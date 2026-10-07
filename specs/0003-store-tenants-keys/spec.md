@@ -1,6 +1,6 @@
 # Spec 0003: Store, tenants, channels, signing keys and rotation
 
-- **Status**: draft
+- **Status**: implemented
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -48,17 +48,19 @@ copies no code from it, because tresor-server is under BUSL-1.1.
 | placeholders (queries use `?`) | `$1…` | `@p1…` | `?` |
 | unique violation | 23505 | 2627, 2601 | `SQLITE_CONSTRAINT_UNIQUE`, `_PRIMARYKEY` |
 | foreign-key violation | 23503 | 547 | `SQLITE_CONSTRAINT_FOREIGNKEY` |
-| retryable | 40001, 40P01 | 1205, 1222, 51000 (lock) | `SQLITE_BUSY` (after `busy_timeout`) |
+| retryable | 40001, 40P01, 55P03 (lock timeout) | 1205, 1222, 51000 (lock) | `SQLITE_BUSY`, `SQLITE_LOCKED` (after `busy_timeout`) |
 | `Lock(tx, key)` | `pg_advisory_xact_lock(hashtextextended(key, 0))` | `EXEC @r = sp_getapplock …, @LockOwner='Transaction', @LockTimeout=10000; IF @r < 0 THROW 51000…` (the return code is checked, the driver raises nothing) | none: `_txlock=immediate` already holds the write lock |
-| session | defaults | `SET XACT_ABORT ON; SET LOCK_TIMEOUT 10000` on every connection | `foreign_keys(1)`, `journal_mode(WAL)`, `busy_timeout(10000)`, `_txlock=immediate` |
+| session (first statement of every transaction) | `lock_timeout` | `SET XACT_ABORT ON; SET LOCK_TIMEOUT …` (`SessionInitSQL` only runs on a pool reset) | `foreign_keys(1)`, `journal_mode(WAL)`, `busy_timeout(10000)`, `_txlock=immediate` |
 
 **Transaction rules:**
 - `Lock` is the first statement of any transaction that needs it.
 - Any error rolls the whole transaction back. There is no "insert, catch the unique violation,
   continue" inside a transaction.
 - On SQLite every `BeginTx` takes the write lock, so plain reads run outside transactions.
-- Services retry a conflict or a retryable error up to 8 times with jitter, then return
-  `ErrConflict`.
+- A retryable engine error (deadlock, serialization failure, lock timeout, `SQLITE_BUSY`) reruns
+  the whole transaction function up to 8 times with jitter, then returns `ErrConflict`. Functions
+  read what they need inside the transaction. A compare-and-set conflict is returned at once: a
+  stale version never succeeds by repeating it.
 - Every mutable row has a `version` column. An update is `… WHERE id = ? AND version = ?`, and zero
   rows affected means a conflict.
 
@@ -69,8 +71,9 @@ copies no code from it, because tresor-server is under BUSL-1.1.
   Server cannot use a column in the batch that adds it, and some drivers do not run multi-statement
   text.
 - Every run starts with `Lock("kista/migrate")`. Under that lock it creates `schema_migrations` if
-  missing (SQL Server: `IF OBJECT_ID(N'dbo.schema_migrations') IS NULL CREATE TABLE …`), reads the
-  applied versions, and applies the rest.
+  missing (SQL Server: `IF OBJECT_ID(N'schema_migrations', N'U') IS NULL CREATE TABLE …`, unqualified
+  like every other statement, so it resolves in the login's default schema), reads the applied
+  versions, and applies the rest.
 - **Compatibility, not equality.** Each migration file declares `-- +min_reader N`: the oldest binary
   schema level that can still work with the database after it. The database keeps the highest
   `min_reader` seen. A binary refuses to start only when that value exceeds its own schema level.
@@ -92,13 +95,22 @@ copies no code from it, because tresor-server is under BUSL-1.1.
     identity.
 - Off loopback, PostgreSQL requires `sslmode=verify-full`, and SQL Server `encrypt=strict` (or
   `true` with certificate verification).
+  - This is judged on the driver's parsed configuration, never on the DSN text: the last of
+    repeated parameters wins, as in the driver.
+  - Every host the driver may use counts: pgx's multi-host fallbacks and SQL Server's failover
+    partner.
+  - The dev profile's "loopback only" rule uses the same parsed check (`store.DSNIsLocal`).
+  - Lock waits are bounded by `store.LockTimeout` (default 10 s; PostgreSQL `lock_timeout`, SQL
+    Server `LOCK_TIMEOUT` and `sp_getapplock`). A transaction that panics is rolled back, so its
+    locks are released.
 - SQLite:
-  - the file is pre-created with mode `0600`, so its `-wal`/`-shm` files get the same mode;
+  - the file is pre-created with mode `0600`, so its `-wal`/`-shm` files get the same mode. The path
+    may not contain `?`, `#` or `%`, which would change the driver's `file:` URI;
   - WAL mode does not work on network filesystems;
   - SQLite means one server process. `kista admin` runs as the same OS user, and SQLite's locking
     covers the two writers.
-  - `kista admin backup <file>` (`VACUUM INTO`) makes a consistent copy. PostgreSQL and SQL Server
-    use their own backups.
+  - `kista admin backup <file>` (`VACUUM INTO`) makes a consistent copy into a new `0600` file, never
+    over an existing one. PostgreSQL and SQL Server use their own backups.
 - Restoring a backup reverts key states to that point, so a restored database can lack a key that
   clients already trust. That is a documented operational risk.
 
@@ -230,6 +242,8 @@ Every transition takes `Lock("kista/channel/<id>")` first, writes a `key_events`
   - From spec 0007 on, retire is also refused while any release of the channel is signed only by
     this key.
   - A retired key never comes back. A new key is added instead.
+  - A key that was never active waits `min_demoted` from when it was added. It has been published in
+    `.well-known`, so clients may already trust it.
 - **Re-signing** with the new active key happens per release, from spec 0007 on. That spec also
   re-reads the key state in the same transaction that records a signature, so a concurrent
   activation cannot leave signatures from the old key recorded after rotation.
@@ -249,8 +263,9 @@ call arbitrary vaults with its own identity.
   separators or `..`. It is allowed only with `profile: dev` or `signers.allow_file: true`. The file
   signer's own checks apply too: `O_NOFOLLOW`, mode `0600`, the owner.
 - `azurekv:` comes with spec 0004 and its vault allowlist.
-- **Every open checks the key against the stored row.** The signer's public-key fingerprint must
-  equal the row's `fingerprint`, or the signer fails closed. A changed file or an edited reference
+- **Every open checks the key against the stored row.** The signer's public key (SPKI DER) must
+  equal the row's `public_key`, which is what `.well-known` publishes, and its fingerprint must equal
+  the row's `fingerprint`. Otherwise the signer fails closed. A changed file or an edited reference
   never signs with a key nobody registered.
 - **The database is the trust root for `.well-known`.** Whoever can write the database can add a key
   that clients will pin at `CREATE`. Database credentials are protected accordingly.
@@ -423,8 +438,9 @@ cmd/kista           + admin subcommands
   `WellKnown` output served:
   - DuckDB's `CREATE` reads it, and `duckdb_extension_repositories()` reports exactly the store's
     fingerprints, before and after a rotation;
-  - if a local-directory prefix reads `.well-known` without httpfs, the case runs in tier A;
-    otherwise it uses the httpfs bootstrap.
+  - a local-directory prefix reads `.well-known` without httpfs (confirmed), so the case runs in
+    tier A. It also checks the rotation end to end: after retirement, an install signed with the old
+    key fails `LOAD` until `FORCE INSTALL` of a build signed with the new key.
 
 ## Alternatives considered
 

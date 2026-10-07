@@ -5,6 +5,10 @@ linters:
     errcheck:
       exclude-functions:
         - (*os.File).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*github.com/hugr-lab/duckdb-extension-repository/internal/store.Store).Close
+        - (*text/tabwriter.Writer).Flush
         - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln

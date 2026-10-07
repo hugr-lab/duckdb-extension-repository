@@ -1,0 +1,22 @@
+# Test databases for the store suite: `make test-db`, then `make test` with the printed variables.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: kista-test
+    ports: ["127.0.0.1:56432:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      retries: 30
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: Kista-Test-2026!
+    ports: ["127.0.0.1:52433:1433"]
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-C", "-S", "localhost", "-U", "sa", "-P", "Kista-Test-2026!", "-Q", "SELECT 1"]
+      interval: 5s
+      retries: 40

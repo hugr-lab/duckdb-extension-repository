@@ -9,4 +9,4 @@ and it is superseded by a new spec when a decision changes.
 | --- | --- | --- |
 | [0001](0001-architecture/spec.md) | Architecture | accepted |
 | [0002](0002-extfile-signer/spec.md) | Extension file format, file signer, DuckDB e2e harness | implemented |
-| [0003](0003-store-tenants-keys/spec.md) | Store, tenants, channels, signing keys and rotation | draft |
+| [0003](0003-store-tenants-keys/spec.md) | Store, tenants, channels, signing keys and rotation | implemented |
