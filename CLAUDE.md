@@ -15,15 +15,14 @@ extension repositories expect - `CREATE EXTENSION REPOSITORY <name> WITH PREFIX 
   Bearer token (tresor-issued); `/.well-known/duckdb-extension-repo.json` (the signature keys) is
   always public.
 
-Start with **design/000-kickoff/KICKOFF.md** (local, gitignored): the owner's decisions, what was
-verified on the duckdb pin, what is still to check, and a first cut of the MVP. The platform context
-is in `design/000-kickoff/017-repository-sections.md` (an excerpt of duckdb-acl's design/017).
+Start with **specs/0001-architecture/spec.md**: the model, the URL layout, the open-core boundary,
+and the DuckDB behaviour the design relies on (with source locations on the duckdb pin).
 
 ## Related repositories
 
-- `hugr-lab/duckdb-acl` - the node's access-control extension; its spec 093 (cluster profile) pins
-  extensions by sha256 and installs them `FROM <repo>`. The duckdb pin to test against is its
-  submodule's (v2.0-cyanoptera).
+- `hugr-lab/duckdb-acl` - the node's access-control extension; its spec 093 (cluster profile) names
+  extensions by version and repository and installs them `FROM <repo>`. The duckdb pin to test
+  against is its submodule's (v2.0-cyanoptera).
 - `hugr-lab/hugr-node` (next) - the node agent, installs only from here.
 - `hugr-lab/tresor` - tokens for private extensions (an http secret with SCOPE on our prefix).
 
@@ -33,6 +32,9 @@ is in `design/000-kickoff/017-repository-sections.md` (an excerpt of duckdb-acl'
   design, security, tests, alternatives. Written and reviewed before code; status `implemented` when
   done. One branch per spec.
 - Every feature lands with tests. Three adversarial review passes before a PR.
-- Self-review the diff before every commit, and again after opening a PR (fix in a follow-up commit).
+- Self-review the diff before every commit, and again after opening a PR (fix in a follow-up
+  commit).
 - `design/` is local scratch (gitignored); specs and code are the record.
-- The owner reads Russian; code, specs and commit messages are English.
+- Everything in the repository and on GitHub is in English: code, comments, specs, commit
+  messages, issues, PRs and reviews.
+- Personal, untracked instructions go in `CLAUDE.local.md` (gitignored).
