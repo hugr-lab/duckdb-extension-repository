@@ -428,7 +428,7 @@ Paths are relative to the duckdb source tree.
 | Paths are flat `<prefix>/<duckdb_version>/<platform>/<name>.duckdb_extension.gz` and versioned `<prefix>/<name>/<version>/<duckdb_version>/<platform>/…`. The DuckDB version is the tag, or the source id on a dev build | `extension_install.cpp:39-47,218-240` | source + experiment |
 | Three transport paths. Local directory: file reads. `http://` with httpfs never loaded: the built-in client sends one `GET` of `.gz`, with no fallback, no redirects and never `Authorization`; `If-None-Match` comes only from `UPDATE EXTENSIONS`. `https://`, or `http://` once httpfs is loaded (bumped to https): httpfs checks `.gz`, then the plain name, then reads, and sends no ETag. A body is gunzipped only if it is gzip, and the gzip trailer is not checked | `extension_install_dynamic.cpp:132-167,225-315`; `http_util.cpp:29-31,515`; `gzip_file_system.cpp:477-533` | e2e (0002) |
 | An http secret's `SCOPE` matches by string prefix, and the longest match wins. httpfs adds the Bearer token | `src/main/secret/secret.cpp:14-32`; the httpfs side is not in the pin | e2e (0002) |
-| `.well-known` is read through DuckDB's file system, so it needs httpfs; it is read without the statement's secrets or `ca_cert_file`, so a private-CA https server cannot serve it. Without httpfs, `CREATE` on `http://` needs `USING PUBLIC KEY` | `extension_repository_manager.cpp:131-160`; `fs.OpenFile` without an opener | e2e (0002) |
+| `.well-known` is read through DuckDB's file system, so an `http(s)` prefix needs httpfs (a local-directory prefix does not); it is read without the statement's secrets or `ca_cert_file`, so a private-CA https server cannot serve it. Without httpfs, `CREATE` on `http://` needs `USING PUBLIC KEY` | `extension_repository_manager.cpp:131-160`; `fs.OpenFile` without an opener | e2e (0002) |
 | `.info` records the repository URL, and `UPDATE EXTENSIONS` goes back to it, sending `If-None-Match`, but only for flat (core-typed) installs: it does not see installs from a user-provided repository. On the flat layout, installing from another URL needs `FORCE` | `extension_helper.cpp:294-305`; `extension_install_dynamic.cpp:330-352` | e2e (0002) |
 | Community keys are trusted only with `allow_community_extensions` | `extension_helper.cpp:636,866` | source |
 
@@ -516,18 +516,19 @@ particular:
 
 | Spec | Scope |
 | --- | --- |
-| 0002 | `extfile`, `signer` (file, Key Vault), gzip assembly; e2e confirmation of the DuckDB behaviour table |
-| 0003 | `store` on three dialects, migrations; tenants, channels, keys, rotation; server and tenant administration API |
-| 0004 | `serve`, `auth`, `authz`, `egress`: issuer records, grants, 401/404, caching headers; serve-path events |
-| 0005 | Index API: releases, body hashes, sha256, visibility (the node agent needs it first) |
-| 0006 | Publication and promotion: API keys, trusted publishing, init-symbol check, reserved names, yank, block |
-| 0007 | Upstreams: core / community / repository / `enterest`, intake, mirror, pull-through, passthrough channels |
-| 0008 | Audit: hash chain, export, sinks, per-tenant statistics |
-| 0009 | Attachments and the feed from Enterest |
-| 0010 | Licensing: licence keys, entitlements, tokens, the SDK (C++, for DuckDB extensions) |
-| 0011 | Deployment: image, Helm, Bicep, Azure Marketplace managed application |
-| 0012 | Bundles for air-gapped sites |
-| 0013 | Administration console: micro-frontend, mounting contract with the hugr platform and Enterest |
+| 0002 | `extfile`, the file signer, gzip assembly; e2e confirmation of the DuckDB behaviour table (implemented) |
+| 0003 | `store` on three dialects, migrations; tenants, channels, keys, rotation; config; `kista admin` |
+| 0004 | Azure Key Vault signer |
+| 0005 | `serve`, `auth`, `authz`, `egress`: issuer records, grants, 401/404, caching headers; the HTTP management API; serve-path events |
+| 0006 | Index API: releases, body hashes, sha256, visibility (the node agent needs it first) |
+| 0007 | Publication and promotion: API keys, trusted publishing, init-symbol check, reserved names, yank, block |
+| 0008 | Upstreams: core / community / repository / `enterest`, intake, mirror, pull-through, passthrough channels |
+| 0009 | Audit: hash chain, export, sinks, per-tenant statistics |
+| 0010 | Attachments and the feed from Enterest |
+| 0011 | Licensing: licence keys, entitlements, tokens, the SDK (C++, for DuckDB extensions) |
+| 0012 | Deployment: image, Helm, Bicep, Azure Marketplace managed application |
+| 0013 | Bundles for air-gapped sites |
+| 0014 | Administration console: micro-frontend, mounting contract with the hugr platform and Enterest |
 | later | custom domains, a CDN for public releases, wasm signatures |
 
 In duckdb-acl (its spec 103, PR hugr-lab/duckdb-acl#183): the optional `sha256` of

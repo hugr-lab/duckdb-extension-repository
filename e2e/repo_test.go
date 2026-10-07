@@ -12,9 +12,9 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 )
 
-// key is a test signing key, generated per run.
+// key is a test signing key, generated per run (or taken from a store-managed signer).
 type key struct {
-	signer *signer.File
+	signer signer.Signer
 	pem    string // SPKI PEM
 	b64    string // base64 SPKI DER
 	fp     string
@@ -30,6 +30,12 @@ func newKey(t *testing.T) *key {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return keyFrom(t, s)
+}
+
+// keyFrom wraps any signer.
+func keyFrom(t *testing.T, s signer.Signer) *key {
+	t.Helper()
 	pemKey, err := extfile.MarshalPublicKeyPEM(s.Public())
 	if err != nil {
 		t.Fatal(err)
