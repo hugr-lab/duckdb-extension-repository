@@ -61,6 +61,7 @@ type SQLite struct {
 // Azure configures the service's Azure identity.
 type Azure struct {
 	Identity Identity `yaml:"identity"`
+	Cloud    string   `yaml:"cloud"` // public (default) | china | usgov; for the entra database login
 }
 
 // Identity is an Azure credential choice.
@@ -87,18 +88,18 @@ type Signers struct {
 // Source is a named key source (spec 0004): a vault or KMS the administrator configured. A signer
 // reference <source>:<key> picks a key inside it; the reference never carries a host.
 type Source struct {
-	Name           string        `yaml:"name"`
-	Kind           string        `yaml:"kind"` // vault | azurekv | awskms | gcpkms
-	Allow          []string      `yaml:"allow"`
-	MaxConcurrency int           `yaml:"max_concurrency"`
-	HealthKey      string        `yaml:"health_key"`
-	Vault          *VaultSource  `yaml:"vault"`
-	AzureKV        *yaml.Node    `yaml:"azurekv"` // phase 2
-	AWSKMS         *yaml.Node    `yaml:"awskms"`  // phase 3
-	GCPKMS         *yaml.Node    `yaml:"gcpkms"`  // phase 4
-	Identity       *Identity     `yaml:"identity"`
-	Recheck        time.Duration `yaml:"recheck"` // how often key properties are re-read; default and maximum 10m
-	Timeout        time.Duration `yaml:"timeout"` // per call; default 10s, 1s..60s
+	Name           string         `yaml:"name"`
+	Kind           string         `yaml:"kind"` // vault | azurekv | awskms | gcpkms
+	Allow          []string       `yaml:"allow"`
+	MaxConcurrency int            `yaml:"max_concurrency"`
+	HealthKey      string         `yaml:"health_key"`
+	Vault          *VaultSource   `yaml:"vault"`
+	AzureKV        *AzureKVSource `yaml:"azurekv"`
+	AWSKMS         *yaml.Node     `yaml:"awskms"` // phase 3
+	GCPKMS         *yaml.Node     `yaml:"gcpkms"` // phase 4
+	Identity       *Identity      `yaml:"identity"`
+	Recheck        time.Duration  `yaml:"recheck"` // how often key properties are re-read; default and maximum 10m
+	Timeout        time.Duration  `yaml:"timeout"` // per call; default 10s, 1s..60s
 }
 
 // VaultSource is a HashiCorp Vault or OpenBao Transit mount.
@@ -109,6 +110,14 @@ type VaultSource struct {
 	CAFile       string    `yaml:"ca_file"`
 	Auth         VaultAuth `yaml:"auth"`
 	SoftwareKeys bool      `yaml:"software_keys"` // required outside dev: Transit keys are software keys
+}
+
+// AzureKVSource is an Azure Key Vault or Managed HSM.
+type AzureKVSource struct {
+	Vault      string `yaml:"vault"`       // the vault name: https://<vault>.vault.<cloud suffix>
+	ManagedHSM string `yaml:"managed_hsm"` // or a Managed HSM name: https://<hsm>.managedhsm.<suffix>
+	Cloud      string `yaml:"cloud"`       // public (default) | china | usgov
+	RequireHSM *bool  `yaml:"require_hsm"` // default true outside dev: RSA-HSM keys only
 }
 
 // VaultAuth says how kista logs in to Vault: no static tokens in config, no AppRole.
@@ -345,8 +354,17 @@ func (c Config) Validate() error {
 	default:
 		bad("store.login.kind must be password or entra")
 	}
+	switch c.Azure.Cloud {
+	case "", "public", "china", "usgov":
+	default:
+		bad("azure.cloud must be public, china or usgov")
+	}
 	switch c.Azure.Identity.Kind {
-	case "", "managed", "workload":
+	case "", "managed":
+	case "workload":
+		if !dev && (c.Azure.Identity.ClientID == "" || c.Azure.Identity.TenantID == "") {
+			bad("azure.identity: workload identity needs client_id and tenant_id")
+		}
 	case "default":
 		if !dev {
 			bad("azure.identity.kind default (the developer credential chain) is allowed only with profile dev")
@@ -405,7 +423,18 @@ func (c Config) Validate() error {
 				continue
 			}
 			validateVault(bad, where, *src.Vault, dev)
-		case "azurekv", "awskms", "gcpkms":
+		case "azurekv":
+			for _, a := range src.Allow {
+				if a != strings.ToLower(a) {
+					bad("%s.allow: Key Vault names are matched lowercased; write prefixes in lowercase", where)
+				}
+			}
+			if src.AzureKV == nil || blocks != 1 {
+				bad("%s: kind azurekv needs exactly one block, azurekv", where)
+				continue
+			}
+			validateAzureKV(bad, where, *src.AzureKV, src.Identity, dev)
+		case "awskms", "gcpkms":
 			bad("%s: kind %s comes in a later phase of spec 0004", where, src.Kind)
 		default:
 			bad("%s.kind must be one of %s", where, strings.Join(SourceKinds, ", "))
@@ -415,6 +444,43 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+var azureName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{1,22}[A-Za-z0-9]$`)
+
+func validateAzureKV(bad func(string, ...any), where string, a AzureKVSource, id *Identity, dev bool) {
+	switch {
+	case (a.Vault == "") == (a.ManagedHSM == ""):
+		bad("%s.azurekv: set exactly one of vault and managed_hsm", where)
+	case a.Vault != "" && (!azureName.MatchString(a.Vault) || strings.Contains(a.Vault, "--")),
+		a.ManagedHSM != "" && (!azureName.MatchString(a.ManagedHSM) || strings.Contains(a.ManagedHSM, "--")):
+		bad("%s.azurekv: a vault or Managed HSM name is 3-24 letters, digits and dashes", where)
+	}
+	switch a.Cloud {
+	case "", "public", "china", "usgov":
+	default:
+		bad("%s.azurekv.cloud must be public, china or usgov", where)
+	}
+	if a.RequireHSM != nil && !*a.RequireHSM && !dev {
+		bad("%s.azurekv.require_hsm: false is allowed only with profile dev", where)
+	}
+	if id == nil {
+		bad("%s.identity is required for kind azurekv", where)
+		return
+	}
+	switch id.Kind {
+	case "managed":
+	case "workload":
+		if !dev && (id.ClientID == "" || id.TenantID == "") {
+			bad("%s.identity: workload identity needs client_id and tenant_id", where)
+		}
+	case "default":
+		if !dev {
+			bad("%s.identity.kind default (the developer chain) is allowed only with profile dev", where)
+		}
+	default:
+		bad("%s.identity.kind must be managed or workload", where)
+	}
 }
 
 func validateVault(bad func(string, ...any), where string, v VaultSource, dev bool) {

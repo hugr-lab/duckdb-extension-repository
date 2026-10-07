@@ -3,16 +3,14 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/cloud/azure"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/azurekv"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/vault"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -20,35 +18,18 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/vaultapi"
 )
 
-// Credential builds the configured Azure credential: managed identity, workload identity, or (dev
-// only, enforced by config validation) the developer chain.
-func Credential(id config.Identity) (azcore.TokenCredential, error) {
-	switch id.Kind {
-	case "managed":
-		opts := &azidentity.ManagedIdentityCredentialOptions{}
-		if id.ClientID != "" {
-			opts.ID = azidentity.ClientID(id.ClientID)
-		}
-		return azidentity.NewManagedIdentityCredential(opts)
-	case "workload":
-		if os.Getenv("AZURE_FEDERATED_TOKEN_FILE") == "" {
-			return nil, errors.New("app: workload identity needs AZURE_FEDERATED_TOKEN_FILE")
-		}
-		return azidentity.NewWorkloadIdentityCredential(&azidentity.WorkloadIdentityCredentialOptions{
-			ClientID: id.ClientID, TenantID: id.TenantID,
-		})
-	case "default":
-		return azidentity.NewDefaultAzureCredential(nil)
-	}
-	return nil, errors.New("app: azure.identity.kind is not set")
-}
-
 // OpenStore opens the configured store and migrates it (store.migrate auto) or checks it (check).
 func OpenStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 	var login store.Login
 	switch cfg.Store.Login.Kind {
 	case "entra":
-		cred, err := Credential(cfg.Azure.Identity)
+		id := cfg.Azure.Identity
+		cloudName := cfg.Azure.Cloud
+		if cloudName == "" {
+			cloudName = "public"
+		}
+		cred, err := azure.Credential(azure.Identity{Kind: id.Kind, ClientID: id.ClientID, TenantID: id.TenantID}, cloudName,
+			cfg.Profile == config.ProfileDev)
 		if err != nil {
 			return nil, err
 		}
@@ -116,6 +97,29 @@ func KeySources(cfg config.Config) (*keysource.Registry, error) {
 				return nil, fmt.Errorf("app: source %s: %w", src.Name, err)
 			}
 			if err := reg.Add(src.Name, vault.New(api, v.Mount), opts); err != nil {
+				return nil, err
+			}
+		case "azurekv":
+			a := src.AzureKV
+			cloudName := a.Cloud
+			if cloudName == "" {
+				cloudName = "public"
+			}
+			host, err := azure.Host(cloudName, a.Vault, a.ManagedHSM)
+			if err != nil {
+				return nil, fmt.Errorf("app: source %s: %w", src.Name, err)
+			}
+			cred, err := azure.Credential(azure.Identity{Kind: src.Identity.Kind, ClientID: src.Identity.ClientID,
+				TenantID: src.Identity.TenantID}, cloudName, cfg.Profile == config.ProfileDev)
+			if err != nil {
+				return nil, fmt.Errorf("app: source %s: %w", src.Name, err)
+			}
+			requireHSM := a.RequireHSM == nil || *a.RequireHSM
+			b, err := azurekv.New(host, cred, requireHSM, azurekv.Options{Timeout: src.Timeout})
+			if err != nil {
+				return nil, fmt.Errorf("app: source %s: %w", src.Name, err)
+			}
+			if err := reg.Add(src.Name, b, opts); err != nil {
 				return nil, err
 			}
 		default:
