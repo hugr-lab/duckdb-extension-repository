@@ -138,7 +138,7 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	return &Services{
 		Store:   s,
 		Sources: reg,
-		Tenants: &tenants.Service{Store: s, Authz: az},
+		Tenants: &tenants.Service{Store: s, Authz: az, HasDomain: cfg.HasBlobDomain},
 		Keys: &keys.Service{
 			Store:      s,
 			Signers:    reg,

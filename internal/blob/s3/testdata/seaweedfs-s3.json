@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "kista-test",
+      "credentials": [{ "accessKey": "kista-test", "secretKey": "kista-test-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

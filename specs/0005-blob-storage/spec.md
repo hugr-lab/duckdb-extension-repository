@@ -1,6 +1,6 @@
 # Spec 0005: Blob storage for extension bodies
 
-- **Status**: draft
+- **Status**: phase 1 implemented
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -53,11 +53,15 @@ interface).
 
 ```text
 blobs            domain, body_hash, stream_hash, body_len, body_crc32, stream_len,
-                 stream_chunks (32 bytes per MiB of stream), corrupt_at null, created_at
+                 stream_chunks (32 bytes per MiB of stream), corrupt_at null, created_at,
+                 committed_at (every commit sets it; a corruption mark applies only to the commit
+                 its reader saw, so a stale reader cannot mark a repaired record)
                  pk (domain, body_hash); index (domain, stream_hash)
 storage_domains  name pk, kind, store_id, created_at
                  -- store_id: a hash of the store's identity (kind, endpoint or account, bucket or
                  -- container or root, prefix), pinned at first use
+deployment       one pk (always 1), id, created_at
+                 -- the deployment's id, created on first use; the domain markers carry it
 ```
 
 - **No raw body is stored.** Signing needs only the body hash, serving uses the stream, and the rare
@@ -72,7 +76,7 @@ storage_domains  name pk, kind, store_id, created_at
 | `body_crc32`, lengths | `bigint` | `bigint` | `INTEGER` |
 | `stream_chunks` (up to about 33 KB at 1 GiB) | `bytea` | `varbinary(max)` | `BLOB` |
 
-It also adds `tenants.storage_domain` as `varchar(16)` / `nvarchar(16) BIN2` / `TEXT`,
+It also adds the single-row `deployment` table, and `tenants.storage_domain` as `varchar(16)` / `nvarchar(16) BIN2` / `TEXT`,
 `NOT NULL DEFAULT 'default'`. On SQL Server the default constraint is named.
 
 ### The store interface
@@ -87,6 +91,10 @@ type Store interface {
     Stat(ctx context.Context, key string) (size int64, err error)          // ErrNotFound
     Delete(ctx context.Context, key string) error                          // GC (spec 0008)
     List(ctx context.Context, prefix string, fn func(key string, size int64, modified time.Time) error) error
+    // Anonymous reports whether key can be read without credentials, when the backend can tell.
+    Anonymous(ctx context.Context, key string) (readable, ok bool)
+    // ID identifies the store (kind, endpoint or account, bucket or root, prefix) for pinning.
+    ID() string
 }
 ```
 
@@ -94,9 +102,11 @@ type Store interface {
   `kista-domain.json` (the marker). They are validated against exactly this grammar on every call,
   with no upper case, no `..`, no other prefixes. `List` accepts only `streams/` and `tmp/`.
   Configured prefixes are validated the same way.
-- **Bounded calls.** Every call has a timeout on time to first byte and on idle time. There are at
-  most 3 attempts, counting the SDK's own retries. Clients ignore proxy environment variables and do
-  not follow redirects.
+- **Bounded calls.** Every remote call has a timeout on connecting, on time to response headers,
+  and on idle time: a read or write on a connection that makes no progress for `timeout` fails.
+  `Stat` and `Delete` are also bounded as a whole. There are at most 3 attempts, counting the SDK's
+  own retries. Clients ignore proxy environment variables and do not follow redirects. `fs` is
+  local and takes no timeout.
 - **Errors** keep the backend's status, an error code of the expected shape, and a request id, never
   bodies, keys, URLs or principals. The SDKs' own error strings, which include the URL and body, are
   never wrapped.
@@ -112,7 +122,7 @@ type Store interface {
 
 **`s3`: S3-compatible stores** (phase 1; `github.com/minio/minio-go/v7`, Apache-2.0).
 - **Config:**
-  - `endpoint`: an https host; http only on loopback with `profile: dev`;
+  - `endpoint`: an `https://host[:port]` URL; `http://` only on loopback with `profile: dev`;
   - `bucket` and `prefix`;
   - `region`, required (no `GetBucketLocation` lookup; R2 uses `auto`; jurisdiction endpoints such
     as `<acct>.eu.r2.cloudflarestorage.com` for residency);
@@ -120,12 +130,18 @@ type Store interface {
   - `sse: none|s3|kms`, required: R2 and MinIO without KMS take `none`, AWS takes `s3` or `kms`,
     with `kms_key_id` for `kms`.
 - **Credentials in phase 1:** static access-key and secret files (`access_key_file`,
-  `secret_key_file`, mode `0600`), wrapped in kista's own `credentials.Provider`. minio-go's IAM,
+  `secret_key_file`, mode `0600` or narrower, re-read on every signing so rotated files are picked
+  up), wrapped in kista's own `credentials.Provider`. minio-go's IAM,
   chain, environment and file providers are never used: they read `AWS_*`, `MINIO_*`,
   `~/.aws/credentials` and container-credential URLs from the environment. Platform identity for AWS
   is deferred to phase 3.
 - **Put:** a single PUT, or a multipart upload from the spool file (`ReadAt`, no buffering), aborted
-  on every error. Documentation adds an `AbortIncompleteMultipartUpload` lifecycle rule.
+  on every error; kista aborts it itself with a fresh deadline, since minio-go's own abort uses the
+  call's context and sends nothing once that is cancelled.
+- **Get:** one ranged GET (`minio.Core`, no `HEAD` first, no `If-Match` pinning to an ETag that a
+  concurrent re-upload changes). Errors from reading the body are described like every other.
+- **TLS:** the system roots, or only `ca_file` for an internal CA. A bucket name with dots cannot be
+  used with `lookup: dns` over https (the certificate does not match), so config refuses it. Documentation adds an `AbortIncompleteMultipartUpload` lifecycle rule.
   `MaxRetry` is capped.
 - Least privilege: `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` and `s3:ListBucket` on the
   prefix, plus `kms:GenerateDataKey` and `kms:Decrypt` for SSE-KMS.
@@ -151,30 +167,45 @@ blob:                               # file-only, like signers
   domains:
     - name: default
       kind: s3
-      s3: { endpoint: minio.internal:9000, bucket: kista, region: us-east-1, sse: none,
-            access_key_file: /run/secrets/s3-access, secret_key_file: /run/secrets/s3-secret }
+      s3: { endpoint: "https://minio.internal:9000", bucket: kista, region: us-east-1, lookup: path,
+            sse: none, access_key_file: /run/secrets/s3-access, secret_key_file: /run/secrets/s3-secret }
     - name: cn
       kind: azureblob                 # phase 2
       azureblob: { account: kistacn, container: bodies, cloud: china,
                    identity: { kind: workload, client_id: "…", tenant_id: "…" } }
-  spool_dir: /var/lib/kista/spool   # required outside dev
-  max_body: 1GiB
+  spool_dir: /var/lib/kista/spool   # the default; in dev with SQLite, beside the database file
+  max_body: 1GiB                    # the default; at most 4GiB
   max_ingests: 4                    # concurrent spools; disk use is about max_ingests × 2 × max_body
 ```
 
+A remote domain also takes `timeout` (connect, headers and idle reads or writes; default 30s, 1s..5m).
+
+- **`default` is required.** Configured domains must include `default`: tenants created without
+  `-domain`, and every tenant that existed before migration 0002, live there.
 - **Default.** Without a `blob` block, kista uses one `fs` domain, `default`, under
   `/var/lib/kista/blobs` (in dev, a directory beside the SQLite file). kista needs nothing but
   DuckDB.
 - **Pinned.** At startup every configured domain's `store_id` is compared with
-  `storage_domains`. A domain that now points at another store refuses to start. Two domains whose
+  `storage_domains` (and pinned on first use). A domain that now points at another store refuses to start. Two domains whose
   stores overlap (same kind and bucket, container or root, with one prefix containing the other) are
-  refused at config validation.
+  refused at config validation and again by store identity at startup. A store's identity is
+  normalized (the endpoint lowercased and without its default port; an `fs` root with symlinks
+  resolved); two different host names for one bucket are not detected, and the marker is what
+  catches them.
+- **Order.** Existing pins are compared first; then every store's marker is checked (written if
+  absent) and the public check runs; only then are new domains pinned. A store kista refused is
+  never pinned, so pointing config at another store is enough to recover.
 - **Marker.** Each domain's store holds `kista-domain.json`: the domain name, the store id, and the
   deployment's id (kept in the database). A store whose marker names another deployment or domain is
-  refused. Two kista deployments never share a prefix, so one's garbage collection cannot delete the
+  refused. After writing a marker kista reads it back, so of two deployments that claim one empty
+  store at the same moment, the one whose marker was overwritten refuses to start. Two kista deployments never share a prefix, so one's garbage collection cannot delete the
   other's objects.
 - **Not public.** At startup kista makes an anonymous, unsigned `HEAD` of the marker. If that
-  succeeds, the domain is public, and kista refuses to start. The same check runs periodically.
+  succeeds, the domain is public, and kista refuses to start. The same check (`CheckPublic`) runs
+  periodically once kista serves (spec 0006). A backend that cannot tell is logged, not refused.
+  Only the marker is probed: a policy that makes just `streams/` public is not detected, which the
+  deployment documentation covers. `kista admin blob check` runs all of these checks and lists
+  tenants whose domain is not configured.
 - **Tenants.**
   - A tenant's domain is set at creation (`kista admin tenant create … -domain cn`), validated
     against the loaded config, and never changes in this spec.
@@ -223,8 +254,10 @@ lookup by a raw hash from a request.
 
 Each returns a `File`:
 - `Size`;
-- `ETag`: `H("gz" ‖ body hash ‖ signature)` or `H("plain" ‖ body hash ‖ signature)`. The body hash
-  is stable even if a stream is ever re-made; this amends spec 0001;
+- `ETag`: `H("gz" ‖ stream hash ‖ body hash ‖ signature)` or `H("plain" ‖ body hash ‖ signature)`.
+  The gzip bytes change when a re-commit makes another stream (another compressor version), so the
+  gzip ETag includes the stream hash: httpfs compares ETags between its ranged requests and must
+  never splice two streams. This amends spec 0001;
 - `ContentType`: `application/gzip` or `application/octet-stream`, set so that `ServeContent` never
   sniffs and a `HEAD` reads nothing;
 - `NewReader(ctx) io.ReadSeeker`, per request.
@@ -232,7 +265,9 @@ Each returns a `File`:
 **Gzip.** The file is the gzip header, the stored stream, a final stored block with the 256
 signature bytes, and the trailer. Total size: `stream_len + 279`; chunk boundaries sit at
 `10 + k × 1 MiB`.
-- A read fetches one ranged `Get` from the first chunk it needs up to the end of the requested range.
+- A read fetches one ranged `Get` from the first chunk it needs to the end of the stream; the reader
+  is closed when the response ends, which cancels the rest (`ServeContent` does not tell a reader
+  where a range ends).
 - It verifies each chunk against the record as it streams, and copies out only verified bytes. The
   last, partial chunk is checked at its exact length.
 - A non-sequential read reopens the range.
@@ -240,13 +275,20 @@ signature bytes, and the trailer. Total size: `stream_len + 279`; chunk boundari
 
 **Plain.** The plain name is fetched only through httpfs (spec 0002). It is served by inflating the
 verified stream and appending the signature.
-- No `Accept-Ranges` is sent, so httpfs downloads it whole; this is to confirm on the pin.
+- No `Accept-Ranges` is sent and the file is sent whole with `200`. Confirmed on the pin: httpfs
+  makes a `HEAD`, then a `GET` with `Range: bytes=0-<size-1>`, and accepts the `200`.
 - The inflated length must equal `body_len`.
+
+**Corruption or transport error.** A chunk whose digest differs, or an object that is missing or
+shorter than recorded, is corruption. A read that ends early is also what a dropped connection looks
+like, so the object's size is asked for before calling it corruption; otherwise it is a transport
+error (the response is aborted all the same, and nothing is marked).
 
 **Failure mid-response.** If a chunk fails verification after headers were sent, the reader returns
 `ErrCorrupt`. The HTTP handler (spec 0006) must abort the connection
 (`panic(http.ErrAbortHandler)`), so a client never sees a clean, truncated file. The record gets
-`corrupt_at`, a metric and an alert are raised, and the next commit of the body repairs the object.
+`corrupt_at` (written once per commit, so a bad object does not turn every request into a database
+write), a metric and an alert are raised, and the next commit of the body repairs the object.
 The store is not trusted, so a bucket writer can deny service but cannot serve a different body.
 
 **Caching.** Records never change except for `corrupt_at`, so serving caches them by
@@ -299,11 +341,13 @@ internal/store            + migration 0002
   - a missing object is `ErrNotFound`;
   - an interrupted Put leaves no visible object;
   - concurrent Puts of one key;
-  - errors without planted secrets;
+  - a multipart Put (17 MiB), and a cancelled one that leaves nothing visible and no pending upload;
+  - a stalled server: every call fails within bounds, a caller's deadline is reported as such;
+  - errors without planted secrets, keys, hosts, buckets or prefixes;
   - steering environment variables (`AWS_*`, `MINIO_*`, `~/.aws` via `HOME`) are ignored.
 - **Real servers in CI (Linux):**
-  - MinIO, pinned by digest (SeaweedFS is the fallback if MinIO images go away), for `s3` with
-    `sse: none`;
+  - SeaweedFS, pinned by digest, for `s3` with `sse: none` (`make test-s3`). MinIO no longer
+    publishes images to Docker Hub or Quay; the suite also passes against a MinIO server;
   - Azurite (`azurite-blob --skipApiVersionCheck --loose`, the well-known dev account) for
     `azureblob` in phase 2;
   - run as `docker run` steps, gated by `KISTA_TEST_S3` / `KISTA_TEST_AZUREBLOB` and required with
@@ -314,7 +358,8 @@ internal/store            + migration 0002
   - a caller that rejects the file stores nothing and leaves no spool;
   - `max_body`, `max_ingests`, the startup sweep;
   - a dedup hit still uploads, and repairs a planted object;
-  - two commits racing;
+  - two commits racing, and replicas starting and committing together on all three databases;
+  - a dropped connection mid-object is not corruption;
   - the record round trip on all three databases;
   - `OpenGzip` bytes equal spec 0002's `WriteGzip`;
   - a range inside a chunk, a range across chunks, the last bytes;
@@ -323,7 +368,7 @@ internal/store            + migration 0002
   - domain pinning: a changed `store_id`, overlapping stores, a foreign marker, a public marker, a
     tenant with a missing domain.
 - **e2e.** A real extension is spooled, verified (footer, test signature) and committed into `fs`,
-  then into MinIO. Served by `http.ServeContent` with a channel signature, DuckDB installs and loads
+  then into an S3 server. Served by `http.ServeContent` with a channel signature, DuckDB installs and loads
   it:
   - over `http://` (one `GET`);
   - over `https://` through httpfs (`HEAD`, then a ranged `GET`, with `ca_cert_file`);

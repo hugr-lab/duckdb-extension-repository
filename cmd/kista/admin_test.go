@@ -38,8 +38,9 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "migrate")
 	run(0, "check")
 	run(0, "tenant", "create", "acme", "-display-name", "Acme")
-	if !strings.Contains(run(0, "tenant", "list"), "acme") {
-		t.Fatal("tenant list")
+	run(1, "tenant", "create", "acme-cn", "-domain", "cn") // not configured
+	if got := run(0, "tenant", "list"); !strings.Contains(got, "acme") || !strings.Contains(got, "default") || strings.Contains(got, "acme-cn") {
+		t.Fatalf("tenant list: %q", got)
 	}
 	run(0, "version", "add", "eb0d9df48e", "-kind", "dev")
 	run(0, "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.2.0")
@@ -69,6 +70,12 @@ func TestAdminCLI(t *testing.T) {
 	}
 	run(1, "key", "check", "-signer", "nope:x")
 	run(0, "backup", filepath.Join(dir, "backup.db"))
+	if got := run(0, "blob", "check"); !strings.Contains(got, "domain default ok") {
+		t.Fatalf("blob check: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "blobs", "kista-domain.json")); err != nil {
+		t.Fatalf("blob check wrote no marker beside the dev database: %v", err)
+	}
 	run(1, "key", "add", "acme/prod", "-signer", "file:../escape.pem")
 	run(2, "nonsense")
 	run(2, "key", "add", "acme")

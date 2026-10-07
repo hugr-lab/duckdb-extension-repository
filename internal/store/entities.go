@@ -30,6 +30,7 @@ const (
 // Tenant is a namespace.
 type Tenant struct {
 	ID, Name, DisplayName, State string
+	StorageDomain                string // set at creation, never changed (spec 0005)
 	CreatedAt                    time.Time
 	Version                      int64
 }
@@ -67,11 +68,11 @@ type KeyEvent struct {
 
 // --- reads (outside transactions) ---
 
-const tenantCols = "id, name, display_name, state, created_at, version"
+const tenantCols = "id, name, display_name, state, storage_domain, created_at, version"
 
 func scanTenant(r interface{ Scan(...any) error }) (Tenant, error) {
 	var t Tenant
-	err := r.Scan(&t.ID, &t.Name, &t.DisplayName, &t.State, scanTime{&t.CreatedAt}, &t.Version)
+	err := r.Scan(&t.ID, &t.Name, &t.DisplayName, &t.State, &t.StorageDomain, scanTime{&t.CreatedAt}, &t.Version)
 	return t, err
 }
 
@@ -251,9 +252,15 @@ func (t *Tx) CreateTenant(ctx context.Context, tn *Tenant) error {
 	if tn.State == "" {
 		tn.State = TenantActive
 	}
+	if tn.StorageDomain == "" {
+		tn.StorageDomain = DefaultDomain
+	}
+	if err := ValidDomain(tn.StorageDomain); err != nil {
+		return err
+	}
 	tn.ID, tn.CreatedAt, tn.Version = NewID(), t.Now(), 1
-	_, err := t.exec(ctx, "INSERT INTO tenants (id, name, display_name, state, created_at, version) VALUES (?, ?, ?, ?, ?, ?)",
-		tn.ID, tn.Name, tn.DisplayName, tn.State, t.s.d.timeArg(tn.CreatedAt), tn.Version)
+	_, err := t.exec(ctx, "INSERT INTO tenants (id, name, display_name, state, storage_domain, created_at, version) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		tn.ID, tn.Name, tn.DisplayName, tn.State, tn.StorageDomain, t.s.d.timeArg(tn.CreatedAt), tn.Version)
 	return t.s.mapErr(err, "tenant "+tn.Name)
 }
 
