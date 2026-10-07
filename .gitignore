@@ -1,5 +1,6 @@
 # local scratch: research and design notes behind the specs
 design/
+CLAUDE.local.md
 # build outputs
 /bin/
 /dist/

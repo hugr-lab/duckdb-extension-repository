@@ -169,8 +169,8 @@ breaks on every key rotation, so duckdb-acl removes it (see Follow-ups). kista d
   passthrough channels of that tenant stop serving that name by default. This prevents autoloading
   from silently picking DuckDB's build over the replacement; an administrator can override it.
 
-  Passthrough is a deliberate exception to "re-sign everything" (the owner's decision 1): DuckDB
-  autoloads core extensions only under its own key.
+  Passthrough is a deliberate exception to "every binary is re-signed": DuckDB autoloads core
+  extensions only under its own key.
 
 **Bootstrapping a client.**
 
@@ -191,7 +191,6 @@ A `Signer` signs a 32-byte digest: RSA-2048, PKCS#1 v1.5, SHA-256 DigestInfo.
   signer.
 - Implementations: a local key file (development), Azure Key Vault / Managed HSM, AWS KMS.
 - Only **RSA-2048** works: DuckDB requires a 256-byte signature.
-- This resolves the kickoff's open decision 6.
 
 Every signed channel has a key set: one active key plus trusted keys. `.well-known` lists all
 trusted keys, as SPKI PEM or base64 DER, one key per string.
@@ -418,7 +417,7 @@ Paths are relative to the duckdb source tree.
 | Paths are flat `<prefix>/<duckdb_version>/<platform>/<name>.duckdb_extension.gz` and versioned `<prefix>/<name>/<version>/<duckdb_version>/<platform>/…`. The DuckDB version is the tag, or the source id on a dev build | `extension_install.cpp:39-47,218-240` | source + experiment |
 | `http://`: the built-in client requests `.gz` only, does not follow redirects, sends `If-None-Match`, and never adds `Authorization`. `https://`: httpfs checks `.gz`, then the plain name. A body is gunzipped only if it is gzip | `extension_install_dynamic.cpp:132-161,225-282`; `http_util.cpp:29-31` | source; e2e in 0002 |
 | An http secret's `SCOPE` matches by string prefix, and the longest match wins. httpfs adds the Bearer token | `src/main/secret/secret.cpp:14-32`; the httpfs side is not in the pin | partly; e2e in 0002 |
-| `.well-known` is read without the statement's secrets or `ca_cert_file` | kickoff experiment; `fs.OpenFile` without an opener | experiment |
+| `.well-known` is read without the statement's secrets or `ca_cert_file` | `fs.OpenFile` without an opener | experiment; e2e in 0002 |
 | `.info` records the repository URL, and `UPDATE EXTENSIONS` goes back to it. Installing from another URL needs `FORCE` | `extension_helper.cpp:294-298`; `extension_install_dynamic.cpp:330-352` | source |
 | Community keys are trusted only with `allow_community_extensions` | `extension_helper.cpp:636,866` | source |
 
