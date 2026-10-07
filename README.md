@@ -1,6 +1,7 @@
-# duckdb-extension-repository
+# kista
 
-A trusted repository for [DuckDB](https://duckdb.org) extensions.
+A trusted repository for [DuckDB](https://duckdb.org) extensions. *Kista* is Old Norse / Swedish for
+"chest".
 
 - **Mirror** the official core and community extensions: DuckDB's signature is verified at intake,
   and every binary is **re-signed with your own key**. A signature from your repository then means
@@ -17,6 +18,6 @@ INSTALL httpfs FROM corp;
 LOAD httpfs FROM corp;
 ```
 
-Status: design. See `specs/`.
+Status: design. See `specs/`. Enterest is the hosted service built on kista.
 
 Licensed under the Apache License, Version 2.0.

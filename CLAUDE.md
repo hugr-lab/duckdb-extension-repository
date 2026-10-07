@@ -1,5 +1,8 @@
 # duckdb-extension-repository — Development Guidelines
 
+The product is **kista** (open server, binary `kista`, env `KISTA_*`); **Enterest** is our hosted
+service on top of it (closed, separate repository, `enterest.hugr-lab.com`).
+
 A trusted repository for DuckDB extensions (Apache-2.0, Go). It serves what DuckDB 2.0's trusted
 extension repositories expect - `CREATE EXTENSION REPOSITORY <name> WITH PREFIX 'https://…'`,
 `INSTALL x FROM <name>` - and is the one place the hugr platform's nodes and people install from:
