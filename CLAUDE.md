@@ -35,6 +35,8 @@ and the DuckDB behaviour the design relies on (with source locations on the duck
 - Self-review the diff before every commit, and again after opening a PR (fix in a follow-up
   commit).
 - `design/` is local scratch (gitignored); specs and code are the record.
+- `make test` and `make lint` for Go; `make e2e-build` (DuckDB at `e2e/DUCKDB_PIN`, minutes with
+  ccache) then `make e2e` for the DuckDB end-to-end cases. All targets run with `GOWORK=off`.
 - Everything in the repository and on GitHub is in English: code, comments, specs, commit
   messages, issues, PRs and reviews.
 - Personal, untracked instructions go in `CLAUDE.local.md` (gitignored).

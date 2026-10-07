@@ -1,6 +1,6 @@
 # Spec 0002: Extension file format, the file signer, and the DuckDB e2e harness
 
-- **Status**: draft
+- **Status**: implemented
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -38,7 +38,8 @@ against a real DuckDB binary.
 - **Go module.** `github.com/hugr-lab/duckdb-extension-repository`; renaming the repository later
   only changes the path. Go 1.26, and CI reads the version from `go.mod`.
 - **Binary.** One, `cmd/kista`. Its CLI uses stdlib `flag` subcommands.
-- **Makefile targets:** `test`, `lint` (`go vet` + `staticcheck`), `e2e-build`, `e2e`. Every target
+- **Makefile targets:** `build`, `test`, `lint` (`go vet` + golangci-lint's standard set, which
+  includes staticcheck), `e2e-build`, `e2e`. Every target
   runs with `GOWORK=off`, so a parent `go.work` cannot interfere.
 - **Dependencies.** kista depends on DuckDB only. No other hugr-lab repository is needed to build or
   test it.
@@ -105,10 +106,15 @@ func HashBody(r io.Reader, maxSize int64) (BodyHash, int64, error)
 - **Key type.** Only RSA keys of exactly 2048 bits, with `e = 65537` and the `rsaEncryption` OID,
   are accepted. The check happens when a key is loaded.
 - **Public key forms.** The two that DuckDB accepts (`extension_repository_manager.cpp:48-83`):
-  - SPKI PEM, exactly one block, no trailing data;
-  - strict base64 of SPKI DER.
+  - SPKI PEM;
+  - base64 of SPKI DER.
 
-  Any other `-----BEGIN` header is refused, as DuckDB refuses it, PKCS#1 `RSA PUBLIC KEY` included.
+  Any other `-----BEGIN` header is refused, as DuckDB refuses it, PKCS#1 `RSA PUBLIC KEY` included,
+  and so are PEM headers (DuckDB fails on them). kista is stricter than DuckDB in a few ways, so that
+  whatever kista accepts, DuckDB accepts too:
+  - exactly one PEM block, with nothing before or after it;
+  - no whitespace inside the base64 form;
+  - NULL algorithm parameters.
   Keys are deduplicated by fingerprint.
 - **Fingerprint.** `"sha256:" + lowercase hex(SHA-256(SPKI DER))`, the string
   `CREATE EXTENSION REPOSITORY` reports (`extension_repository_manager.cpp:116-125`).
@@ -141,18 +147,28 @@ So:
   - the output decompresses to the body, with the same body hash;
   - no block has `BFINAL` set.
 
-  It returns `{BodyHash, BodyCRC32, BodyLen, StreamLen, StreamSHA256}`.
-- **`WriteGzip(dst, pre Precompressed, stream io.Reader, sig []byte)`** writes, in order:
-  1. a gzip header with `FLG = 0`, `MTIME = 0` and `OS = 255`;
-  2. exactly `StreamLen` bytes of the stream. It fails if there are fewer, or if more remain;
-  3. a final stored block: `01 00 01 FF FE` followed by the 256 signature bytes;
-  4. the trailer: `crc32.Update(BodyCRC32, IEEE, sig)` and `(BodyLen + 256) mod 2^32`.
-- **`VerifyStream(pre, stream)`** checks a stored stream against `StreamSHA256`. The serving spec
-  (0004) decides whether to call it on every read or on a schedule.
+  It returns `{BodyHash, BodyCRC32, BodyLen, StreamLen, StreamHash, StreamChunks}`:
+  - `StreamChunks` is the SHA-256 of each 1 MiB chunk of the stream;
+  - `StreamHash` is their composite hash, for addressing.
 
-  A stored stream is trusted only through this hash. A stream with a final block of its own would
-  make DuckDB stop early and ignore the appended signature, so a tampered stream must never be
-  served.
+  On error the destination holds partial output, which the caller discards.
+- **`WriteGzip(dst, pre Precompressed, stream io.Reader, signed BodyHash, sig []byte)`**:
+  - refuses unless `signed` (the hash the signature was made over) equals `pre.BodyHash`;
+  - writes, in order:
+    1. a gzip header with `FLG = 0`, `MTIME = 0` and `OS = 255`;
+    2. the stream, read 1 MiB at a time. **Each chunk is checked against `StreamChunks` before it
+       is written.** The stream must be exactly `StreamLen` bytes, and a read error is reported;
+    3. a final stored block: `01 00 01 FF FE` followed by the 256 signature bytes;
+    4. the trailer: `crc32.Update(BodyCRC32, IEEE, sig)` and `(BodyLen + 256) mod 2^32`.
+
+  A stored stream with a final block of its own would make DuckDB stop early, inflate a different
+  body and ignore the appended signature. So verification happens on the same bytes as they are
+  sent:
+  - a changed chunk stops the output before that chunk, with no final block, and DuckDB refuses an
+    unterminated stream;
+  - the chunks sent before it were verified and contain no final block (checked by `Precompress`).
+- **`VerifyStream(pre, stream)`** checks a whole stored stream (length, every chunk, the composite
+  hash). It is for scrubbing storage; serving does not need it.
 - The `.gz` is served as a file, without `Content-Encoding`. DuckDB does not check the trailer, so
   unit tests do: Go's `gzip.Reader` with `Multistream(false)` must reach EOF with a valid CRC, and
   `gzip -t` must pass.
@@ -174,9 +190,11 @@ type Signer interface {
   `Public()` passes.
 - **`file`** is for development and tests. It requires explicit opt-in (`allow_file_signer: true`)
   outside a dev profile. It:
-  - opens the path and `fstat`s the opened file;
-  - refuses anything that is not a regular file, is not owned by the current user, or has a mode
-    broader than `0600`. On Windows the mode check is skipped; this is documented;
+  - opens the path without following a final symlink (`O_NOFOLLOW` on unix);
+  - `fstat`s the opened file and requires `Lstat` of the path to be the same file and not a symlink;
+  - refuses anything that is not a regular file. On unix it also refuses a file not owned by the
+    current user or with a mode broader than `0600`. Other platforms skip the owner and mode checks;
+    this is documented;
   - accepts PKCS#8 or PKCS#1 PEM with exactly one block, and refuses encrypted PEM with a clear
     error;
   - calls `Validate()` and checks for 2048 bits and `e = 65537`;
@@ -202,9 +220,11 @@ the duckdb-httpfs commit that the pinned tree's `.github/config/extensions/httpf
 
 **Build.** `e2e/build-duckdb.sh <out>`:
 
-- runs `git fetch --depth 1 origin <sha>` from `duckdb/duckdb`, then asserts
-  `git rev-parse HEAD` equals the pin. The `.github` tree is kept, because httpfs's patches live
-  there;
+- runs `git fetch --depth 1 origin <sha>` from `duckdb/duckdb`, then asserts two things:
+  `git rev-parse HEAD` equals the pin, and the working tree is clean. The `.github` tree is kept,
+  because httpfs's patches live there;
+- sets no version override. A shallow checkout gives a dev version, so the extension folder and
+  the extensions' metadata use the commit hash, as any dev build of this commit does;
 - builds release with `STATICALLY_LINK_EXTENSIONS=core_functions`. The default would also link
   json, parquet and icu statically;
 - builds named targets only:
@@ -215,11 +235,16 @@ the duckdb-httpfs commit that the pinned tree's `.github/config/extensions/httpf
   - httpfs (loadable). httpfs needs OpenSSL and libcurl development headers: `apt libssl-dev
     libcurl4-openssl-dev`; on macOS brew `openssl@3`.
 
-Tests read the platform and the version directory name from the runner (`PRAGMA platform`,
+Its output is `<out>/lib` (libduckdb), `<out>/include` (`duckdb.h`) and `<out>/extensions`. Tests
+read the platform and the version directory name from the runner (`PRAGMA platform`,
 `pragma_version()`), never from constants.
 
 **Runner.** `e2e/runner/runner.c` is written against DuckDB's **C API**, so there are no C++ ABI
-concerns. It is built against the same build tree, with an rpath to its `libduckdb`.
+concerns. `e2e/build-runner.sh <out>` builds it against `<out>/lib` and `<out>/include`, with an
+`@rpath` to `<out>/lib`. It is cheap and never cached.
+
+- Its environment is a minimal allowlist (`PATH`, `HOME`, `TMPDIR`), so no proxy setting reaches
+  it. curl reads the lowercase variables too.
 
 - It sets startup options with `duckdb_set_config`:
   - `allow_extension_repositories='allowed'`;
@@ -269,7 +294,7 @@ client. Tier C uses httpfs.
 | --- | --- | --- | --- | --- |
 | 1 | A | signed tree, `USING PUBLIC KEY` (PEM, then base64 DER), `INSTALL x FROM r`, `LOAD x FROM r` | works for `loadable_extension_demo` (CPP) and `demo_capi` (C_STRUCT); the reported fingerprint equals `extfile.Fingerprint` | keys; signature |
 | 2 | A | the same, signed with another key | `INSTALL` refused: "doesn't have a valid signature" | signature |
-| 3 | A | `USING PUBLIC KEY` with a PKCS#1 PEM or a 3072-bit key | refused at `CREATE` | keys |
+| 3 | A | `USING PUBLIC KEY` with a PKCS#1 PEM or a 3072-bit key | refused at `CREATE` (errors name the key form and 2048); a valid key on the same prefix is accepted | keys |
 | 4 | A | `INSTALL x FROM r VERSION 'v'` | read from `<r>/<name>/<v>/<version dir>/<platform>/…`; `v` is used verbatim | paths |
 | 5 | A | rotation: install with key A, `CREATE OR REPLACE` with B only, then `LOAD x FROM r` | load fails; `FORCE INSTALL` of a B-signed file fixes it | keys checked on every LOAD |
 | 6 | A | rotation with keys A and B | A- and B-signed installs both load with `LOAD x FROM r` | keys |
@@ -280,14 +305,33 @@ client. Tier C uses httpfs.
 | 11 | B | an http secret with a matching `SCOPE` | no `Authorization` header on the built-in path | http path |
 | 12 | B | `UPDATE EXTENSIONS (x)` | `If-None-Match` with the served ETag; `304` keeps the install. A repeated plain `INSTALL` makes no request | `.info`, ETag |
 | 13 | B | `CREATE … 'http://…'` without a key | fails: `.well-known` needs httpfs | `.well-known` |
-| 14 | C | after `LOAD httpfs FROM r`: `CREATE` on an `https://` prefix without a key | keys read from `.well-known`; a trailing `/` on the prefix is trimmed; a 64 KiB + 1 file is refused | `.well-known` |
-| 15 | C | `https://` install: the request log | exists check on `.gz`, then the plain name, then reads; `Range` honoured | https path |
+| 14 | C | after `LOAD httpfs FROM r`: `CREATE` without a key on an `http://` prefix with a trailing `/` | keys read from `.well-known` (the path has no double slash; the stored prefix keeps the `/`); exactly 64 KiB accepted, 64 KiB + 1 refused | `.well-known` |
+| 15 | C | `https://` install: the request log | exactly `HEAD` on the `.gz`, then one `GET` of it with `Range` answered `206`; no plain-name request | https path |
 | 16 | C | http secret, `SCOPE '<prefix>/'` | `Authorization: Bearer` on downloads under the prefix and none under `…/prod2/` | secret scope |
 | 17 | C | `SCOPE '<prefix>'` without the slash | the token is also sent to `…/prod2/`; this documents why the slash is required | secret scope |
-| 18 | C | private CA: `SET ca_cert_file`, `CREATE` without a key, then with `USING PUBLIC KEY` | without a key `CREATE` fails even with `ca_cert_file`; with a key it works and the install uses `ca_cert_file` | `.well-known` without context |
-| 19 | C | autoload: `autoinstall_known_extensions=true`, `custom_extension_repository` = our tree, query an `https://` file in a fresh process without httpfs | httpfs is not loaded afterwards: the autoinstall is refused (errors are swallowed, so assert the state, not a message) | autoload is core-only |
+| 18 | C | private CA: `SET ca_cert_file`, `CREATE` without a key, then with `USING PUBLIC KEY` | without a key `CREATE` fails on the certificate even with `ca_cert_file`; with a key the install works; without `ca_cert_file` (negative control) it fails | `.well-known` without context |
+| 19 | C | autoload: `autoinstall_known_extensions=true`, `custom_extension_repository` = our tree, query an `https://` file in a fresh process without httpfs | our repository is asked for httpfs, and httpfs is neither installed nor loaded afterwards (errors are swallowed, so the state is asserted, not a message) | autoload is core-only |
 
-Rows of spec 0001's table that this spec does not test:
+**Results** on the pin (`osx_arm64` locally, `linux_amd64` in CI). All 19 cases pass. Where DuckDB
+behaved differently from the plan, the case asserts what DuckDB does:
+
+- **Case 7.** `LOAD x FROM r2` of an install from r1 fails with "not found": DuckDB looks only in
+  `repositories/r2/`.
+- **Case 12.** `UPDATE EXTENSIONS` does not see installs from a user-provided repository: "the
+  extension is not installed". The ETag exchange (`If-None-Match`, then `304`) happens only for a
+  core-typed flat install from an http URL. That half of the case runs with
+  `allow_unsigned_extensions`, because it checks transport, not trust. Updating from a kista channel
+  is `FORCE INSTALL … FROM r [VERSION …]`.
+- **Case 14.** It runs over plain `http://` after httpfs is loaded: `.well-known` is read through
+  httpfs's file system, which is not bumped to https. The stored prefix keeps a trailing `/`; the
+  `.well-known` path does not double it.
+- **Case 15.** httpfs sends `HEAD` on the `.gz`, then one ranged `GET` (`Range: bytes=0-<n>`). When
+  the `.gz` exists, it never asks for the plain name. kista's serve must answer `HEAD` and `Range`.
+- **Case 18.** httpfs verifies server certificates by default. `SET ca_cert_file` applies to
+  installs, but `.well-known` on an https server with a private CA fails even with it. Such a
+  repository needs `USING PUBLIC KEY`.
+
+
 
 - **community keys with `allow_community_extensions`**: there are no community-signed binaries for
   a dev pin. It stays a source-only row until the pin is a release.
@@ -303,14 +347,17 @@ Rows of spec 0001's table that this spec does not test:
 
 ### CI
 
-- **`go` job, always.** `go vet`, `staticcheck`, `go test ./...` (fuzz seeds included). Linux and
+- **`go` job, always.** `go vet`, golangci-lint, `go test ./...` (fuzz seeds included). Linux and
   macOS.
-- **`e2e` job.** On PRs touching `internal/extfile`, `internal/signer`, `e2e/` or the pin.
-  - Linux only, `linux_amd64`; macOS on `workflow_dispatch`.
-  - The build output (libduckdb, the three extensions, the runner) is cached under a key of both
-    pinned commits plus the compiler version. A cold build is estimated at 30-45 minutes and runs
-    only when the pin changes.
-- Actions are pinned by commit SHA.
+- **`e2e` workflow.** Runs on PRs and pushes touching `internal/extfile`, `internal/signer`, `e2e/`,
+  `go.mod` or the `Makefile`.
+  - Linux (`ubuntu-24.04`) by default; macOS by `workflow_dispatch`.
+  - Only the build output (`lib`, `include`, `extensions`) is cached, under a key of the pin file,
+    the build script, the OS and architecture, and the compiler.
+  - The cache is saved right after the build, so a failing test run does not lose a cold build
+    (estimated at 30-45 minutes). ccache's directory is cached per pin.
+  - The runner is built in every run.
+- Actions are pinned by commit SHA. Checkouts do not persist credentials.
 - No cloud credentials are needed in 0002.
 
 ### Unit tests
@@ -318,18 +365,29 @@ Rows of spec 0001's table that this spec does not test:
 - **Golden composite hashes.** Committed fixtures of 0 bytes, 1 MiB - 1, 1 MiB, 1 MiB + 1 and
   3 MiB + 7, with hashes computed once by `duckdb/scripts/compute-extension-hash.sh` on the body
   only. The script hashes its whole input, and `split` limits it to 676 chunks.
-- **Metadata.** The committed 512-byte footers of the pin's real test extensions (CPP,
-  C_STRUCT_UNSTABLE, C_STRUCT), plus malformed blocks: wrong magic, bytes after the padding, `../`,
-  an unknown ABI.
-- **Keys.** PEM / DER round trips; refusal of PKCS#1, 3072-bit keys, `e ≠ 65537` and trailing data;
-  fingerprints against the e2e value.
+- **Metadata.** The committed 512-byte footers of the pin's real extensions (CPP:
+  `loadable_extension_demo` and httpfs; C_STRUCT: `demo_capi`). The pin builds no C_STRUCT_UNSTABLE
+  extension, so that ABI is covered by an encode/parse round trip. Plus malformed blocks: wrong
+  magic, bytes after the padding, `../`, an unknown ABI.
+- **Keys.** PEM / DER round trips. Refusal of PKCS#1, 3072-bit keys, `e ≠ 65537`, trailing data,
+  PEM headers, text before the block, and wrapped base64. Invalid keys never panic. Fingerprints are
+  checked against the e2e value.
 - **Gzip.**
   - `WriteGzip` output decodes to body plus signature with a valid trailer.
-  - A stream with a premature final block is refused by `Precompress`, and by `VerifyStream` once
-    tampered.
-  - A short or long stream is refused by `WriteGzip`.
-- **Signer.** Sign-then-verify, and the file checks: mode, owner, symlink to a key, encrypted PEM.
-  Keys are generated in the test and `chmod`ed.
+  - The open-stream check (the one `Precompress` runs on its own output) refuses a stream with a
+    final block. It is tested directly, because `Precompress` cannot be made to write one.
+  - `WriteGzip` refuses:
+    - a short or long stream;
+    - a signature over another body;
+    - a read error after the stream.
+  - A changed chunk stops `WriteGzip` exactly after the verified prefix. `VerifyStream` refuses
+    tampered streams.
+  - `Open` accepts a `ReaderAt` that returns `io.EOF` with a full read. `HashBody` handles a
+    `math.MaxInt64` limit.
+- **Signer.** Sign-then-verify. The file checks, each asserting its error message: mode, symlink to
+  a key, directory, encrypted PEM (both forms), 1024 bits, a public key, two blocks, a missing file.
+  Keys are generated in the test and `chmod`ed. The owner check is not unit-tested: it needs a second
+  user.
 - **Fuzz.** `ParseMetadata`, `Open`, `HashBody`, `ParsePublicKey`.
 
 ## Security
@@ -342,8 +400,9 @@ Rows of spec 0001's table that this spec does not test:
   separation is a recorded requirement for spec 0003.
 - **The `file` signer** cannot be used in production without explicit opt-in. It refuses keys that
   are shared, symlinked or encrypted.
-- **Serving a stored stream** relies on `StreamSHA256` and the exact length. A stream that does not
-  match is never served.
+- **Serving a stored stream** verifies each 1 MiB chunk before sending it, against digests recorded
+  when the stream was made. A changed stream is never sent past its first changed chunk, and the
+  output then has no final block.
 - **The e2e harness** is hermetic and loopback-only, and its keys and CA are ephemeral. Its DuckDB
   checkout is verified against the pinned commit hash.
 

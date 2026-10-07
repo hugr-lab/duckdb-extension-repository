@@ -6,3 +6,6 @@ CLAUDE.local.md
 /dist/
 *.test
 coverage.out
+
+# e2e DuckDB build (e2e/build-duckdb.sh)
+/e2e/.build/
