@@ -19,6 +19,7 @@ INSTALL httpfs FROM corp;
 LOAD httpfs FROM corp;
 ```
 
-Status: design. See `specs/`. Enterest is the hosted service built on kista.
+Status: early development: the extension file format and signing are in place (spec 0002); the
+server comes next. See `specs/`. Enterest is the hosted service built on kista.
 
 Licensed under the Apache License, Version 2.0.
