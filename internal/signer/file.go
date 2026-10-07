@@ -23,6 +23,7 @@ const maxKeyFile = 64 << 10
 // production configuration must opt in explicitly (spec 0002).
 type File struct {
 	path string
+	ref  string // the reference it was opened by (file:<name>), if any
 	key  *rsa.PrivateKey
 }
 
@@ -139,8 +140,13 @@ func (f *File) Sign(_ context.Context, h extfile.BodyHash) ([]byte, error) {
 // Public implements Signer.
 func (f *File) Public() *rsa.PublicKey { return &f.key.PublicKey }
 
-// ID implements Signer: "file:" and the path.
-func (f *File) ID() string { return "file:" + f.path }
+// ID implements Signer: the reference it was opened by, or "file:" and the path.
+func (f *File) ID() string {
+	if f.ref != "" {
+		return f.ref
+	}
+	return "file:" + f.path
+}
 
 // GenerateKeyFile writes a new RSA-2048 private key as PKCS#8 PEM with mode 0600. It refuses to
 // overwrite an existing file. It is for development and tests.

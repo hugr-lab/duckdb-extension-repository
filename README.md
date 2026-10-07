@@ -21,6 +21,7 @@ LOAD httpfs FROM corp;
 
 Status: early development. In place: the extension file format and signing (spec 0002); the store
 on PostgreSQL, SQL Server and SQLite, tenants, channels and key rotation, with `kista admin`
-(spec 0003). Serving comes next. See `specs/`. Enterest is the hosted service built on kista.
+(spec 0003); signing keys in HashiCorp Vault / OpenBao behind named key sources (spec 0004,
+phase 1; Azure Key Vault, AWS KMS and Google Cloud KMS follow). Serving comes next. See `specs/`. Enterest is the hosted service built on kista.
 
 Licensed under the Apache License, Version 2.0.

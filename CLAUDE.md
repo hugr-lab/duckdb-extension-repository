@@ -30,7 +30,8 @@ and the DuckDB behaviour the design relies on (with source locations on the duck
 
 - One lightweight spec per feature under `specs/NNNN-slug/spec.md` (`specs/TEMPLATE.md`): problem,
   design, security, tests, alternatives. Written and reviewed before code; status `implemented` when
-  done. One branch per spec.
+  done. One branch per spec; a large spec may be delivered in phases (`NNNN-slug-phase`), each a PR
+  with its own reviews, the spec saying which phase is implemented.
 - Every feature lands with tests. Three adversarial review passes before a PR.
 - Self-review the diff before every commit, and again after opening a PR (fix in a follow-up
   commit).

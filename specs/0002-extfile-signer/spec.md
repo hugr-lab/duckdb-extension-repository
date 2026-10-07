@@ -56,7 +56,7 @@ against a real DuckDB binary.
 - **Size.** A file shorter than 512 bytes is not an extension.
 - **The prefix** (`00 93 04 10 "duckdb_signature" 80 04`) is a wasm custom-section header that
   `scripts/append_metadata.cmake` writes into every file, native ones included. DuckDB does not read
-  it. `inspect` reports whether it is present but does not require it. Spec 0007's publishing
+  it. `inspect` reports whether it is present but does not require it. Spec 0008's publishing
   appends it.
 
 **Metadata.** Eight 32-byte fields, zero-padded, stored in reverse order
@@ -184,7 +184,7 @@ type Signer interface {
 }
 ```
 
-- `Sign` takes the typed `BodyHash`, not arbitrary bytes. Licence signing (spec 0011) gets its own
+- `Sign` takes the typed `BodyHash`, not arbitrary bytes. Licence signing (spec 0012) gets its own
   type with a domain-separated input, so neither can be used to sign the other's data.
 - Every implementation checks its own result: 256 bytes long, and `rsa.VerifyPKCS1v15` against
   `Public()` passes.
@@ -210,7 +210,7 @@ kista ext inspect <file>                    prefix present, metadata, body hash,
 kista ext verify  <file> --key <pub>...     exit 0 if any key verifies; prints its fingerprint
 ```
 
-The CLI does not sign. Signing with a production key is a release action (spec 0003 / 0007), and the
+The CLI does not sign. Signing with a production key is a release action (spec 0003 / 0008), and the
 harness calls the packages directly.
 
 ### The e2e harness (`e2e/`)
@@ -257,7 +257,7 @@ concerns. `e2e/build-runner.sh <out>` builds it against `<out>/lib` and `<out>/i
   `https://` (`extension_install_dynamic.cpp:313-315`).
 
 **Test servers.** The cases are written against a small interface: a base URL plus a request log
-(method, path, `Authorization` present, `If-None-Match`, `Range`). Spec 0005 can swap in
+(method, path, `Authorization` present, `If-None-Match`, `Range`). Spec 0006 can swap in
 `kista serve` and rerun the same suite.
 
 - The implementation for 0002 is a loopback-only file server over a signed tree, in plain HTTP
@@ -418,7 +418,7 @@ behaved differently from the plan, the case asserts what DuckDB does:
   the repository light.
 - **Key Vault in this spec.** It adds the Azure SDK and cloud credentials without proving anything
   about DuckDB that the file signer does not. It moves to spec 0004; key sets and rotation are spec 0003.
-- **A generator for DuckDB's built-in keys here.** Its only consumer is intake (spec 0008).
+- **A generator for DuckDB's built-in keys here.** Its only consumer is intake (spec 0009).
 
 ## Follow-ups
 
@@ -433,9 +433,9 @@ behaved differently from the plan, the case asserts what DuckDB does:
   - a timeout per call; a disabled key fails the release closed;
   - one dedicated key per role, never shared with tresor;
   - a fake vault in CI and a live test only in a protected environment with federated credentials.
-- **Spec 0008:** DuckDB's built-in core and community keys. They are generated from the pinned
+- **Spec 0009:** DuckDB's built-in core and community keys. They are generated from the pinned
   checkout; CI regenerates them and fails on any diff.
-- **Spec 0007:** the init-symbol check, and appending the metadata prefix when publishing.
+- **Spec 0008:** the init-symbol check, and appending the metadata prefix when publishing.
 - **A spec for core extensions built for the pin:** build DuckDB's core extensions at kista's pin
   and publish them into a signed channel. Then every extension installs with `INSTALL … FROM`,
   whoever built it: DuckDB, community, us or a publisher. They are not autoloaded, because DuckDB

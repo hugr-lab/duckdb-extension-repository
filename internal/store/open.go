@@ -97,6 +97,9 @@ func DSNHasPassword(dsn string) bool {
 	return kvPassword.MatchString(dsn)
 }
 
+// IsLoopbackHost reports whether a host name or address is the local machine.
+func IsLoopbackHost(host string) bool { return isLoopback(host) }
+
 func isLoopback(host string) bool {
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
 	if host == "localhost" || strings.HasPrefix(host, "/") { // a Unix socket path is local

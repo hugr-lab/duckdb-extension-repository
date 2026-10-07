@@ -5,6 +5,7 @@ linters:
     errcheck:
       exclude-functions:
         - (*os.File).Close
+        - (io.ReadCloser).Close
         - (*database/sql.DB).Close
         - (*database/sql.Rows).Close
         - (*github.com/hugr-lab/duckdb-extension-repository/internal/store.Store).Close

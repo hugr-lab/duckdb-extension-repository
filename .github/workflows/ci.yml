@@ -39,6 +39,16 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Vault and OpenBao (dev mode)
+        run: |
+          docker run -d --name vault -p 127.0.0.1:58200:8200 -e VAULT_DEV_ROOT_TOKEN_ID=root -e SKIP_SETCAP=true \
+            hashicorp/vault:2.1.1 server -dev -dev-listen-address=0.0.0.0:8200
+          docker run -d --name openbao -p 127.0.0.1:58210:8200 -e BAO_DEV_ROOT_TOKEN_ID=root -e SKIP_SETCAP=true \
+            openbao/openbao:2.7.1 server -dev -dev-listen-address=0.0.0.0:8200
+          for p in 58200 58210; do
+            for i in $(seq 1 30); do curl -sf http://127.0.0.1:$p/v1/sys/health >/dev/null && break; sleep 1; done
+            curl -sf http://127.0.0.1:$p/v1/sys/health >/dev/null || { docker logs vault; docker logs openbao; exit 1; }
+          done
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
@@ -50,6 +60,11 @@ jobs:
           KISTA_TEST_SQLSERVER: sqlserver://sa@127.0.0.1:52433?encrypt=disable
           KISTA_TEST_SQLSERVER_PASSWORD: Kista-Test-2026!
           KISTA_TEST_REQUIRE_DBS: "1"
+          KISTA_TEST_VAULT: http://127.0.0.1:58200
+          KISTA_TEST_VAULT_TOKEN: root
+          KISTA_TEST_OPENBAO: http://127.0.0.1:58210
+          KISTA_TEST_OPENBAO_TOKEN: root
+          KISTA_TEST_REQUIRE_VAULT: "1"
         run: go test -race ./...
 
   go-macos:

@@ -13,6 +13,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/app"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -29,6 +31,7 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   channel create <tenant>/<channel> -kind signed|passthrough
   channel versions <tenant>/<channel> [-add v]... [-remove v]...
   channel list <tenant>
+  key check -signer <ref>                         open a key, check it, sign a probe; stores nothing
   key add <tenant>/<channel> -signer <ref> [-active]
   key list <tenant>/<channel>
   key activate <tenant>/<channel> <key-id|fingerprint> [-force]
@@ -83,7 +86,12 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer s.Close()
-	a := &adminCmd{svc: app.NewServices(cfg, s, authz.ServerAdmin{}), actor: authz.OSActor(), out: stdout, errw: stderr}
+	svc, err := app.NewServices(cfg, s, authz.ServerAdmin{})
+	if err != nil {
+		fmt.Fprintln(stderr, "kista admin:", err)
+		return 1
+	}
+	a := &adminCmd{svc: svc, actor: authz.OSActor(), out: stdout, errw: stderr}
 	if err := a.dispatch(ctx, rest); err != nil {
 		if errors.Is(err, errUsage) {
 			fmt.Fprint(stderr, adminUsage)
@@ -310,7 +318,24 @@ func (a *adminCmd) key(ctx context.Context, sub string, args []string) error {
 	active := fs.Bool("active", false, "")
 	force := fs.Bool("force", false, "")
 	pos, err := flags(fs, args)
-	if err != nil || len(pos) < 1 {
+	if err != nil {
+		return errUsage
+	}
+	if sub == "check" {
+		if len(pos) != 0 || *ref == "" {
+			return errUsage
+		}
+		sg, err := a.svc.Sources.Open(ctx, *ref)
+		if err != nil {
+			return err
+		}
+		if err := keys.Probe(ctx, sg); err != nil {
+			return err
+		}
+		fmt.Fprintln(a.out, sg.ID(), extfile.Fingerprint(sg.Public()))
+		return nil
+	}
+	if len(pos) < 1 {
 		return errUsage
 	}
 	t, c, err := splitPath(pos[0])

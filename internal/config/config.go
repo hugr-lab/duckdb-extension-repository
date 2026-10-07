@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,7 +33,7 @@ type Config struct {
 	Store    Store    `yaml:"store"`
 	Azure    Azure    `yaml:"azure"`
 	Rotation Rotation `yaml:"rotation"`
-	Signers  Signers  `yaml:"signers"`
+	Signers  Signers  `yaml:"signers" kista:"fileonly"`
 }
 
 // Store selects and configures the metadata database.
@@ -74,11 +76,57 @@ type Rotation struct {
 	MinDemoted time.Duration `yaml:"min_demoted"`
 }
 
-// Signers configures where signing keys may come from.
+// Signers configures where signing keys may come from (specs 0003, 0004). The whole block is
+// file-only.
 type Signers struct {
-	AllowFile bool   `yaml:"allow_file" kista:"fileonly"`
-	FileDir   string `yaml:"file_dir" kista:"fileonly"`
+	AllowFile bool     `yaml:"allow_file"`
+	FileDir   string   `yaml:"file_dir"`
+	Sources   []Source `yaml:"sources"`
 }
+
+// Source is a named key source (spec 0004): a vault or KMS the administrator configured. A signer
+// reference <source>:<key> picks a key inside it; the reference never carries a host.
+type Source struct {
+	Name           string        `yaml:"name"`
+	Kind           string        `yaml:"kind"` // vault | azurekv | awskms | gcpkms
+	Allow          []string      `yaml:"allow"`
+	MaxConcurrency int           `yaml:"max_concurrency"`
+	HealthKey      string        `yaml:"health_key"`
+	Vault          *VaultSource  `yaml:"vault"`
+	AzureKV        *yaml.Node    `yaml:"azurekv"` // phase 2
+	AWSKMS         *yaml.Node    `yaml:"awskms"`  // phase 3
+	GCPKMS         *yaml.Node    `yaml:"gcpkms"`  // phase 4
+	Identity       *Identity     `yaml:"identity"`
+	Recheck        time.Duration `yaml:"recheck"` // how often key properties are re-read; default and maximum 10m
+	Timeout        time.Duration `yaml:"timeout"` // per call; default 10s, 1s..60s
+}
+
+// VaultSource is a HashiCorp Vault or OpenBao Transit mount.
+type VaultSource struct {
+	Address      string    `yaml:"address"`
+	Namespace    string    `yaml:"namespace"`
+	Mount        string    `yaml:"mount"`
+	CAFile       string    `yaml:"ca_file"`
+	Auth         VaultAuth `yaml:"auth"`
+	SoftwareKeys bool      `yaml:"software_keys"` // required outside dev: Transit keys are software keys
+}
+
+// VaultAuth says how kista logs in to Vault: no static tokens in config, no AppRole.
+type VaultAuth struct {
+	Kind      string `yaml:"kind"`       // kubernetes | jwt | token_file
+	Mount     string `yaml:"mount"`      // auth mount path; default kubernetes or jwt
+	Role      string `yaml:"role"`       // kubernetes and jwt
+	TokenFile string `yaml:"token_file"` // the projected service-account token, the JWT, or Vault Agent's token
+}
+
+// SourceKinds are the backends; reservedSourceNames cannot name a source.
+var (
+	SourceKinds         = []string{"vault", "azurekv", "awskms", "gcpkms"}
+	reservedSourceNames = map[string]bool{"file": true, "vault": true, "azurekv": true, "awskms": true,
+		"gcpkms": true, "pkcs11": true, "http": true, "https": true, "arn": true, "projects": true}
+	sourceName     = regexp.MustCompile(`^[a-z][a-z0-9-]{0,15}$`)
+	vaultNamespace = regexp.MustCompile(`^[A-Za-z0-9_/-]*$`)
+)
 
 // RotationFloor is the least either rotation minimum may be outside the dev profile.
 const RotationFloor = 24 * time.Hour
@@ -317,10 +365,91 @@ func (c Config) Validate() error {
 	if c.Signers.FileDir != "" && !strings.HasPrefix(c.Signers.FileDir, "/") {
 		bad("signers.file_dir must be an absolute path")
 	}
+	seen := map[string]bool{}
+	for i, src := range c.Signers.Sources {
+		where := fmt.Sprintf("signers.sources[%d]", i)
+		if !sourceName.MatchString(src.Name) || reservedSourceNames[src.Name] {
+			bad("%s.name must match [a-z][a-z0-9-]{0,15} and not be reserved", where)
+		}
+		if seen[src.Name] {
+			bad("%s: source %s is defined twice", where, src.Name)
+		}
+		seen[src.Name] = true
+		if len(src.Allow) == 0 {
+			bad("%s.allow is empty: list key-name prefixes, or \"*\"", where)
+		}
+		for _, a := range src.Allow {
+			if a == "" {
+				bad("%s.allow: use \"*\" for any key, not an empty prefix", where)
+			}
+		}
+		if src.MaxConcurrency < 0 || src.Recheck < 0 || src.Recheck > 10*time.Minute {
+			bad("%s: max_concurrency cannot be negative and recheck must be within 0..10m", where)
+		}
+		if src.Timeout != 0 && (src.Timeout < time.Second || src.Timeout > time.Minute) {
+			bad("%s.timeout must be within 1s..60s", where)
+		}
+		if src.Kind == "vault" && src.Identity != nil {
+			bad("%s.identity is not used by kind vault (it logs in through vault.auth)", where)
+		}
+		blocks := 0
+		for _, set := range []bool{src.Vault != nil, src.AzureKV != nil, src.AWSKMS != nil, src.GCPKMS != nil} {
+			if set {
+				blocks++
+			}
+		}
+		switch src.Kind {
+		case "vault":
+			if src.Vault == nil || blocks != 1 {
+				bad("%s: kind vault needs exactly one block, vault", where)
+				continue
+			}
+			validateVault(bad, where, *src.Vault, dev)
+		case "azurekv", "awskms", "gcpkms":
+			bad("%s: kind %s comes in a later phase of spec 0004", where, src.Kind)
+		default:
+			bad("%s.kind must be one of %s", where, strings.Join(SourceKinds, ", "))
+		}
+	}
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func validateVault(bad func(string, ...any), where string, v VaultSource, dev bool) {
+	u, err := url.Parse(v.Address)
+	switch {
+	case err != nil || u.Host == "" || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.User != nil:
+		bad("%s.vault.address must be a scheme://host[:port] URL", where)
+	case u.Scheme == "http":
+		if !dev || !store.IsLoopbackHost(u.Hostname()) {
+			bad("%s.vault.address: plain http only on loopback with profile dev", where)
+		}
+	case u.Scheme != "https":
+		bad("%s.vault.address must be https", where)
+	}
+	if !vaultNamespace.MatchString(v.Namespace) || strings.Contains(v.Namespace, "..") {
+		bad("%s.vault.namespace may contain only letters, digits, _, - and /", where)
+	}
+	if v.Mount == "" || strings.ContainsAny(v.Mount, "?#%") || strings.Contains(v.Mount, "..") || strings.HasPrefix(v.Mount, "/") {
+		bad("%s.vault.mount must be a relative mount path", where)
+	}
+	switch v.Auth.Kind {
+	case "kubernetes", "jwt":
+		if v.Auth.Role == "" {
+			bad("%s.vault.auth.role is required for %s", where, v.Auth.Kind)
+		}
+	case "token_file":
+	default:
+		bad("%s.vault.auth.kind must be kubernetes, jwt or token_file", where)
+	}
+	if !strings.HasPrefix(v.Auth.TokenFile, "/") {
+		bad("%s.vault.auth.token_file must be an absolute path", where)
+	}
+	if !dev && !v.SoftwareKeys {
+		bad("%s.vault.software_keys must be true outside profile dev: Transit keys are software keys", where)
+	}
 }
 
 // FileSignersAllowed reports whether file: signer references may be used.

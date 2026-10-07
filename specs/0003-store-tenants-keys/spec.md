@@ -18,8 +18,8 @@ kista's first persistent state:
 4. `internal/config`, and `kista admin`: the server administrator's CLI over the same service layer
    the HTTP API will use.
 
-The Azure Key Vault signer is spec 0004. The HTTP management API needs authentication and comes with
-spec 0005. Here, keys use spec 0002's file signer, which is limited to development or to a
+Signer backends (vaults and KMSs behind named key sources) are spec 0004. The HTTP management API needs authentication and comes with
+spec 0006. Here, keys use spec 0002's file signer, which is limited to development or to a
 configured key directory.
 
 ## Problem
@@ -114,7 +114,7 @@ copies no code from it, because tresor-server is under BUSL-1.1.
 - Restoring a backup reverts key states to that point, so a restored database can lack a key that
   clients already trust. That is a documented operational risk.
 
-**Readiness.** `store.Ready(ctx)` pings the database and checks the schema level. Spec 0005 wires it
+**Readiness.** `store.Ready(ctx)` pings the database and checks the schema level. Spec 0006 wires it
 to `/readyz`.
 
 **Errors.** `ErrNotFound`, `ErrExists`, `ErrConflict`, `ErrInvalid`. No raw SQL exists outside the
@@ -163,7 +163,7 @@ key_events        id pk, key_id fk, from_state null, to_state, actor, forced, at
   keeps a tombstone.
 - A channel's `kind` never changes.
 
-**Tenant state.** `suspended` is reserved for subscriptions. Spec 0005 refuses to serve a suspended
+**Tenant state.** `suspended` is reserved for subscriptions. Spec 0006 refuses to serve a suspended
 tenant.
 
 **DuckDB versions** are a global table. Spec 0001's rule "a `C_STRUCT` build is served under every
@@ -173,7 +173,7 @@ API level, and a release tag and a source id can name the same engine build.
 **Key fingerprints.**
 - `key_fingerprints` is inserted in the same transaction as the key, so a fingerprint exists once on
   the server.
-- Licence keys (spec 0011) will insert into the same registry. That is spec 0002's key-role
+- Licence keys (spec 0012) will insert into the same registry. That is spec 0002's key-role
   separation, and it holds before licence keys exist.
 - A key belongs to one channel, so the same key never serves two channels or two tenants.
 
@@ -187,15 +187,15 @@ API level, and a release tag and a source id can name the same engine build.
 
 **Who changed what.** `created_by` / `state_changed_by` and `key_events.actor` hold an actor string:
 - `os:<uid>:<name>` from the CLI (`os/user.Current()`);
-- `principal:<issuer-id>|<sub>` from the HTTP API (spec 0005);
+- `principal:<issuer-id>|<sub>` from the HTTP API (spec 0006);
 - `system`.
 
-Spec 0009's audit log supersedes `key_events` as the record, and `key_events` stays as the key
+Spec 0010's audit log supersedes `key_events` as the record, and `key_events` stays as the key
 history.
 
 **Caching.** Every key-state change and every change to a channel's DuckDB versions increments
 `channels.version` in the same transaction. A server process caches a channel's `.well-known` and
-signer under that version and revalidates it with a short TTL (spec 0005). This is how changes made
+signer under that version and revalidates it with a short TTL (spec 0006). This is how changes made
 by `kista admin` reach running servers on all three engines; PostgreSQL's LISTEN/NOTIFY is not
 available everywhere.
 
@@ -239,30 +239,30 @@ Every transition takes `Lock("kista/channel/<id>")` first, writes a `key_events`
   - It is refused for the active key.
   - It is refused for a key demoted less than `rotation.min_demoted` ago (default 7 days), unless
     `--force`. Clients that installed with it need time to reinstall.
-  - From spec 0007 on, retire is also refused while any release of the channel is signed only by
+  - From spec 0008 on, retire is also refused while any release of the channel is signed only by
     this key.
   - A retired key never comes back. A new key is added instead.
   - A key that was never active waits `min_demoted` from when it was added. It has been published in
     `.well-known`, so clients may already trust it.
-- **Re-signing** with the new active key happens per release, from spec 0007 on. That spec also
+- **Re-signing** with the new active key happens per release, from spec 0008 on. That spec also
   re-reads the key state in the same transaction that records a signature, so a concurrent
   activation cannot leave signatures from the old key recorded after rotation.
 
 `rotation.min_trusted` (default 7 days) and `rotation.min_demoted` (default 7 days) cannot be set
-below 24 h outside `profile: dev`. The trusted period only counts once spec 0005 serves
+below 24 h outside `profile: dev`. The trusted period only counts once spec 0006 serves
 `.well-known`. Keys added before that have not really been seen by clients.
 
 ### Signer references
 
 A key's `signer_ref` says where its private key lives. **Only the server administrator sets it**,
-through `kista admin` or config. The HTTP API never accepts one from a tenant: spec 0005 provisions
+through `kista admin` or config. The HTTP API never accepts one from a tenant: spec 0006 provisions
 tenant keys itself. A reference chosen by a caller would let the server read arbitrary files, or
 call arbitrary vaults with its own identity.
 
 - `file:<name>` resolves to `<signers.file_dir>/<name>`. `<name>` is a single path element, with no
   separators or `..`. It is allowed only with `profile: dev` or `signers.allow_file: true`. The file
   signer's own checks apply too: `O_NOFOLLOW`, mode `0600`, the owner.
-- `azurekv:` comes with spec 0004 and its vault allowlist.
+- Vault and KMS references (`<source>:<key>`, named key sources) come with spec 0004.
 - **Every open checks the key against the stored row.** The signer's public key (SPKI DER) must
   equal the row's `public_key`, which is what `.well-known` publishes, and its fingerprint must equal
   the row's `fingerprint`. Otherwise the signer fails closed. A changed file or an edited reference
@@ -280,7 +280,7 @@ call arbitrary vaults with its own identity.
 - a signed channel with no key returns an error, because DuckDB requires a non-empty array;
 - a passthrough channel has none.
 
-Spec 0005 serves it.
+Spec 0006 serves it.
 
 ### Service layer and authorization
 
@@ -294,7 +294,7 @@ type Authorizer interface {
 }
 ```
 
-The CLI uses an authorizer that allows the server administrator everything. Spec 0005 adds the
+The CLI uses an authorizer that allows the server administrator everything. Spec 0006 adds the
 grant-based one. Keys are addressed as `<tenant>/<channel>` plus a key id or fingerprint, and the
 service checks that the key belongs to that channel, so a tenant API can never reach another
 tenant's key by id.
@@ -322,7 +322,7 @@ store:
   migrate: auto               # auto | check
   # sqlite: { path: /var/lib/kista/kista.db }
 azure:
-  identity: { kind: managed, client_id: "…" }   # for entra login; spec 0004 uses it for Key Vault
+  identity: { kind: managed, client_id: "…" }   # for the entra database login; key sources have their own (spec 0004)
 rotation:
   min_trusted: 168h
   min_demoted: 168h
@@ -377,7 +377,7 @@ cmd/kista           + admin subcommands
   - A key is trusted for a minimum time before activation.
   - The active key cannot be retired.
   - A key is demoted for a minimum time before retirement.
-  - Releases are checked from spec 0007 on.
+  - Releases are checked from spec 0008 on.
   - The minimums have a 24 h floor outside dev.
   - Every forced step is recorded.
 - **Guards cannot be switched off from the environment**: `profile` and the signer settings are
@@ -456,18 +456,18 @@ cmd/kista           + admin subcommands
   sign for prod.
 - **viper for config.** It cannot refuse unknown environment variables and is case-insensitive.
 - **The Key Vault signer and the HTTP API in this spec.** Each doubles the review surface, and
-  neither is needed to prove the store and the lifecycle. They are specs 0004 and 0005.
+  neither is needed to prove the store and the lifecycle. They are specs 0004 and 0006.
 
 ## Follow-ups
 
-- **Spec 0004.** The Azure Key Vault signer: a vault allowlist, versioned keys, refusal of
-  exportable keys and keys with wrap/encrypt ops, the probe, credentials.
-- **Spec 0005.** Serving `.well-known` (with the version-keyed cache), issuer records, grants, the
+- **Spec 0004.** Signer backends behind named key sources: Vault/OpenBao, Azure Key Vault and
+  Managed HSM, AWS KMS, Google Cloud KMS (versioned keys, refusal of exportable keys and keys with
+  wrap/encrypt ops, the probe, platform credentials).
+- **Spec 0006.** Serving `.well-known` (with the version-keyed cache), issuer records, grants, the
   HTTP management API over these services, tenant key provisioning, `/readyz`.
-- **Spec 0007.** Releases and signatures, re-signing, the retirement check.
-- **Spec 0009.** Admin actions in the tamper-evident audit log.
+- **Spec 0008.** Releases and signatures, re-signing, the retirement check.
+- **Spec 0010.** Admin actions in the tamper-evident audit log.
 - **Later:**
   - `store.schema`, for sharing a database with other hugr services;
-  - a config-driven bootstrap of the first tenant, for managed installs (spec 0012);
-  - tenant and channel deletion (with tombstones);
-  - the AWS KMS signer.
+  - a config-driven bootstrap of the first tenant, for managed installs (spec 0013);
+  - tenant and channel deletion (with tombstones).

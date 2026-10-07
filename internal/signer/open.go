@@ -37,7 +37,12 @@ func (r Resolver) Open(_ context.Context, ref string) (Signer, error) {
 		if rest == "" || rest == "." || rest == ".." || strings.ContainsAny(rest, `/\`) || rest != filepath.Base(rest) {
 			return nil, fmt.Errorf("%w: a file reference is a single file name inside signers.file_dir", ErrReference)
 		}
-		return OpenFile(filepath.Join(r.FileDir, rest))
+		f, err := OpenFile(filepath.Join(r.FileDir, rest))
+		if err != nil {
+			return nil, err
+		}
+		f.ref = ref // ID() is the reference, never the path
+		return f, nil
 	case "azurekv":
 		return nil, fmt.Errorf("%w: azurekv signers come with spec 0004", ErrReference)
 	}

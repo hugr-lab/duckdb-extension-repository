@@ -120,3 +120,55 @@ func TestPasswordEnvIsNotASetting(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSources(t *testing.T) {
+	ok := base + `
+signers:
+  sources:
+    - name: bao
+      kind: vault
+      allow: ["ext-"]
+      vault: { address: "https://bao.internal:8200", mount: transit, software_keys: true,
+               auth: { kind: kubernetes, role: kista, token_file: /var/run/secrets/kista/vault } }
+`
+	cfg, err := Load(write(t, ok), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Signers.Sources) != 1 || cfg.Signers.Sources[0].Vault.Auth.Role != "kista" {
+		t.Fatalf("%+v", cfg.Signers.Sources)
+	}
+	bad := map[string]string{
+		"reserved name":    strings.Replace(ok, "name: bao", "name: file", 1),
+		"bad name":         strings.Replace(ok, "name: bao", "name: Bao", 1),
+		"empty allow":      strings.Replace(ok, `allow: ["ext-"]`, "allow: []", 1),
+		"empty prefix":     strings.Replace(ok, `allow: ["ext-"]`, `allow: [""]`, 1),
+		"http remote":      strings.Replace(ok, "https://bao.internal:8200", "http://bao.internal:8200", 1),
+		"no software_keys": strings.Replace(ok, "software_keys: true", "software_keys: false", 1),
+		"later kind":       strings.Replace(ok, "kind: vault", "kind: awskms", 1),
+		"unknown kind":     strings.Replace(ok, "kind: vault", "kind: pkcs11", 1),
+		"relative token":   strings.Replace(ok, "/var/run/secrets/kista/vault", "vault", 1),
+		"no role":          strings.Replace(ok, "role: kista, ", "", 1),
+		"approle":          strings.Replace(ok, "kind: kubernetes", "kind: approle", 1),
+		"mount escapes":    strings.Replace(ok, "mount: transit", "mount: ../sys", 1),
+		"duplicate source": ok + `    - name: bao
+      kind: vault
+      allow: ["*"]
+      vault: { address: "https://b:8200", mount: t, software_keys: true, auth: { kind: token_file, token_file: /t } }
+`,
+	}
+	for name, file := range bad {
+		if _, err := Load(write(t, file), nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// sources cannot come from the environment
+	if _, err := Load(write(t, base), []string{"KISTA_SIGNERS__SOURCES=x"}); err == nil || !strings.Contains(err.Error(), "config file") {
+		t.Fatalf("env: %v", err)
+	}
+	// dev allows http on loopback without software_keys
+	dev := "profile: dev\n" + strings.Replace(strings.Replace(ok, "https://bao.internal:8200", "http://127.0.0.1:8200", 1), "software_keys: true", "software_keys: false", 1)
+	if _, err := Load(write(t, dev), nil); err != nil {
+		t.Fatalf("dev: %v", err)
+	}
+}
