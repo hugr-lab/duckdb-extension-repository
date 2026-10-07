@@ -94,9 +94,13 @@ jobs:
             echo KISTA_TEST_OPENBAO=http://127.0.0.1:58210; echo KISTA_TEST_OPENBAO_TOKEN=root
             echo KISTA_TEST_REQUIRE_VAULT=1
           } >> "$GITHUB_ENV"
-      - name: S3-compatible server (SeaweedFS)
+      - name: S3-compatible server (SeaweedFS) and Azurite
         if: runner.os == 'Linux'
         run: |
-          make test-s3
-          { echo KISTA_TEST_S3=http://kista-test:kista-test-secret@127.0.0.1:58333/kista-test; echo KISTA_TEST_REQUIRE_BLOB=1; } >> "$GITHUB_ENV"
+          make test-s3 test-azurite
+          {
+            echo KISTA_TEST_S3=http://kista-test:kista-test-secret@127.0.0.1:58333/kista-test
+            echo KISTA_TEST_AZUREBLOB=http://127.0.0.1:50000/devstoreaccount1
+            echo KISTA_TEST_REQUIRE_BLOB=1
+          } >> "$GITHUB_ENV"
       - run: make e2e

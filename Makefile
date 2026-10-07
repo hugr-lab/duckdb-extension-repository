@@ -3,7 +3,7 @@ export GOWORK := off
 
 E2E_BUILD ?= $(CURDIR)/e2e/.build
 
-.PHONY: build test test-db test-db-down test-s3 test-s3-down lint e2e-duckdb e2e-runner e2e-build e2e
+.PHONY: build test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down lint e2e-duckdb e2e-runner e2e-build e2e
 
 build:
 	go build -o bin/kista ./cmd/kista
@@ -35,6 +35,21 @@ test-s3:
 
 test-s3-down:
 	docker rm -f kista-test-seaweedfs
+
+# Azurite (the Azure Storage emulator) for the azureblob suite, with its well-known development
+# account; then run make test with:
+#   KISTA_TEST_AZUREBLOB=http://127.0.0.1:50000/devstoreaccount1
+AZURITE := mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
+test-azurite:
+	-docker rm -f kista-test-azurite >/dev/null 2>&1
+	docker run -d --name kista-test-azurite -p 127.0.0.1:50000:10000 $(AZURITE) \
+		azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck --loose --inMemoryPersistence
+	@for i in $$(seq 1 60); do \
+		case $$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:50000/devstoreaccount1?comp=list) in 200|403) exit 0;; esac; sleep 1; done; \
+		docker logs kista-test-azurite; exit 1
+
+test-azurite-down:
+	docker rm -f kista-test-azurite
 
 lint:
 	go vet ./...

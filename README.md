@@ -23,8 +23,8 @@ Status: early development. In place: the extension file format and signing (spec
 on PostgreSQL, SQL Server and SQLite, tenants, channels and key rotation, with `kista admin`
 (spec 0003); signing keys in HashiCorp Vault / OpenBao and Azure Key Vault / Managed HSM behind named
 key sources (spec 0004; AWS KMS and Google Cloud KMS follow); extension bodies stored once per
-storage domain, in a local directory or an S3-compatible bucket, and served with every byte verified
-(spec 0005; Azure Blob Storage follows). Serving over HTTP comes next. See `specs/`. Enterest is the
+storage domain, in a local directory, an S3-compatible bucket or Azure Blob Storage, and served with
+every byte verified (spec 0005; Google Cloud Storage follows). Serving over HTTP comes next. See `specs/`. Enterest is the
 hosted service built on kista.
 
 Licensed under the Apache License, Version 2.0.

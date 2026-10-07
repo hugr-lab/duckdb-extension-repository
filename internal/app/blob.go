@@ -8,8 +8,10 @@ import (
 	"net/url"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/azureblob"
 	blobfs "github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/s3"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/cloud/azure"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -44,6 +46,32 @@ func BlobStores(cfg config.Config) ([]blob.Domain, error) {
 				Region: d.S3.Region, PathStyle: d.S3.Lookup == "path", SSE: d.S3.SSE, KMSKeyID: d.S3.KMSKeyID,
 				AccessKeyFile: d.S3.AccessKeyFile, SecretKeyFile: d.S3.SecretKeyFile, CAFile: d.S3.CAFile, Timeout: timeout,
 			})
+			if err != nil {
+				return fail(fmt.Errorf("app: storage domain %s: %w", d.Name, err))
+			}
+			st = s
+		case "azureblob":
+			a := d.AzureBlob
+			cloudName := a.Cloud
+			if cloudName == "" {
+				cloudName = "public"
+			}
+			c := azureblob.Config{Account: a.Account, Container: a.Container, Prefix: a.Prefix, Timeout: timeout}
+			if a.Endpoint != "" { // Azurite, dev only (config)
+				c.Endpoint, c.AccountKeyFile = a.Endpoint, a.AccountKeyFile
+			} else {
+				host, err := azure.BlobHost(cloudName, a.Account)
+				if err != nil {
+					return fail(fmt.Errorf("app: storage domain %s: %w", d.Name, err))
+				}
+				cred, err := azure.Credential(azure.Identity{Kind: a.Identity.Kind, ClientID: a.Identity.ClientID,
+					TenantID: a.Identity.TenantID}, cloudName, cfg.Profile == config.ProfileDev)
+				if err != nil {
+					return fail(fmt.Errorf("app: storage domain %s: %w", d.Name, err))
+				}
+				c.Endpoint, c.Credential = "https://"+host, cred
+			}
+			s, err := azureblob.New(c)
 			if err != nil {
 				return fail(fmt.Errorf("app: storage domain %s: %w", d.Name, err))
 			}

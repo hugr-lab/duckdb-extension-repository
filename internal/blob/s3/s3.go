@@ -6,8 +6,6 @@ package s3
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +21,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/encrypt"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/transport"
 )
 
 // Config configures a store.
@@ -128,35 +127,11 @@ func New(cfg Config) (*Store, error) {
 	}
 	tr := cfg.Transport
 	if tr == nil {
-		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-		if cfg.CAFile != "" {
-			pem, err := os.ReadFile(cfg.CAFile)
-			if err != nil {
-				return nil, errors.New("blob/s3: cannot read ca_file")
-			}
-			pool := x509.NewCertPool()
-			if !pool.AppendCertsFromPEM(pem) {
-				return nil, errors.New("blob/s3: ca_file holds no certificate")
-			}
-			tlsCfg.RootCAs = pool
+		t, err := transport.New(cfg.Timeout, cfg.CAFile)
+		if err != nil {
+			return nil, err
 		}
-		dialer := &net.Dialer{Timeout: cfg.Timeout}
-		idle := cfg.Timeout
-		tr = &http.Transport{
-			Proxy: nil, // never from the environment
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				c, err := dialer.DialContext(ctx, network, addr)
-				if err != nil {
-					return nil, err
-				}
-				return &idleConn{Conn: c, idle: idle}, nil
-			},
-			TLSClientConfig:       tlsCfg,
-			TLSHandshakeTimeout:   cfg.Timeout,
-			ResponseHeaderTimeout: cfg.Timeout,
-			MaxIdleConnsPerHost:   16,
-			IdleConnTimeout:       90 * time.Second,
-		}
+		tr = t
 	}
 	lookup := minio.BucketLookupDNS
 	if cfg.PathStyle {
@@ -174,23 +149,6 @@ func New(cfg Config) (*Store, error) {
 		return nil, errors.New("blob/s3: invalid endpoint")
 	}
 	return &Store{c: c, core: minio.Core{Client: c}, cfg: cfg, tr: tr, timeout: cfg.Timeout}, nil
-}
-
-// idleConn fails a read or write that makes no progress for idle: a stalled server cannot hold a
-// request (an upload it stops reading, a download it stops sending) longer than that.
-type idleConn struct {
-	net.Conn
-	idle time.Duration
-}
-
-func (c *idleConn) Read(p []byte) (int, error) {
-	_ = c.SetReadDeadline(time.Now().Add(c.idle))
-	return c.Conn.Read(p)
-}
-
-func (c *idleConn) Write(p []byte) (int, error) {
-	_ = c.SetWriteDeadline(time.Now().Add(c.idle))
-	return c.Conn.Write(p)
 }
 
 // ID implements blob.Store: the endpoint lowercased and without its default port, the bucket and
@@ -349,9 +307,7 @@ func (s *Store) Anonymous(ctx context.Context, key string) (bool, bool) {
 	if err != nil {
 		return false, false
 	}
-	hc := &http.Client{Transport: s.tr, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
+	hc := &http.Client{Transport: s.tr, CheckRedirect: transport.NoRedirects}
 	resp, err := hc.Do(req)
 	if err != nil {
 		return false, false
