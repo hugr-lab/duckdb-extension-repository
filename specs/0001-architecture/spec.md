@@ -60,7 +60,7 @@ extension).
 | --- | --- |
 | **Tenant** | A namespace: its own issuers, administrators, channels, grants, upstreams, publishers, and storage domain. The unit of isolation and of subscription. A managed install is one tenant; Enterest hosts many. Tenant and channel names are public. |
 | **Channel** | One DuckDB repository inside a tenant (`prod`, `staging`, `nightly`, ...; created at run time). Kind `signed` or `passthrough` (below). A signed channel has a key set and a list of DuckDB versions it serves. |
-| **Blob** | A body (the file minus its last 256 bytes), addressed by its **body hash**, with the parsed footer. Global within a storage domain and never visible through the API: it is reached only through a Build the caller may see. |
+| **Blob** | A body (the file minus its last 256 bytes), addressed by its **body hash** and stored as a precompressed stream keyed by the stream's own hash (spec 0005); the footer belongs to the Build. Global within a storage domain and never visible through the API: it is reached only through a Build the caller may see. |
 | **Extension** | A name inside a tenant, owned by a publisher. Default visibility `public` or `private`; licence policy `free` or `licensed`. |
 | **Build** | Tenant-scoped: name, extension version, platform, ABI type, DuckDB compatibility (an exact DuckDB version for `CPP`; a minimum C API version for `C_STRUCT`), body hash, origin (an upstream with DuckDB's original signature, or a publication with publisher and provenance). Key: (tenant, name, body hash). The same body under two names is two Builds. |
 | **Release** | A Build in a channel. State `active`, `deprecated` (versioned path only), or `yanked` (served nowhere; kept for audit). Optional visibility override. Carries the channel's signature. For each (channel, DuckDB version, platform, name), one release is **current**: the one served on the flat path. |
@@ -116,8 +116,8 @@ How kista stores and serves it:
   to it. A body is stored once per storage domain, however many channels, tenants or
   upstreams serve it.
 - **Signatures** are 256-byte rows: DuckDB's original one and one per release in a signed channel.
-- **Serving without a per-request cost.** The blob store keeps the body once as a raw file and once
-  as a precompressed deflate stream that ends with a sync flush (not a final block). The gzip
+- **Serving without a per-request cost.** The blob store keeps the body once, as a precompressed
+  deflate stream (no raw copy: spec 0005) that ends with a sync flush (not a final block). The gzip
   answer for a channel is then streamed as three pieces:
   1. the gzip header and the stored deflate stream;
   2. a final *stored* deflate block with the 256 signature bytes;
@@ -130,7 +130,8 @@ How kista stores and serves it:
 - **No redirects.** DuckDB's built-in HTTP client does not follow them (`follow_location=false`).
   Binaries are streamed by the server; a CDN can sit in front only as a caching proxy for public
   releases (a follow-up).
-- **ETag** = a hash of the served bytes (body hash plus this signature). `If-None-Match` is
+- **ETag** = `H("gz" ‖ body hash ‖ signature)` for the `.gz` answer and `H("plain" ‖ body hash ‖ signature)`
+  for the plain one (spec 0005). `If-None-Match` is
   evaluated only after authorization.
 
 ### Versions are immutable
@@ -223,9 +224,9 @@ whatever a publisher uploads, so its key must not be trusted wherever `prod` is.
 
 A build from an upstream is accepted only if all of these hold:
 
-- the original signature verifies over the **exact bytes that are committed**: the bytes are
-  streamed to a temporary blob, the composite hash is computed and verified, then the blob is
-  committed under that hash, with no second fetch;
+- the original signature verifies over the **exact bytes that are committed**: the file is spooled
+  locally, its composite hash is computed and the signature verified, then the same spool is
+  committed (spec 0005: Spool, verify, Commit), with no second fetch;
 - the key matches the upstream:
   - `duckdb-core`: DuckDB's built-in core keys;
   - `duckdb-community`: DuckDB's built-in community keys;

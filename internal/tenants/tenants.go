@@ -13,14 +13,23 @@ import (
 type Service struct {
 	Store *store.Store
 	Authz authz.Authorizer
+	// HasDomain reports whether a storage domain is configured (spec 0005).
+	HasDomain func(string) bool
 }
 
-// CreateTenant creates a tenant (server-wide action).
-func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, displayName string) (store.Tenant, error) {
+// CreateTenant creates a tenant (server-wide action) in a storage domain (empty: the default one),
+// which must be configured and never changes.
+func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, displayName, domain string) (store.Tenant, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, "", ""); err != nil {
 		return store.Tenant{}, err
 	}
-	t := store.Tenant{Name: name, DisplayName: displayName}
+	if domain == "" {
+		domain = store.DefaultDomain
+	}
+	if s.HasDomain == nil || !s.HasDomain(domain) {
+		return store.Tenant{}, fmt.Errorf("%w: storage domain %q is not configured", store.ErrInvalid, domain)
+	}
+	t := store.Tenant{Name: name, DisplayName: displayName, StorageDomain: domain}
 	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.CreateTenant(ctx, &t) })
 	return t, err
 }

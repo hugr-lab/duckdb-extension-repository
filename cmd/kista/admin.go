@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -23,7 +24,7 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   migrate                                         apply pending migrations
   check                                           verify the schema without changing it
   backup <file>                                   consistent copy of a SQLite store
-  tenant create <name> [-display-name …]
+  tenant create <name> [-display-name …] [-domain <storage domain>]
   tenant list
   tenant suspend|resume <name>
   version add <name> -kind release|dev [-c-api v1.2.0]
@@ -38,6 +39,7 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   key retire <tenant>/<channel> <key-id|fingerprint> [-force]
   key events <tenant>/<channel>
   wellknown <tenant>/<channel>
+  blob check                                      pin and check the storage domains, list tenants without one
 `
 
 type multi []string
@@ -91,7 +93,7 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "kista admin:", err)
 		return 1
 	}
-	a := &adminCmd{svc: svc, actor: authz.OSActor(), out: stdout, errw: stderr}
+	a := &adminCmd{cfg: cfg, svc: svc, actor: authz.OSActor(), out: stdout, errw: stderr}
 	if err := a.dispatch(ctx, rest); err != nil {
 		if errors.Is(err, errUsage) {
 			fmt.Fprint(stderr, adminUsage)
@@ -106,6 +108,7 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 var errUsage = errors.New("usage")
 
 type adminCmd struct {
+	cfg   config.Config
 	svc   *app.Services
 	actor authz.Actor
 	out   io.Writer
@@ -181,8 +184,38 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.channel(ctx, sub, args[min(2, len(args)):])
 	case "key":
 		return a.key(ctx, sub, args[min(2, len(args)):])
+	case "blob":
+		if sub != "check" || len(args) != 2 {
+			return errUsage
+		}
+		return a.blobCheck(ctx)
 	}
 	return errUsage
+}
+
+// blobCheck runs the blob service's startup checks (spec 0005): every domain pinned to its store,
+// marked for this deployment and not public; then it lists the domains and the tenants whose domain
+// is not configured.
+func (a *adminCmd) blobCheck(ctx context.Context) error {
+	svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.DiscardHandler))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = svc.Close() }()
+	missing, err := svc.MissingDomains(ctx)
+	if err != nil {
+		return err
+	}
+	for _, d := range svc.Domains() {
+		fmt.Fprintf(a.out, "domain %s ok\n", d)
+	}
+	for _, t := range missing {
+		fmt.Fprintf(a.out, "tenant %s: storage domain not configured; it is served nothing\n", t)
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%d tenant(s) without a configured storage domain", len(missing))
+	}
+	return nil
 }
 
 func (a *adminCmd) table(header string, rows func(w io.Writer)) {
@@ -197,13 +230,14 @@ func ts(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error {
 	fs := flag.NewFlagSet("tenant", flag.ContinueOnError)
 	display := fs.String("display-name", "", "")
+	domain := fs.String("domain", "", "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	switch {
 	case sub == "create" && len(pos) == 1:
-		t, err := a.svc.Tenants.CreateTenant(ctx, a.actor, pos[0], *display)
+		t, err := a.svc.Tenants.CreateTenant(ctx, a.actor, pos[0], *display, *domain)
 		if err != nil {
 			return err
 		}
@@ -214,9 +248,9 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 		if err != nil {
 			return err
 		}
-		a.table("NAME\tSTATE\tDISPLAY NAME\tCREATED", func(w io.Writer) {
+		a.table("NAME\tSTATE\tDOMAIN\tDISPLAY NAME\tCREATED", func(w io.Writer) {
 			for _, t := range ts_ {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Name, t.State, t.DisplayName, ts(t.CreatedAt))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", t.Name, t.State, t.StorageDomain, t.DisplayName, ts(t.CreatedAt))
 			}
 		})
 	case (sub == "suspend" || sub == "resume") && len(pos) == 1:

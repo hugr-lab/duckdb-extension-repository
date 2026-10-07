@@ -31,9 +31,9 @@ func TestStoreWellKnownAndRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	keyDir := t.TempDir()
-	ten := &tenants.Service{Store: st, Authz: authz.ServerAdmin{}}
+	ten := &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
 	ks := &keys.Service{Store: st, Signers: signer.Resolver{FileDir: keyDir, AllowFile: true}, Authz: authz.ServerAdmin{}}
-	if _, err := ten.CreateTenant(ctx, admin, "acme", ""); err != nil {
+	if _, err := ten.CreateTenant(ctx, admin, "acme", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ten.CreateChannel(ctx, admin, "acme", "prod", store.ChannelSigned); err != nil {

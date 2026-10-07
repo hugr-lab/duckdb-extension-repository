@@ -227,7 +227,7 @@ func Cleanup() {
 // Reset empties every table, children first.
 func Reset(ctx context.Context, st *store.Store) error {
 	for _, table := range []string{"key_events", "channel_keys", "key_fingerprints", "channel_duckdb_versions",
-		"channels", "duckdb_versions", "tenants"} {
+		"channels", "duckdb_versions", "tenants", "blobs", "storage_domains", "deployment"} {
 		if err := store.ExecRaw(ctx, st, "DELETE FROM "+table); err != nil {
 			return err
 		}

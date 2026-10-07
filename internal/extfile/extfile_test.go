@@ -504,3 +504,17 @@ func TestABIString(t *testing.T) {
 		t.Fatal("ABI strings")
 	}
 }
+
+func TestGzipFrameSizes(t *testing.T) {
+	if len(GzipHeader()) != GzipHeaderSize {
+		t.Fatal("header size")
+	}
+	if n := len(GzipTail(Precompressed{}, make([]byte, SignatureSize))); n != GzipTailSize {
+		t.Fatalf("tail size %d", n)
+	}
+	h := GzipHeader()
+	h[0] = 0
+	if GzipHeader()[0] != 0x1f {
+		t.Fatal("GzipHeader returned shared bytes")
+	}
+}

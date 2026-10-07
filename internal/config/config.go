@@ -34,6 +34,7 @@ type Config struct {
 	Azure    Azure    `yaml:"azure"`
 	Rotation Rotation `yaml:"rotation"`
 	Signers  Signers  `yaml:"signers" kista:"fileonly"`
+	Blob     Blob     `yaml:"blob" kista:"fileonly"`
 }
 
 // Store selects and configures the metadata database.
@@ -440,6 +441,7 @@ func (c Config) Validate() error {
 			bad("%s.kind must be one of %s", where, strings.Join(SourceKinds, ", "))
 		}
 	}
+	validateBlob(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

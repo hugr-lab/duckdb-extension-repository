@@ -63,11 +63,11 @@ func newEnv(t *testing.T, e storetest.Engine) *env {
 	en := &env{
 		svc: &keys.Service{Store: s, Signers: signer.Resolver{FileDir: dir, AllowFile: true},
 			Authz: authz.ServerAdmin{}, MinTrusted: week, MinDemoted: week},
-		ten:   &tenants.Service{Store: s, Authz: authz.ServerAdmin{}},
+		ten:   &tenants.Service{Store: s, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }},
 		dir:   dir,
 		clock: c,
 	}
-	if _, err := en.ten.CreateTenant(ctx, admin, "acme", "Acme"); err != nil {
+	if _, err := en.ten.CreateTenant(ctx, admin, "acme", "Acme", ""); err != nil {
 		t.Fatal(err)
 	}
 	for name, kind := range map[string]string{"prod": store.ChannelSigned, "mirror": store.ChannelPassthrough, "staging": store.ChannelSigned} {
@@ -374,7 +374,7 @@ func TestRetiredKeysCount(t *testing.T) {
 			}
 		}
 		// Retire and Activate address a key only through its own channel and tenant
-		if _, err := en.ten.CreateTenant(ctx, admin, "other", ""); err != nil {
+		if _, err := en.ten.CreateTenant(ctx, admin, "other", "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := en.ten.CreateChannel(ctx, admin, "other", "staging", store.ChannelSigned); err != nil {

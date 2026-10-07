@@ -24,12 +24,18 @@ func TestTenantsService(t *testing.T) {
 	admin := authz.Actor{Kind: authz.ActorOS, ID: "1:t"}
 	for _, e := range storetest.Engines(t) {
 		t.Run(e.Name, func(t *testing.T) {
-			svc := &tenants.Service{Store: e.Open(t), Authz: authz.ServerAdmin{}}
-			if _, err := svc.CreateTenant(ctx, admin, "acme", ""); err != nil {
+			svc := &tenants.Service{Store: e.Open(t), Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
+			if _, err := svc.CreateTenant(ctx, admin, "acme", "", ""); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.CreateTenant(ctx, admin, "Bad Name", ""); !errors.Is(err, store.ErrInvalid) {
+			if _, err := svc.CreateTenant(ctx, admin, "Bad Name", "", ""); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("bad name: %v", err)
+			}
+			if _, err := svc.CreateTenant(ctx, admin, "acme-cn", "", "cn"); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("a storage domain that is not configured: %v", err)
+			}
+			if tn, err := svc.CreateTenant(ctx, admin, "acme-eu", "", "default"); err != nil || tn.StorageDomain != "default" {
+				t.Fatalf("explicit domain: %+v %v", tn, err)
 			}
 			if _, err := svc.CreateChannel(ctx, admin, "acme", "prod", "mirror"); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("bad kind: %v", err)

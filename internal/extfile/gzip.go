@@ -161,6 +161,27 @@ func WriteGzip(dst io.Writer, pre Precompressed, stream io.Reader, signed BodyHa
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
+	_, err = dst.Write(GzipTail(pre, sig))
+	return err
+}
+
+// GzipHeaderSize and GzipTailSize frame a stored stream in WriteGzip's output: the file is
+// GzipHeaderSize + StreamLen + GzipTailSize bytes.
+const (
+	GzipHeaderSize = 10
+	GzipTailSize   = 5 + SignatureSize + 8
+)
+
+// GzipHeader returns the gzip member header WriteGzip writes.
+func GzipHeader() []byte { return bytes.Clone(gzipHeader) }
+
+// GzipTail returns what follows the stream in WriteGzip's output: the final stored block with the
+// signature, and the trailer. It panics unless sig is SignatureSize bytes (the block header encodes
+// that length).
+func GzipTail(pre Precompressed, sig []byte) []byte {
+	if len(sig) != SignatureSize {
+		panic("extfile: GzipTail needs a SignatureSize signature")
+	}
 	var tail bytes.Buffer
 	tail.Write(finalStoredBlock)
 	tail.Write(sig)
@@ -168,8 +189,7 @@ func WriteGzip(dst io.Writer, pre Precompressed, stream io.Reader, signed BodyHa
 	binary.LittleEndian.PutUint32(trailer[0:], crc32.Update(pre.BodyCRC32, crc32.IEEETable, sig))
 	binary.LittleEndian.PutUint32(trailer[4:], uint32(pre.BodyLen+SignatureSize))
 	tail.Write(trailer[:])
-	_, err = dst.Write(tail.Bytes())
-	return err
+	return tail.Bytes()
 }
 
 // VerifyStream checks a whole stored stream against its record (length, every chunk, the composite
