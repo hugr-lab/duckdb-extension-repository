@@ -32,7 +32,8 @@ and the DuckDB behaviour the design relies on (with source locations on the duck
   design, security, tests, alternatives. Written and reviewed before code; status `implemented` when
   done. One branch per spec.
 - Every feature lands with tests. Three adversarial review passes before a PR.
-- Self-review the diff before every commit, and again after opening a PR (fix in a follow-up commit).
+- Self-review the diff before every commit, and again after opening a PR (fix in a follow-up
+  commit).
 - `design/` is local scratch (gitignored); specs and code are the record.
 - Everything in the repository and on GitHub is in English: code, comments, specs, commit
   messages, issues, PRs and reviews.
