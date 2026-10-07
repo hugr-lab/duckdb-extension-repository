@@ -23,6 +23,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/sourcetest"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/vault"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/vaultapi"
@@ -418,4 +419,76 @@ func TestGrammar(t *testing.T) {
 			t.Errorf("%s: %v", ref, err)
 		}
 	}
+}
+
+// harness adapts the fake to the common contract suite.
+type harness struct {
+	f   *fake
+	srv *httptest.Server
+}
+
+func (h *harness) New(t *testing.T, opts keysource.Options) (*keysource.Registry, string) {
+	h.f, h.srv = newFake(t)
+	if opts.Allow == nil {
+		opts.Allow = []string{"ext-"}
+	}
+	api := client(t, vaultapi.Config{Address: h.srv.URL, AuthKind: vaultapi.AuthTokenFile, TokenFile: tokenFile(t), Timeout: opts.Timeout})
+	reg := keysource.NewRegistry(signer.Resolver{})
+	if err := reg.Add("src", vault.New(api, "kt"), opts); err != nil {
+		t.Fatal(err)
+	}
+	return reg, "src:ext-a:v1"
+}
+
+func (h *harness) Key() *rsa.PrivateKey { return h.f.key }
+
+func (h *harness) Mutate(t *testing.T, m sourcetest.Mutation) bool {
+	f := h.f
+	switch m {
+	case sourcetest.Exportable:
+		f.info["exportable"] = true
+	case sourcetest.Imported:
+		f.info["imported_key"] = true
+	case sourcetest.WrongType:
+		f.info["type"] = "ecdsa-p256"
+	case sourcetest.Size3072:
+		k, _ := rsa.GenerateKey(rand.Reader, 3072)
+		setPub(f, &k.PublicKey)
+	case sourcetest.Exponent3:
+		pub := f.key.PublicKey
+		pub.E = 3
+		setPub(f, &pub)
+	case sourcetest.CanEncrypt:
+		f.caps["kt/encrypt/ext-a"] = []string{"update"}
+	case sourcetest.OtherVersion:
+		f.info["keys"] = map[string]any{"2": f.info["keys"].(map[string]any)["1"]}
+		f.info["latest_version"] = 2
+		f.info["min_encryption_version"] = 2
+	case sourcetest.PublicKeyChange:
+		k, _ := rsa.GenerateKey(rand.Reader, 2048)
+		setPub(f, &k.PublicKey)
+	case sourcetest.SignOtherVersion:
+		f.sigVer = 2
+	case sourcetest.CorruptSignature:
+		f.corrupt = true
+	case sourcetest.Hang:
+		f.hang.Store(true)
+	case sourcetest.SecretInBody:
+		f.errorBody = `{"errors":["permission denied for ` + sourcetest.Secret + `"]}`
+	case sourcetest.SecretInSignBody:
+		f.errorBody = `{"errors":["denied ` + sourcetest.Secret + `"]}`
+	case sourcetest.Transient:
+		f.fail5xx.Store(1)
+	case sourcetest.AlwaysFail:
+		f.fail5xx.Store(1000)
+	default:
+		// Transit has no disabled state, validity window, release policy, tags, HSM tier or
+		// certificate-backed keys
+		return false
+	}
+	return true
+}
+
+func TestContract(t *testing.T) {
+	sourcetest.Run(t, func(t *testing.T) sourcetest.Harness { return &harness{} })
 }

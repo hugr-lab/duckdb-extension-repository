@@ -1,6 +1,6 @@
 # Spec 0004: Signer backends: key sources for vaults and KMSs
 
-- **Status**: phase 1 implemented (registry, contract, `file`, `vault`); phases 2-4 (`azurekv`, `awskms`, `gcpkms`) to do
+- **Status**: phases 1-2 implemented (registry, contract, `file`, `vault`, `azurekv`); phases 3-4 (`awskms`, `gcpkms`) to do
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -248,20 +248,36 @@ DigestInfo.
 | `cloud` | Vault suffix | Managed HSM suffix | Authority |
 | --- | --- | --- | --- |
 | `public` | `.vault.azure.net` | `.managedhsm.azure.net` | public |
-| `china` | `.vault.azure.cn` | `.managedhsm.chinacloudapi.cn` | China |
+| `china` | `.vault.azure.cn` | `.managedhsm.azure.cn` (to confirm) | China |
 | `usgov` | `.vault.usgovcloudapi.net` | `.managedhsm.usgovcloudapi.net` (to confirm) | US Gov |
 
-The authority host comes from `cloud`, never from `AZURE_AUTHORITY_HOST`. Challenge-resource
-verification stays on.
+The authority host comes from `cloud`. The SDK ignores `AZURE_AUTHORITY_HOST` when the cloud is set,
+which kista always does; AKS workload identity sets the variable, so it is not refused.
+Challenge-resource verification stays on.
 
 *Identity.* Per source:
 - `managed`, with an optional client id;
 - `workload`, which needs the federated token file and tenant id;
 - `default`, dev only.
 
-`AZURE_CLIENT_SECRET` and certificate variables are refused outside dev. The platform's own
-managed-identity endpoint variables (`IDENTITY_ENDPOINT`, used by Container Apps and App Service)
-are allowed: the platform sets them.
+- **Refused outside dev:**
+  - `AZURE_CLIENT_SECRET` and the certificate and username/password variables;
+  - `AZURE_POD_IDENTITY_AUTHORITY_HOST` and `AZURE_REGIONAL_AUTHORITY_NAME`, which move token
+    requests;
+  - `AZURE_SDK_GO_LOGGING`, which would log request URLs and headers.
+- **Allowed:** the platform's managed-identity endpoint variables. Container Apps, App Service, Arc
+  and Service Fabric set them: `IDENTITY_ENDPOINT`, `IDENTITY_HEADER`, `MSI_ENDPOINT`,
+  `IMDS_ENDPOINT` and `IDENTITY_SERVER_THUMBPRINT`.
+- **Workload identity** needs `client_id` and `tenant_id` in config, so the identity never comes
+  from `AZURE_CLIENT_ID` / `AZURE_TENANT_ID`.
+- **The Entra database login** (spec 0003) uses `azure.identity` with `azure.cloud`.
+- **Errors** keep the HTTP status, an Azure error code only if it is a plain PascalCase word, and
+  `x-ms-request-id` only if it is a GUID. Both come from the server, so anything else becomes `?`.
+- **Imported (BYOK) keys** cannot be detected: Key Vault does not report imported material. The
+  mitigations are:
+  - the custom role grants no `keys/import/action`;
+  - the purpose tag is set by whoever creates the key;
+  - an Activity Log alert on key create and import.
 
 *Least privilege.*
 - **Vault:** the RBAC permission model, and a custom role whose **dataActions** are

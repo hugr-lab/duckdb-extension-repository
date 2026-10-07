@@ -172,3 +172,59 @@ signers:
 		t.Fatalf("dev: %v", err)
 	}
 }
+
+func TestAzureKVSources(t *testing.T) {
+	ok := base + `
+signers:
+  sources:
+    - name: prod
+      kind: azurekv
+      allow: ["ext-"]
+      azurekv: { vault: kista-prod, cloud: china }
+      identity: { kind: workload, client_id: "c", tenant_id: "t" }
+`
+	if _, err := Load(write(t, ok), nil); err != nil {
+		t.Fatal(err)
+	}
+	hsm := strings.Replace(ok, "vault: kista-prod", "managed_hsm: kista-hsm", 1)
+	if _, err := Load(write(t, hsm), nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, file := range map[string]string{
+		"both":             strings.Replace(ok, "vault: kista-prod", "vault: kista-prod, managed_hsm: h", 1),
+		"neither":          strings.Replace(ok, "vault: kista-prod, ", "", 1),
+		"bad name":         strings.Replace(ok, "kista-prod", "kista.prod", 1),
+		"host in name":     strings.Replace(ok, "kista-prod", "evil.example.com", 1),
+		"unknown cloud":    strings.Replace(ok, "cloud: china", "cloud: mars", 1),
+		"no identity":      strings.Replace(ok, `      identity: { kind: workload, client_id: "c", tenant_id: "t" }`+"\n", "", 1),
+		"default identity": strings.Replace(ok, "kind: workload", "kind: default", 1),
+		"software keys":    strings.Replace(ok, "cloud: china", "cloud: china, require_hsm: false", 1),
+		"vault block":      strings.Replace(ok, "kind: azurekv", "kind: vault", 1),
+		"approle identity": strings.Replace(ok, "kind: workload", "kind: approle", 1),
+		"workload, no ids": strings.Replace(ok, `client_id: "c", tenant_id: "t"`, `client_id: "c"`, 1),
+		"double dash":      strings.Replace(ok, "kista-prod", "kista--prod", 1),
+		"trailing dash":    strings.Replace(ok, "kista-prod", "kista-prod-", 1),
+		"too short":        strings.Replace(ok, "kista-prod", "kp", 1),
+		"too long":         strings.Replace(ok, "kista-prod", "k123456789012345678901234", 1),
+		"upper-case allow": strings.Replace(ok, `allow: ["ext-"]`, `allow: ["EXT-"]`, 1),
+	} {
+		if _, err := Load(write(t, file), nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestAzureKVDev(t *testing.T) {
+	dev := "profile: dev\n" + base + `
+signers:
+  sources:
+    - name: prod
+      kind: azurekv
+      allow: ["ext-"]
+      azurekv: { vault: kista-prod, require_hsm: false }
+      identity: { kind: default }
+`
+	if _, err := Load(write(t, dev), nil); err != nil {
+		t.Fatal(err)
+	}
+}
