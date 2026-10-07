@@ -516,18 +516,19 @@ particular:
 
 | Spec | Scope |
 | --- | --- |
-| 0002 | `extfile`, `signer` (file, Key Vault), gzip assembly; e2e confirmation of the DuckDB behaviour table |
-| 0003 | `store` on three dialects, migrations; tenants, channels, keys, rotation; server and tenant administration API |
-| 0004 | `serve`, `auth`, `authz`, `egress`: issuer records, grants, 401/404, caching headers; serve-path events |
-| 0005 | Index API: releases, body hashes, sha256, visibility (the node agent needs it first) |
-| 0006 | Publication and promotion: API keys, trusted publishing, init-symbol check, reserved names, yank, block |
-| 0007 | Upstreams: core / community / repository / `enterest`, intake, mirror, pull-through, passthrough channels |
-| 0008 | Audit: hash chain, export, sinks, per-tenant statistics |
-| 0009 | Attachments and the feed from Enterest |
-| 0010 | Licensing: licence keys, entitlements, tokens, the SDK (C++, for DuckDB extensions) |
-| 0011 | Deployment: image, Helm, Bicep, Azure Marketplace managed application |
-| 0012 | Bundles for air-gapped sites |
-| 0013 | Administration console: micro-frontend, mounting contract with the hugr platform and Enterest |
+| 0002 | `extfile`, the file signer, gzip assembly; e2e confirmation of the DuckDB behaviour table (implemented) |
+| 0003 | `store` on three dialects, migrations; tenants, channels, keys, rotation; config; `kista admin` |
+| 0004 | Azure Key Vault signer |
+| 0005 | `serve`, `auth`, `authz`, `egress`: issuer records, grants, 401/404, caching headers; the HTTP management API; serve-path events |
+| 0006 | Index API: releases, body hashes, sha256, visibility (the node agent needs it first) |
+| 0007 | Publication and promotion: API keys, trusted publishing, init-symbol check, reserved names, yank, block |
+| 0008 | Upstreams: core / community / repository / `enterest`, intake, mirror, pull-through, passthrough channels |
+| 0009 | Audit: hash chain, export, sinks, per-tenant statistics |
+| 0010 | Attachments and the feed from Enterest |
+| 0011 | Licensing: licence keys, entitlements, tokens, the SDK (C++, for DuckDB extensions) |
+| 0012 | Deployment: image, Helm, Bicep, Azure Marketplace managed application |
+| 0013 | Bundles for air-gapped sites |
+| 0014 | Administration console: micro-frontend, mounting contract with the hugr platform and Enterest |
 | later | custom domains, a CDN for public releases, wasm signatures |
 
 In duckdb-acl (its spec 103, PR hugr-lab/duckdb-acl#183): the optional `sha256` of
