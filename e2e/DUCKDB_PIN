@@ -1,0 +1,5 @@
+# DuckDB commit kista is tested against (full hash; the tag is informational).
+DUCKDB_COMMIT=eb0d9df48ee5341ea4ede1a3cba93251cce571df
+DUCKDB_TAG=v2.0-cyanoptera
+# duckdb-httpfs commit that DUCKDB_COMMIT's .github/config/extensions/httpfs.cmake fetches.
+HTTPFS_COMMIT=5e34903685e4d429cbb19b063406abdd8ce30591
