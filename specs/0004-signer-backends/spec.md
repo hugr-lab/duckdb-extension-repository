@@ -1,6 +1,6 @@
 # Spec 0004: Signer backends: key sources for vaults and KMSs
 
-- **Status**: phases 1-2 implemented (registry, contract, `file`, `vault`, `azurekv`); phases 3-4 (`awskms`, `gcpkms`) to do
+- **Status**: phases 1-2 implemented (registry, contract, `file`, `vault`, `azurekv`); phases 3-4 (`awskms`, `gcpkms`) deferred by the owner (2026-10-07), designed here and done later
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
