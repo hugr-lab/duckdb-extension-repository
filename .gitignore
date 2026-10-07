@@ -1,0 +1,7 @@
+# local scratch: research and design notes behind the specs
+design/
+# build outputs
+/bin/
+/dist/
+*.test
+coverage.out
