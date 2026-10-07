@@ -24,7 +24,6 @@ jobs:
     env:
       GOWORK: off
       E2E_BUILD: ${{ github.workspace }}/e2e/.build
-      CCACHE_DIR: ${{ runner.temp }}/ccache
       CCACHE_MAXSIZE: 2G
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,6 +41,7 @@ jobs:
       - name: cache keys
         id: key
         run: |
+          echo "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
           pin=$(cat e2e/DUCKDB_PIN e2e/build-duckdb.sh | openssl dgst -sha256 | awk '{print substr($NF,1,16)}')
           cc=$(cc --version | head -1 | openssl dgst -sha256 | awk '{print substr($NF,1,8)}')
           echo "build=duckdb-e2e-${{ runner.os }}-${{ runner.arch }}-$pin-$cc" >> "$GITHUB_OUTPUT"
