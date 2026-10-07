@@ -142,7 +142,7 @@ that enough:
 - so the same version in the same channel is always the same code, and a key rotation changes only
   the signature, which DuckDB checks.
 
-spec 093's optional `sha256` (of the installed file, signature included) adds nothing to this and
+Spec 093's optional `sha256` (of the installed file, signature included) adds nothing to this and
 breaks on every key rotation, so duckdb-acl removes it (see Follow-ups). kista does not pin by hash.
 
 ### Channel kinds
@@ -232,11 +232,11 @@ A failure rejects the build and writes an event.
 
 - the request is already authorized;
 - the (name, version, platform) is on the upstream's allowlist;
-- no other replica is fetching it: one fetch at a time through a database lease;
-- the request answers `404` until the build is verified, stored, released and signed. That signing
-  happens at release time, in the background.
+- no other replica is fetching it: one fetch at a time through a database lease.
 
-Results are cached negatively. Anonymous requests never cause an upstream fetch.
+The fetch runs in the background through the same intake, then releases and signs the build. Until
+then the request answers `404`. Misses are cached negatively. Anonymous requests never cause an
+upstream fetch.
 
 ### Publication and promotion
 
