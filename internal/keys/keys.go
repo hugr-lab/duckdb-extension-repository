@@ -83,12 +83,8 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel, ref s
 	if err := extfile.CheckKey(pub); err != nil {
 		return store.Key{}, err
 	}
-	sig, err := sg.Sign(ctx, probe)
-	if err != nil {
-		return store.Key{}, fmt.Errorf("keys: the probe signature failed: %w", err)
-	}
-	if _, ok := extfile.Verify(probe, sig, []*rsa.PublicKey{pub}); !ok {
-		return store.Key{}, errors.New("keys: the probe signature does not verify")
+	if err := Probe(ctx, sg); err != nil {
+		return store.Key{}, err
 	}
 	der, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
@@ -129,6 +125,19 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel, ref s
 		return tx.BumpChannel(ctx, &c)
 	})
 	return k, err
+}
+
+// Probe proves a signer can sign: it signs a fixed body hash and verifies the result against the
+// signer's public key.
+func Probe(ctx context.Context, sg signer.Signer) error {
+	sig, err := sg.Sign(ctx, probe)
+	if err != nil {
+		return fmt.Errorf("keys: the probe signature failed: %w", err)
+	}
+	if _, ok := extfile.Verify(probe, sig, []*rsa.PublicKey{sg.Public()}); !ok {
+		return errors.New("keys: the probe signature does not verify")
+	}
+	return nil
 }
 
 // find returns the key of the channel named by id or fingerprint.

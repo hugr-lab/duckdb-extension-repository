@@ -1,6 +1,6 @@
 # Spec 0004: Signer backends: key sources for vaults and KMSs
 
-- **Status**: draft
+- **Status**: phase 1 implemented (registry, contract, `file`, `vault`); phases 2-4 (`azurekv`, `awskms`, `gcpkms`) to do
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -130,9 +130,11 @@ A source-independent wrapper (`keysource.Open`) checks every backend:
 
   Anything that cannot be confirmed fails closed.
 - **Re-checked later.** Some properties can change after open: Vault `exportable` can be switched
-  on, Azure `key_ops` can be updated, an AWS key can be disabled. The metadata is re-read at least
-  every 10 minutes and whenever the channel's cached signer is revalidated (spec 0003's channel
-  version). A key that no longer passes stops signing. The deployment's policy grants kista no
+  on, Azure `key_ops` can be updated, an AWS key can be disabled.
+  - Before a sign, the metadata is re-read if the last check is older than `recheck` (default and
+    maximum 10 minutes). Only one re-check runs at a time.
+  - Spec 0003's `OpenSigner` opens a key afresh, with every check, whenever a cached signer is
+    revalidated. A key that no longer passes stops signing. The deployment's policy grants kista no
   right to change keys, and the documentation lists the audit alerts to set (CloudTrail, Azure
   Activity Log, Vault audit).
 - **On every `Sign`:**
@@ -144,9 +146,10 @@ A source-independent wrapper (`keysource.Open`) checks every backend:
     - GCP: `name` equals the version resource, and the CRC32C fields check;
     - Vault: `key_version` equals N, and the `vault:v<N>:` prefix agrees.
 - **Calls.**
-  - Every call has a timeout (default 10 s) and at most 3 attempts in total, counting the SDK's
-    own retries and the GCP CRC retry. Throttling uses bounded backoff.
-  - Each source has a concurrency limit (`max_concurrency`, default 4).
+  - Every call has a timeout (`timeout`, default 10 s, 1-60 s) and at most 3 attempts in total,
+    counting the SDK's own retries, a re-login after a `403` and the GCP CRC retry. Throttling uses
+    bounded backoff.
+  - Each source has a concurrency limit (`max_concurrency`, default 4), for opens and signs.
   - Signing happens once per (body hash, key), when a release is made (spec 0008), and the
     signature is stored. No request path triggers KMS calls.
 - **Errors** are mapped at the package boundary to the backend's code and request id: HTTP status
@@ -182,20 +185,27 @@ SDK.
 
 *Key checks.* `GET /v1/<mount>/keys/<key>` must show:
 - `type = rsa-2048`, `supports_signing`;
-- `exportable = false`, `allow_plaintext_backup = false`, `imported_key = false`;
+- `exportable = false`, `allow_plaintext_backup = false`;
+- `imported_key = false`, reported explicitly: a server that does not report it cannot confirm
+  non-imported material. OpenBao's `soft_deleted` must be false;
 - `min_encryption_version ≤ N ≤ latest_version`, with N listed under `keys` (so
   `N ≥ min_decryption_version`). Signing is gated by `min_encryption_version`.
 
 The public key is `keys["N"].public_key`.
 
 *Signing only, by policy.* RSA Transit keys always report encryption support, so metadata cannot
-prove "signing only". At open, kista calls `POST /v1/sys/capabilities-self`. Its token must have no
-capability on:
-- `<mount>/encrypt/<key>` and `<mount>/decrypt/<key>`;
-- `<mount>/export/*` and `<mount>/backup/<key>`;
-- `<mount>/keys/<key>/config`.
+prove "signing only". At open and at every re-check, kista calls `POST /v1/sys/capabilities-self`:
+- the key itself (`<mount>/keys/<key>`) must answer exactly `["read"]`;
+- every other path must answer exactly `["deny"]`:
+  - `encrypt`, `decrypt`, `rewrap`, `datakey/plaintext`, `datakey/wrapped`;
+  - `backup`, `restore`;
+  - `keys/<key>/config`, `/rotate`, `/trim`;
+  - `export/{encryption-key,signing-key,hmac-key}/<key>`, with `/<N>` and `/latest`.
 
-It needs only `read` on `<mount>/keys/<key>` and `update` on `<mount>/sign/<key>/sha2-256`.
+A path missing from the answer, or an unexpected value, fails closed.
+
+It needs only `read` on `<mount>/keys/<key>`, `update` on `<mount>/sign/<key>/sha2-256`, and
+`update` on `sys/capabilities-self`, which Vault's `default` policy also grants.
 
 *Signing.* `POST /v1/<mount>/sign/<key>/sha2-256` with:
 - `input`: the base64 digest;
@@ -213,9 +223,9 @@ variables are ignored.
 - `jwt`: a projected token file.
 - `token_file`: Vault Agent.
 
-Token files must be mode `0600` and are re-read on expiry. A token is renewed at 2/3 of its lease,
-and the old one keeps working until it expires if re-login fails. The renewer is a goroutine, so the
-registry has `Close()`.
+Token files must be mode `0600` and are re-read on expiry. A token is renewed lazily, on the first
+request after 2/3 of its lease, and the old one keeps working until it expires if re-login fails. A
+`403` triggers one re-login. There is no background goroutine to stop.
 
 *Transport.* HTTPS with TLS 1.2 or later, `ca_file` for a private CA, and no option to skip
 verification. Plain HTTP only on loopback with `profile: dev` (a Vault Agent sidecar). Redirects are
@@ -391,11 +401,14 @@ operators preparing keys, and the live tests.
 
 ## Testing
 
-- **Contract suite** (`internal/keysource/sourcetest`). Every backend runs it, against its fake and,
-  where CI has one, against a real server. Capability flags skip what a backend does not have:
+- **Contract suite** (`internal/keysource/sourcetest`). It is extracted in phase 2, when a second
+  backend exists. Phase 1 tests the same cases for `vault` directly, against a TLS fake and against
+  real Vault and OpenBao. Every backend runs it, against its fake and, where CI has one, against a
+  real server. Capability flags skip what a backend does not have:
   Vault has no expiry, AWS has no versions. Cases:
   - **Signing:**
-    - the known-answer signature;
+    - the known-answer signature: a fake's signature equals `rsa.SignPKCS1v15` with the fake's key,
+      and a real server's signature is deterministic and verifies as DuckDB verifies;
     - sign, then verify;
     - a response naming another key or version;
     - a signature that does not verify.
@@ -417,7 +430,8 @@ operators preparing keys, and the live tests.
   reserved sources, and hosts, ARNs, aliases or URLs inside references, `..`, `v0`, empty
   versions.
 - **Real servers in CI:**
-  - **Vault and OpenBao** run in dev mode as `docker run` steps (`-dev-tls`, to test `ca_file`).
+  - **Vault and OpenBao** (`hashicorp/vault:2.1.1`, `openbao/openbao:2.7.1`) run in dev mode as
+    `docker run` steps, on loopback over HTTP. `ca_file` is tested against a TLS fake.
     The test setup uses the root token to:
     - enable Transit and create an `rsa-2048` key;
     - write kista's policy, with read and sign only;

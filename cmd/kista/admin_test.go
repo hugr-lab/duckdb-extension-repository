@@ -64,6 +64,10 @@ func TestAdminCLI(t *testing.T) {
 	if n := strings.Count(run(0, "key", "events", "acme/prod"), "os:"); n != 5 {
 		t.Fatalf("%d events", n)
 	}
+	if got := run(0, "key", "check", "-signer", "file:a.pem"); !strings.HasPrefix(got, "file:a.pem sha256:") {
+		t.Fatalf("key check: %q", got)
+	}
+	run(1, "key", "check", "-signer", "nope:x")
 	run(0, "backup", filepath.Join(dir, "backup.db"))
 	run(1, "key", "add", "acme/prod", "-signer", "file:../escape.pem")
 	run(2, "nonsense")
