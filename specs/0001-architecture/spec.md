@@ -1,6 +1,6 @@
 # Spec 0001: Architecture
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -143,7 +143,8 @@ that enough:
   the signature, which DuckDB checks.
 
 Spec 093's optional `sha256` (of the installed file, signature included) adds nothing to this and
-breaks on every key rotation, so duckdb-acl removes it (see Follow-ups). kista does not pin by hash.
+breaks on every key rotation, so duckdb-acl removes it (its spec 103, PR hugr-lab/duckdb-acl#183).
+kista does not pin by hash.
 
 ### Channel kinds
 
@@ -175,10 +176,18 @@ breaks on every key rotation, so duckdb-acl removes it (see Follow-ups). kista d
 **Bootstrapping a client.**
 
 - Private channels need `https` and httpfs, because only httpfs adds the Bearer token from an http
-  secret. DuckDB's built-in client never sends one.
-- httpfs itself comes from core autoinstall, either DuckDB's or a tenant's passthrough channel.
-- So the public minimum is **httpfs** (from passthrough or DuckDB) plus **tresor** (public in a
-  signed channel). With tresor the client logs in and gets the token for the rest.
+  secret. DuckDB's built-in client never sends one, and without httpfs DuckDB cannot read
+  `.well-known` either.
+- httpfs itself comes from one of two places:
+  - core autoinstall, from DuckDB or a tenant's passthrough channel, when DuckDB has published
+    binaries for the client's version;
+  - a public signed channel over plain `http://` (the built-in client), with
+    `CREATE … USING PUBLIC KEY` and `INSTALL httpfs FROM r` / `LOAD httpfs FROM r`. This is the
+    route for a version DuckDB has not published.
+- kista therefore also serves **public** releases over plain `http://`. The signature, not the
+  transport, protects them. Private releases are served only over `https`.
+- So the public minimum is **httpfs** plus **tresor**, both public. With tresor the client logs in
+  and gets the token for the rest.
 - The client also needs `allow_extension_repositories = 'allowed'`, which can only be set at
   startup.
 
@@ -413,19 +422,24 @@ Paths are relative to the duckdb source tree.
 | The signature covers everything but the last 256 bytes, footer included. It is `mbedtls_pk_verify(SHA256)` over the composite hash (1 MiB chunks) | `src/include/duckdb/main/extension.hpp:45-46`; `extension_load.cpp:273-297,424-439`; `mbedtls_wrapper.cpp:73-97` | source |
 | The footer fields are platform, DuckDB or C API version, extension version and ABI type. There is no name | `extension_load.cpp:346-385` | source |
 | `custom_extension_repository`, `autoinstall_extension_repository` and `INSTALL x FROM '<url>'` are core-typed: DuckDB's core keys apply. Autoload is core-only | `src/main/extension_install_info.cpp:62-97`; `extension_helper.cpp:201-211,900-916`; `physical_load.cpp:16-25` | source; e2e in 0002 |
-| A user-repository install lives under `…/repositories/<repo>/` and is loaded with `LOAD x FROM <repo>`. It needs `allow_extension_repositories='allowed'` | `extension_install_dynamic.cpp:370-379`; `extension_load.cpp:614-677` | source; e2e in 0002 |
+| A user-repository install lives under `…/repositories/<repo>/` and is loaded with `LOAD x FROM <repo>` (a bare `LOAD` checks core keys). Installs from two repositories coexist; `LOAD x FROM r2` refuses one from r1. It needs `allow_extension_repositories='allowed'` | `extension_install_dynamic.cpp:370-379`; `extension_load.cpp:614-677` | source; e2e in 0002 |
 | Paths are flat `<prefix>/<duckdb_version>/<platform>/<name>.duckdb_extension.gz` and versioned `<prefix>/<name>/<version>/<duckdb_version>/<platform>/…`. The DuckDB version is the tag, or the source id on a dev build | `extension_install.cpp:39-47,218-240` | source + experiment |
-| `http://`: the built-in client requests `.gz` only, does not follow redirects, sends `If-None-Match`, and never adds `Authorization`. `https://`: httpfs checks `.gz`, then the plain name. A body is gunzipped only if it is gzip | `extension_install_dynamic.cpp:132-161,225-282`; `http_util.cpp:29-31` | source; e2e in 0002 |
+| Three transport paths. Local directory: file reads. `http://` with httpfs never loaded: the built-in client sends one `GET` of `.gz`, with no fallback, no redirects and never `Authorization`; `If-None-Match` comes only from `UPDATE EXTENSIONS`. `https://`, or `http://` once httpfs is loaded (bumped to https): httpfs checks `.gz`, then the plain name, then reads, and sends no ETag. A body is gunzipped only if it is gzip, and the gzip trailer is not checked | `extension_install_dynamic.cpp:132-167,225-315`; `http_util.cpp:29-31,515`; `gzip_file_system.cpp:477-533` | source; e2e in 0002 |
 | An http secret's `SCOPE` matches by string prefix, and the longest match wins. httpfs adds the Bearer token | `src/main/secret/secret.cpp:14-32`; the httpfs side is not in the pin | partly; e2e in 0002 |
-| `.well-known` is read without the statement's secrets or `ca_cert_file` | `fs.OpenFile` without an opener | experiment; e2e in 0002 |
-| `.info` records the repository URL, and `UPDATE EXTENSIONS` goes back to it. Installing from another URL needs `FORCE` | `extension_helper.cpp:294-298`; `extension_install_dynamic.cpp:330-352` | source |
+| `.well-known` is read through DuckDB's file system, so it needs httpfs; it is read without the statement's secrets or `ca_cert_file`. Without httpfs, `CREATE` on `http://` needs `USING PUBLIC KEY` | `extension_repository_manager.cpp:131-160`; `fs.OpenFile` without an opener | experiment; e2e in 0002 |
+| `.info` records the repository URL, and `UPDATE EXTENSIONS` goes back to it. On the flat (core) layout, installing from another URL needs `FORCE` | `extension_helper.cpp:294-298`; `extension_install_dynamic.cpp:330-352` | source |
 | Community keys are trusted only with `allow_community_extensions` | `extension_helper.cpp:636,866` | source |
 
 Consequences:
 
 - a replacement of a core extension is served from a signed channel and must be loaded explicitly
   (`LOAD httpfs FROM hugr`); it is never autoloaded;
-- moving a node from one channel to another needs `FORCE INSTALL`.
+- moving a node from one channel to another means a new repository name, or `CREATE OR REPLACE`
+  of the same name followed by `FORCE INSTALL`;
+- every client bootstraps the same way: `CREATE … USING PUBLIC KEY` on `http://`, then
+  `INSTALL httpfs FROM r` and `LOAD httpfs FROM r`, then `https://` with `.well-known` and secrets;
+- core extensions for a pin DuckDB has not published are built by us and served from signed
+  channels; kista never relies on a patched DuckDB.
 
 ## Security
 
@@ -510,5 +524,8 @@ particular:
 | 0013 | Administration console: micro-frontend, mounting contract with the hugr platform and Enterest |
 | later | custom domains, a CDN for public releases, wasm signatures |
 
-In duckdb-acl: remove the optional `sha256` from cluster-profile extensions (spec 093): the
-`SHA256 '…'` clause, the profile field, and its test.
+In duckdb-acl (its spec 103, PR hugr-lab/duckdb-acl#183): the optional `sha256` of
+cluster-profile extensions is removed.
+
+kista depends on DuckDB only. duckdb-acl, hugr_node and tresor are clients of it, and every feature
+works for any DuckDB client.

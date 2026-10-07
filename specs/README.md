@@ -7,4 +7,5 @@ and it is superseded by a new spec when a decision changes.
 
 | Spec | Title | Status |
 | --- | --- | --- |
-| [0001](0001-architecture/spec.md) | Architecture | draft |
+| [0001](0001-architecture/spec.md) | Architecture | accepted |
+| [0002](0002-extfile-signer/spec.md) | Extension file format, signers, DuckDB e2e harness | draft |
