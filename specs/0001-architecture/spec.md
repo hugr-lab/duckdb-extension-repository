@@ -200,7 +200,8 @@ A `Signer` signs a 32-byte digest: RSA-2048, PKCS#1 v1.5, SHA-256 DigestInfo.
 - The composite hash is computed by kista and passed as the **digest**. It must not be hashed again
   (AWS KMS `MessageType=DIGEST`, Key Vault `sign RS256` over the digest). The key never leaves the
   signer.
-- Implementations: a local key file (development), Azure Key Vault / Managed HSM, AWS KMS.
+- Implementations, as named key sources (spec 0004): a local key file (development), Azure Key
+  Vault / Managed HSM, AWS KMS, Google Cloud KMS, HashiCorp Vault / OpenBao Transit; PKCS#11 later.
 - Only **RSA-2048** works: DuckDB requires a 256-byte signature.
 
 Every signed channel has a key set: one active key plus trusted keys. `.well-known` lists all
@@ -353,7 +354,8 @@ events. Global statistics across tenants belong to Enterest.
 - **Metadata**: PostgreSQL, SQL Server or SQLite. SQLite means **one replica**; HA needs PostgreSQL
   or SQL Server. Writes are compare-and-set on a version column. Migrations are rolling-safe:
   expand first, contract in a later release.
-- **Blobs**: filesystem, Azure Blob or S3. A tenant belongs to a **storage domain**: dedup happens
+- **Blobs** (spec 0005): filesystem, S3-compatible (AWS S3, Cloudflare R2, MinIO), Azure Blob or
+  Google Cloud Storage, behind one interface. A tenant belongs to a **storage domain**: dedup happens
   only inside a domain. Data residency or a sovereign cloud gets its own domain.
 - **Blob GC**: mark-and-sweep over the Builds that reference a body, with a grace period, so it
   never races a concurrent intake.
@@ -374,11 +376,11 @@ tresor-server:
 
 | Package | Role |
 | --- | --- |
-| `internal/config` | YAML + env (`KISTA_*`), viper: server administrators, store, blob, signers, egress, telemetry |
+| `internal/config` | YAML + env (`KISTA_*`), a strict loader (spec 0003): server administrators, store, blob, signers, egress, telemetry |
 | `internal/store` | Metadata on `database/sql`: PostgreSQL (pgx), SQL Server (go-mssqldb), SQLite (modernc). A `Dialect` struct (rebind, error classes, locks), hand-rolled migrations per dialect, and a shared test suite for all three. |
-| `internal/blob` | Content-addressed bodies and their precompressed deflate streams: filesystem, Azure Blob, S3. GC. |
+| `internal/blob` | Content-addressed bodies and their precompressed deflate streams behind one interface: filesystem, S3-compatible, Azure Blob, Google Cloud Storage (spec 0005). GC. |
 | `internal/extfile` | The extension file format: footer, composite hash, signature verification, init-symbol check, the gzip assembly. |
-| `internal/signer` | `Signer`: file, Azure Key Vault, AWS KMS. |
+| `internal/signer` | `Signer` and named key sources: file, Azure Key Vault / Managed HSM, AWS KMS, Google Cloud KMS, Vault / OpenBao (spec 0004). |
 | `internal/egress` | The outbound HTTP client with the SSRF guard. |
 | `internal/auth` | Issuer records per tenant, JWT verification, principals. |
 | `internal/authz` | Grants and the 401/404 rule. |
@@ -518,17 +520,18 @@ particular:
 | --- | --- |
 | 0002 | `extfile`, the file signer, gzip assembly; e2e confirmation of the DuckDB behaviour table (implemented) |
 | 0003 | `store` on three dialects, migrations; tenants, channels, keys, rotation; config; `kista admin` |
-| 0004 | Azure Key Vault signer |
-| 0005 | `serve`, `auth`, `authz`, `egress`: issuer records, grants, 401/404, caching headers; the HTTP management API; serve-path events |
-| 0006 | Index API: releases, body hashes, sha256, visibility (the node agent needs it first) |
-| 0007 | Publication and promotion: API keys, trusted publishing, init-symbol check, reserved names, yank, block |
-| 0008 | Upstreams: core / community / repository / `enterest`, intake, mirror, pull-through, passthrough channels |
-| 0009 | Audit: hash chain, export, sinks, per-tenant statistics |
-| 0010 | Attachments and the feed from Enterest |
-| 0011 | Licensing: licence keys, entitlements, tokens, the SDK (C++, for DuckDB extensions) |
-| 0012 | Deployment: image, Helm, Bicep, Azure Marketplace managed application |
-| 0013 | Bundles for air-gapped sites |
-| 0014 | Administration console: micro-frontend, mounting contract with the hugr platform and Enterest |
+| 0004 | Signer backends: named key sources; Azure Key Vault / Managed HSM, AWS KMS, Google Cloud KMS, Vault / OpenBao Transit (PKCS#11 later) |
+| 0005 | Blob storage for extension bodies: filesystem, S3-compatible (AWS S3, R2, MinIO), Azure Blob, Google Cloud Storage |
+| 0006 | `serve`, `auth`, `authz`, `egress`: issuer records, grants, 401/404, caching headers; the HTTP management API; serve-path events |
+| 0007 | Index API: releases, body hashes, sha256, visibility (the node agent needs it first) |
+| 0008 | Publication and promotion: API keys, trusted publishing, init-symbol check, reserved names, yank, block |
+| 0009 | Upstreams: core / community / repository / `enterest`, intake, mirror, pull-through, passthrough channels |
+| 0010 | Audit: hash chain, export, sinks, per-tenant statistics |
+| 0011 | Attachments and the feed from Enterest |
+| 0012 | Licensing: licence keys, entitlements, tokens, the SDK (C++, for DuckDB extensions) |
+| 0013 | Deployment: image, Helm, Bicep, Azure Marketplace managed application |
+| 0014 | Bundles for air-gapped sites |
+| 0015 | Administration console: micro-frontend, mounting contract with the hugr platform and Enterest |
 | later | custom domains, a CDN for public releases, wasm signatures |
 
 In duckdb-acl (its spec 103, PR hugr-lab/duckdb-acl#183): the optional `sha256` of
