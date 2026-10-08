@@ -148,11 +148,11 @@ func TestRotation(t *testing.T) {
 		}
 
 		// too soon, then forced is possible but we wait instead
-		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", b.ID, false); !errors.Is(err, keys.ErrTooSoon) {
+		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", b.ID, 0, false); !errors.Is(err, keys.ErrTooSoon) {
 			t.Fatalf("early activation: %v", err)
 		}
 		en.clock.add(week)
-		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", b.Fingerprint, false); err != nil {
+		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", b.Fingerprint, 0, false); err != nil {
 			t.Fatal(err)
 		}
 		if st := states(t, en, "prod"); st[a.Fingerprint] != store.KeyTrusted || st[b.Fingerprint] != store.KeyActive {
@@ -163,29 +163,29 @@ func TestRotation(t *testing.T) {
 		}
 
 		// rollback: the demoted key was trusted long ago, so it can be activated at once
-		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", a.ID, false); err != nil {
+		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", a.ID, 0, false); err != nil {
 			t.Fatalf("rollback: %v", err)
 		}
-		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", b.ID, false); err != nil {
+		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", b.ID, 0, false); err != nil {
 			t.Fatal(err)
 		}
 
 		// retire: never the active key; a just-demoted key only after MinDemoted
-		if _, err := en.svc.Retire(ctx, admin, "acme", "prod", b.ID, false); !errors.Is(err, keys.ErrState) {
+		if _, err := en.svc.Retire(ctx, admin, "acme", "prod", b.ID, 0, false); !errors.Is(err, keys.ErrState) {
 			t.Fatalf("retire active: %v", err)
 		}
-		if _, err := en.svc.Retire(ctx, admin, "acme", "prod", a.ID, false); !errors.Is(err, keys.ErrTooSoon) {
+		if _, err := en.svc.Retire(ctx, admin, "acme", "prod", a.ID, 0, false); !errors.Is(err, keys.ErrTooSoon) {
 			t.Fatalf("early retire: %v", err)
 		}
 		en.clock.add(week)
-		if _, err := en.svc.Retire(ctx, admin, "acme", "prod", a.ID, false); err != nil {
+		if _, err := en.svc.Retire(ctx, admin, "acme", "prod", a.ID, 0, false); err != nil {
 			t.Fatal(err)
 		}
 		if got := wellKnownFPs(t, en, "prod"); len(got) != 1 || got[0] != b.Fingerprint {
 			t.Fatalf(".well-known after retire %v", got)
 		}
 		// a retired key never comes back
-		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", a.ID, true); !errors.Is(err, keys.ErrState) {
+		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", a.ID, 0, true); !errors.Is(err, keys.ErrState) {
 			t.Fatalf("reactivate retired: %v", err)
 		}
 
@@ -214,7 +214,7 @@ func TestForce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", b.ID, true); err != nil {
+		if _, err := en.svc.Activate(ctx, admin, "acme", "prod", b.ID, 0, true); err != nil {
 			t.Fatal(err)
 		}
 		evs, _ := en.svc.Events(ctx, admin, "acme", "prod")
@@ -248,7 +248,7 @@ func TestAddRules(t *testing.T) {
 			t.Fatalf("shared key: %v", err)
 		}
 		// a key is addressed through its own channel only
-		if _, err := en.svc.Activate(ctx, admin, "acme", "staging", a.ID, true); !errors.Is(err, store.ErrNotFound) {
+		if _, err := en.svc.Activate(ctx, admin, "acme", "staging", a.ID, 0, true); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("key through another channel: %v", err)
 		}
 		// at most MaxKeys non-retired keys
@@ -360,7 +360,7 @@ func TestRetiredKeysCount(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := en.svc.Retire(ctx, admin, "acme", "staging", a.ID, true); err != nil {
+		if _, err := en.svc.Retire(ctx, admin, "acme", "staging", a.ID, 0, true); err != nil {
 			t.Fatal(err)
 		}
 		// a channel that only ever had a retired key still had a key: no --active
@@ -382,10 +382,10 @@ func TestRetiredKeysCount(t *testing.T) {
 		}
 		list, _ := en.svc.List(ctx, admin, "acme", "staging")
 		for _, ch := range [][2]string{{"acme", "prod"}, {"other", "staging"}} {
-			if _, err := en.svc.Retire(ctx, admin, ch[0], ch[1], list[1].ID, true); !errors.Is(err, store.ErrNotFound) {
+			if _, err := en.svc.Retire(ctx, admin, ch[0], ch[1], list[1].ID, 0, true); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("retire through %v: %v", ch, err)
 			}
-			if _, err := en.svc.Activate(ctx, admin, ch[0], ch[1], list[1].Fingerprint, true); !errors.Is(err, store.ErrNotFound) {
+			if _, err := en.svc.Activate(ctx, admin, ch[0], ch[1], list[1].Fingerprint, 0, true); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("activate through %v: %v", ch, err)
 			}
 		}

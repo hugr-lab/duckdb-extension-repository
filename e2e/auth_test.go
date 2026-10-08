@@ -203,7 +203,7 @@ func TestAPIItemThenInstall(t *testing.T) {
 		"LOAD loadable_extension_demo FROM r",
 	)
 	mustOK(t, res)
-	if _, err := k.rel.Apply(ctx, serveAdmin, "acme", "prod", rel.ID, release.Yank); err != nil {
+	if _, err := k.rel.Apply(ctx, serveAdmin, "acme", "prod", "", rel.ID, release.Yank, 0); err != nil {
 		t.Fatal(err)
 	}
 	if m := ask(); m["status"] != "yanked" {

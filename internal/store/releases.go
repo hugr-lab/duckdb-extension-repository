@@ -312,6 +312,14 @@ func (t *Tx) UnsignedReleases(ctx context.Context, channelID, keyID string, limi
 	return collectWithHash(rows, err, limit)
 }
 
+// CountUnsigned counts a channel's non-yanked releases without a signature by key.
+func (s *Store) CountUnsigned(ctx context.Context, channelID, keyID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT COUNT(*) FROM releases r WHERE r.channel_id = ? AND r.state <> 'yanked'
+AND NOT EXISTS (SELECT 1 FROM release_signatures s WHERE s.release_id = r.id AND s.key_id = ?)`), channelID, keyID).Scan(&n)
+	return n, err
+}
+
 // UnsignedReleases is the read-only form, outside a transaction.
 func (s *Store) UnsignedReleases(ctx context.Context, channelID, keyID string, limit int) ([]Release, []string, error) {
 	rows, err := s.db.QueryContext(ctx, s.d.rebind(unsignedQuery), channelID, keyID)
@@ -563,10 +571,27 @@ func (s *Store) AcquireLease(ctx context.Context, name, holder string, ttl time.
 
 var errLeaseTaken = errors.New("store: lease taken")
 
-// ReleaseLease gives up a lease if holder holds it.
+// leaseSkew is the clock skew between replicas a released lease allows for.
+const leaseSkew = 5 * time.Second
+
+// ReleaseLease gives up a lease if holder holds it: it expires (a little in the past, so a replica
+// whose clock is behind may take it at once), and the row keeps by whom and about when it was last
+// held (spec 0007's key view shows it).
 func (s *Store) ReleaseLease(ctx context.Context, name, holder string) error {
 	return s.tx(ctx, "", func(t *Tx) error {
-		_, err := t.exec(ctx, "DELETE FROM leases WHERE name = ? AND holder = ?", name, holder)
+		_, err := t.exec(ctx, "UPDATE leases SET expires_at = ?, version = version + 1 WHERE name = ? AND holder = ?",
+			t.s.d.timeArg(t.Now().Add(-leaseSkew)), name, holder)
 		return err
 	})
+}
+
+// LeaseState reads a lease: its last holder and until when it is (or was) held; found is false for
+// a lease never taken.
+func (s *Store) LeaseState(ctx context.Context, name string) (holder string, until time.Time, found bool, err error) {
+	err = s.db.QueryRowContext(ctx, s.d.rebind("SELECT holder, expires_at FROM leases WHERE name = ?"), name).
+		Scan(&holder, scanTime{&until})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", time.Time{}, false, nil
+	}
+	return holder, until, err == nil, err
 }

@@ -109,7 +109,7 @@ func TestStoreWellKnownAndRotation(t *testing.T) {
 
 	// key B added and activated: .well-known lists both, and the A-signed install still loads
 	kB, keyB := addKey("b.pem", false)
-	if _, err := ks.Activate(ctx, admin, "acme", "prod", kB.ID, false); err != nil {
+	if _, err := ks.Activate(ctx, admin, "acme", "prod", kB.ID, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	publish(ra)
@@ -124,7 +124,7 @@ func TestStoreWellKnownAndRotation(t *testing.T) {
 	list, _ := ks.List(ctx, admin, "acme", "prod")
 	for _, k := range list {
 		if k.ID != kB.ID {
-			if _, err := ks.Retire(ctx, admin, "acme", "prod", k.ID, false); err != nil {
+			if _, err := ks.Retire(ctx, admin, "acme", "prod", k.ID, 0, false); err != nil {
 				t.Fatal(err)
 			}
 		}

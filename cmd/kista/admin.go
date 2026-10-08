@@ -463,7 +463,10 @@ func (a *adminCmd) key(ctx context.Context, sub string, args []string) error {
 		if sub == "retire" {
 			do = a.svc.Keys.Retire
 		}
-		k, err := do(ctx, a.actor, t, c, pos[1], *force)
+		k, err := do(ctx, a.actor, t, c, pos[1], 0, *force)
+		if errors.Is(err, keys.ErrTooSoon) {
+			return fmt.Errorf("%w (wait, or use -force)", err)
+		}
 		if err != nil {
 			return err
 		}
@@ -561,7 +564,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 			}
 		})
 	case len(pos) == 2 && slices.Contains([]string{"yank", "deprecate", "activate", "current", "public", "private"}, sub):
-		r, err := a.svc.Releases.Apply(ctx, a.actor, t, c, pos[1], release.Change(sub))
+		r, err := a.svc.Releases.Apply(ctx, a.actor, t, c, "", pos[1], release.Change(sub), 0)
 		if err != nil {
 			return err
 		}

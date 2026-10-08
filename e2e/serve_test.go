@@ -279,7 +279,7 @@ func TestServeRotation(t *testing.T) {
 
 	keyB := k.addKey("b.pem", false)
 	ctx := context.Background()
-	if _, err := k.keys.Activate(ctx, serveAdmin, "acme", "prod", keyB.ID, true); err != nil {
+	if _, err := k.keys.Activate(ctx, serveAdmin, "acme", "prod", keyB.ID, 0, true); err != nil {
 		t.Fatal(err)
 	}
 	ch, err := k.st.GetChannel(ctx, "acme", "prod")

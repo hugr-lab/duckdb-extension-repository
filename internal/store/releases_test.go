@@ -238,6 +238,12 @@ func TestLeases(t *testing.T) {
 		if err := s.ReleaseLease(ctx, "resign/x", holder); err != nil {
 			t.Fatal(err)
 		}
+		if h, until, found, err := s.LeaseState(ctx, "resign/x"); err != nil || !found || h != holder || until.After(time.Now()) {
+			t.Fatalf("a released lease: %s %v %v %v", h, until, found, err)
+		}
+		if _, _, found, err := s.LeaseState(ctx, "resign/none"); err != nil || found {
+			t.Fatalf("a lease never taken: %v %v", found, err)
+		}
 		if ok, _ := s.AcquireLease(ctx, "resign/x", "other", time.Millisecond); !ok {
 			t.Fatal("a released lease is not free")
 		}

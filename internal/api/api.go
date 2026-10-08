@@ -21,6 +21,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -49,7 +50,9 @@ type Options struct {
 	Authz            authz.Authorizer
 	Tenants          *tenants.Service
 	Auth             *tenants.AuthAdmin
-	AdminTokenMaxAge time.Duration // default 1h
+	Keys             *keys.Service    // phase 3
+	Releases         *release.Service // phase 3
+	AdminTokenMaxAge time.Duration    // default 1h
 	Now              func() time.Time
 }
 
@@ -362,7 +365,7 @@ const (
 	public      access = iota // anyone; a tenant route identifies a token for the view, others ignore one
 	serverToken               // a valid server token
 	serverAdmin               // a server administrator
-	tenantAdmin               // admin on the path's tenant, or a server administrator
+	pathAdmin                 // admin on the path's resource (tenant, channel {c}, extension {ext}), or a server administrator
 )
 
 type handler func(h *Handler, w http.ResponseWriter, r *http.Request, c caller, p params)
@@ -413,26 +416,42 @@ func init() {
 		{"duckdb-versions/{v}/c-apis", map[string]rule{http.MethodPost: mb(serverAdmin, (*Handler).addCAPI)}},
 		{"tenants", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listTenants),
 			http.MethodPost: mb(serverAdmin, (*Handler).createTenant)}},
-		{"tenants/{t}", map[string]rule{http.MethodGet: m(tenantAdmin, (*Handler).getTenant)}},
+		{"tenants/{t}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getTenant)}},
 		{"tenants/{t}/suspend", map[string]rule{http.MethodPost: m(serverAdmin, (*Handler).suspend)}},
 		{"tenants/{t}/resume", map[string]rule{http.MethodPost: m(serverAdmin, (*Handler).resume)}},
 		{"tenants/{t}/whoami", idx((*Handler).whoami)},
-		{"tenants/{t}/channels", idx((*Handler).channels)},
 		{"tenants/{t}/channels/{c}", idx((*Handler).channelInfo)},
 		{"tenants/{t}/channels/{c}/extensions", idx((*Handler).extensions)},
 		{"tenants/{t}/channels/{c}/extensions/{name}", idx((*Handler).extension)},
 		{"tenants/{t}/channels/{c}/extensions/{name}/versions/{v}", idx((*Handler).item)},
-		{"tenants/{t}/audiences", map[string]rule{http.MethodGet: m(tenantAdmin, (*Handler).listAudiences),
+		{"tenants/{t}/audiences", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listAudiences),
 			http.MethodPost: mb(serverAdmin, (*Handler).addAudience)}},
 		{"tenants/{t}/audiences/remove", map[string]rule{http.MethodPost: mb(serverAdmin, (*Handler).removeAudience)}},
-		{"tenants/{t}/issuers", map[string]rule{http.MethodGet: m(tenantAdmin, (*Handler).listIssuers),
-			http.MethodPost: mb(tenantAdmin, (*Handler).addIssuer)}},
-		{"tenants/{t}/issuers/{name}", map[string]rule{http.MethodGet: m(tenantAdmin, (*Handler).getIssuer),
-			http.MethodDelete: m(tenantAdmin, (*Handler).removeIssuer)}},
-		{"tenants/{t}/grants", map[string]rule{http.MethodGet: m(tenantAdmin, (*Handler).listGrants),
-			http.MethodPost: mb(tenantAdmin, (*Handler).addGrant)}},
-		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: m(tenantAdmin, (*Handler).getGrant),
-			http.MethodDelete: m(tenantAdmin, (*Handler).removeGrant)}},
+		{"tenants/{t}/issuers", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listIssuers),
+			http.MethodPost: mb(pathAdmin, (*Handler).addIssuer)}},
+		{"tenants/{t}/issuers/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getIssuer),
+			http.MethodDelete: m(pathAdmin, (*Handler).removeIssuer)}},
+		{"tenants/{t}/grants", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listGrants),
+			http.MethodPost: mb(pathAdmin, (*Handler).addGrant)}},
+		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGrant),
+			http.MethodDelete: m(pathAdmin, (*Handler).removeGrant)}},
+		// phase 3: channels
+		{"tenants/{t}/channels", map[string]rule{http.MethodGet: {access: public, handle: (*Handler).channels},
+			http.MethodPost: mb(pathAdmin, (*Handler).createChannel)}},
+		{"tenants/{t}/channels/{c}/duckdb-versions", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelVersions),
+			http.MethodPost: mb(pathAdmin, (*Handler).addChannelVersion)}},
+		{"tenants/{t}/channels/{c}/duckdb-versions/{v}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeChannelVersion)}},
+		{"tenants/{t}/channels/{c}/keys", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).keyView),
+			http.MethodPost: mb(serverAdmin, (*Handler).addKey)}},
+		{"tenants/{t}/channels/{c}/keys/events", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).keyEvents)}},
+		{"tenants/{t}/channels/{c}/keys/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getKey)}},
+		{"tenants/{t}/channels/{c}/keys/{id}/activate", map[string]rule{http.MethodPost: m(pathAdmin, (*Handler).activateKey)}},
+		{"tenants/{t}/channels/{c}/keys/{id}/retire", map[string]rule{http.MethodPost: m(pathAdmin, (*Handler).retireKey)}},
+		{"tenants/{t}/channels/{c}/releases", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelReleases)}},
+		{"tenants/{t}/channels/{c}/extensions/{ext}/releases", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).extReleases)}},
+		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getRelease)}},
+		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/{id}/{change}", map[string]rule{
+			http.MethodPost: m(pathAdmin, (*Handler).changeRelease)}},
 	}
 }
 
@@ -508,7 +527,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // logIDs are a request's route template and the resource ids from its path.
 func logIDs(rt route, p params) []any {
 	out := []any{"route", rt.pattern}
-	for _, k := range []string{"t", "c", "name", "v", "id"} {
+	for _, k := range []string{"t", "c", "name", "ext", "v", "id", "change"} {
 		if v, ok := p[k]; ok {
 			out = append(out, k, v)
 		}
@@ -600,12 +619,13 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		if !c.admin {
 			return refuse()
 		}
-	case tenantAdmin:
+	case pathAdmin:
 		a, ok := c.actor()
 		if !ok || h.o.Authz == nil {
 			return refuse()
 		}
-		if err := h.o.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: name}); err != nil {
+		res := authz.Resource{Tenant: name, Channel: p["c"], Extension: p["ext"]}
+		if err := h.o.Authz.Allow(ctx, a, authz.VerbAdmin, res); err != nil {
 			if !errors.Is(err, authz.ErrDenied) {
 				h.fail(w, err)
 				return caller{}, false
@@ -614,7 +634,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		}
 	}
 	if ru.manage {
-		if h.o.Tenants == nil || h.o.Auth == nil {
+		if h.o.Tenants == nil || h.o.Auth == nil || h.o.Keys == nil || h.o.Releases == nil {
 			notFound(w)
 			return caller{}, false
 		}

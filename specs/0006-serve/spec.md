@@ -154,7 +154,9 @@ re-signer gives it to the older ones.
 **The re-signer** runs in `kista serve` when `serve.resign` is on (a replica that should not hold
 sign permission leaves it off), and in the foreground as `kista admin key resign <tenant>/<channel>`.
 One replica at a time per channel holds a lease (`leases`, compare-and-set with a 2-minute expiry,
-renewed per batch, released on shutdown); the work is idempotent, so the lease only saves KMS calls.
+renewed per batch, released after each pass and on shutdown; a released lease expires a few seconds
+in the past and keeps its row, holder and expiry, which spec 0007's key view reads); the work is
+idempotent, so the lease only saves KMS calls.
 It signs sequentially, in batches of 32 inserted per transaction.
 
 **Adding a release** (`kista admin release add <tenant>/<channel> <file|-> -name <name>

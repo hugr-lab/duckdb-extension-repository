@@ -3,6 +3,7 @@ package tenants
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -194,6 +195,18 @@ func (s *Service) ListChannels(ctx context.Context, a authz.Actor, tenant string
 	return s.Store.ListChannels(ctx, tenant)
 }
 
+// ChannelVersions lists the DuckDB versions a channel serves.
+func (s *Service) ChannelVersions(ctx context.Context, a authz.Actor, tenant, channel string) ([]string, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel}); err != nil {
+		return nil, err
+	}
+	ch, err := s.Store.GetChannel(ctx, tenant, channel)
+	if err != nil {
+		return nil, err
+	}
+	return s.Store.ChannelVersions(ctx, ch.ID)
+}
+
 // SetChannelVersions adds and removes the DuckDB versions a channel serves, under the channel lock,
 // and bumps the channel's version.
 func (s *Service) SetChannelVersions(ctx context.Context, a authz.Actor, tenant, channel string, add, remove []string) ([]string, error) {
@@ -211,6 +224,9 @@ func (s *Service) SetChannelVersions(ctx context.Context, a authz.Actor, tenant,
 		}
 		for _, name := range add {
 			v, err := tx.GetDuckDBVersion(ctx, name)
+			if errors.Is(err, store.ErrNotFound) {
+				return fmt.Errorf("%w: DuckDB version %q is not registered", store.ErrInvalid, name)
+			}
 			if err != nil {
 				return err
 			}
