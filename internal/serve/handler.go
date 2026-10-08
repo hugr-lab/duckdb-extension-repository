@@ -39,6 +39,9 @@ type Options struct {
 	Verifier *auth.Verifier
 	// Server recognises server tokens (spec 0007), which the DuckDB routes treat as no token.
 	Server *auth.Server
+	// Providers are the trusted-publishing providers (spec 0008): tenant records at their URLs are
+	// never used, and their tokens are no token on the DuckDB routes.
+	Providers auth.Providers
 	// Auths and Snapshots are shared with the API (created here when nil).
 	Auths     *auth.TenantAuths
 	Snapshots *release.Snapshots
@@ -368,7 +371,7 @@ func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (v
 		h.log.Error("serve: reading a tenant's issuers and grants", "tenant", sc.Tenant.Name, "error", err)
 		return viewPublic, false, nil // no token: public releases are still served
 	}
-	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, sc.Tenant.Name)
+	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, sc.Tenant.Name, h.o.Providers)
 	p, _, err := h.o.Verifier.Verify(r.Context(), ta, canonical, tok)
 	if err != nil {
 		h.failures.Record(sc.Tenant, "serve", err)

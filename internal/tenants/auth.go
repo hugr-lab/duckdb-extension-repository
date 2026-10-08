@@ -23,6 +23,8 @@ type AuthAdmin struct {
 	AllowHTTP bool         // issuer URLs on loopback over http (profile dev)
 	// ServerAudiences are the server tokens' audiences (spec 0007): no tenant may be assigned one.
 	ServerAudiences []string
+	// Providers are the trusted-publishing issuers (spec 0008): no issuer record may have their URLs.
+	Providers auth.Providers
 }
 
 // ErrIssuerFetch is an issuer whose discovery document or JWKS could not be fetched or used when it
@@ -65,6 +67,9 @@ func (s *AuthAdmin) AddIssuer(ctx context.Context, a authz.Actor, tenant string,
 	}
 	if err := auth.CheckIssuer(&is, s.AllowHTTP); err != nil {
 		return store.Issuer{}, err
+	}
+	if s.Providers.Has(is.URL) {
+		return store.Issuer{}, fmt.Errorf("%w: %s is a trusted-publishing provider: add a publisher with its credential instead", store.ErrInvalid, is.URL)
 	}
 	jwksURI := is.JWKSURI
 	if jwksURI == "" {
@@ -194,16 +199,27 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 		}
 	}
 	g := store.Grant{TenantID: t.ID, Kind: kind, Value: value, Extension: extension, Verbs: verbs, CreatedBy: a.String()}
+	if kind == store.PrincipalPublisher {
+		g.Value = ""
+	}
 	g.Verbs = dedupe(g.Verbs)
 	err = s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
-		rec, err := tx.GetIssuer(ctx, t.ID, issuer)
-		if err != nil {
-			return err
+		if kind == store.PrincipalPublisher {
+			p, err := tx.GetPublisher(ctx, t.ID, value)
+			if err != nil {
+				return err
+			}
+			g.PublisherID, g.PublisherName = p.ID, p.Name
+		} else {
+			rec, err := tx.GetIssuer(ctx, t.ID, issuer)
+			if err != nil {
+				return err
+			}
+			if kind == store.PrincipalIssuer && len(rec.RequiredClaims) == 0 {
+				return fmt.Errorf("%w: an issuer: grant needs the record to have required claims (any account of a shared issuer could use it)", store.ErrInvalid)
+			}
+			g.IssuerID, g.IssuerName = rec.ID, rec.Name
 		}
-		if kind == store.PrincipalIssuer && len(rec.RequiredClaims) == 0 {
-			return fmt.Errorf("%w: an issuer: grant needs the record to have required claims (any account of a shared issuer could use it)", store.ErrInvalid)
-		}
-		g.IssuerID, g.IssuerName = rec.ID, rec.Name
 		if channel != "" {
 			c, err := tx.GetChannel(ctx, tenant, channel)
 			if err != nil {

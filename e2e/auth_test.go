@@ -32,15 +32,21 @@ import (
 
 // Spec 0006 phase 2: a private release over https with a Bearer token from an http secret.
 
-const e2eIssuer = "https://idp.e2e.example"
+const (
+	e2eIssuer = "https://idp.e2e.example"
+	e2eGitHub = "https://token.actions.e2e.example" // a trusted-publishing provider (spec 0008)
+)
 
 type e2eIDP struct{ key *rsa.PrivateKey }
 
 func (f *e2eIDP) Get(_ context.Context, url string) ([]byte, http.Header, error) {
+	for _, iss := range []string{e2eIssuer, e2eGitHub} {
+		if url == iss+"/.well-known/openid-configuration" {
+			return []byte(`{"issuer":"` + iss + `","jwks_uri":"` + iss + `/jwks"}`), http.Header{}, nil
+		}
+	}
 	switch url {
-	case e2eIssuer + "/.well-known/openid-configuration":
-		return []byte(`{"issuer":"` + e2eIssuer + `","jwks_uri":"` + e2eIssuer + `/jwks"}`), http.Header{}, nil
-	case e2eIssuer + "/jwks":
+	case e2eIssuer + "/jwks", e2eGitHub + "/jwks":
 		b, _ := json.Marshal(map[string]any{"keys": []any{map[string]any{"kty": "RSA", "kid": "k1",
 			"n": base64.RawURLEncoding.EncodeToString(f.key.N.Bytes()),
 			"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(f.key.E)).Bytes())}}})
@@ -51,13 +57,26 @@ func (f *e2eIDP) Get(_ context.Context, url string) ([]byte, http.Header, error)
 
 func (f *e2eIDP) token(t *testing.T, sub, aud string) string {
 	t.Helper()
+	return f.sign(t, map[string]any{"iss": e2eIssuer, "sub": sub, "aud": aud})
+}
+
+// run is a GitHub Actions OIDC token of hugr-lab/duckdb-acl's release workflow.
+func (f *e2eIDP) run(t *testing.T, aud string) string {
+	t.Helper()
+	return f.sign(t, map[string]any{"iss": e2eGitHub, "sub": "repo:hugr-lab/duckdb-acl:ref:refs/tags/v1.0", "aud": aud,
+		"repository_owner_id": "10", "repository_id": "20", "repository": "hugr-lab/duckdb-acl", "ref": "refs/tags/v1.0",
+		"workflow_ref": "hugr-lab/duckdb-acl/.github/workflows/release.yml@refs/tags/v1.0", "event_name": "push", "sha": "abc"})
+}
+
+func (f *e2eIDP) sign(t *testing.T, claims map[string]any) string {
+	t.Helper()
 	now := time.Now()
 	enc := func(v any) string {
 		b, _ := json.Marshal(v)
 		return base64.RawURLEncoding.EncodeToString(b)
 	}
-	input := enc(map[string]any{"alg": "RS256", "kid": "k1", "typ": "JWT"}) + "." +
-		enc(map[string]any{"iss": e2eIssuer, "sub": sub, "aud": aud, "iat": now.Unix(), "exp": now.Add(time.Hour).Unix()})
+	claims["iat"], claims["exp"] = now.Unix(), now.Add(30*time.Minute).Unix()
+	input := enc(map[string]any{"alg": "RS256", "kid": "k1", "typ": "JWT"}) + "." + enc(claims)
 	d := sha256.Sum256([]byte(input))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, f.key, crypto.SHA256, d[:])
 	if err != nil {
@@ -241,7 +260,8 @@ func TestPublishPromoteInstall(t *testing.T) {
 	k := startKistaWith(t, b, &auth.Verifier{Fetch: idp})
 	ctx := context.Background()
 	aud := "https://" + k.addr + "/acme"
-	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: aud[:len(aud)-5]}
+	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: aud[:len(aud)-5],
+		Providers: auth.Providers{{Name: "github", URL: e2eGitHub}}}
 	if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,10 +278,24 @@ func TestPublishPromoteInstall(t *testing.T) {
 	if _, err := k.keys.Add(ctx, serveAdmin, "acme", "staging", "file:s.pem", true); err != nil {
 		t.Fatal(err)
 	}
+	// CI is a publisher bound to the release workflow (trusted publishing)
+	if _, err := adm.AddPublisher(ctx, serveAdmin, "acme", "ci"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adm.AddGitHubCredential(ctx, serveAdmin, "acme", "ci", store.GitHubCredential{OwnerID: "10", RepositoryID: "20",
+		Workflow: "hugr-lab/duckdb-acl/.github/workflows/release.yml", Ref: "refs/tags/v*"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []struct{ principal, verb, channel, ext string }{
+		{"publisher:ci", "publish", "staging", ""},          // channel-wide: not demo_capi, a core name
+		{"publisher:ci", "publish", "staging", "demo_capi"}, // named
+	} {
+		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", g.principal, []string{g.verb}, g.channel, g.ext); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, g := range []struct{ sub, verb, channel, ext string }{
-		{"ci", "publish", "staging", ""},          // channel-wide: not demo_capi, a core name
-		{"ci", "publish", "staging", "demo_capi"}, // named
-		{"cw", "publish", "staging", ""},          // channel-wide only
+		{"cw", "publish", "staging", ""}, // channel-wide only
 		{"rm", "promote", "prod", "loadable_extension_demo"},
 		{"rm", "publish", "staging", "loadable_extension_demo"},
 		{"tom", "admin", "", ""},
@@ -276,7 +310,11 @@ func TestPublishPromoteInstall(t *testing.T) {
 	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
 	call := func(method, path, sub, ctype string, body []byte) (int, map[string]any) {
 		req, _ := http.NewRequest(method, "https://"+k.addr+path, bytes.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+idp.token(t, sub, aud))
+		tok := idp.token(t, sub, aud)
+		if sub == "ci" {
+			tok = idp.run(t, aud)
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
 		if ctype != "" {
 			req.Header.Set("Content-Type", ctype)
 		}

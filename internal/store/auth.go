@@ -18,6 +18,8 @@ const (
 	PrincipalGroup   = "group"
 	PrincipalClient  = "client"
 	PrincipalIssuer  = "issuer"
+	// PrincipalPublisher is a publisher of spec 0008: it publishes and promotes only.
+	PrincipalPublisher = "publisher"
 )
 
 // Grant verbs: spec 0006's, and spec 0008's publish and promote (never implied by admin).
@@ -204,20 +206,41 @@ type Grant struct {
 	CreatedAt                           time.Time
 	CreatedBy                           string
 	IssuerName, ChannelName             string // filled by reads
+	// PublisherID is a publisher grant's publisher (spec 0008): its Kind is publisher, its Value the
+	// publisher's id, and it has no issuer.
+	PublisherID, PublisherName string
 }
 
-// Principal renders the grant's principal: kind:<issuer>|value, or issuer:<issuer>.
+// Principal renders the grant's principal: kind:<issuer>|value, issuer:<issuer>, or
+// publisher:<name>.
 func (g Grant) Principal() string {
-	if g.Kind == PrincipalIssuer {
+	switch g.Kind {
+	case PrincipalIssuer:
 		return PrincipalIssuer + ":" + g.IssuerName
+	case PrincipalPublisher:
+		return PrincipalPublisher + ":" + g.PublisherName
 	}
 	return g.Kind + ":" + g.IssuerName + "|" + g.Value
 }
 
 // InsertGrant adds a grant.
 func (t *Tx) InsertGrant(ctx context.Context, g *Grant) error {
-	if !slices.Contains([]string{PrincipalSubject, PrincipalRole, PrincipalGroup, PrincipalClient, PrincipalIssuer}, g.Kind) {
+	if !slices.Contains([]string{PrincipalSubject, PrincipalRole, PrincipalGroup, PrincipalClient, PrincipalIssuer, PrincipalPublisher}, g.Kind) {
 		return fmt.Errorf("%w: principal kind %q", ErrInvalid, g.Kind)
+	}
+	if g.Kind == PrincipalPublisher {
+		// a publisher only publishes and promotes (spec 0008)
+		if g.PublisherID == "" || g.IssuerID != "" {
+			return fmt.Errorf("%w: a publisher grant names a publisher", ErrInvalid)
+		}
+		g.Value = g.PublisherID
+		for _, v := range g.Verbs {
+			if v != VerbPublish && v != VerbPromote {
+				return fmt.Errorf("%w: a publisher may only be granted publish and promote", ErrInvalid)
+			}
+		}
+	} else if g.PublisherID != "" {
+		return fmt.Errorf("%w: only a publisher grant names a publisher", ErrInvalid)
 	}
 	if (g.Kind == PrincipalIssuer) != (g.Value == "") || len(g.Value) > 256 {
 		return fmt.Errorf("%w: principal value", ErrInvalid)
@@ -242,8 +265,9 @@ func (t *Tx) InsertGrant(ctx context.Context, g *Grant) error {
 	}
 	slices.Sort(g.Verbs)
 	var n int
-	if err := t.queryRow(ctx, `SELECT COUNT(*) FROM grants WHERE tenant_id = ? AND issuer_id = ? AND kind = ? AND value = ?
-AND COALESCE(channel_id, '') = ? AND COALESCE(extension, '') = ? AND verbs = ?`, g.TenantID, g.IssuerID, g.Kind, g.Value,
+	if err := t.queryRow(ctx, `SELECT COUNT(*) FROM grants WHERE tenant_id = ? AND COALESCE(issuer_id, '') = ?
+AND COALESCE(publisher_id, '') = ? AND kind = ? AND value = ? AND COALESCE(channel_id, '') = ? AND COALESCE(extension, '') = ?
+AND verbs = ?`, g.TenantID, g.IssuerID, g.PublisherID, g.Kind, g.Value,
 		g.ChannelID, g.Extension, strings.Join(g.Verbs, " ")).Scan(&n); err != nil {
 		return err
 	}
@@ -251,9 +275,9 @@ AND COALESCE(channel_id, '') = ? AND COALESCE(extension, '') = ? AND verbs = ?`,
 		return fmt.Errorf("%w: the same grant", ErrExists)
 	}
 	g.ID, g.CreatedAt = NewID(), t.Now()
-	_, err := t.exec(ctx, `INSERT INTO grants (id, tenant_id, issuer_id, kind, value, channel_id, extension, verbs, created_at, created_by)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, g.IssuerID, g.Kind, g.Value, nullable(g.ChannelID), nullable(g.Extension),
-		strings.Join(g.Verbs, " "), t.s.d.timeArg(g.CreatedAt), g.CreatedBy)
+	_, err := t.exec(ctx, `INSERT INTO grants (id, tenant_id, issuer_id, publisher_id, kind, value, channel_id, extension, verbs,
+created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, nullable(g.IssuerID), nullable(g.PublisherID),
+		g.Kind, g.Value, nullable(g.ChannelID), nullable(g.Extension), strings.Join(g.Verbs, " "), t.s.d.timeArg(g.CreatedAt), g.CreatedBy)
 	if err := t.s.mapErr(err, "grant"); err != nil {
 		return err
 	}
@@ -274,9 +298,10 @@ func (t *Tx) DeleteGrant(ctx context.Context, tenantID, id string) error {
 
 // TenantAuth is everything token verification and grant checks read for a tenant.
 type TenantAuth struct {
-	Issuers   []Issuer
-	Audiences []string
-	Grants    []Grant
+	Issuers    []Issuer
+	Audiences  []string
+	Grants     []Grant
+	Publishers []Publisher // with their GitHub credentials (spec 0008)
 }
 
 // GetTenantAuth reads a tenant's issuers, assigned audiences and grants.
@@ -312,25 +337,31 @@ func (s *Store) GetTenantAuth(ctx context.Context, tenantID string) (TenantAuth,
 	if err := closeRows(rows); err != nil {
 		return a, err
 	}
-	rows, err = s.db.QueryContext(ctx, s.d.rebind(`SELECT g.id, g.tenant_id, g.issuer_id, g.kind, g.value, g.channel_id, g.extension,
-g.verbs, g.created_at, g.created_by, i.name, c.name FROM grants g JOIN issuers i ON i.id = g.issuer_id
-LEFT JOIN channels c ON c.id = g.channel_id WHERE g.tenant_id = ? ORDER BY g.created_at, g.id`), tenantID)
+	rows, err = s.db.QueryContext(ctx, s.d.rebind(`SELECT g.id, g.tenant_id, g.issuer_id, g.publisher_id, g.kind, g.value, g.channel_id,
+g.extension, g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM grants g LEFT JOIN issuers i ON i.id = g.issuer_id
+LEFT JOIN publishers p ON p.id = g.publisher_id LEFT JOIN channels c ON c.id = g.channel_id WHERE g.tenant_id = ?
+ORDER BY g.created_at, g.id`), tenantID)
 	if err != nil {
 		return a, err
 	}
 	for rows.Next() {
 		var g Grant
-		var ch, ext, chName sql.NullString
+		var iss, pub, ch, ext, issName, pubName, chName sql.NullString
 		var verbs string
-		if err := rows.Scan(&g.ID, &g.TenantID, &g.IssuerID, &g.Kind, &g.Value, &ch, &ext, &verbs, scanTime{&g.CreatedAt},
-			&g.CreatedBy, &g.IssuerName, &chName); err != nil {
+		if err := rows.Scan(&g.ID, &g.TenantID, &iss, &pub, &g.Kind, &g.Value, &ch, &ext, &verbs, scanTime{&g.CreatedAt},
+			&g.CreatedBy, &issName, &pubName, &chName); err != nil {
 			rows.Close()
 			return a, err
 		}
+		g.IssuerID, g.PublisherID, g.IssuerName, g.PublisherName = iss.String, pub.String, issName.String, pubName.String
 		g.ChannelID, g.Extension, g.ChannelName, g.Verbs = ch.String, ext.String, chName.String, strings.Fields(verbs)
 		a.Grants = append(a.Grants, g)
 	}
-	return a, closeRows(rows)
+	if err := closeRows(rows); err != nil {
+		return a, err
+	}
+	a.Publishers, err = s.publishers(ctx, tenantID)
+	return a, err
 }
 
 func closeRows(rows *sql.Rows) error {

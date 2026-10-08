@@ -116,6 +116,11 @@ func validateAuth(bad func(string, ...any), c Config) {
 			bad("auth.server_issuers[%d]: the name %s is used twice", i, s.Name)
 		}
 		names[s.Name] = true
+		for _, pr := range c.PublishProviders() {
+			if pr.URL == s.URL {
+				bad("auth.server_issuers[%d]: %s is a trusted-publishing provider (publish.providers)", i, s.URL)
+			}
+		}
 	}
 	for i, s := range a.ServerAdmins {
 		kind, issuer, _, err := auth.ParsePrincipalKey(s)

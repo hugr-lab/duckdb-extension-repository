@@ -33,6 +33,7 @@ const (
 	opsURL      = "https://ops.example"
 	serverAud   = "api://kista"
 	otherIdPURL = "https://other-idp.example"
+	ghURL       = "https://token.actions.example"
 )
 
 // idps serves discovery and JWKS for several issuers.
@@ -87,7 +88,8 @@ type mgmt struct {
 func newMgmt(t *testing.T) *mgmt {
 	t.Helper()
 	en := newEnv(t)
-	ks := idps{idpURL: en.idp.key, opsURL: mustKey(t), otherIdPURL: mustKey(t)}
+	ks := idps{idpURL: en.idp.key, opsURL: mustKey(t), otherIdPURL: mustKey(t), ghURL: mustKey(t)}
+	providers := auth.Providers{{Name: "github", URL: ghURL, Verifier: &auth.Verifier{Fetch: ks}}}
 	server := &auth.Server{
 		Issuers: []store.Issuer{{ID: auth.ServerIssuerID("ops"), Name: "ops", URL: opsURL, Algorithms: auth.Algorithms,
 			RequiredClaims: map[string]string{"tid": "t1"}, RolesClaim: []string{"roles"}, MaxTokenLifetime: 24 * time.Hour}},
@@ -98,12 +100,13 @@ func newMgmt(t *testing.T) *mgmt {
 	auths := &auth.TenantAuths{Store: en.st}
 	grants := authz.Grants{Store: en.st, Auths: auths}
 	ten := &tenants.Service{Store: en.st, Authz: grants, HasDomain: func(d string) bool { return d == "default" }}
-	adm := &tenants.AuthAdmin{Store: en.st, Authz: grants, Fetch: ks, PublicURL: publicURL, ServerAudiences: []string{serverAud}}
+	adm := &tenants.AuthAdmin{Store: en.st, Authz: grants, Fetch: ks, PublicURL: publicURL, ServerAudiences: []string{serverAud},
+		Providers: providers}
 	keySvc, relSvc := *en.keys, *en.rel
 	keySvc.Authz, relSvc.Authz, relSvc.Signers = grants, grants, &keySvc
 	apiH := api.New(api.Options{Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
-		Server: server, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc})
+		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc})
 	h := serve.NewHandler(en.st, en.keys, en.blob, serve.Options{Log: slog.New(slog.DiscardHandler), Verifier: &auth.Verifier{Fetch: ks},
 		Server: server, PublicURL: publicURL, Auths: auths, API: apiH, MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,
 		WriteIdleTimeout: 10 * time.Second})

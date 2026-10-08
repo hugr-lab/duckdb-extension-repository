@@ -1,6 +1,6 @@
 # Spec 0008: Publication and promotion
 
-- **Status**: phase 1a implemented (publication, promotion, reserved names, blocks); 1b and 2 next
+- **Status**: phase 1 implemented (1a: publication, promotion, reserved names, blocks; 1b: publishers, trusted publishing); 2 next
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -223,6 +223,8 @@ publish:                         # file-only
   providers:                     # phase 1b: trusted-publishing issuers; default: GitHub Actions
     - name: github
       url: https://token.actions.githubusercontent.com
+    # - name: ghes                 # a GitHub Enterprise Server
+    #   url: https://ghes.example.com/_services/token
 ```
 
 ### Block (phase 1)
@@ -275,8 +277,10 @@ api_keys (phase 2)    id, publisher_id, prefix, hash, expires_at, created_at, cr
 - `owner_id` and `repository_id`: GitHub's `repository_owner_id` and `repository_id` claims, digit
   strings, never names (a renamed or re-created repository does not inherit the binding);
 - `workflow` (required): the `workflow_ref` claim without its `@<ref>`, for example
-  `hugr-lab/duckdb-acl/.github/workflows/release.yml`; the calling workflow is matched, and a
-  reusable workflow it calls runs under the caller's identity;
+  `hugr-lab/duckdb-acl/.github/workflows/release.yml`; `workflow_ref` must be exactly
+  `<workflow>@<the ref claim>` (a file name may contain `@`); the calling workflow is matched, and a
+  reusable workflow it calls runs under the caller's identity. Names in it are the repository's
+  current names: renaming the repository means updating the credential (the ids stay);
 - `ref` (optional): a pattern over the `ref` claim, such as `refs/tags/v*` (`*` matches within a
   segment, `**` across);
 - `environment` (optional, recommended for credentials whose publisher holds `promote` or publishes
@@ -287,11 +291,15 @@ A token whose `iss` equals a configured provider URL exactly is verified against
 (discovery and JWKS through egress, with a verifier and cache of its own and the same refresh limits
 as spec 0006's): `aud` must be the tenant's canonical audience (`<public_url>/<tenant>`, which the
 workflow requests with `id-token: write`), never an assigned one; its lifetime at most an hour and
-`iat` within `admin_token_max_age`; `event_name` must not be `pull_request`, `pull_request_target`
-or `workflow_run` (they run code a contributor controls with the base repository's identity). The
-path tenant's GitHub credentials whose fields all match make their publishers the caller's
-principals. A tenant issuer record cannot have a provider's URL: adding one is refused, and an
-existing one is disabled with a log line at startup (never a startup failure).
+`iat` within `admin_token_max_age`; `event_name` must not be `pull_request`, `pull_request_target`,
+`workflow_run` or `merge_group` (they run code a contributor controls with the base repository's
+identity). The path tenant's GitHub credentials whose fields all match make their publishers the
+caller's principals. A tenant issuer record cannot have a provider's URL: adding one is refused, and
+an existing one is disabled (never used to verify, on the API or the DuckDB routes) with a log line
+at startup (never a startup failure); a server issuer cannot have one either (config validation).
+`publish.providers: []` turns trusted publishing off; without the key, GitHub Actions is the one
+provider. A ref pattern is matched in time linear in the pattern and the ref (refs are at most 1,024
+bytes).
 
 **API keys (phase 2).** A key is `kista_<prefix>_<secret>`: `prefix` is 8 random hex characters
 (shown in lists, never used for lookup), `secret` 32 random bytes in base32. Only the SHA-256 of the
@@ -304,8 +312,11 @@ API answers `401` (not a valid token), the DuckDB routes treat it as no token (s
 
 **What publishers may do**, whatever their grants say: publish, promote, read the releases their
 grants cover (above), and `GET …/whoami` (their publisher, the matched credential, their grants).
-Nothing else: no install, no management, no index beyond the public view. A grant to a publisher may
-carry only `publish` and `promote` (others are refused when added, and ignored when evaluated).
+Nothing else: no install, no management, no index beyond the public view (on the index's public
+routes a publisher's token is taken as no token; on other routes it answers `401`). A grant to a
+publisher may carry only `publish` and `promote` (others are refused when added, and ignored when
+evaluated). A provider token whose run matches no credential of the path's tenant is not valid
+(`401`).
 
 **Management** (tenant admin): `GET, POST /api/v1/tenants/{t}/publishers`, `GET, DELETE
 …/publishers/{name}`; `GET, POST …/publishers/{name}/github`, `DELETE …/github/{id}`; phase 2: `GET,
@@ -316,9 +327,12 @@ add|remove`, `publisher key add|remove` (phase 2).
 
 **Principals and actors**: a publisher principal is `publisher:<name>`; grants reference the
 publisher by id (`grants.publisher_id`), so a publisher re-created under the same name starts with
-no grants. Actors are recorded as `publisher:<tenant>/<name>` with the credential (`github:<id>` or
-`key:<prefix>`). The prefixes `publisher:` and `kista_` cannot collide with spec 0006's principals,
-which always name an issuer record.
+no grants (a publisher grant's `value` is the publisher's id, and it has no issuer). Actors are
+recorded as `publisher:<tenant>/<names>` (the matched publishers' names, joined by commas); the
+credential (`github:<id>`, phase 2 `key:<prefix>`) and the run go into the provenance of what it
+publishes and promotes. A publisher is named by its publishers whatever its token's `sub`. The
+prefixes `publisher:` and `kista_` cannot collide with spec 0006's principals, which always name an
+issuer record.
 
 ### Provenance and the index
 
@@ -347,7 +361,7 @@ blocks             tenant_id, body_hash varchar(64), reason varchar(400), create
 Grant verbs gain `publish` and `promote` in phase 1a too (verbs are a checked text column: no schema
 change).
 
-Migration 0006 (phase 1b):
+Migration 0006 (phase 1b, `min_reader 6`: an older binary cannot read grants without an issuer):
 
 ```text
 publishers, publisher_github                                   (as above)
@@ -370,7 +384,9 @@ internal/release    + publish (checks, provenance), promote, block
 internal/auth       + provider tokens, publishers' principals; phase 2: API keys
 internal/authz      + publish and promote; the reserved rule; publisher actors
 internal/api        + the raw-body publication route, promote, blocks, publishers
-internal/store      migration 0005
+internal/store      migrations 0005 and 0006; publishers and their credentials
+internal/tenants    + publisher management (AuthAdmin)
+internal/config     + publish (limits, providers)
 ```
 
 ### Changes to earlier specs
@@ -386,7 +402,13 @@ internal/store      migration 0005
 - **0006**: `admin` implies every verb except `publish` and `promote`; blocks yank instead of
   joining resolution.
 - **0007**: the publication route is the raw-body exception; the extension release reads are open to
-  `publish`/`promote` holders.
+  `publish`/`promote` holders; the actor kinds gain `publisher` (`publisher:<tenant>/<names>`, the
+  matched publishers' names joined by commas); a grant's principal may be `publisher:<name>`;
+  `…/whoami` with a publisher's token answers `{tenant, provider, publishers: [{publisher,
+  credential}], grants, holds_admin: false}`; a publisher's token on a route not open to publishers
+  answers `401`, and on the index's public routes is no token.
+- **0006** (phase 1b): a grant's principal may be `publisher:<name>`, with no issuer record
+  (`grants.issuer_id` becomes nullable); the DuckDB routes take a provider's token as no token.
 
 ## Security
 
@@ -435,7 +457,8 @@ internal/store      migration 0005
 - **Trusted publishing**: a fake provider: wrong owner, repository, workflow, ref pattern,
   environment, audience (an assigned one), lifetime, event name; an issuer record with the
   provider's URL refused and disabled; a removed publisher's token refused at the next request.
-- **Store**: migration 0005 on all three dialects, nullable issuer ids, grants of publishers.
+- **Store**: migrations 0005 and 0006 on all three dialects, nullable issuer ids, grants of
+  publishers.
 - **e2e**: CI publishes `loadable_extension_demo` into `staging` through the API with a fake GitHub
   token; `INSTALL … FROM` and `LOAD` it; promote its version to `prod` and install from there;
   `demo_capi`, a reserved name, needs a grant naming it; block the body and see `INSTALL` fail;

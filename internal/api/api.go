@@ -46,6 +46,8 @@ type Options struct {
 
 	// Server verifies server tokens (nil: none are accepted).
 	Server *auth.Server
+	// Providers verify trusted-publishing tokens (spec 0008).
+	Providers auth.Providers
 	// Authz, Tenants and Auth are management's authorizer and services (with that authorizer); nil
 	// Tenants or Auth: no management routes.
 	Authz            authz.Authorizer
@@ -305,11 +307,12 @@ func (l *limiter) retryAfter() string {
 type caller struct {
 	tenant     store.Tenant // on tenant routes
 	ta         store.TenantAuth
-	principals auth.Principals // a tenant token's
-	id         auth.Identity   // a verified token's identity
-	verified   bool            // a valid token (server or tenant)
-	server     bool            // a valid server token
-	admin      bool            // a server administrator's
+	principals auth.Principals   // a tenant token's
+	id         auth.Identity     // a verified token's identity
+	verified   bool              // a valid token (server or tenant)
+	server     bool              // a valid server token
+	admin      bool              // a server administrator's
+	pub        *auth.Publication // a publisher's credential (spec 0008)
 }
 
 func (c caller) anonymous() bool { return !c.verified }
@@ -320,6 +323,13 @@ func (c caller) actor() (authz.Actor, bool) {
 	switch {
 	case c.admin:
 		return authz.Actor{Kind: authz.ActorServer, ID: c.id.Issuer.Name + "|" + c.id.Who()}, true
+	case c.pub != nil:
+		names := make([]string, 0, len(c.pub.Publishers))
+		for _, m := range c.pub.Publishers {
+			names = append(names, m.Publisher.Name)
+		}
+		return authz.Actor{Kind: authz.ActorPublisher, ID: c.tenant.Name + "/" + strings.Join(names, ","),
+			Tenant: c.tenant.Name, Principals: c.principals}, true
 	case c.principals != nil:
 		return authz.Actor{Kind: authz.ActorPrincipal, ID: c.tenant.Name + "/" + c.id.Issuer.ID + "|" + c.id.Who(),
 			Tenant: c.tenant.Name, Principals: c.principals}, true
@@ -370,7 +380,17 @@ func (h *Handler) identifyTenant(ctx context.Context, t store.Tenant, tok string
 	if err != nil {
 		return c, err
 	}
-	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, t.Name)
+	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, t.Name, h.o.Providers)
+	// a trusted-publishing provider's token is verified against the provider only (spec 0008)
+	if p := h.o.Providers.For(auth.Issuer(tok)); p != nil {
+		pub, err := p.Verify(ctx, ta, canonical, tok)
+		if err != nil {
+			h.failures.Record(t, "api", err)
+			return c, errToken
+		}
+		c.principals, c.ta, c.id, c.verified, c.pub = pub.Identity.Principals, ta, pub.Identity, true, &pub
+		return c, nil
+	}
 	id, err := h.o.Verifier.VerifyIdentity(ctx, ta, canonical, tok)
 	if err != nil {
 		h.failures.Record(t, "api", err)
@@ -407,7 +427,10 @@ type rule struct {
 	manage bool         // management: a fresh token; for a write, a named writer
 	body   bool         // the request has a JSON body; any other request has none
 	raw    bool         // the request's body is a file (the publication route, spec 0008)
-	handle handler
+	// publishers marks the routes a publisher's credential may call (spec 0008); on other public
+	// routes it is anonymous, on the rest not a token
+	publishers bool
+	handle     handler
 }
 
 type params map[string]string
@@ -449,7 +472,7 @@ func init() {
 		{"tenants/{t}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getTenant)}},
 		{"tenants/{t}/suspend", map[string]rule{http.MethodPost: m(serverAdmin, (*Handler).suspend)}},
 		{"tenants/{t}/resume", map[string]rule{http.MethodPost: m(serverAdmin, (*Handler).resume)}},
-		{"tenants/{t}/whoami", idx((*Handler).whoami)},
+		{"tenants/{t}/whoami", map[string]rule{http.MethodGet: {access: public, publishers: true, handle: (*Handler).whoami}}},
 		{"tenants/{t}/channels/{c}", idx((*Handler).channelInfo)},
 		{"tenants/{t}/channels/{c}/extensions", idx((*Handler).extensions)},
 		{"tenants/{t}/channels/{c}/extensions/{name}", idx((*Handler).extension)},
@@ -480,12 +503,22 @@ func init() {
 		{"tenants/{t}/channels/{c}/releases", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelReleases)}},
 		// spec 0008: publication, promotion; the extension's release reads are open to publishers
 		{"tenants/{t}/channels/{c}/extensions/{ext}/releases", map[string]rule{
-			http.MethodGet:  {access: pathVerbs, verbs: readers, manage: true, handle: (*Handler).extReleases},
-			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPublish}, manage: true, raw: true, handle: (*Handler).publishRelease}}},
+			http.MethodGet: {access: pathVerbs, verbs: readers, manage: true, publishers: true, handle: (*Handler).extReleases},
+			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPublish}, manage: true, raw: true, publishers: true,
+				handle: (*Handler).publishRelease}}},
 		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/promote", map[string]rule{
-			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPromote}, manage: true, body: true, handle: (*Handler).promoteRelease}}},
+			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPromote}, manage: true, body: true, publishers: true,
+				handle: (*Handler).promoteRelease}}},
 		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/{id}", map[string]rule{
-			http.MethodGet: {access: pathVerbs, verbs: readers, manage: true, handle: (*Handler).getRelease}}},
+			http.MethodGet: {access: pathVerbs, verbs: readers, manage: true, publishers: true, handle: (*Handler).getRelease}}},
+		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listPublishers),
+			http.MethodPost: mb(pathAdmin, (*Handler).addPublisher)}},
+		{"tenants/{t}/publishers/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getPublisher),
+			http.MethodDelete: m(pathAdmin, (*Handler).removePublisher)}},
+		{"tenants/{t}/publishers/{name}/github", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listGitHub),
+			http.MethodPost: mb(pathAdmin, (*Handler).addGitHub)}},
+		{"tenants/{t}/publishers/{name}/github/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGitHub),
+			http.MethodDelete: m(pathAdmin, (*Handler).removeGitHub)}},
 		{"tenants/{t}/blocks", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listBlocks),
 			http.MethodPost: mb(pathAdmin, (*Handler).addBlock)}},
 		{"tenants/{t}/blocks/{hash}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getBlock),
@@ -628,6 +661,13 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 				}
 				return caller{}, false
 			}
+			if c.pub != nil && !ru.publishers {
+				if ru.access != public {
+					unauthorized(w) // a publisher's credential is not a token for this route
+					return caller{}, false
+				}
+				c = caller{tenant: t} // the public view
+			}
 		}
 	case sent && !isServer && ru.access != public:
 		// routes without a tenant take server tokens only
@@ -705,7 +745,8 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		switch {
 		case c.id.IssuedAt.Before(h.o.Now().Add(-h.o.AdminTokenMaxAge)):
 			reason = "stale token"
-		case r.Method != http.MethodGet && r.Method != http.MethodHead && c.id.Who() == "":
+		case r.Method != http.MethodGet && r.Method != http.MethodHead && c.pub == nil && c.id.Who() == "":
+			// (a publisher is named by its publishers, whatever its token's sub)
 			reason = "unnamed writer"
 		}
 		if reason != "" {

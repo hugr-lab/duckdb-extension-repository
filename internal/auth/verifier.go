@@ -162,7 +162,8 @@ func (v *Verifier) VerifyIdentity(ctx context.Context, ta store.TenantAuth, cano
 			return fail(ReasonClaims)
 		}
 	}
-	id := Identity{Principals: Principals{{IssuerID: rec.ID, Kind: store.PrincipalIssuer}: true}, Issuer: *rec, IssuedAt: iat}
+	id := Identity{Principals: Principals{{IssuerID: rec.ID, Kind: store.PrincipalIssuer}: true}, Issuer: *rec, IssuedAt: iat,
+		Claims: t.claims}
 	if sub, ok := t.claims["sub"].(string); ok && cleanValue(sub) {
 		id.Principals[Key{rec.ID, store.PrincipalSubject, sub}] = true
 		id.Subject = sub

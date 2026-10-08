@@ -158,7 +158,7 @@ func (h *Handler) publishRelease(w http.ResponseWriter, r *http.Request, c calle
 		rate: float64(h.o.MinRate), end: now.Add(time.Minute + time.Duration(float64(r.ContentLength)/float64(h.o.MinRate)*float64(time.Second)))}
 	rel, existed, err := h.o.Releases.Add(r.Context(), a, p["t"], p["c"], body, release.AddOptions{
 		Name: p["ext"], Private: private, NotCurrent: notCurrent, NoWait: true,
-		Publish: &release.Publication{Version: version, Platform: platform, Provenance: provenance(a)},
+		Publish: &release.Publication{Version: version, Platform: platform, Provenance: provenance(a, c)},
 	})
 	if err != nil {
 		h.publishErr(w, err, false)
@@ -167,8 +167,11 @@ func (h *Handler) publishRelease(w http.ResponseWriter, r *http.Request, c calle
 	h.answerReleases(w, r, c, p, []store.Release{rel}, existed, true)
 }
 
-// provenance of a publication by a tenant principal (trusted publishing adds its run, spec 0008).
-func provenance(a authz.Actor) string {
+// provenance of a publication: the actor, and for trusted publishing the run (spec 0008).
+func provenance(a authz.Actor, c caller) string {
+	if c.pub != nil {
+		return c.pub.Provenance(a.String())
+	}
 	b, _ := json.Marshal(map[string]string{"actor": a.String()})
 	return string(b)
 }
@@ -195,6 +198,9 @@ func (h *Handler) promoteRelease(w http.ResponseWriter, r *http.Request, c calle
 	}
 	o.NotCurrent = in.Current != nil && !*in.Current
 	a, _ := c.actor()
+	if c.pub != nil { // a publisher's promotion records its run too
+		o.Provenance = c.pub.Provenance(a.String())
+	}
 	rels, existed, err := h.o.Releases.Promote(r.Context(), a, p["t"], p["c"], p["ext"], o)
 	if err != nil {
 		h.publishErr(w, err, false) // a source the caller may not publish from is as missing: 404

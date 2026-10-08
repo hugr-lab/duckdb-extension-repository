@@ -156,6 +156,25 @@ func TestAdminCLI(t *testing.T) {
 	run(1, "grant", "add", "acme", "-principal", "server:corp|alice", "-verb", "install")
 	run(1, "grant", "add", "acme", "-principal", "subject:corp|alice", "-verb", "read")
 	run(1, "grant", "add", "acme", "-principal", "issuer:corp", "-verb", "publish") // never issuer-wide (spec 0008)
+	// publishers (spec 0008): a GitHub credential, publish only
+	run(0, "publisher", "add", "acme", "acl-ci")
+	run(1, "publisher", "add", "acme", "acl-ci")
+	cred := strings.TrimSpace(run(0, "publisher", "github", "add", "acme", "acl-ci", "-owner-id", "10", "-repository-id", "20",
+		"-workflow", "hugr-lab/duckdb-acl/.github/workflows/release.yml", "-ref", "refs/tags/v*"))
+	run(1, "publisher", "github", "add", "acme", "acl-ci", "-owner-id", "hugr-lab", "-repository-id", "20", "-workflow", "a/b/c.yml")
+	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, cred) || !strings.Contains(got, "refs/tags/v*") {
+		t.Fatalf("publisher list: %q", got)
+	}
+	run(1, "grant", "add", "acme", "-principal", "publisher:acl-ci", "-verb", "install")
+	run(0, "grant", "add", "acme", "-principal", "publisher:acl-ci", "-verb", "publish", "-channel", "prod", "-extension", "acl")
+	if got := run(0, "grant", "list", "acme"); !strings.Contains(got, "publisher:acl-ci") {
+		t.Fatalf("grant list: %q", got)
+	}
+	run(0, "publisher", "github", "remove", "acme", "acl-ci", cred)
+	run(0, "publisher", "remove", "acme", "acl-ci")
+	if got := run(0, "grant", "list", "acme"); strings.Contains(got, "publisher:acl-ci") {
+		t.Fatalf("a removed publisher's grant: %q", got)
+	}
 	if got := run(0, "grant", "list", "acme"); !strings.Contains(got, "subject:corp|alice") || !strings.Contains(got, "issuer:corp") {
 		t.Fatalf("grant list: %q", got)
 	}
