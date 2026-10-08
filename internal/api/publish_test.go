@@ -255,7 +255,7 @@ func TestUploadConcurrency(t *testing.T) {
 	const P = "/api/v1/tenants/acme/channels/prod/extensions/"
 	pr, pw := io.Pipe()
 	done := make(chan int)
-	started := make(chan struct{})
+	started := make(chan struct{}, 1) // buffered: the reader may signal before the test waits
 	go func() {
 		req := httptest.NewRequest("POST", P+"a1/releases?version=1.0&platform=linux_amd64", io.TeeReader(pr, notify{started}))
 		req.ContentLength = 4096
@@ -269,7 +269,7 @@ func TestUploadConcurrency(t *testing.T) {
 	<-started
 	r1 := make(chan int)
 	pr2, pw2 := io.Pipe()
-	started2 := make(chan struct{})
+	started2 := make(chan struct{}, 1)
 	go func() {
 		req := httptest.NewRequest("POST", P+"a2/releases?version=1.0&platform=linux_amd64", io.TeeReader(pr2, notify{started2}))
 		req.ContentLength = 4096
