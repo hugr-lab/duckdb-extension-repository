@@ -12,3 +12,4 @@ and it is superseded by a new spec when a decision changes.
 | [0003](0003-store-tenants-keys/spec.md) | Store, tenants, channels, signing keys and rotation | implemented |
 | [0004](0004-signer-backends/spec.md) | Signer backends: key sources for vaults and KMSs | phases 1-2 implemented; 3-4 deferred |
 | [0005](0005-blob-storage/spec.md) | Blob storage for extension bodies | phases 1-2 implemented; 3 deferred |
+| [0006](0006-serve/spec.md) | Serving, tokens and grants | draft |

@@ -187,7 +187,7 @@ API level, and a release tag and a source id can name the same engine build.
 
 **Who changed what.** `created_by` / `state_changed_by` and `key_events.actor` hold an actor string:
 - `os:<uid>:<name>` from the CLI (`os/user.Current()`);
-- `principal:<issuer-id>|<sub>` from the HTTP API (spec 0006);
+- the principal from the HTTP API (spec 0007);
 - `system`.
 
 Spec 0010's audit log supersedes `key_events` as the record, and `key_events` stays as the key
@@ -239,14 +239,14 @@ Every transition takes `Lock("kista/channel/<id>")` first, writes a `key_events`
   - It is refused for the active key.
   - It is refused for a key demoted less than `rotation.min_demoted` ago (default 7 days), unless
     `--force`. Clients that installed with it need time to reinstall.
-  - From spec 0008 on, retire is also refused while any release of the channel is signed only by
-    this key.
+  - From spec 0006 on, retire is also refused for the channel's serving key, and while a release
+    of the channel would be left without a signature by it (`--force` does not bypass this).
   - A retired key never comes back. A new key is added instead.
   - A key that was never active waits `min_demoted` from when it was added. It has been published in
     `.well-known`, so clients may already trust it.
-- **Re-signing** with the new active key happens per release, from spec 0008 on. That spec also
-  re-reads the key state in the same transaction that records a signature, so a concurrent
-  activation cannot leave signatures from the old key recorded after rotation.
+- **Re-signing** with the new active key happens per release, from spec 0006 on. That spec also
+  re-reads the keys in the transaction that records a release, so every release keeps a signature by
+  the channel's serving key and its active key whatever activation runs concurrently.
 
 `rotation.min_trusted` (default 7 days) and `rotation.min_demoted` (default 7 days) cannot be set
 below 24 h outside `profile: dev`. The trusted period only counts once spec 0006 serves
@@ -255,7 +255,7 @@ below 24 h outside `profile: dev`. The trusted period only counts once spec 0006
 ### Signer references
 
 A key's `signer_ref` says where its private key lives. **Only the server administrator sets it**,
-through `kista admin` or config. The HTTP API never accepts one from a tenant: spec 0006 provisions
+through `kista admin` or config. The HTTP API never accepts one from a tenant: spec 0007 provisions
 tenant keys itself. A reference chosen by a caller would let the server read arbitrary files, or
 call arbitrary vaults with its own identity.
 
@@ -377,7 +377,7 @@ cmd/kista           + admin subcommands
   - A key is trusted for a minimum time before activation.
   - The active key cannot be retired.
   - A key is demoted for a minimum time before retirement.
-  - Releases are checked from spec 0008 on.
+  - Releases are checked from spec 0006 on.
   - The minimums have a 24 h floor outside dev.
   - Every forced step is recorded.
 - **Guards cannot be switched off from the environment**: `profile` and the signer settings are
@@ -463,9 +463,9 @@ cmd/kista           + admin subcommands
 - **Spec 0004.** Signer backends behind named key sources: Vault/OpenBao, Azure Key Vault and
   Managed HSM, AWS KMS, Google Cloud KMS (versioned keys, refusal of exportable keys and keys with
   wrap/encrypt ops, the probe, platform credentials).
-- **Spec 0006.** Serving `.well-known` (with the version-keyed cache), issuer records, grants, the
-  HTTP management API over these services, tenant key provisioning, `/readyz`.
-- **Spec 0008.** Releases and signatures, re-signing, the retirement check.
+- **Spec 0006.** Serving `.well-known` (with the version-keyed cache), releases and signatures,
+  re-signing, the retirement check, issuer records, grants, `/readyz`.
+- **Spec 0007.** The HTTP management API over these services, tenant key provisioning.
 - **Spec 0010.** Admin actions in the tamper-evident audit log.
 - **Later:**
   - `store.schema`, for sharing a database with other hugr services;

@@ -66,7 +66,7 @@ deployment       one pk (always 1), id, created_at
 
 - **No raw body is stored.** Signing needs only the body hash, serving uses the stream, and the rare
   plain-name answer inflates it. This amends spec 0001, which planned to keep a raw copy too.
-- **The footer belongs to the Build** (spec 0008), not to the blob.
+- **The footer belongs to the Build** (spec 0006), not to the blob.
 
 **Migration 0002** (`-- +min_reader 1`, purely additive):
 
