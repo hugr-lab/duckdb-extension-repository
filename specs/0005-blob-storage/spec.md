@@ -89,7 +89,7 @@ type Store interface {
     // Get reads n bytes from off (n < 0: to the end).
     Get(ctx context.Context, key string, off, n int64) (io.ReadCloser, error)
     Stat(ctx context.Context, key string) (size int64, err error)          // ErrNotFound
-    Delete(ctx context.Context, key string) error                          // GC (spec 0008)
+    Delete(ctx context.Context, key string) error                          // GC (a follow-up)
     List(ctx context.Context, prefix string, fn func(key string, size int64, modified time.Time) error) error
     // Anonymous reports whether key can be read without credentials, when the backend can tell.
     Anonymous(ctx context.Context, key string) (readable, ok bool)
@@ -410,8 +410,9 @@ internal/store            + migration 0002
 ## Follow-ups
 
 - Spec 0006: the HTTP routes, aborting on `ErrCorrupt`, multi-range limits.
-- Specs 0008 and 0009: Spool/Commit from publication and intake, and garbage collection
-  (mark-and-sweep with a grace period, `tmp/` and orphaned streams, the race with a dedup hit).
+- Specs 0008 and 0009: Spool/Commit from publication and intake (0008 adds `SpoolNoWait`).
+- Garbage collection, a follow-up of its own (mark-and-sweep with a grace period, `tmp/` and
+  orphaned streams, the race with a dedup hit).
 - Phase 3: AWS platform identity for `s3`, and `gcs`.
 - Later:
   - skipping re-uploads of public upstream bodies (with periodic verification);

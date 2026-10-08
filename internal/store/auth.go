@@ -20,11 +20,16 @@ const (
 	PrincipalIssuer  = "issuer"
 )
 
-// Grant verbs in spec 0006.
+// Grant verbs: spec 0006's, and spec 0008's publish and promote (never implied by admin).
 const (
 	VerbInstall = "install"
 	VerbAdmin   = "admin"
+	VerbPublish = "publish"
+	VerbPromote = "promote"
 )
+
+// Verbs are every grant verb.
+var Verbs = []string{VerbInstall, VerbAdmin, VerbPublish, VerbPromote}
 
 // MaxGrants is the most grants a tenant may hold: every request's authorization is linear in them.
 const MaxGrants = 1000
@@ -221,8 +226,8 @@ func (t *Tx) InsertGrant(ctx context.Context, g *Grant) error {
 		return fmt.Errorf("%w: a grant needs a verb", ErrInvalid)
 	}
 	for _, v := range g.Verbs {
-		if v != VerbInstall && v != VerbAdmin {
-			return fmt.Errorf("%w: verb %q (install or admin)", ErrInvalid, v)
+		if !slices.Contains(Verbs, v) {
+			return fmt.Errorf("%w: verb %q (install, admin, publish or promote)", ErrInvalid, v)
 		}
 	}
 	if len(g.CreatedBy) > 400 {

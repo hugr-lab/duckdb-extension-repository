@@ -164,7 +164,7 @@ func TestAdd(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
 		ka := activeKey(t, en)
 		file := ext(t, 3000, 1, cpp("1.0"))
-		r, existed, err := en.add(t, file, release.AddOptions{Name: "tresor"})
+		r, existed, err := en.add(t, file, release.AddOptions{Unchecked: true, Name: "tresor"})
 		if err != nil || existed {
 			t.Fatalf("add: %v %v", existed, err)
 		}
@@ -180,29 +180,29 @@ func TestAdd(t *testing.T) {
 		}
 
 		// the same body and choices: the existing release, nothing new
-		r2, existed, err := en.add(t, file, release.AddOptions{Name: "tresor"})
+		r2, existed, err := en.add(t, file, release.AddOptions{Unchecked: true, Name: "tresor"})
 		if err != nil || !existed || r2.ID != r.ID {
 			t.Fatalf("re-add: %v %v", existed, err)
 		}
-		for _, o := range []release.AddOptions{{Name: "tresor", Private: true}, {Name: "tresor", NotCurrent: true}} {
+		for _, o := range []release.AddOptions{{Unchecked: true, Name: "tresor", Private: true}, {Unchecked: true, Name: "tresor", NotCurrent: true}} {
 			if _, _, err := en.add(t, file, o); !errors.Is(err, release.ErrState) {
 				t.Fatalf("re-add with other choices %+v: %v", o, err)
 			}
 		}
 		// another body in the slot
-		if _, _, err := en.add(t, ext(t, 3000, 2, cpp("1.0")), release.AddOptions{Name: "tresor"}); !errors.Is(err, release.ErrSlot) {
+		if _, _, err := en.add(t, ext(t, 3000, 2, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"}); !errors.Is(err, release.ErrSlot) {
 			t.Fatalf("another body in the slot: %v", err)
 		}
 		// c_struct and cpp builds of one version do not mix
-		if _, _, err := en.add(t, ext(t, 3000, 3, capi("1.0", "v1.2.0")), release.AddOptions{Name: "tresor"}); !errors.Is(err, release.ErrSlot) {
+		if _, _, err := en.add(t, ext(t, 3000, 3, capi("1.0", "v1.2.0")), release.AddOptions{Unchecked: true, Name: "tresor"}); !errors.Is(err, release.ErrSlot) {
 			t.Fatalf("mixing ABIs: %v", err)
 		}
 		// a c_struct build per C API major
-		c1, _, err := en.add(t, ext(t, 3000, 4, capi("1.0", "v1.2.0")), release.AddOptions{Name: "demo"})
+		c1, _, err := en.add(t, ext(t, 3000, 4, capi("1.0", "v1.2.0")), release.AddOptions{Unchecked: true, Name: "demo"})
 		if err != nil || c1.Slot != "capi:1" {
 			t.Fatalf("c_struct v1: %+v %v", c1, err)
 		}
-		c2, _, err := en.add(t, ext(t, 3000, 5, capi("1.0", "v2.0.0")), release.AddOptions{Name: "demo", NotCurrent: true})
+		c2, _, err := en.add(t, ext(t, 3000, 5, capi("1.0", "v2.0.0")), release.AddOptions{Unchecked: true, Name: "demo", NotCurrent: true})
 		if err != nil || c2.Slot != "capi:2" || c2.Seq != 0 {
 			t.Fatalf("c_struct v2, not current: %+v %v", c2, err)
 		}
@@ -213,26 +213,26 @@ func TestAdd(t *testing.T) {
 			channel string
 			want    error
 		}{
-			"alias name":           {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Name: "postgres"}, "prod", store.ErrInvalid},
-			"device name":          {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Name: "com1"}, "prod", store.ErrInvalid},
-			"upper name":           {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Name: "Tresor"}, "prod", store.ErrInvalid},
-			"unserved version":     {ext(t, 100, 6, extfile.Metadata{Platform: "linux_amd64", DuckDBVersion: "v2.1.0", ExtensionVersion: "1", ABI: extfile.ABICPP}), release.AddOptions{Name: "x"}, "prod", store.ErrInvalid},
-			"wasm":                 {ext(t, 100, 6, extfile.Metadata{Platform: "wasm_eh", DuckDBVersion: "v2.0.0", ExtensionVersion: "1", ABI: extfile.ABICPP}), release.AddOptions{Name: "x"}, "prod", store.ErrInvalid},
-			"bad C API":            {ext(t, 100, 6, capi("1.0", "1.2")), release.AddOptions{Name: "x"}, "prod", store.ErrInvalid},
-			"long name":            {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Name: strings.Repeat("a", 65)}, "prod", store.ErrInvalid},
-			"dotdot version":       {ext(t, 100, 6, cpp("..")), release.AddOptions{Name: "x"}, "prod", extfile.ErrMalformed},
-			"version with a space": {ext(t, 100, 6, cpp("1 0")), release.AddOptions{Name: "x"}, "prod", extfile.ErrMalformed},
-			"upper platform":       {ext(t, 100, 6, extfile.Metadata{Platform: "Linux_amd64", DuckDBVersion: "v2.0.0", ExtensionVersion: "1", ABI: extfile.ABICPP}), release.AddOptions{Name: "x"}, "prod", store.ErrInvalid},
-			"bad DuckDB version":   {ext(t, 100, 6, extfile.Metadata{Platform: "linux_amd64", DuckDBVersion: "v2.0", ExtensionVersion: "1", ABI: extfile.ABICPP}), release.AddOptions{Name: "x"}, "prod", store.ErrInvalid},
-			"passthrough channel":  {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Name: "x"}, "mirror", release.ErrState},
-			"no active key":        {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Name: "x"}, "empty", release.ErrState},
+			"alias name":           {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "postgres"}, "prod", store.ErrInvalid},
+			"device name":          {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "com1"}, "prod", store.ErrInvalid},
+			"upper name":           {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "Tresor"}, "prod", store.ErrInvalid},
+			"unserved version":     {ext(t, 100, 6, extfile.Metadata{Platform: "linux_amd64", DuckDBVersion: "v2.1.0", ExtensionVersion: "1", ABI: extfile.ABICPP}), release.AddOptions{Unchecked: true, Name: "x"}, "prod", store.ErrInvalid},
+			"wasm":                 {ext(t, 100, 6, extfile.Metadata{Platform: "wasm_eh", DuckDBVersion: "v2.0.0", ExtensionVersion: "1", ABI: extfile.ABICPP}), release.AddOptions{Unchecked: true, Name: "x"}, "prod", store.ErrInvalid},
+			"bad C API":            {ext(t, 100, 6, capi("1.0", "1.2")), release.AddOptions{Unchecked: true, Name: "x"}, "prod", store.ErrInvalid},
+			"long name":            {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Unchecked: true, Name: strings.Repeat("a", 65)}, "prod", store.ErrInvalid},
+			"dotdot version":       {ext(t, 100, 6, cpp("..")), release.AddOptions{Unchecked: true, Name: "x"}, "prod", extfile.ErrMalformed},
+			"version with a space": {ext(t, 100, 6, cpp("1 0")), release.AddOptions{Unchecked: true, Name: "x"}, "prod", extfile.ErrMalformed},
+			"upper platform":       {ext(t, 100, 6, extfile.Metadata{Platform: "Linux_amd64", DuckDBVersion: "v2.0.0", ExtensionVersion: "1", ABI: extfile.ABICPP}), release.AddOptions{Unchecked: true, Name: "x"}, "prod", store.ErrInvalid},
+			"bad DuckDB version":   {ext(t, 100, 6, extfile.Metadata{Platform: "linux_amd64", DuckDBVersion: "v2.0", ExtensionVersion: "1", ABI: extfile.ABICPP}), release.AddOptions{Unchecked: true, Name: "x"}, "prod", store.ErrInvalid},
+			"passthrough channel":  {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "x"}, "mirror", release.ErrState},
+			"no active key":        {ext(t, 100, 6, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "x"}, "empty", release.ErrState},
 		} {
 			_, _, err := en.rel.Add(ctx, admin, "acme", tc.channel, bytes.NewReader(tc.file), tc.o)
 			if !errors.Is(err, tc.want) {
 				t.Errorf("%s: got %v, want %v", name, err, tc.want)
 			}
 		}
-		if _, _, err := en.rel.Add(ctx, authz.Actor{Kind: authz.ActorPrincipal, ID: "x"}, "acme", "prod", bytes.NewReader(file), release.AddOptions{Name: "tresor"}); !errors.Is(err, authz.ErrDenied) {
+		if _, _, err := en.rel.Add(ctx, authz.Actor{Kind: authz.ActorPrincipal, ID: "x"}, "acme", "prod", bytes.NewReader(file), release.AddOptions{Unchecked: true, Name: "tresor"}); !errors.Is(err, authz.ErrDenied) {
 			t.Fatalf("unauthorised add: %v", err)
 		}
 	})
@@ -255,11 +255,11 @@ func activeKey(t *testing.T, en *env) store.Key {
 
 func TestApply(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
-		r1, _, err := en.add(t, ext(t, 1000, 1, cpp("1.0")), release.AddOptions{Name: "tresor"})
+		r1, _, err := en.add(t, ext(t, 1000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		r2, _, err := en.add(t, ext(t, 1000, 2, cpp("1.1")), release.AddOptions{Name: "tresor", Private: true})
+		r2, _, err := en.add(t, ext(t, 1000, 2, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor", Private: true})
 		if err != nil || r2.Seq != 2 {
 			t.Fatalf("second: %+v %v", r2, err)
 		}
@@ -310,7 +310,7 @@ func TestRotation(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
 		ka := activeKey(t, en)
 		f1 := ext(t, 1000, 1, cpp("1.0"))
-		r1, _, err := en.add(t, f1, release.AddOptions{Name: "tresor"})
+		r1, _, err := en.add(t, f1, release.AddOptions{Unchecked: true, Name: "tresor"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -319,7 +319,7 @@ func TestRotation(t *testing.T) {
 			t.Fatal(err)
 		}
 		f2 := ext(t, 1000, 2, cpp("1.1"))
-		r2, _, err := en.add(t, f2, release.AddOptions{Name: "tresor"})
+		r2, _, err := en.add(t, f2, release.AddOptions{Unchecked: true, Name: "tresor"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -356,7 +356,7 @@ func TestRotation(t *testing.T) {
 		}
 		// a new release after the retirement is signed by the remaining key only
 		f3 := ext(t, 1000, 3, cpp("1.2"))
-		r3, _, err := en.add(t, f3, release.AddOptions{Name: "tresor"})
+		r3, _, err := en.add(t, f3, release.AddOptions{Unchecked: true, Name: "tresor"})
 		if err != nil || !en.verifies(t, r3, kb, f3) || en.verifies(t, r3, ka, f3) {
 			t.Fatalf("after retirement: %v", err)
 		}
@@ -366,7 +366,7 @@ func TestRotation(t *testing.T) {
 // Adds racing a re-sign never leave a release without the serving key's signature.
 func TestRotationRace(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
-		if _, _, err := en.add(t, ext(t, 500, 1, cpp("0.1")), release.AddOptions{Name: "tresor"}); err != nil {
+		if _, _, err := en.add(t, ext(t, 500, 1, cpp("0.1")), release.AddOptions{Unchecked: true, Name: "tresor"}); err != nil {
 			t.Fatal(err)
 		}
 		kb := en.addKey(t, "prod", "b.pem", false)
@@ -379,7 +379,7 @@ func TestRotationRace(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, _, err := en.add(t, ext(t, 500, uint64(10+i), cpp("1."+string(rune('0'+i)))), release.AddOptions{Name: "tresor"})
+				_, _, err := en.add(t, ext(t, 500, uint64(10+i), cpp("1."+string(rune('0'+i)))), release.AddOptions{Unchecked: true, Name: "tresor"})
 				errs <- err
 			}()
 		}

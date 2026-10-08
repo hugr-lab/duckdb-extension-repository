@@ -80,6 +80,7 @@ type kista struct {
 	addr    string
 	b       *build
 	handler *serve.Handler
+	ten     *tenants.Service
 }
 
 func (k *kista) httpURL() string  { return "http://" + k.addr + "/acme/prod" }
@@ -139,8 +140,17 @@ func startKistaWith(t *testing.T, b *build, verifier *auth.Verifier) *kista {
 	must(err)
 	k.addr = ln.Addr().String()
 	auths, snaps := &auth.TenantAuths{Store: st}, &release.Snapshots{Store: st}
+	// management (spec 0007) and publication (spec 0008) with the API's authorizer
+	grants := authz.Grants{Store: st, Auths: auths}
+	mks := *ks
+	mks.Authz = grants
+	k.ten = ten
+	mten := *ten
+	mten.Authz = grants
 	apiH := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
-		PublicURL: "https://" + k.addr, Log: slog.New(slog.DiscardHandler), KistaVersion: "e2e"})
+		PublicURL: "https://" + k.addr, Log: slog.New(slog.DiscardHandler), KistaVersion: "e2e",
+		Authz: grants, Tenants: &mten, Auth: &tenants.AuthAdmin{Store: st, Authz: grants, PublicURL: "https://" + k.addr},
+		Keys: &mks, Releases: &release.Service{Store: st, Blob: bs, Signers: &mks, Authz: grants}})
 	k.handler = serve.NewHandler(st, ks, bs, serve.Options{MaxDownloads: 16, MaxDownloadsPerClient: 16, MinRate: 1024,
 		WriteIdleTimeout: 30 * time.Second, Log: slog.New(slog.NewJSONHandler(&k.access, nil)), Verifier: verifier,
 		PublicURL: "https://" + k.addr, Auths: auths, Snapshots: snaps, API: apiH})

@@ -27,7 +27,7 @@ func TestAdminCLI(t *testing.T) {
 	if err := os.Mkdir(keys, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"a.pem", "b.pem"} {
+	for _, k := range []string{"a.pem", "b.pem", "c.pem"} {
 		if err := signer.GenerateKeyFile(filepath.Join(keys, k)); err != nil {
 			t.Fatal(err)
 		}
@@ -106,20 +106,39 @@ func TestAdminCLI(t *testing.T) {
 	if err := os.WriteFile(file, append(body, make([]byte, extfile.SignatureSize)...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rid := strings.TrimSpace(run(0, "release", "add", "acme/prod", file, "-name", "tresor"))
-	if again := strings.TrimSpace(run(0, "release", "add", "acme/prod", file, "-name", "tresor")); again != rid {
+	run(1, "release", "add", "acme/prod", file, "-name", "tresor") // not a binary: spec 0008's checks refuse it
+	rid := strings.TrimSpace(run(0, "release", "add", "acme/prod", file, "-name", "tresor", "-unchecked"))
+	if again := strings.TrimSpace(run(0, "release", "add", "acme/prod", file, "-name", "tresor", "-unchecked")); again != rid {
 		t.Fatalf("re-add: %q vs %q", again, rid)
 	}
-	run(1, "release", "add", "acme/prod", file, "-name", "postgres") // an alias DuckDB never requests
-	run(2, "release", "add", "acme/prod", file)                      // no -name
+	run(1, "release", "add", "acme/prod", file, "-name", "postgres", "-unchecked") // an alias DuckDB never requests
+	run(2, "release", "add", "acme/prod", file)                                    // no -name
 	if got := run(0, "release", "list", "acme/prod"); !strings.Contains(got, rid) || !strings.Contains(got, "public") {
 		t.Fatalf("release list: %q", got)
 	}
 	run(0, "release", "private", "acme/prod", rid)
 	run(0, "release", "current", "acme/prod", rid)
 	run(0, "key", "resign", "acme/prod")
+	run(1, "release", "promote", "acme/prod", "-name", "tresor", "-from", "prod", "-version", "1.0") // to itself
 	run(0, "release", "yank", "acme/prod", rid)
 	run(1, "release", "yank", "acme/prod", rid)
+	// blocks
+	f, err := extfile.Open(bytes.NewReader(append(body, make([]byte, extfile.SignatureSize)...)), int64(len(body)+extfile.SignatureSize), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(2, "block", "add", "acme", f.Hash.String()) // no -reason
+	run(0, "block", "add", "acme", f.Hash.String(), "-reason", "CVE-1")
+	if got := run(0, "block", "list", "acme"); !strings.Contains(got, f.Hash.String()) || !strings.Contains(got, "CVE-1") {
+		t.Fatalf("block list: %q", got)
+	}
+	run(0, "channel", "create", "acme/staging", "-kind", "signed")
+	run(0, "channel", "versions", "acme/staging", "-add", "v2.0.0")
+	run(0, "key", "add", "acme/staging", "-signer", "file:c.pem", "-active")
+	run(1, "release", "add", "acme/staging", file, "-name", "tresor", "-unchecked")                   // blocked (a fresh slot)
+	run(1, "release", "promote", "acme/staging", "-name", "tresor", "-from", "prod", "-release", rid) // unchecked and yanked
+	run(0, "block", "remove", "acme", f.Hash.String())
+	run(1, "block", "remove", "acme", f.Hash.String())
 	// issuers, audiences, grants (an explicit JWKS URI: no discovery from the test)
 	run(0, "issuer", "add", "acme", "-name", "corp", "-url", "https://login.example/t1/v2.0",
 		"-jwks-uri", jwks, "-require", "tid=t1", "-roles-claim", `["https://x/roles"]`, "-alg", "RS256", "-alg", "RS256")
@@ -135,7 +154,8 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "grant", "add", "acme", "-principal", "issuer:corp", "-verb", "install")
 	run(1, "grant", "add", "acme", "-principal", "subject:nope|alice", "-verb", "install")
 	run(1, "grant", "add", "acme", "-principal", "server:corp|alice", "-verb", "install")
-	run(1, "grant", "add", "acme", "-principal", "subject:corp|alice", "-verb", "publish")
+	run(1, "grant", "add", "acme", "-principal", "subject:corp|alice", "-verb", "read")
+	run(1, "grant", "add", "acme", "-principal", "issuer:corp", "-verb", "publish") // never issuer-wide (spec 0008)
 	if got := run(0, "grant", "list", "acme"); !strings.Contains(got, "subject:corp|alice") || !strings.Contains(got, "issuer:corp") {
 		t.Fatalf("grant list: %q", got)
 	}

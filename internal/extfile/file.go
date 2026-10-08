@@ -12,7 +12,7 @@ type File struct {
 	r         io.ReaderAt
 	BodySize  int64 // everything before the signature
 	Metadata  Metadata
-	HasPrefix bool // the 19-byte MetadataPrefix precedes the metadata block
+	HasPrefix bool // the 22-byte MetadataPrefix precedes the metadata block
 	Hash      BodyHash
 	Signature []byte // the trailing 256 bytes, as found
 }
@@ -88,3 +88,10 @@ func (f *File) WriteSigned(dst io.Writer, sig []byte) error {
 	_, err := dst.Write(sig)
 	return err
 }
+
+// ReaderAt is the file the File was parsed from, and Size its length (body and signature): what
+// spec 0008's binary checks read.
+func (f *File) ReaderAt() io.ReaderAt { return f.r }
+
+// Size is the whole file's length.
+func (f *File) Size() int64 { return f.BodySize + SignatureSize }

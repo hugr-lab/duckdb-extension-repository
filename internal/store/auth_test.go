@@ -68,7 +68,7 @@ func TestAuthRecords(t *testing.T) {
 			"another tenant's issuer":  {TenantID: tn.ID, IssuerID: ois.ID, Kind: "subject", Value: "x", Verbs: []string{"install"}},
 			"another tenant's channel": {TenantID: tn.ID, IssuerID: is.ID, Kind: "subject", Value: "x", ChannelID: otherCh.ID, Verbs: []string{"install"}},
 			"bad kind":                 {TenantID: tn.ID, IssuerID: is.ID, Kind: "server", Value: "x", Verbs: []string{"install"}},
-			"bad verb":                 {TenantID: tn.ID, IssuerID: is.ID, Kind: "subject", Value: "x", Verbs: []string{"publish"}},
+			"bad verb":                 {TenantID: tn.ID, IssuerID: is.ID, Kind: "subject", Value: "x", Verbs: []string{"read"}},
 			"issuer with a value":      {TenantID: tn.ID, IssuerID: is.ID, Kind: "issuer", Value: "x", Verbs: []string{"install"}},
 		} {
 			b := bad

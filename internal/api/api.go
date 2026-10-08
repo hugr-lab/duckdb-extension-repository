@@ -23,6 +23,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
@@ -53,6 +54,12 @@ type Options struct {
 	Keys             *keys.Service    // phase 3
 	Releases         *release.Service // phase 3
 	AdminTokenMaxAge time.Duration    // default 1h
+	// Uploads (spec 0008): the largest file, the least read rate, and how many may run at once per
+	// principal and per tenant (defaults 2 and 8).
+	MaxBody, MinRate int64
+	PublishPerActor  int
+	PublishPerTenant int
+	PublishMax       int // uploads at once on this server: fewer than the blob service's ingest slots
 	Now              func() time.Time
 }
 
@@ -62,8 +69,9 @@ type Handler struct {
 	limiter  *limiter
 	failures *auth.FailureLog
 
-	mu     sync.Mutex
-	egress map[string]bool // tenant id -> an issuer add (discovery, JWKS) is running
+	mu      sync.Mutex
+	egress  map[string]bool // tenant id -> an issuer add (discovery, JWKS) is running
+	uploads map[string]int  // actor and tenant id -> uploads running
 }
 
 // New returns a handler.
@@ -80,7 +88,23 @@ func New(o Options) *Handler {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Handler{o: o, limiter: newLimiter(o.Rate, o.Burst), failures: &auth.FailureLog{Log: o.Log}, egress: map[string]bool{}}
+	if o.PublishPerActor == 0 {
+		o.PublishPerActor = 2
+	}
+	if o.PublishPerTenant == 0 {
+		o.PublishPerTenant = 8
+	}
+	if o.PublishMax == 0 {
+		o.PublishMax = 3
+	}
+	if o.MinRate == 0 {
+		o.MinRate = 16 << 10
+	}
+	if o.MaxBody == 0 {
+		o.MaxBody = 1 << 30
+	}
+	return &Handler{o: o, limiter: newLimiter(o.Rate, o.Burst), failures: &auth.FailureLog{Log: o.Log}, egress: map[string]bool{},
+		uploads: map[string]int{}}
 }
 
 type ctxKey int
@@ -366,6 +390,7 @@ const (
 	serverToken               // a valid server token
 	serverAdmin               // a server administrator
 	pathAdmin                 // admin on the path's resource (tenant, channel {c}, extension {ext}), or a server administrator
+	pathVerbs                 // any of the rule's verbs on the path's resource (spec 0008: publish, promote), or a server administrator
 )
 
 type handler func(h *Handler, w http.ResponseWriter, r *http.Request, c caller, p params)
@@ -378,8 +403,10 @@ type route struct {
 // rule is one method of a route.
 type rule struct {
 	access access
-	manage bool // management: a fresh token; for a write, a named writer
-	body   bool // the request has a JSON body; any other request has none
+	verbs  []authz.Verb // for pathVerbs
+	manage bool         // management: a fresh token; for a write, a named writer
+	body   bool         // the request has a JSON body; any other request has none
+	raw    bool         // the request's body is a file (the publication route, spec 0008)
 	handle handler
 }
 
@@ -402,6 +429,9 @@ func (rt route) match(segs []string) (params, bool) {
 }
 
 var routes []route
+
+// readers may read an extension's releases: its administrators and its publishers (spec 0008).
+var readers = []authz.Verb{authz.VerbAdmin, authz.VerbPublish, authz.VerbPromote}
 
 func init() {
 	idx := func(f handler) map[string]rule { return map[string]rule{http.MethodGet: {access: public, handle: f}} }
@@ -448,8 +478,18 @@ func init() {
 		{"tenants/{t}/channels/{c}/keys/{id}/activate", map[string]rule{http.MethodPost: m(pathAdmin, (*Handler).activateKey)}},
 		{"tenants/{t}/channels/{c}/keys/{id}/retire", map[string]rule{http.MethodPost: m(pathAdmin, (*Handler).retireKey)}},
 		{"tenants/{t}/channels/{c}/releases", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelReleases)}},
-		{"tenants/{t}/channels/{c}/extensions/{ext}/releases", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).extReleases)}},
-		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getRelease)}},
+		// spec 0008: publication, promotion; the extension's release reads are open to publishers
+		{"tenants/{t}/channels/{c}/extensions/{ext}/releases", map[string]rule{
+			http.MethodGet:  {access: pathVerbs, verbs: readers, manage: true, handle: (*Handler).extReleases},
+			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPublish}, manage: true, raw: true, handle: (*Handler).publishRelease}}},
+		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/promote", map[string]rule{
+			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPromote}, manage: true, body: true, handle: (*Handler).promoteRelease}}},
+		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/{id}", map[string]rule{
+			http.MethodGet: {access: pathVerbs, verbs: readers, manage: true, handle: (*Handler).getRelease}}},
+		{"tenants/{t}/blocks", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listBlocks),
+			http.MethodPost: mb(pathAdmin, (*Handler).addBlock)}},
+		{"tenants/{t}/blocks/{hash}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getBlock),
+			http.MethodDelete: m(pathAdmin, (*Handler).removeBlock)}},
 		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/{id}/{change}", map[string]rule{
 			http.MethodPost: m(pathAdmin, (*Handler).changeRelease)}},
 	}
@@ -512,7 +552,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !ru.body && (r.ContentLength != 0 || len(r.TransferEncoding) > 0) {
+	if !ru.body && !ru.raw && (r.ContentLength != 0 || len(r.TransferEncoding) > 0) {
 		problem(w, http.StatusBadRequest, typeInvalid, "this request has no body")
 		return
 	}
@@ -527,7 +567,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // logIDs are a request's route template and the resource ids from its path.
 func logIDs(rt route, p params) []any {
 	out := []any{"route", rt.pattern}
-	for _, k := range []string{"t", "c", "name", "ext", "v", "id", "change"} {
+	for _, k := range []string{"t", "c", "name", "ext", "v", "id", "change", "hash"} {
 		if v, ok := p[k]; ok {
 			out = append(out, k, v)
 		}
@@ -630,6 +670,27 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 				h.fail(w, err)
 				return caller{}, false
 			}
+			return refuse()
+		}
+	case pathVerbs:
+		a, ok := c.actor()
+		if !ok || h.o.Authz == nil {
+			return refuse()
+		}
+		res := authz.Resource{Tenant: name, Channel: p["c"], Extension: p["ext"], Reserved: reserved.Kind(p["ext"]) != ""}
+		allowed := false
+		for _, v := range ru.verbs {
+			err := h.o.Authz.Allow(ctx, a, v, res)
+			if err == nil {
+				allowed = true
+				break
+			}
+			if !errors.Is(err, authz.ErrDenied) {
+				h.fail(w, err)
+				return caller{}, false
+			}
+		}
+		if !allowed {
 			return refuse()
 		}
 	}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -345,21 +347,46 @@ type releaseJSON struct {
 	Seq            int64  `json:"seq"` // 0: never current (served on the versioned path only)
 	BodyHash       string `json:"body_hash"`
 	CreatedAt      string `json:"created_at"`
-	CreatedBy      string `json:"created_by"`
+	CreatedBy      string `json:"created_by,omitempty"` // the extension's administrators only
 	StateChangedAt string `json:"state_changed_at,omitempty"`
 	StateChangedBy string `json:"state_changed_by,omitempty"`
+	Origin         string `json:"origin"`
+	Provenance     any    `json:"provenance,omitempty"`
+	Shadows        string `json:"shadows,omitempty"`
 	ETag           string `json:"etag"`
 }
 
-func releaseOf(x store.Candidate, c caller) releaseJSON {
+// releaseView is a release for its readers: the extension's administrators see who changed it,
+// its publishers (spec 0008) do not.
+func releaseView(x store.Candidate, c caller, admin bool) releaseJSON {
 	o := releaseJSON{ID: x.ID, Name: x.Name, Version: x.ExtVersion, Platform: x.Platform, Slot: x.Slot, ABI: x.ABI,
 		DuckDBVersion: x.DuckDBVersion, State: x.State, Visibility: x.Visibility, Seq: x.Seq, BodyHash: x.BodyHash,
-		CreatedAt: timeOf(x.CreatedAt), CreatedBy: createdBy(x.CreatedBy, c), StateChangedAt: timeOf(x.StateChangedAt),
-		StateChangedBy: createdBy(x.StateChangedBy, c), ETag: versionTag(x.Version)}
+		CreatedAt: timeOf(x.CreatedAt), StateChangedAt: timeOf(x.StateChangedAt), Origin: x.Origin,
+		Provenance: provenanceView(x.Provenance, c, admin), Shadows: reserved.Kind(x.Name), ETag: versionTag(x.Version)}
+	if admin {
+		o.CreatedBy, o.StateChangedBy = createdBy(x.CreatedBy, c), createdBy(x.StateChangedBy, c)
+	}
 	if x.CAPI != nil {
 		o.CAPI = x.CAPI.String()
 	}
 	return o
+}
+
+// provenanceView shows a release's provenance: who made it appears to the extension's
+// administrators as created_by does (server identities masked), and not to its publishers.
+func provenanceView(raw string, c caller, admin bool) any {
+	var m map[string]any
+	if raw == "" || json.Unmarshal([]byte(raw), &m) != nil {
+		return nil
+	}
+	if a, ok := m["actor"].(string); ok {
+		if admin {
+			m["actor"] = createdBy(a, c)
+		} else {
+			delete(m, "actor")
+		}
+	}
+	return m
 }
 
 // releaseKey orders releases as (created_at, id).
@@ -387,9 +414,10 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request, c caller,
 		rs = slices.DeleteFunc(rs, func(x store.Candidate) bool { return x.State != state })
 	}
 	rs, next := paged(rs, releaseKey, limit, after) // oldest first: a cursor survives new releases
+	admin := h.isAdmin(r, c, p)
 	out := []releaseJSON{}
 	for _, x := range rs {
-		out = append(out, releaseOf(x, c))
+		out = append(out, releaseView(x, c, admin))
 	}
 	reply(w, r, http.StatusOK, list("releases", out, next), "", noStore)
 }
@@ -411,7 +439,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request, c caller, p
 	}
 	for _, x := range rs {
 		if x.ID == p["id"] {
-			reply(w, r, http.StatusOK, releaseOf(x, c), versionTag(x.Version), noStore)
+			reply(w, r, http.StatusOK, releaseView(x, c, h.isAdmin(r, c, p)), versionTag(x.Version), noStore)
 			return
 		}
 	}

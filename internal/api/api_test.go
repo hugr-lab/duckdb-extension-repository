@@ -162,7 +162,7 @@ func newEnv(t *testing.T) *env {
 
 	add := func(label, channel, name string, m extfile.Metadata, seed uint64, private bool, notCurrent ...bool) {
 		r, _, err := en.rel.Add(ctx, admin, "acme", channel, bytes.NewReader(ext(t, seed, m)),
-			release.AddOptions{Name: name, Private: private, NotCurrent: len(notCurrent) > 0})
+			release.AddOptions{Unchecked: true, Name: name, Private: private, NotCurrent: len(notCurrent) > 0})
 		if err != nil {
 			t.Fatalf("%s: %v", label, err)
 		}

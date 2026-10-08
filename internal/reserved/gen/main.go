@@ -1,0 +1,178 @@
+// Command gen writes internal/reserved's lists (spec 0008) from a DuckDB checkout at the pin and a
+// duckdb/community-extensions checkout at its pinned commit. It only adds names: what the lists
+// already hold is kept.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+)
+
+var (
+	nameRE     = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	defaultRE  = regexp.MustCompile(`\{"([a-z0-9_]+)",\s*"`)                     // internal_extensions[]
+	entryRE    = regexp.MustCompile(`\{"[^"\n]*",\s*"([a-z0-9_]+)"`)             // {"x", "<extension>", ...}
+	quotedRE   = regexp.MustCompile(`"([a-z0-9_]+)"`)                            // AUTOLOADABLE_EXTENSIONS
+	loadRE     = regexp.MustCompile(`duckdb_extension_load\(\s*([A-Za-z0-9_]+)`) // .github/config
+	ymlNameRE  = regexp.MustCompile(`(?m)^extension:\s*\n(?:[ \t]+.*\n)*?[ \t]+name:\s*["']?([A-Za-z0-9_]+)`)
+	autoloadRE = regexp.MustCompile(`(?s)AUTOLOADABLE_EXTENSIONS\[\]\s*=\s*\{(.*?)\}`)
+)
+
+func main() {
+	duckdb := flag.String("duckdb", "", "a DuckDB checkout at e2e/DUCKDB_PIN")
+	community := flag.String("community", "", "a duckdb/community-extensions checkout at internal/reserved/COMMUNITY_PIN")
+	out := flag.String("out", "internal/reserved", "the directory of the lists")
+	flag.Parse()
+	if *duckdb == "" || *community == "" {
+		flag.Usage()
+		os.Exit(2)
+	}
+	core, err := coreNames(*duckdb)
+	if err != nil {
+		fail(err)
+	}
+	comm, err := communityNames(*community)
+	if err != nil {
+		fail(err)
+	}
+	for file, names := range map[string][]string{"core.txt": core, "community.txt": comm} {
+		if err := merge(filepath.Join(*out, file), names); err != nil {
+			fail(err)
+		}
+	}
+}
+
+func fail(err error) {
+	fmt.Fprintln(os.Stderr, "gen:", err)
+	os.Exit(1)
+}
+
+func read(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	return string(b), err
+}
+
+func coreNames(root string) ([]string, error) {
+	set := map[string]bool{}
+	add := func(n string) {
+		n = strings.ToLower(n)
+		if nameRE.MatchString(n) {
+			set[n] = true
+		}
+	}
+	helper, err := read(filepath.Join(root, "src/main/extension/extension_helper.cpp"))
+	if err != nil {
+		return nil, err
+	}
+	i := strings.Index(helper, "internal_extensions[]")
+	j := strings.Index(helper[max(i, 0):], "{nullptr, nullptr}")
+	if i < 0 || j < 0 {
+		return nil, fmt.Errorf("internal_extensions[] not found in extension_helper.cpp")
+	}
+	for _, m := range defaultRE.FindAllStringSubmatch(helper[i:i+j], -1) {
+		add(m[1])
+	}
+	entries, err := read(filepath.Join(root, "src/include/duckdb/main/extension_entries.hpp"))
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range entryRE.FindAllStringSubmatch(entries, -1) {
+		add(m[1])
+	}
+	auto := autoloadRE.FindStringSubmatch(entries)
+	if auto == nil {
+		return nil, fmt.Errorf("AUTOLOADABLE_EXTENSIONS not found in extension_entries.hpp")
+	}
+	for _, m := range quotedRE.FindAllStringSubmatch(auto[1], -1) {
+		add(m[1])
+	}
+	dirs, err := os.ReadDir(filepath.Join(root, "extension"))
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range dirs {
+		if d.IsDir() {
+			add(d.Name())
+		}
+	}
+	err = filepath.WalkDir(filepath.Join(root, ".github/config"), func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".cmake") {
+			return err
+		}
+		s, err := read(p)
+		for _, m := range loadRE.FindAllStringSubmatch(s, -1) {
+			add(m[1])
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sorted(set), nil
+}
+
+func communityNames(root string) ([]string, error) {
+	set := map[string]bool{}
+	dirs, err := os.ReadDir(filepath.Join(root, "extensions"))
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range dirs {
+		if !d.IsDir() {
+			continue
+		}
+		if n := strings.ToLower(d.Name()); nameRE.MatchString(n) {
+			set[n] = true
+		}
+		y, err := read(filepath.Join(root, "extensions", d.Name(), "description.yml"))
+		if err != nil {
+			continue
+		}
+		if m := ymlNameRE.FindStringSubmatch(y); m != nil {
+			if n := strings.ToLower(m[1]); nameRE.MatchString(n) {
+				set[n] = true
+			}
+		}
+	}
+	if len(set) == 0 {
+		return nil, fmt.Errorf("no community extensions found under %s", root)
+	}
+	return sorted(set), nil
+}
+
+func sorted(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// merge writes the union of the file's names and names (a list never shrinks).
+func merge(path string, names []string) error {
+	set := map[string]bool{}
+	var header []string
+	if old, err := read(path); err == nil {
+		for _, l := range strings.Split(old, "\n") {
+			switch l = strings.TrimSpace(l); {
+			case strings.HasPrefix(l, "#"):
+				header = append(header, l)
+			case l != "":
+				set[l] = true
+			}
+		}
+	}
+	for _, n := range names {
+		set[n] = true
+	}
+	if len(header) == 0 {
+		header = []string{"# Generated by make reserved (spec 0008); never shrinks. Do not edit."}
+	}
+	return os.WriteFile(path, []byte(strings.Join(append(header, sorted(set)...), "\n")+"\n"), 0o644)
+}

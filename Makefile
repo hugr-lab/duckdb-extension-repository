@@ -3,13 +3,18 @@ export GOWORK := off
 
 E2E_BUILD ?= $(CURDIR)/e2e/.build
 
-.PHONY: build test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down lint e2e-duckdb e2e-runner e2e-build e2e
+.PHONY: build reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down lint e2e-duckdb e2e-runner e2e-build e2e
 
 build:
 	go build -o bin/kista ./cmd/kista
 
 test:
 	go test ./...
+
+# The reserved extension names (spec 0008) from DuckDB at e2e/DUCKDB_PIN and community-extensions at
+# internal/reserved/COMMUNITY_PIN; CI checks the committed lists are current.
+reserved:
+	./internal/reserved/generate.sh
 
 # PostgreSQL 17 and SQL Server 2022 for the store suite (Docker); then run make test with:
 #   KISTA_TEST_POSTGRES=postgres://postgres@127.0.0.1:56432/postgres?sslmode=disable KISTA_TEST_POSTGRES_PASSWORD=kista-test
@@ -24,8 +29,12 @@ test-db-down:
 # images); then run make test with:
 #   KISTA_TEST_S3=http://kista-test:kista-test-secret@127.0.0.1:58333/kista-test
 SEAWEEDFS := chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+# A registry that times out once should not fail a run: pull with retries first.
+pull = for i in 1 2 3 4; do docker pull -q $(1) >/dev/null && break; [ $$i = 4 ] && exit 1; sleep $$((i * 10)); done
+
 test-s3:
 	-docker rm -f kista-test-seaweedfs >/dev/null 2>&1
+	@$(call pull,$(SEAWEEDFS))
 	docker run -d --name kista-test-seaweedfs -p 127.0.0.1:58333:8333 \
 		-v $(CURDIR)/internal/blob/s3/testdata/seaweedfs-s3.json:/etc/kista-s3.json:ro \
 		$(SEAWEEDFS) server -s3 -s3.config=/etc/kista-s3.json -dir=/data -ip.bind=0.0.0.0
@@ -42,6 +51,7 @@ test-s3-down:
 AZURITE := mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
 test-azurite:
 	-docker rm -f kista-test-azurite >/dev/null 2>&1
+	@$(call pull,$(AZURITE))
 	docker run -d --name kista-test-azurite -p 127.0.0.1:50000:10000 $(AZURITE) \
 		azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck --loose --inMemoryPersistence
 	@for i in $$(seq 1 60); do \

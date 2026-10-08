@@ -254,7 +254,8 @@ upstream fetch.
 
 ### Publication and promotion
 
-A publisher uploads to a `staging` channel. Authentication is one of:
+A publisher uploads to a channel it holds `publish` on, usually `staging` (spec 0008: a channel
+that takes direct publications must not share trusted keys with `prod`). Authentication is one of:
 
 - a JWT;
 - an API key;
@@ -262,8 +263,8 @@ A publisher uploads to a `staging` channel. Authentication is one of:
   names.
 
 The server checks the footer and the declared name, version and platform. The name is not in the
-footer, so it is bound by the exported init symbol (`<name>_init`, `<name>_duckdb_cpp_init`, or the
-C API entry point) in the ELF / Mach-O / PE file. Uploads answer the same whether the body was
+footer, so it is bound by the entry point the ELF / Mach-O / PE file exports for DuckDB to load
+(`<name>_duckdb_cpp_init`, `<name>_init_c_api` or `<name>_init_c_api_v2` on the pin; spec 0008). Uploads answer the same whether the body was
 already stored or not, and are never short-circuited on a client-declared hash.
 
 **Promotion** releases the same Build in another channel with that channel's signature. It needs
@@ -271,8 +272,8 @@ already stored or not, and are never short-circuited on a client-declared hash.
 
 **Shadowing**: every DuckDB core and community name is reserved from the start, from the static
 lists in the duckdb pin. Publishing or promoting under a reserved name, or under a name an upstream
-of the tenant provides, needs `admin` on the tenant, and the release records that it shadows the
-upstream. Adding an upstream that collides with an existing publication is refused until an
+of the tenant provides, needs grants that name it (spec 0008: a tenant- or channel-wide grant does
+not reach it), and the release shows that it shadows the upstream. Adding an upstream that collides with an existing publication is refused until an
 administrator resolves it.
 
 **Yank** removes a release from serving. **Block** bans a body hash tenant-wide. A yanked binary
@@ -404,7 +405,7 @@ application follows. This is the same shape as tresor-server.
 | kista (this repository, Apache-2.0) | Enterest (separate repository, closed) |
 | --- | --- |
 | tenants, channels, keys, upstreams, mirror, pull-through | developer cabinet, publisher sign-up, cross-tenant publisher identity |
-| publication, promotion, trusted publishing, yank, block | Extension Intelligence: builds from source, analysis, reports |
+| publication, promotion, trusted publishing, API keys, yank, block | Extension Intelligence: builds from source, analysis, reports |
 | grants, audit, per-tenant statistics | global download and usage statistics |
 | attachments, the attachment feed client | the report feed and subscriptions |
 | licence keys, entitlements, tokens; the licensing SDK | marketplace and billing for paid extensions |

@@ -1,6 +1,6 @@
 # Spec 0008: Publication and promotion
 
-- **Status**: draft
+- **Status**: phase 1a implemented (publication, promotion, reserved names, blocks); 1b and 2 next
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -26,6 +26,8 @@ Delivery is phased:
 1. **Publication and trusted publishing**: the `publish` and `promote` verbs; upload, promotion and
    block; the file checks; reserved names; publishers with GitHub credentials. This serves hugr's
    own CI and promoters, our builds of core extensions, and organisations whose CI is on GitHub.
+   Delivered in two pull requests: **1a**, everything but publishers (people publish with tenant
+   tokens), and **1b**, publishers and trusted publishing (migration 0006).
 2. **API keys**: publisher credentials for CI without OIDC and for Enterest's external publishers.
 
 This spec amends earlier specs (see "Changes to earlier specs").
@@ -89,12 +91,13 @@ The generator only adds: a name that was ever reserved stays reserved, since cli
 installed it. CI regenerates from the pinned checkouts and fails on a diff. (The alias names, such
 as `http` or `sqlite`, are already refused by the name grammar of spec 0006.)
 
-A reserved name is covered only by grants that **name** it: for publishing, `publish` on that
-extension (in the channel or in every channel); for promoting, `promote` on it in the target and
-`publish` on it in the source. A tenant- or channel-wide grant never reaches a reserved name. A
-server administrator over the API and the CLI's operator are not limited. A release under a reserved
-name is shown as `shadows: core | community`, computed when the index is read (so it follows the
-list). Releases that exist when a name becomes reserved stay as they are.
+For `publish` and `promote`, a reserved name is covered only by grants that **name** it (other verbs
+are not affected: a tenant administrator still manages `httpfs`'s releases): for publishing,
+`publish` on that extension (in the channel or in every channel); for promoting, `promote` on it in
+the target and `publish` on it in the source. A tenant- or channel-wide grant never reaches a
+reserved name. A server administrator over the API and the CLI's operator are not limited. A release
+under a reserved name is shown as `shadows: core | community`, computed when the index is read (so
+it follows the list). Releases that exist when a name becomes reserved stay as they are.
 
 ### What a file must be
 
@@ -118,22 +121,27 @@ the spooled body, before anything is committed, the server:
      `<name>_init_c_api_v2`;
    - any other `C_STRUCT`: `<name>_init_c_api`.
 
-   The binary must export that symbol, and no other symbol ending in `_duckdb_cpp_init`,
-   `_init_c_api` or `_init_c_api_v2` (a file that is two extensions at once is refused). "Exports"
-   means what the loader resolves:
+   The binary must export that symbol strictly (below), and no other name ending in
+   `_duckdb_cpp_init`, `_init_c_api` or `_init_c_api_v2` in any form the loader resolves (a file
+   that is two extensions at once is refused). The files are read as the loaders read them:
 
-   - **ELF**: a defined (`st_shndx` not `SHN_UNDEF`) `STT_FUNC` symbol, `STB_GLOBAL` or `STB_WEAK`,
-     visibility default or protected, in the dynamic symbol table that `PT_DYNAMIC`'s
-     `DT_SYMTAB`/`DT_STRTAB` point to (section headers that disagree are refused; compressed
-     sections are refused);
-   - **Mach-O**: an entry of the export trie (`LC_DYLD_EXPORTS_TRIE` or `LC_DYLD_INFO_ONLY`), or,
-     without one, an external defined symbol of `LC_DYSYMTAB`, with the `_` prefix;
-   - **PE**: a name in the export directory (data directory 0), not a forwarder.
+   - **ELF**: the dynamic array where `PT_DYNAMIC`'s address is mapped (loadable segments sorted and
+     not overlapping); `DT_SYMTAB` with `DT_SYMENT` 24, as many symbols as `DT_HASH` or
+     `DT_GNU_HASH` reach (the `SHT_DYNSYM` section must agree and cover them; compressed sections
+     are refused), names within `DT_STRSZ`. A strict export is a defined `STT_FUNC` symbol,
+     `STB_GLOBAL` or `STB_WEAK`, visibility default or protected; every other non-local symbol
+     counts against;
+   - **Mach-O**: one source of exports only (the export trie of `LC_DYLD_EXPORTS_TRIE` or
+     `LC_DYLD_INFO(_ONLY)`, or else `LC_SYMTAB` with `LC_DYSYMTAB`; two are refused), names with the
+     `_` prefix. A strict export is a trie entry or an external, non-private section symbol; a
+     re-export (another library's code) counts against;
+   - **PE**: the export directory (data directory 0); each name read only within the section that
+     holds it. A strict export is a name that is not a forwarder; a forwarder counts against.
 
-   The parsers are kista's own, bounded and read-only: every offset and count is checked against the
-   file size, the Mach-O trie walk keeps a visited set and a depth limit, the PE export names are at
-   most 65,536, and a parse runs under `recover` with a time budget. Go's `debug/elf`, `debug/macho`
-   and `debug/pe` are used only for headers. A file the parsers cannot read is refused;
+   The readers are kista's own, bounded and read-only: every offset and count is checked against the
+   file and its sections, the Mach-O trie walk keeps a visited set and a depth limit, all the names
+   one parse reads are at most 128 MiB, the PE export names at most 65,536, and a parse runs under
+   `recover` with a time budget. A file they cannot read is refused;
 5. ignores the trailing 256 bytes (a signature an upload carries is replaced by the channel's).
 
 This check makes what is served under a name load as that name. It is not a sandbox: a publisher
@@ -180,15 +188,17 @@ GET  /api/v1/tenants/{t}/channels/{c}/extensions/{ext}/releases[/{id}]     (spec
   and `c_struct_unstable` build's DuckDB version, and some DuckDB version whose C API maximum
   accepts each `c_struct` build (spec 0006); otherwise `400` naming the platform and version. All
   signatures are made first, then one transaction under the target channel's lock inserts every
-  release or none (a slot conflict on any is `409` for all). It answers `201` with the releases, or
-  `200` when the target already holds them all with the same choices.
+  release or none (a slot conflict on any is `409` for all). It answers `201` (or `200` when the
+  target already holds them all with the same choices): a promotion of one release by id answers
+  that release with its `Location`, a promotion of a version the list of releases.
 - **Answers never tell** whether a body was already stored in this tenant or the storage domain: the
   whole body is always received, hashed and committed (spec 0005 writes it whether or not the hash
   exists), and a client's declared hash is never trusted. A `409` names the slot, not another
   release's id, for a caller who is not the extension's administrator.
 - **Errors**: footer, prefix, format or entry-point mismatch: `400`, naming the check ("the binary
   does not export loadable_ext_init_c_api"); an unknown query parameter `400`; no `Content-Length`
-  `411`; a length over `blob.max_body` `413` before reading; another media type `415`; a blocked
+  `411`; a length over `blob.max_body` plus the 256-byte signature `413` before reading; another
+  media type `415`; an upload that ends before its length `400`, or is too slow `408`; a blocked
   body `409` ("blocked"); a channel without an active key `409`.
 
 ### Uploads
@@ -196,20 +206,21 @@ GET  /api/v1/tenants/{t}/channels/{c}/extensions/{ext}/releases[/{id}]     (spec
 The publication route is the API's one raw-body route: spec 0007's JSON-only, 64 KiB rule does not
 apply to it, and its limits are its own.
 
-- `Content-Length` is required and at most `blob.max_body`.
+- `Content-Length` is required and at most `blob.max_body` plus the signature.
 - The body is read at no less than `serve.min_rate` (a reader that moves the connection's read
-  deadline forward as bytes arrive, the counterpart of the response writer's), and within an
-  absolute deadline of `max_body / min_rate` plus a minute.
+  deadline forward as bytes arrive, the counterpart of the response writer's, and clears it when the
+  body ends), and within an absolute deadline of `Content-Length / min_rate` plus a minute.
 - Concurrency, checked after the decision and before reading: at most `publish.max_per_principal`
-  uploads per principal (default 2) and `publish.max_per_tenant` per tenant (default 8); then the
-  blob service's ingest semaphore is tried without waiting. Over a limit: `429` with `Retry-After`
-  (CI should retry). The counters are per replica.
+  uploads per principal (default 2), `publish.max_per_tenant` per tenant (default 8), and one fewer
+  than `blob.max_ingests` on the server (the CLI and intake keep a slot); then the blob service's
+  ingest semaphore is tried without waiting. Over a limit: `429` with `Retry-After` (CI should
+  retry). The counters are per replica.
 
 ```yaml
 publish:                         # file-only
   max_per_principal: 2
   max_per_tenant: 8
-  providers:                     # trusted-publishing issuers; default: GitHub Actions
+  providers:                     # phase 1b: trusted-publishing issuers; default: GitHub Actions
     - name: github
       url: https://token.actions.githubusercontent.com
 ```
@@ -232,11 +243,13 @@ DELETE /api/v1/tenants/{t}/blocks/{body_hash}           tenant admin; 204
   body and again inside the insert transaction, under the channel lock; so a release either commits
   before the sweep reaches its channel (and is yanked by it) or sees the block.
 - A hash the tenant does not hold may be blocked (a known-bad artifact, ahead of time); the answer
-  is the same.
+  is the same. Blocking a hash already blocked sweeps again (finishing a sweep that failed half-way)
+  and answers `200` with its `Location`. A tenant holds at most 10,000 blocks.
 - Removing a block lets the body be released again; yanked releases stay yanked (a fix is a new
   version, spec 0006).
 - The index shows `blocked: true` on a yanked row whose body is blocked, so the node agent and the
-  console can tell it from an ordinary yank.
+  console can tell it from an ordinary yank. The blocked hashes are part of each channel's snapshot
+  (spec 0007): a block and an unblock bump `release_version` on every signed channel of the tenant.
 - A block stops a known artifact, not a publisher: one changed byte is a new body. Stopping a
   publisher is removing its grants or the publisher.
 - Spec 0009's intake checks `blocks` the same way. This replaces spec 0006's follow-up "blocks join
@@ -316,19 +329,30 @@ which always name an issuer record.
   belongs to the release; the Build keeps its first origin.
 - Index rows (spec 0007) gain `origin`, `shadows` and `blocked` for every caller who sees the row;
   `provenance` for the extension's administrators and holders of `publish` or `promote` covering it.
+  Who made a release (`provenance.actor`, like `created_by`) is shown to the extension's
+  administrators, with server and OS identities masked as spec 0007's `created_by: server`, and not
+  to its publishers.
 
 ### Data model
 
-Migration 0005, on PostgreSQL, SQL Server and SQLite:
+Migration 0005 (phase 1a, `min_reader 5`: an older binary would ignore blocks), on PostgreSQL, SQL
+Server and SQLite:
 
 ```text
 builds             + checked (boolean | bit | INTEGER), default false
 releases           + origin varchar(16) not null default 'admin', provenance varchar(4000) null
-blocks             tenant_id, body_hash char(64), reason varchar(400), created_at, created_by
+blocks             tenant_id, body_hash varchar(64), reason varchar(400), created_at, created_by
+```
+
+Grant verbs gain `publish` and `promote` in phase 1a too (verbs are a checked text column: no schema
+change).
+
+Migration 0006 (phase 1b):
+
+```text
 publishers, publisher_github                                   (as above)
 grants             issuer_id becomes nullable; + publisher_id null, fk -> publishers (cascade);
-                   check: exactly one of issuer_id and publisher_id; kind gains 'publisher';
-                   verbs gain 'publish' and 'promote'
+                   check: exactly one of issuer_id and publisher_id; kind gains 'publisher'
 ```
 
 Making `grants.issuer_id` nullable rebuilds the table on SQLite and, on SQL Server, drops and
@@ -391,12 +415,12 @@ internal/store      migration 0005
 
 ## Testing
 
-- **Readers**: ELF, Mach-O and PE fixtures built with `zig cc` (one toolchain for every target; the
-  script and its version are checked in with the few-kilobyte outputs): the right entry point;
-  another name's; two extensions in one file; an undefined import of it; a hidden or local symbol;
-  the wrong ABI's symbol; the wrong machine; an executable instead of a shared object; universal
-  Mach-O; section headers that disagree with `PT_DYNAMIC`; compressed sections; truncated and cyclic
-  inputs; a fuzz target per reader with a capped input size.
+- **Readers**: ELF, Mach-O and PE fixtures built byte by byte in the tests (no cross toolchain), and
+  DuckDB's own builds at the pin (Mach-O on macOS, ELF on Linux, in the reader tests and the e2e
+  suite): the right entry point; another name's; two extensions in one file; an undefined import of
+  it; a hidden or local symbol; the wrong ABI's symbol; the wrong machine; an executable instead of
+  a shared object; universal Mach-O; section headers that disagree with `PT_DYNAMIC`; compressed
+  sections; truncated and cyclic inputs; a fuzz target per reader with a capped input size.
 - **Footer and prefix**: declared vs footer values; a missing prefix; the C API v1/v2 rule.
 - **Reserved names**: the generated lists against the pins (CI); tenant- and channel-wide grants do
   not reach `httpfs`; a named grant does; promotion needs naming on both sides; `shadows` in the
