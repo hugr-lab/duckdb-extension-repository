@@ -13,3 +13,4 @@ and it is superseded by a new spec when a decision changes.
 | [0004](0004-signer-backends/spec.md) | Signer backends: key sources for vaults and KMSs | phases 1-2 implemented; 3-4 deferred |
 | [0005](0005-blob-storage/spec.md) | Blob storage for extension bodies | phases 1-2 implemented; 3 deferred |
 | [0006](0006-serve/spec.md) | Serving, tokens and grants | implemented |
+| [0007](0007-api/spec.md) | The HTTP API: index and management | draft |
