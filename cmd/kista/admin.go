@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -31,6 +33,17 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   tenant create <name> [-display-name …] [-domain <storage domain>]
   tenant list
   tenant suspend|resume <name>
+  tenant audience add|remove <tenant> <audience>   assign a token audience (server-wide)
+  tenant audience list <tenant>
+  issuer add <tenant> -name <n> -url <issuer> [-jwks-uri u] [-alg A]... [-require claim=value]...
+         [-roles-claim path] [-groups-claim path] [-client-claim path] [-max-lifetime 24h]
+         a claim path is keys joined by dots (realm_access.roles), or a JSON array of keys when a
+         key has dots of its own: '["https://example.com/roles"]' 
+  issuer list <tenant>
+  issuer remove <tenant> <name>                   removes its grants too
+  grant add <tenant> -principal kind:issuer|value -verb install|admin... [-channel c] [-extension x]
+  grant list <tenant>
+  grant remove <tenant> <grant-id>
   version add <name> -kind release|dev [-c-api v1.5.6]...   one maximum C API per major
   version c-api <name> -c-api v2.0.0                       add a major's maximum C API
   version list
@@ -196,6 +209,10 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.key(ctx, sub, args[min(2, len(args)):])
 	case "release":
 		return a.release(ctx, sub, args[min(2, len(args)):])
+	case "issuer":
+		return a.issuer(ctx, sub, args[min(2, len(args)):])
+	case "grant":
+		return a.grant(ctx, sub, args[min(2, len(args)):])
 	case "blob":
 		if sub != "check" || len(args) != 2 {
 			return errUsage
@@ -265,6 +282,29 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", t.Name, t.State, t.StorageDomain, t.DisplayName, ts(t.CreatedAt))
 			}
 		})
+	case sub == "audience" && len(pos) >= 2:
+		switch {
+		case pos[0] == "add" && len(pos) == 3:
+			if err := a.svc.Auth.AddAudience(ctx, a.actor, pos[1], pos[2]); err != nil {
+				return err
+			}
+			a.logf("tenant audience add %s %s", pos[1], pos[2])
+		case pos[0] == "remove" && len(pos) == 3:
+			if err := a.svc.Auth.RemoveAudience(ctx, a.actor, pos[1], pos[2]); err != nil {
+				return err
+			}
+			a.logf("tenant audience remove %s %s", pos[1], pos[2])
+		case pos[0] == "list" && len(pos) == 2:
+			auds, err := a.svc.Auth.ListAudiences(ctx, a.actor, pos[1])
+			if err != nil {
+				return err
+			}
+			for _, x := range auds {
+				fmt.Fprintln(a.out, x)
+			}
+		default:
+			return errUsage
+		}
 	case (sub == "suspend" || sub == "resume") && len(pos) == 1:
 		state := map[string]string{"suspend": store.TenantSuspended, "resume": store.TenantActive}[sub]
 		if _, err := a.svc.Tenants.SetTenantState(ctx, a.actor, pos[0], state); err != nil {
@@ -525,6 +565,147 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 			return err
 		}
 		a.logf("release %s %s/%s %s (%s %s, %s)", sub, t, c, r.ID, r.Name, r.ExtVersion, r.State)
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+// claimPath parses a claim path: a JSON array of keys (for keys with dots), or keys joined by dots.
+func claimPath(s string) ([]string, error) {
+	if s == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(s, "[") {
+		var p []string
+		if err := json.Unmarshal([]byte(s), &p); err != nil || len(p) == 0 {
+			return nil, fmt.Errorf("%w: claim path %q", errUsage, s)
+		}
+		return p, nil
+	}
+	p := strings.Split(s, ".")
+	for _, k := range p {
+		if k == "" {
+			return nil, fmt.Errorf("%w: claim path %q has an empty key", errUsage, s)
+		}
+	}
+	return p, nil
+}
+
+func (a *adminCmd) issuer(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("issuer", flag.ContinueOnError)
+	name := fs.String("name", "", "")
+	issURL := fs.String("url", "", "")
+	jwks := fs.String("jwks-uri", "", "")
+	var algs, require multi
+	fs.Var(&algs, "alg", "")
+	fs.Var(&require, "require", "")
+	roles := fs.String("roles-claim", "", "")
+	groups := fs.String("groups-claim", "", "")
+	client := fs.String("client-claim", "", "")
+	life := fs.Duration("max-lifetime", 0, "")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) == 0 {
+		return errUsage
+	}
+	switch {
+	case sub == "add" && len(pos) == 1 && *name != "" && *issURL != "":
+		is := store.Issuer{Name: *name, URL: *issURL, JWKSURI: *jwks, Algorithms: algs, MaxTokenLifetime: *life,
+			RequiredClaims: map[string]string{}}
+		for _, r := range require {
+			k, v, ok := strings.Cut(r, "=")
+			if !ok {
+				return fmt.Errorf("%w: -require claim=value", errUsage)
+			}
+			is.RequiredClaims[k] = v
+		}
+		if is.RolesClaim, err = claimPath(*roles); err != nil {
+			return err
+		}
+		if is.GroupsClaim, err = claimPath(*groups); err != nil {
+			return err
+		}
+		if is.ClientClaim, err = claimPath(*client); err != nil {
+			return err
+		}
+		out, err := a.svc.Auth.AddIssuer(ctx, a.actor, pos[0], is)
+		if err != nil {
+			return err
+		}
+		a.logf("issuer add %s %s %s", pos[0], out.Name, out.URL)
+	case sub == "list" && len(pos) == 1:
+		iss, err := a.svc.Auth.ListIssuers(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tURL\tJWKS\tALGORITHMS\tREQUIRED CLAIMS\tROLES\tGROUPS\tCLIENT\tMAX LIFETIME", func(w io.Writer) {
+			for _, is := range iss {
+				var req []string
+				for k, v := range is.RequiredClaims {
+					req = append(req, k+"="+v)
+				}
+				sort.Strings(req)
+				jwks := is.JWKSURI
+				if jwks == "" {
+					jwks = "(discovered)"
+				}
+				path := func(p []string) string { b, _ := json.Marshal(p); return string(b) }
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", is.Name, is.URL, jwks, strings.Join(is.Algorithms, " "),
+					strings.Join(req, ","), path(is.RolesClaim), path(is.GroupsClaim), path(is.ClientClaim), is.MaxTokenLifetime)
+			}
+		})
+	case sub == "remove" && len(pos) == 2:
+		if err := a.svc.Auth.RemoveIssuer(ctx, a.actor, pos[0], pos[1]); err != nil {
+			return err
+		}
+		a.logf("issuer remove %s %s", pos[0], pos[1])
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("grant", flag.ContinueOnError)
+	principal := fs.String("principal", "", "")
+	var verbs multi
+	fs.Var(&verbs, "verb", "")
+	channel := fs.String("channel", "", "")
+	extension := fs.String("extension", "", "")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) == 0 {
+		return errUsage
+	}
+	switch {
+	case sub == "add" && len(pos) == 1 && *principal != "" && len(verbs) > 0:
+		g, err := a.svc.Auth.AddGrant(ctx, a.actor, pos[0], *principal, verbs, *channel, *extension)
+		if err != nil {
+			return err
+		}
+		a.logf("grant add %s %s %s", pos[0], g.Principal(), strings.Join(g.Verbs, ","))
+		fmt.Fprintln(a.out, g.ID)
+	case sub == "list" && len(pos) == 1:
+		gs, err := a.svc.Auth.ListGrants(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		a.table("ID\tPRINCIPAL\tVERBS\tCHANNEL\tEXTENSION", func(w io.Writer) {
+			for _, g := range gs {
+				ch, ext := g.ChannelName, g.Extension
+				if ch == "" {
+					ch = "*"
+				}
+				if ext == "" {
+					ext = "*"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", g.ID, g.Principal(), strings.Join(g.Verbs, ","), ch, ext)
+			}
+		})
+	case sub == "remove" && len(pos) == 2:
+		if err := a.svc.Auth.RemoveGrant(ctx, a.actor, pos[0], pos[1]); err != nil {
+			return err
+		}
+		a.logf("grant remove %s %s", pos[0], pos[1])
 	default:
 		return errUsage
 	}

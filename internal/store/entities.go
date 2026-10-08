@@ -32,6 +32,7 @@ const (
 type Tenant struct {
 	ID, Name, DisplayName, State string
 	StorageDomain                string // set at creation, never changed (spec 0005)
+	AuthVersion                  int64  // bumped by every issuer, audience and grant change (spec 0006)
 	CreatedAt                    time.Time
 	Version                      int64
 }
@@ -72,11 +73,11 @@ type KeyEvent struct {
 
 // --- reads (outside transactions) ---
 
-const tenantCols = "id, name, display_name, state, storage_domain, created_at, version"
+const tenantCols = "id, name, display_name, state, storage_domain, auth_version, created_at, version"
 
 func scanTenant(r interface{ Scan(...any) error }) (Tenant, error) {
 	var t Tenant
-	err := r.Scan(&t.ID, &t.Name, &t.DisplayName, &t.State, &t.StorageDomain, scanTime{&t.CreatedAt}, &t.Version)
+	err := r.Scan(&t.ID, &t.Name, &t.DisplayName, &t.State, &t.StorageDomain, &t.AuthVersion, scanTime{&t.CreatedAt}, &t.Version)
 	return t, err
 }
 

@@ -36,6 +36,7 @@ type Config struct {
 	Signers  Signers  `yaml:"signers" kista:"fileonly"`
 	Blob     Blob     `yaml:"blob" kista:"fileonly"`
 	Serve    Serve    `yaml:"serve"`
+	Egress   Egress   `yaml:"egress" kista:"fileonly"`
 }
 
 // Store selects and configures the metadata database.
@@ -444,6 +445,7 @@ func (c Config) Validate() error {
 	}
 	validateBlob(bad, c)
 	validateServe(bad, c)
+	validateEgress(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

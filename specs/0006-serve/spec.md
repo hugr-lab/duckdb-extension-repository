@@ -1,6 +1,6 @@
 # Spec 0006: Serving, tokens and grants
 
-- **Status**: phase 1 implemented
+- **Status**: implemented (phases 1-2)
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -318,24 +318,28 @@ JWKS; upstreams in spec 0009) goes through one client.
 - Addresses are checked on the connection actually dialed (`net.Dialer.Control`), so DNS rebinding
   and Happy Eyeballs cannot slip past a check made on a different resolution. TLS verification and
   SNI stay on the host name.
-- Only global unicast addresses pass. Refused: everything in the IANA special-purpose registries
+- A zoned IPv6 address (`fe80::1%eth0`) is refused outright. Only global unicast addresses pass. Refused: everything in the IANA special-purpose registries
   (loopback, `0.0.0.0/8`, private, CGNAT, link-local, benchmarking, `192.0.0.0/24`, `240.0.0.0/4`,
   multicast, broadcast, ULA, site-local, documentation), and IPv6 forms that embed an IPv4 address
   are unwrapped and re-checked (mapped, compatible, NAT64 `64:ff9b::/96` and `64:ff9b:1::/48`,
-  6to4, Teredo). Cloud metadata and platform endpoints (`169.254.169.254`, `168.63.129.16`,
-  `100.100.100.200`, `fd00:ec2::254`) are refused even when allowlisted.
+  6to4, Teredo, SIIT). Link-local (`169.254.0.0/16`, `fe80::/10`, where cloud metadata lives) and
+  other cloud metadata and platform endpoints (`168.63.129.16`, `100.100.100.200`, `fd00:ec2::/112`)
+  are refused even when allowlisted. A network-specific NAT64 prefix cannot be recognised; such a
+  network's allowlist must not cover it.
 - `egress.allow` (file-only) lists CIDRs (with optional ports) that may be reached despite the rules
   above, for an IdP on a private network. It never names hosts. Without it only port 443 is used.
 - `https` only; `http` to loopback only with `egress.allow_loopback_http`, file-only and only with
   `profile: dev`. No userinfo in URLs. No redirects for discovery and JWKS. Response size capped
   (1 MiB) after decompression (transport compression is off), total time capped (10s). The
-  deployment's own `public_url` host is refused.
+  deployment's own `public_url` host is refused, compared as resolution sees it (IDNA-mapped,
+  lowercase, without a port or a trailing dot). The checked addresses are dialed in turn.
 - No proxy from the environment; an explicit, file-only `egress.proxy` for deployments that must
   use one. Through it, kista resolves and checks the target itself and asks the proxy to `CONNECT`
   to the checked address (TLS verification still on the host name), so the proxy cannot be used to
   reach a refused address.
-- Errors are one message per class (refused address, cannot connect, TLS, status, too large),
-  with the host but nothing else, so `issuer add` is not a port scanner.
+- Errors are one message per class (refused, cannot connect, status, too large), with the host but
+  nothing else (no status code). A name that does not resolve and a name that resolves inside give
+  the same answer, so `issuer add` is neither a port scanner nor an internal DNS oracle.
 
 **Issuer records** (`issuers` table, per tenant; at most 16):
 
@@ -350,10 +354,13 @@ JWKS; upstreams in spec 0009) goes through one client.
   keys, so a key may contain dots (Auth0's `https://…/roles`);
 - `max_token_lifetime` (default 24h, at most 7 days): `exp - iat` above it is refused (DuckDB
   secrets can be persistent);
-- discovery runs at `issuer add` (through egress) and in the background; the discovered `issuer`
-  must equal the record's URL; the JWKS URI comes from discovery or an explicit `jwks_uri`.
+- at `issuer add`, discovery runs (through egress) unless an explicit `jwks_uri` is given, and the
+  JWKS is fetched and must hold a usable signing key; the discovered `issuer` must equal the
+  record's URL. When serving, the discovery document is cached for 6 hours and refreshed like the
+  JWKS (below).
 
-`kista admin issuer add|list|remove`. Grants reference the record by id, and removing a record
+`kista admin issuer add|list|remove` (a claim path is keys joined by dots, or a JSON array of keys
+when a key has dots of its own). Grants reference the record by id, and removing a record
 removes its grants, so a record added later under the same name starts with none.
 
 **Audiences.** A token must carry, in `aud` (a string or an array, compared exactly), one of its
@@ -361,19 +368,22 @@ tenant's audiences:
 
 - the canonical `<public_url>/<tenant>`;
 - audiences a **server administrator** assigns (`kista admin tenant audience add <tenant> <aud>`),
-  unique across all tenants and never equal to another tenant's canonical audience. Entra cannot
+  unique across all tenants. Assigning one needs `serve.public_url`, and nothing under it can be
+  assigned; at verification, an assigned audience under `public_url` is ignored anyway (a store
+  written without it, or a changed `public_url`, cannot make it another tenant's canonical one). Entra cannot
   issue an https audience without a verified domain, hence `api://kista-acme`. For Entra, the
-  documentation requires "assignment required" on the app, or any app in the directory can get a
-  token for it.
+  deployment documentation (spec 0013) requires "assignment required" on the app, or any app in the
+  directory can get a token for it.
 
 A token for tenant A never works at tenant B. `<public_url>` itself is reserved for the server
-level (spec 0007). Changing `public_url` changes every canonical audience; the documentation says
-so.
+level (spec 0007). Changing `public_url` changes every canonical audience; the deployment
+documentation (spec 0013) says so.
 
 **Verification**, on https requests with `Authorization: Bearer <token>`:
 
-- compact JWS only (three parts), at most 16 KiB; a JWE, the JSON serialisation, duplicate JSON keys,
-  an unknown `crit`, `typ` other than absent, `JWT` or `at+jwt`, a missing `kid` mean no valid token.
+- compact JWS only (three parts, strict unpadded base64url), at most 16 KiB; a JWE, the JSON
+  serialisation, duplicate JSON keys, any `crit`, a `typ` other than absent, `JWT`, `at+jwt` or
+  `application/at+jwt` (case-insensitive), a missing `kid` mean no valid token.
   `jku`, `x5u`, `jwk` and `x5c` in the header are ignored;
 - the tenant comes from the path; the token's `iss` (from the single parse) selects the tenant's
   record with that exact URL;
@@ -383,16 +393,18 @@ so.
 - `exp`, `iat` required; `nbf` respected; 60s of skew; the lifetime cap; the audience; the
   required claims;
 - JWKS are fetched once per URL (shared by records with the same URL, verifiers stay per record),
-  cached by `Cache-Control` within 5m-24h, at most 64 keys. An unknown `kid` triggers at most one
-  refresh per URL per minute, single-flight; a request never waits for a refresh that is running or
-  rate-limited: its token is not valid now;
+  cached by `Cache-Control` within 5m-24h, at most 64 keys, member names matched exactly. An unknown
+  `kid` or expired keys start at most one refresh per URL per minute, in the background on its own
+  context (a client that hangs up cannot cancel it); only the first fetch of a URL is waited for.
+  When refreshes fail, keys keep verifying for at most an hour past their expiry, so a key the
+  issuer removed stops working then at the latest;
 - an invalid token is treated as **no token**: public releases are still served (a stale DuckDB
   secret must not break the bootstrap); everything else answers `401`.
 
 **Principals**, namespaced by the issuer record's name (spec 0001): `subject:<issuer>|<sub>`,
 `role:<issuer>|<role>`, `group:<issuer>|<group>`, `client:<issuer>|<id>`, and `issuer:<issuer>`
 for any valid token of that record. Claim values must be strings (non-string array elements are
-dropped), without control characters, at most 256 bytes each and 256 per claim. An Entra groups
+dropped), without control or format (bidi, zero-width) characters, at most 256 bytes each and 256 per claim. An Entra groups
 overage is not resolved (no Graph lookup). The `server:` prefix is reserved for spec 0007's server
 administrators: no tenant principal ever matches a server one.
 
@@ -400,7 +412,8 @@ administrators: no tenant principal ever matches a server one.
 
 - Resource: the tenant; a channel; an extension name (in every channel of the tenant, including
   future ones, or in one channel).
-- Verbs here: `install` and `admin` (`admin` on the tenant implies every verb in the tenant).
+- Verbs here: `install` and `admin` (`admin` implies every verb on its resource: the tenant, a
+  channel, or an extension). An identical grant is not added twice.
   `publish` and `promote` come with spec 0008, `audit` with spec 0010.
 - An `issuer:` grant is refused unless the record has `required_claims`.
 - `kista admin grant add|list|remove <tenant> -principal … -verb … [-channel …] [-extension …]`.
@@ -430,12 +443,14 @@ internal/release   builds, releases, signatures, the serving key, the re-signer
 internal/serve     the server, listeners, routes, health, shutdown
 internal/egress    the outbound client with the SSRF guard            (phase 2)
 internal/auth      issuer records, JWKS, JWT verification, principals  (phase 2)
-internal/authz     + grants; the Authorizer takes principals and an extension resource (phase 2)
+internal/tenants   + issuer records, audiences and grants administration                (phase 2)
 internal/store     + migration 0003 (phase 1, min_reader 3), 0004 (phase 2), both additive
 ```
 
-`authz.Actor` gains a principal set; `Authorizer.Allow` gains the extension resource. Public reads
-(`.well-known`) use a store path that needs no authorisation. Code comments that still number grants
+Grants are evaluated in `internal/auth` (`Allows`) for serving. The administrative `authz`
+interface (an actor with principals, an extension resource, server administrators from config)
+changes with the HTTP API in spec 0007, its only new caller; until then `kista admin` runs as the
+server administrator. Public reads (`.well-known`) use a store path that needs no authorisation. Code comments that still number grants
 as spec 0005 or audit as spec 0009 are corrected.
 
 ## Security

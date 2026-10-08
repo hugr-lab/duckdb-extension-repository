@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
@@ -30,6 +31,10 @@ type Options struct {
 	WriteIdleTimeout      time.Duration
 	TrustedProxies        []netip.Prefix
 	Log                   *slog.Logger
+	// PublicURL gives each tenant's canonical audience, <public_url>/<tenant> (phase 2).
+	PublicURL string
+	// Verifier verifies Bearer tokens; nil: every caller is anonymous.
+	Verifier *auth.Verifier
 }
 
 // Handler serves the DuckDB routes and health.
@@ -45,6 +50,10 @@ type Handler struct {
 	mu        sync.Mutex
 	perClient map[string]int
 
+	authMu     sync.Mutex
+	authCache  map[string]store.TenantAuth // (tenant id, auth_version)
+	failLogged map[string]time.Time        // tenant id -> last failed-token log line
+
 	ready         atomic.Bool
 	stopping      atomic.Bool
 	publicDomains atomic.Pointer[map[string]bool]
@@ -56,7 +65,8 @@ func NewHandler(st *store.Store, ks *keys.Service, bs *blob.Service, o Options) 
 		o.Log = slog.Default()
 	}
 	h := &Handler{st: st, keys: ks, blob: bs, rv: newResolver(st), o: o, log: o.Log,
-		slots: make(chan struct{}, o.MaxDownloads), perClient: map[string]int{}}
+		slots: make(chan struct{}, o.MaxDownloads), perClient: map[string]int{},
+		authCache: map[string]store.TenantAuth{}, failLogged: map[string]time.Time{}}
 	empty := map[string]bool{}
 	h.publicDomains.Store(&empty)
 	return h
@@ -210,15 +220,24 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 		notFound(w) // passthrough channels are fed by upstreams (spec 0009)
 		return
 	}
-	// phase 1: every caller sees public releases only
-	v := viewPublic
+	// the decision comes from the path: a grant names the tenant, channel or extension, all known
+	// before anything is resolved; a caller without install resolves public releases only
+	v, tokenValid, err := h.decide(r, sc, rt.name)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
 	res, err := h.rv.resolve(ctx, sc, rt, v)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
 	if !res.found {
-		h.missing(w)
+		if tokenValid {
+			notFound(w) // a valid token without the grant, or a path that does not exist: the same
+		} else {
+			h.missing(w)
+		}
 		return
 	}
 	// after the decision: conditions of the tenant or the body
@@ -298,6 +317,101 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 		}
 		panic(http.ErrAbortHandler) // in the handler goroutine: never a clean short body
 	}
+}
+
+// bearer returns the request's Bearer token: only on https, only from exactly one Authorization
+// header.
+func bearer(r *http.Request) string {
+	if scheme(r) != "https" {
+		return "" // a token over plain http is never used
+	}
+	vals := r.Header.Values("Authorization")
+	if len(vals) != 1 {
+		return ""
+	}
+	sch, tok, ok := strings.Cut(vals[0], " ")
+	if !ok || !strings.EqualFold(sch, "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(tok)
+}
+
+// decide returns what the caller may see in the channel, and whether it presented a valid token.
+func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (view, bool, error) {
+	tok := bearer(r)
+	if tok == "" || h.o.Verifier == nil {
+		return viewPublic, false, nil
+	}
+	ta, err := h.tenantAuth(r.Context(), sc.Tenant)
+	if err != nil {
+		h.log.Error("serve: reading a tenant's issuers and grants", "tenant", sc.Tenant.Name, "error", err)
+		return viewPublic, false, nil // no token: public releases are still served
+	}
+	canonical := ""
+	if p := strings.TrimSuffix(h.o.PublicURL, "/"); p != "" {
+		canonical = p + "/" + sc.Tenant.Name
+		// an assigned audience under the public URL would be another tenant's canonical one (or the
+		// server's): never honoured, whatever the store holds
+		var assigned []string
+		for _, a := range ta.Audiences {
+			if a != p && !strings.HasPrefix(a, p+"/") {
+				assigned = append(assigned, a)
+			}
+		}
+		ta.Audiences = assigned
+	}
+	p, _, err := h.o.Verifier.Verify(r.Context(), ta, canonical, tok)
+	if err != nil {
+		h.logTokenFailure(sc.Tenant, err)
+		return viewPublic, false, nil // an invalid token is no token: public releases are still served
+	}
+	if auth.Allows(p, ta.Grants, sc.Channel.ID, name, store.VerbInstall) {
+		return viewAll, true, nil
+	}
+	return viewPublic, true, nil
+}
+
+func (h *Handler) tenantAuth(ctx context.Context, t store.Tenant) (store.TenantAuth, error) {
+	k := t.ID + "|" + strconv.FormatInt(t.AuthVersion, 10)
+	h.authMu.Lock()
+	ta, ok := h.authCache[k]
+	h.authMu.Unlock()
+	if ok {
+		return ta, nil
+	}
+	ta, err := h.st.GetTenantAuth(ctx, t.ID)
+	if err != nil {
+		return ta, err
+	}
+	h.authMu.Lock()
+	if len(h.authCache) >= 4096 {
+		clear(h.authCache)
+	}
+	h.authCache[k] = ta
+	h.authMu.Unlock()
+	return ta, nil
+}
+
+// logTokenFailure logs a failed token at most once a minute per tenant: the reason class and the
+// issuer record, never the token or its claims.
+func (h *Handler) logTokenFailure(t store.Tenant, err error) {
+	var f *auth.Failure
+	if !errors.As(err, &f) {
+		return
+	}
+	h.authMu.Lock()
+	last := h.failLogged[t.ID]
+	now := time.Now()
+	if now.Sub(last) < time.Minute {
+		h.authMu.Unlock()
+		return
+	}
+	if len(h.failLogged) >= 4096 {
+		clear(h.failLogged)
+	}
+	h.failLogged[t.ID] = now
+	h.authMu.Unlock()
+	h.log.Warn("serve: a token was not valid", "tenant", t.Name, "issuer", f.Issuer, "reason", f.Reason)
 }
 
 // servePlain sends the plain name whole: no ranges, 304 on a matching If-None-Match.
