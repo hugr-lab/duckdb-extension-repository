@@ -413,8 +413,8 @@ administrators: no tenant principal ever matches a server one.
 - Resource: the tenant; a channel; an extension name (in every channel of the tenant, including
   future ones, or in one channel).
 - Verbs here: `install` and `admin` (`admin` implies every verb on its resource: the tenant, a
-  channel, or an extension; except on an `issuer:` grant, where spec 0007 ignores `admin`, since
-  every account of the issuer would hold it). An identical grant is not added twice.
+  channel, or an extension; spec 0007 refuses `admin` on an `issuer:` grant when it is added and
+  ignores it on rows added before, since every account of the issuer would hold it). An identical grant is not added twice.
   `publish` and `promote` come with spec 0008, `audit` with spec 0010.
 - An `issuer:` grant is refused unless the record has `required_claims`.
 - `kista admin grant add|list|remove <tenant> -principal … -verb … [-channel …] [-extension …]`.

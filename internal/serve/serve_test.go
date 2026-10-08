@@ -423,10 +423,10 @@ func TestServe(t *testing.T) {
 
 	t.Run("a suspended tenant is not served", func(t *testing.T) {
 		ten := &tenants.Service{Store: en.st, Authz: authz.ServerAdmin{}}
-		if _, err := ten.SetTenantState(ctx, admin, "acme", store.TenantSuspended); err != nil {
+		if _, err := ten.SetTenantState(ctx, admin, "acme", store.TenantSuspended, 0); err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _, _ = ten.SetTenantState(ctx, admin, "acme", store.TenantActive) }()
+		defer func() { _, _ = ten.SetTenantState(ctx, admin, "acme", store.TenantActive, 0) }()
 		for _, p := range []string{"/acme/prod/tresor/1.0/v2.0.0/linux_amd64/tresor.duckdb_extension.gz", "/acme/prod/.well-known/duckdb-extension-repo.json"} {
 			if a := en.do(t, "GET", p, nil); a.status != 404 {
 				t.Fatalf("%s: %d", p, a.status)

@@ -160,6 +160,14 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		Keys:     ks,
 		Releases: &release.Service{Store: s, Signers: ks, Authz: az},
 		Auth: &tenants.AuthAdmin{Store: s, Authz: az, Fetch: eg, PublicURL: cfg.Serve.PublicURL,
-			AllowHTTP: cfg.Egress.AllowLoopbackHTTP},
+			AllowHTTP: cfg.Egress.AllowLoopbackHTTP, ServerAudiences: cfg.ServerAudiences()},
 	}, nil
+}
+
+// WithAuthz returns the services with another authorizer (the API's), sharing everything else.
+func (s *Services) WithAuthz(az authz.Authorizer) *Services {
+	ten, ks, rel, au := *s.Tenants, *s.Keys, *s.Releases, *s.Auth
+	ten.Authz, ks.Authz, rel.Authz, au.Authz = az, az, az, az
+	rel.Signers = &ks
+	return &Services{Store: s.Store, Sources: s.Sources, Tenants: &ten, Keys: &ks, Releases: &rel, Auth: &au}
 }

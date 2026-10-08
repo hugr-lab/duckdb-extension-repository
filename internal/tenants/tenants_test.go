@@ -64,7 +64,7 @@ func TestTenantsService(t *testing.T) {
 			if _, err := svc.AddVersionCAPI(ctx, admin, "v2.0.0", "v1.9.9"); !errors.Is(err, store.ErrExists) {
 				t.Fatalf("change a major: %v", err)
 			}
-			if vs, err := svc.ListVersions(ctx, admin); err != nil || len(vs) != 1 || len(vs[0].CAPIs) != 2 {
+			if vs, err := svc.ListVersions(ctx); err != nil || len(vs) != 1 || len(vs[0].CAPIs) != 2 {
 				t.Fatalf("list versions: %+v %v", vs, err)
 			}
 			// a version from before migration 0003 keeps its legacy maximum when a major is added
@@ -91,11 +91,11 @@ func TestTenantsService(t *testing.T) {
 			if vs, err := svc.SetChannelVersions(ctx, admin, "acme", "prod", nil, []string{"v2.0.0"}); err != nil || len(vs) != 0 {
 				t.Fatalf("remove: %v %v", vs, err)
 			}
-			tn, err := svc.SetTenantState(ctx, admin, "acme", store.TenantSuspended)
+			tn, err := svc.SetTenantState(ctx, admin, "acme", store.TenantSuspended, 0)
 			if err != nil || tn.State != store.TenantSuspended {
 				t.Fatalf("suspend: %+v %v", tn, err)
 			}
-			if _, err := svc.SetTenantState(ctx, admin, "acme", "deleted"); !errors.Is(err, store.ErrInvalid) {
+			if _, err := svc.SetTenantState(ctx, admin, "acme", "deleted", 0); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("bad state: %v", err)
 			}
 			if _, err := svc.ListTenants(ctx, authz.Actor{Kind: authz.ActorPrincipal, ID: "x"}); !errors.Is(err, authz.ErrDenied) {

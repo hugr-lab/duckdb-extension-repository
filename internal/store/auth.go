@@ -26,6 +26,9 @@ const (
 	VerbAdmin   = "admin"
 )
 
+// MaxGrants is the most grants a tenant may hold: every request's authorization is linear in them.
+const MaxGrants = 1000
+
 // MaxIssuers is the most issuer records a tenant may hold.
 const MaxIssuers = 16
 
@@ -225,6 +228,14 @@ func (t *Tx) InsertGrant(ctx context.Context, g *Grant) error {
 	if len(g.CreatedBy) > 400 {
 		return fmt.Errorf("%w: a value is too long", ErrInvalid)
 	}
+	var total int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM grants WHERE tenant_id = ?", g.TenantID).Scan(&total); err != nil {
+		return err
+	}
+	if total >= MaxGrants {
+		return fmt.Errorf("%w: a tenant holds at most %d grants", ErrInvalid, MaxGrants)
+	}
+	slices.Sort(g.Verbs)
 	var n int
 	if err := t.queryRow(ctx, `SELECT COUNT(*) FROM grants WHERE tenant_id = ? AND issuer_id = ? AND kind = ? AND value = ?
 AND COALESCE(channel_id, '') = ? AND COALESCE(extension, '') = ? AND verbs = ?`, g.TenantID, g.IssuerID, g.Kind, g.Value,
@@ -321,4 +332,45 @@ func closeRows(rows *sql.Rows) error {
 	err := rows.Err()
 	rows.Close()
 	return err
+}
+
+// TenantAdminGrants counts a tenant's tenant-wide grants that carry admin and are evaluated (not
+// issuer-wide ones, spec 0007): the lock-out check counts them inside the removing transaction.
+func (t *Tx) TenantAdminGrants(ctx context.Context, tenantID string) (int, error) {
+	rows, err := t.query(ctx, `SELECT verbs FROM grants WHERE tenant_id = ? AND channel_id IS NULL AND extension IS NULL
+AND kind <> ?`, tenantID, PrincipalIssuer)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for rows.Next() {
+		var verbs string
+		if err := rows.Scan(&verbs); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if slices.Contains(strings.Fields(verbs), VerbAdmin) {
+			n++
+		}
+	}
+	return n, closeRows(rows)
+}
+
+// AssignedAudiences lists every tenant's assigned audiences: kista serve refuses to start when one
+// is a server audience (spec 0007).
+func (s *Store) AssignedAudiences(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT audience FROM tenant_audiences ORDER BY audience")
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, closeRows(rows)
 }

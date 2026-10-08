@@ -21,7 +21,7 @@ type Service struct {
 // CreateTenant creates a tenant (server-wide action) in a storage domain (empty: the default one),
 // which must be configured and never changes.
 func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, displayName, domain string) (store.Tenant, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, "", ""); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return store.Tenant{}, err
 	}
 	if domain == "" {
@@ -37,15 +37,24 @@ func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, display
 
 // ListTenants lists tenants (server-wide action).
 func (s *Service) ListTenants(ctx context.Context, a authz.Actor) ([]store.Tenant, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbRead, "", ""); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return nil, err
 	}
 	return s.Store.ListTenants(ctx)
 }
 
-// SetTenantState suspends or resumes a tenant (server-wide action).
-func (s *Service) SetTenantState(ctx context.Context, a authz.Actor, name, state string) (store.Tenant, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, "", ""); err != nil {
+// GetTenant reads a tenant (its administrators may read it).
+func (s *Service) GetTenant(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: name}); err != nil {
+		return store.Tenant{}, err
+	}
+	return s.Store.GetTenant(ctx, name)
+}
+
+// SetTenantState suspends or resumes a tenant (server-wide action). A non-zero expected version must
+// be the tenant's (store.ErrConflict otherwise).
+func (s *Service) SetTenantState(ctx context.Context, a authz.Actor, name, state string, expected int64) (store.Tenant, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return store.Tenant{}, err
 	}
 	if state != store.TenantActive && state != store.TenantSuspended {
@@ -57,6 +66,9 @@ func (s *Service) SetTenantState(ctx context.Context, a authz.Actor, name, state
 		if t, err = tx.GetTenant(ctx, name); err != nil {
 			return err
 		}
+		if expected != 0 && t.Version != expected {
+			return store.ErrConflict
+		}
 		return tx.SetTenantState(ctx, &t, state)
 	})
 	return t, err
@@ -65,7 +77,7 @@ func (s *Service) SetTenantState(ctx context.Context, a authz.Actor, name, state
 // AddVersion registers a DuckDB version (server-wide action). kind is release or dev; capis are
 // the maximum C API version it accepts for each major (spec 0006: v1.5.6 and v2.0.0 on the pin).
 func (s *Service) AddVersion(ctx context.Context, a authz.Actor, name, kind string, capis []string) (store.DuckDBVersion, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, "", ""); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return store.DuckDBVersion{}, err
 	}
 	if kind != "release" && kind != "dev" {
@@ -110,7 +122,7 @@ func parseCAPIs(capis []string) ([]store.CAPI, error) {
 // AddVersionCAPI records the maximum C API of one more major for a DuckDB version (server-wide
 // action). Existing majors are facts about the engine and never change.
 func (s *Service) AddVersionCAPI(ctx context.Context, a authz.Actor, name, capi string) (store.DuckDBVersion, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, "", ""); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return store.DuckDBVersion{}, err
 	}
 	c, err := store.ParseCAPI(capi)
@@ -146,17 +158,14 @@ func (s *Service) AddVersionCAPI(ctx context.Context, a authz.Actor, name, capi 
 	return v, err
 }
 
-// ListVersions lists DuckDB versions.
-func (s *Service) ListVersions(ctx context.Context, a authz.Actor) ([]store.DuckDBVersion, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbRead, "", ""); err != nil {
-		return nil, err
-	}
+// ListVersions lists DuckDB versions (public: /api/v1/duckdb-versions).
+func (s *Service) ListVersions(ctx context.Context) ([]store.DuckDBVersion, error) {
 	return s.Store.ListDuckDBVersions(ctx)
 }
 
 // CreateChannel creates a channel; its kind never changes afterwards.
 func (s *Service) CreateChannel(ctx context.Context, a authz.Actor, tenant, name, kind string) (store.Channel, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, tenant, ""); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant}); err != nil {
 		return store.Channel{}, err
 	}
 	if kind != store.ChannelSigned && kind != store.ChannelPassthrough {
@@ -176,7 +185,7 @@ func (s *Service) CreateChannel(ctx context.Context, a authz.Actor, tenant, name
 
 // ListChannels lists a tenant's channels.
 func (s *Service) ListChannels(ctx context.Context, a authz.Actor, tenant string) ([]store.Channel, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbRead, tenant, ""); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant}); err != nil {
 		return nil, err
 	}
 	if _, err := s.Store.GetTenant(ctx, tenant); err != nil {
@@ -188,7 +197,7 @@ func (s *Service) ListChannels(ctx context.Context, a authz.Actor, tenant string
 // SetChannelVersions adds and removes the DuckDB versions a channel serves, under the channel lock,
 // and bumps the channel's version.
 func (s *Service) SetChannelVersions(ctx context.Context, a authz.Actor, tenant, channel string, add, remove []string) ([]string, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, tenant, channel); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel}); err != nil {
 		return nil, err
 	}
 	ch, err := s.Store.GetChannel(ctx, tenant, channel)

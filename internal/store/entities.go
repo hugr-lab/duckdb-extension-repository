@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Tenant states.
@@ -280,6 +282,11 @@ FROM key_events e JOIN channel_keys k ON k.id = e.key_id WHERE k.channel_id = ? 
 func (t *Tx) CreateTenant(ctx context.Context, tn *Tenant) error {
 	if err := ValidName(tn.Name); err != nil {
 		return err
+	}
+	if len(tn.DisplayName) > 200 || strings.ContainsFunc(tn.DisplayName, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	}) || !utf8.ValidString(tn.DisplayName) {
+		return fmt.Errorf("%w: a display name is at most 200 bytes of printable text", ErrInvalid)
 	}
 	if tn.State == "" {
 		tn.State = TenantActive
