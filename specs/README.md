@@ -14,3 +14,4 @@ and it is superseded by a new spec when a decision changes.
 | [0005](0005-blob-storage/spec.md) | Blob storage for extension bodies | phases 1-2 implemented; 3 deferred |
 | [0006](0006-serve/spec.md) | Serving, tokens and grants | implemented |
 | [0007](0007-api/spec.md) | The HTTP API: index and management | implemented |
+| [0008](0008-publication/spec.md) | Publication and promotion | draft |
