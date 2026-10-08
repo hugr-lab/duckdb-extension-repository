@@ -78,7 +78,7 @@ func (s *Store) GetBlob(ctx context.Context, domain, bodyHash string) (Blob, err
 // MarkBlobCorrupt records that the object of rec's stream did not match. It changes nothing if the
 // record has been committed again since rec was read (the commit uploaded the stream anew).
 func (s *Store) MarkBlobCorrupt(ctx context.Context, rec Blob) error {
-	return s.tx(ctx, "", func(t *Tx) error {
+	return s.tx(ctx, nil, func(t *Tx) error {
 		_, err := t.exec(ctx, "UPDATE blobs SET corrupt_at = ? WHERE domain = ? AND body_hash = ? AND stream_hash = ? AND committed_at = ? AND corrupt_at IS NULL",
 			t.s.d.timeArg(t.Now()), rec.Domain, rec.BodyHash, rec.StreamHash, t.s.d.timeArg(rec.CommittedAt))
 		return err

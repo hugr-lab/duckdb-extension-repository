@@ -81,6 +81,7 @@ type kista struct {
 	b       *build
 	handler *serve.Handler
 	ten     *tenants.Service
+	blob    *blob.Service
 }
 
 func (k *kista) httpURL() string  { return "http://" + k.addr + "/acme/prod" }
@@ -131,7 +132,7 @@ func startKistaWith(t *testing.T, b *build, verifier *auth.Verifier) *kista {
 	must(err)
 	_, err = ten.SetChannelVersions(ctx, serveAdmin, "acme", "prod", []string{b.versionDir}, nil)
 	must(err)
-	k := &kista{t: t, st: st, keys: ks, keyDir: keyDir, b: b,
+	k := &kista{t: t, st: st, keys: ks, keyDir: keyDir, b: b, blob: bs,
 		rel: &release.Service{Store: st, Blob: bs, Signers: ks, Authz: authz.ServerAdmin{}}}
 	k.addKey("a.pem", true)
 

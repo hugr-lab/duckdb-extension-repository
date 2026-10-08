@@ -13,3 +13,9 @@ func TestKind(t *testing.T) {
 		}
 	}
 }
+
+func TestAliases(t *testing.T) {
+	if Canonical("postgres") != "postgres_scanner" || Canonical("s3") != "httpfs" || Canonical("httpfs") != "" {
+		t.Fatal("aliases")
+	}
+}

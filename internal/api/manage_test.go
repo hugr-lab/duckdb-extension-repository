@@ -22,11 +22,13 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
 const (
@@ -104,9 +106,15 @@ func newMgmt(t *testing.T) *mgmt {
 		Providers: providers}
 	keySvc, relSvc := *en.keys, *en.rel
 	keySvc.Authz, relSvc.Authz, relSvc.Signers = grants, grants, &keySvc
+	eg, err := egress.New(egress.Config{AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ups := &upstream.Service{Store: en.st, Releases: &relSvc, Blob: en.blob, Fetch: eg, Authz: grants, MaxBody: 1 << 20, MaxIngests: 4,
+		TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler)}
 	apiH := api.New(api.Options{Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
-		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc})
+		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups})
 	h := serve.NewHandler(en.st, en.keys, en.blob, serve.Options{Log: slog.New(slog.DiscardHandler), Verifier: &auth.Verifier{Fetch: ks},
 		Server: server, PublicURL: publicURL, Auths: auths, API: apiH, MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,
 		WriteIdleTimeout: 10 * time.Second})

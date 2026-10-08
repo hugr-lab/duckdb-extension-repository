@@ -26,6 +26,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
 // Version is the API version reported by /api/v1/info.
@@ -53,9 +54,10 @@ type Options struct {
 	Authz            authz.Authorizer
 	Tenants          *tenants.Service
 	Auth             *tenants.AuthAdmin
-	Keys             *keys.Service    // phase 3
-	Releases         *release.Service // phase 3
-	AdminTokenMaxAge time.Duration    // default 1h
+	Keys             *keys.Service     // phase 3
+	Releases         *release.Service  // phase 3
+	Upstreams        *upstream.Service // spec 0009
+	AdminTokenMaxAge time.Duration     // default 1h
 	// Uploads (spec 0008): the largest file, the least read rate, and how many may run at once per
 	// principal and per tenant (defaults 2 and 8).
 	MaxBody, MinRate int64
@@ -564,6 +566,27 @@ func init() {
 			http.MethodDelete: m(pathAdmin, (*Handler).removeBlock)}},
 		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/{id}/{change}", map[string]rule{
 			http.MethodPost: m(pathAdmin, (*Handler).changeRelease)}},
+		// spec 0009: upstreams (tenant administrators; {entry}, never {ext}: an extension's
+		// administrators do not manage upstreams)
+		{"tenants/{t}/upstreams", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listUpstreams),
+			http.MethodPost: mb(pathAdmin, (*Handler).addUpstream)}},
+		{"tenants/{t}/upstreams/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getUpstream),
+			http.MethodDelete: m(pathAdmin, (*Handler).removeUpstream)}},
+		{"tenants/{t}/upstreams/{name}/public", map[string]rule{http.MethodPost: m(pathAdmin, upstreamAction(store.Public, ""))}},
+		{"tenants/{t}/upstreams/{name}/private", map[string]rule{http.MethodPost: m(pathAdmin, upstreamAction(store.Private, ""))}},
+		{"tenants/{t}/upstreams/{name}/pause", map[string]rule{http.MethodPost: m(pathAdmin, upstreamAction("", store.UpstreamPaused))}},
+		{"tenants/{t}/upstreams/{name}/resume", map[string]rule{http.MethodPost: m(pathAdmin, upstreamAction("", store.UpstreamActive))}},
+		{"tenants/{t}/upstreams/{name}/sync", map[string]rule{http.MethodPost: m(pathAdmin, (*Handler).syncUpstream)}},
+		{"tenants/{t}/upstreams/{name}/cells", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listCells)}},
+		{"tenants/{t}/upstreams/{name}/extensions", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listEntries),
+			http.MethodPost: mb(pathAdmin, (*Handler).putEntry)}},
+		{"tenants/{t}/upstreams/{name}/extensions/{entry}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeEntry)}},
+		{"tenants/{t}/upstreams/{name}/platforms", map[string]rule{http.MethodGet: m(pathAdmin, listUpstreamItems("platforms")),
+			http.MethodPost: mb(pathAdmin, addUpstreamItem("platforms"))}},
+		{"tenants/{t}/upstreams/{name}/platforms/{item}", map[string]rule{http.MethodDelete: m(pathAdmin, removeUpstreamItem("platforms"))}},
+		{"tenants/{t}/upstreams/{name}/keys", map[string]rule{http.MethodGet: m(pathAdmin, listUpstreamItems("keys")),
+			http.MethodPost: mb(pathAdmin, addUpstreamItem("keys"))}},
+		{"tenants/{t}/upstreams/{name}/keys/{item}", map[string]rule{http.MethodDelete: m(pathAdmin, removeUpstreamItem("keys"))}},
 	}
 }
 

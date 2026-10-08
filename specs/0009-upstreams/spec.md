@@ -1,6 +1,6 @@
 # Spec 0009: Upstreams
 
-- **Status**: draft
+- **Status**: accepted; phase 1a implemented, 1b next
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -138,14 +138,15 @@ verification"):
 1. **Fetch** through egress (spec 0006: public addresses unless the server allows a range, checked
    at every dial; no redirects; the deployment's own host refused) with a new streaming method: a
    compressed size cap of `blob.max_body` + 1 MiB, a rate floor of `upstreams.min_rate` (default
-   64 KiB/s) and `upstreams.fetch_timeout` (default 10m), with timeouts of its own (the JSON fetches'
+   64 KiB/s, applied after 30 seconds) and `upstreams.fetch_timeout` (default 10m), with timeouts of its own (the JSON fetches'
    10s does not apply). The answer goes to a temporary file first, outside the blob service's ingest
    slots, so a slow upstream never holds a slot; spooling and committing then use at most half of
    the replica's ingest slots (at least one), so runs never starve uploads.
    `If-None-Match` is sent with the cell's last ETag (at most 256 bytes) when the last outcome was
    `released`, `unchanged`, `yanked` or `conflict` (the same answer would change nothing); after
    any other outcome the cell is fetched again, so a fixed cause (a key, a filter, a block lifted, a
-   shadow removed) takes effect. `404` records the cell as `missing`; `304` keeps its outcome.
+   shadow removed) takes effect. `404` records the cell as `missing`; `304` keeps its outcome (a
+   `304` to a request that was not conditional is `failed`).
 2. **Decompress**: a gzip answer (by its magic bytes) is inflated under `blob.max_body` + 256 bytes;
    a plain answer is taken as is. The result goes into a spool (spec 0005: Spool, verify, Commit).
 3. **Signature**: the last 256 bytes verify over the spool's composite hash with the upstream's
@@ -189,17 +190,23 @@ and the reason, and counted in the run; it never stops the run. Spec 0010 makes 
 - **On demand** (1a): a tenant administrator asks for a run (`POST …/sync`, no `If-Match`, the
   upstream's `version` unchanged), which sets the upstream's `requested_at`. A **dry run**
   (`?dry_run=true`) fetches and checks every cell without releasing or committing anything, and
-  without sending `If-None-Match` or touching the cells: its counts and first 20 outcomes go to
-  `last_run`. A real request and a dry one pending together make one real run.
+  without sending `If-None-Match` or touching the cells or the schedule: its counts (`would_release`
+  for a cell it would release) and first 20 problems go to `last_run`. A real request and a dry one
+  pending together make one real run.
 - **Scheduled** (1b): every active `mirror` upstream is due at `next_run_at`, set to the end of its
   last run plus `upstreams.interval` (default 6h, within 15m..7d) with up to 10% jitter. Adding a
   DuckDB version to a channel, or a platform or entry to an upstream, makes the upstream due.
 - Every replica polls for due or requested upstreams every 30 seconds and runs one only while it
   holds the lease `kista/upstream/<id>` (renewed during the run). A request that arrives during a run
   is served by another run right after it.
-- Pausing an upstream stops a running run after the cell in progress.
+- A run follows the upstream as it is: it reads the record at most every two seconds and before each
+  cell, so pausing or removing the upstream stops the run after the cell in progress, and a removed
+  entry or platform, a narrowed version list or an unpinned key applies to the next cell. A run starts
+  only for an upstream that is active and requested or due when it starts (another replica may have
+  run it meanwhile). A run interrupted by a shutdown or a lost lease leaves its request for another
+  run; the lease is renewed during the run, every 30 seconds.
 - A run fetches at most `upstreams.concurrency` cells at a time per replica (default 4) and at most
-  2 at a time per upstream host per replica.
+  2 at a time per upstream host per replica (fixed).
 - A run records on the upstream its start, end, whether it was a dry run, and counts per outcome
   with the first 20 errors. The last outcome of each cell (ETag, body hash, outcome, detail, time)
   is kept in `upstream_cells`; cells that left the matrix (a DuckDB version, platform or entry
@@ -212,16 +219,19 @@ them) and removes its cells; the names it provided stop being reserved (below).
 
 - A name an upstream of a tenant provides is **reserved in the tenant** (spec 0001), like spec 0008's
   core and community names: publishing or promoting it needs a grant that names the extension. A
-  release insert that is not an upstream one, and every change to an allowlist, take the tenant's
-  lock `kista/tenant-upstreams/<id>` and then the channel lock (always in this order; the store's
-  transactions take several lock keys); the insert reads the reservation again under them, so an
-  upstream added between the authorization and the insert is seen.
+  release insert that is not an upstream one takes the tenant's lock `kista/tenant-upstreams/<id>` and
+  then the channel lock (always in this order; the store's transactions take several lock keys), and
+  reads the reservation again under them, so an upstream added between the authorization and the
+  insert is seen. Changes to allowlists take the tenant's lock only; upstream inserts the channel
+  lock only. Publications and promotions in one tenant are therefore serialized (each insert is
+  short).
 - Adding an upstream or an entry whose name has a live replacement in its channel is refused (`409`,
   naming the names) until an administrator drops the entry or yanks the releases. A replacement
   published into the channel later wins: the upstream's cells are `shadowed`.
-- The index's `shadows` (spec 0008) is empty for upstream releases and, for replacements of a name an
-  upstream of the tenant provides, `upstream` (a core or community name keeps `core` or
-  `community`). Adding or removing an entry bumps `release_version` on the tenant's channels, as a
+- The index's `shadows` (spec 0008) is empty for builds that came from an upstream (mirrored, or
+  promoted from a mirror) and, for replacements of a name an upstream of the tenant provides,
+  `upstream` (a core or community name keeps `core` or `community`). An upstream release's index row
+  carries `upstream`, the upstream's name. Adding or removing an entry bumps `release_version` on the tenant's channels, as a
   block does, so snapshots and index ETags follow.
 
 ### Passthrough channels (phase 1b)
@@ -285,7 +295,8 @@ Tenant administrators, with spec 0007's conventions (`ETag` and `If-Match` on th
 ```text
 GET, POST /api/v1/tenants/{t}/upstreams                  POST: 201, Location
 GET, DELETE …/upstreams/{name}                            the record, its last run and run state
-                                                          (idle, requested, running); DELETE: If-Match
+                                                          (idle, requested, dry_run_requested, running);
+                                                          DELETE: If-Match
 POST   …/upstreams/{name}/public, /private, /pause, /resume   If-Match
 GET, POST …/upstreams/{name}/extensions; DELETE …/extensions/{ext}   POST on an existing name
                                                           replaces its versions and allow_reserved (200)
@@ -296,16 +307,21 @@ GET    …/upstreams/{name}/cells[?outcome=&cursor=]
 GET    /api/v1/tenants/{t}/shadows; DELETE …/shadows/{name}   (phase 1b)
 ```
 
-`kind`, `prefix`, `channel` and `mode` are fixed at creation. Errors: `400` for an invalid field, a
-passthrough channel with a non-core upstream, a reserved or alias name not allowed, a `repository`
-whose keys are not listed; `409` for a duplicate name or a collision with releases; `412`/`428` per
+`kind`, `prefix`, `channel` and `mode` are fixed at creation. Every change to the record or its
+allowlist, platforms or keys moves its `version` (a sync does not). Errors: `400` for an invalid
+field, a passthrough channel with a non-core upstream, a reserved or alias name not allowed, a
+`repository` whose keys are not listed; `409` for a duplicate name, a name another upstream of the
+channel lists, a collision with releases, or a sync of a paused upstream; `412`/`428` per
 spec 0007. The index shows `origin: "upstream"` and the upstream's name on its releases to callers
 who see the row; `provenance` to tenant administrators.
 
 CLI: `kista admin upstream add|list|show|remove|sync|pause|resume|public|private <tenant> …`,
 `upstream extension|platform|key add|remove`, `upstream cells`, `shadow list|remove`.
 
-Config (`upstreams:`): `interval`, `concurrency`, `fetch_timeout`, `min_rate`, `negative_ttl`.
+Config (`upstreams:`): `concurrency`, `fetch_timeout`, `min_rate`; `interval` comes with phase 1b and
+`negative_ttl` with phase 2.
+
+Limits: 100 upstreams a tenant, 1,000 entries an upstream, 100 versions an entry, 10 pinned keys.
 
 ### Data model
 
@@ -314,8 +330,9 @@ the new reservation), on all three dialects, with child tables instead of JSON c
 
 ```text
 upstreams          id, tenant_id, name, kind, prefix null, channel_id, mode, visibility, state,
-                   version, requested_at null, dry_run, next_run_at null, last_run_at null,
-                   last_run (text) null, created_at, created_by        unique (tenant_id, name)
+                   version, requested_at null, request_dry_run, next_run_at null, last_run_at null,
+                   last_run (text) null, created_at, created_by        unique (tenant_id, name),
+                                                                       index (channel_id)
 upstream_keys      upstream_id, fingerprint                            primary key (both)
 upstream_platforms upstream_id, platform                               primary key (both)
 upstream_entries   upstream_id, name, allow_reserved                   primary key (upstream_id, name)
@@ -333,7 +350,8 @@ releases           + origin_signature (bytes) null
 
 ```text
 internal/upstream             upstream records, intake orchestration, runs, scheduler, pull-through
-internal/upstream/duckdbkeys  DuckDB's core and community keys and aliases, generated from the pin
+internal/upstream/duckdbkeys  DuckDB's core and community keys, generated from the pin
+internal/reserved             + the pin's extension aliases
 internal/egress               + a streaming, conditional fetch with a rate floor
 internal/release              + Ingest: an upstream build into a channel (signed, passthrough)
 internal/serve                + passthrough channels (1b); pull-through on a miss (2)

@@ -24,6 +24,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
 const adminUsage = `usage: kista admin -config <file> <command> ...
@@ -71,6 +72,15 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   publisher key add <tenant> <name> -expires <90d|RFC 3339>   prints the key, once
   publisher key list <tenant> <name>
   publisher key remove <tenant> <name> <key-id>
+  upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
+               -platforms <p,...> [-extensions <name,...>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
+  upstream list <tenant>
+  upstream show|remove|pause|resume|public|private <tenant> <name>
+  upstream sync <tenant> <name> [-dry-run]        a running kista serve takes the run
+  upstream cells <tenant> <name> [-outcome <outcome>]
+  upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved]
+  upstream extension remove <tenant> <name> <extension>
+  upstream platform|key add|remove <tenant> <name> <platform|fingerprint>
   block add <tenant> <body-hash> -reason <text>   ban a body tenant-wide: its releases are yanked
   block list <tenant>
   block remove <tenant> <body-hash>
@@ -231,6 +241,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.block(ctx, sub, args[min(2, len(args)):])
 	case "publisher":
 		return a.publisher(ctx, sub, args[min(2, len(args)):])
+	case "upstream":
+		return a.upstream(ctx, sub, args[min(2, len(args)):])
 	case "blob":
 		if sub != "check" || len(args) != 2 {
 			return errUsage
@@ -905,5 +917,163 @@ func (a *adminCmd) publisherKey(ctx context.Context, sub string, args []string) 
 	default:
 		return errUsage
 	}
+	return nil
+}
+
+func commaList(s string) []string {
+	var out []string
+	for _, x := range strings.Split(s, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) error {
+	if sub == "extension" || sub == "platform" || sub == "key" {
+		if len(args) == 0 {
+			return errUsage
+		}
+		return a.upstreamItem(ctx, sub, args[0], args[1:])
+	}
+	fs := flag.NewFlagSet("upstream", flag.ContinueOnError)
+	kind := fs.String("kind", "", "")
+	channel := fs.String("channel", "", "")
+	platforms := fs.String("platforms", "", "")
+	extensions := fs.String("extensions", "", "")
+	prefix := fs.String("prefix", "", "")
+	keys := fs.String("keys", "", "")
+	public := fs.Bool("public", false, "")
+	dryRun := fs.Bool("dry-run", false, "")
+	outcome := fs.String("outcome", "", "")
+	pos, err := flags(fs, args)
+	if err != nil {
+		return err
+	}
+	show := func(u store.Upstream) {
+		fmt.Fprintf(a.out, "name: %s\nkind: %s\nstate: %s\nvisibility: %s\nplatforms: %s\n", u.Name, u.Kind, u.State, u.Visibility,
+			strings.Join(u.Platforms, ","))
+		if u.Prefix != "" {
+			fmt.Fprintf(a.out, "prefix: %s\nkeys: %s\n", u.Prefix, strings.Join(u.Keys, ","))
+		}
+		for _, e := range u.Entries {
+			fmt.Fprintf(a.out, "extension: %s %s%s\n", e.Name, strings.Join(e.Versions, ","), map[bool]string{true: " (allow reserved)"}[e.AllowReserved])
+		}
+		if !u.RequestedAt.IsZero() {
+			fmt.Fprintf(a.out, "run: requested %s\n", ts(u.RequestedAt))
+		}
+		if u.LastRun != "" {
+			fmt.Fprintf(a.out, "last run: %s\n", u.LastRun)
+		}
+	}
+	switch {
+	case sub == "add" && len(pos) == 2:
+		sp := upstream.Spec{Name: pos[1], Kind: *kind, Channel: *channel, Prefix: *prefix, Keys: commaList(*keys),
+			Platforms: commaList(*platforms), Visibility: store.Private}
+		if *public {
+			sp.Visibility = store.Public
+		}
+		for _, n := range commaList(*extensions) {
+			sp.Entries = append(sp.Entries, store.UpstreamEntry{Name: n})
+		}
+		u, err := a.svc.Upstreams.Add(ctx, a.actor, pos[0], sp)
+		if err != nil {
+			return err
+		}
+		a.logf("upstream add %s %s (%s, channel %s)", pos[0], u.Name, u.Kind, *channel)
+	case sub == "list" && len(pos) == 1:
+		us, err := a.svc.Upstreams.List(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tKIND\tSTATE\tVISIBILITY\tEXTENSIONS\tLAST RUN", func(w io.Writer) {
+			for _, u := range us {
+				last := "-"
+				if !u.LastRunAt.IsZero() {
+					last = ts(u.LastRunAt)
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n", u.Name, u.Kind, u.State, u.Visibility, len(u.Entries), last)
+			}
+		})
+	case sub == "show" && len(pos) == 2:
+		u, err := a.svc.Upstreams.Get(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		show(u)
+	case sub == "remove" && len(pos) == 2:
+		if err := a.svc.Upstreams.Remove(ctx, a.actor, pos[0], pos[1], 0); err != nil {
+			return err
+		}
+		a.logf("upstream remove %s %s", pos[0], pos[1])
+	case (sub == "pause" || sub == "resume" || sub == "public" || sub == "private") && len(pos) == 2:
+		vis, state := map[string]string{"public": store.Public, "private": store.Private}[sub],
+			map[string]string{"pause": store.UpstreamPaused, "resume": store.UpstreamActive}[sub]
+		if _, err := a.svc.Upstreams.Set(ctx, a.actor, pos[0], pos[1], vis, state, 0); err != nil {
+			return err
+		}
+		a.logf("upstream %s %s %s", sub, pos[0], pos[1])
+	case sub == "sync" && len(pos) == 2:
+		if _, err := a.svc.Upstreams.Sync(ctx, a.actor, pos[0], pos[1], *dryRun); err != nil {
+			return err
+		}
+		a.logf("upstream sync %s %s (dry run: %v): a running kista serve takes it", pos[0], pos[1], *dryRun)
+	case sub == "cells" && len(pos) == 2:
+		var after [3]string
+		a.table("DUCKDB\tPLATFORM\tNAME\tOUTCOME\tFETCHED\tDETAIL", func(w io.Writer) {
+			for {
+				cs, err := a.svc.Upstreams.Cells(ctx, a.actor, pos[0], pos[1], *outcome, after, 500)
+				if err != nil {
+					fmt.Fprintf(w, "error: %v\n", err)
+					return
+				}
+				for _, c := range cs {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", c.DuckDBVersion, c.Platform, c.Name, c.Outcome, ts(c.FetchedAt), c.Detail)
+				}
+				if len(cs) < 500 {
+					return
+				}
+				l := cs[len(cs)-1]
+				after = [3]string{l.DuckDBVersion, l.Platform, l.Name}
+			}
+		})
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+func (a *adminCmd) upstreamItem(ctx context.Context, what, sub string, args []string) error {
+	fs := flag.NewFlagSet("upstream "+what, flag.ContinueOnError)
+	versions := fs.String("versions", "", "")
+	allowReserved := fs.Bool("allow-reserved", false, "")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) != 3 || (sub != "add" && sub != "remove") {
+		return errUsage
+	}
+	if what != "extension" && (*versions != "" || *allowReserved) {
+		return errUsage
+	}
+	t, name, item := pos[0], pos[1], pos[2]
+	up := a.svc.Upstreams
+	switch what + " " + sub {
+	case "extension add":
+		_, err = up.PutEntry(ctx, a.actor, t, name, store.UpstreamEntry{Name: item, Versions: commaList(*versions), AllowReserved: *allowReserved})
+	case "extension remove":
+		err = up.RemoveEntry(ctx, a.actor, t, name, item)
+	case "platform add":
+		err = up.AddPlatform(ctx, a.actor, t, name, item)
+	case "platform remove":
+		err = up.RemovePlatform(ctx, a.actor, t, name, item)
+	case "key add":
+		err = up.AddKey(ctx, a.actor, t, name, item)
+	case "key remove":
+		err = up.RemoveKey(ctx, a.actor, t, name, item)
+	}
+	if err != nil {
+		return err
+	}
+	a.logf("upstream %s %s %s %s %s", what, sub, t, name, item)
 	return nil
 }

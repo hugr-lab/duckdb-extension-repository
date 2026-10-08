@@ -139,6 +139,30 @@ func TestAdminCLI(t *testing.T) {
 	run(1, "release", "add", "acme/staging", file, "-name", "tresor", "-unchecked")                   // blocked (a fresh slot)
 	run(1, "release", "promote", "acme/staging", "-name", "tresor", "-from", "prod", "-release", rid) // unchecked and yanked
 	run(0, "block", "remove", "acme", f.Hash.String())
+	// upstreams (spec 0009)
+	run(0, "upstream", "add", "acme", "core", "-kind", "duckdb-core", "-channel", "staging", "-platforms", "linux_amd64,osx_arm64",
+		"-extensions", "json,parquet")
+	run(1, "upstream", "add", "acme", "bad", "-kind", "duckdb-core", "-channel", "staging", "-platforms", "linux_amd64", "-extensions", "postgres")
+	run(1, "upstream", "add", "acme", "bad", "-kind", "repository", "-channel", "staging", "-platforms", "linux_amd64")
+	run(0, "upstream", "extension", "add", "acme", "core", "httpfs", "-versions", "abc,def")
+	run(2, "upstream", "platform", "add", "acme", "core", "linux_arm64", "-versions", "x")
+	run(0, "upstream", "platform", "remove", "acme", "core", "osx_arm64")
+	run(1, "upstream", "key", "add", "acme", "core", "sha256:"+strings.Repeat("a", 64))
+	if got := run(0, "upstream", "show", "acme", "core"); !strings.Contains(got, "extension: httpfs abc,def") || strings.Contains(got, "osx_arm64") {
+		t.Fatalf("upstream show: %q", got)
+	}
+	run(0, "upstream", "sync", "acme", "core", "-dry-run")
+	if got := run(0, "upstream", "show", "acme", "core"); !strings.Contains(got, "run: requested") {
+		t.Fatalf("a requested run: %q", got)
+	}
+	run(0, "upstream", "pause", "acme", "core")
+	run(1, "upstream", "sync", "acme", "core")
+	if got := run(0, "upstream", "list", "acme"); !strings.Contains(got, "paused") {
+		t.Fatalf("upstream list: %q", got)
+	}
+	run(0, "upstream", "cells", "acme", "core")
+	run(0, "upstream", "remove", "acme", "core")
+	run(1, "upstream", "show", "acme", "core")
 	run(1, "block", "remove", "acme", f.Hash.String())
 	// issuers, audiences, grants (an explicit JWKS URI: no discovery from the test)
 	run(0, "issuer", "add", "acme", "-name", "corp", "-url", "https://login.example/t1/v2.0",

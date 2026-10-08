@@ -11,7 +11,7 @@ build:
 test:
 	go test ./...
 
-# The reserved extension names (spec 0008) from DuckDB at e2e/DUCKDB_PIN and community-extensions at
+# The reserved extension names (spec 0008), aliases and DuckDB's keys (spec 0009) from DuckDB at e2e/DUCKDB_PIN and community-extensions at
 # internal/reserved/COMMUNITY_PIN; CI checks the committed lists are current.
 reserved:
 	./internal/reserved/generate.sh

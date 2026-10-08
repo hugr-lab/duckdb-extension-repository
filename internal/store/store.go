@@ -54,10 +54,19 @@ func (t *Tx) Now() time.Time { return t.s.Now() }
 // other error, ErrConflict included, rolls back and returns: a compare-and-set against a stale
 // version never succeeds by repeating it.
 func (s *Store) InTx(ctx context.Context, lockKey string, fn func(*Tx) error) error {
-	return s.tx(ctx, lockKey, fn)
+	if lockKey == "" {
+		return s.tx(ctx, nil, fn)
+	}
+	return s.tx(ctx, []string{lockKey}, fn)
 }
 
-func (s *Store) tx(ctx context.Context, lockKey string, fn func(*Tx) error) error {
+// InTxLocks is InTx holding several lock keys, taken in the order given: callers that take the same
+// keys take them in one order (spec 0009: the tenant's upstream lock, then a channel's).
+func (s *Store) InTxLocks(ctx context.Context, lockKeys []string, fn func(*Tx) error) error {
+	return s.tx(ctx, lockKeys, fn)
+}
+
+func (s *Store) tx(ctx context.Context, lockKeys []string, fn func(*Tx) error) error {
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
@@ -68,7 +77,7 @@ func (s *Store) tx(ctx context.Context, lockKey string, fn func(*Tx) error) erro
 			case <-time.After(d):
 			}
 		}
-		err = s.once(ctx, lockKey, fn)
+		err = s.once(ctx, lockKeys, fn)
 		if err == nil {
 			return nil
 		}
@@ -82,7 +91,7 @@ func (s *Store) tx(ctx context.Context, lockKey string, fn func(*Tx) error) erro
 	return err
 }
 
-func (s *Store) once(ctx context.Context, lockKey string, fn func(*Tx) error) (err error) {
+func (s *Store) once(ctx context.Context, lockKeys []string, fn func(*Tx) error) (err error) {
 	sqlTx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -100,8 +109,8 @@ func (s *Store) once(ctx context.Context, lockKey string, fn func(*Tx) error) (e
 	if err = s.d.begin(ctx, sqlTx, s.LockTimeout); err != nil {
 		return err
 	}
-	if lockKey != "" {
-		if err = s.d.lock(ctx, sqlTx, lockKey, s.LockTimeout); err != nil {
+	for _, k := range lockKeys {
+		if err = s.d.lock(ctx, sqlTx, k, s.LockTimeout); err != nil {
 			return err
 		}
 	}
