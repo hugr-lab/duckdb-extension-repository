@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,17 +100,41 @@ func (s *Service) create() (string, *os.File, error) {
 	return name, f, nil
 }
 
+// ErrRead is an incoming file that could not be read whole: the client stopped, or was too slow.
+var ErrRead = errors.New("blob: the file could not be read whole")
+
+// ErrBusy is SpoolNoWait's answer when every ingest slot is taken.
+var ErrBusy = errors.New("blob: every ingest slot is taken; try again")
+
 // Spool reads a whole extension file (at most max_body + the signature) into the spool for domain,
 // and parses it. The caller verifies File() and then calls Commit; it always calls Close.
 func (s *Service) Spool(ctx context.Context, domain string, r io.Reader) (*Spool, error) {
+	return s.spoolFile(ctx, domain, r, true)
+}
+
+// SpoolNoWait is Spool, failing with ErrBusy instead of waiting for an ingest slot (an upload holds
+// its client's connection; spec 0008).
+func (s *Service) SpoolNoWait(ctx context.Context, domain string, r io.Reader) (*Spool, error) {
+	return s.spoolFile(ctx, domain, r, false)
+}
+
+func (s *Service) spoolFile(ctx context.Context, domain string, r io.Reader, wait bool) (*Spool, error) {
 	d, err := s.domain(domain)
 	if err != nil {
 		return nil, err
 	}
-	select {
-	case s.sem <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	if wait {
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	} else {
+		select {
+		case s.sem <- struct{}{}:
+		default:
+			return nil, ErrBusy
+		}
 	}
 	name, f, err := s.create()
 	if err != nil {
@@ -126,7 +151,11 @@ func (s *Service) Spool(ctx context.Context, domain string, r io.Reader) (*Spool
 	limit := s.maxBody + extfile.SignatureSize
 	n, err := io.Copy(sp.f, io.LimitReader(ctxReader{ctx, r}, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("blob: spool: %w", err)
+		var pe *fs.PathError
+		if errors.As(err, &pe) { // the spool file, not the incoming reader
+			return nil, fmt.Errorf("blob: spool: %w", err)
+		}
+		return nil, fmt.Errorf("%w: %w", ErrRead, err)
 	}
 	if n > limit {
 		return nil, ErrTooLarge

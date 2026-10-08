@@ -1,0 +1,2 @@
+# Names DuckDB owns that the pin does not show: curated, never shrinking (spec 0008).
+jemalloc

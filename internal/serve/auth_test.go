@@ -87,8 +87,8 @@ func bearerHdr(tok string) map[string]string {
 
 func TestAnswerTable(t *testing.T) {
 	en, idp, adm := authEnv(t, "https")
-	pub := en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Name: "tresor"})
-	priv := en.add(t, ext(t, 2000, 2, cpp("1.1")), release.AddOptions{Name: "tresor", Private: true})
+	pub := en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
+	priv := en.add(t, ext(t, 2000, 2, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor", Private: true})
 	tok := idp.token(t, nil)
 	const (
 		privPath = "/acme/prod/tresor/1.1/v2.0.0/linux_amd64/tresor.duckdb_extension.gz"
@@ -218,7 +218,7 @@ func TestAnswerTable(t *testing.T) {
 // Over plain http a token is never used.
 func TestTokenOverHTTP(t *testing.T) {
 	en, idp, adm := authEnv(t, "http")
-	en.add(t, ext(t, 2000, 2, cpp("1.1")), release.AddOptions{Name: "tresor", Private: true})
+	en.add(t, ext(t, 2000, 2, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor", Private: true})
 	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, "", ""); err != nil {
 		t.Fatal(err)
 	}

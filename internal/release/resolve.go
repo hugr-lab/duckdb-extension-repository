@@ -21,6 +21,9 @@ type Snapshot struct {
 	Keys     []store.Key             // signed channels; a key change bumps channels.version
 	// ServingKey is the serving key's fingerprint ("" without one); a move bumps release_version.
 	ServingKey string
+	// Blocked are the tenant's blocked body hashes (spec 0008); a block or unblock bumps
+	// release_version on every signed channel of the tenant.
+	Blocked map[string]bool
 
 	groups    map[group][]*store.Candidate // by (name, platform), in Releases order
 	platforms map[string][]string          // by name, sorted
@@ -312,5 +315,9 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 			return nil, err
 		}
 	}
-	return NewSnapshot(c, rels, capis, keys), nil
+	snap := NewSnapshot(c, rels, capis, keys)
+	if snap.Blocked, err = s.Store.BlockedHashes(ctx, c.TenantID); err != nil {
+		return nil, err
+	}
+	return snap, nil
 }

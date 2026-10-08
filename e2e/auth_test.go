@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -11,15 +12,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
@@ -223,4 +229,118 @@ func TestAPIItemThenInstall(t *testing.T) {
 	mustOK(t, res[:6])
 	mustFail(t, res[6], "failed to install")
 	mustOK(t, res[7:])
+}
+
+// Spec 0008: CI publishes into staging through the API, a release manager promotes the version to
+// prod, DuckDB installs and loads it; reserved names need grants naming them; a binary under
+// another name is refused; a block stops installs.
+func TestPublishPromoteInstall(t *testing.T) {
+	b := needBuild(t)
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	idp := &e2eIDP{key: key}
+	k := startKistaWith(t, b, &auth.Verifier{Fetch: idp})
+	ctx := context.Background()
+	aud := "https://" + k.addr + "/acme"
+	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: aud[:len(aud)-5]}
+	if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
+		t.Fatal(err)
+	}
+	// a staging channel with its own key
+	if _, err := k.ten.CreateChannel(ctx, serveAdmin, "acme", "staging", store.ChannelSigned); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.ten.SetChannelVersions(ctx, serveAdmin, "acme", "staging", []string{b.versionDir}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := signer.GenerateKeyFile(filepath.Join(k.keyDir, "s.pem")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.keys.Add(ctx, serveAdmin, "acme", "staging", "file:s.pem", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []struct{ sub, verb, channel, ext string }{
+		{"ci", "publish", "staging", ""},          // channel-wide: not demo_capi, a core name
+		{"ci", "publish", "staging", "demo_capi"}, // named
+		{"cw", "publish", "staging", ""},          // channel-wide only
+		{"rm", "promote", "prod", "loadable_extension_demo"},
+		{"rm", "publish", "staging", "loadable_extension_demo"},
+		{"tom", "admin", "", ""},
+	} {
+		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|"+g.sub, []string{g.verb}, g.channel, g.ext); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pool := x509.NewCertPool()
+	pemBytes, _ := os.ReadFile(testCA(t).caFile)
+	pool.AppendCertsFromPEM(pemBytes)
+	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	call := func(method, path, sub, ctype string, body []byte) (int, map[string]any) {
+		req, _ := http.NewRequest(method, "https://"+k.addr+path, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+idp.token(t, sub, aud))
+		if ctype != "" {
+			req.Header.Set("Content-Type", ctype)
+		}
+		resp, err := hc.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var m map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&m)
+		return resp.StatusCode, m
+	}
+	file := func(name string) []byte {
+		data, err := os.ReadFile(b.extensions[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	q := "/releases?version=default-version&platform=" + b.platform + "&visibility=public"
+	S := "/api/v1/tenants/acme/channels/staging/extensions/"
+	if st, m := call("POST", S+"loadable_extension_demo"+q, "ci", "application/octet-stream", file("loadable_extension_demo")); st != 201 {
+		t.Fatalf("publish: %d %v", st, m)
+	}
+	// the demo's binary under another name: its entry point is not that name's
+	if st, m := call("POST", S+"other_ext"+q, "ci", "application/octet-stream", file("loadable_extension_demo")); st != 400 ||
+		!strings.Contains(fmt.Sprint(m["detail"]), "entry point") {
+		t.Fatalf("another name: %d %v", st, m)
+	}
+	// demo_capi is a core name: the channel-wide grant does not reach it, the named one does
+	capi := file("demo_capi")
+	f, err := extfile.Open(bytes.NewReader(capi), int64(len(capi)), 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capiPath := S + "demo_capi/releases?version=" + f.Metadata.ExtensionVersion + "&platform=" + b.platform + "&visibility=public"
+	if st, m := call("POST", capiPath, "cw", "application/octet-stream", capi); st != 404 {
+		t.Fatalf("demo_capi with a channel-wide grant only: %d %v", st, m)
+	}
+	if st, m := call("POST", capiPath, "ci", "application/octet-stream", capi); st != 201 || m["shadows"] != "core" {
+		t.Fatalf("demo_capi with a named grant: %d %v", st, m)
+	}
+	// promote the version to prod
+	st, m := call("POST", "/api/v1/tenants/acme/channels/prod/extensions/loadable_extension_demo/releases/promote", "rm",
+		"application/json", []byte(`{"from_channel":"staging","version":"default-version"}`))
+	if st != 201 {
+		t.Fatalf("promote: %d %v", st, m)
+	}
+	hash := m["releases"].([]any)[0].(map[string]any)["body_hash"].(string)
+	pemKey := k.pem(t, k.activeKey(t))
+	res := newSession(t, b, nil).exec(
+		createRepo("p", k.httpURL(), pemKey),
+		"INSTALL loadable_extension_demo FROM p",
+		"LOAD loadable_extension_demo FROM p",
+	)
+	mustOK(t, res)
+	// a block yanks it: DuckDB cannot install it any more
+	if st, m := call("POST", "/api/v1/tenants/acme/blocks", "tom", "application/json",
+		[]byte(`{"body_hash":"`+hash+`","reason":"e2e"}`)); st != 201 {
+		t.Fatalf("block: %d %v", st, m)
+	}
+	res = newSession(t, b, nil).exec(
+		createRepo("p", k.httpURL(), pemKey),
+		"FORCE INSTALL loadable_extension_demo FROM p",
+	)
+	mustFail(t, res[1], "failed to download") // 401: as missing, to an anonymous client
 }

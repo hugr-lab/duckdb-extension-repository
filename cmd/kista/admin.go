@@ -42,7 +42,7 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
          key has dots of its own: '["https://example.com/roles"]' 
   issuer list <tenant>
   issuer remove <tenant> <name>                   removes its grants too
-  grant add <tenant> -principal kind:issuer|value -verb install|admin... [-channel c] [-extension x]
+  grant add <tenant> -principal kind:issuer|value -verb install|admin|publish|promote... [-channel c] [-extension x]
   grant list <tenant>
   grant remove <tenant> <grant-id>
   version add <name> -kind release|dev [-c-api v1.5.6]...   one maximum C API per major
@@ -58,9 +58,14 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   key retire <tenant>/<channel> <key-id|fingerprint> [-force]
   key events <tenant>/<channel>
   key resign <tenant>/<channel>                   sign releases with the active key; move the serving key
-  release add <tenant>/<channel> <file|-> -name <name> [-private] [-not-current]
+  release add <tenant>/<channel> <file|-> -name <name> [-private] [-not-current] [-unchecked]
   release list <tenant>/<channel> [-name <name>]
   release yank|deprecate|activate|current|public|private <tenant>/<channel> <release-id>
+  release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> | -version <v>)
+                  [-private] [-not-current]               release Builds of another channel here
+  block add <tenant> <body-hash> -reason <text>   ban a body tenant-wide: its releases are yanked
+  block list <tenant>
+  block remove <tenant> <body-hash>
   wellknown <tenant>/<channel>
   blob check                                      pin and check the storage domains, list tenants without one
 `
@@ -214,6 +219,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.issuer(ctx, sub, args[min(2, len(args)):])
 	case "grant":
 		return a.grant(ctx, sub, args[min(2, len(args)):])
+	case "block":
+		return a.block(ctx, sub, args[min(2, len(args)):])
 	case "blob":
 		if sub != "check" || len(args) != 2 {
 			return errUsage
@@ -513,6 +520,10 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 	name := fs.String("name", "", "")
 	private := fs.Bool("private", false, "")
 	notCurrent := fs.Bool("not-current", false, "")
+	unchecked := fs.Bool("unchecked", false, "")
+	from := fs.String("from", "", "")
+	relID := fs.String("release", "", "")
+	version := fs.String("version", "", "")
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) == 0 {
 		return errUsage
@@ -538,7 +549,8 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 		}
 		defer func() { _ = svc.Close() }()
 		a.svc.WithBlob(svc)
-		r, existed, err := a.svc.Releases.Add(ctx, a.actor, t, c, in, release.AddOptions{Name: *name, Private: *private, NotCurrent: *notCurrent})
+		r, existed, err := a.svc.Releases.Add(ctx, a.actor, t, c, in, release.AddOptions{Name: *name, Private: *private,
+			NotCurrent: *notCurrent, Unchecked: *unchecked})
 		if err != nil {
 			return err
 		}
@@ -563,6 +575,19 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 					r.State, r.Visibility, seq, ts(r.CreatedAt))
 			}
 		})
+	case sub == "promote" && len(pos) == 1 && *name != "" && *from != "":
+		rs, existed, err := a.svc.Releases.Promote(ctx, a.actor, t, c, *name, release.PromoteOptions{From: *from,
+			Release: *relID, Version: *version, Private: *private, NotCurrent: *notCurrent})
+		if err != nil {
+			return err
+		}
+		if existed {
+			fmt.Fprintln(a.errw, "the releases already exist")
+		}
+		for _, r := range rs {
+			a.logf("release promote %s/%s -> %s/%s %s %s %s %s", t, *from, t, c, r.Name, r.ExtVersion, r.Platform, r.Slot)
+			fmt.Fprintln(a.out, r.ID)
+		}
 	case len(pos) == 2 && slices.Contains([]string{"yank", "deprecate", "activate", "current", "public", "private"}, sub):
 		r, err := a.svc.Releases.Apply(ctx, a.actor, t, c, "", pos[1], release.Change(sub), 0)
 		if err != nil {
@@ -698,6 +723,44 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 			return err
 		}
 		a.logf("grant remove %s %s", pos[0], pos[1])
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+func (a *adminCmd) block(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("block", flag.ContinueOnError)
+	reason := fs.String("reason", "", "")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) == 0 {
+		return errUsage
+	}
+	switch {
+	case sub == "add" && len(pos) == 2 && *reason != "":
+		b, existed, err := a.svc.Releases.Block(ctx, a.actor, pos[0], pos[1], *reason)
+		if err != nil {
+			return err
+		}
+		if existed {
+			fmt.Fprintln(a.errw, "the body was blocked already; its releases are yanked")
+		}
+		a.logf("block add %s %s", pos[0], b.BodyHash)
+	case sub == "list" && len(pos) == 1:
+		bs, err := a.svc.Releases.ListBlocks(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		a.table("BODY HASH\tREASON\tCREATED\tBY", func(w io.Writer) {
+			for _, b := range bs {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", b.BodyHash, b.Reason, ts(b.CreatedAt), b.CreatedBy)
+			}
+		})
+	case sub == "remove" && len(pos) == 2:
+		if err := a.svc.Releases.Unblock(ctx, a.actor, pos[0], pos[1]); err != nil {
+			return err
+		}
+		a.logf("block remove %s %s", pos[0], pos[1])
 	default:
 		return errUsage
 	}

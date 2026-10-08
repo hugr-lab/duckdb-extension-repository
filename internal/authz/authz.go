@@ -49,11 +49,19 @@ func OSActor() Actor {
 // Verb is what an actor wants to do. Reading management data needs admin too (spec 0007).
 type Verb string
 
-const VerbAdmin Verb = "admin"
+const (
+	VerbAdmin   Verb = "admin"
+	VerbPublish Verb = "publish" // spec 0008: never implied by admin
+	VerbPromote Verb = "promote"
+)
 
 // Resource is what an action is on: the server (no tenant), a tenant, a channel, or an extension
-// in a channel (or in every channel).
-type Resource struct{ Tenant, Channel, Extension string }
+// in a channel (or in every channel). Reserved marks an extension name DuckDB owns (spec 0008):
+// only grants that name it reach it.
+type Resource struct {
+	Tenant, Channel, Extension string
+	Reserved                   bool
+}
 
 // Server is the server-wide resource: tenants, DuckDB versions, audiences, signer references, force.
 var Server = Resource{}
@@ -117,18 +125,23 @@ func (g Grants) Allow(ctx context.Context, a Actor, verb Verb, r Resource) error
 
 // Covers reports whether principals hold verb on a resource: a grant without a channel or extension
 // covers the tenant and everything in it, one on a channel that channel and everything in it, one on
-// an extension that extension's releases (channels are compared by name: a tenant's are unique
-// and never renamed) (in its channel, or every channel). admin implies every verb
-// except on an issuer-wide grant, which never carries admin's rights.
+// an extension that extension's releases, in its channel or every channel (channels are compared
+// by name: a tenant's are unique and never renamed). admin implies every verb but publish and
+// promote (spec 0008), except on an issuer-wide grant, which never carries admin's rights. For
+// publish and promote, a reserved name is reached only by a grant naming it.
 func Covers(p auth.Principals, grants []store.Grant, verb string, r Resource) bool {
+	explicit := verb == store.VerbPublish || verb == store.VerbPromote
 	for _, g := range grants {
 		if !p[auth.Key{IssuerID: g.IssuerID, Kind: g.Kind, Value: g.Value}] {
 			continue
 		}
-		if g.Kind == store.PrincipalIssuer && (verb == store.VerbAdmin || !slices.Contains(g.Verbs, verb)) {
+		if g.Kind == store.PrincipalIssuer && (verb == store.VerbAdmin || explicit || !slices.Contains(g.Verbs, verb)) {
 			continue
 		}
-		if !slices.Contains(g.Verbs, verb) && !slices.Contains(g.Verbs, store.VerbAdmin) {
+		if !slices.Contains(g.Verbs, verb) && (explicit || !slices.Contains(g.Verbs, store.VerbAdmin)) {
+			continue
+		}
+		if r.Reserved && explicit && g.Extension == "" {
 			continue
 		}
 		switch {

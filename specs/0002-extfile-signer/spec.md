@@ -49,7 +49,7 @@ against a real DuckDB binary.
 **File layout**, as DuckDB reads it (`FOOTER_SIZE = 512`, `src/include/duckdb/main/extension.hpp:45`):
 
 ```text
-[ code ... ][ 19-byte prefix ][ metadata: 8 x 32 bytes ][ signature: 256 bytes ]
+[ code ... ][ 22-byte prefix ][ metadata: 8 x 32 bytes ][ signature: 256 bytes ]
  └──────────────────────── body (hashed and signed) ──┘
 ```
 

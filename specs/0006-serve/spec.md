@@ -415,9 +415,10 @@ administrators: no tenant principal ever matches a server one.
 - Resource: the tenant; a channel; an extension name (in every channel of the tenant, including
   future ones, or in one channel).
 - Verbs here: `install` and `admin` (`admin` implies every verb on its resource: the tenant, a
-  channel, or an extension; spec 0007 refuses `admin` on an `issuer:` grant when it is added and
-  ignores it on rows added before, since every account of the issuer would hold it). An identical grant is not added twice.
-  `publish` and `promote` come with spec 0008, `audit` with spec 0010.
+  channel, or an extension, except spec 0008's `publish` and `promote`; spec 0007 refuses `admin` on
+  an `issuer:` grant when it is added and ignores it on rows added before, since every account of
+  the issuer would hold it). An identical grant is not added twice. `publish` and `promote` come
+  with spec 0008, `audit` with spec 0010.
 - An `issuer:` grant is refused unless the record has `required_claims`.
 - `kista admin grant add|list|remove <tenant> -principal … -verb … [-channel …] [-extension …]`.
   Grant management over HTTP, and who besides server administrators may do it, is spec 0007.
@@ -547,8 +548,8 @@ as spec 0005 or audit as spec 0009 are corrected.
   versions, channels, keys with provisioning, issuers, audiences, grants, releases), with server
   administrators (`server:` principals) and grant management by tenant administrators.
 - Spec 0008: publication (upload, publishers, API keys, trusted publishing, the init-symbol binding,
-  reserved names, blocks; blocks join resolution under the same "same work" rule), and an extension's
-  default visibility.
+  reserved names, blocks; spec 0008 yanks a blocked body's releases instead of joining resolution),
+  and an extension's default visibility (spec 0008 defaults a publication to private instead).
 - Spec 0009: upstreams, passthrough serving, and shadowing of core names in passthrough channels.
 - Spec 0010: audit, including serve-path events (installs by principal, anonymous counters,
   rate-limited `401` events).

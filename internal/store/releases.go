@@ -23,8 +23,6 @@ const (
 
 	Public  = "public"
 	Private = "private"
-
-	OriginAdmin = "admin"
 )
 
 // CAPI is a C API version: for a Build the version it was built for, for a DuckDB version the
@@ -63,6 +61,7 @@ type Build struct {
 	CAPI                                          *CAPI  // c_struct
 	BodyHash, Origin                              string
 	OriginSignature                               []byte
+	Checked                                       bool // passed spec 0008's file checks; set once, never cleared
 	CreatedAt                                     time.Time
 	CreatedBy                                     string
 }
@@ -76,7 +75,16 @@ type Release struct {
 	CreatedAt, StateChangedAt        time.Time
 	CreatedBy, StateChangedBy        string
 	Version                          int64
+	Origin                           string // admin | publication | promotion (spec 0008)
+	Provenance                       string // JSON, at most 4,000 bytes; "" when none
 }
+
+// Origins of builds and releases.
+const (
+	OriginAdmin       = "admin"
+	OriginPublication = "publication"
+	OriginPromotion   = "promotion"
+)
 
 // Slot is a build's slot in a channel: the exact DuckDB version, or capi:<major>.
 func (b Build) Slot() string {
@@ -87,14 +95,14 @@ func (b Build) Slot() string {
 }
 
 const buildCols = `id, tenant_id, name, ext_version, platform, abi, duckdb_version, c_api_major, c_api_minor,
-c_api_patch, body_hash, origin, origin_signature, created_at, created_by`
+c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked`
 
 func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 	var b Build
 	var dv sql.NullString
 	var ma, mi, pa sql.NullInt64
 	err := r.Scan(&b.ID, &b.TenantID, &b.Name, &b.ExtVersion, &b.Platform, &b.ABI, &dv, &ma, &mi, &pa,
-		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy)
+		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy, &b.Checked)
 	b.DuckDBVersion = dv.String
 	if ma.Valid {
 		b.CAPI = &CAPI{int(ma.Int64), int(mi.Int64), int(pa.Int64)}
@@ -103,16 +111,17 @@ func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 }
 
 const releaseCols = `r.id, r.tenant_id, r.channel_id, r.build_id, r.name, r.ext_version, r.platform, r.slot, r.state,
-r.visibility, r.seq, r.created_at, r.created_by, r.state_changed_at, r.state_changed_by, r.version`
+r.visibility, r.seq, r.created_at, r.created_by, r.state_changed_at, r.state_changed_by, r.version, r.origin, r.provenance`
 
 func scanRelease(r interface{ Scan(...any) error }, extra ...any) (Release, error) {
 	var x Release
 	var seq sql.NullInt64
+	var prov sql.NullString
 	dst := []any{&x.ID, &x.TenantID, &x.ChannelID, &x.BuildID, &x.Name, &x.ExtVersion, &x.Platform, &x.Slot,
 		&x.State, &x.Visibility, &seq, scanTime{&x.CreatedAt}, &x.CreatedBy, scanTime{&x.StateChangedAt},
-		&x.StateChangedBy, &x.Version}
+		&x.StateChangedBy, &x.Version, &x.Origin, &prov}
 	err := r.Scan(append(dst, extra...)...)
-	x.Seq = seq.Int64
+	x.Seq, x.Provenance = seq.Int64, prov.String
 	return x, err
 }
 
@@ -126,11 +135,18 @@ func nullable(s string) any {
 // --- builds ---
 
 // FindOrInsertBuild inserts b, or, if the tenant already has a build of that name and body, loads
-// it into b (the footer fields then must agree, which they do for one body).
+// it into b (the footer fields then must agree, which they do for one body). A checked b marks an
+// existing unchecked build checked.
 func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	cur, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND name = ? AND body_hash = ?",
 		b.TenantID, b.Name, b.BodyHash))
 	if err == nil {
+		if b.Checked && !cur.Checked {
+			if _, err := t.exec(ctx, "UPDATE builds SET checked = ? WHERE id = ?", true, cur.ID); err != nil {
+				return err
+			}
+			cur.Checked = true
+		}
 		*b = cur
 		return nil
 	}
@@ -146,9 +162,9 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if len(b.OriginSignature) > 0 {
 		sig = b.OriginSignature
 	}
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		b.ID, b.TenantID, b.Name, b.ExtVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
-		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy)
+		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked)
 	return t.s.mapErr(err, "build "+b.Name)
 }
 
@@ -203,10 +219,17 @@ func (t *Tx) InsertRelease(ctx context.Context, r *Release, actor string) error 
 	if r.Seq > 0 {
 		seq = r.Seq
 	}
+	if r.Origin == "" {
+		r.Origin = OriginAdmin
+	}
+	if len(r.Provenance) > 4000 {
+		return fmt.Errorf("%w: provenance is too long", ErrInvalid)
+	}
 	_, err := t.exec(ctx, `INSERT INTO releases (id, tenant_id, channel_id, build_id, name, ext_version, platform, slot, state,
-visibility, seq, created_at, created_by, state_changed_at, state_changed_by, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+visibility, seq, created_at, created_by, state_changed_at, state_changed_by, version, origin, provenance)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.TenantID, r.ChannelID, r.BuildID, r.Name, r.ExtVersion, r.Platform, r.Slot, r.State, r.Visibility, seq,
-		t.s.d.timeArg(now), actor, t.s.d.timeArg(now), actor, r.Version)
+		t.s.d.timeArg(now), actor, t.s.d.timeArg(now), actor, r.Version, r.Origin, nullable(r.Provenance))
 	return t.s.mapErr(err, "release")
 }
 
@@ -477,9 +500,19 @@ func (t *Tx) BumpChannelsServing(ctx context.Context, versionID string) error {
 // ChannelCAPIs returns, for each DuckDB version a channel serves, the C API maxima. A version added
 // by an older binary has only the legacy c_api_version column, which is used when it parses.
 func (s *Store) ChannelCAPIs(ctx context.Context, channelID string) (map[string][]CAPI, error) {
-	rows, err := s.db.QueryContext(ctx, s.d.rebind(`SELECT v.name, v.c_api_version, a.major, a.max_minor, a.max_patch
+	return channelCAPIs(s.db.QueryContext(ctx, s.d.rebind(channelCAPIsQuery), channelID))
+}
+
+// ChannelCAPIs is the transactional form (under the channel lock).
+func (t *Tx) ChannelCAPIs(ctx context.Context, channelID string) (map[string][]CAPI, error) {
+	return channelCAPIs(t.query(ctx, channelCAPIsQuery, channelID))
+}
+
+const channelCAPIsQuery = `SELECT v.name, v.c_api_version, a.major, a.max_minor, a.max_patch
 FROM channel_duckdb_versions cv JOIN duckdb_versions v ON v.id = cv.duckdb_version_id
-LEFT JOIN duckdb_version_c_apis a ON a.duckdb_version_id = v.id WHERE cv.channel_id = ?`), channelID)
+LEFT JOIN duckdb_version_c_apis a ON a.duckdb_version_id = v.id WHERE cv.channel_id = ?`
+
+func channelCAPIs(rows *sql.Rows, err error) (map[string][]CAPI, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -594,4 +627,128 @@ func (s *Store) LeaseState(ctx context.Context, name string) (holder string, unt
 		return "", time.Time{}, false, nil
 	}
 	return holder, until, err == nil, err
+}
+
+// --- blocks (spec 0008) ---
+
+// Block bans a body hash in a tenant.
+type Block struct {
+	TenantID, BodyHash, Reason string
+	CreatedAt                  time.Time
+	CreatedBy                  string
+}
+
+const blockCols = "tenant_id, body_hash, reason, created_at, created_by"
+
+func scanBlock(r interface{ Scan(...any) error }) (Block, error) {
+	var b Block
+	err := r.Scan(&b.TenantID, &b.BodyHash, &b.Reason, scanTime{&b.CreatedAt}, &b.CreatedBy)
+	return b, err
+}
+
+// MaxBlocks is the most blocks a tenant may hold (every index snapshot carries them).
+const MaxBlocks = 10000
+
+// InsertBlock bans a body hash in a tenant (ErrExists if it is banned already).
+func (t *Tx) InsertBlock(ctx context.Context, b *Block) error {
+	if len(b.Reason) > 400 || len(b.CreatedBy) > 400 {
+		return fmt.Errorf("%w: a value is too long", ErrInvalid)
+	}
+	if ok, err := t.Blocked(ctx, b.TenantID, b.BodyHash); err != nil || ok {
+		if err == nil {
+			err = fmt.Errorf("%w: block", ErrExists)
+		}
+		return err
+	}
+	var n int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM blocks WHERE tenant_id = ?", b.TenantID).Scan(&n); err != nil {
+		return err
+	}
+	if n >= MaxBlocks {
+		return fmt.Errorf("%w: a tenant holds at most %d blocks", ErrInvalid, MaxBlocks)
+	}
+	b.CreatedAt = t.Now()
+	_, err := t.exec(ctx, "INSERT INTO blocks ("+blockCols+") VALUES (?, ?, ?, ?, ?)", b.TenantID, b.BodyHash, b.Reason,
+		t.s.d.timeArg(b.CreatedAt), b.CreatedBy)
+	return t.s.mapErr(err, "block")
+}
+
+// DeleteBlock lifts a ban.
+func (t *Tx) DeleteBlock(ctx context.Context, tenantID, hash string) error {
+	res, err := t.exec(ctx, "DELETE FROM blocks WHERE tenant_id = ? AND body_hash = ?", tenantID, hash)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%w: block %s", ErrNotFound, hash)
+	}
+	return nil
+}
+
+// Blocked reports whether a body hash is banned in a tenant.
+func (t *Tx) Blocked(ctx context.Context, tenantID, hash string) (bool, error) {
+	var n int
+	err := t.queryRow(ctx, "SELECT COUNT(*) FROM blocks WHERE tenant_id = ? AND body_hash = ?", tenantID, hash).Scan(&n)
+	return n > 0, err
+}
+
+// Blocked is the read-only form, outside a transaction.
+func (s *Store) Blocked(ctx context.Context, tenantID, hash string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM blocks WHERE tenant_id = ? AND body_hash = ?"), tenantID, hash).Scan(&n)
+	return n > 0, err
+}
+
+// GetBlock reads one block.
+func (s *Store) GetBlock(ctx context.Context, tenantID, hash string) (Block, error) {
+	b, err := scanBlock(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+blockCols+" FROM blocks WHERE tenant_id = ? AND body_hash = ?"),
+		tenantID, hash))
+	return b, notFound(err, "block "+hash)
+}
+
+// ListBlocks lists a tenant's blocks by body hash.
+func (s *Store) ListBlocks(ctx context.Context, tenantID string) ([]Block, error) {
+	rows, err := s.db.QueryContext(ctx, s.d.rebind("SELECT "+blockCols+" FROM blocks WHERE tenant_id = ? ORDER BY body_hash"), tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Block
+	for rows.Next() {
+		b, err := scanBlock(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// BlockedHashes lists a tenant's banned body hashes (the index marks yanked rows with them).
+func (s *Store) BlockedHashes(ctx context.Context, tenantID string) (map[string]bool, error) {
+	bs, err := s.ListBlocks(ctx, tenantID)
+	out := map[string]bool{}
+	for _, b := range bs {
+		out[b.BodyHash] = true
+	}
+	return out, err
+}
+
+// LiveReleasesWithBody lists a channel's releases that are not yanked and hold a body.
+func (t *Tx) LiveReleasesWithBody(ctx context.Context, channelID, hash string) ([]Release, error) {
+	rows, err := t.query(ctx, "SELECT "+releaseCols+" FROM releases r JOIN builds b ON b.id = r.build_id"+
+		" WHERE r.channel_id = ? AND b.body_hash = ? AND r.state <> 'yanked'", channelID, hash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Release
+	for rows.Next() {
+		r, err := scanRelease(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

@@ -224,10 +224,10 @@ func (en *env) checkFile(t *testing.T, body []byte, gz bool, r store.Release) {
 
 func TestServe(t *testing.T) {
 	en := newEnv(t, Options{}, "https")
-	r10 := en.add(t, ext(t, 3<<20, 1, cpp("1.0")), release.AddOptions{Name: "tresor"})
-	r11 := en.add(t, ext(t, 4000, 2, cpp("1.1")), release.AddOptions{Name: "tresor", Private: true})
+	r10 := en.add(t, ext(t, 3<<20, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
+	r11 := en.add(t, ext(t, 4000, 2, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor", Private: true})
 	demo := en.add(t, ext(t, 5000, 3, extfile.Metadata{Platform: "linux_amd64", CAPIVersion: "v1.2.0", ExtensionVersion: "0.1", ABI: extfile.ABICStruct}),
-		release.AddOptions{Name: "demo"})
+		release.AddOptions{Unchecked: true, Name: "demo"})
 
 	t.Run("gz, plain, head, ranges, etags", func(t *testing.T) {
 		a := en.do(t, "GET", flat+"tresor.duckdb_extension.gz", nil)
@@ -510,7 +510,7 @@ func pemEncode(typ string, der []byte) []byte {
 // The http scheme: no Vary on public answers, and the limits.
 func TestLimitsAndScheme(t *testing.T) {
 	en := newEnv(t, Options{MaxDownloads: 1, MaxDownloadsPerClient: 1, MinRate: 1024, WriteIdleTimeout: 10 * time.Second}, "http")
-	en.add(t, ext(t, 1000, 1, cpp("1.0")), release.AddOptions{Name: "tresor"})
+	en.add(t, ext(t, 1000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
 	a := en.do(t, "GET", flat+"tresor.duckdb_extension.gz", nil)
 	if a.status != 200 || a.header.Get("Vary") != "" {
 		t.Fatalf("http: %d %v", a.status, a.header)
@@ -564,7 +564,7 @@ func TestClientAddr(t *testing.T) {
 // X-Forwarded-Proto.
 func TestListeners(t *testing.T) {
 	en := newEnv(t, Options{}, "https")
-	en.add(t, ext(t, 1000, 1, cpp("1.0")), release.AddOptions{Name: "tresor"})
+	en.add(t, ext(t, 1000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
 	certFile, keyFile := selfSigned(t)
 	ln1, _ := net.Listen("tcp", "127.0.0.1:0")
 	ln2, _ := net.Listen("tcp", "127.0.0.1:0")

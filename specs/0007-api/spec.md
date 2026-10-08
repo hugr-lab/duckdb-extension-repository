@@ -65,7 +65,8 @@ After spec 0006, kista serves DuckDB, but everything else goes through `kista ad
   bodies `application/json` exactly (`charset=utf-8` allowed; `415` otherwise), one object, at most
   64 KiB (`413`), read only after the decision, with a read deadline; unknown and duplicate JSON
   keys refused; a request that takes no body (`GET`, `DELETE`, suspend and resume) refuses one. A
-  required `If-Match` is one strong ETag or `*` (any version of the existing resource).
+  required `If-Match` is one strong ETag or `*` (any version of the existing resource). Spec 0008's
+  publication route is the one exception: its body is the extension file, with its own limits.
 - **Responses**: `X-Content-Type-Options: nosniff`; management answers `Cache-Control: no-store`.
 - **Limits**: a token bucket per client address (IPv6 by /64; spec 0006's trusted proxies),
   checked before token verification, the table bounded; file-only `serve.api_rate` and
@@ -293,7 +294,7 @@ extension name, so an extension administrator's right is decided from the path t
 | `POST …/keys {signer_ref, active}` | server |
 | `POST …/keys/{id}/activate`, `/retire` (`force` for server administrators only) | channel admin |
 | `GET …/channels/{c}/releases[?state=&cursor=]` | channel admin |
-| `GET …/extensions/{name}/releases[/{id}]` | extension admin |
+| `GET …/extensions/{name}/releases[/{id}]` | extension admin, or its publishers (spec 0008) |
 | `POST …/extensions/{name}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
 
 There is no re-sign endpoint: replicas with `serve.resign` re-sign on their own (spec 0006); the key
@@ -306,7 +307,9 @@ key view is `keys`, `serving_key`, `active_key`, `unsigned_by_active` (non-yanke
 the active key's signature) and `resigner: {working, last_held_at}` (and `holder`, a host name, for
 server administrators); a key event is `id, key_id, from, to, actor, forced, at`; a release is
 `id, name, version, platform, slot, abi, build_duckdb_version | build_c_api, state, visibility, seq
-(0: never current), body_hash, created_at, created_by, state_changed_at, state_changed_by, etag`.
+(0: never current), body_hash, created_at, created_by, state_changed_at, state_changed_by, etag`,
+and spec 0008's `origin`, `provenance` and `shadows` (its publishers see it without `created_by`,
+`state_changed_by` and the provenance's actor).
 The key view leaves out what a channel lacks (no active key: no `active_key` or
 `unsigned_by_active`; a re-signer never ran: no `resigner`). A created channel answers `name, kind`.
 Release lists run oldest first, so a cursor survives new releases; `?state=` filters. `force` is a
@@ -395,7 +398,8 @@ internal/keys       force are server-only)
 ## Follow-ups
 
 - Key provisioning on a tenant's request (spec 0004's "tenant key provisioning").
-- Spec 0008: publication over this API. Its `publish` and `promote` verbs are not implied by
-  `admin` on an extension unless that spec says so.
+- Spec 0008: publication over this API (implemented there: `publish` and `promote` are never implied
+  by `admin`; the publication route is the API's one raw-body route; an extension's release reads
+  are open to its publishers).
 - Spec 0010: the `audit` verb, events and their routes.
 - Spec 0015: the console, its login settings (client ids, scopes per issuer) and CORS.

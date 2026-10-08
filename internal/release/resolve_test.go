@@ -103,7 +103,7 @@ func TestCompareVersions(t *testing.T) {
 // replaces it after a change.
 func TestSnapshotsCache(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
-		if _, _, err := en.add(t, ext(t, 1000, 1, cpp("1.0")), release.AddOptions{Name: "tresor"}); err != nil {
+		if _, _, err := en.add(t, ext(t, 1000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"}); err != nil {
 			t.Fatal(err)
 		}
 		sc, err := en.st.GetServeChannel(ctx, "acme", "prod")
@@ -130,7 +130,7 @@ func TestSnapshotsCache(t *testing.T) {
 		if len(first.Releases) != 1 || first.ServingKey == "" || len(first.Keys) != 1 {
 			t.Fatalf("snapshot: %d releases, serving key %q, %d keys", len(first.Releases), first.ServingKey, len(first.Keys))
 		}
-		if _, _, err := en.add(t, ext(t, 1000, 2, cpp("1.1")), release.AddOptions{Name: "tresor"}); err != nil {
+		if _, _, err := en.add(t, ext(t, 1000, 2, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor"}); err != nil {
 			t.Fatal(err)
 		}
 		// a caller holding the old row still gets a snapshot at least as new as it

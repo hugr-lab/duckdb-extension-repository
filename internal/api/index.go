@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -274,6 +276,10 @@ type releaseOut struct {
 	Serves        []servesOut `json:"serves"`
 	CurrentFor    []string    `json:"current_for"`
 	WouldServe    []string    `json:"would_serve,omitempty"` // yanked rows: the DuckDB versions it would serve
+	Origin        string      `json:"origin"`
+	Shadows       string      `json:"shadows,omitempty"`    // a reserved name's owner (spec 0008)
+	Blocked       bool        `json:"blocked,omitempty"`    // a yanked row whose body is blocked
+	Provenance    any         `json:"provenance,omitempty"` // for the extension's administrators and publishers
 }
 
 func gzName(name string) string { return name + ".duckdb_extension.gz" }
@@ -285,6 +291,25 @@ type resolver struct {
 	versions []string
 	flat     map[[3]string]*store.Candidate
 	vers     map[[5]string]*store.Candidate
+	// spec 0008: the tenant's blocked bodies, and whether the caller sees provenance (and who)
+	blocked    map[string]bool
+	provenance bool
+	admin      bool
+	c          caller
+}
+
+// indexResolver is a resolver for one extension's rows: with the tenant's blocks, and provenance
+// for the extension's administrators and publishers (spec 0008).
+func (h *Handler) indexResolver(w http.ResponseWriter, r *http.Request, c caller, snap *release.Snapshot, name string) (*resolver, bool) {
+	rs := newResolver(snap, c.view(snap.Channel.ID))
+	rs.blocked = snap.Blocked
+	res := authz.Resource{Tenant: c.tenant.Name, Channel: snap.Channel.Name, Extension: name, Reserved: reserved.Kind(name) != ""}
+	rs.c, rs.admin = c, c.admin || c.principals != nil && authz.Covers(c.principals, c.ta.Grants, store.VerbAdmin, res)
+	rs.provenance = rs.admin
+	for _, v := range []string{store.VerbPublish, store.VerbPromote} {
+		rs.provenance = rs.provenance || c.principals != nil && authz.Covers(c.principals, c.ta.Grants, v, res)
+	}
+	return rs, true
 }
 
 func newResolver(snap *release.Snapshot, vis release.Visible) *resolver {
@@ -326,6 +351,11 @@ func (rs *resolver) row(rel *store.Candidate) releaseOut {
 		ABI: rel.ABI, DuckDBVersion: rel.DuckDBVersion, State: rel.State, Visibility: rel.Visibility, BodyHash: rel.BodyHash,
 		ServingKey: rs.snap.ServingKey, CreatedAt: rel.CreatedAt.UTC().Format(time.RFC3339),
 		Serves: []servesOut{}, CurrentFor: []string{}}
+	o.Origin, o.Shadows = rel.Origin, reserved.Kind(rel.Name)
+	o.Blocked = rel.State == store.ReleaseYanked && rs.blocked[rel.BodyHash]
+	if rs.provenance {
+		o.Provenance = provenanceView(rel.Provenance, rs.c, rs.admin)
+	}
 	if rel.CAPI != nil {
 		o.CAPI = rel.CAPI.String()
 	}
@@ -387,7 +417,11 @@ func (h *Handler) extension(w http.ResponseWriter, r *http.Request, c caller, p 
 	if !ok {
 		return
 	}
-	rows := newResolver(snap, c.view(snap.Channel.ID)).rowsOf(name, platform)
+	rs, ok := h.indexResolver(w, r, c, snap, name)
+	if !ok {
+		return
+	}
+	rows := rs.rowsOf(name, platform)
 	if version != "" {
 		rows = slices.DeleteFunc(rows, func(o releaseOut) bool { return !o.reaches(version) })
 	}
@@ -410,7 +444,10 @@ func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, p param
 	if !ok {
 		return
 	}
-	rs := newResolver(snap, c.view(snap.Channel.ID))
+	rs, ok := h.indexResolver(w, r, c, snap, name)
+	if !ok {
+		return
+	}
 	out := map[string]any{"name": name, "version": extVersion, "duckdb_version": version, "platform": platform}
 	var yanked []releaseOut
 	for _, rel := range snap.Group(name, platform) {

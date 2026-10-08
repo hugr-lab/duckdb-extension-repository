@@ -52,11 +52,14 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	auths, snaps := &auth.TenantAuths{Store: st}, &release.Snapshots{Store: st}
 	grants := authz.Grants{Store: st, Auths: auths}
+	maxBody, maxIngests := cfg.BlobLimits()
+	perActor, perTenant := cfg.PublishLimits()
 	mgmt := svc.WithAuthz(grants)
 	apiHandler := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
 		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
 		Server: server, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
-		Releases: mgmt.Releases, AdminTokenMaxAge: cfg.AdminTokenMaxAge()})
+		Releases: mgmt.Releases, MaxBody: maxBody, MinRate: int64(lim.MinRate), PublishPerActor: perActor,
+		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge()})
 	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{
 		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
