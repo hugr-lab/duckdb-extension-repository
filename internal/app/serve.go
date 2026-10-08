@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -37,7 +38,12 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	defer func() { _ = bs.Close() }()
 	svc.WithBlob(bs)
 	lim := cfg.ServeLimits()
+	eg, err := Egress(cfg)
+	if err != nil {
+		return err
+	}
 	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{
+		PublicURL: cfg.Serve.PublicURL, Verifier: &auth.Verifier{Fetch: eg},
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
 	})

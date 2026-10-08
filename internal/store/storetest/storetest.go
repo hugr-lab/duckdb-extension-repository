@@ -229,7 +229,7 @@ func Reset(ctx context.Context, st *store.Store) error {
 	if err := store.ExecRaw(ctx, st, "UPDATE channels SET serving_key_id = NULL"); err != nil {
 		return err
 	}
-	for _, table := range []string{"release_signatures", "releases", "builds", "key_events", "channel_keys",
+	for _, table := range []string{"grants", "issuers", "tenant_audiences", "release_signatures", "releases", "builds", "key_events", "channel_keys",
 		"key_fingerprints", "channel_duckdb_versions", "duckdb_version_c_apis", "channels", "duckdb_versions",
 		"tenants", "blobs", "storage_domains", "deployment", "leases"} {
 		if err := store.ExecRaw(ctx, st, "DELETE FROM "+table); err != nil {

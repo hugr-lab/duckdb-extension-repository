@@ -79,6 +79,7 @@ type Services struct {
 	Tenants  *tenants.Service
 	Keys     *keys.Service
 	Releases *release.Service // Blob is set by callers that store bodies (WithBlob)
+	Auth     *tenants.AuthAdmin
 }
 
 // WithBlob gives the release service a blob service (adding a release stores its body).
@@ -141,6 +142,10 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	if err != nil {
 		return nil, err
 	}
+	eg, err := Egress(cfg)
+	if err != nil {
+		return nil, err
+	}
 	ks := &keys.Service{
 		Store:      s,
 		Signers:    reg,
@@ -154,5 +159,7 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		Tenants:  &tenants.Service{Store: s, Authz: az, HasDomain: cfg.HasBlobDomain},
 		Keys:     ks,
 		Releases: &release.Service{Store: s, Signers: ks, Authz: az},
+		Auth: &tenants.AuthAdmin{Store: s, Authz: az, Fetch: eg, PublicURL: cfg.Serve.PublicURL,
+			AllowHTTP: cfg.Egress.AllowLoopbackHTTP},
 	}, nil
 }

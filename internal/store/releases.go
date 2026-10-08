@@ -357,9 +357,9 @@ func (s *Store) GetServeChannel(ctx context.Context, tenant, channel string) (Se
 	var sc ServeChannel
 	var serving sql.NullString
 	t, c := &sc.Tenant, &sc.Channel
-	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT t.id, t.name, t.state, t.storage_domain, c.id, c.tenant_id,
+	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT t.id, t.name, t.state, t.storage_domain, t.auth_version, c.id, c.tenant_id,
 c.name, c.kind, c.version, c.serving_key_id, c.release_version FROM channels c JOIN tenants t ON t.id = c.tenant_id
-WHERE t.name = ? AND c.name = ?`), tenant, channel).Scan(&t.ID, &t.Name, &t.State, &t.StorageDomain, &c.ID, &c.TenantID,
+WHERE t.name = ? AND c.name = ?`), tenant, channel).Scan(&t.ID, &t.Name, &t.State, &t.StorageDomain, &t.AuthVersion, &c.ID, &c.TenantID,
 		&c.Name, &c.Kind, &c.Version, &serving, &c.ReleaseVersion)
 	c.ServingKeyID = serving.String
 	return sc, notFound(err, "channel "+tenant+"/"+channel)

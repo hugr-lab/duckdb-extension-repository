@@ -2,9 +2,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -24,9 +32,22 @@ func TestAdminCLI(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// an IdP on loopback TLS serving a JWKS, reached through egress (allowlisted, its CA trusted)
+	idpKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	idp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]any{"kty": "RSA", "kid": "k1",
+			"n": base64.RawURLEncoding.EncodeToString(idpKey.N.Bytes()), "e": "AQAB"}}})
+	}))
+	defer idp.Close()
+	caFile := filepath.Join(dir, "idp-ca.pem")
+	os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: idp.Certificate().Raw}), 0o600)
+	idpPort := idp.Listener.Addr().(*net.TCPAddr).Port
 	cfg := filepath.Join(dir, "kista.yaml")
 	os.WriteFile(cfg, []byte("profile: dev\nstore: { kind: sqlite, sqlite: { path: "+filepath.Join(dir, "k.db")+" } }\n"+
-		"rotation: { min_trusted: 0s, min_demoted: 0s }\nsigners: { file_dir: "+keys+" }\n"), 0o600)
+		"rotation: { min_trusted: 0s, min_demoted: 0s }\nsigners: { file_dir: "+keys+" }\n"+
+		"serve: { public_url: 'https://kista.example' }\n"+
+		"egress: { ca_file: "+caFile+", allow: [{ cidr: 127.0.0.1/32, ports: ["+strconv.Itoa(idpPort)+"] }] }\n"), 0o600)
+	jwks := idp.URL + "/keys"
 
 	run := func(want int, args ...string) string {
 		t.Helper()
@@ -99,6 +120,37 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "key", "resign", "acme/prod")
 	run(0, "release", "yank", "acme/prod", rid)
 	run(1, "release", "yank", "acme/prod", rid)
+	// issuers, audiences, grants (an explicit JWKS URI: no discovery from the test)
+	run(0, "issuer", "add", "acme", "-name", "corp", "-url", "https://login.example/t1/v2.0",
+		"-jwks-uri", jwks, "-require", "tid=t1", "-roles-claim", `["https://x/roles"]`, "-alg", "RS256", "-alg", "RS256")
+	run(1, "issuer", "add", "acme", "-name", "corp2", "-url", "http://login.example", "-jwks-uri", jwks)
+	run(1, "issuer", "add", "acme", "-name", "corp3", "-url", "https://login.example/b", "-jwks-uri", jwks, "-alg", "HS256")
+	run(1, "issuer", "add", "acme", "-name", "corp4", "-url", "https://login.example/c", "-jwks-uri", "https://127.0.0.2:1/keys") // unreachable JWKS
+	run(2, "issuer", "add", "acme", "-name", "corp5", "-url", "https://login.example/d", "-jwks-uri", jwks, "-roles-claim", "a..b")
+	if got := run(0, "issuer", "list", "acme"); !strings.Contains(got, "corp") || !strings.Contains(got, "tid=t1") {
+		t.Fatalf("issuer list: %q", got)
+	}
+	gid := strings.TrimSpace(run(0, "grant", "add", "acme", "-principal", "subject:corp|alice", "-verb", "install", "-channel", "prod", "-extension", "tresor"))
+	run(1, "grant", "add", "acme", "-principal", "subject:corp|alice", "-verb", "install", "-channel", "prod", "-extension", "tresor") // the same grant
+	run(0, "grant", "add", "acme", "-principal", "issuer:corp", "-verb", "install")
+	run(1, "grant", "add", "acme", "-principal", "subject:nope|alice", "-verb", "install")
+	run(1, "grant", "add", "acme", "-principal", "server:corp|alice", "-verb", "install")
+	run(1, "grant", "add", "acme", "-principal", "subject:corp|alice", "-verb", "publish")
+	if got := run(0, "grant", "list", "acme"); !strings.Contains(got, "subject:corp|alice") || !strings.Contains(got, "issuer:corp") {
+		t.Fatalf("grant list: %q", got)
+	}
+	run(0, "grant", "remove", "acme", gid)
+	run(0, "tenant", "audience", "add", "acme", "api://kista-acme")
+	run(1, "tenant", "audience", "add", "acme", "api://kista-acme")
+	run(1, "tenant", "audience", "add", "acme", "https://kista.example/beta") // another tenant's canonical audience
+	run(1, "tenant", "audience", "add", "acme", "https://kista.example")      // the server's
+	if got := run(0, "tenant", "audience", "list", "acme"); !strings.Contains(got, "api://kista-acme") {
+		t.Fatalf("audience list: %q", got)
+	}
+	run(0, "issuer", "remove", "acme", "corp")
+	if got := run(0, "grant", "list", "acme"); strings.Contains(got, "corp") {
+		t.Fatalf("grants survived their issuer: %q", got)
+	}
 	run(0, "backup", filepath.Join(dir, "backup.db"))
 	if got := run(0, "blob", "check"); !strings.Contains(got, "domain default ok") {
 		t.Fatalf("blob check: %q", got)
