@@ -6,12 +6,14 @@ import (
 	"fmt"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/cloud/azure"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/azurekv"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/vault"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -72,11 +74,15 @@ func OpenStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 
 // Services are the service layer over one store.
 type Services struct {
-	Store   *store.Store
-	Sources *keysource.Registry
-	Tenants *tenants.Service
-	Keys    *keys.Service
+	Store    *store.Store
+	Sources  *keysource.Registry
+	Tenants  *tenants.Service
+	Keys     *keys.Service
+	Releases *release.Service // Blob is set by callers that store bodies (WithBlob)
 }
+
+// WithBlob gives the release service a blob service (adding a release stores its body).
+func (s *Services) WithBlob(b *blob.Service) { s.Releases.Blob = b }
 
 // KeySources builds the registry of key sources from config (spec 0004): the built-in file source
 // and every configured vault or KMS. Sources are not contacted here: kista starts even when one is
@@ -135,16 +141,18 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	if err != nil {
 		return nil, err
 	}
+	ks := &keys.Service{
+		Store:      s,
+		Signers:    reg,
+		Authz:      az,
+		MinTrusted: cfg.Rotation.MinTrusted,
+		MinDemoted: cfg.Rotation.MinDemoted,
+	}
 	return &Services{
-		Store:   s,
-		Sources: reg,
-		Tenants: &tenants.Service{Store: s, Authz: az, HasDomain: cfg.HasBlobDomain},
-		Keys: &keys.Service{
-			Store:      s,
-			Signers:    reg,
-			Authz:      az,
-			MinTrusted: cfg.Rotation.MinTrusted,
-			MinDemoted: cfg.Rotation.MinDemoted,
-		},
+		Store:    s,
+		Sources:  reg,
+		Tenants:  &tenants.Service{Store: s, Authz: az, HasDomain: cfg.HasBlobDomain},
+		Keys:     ks,
+		Releases: &release.Service{Store: s, Signers: ks, Authz: az},
 	}, nil
 }

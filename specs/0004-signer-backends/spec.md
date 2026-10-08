@@ -150,7 +150,7 @@ A source-independent wrapper (`keysource.Open`) checks every backend:
     counting the SDK's own retries, a re-login after a `403` and the GCP CRC retry. Throttling uses
     bounded backoff.
   - Each source has a concurrency limit (`max_concurrency`, default 4), for opens and signs.
-  - Signing happens once per (body hash, key), when a release is made (spec 0008), and the
+  - Signing happens once per (body hash, key), when a release is made (spec 0006), and the
     signature is stored. No request path triggers KMS calls.
 - **Errors** are mapped at the package boundary to the backend's code and request id: HTTP status
   plus Azure error code, the AWS error code, the gRPC or REST status, the Vault status. They never
@@ -389,7 +389,7 @@ operators preparing keys, and the live tests.
   - `allow` lists and the purpose marker limit which keys a source may use.
   - Only the server administrator sets references (spec 0003). Tenants never bring their own KMS
     in this spec.
-  - Tenant key provisioning (spec 0006) uses a separate source and identity with create rights. It
+  - Tenant key provisioning (spec 0007) uses a separate source and identity with create rights. It
     sets non-exportable keys and the purpose marker, with a per-tenant name prefix.
 - **Keys never leave the backend.** kista refuses:
   - exportable, imported and external keys;
@@ -488,10 +488,9 @@ operators preparing keys, and the live tests.
 
 - **Spec 0005**: blob storage for extension bodies, with the same pattern: filesystem, S3-compatible
   (AWS S3, Cloudflare R2, MinIO), Azure Blob, Google Cloud Storage.
-- **Spec 0006**:
-  - `/readyz` as a boolean, and source health on admin endpoints;
-  - tenant key provisioning with a separate source and identity.
-- **Spec 0008**: sign once per (body hash, key) and store the signature.
+- **Spec 0006**: `/readyz` as a boolean; sign once per (body hash, key) and store the signature.
+- **Spec 0007**: source health on admin endpoints; tenant key provisioning with a separate source
+  and identity.
 - **Spec 0012**: licence keys from separate sources.
 - **Later**: PKCS#11; tenants bringing their own KMS (an external id per tenant, source config in the
   database, egress allowlists).

@@ -67,7 +67,7 @@ extension).
 | **Block** | A tenant-wide ban on a body hash (a CVE kill switch): no release with that body is served in any channel of the tenant. |
 | **Upstream** | An external source a tenant mirrors from: `duckdb-core`, `duckdb-community`, any DuckDB repository (prefix plus keys pinned by fingerprint), or `enterest`. Has an allowlist of names, versions and platforms, and a mode: scheduled mirror or pull-through. |
 | **Publisher** | Who may publish under a set of names in a tenant: a principal, an API key, or a trusted-publishing binding (CI OIDC). On Enterest a publisher has an identity across tenants. |
-| **Grant** | `principal × resource × verbs`. Resource: tenant, channel, extension, or explicit release versions. Verbs: `install`, `publish`, `promote`, `audit` (read events), `admin`. |
+| **Grant** | `principal × resource × verbs`. Resource: tenant, channel, or extension (explicit release versions later). Verbs: `install`, `publish`, `promote`, `audit` (read events), `admin`. |
 | **Attachment** | Data about a body: a review report, an SBOM, a CVE scan, a provenance statement. Owned by a source (tenant, or Enterest) with its own visibility (and a subscription, for reports). Read only through a Build the caller may see. |
 | **Licence** | A signed token that lets a licensed extension run for a holder (tenant, subject or client) until an expiry. Issued with the publisher's licence key. |
 | **Event** | Audit: who, what, when, from where, outcome. Covers install, publish, promote, yank, grant, mirror and licence events. |
@@ -92,8 +92,10 @@ INSTALL tresor FROM hugr; LOAD tresor FROM hugr;
 
 - `<duckdb_version>` is the DuckDB release tag (`v2.0.0`) or, on a dev build, its source id
   (`eb0d9df48e`). The versioned layout uses the same segment; there is no other "revision".
-- A `C_STRUCT` build is served under every DuckDB version of the channel whose C API is at least
-  the build's minimum. A `CPP` build is served only under its exact version.
+- A `C_STRUCT` build is served under every DuckDB version of the channel that accepts its C API
+  version: the same major, and `(minor, patch)` lexicographically at most that version's maximum for
+  the major (a DuckDB version supports two majors at once; spec 0006). A `CPP` or `C_STRUCT_UNSTABLE` build is
+  served only under its exact version.
 - The server answers the `.gz` name and the plain name, `GET` and `HEAD`. The `.gz` answer is always
   gzip.
 - A channel's prefix is permanent. DuckDB records it in the `.info` file and `UPDATE EXTENSIONS`
@@ -523,11 +525,11 @@ particular:
 | 0003 | `store` on three dialects, migrations; tenants, channels, keys, rotation; config; `kista admin` |
 | 0004 | Signer backends: named key sources; Azure Key Vault / Managed HSM, AWS KMS, Google Cloud KMS, Vault / OpenBao Transit (PKCS#11 later) |
 | 0005 | Blob storage for extension bodies: filesystem, S3-compatible (AWS S3, R2, MinIO), Azure Blob, Google Cloud Storage |
-| 0006 | `serve`, `auth`, `authz`, `egress`: issuer records, grants, 401/404, caching headers; the HTTP management API; serve-path events |
-| 0007 | Index API: releases, body hashes, sha256, visibility (the node agent needs it first) |
-| 0008 | Publication and promotion: API keys, trusted publishing, init-symbol check, reserved names, yank, block |
+| 0006 | Builds and releases, `serve`, `egress`, `auth`, `authz`: issuer records, grants, 401/404, caching headers |
+| 0007 | The HTTP API: the index (releases, body hashes, visibility; the node agent needs it first) and management, with server administrators |
+| 0008 | Publication and promotion: API keys, trusted publishing, init-symbol check, reserved names, block (yank is in 0006) |
 | 0009 | Upstreams: core / community / repository / `enterest`, intake, mirror, pull-through, passthrough channels |
-| 0010 | Audit: hash chain, export, sinks, per-tenant statistics |
+| 0010 | Audit: hash chain, export, sinks, per-tenant statistics, serve-path events |
 | 0011 | Attachments and the feed from Enterest |
 | 0012 | Licensing: licence keys, entitlements, tokens, the SDK (C++, for DuckDB extensions) |
 | 0013 | Deployment: image, Helm, Bicep, Azure Marketplace managed application |

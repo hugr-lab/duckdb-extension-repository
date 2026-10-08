@@ -46,11 +46,37 @@ func TestTenantsService(t *testing.T) {
 			if _, err := svc.CreateChannel(ctx, admin, "acme", "prod", store.ChannelSigned); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.AddVersion(ctx, admin, "v2.0.0", "nightly", ""); !errors.Is(err, store.ErrInvalid) {
+			if _, err := svc.AddVersion(ctx, admin, "v2.0.0", "nightly", nil); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("bad version kind: %v", err)
 			}
-			if _, err := svc.AddVersion(ctx, admin, "v2.0.0", "release", "v1.2.0"); err != nil {
+			for _, bad := range [][]string{{"1.2.0"}, {"v1.2.0", "v1.3.0"}} {
+				if _, err := svc.AddVersion(ctx, admin, "v2.0.0", "release", bad); !errors.Is(err, store.ErrInvalid) {
+					t.Fatalf("bad C APIs %v: %v", bad, err)
+				}
+			}
+			if _, err := svc.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6"}); err != nil {
 				t.Fatal(err)
+			}
+			v, err := svc.AddVersionCAPI(ctx, admin, "v2.0.0", "v2.0.0")
+			if err != nil || len(v.CAPIs) != 2 {
+				t.Fatalf("add a major: %+v %v", v, err)
+			}
+			if _, err := svc.AddVersionCAPI(ctx, admin, "v2.0.0", "v1.9.9"); !errors.Is(err, store.ErrExists) {
+				t.Fatalf("change a major: %v", err)
+			}
+			if vs, err := svc.ListVersions(ctx, admin); err != nil || len(vs) != 1 || len(vs[0].CAPIs) != 2 {
+				t.Fatalf("list versions: %+v %v", vs, err)
+			}
+			// a version from before migration 0003 keeps its legacy maximum when a major is added
+			st := svc.Store
+			if err := st.InTx(ctx, "", func(tx *store.Tx) error {
+				return tx.AddDuckDBVersion(ctx, &store.DuckDBVersion{Name: "eb0d9df48e", Kind: "dev", CAPIVersion: "v1.5.6"})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			v, err = svc.AddVersionCAPI(ctx, admin, "eb0d9df48e", "v2.0.0")
+			if err != nil || len(v.CAPIs) != 2 || v.CAPIs[0] != (store.CAPI{Major: 1, Minor: 5, Patch: 6}) {
+				t.Fatalf("legacy version plus a major: %+v %v", v, err)
 			}
 			if _, err := svc.SetChannelVersions(ctx, admin, "acme", "prod", []string{"v9.9.9"}, nil); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("unknown version: %v", err)

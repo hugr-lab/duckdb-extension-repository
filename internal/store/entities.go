@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -38,7 +39,8 @@ type Tenant struct {
 // DuckDBVersion is a DuckDB engine version: a release tag or a dev source id.
 type DuckDBVersion struct {
 	ID, Name, Kind string
-	CAPIVersion    string // empty if unknown
+	CAPIVersion    string // the legacy single value (spec 0003); spec 0006 keeps C APIs in CAPIs
+	CAPIs          []CAPI // the maximum C API per major this version accepts
 	CreatedAt      time.Time
 }
 
@@ -47,6 +49,8 @@ type Channel struct {
 	ID, TenantID, Name, Kind string
 	CreatedAt                time.Time
 	Version                  int64
+	ServingKeyID             string // the key whose signatures are served; empty before the first release
+	ReleaseVersion           int64  // bumped by every release change and serving-key move (spec 0006)
 }
 
 // Key is a channel signing key. Only its public key and signer reference are stored.
@@ -117,8 +121,27 @@ func scanVersion(r interface{ Scan(...any) error }) (DuckDBVersion, error) {
 	return v, err
 }
 
-// ListDuckDBVersions returns all known DuckDB versions by name.
+// ListDuckDBVersions returns all known DuckDB versions by name, with their C APIs.
 func (s *Store) ListDuckDBVersions(ctx context.Context) ([]DuckDBVersion, error) {
+	capis := map[string][]CAPI{}
+	crows, err := s.db.QueryContext(ctx, "SELECT duckdb_version_id, major, max_minor, max_patch FROM duckdb_version_c_apis ORDER BY major")
+	if err != nil {
+		return nil, err
+	}
+	for crows.Next() {
+		var id string
+		var c CAPI
+		if err := crows.Scan(&id, &c.Major, &c.Minor, &c.Patch); err != nil {
+			crows.Close()
+			return nil, err
+		}
+		capis[id] = append(capis[id], c)
+	}
+	err = crows.Err()
+	crows.Close()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, "SELECT "+versionCols+" FROM duckdb_versions ORDER BY name")
 	if err != nil {
 		return nil, err
@@ -130,16 +153,24 @@ func (s *Store) ListDuckDBVersions(ctx context.Context) ([]DuckDBVersion, error)
 		if err != nil {
 			return nil, err
 		}
+		v.CAPIs = capis[v.ID]
+		if len(v.CAPIs) == 0 {
+			if c, err := ParseCAPI(strings.TrimSpace(v.CAPIVersion)); err == nil {
+				v.CAPIs = []CAPI{c}
+			}
+		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
 }
 
-const channelCols = "c.id, c.tenant_id, c.name, c.kind, c.created_at, c.version"
+const channelCols = "c.id, c.tenant_id, c.name, c.kind, c.created_at, c.version, c.serving_key_id, c.release_version"
 
 func scanChannel(r interface{ Scan(...any) error }) (Channel, error) {
 	var c Channel
-	err := r.Scan(&c.ID, &c.TenantID, &c.Name, &c.Kind, scanTime{&c.CreatedAt}, &c.Version)
+	var serving sql.NullString
+	err := r.Scan(&c.ID, &c.TenantID, &c.Name, &c.Kind, scanTime{&c.CreatedAt}, &c.Version, &serving, &c.ReleaseVersion)
+	c.ServingKeyID = serving.String
 	return c, err
 }
 

@@ -66,7 +66,7 @@ deployment       one pk (always 1), id, created_at
 
 - **No raw body is stored.** Signing needs only the body hash, serving uses the stream, and the rare
   plain-name answer inflates it. This amends spec 0001, which planned to keep a raw copy too.
-- **The footer belongs to the Build** (spec 0008), not to the blob.
+- **The footer belongs to the Build** (spec 0006), not to the blob.
 
 **Migration 0002** (`-- +min_reader 1`, purely additive):
 
@@ -245,7 +245,8 @@ sp.Close()                             // always; removes the spool files; idemp
   - Files are created with `O_EXCL` under random names, mode `0600`.
   - At most `max_ingests` spools exist at once; a semaphore limits them, and the size cap applies
     while reading.
-  - Leftover spool files are swept at startup.
+  - Leftover spool files are swept at startup: those untouched for an hour, since another process
+    (`kista serve`, `kista admin release add`) may be spooling into the same directory.
   - The spool is read through one open descriptor, never reopened by path, so what the caller
     verified is what is stored.
 - **Commit:**

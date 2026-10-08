@@ -451,6 +451,14 @@ func TestSweepAndSpoolDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(spool, "spool-leftover"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(filepath.Join(spool, "spool-leftover"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	// a fresh spool file belongs to another process that is spooling now: it is kept
+	if err := os.WriteFile(filepath.Join(spool, "spool-in-use"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	domains := func() []blob.Domain { return []blob.Domain{{Name: "default", Kind: "fs", Store: openFS(t, dir)}} }
 	svc, err := blob.NewService(ctx, st, domains(), blob.Options{SpoolDir: spool, MaxBody: 1 << 20, MaxIngests: 1})
 	if err != nil {
@@ -459,6 +467,9 @@ func TestSweepAndSpoolDir(t *testing.T) {
 	svc.Close()
 	if _, err := os.Stat(filepath.Join(spool, "spool-leftover")); !os.IsNotExist(err) {
 		t.Fatal("leftover not swept")
+	}
+	if _, err := os.Stat(filepath.Join(spool, "spool-in-use")); err != nil {
+		t.Fatal("a fresh spool file was swept")
 	}
 	if err := os.Chmod(spool, 0o755); err != nil {
 		t.Fatal(err)

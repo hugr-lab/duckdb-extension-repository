@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -16,6 +19,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -27,7 +31,8 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   tenant create <name> [-display-name …] [-domain <storage domain>]
   tenant list
   tenant suspend|resume <name>
-  version add <name> -kind release|dev [-c-api v1.2.0]
+  version add <name> -kind release|dev [-c-api v1.5.6]...   one maximum C API per major
+  version c-api <name> -c-api v2.0.0                       add a major's maximum C API
   version list
   channel create <tenant>/<channel> -kind signed|passthrough
   channel versions <tenant>/<channel> [-add v]... [-remove v]...
@@ -38,6 +43,10 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   key activate <tenant>/<channel> <key-id|fingerprint> [-force]
   key retire <tenant>/<channel> <key-id|fingerprint> [-force]
   key events <tenant>/<channel>
+  key resign <tenant>/<channel>                   sign releases with the active key; move the serving key
+  release add <tenant>/<channel> <file|-> -name <name> [-private] [-not-current]
+  release list <tenant>/<channel> [-name <name>]
+  release yank|deprecate|activate|current|public|private <tenant>/<channel> <release-id>
   wellknown <tenant>/<channel>
   blob check                                      pin and check the storage domains, list tenants without one
 `
@@ -93,7 +102,7 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "kista admin:", err)
 		return 1
 	}
-	a := &adminCmd{cfg: cfg, svc: svc, actor: authz.OSActor(), out: stdout, errw: stderr}
+	a := &adminCmd{in: os.Stdin, cfg: cfg, svc: svc, actor: authz.OSActor(), out: stdout, errw: stderr}
 	if err := a.dispatch(ctx, rest); err != nil {
 		if errors.Is(err, errUsage) {
 			fmt.Fprint(stderr, adminUsage)
@@ -108,6 +117,7 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 var errUsage = errors.New("usage")
 
 type adminCmd struct {
+	in    io.Reader
 	cfg   config.Config
 	svc   *app.Services
 	actor authz.Actor
@@ -115,7 +125,7 @@ type adminCmd struct {
 	errw  io.Writer
 }
 
-// logf prints the one-line record of an admin action (spec 0009 moves these to the audit log).
+// logf prints the one-line record of an admin action (spec 0010 moves these to the audit log).
 func (a *adminCmd) logf(format string, args ...any) {
 	fmt.Fprintf(a.errw, "admin "+format+" by %s\n", append(args, a.actor)...)
 }
@@ -184,6 +194,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.channel(ctx, sub, args[min(2, len(args)):])
 	case "key":
 		return a.key(ctx, sub, args[min(2, len(args)):])
+	case "release":
+		return a.release(ctx, sub, args[min(2, len(args)):])
 	case "blob":
 		if sub != "check" || len(args) != 2 {
 			return errUsage
@@ -268,18 +280,25 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 func (a *adminCmd) version(ctx context.Context, sub string, args []string) error {
 	fs := flag.NewFlagSet("version", flag.ContinueOnError)
 	kind := fs.String("kind", "", "")
-	capi := fs.String("c-api", "", "")
+	var capis multi
+	fs.Var(&capis, "c-api", "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	switch {
 	case sub == "add" && len(pos) == 1:
-		v, err := a.svc.Tenants.AddVersion(ctx, a.actor, pos[0], *kind, *capi)
+		v, err := a.svc.Tenants.AddVersion(ctx, a.actor, pos[0], *kind, capis)
 		if err != nil {
 			return err
 		}
 		a.logf("version add %s", v.Name)
+	case sub == "c-api" && len(pos) == 1 && len(capis) == 1:
+		v, err := a.svc.Tenants.AddVersionCAPI(ctx, a.actor, pos[0], capis[0])
+		if err != nil {
+			return err
+		}
+		a.logf("version c-api %s %s", v.Name, capis[0])
 	case sub == "list" && len(pos) == 0:
 		vs, err := a.svc.Tenants.ListVersions(ctx, a.actor)
 		if err != nil {
@@ -287,7 +306,11 @@ func (a *adminCmd) version(ctx context.Context, sub string, args []string) error
 		}
 		a.table("NAME\tKIND\tC API", func(w io.Writer) {
 			for _, v := range vs {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, v.Kind, v.CAPIVersion)
+				var cs []string
+				for _, c := range v.CAPIs {
+					cs = append(cs, c.String())
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, v.Kind, strings.Join(cs, " "))
 			}
 		})
 	default:
@@ -408,6 +431,23 @@ func (a *adminCmd) key(ctx context.Context, sub string, args []string) error {
 			forced = " (forced)"
 		}
 		a.logf("key %s %s/%s %s%s", sub, t, c, k.Fingerprint, forced)
+		if sub == "activate" {
+			fmt.Fprintf(a.errw, "the key signs new releases now; existing ones are served with the old key's signatures "+
+				"until a re-sign (kista serve with serve.resign, or kista admin key resign %s/%s) moves the serving key\n", t, c)
+		}
+	case sub == "resign" && len(pos) == 1:
+		if err := a.svc.Tenants.Authz.Allow(ctx, a.actor, authz.VerbAdmin, t, c); err != nil {
+			return err
+		}
+		ch, err := a.svc.Store.GetChannel(ctx, t, c)
+		if err != nil {
+			return err
+		}
+		signed, moved, err := a.svc.Releases.Resign(ctx, ch.ID, nil)
+		if err != nil {
+			return err
+		}
+		a.logf("key resign %s/%s: %d signatures, serving key moved: %v", t, c, signed, moved)
 	case sub == "events" && len(pos) == 1:
 		evs, err := a.svc.Keys.Events(ctx, a.actor, t, c)
 		if err != nil {
@@ -418,6 +458,73 @@ func (a *adminCmd) key(ctx context.Context, sub string, args []string) error {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%v\n", ts(e.At), e.KeyID, e.From, e.To, e.Actor, e.Forced)
 			}
 		})
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+func (a *adminCmd) release(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("release", flag.ContinueOnError)
+	name := fs.String("name", "", "")
+	private := fs.Bool("private", false, "")
+	notCurrent := fs.Bool("not-current", false, "")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) == 0 {
+		return errUsage
+	}
+	t, c, err := splitPath(pos[0])
+	if err != nil {
+		return err
+	}
+	switch {
+	case sub == "add" && len(pos) == 2 && *name != "":
+		in := a.in
+		if pos[1] != "-" {
+			f, err := os.Open(pos[1])
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			in = f
+		}
+		svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.NewTextHandler(a.errw, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = svc.Close() }()
+		a.svc.WithBlob(svc)
+		r, existed, err := a.svc.Releases.Add(ctx, a.actor, t, c, in, release.AddOptions{Name: *name, Private: *private, NotCurrent: *notCurrent})
+		if err != nil {
+			return err
+		}
+		if existed {
+			fmt.Fprintln(a.errw, "the release already exists")
+		} else {
+			a.logf("release add %s/%s %s %s %s %s", t, c, r.Name, r.ExtVersion, r.Platform, r.Slot)
+		}
+		fmt.Fprintln(a.out, r.ID)
+	case sub == "list" && len(pos) == 1:
+		rs, err := a.svc.Releases.List(ctx, a.actor, t, c, *name)
+		if err != nil {
+			return err
+		}
+		a.table("ID\tNAME\tVERSION\tPLATFORM\tSLOT\tSTATE\tVISIBILITY\tSEQ\tCREATED", func(w io.Writer) {
+			for _, r := range rs {
+				seq := "-"
+				if r.Seq > 0 {
+					seq = strconv.FormatInt(r.Seq, 10)
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Name, r.ExtVersion, r.Platform, r.Slot,
+					r.State, r.Visibility, seq, ts(r.CreatedAt))
+			}
+		})
+	case len(pos) == 2 && slices.Contains([]string{"yank", "deprecate", "activate", "current", "public", "private"}, sub):
+		r, err := a.svc.Releases.Apply(ctx, a.actor, t, c, pos[1], release.Change(sub))
+		if err != nil {
+			return err
+		}
+		a.logf("release %s %s/%s %s (%s %s, %s)", sub, t, c, r.ID, r.Name, r.ExtVersion, r.State)
 	default:
 		return errUsage
 	}

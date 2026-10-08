@@ -229,7 +229,11 @@ func (s *Service) Retire(ctx context.Context, a authz.Actor, tenant, channel, ke
 			}
 			forced = true
 		}
-		// From spec 0007 on: refuse while a release of the channel is signed only by this key.
+		// Spec 0006: every non-yanked release has a signature by the serving key, so the serving key
+		// is the one key whose retirement would leave releases unservable. -force does not apply.
+		if target.ID == c.ServingKeyID {
+			return fmt.Errorf("%w: the key's signatures are the ones served; activate another key and re-sign the channel first", ErrState)
+		}
 		if err := tx.SetKeyState(ctx, target, store.KeyRetired, a.String(), forced); err != nil {
 			return err
 		}
@@ -257,13 +261,18 @@ func (s *Service) Events(ctx context.Context, a authz.Actor, tenant, channel str
 	return s.Store.KeyEvents(ctx, ch.ID)
 }
 
-// WellKnown returns the channel's .well-known/duckdb-extension-repo.json and the channel version it
-// reflects (for caching).
-func (s *Service) WellKnown(ctx context.Context, a authz.Actor, tenant, channel string) ([]byte, int64, error) {
-	ch, err := s.channel(ctx, a, authz.VerbRead, tenant, channel)
+// PublicWellKnown returns a channel's .well-known document for serving: it is public by design
+// (spec 0001), so no actor is checked. ErrNoKeys for a passthrough channel or one without keys.
+func (s *Service) PublicWellKnown(ctx context.Context, tenant, channel string) ([]byte, int64, error) {
+	ch, err := s.Store.GetChannel(ctx, tenant, channel)
 	if err != nil {
 		return nil, 0, err
 	}
+	return s.WellKnownOf(ctx, ch)
+}
+
+// WellKnownOf builds the .well-known document of a channel already read (public by design).
+func (s *Service) WellKnownOf(ctx context.Context, ch store.Channel) ([]byte, int64, error) {
 	if ch.Kind != store.ChannelSigned {
 		return nil, 0, fmt.Errorf("%w: a %s channel has no .well-known", ErrNoKeys, ch.Kind)
 	}
@@ -273,6 +282,16 @@ func (s *Service) WellKnown(ctx context.Context, a authz.Actor, tenant, channel 
 	}
 	doc, err := wellKnown(keys)
 	return doc, ch.Version, err
+}
+
+// WellKnown returns the channel's .well-known/duckdb-extension-repo.json and the channel version it
+// reflects (for caching).
+func (s *Service) WellKnown(ctx context.Context, a authz.Actor, tenant, channel string) ([]byte, int64, error) {
+	ch, err := s.channel(ctx, a, authz.VerbRead, tenant, channel)
+	if err != nil {
+		return nil, 0, err
+	}
+	return s.WellKnownOf(ctx, ch)
 }
 
 // wellKnown builds the document from a channel's keys: the active key first, then trusted keys by

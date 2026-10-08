@@ -243,6 +243,22 @@ func (s *Service) CheckPublic(ctx context.Context) error {
 	return nil
 }
 
+// PublicDomains returns the domains whose marker can be read anonymously right now (serving refuses
+// their tenants), and logs the ones it could not check.
+func (s *Service) PublicDomains(ctx context.Context) []string {
+	var out []string
+	for _, name := range s.Domains() {
+		readable, ok := s.domains[name].Store.Anonymous(ctx, MarkerKey)
+		if readable {
+			out = append(out, name)
+			s.log.Error("blob: a storage domain can be read without credentials; its tenants are refused", "domain", name)
+		} else if !ok {
+			s.log.Warn("blob: could not check whether a storage domain is public", "domain", name)
+		}
+	}
+	return out
+}
+
 // Domains lists the configured domain names.
 func (s *Service) Domains() []string {
 	out := make([]string, 0, len(s.domains))

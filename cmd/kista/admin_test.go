@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 )
 
@@ -43,7 +44,12 @@ func TestAdminCLI(t *testing.T) {
 		t.Fatalf("tenant list: %q", got)
 	}
 	run(0, "version", "add", "eb0d9df48e", "-kind", "dev")
-	run(0, "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.2.0")
+	run(0, "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6")
+	run(0, "version", "c-api", "v2.0.0", "-c-api", "v2.0.0")
+	run(1, "version", "c-api", "v2.0.0", "-c-api", "v2.1.0") // a major is never changed
+	if got := run(0, "version", "list"); !strings.Contains(got, "v1.5.6 v2.0.0") {
+		t.Fatalf("version list: %q", got)
+	}
 	run(0, "channel", "create", "acme/prod", "-kind", "signed")
 	if got := run(0, "channel", "versions", "acme/prod", "-add", "eb0d9df48e", "-add", "v2.0.0"); !strings.Contains(got, "v2.0.0") {
 		t.Fatalf("versions %q", got)
@@ -69,6 +75,30 @@ func TestAdminCLI(t *testing.T) {
 		t.Fatalf("key check: %q", got)
 	}
 	run(1, "key", "check", "-signer", "nope:x")
+	// releases: add from a file, list, change; key resign after an activation
+	file := filepath.Join(dir, "tresor.duckdb_extension")
+	block, err := extfile.EncodeMetadata(extfile.Metadata{Platform: "linux_amd64", DuckDBVersion: "v2.0.0", ExtensionVersion: "1.0", ABI: extfile.ABICPP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := append(append(bytes.Repeat([]byte{1}, 5000), extfile.MetadataPrefix...), block[:]...)
+	if err := os.WriteFile(file, append(body, make([]byte, extfile.SignatureSize)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rid := strings.TrimSpace(run(0, "release", "add", "acme/prod", file, "-name", "tresor"))
+	if again := strings.TrimSpace(run(0, "release", "add", "acme/prod", file, "-name", "tresor")); again != rid {
+		t.Fatalf("re-add: %q vs %q", again, rid)
+	}
+	run(1, "release", "add", "acme/prod", file, "-name", "postgres") // an alias DuckDB never requests
+	run(2, "release", "add", "acme/prod", file)                      // no -name
+	if got := run(0, "release", "list", "acme/prod"); !strings.Contains(got, rid) || !strings.Contains(got, "public") {
+		t.Fatalf("release list: %q", got)
+	}
+	run(0, "release", "private", "acme/prod", rid)
+	run(0, "release", "current", "acme/prod", rid)
+	run(0, "key", "resign", "acme/prod")
+	run(0, "release", "yank", "acme/prod", rid)
+	run(1, "release", "yank", "acme/prod", rid)
 	run(0, "backup", filepath.Join(dir, "backup.db"))
 	if got := run(0, "blob", "check"); !strings.Contains(got, "domain default ok") {
 		t.Fatalf("blob check: %q", got)
