@@ -32,6 +32,9 @@ type Harness struct {
 	// Failing, if set, returns a store whose server answers every call with an error body
 	// containing Secret, and strings no error may contain (host, bucket, prefix).
 	Failing func(t *testing.T) (blob.Store, []string)
+	// WithTimeout, if set, returns a store like New whose remote calls use the given timeout (connect,
+	// headers, idle reads and writes).
+	WithTimeout func(t *testing.T, timeout time.Duration) blob.Store
 	// Stalling, if set, returns a store whose server accepts connections and then never answers or
 	// stops mid-body, and strings no error may contain. Every call must fail within a few seconds.
 	Stalling func(t *testing.T) (blob.Store, []string)
@@ -361,6 +364,53 @@ func Run(t *testing.T, h Harness) {
 		leaked(t, "stat with a deadline", err, append(forbidden, key)...)
 	})
 
+	t.Run("a slow upload that keeps progressing is not cut", func(t *testing.T) {
+		if h.WithTimeout == nil {
+			t.Skip("not applicable")
+		}
+		s := h.WithTimeout(t, time.Second)
+		data := Data(3<<20, 10)
+		key := Key(data)
+		// 64 KiB every 50 ms: about 2.4 s in all, more than twice the timeout, never idle for long
+		if err := s.Put(ctx, key, &slowReader{data: data, step: 64 << 10, pause: 50 * time.Millisecond}, int64(len(data))); err != nil {
+			t.Fatalf("slow upload: %v", err)
+		}
+		// a pooled connection that sat idle for most of the timeout still serves the next call
+		time.Sleep(700 * time.Millisecond)
+		if n, err := s.Stat(ctx, key); err != nil || n != int64(len(data)) {
+			t.Fatalf("stat on a reused connection: %d %v", n, err)
+		}
+		time.Sleep(700 * time.Millisecond)
+		if err := s.Put(ctx, Key([]byte("after idle")), strings.NewReader("after idle"), 10); err != nil {
+			t.Fatalf("put on a reused connection: %v", err)
+		}
+	})
+
+	t.Run("concurrent large puts of one key", func(t *testing.T) {
+		s := h.New(t)
+		data := Data(17<<20+3, 11)
+		key := Key(data)
+		var wg sync.WaitGroup
+		errs := make(chan error, 3)
+		for range 3 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- s.Put(ctx, key, bytes.NewReader(data), int64(len(data)))
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !bytes.Equal(get(t, s, key, 0, -1), data) {
+			t.Fatal("concurrent large puts left other bytes")
+		}
+	})
+
 	t.Run("large put (multipart)", func(t *testing.T) {
 		s := h.New(t)
 		data := Data(17<<20+1, 6)
@@ -385,6 +435,25 @@ func Run(t *testing.T, h Harness) {
 			t.Fatalf("a cancelled put is visible: %v", err)
 		}
 	})
+}
+
+// slowReader serves step bytes per pause, whatever the caller asks for (one goroutine at a time).
+type slowReader struct {
+	data  []byte
+	step  int
+	pause time.Duration
+	mu    sync.Mutex
+}
+
+func (r *slowReader) ReadAt(p []byte, off int64) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if off >= int64(len(r.data)) {
+		return 0, io.EOF
+	}
+	time.Sleep(r.pause)
+	n := copy(p[:min(len(p), r.step)], r.data[off:])
+	return n, nil
 }
 
 // cancelAt cancels a context once a read reaches at.

@@ -10,8 +10,8 @@ permissions:
 
 jobs:
   go-linux:
-    # The store suite on PostgreSQL 17 and SQL Server 2022 (service containers), Vault, OpenBao and an
-    # S3-compatible server, under -race.
+    # The store suite on PostgreSQL 17 and SQL Server 2022 (service containers), Vault, OpenBao, an
+    # S3-compatible server and Azurite, under -race.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -50,8 +50,8 @@ jobs:
             for i in $(seq 1 30); do curl -sf http://127.0.0.1:$p/v1/sys/health >/dev/null && break; sleep 1; done
             curl -sf http://127.0.0.1:$p/v1/sys/health >/dev/null || { docker logs vault; docker logs openbao; exit 1; }
           done
-      - name: S3-compatible server (SeaweedFS)
-        run: make test-s3
+      - name: S3-compatible server (SeaweedFS) and Azurite
+        run: make test-s3 test-azurite
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
@@ -69,6 +69,7 @@ jobs:
           KISTA_TEST_OPENBAO_TOKEN: root
           KISTA_TEST_REQUIRE_VAULT: "1"
           KISTA_TEST_S3: http://kista-test:kista-test-secret@127.0.0.1:58333/kista-test
+          KISTA_TEST_AZUREBLOB: http://127.0.0.1:50000/devstoreaccount1
           KISTA_TEST_REQUIRE_BLOB: "1"
         run: go test -race ./...
 

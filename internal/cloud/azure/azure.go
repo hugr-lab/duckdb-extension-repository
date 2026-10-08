@@ -4,8 +4,10 @@
 package azure
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
@@ -14,20 +16,30 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 )
 
-// Cloud is an Azure cloud kista knows, with its Key Vault and Managed HSM DNS suffixes.
+// Cloud is an Azure cloud kista knows, with its Key Vault, Managed HSM and Blob Storage DNS suffixes.
 type Cloud struct {
 	Name        string
 	Config      cloud.Configuration
 	VaultSuffix string
 	HSMSuffix   string
+	BlobSuffix  string
 }
 
 // Clouds by config name. The China and US Gov Managed HSM suffixes are to be confirmed against a
 // live instance (spec 0004); a wrong suffix fails closed.
 var Clouds = map[string]Cloud{
-	"public": {"public", cloud.AzurePublic, ".vault.azure.net", ".managedhsm.azure.net"},
-	"china":  {"china", cloud.AzureChina, ".vault.azure.cn", ".managedhsm.azure.cn"},
-	"usgov":  {"usgov", cloud.AzureGovernment, ".vault.usgovcloudapi.net", ".managedhsm.usgovcloudapi.net"},
+	"public": {"public", cloud.AzurePublic, ".vault.azure.net", ".managedhsm.azure.net", ".blob.core.windows.net"},
+	"china":  {"china", cloud.AzureChina, ".vault.azure.cn", ".managedhsm.azure.cn", ".blob.core.chinacloudapi.cn"},
+	"usgov":  {"usgov", cloud.AzureGovernment, ".vault.usgovcloudapi.net", ".managedhsm.usgovcloudapi.net", ".blob.core.usgovcloudapi.net"},
+}
+
+// BlobHost returns the Blob Storage host of an account in a cloud.
+func BlobHost(cloudName, account string) (string, error) {
+	c, ok := Clouds[cloudName]
+	if !ok {
+		return "", fmt.Errorf("azure: unknown cloud %q (public, china, usgov)", cloudName)
+	}
+	return strings.ToLower(account) + c.BlobSuffix, nil
 }
 
 // Host returns the Key Vault or Managed HSM host for a name in a cloud (exactly one of vault and hsm).
@@ -42,6 +54,16 @@ func Host(cloudName, vault, hsm string) (string, error) {
 		return strings.ToLower(vault) + c.VaultSuffix, nil
 	}
 	return strings.ToLower(hsm) + c.HSMSuffix, nil
+}
+
+// HTTPClient is the client for token requests (Entra, the managed-identity endpoint) and for Key
+// Vault: azcore's default, without proxies from the environment, so HTTP_PROXY cannot route the
+// managed-identity request (and the token it returns) through another host.
+func HTTPClient() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil
+	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	return &http.Client{Transport: tr}
 }
 
 // Identity is the credential choice.
@@ -76,7 +98,7 @@ func Credential(id Identity, cloudName string, dev bool) (azcore.TokenCredential
 			}
 		}
 	}
-	co := azcore.ClientOptions{Cloud: c.Config}
+	co := azcore.ClientOptions{Cloud: c.Config, Transport: HTTPClient()}
 	switch id.Kind {
 	case "managed":
 		opts := &azidentity.ManagedIdentityCredentialOptions{ClientOptions: co}

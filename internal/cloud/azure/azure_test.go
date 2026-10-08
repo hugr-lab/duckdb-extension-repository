@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,5 +76,33 @@ func TestHost(t *testing.T) {
 		if _, err := Host(c[0], c[1], c[2]); err == nil {
 			t.Errorf("%v accepted", c)
 		}
+	}
+}
+
+func TestBlobHost(t *testing.T) {
+	for c, want := range map[string]string{
+		"public": "kista.blob.core.windows.net", "china": "kista.blob.core.chinacloudapi.cn", "usgov": "kista.blob.core.usgovcloudapi.net",
+	} {
+		if got, err := BlobHost(c, "Kista"); err != nil || got != want {
+			t.Errorf("%s: %q %v", c, got, err)
+		}
+	}
+	if _, err := BlobHost("mars", "kista"); err == nil {
+		t.Fatal("unknown cloud accepted")
+	}
+}
+
+// Token and Key Vault requests never take a proxy from the environment.
+func TestHTTPClientIgnoresProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+	tr := HTTPClient().Transport.(*http.Transport)
+	if tr.Proxy != nil {
+		t.Fatal("the transport has a proxy function")
+	}
+	req, _ := http.NewRequest(http.MethodGet, "http://169.254.169.254/metadata/identity/oauth2/token", nil)
+	if u, err := http.ProxyFromEnvironment(req); err != nil || u == nil {
+		t.Fatalf("control: the environment proxy is not in effect (%v %v)", u, err)
 	}
 }

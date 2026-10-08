@@ -65,7 +65,6 @@ func TestBlobRefused(t *testing.T) {
 		"twice":              {dom("    - { name: a, kind: fs, fs: { root: /a } }\n    - { name: a, kind: fs, fs: { root: /b } }\n"), "defined twice"},
 		"relative root":      {dom("    - { name: a, kind: fs, fs: { root: a } }\n"), "clean absolute"},
 		"two blocks":         {dom("    - { name: a, kind: fs, fs: { root: /a }, s3: {} }\n"), "exactly one block"},
-		"azureblob":          {dom("    - { name: a, kind: azureblob, azureblob: {} }\n"), "phase 2"},
 		"fs overlap":         {dom("    - { name: a, kind: fs, fs: { root: /a } }\n    - { name: b, kind: fs, fs: { root: /a/b } }\n"), "share a store"},
 		"s3 overlap":         {dom("    - { name: a, kind: s3, s3: { " + ok + " } }\n    - { name: b, kind: s3, s3: { " + ok + ", prefix: x/ } }\n"), "share a store"},
 		"http":               {s3(strings.Replace(ok, "https://e.example", "http://e.example", 1)), "plain http only on loopback"},
@@ -109,5 +108,59 @@ func TestBlobRefused(t *testing.T) {
 	dev := "profile: dev\nrotation: { min_trusted: 1h, min_demoted: 1h }\n" + s3(strings.Replace(ok, "https://e.example", "http://127.0.0.1:9000", 1))
 	if _, err := Load(write(t, dev), nil); err != nil {
 		t.Fatalf("http on loopback in dev: %v", err)
+	}
+}
+
+func TestAzureBlob(t *testing.T) {
+	dom := func(body string) string {
+		return base + "blob:\n  domains:\n    - { name: default, kind: azureblob, azureblob: { " + body + " } }\n"
+	}
+	devDom := func(body string) string {
+		return "profile: dev\nrotation: { min_trusted: 1h, min_demoted: 1h }\n" + dom(body)
+	}
+	ok := `account: kistacn, container: bodies, cloud: china, prefix: prod/, identity: { kind: workload, client_id: c, tenant_id: t }`
+	cfg, err := Load(write(t, dom(ok)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := cfg.BlobDomains()[0].AzureBlob; a.Account != "kistacn" || a.Cloud != "china" {
+		t.Fatalf("%+v", a)
+	}
+	azurite := `account: devstoreaccount1, container: bodies, endpoint: "http://127.0.0.1:10000/devstoreaccount1", account_key_file: /k`
+	if _, err := Load(write(t, devDom(azurite)), nil); err != nil {
+		t.Fatalf("azurite in dev: %v", err)
+	}
+	cases := map[string]struct{ file, want string }{
+		"account":           {dom(strings.Replace(ok, "kistacn", "Kista-CN", 1)), "account"},
+		"container":         {dom(strings.Replace(ok, "bodies", "a--b", 1)), "container"},
+		"cloud":             {dom(strings.Replace(ok, "china", "mars", 1)), "cloud"},
+		"prefix":            {dom(strings.Replace(ok, "prod/", "prod", 1)), "prefix"},
+		"no identity":       {dom("account: kistacn, container: bodies"), "identity is required"},
+		"workload no ids":   {dom("account: kistacn, container: bodies, identity: { kind: workload }"), "client_id and tenant_id"},
+		"default in prod":   {dom("account: kistacn, container: bodies, identity: { kind: default }"), "only with profile dev"},
+		"azurite in prod":   {dom(azurite), "only with profile dev"},
+		"azurite remote":    {devDom(strings.Replace(azurite, "127.0.0.1", "azurite.example", 1)), "loopback"},
+		"azurite https":     {devDom(strings.Replace(azurite, "http://", "https://", 1)), "http URL"},
+		"azurite path":      {devDom(strings.Replace(azurite, "10000/devstoreaccount1", "10000/other", 1)), "end with the account"},
+		"azurite no path":   {devDom(strings.Replace(azurite, "10000/devstoreaccount1", "10000", 1)), "end with the account"},
+		"azurite cloud":     {devDom(azurite + ", cloud: china"), "cloud does not apply"},
+		"azurite no key":    {devDom(strings.Replace(azurite, ", account_key_file: /k", "", 1)), "account_key_file"},
+		"azurite + id":      {devDom(azurite + ", identity: { kind: managed }"), "cannot both"},
+		"sas query":         {devDom(strings.Replace(azurite, "devstoreaccount1\"", "devstoreaccount1?sig=x\"", 1)), "loopback"},
+		"connection string": {dom(ok + ", connection_string: x"), "connection_string"},
+		"sas token":         {dom(ok + ", sas_token: x"), "sas_token"},
+		"overlap": {base + "blob:\n  domains:\n    - { name: default, kind: azureblob, azureblob: { " + ok + " } }\n" +
+			"    - { name: b, kind: azureblob, azureblob: { " + strings.Replace(ok, "prod/", "prod/x/", 1) + " } }\n", "share a store"},
+	}
+	for name, c := range cases {
+		if _, err := Load(write(t, c.file), nil); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got %v, want %q", name, err, c.want)
+		}
+	}
+	// one account name in two clouds is two stores
+	two := base + "blob:\n  domains:\n    - { name: default, kind: azureblob, azureblob: { " + ok + " } }\n" +
+		"    - { name: b, kind: azureblob, azureblob: { " + strings.Replace(ok, "cloud: china", "cloud: public", 1) + " } }\n"
+	if _, err := Load(write(t, two), nil); err != nil {
+		t.Fatalf("one account name in two clouds: %v", err)
 	}
 }

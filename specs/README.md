@@ -11,4 +11,4 @@ and it is superseded by a new spec when a decision changes.
 | [0002](0002-extfile-signer/spec.md) | Extension file format, file signer, DuckDB e2e harness | implemented |
 | [0003](0003-store-tenants-keys/spec.md) | Store, tenants, channels, signing keys and rotation | implemented |
 | [0004](0004-signer-backends/spec.md) | Signer backends: key sources for vaults and KMSs | phases 1-2 implemented; 3-4 deferred |
-| [0005](0005-blob-storage/spec.md) | Blob storage for extension bodies | phase 1 implemented; 2 next; 3 deferred |
+| [0005](0005-blob-storage/spec.md) | Blob storage for extension bodies | phases 1-2 implemented; 3 deferred |

@@ -115,7 +115,7 @@ func KeySources(cfg config.Config) (*keysource.Registry, error) {
 				return nil, fmt.Errorf("app: source %s: %w", src.Name, err)
 			}
 			requireHSM := a.RequireHSM == nil || *a.RequireHSM
-			b, err := azurekv.New(host, cred, requireHSM, azurekv.Options{Timeout: src.Timeout})
+			b, err := azurekv.New(host, cred, requireHSM, azurekv.Options{Timeout: src.Timeout, Transport: azure.HTTPClient()})
 			if err != nil {
 				return nil, fmt.Errorf("app: source %s: %w", src.Name, err)
 			}

@@ -17,11 +17,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/azureblob"
 	blobfs "github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/s3"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
@@ -31,8 +34,9 @@ import (
 // Spec 0005: an extension is spooled, verified and committed into a storage domain, then served
 // from the stored stream with a channel signature, every byte verified against the record.
 
-// blobDomains returns the domains to run against: fs always, and S3 when KISTA_TEST_S3 is set
-// (http://<access>:<secret>@<host:port>/<bucket>, a MinIO or SeaweedFS).
+// blobDomains returns the domains to run against: fs always, S3 when KISTA_TEST_S3 is set
+// (http://<access>:<secret>@<host:port>/<bucket>, a MinIO or SeaweedFS), and Azure Blob Storage
+// when KISTA_TEST_AZUREBLOB is set (http://<host:port>/devstoreaccount1, Azurite).
 func blobDomains(t *testing.T) map[string]func(t *testing.T) blob.Store {
 	out := map[string]func(t *testing.T) blob.Store{
 		"fs": func(t *testing.T) blob.Store {
@@ -43,6 +47,11 @@ func blobDomains(t *testing.T) map[string]func(t *testing.T) blob.Store {
 			t.Cleanup(func() { s.Close() })
 			return s
 		},
+	}
+	if ep := os.Getenv("KISTA_TEST_AZUREBLOB"); ep != "" {
+		out["azureblob"] = func(t *testing.T) blob.Store { return azuriteStore(t, ep) }
+	} else if os.Getenv("KISTA_TEST_REQUIRE_BLOB") == "1" {
+		t.Fatal("KISTA_TEST_AZUREBLOB is required")
 	}
 	v := os.Getenv("KISTA_TEST_S3")
 	if v == "" {
@@ -86,6 +95,37 @@ func blobDomains(t *testing.T) map[string]func(t *testing.T) blob.Store {
 		return s
 	}
 	return out
+}
+
+// The well-known Azurite development account (public, documented by Microsoft).
+const (
+	azuriteAccount = "devstoreaccount1"
+	azuriteKey     = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+)
+
+func azuriteStore(t *testing.T, ep string) blob.Store {
+	t.Helper()
+	cred, err := container.NewSharedKeyCredential(azuriteAccount, azuriteKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := container.NewClientWithSharedKeyCredential(ep+"/kista-e2e", cred, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Create(context.Background(), nil); err != nil && !bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
+		t.Fatal(err)
+	}
+	key := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(key, []byte(azuriteKey), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := azureblob.New(azureblob.Config{Endpoint: ep, Account: azuriteAccount, Container: "kista-e2e",
+		Prefix: "e2e-" + uuid.NewString() + "/", AccountKeyFile: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 // blobRepo is a channel served from the blob service.

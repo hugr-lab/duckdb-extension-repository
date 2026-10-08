@@ -25,12 +25,12 @@ type Blob struct {
 
 // BlobDomain is a named store.
 type BlobDomain struct {
-	Name      string        `yaml:"name"`
-	Kind      string        `yaml:"kind"` // fs | s3 | azureblob (phase 2)
-	FS        *FSDomain     `yaml:"fs"`
-	S3        *S3Domain     `yaml:"s3"`
-	AzureBlob *yaml.Node    `yaml:"azureblob"` // phase 2
-	Timeout   time.Duration `yaml:"timeout"`   // s3: connect, headers and idle reads/writes; default 30s, 1s..5m
+	Name      string           `yaml:"name"`
+	Kind      string           `yaml:"kind"` // fs | s3 | azureblob (phase 2)
+	FS        *FSDomain        `yaml:"fs"`
+	S3        *S3Domain        `yaml:"s3"`
+	AzureBlob *AzureBlobDomain `yaml:"azureblob"`
+	Timeout   time.Duration    `yaml:"timeout"` // remote stores: connect, headers and idle reads/writes; default 30s, 1s..5m
 }
 
 // FSDomain is a local directory (or a mounted volume).
@@ -50,6 +50,29 @@ type S3Domain struct {
 	AccessKeyFile string `yaml:"access_key_file"`
 	SecretKeyFile string `yaml:"secret_key_file"`
 	CAFile        string `yaml:"ca_file"` // trust only this CA bundle (an internal CA); empty: system roots
+}
+
+// AzureBlobDomain is an Azure Blob Storage container and prefix.
+type AzureBlobDomain struct {
+	Account   string    `yaml:"account"`
+	Container string    `yaml:"container"`
+	Cloud     string    `yaml:"cloud"` // public (default) | china | usgov; the blob host follows from it
+	Prefix    string    `yaml:"prefix"`
+	Identity  *Identity `yaml:"identity"` // managed or workload (default only in dev)
+	// Azurite only, with profile dev: an endpoint on loopback and the account key from a file.
+	Endpoint       string `yaml:"endpoint"`
+	AccountKeyFile string `yaml:"account_key_file"`
+}
+
+// where is the cloud or emulator endpoint an account lives in (account names are unique per cloud).
+func (a AzureBlobDomain) where() string {
+	if a.Endpoint != "" {
+		return strings.ToLower(strings.TrimSuffix(a.Endpoint, "/"))
+	}
+	if a.Cloud == "" {
+		return "public"
+	}
+	return a.Cloud
 }
 
 // ByteSize is a size written as a number of bytes or with a KiB, MiB or GiB suffix.
@@ -201,9 +224,13 @@ func validateBlob(bad func(string, ...any), c Config) {
 			}
 			validateS3(bad, where, *d.S3, dev)
 		case "azureblob":
-			bad("%s: kind azureblob comes in phase 2 of spec 0005", where)
+			if d.AzureBlob == nil || blocks != 1 {
+				bad("%s: kind azureblob needs exactly one block, azureblob", where)
+				continue
+			}
+			validateAzureBlob(bad, where, *d.AzureBlob, dev)
 		default:
-			bad("%s.kind must be fs or s3", where)
+			bad("%s.kind must be fs, s3 or azureblob", where)
 		}
 	}
 	// two domains on one store would share objects (and one's garbage collection would delete the
@@ -213,6 +240,12 @@ func validateBlob(bad func(string, ...any), c Config) {
 			if a.Kind == o.Kind && a.Kind == "fs" && a.FS != nil && o.FS != nil && pathsOverlap(a.FS.Root, o.FS.Root) ||
 				a.Kind == o.Kind && a.Kind == "s3" && a.S3 != nil && o.S3 != nil && strings.EqualFold(a.S3.Endpoint, o.S3.Endpoint) &&
 					a.S3.Bucket == o.S3.Bucket && pathsOverlap("/"+a.S3.Prefix, "/"+o.S3.Prefix) {
+				bad("blob.domains: %s and %s share a store", o.Name, a.Name)
+			}
+			if a.Kind == o.Kind && a.Kind == "azureblob" && a.AzureBlob != nil && o.AzureBlob != nil &&
+				a.AzureBlob.where() == o.AzureBlob.where() &&
+				a.AzureBlob.Account == o.AzureBlob.Account && a.AzureBlob.Container == o.AzureBlob.Container &&
+				pathsOverlap("/"+a.AzureBlob.Prefix, "/"+o.AzureBlob.Prefix) {
 				bad("blob.domains: %s and %s share a store", o.Name, a.Name)
 			}
 		}
@@ -269,5 +302,64 @@ func validateS3(bad func(string, ...any), where string, s S3Domain, dev bool) {
 	}
 	if !filepath.IsAbs(s.AccessKeyFile) || !filepath.IsAbs(s.SecretKeyFile) {
 		bad("%s.s3: access_key_file and secret_key_file must be absolute paths", where)
+	}
+}
+
+var (
+	azureAccount   = regexp.MustCompile(`^[a-z0-9]{3,24}$`)
+	azureContainer = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
+)
+
+func validateAzureBlob(bad func(string, ...any), where string, a AzureBlobDomain, dev bool) {
+	if !azureAccount.MatchString(a.Account) {
+		bad("%s.azureblob.account is 3-24 lowercase letters and digits", where)
+	}
+	if !azureContainer.MatchString(a.Container) || strings.Contains(a.Container, "--") {
+		bad("%s.azureblob.container is 3-63 lowercase letters, digits and single dashes", where)
+	}
+	if blob.ValidPrefix(a.Prefix) != nil {
+		bad("%s.azureblob.prefix must be empty or lowercase segments each ending with /", where)
+	}
+	switch a.Cloud {
+	case "", "public", "china", "usgov":
+	default:
+		bad("%s.azureblob.cloud must be public, china or usgov", where)
+	}
+	if a.Endpoint != "" || a.AccountKeyFile != "" {
+		// the Azurite emulator: both, development only, on loopback, and no identity
+		u, err := url.Parse(a.Endpoint)
+		switch {
+		case !dev:
+			bad("%s.azureblob: endpoint and account_key_file (the Azurite emulator) are allowed only with profile dev", where)
+		case err != nil || u.Host == "" || u.RawQuery != "" || u.User != nil || u.Fragment != "" ||
+			u.Scheme != "http" || !store.IsLoopbackHost(u.Hostname()):
+			bad("%s.azureblob.endpoint must be an http URL on a loopback host (the emulator)", where)
+		case strings.TrimSuffix(u.Path, "/") != "/"+a.Account:
+			bad("%s.azureblob.endpoint must end with the account: http://<host:port>/%s", where, a.Account)
+		case a.Cloud != "":
+			bad("%s.azureblob: cloud does not apply to the emulator endpoint", where)
+		case !filepath.IsAbs(a.AccountKeyFile):
+			bad("%s.azureblob: the emulator needs endpoint and an absolute account_key_file", where)
+		case a.Identity != nil:
+			bad("%s.azureblob: an account key and an identity cannot both be set", where)
+		}
+		return
+	}
+	if a.Identity == nil {
+		bad("%s.azureblob.identity is required", where)
+		return
+	}
+	switch a.Identity.Kind {
+	case "managed":
+	case "workload":
+		if !dev && (a.Identity.ClientID == "" || a.Identity.TenantID == "") {
+			bad("%s.azureblob.identity: workload identity needs client_id and tenant_id", where)
+		}
+	case "default":
+		if !dev {
+			bad("%s.azureblob.identity.kind default (the developer chain) is allowed only with profile dev", where)
+		}
+	default:
+		bad("%s.azureblob.identity.kind must be managed or workload", where)
 	}
 }

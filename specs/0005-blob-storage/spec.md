@@ -1,6 +1,6 @@
 # Spec 0005: Blob storage for extension bodies
 
-- **Status**: phase 1 implemented
+- **Status**: phases 1-2 implemented; 3 deferred
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -103,7 +103,9 @@ type Store interface {
   with no upper case, no `..`, no other prefixes. `List` accepts only `streams/` and `tmp/`.
   Configured prefixes are validated the same way.
 - **Bounded calls.** Every remote call has a timeout on connecting, on time to response headers,
-  and on idle time: a read or write on a connection that makes no progress for `timeout` fails.
+  and on idle time: a connection that makes no progress in either direction for `timeout` fails.
+  Progress in one direction keeps the other alive (a slow upload is not cut while the server has not
+  answered yet), and a pooled connection is closed after `timeout/2` idle.
   `Stat` and `Delete` are also bounded as a whole. There are at most 3 attempts, counting the SDK's
   own retries. Clients ignore proxy environment variables and do not follow redirects. `fs` is
   local and takes no timeout.
@@ -149,11 +151,25 @@ type Store interface {
 **`azureblob`: Azure Blob Storage** (phase 2; `azblob`, with `internal/cloud/azure` credentials).
 - Config: `account`, `container`, `cloud` (the blob host is derived from it), `prefix` and
   `identity`.
-- `Put` stages blocks whose ids are derived from the stream hash and the block index, then commits
-  the block list. Two replicas writing one key stage identical blocks, so neither commit invalidates
-  the other.
-- SAS tokens and connection strings are refused. A shared key (`account_key_file`) and an `endpoint`
-  override are allowed only with `profile: dev` on loopback, for the Azurite emulator.
+- The blob host is `<account>.blob.core.windows.net`, `.blob.core.chinacloudapi.cn` or
+  `.blob.core.usgovcloudapi.net`; the token comes from spec 0004's credential (managed or workload
+  identity, `default` only in dev), and is never sent over http.
+- `Put` of an object up to 16 MiB is one Put Blob. A larger one stages 16 MiB blocks whose ids are
+  derived from the key (for a stream, its hash) and the block index, then commits the block list.
+  Two replicas writing one key stage identical blocks, so neither commit invalidates the other.
+  The blocks of a failed upload are never visible; Azure discards uncommitted blocks after a week.
+- At most 3 attempts per call and no per-try time limit (azcore's would also cut a long download);
+  the shared transport bounds connecting, headers and idle reads and writes, as for `s3`.
+- The anonymous check is an unsigned `HEAD` of the marker: `200`, and `404 BlobNotFound` (anonymous
+  reads reach the container, the key is just missing), are public; `404 ResourceNotFound`, `401`,
+  `403` and `409` (public access forbidden on the account) are private.
+- A ranged download whose `Content-Range` does not start at the requested offset is refused. A
+  `Retry-After` up to 10s is honoured (azcore does not retry a longer one at all).
+- The Entra token requests (and Key Vault's, spec 0004) use a client without proxies from the
+  environment, so `HTTP_PROXY` cannot route the managed-identity request and its token elsewhere.
+- SAS tokens and connection strings are refused (config has no field for them, and an endpoint with
+  a query is refused). A shared key (`account_key_file`, mode `0600`) and an `endpoint` override are
+  allowed only together, only with `profile: dev`, on loopback, for the Azurite emulator.
 - Least privilege: Storage Blob Data Contributor on the container. The documentation says to set
   `allowBlobPublicAccess = false`.
 
@@ -170,7 +186,7 @@ blob:                               # file-only, like signers
       s3: { endpoint: "https://minio.internal:9000", bucket: kista, region: us-east-1, lookup: path,
             sse: none, access_key_file: /run/secrets/s3-access, secret_key_file: /run/secrets/s3-secret }
     - name: cn
-      kind: azureblob                 # phase 2
+      kind: azureblob
       azureblob: { account: kistacn, container: bodies, cloud: china,
                    identity: { kind: workload, client_id: "…", tenant_id: "…" } }
   spool_dir: /var/lib/kista/spool   # the default; in dev with SQLite, beside the database file
@@ -302,7 +318,8 @@ Spec 0006 limits multi-range requests: each range can pull whole chunks.
 internal/blob             the Store interface, the key grammar, Spool/Commit, OpenGzip/OpenPlain, domains
 internal/blob/fs
 internal/blob/s3
-internal/blob/azureblob   (phase 2)
+internal/blob/azureblob
+internal/blob/transport   the remote stores' HTTP transport (no proxy, idle timeouts, ca_file)
 internal/blob/blobtest    the contract suite every backend runs
 internal/store            + migration 0002
 ```
@@ -348,8 +365,8 @@ internal/store            + migration 0002
 - **Real servers in CI (Linux):**
   - SeaweedFS, pinned by digest, for `s3` with `sse: none` (`make test-s3`). MinIO no longer
     publishes images to Docker Hub or Quay; the suite also passes against a MinIO server;
-  - Azurite (`azurite-blob --skipApiVersionCheck --loose`, the well-known dev account) for
-    `azureblob` in phase 2;
+  - Azurite, pinned by digest (`azurite-blob --skipApiVersionCheck --loose`, the well-known dev
+    account; `make test-azurite`) for `azureblob`;
   - run as `docker run` steps, gated by `KISTA_TEST_S3` / `KISTA_TEST_AZUREBLOB` and required with
     `KISTA_TEST_REQUIRE_BLOB=1`;
   - `fs` always; macOS runs `fs` only.

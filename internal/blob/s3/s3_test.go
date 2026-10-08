@@ -118,6 +118,11 @@ func TestContract(t *testing.T) {
 			t.Setenv("NO_PROXY", "")
 			return newStore(t, config(t, u))
 		},
+		WithTimeout: func(t *testing.T, timeout time.Duration) blob.Store {
+			cfg := config(t, u)
+			cfg.Timeout = timeout
+			return newStore(t, cfg)
+		},
 		Stalling: func(t *testing.T) (blob.Store, []string) {
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
