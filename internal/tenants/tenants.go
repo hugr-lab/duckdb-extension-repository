@@ -4,6 +4,7 @@ package tenants
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -61,17 +62,87 @@ func (s *Service) SetTenantState(ctx context.Context, a authz.Actor, name, state
 	return t, err
 }
 
-// AddVersion registers a DuckDB version (server-wide action). kind is release or dev; capi is the
-// version's C API level, if known.
-func (s *Service) AddVersion(ctx context.Context, a authz.Actor, name, kind, capi string) (store.DuckDBVersion, error) {
+// AddVersion registers a DuckDB version (server-wide action). kind is release or dev; capis are
+// the maximum C API version it accepts for each major (spec 0006: v1.5.6 and v2.0.0 on the pin).
+func (s *Service) AddVersion(ctx context.Context, a authz.Actor, name, kind string, capis []string) (store.DuckDBVersion, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, "", ""); err != nil {
 		return store.DuckDBVersion{}, err
 	}
 	if kind != "release" && kind != "dev" {
 		return store.DuckDBVersion{}, fmt.Errorf("%w: version kind %q (release or dev)", store.ErrInvalid, kind)
 	}
-	v := store.DuckDBVersion{Name: name, Kind: kind, CAPIVersion: capi}
-	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.AddDuckDBVersion(ctx, &v) })
+	parsed, err := parseCAPIs(capis)
+	if err != nil {
+		return store.DuckDBVersion{}, err
+	}
+	v := store.DuckDBVersion{Name: name, Kind: kind, CAPIs: parsed}
+	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		if err := tx.AddDuckDBVersion(ctx, &v); err != nil {
+			return err
+		}
+		for _, c := range parsed {
+			if err := tx.AddCAPI(ctx, v.ID, c); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return v, err
+}
+
+func parseCAPIs(capis []string) ([]store.CAPI, error) {
+	var out []store.CAPI
+	seen := map[int]bool{}
+	for _, s := range capis {
+		c, err := store.ParseCAPI(s)
+		if err != nil {
+			return nil, err
+		}
+		if seen[c.Major] {
+			return nil, fmt.Errorf("%w: C API major %d given twice", store.ErrInvalid, c.Major)
+		}
+		seen[c.Major] = true
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// AddVersionCAPI records the maximum C API of one more major for a DuckDB version (server-wide
+// action). Existing majors are facts about the engine and never change.
+func (s *Service) AddVersionCAPI(ctx context.Context, a authz.Actor, name, capi string) (store.DuckDBVersion, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, "", ""); err != nil {
+		return store.DuckDBVersion{}, err
+	}
+	c, err := store.ParseCAPI(capi)
+	if err != nil {
+		return store.DuckDBVersion{}, err
+	}
+	var v store.DuckDBVersion
+	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		if v, err = tx.GetDuckDBVersion(ctx, name); err != nil {
+			return err
+		}
+		// a version added before migration 0003 has only the legacy single value: keep it as a row,
+		// or adding a second major would make its readers drop it
+		rows, err := tx.VersionCAPIs(ctx, v.ID)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			if legacy, err := store.ParseCAPI(strings.TrimSpace(v.CAPIVersion)); err == nil && legacy.Major != c.Major {
+				if err := tx.AddCAPI(ctx, v.ID, legacy); err != nil {
+					return err
+				}
+			}
+		}
+		if err := tx.AddCAPI(ctx, v.ID, c); err != nil {
+			return err
+		}
+		if v.CAPIs, err = tx.VersionCAPIs(ctx, v.ID); err != nil {
+			return err
+		}
+		return tx.BumpChannelsServing(ctx, v.ID)
+	})
 	return v, err
 }
 

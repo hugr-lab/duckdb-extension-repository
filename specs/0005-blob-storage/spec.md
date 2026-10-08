@@ -245,7 +245,8 @@ sp.Close()                             // always; removes the spool files; idemp
   - Files are created with `O_EXCL` under random names, mode `0600`.
   - At most `max_ingests` spools exist at once; a semaphore limits them, and the size cap applies
     while reading.
-  - Leftover spool files are swept at startup.
+  - Leftover spool files are swept at startup: those untouched for an hour, since another process
+    (`kista serve`, `kista admin release add`) may be spooling into the same directory.
   - The spool is read through one open descriptor, never reopened by path, so what the caller
     verified is what is stored.
 - **Commit:**

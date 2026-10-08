@@ -35,6 +35,7 @@ type Config struct {
 	Rotation Rotation `yaml:"rotation"`
 	Signers  Signers  `yaml:"signers" kista:"fileonly"`
 	Blob     Blob     `yaml:"blob" kista:"fileonly"`
+	Serve    Serve    `yaml:"serve"`
 }
 
 // Store selects and configures the metadata database.
@@ -442,6 +443,7 @@ func (c Config) Validate() error {
 		}
 	}
 	validateBlob(bad, c)
+	validateServe(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

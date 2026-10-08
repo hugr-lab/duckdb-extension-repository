@@ -24,7 +24,8 @@ on PostgreSQL, SQL Server and SQLite, tenants, channels and key rotation, with `
 (spec 0003); signing keys in HashiCorp Vault / OpenBao and Azure Key Vault / Managed HSM behind named
 key sources (spec 0004; AWS KMS and Google Cloud KMS follow); extension bodies stored once per
 storage domain, in a local directory, an S3-compatible bucket or Azure Blob Storage, and served with
-every byte verified (spec 0005; Google Cloud Storage follows). Serving over HTTP comes next. See `specs/`. Enterest is the
-hosted service built on kista.
+every byte verified (spec 0005; Google Cloud Storage follows); releases in signed channels and
+`kista serve` for public releases, with key rotation that re-signs (spec 0006, phase 1; tokens and
+grants follow). See `specs/`. Enterest is the hosted service built on kista.
 
 Licensed under the Apache License, Version 2.0.

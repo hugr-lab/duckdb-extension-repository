@@ -1,6 +1,6 @@
 # Spec 0006: Serving, tokens and grants
 
-- **Status**: draft
+- **Status**: phase 1 implemented
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -68,8 +68,8 @@ channels            + serving_key_id null, fk (serving_key_id, id) -> channel_ke
 channel_keys        + unique (id, channel_id)
 ```
 
-A release's name, extension version and platform are copied from its Build and checked equal in
-code. Migration 0003 adds tables and columns only, but sets `-- +min_reader 3`: an older
+A release's name, extension version and platform are copied from its Build. SQLite cannot add a table constraint to an existing table, so there the serving key's channel
+is checked in code. Migration 0003 adds tables and columns only, but sets `-- +min_reader 3`: an older
 `kista admin` would retire a serving key or add a DuckDB version without its C API rows.
 
 **Grammars** (checked at release time; the footer is parsed by spec 0002 `extfile`):
@@ -85,7 +85,7 @@ code. Migration 0003 adds tables and columns only, but sets `-- +min_reader 3`: 
   (`INSTALL … VERSION 'x'` puts the string into the path as typed; `1.0` and `v1.0` differ).
 - platform: `[a-z0-9_]{1,64}`, not `wasm_*` (wasm asks for `.duckdb_extension.wasm` under another
   version scheme; `extension_install.cpp:40-41,221-225`).
-- DuckDB version: a release tag `v\d+\.\d+\.\d+` with an optional suffix `-[A-Za-z0-9.]+`
+- DuckDB version: a release tag `v\d+\.\d+\.\d+` with an optional suffix `-[a-z0-9.]+`
   (`-rc1`, `-dev123`), or a 10-character lowercase hex source id.
 - C API version (`c_struct`): `v<major>.<minor>.<patch>`, numeric, as DuckDB's `ParseSemver`
   (`src/main/extension.cpp:149-176`).
@@ -103,7 +103,8 @@ everything:
   -c-api v2.0.0`, and `kista admin version c-api <name> -c-api …` adds a missing major. Rows are
   facts about the engine and are never changed or removed; adding one bumps `channels.version` of
   every channel serving that version. Existing `duckdb_versions.c_api_version`
-  values are backfilled when they parse; a version without C API data serves no `c_struct` build.
+  values are read as one maximum when they parse (a version added before migration 0003); a version
+  without C API data serves no `c_struct` build.
   This amends spec 0001's "C API at least the minimum".
 
 **Slots and immutability.** One body per (channel, name, extension version, platform, DuckDB
@@ -152,9 +153,9 @@ re-signer gives it to the older ones.
 
 **The re-signer** runs in `kista serve` when `serve.resign` is on (a replica that should not hold
 sign permission leaves it off), and in the foreground as `kista admin key resign <tenant>/<channel>`.
-One replica at a time per channel holds a lease (`leases`, compare-and-set with a short expiry,
+One replica at a time per channel holds a lease (`leases`, compare-and-set with a 2-minute expiry,
 renewed per batch, released on shutdown); the work is idempotent, so the lease only saves KMS calls.
-It signs in batches bounded by the key source's `max_concurrency`.
+It signs sequentially, in batches of 32 inserted per transaction.
 
 **Adding a release** (`kista admin release add <tenant>/<channel> <file|-> -name <name>
 [-private] [-not-current]`):
@@ -170,11 +171,11 @@ It signs in batches bounded by the key source's `max_concurrency`.
    `release_version`.
 
 Adding a build to a slot it already holds, with the same flags, returns the existing release;
-different flags are refused (use `release visibility` or `release current`).
+different flags are refused (use `release public|private` or `release current`).
 
 **Other commands** take a release id and record who and when: `release list <tenant>/<channel>
 [-name x]`, `release yank` (final), `release deprecate`, `release activate`, `release current`,
-`release visibility public|private`. Each bumps the channel's `release_version`.
+`release public`, `release private`. Each bumps the channel's `release_version`.
 
 ### `kista serve` (phase 1)
 
@@ -190,14 +191,17 @@ serve:                                          # file-only (spec 0003 rules), e
   max_downloads_per_client: 8
   min_rate: 16KiB                               # per second, over write_idle_timeout
   write_idle_timeout: 30s
+  drain_timeout: 5s                             # /readyz fails this long before shutdown starts
+  shutdown_timeout: 30s                         # then downloads still running are aborted
 ```
 
 **Listeners.** Each declares a scheme:
 
 - `https` with `tls` (a certificate, reloaded when its files change), or with `behind_proxy: true`:
   TLS is terminated in front. A request whose `X-Forwarded-Proto` is anything but exactly one
-  `https` is treated as plain http: the header can only downgrade, never upgrade. With
-  `trusted_proxies` set, a `behind_proxy` listener also refuses connections from other peers.
+  `https` is treated as plain http: the header can only downgrade, never upgrade.
+  `trusted_proxies` is required with a `behind_proxy` listener (otherwise every client would look
+  like the proxy), and requests from other peers are refused and logged.
 - `http`: public releases only; an `Authorization` header is ignored.
 - `dual` (with `tls`): one port that serves TLS when the first byte is a TLS handshake and plain
   http otherwise.
@@ -226,7 +230,8 @@ matches `r.URL.EscapedPath()`:
 
 - Every segment must match its grammar. Any `%`, an empty segment, `.` or `..`, a trailing slash,
   a query string, the two names of a versioned path differing, an absolute-form or `*` request
-  target: all answer as **missing**. There is no normalisation and no redirect.
+  target (`OPTIONS *` included): all answer `404`, like an unknown path. No such path can exist, so
+  this tells nothing. There is no normalisation and no redirect.
 - Methods are decided from the path's shape alone, before anything is looked up: `GET` and `HEAD`;
   others `405`. A request with a body (`Content-Length` above 0, or chunked) is refused with `400`.
 - Tenant names already exclude `api`, `admin`, `healthz`, `readyz`, `metrics`, `static`, `ui`
@@ -462,7 +467,7 @@ as spec 0005 or audit as spec 0009 are corrected.
 
 - **Store suite** on all three dialects: builds, releases, slots (including `capi:<major>` and the
   `c_struct`/`cpp` exclusion), `seq` and its partial unique index, signatures (256 bytes, the
-  composite keys refuse another channel's key), C API rows and the backfill, leases, issuers,
+  composite keys refuse another channel's key), C API rows and the legacy fallback, leases, issuers,
   audiences (unique, not a canonical one), grants.
 - **Release service:** add (idempotent, slot conflicts, a version the channel lacks, a passthrough
   channel, no active key, the alias and device names, every grammar), current and rollback,
@@ -528,7 +533,5 @@ as spec 0005 or audit as spec 0009 are corrected.
 - Spec 0009: upstreams, passthrough serving, and shadowing of core names in passthrough channels.
 - Spec 0010: audit, including serve-path events (installs by principal, anonymous counters,
   rate-limited `401` events).
-- Spec 0005 implementation: sweep only stale spool files (a CLI spooling while `kista serve`
-  starts must not lose its files).
 - Later: custom domains; a CDN in front of public releases (never redirecting a serve request off
   host, since httpfs would carry the Bearer token there).

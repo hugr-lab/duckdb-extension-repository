@@ -1,5 +1,5 @@
 // Package authz holds the actor of a request and the authorization hook every service calls
-// (spec 0003). The CLI's server administrator is allowed everything; spec 0005 adds grants.
+// (spec 0003). The CLI's server administrator is allowed everything; spec 0006 adds grants.
 package authz
 
 import (
@@ -15,7 +15,7 @@ type ActorKind string
 
 const (
 	ActorOS        ActorKind = "os"        // kista admin: the OS user running the CLI
-	ActorPrincipal ActorKind = "principal" // the HTTP API: issuer record and subject (spec 0005)
+	ActorPrincipal ActorKind = "principal" // a token's principals (spec 0006)
 	ActorSystem    ActorKind = "system"    // kista itself
 )
 

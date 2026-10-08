@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -62,11 +63,19 @@ func (s *Service) sweep() {
 	defer d.Close()
 	names, _ := d.Readdirnames(-1)
 	for _, n := range names {
-		if strings.HasPrefix(n, spoolPrefix) {
+		if !strings.HasPrefix(n, spoolPrefix) {
+			continue
+		}
+		// another process (kista serve, a kista admin release add) may be spooling right now:
+		// only files untouched for an hour are a previous run's leftovers
+		if fi, err := s.spool.Stat(n); err == nil && time.Since(fi.ModTime()) > staleSpool {
 			_ = s.spool.Remove(n)
 		}
 	}
 }
+
+// staleSpool is how long a spool file must be untouched before a startup sweep removes it.
+const staleSpool = time.Hour
 
 // ErrTooLarge is returned by Spool for a file over max_body (plus the signature).
 var ErrTooLarge = errors.New("blob: the file exceeds max_body")
