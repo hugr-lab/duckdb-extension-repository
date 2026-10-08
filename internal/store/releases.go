@@ -75,8 +75,11 @@ type Release struct {
 	CreatedAt, StateChangedAt        time.Time
 	CreatedBy, StateChangedBy        string
 	Version                          int64
-	Origin                           string // admin | publication | promotion (spec 0008)
+	Origin                           string // admin | publication | promotion (spec 0008) | upstream (spec 0009)
 	Provenance                       string // JSON, at most 4,000 bytes; "" when none
+	// OriginSignature is an upstream release's original signature (spec 0009), written at insert;
+	// list reads leave it empty.
+	OriginSignature []byte
 }
 
 // Origins of builds and releases.
@@ -226,10 +229,10 @@ func (t *Tx) InsertRelease(ctx context.Context, r *Release, actor string) error 
 		return fmt.Errorf("%w: provenance is too long", ErrInvalid)
 	}
 	_, err := t.exec(ctx, `INSERT INTO releases (id, tenant_id, channel_id, build_id, name, ext_version, platform, slot, state,
-visibility, seq, created_at, created_by, state_changed_at, state_changed_by, version, origin, provenance)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+visibility, seq, created_at, created_by, state_changed_at, state_changed_by, version, origin, provenance, origin_signature)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.TenantID, r.ChannelID, r.BuildID, r.Name, r.ExtVersion, r.Platform, r.Slot, r.State, r.Visibility, seq,
-		t.s.d.timeArg(now), actor, t.s.d.timeArg(now), actor, r.Version, r.Origin, nullable(r.Provenance))
+		t.s.d.timeArg(now), actor, t.s.d.timeArg(now), actor, r.Version, r.Origin, nullable(r.Provenance), nullBytes(r.OriginSignature))
 	return t.s.mapErr(err, "release")
 }
 
@@ -401,15 +404,16 @@ type Candidate struct {
 	Release
 	ABI, DuckDBVersion, BodyHash string
 	CAPI                         *CAPI
+	BuildOrigin                  string // the Build's origin (spec 0009: a mirrored build promoted is no replacement)
 }
 
-const candidateCols = releaseCols + ", b.abi, b.duckdb_version, b.c_api_major, b.c_api_minor, b.c_api_patch, b.body_hash"
+const candidateCols = releaseCols + ", b.abi, b.duckdb_version, b.c_api_major, b.c_api_minor, b.c_api_patch, b.body_hash, b.origin"
 
 func scanCandidate(r interface{ Scan(...any) error }) (Candidate, error) {
 	var c Candidate
 	var dv sql.NullString
 	var ma, mi, pa sql.NullInt64
-	rel, err := scanRelease(r, &c.ABI, &dv, &ma, &mi, &pa, &c.BodyHash)
+	rel, err := scanRelease(r, &c.ABI, &dv, &ma, &mi, &pa, &c.BodyHash, &c.BuildOrigin)
 	c.Release, c.DuckDBVersion = rel, dv.String
 	if ma.Valid {
 		c.CAPI = &CAPI{int(ma.Int64), int(mi.Int64), int(pa.Int64)}
@@ -569,7 +573,7 @@ func (t *Tx) VersionCAPIs(ctx context.Context, versionID string) ([]CAPI, error)
 // holds it. A lease held by another holder and not expired is not taken.
 func (s *Store) AcquireLease(ctx context.Context, name, holder string, ttl time.Duration) (bool, error) {
 	held := false
-	err := s.tx(ctx, "", func(t *Tx) error {
+	err := s.tx(ctx, nil, func(t *Tx) error {
 		now := t.Now()
 		until := t.s.d.timeArg(now.Add(ttl))
 		var cur string
@@ -611,7 +615,7 @@ const leaseSkew = 5 * time.Second
 // whose clock is behind may take it at once), and the row keeps by whom and about when it was last
 // held (spec 0007's key view shows it).
 func (s *Store) ReleaseLease(ctx context.Context, name, holder string) error {
-	return s.tx(ctx, "", func(t *Tx) error {
+	return s.tx(ctx, nil, func(t *Tx) error {
 		_, err := t.exec(ctx, "UPDATE leases SET expires_at = ?, version = version + 1 WHERE name = ? AND holder = ?",
 			t.s.d.timeArg(t.Now().Add(-leaseSkew)), name, holder)
 		return err
@@ -724,6 +728,26 @@ func (s *Store) ListBlocks(ctx context.Context, tenantID string) ([]Block, error
 	return out, rows.Err()
 }
 
+// ProvidedNames lists the names a tenant's upstreams provide (spec 0009).
+func (s *Store) ProvidedNames(ctx context.Context, tenantID string) (map[string]bool, error) {
+	out := map[string]bool{}
+	err := s.InTx(ctx, "", func(tx *Tx) error {
+		names, err := tx.strings(ctx, `SELECT DISTINCT e.name FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
+WHERE u.tenant_id = ?`, tenantID)
+		for _, n := range names {
+			out[n] = true
+		}
+		return err
+	})
+	return out, err
+}
+
+// Replacement reports whether a release replaces an upstream's build (spec 0009): neither it nor
+// its Build came from an upstream.
+func (c Candidate) Replacement() bool {
+	return c.Origin != OriginUpstream && c.BuildOrigin != OriginUpstream
+}
+
 // BlockedHashes lists a tenant's banned body hashes (the index marks yanked rows with them).
 func (s *Store) BlockedHashes(ctx context.Context, tenantID string) (map[string]bool, error) {
 	bs, err := s.ListBlocks(ctx, tenantID)
@@ -751,4 +775,12 @@ func (t *Tx) LiveReleasesWithBody(ctx context.Context, channelID, hash string) (
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// nullBytes is NULL for empty bytes, as a typed nil: SQL Server refuses an untyped NULL for varbinary.
+func nullBytes(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }

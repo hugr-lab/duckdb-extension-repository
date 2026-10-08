@@ -4,6 +4,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -18,6 +20,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/vaultapi"
 )
 
@@ -81,10 +84,12 @@ type Services struct {
 	Keys     *keys.Service
 	Releases *release.Service // Blob is set by callers that store bodies (WithBlob)
 	Auth     *tenants.AuthAdmin
+	// Upstreams manages upstreams (spec 0009); runs need a blob service (WithBlob).
+	Upstreams *upstream.Service
 }
 
-// WithBlob gives the release service a blob service (adding a release stores its body).
-func (s *Services) WithBlob(b *blob.Service) { s.Releases.Blob = b }
+// WithBlob gives the release and upstream services a blob service (adding a release stores its body).
+func (s *Services) WithBlob(b *blob.Service) { s.Releases.Blob, s.Upstreams.Blob = b, b }
 
 // KeySources builds the registry of key sources from config (spec 0004): the built-in file source
 // and every configured vault or KMS. Sources are not contacted here: kista starts even when one is
@@ -154,14 +159,20 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		MinTrusted: cfg.Rotation.MinTrusted,
 		MinDemoted: cfg.Rotation.MinDemoted,
 	}
+	rel := &release.Service{Store: s, Signers: ks, Authz: az}
+	maxBody, maxIngests := cfg.BlobLimits()
+	ul := cfg.UpstreamLimits()
 	return &Services{
 		Store:    s,
 		Sources:  reg,
 		Tenants:  &tenants.Service{Store: s, Authz: az, HasDomain: cfg.HasBlobDomain},
 		Keys:     ks,
-		Releases: &release.Service{Store: s, Signers: ks, Authz: az},
+		Releases: rel,
 		Auth: &tenants.AuthAdmin{Store: s, Authz: az, Fetch: eg, PublicURL: cfg.Serve.PublicURL,
 			AllowHTTP: cfg.Egress.AllowLoopbackHTTP, ServerAudiences: cfg.ServerAudiences(), Providers: Providers(cfg, eg)},
+		Upstreams: &upstream.Service{Store: s, Releases: rel, Fetch: eg, Authz: az, MaxBody: maxBody, MaxIngests: maxIngests,
+			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
+			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate)}},
 	}, nil
 }
 
@@ -176,8 +187,9 @@ func Providers(cfg config.Config, f auth.Fetcher) auth.Providers {
 
 // WithAuthz returns the services with another authorizer (the API's), sharing everything else.
 func (s *Services) WithAuthz(az authz.Authorizer) *Services {
-	ten, ks, rel, au := *s.Tenants, *s.Keys, *s.Releases, *s.Auth
+	ten, ks, rel, au, up := *s.Tenants, *s.Keys, *s.Releases, *s.Auth, s.Upstreams.WithAuthz(az)
 	ten.Authz, ks.Authz, rel.Authz, au.Authz = az, az, az, az
 	rel.Signers = &ks
-	return &Services{Store: s.Store, Sources: s.Sources, Tenants: &ten, Keys: &ks, Releases: &rel, Auth: &au}
+	up.Releases = &rel
+	return &Services{Store: s.Store, Sources: s.Sources, Tenants: &ten, Keys: &ks, Releases: &rel, Auth: &au, Upstreams: up}
 }

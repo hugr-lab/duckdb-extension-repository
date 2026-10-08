@@ -42,3 +42,22 @@ func load() map[string]string {
 
 // Kind returns core or community for a reserved name, and "" for any other.
 func Kind(name string) string { return kinds[name] }
+
+//go:embed aliases.txt
+var aliasList string
+
+var aliases = loadAliases()
+
+func loadAliases() map[string]string {
+	m := map[string]string{}
+	for _, line := range strings.Split(aliasList, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && !strings.HasPrefix(f[0], "#") {
+			m[f[0]] = f[1]
+		}
+	}
+	return m
+}
+
+// Canonical returns the name DuckDB installs an alias as (postgres: postgres_scanner), and "" for a
+// name that is not an alias (spec 0009).
+func Canonical(name string) string { return aliases[name] }

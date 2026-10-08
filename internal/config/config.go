@@ -39,6 +39,8 @@ type Config struct {
 	Egress   Egress   `yaml:"egress" kista:"fileonly"`
 	Auth     Auth     `yaml:"auth" kista:"fileonly"`
 	Publish  Publish  `yaml:"publish" kista:"fileonly"`
+	// Upstreams configures upstream runs (spec 0009).
+	Upstreams Upstreams `yaml:"upstreams" kista:"fileonly"`
 }
 
 // Store selects and configures the metadata database.
@@ -450,6 +452,7 @@ func (c Config) Validate() error {
 	validateEgress(bad, c)
 	validateAuth(bad, c)
 	validatePublish(bad, c)
+	validateUpstreams(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

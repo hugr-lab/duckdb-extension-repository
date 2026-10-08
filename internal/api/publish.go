@@ -223,10 +223,15 @@ func (h *Handler) answerReleases(w http.ResponseWriter, r *http.Request, c calle
 	for _, x := range all {
 		byID[x.ID] = x
 	}
+	provided, err := h.o.Store.ProvidedNames(r.Context(), c.tenant.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
 	out := []releaseJSON{}
 	for _, rel := range rels {
 		if x, ok := byID[rel.ID]; ok {
-			out = append(out, releaseView(x, c, full))
+			out = append(out, releaseView(x, c, full, provided))
 		}
 	}
 	status := http.StatusCreated

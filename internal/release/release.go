@@ -23,6 +23,10 @@ var (
 	ErrSlot  = errors.New("release: the slot holds another body; a fix is a new version")
 	// ErrBlocked is a body banned in the tenant (spec 0008).
 	ErrBlocked = errors.New("release: the body is blocked in this tenant")
+	// ErrShadowed is an upstream build of a name a replacement holds in the channel (spec 0009).
+	ErrShadowed = errors.New("release: a replacement holds the name in this channel")
+	// ErrConflict is an upstream build for a slot that holds another body (spec 0009).
+	ErrConflict = errors.New("release: the slot holds another body")
 )
 
 // SignerOpener opens a key's signer, checked against the stored key (keys.Service.OpenSigner).
@@ -113,6 +117,9 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		}
 		it.origin, it.provenance = store.OriginPublication, p.Provenance
 		it.b.Origin = store.OriginPublication
+		if !res.Reserved {
+			it.recheck = s.reservedCheck(a, authz.VerbPublish, res)
+		}
 	}
 	if !o.Unchecked {
 		if err := CheckFile(sp.File(), o.Name); err != nil {
@@ -183,6 +190,36 @@ type item struct {
 	visibility         string
 	notCurrent         bool
 	origin, provenance string
+	originSignature    []byte // an upstream release's (spec 0009)
+	// recheck authorizes again as for a reserved name; insert calls it under the locks when an
+	// upstream of the tenant provides the name (spec 0009). Nil: no check.
+	recheck func(context.Context) error
+}
+
+// reservedCheck is an item's recheck: the verb on the resource as a reserved name.
+func (s *Service) reservedCheck(a authz.Actor, verb authz.Verb, res authz.Resource) func(context.Context) error {
+	res.Reserved = true
+	return func(ctx context.Context) error { return s.Authz.Allow(ctx, a, verb, res) }
+}
+
+// checkUpstreamSlot finds an upstream item's slot (spec 0009): the release of the same body in any
+// state with any choices is the existing one, so an administrator's changes survive every run;
+// another body, or an ABI the slot's releases do not mix with, is a conflict.
+func checkUpstreamSlot(cands []store.Candidate, b store.Build) (*store.Release, error) {
+	for _, c := range cands {
+		if (c.ABI == store.ABICStruct) != (b.ABI == store.ABICStruct) {
+			return nil, fmt.Errorf("%w: %s %s on %s has %s releases", ErrConflict, b.Name, b.ExtVersion, b.Platform, c.ABI)
+		}
+		if c.Slot != b.Slot() {
+			continue
+		}
+		if c.BodyHash != b.BodyHash {
+			return nil, fmt.Errorf("%w (%s %s %s %s)", ErrConflict, b.Name, b.ExtVersion, b.Platform, c.Slot)
+		}
+		r := c.Release
+		return &r, nil
+	}
+	return nil, nil
 }
 
 // checkSlot finds the release in its slot. The same body with the same choices is the existing
@@ -333,7 +370,15 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 		var out []store.Release
 		existing := 0
 		need = nil
-		err := s.Store.InTx(ctx, lockKey(channelID), func(tx *store.Tx) error {
+		// releases of other origins than upstream take the tenant's upstream lock first (spec 0009)
+		locks := []string{lockKey(channelID)}
+		for _, it := range items {
+			if it.origin != store.OriginUpstream {
+				locks = []string{store.TenantUpstreamLock(it.b.TenantID), lockKey(channelID)}
+				break
+			}
+		}
+		err := s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
 			out, existing, need = nil, 0, nil
 			c, err := tx.ChannelByID(ctx, channelID)
 			if err != nil {
@@ -375,11 +420,36 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					}
 					return err
 				}
+				upstream := it.origin == store.OriginUpstream
+				if it.recheck != nil {
+					provided, err := tx.UpstreamProvides(ctx, b.TenantID, b.Name)
+					if err != nil {
+						return err
+					}
+					if provided {
+						if err := it.recheck(ctx); err != nil {
+							return err
+						}
+					}
+				}
+				if upstream {
+					shadowed, err := tx.LiveReplacement(ctx, channelID, b.Name)
+					if err != nil {
+						return err
+					}
+					if shadowed {
+						return ErrShadowed
+					}
+				}
 				cands, err := tx.SlotCandidates(ctx, channelID, b.Name, b.ExtVersion, b.Platform)
 				if err != nil {
 					return err
 				}
-				ex, err := checkSlot(cands, it)
+				check := checkSlot
+				if upstream {
+					check = func(cands []store.Candidate, it item) (*store.Release, error) { return checkUpstreamSlot(cands, it.b) }
+				}
+				ex, err := check(cands, it)
 				if err != nil {
 					return err
 				}
@@ -393,7 +463,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				}
 				r := store.Release{TenantID: b.TenantID, ChannelID: channelID, BuildID: b.ID, Name: b.Name,
 					ExtVersion: b.ExtVersion, Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive,
-					Visibility: it.visibility, Origin: it.origin, Provenance: it.provenance}
+					Visibility: it.visibility, Origin: it.origin, Provenance: it.provenance, OriginSignature: it.originSignature}
 				if !it.notCurrent {
 					if r.Seq, err = tx.NextSeq(ctx, channelID); err != nil {
 						return err

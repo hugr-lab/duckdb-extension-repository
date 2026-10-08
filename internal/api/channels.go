@@ -11,7 +11,6 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -36,7 +35,7 @@ func (h *Handler) channelErr(w http.ResponseWriter, err error, bodyRef bool) {
 // durations), never with internal error strings.
 func publicRefusal(err error) string {
 	msg := err.Error()
-	for _, p := range []string{"keys: ", "release: "} {
+	for _, p := range []string{"keys: ", "release: ", "upstream: "} {
 		msg = strings.TrimPrefix(msg, p)
 	}
 	if len(msg) > 300 {
@@ -358,11 +357,11 @@ type releaseJSON struct {
 
 // releaseView is a release for its readers: the extension's administrators see who changed it,
 // its publishers (spec 0008) do not.
-func releaseView(x store.Candidate, c caller, admin bool) releaseJSON {
+func releaseView(x store.Candidate, c caller, admin bool, provided map[string]bool) releaseJSON {
 	o := releaseJSON{ID: x.ID, Name: x.Name, Version: x.ExtVersion, Platform: x.Platform, Slot: x.Slot, ABI: x.ABI,
 		DuckDBVersion: x.DuckDBVersion, State: x.State, Visibility: x.Visibility, Seq: x.Seq, BodyHash: x.BodyHash,
 		CreatedAt: timeOf(x.CreatedAt), StateChangedAt: timeOf(x.StateChangedAt), Origin: x.Origin,
-		Provenance: provenanceView(x.Provenance, c, admin), Shadows: reserved.Kind(x.Name), ETag: versionTag(x.Version)}
+		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(x, provided), ETag: versionTag(x.Version)}
 	if admin {
 		o.CreatedBy, o.StateChangedBy = createdBy(x.CreatedBy, c), createdBy(x.StateChangedBy, c)
 	}
@@ -415,9 +414,14 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request, c caller,
 	}
 	rs, next := paged(rs, releaseKey, limit, after) // oldest first: a cursor survives new releases
 	admin := h.isAdmin(r, c, p)
+	provided, err := h.o.Store.ProvidedNames(r.Context(), c.tenant.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
 	out := []releaseJSON{}
 	for _, x := range rs {
-		out = append(out, releaseView(x, c, admin))
+		out = append(out, releaseView(x, c, admin, provided))
 	}
 	reply(w, r, http.StatusOK, list("releases", out, next), "", noStore)
 }
@@ -437,9 +441,14 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request, c caller, p
 		h.serviceErr(w, err, false)
 		return
 	}
+	provided, err := h.o.Store.ProvidedNames(r.Context(), c.tenant.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
 	for _, x := range rs {
 		if x.ID == p["id"] {
-			reply(w, r, http.StatusOK, releaseView(x, c, h.isAdmin(r, c, p)), versionTag(x.Version), noStore)
+			reply(w, r, http.StatusOK, releaseView(x, c, h.isAdmin(r, c, p), provided), versionTag(x.Version), noStore)
 			return
 		}
 	}

@@ -139,7 +139,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 // applied.
 func (s *Store) migrateOne(ctx context.Context, ms []migration) (bool, error) {
 	applied := false
-	err := s.tx(ctx, "kista/migrate", func(tx *Tx) error {
+	err := s.tx(ctx, []string{"kista/migrate"}, func(tx *Tx) error {
 		if _, err := tx.tx.ExecContext(ctx, s.bootstrapSQL()); err != nil {
 			return fmt.Errorf("store: creating schema_migrations: %w", err)
 		}

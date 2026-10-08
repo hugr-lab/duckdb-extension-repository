@@ -89,8 +89,26 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
+  network:
+    # spec 0009: real core and community files of a released DuckDB through the intake. It depends
+    # on DuckDB's servers, so it does not block.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    env:
+      GOWORK: off
+      KISTA_TEST_NETWORK: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test -run TestNetworkIntake -v ./internal/upstream/
+
   reserved:
-    # The reserved extension names (spec 0008) are current for the DuckDB and community pins.
+    # The reserved extension names (spec 0008), aliases and DuckDB's keys (spec 0009) are current for the pins.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -103,4 +121,4 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make reserved
-      - run: git diff --exit-code internal/reserved
+      - run: git diff --exit-code internal/reserved internal/upstream/duckdbkeys

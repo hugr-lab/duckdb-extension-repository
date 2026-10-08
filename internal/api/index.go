@@ -3,6 +3,7 @@ package api
 import (
 	"cmp"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -279,6 +280,7 @@ type releaseOut struct {
 	CurrentFor    []string    `json:"current_for"`
 	WouldServe    []string    `json:"would_serve,omitempty"` // yanked rows: the DuckDB versions it would serve
 	Origin        string      `json:"origin"`
+	Upstream      string      `json:"upstream,omitempty"`   // an upstream release's upstream (spec 0009)
 	Shadows       string      `json:"shadows,omitempty"`    // a reserved name's owner (spec 0008)
 	Blocked       bool        `json:"blocked,omitempty"`    // a yanked row whose body is blocked
 	Provenance    any         `json:"provenance,omitempty"` // for the extension's administrators and publishers
@@ -353,7 +355,15 @@ func (rs *resolver) row(rel *store.Candidate) releaseOut {
 		ABI: rel.ABI, DuckDBVersion: rel.DuckDBVersion, State: rel.State, Visibility: rel.Visibility, BodyHash: rel.BodyHash,
 		ServingKey: rs.snap.ServingKey, CreatedAt: rel.CreatedAt.UTC().Format(time.RFC3339),
 		Serves: []servesOut{}, CurrentFor: []string{}}
-	o.Origin, o.Shadows = rel.Origin, reserved.Kind(rel.Name)
+	o.Origin, o.Shadows = rel.Origin, release.Shadows(*rel, rs.snap.Provided)
+	if rel.Origin == store.OriginUpstream {
+		var p struct {
+			Upstream string `json:"upstream"`
+		}
+		if json.Unmarshal([]byte(rel.Provenance), &p) == nil {
+			o.Upstream = p.Upstream
+		}
+	}
 	o.Blocked = rel.State == store.ReleaseYanked && rs.blocked[rel.BodyHash]
 	if rs.provenance {
 		o.Provenance = provenanceView(rel.Provenance, rs.c, rs.admin)

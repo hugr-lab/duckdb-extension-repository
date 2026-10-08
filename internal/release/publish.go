@@ -115,8 +115,11 @@ func (s *Service) Promote(ctx context.Context, a authz.Actor, tenant, channel, n
 		if err != nil || len(prov) > 4000 {
 			prov, _ = json.Marshal(map[string]string{"actor": a.String(), "from_channel": o.From, "from_release": r.ID})
 		}
-		items = append(items, item{b: b, visibility: vis, notCurrent: o.NotCurrent, origin: store.OriginPromotion,
-			provenance: string(prov)})
+		it := item{b: b, visibility: vis, notCurrent: o.NotCurrent, origin: store.OriginPromotion, provenance: string(prov)}
+		if t := res(channel); !t.Reserved {
+			it.recheck = s.reservedCheck(a, authz.VerbPromote, t)
+		}
+		items = append(items, it)
 	}
 	if len(items) == 0 {
 		return nil, false, fmt.Errorf("%w: version %s has no active release in %s", ErrState, o.Version, o.From)

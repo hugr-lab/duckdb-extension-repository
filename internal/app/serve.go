@@ -17,6 +17,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
 // Serve runs kista serve until ctx is done (spec 0006): the store, the blob service, the handler,
@@ -69,7 +70,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	apiHandler := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
 		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
 		Server: server, Providers: providers, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
-		Releases: mgmt.Releases, MaxBody: maxBody, MinRate: int64(lim.MinRate), PublishPerActor: perActor,
+		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, MaxBody: maxBody, MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge()})
 	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{
 		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
@@ -92,15 +93,25 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	wg.Add(2)
 	go func() { defer wg.Done(); readiness(bg, st, h) }()
 	go func() { defer wg.Done(); publicCheck(bg, bs, h) }()
+	host, _ := os.Hostname()
+	if len(host) > 120 {
+		host = host[:120] // leases.holder is 200 characters
+	}
 	if cfg.Serve.Resign {
-		host, _ := os.Hostname()
-		if len(host) > 120 {
-			host = host[:120] // leases.holder is 200 characters
-		}
 		r := &release.Resigner{Service: svc.Releases, Holder: host + "/" + store.NewID(), Log: log}
 		wg.Add(1)
 		go func() { defer wg.Done(); r.Run(bg) }()
 	}
+	// upstream runs (spec 0009): every replica polls; a run's lease keeps it on one
+	// downloads a crash left behind are swept: the directory is this replica's (blob.spool_dir)
+	_ = os.RemoveAll(svc.Upstreams.TempDir)
+	if err := os.MkdirAll(svc.Upstreams.TempDir, 0o700); err != nil {
+		return fmt.Errorf("app: the upstream download directory: %w", err)
+	}
+	svc.Upstreams.Log = log
+	ur := &upstream.Runner{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log}
+	wg.Add(1)
+	go func() { defer wg.Done(); ur.Run(bg) }()
 	return srv.Run(ctx)
 }
 

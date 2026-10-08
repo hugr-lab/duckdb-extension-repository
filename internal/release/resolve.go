@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -24,6 +25,9 @@ type Snapshot struct {
 	// Blocked are the tenant's blocked body hashes (spec 0008); a block or unblock bumps
 	// release_version on every signed channel of the tenant.
 	Blocked map[string]bool
+	// Provided holds the names the tenant's upstreams provide (spec 0009); allowlist changes bump
+	// release_version on every channel of the tenant.
+	Provided map[string]bool
 
 	groups    map[group][]*store.Candidate // by (name, platform), in Releases order
 	platforms map[string][]string          // by name, sorted
@@ -319,5 +323,24 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 	if snap.Blocked, err = s.Store.BlockedHashes(ctx, c.TenantID); err != nil {
 		return nil, err
 	}
+	if snap.Provided, err = s.Store.ProvidedNames(ctx, c.TenantID); err != nil {
+		return nil, err
+	}
 	return snap, nil
+}
+
+// Shadows is what a release shadows (spec 0008, 0009): a reserved name's owner, or "upstream" for a
+// replacement of a name the tenant's upstreams provide; nothing for an upstream's build (mirrored or
+// promoted).
+func Shadows(c store.Candidate, provided map[string]bool) string {
+	if !c.Replacement() {
+		return ""
+	}
+	if k := reserved.Kind(c.Name); k != "" {
+		return k
+	}
+	if provided[c.Name] && c.Replacement() {
+		return "upstream"
+	}
+	return ""
 }
