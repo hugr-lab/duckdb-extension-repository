@@ -400,6 +400,42 @@ func (h *Handler) identifyTenant(ctx context.Context, t store.Tenant, tok string
 	return c, nil
 }
 
+// identifyAPIKey finds a publisher's key by its hash: the key's tenant must be the path's, and it
+// must not have expired (spec 0008).
+func (h *Handler) identifyAPIKey(ctx context.Context, t store.Tenant, tok string) (caller, error) {
+	c := caller{tenant: t}
+	if !auth.WellFormedAPIKey(tok) {
+		return c, errToken
+	}
+	k, p, err := h.o.Store.APIKeyByHash(ctx, auth.APIKeyHash(tok))
+	if errors.Is(err, store.ErrNotFound) {
+		return c, errToken
+	}
+	if err != nil {
+		return c, err
+	}
+	now := h.o.Now()
+	if p.TenantID != t.ID || !now.Before(k.ExpiresAt) {
+		return c, errToken
+	}
+	if now.Sub(k.LastUsedAt) > time.Hour {
+		if err := h.o.Store.TouchAPIKey(ctx, k.ID); err != nil {
+			h.o.Log.Warn("api: recording a key's use", "error", err)
+		}
+	}
+	ta, err := h.o.Auths.Get(ctx, t)
+	if err != nil {
+		return c, err
+	}
+	// a key is issued now for the freshness check (admin_token_max_age): its expiry and its removal
+	// bound it, and it reaches publication and promotion only
+	id := auth.Identity{Principals: auth.Principals{auth.PublisherKey(p.ID): true}, IssuedAt: now}
+	c.principals, c.ta, c.id, c.verified = id.Principals, ta, id, true
+	c.pub = &auth.Publication{Identity: id, Provider: "apikey",
+		Publishers: []auth.MatchedPublisher{{Publisher: p, Credential: "key:" + k.ID}}}
+	return c, nil
+}
+
 // --- routing ---
 
 // access says who may call a route; decided from the path before anything else.
@@ -517,6 +553,9 @@ func init() {
 			http.MethodDelete: m(pathAdmin, (*Handler).removePublisher)}},
 		{"tenants/{t}/publishers/{name}/github", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listGitHub),
 			http.MethodPost: mb(pathAdmin, (*Handler).addGitHub)}},
+		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listAPIKeys),
+			http.MethodPost: mb(pathAdmin, (*Handler).addAPIKey)}},
+		{"tenants/{t}/publishers/{name}/keys/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeAPIKey)}},
 		{"tenants/{t}/publishers/{name}/github/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGitHub),
 			http.MethodDelete: m(pathAdmin, (*Handler).removeGitHub)}},
 		{"tenants/{t}/blocks", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listBlocks),
@@ -633,6 +672,11 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		unauthorized(w) // without a token, anything not public is 401 before anything is looked up
 		return caller{}, false
 	}
+	// an API key (spec 0008) is looked up only on the routes publishers use
+	if auth.IsAPIKey(tok) && (!ru.publishers || p["t"] == "") {
+		unauthorized(w)
+		return caller{}, false
+	}
 	c, isServer, err := h.identifyServer(ctx, tok)
 	if err != nil {
 		unauthorized(w)
@@ -653,7 +697,11 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		}
 		c.tenant = t
 		if sent && !isServer {
-			if c, err = h.identifyTenant(ctx, t, tok); err != nil {
+			identify := h.identifyTenant
+			if auth.IsAPIKey(tok) {
+				identify = h.identifyAPIKey
+			}
+			if c, err = identify(ctx, t, tok); err != nil {
 				if errors.Is(err, errToken) {
 					unauthorized(w)
 				} else {

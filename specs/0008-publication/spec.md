@@ -1,6 +1,6 @@
 # Spec 0008: Publication and promotion
 
-- **Status**: phase 1 implemented (1a: publication, promotion, reserved names, blocks; 1b: publishers, trusted publishing); 2 next
+- **Status**: implemented (phase 1a: publication, promotion, reserved names, blocks; 1b: publishers, trusted publishing; 2: API keys)
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -302,34 +302,41 @@ provider. A ref pattern is matched in time linear in the pattern and the ref (re
 bytes).
 
 **API keys (phase 2).** A key is `kista_<prefix>_<secret>`: `prefix` is 8 random hex characters
-(shown in lists, never used for lookup), `secret` 32 random bytes in base32. Only the SHA-256 of the
+(shown in lists, never used for lookup), `secret` 32 random bytes in lowercase base32. Only the SHA-256 of the
 whole key is stored (the secret is random, so a slow hash adds nothing; lookup by that hash has no
-timing to learn from). `expires_at` is required, at most a year; a publisher may hold several keys,
-so a new one is issued before the old one is removed. A Bearer starting with `kista_` is looked up
+timing to learn from). `expires_at` is required, at most a year (366 days); a publisher may hold several
+keys, so a new one is issued before the old one is removed (at most 10 unexpired keys a publisher;
+adding a key removes the publisher's expired ones). A Bearer starting with `kista_` is looked up
 only on the routes publishers use; the key's tenant must be the path's (otherwise `401`).
 `last_used_at` is updated at most once an hour. Elsewhere a `kista_` Bearer is never looked up: the
-API answers `401` (not a valid token), the DuckDB routes treat it as no token (spec 0006).
+API answers `401` (not a valid token), the DuckDB routes treat it as no token (spec 0006). A key is not held to `admin_token_max_age`
+(its expiry and its removal bound it; it reaches publication and promotion only). Keys are looked up
+on every request, never cached: a removed key stops at once. A key's caller has `provider: "apikey"`
+in `whoami` and in provenance, its credential is `key:<id>` (the id the key lists show; the prefix
+alone is not unique), and its provenance has no run.
 
 **What publishers may do**, whatever their grants say: publish, promote, read the releases their
 grants cover (above), and `GET …/whoami` (their publisher, the matched credential, their grants).
 Nothing else: no install, no management, no index beyond the public view (on the index's public
-routes a publisher's token is taken as no token; on other routes it answers `401`). A grant to a
+routes a provider token is taken as no token, an API key answers `401`; on other routes both answer
+`401`). A grant to a
 publisher may carry only `publish` and `promote` (others are refused when added, and ignored when
 evaluated). A provider token whose run matches no credential of the path's tenant is not valid
 (`401`).
 
 **Management** (tenant admin): `GET, POST /api/v1/tenants/{t}/publishers`, `GET, DELETE
 …/publishers/{name}`; `GET, POST …/publishers/{name}/github`, `DELETE …/github/{id}`; phase 2: `GET,
-POST …/publishers/{name}/keys` (the key appears only in the `POST` answer), `DELETE …/keys/{id}`.
+POST …/publishers/{name}/keys {expires_at}` (`201` with the key, which appears only in this answer, and
+no `Location`), `DELETE …/keys/{id}`.
 Removing a publisher removes its credentials and grants and bumps the tenant's `auth_version`, so
 caches drop it at the next request. CLI: `kista admin publisher add|list|remove`, `publisher github
-add|remove`, `publisher key add|remove` (phase 2).
+add|remove`, `publisher key add|list|remove` (phase 2; `-expires 90d` or an RFC 3339 time).
 
 **Principals and actors**: a publisher principal is `publisher:<name>`; grants reference the
 publisher by id (`grants.publisher_id`), so a publisher re-created under the same name starts with
 no grants (a publisher grant's `value` is the publisher's id, and it has no issuer). Actors are
 recorded as `publisher:<tenant>/<names>` (the matched publishers' names, joined by commas); the
-credential (`github:<id>`, phase 2 `key:<prefix>`) and the run go into the provenance of what it
+credential (`github:<id>`, phase 2 `key:<id>`) and the run go into the provenance of what it
 publishes and promotes. A publisher is named by its publishers whatever its token's `sub`. The
 prefixes `publisher:` and `kista_` cannot collide with spec 0006's principals, which always name an
 issuer record.
@@ -372,7 +379,7 @@ grants             issuer_id becomes nullable; + publisher_id null, fk -> publis
 Making `grants.issuer_id` nullable rebuilds the table on SQLite and, on SQL Server, drops and
 recreates the foreign key, the check and the index by looking up their generated names. Grant reads
 become `LEFT JOIN`s with nullable scans; the duplicate check compares with `COALESCE`. Phase 2 adds
-`api_keys`.
+`api_keys` (migration 0007).
 
 ### Package layout
 
@@ -457,14 +464,15 @@ internal/config     + publish (limits, providers)
 - **Trusted publishing**: a fake provider: wrong owner, repository, workflow, ref pattern,
   environment, audience (an assigned one), lifetime, event name; an issuer record with the
   provider's URL refused and disabled; a removed publisher's token refused at the next request.
-- **Store**: migrations 0005 and 0006 on all three dialects, nullable issuer ids, grants of
+- **Store**: migrations 0005, 0006 and 0007 on all three dialects, nullable issuer ids, grants of
   publishers.
 - **e2e**: CI publishes `loadable_extension_demo` into `staging` through the API with a fake GitHub
   token; `INSTALL … FROM` and `LOAD` it; promote its version to `prod` and install from there;
   `demo_capi`, a reserved name, needs a grant naming it; block the body and see `INSTALL` fail;
   publishing the demo file under another name is refused by the entry-point check.
-- **Phase 2**: API keys: expired, removed, of another tenant, used on the index, management or the
-  DuckDB routes, two keys overlapping during a rotation.
+- **Phase 2**: API keys: publish and promote with a key; expired, removed, of a removed publisher, of
+  another tenant, malformed, used on the index, management or the DuckDB routes; two keys overlapping
+  during a rotation; the cap (expired keys do not count); the key never in an answer but the `POST`'s.
 
 ## Alternatives considered
 

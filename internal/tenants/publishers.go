@@ -3,6 +3,7 @@ package tenants
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -85,4 +86,75 @@ func (s *AuthAdmin) RemoveGitHubCredential(ctx context.Context, a authz.Actor, t
 		}
 		return tx.DeleteGitHubCredential(ctx, t.ID, p.ID, id)
 	})
+}
+
+// MaxKeyLifetime is the longest an API key may live.
+const MaxKeyLifetime = 366 * 24 * time.Hour
+
+// AddAPIKey issues a key for a publisher, valid until expires (required, within a year). The key
+// is returned once; only its hash is kept.
+func (s *AuthAdmin) AddAPIKey(ctx context.Context, a authz.Actor, tenant, publisher string, expires time.Time) (store.APIKey, string, error) {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return store.APIKey{}, "", err
+	}
+	now := s.Store.Now()
+	if !expires.After(now) || expires.Sub(now) > MaxKeyLifetime {
+		return store.APIKey{}, "", fmt.Errorf("%w: a key expires within a year", store.ErrInvalid)
+	}
+	key, prefix, hash, err := auth.NewAPIKey()
+	if err != nil {
+		return store.APIKey{}, "", err
+	}
+	k := store.APIKey{Prefix: prefix, Hash: hash, ExpiresAt: expires, CreatedBy: a.String()}
+	err = s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+		p, err := tx.GetPublisher(ctx, t.ID, publisher)
+		if err != nil {
+			return err
+		}
+		k.PublisherID = p.ID
+		return tx.InsertAPIKey(ctx, &k)
+	})
+	if err != nil {
+		return store.APIKey{}, "", err
+	}
+	return k, key, nil
+}
+
+// ListAPIKeys lists a publisher's keys (never the keys themselves).
+func (s *AuthAdmin) ListAPIKeys(ctx context.Context, a authz.Actor, tenant, publisher string) ([]store.APIKey, error) {
+	p, err := s.publisher(ctx, a, tenant, publisher)
+	if err != nil {
+		return nil, err
+	}
+	return s.Store.APIKeys(ctx, p.ID)
+}
+
+// RemoveAPIKey removes a key: it stops working at once.
+func (s *AuthAdmin) RemoveAPIKey(ctx context.Context, a authz.Actor, tenant, publisher, id string) error {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return err
+	}
+	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+		p, err := tx.GetPublisher(ctx, t.ID, publisher)
+		if err != nil {
+			return err
+		}
+		return tx.DeleteAPIKey(ctx, p.ID, id)
+	})
+}
+
+func (s *AuthAdmin) publisher(ctx context.Context, a authz.Actor, tenant, name string) (store.Publisher, error) {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return store.Publisher{}, err
+	}
+	var p store.Publisher
+	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		var err error
+		p, err = tx.GetPublisher(ctx, t.ID, name)
+		return err
+	})
+	return p, err
 }

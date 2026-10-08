@@ -97,3 +97,22 @@ func TestProviderVerify(t *testing.T) {
 		t.Error("For matches the issuer exactly")
 	}
 }
+
+func TestAPIKeys(t *testing.T) {
+	key, prefix, hash, err := NewAPIKey()
+	if err != nil || !strings.HasPrefix(key, "kista_"+prefix+"_") || len(hash) != 64 || hash != APIKeyHash(key) {
+		t.Fatalf("a key: %q %q %q %v", key, prefix, hash, err)
+	}
+	if !WellFormedAPIKey(key) || !IsAPIKey(key) {
+		t.Fatalf("not well formed: %s", key)
+	}
+	other, _, _, _ := NewAPIKey()
+	if other == key {
+		t.Fatal("two keys are the same")
+	}
+	for _, bad := range []string{"kista_", "kista_zzzzzzzz_" + key[15:], strings.ToUpper(key), key + "a", key[:len(key)-1], "kista_" + prefix + "-" + key[15:], key[:len(key)-1] + "1"} {
+		if WellFormedAPIKey(bad) {
+			t.Errorf("%q is well formed", bad)
+		}
+	}
+}
