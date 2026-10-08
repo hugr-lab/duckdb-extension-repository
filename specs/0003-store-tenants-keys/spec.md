@@ -295,7 +295,8 @@ type Authorizer interface {
 ```
 
 The CLI uses an authorizer that allows the server administrator everything. Spec 0006 adds the
-grant-based one. Keys are addressed as `<tenant>/<channel>` plus a key id or fingerprint, and the
+grant-based one. (Spec 0007 replaces `tenant, channel` with a `Resource` and gives principal and
+server actors their principals; the `read` verb goes: reading management data needs `admin`.) Keys are addressed as `<tenant>/<channel>` plus a key id or fingerprint, and the
 service checks that the key belongs to that channel, so a tenant API can never reach another
 tenant's key by id.
 

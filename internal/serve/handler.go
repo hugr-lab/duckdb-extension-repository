@@ -37,6 +37,8 @@ type Options struct {
 	PublicURL string
 	// Verifier verifies Bearer tokens; nil: every caller is anonymous.
 	Verifier *auth.Verifier
+	// Server recognises server tokens (spec 0007), which the DuckDB routes treat as no token.
+	Server *auth.Server
 	// Auths and Snapshots are shared with the API (created here when nil).
 	Auths     *auth.TenantAuths
 	Snapshots *release.Snapshots
@@ -358,7 +360,7 @@ func bearer(r *http.Request) string {
 // decide returns what the caller may see in the channel, and whether it presented a valid token.
 func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (view, bool, error) {
 	tok := bearer(r)
-	if tok == "" || h.o.Verifier == nil {
+	if tok == "" || h.o.Verifier == nil || h.o.Server.IsServerToken(tok) {
 		return viewPublic, false, nil
 	}
 	ta, err := h.tenantAuth(r.Context(), sc.Tenant)

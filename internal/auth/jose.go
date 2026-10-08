@@ -105,6 +105,9 @@ func strictJSON(b []byte, v any) error {
 	return nil
 }
 
+// NoDuplicateKeys refuses JSON with a duplicate object key at any depth (or too deep).
+func NoDuplicateKeys(b []byte) error { return noDuplicates(json.NewDecoder(bytes.NewReader(b))) }
+
 func noDuplicates(d *json.Decoder) error {
 	t, err := d.Token()
 	if err != nil {

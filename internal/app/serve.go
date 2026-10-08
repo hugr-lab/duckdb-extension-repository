@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -44,11 +46,18 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 	verifier := &auth.Verifier{Fetch: eg}
+	server, err := ServerAuth(ctx, cfg, st)
+	if err != nil {
+		return err
+	}
 	auths, snaps := &auth.TenantAuths{Store: st}, &release.Snapshots{Store: st}
+	grants := authz.Grants{Store: st, Auths: auths}
+	mgmt := svc.WithAuthz(grants)
 	apiHandler := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
-		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version})
+		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
+		Server: server, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, AdminTokenMaxAge: cfg.AdminTokenMaxAge()})
 	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{
-		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Auths: auths, Snapshots: snaps, API: apiHandler,
+		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
 	})
@@ -78,6 +87,31 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		go func() { defer wg.Done(); r.Run(bg) }()
 	}
 	return srv.Run(ctx)
+}
+
+// ServerAuth builds server identity (spec 0007): the server issuers with a verifier and an egress
+// client of their own, and their audiences, which no tenant may hold (a conflict refuses to start).
+// Without server issuers no server token is accepted.
+func ServerAuth(ctx context.Context, cfg config.Config, st *store.Store) (*auth.Server, error) {
+	issuers := cfg.ServerIssuers()
+	if len(issuers) == 0 {
+		return nil, nil
+	}
+	auds := cfg.ServerAudiences()
+	assigned, err := st.AssignedAudiences(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range assigned {
+		if slices.Contains(auds, a) {
+			return nil, fmt.Errorf("app: %s is a server audience and a tenant's assigned audience; remove one", a)
+		}
+	}
+	eg, err := ServerEgress(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &auth.Server{Issuers: issuers, Audiences: auds, Admins: cfg.ServerAdmins(), Verifier: &auth.Verifier{Fetch: eg}}, nil
 }
 
 // readiness recomputes /readyz every 5 seconds: the store reachable and its schema readable.

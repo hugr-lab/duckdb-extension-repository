@@ -2,11 +2,10 @@ package tenants
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -22,83 +21,70 @@ type AuthAdmin struct {
 	Fetch     auth.Fetcher // egress, for discovery at issuer add
 	PublicURL string       // audiences under it are canonical and cannot be assigned
 	AllowHTTP bool         // issuer URLs on loopback over http (profile dev)
+	// ServerAudiences are the server tokens' audiences (spec 0007): no tenant may be assigned one.
+	ServerAudiences []string
 }
 
-func (s *AuthAdmin) tenant(ctx context.Context, a authz.Actor, verb authz.Verb, name string) (store.Tenant, error) {
-	if err := s.Authz.Allow(ctx, a, verb, name, ""); err != nil {
+// ErrIssuerFetch is an issuer whose discovery document or JWKS could not be fetched or used when it
+// was added.
+var ErrIssuerFetch = errors.New("tenants: the issuer's discovery document or JWKS could not be fetched or used")
+
+// ErrLastAdmin refuses a change by a tenant principal that would leave its tenant without a
+// tenant-wide admin grant (spec 0007: no lock-out by accident).
+var ErrLastAdmin = errors.New("tenants: the tenant's last tenant-wide admin grant; a server administrator can remove it")
+
+func (s *AuthAdmin) tenant(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: name}); err != nil {
 		return store.Tenant{}, err
 	}
 	return s.Store.GetTenant(ctx, name)
 }
 
+// keepAdmin runs inside a removal's transaction (under the tenant's auth lock): a tenant principal
+// may not remove the last tenant-wide admin grant. It counts grants, not people.
+func keepAdmin(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID string, before int) error {
+	if a.Kind != authz.ActorPrincipal || before == 0 {
+		return nil
+	}
+	n, err := tx.TenantAdminGrants(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrLastAdmin
+	}
+	return nil
+}
+
 // AddIssuer adds an issuer record. Without an explicit JWKS URI, discovery runs now (through
 // egress) and must succeed; it is repeated in the background when serving.
 func (s *AuthAdmin) AddIssuer(ctx context.Context, a authz.Actor, tenant string, is store.Issuer) (store.Issuer, error) {
-	t, err := s.tenant(ctx, a, authz.VerbAdmin, tenant)
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return store.Issuer{}, err
 	}
-	if err := s.checkURL(is.URL, "issuer URL"); err != nil {
+	if err := auth.CheckIssuer(&is, s.AllowHTTP); err != nil {
 		return store.Issuer{}, err
-	}
-	if is.JWKSURI != "" {
-		if err := s.checkURL(is.JWKSURI, "jwks_uri"); err != nil {
-			return store.Issuer{}, err
-		}
-	}
-	if len(is.Algorithms) == 0 {
-		is.Algorithms = auth.Algorithms
-	}
-	for _, alg := range is.Algorithms {
-		if !slices.Contains(auth.Algorithms, alg) {
-			return store.Issuer{}, fmt.Errorf("%w: algorithm %q (one of %s)", store.ErrInvalid, alg, strings.Join(auth.Algorithms, ", "))
-		}
-	}
-	if is.MaxTokenLifetime == 0 {
-		is.MaxTokenLifetime = 24 * time.Hour
-	}
-	if is.MaxTokenLifetime < time.Minute || is.MaxTokenLifetime > 7*24*time.Hour {
-		return store.Issuer{}, fmt.Errorf("%w: max token lifetime must be within 1m..7d", store.ErrInvalid)
-	}
-	for k, v := range is.RequiredClaims {
-		if k == "" || v == "" {
-			return store.Issuer{}, fmt.Errorf("%w: a required claim needs a name and a value", store.ErrInvalid)
-		}
 	}
 	jwksURI := is.JWKSURI
 	if jwksURI == "" {
 		if jwksURI, err = auth.Discover(ctx, s.Fetch, is.URL); err != nil {
-			return store.Issuer{}, fmt.Errorf("discovery for %s: %w", is.URL, err)
+			return store.Issuer{}, fmt.Errorf("%w: discovery for %s: %w", ErrIssuerFetch, is.URL, err)
 		}
 	}
 	if n, err := auth.CheckJWKS(ctx, s.Fetch, jwksURI); err != nil {
-		return store.Issuer{}, fmt.Errorf("the JWKS of %s: %w", is.URL, err)
+		return store.Issuer{}, fmt.Errorf("%w: the JWKS of %s: %w", ErrIssuerFetch, is.URL, err)
 	} else if n == 0 {
-		return store.Issuer{}, fmt.Errorf("the JWKS of %s has no usable signing key", is.URL)
+		return store.Issuer{}, fmt.Errorf("%w: the JWKS of %s has no usable signing key", ErrIssuerFetch, is.URL)
 	}
-	is.Algorithms = dedupe(is.Algorithms)
 	is.TenantID, is.CreatedBy = t.ID, a.String()
 	err = s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error { return tx.InsertIssuer(ctx, &is) })
 	return is, err
 }
 
-func (s *AuthAdmin) checkURL(raw, what string) error {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || len(raw) > 512 {
-		return fmt.Errorf("%w: %s %q", store.ErrInvalid, what, raw)
-	}
-	if u.Scheme == "https" {
-		return nil
-	}
-	if u.Scheme == "http" && s.AllowHTTP && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1") {
-		return nil
-	}
-	return fmt.Errorf("%w: %s must be https", store.ErrInvalid, what)
-}
-
 // ListIssuers lists a tenant's issuer records.
 func (s *AuthAdmin) ListIssuers(ctx context.Context, a authz.Actor, tenant string) ([]store.Issuer, error) {
-	t, err := s.tenant(ctx, a, authz.VerbRead, tenant)
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -106,19 +92,37 @@ func (s *AuthAdmin) ListIssuers(ctx context.Context, a authz.Actor, tenant strin
 	return ta.Issuers, err
 }
 
-// RemoveIssuer removes an issuer record and its grants.
-func (s *AuthAdmin) RemoveIssuer(ctx context.Context, a authz.Actor, tenant, name string) error {
-	t, err := s.tenant(ctx, a, authz.VerbAdmin, tenant)
+// RemoveIssuer removes an issuer record and its grants. A non-empty expected id must be the
+// record's (store.ErrConflict otherwise): a record re-added under the same name is not removed by
+// mistake.
+func (s *AuthAdmin) RemoveIssuer(ctx context.Context, a authz.Actor, tenant, name, expectedID string) error {
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return err
 	}
-	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error { return tx.DeleteIssuer(ctx, t.ID, name) })
+	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+		rec, err := tx.GetIssuer(ctx, t.ID, name)
+		if err != nil {
+			return err
+		}
+		if expectedID != "" && rec.ID != expectedID {
+			return store.ErrConflict
+		}
+		before, err := tx.TenantAdminGrants(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		if err := tx.DeleteIssuer(ctx, t.ID, name); err != nil {
+			return err
+		}
+		return keepAdmin(ctx, tx, a, t.ID, before)
+	})
 }
 
 // AddAudience assigns an audience to a tenant (server-wide action: a tenant administrator cannot
 // choose one, or could claim another tenant's).
 func (s *AuthAdmin) AddAudience(ctx context.Context, a authz.Actor, tenant, aud string) error {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, "", ""); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return err
 	}
 	t, err := s.Store.GetTenant(ctx, tenant)
@@ -132,12 +136,15 @@ func (s *AuthAdmin) AddAudience(ctx context.Context, a authz.Actor, tenant, aud 
 	if aud == p || strings.HasPrefix(aud, p+"/") {
 		return fmt.Errorf("%w: audiences under %s are the canonical ones (and %s itself is the server's)", store.ErrInvalid, p, p)
 	}
+	if slices.Contains(s.ServerAudiences, aud) {
+		return fmt.Errorf("%w: %s is a server audience", store.ErrInvalid, aud)
+	}
 	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error { return tx.AddAudience(ctx, t.ID, aud, a.String()) })
 }
 
 // RemoveAudience removes a tenant's assigned audience (server-wide action).
 func (s *AuthAdmin) RemoveAudience(ctx context.Context, a authz.Actor, tenant, aud string) error {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, "", ""); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return err
 	}
 	t, err := s.Store.GetTenant(ctx, tenant)
@@ -149,7 +156,7 @@ func (s *AuthAdmin) RemoveAudience(ctx context.Context, a authz.Actor, tenant, a
 
 // ListAudiences lists a tenant's audiences: the canonical one first, then the assigned ones.
 func (s *AuthAdmin) ListAudiences(ctx context.Context, a authz.Actor, tenant string) ([]string, error) {
-	t, err := s.tenant(ctx, a, authz.VerbRead, tenant)
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -163,30 +170,22 @@ func (s *AuthAdmin) ListAudiences(ctx context.Context, a authz.Actor, tenant str
 
 // ParsePrincipal parses "subject:<issuer>|<value>" (role, group, client alike) or "issuer:<issuer>".
 func ParsePrincipal(p string) (kind, issuer, value string, err error) {
-	kind, rest, ok := strings.Cut(p, ":")
-	if !ok {
-		return "", "", "", fmt.Errorf("%w: principal %q is kind:issuer|value or issuer:name", store.ErrInvalid, p)
-	}
-	if kind == store.PrincipalIssuer {
-		return kind, rest, "", store.ValidIssuerName(rest)
-	}
-	issuer, value, ok = strings.Cut(rest, "|")
-	if !ok || value == "" {
-		return "", "", "", fmt.Errorf("%w: principal %q is kind:issuer|value", store.ErrInvalid, p)
-	}
-	return kind, issuer, value, store.ValidIssuerName(issuer)
+	return auth.ParsePrincipalKey(p)
 }
 
 // AddGrant grants verbs to a principal on the tenant, a channel, or an extension (in every channel
-// or one).
+// or one). An issuer-wide grant cannot carry admin: every account of the issuer would hold it.
 func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, principal string, verbs []string, channel, extension string) (store.Grant, error) {
-	t, err := s.tenant(ctx, a, authz.VerbAdmin, tenant)
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return store.Grant{}, err
 	}
 	kind, issuer, value, err := ParsePrincipal(principal)
 	if err != nil {
 		return store.Grant{}, err
+	}
+	if kind == store.PrincipalIssuer && slices.Contains(verbs, store.VerbAdmin) {
+		return store.Grant{}, fmt.Errorf("%w: an issuer: grant cannot carry admin", store.ErrInvalid)
 	}
 	if extension != "" {
 		if err := release.ValidName(extension); err != nil {
@@ -228,7 +227,7 @@ func dedupe(in []string) []string {
 
 // ListGrants lists a tenant's grants.
 func (s *AuthAdmin) ListGrants(ctx context.Context, a authz.Actor, tenant string) ([]store.Grant, error) {
-	t, err := s.tenant(ctx, a, authz.VerbRead, tenant)
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -238,9 +237,18 @@ func (s *AuthAdmin) ListGrants(ctx context.Context, a authz.Actor, tenant string
 
 // RemoveGrant removes a grant.
 func (s *AuthAdmin) RemoveGrant(ctx context.Context, a authz.Actor, tenant, id string) error {
-	t, err := s.tenant(ctx, a, authz.VerbAdmin, tenant)
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return err
 	}
-	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error { return tx.DeleteGrant(ctx, t.ID, id) })
+	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+		before, err := tx.TenantAdminGrants(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		if err := tx.DeleteGrant(ctx, t.ID, id); err != nil {
+			return err
+		}
+		return keepAdmin(ctx, tx, a, t.ID, before)
+	})
 }

@@ -103,6 +103,8 @@ type env struct {
 	idp   *fakeIDP
 	api   *api.Handler
 	serve *serve.Handler
+	keys  *keys.Service
+	blob  *blob.Service
 	ids   map[string]string // label -> release id
 }
 
@@ -144,7 +146,7 @@ func newEnv(t *testing.T) *env {
 		must(ks.Add(ctx, admin, "acme", ch, "file:"+ch+".pem", true))
 	}
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-	en := &env{st: st, ten: ten, idp: &fakeIDP{key: key}, ids: map[string]string{},
+	en := &env{st: st, ten: ten, idp: &fakeIDP{key: key}, ids: map[string]string{}, keys: ks, blob: bs,
 		rel: &release.Service{Store: st, Blob: bs, Signers: ks, Authz: authz.ServerAdmin{}}}
 	en.adm = &tenants.AuthAdmin{Store: st, Authz: authz.ServerAdmin{}, Fetch: en.idp, PublicURL: publicURL}
 	must(en.adm.AddIssuer(ctx, admin, "acme", store.Issuer{Name: "corp", URL: idpURL}))
@@ -543,7 +545,7 @@ func TestHTTPRules(t *testing.T) {
 		t.Errorf("whoami with issuer admin: %v", m)
 	}
 	// a suspended tenant is 404 for everyone
-	if _, err := en.ten.SetTenantState(ctx, admin, "acme", store.TenantSuspended); err != nil {
+	if _, err := en.ten.SetTenantState(ctx, admin, "acme", store.TenantSuspended, 0); err != nil {
 		t.Fatal(err)
 	}
 	if r := en.get(t, "/api/v1/tenants/acme/channels", tok); r.status != 404 || !bytes.Equal(r.body, nf.body) {

@@ -54,7 +54,7 @@ func (o AddOptions) visibility() string {
 // Add puts a built extension into a signed channel: spool, check, commit, sign, release. It returns
 // the release and whether it already existed (the same body in the same slot with the same choices).
 func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string, r io.Reader, o AddOptions) (store.Release, bool, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, tenant, channel); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel}); err != nil {
 		return store.Release{}, false, err
 	}
 	sc, err := s.Store.GetServeChannel(ctx, tenant, channel)
@@ -351,7 +351,7 @@ func (s *Service) channelByID(ctx context.Context, id string) (store.Channel, er
 
 // List lists a channel's releases (optionally of one name), newest first.
 func (s *Service) List(ctx context.Context, a authz.Actor, tenant, channel, name string) ([]store.Candidate, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbRead, tenant, channel); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel}); err != nil {
 		return nil, err
 	}
 	ch, err := s.Store.GetChannel(ctx, tenant, channel)
@@ -376,7 +376,7 @@ const (
 
 // Apply changes one release of a channel.
 func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, id string, c Change) (store.Release, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, tenant, channel); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel}); err != nil {
 		return store.Release{}, err
 	}
 	ch, err := s.Store.GetChannel(ctx, tenant, channel)

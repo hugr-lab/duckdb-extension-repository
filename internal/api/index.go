@@ -19,7 +19,10 @@ import (
 // view is the caller's view of a channel: public releases, plus those of the extensions it may
 // install there (spec 0007).
 func (c caller) view(channelID string) release.Visible {
-	if c.anonymous() {
+	if c.admin {
+		return release.Everything // a server administrator sees everything
+	}
+	if c.principals == nil {
 		return release.PublicOnly
 	}
 	all, names := auth.InstallScope(c.principals, c.ta.Grants, channelID)
@@ -38,7 +41,18 @@ type grantOut struct {
 	Extension string   `json:"extension,omitempty"`
 }
 
-func whoami(c caller) map[string]any {
+func (h *Handler) whoami(w http.ResponseWriter, r *http.Request, c caller, _ params) {
+	switch {
+	case c.anonymous():
+		unauthorized(w)
+	case c.principals == nil:
+		notFound(w) // a server token: /api/v1/whoami
+	default:
+		answer(w, r, whoamiOf(c), false)
+	}
+}
+
+func whoamiOf(c caller) map[string]any {
 	names := map[string]string{}
 	for _, is := range c.ta.Issuers {
 		names[is.ID] = is.Name
@@ -71,7 +85,7 @@ func nonNil[T any](s []T) []T {
 
 // --- channels ---
 
-func (h *Handler) channels(w http.ResponseWriter, r *http.Request, c caller) {
+func (h *Handler) channels(w http.ResponseWriter, r *http.Request, c caller, _ params) {
 	chs, err := h.o.Store.ListChannels(r.Context(), c.tenant.Name)
 	if err != nil {
 		h.fail(w, err)
@@ -88,35 +102,24 @@ func (h *Handler) channels(w http.ResponseWriter, r *http.Request, c caller) {
 	answer(w, r, map[string]any{"channels": list}, c.anonymous())
 }
 
-func (h *Handler) channel(w http.ResponseWriter, r *http.Request, c caller, name string, rest []string) {
+// snapshot reads the path's channel and its snapshot (404 for an unknown channel).
+func (h *Handler) snapshot(w http.ResponseWriter, r *http.Request, c caller, p params) (*release.Snapshot, bool) {
 	ctx := r.Context()
-	sc, err := h.o.Store.GetServeChannel(ctx, c.tenant.Name, name)
+	sc, err := h.o.Store.GetServeChannel(ctx, c.tenant.Name, p["c"])
 	if errors.Is(err, store.ErrNotFound) {
 		notFound(w)
-		return
+		return nil, false
 	}
 	if err != nil {
 		h.fail(w, err)
-		return
+		return nil, false
 	}
 	snap, err := h.o.Snapshots.Get(ctx, sc.Channel)
 	if err != nil {
 		h.fail(w, err)
-		return
+		return nil, false
 	}
-	q := r.URL.Query()
-	switch {
-	case len(rest) == 0:
-		h.channelInfo(w, r, c, snap)
-	case len(rest) == 1 && rest[0] == "extensions":
-		h.extensions(w, r, c, snap, q.Get("duckdb_version"), q.Get("platform"), q.Get("cursor"), q.Get("limit"))
-	case len(rest) == 2 && rest[0] == "extensions":
-		h.extension(w, r, c, snap, rest[1], q.Get("duckdb_version"), q.Get("platform"))
-	case len(rest) == 4 && rest[0] == "extensions" && rest[2] == "versions":
-		h.item(w, r, c, snap, rest[1], rest[3], q.Get("duckdb_version"), q.Get("platform"))
-	default:
-		notFound(w)
-	}
+	return snap, true
 }
 
 type capiOut struct {
@@ -129,7 +132,11 @@ type keyOut struct {
 	State       string `json:"state"`
 }
 
-func (h *Handler) channelInfo(w http.ResponseWriter, r *http.Request, c caller, snap *release.Snapshot) {
+func (h *Handler) channelInfo(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	snap, ok := h.snapshot(w, r, c, p)
+	if !ok {
+		return
+	}
 	versions := []capiOut{}
 	for _, v := range snap.Versions() {
 		cs := slices.Clone(snap.CAPIs[v])
@@ -154,7 +161,9 @@ func (h *Handler) channelInfo(w http.ResponseWriter, r *http.Request, c caller, 
 
 // --- extensions ---
 
-func (h *Handler) extensions(w http.ResponseWriter, r *http.Request, c caller, snap *release.Snapshot, version, platform, cursor, limitS string) {
+func (h *Handler) extensions(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	q := r.URL.Query()
+	version, platform, cursor, limitS := q.Get("duckdb_version"), q.Get("platform"), q.Get("cursor"), q.Get("limit")
 	limit := 100
 	if limitS != "" {
 		n, err := strconv.Atoi(limitS)
@@ -175,6 +184,10 @@ func (h *Handler) extensions(w http.ResponseWriter, r *http.Request, c caller, s
 	}
 	if (version == "") != (platform == "") {
 		problem(w, http.StatusBadRequest, typeInvalid, "duckdb_version and platform go together")
+		return
+	}
+	snap, ok := h.snapshot(w, r, c, p)
+	if !ok {
 		return
 	}
 	vis := c.view(snap.Channel.ID)
@@ -364,9 +377,14 @@ func (rs *resolver) rowsOf(name, platform string) []releaseOut {
 	return out
 }
 
-func (h *Handler) extension(w http.ResponseWriter, r *http.Request, c caller, snap *release.Snapshot, name, version, platform string) {
+func (h *Handler) extension(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	name, version, platform := p["name"], r.URL.Query().Get("duckdb_version"), r.URL.Query().Get("platform")
 	if (version == "") != (platform == "") {
 		problem(w, http.StatusBadRequest, typeInvalid, "duckdb_version and platform go together")
+		return
+	}
+	snap, ok := h.snapshot(w, r, c, p)
+	if !ok {
 		return
 	}
 	rows := newResolver(snap, c.view(snap.Channel.ID)).rowsOf(name, platform)
@@ -381,9 +399,15 @@ func (h *Handler) extension(w http.ResponseWriter, r *http.Request, c caller, sn
 // available, deprecated, yanked, or missing (which also means "not in your view"). With available or
 // deprecated come the yanked rows that would have served the path (a higher C API major, say), so a
 // node compares the body hash it installed.
-func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, snap *release.Snapshot, name, extVersion, version, platform string) {
+func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	name, extVersion := p["name"], p["v"]
+	version, platform := r.URL.Query().Get("duckdb_version"), r.URL.Query().Get("platform")
 	if version == "" || platform == "" {
 		problem(w, http.StatusBadRequest, typeInvalid, "duckdb_version and platform are required")
+		return
+	}
+	snap, ok := h.snapshot(w, r, c, p)
+	if !ok {
 		return
 	}
 	rs := newResolver(snap, c.view(snap.Channel.ID))

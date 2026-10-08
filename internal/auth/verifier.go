@@ -109,9 +109,15 @@ func (v *Verifier) now() time.Time {
 // Verify checks a token against a tenant's issuers and audiences (the canonical one first) and
 // returns the caller's principals and the issuer record's name. Any failure is a *Failure.
 func (v *Verifier) Verify(ctx context.Context, ta store.TenantAuth, canonical string, token string) (Principals, string, error) {
+	id, err := v.VerifyIdentity(ctx, ta, canonical, token)
+	return id.Principals, id.Issuer.Name, err
+}
+
+// VerifyIdentity is Verify, returning what an actor is recorded as and when the token was issued.
+func (v *Verifier) VerifyIdentity(ctx context.Context, ta store.TenantAuth, canonical string, token string) (Identity, error) {
 	t, err := parse(token)
 	if err != nil {
-		return nil, "", &Failure{Reason: ReasonMalformed}
+		return Identity{}, &Failure{Reason: ReasonMalformed}
 	}
 	iss, _ := t.claims["iss"].(string)
 	var rec *store.Issuer
@@ -121,10 +127,10 @@ func (v *Verifier) Verify(ctx context.Context, ta store.TenantAuth, canonical st
 		}
 	}
 	if rec == nil || iss == "" {
-		return nil, "", &Failure{Reason: ReasonIssuer}
+		return Identity{}, &Failure{Reason: ReasonIssuer}
 	}
-	fail := func(r string) (Principals, string, error) {
-		return nil, rec.Name, &Failure{Reason: r, Issuer: rec.Name}
+	fail := func(r string) (Identity, error) {
+		return Identity{Issuer: *rec}, &Failure{Reason: r, Issuer: rec.Name}
 	}
 	if !slices.Contains(rec.Algorithms, t.alg) {
 		return fail(ReasonSignature)
@@ -156,17 +162,21 @@ func (v *Verifier) Verify(ctx context.Context, ta store.TenantAuth, canonical st
 			return fail(ReasonClaims)
 		}
 	}
-	p := Principals{{IssuerID: rec.ID, Kind: store.PrincipalIssuer}: true}
+	id := Identity{Principals: Principals{{IssuerID: rec.ID, Kind: store.PrincipalIssuer}: true}, Issuer: *rec, IssuedAt: iat}
 	if sub, ok := t.claims["sub"].(string); ok && cleanValue(sub) {
-		p[Key{rec.ID, store.PrincipalSubject, sub}] = true
+		id.Principals[Key{rec.ID, store.PrincipalSubject, sub}] = true
+		id.Subject = sub
 	}
 	for kind, path := range map[string][]string{store.PrincipalRole: rec.RolesClaim, store.PrincipalGroup: rec.GroupsClaim,
 		store.PrincipalClient: rec.ClientClaim} {
 		for _, val := range claimValues(t.claims, path) {
-			p[Key{rec.ID, kind, val}] = true
+			id.Principals[Key{rec.ID, kind, val}] = true
+			if kind == store.PrincipalClient && id.Client == "" {
+				id.Client = val
+			}
 		}
 	}
-	return p, rec.Name, nil
+	return id, nil
 }
 
 func lifetime(rec store.Issuer) time.Duration {
@@ -189,7 +199,9 @@ func numericDate(v any) (time.Time, bool) {
 }
 
 func audienceOK(aud any, canonical string, assigned []string) bool {
-	ok := func(a string) bool { return a != "" && (a == canonical || slices.Contains(assigned, a)) }
+	ok := func(a string) bool {
+		return a != "" && (a == canonical && canonical != "" || slices.Contains(assigned, a))
+	}
 	switch x := aud.(type) {
 	case string:
 		return ok(x)

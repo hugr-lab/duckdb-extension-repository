@@ -20,6 +20,9 @@ var (
 	ErrExists   = errors.New("store: already exists")
 	ErrConflict = errors.New("store: changed concurrently")
 	ErrInvalid  = errors.New("store: invalid")
+	// ErrBusy is a transaction that kept meeting lock timeouts or deadlocks: nothing changed, try
+	// again later. It is an ErrConflict for callers that retry either.
+	ErrBusy = fmt.Errorf("store: busy: %w", ErrConflict)
 )
 
 const maxAttempts = 8
@@ -74,7 +77,7 @@ func (s *Store) tx(ctx context.Context, lockKey string, fn func(*Tx) error) erro
 		}
 	}
 	if s.d.retryable(err) {
-		return fmt.Errorf("%w: %v", ErrConflict, err)
+		return fmt.Errorf("%w: %v", ErrBusy, err)
 	}
 	return err
 }

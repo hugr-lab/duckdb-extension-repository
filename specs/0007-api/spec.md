@@ -1,6 +1,6 @@
 # Spec 0007: The HTTP API: index and management
 
-- **Status**: phase 1 implemented
+- **Status**: phases 1-2 implemented
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -58,20 +58,22 @@ After spec 0006, kista serves DuckDB, but everything else goes through `kista ad
 - **Suspended tenants**: `404` for everyone but server administrators.
 - **Errors**: `application/problem+json`, `type` `urn:kista:problem:<name>` from a fixed set
   (unauthorized, not-found, method-not-allowed, invalid, conflict, precondition-failed,
-  precondition-required, gone, too-large, unsupported-media-type, too-many-requests, unavailable),
-  a `title`, and for an allowed
-  caller a `detail` taken from typed public messages, never from internal error strings, never
-  naming another resource.
+  precondition-required, gone, too-large, unsupported-media-type, too-many-requests, unavailable), a
+  `title`, and for an allowed caller a `detail` taken from typed public messages, never from
+  internal error strings, never naming another resource.
 - **Requests**: `GET`, `HEAD`, `POST`, `DELETE` (and `405` with `Allow` from the route's shape);
-  bodies `application/json` exactly (`415` otherwise), at most 64 KiB (`413`), read only after the
-  decision, with a read deadline; unknown and duplicate JSON keys refused.
+  bodies `application/json` exactly (`charset=utf-8` allowed; `415` otherwise), one object, at most
+  64 KiB (`413`), read only after the decision, with a read deadline; unknown and duplicate JSON
+  keys refused; a request that takes no body (`GET`, `DELETE`, suspend and resume) refuses one. A
+  required `If-Match` is one strong ETag or `*` (any version of the existing resource).
 - **Responses**: `X-Content-Type-Options: nosniff`; management answers `Cache-Control: no-store`.
 - **Limits**: a token bucket per client address (IPv6 by /64; spec 0006's trusted proxies),
   checked before token verification, the table bounded; file-only `serve.api_rate` and
   `serve.api_burst` (default 20 a second, burst 40); when the table is full, buckets that have
   refilled are dropped (at most one sweep a second) and a new client waits rather than everyone
   being reset; `429` with `Retry-After`. Calls that make egress requests (issuer add) also run
-  one at a time per tenant.
+  one at a time per tenant: a second one meanwhile is `429`. A tenant holds at most 1000 grants.
+  A store that stays busy (lock timeouts, deadlocks) is `503` with `Retry-After`, never `412`.
 - **Logs**: one line per request as in spec 0006, never a header value, query string or body; one
   structured line per write and per authenticated request refused by authorisation: actor, route
   template, resource ids, result, client address. Spec 0010 turns them into audit events.
@@ -173,10 +175,11 @@ auth:                                   # file-only
   startup (a conflict refuses to start) and at `audience add`. So a token is a server token or a
   tenant token, never both, even with an `aud` array. The DuckDB routes treat a token carrying a
   server audience as no token.
+- A server token on `/api/v1/tenants/{t}/whoami` is `404`: its identity is at `/api/v1/whoami`.
 - **Routes without a tenant** (`info`, `/api/v1/whoami`, `/api/v1/duckdb-versions`, tenants): a
   token without a server audience is ignored on public ones; on the others it answers `404`, and
-  `/api/v1/whoami` says "not a server token". On tenant routes, a server administrator acts with
-  every right and sees everything in the index.
+  `/api/v1/whoami` answers `400` "not a server token". On tenant routes, a server administrator
+  acts with every right and sees everything in the index.
 - **Namespaces.** A server issuer's principals carry the issuer id `server:<name>`, which no tenant
   record can have (tenant record ids are UUIDs), so `server_admins` never matches a tenant
   principal, whatever a tenant names its records. Actors are recorded as `server:<issuer>|<sub>` and
@@ -193,6 +196,9 @@ auth:                                   # file-only
   holding a long-lived install token (up to 7 days, spec 0006) is not enough. An install principal
   (a node's identity) should not hold `admin`; `whoami` flags a token whose principals do.
 - **Writers are named**: a write needs a `sub` or a client claim to record as the actor.
+- A management request with a token that is stale, or (for a write) names nobody, is `401` like
+  any other token that is not valid for it; a token that may not use the route at all is `404`
+  first.
 - Configuration changes (server issuers, administrators) take effect at restart.
 
 **The authorizer** (`internal/authz`):
@@ -201,7 +207,8 @@ auth:                                   # file-only
 type Actor struct {
     Kind       ActorKind       // os | principal | server | system
     ID         string          // the recorded actor string
-    Principals auth.Principals // for principal and server actors
+    Tenant     string          // a principal actor's tenant (its token's)
+    Principals auth.Principals // a principal actor's
 }
 type Resource struct{ Tenant, Channel, Extension string }
 type Authorizer interface {
@@ -210,7 +217,8 @@ type Authorizer interface {
 ```
 
 - `ServerAdmin` (the CLI) allows OS actors everything, as today.
-- `Grants` (the API) allows server administrators everything. Tenant principals, by their grants:
+- `Grants` (the API) allows OS actors and server administrators everything (the API makes a server
+  actor of an administrator only). Tenant principals, by their grants:
   - `admin` on the tenant: tenant-wide operations (issuers, grants, channels) and everything inside;
   - `admin` on a channel: that channel's DuckDB versions, keys and releases;
   - `admin` on an extension (in one channel or every channel): that extension's releases;
@@ -227,7 +235,10 @@ type Authorizer interface {
 - `issuer:` grants with `admin` are refused when added (CLI and API), and ignored when evaluated
   (rows added before this spec grant no `admin`).
 - **Infrastructure details** (a key's signer reference, a tenant's storage domain) are shown to
-  server administrators only.
+  server administrators only, and so is who among them made a record: a tenant administrator sees
+  `created_by: server`.
+- An actor's `<sub>` is recorded as `sub:<sub>` when it starts with `client:` or `sub:`, so it
+  never reads as a client id. Server issuers' names and URLs are unique in config.
 
 ### Management (phases 2 and 3)
 
@@ -244,7 +255,14 @@ Services take an expected version (0 from the CLI) compared inside the transacti
 **Lists** are ordered and paged with an opaque `(sort key, id)` cursor (management lists are
 administrator-only, so a cursor may expire without telling anything): releases by
 `(created_at, id)`, key events by `(at, id)` through the channel's keys, grants by `(created_at, id)`,
-issuers by name.
+issuers and tenants by name. `limit` is 1..500 (default 100).
+
+**Shapes** (phase 2): a tenant is `name, display_name, state, created_at, etag` (and
+`storage_domain` for server administrators); a DuckDB version `name, kind, c_api_maxima`; an issuer
+record the fields of spec 0006 with claim paths as arrays of keys and `max_token_lifetime` as a
+duration (`24h`), plus `created_at, created_by, etag`; a grant `id, principal, verbs, channel,
+extension, created_at, created_by`. Audience changes answer the tenant's audiences. Deletions answer
+`204`. Management answers carry `Cache-Control: no-store`.
 
 Phase 2:
 
@@ -279,8 +297,10 @@ There is no re-sign endpoint: replicas with `serve.resign` re-sign on their own 
 view shows whether one is working and how much is left.
 
 Errors map from typed service errors: a stale expected version is `412`; a refused state change
-(spec 0003/0006 rules) is `409`; an invalid value, or a reference in the body to something that does
-not exist, is `400`; a path resource the caller may not see, or that does not exist, is `404`.
+(spec 0003/0006 rules), a duplicate, or the lock-out rule is `409`; an invalid value, a reference in
+the body to something that does not exist (a grant's issuer or channel, an audience to remove), or
+an issuer whose discovery document or JWKS cannot be fetched at add is `400`; a path resource the
+caller may not see, or that does not exist, is `404`.
 
 ### Package layout
 
@@ -289,9 +309,13 @@ internal/api      /api/v1: routing, problems, limits, the index (phase 1), manag
 internal/release  + the resolution functions the DuckDB routes and the index share
 internal/auth     + server issuers and principals, the install scope helper, a shared tenant-auth cache
 internal/authz    Actor with principals, Resource, the Grants authorizer (phase 2)
-internal/serve    hands /api/ to the API handler on https listeners
-internal/config   + auth.server_issuers, server_audiences, server_admins, admin_token_max_age,
-                  serve.api_rate and serve.api_burst
+internal/serve    hands /api/ to the API handler on https listeners; server tokens are no token
+internal/config   + auth.server_issuers, server_audiences, server_egress_allow, server_admins,
+                  admin_token_max_age, serve.api_rate and serve.api_burst
+internal/app      + server identity (its own verifier and egress), the startup audience check,
+                  the services with the API's authorizer
+internal/tenants  + server-only checks, lock-out, expected versions (keys: signer references and
+internal/keys       force are server-only)
 ```
 
 ## Security

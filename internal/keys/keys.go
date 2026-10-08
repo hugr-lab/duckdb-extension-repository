@@ -57,8 +57,8 @@ type Service struct {
 func lockKey(channelID string) string { return "kista/channel/" + channelID }
 
 // channel resolves a channel outside a transaction, to know which lock to take.
-func (s *Service) channel(ctx context.Context, a authz.Actor, verb authz.Verb, tenant, channel string) (store.Channel, error) {
-	if err := s.Authz.Allow(ctx, a, verb, tenant, channel); err != nil {
+func (s *Service) channel(ctx context.Context, a authz.Actor, tenant, channel string) (store.Channel, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel}); err != nil {
 		return store.Channel{}, err
 	}
 	return s.Store.GetChannel(ctx, tenant, channel)
@@ -66,9 +66,12 @@ func (s *Service) channel(ctx context.Context, a authz.Actor, verb authz.Verb, t
 
 // Add registers a key: it opens the signer, checks the key (RSA-2048, e = 65537), proves it can
 // sign with a probe signature, and inserts it as trusted (or active, only on a channel that never
-// had a key).
+// had a key). Registering a signer reference is server-wide (spec 0007): it points kista at a key.
 func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel, ref string, active bool) (store.Key, error) {
-	ch, err := s.channel(ctx, a, authz.VerbAdmin, tenant, channel)
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
+		return store.Key{}, err
+	}
+	ch, err := s.channel(ctx, a, tenant, channel)
 	if err != nil {
 		return store.Key{}, err
 	}
@@ -153,7 +156,12 @@ func find(keys []store.Key, ref string) (*store.Key, error) {
 // Activate makes a trusted key the channel's active key and demotes the current one. The key must
 // have been trusted for MinTrusted (from trusted_since, which a demotion never resets), unless force.
 func (s *Service) Activate(ctx context.Context, a authz.Actor, tenant, channel, keyRef string, force bool) (store.Key, error) {
-	ch, err := s.channel(ctx, a, authz.VerbAdmin, tenant, channel)
+	if force {
+		if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
+			return store.Key{}, err // force is server-wide (spec 0007)
+		}
+	}
+	ch, err := s.channel(ctx, a, tenant, channel)
 	if err != nil {
 		return store.Key{}, err
 	}
@@ -201,7 +209,12 @@ func (s *Service) Activate(ctx context.Context, a authz.Actor, tenant, channel, 
 // Retire removes a trusted key from .well-known for good. The active key cannot be retired, and a
 // key must have been out of the active state for MinDemoted, unless force.
 func (s *Service) Retire(ctx context.Context, a authz.Actor, tenant, channel, keyRef string, force bool) (store.Key, error) {
-	ch, err := s.channel(ctx, a, authz.VerbAdmin, tenant, channel)
+	if force {
+		if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
+			return store.Key{}, err // force is server-wide (spec 0007)
+		}
+	}
+	ch, err := s.channel(ctx, a, tenant, channel)
 	if err != nil {
 		return store.Key{}, err
 	}
@@ -245,7 +258,7 @@ func (s *Service) Retire(ctx context.Context, a authz.Actor, tenant, channel, ke
 
 // List returns a channel's keys.
 func (s *Service) List(ctx context.Context, a authz.Actor, tenant, channel string) ([]store.Key, error) {
-	ch, err := s.channel(ctx, a, authz.VerbRead, tenant, channel)
+	ch, err := s.channel(ctx, a, tenant, channel)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +267,7 @@ func (s *Service) List(ctx context.Context, a authz.Actor, tenant, channel strin
 
 // Events returns the transitions of a channel's keys.
 func (s *Service) Events(ctx context.Context, a authz.Actor, tenant, channel string) ([]store.KeyEvent, error) {
-	ch, err := s.channel(ctx, a, authz.VerbRead, tenant, channel)
+	ch, err := s.channel(ctx, a, tenant, channel)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +300,7 @@ func (s *Service) WellKnownOf(ctx context.Context, ch store.Channel) ([]byte, in
 // WellKnown returns the channel's .well-known/duckdb-extension-repo.json and the channel version it
 // reflects (for caching).
 func (s *Service) WellKnown(ctx context.Context, a authz.Actor, tenant, channel string) ([]byte, int64, error) {
-	ch, err := s.channel(ctx, a, authz.VerbRead, tenant, channel)
+	ch, err := s.channel(ctx, a, tenant, channel)
 	if err != nil {
 		return nil, 0, err
 	}

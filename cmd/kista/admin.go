@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/app"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
@@ -307,7 +308,7 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 		}
 	case (sub == "suspend" || sub == "resume") && len(pos) == 1:
 		state := map[string]string{"suspend": store.TenantSuspended, "resume": store.TenantActive}[sub]
-		if _, err := a.svc.Tenants.SetTenantState(ctx, a.actor, pos[0], state); err != nil {
+		if _, err := a.svc.Tenants.SetTenantState(ctx, a.actor, pos[0], state, 0); err != nil {
 			return err
 		}
 		a.logf("tenant %s %s", sub, pos[0])
@@ -340,7 +341,7 @@ func (a *adminCmd) version(ctx context.Context, sub string, args []string) error
 		}
 		a.logf("version c-api %s %s", v.Name, capis[0])
 	case sub == "list" && len(pos) == 0:
-		vs, err := a.svc.Tenants.ListVersions(ctx, a.actor)
+		vs, err := a.svc.Tenants.ListVersions(ctx)
 		if err != nil {
 			return err
 		}
@@ -476,7 +477,7 @@ func (a *adminCmd) key(ctx context.Context, sub string, args []string) error {
 				"until a re-sign (kista serve with serve.resign, or kista admin key resign %s/%s) moves the serving key\n", t, c)
 		}
 	case sub == "resign" && len(pos) == 1:
-		if err := a.svc.Tenants.Authz.Allow(ctx, a.actor, authz.VerbAdmin, t, c); err != nil {
+		if err := a.svc.Tenants.Authz.Allow(ctx, a.actor, authz.VerbAdmin, authz.Resource{Tenant: t, Channel: c}); err != nil {
 			return err
 		}
 		ch, err := a.svc.Store.GetChannel(ctx, t, c)
@@ -573,21 +574,9 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 
 // claimPath parses a claim path: a JSON array of keys (for keys with dots), or keys joined by dots.
 func claimPath(s string) ([]string, error) {
-	if s == "" {
-		return nil, nil
-	}
-	if strings.HasPrefix(s, "[") {
-		var p []string
-		if err := json.Unmarshal([]byte(s), &p); err != nil || len(p) == 0 {
-			return nil, fmt.Errorf("%w: claim path %q", errUsage, s)
-		}
-		return p, nil
-	}
-	p := strings.Split(s, ".")
-	for _, k := range p {
-		if k == "" {
-			return nil, fmt.Errorf("%w: claim path %q has an empty key", errUsage, s)
-		}
+	p, err := auth.ParseClaimPath(s)
+	if err != nil {
+		return nil, fmt.Errorf("%w: claim path %q", errUsage, s)
 	}
 	return p, nil
 }
@@ -655,7 +644,7 @@ func (a *adminCmd) issuer(ctx context.Context, sub string, args []string) error 
 			}
 		})
 	case sub == "remove" && len(pos) == 2:
-		if err := a.svc.Auth.RemoveIssuer(ctx, a.actor, pos[0], pos[1]); err != nil {
+		if err := a.svc.Auth.RemoveIssuer(ctx, a.actor, pos[0], pos[1], ""); err != nil {
 			return err
 		}
 		a.logf("issuer remove %s %s", pos[0], pos[1])

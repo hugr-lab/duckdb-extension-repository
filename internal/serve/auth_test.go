@@ -150,9 +150,22 @@ func TestAnswerTable(t *testing.T) {
 	if a := status(privPath, bearerHdr(tok)); a.status != 404 {
 		t.Fatalf("after the grant's removal: %d", a.status)
 	}
-	// admin on an issuer-wide grant does not imply install (spec 0007): every account of the issuer
-	// would hold it
-	if _, err := adm.AddGrant(ctx, admin, "acme", "issuer:corp", []string{"admin"}, "prod", ""); err != nil {
+	// admin on an issuer-wide grant is refused (spec 0007): every account of the issuer would hold
+	// it; a row added before is ignored, and does not imply install
+	if _, err := adm.AddGrant(ctx, admin, "acme", "issuer:corp", []string{"admin"}, "prod", ""); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("issuer-wide admin grant: %v", err)
+	}
+	iss, err := adm.ListIssuers(ctx, admin, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ten, err := en.st.GetTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := en.st.InTx(ctx, "", func(tx *store.Tx) error {
+		return tx.InsertGrant(ctx, &store.Grant{TenantID: ten.ID, IssuerID: iss[0].ID, Kind: store.PrincipalIssuer, Verbs: []string{"admin"}})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if a := status(privPath, bearerHdr(idp.token(t, map[string]any{"sub": "bob"}))); a.status != 404 {
@@ -166,7 +179,7 @@ func TestAnswerTable(t *testing.T) {
 		t.Fatalf("issuer-wide grant: %d", a.status)
 	}
 	// removing the issuer removes its grants; a new record under the same name starts with none
-	if err := adm.RemoveIssuer(ctx, admin, "acme", "corp"); err != nil {
+	if err := adm.RemoveIssuer(ctx, admin, "acme", "corp", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := adm.AddIssuer(ctx, admin, "acme", store.Issuer{Name: "corp", URL: idpURL}); err != nil {
