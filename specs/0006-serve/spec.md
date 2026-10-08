@@ -413,7 +413,8 @@ administrators: no tenant principal ever matches a server one.
 - Resource: the tenant; a channel; an extension name (in every channel of the tenant, including
   future ones, or in one channel).
 - Verbs here: `install` and `admin` (`admin` implies every verb on its resource: the tenant, a
-  channel, or an extension). An identical grant is not added twice.
+  channel, or an extension; except on an `issuer:` grant, where spec 0007 ignores `admin`, since
+  every account of the issuer would hold it). An identical grant is not added twice.
   `publish` and `promote` come with spec 0008, `audit` with spec 0010.
 - An `issuer:` grant is refused unless the record has `required_claims`.
 - `kista admin grant add|list|remove <tenant> -principal … -verb … [-channel …] [-extension …]`.
@@ -424,8 +425,9 @@ administrators: no tenant principal ever matches a server one.
 **The decision comes from the path.** A grant names a tenant, channel or extension, all known from
 the path before anything is resolved. So: verify the token, compute the caller's principals, decide
 whether they hold `install` on (tenant, channel, name), then resolve, with a caller who does not
-see only public releases. Private rows are then never read for such a caller, and the work does not
-depend on what exists.
+see only public releases. Resolution runs on the channel's snapshot, read the same way for every
+caller (spec 0007), with the caller's view applied in memory: the work does not depend on who asks
+or on what exists.
 
 | Request | Public release | Private release | Missing, yanked, not served |
 | --- | --- | --- | --- |

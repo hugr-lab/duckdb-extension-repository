@@ -150,6 +150,14 @@ func TestAnswerTable(t *testing.T) {
 	if a := status(privPath, bearerHdr(tok)); a.status != 404 {
 		t.Fatalf("after the grant's removal: %d", a.status)
 	}
+	// admin on an issuer-wide grant does not imply install (spec 0007): every account of the issuer
+	// would hold it
+	if _, err := adm.AddGrant(ctx, admin, "acme", "issuer:corp", []string{"admin"}, "prod", ""); err != nil {
+		t.Fatal(err)
+	}
+	if a := status(privPath, bearerHdr(idp.token(t, map[string]any{"sub": "bob"}))); a.status != 404 {
+		t.Fatalf("issuer-wide admin: %d", a.status)
+	}
 	// an issuer-wide grant needs required claims, which this record has
 	if _, err := adm.AddGrant(ctx, admin, "acme", "issuer:corp", []string{"install"}, "prod", ""); err != nil {
 		t.Fatal(err)

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
@@ -137,9 +138,12 @@ func startKistaWith(t *testing.T, b *build, verifier *auth.Verifier) *kista {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	must(err)
 	k.addr = ln.Addr().String()
+	auths, snaps := &auth.TenantAuths{Store: st}, &release.Snapshots{Store: st}
+	apiH := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
+		PublicURL: "https://" + k.addr, Log: slog.New(slog.DiscardHandler), KistaVersion: "e2e"})
 	k.handler = serve.NewHandler(st, ks, bs, serve.Options{MaxDownloads: 16, MaxDownloadsPerClient: 16, MinRate: 1024,
 		WriteIdleTimeout: 30 * time.Second, Log: slog.New(slog.NewJSONHandler(&k.access, nil)), Verifier: verifier,
-		PublicURL: "https://" + k.addr})
+		PublicURL: "https://" + k.addr, Auths: auths, Snapshots: snaps, API: apiH})
 	k.handler.SetReady(true)
 	srv := &serve.Server{Handler: k.handler, Log: slog.New(slog.DiscardHandler), DrainTimeout: time.Millisecond, ShutdownTimeout: time.Second,
 		Listeners: []serve.Listener{{Listener: config.Listener{Addr: k.addr, Scheme: "dual",
