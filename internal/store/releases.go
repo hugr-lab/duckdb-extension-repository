@@ -403,27 +403,11 @@ func (s *Store) candidates(ctx context.Context, q string, args ...any) ([]Candid
 	return out, rows.Err()
 }
 
-func visibilityFilter(publicOnly bool) string {
-	if publicOnly {
-		return " AND r.visibility = 'public'"
-	}
-	return ""
-}
-
-// FlatCandidates lists the current-eligible releases of (channel, name, platform), highest seq
-// first. With publicOnly, private releases are not read at all.
-func (s *Store) FlatCandidates(ctx context.Context, channelID, name, platform string, publicOnly bool) ([]Candidate, error) {
+// ChannelReleases lists every release of a channel (every state and visibility) with its build: the
+// snapshot the DuckDB routes and the index resolve on (spec 0007).
+func (s *Store) ChannelReleases(ctx context.Context, channelID string) ([]Candidate, error) {
 	return s.candidates(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id"+
-		" WHERE r.channel_id = ? AND r.name = ? AND r.platform = ? AND r.state = 'active' AND r.seq IS NOT NULL"+
-		visibilityFilter(publicOnly)+" ORDER BY r.seq DESC", channelID, name, platform)
-}
-
-// VersionedCandidates lists the active or deprecated releases of (channel, name, extension
-// version, platform).
-func (s *Store) VersionedCandidates(ctx context.Context, channelID, name, extVersion, platform string, publicOnly bool) ([]Candidate, error) {
-	return s.candidates(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id"+
-		" WHERE r.channel_id = ? AND r.name = ? AND r.ext_version = ? AND r.platform = ? AND r.state IN ('active', 'deprecated')"+
-		visibilityFilter(publicOnly), channelID, name, extVersion, platform)
+		" WHERE r.channel_id = ? ORDER BY r.created_at, r.id", channelID)
 }
 
 // ListReleases lists a channel's releases (optionally of one name), newest first.

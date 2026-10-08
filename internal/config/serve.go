@@ -23,6 +23,8 @@ type Serve struct {
 	WriteIdleTimeout      time.Duration `yaml:"write_idle_timeout" kista:"fileonly"`
 	DrainTimeout          time.Duration `yaml:"drain_timeout" kista:"fileonly"`
 	ShutdownTimeout       time.Duration `yaml:"shutdown_timeout" kista:"fileonly"`
+	APIRate               float64       `yaml:"api_rate" kista:"fileonly"`  // requests a second per client on /api/ (default 20)
+	APIBurst              int           `yaml:"api_burst" kista:"fileonly"` // default 40
 }
 
 // Listener is one address kista serves on.
@@ -142,6 +144,9 @@ func validateServe(bad func(string, ...any), c Config) {
 	if s.MaxDownloads < 0 || s.MaxDownloadsPerClient < 0 || s.MinRate < 0 || s.WriteIdleTimeout < 0 ||
 		s.DrainTimeout < 0 || s.ShutdownTimeout < 0 {
 		bad("serve limits cannot be negative")
+	}
+	if s.APIRate < 0 || s.APIBurst < 0 || (s.APIRate > 0) != (s.APIBurst > 0) {
+		bad("serve.api_rate and serve.api_burst are set together and positive")
 	}
 	if s.WriteIdleTimeout != 0 && s.WriteIdleTimeout < time.Second {
 		bad("serve.write_idle_timeout must be at least 1s")

@@ -1,6 +1,6 @@
 # Spec 0007: The HTTP API: index and management
 
-- **Status**: draft
+- **Status**: phase 1 implemented
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -56,9 +56,10 @@ After spec 0006, kista serves DuckDB, but everything else goes through `kista ad
   `404`; both with constant bytes. Tenant and channel names are public; the list of tenants is not
   (on Enterest it would enumerate customers).
 - **Suspended tenants**: `404` for everyone but server administrators.
-- **Errors**: `application/problem+json`, `type` from a fixed set (unauthorized, not-found,
-  method-not-allowed, invalid, conflict, precondition-failed, precondition-required, gone,
-  too-large, unsupported-media-type, too-many-requests, unavailable), a `title`, and for an allowed
+- **Errors**: `application/problem+json`, `type` `urn:kista:problem:<name>` from a fixed set
+  (unauthorized, not-found, method-not-allowed, invalid, conflict, precondition-failed,
+  precondition-required, gone, too-large, unsupported-media-type, too-many-requests, unavailable),
+  a `title`, and for an allowed
   caller a `detail` taken from typed public messages, never from internal error strings, never
   naming another resource.
 - **Requests**: `GET`, `HEAD`, `POST`, `DELETE` (and `405` with `Allow` from the route's shape);
@@ -66,8 +67,10 @@ After spec 0006, kista serves DuckDB, but everything else goes through `kista ad
   decision, with a read deadline; unknown and duplicate JSON keys refused.
 - **Responses**: `X-Content-Type-Options: nosniff`; management answers `Cache-Control: no-store`.
 - **Limits**: a token bucket per client address (IPv6 by /64; spec 0006's trusted proxies),
-  checked before token verification, the table bounded; file-only `serve.api_rate` (default 20 a
-  second, burst 40); `429` with `Retry-After`. Calls that make egress requests (issuer add) also run
+  checked before token verification, the table bounded; file-only `serve.api_rate` and
+  `serve.api_burst` (default 20 a second, burst 40); when the table is full, buckets that have
+  refilled are dropped (at most one sweep a second) and a new client waits rather than everyone
+  being reset; `429` with `Retry-After`. Calls that make egress requests (issuer add) also run
   one at a time per tenant.
 - **Logs**: one line per request as in spec 0006, never a header value, query string or body; one
   structured line per write and per authenticated request refused by authorisation: actor, route
@@ -85,28 +88,31 @@ GET /api/v1/tenants/{t}/channels/{c}/extensions/{name}[?duckdb_version=&platform
 GET /api/v1/tenants/{t}/channels/{c}/extensions/{name}/versions/{v}?duckdb_version=&platform=
 ```
 
-**The caller's view** of a channel: public releases, plus those of the extensions it holds
-`install` on **in that channel** (a tenant- or channel-wide grant covers every extension). A helper
-next to spec 0006's `auth.Allows` returns `(all, names)` for a principal set and a channel, cached
-per (tenant, channel, `auth_version`, the canonical principal set), bounded. A server administrator
-(phase 2) sees everything. Everything below is computed in that view.
+**The caller's view** of a channel: public releases, plus those of the extensions it holds `install`
+on **in that channel** (a tenant- or channel-wide grant covers every extension). A helper next to
+spec 0006's `auth.Allows` returns `(all, names)` for a principal set and a channel, computed per
+request from the tenant's cached grants (linear in the grants, no cache of its own). A server
+administrator (phase 2) sees everything. Everything below is computed in that view.
 
-**One computation.** A channel's releases with their builds (active, deprecated and yanked) are read
-once per (channel, `channels.version`, `release_version`), independently of any caller, and kept in
-memory; the view is applied in memory, so the work does not depend on who asks or what is private
-(spec 0006's rule). Then the resolution functions decide, for each of the channel's DuckDB versions
-and each platform, which release the **flat** path serves (current) and which the **versioned** path
-serves for each extension version. Those functions take a raw candidate list and apply every rule
-themselves (state, `seq` order, visibility, which DuckDB versions a build serves, the highest C API
-major for `c_struct`); they move from `internal/serve` and `internal/store`'s query filters to
-`internal/release`, and the DuckDB routes use them too (their SQL keeps at most a pre-filter), so the
-index cannot disagree with what DuckDB gets.
+**One computation.** A channel's releases with their builds (active, deprecated and yanked), its C
+API maxima and keys are read once per (channel, `channels.version`, `release_version`),
+independently of any caller, and kept in memory, indexed by (name, platform): only the newest
+snapshot of a channel is kept, concurrent requests wait for one build, and a request holding older
+counters uses a newer snapshot; the view is applied in memory, so the work does not depend on who
+asks or what is private (spec 0006's rule). Then the resolution functions decide, for each of the
+channel's DuckDB versions and each platform, which release the **flat** path serves (current) and
+which the **versioned** path serves for each extension version. Those functions take a raw candidate
+list and apply every rule themselves (state, `seq` order, visibility, which DuckDB versions a build
+serves, the highest C API major for `c_struct`, nothing without a serving key; a passthrough channel
+has no releases); they move from `internal/serve` and `internal/store`'s query filters to
+`internal/release`, and the DuckDB routes use them too (their SQL keeps at most a pre-filter), so
+the index cannot disagree with what DuckDB gets.
 
 **Routes:**
 
 - `info` (public): kista's version and API version.
-- `whoami` (a valid tenant token): its principals in the tenant (as strings), and the grants that
-  match them.
+- `whoami` (a valid tenant token): its principals in the tenant (as strings), the grants that match
+  them, and whether any of them is `admin` (an install identity should hold none).
 - `channels` (public): name and kind of each channel of the tenant.
 - `channels/{c}` (public): kind; the DuckDB versions served with their C API maxima; for a signed
   channel the trusted and active keys' fingerprints and states (`.well-known`, structured).
@@ -114,21 +120,26 @@ index cannot disagree with what DuckDB gets.
   mixed); with `duckdb_version` and `platform`, the current version there (or none). Ordered by
   name; `limit` up to 500 (default 100); `cursor` is the last name returned, so it never expires and
   says nothing about changes the caller cannot see.
-- `extensions/{name}`: the releases of that name in the view, one row per (extension version,
-  platform):
+- `extensions/{name}`: the releases of that name in the view, one row per release (an extension
+  version on a platform has one row per build: a `cpp` build per DuckDB version, a `c_struct` build
+  per C API major), newest first:
   - extension version, platform, ABI, the build's DuckDB version (`cpp`, `c_struct_unstable`) or C
     API version (`c_struct`), visibility, state (`active`, `deprecated`, `yanked`), created at;
   - the body hash (spec 0002's composite hash of the file without its last 256 bytes, as
     `kista ext inspect` prints it) and the serving key's fingerprint;
-  - `serves`: the DuckDB versions whose versioned path resolves to this row, and `current_for`: those
-    whose flat path does;
-  - the relative flat and versioned paths.
-  With `duckdb_version` and `platform`, only rows those paths reach. A name the caller cannot see, or
+  - `serves`: for each DuckDB version whose versioned path resolves to this row, the version, its
+    relative versioned path, and the flat path when this row is also current there; `current_for`
+    lists those versions; a yanked row serves nothing and lists instead, in `would_serve`, the DuckDB
+    versions whose versioned path it would serve if nothing were yanked;
+  With `duckdb_version` and `platform`, only rows those paths reach (`serves` or `would_serve`). A name the caller cannot see, or
   that does not exist, answers `200` with no rows.
 - `…/versions/{v}` (the agent's question): for that DuckDB version and platform, `status` is the state
   of the row the versioned path serves (`available` or `deprecated`); otherwise `yanked` if a yanked
   row in view would have served it; otherwise `missing`, which covers "does not exist" and "not in
-  your view" alike. The row and whether it is current come with it.
+  your view" alike. The row and whether it is current come with it, and `yanked` lists the yanked
+  rows in view that would have served the path: with two C API majors of one version, yanking the
+  higher one leaves the path `available` with the lower build, and a node that installed the higher
+  one learns it by its body hash.
 - Yanked releases appear to every caller whose view would include the release (public to anyone,
   private to `install` holders): a node with a yanked version installed learns it.
 - Every index answer has an ETag over its bytes (`304` on `If-None-Match`), `Vary: Authorization`,
@@ -279,7 +290,8 @@ internal/release  + the resolution functions the DuckDB routes and the index sha
 internal/auth     + server issuers and principals, the install scope helper, a shared tenant-auth cache
 internal/authz    Actor with principals, Resource, the Grants authorizer (phase 2)
 internal/serve    hands /api/ to the API handler on https listeners
-internal/config   + auth.server_issuers, server_audiences, server_admins, admin_token_max_age, serve.api_rate
+internal/config   + auth.server_issuers, server_audiences, server_admins, admin_token_max_age,
+                  serve.api_rate and serve.api_burst
 ```
 
 ## Security

@@ -16,10 +16,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -35,6 +37,11 @@ type Options struct {
 	PublicURL string
 	// Verifier verifies Bearer tokens; nil: every caller is anonymous.
 	Verifier *auth.Verifier
+	// Auths and Snapshots are shared with the API (created here when nil).
+	Auths     *auth.TenantAuths
+	Snapshots *release.Snapshots
+	// API serves /api/ on https requests (spec 0007); nil: /api/ answers 404.
+	API http.Handler
 }
 
 // Handler serves the DuckDB routes and health.
@@ -50,9 +57,7 @@ type Handler struct {
 	mu        sync.Mutex
 	perClient map[string]int
 
-	authMu     sync.Mutex
-	authCache  map[string]store.TenantAuth // (tenant id, auth_version)
-	failLogged map[string]time.Time        // tenant id -> last failed-token log line
+	failures *auth.FailureLog
 
 	ready         atomic.Bool
 	stopping      atomic.Bool
@@ -64,9 +69,14 @@ func NewHandler(st *store.Store, ks *keys.Service, bs *blob.Service, o Options) 
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
-	h := &Handler{st: st, keys: ks, blob: bs, rv: newResolver(st), o: o, log: o.Log,
-		slots: make(chan struct{}, o.MaxDownloads), perClient: map[string]int{},
-		authCache: map[string]store.TenantAuth{}, failLogged: map[string]time.Time{}}
+	if o.Auths == nil {
+		o.Auths = &auth.TenantAuths{Store: st}
+	}
+	if o.Snapshots == nil {
+		o.Snapshots = &release.Snapshots{Store: st}
+	}
+	h := &Handler{st: st, keys: ks, blob: bs, rv: newResolver(st, o.Snapshots), o: o, log: o.Log,
+		slots: make(chan struct{}, o.MaxDownloads), perClient: map[string]int{}, failures: &auth.FailureLog{Log: o.Log}}
 	empty := map[string]bool{}
 	h.publicDomains.Store(&empty)
 	return h
@@ -142,6 +152,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"aborted", aborted)
 	}()
 	defer func() { aborted = false }() // skipped by a panic: an aborted response
+	if strings.HasPrefix(r.URL.EscapedPath(), "/api/") {
+		// the API (spec 0007): https only, its own rules for methods, queries and bodies
+		if scheme(r) != "https" || h.o.API == nil {
+			notFound(lw)
+			return
+		}
+		h.o.API.ServeHTTP(lw, r.WithContext(api.WithClient(r.Context(), h.clientAddr(r))))
+		return
+	}
 	rt := parseRoute(r)
 	if rt.kind == routeNone {
 		notFound(lw)
@@ -347,22 +366,10 @@ func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (v
 		h.log.Error("serve: reading a tenant's issuers and grants", "tenant", sc.Tenant.Name, "error", err)
 		return viewPublic, false, nil // no token: public releases are still served
 	}
-	canonical := ""
-	if p := strings.TrimSuffix(h.o.PublicURL, "/"); p != "" {
-		canonical = p + "/" + sc.Tenant.Name
-		// an assigned audience under the public URL would be another tenant's canonical one (or the
-		// server's): never honoured, whatever the store holds
-		var assigned []string
-		for _, a := range ta.Audiences {
-			if a != p && !strings.HasPrefix(a, p+"/") {
-				assigned = append(assigned, a)
-			}
-		}
-		ta.Audiences = assigned
-	}
+	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, sc.Tenant.Name)
 	p, _, err := h.o.Verifier.Verify(r.Context(), ta, canonical, tok)
 	if err != nil {
-		h.logTokenFailure(sc.Tenant, err)
+		h.failures.Record(sc.Tenant, "serve", err)
 		return viewPublic, false, nil // an invalid token is no token: public releases are still served
 	}
 	if auth.Allows(p, ta.Grants, sc.Channel.ID, name, store.VerbInstall) {
@@ -372,46 +379,7 @@ func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (v
 }
 
 func (h *Handler) tenantAuth(ctx context.Context, t store.Tenant) (store.TenantAuth, error) {
-	k := t.ID + "|" + strconv.FormatInt(t.AuthVersion, 10)
-	h.authMu.Lock()
-	ta, ok := h.authCache[k]
-	h.authMu.Unlock()
-	if ok {
-		return ta, nil
-	}
-	ta, err := h.st.GetTenantAuth(ctx, t.ID)
-	if err != nil {
-		return ta, err
-	}
-	h.authMu.Lock()
-	if len(h.authCache) >= 4096 {
-		clear(h.authCache)
-	}
-	h.authCache[k] = ta
-	h.authMu.Unlock()
-	return ta, nil
-}
-
-// logTokenFailure logs a failed token at most once a minute per tenant: the reason class and the
-// issuer record, never the token or its claims.
-func (h *Handler) logTokenFailure(t store.Tenant, err error) {
-	var f *auth.Failure
-	if !errors.As(err, &f) {
-		return
-	}
-	h.authMu.Lock()
-	last := h.failLogged[t.ID]
-	now := time.Now()
-	if now.Sub(last) < time.Minute {
-		h.authMu.Unlock()
-		return
-	}
-	if len(h.failLogged) >= 4096 {
-		clear(h.failLogged)
-	}
-	h.failLogged[t.ID] = now
-	h.authMu.Unlock()
-	h.log.Warn("serve: a token was not valid", "tenant", t.Name, "issuer", f.Issuer, "reason", f.Reason)
+	return h.o.Auths.Get(ctx, t)
 }
 
 // servePlain sends the plain name whole: no ranges, 304 on a matching If-None-Match.
@@ -627,3 +595,7 @@ func listenerOf(r *http.Request) string {
 	l, _ := r.Context().Value(listenerKey).(string)
 	return l
 }
+
+// WithHTTPS marks a request as having come through an https listener (for callers that embed the
+// handler without kista's listeners, and tests).
+func WithHTTPS(r *http.Request) *http.Request { return r.WithContext(withScheme(r.Context(), "https")) }

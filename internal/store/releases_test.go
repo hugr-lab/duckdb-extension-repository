@@ -80,21 +80,20 @@ func TestBuildsAndReleases(t *testing.T) {
 			return tx.InsertRelease(ctx, &r2, "os:1:t")
 		})
 
-		// candidates: highest seq first; publicOnly never returns private rows
-		all, err := s.FlatCandidates(ctx, ch.ID, "tresor", "linux_amd64", false)
-		if err != nil || len(all) != 2 || all[0].ID != r2.ID || all[0].BodyHash != b2.BodyHash || all[0].DuckDBVersion != "v2.0.0" {
-			t.Fatalf("flat candidates: %+v %v", all, err)
+		// the channel's releases with their builds, every state and visibility
+		all, err := s.ChannelReleases(ctx, ch.ID)
+		if err != nil || len(all) != 3 {
+			t.Fatalf("channel releases: %+v %v", all, err)
 		}
-		pub, _ := s.FlatCandidates(ctx, ch.ID, "tresor", "linux_amd64", true)
-		if len(pub) != 1 || pub[0].ID != r1.ID {
-			t.Fatalf("public candidates: %+v", pub)
+		byID := map[string]store.Candidate{}
+		for _, c := range all {
+			byID[c.ID] = c
 		}
-		if none, _ := s.FlatCandidates(ctx, ch.ID, "demo", "linux_amd64", false); len(none) != 0 {
-			t.Fatal("a release without seq is a flat candidate")
+		if c := byID[r2.ID]; c.BodyHash != b2.BodyHash || c.DuckDBVersion != "v2.0.0" || c.Seq != 2 || c.Visibility != store.Private {
+			t.Fatalf("release with its build: %+v", c)
 		}
-		ver, _ := s.VersionedCandidates(ctx, ch.ID, "demo", "1.0", "linux_amd64", false)
-		if len(ver) != 1 || ver[0].CAPI == nil || ver[0].ABI != store.ABICStruct {
-			t.Fatalf("versioned: %+v", ver)
+		if c := byID[cr.ID]; c.CAPI == nil || c.ABI != store.ABICStruct || c.Seq != 0 {
+			t.Fatalf("c_struct release: %+v", c)
 		}
 
 		// state, seq, visibility changes are compare-and-set
@@ -104,8 +103,10 @@ func TestBuildsAndReleases(t *testing.T) {
 		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.SetReleaseVisibility(ctx, &stale, store.Public, "x") }); !errors.Is(err, store.ErrConflict) {
 			t.Fatalf("stale visibility change: %v", err)
 		}
-		if got, _ := s.FlatCandidates(ctx, ch.ID, "tresor", "linux_amd64", false); len(got) != 1 {
-			t.Fatal("a yanked release is still a candidate")
+		for _, c := range must(s.ChannelReleases(ctx, ch.ID)) {
+			if c.ID == r2.ID && c.State != store.ReleaseYanked {
+				t.Fatal("the yank is not stored")
+			}
 		}
 
 		// signatures: 256 bytes, one per (release, key), only by the release's channel's keys
@@ -245,4 +246,11 @@ func TestLeases(t *testing.T) {
 			t.Fatal("an expired lease is not free")
 		}
 	})
+}
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
 }

@@ -49,6 +49,7 @@ serve:
 		"bad proxy":           {base + "serve: { trusted_proxies: [10.0.0.1] }\n", nil, "not a CIDR"},
 		"tiny write timeout":  {base + "serve: { write_idle_timeout: 10ms }\n", nil, "at least 1s"},
 		"negative downloads":  {base + "serve: { max_downloads: -1 }\n", nil, "negative"},
+		"api rate alone":      {base + "serve: { api_rate: 5 }\n", nil, "set together"},
 	} {
 		_, err := Load(write(t, c.file), c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
@@ -42,8 +43,12 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	verifier := &auth.Verifier{Fetch: eg}
+	auths, snaps := &auth.TenantAuths{Store: st}, &release.Snapshots{Store: st}
+	apiHandler := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
+		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version})
 	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{
-		PublicURL: cfg.Serve.PublicURL, Verifier: &auth.Verifier{Fetch: eg},
+		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
 	})

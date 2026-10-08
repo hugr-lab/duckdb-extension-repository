@@ -431,7 +431,8 @@ func Allows(p Principals, grants []store.Grant, channelID, extension, verb strin
 		if !p[Key{g.IssuerID, g.Kind, g.Value}] {
 			continue
 		}
-		if !slices.Contains(g.Verbs, verb) && !slices.Contains(g.Verbs, store.VerbAdmin) {
+		// admin implies every verb on its resource, except on an issuer-wide grant (spec 0007)
+		if !slices.Contains(g.Verbs, verb) && (!slices.Contains(g.Verbs, store.VerbAdmin) || g.Kind == store.PrincipalIssuer) {
 			continue
 		}
 		if g.ChannelID != "" && g.ChannelID != channelID {
