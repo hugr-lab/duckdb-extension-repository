@@ -68,6 +68,9 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   publisher github add <tenant> <name> -owner-id <id> -repository-id <id> -workflow <owner/repo/path>
                    [-ref <pattern>] [-environment <env>] [-provider github]
   publisher github remove <tenant> <name> <credential-id>
+  publisher key add <tenant> <name> -expires <90d|RFC 3339>   prints the key, once
+  publisher key list <tenant> <name>
+  publisher key remove <tenant> <name> <key-id>
   block add <tenant> <body-hash> -reason <text>   ban a body tenant-wide: its releases are yanked
   block list <tenant>
   block remove <tenant> <body-hash>
@@ -775,9 +778,12 @@ func (a *adminCmd) block(ctx context.Context, sub string, args []string) error {
 }
 
 func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) error {
-	if sub == "github" {
+	if sub == "github" || sub == "key" {
 		if len(args) == 0 {
 			return errUsage
+		}
+		if sub == "key" {
+			return a.publisherKey(ctx, args[0], args[1:])
 		}
 		return a.publisherGitHub(ctx, args[0], args[1:])
 	}
@@ -844,6 +850,58 @@ func (a *adminCmd) publisherGitHub(ctx context.Context, sub string, args []strin
 			return err
 		}
 		a.logf("publisher github remove %s %s %s", pos[0], pos[1], pos[2])
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+func (a *adminCmd) publisherKey(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("publisher key", flag.ContinueOnError)
+	expires := fs.String("expires", "", "")
+	pos, err := flags(fs, args)
+	if err != nil {
+		return errUsage
+	}
+	switch {
+	case sub == "add" && len(pos) == 2 && *expires != "":
+		var at time.Time
+		if d, ok := strings.CutSuffix(*expires, "d"); ok {
+			n, err := strconv.Atoi(d)
+			if err != nil || n <= 0 || n > 366 {
+				return fmt.Errorf("%w: -expires <days>d or an RFC 3339 time", errUsage)
+			}
+			at = time.Now().Add(time.Duration(n) * 24 * time.Hour)
+		} else if at, err = time.Parse(time.RFC3339, *expires); err != nil {
+			return fmt.Errorf("%w: -expires <days>d or an RFC 3339 time", errUsage)
+		}
+		k, key, err := a.svc.Auth.AddAPIKey(ctx, a.actor, pos[0], pos[1], at)
+		if err != nil {
+			return err
+		}
+		a.logf("publisher key add %s %s %s (expires %s)", pos[0], pos[1], k.Prefix, ts(k.ExpiresAt))
+		fmt.Fprintln(a.out, key)
+	case *expires != "":
+		return errUsage // -expires is add's
+	case sub == "list" && len(pos) == 2:
+		ks, err := a.svc.Auth.ListAPIKeys(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		a.table("ID\tPREFIX\tEXPIRES\tLAST USED\tCREATED\tBY", func(w io.Writer) {
+			for _, k := range ks {
+				used := "-"
+				if !k.LastUsedAt.IsZero() {
+					used = ts(k.LastUsedAt)
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", k.ID, k.Prefix, ts(k.ExpiresAt), used, ts(k.CreatedAt), k.CreatedBy)
+			}
+		})
+	case sub == "remove" && len(pos) == 3:
+		if err := a.svc.Auth.RemoveAPIKey(ctx, a.actor, pos[0], pos[1], pos[2]); err != nil {
+			return err
+		}
+		a.logf("publisher key remove %s %s %s", pos[0], pos[1], pos[2])
 	default:
 		return errUsage
 	}

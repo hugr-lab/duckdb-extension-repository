@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -176,7 +177,7 @@ func publisherWhoami(c caller) map[string]any {
 	var pubs []map[string]string
 	ids := map[string]bool{}
 	for _, m := range c.pub.Publishers {
-		pubs = append(pubs, map[string]string{"publisher": m.Publisher.Name, "credential": "github:" + m.Credential})
+		pubs = append(pubs, map[string]string{"publisher": m.Publisher.Name, "credential": m.Credential})
 		ids[m.Publisher.ID] = true
 	}
 	grants := []grantOut{}
@@ -187,4 +188,68 @@ func publisherWhoami(c caller) map[string]any {
 	}
 	return map[string]any{"tenant": c.tenant.Name, "provider": c.pub.Provider, "publishers": pubs, "grants": grants,
 		"holds_admin": false}
+}
+
+type apiKeyJSON struct {
+	ID         string `json:"id"`
+	Prefix     string `json:"prefix"`
+	Key        string `json:"key,omitempty"` // only in the answer that issues it
+	ExpiresAt  string `json:"expires_at"`
+	CreatedAt  string `json:"created_at"`
+	CreatedBy  string `json:"created_by"`
+	LastUsedAt string `json:"last_used_at,omitempty"`
+}
+
+func apiKeyOf(k store.APIKey, c caller) apiKeyJSON {
+	return apiKeyJSON{ID: k.ID, Prefix: k.Prefix, ExpiresAt: timeOf(k.ExpiresAt), CreatedAt: timeOf(k.CreatedAt),
+		CreatedBy: createdBy(k.CreatedBy, c), LastUsedAt: timeOf(k.LastUsedAt)}
+}
+
+// listAPIKeys lists a publisher's keys: ids and prefixes, never the keys.
+func (h *Handler) listAPIKeys(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	ks, err := h.o.Auth.ListAPIKeys(r.Context(), a, p["t"], p["name"])
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	out := []apiKeyJSON{}
+	for _, k := range ks {
+		out = append(out, apiKeyOf(k, c))
+	}
+	reply(w, r, http.StatusOK, map[string]any{"keys": out}, "", noStore)
+}
+
+// addAPIKey issues a publisher's API key; the key is in this answer only.
+func (h *Handler) addAPIKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	var in struct {
+		ExpiresAt string `json:"expires_at"` // RFC 3339, within a year
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	exp, err := time.Parse(time.RFC3339, in.ExpiresAt)
+	if err != nil {
+		problem(w, http.StatusBadRequest, typeInvalid, "expires_at is an RFC 3339 time within a year")
+		return
+	}
+	a, _ := c.actor()
+	k, key, err := h.o.Auth.AddAPIKey(r.Context(), a, p["t"], p["name"], exp)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	out := apiKeyOf(k, c)
+	out.Key = key
+	reply(w, r, http.StatusCreated, out, "-", noStore) // no Location: a key has no GET of its own
+}
+
+// removeAPIKey removes a publisher's key; it stops working at once.
+func (h *Handler) removeAPIKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	if err := h.o.Auth.RemoveAPIKey(r.Context(), a, p["t"], p["name"], p["id"]); err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	noContent(w)
 }

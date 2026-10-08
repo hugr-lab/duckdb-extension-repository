@@ -60,7 +60,7 @@ type Publication struct {
 // MatchedPublisher is a publisher and the credential that matched.
 type MatchedPublisher struct {
 	Publisher  store.Publisher
-	Credential string // the credential's id
+	Credential string // github:<credential id>, or key:<prefix>
 }
 
 // PublisherKey is a publisher's principal.
@@ -95,7 +95,7 @@ func (p *Provider) Verify(ctx context.Context, ta store.TenantAuth, canonical, t
 				cr.Ref != "" && !RefMatch(cr.Ref, str("ref")) {
 				continue
 			}
-			pub.Publishers = append(pub.Publishers, MatchedPublisher{Publisher: pb, Credential: cr.ID})
+			pub.Publishers = append(pub.Publishers, MatchedPublisher{Publisher: pb, Credential: "github:" + cr.ID})
 			break
 		}
 	}
@@ -121,7 +121,7 @@ func (p Publication) Provenance(actor string) string {
 	}
 	creds := []string{}
 	for _, x := range p.Publishers {
-		creds = append(creds, "github:"+x.Credential)
+		creds = append(creds, x.Credential)
 	}
 	m["credentials"] = creds
 	b, err := json.Marshal(m)

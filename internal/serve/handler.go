@@ -363,7 +363,8 @@ func bearer(r *http.Request) string {
 // decide returns what the caller may see in the channel, and whether it presented a valid token.
 func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (view, bool, error) {
 	tok := bearer(r)
-	if tok == "" || h.o.Verifier == nil || h.o.Server.IsServerToken(tok) {
+	// a publisher's API key is never looked up here (spec 0008): it is no token
+	if tok == "" || h.o.Verifier == nil || h.o.Server.IsServerToken(tok) || auth.IsAPIKey(tok) {
 		return viewPublic, false, nil
 	}
 	ta, err := h.tenantAuth(r.Context(), sc.Tenant)

@@ -76,7 +76,7 @@ func (t *Tx) DeletePublisher(ctx context.Context, tenantID, name string) error {
 		return err
 	}
 	for _, q := range []string{"DELETE FROM grants WHERE publisher_id = ?", "DELETE FROM publisher_github WHERE publisher_id = ?",
-		"DELETE FROM publishers WHERE id = ?"} {
+		"DELETE FROM api_keys WHERE publisher_id = ?", "DELETE FROM publishers WHERE id = ?"} {
 		if _, err := t.exec(ctx, q, p.ID); err != nil {
 			return err
 		}
@@ -179,4 +179,96 @@ func (s *Store) IssuerURLs(ctx context.Context) ([][3]string, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// APIKey is a publisher's API key (spec 0008 phase 2): only its SHA-256 is stored.
+type APIKey struct {
+	ID, PublisherID, Prefix, Hash string
+	ExpiresAt, CreatedAt          time.Time
+	CreatedBy                     string
+	LastUsedAt                    time.Time // zero: never used
+}
+
+// MaxAPIKeys is the most keys one publisher may hold.
+const MaxAPIKeys = 10
+
+// InsertAPIKey adds a key (its hash) to a publisher, which holds at most MaxAPIKeys unexpired keys
+// (expired ones are removed here). Callers hold the tenant's auth lock, so the cap holds.
+func (t *Tx) InsertAPIKey(ctx context.Context, k *APIKey) error {
+	if !hexHash.MatchString(k.Hash) || len(k.Prefix) == 0 || len(k.Prefix) > 16 {
+		return fmt.Errorf("%w: a key", ErrInvalid)
+	}
+	if _, err := t.exec(ctx, "DELETE FROM api_keys WHERE publisher_id = ? AND expires_at <= ?", k.PublisherID, t.s.d.timeArg(t.Now())); err != nil {
+		return err
+	}
+	var n int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM api_keys WHERE publisher_id = ?", k.PublisherID).Scan(&n); err != nil {
+		return err
+	}
+	if n >= MaxAPIKeys {
+		return fmt.Errorf("%w: a publisher holds at most %d keys", ErrInvalid, MaxAPIKeys)
+	}
+	k.ID, k.CreatedAt = NewID(), t.Now()
+	_, err := t.exec(ctx, `INSERT INTO api_keys (id, publisher_id, prefix, hash, expires_at, created_at, created_by)
+VALUES (?, ?, ?, ?, ?, ?, ?)`, k.ID, k.PublisherID, k.Prefix, k.Hash, t.s.d.timeArg(k.ExpiresAt), t.s.d.timeArg(k.CreatedAt), k.CreatedBy)
+	return t.s.mapErr(err, "key")
+}
+
+// DeleteAPIKey removes a publisher's key. Keys are looked up on every request, never cached, so no
+// cache is bumped.
+func (t *Tx) DeleteAPIKey(ctx context.Context, publisherID, id string) error {
+	res, err := t.exec(ctx, "DELETE FROM api_keys WHERE id = ? AND publisher_id = ?", id, publisherID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%w: key %s", ErrNotFound, id)
+	}
+	return nil
+}
+
+const apiKeyCols = "id, publisher_id, prefix, hash, expires_at, created_at, created_by, last_used_at"
+
+func scanAPIKey(r interface{ Scan(...any) error }) (APIKey, error) {
+	var k APIKey
+	err := r.Scan(&k.ID, &k.PublisherID, &k.Prefix, &k.Hash, scanTime{&k.ExpiresAt}, scanTime{&k.CreatedAt}, &k.CreatedBy,
+		scanTime{&k.LastUsedAt})
+	return k, err
+}
+
+// APIKeys lists a publisher's keys, oldest first.
+func (s *Store) APIKeys(ctx context.Context, publisherID string) ([]APIKey, error) {
+	rows, err := s.db.QueryContext(ctx, s.d.rebind("SELECT "+apiKeyCols+" FROM api_keys WHERE publisher_id = ? ORDER BY created_at, id"), publisherID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []APIKey
+	for rows.Next() {
+		k, err := scanAPIKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// APIKeyByHash finds a key by its hash, with its publisher (ErrNotFound for none).
+func (s *Store) APIKeyByHash(ctx context.Context, hash string) (APIKey, Publisher, error) {
+	var p Publisher
+	row := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT k.id, k.publisher_id, k.prefix, k.hash, k.expires_at, k.created_at, k.created_by,
+k.last_used_at, p.tenant_id, p.name, p.created_at, p.created_by FROM api_keys k JOIN publishers p ON p.id = k.publisher_id
+WHERE k.hash = ?`), hash)
+	var k APIKey
+	err := row.Scan(&k.ID, &k.PublisherID, &k.Prefix, &k.Hash, scanTime{&k.ExpiresAt}, scanTime{&k.CreatedAt}, &k.CreatedBy,
+		scanTime{&k.LastUsedAt}, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy)
+	p.ID = k.PublisherID
+	return k, p, notFound(err, "key")
+}
+
+// TouchAPIKey records a key's use (callers do it at most once an hour).
+func (s *Store) TouchAPIKey(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, s.d.rebind("UPDATE api_keys SET last_used_at = ? WHERE id = ?"), s.d.timeArg(s.Now()), id)
+	return err
 }

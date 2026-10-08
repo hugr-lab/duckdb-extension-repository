@@ -91,7 +91,8 @@ func TestTrustedPublishing(t *testing.T) {
 	if pp, _ := r.json(t)["releases"].([]any)[0].(map[string]any)["provenance"].(map[string]any); pp["run_id"] != "42" || pp["from_channel"] != "staging" {
 		t.Errorf("a promotion's provenance records the run: %v", pp)
 	}
-	if w := m.call(t, "GET", T+"/whoami", ci, "").json(t); w["publishers"] == nil || len(w["grants"].([]any)) != 2 {
+	if w := m.call(t, "GET", T+"/whoami", ci, "").json(t); w["publishers"] == nil || len(w["grants"].([]any)) != 2 ||
+		w["publishers"].([]any)[0].(map[string]any)["credential"] != "github:"+credID {
 		t.Errorf("whoami: %v", w)
 	}
 	// nothing else: management is not for it; the index is the public view

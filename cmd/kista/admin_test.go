@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
@@ -169,6 +170,32 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "grant", "add", "acme", "-principal", "publisher:acl-ci", "-verb", "publish", "-channel", "prod", "-extension", "acl")
 	if got := run(0, "grant", "list", "acme"); !strings.Contains(got, "publisher:acl-ci") {
 		t.Fatalf("grant list: %q", got)
+	}
+	// API keys (spec 0008 phase 2): shown once, listed by prefix, an expiry required
+	key := strings.TrimSpace(run(0, "publisher", "key", "add", "acme", "acl-ci", "-expires", "90d"))
+	if !strings.HasPrefix(key, "kista_") {
+		t.Fatalf("key add: %q", key)
+	}
+	run(2, "publisher", "key", "add", "acme", "acl-ci")
+	run(2, "publisher", "key", "add", "acme", "acl-ci", "-expires", "400d")
+	run(1, "publisher", "key", "add", "acme", "acl-ci", "-expires", "2001-01-01T00:00:00Z")
+	run(2, "publisher", "key", "list", "acme", "acl-ci", "-expires", "9d")
+	run(2, "publisher", "key", "add", "acme", "acl-ci", "-expires", "soon")
+	run(0, "publisher", "key", "add", "acme", "acl-ci", "-expires", time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	got := run(0, "publisher", "key", "list", "acme", "acl-ci")
+	if strings.Contains(got, key) || !strings.Contains(got, key[6:14]) {
+		t.Fatalf("key list: %q", got)
+	}
+	var keyID string
+	for _, l := range strings.Split(got, "\n") {
+		if f := strings.Fields(l); len(f) > 1 && f[1] == key[6:14] {
+			keyID = f[0]
+		}
+	}
+	run(0, "publisher", "key", "remove", "acme", "acl-ci", keyID)
+	run(1, "publisher", "key", "remove", "acme", "acl-ci", keyID)
+	if got := run(0, "publisher", "key", "list", "acme", "acl-ci"); strings.Contains(got, key[6:14]) {
+		t.Fatalf("a removed key: %q", got)
 	}
 	run(0, "publisher", "github", "remove", "acme", "acl-ci", cred)
 	run(0, "publisher", "remove", "acme", "acl-ci")
