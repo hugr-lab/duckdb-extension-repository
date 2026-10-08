@@ -226,3 +226,22 @@ func TestTokenOverHTTP(t *testing.T) {
 		t.Fatalf("a token over http: %d", a.status)
 	}
 }
+
+// An issuer record at a trusted-publishing provider's URL is never used (spec 0008): the
+// provider's tokens are no token on the DuckDB routes, whatever grants the record holds.
+func TestProviderRecordDisabled(t *testing.T) {
+	en, idp, adm := authEnv(t, "https")
+	en.add(t, ext(t, 2000, 9, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor", Private: true})
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	const path = "/acme/prod/tresor/1.1/v2.0.0/linux_amd64/tresor.duckdb_extension.gz"
+	tok := idp.token(t, nil)
+	if a := en.do(t, "GET", path, bearerHdr(tok)); a.status != 200 {
+		t.Fatalf("before the provider: %d", a.status)
+	}
+	en.h.o.Providers = auth.Providers{{Name: "github", URL: idpURL}}
+	if a := en.do(t, "GET", path, bearerHdr(tok)); a.status != 401 {
+		t.Fatalf("a record at a provider's URL still installs: %d", a.status)
+	}
+}

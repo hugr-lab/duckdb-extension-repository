@@ -52,16 +52,27 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	auths, snaps := &auth.TenantAuths{Store: st}, &release.Snapshots{Store: st}
 	grants := authz.Grants{Store: st, Auths: auths}
+	providers := svc.Auth.Providers
+	if recs, err := st.IssuerURLs(ctx); err != nil {
+		log.Error("serve: reading issuer records", "error", err)
+	} else {
+		for _, r := range recs {
+			if providers.Has(r[2]) {
+				log.Warn("serve: an issuer record has a trusted-publishing provider's URL and is not used; add a publisher instead",
+					"tenant_id", r[0], "issuer", r[1], "url", r[2])
+			}
+		}
+	}
 	maxBody, maxIngests := cfg.BlobLimits()
 	perActor, perTenant := cfg.PublishLimits()
 	mgmt := svc.WithAuthz(grants)
 	apiHandler := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
 		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
-		Server: server, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
+		Server: server, Providers: providers, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
 		Releases: mgmt.Releases, MaxBody: maxBody, MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge()})
 	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{
-		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Auths: auths, Snapshots: snaps, API: apiHandler,
+		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
 	})

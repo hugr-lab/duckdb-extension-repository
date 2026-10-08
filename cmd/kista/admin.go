@@ -63,6 +63,11 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   release yank|deprecate|activate|current|public|private <tenant>/<channel> <release-id>
   release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> | -version <v>)
                   [-private] [-not-current]               release Builds of another channel here
+  publisher add|remove <tenant> <name>          an identity that only publishes and promotes
+  publisher list <tenant>
+  publisher github add <tenant> <name> -owner-id <id> -repository-id <id> -workflow <owner/repo/path>
+                   [-ref <pattern>] [-environment <env>] [-provider github]
+  publisher github remove <tenant> <name> <credential-id>
   block add <tenant> <body-hash> -reason <text>   ban a body tenant-wide: its releases are yanked
   block list <tenant>
   block remove <tenant> <body-hash>
@@ -221,6 +226,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.grant(ctx, sub, args[min(2, len(args)):])
 	case "block":
 		return a.block(ctx, sub, args[min(2, len(args)):])
+	case "publisher":
+		return a.publisher(ctx, sub, args[min(2, len(args)):])
 	case "blob":
 		if sub != "check" || len(args) != 2 {
 			return errUsage
@@ -761,6 +768,82 @@ func (a *adminCmd) block(ctx context.Context, sub string, args []string) error {
 			return err
 		}
 		a.logf("block remove %s %s", pos[0], pos[1])
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) error {
+	if sub == "github" {
+		if len(args) == 0 {
+			return errUsage
+		}
+		return a.publisherGitHub(ctx, args[0], args[1:])
+	}
+	pos, err := flags(flag.NewFlagSet("publisher", flag.ContinueOnError), args)
+	if err != nil {
+		return errUsage
+	}
+	switch {
+	case sub == "add" && len(pos) == 2:
+		if _, err := a.svc.Auth.AddPublisher(ctx, a.actor, pos[0], pos[1]); err != nil {
+			return err
+		}
+		a.logf("publisher add %s %s", pos[0], pos[1])
+	case sub == "remove" && len(pos) == 2:
+		if err := a.svc.Auth.RemovePublisher(ctx, a.actor, pos[0], pos[1]); err != nil {
+			return err
+		}
+		a.logf("publisher remove %s %s", pos[0], pos[1])
+	case sub == "list" && len(pos) == 1:
+		ps, err := a.svc.Auth.ListPublishers(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		a.table("PUBLISHER\tCREDENTIAL\tPROVIDER\tOWNER ID\tREPOSITORY ID\tWORKFLOW\tREF\tENVIRONMENT", func(w io.Writer) {
+			for _, p := range ps {
+				if len(p.GitHub) == 0 {
+					fmt.Fprintf(w, "%s\t-\t\t\t\t\t\t\n", p.Name)
+				}
+				for _, g := range p.GitHub {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, g.ID, g.Provider, g.OwnerID, g.RepositoryID, g.Workflow,
+						g.Ref, g.Environment)
+				}
+			}
+		})
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+func (a *adminCmd) publisherGitHub(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("publisher github", flag.ContinueOnError)
+	owner := fs.String("owner-id", "", "")
+	repo := fs.String("repository-id", "", "")
+	workflow := fs.String("workflow", "", "")
+	ref := fs.String("ref", "", "")
+	env := fs.String("environment", "", "")
+	provider := fs.String("provider", "github", "")
+	pos, err := flags(fs, args)
+	if err != nil {
+		return errUsage
+	}
+	switch {
+	case sub == "add" && len(pos) == 2 && *owner != "" && *repo != "" && *workflow != "":
+		g, err := a.svc.Auth.AddGitHubCredential(ctx, a.actor, pos[0], pos[1], store.GitHubCredential{Provider: *provider,
+			OwnerID: *owner, RepositoryID: *repo, Workflow: *workflow, Ref: *ref, Environment: *env})
+		if err != nil {
+			return err
+		}
+		a.logf("publisher github add %s %s %s", pos[0], pos[1], g.ID)
+		fmt.Fprintln(a.out, g.ID)
+	case sub == "remove" && len(pos) == 3:
+		if err := a.svc.Auth.RemoveGitHubCredential(ctx, a.actor, pos[0], pos[1], pos[2]); err != nil {
+			return err
+		}
+		a.logf("publisher github remove %s %s %s", pos[0], pos[1], pos[2])
 	default:
 		return errUsage
 	}

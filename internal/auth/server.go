@@ -19,6 +19,7 @@ type Identity struct {
 	Subject    string       // sub, if clean
 	Client     string       // the record's client claim, if any
 	IssuedAt   time.Time
+	Claims     map[string]any // the verified token's claims
 }
 
 // Who is who the token names, as recorded after its issuer: the sub, or client:<client id> without
@@ -106,6 +107,12 @@ func ParsePrincipalKey(p string) (kind, issuer, value string, err error) {
 	}
 	if kind == store.PrincipalIssuer {
 		return kind, rest, "", store.ValidIssuerName(rest)
+	}
+	if kind == store.PrincipalPublisher { // publisher:<name>: a tenant's publisher (spec 0008)
+		if rest == "" || len(rest) > 64 || strings.ContainsAny(rest, "|:/ ") {
+			return "", "", "", fmt.Errorf("%w: principal %q is publisher:<name>", store.ErrInvalid, p)
+		}
+		return kind, "", rest, nil
 	}
 	if !slices.Contains([]string{store.PrincipalSubject, store.PrincipalRole, store.PrincipalGroup, store.PrincipalClient}, kind) {
 		return "", "", "", fmt.Errorf("%w: principal kind %q", store.ErrInvalid, kind)

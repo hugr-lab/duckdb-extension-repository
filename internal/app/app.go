@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/cloud/azure"
@@ -160,8 +161,17 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		Keys:     ks,
 		Releases: &release.Service{Store: s, Signers: ks, Authz: az},
 		Auth: &tenants.AuthAdmin{Store: s, Authz: az, Fetch: eg, PublicURL: cfg.Serve.PublicURL,
-			AllowHTTP: cfg.Egress.AllowLoopbackHTTP, ServerAudiences: cfg.ServerAudiences()},
+			AllowHTTP: cfg.Egress.AllowLoopbackHTTP, ServerAudiences: cfg.ServerAudiences(), Providers: Providers(cfg, eg)},
 	}, nil
+}
+
+// Providers builds the trusted-publishing providers (spec 0008), each with a verifier of its own.
+func Providers(cfg config.Config, f auth.Fetcher) auth.Providers {
+	var out auth.Providers
+	for _, p := range cfg.PublishProviders() {
+		out = append(out, auth.Provider{Name: p.Name, URL: p.URL, Verifier: &auth.Verifier{Fetch: f}})
+	}
+	return out
 }
 
 // WithAuthz returns the services with another authorizer (the API's), sharing everything else.

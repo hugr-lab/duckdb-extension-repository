@@ -71,7 +71,18 @@ func InstallScope(p Principals, grants []store.Grant, channelID string) (all boo
 // canonical audience <public_url>/<tenant>, and the assigned audiences outside the public URL (one
 // under it would be another tenant's canonical audience, or the server's: never honoured, whatever
 // the store holds). The DuckDB routes and the API verify through it.
-func ForTenant(ta store.TenantAuth, publicURL, tenant string) (store.TenantAuth, string) {
+func ForTenant(ta store.TenantAuth, publicURL, tenant string, providers Providers) (store.TenantAuth, string) {
+	// an issuer record at a trusted-publishing provider's URL is never used (spec 0008): the
+	// provider's tokens are publishers' credentials, never a tenant's principals
+	if len(providers) > 0 {
+		var kept []store.Issuer
+		for _, is := range ta.Issuers {
+			if !providers.Has(is.URL) {
+				kept = append(kept, is)
+			}
+		}
+		ta.Issuers = kept
+	}
 	p := strings.TrimSuffix(publicURL, "/")
 	if p == "" {
 		return ta, ""

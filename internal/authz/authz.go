@@ -22,6 +22,7 @@ const (
 	ActorOS        ActorKind = "os"        // kista admin: the OS user running the CLI
 	ActorPrincipal ActorKind = "principal" // a tenant token's principals (spec 0006)
 	ActorServer    ActorKind = "server"    // a server administrator's token (spec 0007)
+	ActorPublisher ActorKind = "publisher" // a publisher's credential (spec 0008): publish and promote only
 	ActorSystem    ActorKind = "system"    // kista itself
 )
 
@@ -100,6 +101,10 @@ func (g Grants) Allow(ctx context.Context, a Actor, verb Verb, r Resource) error
 	case ActorOS, ActorServer:
 		return nil
 	case ActorPrincipal:
+	case ActorPublisher:
+		if verb != VerbPublish && verb != VerbPromote {
+			return ErrDenied
+		}
 	default:
 		return ErrDenied
 	}

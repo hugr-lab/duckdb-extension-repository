@@ -49,6 +49,8 @@ func (h *Handler) whoami(w http.ResponseWriter, r *http.Request, c caller, _ par
 		unauthorized(w)
 	case c.principals == nil:
 		notFound(w) // a server token: /api/v1/whoami
+	case c.pub != nil:
+		answer(w, r, publisherWhoami(c), false)
 	default:
 		answer(w, r, whoamiOf(c), false)
 	}
