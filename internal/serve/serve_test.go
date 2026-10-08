@@ -397,12 +397,12 @@ func TestServe(t *testing.T) {
 	})
 
 	t.Run("changes apply at the next request", func(t *testing.T) {
-		if _, err := en.rel.Apply(ctx, admin, "acme", "prod", r11.ID, release.SetPublic); err != nil {
+		if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", r11.ID, release.SetPublic, 0); err != nil {
 			t.Fatal(err)
 		}
 		a := en.do(t, "GET", flat+"tresor.duckdb_extension.gz", nil)
 		en.checkFile(t, a.body, true, r11)
-		if _, err := en.rel.Apply(ctx, admin, "acme", "prod", r11.ID, release.Yank); err != nil {
+		if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", r11.ID, release.Yank, 0); err != nil {
 			t.Fatal(err)
 		}
 		a = en.do(t, "GET", flat+"tresor.duckdb_extension.gz", nil)
@@ -410,7 +410,7 @@ func TestServe(t *testing.T) {
 		if a := en.do(t, "GET", "/acme/prod/tresor/1.1/v2.0.0/linux_amd64/tresor.duckdb_extension.gz", nil); a.status != 401 {
 			t.Fatalf("a yanked release: %d", a.status)
 		}
-		if _, err := en.rel.Apply(ctx, admin, "acme", "prod", r10.ID, release.Deprecate); err != nil {
+		if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", r10.ID, release.Deprecate, 0); err != nil {
 			t.Fatal(err)
 		}
 		if a := en.do(t, "GET", flat+"tresor.duckdb_extension.gz", nil); a.status != 401 {

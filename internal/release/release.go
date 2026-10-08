@@ -349,9 +349,10 @@ func (s *Service) channelByID(ctx context.Context, id string) (store.Channel, er
 	return c, err
 }
 
-// List lists a channel's releases (optionally of one name), newest first.
+// List lists a channel's releases (optionally of one name: an administrator of that extension may),
+// newest first.
 func (s *Service) List(ctx context.Context, a authz.Actor, tenant, channel, name string) ([]store.Candidate, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel}); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel, Extension: name}); err != nil {
 		return nil, err
 	}
 	ch, err := s.Store.GetChannel(ctx, tenant, channel)
@@ -374,9 +375,10 @@ const (
 	SetPrivate  Change = "private"
 )
 
-// Apply changes one release of a channel.
-func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, id string, c Change) (store.Release, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel}); err != nil {
+// Apply changes one release of a channel. With a name, the release must be of that extension (an
+// administrator of the extension may change it); a non-zero expected version must be the release's.
+func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, name, id string, c Change, expected int64) (store.Release, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel, Extension: name}); err != nil {
 		return store.Release{}, err
 	}
 	ch, err := s.Store.GetChannel(ctx, tenant, channel)
@@ -388,6 +390,12 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, id 
 		r, err := tx.GetRelease(ctx, ch.ID, id)
 		if err != nil {
 			return err
+		}
+		if name != "" && r.Name != name {
+			return fmt.Errorf("%w: release %s", store.ErrNotFound, id) // another extension's id
+		}
+		if expected != 0 && r.Version != expected {
+			return store.ErrConflict
 		}
 		refuse := func() error { return fmt.Errorf("%w: %q is not allowed on a %s release", ErrState, c, r.State) }
 		actor := a.String()

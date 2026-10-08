@@ -22,6 +22,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -71,12 +72,13 @@ func (m idps) sign(t *testing.T, iss string, claims map[string]any) string {
 
 type mgmt struct {
 	*env
-	keys  idps
-	h     *serve.Handler
-	ten   *tenants.Service
-	adm   *tenants.AuthAdmin
-	toks  map[string]string // caller -> token
-	other string            // a grant id in tenant other
+	keys   idps
+	h      *serve.Handler
+	ten    *tenants.Service
+	adm    *tenants.AuthAdmin
+	toks   map[string]string // caller -> token
+	other  string            // a grant id in tenant other
+	keySvc *keys.Service     // the API's key service
 }
 
 // newMgmt builds the API with server identity and management: server issuer ops (role
@@ -97,14 +99,16 @@ func newMgmt(t *testing.T) *mgmt {
 	grants := authz.Grants{Store: en.st, Auths: auths}
 	ten := &tenants.Service{Store: en.st, Authz: grants, HasDomain: func(d string) bool { return d == "default" }}
 	adm := &tenants.AuthAdmin{Store: en.st, Authz: grants, Fetch: ks, PublicURL: publicURL, ServerAudiences: []string{serverAud}}
+	keySvc, relSvc := *en.keys, *en.rel
+	keySvc.Authz, relSvc.Authz, relSvc.Signers = grants, grants, &keySvc
 	apiH := api.New(api.Options{Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
-		Server: server, Authz: grants, Tenants: ten, Auth: adm})
+		Server: server, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc})
 	h := serve.NewHandler(en.st, en.keys, en.blob, serve.Options{Log: slog.New(slog.DiscardHandler), Verifier: &auth.Verifier{Fetch: ks},
 		Server: server, PublicURL: publicURL, Auths: auths, API: apiH, MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,
 		WriteIdleTimeout: 10 * time.Second})
 	h.SetReady(true)
-	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}}
+	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}, keySvc: &keySvc}
 
 	// the CLI sets up: tenant other, grants in acme
 	cli := en.adm

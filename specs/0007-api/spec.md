@@ -1,6 +1,6 @@
 # Spec 0007: The HTTP API: index and management
 
-- **Status**: phases 1-2 implemented
+- **Status**: implemented (phases 1-3)
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -235,22 +235,24 @@ type Authorizer interface {
 - `issuer:` grants with `admin` are refused when added (CLI and API), and ignored when evaluated
   (rows added before this spec grant no `admin`).
 - **Infrastructure details** (a key's signer reference, a tenant's storage domain) are shown to
-  server administrators only, and so is who among them made a record: a tenant administrator sees
-  `created_by: server`.
+  server administrators only, and so is who among them made a record (over the API, or with the CLI
+  as an OS user): a tenant administrator sees `created_by: server`.
 - An actor's `<sub>` is recorded as `sub:<sub>` when it starts with `client:` or `sub:`, so it
   never reads as a client id. Server issuers' names and URLs are unique in config.
 
 ### Management (phases 2 and 3)
 
-**ETags and `If-Match`.** Resources with a `version` column (tenants, channels, keys, releases) have
-`ETag: "v<version>"`, returned by their `GET` and carried in list rows as `etag`; every write to them
-needs `If-Match` (`428` without, `412` when stale).
+**ETags and `If-Match`.** Resources with a `version` column that writes change (tenants, keys,
+releases) have `ETag: "v<version>"`, returned by their `GET` and carried in list rows as `etag`;
+every write to them needs `If-Match` (`428` without; `412` when stale, weak or another resource's).
+A channel's `version` is a cache counter that key and release activity moves, so a channel takes no
+`If-Match`: its `GET` is the index's channel detail, and its DuckDB versions are add/remove items.
 Issuer records are immutable: their ETag is their id, and deleting one needs it (a record re-added
 under the same name is not removed by mistake). Grants, audiences and DuckDB versions are added and
 removed, never changed, and take no `If-Match`. Creating is a `POST` to the collection: `201` with
-`Location` where the created resource has a `GET` (tenants, issuers, grants, keys, DuckDB versions;
-audiences and a channel's DuckDB versions are add/remove items without one), `409` for a duplicate.
-Services take an expected version (0 from the CLI) compared inside the transaction.
+`Location` where the created resource has a `GET` (tenants, channels, issuers, grants, keys, DuckDB
+versions; audiences and a channel's DuckDB versions are add/remove items without one), `409` for a
+duplicate. Services take an expected version (0 from the CLI) compared inside the transaction.
 
 **Lists** are ordered and paged with an opaque `(sort key, id)` cursor (management lists are
 administrator-only, so a cursor may expire without telling anything): releases by
@@ -261,8 +263,9 @@ issuers and tenants by name. `limit` is 1..500 (default 100).
 `storage_domain` for server administrators); a DuckDB version `name, kind, c_api_maxima`; an issuer
 record the fields of spec 0006 with claim paths as arrays of keys and `max_token_lifetime` as a
 duration (`24h`), plus `created_at, created_by, etag`; a grant `id, principal, verbs, channel,
-extension, created_at, created_by`. Audience changes answer the tenant's audiences. Deletions answer
-`204`. Management answers carry `Cache-Control: no-store`.
+extension, created_at, created_by`. Audience changes answer the tenant's audiences. Deletions
+answer `204` unless a shape below says otherwise. Management answers carry `Cache-Control:
+no-store`.
 
 Phase 2:
 
@@ -294,7 +297,24 @@ extension name, so an extension administrator's right is decided from the path t
 | `POST …/extensions/{name}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
 
 There is no re-sign endpoint: replicas with `serve.resign` re-sign on their own (spec 0006); the key
-view shows whether one is working and how much is left.
+view shows whether one is working and how much is left. A re-signer giving up its lease now leaves
+the lease row expired rather than deleted, so the view can say when one last held the channel.
+
+**Shapes** (phase 3): a key is `id, fingerprint, state, trusted_since, state_changed_at,
+state_changed_by, created_at, created_by, etag` (and `signer_ref` for server administrators); the
+key view is `keys`, `serving_key`, `active_key`, `unsigned_by_active` (non-yanked releases without
+the active key's signature) and `resigner: {working, last_held_at}` (and `holder`, a host name, for
+server administrators); a key event is `id, key_id, from, to, actor, forced, at`; a release is
+`id, name, version, platform, slot, abi, build_duckdb_version | build_c_api, state, visibility, seq
+(0: never current), body_hash, created_at, created_by, state_changed_at, state_changed_by, etag`.
+The key view leaves out what a channel lacks (no active key: no `active_key` or
+`unsigned_by_active`; a re-signer never ran: no `resigner`). A created channel answers `name, kind`.
+Release lists run oldest first, so a cursor survives new releases; `?state=` filters. `force` is a
+query parameter (`?force=true`) of activate and retire; a tenant principal asking for it gets `404`
+like any other server-only operation, decided before `If-Match` is read. A release change answers the release; a channel's
+DuckDB versions answer the channel's list (adding an unknown version is `400`, removing one the
+channel does not serve `404`). A release id under another extension's path is `404`, whoever
+asks: the path's extension decides the right and must be the release's.
 
 Errors map from typed service errors: a stale expected version is `412`; a refused state change
 (spec 0003/0006 rules), a duplicate, or the lock-out rule is `409`; an invalid value, a reference in

@@ -78,7 +78,7 @@ func TestTenantsService(t *testing.T) {
 			if err != nil || len(v.CAPIs) != 2 || v.CAPIs[0] != (store.CAPI{Major: 1, Minor: 5, Patch: 6}) {
 				t.Fatalf("legacy version plus a major: %+v %v", v, err)
 			}
-			if _, err := svc.SetChannelVersions(ctx, admin, "acme", "prod", []string{"v9.9.9"}, nil); !errors.Is(err, store.ErrNotFound) {
+			if _, err := svc.SetChannelVersions(ctx, admin, "acme", "prod", []string{"v9.9.9"}, nil); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("unknown version: %v", err)
 			}
 			vs, err := svc.SetChannelVersions(ctx, admin, "acme", "prod", []string{"v2.0.0"}, nil)

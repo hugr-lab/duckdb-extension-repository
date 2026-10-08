@@ -264,7 +264,7 @@ func TestApply(t *testing.T) {
 			t.Fatalf("second: %+v %v", r2, err)
 		}
 		apply := func(id string, c release.Change) (store.Release, error) {
-			return en.rel.Apply(ctx, admin, "acme", "prod", id, c)
+			return en.rel.Apply(ctx, admin, "acme", "prod", "", id, c, 0)
 		}
 		if r, err := apply(r1.ID, release.MakeCurrent); err != nil || r.Seq != 3 {
 			t.Fatalf("current: %+v %v", r, err)
@@ -315,7 +315,7 @@ func TestRotation(t *testing.T) {
 			t.Fatal(err)
 		}
 		kb := en.addKey(t, "prod", "b.pem", false)
-		if _, err := en.keys.Activate(ctx, admin, "acme", "prod", kb.ID, true); err != nil {
+		if _, err := en.keys.Activate(ctx, admin, "acme", "prod", kb.ID, 0, true); err != nil {
 			t.Fatal(err)
 		}
 		f2 := ext(t, 1000, 2, cpp("1.1"))
@@ -330,7 +330,7 @@ func TestRotation(t *testing.T) {
 			t.Fatal("an old release has the new key's signature before re-signing")
 		}
 		for _, force := range []bool{false, true} {
-			if _, err := en.keys.Retire(ctx, admin, "acme", "prod", ka.ID, force); !errors.Is(err, keys.ErrState) {
+			if _, err := en.keys.Retire(ctx, admin, "acme", "prod", ka.ID, 0, force); !errors.Is(err, keys.ErrState) {
 				t.Fatalf("retiring the serving key (force %v): %v", force, err)
 			}
 		}
@@ -351,7 +351,7 @@ func TestRotation(t *testing.T) {
 		if signed, moved, err := en.rel.Resign(ctx, channel(t, en).ID, nil); err != nil || signed != 0 || moved {
 			t.Fatalf("a second resign: %d %v %v", signed, moved, err)
 		}
-		if _, err := en.keys.Retire(ctx, admin, "acme", "prod", ka.ID, true); err != nil {
+		if _, err := en.keys.Retire(ctx, admin, "acme", "prod", ka.ID, 0, true); err != nil {
 			t.Fatalf("retiring the old key after the move: %v", err)
 		}
 		// a new release after the retirement is signed by the remaining key only
@@ -370,7 +370,7 @@ func TestRotationRace(t *testing.T) {
 			t.Fatal(err)
 		}
 		kb := en.addKey(t, "prod", "b.pem", false)
-		if _, err := en.keys.Activate(ctx, admin, "acme", "prod", kb.ID, true); err != nil {
+		if _, err := en.keys.Activate(ctx, admin, "acme", "prod", kb.ID, 0, true); err != nil {
 			t.Fatal(err)
 		}
 		var wg sync.WaitGroup

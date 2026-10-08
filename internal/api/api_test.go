@@ -105,6 +105,7 @@ type env struct {
 	serve *serve.Handler
 	keys  *keys.Service
 	blob  *blob.Service
+	dir   string            // the file signers' directory
 	ids   map[string]string // label -> release id
 }
 
@@ -146,7 +147,7 @@ func newEnv(t *testing.T) *env {
 		must(ks.Add(ctx, admin, "acme", ch, "file:"+ch+".pem", true))
 	}
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-	en := &env{st: st, ten: ten, idp: &fakeIDP{key: key}, ids: map[string]string{}, keys: ks, blob: bs,
+	en := &env{st: st, ten: ten, idp: &fakeIDP{key: key}, ids: map[string]string{}, keys: ks, blob: bs, dir: dir,
 		rel: &release.Service{Store: st, Blob: bs, Signers: ks, Authz: authz.ServerAdmin{}}}
 	en.adm = &tenants.AuthAdmin{Store: st, Authz: authz.ServerAdmin{}, Fetch: en.idp, PublicURL: publicURL}
 	must(en.adm.AddIssuer(ctx, admin, "acme", store.Issuer{Name: "corp", URL: idpURL}))
@@ -175,7 +176,7 @@ func newEnv(t *testing.T) *env {
 	add("acl", "prod", "acl", cpp("1.0"), 6, true)
 	add("acl-staging", "staging", "acl", cpp("1.0"), 7, true)
 	add("tresor-1.2", "prod", "tresor", cpp("1.2"), 8, false, true) // published, not current
-	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", en.ids["tresor-0.9"], release.Yank); err != nil {
+	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", en.ids["tresor-0.9"], release.Yank, 0); err != nil {
 		t.Fatal(err)
 	}
 	return en
@@ -320,7 +321,7 @@ func TestItemLookup(t *testing.T) {
 			t.Errorf("%s: %s, want %s", name, got, want)
 		}
 	}
-	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", en.ids["tresor-1.0"], release.Deprecate); err != nil {
+	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", en.ids["tresor-1.0"], release.Deprecate, 0); err != nil {
 		t.Fatal(err)
 	}
 	if got := status("tresor", "1.0"); got != "deprecated" {
@@ -343,7 +344,7 @@ func TestItemLookup(t *testing.T) {
 	// yanking the C API v2 build: the path serves the v1 build, and the yanked one comes along, so a
 	// node that installed it learns it; the v2 row serves nothing and would serve v2.0.0
 	v2hash := m["release"].(map[string]any)["body_hash"]
-	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", en.ids["demo-v2"], release.Yank); err != nil {
+	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", en.ids["demo-v2"], release.Yank, 0); err != nil {
 		t.Fatal(err)
 	}
 	m = en.get(t, base+"demo/versions/0.1?duckdb_version=v2.0.0&platform=linux_amd64", "").json(t)
@@ -364,7 +365,7 @@ func TestItemLookup(t *testing.T) {
 	}
 
 	// a private yanked release: missing to anonymous, yanked to an install holder
-	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", en.ids["acl"], release.Yank); err != nil {
+	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", en.ids["acl"], release.Yank, 0); err != nil {
 		t.Fatal(err)
 	}
 	if got := status("acl", "1.0"); got != "missing" {
@@ -401,7 +402,7 @@ func TestIndexMatchesServing(t *testing.T) {
 		sub, channel, ext string
 	}{{"", "", ""}, {"bob", "prod", "acl"}, {"carol", "prod", ""}, {"alice", "", ""}}
 	// the C API v2 build of demo is yanked: the versioned path falls back to v1 on v2.0.0
-	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", en.ids["demo-v2"], release.Yank); err != nil {
+	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", en.ids["demo-v2"], release.Yank, 0); err != nil {
 		t.Fatal(err)
 	}
 	for _, vw := range views {

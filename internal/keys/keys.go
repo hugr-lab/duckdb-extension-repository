@@ -32,9 +32,11 @@ const (
 // Errors.
 var (
 	ErrState    = errors.New("keys: not allowed in the key's state")
-	ErrTooSoon  = errors.New("keys: too soon; wait or use --force")
+	ErrTooSoon  = errors.New("keys: too soon")
 	ErrNoKeys   = errors.New("keys: the channel has no trusted keys")
 	ErrMismatch = errors.New("keys: the signer's key is not the registered key")
+	// ErrSigner is a signer reference that cannot be opened, or whose key is refused or cannot sign.
+	ErrSigner = errors.New("keys: the signer cannot be used")
 )
 
 // probe is the body hash signed when a key is added, to prove the key can sign.
@@ -80,18 +82,18 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel, ref s
 	}
 	sg, err := s.Signers.Open(ctx, ref)
 	if err != nil {
-		return store.Key{}, err
+		return store.Key{}, fmt.Errorf("%w: %w", ErrSigner, err)
 	}
 	pub := sg.Public()
 	if err := extfile.CheckKey(pub); err != nil {
-		return store.Key{}, err
+		return store.Key{}, fmt.Errorf("%w: %w", ErrSigner, err)
 	}
 	if err := Probe(ctx, sg); err != nil {
-		return store.Key{}, err
+		return store.Key{}, fmt.Errorf("%w: %w", ErrSigner, err)
 	}
 	der, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
-		return store.Key{}, err
+		return store.Key{}, fmt.Errorf("%w: %w", ErrSigner, err)
 	}
 	k := store.Key{TenantID: ch.TenantID, ChannelID: ch.ID, Fingerprint: extfile.Fingerprint(pub),
 		SignerRef: ref, PublicKey: der, State: store.KeyTrusted}
@@ -153,9 +155,10 @@ func find(keys []store.Key, ref string) (*store.Key, error) {
 	return nil, fmt.Errorf("%w: key %s in this channel", store.ErrNotFound, ref)
 }
 
-// Activate makes a trusted key the channel's active key and demotes the current one. The key must
+// Activate makes a trusted key the channel's active key (a non-zero expected version must be the
+// key's: store.ErrConflict otherwise) and demotes the current one. The key must
 // have been trusted for MinTrusted (from trusted_since, which a demotion never resets), unless force.
-func (s *Service) Activate(ctx context.Context, a authz.Actor, tenant, channel, keyRef string, force bool) (store.Key, error) {
+func (s *Service) Activate(ctx context.Context, a authz.Actor, tenant, channel, keyRef string, expected int64, force bool) (store.Key, error) {
 	if force {
 		if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 			return store.Key{}, err // force is server-wide (spec 0007)
@@ -178,6 +181,9 @@ func (s *Service) Activate(ctx context.Context, a authz.Actor, tenant, channel, 
 		target, err := find(keys, keyRef)
 		if err != nil {
 			return err
+		}
+		if expected != 0 && target.Version != expected {
+			return store.ErrConflict
 		}
 		if target.State != store.KeyTrusted {
 			return fmt.Errorf("%w: key is %s, only a trusted key can be activated", ErrState, target.State)
@@ -208,7 +214,7 @@ func (s *Service) Activate(ctx context.Context, a authz.Actor, tenant, channel, 
 
 // Retire removes a trusted key from .well-known for good. The active key cannot be retired, and a
 // key must have been out of the active state for MinDemoted, unless force.
-func (s *Service) Retire(ctx context.Context, a authz.Actor, tenant, channel, keyRef string, force bool) (store.Key, error) {
+func (s *Service) Retire(ctx context.Context, a authz.Actor, tenant, channel, keyRef string, expected int64, force bool) (store.Key, error) {
 	if force {
 		if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 			return store.Key{}, err // force is server-wide (spec 0007)
@@ -231,6 +237,9 @@ func (s *Service) Retire(ctx context.Context, a authz.Actor, tenant, channel, ke
 		target, err := find(keys, keyRef)
 		if err != nil {
 			return err
+		}
+		if expected != 0 && target.Version != expected {
+			return store.ErrConflict
 		}
 		if target.State != store.KeyTrusted {
 			return fmt.Errorf("%w: key is %s, only a trusted key can be retired", ErrState, target.State)

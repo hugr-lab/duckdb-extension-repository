@@ -462,10 +462,10 @@ type issuerJSON struct {
 
 func issuerTag(is store.Issuer) string { return `"` + is.ID + `"` }
 
-// createdBy shows who made a record: a server administrator's identity only to server
-// administrators (on Enterest it is the operator's staff).
+// createdBy shows who made a record: a server administrator's identity (over the API, or the CLI's
+// OS user) only to server administrators (on Enterest it is the operator's staff).
 func createdBy(by string, c caller) string {
-	if !c.admin && strings.HasPrefix(by, string(authz.ActorServer)+":") {
+	if !c.admin && (strings.HasPrefix(by, string(authz.ActorServer)+":") || strings.HasPrefix(by, string(authz.ActorOS)+":")) {
 		return string(authz.ActorServer)
 	}
 	return by
