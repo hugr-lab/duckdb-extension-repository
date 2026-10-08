@@ -43,8 +43,8 @@ type Ingested struct {
 // is the existing release whatever its state. The caller has authorized the run.
 func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChannel, sp *blob.Spool, in Ingest) (Ingested, error) {
 	ch := sc.Channel
-	if ch.Kind != store.ChannelSigned {
-		return Ingested{}, fmt.Errorf("%w: a %s channel takes upstream builds in phase 1b", ErrState, ch.Kind)
+	if ch.Kind == store.ChannelPassthrough {
+		in.Visibility = store.Public // a passthrough channel is public by nature (spec 0001)
 	}
 	f := sp.File()
 	key, ok := extfile.Verify(f.Hash, f.Signature, in.Keys)
@@ -110,8 +110,10 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	if err := servable(capis, b); err != nil {
 		return res, err
 	}
-	if _, err := activeKey(ctx, s.Store, ch.ID); err != nil {
-		return res, err
+	if ch.Kind == store.ChannelSigned {
+		if _, err := activeKey(ctx, s.Store, ch.ID); err != nil {
+			return res, err
+		}
 	}
 	if in.DryRun {
 		return res, nil

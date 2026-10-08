@@ -28,6 +28,9 @@ type Snapshot struct {
 	// Provided holds the names the tenant's upstreams provide (spec 0009); allowlist changes bump
 	// release_version on every channel of the tenant.
 	Provided map[string]bool
+	// Shadowed holds, for a passthrough channel, the core names the tenant replaced (spec 0009): the
+	// channel does not serve them. Shadow changes bump the tenant's passthrough channels.
+	Shadowed map[string]bool
 
 	groups    map[group][]*store.Candidate // by (name, platform), in Releases order
 	platforms map[string][]string          // by name, sorted
@@ -35,12 +38,9 @@ type Snapshot struct {
 
 type group struct{ name, platform string }
 
-// NewSnapshot indexes a channel's releases. Only a signed channel has releases: a passthrough
-// channel lists none until spec 0009.
+// NewSnapshot indexes a channel's releases: a signed channel's, or a passthrough channel's
+// (spec 0009: DuckDB's builds, served with their original signature).
 func NewSnapshot(c store.Channel, rels []store.Candidate, capis map[string][]store.CAPI, keys []store.Key) *Snapshot {
-	if c.Kind != store.ChannelSigned {
-		rels = nil
-	}
 	s := &Snapshot{Channel: c, Releases: rels, CAPIs: capis, Keys: keys, groups: map[group][]*store.Candidate{},
 		platforms: map[string][]string{}}
 	for _, k := range keys {
@@ -110,11 +110,20 @@ func Serves(c *store.Candidate, version string, capis map[string][]store.CAPI) b
 	return false
 }
 
+// serving reports whether the channel serves name at all: a signed channel with a serving key, or
+// a passthrough channel (no keys) for a name the tenant has not replaced.
+func (s *Snapshot) serving(name string) bool {
+	if s.Channel.Kind == store.ChannelPassthrough {
+		return !s.Shadowed[name]
+	}
+	return s.Channel.ServingKeyID != ""
+}
+
 // Flat is what the flat path serves for (DuckDB version, platform, name) in a view: among the active
-// releases with a seq that serve the version, the highest seq. A channel without a serving key
-// serves nothing.
+// releases with a seq that serve the version, the highest seq. A signed channel without a serving
+// key serves nothing.
 func (s *Snapshot) Flat(version, platform, name string, vis Visible) *store.Candidate {
-	if s.Channel.ServingKeyID == "" {
+	if !s.serving(name) {
 		return nil
 	}
 	var best *store.Candidate
@@ -131,10 +140,10 @@ func (s *Snapshot) Flat(version, platform, name string, vis Visible) *store.Cand
 
 // Versioned is what the versioned path serves for (DuckDB version, platform, name, extension version)
 // in a view, among releases in the given states (active and deprecated for the DuckDB routes): for
-// c_struct, the highest C API major the DuckDB version accepts. A channel without a serving key
-// serves nothing.
+// c_struct, the highest C API major the DuckDB version accepts. A signed channel without a serving
+// key serves nothing.
 func (s *Snapshot) Versioned(version, platform, name, extVersion string, vis Visible, states ...string) *store.Candidate {
-	if s.Channel.ServingKeyID == "" {
+	if !s.serving(name) {
 		return nil
 	}
 	if len(states) == 0 {
@@ -325,6 +334,16 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 	}
 	if snap.Provided, err = s.Store.ProvidedNames(ctx, c.TenantID); err != nil {
 		return nil, err
+	}
+	if c.Kind == store.ChannelPassthrough {
+		shadows, err := s.Store.ListShadows(ctx, c.TenantID)
+		if err != nil {
+			return nil, err
+		}
+		snap.Shadowed = map[string]bool{}
+		for _, x := range shadows {
+			snap.Shadowed[x.Name] = true
+		}
 	}
 	return snap, nil
 }

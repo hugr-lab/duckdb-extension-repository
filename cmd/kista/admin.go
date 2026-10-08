@@ -81,6 +81,8 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved]
   upstream extension remove <tenant> <name> <extension>
   upstream platform|key add|remove <tenant> <name> <platform|fingerprint>
+  shadow list <tenant>                            core names the tenant replaced: passthrough channels do not serve them
+  shadow remove <tenant> <name>                   serve DuckDB's build again from passthrough channels
   block add <tenant> <body-hash> -reason <text>   ban a body tenant-wide: its releases are yanked
   block list <tenant>
   block remove <tenant> <body-hash>
@@ -243,6 +245,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.publisher(ctx, sub, args[min(2, len(args)):])
 	case "upstream":
 		return a.upstream(ctx, sub, args[min(2, len(args)):])
+	case "shadow":
+		return a.shadow(ctx, sub, args[min(2, len(args)):])
 	case "blob":
 		if sub != "check" || len(args) != 2 {
 			return errUsage
@@ -1075,5 +1079,32 @@ func (a *adminCmd) upstreamItem(ctx context.Context, what, sub string, args []st
 		return err
 	}
 	a.logf("upstream %s %s %s %s %s", what, sub, t, name, item)
+	return nil
+}
+
+func (a *adminCmd) shadow(ctx context.Context, sub string, args []string) error {
+	pos, err := flags(flag.NewFlagSet("shadow", flag.ContinueOnError), args)
+	if err != nil {
+		return err
+	}
+	switch {
+	case sub == "list" && len(pos) == 1:
+		xs, err := a.svc.Upstreams.Shadows(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tCREATED\tBY", func(w io.Writer) {
+			for _, x := range xs {
+				fmt.Fprintf(w, "%s\t%s\t%s\n", x.Name, ts(x.CreatedAt), x.CreatedBy)
+			}
+		})
+	case sub == "remove" && len(pos) == 2:
+		if err := a.svc.Upstreams.RemoveShadow(ctx, a.actor, pos[0], pos[1]); err != nil {
+			return err
+		}
+		a.logf("shadow remove %s %s", pos[0], pos[1])
+	default:
+		return errUsage
+	}
 	return nil
 }

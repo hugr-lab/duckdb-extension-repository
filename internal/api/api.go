@@ -586,6 +586,8 @@ func init() {
 		{"tenants/{t}/upstreams/{name}/platforms/{item}", map[string]rule{http.MethodDelete: m(pathAdmin, removeUpstreamItem("platforms"))}},
 		{"tenants/{t}/upstreams/{name}/keys", map[string]rule{http.MethodGet: m(pathAdmin, listUpstreamItems("keys")),
 			http.MethodPost: mb(pathAdmin, addUpstreamItem("keys"))}},
+		{"tenants/{t}/shadows", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listShadows)}},
+		{"tenants/{t}/shadows/{name}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeShadow)}},
 		{"tenants/{t}/upstreams/{name}/keys/{item}", map[string]rule{http.MethodDelete: m(pathAdmin, removeUpstreamItem("keys"))}},
 	}
 }

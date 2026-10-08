@@ -117,6 +117,16 @@ func TestUpstreams(t *testing.T) {
 	if l := m.call(t, "GET", U, ta, "").json(t)["upstreams"].([]any); len(l) != 1 {
 		t.Errorf("list: %v", l)
 	}
+	// shadows (phase 1b): tenant administrators only
+	if r := m.call(t, "GET", "/api/v1/tenants/acme/shadows", ta, ""); r.status != 200 || !strings.Contains(string(r.body), `"shadows":[]`) {
+		t.Errorf("shadows: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", "/api/v1/tenants/acme/shadows", m.toks["channel adm"], ""); r.status != 404 {
+		t.Errorf("shadows for a channel admin: %d", r.status)
+	}
+	if r := m.call(t, "DELETE", "/api/v1/tenants/acme/shadows/httpfs", ta, ""); r.status != 404 {
+		t.Errorf("remove a missing shadow: %d", r.status)
+	}
 	// removal needs If-Match
 	if r := m.call(t, "DELETE", U+"/core", ta, ""); r.status != 428 {
 		t.Errorf("remove without If-Match: %d", r.status)

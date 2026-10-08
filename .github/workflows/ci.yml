@@ -90,8 +90,8 @@ jobs:
       - run: go test -race ./...
 
   network:
-    # spec 0009: real core and community files of a released DuckDB through the intake. It depends
-    # on DuckDB's servers, so it does not block.
+    # spec 0009: real core and community files of a released DuckDB through the intake, and DuckDB's
+    # own file through a passthrough channel. It depends on DuckDB's servers, so it does not block.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     continue-on-error: true

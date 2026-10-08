@@ -240,16 +240,15 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 		h.storeError(w, err)
 		return
 	}
-	if sc.Channel.Kind != store.ChannelSigned {
-		notFound(w) // passthrough channels are fed by upstreams (spec 0009)
-		return
-	}
 	// the decision comes from the path: a grant names the tenant, channel or extension, all known
-	// before anything is resolved; a caller without install resolves public releases only
-	v, tokenValid, err := h.decide(r, sc, rt.name)
-	if err != nil {
-		h.fail(w, err)
-		return
+	// before anything is resolved; a caller without install resolves public releases only. A
+	// passthrough channel is public by nature (spec 0009): no token is looked at, and a miss is 404.
+	v, tokenValid := viewPublic, sc.Channel.Kind == store.ChannelPassthrough
+	if sc.Channel.Kind == store.ChannelSigned {
+		if v, tokenValid, err = h.decide(r, sc, rt.name); err != nil {
+			h.fail(w, err)
+			return
+		}
 	}
 	res, err := h.rv.resolve(ctx, sc, rt, v)
 	if err != nil {
@@ -305,7 +304,7 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 	} else {
 		hd.Set("Cache-Control", "private, no-store, no-transform")
 	}
-	if scheme(r) == "https" {
+	if scheme(r) == "https" && sc.Channel.Kind == store.ChannelSigned { // a passthrough channel looks at no token
 		hd.Set("Vary", "Authorization")
 	}
 	notModified := etagMatches(r.Header.Get("If-None-Match"), f.ETag)

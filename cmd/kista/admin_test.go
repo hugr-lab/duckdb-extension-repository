@@ -161,6 +161,8 @@ func TestAdminCLI(t *testing.T) {
 		t.Fatalf("upstream list: %q", got)
 	}
 	run(0, "upstream", "cells", "acme", "core")
+	run(0, "shadow", "list", "acme")
+	run(1, "shadow", "remove", "acme", "httpfs")
 	run(0, "upstream", "remove", "acme", "core")
 	run(1, "upstream", "show", "acme", "core")
 	run(1, "block", "remove", "acme", f.Hash.String())

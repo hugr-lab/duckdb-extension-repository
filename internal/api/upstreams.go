@@ -383,3 +383,39 @@ func (h *Handler) listCells(w http.ResponseWriter, r *http.Request, c caller, p 
 	}
 	reply(w, r, http.StatusOK, list("cells", out, next), "", noStore)
 }
+
+type shadowJSON struct {
+	Name      string `json:"name"`
+	CreatedAt string `json:"created_at"`
+	CreatedBy string `json:"created_by"`
+}
+
+// listShadows lists the core names the tenant replaced: its passthrough channels do not serve them.
+func (h *Handler) listShadows(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	limit, after, ok := page(w, r)
+	if !ok {
+		return
+	}
+	a, _ := c.actor()
+	xs, err := h.o.Upstreams.Shadows(r.Context(), a, p["t"])
+	if err != nil {
+		h.upstreamErr(w, err)
+		return
+	}
+	xs, next := paged(xs, func(x store.Shadow) string { return x.Name }, limit, after)
+	out := []shadowJSON{}
+	for _, x := range xs {
+		out = append(out, shadowJSON{Name: x.Name, CreatedAt: timeOf(x.CreatedAt), CreatedBy: createdBy(x.CreatedBy, c)})
+	}
+	reply(w, r, http.StatusOK, list("shadows", out, next), "", noStore)
+}
+
+// removeShadow lifts a shadow: passthrough channels serve DuckDB's build again.
+func (h *Handler) removeShadow(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	if err := h.o.Upstreams.RemoveShadow(r.Context(), a, p["t"], p["name"]); err != nil {
+		h.upstreamErr(w, err)
+		return
+	}
+	noContent(w)
+}

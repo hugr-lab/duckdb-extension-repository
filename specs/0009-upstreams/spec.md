@@ -1,6 +1,6 @@
 # Spec 0009: Upstreams
 
-- **Status**: accepted; phase 1a implemented, 1b next
+- **Status**: accepted; phases 1a and 1b implemented, 2 next
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -160,7 +160,8 @@ verification"):
    is recorded as checked, so it can be promoted.
 6. **Under the channel lock**, with the release insert:
    - a blocked body (spec 0008) is `blocked`;
-   - a name with a live replacement in the channel is `shadowed`;
+   - a name with a live replacement in the channel is `shadowed` (in a passthrough channel a name the
+     tenant shadows is still taken in, and hidden when served: removing the shadow serves it at once);
    - the **slot** (spec 0006: name, extension version, platform, and the DuckDB version for exact
      builds): when it holds a release of the same body in any state with any choices, the cell is
      `unchanged` (or `yanked`), and nothing changes: a yank, a visibility or a current change by an
@@ -194,11 +195,15 @@ and the reason, and counted in the run; it never stops the run. Spec 0010 makes 
   for a cell it would release) and first 20 problems go to `last_run`. A real request and a dry one
   pending together make one real run.
 - **Scheduled** (1b): every active `mirror` upstream is due at `next_run_at`, set to the end of its
-  last run plus `upstreams.interval` (default 6h, within 15m..7d) with up to 10% jitter. Adding a
-  DuckDB version to a channel, or a platform or entry to an upstream, makes the upstream due.
-- Every replica polls for due or requested upstreams every 30 seconds and runs one only while it
-  holds the lease `kista/upstream/<id>` (renewed during the run). A request that arrives during a run
-  is served by another run right after it.
+  last run plus `upstreams.interval` (default 6h, within 15m..7d) with up to 10% jitter; a mirror
+  never run is due at once. Adding a DuckDB version to a channel, adding a platform or adding or
+  changing an entry of an upstream, or resuming it, makes the upstream due, also during its run (the
+  run's end does not move a later due mark). A scheduled run interrupted by an error or a lost lease is
+  due again after 5 minutes.
+- Every replica polls for due or requested upstreams every 30 seconds, requested ones first, and runs
+  up to `upstreams.concurrency` of them at once, each only while it holds the lease
+  `kista/upstream/<id>` (renewed during the run). A request that arrives during a run is served by
+  another run right after it.
 - A run follows the upstream as it is: it reads the record at most every two seconds and before each
   cell, so pausing or removing the upstream stops the run after the cell in progress, and a removed
   entry or platform, a narrowed version list or an unpinned key applies to the next cell. A run starts
@@ -219,12 +224,12 @@ them) and removes its cells; the names it provided stop being reserved (below).
 
 - A name an upstream of a tenant provides is **reserved in the tenant** (spec 0001), like spec 0008's
   core and community names: publishing or promoting it needs a grant that names the extension. A
-  release insert that is not an upstream one takes the tenant's lock `kista/tenant-upstreams/<id>` and
-  then the channel lock (always in this order; the store's transactions take several lock keys), and
-  reads the reservation again under them, so an upstream added between the authorization and the
-  insert is seen. Changes to allowlists take the tenant's lock only; upstream inserts the channel
-  lock only. Publications and promotions in one tenant are therefore serialized (each insert is
-  short).
+  release insert into a signed channel takes the tenant's lock `kista/tenant-upstreams/<id>` and then
+  the channel lock (always in this order; the store's transactions take several lock keys), and reads
+  the reservation again under them, so an upstream added between the authorization and the insert is
+  seen (and a tenant shadow is recorded under them, phase 1b). Changes to allowlists take the
+  tenant's lock only; inserts into a passthrough channel the channel lock only. Inserts into a
+  tenant's signed channels are therefore serialized (each insert is short).
 - Adding an upstream or an entry whose name has a live replacement in its channel is refused (`409`,
   naming the names) until an administrator drops the entry or yanks the releases. A replacement
   published into the channel later wins: the upstream's cells are `shadowed`.
@@ -243,16 +248,25 @@ compressed bytes.
 - It is fed by `duckdb-core` upstreams only; a community or repository binary would never load from
   it.
 - Its releases are public and served without tokens, over `http` and `https`, `GET` and `HEAD`
-  (spec 0006's rules for public releases); it has no keys and no `.well-known` file; its ETag is
-  computed over the original signature.
+  (spec 0006's rules for public releases): a token is never looked at, and a miss is `404`. It has
+  no keys and no `.well-known` file; its ETag is computed over the original signature. Its upstreams'
+  visibility is `public`, and setting it `private` is refused.
 - Nothing is published or promoted into it (spec 0008 already refuses), and its inserts take the
   block, slot and version-bump steps without signatures or a serving key; resolving its releases
   needs no serving key either.
-- **Tenant shadows.** Inserting a replacement of a core name into any signed channel of the tenant (the tenant's own `httpfs`) records the name in the tenant's
-  **shadows**. Passthrough channels of the tenant answer `404` for a shadowed name, so autoloading
+- **Tenant shadows.** Releasing into any signed channel of the tenant a body that is not DuckDB's own
+  core build (its original signature does not verify with DuckDB's core keys), under a core name or a
+  name an upstream of one of the tenant's passthrough channels lists, records the name in the
+  tenant's **shadows**: the tenant's own `httpfs`, whether added, published, promoted or mirrored from
+  another repository. Passthrough channels of the tenant answer `404` for a shadowed name, so autoloading
   does not silently pick DuckDB's build over the replacement. Only a tenant administrator removes a
   shadow (`DELETE …/shadows/{name}`): yanking or blocking the replacement does not bring DuckDB's
-  build back. Adding and removing a shadow bumps the tenant's passthrough channels.
+  build back. Adding and removing a shadow bumps the tenant's passthrough channels. Replacements
+  released before phase 1b get their shadows when the tenant's first passthrough upstream is added,
+  once per tenant (`tenants.shadows_backfilled`, migration 0009): a shadow an administrator removed
+  does not come back when a passthrough upstream is re-added.
+- Its releases cannot be made private (`409`). Its index rows of a shadowed name stay `active`, with
+  no versions served and not current.
 - **Blocks** reach passthrough channels: spec 0008's sweep and the version bump on block and unblock
   cover every channel of the tenant.
 
@@ -318,8 +332,8 @@ who see the row; `provenance` to tenant administrators.
 CLI: `kista admin upstream add|list|show|remove|sync|pause|resume|public|private <tenant> …`,
 `upstream extension|platform|key add|remove`, `upstream cells`, `shadow list|remove`.
 
-Config (`upstreams:`): `concurrency`, `fetch_timeout`, `min_rate`; `interval` comes with phase 1b and
-`negative_ttl` with phase 2.
+Config (`upstreams:`): `concurrency`, `fetch_timeout`, `min_rate`, `interval` (1b); `negative_ttl`
+comes with phase 2.
 
 Limits: 100 upstreams a tenant, 1,000 entries an upstream, 100 versions an entry, 10 pinned keys.
 
@@ -346,6 +360,8 @@ releases           + origin_signature (bytes) null
 
 `last_run` is a small JSON document in a text column (`nvarchar(max)` on SQL Server), never queried.
 
+Migration 0009 (phase 1b) adds `tenants.shadows_backfilled` (the one-time shadow backfill).
+
 ### Package layout
 
 ```text
@@ -367,9 +383,11 @@ internal/api, cmd/kista       + upstreams, shadows
   flat path names no extension version).
 - **0006**: passthrough channels serve releases, with the original signature (1b); a miss can offer a
   pull-through fetch (2).
-- **0007**: the index shows `origin: "upstream"`; `shadows` gains `upstream`.
+- **0007**: the index shows `origin: "upstream"`; `shadows` gains `upstream`; passthrough channels
+  list releases (1b).
 - **0008**: names an upstream of the tenant provides are reserved, re-checked under the lock; blocks
-  sweep passthrough channels (1b).
+  sweep passthrough channels (1b); a release of a core name that is not DuckDB's build records a
+  tenant shadow (1b).
 
 ## Security
 
@@ -427,7 +445,8 @@ internal/api, cmd/kista       + upstreams, shadows
   `INSTALL … FROM` and `LOAD` it; a new upstream version is mirrored by the next run. Passthrough
   cannot be checked by DuckDB on the pin: it is a development build for which DuckDB has published no
   binaries, and we never enable `allow_unsigned`. It is checked in Go, and in e2e once kista pins a
-  released DuckDB version.
+  released DuckDB version; the opt-in network test takes DuckDB's own `inet` for v1.4.1 through a
+  passthrough channel and compares the served file with DuckDB's.
 - **Phase 2**: an authorized miss fetches once (two concurrent misses, one fetch); anonymous and
   ungranted misses never fetch, with identical answers; the negative cache; the caps.
 

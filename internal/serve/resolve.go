@@ -85,7 +85,17 @@ func (rv *resolver) lookup(ctx context.Context, c store.Channel, rt route, v vie
 	} else {
 		best = snap.Versioned(rt.duckdbVersion, rt.platform, rt.name, rt.extVersion, v.visible())
 	}
-	if best == nil || c.ServingKeyID == "" {
+	if best == nil {
+		return resolution{}, nil
+	}
+	if c.Kind == store.ChannelPassthrough { // DuckDB's own signature (spec 0009)
+		sig, err := rv.st.OriginSignature(ctx, best.ID)
+		if err != nil {
+			return resolution{}, fmt.Errorf("serve: passthrough release %s has no original signature: %w", best.ID, err)
+		}
+		return resolution{found: true, cand: *best, sig: sig}, nil
+	}
+	if c.ServingKeyID == "" {
 		return resolution{}, nil
 	}
 	sig, err := rv.st.Signature(ctx, best.ID, c.ServingKeyID)

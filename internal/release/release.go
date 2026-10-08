@@ -15,6 +15,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream/duckdbkeys"
 )
 
 // Errors.
@@ -40,6 +41,26 @@ type Service struct {
 	Blob    *blob.Service
 	Signers SignerOpener
 	Authz   authz.Authorizer
+	// CoreKeys replaces DuckDB's core keys (tests); nil is the pin's (spec 0009: shadows).
+	CoreKeys []*rsa.PublicKey
+}
+
+// DuckDBCore reports whether a Build is DuckDB's own core build: its original signature verifies
+// with DuckDB's core keys over its body (spec 0009). Anything else under a core name replaces it.
+func (s *Service) DuckDBCore(b store.Build) bool {
+	if len(b.OriginSignature) != extfile.SignatureSize {
+		return false
+	}
+	h, err := parseHash(b.BodyHash)
+	if err != nil {
+		return false
+	}
+	keys := s.CoreKeys
+	if keys == nil {
+		keys = duckdbkeys.Core()
+	}
+	_, ok := extfile.Verify(h, b.OriginSignature, keys)
+	return ok
 }
 
 func lockKey(channelID string) string { return "kista/channel/" + channelID }
@@ -347,9 +368,13 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 	if err != nil {
 		return nil, false, err
 	}
-	need, err := required(keys, ch.ServingKeyID)
-	if err != nil {
-		return nil, false, err
+	// a passthrough channel's releases carry DuckDB's signature only (spec 0009): no keys
+	passthrough := ch.Kind == store.ChannelPassthrough
+	var need []store.Key
+	if !passthrough {
+		if need, err = required(keys, ch.ServingKeyID); err != nil {
+			return nil, false, err
+		}
 	}
 	for attempt := 0; attempt < 4; attempt++ {
 		for i := range items {
@@ -370,13 +395,11 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 		var out []store.Release
 		existing := 0
 		need = nil
-		// releases of other origins than upstream take the tenant's upstream lock first (spec 0009)
+		// a signed channel's inserts take the tenant's upstream lock first (spec 0009): the reservation
+		// is read again, and a tenant shadow recorded, under it
 		locks := []string{lockKey(channelID)}
-		for _, it := range items {
-			if it.origin != store.OriginUpstream {
-				locks = []string{store.TenantUpstreamLock(it.b.TenantID), lockKey(channelID)}
-				break
-			}
+		if !passthrough {
+			locks = []string{store.TenantUpstreamLock(ch.TenantID), lockKey(channelID)}
 		}
 		err := s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
 			out, existing, need = nil, 0, nil
@@ -388,9 +411,11 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 			if err != nil {
 				return err
 			}
-			req, err := required(keys, c.ServingKeyID)
-			if err != nil {
-				return err
+			var req []store.Key
+			if c.Kind != store.ChannelPassthrough {
+				if req, err = required(keys, c.ServingKeyID); err != nil {
+					return err
+				}
 			}
 			for _, k := range req {
 				for i := range items {
@@ -475,6 +500,22 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				for id, sig := range sigs[i] {
 					if live[id] {
 						if err := tx.InsertSignature(ctx, r.ID, channelID, id, sig); err != nil {
+							return err
+						}
+					}
+				}
+				// any body other than DuckDB's own core build, under a core name or a name the tenant's
+				// passthrough channels serve, released in a signed channel, shadows DuckDB's build in
+				// those channels until an administrator removes the shadow (spec 0009)
+				if c.Kind == store.ChannelSigned && !s.DuckDBCore(b) {
+					core := reserved.Kind(b.Name) == reserved.Core
+					if !core {
+						if core, err = tx.PassthroughProvides(ctx, b.TenantID, b.Name); err != nil {
+							return err
+						}
+					}
+					if core {
+						if _, err := tx.AddShadow(ctx, b.TenantID, b.Name, a.String()); err != nil {
 							return err
 						}
 					}
@@ -640,6 +681,9 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 		case SetPublic, SetPrivate:
 			if r.State == store.ReleaseYanked {
 				return refuse()
+			}
+			if c == SetPrivate && ch.Kind == store.ChannelPassthrough {
+				return fmt.Errorf("%w: a passthrough channel's releases are public", ErrState)
 			}
 			err = tx.SetReleaseVisibility(ctx, &r, string(c), actor)
 		default:

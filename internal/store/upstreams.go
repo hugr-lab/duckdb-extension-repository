@@ -435,29 +435,152 @@ func (t *Tx) RequestUpstreamRun(ctx context.Context, u *Upstream, dryRun bool) e
 	return err
 }
 
-// DueUpstreams lists the ids of active upstreams with a run requested, or due by their schedule.
-func (s *Store) DueUpstreams(ctx context.Context, now time.Time) ([]string, error) {
+// DueUpstreams lists the ids of active upstreams with a run requested or, when scheduled, mirrors due
+// by their schedule (a mirror never run is due).
+func (s *Store) DueUpstreams(ctx context.Context, now time.Time, scheduled bool) ([]string, error) {
 	var out []string
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		var err error
+		if !scheduled {
+			out, err = tx.strings(ctx, "SELECT id FROM upstreams WHERE state = ? AND requested_at IS NOT NULL ORDER BY id", UpstreamActive)
+			return err
+		}
+		// requested runs first, then the longest due
 		out, err = tx.strings(ctx, `SELECT id FROM upstreams WHERE state = ? AND (requested_at IS NOT NULL OR
-(mode = ? AND next_run_at IS NOT NULL AND next_run_at <= ?)) ORDER BY id`, UpstreamActive, ModeMirror, s.d.timeArg(now))
+(mode = ? AND (next_run_at IS NULL OR next_run_at <= ?)))
+ORDER BY CASE WHEN requested_at IS NULL THEN 1 ELSE 0 END, CASE WHEN next_run_at IS NULL THEN 0 ELSE 1 END, next_run_at, id`,
+			UpstreamActive, ModeMirror, s.d.timeArg(now))
 		return err
 	})
 	return out, err
+}
+
+// MakeDue makes mirrors due now: an upstream's (its matrix grew), or every mirror feeding a channel
+// (a DuckDB version was added).
+func (t *Tx) MakeDue(ctx context.Context, upstreamID, channelID string) error {
+	now := t.s.d.timeArg(t.Now())
+	if upstreamID != "" {
+		_, err := t.exec(ctx, "UPDATE upstreams SET next_run_at = ? WHERE id = ? AND mode = ?", now, upstreamID, ModeMirror)
+		return err
+	}
+	_, err := t.exec(ctx, "UPDATE upstreams SET next_run_at = ? WHERE channel_id = ? AND mode = ?", now, channelID, ModeMirror)
+	return err
+}
+
+// Shadow is a core name a tenant replaced (spec 0009): its passthrough channels do not serve it.
+type Shadow struct {
+	TenantID, Name string
+	CreatedAt      time.Time
+	CreatedBy      string
+}
+
+// AddShadow records a shadow if it is new, and bumps the tenant's passthrough channels; it reports
+// whether it was new.
+func (t *Tx) AddShadow(ctx context.Context, tenantID, name, actor string) (bool, error) {
+	var n int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM shadows WHERE tenant_id = ? AND name = ?", tenantID, name).Scan(&n); err != nil || n > 0 {
+		return false, err
+	}
+	if _, err := t.exec(ctx, "INSERT INTO shadows (tenant_id, name, created_at, created_by) VALUES (?, ?, ?, ?)",
+		tenantID, name, t.s.d.timeArg(t.Now()), actor); err != nil {
+		return false, t.s.mapErr(err, "shadow "+name)
+	}
+	return true, t.bumpPassthrough(ctx, tenantID)
+}
+
+// DeleteShadow removes a shadow: the tenant's passthrough channels serve DuckDB's build again.
+func (t *Tx) DeleteShadow(ctx context.Context, tenantID, name string) error {
+	if err := t.deleteOne(ctx, "DELETE FROM shadows WHERE tenant_id = ? AND name = ?", "shadow "+name, tenantID, name); err != nil {
+		return err
+	}
+	return t.bumpPassthrough(ctx, tenantID)
+}
+
+func (t *Tx) bumpPassthrough(ctx context.Context, tenantID string) error {
+	_, err := t.exec(ctx, "UPDATE channels SET release_version = release_version + 1 WHERE tenant_id = ? AND kind = ?", tenantID, ChannelPassthrough)
+	return err
+}
+
+// ListShadows lists a tenant's shadows by name.
+func (s *Store) ListShadows(ctx context.Context, tenantID string) ([]Shadow, error) {
+	rows, err := s.db.QueryContext(ctx, s.d.rebind("SELECT tenant_id, name, created_at, created_by FROM shadows WHERE tenant_id = ? ORDER BY name"), tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Shadow
+	for rows.Next() {
+		var x Shadow
+		if err := rows.Scan(&x.TenantID, &x.Name, scanTime{&x.CreatedAt}, &x.CreatedBy); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+// LiveSignedBuilds lists the Builds of a tenant's live releases in its signed channels (name, body
+// hash and original signature only), for the shadow backfill (spec 0009).
+func (t *Tx) LiveSignedBuilds(ctx context.Context, tenantID string) ([]Build, error) {
+	rows, err := t.query(ctx, `SELECT DISTINCT b.name, b.body_hash, b.origin_signature FROM releases r JOIN builds b ON b.id = r.build_id
+JOIN channels c ON c.id = r.channel_id WHERE r.tenant_id = ? AND c.kind = ? AND r.state <> ?`, tenantID, ChannelSigned, ReleaseYanked)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Build
+	for rows.Next() {
+		var b Build
+		if err := rows.Scan(&b.Name, &b.BodyHash, &b.OriginSignature); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// TakeShadowBackfill marks a tenant's shadow backfill done; it reports whether this call did, so
+// the backfill runs once per tenant (an administrator's removals stay removed).
+func (t *Tx) TakeShadowBackfill(ctx context.Context, tenantID string) (bool, error) {
+	res, err := t.exec(ctx, "UPDATE tenants SET shadows_backfilled = ? WHERE id = ? AND shadows_backfilled = ?", true, tenantID, false)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// PassthroughProvides reports whether an upstream feeding one of the tenant's passthrough channels
+// lists name.
+func (t *Tx) PassthroughProvides(ctx context.Context, tenantID, name string) (bool, error) {
+	var n int
+	err := t.queryRow(ctx, `SELECT COUNT(*) FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
+JOIN channels c ON c.id = u.channel_id WHERE u.tenant_id = ? AND c.kind = ? AND e.name = ?`, tenantID, ChannelPassthrough, name).Scan(&n)
+	return n > 0, err
+}
+
+// OriginSignature reads an upstream release's original signature (spec 0009: what a passthrough
+// channel serves).
+func (s *Store) OriginSignature(ctx context.Context, releaseID string) ([]byte, error) {
+	var sig []byte
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT origin_signature FROM releases WHERE id = ?"), releaseID).Scan(&sig)
+	if err == nil && len(sig) == 0 {
+		err = sql.ErrNoRows
+	}
+	return sig, notFound(err, "original signature")
 }
 
 // StartUpstreamRun takes the pending request of an upstream that is active and requested or due
 // (runnable false otherwise: paused, or run by another replica meanwhile). It reports whether the
 // run is a dry one and whether it was requested, and clears the request, so one that arrives
 // during the run is served by the next.
-func (t *Tx) StartUpstreamRun(ctx context.Context, id string) (runnable, dryRun, requested bool, err error) {
+func (t *Tx) StartUpstreamRun(ctx context.Context, id string, scheduled bool) (runnable, dryRun, requested bool, err error) {
 	u, err := scanUpstream(t.queryRow(ctx, "SELECT "+upstreamCols+" FROM upstreams WHERE id = ?", id))
 	if err != nil {
 		return false, false, false, notFound(err, "upstream "+id)
 	}
 	requested = !u.RequestedAt.IsZero()
-	due := u.Mode == ModeMirror && !u.NextRunAt.IsZero() && !u.NextRunAt.After(t.Now())
+	due := scheduled && u.Mode == ModeMirror && !u.NextRunAt.After(t.Now()) // a zero next run: never run
 	if u.State != UpstreamActive || !requested && !due {
 		return false, false, false, nil
 	}
@@ -466,14 +589,17 @@ func (t *Tx) StartUpstreamRun(ctx context.Context, id string) (runnable, dryRun,
 }
 
 // FinishUpstreamRun records a run's result and, when schedule is set, the next scheduled run
-// (zero: none); a dry run leaves the schedule.
-func (t *Tx) FinishUpstreamRun(ctx context.Context, id, result string, schedule bool, next time.Time) error {
-	if !schedule {
-		_, err := t.exec(ctx, "UPDATE upstreams SET last_run = ?, last_run_at = ? WHERE id = ?", result, t.s.d.timeArg(t.Now()), id)
+// (zero: none), unless the upstream was made due during the run (after started); a dry run leaves
+// the schedule.
+func (t *Tx) FinishUpstreamRun(ctx context.Context, id, result string, schedule bool, started, next time.Time) error {
+	if _, err := t.exec(ctx, "UPDATE upstreams SET last_run = ?, last_run_at = ? WHERE id = ?", result, t.s.d.timeArg(t.Now()), id); err != nil {
 		return err
 	}
-	_, err := t.exec(ctx, "UPDATE upstreams SET last_run = ?, last_run_at = ?, next_run_at = ? WHERE id = ?",
-		result, t.s.d.timeArg(t.Now()), t.s.d.nullTimeArg(next), id)
+	if !schedule {
+		return nil
+	}
+	_, err := t.exec(ctx, "UPDATE upstreams SET next_run_at = ? WHERE id = ? AND (next_run_at IS NULL OR next_run_at <= ?)",
+		t.s.d.nullTimeArg(next), id, t.s.d.timeArg(started))
 	return err
 }
 

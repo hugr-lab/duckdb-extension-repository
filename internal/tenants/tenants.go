@@ -234,6 +234,11 @@ func (s *Service) SetChannelVersions(ctx context.Context, a authz.Actor, tenant,
 				return err
 			}
 		}
+		if len(add) > 0 { // the channel's mirrors fetch the new versions now (spec 0009)
+			if err := tx.MakeDue(ctx, "", c.ID); err != nil {
+				return err
+			}
+		}
 		for _, name := range remove {
 			v, err := tx.GetDuckDBVersion(ctx, name)
 			if err != nil {
