@@ -2,6 +2,7 @@ package egress
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -227,13 +228,7 @@ func (c *Client) Get(ctx context.Context, raw string) ([]byte, http.Header, erro
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		var refused bool
-		var oe *net.OpError
-		refused = errors.Is(err, ErrRefused) || errors.As(err, &oe) && errors.Is(oe.Err, ErrRefused)
-		if refused {
-			return nil, nil, fmt.Errorf("%w: %s", ErrRefused, u.Hostname())
-		}
-		return nil, nil, fmt.Errorf("%w: %s", ErrConnect, u.Hostname())
+		return nil, nil, doErr(err, u)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -247,4 +242,44 @@ func (c *Client) Get(ctx context.Context, raw string) ([]byte, http.Header, erro
 		return nil, nil, fmt.Errorf("%w: %s", ErrTooLarge, u.Hostname())
 	}
 	return b, resp.Header, nil
+}
+
+// doErr maps a transport error to its class.
+func doErr(err error, u *url.URL) error {
+	var oe *net.OpError
+	if errors.Is(err, ErrRefused) || errors.As(err, &oe) && errors.Is(oe.Err, ErrRefused) {
+		return fmt.Errorf("%w: %s", ErrRefused, u.Hostname())
+	}
+	return fmt.Errorf("%w: %s", ErrConnect, u.Hostname())
+}
+
+// Post sends body to a URL; any 2xx answer is success. The answer's body is read up to MaxBytes and
+// discarded; the status is returned with ErrStatus for any other answer.
+func (c *Client) Post(ctx context.Context, raw, contentType string, header http.Header, body []byte) (int, error) {
+	u, err := c.checkURL(raw)
+	if err != nil {
+		return 0, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return 0, fmt.Errorf("%w: not an absolute URL", ErrRefused)
+	}
+	for k, vs := range header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	req.Header.Set("Content-Type", contentType)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return 0, doErr(err, u)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, c.maxBytes))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return resp.StatusCode, fmt.Errorf("%w %d from %s", ErrStatus, resp.StatusCode, u.Hostname())
+	}
+	return resp.StatusCode, nil
 }

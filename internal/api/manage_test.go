@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/writer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
@@ -85,6 +86,7 @@ type mgmt struct {
 	keySvc *keys.Service     // the API's key service
 	ups    *upstream.Service
 	pulls  *fakePuller
+	events *writer.Writer // refusals (spec 0010 phase 1b)
 }
 
 // fakePuller records the misses serving offers (spec 0009 phase 2).
@@ -135,7 +137,8 @@ func newMgmt(t *testing.T) *mgmt {
 	}
 	ups := &upstream.Service{Store: en.st, Releases: &relSvc, Blob: en.blob, Fetch: eg, Authz: grants, MaxBody: 1 << 20, MaxIngests: 4,
 		TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler)}
-	apiH := api.New(api.Options{Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths,
+	events := &writer.Writer{Store: en.st, Log: slog.New(slog.DiscardHandler)}
+	apiH := api.New(api.Options{Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths, Events: events,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
 		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups})
 	pulls := &fakePuller{}
@@ -143,7 +146,7 @@ func newMgmt(t *testing.T) *mgmt {
 		Server: server, PublicURL: publicURL, Auths: auths, API: apiH, MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,
 		WriteIdleTimeout: 10 * time.Second, Puller: pulls})
 	h.SetReady(true)
-	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}, keySvc: &keySvc, ups: ups, pulls: pulls}
+	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}, keySvc: &keySvc, ups: ups, pulls: pulls, events: events}
 
 	// the CLI sets up: tenant other, grants in acme
 	cli := en.adm

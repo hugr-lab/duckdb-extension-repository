@@ -59,6 +59,7 @@ type Options struct {
 	Keys             *keys.Service     // phase 3
 	Releases         *release.Service  // phase 3
 	Upstreams        *upstream.Service // spec 0009
+	Events           Recorder          // spec 0010: refusals and failures; nil: none recorded
 	AdminTokenMaxAge time.Duration     // default 1h
 	// Uploads (spec 0008): the largest file, the least read rate, and how many may run at once per
 	// principal and per tenant (defaults 2 and 8).
@@ -655,18 +656,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusMethodNotAllowed, typeMethod, "")
 		return
 	}
-	c, ok := h.decide(w, r, rt, ru, p)
+	sw := &statusWriter{ResponseWriter: w}
+	defer h.record(r, rt, p, method, sw) // a refusal or a failure is an event (spec 0010)
+	c, ok := h.decide(sw, r, rt, ru, p)
 	if !ok {
-		return
+		return // a refusal noted its actor
 	}
+	sw.actor = c
 	if name := displayName(c.id.Claims); name != "" { // for the events the request causes (spec 0010)
 		r = r.WithContext(audit.WithActorName(r.Context(), name))
 	}
 	if !ru.body && !ru.raw && (r.ContentLength != 0 || len(r.TransferEncoding) > 0) {
-		problem(w, http.StatusBadRequest, typeInvalid, "this request has no body")
+		problem(sw, http.StatusBadRequest, typeInvalid, "this request has no body")
 		return
 	}
-	sw := &statusWriter{ResponseWriter: w}
 	ru.handle(h, sw, r, c, p)
 	if ru.manage && method != http.MethodGet {
 		h.o.Log.Info("api: write", append(logIDs(rt, p), "actor", c.logName(), "method", r.Method,
@@ -683,6 +686,18 @@ func logIDs(rt route, p params) []any {
 		}
 	}
 	return out
+}
+
+// eventActor is the caller as events name it (spec 0010): its actor, server:<issuer>|<who> for a
+// server token that is no administrator's, or anonymous.
+func (c caller) eventActor() string {
+	if a, ok := c.actor(); ok {
+		return a.String()
+	}
+	if c.server {
+		return "server:" + c.id.Issuer.Name + "|" + c.id.Who()
+	}
+	return "anonymous"
 }
 
 // logName is who the caller is in logs: its actor, or the server token it presented.
@@ -702,7 +717,9 @@ func (c caller) logName() string {
 func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru rule, p params) (caller, bool) {
 	ctx := r.Context()
 	tok, sent := bearer(r)
+	failed := func(reason string) { note(w, func(sw *statusWriter) { sw.authFailure = reason }) }
 	if sent && tok == "" {
+		failed("malformed")
 		unauthorized(w)
 		return caller{}, false
 	}
@@ -712,11 +729,13 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 	}
 	// an API key (spec 0008) is looked up only on the routes publishers use
 	if auth.IsAPIKey(tok) && (!ru.publishers || p["t"] == "") {
+		failed("api_key_route")
 		unauthorized(w)
 		return caller{}, false
 	}
 	c, isServer, err := h.identifyServer(ctx, tok)
 	if err != nil {
+		failed("invalid")
 		unauthorized(w)
 		return caller{}, false
 	}
@@ -734,6 +753,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			return caller{}, false
 		}
 		c.tenant = t
+		note(w, func(sw *statusWriter) { sw.tenant = t })
 		if sent && !isServer {
 			identify := h.identifyTenant
 			if auth.IsAPIKey(tok) {
@@ -741,6 +761,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			}
 			if c, err = identify(ctx, t, tok); err != nil {
 				if errors.Is(err, errToken) {
+					failed("invalid")
 					unauthorized(w)
 				} else {
 					h.fail(w, err)
@@ -749,6 +770,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			}
 			if c.pub != nil && !ru.publishers {
 				if ru.access != public {
+					failed("publisher_route")
 					unauthorized(w) // a publisher's credential is not a token for this route
 					return caller{}, false
 				}
@@ -773,6 +795,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		}
 		h.o.Log.Info("api: refused", append(logIDs(rt, p), "actor", c.logName(), "method", r.Method, "status", http.StatusNotFound,
 			"client", client(r))...)
+		note(w, func(sw *statusWriter) { sw.refused, sw.actor = true, c })
 		notFound(w)
 		return caller{}, false
 	}
@@ -838,6 +861,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		if reason != "" {
 			h.o.Log.Info("api: refused", append(logIDs(rt, p), "actor", c.logName(), "method", r.Method,
 				"status", http.StatusUnauthorized, "reason", reason, "client", client(r))...)
+			failed(strings.ReplaceAll(reason, " ", "_"))
 			unauthorized(w)
 			return caller{}, false
 		}
@@ -850,10 +874,24 @@ func (h *Handler) fail(w http.ResponseWriter, err error) {
 	problem(w, http.StatusServiceUnavailable, typeUnavailable, "")
 }
 
-// statusWriter records the status for the write log.
+// statusWriter records the status for the write log, and what an answer means for the events
+// (spec 0010).
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+	tenant store.Tenant // the path's tenant, once known
+	actor  caller
+	// authFailure is why a sent token was not accepted (a 401); refused, that a known caller was
+	// refused (a 404 that stands for forbidden).
+	authFailure string
+	refused     bool
+}
+
+// note marks a statusWriter (w is one when the request came through ServeHTTP).
+func note(w http.ResponseWriter, f func(*statusWriter)) {
+	if sw, ok := w.(*statusWriter); ok {
+		f(sw)
+	}
 }
 
 func (s *statusWriter) WriteHeader(code int) {
@@ -886,4 +924,39 @@ func displayName(claims map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// Recorder takes the events of refusals and failures (spec 0010's asynchronous writer).
+type Recorder interface {
+	Refusal(ctx context.Context, tenantID, actor string, kind audit.Kind, outcome, subject string, fields map[string]any)
+}
+
+// record writes a request's refusal or failure as an event, once, from its final answer: a sent
+// token not accepted (401), a known caller refused (404 for forbidden), a 5xx.
+func (h *Handler) record(r *http.Request, rt route, p params, method string, sw *statusWriter) {
+	if h.o.Events == nil {
+		return
+	}
+	route := method + " " + rt.pattern
+	subject := "route:" + rt.pattern
+	actor := sw.actor.eventActor()
+	if sw.tenant.ID == "" && p["t"] != "" && (sw.authFailure != "" || sw.refused || sw.status >= 500) {
+		// a failure noted before the tenant was looked up is still the tenant's, if it is one
+		t, err := h.o.Store.GetTenant(context.WithoutCancel(r.Context()), p["t"]) // the client may be gone
+		if err != nil || t.State != store.TenantActive {
+			return // an unknown or suspended tenant: nobody's
+		}
+		sw.tenant = t
+	}
+	switch {
+	case sw.authFailure != "":
+		h.o.Events.Refusal(r.Context(), sw.tenant.ID, "anonymous", "auth.failure", audit.Refused, subject,
+			map[string]any{"reason": sw.authFailure, "route": route})
+	case sw.refused:
+		h.o.Events.Refusal(r.Context(), sw.tenant.ID, actor, "authz.refused", audit.Refused, subject,
+			map[string]any{"route": route, "status": sw.status})
+	case sw.status >= 500:
+		h.o.Events.Refusal(r.Context(), sw.tenant.ID, actor, "request.failed", audit.Failed, subject,
+			map[string]any{"route": route, "status": sw.status})
+	}
 }
