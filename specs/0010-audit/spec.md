@@ -1,4 +1,4 @@
-# Spec 0010: Audit
+# Spec 0010: Audit events and download statistics
 
 - **Status**: draft
 - **Date**: 2026-10-09
@@ -6,41 +6,43 @@
 
 ## Summary
 
-kista records what happens to a tenant as **events**: every management, release and upstream change,
-refusals and failed authentications, reads of the log itself, and (phase 2) authenticated installs.
-Events are kept in a per-tenant **hash chain** whose head can be **signed** with a key the
-database's administrators do not hold, so an edit of the stored log is detectable; they are read by
-holders of the `audit` verb, exported with their hashes and verified offline, kept for a tenant's
-retention (with legal holds), counted as per-tenant **statistics**, and sent to **sinks**. Personal
-data in events (principals, client addresses) is pseudonymised in the chain, so an erasure request
-can be honoured without breaking it.
+kista records what happens to a tenant as **events** and hands them to the organisation's log
+pipeline: every management, release and upstream change, refusals and failed authentications, and
+(phase 2) authenticated downloads. Events are written in the transaction of the change they record,
+kept for **30 days** for the API and the console's recent-activity views, and delivered at least
+once to **sinks**: an OpenTelemetry collector (OTLP/HTTP logs) and JSON lines on a file or stdout.
+Long-term storage, search, legal holds, erasure and tamper evidence are the log pipeline's: an event
+delivered off the server is out of reach of the server's database.
+
+Downloads are counted as **daily statistics** per extension, version, platform, DuckDB version and
+channel, kept for years in the database for the API and the console, and exported as
+**OpenTelemetry metrics** with kista's operational metrics.
 
 Delivery is phased, each phase a pull request:
 
-- **1a. The log**: the events table with pseudonymised personal data, the canonical form and the
-  chain, `Tx.Event`; events of tenants, channels, keys, issuers, grants, audiences, publishers and
-  versions; authentication failures and refusals on management routes; `server.start`; the `audit`
-  verb; reading, export and verification (API and CLI).
-- **1b. The rest**: events of releases, publication, promotion, blocks, upstreams and shadows;
-  signed heads; retention, anchors and legal holds; erasure.
-- **2. The serve path**: installs, anonymous download counts, token failures on the DuckDB routes,
-  pull-through; statistics.
-- **3. Sinks**: OpenTelemetry (OTLP/HTTP) and a JSON-lines file.
+- **1a. Events of changes**: the events table, the catalogue, `Tx.Event` in every change with a
+  coverage test, the 30-day buffer, reading (API and CLI), the `audit` verb.
+- **1b. Delivery**: the asynchronous writer (refusals, authentication failures, failures), the sink
+  registry, the JSON-lines and OTLP sinks, `server.start`.
+- **2. Downloads and metrics**: install events, daily download counts and installers, the statistics
+  API, OpenTelemetry metrics.
 
 ## Problem
 
-- An administrator's actions are trusted, but an organisation must be able to tell **who did what,
-  when, from where**: who granted install on `prod`, who promoted `acl 1.2`, who blocked a body, who
-  added an upstream, who removed a tenant shadow. Today only key state changes are recorded
-  (`key_events`, spec 0003); the rest is in process logs, which rotate and are not per tenant.
-- **Tamper evidence**: anyone with the database's credentials can edit rows. The record must make an
-  edit detectable, against evidence the database's administrators cannot rewrite (spec 0001).
-- **Separation of duties**: an auditor reads the log without being able to change what it records.
-- **Installs**: which nodes and people installed which versions (licence compliance; "who installed
-  the version we yanked?").
-- **Privacy**: events hold IdP subject ids and client addresses; erasure requests must be possible.
-- **Statistics and sinks**: installs per extension, version, channel and principal, per tenant
-  (spec 0001; global statistics are Enterest's); central log collection.
+- **Who did what, when, from where**: who granted install on `prod`, who promoted `acl 1.2`, who
+  blocked a body, who added an upstream. Today only key state changes are recorded (`key_events`,
+  spec 0003); the rest is in process logs, which are unstructured and not per tenant.
+- **Where it belongs**: kista is not a log store. Organisations, the hugr platform (acl-otel) and
+  Enterest run OpenTelemetry collectors and log backends that keep, search and protect logs; kista
+  must feed them reliably, not duplicate them.
+- **Statistics are product data**: a publisher on Enterest wants to see how often each version of
+  its extension is downloaded; a tenant administrator, which versions and DuckDB versions are in use
+  before retiring one. That needs durable, cheap counts in kista, independent of any backend.
+- **What kista can know**: kista sees downloads, not what runs. DuckDB downloads on `INSTALL` and
+  then loads its local copy; which nodes run a version is the nodes' telemetry (acl-otel,
+  hugr_node). kista answers who downloaded what: 30 days from its buffer, longer from the pipeline.
+- **Privacy**: who downloaded what is personal data; it belongs to the short buffer and the log
+  pipeline, not to long-lived tables or metric labels.
 
 ## Design
 
@@ -49,313 +51,307 @@ Delivery is phased, each phase a pull request:
 | Field | Meaning |
 | --- | --- |
 | `id` | a UUIDv7, made inside the writing transaction (a retried transaction makes a new one) |
-| `v` | the catalogue's version, 1 |
-| `tenant_id` | the tenant; server-level events (on no tenant: DuckDB versions, `tenant.create`, `server.start`) use the server chain's fixed id `00000000-0000-0000-0000-000000000000`, which is never a tenant's. A server administrator's action on a tenant goes into that tenant's chain |
-| `at` | when it happened: the writing process's clock (`Tx.Now`), UTC, truncated to microseconds before it is stored (every engine keeps them); not monotonic across replicas: `seq` is the order |
+| `tenant_id` | the tenant; server-level events (DuckDB versions, `tenant.create`, `server.start`, a sink's state, drops not attributable to a tenant) use the fixed id `00000000-0000-0000-0000-000000000000`, never a tenant's. A server administrator's action on a tenant is the tenant's event, and its actor (`server:<issuer>\|sub:…`) is visible to the tenant's readers |
+| `at` | when it happened (`Tx.Now`, UTC, microseconds) |
 | `kind` | from the catalogue (below) |
-| `outcome` | `ok`; `refused` (authorization or a rule); `failed` (an error after the decision, written asynchronously: a change that fails rolls its event back with it) |
-| `actor` | the actor, as the code writes it (`principal:<tenant>/<issuer id>\|sub:<sub>` or `\|client:<id>`, `server:<issuer>\|sub:…`, `os:<uid>:<user>`, `publisher:<tenant>/<names>`, `system:…`, `anonymous`), with its personal part replaced by a ref (below) |
-| `subject` | the resource as a path: `channel:prod`, `channel:prod/ext:acl/release:<id>`, `grant:<id>`, `upstream:core`, … |
-| `data` | a JSON object of the event's facts, built from the catalogue's fields for the kind (never a request body as a whole): changed fields with old and new values, a release's version and body hash, provenance, … Personal values in it (a grant's principal, an issuer's subject) appear as refs. At most 64 KiB; a larger one keeps its first fields and `"truncated": true` (a change never fails for its event) |
-| `client` | a ref of the request's client address (after spec 0006's trusted proxies and the reduction below); none for the CLI and background work |
-| `request` | the request's id: `X-Request-Id` when the caller sends one matching `[A-Za-z0-9._-]{1,64}`, else a new UUIDv7 (also logged with the request), for correlation; background work gets its own |
-| `seq`, `prev_hash`, `hash`, `chained_at` | the chain (below) |
+| `outcome` | `ok`; `refused` (an answer `401`, `403`, or `404` that stands for forbidden); `failed` (an answer `5xx`, or `ErrBusy`). Validation errors and stale `If-Match` (`400`, `409`, `412`, `428`) are not events: nothing happened |
+| `actor` | the actor as the code writes it: `principal:<tenant>/<issuer id>\|sub:<sub>` (or `\|client:<id>`), `server:<issuer>\|sub:…`, `os:<uid>:<user>`, `publisher:<tenant>/<names>`, `system:<what>` (`system:upstream:<tenant>/<name>`, `system:resign`, `system:retention`), `anonymous` |
+| `actor_name` | for a token's principal, its `name`, `preferred_username` or `email` claim at the time, for display; otherwise none |
+| `subject` | the resource as a path: `channel:prod`, `channel:prod/ext:acl/release:<id>`, `grant:<id>`, `upstream:core`, … (filters match prefixes) |
+| `data` | a JSON object of the event's facts, from the catalogue's fields for the kind (never a request body as a whole) |
+| `client` | the request's client address after spec 0006's trusted proxies, reduced by `events.client_addresses` (below); none for the CLI and background work |
+| `request` | the request's id (below); background work gets its own |
 
-**Never in events**: tokens, API keys (their prefix only), signer references' credentials, upstream
-or sink credentials, key material. The catalogue lists every field each kind may carry; a test fails
-when a field outside it, or a field typed as secret, reaches `data`.
+**`data`** holds the catalogue's fields only: changed fields with old and new values, a release's
+version and body hash, … Free-form values a caller controls (a publication's provenance) are one
+escaped string field, never merged as fields. A failure carries an error **class** from a fixed list
+(`egress.refused`, `egress.connect`, `egress.status`, `store.busy`, `signer`, `blob`, …), never an
+error's text, which may hold URLs with credentials. At most 16 KiB; a larger one keeps its first
+fields and `"truncated": true` (a change never fails for its event).
 
-**The catalogue** is part of this spec's implementation as a documented list (`internal/audit/kinds.go`
-and the API documentation): each kind, its subject and its `data` fields. Phase 1a: `tenant.create`,
-`tenant.suspend`, `tenant.resume`, `channel.create`,
-`channel.versions`, `version.add`, `version.c_apis`, `key.add`, `key.activate`, `key.retire`,
-`key.resign`, `issuer.add`, `issuer.remove`, `audience.add`, `audience.remove`, `grant.add`,
-`grant.remove`, `publisher.add`, `publisher.remove`, `publisher.github.add`,
-`publisher.github.remove`, `publisher.key.add`, `publisher.key.remove`, `auth.failure`,
-`authz.refused`, `audit.read`, `audit.export`, `audit.dropped`, `server.start`.
-Phase 1b: `tenant.event_retention`, `tenant.event_hold`, `audit.prune`, `audit.erase`, `release.add`, `release.publish`, `release.promote`, `release.yank`, `release.deprecate`,
-`release.activate`, `release.current`, `release.public`, `release.private`, `block.add`,
-`block.remove`, `upstream.add`, `upstream.remove`, `upstream.change`, `upstream.release`,
-`upstream.rejected`, `upstream.run`, `shadow.add`, `shadow.remove`. Phase 2: `install`,
-`auth.failure` on DuckDB routes, `upstream.pull`. Phase 3: `audit.sink`. The catalogue marks each
-`data` field as plain, personal (stored as a ref) or forbidden.
+**Never in events**: tokens, API keys (their prefix only), a key source reference (`key.add` carries
+the key's fingerprint and the source's scheme), upstream or sink credentials, key material. The
+catalogue marks each field plain, secret-free by construction; a test fails when a field outside the
+catalogue, a secret-typed field, or an error text reaches `data`.
+
+**Client addresses**: `events.client_addresses: full | truncated | none` (default `truncated`). An
+IPv4-mapped IPv6 address is unmapped first; IPv4 is cut to /24, IPv6 to /48, and an IPv6 address
+embedding IPv4 (6to4, NAT64, Teredo; egress's `embedded()`) to the embedded address's /24.
+
+**Request ids**: `X-Request-Id` (`[A-Za-z0-9._-]{1,64}`) is taken from a trusted proxy (spec 0006)
+only; otherwise kista makes a UUIDv7 and keeps a caller's value in `data.request_caller`. The id is
+logged with every request.
+
+**The catalogue** (`internal/audit/kinds.go`; served at `GET /api/v1/event-kinds` with each kind's
+subject form and fields; `v` 1):
+
+- tenants and server: `tenant.create`, `tenant.suspend`, `tenant.resume`, `version.add`,
+  `version.c_apis`, `server.start` (kista's version, the schema level, the names of the
+  security-relevant settings that changed since the previous start);
+- channels and keys: `channel.create`, `channel.versions` (versions added and removed), `key.add`,
+  `key.activate`, `key.retire`, `key.resign` (`system:resign` when a re-sign completes, the
+  requester in `data`);
+- identity: `issuer.add`, `issuer.remove`, `audience.add`, `audience.remove`, `grant.add`,
+  `grant.remove`, `publisher.add`, `publisher.remove`, `publisher.github.add`,
+  `publisher.github.remove`, `publisher.key.add`, `publisher.key.remove`;
+- releases: `release.add`, `release.publish`, `release.promote` (both with `shadows` when a reserved
+  or upstream name is released), `release.yank`, `release.deprecate`, `release.activate`,
+  `release.current`, `release.public`, `release.private`, `block.add`, `block.remove`;
+- upstreams: `upstream.add`, `upstream.remove`, `upstream.change`, `upstream.release` (an intake
+  release), `upstream.rejected` (a cell whose outcome changed to a refusal), `upstream.run` (a run's
+  summary, as `last_run`), `upstream.pull` (phase 2), `shadow.add`, `shadow.remove`;
+- access: `auth.failure`, `authz.refused`, `install` (phase 2; subject
+  `channel:<c>/ext:<name>/release:<id>`, `data`: version, platform, DuckDB version, body hash, the
+  `User-Agent`);
+- the log itself (server events): `audit.dropped`, `audit.sink`.
+
+Tenant and channel removal do not exist; when they do, they are events.
 
 ### Where events are written
 
-- **Changes**: in the operation's **decisive transaction** (the one whose commit makes the change),
-  through `Tx.Event`: the change and its event commit or roll back together. Follow-up work in other
-  transactions (a block's sweep of channels, version bumps, `FindOrInsertBuild`) writes none; its
-  results are in the decisive event's `data` or in later events of their own kind. Not events:
-  leases, `TouchAPIKey`, re-sign batches (one `key.resign` when a re-sign completes), cell rows.
-- **Upstreams**: an intake release is `upstream.release` in the ingest transaction; a rejected cell is
-  `upstream.rejected` (asynchronous) when its outcome changes from the cell's last; each run ends with
-  one `upstream.run` summary (counts and problems, as `last_run`).
-- **Refusals and failures**, asynchronously: authentication failures on management routes
-  (`auth.failure`: the reason class, never the token; per tenant, or the server chain when the
-  tenant is unknown), and `authz.refused` (actor, verb, resource) recorded where a request is finally
-  refused: `api.decide`'s refusals before a service is called, and a service's final denial (a
-  service that tries several verbs records only when all are denied), never per verb tried; and
-  `failed` outcomes.
-- **Reads of the log**: `audit.read` (a listing, a head or a verification; at most one per actor,
-  tenant and hour on a replica) and `audit.export` (always), in the chain read: a tenant's, or the
-  server's; a server administrator reading a tenant's log is recorded in the tenant's chain.
-- **`server.start`**: at boot, in the server chain: kista's version, the schema level, and a digest
-  of the security-relevant configuration (server issuers and admins, egress, signers' sources, sinks,
-  `events:`) with the names of the settings that changed since the previous start.
-- The actor and the client reach `Tx.Event` through the request's context (the client key moves from
-  `internal/api` to `internal/audit`); the CLI's events carry the OS actor and no client.
+- **Changes (1a)**: in the operation's **decisive transaction** (the one whose commit makes the
+  change), through `Tx.Event(ctx, actor, kind, subject, data)`: the change and its event commit or
+  roll back together. The services already take the actor; the client address, the request id and
+  `actor_name` come from the request's context (the client key moves from `internal/api` to
+  `internal/audit`). Follow-up work in other transactions (a block's sweep of channels, version bumps,
+  `FindOrInsertBuild`) writes none; its results are in the decisive event's `data`. Not events:
+  leases, `TouchAPIKey`, re-sign batches, upstream cell rows. A registry of the services' write
+  operations, each with its kind, backs a test that fails when an operation emits no event or the
+  wrong one.
+- **Refusals and failures (1b)**: recorded once, at the API layer, from the request's final answer
+  (and spec 0006's DuckDB routes in phase 2): `auth.failure` for a `401` (the reason class, never the
+  token; per tenant, or the server's when the tenant is unknown), `authz.refused` for a `403` or a
+  `404` that stands for forbidden (actor, route, verb), and a `failed` event of the route's kind for a
+  `5xx`. Services do not record refusals.
+- The CLI writes changes' events in their transactions; it runs the asynchronous writer for its own
+  refusals and flushes it before it exits.
 
-**The asynchronous writer** queues events in memory per tenant (at most 1,000 waiting per tenant,
-10,000 in all) and inserts them in batches (every second, or 500 events). A tenant over its quota
-drops its own events only; drops are counted per tenant and written directly into that tenant's
-chain as `audit.dropped` (with the counts by kind) at least once a minute while dropping. Refusal and
-failure events are rate-limited per (tenant, actor, kind) to one a second with a count, in a bounded
-map per tenant. Limits are per replica. Events written this way can be lost in a crash; changes'
-events never are.
+**The asynchronous writer (1b)** queues events in memory per tenant (at most 1,000 waiting per tenant,
+10,000 in all) and inserts them in batches (every second, or 500). A tenant over its quota drops its
+own events only. Refusals are rate-limited per (tenant, actor, kind) to one a second with a count;
+beyond 100 a minute per tenant they are coalesced per (tenant, kind, client prefix); the limiter's
+map is bounded (10,000 keys, least recently used dropped). Drops are counted and written as
+`audit.dropped` (counts by kind) once a minute while dropping, from room the writer reserves for it.
+Limits are per replica. These events can be lost in a crash; changes' events never are.
 
-### Pseudonymisation and erasure
+### The buffer
 
-Each tenant (and the server chain) has a random 32-byte **event key** (`event_keys`, created with the
-tenant). A **personal value** is: the `<sub>` or `<id>` of a principal or server actor's `sub:`/`client:`
-part, the OS user name of an `os:` actor, a client address (after its reduction), and every `data`
-field the catalogue marks personal (a grant's principal value, an issuer record's subject claims).
-Publisher names, issuer ids and tenants are not personal.
+Events stay in the database for `events.retention` (default **30 days**, 1..90 days; up to 365 when no
+sink is configured, for sites without a pipeline). A pass every hour (lease `kista/events/retention`)
+deletes older events in batches (`DELETE TOP (n)` on SQL Server; `WHERE id IN (SELECT … LIMIT n)`
+on PostgreSQL and SQLite). An event not yet delivered to every sink that takes it is kept past the
+retention for at most 7 more days, then deleted, counted in `audit.dropped` per sink. A tenant's
+events beyond `events.max_rows_per_tenant` (default 1,000,000) are deleted oldest first, the same way.
 
-A personal value is never written where the chain covers it. In its place goes its **ref**,
-`ref:` and the lowercase hex of `HMAC-SHA-256(event key, value)`: in `actor` (for example
-`principal:<tenant>/<issuer>|sub:ref:9f…`), in `client`, and in `data`. The clear value is kept in
-`event_personal(event_id, field, ref, value)`, outside the chain, and joined back on reading.
+### Sinks (1b)
 
-- **Online verification** also checks `HMAC(event key, value) == ref` for every clear value that is
-  not erased, so a changed clear value is detected; an offline export carries clear values but not
-  the event key, so offline verification checks the chain over refs only.
-- **Erasure** (phase 1b; `kista admin events erase <tenant> -value <value>` or `-client <address>`,
-  server administrator; the address is reduced first, as at write time) computes the ref and replaces
-  the matching clear values with `[erased]`; it records `audit.erase` with the ref, never the value.
-  The chain still verifies.
-- **Reduction**: `events.client_addresses: full | truncated | none` (default `truncated`: /24 and
-  /48) applies before the ref is made.
-- Refs of low-entropy values (addresses) can be recomputed by whoever holds the event key: refs are
-  pseudonymous, not anonymous.
+`events.sinks` (config, file-only), each with a name, a kind, and the tenants it takes (`["*"]` for
+every tenant, which does not include the server's events; `server: true` adds them; none by default,
+so a tenant's events never reach a party by accident).
 
-### The chain
+- **`otlp`**: an OpenTelemetry collector's OTLP/HTTP logs endpoint, written by kista (OTLP/HTTP with
+  JSON encoding: the wire format is stable; the Go SDK's log exporter is not), through egress's
+  client (no redirects, no proxy from the environment, addresses checked at every dial, egress's
+  never-list), with the sink's own allowlist (`allow`, egress's `cidr`/`ports` form: internal
+  collectors are the usual target), `https` (plain `http` to loopback in profile `dev`), headers from
+  `*_file` / `*_env` settings or a key source (never in events, logs or errors). `OTEL_*` environment
+  variables are ignored. One `ResourceLogs` per tenant (resource: `service.name=kista`,
+  `service.version`, `service.instance.id` (the replica), `kista.tenant.id`, `kista.tenant.name`,
+  and `events.resource`'s attributes such as `deployment.environment.name`), so a collector routes
+  per tenant. Each event is a log record: `EventName` `kista.<kind>`, severity INFO for `ok` and WARN
+  otherwise, timestamp `at`, the body a map (the event's JSON), attributes `kista.event.id`,
+  `kista.kind`, `kista.outcome`, `kista.actor`, `kista.subject`, `kista.request`, `client.address`,
+  and the trace context of the request's `traceparent` when there was one.
+- **`jsonl`**: JSON lines (the API's JSON) to stdout or a file (mode 0600, rotated by size, a number of
+  old files kept). A file is written by whichever replica holds the sink's lease: with several
+  replicas use stdout or a shared volume.
 
-A background **chainer** on every replica, holding the lease `kista/events/chainer` (one replica
-chains at a time; leases expire, so two may briefly overlap and the unique `seq` index aborts one),
-finds tenants with unchained events (`DISTINCT tenant_id` over the index of unchained events). Per
-tenant, one transaction under the lock `kista/events/<tenant_id>` reads the head, takes up to 500
-unchained events in `(at, id)` order, and compare-and-set (`WHERE seq IS NULL`) gives each the next
-`seq`, its `prev_hash` (the previous event's `hash`; 32 zero bytes for the first), `chained_at`, and
+**Bits.** A sink is registered by name in `event_sinks(name, bit, added_at)`; its bit (at most 16
+sinks) is its own for good. When an event is inserted, its `pending` mask gets the bits of the
+registered sinks whose tenant selection takes the event's tenant. A sink new or re-added gets only
+events written after its registration. A sink removed from the configuration keeps its bit until no
+replica has listed it for 10 minutes; then its bits are cleared lazily (on the rows the buffer pass
+touches) and its row is removed.
 
-```text
-hash      = SHA-256(prev_hash ‖ canonical(event))
-canonical = "kista-event-v1" ‖ uuid(tenant_id) ‖ u64(seq) ‖ uuid(id) ‖ u16(v) ‖ i64(at)
-            ‖ text(kind) ‖ text(outcome) ‖ text(actor) ‖ text(subject) ‖ text(data)
-            ‖ opt(client) ‖ text(request)
-uuid(x)   = the 16 bytes of the UUID
-i64(at)   = microseconds since 1970-01-01 UTC
-text(x)   = u32 length ‖ the UTF-8 bytes (data: exactly as kista wrote it)
-opt(x)    = 0x00 when absent | 0x01 ‖ text(x)          (client is the only optional field)
-integers  = big-endian
-```
+**Delivery** is at least once and approximately in `at` order: a replica holding the lease
+`kista/events/sink/<name>` reads `WHERE (pending & bit) <> 0 ORDER BY at, id` in batches (from the
+index of undelivered events), checks again that the sink takes each event's tenant, sends, and clears
+the bit. A transaction that commits late is delivered after events with a later `at`; receivers
+order by `at` and deduplicate by `kista.event.id` (a lease lost mid-batch causes duplicates, never a
+loss). A failing sink is retried with backoff (up to 5 minutes between attempts), never blocks
+writing or the other sinks, and is reported in the process log and as an `audit.sink` server event
+when it starts and stops failing (at most once in 10 minutes). Running with no sink is valid: the
+buffer is then the only record.
 
-`actor`, `client` and `data` are hashed with their refs (above). A transaction that commits with an
-earlier `at` than events already chained gets a later `seq`: it is never lost or skipped, and `seq`
-is the order. Every row is chained, whatever its content. On SQL Server the chainer's read waits for
-inserting transactions to commit (they are short); on SQLite a batch holds the write lock briefly.
-
-What the chain proves: once an event is chained, an edit, a deletion, an insertion or a reordering
-is detectable from any later head the verifier holds **outside the database** (a signed head counts:
-its signature cannot be made without the head signer). It does not prove who wrote a row: a database
-writer can insert rows the chainer then chains; and until an event is chained (seconds) it is
-unprotected. `verify` and the head report unchained events older than a minute as an alarm.
-
-**Heads** (signed heads from phase 1b). The chainer keeps each tenant's current head (`event_heads`:
-`seq`, `hash`, the last event's `at`). When `events.head_signer` is configured (a key source
-reference, spec 0004; recommended in production: a KMS or vault key the database's administrators
-cannot use, never a channel's key: one whose fingerprint is a channel key's is refused), it signs a
-head at most once a minute per tenant: the 32-byte digest
-`SHA-256("kista-head-v1" ‖ uuid(tenant_id) ‖ u64(seq) ‖ hash ‖ i64(at))` is given to the signer as
-a precomputed digest (as channel signatures, spec 0002), RSA-2048 PKCS#1 v1.5. Signed heads are kept
-(`event_signed_heads`) within the tenant's retention, and each is also written to the process log
-and to the sinks, so copies exist outside the database. **Rotation**: head signers are listed in
-`event_head_keys` (fingerprint, public key, first and last use); the API serves the list; while two
-are configured (`events.head_signer` and `events.previous_head_signer`), each signed head carries both
-signatures, so a verifier that pins the old key learns and checks the new one.
-
-### Retention, anchors and holds (phase 1b)
-
-Each tenant has a retention (`tenants.event_retention`, default 400 days, 30 days to 10 years). A daily
-pass (lease `kista/events/retention`) deletes a tenant's chained events older than its retention, in
-batches under the tenant's chain lock, oldest first; each batch first writes an `audit.prune` event
-(actor `system:retention`) naming the range and the new **anchor** (the last deleted event's `seq` and
-`hash`), then records the anchor (`event_anchors`) and deletes. Verification accepts an anchor only if
-an `audit.prune` event later in the chain names exactly it, its actor is `system:retention`, its range
-is older than the retention in effect then (the chain's `tenant.event_retention` events), and no hold
-was in effect (the chain's `tenant.event_hold` events). A retention decrease takes effect 7 days after
-it is set (`tenant.event_retention` records both values and the date). A **legal hold**
-(`tenants.event_hold`, server administrator) suspends pruning; setting and lifting it are events.
-Signed heads older than the retention are pruned with the events, except the newest signed head at or
-before the anchor. Server-level events use `events.server_retention` (config, default 400 days).
-
-Tenant removal does not exist yet; when it does, it exports the tenant's log and records the
-tenant's final head in the server chain before anything is removed.
-
-### Reading, export and verification
+### Reading (1a)
 
 ```text
-GET  /api/v1/tenants/{t}/events[?since=&until=&kind=&actor=&subject=&cursor=&limit=&pending=true]
-GET  /api/v1/tenants/{t}/events/head
-GET  /api/v1/tenants/{t}/events/export[?since=<seq>]      JSON lines, streamed (audit.export)
-GET  /api/v1/tenants/{t}/events/verify                    the stored chain verified (online checks)
-GET  /api/v1/events[...], /head, /export, /verify         the server chain (server administrators)
-GET  /api/v1/events/head-keys                             the head signers' public keys (public; 1b)
-POST /api/v1/tenants/{t}/event-retention {days}           server administrator; If-Match: the tenant's ETag
-POST /api/v1/tenants/{t}/event-hold, /event-release       server administrator; If-Match
+GET /api/v1/tenants/{t}/events[?since=&until=&kind=&actor=&subject=&outcome=&cursor=&limit=&order=]   audit
+GET /api/v1/tenants/{t}/events/{id}                                                                 audit
+GET /api/v1/events[...], /api/v1/events/{id}                    the server's events (server administrators)
+GET /api/v1/event-kinds                                          the catalogue (any valid token)
 ```
 
-- **Who reads**: the `audit` verb on the tenant (spec 0001's verb; `admin` implies it; a channel- or
-  extension-scoped grant does not reach the tenant's log), or a server administrator. Missing and
-  forbidden answer alike (spec 0007).
-- **Listing** is keyset-paged by `seq` (`cursor` is the last `seq`), chained events only; `pending=true`
-  lists unchained ones. Filters use indexed columns.
-- `GET tenants/{t}` shows the retention, its pending decrease and the hold.
+- **Who reads**: the new grant verb `audit` on the tenant (`admin` implies it; refused on a channel or
+  an extension grant and on an issuer-wide grant, as `admin` is, in grant validation and in
+  `authz.Covers`), or a server administrator. Missing and forbidden answer alike (spec 0007). `whoami`
+  shows whether the caller holds `audit`.
+- Newest first by default (`order=asc` oldest first), keyset-paged on `(at, id)` with spec 0007's
+  cursors; `since` and `until` are RFC 3339; `subject` matches a prefix.
+- CLI: `kista admin events list [-server] [-kind …] [-subject …] [-since …] [-follow] [-format
+  table|jsonl] [<tenant>]` (`-follow` prints new events as they are written, oldest first, polling the
+  store; `-format jsonl` exports for sites without a pipeline).
 
-CLI:
+### Downloads and statistics (2)
 
-- `kista admin events list|head|verify|export|erase [-server | <tenant>] …`, `kista admin events
-  head-keys`, `kista admin tenant event-retention <t> <days>`, `kista admin tenant event-hold <t>
-  on|off`;
-- `kista events verify -file events.jsonl [-head-keys keys.pem] [-head <seq>:<hash>]` verifies an
-  export **offline**, without configuration or database (a new top-level command, with `kista ext`).
-  An export is JSON lines: its anchor (with the `audit.prune` event that names it, when it starts
-  after one), the events in `seq` order with their hash fields, and the newest signed head. Without a
-  trusted head or head key, the result says "internally consistent only"; with one, the export must
-  contain the head's `seq` with that hash and the signature must verify.
+- **What counts**: a `GET` of a binary whose headers were sent with `200`, or `206` for a range
+  starting at byte 0, whether or not the body completed. `HEAD`, `304`, later ranges and retries of a
+  range do not count. A download from a passthrough channel counts in that channel's tenant.
+- **Install events**: such a download by a caller with a valid token is an `install` event, the first
+  per (principal, release, client, day) on a replica (a bounded map, 100,000 entries, least recently
+  used dropped). An e2e test checks that one `INSTALL`, with and without httpfs loaded, makes one
+  event.
+- **Counts**: every such download counts in `download_counts(tenant_id, channel_id, name, ext_version,
+  platform, duckdb_version, day, authenticated, count)`: no principal, no address, not deduplicated
+  (so counts exceed install events). Counts are kept in memory and upserted every minute (`ON CONFLICT
+  … DO UPDATE SET count = count + excluded.count` on PostgreSQL and SQLite; update-then-insert in a
+  transaction holding `kista/download_counts` on SQL Server); a crash loses at most a minute. `day` is
+  a date (text `YYYY-MM-DD` on SQLite).
+- **Installers**: a daily pass (lease, after UTC midnight) counts the distinct principals of the
+  previous day's `install` events per (channel, release) from the buffer and stores them in
+  `download_installers(tenant_id, channel_id, name, ext_version, platform, day, installers)`. No
+  principal is kept.
+- Counts and installers are kept for `statistics.retention` (default 3 years).
+- **Statistics API**:
 
-### The serve path (phase 2)
+  ```text
+  GET /api/v1/tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=<d>[,<d>]
+      d: day | version | platform | duckdb_version | channel        → rows of {dimensions…, count, installers}
+  GET /api/v1/tenants/{t}/stats/releases?channel=&extension=        → per release: 7- and 30-day counts, last download day
+  ```
 
-- **Installs**: a `GET` of a binary answered `200`, or `206` for a range starting at byte 0, to a
-  caller with a valid token. The first per (principal, release, client, day) is an `install` event;
-  every one counts in `install_counts(tenant, channel, name, ext_version, platform, principal_ref,
-  day, count)`. An e2e test checks that one `INSTALL`, with and without httpfs loaded, makes one event.
-- **Anonymous public downloads**: `download_counts(tenant, channel, name, ext_version, platform,
-  day, count)`.
-- Counts are upserted every minute by the asynchronous writer (`ON CONFLICT` on PostgreSQL and
-  SQLite, update-then-insert under a lock on SQL Server) and kept for `events.stats_retention`
-  (default 3 years).
-- **Token failures** on DuckDB routes (spec 0006's failure log) become `auth.failure` events,
-  rate-limited per tenant and reason; requests for a blocked or yanked body by an authenticated caller
-  count per (principal, body hash, day).
-- **Pull-through** fetches started by a miss are `upstream.pull` events.
-- **Statistics**: `GET /api/v1/tenants/{t}/stats/installs?from=&to=&group=extension|version|channel|principal`
-  (`audit` verb) from the counts, by day.
+  Readable with `audit` on the tenant (everything), or with `admin`, `publish` or `promote` on an
+  extension name, by a token's principal (not a publisher credential): only those names, and only the
+  channels the grants cover. Enterest reads with a server token and applies its own rules.
+- **OpenTelemetry metrics** (`telemetry.metrics`: an OTLP/HTTP metrics endpoint with the sinks' egress
+  rules, every 60 seconds; the Go SDK's stable metric exporter, given egress's client; `OTEL_*`
+  ignored; the tenants whose names may appear: none by default):
+  - `kista.downloads` (`{download}` counter): `kista.tenant.id`, `kista.channel`, `kista.extension`,
+    `kista.authenticated`; `kista.extension.version`, `kista.platform` and `kista.duckdb.version` only
+    when listed in `telemetry.metrics.labels`; at most `telemetry.metrics.max_series` series (default
+    10,000), beyond which an overflow series counts;
+  - `http.server.request.duration` (seconds, `http.route`, `http.response.status_code`);
+  - `kista.upstream.cells` by outcome, `kista.upstream.pull.queue`, `kista.events.pending` per sink,
+    `kista.events.dropped`, `kista.uploads.active`, `kista.downloads.active`.
 
-### Sinks (phase 3)
+### Configuration
 
-`events.sinks` (config, file-only): OTLP/HTTP log endpoints (reached through an explicit egress
-allowlist, so an internal collector works) and JSON-lines files (or stdout), each with the tenants it
-takes (none by default) and credentials from a key source (never in events or errors). The chainer
-hands each chained batch to the sinks with the head; a sink keeps its position per tenant
-(`event_sink_positions`), retries with backoff, never blocks chaining, and delivers at least once (the
-event `id` deduplicates). Sink lag and failures are logged and, once an hour while they last, an
-`audit.sink` server event. SIEMs, syslog and cloud log services are reached through an OpenTelemetry
-collector's exporters; per-tenant sinks configured over the API are a follow-up.
+```yaml
+events:                       # file-only
+  retention: 30d
+  max_rows_per_tenant: 1000000
+  client_addresses: truncated
+  resource: { deployment.environment.name: prod }
+  sinks:
+    - { name: collector, kind: otlp, url: https://otel.internal:4318/v1/logs, tenants: ["*"], server: true,
+        allow: [{ cidr: 10.0.0.0/8, ports: [4318] }], headers_file: /run/secrets/otel-headers }
+    - { name: stdout, kind: jsonl, path: "-", tenants: ["*"] }
+statistics:
+  retention: 3y
+telemetry:                    # phase 2
+  metrics: { url: https://otel.internal:4318/v1/metrics, allow: [...], tenants: ["*"], labels: [], max_series: 10000 }
+```
 
 ### Data model
 
-Migration 0010 (phase 1a; `-- +min_reader 10`: an older replica would change things without events):
+Migration 0010 (1a; `-- +min_reader 10`: an older replica would change things without events):
 
 ```text
-events          id, tenant_id (no FK), at, v, kind, outcome, actor, subject, data (text), client null,
-                request, seq null, prev_hash null, hash null, chained_at null
-                unique (tenant_id, seq) where seq is not null; index (tenant_id, at, id) where seq is null;
-                index (tenant_id, kind, at); index (tenant_id, actor, at)
-event_personal  event_id, field, ref, value            primary key (event_id, field); index (ref)
-event_keys      tenant_id, key, created_at
-event_heads     tenant_id, seq, hash, at               primary key (tenant_id)
+events       id, tenant_id (no FK), at, kind, v, outcome, actor, actor_name null, subject, data (text),
+             client null, request, pending (int, bits of sinks still to deliver to)
+             primary key (id); index (tenant_id, at, id); index (tenant_id, kind, at);
+             index (tenant_id, subject, at); index (at, id) where pending <> 0
+event_sinks  name, bit, added_at, last_listed_at        (1b fills it; the table ships in 0010)
 ```
 
-Migration 0011 (phase 1b): `event_signed_heads` (tenant_id, seq, hash, at, fingerprint, signature),
-`event_head_keys`, `event_anchors`, `tenants` + `event_retention`, `event_retention_next`,
-`event_retention_next_at`, `event_hold`. Migration 0012 (phase 2): `install_counts`,
-`download_counts`. Migration 0013 (phase 3): `event_sink_positions`. Filtered indexes exist on all
-three engines (as `ux_releases_seq`).
+Migration 0011 (2): `download_counts` (primary key: all but `count`), `download_installers`. Filtered
+indexes exist on all three engines (as `ux_releases_seq`); `&` on integers too.
 
 ### Package layout
 
 ```text
-internal/audit      kinds and their fields, Event, canonical form, the asynchronous writer, the
-                    chainer, heads, verification, export, pseudonyms, retention
-internal/store      + events, keys, heads, anchors, counts; Tx.Event
-internal/tenants, keys, release, upstream   + an event in every decisive transaction
-internal/api, cmd/kista   + reading, export, verification, retention, holds, erasure
+internal/audit     kinds and their fields, Event, Tx.Event's helpers, the asynchronous writer, the
+                   buffer's retention, sinks (otlp, jsonl), metrics (2)
+internal/store     + events, sinks, download counts and installers
+internal/tenants, keys, release, upstream, serve   + events
+internal/api, cmd/kista   + reading, statistics
 ```
-
-A registry of the services' write operations, each with its kind (or "phase 1b" for those 1a does
-not cover yet), backs a test that fails when an operation emits no event or the wrong one.
 
 ### Changes to earlier specs
 
-- **0006/0007**: grants take the verb `audit` (read a tenant's events and statistics; implied by
-  `admin` on the tenant; refused on a channel or an extension, and on an issuer-wide grant, as
-  `admin` is); `api.decide`'s
-  refusals and failures become events; the request id is logged with every request.
+- **0001**: "Events and statistics": events are delivered to the organisation's log pipeline and kept
+  30 days; the hash chain and per-tenant retention become a follow-up; statistics by principal are the
+  pipeline's (install events), kista keeps counts and daily installers.
+- **0006/0007**: grants take the verb `audit`; refusals and authentication failures become events
+  (spec 0006's failure log stays for the process log); the request id is logged; `whoami` shows
+  `audit`.
 - **0003/0007**: `key_events` and `GET …/keys/events` stay as a key's state history; key changes also
-  write events. Tenants gain the retention and hold fields.
+  write events.
 - **0008/0009**: every change writes its event in its decisive transaction; upstream runs write
   `upstream.run` summaries.
 
 ## Security
 
-- **Tamper evidence**, not tamper proofing: a database writer can still change the log; the chain
-  makes it detectable against a signed head (whose key the database's administrators do not hold) or
-  a head recorded outside. Anchors are accepted only when the chain names them; a retention decrease
-  waits 7 days; holds stop pruning.
-- **No secrets** in events: the catalogue's field allowlist, and a test.
-- **Privacy**: principals and client addresses are pseudonymised in the chain and erasable in clear;
-  client addresses are reduced at write time; events are tenant data read by `audit` holders and
-  server administrators, whose reads are themselves recorded.
-- **Isolation**: a tenant's events, keys, heads and statistics are its own; one tenant's volume
-  cannot drop another's events (per-tenant quotas).
-- **Availability**: a change's event costs one insert in its transaction; the serve path never waits
-  on the log.
+- **No secrets** in events: the catalogue's fields, error classes instead of error texts,
+  provenance as an escaped string, a test.
+- **Tamper evidence** is the log pipeline's: events leave the server within seconds, at least once,
+  to a store the server's database administrators do not control. The buffer is a convenience, not
+  evidence.
+- **Tenant isolation in delivery**: a sink takes only the tenants listed (none by default; the
+  server's events only with `server: true`); bits are bound to sink names in the database, and the
+  sender checks the tenant again before sending. Metrics name only listed tenants.
+- **Egress**: sinks and metrics use egress's client with an explicit allowlist; no redirects, no
+  environment proxies or `OTEL_*` settings.
+- **Privacy**: principals, display names and client addresses live in events only: 30 days in kista
+  (addresses reduced by default), then in the organisation's pipeline under its retention and
+  erasure. Counts, installers and metrics carry no principal and no address. Events are tenant data,
+  read by `audit` holders and server administrators; server administrators' actions on a tenant are
+  visible to its readers.
+- **Availability**: a change's event is one insert in its transaction; the serve path never waits on
+  events or metrics; sinks never block writing; floods of refusals are coalesced and bounded per
+  tenant; the buffer is bounded per tenant.
 
 ## Testing
 
-- **Store**: migration 0010 on three dialects; `Tx.Event` rolls back with its change; the filtered
-  indexes.
-- **Canonical form and chain**: the same events give the same hashes on SQLite, PostgreSQL and SQL
-  Server; two replicas' chainers chain in one order without gaps; a late commit with an earlier `at`
-  is chained, not skipped; verification detects an edited, deleted, inserted and reordered event, a
-  rewritten tail against a signed head, a forged anchor, a `NULL`/empty substitution.
-- **Coverage**: every registered write operation emits exactly one event of its kind; no secret
-  field reaches `data`; no personal value reaches a hashed field.
-- **Refusals**: a service trying several verbs records one refusal, only when all are denied.
-- **Pseudonyms and erasure**: an edited clear value fails online verification; erased events keep
-  verifying; refs match the erased value.
-- **Head signers**: a signed head verifies with the served key; a rotation's double signature; a
-  channel key refused as head signer; truncation after a signed head copied to the log is detected.
-- **Retention**: pruning writes `audit.prune` and keeps the chain verifiable; a decrease waits; a hold
-  stops it.
-- **API and CLI**: who reads (`audit`, admin, scoped grants, server administrators), reads recorded,
-  paging, export and offline verification with and without a head.
-- **Phase 2**: one install event per `INSTALL` (e2e, with and without httpfs); counts; failures
-  rate-limited; statistics; per-tenant quotas.
-- **Phase 3**: a fake OTLP endpoint and a file receive every event at least once, in order, across
-  restarts.
+- **Store**: migrations 0010 and 0011 on three dialects; `Tx.Event` rolls back with its change; the
+  pending and delete queries.
+- **Coverage**: every registered write operation emits exactly one event of its kind; no field outside
+  the catalogue, secret-typed field or error text reaches `data`; a refusal is recorded once.
+- **Writer**: per-tenant quotas, coalescing, `audit.dropped` never dropped.
+- **Buffer**: retention, the 7-day grace for undelivered events, the per-tenant cap.
+- **Sinks**: a fake OTLP endpoint and a file receive every event at least once across a restart and a
+  failing endpoint; a late commit is delivered, not skipped; a sink renamed, removed or reordered never
+  receives another sink's tenants; tenants a sink does not take never reach it; redirects refused;
+  credentials never in events or logs.
+- **API and CLI**: who reads (`audit`, admin, scoped and issuer-wide grants refused, server
+  administrators), filters, paging, `-follow`.
+- **Phase 2**: one install event per `INSTALL` (e2e, with and without httpfs); counts and installers;
+  statistics and who reads them; metrics with no principal and no unlisted tenant.
 
 ## Alternatives considered
 
-- **Events written asynchronously only.** A crash loses the record of a committed change.
-- **The hash computed in the change's transaction.** It serializes every change of a tenant on the
-  head; the chainer chains after commit.
-- **One chain for the server.** Tenants' logs must be exportable separately, and volumes isolated.
-- **Clear personal data in the chain.** Erasure would break verification.
-- **Unsigned heads only.** The head would come from the database it protects.
+- **A self-contained, hash-chained audit log** (an earlier draft of this spec): tamper evidence,
+  signed heads, retention with anchors, erasure by pseudonyms. It makes kista a log store, which the
+  organisations' pipelines already are; kept as a follow-up for deployments without one.
+- **The OpenTelemetry Go SDK's log exporter**: not yet stable; OTLP/HTTP's JSON encoding is.
+- **Events only as process logs**: unstructured, lost on a collector's outage, not per tenant.
+- **Principals in counts or metrics**: unbounded cardinality, and personal data in long-lived places.
+- **Statistics from the log pipeline only**: the console and Enterest's publishers would depend on a
+  backend each organisation chooses differently.
 
 ## Follow-ups
 
-- RFC 3161 timestamps of signed heads; per-tenant sinks over the API; webhooks.
-- Statistics across tenants (Enterest); the console's views (spec 0015).
-- Tenant removal (export and final head first).
+- A hash-chained, signed audit log for deployments without a log pipeline.
+- Per-tenant sinks configured over the API (Enterest tenants' own SIEMs); webhooks.
+- Statistics across tenants (Enterest, from its collector); the console's views (spec 0015); air-gapped
+  bundles of events (spec 0014).
