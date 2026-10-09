@@ -47,6 +47,14 @@ type Options struct {
 	Snapshots *release.Snapshots
 	// API serves /api/ on https requests (spec 0007); nil: /api/ answers 404.
 	API http.Handler
+	// Puller takes the misses of callers holding install that a pull-through upstream may fetch
+	// (spec 0009 phase 2); nil: no pull-through.
+	Puller Puller
+}
+
+// Puller takes a miss without blocking; it never changes the answer.
+type Puller interface {
+	Offer(release.Miss)
 }
 
 // Handler serves the DuckDB routes and health.
@@ -260,6 +268,16 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 			notFound(w) // a valid token without the grant, or a path that does not exist: the same
 		} else {
 			h.missing(w)
+		}
+		// spec 0009: a caller holding install offers the cell to a pull-through upstream, after the
+		// answer, from the snapshot the resolution used (no database work)
+		if v == viewAll && rt.kind == routeFlat && h.o.Puller != nil && sc.Channel.Kind == store.ChannelSigned {
+			if snap, err := h.rv.snaps.Get(ctx, sc.Channel); err == nil {
+				if id := snap.PullThroughFor(rt.duckdbVersion, rt.platform, rt.name); id != "" {
+					h.o.Puller.Offer(release.Miss{TenantID: sc.Tenant.ID, UpstreamID: id, DuckDBVersion: rt.duckdbVersion,
+						Platform: rt.platform, Name: rt.name})
+				}
+			}
 		}
 		return
 	}

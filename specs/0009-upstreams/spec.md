@@ -1,6 +1,6 @@
 # Spec 0009: Upstreams
 
-- **Status**: accepted; phases 1a and 1b implemented, 2 next
+- **Status**: accepted; phases 1a, 1b and 2 implemented; 3 by amendment
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -215,7 +215,7 @@ and the reason, and counted in the run; it never stops the run. Spec 0010 makes 
 - A run records on the upstream its start, end, whether it was a dry run, and counts per outcome
   with the first 20 errors. The last outcome of each cell (ETag, body hash, outcome, detail, time)
   is kept in `upstream_cells`; cells that left the matrix (a DuckDB version, platform or entry
-  removed) are removed by the next run.
+  removed) are removed by the next run; removing an entry or a platform removes its cells at once.
 
 Removing an upstream keeps the releases it made (they are the channel's; an administrator yanks
 them) and removes its cells; the names it provided stop being reserved (below).
@@ -281,13 +281,33 @@ bounded in-memory queue, after the answer is decided and without touching the da
   without pull-through;
 - the cell is in an upstream's matrix (the request's DuckDB version and platform, an allowlisted
   name or `"*"`); the versioned path never triggers a fetch;
-- the cell is not in the replica's negative cache (a miss or rejection within
-  `upstreams.negative_ttl`, default 1h; bounded, in memory).
+- the cell is not in the replica's negative cache: every outcome but `released` keeps a cell from
+  being fetched again for `upstreams.negative_ttl` (default 1h; a yanked or unchanged release still
+  misses, and fetching again would change nothing), a failure (network, store) for a minute
+  (bounded, in memory; a full cache evicts, it is never cleared at once).
 
-A worker takes the lease `kista/upstream/<id>/<cell>`, runs the intake, and records the cell (a `"*"`
-upstream records released cells only). At most 4 fetches per tenant and `upstreams.concurrency` per
-replica run at once; a full queue drops the miss (a later request retries). A passthrough channel
-never pulls through: its callers carry no token.
+Whether a miss may be offered is decided from the channel's snapshot (which carries the channel's
+pull-through upstreams, their platforms and names, and every name an upstream of the channel lists;
+every change to an upstream renews the tenant's snapshots). A worker reads the upstream as it is
+now (active, the name and platform still listed, the DuckDB version still the channel's), takes the
+lease `kista/upstream/<id>/<cell>` (renewed while the fetch runs, deleted after), runs the intake,
+and records the cell (a `"*"` upstream records released cells only, so names callers probe do not
+pile up; a `304` keeps the cell's record; a stopping fetch records nothing). Limits, all per replica:
+the queue holds 256 misses, a tenant at most 32 of them; a tenant runs at most 4 fetches at once and
+starts at most 60 a minute; `upstreams.concurrency` fetches run at once; a miss over a limit is
+dropped (a later request retries); a cell queued or fetching is not queued again; the negative cache
+holds at most 10,000 cells; a repository's keys are read at most every 5 minutes (a failing read at
+most every minute).
+
+- `"*"` is a pull-through upstream's entry only, without versions or `allow_reserved`, and not on a
+  `duckdb-core` upstream (every core name is reserved: it would take none; on `duckdb-community` it
+  takes the names newer than the pin). It never matches a reserved name, an alias, nor a name another
+  upstream of the channel lists (an explicit entry wins; the worker checks again), and it reserves
+  no name in the tenant: only listed names are reserved. A `"*"` upstream may take a name the tenant
+  publishes in another channel: list names where that matters.
+- A pull-through upstream is not run: `sync` answers `409`; its cells exist only for misses.
+- A passthrough channel never pulls through: its callers carry no token (adding a pull-through
+  upstream to one is refused).
 
 ### Private upstreams (phase 3)
 
@@ -324,16 +344,18 @@ GET    /api/v1/tenants/{t}/shadows; DELETE …/shadows/{name}   (phase 1b)
 `kind`, `prefix`, `channel` and `mode` are fixed at creation. Every change to the record or its
 allowlist, platforms or keys moves its `version` (a sync does not). Errors: `400` for an invalid
 field, a passthrough channel with a non-core upstream, a reserved or alias name not allowed, a
-`repository` whose keys are not listed; `409` for a duplicate name, a name another upstream of the
-channel lists, a collision with releases, or a sync of a paused upstream; `412`/`428` per
+`repository` whose keys are not listed, `"*"` outside a pull-through upstream or with versions or
+`allow_reserved` or on `duckdb-core`, a pull-through upstream on a passthrough channel; `409` for a
+duplicate name, a name another upstream of the channel lists, a collision with releases, or a sync
+of a paused or pull-through upstream; `412`/`428` per
 spec 0007. The index shows `origin: "upstream"` and the upstream's name on its releases to callers
 who see the row; `provenance` to tenant administrators.
 
 CLI: `kista admin upstream add|list|show|remove|sync|pause|resume|public|private <tenant> …`,
 `upstream extension|platform|key add|remove`, `upstream cells`, `shadow list|remove`.
 
-Config (`upstreams:`): `concurrency`, `fetch_timeout`, `min_rate`, `interval` (1b); `negative_ttl`
-comes with phase 2.
+Config (`upstreams:`): `concurrency`, `fetch_timeout`, `min_rate`, `interval` (1b), `negative_ttl`
+(2; default 1h, within 1m..24h).
 
 Limits: 100 upstreams a tenant, 1,000 entries an upstream, 100 versions an entry, 10 pinned keys.
 
@@ -376,7 +398,7 @@ internal/api, cmd/kista       + upstreams, shadows
 
 ### Changes to earlier specs
 
-- **0001**: no `enterest` kind (a `repository` upstream); a passthrough `.gz` is identical once
+- **0001**: no `enterest` kind (a `repository` upstream); a pull-through allowlist may be `"*"` (2); a passthrough `.gz` is identical once
   inflated, not byte for byte; DuckDB's original signature is kept per release
   (`releases.origin_signature`), the Build's being the first intake's; "an old signed binary cannot
   be served as a newer version" holds by the footer check per cell and by slots never refilled (the

@@ -495,6 +495,15 @@ func TestAddChecks(t *testing.T) {
 		for name, f := range map[string]func(*upstream.Spec){
 			"an alias":             func(s *upstream.Spec) { s.Entries = []store.UpstreamEntry{{Name: "postgres"}} },
 			"any name in a mirror": func(s *upstream.Spec) { s.Entries = []store.UpstreamEntry{{Name: "*"}} },
+			"any name with versions": func(s *upstream.Spec) {
+				s.Mode, s.Entries = store.ModePullThrough, []store.UpstreamEntry{{Name: "*", Versions: []string{"1.0"}}}
+			},
+			"any name, reserved too": func(s *upstream.Spec) {
+				s.Mode, s.Entries = store.ModePullThrough, []store.UpstreamEntry{{Name: "*", AllowReserved: true}}
+			},
+			"any core name": func(s *upstream.Spec) {
+				s.Kind, s.Prefix, s.Keys, s.Mode, s.Entries = store.UpstreamCore, "", nil, store.ModePullThrough, []store.UpstreamEntry{{Name: "*"}}
+			},
 			"over the matrix cap": func(s *upstream.Spec) {
 				s.Entries = nil
 				for i := range store.MaxUpstreamEntries {
@@ -516,10 +525,13 @@ func TestAddChecks(t *testing.T) {
 			"no platforms":               func(s *upstream.Spec) { s.Platforms = nil },
 			"wasm":                       func(s *upstream.Spec) { s.Platforms = []string{"wasm_eh"} },
 			"a kind":                     func(s *upstream.Spec) { s.Kind = "enterest" },
-			"pull-through (phase 2)":     func(s *upstream.Spec) { s.Mode = store.ModePullThrough },
-			"a passthrough channel":      func(s *upstream.Spec) { s.Channel = "mirror" },
-			"a core prefix":              func(s *upstream.Spec) { s.Kind = store.UpstreamCore },
-			"a private address":          func(s *upstream.Spec) { s.Prefix = "https://10.0.0.1" },
+			"a mode":                     func(s *upstream.Spec) { s.Mode = "push" },
+			"pull-through into passthrough": func(s *upstream.Spec) {
+				s.Kind, s.Prefix, s.Keys, s.Channel, s.Mode = store.UpstreamCore, "", nil, "mirror", store.ModePullThrough
+			},
+			"a passthrough channel": func(s *upstream.Spec) { s.Channel = "mirror" },
+			"a core prefix":         func(s *upstream.Spec) { s.Kind = store.UpstreamCore },
+			"a private address":     func(s *upstream.Spec) { s.Prefix = "https://10.0.0.1" },
 		} {
 			sp := en.spec(store.UpstreamEntry{Name: "tresor"})
 			f(&sp)

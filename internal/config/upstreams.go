@@ -8,6 +8,7 @@ type Upstreams struct {
 	FetchTimeout time.Duration `yaml:"fetch_timeout"` // one file's download; default 10m
 	MinRate      ByteSize      `yaml:"min_rate"`      // a download's least rate; default 64 KiB/s
 	Interval     time.Duration `yaml:"interval"`      // between a mirror's scheduled runs; default 6h
+	NegativeTTL  time.Duration `yaml:"negative_ttl"`  // a pull-through miss is not retried within it; default 1h
 }
 
 // Defaults of upstreams:.
@@ -16,6 +17,7 @@ const (
 	DefaultUpstreamFetchTimeout = 10 * time.Minute
 	DefaultUpstreamMinRate      = ByteSize(64 << 10)
 	DefaultUpstreamInterval     = 6 * time.Hour
+	DefaultUpstreamNegativeTTL  = time.Hour
 )
 
 // UpstreamLimits returns upstreams: with its defaults.
@@ -33,6 +35,9 @@ func (c Config) UpstreamLimits() Upstreams {
 	if u.Interval == 0 {
 		u.Interval = DefaultUpstreamInterval
 	}
+	if u.NegativeTTL == 0 {
+		u.NegativeTTL = DefaultUpstreamNegativeTTL
+	}
 	return u
 }
 
@@ -46,6 +51,9 @@ func validateUpstreams(bad func(string, ...any), c Config) {
 	}
 	if u.Interval != 0 && (u.Interval < 15*time.Minute || u.Interval > 7*24*time.Hour) {
 		bad("upstreams.interval must be within 15m..168h")
+	}
+	if u.NegativeTTL != 0 && (u.NegativeTTL < time.Minute || u.NegativeTTL > 24*time.Hour) {
+		bad("upstreams.negative_ttl must be within 1m..24h")
 	}
 	if u.MinRate != 0 && u.MinRate < 1<<10 {
 		bad("upstreams.min_rate must be at least 1KiB")

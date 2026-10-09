@@ -162,6 +162,9 @@ func TestAdminCLI(t *testing.T) {
 	}
 	run(0, "upstream", "cells", "acme", "core")
 	run(0, "shadow", "list", "acme")
+	run(0, "upstream", "add", "acme", "pull", "-kind", "duckdb-community", "-channel", "staging", "-platforms", "linux_amd64",
+		"-extensions", "*", "-mode", "pull-through")
+	run(1, "upstream", "sync", "acme", "pull")
 	run(1, "shadow", "remove", "acme", "httpfs")
 	run(0, "upstream", "remove", "acme", "core")
 	run(1, "upstream", "show", "acme", "core")

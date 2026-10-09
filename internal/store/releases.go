@@ -622,6 +622,15 @@ func (s *Store) ReleaseLease(ctx context.Context, name, holder string) error {
 	})
 }
 
+// DeleteLease removes a lease its holder is done with: leases named per item (a pull-through cell,
+// spec 0009) do not accumulate.
+func (s *Store) DeleteLease(ctx context.Context, name, holder string) error {
+	return s.tx(ctx, nil, func(t *Tx) error {
+		_, err := t.exec(ctx, "DELETE FROM leases WHERE name = ? AND holder = ?", name, holder)
+		return err
+	})
+}
+
 // LeaseState reads a lease: its last holder and until when it is (or was) held; found is false for
 // a lease never taken.
 func (s *Store) LeaseState(ctx context.Context, name string) (holder string, until time.Time, found bool, err error) {
@@ -735,7 +744,9 @@ func (s *Store) ProvidedNames(ctx context.Context, tenantID string) (map[string]
 		names, err := tx.strings(ctx, `SELECT DISTINCT e.name FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
 WHERE u.tenant_id = ?`, tenantID)
 		for _, n := range names {
-			out[n] = true
+			if n != "*" { // "*" reserves no name
+				out[n] = true
+			}
 		}
 		return err
 	})
