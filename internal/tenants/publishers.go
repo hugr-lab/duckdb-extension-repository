@@ -19,7 +19,12 @@ func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, nam
 		return store.Publisher{}, err
 	}
 	p := store.Publisher{TenantID: t.ID, Name: name, CreatedBy: a.String()}
-	err = s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &p) })
+	err = s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+		if err := tx.InsertPublisher(ctx, &p); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name})
+	})
 	return p, err
 }
 
@@ -39,7 +44,12 @@ func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, 
 	if err != nil {
 		return err
 	}
-	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, t.ID, name) })
+	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+		if err := tx.DeletePublisher(ctx, t.ID, name); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "publisher.remove", "publisher:"+name, map[string]any{"name": name})
+	})
 }
 
 // AddGitHubCredential binds a publisher to GitHub Actions runs of a provider.
@@ -68,7 +78,12 @@ func (s *AuthAdmin) AddGitHubCredential(ctx context.Context, a authz.Actor, tena
 			return err
 		}
 		c.PublisherID = p.ID
-		return tx.InsertGitHubCredential(ctx, t.ID, &c)
+		if err := tx.InsertGitHubCredential(ctx, t.ID, &c); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "publisher.github.add", "publisher:"+p.Name+"/github:"+c.ID,
+			map[string]any{"publisher": p.Name, "credential": c.ID, "owner_id": c.OwnerID, "repository_id": c.RepositoryID,
+				"workflow": c.Workflow, "ref": c.Ref, "environment": c.Environment})
 	})
 	return c, err
 }
@@ -84,7 +99,11 @@ func (s *AuthAdmin) RemoveGitHubCredential(ctx context.Context, a authz.Actor, t
 		if err != nil {
 			return err
 		}
-		return tx.DeleteGitHubCredential(ctx, t.ID, p.ID, id)
+		if err := tx.DeleteGitHubCredential(ctx, t.ID, p.ID, id); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "publisher.github.remove", "publisher:"+p.Name+"/github:"+id,
+			map[string]any{"publisher": p.Name, "credential": id})
 	})
 }
 
@@ -113,7 +132,11 @@ func (s *AuthAdmin) AddAPIKey(ctx context.Context, a authz.Actor, tenant, publis
 			return err
 		}
 		k.PublisherID = p.ID
-		return tx.InsertAPIKey(ctx, &k)
+		if err := tx.InsertAPIKey(ctx, &k); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "publisher.key.add", "publisher:"+p.Name+"/key:"+k.ID,
+			map[string]any{"publisher": p.Name, "key": k.ID, "prefix": k.Prefix, "expires_at": k.ExpiresAt})
 	})
 	if err != nil {
 		return store.APIKey{}, "", err
@@ -141,7 +164,11 @@ func (s *AuthAdmin) RemoveAPIKey(ctx context.Context, a authz.Actor, tenant, pub
 		if err != nil {
 			return err
 		}
-		return tx.DeleteAPIKey(ctx, p.ID, id)
+		if err := tx.DeleteAPIKey(ctx, p.ID, id); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "publisher.key.remove", "publisher:"+p.Name+"/key:"+id,
+			map[string]any{"publisher": p.Name, "key": id})
 	})
 }
 

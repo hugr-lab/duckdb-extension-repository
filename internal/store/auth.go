@@ -28,10 +28,11 @@ const (
 	VerbAdmin   = "admin"
 	VerbPublish = "publish"
 	VerbPromote = "promote"
+	VerbAudit   = "audit" // read a tenant's events and statistics (spec 0010)
 )
 
 // Verbs are every grant verb.
-var Verbs = []string{VerbInstall, VerbAdmin, VerbPublish, VerbPromote}
+var Verbs = []string{VerbInstall, VerbAdmin, VerbPublish, VerbPromote, VerbAudit}
 
 // MaxGrants is the most grants a tenant may hold: every request's authorization is linear in them.
 const MaxGrants = 1000
@@ -250,7 +251,11 @@ func (t *Tx) InsertGrant(ctx context.Context, g *Grant) error {
 	}
 	for _, v := range g.Verbs {
 		if !slices.Contains(Verbs, v) {
-			return fmt.Errorf("%w: verb %q (install, admin, publish or promote)", ErrInvalid, v)
+			return fmt.Errorf("%w: verb %q (install, admin, publish, promote or audit)", ErrInvalid, v)
+		}
+		// audit reads the tenant's log: a tenant-wide grant, never an issuer-wide one (spec 0010)
+		if v == VerbAudit && (g.ChannelID != "" || g.Extension != "" || g.Kind == PrincipalIssuer) {
+			return fmt.Errorf("%w: audit is granted on the tenant, never issuer-wide", ErrInvalid)
 		}
 	}
 	if len(g.CreatedBy) > 400 {

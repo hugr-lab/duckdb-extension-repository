@@ -41,6 +41,8 @@ type Config struct {
 	Publish  Publish  `yaml:"publish" kista:"fileonly"`
 	// Upstreams configures upstream runs (spec 0009).
 	Upstreams Upstreams `yaml:"upstreams" kista:"fileonly"`
+	// Events configures the event buffer (spec 0010).
+	Events Events `yaml:"events" kista:"fileonly"`
 }
 
 // Store selects and configures the metadata database.
@@ -453,6 +455,7 @@ func (c Config) Validate() error {
 	validateAuth(bad, c)
 	validatePublish(bad, c)
 	validateUpstreams(bad, c)
+	validateEvents(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

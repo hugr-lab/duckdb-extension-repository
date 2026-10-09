@@ -1,6 +1,6 @@
 # Spec 0010: Audit events and download statistics
 
-- **Status**: draft
+- **Status**: accepted; phase 1a implemented, 1b next
 - **Date**: 2026-10-09
 - **Author**: vgsml, Claude
 
@@ -51,7 +51,7 @@ Delivery is phased, each phase a pull request:
 | Field | Meaning |
 | --- | --- |
 | `id` | a UUIDv7, made inside the writing transaction (a retried transaction makes a new one) |
-| `tenant_id` | the tenant; server-level events (DuckDB versions, `tenant.create`, `server.start`, a sink's state, drops not attributable to a tenant) use the fixed id `00000000-0000-0000-0000-000000000000`, never a tenant's. A server administrator's action on a tenant is the tenant's event, and its actor (`server:<issuer>\|sub:…`) is visible to the tenant's readers |
+| `tenant_id` | the tenant; server-level events (DuckDB versions, `tenant.create` (the tenant does not exist before), `server.start`, a sink's state, drops not attributable to a tenant) use the fixed id `00000000-0000-0000-0000-000000000000`, never a tenant's. A server administrator's other actions on a tenant are the tenant's events; to the tenant's readers their actor shows as `server`, without name or address (as `created_by`, spec 0007) |
 | `at` | when it happened (`Tx.Now`, UTC, microseconds) |
 | `kind` | from the catalogue (below) |
 | `outcome` | `ok`; `refused` (an answer `401`, `403`, or `404` that stands for forbidden); `failed` (an answer `5xx`, or `ErrBusy`). Validation errors and stale `If-Match` (`400`, `409`, `412`, `428`) are not events: nothing happened |
@@ -71,39 +71,43 @@ fields and `"truncated": true` (a change never fails for its event).
 
 **Never in events**: tokens, API keys (their prefix only), a key source reference (`key.add` carries
 the key's fingerprint and the source's scheme), upstream or sink credentials, key material. The
-catalogue marks each field plain, secret-free by construction; a test fails when a field outside the
-catalogue, a secret-typed field, or an error text reaches `data`.
+catalogue lists the fields each kind may carry; the services fill them from typed facts (ids, names,
+versions, hashes, states), never from request bodies or error texts; `Data` refuses any other field,
+and the tests check that no key source reference reaches an event.
 
 **Client addresses**: `events.client_addresses: full | truncated | none` (default `truncated`). An
 IPv4-mapped IPv6 address is unmapped first; IPv4 is cut to /24, IPv6 to /48, and an IPv6 address
 embedding IPv4 (6to4, NAT64, Teredo; egress's `embedded()`) to the embedded address's /24.
 
 **Request ids**: `X-Request-Id` (`[A-Za-z0-9._-]{1,64}`) is taken from a trusted proxy (spec 0006)
-only; otherwise kista makes a UUIDv7 and keeps a caller's value in `data.request_caller`. The id is
-logged with every request.
+only; otherwise kista makes a UUIDv7. The id is logged with every request (`request_id`).
 
-**The catalogue** (`internal/audit/kinds.go`; served at `GET /api/v1/event-kinds` with each kind's
-subject form and fields; `v` 1):
+**The catalogue** (`internal/audit/audit.go`; served publicly at `GET /api/v1/event-kinds` with each
+kind's subject form and fields; `v` 1):
 
 - tenants and server: `tenant.create`, `tenant.suspend`, `tenant.resume`, `version.add`,
   `version.c_apis`, `server.start` (kista's version, the schema level, the names of the
   security-relevant settings that changed since the previous start);
 - channels and keys: `channel.create`, `channel.versions` (versions added and removed), `key.add`,
-  `key.activate`, `key.retire`, `key.resign` (`system:resign` when a re-sign completes, the
-  requester in `data`);
+  `key.activate`, `key.retire`, `key.resign` (actor `system:resign`, when a re-sign completes and the
+  serving key moves);
 - identity: `issuer.add`, `issuer.remove`, `audience.add`, `audience.remove`, `grant.add`,
   `grant.remove`, `publisher.add`, `publisher.remove`, `publisher.github.add`,
   `publisher.github.remove`, `publisher.key.add`, `publisher.key.remove`;
-- releases: `release.add`, `release.publish`, `release.promote` (both with `shadows` when a reserved
-  or upstream name is released), `release.yank`, `release.deprecate`, `release.activate`,
+- releases: `release.add`, `release.publish` (subject the release), `release.promote` (subject
+  `channel:<c>/ext:<name>`, `data.releases` the releases made, `from_channel`), all three with
+  `shadows` when a reserved or upstream name is released and followed by a `shadow.add` in the same
+  transaction when they record a tenant shadow (spec 0009), `release.yank`, `release.deprecate`, `release.activate`,
   `release.current`, `release.public`, `release.private`, `block.add`, `block.remove`;
-- upstreams: `upstream.add`, `upstream.remove`, `upstream.change`, `upstream.release` (an intake
+- upstreams: `upstream.add`, `upstream.remove`, `upstream.change` (`data.change`: `set`,
+  `extension.put`, `extension.remove`, `platform.add`, `platform.remove`, `key.add`, `key.remove`,
+  with the value), `upstream.release` (an intake
   release), `upstream.rejected` (a cell whose outcome changed to a refusal), `upstream.run` (a run's
   summary, as `last_run`), `upstream.pull` (phase 2), `shadow.add`, `shadow.remove`;
 - access: `auth.failure`, `authz.refused`, `install` (phase 2; subject
   `channel:<c>/ext:<name>/release:<id>`, `data`: version, platform, DuckDB version, body hash, the
   `User-Agent`);
-- the log itself (server events): `audit.dropped`, `audit.sink`.
+- the log itself (server events): `audit.dropped`, `audit.sink`; `request.failed` (1b, a `5xx`).
 
 Tenant and channel removal do not exist; when they do, they are events.
 
@@ -114,7 +118,7 @@ Tenant and channel removal do not exist; when they do, they are events.
   roll back together. The services already take the actor; the client address, the request id and
   `actor_name` come from the request's context (the client key moves from `internal/api` to
   `internal/audit`). Follow-up work in other transactions (a block's sweep of channels, version bumps,
-  `FindOrInsertBuild`) writes none; its results are in the decisive event's `data`. Not events:
+  `FindOrInsertBuild`) writes none (a block's yanks follow its `block.add`). Not events:
   leases, `TouchAPIKey`, re-sign batches, upstream cell rows. A registry of the services' write
   operations, each with its kind, backs a test that fails when an operation emits no event or the
   wrong one.
@@ -136,8 +140,8 @@ Limits are per replica. These events can be lost in a crash; changes' events nev
 
 ### The buffer
 
-Events stay in the database for `events.retention` (default **30 days**, 1..90 days; up to 365 when no
-sink is configured, for sites without a pipeline). A pass every hour (lease `kista/events/retention`)
+Events stay in the database for `events.retention` (default **30 days**, at least a day; at most 365
+days, and at most 90 once a sink is configured (phase 1b), for sites without a pipeline). A pass every hour (lease `kista/events/retention`)
 deletes older events in batches (`DELETE TOP (n)` on SQL Server; `WHERE id IN (SELECT … LIMIT n)`
 on PostgreSQL and SQLite). An event not yet delivered to every sink that takes it is kept past the
 retention for at most 7 more days, then deleted, counted in `audit.dropped` per sink. A tenant's
@@ -198,9 +202,10 @@ GET /api/v1/event-kinds                                          the catalogue (
   shows whether the caller holds `audit`.
 - Newest first by default (`order=asc` oldest first), keyset-paged on `(at, id)` with spec 0007's
   cursors; `since` and `until` are RFC 3339; `subject` matches a prefix.
-- CLI: `kista admin events list [-server] [-kind …] [-subject …] [-since …] [-follow] [-format
-  table|jsonl] [<tenant>]` (`-follow` prints new events as they are written, oldest first, polling the
-  store; `-format jsonl` exports for sites without a pipeline).
+- CLI: `kista admin events list [-server] [-kind …] [-subject …] [-actor …] [-since …] [-limit n]
+  [-follow] [-format table|jsonl] [<tenant>]` (`-follow` prints new events, oldest first, polling the
+  store and looking back 30 seconds each time, so an event that commits late is printed once;
+  `-format jsonl` exports for sites without a pipeline).
 
 ### Downloads and statistics (2)
 
@@ -248,7 +253,7 @@ GET /api/v1/event-kinds                                          the catalogue (
 
 ```yaml
 events:                       # file-only
-  retention: 30d
+  retention: 720h             # 30 days
   max_rows_per_tenant: 1000000
   client_addresses: truncated
   resource: { deployment.environment.name: prod }
@@ -257,7 +262,7 @@ events:                       # file-only
         allow: [{ cidr: 10.0.0.0/8, ports: [4318] }], headers_file: /run/secrets/otel-headers }
     - { name: stdout, kind: jsonl, path: "-", tenants: ["*"] }
 statistics:
-  retention: 3y
+  retention: 26280h           # 3 years
 telemetry:                    # phase 2
   metrics: { url: https://otel.internal:4318/v1/metrics, allow: [...], tenants: ["*"], labels: [], max_series: 10000 }
 ```
@@ -315,8 +320,8 @@ internal/api, cmd/kista   + reading, statistics
 - **Privacy**: principals, display names and client addresses live in events only: 30 days in kista
   (addresses reduced by default), then in the organisation's pipeline under its retention and
   erasure. Counts, installers and metrics carry no principal and no address. Events are tenant data,
-  read by `audit` holders and server administrators; server administrators' actions on a tenant are
-  visible to its readers.
+  read by `audit` holders and server administrators; a server administrator's identity shows to a
+  tenant's readers as `server`. Display names are reduced to printable characters.
 - **Availability**: a change's event is one insert in its transaction; the serve path never waits on
   events or metrics; sinks never block writing; floods of refusals are coalesced and bounded per
   tenant; the buffer is bounded per tenant.

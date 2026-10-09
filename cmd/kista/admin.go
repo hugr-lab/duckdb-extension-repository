@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/app"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
@@ -82,6 +83,8 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved]
   upstream extension remove <tenant> <name> <extension>
   upstream platform|key add|remove <tenant> <name> <platform|fingerprint>
+  events list [-server] [-kind <k>] [-subject <prefix>] [-actor <a>] [-since <RFC 3339>] [-limit <n>]
+              [-follow] [-format table|jsonl] [<tenant>]          the event buffer (spec 0010), newest first
   shadow list <tenant>                            core names the tenant replaced: passthrough channels do not serve them
   shadow remove <tenant> <name>                   serve DuckDB's build again from passthrough channels
   block add <tenant> <body-hash> -reason <text>   ban a body tenant-wide: its releases are yanked
@@ -248,6 +251,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.upstream(ctx, sub, args[min(2, len(args)):])
 	case "shadow":
 		return a.shadow(ctx, sub, args[min(2, len(args)):])
+	case "events":
+		return a.events(ctx, sub, args[min(2, len(args)):])
 	case "blob":
 		if sub != "check" || len(args) != 2 {
 			return errUsage
@@ -1109,4 +1114,107 @@ func (a *adminCmd) shadow(ctx context.Context, sub string, args []string) error 
 		return errUsage
 	}
 	return nil
+}
+
+func (a *adminCmd) events(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("events", flag.ContinueOnError)
+	server := fs.Bool("server", false, "")
+	kind := fs.String("kind", "", "")
+	subject := fs.String("subject", "", "")
+	actor := fs.String("actor", "", "")
+	since := fs.String("since", "", "")
+	limit := fs.Int("limit", 100, "")
+	follow := fs.Bool("follow", false, "")
+	format := fs.String("format", "table", "")
+	pos, err := flags(fs, args)
+	if err != nil || sub != "list" || (*server) == (len(pos) == 1) || len(pos) > 1 || (*format != "table" && *format != "jsonl") {
+		return errUsage
+	}
+	tenantID := audit.ServerTenant
+	if !*server {
+		t, err := a.svc.Tenants.GetTenant(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		tenantID = t.ID
+	}
+	f := store.EventFilter{Kind: *kind, Subject: *subject, Actor: *actor, Limit: *limit}
+	if *since != "" {
+		if f.Since, err = time.Parse(time.RFC3339Nano, *since); err != nil {
+			return fmt.Errorf("%w: -since is an RFC 3339 time", errUsage)
+		}
+	}
+	header := true
+	print := func(evs []store.Event) {
+		if *format == "jsonl" {
+			for _, e := range evs {
+				b, err := json.Marshal(map[string]any{"id": e.ID, "at": e.At.UTC().Format(time.RFC3339Nano), "kind": e.Kind, "v": e.V,
+					"outcome": e.Outcome, "actor": e.Actor, "actor_name": e.ActorName, "subject": e.Subject,
+					"data": json.RawMessage(e.Data), "client": e.Client, "request": e.Request})
+				if err == nil {
+					fmt.Fprintln(a.out, string(b))
+				}
+			}
+			return
+		}
+		w := tabwriter.NewWriter(a.out, 0, 2, 2, ' ', 0)
+		if header {
+			fmt.Fprintln(w, "AT\tKIND\tOUTCOME\tACTOR\tSUBJECT\tDATA")
+			header = false
+		}
+		for _, e := range evs {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.At.UTC().Format(time.RFC3339), e.Kind, e.Outcome, e.Actor, e.Subject, e.Data)
+		}
+		w.Flush()
+	}
+	if !*follow {
+		evs, err := a.svc.Store.ListEvents(ctx, tenantID, f)
+		if err != nil {
+			return err
+		}
+		print(evs)
+		return nil
+	}
+	// -follow: oldest first, polling the store; each poll looks back a window, so an event that
+	// commits after a later one was printed is still printed (once: its id is remembered)
+	const window = 30 * time.Second
+	f.Ascending, f.Limit = true, 1000
+	from := f.Since
+	if from.IsZero() {
+		from = time.Now().Add(-time.Minute)
+	}
+	seen := map[string]time.Time{}
+	for {
+		f.Since = from
+		evs, err := a.svc.Store.ListEvents(ctx, tenantID, f)
+		if err != nil {
+			return err
+		}
+		var fresh []store.Event
+		for _, e := range evs {
+			if _, ok := seen[e.ID]; !ok {
+				seen[e.ID] = e.At
+				fresh = append(fresh, e)
+			}
+		}
+		print(fresh)
+		if len(evs) > 0 {
+			if last := evs[len(evs)-1].At.Add(-window); last.After(from) {
+				from = last
+			}
+		}
+		for id, at := range seen {
+			if at.Before(from) {
+				delete(seen, id)
+			}
+		}
+		if len(evs) == f.Limit && len(fresh) > 0 {
+			continue // more waiting: no pause
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(2 * time.Second):
+		}
+	}
 }

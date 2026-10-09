@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -127,6 +128,11 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel, ref s
 		if err := tx.InsertKey(ctx, &k, a.String(), false); err != nil {
 			return err
 		}
+		scheme, _, _ := strings.Cut(k.SignerRef, ":") // the source's scheme, never the reference
+		if err := tx.Event(ctx, c.TenantID, a.String(), "key.add", "channel:"+c.Name+"/key:"+k.ID,
+			map[string]any{"key": k.ID, "fingerprint": k.Fingerprint, "scheme": scheme, "state": k.State}); err != nil {
+			return err
+		}
 		return tx.BumpChannel(ctx, &c)
 	})
 	return k, err
@@ -203,10 +209,15 @@ func (s *Service) Activate(ctx context.Context, a authz.Actor, tenant, channel, 
 				}
 			}
 		}
+		from := target.State
 		if err := tx.SetKeyState(ctx, target, store.KeyActive, a.String(), forced); err != nil {
 			return err
 		}
 		out = *target
+		if err := tx.Event(ctx, c.TenantID, a.String(), "key.activate", "channel:"+c.Name+"/key:"+target.ID,
+			map[string]any{"key": target.ID, "fingerprint": target.Fingerprint, "from": from, "forced": forced}); err != nil {
+			return err
+		}
 		return tx.BumpChannel(ctx, &c)
 	})
 	return out, err
@@ -256,10 +267,15 @@ func (s *Service) Retire(ctx context.Context, a authz.Actor, tenant, channel, ke
 		if target.ID == c.ServingKeyID {
 			return fmt.Errorf("%w: the key's signatures are the ones served; activate another key and re-sign the channel first", ErrState)
 		}
+		from := target.State
 		if err := tx.SetKeyState(ctx, target, store.KeyRetired, a.String(), forced); err != nil {
 			return err
 		}
 		out = *target
+		if err := tx.Event(ctx, c.TenantID, a.String(), "key.retire", "channel:"+c.Name+"/key:"+target.ID,
+			map[string]any{"key": target.ID, "fingerprint": target.Fingerprint, "from": from, "forced": forced}); err != nil {
+			return err
+		}
 		return tx.BumpChannel(ctx, &c)
 	})
 	return out, err

@@ -34,7 +34,7 @@ func (s *Service) Resign(ctx context.Context, channelID string, renew func(conte
 			return signed, false, err
 		}
 		if len(rels) == 0 {
-			moved, err := s.moveServing(ctx, channelID, active.ID)
+			moved, err := s.moveServing(ctx, channelID, active, signed)
 			if errors.Is(err, errResign) {
 				continue // a release arrived or the key changed; look again
 			}
@@ -77,7 +77,8 @@ func (s *Service) Resign(ctx context.Context, channelID string, renew func(conte
 }
 
 // moveServing moves the serving key to key when no non-yanked release lacks its signature.
-func (s *Service) moveServing(ctx context.Context, channelID, key string) (bool, error) {
+func (s *Service) moveServing(ctx context.Context, channelID string, active store.Key, signed int) (bool, error) {
+	key := active.ID
 	moved := false
 	err := s.Store.InTx(ctx, lockKey(channelID), func(tx *store.Tx) error {
 		c, err := tx.ChannelByID(ctx, channelID)
@@ -109,6 +110,10 @@ func (s *Service) moveServing(ctx context.Context, channelID, key string) (bool,
 			return err
 		}
 		moved = true
+		if err := tx.Event(ctx, c.TenantID, "system:resign", "key.resign", "channel:"+c.Name+"/key:"+key,
+			map[string]any{"key": key, "fingerprint": active.Fingerprint, "signatures": signed}); err != nil {
+			return err
+		}
 		return tx.BumpReleaseVersion(ctx, channelID)
 	})
 	return moved, err

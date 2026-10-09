@@ -54,6 +54,7 @@ const (
 	VerbAdmin   Verb = "admin"
 	VerbPublish Verb = "publish" // spec 0008: never implied by admin
 	VerbPromote Verb = "promote"
+	VerbAudit   Verb = "audit" // spec 0010: read the tenant's events; admin implies it
 )
 
 // Resource is what an action is on: the server (no tenant), a tenant, a channel, or an extension
@@ -140,7 +141,7 @@ func Covers(p auth.Principals, grants []store.Grant, verb string, r Resource) bo
 		if !p[auth.Key{IssuerID: g.IssuerID, Kind: g.Kind, Value: g.Value}] {
 			continue
 		}
-		if g.Kind == store.PrincipalIssuer && (verb == store.VerbAdmin || explicit || !slices.Contains(g.Verbs, verb)) {
+		if g.Kind == store.PrincipalIssuer && (verb == store.VerbAdmin || verb == store.VerbAudit || explicit || !slices.Contains(g.Verbs, verb)) {
 			continue
 		}
 		if !slices.Contains(g.Verbs, verb) && (explicit || !slices.Contains(g.Verbs, store.VerbAdmin)) {
@@ -148,6 +149,9 @@ func Covers(p auth.Principals, grants []store.Grant, verb string, r Resource) bo
 		}
 		if r.Reserved && explicit && g.Extension == "" {
 			continue
+		}
+		if verb == store.VerbAudit && (g.ChannelID != "" || g.Extension != "") {
+			continue // the tenant's log: a tenant-wide grant only
 		}
 		switch {
 		case g.ChannelID == "" && g.Extension == "":

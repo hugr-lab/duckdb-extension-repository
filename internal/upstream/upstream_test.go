@@ -346,6 +346,18 @@ func TestMirror(t *testing.T) {
 		if len(rs) != 2 || rs[0].ExtVersion != "1.1" || rs[0].Seq <= rel.Seq {
 			t.Fatalf("the new version: %+v", rs)
 		}
+		// events (spec 0010): each release made, each run summarised, a cell turning into a refusal
+		kinds := map[string]int{}
+		evs, _ := en.st.ListEvents(ctx, rs[0].TenantID, store.EventFilter{Limit: 1000})
+		for _, e := range evs {
+			kinds[e.Kind]++
+			if e.Kind == "upstream.release" && e.Actor != "system:upstream:acme/acme-repo" {
+				t.Errorf("an upstream release's actor: %s", e.Actor)
+			}
+		}
+		if kinds["upstream.release"] != 2 || kinds["upstream.run"] < 5 || kinds["upstream.rejected"] != 1 {
+			t.Fatalf("events: %v", kinds)
+		}
 		// cells page by (DuckDB version, platform, name)
 		one, err := en.up.Cells(ctx, admin, "acme", "acme-repo", "", [3]string{}, 1)
 		if err != nil || len(one) != 1 || one[0].Name != "gone" {

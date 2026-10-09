@@ -116,3 +116,6 @@ func (c *Client) allowed(addr netip.Addr, port uint16) bool {
 	}
 	return false
 }
+
+// Embedded returns the IPv4 addresses an IPv6 address carries (spec 0010 reduces them as IPv4).
+func Embedded(a netip.Addr) []netip.Addr { return embedded(a) }

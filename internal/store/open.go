@@ -195,6 +195,12 @@ type Store struct {
 	// LockTimeout bounds waiting for a lock (PostgreSQL lock_timeout, SQL Server LOCK_TIMEOUT and
 	// sp_getapplock); a timeout is retried, then reported as ErrConflict.
 	LockTimeout time.Duration
+	// EventClients reduces client addresses in events (spec 0010: full, truncated or none; ""
+	// is truncated).
+	EventClients string
+	// EventSinks gives an event's pending sinks: the bits of the sinks that take its tenant (spec
+	// 0010 phase 1b); nil: none.
+	EventSinks func(tenantID string) int
 }
 
 func newStore(db *sql.DB, d *Dialect) *Store {

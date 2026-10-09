@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/buffer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
@@ -112,6 +113,10 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return fmt.Errorf("app: the upstream download directory: %w", err)
 	}
 	svc.Upstreams.Log = log
+	ev := cfg.EventSettings()
+	pruner := &buffer.Pruner{Store: st, Holder: host + "/" + store.NewID(), Retention: ev.Retention, MaxRowsPerTenant: ev.MaxRowsPerTenant, Log: log}
+	wg.Add(1)
+	go func() { defer wg.Done(); pruner.Run(bg) }()
 	ur := &upstream.Runner{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log}
 	wg.Add(2)
 	go func() { defer wg.Done(); ur.Run(bg) }()

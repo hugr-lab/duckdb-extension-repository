@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -32,7 +33,13 @@ func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, display
 		return store.Tenant{}, fmt.Errorf("%w: storage domain %q is not configured", store.ErrInvalid, domain)
 	}
 	t := store.Tenant{Name: name, DisplayName: displayName, StorageDomain: domain}
-	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.CreateTenant(ctx, &t) })
+	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		if err := tx.CreateTenant(ctx, &t); err != nil {
+			return err
+		}
+		return tx.Event(ctx, "", a.String(), "tenant.create", "tenant:"+t.Name,
+			map[string]any{"name": t.Name, "display_name": t.DisplayName, "storage_domain": t.StorageDomain})
+	})
 	return t, err
 }
 
@@ -70,7 +77,15 @@ func (s *Service) SetTenantState(ctx context.Context, a authz.Actor, name, state
 		if expected != 0 && t.Version != expected {
 			return store.ErrConflict
 		}
-		return tx.SetTenantState(ctx, &t, state)
+		was := t.State
+		if err := tx.SetTenantState(ctx, &t, state); err != nil || was == state {
+			return err
+		}
+		kind := audit.Kind("tenant.resume")
+		if state == store.TenantSuspended {
+			kind = "tenant.suspend"
+		}
+		return tx.Event(ctx, t.ID, a.String(), kind, "tenant:"+t.Name, nil)
 	})
 	return t, err
 }
@@ -98,7 +113,7 @@ func (s *Service) AddVersion(ctx context.Context, a authz.Actor, name, kind stri
 				return err
 			}
 		}
-		return nil
+		return tx.Event(ctx, "", a.String(), "version.add", "version:"+v.Name, map[string]any{"version": v.Name, "kind": kind, "c_apis": capis})
 	})
 	return v, err
 }
@@ -154,6 +169,9 @@ func (s *Service) AddVersionCAPI(ctx context.Context, a authz.Actor, name, capi 
 		if v.CAPIs, err = tx.VersionCAPIs(ctx, v.ID); err != nil {
 			return err
 		}
+		if err := tx.Event(ctx, "", a.String(), "version.c_apis", "version:"+v.Name, map[string]any{"version": v.Name, "c_api": capi}); err != nil {
+			return err
+		}
 		return tx.BumpChannelsServing(ctx, v.ID)
 	})
 	return v, err
@@ -179,7 +197,10 @@ func (s *Service) CreateChannel(ctx context.Context, a authz.Actor, tenant, name
 			return err
 		}
 		c.TenantID = t.ID
-		return tx.CreateChannel(ctx, &c)
+		if err := tx.CreateChannel(ctx, &c); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "channel.create", "channel:"+c.Name, map[string]any{"name": c.Name, "kind": c.Kind})
 	})
 	return c, err
 }
@@ -247,6 +268,10 @@ func (s *Service) SetChannelVersions(ctx context.Context, a authz.Actor, tenant,
 			if err := tx.RemoveChannelVersion(ctx, c.ID, v.ID); err != nil {
 				return err
 			}
+		}
+		if err := tx.Event(ctx, c.TenantID, a.String(), "channel.versions", "channel:"+c.Name,
+			map[string]any{"added": add, "removed": remove}); err != nil {
+			return err
 		}
 		return tx.BumpChannel(ctx, &c)
 	})

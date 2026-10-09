@@ -671,3 +671,24 @@ func TestBehindProxyRefusesPeers(t *testing.T) {
 		t.Fatal("a peer outside trusted_proxies was served")
 	}
 }
+
+// Spec 0010: X-Request-Id is a trusted proxy's only, and well formed; otherwise a new id.
+func TestRequestID(t *testing.T) {
+	h := &Handler{o: Options{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}}}
+	for _, c := range []struct {
+		remote, id string
+		kept       bool
+	}{
+		{"10.0.0.1:5", "abc-123", true},
+		{"1.2.3.4:5", "abc-123", false},
+		{"10.0.0.1:5", "bad id!", false},
+		{"10.0.0.1:5", strings.Repeat("a", 65), false},
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.remote
+		r.Header.Set("X-Request-Id", c.id)
+		if got := h.requestID(r); (got == c.id) != c.kept || got == "" {
+			t.Errorf("%+v: %q", c, got)
+		}
+	}
+}

@@ -75,6 +75,8 @@ type Result struct {
 	Error    string         `json:"error,omitempty"` // the run failed before its cells
 	Counts   map[string]int `json:"counts"`
 	Problems []CellNote     `json:"problems,omitempty"` // the first 20 cells that were not released or unchanged
+
+	actor string // the run's actor, for its event
 }
 
 // CellNote is one cell's outcome in a run's record.
@@ -137,7 +139,18 @@ func (s *Service) RunUpstream(ctx context.Context, id string, renew func(context
 				return err
 			}
 		}
-		return tx.FinishUpstreamRun(fctx, id, string(b), !res.DryRun, res.Started, next)
+		if err := tx.FinishUpstreamRun(fctx, id, string(b), !res.DryRun, res.Started, next); err != nil {
+			return err
+		}
+		who := res.actor
+		if who == "" { // the run failed before naming itself
+			who = "system:upstream:" + u.Name
+			if sc, err := s.Store.ServeChannelByID(fctx, u.ChannelID); err == nil {
+				who = "system:upstream:" + sc.Tenant.Name + "/" + u.Name
+			}
+		}
+		return tx.Event(fctx, u.TenantID, who, "upstream.run", "upstream:"+u.Name,
+			map[string]any{"upstream": u.Name, "dry_run": res.DryRun, "counts": res.Counts, "error": runClass(runErr)})
 	})
 	return res, err
 }
@@ -225,6 +238,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	}
 	hostGate := g.host(pu.Host, perHost)
 	actor := authz.Actor{Kind: authz.ActorSystem, ID: "upstream:" + sc.Tenant.Name + "/" + u.Name}
+	res.actor = actor.String()
 
 	var mu sync.Mutex
 	note := func(c cell, outcome, detail string) {
@@ -303,7 +317,18 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 				note(c, counted, outcome.Detail)
 				if !res.DryRun {
 					wctx := context.WithoutCancel(ctx)
-					if err := s.Store.InTx(wctx, "", func(tx *store.Tx) error { return tx.PutCell(wctx, outcome) }); err != nil {
+					if err := s.Store.InTx(wctx, "", func(tx *store.Tx) error {
+						if err := tx.PutCell(wctx, outcome); err != nil {
+							return err
+						}
+						// a cell turning into a refusal is an event (spec 0010); not its text, which may hold URLs
+						if refusal[outcome.Outcome] && outcome.Outcome != prev.Outcome {
+							return tx.Event(wctx, u.TenantID, actor.String(), "upstream.rejected", "upstream:"+u.Name,
+								map[string]any{"upstream": u.Name, "duckdb_version": c.version, "platform": c.platform, "name": c.name,
+									"outcome": outcome.Outcome})
+						}
+						return nil
+					}); err != nil {
 						s.Log.Warn("upstream: recording a cell", "upstream", u.Name, "error", err)
 					}
 				}
@@ -329,6 +354,9 @@ func (s *Service) paused(ctx context.Context, id string) (bool, error) {
 	})
 	return paused, err
 }
+
+// refusal outcomes: a cell turning into one is an upstream.rejected event.
+var refusal = map[string]bool{store.CellRejected: true, store.CellConflict: true, store.CellBlocked: true, store.CellShadowed: true}
 
 // conditional outcomes: the same answer changes nothing, so the last ETag is sent.
 var conditional = map[string]bool{store.CellReleased: true, store.CellUnchanged: true, store.CellYanked: true, store.CellConflict: true}
@@ -405,7 +433,7 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		return fail(store.CellRejected, err) // the file: too large, malformed, a broken gzip stream
 	}
 	defer sp.Close()
-	in := release.Ingest{Name: c.name, DuckDBVersion: c.version, Platform: c.platform, Versions: e.Versions, Keys: keys,
+	in := release.Ingest{Name: c.name, DuckDBVersion: c.version, Platform: c.platform, Upstream: u.Name, URL: url, Versions: e.Versions, Keys: keys,
 		Visibility: u.Visibility, DryRun: dryRun, Provenance: func(key string) string {
 			b, _ := json.Marshal(map[string]string{"upstream": u.Name, "kind": u.Kind, "url": url, "etag": d.ETag, "key": key,
 				"fetched_at": rec.FetchedAt.Format(time.RFC3339)})
@@ -492,4 +520,21 @@ func entry(u store.Upstream, name string) (store.UpstreamEntry, bool) {
 		}
 	}
 	return store.UpstreamEntry{}, false
+}
+
+// runClass is a stopped run's error class for its event (never the error's text).
+func runClass(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, errStopped):
+		return "paused"
+	case errors.Is(err, ErrNoKeys):
+		return "keys"
+	case errors.Is(err, errFailed):
+		return "failed"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "interrupted"
+	}
+	return "error"
 }
