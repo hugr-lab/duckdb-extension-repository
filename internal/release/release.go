@@ -9,6 +9,7 @@ import (
 	"io"
 	"slices"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
@@ -198,7 +199,16 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 			return store.Release{}, false, err
 		}
 	}
-	rs, existed, err := s.insert(ctx, a, ch.ID, []item{it})
+	kind := audit.Kind("release.add")
+	if it.origin == store.OriginPublication {
+		kind = "release.publish"
+	}
+	rs, existed, err := s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {
+		r := made[0]
+		f := releaseFields(r, it.b, kind == "release.publish")
+		f["shadows"] = Shadows(store.Candidate{Release: r, BuildOrigin: it.b.Origin}, nil)
+		return tx.Event(ctx, c.TenantID, a.String(), kind, releaseSubject(c, r), f)
+	})
 	if err != nil {
 		return store.Release{}, false, err
 	}
@@ -347,7 +357,10 @@ func required(keys []store.Key, serving string) ([]store.Key, error) {
 // insert signs outside any transaction and inserts the releases under the channel lock, all or
 // none, retrying while the keys it needs change underneath. It returns the releases (existing ones
 // for items whose slot already holds them with the same choices) and whether all of them existed.
-func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, items []item) ([]store.Release, bool, error) {
+// eventFn writes the event of the releases an insert made (spec 0010), in its transaction.
+type eventFn func(tx *store.Tx, c store.Channel, made []store.Release) error
+
+func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, items []item, event eventFn) ([]store.Release, bool, error) {
 	hashes := make([]extfile.BodyHash, len(items))
 	for i, it := range items {
 		h, err := parseHash(it.b.BodyHash)
@@ -392,7 +405,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				sigs[i][k.ID] = sig
 			}
 		}
-		var out []store.Release
+		var out, made []store.Release
 		existing := 0
 		need = nil
 		// a signed channel's inserts take the tenant's upstream lock first (spec 0009): the reservation
@@ -402,7 +415,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 			locks = []string{store.TenantUpstreamLock(ch.TenantID), lockKey(channelID)}
 		}
 		err := s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
-			out, existing, need = nil, 0, nil
+			out, made, existing, need = nil, nil, 0, nil
 			c, err := tx.ChannelByID(ctx, channelID)
 			if err != nil {
 				return err
@@ -515,15 +528,27 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 						}
 					}
 					if core {
-						if _, err := tx.AddShadow(ctx, b.TenantID, b.Name, a.String()); err != nil {
+						added, err := tx.AddShadow(ctx, b.TenantID, b.Name, a.String())
+						if err != nil {
 							return err
+						}
+						if added {
+							if err := tx.Event(ctx, b.TenantID, a.String(), "shadow.add", "shadow:"+b.Name, map[string]any{"name": b.Name}); err != nil {
+								return err
+							}
 						}
 					}
 				}
 				out = append(out, r)
+				made = append(made, r)
 			}
 			if existing == len(items) {
 				return nil
+			}
+			if event != nil {
+				if err := event(tx, c, made); err != nil {
+					return err
+				}
 			}
 			if c.ServingKeyID == "" {
 				for _, k := range req {
@@ -693,7 +718,28 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 			return err
 		}
 		out = r
+		kind := map[Change]audit.Kind{Yank: "release.yank", Deprecate: "release.deprecate", Activate: "release.activate",
+			MakeCurrent: "release.current", SetPublic: "release.public", SetPrivate: "release.private"}[c]
+		if err := tx.Event(ctx, ch.TenantID, a.String(), kind, releaseSubject(ch, r),
+			map[string]any{"release": r.ID, "name": r.Name, "version": r.ExtVersion, "platform": r.Platform}); err != nil {
+			return err
+		}
 		return tx.BumpReleaseVersion(ctx, ch.ID)
 	})
 	return out, err
+}
+
+func releaseSubject(c store.Channel, r store.Release) string {
+	return "channel:" + c.Name + "/ext:" + r.Name + "/release:" + r.ID
+}
+
+// releaseFields are a release's facts in its events (spec 0010); provenance, which a caller
+// controls, is one string.
+func releaseFields(r store.Release, b store.Build, provenance bool) map[string]any {
+	f := map[string]any{"release": r.ID, "name": r.Name, "version": r.ExtVersion, "platform": r.Platform, "slot": r.Slot,
+		"body_hash": b.BodyHash, "visibility": r.Visibility, "current": r.Seq != 0}
+	if provenance && r.Provenance != "" {
+		f["provenance"] = r.Provenance
+	}
+	return f
 }

@@ -83,7 +83,13 @@ func (s *AuthAdmin) AddIssuer(ctx context.Context, a authz.Actor, tenant string,
 		return store.Issuer{}, fmt.Errorf("%w: the JWKS of %s has no usable signing key", ErrIssuerFetch, is.URL)
 	}
 	is.TenantID, is.CreatedBy = t.ID, a.String()
-	err = s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error { return tx.InsertIssuer(ctx, &is) })
+	err = s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+		if err := tx.InsertIssuer(ctx, &is); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "issuer.add", "issuer:"+is.Name,
+			map[string]any{"name": is.Name, "url": is.URL, "algorithms": is.Algorithms})
+	})
 	return is, err
 }
 
@@ -120,6 +126,9 @@ func (s *AuthAdmin) RemoveIssuer(ctx context.Context, a authz.Actor, tenant, nam
 		if err := tx.DeleteIssuer(ctx, t.ID, name); err != nil {
 			return err
 		}
+		if err := tx.Event(ctx, t.ID, a.String(), "issuer.remove", "issuer:"+rec.Name, map[string]any{"name": rec.Name, "url": rec.URL}); err != nil {
+			return err
+		}
 		return keepAdmin(ctx, tx, a, t.ID, before)
 	})
 }
@@ -144,7 +153,12 @@ func (s *AuthAdmin) AddAudience(ctx context.Context, a authz.Actor, tenant, aud 
 	if slices.Contains(s.ServerAudiences, aud) {
 		return fmt.Errorf("%w: %s is a server audience", store.ErrInvalid, aud)
 	}
-	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error { return tx.AddAudience(ctx, t.ID, aud, a.String()) })
+	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+		if err := tx.AddAudience(ctx, t.ID, aud, a.String()); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "audience.add", "tenant:"+t.Name, map[string]any{"audience": aud})
+	})
 }
 
 // RemoveAudience removes a tenant's assigned audience (server-wide action).
@@ -156,7 +170,12 @@ func (s *AuthAdmin) RemoveAudience(ctx context.Context, a authz.Actor, tenant, a
 	if err != nil {
 		return err
 	}
-	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error { return tx.RemoveAudience(ctx, t.ID, aud) })
+	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+		if err := tx.RemoveAudience(ctx, t.ID, aud); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "audience.remove", "tenant:"+t.Name, map[string]any{"audience": aud})
+	})
 }
 
 // ListAudiences lists a tenant's audiences: the canonical one first, then the assigned ones.
@@ -190,8 +209,8 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 		return store.Grant{}, err
 	}
 	if kind == store.PrincipalIssuer && (slices.Contains(verbs, store.VerbAdmin) || slices.Contains(verbs, store.VerbPublish) ||
-		slices.Contains(verbs, store.VerbPromote)) {
-		return store.Grant{}, fmt.Errorf("%w: an issuer: grant cannot carry admin, publish or promote", store.ErrInvalid)
+		slices.Contains(verbs, store.VerbPromote) || slices.Contains(verbs, store.VerbAudit)) {
+		return store.Grant{}, fmt.Errorf("%w: an issuer: grant cannot carry admin, publish, promote or audit", store.ErrInvalid)
 	}
 	if extension != "" {
 		if err := release.ValidName(extension); err != nil {
@@ -227,9 +246,16 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 			}
 			g.ChannelID, g.ChannelName = c.ID, c.Name
 		}
-		return tx.InsertGrant(ctx, &g)
+		if err := tx.InsertGrant(ctx, &g); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "grant.add", "grant:"+g.ID, grantFields(g))
 	})
 	return g, err
+}
+
+func grantFields(g store.Grant) map[string]any {
+	return map[string]any{"principal": g.Principal(), "verbs": g.Verbs, "channel": g.ChannelName, "extension": g.Extension}
 }
 
 func dedupe(in []string) []string {
@@ -258,12 +284,25 @@ func (s *AuthAdmin) RemoveGrant(ctx context.Context, a authz.Actor, tenant, id s
 	if err != nil {
 		return err
 	}
+	ta, err := s.Store.GetTenantAuth(ctx, t.ID) // the grant's fields for its event (grants never change)
+	if err != nil {
+		return err
+	}
+	fields := map[string]any{}
+	for _, g := range ta.Grants {
+		if g.ID == id {
+			fields = grantFields(g)
+		}
+	}
 	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
 		before, err := tx.TenantAdminGrants(ctx, t.ID)
 		if err != nil {
 			return err
 		}
 		if err := tx.DeleteGrant(ctx, t.ID, id); err != nil {
+			return err
+		}
+		if err := tx.Event(ctx, t.ID, a.String(), "grant.remove", "grant:"+id, fields); err != nil {
 			return err
 		}
 		return keepAdmin(ctx, tx, a, t.ID, before)

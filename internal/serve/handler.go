@@ -10,13 +10,14 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
@@ -159,10 +160,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	lw := &logWriter{ResponseWriter: w, status: http.StatusOK}
 	aborted := true
+	// the request's facts for its events and logs (spec 0010): the client, and a request id, a
+	// trusted proxy's or a new one
+	rq := audit.Request{Client: h.clientAddr(r), ID: h.requestID(r)}
+	r = r.WithContext(audit.WithRequest(r.Context(), rq))
 	defer func() {
 		h.log.Info("request", "method", r.Method, "path", r.URL.EscapedPath(), "status", lw.status, "bytes", lw.bytes,
-			"duration", time.Since(start).Round(time.Millisecond), "client", h.clientAddr(r), "scheme", scheme(r), "listener", listenerOf(r),
-			"aborted", aborted)
+			"duration", time.Since(start).Round(time.Millisecond), "client", rq.Client, "scheme", scheme(r), "listener", listenerOf(r),
+			"aborted", aborted, "request_id", rq.ID)
 	}()
 	defer func() { aborted = false }() // skipped by a panic: an aborted response
 	if strings.HasPrefix(r.URL.EscapedPath(), "/api/") {
@@ -171,7 +176,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			notFound(lw)
 			return
 		}
-		h.o.API.ServeHTTP(lw, r.WithContext(api.WithClient(r.Context(), h.clientAddr(r))))
+		h.o.API.ServeHTTP(lw, r)
 		return
 	}
 	rt := parseRoute(r)
@@ -556,6 +561,22 @@ func (l *logWriter) Write(p []byte) (int, error) {
 }
 
 func (l *logWriter) Unwrap() http.ResponseWriter { return l.ResponseWriter }
+
+var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// requestID is the request's id: X-Request-Id from a trusted proxy (spec 0006), else a new one.
+func (h *Handler) requestID(r *http.Request) string {
+	if v := r.Header.Get("X-Request-Id"); v != "" && requestIDRe.MatchString(v) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		if peer, err := netip.ParseAddr(host); err == nil && h.trusted(peer) {
+			return v
+		}
+	}
+	return store.NewID()
+}
 
 // clientAddr is the connection's address, or, behind a trusted proxy, the rightmost X-Forwarded-For
 // entry that is not a trusted proxy.

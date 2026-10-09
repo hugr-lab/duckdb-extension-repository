@@ -16,3 +16,4 @@ and it is superseded by a new spec when a decision changes.
 | [0007](0007-api/spec.md) | The HTTP API: index and management | implemented |
 | [0008](0008-publication/spec.md) | Publication and promotion | implemented |
 | [0009](0009-upstreams/spec.md) | Upstreams: mirror, passthrough, pull-through | phases 1a, 1b, 2 implemented; 3 by amendment |
+| [0010](0010-audit/spec.md) | Audit events and download statistics | draft |

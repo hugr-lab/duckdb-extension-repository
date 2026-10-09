@@ -19,6 +19,7 @@ var ErrSignature = errors.New("release: the signature does not verify with the u
 // Ingest is one cell of an upstream's matrix (spec 0009): what was fetched and what it must be.
 type Ingest struct {
 	Name, DuckDBVersion, Platform string
+	Upstream, URL                 string   // for the event (spec 0010)
 	Versions                      []string // accepted extension versions; none: any
 	Keys                          []*rsa.PublicKey
 	Visibility                    string
@@ -132,7 +133,12 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 			return res, err
 		}
 	}
-	rs, existed, err := s.insert(ctx, a, ch.ID, []item{it})
+	rs, existed, err := s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {
+		r := made[0]
+		return tx.Event(ctx, c.TenantID, a.String(), "upstream.release", releaseSubject(c, r),
+			map[string]any{"upstream": in.Upstream, "release": r.ID, "name": r.Name, "version": r.ExtVersion, "platform": r.Platform,
+				"slot": r.Slot, "body_hash": it.b.BodyHash, "url": in.URL, "key": key})
+	})
 	if err != nil {
 		return res, err
 	}

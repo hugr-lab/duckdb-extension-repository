@@ -73,6 +73,7 @@ func OpenStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 		s.Close()
 		return nil, err
 	}
+	s.EventClients = cfg.EventSettings().ClientAddresses
 	return s, nil
 }
 

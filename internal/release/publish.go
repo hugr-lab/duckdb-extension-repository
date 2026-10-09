@@ -124,7 +124,24 @@ func (s *Service) Promote(ctx context.Context, a authz.Actor, tenant, channel, n
 	if len(items) == 0 {
 		return nil, false, fmt.Errorf("%w: version %s has no active release in %s", ErrState, o.Version, o.From)
 	}
-	return s.insert(ctx, a, target.Channel.ID, items)
+	return s.insert(ctx, a, target.Channel.ID, items, func(tx *store.Tx, c store.Channel, made []store.Release) error {
+		ids := make([]string, len(made))
+		for i, r := range made {
+			ids[i] = r.ID
+		}
+		origin := ""
+		for _, it := range items {
+			if it.b.ID == made[0].BuildID {
+				origin = it.b.Origin
+			}
+		}
+		f := map[string]any{"releases": ids, "name": name, "from_channel": o.From, "version": made[0].ExtVersion,
+			"shadows": Shadows(store.Candidate{Release: made[0], BuildOrigin: origin}, nil)}
+		if o.Provenance != "" {
+			f["provenance"] = o.Provenance
+		}
+		return tx.Event(ctx, c.TenantID, a.String(), "release.promote", "channel:"+c.Name+"/ext:"+name, f)
+	})
 }
 
 var bodyHashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -149,7 +166,12 @@ func (s *Service) Block(ctx context.Context, a authz.Actor, tenant, hash, reason
 	}
 	b := store.Block{TenantID: t.ID, BodyHash: hash, Reason: reason, CreatedBy: a.String()}
 	existed := false
-	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertBlock(ctx, &b) })
+	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		if err := tx.InsertBlock(ctx, &b); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "block.add", "block:"+hash, map[string]any{"body_hash": hash, "reason": reason})
+	})
 	if errors.Is(err, store.ErrExists) {
 		existed = true
 		if b, err = s.GetBlock(ctx, a, tenant, hash); err != nil {
@@ -191,7 +213,12 @@ func (s *Service) Unblock(ctx context.Context, a authz.Actor, tenant, hash strin
 	if err != nil {
 		return err
 	}
-	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.DeleteBlock(ctx, t.ID, hash) }); err != nil {
+	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		if err := tx.DeleteBlock(ctx, t.ID, hash); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "block.remove", "block:"+hash, map[string]any{"body_hash": hash})
+	}); err != nil {
 		return err
 	}
 	// the index marks yanked rows of blocked bodies: every channel's snapshot is renewed

@@ -78,7 +78,9 @@ func whoamiOf(c caller) map[string]any {
 		// an issuer-wide grant's admin is ignored (spec 0007)
 		admin = admin || slices.Contains(g.Verbs, store.VerbAdmin) && g.Kind != store.PrincipalIssuer
 	}
-	return map[string]any{"tenant": c.tenant.Name, "principals": nonNil(ps), "grants": nonNil(grants), "holds_admin": admin}
+	auditor := authz.Covers(c.principals, c.ta.Grants, store.VerbAudit, authz.Resource{Tenant: c.tenant.Name})
+	return map[string]any{"tenant": c.tenant.Name, "principals": nonNil(ps), "grants": nonNil(grants), "holds_admin": admin,
+		"holds_audit": auditor}
 }
 
 func nonNil[T any](s []T) []T {

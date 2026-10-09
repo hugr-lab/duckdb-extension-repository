@@ -162,6 +162,16 @@ func TestAdminCLI(t *testing.T) {
 	}
 	run(0, "upstream", "cells", "acme", "core")
 	run(0, "shadow", "list", "acme")
+	// events (spec 0010)
+	if got := run(0, "events", "list", "acme", "-subject", "upstream:co"); !strings.Contains(got, "upstream.add") || strings.Contains(got, "block.add") {
+		t.Fatalf("events list: %q", got)
+	}
+	if got := run(0, "events", "list", "-server", "-format", "jsonl", "-limit", "1"); !strings.Contains(got, `"kind":"`) {
+		t.Fatalf("server events: %q", got)
+	}
+	run(2, "events", "list")
+	run(2, "events", "list", "-server", "acme")
+	run(1, "events", "list", "nope")
 	run(0, "upstream", "add", "acme", "pull", "-kind", "duckdb-community", "-channel", "staging", "-platforms", "linux_amd64",
 		"-extensions", "*", "-mode", "pull-through")
 	run(1, "upstream", "sync", "acme", "pull")

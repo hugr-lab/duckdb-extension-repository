@@ -18,7 +18,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
@@ -111,17 +113,16 @@ func New(o Options) *Handler {
 		uploads: map[string]int{}}
 }
 
-type ctxKey int
-
-const clientKey ctxKey = 0
-
-// WithClient records the request's client address (kista serve computes it, spec 0006).
+// WithClient records the request's client address (kista serve computes it, spec 0006; the
+// request's facts are audit's, spec 0010).
 func WithClient(ctx context.Context, addr string) context.Context {
-	return context.WithValue(ctx, clientKey, addr)
+	rq := audit.FromContext(ctx)
+	rq.Client = addr
+	return audit.WithRequest(ctx, rq)
 }
 
 func client(r *http.Request) string {
-	if c, ok := r.Context().Value(clientKey).(string); ok {
+	if c := audit.FromContext(r.Context()).Client; c != "" {
 		return c
 	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
@@ -494,6 +495,9 @@ var routes []route
 // readers may read an extension's releases: its administrators and its publishers (spec 0008).
 var readers = []authz.Verb{authz.VerbAdmin, authz.VerbPublish, authz.VerbPromote}
 
+// auditors read a tenant's events (spec 0010): audit, which admin on the tenant implies.
+var auditors = []authz.Verb{authz.VerbAudit}
+
 func init() {
 	idx := func(f handler) map[string]rule { return map[string]rule{http.MethodGet: {access: public, handle: f}} }
 	m := func(a access, f handler) rule { return rule{access: a, manage: true, handle: f} }
@@ -549,6 +553,12 @@ func init() {
 				handle: (*Handler).promoteRelease}}},
 		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/{id}", map[string]rule{
 			http.MethodGet: {access: pathVerbs, verbs: readers, manage: true, publishers: true, handle: (*Handler).getRelease}}},
+		// spec 0010: events, read with audit on the tenant (admin implies it) or by server administrators
+		{"tenants/{t}/events", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, handle: (*Handler).tenantEvents}}},
+		{"tenants/{t}/events/{id}", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, handle: (*Handler).tenantEvent}}},
+		{"events", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvents)}},
+		{"events/{id}", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvent)}},
+		{"event-kinds", idx((*Handler).eventKinds)},
 		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listPublishers),
 			http.MethodPost: mb(pathAdmin, (*Handler).addPublisher)}},
 		{"tenants/{t}/publishers/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getPublisher),
@@ -648,6 +658,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c, ok := h.decide(w, r, rt, ru, p)
 	if !ok {
 		return
+	}
+	if name := displayName(c.id.Claims); name != "" { // for the events the request causes (spec 0010)
+		r = r.WithContext(audit.WithActorName(r.Context(), name))
 	}
 	if !ru.body && !ru.raw && (r.ContentLength != 0 || len(r.TransferEncoding) > 0) {
 		problem(w, http.StatusBadRequest, typeInvalid, "this request has no body")
@@ -854,4 +867,23 @@ func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 func (h *Handler) info(w http.ResponseWriter, r *http.Request, _ caller, _ params) {
 	answer(w, r, map[string]string{"kista": h.o.KistaVersion, "api": Version}, true)
+}
+
+// displayName is a token's display name for events: its name, preferred_username or email claim,
+// printable characters only.
+func displayName(claims map[string]any) string {
+	for _, k := range []string{"name", "preferred_username", "email"} {
+		if v, ok := claims[k].(string); ok {
+			v = strings.Map(func(r rune) rune {
+				if unicode.IsPrint(r) {
+					return r
+				}
+				return -1
+			}, v)
+			if v = strings.TrimSpace(v); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
