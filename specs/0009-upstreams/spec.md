@@ -1,6 +1,6 @@
 # Spec 0009: Upstreams
 
-- **Status**: accepted; phases 1a, 1b and 2 implemented; 3 by amendment
+- **Status**: accepted; phases 1a, 1b and 2 implemented; 3 (amendment, accepted 2026-10-09) next
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
@@ -24,7 +24,7 @@ Delivery is phased, each phase a pull request:
   channels; tenant shadows; blocks reaching passthrough channels.
 - **2. Pull-through**: an authorized miss on a DuckDB route fetches the binary in the background.
 - **3. Private upstreams**: a Bearer credential for an upstream channel that is not public (an
-  Enterest subscription). Designed in an amendment to this spec before its code.
+  Enterest subscription), named in configuration and obtained without static secrets.
 
 ## Problem
 
@@ -311,11 +311,70 @@ most every minute).
 
 ### Private upstreams (phase 3)
 
-A `repository` upstream whose channel serves private releases needs a Bearer token, kept in a secret
-source (spec 0004's key sources show the pattern: a vault, never the database) and sent only to the
-upstream's prefix. An Enterest subscription is such an upstream. The credential's model, its
-rotation and egress rules are designed in an amendment before the code. Until then a `repository`
-upstream fetches public releases only.
+A `repository` upstream whose channel serves private releases (another kista's private channel,
+an Enterest subscription) needs a token the upstream's tenant accepts: a JWT from an issuer of that
+tenant (spec 0006), with its audience, naming a principal the upstream tenant grants `install`. kista
+obtains it as the platform's other services do (tresor-server specs 006, 017): **no static secret
+where the platform has an identity**.
+
+**Credentials are configuration, never data.** The operator names them in `upstreams.credentials`
+(file-only, as spec 0004's key sources); a tenant administrator picks one by name for an upstream.
+The database holds the name only; the secret, if any, stays where the configuration points.
+
+```yaml
+upstreams:
+  credentials:
+    - name: enterest-acme              # [a-z][a-z0-9-]{0,31}
+      tenants: [acme]                  # who may use it ("*" for every tenant); none by default
+      prefixes: ["https://enterest.hugr-lab.com/acme/"]   # the upstream prefixes it is sent to
+      allow_public: false              # releases it brings may be made public (default false)
+      kind: client_credentials         # client_credentials | token_file
+      token_url: https://login.microsoftonline.com/<tid>/oauth2/v2.0/token
+      client_id: <kista's app registration at the upstream's IdP>
+      scope: api://enterest-acme/.default     # or audience: …, as the IdP wants
+      client_auth: azure               # azure | file | key_file | secret
+      # azure: kista's own managed or workload identity (azure.identity) as the client assertion
+      # file: assertion_file, a projected ServiceAccount token read at each request
+      # key_file: private_key_jwt with a key file (ZITADEL's JSON, or PEM with kid), read at start
+      # secret: client_secret_file or client_secret_env (the last resort)
+    - name: cluster-b
+      tenants: [acme]
+      prefixes: ["https://kista-b.internal/acme/"]
+      kind: token_file                 # a token file read at each request: a projected
+      token_file: /var/run/secrets/kista-b/token   # ServiceAccount token whose issuer the upstream
+                                       # tenant trusts, audience the upstream's
+```
+
+- **Kinds.** `client_credentials` (RFC 6749 with the client authentications above; a token cached
+  until a minute before `exp`, fetched again on a `401`) through egress's client (`egress.allow`
+  plus the credential's `allow`, no redirects, https); `token_file`, read at each fetch (the kubelet
+  rotates it). `keyvault` (`private_key_jwt` signed in Key Vault) and AWS/GCP identities follow the
+  owner's deferred cloud work (spec 0004 phases 3-4).
+- **Who may use one.** A credential names the tenants that may use it and the prefixes it is sent
+  to: an upstream may name it only when its tenant is listed and its prefix starts with one of the
+  credential's (scheme, host, port and path compared as parsed, `https` only). A token is sent in
+  `Authorization: Bearer` to that upstream's prefix only, never on a redirect (egress follows none),
+  never to DuckDB's repositories (`duckdb-core` and `duckdb-community` refuse a credential), never in
+  a pull-through's `Offer` path or a log line.
+- **Visibility.** Releases a credentialed upstream brings are private, whatever the upstream's
+  `visibility` says, unless the credential sets `allow_public` (a paid subscription's extensions
+  are not the tenant's to publish): `POST …/public` is refused (`400`), and a credentialed upstream
+  is created private.
+- **Failures.** The upstream answering `401` or `403` is a cell `failed` (class `upstream.auth`; the
+  run's summary and the cell say so), the token fetched again once on a `401`; the IdP refusing
+  kista's own client (`invalid_client`, `unauthorized_client`) is the operator's problem: logged as
+  an error, the run `failed`, never a cell's refusal (tresor-server spec 017). Nothing of the token
+  or the IdP's answer reaches a cell, an event or the API.
+- **Rotation.** `client_credentials` fetches a new token as the old one ends; the assertion is made
+  per request; a `key_file` or a secret file is read again when it changes. Removing a credential
+  from the configuration leaves its upstreams failing (`upstream.auth`, "unknown credential") until
+  an administrator picks another; a renamed credential is a removed one.
+- **API, CLI, events.** `credential` is a field of the upstream (`POST`, and `POST …/credential` with
+  `If-Match` to set or clear it), shown by name; `GET /api/v1/credentials` lists to a server
+  administrator the configured names with their tenants and prefixes, never their settings. Setting
+  or clearing it is `upstream.change` (`data.change`: `credential`, the name). `kista admin upstream
+  credential <tenant> <upstream> <name>|-`.
+- **Data model.** Migration 0012: `upstreams.credential varchar(32) null`.
 
 **Enterest** is not a separate kind (spec 0001 listed one): an Enterest channel is a `repository`
 upstream with `https://enterest.hugr-lab.com/<tenant>/<channel>` and its pinned keys. Enterest's feed
@@ -441,6 +500,12 @@ internal/api, cmd/kista       + upstreams, shadows
   shared within a storage domain (spec 0005), and whether another tenant holds one is not observable.
 - **Passthrough** is public by nature (spec 0001): DuckDB's built-in client sends no token. Its
   guarantee is the allowlist; nothing private enters it.
+- **Upstream credentials (3).** Named in configuration only; the database and the API hold a name.
+  A credential is used only by the tenants it lists and sent only to the prefixes it lists, over
+  https, never on a redirect, never to DuckDB's repositories. No token, assertion, secret or IdP
+  answer reaches a cell, an event, a log line or an answer. Static secrets are the last resort
+  (`client_auth: secret`); the platform's identity or a projected token is the rule. What a
+  credential brings stays private unless the credential allows otherwise.
 
 ## Testing
 
@@ -471,6 +536,14 @@ internal/api, cmd/kista       + upstreams, shadows
   passthrough channel and compares the served file with DuckDB's.
 - **Phase 2**: an authorized miss fetches once (two concurrent misses, one fetch); anonymous and
   ungranted misses never fetch, with identical answers; the negative cache; the caps.
+- **Phase 3**: config validation (names, tenants, prefixes, kinds, client authentications);
+  `client_credentials` against a fake token endpoint with each client authentication (the
+  assertion's claims, a `key_file` JWT verified with its public key, a token cached until `exp` and
+  fetched again on a `401`); `token_file` read at each fetch; the token sent to the prefix only
+  (never to another host, never on a redirect); an upstream refused a credential of another tenant,
+  of another prefix, or on DuckDB's kinds; private releases unless `allow_public`; `401`/`403` as
+  `upstream.auth`; `invalid_client` as the operator's failure; e2e: a private channel of a second
+  kista mirrored with a `token_file` credential.
 
 ## Alternatives considered
 
@@ -489,7 +562,6 @@ internal/api, cmd/kista       + upstreams, shadows
 
 ## Follow-ups
 
-- Phase 3 (private upstreams) by amendment.
 - Spec 0010: events for intake rejections, runs and pull-through; a run history.
 - Spec 0011: attachments and Enterest's feed.
 - Mirroring versions older than the upstream's current one (the versioned layout, where an upstream

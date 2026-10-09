@@ -15,5 +15,5 @@ and it is superseded by a new spec when a decision changes.
 | [0006](0006-serve/spec.md) | Serving, tokens and grants | implemented |
 | [0007](0007-api/spec.md) | The HTTP API: index and management | implemented |
 | [0008](0008-publication/spec.md) | Publication and promotion | implemented |
-| [0009](0009-upstreams/spec.md) | Upstreams: mirror, passthrough, pull-through | phases 1a, 1b, 2 implemented; 3 by amendment |
-| [0010](0010-audit/spec.md) | Audit events and download statistics | draft |
+| [0009](0009-upstreams/spec.md) | Upstreams: mirror, passthrough, pull-through, private upstreams | phases 1a, 1b, 2 implemented; 3 next |
+| [0010](0010-audit/spec.md) | Audit events, download statistics, metrics | implemented |
