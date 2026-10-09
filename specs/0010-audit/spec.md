@@ -128,11 +128,11 @@ Tenant and channel removal do not exist; when they do, they are events.
   (and spec 0006's DuckDB routes in phase 2), subject `route:<pattern>`, `data.route` the method and
   the route's pattern: `auth.failure` for a `401` given to a request that sent a credential (actor
   `anonymous`; `data.reason` a class: `malformed`, `invalid`, `api_key_route`, `publisher_route`,
-  `stale_token`, `unnamed_writer`; never the token; the tenant's when the path names one, else the
-  server's; a request without a credential is not a failure), `authz.refused` for a `403` or a `404`
-  that stands for forbidden (the caller as actor, `data.status`), and `request.failed` for a `5xx`
-  (`data.status`). A `404` for an unknown or suspended tenant records nothing (it names nobody's
-  tenant). Services do not record refusals.
+  `stale_token`, `unnamed_writer`; never the token; the tenant's when the path names one, the
+  server's on routes without a tenant; a request without a credential is not a failure),
+  `authz.refused` for a `403` or a `404` that stands for forbidden (the caller as actor,
+  `data.status`), and `request.failed` for a `5xx` (`data.status`). A path naming an unknown or
+  suspended tenant records nothing (it names nobody's tenant). Services do not record refusals.
 - The CLI writes changes' events in their transactions; it acts as a server administrator, so it has
   no refusals and no asynchronous writer.
 
@@ -176,8 +176,8 @@ so a tenant's events never reach a party by accident).
   `dev` with `egress.allow_loopback_http`), `timeout` (default 10s), headers from `headers_file`
   (`Name: value` lines, `#` comments; never in events, logs or errors; `Content-Type`, `Content-Length`
   and `Host` refused). `OTEL_*` environment variables are ignored. Any answer other than `2xx` is a
-  failure (a redirect too); the batch is sent again. One `ResourceLogs` per tenant (resource: `service.name=kista`,
-  `service.version`, `service.instance.id` (the replica), `kista.tenant.id`, `kista.tenant.name`,
+  failure (a redirect too); the batch is sent again. One `ResourceLogs` per tenant (resource:
+  `service.name=kista`, `service.version`, `service.instance.id` (the replica), `kista.tenant.id`, `kista.tenant.name`,
   and `events.resource`'s attributes such as `deployment.environment.name`, except `service.*` and
   `kista.*`, which are kista's), so a collector routes per tenant. Each event is a log record:
   `eventName` `kista.<kind>`, severity INFO for `ok` and WARN otherwise, timestamp `at`, the body a
@@ -213,8 +213,8 @@ keeps its bit until no process has listed it for 10 minutes; then a replica's re
 under the registry's lock, only if it is still unlisted: its row becomes a tombstone that frees the
 name (a sink re-added under it gets a new bit) and keeps the bit reserved while the bit is cleared
 from every event in batches (each batch only while the tombstone exists: a replica late to it never
-clears a bit another sink has taken since); then the tombstone goes and the bit is free. Every `serve` replica runs
-this refresh, with no sink configured too. A configured sink that finds no free bit is left out
+clears a bit another sink has taken since); then the tombstone goes and the bit is free. Every
+`serve` replica runs this refresh, with no sink configured too. A configured sink that finds no free bit is left out
 (logged; the CLI and `serve` still start) until a removed sink's bit is freed.
 
 **Delivery** is at least once and approximately in `at` order: a replica holding the lease
