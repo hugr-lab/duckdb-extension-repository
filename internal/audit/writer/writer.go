@@ -159,6 +159,18 @@ func (w *Writer) Refusal(ctx context.Context, tenantID, actor string, kind audit
 	w.emit(ctx, tenantID, actor, kind, outcome, subject, fields, count)
 }
 
+// Event queues an event of something that happened outside any change (an install, spec 0010
+// phase 2): not rate-limited (its caller deduplicates), dropped only by a full queue.
+func (w *Writer) Event(ctx context.Context, tenantID, actor string, kind audit.Kind, subject string, fields map[string]any) {
+	w.init()
+	e, err := w.Store.NewEvent(ctx, tenantID, actor, kind, audit.OK, subject, fields)
+	if err != nil {
+		w.Log.Error("audit: building an event", "kind", kind, "error", err)
+		return
+	}
+	w.Add(e)
+}
+
 func (w *Writer) newMinute(now time.Time) {
 	if now.Sub(w.minAt) >= time.Minute {
 		w.minute, w.kinds, w.minAt = map[string]int{}, map[[2]string]int{}, now

@@ -183,3 +183,90 @@ func TestRefusalEvents(t *testing.T) {
 		t.Fatalf("the request's facts: %+v", fails[0])
 	}
 }
+
+// Spec 0010 phase 2: download statistics, read by scope.
+func TestStatistics(t *testing.T) {
+	m := newMgmt(t)
+	const T = "/api/v1/tenants/acme"
+	acme, _ := m.st.GetTenant(ctx, "acme")
+	chs, _ := m.st.ListChannels(ctx, "acme")
+	ids := map[string]string{}
+	for _, c := range chs {
+		ids[c.Name] = c.ID
+	}
+	today := store.DayOf(m.st.Now())
+	key := func(ch, name string, authd bool) store.DownloadKey {
+		return store.DownloadKey{TenantID: acme.ID, ChannelID: ids[ch], Name: name, ExtVersion: "1.0", Platform: "linux_amd64",
+			DuckDBVersion: "v2.0.0", Day: today, Authenticated: authd}
+	}
+	if _, err := m.st.AddDownloadCounts(ctx, map[store.DownloadKey]int64{key("prod", "tresor", true): 3, key("prod", "tresor", false): 2,
+		key("prod", "acl", true): 5, key("staging", "acl", true): 7}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.st.PutInstallers(ctx, today, map[store.InstallerKey]int64{{TenantID: acme.ID, ChannelID: ids["prod"], Name: "tresor",
+		ExtVersion: "1.0", Platform: "linux_amd64"}: 2}); err != nil {
+		t.Fatal(err)
+	}
+	total := func(who, q string) (int, int64) {
+		r := m.call(t, "GET", T+"/stats/downloads?group=channel,day"+q, m.toks[who], "")
+		if r.status != 200 {
+			return r.status, 0
+		}
+		var n int64
+		for _, row := range r.json(t)["rows"].([]any) {
+			n += int64(row.(map[string]any)["count"].(float64))
+		}
+		return 200, n
+	}
+	for who, want := range map[string]int64{"tenant admin": 17, "server admin": 17, "channel adm": 10, "ext admin": 5} {
+		if status, n := total(who, ""); status != 200 || n != want {
+			t.Errorf("%s: %d %d, want %d", who, status, n, want)
+		}
+	}
+	for who, want := range map[string]int{"anonymous": 401, "install": 404, "no grants": 404} {
+		if status, _ := total(who, ""); status != want {
+			t.Errorf("%s: %d, want %d", who, status, want)
+		}
+	}
+	r := m.call(t, "GET", T+"/stats/downloads?group=version&extension=tresor", m.toks["tenant admin"], "").json(t)
+	rows := r["rows"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["installers"] != float64(2) || rows[0].(map[string]any)["authenticated"] != float64(3) {
+		t.Fatalf("tresor by version: %v", r)
+	}
+	r = m.call(t, "GET", T+"/stats/downloads?group=duckdb_version", m.toks["tenant admin"], "").json(t)
+	if row := r["rows"].([]any)[0].(map[string]any); row["installers"] != nil || row["duckdb_version"] != "v2.0.0" {
+		t.Fatalf("installers are not by DuckDB version: %v", r)
+	}
+	for _, q := range []string{"?group=user", "?from=yesterday", "?from=2020-01-01&to=2026-01-01", "?from=2026-10-09&to=2026-10-01"} {
+		if s := m.call(t, "GET", T+"/stats/downloads"+q, m.toks["tenant admin"], ""); s.status != 400 {
+			t.Errorf("%s: %d", q, s.status)
+		}
+	}
+	if s := m.call(t, "GET", T+"/stats/downloads?channel=nope", m.toks["tenant admin"], ""); s.status != 404 {
+		t.Errorf("an unknown channel: %d", s.status)
+	}
+	// a version is an extension's: grouping by version never merges two extensions
+	r = m.call(t, "GET", T+"/stats/downloads?group=version", m.toks["tenant admin"], "").json(t)
+	if rows := r["rows"].([]any); len(rows) != 2 || rows[0].(map[string]any)["extension"] != "acl" {
+		t.Fatalf("by version: %v", r)
+	}
+	// beyond a caller's scope a channel or an extension answers as missing, and is refused
+	for _, q := range []string{"?channel=staging", "?extension=acl", "?channel=prod&extension=acl"} {
+		if s := m.call(t, "GET", T+"/stats/downloads"+q, m.toks["ext admin"], ""); s.status != 404 {
+			t.Errorf("ext admin %s: %d", q, s.status)
+		}
+	}
+	if s := m.call(t, "GET", T+"/stats/downloads?channel=prod&extension=tresor", m.toks["ext admin"], ""); s.status != 200 {
+		t.Errorf("ext admin on its extension: %d", s.status)
+	}
+	m.events.Close(ctx)
+	if evs, _ := m.st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "authz.refused", Limit: 100}); len(evs) < 3 {
+		t.Errorf("refusals recorded: %d", len(evs))
+	}
+	rel := m.call(t, "GET", T+"/stats/releases", m.toks["ext admin"], "")
+	rs := rel.json(t)["releases"].([]any)
+	if rel.status != 200 || len(rs) != 1 || rs[0].(map[string]any)["last_7_days"] != float64(5) ||
+		rs[0].(map[string]any)["last_download_day"] != today {
+		t.Fatalf("releases for the extension's admin: %d %s", rel.status, rel.body)
+	}
+}

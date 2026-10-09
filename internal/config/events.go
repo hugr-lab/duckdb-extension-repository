@@ -69,8 +69,9 @@ func (c Config) EventSettings() Events {
 func validateEvents(bad func(string, ...any), c Config) {
 	e := c.Events
 	// up to 90 days with sinks (spec 0010); without any, the buffer is the only record
-	if e.Retention != 0 && (e.Retention < 24*time.Hour || e.Retention > 365*24*time.Hour) {
-		bad("events.retention must be within 1..365 days")
+	// two days at least: the installers of a day are counted from its events after it ends
+	if e.Retention != 0 && (e.Retention < 48*time.Hour || e.Retention > 365*24*time.Hour) {
+		bad("events.retention must be within 2..365 days")
 	}
 	if len(e.Sinks) > 0 && e.Retention > 90*24*time.Hour {
 		bad("events.retention is at most 90 days when sinks are configured")
@@ -133,5 +134,28 @@ func validateEvents(bad func(string, ...any), c Config) {
 	}
 	if e.MaxRowsPerTenant < 0 || e.MaxRowsPerTenant > 100000000 {
 		bad("events.max_rows_per_tenant must be within 1..100000000 (0: the default)")
+	}
+}
+
+// Statistics configures download statistics (spec 0010 phase 2).
+type Statistics struct {
+	Retention time.Duration `yaml:"retention"` // default 3 years
+}
+
+// DefaultStatisticsRetention is how long counts and installers are kept.
+const DefaultStatisticsRetention = 3 * 365 * 24 * time.Hour
+
+// StatisticsSettings returns statistics: with its defaults.
+func (c Config) StatisticsSettings() Statistics {
+	s := c.Statistics
+	if s.Retention == 0 {
+		s.Retention = DefaultStatisticsRetention
+	}
+	return s
+}
+
+func validateStatistics(bad func(string, ...any), c Config) {
+	if r := c.Statistics.Retention; r != 0 && (r < 30*24*time.Hour || r > 10*365*24*time.Hour) {
+		bad("statistics.retention must be within 30 days..10 years")
 	}
 }

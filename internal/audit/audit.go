@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 )
@@ -248,4 +249,23 @@ func Data(k Kind, fields map[string]any) (string, error) {
 	}
 	b, err = json.Marshal(kept)
 	return string(b), err
+}
+
+// DisplayName is a token's display name for events: its name, preferred_username or email claim,
+// printable characters only.
+func DisplayName(claims map[string]any) string {
+	for _, k := range []string{"name", "preferred_username", "email"} {
+		if v, ok := claims[k].(string); ok {
+			v = strings.Map(func(r rune) rune {
+				if unicode.IsPrint(r) {
+					return r
+				}
+				return -1
+			}, v)
+			if v = strings.TrimSpace(v); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }

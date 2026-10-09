@@ -37,6 +37,18 @@ func TestEventsConfig(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	for name, c := range map[string]struct{ file, want string }{
+		"one day":          {base + "events: { retention: 24h }\n", "events.retention"},
+		"statistics short": {base + "statistics: { retention: 240h }\n", "statistics.retention"},
+		"statistics long":  {base + "statistics: { retention: 100000h }\n", "statistics.retention"},
+	} {
+		if _, err := Load(write(t, c.file), nil); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if s := cfg.StatisticsSettings(); s.Retention != DefaultStatisticsRetention {
+		t.Errorf("statistics default: %v", s.Retention)
+	}
 	if _, err := Load(write(t, base), []string{"KISTA_EVENTS__RETENTION=1h"}); err == nil {
 		t.Error("events from the environment")
 	}

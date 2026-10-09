@@ -1,6 +1,6 @@
 # Spec 0010: Audit events and download statistics
 
-- **Status**: accepted; phases 1a and 1b implemented, 2 next
+- **Status**: accepted; phases 1a, 1b and 2a implemented, 2b next
 - **Date**: 2026-10-09
 - **Author**: vgsml, Claude
 
@@ -24,8 +24,8 @@ Delivery is phased, each phase a pull request:
   coverage test, the 30-day buffer, reading (API and CLI), the `audit` verb.
 - **1b. Delivery**: the asynchronous writer (refusals, authentication failures, failures), the sink
   registry, the JSON-lines and OTLP sinks, `server.start`.
-- **2. Downloads and metrics**: install events, daily download counts and installers, the statistics
-  API, OpenTelemetry metrics.
+- **2. Downloads and metrics**, in two parts: **2a** install events, the DuckDB routes' refusals,
+  daily download counts and installers, the statistics API; **2b** OpenTelemetry metrics.
 
 ## Problem
 
@@ -106,9 +106,9 @@ kind's subject form and fields; `v` 1):
   with the value), `upstream.release` (an intake
   release), `upstream.rejected` (a cell whose outcome changed to a refusal), `upstream.run` (a run's
   summary, as `last_run`), `upstream.pull` (phase 2), `shadow.add`, `shadow.remove`;
-- access: `auth.failure`, `authz.refused`, `install` (phase 2; subject
-  `channel:<c>/ext:<name>/release:<id>`, `data`: version, platform, DuckDB version, body hash, the
-  `User-Agent`);
+- access: `auth.failure`, `authz.refused`, `install` (phase 2a; subject
+  `channel:<c>/ext:<name>/release:<id>`, `data`: release, name, version, platform, DuckDB version,
+  body hash, the `User-Agent`);
 - the log itself (server events): `audit.dropped`, `audit.sink`; `request.failed` (1b, a `5xx`).
 
 Tenant and channel removal do not exist; when they do, they are events.
@@ -153,7 +153,7 @@ crash; changes' events never are.
 
 ### The buffer
 
-Events stay in the database for `events.retention` (default **30 days**, at least a day; at most 365
+Events stay in the database for `events.retention` (default **30 days**, at least 2 days (phase 2a counts a day's installers from its events after it ends); at most 365
 days, and at most 90 once a sink is configured, for sites without a pipeline). A pass every hour
 (lease `kista/events/retention`) deletes older events in batches (`DELETE TOP (n)` on SQL Server;
 `WHERE id IN (SELECT … LIMIT n)` on PostgreSQL and SQLite). An event not yet delivered to every sink
@@ -254,34 +254,71 @@ GET /api/v1/event-kinds                                          the catalogue (
 ### Downloads and statistics (2)
 
 - **What counts**: a `GET` of a binary whose headers were sent with `200`, or `206` for a range
-  starting at byte 0, whether or not the body completed. `HEAD`, `304`, later ranges and retries of a
-  range do not count. A download from a passthrough channel counts in that channel's tenant.
-- **Install events**: such a download by a caller with a valid token is an `install` event, the first
-  per (principal, release, client, day) on a replica (a bounded map, 100,000 entries, least recently
-  used dropped). An e2e test checks that one `INSTALL`, with and without httpfs loaded, makes one
-  event.
+  starting at byte 0, whether or not the body completed. `HEAD`, `304` and a `206` not starting at
+  byte 0 do not count; every `200` does (the uncompressed name ignores `Range`), so a client retrying
+  a whole download counts again. A download from a passthrough channel counts in that channel's
+  tenant.
+- **Install events**: such a download by a principal holding `install` on it (a valid tenant token;
+  a public release downloaded with a token that holds no `install` counts as authenticated and makes
+  no event) is an `install` event
+  (actor the principal, subject `channel:<c>/ext:<name>/release:<id>`, `data`: release, name,
+  version, platform, the path's DuckDB version, body hash, the `User-Agent`'s first 200 bytes; the
+  token's display name as `actor_name`), the first per (principal, release, client network (`/24`,
+  `/48`), day) on a replica (a bounded map, 100,000 entries, least recently used dropped), at most
+  1,000 a day per principal and 100,000 principals a day on a replica (beyond, downloads count and
+  make no event: a token cannot flood its tenant's log; how many principals an issuer admits is the
+  issuer's `required_claims`), through the asynchronous writer. A token naming neither a subject
+  nor a client is one installer with every other such token of its issuer. A passthrough channel
+  looks at no token: its downloads count, anonymous, and make no event. An e2e test checks that one
+  `INSTALL` is one download with DuckDB's built-in client and with httpfs and a token, and the latter
+  one install event.
+- **Refusals on the DuckDB routes**: a token that does not verify is `auth.failure` (`reason`
+  `invalid`, subject `route:extension`, `data.route` `<method> extension`; the request is still
+  served as anonymous), a valid token without `install` on a path's extension that answers `404` is
+  `authz.refused`.
 - **Counts**: every such download counts in `download_counts(tenant_id, channel_id, name, ext_version,
   platform, duckdb_version, day, authenticated, count)`: no principal, no address, not deduplicated
-  (so counts exceed install events). Counts are kept in memory and upserted every minute (`ON CONFLICT
-  … DO UPDATE SET count = count + excluded.count` on PostgreSQL and SQLite; update-then-insert in a
-  transaction holding `kista/download_counts` on SQL Server); a crash loses at most a minute. `day` is
-  a date (text `YYYY-MM-DD` on SQLite).
-- **Installers**: a daily pass (lease, after UTC midnight) counts the distinct principals of the
-  previous day's `install` events per (channel, release) from the buffer and stores them in
-  `download_installers(tenant_id, channel_id, name, ext_version, platform, day, installers)`. No
+  (so counts exceed install events). Counts are kept in memory and upserted every minute, in key
+  order and transactions of at most 500 keys (`ON CONFLICT … DO UPDATE SET count = count +
+  excluded.count` on PostgreSQL and SQLite; update-then-insert holding `kista/download_counts` on SQL
+  Server); counts the store refuses wait for the next minute (beyond 200,000 keys waiting, further
+  downloads are not counted, and logged); a crash loses at most a minute. Counts are not evidence:
+  anyone may download a public release, and a range from byte 0 counts as a download. `day` is
+  text `YYYY-MM-DD` (UTC) on every engine.
+- **Installers**: an hourly pass (lease `kista/statistics/daily`) counts, for each of the last 7 days
+  not counted yet (`statistics_days`) that ended at least an hour ago (the replicas' writers have
+  flushed its events) and whose start is still within `events.retention` (so all its events are in
+  the buffer; `events.retention` is at least 2 days; `events.max_rows_per_tenant` may still have
+  deleted some, and the day is then undercounted), the distinct principals of the day's `install`
+  events per (channel, name, version, platform), tenant by tenant, and stores them in
+  `download_installers(tenant_id, channel_id, name, ext_version, platform, day, installers)` with the
+  day's mark, in one transaction. A day missed (kista down for longer) has no installers. No
   principal is kept.
-- Counts and installers are kept for `statistics.retention` (default 3 years).
+- Counts and installers are kept for `statistics.retention` (default 3 years; 30 days to 10 years),
+  deleted by the same pass.
 - **Statistics API**:
 
   ```text
   GET /api/v1/tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=<d>[,<d>]
-      d: day | version | platform | duckdb_version | channel        → rows of {dimensions…, count, installers}
-  GET /api/v1/tenants/{t}/stats/releases?channel=&extension=        → per release: 7- and 30-day counts, last download day
+      d: day | channel | extension | version | platform | duckdb_version
+      → {from, to, group, rows: [{dimensions…, count, authenticated, installers}]}
+  GET /api/v1/tenants/{t}/stats/releases?channel=&extension=
+      → {releases: [{channel, extension, version, platform, last_7_days, last_30_days, last_download_day}]}
   ```
+
+  `from` and `to` are days (default the 30 days to `to`, and `to` today), at most 366 days inclusive;
+  `group` defaults to `day`, and `version` brings `extension` with it; a query over more than
+  100,000 of the caller's stored rows is refused (`400`: narrow it). `installers` is the sum of the
+  daily installers of the rows grouped (a principal installing on two days counts twice) and is
+  absent when grouping by DuckDB version (installs are counted per release). `releases` lists the
+  releases downloaded within the statistics' retention.
 
   Readable with `audit` on the tenant (everything), or with `admin`, `publish` or `promote` on an
   extension name, by a token's principal (not a publisher credential): only those names, and only the
-  channels the grants cover. Enterest reads with a server token and applies its own rules.
+  channels the grants cover; a principal with none of these, or asking for a channel or an extension
+  none of its grants covers, answers `404` (recorded as refused), so a query never tells what exists
+  beyond the caller's scope. The routes take a fresh token, as the other management routes. Server
+  administrators read everything; Enterest reads with a server token and applies its own rules.
 - **OpenTelemetry metrics** (`telemetry.metrics`: an OTLP/HTTP metrics endpoint with the sinks' egress
   rules, every 60 seconds; the Go SDK's stable metric exporter, given egress's client; `OTEL_*`
   ignored; the tenants whose names may appear: none by default):
@@ -307,7 +344,7 @@ events:                       # file-only
     - { name: stdout, kind: jsonl, path: "-", tenants: ["*"] }
 statistics:
   retention: 26280h           # 3 years
-telemetry:                    # phase 2
+telemetry:                    # phase 2b
   metrics: { url: https://otel.internal:4318/v1/metrics, allow: [...], tenants: ["*"], labels: [], max_series: 10000 }
 ```
 
@@ -323,8 +360,10 @@ events       id, tenant_id (no FK), at, kind, v, outcome, actor, actor_name null
 event_sinks  name, bit, added_at, last_listed_at        (1b fills it; the table ships in 0010)
 ```
 
-Migration 0011 (2): `download_counts` (primary key: all but `count`), `download_installers`. Filtered
-indexes exist on all three engines (as `ux_releases_seq`); `&` on integers too.
+Migration 0011 (2a): `download_counts` (primary key: all but `count`; index (tenant_id, day)),
+`download_installers` (primary key: all but `installers`; index (tenant_id, day)),
+`statistics_days(day, done_at)`. Filtered indexes exist on all three engines (as `ux_releases_seq`);
+`&` on integers too.
 
 ### Package layout
 
@@ -334,8 +373,9 @@ internal/audit     kinds and their fields, Tx.Event's helpers; writer/ the async
 internal/app       the sinks from config, server.start
 internal/egress    + Client.Post
 internal/store     + events, sinks, download counts and installers
+internal/stats     the download counter, the install deduplication, the daily installers pass (2a)
 internal/tenants, keys, release, upstream, serve   + events
-internal/api, cmd/kista   + reading, statistics
+internal/api, cmd/kista   + reading; internal/api + statistics (2a)
 ```
 
 ### Changes to earlier specs
@@ -386,8 +426,10 @@ internal/api, cmd/kista   + reading, statistics
   credentials never in events or logs.
 - **API and CLI**: who reads (`audit`, admin, scoped and issuer-wide grants refused, server
   administrators), filters, paging, `-follow`.
-- **Phase 2**: one install event per `INSTALL` (e2e, with and without httpfs); counts and installers;
-  statistics and who reads them; metrics with no principal and no unlisted tenant.
+- **Phase 2a**: one download per `INSTALL` and one install event per authenticated one (e2e, the
+  built-in client and httpfs); what counts (`200`, a range from 0; not `HEAD`, `304`, later ranges);
+  counts on three engines; installers; statistics and who reads them; the DuckDB routes' refusals.
+- **Phase 2b**: metrics with no principal and no unlisted tenant.
 
 ## Alternatives considered
 
