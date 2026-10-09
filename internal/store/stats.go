@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// DownloadKey is what a download count counts by (spec 0010 phase 2): no principal, no address.
+// DownloadKey is what a download count counts by (spec 0010 phase 2a): no principal, no address.
 type DownloadKey struct {
 	TenantID, ChannelID, Name, ExtVersion, Platform, DuckDBVersion string
 	Day                                                            string // YYYY-MM-DD, UTC

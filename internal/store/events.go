@@ -458,3 +458,43 @@ func (s *Store) LastEvent(ctx context.Context, tenantID, kind string) (Event, er
 	}
 	return evs[0], nil
 }
+
+// pendingCap bounds the undelivered events PendingCounts reads.
+const pendingCap = 1000000
+
+// PendingCounts counts the events still to deliver to each sink (masks: 1 << its bit, by name), in
+// one pass over at most a million undelivered events.
+func (s *Store) PendingCounts(ctx context.Context, masks map[string]int) (map[string]int64, error) {
+	out := map[string]int64{}
+	if len(masks) == 0 {
+		return out, nil
+	}
+	names := make([]string, 0, len(masks))
+	for n := range masks {
+		names = append(names, n)
+	}
+	sums := make([]string, len(names))
+	args := make([]any, len(names))
+	for i, n := range names {
+		sums[i], args[i] = "SUM(CASE WHEN (pending & ?) <> 0 THEN 1 ELSE 0 END)", masks[n]
+	}
+	vals := make([]sql.NullInt64, len(names))
+	dst := make([]any, len(names))
+	for i := range vals {
+		dst[i] = &vals[i]
+	}
+	// at most pendingCap undelivered events are read: a long backlog reads as the cap, never as a scan
+	// too slow for the metrics' export
+	sub := fmt.Sprintf("SELECT pending FROM events WHERE pending <> 0 LIMIT %d", pendingCap)
+	if s.d.Name == "sqlserver" {
+		sub = fmt.Sprintf("SELECT TOP (%d) pending FROM events WHERE pending <> 0", pendingCap)
+	}
+	q := "SELECT " + strings.Join(sums, ", ") + " FROM (" + sub + ") p"
+	if err := s.db.QueryRowContext(ctx, s.d.rebind(q), args...).Scan(dst...); err != nil {
+		return nil, err
+	}
+	for i, n := range names {
+		out[n] = vals[i].Int64
+	}
+	return out, nil
+}

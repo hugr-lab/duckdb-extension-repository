@@ -777,3 +777,18 @@ func (t *Tx) GetCell(ctx context.Context, upstreamID, duckdbVersion, platform, n
 FROM upstream_cells WHERE upstream_id = ? AND duckdb_version = ? AND platform = ? AND name = ?`, upstreamID, duckdbVersion, platform, name))
 	return c, notFound(err, "cell")
 }
+
+// CellOutcomes counts the upstream cells per outcome (metrics).
+func (s *Store) CellOutcomes(ctx context.Context) (map[string]int64, error) {
+	out := map[string]int64{}
+	err := s.eachRow(ctx, "SELECT outcome, COUNT(*) FROM upstream_cells GROUP BY outcome", nil, func(sc func(...any) error) error {
+		var o string
+		var n int64
+		if err := sc(&o, &n); err != nil {
+			return err
+		}
+		out[o] = n
+		return nil
+	})
+	return out, err
+}

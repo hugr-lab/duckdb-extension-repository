@@ -156,7 +156,6 @@ var catalogue = map[Kind][]string{
 	"upstream.release":  {"upstream", "release", "name", "version", "platform", "slot", "body_hash", "url", "key"},
 	"upstream.rejected": {"upstream", "duckdb_version", "platform", "name", "outcome"},
 	"upstream.run":      {"upstream", "dry_run", "counts", "error"},
-	"upstream.pull":     {"upstream", "duckdb_version", "platform", "name"},
 	"shadow.add":        {"name"},
 	"shadow.remove":     {"name"},
 	"auth.failure":      {"reason", "route", "count"},

@@ -2,6 +2,8 @@ package serve
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/telemetry"
 )
 
 type fakeEvents struct {
@@ -55,7 +58,7 @@ func (f *fakeCounter) total(authenticated bool) (n int64) {
 	return n
 }
 
-// Spec 0010 phase 2: what counts as a download, one install event per (principal, release,
+// Spec 0010 phase 2a: what counts as a download, one install event per (principal, release,
 // client, day), and the DuckDB routes' refusals.
 func TestDownloadsAndInstalls(t *testing.T) {
 	en, idp, adm := authEnv(t, "https")
@@ -143,5 +146,48 @@ func TestDownloadsAndInstalls(t *testing.T) {
 	}
 	if _, err := audit.Data("install", d); err != nil {
 		t.Fatalf("the install's fields are the catalogue's: %v", err)
+	}
+}
+
+type fakeMetrics struct {
+	mu        sync.Mutex
+	routes    []string // method route status
+	downloads []telemetry.Download
+}
+
+func (f *fakeMetrics) Downloaded(_ context.Context, d telemetry.Download) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.downloads = append(f.downloads, d)
+}
+
+func (f *fakeMetrics) Request(_ context.Context, method, route string, status int, _ time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.routes = append(f.routes, method+" "+route+" "+strconv.Itoa(status))
+}
+
+// Spec 0010 phase 2b: requests are measured by their route's kind, never a path; a download is
+// measured when it is counted.
+func TestRequestMetrics(t *testing.T) {
+	en := newEnv(t, Options{}, "https")
+	fm, cnt := &fakeMetrics{}, &fakeCounter{counts: map[store.DownloadKey]int64{}}
+	en.h.o.Metrics, en.h.o.Downloads = fm, cnt
+	en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
+	const path = "/acme/prod/tresor/1.0/v2.0.0/linux_amd64/tresor.duckdb_extension.gz"
+	en.do(t, "GET", "/healthz", nil)
+	en.do(t, "GET", path, nil)
+	en.do(t, "HEAD", path, nil)
+	en.do(t, "GET", "/acme/prod/nothing/here", nil)
+	en.do(t, "GET", flat+"tresor.duckdb_extension.gz", nil)
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	want := []string{"GET healthz 200", "GET extension-versioned 200", "HEAD extension-versioned 200", "GET none 404", "GET extension 200"}
+	if strings.Join(fm.routes, ",") != strings.Join(want, ",") {
+		t.Fatalf("routes: %q", fm.routes)
+	}
+	if len(fm.downloads) != 2 || cnt.total(false) != 2 || fm.downloads[0].TenantName != "acme" || fm.downloads[0].Channel != "prod" ||
+		fm.downloads[0].Extension != "tresor" || fm.downloads[0].Authenticated {
+		t.Fatalf("downloads measured as counted: %+v", fm.downloads)
 	}
 }

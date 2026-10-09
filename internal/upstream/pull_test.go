@@ -1,7 +1,10 @@
 package upstream_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -123,6 +126,18 @@ func TestPullThrough(t *testing.T) {
 		var leases int
 		if err := store.QueryRowRaw(ctx, en.st, "SELECT COUNT(*) FROM leases WHERE name LIKE 'kista/upstream/%/%'", &leases); err != nil || leases != 0 {
 			t.Fatalf("cell leases left: %d %v", leases, err)
+		}
+		// a listed name whose body a pull refuses is an upstream.rejected event, as in a run (spec 0010)
+		other, _ := rsa.GenerateKey(rand.Reader, 2048)
+		en.repo.put("v2.0.0", "linux_amd64", "forged", signed(t, other, cpp("1.0", "v2.0.0"), 5, "forged_duckdb_cpp_init"))
+		if _, err := en.up.PutEntry(ctx, admin, "acme", "pull", store.UpstreamEntry{Name: "forged"}); err != nil {
+			t.Fatal(err)
+		}
+		p.Offer(miss("forged"))
+		p.Drain(ctx)
+		evs, _ := en.st.ListEvents(ctx, u.TenantID, store.EventFilter{Kind: "upstream.rejected"})
+		if len(evs) != 1 || !strings.Contains(evs[0].Data, `"name":"forged"`) {
+			t.Fatalf("upstream.rejected of a pull: %+v", evs)
 		}
 		// a paused upstream does not fetch
 		cur, _ := en.up.Get(ctx, admin, "acme", "pull")

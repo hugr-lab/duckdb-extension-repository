@@ -12,6 +12,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/telemetry"
 )
 
 func TestServerStart(t *testing.T) {
@@ -44,7 +45,7 @@ func TestServerStart(t *testing.T) {
 	if err := ServerStart(ctx, cfg, st); err != nil {
 		t.Fatal(err)
 	}
-	if d := last(); d.Version != Version || d.Schema == 0 || len(d.Digests) != 9 || len(d.Changed) != 0 {
+	if d := last(); d.Version != Version || d.Schema == 0 || len(d.Digests) != 11 || len(d.Changed) != 0 {
 		t.Fatalf("the first start: %+v", d)
 	}
 	cfg.Egress.Allow = []config.EgressAllow{{CIDR: "10.0.0.0/8"}}
@@ -77,5 +78,20 @@ func TestHeadersFile(t *testing.T) {
 	}
 	if _, err := headersFile(filepath.Join(dir, "missing")); err == nil {
 		t.Error("a missing file")
+	}
+}
+
+// A sink is named in metrics only when metrics may name every tenant it takes.
+func TestSinkNames(t *testing.T) {
+	cfg := config.Default()
+	cfg.Events.Sinks = []config.Sink{{Name: "acme-splunk", Tenants: []string{"acme"}}, {Name: "beta-siem", Tenants: []string{"beta"}},
+		{Name: "all", Tenants: []string{"*"}}, {Name: "ops", Server: true}}
+	counts := map[string]int64{"acme-splunk": 1, "beta-siem": 2, "all": 4, "ops": 8}
+	got := sinkNames(cfg, telemetry.Tenants{Names: map[string]bool{"acme": true}}, counts)
+	if len(got) != 3 || got["acme-splunk"] != 1 || got["ops"] != 8 || got["_other"] != 6 {
+		t.Fatalf("named: %v", got)
+	}
+	if got := sinkNames(cfg, telemetry.Tenants{All: true}, counts); got["beta-siem"] != 2 || got["all"] != 4 {
+		t.Fatalf("every tenant: %v", got)
 	}
 }

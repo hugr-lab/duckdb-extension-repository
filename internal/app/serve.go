@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
@@ -21,6 +22,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/telemetry"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
@@ -100,13 +102,55 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background
 	puller := &upstream.Puller{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log,
 		NegativeTTL: cfg.UpstreamLimits().NegativeTTL}
-	// download statistics (spec 0010 phase 2): counts every minute, installers once a day
+	// download statistics (spec 0010 phase 2a): counts every minute, installers once a day
 	downloads := &stats.Counter{Store: st, Log: log}
-	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Puller: puller, Events: events, Downloads: downloads,
+	// OpenTelemetry metrics (spec 0010 phase 2b): where they go is the OTEL_* environment's
+	mp, flushMetrics, err := telemetry.Setup(ctx, telemetry.Options{Version: Version, Instance: instance,
+		MaxSeries: cfg.TelemetrySettings().Metrics.MaxSeries, Log: log})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := flushMetrics(fctx); err != nil {
+			log.Error("serve: flushing metrics", "error", err)
+		}
+	}()
+	var served atomic.Pointer[serve.Handler] // the gauge may be read before the handler is made
+	tenants := metricTenants(cfg)
+	metrics, err := telemetry.New(mp, tenants, metricLabels(cfg), telemetry.Gauges{
+		Log: log,
+		DownloadsActive: func() int64 {
+			if h := served.Load(); h != nil {
+				return h.DownloadsActive()
+			}
+			return 0
+		},
+		UploadsActive: apiHandler.UploadsActive,
+		PullQueue:     puller.Queued,
+		EventsDropped: events.Dropped,
+		EventsPending: func(ctx context.Context) (map[string]int64, error) {
+			counts, err := st.PendingCounts(ctx, resolver.Masks())
+			if err != nil {
+				return nil, err
+			}
+			return sinkNames(cfg, tenants, counts), nil
+		},
+		UpstreamCells: st.CellOutcomes,
+	})
+	if err != nil {
+		return err
+	}
+	if telemetry.Enabled() {
+		log.Info("serve: exporting OpenTelemetry metrics")
+	}
+	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Puller: puller, Events: events, Downloads: downloads, Metrics: metrics,
 		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
 	})
+	served.Store(h)
 	var ls []serve.Listener
 	for _, l := range cfg.Serve.Listeners {
 		ls = append(ls, serve.Listener{Listener: l})
@@ -215,4 +259,49 @@ func publicCheck(ctx context.Context, bs interface {
 			h.SetPublicDomains(bs.PublicDomains(ctx))
 		}
 	}
+}
+
+// metricTenants are the tenants metrics may name (telemetry.metrics.tenants).
+func metricTenants(cfg config.Config) telemetry.Tenants {
+	t := telemetry.Tenants{Names: map[string]bool{}}
+	for _, n := range cfg.Telemetry.Metrics.Tenants {
+		if n == "*" {
+			t.All = true
+		} else {
+			t.Names[n] = true
+		}
+	}
+	return t
+}
+
+// metricLabels are kista.downloads' optional labels (telemetry.metrics.labels).
+func metricLabels(cfg config.Config) telemetry.Labels {
+	ls := cfg.Telemetry.Metrics.Labels
+	return telemetry.Labels{Version: slices.Contains(ls, "version"), Platform: slices.Contains(ls, "platform"),
+		DuckDBVersion: slices.Contains(ls, "duckdb_version")}
+}
+
+// sinkNames names a sink's pending count only when metrics may name every tenant it takes (or it
+// takes the server's events only); the others count together as "_other" (never a sink's name): a
+// sink's name may be a tenant's.
+func sinkNames(cfg config.Config, tenants telemetry.Tenants, counts map[string]int64) map[string]int64 {
+	out := map[string]int64{}
+	for _, s := range cfg.Events.Sinks {
+		n, ok := counts[s.Name]
+		if !ok {
+			continue
+		}
+		named := !slices.Contains(s.Tenants, "*") || tenants.All
+		for _, t := range s.Tenants {
+			if t != "*" && !tenants.All && !tenants.Names[t] {
+				named = false
+			}
+		}
+		if named {
+			out[s.Name] += n
+		} else {
+			out["_other"] += n // never a sink's name
+		}
+	}
+	return out
 }

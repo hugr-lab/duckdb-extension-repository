@@ -558,7 +558,7 @@ func init() {
 		{"tenants/{t}/events", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, handle: (*Handler).tenantEvents}}},
 		{"tenants/{t}/events/{id}", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, handle: (*Handler).tenantEvent}}},
 		{"events", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvents)}},
-		// spec 0010 phase 2: download statistics
+		// spec 0010 phase 2a: download statistics
 		{"tenants/{t}/stats/downloads", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsDownloads)}},
 		{"tenants/{t}/stats/releases", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsReleases)}},
 		{"events/{id}", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvent)}},

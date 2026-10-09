@@ -1,5 +1,5 @@
 // Package writer is the asynchronous event writer (spec 0010): events outside any change
-// (refusals, failures; installs in phase 2) are queued in memory per tenant and inserted in
+// (refusals, failures; installs, phase 2a) are queued in memory per tenant and inserted in
 // batches, off the request's path. A tenant over its quota drops its own events only, counted and
 // written as audit.dropped; refusals are rate-limited with a count.
 package writer
@@ -34,6 +34,7 @@ type Writer struct {
 	Every time.Duration // default 1s
 
 	mu      sync.Mutex
+	total   int64 // events dropped since the start (metrics)
 	queues  map[string][]store.Event
 	waiting int
 	dropped map[string]map[string]int // tenant → kind → count
@@ -109,6 +110,7 @@ func (w *Writer) Add(e store.Event) {
 }
 
 func (w *Writer) drop(tenant, kind string, n int) {
+	w.total += int64(n)
 	if w.dropped[tenant] == nil {
 		w.dropped[tenant] = map[string]int{}
 	}
@@ -160,7 +162,7 @@ func (w *Writer) Refusal(ctx context.Context, tenantID, actor string, kind audit
 }
 
 // Event queues an event of something that happened outside any change (an install, spec 0010
-// phase 2): not rate-limited (its caller deduplicates), dropped only by a full queue.
+// phase 2a): not rate-limited (its caller deduplicates), dropped only by a full queue.
 func (w *Writer) Event(ctx context.Context, tenantID, actor string, kind audit.Kind, subject string, fields map[string]any) {
 	w.init()
 	e, err := w.Store.NewEvent(ctx, tenantID, actor, kind, audit.OK, subject, fields)
@@ -320,10 +322,20 @@ func (w *Writer) WriteDrops(ctx context.Context) {
 		if err != nil {
 			w.Log.Error("audit: recording dropped events", "tenant", tenant, "error", err)
 			w.mu.Lock() // counted again next time
+			if w.dropped[tenant] == nil {
+				w.dropped[tenant] = map[string]int{}
+			}
 			for k, n := range counts {
-				w.drop(tenant, k, n)
+				w.dropped[tenant][k] += n
 			}
 			w.mu.Unlock()
 		}
 	}
+}
+
+// Dropped is how many events the writer has dropped since it started.
+func (w *Writer) Dropped() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.total
 }
