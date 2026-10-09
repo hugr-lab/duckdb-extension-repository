@@ -19,6 +19,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
@@ -99,7 +100,9 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background
 	puller := &upstream.Puller{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log,
 		NegativeTTL: cfg.UpstreamLimits().NegativeTTL}
-	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Puller: puller,
+	// download statistics (spec 0010 phase 2): counts every minute, installers once a day
+	downloads := &stats.Counter{Store: st, Log: log}
+	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Puller: puller, Events: events, Downloads: downloads,
 		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
@@ -141,6 +144,12 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	evDone := make(chan struct{})
 	go func() { defer close(evDone); events.Run(evCtx) }()
 	defer func() { evStop(); <-evDone }()
+	cntDone := make(chan struct{})
+	go func() { defer close(cntDone); downloads.Run(evCtx) }() // counts of draining downloads too
+	defer func() { evStop(); <-cntDone }()
+	daily := &stats.Daily{Store: st, Holder: instance, Retention: cfg.StatisticsSettings().Retention, EventRetention: ev.Retention, Log: log}
+	wg.Add(1)
+	go func() { defer wg.Done(); daily.Run(bg) }()
 	m := &sinks.Manager{Store: st, Resolver: resolver, Sinks: eventSinks, Holder: instance, Log: log}
 	wg.Add(1)
 	go func() { defer wg.Done(); m.Run(bg) }()

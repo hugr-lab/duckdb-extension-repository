@@ -19,10 +19,12 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -51,6 +53,21 @@ type Options struct {
 	// Puller takes the misses of callers holding install that a pull-through upstream may fetch
 	// (spec 0009 phase 2); nil: no pull-through.
 	Puller Puller
+	// Events takes install events and the DuckDB routes' refusals (spec 0010); nil: none.
+	Events Events
+	// Downloads counts downloads (spec 0010 phase 2); nil: none counted.
+	Downloads Counter
+}
+
+// Events records events outside any change (spec 0010's asynchronous writer).
+type Events interface {
+	Event(ctx context.Context, tenantID, actor string, kind audit.Kind, subject string, fields map[string]any)
+	Refusal(ctx context.Context, tenantID, actor string, kind audit.Kind, outcome, subject string, fields map[string]any)
+}
+
+// Counter counts downloads.
+type Counter interface {
+	Add(store.DownloadKey)
 }
 
 // Puller takes a miss without blocking; it never changes the answer.
@@ -72,6 +89,7 @@ type Handler struct {
 	perClient map[string]int
 
 	failures *auth.FailureLog
+	installs stats.Installs
 
 	ready         atomic.Bool
 	stopping      atomic.Bool
@@ -256,12 +274,14 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 	// the decision comes from the path: a grant names the tenant, channel or extension, all known
 	// before anything is resolved; a caller without install resolves public releases only. A
 	// passthrough channel is public by nature (spec 0009): no token is looked at, and a miss is 404.
-	v, tokenValid := viewPublic, sc.Channel.Kind == store.ChannelPassthrough
+	v, actor := viewPublic, ""
+	tokenValid := sc.Channel.Kind == store.ChannelPassthrough
 	if sc.Channel.Kind == store.ChannelSigned {
-		if v, tokenValid, err = h.decide(r, sc, rt.name); err != nil {
+		if v, actor, r, err = h.decide(r, sc, rt.name); err != nil {
 			h.fail(w, err)
 			return
 		}
+		tokenValid = actor != ""
 	}
 	res, err := h.rv.resolve(ctx, sc, rt, v)
 	if err != nil {
@@ -271,6 +291,11 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 	if !res.found {
 		if tokenValid {
 			notFound(w) // a valid token without the grant, or a path that does not exist: the same
+			// without install on the name: refused
+			if actor != "" && v != viewAll && h.o.Events != nil {
+				h.o.Events.Refusal(r.Context(), sc.Tenant.ID, actor, "authz.refused", audit.Refused, "route:extension",
+					map[string]any{"route": r.Method + " extension", "status": http.StatusNotFound})
+			}
 		} else {
 			h.missing(w)
 		}
@@ -345,6 +370,13 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 	}
 	rd := &trackReader{Reader: f.NewReader(ctx)}
 	defer func() { _ = rd.Close() }()
+	if r.Method == http.MethodGet {
+		installer := ""
+		if v == viewAll {
+			installer = actor // an install event is a principal holding install's
+		}
+		w = &countWriter{ResponseWriter: w, counted: func() { h.downloaded(r, sc, rt, res.cand, actor != "", installer) }}
+	}
 	out := h.rateWriter(&errHeaders{ResponseWriter: w})
 	if rt.gz {
 		if strings.Contains(r.Header.Get("Range"), ",") {
@@ -365,6 +397,59 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 	}
 }
 
+// downloaded counts a download whose headers were sent (spec 0010 phase 2a), and records the first
+// install of its (principal, release, client network, day) on this replica as an event, for a
+// principal holding install (actor; "" for none).
+func (h *Handler) downloaded(r *http.Request, sc store.ServeChannel, rt route, c store.Candidate, authenticated bool, actor string) {
+	day := store.DayOf(h.st.Now())
+	if h.o.Downloads != nil {
+		h.o.Downloads.Add(store.DownloadKey{TenantID: sc.Tenant.ID, ChannelID: sc.Channel.ID, Name: c.Name, ExtVersion: c.ExtVersion,
+			Platform: c.Platform, DuckDBVersion: rt.duckdbVersion, Day: day, Authenticated: authenticated})
+	}
+	if actor == "" || h.o.Events == nil {
+		return
+	}
+	rq := audit.FromContext(r.Context())
+	if !h.installs.First(actor, c.ID, audit.ReduceClient(rq.Client, audit.ClientTruncated), day) {
+		return
+	}
+	ua := r.Header.Get("User-Agent")
+	if len(ua) > 200 {
+		ua = ua[:200]
+	}
+	ua = strings.ToValidUTF8(ua, "")
+	h.o.Events.Event(r.Context(), sc.Tenant.ID, actor, "install", "channel:"+sc.Channel.Name+"/ext:"+c.Name+"/release:"+c.ID,
+		map[string]any{"release": c.ID, "name": c.Name, "version": c.ExtVersion, "platform": c.Platform,
+			"duckdb_version": rt.duckdbVersion, "body_hash": c.BodyHash, "user_agent": ua})
+}
+
+// countWriter calls counted once when a download's headers are sent: 200, or 206 for a range
+// from byte 0 (HEAD, 304, later ranges are no download).
+type countWriter struct {
+	http.ResponseWriter
+	counted func()
+	done    bool
+}
+
+func (c *countWriter) WriteHeader(code int) {
+	if !c.done {
+		c.done = true
+		if code == http.StatusOK || code == http.StatusPartialContent && strings.HasPrefix(c.Header().Get("Content-Range"), "bytes 0-") {
+			c.counted()
+		}
+	}
+	c.ResponseWriter.WriteHeader(code)
+}
+
+func (c *countWriter) Write(p []byte) (int, error) {
+	if !c.done {
+		c.WriteHeader(http.StatusOK)
+	}
+	return c.ResponseWriter.Write(p)
+}
+
+func (c *countWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }
+
 // bearer returns the request's Bearer token: only on https, only from exactly one Authorization
 // header.
 func bearer(r *http.Request) string {
@@ -382,28 +467,38 @@ func bearer(r *http.Request) string {
 	return strings.TrimSpace(tok)
 }
 
-// decide returns what the caller may see in the channel, and whether it presented a valid token.
-func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (view, bool, error) {
+// decide returns what the caller may see in the channel and the actor of a valid token ("" for
+// none: no token, or one not accepted, which is recorded as auth.failure), with the request's
+// context carrying the token's display name for its events.
+func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (view, string, *http.Request, error) {
 	tok := bearer(r)
 	// a publisher's API key is never looked up here (spec 0008): it is no token
 	if tok == "" || h.o.Verifier == nil || h.o.Server.IsServerToken(tok) || auth.IsAPIKey(tok) {
-		return viewPublic, false, nil
+		return viewPublic, "", r, nil
 	}
 	ta, err := h.tenantAuth(r.Context(), sc.Tenant)
 	if err != nil {
 		h.log.Error("serve: reading a tenant's issuers and grants", "tenant", sc.Tenant.Name, "error", err)
-		return viewPublic, false, nil // no token: public releases are still served
+		return viewPublic, "", r, nil // no token: public releases are still served
 	}
 	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, sc.Tenant.Name, h.o.Providers)
-	p, _, err := h.o.Verifier.Verify(r.Context(), ta, canonical, tok)
+	id, err := h.o.Verifier.VerifyIdentity(r.Context(), ta, canonical, tok)
 	if err != nil {
 		h.failures.Record(sc.Tenant, "serve", err)
-		return viewPublic, false, nil // an invalid token is no token: public releases are still served
+		if h.o.Events != nil {
+			h.o.Events.Refusal(r.Context(), sc.Tenant.ID, "anonymous", "auth.failure", audit.Refused, "route:extension",
+				map[string]any{"reason": "invalid", "route": r.Method + " extension"})
+		}
+		return viewPublic, "", r, nil // an invalid token is no token: public releases are still served
 	}
-	if auth.Allows(p, ta.Grants, sc.Channel.ID, name, store.VerbInstall) {
-		return viewAll, true, nil
+	actor := authz.Actor{Kind: authz.ActorPrincipal, ID: sc.Tenant.Name + "/" + id.Issuer.ID + "|" + id.Who()}.String()
+	if n := audit.DisplayName(id.Claims); n != "" {
+		r = r.WithContext(audit.WithActorName(r.Context(), n))
 	}
-	return viewPublic, true, nil
+	if auth.Allows(id.Principals, ta.Grants, sc.Channel.ID, name, store.VerbInstall) {
+		return viewAll, actor, r, nil
+	}
+	return viewPublic, actor, r, nil
 }
 
 func (h *Handler) tenantAuth(ctx context.Context, t store.Tenant) (store.TenantAuth, error) {

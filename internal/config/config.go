@@ -43,6 +43,8 @@ type Config struct {
 	Upstreams Upstreams `yaml:"upstreams" kista:"fileonly"`
 	// Events configures the event buffer (spec 0010).
 	Events Events `yaml:"events" kista:"fileonly"`
+	// Statistics configures download statistics (spec 0010 phase 2).
+	Statistics Statistics `yaml:"statistics" kista:"fileonly"`
 }
 
 // Store selects and configures the metadata database.
@@ -456,6 +458,7 @@ func (c Config) Validate() error {
 	validatePublish(bad, c)
 	validateUpstreams(bad, c)
 	validateEvents(bad, c)
+	validateStatistics(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

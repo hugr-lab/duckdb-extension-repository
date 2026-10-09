@@ -18,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
@@ -446,11 +445,12 @@ func (h *Handler) identifyAPIKey(ctx context.Context, t store.Tenant, tok string
 type access int
 
 const (
-	public      access = iota // anyone; a tenant route identifies a token for the view, others ignore one
-	serverToken               // a valid server token
-	serverAdmin               // a server administrator
-	pathAdmin                 // admin on the path's resource (tenant, channel {c}, extension {ext}), or a server administrator
-	pathVerbs                 // any of the rule's verbs on the path's resource (spec 0008: publish, promote), or a server administrator
+	public          access = iota // anyone; a tenant route identifies a token for the view, others ignore one
+	serverToken                   // a valid server token
+	serverAdmin                   // a server administrator
+	pathAdmin                     // admin on the path's resource (tenant, channel {c}, extension {ext}), or a server administrator
+	pathVerbs                     // any of the rule's verbs on the path's resource (spec 0008: publish, promote), or a server administrator
+	tenantPrincipal               // a token's principal of the path's tenant (its handler decides what it reads), or a server administrator
 )
 
 type handler func(h *Handler, w http.ResponseWriter, r *http.Request, c caller, p params)
@@ -558,6 +558,9 @@ func init() {
 		{"tenants/{t}/events", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, handle: (*Handler).tenantEvents}}},
 		{"tenants/{t}/events/{id}", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, handle: (*Handler).tenantEvent}}},
 		{"events", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvents)}},
+		// spec 0010 phase 2: download statistics
+		{"tenants/{t}/stats/downloads", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsDownloads)}},
+		{"tenants/{t}/stats/releases", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsReleases)}},
 		{"events/{id}", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvent)}},
 		{"event-kinds", idx((*Handler).eventKinds)},
 		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listPublishers),
@@ -663,7 +666,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return // a refusal noted its actor
 	}
 	sw.actor = c
-	if name := displayName(c.id.Claims); name != "" { // for the events the request causes (spec 0010)
+	if name := audit.DisplayName(c.id.Claims); name != "" { // for the events the request causes (spec 0010)
 		r = r.WithContext(audit.WithActorName(r.Context(), name))
 	}
 	if !ru.body && !ru.raw && (r.ContentLength != 0 || len(r.TransferEncoding) > 0) {
@@ -821,6 +824,10 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			}
 			return refuse()
 		}
+	case tenantPrincipal:
+		if !c.admin && (c.principals == nil || c.pub != nil) {
+			return refuse()
+		}
 	case pathVerbs:
 		a, ok := c.actor()
 		if !ok || h.o.Authz == nil {
@@ -905,25 +912,6 @@ func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 func (h *Handler) info(w http.ResponseWriter, r *http.Request, _ caller, _ params) {
 	answer(w, r, map[string]string{"kista": h.o.KistaVersion, "api": Version}, true)
-}
-
-// displayName is a token's display name for events: its name, preferred_username or email claim,
-// printable characters only.
-func displayName(claims map[string]any) string {
-	for _, k := range []string{"name", "preferred_username", "email"} {
-		if v, ok := claims[k].(string); ok {
-			v = strings.Map(func(r rune) rune {
-				if unicode.IsPrint(r) {
-					return r
-				}
-				return -1
-			}, v)
-			if v = strings.TrimSpace(v); v != "" {
-				return v
-			}
-		}
-	}
-	return ""
 }
 
 // Recorder takes the events of refusals and failures (spec 0010's asynchronous writer).

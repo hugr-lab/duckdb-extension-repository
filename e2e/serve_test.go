@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/writer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
@@ -25,6 +26,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
@@ -82,6 +84,8 @@ type kista struct {
 	handler *serve.Handler
 	ten     *tenants.Service
 	blob    *blob.Service
+	events  *writer.Writer // install events (spec 0010 phase 2)
+	counts  *stats.Counter // download counts
 }
 
 func (k *kista) httpURL() string  { return "http://" + k.addr + "/acme/prod" }
@@ -153,7 +157,10 @@ func startKistaWith(t *testing.T, b *build, verifier *auth.Verifier) *kista {
 		Providers: e2eProviders(verifier),
 		Authz:     grants, Tenants: &mten, Auth: &tenants.AuthAdmin{Store: st, Authz: grants, PublicURL: "https://" + k.addr},
 		Keys: &mks, Releases: &release.Service{Store: st, Blob: bs, Signers: &mks, Authz: grants}})
+	k.events = &writer.Writer{Store: st, Log: slog.New(slog.DiscardHandler)}
+	k.counts = &stats.Counter{Store: st, Log: slog.New(slog.DiscardHandler)}
 	k.handler = serve.NewHandler(st, ks, bs, serve.Options{MaxDownloads: 16, MaxDownloadsPerClient: 16, MinRate: 1024,
+		Events: k.events, Downloads: k.counts,
 		WriteIdleTimeout: 30 * time.Second, Log: slog.New(slog.NewJSONHandler(&k.access, nil)), Verifier: verifier,
 		PublicURL: "https://" + k.addr, Auths: auths, Snapshots: snaps, API: apiH})
 	k.handler.SetReady(true)
