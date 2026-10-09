@@ -79,6 +79,7 @@ func jsonProblem(err error) string {
 func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
 	switch {
 	case errors.Is(err, authz.ErrDenied):
+		note(w, func(sw *statusWriter) { sw.refused = true })
 		notFound(w)
 	case errors.Is(err, store.ErrNotFound):
 		if bodyRef {

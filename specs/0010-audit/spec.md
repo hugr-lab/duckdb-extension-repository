@@ -1,6 +1,6 @@
 # Spec 0010: Audit events and download statistics
 
-- **Status**: accepted; phase 1a implemented, 1b next
+- **Status**: accepted; phases 1a and 1b implemented, 2 next
 - **Date**: 2026-10-09
 - **Author**: vgsml, Claude
 
@@ -55,7 +55,7 @@ Delivery is phased, each phase a pull request:
 | `at` | when it happened (`Tx.Now`, UTC, microseconds) |
 | `kind` | from the catalogue (below) |
 | `outcome` | `ok`; `refused` (an answer `401`, `403`, or `404` that stands for forbidden); `failed` (an answer `5xx`, or `ErrBusy`). Validation errors and stale `If-Match` (`400`, `409`, `412`, `428`) are not events: nothing happened |
-| `actor` | the actor as the code writes it: `principal:<tenant>/<issuer id>\|sub:<sub>` (or `\|client:<id>`), `server:<issuer>\|sub:…`, `os:<uid>:<user>`, `publisher:<tenant>/<names>`, `system:<what>` (`system:upstream:<tenant>/<name>`, `system:resign`, `system:retention`), `anonymous` |
+| `actor` | the actor as the code writes it: `principal:<tenant>/<issuer id>\|sub:<sub>` (or `\|client:<id>`), `server:<issuer>\|sub:…`, `os:<uid>:<user>`, `publisher:<tenant>/<names>`, `system:<what>` (`system:upstream:<tenant>/<name>`, `system:resign`, `system:retention`, `system:serve` (`server.start`), `system:sinks`, `system:audit`), `anonymous` |
 | `actor_name` | for a token's principal, its `name`, `preferred_username` or `email` claim at the time, for display; otherwise none |
 | `subject` | the resource as a path: `channel:prod`, `channel:prod/ext:acl/release:<id>`, `grant:<id>`, `upstream:core`, … (filters match prefixes) |
 | `data` | a JSON object of the event's facts, from the catalogue's fields for the kind (never a request body as a whole) |
@@ -86,8 +86,10 @@ only; otherwise kista makes a UUIDv7. The id is logged with every request (`requ
 kind's subject form and fields; `v` 1):
 
 - tenants and server: `tenant.create`, `tenant.suspend`, `tenant.resume`, `version.add`,
-  `version.c_apis`, `server.start` (kista's version, the schema level, the names of the
-  security-relevant settings that changed since the previous start);
+  `version.c_apis`, `server.start` (kista's version, the schema level, a digest (64 bits of SHA-256 of
+  the section's JSON) of each security-relevant configuration section: `profile`, `signers`, `blob`,
+  `serve`, `egress`, `auth`, `publish`, `upstreams`, `events`, and the names of those changed since
+  the previous start, which every replica records);
 - channels and keys: `channel.create`, `channel.versions` (versions added and removed), `key.add`,
   `key.activate`, `key.retire`, `key.resign` (actor `system:resign`, when a re-sign completes and the
   serving key moves);
@@ -123,29 +125,42 @@ Tenant and channel removal do not exist; when they do, they are events.
   operations, each with its kind, backs a test that fails when an operation emits no event or the
   wrong one.
 - **Refusals and failures (1b)**: recorded once, at the API layer, from the request's final answer
-  (and spec 0006's DuckDB routes in phase 2): `auth.failure` for a `401` (the reason class, never the
-  token; per tenant, or the server's when the tenant is unknown), `authz.refused` for a `403` or a
-  `404` that stands for forbidden (actor, route, verb), and a `failed` event of the route's kind for a
-  `5xx`. Services do not record refusals.
-- The CLI writes changes' events in their transactions; it runs the asynchronous writer for its own
-  refusals and flushes it before it exits.
+  (and spec 0006's DuckDB routes in phase 2), subject `route:<pattern>`, `data.route` the method and
+  the route's pattern: `auth.failure` for a `401` given to a request that sent a credential (actor
+  `anonymous`; `data.reason` a class: `malformed`, `invalid`, `api_key_route`, `publisher_route`,
+  `stale_token`, `unnamed_writer`; never the token; the tenant's when the path names one, else the
+  server's; a request without a credential is not a failure), `authz.refused` for a `403` or a `404`
+  that stands for forbidden (the caller as actor, `data.status`), and `request.failed` for a `5xx`
+  (`data.status`). A `404` for an unknown or suspended tenant records nothing (it names nobody's
+  tenant). Services do not record refusals.
+- The CLI writes changes' events in their transactions; it acts as a server administrator, so it has
+  no refusals and no asynchronous writer.
 
 **The asynchronous writer (1b)** queues events in memory per tenant (at most 1,000 waiting per tenant,
 10,000 in all) and inserts them in batches (every second, or 500). A tenant over its quota drops its
-own events only. Refusals are rate-limited per (tenant, actor, kind) to one a second with a count;
-beyond 100 a minute per tenant they are coalesced per (tenant, kind, client prefix); the limiter's
-map is bounded (10,000 keys, least recently used dropped). Drops are counted and written as
-`audit.dropped` (counts by kind) once a minute while dropping, from room the writer reserves for it.
-Limits are per replica. These events can be lost in a crash; changes' events never are.
+own events only; when all queues together are full, the largest one loses its oldest event, so a
+flooded tenant never crowds out another. Refusals are rate-limited per (tenant, actor, kind) to one
+a second, each event carrying `count`, the refusals it stands for; a key's suppressed refusals are
+emitted as a trailing event once it has been quiet for a second (or when it is evicted, or at
+shutdown), so counts add up. Beyond 100 refusals a minute in a tenant they are keyed by the client's
+prefix (`/24`, `/48`) instead of the actor; beyond 300 events a minute of a (tenant, kind), by
+nothing. The limiter holds at most 10,000 keys (idle ones, then the least recently used, are
+evicted). Drops (a full queue, or a batch the database refused) are counted per tenant and kind and
+written as `audit.dropped` (actor `system:audit`) once a minute and at shutdown, inserted directly,
+never queued. Limits are per replica. The writer outlives `serve`'s listeners (refusals while
+draining are written) and its final flush takes at most 10 seconds. These events can be lost in a
+crash; changes' events never are.
 
 ### The buffer
 
 Events stay in the database for `events.retention` (default **30 days**, at least a day; at most 365
-days, and at most 90 once a sink is configured (phase 1b), for sites without a pipeline). A pass every hour (lease `kista/events/retention`)
-deletes older events in batches (`DELETE TOP (n)` on SQL Server; `WHERE id IN (SELECT … LIMIT n)`
-on PostgreSQL and SQLite). An event not yet delivered to every sink that takes it is kept past the
-retention for at most 7 more days, then deleted, counted in `audit.dropped` per sink. A tenant's
-events beyond `events.max_rows_per_tenant` (default 1,000,000) are deleted oldest first, the same way.
+days, and at most 90 once a sink is configured, for sites without a pipeline). A pass every hour
+(lease `kista/events/retention`) deletes older events in batches (`DELETE TOP (n)` on SQL Server;
+`WHERE id IN (SELECT … LIMIT n)` on PostgreSQL and SQLite). An event not yet delivered to every sink
+that takes it is kept past the retention for at most 7 more days, then deleted. A tenant's events
+beyond `events.max_rows_per_tenant` (default 1,000,000) are deleted oldest first, those every sink
+has before undelivered ones. Undelivered events deleted either way are counted in one server
+`audit.dropped` (actor `system:retention`, `counts`: `overdue`, `overflow`).
 
 ### Sinks (1b)
 
@@ -156,35 +171,64 @@ so a tenant's events never reach a party by accident).
 - **`otlp`**: an OpenTelemetry collector's OTLP/HTTP logs endpoint, written by kista (OTLP/HTTP with
   JSON encoding: the wire format is stable; the Go SDK's log exporter is not), through egress's
   client (no redirects, no proxy from the environment, addresses checked at every dial, egress's
-  never-list), with the sink's own allowlist (`allow`, egress's `cidr`/`ports` form: internal
-  collectors are the usual target), `https` (plain `http` to loopback in profile `dev`), headers from
-  `*_file` / `*_env` settings or a key source (never in events, logs or errors). `OTEL_*` environment
-  variables are ignored. One `ResourceLogs` per tenant (resource: `service.name=kista`,
+  never-list), with `egress.allow` plus the sink's own allowlist (`allow`, egress's `cidr`/`ports`
+  form: internal collectors are the usual target), `https` (plain `http` to loopback in profile
+  `dev` with `egress.allow_loopback_http`), `timeout` (default 10s), headers from `headers_file`
+  (`Name: value` lines, `#` comments; never in events, logs or errors; `Content-Type`, `Content-Length`
+  and `Host` refused). `OTEL_*` environment variables are ignored. Any answer other than `2xx` is a
+  failure (a redirect too); the batch is sent again. One `ResourceLogs` per tenant (resource: `service.name=kista`,
   `service.version`, `service.instance.id` (the replica), `kista.tenant.id`, `kista.tenant.name`,
-  and `events.resource`'s attributes such as `deployment.environment.name`), so a collector routes
-  per tenant. Each event is a log record: `EventName` `kista.<kind>`, severity INFO for `ok` and WARN
-  otherwise, timestamp `at`, the body a map (the event's JSON), attributes `kista.event.id`,
-  `kista.kind`, `kista.outcome`, `kista.actor`, `kista.subject`, `kista.request`, `client.address`,
-  and the trace context of the request's `traceparent` when there was one.
-- **`jsonl`**: JSON lines (the API's JSON) to stdout or a file (mode 0600, rotated by size, a number of
-  old files kept). A file is written by whichever replica holds the sink's lease: with several
-  replicas use stdout or a shared volume.
+  and `events.resource`'s attributes such as `deployment.environment.name`, except `service.*` and
+  `kista.*`, which are kista's), so a collector routes per tenant. Each event is a log record:
+  `eventName` `kista.<kind>`, severity INFO for `ok` and WARN otherwise, timestamp `at`, the body a
+  map (the event's JSON), attributes `kista.event.id`, `kista.kind`, `kista.outcome`, `kista.actor`,
+  `kista.subject`, `kista.request`, `client.address`. No trace context: events do not store it.
+  A batch answered `400` or `413` is sent again in halves (a `413` also lowers the largest batch
+  until a single event is found to be the one refused); a single event still refused is dropped,
+  counted in the tenant's `audit.dropped` (`data.sink`, the event's `count`; never sent to the sink
+  that refused it), so that one event never blocks a sink. After 3 drops in 10 minutes (per replica)
+  with no batch taken between them the endpoint is failing (backoff, `audit.sink`), and its events
+  wait.
+- **`jsonl`**: JSON lines (the API's JSON with `tenant_id` and `tenant`) to stdout (`path: "-"`) or a
+  file (an absolute path, mode 0600, rotated by size: `max_size`, default 100 MiB; `keep` old files,
+  default 5, and `keep: 0` too; a batch never splits across files, and a failed write is truncated
+  away before it is sent again). The file is opened without following a symbolic link and made 0600;
+  two sinks never share one. On stdout, which `serve`'s JSON log shares, each line is written whole
+  and records are told apart by their `kind` and `id`. A file is written by whichever replica holds
+  the sink's lease: with several replicas use stdout or a shared volume (a replica reopens the file
+  when the path no longer names the one it holds, after another rotated it).
+- **Identities**: on a tenant's events a server administrator's or the CLI's actor shows as `server`,
+  without name or address, as to the tenant's readers (a sink may route to the tenant's own
+  pipeline); `unmasked: true` sends them as they are.
 
-**Bits.** A sink is registered by name in `event_sinks(name, bit, added_at)`; its bit (at most 16
-sinks) is its own for good. When an event is inserted, its `pending` mask gets the bits of the
-registered sinks whose tenant selection takes the event's tenant. A sink new or re-added gets only
-events written after its registration. A sink removed from the configuration keeps its bit until no
-replica has listed it for 10 minutes; then its bits are cleared lazily (on the rows the buffer pass
-touches) and its row is removed.
+**Bits.** A sink is registered by name in `event_sinks(name, bit, added_at, last_listed_at)`; its
+bit (at most 16 sinks, removed ones included until their bits are cleared) is its own until it is
+removed. When an event is inserted, its `pending` mask gets the bits of the
+registered sinks whose tenant selection takes the event's tenant (a tenant created since the
+replica last read the tenants gets the bits of every sink that names tenants; the sender decides).
+Every process that writes events registers the configured sinks at start (`serve` and the CLI); a
+`serve` replica lists them again every minute (`last_listed_at`) and re-reads the tenants. A sink new
+or re-added gets only events written after its registration. A sink removed from the configuration
+keeps its bit until no process has listed it for 10 minutes; then a replica's refresh retires it
+under the registry's lock, only if it is still unlisted: its row becomes a tombstone that frees the
+name (a sink re-added under it gets a new bit) and keeps the bit reserved while the bit is cleared
+from every event in batches (each batch only while the tombstone exists: a replica late to it never
+clears a bit another sink has taken since); then the tombstone goes and the bit is free. Every `serve` replica runs
+this refresh, with no sink configured too. A configured sink that finds no free bit is left out
+(logged; the CLI and `serve` still start) until a removed sink's bit is freed.
 
 **Delivery** is at least once and approximately in `at` order: a replica holding the lease
 `kista/events/sink/<name>` reads `WHERE (pending & bit) <> 0 ORDER BY at, id` in batches (from the
 index of undelivered events), checks again that the sink takes each event's tenant, sends, and clears
-the bit. A transaction that commits late is delivered after events with a later `at`; receivers
-order by `at` and deduplicate by `kista.event.id` (a lease lost mid-batch causes duplicates, never a
-loss). A failing sink is retried with backoff (up to 5 minutes between attempts), never blocks
-writing or the other sinks, and is reported in the process log and as an `audit.sink` server event
-when it starts and stops failing (at most once in 10 minutes). Running with no sink is valid: the
+the bit (events of tenants it does not take lose the bit unsent). A transaction that commits late
+is delivered after events with a later `at`; receivers order by `at` and deduplicate by
+`kista.event.id` (a lease lost mid-batch causes duplicates, never a loss). A failing sink is retried
+with backoff (up to 5 minutes between attempts; the replica keeps the lease while it waits, so
+another does not retry at once), never blocks writing or the other sinks, and is reported in the
+process log and as an `audit.sink` server event (actor `system:sinks`, subject `sink:<name>`,
+`data`: `state`, `class` (`egress.status`, `egress.refused`, `egress.connect`, `sink`), `status`)
+when it starts and stops failing (at most once in 10 minutes; a process starts from the state the
+last `audit.sink` reported, so a recovery after a restart or a lease handover is reported too). Running with no sink is valid: the
 buffer is then the only record.
 
 ### Reading (1a)
@@ -285,8 +329,10 @@ indexes exist on all three engines (as `ux_releases_seq`); `&` on integers too.
 ### Package layout
 
 ```text
-internal/audit     kinds and their fields, Event, Tx.Event's helpers, the asynchronous writer, the
-                   buffer's retention, sinks (otlp, jsonl), metrics (2)
+internal/audit     kinds and their fields, Tx.Event's helpers; writer/ the asynchronous writer,
+                   buffer/ the buffer's retention, sinks/ the registry, otlp and jsonl; metrics (2)
+internal/app       the sinks from config, server.start
+internal/egress    + Client.Post
 internal/store     + events, sinks, download counts and installers
 internal/tenants, keys, release, upstream, serve   + events
 internal/api, cmd/kista   + reading, statistics

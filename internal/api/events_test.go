@@ -4,6 +4,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
 // Spec 0010 phase 1a: events, read with audit on the tenant or by server administrators.
@@ -121,5 +124,62 @@ func TestEvents(t *testing.T) {
 	}
 	if g := m.call(t, "GET", "/api/v1/event-kinds", "", ""); g.status != 200 || !strings.Contains(string(g.body), `"release.promote"`) {
 		t.Errorf("the catalogue: %d", g.status)
+	}
+}
+
+// Spec 0010 phase 1b: refusals are events, recorded from the request's final answer.
+func TestRefusalEvents(t *testing.T) {
+	m := newMgmt(t)
+	const T = "/api/v1/tenants/acme"
+	acme, err := m.st.GetTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := m.call(t, "GET", T+"/events", "", ""); r.status != 401 {
+		t.Fatalf("anonymous: %d", r.status)
+	}
+	if r := m.call(t, "GET", T+"/events", "not-a-token", ""); r.status != 401 {
+		t.Fatalf("a bad token: %d", r.status)
+	}
+	// noted before the tenant is looked up, still the tenant's; an unknown tenant's is nobody's
+	if r := m.call(t, "GET", T+"/events", "", "", "Authorization", "Bearer "); r.status != 401 {
+		t.Fatalf("a malformed credential: %d", r.status)
+	}
+	if r := m.call(t, "GET", "/api/v1/tenants/nobody/events", "", "", "Authorization", "Bearer "); r.status != 401 {
+		t.Fatalf("a malformed credential: %d", r.status)
+	}
+	if r := m.call(t, "GET", T+"/events", m.toks["install"], ""); r.status != 404 {
+		t.Fatalf("install reads events: %d", r.status)
+	}
+	if r := m.call(t, "GET", "/api/v1/events", m.toks["tenant admin"], ""); r.status != 404 {
+		t.Fatalf("a tenant token on a server route: %d", r.status)
+	}
+	m.events.Close(ctx) // the second failure, a second within the first, is a trailing count
+	list := func(tenantID, kind string) []store.Event {
+		evs, err := m.st.ListEvents(ctx, tenantID, store.EventFilter{Kind: kind})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return evs
+	}
+	fails := list(acme.ID, "auth.failure")
+	if len(fails) != 2 || !strings.Contains(fails[0].Data, `"reason":"malformed"`) {
+		t.Fatalf("auth.failure, malformed (the trailing count of the invalid one's key): %+v", fails)
+	}
+	fails = fails[1:]
+	if n := len(list(audit.ServerTenant, "auth.failure")); n != 0 {
+		t.Fatalf("an unknown tenant's failure was recorded: %d", n)
+	}
+	if len(fails) != 1 || fails[0].Actor != "anonymous" || fails[0].Outcome != audit.Refused ||
+		!strings.Contains(fails[0].Data, `"reason":"invalid"`) || !strings.Contains(fails[0].Data, `"route":"GET tenants/{t}/events"`) ||
+		strings.Contains(fails[0].Data, "not-a-token") {
+		t.Fatalf("auth.failure (a request without a token is none): %+v", fails)
+	}
+	refused := list(acme.ID, "authz.refused")
+	if len(refused) != 1 || !strings.HasPrefix(refused[0].Actor, "principal:acme/") || !strings.Contains(refused[0].Data, `"status":404`) {
+		t.Fatalf("authz.refused: %+v", refused)
+	}
+	if fails[0].Client == "" || fails[0].Request == fails[0].ID {
+		t.Fatalf("the request's facts: %+v", fails[0])
 	}
 }

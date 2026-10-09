@@ -3,10 +3,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/sinks"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
@@ -74,6 +76,14 @@ func OpenStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 		return nil, err
 	}
 	s.EventClients = cfg.EventSettings().ClientAddresses
+	// events written here carry the configured sinks' bits (spec 0010)
+	if len(cfg.Events.Sinks) > 0 {
+		// a sink without a free bit gets none until a serve replica frees a removed sink's
+		if _, err := sinks.Attach(ctx, s, cfg.Events.Sinks); err != nil && !errors.Is(err, store.ErrNoSinkBit) {
+			s.Close()
+			return nil, err
+		}
+	}
 	return s, nil
 }
 

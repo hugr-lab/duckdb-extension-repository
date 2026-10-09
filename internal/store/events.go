@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -176,27 +177,22 @@ func (s *Store) GetEvent(ctx context.Context, tenantID, id string) (Event, error
 }
 
 // PruneEvents deletes up to batch events written before cutoff that every sink has (spec 0010's
-// buffer), and up to batch undelivered ones written before overdue; it returns how many it deleted.
-func (s *Store) PruneEvents(ctx context.Context, cutoff, overdue time.Time, batch int) (int, error) {
-	n := 0
-	for _, c := range []struct {
-		where string
-		at    time.Time
-	}{{"pending = 0 AND at < ?", cutoff}, {"pending <> 0 AND at < ?", overdue}} {
-		m, err := s.deleteEvents(ctx, c.where, batch, s.d.timeArg(c.at))
-		if err != nil {
-			return n, err
-		}
-		n += m
+// buffer), and up to batch undelivered ones written before overdue; it returns how many of each it
+// deleted.
+func (s *Store) PruneEvents(ctx context.Context, cutoff, overdue time.Time, batch int) (delivered, undelivered int, err error) {
+	if delivered, err = s.deleteEvents(ctx, "pending = 0 AND at < ?", batch, s.d.timeArg(cutoff)); err != nil {
+		return delivered, 0, err
 	}
-	return n, nil
+	undelivered, err = s.deleteEvents(ctx, "pending <> 0 AND at < ?", batch, s.d.timeArg(overdue))
+	return delivered, undelivered, err
 }
 
-// PruneTenantOverflow deletes the tenants' oldest events beyond max rows each, in batches.
-func (s *Store) PruneTenantOverflow(ctx context.Context, max, batch int) (int, error) {
+// PruneTenantOverflow deletes the tenants' oldest events beyond max rows each, in batches: those
+// every sink has first, then undelivered ones, which it counts.
+func (s *Store) PruneTenantOverflow(ctx context.Context, max, batch int) (deleted, undelivered int, err error) {
 	rows, err := s.db.QueryContext(ctx, s.d.rebind("SELECT tenant_id, COUNT(*) FROM events GROUP BY tenant_id HAVING COUNT(*) > ?"), max)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	over := map[string]int{}
 	for rows.Next() {
@@ -204,29 +200,33 @@ func (s *Store) PruneTenantOverflow(ctx context.Context, max, batch int) (int, e
 		var c int
 		if err := rows.Scan(&t, &c); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, 0, err
 		}
 		over[t] = c - max
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	total := 0
 	for t, extra := range over {
-		for extra > 0 && ctx.Err() == nil {
-			m, err := s.deleteOldestOf(ctx, t, min(extra, batch))
-			if err != nil {
-				return total, err
-			}
-			total += m
-			extra -= batch
-			if m == 0 {
-				break
+		for _, delivered := range []bool{true, false} {
+			for extra > 0 && ctx.Err() == nil {
+				m, err := s.deleteOldestOf(ctx, t, delivered, min(extra, batch))
+				if err != nil {
+					return deleted, undelivered, err
+				}
+				deleted += m
+				if !delivered {
+					undelivered += m
+				}
+				extra -= m
+				if m == 0 {
+					break
+				}
 			}
 		}
 	}
-	return total, nil
+	return deleted, undelivered, nil
 }
 
 // deleteEvents deletes at most n events matching where (the oldest first).
@@ -245,12 +245,16 @@ func (s *Store) deleteEvents(ctx context.Context, where string, n int, args ...a
 	return int(m), err
 }
 
-func (s *Store) deleteOldestOf(ctx context.Context, tenantID string, n int) (int, error) {
+func (s *Store) deleteOldestOf(ctx context.Context, tenantID string, delivered bool, n int) (int, error) {
+	cond := "pending <> 0"
+	if delivered {
+		cond = "pending = 0"
+	}
 	var q string
 	if s.d.Name == "sqlserver" {
-		q = fmt.Sprintf("DELETE FROM events WHERE id IN (SELECT TOP (%d) id FROM events WHERE tenant_id = ? ORDER BY at, id)", n)
+		q = fmt.Sprintf("DELETE FROM events WHERE id IN (SELECT TOP (%d) id FROM events WHERE tenant_id = ? AND %s ORDER BY at, id)", n, cond)
 	} else {
-		q = fmt.Sprintf("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE tenant_id = ? ORDER BY at, id LIMIT %d)", n)
+		q = fmt.Sprintf("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE tenant_id = ? AND %s ORDER BY at, id LIMIT %d)", cond, n)
 	}
 	res, err := s.db.ExecContext(ctx, s.d.rebind(q), tenantID)
 	if err != nil {
@@ -258,4 +262,199 @@ func (s *Store) deleteOldestOf(ctx context.Context, tenantID string, n int) (int
 	}
 	m, err := res.RowsAffected()
 	return int(m), err
+}
+
+// PendingEvents reads up to limit events still to deliver to a sink (mask: 1 << its bit), in (at,
+// id) order.
+func (s *Store) PendingEvents(ctx context.Context, mask, limit int) ([]Event, error) {
+	q := "SELECT " + eventCols + " FROM events WHERE pending <> 0 AND (pending & ?) <> 0 ORDER BY at, id"
+	if s.d.Name == "sqlserver" {
+		q += fmt.Sprintf(" OFFSET 0 ROWS FETCH NEXT %d ROWS ONLY", limit)
+	} else {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	rows, err := s.db.QueryContext(ctx, s.d.rebind(q), mask)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ClearPending marks events delivered to a sink (mask: 1 << its bit).
+func (s *Store) ClearPending(ctx context.Context, mask int, ids []string) error {
+	for len(ids) > 0 {
+		n := min(len(ids), 200)
+		ph := strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+		args := []any{^mask} // the complement here: a parameter's type is not inferred under ~ on PostgreSQL
+		for _, id := range ids[:n] {
+			args = append(args, id)
+		}
+		if _, err := s.db.ExecContext(ctx, s.d.rebind("UPDATE events SET pending = pending & ? WHERE id IN ("+ph+")"), args...); err != nil {
+			return err
+		}
+		ids = ids[n:]
+	}
+	return nil
+}
+
+// ClearSinkBit clears a retired sink's bit (mask: 1 << bit) from up to batch events while its
+// tombstone exists (another replica may have dropped it and the bit be another sink's since); it
+// reports how many.
+func (s *Store) ClearSinkBit(ctx context.Context, tombstoneName string, mask, batch int) (int, error) {
+	const live = " AND EXISTS (SELECT 1 FROM event_sinks WHERE name = ?)"
+	var q string
+	if s.d.Name == "sqlserver" {
+		q = fmt.Sprintf("UPDATE events SET pending = pending & ? WHERE id IN (SELECT TOP (%d) id FROM events WHERE pending <> 0 AND (pending & ?) <> 0)"+live, batch)
+	} else {
+		q = fmt.Sprintf("UPDATE events SET pending = pending & ? WHERE id IN (SELECT id FROM events WHERE pending <> 0 AND (pending & ?) <> 0 LIMIT %d)"+live, batch)
+	}
+	res, err := s.db.ExecContext(ctx, s.d.rebind(q), ^mask, mask, tombstoneName)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
+// Sink is a registered event sink: its name and its bit (spec 0010). A removed sink's row is
+// renamed to a tombstone (Removing) that keeps its bit reserved until no event carries it.
+type Sink struct {
+	Name                  string
+	Bit                   int
+	AddedAt, LastListedAt time.Time
+	Removing              bool
+}
+
+// MaxSinks is the most sinks: a bit each in events.pending.
+const MaxSinks = 16
+
+// ErrNoSinkBit is returned with the sinks registered when some configured ones found no free bit.
+var ErrNoSinkBit = errors.New("store: no free event sink bit (at most 16 sinks, removed ones included until they are cleared)")
+
+const tombstone = "~removing:"
+
+// RegisterSinks registers the configured sinks by name (a new one gets the lowest free bit) and
+// marks them listed now; it returns every registered sink, tombstones included. Names that find no
+// free bit are left out and reported with ErrNoSinkBit.
+func (s *Store) RegisterSinks(ctx context.Context, names []string) ([]Sink, error) {
+	var out []Sink
+	full := false
+	err := s.InTx(ctx, "kista/events/sinks", func(tx *Tx) error {
+		out, full = nil, false
+		rows, err := tx.query(ctx, "SELECT name, bit, added_at, last_listed_at FROM event_sinks ORDER BY bit")
+		if err != nil {
+			return err
+		}
+		have := map[string]bool{}
+		used := map[int]bool{}
+		for rows.Next() {
+			var k Sink
+			if err := rows.Scan(&k.Name, &k.Bit, scanTime{&k.AddedAt}, scanTime{&k.LastListedAt}); err != nil {
+				rows.Close()
+				return err
+			}
+			k.Removing = strings.HasPrefix(k.Name, tombstone)
+			have[k.Name], used[k.Bit] = true, true
+			out = append(out, k)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		now := tx.Now()
+		for _, n := range names {
+			if have[n] {
+				if _, err := tx.exec(ctx, "UPDATE event_sinks SET last_listed_at = ? WHERE name = ?", tx.s.d.timeArg(now), n); err != nil {
+					return err
+				}
+				for i := range out {
+					if out[i].Name == n {
+						out[i].LastListedAt = now
+					}
+				}
+				continue
+			}
+			bit := -1
+			for b := range MaxSinks {
+				if !used[b] {
+					bit = b
+					break
+				}
+			}
+			if bit < 0 {
+				full = true
+				continue
+			}
+			used[bit] = true
+			if _, err := tx.exec(ctx, "INSERT INTO event_sinks (name, bit, added_at, last_listed_at) VALUES (?, ?, ?, ?)",
+				n, bit, tx.s.d.timeArg(now), tx.s.d.timeArg(now)); err != nil {
+				return err
+			}
+			out = append(out, Sink{Name: n, Bit: bit, AddedAt: now, LastListedAt: now})
+		}
+		return nil
+	})
+	if err == nil && full {
+		err = ErrNoSinkBit
+	}
+	return out, err
+}
+
+// RetireSink turns a sink no process has listed since before into a tombstone, under the
+// registry's lock: its name is free again (a sink re-added under it gets a new bit) while its bit
+// stays reserved until ClearSinkBit has cleared it and DropSink removes it. It reports whether the
+// sink was retired (false: listed again since).
+func (s *Store) RetireSink(ctx context.Context, name string, before time.Time) (bool, error) {
+	retired := false
+	err := s.InTx(ctx, "kista/events/sinks", func(tx *Tx) error {
+		var bit int
+		err := tx.queryRow(ctx, "SELECT bit FROM event_sinks WHERE name = ? AND last_listed_at < ?", name, tx.s.d.timeArg(before)).Scan(&bit)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		res, err := tx.exec(ctx, "UPDATE event_sinks SET name = ? WHERE name = ?", TombstoneName(bit), name)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		retired = n == 1
+		return err
+	})
+	return retired, err
+}
+
+// TombstoneName is a retired sink's tombstone's name.
+func TombstoneName(bit int) string { return fmt.Sprintf("%s%d", tombstone, bit) }
+
+// DropSink removes a cleared tombstone: its bit is free.
+func (s *Store) DropSink(ctx context.Context, name string) error {
+	if !strings.HasPrefix(name, tombstone) {
+		return fmt.Errorf("%w: %s is not a removed sink", ErrInvalid, name)
+	}
+	_, err := s.db.ExecContext(ctx, s.d.rebind("DELETE FROM event_sinks WHERE name = ?"), name)
+	return err
+}
+
+// LastEvent reads a tenant's newest event of a kind (ErrNotFound for none).
+func (s *Store) LastEvent(ctx context.Context, tenantID, kind string) (Event, error) {
+	evs, err := s.ListEvents(ctx, tenantID, EventFilter{Kind: kind, Limit: 1})
+	if err != nil {
+		return Event{}, err
+	}
+	if len(evs) == 0 {
+		return Event{}, fmt.Errorf("%w: event", ErrNotFound)
+	}
+	return evs[0], nil
 }

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -57,15 +58,16 @@ func (p *Pruner) Once(ctx context.Context) {
 	if overdue == 0 {
 		overdue = 7 * 24 * time.Hour
 	}
-	total := 0
+	total, overdueLost, overflowLost := 0, 0, 0
 	for ctx.Err() == nil {
-		n, err := p.Store.PruneEvents(ctx, now.Add(-p.Retention), now.Add(-p.Retention-overdue), pruneBatch)
+		n, lost, err := p.Store.PruneEvents(ctx, now.Add(-p.Retention), now.Add(-p.Retention-overdue), pruneBatch)
 		if err != nil {
 			p.Log.Error("audit: pruning events", "error", err)
 			return
 		}
-		total += n
-		if n < pruneBatch {
+		total += n + lost
+		overdueLost += lost
+		if n < pruneBatch && lost < pruneBatch {
 			break
 		}
 		if _, err := p.Store.AcquireLease(ctx, lease, p.Holder, 10*time.Minute); err != nil { // a long pass keeps its lease
@@ -73,14 +75,28 @@ func (p *Pruner) Once(ctx context.Context) {
 		}
 	}
 	if p.MaxRowsPerTenant > 0 && ctx.Err() == nil {
-		n, err := p.Store.PruneTenantOverflow(ctx, p.MaxRowsPerTenant, pruneBatch)
+		n, lost, err := p.Store.PruneTenantOverflow(ctx, p.MaxRowsPerTenant, pruneBatch)
 		if err != nil {
 			p.Log.Error("audit: pruning a tenant's overflow", "error", err)
 			return
 		}
 		total += n
+		overflowLost = lost
 	}
 	if total > 0 {
-		p.Log.Info("audit: pruned events", "count", total)
+		p.Log.Info("audit: pruned events", "count", total, "undelivered", overdueLost+overflowLost)
+	}
+	if overdueLost+overflowLost > 0 { // events a sink never had (spec 0010): counted on the server's log
+		p.Log.Warn("audit: undelivered events were pruned", "overdue", overdueLost, "overflow", overflowLost)
+		counts := map[string]int{}
+		for k, n := range map[string]int{"overdue": overdueLost, "overflow": overflowLost} {
+			if n > 0 {
+				counts[k] = n
+			}
+		}
+		if e, err := p.Store.NewEvent(ctx, "", "system:retention", "audit.dropped", audit.OK, "server",
+			map[string]any{"counts": counts}); err == nil {
+			_ = p.Store.InsertEvents(ctx, []store.Event{e})
+		}
 	}
 }

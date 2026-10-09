@@ -116,7 +116,7 @@ var catalogue = map[Kind][]string{
 	"tenant.resume":  {},
 	"version.add":    {"version", "kind", "c_apis"},
 	"version.c_apis": {"version", "c_api"},
-	"server.start":   {"version", "schema", "changed"},
+	"server.start":   {"version", "schema", "digests", "changed"},
 	// channels and keys
 	"channel.create":   {"name", "kind"},
 	"channel.versions": {"added", "removed"},
@@ -158,12 +158,12 @@ var catalogue = map[Kind][]string{
 	"upstream.pull":     {"upstream", "duckdb_version", "platform", "name"},
 	"shadow.add":        {"name"},
 	"shadow.remove":     {"name"},
-	"auth.failure":      {"reason", "count"},
+	"auth.failure":      {"reason", "route", "count"},
 	"authz.refused":     {"route", "verb", "status", "count"},
 	"install":           {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
 	"audit.dropped":     {"counts", "sink"},
-	"audit.sink":        {"sink", "state", "class"},
-	"request.failed":    {"route", "status", "class"},
+	"audit.sink":        {"sink", "state", "class", "status"},
+	"request.failed":    {"route", "status", "count"},
 }
 
 // Kinds lists the catalogue: each kind with its fields, sorted by kind.
@@ -191,8 +191,10 @@ func SubjectForm(k Kind) string {
 		return "channel:<channel>/ext:<name>"
 	case "upstream.release", "install":
 		return release
-	case "server.start", "audit.dropped", "audit.sink":
+	case "server.start", "audit.dropped":
 		return "server"
+	case "audit.sink":
+		return "sink:<name>"
 	case "auth.failure", "authz.refused", "request.failed":
 		return "route:<route>"
 	}

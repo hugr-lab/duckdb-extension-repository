@@ -12,6 +12,8 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/buffer"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/sinks"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/writer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
@@ -65,6 +67,27 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			}
 		}
 	}
+	// events (spec 0010): refusals through the asynchronous writer; the sinks' registry, loaded
+	// again for serve's own resolver, which refreshes
+	events := &writer.Writer{Store: st, Log: log}
+	resolver, err := sinks.Attach(ctx, st, cfg.Events.Sinks)
+	if errors.Is(err, store.ErrNoSinkBit) {
+		log.Error("serve: an event sink has no bit yet; removed sinks' bits are freed 10 minutes after they leave every configuration", "error", err)
+	} else if err != nil {
+		return err
+	}
+	host, _ := os.Hostname()
+	if len(host) > 120 {
+		host = host[:120] // leases.holder is 200 characters
+	}
+	instance := host + "/" + store.NewID()
+	eventSinks, err := EventSinks(cfg, instance)
+	if err != nil {
+		return err
+	}
+	if err := ServerStart(ctx, cfg, st); err != nil {
+		log.Error("serve: recording server.start", "error", err)
+	}
 	maxBody, maxIngests := cfg.BlobLimits()
 	perActor, perTenant := cfg.PublishLimits()
 	mgmt := svc.WithAuthz(grants)
@@ -72,11 +95,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
 		Server: server, Providers: providers, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
 		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, MaxBody: maxBody, MinRate: int64(lim.MinRate), PublishPerActor: perActor,
-		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge()})
-	host, _ := os.Hostname()
-	if len(host) > 120 {
-		host = host[:120] // leases.holder is 200 characters
-	}
+		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events})
 	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background
 	puller := &upstream.Puller{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log,
 		NegativeTTL: cfg.UpstreamLimits().NegativeTTL}
@@ -117,6 +136,14 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	pruner := &buffer.Pruner{Store: st, Holder: host + "/" + store.NewID(), Retention: ev.Retention, MaxRowsPerTenant: ev.MaxRowsPerTenant, Log: log}
 	wg.Add(1)
 	go func() { defer wg.Done(); pruner.Run(bg) }()
+	// the writer outlives the listeners: refusals while draining are written
+	evCtx, evStop := context.WithCancel(context.WithoutCancel(ctx))
+	evDone := make(chan struct{})
+	go func() { defer close(evDone); events.Run(evCtx) }()
+	defer func() { evStop(); <-evDone }()
+	m := &sinks.Manager{Store: st, Resolver: resolver, Sinks: eventSinks, Holder: instance, Log: log}
+	wg.Add(1)
+	go func() { defer wg.Done(); m.Run(bg) }()
 	ur := &upstream.Runner{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log}
 	wg.Add(2)
 	go func() { defer wg.Done(); ur.Run(bg) }()
