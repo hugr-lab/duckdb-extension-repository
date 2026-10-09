@@ -41,6 +41,8 @@ var (
 	// ErrCollision is an allowlist name another upstream of the channel lists, or a replacement
 	// holds in the channel (409).
 	ErrCollision = errors.New("upstream")
+	// ErrPullThrough is a run asked of a pull-through upstream, which fetches on a miss (409).
+	ErrPullThrough = errors.New("upstream: a pull-through upstream fetches on a miss, not in runs")
 	// ErrPaused is a run asked of a paused upstream (409).
 	ErrPaused = errors.New("upstream: the upstream is paused; resume it first")
 )
@@ -140,8 +142,8 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 	default:
 		return u, fmt.Errorf("%w: kind %q (duckdb-core, duckdb-community or repository)", store.ErrInvalid, sp.Kind)
 	}
-	if sp.Mode != store.ModeMirror {
-		return u, fmt.Errorf("%w: mode %q (mirror; pull-through comes with spec 0009 phase 2)", store.ErrInvalid, sp.Mode)
+	if sp.Mode != store.ModeMirror && sp.Mode != store.ModePullThrough {
+		return u, fmt.Errorf("%w: mode %q (mirror or pull-through)", store.ErrInvalid, sp.Mode)
 	}
 	if sp.Visibility != store.Public && sp.Visibility != store.Private {
 		return u, fmt.Errorf("%w: visibility %q", store.ErrInvalid, sp.Visibility)
@@ -160,7 +162,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 		}
 	}
 	for i := range sp.Entries {
-		if err := checkEntry(sp.Kind, &sp.Entries[i]); err != nil {
+		if err := checkEntry(sp.Kind, sp.Mode, &sp.Entries[i]); err != nil {
 			return u, err
 		}
 	}
@@ -174,6 +176,9 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 		// DuckDB checks a core-typed repository against its core keys only: nothing else would load
 		if u.Kind != store.UpstreamCore {
 			return u, fmt.Errorf("%w: a passthrough channel takes duckdb-core upstreams only", store.ErrInvalid)
+		}
+		if u.Mode == store.ModePullThrough { // its callers carry no token: nothing would ever pull
+			return u, fmt.Errorf("%w: a passthrough channel takes mirrors only", store.ErrInvalid)
 		}
 		if askedPrivate {
 			return u, fmt.Errorf("%w: a passthrough channel's releases are public", store.ErrInvalid)
@@ -280,7 +285,16 @@ func checkFingerprint(fp string) error {
 
 // checkEntry validates an allowlist entry for an upstream of kind (spec 0009): a canonical name,
 // reserved names only from their own repository unless allow_reserved, valid versions.
-func checkEntry(kind string, e *store.UpstreamEntry) error {
+func checkEntry(kind, mode string, e *store.UpstreamEntry) error {
+	if e.Name == "*" { // any name: pull-through only, never a reserved name, no versions
+		if mode != store.ModePullThrough || len(e.Versions) > 0 || e.AllowReserved {
+			return fmt.Errorf("%w: \"*\" is a pull-through upstream's entry, without versions or allow_reserved", store.ErrInvalid)
+		}
+		if kind == store.UpstreamCore { // every core name is reserved: "*" would take none
+			return fmt.Errorf("%w: \"*\" takes no core name; list them", store.ErrInvalid)
+		}
+		return nil
+	}
 	if c := reserved.Canonical(e.Name); c != "" {
 		return fmt.Errorf("%w: %q is an alias; DuckDB installs it as %q", store.ErrInvalid, e.Name, c)
 	}
@@ -398,9 +412,9 @@ func (s *Service) Get(ctx context.Context, a authz.Actor, tenant, name string) (
 	return u, err
 }
 
-// change runs fn on an upstream under the tenant's upstream lock; fn reports whether the
-// allowlist changed (the tenant's snapshots are renewed).
-func (s *Service) change(ctx context.Context, a authz.Actor, tenant, name string, fn func(tx *store.Tx, u *store.Upstream) (bool, error)) (store.Upstream, error) {
+// change runs fn on an upstream under the tenant's upstream lock, moves the record's version, and
+// renews the tenant's snapshots.
+func (s *Service) change(ctx context.Context, a authz.Actor, tenant, name string, fn func(tx *store.Tx, u *store.Upstream) error) (store.Upstream, error) {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return store.Upstream{}, err
@@ -411,8 +425,7 @@ func (s *Service) change(ctx context.Context, a authz.Actor, tenant, name string
 			return err
 		}
 		before := u.Version
-		allowlist, err := fn(tx, &u)
-		if err != nil {
+		if err := fn(tx, &u); err != nil {
 			return err
 		}
 		if u.Version == before { // the record changed: a new ETag (Set and Sync move it themselves or not at all)
@@ -420,9 +433,8 @@ func (s *Service) change(ctx context.Context, a authz.Actor, tenant, name string
 				return err
 			}
 		}
-		if !allowlist {
-			return nil
-		}
+		// every change renews the tenant's snapshots: the index's shadows follow allowlists, and
+		// serving's pull-through follows platforms and states (spec 0009 phase 2)
 		return bumpTenant(ctx, tx, t.ID)
 	})
 	if err != nil {
@@ -453,24 +465,24 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string
 // Set changes an upstream's visibility (for its new releases) or state; resuming makes a mirror
 // due.
 func (s *Service) Set(ctx context.Context, a authz.Actor, tenant, name, visibility, state string, expected int64) (store.Upstream, error) {
-	return s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) (bool, error) {
+	return s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) error {
 		if visibility == store.Private {
 			ch, err := tx.ChannelByID(ctx, u.ChannelID)
 			if err != nil {
-				return false, err
+				return err
 			}
 			if ch.Kind == store.ChannelPassthrough {
-				return false, fmt.Errorf("%w: a passthrough channel's releases are public", store.ErrInvalid)
+				return fmt.Errorf("%w: a passthrough channel's releases are public", store.ErrInvalid)
 			}
 		}
 		wasPaused := u.State == store.UpstreamPaused
 		if err := tx.SetUpstream(ctx, u, visibility, state, expected); err != nil {
-			return false, err
+			return err
 		}
 		if wasPaused && u.State == store.UpstreamActive {
-			return false, tx.MakeDue(ctx, u.ID, "")
+			return tx.MakeDue(ctx, u.ID, "")
 		}
-		return false, nil
+		return nil
 	})
 }
 
@@ -478,31 +490,31 @@ func (s *Service) Set(ctx context.Context, a authz.Actor, tenant, name, visibili
 // reports whether the entry is new.
 func (s *Service) PutEntry(ctx context.Context, a authz.Actor, tenant, name string, e store.UpstreamEntry) (bool, error) {
 	created := false
-	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) (bool, error) {
-		if err := checkEntry(u.Kind, &e); err != nil {
-			return false, err
+	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) error {
+		if err := checkEntry(u.Kind, u.Mode, &e); err != nil {
+			return err
 		}
 		created = !slices.ContainsFunc(u.Entries, func(x store.UpstreamEntry) bool { return x.Name == e.Name })
 		if created {
 			if err := s.collisions(ctx, tx, *u, []string{e.Name}); err != nil {
-				return false, err
+				return err
 			}
 		}
 		if err := tx.PutUpstreamEntry(ctx, u.ID, e); err != nil {
-			return false, err
+			return err
 		}
 		if err := tx.MakeDue(ctx, u.ID, ""); err != nil {
-			return false, err
+			return err
 		}
-		return created, s.checkCells(ctx, tx, *u)
+		return s.checkCells(ctx, tx, *u)
 	})
 	return created, err
 }
 
 // RemoveEntry removes an allowlist entry; its cells go with the next run.
 func (s *Service) RemoveEntry(ctx context.Context, a authz.Actor, tenant, name, ext string) error {
-	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) (bool, error) {
-		return true, tx.RemoveUpstreamEntry(ctx, u.ID, ext)
+	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) error {
+		return tx.RemoveUpstreamEntry(ctx, u.ID, ext)
 	})
 	return err
 }
@@ -512,25 +524,25 @@ func (s *Service) AddPlatform(ctx context.Context, a authz.Actor, tenant, name, 
 	if err := release.ValidPlatform(platform); err != nil {
 		return err
 	}
-	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) (bool, error) {
+	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) error {
 		if err := tx.AddUpstreamPlatform(ctx, u.ID, platform); err != nil {
-			return false, err
+			return err
 		}
 		if err := tx.MakeDue(ctx, u.ID, ""); err != nil {
-			return false, err
+			return err
 		}
-		return false, s.checkCells(ctx, tx, *u)
+		return s.checkCells(ctx, tx, *u)
 	})
 	return err
 }
 
 // RemovePlatform removes a platform (at least one stays).
 func (s *Service) RemovePlatform(ctx context.Context, a authz.Actor, tenant, name, platform string) error {
-	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) (bool, error) {
+	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) error {
 		if len(u.Platforms) == 1 && u.Platforms[0] == platform {
-			return false, fmt.Errorf("%w: an upstream fetches at least one platform", store.ErrInvalid)
+			return fmt.Errorf("%w: an upstream fetches at least one platform", store.ErrInvalid)
 		}
-		return false, tx.RemoveUpstreamPlatform(ctx, u.ID, platform)
+		return tx.RemoveUpstreamPlatform(ctx, u.ID, platform)
 	})
 	return err
 }
@@ -540,22 +552,22 @@ func (s *Service) AddKey(ctx context.Context, a authz.Actor, tenant, name, finge
 	if err := checkFingerprint(fingerprint); err != nil {
 		return err
 	}
-	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) (bool, error) {
+	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) error {
 		if u.Kind != store.UpstreamRepo {
-			return false, fmt.Errorf("%w: a %s upstream uses DuckDB's keys", store.ErrInvalid, u.Kind)
+			return fmt.Errorf("%w: a %s upstream uses DuckDB's keys", store.ErrInvalid, u.Kind)
 		}
-		return false, tx.AddUpstreamKey(ctx, u.ID, fingerprint)
+		return tx.AddUpstreamKey(ctx, u.ID, fingerprint)
 	})
 	return err
 }
 
 // RemoveKey unpins a key (at least one stays).
 func (s *Service) RemoveKey(ctx context.Context, a authz.Actor, tenant, name, fingerprint string) error {
-	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) (bool, error) {
+	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) error {
 		if len(u.Keys) == 1 && u.Keys[0] == fingerprint {
-			return false, fmt.Errorf("%w: a repository upstream pins at least one key", store.ErrInvalid)
+			return fmt.Errorf("%w: a repository upstream pins at least one key", store.ErrInvalid)
 		}
-		return false, tx.RemoveUpstreamKey(ctx, u.ID, fingerprint)
+		return tx.RemoveUpstreamKey(ctx, u.ID, fingerprint)
 	})
 	return err
 }
@@ -574,6 +586,9 @@ func (s *Service) Sync(ctx context.Context, a authz.Actor, tenant, name string, 
 		}
 		if u.State != store.UpstreamActive {
 			return ErrPaused
+		}
+		if u.Mode == store.ModePullThrough {
+			return ErrPullThrough
 		}
 		return tx.RequestUpstreamRun(ctx, &u, dryRun) // the record's version stays: a request is not a change
 	})

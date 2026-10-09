@@ -31,6 +31,10 @@ type Snapshot struct {
 	// Shadowed holds, for a passthrough channel, the core names the tenant replaced (spec 0009): the
 	// channel does not serve them. Shadow changes bump the tenant's passthrough channels.
 	Shadowed map[string]bool
+	// PullThrough is a signed channel's pull-through upstreams (spec 0009 phase 2) and Listed every
+	// name an upstream of the channel lists; upstream changes bump the tenant's channels.
+	PullThrough []store.PullThrough
+	Listed      map[string]bool
 
 	groups    map[group][]*store.Candidate // by (name, platform), in Releases order
 	platforms map[string][]string          // by name, sorted
@@ -335,6 +339,11 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 	if snap.Provided, err = s.Store.ProvidedNames(ctx, c.TenantID); err != nil {
 		return nil, err
 	}
+	if c.Kind == store.ChannelSigned {
+		if snap.PullThrough, snap.Listed, err = s.Store.ChannelPullThrough(ctx, c.ID); err != nil {
+			return nil, err
+		}
+	}
 	if c.Kind == store.ChannelPassthrough {
 		shadows, err := s.Store.ListShadows(ctx, c.TenantID)
 		if err != nil {
@@ -362,4 +371,27 @@ func Shadows(c store.Candidate, provided map[string]bool) string {
 		return "upstream"
 	}
 	return ""
+}
+
+// PullThroughFor returns the pull-through upstream a miss of the cell may be offered to (spec 0009
+// phase 2), or "": a DuckDB version the channel serves, a platform the upstream fetches, and a name
+// it lists, or for "*" any name no other upstream of the channel lists that is not reserved.
+func (s *Snapshot) PullThroughFor(version, platform, name string) string {
+	if _, ok := s.CAPIs[version]; !ok {
+		return ""
+	}
+	for _, p := range s.PullThrough {
+		if !p.Platforms[platform] {
+			continue
+		}
+		if p.Names[name] || p.Any && !s.Listed[name] && reserved.Kind(name) == "" && reserved.Canonical(name) == "" {
+			return p.UpstreamID
+		}
+	}
+	return ""
+}
+
+// Miss is a cell a pull-through upstream may fetch (spec 0009 phase 2).
+type Miss struct {
+	TenantID, UpstreamID, DuckDBVersion, Platform, Name string
 }

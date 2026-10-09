@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,6 +83,28 @@ type mgmt struct {
 	toks   map[string]string // caller -> token
 	other  string            // a grant id in tenant other
 	keySvc *keys.Service     // the API's key service
+	ups    *upstream.Service
+	pulls  *fakePuller
+}
+
+// fakePuller records the misses serving offers (spec 0009 phase 2).
+type fakePuller struct {
+	mu     sync.Mutex
+	offers []release.Miss
+}
+
+func (f *fakePuller) Offer(m release.Miss) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.offers = append(f.offers, m)
+}
+
+func (f *fakePuller) take() []release.Miss {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := f.offers
+	f.offers = nil
+	return out
 }
 
 // newMgmt builds the API with server identity and management: server issuer ops (role
@@ -115,11 +138,12 @@ func newMgmt(t *testing.T) *mgmt {
 	apiH := api.New(api.Options{Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
 		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups})
+	pulls := &fakePuller{}
 	h := serve.NewHandler(en.st, en.keys, en.blob, serve.Options{Log: slog.New(slog.DiscardHandler), Verifier: &auth.Verifier{Fetch: ks},
 		Server: server, PublicURL: publicURL, Auths: auths, API: apiH, MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,
-		WriteIdleTimeout: 10 * time.Second})
+		WriteIdleTimeout: 10 * time.Second, Puller: pulls})
 	h.SetReady(true)
-	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}, keySvc: &keySvc}
+	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}, keySvc: &keySvc, ups: ups, pulls: pulls}
 
 	// the CLI sets up: tenant other, grants in acme
 	cli := en.adm

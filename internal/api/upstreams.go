@@ -87,7 +87,7 @@ func (h *Handler) channelNames(w http.ResponseWriter, r *http.Request, tenant st
 // upstreamErr maps the upstream service's refusals before the common mapping.
 func (h *Handler) upstreamErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, upstream.ErrCollision), errors.Is(err, upstream.ErrPaused):
+	case errors.Is(err, upstream.ErrCollision), errors.Is(err, upstream.ErrPaused), errors.Is(err, upstream.ErrPullThrough):
 		problem(w, http.StatusConflict, typeConflict, publicRefusal(err))
 	case errors.Is(err, upstream.ErrNoKeys):
 		problem(w, http.StatusBadRequest, typeInvalid, publicRefusal(err))

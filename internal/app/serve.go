@@ -72,7 +72,14 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		Server: server, Providers: providers, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
 		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, MaxBody: maxBody, MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge()})
-	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{
+	host, _ := os.Hostname()
+	if len(host) > 120 {
+		host = host[:120] // leases.holder is 200 characters
+	}
+	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background
+	puller := &upstream.Puller{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log,
+		NegativeTTL: cfg.UpstreamLimits().NegativeTTL}
+	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Puller: puller,
 		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
@@ -93,10 +100,6 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	wg.Add(2)
 	go func() { defer wg.Done(); readiness(bg, st, h) }()
 	go func() { defer wg.Done(); publicCheck(bg, bs, h) }()
-	host, _ := os.Hostname()
-	if len(host) > 120 {
-		host = host[:120] // leases.holder is 200 characters
-	}
 	if cfg.Serve.Resign {
 		r := &release.Resigner{Service: svc.Releases, Holder: host + "/" + store.NewID(), Log: log}
 		wg.Add(1)
@@ -110,8 +113,9 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	svc.Upstreams.Log = log
 	ur := &upstream.Runner{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log}
-	wg.Add(1)
+	wg.Add(2)
 	go func() { defer wg.Done(); ur.Run(bg) }()
+	go func() { defer wg.Done(); puller.Run(bg) }()
 	return srv.Run(ctx)
 }
 

@@ -307,7 +307,11 @@ func (t *Tx) AddUpstreamPlatform(ctx context.Context, upstreamID, platform strin
 
 // RemoveUpstreamPlatform removes a platform.
 func (t *Tx) RemoveUpstreamPlatform(ctx context.Context, upstreamID, platform string) error {
-	return t.deleteOne(ctx, "DELETE FROM upstream_platforms WHERE upstream_id = ? AND platform = ?", "platform "+platform, upstreamID, platform)
+	if err := t.deleteOne(ctx, "DELETE FROM upstream_platforms WHERE upstream_id = ? AND platform = ?", "platform "+platform, upstreamID, platform); err != nil {
+		return err
+	}
+	_, err := t.exec(ctx, "DELETE FROM upstream_cells WHERE upstream_id = ? AND platform = ?", upstreamID, platform)
+	return err
 }
 
 // PutUpstreamEntry adds an allowlist entry or replaces its versions and allow_reserved. It reports
@@ -347,7 +351,11 @@ func (t *Tx) RemoveUpstreamEntry(ctx context.Context, upstreamID, name string) e
 	if _, err := t.exec(ctx, "DELETE FROM upstream_versions WHERE upstream_id = ? AND name = ?", upstreamID, name); err != nil {
 		return err
 	}
-	return t.deleteOne(ctx, "DELETE FROM upstream_entries WHERE upstream_id = ? AND name = ?", "extension "+name, upstreamID, name)
+	if err := t.deleteOne(ctx, "DELETE FROM upstream_entries WHERE upstream_id = ? AND name = ?", "extension "+name, upstreamID, name); err != nil {
+		return err
+	}
+	_, err := t.exec(ctx, "DELETE FROM upstream_cells WHERE upstream_id = ? AND name = ?", upstreamID, name)
+	return err
 }
 
 func (t *Tx) deleteOne(ctx context.Context, q, what string, args ...any) error {
@@ -696,4 +704,76 @@ func (s *Store) ServeChannelByID(ctx context.Context, channelID string) (ServeCh
 // TenantChannelIDs lists the ids of a tenant's channels.
 func (t *Tx) TenantChannelIDs(ctx context.Context, tenantID string) ([]string, error) {
 	return t.strings(ctx, "SELECT id FROM channels WHERE tenant_id = ? ORDER BY id", tenantID)
+}
+
+// PullThrough is what serving needs about a channel's pull-through upstreams (spec 0009 phase 2):
+// which cells a miss may offer, decided without the database (it is part of the channel's snapshot).
+type PullThrough struct {
+	UpstreamID, TenantID string
+	Platforms, Names     map[string]bool
+	Any                  bool // "*": any name no other upstream of the channel lists, and no reserved name
+}
+
+// ChannelPullThrough reads a channel's active pull-through upstreams, and every name an upstream of
+// the channel lists (an explicit entry wins over "*").
+func (s *Store) ChannelPullThrough(ctx context.Context, channelID string) ([]PullThrough, map[string]bool, error) {
+	var out []PullThrough
+	listed := map[string]bool{}
+	err := s.InTx(ctx, "", func(tx *Tx) error {
+		out, listed = nil, map[string]bool{}
+		names, err := tx.strings(ctx, `SELECT DISTINCT e.name FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
+WHERE u.channel_id = ?`, channelID)
+		if err != nil {
+			return err
+		}
+		for _, n := range names {
+			if n != "*" {
+				listed[n] = true
+			}
+		}
+		rows, err := tx.query(ctx, "SELECT "+upstreamCols+" FROM upstreams WHERE channel_id = ? AND mode = ? AND state = ? ORDER BY name",
+			channelID, ModePullThrough, UpstreamActive)
+		if err != nil {
+			return err
+		}
+		var us []Upstream
+		for rows.Next() {
+			u, err := scanUpstream(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			us = append(us, u)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for i := range us {
+			if err := tx.upstreamChildren(ctx, &us[i]); err != nil {
+				return err
+			}
+			p := PullThrough{UpstreamID: us[i].ID, TenantID: us[i].TenantID, Platforms: map[string]bool{}, Names: map[string]bool{}}
+			for _, x := range us[i].Platforms {
+				p.Platforms[x] = true
+			}
+			for _, e := range us[i].Entries {
+				if e.Name == "*" {
+					p.Any = true
+				} else {
+					p.Names[e.Name] = true
+				}
+			}
+			out = append(out, p)
+		}
+		return nil
+	})
+	return out, listed, err
+}
+
+// GetCell reads one cell (ErrNotFound for none).
+func (t *Tx) GetCell(ctx context.Context, upstreamID, duckdbVersion, platform, name string) (UpstreamCell, error) {
+	c, err := scanCell(t.queryRow(ctx, `SELECT upstream_id, duckdb_version, platform, name, etag, body_hash, outcome, detail, fetched_at
+FROM upstream_cells WHERE upstream_id = ? AND duckdb_version = ? AND platform = ? AND name = ?`, upstreamID, duckdbVersion, platform, name))
+	return c, notFound(err, "cell")
 }

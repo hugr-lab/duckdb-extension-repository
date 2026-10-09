@@ -73,7 +73,8 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   publisher key list <tenant> <name>
   publisher key remove <tenant> <name> <key-id>
   upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
-               -platforms <p,...> [-extensions <name,...>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
+               -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
+               [-mode mirror|pull-through]
   upstream list <tenant>
   upstream show|remove|pause|resume|public|private <tenant> <name>
   upstream sync <tenant> <name> [-dry-run]        a running kista serve takes the run
@@ -951,6 +952,7 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 	public := fs.Bool("public", false, "")
 	dryRun := fs.Bool("dry-run", false, "")
 	outcome := fs.String("outcome", "", "")
+	mode := fs.String("mode", "", "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
@@ -974,7 +976,7 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 	switch {
 	case sub == "add" && len(pos) == 2:
 		sp := upstream.Spec{Name: pos[1], Kind: *kind, Channel: *channel, Prefix: *prefix, Keys: commaList(*keys),
-			Platforms: commaList(*platforms), Visibility: store.Private}
+			Platforms: commaList(*platforms), Visibility: store.Private, Mode: *mode}
 		if *public {
 			sp.Visibility = store.Public
 		}

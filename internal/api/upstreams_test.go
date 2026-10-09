@@ -3,6 +3,9 @@ package api_test
 import (
 	"strings"
 	"testing"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
 // Spec 0009 phase 1a: upstream management, tenant administrators only.
@@ -136,5 +139,44 @@ func TestUpstreams(t *testing.T) {
 	}
 	if r := m.call(t, "GET", U+"/core", ta, ""); r.status != 404 {
 		t.Errorf("a removed upstream: %d", r.status)
+	}
+}
+
+// Spec 0009 phase 2: a miss on a DuckDB route offers the cell to a pull-through upstream only for a
+// caller holding install, on the flat path; the answer is the same.
+func TestPullThroughOffers(t *testing.T) {
+	m := newMgmt(t)
+	if _, err := m.ups.Add(ctx, admin, "acme", upstream.Spec{Name: "pull", Kind: store.UpstreamCommunity, Channel: "prod",
+		Mode: store.ModePullThrough, Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "*"}}}); err != nil {
+		t.Fatal(err)
+	}
+	const flat = "/acme/prod/v2.0.0/linux_amd64/newext.duckdb_extension.gz"
+	for who, want := range map[string]int{"anonymous": 401, "no grants": 404, "install": 404, "channel adm": 404,
+		"server admin": 401} {
+		if r := m.call(t, "GET", flat, m.toks[who], ""); r.status != want {
+			t.Errorf("%s: %d", who, r.status)
+		}
+		offers := m.pulls.take()
+		if (who == "install" || who == "channel adm") != (len(offers) == 1) { // admin holds install
+			t.Errorf("%s offered %v", who, offers)
+		}
+		if who == "install" && (offers[0].Name != "newext" || offers[0].DuckDBVersion != "v2.0.0" || offers[0].Platform != "linux_amd64") {
+			t.Errorf("the offer: %+v", offers[0])
+		}
+	}
+	// a pull-through upstream is not run
+	if r := m.call(t, "POST", "/api/v1/tenants/acme/upstreams/pull/sync", m.toks["tenant admin"], ""); r.status != 409 {
+		t.Errorf("sync a pull-through upstream: %d", r.status)
+	}
+	// a core name, an alias, the versioned path, an existing release, a platform it does not fetch: no offer
+	for _, path := range []string{"/acme/prod/v2.0.0/linux_amd64/json.duckdb_extension.gz",
+		"/acme/prod/v2.0.0/linux_amd64/postgres.duckdb_extension.gz",
+		"/acme/prod/newext/1.0/v2.0.0/linux_amd64/newext.duckdb_extension.gz",
+		"/acme/prod/v2.0.0/linux_amd64/tresor.duckdb_extension.gz",
+		"/acme/prod/v2.0.0/osx_arm64/newext.duckdb_extension.gz"} {
+		m.call(t, "GET", path, m.toks["install"], "")
+		if offers := m.pulls.take(); len(offers) != 0 {
+			t.Errorf("%s offered %v", path, offers)
+		}
 	}
 }

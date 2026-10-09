@@ -23,6 +23,7 @@ func TestUpstreamsConfig(t *testing.T) {
 		"timeout":     {base + "upstreams: { fetch_timeout: 5s }\n", "upstreams.fetch_timeout"},
 		"rate":        {base + "upstreams: { min_rate: 10 }\n", "upstreams.min_rate"},
 		"interval":    {base + "upstreams: { interval: 1m }\n", "upstreams.interval"},
+		"negative":    {base + "upstreams: { negative_ttl: 5s }\n", "upstreams.negative_ttl"},
 	} {
 		if _, err := Load(write(t, c.file), nil); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)
