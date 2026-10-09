@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -61,12 +62,27 @@ type fakeRepo struct {
 	gate  map[string]chan struct{} // a path's answers wait for the gate to close
 	hit   chan string              // paths of gated requests, as they arrive
 	srv   *httptest.Server
+	// token, when set, is the Bearer token the files take (a private channel, spec 0009 phase 3):
+	// 401 without it, 403 with another; .well-known stays public
+	token     string
+	auths     []string          // the Authorization headers of file requests
+	wellAuth  []string          // the Authorization headers of .well-known requests
+	redirects map[string]string // path → where it redirects
 }
 
-func newRepo(t *testing.T) *fakeRepo {
+// authorizations returns the Authorization headers of file requests so far.
+func (r *fakeRepo) authorizations() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.auths)
+}
+
+func newRepo(t *testing.T) *fakeRepo { return newRepoTLS(t, false) }
+
+func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 	r := &fakeRepo{files: map[string][]byte{}, etags: map[string]string{}, gets: map[string]int{}, conds: map[string]int{},
 		gate: map[string]chan struct{}{}, hit: make(chan string, 16)}
-	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
 		r.mu.Lock()
 		g := r.gate[q.URL.Path]
 		r.mu.Unlock()
@@ -85,8 +101,25 @@ func newRepo(t *testing.T) *fakeRepo {
 			return
 		}
 		if q.URL.Path == "/.well-known/duckdb-extension-repo.json" {
+			r.wellAuth = append(r.wellAuth, q.Header.Get("Authorization"))
 			_ = json.NewEncoder(w).Encode(map[string]any{"signature_keys": r.keys})
 			return
+		}
+		r.auths = append(r.auths, q.Header.Get("Authorization"))
+		if to, ok := r.redirects[q.URL.Path]; ok {
+			http.Redirect(w, q, to, http.StatusFound)
+			return
+		}
+		if r.token != "" {
+			switch q.Header.Get("Authorization") {
+			case "Bearer " + r.token:
+			case "":
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			default:
+				w.WriteHeader(map[bool]int{true: http.StatusUnauthorized, false: http.StatusForbidden}[strings.HasPrefix(q.Header.Get("Authorization"), "Bearer stale")])
+				return
+			}
 		}
 		b, ok := r.files[q.URL.Path]
 		if !ok {
@@ -100,7 +133,12 @@ func newRepo(t *testing.T) *fakeRepo {
 		}
 		w.Header().Set("ETag", etag)
 		_, _ = w.Write(b)
-	}))
+	})
+	if tls {
+		r.srv = httptest.NewTLSServer(h)
+	} else {
+		r.srv = httptest.NewServer(h)
+	}
 	t.Cleanup(r.srv.Close)
 	return r
 }

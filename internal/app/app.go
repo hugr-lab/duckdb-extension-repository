@@ -7,6 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/sinks"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
@@ -14,6 +18,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/cloud/azure"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/azurekv"
@@ -173,6 +178,12 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	rel := &release.Service{Store: s, Signers: ks, Authz: az}
 	maxBody, maxIngests := cfg.BlobLimits()
 	ul := cfg.UpstreamLimits()
+	creds, err := Credentials(cfg)
+	if err != nil {
+		return nil, err
+	}
+	// what a private upstream brought becomes public only as its credential allows (spec 0009 phase 3)
+	rel.MayPublish = func(name string) bool { c, ok := creds[name]; return ok && c.AllowPublic }
 	return &Services{
 		Store:    s,
 		Sources:  reg,
@@ -184,8 +195,39 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		Upstreams: &upstream.Service{Store: s, Releases: rel, Fetch: eg, Authz: az, MaxBody: maxBody, MaxIngests: maxIngests,
 			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
 			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate),
-				Interval: ul.Interval}},
+				Interval: ul.Interval}, Credentials: creds},
 	}, nil
+}
+
+// Credentials builds the private upstreams' credentials (spec 0009 phase 3): each token endpoint
+// through egress with egress.allow and the credential's own allowlist; the platform's identity for
+// client_auth azure. Nothing is contacted here.
+func Credentials(cfg config.Config) (credential.Registry, error) {
+	d := credential.Deps{Poster: func(c config.Credential) (credential.Poster, error) { return egressWith(cfg, c.Allow, 0) }}
+	if cfg.Azure.Identity.Kind != "" {
+		id := cfg.Azure.Identity
+		cloudName := cfg.Azure.Cloud
+		if cloudName == "" {
+			cloudName = "public"
+		}
+		// Entra's federated credential audience per cloud
+		d.AzureExchange = map[string]string{"public": "api://AzureADTokenExchange", "china": "api://AzureADTokenExchangeChina",
+			"usgov": "api://AzureADTokenExchangeUSGov"}[cloudName]
+		// one credential, made at first use: its token cache is reused
+		cred := sync.OnceValues(func() (azcore.TokenCredential, error) {
+			return azure.Credential(azure.Identity{Kind: id.Kind, ClientID: id.ClientID, TenantID: id.TenantID}, cloudName,
+				cfg.Profile == config.ProfileDev)
+		})
+		d.Azure = func(ctx context.Context, scope string) (string, error) {
+			c, err := cred()
+			if err != nil {
+				return "", err
+			}
+			tok, err := c.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{scope}})
+			return tok.Token, err
+		}
+	}
+	return credential.New(cfg.Upstreams.Credentials, d)
 }
 
 // Providers builds the trusted-publishing providers (spec 0008), each with a verifier of its own.

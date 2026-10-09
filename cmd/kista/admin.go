@@ -75,7 +75,9 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   publisher key remove <tenant> <name> <key-id>
   upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
                -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
-               [-mode mirror|pull-through]
+               [-mode mirror|pull-through] [-credential <name>]
+  upstream credential <tenant> <name> <credential|->   a private upstream's credential (- clears it)
+  upstream credentials                            the configured credentials (names, tenants, prefixes)
   upstream list <tenant>
   upstream show|remove|pause|resume|public|private <tenant> <name>
   upstream sync <tenant> <name> [-dry-run]        a running kista serve takes the run
@@ -958,6 +960,7 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 	dryRun := fs.Bool("dry-run", false, "")
 	outcome := fs.String("outcome", "", "")
 	mode := fs.String("mode", "", "")
+	cred := fs.String("credential", "", "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
@@ -967,6 +970,9 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 			strings.Join(u.Platforms, ","))
 		if u.Prefix != "" {
 			fmt.Fprintf(a.out, "prefix: %s\nkeys: %s\n", u.Prefix, strings.Join(u.Keys, ","))
+		}
+		if u.Credential != "" {
+			fmt.Fprintf(a.out, "credential: %s\n", u.Credential)
 		}
 		for _, e := range u.Entries {
 			fmt.Fprintf(a.out, "extension: %s %s%s\n", e.Name, strings.Join(e.Versions, ","), map[bool]string{true: " (allow reserved)"}[e.AllowReserved])
@@ -981,7 +987,7 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 	switch {
 	case sub == "add" && len(pos) == 2:
 		sp := upstream.Spec{Name: pos[1], Kind: *kind, Channel: *channel, Prefix: *prefix, Keys: commaList(*keys),
-			Platforms: commaList(*platforms), Visibility: store.Private, Mode: *mode}
+			Platforms: commaList(*platforms), Visibility: store.Private, Mode: *mode, Credential: *cred}
 		if *public {
 			sp.Visibility = store.Public
 		}
@@ -1025,6 +1031,21 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 			return err
 		}
 		a.logf("upstream %s %s %s", sub, pos[0], pos[1])
+	case sub == "credential" && len(pos) == 3:
+		name := pos[2]
+		if name == "-" {
+			name = ""
+		}
+		if _, err := a.svc.Upstreams.SetCredential(ctx, a.actor, pos[0], pos[1], name, 0); err != nil {
+			return err
+		}
+		a.logf("upstream credential %s %s %s", pos[0], pos[1], pos[2])
+	case sub == "credentials" && len(pos) == 0:
+		a.table("NAME\tKIND\tTENANTS\tPREFIXES\tPUBLIC", func(w io.Writer) {
+			for _, i := range a.svc.Upstreams.Credentials.Infos() {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\n", i.Name, i.Kind, strings.Join(i.Tenants, ","), strings.Join(i.Prefixes, ","), i.AllowPublic)
+			}
+		})
 	case sub == "sync" && len(pos) == 2:
 		if _, err := a.svc.Upstreams.Sync(ctx, a.actor, pos[0], pos[1], *dryRun); err != nil {
 			return err

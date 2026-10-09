@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
@@ -177,6 +179,38 @@ func TestPullThroughOffers(t *testing.T) {
 		m.call(t, "GET", path, m.toks["install"], "")
 		if offers := m.pulls.take(); len(offers) != 0 {
 			t.Errorf("%s offered %v", path, offers)
+		}
+	}
+}
+
+// Spec 0009 phase 3: credentials are listed to server administrators by name, never their
+// settings; an upstream takes one by name.
+func TestUpstreamCredentials(t *testing.T) {
+	m := newMgmt(t)
+	creds, err := credential.New([]config.Credential{{Name: "sub", Tenants: []string{"acme"}, Prefixes: []string{"https://repo.example/acme/"},
+		Kind: "token_file", TokenFile: "/run/secrets/token"}}, credential.Deps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ups.Credentials = creds
+	r := m.call(t, "GET", "/api/v1/credentials", m.toks["server admin"], "")
+	if r.status != 200 || !strings.Contains(string(r.body), `"name":"sub"`) || strings.Contains(string(r.body), "/run/secrets") {
+		t.Fatalf("credentials: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", "/api/v1/credentials", m.toks["tenant admin"], ""); r.status != 404 {
+		t.Fatalf("a tenant administrator lists credentials: %d", r.status)
+	}
+	const U = "/api/v1/tenants/acme/upstreams"
+	ta := m.toks["tenant admin"]
+	if r := m.call(t, "POST", U, ta, `{"name":"core","kind":"duckdb-core","channel":"staging","platforms":["linux_amd64"],"credential":"sub"}`); r.status != 400 {
+		t.Fatalf("a credential on DuckDB's core: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", U, ta, `{"name":"core","kind":"duckdb-core","channel":"staging","platforms":["linux_amd64"]}`); r.status != 201 {
+		t.Fatalf("add: %d %s", r.status, r.body)
+	}
+	for body, want := range map[string]int{`{"credential":"sub"}`: 400, `{}`: 400, `{"credential":""}`: 200} {
+		if r := m.call(t, "POST", U+"/core/credential", ta, body, "If-Match", "*"); r.status != want {
+			t.Errorf("%s: %d %s", body, r.status, r.body)
 		}
 	}
 }

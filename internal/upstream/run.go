@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -307,6 +309,10 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 				}
 				prev := last[[3]string{c.version, c.platform, c.name}]
 				outcome := s.cell(rctx, actor, sc, cur, e, ks, base, hostGate, c, prev, res.DryRun)
+				if outcome.Outcome == "" { // the identity provider refuses kista's own client: the run fails
+					cancel(fmt.Errorf("%w: %w", errFailed, credential.ErrClient))
+					return
+				}
 				if rctx.Err() != nil {
 					return // a stopped run records nothing more: another run takes the cell
 				}
@@ -396,13 +402,33 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 	if rate <= 0 {
 		rate = 64 << 10
 	}
+	// a private upstream's token, before the host's slot (a slow identity provider holds none);
+	// its failures are classes in the cell, the details in the log (spec 0009 phase 3)
+	cred, tok, err := s.token(ctx, sc.Tenant.Name, u)
+	if errors.Is(err, credential.ErrClient) {
+		rec.Outcome = "" // the operator's configuration: the run stops, the cell is not recorded
+		return rec
+	}
+	if err != nil {
+		return fail(store.CellFailed, err)
+	}
 	if err := acquire(ctx, hostGate); err != nil {
 		return fail(store.CellFailed, err)
 	}
 	url := base + "/" + c.version + "/" + c.platform + "/" + c.name + ".duckdb_extension.gz"
-	d, err := s.Fetch.Download(ctx, url, egress.DownloadOptions{ETag: etag, MaxBytes: s.MaxBody + 1<<20, Timeout: timeout, MinRate: rate}, tmp)
+	opts := egress.DownloadOptions{ETag: etag, MaxBytes: s.MaxBody + 1<<20, Timeout: timeout, MinRate: rate}
+	d, err := s.download(ctx, cred, tok, url, opts, tmp)
 	<-hostGate
+	var ae *egress.AuthError
 	switch {
+	case errors.Is(err, credential.ErrClient):
+		rec.Outcome = ""
+		return rec
+	case errors.As(err, &ae):
+		return fail(store.CellFailed, fmt.Errorf("upstream.auth: the upstream answered %d", ae.Status))
+	case errors.Is(err, credential.ErrToken):
+		s.Log.Warn("upstream: no token for a private upstream", "tenant", sc.Tenant.Name, "upstream", u.Name, "error", err)
+		return fail(store.CellFailed, errors.New("upstream.auth: no token"))
 	case errors.Is(err, egress.ErrNotFound):
 		return fail(store.CellMissing, nil)
 	case err != nil:
@@ -433,10 +459,18 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		return fail(store.CellRejected, err) // the file: too large, malformed, a broken gzip stream
 	}
 	defer sp.Close()
+	vis := u.Visibility
+	if u.Credential != "" && (cred == nil || !cred.AllowPublic) {
+		vis = store.Private // whatever the upstream's visibility says (spec 0009 phase 3)
+	}
 	in := release.Ingest{Name: c.name, DuckDBVersion: c.version, Platform: c.platform, Upstream: u.Name, URL: url, Versions: e.Versions, Keys: keys,
-		Visibility: u.Visibility, DryRun: dryRun, Provenance: func(key string) string {
-			b, _ := json.Marshal(map[string]string{"upstream": u.Name, "kind": u.Kind, "url": url, "etag": d.ETag, "key": key,
-				"fetched_at": rec.FetchedAt.Format(time.RFC3339)})
+		Visibility: vis, DryRun: dryRun, Provenance: func(key string) string {
+			p := map[string]string{"upstream": u.Name, "kind": u.Kind, "url": url, "etag": d.ETag, "key": key,
+				"fetched_at": rec.FetchedAt.Format(time.RFC3339)}
+			if u.Credential != "" {
+				p["credential"] = u.Credential
+			}
+			b, _ := json.Marshal(p)
 			return string(b)
 		}}
 	got, err := s.Releases.Ingest(ctx, a, sc, sp, in)
@@ -531,10 +565,61 @@ func runClass(err error) string {
 		return "paused"
 	case errors.Is(err, ErrNoKeys):
 		return "keys"
+	case errors.Is(err, credential.ErrClient):
+		return "credential"
 	case errors.Is(err, errFailed):
 		return "failed"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "interrupted"
 	}
 	return "error"
+}
+
+// token is the credential an upstream uses (nil for none) and a token of it.
+func (s *Service) token(ctx context.Context, tenant string, u store.Upstream) (*credential.Credential, string, error) {
+	if u.Credential == "" {
+		return nil, "", nil
+	}
+	c, err := s.Credentials.For(u.Credential, tenant, u.Prefix)
+	if err != nil {
+		s.Log.Warn("upstream: a private upstream's credential is not configured for it", "tenant", tenant, "upstream", u.Name,
+			"credential", u.Credential, "error", err)
+		return nil, "", errors.New("upstream.auth: the credential is not configured for this upstream")
+	}
+	tok, err := c.Token(ctx)
+	switch {
+	case errors.Is(err, credential.ErrClient):
+		s.Log.Error("upstream: the identity provider refuses kista's own client; check the credential's configuration",
+			"tenant", tenant, "upstream", u.Name, "credential", u.Credential)
+		return nil, "", err
+	case err != nil:
+		s.Log.Warn("upstream: no token for a private upstream", "tenant", tenant, "upstream", u.Name, "error", err)
+		return nil, "", errors.New("upstream.auth: no token")
+	}
+	return c, tok, nil
+}
+
+// download fetches a cell's file, with the credential's token when there is one: a 401 forgets
+// that token (unless it is younger than 30 seconds) and tries once more, the file truncated first.
+func (s *Service) download(ctx context.Context, cred *credential.Credential, tok, url string, o egress.DownloadOptions, f *os.File) (egress.Download, error) {
+	for attempt := 0; ; attempt++ {
+		if cred != nil {
+			o.Header = http.Header{"Authorization": {"Bearer " + tok}}
+		}
+		d, err := s.Fetch.Download(ctx, url, o, f)
+		var ae *egress.AuthError
+		if cred == nil || attempt > 0 || !errors.As(err, &ae) || ae.Status != http.StatusUnauthorized {
+			return d, err
+		}
+		cred.Invalidate(tok)
+		if tok, err = cred.Token(ctx); err != nil {
+			return d, err
+		}
+		if err := f.Truncate(0); err != nil {
+			return d, err
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return d, err
+		}
+	}
 }

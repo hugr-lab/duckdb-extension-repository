@@ -103,17 +103,21 @@ func (s *Service) Promote(ctx context.Context, a authz.Actor, tenant, channel, n
 			return nil, false, fmt.Errorf("%w: %s %s %s was added unchecked; publish it to check it", ErrState, r.Name, r.ExtVersion, r.Platform)
 		}
 		vis := r.Visibility
-		if o.Private {
-			vis = store.Private
+		if cr := CredentialOf(r.Release); o.Private || cr != "" && (s.MayPublish == nil || !s.MayPublish(cr)) {
+			vis = store.Private // a private upstream's release is public only as its credential allows now
 		}
 		pm := map[string]any{}
 		if o.Provenance != "" {
 			_ = json.Unmarshal([]byte(o.Provenance), &pm)
 		}
 		pm["actor"], pm["from_channel"], pm["from_release"] = a.String(), o.From, r.ID
+		if cr := CredentialOf(r.Release); cr != "" {
+			pm["credential"] = cr // what a private upstream brought stays as private as its credential says
+		}
 		prov, err := json.Marshal(pm)
 		if err != nil || len(prov) > 4000 {
-			prov, _ = json.Marshal(map[string]string{"actor": a.String(), "from_channel": o.From, "from_release": r.ID})
+			prov, _ = json.Marshal(map[string]string{"actor": a.String(), "from_channel": o.From, "from_release": r.ID,
+				"credential": CredentialOf(r.Release)})
 		}
 		it := item{b: b, visibility: vis, notCurrent: o.NotCurrent, origin: store.OriginPromotion, provenance: string(prov)}
 		if t := res(channel); !t.Reserved {

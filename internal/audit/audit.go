@@ -150,7 +150,7 @@ var catalogue = map[Kind][]string{
 	"release.private":   {"release", "name", "version", "platform"},
 	"block.add":         {"body_hash", "reason"},
 	"block.remove":      {"body_hash"},
-	"upstream.add":      {"name", "kind", "prefix", "channel", "mode", "visibility", "keys", "platforms", "extensions"},
+	"upstream.add":      {"name", "kind", "prefix", "channel", "mode", "visibility", "keys", "platforms", "extensions", "credential"},
 	"upstream.remove":   {"name"},
 	"upstream.change":   {"name", "change", "value", "versions", "allow_reserved", "visibility", "state"},
 	"upstream.release":  {"upstream", "release", "name", "version", "platform", "slot", "body_hash", "url", "key"},
