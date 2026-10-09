@@ -20,6 +20,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -78,6 +79,8 @@ type Service struct {
 	Log        Logger
 	// DuckDB replaces DuckDB's repositories and keys (tests); the zero value is the real ones.
 	DuckDB DuckDB
+	// Credentials are the configured credentials private upstreams use (phase 3).
+	Credentials credential.Registry
 
 	gate gates
 }
@@ -92,11 +95,13 @@ type DuckDB struct {
 type Logger interface {
 	Info(msg string, args ...any)
 	Warn(msg string, args ...any)
+	Error(msg string, args ...any)
 }
 
 // Spec is what an administrator gives to add an upstream.
 type Spec struct {
 	Name, Kind, Prefix, Channel, Mode, Visibility string
+	Credential                                    string // a configured credential's name (phase 3)
 	Keys, Platforms                               []string
 	Entries                                       []store.UpstreamEntry
 }
@@ -185,6 +190,12 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 		}
 		u.Visibility = store.Public // public by nature
 	}
+	if sp.Credential != "" {
+		if err := s.checkCredential(sp.Credential, tenant, u, sp.Visibility == store.Public); err != nil {
+			return u, err
+		}
+		u.Credential = sp.Credential
+	}
 	u.ChannelID = sc.Channel.ID
 	if u.Kind == store.UpstreamRepo {
 		if _, err := s.repoKeys(ctx, u); err != nil {
@@ -238,7 +249,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 		}
 		if err := tx.Event(ctx, t.ID, a.String(), "upstream.add", "upstream:"+u.Name, map[string]any{"name": u.Name, "kind": u.Kind,
 			"prefix": u.Prefix, "channel": sp.Channel, "mode": u.Mode, "visibility": u.Visibility, "keys": u.Keys,
-			"platforms": u.Platforms, "extensions": entries}); err != nil {
+			"platforms": u.Platforms, "extensions": entries, "credential": u.Credential}); err != nil {
 			return err
 		}
 		if err := s.checkCells(ctx, tx, u); err != nil {
@@ -247,6 +258,35 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 		return bumpTenant(ctx, tx, t.ID)
 	})
 	return u, err
+}
+
+// checkCredential checks that an upstream may use a credential: a repository upstream of a tenant
+// the credential lists, at a prefix it covers; public only when the credential allows it.
+func (s *Service) checkCredential(name, tenant string, u store.Upstream, public bool) error {
+	if u.Kind != store.UpstreamRepo {
+		return fmt.Errorf("%w: only a repository upstream takes a credential", store.ErrInvalid)
+	}
+	c, err := s.Credentials.For(name, tenant, u.Prefix)
+	if err != nil { // unknown or another's: the same answer, so a tenant never learns another's names
+		return fmt.Errorf("%w: credential %s is not one this upstream may use", store.ErrInvalid, name)
+	}
+	if public && !c.AllowPublic {
+		return fmt.Errorf("%w: credential %s does not allow public releases", store.ErrInvalid, name)
+	}
+	return nil
+}
+
+// SetCredential sets an upstream's credential, or clears it ("") (expected: its version). A public
+// upstream takes a credential only when the credential allows public releases.
+func (s *Service) SetCredential(ctx context.Context, a authz.Actor, tenant, name, cred string, expected int64) (store.Upstream, error) {
+	return s.change(ctx, a, tenant, name, "credential", map[string]any{"value": cred}, func(tx *store.Tx, u *store.Upstream) error {
+		if cred != "" {
+			if err := s.checkCredential(cred, tenant, *u, u.Visibility == store.Public); err != nil {
+				return err
+			}
+		}
+		return tx.SetUpstreamCredential(ctx, u, cred, expected)
+	})
 }
 
 // checkPrefix normalises a repository prefix: https (http to loopback in development), no user
@@ -500,6 +540,11 @@ func (s *Service) Set(ctx context.Context, a authz.Actor, tenant, name, visibili
 		set["state"] = state
 	}
 	return s.change(ctx, a, tenant, name, "set", set, func(tx *store.Tx, u *store.Upstream) error {
+		if visibility == store.Public && u.Credential != "" {
+			if err := s.checkCredential(u.Credential, tenant, *u, true); err != nil {
+				return err
+			}
+		}
 		if visibility == store.Private {
 			ch, err := tx.ChannelByID(ctx, u.ChannelID)
 			if err != nil {
@@ -718,7 +763,7 @@ func (s *Service) prefix(u store.Upstream) string {
 // are its own).
 func (s *Service) WithAuthz(az authz.Authorizer) *Service {
 	return &Service{Store: s.Store, Releases: s.Releases, Blob: s.Blob, Fetch: s.Fetch, Authz: az, Config: s.Config,
-		MaxBody: s.MaxBody, MaxIngests: s.MaxIngests, TempDir: s.TempDir, Log: s.Log, DuckDB: s.DuckDB}
+		MaxBody: s.MaxBody, MaxIngests: s.MaxIngests, TempDir: s.TempDir, Log: s.Log, DuckDB: s.DuckDB, Credentials: s.Credentials}
 }
 
 // Shadows lists a tenant's shadows (spec 0009): core names it replaced, which its passthrough

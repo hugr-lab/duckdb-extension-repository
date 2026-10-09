@@ -37,6 +37,7 @@ type upstreamJSON struct {
 	LastRun    json.RawMessage `json:"last_run,omitempty"`
 	CreatedAt  string          `json:"created_at"`
 	CreatedBy  string          `json:"created_by"`
+	Credential string          `json:"credential,omitempty"` // a configured credential's name (spec 0009 phase 3)
 	ETag       string          `json:"etag"`
 }
 
@@ -54,7 +55,7 @@ func (h *Handler) upstreamOf(u store.Upstream, channels map[string]string, c cal
 	o := upstreamJSON{Name: u.Name, Kind: u.Kind, Prefix: u.Prefix, Channel: channels[u.ChannelID], Mode: u.Mode,
 		Visibility: u.Visibility, State: u.State, Run: "idle", Keys: nonNil(u.Keys), Platforms: nonNil(u.Platforms),
 		Extensions: []entryJSON{}, LastRunAt: timeOf(u.LastRunAt), CreatedAt: timeOf(u.CreatedAt),
-		CreatedBy: createdBy(u.CreatedBy, c), ETag: versionTag(u.Version)}
+		CreatedBy: createdBy(u.CreatedBy, c), Credential: u.Credential, ETag: versionTag(u.Version)}
 	switch {
 	case !u.RequestedAt.IsZero() && u.RequestDryRun:
 		o.Run = "dry_run_requested"
@@ -156,12 +157,13 @@ func (h *Handler) addUpstream(w http.ResponseWriter, r *http.Request, c caller, 
 		Keys       []string    `json:"keys"`
 		Platforms  []string    `json:"platforms"`
 		Extensions []entryJSON `json:"extensions"`
+		Credential string      `json:"credential"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	sp := upstream.Spec{Name: in.Name, Kind: in.Kind, Prefix: in.Prefix, Channel: in.Channel, Mode: in.Mode,
-		Visibility: in.Visibility, Keys: in.Keys, Platforms: in.Platforms}
+		Visibility: in.Visibility, Keys: in.Keys, Platforms: in.Platforms, Credential: in.Credential}
 	for _, e := range in.Extensions {
 		sp.Entries = append(sp.Entries, store.UpstreamEntry{Name: e.Name, Versions: e.Versions, AllowReserved: e.AllowReserved})
 	}
@@ -418,4 +420,43 @@ func (h *Handler) removeShadow(w http.ResponseWriter, r *http.Request, c caller,
 		return
 	}
 	noContent(w)
+}
+
+// setCredential answers POST …/upstreams/{name}/credential {"credential": name or ""} (If-Match).
+func (h *Handler) setCredential(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	expected, ok := expectedVersion(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Credential *string `json:"credential"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	if in.Credential == nil {
+		problem(w, http.StatusBadRequest, typeInvalid, "credential is a name, or \"\" to clear it")
+		return
+	}
+	a, _ := c.actor()
+	// If-Match: * (0) is the version the transaction reads
+	u, err := h.o.Upstreams.SetCredential(r.Context(), a, p["t"], p["name"], *in.Credential, expected)
+	if err != nil {
+		h.upstreamErr(w, err)
+		return
+	}
+	h.replyUpstream(w, r, c, p, u, http.StatusOK)
+}
+
+// listCredentials answers GET /api/v1/credentials: the configured credentials' names, tenants and
+// prefixes, never their settings (server administrators).
+func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	out := []map[string]any{}
+	if h.o.Upstreams != nil {
+		for _, i := range h.o.Upstreams.Credentials.Infos() {
+			out = append(out, map[string]any{"name": i.Name, "kind": i.Kind, "tenants": nonNil(i.Tenants),
+				"prefixes": nonNil(i.Prefixes), "allow_public": i.AllowPublic})
+		}
+	}
+	reply(w, r, http.StatusOK, map[string]any{"credentials": out}, "", noStore)
 }

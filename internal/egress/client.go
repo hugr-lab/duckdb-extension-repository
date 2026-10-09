@@ -28,6 +28,8 @@ var (
 	ErrConnect  = errors.New("egress: cannot connect")
 	ErrStatus   = errors.New("egress: unexpected status")
 	ErrTooLarge = errors.New("egress: response too large")
+	// ErrAuth is an answer 401 or 403: the request's credential is not accepted.
+	ErrAuth = errors.New("egress: not authorized")
 )
 
 // Config configures a client.
@@ -283,3 +285,44 @@ func (c *Client) Post(ctx context.Context, raw, contentType string, header http.
 	}
 	return resp.StatusCode, nil
 }
+
+// PostForm posts a form (an OAuth 2.0 token request) and returns the answer's status and body (at
+// most MaxBytes), whatever the status: the caller reads an error answer too.
+func (c *Client) PostForm(ctx context.Context, raw string, form url.Values) (int, []byte, error) {
+	u, err := c.checkURL(raw)
+	if err != nil {
+		return 0, nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, nil, fmt.Errorf("%w: not an absolute URL", ErrRefused)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return 0, nil, doErr(err, u)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBytes+1))
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("%w: %s", ErrConnect, u.Hostname())
+	}
+	if int64(len(b)) > c.maxBytes {
+		return resp.StatusCode, nil, fmt.Errorf("%w: %s", ErrTooLarge, u.Hostname())
+	}
+	return resp.StatusCode, b, nil
+}
+
+// AuthError is an answer 401 or 403 (errors.Is ErrAuth).
+type AuthError struct {
+	Status int
+	Host   string
+}
+
+func (e *AuthError) Error() string { return fmt.Sprintf("%v %d from %s", ErrAuth, e.Status, e.Host) }
+
+// Unwrap makes an AuthError ErrAuth.
+func (e *AuthError) Unwrap() error { return ErrAuth }

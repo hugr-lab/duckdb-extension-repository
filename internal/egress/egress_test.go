@@ -2,6 +2,7 @@ package egress
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestCheck(t *testing.T) {
@@ -196,3 +198,71 @@ func TestProxyConnectsToCheckedAddress(t *testing.T) {
 }
 
 func itoa(p uint16) string { return strconv.Itoa(int(p)) }
+
+// Spec 0009 phase 3: a token request's answer, error answers included, under the size cap and
+// without redirects; a download's header; 401 and 403 as AuthError.
+func TestPostFormAndAuth(t *testing.T) {
+	ctx := context.Background()
+	srv, hp := newTLS(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = r.ParseForm()
+			if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" || r.PostForm.Get("grant_type") != "client_credentials" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"access_token":"t"}`))
+		case "/refused":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
+		case "/big":
+			_, _ = w.Write(make([]byte, 2048))
+		case "/moved":
+			http.Redirect(w, r, "/token", http.StatusFound)
+		case "/file":
+			switch r.Header.Get("Authorization") {
+			case "Bearer good":
+				_, _ = w.Write([]byte("body"))
+			case "":
+				w.WriteHeader(http.StatusUnauthorized)
+			default:
+				w.WriteHeader(http.StatusForbidden)
+			}
+		}
+	})
+	port, _ := strconv.Atoi(hp[strings.LastIndex(hp, ":")+1:])
+	c := client(t, srv, Config{Allow: loopbackAllow(uint16(port)), MaxBytes: 1024})
+	base := "https://" + hp
+	form := url.Values{"grant_type": {"client_credentials"}}
+	if st, b, err := c.PostForm(ctx, base+"/token", form); err != nil || st != 200 || string(b) != `{"access_token":"t"}` {
+		t.Fatalf("token: %d %s %v", st, b, err)
+	}
+	if st, b, err := c.PostForm(ctx, base+"/refused", form); err != nil || st != 400 || !strings.Contains(string(b), "invalid_client") {
+		t.Fatalf("an error answer: %d %s %v", st, b, err)
+	}
+	if _, _, err := c.PostForm(ctx, base+"/big", form); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("the cap: %v", err)
+	}
+	if st, _, err := c.PostForm(ctx, base+"/moved", form); err != nil || st != http.StatusFound {
+		t.Fatalf("a redirect is the answer, not followed: %d %v", st, err)
+	}
+	if _, _, err := c.PostForm(ctx, "https://10.0.0.1/token", form); !errors.Is(err, ErrRefused) {
+		t.Fatalf("an address not allowed: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := c.Download(ctx, base+"/file", DownloadOptions{MaxBytes: 100, Timeout: 5 * time.Second,
+		Header: http.Header{"Authorization": {"Bearer good"}}}, &buf); err != nil || buf.String() != "body" {
+		t.Fatalf("the header: %q %v", buf.String(), err)
+	}
+	for hdr, status := range map[string]int{"": 401, "Bearer bad": 403} {
+		h := http.Header{}
+		if hdr != "" {
+			h.Set("Authorization", hdr)
+		}
+		_, err := c.Download(ctx, base+"/file", DownloadOptions{MaxBytes: 100, Timeout: 5 * time.Second, Header: h}, &bytes.Buffer{})
+		var ae *AuthError
+		if !errors.Is(err, ErrAuth) || !errors.As(err, &ae) || ae.Status != status {
+			t.Errorf("%q: %v", hdr, err)
+		}
+	}
+}

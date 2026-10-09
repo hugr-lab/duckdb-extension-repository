@@ -21,6 +21,9 @@ type DownloadOptions struct {
 	Timeout  time.Duration // the whole download
 	MinRate  int64         // bytes per second, after Grace
 	Grace    time.Duration // before the rate floor applies (default 30s)
+	// Header is sent with the request (an upstream's Authorization, spec 0009 phase 3); a redirect
+	// is never followed, so it reaches the URL's host only.
+	Header http.Header
 }
 
 // Download is a download's outcome: NotModified for a 304 (nothing written), otherwise the body's
@@ -48,6 +51,11 @@ func (c *Client) Download(ctx context.Context, raw string, o DownloadOptions, w 
 	if err != nil {
 		return Download{}, fmt.Errorf("%w: not an absolute URL", ErrRefused)
 	}
+	for k, vs := range o.Header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
 	if o.ETag != "" {
 		req.Header.Set("If-None-Match", o.ETag)
 	}
@@ -66,6 +74,8 @@ func (c *Client) Download(ctx context.Context, raw string, o DownloadOptions, w 
 		return Download{NotModified: true, ETag: resp.Header.Get("ETag")}, nil
 	case http.StatusNotFound:
 		return Download{}, fmt.Errorf("%w: %s", ErrNotFound, u.Hostname())
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return Download{}, &AuthError{Status: resp.StatusCode, Host: u.Hostname()}
 	default:
 		return Download{}, fmt.Errorf("%w %d from %s", ErrStatus, resp.StatusCode, u.Hostname())
 	}

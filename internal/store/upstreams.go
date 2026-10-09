@@ -54,6 +54,7 @@ type Upstream struct {
 	LastRun                                     string // JSON
 	CreatedAt                                   time.Time
 	CreatedBy                                   string
+	Credential                                  string // a configured credential's name (spec 0009 phase 3); "": none
 
 	Keys      []string // fingerprints
 	Platforms []string
@@ -79,15 +80,15 @@ type UpstreamCell struct {
 func TenantUpstreamLock(tenantID string) string { return "kista/tenant-upstreams/" + tenantID }
 
 const upstreamCols = `id, tenant_id, name, kind, prefix, channel_id, mode, visibility, state, version, requested_at,
-request_dry_run, next_run_at, last_run_at, last_run, created_at, created_by`
+request_dry_run, next_run_at, last_run_at, last_run, created_at, created_by, credential`
 
 func scanUpstream(r interface{ Scan(...any) error }) (Upstream, error) {
 	var u Upstream
-	var prefix, lastRun sql.NullString
+	var prefix, lastRun, cred sql.NullString
 	err := r.Scan(&u.ID, &u.TenantID, &u.Name, &u.Kind, &prefix, &u.ChannelID, &u.Mode, &u.Visibility, &u.State, &u.Version,
 		scanTime{&u.RequestedAt}, &u.RequestDryRun, scanTime{&u.NextRunAt}, scanTime{&u.LastRunAt}, &lastRun,
-		scanTime{&u.CreatedAt}, &u.CreatedBy)
-	u.Prefix, u.LastRun = prefix.String, lastRun.String
+		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred)
+	u.Prefix, u.LastRun, u.Credential = prefix.String, lastRun.String, cred.String
 	return u, err
 }
 
@@ -112,10 +113,10 @@ func (t *Tx) InsertUpstream(ctx context.Context, u *Upstream) error {
 		return fmt.Errorf("%w: a tenant holds at most %d upstreams", ErrInvalid, MaxUpstreams)
 	}
 	u.ID, u.CreatedAt, u.Version = NewID(), t.Now(), 1
-	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		u.ID, u.TenantID, u.Name, u.Kind, nullable(u.Prefix), u.ChannelID, u.Mode, u.Visibility, u.State, u.Version,
 		t.s.d.nullTimeArg(u.RequestedAt), u.RequestDryRun, t.s.d.nullTimeArg(u.NextRunAt), nil, nil,
-		t.s.d.timeArg(u.CreatedAt), u.CreatedBy)
+		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential))
 	if err := t.s.mapErr(err, "upstream "+u.Name); err != nil {
 		return err
 	}
@@ -273,6 +274,15 @@ func (t *Tx) SetUpstream(ctx context.Context, u *Upstream, visibility, state str
 	}
 	return t.cas(ctx, "UPDATE upstreams SET visibility = ?, state = ?, version = version + 1 WHERE id = ? AND version = ?",
 		[]any{visibility, state, u.ID, expected}, func() { u.Visibility, u.State, u.Version = visibility, state, expected+1 })
+}
+
+// SetUpstreamCredential sets or clears an upstream's credential (expected: its version).
+func (t *Tx) SetUpstreamCredential(ctx context.Context, u *Upstream, credential string, expected int64) error {
+	if expected == 0 {
+		expected = u.Version
+	}
+	return t.cas(ctx, "UPDATE upstreams SET credential = ?, version = version + 1 WHERE id = ? AND version = ?",
+		[]any{nullable(credential), u.ID, expected}, func() { u.Credential, u.Version = credential, expected+1 })
 }
 
 // BumpUpstream moves an upstream's version: its keys, platforms or entries changed.

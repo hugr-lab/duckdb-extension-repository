@@ -591,6 +591,8 @@ func init() {
 		{"tenants/{t}/upstreams/{name}/pause", map[string]rule{http.MethodPost: m(pathAdmin, upstreamAction("", store.UpstreamPaused))}},
 		{"tenants/{t}/upstreams/{name}/resume", map[string]rule{http.MethodPost: m(pathAdmin, upstreamAction("", store.UpstreamActive))}},
 		{"tenants/{t}/upstreams/{name}/sync", map[string]rule{http.MethodPost: m(pathAdmin, (*Handler).syncUpstream)}},
+		{"tenants/{t}/upstreams/{name}/credential", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).setCredential)}},
+		{"credentials", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listCredentials)}},
 		{"tenants/{t}/upstreams/{name}/cells", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listCells)}},
 		{"tenants/{t}/upstreams/{name}/extensions", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listEntries),
 			http.MethodPost: mb(pathAdmin, (*Handler).putEntry)}},

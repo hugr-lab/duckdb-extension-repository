@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
@@ -207,6 +208,13 @@ func (p *Puller) work(ctx context.Context, m release.Miss) {
 	}
 	// a released cell is served from now on; any other outcome is not fetched again for a while (a
 	// yanked or unchanged release still misses: fetching again would change nothing)
+	switch {
+	case errors.Is(err, credential.ErrClient): // the operator's configuration: not asked again for a while
+		p.mu.Lock()
+		p.remember(k, time.Now().Add(failedTTL))
+		p.mu.Unlock()
+		return
+	}
 	switch outcome {
 	case store.CellReleased, "":
 	case store.CellFailed:
@@ -319,6 +327,9 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 		cell{m.DuckDBVersion, m.Platform, m.Name}, prev, false)
 	if ctx.Err() != nil {
 		return "", nil // stopping, or the lease was lost: nothing is recorded
+	}
+	if rec.Outcome == "" { // the identity provider refuses kista's own client: logged, nothing recorded
+		return "", credential.ErrClient
 	}
 	if rec.FetchedAt.Equal(prev.FetchedAt) && prev.Outcome != "" {
 		return store.CellUnchanged, nil // a 304: the cell keeps its record

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -44,6 +45,22 @@ type Service struct {
 	Authz   authz.Authorizer
 	// CoreKeys replaces DuckDB's core keys (tests); nil is the pin's (spec 0009: shadows).
 	CoreKeys []*rsa.PublicKey
+	// MayPublish reports whether a private upstream's credential (spec 0009 phase 3) allows the
+	// releases it brought to be public; nil allows none.
+	MayPublish func(credential string) bool
+}
+
+// CredentialOf is the private upstream credential a release came through (its provenance's
+// "credential", carried by promotion), "" for none.
+func CredentialOf(r store.Release) string {
+	if r.Origin != store.OriginUpstream && r.Origin != store.OriginPromotion || r.Provenance == "" {
+		return ""
+	}
+	var p struct {
+		Credential string `json:"credential"`
+	}
+	_ = json.Unmarshal([]byte(r.Provenance), &p)
+	return p.Credential
 }
 
 // DuckDBCore reports whether a Build is DuckDB's own core build: its original signature verifies
@@ -706,6 +723,10 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 		case SetPublic, SetPrivate:
 			if r.State == store.ReleaseYanked {
 				return refuse()
+			}
+			// a subscription's extensions are not the tenant's to publish (spec 0009 phase 3)
+			if cr := CredentialOf(r); c == SetPublic && cr != "" && (s.MayPublish == nil || !s.MayPublish(cr)) {
+				return fmt.Errorf("%w: the release came through credential %s, which does not allow public releases", ErrState, cr)
 			}
 			if c == SetPrivate && ch.Kind == store.ChannelPassthrough {
 				return fmt.Errorf("%w: a passthrough channel's releases are public", ErrState)

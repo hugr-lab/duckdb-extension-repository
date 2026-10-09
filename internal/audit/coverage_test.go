@@ -25,6 +25,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
@@ -91,8 +93,9 @@ var writes = map[string]map[string][]audit.Kind{
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
 		"RemoveEntry": {"upstream.change"}, "AddPlatform": {"upstream.change"}, "RemovePlatform": {"upstream.change"},
 		"AddKey": {"upstream.change"}, "RemoveKey": {"upstream.change"}, "RemoveShadow": {"shadow.remove"},
-		"RunUpstream": {"upstream.run", "upstream.release", "upstream.rejected"},
-		"Sync":        nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil,
+		"SetCredential": {"upstream.change"},
+		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
+		"Sync":          nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil,
 	},
 }
 
@@ -391,6 +394,16 @@ func TestCoverage(t *testing.T) {
 	other := "sha256:" + strings.Repeat("ab", 32)
 	en.expect("upstream.Service.AddKey", do(func() error { return en.up.AddKey(rctx, admin, "acme", "repo", other) }), "upstream.change")
 	en.expect("upstream.Service.RemoveKey", do(func() error { return en.up.RemoveKey(rctx, admin, "acme", "repo", other) }), "upstream.change")
+	creds, err := credential.New([]config.Credential{{Name: "repo-token", Tenants: []string{"acme"}, Prefixes: []string{"https://repo.example"},
+		Kind: "token_file", TokenFile: "/nonexistent"}}, credential.Deps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	en.up.Credentials = creds
+	en.expect("upstream.Service.SetCredential", do(func() error {
+		_, err := en.up.SetCredential(rctx, admin, "acme", "repo", "repo-token", 0)
+		return err
+	}), "upstream.change")
 	en.expect("upstream.Service.Remove", do(func() error { return en.up.Remove(rctx, admin, "acme", "core", 0) }), "upstream.remove")
 	// every registered writer ran (Ingest and RunUpstream: in internal/upstream's tests, which
 	// check their events)
