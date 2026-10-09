@@ -1,11 +1,19 @@
 package upstream_test
 
 import (
+	"bytes"
+	"io"
+	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
@@ -52,8 +60,40 @@ func TestNetworkIntake(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// DuckDB's own file through a passthrough channel, with its own signature (spec 0009 phase 1b)
+	must(t, func() error {
+		_, err := en.ten.SetChannelVersions(ctx, admin, "acme", "mirror", []string{"v1.4.1"}, nil)
+		return err
+	})
+	if _, err := en.up.Add(ctx, admin, "acme", upstream.Spec{Name: "passthrough", Kind: store.UpstreamCore, Channel: "mirror",
+		Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "inet"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := en.up.Sync(ctx, admin, "acme", "passthrough", false); err != nil {
+		t.Fatal(err)
+	}
 	en.run.Once(ctx)
-	for _, name := range []string{"core", "community"} {
+	h := serve.NewHandler(en.st, en.ks, en.blob, serve.Options{MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,
+		WriteIdleTimeout: 10 * time.Second, Log: slog.New(slog.DiscardHandler), PublicURL: "https://kista.example",
+		Auths: &auth.TenantAuths{Store: en.st}, Snapshots: &release.Snapshots{Store: en.st}})
+	h.SetReady(true)
+	code, gz, _ := fetch(t, h, "GET", "/acme/mirror/v1.4.1/linux_amd64/inet.duckdb_extension.gz")
+	if code != 200 {
+		t.Fatalf("the passthrough answer: %d", code)
+	}
+	resp, err := http.Get(upstream.CoreURL + "/v1.4.1/linux_amd64/inet.duckdb_extension.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gunzip(t, gz), gunzip(t, orig)) {
+		t.Fatal("the passthrough file is not DuckDB's")
+	}
+	for _, name := range []string{"core", "community", "passthrough"} {
 		u, err := en.up.Get(ctx, admin, "acme", name)
 		if err != nil {
 			t.Fatal(err)

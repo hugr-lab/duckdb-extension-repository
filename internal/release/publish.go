@@ -162,10 +162,7 @@ func (s *Service) Block(ctx context.Context, a authz.Actor, tenant, hash, reason
 	if err != nil {
 		return b, existed, err
 	}
-	for _, ch := range chs {
-		if ch.Kind != store.ChannelSigned {
-			continue
-		}
+	for _, ch := range chs { // signed and passthrough channels (spec 0009)
 		err := s.Store.InTx(ctx, lockKey(ch.ID), func(tx *store.Tx) error {
 			rels, err := tx.LiveReleasesWithBody(ctx, ch.ID, hash)
 			if err != nil {
@@ -203,9 +200,6 @@ func (s *Service) Unblock(ctx context.Context, a authz.Actor, tenant, hash strin
 		return err
 	}
 	for _, ch := range chs {
-		if ch.Kind != store.ChannelSigned {
-			continue
-		}
 		if err := s.Store.InTx(ctx, lockKey(ch.ID), func(tx *store.Tx) error { return tx.BumpReleaseVersion(ctx, ch.ID) }); err != nil {
 			return err
 		}

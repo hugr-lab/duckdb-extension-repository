@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/url"
 	"os"
 	"slices"
@@ -98,7 +99,7 @@ func (s *Service) RunUpstream(ctx context.Context, id string, renew func(context
 	runnable, requested := false, false
 	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
-		if runnable, res.DryRun, requested, err = tx.StartUpstreamRun(ctx, id); err != nil || !runnable {
+		if runnable, res.DryRun, requested, err = tx.StartUpstreamRun(ctx, id, s.Config.Interval > 0); err != nil || !runnable {
 			return err
 		}
 		u, err = tx.GetUpstreamByID(ctx, id)
@@ -119,8 +120,12 @@ func (s *Service) RunUpstream(ctx context.Context, id string, renew func(context
 	fctx := context.WithoutCancel(ctx) // a stopping run still records its result
 	interrupted := runErr != nil && !errors.Is(runErr, errStopped) && !errors.Is(runErr, errFailed)
 	var next time.Time
-	if s.Config.Interval > 0 && u.Mode == store.ModeMirror {
-		next = res.Ended.Add(s.Config.Interval)
+	switch {
+	case s.Config.Interval <= 0 || u.Mode != store.ModeMirror:
+	case interrupted: // a store error or a lost lease: retried after a pause, not at the next poll
+		next = res.Ended.Add(retryAfter)
+	default: // the next run, with up to 10% jitter
+		next = res.Ended.Add(s.Config.Interval + time.Duration(rand.Int64N(int64(s.Config.Interval/10)+1)))
 	}
 	err = s.Store.InTx(fctx, "", func(tx *store.Tx) error {
 		if interrupted && requested { // a shutdown or a lost lease: the request stays for another run
@@ -132,10 +137,13 @@ func (s *Service) RunUpstream(ctx context.Context, id string, renew func(context
 				return err
 			}
 		}
-		return tx.FinishUpstreamRun(fctx, id, string(b), !res.DryRun && !interrupted, next)
+		return tx.FinishUpstreamRun(fctx, id, string(b), !res.DryRun, res.Started, next)
 	})
 	return res, err
 }
+
+// retryAfter is how long an interrupted scheduled run waits before it is due again.
+const retryAfter = 5 * time.Minute
 
 // ErrNotDue is an upstream that was no longer runnable when its run started: paused, or run by
 // another replica meanwhile.
@@ -208,7 +216,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 			}
 		}
 	}
-	base := prefix(u)
+	base := s.prefix(u)
 	pu, _ := url.Parse(base)
 	g := s.gates()
 	perHost := s.Config.PerHost

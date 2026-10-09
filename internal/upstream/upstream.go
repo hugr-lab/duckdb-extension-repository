@@ -74,8 +74,16 @@ type Service struct {
 	MaxIngests int
 	TempDir    string // downloads; "" is the system's
 	Log        Logger
+	// DuckDB replaces DuckDB's repositories and keys (tests); the zero value is the real ones.
+	DuckDB DuckDB
 
 	gate gates
+}
+
+// DuckDB is where DuckDB's core and community repositories are and which keys sign them.
+type DuckDB struct {
+	CoreURL, CommunityURL   string
+	CoreKeys, CommunityKeys []*rsa.PublicKey
 }
 
 // Logger is the logging a run does.
@@ -108,6 +116,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 	if sp.Mode == "" {
 		sp.Mode = store.ModeMirror
 	}
+	askedPrivate := sp.Visibility == store.Private
 	if sp.Visibility == "" {
 		sp.Visibility = store.Private
 	}
@@ -160,8 +169,16 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 	if err != nil {
 		return u, err
 	}
-	if sc.Channel.Kind != store.ChannelSigned {
-		return u, fmt.Errorf("%w: a %s channel takes upstreams with spec 0009 phase 1b", store.ErrInvalid, sc.Channel.Kind)
+	passthrough := sc.Channel.Kind == store.ChannelPassthrough
+	if passthrough {
+		// DuckDB checks a core-typed repository against its core keys only: nothing else would load
+		if u.Kind != store.UpstreamCore {
+			return u, fmt.Errorf("%w: a passthrough channel takes duckdb-core upstreams only", store.ErrInvalid)
+		}
+		if askedPrivate {
+			return u, fmt.Errorf("%w: a passthrough channel's releases are public", store.ErrInvalid)
+		}
+		u.Visibility = store.Public // public by nature
 	}
 	u.ChannelID = sc.Channel.ID
 	if u.Kind == store.UpstreamRepo {
@@ -181,6 +198,25 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 		}
 		if err := s.collisions(ctx, tx, u, names); err != nil {
 			return err
+		}
+		if passthrough { // once per tenant: replacements made before 1b become shadows
+			first, err := tx.TakeShadowBackfill(ctx, t.ID)
+			if err != nil {
+				return err
+			}
+			if first {
+				builds, err := tx.LiveSignedBuilds(ctx, t.ID)
+				if err != nil {
+					return err
+				}
+				for _, b := range builds {
+					if reserved.Kind(b.Name) == reserved.Core && !s.Releases.DuckDBCore(b) {
+						if _, err := tx.AddShadow(ctx, t.ID, b.Name, a.String()); err != nil {
+							return err
+						}
+					}
+				}
+			}
 		}
 		if err := tx.InsertUpstream(ctx, &u); err != nil {
 			return err
@@ -414,10 +450,27 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string
 	})
 }
 
-// Set changes an upstream's visibility (for its new releases) or state.
+// Set changes an upstream's visibility (for its new releases) or state; resuming makes a mirror
+// due.
 func (s *Service) Set(ctx context.Context, a authz.Actor, tenant, name, visibility, state string, expected int64) (store.Upstream, error) {
 	return s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) (bool, error) {
-		return false, tx.SetUpstream(ctx, u, visibility, state, expected)
+		if visibility == store.Private {
+			ch, err := tx.ChannelByID(ctx, u.ChannelID)
+			if err != nil {
+				return false, err
+			}
+			if ch.Kind == store.ChannelPassthrough {
+				return false, fmt.Errorf("%w: a passthrough channel's releases are public", store.ErrInvalid)
+			}
+		}
+		wasPaused := u.State == store.UpstreamPaused
+		if err := tx.SetUpstream(ctx, u, visibility, state, expected); err != nil {
+			return false, err
+		}
+		if wasPaused && u.State == store.UpstreamActive {
+			return false, tx.MakeDue(ctx, u.ID, "")
+		}
+		return false, nil
 	})
 }
 
@@ -436,6 +489,9 @@ func (s *Service) PutEntry(ctx context.Context, a authz.Actor, tenant, name stri
 			}
 		}
 		if err := tx.PutUpstreamEntry(ctx, u.ID, e); err != nil {
+			return false, err
+		}
+		if err := tx.MakeDue(ctx, u.ID, ""); err != nil {
 			return false, err
 		}
 		return created, s.checkCells(ctx, tx, *u)
@@ -458,6 +514,9 @@ func (s *Service) AddPlatform(ctx context.Context, a authz.Actor, tenant, name, 
 	}
 	_, err := s.change(ctx, a, tenant, name, func(tx *store.Tx, u *store.Upstream) (bool, error) {
 		if err := tx.AddUpstreamPlatform(ctx, u.ID, platform); err != nil {
+			return false, err
+		}
+		if err := tx.MakeDue(ctx, u.ID, ""); err != nil {
 			return false, err
 		}
 		return false, s.checkCells(ctx, tx, *u)
@@ -543,8 +602,14 @@ func (s *Service) Cells(ctx context.Context, a authz.Actor, tenant, name, outcom
 func (s *Service) keys(ctx context.Context, u store.Upstream) ([]*rsa.PublicKey, error) {
 	switch u.Kind {
 	case store.UpstreamCore:
+		if s.DuckDB.CoreKeys != nil {
+			return s.DuckDB.CoreKeys, nil
+		}
 		return duckdbkeys.Core(), nil
 	case store.UpstreamCommunity:
+		if s.DuckDB.CommunityKeys != nil {
+			return s.DuckDB.CommunityKeys, nil
+		}
 		return duckdbkeys.Community(), nil
 	}
 	return s.repoKeys(ctx, u)
@@ -585,11 +650,15 @@ func (s *Service) repoKeys(ctx context.Context, u store.Upstream) ([]*rsa.Public
 }
 
 // prefix is where an upstream's files are.
-func prefix(u store.Upstream) string {
-	switch u.Kind {
-	case store.UpstreamCore:
+func (s *Service) prefix(u store.Upstream) string {
+	switch {
+	case u.Kind == store.UpstreamCore && s.DuckDB.CoreURL != "":
+		return s.DuckDB.CoreURL
+	case u.Kind == store.UpstreamCore:
 		return CoreURL
-	case store.UpstreamCommunity:
+	case u.Kind == store.UpstreamCommunity && s.DuckDB.CommunityURL != "":
+		return s.DuckDB.CommunityURL
+	case u.Kind == store.UpstreamCommunity:
 		return CommunityURL
 	}
 	return u.Prefix
@@ -599,5 +668,25 @@ func prefix(u store.Upstream) string {
 // are its own).
 func (s *Service) WithAuthz(az authz.Authorizer) *Service {
 	return &Service{Store: s.Store, Releases: s.Releases, Blob: s.Blob, Fetch: s.Fetch, Authz: az, Config: s.Config,
-		MaxBody: s.MaxBody, MaxIngests: s.MaxIngests, TempDir: s.TempDir, Log: s.Log}
+		MaxBody: s.MaxBody, MaxIngests: s.MaxIngests, TempDir: s.TempDir, Log: s.Log, DuckDB: s.DuckDB}
+}
+
+// Shadows lists a tenant's shadows (spec 0009): core names it replaced, which its passthrough
+// channels do not serve.
+func (s *Service) Shadows(ctx context.Context, a authz.Actor, tenant string) ([]store.Shadow, error) {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return nil, err
+	}
+	return s.Store.ListShadows(ctx, t.ID)
+}
+
+// RemoveShadow lifts a shadow: the tenant's passthrough channels serve DuckDB's build of the name
+// again (until the next replacement is released).
+func (s *Service) RemoveShadow(ctx context.Context, a authz.Actor, tenant, name string) error {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return err
+	}
+	return s.Store.InTx(ctx, store.TenantUpstreamLock(t.ID), func(tx *store.Tx) error { return tx.DeleteShadow(ctx, t.ID, name) })
 }

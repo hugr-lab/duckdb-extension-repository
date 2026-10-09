@@ -11,7 +11,7 @@ func TestUpstreamsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u := cfg.UpstreamLimits(); u.Concurrency != 4 || u.FetchTimeout != 10*time.Minute || u.MinRate != 64<<10 {
+	if u := cfg.UpstreamLimits(); u.Concurrency != 4 || u.FetchTimeout != 10*time.Minute || u.MinRate != 64<<10 || u.Interval != 6*time.Hour {
 		t.Fatalf("defaults: %+v", u)
 	}
 	cfg, err = Load(write(t, base+"upstreams: { concurrency: 8, fetch_timeout: 30m, min_rate: 1MiB }\n"), nil)
@@ -22,6 +22,7 @@ func TestUpstreamsConfig(t *testing.T) {
 		"concurrency": {base + "upstreams: { concurrency: 64 }\n", "upstreams.concurrency"},
 		"timeout":     {base + "upstreams: { fetch_timeout: 5s }\n", "upstreams.fetch_timeout"},
 		"rate":        {base + "upstreams: { min_rate: 10 }\n", "upstreams.min_rate"},
+		"interval":    {base + "upstreams: { interval: 1m }\n", "upstreams.interval"},
 	} {
 		if _, err := Load(write(t, c.file), nil); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)

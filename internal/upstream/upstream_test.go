@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -129,6 +130,7 @@ func (r *fakeRepo) touch(version, platform, name string) {
 }
 
 type env struct {
+	blob *blob.Service
 	ks   *keys.Service
 	dir  string
 	st   *store.Store
@@ -169,7 +171,7 @@ func newEnvWith(t *testing.T, e storetest.Engine, maxBody int64, ec egress.Confi
 		t.Fatal(err)
 	}
 	der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
-	en := &env{ks: ks, dir: dir, st: st, repo: newRepo(t), key: k, fp: extfile.Fingerprint(&k.PublicKey)}
+	en := &env{blob: bs, ks: ks, dir: dir, st: st, repo: newRepo(t), key: k, fp: extfile.Fingerprint(&k.PublicKey)}
 	en.repo.keys = []string{base64.StdEncoding.EncodeToString(der)}
 	en.rel = &release.Service{Store: st, Blob: bs, Signers: ks, Authz: authz.ServerAdmin{}}
 	en.ten = &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
@@ -788,4 +790,15 @@ func TestRunControl(t *testing.T) {
 			t.Fatalf("the stopped run: %+v", r)
 		}
 	})
+}
+
+func gzipReader(b []byte) (io.Reader, error) { return gzip.NewReader(bytes.NewReader(b)) }
+
+func (en *env) releasesIn(t *testing.T, channel, name string) []store.Candidate {
+	t.Helper()
+	rs, err := en.rel.List(ctx, admin, "acme", channel, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rs
 }

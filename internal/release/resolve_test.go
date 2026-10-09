@@ -64,15 +64,21 @@ func TestSnapshotResolution(t *testing.T) {
 			t.Errorf("%s: %s, want %s", tc.name, tc.got, tc.want)
 		}
 	}
-	// without a serving key nothing is served; a passthrough channel has no releases
+	// a signed channel without a serving key serves nothing; a passthrough channel needs no key
+	// (spec 0009) and does not serve a name the tenant replaced
 	noKey := release.NewSnapshot(store.Channel{ID: "c", Kind: store.ChannelSigned}, rels, capis, nil)
 	if noKey.Flat("v2.0.0", "linux_amd64", "t", release.Everything) != nil ||
 		noKey.Versioned("v2.0.0", "linux_amd64", "t", "1.0", release.Everything) != nil {
 		t.Error("a channel without a serving key serves")
 	}
-	pt := release.NewSnapshot(store.Channel{ID: "c", Kind: store.ChannelPassthrough, ServingKeyID: "k"}, rels, capis, nil)
-	if len(pt.Releases) != 0 || pt.Platforms("t") != nil {
-		t.Error("a passthrough channel lists releases")
+	pt := release.NewSnapshot(store.Channel{ID: "c", Kind: store.ChannelPassthrough}, rels, capis, nil)
+	if pt.Flat("v2.0.0", "linux_amd64", "t", release.Everything) == nil {
+		t.Error("a passthrough channel does not serve")
+	}
+	pt.Shadowed = map[string]bool{"t": true}
+	if pt.Flat("v2.0.0", "linux_amd64", "t", release.Everything) != nil ||
+		pt.Versioned("v2.0.0", "linux_amd64", "t", "1.0", release.Everything) != nil {
+		t.Error("a passthrough channel serves a shadowed name")
 	}
 	if got := s.Platforms("t"); len(got) != 1 || got[0] != "linux_amd64" {
 		t.Errorf("platforms: %v", got)

@@ -172,7 +172,8 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 			AllowHTTP: cfg.Egress.AllowLoopbackHTTP, ServerAudiences: cfg.ServerAudiences(), Providers: Providers(cfg, eg)},
 		Upstreams: &upstream.Service{Store: s, Releases: rel, Fetch: eg, Authz: az, MaxBody: maxBody, MaxIngests: maxIngests,
 			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
-			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate)}},
+			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate),
+				Interval: ul.Interval}},
 	}, nil
 }
 
