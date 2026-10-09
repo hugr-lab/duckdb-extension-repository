@@ -137,7 +137,7 @@ func validateEvents(bad func(string, ...any), c Config) {
 	}
 }
 
-// Statistics configures download statistics (spec 0010 phase 2).
+// Statistics configures download statistics (spec 0010 phase 2a).
 type Statistics struct {
 	Retention time.Duration `yaml:"retention"` // default 3 years
 }
@@ -157,5 +157,49 @@ func (c Config) StatisticsSettings() Statistics {
 func validateStatistics(bad func(string, ...any), c Config) {
 	if r := c.Statistics.Retention; r != 0 && (r < 30*24*time.Hour || r > 10*365*24*time.Hour) {
 		bad("statistics.retention must be within 30 days..10 years")
+	}
+}
+
+// Telemetry configures OpenTelemetry metrics (spec 0010 phase 2b).
+type Telemetry struct {
+	Metrics Metrics `yaml:"metrics"`
+}
+
+// Metrics are what metrics may name.
+type Metrics struct {
+	Tenants   []string `yaml:"tenants"`    // tenant names, or "*": whose ids, channels and extensions appear; none by default
+	Labels    []string `yaml:"labels"`     // kista.downloads' optional labels: version, platform, duckdb_version
+	MaxSeries int      `yaml:"max_series"` // per instrument; default 10,000
+}
+
+// metricLabels are the optional labels of kista.downloads.
+var metricLabels = []string{"version", "platform", "duckdb_version"}
+
+// DefaultMaxSeries is how many series an instrument holds before its overflow series counts.
+const DefaultMaxSeries = 10000
+
+// TelemetrySettings returns telemetry: with its defaults.
+func (c Config) TelemetrySettings() Telemetry {
+	t := c.Telemetry
+	if t.Metrics.MaxSeries == 0 {
+		t.Metrics.MaxSeries = DefaultMaxSeries
+	}
+	return t
+}
+
+func validateTelemetry(bad func(string, ...any), c Config) {
+	m := c.Telemetry.Metrics
+	for _, t := range m.Tenants {
+		if t != "*" && !tenantName.MatchString(t) {
+			bad("telemetry.metrics.tenants: %q is not a tenant name or *", t)
+		}
+	}
+	for _, l := range m.Labels {
+		if !slices.Contains(metricLabels, l) {
+			bad("telemetry.metrics.labels: %q is not version, platform or duckdb_version", l)
+		}
+	}
+	if m.MaxSeries != 0 && (m.MaxSeries < 100 || m.MaxSeries > 1000000) {
+		bad("telemetry.metrics.max_series must be within 100..1,000,000")
 	}
 }

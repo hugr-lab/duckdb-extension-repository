@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -568,3 +569,12 @@ func errClass(err error) string {
 type StatusError struct{ Status int }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("sinks: the endpoint answered %d", e.Status) }
+
+// Masks are the configured sinks' bits (1 << bit) by name, as loaded.
+func (r *Resolver) Masks() map[string]int {
+	t := r.state.Load()
+	if t == nil {
+		return nil
+	}
+	return maps.Clone(t.masks)
+}

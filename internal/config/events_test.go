@@ -41,6 +41,9 @@ func TestEventsConfig(t *testing.T) {
 		"one day":          {base + "events: { retention: 24h }\n", "events.retention"},
 		"statistics short": {base + "statistics: { retention: 240h }\n", "statistics.retention"},
 		"statistics long":  {base + "statistics: { retention: 100000h }\n", "statistics.retention"},
+		"metric label":     {base + "telemetry: { metrics: { labels: [principal] } }\n", "telemetry.metrics.labels"},
+		"metric tenant":    {base + "telemetry: { metrics: { tenants: ['Acme!'] } }\n", "telemetry.metrics.tenants"},
+		"metric series":    {base + "telemetry: { metrics: { max_series: 5 } }\n", "telemetry.metrics.max_series"},
 	} {
 		if _, err := Load(write(t, c.file), nil); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)
@@ -67,5 +70,22 @@ func TestEventSinksConfig(t *testing.T) {
 	}
 	if s := cfg.Events.Sinks; len(s) != 2 || !s[0].Server || s[1].Tenants[0] != "acme" || cfg.Events.Resource["deployment.environment.name"] != "prod" {
 		t.Fatalf("sinks: %+v", cfg.Events)
+	}
+}
+
+func TestTelemetryConfig(t *testing.T) {
+	cfg, err := Load(write(t, base+"telemetry: { metrics: { tenants: ['*', acme], labels: [version, platform, duckdb_version], max_series: 100 } }\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := cfg.TelemetrySettings().Metrics; len(m.Tenants) != 2 || len(m.Labels) != 3 || m.MaxSeries != 100 {
+		t.Fatalf("telemetry: %+v", m)
+	}
+	cfg, _ = Load(write(t, base), nil)
+	if m := cfg.TelemetrySettings().Metrics; m.MaxSeries != DefaultMaxSeries || len(m.Tenants) != 0 {
+		t.Fatalf("defaults: %+v", m)
+	}
+	if _, err := Load(write(t, base), []string{"KISTA_TELEMETRY__METRICS__MAX_SERIES=200"}); err == nil {
+		t.Error("telemetry from the environment")
 	}
 }

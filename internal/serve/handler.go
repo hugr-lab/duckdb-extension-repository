@@ -26,6 +26,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/telemetry"
 )
 
 // Options configure a Handler.
@@ -55,8 +56,16 @@ type Options struct {
 	Puller Puller
 	// Events takes install events and the DuckDB routes' refusals (spec 0010); nil: none.
 	Events Events
-	// Downloads counts downloads (spec 0010 phase 2); nil: none counted.
+	// Downloads counts downloads (spec 0010 phase 2a); nil: none counted.
 	Downloads Counter
+	// Metrics takes downloads and request durations (spec 0010 phase 2b); nil: none.
+	Metrics Metrics
+}
+
+// Metrics records downloads and request durations.
+type Metrics interface {
+	Downloaded(ctx context.Context, d telemetry.Download)
+	Request(ctx context.Context, method, route string, status int, d time.Duration)
 }
 
 // Events records events outside any change (spec 0010's asynchronous writer).
@@ -182,6 +191,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// trusted proxy's or a new one
 	rq := audit.Request{Client: h.clientAddr(r), ID: h.requestID(r)}
 	r = r.WithContext(audit.WithRequest(r.Context(), rq))
+	route := "other" // a route's pattern for metrics, never a path
+	defer func() {
+		if h.o.Metrics != nil {
+			h.o.Metrics.Request(r.Context(), r.Method, route, lw.status, time.Since(start))
+		}
+	}()
 	defer func() {
 		h.log.Info("request", "method", r.Method, "path", r.URL.EscapedPath(), "status", lw.status, "bytes", lw.bytes,
 			"duration", time.Since(start).Round(time.Millisecond), "client", rq.Client, "scheme", scheme(r), "listener", listenerOf(r),
@@ -194,10 +209,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			notFound(lw)
 			return
 		}
+		route = "api"
 		h.o.API.ServeHTTP(lw, r)
 		return
 	}
 	rt := parseRoute(r)
+	route = rt.kind.String()
 	if rt.kind == routeNone {
 		notFound(lw)
 		return
@@ -405,6 +422,10 @@ func (h *Handler) downloaded(r *http.Request, sc store.ServeChannel, rt route, c
 	if h.o.Downloads != nil {
 		h.o.Downloads.Add(store.DownloadKey{TenantID: sc.Tenant.ID, ChannelID: sc.Channel.ID, Name: c.Name, ExtVersion: c.ExtVersion,
 			Platform: c.Platform, DuckDBVersion: rt.duckdbVersion, Day: day, Authenticated: authenticated})
+	}
+	if h.o.Metrics != nil {
+		h.o.Metrics.Downloaded(r.Context(), telemetry.Download{TenantID: sc.Tenant.ID, TenantName: sc.Tenant.Name, Channel: sc.Channel.Name,
+			Extension: c.Name, Version: c.ExtVersion, Platform: c.Platform, DuckDBVersion: rt.duckdbVersion, Authenticated: authenticated})
 	}
 	if actor == "" || h.o.Events == nil {
 		return
@@ -738,3 +759,6 @@ func listenerOf(r *http.Request) string {
 // WithHTTPS marks a request as having come through an https listener (for callers that embed the
 // handler without kista's listeners, and tests).
 func WithHTTPS(r *http.Request) *http.Request { return r.WithContext(withScheme(r.Context(), "https")) }
+
+// DownloadsActive is how many downloads hold a slot (metrics).
+func (h *Handler) DownloadsActive() int64 { return int64(len(h.slots)) }

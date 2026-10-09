@@ -21,6 +21,11 @@ const (
 	routeVersioned
 )
 
+// String is a route kind's name for metrics.
+func (k routeKind) String() string {
+	return [...]string{"none", "healthz", "readyz", "well-known", "extension", "extension-versioned"}[k]
+}
+
 // route is a parsed request path.
 type route struct {
 	kind                                      routeKind

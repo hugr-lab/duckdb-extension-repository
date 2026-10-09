@@ -123,3 +123,51 @@ func TestDownloadCountsConcurrent(t *testing.T) {
 		}
 	})
 }
+
+// The gauges' queries (spec 0010 phase 2b): pending events per sink in one pass, cells per outcome.
+func TestMetricsQueries(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		tn, ch := fixture(t, s)
+		if m, err := s.PendingCounts(ctx, map[string]int{"a": 1 << 3}); err != nil || m["a"] != 0 {
+			t.Fatalf("empty pending: %v %v", m, err)
+		}
+		if m, err := s.CellOutcomes(ctx); err != nil || len(m) != 0 {
+			t.Fatalf("empty cells: %v %v", m, err)
+		}
+		s.EventSinks = func(string) int { return 1<<0 | 1<<5 }
+		for i := range 3 {
+			ev, err := s.NewEvent(ctx, tn.ID, "os:1:t", "grant.add", audit.OK, "grant:"+string(rune('a'+i)), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.InsertEvents(ctx, []store.Event{ev}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		m, err := s.PendingCounts(ctx, map[string]int{"a": 1 << 0, "b": 1 << 5, "c": 1 << 1, "d": 1 << 15})
+		if err != nil || m["a"] != 3 || m["b"] != 3 || m["c"] != 0 || m["d"] != 0 {
+			t.Fatalf("pending: %v %v", m, err)
+		}
+		u := store.Upstream{TenantID: tn.ID, Name: "core", Kind: store.UpstreamCore, ChannelID: ch.ID, Mode: store.ModeMirror,
+			Visibility: "public", State: store.UpstreamActive}
+		if err := s.InTx(ctx, "", func(tx *store.Tx) error {
+			if err := tx.InsertUpstream(ctx, &u); err != nil {
+				return err
+			}
+			for i, o := range []string{store.CellReleased, store.CellReleased, store.CellFailed} {
+				if err := tx.PutCell(ctx, store.UpstreamCell{UpstreamID: u.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64",
+					Name: string(rune('a' + i)), Outcome: o, FetchedAt: time.Now()}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		m, err = s.CellOutcomes(ctx)
+		if err != nil || m[store.CellReleased] != 2 || m[store.CellFailed] != 1 || len(m) != 2 {
+			t.Fatalf("cells: %v %v", m, err)
+		}
+	})
+}

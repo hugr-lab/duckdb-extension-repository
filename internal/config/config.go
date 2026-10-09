@@ -43,8 +43,11 @@ type Config struct {
 	Upstreams Upstreams `yaml:"upstreams" kista:"fileonly"`
 	// Events configures the event buffer (spec 0010).
 	Events Events `yaml:"events" kista:"fileonly"`
-	// Statistics configures download statistics (spec 0010 phase 2).
+	// Statistics configures download statistics (spec 0010 phase 2a).
 	Statistics Statistics `yaml:"statistics" kista:"fileonly"`
+	// Telemetry configures what OpenTelemetry metrics may name (spec 0010 phase 2b); where they go is
+	// the standard OTEL_* environment's.
+	Telemetry Telemetry `yaml:"telemetry" kista:"fileonly"`
 }
 
 // Store selects and configures the metadata database.
@@ -459,6 +462,7 @@ func (c Config) Validate() error {
 	validateUpstreams(bad, c)
 	validateEvents(bad, c)
 	validateStatistics(bad, c)
+	validateTelemetry(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

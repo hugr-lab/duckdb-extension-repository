@@ -1,6 +1,6 @@
 # Spec 0010: Audit events and download statistics
 
-- **Status**: accepted; phases 1a, 1b and 2a implemented, 2b next
+- **Status**: implemented (phases 1a, 1b, 2a, 2b)
 - **Date**: 2026-10-09
 - **Author**: vgsml, Claude
 
@@ -8,7 +8,7 @@
 
 kista records what happens to a tenant as **events** and hands them to the organisation's log
 pipeline: every management, release and upstream change, refusals and failed authentications, and
-(phase 2) authenticated downloads. Events are written in the transaction of the change they record,
+(phase 2a) authenticated downloads. Events are written in the transaction of the change they record,
 kept for **30 days** for the API and the console's recent-activity views, and delivered at least
 once to **sinks**: an OpenTelemetry collector (OTLP/HTTP logs) and JSON lines on a file or stdout.
 Long-term storage, search, legal holds, erasure and tamper evidence are the log pipeline's: an event
@@ -88,8 +88,9 @@ kind's subject form and fields; `v` 1):
 - tenants and server: `tenant.create`, `tenant.suspend`, `tenant.resume`, `version.add`,
   `version.c_apis`, `server.start` (kista's version, the schema level, a digest (64 bits of SHA-256 of
   the section's JSON) of each security-relevant configuration section: `profile`, `signers`, `blob`,
-  `serve`, `egress`, `auth`, `publish`, `upstreams`, `events`, and the names of those changed since
-  the previous start, which every replica records);
+  `serve`, `egress`, `auth`, `publish`, `upstreams`, `events`, `statistics`, `telemetry`, and the names of those changed since
+  the previous start (a section the previous start did not digest is not one), which every replica
+  records);
 - channels and keys: `channel.create`, `channel.versions` (versions added and removed), `key.add`,
   `key.activate`, `key.retire`, `key.resign` (actor `system:resign`, when a re-sign completes and the
   serving key moves);
@@ -105,7 +106,8 @@ kind's subject form and fields; `v` 1):
   `extension.put`, `extension.remove`, `platform.add`, `platform.remove`, `key.add`, `key.remove`,
   with the value), `upstream.release` (an intake
   release), `upstream.rejected` (a cell whose outcome changed to a refusal), `upstream.run` (a run's
-  summary, as `last_run`), `upstream.pull` (phase 2), `shadow.add`, `shadow.remove`;
+  summary, as `last_run`; a pull-through fetch (spec 0009 phase 2) is its `upstream.release` or
+  `upstream.rejected`), `shadow.add`, `shadow.remove`;
 - access: `auth.failure`, `authz.refused`, `install` (phase 2a; subject
   `channel:<c>/ext:<name>/release:<id>`, `data`: release, name, version, platform, DuckDB version,
   body hash, the `User-Agent`);
@@ -125,7 +127,7 @@ Tenant and channel removal do not exist; when they do, they are events.
   operations, each with its kind, backs a test that fails when an operation emits no event or the
   wrong one.
 - **Refusals and failures (1b)**: recorded once, at the API layer, from the request's final answer
-  (and spec 0006's DuckDB routes in phase 2), subject `route:<pattern>`, `data.route` the method and
+  (and spec 0006's DuckDB routes in phase 2a), subject `route:<pattern>`, `data.route` the method and
   the route's pattern: `auth.failure` for a `401` given to a request that sent a credential (actor
   `anonymous`; `data.reason` a class: `malformed`, `invalid`, `api_key_route`, `publisher_route`,
   `stale_token`, `unnamed_writer`; never the token; the tenant's when the path names one, the
@@ -175,7 +177,7 @@ so a tenant's events never reach a party by accident).
   form: internal collectors are the usual target), `https` (plain `http` to loopback in profile
   `dev` with `egress.allow_loopback_http`), `timeout` (default 10s), headers from `headers_file`
   (`Name: value` lines, `#` comments; never in events, logs or errors; `Content-Type`, `Content-Length`
-  and `Host` refused). `OTEL_*` environment variables are ignored. Any answer other than `2xx` is a
+  and `Host` refused). The sink ignores the `OTEL_*` environment (which configures metrics only). Any answer other than `2xx` is a
   failure (a redirect too); the batch is sent again. One `ResourceLogs` per tenant (resource:
   `service.name=kista`, `service.version`, `service.instance.id` (the replica), `kista.tenant.id`, `kista.tenant.name`,
   and `events.resource`'s attributes such as `deployment.environment.name`, except `service.*` and
@@ -251,7 +253,7 @@ GET /api/v1/event-kinds                                          the catalogue (
   store and looking back 30 seconds each time, so an event that commits late is printed once;
   `-format jsonl` exports for sites without a pipeline).
 
-### Downloads and statistics (2)
+### Downloads, statistics and metrics (2a, 2b)
 
 - **What counts**: a `GET` of a binary whose headers were sent with `200`, or `206` for a range
   starting at byte 0, whether or not the body completed. `HEAD`, `304` and a `206` not starting at
@@ -319,16 +321,40 @@ GET /api/v1/event-kinds                                          the catalogue (
   none of its grants covers, answers `404` (recorded as refused), so a query never tells what exists
   beyond the caller's scope. The routes take a fresh token, as the other management routes. Server
   administrators read everything; Enterest reads with a server token and applies its own rules.
-- **OpenTelemetry metrics** (`telemetry.metrics`: an OTLP/HTTP metrics endpoint with the sinks' egress
-  rules, every 60 seconds; the Go SDK's stable metric exporter, given egress's client; `OTEL_*`
-  ignored; the tenants whose names may appear: none by default):
-  - `kista.downloads` (`{download}` counter): `kista.tenant.id`, `kista.channel`, `kista.extension`,
-    `kista.authenticated`; `kista.extension.version`, `kista.platform` and `kista.duckdb.version` only
-    when listed in `telemetry.metrics.labels`; at most `telemetry.metrics.max_series` series (default
-    10,000), beyond which an overflow series counts;
-  - `http.server.request.duration` (seconds, `http.route`, `http.response.status_code`);
-  - `kista.upstream.cells` by outcome, `kista.upstream.pull.queue`, `kista.events.pending` per sink,
-    `kista.events.dropped`, `kista.uploads.active`, `kista.downloads.active`.
+- **OpenTelemetry metrics (2b)**: the Go SDK's stable metric exporter (OTLP over HTTP with protobuf)
+  and its own HTTP client, set up as the hugr platform's other services (tresor-server) from the
+  standard environment: `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`
+  (nothing is exported without one), the `OTEL_EXPORTER_OTLP_(METRICS_)HEADERS`, `TIMEOUT`,
+  `CERTIFICATE`, `CLIENT_CERTIFICATE` and `CLIENT_KEY` settings (a private CA, mutual TLS),
+  `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` (over kista's defaults `service.name=kista`,
+  `service.version`, `service.instance.id`; a malformed part is logged and left out),
+  `OTEL_METRIC_EXPORT_INTERVAL` (60 s), `OTEL_SDK_DISABLED`; `OTEL_METRICS_EXPORTER` is `otlp` or
+  `none`, and the protocol (`OTEL_EXPORTER_OTLP_METRICS_PROTOCOL`, else `OTEL_EXPORTER_OTLP_PROTOCOL`)
+  `http/protobuf`: with an endpoint set, anything else refuses to start. The SDK's errors (an export failing) go to
+  kista's log, at most once a minute. The endpoint is the operator's, as the process log's; event
+  sinks (tenants' data, routed per tenant) keep their own configuration and egress rules. What
+  metrics may name is kista's configuration (`telemetry.metrics`, file-only):
+  - `kista.downloads` (`{download}` counter): `kista.authenticated`; and `kista.tenant.id`,
+    `kista.channel`, `kista.extension` only for the tenants listed in `telemetry.metrics.tenants`
+    (names or `*`; none by default: unlisted tenants' downloads count in series without them);
+    `kista.extension.version`, `kista.platform` and `kista.duckdb.version` only when `version`,
+    `platform`, `duckdb_version` are in `telemetry.metrics.labels`;
+  - `http.server.request.duration` (seconds; `http.request.method` (`_OTHER` beyond the usual
+    ones), `http.route`: `api`, `extension`, `extension-versioned`, `well-known`, `healthz`,
+    `readyz`, `none`, `other`, never a path; `http.response.status_code`);
+  - `kista.downloads.active`, `kista.uploads.active`, `kista.upstream.pull.queue` (gauges of this
+    replica), `kista.events.dropped` (a counter of this replica's writer);
+  - `kista.events.pending` per sink (`kista.sink`: a sink's name only when metrics may name every
+    tenant it takes, or it takes the server's events only; the others together as `_other`, since a
+    sink's name may be a tenant's) and `kista.upstream.cells` per outcome (`kista.outcome`): read
+    from the store at each export (one pass over at most a million undelivered events, so a longer
+    backlog counts as at most a million; at most 5 seconds; a failing read is logged and left out,
+    never the whole export), the same on every replica (take the maximum across
+    `service.instance.id`, not the sum);
+  - at most `telemetry.metrics.max_series` series per instrument (default 10,000; 100 to 1,000,000),
+    beyond which the SDK's overflow series (`otel.metric.overflow`) counts. Series are cumulative and
+    kept until the process ends: with `*` and the `version` label on a self-service deployment, one
+    tenant's many releases can push others' new series into the overflow.
 
 ### Configuration
 
@@ -344,8 +370,8 @@ events:                       # file-only
     - { name: stdout, kind: jsonl, path: "-", tenants: ["*"] }
 statistics:
   retention: 26280h           # 3 years
-telemetry:                    # phase 2b
-  metrics: { url: https://otel.internal:4318/v1/metrics, allow: [...], tenants: ["*"], labels: [], max_series: 10000 }
+telemetry:                    # phase 2b; the endpoint is OTEL_EXPORTER_OTLP_(METRICS_)ENDPOINT
+  metrics: { tenants: ["*"], labels: [platform], max_series: 10000 }
 ```
 
 ### Data model
@@ -369,11 +395,12 @@ Migration 0011 (2a): `download_counts` (primary key: all but `count`; index (ten
 
 ```text
 internal/audit     kinds and their fields, Tx.Event's helpers; writer/ the asynchronous writer,
-                   buffer/ the buffer's retention, sinks/ the registry, otlp and jsonl; metrics (2)
+                   buffer/ the buffer's retention, sinks/ the registry, otlp and jsonl
 internal/app       the sinks from config, server.start
 internal/egress    + Client.Post
 internal/store     + events, sinks, download counts and installers
 internal/stats     the download counter, the install deduplication, the daily installers pass (2a)
+internal/telemetry OpenTelemetry metrics from the environment, the instruments (2b)
 internal/tenants, keys, release, upstream, serve   + events
 internal/api, cmd/kista   + reading; internal/api + statistics (2a)
 ```
@@ -401,8 +428,9 @@ internal/api, cmd/kista   + reading; internal/api + statistics (2a)
 - **Tenant isolation in delivery**: a sink takes only the tenants listed (none by default; the
   server's events only with `server: true`); bits are bound to sink names in the database, and the
   sender checks the tenant again before sending. Metrics name only listed tenants.
-- **Egress**: sinks and metrics use egress's client with an explicit allowlist; no redirects, no
-  environment proxies or `OTEL_*` settings.
+- **Egress**: sinks use egress's client with an explicit allowlist; no redirects, no environment
+  proxies or `OTEL_*` settings. Metrics go where the operator's standard OTel environment says, as
+  the platform's other services, and carry no principal, no address and no unlisted tenant.
 - **Privacy**: principals, display names and client addresses live in events only: 30 days in kista
   (addresses reduced by default), then in the organisation's pipeline under its retention and
   erasure. Counts, installers and metrics carry no principal and no address. Events are tenant data,
@@ -429,7 +457,9 @@ internal/api, cmd/kista   + reading; internal/api + statistics (2a)
 - **Phase 2a**: one download per `INSTALL` and one install event per authenticated one (e2e, the
   built-in client and httpfs); what counts (`200`, a range from 0; not `HEAD`, `304`, later ranges);
   counts on three engines; installers; statistics and who reads them; the DuckDB routes' refusals.
-- **Phase 2b**: metrics with no principal and no unlisted tenant.
+- **Phase 2b**: metrics with no principal and no unlisted tenant, the optional labels, the gauges;
+  setup from the environment (no endpoint: nothing; `grpc` refused; an export reaches a fake
+  endpoint as `application/x-protobuf`).
 
 ## Alternatives considered
 

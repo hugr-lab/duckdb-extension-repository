@@ -327,7 +327,18 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	_, listed := entry(u, m.Name)
 	if listed || rec.Outcome == store.CellReleased {
 		wctx := context.WithoutCancel(ctx)
-		if err := s.Store.InTx(wctx, "", func(tx *store.Tx) error { return tx.PutCell(wctx, rec) }); err != nil {
+		if err := s.Store.InTx(wctx, "", func(tx *store.Tx) error {
+			if err := tx.PutCell(wctx, rec); err != nil {
+				return err
+			}
+			// a cell turning into a refusal is an event (spec 0010), as in a run
+			if refusal[rec.Outcome] && rec.Outcome != prev.Outcome {
+				return tx.Event(wctx, u.TenantID, actor.String(), "upstream.rejected", "upstream:"+u.Name,
+					map[string]any{"upstream": u.Name, "duckdb_version": m.DuckDBVersion, "platform": m.Platform, "name": m.Name,
+						"outcome": rec.Outcome})
+			}
+			return nil
+		}); err != nil {
 			return rec.Outcome, err
 		}
 	}
@@ -371,4 +382,16 @@ func filterKeys(keys []*rsa.PublicKey, u store.Upstream) []*rsa.PublicKey {
 		}
 	}
 	return out
+}
+
+// Queued is how many misses wait on this replica (metrics).
+func (p *Puller) Queued() int64 {
+	p.init()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, q := range p.queued {
+		n += q
+	}
+	return int64(n)
 }

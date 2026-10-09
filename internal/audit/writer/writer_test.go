@@ -93,6 +93,20 @@ func TestQuota(t *testing.T) {
 	if n := len(count(t, st, b.ID, "audit.dropped")); n != 0 {
 		t.Fatalf("no drops for b: %d", n)
 	}
+	if n := w.Dropped(); n != 200 {
+		t.Fatalf("dropped since the start: %d", n)
+	}
+	// a failed write of the counts counts them again for audit.dropped, not for Dropped
+	w.Add(e)
+	for range 1000 {
+		w.Add(e)
+	}
+	gone, cancel := context.WithCancel(ctx)
+	cancel()
+	w.WriteDrops(gone)
+	if n := w.Dropped(); n != 201 {
+		t.Fatalf("dropped after a failed write: %d", n)
+	}
 }
 
 // When every queue together is full, the largest loses its oldest: flooded tenants never crowd out

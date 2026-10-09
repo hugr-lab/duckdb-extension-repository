@@ -184,7 +184,7 @@ func TestRefusalEvents(t *testing.T) {
 	}
 }
 
-// Spec 0010 phase 2: download statistics, read by scope.
+// Spec 0010 phase 2a: download statistics, read by scope.
 func TestStatistics(t *testing.T) {
 	m := newMgmt(t)
 	const T = "/api/v1/tenants/acme"

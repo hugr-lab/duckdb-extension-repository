@@ -330,3 +330,10 @@ func (h *Handler) removeBlock(w http.ResponseWriter, r *http.Request, c caller, 
 	}
 	noContent(w)
 }
+
+// UploadsActive is how many uploads this server is receiving (metrics).
+func (h *Handler) UploadsActive() int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return int64(h.uploads["all"])
+}

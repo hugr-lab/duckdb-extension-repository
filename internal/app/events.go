@@ -83,7 +83,8 @@ func headersFile(path string) (http.Header, error) {
 // securitySettings are the configuration sections server.start digests (spec 0010).
 func securitySettings(cfg config.Config) map[string]any {
 	return map[string]any{"profile": cfg.Profile, "signers": cfg.Signers, "blob": cfg.Blob, "serve": cfg.Serve,
-		"egress": cfg.Egress, "auth": cfg.Auth, "publish": cfg.Publish, "upstreams": cfg.Upstreams, "events": cfg.Events}
+		"egress": cfg.Egress, "auth": cfg.Auth, "publish": cfg.Publish, "upstreams": cfg.Upstreams, "events": cfg.Events,
+		"statistics": cfg.Statistics, "telemetry": cfg.Telemetry}
 }
 
 // ServerStart records server.start: kista's version, the schema level, the digests of the
@@ -107,7 +108,7 @@ func ServerStart(ctx context.Context, cfg config.Config, st *store.Store) error 
 		}
 		_ = json.Unmarshal([]byte(prev.Data), &d)
 		for k, v := range digests {
-			if d.Digests[k] != v {
+			if old, ok := d.Digests[k]; ok && old != v { // a section new to the digests is no change
 				changed = append(changed, k)
 			}
 		}
