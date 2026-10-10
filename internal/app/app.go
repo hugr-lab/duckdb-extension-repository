@@ -193,7 +193,8 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		Keys:     ks,
 		Releases: rel,
 		Auth: &tenants.AuthAdmin{Store: s, Authz: az, Fetch: eg, PublicURL: cfg.Serve.PublicURL,
-			AllowHTTP: cfg.Egress.AllowLoopbackHTTP, ServerAudiences: cfg.ServerAudiences(), Providers: Providers(cfg, eg)},
+			AllowHTTP: cfg.Egress.AllowLoopbackHTTP, ServerAudiences: cfg.ServerAudiences(), Providers: Providers(cfg, eg),
+			ServerIssuerURLs: serverIssuerURLs(cfg)},
 		Upstreams: &upstream.Service{Store: s, Releases: rel, Fetch: eg, Authz: az, MaxBody: maxBody, MaxIngests: maxIngests,
 			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
 			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate),
@@ -248,4 +249,12 @@ func (s *Services) WithAuthz(az authz.Authorizer) *Services {
 	rel.Signers = &ks
 	up.Releases = &rel
 	return &Services{Store: s.Store, Sources: s.Sources, Tenants: &ten, Keys: &ks, Releases: &rel, Auth: &au, Upstreams: up}
+}
+
+func serverIssuerURLs(cfg config.Config) []string {
+	var out []string
+	for _, s := range cfg.Auth.ServerIssuers {
+		out = append(out, s.URL)
+	}
+	return out
 }

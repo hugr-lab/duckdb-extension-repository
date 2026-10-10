@@ -77,6 +77,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddPublisher": {"publisher.add"}, "RemovePublisher": {"publisher.remove"},
 		"AddGitHubCredential": {"publisher.github.add"}, "RemoveGitHubCredential": {"publisher.github.remove"},
 		"AddAPIKey": {"publisher.key.add"}, "RemoveAPIKey": {"publisher.key.remove"},
+		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil,
 		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListAPIKeys": nil,
 	},
 	"keys.Service": {
@@ -301,6 +302,13 @@ func TestCoverage(t *testing.T) {
 		return err
 	}), "issuer.add")
 	en.expect("tenants.AuthAdmin.AddAudience", do(func() error { return en.adm.AddAudience(rctx, admin, "acme", "api://acme") }), "audience.add")
+	en.expect("tenants.AuthAdmin.SetConsoleClient", do(func() error {
+		_, err := en.adm.SetConsoleClient(rctx, admin, "acme", "corp", "", store.ConsoleClient{ClientID: "kista-console",
+			Scopes: []string{"openid"}, Audience: "api://acme"})
+		return err
+	}), "issuer.console.set")
+	en.expect("tenants.AuthAdmin.RemoveConsoleClient", do(func() error { return en.adm.RemoveConsoleClient(rctx, admin, "acme", "corp", "") }),
+		"issuer.console.remove")
 	en.expect("tenants.AuthAdmin.RemoveAudience", do(func() error { return en.adm.RemoveAudience(rctx, admin, "acme", "api://acme") }), "audience.remove")
 	var grant string
 	en.expect("tenants.AuthAdmin.AddGrant", do(func() error {

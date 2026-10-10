@@ -25,6 +25,9 @@ type AuthAdmin struct {
 	ServerAudiences []string
 	// Providers are the trusted-publishing issuers (spec 0008): no issuer record may have their URLs.
 	Providers auth.Providers
+	// ServerIssuerURLs are the server issuers' URLs (spec 0007): a tenant's console may not sign in
+	// there, or a tenant could lead a server administrator to act inside it unawares (spec 0015).
+	ServerIssuerURLs []string
 }
 
 // ErrIssuerFetch is an issuer whose discovery document or JWKS could not be fetched or used when it
@@ -171,6 +174,13 @@ func (s *AuthAdmin) RemoveAudience(ctx context.Context, a authz.Actor, tenant, a
 		return err
 	}
 	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+		// a console client signing in for it would advertise an audience the tenant no longer has
+		if used, err := tx.ConsoleClientUses(ctx, t.ID, aud); err != nil || used {
+			if err == nil {
+				err = fmt.Errorf("%w: an issuer's console client asks for %s: change it first", store.ErrInvalid, aud)
+			}
+			return err
+		}
 		if err := tx.RemoveAudience(ctx, t.ID, aud); err != nil {
 			return err
 		}

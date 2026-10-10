@@ -567,13 +567,8 @@ func (h *Handler) getIssuer(w http.ResponseWriter, r *http.Request, c caller, p 
 }
 
 func (h *Handler) removeIssuer(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	tag, ok := ifMatch(w, r)
+	id, ok := issuerIfMatch(w, r) // "" for *: any record under the name
 	if !ok {
-		return
-	}
-	id := strings.TrimSuffix(strings.TrimPrefix(tag, `"`), `"`) // "" for *: any record under the name
-	if tag != "" && (id == "" || `"`+id+`"` != tag) {
-		problem(w, http.StatusPreconditionFailed, typePrecondition, "it changed: read it again")
 		return
 	}
 	a, _ := c.actor()

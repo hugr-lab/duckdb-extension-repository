@@ -1,0 +1,10 @@
+# The console's npm dependencies (spec 0015): weekly, grouped, so a vulnerable package is noticed.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /web/console
+    schedule:
+      interval: weekly
+    groups:
+      console:
+        patterns: ["*"]

@@ -1,0 +1,12 @@
+node_modules/
+dist/app/
+.vite/
+.vitest/
+*.tsbuildinfo
+coverage/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+.eslintcache
+npm-debug.log*

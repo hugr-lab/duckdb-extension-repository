@@ -67,6 +67,9 @@ type Options struct {
 	PublishPerTenant int
 	PublishMax       int // uploads at once on this server: fewer than the blob service's ingest slots
 	Now              func() time.Time
+	// Console is the administration console's sign-in configuration (spec 0015); nil: its routes
+	// answer 404 (ui.enabled false).
+	Console *Console
 }
 
 // Handler serves /api/v1.
@@ -505,6 +508,9 @@ func init() {
 	mb := func(a access, f handler) rule { return rule{access: a, manage: true, body: true, handle: f} }
 	routes = []route{
 		{"info", idx((*Handler).info)},
+		// spec 0015: the administration console's sign-in configuration
+		{"console", map[string]rule{http.MethodGet: {access: public, handle: (*Handler).serverConsole}}},
+		{"tenants/{t}/console", map[string]rule{http.MethodGet: {access: public, handle: (*Handler).tenantConsole}}},
 		{"whoami", map[string]rule{http.MethodGet: {access: serverToken, handle: (*Handler).serverWhoami}}},
 		{"duckdb-versions", map[string]rule{http.MethodGet: {access: public, handle: (*Handler).duckdbVersions},
 			http.MethodPost: mb(serverAdmin, (*Handler).addDuckDBVersion)}},
@@ -527,6 +533,8 @@ func init() {
 			http.MethodPost: mb(pathAdmin, (*Handler).addIssuer)}},
 		{"tenants/{t}/issuers/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getIssuer),
 			http.MethodDelete: m(pathAdmin, (*Handler).removeIssuer)}},
+		{"tenants/{t}/issuers/{name}/console", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).setConsoleClient),
+			http.MethodDelete: m(pathAdmin, (*Handler).removeConsoleClient)}},
 		{"tenants/{t}/grants", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listGrants),
 			http.MethodPost: mb(pathAdmin, (*Handler).addGrant)}},
 		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGrant),

@@ -51,6 +51,8 @@ type Options struct {
 	Snapshots *release.Snapshots
 	// API serves /api/ on https requests (spec 0007); nil: /api/ answers 404.
 	API http.Handler
+	// Console serves /ui/ on https requests (spec 0015); nil: /ui/ answers 404.
+	Console http.Handler
 	// Puller takes the misses of callers holding install that a pull-through upstream may fetch
 	// (spec 0009 phase 2); nil: no pull-through.
 	Puller Puller
@@ -211,6 +213,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		route = "api"
 		h.o.API.ServeHTTP(lw, r)
+		return
+	}
+	if p := r.URL.EscapedPath(); p == "/ui" || strings.HasPrefix(p, "/ui/") {
+		// the administration console (spec 0015): https only, like the API
+		if scheme(r) != "https" || h.o.Console == nil {
+			notFound(lw)
+			return
+		}
+		route = "ui"
+		h.o.Console.ServeHTTP(lw, r)
 		return
 	}
 	rt := parseRoute(r)

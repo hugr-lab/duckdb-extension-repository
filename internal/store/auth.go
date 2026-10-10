@@ -158,6 +158,9 @@ func (t *Tx) DeleteIssuer(ctx context.Context, tenantID, name string) error {
 	if _, err := t.exec(ctx, "DELETE FROM grants WHERE issuer_id = ?", id); err != nil {
 		return err
 	}
+	if _, err := t.exec(ctx, "DELETE FROM issuer_console_clients WHERE issuer_id = ?", id); err != nil {
+		return err
+	}
 	if _, err := t.exec(ctx, "DELETE FROM issuers WHERE id = ?", id); err != nil {
 		return err
 	}
@@ -183,6 +186,24 @@ func (t *Tx) AddAudience(ctx context.Context, tenantID, aud, actor string) error
 		return err
 	}
 	return t.BumpAuth(ctx, tenantID)
+}
+
+// TenantAudiences lists a tenant's assigned audiences.
+func (t *Tx) TenantAudiences(ctx context.Context, tenantID string) ([]string, error) {
+	rows, err := t.query(ctx, "SELECT audience FROM tenant_audiences WHERE tenant_id = ? ORDER BY audience", tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // RemoveAudience removes a tenant's audience.

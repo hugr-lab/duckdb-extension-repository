@@ -128,6 +128,8 @@ var catalogue = map[Kind][]string{
 	// identity
 	"issuer.add":              {"name", "url", "algorithms"},
 	"issuer.remove":           {"name", "url"},
+	"issuer.console.set":      {"issuer", "client_id", "audience"},
+	"issuer.console.remove":   {"issuer", "client_id", "audience"},
 	"audience.add":            {"audience"},
 	"audience.remove":         {"audience"},
 	"grant.add":               {"principal", "verbs", "channel", "extension"},
