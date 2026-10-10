@@ -251,6 +251,17 @@ func TestLeases(t *testing.T) {
 		if ok, _ := s.AcquireLease(ctx, "resign/x", "third", time.Minute); !ok {
 			t.Fatal("an expired lease is not free")
 		}
+		// renewing (spec 0016) extends a held lease only: never one that expired, even untaken
+		if ok, err := s.RenewLease(ctx, "resign/x", "third", time.Millisecond); err != nil || !ok {
+			t.Fatalf("renew a held lease: %v %v", ok, err)
+		}
+		if ok, _ := s.RenewLease(ctx, "resign/x", "other", time.Minute); ok {
+			t.Fatal("renewed another holder's lease")
+		}
+		time.Sleep(5 * time.Millisecond)
+		if ok, err := s.RenewLease(ctx, "resign/x", "third", time.Minute); err != nil || ok {
+			t.Fatalf("renewed an expired lease: %v %v", ok, err)
+		}
 	})
 }
 

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -44,9 +45,21 @@ type Service struct {
 	log     *slog.Logger
 
 	mu    sync.Mutex
-	cache map[cacheKey]store.Blob
+	cache map[cacheKey]cached
 	gen   uint64 // bumped by forget: a lookup that raced a forget does not cache its result
 }
+
+// cached is a record and when it was read: kept for recordTTL (spec 0016: well under the
+// collector's grace, so a replica never resolves a body to a stream deleted since).
+type cached struct {
+	rec store.Blob
+	at  time.Time
+}
+
+const recordTTL = 15 * time.Minute
+
+// clock is the record cache's clock.
+var clock = time.Now
 
 type cacheKey struct{ domain, body string }
 
@@ -81,7 +94,7 @@ func NewService(ctx context.Context, st *store.Store, domains []Domain, o Option
 		o.Log = slog.Default()
 	}
 	s := &Service{st: st, domains: map[string]Domain{}, sem: make(chan struct{}, o.MaxIngests), maxBody: o.MaxBody,
-		log: o.Log, cache: map[cacheKey]store.Blob{}}
+		log: o.Log, cache: map[cacheKey]cached{}}
 	for i, d := range domains {
 		if err := store.ValidDomain(d.Name); err != nil {
 			return nil, err
@@ -296,16 +309,16 @@ func (s *Service) domain(name string) (Domain, error) {
 	return d, nil
 }
 
-// Record returns the record of a body in a domain, cached: records change only by a commit or a
-// corruption mark, both of which drop the cached entry here.
+// Record returns the record of a body in a domain, cached for recordTTL: a commit or a corruption
+// mark on this replica drops the entry at once.
 func (s *Service) Record(ctx context.Context, domain string, body extfile.BodyHash) (store.Blob, error) {
 	k := cacheKey{domain, body.String()}
 	s.mu.Lock()
-	b, ok := s.cache[k]
+	c, ok := s.cache[k]
 	gen := s.gen
 	s.mu.Unlock()
-	if ok {
-		return b, nil
+	if ok && clock().Sub(c.at) < recordTTL {
+		return c.rec, nil
 	}
 	b, err := s.st.GetBlob(ctx, domain, k.body)
 	if err != nil {
@@ -316,7 +329,7 @@ func (s *Service) Record(ctx context.Context, domain string, body extfile.BodyHa
 		if len(s.cache) >= maxCached {
 			clear(s.cache)
 		}
-		s.cache[k] = b
+		s.cache[k] = cached{rec: b, at: clock()}
 	}
 	s.mu.Unlock()
 	return b, nil

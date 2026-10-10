@@ -108,7 +108,8 @@ var SQLServer = &Dialect{
 		n := mssqlNumber(err)
 		return n == 2627 || n == 2601
 	},
-	foreignKey: func(err error) bool { return mssqlNumber(err) == 547 },
+	// 547 is any constraint conflict (a CHECK too); a foreign key's message names it
+	foreignKey: func(err error) bool { return mssqlNumber(err) == 547 && strings.Contains(err.Error(), "FOREIGN KEY") },
 	retryable: func(err error) bool {
 		n := mssqlNumber(err)
 		return n == 1205 || n == 1222 || n == 51000

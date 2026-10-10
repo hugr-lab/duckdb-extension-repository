@@ -119,25 +119,13 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	if in.DryRun {
 		return res, nil
 	}
-	if _, err := sp.Commit(ctx); err != nil {
-		return res, err
-	}
-	for attempt := 0; ; attempt++ {
-		bb := it.b
-		err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &bb) })
-		if err == nil {
-			it.b = bb
-			break
-		}
-		if !errors.Is(err, store.ErrExists) || attempt > 0 {
-			return res, err
-		}
-	}
-	rs, existed, err := s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {
-		r := made[0]
-		return tx.Event(ctx, c.TenantID, a.String(), "upstream.release", releaseSubject(c, r),
-			map[string]any{"upstream": in.Upstream, "release": r.ID, "name": r.Name, "version": r.ExtVersion, "platform": r.Platform,
-				"slot": r.Slot, "body_hash": it.b.BodyHash, "url": in.URL, "key": key})
+	rs, existed, err := s.commitAndRelease(ctx, sp, &it, func(ctx context.Context, it item) ([]store.Release, bool, error) {
+		return s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {
+			r := made[0]
+			return tx.Event(ctx, c.TenantID, a.String(), "upstream.release", releaseSubject(c, r),
+				map[string]any{"upstream": in.Upstream, "release": r.ID, "name": r.Name, "version": r.ExtVersion, "platform": r.Platform,
+					"slot": r.Slot, "body_hash": it.b.BodyHash, "url": in.URL, "key": key})
+		})
 	})
 	if err != nil {
 		return res, err

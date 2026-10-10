@@ -162,6 +162,7 @@ var catalogue = map[Kind][]string{
 	"authz.refused":     {"route", "verb", "status", "count"},
 	"install":           {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
 	"audit.dropped":     {"counts", "sink"},
+	"storage.gc":        {"domain", "builds", "bodies", "marked", "streams", "tmp", "uploads", "bytes", "claims", "resolved", "dry_run", "error"},
 	"audit.sink":        {"sink", "state", "class", "status"},
 	"request.failed":    {"route", "status", "count"},
 }
@@ -193,6 +194,8 @@ func SubjectForm(k Kind) string {
 		return release
 	case "server.start", "audit.dropped":
 		return "server"
+	case "storage.gc":
+		return "domain:<domain>"
 	case "audit.sink":
 		return "sink:<name>"
 	case "auth.failure", "authz.refused", "request.failed":

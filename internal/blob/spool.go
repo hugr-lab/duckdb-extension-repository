@@ -183,8 +183,10 @@ func (c ctxReader) Read(p []byte) (int, error) {
 // File is the parsed spooled file: metadata, body hash and signature, for the caller to verify.
 func (sp *Spool) File() *extfile.File { return sp.file }
 
-// Commit stores the body: it precompresses it into a second spool file, uploads the stream to its
-// content address (always, even when the domain already holds it), and records it.
+// Commit stores the body: it precompresses it into a second spool file, claims the stream (spec
+// 0016: the collector never deletes a claimed stream), uploads it to its content address (always,
+// even when the domain already holds it), and records it, its claim checked. A claim lost (expired,
+// or a commit slower than its deadline) is taken again and the stream uploaded again.
 func (sp *Spool) Commit(ctx context.Context) (store.Blob, error) {
 	if sp.f == nil {
 		return store.Blob{}, errors.New("blob: the spool is closed")
@@ -216,23 +218,58 @@ func (sp *Spool) Commit(ctx context.Context) (store.Blob, error) {
 	for _, c := range pre.StreamChunks {
 		rec.StreamChunks = append(rec.StreamChunks, c[:]...)
 	}
-	if err := sp.domain.Store.Put(ctx, StreamKey(rec.StreamHash), zf, pre.StreamLen); err != nil {
-		return store.Blob{}, err
-	}
-	// Two first commits of one body race on the insert; the loser retries and finds the record.
 	for attempt := 0; ; attempt++ {
-		r := rec
-		err = s.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.PutBlob(ctx, &r) })
-		if err == nil {
-			rec = r
-			break
-		}
-		if !errors.Is(err, store.ErrExists) || attempt > 0 {
+		claim := store.NewID()
+		if err := s.claim(ctx, rec.Domain, rec.StreamHash, claim); err != nil {
 			return store.Blob{}, err
 		}
+		if err := sp.domain.Store.Put(ctx, StreamKey(rec.StreamHash), zf, pre.StreamLen); err != nil {
+			_ = s.st.ReleaseClaim(context.WithoutCancel(ctx), rec.Domain, rec.StreamHash, claim)
+			return store.Blob{}, err
+		}
+		// two first commits of one body (other compressors) race on the insert: the loser retries
+		r := rec
+		err = s.st.CommitBlob(ctx, &r, claim)
+		if errors.Is(err, store.ErrExists) {
+			r = rec
+			err = s.st.CommitBlob(ctx, &r, claim)
+		}
+		if errors.Is(err, store.ErrClaimLost) && attempt < 2 {
+			continue // claim again, upload again
+		}
+		if err != nil {
+			_ = s.st.ReleaseClaim(context.WithoutCancel(ctx), rec.Domain, rec.StreamHash, claim)
+			return store.Blob{}, err
+		}
+		s.forget(r.Domain, r.BodyHash)
+		return r, nil
 	}
-	s.forget(rec.Domain, rec.BodyHash)
-	return rec, nil
+}
+
+// IntakeDeadline bounds an intake from its commit to its release (spec 0016): a claim lasts as long.
+const IntakeDeadline = time.Hour
+
+// busyPoll is how often a commit waiting on a stream's delete tries again.
+var busyPoll = 2 * time.Second
+
+// claim claims a stream until the intake's deadline (its context's, at most IntakeDeadline), waiting
+// while the collector deletes it.
+func (s *Service) claim(ctx context.Context, domain, stream, id string) error {
+	until := s.st.Now().Add(IntakeDeadline)
+	if d, ok := ctx.Deadline(); ok && d.Before(until) {
+		until = d
+	}
+	for {
+		err := s.st.ClaimStream(ctx, domain, stream, id, until)
+		if !errors.Is(err, store.ErrStreamBusy) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w: %w", err, ctx.Err())
+		case <-time.After(busyPoll):
+		}
+	}
 }
 
 // Close removes the spool file and frees the ingest slot; it is safe to call more than once.

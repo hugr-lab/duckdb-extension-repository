@@ -191,6 +191,9 @@ GET  /api/v1/tenants/{t}/channels/{c}/extensions/{ext}/releases[/{id}]     (spec
   release or none (a slot conflict on any is `409` for all). It answers `201` (or `200` when the
   target already holds them all with the same choices): a promotion of one release by id answers
   that release with its `Location`, a promotion of a version the list of releases.
+- **Intake deadline** (spec 0016): a publication or a promotion runs from its commit to its release
+  insert within an hour; one whose Build the storage collector deleted meanwhile starts again from
+  its commit (a promotion: re-reads its sources), once.
 - **Answers never tell** whether a body was already stored in this tenant or the storage domain: the
   whole body is always received, hashed and committed (spec 0005 writes it whether or not the hash
   exists), and a client's declared hash is never trusted. A `409` names the slot, not another

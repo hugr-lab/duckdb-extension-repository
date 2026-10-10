@@ -263,6 +263,13 @@ func TestAdminCLI(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "blobs", "kista-domain.json")); err != nil {
 		t.Fatalf("blob check wrote no marker beside the dev database: %v", err)
 	}
+	// storage GC (spec 0016): a dry run by default; -apply needs -force while gc.interval is 0
+	if got := run(0, "blob", "gc"); !strings.Contains(got, "a dry run") {
+		t.Fatalf("blob gc: %q", got)
+	}
+	run(1, "blob", "gc", "-apply")
+	run(0, "blob", "gc", "-apply", "-force")
+	run(1, "blob", "gc", "-domain", "nowhere")
 	run(1, "key", "add", "acme/prod", "-signer", "file:../escape.pem")
 	run(2, "nonsense")
 	run(2, "key", "add", "acme")

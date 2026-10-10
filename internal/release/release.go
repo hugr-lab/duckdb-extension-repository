@@ -48,6 +48,8 @@ type Service struct {
 	// MayPublish reports whether a private upstream's credential (spec 0009 phase 3) allows the
 	// releases it brought to be public; nil allows none.
 	MayPublish func(credential string) bool
+
+	afterBuild func(store.Build) // tests: between finding the Build and inserting the release
 }
 
 // CredentialOf is the private upstream credential a release came through (its provenance's
@@ -201,30 +203,17 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	if err := servable(capis, b); err != nil {
 		return store.Release{}, false, err
 	}
-	if _, err := sp.Commit(ctx); err != nil {
-		return store.Release{}, false, err
-	}
-	// two adds of one body race on the build's insert; the loser finds the winner's build
-	for attempt := 0; ; attempt++ {
-		bb := it.b
-		err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &bb) })
-		if err == nil {
-			it.b = bb
-			break
-		}
-		if !errors.Is(err, store.ErrExists) || attempt > 0 {
-			return store.Release{}, false, err
-		}
-	}
 	kind := audit.Kind("release.add")
 	if it.origin == store.OriginPublication {
 		kind = "release.publish"
 	}
-	rs, existed, err := s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {
-		r := made[0]
-		f := releaseFields(r, it.b, kind == "release.publish")
-		f["shadows"] = Shadows(store.Candidate{Release: r, BuildOrigin: it.b.Origin}, nil)
-		return tx.Event(ctx, c.TenantID, a.String(), kind, releaseSubject(c, r), f)
+	rs, existed, err := s.commitAndRelease(ctx, sp, &it, func(ctx context.Context, it item) ([]store.Release, bool, error) {
+		return s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {
+			r := made[0]
+			f := releaseFields(r, it.b, kind == "release.publish")
+			f["shadows"] = Shadows(store.Candidate{Release: r, BuildOrigin: it.b.Origin}, nil)
+			return tx.Event(ctx, c.TenantID, a.String(), kind, releaseSubject(c, r), f)
+		})
 	})
 	if err != nil {
 		return store.Release{}, false, err
@@ -763,4 +752,38 @@ func releaseFields(r store.Release, b store.Build, provenance bool) map[string]a
 		f["provenance"] = r.Provenance
 	}
 	return f
+}
+
+// commitAndRelease commits a spooled body, finds or inserts its Build and inserts its release, all
+// under the intake deadline (spec 0016: what the intake touched stays live that long); a Build the
+// collector removed in between starts it again from the commit, once.
+func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item,
+	ins func(ctx context.Context, it item) ([]store.Release, bool, error)) ([]store.Release, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, blob.IntakeDeadline)
+	defer cancel()
+	for attempt := 0; ; attempt++ {
+		if _, err := sp.Commit(ctx); err != nil {
+			return nil, false, err
+		}
+		// two intakes of one body race on the build's insert; the loser finds the winner's build
+		for try := 0; ; try++ {
+			bb := it.b
+			err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &bb) })
+			if err == nil {
+				it.b = bb
+				break
+			}
+			if !errors.Is(err, store.ErrExists) || try > 0 {
+				return nil, false, err
+			}
+		}
+		if s.afterBuild != nil {
+			s.afterBuild(it.b)
+		}
+		rs, existed, err := ins(ctx, *it)
+		if errors.Is(err, store.ErrBuildGone) && attempt == 0 {
+			continue
+		}
+		return rs, existed, err
+	}
 }
