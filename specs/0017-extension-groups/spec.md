@@ -1,6 +1,6 @@
 # Spec 0017: Extension groups
 
-- **Status**: draft
+- **Status**: accepted (2026-10-11)
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 
