@@ -149,7 +149,9 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		log.Info("serve: exporting OpenTelemetry metrics")
 	}
 	var ui http.Handler
+	var corsOrigins []string
 	if cfg.UIEnabled() {
+		corsOrigins = cfg.UI.AllowedOrigins
 		var serverFetch auth.Fetcher = eg
 		if server != nil {
 			serverFetch = server.Verifier.Fetch
@@ -161,7 +163,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		}
 		ui = c
 	}
-	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Console: ui, Puller: puller, Events: events, Downloads: downloads, Metrics: metrics,
+	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Console: ui, CORSOrigins: corsOrigins, Puller: puller, Events: events, Downloads: downloads, Metrics: metrics,
 		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,

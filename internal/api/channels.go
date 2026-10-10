@@ -403,14 +403,20 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request, c caller,
 		problem(w, http.StatusBadRequest, typeInvalid, "state is active, deprecated or yanked")
 		return
 	}
+	prefix, ok := namePrefix(w, r)
+	if !ok {
+		return
+	}
 	a, _ := c.actor()
 	rs, err := h.o.Releases.List(r.Context(), a, p["t"], p["c"], name)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
-	if state != "" {
-		rs = slices.DeleteFunc(rs, func(x store.Candidate) bool { return x.State != state })
+	if state != "" || prefix != "" {
+		rs = slices.DeleteFunc(rs, func(x store.Candidate) bool {
+			return state != "" && x.State != state || !strings.HasPrefix(x.Name, prefix)
+		})
 	}
 	rs, next := paged(rs, releaseKey, limit, after) // oldest first: a cursor survives new releases
 	admin := h.isAdmin(r, c, p)

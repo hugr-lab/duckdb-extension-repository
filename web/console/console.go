@@ -16,7 +16,9 @@ import (
 	"time"
 )
 
-// dist holds the build in dist/app (make console); a binary built without it serves placeholder.
+// dist holds the builds (make console): the standalone console in dist/app, the micro-frontend in
+// dist/mfe (spec 0015 phase 1b). A binary built without dist/app serves placeholder at /ui/ and no
+// micro-frontend: npm run build makes both.
 //
 //go:embed all:dist
 var dist embed.FS
@@ -27,7 +29,7 @@ const placeholder = `<!doctype html>
 then <code>make build</code>.</p></body></html>
 `
 
-// placeholderFS holds only the placeholder index.html (read with fs.ReadFile).
+// placeholderFS holds only the placeholder app/index.html (read with fs.ReadFile).
 type placeholderFS struct{}
 
 func (placeholderFS) Open(name string) (fs.File, error) {
@@ -35,7 +37,7 @@ func (placeholderFS) Open(name string) (fs.File, error) {
 }
 
 func (placeholderFS) ReadFile(name string) ([]byte, error) {
-	if name != "index.html" {
+	if name != "app/index.html" {
 		return nil, &fs.PathError{Op: "read", Path: name, Err: fs.ErrNotExist}
 	}
 	return []byte(placeholder), nil
@@ -54,7 +56,7 @@ type Options struct {
 	Origins        func(ctx context.Context, s Scope) []string
 	FrameAncestors []string
 	ConnectSrc     []string
-	FS             fs.FS // the build; nil: the embedded one
+	FS             fs.FS // the builds, app/ and mfe/; nil: the embedded ones
 }
 
 // Handler serves /ui/.
@@ -68,17 +70,17 @@ type Handler struct {
 func New(o Options) (*Handler, error) {
 	files := o.FS
 	if files == nil {
-		sub, err := fs.Sub(dist, "dist/app")
+		sub, err := fs.Sub(dist, "dist")
 		if err != nil {
 			return nil, err
 		}
 		files = sub
 	}
-	if _, err := fs.Stat(files, "index.html"); err != nil {
+	if _, err := fs.Stat(files, "app/index.html"); err != nil {
 		files = placeholderFS{}
 	}
 	h := &Handler{o: o, files: files, etags: map[string]string{}}
-	for _, name := range []string{"index.html", "mfe/kista.js"} {
+	for _, name := range []string{"app/index.html", "mfe/kista.js"} {
 		if b, err := fs.ReadFile(files, name); err == nil {
 			sum := sha256.Sum256(b)
 			h.etags[name] = `"` + hex.EncodeToString(sum[:16]) + `"`
@@ -118,9 +120,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(p, "/ui/")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	if path.Ext(name) == "" || name == "index.html" {
+	mfe := strings.HasPrefix(name, "mfe/") // the micro-frontend's files: never the SPA fallback
+	if !mfe && (path.Ext(name) == "" || name == "index.html") {
 		h.index(w, r, ScopeOf(p))
 		return
+	}
+	if !mfe {
+		name = "app/" + name
 	}
 	b, err := fs.ReadFile(h.files, name)
 	if err != nil {
@@ -133,7 +139,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if tag, ok := h.etags[name]; ok {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("ETag", tag)
-	} else if strings.HasPrefix(name, "assets/") || strings.HasPrefix(name, "mfe/assets/") {
+	} else if strings.HasPrefix(name, "app/assets/") || strings.HasPrefix(name, "mfe/assets/") {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else {
 		w.Header().Set("Cache-Control", "no-cache")
@@ -143,7 +149,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // index serves the page of a scope with its policy.
 func (h *Handler) index(w http.ResponseWriter, r *http.Request, s Scope) {
-	b, err := fs.ReadFile(h.files, "index.html")
+	b, err := fs.ReadFile(h.files, "app/index.html")
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -157,7 +163,7 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request, s Scope) {
 	w.Header().Set("Content-Security-Policy", h.policy(idp))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("ETag", h.etags["index.html"])
+	w.Header().Set("ETag", h.etags["app/index.html"])
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(b))
 }
 

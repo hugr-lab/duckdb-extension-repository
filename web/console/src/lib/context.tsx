@@ -92,3 +92,34 @@ export function useLoad<T>(f: () => Promise<T>, deps: unknown[]) {
   const reload = useCallback(() => setN((x) => x + 1), [])
   return { ...state, reload }
 }
+
+export interface Page<T> {
+  items: T[]
+  next?: string
+}
+
+/** A list read page by page from the API's cursors (spec 0015 phase 1b): nothing is loaded ahead,
+ * and "previous" replays the cursors seen. A change of deps starts again from the first page. */
+export function usePaged<T>(fetchPage: (cursor: string, limit: number) => Promise<Page<T>>, deps: unknown[]) {
+  const key = JSON.stringify(deps)
+  const [size, setSizeState] = useState(50)
+  const [at, setAt] = useState<{ key: string; cursors: string[] }>({ key, cursors: [''] })
+  if (at.key !== key) setAt({ key, cursors: [''] }) // other filters: the first page, never cursors kept from before
+  const cursors = at.key === key ? at.cursors : ['']
+  const page = cursors.length - 1
+  const load = useLoad(() => fetchPage(cursors[page], size), [key, size, cursors.join('\n')])
+  const next = load.data?.next
+  return {
+    ...load,
+    items: load.data?.items ?? [],
+    page,
+    size,
+    hasNext: !!next && !load.loading,
+    next: () => next && setAt({ key, cursors: [...cursors, next] }),
+    prev: () => page > 0 && setAt({ key, cursors: cursors.slice(0, -1) }),
+    setSize: (n: number) => {
+      setSizeState(n)
+      setAt({ key, cursors: [''] })
+    },
+  }
+}

@@ -13,6 +13,7 @@ coverage.out
 # the console (web/console): Node modules, build output and tool caches
 node_modules/
 web/console/dist/app/
+web/console/dist/mfe/
 .vite/
 .vitest/
 *.tsbuildinfo

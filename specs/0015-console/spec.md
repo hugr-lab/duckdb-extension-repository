@@ -1,6 +1,6 @@
 # Spec 0015: Administration console
 
-- **Status**: accepted (2026-10-10); phase 1a implemented, 1b next
+- **Status**: accepted (2026-10-10); phases 1a and 1b implemented, 2 next
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 
@@ -23,7 +23,10 @@ Delivery, each phase a pull request:
   - issuer console clients (route, CLI, migration, events);
   - reads: tenants, channels, releases, keys, events, statistics;
   - release changes: yank, deprecate, activate, current, public/private, purge.
-- **1b. Micro-frontend**: the contract module and custom element, CORS for shells, the test host.
+- **1b. Micro-frontend**:
+  - the contract module and custom element, CORS for shells, the test host;
+  - the frame and tokens of tresor-server's console, so the two read as one platform;
+  - lists read page by page, with a name prefix searched by the API.
 - **2. Administration forms**:
   - grants, issuers and their console clients, audiences;
   - publishers and API keys, blocks;
@@ -61,7 +64,8 @@ The stack is tresor-server's (one platform, one way of building consoles):
   tags, like Radix's scroll lock, breaks the CSP below);
 - a licence gate in CI: MIT, ISC, Apache-2.0, BSD and OFL dependencies only.
 
-The source is in `web/console/`. Two Vite builds:
+The source is in `web/console/`. Two Vite builds ship (a third, `vite.host.config.ts`, serves the
+test platform only):
 
 - **standalone**: `dist/app/index.html`, hashed assets under `dist/app/assets/`, no inline script
   (no module-preload polyfill), no `data:` fonts;
@@ -70,10 +74,11 @@ The source is in `web/console/`. Two Vite builds:
 
 ### Build and repository
 
-- **Embedding.** `web/console/console.go` embeds `dist` (`//go:embed all:dist`); the build goes to
-  `dist/app/` (ignored), and only `dist/.gitkeep` is committed, so a build never changes a tracked
+- **Embedding.** `web/console/console.go` embeds `dist` (`//go:embed all:dist`); the builds go to
+  `dist/app/` and `dist/mfe/` (both ignored), and only `dist/.gitkeep` is committed, so a build never changes a tracked
   file. A binary built without the console serves a placeholder page (in the Go source) that says
-  so.
+  so; `npm run build` makes both builds, and without `dist/app` the micro-frontend is not served
+  either.
 - **Make targets.** `make console` runs `npm ci && npm run build` in `web/console`. `make build`
   does not need Node, so Go contributors and the existing `go-linux`/`go-macos` jobs build with
   the placeholder. Every target keeps `GOWORK=off`.
@@ -141,9 +146,12 @@ The source is in `web/console/`. Two Vite builds:
 `issuers` lists `ui.server_clients` only.
 
 **A tenant**: `GET /api/v1/tenants/{t}/console` (public, `no-store`) returns
-`{"issuers": [{name, issuer, client_id, scopes, audience_parameter, audience}]}`:
+`{"audience": "<public_url>/<tenant>", "issuers": [{name, issuer, client_id, scopes,
+audience_parameter, audience}]}`:
 
-- it lists the issuer records that have a console client;
+- `audience` (1b) is the tenant's canonical audience, for an embedded console whose tenant has no
+  console client yet;
+- `issuers` lists the issuer records that have a console client;
 - each entry has the audience its tokens must carry: the client's `audience` if it set one (Entra
   needs the assigned `api://…`), otherwise the canonical `<public_url>/<tenant>`;
 - an unknown or suspended tenant answers `404`, like every tenant route (spec 0007);
@@ -281,6 +289,41 @@ tresor-server and hub do.
 Release signatures are not listed: the API has no field for them. The keys view shows which keys
 sign the channel.
 
+### Frame and lists (1b)
+
+**The frame** is tresor-server's, so a platform that shows both consoles reads as one product:
+
+- standalone: a navy sidebar (the hugr icon, "kista", the scope's sections with Lucide icons, the
+  service's host and version at its foot), a top bar (the environment badge, a light/dark switch
+  kept in `localStorage`, the signed-in user with a sign-out menu);
+- embedded: no sidebar or top bar (the host has its own); the sections are tabs above the
+  content;
+- the sign-in page is a card with the hugr logo, one button per issuer naming its host;
+- pages: a 24 px title with a line of context, tables in a bordered box with a soft header, names
+  in JetBrains Mono, status chips.
+
+The hugr logo and icon are the Hugr Lab design system's (`src/assets`, not tresor-server's files).
+
+**Lists are read page by page** from the API's cursors, never whole: a tenant mirrors hundreds of
+community extensions, and its channels hold thousands of releases.
+
+- Every list has a page size (50, 100 or 200), previous and next. "Previous" replays the cursors
+  already seen; nothing is loaded ahead.
+- Name search is the API's: a **name prefix**, so a page never filters only what it happens to
+  hold. 1b adds `prefix` to two routes:
+  - the index's `GET …/channels/{c}/extensions[?prefix=]`: names starting with it (the cursor
+    stays the last name);
+  - the management list `GET …/channels/{c}/releases[?prefix=]` (extension names starting with
+    it), beside `state`.
+- **Channel** (1b): its extensions from the index route, by name: the current version for a
+  chosen DuckDB version and platform, and visibility. Its releases (every extension, with the
+  state filter) are a second tab; an extension's own page lists its releases from
+  `…/extensions/{ext}/releases`. 1a's channel page read up to 10,000 releases at once; it goes.
+- The tenants list (server scope) and events are paged the same way.
+
+Phase 2's forms (grants, upstream allowlists, extension groups) follow the same rule; the routes
+they need without paging today (an upstream's allowlist, an extension's index rows) gain it there.
+
 ### The micro-frontend contract (1b; kista's contract version 1)
 
 This is tresor-server's contract with kista's names, plus `tenant`. kista's contract number is
@@ -311,22 +354,31 @@ h.unmount()
     value.
   - The host maps it to what its IdP needs: an Entra `api://kista-acme/.default` scope, a ZITADEL
     project, a Keycloak audience mapper.
-  - The host issues tokens only for audiences it knows, never whatever a component names.
+  - The host issues tokens only for audiences it knows, never whatever a component names. A
+    tenant's console client can name only an audience of that tenant (its canonical one, or one a
+    server administrator assigned), but the host's allowlist is what keeps a component from
+    obtaining a token for another service.
+  - `getToken` does not say which scope asks: a host that passes `audience` and changes `tenant`
+    keeps them consistent itself.
 - **`getToken`.**
   - The console keeps no token: it calls `getToken` before each request (the host caches).
   - `{renew: true}` means a **newly issued** token with a fresh `iat` (MSAL's `forceRefresh`),
     not another cached one. The console checks `iat` against `admin_token_max_age` and asks
     `renew` before the API would refuse the token.
   - A rejected `getToken` shows "no token for audience X" and does not call `onUnauthorized`.
-- **Routing.** Paths are relative to `basePath`:
+- **Routing.** The console's own paths, below `basePath`:
   - with `tenant`, the tenant's paths (`/channels/prod`), default `/channels`;
   - without it, the server scope's paths (`/tenants`, `/tenants/acme/channels/prod`), default
     `/tenants`;
   - standalone adds `/server` or `/t/{tenant}`.
 
-  Inside, a memory router; moves are reported by `onNavigate`. Without `onNavigate`, the console
-  pushes to `window.history` and ignores `popstate` outside its `basePath`, so two consoles do
-  not reset each other. Embedded, `onNavigate` is recommended.
+  Inside, a memory router. As in tresor-server, the host sees **its own full paths**:
+  - the first route is read from `window.location` below `basePath` (another path: the default);
+  - `onNavigate` receives `basePath` + the console's path and query;
+  - `update({path})` takes a host path the same way (the host's back button);
+  - without `onNavigate`, the console pushes those paths to `window.history` and ignores
+    `popstate` outside its `basePath`, so two consoles do not reset each other. Embedded,
+    `onNavigate` is recommended.
 - **`update`.**
   - A changed `tenant` remounts: a new router, the default route, answers in flight dropped. With
     `path` in the same call, `tenant` applies first.
@@ -338,7 +390,8 @@ h.unmount()
   - `getToken` and the callbacks are properties, set before or after the element is upgraded; a
     token is never an attribute. The element mounts once `getToken` is set;
   - events: `kista-navigate` (detail `{path, replace}`), `kista-title` (detail the title),
-    `kista-unauthorized`;
+    `kista-unauthorized`; the element always reports its moves (as its `onNavigate` property or
+    the event), so a host using it keeps the address bar itself;
   - a `navigate(path)` method, a `data-contract` attribute, and `data-kista-theme` for the dark
     defaults.
 - **Rendering.**
@@ -348,10 +401,12 @@ h.unmount()
   - `@font-face` is added to the document once, skipping a family `document.fonts` already has,
     so a platform that also loads tresor's console downloads Manrope once.
   - A minimum width of 960 px; below that, it scrolls.
-- **Theme.** tresor-server's CSS variables, on the host element and unprefixed: `--surface,
-  --surface-soft, --ink, --ink-muted, --border, --brand, --brand-strong, --on-brand, --focus,
-  --success(-soft), --warning(-soft), --danger(-soft), --row`. A platform sets them once for both
-  consoles; host values win.
+- **Theme.** tresor-server's CSS variables, on the host element and unprefixed, with its values
+  and its format (whole colours, `--brand: #338a86`, not channel triplets): `--surface,
+  --surface-soft, --ink, --ink-muted, --border, --brand, --brand-strong, --on-brand, --navy,
+  --focus, --success(-soft), --warning(-soft), --danger(-soft), --row`. A platform sets them once
+  for both consoles; host values win. The dark defaults apply under the host's
+  `data-kista-theme="dark"`.
 - **Entry gating.** The shell decides whether to show the kista entry with the token it would
   pass in, by the scope's gate above. The platform knows which tenant a user works in: by design,
   kista has no route listing the tenants a token administers (spec 0007: no customer
@@ -363,10 +418,11 @@ h.unmount()
     `font-src` and `connect-src`.
   - CORS (1b) on `/ui/mfe/*` and `/api/v1/*`, exact origins only:
     - allowed headers: `Authorization, Content-Type, If-Match, If-None-Match, traceparent`;
-    - exposed headers: `ETag, Location, X-Request-Id`;
+    - exposed headers: `ETag, Location`;
     - `Access-Control-Max-Age: 600`, `Vary: Origin`, no credentials;
     - a preflight (`OPTIONS`) from an allowed origin is answered before the rate limiter and the
-      method check; any other preflight gets `403`.
+      method check; any other preflight gets `403`;
+    - `ui.enabled: false` serves no console, so `allowed_origins` then gives no CORS either.
 - **Test host.** `npm run host` serves a page on another origin that mounts the console as a
   shell would.
 
@@ -385,7 +441,9 @@ own spec settles:
 web/console/                   the console: src/main.tsx (standalone), src/mfe.tsx (contract, 1b), e2e/
 web/console/console.go         embed, /ui/ serving, the per-scope CSP
 internal/config                + ui:
-internal/api                   + /api/v1/console, tenants/{t}/console, issuers/{name}/console, CORS (1b)
+web/console/mfe-host/          the test platform (1b): npm run host, vite.host.config.ts
+internal/api                   + /api/v1/console, tenants/{t}/console, issuers/{name}/console, prefix (1b)
+internal/serve                 + /ui/ routing, CORS for shells (1b)
 internal/store, migrations/*/0015_console.sql   + issuer_console_clients
 internal/tenants, internal/audit, cmd/kista     + console clients, their events, kista admin issuer console
 Makefile, .github/workflows/ci.yml               + make console; console, console-e2e jobs
@@ -428,7 +486,8 @@ Makefile, .github/workflows/ci.yml               + make console; console, consol
     - the shared store suite on three dialects (set, replace, removed with the record);
     - the API: `If-Match` with the issuer id, and a re-added record not inheriting;
     - the CLI and the events coverage test;
-  - CORS and preflight (1b); the `ui:` validation.
+  - CORS and preflight (1b); the `ui:` validation;
+  - `prefix` on the extensions index and the releases list, with cursors (1b).
 - **Unit** (Vitest, jsdom, Testing Library):
   - the API client: If-Match, one renewal per `401`, none on `404` or `400`, the throttle, the
     token bound to its scope prefix;

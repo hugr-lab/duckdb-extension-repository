@@ -8,6 +8,9 @@ console="$(cd "$(dirname "$0")/.." && pwd)"
 root="$(cd "$console/../.." && pwd)"
 kc_port="${E2E_KC_PORT:-18790}"
 kista_port="${E2E_KISTA_PORT:-18743}"
+host_port="${E2E_HOST_PORT:-18444}"
+# the micro-frontend's test platform (mfe-host), on another origin than kista
+host="http://127.0.0.1:$host_port"
 kc="http://127.0.0.1:$kc_port"
 # kista by a name the browser maps to loopback: egress refuses the deployment's own address, and
 # Keycloak is on 127.0.0.1
@@ -39,7 +42,8 @@ user = lambda n, pw, roles: {"username": n, "enabled": True, "email": f"{n}@exam
     "firstName": n.title(), "lastName": "Test", "credentials": [{"type": "password", "value": pw, "temporary": False}],
     "realmRoles": roles + ["offline_access"]}  # the console asks for offline_access (a refresh token)
 def client(cid, aud):
-    return {"clientId": cid, "publicClient": True, "standardFlowEnabled": True, "directAccessGrantsEnabled": False,
+    # direct grants: the test platform's tokens (e2e/mfe.spec.ts) come from Playwright, with this run's passwords
+    return {"clientId": cid, "publicClient": True, "standardFlowEnabled": True, "directAccessGrantsEnabled": True,
         "redirectUris": [f"{kista}/ui/*"], "webOrigins": [kista],
         # 70 s tokens: the console renews 10 s after a sign-in, which the session-ended test needs
         "attributes": {"pkce.code.challenge.method": "S256", "post.logout.redirect.uris": f"{kista}/ui/*", "access.token.lifespan": "70"},
@@ -86,6 +90,7 @@ auth:
 gc: { interval: 24h }  # every replica runs this version: purging is on (spec 0016)
 ui:
   environment: e2e
+  allowed_origins: [ $host ]
   server_clients: [ { issuer: ops, client_id: kista-server-console } ]
 YAML
 k() { "$work/kista" admin -config "$work/kista.yaml" "$@" >/dev/null; }
@@ -108,6 +113,12 @@ pids+=($!)
 for i in $(seq 1 60); do curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null && break; sleep 1; done
 curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null || { cat "$work/kista.log"; exit 1; }
 
-echo "e2e: Playwright"
+echo "e2e: the test platform"
 cd "$console"
-E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }
+HOST_PORT="$host_port" npx vite -c vite.host.config.ts >"$work/host.log" 2>&1 &
+pids+=($!)
+for i in $(seq 1 30); do curl -sf "$host/" >/dev/null && break; sleep 1; done
+curl -sf "$host/" >/dev/null || { cat "$work/host.log"; exit 1; }
+
+echo "e2e: Playwright"
+E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }

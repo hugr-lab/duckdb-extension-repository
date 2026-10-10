@@ -40,6 +40,9 @@ describe('Client', () => {
     const calls = stub([200])
     const c = new Client({ base: '/api/v1', prefix: '/tenants/acme/', getToken: async () => 't1' })
     await expect(c.get('/tenants/other/channels')).rejects.toThrow(/outside this scope/)
+    // dot segments resolved by the URL parser cannot climb out of it either
+    await expect(c.get('/tenants/acme/../other/channels')).rejects.toThrow(/outside this scope/)
+    await expect(c.get('/tenants/acme/channels/%2e%2e/%2e%2e/../other')).rejects.toThrow(/outside this scope/)
     await c.get('/event-kinds', { anonymous: true })
     expect(calls).toHaveLength(1)
     expect(auth(calls[0])).toBeUndefined()

@@ -158,6 +158,35 @@ func TestReleaseChanges(t *testing.T) {
 	if r := m.call(t, "GET", "/api/v1/tenants/acme/channels/prod/releases?state=gone", m.toks["channel adm"], ""); r.status != 400 {
 		t.Errorf("a bad state filter: %d", r.status)
 	}
+	// a name prefix (spec 0015 phase 1b), with the state filter
+	for q, want := range map[string]bool{"prefix=tre": true, "prefix=tre&state=yanked": true, "prefix=zz": false} {
+		got := m.call(t, "GET", "/api/v1/tenants/acme/channels/prod/releases?"+q, m.toks["channel adm"], "").json(t)["releases"].([]any)
+		if (len(got) > 0) != want {
+			t.Errorf("%s: %v", q, got)
+		}
+		for _, x := range got {
+			if !strings.HasPrefix(x.(map[string]any)["name"].(string), "tre") {
+				t.Errorf("%s: %v", q, x)
+			}
+		}
+	}
+	// a prefix with a cursor: the pages hold what the unpaged list holds
+	whole := len(m.call(t, "GET", "/api/v1/tenants/acme/channels/prod/releases?prefix=tre", m.toks["channel adm"], "").json(t)["releases"].([]any))
+	paged, cur := 0, ""
+	for i := 0; i < 50; i++ {
+		pg := m.call(t, "GET", "/api/v1/tenants/acme/channels/prod/releases?prefix=tre&limit=1&cursor="+cur, m.toks["channel adm"], "").json(t)
+		paged += len(pg["releases"].([]any))
+		if pg["next"] == nil {
+			break
+		}
+		cur = pg["next"].(string)
+	}
+	if whole < 2 || paged != whole {
+		t.Errorf("prefix pages: %d of %d", paged, whole)
+	}
+	if r := m.call(t, "GET", "/api/v1/tenants/acme/channels/prod/releases?prefix=a/b", m.toks["channel adm"], ""); r.status != 400 {
+		t.Errorf("a bad prefix: %d", r.status)
+	}
 	seen := map[string]bool{}
 	cursor, pages := "", 0
 	for ; pages < 20; pages++ {

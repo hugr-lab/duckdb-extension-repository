@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -306,6 +307,13 @@ func TestIndexViews(t *testing.T) {
 	if names(p2, "extensions", "name")[0] != "tresor" || p2["next"] != nil {
 		t.Fatalf("page 2: %v", p2)
 	}
+	// a name prefix (spec 0015 phase 1b), searched before paging
+	if got := names(en.get(t, base+"/extensions?prefix=tr&limit=1", "").json(t), "extensions", "name"); len(got) != 1 || got[0] != "tresor" {
+		t.Fatalf("prefix tr: %v", got)
+	}
+	if got := en.get(t, base+"/extensions?prefix=zz", "").json(t)["extensions"].([]any); len(got) != 0 {
+		t.Fatalf("prefix zz: %v", got)
+	}
 }
 
 func TestItemLookup(t *testing.T) {
@@ -530,7 +538,7 @@ func TestHTTPRules(t *testing.T) {
 		t.Errorf("weak If-None-Match: %d", r.status)
 	}
 	// limit and cursor
-	for _, q := range []string{"limit=0", "limit=501", "limit=+5", "limit=x", "cursor=***", "duckdb_version=v2.0.0"} {
+	for _, q := range []string{"limit=0", "limit=501", "limit=+5", "limit=x", "cursor=***", "duckdb_version=v2.0.0", "prefix=a%20b", "prefix=" + strings.Repeat("a", 65)} {
 		if r := en.get(t, "/api/v1/tenants/acme/channels/prod/extensions?"+q, ""); r.status != 400 {
 			t.Errorf("%s: %d", q, r.status)
 		}

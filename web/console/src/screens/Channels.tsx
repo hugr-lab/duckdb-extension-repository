@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Badge, Card, Empty, ErrorBox, Loading, Mono, Table } from '../components/ui'
+import { Badge, Empty, ErrorBox, Loading, Mono, PageTitle, Table } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
 
@@ -22,7 +22,10 @@ export function Channels() {
   if (error) return <ErrorBox error={error} />
   const rows = data ?? []
   return (
-    <Card title="Channels">
+    <>
+      <PageTitle title="Channels">
+        <span className="pb-1 text-ink-muted">{rows.length} {rows.length === 1 ? 'channel' : 'channels'} · each signs what it serves with its own key.</span>
+      </PageTitle>
       {rows.length === 0 ? (
         <Empty>No channel you administer.</Empty>
       ) : (
@@ -30,13 +33,13 @@ export function Channels() {
           rows={rows}
           rowKey={(c) => c.name}
           columns={[
-            ['Channel', (c) => <Link className="font-semibold text-brand-strong hover:underline" to={`${base}/channels/${seg(c.name)}`}>{c.name}</Link>],
+            ['Channel', (c) => <Link className="font-mono font-medium no-underline" to={`${base}/channels/${seg(c.name)}`}>{c.name}</Link>],
             ['Kind', (c) => <Badge>{c.kind}</Badge>],
             ['DuckDB versions', (c) => <Mono>{c.versions.join(' ')}</Mono>],
             ['Your access', (c) => (perms.channelAdmin(c.name) ? 'channel administrator' : `extensions: ${perms.extensionsIn(c.name).join(', ')}`)],
           ]}
         />
       )}
-    </Card>
+    </>
   )
 }

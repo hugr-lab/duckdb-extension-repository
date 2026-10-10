@@ -1,7 +1,8 @@
 import type { Config } from 'tailwindcss'
 
-// The Hugr Lab design system's tokens, as CSS variables a host may override (spec 0015).
-const v = (name: string) => `rgb(var(--${name}) / <alpha-value>)`
+// The Hugr Lab design system's tokens, as CSS variables a host may override (spec 0015); whole
+// colours, as tresor-server's console has them.
+const v = (name: string) => `var(--${name})`
 
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
@@ -12,6 +13,7 @@ export default {
         ink: { DEFAULT: v('ink'), muted: v('ink-muted') },
         line: v('border'),
         brand: { DEFAULT: v('brand'), strong: v('brand-strong'), on: v('on-brand') },
+        navy: v('navy'),
         focus: v('focus'),
         success: { DEFAULT: v('success'), soft: v('success-soft') },
         warning: { DEFAULT: v('warning'), soft: v('warning-soft') },
@@ -22,6 +24,7 @@ export default {
         sans: ['Manrope', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
       },
+      borderRadius: { sm: '8px', md: '16px', lg: '28px' },
     },
   },
 } satisfies Config

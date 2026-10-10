@@ -193,6 +193,10 @@ func (h *Handler) extensions(w http.ResponseWriter, r *http.Request, c caller, p
 		problem(w, http.StatusBadRequest, typeInvalid, "duckdb_version and platform go together")
 		return
 	}
+	prefix, ok := namePrefix(w, r)
+	if !ok {
+		return
+	}
 	snap, ok := h.snapshot(w, r, c, p)
 	if !ok {
 		return
@@ -202,7 +206,7 @@ func (h *Handler) extensions(w http.ResponseWriter, r *http.Request, c caller, p
 	names := map[string]*agg{}
 	for i := range snap.Releases {
 		rel := &snap.Releases[i]
-		if !vis(rel) {
+		if !vis(rel) || !strings.HasPrefix(rel.Name, prefix) {
 			continue
 		}
 		a := names[rel.Name]

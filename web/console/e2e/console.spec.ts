@@ -67,6 +67,7 @@ test('a tenant administrator yanks and purges a release', async ({ page }) => {
   await signInTenant(page, 'tom')
   await page.getByRole('link', { name: 'prod' }).click()
   await page.getByRole('link', { name: 'tresor' }).click()
+  await page.getByRole('link', { name: '1.0' }).click()
   await expect(page.getByRole('heading', { name: 'tresor 1.0' })).toBeVisible()
   await page.getByRole('button', { name: 'yank' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'yank' }).click()
@@ -78,7 +79,12 @@ test('a tenant administrator yanks and purges a release', async ({ page }) => {
   await dialog.getByRole('button', { name: 'purge' }).click()
   await expect(page.getByRole('heading', { name: 'prod' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'hello_acme' })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'tresor' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'tresor', exact: true })).toHaveCount(0)
+  // the extensions are searched by the API, by name prefix
+  await page.getByLabel('Find an extension').fill('hel')
+  await expect(page.getByRole('link', { name: 'hello_acme' })).toBeVisible()
+  await page.getByLabel('Find an extension').fill('zz')
+  await expect(page.getByText('No extension starts with')).toBeVisible()
   // the purge and the yank are events
   await page.getByRole('link', { name: 'Events' }).click()
   await expect(page.getByRole('cell', { name: 'release.purge' })).toBeVisible()

@@ -12,10 +12,10 @@ import (
 func handler(t *testing.T) *Handler {
 	t.Helper()
 	files := fstest.MapFS{
-		"index.html":         {Data: []byte(`<!doctype html><base href="/ui/"><script type="module" src="assets/app-1.js"></script>`)},
-		"assets/app-1.js":    {Data: []byte("console.log(1)")},
-		"mfe/kista.js":       {Data: []byte("export const contract = 1")},
-		"mfe/assets/f.woff2": {Data: []byte("font")},
+		"app/index.html":      {Data: []byte(`<!doctype html><base href="/ui/"><script type="module" src="assets/app-1.js"></script>`)},
+		"app/assets/app-1.js": {Data: []byte("console.log(1)")},
+		"mfe/kista.js":        {Data: []byte("export const contract = 1")},
+		"mfe/assets/f.woff2":  {Data: []byte("font")},
 	}
 	origins := func(_ context.Context, s Scope) []string {
 		switch {
@@ -85,6 +85,15 @@ func TestServing(t *testing.T) {
 		t.Errorf("the module: %d %v", w.Code, w.Header())
 	} else if w2 := get(h, "GET", "/ui/mfe/kista.js", "If-None-Match", w.Header().Get("ETag")); w2.Code != http.StatusNotModified {
 		t.Errorf("the module again: %d", w2.Code)
+	}
+	if w := get(h, "GET", "/ui/mfe/assets/f.woff2"); w.Code != 200 || w.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Errorf("the module's font: %d %v", w.Code, w.Header())
+	}
+	// the micro-frontend's paths never fall back to the page, nor reach the standalone build
+	for _, p := range []string{"/ui/mfe/", "/ui/mfe/route", "/ui/mfe/assets/missing.woff2", "/ui/mfe/index.html", "/ui/app/index.html"} {
+		if w := get(h, "GET", p); w.Code != 404 {
+			t.Errorf("%s: %d", p, w.Code)
+		}
 	}
 	if w := get(h, "POST", "/ui/"); w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST: %d", w.Code)
