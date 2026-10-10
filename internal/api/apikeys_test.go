@@ -62,6 +62,10 @@ func TestAPIKeyPublishing(t *testing.T) {
 	if r := m.call(t, "POST", T+"/channels/prod/extensions/newext/releases/promote", key, `{"from_channel":"staging","version":"1.0"}`); r.status != 201 {
 		t.Fatalf("promote with a key: %d %s", r.status, r.body)
 	}
+	// nor purges (spec 0016): an administrator's change
+	if r := m.call(t, "DELETE", T+"/channels/prod/extensions/newext/releases/x", key, "", "If-Match", "*"); r.status != 401 {
+		t.Errorf("purge with a key: %d", r.status)
+	}
 	// a key is a token nowhere else: the index, management, server routes, another tenant
 	for _, path := range []string{T + "/channels/staging/extensions", T + "/grants", "/api/v1/info", "/api/v1/tenants",
 		"/api/v1/tenants/other/channels/prod/extensions/newext/releases"} {

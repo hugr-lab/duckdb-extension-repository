@@ -296,6 +296,7 @@ extension name, so an extension administrator's right is decided from the path t
 | `GET …/channels/{c}/releases[?state=&cursor=]` | channel admin |
 | `GET …/extensions/{name}/releases[/{id}]` | extension admin, or its publishers (spec 0008) |
 | `POST …/extensions/{name}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
+| `DELETE …/extensions/{name}/releases/{id}` (a yanked release, for good: spec 0016) | extension admin |
 
 There is no re-sign endpoint: replicas with `serve.resign` re-sign on their own (spec 0006); the key
 view shows whether one is working and how much is left. A re-signer giving up its lease now leaves

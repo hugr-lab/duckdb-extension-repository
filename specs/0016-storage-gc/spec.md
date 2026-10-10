@@ -1,6 +1,6 @@
 # Spec 0016: Storage garbage collection
 
-- **Status**: accepted (2026-10-10); phase 1 implemented, 2 next
+- **Status**: implemented (2026-10-10; phase 1 and phase 2)
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 
@@ -192,23 +192,33 @@ incomplete uploads as the pass needs.
 
 A tenant administrator (admin on the release's channel or extension, as for a yank) deletes a
 **yanked** release explicitly: `DELETE /api/v1/tenants/{t}/channels/{c}/extensions/{name}/releases/{id}`
-with `If-Match`, `kista admin release purge <tenant> <channel> <release-id>`. There is no automatic
-retention.
+with `If-Match` (as every change to a release; `204`), `kista admin release purge <tenant>/<channel>
+<release-id>`. There is no automatic retention.
+
+- **Not before the rollout**: a replica still running a version without `purged_slots` would refill
+  a purged slot (the releases' unique slot no longer holds it) or give its sequence number again, and
+  migration 0014's `min_reader` only stops such a replica from starting. So a purge is refused
+  (`409`) while `gc.interval` is 0, the operator's declaration that every replica runs this
+  version; `kista admin release purge -force` vouches for it.
 
 - Only a yanked release: an active or deprecated one is refused (`409`): yank it first.
-- A re-sign batch skips a release purged since it read it.
+- A re-sign batch skips a release purged (or yanked) since it read it.
 - **The slot stays taken**: in the channel's lock, the release's signatures and the release are
   deleted and its slot written to `purged_slots(channel_id, name, ext_version, platform, slot, abi,
   body_hash, seq, release_id, purged_at)`; the slot candidates include purged slots (a union beside
   the releases joined to their Builds), so a purged slot is never refilled, with its body or another
   ("a released (channel, name, version, platform) never changes its body", spec 0001): a purged
   candidate has the state `purged`, which every slot check refuses (an add, a publication, a
-  promotion and an upstream cell alike, never "existing"); a channel's next sequence number counts
+  promotion and an upstream cell, whose outcome is `conflict`, alike, never "existing"); a channel's next sequence number counts
   purged slots too. The purge moves the channel's `release_version` (snapshots and the index follow). Its
   id answers `404`.
-- The Build loses that reference; the collector deletes it a grace after its last use, then its body
-  row, then the stream a grace after that.
-- An event `release.purge` (subject the release; `data`: name, version, platform, body hash).
+- The Build loses that reference, its `used_at` set to the purge; the collector deletes it a grace
+  later, then its body row, then the stream a grace after that.
+- The index stops listing the release: a node that installed it learns it is gone by its absence,
+  which a consumer treats as a yank (the index lists yanked releases so that nodes learn of them;
+  a purge comes after the yank, for a body nobody should still run).
+- An event `release.purge` (subject the release; `data`: release, name, version, platform, slot,
+  body hash).
 - A promotion that read the Build before the purge and inserts after its collection fails on the
   foreign key and retries once, as an intake does.
 
@@ -232,8 +242,9 @@ Migration 0013 (phase 1, `-- +min_reader 13`, so a replica started after it is t
 `blob_claims` (primary key `domain, stream_hash, claim_id`) and `blob_tombstones` (primary key
 `domain, stream_hash`). Replicas already running an
 older version keep running until restarted: the scheduled pass is off by default, and the operator
-turns it on after the rollout. Phase 2: `purged_slots` (primary key `channel_id, name, ext_version,
-platform, slot`), in its own migration.
+turns it on after the rollout. Phase 2: migration 0014 (`-- +min_reader 14`: an older replica
+would refill a purged slot), `purged_slots` (primary key `channel_id, name, ext_version, platform,
+slot`).
 
 ### Package layout
 
@@ -252,6 +263,8 @@ internal/app, cmd/kista, internal/api   + the scheduled pass, kista admin blob g
 - **0001**: Blob GC as designed here; a yanked release may be purged explicitly (2), its slot kept
   in `purged_slots` (yanked releases were "kept for audit": the event `release.purge` keeps what it
   was).
+- **0006/0007/0010**: `kista admin release purge`, `DELETE …/extensions/{name}/releases/{id}`, the
+  event `release.purge` (phase 2).
 - **0008/0009**: every intake runs from its commit to its release under a one-hour deadline;
   one whose Build was collected meanwhile starts again from its commit, once.
 
@@ -287,9 +300,13 @@ internal/app, cmd/kista, internal/api   + the scheduled pass, kista admin blob g
 - **Intake**: a Build collected between `FindOrInsertBuild` and the release insert: started again
   from the commit; collected again: the intake fails after the second try.
 - **Backends**: `List` and `Delete` on fs, S3 (SeaweedFS) and Azurite in the existing suites.
-- **e2e** (phase 2, with purging; phase 1's grace keeps a collection out of reach end to end
-  without an injected clock): a purged release's slot cannot be refilled, DuckDB at the pin cannot
-  install it, and other releases are served throughout passes.
+- **Purging** (three dialects, the API, the CLI): only a yanked release; its slot refused to an
+  add with its body or another and to an upstream cell; the next sequence number past it; its event;
+  its Build collectable after; a re-sign batch skipping a release purged meanwhile; 404 after,
+  isolation by channel and extension, publishers' keys refused.
+- **e2e**: a purged release is no longer listed, its slot cannot be refilled, and DuckDB at the pin
+  cannot install it. A collection end to end needs an injected clock (the grace) and is left to the
+  unit suites.
 
 ## Alternatives considered
 

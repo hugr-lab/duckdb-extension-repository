@@ -184,6 +184,8 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	}
 	// what a private upstream brought becomes public only as its credential allows (spec 0009 phase 3)
 	rel.MayPublish = func(name string) bool { c, ok := creds[name]; return ok && c.AllowPublic }
+	// a purge before every replica keeps purged slots could see its slot refilled (spec 0016)
+	rel.PurgeOff = cfg.GCSettings().Interval == 0
 	return &Services{
 		Store:    s,
 		Sources:  reg,

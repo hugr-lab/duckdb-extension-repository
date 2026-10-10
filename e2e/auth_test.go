@@ -248,6 +248,35 @@ func TestAPIItemThenInstall(t *testing.T) {
 	mustOK(t, res[:6])
 	mustFail(t, res[6], "failed to install")
 	mustOK(t, res[7:])
+
+	// spec 0016 phase 2: purged, it is gone for good: no longer listed, its slot not refilled, and
+	// DuckDB still cannot install it
+	if _, err := k.rel.Purge(ctx, serveAdmin, "acme", "prod", "", rel.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := k.rel.List(ctx, serveAdmin, "acme", "prod", "loadable_extension_demo")
+	if err != nil || len(rs) != 0 {
+		t.Fatalf("a purged release listed: %+v %v", rs, err)
+	}
+	f, err := os.Open(b.extensions["loadable_extension_demo"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, _, err := k.rel.Add(ctx, serveAdmin, "acme", "prod", f, release.AddOptions{Name: "loadable_extension_demo", Private: true}); !errors.Is(err, release.ErrSlot) {
+		t.Fatalf("a purged slot refilled: %v", err)
+	}
+	res = newSession(t, b, nil).exec(
+		createRepo("boot", k.httpURL(), pemKey),
+		"INSTALL httpfs FROM boot",
+		"LOAD httpfs FROM boot",
+		"SET ca_cert_file = "+sqlString(testCA(t).caFile),
+		createRepo("r", k.httpsURL(), pemKey),
+		"CREATE SECRET s (TYPE http, BEARER_TOKEN "+sqlString(tok)+", SCOPE "+sqlString(k.httpsURL()+"/")+")",
+		"FORCE INSTALL loadable_extension_demo FROM r VERSION 'default-version'",
+	)
+	mustOK(t, res[:6])
+	mustFail(t, res[6], "failed to install")
 }
 
 // Spec 0008: CI publishes into staging through the API, a release manager promotes the version to

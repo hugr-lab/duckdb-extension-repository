@@ -20,6 +20,9 @@ const (
 	ReleaseActive     = "active"
 	ReleaseDeprecated = "deprecated"
 	ReleaseYanked     = "yanked"
+	// ReleasePurged is a slot candidate whose release was purged (spec 0016 phase 2): its slot stays
+	// taken. It is never a release's stored state.
+	ReleasePurged = "purged"
 
 	Public  = "public"
 	Private = "private"
@@ -185,7 +188,7 @@ func (t *Tx) GetBuild(ctx context.Context, id string) (Build, error) {
 // --- releases ---
 
 // SlotCandidates reads a channel's releases of one (name, extension version, platform), in every
-// slot and state, with what their builds say.
+// slot and state, with what their builds say, and its purged slots (state ReleasePurged).
 func (t *Tx) SlotCandidates(ctx context.Context, channelID, name, extVersion, platform string) ([]Candidate, error) {
 	rows, err := t.query(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id"+
 		" WHERE r.channel_id = ? AND r.name = ? AND r.ext_version = ? AND r.platform = ?", channelID, name, extVersion, platform)
@@ -201,7 +204,89 @@ func (t *Tx) SlotCandidates(ctx context.Context, channelID, name, extVersion, pl
 		}
 		out = append(out, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	purged, err := t.query(ctx, "SELECT release_id, slot, abi, body_hash, seq FROM purged_slots"+
+		" WHERE channel_id = ? AND name = ? AND ext_version = ? AND platform = ?", channelID, name, extVersion, platform)
+	if err != nil {
+		return nil, err
+	}
+	defer purged.Close()
+	for purged.Next() {
+		c := Candidate{Release: Release{ChannelID: channelID, Name: name, ExtVersion: extVersion, Platform: platform, State: ReleasePurged}}
+		var seq sql.NullInt64
+		if err := purged.Scan(&c.ID, &c.Slot, &c.ABI, &c.BodyHash, &seq); err != nil {
+			return nil, err
+		}
+		c.Seq = seq.Int64
+		out = append(out, c)
+	}
+	return out, purged.Err()
+}
+
+// PurgeRelease deletes a release and its signatures, keeping its slot taken in purged_slots (spec
+// 0016 phase 2); call it under the channel's lock, with the release as read there.
+func (t *Tx) PurgeRelease(ctx context.Context, c Candidate) error {
+	if _, err := t.exec(ctx, "DELETE FROM release_signatures WHERE release_id = ?", c.ID); err != nil {
+		return err
+	}
+	var seq any
+	if c.Seq > 0 {
+		seq = c.Seq
+	}
+	if _, err := t.exec(ctx, "INSERT INTO purged_slots (channel_id, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at) "+
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", c.ChannelID, c.Name, c.ExtVersion, c.Platform, c.Slot, c.ABI, c.BodyHash, seq, c.ID,
+		t.s.d.timeArg(t.Now())); err != nil {
+		return t.s.mapErr(err, "purged slot")
+	}
+	res, err := t.exec(ctx, "DELETE FROM releases WHERE id = ? AND version = ?", c.ID, c.Version)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		if err == nil {
+			err = ErrConflict
+		}
+		return err
+	}
+	// the Build's last use: the collector removes it a grace after the purge
+	_, err = t.exec(ctx, "UPDATE builds SET used_at = ? WHERE id = ?", t.s.d.timeArg(t.Now()), c.BuildID)
+	return err
+}
+
+// UnyankedReleases reports which of ids are releases of the channel that are not yanked.
+func (t *Tx) UnyankedReleases(ctx context.Context, channelID string, ids []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := []any{channelID}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := t.query(ctx, "SELECT id FROM releases WHERE channel_id = ? AND state <> 'yanked' AND id IN ("+
+		strings.TrimSuffix(strings.Repeat("?, ", len(ids)), ", ")+")", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
 	return out, rows.Err()
+}
+
+// GetCandidate reads a release by id within a channel, with what its build says.
+func (t *Tx) GetCandidate(ctx context.Context, channelID, id string) (Candidate, error) {
+	c, err := scanCandidate(t.queryRow(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id"+
+		" WHERE r.id = ? AND r.channel_id = ?", id, channelID))
+	return c, notFound(err, "release "+id)
 }
 
 // GetRelease reads a release by id within a channel.
@@ -213,7 +298,9 @@ func (t *Tx) GetRelease(ctx context.Context, channelID, id string) (Release, err
 // NextSeq is the channel's next release sequence number; call it under the channel lock.
 func (t *Tx) NextSeq(ctx context.Context, channelID string) (int64, error) {
 	var max sql.NullInt64
-	if err := t.queryRow(ctx, "SELECT MAX(seq) FROM releases WHERE channel_id = ?", channelID).Scan(&max); err != nil {
+	// a purged release's number is never given again (spec 0016 phase 2)
+	if err := t.queryRow(ctx, "SELECT MAX(seq) FROM (SELECT seq FROM releases WHERE channel_id = ? UNION ALL "+
+		"SELECT seq FROM purged_slots WHERE channel_id = ?) x", channelID, channelID).Scan(&max); err != nil {
 		return 0, err
 	}
 	return max.Int64 + 1, nil

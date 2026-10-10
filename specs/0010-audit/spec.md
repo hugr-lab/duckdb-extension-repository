@@ -101,7 +101,8 @@ kind's subject form and fields; `v` 1):
   `channel:<c>/ext:<name>`, `data.releases` the releases made, `from_channel`), all three with
   `shadows` when a reserved or upstream name is released and followed by a `shadow.add` in the same
   transaction when they record a tenant shadow (spec 0009), `release.yank`, `release.deprecate`, `release.activate`,
-  `release.current`, `release.public`, `release.private`, `block.add`, `block.remove`;
+  `release.current`, `release.public`, `release.private`, `release.purge` (spec 0016: subject the
+  release, data adding `slot` and `body_hash`), `block.add`, `block.remove`;
 - upstreams: `upstream.add`, `upstream.remove`, `upstream.change` (`data.change`: `set`,
   `extension.put`, `extension.remove`, `platform.add`, `platform.remove`, `key.add`, `key.remove`,
   with the value), `upstream.release` (an intake

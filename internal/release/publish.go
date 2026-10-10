@@ -110,6 +110,9 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 			b, err = tx.GetBuild(ctx, r.BuildID)
 			return err
 		}); err != nil {
+			if errors.Is(err, store.ErrNotFound) { // purged and collected since it was read
+				return nil, false, fmt.Errorf("%w: release", store.ErrNotFound)
+			}
 			return nil, false, err
 		}
 		if !b.Checked {

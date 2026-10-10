@@ -87,7 +87,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"Add": {"release.add", "release.publish", "shadow.add"}, "Promote": {"release.promote", "shadow.add"}, "Apply": {"release.yank",
 			"release.deprecate", "release.activate", "release.current", "release.public", "release.private"},
 		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release"}, "Resign": {"key.resign"},
-		"List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
+		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
@@ -349,6 +349,10 @@ func TestCoverage(t *testing.T) {
 			return err
 		}), kind)
 	}
+	en.expect("release.Service.Purge", do(func() error {
+		_, err := en.rel.Purge(rctx, admin, "acme", "staging", "tresor", relID, 0) // yanked just above
+		return err
+	}), "release.purge")
 	body := ext(t, nil, "blocked", "1.0")
 	h, _, _ := extfile.HashBody(bytes.NewReader(body[:len(body)-extfile.SignatureSize]), 1<<30)
 	en.expect("release.Service.Block", do(func() error { _, _, err := en.rel.Block(rctx, admin, "acme", h.String(), "CVE"); return err }), "block.add")

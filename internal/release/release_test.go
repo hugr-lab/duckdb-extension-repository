@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -435,6 +436,122 @@ func TestBuildCollectedDuringIntake(t *testing.T) {
 		other := ext(t, 2000, 42, cpp("1.1"))
 		if _, _, err := en.add(t, other, release.AddOptions{Unchecked: true, Name: "tresor"}); !errors.Is(err, store.ErrBuildGone) || tries != 2 {
 			t.Fatalf("an add whose build is always collected: %v after %d tries", err, tries)
+		}
+	})
+}
+
+// Spec 0016 phase 2: a yanked release is purged for good; its slot is never refilled, its sequence
+// number never given again, and the purge is an event.
+func TestPurge(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		file := ext(t, 1000, 51, cpp("1.0"))
+		r, _, err := en.add(t, file, release.AddOptions{Unchecked: true, Name: "tresor"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		purge := func(name, id string, expected int64) error {
+			_, err := en.rel.Purge(ctx, admin, "acme", "prod", name, id, expected)
+			return err
+		}
+		if err := purge("", r.ID, 0); !errors.Is(err, release.ErrState) {
+			t.Fatalf("an active release purged: %v", err)
+		}
+		y, err := en.rel.Apply(ctx, admin, "acme", "prod", "", r.ID, release.Yank, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		en.rel.PurgeOff = true
+		if err := purge("", r.ID, 0); !errors.Is(err, release.ErrState) {
+			t.Fatalf("a yanked release purged before the rollout: %v", err)
+		}
+		en.rel.PurgeOff = false
+		if err := purge("other", r.ID, 0); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("purged through another extension: %v", err)
+		}
+		if err := purge("", r.ID, y.Version-1); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("a stale version: %v", err)
+		}
+		before := channel(t, en).ReleaseVersion
+		if err := purge("tresor", r.ID, y.Version); err != nil {
+			t.Fatal(err)
+		}
+		if c := channel(t, en); c.ReleaseVersion != before+1 {
+			t.Fatalf("release_version %d after %d", c.ReleaseVersion, before)
+		}
+		if rs, _ := en.rel.List(ctx, admin, "acme", "prod", ""); len(rs) != 0 {
+			t.Fatalf("a purged release listed: %+v", rs)
+		}
+		if err := purge("", r.ID, 0); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("purged twice: %v", err)
+		}
+		// the slot: refused with its body or another
+		if _, _, err := en.add(t, file, release.AddOptions{Unchecked: true, Name: "tresor"}); !errors.Is(err, release.ErrSlot) {
+			t.Fatalf("the purged body added again: %v", err)
+		}
+		if _, _, err := en.add(t, ext(t, 1000, 52, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"}); !errors.Is(err, release.ErrSlot) {
+			t.Fatalf("another body in the purged slot: %v", err)
+		}
+		var cands []store.Candidate
+		must(t, func() error {
+			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+				var err error
+				cands, err = tx.SlotCandidates(ctx, r.ChannelID, r.Name, r.ExtVersion, r.Platform)
+				return err
+			})
+		})
+		if len(cands) != 1 || cands[0].State != store.ReleasePurged {
+			t.Fatalf("slot candidates: %+v", cands)
+		}
+		b := store.Build{Name: r.Name, ExtVersion: r.ExtVersion, Platform: r.Platform, ABI: cands[0].ABI, BodyHash: cands[0].BodyHash,
+			DuckDBVersion: "v2.0.0"}
+		if _, err := release.CheckUpstreamSlot(cands, b); !errors.Is(err, release.ErrConflict) {
+			t.Fatalf("an upstream refilling a purged slot: %v", err)
+		}
+		// the next release's number is past the purged one's
+		n, _, err := en.add(t, ext(t, 1000, 53, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor"})
+		if err != nil || n.Seq <= r.Seq {
+			t.Fatalf("after a purge: %+v %v", n, err)
+		}
+		evs, err := en.st.ListEvents(ctx, r.TenantID, store.EventFilter{Kind: "release.purge"})
+		if err != nil || len(evs) != 1 || !strings.Contains(evs[0].Data, `"slot":"`+r.Slot+`"`) ||
+			!strings.Contains(evs[0].Data, `"body_hash":"`+cands[0].BodyHash+`"`) {
+			t.Fatalf("the purge's event: %+v %v", evs, err)
+		}
+		// its Build lost the reference: the storage collector removes it a grace after its last use
+		dead, err := en.st.DeadBuilds(ctx, "default", time.Now().Add(time.Hour), "", 10)
+		if err != nil || !slices.Contains(dead, r.BuildID) {
+			t.Fatalf("the purged release's build is not collectable: %v %v", dead, err)
+		}
+	})
+}
+
+// Spec 0016 phase 2: a release purged while a re-sign batch is signed is skipped, not a failure,
+// and not counted.
+func TestResignSkipsPurged(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		r1, _, err := en.add(t, ext(t, 1000, 61, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := en.add(t, ext(t, 1000, 62, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor"}); err != nil {
+			t.Fatal(err)
+		}
+		kb := en.addKey(t, "prod", "b.pem", false)
+		if _, err := en.keys.Activate(ctx, admin, "acme", "prod", kb.ID, 0, true); err != nil {
+			t.Fatal(err)
+		}
+		release.SetBeforeResign(en.rel, func([]store.Release) {
+			release.SetBeforeResign(en.rel, nil)
+			if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", r1.ID, release.Yank, 0); err != nil {
+				t.Error(err)
+			}
+			if _, err := en.rel.Purge(ctx, admin, "acme", "prod", "", r1.ID, 0); err != nil {
+				t.Error(err)
+			}
+		})
+		signed, moved, err := en.rel.Resign(ctx, channel(t, en).ID, nil)
+		if err != nil || signed != 1 || !moved {
+			t.Fatalf("resign with a release purged meanwhile: %d %v %v", signed, moved, err)
 		}
 	})
 }

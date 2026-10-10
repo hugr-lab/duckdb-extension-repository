@@ -553,7 +553,9 @@ func init() {
 			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPromote}, manage: true, body: true, publishers: true,
 				handle: (*Handler).promoteRelease}}},
 		{"tenants/{t}/channels/{c}/extensions/{ext}/releases/{id}", map[string]rule{
-			http.MethodGet: {access: pathVerbs, verbs: readers, manage: true, publishers: true, handle: (*Handler).getRelease}}},
+			http.MethodGet: {access: pathVerbs, verbs: readers, manage: true, publishers: true, handle: (*Handler).getRelease},
+			// spec 0016 phase 2: purging a yanked release
+			http.MethodDelete: m(pathAdmin, (*Handler).purgeRelease)}},
 		// spec 0010: events, read with audit on the tenant (admin implies it) or by server administrators
 		{"tenants/{t}/events", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, handle: (*Handler).tenantEvents}}},
 		{"tenants/{t}/events/{id}", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, handle: (*Handler).tenantEvent}}},

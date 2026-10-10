@@ -177,7 +177,8 @@ different flags are refused (use `release public|private` or `release current`).
 
 **Other commands** take a release id and record who and when: `release list <tenant>/<channel>
 [-name x]`, `release yank` (final), `release deprecate`, `release activate`, `release current`,
-`release public`, `release private`. Each bumps the channel's `release_version`.
+`release public`, `release private`, `release purge` (a yanked release, for good: spec 0016). Each
+bumps the channel's `release_version`.
 
 ### `kista serve` (phase 1)
 
