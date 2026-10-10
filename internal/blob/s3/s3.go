@@ -362,3 +362,25 @@ func describe(err error) error {
 	}
 	return errors.New("blob/s3: the store could not be reached, or the connection broke")
 }
+
+// AbortIncompleteUploads aborts the multipart uploads under the prefix started before olderThan
+// (spec 0016: a crash mid-Put leaves one, invisible to List and billed); each by its upload id, so
+// a commit uploading the same key now is never touched. It implements blob.Uploader.
+func (s *Store) AbortIncompleteUploads(ctx context.Context, olderThan time.Time) (int, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	n := 0
+	for u := range s.c.ListIncompleteUploads(ctx, s.cfg.Bucket, s.object("streams/"), true) {
+		if u.Err != nil {
+			return n, describe(u.Err)
+		}
+		if u.Initiated.IsZero() || !u.Initiated.Before(olderThan) {
+			continue
+		}
+		if err := s.core.AbortMultipartUpload(ctx, s.cfg.Bucket, u.Key, u.UploadID); err != nil {
+			return n, describe(err)
+		}
+		n++
+	}
+	return n, nil
+}

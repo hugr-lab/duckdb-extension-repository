@@ -48,6 +48,8 @@ type Config struct {
 	// Telemetry configures what OpenTelemetry metrics may name (spec 0010 phase 2b); where they go is
 	// the standard OTEL_* environment's.
 	Telemetry Telemetry `yaml:"telemetry" kista:"fileonly"`
+	// GC configures storage garbage collection (spec 0016).
+	GC GC `yaml:"gc" kista:"fileonly"`
 }
 
 // Store selects and configures the metadata database.
@@ -463,6 +465,7 @@ func (c Config) Validate() error {
 	validateEvents(bad, c)
 	validateStatistics(bad, c)
 	validateTelemetry(bad, c)
+	validateGC(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

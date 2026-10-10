@@ -191,6 +191,10 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	cntDone := make(chan struct{})
 	go func() { defer close(cntDone); downloads.Run(evCtx) }() // counts of draining downloads too
 	defer func() { evStop(); <-cntDone }()
+	// storage garbage collection (spec 0016): the resolver always, full passes every gc.interval
+	collector := Collector(cfg, st, bs, instance, log)
+	wg.Add(1)
+	go func() { defer wg.Done(); collector.Run(bg, cfg.GCSettings().Interval) }()
 	daily := &stats.Daily{Store: st, Holder: instance, Retention: cfg.StatisticsSettings().Retention, EventRetention: ev.Retention, Log: log}
 	wg.Add(1)
 	go func() { defer wg.Done(); daily.Run(bg) }()

@@ -404,3 +404,37 @@ func TestRotationRace(t *testing.T) {
 		}
 	})
 }
+
+// Spec 0016: a Build the collector removes between an intake finding it and inserting the release
+// starts the intake again from its commit, once.
+func TestBuildCollectedDuringIntake(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		file := ext(t, 2000, 41, cpp("1.0"))
+		gone := 0
+		release.SetAfterBuild(en.rel, func(b store.Build) {
+			if gone > 0 {
+				return
+			}
+			gone++
+			if err := store.ExecRaw(ctx, en.st, "DELETE FROM builds WHERE id = '"+b.ID+"'"); err != nil {
+				t.Errorf("delete the build: %v", err)
+			}
+		})
+		r, existed, err := en.add(t, file, release.AddOptions{Unchecked: true, Name: "tresor"})
+		if err != nil || existed || r.ID == "" || gone != 1 {
+			t.Fatalf("an add whose build was collected: %+v %v %v", r, existed, err)
+		}
+		// collected on every try: the intake starts again once, then gives up
+		tries := 0
+		release.SetAfterBuild(en.rel, func(b store.Build) {
+			tries++
+			if err := store.ExecRaw(ctx, en.st, "DELETE FROM builds WHERE id = '"+b.ID+"'"); err != nil {
+				t.Errorf("delete the build: %v", err)
+			}
+		})
+		other := ext(t, 2000, 42, cpp("1.1"))
+		if _, _, err := en.add(t, other, release.AddOptions{Unchecked: true, Name: "tresor"}); !errors.Is(err, store.ErrBuildGone) || tries != 2 {
+			t.Fatalf("an add whose build is always collected: %v after %d tries", err, tries)
+		}
+	})
+}

@@ -111,7 +111,8 @@ kind's subject form and fields; `v` 1):
 - access: `auth.failure`, `authz.refused`, `install` (phase 2a; subject
   `channel:<c>/ext:<name>/release:<id>`, `data`: release, name, version, platform, DuckDB version,
   body hash, the `User-Agent`);
-- the log itself (server events): `audit.dropped`, `audit.sink`; `request.failed` (1b, a `5xx`).
+- the log itself (server events): `audit.dropped`, `audit.sink`; `request.failed` (1b, a `5xx`);
+  `storage.gc` (spec 0016, a collector's pass over a storage domain).
 
 Tenant and channel removal do not exist; when they do, they are events.
 

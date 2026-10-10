@@ -256,3 +256,37 @@ func TestCancelledMultipartAborted(t *testing.T) {
 type readerAtFunc func([]byte, int64) (int, error)
 
 func (f readerAtFunc) ReadAt(p []byte, off int64) (int, error) { return f(p, off) }
+
+// Spec 0016: incomplete multipart uploads under the prefix are aborted once older than a time,
+// each by its upload id.
+func TestAbortIncompleteUploads(t *testing.T) {
+	u := server(t)
+	ensureBucket(t, u)
+	cfg := config(t, u)
+	st := newStore(t, cfg)
+	pw, _ := u.User.Password()
+	core, err := minio.NewCore(u.Host, &minio.Options{Creds: credentials.NewStaticV4(u.User.Username(), pw, ""), Region: "us-east-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	key := cfg.Prefix + "streams/" + strings.Repeat("ab", 32)
+	id, err := core.NewMultipartUpload(ctx, cfg.Bucket, key, minio.PutObjectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ab, ok := st.(blob.Uploader)
+	if !ok {
+		t.Fatal("the s3 store aborts incomplete uploads")
+	}
+	if n, err := ab.AbortIncompleteUploads(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {
+		t.Fatalf("a fresh upload aborted: %d %v", n, err)
+	}
+	n, err := ab.AbortIncompleteUploads(ctx, time.Now().Add(time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("an old upload: %d %v", n, err)
+	}
+	if _, err := core.ListObjectParts(ctx, cfg.Bucket, key, id, 0, 10); err == nil {
+		t.Fatal("the upload is still there")
+	}
+}

@@ -482,8 +482,9 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		return fail(store.CellShadowed, err)
 	case errors.Is(err, release.ErrConflict):
 		return fail(store.CellConflict, err)
-	case errors.Is(err, store.ErrBusy), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return fail(store.CellFailed, err)
+	case errors.Is(err, store.ErrBusy), errors.Is(err, store.ErrBuildGone), errors.Is(err, store.ErrStreamBusy),
+		errors.Is(err, store.ErrClaimLost), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return fail(store.CellFailed, err) // tried again by the next run: never the file's fault
 	case err != nil:
 		return fail(store.CellRejected, err)
 	case got.Existed && got.Release.State == store.ReleaseYanked:

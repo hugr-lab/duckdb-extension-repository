@@ -144,16 +144,21 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	cur, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND name = ? AND body_hash = ?",
 		b.TenantID, b.Name, b.BodyHash))
 	if err == nil {
-		if b.Checked && !cur.Checked {
-			if _, err := t.exec(ctx, "UPDATE builds SET checked = ? WHERE id = ?", true, cur.ID); err != nil {
+		// its last use (spec 0016): a Build an intake found is not collected under it; an update that
+		// finds no row (collected since the select) inserts it again below
+		res, err := t.exec(ctx, "UPDATE builds SET used_at = ?, checked = ? WHERE id = ?", t.s.d.timeArg(t.Now()), b.Checked || cur.Checked, cur.ID)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 1 {
+			if err != nil {
 				return err
 			}
-			cur.Checked = true
+			cur.Checked = b.Checked || cur.Checked
+			*b = cur
+			return nil
 		}
-		*b = cur
-		return nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	b.ID, b.CreatedAt = NewID(), t.Now()
@@ -165,9 +170,9 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if len(b.OriginSignature) > 0 {
 		sig = b.OriginSignature
 	}
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		b.ID, b.TenantID, b.Name, b.ExtVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
-		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked)
+		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, t.s.d.timeArg(b.CreatedAt))
 	return t.s.mapErr(err, "build "+b.Name)
 }
 
@@ -233,6 +238,9 @@ visibility, seq, created_at, created_by, state_changed_at, state_changed_by, ver
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.TenantID, r.ChannelID, r.BuildID, r.Name, r.ExtVersion, r.Platform, r.Slot, r.State, r.Visibility, seq,
 		t.s.d.timeArg(now), actor, t.s.d.timeArg(now), actor, r.Version, r.Origin, nullable(r.Provenance), nullBytes(r.OriginSignature))
+	if t.s.d.foreignKey(err) { // the channel is never deleted: the Build was collected (spec 0016)
+		return fmt.Errorf("%w: %s", ErrBuildGone, r.BuildID)
+	}
 	return t.s.mapErr(err, "release")
 }
 
@@ -607,6 +615,24 @@ func (s *Store) AcquireLease(ctx context.Context, name, holder string, ttl time.
 }
 
 var errLeaseTaken = errors.New("store: lease taken")
+
+// RenewLease extends a lease holder still holds (it has not expired): unlike AcquireLease it never
+// takes one back, so a holder that was paused past the lease learns that it lost it.
+func (s *Store) RenewLease(ctx context.Context, name, holder string, ttl time.Duration) (bool, error) {
+	held := false
+	err := s.tx(ctx, nil, func(t *Tx) error {
+		now := t.Now()
+		res, err := t.exec(ctx, "UPDATE leases SET expires_at = ?, version = version + 1 WHERE name = ? AND holder = ? AND expires_at > ?",
+			t.s.d.timeArg(now.Add(ttl)), name, holder, t.s.d.timeArg(now))
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		held = n == 1
+		return err
+	})
+	return held, err
+}
 
 // leaseSkew is the clock skew between replicas a released lease allows for.
 const leaseSkew = 5 * time.Second

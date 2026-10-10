@@ -89,7 +89,7 @@ type Store interface {
     // Get reads n bytes from off (n < 0: to the end).
     Get(ctx context.Context, key string, off, n int64) (io.ReadCloser, error)
     Stat(ctx context.Context, key string) (size int64, err error)          // ErrNotFound
-    Delete(ctx context.Context, key string) error                          // GC (a follow-up)
+    Delete(ctx context.Context, key string) error                          // GC (spec 0016)
     List(ctx context.Context, prefix string, fn func(key string, size int64, modified time.Time) error) error
     // Anonymous reports whether key can be read without credentials, when the backend can tell.
     Anonymous(ctx context.Context, key string) (readable, ok bool)
@@ -252,9 +252,12 @@ sp.Close()                             // always; removes the spool files; idemp
 - **Commit:**
   1. precompress the spooled body (spec 0002 `Precompress`), asserting the result's body hash equals
      the spool's;
-  2. upload the stream to `streams/<stream hash>`, **always**, replacing any existing object;
-  3. insert the record. If it exists (a dedup hit), keep the first record when its stream is still
-     the uploaded one, otherwise update it to the new stream, and clear `corrupt_at`.
+  2. claim the stream (spec 0016: under the stream's lock, waiting while the collector deletes it);
+  3. upload the stream to `streams/<stream hash>`, **always**, replacing any existing object;
+  4. insert the record, under the stream's lock, if the claim is still live (otherwise claim and
+     upload again). If it exists (a dedup hit), keep the first record when its stream is still the
+     uploaded one, otherwise update it to the new stream (the replaced one is marked for the
+     collector), and clear `corrupt_at`.
 - **Why always upload:**
   - the same work and timing whether or not another tenant in the domain already stored the body, so
     an upload reveals nothing (spec 0001);
@@ -309,7 +312,8 @@ write), a metric and an alert are raised, and the next commit of the body repair
 The store is not trusted, so a bucket writer can deny service but cannot serve a different body.
 
 **Caching.** Records never change except for `corrupt_at`, so serving caches them by
-`(domain, body hash)`. Per-request read buffers are never shared.
+`(domain, body hash)`, for 15 minutes (spec 0016: the collector may delete a record a grace after
+nothing references it). Per-request read buffers are never shared.
 
 Spec 0006 limits multi-range requests: each range can pull whole chunks.
 
@@ -411,8 +415,7 @@ internal/store            + migration 0002
 
 - Spec 0006: the HTTP routes, aborting on `ErrCorrupt`, multi-range limits.
 - Specs 0008 and 0009: Spool/Commit from publication and intake (0008 adds `SpoolNoWait`).
-- Garbage collection, a follow-up of its own (mark-and-sweep with a grace period, `tmp/` and
-  orphaned streams, the race with a dedup hit).
+- Garbage collection: spec 0016.
 - Phase 3: AWS platform identity for `s3`, and `gcs`.
 - Later:
   - skipping re-uploads of public upstream bodies (with periodic verification);

@@ -8,6 +8,7 @@ import (
 	"regexp"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -29,6 +30,18 @@ type PromoteOptions struct {
 // all or none. The caller needs promote on (channel, name) and publish on (o.From, name); a source
 // it may not publish from answers as missing. It returns the releases and whether all existed.
 func (s *Service) Promote(ctx context.Context, a authz.Actor, tenant, channel, name string, o PromoteOptions) ([]store.Release, bool, error) {
+	// under the intake deadline (spec 0016); a source Build the collector removed since it was read
+	// (its release purged) reads the source again, once
+	ctx, cancel := context.WithTimeout(ctx, blob.IntakeDeadline)
+	defer cancel()
+	rs, existed, err := s.promote(ctx, a, tenant, channel, name, o)
+	if errors.Is(err, store.ErrBuildGone) {
+		rs, existed, err = s.promote(ctx, a, tenant, channel, name, o)
+	}
+	return rs, existed, err
+}
+
+func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, name string, o PromoteOptions) ([]store.Release, bool, error) {
 	res := func(ch string) authz.Resource {
 		return authz.Resource{Tenant: tenant, Channel: ch, Extension: name, Reserved: reserved.Kind(name) != ""}
 	}

@@ -94,6 +94,8 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   block remove <tenant> <body-hash>
   wellknown <tenant>/<channel>
   blob check                                      pin and check the storage domains, list tenants without one
+  blob gc [-domain <d>] [-apply] [-force]         collect storage garbage (spec 0016): a dry run unless -apply;
+                                                  -apply needs -force while gc.interval is 0 (replicas maybe older)
 `
 
 type multi []string
@@ -256,10 +258,13 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 	case "events":
 		return a.events(ctx, sub, args[min(2, len(args)):])
 	case "blob":
-		if sub != "check" || len(args) != 2 {
-			return errUsage
+		switch {
+		case sub == "check" && len(args) == 2:
+			return a.blobCheck(ctx)
+		case sub == "gc":
+			return a.blobGC(ctx, args[2:])
 		}
-		return a.blobCheck(ctx)
+		return errUsage
 	}
 	return errUsage
 }
@@ -1238,4 +1243,56 @@ func (a *adminCmd) events(ctx context.Context, sub string, args []string) error 
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// blobGC runs a collection of the storage domains now (spec 0016), a dry run unless -apply.
+func (a *adminCmd) blobGC(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("blob gc", flag.ContinueOnError)
+	domain := fs.String("domain", "", "")
+	apply := fs.Bool("apply", false, "")
+	force := fs.Bool("force", false, "")
+	if pos, err := flags(fs, args); err != nil || len(pos) != 0 {
+		return errUsage
+	}
+	if *apply && a.cfg.GCSettings().Interval == 0 && !*force {
+		return errors.New("gc.interval is 0: replicas may run a version that does not claim streams; " +
+			"set gc.interval once every replica runs this one, or add -force")
+	}
+	svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.DiscardHandler))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = svc.Close() }()
+	host, _ := os.Hostname()
+	if len(host) > 64 {
+		host = host[:64]
+	}
+	c := app.Collector(a.cfg, a.svc.Store, svc, "cli:"+host+"/"+store.NewID(), slog.New(slog.NewTextHandler(a.errw, nil)))
+	domains := svc.Domains()
+	if *domain != "" {
+		domains = []string{*domain}
+	}
+	var failed []string
+	a.table("DOMAIN\tBUILDS\tBODIES\tMARKED\tSTREAMS\tTMP\tUPLOADS\tBYTES", func(w io.Writer) {
+		for _, d := range domains {
+			r, err := c.Pass(ctx, d, !*apply)
+			switch {
+			case r.Skipped:
+				fmt.Fprintf(w, "%s\tskipped: another replica is collecting it\n", d)
+			default:
+				fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", d, r.Builds, r.Bodies, r.Marked, r.Streams, r.Tmp, r.Uploads, r.Bytes)
+			}
+			if err != nil {
+				failed = append(failed, d)
+				fmt.Fprintf(a.errw, "domain %s: %v\n", d, err)
+			}
+		}
+	})
+	if len(failed) > 0 {
+		return fmt.Errorf("the collection of %s stopped on an error", strings.Join(failed, ", "))
+	}
+	if !*apply {
+		fmt.Fprintln(a.out, "a dry run: nothing was deleted (-apply to collect)")
+	}
+	return nil
 }

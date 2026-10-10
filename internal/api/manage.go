@@ -89,7 +89,8 @@ func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
 		}
 	case errors.Is(err, store.ErrExists):
 		problem(w, http.StatusConflict, typeConflict, "it exists already")
-	case errors.Is(err, store.ErrBusy):
+	case errors.Is(err, store.ErrBusy), errors.Is(err, store.ErrStreamBusy), errors.Is(err, store.ErrClaimLost),
+		errors.Is(err, store.ErrBuildGone): // spec 0016: the storage collector in the way; try again
 		w.Header().Set("Retry-After", "1")
 		problem(w, http.StatusServiceUnavailable, typeUnavailable, "busy: try again")
 	case errors.Is(err, store.ErrConflict):

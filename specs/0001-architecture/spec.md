@@ -361,8 +361,9 @@ events. Global statistics across tenants belong to Enterest.
 - **Blobs** (spec 0005): filesystem, S3-compatible (AWS S3, Cloudflare R2, MinIO), Azure Blob or
   Google Cloud Storage, behind one interface. A tenant belongs to a **storage domain**: dedup happens
   only inside a domain. Data residency or a sovereign cloud gets its own domain.
-- **Blob GC**: mark-and-sweep over the Builds that reference a body, with a grace period, so it
-  never races a concurrent intake.
+- **Blob GC** (spec 0016): mark-and-sweep over the Builds that reference a body, with a grace
+  period, so it never races a concurrent intake; a yanked release may be purged explicitly, its
+  slot kept taken.
 - **Tenant deletion** cascades to its Builds, Releases, grants, keys and attachments. Its events
   are exported first. Blobs are left to GC.
 - **A new DuckDB release** is added to a channel's version list. That triggers mirroring for the

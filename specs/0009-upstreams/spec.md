@@ -173,7 +173,9 @@ verification"):
    is inserted with origin `upstream`, the cell's **original signature** on the release
    (`releases.origin_signature`: a Build's `origin_signature` is the first intake's, which a body
    added otherwise lacks), and provenance `{"upstream", "kind", "url", "etag", "key", "fetched_at"}`
-   (`key`: the verifying fingerprint). The new release becomes **current** for its name and
+   (`key`: the verifying fingerprint). The commit, the Build and the release run within spec 0016's
+   one-hour intake deadline; a Build the storage collector deleted meanwhile starts the intake again
+   from its commit, once (then the cell is `failed`, never `rejected`). The new release becomes **current** for its name and
    platform: versions of core and community extensions are often commit hashes, so kista does not
    order them; the newest accepted build is current, and an older version returns only if the
    upstream serves one this channel never held (a slot it held stays as it is). A run takes the
