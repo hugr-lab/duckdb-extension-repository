@@ -455,6 +455,20 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request, c caller, p
 	notFound(w)
 }
 
+// purgeRelease deletes a yanked release for good (spec 0016 phase 2).
+func (h *Handler) purgeRelease(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	expected, ok := expectedVersion(w, r)
+	if !ok {
+		return
+	}
+	a, _ := c.actor()
+	if _, err := h.o.Releases.Purge(r.Context(), a, p["t"], p["c"], p["ext"], p["id"], expected); err != nil {
+		h.channelErr(w, err, false)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 var changes = map[string]release.Change{"yank": release.Yank, "deprecate": release.Deprecate, "activate": release.Activate,
 	"current": release.MakeCurrent, "public": release.SetPublic, "private": release.SetPrivate}
 

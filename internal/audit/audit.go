@@ -148,6 +148,7 @@ var catalogue = map[Kind][]string{
 	"release.current":   {"release", "name", "version", "platform"},
 	"release.public":    {"release", "name", "version", "platform"},
 	"release.private":   {"release", "name", "version", "platform"},
+	"release.purge":     {"release", "name", "version", "platform", "slot", "body_hash"},
 	"block.add":         {"body_hash", "reason"},
 	"block.remove":      {"body_hash"},
 	"upstream.add":      {"name", "kind", "prefix", "channel", "mode", "visibility", "keys", "platforms", "extensions", "credential"},

@@ -138,7 +138,12 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "key", "add", "acme/staging", "-signer", "file:c.pem", "-active")
 	run(1, "release", "add", "acme/staging", file, "-name", "tresor", "-unchecked")                   // blocked (a fresh slot)
 	run(1, "release", "promote", "acme/staging", "-name", "tresor", "-from", "prod", "-release", rid) // unchecked and yanked
+	// spec 0016 phase 2: a yanked release purged; its slot stays taken
+	run(1, "release", "purge", "acme/prod", rid) // gc.interval 0: replicas may not all keep purged slots
+	run(0, "release", "purge", "acme/prod", rid, "-force")
+	run(1, "release", "purge", "acme/prod", rid, "-force")
 	run(0, "block", "remove", "acme", f.Hash.String())
+	run(1, "release", "add", "acme/prod", file, "-name", "tresor", "-unchecked") // unblocked: the purged slot refuses it
 	// upstreams (spec 0009)
 	run(0, "upstream", "add", "acme", "core", "-kind", "duckdb-core", "-channel", "staging", "-platforms", "linux_amd64,osx_arm64",
 		"-extensions", "json,parquet")

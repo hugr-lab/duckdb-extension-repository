@@ -88,6 +88,7 @@ func TestOtherChannelIDs(t *testing.T) {
 			{"POST", C + "/keys/" + stagingKey + "/activate"},
 			{"GET", C + "/extensions/acl/releases/" + stagingACL},
 			{"POST", C + "/extensions/acl/releases/" + stagingACL + "/yank"},
+			{"DELETE", C + "/extensions/acl/releases/" + stagingACL},
 		} {
 			if r := m.call(t, c.method, c.path, tok, "", "If-Match", "*"); r.status != 404 {
 				t.Errorf("%s %s: %d", c.method, c.path, r.status)
@@ -176,6 +177,33 @@ func TestReleaseChanges(t *testing.T) {
 	}
 	if len(seen) != 7 {
 		t.Errorf("paged %d releases, want 7", len(seen))
+	}
+
+	// spec 0016 phase 2: purging; only a yanked release, by its extension's administrator
+	if r := m.call(t, "DELETE", E+"tresor/releases/"+id, eve, "", "If-Match", "*"); r.status != 409 {
+		t.Errorf("purging a deprecated release: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "DELETE", E+"tresor/releases/"+acl, eve, "", "If-Match", "*"); r.status != 404 {
+		t.Errorf("purging another extension's release: %d", r.status)
+	}
+	r = m.call(t, "POST", E+"tresor/releases/"+id+"/yank", eve, "", "If-Match", "*")
+	if r.status != 200 {
+		t.Fatalf("yank: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "DELETE", E+"tresor/releases/"+id, eve, ""); r.status != 428 {
+		t.Errorf("purging without If-Match: %d", r.status)
+	}
+	if r := m.call(t, "DELETE", E+"tresor/releases/"+id, eve, "", "If-Match", tag); r.status != 412 {
+		t.Errorf("purging with a stale If-Match: %d", r.status)
+	}
+	if r := m.call(t, "DELETE", E+"tresor/releases/"+id, eve, "", "If-Match", r.header.Get("ETag")); r.status != 204 {
+		t.Fatalf("purge: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", E+"tresor/releases/"+id, eve, ""); r.status != 404 {
+		t.Errorf("a purged release read: %d", r.status)
+	}
+	if r := m.call(t, "DELETE", E+"tresor/releases/"+id, eve, "", "If-Match", "*"); r.status != 404 {
+		t.Errorf("purged twice: %d", r.status)
 	}
 }
 

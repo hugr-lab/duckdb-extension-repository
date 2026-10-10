@@ -63,6 +63,8 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   release add <tenant>/<channel> <file|-> -name <name> [-private] [-not-current] [-unchecked]
   release list <tenant>/<channel> [-name <name>]
   release yank|deprecate|activate|current|public|private <tenant>/<channel> <release-id>
+  release purge <tenant>/<channel> <release-id> [-force]
+                  delete a yanked release for good; its slot stays taken (-force while gc.interval is 0)
   release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> | -version <v>)
                   [-private] [-not-current]               release Builds of another channel here
   publisher add|remove <tenant> <name>          an identity that only publishes and promotes
@@ -563,6 +565,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 	from := fs.String("from", "", "")
 	relID := fs.String("release", "", "")
 	version := fs.String("version", "", "")
+	force := fs.Bool("force", false, "")
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) == 0 {
 		return errUsage
@@ -633,6 +636,15 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 			return err
 		}
 		a.logf("release %s %s/%s %s (%s %s, %s)", sub, t, c, r.ID, r.Name, r.ExtVersion, r.State)
+	case len(pos) == 2 && sub == "purge":
+		if *force { // the operator vouches that every replica runs this version
+			a.svc.Releases.PurgeOff = false
+		}
+		r, err := a.svc.Releases.Purge(ctx, a.actor, t, c, "", pos[1], 0)
+		if err != nil {
+			return err
+		}
+		a.logf("release purge %s/%s %s (%s %s %s %s)", t, c, r.ID, r.Name, r.ExtVersion, r.Platform, r.Slot)
 	default:
 		return errUsage
 	}

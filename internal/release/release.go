@@ -49,7 +49,13 @@ type Service struct {
 	// releases it brought to be public; nil allows none.
 	MayPublish func(credential string) bool
 
-	afterBuild func(store.Build) // tests: between finding the Build and inserting the release
+	// PurgeOff refuses purges (spec 0016 phase 2): replicas may still run a version that does not
+	// know purged slots and would refill them. kista sets it while gc.interval is 0 (the rollout
+	// not declared done).
+	PurgeOff bool
+
+	afterBuild   func(store.Build)     // tests: between finding the Build and inserting the release
+	beforeResign func([]store.Release) // tests: between reading a re-sign batch and inserting it
 }
 
 // CredentialOf is the private upstream credential a release came through (its provenance's
@@ -241,22 +247,30 @@ func (s *Service) reservedCheck(a authz.Actor, verb authz.Verb, res authz.Resour
 
 // checkUpstreamSlot finds an upstream item's slot (spec 0009): the release of the same body in any
 // state with any choices is the existing one, so an administrator's changes survive every run;
-// another body, or an ABI the slot's releases do not mix with, is a conflict.
+// another body, a purged slot (spec 0016), or an ABI the slot's releases do not mix with, is a
+// conflict.
 func checkUpstreamSlot(cands []store.Candidate, b store.Build) (*store.Release, error) {
 	for _, c := range cands {
 		if (c.ABI == store.ABICStruct) != (b.ABI == store.ABICStruct) {
-			return nil, fmt.Errorf("%w: %s %s on %s has %s releases", ErrConflict, b.Name, b.ExtVersion, b.Platform, c.ABI)
+			return nil, fmt.Errorf("%w: %s %s on %s has %s releases%s", ErrConflict, b.Name, b.ExtVersion, b.Platform, c.ABI, purgedNote(c))
 		}
 		if c.Slot != b.Slot() {
 			continue
 		}
-		if c.BodyHash != b.BodyHash {
-			return nil, fmt.Errorf("%w (%s %s %s %s)", ErrConflict, b.Name, b.ExtVersion, b.Platform, c.Slot)
+		if c.BodyHash != b.BodyHash || c.State == store.ReleasePurged {
+			return nil, fmt.Errorf("%w (%s %s %s %s%s)", ErrConflict, b.Name, b.ExtVersion, b.Platform, c.Slot, purgedNote(c))
 		}
 		r := c.Release
 		return &r, nil
 	}
 	return nil, nil
+}
+
+func purgedNote(c store.Candidate) string {
+	if c.State == store.ReleasePurged {
+		return ", purged"
+	}
+	return ""
 }
 
 // checkSlot finds the release in its slot. The same body with the same choices is the existing
@@ -265,11 +279,14 @@ func checkSlot(cands []store.Candidate, it item) (*store.Release, error) {
 	b := it.b
 	for _, c := range cands {
 		if (c.ABI == store.ABICStruct) != (b.ABI == store.ABICStruct) {
-			return nil, fmt.Errorf("%w: %s %s on %s already has %s releases; c_struct and exact-version builds do not mix",
-				ErrSlot, b.Name, b.ExtVersion, b.Platform, c.ABI)
+			return nil, fmt.Errorf("%w: %s %s on %s already has %s releases%s; c_struct and exact-version builds do not mix",
+				ErrSlot, b.Name, b.ExtVersion, b.Platform, c.ABI, purgedNote(c))
 		}
 		if c.Slot != b.Slot() {
 			continue
+		}
+		if c.State == store.ReleasePurged {
+			return nil, fmt.Errorf("%w: %s %s %s %s was purged; a fix is a new version", ErrSlot, b.Name, b.ExtVersion, b.Platform, c.Slot)
 		}
 		if c.BodyHash != b.BodyHash {
 			return nil, fmt.Errorf("%w (%s %s %s %s)", ErrSlot, b.Name, b.ExtVersion, b.Platform, c.Slot)
@@ -786,4 +803,49 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 		}
 		return rs, existed, err
 	}
+}
+
+// Purge deletes a yanked release of a channel for good (spec 0016 phase 2): its signatures go, its
+// slot stays taken (never refilled, its sequence number never given again), and its Build loses the
+// reference, so the storage collector removes the body later. With a name, the release must be of
+// that extension; a non-zero expected version must be the release's. It returns what was purged.
+func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, name, id string, expected int64) (store.Candidate, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel, Extension: name}); err != nil {
+		return store.Candidate{}, err
+	}
+	if s.PurgeOff {
+		return store.Candidate{}, fmt.Errorf("%w: purging is off until the server administrator sets gc.interval "+
+			"(every replica then runs a version that keeps purged slots)", ErrState)
+	}
+	ch, err := s.Store.GetChannel(ctx, tenant, channel)
+	if err != nil {
+		return store.Candidate{}, err
+	}
+	var out store.Candidate
+	err = s.Store.InTx(ctx, lockKey(ch.ID), func(tx *store.Tx) error {
+		c, err := tx.GetCandidate(ctx, ch.ID, id)
+		if err != nil {
+			return err
+		}
+		if name != "" && c.Name != name {
+			return fmt.Errorf("%w: release %s", store.ErrNotFound, id) // another extension's id
+		}
+		if expected != 0 && c.Version != expected {
+			return store.ErrConflict
+		}
+		if c.State != store.ReleaseYanked {
+			return fmt.Errorf("%w: only a yanked release is purged; yank it first", ErrState)
+		}
+		if err := tx.PurgeRelease(ctx, c); err != nil {
+			return err
+		}
+		out = c
+		if err := tx.Event(ctx, ch.TenantID, a.String(), "release.purge", releaseSubject(ch, c.Release),
+			map[string]any{"release": c.ID, "name": c.Name, "version": c.ExtVersion, "platform": c.Platform, "slot": c.Slot,
+				"body_hash": c.BodyHash}); err != nil {
+			return err
+		}
+		return tx.BumpReleaseVersion(ctx, ch.ID)
+	})
+	return out, err
 }

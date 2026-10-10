@@ -40,6 +40,10 @@ func (s *Service) Resign(ctx context.Context, channelID string, renew func(conte
 			}
 			return signed, moved, err
 		}
+		if s.beforeResign != nil {
+			s.beforeResign(rels)
+		}
+		inserted := 0
 		sigs := make([][]byte, len(rels))
 		for i, h := range hashes {
 			bh, err := parseHash(h)
@@ -60,10 +64,24 @@ func (s *Service) Resign(ctx context.Context, channelID string, renew func(conte
 					return errResign
 				}
 			}
+			// a release yanked or purged (spec 0016) since the batch was read is not signed
+			ids := make([]string, len(rels))
 			for i, r := range rels {
+				ids[i] = r.ID
+			}
+			live, err := tx.UnyankedReleases(ctx, channelID, ids)
+			if err != nil {
+				return err
+			}
+			inserted = 0
+			for i, r := range rels {
+				if !live[r.ID] {
+					continue
+				}
 				if err := tx.InsertSignature(ctx, r.ID, channelID, active.ID, sigs[i]); err != nil {
 					return err
 				}
+				inserted++
 			}
 			return nil
 		})
@@ -71,7 +89,7 @@ func (s *Service) Resign(ctx context.Context, channelID string, renew func(conte
 			return signed, false, err
 		}
 		if err == nil {
-			signed += len(rels)
+			signed += inserted
 		}
 	}
 }
