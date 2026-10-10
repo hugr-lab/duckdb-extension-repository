@@ -9,3 +9,18 @@ coverage.out
 
 # e2e DuckDB build (e2e/build-duckdb.sh)
 /e2e/.build/
+
+# the console (web/console): Node modules, build output and tool caches
+node_modules/
+web/console/dist/app/
+.vite/
+.vitest/
+*.tsbuildinfo
+coverage/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+.eslintcache
+.npm/
+npm-debug.log*

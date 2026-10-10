@@ -50,6 +50,8 @@ type Config struct {
 	Telemetry Telemetry `yaml:"telemetry" kista:"fileonly"`
 	// GC configures storage garbage collection (spec 0016).
 	GC GC `yaml:"gc" kista:"fileonly"`
+	// UI configures the administration console (spec 0015).
+	UI UI `yaml:"ui" kista:"fileonly"`
 }
 
 // Store selects and configures the metadata database.
@@ -466,6 +468,7 @@ func (c Config) Validate() error {
 	validateStatistics(bad, c)
 	validateTelemetry(bad, c)
 	validateGC(bad, c)
+	validateUI(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

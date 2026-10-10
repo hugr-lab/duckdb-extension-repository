@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The Hugr Lab design system's tokens (spec 0015): RGB triplets a host may override on its
+   element; the same names as tresor-server's console, so a platform sets them once. */
+:root,
+:host {
+  --surface: 255 255 255;
+  --surface-soft: 244 247 249;
+  --ink: 11 31 58;
+  --ink-muted: 90 104 125;
+  --border: 221 227 234;
+  --brand: 13 148 136;
+  --brand-strong: 15 118 110;
+  --on-brand: 255 255 255;
+  --focus: 45 212 191;
+  --success: 22 163 74;
+  --success-soft: 220 252 231;
+  --warning: 180 83 9;
+  --warning-soft: 254 243 199;
+  --danger: 220 38 38;
+  --danger-soft: 254 226 226;
+  --row: 248 250 252;
+}
+
+:root[data-kista-theme='dark'],
+:host([data-kista-theme='dark']) {
+  --surface: 15 23 42;
+  --surface-soft: 22 33 56;
+  --ink: 226 232 240;
+  --ink-muted: 148 163 184;
+  --border: 51 65 85;
+  --brand: 45 212 191;
+  --brand-strong: 94 234 212;
+  --on-brand: 11 31 58;
+  --focus: 94 234 212;
+  --success: 74 222 128;
+  --success-soft: 20 83 45;
+  --warning: 251 191 36;
+  --warning-soft: 120 53 15;
+  --danger: 248 113 113;
+  --danger-soft: 127 29 29;
+  --row: 17 26 46;
+}
+
+body {
+  @apply bg-surface-soft font-sans text-ink antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--focus));
+  outline-offset: 2px;
+}
+
+dialog::backdrop {
+  background: rgb(11 31 58 / 0.4);
+}

@@ -44,6 +44,8 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
          key has dots of its own: '["https://example.com/roles"]' 
   issuer list <tenant>
   issuer remove <tenant> <name>                   removes its grants too
+  issuer console <tenant> <name> (-client-id <id> [-scopes a,b] [-audience a] [-audience-parameter p] | -remove)
+                  the administration console's public client at the issuer (spec 0015)
   grant add <tenant> -principal kind:issuer|value -verb install|admin|publish|promote... [-channel c] [-extension x]
   grant list <tenant>
   grant remove <tenant> <grant-id>
@@ -672,6 +674,11 @@ func (a *adminCmd) issuer(ctx context.Context, sub string, args []string) error 
 	groups := fs.String("groups-claim", "", "")
 	client := fs.String("client-claim", "", "")
 	life := fs.Duration("max-lifetime", 0, "")
+	clientID := fs.String("client-id", "", "")
+	scopes := fs.String("scopes", "", "")
+	audience := fs.String("audience", "", "")
+	audParam := fs.String("audience-parameter", "", "")
+	remove := fs.Bool("remove", false, "")
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) == 0 {
 		return errUsage
@@ -727,6 +734,22 @@ func (a *adminCmd) issuer(ctx context.Context, sub string, args []string) error 
 			return err
 		}
 		a.logf("issuer remove %s %s", pos[0], pos[1])
+	case sub == "console" && len(pos) == 2 && *remove && *clientID == "" && *scopes == "" && *audience == "" && *audParam == "":
+		if err := a.svc.Auth.RemoveConsoleClient(ctx, a.actor, pos[0], pos[1], ""); err != nil {
+			return err
+		}
+		a.logf("issuer console %s %s removed", pos[0], pos[1])
+	case sub == "console" && len(pos) == 2 && *clientID != "" && !*remove:
+		sc := strings.FieldsFunc(*scopes, func(r rune) bool { return r == ',' || r == ' ' })
+		if len(sc) == 0 {
+			sc = config.DefaultConsoleScopes
+		}
+		c, err := a.svc.Auth.SetConsoleClient(ctx, a.actor, pos[0], pos[1], "", store.ConsoleClient{ClientID: *clientID,
+			Scopes: sc, Audience: *audience, AudienceParameter: *audParam})
+		if err != nil {
+			return err
+		}
+		a.logf("issuer console %s %s %s", pos[0], pos[1], c.ClientID)
 	default:
 		return errUsage
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"slices"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/telemetry"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
+	"github.com/hugr-lab/duckdb-extension-repository/web/console"
 )
 
 // Serve runs kista serve until ctx is done (spec 0006): the store, the blob service, the handler,
@@ -98,7 +100,8 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
 		Server: server, Providers: providers, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
 		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, MaxBody: maxBody, MinRate: int64(lim.MinRate), PublishPerActor: perActor,
-		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events})
+		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events,
+		Console: ConsoleInfo(cfg)})
 	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background
 	puller := &upstream.Puller{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log,
 		NegativeTTL: cfg.UpstreamLimits().NegativeTTL}
@@ -145,7 +148,20 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if telemetry.Enabled() {
 		log.Info("serve: exporting OpenTelemetry metrics")
 	}
-	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Puller: puller, Events: events, Downloads: downloads, Metrics: metrics,
+	var ui http.Handler
+	if cfg.UIEnabled() {
+		var serverFetch auth.Fetcher = eg
+		if server != nil {
+			serverFetch = server.Verifier.Fetch
+		}
+		c, err := console.New(console.Options{Origins: ConsoleOrigins(cfg, st, serverFetch, eg),
+			FrameAncestors: cfg.UI.FrameAncestors, ConnectSrc: cfg.UI.ConnectSrc})
+		if err != nil {
+			return err
+		}
+		ui = c
+	}
+	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Console: ui, Puller: puller, Events: events, Downloads: downloads, Metrics: metrics,
 		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,

@@ -3,10 +3,23 @@ export GOWORK := off
 
 E2E_BUILD ?= $(CURDIR)/e2e/.build
 
-.PHONY: build reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down lint e2e-duckdb e2e-runner e2e-build e2e
+.PHONY: build console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down lint e2e-duckdb e2e-runner e2e-build e2e
 
 build:
 	go build -o bin/kista ./cmd/kista
+
+# The administration console (spec 0015), embedded by the next make build; without it kista serves a
+# placeholder at /ui/. Needs Node 22.
+console:
+	cd web/console && npm ci && npm run build
+
+console-test:
+	cd web/console && npm run typecheck && npm test && npm run licenses
+
+# The console end to end: Keycloak in Docker, kista serve, Playwright (Chromium: npx playwright
+# install chromium in web/console once). Run make console first.
+console-e2e:
+	web/console/e2e/run.sh
 
 test:
 	go test ./...

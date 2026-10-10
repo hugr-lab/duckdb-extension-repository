@@ -187,6 +187,12 @@ func TestAdminCLI(t *testing.T) {
 	// issuers, audiences, grants (an explicit JWKS URI: no discovery from the test)
 	run(0, "issuer", "add", "acme", "-name", "corp", "-url", "https://login.example/t1/v2.0",
 		"-jwks-uri", jwks, "-require", "tid=t1", "-roles-claim", `["https://x/roles"]`, "-alg", "RS256", "-alg", "RS256")
+	// the console's client at an issuer (spec 0015)
+	run(0, "issuer", "console", "acme", "corp", "-client-id", "kista-console", "-scopes", "openid,offline_access")
+	run(1, "issuer", "console", "acme", "corp", "-client-id", "x", "-scopes", "profile") // no openid
+	run(2, "issuer", "console", "acme", "corp", "-remove", "-client-id", "x")
+	run(0, "issuer", "console", "acme", "corp", "-remove")
+	run(1, "issuer", "console", "acme", "corp", "-remove") // none left
 	run(1, "issuer", "add", "acme", "-name", "corp2", "-url", "http://login.example", "-jwks-uri", jwks)
 	run(1, "issuer", "add", "acme", "-name", "corp3", "-url", "https://login.example/b", "-jwks-uri", jwks, "-alg", "HS256")
 	run(1, "issuer", "add", "acme", "-name", "corp4", "-url", "https://login.example/c", "-jwks-uri", "https://127.0.0.2:1/keys") // unreachable JWKS

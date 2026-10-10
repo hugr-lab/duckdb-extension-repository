@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	neturl "net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -428,6 +429,46 @@ func Discover(ctx context.Context, f Fetcher, issuer string) (string, error) {
 		return "", errors.New("auth: the discovery document has no https jwks_uri")
 	}
 	return uri, nil // egress decides whether http to loopback is allowed (development only)
+}
+
+// DiscoverOrigins reads an issuer's OIDC discovery document and returns the origins a browser
+// signing in there talks to (spec 0015's CSP): the issuer's and those of its token, revocation,
+// end-session and userinfo endpoints.
+func DiscoverOrigins(ctx context.Context, f Fetcher, issuer string) ([]string, error) {
+	b, _, err := f.Get(ctx, strings.TrimSuffix(issuer, "/")+"/.well-known/openid-configuration")
+	if err != nil {
+		return nil, err
+	}
+	var doc map[string]any
+	if err := strictJSON(b, &doc); err != nil {
+		return nil, errors.New("auth: the discovery document is not valid JSON")
+	}
+	if got, _ := doc["issuer"].(string); got != issuer {
+		return nil, errors.New("auth: the discovery document names another issuer")
+	}
+	var out []string
+	for _, k := range []string{"issuer", "token_endpoint", "revocation_endpoint", "end_session_endpoint", "userinfo_endpoint"} {
+		s, _ := doc[k].(string)
+		if o, ok := OriginOf(s); ok && !slices.Contains(out, o) {
+			out = append(out, o)
+		}
+	}
+	return out, nil
+}
+
+// origin is what an origin may be in a CSP header: a scheme, a host name or an IP address, a port.
+// A host url.Parse accepts may hold ";", "," or quotes, which would inject into the policy.
+var origin = regexp.MustCompile(`^https?://([A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?$`)
+
+// OriginOf returns a URL's origin (scheme://host[:port]) when it is an http or https URL with a
+// plain host: nothing else may go into a content security policy.
+func OriginOf(s string) (string, bool) {
+	u, err := neturl.Parse(s)
+	if s == "" || err != nil || u.User != nil || u.Scheme != "https" && u.Scheme != "http" {
+		return "", false
+	}
+	o := u.Scheme + "://" + u.Host
+	return o, origin.MatchString(o)
 }
 
 // CheckJWKS fetches and parses a JWKS, returning how many usable signing keys it has.

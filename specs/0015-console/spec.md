@@ -1,6 +1,6 @@
 # Spec 0015: Administration console
 
-- **Status**: accepted (2026-10-10)
+- **Status**: accepted (2026-10-10); phase 1a implemented, 1b next
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 
@@ -55,7 +55,7 @@ Delivery, each phase a pull request:
 
 The stack is tresor-server's (one platform, one way of building consoles):
 
-- React 18, TypeScript, Vite, Tailwind 3, react-router-dom 6, lucide-react, oidc-client-ts;
+- React 18, TypeScript, Vite, Tailwind 3, react-router-dom 7 (6 has an open-redirect advisory), lucide-react, oidc-client-ts;
 - Manrope and JetBrains Mono, self-hosted (`@fontsource`);
 - **no component library**: dialogs are native `<dialog>`s (a library that injects `<style>`
   tags, like Radix's scroll lock, breaks the CSP below);
@@ -63,25 +63,28 @@ The stack is tresor-server's (one platform, one way of building consoles):
 
 The source is in `web/console/`. Two Vite builds:
 
-- **standalone**: `dist/index.html`, hashed assets under `dist/assets/`, no inline script (no
-  module-preload polyfill), no `data:` fonts;
+- **standalone**: `dist/app/index.html`, hashed assets under `dist/app/assets/`, no inline script
+  (no module-preload polyfill), no `data:` fonts;
 - **micro-frontend** (1b): one ES module `dist/mfe/kista.js` (a fixed name) with its own React,
   its CSS and dynamic imports inlined; only its fonts are files, under `dist/mfe/assets/`.
 
 ### Build and repository
 
-- **Embedding.** `web/console/console.go` embeds `dist` (`//go:embed all:dist`). Only a
-  placeholder `dist/index.html` is committed (`.gitignore`: `dist/*`, `!dist/index.html`); a
-  binary built without the console serves the placeholder, which says so.
+- **Embedding.** `web/console/console.go` embeds `dist` (`//go:embed all:dist`); the build goes to
+  `dist/app/` (ignored), and only `dist/.gitkeep` is committed, so a build never changes a tracked
+  file. A binary built without the console serves a placeholder page (in the Go source) that says
+  so.
 - **Make targets.** `make console` runs `npm ci && npm run build` in `web/console`. `make build`
   does not need Node, so Go contributors and the existing `go-linux`/`go-macos` jobs build with
   the placeholder. Every target keeps `GOWORK=off`.
 - **CI.** `.github/workflows/ci.yml` gains two jobs:
-  - `console`: `npm ci`, typecheck, unit tests, licences, `npm audit --audit-level=high`, build;
-  - `console-e2e`: Playwright, traces as artifacts.
-- **Releases.** A release build runs `make console` before `go build`. There is no Dockerfile
-  yet; the one that comes later builds the console in a Node stage.
-- **Dependencies.** Dependabot covers `web/console`.
+  - `console`: `npm ci`, typecheck, unit tests, licences, `npm audit --omit=dev
+    --audit-level=high` (what the console ships), build;
+  - `console-e2e`: Playwright; screenshots of a failure as artifacts (traces stay off: they
+    would record the run's passwords).
+- **Releases.** A release build runs `make console` before `go build`. There is no release
+  workflow or Dockerfile yet; the ones that come later build the console first (a Node stage).
+- **Dependencies.** Dependabot covers `web/console` (`.github/dependabot.yml`).
 
 ### Serving
 
@@ -92,8 +95,9 @@ The source is in `web/console/`. Two Vite builds:
   - `/ui` redirects to `/ui/`;
   - under `/ui/`, a path without an extension gets `index.html` (the SPA fallback);
   - a missing file with an extension is `404`;
-  - `index.html` is served with `<base href="/ui/">` rewritten to `<public_url path>/ui/`, so
-    assets resolve from any SPA path (`/ui/t/acme/channels/prod`).
+  - `index.html` carries `<base href="/ui/">`, so assets resolve from any SPA path
+    (`/ui/t/acme/channels/prod`); `serve.public_url` has no path (spec 0006), so `/ui/` is always
+    the console's root.
 - **Three scopes, by path**, each its own document. Moving between them is a full page load,
   never an SPA navigation.
   - `/ui/` (and `/ui/index…`): the landing, which asks where to sign in;
@@ -111,9 +115,12 @@ The source is in `web/console/`. Two Vite builds:
     server scope; that tenant's issuers with a console client for a tenant scope. A tenant never
     adds an origin to another scope's policy;
   - an issuer's origins are those of its discovery document's `issuer`, `token_endpoint`,
-    `revocation_endpoint`, `end_session_endpoint` and `userinfo_endpoint`, read through egress
-    and the issuer cache (spec 0006). An issuer whose discovery cannot be read contributes its
-    own origin only, and its sign-in fails visibly.
+    `revocation_endpoint`, `end_session_endpoint` and `userinfo_endpoint`, read through the
+    scope's egress (the server issuers' or the tenants'), each a plain `scheme://host[:port]`
+    (anything else, which could inject into the header, is dropped). They are cached an hour per
+    egress and issuer, used at once when stale and read again in the background, one read at a
+    time; an issuer not read yet contributes its own origin after a page's two-second budget, and
+    an issuer whose discovery cannot be read keeps its own origin (its sign-in fails visibly).
 - **Other headers**: `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`.
 - **Cache**:
   - `assets/*` and `mfe/assets/*`: `public, max-age=31536000, immutable`;
@@ -151,7 +158,10 @@ a record's console client is a sub-resource, set and removed by a tenant adminis
   `204`.
   - Both need `If-Match: "<issuer id>"`, the record's ETag, as removing the record does: a record
     removed and re-added under the same name never inherits a client meant for the old one.
-  - `audience`, when set, must be one of the tenant's audiences (canonical or assigned).
+  - `audience`, when set, must be one of the tenant's audiences (canonical or assigned); an
+    assigned audience a console client asks for cannot be removed until the client changes.
+  - The record's issuer may not be a server issuer: a tenant's console never signs in there (a
+    tenant could otherwise lead a server administrator to act inside it).
 - **CLI.** `kista admin issuer console <tenant> <name> -client-id <id> [-scopes …]
   [-audience …]`, and `-remove`.
 - **Table.** `issuer_console_clients(issuer_id PRIMARY KEY, client_id, scopes,
@@ -163,6 +173,7 @@ a record's console client is a sub-resource, set and removed by a tenant adminis
   - `audience_parameter`: a parameter name or empty.
 - **Events.** `issuer.console.set` and `issuer.console.remove`, with `issuer`, `client_id` and
   `audience` (spec 0010's catalogue).
+- **`If-Match: *` is refused** (`428`): the record's id is the point.
 - **A new tenant.** Its first issuer record and that record's console client are added by a server
   administrator (API or CLI), or by the tenant administrator over the API.
 
@@ -251,8 +262,9 @@ The visual system is the Hugr Lab design system (teal and navy, Manrope, JetBrai
 icons, no shadows, pill buttons). Its tokens are copied into the console's Tailwind theme, as
 tresor-server and hub do.
 
-- **Tenant home**: the channels (kind, DuckDB versions) and, for a channel administrator, its key
-  summary (`keys`: active and serving key, `unsigned_by_active`, the re-signer).
+- **Tenant home**: the channels the caller administers, with kind and DuckDB versions; a
+  channel's key summary (`keys`: active and serving key, `unsigned_by_active`, the re-signer) is
+  on its Keys tab, for its administrators.
 - **Channel**: releases from the management list (spec 0007: filtered by state; name and platform
   filtered over the loaded pages).
   - A release's page shows its build (ABI, DuckDB or C API version, body hash), provenance,
@@ -262,7 +274,8 @@ tresor-server and hub do.
 - **Keys** (read): trusted, active and serving keys, key events, re-sign progress.
 - **Events**: the API's filters, a detail view, kinds from `event-kinds`; server events in the
   server scope. Event data, provenance and everything else from the API are rendered as text.
-- **Statistics**: downloads by extension, version and platform over time (spec 0010 phase 2a).
+- **Statistics**: downloads per day over 7, 30 or 90 days (days without any shown as zero), and by
+  extension, version or platform (spec 0010 phase 2a, within what the caller's grants cover).
 - **Server scope**: the tenants list (name, state, storage domain), and a tenant opened inside.
 
 Release signatures are not listed: the API has no field for them. The keys view shows which keys
