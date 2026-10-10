@@ -6,11 +6,12 @@
   "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && vite build -c vite.mfe.config.ts",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "licenses": "node scripts/licenses.mjs",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "host": "vite -c vite.host.config.ts"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.1.1",

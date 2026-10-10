@@ -36,7 +36,9 @@ func (h *Handler) tenantConsole(w http.ResponseWriter, r *http.Request, c caller
 		h.fail(w, err)
 		return
 	}
-	reply(w, r, http.StatusOK, map[string]any{"issuers": nonNil(iss)}, "", noStore)
+	// the canonical audience too (phase 1b): an embedded console needs one before any console client
+	aud := strings.TrimSuffix(h.o.PublicURL, "/") + "/" + c.tenant.Name
+	reply(w, r, http.StatusOK, map[string]any{"audience": aud, "issuers": nonNil(iss)}, "", noStore)
 }
 
 type consoleClientJSON struct {

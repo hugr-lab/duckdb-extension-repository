@@ -23,8 +23,10 @@ export interface ClientOptions {
   prefix: string
   /** A token for the scope; renew asks for a newly issued one. */
   getToken: (renew: boolean) => Promise<string>
-  /** Called when a renewed token is refused too; throttled to once per 30 seconds. */
+  /** Called when a renewed token is refused too; throttled to once per unauthorizedEvery. */
   onUnauthorized?: () => void
+  /** The throttle, in ms (default 30 seconds); 0: every time (a caller that throttles itself). */
+  unauthorizedEvery?: number
   now?: () => number
 }
 
@@ -52,7 +54,7 @@ export class Client {
   }
 
   async request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<Answer<T>> {
-    if (!opts.anonymous && !path.startsWith(this.o.prefix)) {
+    if (!opts.anonymous && !this.inScope(path)) {
       // a token never leaves its scope: a request outside it is a bug
       throw new Error(`kista console: ${path} is outside this scope (${this.o.prefix})`)
     }
@@ -61,7 +63,7 @@ export class Client {
       res = await this.send(method, path, opts, true)
       if (res.status === 401) {
         const now = (this.o.now ?? Date.now)()
-        if (now - this.lastUnauthorized >= 30_000) {
+        if (now - this.lastUnauthorized >= (this.o.unauthorizedEvery ?? 30_000)) {
           this.lastUnauthorized = now
           this.o.onUnauthorized?.()
         }
@@ -81,6 +83,19 @@ export class Client {
       throw new ApiError(res.status, detail.detail || detail.title || `${res.status}`)
     }
     return { status: res.status, data: data as T, etag: res.headers.get('ETag') ?? '' }
+  }
+
+  /** Whether path stays below the scope's prefix once resolved: a ".." segment (or "%2e%2e") the
+   * URL parser removes cannot lead a token elsewhere. */
+  private inScope(path: string): boolean {
+    if (!path.startsWith(this.o.prefix)) return false
+    try {
+      const base = new URL(this.o.base, location.href)
+      const want = base.pathname.replace(/\/+$/, '') + this.o.prefix
+      return new URL(this.o.base + path, location.href).pathname.startsWith(want)
+    } catch {
+      return false
+    }
   }
 
   private async send(method: string, path: string, opts: RequestOptions, renew: boolean): Promise<Response> {

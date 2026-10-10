@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Badge, Button, Card, Confirm, ErrorBox, Loading, Mono, when } from '../components/ui'
+import { Badge, Button, Card, Confirm, ErrorBox, Loading, Mono, PageTitle, when } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
 import type { Release as R } from './types'
@@ -67,8 +67,6 @@ export function Release() {
     ['Slot', <Mono>{r.slot}</Mono>],
     ['Build', <Mono>{r.abi} {r.build_duckdb_version ?? r.build_c_api ?? ''}</Mono>],
     ['Body hash', <Mono>{r.body_hash}</Mono>],
-    ['State', <Badge>{r.state}</Badge>],
-    ['Visibility', <Badge>{r.visibility}</Badge>],
     // the highest active one among its DuckDB versions and platform is served as current
     ['Current-eligible', r.seq > 0 ? `yes (#${r.seq})` : 'no: versioned path only'],
     ['Origin', r.origin],
@@ -77,21 +75,23 @@ export function Release() {
   ]
   if (r.shadows) facts.push(['Shadows', r.shadows])
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <Link to={`${base}/channels/${seg(c)}`} className="text-sm text-brand-strong hover:underline">← {c}</Link>
-        <h1 className="text-2xl font-bold">{r.name} {r.version}</h1>
-      </div>
+    <>
+      <PageTitle
+        eyebrow={<><Link to={`${base}/channels/${seg(c)}`} className="no-underline">{c}</Link> / <Link to={`${base}/channels/${seg(c)}/extensions/${seg(r.name)}`} className="no-underline">{r.name}</Link></>}
+        title={<><span className="font-mono">{r.name}</span> {r.version}</>}>
+        <span className="pb-1"><Badge>{r.state}</Badge></span>
+        <span className="pb-1"><Badge>{r.visibility}</Badge></span>
+        <div className="ml-auto flex flex-wrap gap-2">
+          {changes(r).map((ch) => (
+            <Button key={ch} tone={ch === 'purge' || ch === 'yank' ? 'danger-outline' : 'outline'} onClick={() => setPending(ch)}>
+              {ch}
+            </Button>
+          ))}
+        </div>
+      </PageTitle>
       {failure != null && <ErrorBox error={failure} />}
-      <Card
-        title="Release"
-        actions={changes(r).map((ch) => (
-          <Button key={ch} tone={ch === 'purge' || ch === 'yank' ? 'danger' : 'plain'} onClick={() => setPending(ch)}>
-            {ch}
-          </Button>
-        ))}
-      >
-        <dl className="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-2 text-sm">
+      <Card>
+        <dl className="m-0 grid grid-cols-[10rem_1fr] gap-x-4 gap-y-2">
           {facts.map(([k, v]) => (
             <div key={k} className="contents">
               <dt className="text-ink-muted">{k}</dt>
@@ -102,7 +102,7 @@ export function Release() {
       </Card>
       {r.provenance != null && (
         <Card title="Provenance">
-          <pre className="overflow-x-auto rounded-xl bg-row p-3 font-mono text-xs">{JSON.stringify(r.provenance, null, 2)}</pre>
+          <pre className="m-0 overflow-x-auto rounded-md bg-surface-soft p-4 font-mono text-[13px]">{JSON.stringify(r.provenance, null, 2)}</pre>
         </Card>
       )}
       <Confirm
@@ -121,10 +121,10 @@ export function Release() {
         {pending === 'purge' && (
           <label className="block">
             Type <Mono>{r.name}</Mono> to confirm:
-            <input data-autofocus aria-label="confirm name" className="mt-1 w-full rounded-full border border-line bg-surface px-3 py-1" value={typed} onChange={(e) => setTyped(e.target.value)} />
+            <input data-autofocus aria-label="confirm name" className="field mt-1 w-full font-mono" value={typed} onChange={(e) => setTyped(e.target.value)} />
           </label>
         )}
       </Confirm>
-    </div>
+    </>
   )
 }

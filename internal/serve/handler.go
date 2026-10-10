@@ -53,6 +53,9 @@ type Options struct {
 	API http.Handler
 	// Console serves /ui/ on https requests (spec 0015); nil: /ui/ answers 404.
 	Console http.Handler
+	// CORSOrigins are the shells on other origins that may load the console's micro-frontend and
+	// call the API (ui.allowed_origins, spec 0015 phase 1b); none: no CORS.
+	CORSOrigins []string
 	// Puller takes the misses of callers holding install that a pull-through upstream may fetch
 	// (spec 0009 phase 2); nil: no pull-through.
 	Puller Puller
@@ -205,6 +208,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"aborted", aborted, "request_id", rq.ID)
 	}()
 	defer func() { aborted = false }() // skipped by a panic: an aborted response
+	cw, done := h.cors(lw, r)
+	if done {
+		route = "cors"
+		return
+	}
 	if strings.HasPrefix(r.URL.EscapedPath(), "/api/") {
 		// the API (spec 0007): https only, its own rules for methods, queries and bodies
 		if scheme(r) != "https" || h.o.API == nil {
@@ -212,7 +220,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		route = "api"
-		h.o.API.ServeHTTP(lw, r)
+		h.o.API.ServeHTTP(cw, r)
 		return
 	}
 	if p := r.URL.EscapedPath(); p == "/ui" || strings.HasPrefix(p, "/ui/") {
@@ -222,7 +230,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		route = "ui"
-		h.o.Console.ServeHTTP(lw, r)
+		h.o.Console.ServeHTTP(cw, r)
 		return
 	}
 	rt := parseRoute(r)

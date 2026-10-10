@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -21,6 +22,9 @@ func TestConsoleRoutes(t *testing.T) {
 		r := m.call(t, "GET", T+"/console", "", "")
 		if r.status != 200 {
 			t.Fatalf("the tenant console: %d %s", r.status, r.body)
+		}
+		if aud, _ := r.json(t)["audience"].(string); !strings.HasSuffix(aud, "/acme") {
+			t.Fatalf("the canonical audience: %q", aud) // phase 1b
 		}
 		return r.json(t)["issuers"].([]any)
 	}

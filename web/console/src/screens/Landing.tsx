@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Shield } from 'lucide-react'
-import { Button, Card } from '../components/ui'
+import { Button } from '../components/ui'
 import { validTenant } from '../lib/scope'
-import { Shell } from './Shell'
+import { EntryCard } from './Shell'
 
 const lastTenant = 'kista.last-tenant'
 
@@ -32,23 +32,28 @@ export function Landing() {
     location.assign(`/ui/t/${tenant}/`)
   }
   return (
-    <Shell environment={server?.environment}>
-      <div className="mx-auto max-w-lg space-y-4 pt-10">
-        <Card title="Tenant administration">
-          <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); go() }}>
-            <input aria-label="tenant" placeholder="tenant name" className="flex-1 rounded-full border border-line bg-surface px-4 py-1.5" value={tenant}
-              onChange={(e) => setTenant(e.target.value.trim().toLowerCase())} />
-            <Button type="submit" tone="brand" disabled={!validTenant(tenant)}>Continue</Button>
-          </form>
-        </Card>
-        {server && server.issuers.length > 0 && (
-          <Card title="Server administration">
-            <a href="/ui/server/" className="inline-flex items-center gap-2 font-semibold text-brand-strong hover:underline">
-              <Shield className="h-4 w-4" /> Sign in as a server administrator
-            </a>
-          </Card>
-        )}
+    <EntryCard environment={server?.environment}>
+      <div className="flex flex-col gap-1.5">
+        <span className="eyebrow">kista console</span>
+        <h1 className="m-0 text-[26px] font-bold leading-[34px] tracking-[-0.01em]">Sign in to manage extensions</h1>
+        <span className="font-mono text-[13px] text-ink-muted">{location.host}</span>
       </div>
-    </Shell>
+      <form className="flex flex-col gap-2" onSubmit={(e) => { e.preventDefault(); go() }}>
+        <span className="text-[13px] font-semibold">Tenant administration</span>
+        <div className="flex gap-2">
+          <input aria-label="tenant" placeholder="tenant name" className="field min-w-0 flex-1 font-mono" value={tenant}
+            onChange={(e) => setTenant(e.target.value.trim().toLowerCase())} />
+          <Button type="submit" tone="brand" disabled={!validTenant(tenant)}>Continue</Button>
+        </div>
+      </form>
+      {server && server.issuers.length > 0 && (
+        <div className="flex flex-col gap-2 border-t border-line pt-5">
+          <span className="text-[13px] font-semibold">Server administration</span>
+          <a href="/ui/server/" className="inline-flex items-center gap-2 font-semibold text-brand-strong no-underline hover:underline">
+            <Shield size={16} aria-hidden /> Sign in as a server administrator
+          </a>
+        </div>
+      )}
+    </EntryCard>
   )
 }

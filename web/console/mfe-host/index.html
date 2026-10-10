@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>A test platform</title>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; background: #f4f4f5; color: #18181b; }
+      header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 20px; background: #3f3f46; color: #fff; }
+      header a { color: #e4e4e7; }
+      header input { width: 280px; }
+      main { display: flex; flex-direction: column; gap: 24px; padding: 20px; }
+      section { background: #fff; border: 1px dashed #a1a1aa; padding: 12px; }
+      #status { font-size: 13px; opacity: 0.85; }
+      /* the platform's colours, set on the element: they win over the console's own */
+      .branded { --brand-strong: rgb(200, 30, 90); --on-brand: #fff; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>platform</strong>
+      <a href="/platform/acme/channels" data-host="acme">Acme</a>
+      <a href="/platform/server/tenants" data-host="server">Server</a>
+      <button id="theme" type="button">Theme</button>
+      <button id="brand" type="button">Brand</button>
+      <button id="expire" type="button">Expire token</button>
+      <button id="revoke" type="button">Revoke token</button>
+      <button id="restore" type="button">Restore token</button>
+      <label>token <input id="token" placeholder="a token for any audience (manual use)" /></label>
+      <span id="status"></span>
+    </header>
+    <main>
+      <section><h2 id="title-acme"></h2><kista-console id="acme" tenant="acme" base-path="/platform/acme"></kista-console></section>
+      <section><h2 id="title-server"></h2><kista-console id="server" base-path="/platform/server"></kista-console></section>
+    </main>
+    <script type="module" src="./host.ts"></script>
+  </body>
+</html>

@@ -1,58 +1,112 @@
+/* The Hugr Lab design system's tokens and fonts (spec 0015): the same variables, values and format
+   as tresor-server's console, so a platform sets them once for both. Fonts are bundled (SIL OFL),
+   never from a CDN. */
+@import '@fontsource/manrope/400.css';
+@import '@fontsource/manrope/500.css';
+@import '@fontsource/manrope/600.css';
+@import '@fontsource/manrope/700.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* The Hugr Lab design system's tokens (spec 0015): RGB triplets a host may override on its
-   element; the same names as tresor-server's console, so a platform sets them once. */
+/* :host is the micro-frontend's shadow root (phase 1b). The dark defaults are on :host too, by the
+   element's data-kista-theme, so a host's variables set on the element win in either theme. */
 :root,
 :host {
-  --surface: 255 255 255;
-  --surface-soft: 244 247 249;
-  --ink: 11 31 58;
-  --ink-muted: 90 104 125;
-  --border: 221 227 234;
-  --brand: 13 148 136;
-  --brand-strong: 15 118 110;
-  --on-brand: 255 255 255;
-  --focus: 45 212 191;
-  --success: 22 163 74;
-  --success-soft: 220 252 231;
-  --warning: 180 83 9;
-  --warning-soft: 254 243 199;
-  --danger: 220 38 38;
-  --danger-soft: 254 226 226;
-  --row: 248 250 252;
+  --surface: #ffffff;
+  --surface-soft: #f2f7f7;
+  --ink: #0b1f2a;
+  --ink-muted: #4a5b64;
+  --border: #d3e1e2;
+  --brand: #338a86;
+  --brand-strong: #2a7470;
+  --on-brand: #ffffff;
+  --navy: #0a3146;
+  --focus: #2a7470;
+  --success: #1e7a4c;
+  --success-soft: #e3f3ea;
+  --warning: #8a5a00;
+  --warning-soft: #fbf0d9;
+  --danger: #b3261e;
+  --danger-soft: #fbe6e4;
+  --row: #f7fafa;
+  color-scheme: light;
 }
 
 :root[data-kista-theme='dark'],
 :host([data-kista-theme='dark']) {
-  --surface: 15 23 42;
-  --surface-soft: 22 33 56;
-  --ink: 226 232 240;
-  --ink-muted: 148 163 184;
-  --border: 51 65 85;
-  --brand: 45 212 191;
-  --brand-strong: 94 234 212;
-  --on-brand: 11 31 58;
-  --focus: 94 234 212;
-  --success: 74 222 128;
-  --success-soft: 20 83 45;
-  --warning: 251 191 36;
-  --warning-soft: 120 53 15;
-  --danger: 248 113 113;
-  --danger-soft: 127 29 29;
-  --row: 17 26 46;
+  --surface: #061c28;
+  --surface-soft: #0a3146;
+  --ink: #e8f1f2;
+  --ink-muted: #9cb1ba;
+  --border: #1e4a60;
+  --brand: #5cbdb6;
+  --brand-strong: #5cbdb6;
+  --on-brand: #061c28;
+  --focus: #5cbdb6;
+  --success: #5fcb91;
+  --success-soft: #0e3a2c;
+  --warning: #e8b45c;
+  --warning-soft: #3a2e10;
+  --danger: #f08a80;
+  --danger-soft: #401c1c;
+  --row: #0b2737;
+  color-scheme: dark;
 }
 
+html,
 body {
-  @apply bg-surface-soft font-sans text-ink antialiased;
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+body,
+.kista-root {
+  font-family: Manrope, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.kista-root {
+  background: var(--surface);
+  color: var(--ink);
+  min-width: 960px;
 }
 
 :focus-visible {
-  outline: 2px solid rgb(var(--focus));
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
 dialog::backdrop {
-  background: rgb(11 31 58 / 0.4);
+  background: rgba(6, 28, 40, 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+@layer components {
+  .eyebrow {
+    @apply text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-muted;
+  }
+  .th {
+    @apply px-3 py-2.5 text-left text-[12px] font-semibold uppercase tracking-[0.04em] text-ink-muted;
+  }
+  .td {
+    @apply px-3 py-3 align-top;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 text-[12px] font-semibold leading-5;
+  }
+  .field {
+    @apply rounded-sm border border-line bg-surface px-3 py-1.5 text-ink outline-none;
+  }
 }

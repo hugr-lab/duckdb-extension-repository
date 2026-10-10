@@ -160,6 +160,20 @@ func page(w http.ResponseWriter, r *http.Request) (int, string, bool) {
 	return limit, after, true
 }
 
+// namePrefix reads ?prefix=, an extension name's beginning (spec 0015 phase 1b): at most 64 bytes of
+// the name grammar's characters, so it never needs escaping in a log or a cursor.
+func namePrefix(w http.ResponseWriter, r *http.Request) (string, bool) {
+	s := r.URL.Query().Get("prefix")
+	nameChar := func(c rune) bool {
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.'
+	}
+	if len(s) > 64 || strings.IndexFunc(s, func(c rune) bool { return !nameChar(c) }) >= 0 {
+		problem(w, http.StatusBadRequest, typeInvalid, "prefix is at most 64 letters, digits, '_', '-' or '.'")
+		return "", false
+	}
+	return s, true
+}
+
 // paged returns the items after the cursor key, at most limit, and the next cursor.
 func paged[T any](items []T, key func(T) string, limit int, after string) ([]T, string) {
 	items = slices.Clone(items)
