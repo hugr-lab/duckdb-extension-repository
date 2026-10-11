@@ -1,6 +1,6 @@
 # Spec 0011: Attachments and the feed
 
-- **Status**: draft
+- **Status**: accepted (2026-10-11); 1a in progress
 - **Date**: 2026-10-11
 - **Author**: vgsml, Claude
 
