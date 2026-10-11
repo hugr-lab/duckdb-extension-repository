@@ -6,6 +6,8 @@ export interface Grant {
   verbs: string[]
   channel?: string
   extension?: string
+  /** spec 0017: a grant on an extension group */
+  extension_group?: string
 }
 
 /** What a caller may administer in a tenant (from whoami's grants; a server administrator: all).
@@ -21,10 +23,14 @@ export class Perms {
     return g.verbs.includes('admin')
   }
   get tenantAdmin() {
-    return this.server || this.grants.some((g) => this.admin(g) && !g.channel && !g.extension)
+    return this.server || this.grants.some((g) => this.admin(g) && !g.channel && !g.extension && !g.extension_group)
   }
   channelAdmin(c: string) {
-    return this.tenantAdmin || this.grants.some((g) => this.admin(g) && g.channel === c && !g.extension)
+    return this.tenantAdmin || this.grants.some((g) => this.admin(g) && g.channel === c && !g.extension && !g.extension_group)
+  }
+  /** The extension groups the caller administers by a grant on them (spec 0017: it reads them). */
+  get groups(): string[] {
+    return [...new Set(this.grants.filter((g) => this.admin(g) && g.extension_group).map((g) => g.extension_group!))].sort()
   }
   /** The extensions of a channel the caller administers by an extension grant. */
   extensionsIn(c: string): string[] {

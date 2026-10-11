@@ -1,11 +1,15 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { BarChart3, List, Package } from 'lucide-react'
+import { BarChart3, Boxes, Fingerprint, List, Package, Send, ShieldCheck } from 'lucide-react'
 import { useTenant } from '../lib/context'
 import { useSections, type NavItem } from '../lib/frame'
 import { Empty } from '../components/ui'
+import { Access } from './Access'
 import { Channel, Extension } from './Channel'
 import { Channels } from './Channels'
 import { Events } from './Events'
+import { GroupPage, Groups } from './Groups'
+import { Identity } from './Identity'
+import { PublisherPage, Publishers } from './Publishers'
 import { Release } from './Release'
 import { Stats } from './Stats'
 
@@ -16,6 +20,13 @@ export function TenantArea({ label }: { label?: React.ReactNode }) {
   const admin = perms.server || perms.grants.some((g) => g.verbs.includes('admin'))
   const tabs: NavItem[] = []
   if (admin) tabs.push({ to: `${base}/channels`, label: 'Channels', icon: Package })
+  // spec 0015 phase 2a: a group's administrators read their groups; the rest is a tenant administrator's
+  if (perms.tenantAdmin || perms.groups.length > 0) tabs.push({ to: `${base}/groups`, label: 'Groups', icon: Boxes })
+  if (perms.tenantAdmin) {
+    tabs.push({ to: `${base}/access`, label: 'Access', icon: ShieldCheck })
+    tabs.push({ to: `${base}/identity`, label: 'Identity', icon: Fingerprint })
+    tabs.push({ to: `${base}/publishers`, label: 'Publishers', icon: Send })
+  }
   if (perms.canAudit) tabs.push({ to: `${base}/events`, label: 'Events', icon: List })
   if (admin || perms.canAudit) tabs.push({ to: `${base}/stats`, label: 'Statistics', icon: BarChart3 }) // the API scopes them to the caller's grants
   useSections('tenant', perms.anything ? { label, items: tabs } : null, `${base}|${tabs.map((t) => t.to).join(',')}`)
@@ -27,6 +38,12 @@ export function TenantArea({ label }: { label?: React.ReactNode }) {
       <Route path="channels/:c" element={<Channel />} />
       <Route path="channels/:c/extensions/:ext" element={<Extension />} />
       <Route path="channels/:c/releases/:ext/:id" element={<Release />} />
+      <Route path="groups" element={<Groups />} />
+      <Route path="groups/:g" element={<GroupPage />} />
+      <Route path="access" element={<Access />} />
+      <Route path="identity" element={<Identity />} />
+      <Route path="publishers" element={<Publishers />} />
+      <Route path="publishers/:name" element={<PublisherPage />} />
       <Route path="events" element={<Events key={api} client={client} path={`${api}/events`} title="Events" />} />
       <Route path="stats" element={<Stats />} />
       <Route path="*" element={<Empty>Not found.</Empty>} />

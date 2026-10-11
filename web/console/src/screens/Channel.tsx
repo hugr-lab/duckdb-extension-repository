@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { Badge, Button, Chips, Empty, ErrorBox, Loading, Mono, PageTitle, Pager, SearchBox, Table, when } from '../components/ui'
 import { useLoad, usePaged, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
+import { WhoMayUse } from './Access'
 import { Keys } from './Keys'
 import type { Release } from './types'
 
@@ -103,7 +104,11 @@ function Extensions({ channel, versions }: { channel: string; versions: string[]
 function Mine({ channel }: { channel: string }) {
   const { perms, base } = useTenant()
   const exts = perms.extensionsIn(channel)
-  if (exts.length === 0) return <Empty>You administer no extension in this channel.</Empty>
+  if (exts.length === 0) {
+    return perms.groups.length > 0
+      ? <Empty>Your extensions here come through your groups: <Link to={`${base}/groups`}>Groups</Link>.</Empty>
+      : <Empty>You administer no extension in this channel.</Empty>
+  }
   return (
     <Table
       rows={exts}
@@ -166,12 +171,13 @@ function Releases({ channel }: { channel: string }) {
  * cursor survives new releases). */
 export function Extension() {
   const { c = '', ext = '' } = useParams()
-  const { base } = useTenant()
+  const { base, perms } = useTenant()
   return (
     <>
       <PageTitle eyebrow={<><Link to={`${base}/channels`} className="no-underline">Channels</Link> / <Link to={`${base}/channels/${seg(c)}`} className="no-underline">{c}</Link></>}
         title={<span className="font-mono">{ext}</span>} />
       <ReleaseList channel={c} ext={ext} />
+      {perms.tenantAdmin && <WhoMayUse channel={c} ext={ext} />}
     </>
   )
 }

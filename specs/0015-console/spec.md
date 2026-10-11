@@ -1,6 +1,6 @@
 # Spec 0015: Administration console
 
-- **Status**: accepted (2026-10-10); phases 1a and 1b implemented, 2 next
+- **Status**: accepted (2026-10-10); phases 1a and 1b implemented, 2a in progress
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 
@@ -27,10 +27,13 @@ Delivery, each phase a pull request:
   - the contract module and custom element, CORS for shells, the test host;
   - the frame and tokens of tresor-server's console, so the two read as one platform;
   - lists read page by page, with a name prefix searched by the API.
-- **2. Administration forms**:
-  - grants, issuers and their console clients, audiences;
-  - publishers and API keys, blocks;
-  - upstreams (entries, platforms, keys, credentials, sync, cells);
+- **2a. Access and identity forms**:
+  - access by principal, and who may use an extension; grants given and revoked;
+  - extension groups (spec 0017): the list, a group's members and grants;
+  - issuers and their console clients, audiences;
+  - publishers, their GitHub credentials and API keys.
+- **2b. Distribution forms**:
+  - upstreams (entries, platforms, keys, credentials, sync, cells), blocks;
   - key activation and retirement;
   - tenants and DuckDB versions (server administrators).
 
@@ -324,6 +327,44 @@ community extensions, and its channels hold thousands of releases.
 Phase 2's forms (grants, upstream allowlists, extension groups) follow the same rule; the routes
 they need without paging today (an upstream's allowlist, an extension's index rows) gain it there.
 
+### Access and identity (2a)
+
+The tenant's sections become Channels, Groups, Access, Identity, Publishers, then Events and
+Statistics. Groups are listed for a group's administrators too (read only); the others are a tenant
+administrator's. Every form sends what the API takes and shows the API's own message on a `400`.
+
+- **Access**, by principal, as tresor-server's Access screen:
+  - left, the tenant's principals with their grant counts, paged with a prefix search, from a new
+    route `GET …/grants/principals[?prefix=&cursor=&limit=]` (tenant admin; rows `principal`,
+    `grants`; by principal, cursor the last one; issuer-wide and publisher principals included). A
+    `subject:` principal is marked "a person": grants go to roles and groups, a person or a client
+    only as an exception, and the page says so;
+  - right, the chosen principal's grants (`?principal=`, paged): on what, in which channel, the
+    verbs, and revoke (confirmed);
+  - a form to grant to a principal, typed or chosen: on the tenant, a channel, an extension or an
+    extension group, in every channel or one, with the verbs. `admin` on a group says it manages
+    the members' releases and never the members; `audit` is offered only on the tenant.
+- **Who may use an extension** (its page in a channel, tenant administrators): the grants that
+  reach it (`?extension=`), those of other channels left out, each with how it reaches it (`via`)
+  and the verbs that apply (`verbs_on_extension`). Only a grant on the extension itself is
+  revoked there; the others say where they are changed.
+- **Extension groups**: the list (paged, prefix; members and grant counts), a new group; a group's
+  page with its description (edited with `If-Match`), its members (paged, prefix; added as names
+  separated by commas or spaces, at most 100 at a time, and removed one by one, each confirmed with
+  what it changes: who gains or loses the name), its grants (`?extension_group=`) with a link to
+  grant on it, the group's recent events (`subject=extension-group:<name>`), and removal (refused by
+  the API while a grant names it, which the page explains). A group's administrator sees the page
+  without its forms or grants.
+- **Identity**: the issuer records (name, URL, algorithms, required claims, claim paths, the
+  console client), a new record (the API fetches its discovery document and JWKS, so a failure is
+  shown as the API words it), removal (with the record's ETag, warning that its grants go with it),
+  and its console client set or removed. The tenant's audiences are listed; adding and removing
+  one is a server administrator's.
+- **Publishers**: the list, a new publisher, removal (its grants and credentials go with it); a
+  publisher's page with its GitHub credentials (added with owner and repository ids, workflow, ref
+  pattern, environment; removed) and API keys (issued with an expiry, the key shown once and never
+  again; revoked), and its grants (`?principal=publisher:<name>`).
+
 ### The micro-frontend contract (1b; kista's contract version 1)
 
 This is tresor-server's contract with kista's names, plus `tenant`. kista's contract number is
@@ -442,7 +483,8 @@ web/console/                   the console: src/main.tsx (standalone), src/mfe.t
 web/console/console.go         embed, /ui/ serving, the per-scope CSP
 internal/config                + ui:
 web/console/mfe-host/          the test platform (1b): npm run host, vite.host.config.ts
-internal/api                   + /api/v1/console, tenants/{t}/console, issuers/{name}/console, prefix (1b)
+internal/api                   + /api/v1/console, tenants/{t}/console, issuers/{name}/console, prefix (1b),
+                               grants/principals (2a)
 internal/serve                 + /ui/ routing, CORS for shells (1b)
 internal/store, migrations/*/0015_console.sql   + issuer_console_clients
 internal/tenants, internal/audit, cmd/kista     + console clients, their events, kista admin issuer console
@@ -487,7 +529,9 @@ Makefile, .github/workflows/ci.yml               + make console; console, consol
     - the API: `If-Match` with the issuer id, and a re-added record not inheriting;
     - the CLI and the events coverage test;
   - CORS and preflight (1b); the `ui:` validation;
-  - `prefix` on the extensions index and the releases list, with cursors (1b).
+  - `prefix` on the extensions index and the releases list, with cursors (1b);
+  - `grants/principals`: counts over both grant tables, prefix and cursors, tenant administrators
+    only (2a).
 - **Unit** (Vitest, jsdom, Testing Library):
   - the API client: If-Match, one renewal per `401`, none on `404` or `400`, the throttle, the
     token bound to its scope prefix;
@@ -503,7 +547,11 @@ Makefile, .github/workflows/ci.yml               + make console; console, consol
   - `/ui/t/other` shows the IdP host and does not redirect;
   - an expired session's popup sign-in keeps a form;
   - (1b) the micro-frontend in the test host on another origin, two instances on one page: the
-    token per audience, `renew` semantics, theme, `onUnauthorized`, navigation.
+    token per audience, `renew` semantics, theme, `onUnauthorized`, navigation;
+  - (2a) a tenant administrator grants install on an extension group to a principal, adds a name
+    to the group, sees the grant in Access and on the extension's page, and revokes it; a group's
+    administrator sees the group without forms; an issuer record and a publisher with an API key
+    are added and removed.
 
 ## Alternatives considered
 

@@ -204,18 +204,22 @@ export function Chips<T extends string>({ value, options, onChange, label }: { v
 }
 
 /** Pages by the API's cursors: the size, where we are, previous and next. */
-export function Pager({ page, size, count, hasNext, onPrev, onNext, onSize }: {
+export function Pager({ page, size, count, hasNext, onPrev, onNext, onSize, compact }: {
   page: number; size: number; count: number; hasNext: boolean; onPrev: () => void; onNext: () => void; onSize: (n: number) => void
+  /** a narrow column: the page size stays as it is */
+  compact?: boolean
 }) {
   const from = count ? page * size + 1 : 0
   return (
     <nav aria-label="Pages" className="flex flex-wrap items-center gap-3 text-[13px] text-ink-muted">
-      <label className="flex items-center gap-2">
-        Rows per page
-        <select value={size} onChange={(e) => onSize(Number(e.target.value))} className="field py-1 text-[13px]">
-          {[50, 100, 200].map((n) => <option key={n} value={n}>{n}</option>)}
-        </select>
-      </label>
+      {!compact && (
+        <label className="flex items-center gap-2">
+          Rows per page
+          <select value={size} onChange={(e) => onSize(Number(e.target.value))} className="field py-1 text-[13px]">
+            {[50, 100, 200].map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+      )}
       <span className="ml-auto">{count ? `${from}–${from + count - 1}` : 'Nothing here'}</span>
       <button type="button" aria-label="Previous page" disabled={page === 0} onClick={onPrev}
         className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface text-ink disabled:opacity-40">
@@ -227,4 +231,37 @@ export function Pager({ page, size, count, hasNext, onPrev, onNext, onSize }: {
       </button>
     </nav>
   )
+}
+
+/** A labelled form field (phase 2a's forms). */
+export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
+  return (
+    <label className="flex min-w-0 flex-col gap-1">
+      <span className="text-[13px] font-semibold text-ink">{label}</span>
+      {children}
+      {hint && <span className="text-[12px] text-ink-muted">{hint}</span>}
+    </label>
+  )
+}
+
+/** Checkboxes for a set of values, as pills. */
+export function Checks({ value, options, onChange, label }: { value: string[]; options: string[]; onChange: (v: string[]) => void; label: string }) {
+  return (
+    <div role="group" aria-label={label} className="flex flex-wrap gap-1.5">
+      {options.map((o) => {
+        const on = value.includes(o)
+        return (
+          <label key={o} className={`flex cursor-pointer items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] ${on ? 'border border-brand-strong bg-surface-soft font-semibold text-brand-strong' : 'border border-line bg-surface text-ink'}`}>
+            <input type="checkbox" className="sr-only" checked={on} onChange={() => onChange(on ? value.filter((x) => x !== o) : [...value, o])} />
+            {o}
+          </label>
+        )
+      })}
+    </div>
+  )
+}
+
+/** A note beside a form: what the action means. */
+export function Note({ children }: { children: ReactNode }) {
+  return <p className="m-0 rounded-md bg-surface-soft px-3.5 py-2.5 text-[13px] text-ink-muted">{children}</p>
 }

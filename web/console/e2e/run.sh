@@ -26,11 +26,12 @@ cleanup() {
 trap cleanup EXIT
 
 # passwords for this run only, never printed
-export E2E_PW_TOM E2E_PW_EVE E2E_PW_NINA E2E_PW_ROOT E2E_KC_ADMIN_PW
+export E2E_PW_TOM E2E_PW_EVE E2E_PW_NINA E2E_PW_GINA E2E_PW_ROOT E2E_KC_ADMIN_PW
 E2E_KC_ADMIN_PW="$(openssl rand -hex 12)"
 E2E_PW_TOM="$(openssl rand -hex 12)"
 E2E_PW_EVE="$(openssl rand -hex 12)"
 E2E_PW_NINA="$(openssl rand -hex 12)"
+E2E_PW_GINA="$(openssl rand -hex 12)"
 E2E_PW_ROOT="$(openssl rand -hex 12)"
 
 echo "e2e: Keycloak"
@@ -51,9 +52,10 @@ def client(cid, aud):
             "config": {"included.custom.audience": aud, "access.token.claim": "true", "id.token.claim": "false"}}]}
 e = os.environ
 acme = {"realm": "acme", "enabled": True, "sslRequired": "none",
-    "roles": {"realm": [{"name": "tenant-admin"}, {"name": "ext-admin"}]},
+    "roles": {"realm": [{"name": "tenant-admin"}, {"name": "ext-admin"}, {"name": "platform-team"}]},
     "clients": [client("kista-console", f"{kista}/acme")],
-    "users": [user("tom", e["E2E_PW_TOM"], ["tenant-admin"]), user("eve", e["E2E_PW_EVE"], ["ext-admin"]), user("nina", e["E2E_PW_NINA"], [])]}
+    "users": [user("tom", e["E2E_PW_TOM"], ["tenant-admin"]), user("eve", e["E2E_PW_EVE"], ["ext-admin"]), user("nina", e["E2E_PW_NINA"], []),
+        user("gina", e["E2E_PW_GINA"], ["platform-team"])]}
 ops = {"realm": "ops", "enabled": True, "sslRequired": "none", "roles": {"realm": [{"name": "kista-admin"}]},
     "clients": [client("kista-server-console", "api://kista-server")], "users": [user("root", e["E2E_PW_ROOT"], ["kista-admin"])]}
 for r in (acme, ops):
@@ -106,6 +108,9 @@ k issuer add acme -name kc -url "$kc/realms/acme" -roles-claim realm_access.role
 k issuer console acme kc -client-id kista-console
 k grant add acme -principal "role:kc|tenant-admin" -verb admin
 k grant add acme -principal "role:kc|ext-admin" -verb admin -channel prod -extension tresor
+k extension-group add acme platform -description "What every hugr node installs"   # spec 0017
+k extension-group members acme platform -add tresor
+k grant add acme -principal "role:kc|platform-team" -verb admin -extension-group platform
 k release add acme/prod "$work/tresor.duckdb_extension" -name tresor -unchecked
 k release add acme/prod "$work/hello.duckdb_extension" -name hello_acme -unchecked
 "$work/kista" serve -config "$work/kista.yaml" >"$work/kista.log" 2>&1 &
