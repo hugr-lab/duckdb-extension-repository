@@ -1,5 +1,6 @@
-import { Link } from 'react-router-dom'
-import { Badge, Empty, ErrorBox, Loading, Mono, PageTitle, Table } from '../components/ui'
+import { useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Table } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
 
@@ -10,6 +11,7 @@ interface Channel {
 
 export function Channels() {
   const { client, api, perms, base } = useTenant()
+  const [creating, setCreating] = useState(false)
   const { data, error, loading } = useLoad(async () => {
     const chs = (await client.get<{ channels: Channel[] }>(`${api}/channels`)).data.channels.filter((c) => perms.anyIn(c.name))
     // each channel's DuckDB versions, from its (public) detail
@@ -25,7 +27,9 @@ export function Channels() {
     <>
       <PageTitle title="Channels">
         <span className="pb-1 text-ink-muted">{rows.length} {rows.length === 1 ? 'channel' : 'channels'} · each signs what it serves with its own key.</span>
+        {perms.tenantAdmin && <span className="ml-auto"><Button tone="brand" onClick={() => setCreating(!creating)}>{creating ? 'Close' : 'New channel'}</Button></span>}
       </PageTitle>
+      {creating && <NewChannel />}
       {rows.length === 0 ? (
         <Empty>No channel you administer.</Empty>
       ) : (
@@ -41,5 +45,43 @@ export function Channels() {
         />
       )}
     </>
+  )
+}
+
+/** Creates a channel (spec 0007 phase 3): a signed one needs a key a server administrator adds. */
+function NewChannel() {
+  const { client, api, base } = useTenant()
+  const nav = useNavigate()
+  const [name, setName] = useState('')
+  const [kind, setKind] = useState('signed')
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState<unknown>(null)
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (busy) return
+    setBusy(true)
+    setFailure(null)
+    try {
+      await client.post(`${api}/channels`, { body: { name, kind } })
+      nav(`${base}/channels/${seg(name)}`)
+    } catch (err) {
+      setFailure(err)
+    }
+    setBusy(false)
+  }
+  return (
+    <Card title="New channel">
+      <form className="flex flex-col gap-4" onSubmit={submit}>
+        <div className="flex flex-wrap gap-4">
+          <Field label="Name" hint="a path segment: lowercase letters, digits and -"><input className="field font-mono" required pattern="[a-z0-9][a-z0-9-]{0,62}" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label="Kind">
+            <select className="field" value={kind} onChange={(e) => setKind(e.target.value)}><option value="signed">signed</option><option value="passthrough">passthrough</option></select>
+          </Field>
+        </div>
+        <Note>A signed channel serves what its key signs: a server administrator adds the key. A passthrough channel serves DuckDB's core byte-identical. Give it DuckDB versions on its page.</Note>
+        {failure != null && <ErrorBox error={failure} />}
+        <div><Button type="submit" tone="brand" disabled={busy}>Create</Button></div>
+      </form>
+    </Card>
   )
 }

@@ -73,6 +73,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=kista.test" -addext
 	-keyout "$work/key.pem" -out "$work/cert.pem" 2>/dev/null
 mkdir -p "$work/keys"
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/a.pem" 2>/dev/null
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/b.pem" 2>/dev/null  # added from the console (2b)
 (cd "$root" && GOWORK=off go build -o "$work/kista" ./cmd/kista && GOWORK=off go run ./web/console/e2e/fixture "$work/tresor.duckdb_extension" 1.0 a \
 	&& GOWORK=off go run ./web/console/e2e/fixture "$work/hello.duckdb_extension" 1.0 b)
 cat >"$work/kista.yaml" <<YAML

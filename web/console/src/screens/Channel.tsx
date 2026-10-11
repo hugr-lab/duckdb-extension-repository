@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Badge, Button, Chips, Empty, ErrorBox, Loading, Mono, PageTitle, Pager, SearchBox, Table, when } from '../components/ui'
+import { Badge, Button, Chips, Confirm, Empty, ErrorBox, Loading, Mono, PageTitle, Pager, SearchBox, Table, when } from '../components/ui'
 import { useLoad, usePaged, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
 import { WhoMayUse } from './Access'
@@ -31,12 +31,62 @@ export function Channel() {
     <>
       <PageTitle eyebrow={<><Link to={`${base}/channels`} className="no-underline">Channels</Link>{detail.data && ` / ${detail.data.data.kind}`}</>}
         title={<span className="font-mono">{c}</span>}>
-        {versions.length > 0 && <span className="pb-1 text-ink-muted">Serves DuckDB {versions.join(', ')}</span>}
+        {!admin && versions.length > 0 && <span className="pb-1 text-ink-muted">Serves DuckDB {versions.join(', ')}</span>}
       </PageTitle>
+      {admin && detail.data && <ChannelVersions key={c} channel={c} versions={versions} onChanged={detail.reload} />}
       {tabs.length > 1 && <Chips label="channel sections" value={tab} options={tabs} onChange={(t) => setTab({ c, tab: t })} />}
       {tab === 'keys' ? <Keys channel={c} /> : tab === 'releases' ? <Releases channel={c} /> : !admin ? <Mine channel={c} /> :
         detail.error ? <ErrorBox error={detail.error} /> : !detail.data ? <Loading /> : <Extensions channel={c} versions={versions} />}
     </>
+  )
+}
+
+/** The DuckDB versions a channel serves, added and removed by its administrators. */
+function ChannelVersions({ channel, versions, onChanged }: { channel: string; versions: string[]; onChanged: () => void }) {
+  const { client, api } = useTenant()
+  const known = useLoad(() => client.get<{ duckdb_versions: { name: string }[] }>('/duckdb-versions', { anonymous: true }), [])
+  const [adding, setAdding] = useState('')
+  const [removing, setRemoving] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState<unknown>(null)
+  const act = async (fn: () => Promise<unknown>) => {
+    if (busy) return
+    setBusy(true)
+    setFailure(null)
+    try {
+      await fn()
+      setAdding('')
+    } catch (e) {
+      setFailure(e)
+    }
+    setBusy(false)
+    onChanged()
+  }
+  const path = `${api}/channels/${seg(channel)}/duckdb-versions`
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[13px] text-ink-muted">Serves DuckDB</span>
+        {versions.map((v) => (
+          <span key={v} className="chip flex items-center gap-1 border border-line text-ink">
+            <Mono>{v}</Mono>
+            <button type="button" aria-label={`stop serving ${v}`} disabled={busy} onClick={() => setRemoving(v)} className="text-ink-muted hover:text-danger">×</button>
+          </span>
+        ))}
+        <form className="flex items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); act(() => client.post(path, { body: { duckdb_version: adding } })) }}>
+          <select aria-label="DuckDB version to serve" className="field py-1 text-[13px]" value={adding} required onChange={(e) => setAdding(e.target.value)}>
+            <option value="" disabled>add…</option>
+            {(known.data?.data.duckdb_versions ?? []).filter((v) => !versions.includes(v.name)).map((v) => <option key={v.name}>{v.name}</option>)}
+          </select>
+          <Button type="submit" disabled={busy || !adding}>Add</Button>
+        </form>
+      </div>
+      {failure != null && <ErrorBox error={failure} />}
+      <Confirm open={removing !== ''} title={`Stop serving DuckDB ${removing}?`} confirm="Stop serving" danger
+        onConfirm={() => { const v = removing; setRemoving(''); act(() => client.del(`${path}/${seg(v)}`)) }} onClose={() => setRemoving('')}>
+        <p>Clients on DuckDB {removing} find nothing in this channel any more. Its releases stay, and adding the version back serves them again.</p>
+      </Confirm>
+    </div>
   )
 }
 

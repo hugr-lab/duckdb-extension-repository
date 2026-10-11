@@ -30,6 +30,7 @@ export interface Key {
   state_changed_by: string
   created_at: string
   created_by: string
+  etag: string
 }
 
 export interface KeyView {

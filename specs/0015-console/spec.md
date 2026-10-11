@@ -1,6 +1,6 @@
 # Spec 0015: Administration console
 
-- **Status**: accepted (2026-10-10); phases 1a, 1b and 2a implemented, 2b next
+- **Status**: implemented (accepted 2026-10-10; phases 1a, 1b, 2a and 2b)
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 
@@ -33,8 +33,8 @@ Delivery, each phase a pull request:
   - issuers and their console clients, audiences;
   - publishers, their GitHub credentials and API keys.
 - **2b. Distribution forms**:
-  - upstreams (entries, platforms, keys, credentials, sync, cells), blocks;
-  - key activation and retirement;
+  - upstreams (entries, platforms, keys, credentials, sync, cells), shadows, blocks;
+  - channels created, their DuckDB versions; key activation and retirement, a key added (server);
   - tenants and DuckDB versions (server administrators).
 
 ## Problem
@@ -366,6 +366,37 @@ administrator's. Every form sends what the API takes and shows the API's own mes
   pattern, environment; removed) and API keys (issued with an expiry, the key shown once and never
   again; revoked), and its grants (`?principal=publisher:<name>`).
 
+### Distribution (2b)
+
+The tenant's sections gain Upstreams and Blocks (a tenant administrator's); the server's gain
+DuckDB versions.
+
+- **Upstreams**: the list (name, kind, the channel it feeds, mode, state, visibility, the last
+  run's counts, whether a run is requested or running), a new upstream (kind; channel; mode;
+  visibility; platforms as chips; for a repository its prefix and pinned key fingerprints; the
+  first allowlist entries; a configured credential by name), and an upstream's page:
+  - sync and dry run; pause or resume, public or private, and removal (its releases stay) with
+    its `If-Match`; each confirmed;
+  - for a repository, its credential set or cleared (the configured names are a server
+    administrator's to list, so the name is typed) and its pinned keys added and removed (a key in
+    the path as is: `sha256:…`, since the API refuses escaped paths);
+  - platforms added and removed, each removal confirmed;
+  - the allowlist, page by page with a prefix, from `GET …/upstreams/{name}/extensions`, which gains
+    `?prefix=&cursor=&limit=` (by name; without `limit`, the whole allowlist as before); an entry
+    added or replaced (name, versions, the reserved-name override) and removed;
+  - the last run: when, dry or not, counts by outcome, the first problems and an error;
+  - the cells, page by page, filtered by outcome.
+  - The tenant's shadows (core names it replaced) are listed under Upstreams, paged, each removable.
+- **Blocks**: the tenant's blocked bodies (hash, reason, when, who), a body blocked by its hash
+  with a reason (confirmed: its releases are yanked in every channel), and unblocked.
+- **Channels**: a tenant administrator creates one (name, kind); a channel's administrator adds
+  and removes its DuckDB versions on its page. On the Keys tab a channel's administrator activates
+  a trusted key and retires a trusted one (with the key's `If-Match`, confirmed, the API's refusal
+  shown as worded); a server administrator also adds a key by signer reference and may force.
+- **Server**: tenants created (name, display name, storage domain) and suspended or resumed (with
+  the tenant's `If-Match`, confirmed); DuckDB versions listed and added (name, kind, a maximum C API
+  per major), and a C API added to one.
+
 ### The micro-frontend contract (1b; kista's contract version 1)
 
 This is tresor-server's contract with kista's names, plus `tenant`. kista's contract number is
@@ -532,7 +563,8 @@ Makefile, .github/workflows/ci.yml               + make console; console, consol
   - CORS and preflight (1b); the `ui:` validation;
   - `prefix` on the extensions index and the releases list, with cursors (1b);
   - `grants/principals`: counts over both grant tables, prefix and cursors, tenant administrators
-    only (2a).
+    only (2a);
+  - an upstream's allowlist paged with a prefix (2b).
 - **Unit** (Vitest, jsdom, Testing Library):
   - the API client: If-Match, one renewal per `401`, none on `404` or `400`, the throttle, the
     token bound to its scope prefix;
@@ -541,7 +573,9 @@ Makefile, .github/workflows/ci.yml               + make console; console, consol
     `basePath`, `popstate` outside it ignored, a rejected `getToken`;
   - the forms' rules (2a): a grant's request body, the verbs offered (audit on the tenant only,
     install only to an issuer-wide principal, a publisher's), member names, required claims and
-    claim paths, group grants in `Perms`.
+    claim paths, group grants in `Perms`;
+  - (2b) an upstream's request body (a repository's prefix, keys and credential only), allowlist
+    names, a run's counts, a key's path segment.
 - **e2e** (Playwright, Chromium, against `kista serve`, with Keycloak in docker as tresor-server
   does):
   - sign-in in both scopes;
@@ -555,7 +589,11 @@ Makefile, .github/workflows/ci.yml               + make console; console, consol
   - (2a) a tenant administrator adds a name to an extension group, grants install on it to a
     principal, is told why the granted group cannot be deleted, sees the grant on the extension's
     page and, searching by prefix, in Access, and revokes it; a group's administrator sees the group
-    without forms; an issuer record and a publisher with an API key are added and removed.
+    without forms; an issuer record and a publisher with an API key are added and removed;
+  - (2b) a tenant administrator adds a core upstream, adds and finds an allowlist entry, requests a
+    dry run and removes the upstream; blocks and unblocks a body; creates a channel and gives it a
+    DuckDB version; a server administrator creates a tenant, suspends and resumes it, adds a DuckDB
+    version, and adds a key to the channel by signer reference and activates it.
 
 ## Alternatives considered
 

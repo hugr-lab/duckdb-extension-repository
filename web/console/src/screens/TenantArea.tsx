@@ -1,15 +1,17 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { BarChart3, Boxes, Fingerprint, List, Package, Send, ShieldCheck } from 'lucide-react'
+import { Ban, BarChart3, Boxes, CloudDownload, Fingerprint, List, Package, Send, ShieldCheck } from 'lucide-react'
 import { useTenant } from '../lib/context'
 import { useSections, type NavItem } from '../lib/frame'
 import { Empty } from '../components/ui'
 import { Access } from './Access'
+import { Blocks } from './Blocks'
 import { Channel, Extension } from './Channel'
 import { Channels } from './Channels'
 import { Events } from './Events'
 import { GroupPage, Groups } from './Groups'
 import { Identity } from './Identity'
 import { PublisherPage, Publishers } from './Publishers'
+import { UpstreamPage, Upstreams } from './Upstreams'
 import { Release } from './Release'
 import { Stats } from './Stats'
 
@@ -20,12 +22,14 @@ export function TenantArea({ label }: { label?: React.ReactNode }) {
   const admin = perms.server || perms.grants.some((g) => g.verbs.includes('admin'))
   const tabs: NavItem[] = []
   if (admin) tabs.push({ to: `${base}/channels`, label: 'Channels', icon: Package })
-  // spec 0015 phase 2a: a group's administrators read their groups; the rest is a tenant administrator's
+  // spec 0015 phases 2a, 2b: a group's administrators read their groups; the rest is a tenant administrator's
+  if (perms.tenantAdmin) tabs.push({ to: `${base}/upstreams`, label: 'Upstreams', icon: CloudDownload })
   if (perms.tenantAdmin || perms.groups.length > 0) tabs.push({ to: `${base}/groups`, label: 'Groups', icon: Boxes })
   if (perms.tenantAdmin) {
     tabs.push({ to: `${base}/access`, label: 'Access', icon: ShieldCheck })
     tabs.push({ to: `${base}/identity`, label: 'Identity', icon: Fingerprint })
     tabs.push({ to: `${base}/publishers`, label: 'Publishers', icon: Send })
+    tabs.push({ to: `${base}/blocks`, label: 'Blocks', icon: Ban })
   }
   if (perms.canAudit) tabs.push({ to: `${base}/events`, label: 'Events', icon: List })
   if (admin || perms.canAudit) tabs.push({ to: `${base}/stats`, label: 'Statistics', icon: BarChart3 }) // the API scopes them to the caller's grants
@@ -38,6 +42,9 @@ export function TenantArea({ label }: { label?: React.ReactNode }) {
       <Route path="channels/:c" element={<Channel />} />
       <Route path="channels/:c/extensions/:ext" element={<Extension />} />
       <Route path="channels/:c/releases/:ext/:id" element={<Release />} />
+      <Route path="upstreams" element={<Upstreams />} />
+      <Route path="upstreams/:name" element={<UpstreamPage />} />
+      <Route path="blocks" element={<Blocks />} />
       <Route path="groups" element={<Groups />} />
       <Route path="groups/:g" element={<GroupPage />} />
       <Route path="access" element={<Access />} />
