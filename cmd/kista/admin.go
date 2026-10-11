@@ -20,6 +20,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
@@ -107,6 +108,9 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   block remove <tenant> <body-hash>
   wellknown <tenant>/<channel>
   blob check                                      pin and check the storage domains, list tenants without one
+  blob verify [-domain d] [-full] [-mark] [-concurrency 4]
+                  every stored body present and of its length (-full: every chunk against its digest);
+                  -mark marks what is not, so the next commit of the body uploads it again
   blob gc [-domain <d>] [-apply] [-force]         collect storage garbage (spec 0016): a dry run unless -apply;
                                                   -apply needs -force while gc.interval is 0 (replicas maybe older)
 `
@@ -278,6 +282,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 			return a.blobCheck(ctx)
 		case sub == "gc":
 			return a.blobGC(ctx, args[2:])
+		case sub == "verify":
+			return a.blobVerify(ctx, args[2:])
 		}
 		return errUsage
 	}
@@ -1431,6 +1437,59 @@ func (a *adminCmd) events(ctx context.Context, sub string, args []string) error 
 }
 
 // blobGC runs a collection of the storage domains now (spec 0016), a dry run unless -apply.
+// blobVerify checks every record of the storage domains against its object (spec 0018).
+func (a *adminCmd) blobVerify(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("blob verify", flag.ContinueOnError)
+	domain := fs.String("domain", "", "")
+	full := fs.Bool("full", false, "")
+	mark := fs.Bool("mark", false, "")
+	conc := fs.Int("concurrency", 4, "")
+	if pos, err := flags(fs, args); err != nil || len(pos) != 0 {
+		return errUsage
+	}
+	svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.DiscardHandler))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = svc.Close() }()
+	domains := svc.Domains()
+	if *domain != "" {
+		if !svc.HasDomain(*domain) {
+			return fmt.Errorf("no storage domain %s in the configuration", *domain)
+		}
+		domains = []string{*domain}
+	}
+	problem := func(p blob.Problem) {
+		note := ""
+		switch {
+		case p.Marked:
+			note = " (marked)"
+		case p.WasMarked:
+			note = " (marked before)"
+		}
+		fmt.Fprintf(a.out, "%s\t%s\t%s\t%s\t%s%s\n", p.Domain, p.BodyHash, p.StreamHash, p.Outcome, p.Detail, note)
+	}
+	var bad []string
+	for _, d := range domains {
+		r, err := svc.Verify(ctx, d, blob.VerifyOptions{Full: *full, Mark: *mark, Concurrency: *conc, Problem: problem})
+		if eerr := app.VerifyEvent(context.WithoutCancel(ctx), a.svc.Store, a.actor.String(), r, err); eerr != nil {
+			fmt.Fprintf(a.errw, "domain %s: recording the pass: %v\n", d, eerr)
+		}
+		fmt.Fprintf(a.out, "domain %s: %d checked, %d ok, %d missing, %d short, %d long, %d corrupt, %d damaged records, %d unreadable, %d marked, %d bytes read\n",
+			d, r.Checked, r.OK, r.Missing, r.Short, r.Long, r.Corrupt, r.Record, r.Unreadable, r.Marked, r.Bytes)
+		if err != nil {
+			fmt.Fprintf(a.errw, "domain %s: %v\n", d, err)
+		}
+		if err != nil || !r.Clean() {
+			bad = append(bad, d)
+		}
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("storage domain(s) %s: not every body is present and intact", strings.Join(bad, ", "))
+	}
+	return nil
+}
+
 func (a *adminCmd) blobGC(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("blob gc", flag.ContinueOnError)
 	domain := fs.String("domain", "", "")

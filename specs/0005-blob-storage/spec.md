@@ -419,6 +419,6 @@ internal/store            + migration 0002
 - Phase 3: AWS platform identity for `s3`, and `gcs`.
 - Later:
   - skipping re-uploads of public upstream bodies (with periodic verification);
-  - `kista admin blob verify` (scrub);
+  - `kista admin blob verify` (scrub): spec 0018;
   - moving a tenant between domains;
   - a local read cache.

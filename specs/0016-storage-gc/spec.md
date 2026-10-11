@@ -127,7 +127,7 @@ the tombstone gone, then uploads. The one residual case is a delete request that
 more than thirty minutes after its collector checked its stamp (a process suspended between the
 check and the request, or a request held in the network): the object store offers no conditional
 delete to fence it. A reader then finds the object missing and marks the row corrupt
-(spec 0005); the next commit of the body repairs it, and `kista admin blob verify` (a follow-up)
+(spec 0005); the next commit of the body repairs it, and `kista admin blob verify` (spec 0018)
 finds such rows.
 
 ### Builds and bodies
@@ -322,6 +322,6 @@ internal/app, cmd/kista, internal/api   + the scheduled pass, kista admin blob g
 ## Follow-ups
 
 - Tenant deletion; an automatic retention for yanked releases, if wanted later.
-- `kista admin blob verify` (spec 0005's follow-up): every row's object present and intact.
+- `kista admin blob verify` (spec 0005's follow-up): spec 0018.
 - Moving a tenant between domains (spec 0005's follow-up), which leaves the old domain's bodies to
   this collector.

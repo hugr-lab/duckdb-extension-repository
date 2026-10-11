@@ -101,7 +101,9 @@ type streamReader struct {
 
 	buf      []byte // verified bytes of chunk bufChunk
 	bufChunk int64
-	err      error // sticky ErrCorrupt
+	err      error  // sticky ErrCorrupt
+	why      string // the corruption, as a reader marks it
+	quiet    bool   // verification (spec 0018): it marks, or not, itself
 }
 
 func (s *Service) newStream(ctx context.Context, d Domain, rec store.Blob) *streamReader {
@@ -162,7 +164,10 @@ func (r *streamReader) failed(k int64, err error) error {
 
 func (r *streamReader) corrupt(k int64, why string) error {
 	r.err = fmt.Errorf("%w: domain %s, chunk %d (%s)", ErrCorrupt, r.rec.Domain, k, why)
-	r.svc.markCorrupt(r.ctx, r.rec, fmt.Sprintf("chunk %d: %s", k, why))
+	r.why = why
+	if !r.quiet {
+		r.svc.markCorrupt(r.ctx, r.rec, fmt.Sprintf("chunk %d: %s", k, why))
+	}
 	return r.err
 }
 
@@ -178,7 +183,7 @@ func (s *Service) markCorrupt(ctx context.Context, rec store.Blob, why string) {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if err := s.st.MarkBlobCorrupt(ctx, rec); err != nil {
+	if _, err := s.st.MarkBlobCorrupt(ctx, rec); err != nil {
 		s.log.Error("blob: recording corrupt_at failed", "error", err)
 	}
 }

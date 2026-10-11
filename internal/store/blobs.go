@@ -75,14 +75,53 @@ func (s *Store) GetBlob(ctx context.Context, domain, bodyHash string) (Blob, err
 	return b, notFound(err, "blob")
 }
 
-// MarkBlobCorrupt records that the object of rec's stream did not match. It changes nothing if the
-// record has been committed again since rec was read (the commit uploaded the stream anew).
-func (s *Store) MarkBlobCorrupt(ctx context.Context, rec Blob) error {
-	return s.tx(ctx, nil, func(t *Tx) error {
-		_, err := t.exec(ctx, "UPDATE blobs SET corrupt_at = ? WHERE domain = ? AND body_hash = ? AND stream_hash = ? AND committed_at = ? AND corrupt_at IS NULL",
+// BlobRow is a record as read for verification (spec 0018): Err says it is damaged (its fields do
+// not hold together), and Blob then holds what could be read.
+type BlobRow struct {
+	Blob
+	Err error
+}
+
+// ListBlobs lists up to limit records of a domain after the body hash after, by body hash. A
+// damaged record is listed with its Err rather than failing the list.
+func (s *Store) ListBlobs(ctx context.Context, domain, after string, limit int) ([]BlobRow, error) {
+	q := "SELECT " + blobCols + " FROM blobs WHERE domain = ? AND body_hash > ? ORDER BY body_hash"
+	var out []BlobRow
+	err := s.eachRow(ctx, q+s.limit(limit), []any{domain, after}, func(sc func(...any) error) error {
+		var b Blob
+		var crc int64
+		if err := sc(&b.Domain, &b.BodyHash, &b.StreamHash, &b.BodyLen, &crc, &b.StreamLen, &b.StreamChunks,
+			scanTime{&b.CorruptAt}, scanTime{&b.CreatedAt}, scanTime{&b.CommittedAt}); err != nil {
+			return err
+		}
+		r := BlobRow{Blob: b}
+		if crc < 0 || crc > 0xffffffff {
+			r.Err = errors.New("store: blob crc32 out of range")
+		} else {
+			r.BodyCRC32 = uint32(crc)
+			r.Err = r.valid()
+		}
+		out = append(out, r)
+		return nil
+	})
+	return out, err
+}
+
+// MarkBlobCorrupt records that the object of rec's stream did not match, and reports whether it did.
+// It changes nothing if the record has been committed again since rec was read (the commit uploaded
+// the stream anew), or is marked already.
+func (s *Store) MarkBlobCorrupt(ctx context.Context, rec Blob) (marked bool, err error) {
+	err = s.tx(ctx, nil, func(t *Tx) error {
+		res, err := t.exec(ctx, "UPDATE blobs SET corrupt_at = ? WHERE domain = ? AND body_hash = ? AND stream_hash = ? AND committed_at = ? AND corrupt_at IS NULL",
 			t.s.d.timeArg(t.Now()), rec.Domain, rec.BodyHash, rec.StreamHash, t.s.d.timeArg(rec.CommittedAt))
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		marked = n > 0
 		return err
 	})
+	return marked, err
 }
 
 // PutBlob records a committed stream. If the body already has a record, it keeps the record when it

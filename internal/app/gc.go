@@ -35,3 +35,26 @@ func Collector(cfg config.Config, st *store.Store, bs *blob.Service, holder stri
 			}
 		}}
 }
+
+// VerifyEvent records a verification pass over a domain (spec 0018) as storage.verify: ok when every
+// record was, failed otherwise or when the pass stopped on err.
+func VerifyEvent(ctx context.Context, st *store.Store, actor string, r blob.VerifyResult, err error) error {
+	outcome := audit.OK
+	if !r.Clean() || err != nil {
+		outcome = audit.Failed
+	}
+	data := map[string]any{"domain": r.Domain, "full": r.Full, "mark": r.Mark, "checked": r.Checked, "ok": r.OK, "missing": r.Missing,
+		"short": r.Short, "long": r.Long, "corrupt": r.Corrupt, "record": r.Record, "unreadable": r.Unreadable, "marked": r.Marked, "bytes": r.Bytes}
+	if err != nil {
+		msg := err.Error()
+		if len(msg) > 1000 {
+			msg = msg[:1000]
+		}
+		data["error"] = msg
+	}
+	e, eerr := st.NewEvent(ctx, "", actor, "storage.verify", outcome, "domain:"+r.Domain, data)
+	if eerr == nil {
+		eerr = st.InsertEvents(ctx, []store.Event{e})
+	}
+	return eerr
+}
