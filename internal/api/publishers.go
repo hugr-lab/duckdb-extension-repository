@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -181,9 +182,9 @@ func publisherWhoami(c caller) map[string]any {
 		ids[m.Publisher.ID] = true
 	}
 	grants := []grantOut{}
-	for _, g := range c.ta.Grants {
+	for _, g := range slices.Concat(c.ta.Grants, c.ta.GroupGrants) {
 		if g.Kind == store.PrincipalPublisher && ids[g.PublisherID] {
-			grants = append(grants, grantOut{Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Extension})
+			grants = append(grants, grantOutOf(g))
 		}
 	}
 	return map[string]any{"tenant": c.tenant.Name, "provider": c.pub.Provider, "publishers": pubs, "grants": grants,

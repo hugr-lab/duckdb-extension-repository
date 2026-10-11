@@ -217,7 +217,7 @@ Validation:
   - It never calls tenant `whoami`, which answers a server token `404`, and shows every section.
 - **Tenant**, under `/ui/t/{tenant}/…`: a token for that tenant, from one of its issuers.
   - The gate: `GET /api/v1/tenants/{t}/whoami` with `holds_admin` (an admin grant on the tenant,
-    a channel or an extension) or `holds_audit`.
+    a channel, an extension or an extension group, spec 0017) or `holds_audit`.
   - The console shows what the grants allow:
     - tenant administrators see everything;
     - channel administrators see their channels;

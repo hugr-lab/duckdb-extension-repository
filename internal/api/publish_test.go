@@ -13,6 +13,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/symbols/symtest"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
 
 // built is an extension file whose binary exports the given entry points (an x86-64 ELF), so it
@@ -53,7 +54,7 @@ func TestPublication(t *testing.T) {
 	m := newMgmt(t)
 	const P = "/api/v1/tenants/acme/channels/prod/extensions/"
 	grant := func(sub, verb, channel, ext string) {
-		if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+sub, []string{verb}, channel, ext); err != nil {
+		if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+sub, []string{verb}, tenants.GrantOn{Channel: channel, Extension: ext}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -161,7 +162,7 @@ func TestPublication(t *testing.T) {
 func TestPromotionAndBlocks(t *testing.T) {
 	m := newMgmt(t)
 	grant := func(sub, verb, channel, ext string) {
-		if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+sub, []string{verb}, channel, ext); err != nil {
+		if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+sub, []string{verb}, tenants.GrantOn{Channel: channel, Extension: ext}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -248,7 +249,7 @@ func TestPromotionAndBlocks(t *testing.T) {
 // Uploads run at most publish.max_per_principal at once per principal.
 func TestUploadConcurrency(t *testing.T) {
 	m := newMgmt(t)
-	if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|pat", []string{"publish"}, "prod", ""); err != nil {
+	if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|pat", []string{"publish"}, tenants.GrantOn{Channel: "prod"}); err != nil {
 		t.Fatal(err)
 	}
 	tok := m.keys.sign(t, idpURL, map[string]any{"sub": "pat", "aud": publicURL + "/acme"})

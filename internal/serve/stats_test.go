@@ -12,6 +12,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/telemetry"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
 
 type fakeEvents struct {
@@ -97,7 +98,7 @@ func TestDownloadsAndInstalls(t *testing.T) {
 	if r := en.do(t, "GET", privPath, bearerHdr(tok)); r.status != 404 {
 		t.Fatalf("without a grant: %d", r.status)
 	}
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, "", "tresor"); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Extension: "tresor"}); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {

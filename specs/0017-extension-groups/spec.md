@@ -1,6 +1,6 @@
 # Spec 0017: Extension groups
 
-- **Status**: accepted (2026-10-11)
+- **Status**: implemented (accepted 2026-10-11)
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 
@@ -141,8 +141,11 @@ removes their grants on groups (the cascade, so an older replica's removal, whic
 upgrade an older replica counts only `grants` and may exceed it, an accepted limit of the rollout.
 An identical grant is not added twice (principal, group, channel, verbs).
 
-Every write (group, member, group grant) runs under the tenant's auth lock and bumps the tenant's
-`auth_version`, so a change applies at the next request on every replica (spec 0006).
+Every write (group, member, group grant) runs under the tenant's auth lock, and every write to a
+table `GetTenantAuth` reads bumps the tenant's `auth_version`, so a change applies at the next
+request on every replica (spec 0006); a description is not authorization and does not. A
+description set to its current value changes nothing (no version, no event), and a member both
+added and removed in one request is `400`.
 
 **Removing a group** that a grant names is refused (`409`, "revoke its grants first"), checked by
 the service under the lock: removing it would silently take rights from people, and the grants are

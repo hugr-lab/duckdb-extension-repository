@@ -1,12 +1,14 @@
 package api_test
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
 
 // Spec 0010 phase 1a: events, read with audit on the tenant or by server administrators.
@@ -258,6 +260,53 @@ func TestStatistics(t *testing.T) {
 	}
 	if s := m.call(t, "GET", T+"/stats/downloads?channel=prod&extension=tresor", m.toks["ext admin"], ""); s.status != 200 {
 		t.Errorf("ext admin on its extension: %d", s.status)
+	}
+	// a grant on an extension group (spec 0017) reads its members' statistics, in its channel, never
+	// "any extension"; an install grant on one reads none
+	cli := m.env.adm
+	if _, err := cli.CreateExtensionGroup(ctx, admin, "acme", "platform", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := cli.ChangeExtensionGroupMembers(ctx, admin, "acme", "platform", []string{"acl"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []struct{ sub, verb string }{{"gina", "admin"}, {"ina", "install"}} {
+		if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|"+g.sub, []string{g.verb},
+			tenants.GrantOn{Channel: "staging", ExtensionGroup: "platform"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.toks["group admin"] = m.keys.sign(t, idpURL, map[string]any{"sub": "gina", "aud": publicURL + "/acme"})
+	m.toks["group install"] = m.keys.sign(t, idpURL, map[string]any{"sub": "ina", "aud": publicURL + "/acme"})
+	if status, n := total("group admin", ""); status != 200 || n != 7 {
+		t.Errorf("group admin: %d %d, want 7", status, n)
+	}
+	for _, q := range []string{"?extension=tresor", "?channel=prod&extension=acl"} {
+		if s := m.call(t, "GET", T+"/stats/downloads"+q, m.toks["group admin"], ""); s.status != 404 {
+			t.Errorf("group admin %s: %d", q, s.status)
+		}
+	}
+	if status, _ := total("group install", ""); status != 404 {
+		t.Errorf("group install: %d", status)
+	}
+	// more than 1000 names in scope: the store reads every name and the scope filters
+	if _, err := cli.CreateExtensionGroup(ctx, admin, "acme", "bulk", ""); err != nil {
+		t.Fatal(err)
+	}
+	for b := range 10 {
+		var batch []string
+		for i := range tenants.MaxMemberChange {
+			batch = append(batch, fmt.Sprintf("n%04d", b*tenants.MaxMemberChange+i))
+		}
+		if _, _, err := cli.ChangeExtensionGroupMembers(ctx, admin, "acme", "bulk", batch, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|gina", []string{"admin"}, tenants.GrantOn{ExtensionGroup: "bulk"}); err != nil {
+		t.Fatal(err)
+	}
+	if status, n := total("group admin", ""); status != 200 || n != 7 {
+		t.Errorf("group admin over 1000 names: %d %d, want 7", status, n)
 	}
 	m.events.Close(ctx)
 	if evs, _ := m.st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "authz.refused", Limit: 100}); len(evs) < 3 {

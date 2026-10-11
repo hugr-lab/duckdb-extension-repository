@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,22 +11,24 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// TenantAuths caches each tenant's issuers, audiences and grants by its auth_version, which every
-// change bumps (spec 0006): the DuckDB routes and the API read them through one cache.
+// TenantAuths caches each tenant's issuers, audiences, grants and extension groups, one entry per
+// tenant at the auth_version it was read at, which every change bumps (spec 0006, 0017): the DuckDB
+// routes and the API read them through one cache.
 type TenantAuths struct {
 	Store *store.Store
 
 	mu    sync.Mutex
-	cache map[string]store.TenantAuth
+	cache map[string]store.TenantAuth // tenant id
 }
 
-// Get returns a tenant's issuers, audiences and grants for the auth_version the caller read.
+// Get returns a tenant's auth at the auth_version the caller read or later: an entry is served when
+// it is at least that version, and replaced only by a later one, so callers holding older tenant
+// rows do not make it thrash.
 func (c *TenantAuths) Get(ctx context.Context, t store.Tenant) (store.TenantAuth, error) {
-	k := t.ID + "|" + strconv.FormatInt(t.AuthVersion, 10)
 	c.mu.Lock()
-	ta, ok := c.cache[k]
+	ta, ok := c.cache[t.ID]
 	c.mu.Unlock()
-	if ok {
+	if ok && ta.Version >= t.AuthVersion {
 		return ta, nil
 	}
 	ta, err := c.Store.GetTenantAuth(ctx, t.ID)
@@ -39,32 +39,11 @@ func (c *TenantAuths) Get(ctx context.Context, t store.Tenant) (store.TenantAuth
 	if c.cache == nil || len(c.cache) >= 4096 {
 		c.cache = map[string]store.TenantAuth{}
 	}
-	c.cache[k] = ta
+	if old, ok := c.cache[t.ID]; !ok || old.Version < ta.Version {
+		c.cache[t.ID] = ta
+	}
 	c.mu.Unlock()
 	return ta, nil
-}
-
-// InstallScope returns what principals may install in a channel: every extension (a grant on the
-// tenant or the channel), or these names (grants on extensions in every channel or in this one).
-func InstallScope(p Principals, grants []store.Grant, channelID string) (all bool, names []string) {
-	for _, g := range grants {
-		if !p[Key{g.IssuerID, g.Kind, g.Value}] {
-			continue
-		}
-		if !slices.Contains(g.Verbs, store.VerbInstall) && (!slices.Contains(g.Verbs, store.VerbAdmin) || g.Kind == store.PrincipalIssuer) {
-			continue
-		}
-		if g.ChannelID != "" && g.ChannelID != channelID {
-			continue
-		}
-		if g.Extension == "" {
-			return true, nil
-		}
-		if !slices.Contains(names, g.Extension) {
-			names = append(names, g.Extension)
-		}
-	}
-	return false, names
 }
 
 // ForTenant narrows a tenant's issuers, audiences and grants to what a token for it may carry: the

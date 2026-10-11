@@ -41,6 +41,13 @@ func (t *Tx) query(ctx context.Context, q string, args ...any) (*sql.Rows, error
 	return t.tx.QueryContext(ctx, t.s.d.rebind(q), args...)
 }
 
+// queryFn runs a query (a Store's or a Tx's), with ? placeholders: reads shared by both.
+type queryFn func(ctx context.Context, q string, args ...any) (*sql.Rows, error)
+
+func (s *Store) query(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	return s.db.QueryContext(ctx, s.d.rebind(q), args...)
+}
+
 func (t *Tx) queryRow(ctx context.Context, q string, args ...any) *sql.Row {
 	return t.tx.QueryRowContext(ctx, t.s.d.rebind(q), args...)
 }

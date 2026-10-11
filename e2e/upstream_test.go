@@ -94,7 +94,7 @@ func TestUpstreamPrivate(t *testing.T) {
 	if err := adm.AddAudience(ctx, serveAdmin, "acme", "api://kista-acme"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|mirror", []string{"install"}, "prod", ""); err != nil {
+	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|mirror", []string{"install"}, tenants.GrantOn{Channel: "prod"}); err != nil {
 		t.Fatal(err)
 	}
 	src.release("loadable_extension_demo", release.AddOptions{Private: true})
@@ -106,7 +106,7 @@ func TestUpstreamPrivate(t *testing.T) {
 	if err := dadm.AddAudience(ctx, serveAdmin, "acme", "api://kista-dst"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dadm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|alice", []string{"install"}, "prod", ""); err != nil {
+	if _, err := dadm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod"}); err != nil {
 		t.Fatal(err)
 	}
 	dst.release("httpfs", release.AddOptions{})

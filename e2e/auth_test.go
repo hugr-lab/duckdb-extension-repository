@@ -98,7 +98,7 @@ func TestServePrivate(t *testing.T) {
 	if err := adm.AddAudience(ctx, serveAdmin, "acme", "api://kista-acme"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|alice", []string{"install"}, "prod", ""); err != nil {
+	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod"}); err != nil {
 		t.Fatal(err)
 	}
 	k.release("httpfs", release.AddOptions{})
@@ -132,7 +132,7 @@ func TestServePrivate(t *testing.T) {
 	if err := adm.AddAudience(ctx, serveAdmin, "beta", "api://kista-beta"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adm.AddGrant(ctx, serveAdmin, "beta", "subject:corp|alice", []string{"install"}, "", ""); err != nil {
+	if _, err := adm.AddGrant(ctx, serveAdmin, "beta", "subject:corp|alice", []string{"install"}, tenants.GrantOn{}); err != nil {
 		t.Fatal(err)
 	}
 	canonical := "https://" + k.addr + "/acme"
@@ -176,7 +176,7 @@ func TestAPIItemThenInstall(t *testing.T) {
 	if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|alice", []string{"install"}, "", ""); err != nil {
+	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{}); err != nil {
 		t.Fatal(err)
 	}
 	k.release("httpfs", release.AddOptions{})
@@ -319,7 +319,7 @@ func TestPublishPromoteInstall(t *testing.T) {
 		{"publisher:ci", "publish", "staging", ""},          // channel-wide: not demo_capi, a core name
 		{"publisher:ci", "publish", "staging", "demo_capi"}, // named
 	} {
-		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", g.principal, []string{g.verb}, g.channel, g.ext); err != nil {
+		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", g.principal, []string{g.verb}, tenants.GrantOn{Channel: g.channel, Extension: g.ext}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -329,7 +329,7 @@ func TestPublishPromoteInstall(t *testing.T) {
 		{"rm", "publish", "staging", "loadable_extension_demo"},
 		{"tom", "admin", "", ""},
 	} {
-		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|"+g.sub, []string{g.verb}, g.channel, g.ext); err != nil {
+		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|"+g.sub, []string{g.verb}, tenants.GrantOn{Channel: g.channel, Extension: g.ext}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -410,4 +410,73 @@ func TestPublishPromoteInstall(t *testing.T) {
 		"FORCE INSTALL loadable_extension_demo FROM p",
 	)
 	mustFail(t, res[1], "failed to download") // 401: as missing, to an anonymous client
+}
+
+// A grant on an extension group (spec 0017): the pinned DuckDB installs a private member with a
+// token whose only grant is on the group, from the request after the name joins it; a grant on the
+// group in another channel installs nothing here; a name that leaves the group is refused at the
+// next request.
+func TestServeGroupGrant(t *testing.T) {
+	b := needBuild(t)
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	idp := &e2eIDP{key: key}
+	k := startKistaWith(t, b, &auth.Verifier{Fetch: idp})
+	ctx := context.Background()
+	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: "https://" + k.addr}
+	ten := &tenants.Service{Store: k.st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
+	if _, err := ten.CreateChannel(ctx, serveAdmin, "acme", "staging", store.ChannelSigned); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adm.CreateExtensionGroup(ctx, serveAdmin, "acme", "demos", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []struct{ sub, channel string }{{"carol", "prod"}, {"dave", "staging"}} {
+		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|"+g.sub, []string{"install"},
+			tenants.GrantOn{Channel: g.channel, ExtensionGroup: "demos"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	k.release("httpfs", release.AddOptions{})
+	k.release("loadable_extension_demo", release.AddOptions{Private: true})
+	pemKey := k.pem(t, k.activeKey(t))
+	aud := "https://" + k.addr + "/acme"
+	install := func(sub string) result {
+		res := newSession(t, b, nil).exec(
+			createRepo("boot", k.httpURL(), pemKey),
+			"INSTALL httpfs FROM boot",
+			"LOAD httpfs FROM boot",
+			"SET ca_cert_file = "+sqlString(testCA(t).caFile),
+			createRepo("r", k.httpsURL(), pemKey),
+			"CREATE SECRET s (TYPE http, BEARER_TOKEN "+sqlString(idp.token(t, sub, aud))+", SCOPE "+sqlString(k.httpsURL()+"/")+")",
+			"INSTALL loadable_extension_demo FROM r",
+		)
+		mustOK(t, res[:len(res)-1])
+		return res[len(res)-1]
+	}
+	file := "/loadable_extension_demo.duckdb_extension.gz"
+	refused := func(name, sub string) {
+		t.Helper()
+		mark := k.mark()
+		if r := install(sub); r.OK {
+			t.Fatalf("%s: installed", name)
+		}
+		if got := k.statuses(file, mark); len(got) == 0 || got[0] != 404 {
+			t.Fatalf("%s: statuses %v", name, got)
+		}
+	}
+	refused("not yet a member", "carol")
+	if _, _, err := adm.ChangeExtensionGroupMembers(ctx, serveAdmin, "acme", "demos", []string{"loadable_extension_demo"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if r := install("carol"); !r.OK {
+		t.Fatalf("a member at the next request: %s", r.Error)
+	}
+	refused("the group in another channel", "dave")
+	if _, _, err := adm.ChangeExtensionGroupMembers(ctx, serveAdmin, "acme", "demos", nil, []string{"loadable_extension_demo"}); err != nil {
+		t.Fatal(err)
+	}
+	refused("a name that left the group", "carol")
 }

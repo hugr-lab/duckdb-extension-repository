@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -256,6 +257,39 @@ func TestAdminCLI(t *testing.T) {
 		t.Fatalf("grant list: %q", got)
 	}
 	run(0, "grant", "remove", "acme", gid)
+	// extension groups (spec 0017): members in batches, grants on a group, removal refused while granted
+	run(0, "extension-group", "add", "acme", "platform", "-description", "hugr")
+	run(1, "extension-group", "add", "acme", "platform")
+	run(1, "extension-group", "add", "acme", "Platform")
+	var many []string
+	for i := range 150 {
+		many = append(many, fmt.Sprintf("x%03d", i))
+	}
+	run(0, "extension-group", "members", "acme", "platform", "-add", "tresor,acl,"+strings.Join(many, ","))
+	run(1, "extension-group", "members", "acme", "platform", "-add", "ok_name,Bad") // checked before any batch
+	run(0, "extension-group", "members", "acme", "platform", "-remove", strings.Join(many, ","))
+	if got := run(0, "extension-group", "members", "acme", "platform"); !strings.Contains(got, "tresor") || strings.Contains(got, "x001") ||
+		strings.Contains(got, "ok_name") {
+		t.Fatalf("members: %q", got)
+	}
+	run(0, "grant", "add", "acme", "-principal", "role:corp|team", "-verb", "install", "-extension-group", "platform")
+	run(1, "grant", "add", "acme", "-principal", "role:corp|team", "-verb", "install", "-extension-group", "platform", "-extension", "acl")
+	run(1, "grant", "add", "acme", "-principal", "role:corp|team", "-verb", "install", "-extension-group", "nope")
+	if got := run(0, "grant", "list", "acme", "-extension", "acl"); !strings.Contains(got, "extension-group:platform") || strings.Contains(got, "subject:corp|alice") {
+		t.Fatalf("grants reaching acl: %q", got)
+	}
+	if got := run(0, "grant", "list", "acme", "-extension-group", "platform"); !strings.Contains(got, "role:corp|team") || strings.Contains(got, "issuer:corp") {
+		t.Fatalf("grants on platform: %q", got)
+	}
+	run(1, "grant", "list", "acme", "-extension", "Bad")
+	if got := run(0, "extension-group", "show", "acme", "platform"); !strings.Contains(got, "members (2)") || !strings.Contains(got, "role:corp|team") {
+		t.Fatalf("show: %q", got)
+	}
+	if got := run(0, "extension-group", "list", "acme"); !strings.Contains(got, "platform") || !strings.Contains(got, "hugr") {
+		t.Fatalf("list: %q", got)
+	}
+	run(0, "extension-group", "description", "acme", "platform", "the hugr platform")
+	run(1, "extension-group", "remove", "acme", "platform") // a grant names it
 	run(0, "tenant", "audience", "add", "acme", "api://kista-acme")
 	run(1, "tenant", "audience", "add", "acme", "api://kista-acme")
 	run(1, "tenant", "audience", "add", "acme", "https://kista.example/beta") // another tenant's canonical audience
@@ -266,6 +300,10 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "issuer", "remove", "acme", "corp")
 	if got := run(0, "grant", "list", "acme"); strings.Contains(got, "corp") {
 		t.Fatalf("grants survived their issuer: %q", got)
+	}
+	run(0, "extension-group", "remove", "acme", "platform") // its grant went with the issuer
+	if got := run(0, "extension-group", "list", "acme"); strings.Contains(got, "platform") {
+		t.Fatalf("a removed group: %q", got)
 	}
 	run(0, "backup", filepath.Join(dir, "backup.db"))
 	if got := run(0, "blob", "check"); !strings.Contains(got, "domain default ok") {

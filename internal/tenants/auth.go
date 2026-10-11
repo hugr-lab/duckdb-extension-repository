@@ -207,9 +207,15 @@ func ParsePrincipal(p string) (kind, issuer, value string, err error) {
 	return auth.ParsePrincipalKey(p)
 }
 
-// AddGrant grants verbs to a principal on the tenant, a channel, or an extension (in every channel
-// or one). An issuer-wide grant cannot carry admin: every account of the issuer would hold it.
-func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, principal string, verbs []string, channel, extension string) (store.Grant, error) {
+// GrantOn is what a grant is on: the tenant (all empty), a channel, an extension or an extension
+// group (spec 0017), the last two in every channel or in Channel.
+type GrantOn struct{ Channel, Extension, ExtensionGroup string }
+
+// AddGrant grants verbs to a principal on the tenant, a channel, an extension or an extension group
+// (in every channel or one). An issuer-wide grant cannot carry admin: every account of the issuer
+// would hold it.
+func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, principal string, verbs []string, on GrantOn) (store.Grant, error) {
+	channel, extension := on.Channel, on.Extension
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return store.Grant{}, err
@@ -224,6 +230,14 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 	}
 	if extension != "" {
 		if err := release.ValidName(extension); err != nil {
+			return store.Grant{}, err
+		}
+	}
+	if on.ExtensionGroup != "" {
+		if extension != "" {
+			return store.Grant{}, fmt.Errorf("%w: a grant names an extension or an extension group, not both", store.ErrInvalid)
+		}
+		if err := store.ValidGroupName(on.ExtensionGroup); err != nil {
 			return store.Grant{}, err
 		}
 	}
@@ -256,6 +270,13 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 			}
 			g.ChannelID, g.ChannelName = c.ID, c.Name
 		}
+		if on.ExtensionGroup != "" {
+			eg, err := tx.GetExtensionGroup(ctx, t.ID, on.ExtensionGroup)
+			if err != nil {
+				return err
+			}
+			g.ExtensionGroupID, g.ExtensionGroupName = eg.ID, eg.Name
+		}
 		if err := tx.InsertGrant(ctx, &g); err != nil {
 			return err
 		}
@@ -265,7 +286,8 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 }
 
 func grantFields(g store.Grant) map[string]any {
-	return map[string]any{"principal": g.Principal(), "verbs": g.Verbs, "channel": g.ChannelName, "extension": g.Extension}
+	return map[string]any{"principal": g.Principal(), "verbs": g.Verbs, "channel": g.ChannelName, "extension": g.Extension,
+		"extension_group": g.ExtensionGroupName}
 }
 
 func dedupe(in []string) []string {
@@ -278,14 +300,26 @@ func dedupe(in []string) []string {
 	return out
 }
 
-// ListGrants lists a tenant's grants.
+// ListGrants lists a tenant's grants, those on extension groups included, by (created_at, id).
 func (s *AuthAdmin) ListGrants(ctx context.Context, a authz.Actor, tenant string) ([]store.Grant, error) {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
 	ta, err := s.Store.GetTenantAuth(ctx, t.ID)
-	return ta.Grants, err
+	return allGrants(ta), err
+}
+
+// allGrants are a tenant's grants of both kinds, by (created_at, id).
+func allGrants(ta store.TenantAuth) []store.Grant {
+	gs := slices.Concat(ta.Grants, ta.GroupGrants)
+	slices.SortFunc(gs, func(x, y store.Grant) int {
+		if c := x.CreatedAt.Compare(y.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(x.ID, y.ID)
+	})
+	return gs
 }
 
 // RemoveGrant removes a grant.
@@ -299,7 +333,7 @@ func (s *AuthAdmin) RemoveGrant(ctx context.Context, a authz.Actor, tenant, id s
 		return err
 	}
 	fields := map[string]any{}
-	for _, g := range ta.Grants {
+	for _, g := range allGrants(ta) {
 		if g.ID == id {
 			fields = grantFields(g)
 		}

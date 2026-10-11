@@ -477,25 +477,3 @@ func CheckJWKS(ctx context.Context, f Fetcher, url string) (int, error) {
 	keys, _, err := v.fetchJWKS(ctx, url)
 	return len(keys), err
 }
-
-// Allows reports whether principals hold verb (or admin) on (channel, extension) in a tenant's
-// grants: a grant on the tenant, on the channel, or on the extension in every channel or in this one.
-func Allows(p Principals, grants []store.Grant, channelID, extension, verb string) bool {
-	for _, g := range grants {
-		if !p[Key{g.IssuerID, g.Kind, g.Value}] {
-			continue
-		}
-		// admin implies every verb on its resource, except on an issuer-wide grant (spec 0007)
-		if !slices.Contains(g.Verbs, verb) && (!slices.Contains(g.Verbs, store.VerbAdmin) || g.Kind == store.PrincipalIssuer) {
-			continue
-		}
-		if g.ChannelID != "" && g.ChannelID != channelID {
-			continue
-		}
-		if g.Extension != "" && g.Extension != extension {
-			continue
-		}
-		return true
-	}
-	return false
-}

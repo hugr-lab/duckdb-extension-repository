@@ -57,7 +57,7 @@ Delivery is phased, each phase a pull request:
 | `outcome` | `ok`; `refused` (an answer `401`, `403`, or `404` that stands for forbidden); `failed` (an answer `5xx`, or `ErrBusy`). Validation errors and stale `If-Match` (`400`, `409`, `412`, `428`) are not events: nothing happened |
 | `actor` | the actor as the code writes it: `principal:<tenant>/<issuer id>\|sub:<sub>` (or `\|client:<id>`), `server:<issuer>\|sub:…`, `os:<uid>:<user>`, `publisher:<tenant>/<names>`, `system:<what>` (`system:upstream:<tenant>/<name>`, `system:resign`, `system:retention`, `system:serve` (`server.start`), `system:sinks`, `system:audit`), `anonymous` |
 | `actor_name` | for a token's principal, its `name`, `preferred_username` or `email` claim at the time, for display; otherwise none |
-| `subject` | the resource as a path: `channel:prod`, `channel:prod/ext:acl/release:<id>`, `grant:<id>`, `upstream:core`, … (filters match prefixes) |
+| `subject` | the resource as a path: `channel:prod`, `channel:prod/ext:acl/release:<id>`, `grant:<id>`, `upstream:core`, `extension-group:<name>` (spec 0017), … (filters match prefixes) |
 | `data` | a JSON object of the event's facts, from the catalogue's fields for the kind (never a request body as a whole) |
 | `client` | the request's client address after spec 0006's trusted proxies, reduced by `events.client_addresses` (below); none for the CLI and background work |
 | `request` | the request's id (below); background work gets its own |
@@ -96,7 +96,9 @@ kind's subject form and fields; `v` 1):
   serving key moves);
 - identity: `issuer.add`, `issuer.remove`, `audience.add`, `audience.remove`, `grant.add`,
   `grant.remove`, `publisher.add`, `publisher.remove`, `publisher.github.add`,
-  `publisher.github.remove`, `publisher.key.add`, `publisher.key.remove`;
+  `publisher.github.remove`, `publisher.key.add`, `publisher.key.remove`, and spec 0017's
+  `extension_group.add`, `extension_group.change`, `extension_group.members`,
+  `extension_group.remove` (and `extension_group` in `grant.add` and `grant.remove`'s data);
 - releases: `release.add`, `release.publish` (subject the release), `release.promote` (subject
   `channel:<c>/ext:<name>`, `data.releases` the releases made, `from_channel`), all three with
   `shadows` when a reserved or upstream name is released and followed by a `shadow.add` in the same

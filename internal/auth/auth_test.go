@@ -16,6 +16,7 @@ import (
 	"errors"
 	"math/big"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -376,8 +377,52 @@ func TestAllows(t *testing.T) {
 		"another issuer":       {[]store.Grant{{IssuerID: "i2", Kind: "subject", Value: "alice", Verbs: []string{"install"}}}, false},
 		"none":                 {nil, false},
 	} {
-		if got := Allows(p, tc.grants, "c1", "tresor", "install"); got != tc.want {
+		if got := Allows(HeldBy(p, store.TenantAuth{Grants: tc.grants}), "c1", "tresor", "install"); got != tc.want {
 			t.Errorf("%s: %v", name, got)
 		}
+	}
+}
+
+// Grants on extension groups (spec 0017): install of their members, in every channel or one.
+func TestAllowsGroups(t *testing.T) {
+	p := Principals{{"i1", "role", "team"}: true}
+	members := map[string]bool{"tresor": true, "acl": true}
+	gg := func(ch string, verbs ...string) store.Grant {
+		return store.Grant{IssuerID: "i1", Kind: "role", Value: "team", ChannelID: ch, ExtensionGroupID: "g1", Members: members, Verbs: verbs}
+	}
+	for name, tc := range map[string]struct {
+		grant      store.Grant
+		ext        string
+		want       bool
+		all        bool
+		installing []string
+	}{
+		"member":           {gg("", "install"), "tresor", true, false, []string{"acl", "tresor"}},
+		"admin implies it": {gg("", "admin"), "tresor", true, false, []string{"acl", "tresor"}},
+		"not a member":     {gg("", "install"), "httpfs", false, false, []string{"acl", "tresor"}},
+		"in its channel":   {gg("c1", "install"), "tresor", true, false, []string{"acl", "tresor"}},
+		"another channel":  {gg("c2", "install"), "tresor", false, false, nil},
+		"publish only":     {gg("", "publish"), "tresor", false, false, nil},
+		"another role":     {store.Grant{IssuerID: "i1", Kind: "role", Value: "x", ExtensionGroupID: "g1", Members: members, Verbs: []string{"install"}}, "tresor", false, false, nil},
+	} {
+		h := HeldBy(p, store.TenantAuth{GroupGrants: []store.Grant{tc.grant}})
+		if got := Allows(h, "c1", tc.ext, "install"); got != tc.want {
+			t.Errorf("%s: allows %v", name, got)
+		}
+		all, may := InstallScope(h, "c1")
+		var got []string
+		for _, n := range []string{"acl", "httpfs", "tresor"} {
+			if may(n) {
+				got = append(got, n)
+			}
+		}
+		if all != tc.all || !slices.Equal(got, tc.installing) {
+			t.Errorf("%s: scope %v %v", name, all, got)
+		}
+	}
+	// a group grant read as a plain grant would cover the tenant: Held keeps them apart
+	h := HeldBy(p, store.TenantAuth{GroupGrants: []store.Grant{gg("", "install")}})
+	if all, _ := InstallScope(h, "c1"); all || len(h.Grants) != 0 {
+		t.Error("a group grant is tenant-wide")
 	}
 }

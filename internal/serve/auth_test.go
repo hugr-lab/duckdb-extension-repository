@@ -118,7 +118,7 @@ func TestAnswerTable(t *testing.T) {
 	en.checkFile(t, status(flatPath, nil).body, true, pub)
 
 	// grant install on the extension
-	g, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, "", "tresor")
+	g, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Extension: "tresor"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestAnswerTable(t *testing.T) {
 	}
 	// admin on an issuer-wide grant is refused (spec 0007): every account of the issuer would hold
 	// it; a row added before is ignored, and does not imply install
-	if _, err := adm.AddGrant(ctx, admin, "acme", "issuer:corp", []string{"admin"}, "prod", ""); !errors.Is(err, store.ErrInvalid) {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "issuer:corp", []string{"admin"}, tenants.GrantOn{Channel: "prod"}); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("issuer-wide admin grant: %v", err)
 	}
 	iss, err := adm.ListIssuers(ctx, admin, "acme")
@@ -172,7 +172,7 @@ func TestAnswerTable(t *testing.T) {
 		t.Fatalf("issuer-wide admin: %d", a.status)
 	}
 	// an issuer-wide grant needs required claims, which this record has
-	if _, err := adm.AddGrant(ctx, admin, "acme", "issuer:corp", []string{"install"}, "prod", ""); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "issuer:corp", []string{"install"}, tenants.GrantOn{Channel: "prod"}); err != nil {
 		t.Fatal(err)
 	}
 	if a := status(privPath, bearerHdr(idp.token(t, map[string]any{"sub": "bob"}))); a.status != 200 {
@@ -188,7 +188,7 @@ func TestAnswerTable(t *testing.T) {
 	if a := status(privPath, bearerHdr(tok)); a.status != 404 {
 		t.Fatalf("a re-added issuer inherited grants: %d", a.status)
 	}
-	if _, err := adm.AddGrant(ctx, admin, "acme", "issuer:corp", []string{"install"}, "", ""); !errors.Is(err, store.ErrInvalid) {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "issuer:corp", []string{"install"}, tenants.GrantOn{}); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("an issuer: grant without required claims: %v", err)
 	}
 	// assigned audiences: unique, never under the public URL
@@ -198,7 +198,7 @@ func TestAnswerTable(t *testing.T) {
 	if err := adm.AddAudience(ctx, admin, "acme", publicURL+"/other"); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("a canonical audience assigned: %v", err)
 	}
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, "", ""); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{}); err != nil {
 		t.Fatal(err)
 	}
 	if a := status(privPath, bearerHdr(idp.token(t, map[string]any{"aud": "api://kista-acme"}))); a.status != 200 {
@@ -219,7 +219,7 @@ func TestAnswerTable(t *testing.T) {
 func TestTokenOverHTTP(t *testing.T) {
 	en, idp, adm := authEnv(t, "http")
 	en.add(t, ext(t, 2000, 2, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor", Private: true})
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, "", ""); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{}); err != nil {
 		t.Fatal(err)
 	}
 	if a := en.do(t, "GET", "/acme/prod/tresor/1.1/v2.0.0/linux_amd64/tresor.duckdb_extension.gz", bearerHdr(idp.token(t, nil))); a.status != 401 {
@@ -232,7 +232,7 @@ func TestTokenOverHTTP(t *testing.T) {
 func TestProviderRecordDisabled(t *testing.T) {
 	en, idp, adm := authEnv(t, "https")
 	en.add(t, ext(t, 2000, 9, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor", Private: true})
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, "", ""); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{}); err != nil {
 		t.Fatal(err)
 	}
 	const path = "/acme/prod/tresor/1.1/v2.0.0/linux_amd64/tresor.duckdb_extension.gz"

@@ -79,6 +79,10 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddAPIKey": {"publisher.key.add"}, "RemoveAPIKey": {"publisher.key.remove"},
 		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil,
 		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListAPIKeys": nil,
+		"CreateExtensionGroup": {"extension_group.add"}, "SetExtensionGroupDescription": {"extension_group.change"},
+		"ChangeExtensionGroupMembers": {"extension_group.members"},
+		"RemoveExtensionGroup":        {"extension_group.members", "extension_group.remove"},
+		"ListExtensionGroups":         nil, "GetExtensionGroup": nil, "ExtensionGroupMembers": nil,
 	},
 	"keys.Service": {
 		"Add": {"key.add"}, "Activate": {"key.activate"}, "Retire": {"key.retire"},
@@ -312,11 +316,32 @@ func TestCoverage(t *testing.T) {
 	en.expect("tenants.AuthAdmin.RemoveAudience", do(func() error { return en.adm.RemoveAudience(rctx, admin, "acme", "api://acme") }), "audience.remove")
 	var grant string
 	en.expect("tenants.AuthAdmin.AddGrant", do(func() error {
-		g, err := en.adm.AddGrant(rctx, admin, "acme", "subject:corp|alice", []string{"audit"}, "", "")
+		g, err := en.adm.AddGrant(rctx, admin, "acme", "subject:corp|alice", []string{"audit"}, tenants.GrantOn{})
 		grant = g.ID
 		return err
 	}), "grant.add")
 	en.expect("tenants.AuthAdmin.RemoveGrant", do(func() error { return en.adm.RemoveGrant(rctx, admin, "acme", grant) }), "grant.remove")
+	// extension groups (spec 0017)
+	en.expect("tenants.AuthAdmin.CreateExtensionGroup", do(func() error {
+		_, err := en.adm.CreateExtensionGroup(rctx, admin, "acme", "platform", "hugr")
+		return err
+	}), "extension_group.add")
+	en.expect("tenants.AuthAdmin.SetExtensionGroupDescription", do(func() error {
+		_, err := en.adm.SetExtensionGroupDescription(rctx, admin, "acme", "platform", "the hugr platform", 0)
+		return err
+	}), "extension_group.change")
+	en.expect("tenants.AuthAdmin.ChangeExtensionGroupMembers", do(func() error {
+		_, _, err := en.adm.ChangeExtensionGroupMembers(rctx, admin, "acme", "platform", []string{"tresor", "acl"}, nil)
+		return err
+	}), "extension_group.members")
+	en.expect("tenants.AuthAdmin.AddGrant", do(func() error {
+		g, err := en.adm.AddGrant(rctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{ExtensionGroup: "platform"})
+		grant = g.ID
+		return err
+	}), "grant.add")
+	en.expect("tenants.AuthAdmin.RemoveGrant", do(func() error { return en.adm.RemoveGrant(rctx, admin, "acme", grant) }), "grant.remove")
+	en.expect("tenants.AuthAdmin.RemoveExtensionGroup", do(func() error { return en.adm.RemoveExtensionGroup(rctx, admin, "acme", "platform", 0) }),
+		"extension_group.members", "extension_group.remove")
 	en.expect("tenants.AuthAdmin.AddPublisher", do(func() error { _, err := en.adm.AddPublisher(rctx, admin, "acme", "ci"); return err }), "publisher.add")
 	var cred, apiKey string
 	en.expect("tenants.AuthAdmin.AddGitHubCredential", do(func() error {
