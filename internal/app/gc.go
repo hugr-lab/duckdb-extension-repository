@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
@@ -43,12 +44,13 @@ func VerifyEvent(ctx context.Context, st *store.Store, actor string, r blob.Veri
 	if !r.Clean() || err != nil {
 		outcome = audit.Failed
 	}
-	data := map[string]any{"domain": r.Domain, "full": r.Full, "mark": r.Mark, "checked": r.Checked, "ok": r.OK, "missing": r.Missing,
-		"short": r.Short, "long": r.Long, "corrupt": r.Corrupt, "record": r.Record, "unreadable": r.Unreadable, "marked": r.Marked, "bytes": r.Bytes}
+	data := map[string]any{"domain": r.Domain, "full": r.Full, "mark": r.Mark, "unmark": r.Unmark, "checked": r.Checked, "ok": r.OK,
+		"skipped": r.Skipped, "marked_ok": r.MarkedOK, "missing": r.Missing, "short": r.Short, "long": r.Long, "corrupt": r.Corrupt,
+		"record": r.Record, "unreadable": r.Unreadable, "marked": r.Marked, "unmarked": r.Unmarked, "bytes": r.Bytes}
 	if err != nil {
 		msg := err.Error()
 		if len(msg) > 1000 {
-			msg = msg[:1000]
+			msg = strings.ToValidUTF8(msg[:1000], "")
 		}
 		data["error"] = msg
 	}

@@ -55,18 +55,26 @@ func (b *Blob) valid() error {
 const blobCols = "domain, body_hash, stream_hash, body_len, body_crc32, stream_len, stream_chunks, corrupt_at, created_at, committed_at"
 
 func scanBlob(r interface{ Scan(...any) error }) (Blob, error) {
-	var b Blob
-	var crc int64
-	err := r.Scan(&b.Domain, &b.BodyHash, &b.StreamHash, &b.BodyLen, &crc, &b.StreamLen, &b.StreamChunks,
-		scanTime{&b.CorruptAt}, scanTime{&b.CreatedAt}, scanTime{&b.CommittedAt})
-	if err == nil && (crc < 0 || crc > 0xffffffff) {
-		err = errors.New("store: blob crc32 out of range")
-	}
-	b.BodyCRC32 = uint32(crc)
+	b, invalid, err := scanBlobRow(r.Scan)
 	if err == nil {
-		err = b.valid()
+		err = invalid
 	}
 	return b, err
+}
+
+// scanBlobRow reads a record: invalid says its fields do not hold together, err that it could not
+// be read at all.
+func scanBlobRow(scan func(...any) error) (b Blob, invalid, err error) {
+	var crc int64
+	if err := scan(&b.Domain, &b.BodyHash, &b.StreamHash, &b.BodyLen, &crc, &b.StreamLen, &b.StreamChunks,
+		scanTime{&b.CorruptAt}, scanTime{&b.CreatedAt}, scanTime{&b.CommittedAt}); err != nil {
+		return b, nil, err
+	}
+	if crc < 0 || crc > 0xffffffff {
+		return b, errors.New("store: blob crc32 out of range"), nil
+	}
+	b.BodyCRC32 = uint32(crc)
+	return b, b.valid(), nil
 }
 
 // GetBlob returns the record of a body in a domain.
@@ -88,20 +96,11 @@ func (s *Store) ListBlobs(ctx context.Context, domain, after string, limit int) 
 	q := "SELECT " + blobCols + " FROM blobs WHERE domain = ? AND body_hash > ? ORDER BY body_hash"
 	var out []BlobRow
 	err := s.eachRow(ctx, q+s.limit(limit), []any{domain, after}, func(sc func(...any) error) error {
-		var b Blob
-		var crc int64
-		if err := sc(&b.Domain, &b.BodyHash, &b.StreamHash, &b.BodyLen, &crc, &b.StreamLen, &b.StreamChunks,
-			scanTime{&b.CorruptAt}, scanTime{&b.CreatedAt}, scanTime{&b.CommittedAt}); err != nil {
+		b, invalid, err := scanBlobRow(sc)
+		if err != nil {
 			return err
 		}
-		r := BlobRow{Blob: b}
-		if crc < 0 || crc > 0xffffffff {
-			r.Err = errors.New("store: blob crc32 out of range")
-		} else {
-			r.BodyCRC32 = uint32(crc)
-			r.Err = r.valid()
-		}
-		out = append(out, r)
+		out = append(out, BlobRow{Blob: b, Err: invalid})
 		return nil
 	})
 	return out, err
@@ -122,6 +121,23 @@ func (s *Store) MarkBlobCorrupt(ctx context.Context, rec Blob) (marked bool, err
 		return err
 	})
 	return marked, err
+}
+
+// UnmarkBlob clears corrupt_at of a record whose object a full read found intact (spec 0018), and
+// reports whether it did. Like a mark, it changes nothing if the record has been committed again
+// since rec was read.
+func (s *Store) UnmarkBlob(ctx context.Context, rec Blob) (unmarked bool, err error) {
+	err = s.tx(ctx, nil, func(t *Tx) error {
+		res, err := t.exec(ctx, "UPDATE blobs SET corrupt_at = NULL WHERE domain = ? AND body_hash = ? AND stream_hash = ? AND committed_at = ? AND corrupt_at IS NOT NULL",
+			rec.Domain, rec.BodyHash, rec.StreamHash, t.s.d.timeArg(rec.CommittedAt))
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		unmarked = n > 0
+		return err
+	})
+	return unmarked, err
 }
 
 // PutBlob records a committed stream. If the body already has a record, it keeps the record when it

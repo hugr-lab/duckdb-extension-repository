@@ -320,7 +320,7 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "blob", "gc", "-apply", "-force")
 	run(1, "blob", "gc", "-domain", "nowhere")
 	// verifying stored bodies (spec 0018): clean, then an object gone, found and marked
-	if got := run(0, "blob", "verify", "-full"); !strings.Contains(got, "domain default:") || strings.Contains(got, " 0 checked") {
+	if got := run(0, "blob", "verify", "-full", "-domain", "default"); !strings.Contains(got, "DOMAIN") || !strings.Contains(got, "default") {
 		t.Fatalf("blob verify: %q", got)
 	}
 	streams, err := filepath.Glob(filepath.Join(dir, "blobs", "streams", "*"))
@@ -330,12 +330,14 @@ func TestAdminCLI(t *testing.T) {
 	if err := os.Remove(streams[0]); err != nil {
 		t.Fatal(err)
 	}
-	if got := run(1, "blob", "verify", "-mark"); !strings.Contains(got, "\tmissing\t") || !strings.Contains(got, "(marked)") {
+	if got := run(1, "blob", "verify", "-full", "-mark"); !strings.Contains(got, "\tmissing\t") || !strings.Contains(got, "(marked)") {
 		t.Fatalf("blob verify after a loss: %q", got)
 	}
-	if got := run(1, "blob", "verify"); !strings.Contains(got, "(marked before)") {
+	if got := run(1, "blob", "verify"); !strings.Contains(got, "(marked before: served 503)") {
 		t.Fatalf("a second pass: %q", got)
 	}
+	run(2, "blob", "verify", "-mark")              // marks come from a full read only
+	run(2, "blob", "verify", "-concurrency", "0") // 1 to 32
 	if got := run(0, "events", "list", "-server", "-kind", "storage.verify"); !strings.Contains(got, "storage.verify") {
 		t.Fatalf("no storage.verify event: %q", got)
 	}

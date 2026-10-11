@@ -140,11 +140,18 @@ func (r *streamReader) chunk(k int64) ([]byte, error) {
 	r.next += n
 	if sha256.Sum256(buf) != [sha256.Size]byte(r.rec.StreamChunks[k*sha256.Size:(k+1)*sha256.Size]) {
 		r.closeBody()
-		return nil, r.corrupt(k, "digest")
+		return nil, r.corrupt(k, whyDigest)
 	}
 	r.buf, r.bufChunk = buf, k
 	return buf, nil
 }
+
+// What a reader found wrong with an object (verification maps them to its outcomes).
+const (
+	whyMissing = "missing"
+	whyShort   = "short"
+	whyDigest  = "digest"
+)
 
 // failed tells a missing or short object (corruption) from a transport error: a read that ends early
 // is what a dropped connection looks like too, so the store is asked for the object's size.
@@ -155,9 +162,9 @@ func (r *streamReader) failed(k int64, err error) error {
 	size, serr := r.d.Store.Stat(r.ctx, StreamKey(r.rec.StreamHash))
 	switch {
 	case errors.Is(err, ErrNotFound) || errors.Is(serr, ErrNotFound):
-		return r.corrupt(k, "missing")
+		return r.corrupt(k, whyMissing)
 	case serr == nil && size < r.rec.StreamLen:
-		return r.corrupt(k, "short")
+		return r.corrupt(k, whyShort)
 	}
 	return fmt.Errorf("blob: reading the stream: %w", err)
 }

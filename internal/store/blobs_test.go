@@ -43,9 +43,22 @@ func TestBlobs(t *testing.T) {
 			t.Fatalf("another domain: %v", err)
 		}
 
-		// corrupt, then a commit of the same stream clears it and keeps the record
-		if _, err := s.MarkBlobCorrupt(ctx, b); err != nil {
-			t.Fatal(err)
+		// corrupt (once), unmarked from a full read (spec 0018), marked again; then a commit of the same
+		// stream clears it and keeps the record
+		if marked, err := s.MarkBlobCorrupt(ctx, b); err != nil || !marked {
+			t.Fatalf("mark: %v %v", marked, err)
+		}
+		if marked, err := s.MarkBlobCorrupt(ctx, b); err != nil || marked {
+			t.Fatalf("a second mark: %v %v", marked, err)
+		}
+		if unmarked, err := s.UnmarkBlob(ctx, b); err != nil || !unmarked {
+			t.Fatalf("unmark: %v %v", unmarked, err)
+		}
+		if unmarked, err := s.UnmarkBlob(ctx, b); err != nil || unmarked {
+			t.Fatalf("a second unmark: %v %v", unmarked, err)
+		}
+		if marked, err := s.MarkBlobCorrupt(ctx, b); err != nil || !marked {
+			t.Fatalf("mark again: %v %v", marked, err)
 		}
 		if got, _ := s.GetBlob(ctx, "default", b.BodyHash); got.CorruptAt.IsZero() {
 			t.Fatal("corrupt_at not set")
@@ -59,9 +72,9 @@ func TestBlobs(t *testing.T) {
 			!got.CommittedAt.Equal(again.CommittedAt) || got.CommittedAt.Before(b.CommittedAt) {
 			t.Fatalf("after recommit: %+v", got)
 		}
-		// a reader that saw the earlier commit cannot mark the repaired record
-		if _, err := s.MarkBlobCorrupt(ctx, b); err != nil {
-			t.Fatal(err)
+		// a reader that saw the earlier commit cannot mark the repaired record, nor unmark it
+		if marked, err := s.MarkBlobCorrupt(ctx, b); err != nil || marked {
+			t.Fatalf("a stale mark: %v %v", marked, err)
 		}
 		if again.CommittedAt.Equal(b.CommittedAt) {
 			t.Fatal("two commits share committed_at; the generation check proves nothing")
@@ -75,7 +88,16 @@ func TestBlobs(t *testing.T) {
 		if err := putBlob(t, s, &other); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.MarkBlobCorrupt(ctx, b); err != nil {
+		if marked, err := s.MarkBlobCorrupt(ctx, b); err != nil || marked {
+			t.Fatalf("a mark of the old stream: %v %v", marked, err)
+		}
+		if marked, err := s.MarkBlobCorrupt(ctx, other); err != nil || !marked {
+			t.Fatal(err)
+		}
+		if unmarked, err := s.UnmarkBlob(ctx, b); err != nil || unmarked {
+			t.Fatalf("an unmark from the old stream: %v %v", unmarked, err)
+		}
+		if unmarked, err := s.UnmarkBlob(ctx, other); err != nil || !unmarked {
 			t.Fatal(err)
 		}
 		got, _ = s.GetBlob(ctx, "default", b.BodyHash)

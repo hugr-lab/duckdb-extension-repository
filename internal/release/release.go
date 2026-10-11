@@ -193,6 +193,15 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		return store.Release{}, false, err
 	}
 	if existing != nil {
+		// a body marked corrupt (spec 0005, 0018) is uploaded again: adding the same file repairs it
+		if rec, err := s.Store.GetBlob(ctx, sc.Tenant.StorageDomain, b.BodyHash); err == nil && !rec.CorruptAt.IsZero() {
+			cctx, cancel := context.WithTimeout(ctx, blob.IntakeDeadline)
+			_, err := sp.Commit(cctx)
+			cancel()
+			if err != nil {
+				return store.Release{}, false, err
+			}
+		}
 		if it.b.Checked { // publishing the same body with the checks marks its Build checked
 			bb := it.b
 			if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &bb) }); err != nil {

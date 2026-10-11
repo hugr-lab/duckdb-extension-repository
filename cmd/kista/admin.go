@@ -108,9 +108,11 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   block remove <tenant> <body-hash>
   wellknown <tenant>/<channel>
   blob check                                      pin and check the storage domains, list tenants without one
-  blob verify [-domain d] [-full] [-mark] [-concurrency 4]
-                  every stored body present and of its length (-full: every chunk against its digest);
-                  -mark marks what is not, so the next commit of the body uploads it again
+  blob verify [-domain <d>] [-full [-mark] [-unmark]] [-concurrency <n>]
+                                                  every stored body present and of its length (spec 0018);
+                                                  -full reads every chunk; -mark marks what a reader would
+                                                  (served 503 until the body is committed again); -unmark
+                                                  clears the mark of a body found intact
   blob gc [-domain <d>] [-apply] [-force]         collect storage garbage (spec 0016): a dry run unless -apply;
                                                   -apply needs -force while gc.interval is 0 (replicas maybe older)
 `
@@ -1436,15 +1438,15 @@ func (a *adminCmd) events(ctx context.Context, sub string, args []string) error 
 	}
 }
 
-// blobGC runs a collection of the storage domains now (spec 0016), a dry run unless -apply.
 // blobVerify checks every record of the storage domains against its object (spec 0018).
 func (a *adminCmd) blobVerify(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("blob verify", flag.ContinueOnError)
 	domain := fs.String("domain", "", "")
 	full := fs.Bool("full", false, "")
 	mark := fs.Bool("mark", false, "")
+	unmark := fs.Bool("unmark", false, "")
 	conc := fs.Int("concurrency", 4, "")
-	if pos, err := flags(fs, args); err != nil || len(pos) != 0 {
+	if pos, err := flags(fs, args); err != nil || len(pos) != 0 || *conc < 1 || *conc > 32 || (*mark || *unmark) && !*full {
 		return errUsage
 	}
 	svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.DiscardHandler))
@@ -1464,32 +1466,41 @@ func (a *adminCmd) blobVerify(ctx context.Context, args []string) error {
 		switch {
 		case p.Marked:
 			note = " (marked)"
+		case p.Unmarked:
+			note = " (unmarked)"
 		case p.WasMarked:
-			note = " (marked before)"
+			note = " (marked before: served 503)"
 		}
 		fmt.Fprintf(a.out, "%s\t%s\t%s\t%s\t%s%s\n", p.Domain, p.BodyHash, p.StreamHash, p.Outcome, p.Detail, note)
 	}
 	var bad []string
+	results := make([]blob.VerifyResult, 0, len(domains))
 	for _, d := range domains {
-		r, err := svc.Verify(ctx, d, blob.VerifyOptions{Full: *full, Mark: *mark, Concurrency: *conc, Problem: problem})
+		r, err := svc.Verify(ctx, d, blob.VerifyOptions{Full: *full, Mark: *mark, Unmark: *unmark, Concurrency: *conc, Problem: problem})
 		if eerr := app.VerifyEvent(context.WithoutCancel(ctx), a.svc.Store, a.actor.String(), r, err); eerr != nil {
 			fmt.Fprintf(a.errw, "domain %s: recording the pass: %v\n", d, eerr)
 		}
-		fmt.Fprintf(a.out, "domain %s: %d checked, %d ok, %d missing, %d short, %d long, %d corrupt, %d damaged records, %d unreadable, %d marked, %d bytes read\n",
-			d, r.Checked, r.OK, r.Missing, r.Short, r.Long, r.Corrupt, r.Record, r.Unreadable, r.Marked, r.Bytes)
 		if err != nil {
 			fmt.Fprintf(a.errw, "domain %s: %v\n", d, err)
 		}
 		if err != nil || !r.Clean() {
 			bad = append(bad, d)
 		}
+		results = append(results, r)
 	}
+	a.table("DOMAIN\tCHECKED\tOK\tSKIPPED\tMARKED-OK\tMISSING\tSHORT\tLONG\tCORRUPT\tRECORD\tUNREADABLE\tMARKED\tUNMARKED\tBYTES", func(w io.Writer) {
+		for _, r := range results {
+			fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Domain, r.Checked, r.OK, r.Skipped, r.MarkedOK,
+				r.Missing, r.Short, r.Long, r.Corrupt, r.Record, r.Unreadable, r.Marked, r.Unmarked, r.Bytes)
+		}
+	})
 	if len(bad) > 0 {
-		return fmt.Errorf("storage domain(s) %s: not every body is present and intact", strings.Join(bad, ", "))
+		return fmt.Errorf("storage domain(s) %s: not every body is present, intact and served", strings.Join(bad, ", "))
 	}
 	return nil
 }
 
+// blobGC runs a collection of the storage domains now (spec 0016), a dry run unless -apply.
 func (a *adminCmd) blobGC(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("blob gc", flag.ContinueOnError)
 	domain := fs.String("domain", "", "")
