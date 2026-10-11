@@ -8,8 +8,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -324,5 +327,84 @@ func TestRecordCacheTTL(t *testing.T) {
 	at = at.Add(2 * time.Minute)
 	if _, err := e.svc.Record(ctx, "default", body); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("after the TTL: %v", err)
+	}
+}
+
+// Attachments (spec 0011): the documents of a body the tenant no longer holds go with their objects,
+// unless the body is blocked; an object without a record goes once older than the grace.
+func TestCollectAttachments(t *testing.T) {
+	e := newEnv(t, blob.Options{})
+	now := time.Now().UTC()
+	e.st.Now = func() time.Time { return now }
+	tn := store.Tenant{Name: "acme"}
+	held := store.Build{Name: "acl", ExtVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICPP, DuckDBVersion: "v2.0.0",
+		BodyHash: strings.Repeat("a", 64), Origin: store.OriginAdmin, CreatedBy: "os:1:t"}
+	if err := e.st.InTx(ctx, "", func(tx *store.Tx) error {
+		if err := tx.CreateTenant(ctx, &tn); err != nil {
+			return err
+		}
+		held.TenantID = tn.ID
+		if err := tx.FindOrInsertBuild(ctx, &held); err != nil {
+			return err
+		}
+		return tx.InsertBlock(ctx, &store.Block{TenantID: tn.ID, BodyHash: strings.Repeat("b", 64), Reason: "cve", CreatedBy: "os:1:t"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attach := func(body string) store.Attachment {
+		t.Helper()
+		a := store.Attachment{ID: uuid.NewString(), TenantID: tn.ID, BodyHash: body, Kind: store.KindNotes, MediaType: "text/markdown",
+			Title: "t", Size: 3, ContentHash: blob.ContentHash([]byte("doc")), Summary: "{}", Origin: store.AttachedByTenant,
+			AttachedBy: "os:1:t", Visibility: store.VisibleAdministrators}
+		if err := e.svc.PutAttachment(ctx, "default", a.ID, []byte("doc")); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertAttachment(ctx, &a) }); err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	kept, blocked, gone := attach(held.BodyHash), attach(strings.Repeat("b", 64)), attach(strings.Repeat("c", 64))
+	stray := uuid.NewString()
+	putObject(t, e.fsStore, blob.AttachmentKey(stray), []byte("left by a failed attach"))
+	exists := func(id string) bool {
+		_, err := e.fsStore.Stat(ctx, blob.AttachmentKey(id))
+		return err == nil
+	}
+	var b []byte
+	if err := e.svc.ReadAttachment(ctx, "default", kept.ID, kept.ContentHash, kept.Size, func(c []byte) error { b = c; return nil }); err != nil || string(b) != "doc" {
+		t.Fatalf("read: %q %v", b, err)
+	}
+	if err := e.svc.ReadAttachment(ctx, "default", kept.ID, strings.Repeat("0", 64), kept.Size, func([]byte) error { return nil }); !errors.Is(err, blob.ErrCorrupt) {
+		t.Fatalf("a content that does not match: %v", err)
+	}
+	c := &blob.Collector{Service: e.svc, Holder: "test", Grace: 24 * time.Hour, Log: slog.New(slog.DiscardHandler)}
+	// within the grace: the gone body's document goes; the stray object is too new
+	if r, err := c.Pass(ctx, "default", false); err != nil || r.Attachments != 1 {
+		t.Fatalf("the first pass: %+v %v", r, err)
+	}
+	if exists(gone.ID) || !exists(kept.ID) || !exists(blocked.ID) || !exists(stray) {
+		t.Fatalf("after the first pass: gone %v kept %v blocked %v stray %v", exists(gone.ID), exists(kept.ID), exists(blocked.ID), exists(stray))
+	}
+	// a grace later (its mtime made old): the stray object goes
+	old := now.Add(-48 * time.Hour)
+	_ = os.Chtimes(filepath.Join(e.dir, "attachments", stray), old, old)
+	if r, err := c.Pass(ctx, "default", false); err != nil || r.Attachments != 1 || exists(stray) || !exists(kept.ID) {
+		t.Fatalf("the second pass: %+v %v", r, err)
+	}
+	// a version superseded more than a year ago goes with its object; its successor stays
+	newer := attach(held.BodyHash)
+	if err := store.ExecRaw(ctx, e.st, "UPDATE attachments SET supersedes = ? WHERE id = ?", kept.ID, newer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := c.Pass(ctx, "default", false); err != nil || r.Attachments != 0 {
+		t.Fatalf("superseded just now: %+v %v", r, err)
+	}
+	now = now.AddDate(1, 0, 1)
+	if err := e.st.InTx(ctx, "", func(tx *store.Tx) error { _, err := tx.TouchBuild(ctx, tn.ID, "acl", held.BodyHash); return err }); err != nil {
+		t.Fatal(err) // the body is still in use
+	}
+	if r, err := c.Pass(ctx, "default", false); err != nil || r.Attachments != 1 || exists(kept.ID) || !exists(newer.ID) {
+		t.Fatalf("superseded a year ago: %+v %v", r, err)
 	}
 }

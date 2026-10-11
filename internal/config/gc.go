@@ -28,3 +28,19 @@ func validateGC(bad func(string, ...any), c Config) {
 		bad("gc.interval must be 0 or within 1h..168h")
 	}
 }
+
+// Attachments configures documents about bodies (spec 0011).
+type Attachments struct {
+	MaxSize int64 `yaml:"max_size"` // bytes; default 4 MiB, at most 16 MiB
+	// MaxReads is how many documents are held in memory at once, read and sent (default 8).
+	MaxReads int `yaml:"max_reads"`
+}
+
+func validateAttachments(bad func(string, ...any), c Config) {
+	if m := c.Attachments.MaxSize; m != 0 && (m < 64<<10 || m > 16<<20) {
+		bad("attachments.max_size must be 0 or within 64 KiB..16 MiB")
+	}
+	if m := c.Attachments.MaxReads; m < 0 || m > 256 {
+		bad("attachments.max_reads must be 0 (8) to 256")
+	}
+}

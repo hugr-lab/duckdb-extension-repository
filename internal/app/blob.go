@@ -96,7 +96,7 @@ func BlobService(ctx context.Context, cfg config.Config, st *store.Store, log *s
 	}
 	maxBody, maxIngests := cfg.BlobLimits()
 	svc, err := blob.NewService(ctx, st, domains, blob.Options{
-		SpoolDir: cfg.SpoolDir(), MaxBody: maxBody, MaxIngests: maxIngests, Log: log,
+		SpoolDir: cfg.SpoolDir(), MaxBody: maxBody, MaxIngests: maxIngests, Log: log, MaxAttachmentReads: cfg.Attachments.MaxReads,
 	})
 	if err != nil {
 		closeStores(domains)

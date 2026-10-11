@@ -75,7 +75,9 @@ func newVerifyEnv(t *testing.T, names ...string) *verifyEnv {
 	return v
 }
 
-func (v *verifyEnv) body(t *testing.T, i int) []byte { return extension(t, 2<<20+512<<10, uint64(100+i)) }
+func (v *verifyEnv) body(t *testing.T, i int) []byte {
+	return extension(t, 2<<20+512<<10, uint64(100+i))
+}
 
 func (v *verifyEnv) key(name string) string { return blob.StreamKey(v.recs[name].StreamHash) }
 

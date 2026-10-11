@@ -18,7 +18,7 @@ func Collector(cfg config.Config, st *store.Store, bs *blob.Service, holder stri
 		Event: func(ctx context.Context, r blob.Result) {
 			outcome := audit.OK
 			data := map[string]any{"domain": r.Domain, "builds": r.Builds, "bodies": r.Bodies, "marked": r.Marked, "streams": r.Streams,
-				"tmp": r.Tmp, "uploads": r.Uploads, "bytes": r.Bytes, "claims": r.Claims, "resolved": r.Resolved, "dry_run": r.DryRun}
+				"tmp": r.Tmp, "attachments": r.Attachments, "uploads": r.Uploads, "bytes": r.Bytes, "claims": r.Claims, "resolved": r.Resolved, "dry_run": r.DryRun}
 			if r.Err != nil {
 				outcome = audit.Failed
 				msg := r.Err.Error()

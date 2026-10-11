@@ -40,6 +40,11 @@ export class Perms {
     }
     return [...out].sort()
   }
+  /** Whether the caller administers an extension in every channel (a tenant administrator, or a
+   * grant on the extension without a channel): it manages the extension's documents (spec 0011). */
+  extensionAdmin(ext: string) {
+    return this.tenantAdmin || this.grants.some((g) => this.admin(g) && g.extension === ext && !g.channel)
+  }
   /** Whether the caller administers anything in a channel. */
   anyIn(c: string) {
     return this.channelAdmin(c) || this.extensionsIn(c).length > 0

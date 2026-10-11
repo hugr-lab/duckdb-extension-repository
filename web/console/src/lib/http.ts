@@ -35,7 +35,13 @@ export interface RequestOptions {
   ifMatch?: string
   /** A public route: no token is sent. */
   anonymous?: boolean
+  /** A raw body (a document, spec 0011) with its media type, sent as is. */
+  raw?: { body: Blob; type: string }
+  /** More request headers (e.g. Kista-Title). */
+  headers?: Record<string, string>
 }
+
+const reserved = new Set(['authorization', 'if-match', 'content-type', 'accept', 'cookie'])
 
 export class Client {
   private renewing: Promise<string> | null = null
@@ -52,8 +58,12 @@ export class Client {
   del<T>(path: string, opts: RequestOptions = {}) {
     return this.request<T>('DELETE', path, opts)
   }
+  /** A file's bytes, fetched with the token. */
+  async blob(path: string): Promise<Blob> {
+    return (await this.request<Blob>('GET', path, { blob: true })).data
+  }
 
-  async request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<Answer<T>> {
+  async request<T>(method: string, path: string, opts: RequestOptions & { blob?: boolean } = {}): Promise<Answer<T>> {
     if (!opts.anonymous && !this.inScope(path)) {
       // a token never leaves its scope: a request outside it is a bug
       throw new Error(`kista console: ${path} is outside this scope (${this.o.prefix})`)
@@ -68,6 +78,10 @@ export class Client {
           this.o.onUnauthorized?.()
         }
       }
+    }
+    if (opts.blob && res.ok) {
+      // a document, downloaded as bytes: never parsed, never rendered
+      return { status: res.status, data: (await res.blob()) as T, etag: res.headers.get('ETag') ?? '' }
     }
     const text = await res.text()
     let data: unknown = undefined
@@ -99,15 +113,22 @@ export class Client {
   }
 
   private async send(method: string, path: string, opts: RequestOptions, renew: boolean): Promise<Response> {
+    // extra headers never carry the token, If-Match, the content type or Accept, in any spelling
     const headers: Record<string, string> = { Accept: 'application/json' }
+    for (const [k, v] of Object.entries(opts.headers ?? {})) {
+      if (!reserved.has(k.toLowerCase())) headers[k] = v
+    }
     if (!opts.anonymous) {
       headers.Authorization = `Bearer ${await this.token(renew)}`
     }
     if (opts.ifMatch) {
       headers['If-Match'] = opts.ifMatch
     }
-    let body: string | undefined
-    if (opts.body !== undefined) {
+    let body: string | Blob | undefined
+    if (opts.raw) {
+      headers['Content-Type'] = opts.raw.type
+      body = opts.raw.body
+    } else if (opts.body !== undefined) {
       headers['Content-Type'] = 'application/json'
       body = JSON.stringify(opts.body)
     }

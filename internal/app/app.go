@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -102,10 +103,15 @@ type Services struct {
 	Auth     *tenants.AuthAdmin
 	// Upstreams manages upstreams (spec 0009); runs need a blob service (WithBlob).
 	Upstreams *upstream.Service
+	// Attachments holds documents about bodies (spec 0011); it needs a blob service (WithBlob).
+	Attachments *attachment.Service
 }
 
-// WithBlob gives the release and upstream services a blob service (adding a release stores its body).
-func (s *Services) WithBlob(b *blob.Service) { s.Releases.Blob, s.Upstreams.Blob = b, b }
+// WithBlob gives the release, upstream and attachment services a blob service (adding a release
+// stores its body, an attachment its content).
+func (s *Services) WithBlob(b *blob.Service) {
+	s.Releases.Blob, s.Upstreams.Blob, s.Attachments.Blob = b, b, b
+}
 
 // KeySources builds the registry of key sources from config (spec 0004): the built-in file source
 // and every configured vault or KMS. Sources are not contacted here: kista starts even when one is
@@ -199,6 +205,7 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
 			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate),
 				Interval: ul.Interval}, Credentials: creds},
+		Attachments: &attachment.Service{Store: s, Authz: az, MaxSize: cfg.Attachments.MaxSize},
 	}, nil
 }
 
@@ -244,11 +251,11 @@ func Providers(cfg config.Config, f auth.Fetcher) auth.Providers {
 
 // WithAuthz returns the services with another authorizer (the API's), sharing everything else.
 func (s *Services) WithAuthz(az authz.Authorizer) *Services {
-	ten, ks, rel, au, up := *s.Tenants, *s.Keys, *s.Releases, *s.Auth, s.Upstreams.WithAuthz(az)
-	ten.Authz, ks.Authz, rel.Authz, au.Authz = az, az, az, az
+	ten, ks, rel, au, up, at := *s.Tenants, *s.Keys, *s.Releases, *s.Auth, s.Upstreams.WithAuthz(az), *s.Attachments
+	ten.Authz, ks.Authz, rel.Authz, au.Authz, at.Authz = az, az, az, az, az
 	rel.Signers = &ks
 	up.Releases = &rel
-	return &Services{Store: s.Store, Sources: s.Sources, Tenants: &ten, Keys: &ks, Releases: &rel, Auth: &au, Upstreams: up}
+	return &Services{Store: s.Store, Sources: s.Sources, Tenants: &ten, Keys: &ks, Releases: &rel, Auth: &au, Upstreams: up, Attachments: &at}
 }
 
 func serverIssuerURLs(cfg config.Config) []string {

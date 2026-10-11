@@ -41,7 +41,7 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("blob/fs: %w", err)
 	}
-	for _, d := range []string{"streams", "tmp"} {
+	for _, d := range []string{"streams", "tmp", "attachments"} {
 		if err := r.Mkdir(d, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 			_ = r.Close()
 			return nil, fmt.Errorf("blob/fs: %w", err)

@@ -31,7 +31,8 @@ type Result struct {
 	Domain                                        string
 	DryRun                                        bool
 	Builds, Bodies, Marked, Streams, Tmp, Uploads int
-	Bytes                                         int64 // of the streams, tmp objects deleted
+	Attachments                                   int   // spec 0011: of bodies gone, superseded a year ago, and objects without a record
+	Bytes                                         int64 // of the streams, tmp and attachment objects deleted
 	Claims                                        int   // expired claims removed
 	Resolved                                      int   // deleting tombstones another collector left, finished
 	Skipped                                       bool  // another replica holds the domain's lease
@@ -164,7 +165,7 @@ func (c *Collector) Pass(ctx context.Context, domain string, dryRun bool) (r Res
 			log = c.Log.Error
 		}
 		log("blob: collected a storage domain", "domain", domain, "dry_run", dryRun, "builds", r.Builds, "bodies", r.Bodies,
-			"marked", r.Marked, "streams", r.Streams, "tmp", r.Tmp, "uploads", r.Uploads, "bytes", r.Bytes, "claims", r.Claims,
+			"marked", r.Marked, "streams", r.Streams, "tmp", r.Tmp, "attachments", r.Attachments, "uploads", r.Uploads, "bytes", r.Bytes, "claims", r.Claims,
 			"resolved", r.Resolved, "error", err)
 		if c.Event != nil {
 			c.Event(context.WithoutCancel(ctx), r)
@@ -181,6 +182,7 @@ func (c *Collector) Pass(ctx context.Context, domain string, dryRun bool) (r Res
 		func() error { return c.listing(ctx, d, &r) },
 		func() error { return c.tombstones(ctx, d, cutoff, &r) },
 		func() error { return c.leftovers(ctx, d, cutoff, &r) },
+		func() error { return c.attachments(ctx, d, cutoff, &r) },
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {

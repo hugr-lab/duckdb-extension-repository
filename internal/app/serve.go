@@ -99,7 +99,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	apiHandler := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
 		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
 		Server: server, Providers: providers, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
-		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, MaxBody: maxBody, MinRate: int64(lim.MinRate), PublishPerActor: perActor,
+		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, Attachments: mgmt.Attachments, MaxBody: maxBody, MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events,
 		Console: ConsoleInfo(cfg)})
 	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background

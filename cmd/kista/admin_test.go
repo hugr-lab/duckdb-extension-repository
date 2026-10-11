@@ -121,6 +121,34 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "release", "private", "acme/prod", rid)
 	run(0, "release", "current", "acme/prod", rid)
 	run(0, "key", "resign", "acme/prod")
+	// attachments (spec 0011): a document about tresor's body, listed, shown, made readers-visible, removed
+	bodyHash, _, err := extfile.HashBody(bytes.NewReader(body), 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sbom := filepath.Join(dir, "sbom.json")
+	os.WriteFile(sbom, []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library"}]}`), 0o600)
+	addAtt := func(want int, file, kind string) string {
+		return strings.TrimSpace(run(want, "attachment", "add", "acme", "tresor", file, "-body-hash", bodyHash.String(), "-kind", kind,
+			"-media-type", "application/vnd.cyclonedx+json", "-title", "SBOM"))
+	}
+	addAtt(1, sbom, "review")                                            // a CycloneDX document is not a review
+	addAtt(1, filepath.Join(dir, "k.db"), "sbom")                        // not JSON
+	run(2, "attachment", "add", "acme", "tresor", sbom, "-kind", "sbom") // no -body-hash
+	aid := addAtt(0, sbom, "sbom")
+	if got := run(0, "attachment", "list", "acme", "tresor"); !strings.Contains(got, aid) || !strings.Contains(got, `"components":1`) ||
+		!strings.Contains(got, "administrators") {
+		t.Fatalf("attachment list: %q", got)
+	}
+	if got := run(0, "attachment", "show", "acme", "tresor", aid, "-content"); !strings.Contains(got, "CycloneDX") {
+		t.Fatalf("attachment content: %q", got)
+	}
+	run(0, "attachment", "readers", "acme", "tresor", aid)
+	if got := run(0, "attachment", "show", "acme", "tresor", aid); !strings.Contains(got, "readers") {
+		t.Fatalf("attachment show: %q", got)
+	}
+	run(0, "attachment", "remove", "acme", "tresor", aid)
+	run(1, "attachment", "show", "acme", "tresor", aid)
 	run(1, "release", "promote", "acme/prod", "-name", "tresor", "-from", "prod", "-version", "1.0") // to itself
 	run(0, "release", "yank", "acme/prod", rid)
 	run(1, "release", "yank", "acme/prod", rid)
@@ -336,7 +364,7 @@ func TestAdminCLI(t *testing.T) {
 	if got := run(1, "blob", "verify"); !strings.Contains(got, "(marked before: served 503)") {
 		t.Fatalf("a second pass: %q", got)
 	}
-	run(2, "blob", "verify", "-mark")              // marks come from a full read only
+	run(2, "blob", "verify", "-mark")             // marks come from a full read only
 	run(2, "blob", "verify", "-concurrency", "0") // 1 to 32
 	if got := run(0, "events", "list", "-server", "-kind", "storage.verify"); !strings.Contains(got, "storage.verify") {
 		t.Fatalf("no storage.verify event: %q", got)

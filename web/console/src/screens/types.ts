@@ -53,3 +53,25 @@ export interface Event {
   client?: string
   request: string
 }
+
+/** A document about a body (spec 0011), as the management API shows it. */
+export interface Attachment {
+  id: string
+  body_hash: string
+  kind: string
+  media_type: string
+  title: string
+  size: number
+  summary: Record<string, unknown>
+  origin: string
+  issued_at: string
+  valid_until?: string
+  expired?: boolean
+  attached_by?: string
+  supersedes?: string
+  head?: boolean
+  visibility?: string
+  feedable?: boolean
+  withdrawn?: boolean
+  etag?: string
+}

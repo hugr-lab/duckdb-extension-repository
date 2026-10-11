@@ -1,6 +1,6 @@
 # Spec 0011: Attachments and the feed
 
-- **Status**: accepted (2026-10-11); 1a in progress
+- **Status**: accepted (2026-10-11); phase 1a implemented, 1b (the feed) to come
 - **Date**: 2026-10-11
 - **Author**: vgsml, Claude
 
@@ -101,7 +101,7 @@ attachments  id (uuid), tenant_id, body_hash, kind, media_type, title, size, con
 - **Limits**: a document is at most 4 MiB (`attachments.max_size`, a deployment setting up to
   16 MiB); at most 20 documents per (body, kind, origin) and 100,000 per tenant; superseded versions
   older than a year are removed by the collector. Reads hold at most `attachments.max_reads` (8)
-  documents in memory at once, the rest wait.
+  documents in memory at once, while read and sent; the rest wait.
 - **Visibility**: `administrators` (the default for every document) or `readers`. Only a tenant
   administrator makes a document `readers`, an explicit act per document: it is then shown, through
   the index, to whoever may see a release of the body in the channel asked about. The console says,
@@ -112,7 +112,9 @@ attachments  id (uuid), tenant_id, body_hash, kind, media_type, title, size, con
   withdrawn, and `readers`; otherwise they see nothing of that chain (never an older version in its
   place). Administrators see the whole chain. A withdrawn document (1b: a source withdraws it) is
   kept, marked, and never the head. A document past its `valid_until` is shown as expired. The
-  limits below count heads only.
+  limits below count heads only. Removing a document links its successor to its predecessor (the
+  chain stays one chain); removing a head makes its predecessor the head, as it was before. A
+  publisher supersedes only its own documents.
 - **Who attaches and removes**:
   - a tenant administrator, or an administrator of the extension (spec 0006, an extension group's
     included, spec 0017) whose grant has no channel: any kind, origin `tenant`;
@@ -134,11 +136,11 @@ them under the extension:
 
 | Route | Who |
 | --- | --- |
-| `GET …/channels/{c}/extensions/{ext}/attachments[?body_hash=&kind=&cursor=&limit=]` | the `readers` documents of the bodies of `{ext}` in the caller's view of `{c}`, latest per (body, kind, origin, issuer) |
+| `GET …/channels/{c}/extensions/{ext}/attachments[?body_hash=&kind=&cursor=&limit=]` | the `readers` documents of the bodies of `{ext}` in the caller's view of `{c}`: the heads of their chains (the latest version of each) |
 | `GET …/channels/{c}/extensions/{ext}/attachments/{id}` | one of those, as a download |
 | `GET …/extensions/{ext}/attachments[?body_hash=&kind=&origin=&cursor=&limit=]` | every document of `{ext}`'s bodies (management: fresh tokens): its administrators, and the tenant's auditors |
 | `GET …/extensions/{ext}/attachments/{id}[/content]` | the record (ETag `"v<version>"`), its content as a download |
-| `POST …/extensions/{ext}/attachments?body_hash=&kind=&supersedes=` (the document as the raw body, `Content-Type` its media type, the title in `Kista-Title`, kept out of access logs) | as above (administrators; publishers' credentials too, as publication takes them, spec 0008) |
+| `POST …/extensions/{ext}/attachments?body_hash=&kind=&supersedes=` (the document as the raw body, `Content-Type` its media type, the title in `Kista-Title` as percent-encoded UTF-8, kept out of access logs; attaching takes an upload slot as publishing does) | as above (administrators; publishers' credentials too, as publication takes them, spec 0008) |
 | `POST …/extensions/{ext}/attachments/{id}/readers`, `/administrators`, `/feedable`, `/unfeedable` (`If-Match`) | tenant administrators |
 | `DELETE …/extensions/{ext}/attachments/{id}` | as above |
 | `GET, DELETE …/blocks/{hash}/attachments[/{id}]` | tenant administrators: the documents of a blocked body whose Builds are gone |

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"log/slog"
 	"maps"
 	"math/big"
@@ -141,7 +142,8 @@ func newMgmt(t *testing.T) *mgmt {
 	apiH := api.New(api.Options{Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths, Events: events,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
 		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups,
-		Console: &api.Console{Environment: "test", AdminTokenMaxAge: 3600, Audience: serverAud}})
+		Attachments: &attachment.Service{Store: en.st, Blob: en.blob, Authz: grants},
+		Console:     &api.Console{Environment: "test", AdminTokenMaxAge: 3600, Audience: serverAud}})
 	pulls := &fakePuller{}
 	h := serve.NewHandler(en.st, en.keys, en.blob, serve.Options{Log: slog.New(slog.DiscardHandler), Verifier: &auth.Verifier{Fetch: ks},
 		Server: server, PublicURL: publicURL, Auths: auths, API: apiH, MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,

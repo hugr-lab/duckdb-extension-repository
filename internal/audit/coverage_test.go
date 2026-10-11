@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"io"
 	"log/slog"
 	"math/big"
@@ -102,12 +103,18 @@ var writes = map[string]map[string][]audit.Kind{
 		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
 		"Sync":          nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil,
 	},
+	"attachment.Service": {
+		"Attach": {"attachment.add"}, "SetFlags": {"attachment.change"}, "Remove": {"attachment.remove"},
+		"RemoveBlockedDocument": {"attachment.remove"},
+		"List":                  nil, "Get": nil, "Content": nil, "ReadContent": nil, "BlockedDocuments": nil,
+	},
 }
 
 // TestRegistry fails when a service gains an exported method the registry does not list.
 func TestRegistry(t *testing.T) {
 	for name, v := range map[string]any{"tenants.Service": &tenants.Service{}, "tenants.AuthAdmin": &tenants.AuthAdmin{},
-		"keys.Service": &keys.Service{}, "release.Service": &release.Service{}, "upstream.Service": &upstream.Service{}} {
+		"keys.Service": &keys.Service{}, "release.Service": &release.Service{}, "upstream.Service": &upstream.Service{},
+		"attachment.Service": &attachment.Service{}} {
 		typ := reflect.TypeOf(v)
 		for i := range typ.NumMethod() {
 			m := typ.Method(i).Name
@@ -442,6 +449,27 @@ func TestCoverage(t *testing.T) {
 		return err
 	}), "upstream.change")
 	en.expect("upstream.Service.Remove", do(func() error { return en.up.Remove(rctx, admin, "acme", "core", 0) }), "upstream.remove")
+	// attachments (spec 0011): on acl's body, then on it blocked
+	att := &attachment.Service{Store: st, Blob: bs, Authz: authz.ServerAdmin{}}
+	aclBody := ext(t, nil, "acl", "1.0")
+	ah, _, _ := extfile.HashBody(bytes.NewReader(aclBody[:len(aclBody)-extfile.SignatureSize]), 1<<30)
+	notes := func() (store.Attachment, error) {
+		return att.Attach(rctx, admin, "acme", "acl", attachment.AttachInput{BodyHash: ah.String(), Kind: store.KindNotes,
+			MediaType: attachment.Markdown, Title: "Notes", Content: []byte("# checked")})
+	}
+	var doc store.Attachment
+	en.expect("attachment.Service.Attach", do(func() (err error) { doc, err = notes(); return err }), "attachment.add")
+	readers := store.VisibleReaders
+	en.expect("attachment.Service.SetFlags", do(func() error {
+		_, err := att.SetFlags(rctx, admin, "acme", "acl", doc.ID, &readers, nil, doc.Version)
+		return err
+	}), "attachment.change")
+	en.expect("attachment.Service.Remove", do(func() error { return att.Remove(rctx, admin, "acme", "acl", doc.ID) }), "attachment.remove")
+	en.expect("attachment.Service.Attach", do(func() (err error) { doc, err = notes(); return err }), "attachment.add")
+	en.expect("release.Service.Block", do(func() error { _, _, err := en.rel.Block(rctx, admin, "acme", ah.String(), "CVE"); return err }), "block.add")
+	en.expect("attachment.Service.RemoveBlockedDocument", do(func() error {
+		return att.RemoveBlockedDocument(rctx, admin, "acme", ah.String(), doc.ID)
+	}), "attachment.remove")
 	// every registered writer ran (Ingest and RunUpstream: in internal/upstream's tests, which
 	// check their events)
 	elsewhere := map[string]bool{"release.Service.Ingest": true, "upstream.Service.RunUpstream": true}

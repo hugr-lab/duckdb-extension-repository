@@ -134,6 +134,9 @@ var catalogue = map[Kind][]string{
 	"audience.remove":         {"audience"},
 	"grant.add":               {"principal", "verbs", "channel", "extension", "extension_group"},
 	"grant.remove":            {"principal", "verbs", "channel", "extension", "extension_group"},
+	"attachment.add":          {"body_hash", "kind", "origin", "size"},
+	"attachment.remove":       {"body_hash", "kind", "origin", "size"},
+	"attachment.change":       {"body_hash", "kind", "origin", "change"},
 	"extension_group.add":     {"name", "description"},
 	"extension_group.remove":  {"name", "description", "members"},
 	"extension_group.change":  {"description"},
@@ -169,7 +172,7 @@ var catalogue = map[Kind][]string{
 	"authz.refused":     {"route", "verb", "status", "count"},
 	"install":           {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
 	"audit.dropped":     {"counts", "sink"},
-	"storage.gc":        {"domain", "builds", "bodies", "marked", "streams", "tmp", "uploads", "bytes", "claims", "resolved", "dry_run", "error"},
+	"storage.gc":        {"domain", "builds", "bodies", "marked", "streams", "tmp", "attachments", "uploads", "bytes", "claims", "resolved", "dry_run", "error"},
 	"storage.verify": {"domain", "full", "mark", "unmark", "checked", "ok", "skipped", "marked_ok", "missing", "short", "long",
 		"corrupt", "record", "unreadable", "marked", "unmarked", "bytes", "error"},
 	"audit.sink":     {"sink", "state", "class", "status"},
@@ -220,7 +223,7 @@ func SubjectForm(k Kind) string {
 	return map[string]string{"tenant": "tenant:<name>", "audience": "tenant:<name>", "version": "version:<name>",
 		"channel": "channel:<channel>", "key": "channel:<channel>/key:<id>", "issuer": "issuer:<name>", "grant": "grant:<id>",
 		"publisher": "publisher:<name>", "release": release, "block": "block:<body hash>", "upstream": "upstream:<name>",
-		"shadow": "shadow:<name>", "extension_group": "extension-group:<name>"}[prefix]
+		"shadow": "shadow:<name>", "extension_group": "extension-group:<name>", "attachment": "ext:<name>/attachment:<id>"}[prefix]
 }
 
 // Known reports whether a kind is in the catalogue.

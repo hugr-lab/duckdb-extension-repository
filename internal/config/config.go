@@ -52,6 +52,8 @@ type Config struct {
 	GC GC `yaml:"gc" kista:"fileonly"`
 	// UI configures the administration console (spec 0015).
 	UI UI `yaml:"ui" kista:"fileonly"`
+	// Attachments configures documents about bodies (spec 0011).
+	Attachments Attachments `yaml:"attachments" kista:"fileonly"`
 }
 
 // Store selects and configures the metadata database.
@@ -468,6 +470,7 @@ func (c Config) Validate() error {
 	validateStatistics(bad, c)
 	validateTelemetry(bad, c)
 	validateGC(bad, c)
+	validateAttachments(bad, c)
 	validateUI(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
