@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Pager, Table, when } from '../components/ui'
 import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
-import { GrantForm, GrantTable, type GrantRow } from './Access'
+import { GrantForm, GrantsList, useGrants } from './Access'
 
 // Publishers (spec 0008; console phase 2a): identities that only publish and promote, from CI by
 // trusted publishing (GitHub Actions OIDC) or with an API key. They never sign in here.
@@ -41,6 +41,7 @@ export function Publishers() {
   const { client, api, base } = useTenant()
   const nav = useNavigate()
   const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<unknown>(null)
   const list = usePaged<Publisher>(async (cursor, limit) => {
     const q = new URLSearchParams({ limit: String(limit) })
@@ -50,6 +51,8 @@ export function Publishers() {
   }, [api])
   const add = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (busy) return
+    setBusy(true)
     setFailure(null)
     try {
       await client.post(`${api}/publishers`, { body: { name } })
@@ -57,6 +60,7 @@ export function Publishers() {
     } catch (err) {
       setFailure(err)
     }
+    setBusy(false)
   }
   return (
     <>
@@ -65,7 +69,7 @@ export function Publishers() {
       </PageTitle>
       <form className="flex items-end gap-2" onSubmit={add}>
         <Field label="New publisher"><input className="field font-mono" required pattern="[a-z][a-z0-9-]{0,63}" placeholder="acl-ci" value={name} onChange={(e) => setName(e.target.value)} /></Field>
-        <Button type="submit" tone="brand">Add</Button>
+        <Button type="submit" tone="brand" disabled={busy}>Add</Button>
       </form>
       {failure != null && <ErrorBox error={failure} />}
       {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : list.items.length === 0 ? <Empty>No publishers.</Empty> : (
@@ -84,9 +88,14 @@ export function Publishers() {
   )
 }
 
-/** One publisher: its GitHub workflows, API keys and grants. */
+/** One publisher, its state kept per publisher: a key shown once never shows on another's page. */
 export function PublisherPage() {
   const { name = '' } = useParams()
+  return <PublisherView key={name} name={name} />
+}
+
+/** One publisher: its GitHub workflows, API keys and grants. */
+function PublisherView({ name }: { name: string }) {
   const { client, api, base } = useTenant()
   const nav = useNavigate()
   const path = `${api}/publishers/${seg(name)}`
@@ -128,9 +137,12 @@ function Workflows({ publisher, onChanged }: { publisher: Publisher; onChanged: 
   const [adding, setAdding] = useState(false)
   const [f, setF] = useState({ owner_id: '', repository_id: '', workflow: '', ref: '', environment: '' })
   const [removing, setRemoving] = useState<GitHub | null>(null)
+  const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<unknown>(null)
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value })
   const act = async (fn: () => Promise<unknown>) => {
+    if (busy) return
+    setBusy(true)
     setFailure(null)
     try {
       await fn()
@@ -138,6 +150,7 @@ function Workflows({ publisher, onChanged }: { publisher: Publisher; onChanged: 
     } catch (e) {
       setFailure(e)
     }
+    setBusy(false)
     onChanged()
   }
   return (
@@ -153,7 +166,7 @@ function Workflows({ publisher, onChanged }: { publisher: Publisher; onChanged: 
               <Field label="Ref" hint="a pattern: refs/tags/v*; empty: any"><input className="field font-mono" value={f.ref} onChange={set('ref')} /></Field>
               <Field label="Environment" hint="empty: any"><input className="field font-mono" value={f.environment} onChange={set('environment')} /></Field>
             </div>
-            <div><Button type="submit" tone="brand">Add</Button></div>
+            <div><Button type="submit" tone="brand" disabled={busy}>Add</Button></div>
           </form>
         )}
         {failure != null && <ErrorBox error={failure} />}
@@ -186,8 +199,11 @@ function Keys({ publisher }: { publisher: string }) {
   const [days, setDays] = useState(90)
   const [issued, setIssued] = useState<APIKey | null>(null)
   const [revoking, setRevoking] = useState<APIKey | null>(null)
+  const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<unknown>(null)
   const issue = async () => {
+    if (busy) return
+    setBusy(true)
     setFailure(null)
     try {
       const expires = new Date(Date.now() + days * 86_400_000).toISOString().replace(/\.\d+Z$/, 'Z')
@@ -196,6 +212,7 @@ function Keys({ publisher }: { publisher: string }) {
     } catch (e) {
       setFailure(e)
     }
+    setBusy(false)
     keys.reload()
   }
   const revoke = async () => {
@@ -216,7 +233,7 @@ function Keys({ publisher }: { publisher: string }) {
             {[30, 90, 180, 365].map((d) => <option key={d} value={d}>{d} days</option>)}
           </select>
         </label>
-        <Button tone="outline" onClick={issue}>+ API key</Button>
+        <Button tone="outline" disabled={busy || !!issued} onClick={issue}>+ API key</Button>
       </span>}>
       <div className="flex flex-col gap-4">
         {issued?.key && (
@@ -248,23 +265,18 @@ function Keys({ publisher }: { publisher: string }) {
 }
 
 function PublisherGrants({ publisher }: { publisher: string }) {
-  const { client, api } = useTenant()
   const principal = `publisher:${publisher}`
   const [granting, setGranting] = useState(false)
-  const list = usePaged<GrantRow>(async (cursor, limit) => {
-    const q = new URLSearchParams({ limit: String(limit), principal })
-    if (cursor) q.set('cursor', cursor)
-    const r = await client.get<{ grants: GrantRow[]; next?: string }>(`${api}/grants?${q}`)
-    return { items: r.data.grants, next: r.data.next }
-  }, [api, principal])
+  const list = useGrants({ principal })
   return (
     <Card title="What it may publish" actions={<Button tone="outline" onClick={() => setGranting(!granting)}>{granting ? 'Close' : 'Grant'}</Button>}>
       <div className="flex flex-col gap-4">
-        {granting && <GrantForm principal={principal} only={['publish', 'promote']} onDone={list.reload} />}
-        <Note>A publisher is granted publish and promote only, on extensions, groups or channels.</Note>
-        {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : list.items.length === 0 ? <Empty>Nothing granted: it can publish nothing yet.</Empty> : (
-          <GrantTable rows={list.items} onRevoked={list.reload} />
+        {granting && (
+          <GrantForm principal={principal} only={['publish', 'promote']} targets={['extension_group', 'extension', 'channel']}
+            onDone={() => { setGranting(false); list.reload() }} />
         )}
+        <Note>A publisher is granted publish and promote only: on extensions, extension groups or channels.</Note>
+        <GrantsList list={list} empty="Nothing granted: it can publish nothing yet." />
       </div>
     </Card>
   )

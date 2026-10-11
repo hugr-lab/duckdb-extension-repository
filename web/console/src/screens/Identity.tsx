@@ -33,8 +33,28 @@ interface ConsoleIssuer {
 export function claimPath(s: string): string[] | undefined {
   const t = s.trim()
   if (!t) return undefined
-  if (t.startsWith('[')) return JSON.parse(t) as string[]
-  return t.split('.')
+  if (!t.startsWith('[')) return t.split('.')
+  let v: unknown
+  try {
+    v = JSON.parse(t)
+  } catch {
+    v = null
+  }
+  if (!Array.isArray(v) || v.length === 0 || !v.every((k) => typeof k === 'string' && k !== '')) {
+    throw new Error(`A claim path is keys joined by dots, or a JSON array of keys: ${t}`)
+  }
+  return v as string[]
+}
+
+/** Required claims as typed: claim=value, separated by commas. */
+export function requiredClaims(s: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const pair of s.split(',').map((x) => x.trim()).filter(Boolean)) {
+    const i = pair.indexOf('=')
+    if (i <= 0) throw new Error(`A required claim is claim=value: ${pair}`)
+    out[pair.slice(0, i)] = pair.slice(i + 1)
+  }
+  return out
 }
 
 const showPath = (p?: string[]) => (!p || p.length === 0 ? '' : p.some((k) => k.includes('.')) ? JSON.stringify(p) : p.join('.'))
@@ -42,7 +62,7 @@ const showPath = (p?: string[]) => (!p || p.length === 0 ? '' : p.some((k) => k.
 export function Identity() {
   const { client, api, tenant } = useTenant()
   const issuers = useLoad(() => client.get<{ issuers: Issuer[] }>(`${api}/issuers?limit=500`), [api])
-  const consoles = useLoad(() => client.get<{ issuers: ConsoleIssuer[] }>(`${api}/console`, { anonymous: true }), [api])
+  const consoles = useLoad(() => client.get<{ audience: string; issuers: ConsoleIssuer[] }>(`${api}/console`, { anonymous: true }), [api])
   const audiences = useLoad(() => client.get<{ audiences: string[] }>(`${api}/audiences`), [api])
   const [adding, setAdding] = useState(false)
   const reload = () => {
@@ -60,7 +80,8 @@ export function Identity() {
         <Empty>No issuer records: no token is accepted here yet.</Empty>
       ) : (
         issuers.data!.data.issuers.map((is) => (
-          <IssuerCard key={is.name} is={is} console={consoles.data?.data.issuers.find((c) => c.name === is.name)} onChanged={reload} />
+          <IssuerCard key={is.name} is={is} onChanged={reload} canonical={consoles.data?.data.audience ?? ''}
+            console={consoles.error ? 'unknown' : consoles.data?.data.issuers.find((c) => c.name === is.name)} />
         ))
       )}
       <Card title="Audiences">
@@ -77,7 +98,8 @@ export function Identity() {
   )
 }
 
-function IssuerCard({ is, console: cc, onChanged }: { is: Issuer; console?: ConsoleIssuer; onChanged: () => void }) {
+function IssuerCard({ is, console: c, canonical, onChanged }: { is: Issuer; console?: ConsoleIssuer | 'unknown'; canonical: string; onChanged: () => void }) {
+  const cc = c === 'unknown' ? undefined : c
   const { client, api } = useTenant()
   const [removing, setRemoving] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -89,7 +111,7 @@ function IssuerCard({ is, console: cc, onChanged }: { is: Issuer; console?: Cons
     try {
       await client.del(path, { ifMatch: is.etag })
     } catch (e) {
-      setFailure(e instanceof ApiError && e.status === 409 ? new Error(e.message) : e)
+      setFailure(e)
     }
     onChanged()
   }
@@ -103,12 +125,12 @@ function IssuerCard({ is, console: cc, onChanged }: { is: Issuer; console?: Cons
     ['Client claim', <Mono>{showPath(is.client_claim)}</Mono>],
     ['Token lifetime', is.max_token_lifetime ?? ''],
     ['Added', `${when(is.created_at)}${is.created_by ? ` by ${is.created_by}` : ''}`],
-    ['Console sign-in', cc ? <><Mono>{cc.client_id}</Mono> <span className="text-ink-muted">· {cc.scopes.join(' ')} · audience {cc.audience}</span></> : <span className="text-ink-muted">off</span>],
+    ['Console sign-in', c === 'unknown' ? <span className="text-ink-muted">could not be read</span> : cc ? <><Mono>{cc.client_id}</Mono> <span className="text-ink-muted">· {cc.scopes.join(' ')} · audience {cc.audience}</span></> : <span className="text-ink-muted">off</span>],
   ]
   return (
     <Card title={<span className="font-mono">{is.name}</span>}
       actions={<>
-        <Button tone="outline" onClick={() => setEditing(!editing)}>{editing ? 'Close' : cc ? 'Console client…' : 'Allow console sign-in…'}</Button>
+        <Button tone="outline" onClick={() => setEditing(!editing)}>{editing ? 'Close' : cc ? 'Console client' : 'Allow console sign-in'}</Button>
         <Button tone="danger-outline" onClick={() => setRemoving(true)}>Remove…</Button>
       </>}>
       <dl className="m-0 grid grid-cols-[10rem_1fr] gap-x-4 gap-y-2">
@@ -120,31 +142,41 @@ function IssuerCard({ is, console: cc, onChanged }: { is: Issuer; console?: Cons
         ))}
       </dl>
       {failure != null && <div className="mt-3"><ErrorBox error={failure} /></div>}
-      {editing && <ConsoleClientForm is={is} cc={cc} onDone={() => { setEditing(false); onChanged() }} />}
+      {editing && <ConsoleClientForm key={cc?.client_id ?? ''} is={is} cc={cc} canonical={canonical} onDone={() => { setEditing(false); onChanged() }} onStale={onChanged} />}
       <Confirm open={removing} title={`Remove the issuer ${is.name}?`} confirm="Remove" danger onConfirm={remove} onClose={() => setRemoving(false)}>
         <p>Its tokens stop working here, and every grant to its principals goes with it: a record added later under the same name starts with none.</p>
+        <p>If you signed in through it, you lose access here too.</p>
       </Confirm>
     </Card>
   )
 }
 
 /** Sets or removes an issuer's console client (spec 0015), with the record's ETag. */
-function ConsoleClientForm({ is, cc, onDone }: { is: Issuer; cc?: ConsoleIssuer; onDone: () => void }) {
+function ConsoleClientForm({ is, cc, canonical, onDone, onStale }: { is: Issuer; cc?: ConsoleIssuer; canonical: string; onDone: () => void; onStale: () => void }) {
   const { client, api } = useTenant()
   const [clientID, setClientID] = useState(cc?.client_id ?? '')
   const [scopes, setScopes] = useState(cc?.scopes.join(' ') ?? 'openid profile offline_access')
-  const [audience, setAudience] = useState(cc?.audience ?? '')
+  // the canonical audience is the default: kept empty, so a later public_url still applies
+  const [audience, setAudience] = useState(cc && cc.audience !== canonical ? cc.audience : '')
   const [param, setParam] = useState(cc?.audience_parameter ?? '')
+  const [busy, setBusy] = useState(false)
+  const [turningOff, setTurningOff] = useState(false)
   const [failure, setFailure] = useState<unknown>(null)
   const path = `${api}/issuers/${seg(is.name)}/console`
   const act = async (f: () => Promise<unknown>) => {
+    if (busy) return
+    setBusy(true)
     setFailure(null)
     try {
       await f()
       onDone()
     } catch (e) {
-      setFailure(e instanceof ApiError && e.status === 412 ? new Error('The issuer record changed meanwhile: read it again.') : e)
+      if (e instanceof ApiError && e.status === 412) {
+        setFailure(new Error('The issuer record changed meanwhile: it was read again.'))
+        onStale()
+      } else setFailure(e)
     }
+    setBusy(false)
   }
   return (
     <form className="mt-4 flex flex-col gap-4 border-t border-line pt-4"
@@ -158,9 +190,13 @@ function ConsoleClientForm({ is, cc, onDone }: { is: Issuer; cc?: ConsoleIssuer;
       </div>
       {failure != null && <ErrorBox error={failure} />}
       <div className="flex gap-2">
-        <Button type="submit" tone="brand">Save</Button>
-        {cc && <Button tone="danger-outline" onClick={() => act(() => client.del(path, { ifMatch: is.etag }))}>Turn console sign-in off</Button>}
+        <Button type="submit" tone="brand" disabled={busy}>Save</Button>
+        {cc && <Button tone="danger-outline" disabled={busy} onClick={() => setTurningOff(true)}>Turn console sign-in off…</Button>}
       </div>
+      <Confirm open={turningOff} title={`Turn console sign-in off at ${is.name}?`} confirm="Turn off" danger
+        onConfirm={() => { setTurningOff(false); act(() => client.del(path, { ifMatch: is.etag })) }} onClose={() => setTurningOff(false)}>
+        <p>Nobody can sign in to this console through {is.name} any more; sessions already open keep their tokens until they expire. If it is the only issuer with a console client, the CLI or a server administrator turns it on again.</p>
+      </Confirm>
     </form>
   )
 }
@@ -174,16 +210,11 @@ function NewIssuer({ onDone }: { onDone: () => void }) {
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value })
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (busy) return
     setBusy(true)
     setFailure(null)
     try {
-      const required: Record<string, string> = {}
-      for (const pair of f.required.split(',').map((x) => x.trim()).filter(Boolean)) {
-        const i = pair.indexOf('=')
-        if (i <= 0) throw new Error(`A required claim is claim=value: ${pair}`)
-        required[pair.slice(0, i)] = pair.slice(i + 1)
-      }
-      const body: Record<string, unknown> = { name: f.name, url: f.url, max_token_lifetime: f.lifetime || undefined, required_claims: required }
+      const body: Record<string, unknown> = { name: f.name, url: f.url, max_token_lifetime: f.lifetime || undefined, required_claims: requiredClaims(f.required) }
       if (f.jwks_uri) body.jwks_uri = f.jwks_uri
       for (const [k, v] of [['roles_claim', f.roles], ['groups_claim', f.groups], ['client_claim', f.client]] as const) {
         const p = claimPath(v)

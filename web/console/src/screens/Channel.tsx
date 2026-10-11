@@ -106,7 +106,7 @@ function Mine({ channel }: { channel: string }) {
   const exts = perms.extensionsIn(channel)
   if (exts.length === 0) {
     return perms.groups.length > 0
-      ? <Empty>Your extensions here come through your groups: <Link to={`${base}/groups`}>Groups</Link>.</Empty>
+      ? <Empty>You administer extensions here through extension groups: see <Link to={`${base}/groups`}>Groups</Link>.</Empty>
       : <Empty>You administer no extension in this channel.</Empty>
   }
   return (
@@ -177,7 +177,7 @@ export function Extension() {
       <PageTitle eyebrow={<><Link to={`${base}/channels`} className="no-underline">Channels</Link> / <Link to={`${base}/channels/${seg(c)}`} className="no-underline">{c}</Link></>}
         title={<span className="font-mono">{ext}</span>} />
       <ReleaseList channel={c} ext={ext} />
-      {perms.tenantAdmin && <WhoMayUse channel={c} ext={ext} />}
+      {perms.tenantAdmin && <WhoMayUse key={`${c}/${ext}`} channel={c} ext={ext} />}
     </>
   )
 }

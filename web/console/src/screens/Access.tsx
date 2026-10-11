@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Button, Card, Checks, Chips, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Pager, SearchBox, Table, when } from '../components/ui'
-import { useLoad, usePaged, useTenant } from '../lib/context'
-import { ApiError, seg } from '../lib/http'
+import { type Grant, useLoad, usePaged, useTenant } from '../lib/context'
+import { seg } from '../lib/http'
 
 // Access (spec 0015 phase 2a), as tresor-server's Access screen: the tenant's principals with their
 // grant counts, a principal's grants, granting and revoking; and who may use one extension.
@@ -20,20 +20,61 @@ export interface GrantRow {
   verbs_on_extension?: string[]
 }
 
-/** What kind of principal this is, in words; a person or a service is the exception. */
+/** What kind of principal this is, in words; a person and a service are the exception. */
 export function principalKind(p: string): string {
-  const kind = p.slice(0, p.indexOf(':'))
-  return { subject: 'a person', client: 'a service', publisher: 'a publisher', issuer: 'every account of an issuer', role: 'a role', group: 'a group of people' }[kind] ?? kind
+  const i = p.indexOf(':')
+  if (i < 0) return 'not a principal: kind:issuer|value'
+  const kind = p.slice(0, i)
+  return ({ subject: 'a person', client: 'a service', publisher: 'a publisher', issuer: 'every account of an issuer', role: 'a role', group: 'a group of people' } as Record<string, string>)[kind] ?? kind
 }
 
 /** What a grant is on, in words. */
 export function grantTarget(g: GrantRow) {
-  const where = g.channel ? ` in ${g.channel}` : ''
+  const where = g.channel ? ` in ${g.channel}` : ' in every channel'
   if (g.extension_group) return <><span className="text-ink-muted">group</span> <Mono>{g.extension_group}</Mono>{where}</>
   if (g.extension) return <><Mono>{g.extension}</Mono>{where}</>
   if (g.channel) return <><span className="text-ink-muted">channel</span> <Mono>{g.channel}</Mono></>
   return <span className="text-ink-muted">the whole tenant</span>
 }
+
+/** Whether a listed grant is one of the caller's own (whoami's grants carry no id). */
+function isOwn(g: GrantRow, mine: Grant[]) {
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((v) => b.includes(v))
+  return mine.some((m) => m.principal === g.principal && same(m.verbs, g.verbs) && (m.channel ?? '') === (g.channel ?? '') &&
+    (m.extension ?? '') === (g.extension ?? '') && (m.extension_group ?? '') === (g.extension_group ?? ''))
+}
+
+/** The tenant's grants with a filter (principal, extension_group), page by page. */
+export function useGrants(filter: Record<string, string>) {
+  const { client, api } = useTenant()
+  const key = new URLSearchParams(filter).toString()
+  return usePaged<GrantRow>(async (cursor, limit) => {
+    const q = new URLSearchParams({ ...filter, limit: String(limit) })
+    if (cursor) q.set('cursor', cursor)
+    const r = await client.get<{ grants: GrantRow[]; next?: string }>(`${api}/grants?${q}`)
+    return { items: r.data.grants, next: r.data.next }
+  }, [api, key])
+}
+
+/** Grants of a list: the table with revoke, the pager, an empty state. */
+export function GrantsList({ list, principalColumn, empty, onChanged }: {
+  list: ReturnType<typeof useGrants>
+  principalColumn?: boolean
+  empty: string
+  onChanged?: () => void
+}) {
+  return (
+    <>
+      {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : list.items.length === 0 ? <Empty>{empty}</Empty> : (
+        <GrantTable rows={list.items} principalColumn={principalColumn} onRevoked={() => { list.reload(); onChanged?.() }} />
+      )}
+      <Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />
+    </>
+  )
+}
+
+/** A principal's characters (kind:issuer|value): the API's prefix takes any but whitespace here. */
+const principalRefuse = /\s/g
 
 export function Access() {
   const { client, api } = useTenant()
@@ -55,8 +96,10 @@ export function Access() {
       <Note>People get access through their identity provider's roles and groups. Grant to a person or a client only as an exception.</Note>
       <div className="grid grid-cols-[minmax(260px,320px)_1fr] items-start gap-6">
         <section aria-label="principals" className="flex flex-col gap-3 rounded-lg border border-line bg-surface p-4">
-          <SearchBox label="Find a principal" placeholder="Starts with… (role:kc|)" value={prefix} onChange={setPrefix} />
-          {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : list.items.length === 0 ? <Empty>No grants yet.</Empty> : (
+          <SearchBox label="Find a principal" placeholder="role:kc|…" value={prefix} onChange={setPrefix} refuse={principalRefuse} maxLength={300} mono />
+          {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : list.items.length === 0 ? (
+            <Empty>{prefix ? <>No principal starts with <Mono>{prefix}</Mono>.</> : 'No grants yet.'}</Empty>
+          ) : (
             <ul className="m-0 flex list-none flex-col gap-1 p-0">
               {list.items.map((p) => (
                 <li key={p.principal}>
@@ -72,7 +115,7 @@ export function Access() {
           )}
           <Pager compact page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />
           <form className="flex flex-col gap-2 border-t border-line pt-3" onSubmit={(e) => { e.preventDefault(); if (typed.trim()) setPicked(typed.trim()) }}>
-            <Field label="Another principal" hint="kind:issuer|value, e.g. role:kc|platform-team">
+            <Field label="Another principal" hint={<>kind:issuer|value, e.g. <Mono>role:kc|platform-team</Mono></>}>
               <input className="field font-mono" value={typed} onChange={(e) => setTyped(e.target.value)} />
             </Field>
             <Button type="submit">Open</Button>
@@ -86,13 +129,7 @@ export function Access() {
 
 /** One principal: its grants, page by page, revoked one by one; and a form to grant it more. */
 function Principal({ principal, onChanged }: { principal: string; onChanged: () => void }) {
-  const { client, api } = useTenant()
-  const list = usePaged<GrantRow>(async (cursor, limit) => {
-    const q = new URLSearchParams({ limit: String(limit), principal })
-    if (cursor) q.set('cursor', cursor)
-    const r = await client.get<{ grants: GrantRow[]; next?: string }>(`${api}/grants?${q}`)
-    return { items: r.data.grants, next: r.data.next }
-  }, [api, principal])
+  const list = useGrants({ principal })
   const changed = () => {
     list.reload()
     onChanged()
@@ -107,35 +144,35 @@ function Principal({ principal, onChanged }: { principal: string; onChanged: () 
         <GrantForm principal={principal} onDone={changed} />
       </Card>
       <Card title="Granted">
-        {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : list.items.length === 0 ? <Empty>Nothing granted.</Empty> : (
-          <GrantTable rows={list.items} onRevoked={changed} />
-        )}
-        <div className="mt-3"><Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} /></div>
+        <GrantsList list={list} empty="Nothing granted." onChanged={onChanged} />
       </Card>
     </div>
   )
 }
 
-/** Grants, each revocable unless revocable says otherwise (then the reason shows instead). */
+/** Grants, each revocable unless revocable says otherwise (then where it is changed shows). */
 export function GrantTable({ rows, onRevoked, principalColumn, revocable, verbs }: {
   rows: GrantRow[]
   onRevoked: () => void
   principalColumn?: boolean
-  revocable?: (g: GrantRow) => string | true
+  revocable?: (g: GrantRow) => React.ReactNode | true
   verbs?: (g: GrantRow) => string[]
 }) {
-  const { client, api } = useTenant()
+  const { client, api, perms } = useTenant()
   const [pending, setPending] = useState<GrantRow | null>(null)
+  const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<unknown>(null)
   const revoke = async () => {
     const g = pending!
     setPending(null)
     setFailure(null)
+    setBusy(true)
     try {
       await client.del(`${api}/grants/${seg(g.id)}`)
     } catch (e) {
-      setFailure(e instanceof ApiError && e.status === 409 ? new Error(e.message) : e)
+      setFailure(e)
     }
+    setBusy(false)
     onRevoked()
   }
   const columns: [string, (g: GrantRow) => React.ReactNode][] = []
@@ -146,7 +183,7 @@ export function GrantTable({ rows, onRevoked, principalColumn, revocable, verbs 
     ['Granted', (g) => <span className="text-[13px] text-ink-muted">{when(g.created_at)}</span>],
     ['', (g) => {
       const ok = revocable ? revocable(g) : true
-      return ok === true ? <Button tone="danger-outline" onClick={() => setPending(g)}>Revoke…</Button> : <span className="text-[13px] text-ink-muted">{ok}</span>
+      return ok === true ? <Button tone="danger-outline" disabled={busy} onClick={() => setPending(g)}>Revoke…</Button> : <span className="text-[13px] text-ink-muted">{ok}</span>
     }],
   )
   return (
@@ -155,12 +192,13 @@ export function GrantTable({ rows, onRevoked, principalColumn, revocable, verbs 
       <Table rows={rows} rowKey={(g) => g.id} columns={columns} />
       <Confirm open={pending !== null} title="Revoke this grant?" confirm="Revoke" danger onConfirm={revoke} onClose={() => setPending(null)}>
         {pending && <p><Mono>{pending.principal}</Mono> loses {pending.verbs.join(', ')} on {grantTarget(pending)}.</p>}
+        {pending && isOwn(pending, perms.grants) && <p className="font-semibold text-danger">This is one of your own grants: you may lose access here.</p>}
       </Confirm>
     </>
   )
 }
 
-type Target = 'extension_group' | 'extension' | 'channel' | 'tenant'
+export type Target = 'extension_group' | 'extension' | 'channel' | 'tenant'
 const verbsFor: Record<Target, string[]> = {
   extension_group: ['install', 'publish', 'promote', 'admin'],
   extension: ['install', 'publish', 'promote', 'admin'],
@@ -168,16 +206,34 @@ const verbsFor: Record<Target, string[]> = {
   tenant: ['install', 'publish', 'promote', 'audit', 'admin'],
 }
 
+/** The verbs a form offers: the target's, within only, and install alone to an issuer-wide
+ * principal (spec 0006: every account of the issuer would hold the others). */
+export function offeredVerbs(target: Target, principal: string, only?: string[]): string[] {
+  return verbsFor[target].filter((v) => (!only || only.includes(v)) && (!principal.startsWith('issuer:') || v === 'install'))
+}
+
+/** The body of POST …/grants: channel only when one is chosen, the name under its target's key. */
+export function grantBody(principal: string, target: Target, name: string, channel: string, verbs: string[]) {
+  const body: Record<string, unknown> = { principal, verbs }
+  if (target !== 'tenant' && channel) body.channel = channel
+  if (target === 'extension') body.extension = name
+  if (target === 'extension_group') body.extension_group = name
+  return body
+}
+
 /** Grants verbs to a principal (given, or typed) on the tenant, a channel, an extension or an
- * extension group; fixed fixes the target (a group's or an extension's page). */
-export function GrantForm({ principal, fixed, only, onDone }: {
+ * extension group; fixed fixes the target (a group's or an extension's page, its channel kept). */
+export function GrantForm({ principal, fixed, only, targets, onDone }: {
   principal?: string
   fixed?: { target: 'extension_group' | 'extension'; name: string; channel?: string }
   /** the verbs offered at most (a publisher: publish and promote) */
   only?: string[]
+  /** the targets offered (a publisher: never the whole tenant) */
+  targets?: Target[]
   onDone: () => void
 }) {
   const { client, api } = useTenant()
+  const ids = useId()
   const [who, setWho] = useState('')
   const [target, setTarget] = useState<Target>(fixed?.target ?? 'extension_group')
   const [name, setName] = useState('')
@@ -189,21 +245,20 @@ export function GrantForm({ principal, fixed, only, onDone }: {
   const channels = useLoad(() => client.get<{ channels: { name: string }[] }>(`${api}/channels`), [api])
   const groups = useLoad(() => (fixed || target !== 'extension_group' ? Promise.resolve(null) :
     client.get<{ extension_groups: { name: string }[] }>(`${api}/extension-groups?limit=500`)), [api, target, !!fixed])
-  const allowed = verbsFor[target].filter((v) => !only || only.includes(v))
+  const p = principal ?? who.trim()
+  const allowed = offeredVerbs(target, p, only)
   const chosen = verbs.filter((v) => allowed.includes(v))
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (busy) return
     setBusy(true)
     setFailure(null)
     setDone('')
-    const body: Record<string, unknown> = { principal: principal ?? who.trim(), verbs: chosen }
-    if (target !== 'tenant' && (target === 'channel' || channel)) body.channel = channel
-    const n = fixed?.name ?? name.trim()
-    if (target === 'extension') body.extension = n
-    if (target === 'extension_group') body.extension_group = n
     try {
-      await client.post(`${api}/grants`, { body })
-      setDone(`Granted ${chosen.join(', ')}.`)
+      await client.post(`${api}/grants`, { body: grantBody(p, target, fixed?.name ?? name.trim(), channel, chosen) })
+      setDone(`Granted ${chosen.join(', ')} to ${p}.`)
+      setWho('')
+      setName('')
       onDone()
     } catch (err) {
       setFailure(err)
@@ -211,28 +266,30 @@ export function GrantForm({ principal, fixed, only, onDone }: {
     setBusy(false)
   }
   const needsName = !fixed && (target === 'extension' || target === 'extension_group')
+  const offered = ([['extension_group', 'Extension group'], ['extension', 'Extension'], ['channel', 'Channel'], ['tenant', 'Whole tenant']] as [Target, string][])
+    .filter(([t]) => !targets || targets.includes(t))
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
       {!principal && (
-        <Field label="Principal" hint="kind:issuer|value: role:kc|platform-team, group:kc|analysts, client:kc|node, subject:kc|<sub>, publisher:<name>">
+        <Field label="Principal" hint={<>kind:issuer|value: <Mono>role:kc|platform-team</Mono>, <Mono>group:kc|analysts</Mono>, <Mono>client:kc|node</Mono>, <Mono>publisher:ci</Mono></>}>
           <input className="field font-mono" required value={who} onChange={(e) => setWho(e.target.value)} />
         </Field>
       )}
       {!fixed && (
-        <Field label="On">
-          <Chips label="what the grant is on" value={target} onChange={setTarget}
-            options={[['extension_group', 'Extension group'], ['extension', 'Extension'], ['channel', 'Channel'], ['tenant', 'Whole tenant']]} />
-        </Field>
+        <div className="flex flex-col gap-1">
+          <span className="text-[13px] font-semibold text-ink">On</span>
+          <Chips label="what the grant is on" value={target} onChange={setTarget} options={offered} />
+        </div>
       )}
       <div className="flex flex-wrap gap-4">
         {needsName && (
           <Field label={target === 'extension_group' ? 'Group' : 'Extension'}>
-            <input className="field font-mono" required list={target === 'extension_group' ? 'kista-groups' : undefined} value={name} onChange={(e) => setName(e.target.value)} />
+            <input className="field font-mono" required list={target === 'extension_group' ? `${ids}-groups` : undefined} value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
         )}
         {target !== 'tenant' && (
-          <Field label={target === 'channel' ? 'Channel' : 'In channel'}>
-            <select className="field" value={channel} required={target === 'channel'} onChange={(e) => setChannel(e.target.value)}>
+          <Field label={target === 'channel' ? 'Channel' : 'In channel'} hint={fixed?.channel ? 'this page’s channel; grant in every channel from Access' : undefined}>
+            <select className="field" value={channel} required={target === 'channel'} disabled={!!fixed?.channel} onChange={(e) => setChannel(e.target.value)}>
               {target !== 'channel' && <option value="">every channel</option>}
               {target === 'channel' && <option value="" disabled>choose…</option>}
               {(channels.data?.data.channels ?? []).map((c) => <option key={c.name}>{c.name}</option>)}
@@ -240,10 +297,11 @@ export function GrantForm({ principal, fixed, only, onDone }: {
           </Field>
         )}
       </div>
-      <datalist id="kista-groups">{(groups.data?.data.extension_groups ?? []).map((g) => <option key={g.name} value={g.name} />)}</datalist>
-      <Field label="May">
+      <datalist id={`${ids}-groups`}>{(groups.data?.data.extension_groups ?? []).map((g) => <option key={g.name} value={g.name} />)}</datalist>
+      <div className="flex flex-col gap-1">
+        <span className="text-[13px] font-semibold text-ink">May</span>
         <Checks label="verbs" options={allowed} value={chosen} onChange={setVerbs} />
-      </Field>
+      </div>
       {target === 'extension_group' && chosen.includes('admin') && (
         <Note>admin on a group manages its extensions' releases. Only a tenant administrator changes who is in the group.</Note>
       )}
@@ -263,7 +321,7 @@ export function WhoMayUse({ channel, ext }: { channel: string; ext: string }) {
   const list = useLoad(async () => {
     const rows: GrantRow[] = []
     let cursor = ''
-    // every grant reaching one name: a tenant holds at most 1000, so a few pages at most
+    // every grant reaching one name: a tenant holds at most 1000, so two pages at most
     for (;;) {
       const q = new URLSearchParams({ extension: ext, limit: '500' })
       if (cursor) q.set('cursor', cursor)
@@ -274,22 +332,32 @@ export function WhoMayUse({ channel, ext }: { channel: string; ext: string }) {
     }
   }, [api, ext])
   const here = (list.data ?? []).filter((g) => !g.channel || g.channel === channel)
-  const where: Record<string, string> = { tenant: 'on the tenant', channel: 'on the channel', extension_group: 'through the group' }
+  const changedAt = (g: GrantRow): React.ReactNode | true => {
+    switch (g.via) {
+      case 'extension':
+        return true
+      case 'extension_group':
+        return <>through the group: <Link to={`${base}/groups/${seg(g.extension_group ?? '')}`}>change it there</Link></>
+      case 'channel':
+        return <>on the channel: <Link to={`${base}/access`}>change it in Access</Link></>
+      case 'tenant':
+        return <>on the tenant: <Link to={`${base}/access`}>change it in Access</Link></>
+      default:
+        return <Link to={`${base}/access`}>change it in Access</Link>
+    }
+  }
   return (
     <Card title={<>Who may use <span className="font-mono">{ext}</span> in {channel}</>}
       actions={<Button tone="outline" onClick={() => setGranting(!granting)}>{granting ? 'Close' : 'Grant access'}</Button>}>
       <div className="flex flex-col gap-4">
-        {granting && <GrantForm fixed={{ target: 'extension', name: ext, channel }} onDone={list.reload} />}
-        {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : here.length === 0 ? <Empty>Only what is public: no grant reaches it.</Empty> : (
-          <GrantTable rows={here} onRevoked={list.reload} principalColumn verbs={(g) => g.verbs_on_extension ?? g.verbs}
-            revocable={(g) => (g.via === 'extension' ? true : where[g.via ?? 'tenant'])} />
+        {granting && <GrantForm fixed={{ target: 'extension', name: ext, channel }} onDone={() => { setGranting(false); list.reload() }} />}
+        {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : here.length === 0 ? (
+          <Empty>No grant reaches it: only its public releases are served, to anyone.</Empty>
+        ) : (
+          <GrantTable rows={here} onRevoked={list.reload} principalColumn verbs={(g) => g.verbs_on_extension ?? g.verbs} revocable={changedAt} />
         )}
-        <Note>
-          Grants on the tenant, the channel or a group count here too, and are changed where they are made:{' '}
-          <Link to={`${base}/access`}>Access</Link> or the group's page.
-        </Note>
+        <Note>Grants on the tenant, the channel or a group count here too, and are changed where they are made.</Note>
       </div>
     </Card>
   )
 }
-

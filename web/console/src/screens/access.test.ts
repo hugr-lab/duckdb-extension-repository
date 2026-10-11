@@ -32,3 +32,31 @@ describe('claimPath', () => {
     expect(claimPath('  ')).toBeUndefined()
   })
 })
+
+describe('the grant form', () => {
+  it('sends channel only when one is chosen, the name under its target', async () => {
+    const { grantBody, offeredVerbs } = await import('./Access')
+    expect(grantBody('role:kc|t', 'extension_group', 'platform', '', ['install'])).toEqual({ principal: 'role:kc|t', verbs: ['install'], extension_group: 'platform' })
+    expect(grantBody('role:kc|t', 'extension', 'acl', 'prod', ['admin'])).toEqual({ principal: 'role:kc|t', verbs: ['admin'], extension: 'acl', channel: 'prod' })
+    expect(grantBody('role:kc|t', 'tenant', '', 'prod', ['audit'])).toEqual({ principal: 'role:kc|t', verbs: ['audit'] })
+    expect(offeredVerbs('tenant', 'role:kc|t')).toContain('audit')
+    expect(offeredVerbs('extension_group', 'role:kc|t')).not.toContain('audit')
+    expect(offeredVerbs('tenant', 'issuer:kc')).toEqual(['install'])
+    expect(offeredVerbs('channel', 'publisher:ci', ['publish', 'promote'])).toEqual(['publish', 'promote'])
+  })
+  it('words a string with no kind', () => {
+    expect(principalKind('foo')).toMatch(/not a principal/)
+  })
+})
+
+describe('forms input', () => {
+  it('splits member names once each; reads required claims; refuses a bad claim path', async () => {
+    const { splitNames } = await import('./Groups')
+    const { requiredClaims } = await import('./Identity')
+    expect(splitNames('acl, tresor  acl\nhttpfs')).toEqual(['acl', 'tresor', 'httpfs'])
+    expect(requiredClaims('tid=t1, azp=kista-console')).toEqual({ tid: 't1', azp: 'kista-console' })
+    expect(() => requiredClaims('tid')).toThrow(/claim=value/)
+    expect(() => claimPath('[1]')).toThrow(/claim path/)
+    expect(() => claimPath('[nope')).toThrow(/claim path/)
+  })
+})

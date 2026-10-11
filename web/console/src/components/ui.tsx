@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from 'react'
+import { cloneElement, type ReactElement, type ReactNode, useEffect, useId, useRef } from 'react'
 import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, Search } from 'lucide-react'
 
 // The console's parts, in the Hugr Lab design system as tresor-server's console draws it: pill
@@ -176,15 +176,18 @@ export function when(s?: string) {
   return isNaN(d.getTime()) ? s : d.toLocaleString()
 }
 
-/** A name-prefix search, answered by the API (spec 0015 phase 1b): never a filter of one page. */
-export function SearchBox({ value, onChange, label, placeholder = 'Name starts with…' }: { value: string; onChange: (v: string) => void; label: string; placeholder?: string }) {
+/** A name-prefix search, answered by the API (spec 0015 phase 1b): never a filter of one page.
+ * refuse strips what the API's prefix does not take (an extension name's characters by default). */
+export function SearchBox({ value, onChange, label, placeholder = 'Name starts with…', refuse = /[^A-Za-z0-9_.-]/g, maxLength = 64, mono }: {
+  value: string; onChange: (v: string) => void; label: string; placeholder?: string; refuse?: RegExp; maxLength?: number; mono?: boolean
+}) {
   return (
-    <label className="flex w-[300px] items-center gap-2 rounded-full border border-line px-3.5 py-1.5 text-ink-muted">
+    <label className="flex w-[300px] max-w-full items-center gap-2 rounded-full border border-line px-3.5 py-1.5 text-ink-muted">
       <Search size={15} aria-hidden />
       <span className="sr-only">{label}</span>
-      <input type="search" value={value} placeholder={placeholder} aria-label={label} maxLength={64}
-        onChange={(e) => onChange(e.target.value.replace(/[^A-Za-z0-9_.-]/g, ''))}
-        className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-ink outline-none" />
+      <input type="search" value={value} placeholder={placeholder} aria-label={label} maxLength={maxLength}
+        onChange={(e) => onChange(e.target.value.replace(refuse, ''))}
+        className={`min-w-0 flex-1 border-0 bg-transparent text-[13px] text-ink outline-none ${mono ? 'font-mono' : ''}`} />
     </label>
   )
 }
@@ -233,14 +236,16 @@ export function Pager({ page, size, count, hasNext, onPrev, onNext, onSize, comp
   )
 }
 
-/** A labelled form field (phase 2a's forms). */
-export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
+/** A labelled form field (phase 2a's forms): the label names the control, the hint describes it. */
+export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactElement<{ id?: string; 'aria-describedby'?: string }> }) {
+  const id = useId()
+  const control = cloneElement(children, { id: `${id}-c`, 'aria-describedby': hint ? `${id}-h` : undefined })
   return (
-    <label className="flex min-w-0 flex-col gap-1">
-      <span className="text-[13px] font-semibold text-ink">{label}</span>
-      {children}
-      {hint && <span className="text-[12px] text-ink-muted">{hint}</span>}
-    </label>
+    <div className="flex min-w-0 flex-col gap-1">
+      <label htmlFor={`${id}-c`} className="text-[13px] font-semibold text-ink">{label}</label>
+      {control}
+      {hint && <span id={`${id}-h`} className="text-[12px] text-ink-muted">{hint}</span>}
+    </div>
   )
 }
 
@@ -251,7 +256,7 @@ export function Checks({ value, options, onChange, label }: { value: string[]; o
       {options.map((o) => {
         const on = value.includes(o)
         return (
-          <label key={o} className={`flex cursor-pointer items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] ${on ? 'border border-brand-strong bg-surface-soft font-semibold text-brand-strong' : 'border border-line bg-surface text-ink'}`}>
+          <label key={o} className={`flex cursor-pointer items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] focus-within:outline focus-within:outline-2 focus-within:outline-focus ${on ? 'border border-brand-strong bg-surface-soft font-semibold text-brand-strong' : 'border border-line bg-surface text-ink'}`}>
             <input type="checkbox" className="sr-only" checked={on} onChange={() => onChange(on ? value.filter((x) => x !== o) : [...value, o])} />
             {o}
           </label>

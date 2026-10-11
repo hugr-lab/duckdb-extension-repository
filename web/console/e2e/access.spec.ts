@@ -34,16 +34,24 @@ test('a group, a grant on it, and who may use an extension through it', async ({
   await page.getByRole('button', { name: 'Grant', exact: true }).click()
   await expect(page.getByRole('cell', { name: /role:kc\|analysts/ })).toBeVisible()
 
+  // a granted group is not deleted: the page says why
+  await page.getByRole('button', { name: 'Delete…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click()
+  await expect(page.getByText('Grants name this group: revoke them first')).toBeVisible()
+
   // the extension's page: the role reaches hello_acme through the group, revoked elsewhere
   await nav(page, 'Channels').click()
-  await page.getByRole('link', { name: 'prod' }).click()
-  await page.getByRole('link', { name: 'hello_acme' }).click()
+  await page.getByRole('link', { name: 'prod', exact: true }).click()
+  await page.getByRole('link', { name: 'hello_acme', exact: true }).click()
   const row = page.getByRole('row', { name: /role:kc\|analysts/ })
   await expect(row.getByText('through the group')).toBeVisible()
   await expect(row.getByText('install', { exact: true })).toBeVisible()
 
   // Access: the principal, its grant, revoked
+  // (hello_acme stays in platform: each run starts from run.sh's fresh store)
   await nav(page, 'Access').click()
+  await page.getByLabel('Find a principal').fill('role:kc|ana')
+  await expect(page.getByRole('button', { name: /role:kc\|tenant-admin/ })).toHaveCount(0)
   await page.getByRole('button', { name: /role:kc\|analysts/ }).click()
   await expect(page.getByText('a role', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Revoke…' }).click()

@@ -1,6 +1,6 @@
 # Spec 0015: Administration console
 
-- **Status**: accepted (2026-10-10); phases 1a and 1b implemented, 2a in progress
+- **Status**: accepted (2026-10-10); phases 1a, 1b and 2a implemented, 2b next
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 
@@ -352,11 +352,12 @@ administrator's. Every form sends what the API takes and shows the API's own mes
   page with its description (edited with `If-Match`), its members (paged, prefix; added as names
   separated by commas or spaces, at most 100 at a time, and removed one by one, each confirmed with
   what it changes: who gains or loses the name), its grants (`?extension_group=`) with a link to
-  grant on it, the group's recent events (`subject=extension-group:<name>`), and removal (refused by
-  the API while a grant names it, which the page explains). A group's administrator sees the page
-  without its forms or grants.
+  grant on it, the group's recent events (`subject=extension-group:<name>`, kept exact: the API's
+  filter is a prefix; shown to those who may read the tenant's events), and removal (refused by the
+  API while a grant names it, which the page explains). A group's administrator sees the page
+  without its forms, grants or events.
 - **Identity**: the issuer records (name, URL, algorithms, required claims, claim paths, the
-  console client), a new record (the API fetches its discovery document and JWKS, so a failure is
+  console client; at most 16 per tenant, so read in one page), a new record (the API fetches its discovery document and JWKS, so a failure is
   shown as the API words it), removal (with the record's ETag, warning that its grants go with it),
   and its console client set or removed. The tenant's audiences are listed; adding and removing
   one is a server administrator's.
@@ -537,7 +538,10 @@ Makefile, .github/workflows/ci.yml               + make console; console, consol
     token bound to its scope prefix;
   - the renewal schedule;
   - the contract (1b): `mountKista`, the element, `update` with `tenant`, events, routing under
-    `basePath`, `popstate` outside it ignored, a rejected `getToken`.
+    `basePath`, `popstate` outside it ignored, a rejected `getToken`;
+  - the forms' rules (2a): a grant's request body, the verbs offered (audit on the tenant only,
+    install only to an issuer-wide principal, a publisher's), member names, required claims and
+    claim paths, group grants in `Perms`.
 - **e2e** (Playwright, Chromium, against `kista serve`, with Keycloak in docker as tresor-server
   does):
   - sign-in in both scopes;
@@ -548,10 +552,10 @@ Makefile, .github/workflows/ci.yml               + make console; console, consol
   - an expired session's popup sign-in keeps a form;
   - (1b) the micro-frontend in the test host on another origin, two instances on one page: the
     token per audience, `renew` semantics, theme, `onUnauthorized`, navigation;
-  - (2a) a tenant administrator grants install on an extension group to a principal, adds a name
-    to the group, sees the grant in Access and on the extension's page, and revokes it; a group's
-    administrator sees the group without forms; an issuer record and a publisher with an API key
-    are added and removed.
+  - (2a) a tenant administrator adds a name to an extension group, grants install on it to a
+    principal, is told why the granted group cannot be deleted, sees the grant on the extension's
+    page and, searching by prefix, in Access, and revokes it; a group's administrator sees the group
+    without forms; an issuer record and a publisher with an API key are added and removed.
 
 ## Alternatives considered
 
