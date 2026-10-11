@@ -1,4 +1,6 @@
 # The console's npm dependencies (spec 0015): weekly, grouped, so a vulnerable package is noticed.
+# Minor and patch updates only: a major one (React, Tailwind, Vite, TypeScript) changes the code and
+# is done on purpose in its own branch. CI's npm audit still fails on a vulnerable package.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -8,3 +10,7 @@ updates:
     groups:
       console:
         patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
