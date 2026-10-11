@@ -14,6 +14,8 @@ async function signIn(page: Page, path: string, user: string) {
   await page.locator('#kc-login').click()
 }
 
+test.describe.configure({ mode: 'serial' }) // the server's test adds a key to the channel the second one creates
+
 const nav = (page: Page, name: string) => page.getByRole('navigation').getByRole('link', { name, exact: true })
 const confirm = (page: Page, name: string) => page.getByRole('dialog').getByRole('button', { name, exact: true }).click()
 
@@ -28,18 +30,22 @@ test('an upstream: added, an allowlist entry, a dry run requested, removed', asy
   await expect(page.getByRole('heading', { name: 'core' })).toBeVisible()
   await expect(page.getByRole('cell', { name: 'json', exact: true })).toBeVisible()
 
-  await page.getByLabel('Extension', { exact: true }).fill('parquet')
-  await page.getByRole('button', { name: 'Add or replace' }).click()
+  const allow = page.locator('section', { has: page.getByRole('heading', { name: 'Allowlist' }) })
+  await allow.getByLabel('Name', { exact: true }).fill('parquet')
+  await allow.getByRole('button', { name: 'Add', exact: true }).click()
   await expect(page.getByRole('cell', { name: 'parquet', exact: true })).toBeVisible()
   await page.getByLabel('Find an entry').fill('par')
   await expect(page.getByRole('cell', { name: 'json', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('cell', { name: 'parquet', exact: true })).toBeVisible()
 
-  await page.getByRole('button', { name: 'Dry run' }).click()
+  // a dry run is requested; a running kista serve takes it (and, offline, fails it fast)
+  const actions = page.getByRole('group', { name: 'upstream actions' })
+  await actions.getByRole('button', { name: 'Dry run' }).click()
   await confirm(page, 'Run')
-  await expect(page.getByText(/a dry run is requested|running|dry run/).first()).toBeVisible()
+  await expect(page.getByText('a dry run is requested').or(page.getByText('running', { exact: true })).or(page.locator('.chip', { hasText: 'dry run' })).first()).toBeVisible()
 
-  await page.getByRole('button', { name: 'Remove…' }).first().click()
-  await confirm(page, 'remove')
+  await actions.getByRole('button', { name: 'Remove…' }).click()
+  await confirm(page, 'Remove')
   await expect(page.getByRole('heading', { name: 'Upstreams' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'core', exact: true })).toHaveCount(0)
 })
@@ -97,10 +103,10 @@ test('a server administrator: a tenant created, suspended and resumed; a version
   await expect(page.getByText('trusted', { exact: true })).toBeVisible()
   // a key trusted for less than a week is refused, as the API words it; a server administrator forces
   await page.getByRole('button', { name: 'Activate…' }).click()
-  await confirm(page, 'activate')
+  await confirm(page, 'Activate')
   await expect(page.getByText(/too soon/)).toBeVisible()
   await page.getByRole('button', { name: 'Activate…' }).click()
   await page.getByRole('dialog').getByLabel(/force/).check()
-  await confirm(page, 'activate')
+  await confirm(page, 'Activate')
   await expect(page.getByRole('cell', { name: 'active', exact: true })).toBeVisible()
 })

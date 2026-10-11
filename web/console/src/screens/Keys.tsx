@@ -42,7 +42,6 @@ export function Keys({ channel }: { channel: string }) {
     setFailure(null)
     try {
       await fn()
-      setSigner('')
     } catch (e) {
       setFailure(e instanceof ApiError && e.status === 412 ? new Error('The key changed meanwhile: it was read again.') : e)
     }
@@ -84,21 +83,22 @@ export function Keys({ channel }: { channel: string }) {
       />
       {failure != null && <div className="mt-3"><ErrorBox error={failure} /></div>}
       {perms.server && (
-        <form className="mt-4 flex items-end gap-2 border-t border-line pt-4" onSubmit={(e) => { e.preventDefault(); act(() => client.post(`${api}/channels/${seg(channel)}/keys`, { body: { signer_ref: signer, active: false } })) }}>
+        <form className="mt-4 flex items-end gap-2 border-t border-line pt-4" onSubmit={(e) => { e.preventDefault(); act(() => client.post(`${api}/channels/${seg(channel)}/keys`, { body: { signer_ref: signer, active: false } }).then(() => setSigner(''))) }}>
           <Field label="Add a key" hint="a signer reference (vault:…, kms:…, file:…); it starts trusted, activated later"><input className="field w-[28rem] font-mono" required value={signer} onChange={(e) => setSigner(e.target.value)} /></Field>
           <Button type="submit" disabled={busy}>Add key</Button>
         </form>
       )}
     </Card>
-    <Confirm open={pending !== null} title={`${pending?.change ?? ''} ${pending?.key.fingerprint ?? ''}`} confirm={pending?.change ?? ''}
+    <Confirm open={pending !== null} title={pending?.change === 'activate' ? 'Activate this key?' : 'Retire this key?'} confirm={pending?.change === 'activate' ? 'Activate' : 'Retire'}
       danger={pending?.change === 'retire'} onConfirm={change} onClose={() => { setPending(null); setForce(false) }}>
+      <p><Mono>{pending?.key.fingerprint ?? ''}</Mono></p>
       <p>{pending?.change === 'activate'
-        ? 'New releases are signed with this key, and a re-sign signs the existing ones; the serving key moves once every release carries its signature.'
-        : 'A retired key never comes back: clients stop trusting it. The API refuses while a release still needs it.'}</p>
+        ? 'New releases are signed with this key, and a re-sign signs the existing ones; the serving key moves once every release carries its signature. A key must have been trusted for a while first (a week by default), so clients learn it before it signs.'
+        : 'A retired key never comes back: clients stop trusting it. The serving key is never retired, and a key demoted only recently is refused.'}</p>
       {perms.server && (
-        <label className="flex items-center gap-2 text-[13px]"><input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} /> force (server administrators): skip the API's safety checks</label>
+        <label className="flex items-center gap-2 text-[13px]"><input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} /> force (server administrators): skip the minimum time in its state</label>
       )}
-      {force && <Note>Forcing can leave clients without a key they trust for some releases.</Note>}
+      {force && <Note>Clients that have not yet learnt the key refuse what it signs until they do.</Note>}
     </Confirm>
     <Card title="Key events">
       {events.loading ? <Loading /> : events.error ? <ErrorBox error={events.error} /> : (

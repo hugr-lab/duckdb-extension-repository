@@ -415,7 +415,9 @@ GET, DELETE …/upstreams/{name}                            the record, its last
                                                           DELETE: If-Match
 POST   …/upstreams/{name}/public, /private, /pause, /resume   If-Match
 GET, POST …/upstreams/{name}/extensions; DELETE …/extensions/{ext}   POST on an existing name
-                                                          replaces its versions and allow_reserved (200)
+                                                          replaces its versions and allow_reserved (200);
+                                                          GET takes ?prefix=&cursor=&limit= by name
+                                                          (spec 0015 phase 2b; without limit, all)
 GET, POST …/upstreams/{name}/platforms;  DELETE …/platforms/{platform}
 GET, POST …/upstreams/{name}/keys;       DELETE …/keys/{fingerprint}
 POST   …/upstreams/{name}/sync[?dry_run=true]             202 with the upstream (its run state)

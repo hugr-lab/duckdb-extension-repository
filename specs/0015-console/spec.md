@@ -1,6 +1,6 @@
 # Spec 0015: Administration console
 
-- **Status**: accepted (2026-10-10); phases 1a, 1b and 2a implemented, 2b in progress
+- **Status**: implemented (accepted 2026-10-10; phases 1a, 1b, 2a and 2b)
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 
@@ -375,17 +375,18 @@ DuckDB versions.
   run's counts, whether a run is requested or running), a new upstream (kind; channel; mode;
   visibility; platforms as chips; for a repository its prefix and pinned key fingerprints; the
   first allowlist entries; a configured credential by name), and an upstream's page:
-  - actions with its `If-Match`: sync, dry run, pause or resume, public or private, removal
-    (confirmed: its releases stay);
-  - its credential set or cleared (the configured names are a server administrator's to list, so
-    the name is typed);
-  - platforms and, for a repository, pinned keys, added and removed;
+  - sync and dry run; pause or resume, public or private, and removal (its releases stay) with
+    its `If-Match`; each confirmed;
+  - for a repository, its credential set or cleared (the configured names are a server
+    administrator's to list, so the name is typed) and its pinned keys added and removed (a key in
+    the path as is: `sha256:…`, since the API refuses escaped paths);
+  - platforms added and removed, each removal confirmed;
   - the allowlist, page by page with a prefix, from `GET …/upstreams/{name}/extensions`, which gains
-    `?prefix=&cursor=&limit=` (by name); an entry added or replaced (name, versions, the reserved
-    override) and removed;
+    `?prefix=&cursor=&limit=` (by name; without `limit`, the whole allowlist as before); an entry
+    added or replaced (name, versions, the reserved-name override) and removed;
   - the last run: when, dry or not, counts by outcome, the first problems and an error;
   - the cells, page by page, filtered by outcome.
-  - The tenant's shadows (core names it replaced) are listed under Upstreams, each removable.
+  - The tenant's shadows (core names it replaced) are listed under Upstreams, paged, each removable.
 - **Blocks**: the tenant's blocked bodies (hash, reason, when, who), a body blocked by its hash
   with a reason (confirmed: its releases are yanked in every channel), and unblocked.
 - **Channels**: a tenant administrator creates one (name, kind); a channel's administrator adds
@@ -572,7 +573,9 @@ Makefile, .github/workflows/ci.yml               + make console; console, consol
     `basePath`, `popstate` outside it ignored, a rejected `getToken`;
   - the forms' rules (2a): a grant's request body, the verbs offered (audit on the tenant only,
     install only to an issuer-wide principal, a publisher's), member names, required claims and
-    claim paths, group grants in `Perms`.
+    claim paths, group grants in `Perms`;
+  - (2b) an upstream's request body (a repository's prefix, keys and credential only), allowlist
+    names, a run's counts, a key's path segment.
 - **e2e** (Playwright, Chromium, against `kista serve`, with Keycloak in docker as tresor-server
   does):
   - sign-in in both scopes;

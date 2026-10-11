@@ -49,14 +49,14 @@ export function Blocks() {
       <Card title="Block a body">
         <form className="flex flex-col gap-4" onSubmit={(e) => { e.preventDefault(); setConfirming(true) }}>
           <div className="grid grid-cols-[1fr_1fr] gap-4">
-            <Field label="Body hash" hint="a release's body hash, from its page"><input className="field font-mono" required value={hash} onChange={(e) => setHash(e.target.value.trim())} /></Field>
+            <Field label="Body hash" hint="a release's body hash, from its page"><input className="field font-mono" required pattern="[0-9a-f]{64}" title="64 lowercase hex characters" value={hash} onChange={(e) => setHash(e.target.value.trim())} /></Field>
             <Field label="Reason"><input className="field" required maxLength={400} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
           </div>
           <Note>Blocking yanks every release with this body, in every channel, and refuses it from publishers and upstreams from then on.</Note>
+          {failure != null && <ErrorBox error={failure} />}
           <div><Button type="submit" tone="danger" disabled={busy}>Block…</Button></div>
         </form>
       </Card>
-      {failure != null && <ErrorBox error={failure} />}
       {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : list.items.length === 0 ? <Empty>Nothing blocked.</Empty> : (
         <Table rows={list.items} rowKey={(b) => b.body_hash} columns={[
           ['Body hash', (b) => <Mono>{b.body_hash}</Mono>],
@@ -73,6 +73,7 @@ export function Blocks() {
       </Confirm>
       <Confirm open={unblocking !== ''} title="Unblock this body?" confirm="Unblock"
         onConfirm={() => { const h = unblocking; setUnblocking(''); act(() => client.del(`${api}/blocks/${seg(h)}`)) }} onClose={() => setUnblocking('')}>
+        <p><Mono>{unblocking}</Mono></p>
         <p>It may be published or mirrored again. Releases already yanked stay yanked.</p>
       </Confirm>
     </>

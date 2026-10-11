@@ -5,6 +5,7 @@ import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, No
 import { Perms, TenantContext, useLoad, usePaged } from '../lib/context'
 import { useSections } from '../lib/frame'
 import { ApiError, type Client, seg } from '../lib/http'
+import { useAction } from '../lib/action'
 import { Events } from './Events'
 import { TenantArea } from './TenantArea'
 
@@ -112,20 +113,20 @@ function Tenants({ client, root }: { client: Client; root: string }) {
   )
 }
 
+/** One tenant in the server scope, its state kept per tenant. */
 function ServerTenant({ client, root }: { client: Client; root: string }) {
   const { t = '' } = useParams()
+  return <ServerTenantView key={t} t={t} client={client} root={root} />
+}
+
+function ServerTenantView({ t, client, root }: { t: string; client: Client; root: string }) {
   const info = useLoad(() => client.get<Tenant>(`/tenants/${seg(t)}`), [t])
   const [pending, setPending] = useState(false)
-  const [failure, setFailure] = useState<unknown>(null)
+  const { busy, failure, act } = useAction('The tenant', info.reload)
   const suspended = info.data?.data.state === 'suspended'
   const toggle = async () => {
     setPending(false)
-    setFailure(null)
-    try {
-      await client.post(`/tenants/${seg(t)}/${suspended ? 'resume' : 'suspend'}`, { ifMatch: info.data!.etag || info.data!.data.etag })
-    } catch (e) {
-      setFailure(e)
-    }
+    await act(() => client.post(`/tenants/${seg(t)}/${suspended ? 'resume' : 'suspend'}`, { ifMatch: info.data!.etag || info.data!.data.etag }))
     info.reload()
   }
   const perms = useMemo(() => new Perms(true), [])
@@ -135,7 +136,7 @@ function ServerTenant({ client, root }: { client: Client; root: string }) {
       <div className="flex items-center gap-3">
         <h1 className="m-0 font-mono text-[24px] font-bold leading-8">{t}</h1>
         {info.data && <Badge>{info.data.data.state}</Badge>}
-        {info.data && <span className="ml-auto"><Button tone={suspended ? 'outline' : 'danger-outline'} onClick={() => setPending(true)}>{suspended ? 'Resume…' : 'Suspend…'}</Button></span>}
+        {info.data && <span className="ml-auto"><Button tone={suspended ? 'outline' : 'danger-outline'} disabled={busy || info.loading} onClick={() => setPending(true)}>{suspended ? 'Resume…' : 'Suspend…'}</Button></span>}
       </div>
       {failure != null && <ErrorBox error={failure} />}
       <Confirm open={pending} title={`${suspended ? 'Resume' : 'Suspend'} ${t}?`} confirm={suspended ? 'Resume' : 'Suspend'} danger={!suspended} onConfirm={toggle} onClose={() => setPending(false)}>

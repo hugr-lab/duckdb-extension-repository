@@ -130,3 +130,7 @@ export class Client {
 
 /** A path segment, escaped. */
 export const seg = (s: string) => encodeURIComponent(s)
+
+/** A key fingerprint as a path segment: sha256:… with its colon as is (the API refuses escaped
+ * paths; a fingerprint has no other character to escape). */
+export const fingerprintSeg = (s: string) => encodeURIComponent(s).replace(/%3A/gi, ':')

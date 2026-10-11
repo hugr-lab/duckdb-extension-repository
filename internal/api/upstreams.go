@@ -235,6 +235,9 @@ func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request, c caller, 
 	if !ok {
 		return
 	}
+	if r.URL.Query().Get("limit") == "" {
+		limit = store.MaxUpstreamEntries // without one, the whole allowlist, as before paging
+	}
 	prefix, ok := namePrefix(w, r)
 	if !ok {
 		return

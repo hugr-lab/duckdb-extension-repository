@@ -119,8 +119,16 @@ func TestUpstreams(t *testing.T) {
 	if got := names(m.call(t, "GET", U+"/core/extensions?prefix=json&limit=2&cursor="+nx, ta, "").json(t), "extensions", "name"); !slices.Equal(got, []string{"json_b"}) {
 		t.Errorf("second page: %v", got)
 	}
+	if r := m.call(t, "GET", U+"/core/extensions?prefix=json!", ta, ""); r.status != 400 {
+		t.Errorf("an invalid prefix: %d", r.status)
+	}
+	if all := m.call(t, "GET", U+"/core/extensions", ta, "").json(t); all["next"] != nil || len(all["extensions"].([]any)) != 5 {
+		t.Errorf("without a limit, the whole allowlist: %v", all)
+	}
 	for _, n := range []string{"json_a", "json_b", "parquet"} {
-		m.call(t, "DELETE", U+"/core/extensions/"+n, ta, "")
+		if r := m.call(t, "DELETE", U+"/core/extensions/"+n, ta, ""); r.status != 204 {
+			t.Errorf("remove %s: %d", n, r.status)
+		}
 	}
 	if r := m.call(t, "DELETE", U+"/core/extensions/json", ta, ""); r.status != 204 {
 		t.Errorf("remove an entry: %d", r.status)
@@ -230,5 +238,40 @@ func TestUpstreamCredentials(t *testing.T) {
 		if r := m.call(t, "POST", U+"/core/credential", ta, body, "If-Match", "*"); r.status != want {
 			t.Errorf("%s: %d %s", body, r.status, r.body)
 		}
+	}
+}
+
+// A pinned key is removed by its fingerprint in the path, the colon as is (spec 0015 phase 2b: the
+// console sends sha256:… unescaped, since the API refuses escaped paths).
+func TestUpstreamKeyPath(t *testing.T) {
+	m := newMgmt(t)
+	acme, _ := m.st.GetTenant(ctx, "acme")
+	ch, err := m.st.GetChannel(ctx, "acme", "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k1, k2 := "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64)
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+		u := store.Upstream{TenantID: acme.ID, Name: "repo", Kind: store.UpstreamRepo, Prefix: "https://repo.example/acme/", ChannelID: ch.ID,
+			Mode: store.ModeMirror, Visibility: store.Private, State: store.UpstreamActive, CreatedBy: "os:1:t"}
+		if err := tx.InsertUpstream(ctx, &u); err != nil {
+			return err
+		}
+		for _, k := range []string{k1, k2} {
+			if err := tx.AddUpstreamKey(ctx, u.ID, k); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const U = "/api/v1/tenants/acme/upstreams/repo/keys/"
+	ta := m.toks["tenant admin"]
+	if r := m.call(t, "DELETE", U+k2, ta, ""); r.status != 204 {
+		t.Fatalf("remove a pinned key: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "DELETE", U+k1, ta, ""); r.status != 400 {
+		t.Errorf("the last pinned key: %d %s", r.status, r.body)
 	}
 }
