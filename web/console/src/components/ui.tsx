@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from 'react'
+import { cloneElement, type ReactElement, type ReactNode, useEffect, useId, useRef } from 'react'
 import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, Search } from 'lucide-react'
 
 // The console's parts, in the Hugr Lab design system as tresor-server's console draws it: pill
@@ -176,15 +176,18 @@ export function when(s?: string) {
   return isNaN(d.getTime()) ? s : d.toLocaleString()
 }
 
-/** A name-prefix search, answered by the API (spec 0015 phase 1b): never a filter of one page. */
-export function SearchBox({ value, onChange, label, placeholder = 'Name starts with…' }: { value: string; onChange: (v: string) => void; label: string; placeholder?: string }) {
+/** A name-prefix search, answered by the API (spec 0015 phase 1b): never a filter of one page.
+ * refuse strips what the API's prefix does not take (an extension name's characters by default). */
+export function SearchBox({ value, onChange, label, placeholder = 'Name starts with…', refuse = /[^A-Za-z0-9_.-]/g, maxLength = 64, mono }: {
+  value: string; onChange: (v: string) => void; label: string; placeholder?: string; refuse?: RegExp; maxLength?: number; mono?: boolean
+}) {
   return (
-    <label className="flex w-[300px] items-center gap-2 rounded-full border border-line px-3.5 py-1.5 text-ink-muted">
+    <label className="flex w-[300px] max-w-full items-center gap-2 rounded-full border border-line px-3.5 py-1.5 text-ink-muted">
       <Search size={15} aria-hidden />
       <span className="sr-only">{label}</span>
-      <input type="search" value={value} placeholder={placeholder} aria-label={label} maxLength={64}
-        onChange={(e) => onChange(e.target.value.replace(/[^A-Za-z0-9_.-]/g, ''))}
-        className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-ink outline-none" />
+      <input type="search" value={value} placeholder={placeholder} aria-label={label} maxLength={maxLength}
+        onChange={(e) => onChange(e.target.value.replace(refuse, ''))}
+        className={`min-w-0 flex-1 border-0 bg-transparent text-[13px] text-ink outline-none ${mono ? 'font-mono' : ''}`} />
     </label>
   )
 }
@@ -204,18 +207,22 @@ export function Chips<T extends string>({ value, options, onChange, label }: { v
 }
 
 /** Pages by the API's cursors: the size, where we are, previous and next. */
-export function Pager({ page, size, count, hasNext, onPrev, onNext, onSize }: {
+export function Pager({ page, size, count, hasNext, onPrev, onNext, onSize, compact }: {
   page: number; size: number; count: number; hasNext: boolean; onPrev: () => void; onNext: () => void; onSize: (n: number) => void
+  /** a narrow column: the page size stays as it is */
+  compact?: boolean
 }) {
   const from = count ? page * size + 1 : 0
   return (
     <nav aria-label="Pages" className="flex flex-wrap items-center gap-3 text-[13px] text-ink-muted">
-      <label className="flex items-center gap-2">
-        Rows per page
-        <select value={size} onChange={(e) => onSize(Number(e.target.value))} className="field py-1 text-[13px]">
-          {[50, 100, 200].map((n) => <option key={n} value={n}>{n}</option>)}
-        </select>
-      </label>
+      {!compact && (
+        <label className="flex items-center gap-2">
+          Rows per page
+          <select value={size} onChange={(e) => onSize(Number(e.target.value))} className="field py-1 text-[13px]">
+            {[50, 100, 200].map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+      )}
       <span className="ml-auto">{count ? `${from}–${from + count - 1}` : 'Nothing here'}</span>
       <button type="button" aria-label="Previous page" disabled={page === 0} onClick={onPrev}
         className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface text-ink disabled:opacity-40">
@@ -227,4 +234,39 @@ export function Pager({ page, size, count, hasNext, onPrev, onNext, onSize }: {
       </button>
     </nav>
   )
+}
+
+/** A labelled form field (phase 2a's forms): the label names the control, the hint describes it. */
+export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactElement<{ id?: string; 'aria-describedby'?: string }> }) {
+  const id = useId()
+  const control = cloneElement(children, { id: `${id}-c`, 'aria-describedby': hint ? `${id}-h` : undefined })
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <label htmlFor={`${id}-c`} className="text-[13px] font-semibold text-ink">{label}</label>
+      {control}
+      {hint && <span id={`${id}-h`} className="text-[12px] text-ink-muted">{hint}</span>}
+    </div>
+  )
+}
+
+/** Checkboxes for a set of values, as pills. */
+export function Checks({ value, options, onChange, label }: { value: string[]; options: string[]; onChange: (v: string[]) => void; label: string }) {
+  return (
+    <div role="group" aria-label={label} className="flex flex-wrap gap-1.5">
+      {options.map((o) => {
+        const on = value.includes(o)
+        return (
+          <label key={o} className={`flex cursor-pointer items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] focus-within:outline focus-within:outline-2 focus-within:outline-focus ${on ? 'border border-brand-strong bg-surface-soft font-semibold text-brand-strong' : 'border border-line bg-surface text-ink'}`}>
+            <input type="checkbox" className="sr-only" checked={on} onChange={() => onChange(on ? value.filter((x) => x !== o) : [...value, o])} />
+            {o}
+          </label>
+        )
+      })}
+    </div>
+  )
+}
+
+/** A note beside a form: what the action means. */
+export function Note({ children }: { children: ReactNode }) {
+  return <p className="m-0 rounded-md bg-surface-soft px-3.5 py-2.5 text-[13px] text-ink-muted">{children}</p>
 }

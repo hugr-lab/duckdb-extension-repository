@@ -540,6 +540,7 @@ func init() {
 			http.MethodDelete: m(pathAdmin, (*Handler).removeConsoleClient)}},
 		{"tenants/{t}/grants", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listGrants),
 			http.MethodPost: mb(pathAdmin, (*Handler).addGrant)}},
+		{"tenants/{t}/grants/principals", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).grantPrincipals)}}, // before grants/{id}
 		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGrant),
 			http.MethodDelete: m(pathAdmin, (*Handler).removeGrant)}},
 		// spec 0017: extension groups; the services decide who besides a tenant administrator reads

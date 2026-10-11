@@ -254,3 +254,51 @@ func anyStrings(v any) []string {
 	}
 	return out
 }
+
+// The tenant's principals with their grant counts (spec 0015 phase 2a), both grant tables counted.
+func TestGrantPrincipals(t *testing.T) {
+	m := newMgmt(t)
+	const T = "/api/v1/tenants/acme"
+	cli := m.env.adm
+	if _, err := cli.CreateExtensionGroup(ctx, admin, "acme", "platform", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|eve", []string{"install"}, tenants.GrantOn{ExtensionGroup: "platform"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.AddGrant(ctx, admin, "acme", "role:corp|team", []string{"admin"}, tenants.GrantOn{ExtensionGroup: "platform"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.AddPublisher(ctx, admin, "acme", "ci"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.AddGrant(ctx, admin, "acme", "publisher:ci", []string{"publish"}, tenants.GrantOn{Extension: "acl"}); err != nil {
+		t.Fatal(err)
+	}
+	tom := m.toks["tenant admin"]
+	r := m.call(t, "GET", T+"/grants/principals", tom, "")
+	counts := map[string]float64{}
+	for _, x := range r.json(t)["principals"].([]any) {
+		counts[x.(map[string]any)["principal"].(string)] = x.(map[string]any)["grants"].(float64)
+	}
+	if counts["subject:corp|eve"] != 2 || counts["subject:corp|tom"] != 1 || counts["role:corp|team"] != 1 || counts["publisher:ci"] != 1 || len(counts) != 6 {
+		t.Fatalf("principals: %s", r.body)
+	}
+	page := m.call(t, "GET", T+"/grants/principals?prefix=subject:corp|&limit=3", tom, "").json(t)
+	next, _ := page["next"].(string)
+	if got := names(page, "principals", "principal"); !slices.Equal(got, []string{"subject:corp|carl", "subject:corp|eve", "subject:corp|ivan"}) || next == "" {
+		t.Fatalf("first page: %v", page)
+	}
+	if got := names(m.call(t, "GET", T+"/grants/principals?prefix=subject:corp|&limit=3&cursor="+next, tom, "").json(t), "principals", "principal"); !slices.Equal(got, []string{"subject:corp|tom"}) {
+		t.Errorf("second page: %v", got)
+	}
+	if r := m.call(t, "GET", T+"/grants/principals?prefix="+strings.Repeat("x", 301), tom, ""); r.status != 400 {
+		t.Errorf("a long prefix: %d", r.status)
+	}
+	team := m.keys.sign(t, idpURL, map[string]any{"sub": "tina", "aud": publicURL + "/acme"}) // no grant of its own
+	for who, tok := range map[string]string{"an extension administrator": m.toks["ext admin"], "a token without grants": team} {
+		if r := m.call(t, "GET", T+"/grants/principals", tok, ""); r.status != 404 {
+			t.Errorf("%s: %d", who, r.status)
+		}
+	}
+}

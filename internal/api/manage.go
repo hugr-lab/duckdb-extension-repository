@@ -678,6 +678,40 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 	reply(w, r, http.StatusOK, list("grants", out, next), "", noStore)
 }
 
+// grantPrincipals answers the tenant's principals with their grant counts (spec 0015 phase 2a), by
+// principal, paged, with a prefix of the principal.
+func (h *Handler) grantPrincipals(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	limit, after, ok := page(w, r)
+	if !ok {
+		return
+	}
+	prefix := r.URL.Query().Get("prefix")
+	if len(prefix) > 300 {
+		problem(w, http.StatusBadRequest, typeInvalid, "prefix is at most 300 bytes")
+		return
+	}
+	gs, ok := h.tenantGrants(w, r, c, p)
+	if !ok {
+		return
+	}
+	type row struct {
+		Principal string `json:"principal"`
+		Grants    int    `json:"grants"`
+	}
+	counts := map[string]int{}
+	for _, g := range gs {
+		if pr := g.Principal(); strings.HasPrefix(pr, prefix) {
+			counts[pr]++
+		}
+	}
+	rows := make([]row, 0, len(counts))
+	for pr, n := range counts {
+		rows = append(rows, row{pr, n})
+	}
+	rows, next := paged(rows, func(x row) string { return x.Principal }, limit, after)
+	reply(w, r, http.StatusOK, list("principals", rows, next), "", noStore)
+}
+
 func (h *Handler) addGrant(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
 		Principal      string   `json:"principal"`
