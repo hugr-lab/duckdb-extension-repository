@@ -228,7 +228,17 @@ func upstreamAction(visibility, state string) handler {
 	}
 }
 
+// listEntries answers an upstream's allowlist by name, paged, with a name prefix (spec 0015 phase
+// 2b: up to 1000 entries).
 func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	limit, after, ok := page(w, r)
+	if !ok {
+		return
+	}
+	prefix, ok := namePrefix(w, r)
+	if !ok {
+		return
+	}
 	a, _ := c.actor()
 	u, err := h.o.Upstreams.Get(r.Context(), a, p["t"], p["name"])
 	if err != nil {
@@ -239,7 +249,9 @@ func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request, c caller, 
 	if !ok {
 		return
 	}
-	reply(w, r, http.StatusOK, map[string]any{"extensions": h.upstreamOf(u, chs, c).Extensions}, "", noStore)
+	es := slices.DeleteFunc(h.upstreamOf(u, chs, c).Extensions, func(e entryJSON) bool { return !strings.HasPrefix(e.Name, prefix) })
+	es, next := paged(es, func(e entryJSON) string { return e.Name }, limit, after)
+	reply(w, r, http.StatusOK, list("extensions", es, next), "", noStore)
 }
 
 // putEntry adds an allowlist entry (201), or replaces an existing one's versions and allow_reserved

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -103,6 +104,23 @@ func TestUpstreams(t *testing.T) {
 	}
 	if r := m.call(t, "POST", U+"/core/extensions", ta, `{"name":"json","versions":["abc"]}`); r.status != 200 {
 		t.Errorf("replace an entry: %d %s", r.status, r.body)
+	}
+	// the allowlist by name, paged, with a prefix (spec 0015 phase 2b)
+	for _, n := range []string{"json_a", "json_b", "parquet"} {
+		if r := m.call(t, "POST", U+"/core/extensions", ta, `{"name":"`+n+`"}`); r.status != 201 {
+			t.Fatalf("add %s: %d %s", n, r.status, r.body)
+		}
+	}
+	pg := m.call(t, "GET", U+"/core/extensions?prefix=json&limit=2", ta, "").json(t)
+	nx, _ := pg["next"].(string)
+	if got := names(pg, "extensions", "name"); !slices.Equal(got, []string{"json", "json_a"}) || nx == "" {
+		t.Fatalf("first page: %v", pg)
+	}
+	if got := names(m.call(t, "GET", U+"/core/extensions?prefix=json&limit=2&cursor="+nx, ta, "").json(t), "extensions", "name"); !slices.Equal(got, []string{"json_b"}) {
+		t.Errorf("second page: %v", got)
+	}
+	for _, n := range []string{"json_a", "json_b", "parquet"} {
+		m.call(t, "DELETE", U+"/core/extensions/"+n, ta, "")
 	}
 	if r := m.call(t, "DELETE", U+"/core/extensions/json", ta, ""); r.status != 204 {
 		t.Errorf("remove an entry: %d", r.status)
