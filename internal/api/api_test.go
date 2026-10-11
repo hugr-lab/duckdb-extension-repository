@@ -267,7 +267,7 @@ func TestIndexViews(t *testing.T) {
 		t.Fatalf("whoami: %v", w)
 	}
 	// install on acl in prod only: acl appears in prod, not in staging
-	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, "prod", "acl"); err != nil {
+	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod", Extension: "acl"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := names(en.get(t, base+"/extensions", tok).json(t), "extensions", "name"); len(got) != 3 || got[0] != "acl" {
@@ -379,7 +379,7 @@ func TestItemLookup(t *testing.T) {
 	if got := status("acl", "1.0"); got != "missing" {
 		t.Fatalf("private yanked, anonymous: %s", got)
 	}
-	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, "prod", "acl"); err != nil {
+	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod", Extension: "acl"}); err != nil {
 		t.Fatal(err)
 	}
 	tok := en.idp.token(t, "alice")
@@ -402,7 +402,7 @@ func cut(s string) (string, string, bool) {
 // flat path serves the row marked current.
 func TestIndexMatchesServing(t *testing.T) {
 	en := newEnv(t)
-	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, "", ""); err != nil {
+	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{}); err != nil {
 		t.Fatal(err)
 	}
 	// four views: anonymous, a grant on acl in prod, a channel-wide grant, a tenant-wide grant
@@ -418,7 +418,7 @@ func TestIndexMatchesServing(t *testing.T) {
 		if vw.sub != "" {
 			token = en.idp.token(t, vw.sub)
 			if vw.sub != "alice" {
-				if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+vw.sub, []string{"install"}, vw.channel, vw.ext); err != nil {
+				if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+vw.sub, []string{"install"}, tenants.GrantOn{Channel: vw.channel, Extension: vw.ext}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -547,7 +547,7 @@ func TestHTTPRules(t *testing.T) {
 	if m := en.get(t, "/api/v1/tenants/acme/whoami", tok).json(t); m["holds_admin"] != false || len(m["grants"].([]any)) != 0 {
 		t.Errorf("whoami without grants: %v", m)
 	}
-	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"admin"}, "prod", ""); err != nil {
+	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"admin"}, tenants.GrantOn{Channel: "prod"}); err != nil {
 		t.Fatal(err)
 	}
 	if m := en.get(t, "/api/v1/tenants/acme/whoami", tok).json(t); m["holds_admin"] != true || len(m["grants"].([]any)) != 1 {

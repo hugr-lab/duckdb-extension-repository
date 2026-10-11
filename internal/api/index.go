@@ -28,20 +28,25 @@ func (c caller) view(channelID string) release.Visible {
 	if c.principals == nil {
 		return release.PublicOnly
 	}
-	all, names := auth.InstallScope(c.principals, c.ta.Grants, channelID)
+	all, may := auth.InstallScope(c.held(), channelID)
 	if all {
 		return release.Everything
 	}
-	return func(r *store.Candidate) bool { return r.Visibility == store.Public || slices.Contains(names, r.Name) }
+	return func(r *store.Candidate) bool { return r.Visibility == store.Public || may(r.Name) }
 }
 
 // --- whoami ---
 
 type grantOut struct {
-	Principal string   `json:"principal"`
-	Verbs     []string `json:"verbs"`
-	Channel   string   `json:"channel,omitempty"`
-	Extension string   `json:"extension,omitempty"`
+	Principal      string   `json:"principal"`
+	Verbs          []string `json:"verbs"`
+	Channel        string   `json:"channel,omitempty"`
+	Extension      string   `json:"extension,omitempty"`
+	ExtensionGroup string   `json:"extension_group,omitempty"`
+}
+
+func grantOutOf(g store.Grant) grantOut {
+	return grantOut{Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Extension, ExtensionGroup: g.ExtensionGroupName}
 }
 
 func (h *Handler) whoami(w http.ResponseWriter, r *http.Request, c caller, _ params) {
@@ -70,15 +75,13 @@ func whoamiOf(c caller) map[string]any {
 	sort.Strings(ps)
 	var grants []grantOut
 	admin := false
-	for _, g := range c.ta.Grants {
-		if !c.principals[auth.Key{IssuerID: g.IssuerID, Kind: g.Kind, Value: g.Value}] {
-			continue
-		}
-		grants = append(grants, grantOut{Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Extension})
-		// an issuer-wide grant's admin is ignored (spec 0007)
+	h := c.held()
+	for _, g := range slices.Concat(h.Grants, h.GroupGrants) {
+		grants = append(grants, grantOutOf(g))
+		// an issuer-wide grant's admin is ignored (spec 0007); a group's counts (spec 0017)
 		admin = admin || slices.Contains(g.Verbs, store.VerbAdmin) && g.Kind != store.PrincipalIssuer
 	}
-	auditor := authz.Covers(c.principals, c.ta.Grants, store.VerbAudit, authz.Resource{Tenant: c.tenant.Name})
+	auditor := authz.Covers(h, store.VerbAudit, authz.Resource{Tenant: c.tenant.Name})
 	return map[string]any{"tenant": c.tenant.Name, "principals": nonNil(ps), "grants": nonNil(grants), "holds_admin": admin,
 		"holds_audit": auditor}
 }
@@ -314,10 +317,11 @@ func (h *Handler) indexResolver(w http.ResponseWriter, r *http.Request, c caller
 	rs := newResolver(snap, c.view(snap.Channel.ID))
 	rs.blocked = snap.Blocked
 	res := authz.Resource{Tenant: c.tenant.Name, Channel: snap.Channel.Name, Extension: name, Reserved: reserved.Kind(name) != ""}
-	rs.c, rs.admin = c, c.admin || c.principals != nil && authz.Covers(c.principals, c.ta.Grants, store.VerbAdmin, res)
+	held := c.held()
+	rs.c, rs.admin = c, c.admin || c.principals != nil && authz.Covers(held, store.VerbAdmin, res)
 	rs.provenance = rs.admin
 	for _, v := range []string{store.VerbPublish, store.VerbPromote} {
-		rs.provenance = rs.provenance || c.principals != nil && authz.Covers(c.principals, c.ta.Grants, v, res)
+		rs.provenance = rs.provenance || c.principals != nil && authz.Covers(held, v, res)
 	}
 	return rs, true
 }

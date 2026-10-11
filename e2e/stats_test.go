@@ -30,7 +30,7 @@ func TestInstallCounts(t *testing.T) {
 	if err := adm.AddAudience(ctx, serveAdmin, "acme", "api://kista-acme"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|alice", []string{"install"}, "prod", ""); err != nil {
+	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod"}); err != nil {
 		t.Fatal(err)
 	}
 	k.release("httpfs", release.AddOptions{})

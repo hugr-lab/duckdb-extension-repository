@@ -73,7 +73,7 @@ After spec 0006, kista serves DuckDB, but everything else goes through `kista ad
   `serve.api_burst` (default 20 a second, burst 40); when the table is full, buckets that have
   refilled are dropped (at most one sweep a second) and a new client waits rather than everyone
   being reset; `429` with `Retry-After`. Calls that make egress requests (issuer add) also run
-  one at a time per tenant: a second one meanwhile is `429`. A tenant holds at most 1000 grants.
+  one at a time per tenant: a second one meanwhile is `429`. A tenant holds at most 1000 grants (spec 0017: those on extension groups included).
   A store that stays busy (lock timeouts, deadlocks) is `503` with `Retry-After`, never `412`.
 - **Logs**: one line per request as in spec 0006, never a header value, query string or body; one
   structured line per write and per authenticated request refused by authorisation: actor, route
@@ -115,7 +115,8 @@ the index cannot disagree with what DuckDB gets.
 
 - `info` (public): kista's version and API version.
 - `whoami` (a valid tenant token): its principals in the tenant (as strings), the grants that match
-  them, and whether any of them is `admin` (an install identity should hold none).
+  them (spec 0017: those on extension groups too), and whether any of them is `admin` (an install
+  identity should hold none).
 - `channels` (public): name and kind of each channel of the tenant.
 - `channels/{c}` (public): kind; the DuckDB versions served with their C API maxima; for a signed
   channel the trusted and active keys' fingerprints and states (`.well-known`, structured).
@@ -279,7 +280,7 @@ Phase 2:
 | `GET /api/v1/tenants/{t}/audiences` | tenant admin |
 | `POST …/audiences {audience}`; `POST …/audiences/remove {audience}` | server |
 | `GET, POST /api/v1/tenants/{t}/issuers`; `GET, DELETE …/issuers/{name}` | tenant admin |
-| `GET, POST /api/v1/tenants/{t}/grants[?principal=]`; `GET, DELETE …/grants/{id}` | tenant admin |
+| `GET, POST /api/v1/tenants/{t}/grants[?principal=]`; `GET, DELETE …/grants/{id}` | tenant admin (spec 0017 adds `extension_group`, `?extension_group=` and `?extension=`) |
 
 Phase 3 (every id is looked up with the tenant and channel from the path; release routes carry the
 extension name, so an extension administrator's right is decided from the path too):

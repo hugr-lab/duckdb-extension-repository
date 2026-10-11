@@ -132,8 +132,12 @@ var catalogue = map[Kind][]string{
 	"issuer.console.remove":   {"issuer", "client_id", "audience"},
 	"audience.add":            {"audience"},
 	"audience.remove":         {"audience"},
-	"grant.add":               {"principal", "verbs", "channel", "extension"},
-	"grant.remove":            {"principal", "verbs", "channel", "extension"},
+	"grant.add":               {"principal", "verbs", "channel", "extension", "extension_group"},
+	"grant.remove":            {"principal", "verbs", "channel", "extension", "extension_group"},
+	"extension_group.add":     {"name", "description"},
+	"extension_group.remove":  {"name", "description", "members"},
+	"extension_group.change":  {"description"},
+	"extension_group.members": {"added", "removed"},
 	"publisher.add":           {"name"},
 	"publisher.remove":        {"name"},
 	"publisher.github.add":    {"publisher", "credential", "owner_id", "repository_id", "workflow", "ref", "environment"},
@@ -214,7 +218,7 @@ func SubjectForm(k Kind) string {
 	return map[string]string{"tenant": "tenant:<name>", "audience": "tenant:<name>", "version": "version:<name>",
 		"channel": "channel:<channel>", "key": "channel:<channel>/key:<id>", "issuer": "issuer:<name>", "grant": "grant:<id>",
 		"publisher": "publisher:<name>", "release": release, "block": "block:<body hash>", "upstream": "upstream:<name>",
-		"shadow": "shadow:<name>"}[prefix]
+		"shadow": "shadow:<name>", "extension_group": "extension-group:<name>"}[prefix]
 }
 
 // Known reports whether a kind is in the catalogue.

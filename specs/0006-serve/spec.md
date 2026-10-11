@@ -414,7 +414,8 @@ administrators: no tenant principal ever matches a server one.
 **Grants** (`grants` table, per tenant): `principal × resource × verbs`.
 
 - Resource: the tenant; a channel; an extension name (in every channel of the tenant, including
-  future ones, or in one channel).
+  future ones, or in one channel); an extension group (spec 0017, stored apart, in every channel or
+  one).
 - Verbs here: `install` and `admin` (`admin` implies every verb on its resource: the tenant, a
   channel, or an extension, except spec 0008's `publish` and `promote`; spec 0007 refuses `admin` on
   an `issuer:` grant when it is added and ignores it on rows added before, since every account of

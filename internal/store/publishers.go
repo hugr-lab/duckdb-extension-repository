@@ -75,7 +75,8 @@ func (t *Tx) DeletePublisher(ctx context.Context, tenantID, name string) error {
 	if err != nil {
 		return err
 	}
-	for _, q := range []string{"DELETE FROM grants WHERE publisher_id = ?", "DELETE FROM publisher_github WHERE publisher_id = ?",
+	for _, q := range []string{"DELETE FROM grants WHERE publisher_id = ?",
+		"DELETE FROM extension_group_grants WHERE publisher_id = ?", "DELETE FROM publisher_github WHERE publisher_id = ?",
 		"DELETE FROM api_keys WHERE publisher_id = ?", "DELETE FROM publishers WHERE id = ?"} {
 		if _, err := t.exec(ctx, q, p.ID); err != nil {
 			return err
@@ -132,10 +133,10 @@ func (t *Tx) DeleteGitHubCredential(ctx context.Context, tenantID, publisherID, 
 }
 
 // publishers reads a tenant's publishers with their credentials, by name.
-func (s *Store) publishers(ctx context.Context, tenantID string) ([]Publisher, error) {
-	rows, err := s.db.QueryContext(ctx, s.d.rebind(`SELECT p.id, p.tenant_id, p.name, p.created_at, p.created_by, g.id, g.provider,
+func publishers(ctx context.Context, query queryFn, tenantID string) ([]Publisher, error) {
+	rows, err := query(ctx, `SELECT p.id, p.tenant_id, p.name, p.created_at, p.created_by, g.id, g.provider,
 g.owner_id, g.repository_id, g.workflow, g.ref, g.environment, g.created_at, g.created_by
-FROM publishers p LEFT JOIN publisher_github g ON g.publisher_id = p.id WHERE p.tenant_id = ? ORDER BY p.name, g.created_at, g.id`), tenantID)
+FROM publishers p LEFT JOIN publisher_github g ON g.publisher_id = p.id WHERE p.tenant_id = ? ORDER BY p.name, g.created_at, g.id`, tenantID)
 	if err != nil {
 		return nil, err
 	}

@@ -536,7 +536,7 @@ func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (v
 	if n := audit.DisplayName(id.Claims); n != "" {
 		r = r.WithContext(audit.WithActorName(r.Context(), n))
 	}
-	if auth.Allows(id.Principals, ta.Grants, sc.Channel.ID, name, store.VerbInstall) {
+	if auth.Allows(auth.HeldBy(id.Principals, ta), sc.Channel.ID, name, store.VerbInstall) {
 		return viewAll, actor, r, nil
 	}
 	return viewPublic, actor, r, nil

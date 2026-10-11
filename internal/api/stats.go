@@ -29,11 +29,13 @@ var (
 )
 
 // statsScope is what a caller may read: everything, or the (channel, extension) pairs its grants
-// cover.
+// cover, its grants on extension groups included (spec 0017).
 type statsScope struct {
-	all   bool
-	c     caller
-	cache map[[2]string]bool
+	all           bool
+	c             caller
+	held          auth.Held
+	plain, groups []store.Grant // the grants giving statistics
+	cache         map[[2]string]bool
 }
 
 func (s *statsScope) allow(channel, ext string) bool {
@@ -45,25 +47,19 @@ func (s *statsScope) allow(channel, ext string) bool {
 		return v
 	}
 	res := authz.Resource{Tenant: s.c.tenant.Name, Channel: channel, Extension: ext, Reserved: reserved.Kind(ext) != ""}
-	v := slices.ContainsFunc(statsVerbs, func(verb string) bool { return authz.Covers(s.c.principals, s.c.ta.Grants, verb, res) })
+	v := slices.ContainsFunc(statsVerbs, func(verb string) bool { return authz.Covers(s.held, verb, res) })
 	s.cache[k] = v
 	return v
 }
 
-// grants are the caller's grants that give it statistics: admin, publish or promote (never on an
+// statsGrant reports whether a grant gives statistics: admin, publish or promote (never on an
 // issuer-wide grant, which grant validation refuses and authz.Covers ignores).
-func (s *statsScope) grants() []store.Grant {
-	var out []store.Grant
-	for _, g := range s.c.ta.Grants {
-		if g.Kind == store.PrincipalIssuer || !s.c.principals[auth.Key{IssuerID: g.IssuerID, Kind: g.Kind, Value: g.Value}] {
-			continue
-		}
-		if slices.ContainsFunc(statsVerbs, func(v string) bool { return slices.Contains(g.Verbs, v) }) {
-			out = append(out, g)
-		}
-	}
-	return out
+func statsGrant(g store.Grant) bool {
+	return g.Kind != store.PrincipalIssuer && slices.ContainsFunc(statsVerbs, func(v string) bool { return slices.Contains(g.Verbs, v) })
 }
+
+// grants are the caller's plain grants that give it statistics, and its grants on groups.
+func (s *statsScope) grants() (plain, groups []store.Grant) { return s.plain, s.groups }
 
 // mayAsk reports whether a caller may ask about a channel and an extension ("" for any): some grant
 // of its covers them. Anything else answers as missing, so that a query never tells what exists
@@ -73,41 +69,76 @@ func (s *statsScope) mayAsk(channel, ext string) bool {
 		return true
 	}
 	reservedExt := ext != "" && reserved.Kind(ext) != ""
-	return slices.ContainsFunc(s.grants(), func(g store.Grant) bool {
+	inChannel := func(g store.Grant) bool { return channel == "" || g.ChannelID == "" || g.ChannelName == channel }
+	plain, groups := s.grants()
+	return slices.ContainsFunc(plain, func(g store.Grant) bool {
 		// a reserved name is reached by publish or promote only through a grant naming it (authz.Covers)
 		if reservedExt && g.Extension == "" && !slices.Contains(g.Verbs, store.VerbAdmin) {
 			return false
 		}
-		return (channel == "" || g.ChannelID == "" || g.ChannelName == channel) && (ext == "" || g.Extension == "" || g.Extension == ext)
+		return inChannel(g) && (ext == "" || g.Extension == "" || g.Extension == ext)
+	}) || slices.ContainsFunc(groups, func(g store.Grant) bool {
+		// never through a group (spec 0017)
+		if reservedExt && !slices.Contains(g.Verbs, store.VerbAdmin) {
+			return false
+		}
+		return inChannel(g) && (ext == "" && len(g.Members) > 0 || g.Members[ext])
 	})
 }
 
-// names are the extensions a scope is limited to, when every grant of it names one (the store
-// then reads those only); nil: any.
+// maxStatsNames is the most names a scope gives the store to read (a name IN (…) list stays under
+// SQL Server's parameter limit); beyond it the store reads every name and keep filters.
+const maxStatsNames = 1000
+
+// names are the extensions a scope is limited to, when every grant of it names some (the store then
+// reads those only); nil: any.
 func (s *statsScope) names() []string {
 	if s.all {
 		return nil
 	}
-	var out []string
-	for _, g := range s.grants() {
+	set := map[string]bool{}
+	plain, groups := s.grants()
+	for _, g := range plain {
 		if g.Extension == "" {
 			return nil
 		}
-		if !slices.Contains(out, g.Extension) {
-			out = append(out, g.Extension)
+		set[g.Extension] = true
+	}
+	for _, g := range groups {
+		for n := range g.Members {
+			set[n] = true
 		}
 	}
+	if len(set) > maxStatsNames {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	slices.Sort(out)
 	return out
 }
 
 // statsScopeOf gives a caller's statistics scope (tenantPrincipal admits server administrators and
 // the tenant's principals); false when it may read none.
 func statsScopeOf(c caller) (*statsScope, bool) {
-	if c.admin || authz.Covers(c.principals, c.ta.Grants, store.VerbAudit, authz.Resource{Tenant: c.tenant.Name}) {
+	held := c.held()
+	if c.admin || authz.Covers(held, store.VerbAudit, authz.Resource{Tenant: c.tenant.Name}) {
 		return &statsScope{all: true}, true
 	}
-	s := &statsScope{c: c, cache: map[[2]string]bool{}}
-	return s, len(s.grants()) > 0
+	s := &statsScope{c: c, held: held, cache: map[[2]string]bool{}}
+	for _, g := range held.Grants {
+		if statsGrant(g) {
+			s.plain = append(s.plain, g)
+		}
+	}
+	for _, g := range held.GroupGrants {
+		if statsGrant(g) {
+			s.groups = append(s.groups, g)
+		}
+	}
+	return s, len(s.plain)+len(s.groups) > 0
 }
 
 // statsRequest is a statistics query: its scope, filter and channel names.

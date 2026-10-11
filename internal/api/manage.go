@@ -17,6 +17,8 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
@@ -95,6 +97,8 @@ func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
 		problem(w, http.StatusServiceUnavailable, typeUnavailable, "busy: try again")
 	case errors.Is(err, store.ErrConflict):
 		problem(w, http.StatusPreconditionFailed, typePrecondition, "it changed: read it again")
+	case errors.Is(err, tenants.ErrGroupGranted):
+		problem(w, http.StatusConflict, typeConflict, "a grant names the extension group: revoke its grants first")
 	case errors.Is(err, tenants.ErrLastAdmin):
 		problem(w, http.StatusConflict, typeConflict, "the tenant's last tenant-wide admin grant; a server administrator can remove it")
 	case errors.Is(err, tenants.ErrIssuerFetch):
@@ -596,18 +600,27 @@ func (h *Handler) removeIssuer(w http.ResponseWriter, r *http.Request, c caller,
 // --- grants ---
 
 type grantJSON struct {
-	ID        string   `json:"id"`
-	Principal string   `json:"principal"`
-	Verbs     []string `json:"verbs"`
-	Channel   string   `json:"channel,omitempty"`
-	Extension string   `json:"extension,omitempty"`
-	CreatedAt string   `json:"created_at"`
-	CreatedBy string   `json:"created_by"`
+	ID             string   `json:"id"`
+	Principal      string   `json:"principal"`
+	Verbs          []string `json:"verbs"`
+	Channel        string   `json:"channel,omitempty"`
+	Extension      string   `json:"extension,omitempty"`
+	ExtensionGroup string   `json:"extension_group,omitempty"`
+	CreatedAt      string   `json:"created_at"`
+	CreatedBy      string   `json:"created_by"`
+	// with ?extension= (spec 0017): how the grant reaches the name, and the verbs that apply to it
+	Via              string   `json:"via,omitempty"`
+	VerbsOnExtension []string `json:"verbs_on_extension,omitempty"`
 }
 
 func grantOf(g store.Grant, c caller) grantJSON {
 	return grantJSON{ID: g.ID, Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Extension,
-		CreatedAt: g.CreatedAt.UTC().Format(time.RFC3339), CreatedBy: createdBy(g.CreatedBy, c)}
+		ExtensionGroup: g.ExtensionGroupName, CreatedAt: g.CreatedAt.UTC().Format(time.RFC3339), CreatedBy: createdBy(g.CreatedBy, c)}
+}
+
+// reaching is how a grant reaches an extension and the verbs it gives there (spec 0017).
+func reaching(g store.Grant, tenant, ext string) (string, []string) {
+	return authz.Reaching(g, tenant, ext, reserved.Kind(ext) != "")
 }
 
 // grantKey orders grants as the store lists them: (created_at, id).
@@ -635,35 +648,50 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 	if !ok {
 		return
 	}
-	if pr := r.URL.Query().Get("principal"); pr != "" {
-		var kept []store.Grant
-		for _, g := range gs {
-			if g.Principal() == pr {
-				kept = append(kept, g)
+	q := r.URL.Query()
+	pr, group, ext := q.Get("principal"), q.Get("extension_group"), q.Get("extension")
+	if group != "" && store.ValidGroupName(group) != nil || ext != "" && release.ValidName(ext) != nil {
+		problem(w, http.StatusBadRequest, typeInvalid, "extension_group or extension is not a valid name")
+		return
+	}
+	var kept []store.Grant
+	for _, g := range gs {
+		if pr != "" && g.Principal() != pr || group != "" && g.ExtensionGroupName != group {
+			continue
+		}
+		if ext != "" {
+			if _, verbs := reaching(g, c.tenant.Name, ext); len(verbs) == 0 {
+				continue
 			}
 		}
-		gs = kept
+		kept = append(kept, g)
 	}
-	gs, next := paged(gs, grantKey, limit, after)
+	kept, next := paged(kept, grantKey, limit, after)
 	out := []grantJSON{}
-	for _, g := range gs {
-		out = append(out, grantOf(g, c))
+	for _, g := range kept {
+		o := grantOf(g, c)
+		if ext != "" {
+			o.Via, o.VerbsOnExtension = reaching(g, c.tenant.Name, ext)
+		}
+		out = append(out, o)
 	}
 	reply(w, r, http.StatusOK, list("grants", out, next), "", noStore)
 }
 
 func (h *Handler) addGrant(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
-		Principal string   `json:"principal"`
-		Verbs     []string `json:"verbs"`
-		Channel   string   `json:"channel"`
-		Extension string   `json:"extension"`
+		Principal      string   `json:"principal"`
+		Verbs          []string `json:"verbs"`
+		Channel        string   `json:"channel"`
+		Extension      string   `json:"extension"`
+		ExtensionGroup string   `json:"extension_group"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	a, _ := c.actor()
-	g, err := h.o.Auth.AddGrant(r.Context(), a, p["t"], in.Principal, in.Verbs, in.Channel, in.Extension)
+	g, err := h.o.Auth.AddGrant(r.Context(), a, p["t"], in.Principal, in.Verbs,
+		tenants.GrantOn{Channel: in.Channel, Extension: in.Extension, ExtensionGroup: in.ExtensionGroup})
 	if err != nil {
 		h.serviceErr(w, err, true)
 		return

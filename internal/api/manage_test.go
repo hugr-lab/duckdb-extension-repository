@@ -158,7 +158,7 @@ func newMgmt(t *testing.T) *mgmt {
 	if _, err := cli.AddIssuer(ctx, admin, "other", store.Issuer{Name: "corp", URL: otherIdPURL}); err != nil {
 		t.Fatal(err)
 	}
-	og, err := cli.AddGrant(ctx, admin, "other", "subject:corp|olga", []string{"admin"}, "", "")
+	og, err := cli.AddGrant(ctx, admin, "other", "subject:corp|olga", []string{"admin"}, tenants.GrantOn{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func newMgmt(t *testing.T) *mgmt {
 	for _, g := range []struct{ sub, channel, ext, verb string }{
 		{"ivan", "", "", "install"}, {"eve", "prod", "tresor", "admin"}, {"carl", "prod", "", "admin"}, {"tom", "", "", "admin"},
 	} {
-		if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|"+g.sub, []string{g.verb}, g.channel, g.ext); err != nil {
+		if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|"+g.sub, []string{g.verb}, tenants.GrantOn{Channel: g.channel, Extension: g.ext}); err != nil {
 			t.Fatal(err)
 		}
 	}

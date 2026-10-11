@@ -323,6 +323,9 @@ type caller struct {
 
 func (c caller) anonymous() bool { return !c.verified }
 
+// held is what the caller's principals hold in the tenant (none for a caller without principals).
+func (c caller) held() auth.Held { return auth.HeldBy(c.principals, c.ta) }
+
 // actor is the caller as the services see it; false for a caller with no rights to act on anything
 // (anonymous, a server token that is not an administrator's).
 func (c caller) actor() (authz.Actor, bool) {
@@ -451,7 +454,7 @@ const (
 	public          access = iota // anyone; a tenant route identifies a token for the view, others ignore one
 	serverToken                   // a valid server token
 	serverAdmin                   // a server administrator
-	pathAdmin                     // admin on the path's resource (tenant, channel {c}, extension {ext}), or a server administrator
+	pathAdmin                     // admin on the path's resource (tenant, channel {c}, extension {ext}, extension group {g} to read it), or a server administrator
 	pathVerbs                     // any of the rule's verbs on the path's resource (spec 0008: publish, promote), or a server administrator
 	tenantPrincipal               // a token's principal of the path's tenant (its handler decides what it reads), or a server administrator
 )
@@ -539,6 +542,14 @@ func init() {
 			http.MethodPost: mb(pathAdmin, (*Handler).addGrant)}},
 		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGrant),
 			http.MethodDelete: m(pathAdmin, (*Handler).removeGrant)}},
+		// spec 0017: extension groups; the services decide who besides a tenant administrator reads
+		{"tenants/{t}/extension-groups", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).listGroups),
+			http.MethodPost: mb(pathAdmin, (*Handler).createGroup)}},
+		{"tenants/{t}/extension-groups/{g}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGroup),
+			http.MethodDelete: m(pathAdmin, (*Handler).removeGroup)}},
+		{"tenants/{t}/extension-groups/{g}/description", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).setGroupDescription)}},
+		{"tenants/{t}/extension-groups/{g}/members", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).groupMembers),
+			http.MethodPost: mb(pathAdmin, (*Handler).changeGroupMembers)}},
 		// phase 3: channels
 		{"tenants/{t}/channels", map[string]rule{http.MethodGet: {access: public, handle: (*Handler).channels},
 			http.MethodPost: mb(pathAdmin, (*Handler).createChannel)}},
@@ -695,7 +706,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // logIDs are a request's route template and the resource ids from its path.
 func logIDs(rt route, p params) []any {
 	out := []any{"route", rt.pattern}
-	for _, k := range []string{"t", "c", "name", "ext", "v", "id", "change", "hash"} {
+	for _, k := range []string{"t", "c", "name", "ext", "g", "v", "id", "change", "hash"} {
 		if v, ok := p[k]; ok {
 			out = append(out, k, v)
 		}
@@ -828,7 +839,11 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		if !ok || h.o.Authz == nil {
 			return refuse()
 		}
+		// a group's administrators read it (spec 0017); its writes are the tenant administrator's
 		res := authz.Resource{Tenant: name, Channel: p["c"], Extension: p["ext"]}
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			res.ExtensionGroup = p["g"]
+		}
 		if err := h.o.Authz.Allow(ctx, a, authz.VerbAdmin, res); err != nil {
 			if !errors.Is(err, authz.ErrDenied) {
 				h.fail(w, err)

@@ -24,7 +24,9 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
@@ -46,9 +48,16 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   issuer remove <tenant> <name>                   removes its grants too
   issuer console <tenant> <name> (-client-id <id> [-scopes a,b] [-audience a] [-audience-parameter p] | -remove)
                   the administration console's public client at the issuer (spec 0015)
-  grant add <tenant> -principal kind:issuer|value -verb install|admin|publish|promote... [-channel c] [-extension x]
-  grant list <tenant>
+  grant add <tenant> -principal kind:issuer|value -verb install|admin|publish|promote... [-channel c]
+            [-extension x | -extension-group g]
+  grant list <tenant> [-extension-group g] [-extension x]
   grant remove <tenant> <grant-id>
+  extension-group add <tenant> <group> [-description …]   a named set of extension names (spec 0017)
+  extension-group list <tenant>
+  extension-group show <tenant> <group>          the group, its members, its grants
+  extension-group description <tenant> <group> <text>
+  extension-group remove <tenant> <group>        refused while a grant names it
+  extension-group members <tenant> <group> [-add a,b,…] [-remove c,…]   lists them without -add/-remove
   version add <name> -kind release|dev [-c-api v1.5.6]...   one maximum C API per major
   version c-api <name> -c-api v2.0.0                       add a major's maximum C API
   version list
@@ -251,6 +260,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.issuer(ctx, sub, args[min(2, len(args)):])
 	case "grant":
 		return a.grant(ctx, sub, args[min(2, len(args)):])
+	case "extension-group":
+		return a.extensionGroup(ctx, sub, args[min(2, len(args)):])
 	case "block":
 		return a.block(ctx, sub, args[min(2, len(args)):])
 	case "publisher":
@@ -763,40 +774,179 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 	fs.Var(&verbs, "verb", "")
 	channel := fs.String("channel", "", "")
 	extension := fs.String("extension", "", "")
+	group := fs.String("extension-group", "", "")
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) == 0 {
 		return errUsage
 	}
 	switch {
 	case sub == "add" && len(pos) == 1 && *principal != "" && len(verbs) > 0:
-		g, err := a.svc.Auth.AddGrant(ctx, a.actor, pos[0], *principal, verbs, *channel, *extension)
+		g, err := a.svc.Auth.AddGrant(ctx, a.actor, pos[0], *principal, verbs,
+			tenants.GrantOn{Channel: *channel, Extension: *extension, ExtensionGroup: *group})
 		if err != nil {
 			return err
 		}
 		a.logf("grant add %s %s %s", pos[0], g.Principal(), strings.Join(g.Verbs, ","))
 		fmt.Fprintln(a.out, g.ID)
 	case sub == "list" && len(pos) == 1:
+		if *group != "" {
+			if err := store.ValidGroupName(*group); err != nil {
+				return err
+			}
+		}
+		if *extension != "" {
+			if err := release.ValidName(*extension); err != nil {
+				return err
+			}
+		}
 		gs, err := a.svc.Auth.ListGrants(ctx, a.actor, pos[0])
 		if err != nil {
 			return err
 		}
-		a.table("ID\tPRINCIPAL\tVERBS\tCHANNEL\tEXTENSION", func(w io.Writer) {
-			for _, g := range gs {
-				ch, ext := g.ChannelName, g.Extension
-				if ch == "" {
-					ch = "*"
-				}
-				if ext == "" {
-					ext = "*"
-				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", g.ID, g.Principal(), strings.Join(g.Verbs, ","), ch, ext)
-			}
-		})
+		a.grantTable(gs, *group, *extension)
 	case sub == "remove" && len(pos) == 2:
 		if err := a.svc.Auth.RemoveGrant(ctx, a.actor, pos[0], pos[1]); err != nil {
 			return err
 		}
 		a.logf("grant remove %s %s", pos[0], pos[1])
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+// grantTable prints grants; with group, those on it; with extension, those reaching it (spec 0017).
+func (a *adminCmd) grantTable(gs []store.Grant, group, extension string) {
+	a.table("ID\tPRINCIPAL\tVERBS\tCHANNEL\tEXTENSION", func(w io.Writer) {
+		for _, g := range gs {
+			if group != "" && g.ExtensionGroupName != group {
+				continue
+			}
+			if extension != "" && !reaches(g, extension) {
+				continue
+			}
+			ch, ext := g.ChannelName, g.Extension
+			if ch == "" {
+				ch = "*"
+			}
+			switch {
+			case g.ExtensionGroupName != "":
+				ext = "extension-group:" + g.ExtensionGroupName
+			case ext == "":
+				ext = "*"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", g.ID, g.Principal(), strings.Join(g.Verbs, ","), ch, ext)
+		}
+	})
+}
+
+// reaches reports whether a grant gives some verb on an extension, in its own channel scope.
+func reaches(g store.Grant, extension string) bool {
+	_, verbs := authz.Reaching(g, "", extension, reserved.Kind(extension) != "")
+	return len(verbs) > 0
+}
+
+func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("extension-group", flag.ContinueOnError)
+	description := fs.String("description", "", "")
+	add := fs.String("add", "", "")
+	remove := fs.String("remove", "", "")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) == 0 {
+		return errUsage
+	}
+	split := func(s string) []string {
+		return strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' })
+	}
+	switch {
+	case sub == "add" && len(pos) == 2:
+		if _, err := a.svc.Auth.CreateExtensionGroup(ctx, a.actor, pos[0], pos[1], *description); err != nil {
+			return err
+		}
+		a.logf("extension-group add %s %s", pos[0], pos[1])
+	case sub == "list" && len(pos) == 1:
+		gs, _, err := a.svc.Auth.ListExtensionGroups(ctx, a.actor, pos[0], "")
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tMEMBERS\tGRANTS\tDESCRIPTION", func(w io.Writer) {
+			for _, g := range gs {
+				fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", g.Name, g.Members, g.Grants, g.Description)
+			}
+		})
+	case sub == "show" && len(pos) == 2:
+		g, _, err := a.svc.Auth.GetExtensionGroup(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		ms, err := a.svc.Auth.ExtensionGroupMembers(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		gs, err := a.svc.Auth.ListGrants(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "%s: %s\ncreated %s by %s\n\nmembers (%d):\n", g.Name, g.Description, ts(g.CreatedAt), g.CreatedBy, len(ms))
+		for _, m := range ms {
+			fmt.Fprintf(a.out, "  %s\n", m.Name)
+		}
+		fmt.Fprintln(a.out, "\ngrants:")
+		a.grantTable(gs, g.Name, "")
+	case sub == "description" && len(pos) == 3:
+		if _, err := a.svc.Auth.SetExtensionGroupDescription(ctx, a.actor, pos[0], pos[1], pos[2], 0); err != nil {
+			return err
+		}
+		a.logf("extension-group description %s %s", pos[0], pos[1])
+	case sub == "remove" && len(pos) == 2:
+		if err := a.svc.Auth.RemoveExtensionGroup(ctx, a.actor, pos[0], pos[1], 0); err != nil {
+			return err
+		}
+		a.logf("extension-group remove %s %s", pos[0], pos[1])
+	case sub == "members" && len(pos) == 2 && *add == "" && *remove == "":
+		ms, err := a.svc.Auth.ExtensionGroupMembers(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tADDED\tBY", func(w io.Writer) {
+			for _, m := range ms {
+				fmt.Fprintf(w, "%s\t%s\t%s\n", m.Name, ts(m.AddedAt), m.AddedBy)
+			}
+		})
+	case sub == "members" && len(pos) == 2:
+		// every name checked first, then in batches of tenants.MaxMemberChange: removals first, so a
+		// full group can take others
+		for _, n := range slices.Concat(split(*add), split(*remove)) {
+			if err := release.ValidName(n); err != nil {
+				return err
+			}
+		}
+		var ops [][2][]string
+		for _, part := range []struct {
+			names  []string
+			remove bool
+		}{{split(*remove), true}, {split(*add), false}} {
+			for i := 0; i < len(part.names); i += tenants.MaxMemberChange {
+				batch := part.names[i:min(i+tenants.MaxMemberChange, len(part.names))]
+				if part.remove {
+					ops = append(ops, [2][]string{nil, batch})
+				} else {
+					ops = append(ops, [2][]string{batch, nil})
+				}
+			}
+		}
+		var added, removed int
+		for _, op := range ops {
+			ad, rm, err := a.svc.Auth.ChangeExtensionGroupMembers(ctx, a.actor, pos[0], pos[1], op[0], op[1])
+			if err != nil {
+				if added+removed > 0 {
+					a.logf("extension-group members %s %s: %d added, %d removed before the error", pos[0], pos[1], added, removed)
+				}
+				return err
+			}
+			added, removed = added+len(ad), removed+len(rm)
+		}
+		a.logf("extension-group members %s %s: %d added, %d removed", pos[0], pos[1], added, removed)
 	default:
 		return errUsage
 	}
