@@ -40,11 +40,12 @@ func TestMain(m *testing.M) {
 }
 
 type env struct {
-	st   *store.Store
-	keys *keys.Service
-	rel  *release.Service
-	ten  *tenants.Service
-	dir  string
+	st    *store.Store
+	keys  *keys.Service
+	rel   *release.Service
+	ten   *tenants.Service
+	dir   string
+	blobs *fs.Store
 }
 
 func newEnv(t *testing.T, e storetest.Engine) *env {
@@ -62,7 +63,7 @@ func newEnv(t *testing.T, e storetest.Engine) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { bs.Close() })
-	en := &env{st: st, keys: ks, dir: dir,
+	en := &env{st: st, keys: ks, dir: dir, blobs: fsStore,
 		rel: &release.Service{Store: st, Blob: bs, Signers: ks, Authz: authz.ServerAdmin{}},
 		ten: &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}}
 	must(t, func() error { _, err := en.ten.CreateTenant(ctx, admin, "acme", "", ""); return err })
@@ -184,6 +185,34 @@ func TestAdd(t *testing.T) {
 		r2, existed, err := en.add(t, file, release.AddOptions{Unchecked: true, Name: "tresor"})
 		if err != nil || !existed || r2.ID != r.ID {
 			t.Fatalf("re-add: %v %v", existed, err)
+		}
+		// a body marked corrupt (its object lost, spec 0018) is uploaded again by adding the same file
+		var bodyHash string
+		must(t, func() error {
+			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+				b, err := tx.GetBuild(ctx, r.BuildID)
+				bodyHash = b.BodyHash
+				return err
+			})
+		})
+		rec, err := en.st.GetBlob(ctx, "default", bodyHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := en.blobs.Delete(ctx, blob.StreamKey(rec.StreamHash)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := en.st.MarkBlobCorrupt(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+		if _, existed, err := en.add(t, file, release.AddOptions{Unchecked: true, Name: "tresor"}); err != nil || !existed {
+			t.Fatalf("repair: %v %v", existed, err)
+		}
+		if got, _ := en.st.GetBlob(ctx, "default", bodyHash); !got.CorruptAt.IsZero() {
+			t.Fatal("still marked after the same file was added")
+		}
+		if _, err := en.blobs.Stat(ctx, blob.StreamKey(rec.StreamHash)); err != nil {
+			t.Fatalf("not uploaded again: %v", err)
 		}
 		for _, o := range []release.AddOptions{{Unchecked: true, Name: "tresor", Private: true}, {Unchecked: true, Name: "tresor", NotCurrent: true}} {
 			if _, _, err := en.add(t, file, o); !errors.Is(err, release.ErrState) {

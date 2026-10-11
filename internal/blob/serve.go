@@ -101,7 +101,9 @@ type streamReader struct {
 
 	buf      []byte // verified bytes of chunk bufChunk
 	bufChunk int64
-	err      error // sticky ErrCorrupt
+	err      error  // sticky ErrCorrupt
+	why      string // the corruption, as a reader marks it
+	quiet    bool   // verification (spec 0018): it marks, or not, itself
 }
 
 func (s *Service) newStream(ctx context.Context, d Domain, rec store.Blob) *streamReader {
@@ -138,11 +140,18 @@ func (r *streamReader) chunk(k int64) ([]byte, error) {
 	r.next += n
 	if sha256.Sum256(buf) != [sha256.Size]byte(r.rec.StreamChunks[k*sha256.Size:(k+1)*sha256.Size]) {
 		r.closeBody()
-		return nil, r.corrupt(k, "digest")
+		return nil, r.corrupt(k, whyDigest)
 	}
 	r.buf, r.bufChunk = buf, k
 	return buf, nil
 }
+
+// What a reader found wrong with an object (verification maps them to its outcomes).
+const (
+	whyMissing = "missing"
+	whyShort   = "short"
+	whyDigest  = "digest"
+)
 
 // failed tells a missing or short object (corruption) from a transport error: a read that ends early
 // is what a dropped connection looks like too, so the store is asked for the object's size.
@@ -153,16 +162,19 @@ func (r *streamReader) failed(k int64, err error) error {
 	size, serr := r.d.Store.Stat(r.ctx, StreamKey(r.rec.StreamHash))
 	switch {
 	case errors.Is(err, ErrNotFound) || errors.Is(serr, ErrNotFound):
-		return r.corrupt(k, "missing")
+		return r.corrupt(k, whyMissing)
 	case serr == nil && size < r.rec.StreamLen:
-		return r.corrupt(k, "short")
+		return r.corrupt(k, whyShort)
 	}
 	return fmt.Errorf("blob: reading the stream: %w", err)
 }
 
 func (r *streamReader) corrupt(k int64, why string) error {
 	r.err = fmt.Errorf("%w: domain %s, chunk %d (%s)", ErrCorrupt, r.rec.Domain, k, why)
-	r.svc.markCorrupt(r.ctx, r.rec, fmt.Sprintf("chunk %d: %s", k, why))
+	r.why = why
+	if !r.quiet {
+		r.svc.markCorrupt(r.ctx, r.rec, fmt.Sprintf("chunk %d: %s", k, why))
+	}
 	return r.err
 }
 
@@ -178,7 +190,7 @@ func (s *Service) markCorrupt(ctx context.Context, rec store.Blob, why string) {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if err := s.st.MarkBlobCorrupt(ctx, rec); err != nil {
+	if _, err := s.st.MarkBlobCorrupt(ctx, rec); err != nil {
 		s.log.Error("blob: recording corrupt_at failed", "error", err)
 	}
 }

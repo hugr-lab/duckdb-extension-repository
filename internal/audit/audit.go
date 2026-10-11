@@ -170,8 +170,10 @@ var catalogue = map[Kind][]string{
 	"install":           {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
 	"audit.dropped":     {"counts", "sink"},
 	"storage.gc":        {"domain", "builds", "bodies", "marked", "streams", "tmp", "uploads", "bytes", "claims", "resolved", "dry_run", "error"},
-	"audit.sink":        {"sink", "state", "class", "status"},
-	"request.failed":    {"route", "status", "count"},
+	"storage.verify": {"domain", "full", "mark", "unmark", "checked", "ok", "skipped", "marked_ok", "missing", "short", "long",
+		"corrupt", "record", "unreadable", "marked", "unmarked", "bytes", "error"},
+	"audit.sink":     {"sink", "state", "class", "status"},
+	"request.failed": {"route", "status", "count"},
 }
 
 // Kinds lists the catalogue: each kind with its fields, sorted by kind.
@@ -201,7 +203,7 @@ func SubjectForm(k Kind) string {
 		return release
 	case "server.start", "audit.dropped":
 		return "server"
-	case "storage.gc":
+	case "storage.gc", "storage.verify":
 		return "domain:<domain>"
 	case "audit.sink":
 		return "sink:<name>"

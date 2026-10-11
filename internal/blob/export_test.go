@@ -15,3 +15,10 @@ func SetClock(t interface{ Cleanup(func()) }, now func() time.Time) {
 	clock = now
 	t.Cleanup(func() { clock = old })
 }
+
+// SetVerifyPage sets the records a verification pass reads at once (spec 0018), for a test.
+func SetVerifyPage(n int) (restore func()) {
+	old := verifyPage
+	verifyPage = n
+	return func() { verifyPage = old }
+}
