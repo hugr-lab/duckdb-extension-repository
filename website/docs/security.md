@@ -1,0 +1,222 @@
+---
+title: Security
+---
+
+# Security
+
+DuckDB loads extensions as native code. kista's job is to make sure that what a client loads from a
+channel is what the channel's administrators admitted, and that nobody gets a private extension, or
+learns it exists, without a grant. This page states what kista guarantees, what it relies on, and
+where each guarantee is enforced. The reasoning is in the specs, starting with
+[0001](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0001-architecture/spec.md).
+
+## What a signature means
+
+A DuckDB client trusts a repository's keys, pinned at `CREATE EXTENSION REPOSITORY` from the
+channel's `.well-known/duckdb-extension-repo.json`, and checks the signature on every `LOAD`.
+
+- **Signed channel.** The signature means "checked and admitted by this tenant into this channel".
+  kista re-signs everything it serves there with the channel's key: its own builds, mirrored core
+  and community builds, and builds from other repositories. A mirrored binary is served under
+  kista's signature only after its original signature was verified (below).
+- **Passthrough channel.** The deliberate exception. It serves core extensions byte-identical, with
+  DuckDB's own signature, because DuckDB autoloads core extensions only under its built-in keys. It
+  adds no signature of its own; its guarantee is the allowlist, and it serves only files that verify
+  with DuckDB's core keys. A passthrough channel is public to anyone who can reach it: DuckDB's
+  built-in HTTP client sends no token.
+- **Released versions are immutable.** A released (channel, name, version, DuckDB version,
+  platform) never changes its body. It can be yanked or purged, never replaced; a purged slot stays
+  taken. A key rotation changes only the signature.
+- **Separate keys per channel.** A key belongs to one channel; one fingerprint exists once per
+  server. A `staging` channel that signs whatever a publisher uploads must not share keys with
+  `prod`.
+- **Revocation.** A yanked binary stays loadable where it is installed, because the client trusts
+  the key. Only retiring the key (after rotating to a new one) revokes it everywhere. See
+  [Key rotation](administration/key-rotation.md).
+
+## Intake verification
+
+Nothing reaches a signed channel unchecked. kista verifies the exact bytes it stores: a file is
+spooled locally, verified, and the same spool is committed, with no second fetch.
+
+- **Mirrored builds** ([Upstreams](upstreams.md)): the original signature must verify with the
+  upstream's keys: DuckDB's built-in core or community keys (kista carries its own copy, taken from
+  its DuckDB pin and checked in CI), or a repository's keys pinned by fingerprint. A `repository`
+  upstream without a pinned key is refused.
+- **Published builds** ([Publishing](publishing.md)): the footer must match the declared version
+  and platform, and the binary must export the entry point of the declared name and no other
+  extension's, so it loads as that name. This is a naming check, not a code review.
+- **Both**: the footer's platform, version and ABI must match the path, so an old signed binary
+  cannot be served as a newer version; bodies are size-capped and gzip is inflated under a limit.
+- **Reserved names.** Core and community names, and names an upstream of the tenant provides, can
+  be published or promoted only through grants that name them.
+- **Blocks** ban a body hash tenant-wide; every release insert re-checks them.
+
+A build that fails any check is rejected: a publisher gets an error answer, and an upstream run
+records the rejection as an `upstream.rejected` event.
+
+## Key custody
+
+- **Private keys never leave the signer.** Production keys live in HashiCorp Vault / OpenBao
+  Transit, Azure Key Vault or Azure Managed HSM; kista sends a 32-byte digest and receives a
+  signature. The database stores public keys and signer references only.
+- **Keys are checked, not trusted.** RSA-2048 with `e = 65537`; signing only; not exportable; not
+  imported; version pinned; HSM-backed on Azure by default; properties re-read while in use; every
+  signature verified against the registered public key and the key identity the backend reports.
+- **References come from the server administrator only.** A reference names a configured source and
+  a key inside it, limited by the source's allow list. It never carries a host, so no tenant can make
+  kista call another vault with its identity.
+- **Credentials come from the platform**: managed or workload identity, Kubernetes or JWT login,
+  Vault Agent token files. Steering environment variables are refused outside `profile: dev`.
+- **File keys** are for development, or need an explicit `signers.allow_file: true`; the file must
+  be mode `0600`, owned by kista's user, and not a symlink.
+- Signing happens when a release is made, never on a download, so a KMS outage stops publishing,
+  not serving.
+
+Details: [Signing keys](signing-keys.md).
+
+## Tokens and issuers
+
+- **Issuers are per tenant.** A tenant administrator registers the tenant's identity providers.
+  Algorithms are limited to `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`
+  and `EdDSA`; never `none` or `HS*`.
+- **The audience is bound to the tenant**: its canonical URL, or an audience the server
+  administrator assigns. A token minted for one tenant does not work at another, even with the same
+  identity provider. Server audiences and tenant audiences are disjoint.
+- **Principals are namespaced by the issuer record**, so controlling claims at one issuer never
+  satisfies a grant made for another. Removing an issuer removes its grants.
+- **Tokens are read only over https**, never logged, never put in events, never forwarded upstream.
+  An invalid token is treated as no token. Management calls require a recently issued token.
+- **Server administrators** come from the configuration file (`auth.server_admins`, principals of
+  `auth.server_issuers`, which must have required claims). The `kista admin` CLI acts as the server
+  administrator: it runs as the service's OS user with the service's configuration.
+- **Publishers** authenticate with trusted-publishing CI tokens (bound to immutable repository and
+  owner ids) or API keys. API keys are stored as SHA-256 hashes, expire, and are accepted only on
+  the publishers' routes.
+- **DuckDB clients** send the token from an http secret. Its `SCOPE` must end with a slash
+  (`https://host/acme/prod/`): DuckDB matches scopes by string prefix, so without the slash the
+  token would also be sent to `https://host/acme/prod2/`.
+
+Details: [Access](access.md).
+
+## Grants and visibility
+
+- **Default deny.** Without a grant, a principal gets nothing beyond public releases. `publish` and
+  `promote` are never implied by `admin`, and an issuer-wide grant never carries `admin`'s rights.
+- **Public and private.** A public release is served to anyone, also over plain `http` (the
+  signature, not the transport, protects it; this is how a client bootstraps httpfs). A private
+  release needs `https` and a token with `install`.
+- **No existence leaks.** Inside a channel, a request without a valid token for anything not public
+  answers `401`; with a valid token but no grant, `404`, the same as a missing path, with identical
+  bodies and headers and the same database work. Non-public answers carry
+  `Cache-Control: private, no-store` and `Vary: Authorization`.
+- **What is always public**: tenant and channel names, a signed channel's
+  `/.well-known/duckdb-extension-repo.json` (the public keys DuckDB needs before it can send a
+  token), a tenant's attestation public keys, and passthrough channels.
+- **Blobs are never reachable by hash.** A body is resolved only through a release the caller may
+  see, and whether another tenant stores the same body is not observable: every commit uploads.
+
+## Outbound requests
+
+Every request kista makes on a tenant's behalf (issuer discovery, JWKS, upstream fetches, private
+upstream token endpoints, feeds, event sinks) goes through one egress client:
+
+- `https` only; plain `http` only to loopback with `egress.allow_loopback_http`, which needs
+  `profile: dev`;
+- the host is resolved by kista and **every address is checked on the connection actually dialed**,
+  so DNS rebinding does not help;
+- only global unicast addresses on port 443. Private, loopback, shared, documentation, multicast
+  and other special-purpose ranges are refused, including IPv4 addresses embedded in IPv6 (mapped,
+  NAT64, 6to4, Teredo) and zoned addresses;
+- link-local ranges and cloud metadata endpoints (`169.254.0.0/16`, `fe80::/10`, `168.63.129.16`,
+  `100.100.100.200`, `fd00:ec2::/112`) are refused **even when allowlisted**: a tenant can never
+  reach IMDS and the managed identity behind every key;
+- the deployment's own host (`serve.public_url`) is refused;
+- redirects are never followed; responses are size-capped (1 MiB by default for metadata) and
+  time-bounded; proxy environment variables are ignored.
+
+```yaml title="kista.yaml"
+egress:                        # file-only
+  allow:                       # private ranges kista may reach; CIDRs, never host names
+    - cidr: 10.20.0.0/16
+      ports: [443, 8443]       # empty: 443
+  proxy: http://proxy.internal:3128   # explicit; CONNECT to the checked address
+  ca_file: /etc/kista/private-ca.pem  # trust only this bundle
+  timeout: 10s                 # 1s to 60s
+auth:
+  server_egress_allow:         # reached only by the server issuers, never by tenants' issuers
+    - cidr: 10.30.0.0/24
+```
+
+Key sources and object stores are configured by the server administrator and use their own
+clients, with the same rules: TLS 1.2 or later, no proxy from the environment, no redirects. See
+[Configuration](configuration.md).
+
+## Storage integrity
+
+The object store is not trusted. Every chunk of a body is checked against a digest held in the
+database before it is sent; a mismatch aborts the response and marks the body. Attachment contents
+are checked against their hash on every read. Storage domains are pinned to their stores and marked
+with the deployment; kista refuses to start on a store that is readable anonymously. A bucket
+writer can deny service, not substitute a body. See [Storage](storage.md).
+
+## Attachments and signed statements
+
+[Attachments](attachments.md) are documents about a body (SBOM, vulnerability scan, review,
+provenance). They are shown only through a release the reader may see, are served as data with
+`nosniff` and a sandboxing content security policy, and record who stands behind them: a
+publisher's self-assessment is labelled as such.
+
+Between repositories, documents travel as **signed statements**: a JSON object canonicalised by
+RFC 8785, signed RSA PKCS#1 v1.5 over SHA-256 of `kista-statement-v1\0` followed by it, with a
+tenant's attestation key. The domain separator keeps a statement signature apart from an extension
+signature, and the fingerprint registry (and on Azure the `attestation-signing` tag) keeps an
+attestation key apart from a channel key. A subscriber accepts statements only under keys it pinned,
+only for bodies it holds, and verifies every field it shows; content is fetched only from the fixed
+path under the configured feed URL, through egress.
+
+## Audit
+
+Every management, release, key, upstream and storage change is recorded as an event in the same
+transaction as the change, along with refusals and failed authentications; authenticated downloads
+are recorded too (once a day per principal, release and client). Events carry no tokens or secrets.
+kista keeps them for `events.retention` (30 days by default) and delivers them at least once to
+sinks (OpenTelemetry logs, JSON lines). **Tamper evidence is the log pipeline's**:
+send events to a store the database administrators do not control. See
+[Observability](observability.md).
+
+## What kista trusts
+
+| Trusted | Why |
+| --- | --- |
+| The configuration file | it decides key sources, stores, egress, server administrators. Guards (`profile`, `signers`, `blob`, `egress`, `auth`, ...) can only be set in the file, never from `KISTA_*` variables |
+| The database | it is the trust root for `.well-known`: whoever can write it can add a key clients will pin. Protect its credentials accordingly |
+| Server and tenant administrators | their actions are trusted and recorded as events |
+| The key backends | to keep keys non-exportable and to sign only with the pinned key, which kista checks as far as each backend reports |
+
+| Not trusted | How it is checked |
+| --- | --- |
+| Upstream repositories | signatures against pinned keys, footers, entry points, size limits |
+| Publishers' uploads | footers, entry points, reserved names, grants |
+| The object store | chunk digests and content hashes in the database |
+| Tenants' issuer records and feed URLs | the egress guard |
+| Feed sources | pinned keys, signed fields, content hashes |
+| Clients | grants, constant `401` / `404`, download and rate limits |
+
+## Hardening checklist
+
+- Run with `profile: prod` (the default). It refuses development shortcuts: file keys without
+  `allow_file`, plain `http` to vaults and stores, Azure `default` credentials, `require_hsm: false`,
+  rotation minimums below 24 hours.
+- Keep channel keys in a vault or KMS; give kista read and sign on its keys only, and alert on key
+  changes in the backend's audit log.
+- Block public access on buckets and containers.
+- Keep `staging` and `prod` keys apart.
+- Send events to an external log pipeline.
+- Protect the database credentials as you protect the keys.
+
+## Reporting a vulnerability
+
+Report vulnerabilities privately through a
+[GitHub security advisory](https://github.com/hugr-lab/duckdb-extension-repository/security/advisories/new)
+on the repository. Do not open a public issue.

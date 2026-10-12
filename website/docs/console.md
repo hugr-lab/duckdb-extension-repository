@@ -1,0 +1,221 @@
+---
+title: Administration console
+---
+
+# Administration console
+
+kista serves a web console for its administrators at `/ui/`. It does nothing the
+[HTTP API](api.md) does not: every action is a management API call made with the signed-in user's
+own token, authorised exactly as a `curl` request would be. The console's own checks only hide what
+the user cannot do.
+
+The same build is also a **micro-frontend**: the hugr platform's shell can mount it beside other
+components. The design is in
+[spec 0015](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0015-console/spec.md).
+
+## Building it in
+
+The console is a React application in `web/console/`, embedded in the `kista` binary at build time.
+
+```bash
+make console    # npm ci && npm run build in web/console (needs Node 22)
+make build      # go build -o bin/kista ./cmd/kista, embedding web/console/dist
+```
+
+`make console` writes `web/console/dist/app/` (the standalone console) and `web/console/dist/mfe/`
+(the micro-frontend module). Run it before `make build`. A binary built without it serves a
+placeholder page at `/ui/` that says so, and no micro-frontend; everything else works.
+
+Other targets:
+
+| Target | What it does |
+| --- | --- |
+| `make console-test` | typecheck, unit tests, licence check |
+| `make console-e2e` | Playwright against `kista serve` with Keycloak in Docker (run `make console` first) |
+
+## How it is served
+
+- `/ui/` is served on **https** listeners only, like the API; on http it answers `404`.
+- `/ui` redirects to `/ui/`. A path without a file extension gets the application (it routes
+  itself); a missing file with an extension is `404`. Only `GET` and `HEAD` are allowed.
+- Three scopes, each its own page load:
+  - `/ui/`: the landing page, which asks where to sign in;
+  - `/ui/server/…`: server administration;
+  - `/ui/t/{tenant}/…`: a tenant.
+- Each scope gets its own **Content Security Policy**: no inline script, `connect-src` and
+  `form-action` limited to kista and that scope's identity providers, and `frame-ancestors` from
+  `ui.frame_ancestors` (none by default). A tenant's identity provider never appears in another
+  scope's policy.
+- `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff` on every answer. Hashed assets
+  are cached for a year; `index.html` and the micro-frontend module are `no-cache` with a strong
+  ETag, so an upgrade is picked up at once.
+
+`ui.enabled: false` turns off `/ui/`, the console's API routes and CORS.
+
+## Configuration
+
+```yaml title="kista.yaml"
+ui:                           # file-only
+  enabled: true               # default true
+  environment: staging        # a badge in the header; at most 32 characters
+  allowed_origins: []         # shells on other origins that mount the micro-frontend
+  frame_ancestors: []         # who may frame the standalone console; default none
+  connect_src: []             # extra connect-src origins (a proxy, an OTel collector)
+  server_clients:             # the console's clients at server issuers; none: no server sign-in
+    - issuer: ops             # a name from auth.server_issuers
+      client_id: kista-console
+      scopes: [openid, profile, offline_access]   # the default
+      audience_parameter: ""  # e.g. "audience" for an IdP that takes it as a parameter
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `ui.enabled` | serve the console (default `true`) |
+| `ui.environment` | a badge in the console's header |
+| `ui.allowed_origins` | exact origins (`https://host[:port]`, `http` only on loopback, no path, no `*`) allowed by CORS on `/ui/mfe/*` and `/api/v1/*` |
+| `ui.frame_ancestors` | origins that may frame the standalone console |
+| `ui.connect_src` | extra origins the console may connect to |
+| `ui.server_clients` | one public (PKCE) client per server issuer, for server sign-in |
+
+A server client's `scopes` must include `openid` (at most 20 scopes). See
+[Configuration](configuration.md) for the rest of the file.
+
+## Sign-in
+
+The console signs in with OpenID Connect, Authorization Code with PKCE, as a public client. kista
+has two kinds of identity, and a token is one or the other (see [Access](access.md)), so the two
+scopes sign in separately.
+
+### Server scope
+
+1. Configure `auth.server_issuers`, `auth.server_admins` and `auth.server_audiences`.
+2. Register a public client at the server issuer with the redirect URI
+   `https://<public host>/ui/server/callback`, and list it in `ui.server_clients`.
+3. Open `/ui/`, choose **Server administration**, pick the issuer.
+
+The console asks for a token for the server audience (the first of `auth.server_audiences`). It
+opens only for a token whose `GET /api/v1/whoami` says `administrator: true`; another server token
+sees "not a server administrator".
+
+### Tenant scope
+
+A tenant's administrators sign in through the tenant's own issuer records. A record offers console
+sign-in once it has a **console client**:
+
+1. Register a public client at the tenant's identity provider with the redirect URI
+   `https://<public host>/ui/t/<tenant>/callback`.
+2. Attach it to the issuer record:
+
+   ```bash
+   kista admin -config kista.yaml issuer console acme corp-idp -client-id kista-console
+   # [-scopes openid,profile,offline_access] [-audience api://kista-acme] [-audience-parameter audience]
+   kista admin -config kista.yaml issuer console acme corp-idp -remove
+   ```
+
+   Over the API: `POST /api/v1/tenants/{t}/issuers/{name}/console` with
+   `{client_id, scopes, audience_parameter, audience}` and `If-Match: "<issuer id>"`; `DELETE` removes
+   it.
+3. Open `/ui/`, type the tenant's name, and pick the issuer.
+
+`audience`, when set, must be one of the tenant's audiences; otherwise tokens are requested for the
+canonical `<public_url>/<tenant>`. Setting a console client makes the issuer's URL public through
+`GET /api/v1/tenants/{t}/console`. A server issuer cannot be a tenant's console issuer.
+
+The console opens for a token whose tenant `whoami` shows `holds_admin` (an `admin` grant on the
+tenant, a channel, an extension or an extension group) or `holds_audit`. A token holding neither
+sees "Nothing to administer here".
+
+### Sessions
+
+- The landing page never redirects to an identity provider on its own: it shows the provider's host
+  and waits for a click.
+- Access and refresh tokens are kept in memory only; only the PKCE state is in `sessionStorage`.
+- Management needs a token issued within `auth.admin_token_max_age`. The console renews through the
+  refresh token before that, and before the token expires. If renewal fails, a banner offers a
+  popup sign-in, so a form being edited is kept.
+- A `401` triggers one renewal and one retry. A `404` means "not there, or not yours".
+- Every change sends the `If-Match` it read; a `412` re-reads and says the object changed.
+- Sign-out revokes the refresh token where the provider supports it, then ends the provider session.
+
+## Screens
+
+The tenant's sections appear according to the caller's grants: tenant administrators see all of
+them; channel and extension administrators see their channels and extensions; auditors see events.
+
+| Section | Who | What it does |
+| --- | --- | --- |
+| **Channels** | any administrator | the channels; a new channel (tenant administrators); a channel's DuckDB versions added and removed (its administrators) |
+| Channel: Extensions | channel administrators; an extension administrator sees its own extensions | the channel's extensions from the index, by name prefix, with the current version for a chosen DuckDB version and platform |
+| Channel: All releases | channel administrators | every release, filtered by state and name prefix |
+| Channel: Keys | channel administrators | trusted, active and serving keys, key events, re-sign progress; activate and retire a trusted key; a server administrator adds a key by signer reference |
+| Extension page | extension administrators | its releases, its **Reports**, and (tenant administrators) who may use it and through which grant |
+| Release page | extension administrators | build, body hash, provenance, origin, state history; yank, deprecate, activate, make current, public or private, purge (typing the name to confirm); its Reports |
+| **Upstreams** | tenant administrators | upstreams: add, sync and dry run, pause, resume, public, private, remove; platforms, pinned keys, credential, allowlist; last run and cells; the tenant's shadows; **Feeds** |
+| **Groups** | tenant administrators, group administrators (read only) | extension groups: members, description, grants, recent events, removal |
+| **Access** | tenant administrators | principals with their grant counts; a principal's grants; grant and revoke |
+| **Identity** | tenant administrators | issuer records and their console clients; the tenant's audiences (changed by a server administrator) |
+| **Publishers** | tenant administrators | publishers, their GitHub workflows (trusted publishing), API keys (shown once), and what they may publish |
+| **Blocks** | tenant administrators | block a body by its hash with a reason (its releases are yanked in every channel); unblock |
+| **Events** | auditors | the tenant's events with the API's filters, and an event's detail |
+| **Statistics** | administrators, auditors | downloads per day over 7, 30 or 90 days, and by extension, version or platform, within the caller's grants |
+
+**Reports** lists the documents attached to a release's body: kind, title, origin (the tenant, a
+publisher, or a feed and its verified issuer), date, expiry, and summary. Administrators download a
+document (saved as a file, never opened) and remove it, and attach one on a release's page; tenant
+administrators also mark it `readers` or feedable. **Feeds**, on the Upstreams page, lists subscriptions with their status, last run and last
+success; they are added, synced, paused, resumed and removed there. Changing a feed's credential,
+keys, kinds or readers is done with the API or the CLI. See [Attachments and the feed](attachments.md).
+
+The server scope adds:
+
+| Section | What it does |
+| --- | --- |
+| **Tenants** | every tenant (name, state, storage domain); create, suspend, resume; open a tenant with every right |
+| **DuckDB versions** | list and add DuckDB versions with their maximum C API per major; add a C API |
+| **Server events** | the server's own events |
+
+Lists are read page by page (50, 100 or 200 rows) from the API's cursors. Name search is a prefix
+search done by the API. Nothing refreshes in the background, except a running re-sign's progress
+every 10 seconds while its view is open. Event data, provenance and documents are rendered as text.
+
+## Micro-frontend
+
+A shell on another page can mount the console. It loads one ES module from kista and either calls
+`mountKista` or uses the `<kista-console>` custom element. The contract is version 1 (the module
+exports `contract = 1`).
+
+```js
+const m = await import(`${apiBase}/ui/mfe/kista.js`)
+const h = m.mountKista(el, {
+  apiBase,         // kista's origin or the shell's proxy prefix, no trailing slash
+  getToken,        // (audience, {renew}?) => Promise<string>
+  tenant,          // optional: a tenant scope; absent: the server scope
+  audience,        // optional: overrides the audience kista names
+  basePath,        // the host path the console lives under
+  theme,           // "light" | "dark"
+  locale,          // reserved: "en" only
+  onNavigate,      // (path, {replace}) => void
+  onTitle,         // (title) => void
+  onUnauthorized,  // () => void
+})
+h.update({ theme, path, locale, tenant })
+h.unmount()
+```
+
+- **The host owns sign-in.** The console calls `getToken(audience)` before each request and keeps no
+  token. `{renew: true}` asks for a newly issued token with a fresh `iat`. The audience comes from
+  `/api/v1/console` or the tenant's `console` route unless `audience` overrides it; the host should
+  issue tokens only for audiences it knows.
+- **Routing.** The console's paths are below `basePath`; `onNavigate` receives the host's full path.
+  Without `onNavigate`, the console pushes to `window.history` itself.
+- **The custom element** `<kista-console api-base tenant audience base-path theme locale>` takes
+  `getToken` and the callbacks as properties (never attributes); without a callback it emits the
+  matching `kista-navigate`, `kista-title` or `kista-unauthorized` event instead.
+- **Rendering** goes into an open shadow root with constructed stylesheets, so the host's CSP needs
+  no `'unsafe-inline'`. The theme follows the host's CSS variables (`--surface`, `--ink`, `--brand`,
+  …). The minimum width is 960 px.
+
+**Delivery.** The simplest setup is for the shell to proxy kista under its own origin, which needs no
+CORS. Otherwise list the shell's origin in `ui.allowed_origins`, and allow kista's origin in the
+shell's `script-src`, `font-src` and `connect-src`. `npm run host` in `web/console` serves a test
+shell on another origin.

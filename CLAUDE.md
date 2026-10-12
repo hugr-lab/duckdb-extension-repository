@@ -35,6 +35,8 @@ and the DuckDB behaviour the design relies on (with source locations on the duck
 - Every feature lands with tests. Three adversarial review passes before a PR.
 - Self-review the diff before every commit, and again after opening a PR (fix in a follow-up
   commit).
+- The docs site is `website/` (Docusaurus, published to GitHub Pages from main by
+  `.github/workflows/pages.yml`): a change in behaviour updates its page in the same PR.
 - `design/` is local scratch (gitignored); specs and code are the record.
 - `make test` and `make lint` for Go; `make e2e-build` (DuckDB at `e2e/DUCKDB_PIN`, minutes with
   ccache) then `make e2e` for the DuckDB end-to-end cases. All targets run with `GOWORK=off`.

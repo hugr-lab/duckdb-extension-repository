@@ -3,7 +3,7 @@ export GOWORK := off
 
 E2E_BUILD ?= $(CURDIR)/e2e/.build
 
-.PHONY: build console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down lint e2e-duckdb e2e-runner e2e-build e2e
+.PHONY: build docs console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down lint e2e-duckdb e2e-runner e2e-build e2e
 
 build:
 	go build -o bin/kista ./cmd/kista
@@ -89,3 +89,8 @@ e2e-build: e2e-duckdb e2e-runner
 
 e2e:
 	KISTA_E2E_DUCKDB=$(E2E_BUILD) go test -count=1 ./e2e/...
+
+# The docs site (website/, Docusaurus): built as the docs-build workflow does; `cd website && npm start`
+# serves it with live reload. Needs Node 22.
+docs:
+	cd website && npm ci && npx docusaurus build
