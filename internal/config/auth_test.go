@@ -109,6 +109,8 @@ func TestPublishConfig(t *testing.T) {
 		"bad name":                      {base + "publish: { providers: [ { name: GH, url: 'https://x.example' } ] }\n", nil, "name must match"},
 		"twice":                         {base + "publish: { providers: [ { name: gh, url: 'https://x.example' }, { name: gh, url: 'https://y.example' } ] }\n", nil, "used twice"},
 		"per principal":                 {base + "publish: { max_per_principal: 9, max_per_tenant: 4 }\n", nil, "cannot exceed"},
+		"over the default tenant limit": {base + "publish: { max_per_principal: 16 }\n", nil, "cannot exceed"},
+		"tenant under the default":      {base + "publish: { max_per_tenant: 1 }\n", nil, "cannot exceed"},
 		"server issuer at the provider": {base + "serve: { public_url: https://k.example }\nauth: { server_issuers: [ { name: ops, url: 'https://token.actions.githubusercontent.com', required_claims: { a: b } } ] }\n", nil, "trusted-publishing provider"},
 	} {
 		_, err := Load(write(t, c.file), c.env)

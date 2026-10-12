@@ -1,12 +1,13 @@
 name: e2e
 
-# DuckDB at e2e/DUCKDB_PIN against signed repositories (spec 0002).
+# DuckDB at e2e/DUCKDB_PIN against signed repositories (spec 0002): on any server code change, since
+# the cases go through serving, tokens, publication and upstreams, not only the file format.
 on:
   pull_request:
-    paths: [internal/extfile/**, internal/signer/**, internal/store/**, internal/keys/**, internal/tenants/**, internal/config/**, internal/authz/**, internal/keysource/**, internal/vaultapi/**, internal/cloud/**, internal/app/**, internal/blob/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, .github/workflows/e2e.yml]
+    paths: [internal/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, .github/workflows/e2e.yml]
   push:
     branches: [main]
-    paths: [internal/extfile/**, internal/signer/**, internal/store/**, internal/keys/**, internal/tenants/**, internal/config/**, internal/authz/**, internal/keysource/**, internal/vaultapi/**, internal/cloud/**, internal/app/**, internal/blob/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, .github/workflows/e2e.yml]
+    paths: [internal/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, .github/workflows/e2e.yml]
   workflow_dispatch:
     inputs:
       os:

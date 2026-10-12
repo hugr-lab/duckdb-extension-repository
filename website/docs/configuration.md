@@ -328,7 +328,7 @@ Publication limits and trusted-publishing providers. The whole block is file-onl
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `publish.max_per_principal` | integer | `2` | Uploads at once per principal; `1..64`, not above `max_per_tenant` when both are set. |
+| `publish.max_per_principal` | integer | `2` | Uploads at once per principal; `1..64`, not above `max_per_tenant` (each at its default when left out: `max_per_principal: 16` alone is refused, as is `max_per_tenant: 1` alone). |
 | `publish.max_per_tenant` | integer | `8` | Uploads at once per tenant; `1..256`. |
 | `publish.providers` | list | GitHub Actions | Trusted-publishing issuers, each `name` (`[a-z][a-z0-9-]{0,31}`) and `url` (https, no trailing slash). Absent: GitHub Actions (`https://token.actions.githubusercontent.com`) alone. An empty list `[]` turns trusted publishing off. |
 
@@ -339,7 +339,7 @@ Upstream runs and the credentials of private upstreams. The whole block is file-
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `upstreams.concurrency` | integer | `4` | Cells fetched at once per replica; `1..32`. |
+| `upstreams.concurrency` | integer | `4` | Upstream runs at once per replica, and cells fetched at once by them; `1..32`. |
 | `upstreams.fetch_timeout` | duration | `10m` | One file's download; `1m..2h`. |
 | `upstreams.min_rate` | size | `64KiB` | A download's least rate; at least `1KiB`. |
 | `upstreams.interval` | duration | `6h` | Between a mirror's scheduled runs; `15m..168h`. |

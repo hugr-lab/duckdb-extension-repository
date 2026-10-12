@@ -2,8 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
-	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
@@ -20,12 +20,7 @@ func Collector(cfg config.Config, st *store.Store, bs *blob.Service, holder stri
 			data := map[string]any{"domain": r.Domain, "builds": r.Builds, "bodies": r.Bodies, "marked": r.Marked, "streams": r.Streams,
 				"tmp": r.Tmp, "attachments": r.Attachments, "uploads": r.Uploads, "bytes": r.Bytes, "claims": r.Claims, "resolved": r.Resolved, "dry_run": r.DryRun}
 			if r.Err != nil {
-				outcome = audit.Failed
-				msg := r.Err.Error()
-				if len(msg) > 1000 {
-					msg = msg[:1000]
-				}
-				data["error"] = msg
+				outcome, data["error"] = audit.Failed, storageClass(r.Err)
 			}
 			e, err := st.NewEvent(ctx, "", "system:gc", "storage.gc", outcome, "domain:"+r.Domain, data)
 			if err == nil {
@@ -35,6 +30,22 @@ func Collector(cfg config.Config, st *store.Store, bs *blob.Service, holder stri
 				log.Error("blob: recording a collection", "error", err)
 			}
 		}}
+}
+
+// storageClass is a stopped pass's error class for its event (spec 0010: never the error's text,
+// which may name a store's host or a database's; the text goes to the log and the command's stderr).
+func storageClass(err error) string {
+	switch {
+	case errors.Is(err, blob.ErrLeaseLost):
+		return "lease"
+	case errors.Is(err, blob.ErrImplausible):
+		return "implausible"
+	case errors.Is(err, blob.ErrDomain):
+		return "domain"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "interrupted"
+	}
+	return "error"
 }
 
 // VerifyEvent records a verification pass over a domain (spec 0018) as storage.verify: ok when every
@@ -48,11 +59,7 @@ func VerifyEvent(ctx context.Context, st *store.Store, actor string, r blob.Veri
 		"skipped": r.Skipped, "marked_ok": r.MarkedOK, "missing": r.Missing, "short": r.Short, "long": r.Long, "corrupt": r.Corrupt,
 		"record": r.Record, "unreadable": r.Unreadable, "marked": r.Marked, "unmarked": r.Unmarked, "bytes": r.Bytes}
 	if err != nil {
-		msg := err.Error()
-		if len(msg) > 1000 {
-			msg = strings.ToValidUTF8(msg[:1000], "")
-		}
-		data["error"] = msg
+		data["error"] = storageClass(err)
 	}
 	e, eerr := st.NewEvent(ctx, "", actor, "storage.verify", outcome, "domain:"+r.Domain, data)
 	if eerr == nil {

@@ -51,7 +51,7 @@ func TestConsoleRoutes(t *testing.T) {
 	if r := m.call(t, "POST", T+"/issuers/corp/console", tom, `{"client_id":"x","audience":"api://someone-else"}`, "If-Match", tag); r.status != 400 {
 		t.Errorf("an audience not the tenant's: %d %s", r.status, r.body)
 	}
-	if r := m.call(t, "POST", T+"/issuers/corp/console", tom, body, "If-Match", "*"); r.status != 428 {
+	if r := m.call(t, "POST", T+"/issuers/corp/console", tom, body, "If-Match", "*"); r.status != 428 || !strings.HasSuffix(r.json(t)["type"].(string), "precondition-required") {
 		t.Errorf("If-Match *: %d %s", r.status, r.body)
 	}
 	if r := m.call(t, "POST", T+"/issuers/corp/console", tom, body, "If-Match", tag); r.status != 200 || r.json(t)["client_id"] != "kista-console" {

@@ -157,7 +157,7 @@ A source-independent wrapper (`keysource.Open`) checks every backend:
   include response bodies, principals, tokens or key material, and raw SDK errors are never
   wrapped. Authentication failures become one fixed message per backend. A test scans error
   strings and logs for planted values.
-- **Readiness.**
+- **Readiness** (deferred: `health_key` is accepted and not yet read; `/readyz` checks the store).
   - Each source registers a health check. It reads an optional `health_key`'s metadata, or reports
     the last open or sign outcome. It never signs, runs at most once per 60 s, and is single-flight.
   - `/readyz` (spec 0006) reports a boolean. Source names, hosts and codes go to admin endpoints and
