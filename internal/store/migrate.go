@@ -224,3 +224,14 @@ func (s *Store) Ready(ctx context.Context) error {
 	}
 	return s.Check(ctx)
 }
+
+// SchemaCurrent reports whether the database is at exactly this binary's schema level: neither
+// behind nor ahead (spec 0019: an older binary never reaps a schema with tables it does not know).
+func (s *Store) SchemaCurrent(ctx context.Context) (bool, error) {
+	level, err := s.SchemaLevel()
+	if err != nil {
+		return false, err
+	}
+	current, _, err := s.schemaState(ctx, s.db)
+	return err == nil && current == level, err
+}

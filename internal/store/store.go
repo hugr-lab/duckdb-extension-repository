@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"regexp"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -74,6 +75,9 @@ func (s *Store) InTxLocks(ctx context.Context, lockKeys []string, fn func(*Tx) e
 }
 
 func (s *Store) tx(ctx context.Context, lockKeys []string, fn func(*Tx) error) error {
+	if h := txHook.Load(); h != nil {
+		(*h)()
+	}
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
@@ -198,4 +202,39 @@ func (s *Store) Backup(ctx context.Context, path string) error {
 		return err
 	}
 	return nil
+}
+
+// txHook runs before every transaction begins; for tests only (spec 0019: a deletion that starts
+// between a service's checks and its transaction).
+var txHook atomic.Pointer[func()]
+
+// SetTxHook sets (nil: clears) the hook every transaction runs before it begins; for tests only.
+func SetTxHook(f func()) {
+	if f == nil {
+		txHook.Store(nil)
+		return
+	}
+	txHook.Store(&f)
+}
+
+// TimeArg is a timestamp argument in the store's dialect; for test fixtures only.
+func TimeArg(s *Store, t time.Time) any { return s.d.timeArg(t) }
+
+// Tables lists the database's tables (spec 0019's completeness test).
+func Tables(ctx context.Context, s *Store) ([]string, error) {
+	q := "SELECT name FROM sqlite_master WHERE type = 'table'"
+	switch s.d.Name {
+	case "postgres":
+		q = "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'"
+	case "sqlserver":
+		q = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'"
+	}
+	return s.ids(ctx, q)
+}
+
+// CountRaw counts the rows matching a condition; for tests only.
+func CountRaw(ctx context.Context, s *Store, table, where string, args ...any) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM "+table+" WHERE "+where), args...).Scan(&n)
+	return n, err
 }

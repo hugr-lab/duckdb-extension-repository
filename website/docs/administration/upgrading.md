@@ -77,6 +77,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0013_storage_gc` | 13 | storage GC: commits must claim streams before the collector runs |
 | `0014_purged_slots` | 14 | an older replica would refill the slot of a purged release |
 | `0018_feeds` | 18 | an older replica would mark documents feedable without issuing their signed statements |
+| `0019_tenant_deletion` | 19 | an older replica would let a deleting tenant be resumed and keep running its upstreams and feeds |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016 and 0017 are additive and keep the previous
 value.
@@ -125,6 +126,15 @@ so the operator declares it:
   needs `-force`, and purging a yanked release is refused (`release purge` needs `-force` from the
   CLI). Set `gc.interval` (for example `24h`) once the rollout is complete. See
   [Storage](../storage.md).
+- **Deleting a tenant** (migration 0019) needs no setting. Only a binary with migration 0019
+  records when a tenant was suspended, and the migration gives tenants that are already suspended
+  the migration time. So no tenant can be deleted until `tenants.min_suspended` (at least 24 hours
+  outside `profile: dev`) has passed since the upgrade. An older replica that is still running
+  sees a deleting tenant as suspended and does not serve it; one still running a day after the
+  migration is outside what kista supports. A tenant suspended by an older binary while the
+  rollout ran has no suspension time: resume it and suspend it again before deleting it. The
+  reaper runs only on a replica whose binary matches the database's schema level exactly. See
+  [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
 ## Downgrading
 

@@ -56,6 +56,9 @@ After spec 0006, kista serves DuckDB, but everything else goes through `kista ad
   `404`; both with constant bytes. Tenant and channel names are public; the list of tenants is not
   (on Enterest it would enumerate customers).
 - **Suspended tenants**: `404` for everyone but server administrators.
+- **Deleting and deleted tenants** (spec 0019): every route answers the unknown tenant's `404`, the
+  same bytes and headers, to every caller. Server administrators alone still reach
+  `GET /api/v1/tenants/{t}`, `DELETE /api/v1/tenants/{t}` and `GET …/{t}/events[/{id}]`.
 - **Errors**: `application/problem+json`, `type` `urn:kista:problem:<name>` from a fixed set
   (unauthorized, not-found, method-not-allowed, invalid, conflict, precondition-failed,
   precondition-required, gone, too-large, unsupported-media-type, too-many-requests, unavailable), a
@@ -269,12 +272,22 @@ extension, created_at, created_by`. Audience changes answer the tenant's audienc
 answer `204` unless a shape below says otherwise. Management answers carry `Cache-Control:
 no-store`.
 
+**Deleting a tenant** (spec 0019). A tenant also has `suspended_at`, and its `state` may be
+`deleting` or `deleted`. Server administrators also see `deletable_at` (a suspended tenant) and,
+on the tenant's `GET` and `DELETE`, `deletion` (`started_at, started_by, passes, table,
+deleted_rows, last_error, next_attempt_at, finished_at, keys`). `GET /api/v1/tenants?state=a,b`
+filters the list (`400` for another value); without it every state but `deleted` is listed.
+`DELETE /api/v1/tenants/{t}` needs `If-Match` with the tenant's ETag (`*` answers `428`), answers
+`202` with the record, and `409` when the tenant is not suspended, suspended for less than
+`tenants.min_suspended`, suspended by an older binary, or already deleting or deleted.
+
 Phase 2:
 
 | Route | Who |
 | --- | --- |
 | `GET /api/v1/whoami` | a server token |
 | `GET, POST /api/v1/tenants`; `GET /api/v1/tenants/{t}`; `POST …/{t}/suspend`, `/resume` | server (a tenant administrator may `GET` its own tenant) |
+| `DELETE /api/v1/tenants/{t}` (spec 0019) | server |
 | `GET /api/v1/duckdb-versions`, `…/{v}` | public |
 | `POST /api/v1/duckdb-versions`; `POST …/{v}/c-apis` | server |
 | `GET /api/v1/tenants/{t}/audiences` | tenant admin |

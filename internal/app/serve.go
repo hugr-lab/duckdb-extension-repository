@@ -25,6 +25,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/telemetry"
+	tenantsvc "github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 	"github.com/hugr-lab/duckdb-extension-repository/web/console"
 )
@@ -110,7 +111,8 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, Attachments: mgmt.Attachments, Feeds: mgmt.Feeds, MaxBody: maxBody,
 		MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events,
-		Console: ConsoleInfo(cfg)})
+		MinSuspended: apiMinSuspended(cfg.Tenants.MinSuspended),
+		Console:      ConsoleInfo(cfg)})
 	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background
 	puller := &upstream.Puller{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log,
 		NegativeTTL: cfg.UpstreamLimits().NegativeTTL}
@@ -230,10 +232,13 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	go func() { defer wg.Done(); m.Run(bg) }()
 	ur := &upstream.Runner{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log}
 	fr := &attachment.Runner{Feeds: svc.Feeds, Holder: host + "/" + store.NewID(), Log: log}
-	wg.Add(3)
+	// deleting tenants (spec 0019): their rows in batches, then their tombstones
+	reaper := &tenantsvc.Reaper{Store: st, Holder: host + "/" + store.NewID(), Log: log}
+	wg.Add(4)
 	go func() { defer wg.Done(); ur.Run(bg) }()
 	go func() { defer wg.Done(); fr.Run(bg) }()
 	go func() { defer wg.Done(); puller.Run(bg) }()
+	go func() { defer wg.Done(); reaper.Run(bg) }()
 	return srv.Run(ctx)
 }
 
@@ -337,4 +342,13 @@ func sinkNames(cfg config.Config, tenants telemetry.Tenants, counts map[string]i
 		}
 	}
 	return out
+}
+
+// apiMinSuspended is tenants.min_suspended as api.Options takes it: 0 there is the default, so a
+// configured 0 (the dev profile) is passed as none.
+func apiMinSuspended(d time.Duration) time.Duration {
+	if d == 0 {
+		return -1
+	}
+	return d
 }

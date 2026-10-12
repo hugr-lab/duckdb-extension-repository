@@ -106,8 +106,10 @@ func (s *Service) RunUpstream(ctx context.Context, id string, renew func(context
 		if runnable, res.DryRun, requested, err = tx.StartUpstreamRun(ctx, id, s.Config.Interval > 0); err != nil || !runnable {
 			return err
 		}
-		u, err = tx.GetUpstreamByID(ctx, id)
-		return err
+		if u, err = tx.GetUpstreamByID(ctx, id); err != nil {
+			return err
+		}
+		return tx.WritableTenant(ctx, u.TenantID, false) // spec 0019: no run starts for a deleting tenant
 	})
 	if err != nil {
 		return res, err
@@ -131,7 +133,7 @@ func (s *Service) RunUpstream(ctx context.Context, id string, renew func(context
 	default: // the next run, with up to 10% jitter
 		next = res.Ended.Add(s.Config.Interval + time.Duration(rand.Int64N(int64(s.Config.Interval/10)+1)))
 	}
-	err = s.Store.InTx(fctx, "", func(tx *store.Tx) error {
+	err = s.Store.InTenantTx(fctx, u.TenantID, nil, func(tx *store.Tx) error {
 		if interrupted && requested { // a shutdown or a lost lease: the request stays for another run
 			cur, err := tx.GetUpstreamByID(fctx, id)
 			if err != nil {
@@ -225,7 +227,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	if !res.DryRun {
 		for k := range last {
 			if !inMatrix[k] {
-				if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.DeleteCell(ctx, u.ID, k[0], k[1], k[2]) }); err != nil {
+				if err := s.Store.InTenantTx(ctx, u.TenantID, nil, func(tx *store.Tx) error { return tx.DeleteCell(ctx, u.ID, k[0], k[1], k[2]) }); err != nil {
 					return err
 				}
 			}
@@ -323,7 +325,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 				note(c, counted, outcome.Detail)
 				if !res.DryRun {
 					wctx := context.WithoutCancel(ctx)
-					if err := s.Store.InTx(wctx, "", func(tx *store.Tx) error {
+					if err := s.Store.InTenantTx(wctx, u.TenantID, nil, func(tx *store.Tx) error {
 						if err := tx.PutCell(wctx, outcome); err != nil {
 							return err
 						}
@@ -334,7 +336,10 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 									"outcome": outcome.Outcome})
 						}
 						return nil
-					}); err != nil {
+					}); errors.Is(err, store.ErrDeleting) {
+						cancel(errStopped) // spec 0019: the tenant's deletion started
+						return
+					} else if err != nil {
 						s.Log.Warn("upstream: recording a cell", "upstream", u.Name, "error", err)
 					}
 				}
@@ -355,8 +360,14 @@ func (s *Service) paused(ctx context.Context, id string) (bool, error) {
 	var paused bool
 	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		u, err := tx.GetUpstreamByID(ctx, id)
-		paused = err == nil && u.State != store.UpstreamActive
-		return err
+		if err != nil {
+			return err
+		}
+		paused = u.State != store.UpstreamActive
+		if werr := tx.WritableTenant(ctx, u.TenantID, false); errors.Is(werr, store.ErrDeleting) {
+			paused = true // spec 0019: the tenant's deletion started
+		}
+		return nil
 	})
 	return paused, err
 }
@@ -483,7 +494,8 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 	case errors.Is(err, release.ErrConflict):
 		return fail(store.CellConflict, err)
 	case errors.Is(err, store.ErrBusy), errors.Is(err, store.ErrBuildGone), errors.Is(err, store.ErrStreamBusy),
-		errors.Is(err, store.ErrClaimLost), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		errors.Is(err, store.ErrClaimLost), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, store.ErrDeleting): // spec 0019: never the file's fault; recording the cell stops the run
 		return fail(store.CellFailed, err) // tried again by the next run: never the file's fault
 	case err != nil:
 		return fail(store.CellRejected, err)
@@ -537,8 +549,10 @@ func freshness(st *store.Store, id string) func(context.Context) (store.Upstream
 		}
 		err := st.InTx(ctx, "", func(tx *store.Tx) error {
 			var err error
-			u, err = tx.GetUpstreamByID(ctx, id)
-			return err
+			if u, err = tx.GetUpstreamByID(ctx, id); err != nil {
+				return err
+			}
+			return tx.WritableTenant(ctx, u.TenantID, false) // spec 0019: a deleting tenant's run stops
 		})
 		if err != nil {
 			return u, err

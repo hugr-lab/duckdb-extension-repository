@@ -78,7 +78,7 @@ func (s *Service) AddAttestation(ctx context.Context, a authz.Actor, tenant, ref
 	if active {
 		k.State = store.KeyActive
 	}
-	err = s.Store.InTx(ctx, store.AttestationLock(t.ID), func(tx *store.Tx) error {
+	err = s.Store.InTenantTx(ctx, t.ID, []string{store.AttestationLock(t.ID)}, func(tx *store.Tx) error {
 		existing, err := tx.AttestationKeys(ctx, t.ID)
 		if err != nil {
 			return err
@@ -119,7 +119,7 @@ func (s *Service) changeAttestation(ctx context.Context, a authz.Actor, tenant, 
 		return store.Key{}, err
 	}
 	var out store.Key
-	err = s.Store.InTx(ctx, store.AttestationLock(t.ID), func(tx *store.Tx) error {
+	err = s.Store.InTenantTx(ctx, t.ID, []string{store.AttestationLock(t.ID)}, func(tx *store.Tx) error {
 		keys, err := tx.AttestationKeys(ctx, t.ID)
 		if err != nil {
 			return err

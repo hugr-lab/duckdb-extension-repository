@@ -75,6 +75,7 @@ mkdir -p "$work/keys"
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/a.pem" 2>/dev/null
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/b.pem" 2>/dev/null  # added from the console (2b)
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/att.pem" 2>/dev/null  # the feed's (spec 0011)
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/s.pem" 2>/dev/null  # tenant scratch's (spec 0019)
 (cd "$root" && GOWORK=off go build -o "$work/kista" ./cmd/kista && GOWORK=off go run ./web/console/e2e/fixture "$work/tresor.duckdb_extension" 1.0 a \
 	&& GOWORK=off go run ./web/console/e2e/fixture "$work/hello.duckdb_extension" 1.0 b)
 cat >"$work/kista.yaml" <<YAML
@@ -95,6 +96,7 @@ auth:
   server_egress_allow: [ { cidr: 127.0.0.1/32, ports: [$kc_port] } ]
   server_admins: [ "role:ops|kista-admin" ]
 gc: { interval: 24h }  # every replica runs this version: purging is on (spec 0016)
+tenants: { min_suspended: 0s }  # spec 0019: deleted at once in the suite
 ui:
   environment: e2e
   allowed_origins: [ $host ]
@@ -119,6 +121,9 @@ k extension-group members acme platform -add tresor
 k grant add acme -principal "role:kc|platform-team" -verb admin -extension-group platform
 k release add acme/prod "$work/tresor.duckdb_extension" -name tresor -unchecked
 k release add acme/prod "$work/hello.duckdb_extension" -name hello_acme -unchecked
+k tenant create scratch -display-name Scratch   # deleted from the console (spec 0019)
+k channel create scratch/prod -kind signed
+k key add scratch/prod -signer file:s.pem -active
 "$work/kista" serve -config "$work/kista.yaml" >"$work/kista.log" 2>&1 &
 pids+=($!)
 for i in $(seq 1 60); do curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null && break; sleep 1; done

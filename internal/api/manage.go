@@ -101,6 +101,10 @@ func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
 		problem(w, http.StatusConflict, typeConflict, "a grant names the extension group: revoke its grants first")
 	case errors.Is(err, tenants.ErrLastAdmin):
 		problem(w, http.StatusConflict, typeConflict, "the tenant's last tenant-wide admin grant; a server administrator can remove it")
+	case errors.As(err, new(*tenants.Refusal)):
+		var rf *tenants.Refusal
+		errors.As(err, &rf)
+		problem(w, http.StatusConflict, typeConflict, rf.Reason)
 	case errors.Is(err, tenants.ErrIssuerFetch):
 		problem(w, http.StatusBadRequest, typeInvalid, "the issuer's discovery document or JWKS could not be fetched or used")
 	case errors.Is(err, store.ErrInvalid):
@@ -324,19 +328,57 @@ func (h *Handler) addCAPI(w http.ResponseWriter, r *http.Request, c caller, p pa
 // --- tenants ---
 
 type tenantOut struct {
-	Name          string `json:"name"`
-	DisplayName   string `json:"display_name,omitempty"`
-	State         string `json:"state"`
-	StorageDomain string `json:"storage_domain,omitempty"` // server administrators only
-	CreatedAt     string `json:"created_at"`
-	ETag          string `json:"etag"`
+	Name          string       `json:"name"`
+	DisplayName   string       `json:"display_name,omitempty"`
+	State         string       `json:"state"`                    // active, suspended, deleting or deleted (spec 0019)
+	StorageDomain string       `json:"storage_domain,omitempty"` // server administrators only
+	CreatedAt     string       `json:"created_at"`
+	SuspendedAt   string       `json:"suspended_at,omitempty"`
+	DeletableAt   string       `json:"deletable_at,omitempty"` // server administrators only
+	Deletion      *deletionOut `json:"deletion,omitempty"`     // server administrators only
+	ETag          string       `json:"etag"`
+}
+
+type deletionOut struct {
+	StartedAt     string              `json:"started_at"`
+	StartedBy     string              `json:"started_by"`
+	Passes        int64               `json:"passes"`
+	Table         string              `json:"table,omitempty"`
+	DeletedRows   int64               `json:"deleted_rows"`
+	LastError     string              `json:"last_error,omitempty"`
+	NextAttemptAt string              `json:"next_attempt_at,omitempty"`
+	FinishedAt    string              `json:"finished_at,omitempty"`
+	Keys          []store.DeletionKey `json:"keys"`
+}
+
+func rfc3339(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// withDeletion adds what a server administrator sees of a tenant's deletion (spec 0019).
+func (h *Handler) withDeletion(o tenantOut, t store.Tenant, d *store.Deletion, c caller) tenantOut {
+	if !c.admin {
+		return o
+	}
+	o.DeletableAt = rfc3339(tenants.DeletableAt(t, h.o.MinSuspended))
+	if d != nil {
+		o.Deletion = &deletionOut{StartedAt: rfc3339(d.StartedAt), StartedBy: d.StartedBy, Passes: d.Passes, Table: d.Table,
+			DeletedRows: d.DeletedRows, LastError: d.LastError, FinishedAt: rfc3339(d.FinishedAt), Keys: d.Keys}
+		if d.FinishedAt.IsZero() {
+			o.Deletion.NextAttemptAt = rfc3339(d.NextAttemptAt)
+		}
+	}
+	return o
 }
 
 func versionTag(v int64) string { return `"v` + strconv.FormatInt(v, 10) + `"` }
 
 func tenantOf(t store.Tenant, c caller) tenantOut {
-	o := tenantOut{Name: t.Name, DisplayName: t.DisplayName, State: t.State, CreatedAt: t.CreatedAt.UTC().Format(time.RFC3339),
-		ETag: versionTag(t.Version)}
+	o := tenantOut{Name: t.Name, DisplayName: t.DisplayName, State: t.Phase(), CreatedAt: t.CreatedAt.UTC().Format(time.RFC3339),
+		SuspendedAt: rfc3339(t.SuspendedAt), ETag: versionTag(t.Version)}
 	if c.admin {
 		o.StorageDomain = t.StorageDomain
 	}
@@ -349,7 +391,11 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request, c caller, 
 		return
 	}
 	a, _ := c.actor()
-	ts, err := h.o.Tenants.ListTenants(r.Context(), a)
+	var phases []string
+	if q := r.URL.Query().Get("state"); q != "" {
+		phases = strings.Split(q, ",")
+	}
+	ts, err := h.o.Tenants.ListTenants(r.Context(), a, phases...)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -358,7 +404,7 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request, c caller, 
 	ts, next := paged(ts, func(t store.Tenant) string { return t.Name }, limit, after)
 	out := []tenantOut{}
 	for _, t := range ts {
-		out = append(out, tenantOf(t, c))
+		out = append(out, h.withDeletion(tenantOf(t, c), t, nil, c))
 	}
 	reply(w, r, http.StatusOK, list("tenants", out, next), "", noStore)
 }
@@ -383,12 +429,46 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request, c caller,
 
 func (h *Handler) getTenant(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
+	if c.admin { // spec 0019: any phase, with the deletion's record
+		t, d, err := h.o.Tenants.Show(r.Context(), a, p["t"])
+		if err != nil {
+			h.serviceErr(w, err, false)
+			return
+		}
+		reply(w, r, http.StatusOK, h.withDeletion(tenantOf(t, c), t, d, c), versionTag(t.Version), noStore)
+		return
+	}
 	t, err := h.o.Tenants.GetTenant(r.Context(), a, p["t"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
 	reply(w, r, http.StatusOK, tenantOf(t, c), versionTag(t.Version), noStore)
+}
+
+// deleteTenant starts a suspended tenant's deletion (spec 0019): an exact If-Match, 202 while the
+// reaper works.
+func (h *Handler) deleteTenant(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	tag, ok := ifMatch(w, r)
+	if !ok {
+		return
+	}
+	n, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(tag, `"v`), `"`), 10, 64)
+	if tag == "" {
+		problem(w, http.StatusPreconditionRequired, typeRequired, "deleting a tenant needs If-Match with its ETag, not *")
+		return
+	}
+	if err != nil || n <= 0 || versionTag(n) != tag {
+		problem(w, http.StatusPreconditionFailed, typePrecondition, "it changed: read it again")
+		return
+	}
+	a, _ := c.actor()
+	t, d, err := h.o.Tenants.Delete(r.Context(), a, p["t"], n, h.o.MinSuspended)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	reply(w, r, http.StatusAccepted, h.withDeletion(tenantOf(t, c), t, &d, c), versionTag(t.Version), noStore)
 }
 
 func (h *Handler) suspend(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -419,7 +499,7 @@ func (h *Handler) setTenantState(w http.ResponseWriter, r *http.Request, c calle
 		h.serviceErr(w, err, false)
 		return
 	}
-	reply(w, r, http.StatusOK, tenantOf(t, c), versionTag(t.Version), noStore)
+	reply(w, r, http.StatusOK, h.withDeletion(tenantOf(t, c), t, nil, c), versionTag(t.Version), noStore)
 }
 
 // --- audiences ---

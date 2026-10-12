@@ -402,10 +402,10 @@ func (s *Store) DueFeeds(ctx context.Context, now time.Time, scheduled bool) ([]
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		var err error
 		if !scheduled {
-			out, err = tx.strings(ctx, "SELECT id FROM feeds WHERE state = ? AND requested_at IS NOT NULL ORDER BY id", FeedActive)
+			out, err = tx.strings(ctx, "SELECT id FROM feeds WHERE state = ? AND requested_at IS NOT NULL AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) ORDER BY id", FeedActive)
 			return err
 		}
-		out, err = tx.strings(ctx, `SELECT id FROM feeds WHERE state = ? AND (requested_at IS NOT NULL OR next_run_at IS NULL OR next_run_at <= ?)
+		out, err = tx.strings(ctx, `SELECT id FROM feeds WHERE state = ? AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) AND (requested_at IS NOT NULL OR next_run_at IS NULL OR next_run_at <= ?)
 ORDER BY CASE WHEN requested_at IS NULL THEN 1 ELSE 0 END, CASE WHEN next_run_at IS NULL THEN 0 ELSE 1 END, next_run_at, id`,
 			FeedActive, s.d.timeArg(now))
 		return err
@@ -580,8 +580,7 @@ AND s.issuer_id = a.issuer_id AND s.seq > ?)`), tenantID, issuerID, true, seq).S
 	return n > 0, err
 }
 
-// GetTenantByID reads a tenant by id.
+// GetTenantByID reads a tenant by id, as Tx.GetTenant: locked, and closed once its deletion started.
 func (t *Tx) GetTenantByID(ctx context.Context, id string) (Tenant, error) {
-	tn, err := scanTenant(t.queryRow(ctx, "SELECT "+tenantCols+" FROM tenants WHERE id = ?", id))
-	return tn, notFound(err, "tenant")
+	return t.getTenant(ctx, "id = ?", id, false)
 }

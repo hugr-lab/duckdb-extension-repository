@@ -28,7 +28,7 @@ func TestLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Profile != ProfileProd || cfg.Rotation.MinTrusted != 7*24*time.Hour || cfg.Store.Migrate != "auto" {
+	if cfg.Profile != ProfileProd || cfg.Rotation.MinTrusted != 7*24*time.Hour || cfg.Store.Migrate != "auto" || cfg.Tenants.MinSuspended != 7*24*time.Hour {
 		t.Fatalf("defaults %+v", cfg)
 	}
 	cfg, err = Load(write(t, base+"rotation: { min_trusted: 48h }\n"), []string{
@@ -62,6 +62,9 @@ func TestRefused(t *testing.T) {
 		{"bad duration", base, []string{"KISTA_ROTATION__MIN_TRUSTED=week"}, "not a duration"},
 		{"relative key dir", base + "signers: { file_dir: keys }\n", nil, "absolute"},
 		{"min_demoted floor", base + "rotation: { min_demoted: 23h59m }\n", nil, "cannot be below"},
+		{"min_suspended floor", base + "tenants: { min_suspended: 1h }\n", nil, "tenants.min_suspended"},
+		{"min_suspended from env", base, []string{"KISTA_TENANTS__MIN_SUSPENDED=48h"}, "can only be set in the config file"},
+		{"min_suspended negative in dev", "profile: dev\nstore: { kind: sqlite, sqlite: { path: /tmp/k.db } }\nrotation: { min_trusted: 1h, min_demoted: 1h }\ntenants: { min_suspended: -1s }\n", nil, "tenants.min_suspended"},
 		{"password in dsn", "store: { kind: postgres, dsn: 'postgres://k:secret@db.example/k?sslmode=verify-full' }\n", nil, "must not contain a password"},
 		{"dev reaching a remote host through ?host=", "profile: dev\nstore: { kind: postgres, dsn: 'postgres://k@127.0.0.1/k?host=db.example' }\n", nil, "loopback"},
 		{"dev with a remote failover partner", "profile: dev\nstore: { kind: sqlserver, dsn: 'server=127.0.0.1;failover partner=db.example' }\n", nil, "loopback"},

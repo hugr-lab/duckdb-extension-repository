@@ -88,9 +88,13 @@ kind's subject form and fields; `v` 1):
 - tenants and server: `tenant.create`, `tenant.suspend`, `tenant.resume`, `version.add`,
   `version.c_apis`, `server.start` (kista's version, the schema level, a digest (64 bits of SHA-256 of
   the section's JSON) of each security-relevant configuration section: `profile`, `signers`, `blob`,
-  `serve`, `egress`, `auth`, `publish`, `upstreams`, `events`, `statistics`, `telemetry`, and the names of those changed since
-  the previous start (a section the previous start did not digest is not one), which every replica
-  records);
+  `serve`, `egress`, `auth`, `publish`, `upstreams`, `events`, `statistics`, `telemetry`, `tenants`
+  (spec 0019), and the names of those changed since the previous start (a section the previous start did not digest is not one), which every replica
+  records); spec 0019's `tenant.delete` (the tenant's event, actor the administrator, subject
+  `tenant:<name>`; `channels` a count, `suspended_at`, `keys` the fingerprints, never signer
+  references) and `tenant.purge` (actor `system:tenant-delete`, subject `tenant:<name>`; `rows`,
+  `passes`, `late`, and `error`, a class (`lease`, `interrupted`, `error`), when the outcome is
+  `failed`: written on the first failure and when the class changes);
 - channels and keys: `channel.create`, `channel.versions` (versions added and removed), `key.add`,
   `key.activate`, `key.retire`, `key.resign` (actor `system:resign`, when a re-sign completes and the
   serving key moves);
@@ -263,6 +267,9 @@ GET /api/v1/event-kinds                                          the catalogue (
   [-follow] [-format table|jsonl] [<tenant>]` (`-follow` prints new events, oldest first, polling the
   store and looking back 30 seconds each time, so an event that commits late is printed once;
   `-format jsonl` exports for sites without a pipeline).
+- A deleting or deleted tenant's events (spec 0019) stay until retention. Server administrators
+  still read them, over the API and with `events list <tenant>`; to everyone else the tenant is
+  unknown.
 
 ### Downloads, statistics and metrics (2a, 2b)
 

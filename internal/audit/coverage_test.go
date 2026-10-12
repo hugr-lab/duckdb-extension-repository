@@ -67,7 +67,7 @@ func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 // until it is listed.
 var writes = map[string]map[string][]audit.Kind{
 	"tenants.Service": {
-		"CreateTenant": {"tenant.create"}, "SetTenantState": {"tenant.suspend", "tenant.resume"},
+		"CreateTenant": {"tenant.create"}, "SetTenantState": {"tenant.suspend", "tenant.resume"}, "Delete": {"tenant.delete"}, "Show": nil,
 		"AddVersion": {"version.add"}, "AddVersionCAPI": {"version.c_apis"}, "CreateChannel": {"channel.create"},
 		"SetChannelVersions": {"channel.versions"},
 		"ListTenants":        nil, "GetTenant": nil, "ListVersions": nil, "ListChannels": nil, "ChannelVersions": nil,
@@ -143,6 +143,7 @@ func TestRegistry(t *testing.T) {
 
 type env struct {
 	hit map[string]bool // registry methods run
+	ops []namedOp       // every operation run, to run again on a deleting tenant
 	st  *store.Store
 	ten *tenants.Service
 	adm *tenants.AuthAdmin
@@ -157,6 +158,7 @@ type env struct {
 func (en *env) expect(name string, op func() error, want ...audit.Kind) {
 	en.t.Helper()
 	en.hit[name] = true
+	en.ops = append(en.ops, namedOp{name, op})
 	before := en.count()
 	if err := op(); err != nil {
 		en.t.Fatalf("%s: %v", name, err)
@@ -193,7 +195,7 @@ func (en *env) all() []store.Event {
 }
 
 func (en *env) tenantID() string {
-	t, err := en.st.GetTenant(ctx, "acme")
+	t, err := en.st.GetTenantAny(ctx, "acme")
 	if err != nil {
 		return "none"
 	}
@@ -528,6 +530,85 @@ func TestCoverage(t *testing.T) {
 	en.expect("attachment.Service.RemoveBlockedDocument", do(func() error {
 		return att.RemoveBlockedDocument(rctx, admin, "acme", ah.String(), doc.ID)
 	}), "attachment.remove")
+	// spec 0019, the race: a deletion that starts after an operation's checks, before its first
+	// transaction; the operation is refused as a deleting tenant, or writes nothing
+	serverWide := map[string]bool{"tenants.Service.CreateTenant": true, "tenants.Service.AddVersion": true, "tenants.Service.AddVersionCAPI": true}
+	tid := en.tenantID()
+	chans, err := st.ListChannels(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chanIDs []string
+	for _, c := range chans {
+		chanIDs = append(chanIDs, c.ID)
+	}
+	rows := func() map[string]int64 {
+		r, err := store.TenantRows(ctx, st, tid, chanIDs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	refused := 0
+	for _, o := range en.ops {
+		if serverWide[o.name] || o.name == "tenants.Service.Delete" {
+			continue
+		}
+		before, evs := rows(), en.count()
+		store.SetTxHook(func() {
+			store.SetTxHook(nil)
+			if err := store.ExecRaw(ctx, st, "UPDATE tenants SET deleting_at = ? WHERE id = ?", store.TimeArg(st, base), tid); err != nil {
+				t.Error(err)
+			}
+		})
+		err := o.op()
+		store.SetTxHook(nil)
+		if err := store.ExecRaw(ctx, st, "UPDATE tenants SET deleting_at = NULL WHERE id = ?", tid); err != nil {
+			t.Fatal(err)
+		}
+		after := rows()
+		if errors.Is(err, store.ErrDeleting) {
+			refused++
+		}
+		for table, n := range after {
+			if n != before[table] {
+				t.Errorf("%s, its tenant closed before its transaction: %s changed from %d to %d rows (%v)", o.name, table, before[table], n, err)
+			}
+		}
+		if n := en.count(); n != evs {
+			t.Errorf("%s, its tenant closed before its transaction: %d events (%v)", o.name, n-evs, err)
+		}
+	}
+	if refused == 0 {
+		t.Error("no operation met the deletion in its transaction")
+	}
+
+	// spec 0019: once the tenant's deletion started, every write to it is refused as a deleting
+	// tenant and changes nothing; the server-wide ones are not the tenant's
+	en.expect("tenants.Service.SetTenantState", do(func() error {
+		_, err := en.ten.SetTenantState(rctx, admin, "acme", store.TenantSuspended, 0)
+		return err
+	}), "tenant.suspend")
+	en.expect("tenants.Service.Delete", do(func() error { _, _, err := en.ten.Delete(rctx, admin, "acme", 0, 0); return err }), "tenant.delete")
+	before := en.count()
+	for _, o := range en.ops {
+		if serverWide[o.name] {
+			continue
+		}
+		err := o.op()
+		var refusal *tenants.Refusal
+		switch {
+		case o.name == "tenants.Service.Delete":
+			if !errors.As(err, &refusal) {
+				t.Errorf("deleting a deleting tenant again: %v", err)
+			}
+		case !errors.Is(err, store.ErrDeleting):
+			t.Errorf("%s on a deleting tenant: %v", o.name, err)
+		}
+	}
+	if after := en.count(); after != before {
+		t.Errorf("writes refused on a deleting tenant still wrote %d events", after-before)
+	}
 	// every registered writer ran (Ingest and RunUpstream: in internal/upstream's tests, which
 	// check their events)
 	elsewhere := map[string]bool{"release.Service.Ingest": true, "upstream.Service.RunUpstream": true, "attachment.Feeds.RunFeed": true}
@@ -550,6 +631,11 @@ func TestCoverage(t *testing.T) {
 			t.Errorf("%s: client %q", e.Kind, e.Client)
 		}
 	}
+}
+
+type namedOp struct {
+	name string
+	op   func() error
 }
 
 // repoFetch serves a repository upstream's .well-known file with one key.

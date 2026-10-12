@@ -460,11 +460,11 @@ func (s *Store) DueUpstreams(ctx context.Context, now time.Time, scheduled bool)
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		var err error
 		if !scheduled {
-			out, err = tx.strings(ctx, "SELECT id FROM upstreams WHERE state = ? AND requested_at IS NOT NULL ORDER BY id", UpstreamActive)
+			out, err = tx.strings(ctx, "SELECT id FROM upstreams WHERE state = ? AND requested_at IS NOT NULL AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) ORDER BY id", UpstreamActive)
 			return err
 		}
 		// requested runs first, then the longest due
-		out, err = tx.strings(ctx, `SELECT id FROM upstreams WHERE state = ? AND (requested_at IS NOT NULL OR
+		out, err = tx.strings(ctx, `SELECT id FROM upstreams WHERE state = ? AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) AND (requested_at IS NOT NULL OR
 (mode = ? AND (next_run_at IS NULL OR next_run_at <= ?)))
 ORDER BY CASE WHEN requested_at IS NULL THEN 1 ELSE 0 END, CASE WHEN next_run_at IS NULL THEN 0 ELSE 1 END, next_run_at, id`,
 			UpstreamActive, ModeMirror, s.d.timeArg(now))

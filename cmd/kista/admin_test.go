@@ -406,3 +406,65 @@ func TestAdminCLI(t *testing.T) {
 	run(2, "nonsense")
 	run(2, "key", "add", "acme")
 }
+
+// Spec 0019 from the CLI: a suspended tenant is deleted with its name given twice, its rows reaped
+// here with -force, and its tombstone listed and shown.
+func TestAdminTenantDelete(t *testing.T) {
+	dir := t.TempDir()
+	keys := filepath.Join(dir, "keys")
+	if err := os.Mkdir(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := signer.GenerateKeyFile(filepath.Join(keys, "a.pem")); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "kista.yaml")
+	os.WriteFile(cfg, []byte("profile: dev\nstore: { kind: sqlite, sqlite: { path: "+filepath.Join(dir, "k.db")+" } }\n"+
+		"signers: { file_dir: "+keys+" }\ntenants: { min_suspended: 0s }\n"), 0o600)
+	run := func(want int, args ...string) string {
+		t.Helper()
+		var out, errw bytes.Buffer
+		if code := admin(append([]string{"-config", cfg}, args...), nil, &out, &errw); code != want {
+			t.Fatalf("%v: exit %d, want %d\n%s%s", args, code, want, out.String(), errw.String())
+		}
+		return out.String() + errw.String()
+	}
+	run(0, "migrate")
+	run(0, "tenant", "create", "gone")
+	run(0, "channel", "create", "gone/prod", "-kind", "signed")
+	run(0, "key", "add", "gone/prod", "-signer", "file:a.pem", "-active")
+	if got := run(1, "tenant", "delete", "gone", "-confirm", "gone"); !strings.Contains(got, "suspend it first") {
+		t.Errorf("an active tenant: %q", got)
+	}
+	run(0, "tenant", "suspend", "gone")
+	run(2, "tenant", "delete", "gone")
+	run(2, "tenant", "delete", "gone", "-confirm", "other")
+	got := run(0, "tenant", "delete", "gone", "-confirm", "gone")
+	if !strings.Contains(got, "being deleted") || !strings.Contains(got, "file:a.pem") || !strings.Contains(got, "gc.interval is 0") {
+		t.Errorf("delete: %q", got)
+	}
+	if got := run(1, "channel", "list", "gone"); !strings.Contains(got, "being deleted") {
+		t.Errorf("a deleting tenant's channels: %q", got)
+	}
+	if got := run(0, "tenant", "show", "gone"); !strings.Contains(got, "deleting") || !strings.Contains(got, "file:a.pem") {
+		t.Errorf("show: %q", got)
+	}
+	if got := run(1, "tenant", "reap", "gone"); !strings.Contains(got, "settle") {
+		t.Errorf("reap before the settle period: %q", got)
+	}
+	if got := run(0, "tenant", "reap", "gone", "-force"); !strings.Contains(got, "tenant gone deleted") {
+		t.Errorf("reap: %q", got)
+	}
+	if got := run(0, "tenant", "list"); strings.Contains(got, "gone") {
+		t.Errorf("a tombstone in the default list: %q", got)
+	}
+	if got := run(0, "tenant", "list", "-state", "deleted"); !strings.Contains(got, "gone") {
+		t.Errorf("list -state deleted: %q", got)
+	}
+	if got := run(0, "events", "list", "gone"); !strings.Contains(got, "tenant.purge") || !strings.Contains(got, "tenant.delete") {
+		t.Errorf("a tombstone's events: %q", got)
+	}
+	if got := run(1, "tenant", "create", "gone"); !strings.Contains(got, "never reused") {
+		t.Errorf("the name again: %q", got)
+	}
+}

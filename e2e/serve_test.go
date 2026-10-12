@@ -6,8 +6,10 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -341,4 +343,62 @@ func e2eProviders(v *auth.Verifier) auth.Providers {
 		return nil
 	}
 	return auth.Providers{{Name: "github", URL: e2eGitHub, Verifier: &auth.Verifier{Fetch: v.Fetch}}}
+}
+
+// Spec 0019: once a tenant's deletion starts, and after its tombstone, DuckDB meets what it meets
+// for a tenant that never existed: the same 404 for .well-known and for a binary.
+func TestServeTenantDeleted(t *testing.T) {
+	b := needBuild(t)
+	k := startKista(t, b)
+	k.release("loadable_extension_demo", release.AddOptions{})
+	key := k.pem(t, k.activeKey(t))
+	mustOK(t, newSession(t, b, nil).exec(createRepo("r", k.httpURL(), key), "INSTALL loadable_extension_demo FROM r"))
+
+	ctx := context.Background()
+	if _, err := k.ten.SetTenantState(ctx, serveAdmin, "acme", store.TenantSuspended, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := k.ten.Delete(ctx, serveAdmin, "acme", 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	same := func(stage string) {
+		t.Helper()
+		for _, path := range []string{"/.well-known/duckdb-extension-repo.json", "/" + b.versionDir + "/" + b.platform + "/loadable_extension_demo.duckdb_extension.gz"} {
+			gone, never := httpGet(t, k.httpURL()+path), httpGet(t, "http://"+k.addr+"/never/prod"+path)
+			if gone.status != 404 || gone.status != never.status || !bytes.Equal(gone.body, never.body) {
+				t.Errorf("%s %s: %d %q, unknown tenant: %d %q", stage, path, gone.status, gone.body, never.status, never.body)
+			}
+		}
+		res := newSession(t, b, nil).exec(createRepo("r", k.httpURL(), key), "FORCE INSTALL loadable_extension_demo FROM r")
+		mustOK(t, res[:1])
+		if res[1].OK {
+			t.Errorf("%s: installed from a deleted tenant", stage)
+		}
+	}
+	same("deleting")
+	r := &tenants.Reaper{Store: k.st, Holder: "e2e", Log: slog.New(slog.DiscardHandler)}
+	if tn, err := r.Reap(ctx, "acme", true); err != nil || tn.Phase() != store.TenantDeleted {
+		t.Fatalf("reap: %+v %v", tn, err)
+	}
+	same("deleted")
+}
+
+type httpAnswer struct {
+	status int
+	body   []byte
+}
+
+// httpGet fetches a plain http URL from kista serve.
+func httpGet(t *testing.T, url string) httpAnswer {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return httpAnswer{resp.StatusCode, b}
 }

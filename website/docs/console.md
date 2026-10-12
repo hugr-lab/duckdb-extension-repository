@@ -170,9 +170,18 @@ The server scope adds:
 
 | Section | What it does |
 | --- | --- |
-| **Tenants** | every tenant (name, state, storage domain); create, suspend, resume; open a tenant with every right |
+| **Tenants** | every tenant but deleted ones (name, state, storage domain); create, suspend, resume, delete; open a tenant with every right |
 | **DuckDB versions** | list and add DuckDB versions with their maximum C API per major; add a C API |
 | **Server events** | the server's own events |
+
+**Deleting a tenant.** A suspended tenant's page has **Delete…**, enabled once the tenant has been
+suspended for `tenants.min_suspended` (until then a note says from when). The dialog says what is
+removed and what stays, reminds you to retire the tenant's keys in their key sources, and asks for
+the tenant's name typed in full. A deleting or deleted tenant's page shows its deletion instead of
+its screens: when and by whom it started, the rows deleted and the passes, the table the reaper
+reached, the last error, the next attempt, and the keys to retire (kind, fingerprint, signer
+reference). **Refresh** reloads it. See
+[Deleting a tenant](administration/tenants-and-channels.md#deleting-a-tenant).
 
 Lists are read page by page (50, 100 or 200 rows) from the API's cursors. Name search is a prefix
 search done by the API. Nothing refreshes in the background, except a running re-sign's progress

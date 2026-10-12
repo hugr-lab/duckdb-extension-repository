@@ -115,6 +115,8 @@ var catalogue = map[Kind][]string{
 	"tenant.create":  {"name", "display_name", "storage_domain"},
 	"tenant.suspend": {},
 	"tenant.resume":  {},
+	"tenant.delete":  {"channels", "suspended_at", "keys"},
+	"tenant.purge":   {"rows", "passes", "late", "error"},
 	"version.add":    {"version", "kind", "c_apis"},
 	"version.c_apis": {"version", "c_api"},
 	"server.start":   {"version", "schema", "digests", "changed"},

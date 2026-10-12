@@ -84,7 +84,7 @@ func headersFile(path string) (http.Header, error) {
 func securitySettings(cfg config.Config) map[string]any {
 	return map[string]any{"profile": cfg.Profile, "signers": cfg.Signers, "blob": cfg.Blob, "serve": cfg.Serve,
 		"egress": cfg.Egress, "auth": cfg.Auth, "publish": cfg.Publish, "upstreams": cfg.Upstreams, "events": cfg.Events,
-		"statistics": cfg.Statistics, "telemetry": cfg.Telemetry}
+		"statistics": cfg.Statistics, "telemetry": cfg.Telemetry, "tenants": cfg.Tenants}
 }
 
 // ServerStart records server.start: kista's version, the schema level, the digests of the

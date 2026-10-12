@@ -55,6 +55,9 @@ func (s *Service) Resign(ctx context.Context, channelID string, renew func(conte
 			}
 		}
 		err = s.Store.InTx(ctx, lockKey(channelID), func(tx *store.Tx) error {
+			if _, err := tx.ChannelByID(ctx, channelID); err != nil {
+				return err // spec 0019: none signed for a tenant whose deletion started
+			}
 			keys, err := tx.ChannelKeys(ctx, channelID)
 			if err != nil {
 				return err

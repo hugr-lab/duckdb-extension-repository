@@ -42,7 +42,18 @@ func (s *Store) AddDownloadCounts(ctx context.Context, counts map[DownloadKey]in
 	for len(keys) > 0 {
 		batch := keys[:min(len(keys), 500)]
 		if err := s.InTx(ctx, lock, func(tx *Tx) error {
+			ids := make([]string, 0, len(batch))
 			for _, k := range batch {
+				ids = append(ids, k.TenantID)
+			}
+			closed, err := tx.closedTenants(ctx, ids)
+			if err != nil {
+				return err
+			}
+			for _, k := range batch {
+				if closed[k.TenantID] {
+					continue // spec 0019: done, so the counter does not keep it
+				}
 				if err := tx.addDownloadCount(ctx, k, counts[k]); err != nil {
 					return err
 				}
@@ -110,7 +121,18 @@ func (s *Store) PutInstallers(ctx context.Context, day string, rows map[Installe
 		if _, err := tx.exec(ctx, "DELETE FROM download_installers WHERE day = ?", day); err != nil {
 			return err
 		}
+		ids := make([]string, 0, len(rows))
+		for k := range rows {
+			ids = append(ids, k.TenantID)
+		}
+		closed, err := tx.closedTenants(ctx, ids)
+		if err != nil {
+			return err
+		}
 		for k, n := range rows {
+			if closed[k.TenantID] {
+				continue
+			}
 			if _, err := tx.exec(ctx, "INSERT INTO download_installers (tenant_id, channel_id, name, ext_version, platform, day, installers) "+
 				"VALUES (?, ?, ?, ?, ?, ?, ?)", k.TenantID, k.ChannelID, k.Name, k.ExtVersion, k.Platform, day, n); err != nil {
 				return err
@@ -119,7 +141,7 @@ func (s *Store) PutInstallers(ctx context.Context, day string, rows map[Installe
 		if _, err := tx.exec(ctx, "DELETE FROM statistics_days WHERE day = ?", day); err != nil {
 			return err
 		}
-		_, err := tx.exec(ctx, "INSERT INTO statistics_days (day, done_at) VALUES (?, ?)", day, tx.s.d.timeArg(tx.Now()))
+		_, err = tx.exec(ctx, "INSERT INTO statistics_days (day, done_at) VALUES (?, ?)", day, tx.s.d.timeArg(tx.Now()))
 		return err
 	})
 }
@@ -339,4 +361,32 @@ func (s *Store) InstallEvents(ctx context.Context, tenantID, day string, fn func
 			return nil
 		}
 	}
+}
+
+// closedTenants are those of ids whose deletion started (spec 0019): no statistics are written for
+// them.
+func (tx *Tx) closedTenants(ctx context.Context, ids []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	for len(ids) > 0 {
+		chunk := ids[:min(len(ids), 500)]
+		ids = ids[len(chunk):]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		q := "SELECT id FROM tenants WHERE deleting_at IS NOT NULL AND id IN (" + strings.TrimSuffix(strings.Repeat("?, ", len(chunk)), ", ") + ")"
+		if err := tx.each(ctx, q, args, func(r *sql.Rows) error {
+			var id string
+			if err := r.Scan(&id); err != nil {
+				return err
+			}
+			out[id] = true
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }

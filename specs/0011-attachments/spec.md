@@ -73,7 +73,7 @@ feed_keys, feed_channels, feed_cursors (feed, body_hash, seq)
   that body in the tenant shows it (a promotion carries its documents along). Only a body the tenant
   holds (a Build of it exists) can be attached to. When the tenant stops holding it (its last Build
   collected, spec 0016), the collector removes its attachments too, unless the body is blocked
-  (spec 0008): the report that justified a block stays with the block. Tenant deletion (spec 0001)
+  (spec 0008): the report that justified a block stays with the block. Tenant deletion (spec 0019)
   removes them all. A body mirrored again later starts with none of the tenant's own documents; a
   feed sends its documents again (1b).
 - **Kinds and media types** (a closed list, so summaries and the console know them):

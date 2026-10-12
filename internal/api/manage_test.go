@@ -152,7 +152,7 @@ func newMgmt(t *testing.T) *mgmt {
 	apiH := api.New(api.Options{Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths, Events: events,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
 		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups,
-		Attachments: att, Feeds: feeds,
+		Attachments: att, Feeds: feeds, MinSuspended: -1,
 		Console: &api.Console{Environment: "test", AdminTokenMaxAge: 3600, Audience: serverAud}})
 	pulls := &fakePuller{}
 	h := serve.NewHandler(en.st, en.keys, en.blob, serve.Options{Log: slog.New(slog.DiscardHandler), Verifier: &auth.Verifier{Fetch: ks},

@@ -38,8 +38,12 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   check                                           verify the schema without changing it
   backup <file>                                   consistent copy of a SQLite store
   tenant create <name> [-display-name …] [-domain <storage domain>]
-  tenant list
+  tenant list [-state active,suspended,deleting,deleted]   every state but deleted by default
+  tenant show <name>                              its record; a deleting one's progress and keys to retire
   tenant suspend|resume <name>
+  tenant delete <name> -confirm <name>            a tenant suspended for tenants.min_suspended (spec 0019)
+  tenant reap <name> [-force]                     remove a deleting tenant's rows here, after the settle period;
+                                                  -force: now, when no kista serve or other command runs
   tenant audience add|remove <tenant> <audience>   assign a token audience (server-wide)
   tenant audience list <tenant>
   issuer add <tenant> -name <n> -url <issuer> [-jwks-uri u] [-alg A]... [-require claim=value]...
@@ -352,6 +356,9 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 	fs := flag.NewFlagSet("tenant", flag.ContinueOnError)
 	display := fs.String("display-name", "", "")
 	domain := fs.String("domain", "", "")
+	confirm := fs.String("confirm", "", "")
+	force := fs.Bool("force", false, "")
+	states := fs.String("state", "", "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
@@ -365,15 +372,78 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 		a.logf("tenant create %s", t.Name)
 		fmt.Fprintln(a.out, t.ID)
 	case sub == "list" && len(pos) == 0:
-		ts_, err := a.svc.Tenants.ListTenants(ctx, a.actor)
+		var phases []string
+		if *states != "" {
+			phases = strings.Split(*states, ",")
+		}
+		ts_, err := a.svc.Tenants.ListTenants(ctx, a.actor, phases...)
 		if err != nil {
 			return err
 		}
 		a.table("NAME\tSTATE\tDOMAIN\tDISPLAY NAME\tCREATED", func(w io.Writer) {
 			for _, t := range ts_ {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", t.Name, t.State, t.StorageDomain, t.DisplayName, ts(t.CreatedAt))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", t.Name, t.Phase(), t.StorageDomain, t.DisplayName, ts(t.CreatedAt))
 			}
 		})
+	case sub == "delete" && len(pos) == 1:
+		if *confirm != pos[0] {
+			return fmt.Errorf("%w: give the tenant's name again: -confirm %s", errUsage, pos[0])
+		}
+		t, d, err := a.svc.Tenants.Delete(ctx, a.actor, pos[0], 0, a.cfg.Tenants.MinSuspended)
+		if err != nil {
+			return err
+		}
+		a.logf("tenant delete %s", t.Name)
+		fmt.Fprintf(a.out, "tenant %s is being deleted; its rows go after %s (kista serve, or kista admin tenant reap %s)\n",
+			t.Name, tenants.SettlePeriod, t.Name)
+		a.deletionKeys(d)
+		if a.cfg.GCSettings().Interval == 0 {
+			fmt.Fprintln(a.out, "gc.interval is 0: its bodies stay in storage until kista admin blob gc -apply runs")
+		}
+	case sub == "reap" && len(pos) == 1:
+		host, _ := os.Hostname()
+		r := &tenants.Reaper{Store: a.svc.Tenants.Store, Holder: fmt.Sprintf("admin/%s/%d", host, os.Getpid()),
+			Log: slog.New(slog.NewTextHandler(a.errw, nil))}
+		t, err := r.Reap(ctx, pos[0], *force)
+		if err != nil {
+			return err
+		}
+		if t.Phase() != store.TenantDeleted {
+			return fmt.Errorf("tenant %s: the deletion pass did not finish; tenant show %s says why", t.Name, t.Name)
+		}
+		a.logf("tenant reap %s", t.Name)
+		fmt.Fprintf(a.out, "tenant %s deleted\n", t.Name)
+	case sub == "show" && len(pos) == 1:
+		t, d, err := a.svc.Tenants.Show(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		line := func(k, v string) {
+			if v != "" {
+				fmt.Fprintf(a.out, "%-16s %s\n", k+":", v)
+			}
+		}
+		line("name", t.Name)
+		line("id", t.ID)
+		line("state", t.Phase())
+		line("display name", t.DisplayName)
+		line("storage domain", t.StorageDomain)
+		line("created", ts(t.CreatedAt))
+		line("suspended", tsOpt(t.SuspendedAt))
+		line("deletable from", tsOpt(tenants.DeletableAt(t, a.cfg.Tenants.MinSuspended)))
+		if d != nil {
+			line("deletion by", d.StartedBy)
+			line("deleting since", ts(d.StartedAt))
+			line("deleted", tsOpt(d.FinishedAt))
+			line("passes", strconv.FormatInt(d.Passes, 10))
+			line("rows deleted", strconv.FormatInt(d.DeletedRows, 10))
+			line("reached", d.Table)
+			line("last error", d.LastError)
+			if d.FinishedAt.IsZero() {
+				line("next attempt", tsOpt(d.NextAttemptAt))
+			}
+			a.deletionKeys(*d)
+		}
 	case sub == "audience" && len(pos) >= 2:
 		switch {
 		case pos[0] == "add" && len(pos) == 3:
@@ -1482,7 +1552,7 @@ func (a *adminCmd) events(ctx context.Context, sub string, args []string) error 
 	}
 	tenantID := audit.ServerTenant
 	if !*server {
-		t, err := a.svc.Tenants.GetTenant(ctx, a.actor, pos[0])
+		t, _, err := a.svc.Tenants.Show(ctx, a.actor, pos[0]) // spec 0019: a tombstone's events too
 		if err != nil {
 			return err
 		}
@@ -1844,4 +1914,25 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 		return errUsage
 	}
 	return nil
+}
+
+// deletionKeys prints the keys a deleted tenant leaves in its key sources, for the operator to
+// retire there (spec 0019).
+func (a *adminCmd) deletionKeys(d store.Deletion) {
+	if len(d.Keys) == 0 {
+		return
+	}
+	fmt.Fprintln(a.out, "keys to retire in their key sources:")
+	a.table("KIND\tID\tFINGERPRINT\tSIGNER", func(w io.Writer) {
+		for _, k := range d.Keys {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", k.Kind, k.ID, k.Fingerprint, k.SignerRef)
+		}
+	})
+}
+
+func tsOpt(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return ts(t)
 }

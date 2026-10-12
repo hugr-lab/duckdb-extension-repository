@@ -1,6 +1,6 @@
 # Spec 0019: Deleting a tenant
 
-- **Status**: accepted (2026-10-12)
+- **Status**: implemented (accepted 2026-10-12)
 - **Date**: 2026-10-12
 - **Author**: vgsml, Claude
 
@@ -112,10 +112,11 @@ others reference. It also means an older binary sees the tenant as suspended, an
   - `GET /api/v1/tenants/{t}/events[/{id}]`;
   - `DELETE /api/v1/tenants/{t}` (`409 conflict`, "the tenant is being deleted" or "the tenant
     was deleted").
-- **CLI.** The services return `ErrDeleting` for reads and writes of a deleting or deleted tenant.
-  The exceptions are `tenant show`, `tenant reap` and `events list`. The CLI prints "the tenant is
-  being deleted" or "the tenant was deleted". The API maps `ErrDeleting` to `409 conflict`, which
-  it can only meet in a race.
+- **CLI.** The services return `ErrDeleting` or `ErrDeleted` for reads and writes of a deleting or
+  deleted tenant. The exceptions are `tenant show`, `tenant reap` and `events list`. The CLI prints
+  "the tenant is being deleted" or "the tenant was deleted". Both errors are an `ErrNotFound`, so
+  the API answers what it answers for an unknown tenant even in a race with the deletion: a `409`
+  would tell a tenant principal with a request in flight that the deletion started.
 - **Listings.**
   - `ListTenants` takes a state filter. Listings default to every state but `deleted`.
   - The event sinks' name resolver keeps resolving tombstones, because the tenant's remaining
@@ -138,11 +139,13 @@ others reference. It also means an older binary sees the tenant as suspended, an
   before the delete, and upstream cells mid-flight, are long done by then.
   Their writes are refused anyway. The settle period only keeps the reaper from deleting under
   them.
-- **Runs in progress.** While an upstream's or a feed's lease (`kista/upstream/<id>`,
-  `kista/feed/<id>`) is still held, the reaper leaves that upstream or feed for the next pass. It
-  deletes an expired lease row together with its upstream or feed: `kista/feed/<id>`,
-  `kista/upstream/<id>`, and the pull-through cell leases under `kista/upstream/<id>/`. With the
-  channels it deletes `resign/<channel id>`.
+- **Runs in progress.** While a run lease of the tenant is held (`kista/upstream/<id>`,
+  `kista/feed/<id>`, `resign/<channel id>`), the pass waits: it is put off a minute, which is a
+  pause, not a failure. A run in progress stops on its own: an upstream run checks the tenant with
+  every cell and stops at the first refused write, a feed run at its first write. Before the rows go
+  the reaper deletes the expired run leases. The deletion record keeps the tenant's upstream and
+  feed run leases, known for good once it is deleting, and the tombstone transaction deletes them
+  and the pull-through cell leases under `kista/upstream/<id>/`, held or not.
 - **Order**, children before parents. Cascading children are deleted explicitly first, so that a
   batch stays bounded.
   1. feeds: `feed_cursors`, `feed_channels`, `feed_keys`, `feeds`, and their lease rows;
@@ -156,8 +159,8 @@ others reference. It also means an older binary sees the tenant as suspended, an
      `upstream_keys`, `upstreams`, and their lease rows;
   9. `shadows`, `blocks`;
   10. `UPDATE channels SET serving_key_id = NULL` for the tenant's channels;
-  11. `release_signatures`, `releases`, `purged_slots` (by the channel ids in the deletion
-      record), `builds`;
+  11. `release_signatures` (by the tenant's keys), `releases` (by its channels), `purged_slots` (by
+      the channel ids in the deletion record), `builds`: each through an indexed column;
   12. `key_events`, `channel_keys`;
   13. `channel_duckdb_versions`, `channels`;
   14. `download_counts`, `download_installers`;
@@ -181,7 +184,9 @@ others reference. It also means an older binary sees the tenant as suspended, an
 - **Progress.** `tenant_deletions` records the reaper's state: passes, the current table, rows
   deleted so far, the last error's class, and the time of the next attempt.
 - **Failures.**
-  - After a failed pass the next attempt waits 1 minute, doubling up to 1 hour.
+  - After a failed pass the next attempt waits 1 minute, doubling with each failure in a row, at
+    most 1 hour. A pause, or a pass a shutdown interrupted, is not a failure.
+  - A failure is not recorded on a deletion another reaper finished meanwhile.
   - `tenant.purge` with outcome `failed` is written on the first failure and when the error class
     changes, not on every pass.
 - **A late sweep.** For seven days after a tombstone, the reaper checks it once an hour. Rows found
@@ -274,8 +279,10 @@ to download, and `blob verify` (spec 0018) reports them. After a restore, the op
   - `GET /api/v1/tenants?state=` filters the list.
 - **Console**
   - On the server's view of a suspended tenant: **Delete…**, enabled from `deletable_at`. Its
-    dialog lists the keys to retire and asks for the tenant's name typed in full, as the release
-    purge dialog does.
+    dialog says what goes and that the keys are to be retired in their sources, and asks for the
+    tenant's name typed in full, as the release purge dialog does. The deletion view then lists
+    the keys. A tenant an older version suspended (no `deletable_at`) gets a note: resume it and
+    suspend it again.
   - A deleting or deleted tenant shows a deletion view instead of the tenant's screens, which
     would all answer `404`. The view shows the state, when it started and by whom, the progress,
     the last error and the keys.
@@ -284,7 +291,9 @@ to download, and `blob verify` (spec 0018) reports them. After a restore, the op
     `config.Default()` as the rotation minimums are. Outside `profile: dev` it is at least `24h`;
     in dev it may be `0`. A negative value is refused.
   - The process that takes the delete applies its own value, so `kista admin` and `kista serve`
-    should share the configuration.
+    should share the configuration. `server.start` digests the `tenants` section with the other
+    security-relevant ones (spec 0010): lowering the minimum shows.
+  - An embedder of the API that leaves `api.Options.MinSuspended` out gets the 7 days, not none.
 
 ### Events
 
@@ -308,9 +317,9 @@ tombstone. Spec 0010's catalogue and the coverage test gain:
     `CURRENT_TIMESTAMP` is not).
 - `tenant_deletions`, one row per deletion:
   - `tenant_id` (primary key, references `tenants`), `started_at`, `started_by` (`varchar(400)`),
-    `keys` and `channel_ids` (JSON text);
-  - the progress: `passes`, `current_table`, `deleted_rows`, `last_error`, `next_attempt_at`,
-    `finished_at`, `last_checked_at`.
+    `keys`, `channel_ids` and `run_leases` (JSON text);
+  - the progress: `passes`, `failures` (in a row), `current_table`, `deleted_rows`, `last_error`,
+    `next_attempt_at`, `finished_at`, `last_checked_at`.
 - An index on `tenants (deleting_at)` for the reaper's selection.
 - `-- +min_reader 19`.
 

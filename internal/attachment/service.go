@@ -141,7 +141,7 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant, ext string,
 	if err := s.Blob.PutAttachment(ctx, t.StorageDomain, rec.ID, in.Content); err != nil {
 		return store.Attachment{}, err
 	}
-	err = s.Store.InTx(ctx, lock(t), func(tx *store.Tx) error {
+	err = s.Store.InTenantTx(ctx, t.ID, []string{lock(t)}, func(tx *store.Tx) error {
 		held, err := tx.TouchBuild(ctx, t.ID, ext, in.BodyHash)
 		if err != nil {
 			return err
@@ -281,7 +281,7 @@ func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant, ext, id s
 		return store.Attachment{}, fmt.Errorf("%w: its source offers it to administrators only", store.ErrInvalid)
 	}
 	var out store.Attachment
-	err = s.Store.InTx(ctx, lock(t), func(tx *store.Tx) error {
+	err = s.Store.InTenantTx(ctx, t.ID, []string{lock(t)}, func(tx *store.Tx) error {
 		cur := rec // a copy: a retried transaction starts again from what was read
 		out = cur
 		v, f := cur.Visibility, cur.Feedable
@@ -356,7 +356,7 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, ext, id str
 }
 
 func (s *Service) remove(ctx context.Context, a authz.Actor, t store.Tenant, subj string, rec store.Attachment) error {
-	err := s.Store.InTx(ctx, lock(t), func(tx *store.Tx) error {
+	err := s.Store.InTenantTx(ctx, t.ID, []string{lock(t)}, func(tx *store.Tx) error {
 		// read again under the lock: a document marked feedable meanwhile is withdrawn
 		rec, err := tx.GetAttachment(ctx, t.ID, rec.ID)
 		if err != nil {

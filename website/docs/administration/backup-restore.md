@@ -178,3 +178,20 @@ A restored database is the state at the time of its backup:
   `blob verify`.
 - **Events and statistics** after the backup are lost from the database; copies sent to event sinks
   remain there.
+- **Deleted tenants** come back: see below.
+
+### A backup from before a tenant deletion
+
+Restoring a database backup taken before a tenant was
+[deleted](tenants-and-channels.md#deleting-a-tenant) brings the tenant back in the state it had
+then. If it was active, it serves again; if its deletion had started but not finished, the reaper
+carries on. Its bodies may already be collected: those releases then fail to download, and
+`blob verify` reports them as `missing`. After such a restore:
+
+1. Compare what the restored database says with what was deleted:
+   `kista admin tenant list -state deleting,deleted`, and the `tenant.delete` events kept in an
+   event sink (the database's own copies may be gone with the restore).
+2. Delete again whatever came back: suspend it, and delete it once `tenants.min_suspended` has
+   passed. The restored `suspended_at`, if the tenant was already suspended, counts.
+3. Run `kista admin blob verify` (above), and repair or yank what it reports for the tenants that
+   stay.

@@ -15,6 +15,9 @@ import (
 const (
 	TenantActive    = "active"
 	TenantSuspended = "suspended"
+	// spec 0019: phases, not values of the state column (a deleting tenant stays suspended)
+	TenantDeleting = "deleting"
+	TenantDeleted  = "deleted"
 )
 
 // Channel kinds.
@@ -37,6 +40,32 @@ type Tenant struct {
 	AuthVersion                  int64  // bumped by every issuer, audience and grant change (spec 0006)
 	CreatedAt                    time.Time
 	Version                      int64
+	// spec 0019: when it was suspended (zero while active, and for one an older binary suspended),
+	// when its deletion started, and when its tombstone was written
+	SuspendedAt, DeletingAt, DeletedAt time.Time
+}
+
+// Phase is the tenant's state as the API shows it: active, suspended, deleting or deleted (spec
+// 0019: a deleting tenant's state column stays suspended).
+func (t Tenant) Phase() string {
+	switch {
+	case !t.DeletedAt.IsZero():
+		return TenantDeleted
+	case !t.DeletingAt.IsZero():
+		return TenantDeleting
+	}
+	return t.State
+}
+
+// closed is the error for a tenant whose deletion started: nil while it is not.
+func (t Tenant) closed() error {
+	switch {
+	case !t.DeletedAt.IsZero():
+		return ErrDeleted
+	case !t.DeletingAt.IsZero():
+		return ErrDeleting
+	}
+	return nil
 }
 
 // DuckDBVersion is a DuckDB engine version: a release tag or a dev source id.
@@ -75,11 +104,12 @@ type KeyEvent struct {
 
 // --- reads (outside transactions) ---
 
-const tenantCols = "id, name, display_name, state, storage_domain, auth_version, created_at, version"
+const tenantCols = "id, name, display_name, state, storage_domain, auth_version, created_at, version, suspended_at, deleting_at, deleted_at"
 
 func scanTenant(r interface{ Scan(...any) error }) (Tenant, error) {
 	var t Tenant
-	err := r.Scan(&t.ID, &t.Name, &t.DisplayName, &t.State, &t.StorageDomain, &t.AuthVersion, scanTime{&t.CreatedAt}, &t.Version)
+	err := r.Scan(&t.ID, &t.Name, &t.DisplayName, &t.State, &t.StorageDomain, &t.AuthVersion, scanTime{&t.CreatedAt}, &t.Version,
+		scanTime{&t.SuspendedAt}, scanTime{&t.DeletingAt}, scanTime{&t.DeletedAt})
 	return t, err
 }
 
@@ -90,13 +120,24 @@ func notFound(err error, what string) error {
 	return err
 }
 
-// GetTenant returns a tenant by name.
+// GetTenant returns a tenant by name: ErrDeleting or ErrDeleted (both an ErrNotFound) once its
+// deletion started (spec 0019), so everything that resolves a tenant by name treats it as gone.
 func (s *Store) GetTenant(ctx context.Context, name string) (Tenant, error) {
+	t, err := s.GetTenantAny(ctx, name)
+	if err == nil {
+		err = t.closed()
+	}
+	return t, err
+}
+
+// GetTenantAny returns a tenant by name in any phase, a deleting or deleted one included: for the
+// few readers spec 0019 lets see one (a server administrator's view, its events, the reaper).
+func (s *Store) GetTenantAny(ctx context.Context, name string) (Tenant, error) {
 	t, err := scanTenant(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+tenantCols+" FROM tenants WHERE name = ?"), name))
 	return t, notFound(err, "tenant "+name)
 }
 
-// ListTenants returns all tenants by name.
+// ListTenants returns all tenants by name, in every phase: callers filter by Phase.
 func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT "+tenantCols+" FROM tenants ORDER BY name")
 	if err != nil {
@@ -177,17 +218,29 @@ func scanChannel(r interface{ Scan(...any) error }) (Channel, error) {
 	return c, err
 }
 
-// GetChannel returns a channel by tenant and channel name.
+// GetChannel returns a channel by tenant and channel name; none of a tenant whose deletion started.
 func (s *Store) GetChannel(ctx context.Context, tenant, channel string) (Channel, error) {
 	c, err := scanChannel(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+channelCols+
-		" FROM channels c JOIN tenants t ON t.id = c.tenant_id WHERE t.name = ? AND c.name = ?"), tenant, channel))
-	return c, notFound(err, "channel "+tenant+"/"+channel)
+		" FROM channels c JOIN tenants t ON t.id = c.tenant_id WHERE t.name = ? AND c.name = ? AND t.deleting_at IS NULL"), tenant, channel))
+	return c, s.closedOr(ctx, tenant, notFound(err, "channel "+tenant+"/"+channel))
+}
+
+// closedOr is err, or for a missing row of a tenant whose deletion started, ErrDeleting or
+// ErrDeleted (both an ErrNotFound): what the caller is told is the tenant's phase.
+func (s *Store) closedOr(ctx context.Context, tenant string, err error) error {
+	if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	if t, terr := s.GetTenantAny(ctx, tenant); terr == nil && t.closed() != nil {
+		return t.closed()
+	}
+	return err
 }
 
 // ListChannels returns a tenant's channels by name.
 func (s *Store) ListChannels(ctx context.Context, tenant string) ([]Channel, error) {
 	rows, err := s.db.QueryContext(ctx, s.d.rebind("SELECT "+channelCols+
-		" FROM channels c JOIN tenants t ON t.id = c.tenant_id WHERE t.name = ? ORDER BY c.name"), tenant)
+		" FROM channels c JOIN tenants t ON t.id = c.tenant_id WHERE t.name = ? AND t.deleting_at IS NULL ORDER BY c.name"), tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -303,16 +356,44 @@ func (t *Tx) CreateTenant(ctx context.Context, tn *Tenant) error {
 	return t.s.mapErr(err, "tenant "+tn.Name)
 }
 
-// GetTenant reads a tenant inside the transaction.
+// GetTenant reads a tenant inside the transaction: ErrDeleting or ErrDeleted once its deletion
+// started, as Store.GetTenant.
+// It holds the row with a shared lock until commit (spec 0019: the deletion transition waits for
+// the transaction, so a write it makes never lands after the tenant closed).
 func (t *Tx) GetTenant(ctx context.Context, name string) (Tenant, error) {
-	tn, err := scanTenant(t.queryRow(ctx, "SELECT "+tenantCols+" FROM tenants WHERE name = ?", name))
+	return t.getTenant(ctx, "name = ?", name, false)
+}
+
+// GetTenantForUpdate is GetTenant for a transaction that then updates the tenant row: an update
+// lock, so two such transactions never deadlock upgrading a shared one.
+func (t *Tx) GetTenantForUpdate(ctx context.Context, name string) (Tenant, error) {
+	return t.getTenant(ctx, "name = ?", name, true)
+}
+
+// GetTenantAnyForUpdate reads a tenant by name in any phase, under an update lock: for the
+// deletion's own transition.
+func (t *Tx) GetTenantAnyForUpdate(ctx context.Context, name string) (Tenant, error) {
+	tn, err := scanTenant(t.queryRow(ctx, t.lockedTenantQuery("SELECT "+tenantCols+" FROM tenants", "name = ?", true), name))
 	return tn, notFound(err, "tenant "+name)
 }
 
-// SetTenantState changes a tenant's state if its version is still tn.Version.
+func (t *Tx) getTenant(ctx context.Context, where string, arg any, forUpdate bool) (Tenant, error) {
+	tn, err := scanTenant(t.queryRow(ctx, t.lockedTenantQuery("SELECT "+tenantCols+" FROM tenants", where, forUpdate), arg))
+	if err == nil {
+		err = tn.closed()
+	}
+	return tn, notFound(err, "tenant")
+}
+
+// SetTenantState changes a tenant's state if its version is still tn.Version and its deletion has
+// not started: suspending sets suspended_at, resuming clears it (spec 0019).
 func (t *Tx) SetTenantState(ctx context.Context, tn *Tenant, state string) error {
-	return t.cas(ctx, "UPDATE tenants SET state = ?, version = version + 1 WHERE id = ? AND version = ?",
-		[]any{state, tn.ID, tn.Version}, func() { tn.State = state; tn.Version++ })
+	var at time.Time
+	if state == TenantSuspended {
+		at = t.Now()
+	}
+	return t.cas(ctx, "UPDATE tenants SET state = ?, suspended_at = ?, version = version + 1 WHERE id = ? AND version = ? AND deleting_at IS NULL",
+		[]any{state, t.s.d.nullTimeArg(at), tn.ID, tn.Version}, func() { tn.State = state; tn.SuspendedAt = at; tn.Version++ })
 }
 
 // cas runs a compare-and-set update: exactly one row must change.
@@ -368,6 +449,9 @@ func (t *Tx) CreateChannel(ctx context.Context, c *Channel) error {
 func (t *Tx) GetChannel(ctx context.Context, tenant, channel string) (Channel, error) {
 	c, err := scanChannel(t.queryRow(ctx, "SELECT "+channelCols+
 		" FROM channels c JOIN tenants t ON t.id = c.tenant_id WHERE t.name = ? AND c.name = ?", tenant, channel))
+	if err == nil {
+		err = t.WritableTenant(ctx, c.TenantID, false) // spec 0019: the tenant held open until commit
+	}
 	return c, notFound(err, "channel "+tenant+"/"+channel)
 }
 

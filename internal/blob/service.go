@@ -299,7 +299,7 @@ func (s *Service) MissingDomains(ctx context.Context) ([]string, error) {
 	}
 	var out []string
 	for _, t := range ts {
-		if !s.HasDomain(t.StorageDomain) {
+		if !s.HasDomain(t.StorageDomain) && t.DeletedAt.IsZero() { // a tombstone's domain may leave the configuration
 			out = append(out, t.Name)
 		}
 	}

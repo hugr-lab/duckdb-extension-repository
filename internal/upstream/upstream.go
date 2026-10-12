@@ -202,7 +202,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 			return u, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 		}
 	}
-	err = s.Store.InTx(ctx, store.TenantUpstreamLock(t.ID), func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
 		if _, err := tx.GetUpstream(ctx, t.ID, u.Name); err == nil {
 			return fmt.Errorf("%w: upstream %s", store.ErrExists, u.Name)
 		} else if !errors.Is(err, store.ErrNotFound) {
@@ -477,7 +477,7 @@ func (s *Service) change(ctx context.Context, a authz.Actor, tenant, name string
 		return store.Upstream{}, err
 	}
 	var u store.Upstream
-	err = s.Store.InTx(ctx, store.TenantUpstreamLock(t.ID), func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
 		if u, err = tx.GetUpstream(ctx, t.ID, name); err != nil {
 			return err
 		}
@@ -514,7 +514,7 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string
 	if err != nil {
 		return err
 	}
-	return s.Store.InTx(ctx, store.TenantUpstreamLock(t.ID), func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
 		u, err := tx.GetUpstream(ctx, t.ID, name)
 		if err != nil {
 			return err
@@ -660,7 +660,7 @@ func (s *Service) Sync(ctx context.Context, a authz.Actor, tenant, name string, 
 		return store.Upstream{}, err
 	}
 	var u store.Upstream
-	err = s.Store.InTx(ctx, store.TenantUpstreamLock(t.ID), func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
 		if u, err = tx.GetUpstream(ctx, t.ID, name); err != nil {
 			return err
 		}
@@ -783,7 +783,7 @@ func (s *Service) RemoveShadow(ctx context.Context, a authz.Actor, tenant, name 
 	if err != nil {
 		return err
 	}
-	return s.Store.InTx(ctx, store.TenantUpstreamLock(t.ID), func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
 		if err := tx.DeleteShadow(ctx, t.ID, name); err != nil {
 			return err
 		}

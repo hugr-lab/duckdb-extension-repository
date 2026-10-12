@@ -138,14 +138,18 @@ kista admin -config kista.yaml version add v2.0.0 -kind release -c-api v1.5.6 -c
 
 | Command | What it does | Output |
 | --- | --- | --- |
-| `tenant create <name> [-display-name <text>] [-domain <storage domain>]` | creates a tenant; without `-domain` it lives in `default`; the domain must be configured and never changes | the tenant id |
-| `tenant list` | `NAME`, `STATE`, `DOMAIN`, `DISPLAY NAME`, `CREATED` | |
-| `tenant suspend <name>`, `tenant resume <name>` | a suspended tenant is served nothing and its API answers `404` except to server administrators | |
+| `tenant create <name> [-display-name <text>] [-domain <storage domain>]` | creates a tenant; without `-domain` it lives in `default`; the domain must be configured and never changes; a deleted tenant's name is refused | the tenant id |
+| `tenant list [-state <s>,…]` | the tenants in the given states (`active`, `suspended`, `deleting`, `deleted`); by default every state but `deleted` | `NAME`, `STATE`, `DOMAIN`, `DISPLAY NAME`, `CREATED` |
+| `tenant show <name>` | a tenant in any state: its record, and when a suspended one becomes deletable; for a deleting or deleted one, who started the deletion and when, its progress, the last error and the keys to retire | `name:`, `state:`, `deletable from:`, `deletion by:`, … one per line |
+| `tenant suspend <name>`, `tenant resume <name>` | a suspended tenant is served nothing and its API answers `404` except to server administrators; both are refused once a deletion started | |
+| `tenant delete <name> -confirm <name>` | deletes a tenant suspended for at least `tenants.min_suspended`; the name is given twice; cannot be undone; warns when `gc.interval` is `0` | the keys to retire in their key sources (`KIND`, `ID`, `FINGERPRINT`, `SIGNER`) |
+| `tenant reap <name> [-force]` | removes a deleting tenant's rows in this process and writes its tombstone; refused before the settle period (2 hours after the delete) ends, saying how long remains; `-force` skips the wait, only when no `kista serve` and no other command runs | `tenant <name> deleted` |
 | `tenant audience add <tenant> <audience>` | assigns an extra token audience; unique across tenants; needs `serve.public_url` | |
 | `tenant audience remove <tenant> <audience>` | removes one | |
 | `tenant audience list <tenant>` | the assigned audiences, one per line | |
 
-See [Tenants and channels](tenants-and-channels.md).
+See [Tenants and channels](tenants-and-channels.md) and
+[Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
 ## Channels
 
@@ -300,7 +304,8 @@ kista admin -config kista.yaml events list [-server] [-kind <k>] [-subject <pref
   [-since <RFC 3339>] [-limit <n>] [-follow] [-format table|jsonl] [<tenant>]
 ```
 
-Give exactly one of `-server` (the server's own events) or a tenant. Newest first; `-limit`
+Give exactly one of `-server` (the server's own events) or a tenant; a deleting or deleted tenant's
+events are read too. Newest first; `-limit`
 defaults to 100. Table columns: `AT`, `KIND`, `OUTCOME`, `ACTOR`, `SUBJECT`, `DATA`. `-format jsonl`
 prints one JSON object per event. `-follow` prints oldest first from `-since` (default: one minute
 ago), polls every two seconds and runs until interrupted. See [Observability](../observability.md).
