@@ -134,7 +134,8 @@ others reference. It also means an older binary sees the tenant as suspended, an
 - **Version gate.** A replica reaps only when the database's schema level equals the binary's own.
   An older binary does not know a newer table, and must not write a tombstone over it.
 - **Settle period.** Two hours after `deleting_at`, by the reaper's clock: twice the intake
-  deadline of spec 0016, which also leaves room for clock skew between replicas. Uploads spooled before the delete, and upstream cells mid-flight, are long done by then.
+  deadline of spec 0016, which also leaves room for clock skew between replicas. Uploads spooled
+  before the delete, and upstream cells mid-flight, are long done by then.
   Their writes are refused anyway. The settle period only keeps the reaper from deleting under
   them.
 - **Runs in progress.** While an upstream's or a feed's lease (`kista/upstream/<id>`,
