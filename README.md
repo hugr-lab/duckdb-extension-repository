@@ -28,4 +28,6 @@ every byte verified (spec 0005; Google Cloud Storage follows); releases in signe
 `kista serve`, with key rotation that re-signs, Bearer tokens from each tenant's own issuers, and
 grants for private extensions (spec 0006). See `specs/`. Enterest is the hosted service built on kista.
 
+Documentation: https://hugr-lab.github.io/duckdb-extension-repository/ (the source is in `website/`).
+
 Licensed under the Apache License, Version 2.0.

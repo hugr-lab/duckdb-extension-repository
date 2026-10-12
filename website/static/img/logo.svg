@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="kista">
+  <!-- a chest: lid, body, band and lock -->
+  <path d="M8 26 Q8 12 32 12 Q56 12 56 26 Z" fill="#20908a"/>
+  <rect x="8" y="28" width="48" height="26" rx="3" fill="#1c7d78"/>
+  <rect x="8" y="34" width="48" height="4" fill="#145854"/>
+  <rect x="27" y="30" width="10" height="12" rx="2" fill="#f2c94c"/>
+  <circle cx="32" cy="35" r="1.8" fill="#145854"/>
+</svg>

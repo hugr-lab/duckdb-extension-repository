@@ -172,7 +172,8 @@ func (s *Service) ActivateAttestation(ctx context.Context, a authz.Actor, tenant
 	return s.changeAttestation(ctx, a, tenant, keyRef, expected, force, true)
 }
 
-// RetireAttestation retires a trusted attestation key: it is no longer published.
+// RetireAttestation retires a trusted attestation key: it signs no more statements, and stays listed
+// (with its state) so a subscriber that pinned it can still check what it signed.
 func (s *Service) RetireAttestation(ctx context.Context, a authz.Actor, tenant, keyRef string, expected int64, force bool) (store.Key, error) {
 	return s.changeAttestation(ctx, a, tenant, keyRef, expected, force, false)
 }
