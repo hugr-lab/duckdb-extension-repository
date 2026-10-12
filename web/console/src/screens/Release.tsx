@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Badge, Button, Card, Confirm, ErrorBox, Loading, Mono, PageTitle, when } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
+import { Reports } from './Reports'
 import type { Release as R } from './types'
 
 type Change = 'yank' | 'deprecate' | 'activate' | 'current' | 'public' | 'private' | 'purge'
@@ -105,6 +106,7 @@ export function Release() {
           <pre className="m-0 overflow-x-auto rounded-md bg-surface-soft p-4 font-mono text-[13px]">{JSON.stringify(r.provenance, null, 2)}</pre>
         </Card>
       )}
+      <Reports ext={r.name} body={r.body_hash} />
       <Confirm
         open={pending !== null}
         title={`${pending ?? ''} ${r.name} ${r.version} (${r.platform})`}

@@ -22,7 +22,7 @@ type Store interface {
 	// Stat returns an object's size, or ErrNotFound.
 	Stat(ctx context.Context, key string) (int64, error)
 	Delete(ctx context.Context, key string) error
-	// List calls fn for every object under prefix ("streams/" or "tmp/").
+	// List calls fn for every object under prefix ("streams/", "tmp/" or "attachments/").
 	List(ctx context.Context, prefix string, fn func(key string, size int64, modified time.Time) error) error
 	// Anonymous reports whether key can be read without credentials (a public store), when the
 	// backend can tell; ok is false when it cannot.
@@ -45,12 +45,14 @@ const MarkerKey = "kista-domain.json"
 var (
 	streamKey = regexp.MustCompile(`^streams/[0-9a-f]{64}$`)
 	tmpKey    = regexp.MustCompile(`^tmp/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	attachKey = regexp.MustCompile(`^attachments/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	prefixRe  = regexp.MustCompile(`^([a-z0-9][a-z0-9_-]{0,62}/){0,4}$`)
 )
 
-// ValidKey checks a key against the grammar: streams/<64 hex>, tmp/<uuid>, or the marker.
+// ValidKey checks a key against the grammar: streams/<64 hex>, tmp/<uuid>, attachments/<uuid> (spec
+// 0011), or the marker.
 func ValidKey(key string) error {
-	if key == MarkerKey || streamKey.MatchString(key) || tmpKey.MatchString(key) {
+	if key == MarkerKey || streamKey.MatchString(key) || tmpKey.MatchString(key) || attachKey.MatchString(key) {
 		return nil
 	}
 	return fmt.Errorf("%w: %q", ErrKey, key)
@@ -58,7 +60,7 @@ func ValidKey(key string) error {
 
 // ValidListPrefix checks a List prefix.
 func ValidListPrefix(p string) error {
-	if p == "streams/" || p == "tmp/" {
+	if p == "streams/" || p == "tmp/" || p == "attachments/" {
 		return nil
 	}
 	return fmt.Errorf("%w: list prefix %q", ErrKey, p)
@@ -71,6 +73,9 @@ func ValidPrefix(p string) error {
 	}
 	return nil
 }
+
+// AttachmentKey is the key of an attachment's content (spec 0011): its record's id.
+func AttachmentKey(id string) string { return "attachments/" + id }
 
 // StreamKey is the key of a stream.
 func StreamKey(streamHash string) string { return "streams/" + streamHash }

@@ -2,6 +2,7 @@ package blob
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -33,6 +34,8 @@ type Options struct {
 	MaxBody    int64  // the largest body accepted
 	MaxIngests int    // concurrent spools
 	Log        *slog.Logger
+	// MaxAttachmentReads is how many documents (spec 0011) are held in memory at once (default 8).
+	MaxAttachmentReads int
 }
 
 // Service stores and serves extension bodies.
@@ -41,6 +44,7 @@ type Service struct {
 	domains map[string]Domain
 	spool   *os.Root
 	sem     chan struct{}
+	reads   chan struct{} // documents held in memory (spec 0011)
 	maxBody int64
 	log     *slog.Logger
 
@@ -94,7 +98,8 @@ func NewService(ctx context.Context, st *store.Store, domains []Domain, o Option
 		o.Log = slog.Default()
 	}
 	s := &Service{st: st, domains: map[string]Domain{}, sem: make(chan struct{}, o.MaxIngests), maxBody: o.MaxBody,
-		log: o.Log, cache: map[cacheKey]cached{}}
+		reads: make(chan struct{}, cmp.Or(max(o.MaxAttachmentReads, 0), 8)),
+		log:   o.Log, cache: map[cacheKey]cached{}}
 	for i, d := range domains {
 		if err := store.ValidDomain(d.Name); err != nil {
 			return nil, err

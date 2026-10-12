@@ -5,6 +5,7 @@ import { useLoad, usePaged, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
 import { WhoMayUse } from './Access'
 import { Keys } from './Keys'
+import { Reports } from './Reports'
 import type { Release } from './types'
 
 // DuckDB's platforms (spec 0006's grammar names more; these are the ones DuckDB builds).
@@ -227,6 +228,7 @@ export function Extension() {
       <PageTitle eyebrow={<><Link to={`${base}/channels`} className="no-underline">Channels</Link> / <Link to={`${base}/channels/${seg(c)}`} className="no-underline">{c}</Link></>}
         title={<span className="font-mono">{ext}</span>} />
       <ReleaseList channel={c} ext={ext} />
+      <Reports key={ext} ext={ext} />
       {perms.tenantAdmin && <WhoMayUse key={`${c}/${ext}`} channel={c} ext={ext} />}
     </>
   )

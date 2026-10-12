@@ -293,6 +293,9 @@ type releaseOut struct {
 	Shadows       string      `json:"shadows,omitempty"`    // a reserved name's owner (spec 0008)
 	Blocked       bool        `json:"blocked,omitempty"`    // a yanked row whose body is blocked
 	Provenance    any         `json:"provenance,omitempty"` // for the extension's administrators and publishers
+	// spec 0011: per kind, the readers-visible documents of the body: their count and latest summary
+	Attachments map[string]*kindSummary `json:"attachments,omitempty"`
+	latestAt    map[string]time.Time
 }
 
 func gzName(name string) string { return name + ".duckdb_extension.gz" }
@@ -447,6 +450,14 @@ func (h *Handler) extension(w http.ResponseWriter, r *http.Request, c caller, p 
 	if version != "" {
 		rows = slices.DeleteFunc(rows, func(o releaseOut) bool { return !o.reaches(version) })
 	}
+	ptrs := make([]*releaseOut, len(rows))
+	for i := range rows {
+		ptrs[i] = &rows[i]
+	}
+	if err := h.withAttachments(r, c, name, ptrs...); err != nil {
+		h.fail(w, err)
+		return
+	}
 	// an unknown name, or one outside the view, is no rows: the same answer
 	answer(w, r, map[string]any{"name": name, "releases": nonNil(rows)}, c.anonymous())
 }
@@ -479,14 +490,27 @@ func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, p param
 			}
 		}
 	}
+	ptrs := make([]*releaseOut, 0, len(yanked)+1)
+	for i := range yanked {
+		ptrs = append(ptrs, &yanked[i])
+	}
 	switch best := rs.versionedOf(version, platform, name, extVersion, false); {
 	case best != nil:
 		out["status"] = map[string]string{store.ReleaseActive: "available", store.ReleaseDeprecated: "deprecated"}[best.State]
 		cur := rs.flatOf(version, platform, name)
 		out["current"] = cur != nil && cur.ID == best.ID
-		out["release"] = rs.row(best)
+		row := rs.row(best)
+		if err := h.withAttachments(r, c, name, append(ptrs, &row)...); err != nil {
+			h.fail(w, err)
+			return
+		}
+		out["release"] = row
 		out["yanked"] = nonNil(yanked)
 	case len(yanked) > 0:
+		if err := h.withAttachments(r, c, name, ptrs...); err != nil {
+			h.fail(w, err)
+			return
+		}
 		out["status"] = "yanked"
 		out["current"] = false
 		out["yanked"] = yanked

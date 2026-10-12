@@ -44,7 +44,7 @@ func TestModes(t *testing.T) {
 	if err := s.Put(context.Background(), key, strings.NewReader(string(data)), 10); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]os.FileMode{"": 0o700, "streams": 0o700, "tmp": 0o700, key: 0o600} {
+	for name, want := range map[string]os.FileMode{"": 0o700, "streams": 0o700, "tmp": 0o700, "attachments": 0o700, key: 0o600} {
 		fi, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatal(err)

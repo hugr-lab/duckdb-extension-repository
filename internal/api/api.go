@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -55,11 +56,12 @@ type Options struct {
 	Authz            authz.Authorizer
 	Tenants          *tenants.Service
 	Auth             *tenants.AuthAdmin
-	Keys             *keys.Service     // phase 3
-	Releases         *release.Service  // phase 3
-	Upstreams        *upstream.Service // spec 0009
-	Events           Recorder          // spec 0010: refusals and failures; nil: none recorded
-	AdminTokenMaxAge time.Duration     // default 1h
+	Keys             *keys.Service       // phase 3
+	Releases         *release.Service    // phase 3
+	Upstreams        *upstream.Service   // spec 0009
+	Attachments      *attachment.Service // spec 0011; nil: no attachment routes
+	Events           Recorder            // spec 0010: refusals and failures; nil: none recorded
+	AdminTokenMaxAge time.Duration       // default 1h
 	// Uploads (spec 0008): the largest file, the least read rate, and how many may run at once per
 	// principal and per tenant (defaults 2 and 8).
 	MaxBody, MinRate int64
@@ -502,6 +504,13 @@ var routes []route
 // readers may read an extension's releases: its administrators and its publishers (spec 0008).
 var readers = []authz.Verb{authz.VerbAdmin, authz.VerbPublish, authz.VerbPromote}
 
+// attachmentReaders may reach the extension's attachment routes (spec 0011; the service decides
+// exactly), attachmentWriters may attach (publishers attach an SBOM or provenance).
+var (
+	attachmentReaders = []authz.Verb{authz.VerbAdmin, authz.VerbAudit}
+	attachmentWriters = []authz.Verb{authz.VerbAdmin, authz.VerbPublish}
+)
+
 // auditors read a tenant's events (spec 0010): audit, which admin on the tenant implies.
 var auditors = []authz.Verb{authz.VerbAudit}
 
@@ -529,6 +538,22 @@ func init() {
 		{"tenants/{t}/channels/{c}/extensions", idx((*Handler).extensions)},
 		{"tenants/{t}/channels/{c}/extensions/{name}", idx((*Handler).extension)},
 		{"tenants/{t}/channels/{c}/extensions/{name}/versions/{v}", idx((*Handler).item)},
+		// spec 0011: attachments, read by readers through the index, managed under the extension
+		{"tenants/{t}/channels/{c}/extensions/{name}/attachments", idx((*Handler).indexAttachments)},
+		{"tenants/{t}/channels/{c}/extensions/{name}/attachments/{id}", idx((*Handler).indexAttachment)},
+		{"tenants/{t}/extensions/{ext}/attachments", map[string]rule{
+			http.MethodGet: {access: pathVerbs, verbs: attachmentReaders, manage: true, handle: attachmentRoute((*Handler).listAttachments)},
+			http.MethodPost: {access: pathVerbs, verbs: attachmentWriters, manage: true, raw: true, publishers: true,
+				handle: attachmentRoute((*Handler).addAttachment)}}},
+		{"tenants/{t}/extensions/{ext}/attachments/{id}", map[string]rule{
+			http.MethodGet:    {access: pathVerbs, verbs: attachmentReaders, manage: true, handle: attachmentRoute((*Handler).getAttachment)},
+			http.MethodDelete: {access: pathVerbs, verbs: attachmentReaders, manage: true, handle: attachmentRoute((*Handler).removeAttachment)}}},
+		{"tenants/{t}/extensions/{ext}/attachments/{id}/content", map[string]rule{
+			http.MethodGet: {access: pathVerbs, verbs: attachmentReaders, manage: true, handle: attachmentRoute((*Handler).attachmentContent)}}},
+		{"tenants/{t}/extensions/{ext}/attachments/{id}/{change}", map[string]rule{
+			http.MethodPost: m(pathAdmin, attachmentRoute((*Handler).changeAttachment))}},
+		{"tenants/{t}/blocks/{hash}/attachments", map[string]rule{http.MethodGet: m(pathAdmin, attachmentRoute((*Handler).blockAttachments))}},
+		{"tenants/{t}/blocks/{hash}/attachments/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, attachmentRoute((*Handler).removeBlockAttachment))}},
 		{"tenants/{t}/audiences", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listAudiences),
 			http.MethodPost: mb(serverAdmin, (*Handler).addAudience)}},
 		{"tenants/{t}/audiences/remove", map[string]rule{http.MethodPost: mb(serverAdmin, (*Handler).removeAudience)}},

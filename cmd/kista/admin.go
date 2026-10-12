@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"io"
 	"log/slog"
 	"os"
@@ -53,6 +54,11 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
             [-extension x | -extension-group g]
   grant list <tenant> [-extension-group g] [-extension x]
   grant remove <tenant> <grant-id>
+  attachment add <tenant> <extension> <file|-> -body-hash <h> -kind <k> -media-type <t> -title <t> [-supersedes <id>]
+                  a document about a body (spec 0011): sbom, vulnerabilities, review, provenance, notes
+  attachment list <tenant> <extension> [-body-hash <h>]
+  attachment show <tenant> <extension> <id> [-content]
+  attachment readers|administrators|remove <tenant> <extension> <id>
   extension-group add <tenant> <group> [-description …]   a named set of extension names (spec 0017)
   extension-group list <tenant>
   extension-group show <tenant> <group>          the group, its members, its grants
@@ -268,6 +274,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.grant(ctx, sub, args[min(2, len(args)):])
 	case "extension-group":
 		return a.extensionGroup(ctx, sub, args[min(2, len(args)):])
+	case "attachment":
+		return a.attachment(ctx, sub, args[min(2, len(args)):])
 	case "block":
 		return a.block(ctx, sub, args[min(2, len(args)):])
 	case "publisher":
@@ -852,6 +860,109 @@ func (a *adminCmd) grantTable(gs []store.Grant, group, extension string) {
 func reaches(g store.Grant, extension string) bool {
 	_, verbs := authz.Reaching(g, "", extension, reserved.Kind(extension) != "")
 	return len(verbs) > 0
+}
+
+// attachment manages documents about bodies (spec 0011).
+func (a *adminCmd) attachment(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("attachment", flag.ContinueOnError)
+	bodyHash := fs.String("body-hash", "", "")
+	kind := fs.String("kind", "", "")
+	mediaType := fs.String("media-type", "", "")
+	title := fs.String("title", "", "")
+	supersedes := fs.String("supersedes", "", "")
+	content := fs.Bool("content", false, "")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) < 2 {
+		return errUsage
+	}
+	t, ext := pos[0], pos[1]
+	withBlob := func() (func(), error) {
+		svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.NewTextHandler(a.errw, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		if err != nil {
+			return nil, err
+		}
+		a.svc.WithBlob(svc)
+		return func() { _ = svc.Close() }, nil
+	}
+	switch {
+	case sub == "add" && len(pos) == 3 && *bodyHash != "" && *kind != "" && *mediaType != "" && *title != "":
+		var b []byte
+		if pos[2] == "-" {
+			b, err = io.ReadAll(io.LimitReader(a.in, attachment.MaxConfigurableSize+1))
+		} else {
+			b, err = os.ReadFile(pos[2])
+		}
+		if err != nil {
+			return err
+		}
+		done, err := withBlob()
+		if err != nil {
+			return err
+		}
+		defer done()
+		x, err := a.svc.Attachments.Attach(ctx, a.actor, t, ext, attachment.AttachInput{BodyHash: *bodyHash, Kind: *kind,
+			MediaType: *mediaType, Title: *title, Supersedes: *supersedes, Content: b})
+		if err != nil {
+			return err
+		}
+		a.logf("attachment add %s %s %s %s", t, ext, x.Kind, x.ID)
+		fmt.Fprintln(a.out, x.ID)
+	case sub == "list" && len(pos) == 2:
+		all, err := a.svc.Attachments.List(ctx, a.actor, t, ext)
+		if err != nil {
+			return err
+		}
+		heads := map[string]bool{}
+		for _, x := range attachment.Heads(all) {
+			heads[x.ID] = true
+		}
+		a.table("ID\tBODY\tKIND\tTITLE\tORIGIN\tVISIBILITY\tHEAD\tSUMMARY", func(w io.Writer) {
+			for _, x := range all {
+				if *bodyHash != "" && x.BodyHash != *bodyHash {
+					continue
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%v\t%s\n", x.ID, x.BodyHash[:12], x.Kind, x.Title, x.Origin, x.Visibility,
+					heads[x.ID], x.Summary)
+			}
+		})
+	case sub == "show" && len(pos) == 3:
+		if *content {
+			done, err := withBlob()
+			if err != nil {
+				return err
+			}
+			defer done()
+			return a.svc.Attachments.Content(ctx, a.actor, t, ext, pos[2], func(_ store.Attachment, b []byte) error {
+				_, err := a.out.Write(b)
+				return err
+			})
+		}
+		x, err := a.svc.Attachments.Get(ctx, a.actor, t, ext, pos[2])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "%s %s %q\nbody %s\nmedia type %s, %d bytes, sha256 %s\norigin %s (%s), %s\nsummary %s\n",
+			x.ID, x.Kind, x.Title, x.BodyHash, x.MediaType, x.Size, x.ContentHash, x.Origin, x.AttachedBy, x.Visibility, x.Summary)
+	case (sub == "readers" || sub == "administrators") && len(pos) == 3:
+		v := sub
+		if _, err := a.svc.Attachments.SetFlags(ctx, a.actor, t, ext, pos[2], &v, nil, 0); err != nil {
+			return err
+		}
+		a.logf("attachment %s %s %s %s", sub, t, ext, pos[2])
+	case sub == "remove" && len(pos) == 3:
+		done, err := withBlob()
+		if err != nil {
+			return err
+		}
+		defer done()
+		if err := a.svc.Attachments.Remove(ctx, a.actor, t, ext, pos[2]); err != nil {
+			return err
+		}
+		a.logf("attachment remove %s %s %s", t, ext, pos[2])
+	default:
+		return errUsage
+	}
+	return nil
 }
 
 func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string) error {
@@ -1528,14 +1639,14 @@ func (a *adminCmd) blobGC(ctx context.Context, args []string) error {
 		domains = []string{*domain}
 	}
 	var failed []string
-	a.table("DOMAIN\tBUILDS\tBODIES\tMARKED\tSTREAMS\tTMP\tUPLOADS\tBYTES", func(w io.Writer) {
+	a.table("DOMAIN\tBUILDS\tBODIES\tMARKED\tSTREAMS\tTMP\tUPLOADS\tATTACHMENTS\tBYTES", func(w io.Writer) {
 		for _, d := range domains {
 			r, err := c.Pass(ctx, d, !*apply)
 			switch {
 			case r.Skipped:
 				fmt.Fprintf(w, "%s\tskipped: another replica is collecting it\n", d)
 			default:
-				fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", d, r.Builds, r.Bodies, r.Marked, r.Streams, r.Tmp, r.Uploads, r.Bytes)
+				fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", d, r.Builds, r.Bodies, r.Marked, r.Streams, r.Tmp, r.Uploads, r.Attachments, r.Bytes)
 			}
 			if err != nil {
 				failed = append(failed, d)

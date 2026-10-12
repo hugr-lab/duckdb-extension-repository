@@ -36,6 +36,24 @@ describe('Client', () => {
     expect(calls[0].init.body).toBe('{"a":1}')
   })
 
+  it('sends a raw document with its type; extra headers never replace the token; a blob is bytes', async () => {
+    const calls = stub([201, 200])
+    const c = new Client({ base: '/api/v1', prefix: '/tenants/acme/', getToken: async () => 't1' })
+    const doc = new Blob(['{"bomFormat":"CycloneDX"}'])
+    await c.post('/tenants/acme/extensions/x/attachments', {
+      raw: { body: doc, type: 'application/vnd.cyclonedx+json' },
+      headers: { 'Kista-Title': 'SBOM', Authorization: 'Bearer forged', authorization: 'Bearer forged', 'content-type': 'text/html' },
+    })
+    const h = calls[0].init.headers as Record<string, string>
+    expect(h.Authorization).toBe('Bearer t1')
+    expect(h['Content-Type']).toBe('application/vnd.cyclonedx+json')
+    expect(h['Kista-Title']).toBe('SBOM')
+    expect(Object.keys(h).filter((k) => k.toLowerCase() === 'authorization' || k.toLowerCase() === 'content-type')).toEqual(['Authorization', 'Content-Type'])
+    expect(calls[0].init.body).toBe(doc)
+    const b = await c.blob('/tenants/acme/extensions/x/attachments/1/content')
+    expect(await b.text()).toBe('{"ok":true}')
+  })
+
   it('never sends a token outside its scope', async () => {
     const calls = stub([200])
     const c = new Client({ base: '/api/v1', prefix: '/tenants/acme/', getToken: async () => 't1' })

@@ -408,7 +408,7 @@ application follows. This is the same shape as tresor-server.
 | tenants, channels, keys, upstreams, mirror, pull-through | developer cabinet, publisher sign-up, cross-tenant publisher identity |
 | publication, promotion, trusted publishing, API keys, yank, block | Extension Intelligence: builds from source, analysis, reports |
 | grants, audit, per-tenant statistics | global download and usage statistics |
-| attachments, the attachment feed client | the report feed and subscriptions |
+| attachments, the feed (serving and pulling signed statements, spec 0011) | the review analysis, its subscriptions and content |
 | licence keys, entitlements, tokens; the licensing SDK | marketplace and billing for paid extensions |
 | administration console, built as a micro-frontend | the cabinet and report views, also micro-frontends |
 | bundles for air-gapped sites, deployment artifacts | managed Azure / sovereign-cloud operations |
@@ -532,7 +532,7 @@ particular:
 | 0008 | Publication and promotion: API keys, trusted publishing, init-symbol check, reserved names, block (yank is in 0006) |
 | 0009 | Upstreams: core / community / repository / `enterest`, intake, mirror, pull-through, passthrough channels |
 | 0010 | Audit: hash chain, export, sinks, per-tenant statistics, serve-path events |
-| 0011 | Attachments and the feed from Enterest |
+| 0011 | Attachments and the feed (Enterest is one source) |
 | 0012 | Licensing: licence keys, entitlements, tokens, the SDK (C++, for DuckDB extensions) |
 | 0013 | Deployment: image, Helm, Bicep, Azure Marketplace managed application |
 | 0014 | Bundles for air-gapped sites |

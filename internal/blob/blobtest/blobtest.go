@@ -164,7 +164,7 @@ func Run(t *testing.T, h Harness) {
 		s := h.New(t)
 		bad := []string{"", "streams/", "streams/ABC", "streams/" + strings.Repeat("A", 64),
 			"streams/../" + strings.Repeat("a", 64), "/streams/" + strings.Repeat("a", 64),
-			"tmp/x", "other/" + strings.Repeat("a", 64), "streams/" + strings.Repeat("a", 64) + "/x",
+			"tmp/x", "attachments/x", "attachments/" + strings.Repeat("a", 64), "other/" + strings.Repeat("a", 64), "streams/" + strings.Repeat("a", 64) + "/x",
 			"Kista-domain.json", "kista-domain.json/"}
 		for _, k := range bad {
 			if err := s.Put(ctx, k, strings.NewReader("x"), 1); !errors.Is(err, blob.ErrKey) {
@@ -265,6 +265,27 @@ func Run(t *testing.T, h Harness) {
 		stop := errors.New("stop")
 		if err := s.List(ctx, "tmp/", func(string, int64, time.Time) error { return stop }); !errors.Is(err, stop) {
 			t.Fatalf("list did not return the callback's error: %v", err)
+		}
+	})
+
+	t.Run("list attachments", func(t *testing.T) { // spec 0011
+		s := h.New(t)
+		key := "attachments/" + uuid.NewString()
+		if err := s.Put(ctx, key, strings.NewReader("doc"), 3); err != nil {
+			t.Fatal(err)
+		}
+		var found []string
+		if err := s.List(ctx, "attachments/", func(k string, size int64, _ time.Time) error {
+			if size != 3 {
+				t.Errorf("%s: size %d", k, size)
+			}
+			found = append(found, k)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(found) != 1 || found[0] != key {
+			t.Fatalf("listed %v", found)
 		}
 	})
 

@@ -117,3 +117,39 @@ test('an ended session signs in again in a popup and keeps what was typed', asyn
   await expect(page.getByText('Your session has ended')).toHaveCount(0)
   await expect(page.getByLabel('actor')).toHaveValue('kept while signing in again')
 })
+
+test('a tenant administrator attaches an SBOM and reads its summary (spec 0011)', async ({ page }) => {
+  await signInTenant(page, 'tom')
+  await page.getByRole('link', { name: 'prod' }).click()
+  await page.getByRole('link', { name: 'hello_acme' }).click()
+  await page.getByRole('table').getByRole('link').first().click()
+  await expect(page.getByRole('heading', { name: /^hello_acme / })).toBeVisible()
+  await expect(page.getByText('No documents.')).toBeVisible()
+  await page.getByRole('button', { name: 'Attach' }).click()
+  await page.getByLabel('Title').fill('SBOM <b>build</b>')
+  await page.getByLabel('Document').setInputFiles({
+    name: 'sbom.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from('{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library"},{"type":"library"}]}'),
+  })
+  await page.getByRole('button', { name: 'Attach' }).last().click()
+  await expect(page.getByText('cyclonedx 1.6, 2 components')).toBeVisible()
+  await expect(page.getByText('SBOM <b>build</b>')).toBeVisible() // text, never markup
+  await expect(page.getByRole('cell', { name: 'administrators' })).toBeVisible()
+  // shown to readers: the console says where the body is served publicly first
+  await page.getByRole('button', { name: 'Show to readers' }).click()
+  await expect(page.getByRole('dialog').getByText(/Served publicly in prod/)).toBeVisible()
+  await page.getByRole('dialog').getByRole('button', { name: 'show to readers' }).click()
+  await expect(page.getByRole('cell', { name: 'readers', exact: true })).toBeVisible()
+  // a download is a file, saved with the download attribute
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Download' }).click()
+  expect((await download).suggestedFilename()).toMatch(/\.json$/)
+  await page.getByRole('button', { name: 'Remove' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'remove' }).click()
+  await expect(page.getByText('No documents.')).toBeVisible()
+  await page.getByRole('link', { name: 'Events' }).click()
+  await expect(page.getByRole('cell', { name: 'attachment.add' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'attachment.change' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'attachment.remove' })).toBeVisible()
+})
