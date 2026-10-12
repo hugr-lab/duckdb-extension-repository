@@ -311,24 +311,38 @@ func TestRemovedSink(t *testing.T) {
 	if e, _ := st.GetEvent(ctx, acme.ID, ev); e.Pending != 1 {
 		t.Fatalf("old's bit: %+v", e)
 	}
-	run := func() {
+	// run runs a manager until done reports true (nil: for a few refreshes); the work is a few
+	// commits that share SQLite's one writer with the sink's sender, so it is waited for, not timed
+	run := func(window time.Duration, done func() bool) {
 		var out strings.Builder
 		m := &sinks.Manager{Store: st, Resolver: resolver, Holder: "test", Log: slog.New(slog.DiscardHandler),
 			Every: 5 * time.Millisecond, Refresh: 5 * time.Millisecond,
 			Sinks: []sinks.Sink{{Name: "new", Selection: sinks.SelectionOf(cfg[0]), Sender: &sinks.JSONL{Path: "-", Stdout: &out}}}}
-		c, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-		defer cancel()
-		m.Run(c)
+		c, cancel := context.WithCancel(ctx)
+		stopped := make(chan struct{})
+		go func() { m.Run(c); close(stopped) }()
+		if done == nil {
+			time.Sleep(window)
+		} else {
+			waitFor(t, "the removed sink's bit cleared", done)
+		}
+		cancel()
+		<-stopped
 	}
-	run() // listed a minute ago: kept
-	if e, _ := st.GetEvent(ctx, acme.ID, ev); e.Pending != 1 {
-		t.Fatalf("a sink removed recently keeps its bit: %+v", e)
+	pending := func() int {
+		e, _ := st.GetEvent(ctx, acme.ID, ev)
+		return e.Pending
+	}
+	run(100*time.Millisecond, nil) // listed a minute ago: kept
+	if p := pending(); p != 1 {
+		t.Fatalf("a sink removed recently keeps its bit: %d", p)
 	}
 	now = now.Add(11 * time.Minute)
-	run()
-	if e, _ := st.GetEvent(ctx, acme.ID, ev); e.Pending != 0 {
-		t.Fatalf("a sink no replica lists loses its bit: %+v", e)
-	}
+	// a manager stopped at once may leave the sink retired with its bit half cleared; the next finishes
+	short, cancel := context.WithTimeout(ctx, time.Millisecond)
+	(&sinks.Manager{Store: st, Resolver: resolver, Holder: "test", Log: slog.New(slog.DiscardHandler), Refresh: time.Millisecond}).Run(short)
+	cancel()
+	run(0, func() bool { return pending() == 0 })
 	reg, err := st.RegisterSinks(ctx, []string{"new"})
 	if err != nil || len(reg) != 1 || reg[0].Name != "new" {
 		t.Fatalf("old is forgotten: %+v %v", reg, err)
@@ -530,7 +544,10 @@ func TestRefusingEverythingIsFailing(t *testing.T) {
 		evs, _ := st.ListEvents(ctx, audit.ServerTenant, store.EventFilter{Kind: "audit.sink"})
 		return len(evs) > 0 && evs[0].Outcome == audit.Failed
 	})
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, "three drops", func() bool {
+		drops, _ := st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "audit.dropped"})
+		return len(drops) >= 3
+	})
 	cancel()
 	<-done
 	drops, _ := st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "audit.dropped"})
