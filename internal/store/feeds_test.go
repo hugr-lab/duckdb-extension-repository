@@ -182,17 +182,42 @@ func TestFeedRecords(t *testing.T) {
 		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.WithdrawFeedAttachment(ctx, &a, 9, "{}", "s") }); err != nil {
 			t.Fatal(err)
 		}
+		inTx(t, s, func(tx *store.Tx) error {
+			cur, _ := tx.GetAttachment(ctx, tn.ID, a.ID)
+			return tx.SetAttachmentFlags(ctx, &cur, store.VisibleReaders, false, 0)
+		})
 		newer := a
 		newer.Seq, newer.Visibility = 10, store.VisibleReaders
 		inTx(t, s, func(tx *store.Tx) error { return tx.ReissueFeedAttachment(ctx, &newer) })
 		if g, _ := s.GetAttachment(ctx, tn.ID, a.ID); !g.WithdrawnAt.IsZero() || g.Seq != 10 || g.Visibility != store.VisibleReaders {
 			t.Fatalf("reissued: %+v", g)
 		}
+		narrowed := a
+		narrowed.Seq, narrowed.Visibility = 11, store.VisibleAdministrators
+		inTx(t, s, func(tx *store.Tx) error { return tx.ReissueFeedAttachment(ctx, &narrowed) })
+		if g, _ := s.GetAttachment(ctx, tn.ID, a.ID); g.Visibility != store.VisibleAdministrators {
+			t.Fatalf("not narrowed: %+v", g)
+		}
+
+		// the heads limit counts per issuer: one source never uses up another's room
+		for i := range store.MaxAttachmentHeads {
+			x := recv("x"+strconv.Itoa(i), "", 1)
+			x.Issuer = "https://x.example/api/v1/tenants/x"
+			inTx(t, s, func(tx *store.Tx) error { return tx.InsertAttachment(ctx, &x) })
+		}
+		over := recv("x-over", "", 1)
+		over.Issuer = "https://x.example/api/v1/tenants/x"
+		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertAttachment(ctx, &over) }); !errors.Is(err, store.ErrInvalid) {
+			t.Fatalf("a head beyond the issuer's limit: %v", err)
+		}
+		other := recv("y1", "", 1)
+		other.Issuer = "https://y.example/api/v1/tenants/y"
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertAttachment(ctx, &other) })
 
 		// removing the feed's documents, the feed; the collector's cursors of bodies no longer held
 		inTx(t, s, func(tx *store.Tx) error {
 			n, err := tx.RemoveFeedDocuments(ctx, f)
-			if n != 1 {
+			if n != 2+store.MaxAttachmentHeads {
 				t.Errorf("removed %d", n)
 			}
 			return err

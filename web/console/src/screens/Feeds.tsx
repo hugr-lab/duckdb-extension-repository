@@ -3,7 +3,7 @@ import { Badge, Button, Card, Checks, Chips, Confirm, Empty, ErrorBox, Field, Lo
 import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
-import { entryNames } from './Upstreams'
+import { entryNames } from '../lib/names'
 
 // Feeds (spec 0011 phase 1b): the other repositories whose signed statements about the bodies the
 // tenant holds it subscribes to: an organisation's kista taking Enterest's reviews, or a public
@@ -87,6 +87,7 @@ export function Feeds() {
             ['Last run', (f) => (
               <span className="text-[13px]">
                 {f.last_run_at ? when(f.last_run_at) : <span className="text-ink-muted">never</span>}
+                {f.last_success_at && f.last_success_at !== f.last_run_at && <div className="text-ink-muted">last success {when(f.last_success_at)}</div>}
                 <div className="text-ink-muted">{feedCounts(f)}</div>
                 {f.last_error && <div className="text-danger break-words">{f.last_error}</div>}
                 {f.run_requested && <div className="text-warning">a sync is requested</div>}

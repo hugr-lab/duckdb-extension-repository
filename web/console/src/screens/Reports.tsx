@@ -225,7 +225,7 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
             ['', (a) => (
               <span className="flex flex-wrap gap-1.5">
                 <Button onClick={() => download(a)}>Download</Button>
-                {perms.tenantAdmin && (
+                {perms.tenantAdmin && (a.visibility === 'readers' || a.origin !== 'feed' || a.audience === 'readers') && (
                   <Button tone="outline" onClick={() => ask({ a, change: a.visibility === 'readers' ? 'administrators' : 'readers' })}>
                     {a.visibility === 'readers' ? 'Hide from readers' : 'Show to readers'}
                   </Button>

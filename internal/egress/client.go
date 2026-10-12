@@ -316,6 +316,19 @@ func (c *Client) PostForm(ctx context.Context, raw string, form url.Values) (int
 	return resp.StatusCode, b, nil
 }
 
+// StatusError is another unexpected answer (errors.Is ErrStatus).
+type StatusError struct {
+	Status int
+	Host   string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%v %d from %s", ErrStatus, e.Status, e.Host)
+}
+
+// Unwrap makes a StatusError ErrStatus.
+func (e *StatusError) Unwrap() error { return ErrStatus }
+
 // AuthError is an answer 401 or 403 (errors.Is ErrAuth).
 type AuthError struct {
 	Status int
@@ -360,7 +373,7 @@ func (c *Client) PostJSON(ctx context.Context, raw string, header http.Header, b
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return nil, &AuthError{Status: resp.StatusCode, Host: u.Hostname()}
 	case resp.StatusCode != http.StatusOK:
-		return nil, fmt.Errorf("%w %d from %s", ErrStatus, resp.StatusCode, u.Hostname())
+		return nil, &StatusError{Status: resp.StatusCode, Host: u.Hostname()}
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
 	if err != nil {

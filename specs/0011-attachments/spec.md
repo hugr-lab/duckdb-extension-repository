@@ -177,9 +177,11 @@ them under the extension:
   administrator registers one by signer reference and a tenant administrator activates and retires
   it (`kista admin attestation-key add|list|activate|retire`, and the API: `POST
   …/attestation-keys` for a server administrator, `POST …/attestation-keys/{id}/activate|retire`
-  with `If-Match`). Their public keys (active and trusted) are served at `GET
-  /api/v1/tenants/{t}/attestation-keys` (public). Rotation is a new key that subscribers pin before
-  it signs. The signer signs the statement's digest as it signs a body hash; the domain separator
+  with `If-Match`; `GET …/attestation-keys/{id}` gives its administrators the ETag). Their public
+  keys are served with their states at `GET /api/v1/tenants/{t}/attestation-keys` (public), a
+  retired one too: the statements it signed are still served, and a subscriber that pinned it
+  verifies them (unpinning is how a subscriber stops trusting a key). Rotation is a new key that
+  subscribers pin before it signs. The signer signs the statement's digest as it signs a body hash; the domain separator
   and the registry (one key, one role) keep the two apart.
 - **The statement** is a JSON object canonicalised by RFC 8785 (JCS), signed RSA PKCS#1 v1.5 over
   SHA-256 of `kista-statement-v1\0` followed by it, a typed input of its own (spec 0002 signs only
@@ -200,9 +202,14 @@ them under the extension:
   when it is created, and its `seq` is taken from a per-issuer counter row locked until commit, so a
   subscriber that has seen `seq` n never misses a lower one committed later. A visibility change of
   an offered document issues a new statement (its audience); un-marking or removing it issues its
-  withdrawal. Marking needs an active attestation key and `serve.public_url`; when the tenant can no
-  longer sign, un-marking, a visibility change or a removal still goes ahead, unsigned, and the
-  document is no longer offered (the feed leaves out what is not offered). Only the tenant's own and
+  withdrawal. Each is signed when the change commits: marking and a visibility change of an offered
+  document fail while the tenant cannot sign. Un-marking and removing go ahead unsigned only when
+  the tenant cannot sign at all (no active attestation key, no `serve.public_url`): the document is
+  then no longer offered (the feed leaves out what is not offered), and subscribers holding it keep
+  it; a signer failing now fails the change, to be tried again. A removal reads the document again
+  under the lock, so one marked feedable meanwhile is withdrawn. Documents marked feedable before 1b
+  (never offered) start unmarked. The issuer is `serve.public_url` with a lowercase host and no
+  default port, as a subscriber normalises its feed URL. Only the tenant's own and
   its publishers' documents are offered: a feed's documents are not relayed (Follow-ups).
 - **The feed route**, on the source:
 
@@ -212,7 +219,9 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
 ```
 
   - Authorised by a new verb **`feed`**, granted on the tenant or on a channel (spec 0006's verb
-    list gains it; `admin` implies it; never to an `issuer:` grant or a publisher). The source answers
+    list gains it; a tenant-wide `admin` implies it, a channel's `admin` does not, so a channel's
+    administrators do not read its administrators-only documents through the feed; never to an
+    `issuer:` grant or a publisher). The source answers
     only for bodies released in the channels the grant covers, and only documents its administrators
     marked **feedable** (a flag on a document, off by default: a document is offered only on
     purpose). A body it does not hold, or holds outside those channels, answers like one without
@@ -244,22 +253,33 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
     only there), checks size and content hash against the statement and the signature against a
     pinned key, and inserts it only if its body is one it sent and still holds, under the same rule
     as an intake (spec 0016). The source's published keys are read at each run, and only the pinned
-    ones kept; a statement's `issuer` must be the feed's URL. A `supersedes` must name an earlier statement of the same issuer, body
-    and kind; one the subscriber never received (not offered, refused) is accepted and kept as an
-    unresolved link. A withdrawal marks its target.
+    ones kept; a statement's `issuer` must be the feed's URL. A `supersedes` must name an earlier
+    statement of the same issuer, body and kind; one the subscriber never received (not offered,
+    refused) or removed here is accepted and kept as an unresolved link. A withdrawal marks its
+    target. A source answering `/feed` with `404` (a kista source's answer to a principal without
+    `feed`) makes the feed `unauthorized`.
+  - Quotas: a feed's documents count against a tenant quota of their own (100,000), apart from the
+    tenant's own documents, and the heads limit counts per issuer, so one source never uses up the
+    tenant's or another source's room.
   - The cursor advances past a statement that was stored or permanently refused (a limit, content
     that does not match, a kind not accepted), each refusal recorded; a transient failure (a fetch,
-    egress) leaves it, and that body's later statements wait, so the next run tries again in order.
-    A statement that does not verify moves no cursor (nothing of it is trusted, not even its body)
-    and is refused again at the next run; one naming another issuer or a body not sent neither. A body's feed state goes with its attachments when the collector removes them, so a
+    egress, a document the source no longer serves) leaves it, and that body's later statements
+    wait, so the next run tries again in order. A statement that does not verify, or names another
+    issuer, holds its body's cursor the same way (every body's in that request when its body cannot
+    be told): it is refused again at the next run, and taken once its key is pinned. The source's
+    high-water (unsigned) moves a cursor only up to the highest `seq` verified in the run. A body's feed state goes with its attachments when the collector removes them, so a
     body held again receives its history again.
   - The same document reaching the tenant through two feeds is stored once (the first feed's). A
-    newer statement about a document held updates it (its statement, validity and visibility; a
-    withdrawn one offered again); its content, kind, body and place in its chain never change.
+    newer statement about a document held updates it (its statement and validity; a withdrawn one
+    offered again; its visibility only narrows, to administrators when the audience does: showing it
+    to readers again is an administrator's act here, allowed only while its signed audience is
+    `readers`); its content, kind and body never change (its link may: a removal at the source
+    relinks a chain, and a withdrawn successor here does not keep its predecessor from another).
     Documents name their feed by id, so a feed's name can be reused.
   - A run records `feed.run` (received, superseded, withdrawn, refused with reasons) and the feed's
     status (`ok`, `unauthorized`, `failing`, the last success and error) shown on the console.
-  - Removing a feed keeps its documents unless asked to remove them.
+  - Removing a feed keeps its documents unless asked to remove them; asked, they pass to another
+    feed of the same source if there is one (its cursors are past them), else they go.
 - **What a subscriber discloses**: the body hashes it offers, to each source it subscribes to, and
   only those; a multi-tenant source learns which of those hashes each subscriber holds. The default
   (mirrored bodies only) keeps the tenant's own builds out of it.
@@ -275,14 +295,16 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
   severity, an SBOM's components), rendered as text; Markdown with raw HTML off, links limited to
   `https` with `rel="noopener noreferrer"`, no images. A download is fetched with the token and saved
   as `application/octet-stream` with the `download` attribute, never opened.
-- Administrators attach a document, mark it `readers` or feedable, and remove it. Feeds are managed
-  on the Upstreams page.
+- Administrators attach a document, mark it `readers` or feedable, and remove it. Feeds are added,
+  paused, resumed, synced and removed on the Upstreams page, with their status, last run and last
+  success; changing a feed's credential, keys, kinds or readers is the API's and the CLI's. The
+  grant form offers `feed` on the tenant and on a channel.
 
 ### Events
 
 `attachment.add`, `attachment.remove`, `attachment.change` (visibility, feedable), subject
 `ext:<name>/attachment:<id>`, data `body_hash`, `kind`, `origin`, `size`, the change, and the
-`statement` issued (its seq); `attestation-key.add|activate|retire`, subject
+`statement` issued (its seq); `attestation_key.add|activate|retire`, subject
 `attestation-key:<id>`; `feed.add`, `feed.remove` (`documents` removed), `feed.change`, `feed.run`
 (`feed`, counts, refusals by reason, `error` as a class), subject `feed:<name>`. Spec
 0010's catalogue and subject forms gain them; a source does not record one event per feed request,
@@ -373,3 +395,5 @@ web/console           the Reports block; feeds on Upstreams
   publishing).
 - Air-gapped bundles (spec 0014) carrying attachments with their statements.
 - Spec 0018's verify covering attachment objects.
+- Collecting the statements of documents removed long ago (an offer and its withdrawal stay, small
+  but unbounded).

@@ -559,6 +559,7 @@ func init() {
 		// principals holding feed; not management: a feed credential may be long-lived), its feeds
 		{"tenants/{t}/attestation-keys", map[string]rule{http.MethodGet: {access: public, handle: (*Handler).attestationKeys},
 			http.MethodPost: mb(serverAdmin, (*Handler).addAttestationKey)}},
+		{"tenants/{t}/attestation-keys/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getAttestationKey)}},
 		{"tenants/{t}/attestation-keys/{id}/activate", map[string]rule{http.MethodPost: m(pathAdmin, attestationKeyState(true))}},
 		{"tenants/{t}/attestation-keys/{id}/retire", map[string]rule{http.MethodPost: m(pathAdmin, attestationKeyState(false))}},
 		{"tenants/{t}/feed", map[string]rule{http.MethodPost: {access: tenantPrincipal, body: true, handle: attachmentRoute((*Handler).feed)}}},

@@ -1794,8 +1794,12 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.out, "%s %s\nstate %s, status %s %s\ncredential %s\nkeys %s\nkinds %s, readers %v, offer %s\nlast run %s\n",
-			fd.Name, fd.URL, fd.State, fd.Status, fd.LastError, fd.Credential, strings.Join(fd.Keys, ","), strings.Join(fd.Kinds, ","),
+		last := "never"
+		if !fd.LastSuccessAt.IsZero() {
+			last = ts(fd.LastSuccessAt)
+		}
+		fmt.Fprintf(a.out, "%s %s\nstate %s, status %s %s\nlast success %s\ncredential %s\nkeys %s\nkinds %s, readers %v, offer %s\nlast run %s\n",
+			fd.Name, fd.URL, fd.State, fd.Status, fd.LastError, last, fd.Credential, strings.Join(fd.Keys, ","), strings.Join(fd.Kinds, ","),
 			fd.Readers, fd.Offer, fd.LastRun)
 	case sub == "sync" && len(pos) == 2:
 		if _, err := f.Sync(ctx, a.actor, pos[0], pos[1]); err != nil {

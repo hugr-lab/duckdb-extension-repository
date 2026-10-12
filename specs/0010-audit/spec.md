@@ -55,7 +55,7 @@ Delivery is phased, each phase a pull request:
 | `at` | when it happened (`Tx.Now`, UTC, microseconds) |
 | `kind` | from the catalogue (below) |
 | `outcome` | `ok`; `refused` (an answer `401`, `403`, or `404` that stands for forbidden); `failed` (an answer `5xx`, or `ErrBusy`). Validation errors and stale `If-Match` (`400`, `409`, `412`, `428`) are not events: nothing happened |
-| `actor` | the actor as the code writes it: `principal:<tenant>/<issuer id>\|sub:<sub>` (or `\|client:<id>`), `server:<issuer>\|sub:…`, `os:<uid>:<user>`, `publisher:<tenant>/<names>`, `system:<what>` (`system:upstream:<tenant>/<name>`, `system:resign`, `system:retention`, `system:serve` (`server.start`), `system:sinks`, `system:audit`), `anonymous` |
+| `actor` | the actor as the code writes it: `principal:<tenant>/<issuer id>\|sub:<sub>` (or `\|client:<id>`), `server:<issuer>\|sub:…`, `os:<uid>:<user>`, `publisher:<tenant>/<names>`, `system:<what>` (`system:upstream:<tenant>/<name>`, `system:feed:<tenant>/<name>`, `system:resign`, `system:retention`, `system:serve` (`server.start`), `system:sinks`, `system:audit`), `anonymous` |
 | `actor_name` | for a token's principal, its `name`, `preferred_username` or `email` claim at the time, for display; otherwise none |
 | `subject` | the resource as a path: `channel:prod`, `channel:prod/ext:acl/release:<id>`, `grant:<id>`, `upstream:core`, `extension-group:<name>` (spec 0017), … (filters match prefixes) |
 | `data` | a JSON object of the event's facts, from the catalogue's fields for the kind (never a request body as a whole) |
@@ -111,6 +111,12 @@ kind's subject form and fields; `v` 1):
   release), `upstream.rejected` (a cell whose outcome changed to a refusal), `upstream.run` (a run's
   summary, as `last_run`; a pull-through fetch (spec 0009 phase 2) is its `upstream.release` or
   `upstream.rejected`), `shadow.add`, `shadow.remove`;
+- attachments and the feed (spec 0011): `attachment.add`, `attachment.change`, `attachment.remove`
+  (subject `ext:<name>/attachment:<id>`, or `block:<hash>/attachment:<id>` for a blocked body's;
+  `statement`: the seq of a statement issued with it), `attestation_key.add`,
+  `attestation_key.activate`, `attestation_key.retire` (subject `attestation-key:<id>`), `feed.add`,
+  `feed.change`, `feed.remove`, `feed.run` (subject `feed:<name>`, actor
+  `system:feed:<tenant>/<name>`);
 - access: `auth.failure`, `authz.refused`, `install` (phase 2a; subject
   `channel:<c>/ext:<name>/release:<id>`, `data`: release, name, version, platform, DuckDB version,
   body hash, the `User-Agent`);

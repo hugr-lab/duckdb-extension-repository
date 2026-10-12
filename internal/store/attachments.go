@@ -93,20 +93,27 @@ AND b.body_hash = ? AND r.origin = ? AND r.created_by = ?`, tenantID, name, body
 // InsertAttachment adds a document's record (its object is already stored). The caller holds the
 // tenant's attachment lock: the limits are counted here.
 func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
+	// the tenant's own documents and those its feeds bring are counted apart: a source never fills
+	// the tenant's own quota
 	var total int
-	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM attachments WHERE tenant_id = ? AND removed_at IS NULL", a.TenantID).Scan(&total); err != nil {
+	same := "origin <> ?"
+	if a.Origin == AttachedByFeed {
+		same = "origin = ?"
+	}
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM attachments WHERE tenant_id = ? AND removed_at IS NULL AND "+same,
+		a.TenantID, AttachedByFeed).Scan(&total); err != nil {
 		return err
 	}
 	if total >= MaxTenantAttachments {
-		return fmt.Errorf("%w: a tenant holds at most %d attachments", ErrInvalid, MaxTenantAttachments)
+		return fmt.Errorf("%w: a tenant holds at most %d attachments (and as many from feeds)", ErrInvalid, MaxTenantAttachments)
 	}
 	unresolved := false
 	if a.Supersedes != "" {
 		prev, err := t.attachmentByIssuer(ctx, a.TenantID, a.Issuer, a.Supersedes)
 		switch {
-		case errors.Is(err, ErrNotFound) && a.Origin == AttachedByFeed:
-			// a statement this tenant never received (not offered, or refused): an unresolved link,
-			// and a new head as far as the limits go
+		case (errors.Is(err, ErrNotFound) || err == nil && !prev.RemovedAt.IsZero()) && a.Origin == AttachedByFeed:
+			// a statement this tenant never received (not offered, or refused) or removed here: an
+			// unresolved link, and a new head as far as the limits go
 			unresolved = true
 		case err != nil:
 			return fmt.Errorf("%w: the document it supersedes: %w", ErrInvalid, err)
@@ -115,9 +122,10 @@ func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
 		case !prev.RemovedAt.IsZero() && a.Origin != AttachedByFeed:
 			return fmt.Errorf("%w: the document it supersedes was removed", ErrInvalid)
 		}
+		// a feed's withdrawn successor does not count: the source removed it and relinked its chain
 		var later int
-		if err := t.queryRow(ctx, "SELECT COUNT(*) FROM attachments WHERE tenant_id = ? AND issuer = ? AND supersedes = ? AND removed_at IS NULL",
-			a.TenantID, a.Issuer, a.Supersedes).Scan(&later); err != nil {
+		if err := t.queryRow(ctx, `SELECT COUNT(*) FROM attachments WHERE tenant_id = ? AND issuer = ? AND supersedes = ? AND removed_at IS NULL
+AND (origin <> ? OR withdrawn_at IS NULL)`, a.TenantID, a.Issuer, a.Supersedes, AttachedByFeed).Scan(&later); err != nil {
 			return err
 		}
 		if later > 0 {
@@ -125,11 +133,11 @@ func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
 		}
 	}
 	if a.Supersedes == "" || unresolved {
-		// a new chain: count the heads of (body, kind, origin)
+		// a new chain: count the heads of (body, kind, origin, issuer): one source never uses up another's
 		var heads int
 		if err := t.queryRow(ctx, `SELECT COUNT(*) FROM attachments a WHERE a.tenant_id = ? AND a.body_hash = ? AND a.kind = ? AND a.origin = ?
-AND a.removed_at IS NULL AND NOT EXISTS (SELECT 1 FROM attachments n WHERE n.tenant_id = a.tenant_id AND n.issuer = a.issuer
-AND n.supersedes = a.issuer_id AND n.removed_at IS NULL)`, a.TenantID, a.BodyHash, a.Kind, a.Origin).Scan(&heads); err != nil {
+AND a.issuer = ? AND a.removed_at IS NULL AND NOT EXISTS (SELECT 1 FROM attachments n WHERE n.tenant_id = a.tenant_id AND n.issuer = a.issuer
+AND n.supersedes = a.issuer_id AND n.removed_at IS NULL)`, a.TenantID, a.BodyHash, a.Kind, a.Origin, a.Issuer).Scan(&heads); err != nil {
 			return err
 		}
 		if heads >= MaxAttachmentHeads {

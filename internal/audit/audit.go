@@ -126,9 +126,9 @@ var catalogue = map[Kind][]string{
 	"key.retire":       {"key", "fingerprint", "from", "forced"},
 	"key.resign":       {"key", "fingerprint", "signatures"},
 	// attestation keys and feeds (spec 0011)
-	"attestation-key.add":      {"key", "fingerprint", "scheme", "state"},
-	"attestation-key.activate": {"key", "fingerprint", "from", "forced"},
-	"attestation-key.retire":   {"key", "fingerprint", "from", "forced"},
+	"attestation_key.add":      {"key", "fingerprint", "scheme", "state"},
+	"attestation_key.activate": {"key", "fingerprint", "from", "forced"},
+	"attestation_key.retire":   {"key", "fingerprint", "from", "forced"},
 	"feed.add":                 {"name", "url", "credential", "kinds", "readers", "offer", "channels", "keys"},
 	"feed.remove":              {"name", "documents"},
 	"feed.change":              {"name", "change"},
@@ -232,7 +232,7 @@ func SubjectForm(k Kind) string {
 		"channel": "channel:<channel>", "key": "channel:<channel>/key:<id>", "issuer": "issuer:<name>", "grant": "grant:<id>",
 		"publisher": "publisher:<name>", "release": release, "block": "block:<body hash>", "upstream": "upstream:<name>",
 		"shadow": "shadow:<name>", "extension_group": "extension-group:<name>", "attachment": "ext:<name>/attachment:<id>",
-		"attestation-key": "attestation-key:<id>", "feed": "feed:<name>"}[prefix]
+		"attestation_key": "attestation-key:<id>", "feed": "feed:<name>"}[prefix]
 }
 
 // Known reports whether a kind is in the catalogue.

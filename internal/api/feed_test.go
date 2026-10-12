@@ -265,8 +265,15 @@ func TestFeedBetweenServers(t *testing.T) {
 		Credential: "src", Keys: []string{other}}); err == nil {
 		t.Fatal("an unreachable port accepted")
 	}
-	// removing a feed with its documents
-	if err := sub.feeds.Remove(ctx, admin, "acme", "enterest", true, 0); err != nil || len(sub.docs(t, body)) != 0 {
+	// removing a feed with its documents: another feed of the source keeps them, then they go
+	if err := sub.feeds.Remove(ctx, admin, "acme", "enterest", true, 0); err != nil || len(sub.docs(t, body)) != 1 ||
+		sub.docs(t, body)[0].AttachedBy != mustFeed(t, sub, "again").ID {
+		t.Fatalf("remove: %v %+v", err, sub.docs(t, body))
+	}
+	if err := sub.feeds.Remove(ctx, admin, "acme", "wrong-key", false, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.feeds.Remove(ctx, admin, "acme", "again", true, 0); err != nil || len(sub.docs(t, body)) != 0 {
 		t.Fatalf("remove: %v %d", err, len(sub.docs(t, body)))
 	}
 }
@@ -341,6 +348,8 @@ func TestFeedRefusals(t *testing.T) {
 	add(b, sig) // stored
 	_, b, sig = sign(stmt(func(s *attachment.Statement) { s.Supersedes = "never-seen" }), key)
 	add(b, sig) // stored, its link unresolved
+	_, b, sig = sign(stmt(func(s *attachment.Statement) { s.IssuerID = "bad-content" }), key)
+	add(b, sig) // content that does not match
 	_, b, sig = sign(stmt(nil), key)
 	add([]byte(strings.Replace(string(b), `"Review"`, `"Approved by us"`, 1)), sig) // altered after signing
 	_, b, _ = sign(stmt(nil), key)
@@ -351,8 +360,6 @@ func TestFeedRefusals(t *testing.T) {
 	add(b, sig) // a body not sent
 	_, b, sig = sign(stmt(func(s *attachment.Statement) { s.Issuer = srv.URL + "/api/v1/tenants/other" }), key)
 	add(b, sig) // another issuer
-	_, b, sig = sign(stmt(func(s *attachment.Statement) { s.IssuerID = "bad-content" }), key)
-	add(b, sig) // content that does not match
 	s := stmt(nil)
 	pretty, _ := json.MarshalIndent(s, "", " ")
 	sig, _ = attachment.Sign(ctx, keySigner{key}, pretty)
@@ -374,9 +381,14 @@ func TestFeedRefusals(t *testing.T) {
 	if len(docs) != 2 || docs[1].Supersedes != "never-seen" || len(attachment.Heads(docs)) != 2 {
 		t.Fatalf("stored: %+v", docs)
 	}
+	// the first statement that does not verify holds the body's cursor: what follows it, verified
+	// or not, comes again at the next run (once its key is pinned)
 	cur, _ := sub.st.FeedCursors(ctx, mustFeed(t, sub, "src").ID)
-	if cur[body] != 8 {
+	if cur[body] != 3 {
 		t.Fatalf("cursor: %v", cur)
+	}
+	if res := sub.run(t, "src"); res.Counts["received"] != 0 || res.Counts["refused"] != 6 {
+		t.Fatalf("again: %+v", res)
 	}
 }
 
@@ -409,3 +421,90 @@ func getJSON(t *testing.T, en *env, path string) map[string]any {
 	}
 	return out
 }
+
+// The feed's management routes over HTTP (spec 0011 phase 1b): who may call them, If-Match, 404
+// uniformity; attestation keys added by a server administrator, read and moved by the tenant's.
+func TestFeedRoutes(t *testing.T) {
+	m := newMgmt(t)
+	const T = "/api/v1/tenants/acme"
+	tom, carl, root := m.toks["tenant admin"], m.toks["channel adm"], m.toks["server admin"]
+	// attestation keys
+	if err := signer.GenerateKeyFile(filepath.Join(m.dir, "att.pem")); err != nil {
+		t.Fatal(err)
+	}
+	add := `{"signer_ref":"file:att.pem","active":true}`
+	if r := m.call(t, "POST", T+"/attestation-keys", tom, add); r.status != 404 {
+		t.Fatalf("a tenant administrator registers a signer: %d", r.status)
+	}
+	r := m.call(t, "POST", T+"/attestation-keys", root, add)
+	if r.status != 201 {
+		t.Fatalf("add: %d %s", r.status, r.body)
+	}
+	loc := strings.TrimPrefix(r.header.Get("Location"), "")
+	got := m.call(t, "GET", loc, tom, "")
+	if got.status != 200 || got.header.Get("ETag") == "" {
+		t.Fatalf("read: %d %v", got.status, got.header)
+	}
+	if r := m.call(t, "GET", loc, carl, ""); r.status != 404 {
+		t.Fatalf("a channel administrator reads it: %d", r.status)
+	}
+	if r := m.call(t, "POST", loc+"/retire", tom, "", "If-Match", got.header.Get("ETag")); r.status != 409 {
+		t.Fatalf("the active key retired: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", loc+"/retire?force=true", tom, "", "If-Match", "*"); r.status != 404 {
+		t.Fatalf("force by a tenant administrator: %d", r.status)
+	}
+	// a document offered over the API
+	body := tresorBody(t, func(p string) map[string]any { return m.call(t, "GET", p, "", "").json(t) })
+	d, err := m.att.Attach(ctx, admin, "acme", "tresor", attachment.AttachInput{BodyHash: body, Kind: store.KindReview,
+		MediaType: attachment.Review, Title: "R", Content: []byte(review)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := m.call(t, "POST", T+"/extensions/tresor/attachments/"+d.ID+"/feedable", tom, "", "If-Match", versionTag(d.Version)); r.status != 200 ||
+		r.json(t)["feedable"] != true {
+		t.Fatalf("feedable: %d %s", r.status, r.body)
+	}
+	// feeds
+	feed := `{"name":"src","url":"https://source.example/api/v1/tenants/x","credential":"src","keys":["sha256:` + strings.Repeat("a", 64) + `"]}`
+	for who, want := range map[string]int{"": 401, "channel adm": 404, "install": 404} {
+		if r := m.call(t, "POST", T+"/feeds", m.toks[who], feed); r.status != want {
+			t.Errorf("%q adds a feed: %d", who, r.status)
+		}
+	}
+	r = m.call(t, "POST", T+"/feeds", tom, feed)
+	if r.status != 201 || r.header.Get("Location") != T+"/feeds/src" {
+		t.Fatalf("add a feed: %d %s", r.status, r.body)
+	}
+	etag := r.header.Get("ETag")
+	if r := m.call(t, "POST", T+"/feeds", tom, strings.Replace(feed, `"src","url"`, `"other","url"`, 1)+"x"); r.status != 400 {
+		t.Fatalf("a bad body: %d", r.status)
+	}
+	if l := m.call(t, "GET", T+"/feeds", tom, "").json(t)["feeds"].([]any); len(l) != 1 || l[0].(map[string]any)["status"] != "new" {
+		t.Fatalf("list: %v", l)
+	}
+	if r := m.call(t, "POST", T+"/feeds/src", tom, `{"readers":true}`); r.status != 428 {
+		t.Fatalf("a change without If-Match: %d", r.status)
+	}
+	if r := m.call(t, "POST", T+"/feeds/src", tom, `{"readers":true}`, "If-Match", `"v9"`); r.status != 412 {
+		t.Fatalf("a stale change: %d", r.status)
+	}
+	r = m.call(t, "POST", T+"/feeds/src", tom, `{"readers":true}`, "If-Match", etag)
+	if r.status != 200 || r.json(t)["readers"] != true {
+		t.Fatalf("change: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", T+"/feeds/src/sync", tom, ""); r.status != 202 {
+		t.Fatalf("sync: %d", r.status)
+	}
+	if r := m.call(t, "DELETE", T+"/feeds/src?documents=maybe", tom, "", "If-Match", "*"); r.status != 400 {
+		t.Fatalf("documents=maybe: %d", r.status)
+	}
+	if r := m.call(t, "DELETE", T+"/feeds/src?documents=true", tom, "", "If-Match", "*"); r.status != 204 {
+		t.Fatalf("remove: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", T+"/feeds/src", tom, ""); r.status != 404 {
+		t.Fatalf("removed: %d", r.status)
+	}
+}
+
+func versionTag(v int64) string { return `"v` + strconv.FormatInt(v, 10) + `"` }

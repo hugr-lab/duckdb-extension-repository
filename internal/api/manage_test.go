@@ -25,6 +25,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/writer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -141,11 +143,17 @@ func newMgmt(t *testing.T) *mgmt {
 		TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler)}
 	events := &writer.Writer{Store: en.st, Log: slog.New(slog.DiscardHandler)}
 	att := &attachment.Service{Store: en.st, Blob: en.blob, Authz: grants, Keys: &keySvc, PublicURL: publicURL}
+	creds, err := credential.New([]config.Credential{{Name: "src", Tenants: []string{"acme"}, Prefixes: []string{"https://source.example/"},
+		Kind: "token_file", TokenFile: "/nonexistent"}}, credential.Deps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds := &attachment.Feeds{Store: en.st, Authz: grants, Attachments: att, Fetch: eg, Credentials: creds, Log: slog.New(slog.DiscardHandler)}
 	apiH := api.New(api.Options{Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths, Events: events,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
 		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups,
-		Attachments: att,
-		Console:     &api.Console{Environment: "test", AdminTokenMaxAge: 3600, Audience: serverAud}})
+		Attachments: att, Feeds: feeds,
+		Console: &api.Console{Environment: "test", AdminTokenMaxAge: 3600, Audience: serverAud}})
 	pulls := &fakePuller{}
 	h := serve.NewHandler(en.st, en.keys, en.blob, serve.Options{Log: slog.New(slog.DiscardHandler), Verifier: &auth.Verifier{Fetch: ks},
 		Server: server, PublicURL: publicURL, Auths: auths, API: apiH, MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,

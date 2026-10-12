@@ -202,8 +202,8 @@ export type Target = 'extension_group' | 'extension' | 'channel' | 'tenant'
 const verbsFor: Record<Target, string[]> = {
   extension_group: ['install', 'publish', 'promote', 'admin'],
   extension: ['install', 'publish', 'promote', 'admin'],
-  channel: ['install', 'publish', 'promote', 'admin'],
-  tenant: ['install', 'publish', 'promote', 'audit', 'admin'],
+  channel: ['install', 'publish', 'promote', 'feed', 'admin'],
+  tenant: ['install', 'publish', 'promote', 'audit', 'feed', 'admin'],
 }
 
 /** The verbs a form offers: the target's, within only, and install alone to an issuer-wide

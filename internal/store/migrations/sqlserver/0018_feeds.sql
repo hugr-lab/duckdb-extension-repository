@@ -86,3 +86,6 @@ CREATE TABLE feed_cursors (
 )
 -- +statement
 ALTER TABLE attachments ADD seq bigint NULL
+-- +statement
+-- documents marked feedable before statements existed (1a) were never offered: they start unmarked
+UPDATE attachments SET feedable = 0 WHERE feedable = 1

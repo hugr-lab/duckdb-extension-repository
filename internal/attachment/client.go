@@ -310,7 +310,18 @@ func (f *Feeds) Remove(ctx context.Context, a authz.Actor, tenant, name string, 
 		}
 		var n int64
 		if documents {
-			if n, err = tx.RemoveFeedDocuments(ctx, fd); err != nil {
+			// another feed of the same source keeps them: its cursors are past them
+			all, err := tx.ListFeeds(ctx, t.ID)
+			if err != nil {
+				return err
+			}
+			i := slices.IndexFunc(all, func(o store.Feed) bool { return o.ID != fd.ID && o.URL == fd.URL })
+			if i >= 0 {
+				err = tx.ReattributeFeedDocuments(ctx, fd, all[i])
+			} else {
+				n, err = tx.RemoveFeedDocuments(ctx, fd)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -349,10 +360,11 @@ var ErrNotDue = errors.New("attachment: the feed is not due")
 
 // RunResult is a run's outcome, recorded as the feed's last run.
 type RunResult struct {
-	Started, Ended time.Time
-	Counts         map[string]int `json:"counts"`
-	Refused        []Refusal      `json:"refused,omitempty"`
-	Error          string         `json:"error,omitempty"`
+	Started time.Time      `json:"started"`
+	Ended   time.Time      `json:"ended"`
+	Counts  map[string]int `json:"counts"`
+	Refused []Refusal      `json:"refused,omitempty"`
+	Error   string         `json:"error,omitempty"`
 }
 
 // Refusal is a statement a run refused for good: its cursor moved past it.
@@ -384,9 +396,13 @@ type run struct {
 	t      store.Tenant
 	res    *RunResult
 	pinned map[string]*rsa.PublicKey
-	header http.Header
-	cred   *credential.Credential
-	token  string
+	renew  func(context.Context) error
+	// verified is the highest seq of a statement that verified in this run: the source's unsigned
+	// high-water never moves a cursor beyond it
+	verified int64
+	header   http.Header
+	cred     *credential.Credential
+	token    string
 }
 
 // RunFeed runs a feed if it is requested or due; renew keeps the run's lease.
@@ -418,7 +434,7 @@ func (f *Feeds) RunFeed(ctx context.Context, id string, renew func(context.Conte
 		status = store.FeedFailing
 	}
 	if runErr != nil {
-		res.Error = runErr.Error()
+		res.Error = clip(runErr.Error())
 	}
 	res.Ended = time.Now().UTC()
 	b, _ := json.Marshal(res)
@@ -478,7 +494,7 @@ func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) err
 	if err != nil {
 		return err
 	}
-	r.cred = cred
+	r.cred, r.renew = cred, renew
 	if err := r.authorize(ctx); err != nil {
 		return err
 	}
@@ -549,6 +565,11 @@ func (r *run) keys(ctx context.Context) (map[string]*rsa.PublicKey, error) {
 func (r *run) post(ctx context.Context, body []byte) ([]byte, error) {
 	for attempt := 0; ; attempt++ {
 		b, err := r.f.Fetch.PostJSON(ctx, r.fd.URL+"/feed", r.header, body, MaxFeedAnswer+64<<10)
+		var se *egress.StatusError
+		if errors.As(err, &se) && se.Status == http.StatusNotFound {
+			// a kista source answers a principal without feed as it answers a missing route
+			return nil, fmt.Errorf("%w: the source answers 404 (no feed grant for the credential, or no such tenant)", errAuth)
+		}
 		if !errors.Is(err, egress.ErrAuth) {
 			return b, err
 		}
@@ -581,6 +602,9 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 		if len(req.Bodies) == 0 {
 			return nil
 		}
+		if err := r.renew(ctx); err != nil {
+			return err
+		}
 		body, _ := json.Marshal(req)
 		raw, err := r.post(ctx, body)
 		if err != nil {
@@ -596,7 +620,7 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 			}
 		}
 		for _, h := range ans.Bodies {
-			if sent[h.BodyHash] && !failed[h.BodyHash] && h.Seq > cursors[h.BodyHash] {
+			if sent[h.BodyHash] && !failed[h.BodyHash] && h.Seq > cursors[h.BodyHash] && h.Seq <= r.verified {
 				if err := r.f.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, h.BodyHash, h.Seq) }); err != nil {
 					return err
 				}
@@ -615,19 +639,34 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cursors map[string]int64, failed map[string]bool) error {
 	stmt, err1 := base64.StdEncoding.DecodeString(w.Statement)
 	sig, err2 := base64.StdEncoding.DecodeString(w.Signature)
-	if err1 != nil || err2 != nil {
-		r.refuse(Statement{}, "encoding")
+	// a statement refused before it is trusted holds its body's cursor for this run (and every
+	// cursor when its body cannot be told), so a later statement or the source's high-water never
+	// moves past it: it is tried again at the next run, once its key is pinned
+	hold := func(reason string) error {
+		r.refuse(Statement{}, reason)
+		var claimed struct {
+			BodyHash string `json:"body_hash"`
+		}
+		if err1 == nil && json.Unmarshal(stmt, &claimed) == nil && sent[claimed.BodyHash] {
+			failed[claimed.BodyHash] = true
+			return nil
+		}
+		for b := range sent {
+			failed[b] = true
+		}
 		return nil
+	}
+	if err1 != nil || err2 != nil {
+		return hold("encoding")
 	}
 	st, err := Verify(stmt, sig, r.pinned)
 	if err != nil {
-		r.refuse(Statement{}, "signature") // unverified: nothing of it is trusted, not even its body
-		return nil
+		return hold("signature") // unverified: nothing of it is trusted, not even its body
 	}
 	if st.Issuer != r.fd.URL { // the source tenant's URL is its identity
-		r.refuse(st, "issuer")
-		return nil
+		return hold("issuer")
 	}
+	r.verified = max(r.verified, st.Seq)
 	if !sent[st.BodyHash] {
 		r.refuse(st, "unrequested")
 		return nil
@@ -718,14 +757,14 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 			return "", nil // removed here: the tombstone keeps it out
 		case existing.Seq >= st.Seq:
 			return "", nil
-		case existing.BodyHash != st.BodyHash || existing.Kind != st.Kind || existing.ContentHash != st.ContentHash ||
-			existing.Supersedes != st.Supersedes:
-			return "changed", nil // a document's content and place never change
+		case existing.BodyHash != st.BodyHash || existing.Kind != st.Kind || existing.ContentHash != st.ContentHash:
+			return "changed", nil // a document's content never changes (its link may: a removal at the source relinks)
 		}
 		upd := *existing
 		upd.Seq, upd.Statement, upd.Signature, upd.KeyFP, upd.IssuedAt, upd.ValidUntil = st.Seq, string(stmt), sigText, st.Key, issued, until
+		upd.Visibility = store.VisibleReaders // kept as it is here...
 		if st.Audience != store.VisibleReaders {
-			upd.Visibility = store.VisibleAdministrators // narrowed at the source; a widening is the administrators' to show
+			upd.Visibility = store.VisibleAdministrators // ...unless narrowed at the source; widening is the administrators'
 		}
 		err := r.f.Store.InTx(ctx, lock(t), func(tx *store.Tx) error { return tx.ReissueFeedAttachment(ctx, &upd) })
 		if errors.Is(err, store.ErrConflict) {
@@ -737,12 +776,15 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		return "", err
 	}
 	// a new document: its content from the fixed path, checked against the statement
+	if err := r.renew(ctx); err != nil {
+		return "", err
+	}
 	var buf bytes.Buffer
 	_, err = r.f.Fetch.Download(ctx, r.fd.URL+"/feed/documents/"+url.PathEscape(st.IssuerID),
 		egress.DownloadOptions{MaxBytes: st.Size, Timeout: 2 * time.Minute, MinRate: 16 << 10, Header: r.header}, &buf)
 	switch {
 	case errors.Is(err, egress.ErrNotFound):
-		return "missing", nil // no longer offered: a later statement says so
+		return "", transient{err} // no longer offered (the next answer leaves the offer out), or a glitch
 	case errors.Is(err, egress.ErrAuth):
 		return "", fmt.Errorf("%w: %w", errAuth, err)
 	case errors.Is(err, egress.ErrTooLarge):

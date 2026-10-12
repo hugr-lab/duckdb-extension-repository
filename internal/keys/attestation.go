@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -97,7 +99,7 @@ func (s *Service) AddAttestation(ctx context.Context, a authz.Actor, tenant, ref
 			return err
 		}
 		scheme, _, _ := strings.Cut(k.SignerRef, ":")
-		return tx.Event(ctx, t.ID, a.String(), "attestation-key.add", attestationSubject(k),
+		return tx.Event(ctx, t.ID, a.String(), "attestation_key.add", attestationSubject(k),
 			map[string]any{"key": k.ID, "fingerprint": k.Fingerprint, "scheme": scheme, "state": k.State})
 	})
 	return k, err
@@ -159,7 +161,7 @@ func (s *Service) changeAttestation(ctx context.Context, a authz.Actor, tenant, 
 			return err
 		}
 		out = *target
-		return tx.Event(ctx, t.ID, a.String(), audit.Kind("attestation-key."+verb), attestationSubject(*target),
+		return tx.Event(ctx, t.ID, a.String(), audit.Kind("attestation_key."+verb), attestationSubject(*target),
 			map[string]any{"key": target.ID, "fingerprint": target.Fingerprint, "from": store.KeyTrusted, "forced": forced})
 	})
 	return out, err
@@ -184,10 +186,15 @@ func (s *Service) ListAttestation(ctx context.Context, a authz.Actor, tenant str
 	return s.Store.AttestationKeys(ctx, t.ID)
 }
 
-// PublicAttestation lists a tenant's published attestation keys (active and trusted, the active one
-// first): public by design, like .well-known, so subscribers can pin them.
+// PublicAttestation lists a tenant's attestation keys with their states (the active one first, the
+// retired last): public by design, like .well-known, so subscribers can pin them. A retired key is
+// listed too: the statements it signed are still served, and a subscriber that pinned it verifies
+// them; it signs nothing more. An unknown tenant has none.
 func (s *Service) PublicAttestation(ctx context.Context, tenant string) ([]store.Key, error) {
 	t, err := s.Store.GetTenant(ctx, tenant)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -195,16 +202,9 @@ func (s *Service) PublicAttestation(ctx context.Context, tenant string) ([]store
 	if err != nil {
 		return nil, err
 	}
-	var out []store.Key
-	for _, k := range all {
-		switch k.State {
-		case store.KeyActive:
-			out = append([]store.Key{k}, out...)
-		case store.KeyTrusted:
-			out = append(out, k)
-		}
-	}
-	return out, nil
+	rank := map[string]int{store.KeyActive: 0, store.KeyTrusted: 1, store.KeyRetired: 2}
+	sort.SliceStable(all, func(i, j int) bool { return rank[all[i].State] < rank[all[j].State] })
+	return all, nil
 }
 
 // OpenAttestationSigner opens an attestation key's signer and checks it is the registered key.

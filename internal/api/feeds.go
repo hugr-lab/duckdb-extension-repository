@@ -51,6 +51,24 @@ func (h *Handler) attestationKeys(w http.ResponseWriter, r *http.Request, c call
 	answer(w, r, map[string]any{"keys": out}, true)
 }
 
+// getAttestationKey answers one of the tenant's attestation keys with its ETag (its administrators:
+// activating and retiring take If-Match).
+func (h *Handler) getAttestationKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	ks, err := h.o.Keys.ListAttestation(r.Context(), a, p["t"])
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	for _, k := range ks {
+		if k.ID == p["id"] || k.Fingerprint == p["id"] {
+			reply(w, r, http.StatusOK, attestationKeyOf(k, true), versionTag(k.Version), noStore)
+			return
+		}
+	}
+	notFound(w)
+}
+
 func (h *Handler) addAttestationKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
 		SignerRef string `json:"signer_ref"`

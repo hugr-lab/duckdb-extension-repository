@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -22,9 +23,22 @@ const (
 	MaxFeedAnswer = 1 << 20 // an answer's statements, encoded
 )
 
-// Issuer is a tenant's stable identity in its statements: its URL under the deployment's public URL.
+// Issuer is a tenant's stable identity in its statements: its URL under the deployment's public URL,
+// in the form a subscriber's feed URL is normalised to (lowercase host, no default port).
 func Issuer(publicURL, tenant string) string {
-	return strings.TrimSuffix(publicURL, "/") + "/api/v1/tenants/" + tenant
+	raw := strings.TrimSuffix(publicURL, "/") + "/api/v1/tenants/" + tenant
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if u.Port() == "443" && u.Scheme == "https" {
+		u.Host = u.Hostname()
+		if strings.Contains(u.Host, ":") {
+			u.Host = "[" + u.Host + "]"
+		}
+	}
+	u.Host = strings.ToLower(u.Host)
+	return u.String()
 }
 
 // sourceOrigin is who stands behind a document at its source: the tenant, or publisher:<name>.
@@ -147,6 +161,10 @@ func (s *Service) feedChannels(ctx context.Context, a authz.Actor, tenant string
 // without documents), only documents still offered, and withdrawals.
 func (s *Service) Feed(ctx context.Context, a authz.Actor, tenant string, bodies []FeedBody) (FeedAnswer, error) {
 	out := FeedAnswer{Statements: []WireStatement{}, Bodies: []HighWater{}}
+	channels, err := s.feedChannels(ctx, a, tenant)
+	if err != nil {
+		return out, err
+	}
 	if len(bodies) > MaxFeedBodies {
 		return out, fmt.Errorf("%w: at most %d bodies a request", store.ErrInvalid, MaxFeedBodies)
 	}
@@ -158,10 +176,6 @@ func (s *Service) Feed(ctx context.Context, a authz.Actor, tenant string, bodies
 		}
 		seen[b.BodyHash] = true
 		hashes = append(hashes, b.BodyHash)
-	}
-	channels, err := s.feedChannels(ctx, a, tenant)
-	if err != nil {
-		return out, err
 	}
 	t, err := s.Store.GetTenant(ctx, tenant)
 	if err != nil {

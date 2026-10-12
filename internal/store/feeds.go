@@ -542,12 +542,23 @@ func (t *Tx) FeedAttachment(ctx context.Context, tenantID, issuer, issuerID stri
 }
 
 // ReissueFeedAttachment records a newer statement about a document already received: its seq,
-// statement, signature, key, validity and visibility; a withdrawn one is offered again.
+// statement, signature, key and validity; a withdrawn one is offered again. Its visibility only
+// narrows (to administrators, when a.Visibility says so): what an administrator here set meanwhile
+// is never widened from a stale read.
 func (t *Tx) ReissueFeedAttachment(ctx context.Context, a *Attachment) error {
 	return t.cas(ctx, `UPDATE attachments SET seq = ?, statement = ?, signature = ?, key_fp = ?, issued_at = ?, valid_until = ?,
-visibility = ?, withdrawn_at = NULL, version = version + 1 WHERE id = ? AND removed_at IS NULL AND (seq IS NULL OR seq < ?)`,
+visibility = CASE WHEN ? = ? THEN ? ELSE visibility END, withdrawn_at = NULL, version = version + 1
+WHERE id = ? AND removed_at IS NULL AND (seq IS NULL OR seq < ?)`,
 		[]any{a.Seq, nullable(a.Statement), nullable(a.Signature), nullable(a.KeyFP), t.s.d.timeArg(a.IssuedAt), t.s.d.nullTimeArg(a.ValidUntil),
-			a.Visibility, a.ID, a.Seq}, func() { a.WithdrawnAt = time.Time{}; a.Version++ })
+			a.Visibility, VisibleAdministrators, VisibleAdministrators, a.ID, a.Seq}, func() { a.WithdrawnAt = time.Time{}; a.Version++ })
+}
+
+// ReattributeFeedDocuments hands a feed's documents to another feed of the same source (removing a
+// feed with its documents while another still subscribes: that one's cursors are past them).
+func (t *Tx) ReattributeFeedDocuments(ctx context.Context, from, to Feed) error {
+	_, err := t.exec(ctx, "UPDATE attachments SET attached_by = ? WHERE tenant_id = ? AND origin = ? AND attached_by = ?",
+		to.ID, from.TenantID, AttachedByFeed, from.ID)
+	return err
 }
 
 // WithdrawFeedAttachment marks a received document withdrawn by a statement numbered seq (a newer

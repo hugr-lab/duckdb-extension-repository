@@ -117,3 +117,16 @@ func sign2(t *testing.T, key *rsa.PrivateKey, raw string) ([]byte, []byte) {
 	}
 	return []byte(raw), sig
 }
+
+// The issuer is the form a subscriber normalises its feed URL to.
+func TestIssuer(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://Kista.Example":      "https://kista.example/api/v1/tenants/acme",
+		"https://kista.example:443/": "https://kista.example/api/v1/tenants/acme",
+		"https://kista.example:8443": "https://kista.example:8443/api/v1/tenants/acme",
+	} {
+		if got := Issuer(in, "acme"); got != want {
+			t.Errorf("%s: %s", in, got)
+		}
+	}
+}

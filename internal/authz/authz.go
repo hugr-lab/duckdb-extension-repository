@@ -224,6 +224,9 @@ func GrantCovers(g store.Grant, verb string, r Resource) bool {
 	if verb == store.VerbAudit && (g.ChannelID != "" || g.Extension != "") {
 		return false // the tenant's log: a tenant-wide grant only
 	}
+	if verb == store.VerbFeed && g.ChannelID != "" && !slices.Contains(g.Verbs, store.VerbFeed) {
+		return false // spec 0011: only a tenant-wide admin implies feed; on a channel it is granted explicitly
+	}
 	switch {
 	case g.ChannelID == "" && g.Extension == "":
 		return true

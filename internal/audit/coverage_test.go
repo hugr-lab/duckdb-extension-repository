@@ -88,8 +88,8 @@ var writes = map[string]map[string][]audit.Kind{
 	"keys.Service": {
 		"Add": {"key.add"}, "Activate": {"key.activate"}, "Retire": {"key.retire"},
 		"List": nil, "Events": nil, "PublicWellKnown": nil, "WellKnownOf": nil, "WellKnown": nil, "OpenSigner": nil,
-		"AddAttestation": {"attestation-key.add"}, "ActivateAttestation": {"attestation-key.activate"},
-		"RetireAttestation": {"attestation-key.retire"}, "ListAttestation": nil, "PublicAttestation": nil, "OpenAttestationSigner": nil,
+		"AddAttestation": {"attestation_key.add"}, "ActivateAttestation": {"attestation_key.activate"},
+		"RetireAttestation": {"attestation_key.retire"}, "ListAttestation": nil, "PublicAttestation": nil, "OpenAttestationSigner": nil,
 	},
 	"release.Service": {
 		"Add": {"release.add", "release.publish", "shadow.add"}, "Promote": {"release.promote", "shadow.add"}, "Apply": {"release.yank",
@@ -482,20 +482,20 @@ func TestCoverage(t *testing.T) {
 		k, err := en.ks.AddAttestation(rctx, admin, "acme", "file:att1.pem", true)
 		attKeys = append(attKeys, k.ID)
 		return err
-	}), "attestation-key.add")
+	}), "attestation_key.add")
 	en.expect("keys.Service.AddAttestation", do(func() error {
 		k, err := en.ks.AddAttestation(rctx, admin, "acme", "file:att2.pem", false)
 		attKeys = append(attKeys, k.ID)
 		return err
-	}), "attestation-key.add")
+	}), "attestation_key.add")
 	en.expect("keys.Service.ActivateAttestation", do(func() error {
 		_, err := en.ks.ActivateAttestation(rctx, admin, "acme", attKeys[1], 0, false)
 		return err
-	}), "attestation-key.activate")
+	}), "attestation_key.activate")
 	en.expect("keys.Service.RetireAttestation", do(func() error {
 		_, err := en.ks.RetireAttestation(rctx, admin, "acme", attKeys[0], 0, false)
 		return err
-	}), "attestation-key.retire")
+	}), "attestation_key.retire")
 	att.Keys, att.PublicURL = en.ks, "https://kista.example"
 	feedable := true
 	en.expect("attachment.Service.SetFlags", do(func() error {

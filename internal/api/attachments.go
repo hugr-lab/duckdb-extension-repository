@@ -42,6 +42,7 @@ type attachmentJSON struct {
 	// a feed's document: who stands behind it at its source, and the key that signed it
 	SourceOrigin string `json:"source_origin,omitempty"`
 	Key          string `json:"key,omitempty"`
+	Audience     string `json:"audience,omitempty"` // who its source lets subscribers show it to
 	ETag         string `json:"etag,omitempty"`
 }
 
@@ -53,6 +54,9 @@ func (h *Handler) attachmentOf(a store.Attachment, manage bool, head bool, c cal
 		o.AttachedBy, o.Supersedes, o.Visibility, o.ETag = createdBy(a.AttachedBy, c), a.Supersedes, a.Visibility, versionTag(a.Version)
 		o.Head, o.Feedable, o.Withdrawn = &head, &a.Feedable, !a.WithdrawnAt.IsZero()
 		o.SourceOrigin, o.Key = a.SourceOrigin, a.KeyFP
+		if a.Origin == store.AttachedByFeed {
+			o.Audience = attachment.Audience(a)
+		}
 	}
 	return o
 }

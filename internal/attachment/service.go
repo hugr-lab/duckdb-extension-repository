@@ -276,7 +276,7 @@ func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant, ext, id s
 	if feedable != nil && *feedable && rec.Origin == store.AttachedByFeed {
 		return store.Attachment{}, fmt.Errorf("%w: a feed's document is not offered onward", store.ErrInvalid)
 	}
-	if visibility != nil && *visibility == store.VisibleReaders && rec.Origin == store.AttachedByFeed && audience(rec) != store.VisibleReaders {
+	if visibility != nil && *visibility == store.VisibleReaders && rec.Origin == store.AttachedByFeed && Audience(rec) != store.VisibleReaders {
 		// the source signed who may see it: a document for administrators stays theirs
 		return store.Attachment{}, fmt.Errorf("%w: its source offers it to administrators only", store.ErrInvalid)
 	}
@@ -295,20 +295,20 @@ func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant, ext, id s
 			return nil
 		}
 		// spec 0011 phase 1b: marking a document feedable issues its statement, a change of what it
-		// says while offered (its audience) a new one, un-marking its withdrawal. Only marking needs
-		// the statement signed: when the tenant can no longer sign (no active attestation key), a
-		// change goes ahead and the document is no longer offered, which the feed honours unsigned.
+		// says while offered (its audience) a new one, un-marking its withdrawal. Each is signed; only
+		// un-marking goes ahead unsigned, and only when the tenant cannot sign at all (no active
+		// attestation key, no public URL): the feed then leaves the document out. A signer that
+		// fails now fails the change, to be tried again.
 		var seq int64
 		if f || cur.Feedable {
 			next := cur
 			next.Visibility = v
 			var err error
-			seq, err = s.issue(ctx, tx, t, next, !f)
-			if err != nil && (!cur.Feedable || !errors.Is(err, store.ErrInvalid)) {
-				return err
-			}
-			if err != nil {
-				f, seq = false, 0
+			if seq, err = s.issue(ctx, tx, t, next, !f); err != nil {
+				if f || !errors.Is(err, store.ErrInvalid) {
+					return err
+				}
+				seq = 0
 			}
 		}
 		change := map[string]any{}
@@ -357,6 +357,14 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, ext, id str
 
 func (s *Service) remove(ctx context.Context, a authz.Actor, t store.Tenant, subj string, rec store.Attachment) error {
 	err := s.Store.InTx(ctx, lock(t), func(tx *store.Tx) error {
+		// read again under the lock: a document marked feedable meanwhile is withdrawn
+		rec, err := tx.GetAttachment(ctx, t.ID, rec.ID)
+		if err != nil {
+			return err
+		}
+		if !rec.RemovedAt.IsZero() {
+			return fmt.Errorf("%w: attachment %s", store.ErrNotFound, rec.ID)
+		}
 		if _, err := tx.RemoveAttachment(ctx, rec); err != nil {
 			return err
 		}
@@ -413,8 +421,8 @@ func (s *Service) RemoveBlockedDocument(ctx context.Context, a authz.Actor, tena
 	return fmt.Errorf("%w: attachment %s", store.ErrNotFound, id)
 }
 
-// audience is what a feed's document's signed statement says of who may see it ("" if unreadable).
-func audience(rec store.Attachment) string {
+// Audience is what a feed's document's signed statement says of who may see it ("" if unreadable).
+func Audience(rec store.Attachment) string {
 	var st struct {
 		Audience string `json:"audience"`
 	}

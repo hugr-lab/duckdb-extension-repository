@@ -48,7 +48,8 @@ func TestCovers(t *testing.T) {
 		{"feed on another channel", g("subject", "me", "staging", "", "feed"), "feed", prod, false},
 		{"tenant feed in a channel", g("subject", "me", "", "", "feed"), "feed", prod, true},
 		{"feed is not install", g("subject", "me", "", "", "feed"), "install", tresor, false},
-		{"channel admin implies feed", g("subject", "me", "prod", "", "admin"), "feed", prod, true},
+		{"tenant admin implies feed", g("subject", "me", "", "", "admin"), "feed", prod, true},
+		{"channel admin does not imply feed", g("subject", "me", "prod", "", "admin"), "feed", prod, false},
 		{"extension admin does not feed", g("subject", "me", "", "tresor", "admin"), "feed", prod, false},
 		{"issuer-wide feed is ignored", g("issuer", "", "", "", "feed"), "feed", prod, false},
 	} {

@@ -4,6 +4,7 @@ import { Badge, Button, Card, Checks, Chips, Confirm, Empty, ErrorBox, Field, Lo
 import { useAction } from '../lib/action'
 import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, fingerprintSeg, seg } from '../lib/http'
+import { entryNames } from '../lib/names'
 import { platforms } from './Channel'
 import { Feeds } from './Feeds'
 
@@ -76,10 +77,8 @@ export function countsLine(r?: RunResult) {
   return counts(r).map(([k, n]) => `${k} ${n}`).join(' · ') || 'nothing to do'
 }
 
-/** Names typed into a field: separated by commas or spaces, each once. */
-export function entryNames(s: string): string[] {
-  return [...new Set(s.split(/[\s,]+/).filter(Boolean))]
-}
+export { entryNames } from '../lib/names'
+
 
 export interface UpstreamForm {
   name: string
