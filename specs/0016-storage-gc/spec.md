@@ -179,7 +179,8 @@ The pass first reads the domain's marker (spec 0005) and stops if it is not this
 store that cannot list, or a database error, stops the pass for the domain; nothing is deleted on a
 guess. A pass that ran logs its counts and writes a server event `storage.gc` (`domain`,
 `builds`, `bodies`, `marked`, `streams`, `tmp`, `uploads`, `bytes`, `claims`, `resolved`,
-`dry_run`; outcome `failed` with `error` when it stopped on one): nothing of a tenant. A dry run
+`dry_run`; outcome `failed` with `error`, the class `lease`, `domain`, `interrupted` or `error`, when it
+stopped on one; the text goes to the log): nothing of a tenant. A dry run
 counts this pass alone: the streams of the bodies it would delete are not counted as marked, so it
 underestimates what two passes delete.
 

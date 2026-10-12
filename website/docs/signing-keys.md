@@ -167,7 +167,7 @@ are software keys in Vault's barrier, so outside `profile: dev` the source must 
 | `vault.auth.mount` | the auth mount path; default the kind's name (`kubernetes` or `jwt`) |
 | `vault.auth.role` | the Vault role; required for `kubernetes` and `jwt` |
 | `vault.auth.token_file` | absolute path: the projected service-account token (`kubernetes`), the JWT (`jwt`), or the token Vault Agent writes (`token_file`) |
-| `vault.software_keys` | must be `true` outside `profile: dev` |
+| `vault.software_keys` | must be `true` outside `profile: dev`; `kista serve` logs a warning for each `vault` source at every start |
 
 ### Authentication
 

@@ -53,8 +53,9 @@ func validatePublish(bad func(string, ...any), c Config) {
 	if p.MaxPerTenant < 0 || p.MaxPerTenant > 256 {
 		bad("publish.max_per_tenant must be within 1..256")
 	}
-	if p.MaxPerPrincipal > 0 && p.MaxPerTenant > 0 && p.MaxPerPrincipal > p.MaxPerTenant {
-		bad("publish.max_per_principal cannot exceed publish.max_per_tenant")
+	// compared as they apply, a value left out at its default
+	if perPrincipal, perTenant := c.PublishLimits(); perPrincipal > perTenant {
+		bad("publish.max_per_principal (%d) cannot exceed publish.max_per_tenant (%d)", perPrincipal, perTenant)
 	}
 	names, urls := map[string]bool{}, map[string]bool{}
 	for i, pr := range p.Providers {

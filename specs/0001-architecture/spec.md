@@ -193,8 +193,9 @@ kista does not pin by hash.
   transport, protects them. Private releases are served only over `https`.
 - So the public minimum is **httpfs** plus **tresor**, both public. With tresor the client logs in
   and gets the token for the rest.
-- The client also needs `allow_extension_repositories = 'allowed'`, which can only be set at
-  startup.
+- The client also needs `allow_extension_repositories = 'allowed'`. At the pin a running client may
+  move it from `undecided` to `allowed` or `forbidden`, and from `allowed` to `forbidden`, never
+  back (`custom_settings.cpp`).
 
 ### Signing keys
 

@@ -50,7 +50,7 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   issuer remove <tenant> <name>                   removes its grants too
   issuer console <tenant> <name> (-client-id <id> [-scopes a,b] [-audience a] [-audience-parameter p] | -remove)
                   the administration console's public client at the issuer (spec 0015)
-  grant add <tenant> -principal kind:issuer|value -verb install|admin|publish|promote... [-channel c]
+  grant add <tenant> -principal kind:issuer|value -verb install|admin|publish|promote|audit|feed... [-channel c]
             [-extension x | -extension-group g]
   grant list <tenant> [-extension-group g] [-extension x]
   grant remove <tenant> <grant-id>

@@ -40,9 +40,9 @@ commit or roll back together. Refusals, authentication failures, failures and in
 through an asynchronous writer and can be lost in a crash.
 
 Events never carry tokens, API keys (only their prefix), signer references, credentials or key
-material. A failure carries an error class, never an error's text, with one exception:
-`storage.gc` and `storage.verify` (server events) carry the error's text, cut to 1,000 bytes, in
-`error`. Validation errors and stale `If-Match` (`400`, `409`, `412`, `428`) are not events:
+material. A failure carries an error class, never an error's text: for `storage.gc` and
+`storage.verify`, `error` is `lease`, `implausible`, `domain`, `interrupted` or `error`, and the text
+is in the server's log or the command's stderr. Validation errors and stale `If-Match` (`400`, `409`, `412`, `428`) are not events:
 nothing happened.
 
 To a tenant's readers, and to sinks unless `unmasked: true`, a server administrator's or the CLI's

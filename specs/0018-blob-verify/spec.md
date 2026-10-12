@@ -92,7 +92,8 @@ stream again (spec 0005). So:
 A pass per domain is the server event `storage.verify` (actor the OS user, subject `domain:<name>`):
 `domain`, `full`, `mark`, `unmark`, the counts (`checked`, `ok`, `skipped`, `marked_ok`, `missing`,
 `short`, `long`, `corrupt`, `record`, `unreadable`), `marked`, `unmarked`, `bytes`, and `error` when
-the pass stopped. Its outcome is `ok` when every record was, `failed` otherwise, so a sink can alert
+the pass stopped (its class, `implausible`, `domain`, `interrupted` or `error`, as spec 0010 has it; the
+text is on stderr). Its outcome is `ok` when every record was, `failed` otherwise, so a sink can alert
 on it. Body hashes are in the command's output, not in the event: an event is a summary.
 
 ### Running it

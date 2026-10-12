@@ -67,7 +67,7 @@ func issuerIfMatch(w http.ResponseWriter, r *http.Request) (string, bool) {
 func exactIssuer(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id, ok := issuerIfMatch(w, r)
 	if ok && id == "" {
-		problem(w, http.StatusPreconditionRequired, typePrecondition, `If-Match is the issuer record's ETag, not *`)
+		problem(w, http.StatusPreconditionRequired, typeRequired, `If-Match is the issuer record's ETag, not *`)
 		return "", false
 	}
 	return id, ok

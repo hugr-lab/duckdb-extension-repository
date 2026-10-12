@@ -181,14 +181,14 @@ change them per release (see [Publishing](publishing.md#changing-a-release)).
   committing or touching the cells and the schedule. Its counts (`would_release` for a cell it would
   release) and first 20 problems go to `last_run`.
 - Every replica polls every 30 seconds. One run at a time per upstream (a lease,
-  `kista/upstream/<id>`, renewed every 30 seconds). A replica fetches at most
-  `upstreams.concurrency` cells at once (default 4), and at most 2 at once per upstream host.
+  `kista/upstream/<id>`, renewed every 30 seconds). A replica runs at most
+  `upstreams.concurrency` upstreams and fetches at most that many cells at once (default 4), and at most 2 at once per upstream host.
 - A run follows the record as it is: pausing or removing the upstream stops it after the cell in
   progress; a removed entry, platform or key applies to the next cell.
 
 ```yaml title="kista.yaml"
 upstreams:                   # file-only
-  concurrency: 4             # cells fetched at once per replica; 1..32
+  concurrency: 4             # runs, and cells fetched, at once per replica; 1..32
   fetch_timeout: 10m         # one file's download; 1m..2h
   min_rate: 64KiB            # a download's least rate after 30s; at least 1KiB
   interval: 6h               # between a mirror's scheduled runs; 15m..168h

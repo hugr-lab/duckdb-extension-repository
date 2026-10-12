@@ -119,7 +119,7 @@ make test
 | `console-e2e` | `make console`, Playwright's Chromium, `make console-e2e` |
 | `network` | Real DuckDB core and community files through the intake (`KISTA_TEST_NETWORK=1`); depends on DuckDB's servers, so it does not block |
 | `reserved` | `make reserved`, then fails if the committed lists changed |
-| `e2e` (own workflow) | DuckDB at the pin against kista, on pull requests and pushes to `main` that touch the paths listed in `.github/workflows/e2e.yml` (`cmd/`, `e2e/` and part of `internal/`), or on demand |
+| `e2e` (own workflow) | DuckDB at the pin against kista, on pull requests and pushes to `main` that touch `internal/`, `cmd/`, `e2e/`, `go.mod`, `go.sum` or the `Makefile`, or on demand |
 | `docs-build` (own workflow) | This site, on changes under `website/` |
 
 ## Lint

@@ -91,6 +91,13 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// spec 0004: a vault source's keys are software keys (acknowledged with software_keys outside dev), said at every start
+	for _, s := range cfg.Signers.Sources {
+		if s.Kind == "vault" {
+			log.Warn("serve: a key source holds software keys (Vault Transit); its private keys live in Vault's storage, not an HSM",
+				"source", s.Name)
+		}
+	}
 	if err := ServerStart(ctx, cfg, st); err != nil {
 		log.Error("serve: recording server.start", "error", err)
 	}
