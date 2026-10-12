@@ -177,7 +177,7 @@ func (f *Feeds) Add(ctx context.Context, a authz.Actor, tenant string, sp FeedSp
 		}
 		fd.Channels, names = append(fd.Channels, ch.ID), append(names, ch.Name)
 	}
-	err = f.Store.InTx(ctx, store.FeedLock(t.ID), func(tx *store.Tx) error {
+	err = f.Store.InTenantTx(ctx, t.ID, []string{store.FeedLock(t.ID)}, func(tx *store.Tx) error {
 		if err := tx.InsertFeed(ctx, &fd); err != nil {
 			return err
 		}
@@ -234,7 +234,7 @@ func (f *Feeds) Change(ctx context.Context, a authz.Actor, tenant, name string, 
 		return store.Feed{}, err
 	}
 	var out store.Feed
-	err = f.Store.InTx(ctx, store.FeedLock(t.ID), func(tx *store.Tx) error {
+	err = f.Store.InTenantTx(ctx, t.ID, []string{store.FeedLock(t.ID)}, func(tx *store.Tx) error {
 		fd, err := tx.GetFeed(ctx, t.ID, name)
 		if err != nil {
 			return err
@@ -303,7 +303,7 @@ func (f *Feeds) Remove(ctx context.Context, a authz.Actor, tenant, name string, 
 	if err != nil {
 		return err
 	}
-	return f.Store.InTxLocks(ctx, []string{store.FeedLock(t.ID), lock(t)}, func(tx *store.Tx) error {
+	return f.Store.InTenantTx(ctx, t.ID, []string{store.FeedLock(t.ID), lock(t)}, func(tx *store.Tx) error {
 		fd, err := tx.GetFeed(ctx, t.ID, name)
 		if err != nil {
 			return err
@@ -339,7 +339,7 @@ func (f *Feeds) Sync(ctx context.Context, a authz.Actor, tenant, name string) (s
 		return store.Feed{}, err
 	}
 	var out store.Feed
-	err = f.Store.InTx(ctx, "", func(tx *store.Tx) error {
+	err = f.Store.InTenantTx(ctx, t.ID, nil, func(tx *store.Tx) error {
 		fd, err := tx.GetFeed(ctx, t.ID, name)
 		if err != nil {
 			return err
@@ -447,7 +447,7 @@ func (f *Feeds) RunFeed(ctx context.Context, id string, renew func(context.Conte
 		next = res.Ended.Add(f.Interval + time.Duration(rand.Int64N(int64(f.Interval/10)+1)))
 	}
 	fctx := context.WithoutCancel(ctx)
-	err = f.Store.InTx(fctx, "", func(tx *store.Tx) error {
+	err = f.Store.InTenantTx(fctx, t.ID, nil, func(tx *store.Tx) error {
 		if err := tx.FinishFeedRun(fctx, id, string(b), status, res.Error, res.Started, next); err != nil {
 			return err
 		}
@@ -621,7 +621,7 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 		}
 		for _, h := range ans.Bodies {
 			if sent[h.BodyHash] && !failed[h.BodyHash] && h.Seq > cursors[h.BodyHash] && h.Seq <= r.verified {
-				if err := r.f.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, h.BodyHash, h.Seq) }); err != nil {
+				if err := r.f.Store.InTenantTx(ctx, r.t.ID, nil, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, h.BodyHash, h.Seq) }); err != nil {
 					return err
 				}
 				cursors[h.BodyHash] = h.Seq
@@ -687,7 +687,7 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 	case reason != "":
 		r.refuse(st, reason)
 	}
-	err = r.f.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, st.BodyHash, st.Seq) })
+	err = r.f.Store.InTenantTx(ctx, r.t.ID, nil, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, st.BodyHash, st.Seq) })
 	if err == nil {
 		cursors[st.BodyHash] = st.Seq
 	}
@@ -719,7 +719,7 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		if existing.BodyHash != st.BodyHash {
 			return "body", nil
 		}
-		err := r.f.Store.InTx(ctx, lock(t), func(tx *store.Tx) error {
+		err := r.f.Store.InTenantTx(ctx, t.ID, []string{lock(t)}, func(tx *store.Tx) error {
 			return tx.WithdrawFeedAttachment(ctx, existing, st.Seq, string(stmt), sigText)
 		})
 		if errors.Is(err, store.ErrConflict) {
@@ -766,7 +766,7 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		if st.Audience != store.VisibleReaders {
 			upd.Visibility = store.VisibleAdministrators // ...unless narrowed at the source; widening is the administrators'
 		}
-		err := r.f.Store.InTx(ctx, lock(t), func(tx *store.Tx) error { return tx.ReissueFeedAttachment(ctx, &upd) })
+		err := r.f.Store.InTenantTx(ctx, t.ID, []string{lock(t)}, func(tx *store.Tx) error { return tx.ReissueFeedAttachment(ctx, &upd) })
 		if errors.Is(err, store.ErrConflict) {
 			return "", nil
 		}
@@ -808,7 +808,7 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		return "", transient{err}
 	}
 	reason := ""
-	err = r.f.Store.InTx(ctx, lock(t), func(tx *store.Tx) error {
+	err = r.f.Store.InTenantTx(ctx, t.ID, []string{lock(t)}, func(tx *store.Tx) error {
 		reason = ""
 		held, err := tx.TouchBody(ctx, t.ID, st.BodyHash)
 		if err != nil {

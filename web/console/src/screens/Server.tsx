@@ -9,13 +9,38 @@ import { useAction } from '../lib/action'
 import { Events } from './Events'
 import { TenantArea } from './TenantArea'
 
-interface Tenant {
+export interface DeletionKey {
+  kind: string
+  id: string
+  fingerprint: string
+  signer_ref: string
+}
+
+export interface Tenant {
   name: string
   display_name?: string
-  state: string
+  state: 'active' | 'suspended' | 'deleting' | 'deleted'
   storage_domain?: string
   created_at: string
+  suspended_at?: string
+  deletable_at?: string
+  deletion?: {
+    started_at: string
+    started_by: string
+    passes: number
+    table?: string
+    deleted_rows: number
+    last_error?: string
+    next_attempt_at?: string
+    finished_at?: string
+    keys: DeletionKey[]
+  }
   etag: string
+}
+
+/** Whether a suspended tenant may be deleted now (spec 0019: from deletable_at). */
+export function deletable(t: Pick<Tenant, 'state' | 'deletable_at'>, now: Date): boolean {
+  return t.state === 'suspended' && !!t.deletable_at && new Date(t.deletable_at) <= now
 }
 
 /** The server scope: its administrator is gated by /api/v1/whoami, and acts in any tenant with the
@@ -122,6 +147,8 @@ function ServerTenant({ client, root }: { client: Client; root: string }) {
 function ServerTenantView({ t, client, root }: { t: string; client: Client; root: string }) {
   const info = useLoad(() => client.get<Tenant>(`/tenants/${seg(t)}`), [t])
   const [pending, setPending] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [typed, setTyped] = useState('')
   const { busy, failure, act } = useAction('The tenant', info.reload)
   const suspended = info.data?.data.state === 'suspended'
   const toggle = async () => {
@@ -129,21 +156,86 @@ function ServerTenantView({ t, client, root }: { t: string; client: Client; root
     await act(() => client.post(`/tenants/${seg(t)}/${suspended ? 'resume' : 'suspend'}`, { ifMatch: info.data!.etag || info.data!.data.etag }))
     info.reload()
   }
+  const remove = async () => {
+    setDeleting(false)
+    setTyped('')
+    await act(() => client.del(`/tenants/${seg(t)}`, { ifMatch: info.data!.etag || info.data!.data.etag }))
+    info.reload()
+  }
   const perms = useMemo(() => new Perms(true), [])
   const label = <>Tenant <span className="font-mono normal-case tracking-normal">{t}</span></>
+  const tn = info.data?.data
+  if (tn && (tn.state === 'deleting' || tn.state === 'deleted')) return <DeletionView t={tn} reload={info.reload} />
   return (
     <TenantContext.Provider value={{ client, tenant: t, perms, api: `/tenants/${seg(t)}`, base: `${root}/tenants/${seg(t)}` }}>
       <div className="flex items-center gap-3">
         <h1 className="m-0 font-mono text-[24px] font-bold leading-8">{t}</h1>
         {info.data && <Badge>{info.data.data.state}</Badge>}
-        {info.data && <span className="ml-auto"><Button tone={suspended ? 'outline' : 'danger-outline'} disabled={busy || info.loading} onClick={() => setPending(true)}>{suspended ? 'Resume…' : 'Suspend…'}</Button></span>}
+        {info.data && (
+          <span className="ml-auto flex gap-2">
+            <Button tone={suspended ? 'outline' : 'danger-outline'} disabled={busy || info.loading} onClick={() => setPending(true)}>{suspended ? 'Resume…' : 'Suspend…'}</Button>
+            {suspended && (
+              <Button tone="danger-outline" disabled={busy || info.loading || !deletable(info.data.data, new Date())} onClick={() => setDeleting(true)}
+                title={info.data.data.deletable_at ? `may be deleted from ${when(info.data.data.deletable_at)}` : undefined}>Delete…</Button>
+            )}
+          </span>
+        )}
       </div>
+      {suspended && tn?.deletable_at && !deletable(tn, new Date()) && <Note>It may be deleted from {when(tn.deletable_at)} (tenants.min_suspended).</Note>}
+      {suspended && tn && !tn.deletable_at && <Note>An older version suspended it: resume it and suspend it again before deleting it.</Note>}
       {failure != null && <ErrorBox error={failure} />}
       <Confirm open={pending} title={`${suspended ? 'Resume' : 'Suspend'} ${t}?`} confirm={suspended ? 'Resume' : 'Suspend'} danger={!suspended} onConfirm={toggle} onClose={() => setPending(false)}>
         <p>{suspended ? 'The tenant serves and answers again.' : 'The tenant serves nothing and its API answers as if it did not exist, until it is resumed. Nothing is deleted.'}</p>
       </Confirm>
+      <Confirm open={deleting} title={`Delete ${t}?`} confirm="Delete" danger disabled={typed !== t} onConfirm={remove}
+        onClose={() => { setDeleting(false); setTyped('') }}>
+        <p>Its channels, keys, releases, grants, publishers, upstreams, documents, feeds and statistics are removed, and cannot be
+          restored. Its name is never given to another tenant. Its events stay until their retention ends.</p>
+        <p>Retire its keys in their key sources afterwards: the deletion's record lists them.</p>
+        <label className="block">
+          Type <Mono>{t}</Mono> to confirm:
+          <input data-autofocus aria-label="confirm name" className="field mt-1 w-full font-mono" value={typed} onChange={(e) => setTyped(e.target.value)} />
+        </label>
+      </Confirm>
       <TenantArea label={label} />
     </TenantContext.Provider>
+  )
+}
+
+/** A tenant whose deletion started (spec 0019): its tenant screens would all be unknown, so its
+ * deletion is shown instead, with the keys to retire. */
+function DeletionView({ t, reload }: { t: Tenant; reload: () => void }) {
+  const d = t.deletion
+  return (
+    <>
+      <div className="flex items-center gap-3">
+        <h1 className="m-0 font-mono text-[24px] font-bold leading-8">{t.name}</h1>
+        <Badge>{t.state}</Badge>
+        <span className="ml-auto"><Button onClick={reload}>Refresh</Button></span>
+      </div>
+      <Card title="Deletion">
+        {!d ? <Empty>No deletion record.</Empty> : (
+          <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1 text-[13px]">
+            <dt className="text-ink-muted">Started</dt><dd>{when(d.started_at)} by <Mono>{d.started_by}</Mono></dd>
+            {d.finished_at && <><dt className="text-ink-muted">Deleted</dt><dd>{when(d.finished_at)}</dd></>}
+            <dt className="text-ink-muted">Rows deleted</dt><dd>{d.deleted_rows} in {d.passes} {d.passes === 1 ? 'pass' : 'passes'}</dd>
+            {d.table && <><dt className="text-ink-muted">Reached</dt><dd><Mono>{d.table}</Mono></dd></>}
+            {d.last_error && <><dt className="text-ink-muted">Last error</dt><dd className="text-danger">{d.last_error}</dd></>}
+            {!d.finished_at && d.next_attempt_at && <><dt className="text-ink-muted">Next attempt</dt><dd>{when(d.next_attempt_at)}</dd></>}
+          </dl>
+        )}
+      </Card>
+      <Card title="Keys to retire">
+        <Note>kista only signed with these; disable or destroy them in their key sources.</Note>
+        {!d || d.keys.length === 0 ? <Empty>No keys.</Empty> : (
+          <Table rows={d.keys} rowKey={(k) => k.id} columns={[
+            ['Kind', (k) => <Badge>{k.kind}</Badge>],
+            ['Fingerprint', (k) => <Mono>{k.fingerprint}</Mono>],
+            ['Signer', (k) => <Mono>{k.signer_ref}</Mono>],
+          ]} />
+        )}
+      </Card>
+    </>
   )
 }
 

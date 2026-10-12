@@ -258,6 +258,9 @@ func (d *Daily) count(ctx context.Context, day string) error {
 	}
 	rows := map[store.InstallerKey]int64{}
 	for _, t := range tenants {
+		if !t.DeletingAt.IsZero() {
+			continue // spec 0019: its statistics go with it
+		}
 		chans, err := d.Store.ListChannels(ctx, t.Name)
 		if err != nil {
 			return err

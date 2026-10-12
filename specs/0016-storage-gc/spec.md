@@ -21,7 +21,7 @@ Delivery, each phase a pull request:
   and the scheduled pass, off until the operator turns it on.
 - **2. Purging releases**: a tenant administrator deletes a yanked release explicitly (the owner's
   choice, 2026-10-09: no automatic retention); its slot stays taken; its body becomes garbage.
-  Tenant deletion follows the same path later.
+  Tenant deletion follows the same path (spec 0019).
 
 ## Problem
 
@@ -322,7 +322,8 @@ internal/app, cmd/kista, internal/api   + the scheduled pass, kista admin blob g
 
 ## Follow-ups
 
-- Tenant deletion; an automatic retention for yanked releases, if wanted later.
+- Tenant deletion: spec 0019.
+- An automatic retention for yanked releases, if wanted later.
 - `kista admin blob verify` (spec 0005's follow-up): spec 0018.
 - Moving a tenant between domains (spec 0005's follow-up), which leaves the old domain's bodies to
   this collector.

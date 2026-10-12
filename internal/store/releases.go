@@ -144,6 +144,9 @@ func nullable(s string) any {
 // it into b (the footer fields then must agree, which they do for one body). A checked b marks an
 // existing unchecked build checked.
 func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
+	if err := t.WritableTenant(ctx, b.TenantID, false); err != nil {
+		return err // spec 0019: no Build for a tenant whose deletion started
+	}
 	cur, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND name = ? AND body_hash = ?",
 		b.TenantID, b.Name, b.BodyHash))
 	if err == nil {
@@ -382,6 +385,9 @@ func (t *Tx) SetServingKey(ctx context.Context, channelID, old, key string) erro
 // ChannelByID reads a channel inside the transaction.
 func (t *Tx) ChannelByID(ctx context.Context, id string) (Channel, error) {
 	c, err := scanChannel(t.queryRow(ctx, "SELECT "+channelCols+" FROM channels c WHERE c.id = ?", id))
+	if err == nil {
+		err = t.WritableTenant(ctx, c.TenantID, false) // spec 0019: the tenant held open until commit
+	}
 	return c, notFound(err, "channel")
 }
 
@@ -488,10 +494,10 @@ func (s *Store) GetServeChannel(ctx context.Context, tenant, channel string) (Se
 	t, c := &sc.Tenant, &sc.Channel
 	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT t.id, t.name, t.state, t.storage_domain, t.auth_version, c.id, c.tenant_id,
 c.name, c.kind, c.version, c.serving_key_id, c.release_version FROM channels c JOIN tenants t ON t.id = c.tenant_id
-WHERE t.name = ? AND c.name = ?`), tenant, channel).Scan(&t.ID, &t.Name, &t.State, &t.StorageDomain, &t.AuthVersion, &c.ID, &c.TenantID,
+WHERE t.name = ? AND c.name = ? AND t.deleting_at IS NULL`), tenant, channel).Scan(&t.ID, &t.Name, &t.State, &t.StorageDomain, &t.AuthVersion, &c.ID, &c.TenantID,
 		&c.Name, &c.Kind, &c.Version, &serving, &c.ReleaseVersion)
 	c.ServingKeyID = serving.String
-	return sc, notFound(err, "channel "+tenant+"/"+channel)
+	return sc, s.closedOr(ctx, tenant, notFound(err, "channel "+tenant+"/"+channel))
 }
 
 // Candidate is a release with what resolution needs from its build.
@@ -563,7 +569,7 @@ WHERE cv.channel_id = ? AND v.name = ?`, channelID, version).Scan(&n)
 // non-yanked release without a signature by the active key.
 func (s *Store) ChannelsToResign(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id FROM channels c JOIN channel_keys k ON k.channel_id = c.id AND k.state = 'active'
-WHERE c.kind = 'signed' AND (c.serving_key_id <> k.id OR EXISTS (SELECT 1 FROM releases r WHERE r.channel_id = c.id
+WHERE c.kind = 'signed' AND c.tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) AND (c.serving_key_id <> k.id OR EXISTS (SELECT 1 FROM releases r WHERE r.channel_id = c.id
 AND r.state <> 'yanked' AND NOT EXISTS (SELECT 1 FROM release_signatures x WHERE x.release_id = r.id AND x.key_id = k.id)))`)
 	if err != nil {
 		return nil, err

@@ -157,7 +157,8 @@ audience_parameter, audience}]}`:
 - `issuers` lists the issuer records that have a console client;
 - each entry has the audience its tokens must carry: the client's `audience` if it set one (Entra
   needs the assigned `api://…`), otherwise the canonical `<public_url>/<tenant>`;
-- an unknown or suspended tenant answers `404`, like every tenant route (spec 0007);
+- an unknown, suspended, deleting or deleted tenant answers `404`, like every tenant route (spec
+  0007, spec 0019);
 - listing an issuer here makes its URL public. That identifies the tenant's IdP (an Entra tenant
   id, an Okta domain), so the tenant opts in per record by setting a console client.
 
@@ -394,7 +395,13 @@ DuckDB versions.
   a trusted key and retires a trusted one (with the key's `If-Match`, confirmed, the API's refusal
   shown as worded); a server administrator also adds a key by signer reference and may force.
 - **Server**: tenants created (name, display name, storage domain) and suspended or resumed (with
-  the tenant's `If-Match`, confirmed); DuckDB versions listed and added (name, kind, a maximum C API
+  the tenant's `If-Match`, confirmed). Spec 0019: a suspended tenant has **Delete…**, enabled from
+  its `deletable_at` (before then a note says when). Its dialog says what goes and what stays, says
+  to retire the keys in their key sources, and asks for the tenant's name typed in full; it sends
+  the tenant's `If-Match`. A deleting or deleted tenant shows a deletion view instead of its
+  screens (which would all answer `404`): the state, when and by whom it started, the rows
+  deleted, the passes, the table reached, the last error, the next attempt, and the keys to
+  retire. DuckDB versions listed and added (name, kind, a maximum C API
   per major), and a C API added to one.
 
 ### The micro-frontend contract (1b; kista's contract version 1)

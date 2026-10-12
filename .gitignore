@@ -25,3 +25,4 @@ playwright/.cache/
 .eslintcache
 .npm/
 npm-debug.log*
+/kista

@@ -175,6 +175,22 @@ attestation key apart from a channel key. A subscriber accepts statements only u
 only for bodies it holds, and verifies every field it shows; content is fetched only from the fixed
 path under the configured feed URL, through egress.
 
+## Tenant deletion
+
+- **Two steps, server administrators only.** A tenant is suspended first and can be deleted only
+  after `tenants.min_suspended`; the delete needs the tenant's exact ETag over the API and the name
+  typed again in the CLI and the console. A tenant administrator cannot delete its own tenant.
+- **Fail closed.** From the delete, the tenant answers `404` on every DuckDB and API route exactly
+  as a name that never existed, no write for it commits, its upstreams, feeds and re-signing stop,
+  and nothing is served or signed from a half-deleted tenant.
+- **No reuse.** The tenant's row stays as a tombstone, so its name, and the `.well-known` keys
+  DuckDB clients pinned under its prefix, never pass to another tenant. Its key fingerprints never
+  sign for another tenant, and its audiences cannot be assigned to another one.
+- **Signer references** stay out of events; only server administrators read them, in the
+  deletion's record, to retire the keys in their sources.
+
+Details: [Deleting a tenant](administration/tenants-and-channels.md#deleting-a-tenant).
+
 ## Audit
 
 Every management, release, key, upstream and storage change is recorded as an event in the same

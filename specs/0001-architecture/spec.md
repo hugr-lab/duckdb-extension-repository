@@ -365,8 +365,10 @@ events. Global statistics across tenants belong to Enterest.
 - **Blob GC** (spec 0016): mark-and-sweep over the Builds that reference a body, with a grace
   period, so it never races a concurrent intake; a yanked release may be purged explicitly, its
   slot kept taken.
-- **Tenant deletion** cascades to its Builds, Releases, grants, keys and attachments. Its events
-  are exported first. Blobs are left to GC.
+- **Tenant deletion** (spec 0019) takes two steps: a tenant suspended long enough is deleted, and a
+  background reaper removes its Builds, Releases, grants, keys, attachments and the rest in small
+  batches. Its bodies are left to GC. The tenant's row stays as a tombstone, so its name is never
+  reused. Its events stay until their retention, as spec 0019's table of what is kept says.
 - **A new DuckDB release** is added to a channel's version list. That triggers mirroring for the
   allowlisted names and, for `C_STRUCT` builds, serving under the new version with no new body.
 - **Outbound requests on a tenant's behalf** (issuer discovery, JWKS, upstreams) go through one

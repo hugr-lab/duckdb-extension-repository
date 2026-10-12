@@ -102,6 +102,25 @@ test('a server administrator sees the tenants and opens one', async ({ page }) =
   await expect(page.getByRole('link', { name: 'hello_acme' })).toBeVisible()
 })
 
+test('a server administrator suspends and deletes a tenant (spec 0019)', async ({ page }) => {
+  await page.goto('/ui/server/')
+  await page.getByRole('button', { name: 'Sign in' }).click()
+  await login(page, 'root')
+  await page.getByRole('link', { name: 'scratch', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'scratch' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Delete…' })).toHaveCount(0) // only a suspended tenant
+  await page.getByRole('button', { name: 'Suspend…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Suspend' }).click()
+  await page.getByRole('button', { name: 'Delete…' }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByRole('button', { name: 'Delete' })).toBeDisabled()
+  await dialog.getByLabel('confirm name').fill('scratch')
+  await dialog.getByRole('button', { name: 'Delete' }).click()
+  await expect(page.getByText('Keys to retire')).toBeVisible()
+  await expect(page.getByText('file:s.pem')).toBeVisible()
+  await expect(page.getByText('deleting', { exact: true })).toBeVisible()
+})
+
 test('an ended session signs in again in a popup and keeps what was typed', async ({ page }) => {
   await signInTenant(page, 'tom')
   await page.getByRole('link', { name: 'Events' }).click()

@@ -28,7 +28,7 @@ func (s *AuthAdmin) SetConsoleClient(ctx context.Context, a authz.Actor, tenant,
 		return store.ConsoleClient{}, err
 	}
 	c.CreatedBy = a.String()
-	err = s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
 		rec, err := tx.GetIssuer(ctx, t.ID, issuer)
 		if err != nil {
 			return err
@@ -65,7 +65,7 @@ func (s *AuthAdmin) RemoveConsoleClient(ctx context.Context, a authz.Actor, tena
 	if err != nil {
 		return err
 	}
-	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
 		rec, err := tx.GetIssuer(ctx, t.ID, issuer)
 		if err != nil {
 			return err

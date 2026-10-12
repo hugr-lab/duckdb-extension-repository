@@ -338,7 +338,7 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	_, listed := entry(u, m.Name)
 	if listed || rec.Outcome == store.CellReleased {
 		wctx := context.WithoutCancel(ctx)
-		if err := s.Store.InTx(wctx, "", func(tx *store.Tx) error {
+		if err := s.Store.InTenantTx(wctx, u.TenantID, nil, func(tx *store.Tx) error {
 			if err := tx.PutCell(wctx, rec); err != nil {
 				return err
 			}

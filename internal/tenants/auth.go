@@ -86,7 +86,7 @@ func (s *AuthAdmin) AddIssuer(ctx context.Context, a authz.Actor, tenant string,
 		return store.Issuer{}, fmt.Errorf("%w: the JWKS of %s has no usable signing key", ErrIssuerFetch, is.URL)
 	}
 	is.TenantID, is.CreatedBy = t.ID, a.String()
-	err = s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
 		if err := tx.InsertIssuer(ctx, &is); err != nil {
 			return err
 		}
@@ -114,7 +114,7 @@ func (s *AuthAdmin) RemoveIssuer(ctx context.Context, a authz.Actor, tenant, nam
 	if err != nil {
 		return err
 	}
-	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
 		rec, err := tx.GetIssuer(ctx, t.ID, name)
 		if err != nil {
 			return err
@@ -156,7 +156,7 @@ func (s *AuthAdmin) AddAudience(ctx context.Context, a authz.Actor, tenant, aud 
 	if slices.Contains(s.ServerAudiences, aud) {
 		return fmt.Errorf("%w: %s is a server audience", store.ErrInvalid, aud)
 	}
-	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
 		if err := tx.AddAudience(ctx, t.ID, aud, a.String()); err != nil {
 			return err
 		}
@@ -173,7 +173,7 @@ func (s *AuthAdmin) RemoveAudience(ctx context.Context, a authz.Actor, tenant, a
 	if err != nil {
 		return err
 	}
-	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
 		// a console client signing in for it would advertise an audience the tenant no longer has
 		if used, err := tx.ConsoleClientUses(ctx, t.ID, aud); err != nil || used {
 			if err == nil {
@@ -246,7 +246,7 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 		g.Value = ""
 	}
 	g.Verbs = dedupe(g.Verbs)
-	err = s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
 		if kind == store.PrincipalPublisher {
 			p, err := tx.GetPublisher(ctx, t.ID, value)
 			if err != nil {
@@ -338,7 +338,7 @@ func (s *AuthAdmin) RemoveGrant(ctx context.Context, a authz.Actor, tenant, id s
 			fields = grantFields(g)
 		}
 	}
-	return s.Store.InTx(ctx, "kista/tenant-auth/"+t.ID, func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
 		before, err := tx.TenantAdminGrants(ctx, t.ID)
 		if err != nil {
 			return err

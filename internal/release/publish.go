@@ -186,7 +186,7 @@ func (s *Service) Block(ctx context.Context, a authz.Actor, tenant, hash, reason
 	}
 	b := store.Block{TenantID: t.ID, BodyHash: hash, Reason: reason, CreatedBy: a.String()}
 	existed := false
-	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+	err = s.Store.InTenantTx(ctx, t.ID, nil, func(tx *store.Tx) error {
 		if err := tx.InsertBlock(ctx, &b); err != nil {
 			return err
 		}
@@ -205,7 +205,7 @@ func (s *Service) Block(ctx context.Context, a authz.Actor, tenant, hash, reason
 		return b, existed, err
 	}
 	for _, ch := range chs { // signed and passthrough channels (spec 0009)
-		err := s.Store.InTx(ctx, lockKey(ch.ID), func(tx *store.Tx) error {
+		err := s.Store.InTenantTx(ctx, ch.TenantID, []string{lockKey(ch.ID)}, func(tx *store.Tx) error {
 			rels, err := tx.LiveReleasesWithBody(ctx, ch.ID, hash)
 			if err != nil {
 				return err
@@ -233,7 +233,7 @@ func (s *Service) Unblock(ctx context.Context, a authz.Actor, tenant, hash strin
 	if err != nil {
 		return err
 	}
-	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+	if err := s.Store.InTenantTx(ctx, t.ID, nil, func(tx *store.Tx) error {
 		if err := tx.DeleteBlock(ctx, t.ID, hash); err != nil {
 			return err
 		}
@@ -247,7 +247,7 @@ func (s *Service) Unblock(ctx context.Context, a authz.Actor, tenant, hash strin
 		return err
 	}
 	for _, ch := range chs {
-		if err := s.Store.InTx(ctx, lockKey(ch.ID), func(tx *store.Tx) error { return tx.BumpReleaseVersion(ctx, ch.ID) }); err != nil {
+		if err := s.Store.InTenantTx(ctx, ch.TenantID, []string{lockKey(ch.ID)}, func(tx *store.Tx) error { return tx.BumpReleaseVersion(ctx, ch.ID) }); err != nil {
 			return err
 		}
 	}

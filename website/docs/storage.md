@@ -108,7 +108,9 @@ Two domains that overlap (the same root, or the same bucket or container with on
 the other) are refused by the configuration check and again by store identity. A store kista
 refused is never pinned: pointing the configuration back at the right store is enough to recover.
 
-`kista admin blob check` runs these checks and lists tenants whose domain is not configured:
+`kista admin blob check` runs these checks and lists tenants whose domain is not configured (a
+deleted tenant's domain is not listed; keep it configured until the collector has removed the
+tenant's bodies, since the collector runs only over configured domains):
 
 ```bash
 kista admin -config kista.yaml blob check

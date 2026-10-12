@@ -37,8 +37,8 @@ Value types used in the tables below:
 | CIDR | `10.0.0.0/8`, `192.168.1.10/32`, `fd00::/8`; host names are never accepted |
 
 For a numeric limit with a default, `0` (or the key left out) means that default. Two exceptions:
-the `rotation` minimums take `0` literally (allowed only with `profile: dev`), and `gc.interval: 0`
-means no scheduled collection.
+the `rotation` minimums and `tenants.min_suspended` take `0` literally (allowed only with
+`profile: dev`), and `gc.interval: 0` means no scheduled collection.
 
 ## Environment overrides
 
@@ -67,7 +67,7 @@ Every setting that is not file-only can be overridden by a variable named after 
 
 That is the complete list. Everything else is **file-only**: `profile`, `azure.identity.kind`, and
 the whole of `signers`, `blob`, `egress`, `auth`, `publish`, `upstreams`, `events`, `statistics`,
-`telemetry`, `gc`, `ui`, `attachments`, and every `serve` setting but `public_url`. Each of these
+`telemetry`, `gc`, `ui`, `attachments`, `tenants`, and every `serve` setting but `public_url`. Each of these
 switches a guard on or off, or decides what kista may reach, so it cannot be changed by whoever
 controls the process environment.
 
@@ -103,6 +103,7 @@ kista serve -config /etc/kista/kista.yaml
 | --- | --- | --- |
 | Store | any reachable PostgreSQL or SQL Server, or SQLite | SQLite, or PostgreSQL / SQL Server on loopback hosts only (every host of a multi-host DSN and the failover partner count) |
 | Rotation minimums | at least `24h` each | any value, `0` included |
+| `tenants.min_suspended` | at least `24h` | any value, `0` included |
 | File signers (`file:` references) | need `signers.allow_file: true` and `signers.file_dir` | need `signers.file_dir` only |
 | Vault / OpenBao | `https` address; `software_keys: true` required | `http` on loopback allowed; `software_keys` not required |
 | Azure Key Vault | `require_hsm` stays on | `require_hsm: false` allowed |
@@ -462,6 +463,20 @@ Documents about bodies. File-only. See [Attachments](attachments.md).
 | `attachments.max_reads` | integer | `8` | Documents held in memory at once; `0..256`. |
 | `attachments.feed_interval` | duration | `6h` | Between a feed's scheduled runs; at least `5m`. |
 
+## tenants
+
+The tenant lifecycle. File-only. See
+[Deleting a tenant](administration/tenants-and-channels.md#deleting-a-tenant).
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `tenants.min_suspended` | duration | `168h` | How long a tenant stays suspended before it may be deleted. |
+
+Outside `profile: dev` it may not be below `24h`; in dev it may be `0`. It may not be negative. The
+process that takes the delete applies its own value (`kista admin tenant delete`, or the replica
+that answers `DELETE /api/v1/tenants/{t}`), so `kista admin` and `kista serve` should share the
+configuration.
+
 ## A complete example
 
 A production replica on PostgreSQL with a password from a file, keys in OpenBao, bodies in S3, TLS
@@ -481,6 +496,9 @@ store:
 rotation:
   min_trusted: 168h                # at least 24h outside dev
   min_demoted: 168h
+
+tenants:
+  min_suspended: 168h              # before a suspended tenant may be deleted; at least 24h outside dev
 
 signers:
   allow_file: false

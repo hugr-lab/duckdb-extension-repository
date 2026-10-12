@@ -45,6 +45,9 @@ for issuers, principals and grants, and [Publishing](publishing.md) for publishe
   that does not exist.
 - Authorisation is decided from the path first, before the body is read or `If-Match` compared.
 - An unknown or suspended tenant answers `404` to everyone but server administrators.
+- A tenant whose deletion started (`deleting` or `deleted`) answers the unknown tenant's `404`, the
+  same bytes and headers, to every caller. Server administrators alone still reach its record
+  (`GET tenants/{t}`), `DELETE tenants/{t}` and its events; see [Deleting a tenant](#deleting-a-tenant).
 - `GET /api/v1/tenants/{t}/whoami` shows a tenant token's principals, the grants that match them,
   `holds_admin` and `holds_audit`. `GET /api/v1/whoami` shows a server token's issuer, principals and
   `administrator`. A server token on the tenant `whoami` answers `404`; a tenant token on the
@@ -68,7 +71,8 @@ its writer (a `sub` or a client claim). Either failure answers `401`.
   `Cache-Control` is `public, no-cache` for an anonymous answer and `private, no-cache` otherwise.
 - **Management answers** carry `Cache-Control: no-store`.
 - **Creating** is a `POST` to a collection: `201` with `Location` (when the resource has a `GET`),
-  `409` for a duplicate. **Deleting** answers `204`.
+  `409` for a duplicate. **Deleting** answers `204`; deleting a tenant answers `202`, since its
+  rows are removed in the background.
 
 ### ETags and If-Match
 
@@ -77,7 +81,8 @@ carry it as `etag`. Tenants, keys, attestation keys, releases, attachments, feed
 versioned resources work this way.
 
 - A change to a versioned resource needs `If-Match` with its ETag: `428` without one, `412` when it is
-  stale or another resource's. `If-Match: *` matches any version of an existing resource.
+  stale or another resource's. `If-Match: *` matches any version of an existing resource, except
+  where a route refuses it (deleting a tenant, a console client).
 - `If-Match` takes one strong ETag.
 - Issuer records are immutable: their ETag is their id. Deleting a record, and setting or removing
   its console client, takes `If-Match: "<issuer id>"` (`*` is refused for the console client).
@@ -170,10 +175,55 @@ All paths are relative to `/api/v1`. `{t}` is a tenant, `{c}` a channel.
 | `GET console`, `GET tenants/{t}/console` | public: the console's sign-in configuration |
 | `GET duckdb-versions`, `GET duckdb-versions/{v}` | public |
 | `POST duckdb-versions`, `POST duckdb-versions/{v}/c-apis` | server |
-| `GET, POST tenants`; `POST tenants/{t}/suspend`, `/resume` | server |
-| `GET tenants/{t}` | tenant admin |
+| `GET tenants[?state=]`, `POST tenants`; `POST tenants/{t}/suspend`, `/resume` | server |
+| `GET tenants/{t}` | tenant admin; a deleting or deleted tenant: server |
+| `DELETE tenants/{t}` | server: [deleting a tenant](#deleting-a-tenant) |
 | `GET tenants/{t}/audiences` | tenant admin |
 | `POST tenants/{t}/audiences`, `POST tenants/{t}/audiences/remove` | server |
+
+#### The tenant record
+
+```json
+{"name": "acme", "display_name": "Acme Corp", "state": "suspended", "storage_domain": "default",
+ "created_at": "2026-10-01T09:00:00Z", "suspended_at": "2026-10-02T09:00:00Z",
+ "deletable_at": "2026-10-09T09:00:00Z", "etag": "\"v7\""}
+```
+
+- `state` is `active`, `suspended`, `deleting` or `deleted`.
+- `suspended_at` is set while the tenant is suspended (it stays set once its deletion started).
+- Server administrators only: `storage_domain`; `deletable_at`, when a suspended tenant may be
+  deleted (`suspended_at` plus `tenants.min_suspended`; absent for a tenant suspended by an older
+  kista); and, on `GET tenants/{t}` and `DELETE tenants/{t}` of a deleting or deleted tenant,
+  `deletion`: `started_at`, `started_by`, `passes`, `table` (the table the reaper reached),
+  `deleted_rows`, `last_error` (a class: `lease`, `interrupted` or `error`), `next_attempt_at`
+  (until it finishes), `finished_at`, and `keys`, the keys to retire (`kind` `channel` or
+  `attestation`, `id`, `fingerprint`, `signer_ref`).
+- `GET tenants?state=deleting,deleted` lists the tenants in those states (`400` for another value).
+  Without `state`, every state but `deleted` is listed.
+
+#### Deleting a tenant
+
+`DELETE tenants/{t}` deletes a tenant that has been suspended for at least
+`tenants.min_suspended`. It cannot be undone; see
+[Deleting a tenant](administration/tenants-and-channels.md#deleting-a-tenant) for what goes and what
+is kept.
+
+- It needs `If-Match` with the tenant's ETag: `428` without one or with `*`, `412` when it is stale.
+- It answers `202` with the tenant record, `deletion` included: the reaper removes the rows later.
+- It answers `409 conflict`, with the reason in `detail`, when the tenant is active ("only a
+  suspended tenant can be deleted"), when it has been suspended for less than the minimum (the
+  `detail` says from when it may be deleted), when an older kista suspended it ("resume it and
+  suspend it again"), and when its deletion already started ("the tenant is being deleted", "the
+  tenant was deleted").
+- From then on the tenant answers as unknown on every route except its `GET`, this `DELETE` and its
+  events, for server administrators. Suspend and resume answer `404`.
+
+```bash
+ETAG=$(curl -sS -D - -o /dev/null -H "Authorization: Bearer $SERVER_TOKEN" \
+  https://extensions.example.com/api/v1/tenants/acme | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')
+curl -sS -X DELETE -H "Authorization: Bearer $SERVER_TOKEN" -H "If-Match: $ETAG" \
+  https://extensions.example.com/api/v1/tenants/acme
+```
 
 ### The index
 
@@ -273,7 +323,7 @@ See [Attachments and the feed](attachments.md).
 | Route | Who |
 | --- | --- |
 | `GET event-kinds` | public: the event catalogue |
-| `GET tenants/{t}/events[?since=&until=&kind=&actor=&subject=&outcome=&order=&cursor=&limit=]`, `GET …/events/{id}` | auditor |
+| `GET tenants/{t}/events[?since=&until=&kind=&actor=&subject=&outcome=&order=&cursor=&limit=]`, `GET …/events/{id}` | auditor; a deleting or deleted tenant: server |
 | `GET events[...]`, `GET events/{id}` | server: the server's own events |
 | `GET tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=` | principal: everything with `audit`, otherwise what its `admin`, `publish` or `promote` grants cover |
 | `GET tenants/{t}/stats/releases?channel=&extension=` | the same |

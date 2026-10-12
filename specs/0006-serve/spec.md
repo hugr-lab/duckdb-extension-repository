@@ -271,8 +271,10 @@ for a record marked corrupt is best-effort, the per-chunk verification is what g
 **Answers in phase 1.** A public release is served. In an existing tenant and channel, everything
 else (a private release, a yanked one, a version or platform the channel does not serve, a name
 that never existed) answers **missing**: `401` in a signed channel, identical bytes in every case.
-An unknown tenant or channel, or a suspended tenant, answers `404` (names are public). A passthrough
-channel answers `404` for every binary until spec 0009 feeds it.
+An unknown tenant or channel, or a suspended tenant, answers `404` (names are public). A tenant
+whose deletion started (spec 0019: deleting or deleted) answers the unknown tenant's `404`, the same
+bytes and headers, on `.well-known` and every binary. A passthrough channel answers `404` for every
+binary until spec 0009 feeds it.
 
 **Headers.**
 

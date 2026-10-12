@@ -159,12 +159,15 @@ key_events        id pk, key_id fk, from_state null, to_state, actor, forced, at
 **Names and ids.**
 - Tenant and channel names are URL path segments (`/<tenant>/<channel>`): `[a-z0-9][a-z0-9-]{0,62}`.
 - Reserved names: `api`, `admin`, `healthz`, `readyz`, `metrics`, `static`, `ui`.
-- Names never change and are never reused. There is no deletion in this spec, and a later deletion
-  keeps a tombstone.
+- Names never change and are never reused. There is no deletion in this spec. Spec 0019 deletes a
+  tenant and keeps its row as a tombstone (`deleted_at` set, `display_name` cleared), so the name
+  stays taken.
 - A channel's `kind` never changes.
 
 **Tenant state.** `suspended` is reserved for subscriptions. Spec 0006 refuses to serve a suspended
-tenant.
+tenant. Spec 0019 adds `suspended_at` (suspend sets it, resume clears it) and `deleting_at` /
+`deleted_at`; `state` keeps its two values. Suspend and resume refuse a tenant whose deletion
+started; suspending a suspended tenant, or resuming an active one, stays a no-op.
 
 **DuckDB versions** are a global table. Spec 0001's rule "a `C_STRUCT` build is served under every
 DuckDB version of the channel whose C API is at least the build's minimum" needs each version's C
@@ -182,7 +185,9 @@ API level, and a release tag and a source id can name the same engine build.
   Server filtered index, SQLite partial index. `channel_id` is never null, so SQL Server's NULL
   semantics do not arise.
 - **Foreign keys** are `NO ACTION`; nothing cascades. SQL Server refuses multiple cascade paths, and
-  deletions will be explicit application steps.
+  deletions will be explicit application steps. Later specs added some cascading keys (publishers'
+  credentials and API keys, upstream children, console clients, group members and grants, feed
+  children); spec 0019's reaper deletes those children explicitly all the same.
 - **Passthrough channels** hold no keys.
 
 **Who changed what.** `created_by` / `state_changed_by` and `key_events.actor` hold an actor string:
@@ -471,4 +476,4 @@ cmd/kista           + admin subcommands
 - **Later:**
   - `store.schema`, for sharing a database with other hugr services;
   - a config-driven bootstrap of the first tenant, for managed installs (spec 0013);
-  - tenant and channel deletion (with tombstones).
+  - tenant deletion (with a tombstone): spec 0019; channel deletion.

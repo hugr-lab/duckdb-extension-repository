@@ -45,7 +45,7 @@ func TestServerStart(t *testing.T) {
 	if err := ServerStart(ctx, cfg, st); err != nil {
 		t.Fatal(err)
 	}
-	if d := last(); d.Version != Version || d.Schema == 0 || len(d.Digests) != 11 || len(d.Changed) != 0 {
+	if d := last(); d.Version != Version || d.Schema == 0 || len(d.Digests) != 12 || len(d.Changed) != 0 {
 		t.Fatalf("the first start: %+v", d)
 	}
 	cfg.Egress.Allow = []config.EgressAllow{{CIDR: "10.0.0.0/8"}}

@@ -54,7 +54,18 @@ type Config struct {
 	UI UI `yaml:"ui" kista:"fileonly"`
 	// Attachments configures documents about bodies (spec 0011).
 	Attachments Attachments `yaml:"attachments" kista:"fileonly"`
+	// Tenants configures deleting tenants (spec 0019).
+	Tenants Tenants `yaml:"tenants" kista:"fileonly"`
 }
+
+// Tenants holds the tenant lifecycle settings.
+type Tenants struct {
+	// MinSuspended is how long a tenant stays suspended before it may be deleted (spec 0019).
+	MinSuspended time.Duration `yaml:"min_suspended"`
+}
+
+// MinSuspendedFloor is the least tenants.min_suspended may be outside the dev profile.
+const MinSuspendedFloor = 24 * time.Hour
 
 // Store selects and configures the metadata database.
 type Store struct {
@@ -166,6 +177,7 @@ func Default() Config {
 		Profile:  ProfileProd,
 		Store:    Store{MaxOpenConns: 10, Migrate: "auto", Login: Login{Kind: "password"}},
 		Rotation: Rotation{MinTrusted: 7 * 24 * time.Hour, MinDemoted: 7 * 24 * time.Hour},
+		Tenants:  Tenants{MinSuspended: 7 * 24 * time.Hour},
 	}
 }
 
@@ -399,6 +411,9 @@ func (c Config) Validate() error {
 	}
 	if c.Rotation.MinTrusted < 0 || c.Rotation.MinDemoted < 0 {
 		bad("rotation minimums cannot be negative")
+	}
+	if c.Tenants.MinSuspended < 0 || !dev && c.Tenants.MinSuspended < MinSuspendedFloor {
+		bad("tenants.min_suspended cannot be negative, nor below %s outside profile dev", MinSuspendedFloor)
 	}
 	if c.Signers.FileDir != "" && !strings.HasPrefix(c.Signers.FileDir, "/") {
 		bad("signers.file_dir must be an absolute path")

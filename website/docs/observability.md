@@ -57,6 +57,8 @@ are all the kinds in `internal/audit`:
 | --- | --- | --- | --- |
 | Tenants and server | `tenant.create` | `tenant:<name>` | `name`, `display_name`, `storage_domain` |
 | | `tenant.suspend`, `tenant.resume` | `tenant:<name>` | none |
+| | `tenant.delete` | `tenant:<name>` | `channels` (a count), `suspended_at`, `keys` (the fingerprints) |
+| | `tenant.purge` | `tenant:<name>` | `rows`, `passes`, `late`, `error` |
 | | `version.add` | `version:<name>` | `version`, `kind`, `c_apis` |
 | | `version.c_apis` | `version:<name>` | `version`, `c_api` |
 | | `server.start` | `server` | `version`, `schema`, `digests`, `changed` |
@@ -115,7 +117,7 @@ Notes on some kinds:
 
 - `server.start` is recorded by every replica at start: kista's version, the schema level, a digest
   of each security-relevant configuration section (`profile`, `signers`, `blob`, `serve`, `egress`,
-  `auth`, `publish`, `upstreams`, `events`, `statistics`, `telemetry`), and the sections changed
+  `auth`, `publish`, `upstreams`, `events`, `statistics`, `telemetry`, `tenants`), and the sections changed
   since the previous start.
 - `auth.failure` is recorded for a `401` given to a request that sent a credential; `reason` is
   `malformed`, `invalid`, `api_key_route`, `publisher_route`, `stale_token` or `unnamed_writer`.
@@ -127,7 +129,16 @@ Notes on some kinds:
   (`system:audit`, `system:retention`).
 - The background actors are `system:upstream:<tenant>/<name>`, `system:feed:<tenant>/<name>`,
   `system:resign`, `system:retention`, `system:serve`, `system:sinks`, `system:audit` and
-  `system:gc` (every garbage collection pass, scheduled or `kista admin blob gc`).
+  `system:gc` (every garbage collection pass, scheduled or `kista admin blob gc`), and
+  `system:tenant-delete` (the reaper of a deleted tenant).
+- `tenant.delete` and `tenant.purge` are the tenant's events, like `tenant.suspend`. `tenant.delete`
+  is the server administrator's delete: its `keys` are fingerprints, never signer references.
+  `tenant.purge` is written when the reaper writes the tombstone (`rows` deleted over `passes`);
+  with outcome `failed` and `error` a class (`lease`, `interrupted` or `error`) on the first failed
+  pass and whenever the class changes, not on every pass; and with `late: true` when rows found
+  under a tombstone during the week after it were removed, which should never happen. Server
+  administrators still read a deleted tenant's events, with `kista admin events list <tenant>`
+  or the API, until `events.retention` removes them.
 
 ### Reading events
 

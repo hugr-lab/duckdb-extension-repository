@@ -63,6 +63,9 @@ type Options struct {
 	Feeds            *attachment.Feeds   // spec 0011 phase 1b; nil: no feed management routes
 	Events           Recorder            // spec 0010: refusals and failures; nil: none recorded
 	AdminTokenMaxAge time.Duration       // default 1h
+	// MinSuspended is how long a tenant stays suspended before it may be deleted (spec 0019): 0 is
+	// the default, 7 days; a negative value is none (tenants.min_suspended: 0 in the dev profile).
+	MinSuspended time.Duration
 	// Uploads (spec 0008): the largest file, the least read rate, and how many may run at once per
 	// principal and per tenant (defaults 2 and 8).
 	MaxBody, MinRate int64
@@ -96,6 +99,12 @@ func New(o Options) *Handler {
 	}
 	if o.AdminTokenMaxAge == 0 {
 		o.AdminTokenMaxAge = time.Hour
+	}
+	switch {
+	case o.MinSuspended == 0:
+		o.MinSuspended = 7 * 24 * time.Hour
+	case o.MinSuspended < 0:
+		o.MinSuspended = 0
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -479,7 +488,10 @@ type rule struct {
 	// publishers marks the routes a publisher's credential may call (spec 0008); on other public
 	// routes it is anonymous, on the rest not a token
 	publishers bool
-	handle     handler
+	// closed: server administrators reach a tenant whose deletion started (spec 0019: its record,
+	// its deletion and its events); to everyone else it is unknown
+	closed bool
+	handle handler
 }
 
 type params map[string]string
@@ -531,7 +543,8 @@ func init() {
 		{"duckdb-versions/{v}/c-apis", map[string]rule{http.MethodPost: mb(serverAdmin, (*Handler).addCAPI)}},
 		{"tenants", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listTenants),
 			http.MethodPost: mb(serverAdmin, (*Handler).createTenant)}},
-		{"tenants/{t}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getTenant)}},
+		{"tenants/{t}", map[string]rule{http.MethodGet: {access: pathAdmin, manage: true, closed: true, handle: (*Handler).getTenant},
+			http.MethodDelete: {access: serverAdmin, manage: true, closed: true, handle: (*Handler).deleteTenant}}},
 		{"tenants/{t}/suspend", map[string]rule{http.MethodPost: m(serverAdmin, (*Handler).suspend)}},
 		{"tenants/{t}/resume", map[string]rule{http.MethodPost: m(serverAdmin, (*Handler).resume)}},
 		{"tenants/{t}/whoami", map[string]rule{http.MethodGet: {access: public, publishers: true, handle: (*Handler).whoami}}},
@@ -617,8 +630,9 @@ func init() {
 			// spec 0016 phase 2: purging a yanked release
 			http.MethodDelete: m(pathAdmin, (*Handler).purgeRelease)}},
 		// spec 0010: events, read with audit on the tenant (admin implies it) or by server administrators
-		{"tenants/{t}/events", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, handle: (*Handler).tenantEvents}}},
-		{"tenants/{t}/events/{id}", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, handle: (*Handler).tenantEvent}}},
+		{"tenants/{t}/events", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, closed: true, handle: (*Handler).tenantEvents}}},
+		{"tenants/{t}/events/{id}", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, closed: true,
+			handle: (*Handler).tenantEvent}}},
 		{"events", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvents)}},
 		// spec 0010 phase 2a: download statistics
 		{"tenants/{t}/stats/downloads", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsDownloads)}},
@@ -810,6 +824,9 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 	switch {
 	case onTenant:
 		t, err := h.o.Store.GetTenant(ctx, name)
+		if (errors.Is(err, store.ErrDeleting) || errors.Is(err, store.ErrDeleted)) && ru.closed && c.admin {
+			err = nil // spec 0019: a server administrator's view of a closed tenant
+		}
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			h.fail(w, err)
 			return caller{}, false

@@ -698,7 +698,7 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 		return store.Release{}, err
 	}
 	var out store.Release
-	err = s.Store.InTx(ctx, lockKey(ch.ID), func(tx *store.Tx) error {
+	err = s.Store.InTenantTx(ctx, ch.TenantID, []string{lockKey(ch.ID)}, func(tx *store.Tx) error {
 		r, err := tx.GetRelease(ctx, ch.ID, id)
 		if err != nil {
 			return err
@@ -831,7 +831,7 @@ func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, nam
 		return store.Candidate{}, err
 	}
 	var out store.Candidate
-	err = s.Store.InTx(ctx, lockKey(ch.ID), func(tx *store.Tx) error {
+	err = s.Store.InTenantTx(ctx, ch.TenantID, []string{lockKey(ch.ID)}, func(tx *store.Tx) error {
 		c, err := tx.GetCandidate(ctx, ch.ID, id)
 		if err != nil {
 			return err

@@ -40,15 +40,28 @@ func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, display
 		return tx.Event(ctx, "", a.String(), "tenant.create", "tenant:"+t.Name,
 			map[string]any{"name": t.Name, "display_name": t.DisplayName, "storage_domain": t.StorageDomain})
 	})
+	if errors.Is(err, store.ErrExists) {
+		// spec 0019: a tombstone keeps its name for good
+		if old, gerr := s.Store.GetTenantAny(ctx, name); gerr == nil && !old.DeletingAt.IsZero() {
+			return t, &Refusal{"the name belonged to a deleted tenant and is never reused"}
+		}
+	}
 	return t, err
 }
 
-// ListTenants lists tenants (server-wide action).
-func (s *Service) ListTenants(ctx context.Context, a authz.Actor) ([]store.Tenant, error) {
+// ListTenants lists tenants in the given phases, every one but deleted when none is given
+// (server-wide action).
+func (s *Service) ListTenants(ctx context.Context, a authz.Actor, phases ...string) ([]store.Tenant, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return nil, err
 	}
-	return s.Store.ListTenants(ctx)
+	for _, p := range phases {
+		if !ValidPhase(p) {
+			return nil, fmt.Errorf("%w: tenant state %q (active, suspended, deleting or deleted)", store.ErrInvalid, p)
+		}
+	}
+	ts, err := s.Store.ListTenants(ctx)
+	return Phases(ts, phases...), err
 }
 
 // GetTenant reads a tenant (its administrators may read it).
@@ -71,14 +84,16 @@ func (s *Service) SetTenantState(ctx context.Context, a authz.Actor, name, state
 	var t store.Tenant
 	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
-		if t, err = tx.GetTenant(ctx, name); err != nil {
-			return err
+		if t, err = tx.GetTenantForUpdate(ctx, name); err != nil {
+			return err // a deleting tenant is refused: never resumed (spec 0019)
 		}
 		if expected != 0 && t.Version != expected {
 			return store.ErrConflict
 		}
-		was := t.State
-		if err := tx.SetTenantState(ctx, &t, state); err != nil || was == state {
+		if t.State == state {
+			return nil // suspending a suspended tenant keeps when it was suspended
+		}
+		if err := tx.SetTenantState(ctx, &t, state); err != nil {
 			return err
 		}
 		kind := audit.Kind("tenant.resume")

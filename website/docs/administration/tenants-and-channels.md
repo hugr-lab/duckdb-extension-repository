@@ -17,8 +17,9 @@ In the examples, `ka` stands for `kista admin -config /etc/kista/kista.yaml`.
 ## Names
 
 Tenant and channel names are URL path segments: `[a-z0-9][a-z0-9-]{0,62}`. These names are
-reserved: `api`, `admin`, `healthz`, `readyz`, `metrics`, `static`, `ui`. A name never changes,
-and there is no deletion of tenants or channels yet. Names are public: anyone can learn that a
+reserved: `api`, `admin`, `healthz`, `readyz`, `metrics`, `static`, `ui`. A name never changes and
+is never reused, not even after its tenant is [deleted](#deleting-a-tenant); there is no deletion of
+channels yet. Names are public: anyone can learn that a
 tenant or channel exists; the list of tenants is not public.
 
 ## DuckDB versions
@@ -63,7 +64,8 @@ which every configuration has. The domain:
 - keeps tenants apart for data residency: deduplication of identical bodies happens only inside a
   domain.
 
-At startup, and with `ka blob check`, kista lists tenants whose domain is no longer configured.
+At startup, and with `ka blob check`, kista lists tenants whose domain is no longer configured
+(a deleted tenant's is not listed).
 Such a tenant is served nothing; it never falls back to another domain.
 
 Domain names follow `[a-z][a-z0-9-]{0,15}`. The domain is shown to server administrators only.
@@ -77,6 +79,85 @@ ka tenant resume acme
 
 A suspended tenant is served nothing: DuckDB routes answer `404`, and its API answers `404` to
 everyone but server administrators. Nothing is deleted.
+
+Suspending records when it happened (`suspended_at`), and resuming clears it. Suspending is also
+the first step of deleting a tenant.
+
+### Deleting a tenant
+
+Deleting a tenant removes its channels, keys, releases, grants, issuers, publishers, upstreams,
+documents, feeds and download statistics, and cannot be undone. It takes two steps:
+
+1. **Suspend** the tenant (above). This can be undone.
+2. **Delete** it, once it has been suspended for at least `tenants.min_suspended` (default `168h`,
+   at least `24h` outside `profile: dev`; see [Configuration](../configuration.md#tenants)). The
+   minimum suspension is the window for changing one's mind.
+
+```bash
+ka tenant suspend acme
+ka tenant show acme                    # "deletable from" says when the delete is accepted
+ka tenant delete acme -confirm acme    # the name twice, so a pasted command cannot hit another tenant
+```
+
+- Only a server administrator deletes a tenant: with `kista admin`, with
+  `DELETE /api/v1/tenants/{t}` ([HTTP API](../api.md#deleting-a-tenant)), or with **Delete…** in the
+  console's server view. A tenant administrator cannot delete its own tenant.
+- The delete is refused for an active tenant, for one suspended for less than the minimum (the
+  answer says when it may be deleted), for one already being deleted, and for one suspended by a
+  kista older than this feature: resume it and suspend it again.
+- `tenant delete` prints the **keys to retire**: the tenant's channel keys and attestation keys,
+  with their fingerprints and signer references. kista only signed with them; disable or destroy
+  them in their key sources (Vault, Key Vault, a key file). It also warns when `gc.interval` is `0`,
+  since the tenant's bodies then stay in storage until `ka blob gc -apply` runs.
+
+From the moment of the delete the tenant is **closed**: DuckDB routes and every API route answer
+`404` exactly as for a tenant that never existed, every change is refused, and its upstreams, feeds
+and re-signing stop. Only server administrators still read its record
+(`GET /api/v1/tenants/{t}`, `ka tenant show`) and its events (`ka events list acme`). Its state
+shows as `deleting`.
+
+**The reaper.** Two hours after the delete (the settle period, so uploads and upstream fetches that
+started before it are done), `kista serve` removes the tenant's rows in small batches in the
+background, one replica at a time. A pass that fails or is interrupted is resumed later (after 1
+minute, doubling up to 1 hour). When nothing is left it writes the **tombstone**: the tenant's row
+stays with its id, name, storage domain and dates, its display name is cleared, and its state shows
+as `deleted`. A replica reaps only while the database's schema is exactly its own version.
+
+```bash
+ka tenant show acme                    # the deletion's progress, last error and keys to retire
+ka tenant list -state deleting,deleted # by default, list shows every state but deleted
+ka tenant reap acme                    # reap here and now, after the settle period
+ka tenant reap acme -force             # skip the settle period: only when nothing else runs
+```
+
+`tenant reap` runs the reaper in the command and returns when the tombstone is written. `-force` is
+for a server where no `kista serve` and no other command is running, such as a SQLite store stopped
+for maintenance.
+
+A tombstone's storage domain must stay configured until the [storage collector](../storage.md) has
+removed its bodies: the collector only runs over configured domains.
+
+#### What is kept, and for how long
+
+| What | Where | How long |
+| --- | --- | --- |
+| The tombstone: id, name, storage domain, created, suspended, deleting and deleted times | `tenants` | forever: the name is never reused |
+| The deletion record: who started it, the former channel ids, the keys to retire (kind, id, fingerprint, signer reference) | `tenant_deletions` | forever; server administrators only |
+| Assigned audiences | `tenant_audiences` | forever: another tenant cannot take them and accept tokens minted for this one |
+| Key fingerprints | `key_fingerprints` | forever: a key that signed for this tenant never signs for another |
+| The tenant's events (actor names, reduced client addresses) | `events`, and every configured sink | `events.retention` in the database (sinks keep them as long as they keep anything) |
+| Bodies | blob storage | Builds go at the reap. Each body is then collected on a collector pass at least `gc.grace` after it was last used, and its stream a grace later. With `gc.interval: 0`, nothing goes until `kista admin blob gc -apply` runs. |
+| Attachment contents | blob storage, `attachments/` | collected as orphans by the same passes |
+| Objects in versioned or object-locked buckets | the bucket | as the bucket's own policy says |
+| Key material | the key sources (Vault, Key Vault, a key file) | until the operator retires it; kista only signs with it |
+| Statements given to subscribers | other kista servers | their choice: their feed shows `unauthorized`, and their documents stay |
+| Backups | the operator's database and blob backups | their own retention |
+| Logs and traces naming `kista.tenant.name` | the telemetry backend | its own retention |
+
+No withdrawals are issued for documents the tenant offered to subscribers. Restoring a database
+backup taken before a deletion brings the tenant back: see
+[Backup and restore](backup-restore.md#a-backup-from-before-a-tenant-deletion). The design is in
+[spec 0019](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0019-tenant-deletion/spec.md).
 
 ## Creating a channel
 
