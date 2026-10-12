@@ -1,7 +1,7 @@
 // Package azurekv is the Azure Key Vault / Managed HSM key source (spec 0004, phase 2). Keys are
 // RSA-HSM (RSA only when require_hsm is off, in development), 2048 bits, enabled, sign-only, not
-// exportable, without a release policy, not certificate-backed, and tagged kista-purpose =
-// channel-signing. Signing is RS256 over the digest; the answer's kid must name the pinned version.
+// exportable, without a release policy, not certificate-backed, and tagged kista-purpose with its
+// role (channel-signing, or attestation-signing for an attestation key). Signing is RS256 over the digest; the answer's kid must name the pinned version.
 package azurekv
 
 import (
@@ -22,10 +22,11 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
 )
 
-// PurposeTag is the tag every key must carry.
+// PurposeTag is the tag every key must carry, with the value its role names (spec 0011: a channel
+// key's is channel-signing, an attestation key's attestation-signing).
 const (
 	PurposeTag   = "kista-purpose"
-	PurposeValue = "channel-signing"
+	PurposeValue = keysource.PurposeChannel
 )
 
 // Ops is the narrow Key Vault API the source uses (azkeys.Client; fakes in tests).
@@ -90,6 +91,7 @@ type handle struct {
 	s       *Source
 	name    string // as written in the reference
 	version string
+	purpose string
 	pub     *rsa.PublicKey
 }
 
@@ -100,7 +102,11 @@ func (s *Source) Open(ctx context.Context, k keysource.Key) (keysource.Handle, e
 	if name == "" {
 		name = k.Name
 	}
-	h := &handle{s: s, name: name, version: k.Version}
+	purpose := k.Purpose
+	if purpose == "" {
+		purpose = keysource.PurposeChannel
+	}
+	h := &handle{s: s, name: name, version: k.Version, purpose: purpose}
 	pub, err := h.check(ctx)
 	if err != nil {
 		return nil, err
@@ -196,8 +202,8 @@ func (h *handle) check(ctx context.Context) (*rsa.PublicKey, error) {
 	if !canSign {
 		return refuse("key_ops do not include sign")
 	}
-	if v, ok := b.Tags[PurposeTag]; !ok || v == nil || *v != PurposeValue {
-		return refuse("the key lacks the tag %s=%s", PurposeTag, PurposeValue)
+	if v, ok := b.Tags[PurposeTag]; !ok || v == nil || *v != h.purpose {
+		return refuse("the key lacks the tag %s=%s", PurposeTag, h.purpose)
 	}
 	if len(b.Key.N) == 0 || len(b.Key.E) == 0 || len(b.Key.E) > 4 {
 		return refuse("the key has no usable RSA public key")

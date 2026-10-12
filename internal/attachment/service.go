@@ -2,6 +2,7 @@ package attachment
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -9,17 +10,23 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// Service attaches, lists, reads and removes a tenant's documents (spec 0011 phase 1a).
+// Service attaches, lists, reads and removes a tenant's documents (spec 0011), and serves the
+// statements its feed offers (phase 1b).
 type Service struct {
 	Store   *store.Store
 	Blob    *blob.Service
 	Authz   authz.Authorizer
 	MaxSize int64 // a document's largest size; 0: 4 MiB
+	// Keys signs statements with the tenant's attestation key, and PublicURL names the tenant in
+	// them (issuer); without either, no document can be marked feedable.
+	Keys      *keys.Service
+	PublicURL string
 }
 
 // DefaultMaxSize is a document's largest size unless configured (spec 0011: up to 16 MiB).
@@ -266,6 +273,13 @@ func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant, ext, id s
 	if expected != 0 && expected != rec.Version {
 		return store.Attachment{}, store.ErrConflict
 	}
+	if feedable != nil && *feedable && rec.Origin == store.AttachedByFeed {
+		return store.Attachment{}, fmt.Errorf("%w: a feed's document is not offered onward", store.ErrInvalid)
+	}
+	if visibility != nil && *visibility == store.VisibleReaders && rec.Origin == store.AttachedByFeed && audience(rec) != store.VisibleReaders {
+		// the source signed who may see it: a document for administrators stays theirs
+		return store.Attachment{}, fmt.Errorf("%w: its source offers it to administrators only", store.ErrInvalid)
+	}
 	var out store.Attachment
 	err = s.Store.InTx(ctx, lock(t), func(tx *store.Tx) error {
 		cur := rec // a copy: a retried transaction starts again from what was read
@@ -280,6 +294,23 @@ func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant, ext, id s
 		if v == cur.Visibility && f == cur.Feedable {
 			return nil
 		}
+		// spec 0011 phase 1b: marking a document feedable issues its statement, a change of what it
+		// says while offered (its audience) a new one, un-marking its withdrawal. Only marking needs
+		// the statement signed: when the tenant can no longer sign (no active attestation key), a
+		// change goes ahead and the document is no longer offered, which the feed honours unsigned.
+		var seq int64
+		if f || cur.Feedable {
+			next := cur
+			next.Visibility = v
+			var err error
+			seq, err = s.issue(ctx, tx, t, next, !f)
+			if err != nil && (!cur.Feedable || !errors.Is(err, store.ErrInvalid)) {
+				return err
+			}
+			if err != nil {
+				f, seq = false, 0
+			}
+		}
 		change := map[string]any{}
 		if v != cur.Visibility {
 			change["visibility"] = map[string]string{"old": cur.Visibility, "new": v}
@@ -291,8 +322,11 @@ func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant, ext, id s
 			return err
 		}
 		out = cur
-		return tx.Event(ctx, t.ID, a.String(), "attachment.change", subject(ext, cur.ID),
-			map[string]any{"body_hash": cur.BodyHash, "kind": cur.Kind, "origin": cur.Origin, "change": change})
+		data := map[string]any{"body_hash": cur.BodyHash, "kind": cur.Kind, "origin": cur.Origin, "change": change}
+		if seq != 0 {
+			data["statement"] = seq
+		}
+		return tx.Event(ctx, t.ID, a.String(), "attachment.change", subject(ext, cur.ID), data)
 	})
 	if err != nil {
 		return store.Attachment{}, err
@@ -326,8 +360,17 @@ func (s *Service) remove(ctx context.Context, a authz.Actor, t store.Tenant, sub
 		if _, err := tx.RemoveAttachment(ctx, rec); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "attachment.remove", subj,
-			map[string]any{"body_hash": rec.BodyHash, "kind": rec.Kind, "origin": rec.Origin, "size": rec.Size})
+		data := map[string]any{"body_hash": rec.BodyHash, "kind": rec.Kind, "origin": rec.Origin, "size": rec.Size}
+		if rec.Feedable { // an offered document's removal is its withdrawal, when the tenant can sign
+			seq, err := s.issue(ctx, tx, t, rec, true)
+			if err != nil && !errors.Is(err, store.ErrInvalid) {
+				return err
+			}
+			if err == nil {
+				data["statement"] = seq
+			}
+		}
+		return tx.Event(ctx, t.ID, a.String(), "attachment.remove", subj, data)
 	})
 	if err != nil {
 		return err
@@ -368,6 +411,17 @@ func (s *Service) RemoveBlockedDocument(ctx context.Context, a authz.Actor, tena
 		}
 	}
 	return fmt.Errorf("%w: attachment %s", store.ErrNotFound, id)
+}
+
+// audience is what a feed's document's signed statement says of who may see it ("" if unreadable).
+func audience(rec store.Attachment) string {
+	var st struct {
+		Audience string `json:"audience"`
+	}
+	if json.Unmarshal([]byte(rec.Statement), &st) != nil {
+		return ""
+	}
+	return st.Audience
 }
 
 // Heads keeps the documents that head their chains: none supersedes them (spec 0011).

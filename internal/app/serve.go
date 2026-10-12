@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/buffer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/sinks"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/writer"
@@ -99,7 +100,8 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	apiHandler := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
 		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
 		Server: server, Providers: providers, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
-		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, Attachments: mgmt.Attachments, MaxBody: maxBody, MinRate: int64(lim.MinRate), PublishPerActor: perActor,
+		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, Attachments: mgmt.Attachments, Feeds: mgmt.Feeds, MaxBody: maxBody,
+		MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events,
 		Console: ConsoleInfo(cfg)})
 	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background
@@ -220,8 +222,10 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	wg.Add(1)
 	go func() { defer wg.Done(); m.Run(bg) }()
 	ur := &upstream.Runner{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log}
-	wg.Add(2)
+	fr := &attachment.Runner{Feeds: svc.Feeds, Holder: host + "/" + store.NewID(), Log: log}
+	wg.Add(3)
 	go func() { defer wg.Done(); ur.Run(bg) }()
+	go func() { defer wg.Done(); fr.Run(bg) }()
 	go func() { defer wg.Done(); puller.Run(bg) }()
 	return srv.Run(ctx)
 }

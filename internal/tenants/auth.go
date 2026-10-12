@@ -225,8 +225,8 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 		return store.Grant{}, err
 	}
 	if kind == store.PrincipalIssuer && (slices.Contains(verbs, store.VerbAdmin) || slices.Contains(verbs, store.VerbPublish) ||
-		slices.Contains(verbs, store.VerbPromote) || slices.Contains(verbs, store.VerbAudit)) {
-		return store.Grant{}, fmt.Errorf("%w: an issuer: grant cannot carry admin, publish, promote or audit", store.ErrInvalid)
+		slices.Contains(verbs, store.VerbPromote) || slices.Contains(verbs, store.VerbAudit) || slices.Contains(verbs, store.VerbFeed)) {
+		return store.Grant{}, fmt.Errorf("%w: an issuer: grant cannot carry admin, publish, promote, audit or feed", store.ErrInvalid)
 	}
 	if extension != "" {
 		if err := release.ValidName(extension); err != nil {

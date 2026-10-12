@@ -88,6 +88,8 @@ var writes = map[string]map[string][]audit.Kind{
 	"keys.Service": {
 		"Add": {"key.add"}, "Activate": {"key.activate"}, "Retire": {"key.retire"},
 		"List": nil, "Events": nil, "PublicWellKnown": nil, "WellKnownOf": nil, "WellKnown": nil, "OpenSigner": nil,
+		"AddAttestation": {"attestation-key.add"}, "ActivateAttestation": {"attestation-key.activate"},
+		"RetireAttestation": {"attestation-key.retire"}, "ListAttestation": nil, "PublicAttestation": nil, "OpenAttestationSigner": nil,
 	},
 	"release.Service": {
 		"Add": {"release.add", "release.publish", "shadow.add"}, "Promote": {"release.promote", "shadow.add"}, "Apply": {"release.yank",
@@ -107,6 +109,11 @@ var writes = map[string]map[string][]audit.Kind{
 		"Attach": {"attachment.add"}, "SetFlags": {"attachment.change"}, "Remove": {"attachment.remove"},
 		"RemoveBlockedDocument": {"attachment.remove"},
 		"List":                  nil, "Get": nil, "Content": nil, "ReadContent": nil, "BlockedDocuments": nil,
+		"Feed": nil, "FeedDocument": nil,
+	},
+	"attachment.Feeds": {
+		"Add": {"feed.add"}, "Change": {"feed.change"}, "Remove": {"feed.remove"}, "RunFeed": {"feed.run"},
+		"List": nil, "Get": nil, "Sync": nil,
 	},
 }
 
@@ -114,7 +121,7 @@ var writes = map[string]map[string][]audit.Kind{
 func TestRegistry(t *testing.T) {
 	for name, v := range map[string]any{"tenants.Service": &tenants.Service{}, "tenants.AuthAdmin": &tenants.AuthAdmin{},
 		"keys.Service": &keys.Service{}, "release.Service": &release.Service{}, "upstream.Service": &upstream.Service{},
-		"attachment.Service": &attachment.Service{}} {
+		"attachment.Service": &attachment.Service{}, "attachment.Feeds": &attachment.Feeds{}} {
 		typ := reflect.TypeOf(v)
 		for i := range typ.NumMethod() {
 			m := typ.Method(i).Name
@@ -464,7 +471,58 @@ func TestCoverage(t *testing.T) {
 		_, err := att.SetFlags(rctx, admin, "acme", "acl", doc.ID, &readers, nil, doc.Version)
 		return err
 	}), "attachment.change")
+	// attestation keys and the feed (spec 0011 phase 1b): a document offered, then withdrawn by its removal
+	var attKeys []string
+	for _, f := range []string{"att1.pem", "att2.pem"} {
+		if err := signer.GenerateKeyFile(filepath.Join(dir, f)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	en.expect("keys.Service.AddAttestation", do(func() error {
+		k, err := en.ks.AddAttestation(rctx, admin, "acme", "file:att1.pem", true)
+		attKeys = append(attKeys, k.ID)
+		return err
+	}), "attestation-key.add")
+	en.expect("keys.Service.AddAttestation", do(func() error {
+		k, err := en.ks.AddAttestation(rctx, admin, "acme", "file:att2.pem", false)
+		attKeys = append(attKeys, k.ID)
+		return err
+	}), "attestation-key.add")
+	en.expect("keys.Service.ActivateAttestation", do(func() error {
+		_, err := en.ks.ActivateAttestation(rctx, admin, "acme", attKeys[1], 0, false)
+		return err
+	}), "attestation-key.activate")
+	en.expect("keys.Service.RetireAttestation", do(func() error {
+		_, err := en.ks.RetireAttestation(rctx, admin, "acme", attKeys[0], 0, false)
+		return err
+	}), "attestation-key.retire")
+	att.Keys, att.PublicURL = en.ks, "https://kista.example"
+	feedable := true
+	en.expect("attachment.Service.SetFlags", do(func() error {
+		_, err := att.SetFlags(rctx, admin, "acme", "acl", doc.ID, nil, &feedable, 0)
+		return err
+	}), "attachment.change")
 	en.expect("attachment.Service.Remove", do(func() error { return att.Remove(rctx, admin, "acme", "acl", doc.ID) }), "attachment.remove")
+	if ev := en.newest(1)[0]; !strings.Contains(ev.Data, `"statement":2`) {
+		t.Errorf("a removal of an offered document issues its withdrawal: %s", ev.Data)
+	}
+	feedURL := "https://source.example/api/v1/tenants/upstream"
+	fcreds, err := credential.New([]config.Credential{{Name: "feed", Tenants: []string{"acme"}, Prefixes: []string{"https://source.example/"},
+		Kind: "token_file", TokenFile: "/nonexistent"}}, credential.Deps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds := &attachment.Feeds{Store: st, Authz: authz.ServerAdmin{}, Attachments: att, Fetch: repoFetch{}, Credentials: fcreds}
+	en.expect("attachment.Feeds.Add", do(func() error {
+		_, err := feeds.Add(rctx, admin, "acme", attachment.FeedSpec{Name: "reviews", URL: feedURL, Credential: "feed", Keys: []string{repoFingerprint}})
+		return err
+	}), "feed.add")
+	paused := store.FeedPaused
+	en.expect("attachment.Feeds.Change", do(func() error {
+		_, err := feeds.Change(rctx, admin, "acme", "reviews", attachment.FeedChange{State: &paused}, 0)
+		return err
+	}), "feed.change")
+	en.expect("attachment.Feeds.Remove", do(func() error { return feeds.Remove(rctx, admin, "acme", "reviews", true, 0) }), "feed.remove")
 	en.expect("attachment.Service.Attach", do(func() (err error) { doc, err = notes(); return err }), "attachment.add")
 	en.expect("release.Service.Block", do(func() error { _, _, err := en.rel.Block(rctx, admin, "acme", ah.String(), "CVE"); return err }), "block.add")
 	en.expect("attachment.Service.RemoveBlockedDocument", do(func() error {
@@ -472,7 +530,7 @@ func TestCoverage(t *testing.T) {
 	}), "attachment.remove")
 	// every registered writer ran (Ingest and RunUpstream: in internal/upstream's tests, which
 	// check their events)
-	elsewhere := map[string]bool{"release.Service.Ingest": true, "upstream.Service.RunUpstream": true}
+	elsewhere := map[string]bool{"release.Service.Ingest": true, "upstream.Service.RunUpstream": true, "attachment.Feeds.RunFeed": true}
 	for svc, ms := range writes {
 		for m, kinds := range ms {
 			if kinds != nil && !en.hit[svc+"."+m] && !elsewhere[svc+"."+m] {
@@ -512,3 +570,7 @@ func (repoFetch) Download(context.Context, string, egress.DownloadOptions, io.Wr
 }
 
 func (repoFetch) PortAllowed(uint16) bool { return true }
+
+func (repoFetch) PostJSON(context.Context, string, http.Header, []byte, int64) ([]byte, error) {
+	return nil, egress.ErrNotFound
+}

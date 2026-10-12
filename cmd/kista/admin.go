@@ -59,6 +59,16 @@ const adminUsage = `usage: kista admin -config <file> <command> ...
   attachment list <tenant> <extension> [-body-hash <h>]
   attachment show <tenant> <extension> <id> [-content]
   attachment readers|administrators|remove <tenant> <extension> <id>
+  attachment feedable|unfeedable <tenant> <extension> <id>   offered by the tenant's feed, or withdrawn
+  attestation-key add <tenant> <signer-ref> [-active]   a key that signs the feed's statements (spec 0011)
+  attestation-key list <tenant>
+  attestation-key activate|retire <tenant> <id|fingerprint> [-force]
+  feed add <tenant> <name> -url https://<host>/api/v1/tenants/<t> -credential <c> -key <fingerprint,...>
+           [-kinds <k,...>] [-readers] [-channels <c,...>]   a subscription to another repository's feed
+  feed list <tenant>
+  feed show|sync|pause|resume <tenant> <name>    a running kista serve takes a requested run
+  feed set <tenant> <name> [-credential <c>] [-key <fp,...>] [-kinds <k,...|->] [-readers=true|false]
+  feed remove <tenant> <name> [-documents]       its documents stay unless -documents
   extension-group add <tenant> <group> [-description …]   a named set of extension names (spec 0017)
   extension-group list <tenant>
   extension-group show <tenant> <group>          the group, its members, its grants
@@ -276,6 +286,10 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.extensionGroup(ctx, sub, args[min(2, len(args)):])
 	case "attachment":
 		return a.attachment(ctx, sub, args[min(2, len(args)):])
+	case "attestation-key":
+		return a.attestationKey(ctx, sub, args[min(2, len(args)):])
+	case "feed":
+		return a.feed(ctx, sub, args[min(2, len(args)):])
 	case "block":
 		return a.block(ctx, sub, args[min(2, len(args)):])
 	case "publisher":
@@ -946,6 +960,12 @@ func (a *adminCmd) attachment(ctx context.Context, sub string, args []string) er
 	case (sub == "readers" || sub == "administrators") && len(pos) == 3:
 		v := sub
 		if _, err := a.svc.Attachments.SetFlags(ctx, a.actor, t, ext, pos[2], &v, nil, 0); err != nil {
+			return err
+		}
+		a.logf("attachment %s %s %s %s", sub, t, ext, pos[2])
+	case (sub == "feedable" || sub == "unfeedable") && len(pos) == 3:
+		f := sub == "feedable"
+		if _, err := a.svc.Attachments.SetFlags(ctx, a.actor, t, ext, pos[2], nil, &f, 0); err != nil {
 			return err
 		}
 		a.logf("attachment %s %s %s %s", sub, t, ext, pos[2])
@@ -1659,6 +1679,165 @@ func (a *adminCmd) blobGC(ctx context.Context, args []string) error {
 	}
 	if !*apply {
 		fmt.Fprintln(a.out, "a dry run: nothing was deleted (-apply to collect)")
+	}
+	return nil
+}
+
+// attestationKey manages a tenant's attestation keys (spec 0011 phase 1b).
+func (a *adminCmd) attestationKey(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("attestation-key", flag.ContinueOnError)
+	active := fs.Bool("active", false, "")
+	force := fs.Bool("force", false, "")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) < 1 {
+		return errUsage
+	}
+	switch {
+	case sub == "add" && len(pos) == 2:
+		k, err := a.svc.Keys.AddAttestation(ctx, a.actor, pos[0], pos[1], *active)
+		if err != nil {
+			return err
+		}
+		a.logf("attestation-key add %s %s (%s, %s)", pos[0], k.ID, k.Fingerprint, k.State)
+		fmt.Fprintln(a.out, k.ID)
+	case sub == "list" && len(pos) == 1:
+		ks, err := a.svc.Keys.ListAttestation(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		a.table("ID\tFINGERPRINT\tSTATE\tTRUSTED SINCE\tSIGNER", func(w io.Writer) {
+			for _, k := range ks {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", k.ID, k.Fingerprint, k.State, ts(k.TrustedSince), k.SignerRef)
+			}
+		})
+	case (sub == "activate" || sub == "retire") && len(pos) == 2:
+		do := a.svc.Keys.RetireAttestation
+		if sub == "activate" {
+			do = a.svc.Keys.ActivateAttestation
+		}
+		k, err := do(ctx, a.actor, pos[0], pos[1], 0, *force)
+		if err != nil {
+			return err
+		}
+		a.logf("attestation-key %s %s %s (%s)", sub, pos[0], k.ID, k.Fingerprint)
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+// optBool is a boolean flag that records whether it was given (-readers, -readers=false).
+type optBool struct{ set, v bool }
+
+func (b *optBool) String() string   { return strconv.FormatBool(b.v) }
+func (b *optBool) IsBoolFlag() bool { return true }
+func (b *optBool) Set(s string) error {
+	v, err := strconv.ParseBool(s)
+	b.set, b.v = true, v
+	return err
+}
+
+func csv(s string) []string {
+	var out []string
+	for _, x := range strings.Split(s, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// feed manages a tenant's feeds (spec 0011 phase 1b).
+func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("feed", flag.ContinueOnError)
+	feedURL := fs.String("url", "", "")
+	cred := fs.String("credential", "", "")
+	keys := fs.String("key", "", "")
+	kinds := fs.String("kinds", "", "")
+	var readers optBool
+	fs.Var(&readers, "readers", "")
+	channels := fs.String("channels", "", "")
+	documents := fs.Bool("documents", false, "")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) < 1 {
+		return errUsage
+	}
+	f := a.svc.Feeds
+	switch {
+	case sub == "add" && len(pos) == 2 && *feedURL != "":
+		sp := attachment.FeedSpec{Name: pos[1], URL: *feedURL, Credential: *cred, Keys: csv(*keys), Kinds: csv(*kinds),
+			Readers: readers.v, Channels: csv(*channels)}
+		if len(sp.Channels) > 0 {
+			sp.Offer = store.OfferChannels
+		}
+		fd, err := f.Add(ctx, a.actor, pos[0], sp)
+		if err != nil {
+			return err
+		}
+		a.logf("feed add %s %s (%s)", pos[0], fd.Name, fd.URL)
+	case sub == "list" && len(pos) == 1:
+		fds, err := f.List(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tURL\tSTATE\tSTATUS\tLAST SUCCESS\tKINDS\tREADERS", func(w io.Writer) {
+			for _, fd := range fds {
+				last := "-"
+				if !fd.LastSuccessAt.IsZero() {
+					last = ts(fd.LastSuccessAt)
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%v\n", fd.Name, fd.URL, fd.State, fd.Status, last, strings.Join(fd.Kinds, ","), fd.Readers)
+			}
+		})
+	case sub == "show" && len(pos) == 2:
+		fd, err := f.Get(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "%s %s\nstate %s, status %s %s\ncredential %s\nkeys %s\nkinds %s, readers %v, offer %s\nlast run %s\n",
+			fd.Name, fd.URL, fd.State, fd.Status, fd.LastError, fd.Credential, strings.Join(fd.Keys, ","), strings.Join(fd.Kinds, ","),
+			fd.Readers, fd.Offer, fd.LastRun)
+	case sub == "sync" && len(pos) == 2:
+		if _, err := f.Sync(ctx, a.actor, pos[0], pos[1]); err != nil {
+			return err
+		}
+		a.logf("feed sync %s %s: a running kista serve takes it", pos[0], pos[1])
+	case (sub == "pause" || sub == "resume") && len(pos) == 2:
+		st := map[string]string{"pause": store.FeedPaused, "resume": store.FeedActive}[sub]
+		if _, err := f.Change(ctx, a.actor, pos[0], pos[1], attachment.FeedChange{State: &st}, 0); err != nil {
+			return err
+		}
+		a.logf("feed %s %s %s", sub, pos[0], pos[1])
+	case sub == "set" && len(pos) == 2:
+		var ch attachment.FeedChange
+		if *cred != "" {
+			ch.Credential = cred
+		}
+		if *keys != "" {
+			k := csv(*keys)
+			ch.Keys = &k
+		}
+		if *kinds != "" {
+			k := csv(*kinds)
+			if *kinds == "-" {
+				k = []string{}
+			}
+			ch.Kinds = &k
+		}
+		if readers.set {
+			ch.Readers = &readers.v
+		}
+		if _, err := f.Change(ctx, a.actor, pos[0], pos[1], ch, 0); err != nil {
+			return err
+		}
+		a.logf("feed set %s %s", pos[0], pos[1])
+	case sub == "remove" && len(pos) == 2:
+		if err := f.Remove(ctx, a.actor, pos[0], pos[1], *documents, 0); err != nil {
+			return err
+		}
+		a.logf("feed remove %s %s (documents removed: %v)", pos[0], pos[1], *documents)
+	default:
+		return errUsage
 	}
 	return nil
 }

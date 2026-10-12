@@ -125,6 +125,14 @@ var catalogue = map[Kind][]string{
 	"key.activate":     {"key", "fingerprint", "from", "forced"},
 	"key.retire":       {"key", "fingerprint", "from", "forced"},
 	"key.resign":       {"key", "fingerprint", "signatures"},
+	// attestation keys and feeds (spec 0011)
+	"attestation-key.add":      {"key", "fingerprint", "scheme", "state"},
+	"attestation-key.activate": {"key", "fingerprint", "from", "forced"},
+	"attestation-key.retire":   {"key", "fingerprint", "from", "forced"},
+	"feed.add":                 {"name", "url", "credential", "kinds", "readers", "offer", "channels", "keys"},
+	"feed.remove":              {"name", "documents"},
+	"feed.change":              {"name", "change"},
+	"feed.run":                 {"feed", "counts", "refused", "error"},
 	// identity
 	"issuer.add":              {"name", "url", "algorithms"},
 	"issuer.remove":           {"name", "url"},
@@ -135,8 +143,8 @@ var catalogue = map[Kind][]string{
 	"grant.add":               {"principal", "verbs", "channel", "extension", "extension_group"},
 	"grant.remove":            {"principal", "verbs", "channel", "extension", "extension_group"},
 	"attachment.add":          {"body_hash", "kind", "origin", "size"},
-	"attachment.remove":       {"body_hash", "kind", "origin", "size"},
-	"attachment.change":       {"body_hash", "kind", "origin", "change"},
+	"attachment.remove":       {"body_hash", "kind", "origin", "size", "statement"},
+	"attachment.change":       {"body_hash", "kind", "origin", "change", "statement"},
 	"extension_group.add":     {"name", "description"},
 	"extension_group.remove":  {"name", "description", "members"},
 	"extension_group.change":  {"description"},
@@ -223,7 +231,8 @@ func SubjectForm(k Kind) string {
 	return map[string]string{"tenant": "tenant:<name>", "audience": "tenant:<name>", "version": "version:<name>",
 		"channel": "channel:<channel>", "key": "channel:<channel>/key:<id>", "issuer": "issuer:<name>", "grant": "grant:<id>",
 		"publisher": "publisher:<name>", "release": release, "block": "block:<body hash>", "upstream": "upstream:<name>",
-		"shadow": "shadow:<name>", "extension_group": "extension-group:<name>", "attachment": "ext:<name>/attachment:<id>"}[prefix]
+		"shadow": "shadow:<name>", "extension_group": "extension-group:<name>", "attachment": "ext:<name>/attachment:<id>",
+		"attestation-key": "attestation-key:<id>", "feed": "feed:<name>"}[prefix]
 }
 
 // Known reports whether a kind is in the catalogue.

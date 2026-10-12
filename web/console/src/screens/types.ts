@@ -64,6 +64,9 @@ export interface Attachment {
   size: number
   summary: Record<string, unknown>
   origin: string
+  issuer?: string // a feed's document: its source, whose pinned key signed it
+  source_origin?: string
+  key?: string
   issued_at: string
   valid_until?: string
   expired?: boolean

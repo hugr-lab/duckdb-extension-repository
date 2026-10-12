@@ -326,3 +326,48 @@ func (e *AuthError) Error() string { return fmt.Sprintf("%v %d from %s", ErrAuth
 
 // Unwrap makes an AuthError ErrAuth.
 func (e *AuthError) Unwrap() error { return ErrAuth }
+
+// PostJSON posts a JSON body with header and returns a 200 answer's body, at most max bytes (0:
+// MaxBytes). A 401 or 403 is an AuthError, any other status ErrStatus; a redirect is never followed,
+// so the header reaches the URL's host only.
+func (c *Client) PostJSON(ctx context.Context, raw string, header http.Header, body []byte, max int64) ([]byte, error) {
+	u, err := c.checkURL(raw)
+	if err != nil {
+		return nil, err
+	}
+	if max <= 0 {
+		max = c.maxBytes
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("%w: not an absolute URL", ErrRefused)
+	}
+	for k, vs := range header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, doErr(err, u)
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return nil, &AuthError{Status: resp.StatusCode, Host: u.Hostname()}
+	case resp.StatusCode != http.StatusOK:
+		return nil, fmt.Errorf("%w %d from %s", ErrStatus, resp.StatusCode, u.Hostname())
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrConnect, u.Hostname())
+	}
+	if int64(len(b)) > max {
+		return nil, fmt.Errorf("%w: %s", ErrTooLarge, u.Hostname())
+	}
+	return b, nil
+}

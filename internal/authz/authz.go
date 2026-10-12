@@ -55,6 +55,7 @@ const (
 	VerbPublish Verb = "publish" // spec 0008: never implied by admin
 	VerbPromote Verb = "promote"
 	VerbAudit   Verb = "audit" // spec 0010: read the tenant's events; admin implies it
+	VerbFeed    Verb = "feed"  // spec 0011: take the tenant's feed in a channel; admin implies it
 )
 
 // Resource is what an action is on: the server (no tenant), a tenant, a channel, an extension in a
@@ -200,7 +201,7 @@ func Reaching(g store.Grant, tenant, ext string, reserved bool) (via string, ver
 // GrantCovers reports whether one grant gives verb on a resource (Covers' rule, per grant).
 func GrantCovers(g store.Grant, verb string, r Resource) bool {
 	explicit := verb == store.VerbPublish || verb == store.VerbPromote
-	if g.Kind == store.PrincipalIssuer && (verb == store.VerbAdmin || verb == store.VerbAudit || explicit || !slices.Contains(g.Verbs, verb)) {
+	if g.Kind == store.PrincipalIssuer && (verb == store.VerbAdmin || verb == store.VerbAudit || verb == store.VerbFeed || explicit || !slices.Contains(g.Verbs, verb)) {
 		return false
 	}
 	if !slices.Contains(g.Verbs, verb) && (explicit || !slices.Contains(g.Verbs, store.VerbAdmin)) {

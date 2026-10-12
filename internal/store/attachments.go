@@ -51,18 +51,21 @@ type Attachment struct {
 	Supersedes                                     string // an issuer id of the same issuer
 	WithdrawnAt                                    time.Time
 	Statement, Signature                           string
+	Seq                                            int64 // a feed document's: the statement's seq at its source
 }
 
 const attachmentCols = `id, tenant_id, body_hash, kind, media_type, title, size, content_hash, summary, origin, attached_by,
 visibility, feedable, version, removed_at, created_at, issuer, issuer_id, key_fp, source_origin, issued_at, valid_until,
-supersedes, withdrawn_at, statement, signature`
+supersedes, withdrawn_at, statement, signature, seq`
 
 func scanAttachment(scan func(...any) error) (Attachment, error) {
 	var a Attachment
 	var key, src, sup, stmt, sig sql.NullString
+	var seq sql.NullInt64
 	err := scan(&a.ID, &a.TenantID, &a.BodyHash, &a.Kind, &a.MediaType, &a.Title, &a.Size, &a.ContentHash, &a.Summary, &a.Origin,
 		&a.AttachedBy, &a.Visibility, &a.Feedable, &a.Version, scanTime{&a.RemovedAt}, scanTime{&a.CreatedAt}, &a.Issuer, &a.IssuerID,
-		&key, &src, scanTime{&a.IssuedAt}, scanTime{&a.ValidUntil}, &sup, scanTime{&a.WithdrawnAt}, &stmt, &sig)
+		&key, &src, scanTime{&a.IssuedAt}, scanTime{&a.ValidUntil}, &sup, scanTime{&a.WithdrawnAt}, &stmt, &sig, &seq)
+	a.Seq = seq.Int64
 	a.KeyFP, a.SourceOrigin, a.Supersedes, a.Statement, a.Signature = key.String, src.String, sup.String, stmt.String, sig.String
 	return a, err
 }
@@ -97,13 +100,20 @@ func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
 	if total >= MaxTenantAttachments {
 		return fmt.Errorf("%w: a tenant holds at most %d attachments", ErrInvalid, MaxTenantAttachments)
 	}
+	unresolved := false
 	if a.Supersedes != "" {
 		prev, err := t.attachmentByIssuer(ctx, a.TenantID, a.Issuer, a.Supersedes)
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound) && a.Origin == AttachedByFeed:
+			// a statement this tenant never received (not offered, or refused): an unresolved link,
+			// and a new head as far as the limits go
+			unresolved = true
+		case err != nil:
 			return fmt.Errorf("%w: the document it supersedes: %w", ErrInvalid, err)
-		}
-		if prev.BodyHash != a.BodyHash || prev.Kind != a.Kind || prev.Origin != a.Origin || !prev.RemovedAt.IsZero() {
+		case prev.BodyHash != a.BodyHash || prev.Kind != a.Kind || prev.Origin != a.Origin:
 			return fmt.Errorf("%w: a document supersedes one of the same body, kind and origin", ErrInvalid)
+		case !prev.RemovedAt.IsZero() && a.Origin != AttachedByFeed:
+			return fmt.Errorf("%w: the document it supersedes was removed", ErrInvalid)
 		}
 		var later int
 		if err := t.queryRow(ctx, "SELECT COUNT(*) FROM attachments WHERE tenant_id = ? AND issuer = ? AND supersedes = ? AND removed_at IS NULL",
@@ -113,7 +123,8 @@ func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
 		if later > 0 {
 			return fmt.Errorf("%w: the document it supersedes is superseded already", ErrInvalid)
 		}
-	} else {
+	}
+	if a.Supersedes == "" || unresolved {
 		// a new chain: count the heads of (body, kind, origin)
 		var heads int
 		if err := t.queryRow(ctx, `SELECT COUNT(*) FROM attachments a WHERE a.tenant_id = ? AND a.body_hash = ? AND a.kind = ? AND a.origin = ?
@@ -135,11 +146,11 @@ AND n.supersedes = a.issuer_id AND n.removed_at IS NULL)`, a.TenantID, a.BodyHas
 	if a.IssuedAt.IsZero() {
 		a.IssuedAt = a.CreatedAt
 	}
-	_, err := t.exec(ctx, "INSERT INTO attachments ("+attachmentCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := t.exec(ctx, "INSERT INTO attachments ("+attachmentCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		a.ID, a.TenantID, a.BodyHash, a.Kind, a.MediaType, a.Title, a.Size, a.ContentHash, a.Summary, a.Origin, a.AttachedBy,
 		a.Visibility, a.Feedable, a.Version, t.s.d.nullTimeArg(a.RemovedAt), t.s.d.timeArg(a.CreatedAt), a.Issuer, a.IssuerID,
 		nullable(a.KeyFP), nullable(a.SourceOrigin), t.s.d.timeArg(a.IssuedAt), t.s.d.nullTimeArg(a.ValidUntil), nullable(a.Supersedes),
-		t.s.d.nullTimeArg(a.WithdrawnAt), nullable(a.Statement), nullable(a.Signature))
+		t.s.d.nullTimeArg(a.WithdrawnAt), nullable(a.Statement), nullable(a.Signature), nullableInt(a.Seq))
 	return t.s.mapErr(err, "attachment")
 }
 
@@ -256,6 +267,11 @@ AND created_at < ?`, a.TenantID, a.Issuer, a.IssuerID, t.s.d.timeArg(before)).Sc
 		if _, err := t.RemoveAttachment(ctx, cur); err != nil {
 			return err
 		}
+		if cur.Issuer == "" { // a version long superseded: its statements go (a feed holds its own copy)
+			if err := t.DeleteStatements(ctx, cur.TenantID, cur.IssuerID); err != nil {
+				return err
+			}
+		}
 		ok = true
 		return nil
 	})
@@ -281,8 +297,10 @@ AND NOT EXISTS (SELECT 1 FROM blocks k WHERE k.tenant_id = ? AND k.body_hash = ?
 			return err
 		}
 		n, err := res.RowsAffected()
-		ok = n > 0
-		return err
+		if ok = n > 0; err != nil || !ok || a.Issuer != "" {
+			return err
+		}
+		return t.DeleteStatements(ctx, a.TenantID, a.IssuerID) // a body no longer held: nothing to offer
 	})
 	return ok, err
 }

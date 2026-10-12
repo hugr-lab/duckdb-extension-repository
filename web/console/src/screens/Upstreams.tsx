@@ -5,6 +5,7 @@ import { useAction } from '../lib/action'
 import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, fingerprintSeg, seg } from '../lib/http'
 import { platforms } from './Channel'
+import { Feeds } from './Feeds'
 
 // Upstreams (spec 0009; console phase 2b): where a channel's mirrored extensions come from, what is
 // allowed in, and what each run did.
@@ -143,6 +144,7 @@ export function Upstreams() {
       <Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />
       <Note>Each upstream feeds one channel. Two upstreams of a channel never supply the same name: one source decides its current release.</Note>
       <Shadows />
+      <Feeds />
     </>
   )
 }

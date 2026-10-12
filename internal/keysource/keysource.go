@@ -25,11 +25,20 @@ var (
 	ErrSign      = errors.New("keysource: signing failed")
 )
 
+// Key purposes: the role a key is opened for. A backend with key metadata (Azure Key Vault's tags)
+// requires the key to be marked with it; one without (a file, Vault Transit) relies on the
+// fingerprint registry, which never lets one key hold two roles.
+const (
+	PurposeChannel     = "channel-signing"
+	PurposeAttestation = "attestation-signing"
+)
+
 // Key is a parsed key inside a source: what the backend needs, and how the reference spells it.
 type Key struct {
 	Name    string // the key name, checked against the source's allow list
 	Version string // the pinned version, in the backend's own terms
 	Ref     string // the canonical reference <source>:<key>
+	Purpose string // the role it is opened for; "" is PurposeChannel
 }
 
 // Backend is one configured source of a kind.
@@ -131,12 +140,18 @@ func (r *Registry) Parse(ref string) (string, Key, error) {
 	return name, k, nil
 }
 
-// Open resolves a reference to a signer wrapped in the common contract.
+// Open resolves a reference to a channel key's signer wrapped in the common contract.
 func (r *Registry) Open(ctx context.Context, ref string) (signer.Signer, error) {
+	return r.OpenPurpose(ctx, ref, PurposeChannel)
+}
+
+// OpenPurpose resolves a reference to a signer for a role (PurposeChannel, PurposeAttestation).
+func (r *Registry) OpenPurpose(ctx context.Context, ref, purpose string) (signer.Signer, error) {
 	name, k, err := r.Parse(ref)
 	if err != nil {
 		return nil, err
 	}
+	k.Purpose = purpose
 	if name == "file" {
 		return r.files.Open(ctx, ref)
 	}

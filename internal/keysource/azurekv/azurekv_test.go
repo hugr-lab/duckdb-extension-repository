@@ -383,3 +383,35 @@ func TestSignKidOtherHost(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// A key is opened for its role (spec 0011): a channel key's tag does not open it as an attestation
+// key, nor the reverse.
+func TestPurpose(t *testing.T) {
+	open := func(tag, purpose string) error {
+		f := newFakeVault(t)
+		f.mu.Lock()
+		f.bundle["tags"] = map[string]string{azurekv.PurposeTag: tag}
+		f.mu.Unlock()
+		src, err := azurekv.New(host, fakeCred{}, true, azurekv.Options{Transport: f.transport()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg := keysource.NewRegistry(signer.Resolver{})
+		_ = reg.Add("src", src, keysource.Options{Allow: []string{"*"}})
+		_, err = reg.OpenPurpose(context.Background(), "src:ext-a/"+version, purpose)
+		return err
+	}
+	for _, c := range []struct {
+		tag, purpose string
+		ok           bool
+	}{
+		{keysource.PurposeChannel, keysource.PurposeChannel, true},
+		{keysource.PurposeAttestation, keysource.PurposeAttestation, true},
+		{keysource.PurposeChannel, keysource.PurposeAttestation, false},
+		{keysource.PurposeAttestation, keysource.PurposeChannel, false},
+	} {
+		if err := open(c.tag, c.purpose); (err == nil) != c.ok {
+			t.Errorf("tag %s opened for %s: %v", c.tag, c.purpose, err)
+		}
+	}
+}

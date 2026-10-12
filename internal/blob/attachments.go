@@ -139,6 +139,12 @@ func (c *Collector) attachments(ctx context.Context, d Domain, cutoff time.Time,
 			return fmt.Errorf("blob: domain %s: deleting an attachment: %w", d.Name, err)
 		}
 	}
+	// a body's feed state goes with its documents: held again, it receives its history again
+	if !r.DryRun {
+		if _, err := st.DeleteGoneFeedCursors(ctx, d.Name); err != nil {
+			return err
+		}
+	}
 	type obj struct {
 		id   string
 		size int64

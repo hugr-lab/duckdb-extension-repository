@@ -65,6 +65,15 @@ export function stale(a: Attachment, now = Date.now()) {
 
 const origins: Record<string, string> = { tenant: 'the tenant', publisher: 'a publisher', feed: 'a feed' }
 
+/** Who stands behind a document: the tenant, a publisher, or a feed's verified source. */
+export function originText(a: Pick<Attachment, 'origin' | 'attached_by' | 'issuer' | 'source_origin'>) {
+  if (a.origin === 'feed' && a.issuer) {
+    const behind = a.source_origin && a.source_origin !== 'tenant' ? `, by ${a.source_origin}` : ''
+    return `the feed of ${a.issuer}${behind} (signature verified)`
+  }
+  return `${origins[a.origin] ?? a.origin}${a.attached_by ? ` (${a.attached_by})` : ''}`
+}
+
 const fileExt = (mt: string) => (mt === 'text/markdown' ? 'md' : 'json')
 
 /** Saves bytes as a file: never opened, never rendered. */
@@ -80,7 +89,15 @@ function save(b: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-type Pending = { a: Attachment; change: 'readers' | 'administrators' | 'remove' }
+type Pending = { a: Attachment; change: 'readers' | 'administrators' | 'feedable' | 'unfeedable' | 'remove' }
+
+const titles: Record<Pending['change'], [string, string]> = {
+  readers: ['Show to readers', 'show to readers'],
+  administrators: ['Hide from readers', 'hide'],
+  feedable: ['Offer in the feed', 'offer'],
+  unfeedable: ['Withdraw from the feed', 'withdraw'],
+  remove: ['Remove', 'remove'],
+}
 
 /** Every page of a list, following the API's cursors. */
 async function every<T>(client: Client, path: string, key: string): Promise<T[]> {
@@ -189,7 +206,7 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
             ['Title', (a) => <span title={a.media_type}>{a.title}</span>],
             ...(body ? [] : ([['Body', (a: Attachment) => <Mono>{a.body_hash.slice(0, 12)}</Mono>]] as [string, (a: Attachment) => React.ReactNode][])),
             ['Summary', (a) => <span className="whitespace-pre-wrap break-words">{summaryText(a.kind, a.summary ?? {})}</span>],
-            ['Origin', (a) => `${origins[a.origin] ?? a.origin}${a.attached_by ? ` (${a.attached_by})` : ''}`],
+            ['Origin', (a) => <span className="break-words">{originText(a)}</span>],
             ['Dated', (a) => (
               <span>
                 {when(dated(a))}
@@ -202,6 +219,7 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
                 <Badge>{a.visibility ?? ''}</Badge>
                 {a.head === false && <Badge>superseded</Badge>}
                 {a.withdrawn && <Badge>withdrawn</Badge>}
+                {a.feedable && <Badge>offered</Badge>}
               </span>
             )],
             ['', (a) => (
@@ -212,6 +230,11 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
                     {a.visibility === 'readers' ? 'Hide from readers' : 'Show to readers'}
                   </Button>
                 )}
+                {perms.tenantAdmin && a.origin !== 'feed' && (
+                  <Button tone="outline" onClick={() => ask({ a, change: a.feedable ? 'unfeedable' : 'feedable' })}>
+                    {a.feedable ? 'Withdraw from feed' : 'Offer in feed'}
+                  </Button>
+                )}
                 {manage && <Button tone="danger-outline" onClick={() => ask({ a, change: 'remove' })}>Remove</Button>}
               </span>
             )],
@@ -220,8 +243,8 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
       )}
       <Confirm
         open={pending !== null}
-        title={pending ? `${pending.change === 'remove' ? 'Remove' : pending.change === 'readers' ? 'Show to readers' : 'Hide from readers'}: ${pending.a.title}` : ''}
-        confirm={pending?.change === 'remove' ? 'remove' : pending?.change === 'readers' ? 'show to readers' : 'hide'}
+        title={pending ? `${titles[pending.change][0]}: ${pending.a.title}` : ''}
+        confirm={pending ? titles[pending.change][1] : ''}
         danger={pending?.change === 'remove'}
         disabled={pending?.change === 'readers' && showing === undefined}
         onConfirm={run}
@@ -230,7 +253,14 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
           setPending(null)
         }}
       >
-        {pending?.change === 'remove' && <p>The document is deleted for good.</p>}
+        {pending?.change === 'remove' && (
+          <p>The document is deleted for good{pending.a.feedable ? '; the feed withdraws it from subscribers' : ''}.</p>
+        )}
+        {pending?.change === 'feedable' && (
+          <p>Subscribers holding feed in a channel serving this body receive the document, signed with the tenant's attestation key
+            {pending.a.visibility === 'readers' ? ', and may show it to their readers' : ''}. Withdrawing it later tells them so.</p>
+        )}
+        {pending?.change === 'unfeedable' && <p>The feed withdraws the document: subscribers mark it withdrawn.</p>}
         {pending?.change === 'administrators' && <p>Readers no longer see the document; administrators still do.</p>}
         {pending?.change === 'readers' && (
           <>

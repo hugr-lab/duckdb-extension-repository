@@ -17,7 +17,7 @@ and it is superseded by a new spec when a decision changes.
 | [0008](0008-publication/spec.md) | Publication and promotion | implemented |
 | [0009](0009-upstreams/spec.md) | Upstreams: mirror, passthrough, pull-through, private upstreams | implemented |
 | [0010](0010-audit/spec.md) | Audit events, download statistics, metrics | implemented |
-| [0011](0011-attachments/spec.md) | Attachments and the feed | 1a implemented |
+| [0011](0011-attachments/spec.md) | Attachments and the feed | implemented |
 | [0015](0015-console/spec.md) | Administration console, the micro-frontend contract | implemented |
 | [0016](0016-storage-gc/spec.md) | Storage garbage collection, purging yanked releases | implemented |
 | [0017](0017-extension-groups/spec.md) | Extension groups: grants on named sets of extensions | implemented |
