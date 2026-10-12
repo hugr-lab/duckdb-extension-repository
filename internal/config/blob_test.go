@@ -164,3 +164,38 @@ func TestAzureBlob(t *testing.T) {
 		t.Fatalf("one account name in two clouds: %v", err)
 	}
 }
+
+// An s3 domain with an AWS identity (spec 0005 phase 3a): AWS S3 hosts only, with the bucket owner's
+// account, without key files or ca_file.
+func TestS3AWSIdentity(t *testing.T) {
+	dom := func(fields string) string {
+		return base + "blob:\n  domains:\n    - { name: default, kind: s3, s3: { " + fields + " } }\n"
+	}
+	ok := `endpoint: "https://s3.eu-central-1.amazonaws.com", bucket: kista, region: eu-central-1, lookup: dns, sse: s3, ` +
+		`account: "123456789012", identity: { kind: pod_identity }`
+	if _, err := Load(write(t, dom(ok)), nil); err != nil {
+		t.Fatalf("ok: %v", err)
+	}
+	irsa := strings.Replace(ok, "{ kind: pod_identity }", `{ kind: irsa, role_arn: "arn:aws:iam::123456789012:role/kista" }`, 1)
+	if _, err := Load(write(t, dom(irsa+`, role_arn: "arn:aws:iam::210987654321:role/bodies"`)), nil); err != nil {
+		t.Fatalf("irsa with an assumed role: %v", err)
+	}
+	for name, c := range map[string]struct{ fields, want string }{
+		"not AWS":          {strings.Replace(ok, "s3.eu-central-1.amazonaws.com", "s3.example.com", 1), "only to AWS S3"},
+		"other region":     {strings.Replace(ok, "s3.eu-central-1.amazonaws.com", "s3.eu-west-1.amazonaws.com", 1), "only to AWS S3"},
+		"lookalike":        {strings.Replace(ok, "s3.eu-central-1.amazonaws.com", "s3.eu-central-1.amazonaws.com.evil.example", 1), "only to AWS S3"},
+		"port":             {strings.Replace(ok, "amazonaws.com", "amazonaws.com:8443", 1), "only to AWS S3"},
+		"no account":       {strings.Replace(ok, `account: "123456789012", `, "", 1), "account is required"},
+		"with key files":   {ok + ", access_key_file: /a, secret_key_file: /s", "not both"},
+		"with ca_file":     {ok + ", ca_file: /ca.pem", "system roots"},
+		"static":           {strings.Replace(ok, "pod_identity", "static", 1), "static"},
+		"azure kind":       {strings.Replace(ok, "pod_identity", "workload", 1), "pod_identity, irsa"},
+		"irsa no role":     {strings.Replace(ok, "pod_identity", "irsa", 1), "irsa needs role_arn"},
+		"role on imds":     {strings.Replace(ok, "{ kind: pod_identity }", `{ kind: imds, role_arn: "arn:aws:iam::123456789012:role/kista" }`, 1), "only for irsa"},
+		"account no ident": {`endpoint: "https://e.example", bucket: kista, region: auto, lookup: path, sse: none, access_key_file: /a, secret_key_file: /s, account: "123456789012"`, "go with an AWS identity"},
+	} {
+		if _, err := Load(write(t, dom(c.fields)), nil); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", name, err, c.want)
+		}
+	}
+}

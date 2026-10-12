@@ -1,6 +1,6 @@
 # Spec 0004: Signer backends: key sources for vaults and KMSs
 
-- **Status**: phases 1-2 implemented (registry, contract, `file`, `vault`, `azurekv`); phases 3-4 (`awskms`, `gcpkms`) deferred by the owner (2026-10-07), designed here and done later
+- **Status**: phases 1-3 implemented (registry, contract, `file`, `vault`, `azurekv`, `awskms`); phase 4 (`gcpkms`) deferred by the owner (2026-10-07), designed here and done later
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -310,17 +310,85 @@ The response `KeyId` must equal the ARN.
 | `imds` | IMDSv2 only |
 | `ecs` | the task role |
 
-Optionally, `role_arn` adds STS AssumeRole for cross-account keys. kista refuses:
-- static keys, unless `static_credentials: allow` in dev;
-- `AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CA_BUNDLE`,
-  `AWS_EC2_METADATA_SERVICE_ENDPOINT`, and `AWS_ENDPOINT_URL*`.
-
-Shared config files are loaded as empty lists. `endpoint_url` is allowed only with `profile: dev` or
-on loopback. The partition is derived from the region through the SDK resolver, so `aws-us-gov`,
-`aws-cn`, `aws-iso*` and new partitions work.
+Optionally, `role_arn` adds STS AssumeRole for cross-account keys. Static keys, the steering
+variables, `endpoint_url` and the partition are as the phase 3 details below say.
 
 *Least privilege.* `kms:Sign`, `kms:GetPublicKey`, `kms:DescribeKey` and `kms:ListResourceTags` on
 the key.
+
+*Phase 3 details* (2026-10-12, settled before the code, and reviewed). They replace the paragraph
+above where the two differ.
+- **Config.**
+  - `awskms: { region, account, role_arn, allow_multi_region, fips, endpoint_url }`.
+  - `region` matches `^[a-z]{2,4}(-[a-z]+)+-\d{1,2}$`. `account` is 12 digits.
+  - `role_arn` (optional) is an IAM role ARN in the region's partition, for an `AssumeRole` after
+    the identity.
+  - `fips: true` uses the FIPS endpoints of KMS, and of STS in the `us-` regions, the only ones
+    where STS has them. It is refused in a partition without FIPS endpoints, and with
+    `endpoint_url`.
+  - `endpoint_url` only with `profile: dev`, a loopback host and `identity.kind: static`: the moto
+    emulator, which never receives a platform's token.
+  - `identity.kind` is `pod_identity`, `irsa`, `imds`, `ecs`, or `static` (dev only).
+    - `irsa` needs `identity.role_arn`, the role the ServiceAccount is bound to. `AWS_ROLE_ARN`
+      must equal it, so whoever edits the ServiceAccount's annotation cannot change kista's
+      identity, as Azure's workload identity takes its ids from config.
+    - `static` reads `identity.access_key_file` and `identity.secret_key_file`, mode `0600` or
+      narrower, re-read at every retrieval.
+  - `allow` lists key ids (and `mrk-` ids, with `allow_multi_region`), or `*`, which the purpose
+    tag then guards.
+- **The partition** comes from the region's prefix: `cn-` gives `aws-cn`, `us-gov-` gives
+  `aws-us-gov`, `us-iso-` gives `aws-iso`, `us-isob-` gives `aws-iso-b`, `eu-isoe-` gives
+  `aws-iso-e`, `us-isof-` gives `aws-iso-f`, `eusc-` gives `aws-eusc`, anything else `aws`.
+  - A test compares the table with the pinned SDK's `partitions.json`, so a new partition fails
+    the build, not a deployment.
+  - `DescribeKey`'s `Arn` must equal the ARN built from it, so a wrong guess fails closed.
+- **Credentials** (`internal/cloud/aws`) come from the platform's own variables, which EKS, ECS
+  and EC2 set. They are not steering variables: kista reads them, and a value outside the Accepted
+  column is an error at startup.
+
+  | `identity.kind` | Read | Accepted |
+  | --- | --- | --- |
+  | `pod_identity` | `AWS_CONTAINER_CREDENTIALS_FULL_URI` and `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` | the URI is `http://169.254.170.23/v1/credentials` or `http://[fd00:ec2::23]/v1/credentials`; the token file is re-read for every retrieval |
+  | `ecs` (EC2, Fargate, ECS Anywhere) | `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` | it starts with `/`, has no `//`, `@`, `\`, `?`, `#`, `%` or `..`, and the URL built on `http://169.254.170.2` has exactly that host, no user and no port |
+  | `irsa` | `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` | the role equals `identity.role_arn`; STS `AssumeRoleWithWebIdentity` in the region |
+  | `imds` | nothing | IMDSv2 at `http://169.254.169.254`, with the client enabled and no fallback to v1, all set explicitly (the IMDS client otherwise reads `AWS_EC2_METADATA_*`). IPv6-only instances are not supported yet |
+
+  - The platform's token files live in Kubernetes projected volumes: a symlink into a timestamped
+    directory, with the mode the volume sets. They are read following the link, as a regular file
+    of at most 64 KiB, at every retrieval. An empty token is refused. Only `static` key files must
+    be private regular files that are not links.
+  - `role_arn` then adds STS `AssumeRole`, with session name `kista`.
+  - Credentials are cached by the SDK's cache. It refreshes them five minutes (jittered) before
+    they expire.
+  - With `imds`, `AWS_EC2_METADATA_DISABLED=true` is refused outside dev.
+  - STS and KMS are reached in the configured region, through a client that:
+    - ignores proxies from the environment;
+    - requires TLS 1.2;
+    - follows no redirect.
+  - `LoadDefaultConfig` is never called, and no shared file is read.
+  - Outside dev, kista still refuses to start when a steering variable is set. kista would not use
+    it, but an operator who set one expects it to apply:
+    - `AWS_ACCESS_KEY_ID`, `AWS_ACCESS_KEY`, `AWS_SECRET_ACCESS_KEY`, `AWS_SECRET_KEY`,
+      `AWS_SESSION_TOKEN`, `AWS_CONTAINER_AUTHORIZATION_TOKEN`;
+    - `AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CA_BUNDLE`;
+    - `AWS_EC2_METADATA_SERVICE_ENDPOINT` and `AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE`;
+    - `AWS_USE_FIPS_ENDPOINT` and `AWS_USE_DUALSTACK_ENDPOINT` (`fips` is in config);
+    - `AWS_ENDPOINT_URL` and every `AWS_ENDPOINT_URL_*`.
+
+    `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_STS_REGIONAL_ENDPOINTS` and `AWS_ROLE_SESSION_NAME`,
+    which platforms set, are ignored.
+- **The account.**
+  - `ListResourceTags` does not work across accounts. A key in another account is therefore
+    reached only through `role_arn` into that account; otherwise its tag cannot be read, and it is
+    refused.
+- **Calls.** At most 3 attempts, through the SDK's retryer. An error keeps the AWS error code (a
+  plain word) and the request id (a UUID), and nothing else. Any other failure (no answer, no
+  credentials) is one fixed message.
+- **The emulator.** moto 5.1.22 signs `RSA_2048` keys, but ignores `MessageType = DIGEST`: it
+  hashes the digest again, so its signatures fail the known answer. CI runs moto for the metadata,
+  the tags, `GetPublicKey` and the sign call. There, the contract must refuse moto's signature as
+  one that does not verify. The known answer runs against a fake of the KMS operations, and against
+  real AWS in the `live` tests.
 
 **`gcpkms`: Google Cloud KMS over REST** (`golang.org/x/oauth2/google` for credentials; no gRPC SDK).
 
@@ -372,6 +440,9 @@ internal/keysource/awskms     (build tag kista_no_aws leaves it out)
 internal/keysource/gcpkms     (build tag kista_no_gcp leaves it out)
 internal/cloud/{azure,aws,gcp}   hardened credential construction
 ```
+
+The build tags `kista_no_aws` and `kista_no_gcp` are not implemented yet: every build includes
+`awskms`.
 
 `app.Credential` (spec 0003, the Entra database login) moves to `internal/cloud/azure`. The database
 login keeps the global `azure.identity`, and key sources have their own `identity`.
@@ -457,9 +528,9 @@ operators preparing keys, and the live tests.
     kista then authenticates with `token_file` and `jwt`; `kubernetes` auth runs against a fake
     TokenReview. The tests are gated by `KISTA_TEST_VAULT` and `KISTA_TEST_OPENBAO`, and
     `KISTA_TEST_REQUIRE_VAULT=1` on Linux, like the databases.
-  - **AWS:** moto (`motoserver/moto`, Apache-2.0) if its KMS signs `RSA_2048` with
-    `MessageType = DIGEST`. LocalStack's current image needs an auth token, so it is not used.
-    Otherwise AWS is tested with fakes only.
+  - **AWS:** moto (`motoserver/moto:5.1.22`, Apache-2.0) as a `docker run` step, gated by
+    `KISTA_TEST_MOTO`. It double-hashes a digest (above), so it covers everything but the known
+    answer, which a fake covers. LocalStack's current image needs an auth token, so it is not used.
   - **Azure and GCP:** `httptest` TLS servers speaking the REST shapes, with the Azure 401 challenge.
     A test transport is injected into the real clients.
   - **Live tests** (build tag `live`) run with `kista admin key check` in a protected environment

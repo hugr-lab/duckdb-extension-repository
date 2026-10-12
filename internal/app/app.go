@@ -17,11 +17,13 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	awscloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/aws"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/cloud/azure"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/awskms"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/azurekv"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/vault"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -159,11 +161,35 @@ func KeySources(cfg config.Config) (*keysource.Registry, error) {
 			if err := reg.Add(src.Name, b, opts); err != nil {
 				return nil, err
 			}
+		case "awskms":
+			a := src.AWSKMS
+			dev := cfg.Profile == config.ProfileDev
+			creds, err := awscloud.Credentials(AWSIdentity(src.Identity, a.RoleARN), a.Region,
+				awscloud.Options{Dev: dev, FIPS: a.FIPS, STSEndpoint: a.EndpointURL})
+			if err != nil {
+				return nil, fmt.Errorf("app: source %s: %w", src.Name, err)
+			}
+			b, err := awskms.New(a.Region, a.Account, a.AllowMultiRegion, creds, awskms.Options{Endpoint: a.EndpointURL, FIPS: a.FIPS})
+			if err != nil {
+				return nil, fmt.Errorf("app: source %s: %w", src.Name, err)
+			}
+			if err := reg.Add(src.Name, b, opts); err != nil {
+				return nil, err
+			}
 		default:
 			return nil, fmt.Errorf("app: source %s: kind %s is not available in this build", src.Name, src.Kind)
 		}
 	}
 	return reg, nil
+}
+
+// AWSIdentity is a configured AWS identity, with the role to assume after it ("" for none).
+func AWSIdentity(id *config.Identity, assume string) awscloud.Identity {
+	out := awscloud.Identity{AssumeRole: assume}
+	if id != nil {
+		out.Kind, out.PlatformRole, out.AccessKeyFile, out.SecretKeyFile = id.Kind, id.RoleARN, id.AccessKeyFile, id.SecretKeyFile
+	}
+	return out
 }
 
 // NewServices builds the services with an authorizer.

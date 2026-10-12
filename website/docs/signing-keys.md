@@ -22,7 +22,7 @@ and [0004](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/spe
 | `file` (built in) | an unencrypted PEM key file in `signers.file_dir` | development, or explicit opt-in |
 | `vault` | HashiCorp Vault or OpenBao Transit | available |
 | `azurekv` | Azure Key Vault or Azure Key Vault Managed HSM | available |
-| `awskms` | AWS KMS | not available yet: config validation refuses it |
+| `awskms` | AWS KMS | available |
 | `gcpkms` | Google Cloud KMS | not available yet: config validation refuses it |
 
 PKCS#11 hardware HSMs are not available either. A Kubernetes Secret is not a backend: mounted into
@@ -38,6 +38,7 @@ the first `:`; the rest is parsed by that source's kind.
 | `file` | `file:<name>` | one file name inside `signers.file_dir`, no `/` or `..` | the file itself |
 | `vault` | `<source>:<key>:v<N>` | `[A-Za-z0-9_-]{1,128}` | `N ≥ 1`, no leading zeros (`v0` would mean "latest" in Vault) |
 | `azurekv` | `<source>:<name>/<version>` | `[0-9A-Za-z-]{1,127}`, compared lowercased | 32 lowercase hex characters (an empty version would mean "latest") |
+| `awskms` | `<source>:<key-id>` | a key id: a UUID in lowercase hex, or `mrk-` and 32 lowercase hex characters (a multi-Region key, with `allow_multi_region`). Aliases and ARNs are refused | the key id itself: an asymmetric KMS key is never rotated |
 
 - A reference never carries a host, URL, account or path. Hosts, mounts and namespaces come only
   from the configuration, so a reference can only pick a key inside a source the administrator
@@ -81,6 +82,14 @@ signers:
         client_id: "00000000-0000-0000-0000-000000000000"
         tenant_id: "00000000-0000-0000-0000-000000000000"
       allow: ["ext-"]
+    - name: aws
+      kind: awskms
+      awskms:
+        region: eu-central-1
+        account: "123456789012"
+      identity:
+        kind: pod_identity       # pod_identity | irsa | imds | ecs
+      allow: ["1234abcd-12ab-34cd-56ef-1234567890ab"]   # key ids, or "*"
 ```
 
 ### Settings of a source
@@ -88,17 +97,19 @@ signers:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `name` | required | `[a-z][a-z0-9-]{0,15}`, unique. Reserved: `file`, `vault`, `azurekv`, `awskms`, `gcpkms`, `pkcs11`, `http`, `https`, `arn`, `projects` |
-| `kind` | required | `vault` or `azurekv`; exactly one matching block (`vault:` or `azurekv:`) |
-| `allow` | required | key-name prefixes the source may use; `"*"` for any key. An empty list, or an empty prefix, is refused |
+| `kind` | required | `vault`, `azurekv` or `awskms`; exactly one matching block (`vault:`, `azurekv:` or `awskms:`) |
+| `allow` | required | key-name prefixes the source may use; `"*"` for any key. An empty list, or an empty prefix, is refused. For `awskms`, whole key ids or `"*"` |
 | `max_concurrency` | `4` | concurrent opens and signs through this source |
 | `timeout` | `10s` | per call, `1s` to `60s` |
 | `recheck` | `10m` | how often a key's properties are read again while it is in use; at most `10m` |
 | `health_key` | none | accepted by the configuration; this build does not use it |
-| `identity` | none | `azurekv` only (required there); refused on `vault` |
+| `identity` | none | required for `azurekv` and `awskms`, with that cloud's kinds; refused on `vault` |
 
 **Allow lists** are plain prefixes, matched after the key name passed its kind's rule: `ext-`
 admits `ext-prod` but not `extra`. For `azurekv`, names are matched lowercased, so prefixes must be
-written in lowercase.
+written in lowercase. For `awskms`, an entry must be a whole key id (or `"*"`, which the purpose
+tag then guards): AWS key ids are random, so a prefix of one means nothing. A `mrk-` id is accepted
+only with `allow_multi_region`.
 
 kista does not contact a source at startup. It starts even when a source is unreachable; signing
 and `key add` through it then fail, while serving and `.well-known` keep working, since they use
@@ -117,7 +128,7 @@ signature it makes is verified.
   than `recheck`. A key that no longer passes stops signing.
 - **Every signature**: the digest goes out as a precomputed SHA-256 digest; the answer must be
   256 bytes, verify against the public key, and name the pinned key version (Vault's
-  `key_version`, Azure's `kid`).
+  `key_version`, Azure's `kid`, AWS's `KeyId`, which must be the key's ARN).
 - **Every open of a registered key** compares the signer's public key with the one stored when the
   key was registered (the one published in `.well-known`) and its fingerprint. A file that changed,
   or a source re-pointed at another key, never signs.
@@ -305,6 +316,176 @@ kista needs to read the key and sign with it, nothing more.
 - Turn on purge protection.
 - Only kista's identity should hold sign rights on these keys.
 
+## AWS KMS
+
+An `awskms` source signs with an asymmetric KMS key in one AWS account and region, through the AWS
+SDK for Go v2, `RSASSA_PKCS1_V1_5_SHA_256` over the digest. Google Cloud KMS (`gcpkms`) is not
+available yet: config validation refuses it.
+
+```yaml title="kista.yaml"
+signers:
+  sources:
+    - name: aws
+      kind: awskms
+      awskms:
+        region: eu-central-1
+        account: "123456789012"      # the account that holds the keys
+        role_arn: ""                 # optional: a role to assume, for keys in another account
+        allow_multi_region: false
+        fips: false
+      identity:
+        kind: irsa
+        role_arn: arn:aws:iam::123456789012:role/kista
+      allow: ["1234abcd-12ab-34cd-56ef-1234567890ab"]
+```
+
+### Settings
+
+| Setting | Meaning |
+| --- | --- |
+| `awskms.region` | required; a region such as `eu-central-1` (`^[a-z]{2,4}(-[a-z]+)+-\d{1,2}$`). KMS and STS are called in this region |
+| `awskms.account` | required; the 12-digit account that holds the keys |
+| `awskms.role_arn` | optional; an IAM role ARN in the region's partition, assumed with STS `AssumeRole` (session name `kista`) after the identity |
+| `awskms.allow_multi_region` | default `false`; `true` accepts multi-Region keys (`mrk-` ids) |
+| `awskms.fips` | default `false`; `true` uses the FIPS endpoints of KMS, and of STS in the `us-` regions (the only ones where STS has them). Refused in a partition without FIPS endpoints (`aws` and `aws-us-gov` have them) and with `endpoint_url` |
+| `awskms.endpoint_url` | the moto emulator only: `profile: dev`, an `http` or `https` URL on a loopback host, and `identity.kind: static`, so no platform token goes to it. It replaces both the KMS and the STS endpoint |
+| `identity.kind` | `pod_identity`, `irsa`, `imds`, `ecs`, or `static` (`profile: dev` only) |
+| `identity.role_arn` | `irsa` only, and required there: the IAM role the ServiceAccount is bound to, in the region's partition |
+| `identity.access_key_file`, `identity.secret_key_file` | `static` only, and required there: absolute paths to the access key id and the secret |
+
+`client_id` and `tenant_id` are Azure's and are refused here; the AWS fields are refused on an
+`azurekv` source.
+
+### Identity
+
+kista builds the credentials from `identity.kind`. It never calls the SDK's default credential
+chain and never reads `~/.aws/config` or `~/.aws/credentials`. For the kind chosen it reads the
+variables the platform sets (EKS, ECS, EC2) and checks them at startup; a value outside the Accepted
+column stops kista.
+
+| `identity.kind` | Platform | Read | Accepted |
+| --- | --- | --- | --- |
+| `pod_identity` | EKS Pod Identity | `AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` | the URI is `http://169.254.170.23/v1/credentials` or `http://[fd00:ec2::23]/v1/credentials`; the token file is read again for every retrieval |
+| `irsa` | EKS IAM roles for service accounts | `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE` | `AWS_ROLE_ARN` equals `identity.role_arn`; STS `AssumeRoleWithWebIdentity` in the region, session name `kista` |
+| `ecs` | ECS task role (EC2, Fargate, ECS Anywhere) | `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` | a path starting with `/`, without `//`, `@`, `\`, `?`, `#`, `%` or `..`, on `http://169.254.170.2` |
+| `imds` | EC2 instance profile | nothing | IMDSv2 at `http://169.254.169.254`, no fallback to IMDSv1. IPv6-only instances are not supported yet |
+
+- `irsa` takes the role from the configuration. Whoever edits the ServiceAccount's annotation can
+  change `AWS_ROLE_ARN`, but not kista's identity: kista then refuses to start.
+- The token files of `pod_identity` and `irsa` are Kubernetes projected tokens: kista follows
+  their symlink, accepts the volume's mode, reads them again for every retrieval and refuses an
+  empty one.
+- `imds` in a container needs the instance's metadata hop limit raised to `2`. With `imds`,
+  `AWS_EC2_METADATA_DISABLED=true` stops kista outside `profile: dev`.
+- `static` reads `identity.access_key_file` and `identity.secret_key_file`, each a regular file
+  (not a symlink) with mode `0600` or narrower. It is for development against the emulator.
+- Credentials are cached, and refreshed five minutes (jittered) before they expire. Nothing is
+  fetched at startup.
+- STS, KMS and the platform's credential endpoints are reached through a client that ignores proxy
+  environment variables, requires TLS 1.2 or later and never follows redirects.
+
+Outside `profile: dev`, kista refuses to start while any of these steering variables is set. kista
+would not use them, but whoever set one expects it to apply:
+
+- `AWS_ACCESS_KEY_ID`, `AWS_ACCESS_KEY`, `AWS_SECRET_ACCESS_KEY`, `AWS_SECRET_KEY`,
+  `AWS_SESSION_TOKEN`, `AWS_CONTAINER_AUTHORIZATION_TOKEN`;
+- `AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CA_BUNDLE`;
+- `AWS_EC2_METADATA_SERVICE_ENDPOINT`, `AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE`;
+- `AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT` (use `fips` in the configuration);
+- `AWS_ENDPOINT_URL` and every `AWS_ENDPOINT_URL_*`.
+
+`AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_STS_REGIONAL_ENDPOINTS` and `AWS_ROLE_SESSION_NAME` are
+ignored: the region and the session name come from the configuration.
+
+### Partitions
+
+The partition follows from the region's prefix. It is used to build the key's ARN and to check
+every `role_arn`.
+
+| Region prefix | Partition |
+| --- | --- |
+| `cn-` | `aws-cn` |
+| `us-gov-` | `aws-us-gov` |
+| `us-iso-` | `aws-iso` |
+| `us-isob-` | `aws-iso-b` |
+| `eu-isoe-` | `aws-iso-e` |
+| `us-isof-` | `aws-iso-f` |
+| `eusc-` | `aws-eusc` |
+| any other | `aws` |
+
+The ARN `DescribeKey` returns must equal the one kista built, so a wrong partition fails closed.
+
+### What the key must look like
+
+kista names the key by its ARN, `arn:<partition>:kms:<region>:<account>:key/<key-id>`, built from
+the configuration and the reference only. It reads `DescribeKey`, `ListResourceTags` and
+`GetPublicKey`, and refuses the key unless:
+
+- the described `Arn` equals that ARN, and `AWSAccountId` equals `account`;
+- `KeySpec` is `RSA_2048` and `KeyUsage` is `SIGN_VERIFY`;
+- `KeyState` is `Enabled`;
+- `Origin` is `AWS_KMS`: no imported material (`EXTERNAL`), no CloudHSM or external key store;
+- it is not in a custom key store;
+- it is not a multi-Region key, unless `allow_multi_region` is set;
+- it has no `ValidTo` (an expiry, which only imported material has);
+- it carries the tag `kista-purpose` with its role's value: `channel-signing` for a channel key,
+  `attestation-signing` for an [attestation key](attachments.md);
+- `GetPublicKey` reports `SIGN_VERIFY`, lists `RSASSA_PKCS1_V1_5_SHA_256`, and returns an RSA
+  public key, the same one at every re-check.
+
+**Another account.** `ListResourceTags` does not work across accounts, so the tag of a key in
+another account cannot be read. Such a key is reachable only through `awskms.role_arn`, a role in
+the key's account, with `awskms.account` set to that account. Without it the key is refused.
+
+Signing is `Sign` with `MessageType = DIGEST` and `SigningAlgorithm = RSASSA_PKCS1_V1_5_SHA_256`.
+The answer must name the same algorithm, and its `KeyId` must be the key's ARN. Each call makes at
+most 3 attempts. An error keeps the AWS error code and the request id only; a failure without an
+answer (no network, no credentials) is one fixed message.
+
+```bash
+aws kms create-key --region eu-central-1 \
+  --key-spec RSA_2048 --key-usage SIGN_VERIFY \
+  --description "kista channel key acme/prod" \
+  --tags TagKey=kista-purpose,TagValue=channel-signing
+```
+
+The reference is `aws:<key-id>`, with the `KeyId` from the answer's `KeyMetadata`:
+
+```bash
+kista admin -config kista.yaml key check -signer aws:1234abcd-12ab-34cd-56ef-1234567890ab
+```
+
+### Permissions
+
+kista needs to read the key and sign with it, nothing more: `kms:DescribeKey`,
+`kms:ListResourceTags`, `kms:GetPublicKey` and `kms:Sign`, on the key's ARN.
+
+```json title="kista-kms-policy.json"
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "kms:DescribeKey",
+        "kms:ListResourceTags",
+        "kms:GetPublicKey",
+        "kms:Sign"
+      ],
+      "Resource": "arn:aws:kms:eu-central-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+    }
+  ]
+}
+```
+
+- Attach it to kista's role (the IRSA or Pod Identity role, the task role, or the instance
+  profile's role). The key policy must let IAM policies grant access (the default key policy does)
+  or grant the same actions itself.
+- With `awskms.role_arn`, attach the policy to that role instead. Its trust policy must allow
+  kista's identity, which needs `sts:AssumeRole` on it.
+- Keep `kms:TagResource`, `kms:UntagResource`, `kms:CreateKey`, `kms:ImportKeyMaterial` and
+  `kms:PutKeyPolicy` away from kista's role: whoever sets the tag decides which keys kista accepts.
+
 ## Registering a key
 
 A key becomes a channel's key in two steps: check it, then add it.
@@ -346,7 +527,7 @@ server log. See [HTTP API](api.md).
 | `kista admin key resign <tenant>/<channel>` | sign releases with the active key; move the serving key |
 | `kista admin attestation-key add <tenant> <signer-ref> [-active]` | register a tenant's attestation key |
 
-`key check` opens a key for the channel purpose, so on Azure it refuses a key tagged
+`key check` opens a key for the channel purpose, so on Azure and AWS it refuses a key tagged
 `attestation-signing`.
 
 ## Fingerprints
@@ -366,7 +547,7 @@ One key holds one role. Two mechanisms keep the roles apart:
 - **The fingerprint registry.** A fingerprint exists once on the server, across channel keys and
   attestation keys. The same key can never serve two channels, two tenants, or a channel and a
   feed.
-- **The purpose tag**, where the backend has tags. On Azure the `kista-purpose` tag must be
+- **The purpose tag**, where the backend has tags. On Azure and AWS the `kista-purpose` tag must be
   `channel-signing` for a channel key and `attestation-signing` for an attestation key. A file key
   and a Vault Transit key have no tags and rely on the registry.
 
@@ -376,6 +557,8 @@ Attestation keys sign the statements a tenant's feed serves; they live in the sa
 ## Monitoring
 
 kista's policy gives it no right to change keys. Watch the backend's own audit log for changes to
-them: the Vault audit device, the Azure Activity Log (key create, import, update, delete). On kista's
+them: the Vault audit device, the Azure Activity Log (key create, import, update, delete), AWS
+CloudTrail (`CreateKey`, `ImportKeyMaterial`, `TagResource`, `UntagResource`, `PutKeyPolicy`,
+`DisableKey`, `ScheduleKeyDeletion`). On kista's
 side, the events `key.add`, `key.activate`, `key.retire`, `key.resign` and
 `attestation_key.add|activate|retire` record every change (see [Observability](observability.md)).

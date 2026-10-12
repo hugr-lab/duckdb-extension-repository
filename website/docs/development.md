@@ -49,6 +49,7 @@ make build
 | `test-db` / `test-db-down` | Start / stop PostgreSQL 17 and SQL Server 2022 in Docker Compose (`internal/store/testdb/compose.yaml`) |
 | `test-s3` / `test-s3-down` | Start / stop SeaweedFS (S3-compatible, pinned by digest) on `127.0.0.1:58333` |
 | `test-azurite` / `test-azurite-down` | Start / stop Azurite (the Azure Storage emulator) on `127.0.0.1:50000` |
+| `test-moto` / `test-moto-down` | Start / stop moto 5.1.22 (an AWS emulator, pinned by digest) on `127.0.0.1:55000`, for the AWS KMS source |
 | `e2e-duckdb` | Build DuckDB at `e2e/DUCKDB_PIN` with the e2e extensions |
 | `e2e-runner` | Build the small C runner linked against that DuckDB |
 | `e2e-build` | Both of the above |
@@ -63,7 +64,7 @@ make build
 
 `make test` runs every Go test. Without extra services, the store suite runs on SQLite only, the
 blob suite on the file system only, and the suites that need a database, an S3 server, Azurite,
-Vault or OpenBao skip themselves. Set the variables below to run them.
+moto, Vault or OpenBao skip themselves. Set the variables below to run them.
 
 ### The three databases
 
@@ -94,6 +95,22 @@ make test
 make test-s3-down test-azurite-down
 ```
 
+### moto (AWS KMS)
+
+```bash
+make test-moto
+KISTA_TEST_MOTO=http://127.0.0.1:55000 KISTA_TEST_REQUIRE_MOTO=1 make test
+make test-moto-down
+```
+
+The `awskms` suite creates keys in moto and runs the metadata, tag and public-key checks, and the
+sign call, against it. `KISTA_TEST_REQUIRE_MOTO=1` turns a missing `KISTA_TEST_MOTO` into a failure;
+CI sets it.
+
+moto ignores `MessageType = DIGEST` and hashes the digest again, so its signatures are over
+`SHA-256(digest)` and do not verify. The test expects kista to refuse them. The known answer (a
+signature that verifies) is tested against a fake of the KMS operations instead.
+
 ### Vault and OpenBao
 
 There is no make target; CI starts both in dev mode:
@@ -113,7 +130,7 @@ make test
 
 | Job | Runs |
 | --- | --- |
-| `go-linux` | `go vet`, `govulncheck`, `golangci-lint`, and `go test -race ./...` with PostgreSQL, SQL Server, Vault, OpenBao, SeaweedFS and Azurite, every `REQUIRE` switch on |
+| `go-linux` | `go vet`, `govulncheck`, `golangci-lint`, and `go test -race ./...` with PostgreSQL, SQL Server, Vault, OpenBao, SeaweedFS, Azurite and moto, every `REQUIRE` switch on |
 | `go-macos` | `go vet` and `go test -race ./...` (SQLite and the file system only) |
 | `console` | type check, unit tests, licenses, `npm audit`, build |
 | `console-e2e` | `make console`, Playwright's Chromium, `make console-e2e` |

@@ -394,7 +394,6 @@ func TestReapBatch(t *testing.T) {
 	})
 }
 
-
 // Migration 0019 starts the minimum suspension of a tenant already suspended at the migration, in
 // each dialect's own time form.
 func TestMigrationSuspendedAt(t *testing.T) {

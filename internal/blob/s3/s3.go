@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/minio/minio-go/v7/pkg/encrypt"
@@ -36,6 +37,11 @@ type Config struct {
 	KMSKeyID      string
 	AccessKeyFile string
 	SecretKeyFile string
+	// AWS is an AWS platform identity's credentials instead of the key files (spec 0005 phase 3a).
+	AWS aws.CredentialsProvider
+	// ExpectedOwner is the bucket owner's account, sent as x-amz-expected-bucket-owner with an AWS
+	// identity (spec 0005 phase 3a).
+	ExpectedOwner string
 	CAFile        string // trust only this CA bundle; empty: the system roots
 	// Timeout bounds the dial, the TLS handshake, the wait for response headers, and every read or
 	// write on a connection that makes no progress (default 30s); Stat and Delete are bounded as a
@@ -103,6 +109,27 @@ func (p fileProvider) Retrieve() (credentials.Value, error) {
 
 func (fileProvider) IsExpired() bool { return true } // re-read each time; files are small
 
+// awsProvider hands an AWS identity's credentials (spec 0005 phase 3a) to minio-go: the SDK's
+// cache refreshes them before they expire, so every retrieval asks it.
+type awsProvider struct{ p aws.CredentialsProvider }
+
+func (p awsProvider) RetrieveWithCredContext(*credentials.CredContext) (credentials.Value, error) {
+	return p.Retrieve()
+}
+
+func (p awsProvider) Retrieve() (credentials.Value, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c, err := p.p.Retrieve(ctx)
+	if err != nil {
+		return credentials.Value{}, fmt.Errorf("%w: the AWS identity's credentials could not be obtained", errCredentials)
+	}
+	return credentials.Value{AccessKeyID: c.AccessKeyID, SecretAccessKey: c.SecretAccessKey, SessionToken: c.SessionToken,
+		Expiration: c.Expires, SignerType: credentials.SignatureV4}, nil
+}
+
+func (awsProvider) IsExpired() bool { return true } // the SDK's cache decides
+
 // New builds a store. It does not contact the service.
 func New(cfg Config) (*Store, error) {
 	if cfg.Endpoint == "" || cfg.Bucket == "" || cfg.Region == "" {
@@ -111,7 +138,13 @@ func New(cfg Config) (*Store, error) {
 	if err := blob.ValidPrefix(cfg.Prefix); err != nil {
 		return nil, err
 	}
-	if cfg.AccessKeyFile == "" || cfg.SecretKeyFile == "" {
+	var creds credentials.Provider = fileProvider{cfg.AccessKeyFile, cfg.SecretKeyFile}
+	switch {
+	case cfg.AWS != nil && (cfg.AccessKeyFile != "" || cfg.SecretKeyFile != ""):
+		return nil, errors.New("blob/s3: either key files or an AWS identity, not both")
+	case cfg.AWS != nil:
+		creds = awsProvider{cfg.AWS}
+	case cfg.AccessKeyFile == "" || cfg.SecretKeyFile == "":
 		return nil, errors.New("blob/s3: access_key_file and secret_key_file are required")
 	}
 	switch {
@@ -133,14 +166,21 @@ func New(cfg Config) (*Store, error) {
 		}
 		tr = t
 	}
+	signed := tr // the anonymous check (Public) sends unsigned requests through the plain one
+	if (cfg.AWS != nil) != (cfg.ExpectedOwner != "") || cfg.AWS != nil && !cfg.Secure {
+		return nil, errors.New("blob/s3: an AWS identity goes with an expected bucket owner, over https")
+	}
+	if cfg.AWS != nil {
+		signed = newOwnerTransport(tr, cfg.ExpectedOwner, cfg.Region, cfg.Endpoint, cfg.Bucket, cfg.AWS)
+	}
 	lookup := minio.BucketLookupDNS
 	if cfg.PathStyle {
 		lookup = minio.BucketLookupPath
 	}
 	c, err := minio.New(cfg.Endpoint, &minio.Options{
-		Creds:        credentials.New(fileProvider{cfg.AccessKeyFile, cfg.SecretKeyFile}),
+		Creds:        credentials.New(creds),
 		Secure:       cfg.Secure,
-		Transport:    tr,
+		Transport:    signed,
 		Region:       cfg.Region,
 		BucketLookup: lookup,
 		MaxRetries:   3,
@@ -148,6 +188,8 @@ func New(cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, errors.New("blob/s3: invalid endpoint")
 	}
+	// minio-go turns dual-stack on for every AWS endpoint; requests go to the configured host
+	c.SetS3EnableDualstack(strings.Contains(strings.ToLower(cfg.Endpoint), ".dualstack."))
 	return &Store{c: c, core: minio.Core{Client: c}, cfg: cfg, tr: tr, timeout: cfg.Timeout}, nil
 }
 

@@ -54,8 +54,8 @@ A channel's prefix is permanent: DuckDB records it with each install. See
 Every signed channel has a **key set**: one active key, which signs new releases, plus trusted
 keys. The channel's `.well-known/duckdb-extension-repo.json` lists the active key and every trusted
 key, and DuckDB pins them when the repository is created. A key is RSA-2048 and lives in a key source: a key file for
-development, HashiCorp Vault / OpenBao Transit, or Azure Key Vault / Managed HSM. AWS KMS and Google
-Cloud KMS are not available yet.
+development, HashiCorp Vault / OpenBao Transit, Azure Key Vault / Managed HSM, or AWS KMS. Google
+Cloud KMS is not available yet.
 
 A `staging` channel signs whatever a publisher uploads, so its key must never be trusted where the
 `prod` key is. Rotation adds a key as trusted, makes it active, re-signs the releases and retires

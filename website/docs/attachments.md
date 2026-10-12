@@ -202,7 +202,7 @@ A tenant that offers documents to subscribers signs them with an **attestation k
 in the same key sources as channel keys (see [Signing keys](signing-keys.md)), with its own registry
 rows. One key never serves both roles.
 
-- In Azure Key Vault the key must carry the tag `kista-purpose` with the value
+- In Azure Key Vault and AWS KMS the key must carry the tag `kista-purpose` with the value
   `attestation-signing`; a channel key carries `channel-signing`.
 - File keys and Vault/OpenBao Transit keys have no tags: the fingerprint registry alone keeps the
   roles apart.

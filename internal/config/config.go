@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -17,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	awscloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/aws"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"go.yaml.in/yaml/v3"
 )
@@ -97,9 +100,25 @@ type Azure struct {
 
 // Identity is an Azure credential choice.
 type Identity struct {
-	Kind     string `yaml:"kind" kista:"fileonly"` // managed | workload | default (dev only)
-	ClientID string `yaml:"client_id"`
-	TenantID string `yaml:"tenant_id"`
+	// Azure: managed | workload | default (dev only); AWS: pod_identity | irsa | imds | ecs | static (dev only)
+	Kind     string `yaml:"kind" kista:"fileonly"`
+	ClientID string `yaml:"client_id"` // Azure
+	TenantID string `yaml:"tenant_id"` // Azure
+	// AWS static (dev only): key files, mode 0600 or narrower
+	AccessKeyFile string `yaml:"access_key_file" kista:"fileonly"`
+	SecretKeyFile string `yaml:"secret_key_file" kista:"fileonly"`
+	// AWS irsa: the role the ServiceAccount is bound to; AWS_ROLE_ARN must equal it
+	RoleARN string `yaml:"role_arn" kista:"fileonly"`
+}
+
+// AWSKMSSource is an AWS KMS account and region (spec 0004 phase 3).
+type AWSKMSSource struct {
+	Region           string `yaml:"region"`
+	Account          string `yaml:"account"`
+	RoleARN          string `yaml:"role_arn"` // optional AssumeRole, for a key in another account
+	AllowMultiRegion bool   `yaml:"allow_multi_region"`
+	FIPS             bool   `yaml:"fips"`         // the FIPS endpoints of KMS and STS
+	EndpointURL      string `yaml:"endpoint_url"` // the emulator: profile dev, loopback only
 }
 
 // Rotation holds the key-lifecycle minimums.
@@ -126,7 +145,7 @@ type Source struct {
 	HealthKey      string         `yaml:"health_key"`
 	Vault          *VaultSource   `yaml:"vault"`
 	AzureKV        *AzureKVSource `yaml:"azurekv"`
-	AWSKMS         *yaml.Node     `yaml:"awskms"` // phase 3
+	AWSKMS         *AWSKMSSource  `yaml:"awskms"` // phase 3
 	GCPKMS         *yaml.Node     `yaml:"gcpkms"` // phase 4
 	Identity       *Identity      `yaml:"identity"`
 	Recheck        time.Duration  `yaml:"recheck"` // how often key properties are re-read; default and maximum 10m
@@ -391,6 +410,9 @@ func (c Config) Validate() error {
 	default:
 		bad("azure.cloud must be public, china or usgov")
 	}
+	if id := c.Azure.Identity; id.RoleARN != "" || id.AccessKeyFile != "" || id.SecretKeyFile != "" {
+		bad("azure.identity: role_arn and the key files are AWS's")
+	}
 	switch c.Azure.Identity.Kind {
 	case "", "managed":
 	case "workload":
@@ -469,7 +491,13 @@ func (c Config) Validate() error {
 				continue
 			}
 			validateAzureKV(bad, where, *src.AzureKV, src.Identity, dev)
-		case "awskms", "gcpkms":
+		case "awskms":
+			if src.AWSKMS == nil || blocks != 1 {
+				bad("%s: kind awskms needs exactly one block, awskms", where)
+				continue
+			}
+			validateAWSKMS(bad, where, *src.AWSKMS, src.Identity, src.Allow, dev)
+		case "gcpkms":
 			bad("%s: kind %s comes in a later phase of spec 0004", where, src.Kind)
 		default:
 			bad("%s.kind must be one of %s", where, strings.Join(SourceKinds, ", "))
@@ -515,6 +543,9 @@ func validateAzureKV(bad func(string, ...any), where string, a AzureKVSource, id
 		bad("%s.identity is required for kind azurekv", where)
 		return
 	}
+	if id.AccessKeyFile != "" || id.SecretKeyFile != "" || id.RoleARN != "" {
+		bad("%s.identity: key files and role_arn are AWS's", where)
+	}
 	switch id.Kind {
 	case "managed":
 	case "workload":
@@ -528,6 +559,83 @@ func validateAzureKV(bad func(string, ...any), where string, a AzureKVSource, id
 	default:
 		bad("%s.identity.kind must be managed or workload", where)
 	}
+}
+
+func validateAWSKMS(bad func(string, ...any), where string, a AWSKMSSource, id *Identity, allow []string, dev bool) {
+	if !awscloud.ValidRegion(a.Region) {
+		bad("%s.awskms.region is required, a region such as eu-central-1", where)
+	}
+	if !awscloud.ValidAccount(a.Account) {
+		bad("%s.awskms.account is required, 12 digits", where)
+	}
+	if a.RoleARN != "" && !awscloud.ValidRoleARN(a.RoleARN, a.Region) {
+		bad("%s.awskms.role_arn must be an IAM role ARN in the region's partition", where)
+	}
+	if a.FIPS && !awscloud.FIPSPartition(a.Region) {
+		bad("%s.awskms.fips: the region's partition has no FIPS endpoints (aws and aws-us-gov do)", where)
+	}
+	if a.FIPS && a.EndpointURL != "" {
+		bad("%s.awskms: fips and endpoint_url do not go together", where)
+	}
+	if a.EndpointURL != "" && (!dev || !loopbackURL(a.EndpointURL)) {
+		bad("%s.awskms.endpoint_url is allowed only with profile dev, on loopback (the emulator)", where)
+	}
+	if a.EndpointURL != "" && (id == nil || id.Kind != "static") {
+		bad("%s.awskms.endpoint_url goes with identity kind static: a platform's token never goes to the emulator", where)
+	}
+	for _, x := range allow {
+		if x != "*" && !awsKeyID.MatchString(x) || strings.HasPrefix(x, "mrk-") && !a.AllowMultiRegion {
+			bad("%s.allow: AWS key ids carry no meaning as prefixes; list key ids (mrk- ids with allow_multi_region), or * (the purpose tag guards it)", where)
+		}
+	}
+	validateAWSIdentity(bad, where, id, a.Region, dev)
+}
+
+var awsKeyID = regexp.MustCompile(`^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$`)
+
+// validateAWSIdentity checks an AWS identity (spec 0004 phase 3; spec 0005 phase 3a).
+func validateAWSIdentity(bad func(string, ...any), where string, id *Identity, region string, dev bool) {
+	if id == nil {
+		bad("%s.identity is required: pod_identity, irsa, imds or ecs", where)
+		return
+	}
+	if id.ClientID != "" || id.TenantID != "" {
+		bad("%s.identity: client_id and tenant_id are Azure's", where)
+	}
+	if id.Kind == "irsa" && !awscloud.ValidRoleARN(id.RoleARN, region) {
+		bad("%s.identity: irsa needs role_arn, the IAM role (in the region's partition) the ServiceAccount is bound to", where)
+	}
+	if id.Kind != "irsa" && id.RoleARN != "" {
+		bad("%s.identity.role_arn is only for irsa", where)
+	}
+	switch id.Kind {
+	case "pod_identity", "irsa", "imds", "ecs":
+		if id.AccessKeyFile != "" || id.SecretKeyFile != "" {
+			bad("%s.identity: key files are only for kind static", where)
+		}
+	case "static":
+		if !dev {
+			bad("%s.identity.kind static is allowed only with profile dev", where)
+		}
+		if !filepath.IsAbs(id.AccessKeyFile) || !filepath.IsAbs(id.SecretKeyFile) {
+			bad("%s.identity: static needs absolute access_key_file and secret_key_file", where)
+		}
+	default:
+		bad("%s.identity.kind must be pod_identity, irsa, imds or ecs", where)
+	}
+}
+
+// loopbackURL reports whether s is an http(s) URL on a loopback host.
+func loopbackURL(s string) bool {
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" {
+		return false
+	}
+	if u.Hostname() == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsLoopback()
 }
 
 func validateVault(bad func(string, ...any), where string, v VaultSource, dev bool) {
