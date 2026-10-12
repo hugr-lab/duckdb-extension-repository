@@ -1,6 +1,6 @@
 # Spec 0019: Deleting a tenant
 
-- **Status**: draft
+- **Status**: accepted (2026-10-12)
 - **Date**: 2026-10-12
 - **Author**: vgsml, Claude
 
