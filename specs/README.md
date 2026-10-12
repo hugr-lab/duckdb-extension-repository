@@ -22,3 +22,4 @@ and it is superseded by a new spec when a decision changes.
 | [0016](0016-storage-gc/spec.md) | Storage garbage collection, purging yanked releases | implemented |
 | [0017](0017-extension-groups/spec.md) | Extension groups: grants on named sets of extensions | implemented |
 | [0018](0018-blob-verify/spec.md) | Verifying stored bodies | implemented |
+| [0019](0019-tenant-deletion/spec.md) | Deleting a tenant | draft |
