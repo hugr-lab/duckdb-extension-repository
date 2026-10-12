@@ -29,7 +29,7 @@ func TestAdminCLI(t *testing.T) {
 	if err := os.Mkdir(keys, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"a.pem", "b.pem", "c.pem"} {
+	for _, k := range []string{"a.pem", "b.pem", "c.pem", "att.pem"} {
 		if err := signer.GenerateKeyFile(filepath.Join(keys, k)); err != nil {
 			t.Fatal(err)
 		}
@@ -48,7 +48,9 @@ func TestAdminCLI(t *testing.T) {
 	os.WriteFile(cfg, []byte("profile: dev\nstore: { kind: sqlite, sqlite: { path: "+filepath.Join(dir, "k.db")+" } }\n"+
 		"rotation: { min_trusted: 0s, min_demoted: 0s }\nsigners: { file_dir: "+keys+" }\n"+
 		"serve: { public_url: 'https://kista.example' }\n"+
-		"egress: { ca_file: "+caFile+", allow: [{ cidr: 127.0.0.1/32, ports: ["+strconv.Itoa(idpPort)+"] }] }\n"), 0o600)
+		"egress: { ca_file: "+caFile+", allow: [{ cidr: 127.0.0.1/32, ports: ["+strconv.Itoa(idpPort)+"] }] }\n"+
+		"upstreams: { credentials: [{ name: src, tenants: [acme], prefixes: ['"+idp.URL+"/'], kind: token_file, token_file: "+
+		filepath.Join(dir, "token")+" }] }\n"), 0o600)
 	jwks := idp.URL + "/keys"
 
 	run := func(want int, args ...string) string {
@@ -147,6 +149,35 @@ func TestAdminCLI(t *testing.T) {
 	if got := run(0, "attachment", "show", "acme", "tresor", aid); !strings.Contains(got, "readers") {
 		t.Fatalf("attachment show: %q", got)
 	}
+	// the feed (spec 0011 phase 1b): offering needs an active attestation key
+	run(1, "attachment", "feedable", "acme", "tresor", aid)
+	kid := strings.TrimSpace(run(0, "attestation-key", "add", "acme", "file:att.pem", "-active"))
+	run(1, "attestation-key", "add", "acme", "file:a.pem") // a channel key already
+	if got := run(0, "attestation-key", "list", "acme"); !strings.Contains(got, kid) || !strings.Contains(got, "active") {
+		t.Fatalf("attestation-key list: %q", got)
+	}
+	run(1, "attestation-key", "retire", "acme", kid) // the active one
+	run(0, "attachment", "feedable", "acme", "tresor", aid)
+	run(0, "attachment", "unfeedable", "acme", "tresor", aid)
+	feedURL := idp.URL + "/api/v1/tenants/upstream"
+	fp := "sha256:" + strings.Repeat("ab", 32)
+	run(1, "feed", "add", "acme", "src", "-url", feedURL, "-key", fp)                                                   // no credential
+	run(1, "feed", "add", "acme", "src", "-url", "http://127.0.0.1/api/v1/tenants/x", "-credential", "src", "-key", fp) // not https
+	run(0, "feed", "add", "acme", "src", "-url", feedURL, "-credential", "src", "-key", fp, "-kinds", "review,vulnerabilities", "-readers")
+	if got := run(0, "feed", "list", "acme"); !strings.Contains(got, "src") || !strings.Contains(got, "review,vulnerabilities") ||
+		!strings.Contains(got, "true") {
+		t.Fatalf("feed list: %q", got)
+	}
+	run(0, "feed", "pause", "acme", "src")
+	run(1, "feed", "sync", "acme", "src") // paused
+	run(0, "feed", "resume", "acme", "src")
+	run(0, "feed", "set", "acme", "src", "-readers=false", "-kinds", "-")
+	if got := run(0, "feed", "show", "acme", "src"); !strings.Contains(got, "readers false") || !strings.Contains(got, "state active") {
+		t.Fatalf("feed show: %q", got)
+	}
+	run(0, "feed", "sync", "acme", "src")
+	run(0, "feed", "remove", "acme", "src", "-documents")
+	run(1, "feed", "show", "acme", "src")
 	run(0, "attachment", "remove", "acme", "tresor", aid)
 	run(1, "attachment", "show", "acme", "tresor", aid)
 	run(1, "release", "promote", "acme/prod", "-name", "tresor", "-from", "prod", "-version", "1.0") // to itself

@@ -60,6 +60,7 @@ type Options struct {
 	Releases         *release.Service    // phase 3
 	Upstreams        *upstream.Service   // spec 0009
 	Attachments      *attachment.Service // spec 0011; nil: no attachment routes
+	Feeds            *attachment.Feeds   // spec 0011 phase 1b; nil: no feed management routes
 	Events           Recorder            // spec 0010: refusals and failures; nil: none recorded
 	AdminTokenMaxAge time.Duration       // default 1h
 	// Uploads (spec 0008): the largest file, the least read rate, and how many may run at once per
@@ -554,6 +555,20 @@ func init() {
 			http.MethodPost: m(pathAdmin, attachmentRoute((*Handler).changeAttachment))}},
 		{"tenants/{t}/blocks/{hash}/attachments", map[string]rule{http.MethodGet: m(pathAdmin, attachmentRoute((*Handler).blockAttachments))}},
 		{"tenants/{t}/blocks/{hash}/attachments/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, attachmentRoute((*Handler).removeBlockAttachment))}},
+		// spec 0011 phase 1b: attestation keys (public to read), the feed a tenant serves (to
+		// principals holding feed; not management: a feed credential may be long-lived), its feeds
+		{"tenants/{t}/attestation-keys", map[string]rule{http.MethodGet: {access: public, handle: (*Handler).attestationKeys},
+			http.MethodPost: mb(serverAdmin, (*Handler).addAttestationKey)}},
+		{"tenants/{t}/attestation-keys/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getAttestationKey)}},
+		{"tenants/{t}/attestation-keys/{id}/activate", map[string]rule{http.MethodPost: m(pathAdmin, attestationKeyState(true))}},
+		{"tenants/{t}/attestation-keys/{id}/retire", map[string]rule{http.MethodPost: m(pathAdmin, attestationKeyState(false))}},
+		{"tenants/{t}/feed", map[string]rule{http.MethodPost: {access: tenantPrincipal, body: true, handle: attachmentRoute((*Handler).feed)}}},
+		{"tenants/{t}/feed/documents/{id}", map[string]rule{http.MethodGet: {access: tenantPrincipal, handle: attachmentRoute((*Handler).feedDocument)}}},
+		{"tenants/{t}/feeds", map[string]rule{http.MethodGet: m(pathAdmin, feedRoute((*Handler).listFeeds)),
+			http.MethodPost: mb(pathAdmin, feedRoute((*Handler).addFeed))}},
+		{"tenants/{t}/feeds/{name}", map[string]rule{http.MethodGet: m(pathAdmin, feedRoute((*Handler).getFeed)),
+			http.MethodPost: mb(pathAdmin, feedRoute((*Handler).changeFeed)), http.MethodDelete: m(pathAdmin, feedRoute((*Handler).removeFeed))}},
+		{"tenants/{t}/feeds/{name}/sync", map[string]rule{http.MethodPost: m(pathAdmin, feedRoute((*Handler).syncFeed))}},
 		{"tenants/{t}/audiences", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listAudiences),
 			http.MethodPost: mb(serverAdmin, (*Handler).addAudience)}},
 		{"tenants/{t}/audiences/remove", map[string]rule{http.MethodPost: mb(serverAdmin, (*Handler).removeAudience)}},

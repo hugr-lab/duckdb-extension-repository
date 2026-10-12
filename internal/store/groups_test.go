@@ -80,7 +80,11 @@ func TestExtensionGroups(t *testing.T) {
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertGrant(ctx, &pg) })
 		for name, bad := range map[string]store.Grant{
 			"audit": {TenantID: tn.ID, IssuerID: is.ID, Kind: "role", Value: "x", ExtensionGroupID: g.ID, Verbs: []string{"audit"}},
-			"both":  {TenantID: tn.ID, IssuerID: is.ID, Kind: "role", Value: "x", Extension: "acl", ExtensionGroupID: g.ID, Verbs: []string{"install"}},
+			// spec 0011: feed on the tenant or a channel only
+			"feed on a group":      {TenantID: tn.ID, IssuerID: is.ID, Kind: "role", Value: "x", ExtensionGroupID: g.ID, Verbs: []string{"feed"}},
+			"feed on an extension": {TenantID: tn.ID, IssuerID: is.ID, Kind: "role", Value: "x", Extension: "acl", Verbs: []string{"feed"}},
+			"feed issuer-wide":     {TenantID: tn.ID, IssuerID: is.ID, Kind: "issuer", Verbs: []string{"feed"}},
+			"both":                 {TenantID: tn.ID, IssuerID: is.ID, Kind: "role", Value: "x", Extension: "acl", ExtensionGroupID: g.ID, Verbs: []string{"install"}},
 		} {
 			b := bad
 			if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertGrant(ctx, &b) }); !errors.Is(err, store.ErrInvalid) {

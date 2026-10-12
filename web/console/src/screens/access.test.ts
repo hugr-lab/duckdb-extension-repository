@@ -41,6 +41,8 @@ describe('the grant form', () => {
     expect(grantBody('role:kc|t', 'tenant', '', 'prod', ['audit'])).toEqual({ principal: 'role:kc|t', verbs: ['audit'] })
     expect(offeredVerbs('tenant', 'role:kc|t')).toContain('audit')
     expect(offeredVerbs('extension_group', 'role:kc|t')).not.toContain('audit')
+    expect(offeredVerbs('channel', 'role:kc|t')).toContain('feed') // spec 0011: on the tenant or a channel
+    expect(offeredVerbs('extension', 'role:kc|t')).not.toContain('feed')
     expect(offeredVerbs('tenant', 'issuer:kc')).toEqual(['install'])
     expect(offeredVerbs('channel', 'publisher:ci', ['publish', 'promote'])).toEqual(['publish', 'promote'])
   })

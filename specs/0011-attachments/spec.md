@@ -1,6 +1,6 @@
 # Spec 0011: Attachments and the feed
 
-- **Status**: accepted (2026-10-11); phase 1a implemented, 1b (the feed) to come
+- **Status**: implemented (1a 2026-10-11, 1b 2026-10-12)
 - **Date**: 2026-10-11
 - **Author**: vgsml, Claude
 
@@ -18,8 +18,7 @@ them against the source's pinned key.
 
 Delivery, each phase a pull request:
 
-- **1a. Attachments in a tenant**: the model (with the statement's fields, so 1b needs no
-  migration), storage and collection, the API, the CLI, events, and a Reports block on the console's
+- **1a. Attachments in a tenant**: the model (with the statement's fields), storage and collection, the API, the CLI, events, and a Reports block on the console's
   extension and release pages.
 - **1b. Signed statements and the feed**: a tenant's attestation keys, the feed a kista serves, and
   the feed client that pulls a source's statements for the bodies a tenant holds.
@@ -57,8 +56,17 @@ attachments  id (uuid), tenant_id, body_hash, kind, media_type, title, size, con
              issuer (the source's stable identity: its tenant URL), issuer_id, key (the signing
              key's fingerprint), source_origin ('tenant' | 'publisher:<name>' at the source),
              issued_at, valid_until null, supersedes null (an issuer_id), withdrawn_at null,
-             statement null (the exact signed bytes), signature null
+             statement null (the exact signed bytes), signature null,
+             seq null (1b: a feed document's statement number at its source)
              unique (tenant_id, issuer, issuer_id); index (tenant_id, body_hash)
+attestation_keys    (1b) a channel key's columns, per tenant; one active per tenant
+statements          (1b) tenant_id, seq, issuer_id, body_hash, withdrawn, statement, signature,
+                    issued_at: what the tenant issued, kept apart from the documents, so a
+                    withdrawal outlives its document's record
+statement_counters  (1b) tenant_id, seq
+feeds               (1b) name, url, credential, kinds, readers, offer ('upstreams' | 'channels'),
+                    state, status ('new' | 'ok' | 'unauthorized' | 'failing'), the last run
+feed_keys, feed_channels, feed_cursors (feed, body_hash, seq)
 ```
 
 - **Bound to a body, in a tenant.** An attachment names a body hash, not a release: every release of
@@ -104,7 +112,8 @@ attachments  id (uuid), tenant_id, body_hash, kind, media_type, title, size, con
   documents in memory at once, while read and sent; the rest wait.
 - **Visibility**: `administrators` (the default for every document) or `readers`. Only a tenant
   administrator makes a document `readers`, an explicit act per document: it is then shown, through
-  the index, to whoever may see a release of the body in the channel asked about. The console says,
+  the index, to whoever may see a release of the body in the channel asked about. A feed's document
+  shows its source (the verified issuer) to readers; who attached it here does not. The console says,
   before the change, which channels show the body publicly. Who attached a document is never shown to
   readers, and neither is what it supersedes.
 - **Versions**: a document may name an earlier one of the **same body, kind, origin and issuer** in
@@ -166,9 +175,14 @@ them under the extension:
   fingerprint registry alone), in an `attestation_keys` table (trusted, active, retired, as channel
   keys; one active per tenant) with registry rows of their own. Like channel keys, a server
   administrator registers one by signer reference and a tenant administrator activates and retires
-  it (`kista admin attestation-key add|list|activate|retire`, and the API). Their public keys are
-  served at `GET /api/v1/tenants/{t}/attestation-keys` (public). Rotation is a new key that
-  subscribers pin before it signs.
+  it (`kista admin attestation-key add|list|activate|retire`, and the API: `POST
+  …/attestation-keys` for a server administrator, `POST …/attestation-keys/{id}/activate|retire`
+  with `If-Match`; `GET …/attestation-keys/{id}` gives its administrators the ETag). Their public
+  keys are served with their states at `GET /api/v1/tenants/{t}/attestation-keys` (public), a
+  retired one too: the statements it signed are still served, and a subscriber that pinned it
+  verifies them (unpinning is how a subscriber stops trusting a key). Rotation is a new key that
+  subscribers pin before it signs. The signer signs the statement's digest as it signs a body hash; the domain separator
+  and the registry (one key, one role) keep the two apart.
 - **The statement** is a JSON object canonicalised by RFC 8785 (JCS), signed RSA PKCS#1 v1.5 over
   SHA-256 of `kista-statement-v1\0` followed by it, a typed input of its own (spec 0002 signs only
   body hashes), and sent as its exact bytes (base64) with the signature, so a subscriber verifies
@@ -178,12 +192,25 @@ them under the extension:
   `issued_at`, `valid_until`, `supersedes`, `origin` (who stands behind it at the source: `tenant` or
   `publisher:<name>`), `audience` (`administrators`, or `readers` when the source lets subscribers
   show it to their readers), `withdrawn` (true for a withdrawal, which carries no content). Every
-  field the subscriber stores or shows is signed; a received `summary` is still checked against its
-  kind's shape and size before it is stored.
+  field the subscriber stores or shows is signed. Numbers are integers, so the canonical form is
+  plain; the subscriber also refuses bytes that are not the statement's canonical form, and unknown
+  fields. The subscriber does not store the received `summary`: it computes its own from the
+  content, which the signed hash binds, as an intake does.
+- **The audience** is the source document's visibility: a document the source shows its own
+  readers may be shown to the subscribers' readers.
 - **Issuing.** A statement is issued (numbered and signed) when a document is marked feedable, not
   when it is created, and its `seq` is taken from a per-issuer counter row locked until commit, so a
-  subscriber that has seen `seq` n never misses a lower one committed later. Un-marking a document
-  feedable issues its withdrawal.
+  subscriber that has seen `seq` n never misses a lower one committed later. A visibility change of
+  an offered document issues a new statement (its audience); un-marking or removing it issues its
+  withdrawal. Each is signed when the change commits: marking and a visibility change of an offered
+  document fail while the tenant cannot sign. Un-marking and removing go ahead unsigned only when
+  the tenant cannot sign at all (no active attestation key, no `serve.public_url`): the document is
+  then no longer offered (the feed leaves out what is not offered), and subscribers holding it keep
+  it; a signer failing now fails the change, to be tried again. A removal reads the document again
+  under the lock, so one marked feedable meanwhile is withdrawn. Documents marked feedable before 1b
+  (never offered) start unmarked. The issuer is `serve.public_url` with a lowercase host and no
+  default port, as a subscriber normalises its feed URL. Only the tenant's own and
+  its publishers' documents are offered: a feed's documents are not relayed (Follow-ups).
 - **The feed route**, on the source:
 
 ```text
@@ -192,15 +219,20 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
 ```
 
   - Authorised by a new verb **`feed`**, granted on the tenant or on a channel (spec 0006's verb
-    list gains it; `admin` implies it; never to an `issuer:` grant or a publisher). The source answers
+    list gains it; a tenant-wide `admin` implies it, a channel's `admin` does not, so a channel's
+    administrators do not read its administrators-only documents through the feed; never to an
+    `issuer:` grant or a publisher). The source answers
     only for bodies released in the channels the grant covers, and only documents its administrators
     marked **feedable** (a flag on a document, off by default: a document is offered only on
     purpose). A body it does not hold, or holds outside those channels, answers like one without
     documents.
   - A request names at most 500 bodies; an answer carries statements, never content, at most 1 MiB,
-    each body's in `seq` order, with `more` when it stopped early; content is fetched by its issuer
-    id from the fixed path under the configured feed URL, which applies the same feedable and
-    channel checks and answers a document out of scope like a missing one.
+    each body's in `seq` order, with `more` when it stopped early. It leaves out an offer that is no
+    longer what the source says (a later statement about the document, or the document no longer
+    offered) and always carries withdrawals; `bodies` gives, per body read through, the last `seq`
+    read, so a subscriber's cursor passes what was left out. Content is fetched by its issuer id
+    from the fixed path under the configured feed URL, which applies the same feedable and channel
+    checks and answers a document out of scope like a missing one.
   - Not a management route: a feed credential may be long-lived. Its events are counted, not one
     per request.
 - **The feed client**, on the subscriber: `feeds` per tenant (API and CLI, like upstreams): name, the
@@ -210,25 +242,44 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
   of what arrives (`administrators`; `readers` only for statements whose signed `audience` is
   `readers`, and only if the feed's configuration allows it, since a paid review shown to readers of
   a public release is published to anyone), the bodies offered (by
-  default those whose Builds came from upstreams, never the tenant's own publications; or named
-  channels), and a schedule.
+  default those released from upstreams and never by the tenant itself, by a publication or an
+  administrator's release; or those released in named channels), and a schedule
+  (`attachments.feed_interval`, 6 h by default; a run is also requested from the API, the CLI or
+  the console). Routes: `GET, POST …/feeds`, `GET, POST (a change, If-Match), DELETE
+  (?documents=true, If-Match) …/feeds/{name}`, `POST …/feeds/{name}/sync`; tenant administrators.
   - A run (one replica's, under a lease) sends the bodies with the last `seq` received per (feed,
     body): a body never sent goes with none, so it receives its whole history; then it fetches each
     new statement's content from the fixed path (through egress, no redirects, the credential sent
     only there), checks size and content hash against the statement and the signature against a
     pinned key, and inserts it only if its body is one it sent and still holds, under the same rule
-    as an intake (spec 0016). A `supersedes` must name an earlier statement of the same issuer, body
-    and kind; one the subscriber never received (not offered, refused) is accepted and kept as an
-    unresolved link. A withdrawal marks its target.
-  - The cursor advances past a statement that was stored or permanently refused (a bad signature, a
-    limit), each refusal recorded; a transient failure (a fetch, egress) leaves it, so the next run
-    tries again. A body's feed state goes with its attachments when the collector removes them, so a
+    as an intake (spec 0016). The source's published keys are read at each run, and only the pinned
+    ones kept; a statement's `issuer` must be the feed's URL. A `supersedes` must name an earlier
+    statement of the same issuer, body and kind; one the subscriber never received (not offered,
+    refused) or removed here is accepted and kept as an unresolved link. A withdrawal marks its
+    target. A source answering `/feed` with `404` (a kista source's answer to a principal without
+    `feed`) makes the feed `unauthorized`.
+  - Quotas: a feed's documents count against a tenant quota of their own (100,000), apart from the
+    tenant's own documents, and the heads limit counts per issuer, so one source never uses up the
+    tenant's or another source's room.
+  - The cursor advances past a statement that was stored or permanently refused (a limit, content
+    that does not match, a kind not accepted), each refusal recorded; a transient failure (a fetch,
+    egress, a document the source no longer serves) leaves it, and that body's later statements
+    wait, so the next run tries again in order. A statement that does not verify, or names another
+    issuer, holds its body's cursor the same way (every body's in that request when its body cannot
+    be told): it is refused again at the next run, and taken once its key is pinned. The source's
+    high-water (unsigned) moves a cursor only up to the highest `seq` verified in the run. A body's feed state goes with its attachments when the collector removes them, so a
     body held again receives its history again.
-  - The same document reaching the tenant through two feeds is stored once (the first feed's); a
-    feed's name is not reused while its documents remain.
+  - The same document reaching the tenant through two feeds is stored once (the first feed's). A
+    newer statement about a document held updates it (its statement and validity; a withdrawn one
+    offered again; its visibility only narrows, to administrators when the audience does: showing it
+    to readers again is an administrator's act here, allowed only while its signed audience is
+    `readers`); its content, kind and body never change (its link may: a removal at the source
+    relinks a chain, and a withdrawn successor here does not keep its predecessor from another).
+    Documents name their feed by id, so a feed's name can be reused.
   - A run records `feed.run` (received, superseded, withdrawn, refused with reasons) and the feed's
     status (`ok`, `unauthorized`, `failing`, the last success and error) shown on the console.
-  - Removing a feed keeps its documents unless asked to remove them.
+  - Removing a feed keeps its documents unless asked to remove them; asked, they pass to another
+    feed of the same source if there is one (its cursors are past them), else they go.
 - **What a subscriber discloses**: the body hashes it offers, to each source it subscribes to, and
   only those; a multi-tenant source learns which of those hashes each subscriber holds. The default
   (mirrored bodies only) keeps the tenant's own builds out of it.
@@ -244,28 +295,37 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
   severity, an SBOM's components), rendered as text; Markdown with raw HTML off, links limited to
   `https` with `rel="noopener noreferrer"`, no images. A download is fetched with the token and saved
   as `application/octet-stream` with the `download` attribute, never opened.
-- Administrators attach a document, mark it `readers` or feedable, and remove it. Feeds are managed
-  on the Upstreams page.
+- Administrators attach a document, mark it `readers` or feedable, and remove it. Feeds are added,
+  paused, resumed, synced and removed on the Upstreams page, with their status, last run and last
+  success; changing a feed's credential, keys, kinds or readers is the API's and the CLI's. The
+  grant form offers `feed` on the tenant and on a channel.
 
 ### Events
 
 `attachment.add`, `attachment.remove`, `attachment.change` (visibility, feedable), subject
-`ext:<name>/attachment:<id>`, data `body_hash`, `kind`, `origin`, `size`, the change; `feed.add`,
-`feed.remove`, `feed.change`, `feed.run` (`feed`, counts, `error`), subject `feed:<name>`. Spec
+`ext:<name>/attachment:<id>`, data `body_hash`, `kind`, `origin`, `size`, the change, and the
+`statement` issued (its seq); `attestation_key.add|activate|retire`, subject
+`attestation-key:<id>`; `feed.add`, `feed.remove` (`documents` removed), `feed.change`, `feed.run`
+(`feed`, counts, refusals by reason, `error` as a class), subject `feed:<name>`. Spec
 0010's catalogue and subject forms gain them; a source does not record one event per feed request,
 only refusals (spec 0010's `authz.refused`).
 
 ### Package layout
 
 ```text
-internal/store/migrations/*/0017_attachments.sql   attachments (1a); feeds, feed state (1b)
-internal/attachment   kinds, media types, summaries, the review schema; the service; the feed
-                      source and client (1b)
+internal/store/migrations/*/0017_attachments.sql   attachments (1a)
+internal/store/migrations/*/0018_feeds.sql         attestation keys, statements, feeds and cursors (1b)
+internal/attachment   kinds, media types, summaries, the review schema; the service; statements
+                      (JCS, signing, verifying), the feed source, the client and its runner (1b)
+internal/keysource    + a key's purpose (channel-signing, attestation-signing), checked at open
+internal/egress       + PostJSON (the feed request)
 internal/blob         + attachments/<id> objects (put, read checked against the hash), the collector's
                       step for them
-internal/keys         + attestation keys (1b): attestation_keys, registry rows, statements signed
+internal/keys         + attestation keys (1b): their lifecycle, registry rows, their signers
 internal/api          the routes; the index rows' attachments
-cmd/kista             kista admin attachment add|list|show|visibility|remove; feed add|show|remove|sync
+cmd/kista             kista admin attachment add|list|show|readers|administrators|feedable|unfeedable|
+                      remove; attestation-key add|list|activate|retire; feed add|list|show|sync|pause|
+                      resume|set|remove
 web/console           the Reports block; feeds on Upstreams
 ```
 
@@ -300,10 +360,13 @@ web/console           the Reports block; feeds on Upstreams
 - Collector: objects without records collected after the grace; records of bodies no longer held.
 - API: the routes and who may call them, `404` uniformity, index rows' summaries, download headers,
   `If-Match`.
-- Feed (1b): two kista servers in one test (source and subscriber): pinned keys, an unsigned, a
-  wrongly signed, an altered (title, supersedes) and an unrequested statement refused; a new body
-  receiving its history; withdrawals; feedable and channel scope at the source; the fixed content
-  path; egress.
+- Feed (1b): two kista servers in one test (source and subscriber): pinned keys, a body receiving
+  its history, withdrawals, re-offers and a narrowed audience, two feeds of one source, an unpinned
+  key, a refused credential, feedable and channel scope at the source, the fixed content path,
+  egress; a fake source: an unsigned, a wrongly signed, an altered, a re-encoded, an unrequested and
+  a misattributed statement refused, content that does not match its statement refused, an
+  unresolved supersedes kept. Statements: JCS, the domain separator, bounds. Keys: the purpose
+  marker, one registry for both roles.
 - Console: the Reports block; e2e attaching an SBOM and reading its summary.
 
 ## Alternatives considered
@@ -332,3 +395,5 @@ web/console           the Reports block; feeds on Upstreams
   publishing).
 - Air-gapped bundles (spec 0014) carrying attachments with their statements.
 - Spec 0018's verify covering attachment objects.
+- Collecting the statements of documents removed long ago (an offer and its withdrawal stay, small
+  but unbounded).

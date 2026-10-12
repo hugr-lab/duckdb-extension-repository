@@ -28,6 +28,7 @@ type attachmentJSON struct {
 	Size       int64           `json:"size"`
 	Summary    json.RawMessage `json:"summary"`
 	Origin     string          `json:"origin"`
+	Issuer     string          `json:"issuer,omitempty"` // a feed's document: its source, whose key signed it
 	IssuedAt   string          `json:"issued_at"`
 	ValidUntil string          `json:"valid_until,omitempty"`
 	Expired    bool            `json:"expired,omitempty"`
@@ -38,16 +39,24 @@ type attachmentJSON struct {
 	Visibility string `json:"visibility,omitempty"`
 	Feedable   *bool  `json:"feedable,omitempty"`
 	Withdrawn  bool   `json:"withdrawn,omitempty"`
-	ETag       string `json:"etag,omitempty"`
+	// a feed's document: who stands behind it at its source, and the key that signed it
+	SourceOrigin string `json:"source_origin,omitempty"`
+	Key          string `json:"key,omitempty"`
+	Audience     string `json:"audience,omitempty"` // who its source lets subscribers show it to
+	ETag         string `json:"etag,omitempty"`
 }
 
 func (h *Handler) attachmentOf(a store.Attachment, manage bool, head bool, c caller) attachmentJSON {
 	o := attachmentJSON{ID: a.ID, BodyHash: a.BodyHash, Kind: a.Kind, MediaType: a.MediaType, Title: a.Title, Size: a.Size,
-		Summary: json.RawMessage(a.Summary), Origin: a.Origin, IssuedAt: timeOf(a.IssuedAt), ValidUntil: timeOf(a.ValidUntil),
+		Summary: json.RawMessage(a.Summary), Origin: a.Origin, Issuer: a.Issuer, IssuedAt: timeOf(a.IssuedAt), ValidUntil: timeOf(a.ValidUntil),
 		Expired: attachment.Expired(a, h.now())}
 	if manage {
 		o.AttachedBy, o.Supersedes, o.Visibility, o.ETag = createdBy(a.AttachedBy, c), a.Supersedes, a.Visibility, versionTag(a.Version)
 		o.Head, o.Feedable, o.Withdrawn = &head, &a.Feedable, !a.WithdrawnAt.IsZero()
+		o.SourceOrigin, o.Key = a.SourceOrigin, a.KeyFP
+		if a.Origin == store.AttachedByFeed {
+			o.Audience = attachment.Audience(a)
+		}
 	}
 	return o
 }

@@ -141,6 +141,10 @@ test('a tenant administrator attaches an SBOM and reads its summary (spec 0011)'
   await expect(page.getByRole('dialog').getByText(/Served publicly in prod/)).toBeVisible()
   await page.getByRole('dialog').getByRole('button', { name: 'show to readers' }).click()
   await expect(page.getByRole('cell', { name: 'readers', exact: true })).toBeVisible()
+  // offered in the tenant's feed (phase 1b): signed with its attestation key
+  await page.getByRole('button', { name: 'Offer in feed' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'offer' }).click()
+  await expect(page.getByText('offered', { exact: true })).toBeVisible()
   // a download is a file, saved with the download attribute
   const download = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Download' }).click()
@@ -150,6 +154,16 @@ test('a tenant administrator attaches an SBOM and reads its summary (spec 0011)'
   await expect(page.getByText('No documents.')).toBeVisible()
   await page.getByRole('link', { name: 'Events' }).click()
   await expect(page.getByRole('cell', { name: 'attachment.add' })).toBeVisible()
-  await expect(page.getByRole('cell', { name: 'attachment.change' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'attachment.change' }).first()).toBeVisible()
   await expect(page.getByRole('cell', { name: 'attachment.remove' })).toBeVisible()
+  // the feeds the tenant subscribes to, on the Upstreams page
+  await page.getByRole('link', { name: 'Upstreams' }).click()
+  await expect(page.getByText('No feeds.')).toBeVisible()
+  await page.getByRole('button', { name: 'New feed' }).click()
+  await page.getByLabel('Name', { exact: true }).last().fill('enterest')
+  await page.getByLabel('Source URL', { exact: true }).fill('https://enterest.example/api/v1/tenants/acme')
+  await page.getByLabel('Credential', { exact: true }).fill('none')
+  await page.getByLabel('Pinned keys', { exact: true }).fill('sha256:' + 'a'.repeat(64))
+  await page.getByRole('button', { name: 'Add', exact: true }).last().click()
+  await expect(page.getByText(/credential: not configured/)).toBeVisible() // no such credential in this deployment
 })

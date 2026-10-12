@@ -43,6 +43,15 @@ func TestCovers(t *testing.T) {
 		{"issuer-wide admin does not imply install", g("issuer", "", "", "", "admin"), "install", tresor, false},
 		{"issuer-wide install", g("issuer", "", "", "", "install"), "install", tresor, true},
 		{"another principal", g("subject", "you", "", "", "admin"), "admin", tenant, false},
+		// spec 0011: feed, in the channels a grant covers; admin implies it, never issuer-wide or by an extension's grant
+		{"feed on its channel", g("subject", "me", "prod", "", "feed"), "feed", prod, true},
+		{"feed on another channel", g("subject", "me", "staging", "", "feed"), "feed", prod, false},
+		{"tenant feed in a channel", g("subject", "me", "", "", "feed"), "feed", prod, true},
+		{"feed is not install", g("subject", "me", "", "", "feed"), "install", tresor, false},
+		{"tenant admin implies feed", g("subject", "me", "", "", "admin"), "feed", prod, true},
+		{"channel admin does not imply feed", g("subject", "me", "prod", "", "admin"), "feed", prod, false},
+		{"extension admin does not feed", g("subject", "me", "", "tresor", "admin"), "feed", prod, false},
+		{"issuer-wide feed is ignored", g("issuer", "", "", "", "feed"), "feed", prod, false},
 	} {
 		if got := authz.Covers(auth.HeldBy(me, store.TenantAuth{Grants: []store.Grant{tc.grant}}), tc.verb, tc.r); got != tc.want {
 			t.Errorf("%s: %v", tc.name, got)

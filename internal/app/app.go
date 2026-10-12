@@ -105,6 +105,8 @@ type Services struct {
 	Upstreams *upstream.Service
 	// Attachments holds documents about bodies (spec 0011); it needs a blob service (WithBlob).
 	Attachments *attachment.Service
+	// Feeds are the tenants' subscriptions to other repositories' feeds (spec 0011 phase 1b).
+	Feeds *attachment.Feeds
 }
 
 // WithBlob gives the release, upstream and attachment services a blob service (adding a release
@@ -192,6 +194,7 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	rel.MayPublish = func(name string) bool { c, ok := creds[name]; return ok && c.AllowPublic }
 	// a purge before every replica keeps purged slots could see its slot refilled (spec 0016)
 	rel.PurgeOff = cfg.GCSettings().Interval == 0
+	at := &attachment.Service{Store: s, Authz: az, MaxSize: cfg.Attachments.MaxSize, Keys: ks, PublicURL: cfg.Serve.PublicURL}
 	return &Services{
 		Store:    s,
 		Sources:  reg,
@@ -205,7 +208,9 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
 			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate),
 				Interval: ul.Interval}, Credentials: creds},
-		Attachments: &attachment.Service{Store: s, Authz: az, MaxSize: cfg.Attachments.MaxSize},
+		Attachments: at,
+		Feeds: &attachment.Feeds{Store: s, Authz: az, Attachments: at, Fetch: eg, Credentials: creds,
+			Interval: cfg.Attachments.FeedIntervalOrDefault(), Log: slog.Default()},
 	}, nil
 }
 
@@ -251,11 +256,14 @@ func Providers(cfg config.Config, f auth.Fetcher) auth.Providers {
 
 // WithAuthz returns the services with another authorizer (the API's), sharing everything else.
 func (s *Services) WithAuthz(az authz.Authorizer) *Services {
-	ten, ks, rel, au, up, at := *s.Tenants, *s.Keys, *s.Releases, *s.Auth, s.Upstreams.WithAuthz(az), *s.Attachments
-	ten.Authz, ks.Authz, rel.Authz, au.Authz, at.Authz = az, az, az, az, az
+	ten, ks, rel, au, up, at, fd := *s.Tenants, *s.Keys, *s.Releases, *s.Auth, s.Upstreams.WithAuthz(az), *s.Attachments, *s.Feeds
+	ten.Authz, ks.Authz, rel.Authz, au.Authz, at.Authz, fd.Authz = az, az, az, az, az, az
 	rel.Signers = &ks
 	up.Releases = &rel
-	return &Services{Store: s.Store, Sources: s.Sources, Tenants: &ten, Keys: &ks, Releases: &rel, Auth: &au, Upstreams: up, Attachments: &at}
+	at.Keys = &ks
+	fd.Attachments = &at
+	return &Services{Store: s.Store, Sources: s.Sources, Tenants: &ten, Keys: &ks, Releases: &rel, Auth: &au, Upstreams: up, Attachments: &at,
+		Feeds: &fd}
 }
 
 func serverIssuerURLs(cfg config.Config) []string {

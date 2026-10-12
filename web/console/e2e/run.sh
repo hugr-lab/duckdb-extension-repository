@@ -74,6 +74,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=kista.test" -addext
 mkdir -p "$work/keys"
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/a.pem" 2>/dev/null
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/b.pem" 2>/dev/null  # added from the console (2b)
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/att.pem" 2>/dev/null  # the feed's (spec 0011)
 (cd "$root" && GOWORK=off go build -o "$work/kista" ./cmd/kista && GOWORK=off go run ./web/console/e2e/fixture "$work/tresor.duckdb_extension" 1.0 a \
 	&& GOWORK=off go run ./web/console/e2e/fixture "$work/hello.duckdb_extension" 1.0 b)
 cat >"$work/kista.yaml" <<YAML
@@ -108,6 +109,7 @@ k tenant create acme -display-name Acme
 k channel create acme/prod -kind signed
 k channel versions acme/prod -add v2.0.0
 k key add acme/prod -signer file:a.pem -active
+k attestation-key add acme file:att.pem -active
 k issuer add acme -name kc -url "$kc/realms/acme" -roles-claim realm_access.roles -require azp=kista-console
 k issuer console acme kc -client-id kista-console
 k grant add acme -principal "role:kc|tenant-admin" -verb admin

@@ -4,7 +4,9 @@ import { Badge, Button, Card, Checks, Chips, Confirm, Empty, ErrorBox, Field, Lo
 import { useAction } from '../lib/action'
 import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, fingerprintSeg, seg } from '../lib/http'
+import { entryNames } from '../lib/names'
 import { platforms } from './Channel'
+import { Feeds } from './Feeds'
 
 // Upstreams (spec 0009; console phase 2b): where a channel's mirrored extensions come from, what is
 // allowed in, and what each run did.
@@ -75,10 +77,8 @@ export function countsLine(r?: RunResult) {
   return counts(r).map(([k, n]) => `${k} ${n}`).join(' · ') || 'nothing to do'
 }
 
-/** Names typed into a field: separated by commas or spaces, each once. */
-export function entryNames(s: string): string[] {
-  return [...new Set(s.split(/[\s,]+/).filter(Boolean))]
-}
+export { entryNames } from '../lib/names'
+
 
 export interface UpstreamForm {
   name: string
@@ -143,6 +143,7 @@ export function Upstreams() {
       <Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />
       <Note>Each upstream feeds one channel. Two upstreams of a channel never supply the same name: one source decides its current release.</Note>
       <Shadows />
+      <Feeds />
     </>
   )
 }

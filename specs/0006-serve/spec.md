@@ -420,7 +420,7 @@ administrators: no tenant principal ever matches a server one.
   channel, or an extension, except spec 0008's `publish` and `promote`; spec 0007 refuses `admin` on
   an `issuer:` grant when it is added and ignores it on rows added before, since every account of
   the issuer would hold it). An identical grant is not added twice. `publish` and `promote` come
-  with spec 0008, `audit` with spec 0010.
+  with spec 0008, `audit` with spec 0010, `feed` with spec 0011 (on the tenant or a channel only).
 - An `issuer:` grant is refused unless the record has `required_claims`.
 - `kista admin grant add|list|remove <tenant> -principal … -verb … [-channel …] [-extension …]`.
   Grant management over HTTP, and who besides server administrators may do it, is spec 0007.
