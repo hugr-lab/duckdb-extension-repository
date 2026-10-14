@@ -27,9 +27,11 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) >= 1 && args[0] == "admin" {
+		makeTmpdir(os.Getenv("TMPDIR"))
 		return admin(args[1:], os.Environ(), stdout, stderr)
 	}
 	if len(args) >= 1 && args[0] == "serve" {
+		makeTmpdir(os.Getenv("TMPDIR"))
 		return serveCmd(args[1:], os.Environ(), stderr)
 	}
 	if len(args) == 1 && (args[0] == "version" || args[0] == "--version" || args[0] == "-version") {
@@ -51,6 +53,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "kista ext: unknown command %q\n", args[1])
 	return 2
+}
+
+// makeTmpdir creates TMPDIR when it is missing (one level, owner-only), where SQLite writes its
+// temporary files. The image sets TMPDIR=/var/lib/kista/tmp, and a volume mounted at /var/lib/kista
+// hides the image's directory. A failure is left to the code that needs the directory.
+func makeTmpdir(dir string) {
+	if dir != "" {
+		_ = os.Mkdir(dir, 0o700)
+	}
 }
 
 type keyFlags []string

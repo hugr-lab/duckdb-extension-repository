@@ -7,6 +7,7 @@ const sidebars: SidebarsConfig = {
     'concepts',
     'duckdb',
     'configuration',
+    'deployment/index',
     'state',
     'signing-keys',
     'storage',

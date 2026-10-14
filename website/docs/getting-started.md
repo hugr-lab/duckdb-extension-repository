@@ -14,7 +14,7 @@ The setup uses `profile: dev`, which is meant for development only. For a real d
 
 ## What you need
 
-- Go, at the version in `go.mod`, to build kista.
+- Go, at the version in `go.mod`, to build kista (or a release binary, see [Deployment](deployment/index.md)).
 - `openssl`, to create a signing key.
 - DuckDB 2.0, which has `CREATE EXTENSION REPOSITORY`. kista is tested against the DuckDB commit in
   `e2e/DUCKDB_PIN`.
@@ -30,9 +30,10 @@ make build          # writes bin/kista; the same as: GOWORK=off go build -o bin/
 export PATH="$PWD/bin:$PATH"
 ```
 
-There is no container image or Helm chart yet. The administration console is embedded only if you
-run `make console` (Node 22) before `make build`; without it `/ui/` serves a placeholder. This page
-does not need the console.
+The administration console is embedded only if you run `make console` (Node 22) before
+`make build`; without it `/ui/` serves a placeholder. This page does not need the console. The
+published image and the release binaries embed it ([Deployment](deployment/index.md)): a release
+binary can replace this step.
 
 ## Create a signing key
 

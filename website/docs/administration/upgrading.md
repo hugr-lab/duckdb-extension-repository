@@ -10,8 +10,9 @@ replicas run through an upgrade. The design is in
 [spec 0003](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0003-store-tenants-keys/spec.md)
 ("Migrations").
 
-There is no container image or package yet: build the new binary with `make build` (`bin/kista`) or
-`go build ./cmd/kista` (see [Development](../development.md)).
+A new version is a new image `ghcr.io/hugr-lab/kista:vX.Y.Z` (deploy it by digest) or a new
+release binary, both verified as [Deployment](../deployment/index.md) says; or build it with
+`make build` (see [Development](../development.md)).
 
 ## Migrations
 

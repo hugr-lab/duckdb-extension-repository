@@ -89,8 +89,9 @@ flowchart TD
     K --> L[Releases and upstreams]
 ```
 
-1. **Build** `bin/kista` with `make build` (`make console` first to embed the console). There is no
-   container image or package yet.
+1. **Get kista**: the image `ghcr.io/hugr-lab/kista` or a release binary, verified
+   ([Deployment](../deployment/index.md)), or build `bin/kista` with `make build` (`make console`
+   first to embed the console).
 2. **Write the configuration** ([Configuration](../configuration.md)): `profile`, `store`,
    `blob.domains` (with `default`), `signers` (key sources), `serve` (listeners, `public_url`),
    `auth` (server issuers and administrators), `egress`.

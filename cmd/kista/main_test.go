@@ -89,3 +89,19 @@ func TestCLI(t *testing.T) {
 		}
 	}
 }
+
+func TestMakeTmpdir(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "tmp")
+	makeTmpdir(dir)
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("stat %s: %v %v", dir, fi, err)
+	}
+	makeTmpdir(dir)                           // exists: no change
+	makeTmpdir(filepath.Join(base, "a", "b")) // one level only
+	if _, err := os.Stat(filepath.Join(base, "a")); !os.IsNotExist(err) {
+		t.Fatalf("created a parent: %v", err)
+	}
+	makeTmpdir("")
+}

@@ -3,10 +3,16 @@ export GOWORK := off
 
 E2E_BUILD ?= $(CURDIR)/e2e/.build
 
-.PHONY: build docs console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down test-moto test-moto-down test-gcs test-gcs-down lint e2e-duckdb e2e-runner e2e-build e2e
+.PHONY: build image docs console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down test-moto test-moto-down test-gcs test-gcs-down lint e2e-duckdb e2e-runner e2e-build e2e
 
 build:
 	go build -o bin/kista ./cmd/kista
+
+# The image (spec 0013) for this machine's platform, as kista:dev, then its smoke test: uid 65532, a
+# read-only root filesystem, /readyz on the probe listener. Needs Docker with buildx.
+image:
+	docker buildx build --build-arg VERSION=dev --provenance=false --load -t kista:dev .
+	deploy/docker/smoke.sh kista:dev dev
 
 # The administration console (spec 0015), embedded by the next make build; without it kista serves a
 # placeholder at /ui/. Needs Node 22.
