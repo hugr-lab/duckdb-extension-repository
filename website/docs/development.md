@@ -209,8 +209,9 @@ on the bucket, upload 20 MiB in two resumable chunks and read across the boundar
 bucket is private, and check that GCS refuses bytes whose CRC32C differs from the one sent. They
 cover the metadata server only through fakes.
 
-The same tests run in GitHub Actions (`.github/workflows/gcp-live.yml`, on demand and on pull
-requests that touch the GCP code) through kista's own `external_account` path: the job writes
+The same tests run in GitHub Actions (`.github/workflows/gcp-live.yml`, by hand only:
+`gh workflow run gcp-live.yml --ref <branch>` while a stack is up) through kista's own
+`external_account` path: the job writes
 GitHub's OIDC token to a file and an `external_account` file with that file source, impersonating
 the principal, so no key exists. `deploy/gcp/github.sh <project> <owner/repo>` (or `up.sh` with
 `KISTA_GCP_GITHUB_REPO`) creates the federation and prints the repository variables the workflow

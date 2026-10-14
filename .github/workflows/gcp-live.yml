@@ -3,18 +3,11 @@ name: gcp-live
 # The live tests of gcpkms and gcs against the stack deploy/gcp/up.sh made, with kista's own
 # credentials: GitHub's OIDC token in a file, an external_account file with a file source that
 # impersonates the principal (spec 0004 phase 4). No key and no google-github-actions/auth, whose
-# url source kista refuses. The stack is named by repository variables (deploy/gcp/github.sh prints
-# them); without them the job is skipped.
+# url source kista refuses. Run by hand while a stack is up: the stack is named by repository
+# variables (deploy/gcp/github.sh prints them); without them the job is skipped.
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - deploy/gcp/**
-      - internal/cloud/gcp/**
-      - internal/keysource/gcpkms/**
-      - internal/blob/gcs/**
-      - .github/workflows/gcp-live.yml
 
 permissions:
   contents: read
@@ -25,10 +18,7 @@ concurrency:
 
 jobs:
   live:
-    # forks get no OIDC token, and the provider admits this repository only
-    if: >-
-      vars.KISTA_GCP_PROVIDER != '' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: vars.KISTA_GCP_PROVIDER != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
