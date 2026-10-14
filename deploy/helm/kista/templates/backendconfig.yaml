@@ -1,0 +1,17 @@
+{{- if .Values.gke.backendConfig.enabled }}
+# GKE Ingress with NEG checks the pods directly: on the health port, not the serving one
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: {{ include "kista.fullname" . }}
+  labels: {{- include "kista.labels" . | nindent 4 }}
+spec:
+  healthCheck:
+    type: HTTP
+    port: 8081
+    requestPath: /readyz
+    checkIntervalSec: 5
+    timeoutSec: 3
+    healthyThreshold: 1
+    unhealthyThreshold: 2
+{{- end }}

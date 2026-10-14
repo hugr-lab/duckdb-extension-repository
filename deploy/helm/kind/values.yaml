@@ -1,0 +1,71 @@
+# kista in the kind test (run.sh): two replicas behind Traefik with the NetworkPolicy, PostgreSQL
+# and SeaweedFS (S3) with their secrets from Secrets, OpenBao Transit through a projected token, and
+# the cluster itself as the token issuer.
+image:
+  repository: kista
+  tag: e2e
+  pullPolicy: Never
+replicas: 2
+config:
+  store:
+    kind: postgres
+    dsn: postgres://kista@postgres.e2e.svc:5432/kista?sslmode=verify-full&sslrootcert=/etc/kista/secrets/ca/ca.crt
+    login:
+      password_file: /etc/kista/secrets/db/password
+  serve:
+    public_url: https://kista.localhost
+    # the pod CIDR; the NetworkPolicy lets only Traefik's pods reach 8443
+    trusted_proxies: [10.244.0.0/16]
+    drain_timeout: 3s
+    shutdown_timeout: 10s
+  signers:
+    sources:
+      - name: bao
+        kind: vault
+        allow: ["ext-"]
+        vault:
+          address: https://openbao.e2e.svc:8200
+          mount: transit
+          ca_file: /etc/kista/secrets/ca/ca.crt
+          software_keys: true
+          auth:
+            kind: kubernetes
+            role: kista
+            token_file: /var/run/secrets/kista/bao/token
+  blob:
+    max_body: 256MiB
+    max_ingests: 2
+    domains:
+      - name: default
+        kind: s3
+        s3:
+          endpoint: https://seaweedfs.e2e.svc:8333
+          bucket: kista
+          region: us-east-1
+          lookup: path
+          sse: none
+          ca_file: /etc/kista/secrets/ca/ca.crt
+          access_key_file: /etc/kista/secrets/s3/access-key
+          secret_key_file: /etc/kista/secrets/s3/secret-key
+  egress:
+    # the API server, whose service account issuer the test's tokens come from
+    allow: [{cidr: 10.96.0.0/12, ports: [443]}]
+    ca_file: /etc/kista/secrets/ca/kube-ca.crt
+secretVolumes:
+  - {name: db, secretName: kista-db, mountPath: /etc/kista/secrets/db}
+  - {name: s3, secretName: kista-s3, mountPath: /etc/kista/secrets/s3}
+  - {name: ca, secretName: kista-ca, mountPath: /etc/kista/secrets/ca}
+projectedTokens:
+  - {name: bao, mountPath: /var/run/secrets/kista/bao, audience: openbao, expirationSeconds: 3600}
+ingress:
+  enabled: true
+  className: traefik
+  hosts: [{host: kista.localhost}]
+  tls: [{secretName: kista-ingress-tls, hosts: [kista.localhost]}]
+networkPolicy:
+  ingressController:
+    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: traefik}}
+    podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+resources:
+  requests: {cpu: 50m, memory: 64Mi}
+  limits: {memory: 512Mi}

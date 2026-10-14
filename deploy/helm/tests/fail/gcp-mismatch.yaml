@@ -1,0 +1,6 @@
+# want: is not gcp.serviceAccount
+gcp: {serviceAccount: kista-signer@acme.iam.gserviceaccount.com}
+config:
+  store: {kind: postgres, dsn: postgres://kista@db/kista}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+  blob: {domains: [{name: default, kind: gcs, gcs: {bucket: b, principal: other-account@acme.iam.gserviceaccount.com}}]}

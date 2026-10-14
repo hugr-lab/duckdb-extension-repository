@@ -1,0 +1,105 @@
+{{- $_ := include "kista.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kista.fullname" . }}
+  labels: {{- include "kista.labels" . | nindent 4 }}
+spec:
+  replicas: {{ include "kista.replicas" . }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: {{- include "kista.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  strategy:
+    {{- if include "kista.singleVolume" . }}
+    # one ReadWriteOnce volume: the old pod goes before the new one starts
+    type: Recreate
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "kista.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+        {{- if .Values.azure.workloadIdentity.clientId }}
+        azure.workload.identity/use: "true"
+        {{- end }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include "kista.config" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "kista.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      # a Service named kista would inject KISTA_* variables, which kista refuses
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext: {{- include "kista.podSecurityContext" . | nindent 8 }}
+      terminationGracePeriodSeconds: {{ include "kista.grace" . }}
+      containers:
+        - name: kista
+          image: {{ include "kista.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [serve, -config, /etc/kista/kista.yaml]
+          ports:
+            - name: serve
+              containerPort: 8443
+            - name: health
+              containerPort: 8081
+          env: {{- include "kista.env" . | nindent 12 }}
+          {{- with .Values.envFrom }}
+          envFrom: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            httpGet: {path: /healthz, port: health}
+            periodSeconds: 5
+            failureThreshold: {{ max 1 (div (int .Values.probes.startupSeconds) 5) }}
+          readinessProbe:
+            httpGet: {path: /readyz, port: health}
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+            periodSeconds: 10
+            failureThreshold: 6
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ int .Values.preStopSeconds }}
+          securityContext: {{- include "kista.securityContext" . | nindent 12 }}
+          resources: {{- include "kista.resources" . | nindent 12 }}
+          volumeMounts: {{- include "kista.mounts" . | nindent 12 }}
+      volumes: {{- include "kista.volumes" . | nindent 8 }}
+      {{- if .Values.topologySpread }}
+      topologySpreadConstraints:
+        {{- range list "topology.kubernetes.io/zone" "kubernetes.io/hostname" }}
+        - maxSkew: 1
+          topologyKey: {{ . }}
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "kista.selectorLabels" $ | nindent 14 }}
+              app.kubernetes.io/component: server
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

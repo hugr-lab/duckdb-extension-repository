@@ -1,0 +1,5 @@
+# want: is on no volume
+replicas: 1
+config:
+  store: {kind: postgres, dsn: postgres://kista@db/kista}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}

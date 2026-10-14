@@ -7,7 +7,12 @@ const sidebars: SidebarsConfig = {
     'concepts',
     'duckdb',
     'configuration',
-    'deployment/index',
+    {
+      type: 'category',
+      label: 'Deployment',
+      link: {type: 'doc', id: 'deployment/index'},
+      items: ['deployment/kubernetes'],
+    },
     'state',
     'signing-keys',
     'storage',

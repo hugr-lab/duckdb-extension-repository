@@ -180,3 +180,41 @@ jobs:
           go-version-file: go.mod
       - run: make reserved
       - run: git diff --exit-code internal/reserved internal/upstream/duckdbkeys
+
+  chart:
+    # The Helm chart (spec 0013): lint, kubeconform and the refusals (deploy/helm/test.sh), and kista
+    # loading each configuration the chart renders; with Helm 3 and Helm 4.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        helm:
+          - {version: v3.22.0, sha256: 1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb}
+          - {version: v4.3.0, sha256: 86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb}
+    env:
+      GOWORK: off
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: helm and kubeconform
+        env:
+          HELM: ${{ matrix.helm.version }}
+          HELM_SHA256: ${{ matrix.helm.sha256 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin" && cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o helm.tgz "https://get.helm.sh/helm-$HELM-linux-amd64.tar.gz"
+          echo "$HELM_SHA256  helm.tgz" | sha256sum -c
+          tar -xzf helm.tgz -C bin --strip-components 1 linux-amd64/helm
+          curl -fsSL --retry 3 -o kc.tgz https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kc.tgz" | sha256sum -c
+          tar -xzf kc.tgz -C bin kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: helm version --short && deploy/helm/test.sh
+      - run: go test -count=1 ./deploy/helm/chartcheck/
+        env:
+          KISTA_TEST_REQUIRE_HELM: "1"

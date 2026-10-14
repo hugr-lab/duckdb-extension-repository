@@ -1,6 +1,6 @@
 # Spec 0013: Deployment: image, Helm chart, Azure
 
-- **Status**: accepted; phases 1a (server changes) and 1b (image and releases) implemented, 1c (chart) to come
+- **Status**: phase 1 implemented (1a server changes, 1b image and releases, 1c chart); phase 2 (Azure) to come
 - **Date**: 2026-10-14
 - **Author**: vgsml, Claude
 
@@ -183,7 +183,7 @@ organisation that writes its own manifests runs into these problems:
     It carries buildx's SBOM, and a build provenance attestation from
     `actions/attest-build-provenance`. The docs claim no SLSA level beyond what that action
     states.
-- **The chart** (phase 1c): `helm package --version X.Y.Z --app-version vX.Y.Z`, pushed to
+- **The chart:** `helm package --version X.Y.Z --app-version vX.Y.Z`, pushed to
   `oci://ghcr.io/hugr-lab/charts` (so `oci://ghcr.io/hugr-lab/charts/kista`), signed by digest
   in the same way. It has an `org.opencontainers.image.source` annotation.
 - **Binaries:** `kista` for linux and darwin, amd64 and arm64 (`kista-vX.Y.Z-<os>-<arch>`, built
@@ -221,14 +221,16 @@ organisation that writes its own manifests runs into these problems:
         `externalTrafficPolicy: Local`, so client addresses are kept) or TLS passthrough. The pod
         is the TLS end, and nothing is in clear on the pod network.
     - **`blob.spool_dir`**: `/var/lib/kista/tmp/spool`. It sits under an `emptyDir` at
-      `/var/lib/kista/tmp` with a `sizeLimit` and an `ephemeral-storage` request, both sized from
-      `blob.max_body` and `blob.max_ingests` plus upstream downloads. kista creates the
+      `/var/lib/kista/tmp` with a `sizeLimit` and an `ephemeral-storage` request, both
+      `(2 × max_ingests + 1) × max_body` unless set (upstream downloads go through the same
+      ingest slots). kista creates the
       subdirectory itself with mode `0700`.
   - The root filesystem is read-only.
 - **Storage.**
   - With `store.kind: postgres` or `sqlserver` and more than one replica, `blob.domains` must name
     a remote store (`s3`, `azureblob`, `gcs`), or an `fs` domain on a `ReadWriteMany` volume
-    (`blobVolume`). `helm install` fails otherwise.
+    (`blobVolume`). `helm install` fails otherwise. A `blobVolume` of another access mode means one
+    pod at a time: `Recreate`, and no `adminJobs`.
   - With `store.kind: sqlite`, the chart:
     - forces one replica and the `Recreate` strategy;
     - uses one `ReadWriteOnce` PVC on block storage (not Azure Files or NFS: SQLite's locking and
@@ -250,7 +252,7 @@ organisation that writes its own manifests runs into these problems:
   - the S3 keys, on each credential refresh;
   - the TLS certificate and key, when the files change.
 
-  The OTLP `headers_file` is read only at start, so changing it needs a restart. There are no
+  An OTLP events sink's `headers_file` is read only at start, so changing it needs a restart. There are no
   secret values in `values.yaml`.
 - **Identity.**
   - `serviceAccount.{create, name, annotations}`. `automountServiceAccountToken: false` always:
@@ -258,9 +260,12 @@ organisation that writes its own manifests runs into these problems:
   - The values carry one identity block per cloud. The chart writes the annotation and the pod
     label, and checks the matching config:
     - `azure.workloadIdentity.clientId`: the annotation, `azure.workload.identity/use`, and equal
-      to `azure.identity.client_id` (with `tenant_id`) in config;
+      to the `client_id` of every identity with `kind: workload` in config;
     - `aws.irsa.roleArn`: equal to the config's `role_arn`. EKS Pod Identity needs no annotation.
-    - `gcp.serviceAccount`: `iam.gke.io/gcp-service-account`, equal to the config's `principal`.
+    - `gcp.serviceAccount`: `iam.gke.io/gcp-service-account`, equal to the `principal` of every
+      `gcpkms` source and `gcs` domain that uses the metadata server.
+    - Each check runs both ways: a value without a matching identity in config, or the reverse,
+      fails. `profile: dev`, which relaxes these rules, needs `devProfile: true`.
   - `projectedTokens` adds service account tokens at a path. Each needs an audience that is not
     the API server's, and an `expirationSeconds` of at most 3600. They serve Vault or OpenBao
     `jwt`/`kubernetes` auth, and a GCP `external_account` file source on AKS or EKS.
@@ -291,8 +296,8 @@ organisation that writes its own manifests runs into these problems:
   - `public_url` is the audience base.
 - **Cloud load balancers that reach pods directly** check health on the serving port unless told
   otherwise, where `/` answers `404`:
-  - GKE Ingress with NEG: the chart renders a `BackendConfig` (or a `HealthCheckPolicy` for the
-    Gateway API) for `8081` `/readyz`.
+  - GKE Ingress with NEG: the chart renders a `BackendConfig` for `8081` `/readyz` (the Gateway
+    API's `HealthCheckPolicy` is documented, not rendered).
   - AWS ALB with IP targets: the values comments give `healthcheck-port: "8081"` and
     `healthcheck-path: /readyz`.
   - Application Gateway: the equivalent probe setting.
@@ -301,12 +306,18 @@ organisation that writes its own manifests runs into these problems:
   the gateway subnet) go into `trusted_proxies` and into the NetworkPolicy.
 - **Who may connect: NetworkPolicy and `trusted_proxies` together.**
   - What trusting a peer grants: its `X-Forwarded-For` sets the client address (access logs,
-    events, the per-client download limit), and its `X-Forwarded-Proto` may only downgrade a
-    request to http (spec 0006). Pod IPs are seldom in a range of their own, so `trusted_proxies`
+    events, the per-client download limit), and a request counts as https only with exactly one
+    `X-Forwarded-Proto: https` (spec 0006); a peer outside `trusted_proxies` is refused. Pod IPs are seldom in a range of their own, so `trusted_proxies`
     is in practice the cluster's pod CIDR.
   - So with `behind_proxy` the chart renders, by default, a NetworkPolicy that admits `8443` only
     from the ingress controller's pods (`namespaceSelector` and `podSelector` from the values) and
     the load balancer ranges. Turning it off takes an explicit `networkPolicy.enabled: false`.
+    The selectors have no default (ingress-nginx, the obvious guess, was retired in March 2026):
+    `helm install` fails until the pod selector or the load balancer ranges are set. A
+    `namespaceSelector` alone is refused (it admits every pod there); a `podSelector` alone means
+    kista's namespace.
+  - With `behind_proxy`, a Service other than `ClusterIP` is refused: it would expose the
+    plain-http listener to clients.
     The kubelet is exempt from NetworkPolicy on every mainstream CNI; `8081` admits only the
     configured load-balancer ranges, plus an optional node CIDR for CNIs that do not exempt it.
   - Spec 0006 notes that the hop from the ingress to the pod is plain http and carries Bearer
@@ -324,7 +335,7 @@ organisation that writes its own manifests runs into these problems:
   - `/readyz` depends on the database, so a database outage takes every pod out of the endpoints.
     That is intended.
 - **Admin work.**
-  - **First run** is `kubectl exec deploy/<release> -- /kista admin -config /etc/kista/kista.yaml
+  - **First run** is `kubectl exec deploy/<fullname> -- /kista admin -config /etc/kista/kista.yaml
     …`, which needs no shell. `release add -` reads stdin through `kubectl exec -i`.
   - **Recurring commands** (`blob verify`, spec 0018) are `adminJobs`: one CronJob per entry,
     suspended unless a schedule is set, with the same config, Secrets, spool `emptyDir` and
@@ -345,7 +356,7 @@ organisation that writes its own manifests runs into these problems:
   - Kubernetes: values, Secrets as files, identities per cloud, ingress and load balancers,
     NetworkPolicy, replicas and storage, upgrading, admin work;
   - a hardening list, including egress: block `169.254.169.254` where no metadata identity is
-    used, and an IMDS hop limit of 1 on EKS without IRSA.
+    used, and an IMDS hop limit of 1 on EKS unless kista's AWS identity is `kind: imds`.
 - **Corrections.**
   - The pages that say there is no image or chart.
   - The new file rules: configuration, security, and the pages for each backend.
@@ -450,14 +461,20 @@ organisation that writes its own manifests runs into these problems:
   `deploy/**`, the chart, the Dockerfile or `internal/secretfile`, and nightly. About 15 minutes
   warm.
   - The cluster:
-    - kind with ingress-nginx, NetworkPolicy enforced;
+    - kind with Traefik (ingress-nginx is retired), NetworkPolicy enforced (kindnet);
     - the chart with `behind_proxy` and the NetworkPolicy on;
-    - a TLS ingress with a test CA.
+    - a TLS ingress with a test CA, at `kista.localhost`: curl uses `--resolve`, DuckDB the system
+      resolver (macOS and systemd-resolved map `*.localhost` to loopback; the workflow also adds
+      an `/etc/hosts` entry).
   - The backends:
     - PostgreSQL, with its password from a Secret;
     - SeaweedFS (S3), with its key files from Secrets;
     - OpenBao Transit with `kubernetes` auth through a projected token (the harness binds
-      `system:auth-delegator` for OpenBao).
+      `system:auth-delegator` for OpenBao);
+    - PostgreSQL and SeaweedFS over TLS with the test CA, as outside `profile: dev` they must be;
+    - the cluster's own service account issuer as the tenant's token issuer (its JWKS through
+      `egress` with the API server's CA), so the Bearer tokens are real `kubectl create token`
+      tokens and no IdP is deployed.
   - A step asserts the `stat` of every mounted file, to pin the shapes this spec relies on.
   - Then:
     1. Two replicas become ready.
@@ -465,7 +482,9 @@ organisation that writes its own manifests runs into these problems:
     3. The pinned DuckDB (`e2e/DUCKDB_PIN`) installs and loads an extension through the ingress,
        public and with a Bearer token. This uses a new e2e mode, `KISTA_E2E_URL` with the CA,
        that targets a running kista instead of starting one.
-    4. A rolling restart: a poll through the Service sees `/readyz` up throughout.
+    4. A pod other than the ingress controller's cannot reach `8443`.
+    5. A rolling restart: a poll through the ingress sees `/readyz` up throughout.
+  - The harness is `deploy/helm/kind/run.sh`; it runs locally as well.
 - **GKE, by hand.** `deploy/gcp/gke.sh` adds a GKE Autopilot cluster to a stack made by
   `deploy/gcp/up.sh`. It installs the chart with GKE Workload Identity, a GKE Ingress and the
   `BackendConfig`. This proves spec 0004 phase 4's metadata-server path, and the load-balancer

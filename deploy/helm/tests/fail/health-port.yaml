@@ -1,0 +1,6 @@
+# want: :8081 is the chart's health port
+config:
+  store: {kind: sqlite}
+  serve:
+    public_url: https://kista.example.com
+    listeners: [{addr: ":8443", scheme: http}, {addr: "0.0.0.0:8081", scheme: http}]

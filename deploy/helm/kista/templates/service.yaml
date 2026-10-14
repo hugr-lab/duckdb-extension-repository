@@ -1,0 +1,35 @@
+{{- $tls := eq .Values.mode "tls" -}}
+{{- $type := .Values.service.type | default (ternary "LoadBalancer" "ClusterIP" $tls) -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kista.fullname" . }}
+  labels: {{- include "kista.labels" . | nindent 4 }}
+  {{- $ann := deepCopy (.Values.service.annotations | default dict) -}}
+  {{- if .Values.gke.backendConfig.enabled }}
+  {{- $_ := set $ann "cloud.google.com/backend-config" (printf "{\"default\": \"%s\"}" (include "kista.fullname" .)) }}
+  {{- $_ := set $ann "cloud.google.com/neg" "{\"ingress\": true}" }}
+  {{- end }}
+  {{- with $ann }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $type }}
+  {{- if eq $type "LoadBalancer" }}
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
+  {{- with .Values.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  selector: {{- include "kista.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  # the health port is never in the Service
+  ports:
+    - name: http
+      port: 80
+      targetPort: serve
+    {{- if $tls }}
+    - name: https
+      port: 443
+      targetPort: serve
+    {{- end }}
