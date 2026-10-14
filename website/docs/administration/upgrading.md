@@ -22,7 +22,7 @@ There is no container image or package yet: build the new binary with `make buil
   replicas starting together never apply one twice.
 - Applied migrations are recorded in the table `schema_migrations` (`version`, `name`,
   `min_reader`, `applied_at`).
-- A binary's **schema level** is the number of migrations it carries. This release carries 18.
+- A binary's **schema level** is the number of migrations it carries. This release carries 19.
 
 ### Who migrates: `store.migrate`
 
@@ -136,6 +136,47 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
+## Upgrading to this release
+
+### Files kista reads
+
+Every file the configuration names now follows one rule
+([Files kista reads](../security.md#files-kista-reads)). Check the files before the upgrade: a
+file that breaks its rule stops `kista serve` at start, or fails the read that needs it, with an
+error naming the file and the rule.
+
+**Files that had no check before** and now have one:
+
+- secrets: `store.login.password_file`, the listener `tls.key_file`, the OTLP `headers_file`, and
+  the upstream credential `client_secret_file` and `key_file`;
+- tokens: the upstream credential `token_file` and `assertion_file`;
+- public files: `egress.ca_file`, the Vault `ca_file`, the S3 `ca_file` and the listener
+  `tls.cert_file`.
+
+**What may now be refused:**
+
+- **Owners of public files and tokens.** A public file or a token must be owned by root or by
+  the user kista runs as. A CA bundle on the host owned by another user is refused; so is a token
+  file written by another user.
+- **Readable directories.** A secret or a token is opened inside its directory, which kista must
+  be able to read (the `r` bit, not only `x`). `/etc/ssl/private` at `0710 root:ssl-cert` is not
+  readable, for example.
+- **Links.** A secret's or a token's link must be relative and stay inside the file's directory;
+  an absolute link is refused even when it points inside. certbot's `live/privkey.pem` leaves its
+  directory: point `tls.key_file` at the real file or a copy.
+- **Hard links.** A secret or a token must have exactly one.
+- **Sizes.** An S3 or Azure Blob key file over 4 KiB used to be cut at 4 KiB; it is now refused.
+  A Vault token file over 64 KiB likewise.
+
+**What is now accepted:**
+
+- A Vault `kubernetes` or `jwt` token file no longer needs mode `0600` or narrower: like every
+  token, any read bits on a file owned by root or kista's user.
+- The AWS static key files (`identity.access_key_file`, `identity.secret_key_file`) may be
+  relative links inside their directory; any link used to be refused.
+- Secrets may be root-owned with kista's group and mode `0440` or narrower: a Kubernetes Secret
+  volume under `fsGroup`.
+
 ## Downgrading
 
 A binary runs against a newer database only while the database's `min_reader` is at most the
@@ -147,6 +188,8 @@ binary's schema level. Migrations have no down steps. To go back past a migratio
 
 - Read the release's migrations: which ones raise `min_reader`.
 - Back up the database.
+- Check the files the configuration names against
+  [Files kista reads](../security.md#files-kista-reads) (what changed: [above](#files-kista-reads)).
 - Decide who migrates (`auto` on the first replica, or a `kista admin migrate` job).
 - Run `kista admin check` with the new binary afterwards: `schema ok`.
 - Watch `/readyz` on every replica, and the server events

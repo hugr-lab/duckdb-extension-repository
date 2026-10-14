@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/app"
@@ -29,11 +30,13 @@ func serveCmd(args, env []string, stderr io.Writer) int {
 		return 1
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	log.Info("kista serve: starting", "version", app.Version, "go", runtime.Version(), "platform", runtime.GOOS+"/"+runtime.GOARCH)
 	if cfg.Profile == config.ProfileDev {
 		log.Warn("kista serve: profile dev")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
+	go func() { <-ctx.Done(); stop() }() // a second signal ends the process at once, not after the drain
 	if err := app.Serve(ctx, cfg, log); err != nil {
 		fmt.Fprintln(stderr, "kista serve:", err)
 		return 1

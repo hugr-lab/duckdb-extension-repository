@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 // Listener is one configured address.
@@ -36,18 +37,41 @@ type Server struct {
 	bound []boundListener
 }
 
+// buildHealth is a probe listener (spec 0013): plain http/1.1, short timeouts, small headers.
+func (s *Server) buildHealth(l Listener) (*http.Server, net.Listener, error) {
+	srv := &http.Server{
+		Handler:                      s.Handler.Health(),
+		DisableGeneralOptionsHandler: true, // "OPTIONS *" is a 404 too
+		ReadHeaderTimeout:            5 * time.Second,
+		ReadTimeout:                  5 * time.Second,
+		WriteTimeout:                 5 * time.Second,
+		IdleTimeout:                  30 * time.Second,
+		MaxHeaderBytes:               1 << 10,
+		ErrorLog:                     slog.NewLogLogger(s.Log.Handler(), slog.LevelWarn),
+	}
+	ln := l.Net
+	if ln == nil {
+		var err error
+		if ln, err = net.Listen("tcp", l.Addr); err != nil {
+			return nil, nil, fmt.Errorf("serve: listen %s: %w", l.Addr, err)
+		}
+	}
+	return srv, ln, nil
+}
+
 // certReloader serves a certificate from files, re-reading them when they change (checked at most
 // once a minute).
 type certReloader struct {
 	certFile, keyFile string
+	log               *slog.Logger
 	mu                sync.Mutex
 	cert              *tls.Certificate
 	modCert, modKey   time.Time
 	checked           time.Time
 }
 
-func newCertReloader(cfg *config.TLSConfig) (*certReloader, error) {
-	c := &certReloader{certFile: cfg.CertFile, keyFile: cfg.KeyFile}
+func newCertReloader(cfg *config.TLSConfig, log *slog.Logger) (*certReloader, error) {
+	c := &certReloader{certFile: cfg.CertFile, keyFile: cfg.KeyFile, log: log}
 	if err := c.load(); err != nil {
 		return nil, err
 	}
@@ -55,15 +79,26 @@ func newCertReloader(cfg *config.TLSConfig) (*certReloader, error) {
 }
 
 func (c *certReloader) load() error {
-	ci, err1 := os.Stat(c.certFile)
-	ki, err2 := os.Stat(c.keyFile)
-	if err1 != nil || err2 != nil {
-		return errors.New("serve: cannot read the TLS certificate or key file")
+	ci, err := os.Stat(c.certFile)
+	if err != nil {
+		return fmt.Errorf("serve: the TLS certificate: %w", err)
+	}
+	ki, err := os.Stat(c.keyFile)
+	if err != nil {
+		return fmt.Errorf("serve: the TLS key: %w", err)
 	}
 	if c.cert != nil && ci.ModTime().Equal(c.modCert) && ki.ModTime().Equal(c.modKey) {
 		return nil
 	}
-	cert, err := tls.LoadX509KeyPair(c.certFile, c.keyFile)
+	certPEM, err := secretfile.Read(c.certFile, secretfile.Public, secretfile.LargeLimit)
+	if err != nil {
+		return fmt.Errorf("serve: the TLS certificate: %w", err)
+	}
+	keyPEM, err := secretfile.Read(c.keyFile, secretfile.Secret, secretfile.LargeLimit)
+	if err != nil {
+		return fmt.Errorf("serve: the TLS key: %w", err)
+	}
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		return errors.New("serve: the TLS certificate and key do not load")
 	}
@@ -76,7 +111,9 @@ func (c *certReloader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	defer c.mu.Unlock()
 	if time.Since(c.checked) > time.Minute {
 		c.checked = time.Now()
-		_ = c.load() // keep the current certificate if the new files do not load
+		if err := c.load(); err != nil && c.log != nil { // keep the current certificate
+			c.log.Warn("serve: the TLS certificate was not reloaded; the current one stays", "error", err)
+		}
 	}
 	return c.cert, nil
 }
@@ -227,6 +264,9 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) build(l Listener) (*http.Server, net.Listener, error) {
+	if l.Scheme == "health" {
+		return s.buildHealth(l)
+	}
 	srv := &http.Server{
 		DisableGeneralOptionsHandler: true, // "OPTIONS *" reaches our handler, which answers 404
 		ReadHeaderTimeout:            10 * time.Second,
@@ -244,7 +284,7 @@ func (s *Server) build(l Listener) (*http.Server, net.Listener, error) {
 	}
 	var tlsCfg *tls.Config
 	if l.TLS != nil {
-		cr, err := newCertReloader(l.TLS)
+		cr, err := newCertReloader(l.TLS, s.Log)
 		if err != nil {
 			_ = ln.Close()
 			return nil, nil, err

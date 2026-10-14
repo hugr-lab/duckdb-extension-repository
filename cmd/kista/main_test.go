@@ -74,6 +74,9 @@ func TestCLI(t *testing.T) {
 		{[]string{"ext", "verify", ext}, 2, ""},
 		{[]string{"ext", "inspect"}, 2, ""},
 		{[]string{"nope"}, 2, ""},
+		{[]string{"version"}, 0, "kista dev (go"},
+		{[]string{"--version"}, 0, "kista dev (go"},
+		{[]string{"version", "x"}, 2, ""},
 		{[]string{"ext", "verify", ext, "--key", t.TempDir()}, 1, ""},
 	}
 	for _, c := range cases {

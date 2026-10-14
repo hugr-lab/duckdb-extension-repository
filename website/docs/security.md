@@ -75,11 +75,92 @@ records the rejection as an `upstream.rejected` event.
   On Google Cloud, kista acts only as the configured service account (`principal`), and refuses
   credential sources that answer with the node's identity.
 - **File keys** are for development, or need an explicit `signers.allow_file: true`; the file must
-  be mode `0600`, owned by kista's user, and not a symlink.
+  be mode `0600` or narrower, owned by kista's user, and not a symlink. This is stricter than the
+  rule for other files (below), on purpose: a Kubernetes Secret mounted into `signers.file_dir` is
+  refused.
 - Signing happens when a release is made, never on a download, so a KMS outage stops publishing,
   not serving.
 
 Details: [Signing keys](signing-keys.md).
+
+## Files kista reads
+
+kista reads passwords, keys, tokens and certificates from files the configuration names. They all
+follow one rule ([spec 0013](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0013-deployment/spec.md)).
+The file is checked on the opened descriptor, at every read.
+
+- **A secret's or a token's links stay in its directory.** The file is opened inside its own
+  directory (Go's `os.Root`). A relative symlink may lead anywhere under that directory; a link
+  that leaves it, or an absolute link (even one pointing inside it), is refused. This is the
+  layout Kubernetes uses for Secret and projected volumes (`x -> ..data/x`,
+  `..data -> ..2026_10_14…`). The directory must be readable by kista (the `r` bit, not only
+  `x`): `/etc/ssl/private` at `0710 root:ssl-cert` fails, and the error names the directory.
+- **A public file's links are followed anywhere**: its content is not secret. certbot's `live/`
+  links and the system CA bundle's links work for `tls.cert_file` and the `ca_file`s. certbot's
+  `privkey.pem` is a secret, though, and its `live/` link leaves the directory: point
+  `tls.key_file` at the real file under `archive/` (if its owner, mode and directory fit the
+  secret rule), or at a copy, for example one a certbot deploy hook makes.
+- A missing file is retried once, for a `..data` swap in progress.
+- **A regular file**, opened without blocking, so a FIFO in its place is refused, not waited on.
+- **Nobody but the owner may write it** (no group or other write bit).
+- **A secret or a token has exactly one hard link.**
+- Then the rule of the file's class:
+
+| Class | Owner and mode |
+| --- | --- |
+| **secret** | owned by the user kista runs as, with no group or other bits (`0600` or narrower); or owned by root, with group equal to kista's group (not `0`) and mode `0440` or narrower |
+| **token** | owned by root or by the user kista runs as, any read bits; nobody but the owner may write it (a projected service account token: short-lived and bound to an audience) |
+| **public** | owned by root or by the user kista runs as, any read bits; nobody but the owner may write it |
+
+"The user kista runs as" is the effective uid, and "kista's group" the effective gid. The second
+shape of a secret is a Kubernetes Secret volume under `fsGroup`, with `defaultMode` `0440` or
+`0400`: the kubelet makes the files root-owned, with the pod's `fsGroup` and mode `0440`. It
+trusts root and kista's primary group only: not a supplementary group, and never gid `0`. On a
+plain host, do not share kista's group with other users. On a system without Unix ownership, only
+the directory, regular-file and size rules apply.
+
+| File | Class | Size limit |
+| --- | --- | --- |
+| `store.login.password_file` | secret | 64 KiB |
+| Vault `auth.token_file` with `kind: token_file` (a Vault token) | secret | 64 KiB |
+| Vault `auth.token_file` with `kind: kubernetes` or `jwt` | token | 64 KiB |
+| Vault `ca_file` | public | 1 MiB |
+| S3 `access_key_file` and `secret_key_file` (blob domains) | secret | 4 KiB |
+| S3 `ca_file` | public | 1 MiB |
+| Azure Blob `account_key_file` | secret | 4 KiB |
+| AWS `identity.access_key_file` and `identity.secret_key_file` (`static`) | secret | 64 KiB |
+| AWS web identity and Pod Identity token files (`AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`) | token | 64 KiB |
+| GCP `credentials_file` (with `profile: dev` it may be a `service_account` key, which holds a private key, yet is checked as public: a gap accepted in dev only) | public | 64 KiB |
+| the token file an `external_account` file names (`credential_source.file`) | token | 64 KiB |
+| listener `tls.cert_file` | public | 1 MiB |
+| listener `tls.key_file` | secret | 1 MiB |
+| `egress.ca_file` | public | 1 MiB |
+| OTLP sink `headers_file` | secret | 64 KiB |
+| upstream credential `token_file` and `assertion_file` | token | 64 KiB |
+| upstream credential `client_secret_file` and `key_file` | secret | 64 KiB |
+
+A file that breaks its rule stops kista at start, or fails the read that needs it. The error
+names the file and the rule it breaks, with the owner, group or mode that breaks it; never the
+file's content. What this rule changes for existing files is in
+[Upgrading](administration/upgrading.md#files-kista-reads).
+
+Some files keep rules of their own:
+
+- **Key files** in `signers.file_dir`: no symlink, owned by kista's user, mode `0600` or narrower
+  ([Signing keys](signing-keys.md#file-keys)). A Kubernetes Secret mounted there is
+  refused.
+- **The SQLite database**: created or changed to `0600` at open ([State](state.md)).
+- **The jsonl event sink and the blob spool**: files kista writes itself, with mode `0600` (the
+  spool directory `0700`).
+
+The Azure workload identity token (`AZURE_FEDERATED_TOKEN_FILE`) is read by the Azure SDK, not by
+this rule.
+
+**Docker and host files.** Docker Swarm's default secret mount, `/run/secrets/<name>` owned by
+root with mode `0444`, is refused for a secret: others can read it. Compose's file-based secrets
+are bind mounts, which keep the host file's owner and mode. A secret file on a host or in a bind
+mount must be owned by the uid kista runs as (for example `65532`, the distroless `nonroot`
+user) with mode `0400` or `0600`, or owned by root with kista's group and mode `0440`.
 
 ## Tokens and issuers
 

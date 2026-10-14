@@ -16,10 +16,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 // Auth kinds.
@@ -110,7 +111,7 @@ func New(cfg Config) (*Client, error) {
 	if hc == nil {
 		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 		if cfg.CAFile != "" {
-			pem, err := os.ReadFile(cfg.CAFile)
+			pem, err := secretfile.Read(cfg.CAFile, secretfile.Public, secretfile.LargeLimit)
 			if err != nil {
 				return nil, fmt.Errorf("vault: reading ca_file: %w", err)
 			}
@@ -141,23 +142,10 @@ func loopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// readTokenFile reads a token file that must be a regular file with no permissions for group or
-// others (checked on the opened file; a symlink, as Kubernetes projected volumes use, is followed),
-// and not empty.
-func readTokenFile(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("vault: token file: %w", err)
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return "", fmt.Errorf("vault: token file: %w", err)
-	}
-	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 {
-		return "", errors.New("vault: the token file must be a regular file with mode 0600 or narrower")
-	}
-	b, err := io.ReadAll(io.LimitReader(f, 64<<10))
+// readTokenFile reads a token file (spec 0013): a Vault token is a secret, a service account JWT
+// for kubernetes or jwt auth a projected token. It must not be empty.
+func readTokenFile(path string, class secretfile.Class) (string, error) {
+	b, err := secretfile.Read(path, class, secretfile.SmallLimit)
 	if err != nil {
 		return "", fmt.Errorf("vault: token file: %w", err)
 	}
@@ -252,10 +240,10 @@ func minTime(a, b time.Time) time.Time {
 func (c *Client) login(ctx context.Context) (string, time.Duration, error) {
 	switch c.cfg.AuthKind {
 	case AuthTokenFile:
-		tok, err := readTokenFile(c.cfg.TokenFile)
+		tok, err := readTokenFile(c.cfg.TokenFile, secretfile.Secret)
 		return tok, 0, err
 	case AuthKubernetes, AuthJWT:
-		jwt, err := readTokenFile(c.cfg.TokenFile)
+		jwt, err := readTokenFile(c.cfg.TokenFile, secretfile.Token)
 		if err != nil {
 			return "", 0, err
 		}

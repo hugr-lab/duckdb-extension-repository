@@ -21,6 +21,8 @@ import (
 	mssql "github.com/microsoft/go-mssqldb"
 	"github.com/microsoft/go-mssqldb/msdsn"
 	_ "modernc.org/sqlite" // the "sqlite" database/sql driver
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 // Login supplies the database password (or token) for every new connection, so a DSN never holds
@@ -46,7 +48,7 @@ func (p PasswordLogin) Password(context.Context) (string, error) {
 		}
 		return v, nil
 	case p.File != "":
-		b, err := os.ReadFile(p.File)
+		b, err := secretfile.Read(p.File, secretfile.Secret, secretfile.SmallLimit)
 		if err != nil {
 			return "", fmt.Errorf("store: reading the password file: %w", err)
 		}

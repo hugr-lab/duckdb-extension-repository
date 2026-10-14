@@ -9,14 +9,12 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -25,6 +23,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 // Identity is the credential choice.
@@ -130,7 +130,7 @@ type Env struct {
 	Getenv   func(string) string
 	Environ  func() []string
 	ReadFile func(string) ([]byte, error) // static key files: private regular files
-	// ReadToken reads a platform token file: a projected volume's symlink, any mode
+	// ReadToken reads a platform token file (spec 0013: owned by root or kista, any read bits)
 	ReadToken func(string) ([]byte, error)
 }
 
@@ -304,45 +304,22 @@ func (s staticFiles) Retrieve(context.Context) (aws.Credentials, error) {
 		CanExpire: true, Expires: time.Now().Add(staticRefresh)}, nil
 }
 
-// readTokenFile reads a platform token file (EKS Pod Identity, IRSA): Kubernetes projects it as a
-// symlink into a timestamped directory, with the mode the webhook's volume sets, so both are
-// followed; it must be a regular file of at most 64 KiB.
+// readTokenFile reads a platform token file (EKS Pod Identity, IRSA): a token (spec 0013), which
+// Kubernetes projects as a link into a timestamped directory, with the mode the webhook's volume
+// sets; at most 64 KiB.
 func readTokenFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	b, err := secretfile.Read(path, secretfile.Token, secretfile.SmallLimit)
 	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
-		return nil, errors.New("aws: a token file must be a regular file")
-	}
-	b, err := io.ReadAll(io.LimitReader(f, 64<<10+1))
-	if err != nil || len(b) > 64<<10 {
-		return nil, errors.New("aws: the token file could not be read whole")
+		return nil, fmt.Errorf("aws: %w", err)
 	}
 	return b, nil
 }
 
-// readSecretFile reads a credential file that must be a regular file of mode 0600 or narrower.
+// readSecretFile reads a static credential file (dev): a secret file (spec 0013).
 func readSecretFile(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	b, err := secretfile.Read(path, secretfile.Secret, secretfile.SmallLimit)
 	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !st.Mode().IsRegular() || st.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("aws: %s must be a regular file of mode 0600 or narrower", path)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, 64<<10+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(b) > 64<<10 {
-		return nil, errors.New("aws: the file is too large")
+		return nil, fmt.Errorf("aws: %w", err)
 	}
 	return b, nil
 }

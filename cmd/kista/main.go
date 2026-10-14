@@ -4,6 +4,7 @@
 //	kista ext verify  <file> --key <pub>...     exit 0 if any key verifies the signature
 //	kista admin -config <file> <command> ...    the server administrator's CLI (kista admin help)
 //	kista serve -config <file>                  the repository server (spec 0006)
+//	kista version                               kista's version (DuckDB versions: kista admin version)
 package main
 
 import (
@@ -13,6 +14,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/app"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 )
 
@@ -30,10 +32,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) >= 1 && args[0] == "serve" {
 		return serveCmd(args[1:], os.Environ(), stderr)
 	}
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version" || args[0] == "-version") {
+		fmt.Fprintln(stdout, app.VersionLine())
+		return 0
+	}
 	if len(args) < 2 || args[0] != "ext" {
 		fmt.Fprintln(stderr, "usage: kista ext inspect|verify <file> [--key <public key file>]...")
 		fmt.Fprintln(stderr, "       kista admin -config <file> <command> ...   (kista admin help)")
 		fmt.Fprintln(stderr, "       kista serve -config <file>")
+		fmt.Fprintln(stderr, "       kista version                              (DuckDB versions: kista admin version)")
 		return 2
 	}
 	switch args[1] {
