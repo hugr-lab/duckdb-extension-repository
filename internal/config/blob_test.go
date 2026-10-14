@@ -199,3 +199,25 @@ func TestS3AWSIdentity(t *testing.T) {
 		}
 	}
 }
+
+// A gcs domain (spec 0005 phase 3b).
+func TestGCSDomain(t *testing.T) {
+	dom := func(fields string) string {
+		return base + "blob:\n  domains:\n    - { name: default, kind: gcs, gcs: { " + fields + " } }\n"
+	}
+	ok := `bucket: kista-bodies, prefix: prod/, principal: kista-signer@kista-test-1.iam.gserviceaccount.com`
+	if _, err := Load(write(t, dom(ok)), nil); err != nil {
+		t.Fatalf("ok: %v", err)
+	}
+	for name, f := range map[string]string{
+		"dotted bucket": strings.Replace(ok, "kista-bodies", "bodies.example.com", 1),
+		"goog bucket":   strings.Replace(ok, "kista-bodies", "google-bodies", 1),
+		"bad prefix":    strings.Replace(ok, "prod/", "Prod", 1),
+		"no principal":  `bucket: kista-bodies`,
+		"fake":          ok + `, endpoint_url: "http://127.0.0.1:4443"`,
+	} {
+		if _, err := Load(write(t, dom(f)), nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

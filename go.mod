@@ -24,10 +24,12 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.46.0
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/net v0.60.0
+	golang.org/x/oauth2 v0.37.0
 	modernc.org/sqlite v1.60.1
 )
 
 require (
+	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/storage/internal v0.1.0 // indirect

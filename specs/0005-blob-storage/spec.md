@@ -1,6 +1,6 @@
 # Spec 0005: Blob storage for extension bodies
 
-- **Status**: phases 1, 2 and 3a implemented; 3b (`gcs`) deferred
+- **Status**: phases 1, 2, 3a and 3b implemented
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -204,8 +204,60 @@ type Store interface {
 - Least privilege: Storage Blob Data Contributor on the container. The documentation says to set
   `allowBlobPublicAccess = false`.
 
-**`gcs`: Google Cloud Storage** is deferred to phase 3, with the GCP work. It will use REST with
-Application Default Credentials.
+**`gcs`: Google Cloud Storage** (phase 3b, with spec 0004's `gcpkms`). It uses the JSON API over
+REST, with no Google SDK.
+- **Config:** `bucket`, `prefix`, `principal`, `credentials_file` and `endpoint_url`. The last
+  three work as `gcpkms`'s do:
+  - credentials from the metadata server when the file is absent, an `external_account` file, or
+    a `service_account` key file in dev only;
+  - `endpoint_url` only in dev, on loopback, without a credentials file: `fake-gcs-server` in the
+    tests.
+- **The host** is `https://storage.googleapis.com` only (REP endpoints are not supported yet). The
+  credentials come from spec 0004's `internal/cloud/gcp`.
+- **Object names** in `/o/<name>` are escaped with `/` as `%2F`.
+- **Put:**
+  - An object up to 16 MiB is one upload (`uploadType=media`), with its CRC32C in `x-goog-hash`.
+  - A larger one is a resumable upload:
+    - It is started with `X-Upload-Content-Length` and the CRC32C in the object resource.
+    - Its session URI must be on the store's endpoint, on the `/upload/storage/v1/b/<bucket>/o`
+      path, before any byte is sent to it. The URI is a bearer capability and is never logged.
+    - Chunks of 16 MiB are read from the spool file (`ReadAt`). A `308` continues from its `Range`
+      header, which may acknowledge fewer bytes than were sent.
+    - A failed chunk is followed by a backoff (honouring `Retry-After`) and a status query
+      (`Content-Range: bytes */<total>`) before it is sent again. A 4xx other than 408 and 429 ends the upload at once. Each chunk has three failures,
+      and the whole upload a bounded number of rounds.
+    - A failed upload is cancelled with a fresh deadline (`DELETE`; `499` is success).
+  - Either kind becomes visible only when complete. The final answer's `crc32c` and `size` must
+    match kista's. Otherwise that generation is deleted (`ifGenerationMatch`), so a later writer's
+    object is not, and the Put fails. GCS refuses a wrong `x-goog-hash` itself, which
+    fake-gcs-server does not emulate; the live tests will prove it.
+- **Get:**
+  - Offset 0 with no length sends no `Range` and wants `200`. Otherwise a `Range`, and a `206`
+    whose `Content-Range` starts at the offset.
+  - `Accept-Encoding: identity`: kista sets no `Content-Encoding`, so GCS never transcodes.
+- **Stat, Delete, List:**
+  - `size` is a decimal string.
+  - `List` pages by `pageToken`, and refuses a page token repeated.
+  - A `404` is `ErrNotFound`.
+- **Anonymous check:** an unauthenticated `GET` of the marker's metadata.
+  - `200`, or `404` for a missing object (or bucket), means public, and kista refuses the domain.
+  - `401` and `403` mean private.
+  - Anything else is an error.
+  - The check covers the bucket only under uniform bucket-level access, which the documentation
+    requires.
+- **Errors** keep the HTTP status and the first error's `reason` word (`notFound`, `forbidden`).
+  At most 3 attempts on `429` and `5xx`, honouring a `Retry-After` up to 10 s.
+- **Incomplete uploads:** a resumable session GCS never completed expires on its own after a week,
+  and holds no object, so the collector has nothing to abort.
+- **Least privilege:** `roles/storage.objectUser` on the bucket (create, get, delete and list
+  objects). The bucket uses uniform bucket-level access and public access prevention. Soft delete
+  and versioning keep deleted objects, at a cost.
+- **Tests:**
+  - The contract suite runs against `fake-gcs-server` (`fsouza/fake-gcs-server`, BSD-2-Clause, pinned
+    by digest), as a `docker run` step gated by `KISTA_TEST_GCS`.
+  - An `httptest` fake covers what fake-gcs-server does not emulate: a short `308`, the status
+    query after a failed chunk, `429` with `Retry-After`, the cancel, the CRC32C check, the
+    escaped names and multi-page lists.
 
 ### Storage domains
 

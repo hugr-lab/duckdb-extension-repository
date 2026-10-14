@@ -12,7 +12,7 @@ follow the specs process described at the end.
 | Tool | Needed for |
 | --- | --- |
 | Go, the version in `go.mod` (1.27) | everything |
-| Docker | the PostgreSQL, SQL Server, S3 and Azurite test suites, the console end-to-end run |
+| Docker | the PostgreSQL, SQL Server, S3, Azurite, moto and fake-gcs-server test suites, the console end-to-end run |
 | `golangci-lint` v2 (CI uses v2.14.0) | `make lint` |
 | Node 22 and npm | the console and this site |
 | CMake, Ninja, a C/C++ compiler, OpenSSL and libcurl headers; ccache recommended | `make e2e-build` |
@@ -50,6 +50,7 @@ make build
 | `test-s3` / `test-s3-down` | Start / stop SeaweedFS (S3-compatible, pinned by digest) on `127.0.0.1:58333` |
 | `test-azurite` / `test-azurite-down` | Start / stop Azurite (the Azure Storage emulator) on `127.0.0.1:50000` |
 | `test-moto` / `test-moto-down` | Start / stop moto 5.1.22 (an AWS emulator, pinned by digest) on `127.0.0.1:55000`, for the AWS KMS source |
+| `test-gcs` / `test-gcs-down` | Start / stop fake-gcs-server 1.52.2 (a Google Cloud Storage emulator, pinned by digest) on `127.0.0.1:54443`, for the `gcs` store |
 | `e2e-duckdb` | Build DuckDB at `e2e/DUCKDB_PIN` with the e2e extensions |
 | `e2e-runner` | Build the small C runner linked against that DuckDB |
 | `e2e-build` | Both of the above |
@@ -64,7 +65,7 @@ make build
 
 `make test` runs every Go test. Without extra services, the store suite runs on SQLite only, the
 blob suite on the file system only, and the suites that need a database, an S3 server, Azurite,
-moto, Vault or OpenBao skip themselves. Set the variables below to run them.
+fake-gcs-server, moto, Vault or OpenBao skip themselves. Set the variables below to run them.
 
 ### The three databases
 
@@ -94,6 +95,26 @@ KISTA_TEST_REQUIRE_BLOB=1 \
 make test
 make test-s3-down test-azurite-down
 ```
+
+### fake-gcs-server (Google Cloud Storage)
+
+```bash
+make test-gcs
+KISTA_TEST_GCS=http://127.0.0.1:54443 KISTA_TEST_REQUIRE_BLOB=1 make test
+make test-gcs-down
+```
+
+The `gcs` store's contract suite creates its bucket in fake-gcs-server and runs against it.
+fake-gcs-server takes any caller, so the tests put a small proxy in front of it that refuses a
+request without the test's bearer token, as GCS does for a private bucket, and rewrites resumable
+session URIs to point back at the proxy. `KISTA_TEST_REQUIRE_BLOB=1` turns a missing
+`KISTA_TEST_GCS` into a failure; CI sets it. What fake-gcs-server does not emulate (partial `308`
+answers, the status query, a cancelled upload, escaped names, Google's error shapes) is tested
+against an `httptest` fake.
+
+There is no Cloud KMS emulator. The `gcpkms` source, and the metadata server and `external_account`
+rules of `internal/cloud/gcp`, are tested against `httptest` fakes of the REST shapes; they need
+nothing to run.
 
 ### moto (AWS KMS)
 
@@ -130,7 +151,7 @@ make test
 
 | Job | Runs |
 | --- | --- |
-| `go-linux` | `go vet`, `govulncheck`, `golangci-lint`, and `go test -race ./...` with PostgreSQL, SQL Server, Vault, OpenBao, SeaweedFS, Azurite and moto, every `REQUIRE` switch on |
+| `go-linux` | `go vet`, `govulncheck`, `golangci-lint`, and `go test -race ./...` with PostgreSQL, SQL Server, Vault, OpenBao, SeaweedFS, Azurite, moto and fake-gcs-server, every `REQUIRE` switch on |
 | `go-macos` | `go vet` and `go test -race ./...` (SQLite and the file system only) |
 | `console` | type check, unit tests, licenses, `npm audit`, build |
 | `console-e2e` | `make console`, Playwright's Chromium, `make console-e2e` |
@@ -138,6 +159,49 @@ make test
 | `reserved` | `make reserved`, then fails if the committed lists changed |
 | `e2e` (own workflow) | DuckDB at the pin against kista, on pull requests and pushes to `main` that touch `internal/`, `cmd/`, `e2e/`, `go.mod`, `go.sum` or the `Makefile`, or on demand |
 | `docs-build` (own workflow) | This site, on changes under `website/` |
+
+### A disposable GCP stack
+
+Live tests against Google Cloud come later. `deploy/gcp/up.sh` builds a real stack for them, and
+for trying kista by hand, in a Google Cloud project of its own; `deploy/gcp/down.sh` deletes it.
+
+A dedicated project is the only clean way out: Cloud KMS key rings and keys can never be deleted,
+only their versions destroyed. Deleting the project removes the keys, the bucket and its objects,
+the service account, the role and the federation together.
+
+```bash
+KISTA_GCP_BILLING=XXXXXX-XXXXXX-XXXXXX deploy/gcp/up.sh            # a new project kista-<date>-<n>
+KISTA_GCP_BILLING=XXXXXX-XXXXXX-XXXXXX deploy/gcp/up.sh kista-dev  # or a given id
+deploy/gcp/down.sh kista-dev
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `KISTA_GCP_BILLING` | required: the billing account the project is linked to |
+| `KISTA_GCP_REGION` | the location of the key ring and the bucket; default `europe-west4` |
+| `KISTA_GCP_FOLDER`, `KISTA_GCP_ORG` | where the project is created: a folder id or an organisation id |
+| `KISTA_GCP_HSM` | `0` for software keys, which kista accepts only with `profile: dev` and `require_hsm: false`; default HSM keys |
+| `KISTA_GCP_GITHUB_REPO` | `owner/repo`: let that repository's GitHub Actions use the stack through workload identity federation, without keys |
+
+`up.sh` creates the project with the label `purpose=kista-test` and enables Cloud KMS, Cloud
+Storage, IAM, IAM Credentials and STS. It makes:
+
+- a key ring `kista` with two keys, `ext-channel` (labelled `kista-purpose=channel-signing`) and
+  `ext-attestation` (`attestation-signing`);
+- the service account `kista-signer` and a custom role `kistaSigner` with the four Cloud KMS
+  permissions, bound on each key;
+- a private bucket `<project>-bodies` (uniform bucket-level access, public access prevention), with
+  `roles/storage.objectUser` for the service account;
+- with `KISTA_GCP_GITHUB_REPO`, a workload identity pool `kista` with a provider `github` that
+  admits only that repository.
+
+It prints the `signers` and `blob` configuration for the stack, and records the project in
+`deploy/gcp/.state-<project>` (git-ignored). The project id must start with `kista-`.
+
+`down.sh` deletes only a project whose id starts with `kista-` and that carries the label
+`purpose=kista-test`. It asks for the project id to be typed again unless given `--yes`. Google
+Cloud keeps a deleted project recoverable for 30 days (`gcloud projects undelete <project>`), then
+purges it; the key versions are destroyed then.
 
 ## Lint
 

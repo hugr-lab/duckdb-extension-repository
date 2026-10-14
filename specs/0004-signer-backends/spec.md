@@ -1,6 +1,6 @@
 # Spec 0004: Signer backends: key sources for vaults and KMSs
 
-- **Status**: phases 1-3 implemented (registry, contract, `file`, `vault`, `azurekv`, `awskms`); phase 4 (`gcpkms`) deferred by the owner (2026-10-07), designed here and done later
+- **Status**: implemented (phases 1-4: registry, contract, `file`, `vault`, `azurekv`, `awskms`, `gcpkms`)
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -422,6 +422,119 @@ The endpoint is pinned to `cloudkms.googleapis.com`.
 - `cloudkms.cryptoKeys.get`.
 
 `roles/cloudkms.signer` alone is not enough.
+
+*Phase 4 details* (2026-10-14, settled before the code). They replace the paragraphs above where
+the two differ.
+- **Config.**
+  - `gcpkms: { key_ring, principal, require_hsm, credentials_file, endpoint_url }`, with
+    `principal` described below.
+  - `key_ring` is `projects/<project>/locations/<location>/keyRings/<ring>`. The project, location
+    and ring ids follow GCP's id rules.
+  - `require_hsm` defaults to true in every profile: protection level `HSM`, or `HSM_SINGLE_TENANT` where
+    the API reports it. `false`, dev only, also takes `SOFTWARE`. `EXTERNAL` and `EXTERNAL_VPC` are
+    always refused.
+  - `credentials_file` is absent for the metadata server: GKE Workload Identity, or a GCE service
+    account. Otherwise it names an `external_account` file (workload identity federation, for
+    kista outside GCP), or, in dev only, a `service_account` key file.
+  - `endpoint_url` is allowed only with `profile: dev`, on a loopback host, and without
+    `credentials_file`: the tests' fake.
+- **References** are `<source>:<key>/<version>`: a key id (`[A-Za-z0-9_-]{1,63}`) and a version
+  number (`[1-9][0-9]{0,9}`). The allow list matches key-id prefixes, as for Vault.
+- **Key checks.**
+  - `GET <version>`:
+    - `name` is the version's own resource name;
+    - `state = ENABLED`;
+    - `algorithm = RSA_SIGN_PKCS1_2048_SHA256`;
+    - the protection level as above;
+    - no `importJob` (imported material is refused);
+    - no `externalProtectionLevelOptions`.
+  - `GET <key>`: `purpose = ASYMMETRIC_SIGN`, and the label `kista-purpose` with the role (labels
+    take only lowercase, so `channel-signing` and `attestation-signing` fit).
+  - `GET <version>/publicKey`:
+    - `name` is the version;
+    - `pemCrc32c` matches the PEM (CRC32C);
+    - the PEM is an RSA public key.
+- **Signing.** `POST <version>:asymmetricSign` with `digest.sha256` and `digestCrc32c`. The answer
+  must have:
+  - `verifiedDigestCrc32c: true`;
+  - `signatureCrc32c` matching the signature;
+  - `name` equal to the version;
+  - the protection level as above.
+
+  A CRC mismatch is retried once, as Google advises, and then refused.
+- **The principal.** `gcpkms.principal` is the service account email kista acts as, and is
+  required outside dev. It binds kista's identity to config, as `irsa`'s role does on AWS.
+  - With the metadata server, kista reads `instance/service-accounts/default/email` before every
+    token it fetches. It refuses to sign or store unless the email equals `principal`. On GKE
+    without Workload Identity, or in a `hostNetwork` pod, the metadata server would otherwise hand
+    out the node's account.
+  - On GKE the Kubernetes ServiceAccount is bound to a Google service account (the
+    `iam.gke.io/gcp-service-account` annotation). Workload Identity's direct principal access,
+    without a Google service account, answers `<project>.svc.id.goog`, which is not a principal:
+    it is not supported.
+  - With an `external_account` file, the file must impersonate exactly that account.
+- **Credentials** (`internal/cloud/gcp`):
+  - **Metadata server.** kista asks the server itself, at its fixed address
+    (`http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/…`, with
+    `Metadata-Flavor: Google`). The answer must carry `Metadata-Flavor: Google` too, and is read up
+    to 64 KiB. IPv6-only GCE is not supported yet.
+  - **`external_account` file.** kista parses it strictly: an unknown key is refused. It builds the
+    token source from the parsed parts, through `externalaccount.SubjectTokenSupplier`, so the
+    library opens no file and makes no request except to STS and IAM Credentials. The file must
+    have:
+    - `type` exactly `external_account`;
+    - an `audience` of a workload identity pool provider,
+      `//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`;
+    - `subject_token_type = urn:ietf:params:oauth:token-type:jwt`;
+    - `token_url = https://sts.googleapis.com/v1/token`;
+    - `service_account_impersonation_url` exactly
+      `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/<principal>:generateAccessToken`
+      (required outside dev), with a token lifetime, if any, of 600 to 3600 s;
+    - `universe_domain` absent or `googleapis.com`; `token_info_url` absent or STS's introspect URL.
+    - `credential_source` a `file` only, with `format` absent, `text`, or `json` with a field name.
+      This is a Kubernetes projected ServiceAccount token whose audience is the provider: AKS, EKS,
+      or any cluster with an OIDC issuer. It is read through its symlink at every exchange.
+    - `aws1` and `url` sources are refused. On EKS and AKS they answer with the node's identity
+      (EC2's instance role, Azure's VM identity), which every pod on the node shares. `executable`
+      and `certificate` are refused too.
+    - Workforce pools, `client_id`, `client_secret`, `workforce_pool_user_project` and
+      `quota_project_id` are refused.
+    - The file itself must be a regular file that nobody else may write, owned by root (a
+      ConfigMap's projection, whose symlink is followed) or by kista's user.
+  - **`authorized_user`**, `external_account_authorized_user`, `impersonated_service_account` and
+    `gdch_service_account` files are always refused. A `service_account` key file is allowed in dev
+    only, with `token_uri = https://oauth2.googleapis.com/token`.
+  - **`endpoint_url`** (dev, loopback) goes with no credentials file. Requests to the fake carry a
+    fixed test token, and no credential is loaded, so no real token ever reaches it.
+  - **Steering variables.** Outside dev, kista refuses to start when any of these is set:
+    - `GOOGLE_APPLICATION_CREDENTIALS`, `GCE_METADATA_HOST`, `GCE_METADATA_IP`,
+      `GCE_METADATA_ROOT`;
+    - `STORAGE_EMULATOR_HOST`, `GOOGLE_API_USE_CLIENT_CERTIFICATE`, `GOOGLE_API_USE_MTLS_ENDPOINT`;
+    - `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES`, `CLOUDSDK_CONFIG`;
+    - a `GOOGLE_CLOUD_UNIVERSE_DOMAIN` other than `googleapis.com`.
+
+    `GOOGLE_CLOUD_PROJECT` is ignored.
+  - **Scope.** Tokens are asked for with `https://www.googleapis.com/auth/cloud-platform`: IAM is
+    the limit, not scopes. A GCE VM needs that access scope.
+  - **Refresh.** Tokens are cached and refreshed 225 s before they expire, since the metadata
+    server itself hands out a cached token until about 5 minutes are left.
+  - **The client.** The token source keeps a never-cancelled context carrying kista's client.
+    That client ignores proxies from the environment, follows no redirect, and requires TLS 1.2
+    for https. The link-local metadata address is the only plain-http request, and no Google token
+    is ever sent over http.
+  - Requests go to `https://cloudkms.googleapis.com/v1/` only. Regional and REP endpoints are not
+    supported yet.
+- **More key checks.**
+  - The CryptoKey has `importOnly` false.
+  - `getPublicKey` answers with the version's `algorithm` and `protectionLevel`.
+  - Names are compared exactly. `key_ring` names the project by its id, which KMS echoes.
+  - int64 fields (`pemCrc32c`, `digestCrc32c`, `signatureCrc32c`) are JSON strings, and the fake
+    sends them so.
+- **Calls.** At most 3 attempts, on `429` and `5xx`, with bounded backoff. An error keeps the HTTP
+  status and Google's `status` word (`PERMISSION_DENIED`), and nothing else.
+- **Tests.** There is no Cloud KMS emulator. An `httptest` fake speaks the REST shapes, and the
+  contract suite and the known answer run against it. Live tests come later, against a project
+  that `deploy/gcp/up.sh` creates and `deploy/gcp/down.sh` deletes.
 
 **Kubernetes Secrets** hold the private key itself. One is mounted into `signers.file_dir` and used
 as a `file` key, under the development-or-opt-in rule.

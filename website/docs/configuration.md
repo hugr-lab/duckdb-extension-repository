@@ -173,16 +173,17 @@ Each entry of `signers.sources`:
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `name` | string | required | `[a-z][a-z0-9-]{0,15}`, unique. Reserved: `file`, `vault`, `azurekv`, `awskms`, `gcpkms`, `pkcs11`, `http`, `https`, `arn`, `projects`. A signer reference is `<name>:<key>`. |
-| `kind` | `vault`, `azurekv`, `awskms` | required | `gcpkms` is recognised but not available yet (a later phase of spec 0004); the loader refuses it. |
-| `allow` | list of key-name prefixes | required | Which keys of the source may be used; `"*"` for any. For `azurekv`, prefixes are written in lower case. For `awskms`, whole key ids (`mrk-` ids only with `allow_multi_region`) or `"*"`. |
+| `kind` | `vault`, `azurekv`, `awskms`, `gcpkms` | required | |
+| `allow` | list of key-name prefixes | required | Which keys of the source may be used; `"*"` for any. For `azurekv`, prefixes are written in lower case. For `awskms`, whole key ids (`mrk-` ids only with `allow_multi_region`) or `"*"`. For `gcpkms`, CryptoKey id prefixes. |
 | `max_concurrency` | integer | `4` | Signing calls in flight to this source. |
 | `recheck` | duration | `10m` | How often key properties are re-read; `0..10m`. |
 | `timeout` | duration | `10s` | Per call; `1s..60s`. |
 | `health_key` | string | none | Accepted by the loader; not used by this version. |
-| `identity` | block | none | Required for `azurekv` and `awskms`; refused for `vault`. Its fields are below. |
+| `identity` | block | none | Required for `azurekv` and `awskms`; refused for `vault` and `gcpkms`. Its fields are below. |
 | `vault` | block | | Exactly one block matching `kind`. |
 | `azurekv` | block | | |
 | `awskms` | block | | |
+| `gcpkms` | block | | |
 
 `identity` block of a source:
 
@@ -229,6 +230,16 @@ Each entry of `signers.sources`:
 | `fips` | boolean | `false` | Use the FIPS endpoints of KMS, and of STS in the `us-` regions. Only in the `aws` and `aws-us-gov` partitions; not with `endpoint_url`. |
 | `endpoint_url` | URL | none | The moto emulator only: `profile: dev`, `http` or `https` on a loopback host, with `identity.kind: static`. Replaces the KMS and STS endpoints. |
 
+`gcpkms` block (Google Cloud KMS):
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `key_ring` | string | required | `projects/<project id>/locations/<location>/keyRings/<ring>`; the project by its id, not its number. |
+| `principal` | service account email | none | The service account kista acts as, `<name>@<project>.iam.gserviceaccount.com`. Required outside dev. |
+| `require_hsm` | boolean | `true` | Only `HSM` and `HSM_SINGLE_TENANT` keys. `false` (also `SOFTWARE`) only with `profile: dev`. |
+| `credentials_file` | absolute path | none | Absent: the metadata server. Otherwise an `external_account` file; a `service_account` key file only with `profile: dev`. |
+| `endpoint_url` | URL | none | The tests' fake only: `profile: dev`, `http` or `https` on a loopback host, without `credentials_file`. Requests carry a fixed test token. |
+
 ## blob
 
 Where extension bodies are stored. The whole block is file-only. See [Storage](storage.md).
@@ -245,7 +256,7 @@ Each domain:
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `name` | string | required | `[a-z][a-z0-9-]{0,15}`, unique. Tenants choose a domain at creation; `default` otherwise. |
-| `kind` | `fs`, `s3`, `azureblob` | required | Exactly one block matching `kind`. |
+| `kind` | `fs`, `s3`, `azureblob`, `gcs` | required | Exactly one block matching `kind`. |
 | `timeout` | duration | `30s` | Remote stores only: connect, headers and idle reads/writes; `1s..5m`. |
 | `fs.root` | absolute path | required | A clean absolute directory (a local disk or a mounted volume). |
 | `s3.endpoint` | URL | required | `https://host[:port]`; `http` only on loopback with dev. |
@@ -268,6 +279,11 @@ Each domain:
 | `azureblob.identity` | block | required | `managed` or `workload` (`default` in dev). |
 | `azureblob.endpoint` | URL | none | Azurite only, dev only: `http://<loopback host:port>/<account>`. |
 | `azureblob.account_key_file` | absolute path | none | Azurite only, dev only, with `endpoint` and without `identity`. |
+| `gcs.bucket` | string | required | 3-63 lower-case letters, digits, `-` and `_`; no dots, no `goog`. |
+| `gcs.prefix` | string | empty | As for S3. |
+| `gcs.principal` | service account email | none | As in `gcpkms`. Required outside dev. |
+| `gcs.credentials_file` | absolute path | none | As in `gcpkms`. Absent: the metadata server. |
+| `gcs.endpoint_url` | URL | none | fake-gcs-server only: dev only, on loopback, without `credentials_file`. |
 
 Two domains may not share a store (an overlapping `fs.root`, or the same bucket or container with
 overlapping prefixes): one's garbage collection would delete the other's objects.

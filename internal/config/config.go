@@ -20,6 +20,7 @@ import (
 	"time"
 
 	awscloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/aws"
+	gcpcloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/gcp"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"go.yaml.in/yaml/v3"
 )
@@ -111,6 +112,21 @@ type Identity struct {
 	RoleARN string `yaml:"role_arn" kista:"fileonly"`
 }
 
+// GCPCreds is how kista reaches Google Cloud (spec 0004 phase 4): the service account it acts as,
+// and a credentials file (absent: the metadata server).
+type GCPCreds struct {
+	Principal       string `yaml:"principal"`        // the service account email; required outside dev
+	CredentialsFile string `yaml:"credentials_file"` // an external_account file; a service_account key in dev only
+	EndpointURL     string `yaml:"endpoint_url"`     // the tests' fake: profile dev, loopback, no credentials file
+}
+
+// GCPKMSSource is a Cloud KMS key ring (spec 0004 phase 4).
+type GCPKMSSource struct {
+	KeyRing    string `yaml:"key_ring"` // projects/<project id>/locations/<location>/keyRings/<ring>
+	RequireHSM *bool  `yaml:"require_hsm"`
+	GCPCreds   `yaml:",inline"`
+}
+
 // AWSKMSSource is an AWS KMS account and region (spec 0004 phase 3).
 type AWSKMSSource struct {
 	Region           string `yaml:"region"`
@@ -146,7 +162,7 @@ type Source struct {
 	Vault          *VaultSource   `yaml:"vault"`
 	AzureKV        *AzureKVSource `yaml:"azurekv"`
 	AWSKMS         *AWSKMSSource  `yaml:"awskms"` // phase 3
-	GCPKMS         *yaml.Node     `yaml:"gcpkms"` // phase 4
+	GCPKMS         *GCPKMSSource  `yaml:"gcpkms"` // phase 4
 	Identity       *Identity      `yaml:"identity"`
 	Recheck        time.Duration  `yaml:"recheck"` // how often key properties are re-read; default and maximum 10m
 	Timeout        time.Duration  `yaml:"timeout"` // per call; default 10s, 1s..60s
@@ -498,7 +514,20 @@ func (c Config) Validate() error {
 			}
 			validateAWSKMS(bad, where, *src.AWSKMS, src.Identity, src.Allow, dev)
 		case "gcpkms":
-			bad("%s: kind %s comes in a later phase of spec 0004", where, src.Kind)
+			if src.GCPKMS == nil || blocks != 1 {
+				bad("%s: kind gcpkms needs exactly one block, gcpkms", where)
+				continue
+			}
+			if src.Identity != nil {
+				bad("%s.identity is not used by kind gcpkms (principal and credentials_file are)", where)
+			}
+			if !gcpcloud.ValidKeyRing(src.GCPKMS.KeyRing) {
+				bad("%s.gcpkms.key_ring must be projects/<project id>/locations/<location>/keyRings/<ring>", where)
+			}
+			if r := src.GCPKMS.RequireHSM; r != nil && !*r && !dev {
+				bad("%s.gcpkms.require_hsm: false is allowed only with profile dev", where)
+			}
+			validateGCPCreds(bad, where+".gcpkms", src.GCPKMS.GCPCreds, dev)
 		default:
 			bad("%s.kind must be one of %s", where, strings.Join(SourceKinds, ", "))
 		}
@@ -592,6 +621,22 @@ func validateAWSKMS(bad func(string, ...any), where string, a AWSKMSSource, id *
 }
 
 var awsKeyID = regexp.MustCompile(`^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$`)
+
+// validateGCPCreds checks how kista reaches Google Cloud (specs 0004 phase 4, 0005 phase 3b).
+func validateGCPCreds(bad func(string, ...any), where string, c GCPCreds, dev bool) {
+	switch {
+	case c.Principal == "" && !dev:
+		bad("%s.principal is required outside profile dev: the service account kista acts as", where)
+	case c.Principal != "" && !gcpcloud.ValidPrincipal(c.Principal):
+		bad("%s.principal must be a service account email (<name>@<project>.iam.gserviceaccount.com)", where)
+	}
+	if c.CredentialsFile != "" && !filepath.IsAbs(c.CredentialsFile) {
+		bad("%s.credentials_file must be an absolute path", where)
+	}
+	if c.EndpointURL != "" && (!dev || !loopbackURL(c.EndpointURL) || c.CredentialsFile != "") {
+		bad("%s.endpoint_url is allowed only with profile dev, on loopback, without credentials_file (the tests' fake)", where)
+	}
+}
 
 // validateAWSIdentity checks an AWS identity (spec 0004 phase 3; spec 0005 phase 3a).
 func validateAWSIdentity(bad func(string, ...any), where string, id *Identity, region string, dev bool) {

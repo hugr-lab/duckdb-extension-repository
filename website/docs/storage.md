@@ -27,10 +27,12 @@ Designs: specs [0005](https://github.com/hugr-lab/duckdb-extension-repository/bl
 | `fs` | a local directory or a mounted volume | available |
 | `s3` | S3-compatible: AWS S3, Cloudflare R2, MinIO, SeaweedFS, others | available: static key files, or an AWS platform identity on AWS S3 |
 | `azureblob` | Azure Blob Storage | available |
-| `gcs` | Google Cloud Storage | not available yet |
+| `gcs` | Google Cloud Storage | available |
 
 An `s3` domain authenticates with an access key and secret read from files, or, on AWS S3 only,
-with the platform's identity (EKS Pod Identity, IRSA, ECS task roles, EC2 instance profiles).
+with the platform's identity (EKS Pod Identity, IRSA, ECS task roles, EC2 instance profiles). A
+`gcs` domain authenticates as a Google service account, through the metadata server or workload
+identity federation.
 
 ## Storage domains
 
@@ -83,7 +85,7 @@ The API takes `storage_domain` on tenant creation, for a server administrator on
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `blob.domains[].name` | required | `[a-z][a-z0-9-]{0,15}`, unique |
-| `blob.domains[].kind` | required | `fs`, `s3` or `azureblob`, with exactly one matching block |
+| `blob.domains[].kind` | required | `fs`, `s3`, `azureblob` or `gcs`, with exactly one matching block |
 | `blob.domains[].timeout` | `30s` | remote stores only, `1s` to `5m`: connecting, response headers, and idle reads or writes |
 | `blob.spool_dir` | `/var/lib/kista/spool` | where incoming files are spooled; absolute |
 | `blob.max_body` | `1GiB` | the largest body, at most `4GiB`; bytes, or with `KiB`, `MiB`, `GiB` |
@@ -99,7 +101,7 @@ At startup kista checks every domain before it serves:
 2. Each store holds a marker object, `kista-domain.json`, naming the domain and the deployment. It
    is written if absent and read back. A store whose marker names another deployment or another
    domain is refused, so two kista deployments never share a prefix.
-3. An anonymous, unsigned `HEAD` of the marker must fail. If it succeeds the domain is public and
+3. An anonymous, unsigned read of the marker (a `HEAD`, or on `gcs` a metadata `GET`) must fail. If it succeeds the domain is public and
    kista refuses to start. The check repeats every 10 minutes while serving; a domain found public
    then has its tenants refused. A backend that cannot tell is logged, not refused.
 4. Only then are new domains pinned.
@@ -233,6 +235,75 @@ proxy variables. SAS tokens and connection strings cannot be configured.
 - **Permissions**: the role *Storage Blob Data Contributor* on the container, for kista's
   identity.
 - Set `allowBlobPublicAccess = false` on the account.
+
+## Google Cloud Storage (`gcs`)
+
+A `gcs` domain is a bucket and a prefix, reached through the JSON API over REST (no Google SDK) at
+`https://storage.googleapis.com` only; REP endpoints are not supported yet.
+
+```yaml title="kista.yaml"
+blob:
+  domains:
+    - name: default
+      kind: gcs
+      gcs:
+        bucket: acme-kista-bodies
+        prefix: bodies/
+        principal: kista-signer@acme-kista.iam.gserviceaccount.com
+        credentials_file: ""         # empty: the metadata server; or an external_account file
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `bucket` | 3 to 63 lowercase letters, digits, `-` and `_`, starting and ending with a letter or digit. No dots (a dotted name is a domain) and no `goog` |
+| `prefix` | empty, or lowercase segments each ending with `/` |
+| `principal` | the service account kista acts as; required outside `profile: dev` |
+| `credentials_file` | absent: the metadata server; otherwise an `external_account` file, or a `service_account` key file with `profile: dev` only |
+| `endpoint_url` | the tests' fake (`fake-gcs-server`) only: `profile: dev`, an `http` or `https` URL on a loopback host, and no `credentials_file` |
+
+`principal`, `credentials_file` and `endpoint_url` work as a Google Cloud KMS key source's do: the
+metadata server and its principal check, the rules for `external_account` files, the refused
+steering variables, the scope and the refresh (see
+[Signing keys](signing-keys.md#google-cloud-kms)). A source and a domain may name the same
+service account.
+
+- **Uploads.** An object up to 16 MiB is one upload (`uploadType=media`), with its CRC32C in
+  `x-goog-hash`; GCS refuses the object when the bytes do not match. A larger one is a resumable
+  upload in 16 MiB chunks, started with the length and the CRC32C in the object resource. Its
+  session URI must be on the store's endpoint and upload path before any byte is sent, and is never
+  logged. A `308` continues from the bytes GCS acknowledged; a failed chunk is followed by a status
+  query before it is sent again; a failed upload is cancelled. Either kind becomes visible only
+  when complete.
+- **The object's check.** The object GCS reports at the end must have kista's CRC32C and size;
+  otherwise kista deletes it and the upload fails.
+- **Reads** are ranged media downloads with `Accept-Encoding: identity`, so GCS never transcodes;
+  a ranged answer must start at the asked offset. Listing pages by `pageToken`.
+- **The anonymous check** of the marker is an unauthenticated `GET` of its metadata. `200`, or `404`
+  for a missing object or bucket, means public, and kista refuses the domain; `401` and `403` mean
+  private; anything else is logged. The check covers the whole bucket only under uniform
+  bucket-level access.
+- **Errors and retries.** An error keeps the HTTP status and Google's first `reason` word
+  (`notFound`, `forbidden`), never a message, bucket or object name. A call makes at most 3
+  attempts, on `429`, `5xx` and connection failures, honouring a `Retry-After` of up to 10 seconds.
+  The domain's `timeout` bounds connecting, headers and idle reads or writes; a metadata read, a
+  delete and each list page are bounded by it as a whole.
+- **Incomplete uploads.** A resumable session GCS never completed holds no object and expires on its
+  own after a week, so the collector has nothing to abort.
+- The store's identity, pinned in the database, is the endpoint's host, the bucket and the prefix.
+
+**Permissions**: `roles/storage.objectUser` on the bucket (create, read, delete and list objects),
+for kista's service account. Create the bucket with uniform bucket-level access and public access
+prevention:
+
+```bash
+gcloud storage buckets create gs://acme-kista-bodies --project acme-kista --location europe-west4 \
+  --uniform-bucket-level-access --public-access-prevention
+gcloud storage buckets add-iam-policy-binding gs://acme-kista-bodies \
+  --member serviceAccount:kista-signer@acme-kista.iam.gserviceaccount.com --role roles/storage.objectUser
+```
+
+Soft delete (on by default for new buckets) and object versioning keep deleted objects, at a cost:
+the collector's deletes then free storage only when the retention ends.
 
 ## Intake and serving
 

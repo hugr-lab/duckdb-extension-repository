@@ -3,7 +3,7 @@ export GOWORK := off
 
 E2E_BUILD ?= $(CURDIR)/e2e/.build
 
-.PHONY: build docs console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down test-moto test-moto-down lint e2e-duckdb e2e-runner e2e-build e2e
+.PHONY: build docs console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down test-moto test-moto-down test-gcs test-gcs-down lint e2e-duckdb e2e-runner e2e-build e2e
 
 build:
 	go build -o bin/kista ./cmd/kista
@@ -88,6 +88,21 @@ test-moto:
 
 test-moto-down:
 	docker rm -f kista-test-moto
+
+# fake-gcs-server for the gcs store (spec 0005 phase 3b; pinned by digest); then run make test with
+# KISTA_TEST_GCS=http://127.0.0.1:54443.
+FAKEGCS := fsouza/fake-gcs-server:1.52.2@sha256:d47b4cf8b87006cab8fbbecfa5f06a2a3c5722e464abddc0d107729663d40ec4
+
+test-gcs:
+	-docker rm -f kista-test-gcs >/dev/null 2>&1
+	@$(call pull,$(FAKEGCS))
+	docker run -d --name kista-test-gcs -p 127.0.0.1:54443:4443 $(FAKEGCS) \
+		-scheme http -port 4443 -public-host 127.0.0.1:54443 -external-url http://127.0.0.1:54443
+	@for i in $$(seq 1 60); do curl -sf http://127.0.0.1:54443/storage/v1/b >/dev/null && exit 0; sleep 1; done; \
+		docker logs kista-test-gcs; exit 1
+
+test-gcs-down:
+	docker rm -f kista-test-gcs
 
 lint:
 	go vet ./...

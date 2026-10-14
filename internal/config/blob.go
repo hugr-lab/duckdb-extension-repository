@@ -13,6 +13,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	awscloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/aws"
+	gcpcloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/gcp"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -31,7 +32,15 @@ type BlobDomain struct {
 	FS        *FSDomain        `yaml:"fs"`
 	S3        *S3Domain        `yaml:"s3"`
 	AzureBlob *AzureBlobDomain `yaml:"azureblob"`
+	GCS       *GCSDomain       `yaml:"gcs"`     // phase 3b
 	Timeout   time.Duration    `yaml:"timeout"` // remote stores: connect, headers and idle reads/writes; default 30s, 1s..5m
+}
+
+// GCSDomain is a Google Cloud Storage bucket and prefix (spec 0005 phase 3b).
+type GCSDomain struct {
+	Bucket   string `yaml:"bucket"`
+	Prefix   string `yaml:"prefix"`
+	GCPCreds `yaml:",inline"`
 }
 
 // FSDomain is a local directory (or a mounted volume).
@@ -206,7 +215,7 @@ func validateBlob(bad func(string, ...any), c Config) {
 			bad("%s.timeout must be within 1s..5m", where)
 		}
 		blocks := 0
-		for _, set := range []bool{d.FS != nil, d.S3 != nil, d.AzureBlob != nil} {
+		for _, set := range []bool{d.FS != nil, d.S3 != nil, d.AzureBlob != nil, d.GCS != nil} {
 			if set {
 				blocks++
 			}
@@ -235,8 +244,20 @@ func validateBlob(bad func(string, ...any), c Config) {
 				continue
 			}
 			validateAzureBlob(bad, where, *d.AzureBlob, dev)
+		case "gcs":
+			if d.GCS == nil || blocks != 1 {
+				bad("%s: kind gcs needs exactly one block, gcs", where)
+				continue
+			}
+			if !gcpcloud.ValidBucket(d.GCS.Bucket) {
+				bad("%s.gcs.bucket must be 3-63 lowercase letters, digits, - and _ (no dots, no \"goog\")", where)
+			}
+			if blob.ValidPrefix(d.GCS.Prefix) != nil {
+				bad("%s.gcs.prefix must be lowercase segments ending with /", where)
+			}
+			validateGCPCreds(bad, where+".gcs", d.GCS.GCPCreds, dev)
 		default:
-			bad("%s.kind must be fs, s3 or azureblob", where)
+			bad("%s.kind must be fs, s3, azureblob or gcs", where)
 		}
 	}
 	// two domains on one store would share objects (and one's garbage collection would delete the
@@ -246,6 +267,10 @@ func validateBlob(bad func(string, ...any), c Config) {
 			if a.Kind == o.Kind && a.Kind == "fs" && a.FS != nil && o.FS != nil && pathsOverlap(a.FS.Root, o.FS.Root) ||
 				a.Kind == o.Kind && a.Kind == "s3" && a.S3 != nil && o.S3 != nil && strings.EqualFold(a.S3.Endpoint, o.S3.Endpoint) &&
 					a.S3.Bucket == o.S3.Bucket && pathsOverlap("/"+a.S3.Prefix, "/"+o.S3.Prefix) {
+				bad("blob.domains: %s and %s share a store", o.Name, a.Name)
+			}
+			if a.Kind == o.Kind && a.Kind == "gcs" && a.GCS != nil && o.GCS != nil && a.GCS.EndpointURL == o.GCS.EndpointURL &&
+				a.GCS.Bucket == o.GCS.Bucket && pathsOverlap("/"+a.GCS.Prefix, "/"+o.GCS.Prefix) {
 				bad("blob.domains: %s and %s share a store", o.Name, a.Name)
 			}
 			if a.Kind == o.Kind && a.Kind == "azureblob" && a.AzureBlob != nil && o.AzureBlob != nil &&

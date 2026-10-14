@@ -58,20 +58,22 @@ records the rejection as an `upstream.rejected` event.
 ## Key custody
 
 - **Private keys never leave the signer.** Production keys live in HashiCorp Vault / OpenBao
-  Transit, Azure Key Vault, Azure Managed HSM or AWS KMS; kista sends a 32-byte digest and receives
-  a signature. The database stores public keys and signer references only.
+  Transit, Azure Key Vault, Azure Managed HSM, AWS KMS or Google Cloud KMS; kista sends a 32-byte
+  digest and receives a signature. The database stores public keys and signer references only.
 - **Keys are checked, not trusted.** RSA-2048 with `e = 65537`; signing only; not exportable; not
-  imported; version pinned; HSM-backed on Azure by default; tagged with their purpose on Azure and
-  AWS; properties re-read while in use; every signature verified against the registered public key
-  and the key identity the backend reports.
+  imported; version pinned; HSM-backed on Azure and Google Cloud by default; tagged or labelled with
+  their purpose on Azure, AWS and Google Cloud; properties re-read while in use; every signature
+  verified against the registered public key and the key identity the backend reports.
 - **References come from the server administrator only.** A reference names a configured source and
   a key inside it, limited by the source's allow list. It never carries a host, so no tenant can make
   kista call another vault with its identity.
 - **Credentials come from the platform**: managed or workload identity, EKS Pod Identity, IRSA,
-  ECS task roles, EC2 instance profiles, Kubernetes or JWT login, Vault Agent token files. Steering
-  environment variables are refused outside `profile: dev`. An S3 domain with an AWS identity
-  follows the same rules; it is accepted only for AWS S3 hosts, and every request names the bucket's
-  expected owner.
+  ECS task roles, EC2 instance profiles, GKE Workload Identity, Google workload identity federation
+  from a projected token, Kubernetes or JWT login, Vault Agent token files. Steering environment
+  variables are refused outside `profile: dev`. An S3 domain with an AWS identity follows the same
+  rules; it is accepted only for AWS S3 hosts, and every request names the bucket's expected owner.
+  On Google Cloud, kista acts only as the configured service account (`principal`), and refuses
+  credential sources that answer with the node's identity.
 - **File keys** are for development, or need an explicit `signers.allow_file: true`; the file must
   be mode `0600`, owned by kista's user, and not a symlink.
 - Signing happens when a release is made, never on a download, so a KMS outage stops publishing,
@@ -174,10 +176,10 @@ publisher's self-assessment is labelled as such.
 Between repositories, documents travel as **signed statements**: a JSON object canonicalised by
 RFC 8785, signed RSA PKCS#1 v1.5 over SHA-256 of `kista-statement-v1\0` followed by it, with a
 tenant's attestation key. The domain separator keeps a statement signature apart from an extension
-signature, and the fingerprint registry (and on Azure the `attestation-signing` tag) keeps an
-attestation key apart from a channel key. A subscriber accepts statements only under keys it pinned,
-only for bodies it holds, and verifies every field it shows; content is fetched only from the fixed
-path under the configured feed URL, through egress.
+signature, and the fingerprint registry (and on Azure, AWS and Google Cloud the
+`attestation-signing` tag or label) keeps an attestation key apart from a channel key. A subscriber
+accepts statements only under keys it pinned, only for bodies it holds, and verifies every field it
+shows; content is fetched only from the fixed path under the configured feed URL, through egress.
 
 ## Tenant deletion
 
@@ -226,8 +228,8 @@ send events to a store the database administrators do not control. See
 ## Hardening checklist
 
 - Run with `profile: prod` (the default). It refuses development shortcuts: file keys without
-  `allow_file`, plain `http` to vaults and stores, Azure `default` credentials, `require_hsm: false`,
-  rotation minimums below 24 hours.
+  `allow_file`, plain `http` to vaults and stores, Azure `default` credentials, Google
+  `service_account` key files, `require_hsm: false`, rotation minimums below 24 hours.
 - Keep channel keys in a vault or KMS; give kista read and sign on its keys only, and alert on key
   changes in the backend's audit log.
 - Block public access on buckets and containers.
