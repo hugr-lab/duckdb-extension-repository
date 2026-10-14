@@ -52,8 +52,8 @@ flowchart LR
   end
   admin[kista admin<br/>server administrator CLI]
   db[(metadata database<br/>PostgreSQL, SQL Server, SQLite)]
-  blob[(blob storage<br/>local dir, S3, Azure Blob)]
-  keys[[key sources<br/>key file, Vault / OpenBao,<br/>Azure Key Vault / Managed HSM,<br/>AWS KMS]]
+  blob[(blob storage<br/>local dir, S3, Azure Blob,<br/>Google Cloud Storage)]
+  keys[[key sources<br/>key file, Vault / OpenBao,<br/>Azure Key Vault / Managed HSM,<br/>AWS KMS, Google Cloud KMS]]
   up[upstreams<br/>extensions.duckdb.org,<br/>community, another kista]
   idp[token issuers<br/>OIDC / JWT]
 

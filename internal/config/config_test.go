@@ -266,3 +266,39 @@ func TestAWSKMSSource(t *testing.T) {
 		}
 	}
 }
+
+// A gcpkms source (spec 0004 phase 4): a key ring, the principal outside dev, a credentials file or
+// the metadata server, the fake only in dev without credentials.
+func TestGCPKMSSource(t *testing.T) {
+	src := func(fields string) string {
+		return base + "signers:\n  sources:\n    - name: gcp\n      kind: gcpkms\n      gcpkms: { " + fields + " }\n      allow: [\"ext-\"]\n"
+	}
+	ring := `key_ring: projects/kista-test-1/locations/europe-west4/keyRings/kista`
+	pr := `, principal: kista-signer@kista-test-1.iam.gserviceaccount.com`
+	for name, f := range map[string]string{"metadata": ring + pr, "federation": ring + pr + ", credentials_file: /etc/kista/gcp.json"} {
+		if _, err := Load(write(t, src(f)), nil); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	dev := "profile: dev\nrotation: { min_trusted: 0s, min_demoted: 0s }\n" + strings.Replace(src(ring+`, endpoint_url: "http://127.0.0.1:8080"`), "/var/lib/kista/kista.db", "/tmp/k.db", 1)
+	if _, err := Load(write(t, dev), nil); err != nil {
+		t.Fatalf("dev fake: %v", err)
+	}
+	for name, f := range map[string]string{
+		"no principal":         ring,
+		"bad principal":        ring + `, principal: kista@gmail.com`,
+		"bad ring":             `key_ring: projects/p/keyRings/k` + pr,
+		"project number":       `key_ring: projects/123456/locations/europe-west4/keyRings/kista` + pr,
+		"relative creds":       ring + pr + ", credentials_file: gcp.json",
+		"fake outside dev":     ring + pr + `, endpoint_url: "http://127.0.0.1:8080"`,
+		"software outside dev": ring + pr + ", require_hsm: false",
+	} {
+		if _, err := Load(write(t, src(f)), nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := Load(write(t, "profile: dev\nrotation: { min_trusted: 0s, min_demoted: 0s }\n"+strings.Replace(src(ring+
+		`, endpoint_url: "http://127.0.0.1:8080", credentials_file: /k.json`), "/var/lib/kista/kista.db", "/tmp/k.db", 1)), nil); err == nil {
+		t.Error("the fake with a credentials file: accepted")
+	}
+}

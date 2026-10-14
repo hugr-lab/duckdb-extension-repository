@@ -5,26 +5,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"sync"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"golang.org/x/oauth2"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/sinks"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	awscloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/aws"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/cloud/azure"
+	gcpcloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/gcp"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/awskms"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/azurekv"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/gcpkms"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/vault"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
@@ -176,11 +180,32 @@ func KeySources(cfg config.Config) (*keysource.Registry, error) {
 			if err := reg.Add(src.Name, b, opts); err != nil {
 				return nil, err
 			}
+		case "gcpkms":
+			g := src.GCPKMS
+			ts, hc, err := GCPTokens(cfg, g.GCPCreds)
+			if err != nil {
+				return nil, fmt.Errorf("app: source %s: %w", src.Name, err)
+			}
+			requireHSM := g.RequireHSM == nil || *g.RequireHSM
+			if err := reg.Add(src.Name, gcpkms.New(g.KeyRing, ts, requireHSM, hc, gcpkms.Options{Endpoint: g.EndpointURL}), opts); err != nil {
+				return nil, err
+			}
 		default:
 			return nil, fmt.Errorf("app: source %s: kind %s is not available in this build", src.Name, src.Kind)
 		}
 	}
 	return reg, nil
+}
+
+// GCPTokens are the Google credentials of a source or a domain (spec 0004 phase 4), with the HTTP
+// client their calls use. A development fake (endpoint_url) gets a fixed token and no credential.
+func GCPTokens(cfg config.Config, c config.GCPCreds) (oauth2.TokenSource, *http.Client, error) {
+	hc := gcpcloud.HTTPClient()
+	if c.EndpointURL != "" {
+		return gcpcloud.StaticToken(), hc, nil
+	}
+	ts, err := gcpcloud.TokenSource(c.CredentialsFile, c.Principal, gcpcloud.Options{Dev: cfg.Profile == config.ProfileDev, HTTPClient: hc})
+	return ts, hc, err
 }
 
 // AWSIdentity is a configured AWS identity, with the role to assume after it ("" for none).

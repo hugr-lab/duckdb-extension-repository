@@ -11,6 +11,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/azureblob"
 	blobfs "github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/gcs"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/s3"
 	awscloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/aws"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/cloud/azure"
@@ -83,6 +84,17 @@ func BlobStores(cfg config.Config) ([]blob.Domain, error) {
 				c.Endpoint, c.Credential = "https://"+host, cred
 			}
 			s, err := azureblob.New(c)
+			if err != nil {
+				return fail(fmt.Errorf("app: storage domain %s: %w", d.Name, err))
+			}
+			st = s
+		case "gcs":
+			g := d.GCS
+			ts, _, err := GCPTokens(cfg, g.GCPCreds)
+			if err != nil {
+				return fail(fmt.Errorf("app: storage domain %s: %w", d.Name, err))
+			}
+			s, err := gcs.New(gcs.Config{Bucket: g.Bucket, Prefix: g.Prefix, Endpoint: g.EndpointURL, Tokens: ts, Timeout: timeout})
 			if err != nil {
 				return fail(fmt.Errorf("app: storage domain %s: %w", d.Name, err))
 			}

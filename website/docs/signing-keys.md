@@ -23,7 +23,7 @@ and [0004](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/spe
 | `vault` | HashiCorp Vault or OpenBao Transit | available |
 | `azurekv` | Azure Key Vault or Azure Key Vault Managed HSM | available |
 | `awskms` | AWS KMS | available |
-| `gcpkms` | Google Cloud KMS | not available yet: config validation refuses it |
+| `gcpkms` | Google Cloud KMS | available |
 
 PKCS#11 hardware HSMs are not available either. A Kubernetes Secret is not a backend: mounted into
 `signers.file_dir`, it is a file key.
@@ -39,6 +39,7 @@ the first `:`; the rest is parsed by that source's kind.
 | `vault` | `<source>:<key>:v<N>` | `[A-Za-z0-9_-]{1,128}` | `N ≥ 1`, no leading zeros (`v0` would mean "latest" in Vault) |
 | `azurekv` | `<source>:<name>/<version>` | `[0-9A-Za-z-]{1,127}`, compared lowercased | 32 lowercase hex characters (an empty version would mean "latest") |
 | `awskms` | `<source>:<key-id>` | a key id: a UUID in lowercase hex, or `mrk-` and 32 lowercase hex characters (a multi-Region key, with `allow_multi_region`). Aliases and ARNs are refused | the key id itself: an asymmetric KMS key is never rotated |
+| `gcpkms` | `<source>:<key>/<version>` | a CryptoKey id in the source's key ring, `[A-Za-z0-9_-]{1,63}` | the CryptoKeyVersion number, `[1-9][0-9]{0,9}` (required) |
 
 - A reference never carries a host, URL, account or path. Hosts, mounts and namespaces come only
   from the configuration, so a reference can only pick a key inside a source the administrator
@@ -90,6 +91,12 @@ signers:
       identity:
         kind: pod_identity       # pod_identity | irsa | imds | ecs
       allow: ["1234abcd-12ab-34cd-56ef-1234567890ab"]   # key ids, or "*"
+    - name: gcp
+      kind: gcpkms
+      gcpkms:
+        key_ring: projects/acme-kista/locations/europe-west4/keyRings/kista
+        principal: kista-signer@acme-kista.iam.gserviceaccount.com
+      allow: ["ext-"]
 ```
 
 ### Settings of a source
@@ -97,13 +104,13 @@ signers:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `name` | required | `[a-z][a-z0-9-]{0,15}`, unique. Reserved: `file`, `vault`, `azurekv`, `awskms`, `gcpkms`, `pkcs11`, `http`, `https`, `arn`, `projects` |
-| `kind` | required | `vault`, `azurekv` or `awskms`; exactly one matching block (`vault:`, `azurekv:` or `awskms:`) |
+| `kind` | required | `vault`, `azurekv`, `awskms` or `gcpkms`; exactly one matching block (`vault:`, `azurekv:`, `awskms:` or `gcpkms:`) |
 | `allow` | required | key-name prefixes the source may use; `"*"` for any key. An empty list, or an empty prefix, is refused. For `awskms`, whole key ids or `"*"` |
 | `max_concurrency` | `4` | concurrent opens and signs through this source |
 | `timeout` | `10s` | per call, `1s` to `60s` |
 | `recheck` | `10m` | how often a key's properties are read again while it is in use; at most `10m` |
 | `health_key` | none | accepted by the configuration; this build does not use it |
-| `identity` | none | required for `azurekv` and `awskms`, with that cloud's kinds; refused on `vault` |
+| `identity` | none | required for `azurekv` and `awskms`, with that cloud's kinds; refused on `vault` and `gcpkms` (which use `vault.auth`, and `principal` and `credentials_file`) |
 
 **Allow lists** are plain prefixes, matched after the key name passed its kind's rule: `ext-`
 admits `ext-prod` but not `extra`. For `azurekv`, names are matched lowercased, so prefixes must be
@@ -128,7 +135,8 @@ signature it makes is verified.
   than `recheck`. A key that no longer passes stops signing.
 - **Every signature**: the digest goes out as a precomputed SHA-256 digest; the answer must be
   256 bytes, verify against the public key, and name the pinned key version (Vault's
-  `key_version`, Azure's `kid`, AWS's `KeyId`, which must be the key's ARN).
+  `key_version`, Azure's `kid`, AWS's `KeyId`, which must be the key's ARN, Google's `name`, which
+  must be the version's resource name).
 - **Every open of a registered key** compares the signer's public key with the one stored when the
   key was registered (the one published in `.well-known`) and its fingerprint. A file that changed,
   or a source re-pointed at another key, never signs.
@@ -319,8 +327,7 @@ kista needs to read the key and sign with it, nothing more.
 ## AWS KMS
 
 An `awskms` source signs with an asymmetric KMS key in one AWS account and region, through the AWS
-SDK for Go v2, `RSASSA_PKCS1_V1_5_SHA_256` over the digest. Google Cloud KMS (`gcpkms`) is not
-available yet: config validation refuses it.
+SDK for Go v2, `RSASSA_PKCS1_V1_5_SHA_256` over the digest.
 
 ```yaml title="kista.yaml"
 signers:
@@ -486,6 +493,229 @@ kista needs to read the key and sign with it, nothing more: `kms:DescribeKey`,
 - Keep `kms:TagResource`, `kms:UntagResource`, `kms:CreateKey`, `kms:ImportKeyMaterial` and
   `kms:PutKeyPolicy` away from kista's role: whoever sets the tag decides which keys kista accepts.
 
+## Google Cloud KMS
+
+A `gcpkms` source signs with an asymmetric key in one Cloud KMS key ring, through Cloud KMS's REST
+API (no Google SDK), `RSA_SIGN_PKCS1_2048_SHA256` over the digest. Requests go to
+`https://cloudkms.googleapis.com/v1/` only; regional and REP endpoints are not supported yet.
+
+```yaml title="kista.yaml"
+signers:
+  sources:
+    - name: gcp
+      kind: gcpkms
+      gcpkms:
+        key_ring: projects/acme-kista/locations/europe-west4/keyRings/kista
+        principal: kista-signer@acme-kista.iam.gserviceaccount.com
+        require_hsm: true
+        credentials_file: ""         # empty: the metadata server; or an external_account file
+      allow: ["ext-"]
+```
+
+### Settings
+
+| Setting | Meaning |
+| --- | --- |
+| `gcpkms.key_ring` | required; `projects/<project id>/locations/<location>/keyRings/<ring>`. The project is named by its id (`[a-z][a-z0-9-]{4,28}[a-z0-9]`), not its number: names are compared exactly, and KMS echoes the id. The location is `[a-z0-9-]{1,63}`, the ring `[A-Za-z0-9_-]{1,63}` |
+| `gcpkms.principal` | the service account kista acts as, `<name>@<project>.iam.gserviceaccount.com`; required outside `profile: dev`. Google-managed accounts (such as the Compute Engine default account) are refused |
+| `gcpkms.require_hsm` | default `true`: protection level `HSM` or `HSM_SINGLE_TENANT`. `false` also accepts `SOFTWARE`, and is allowed only with `profile: dev`. `EXTERNAL` and `EXTERNAL_VPC` are always refused |
+| `gcpkms.credentials_file` | an absolute path. Absent: the metadata server. Otherwise an `external_account` file, or, with `profile: dev` only, a `service_account` key file |
+| `gcpkms.endpoint_url` | the tests' fake only: `profile: dev`, an `http` or `https` URL on a loopback host, and no `credentials_file`. No credential is loaded; requests carry a fixed test token, so no real token reaches the fake |
+
+`allow` lists key-id prefixes, as for Vault. `identity` is refused: a `gcpkms` source is reached
+through `principal` and `credentials_file`.
+
+### Credentials
+
+kista builds the credentials from the configuration. It never looks up Application Default
+Credentials (no `~/.config/gcloud`, no well-known file).
+
+- **The metadata server** (`credentials_file` absent): GKE Workload Identity, or a Compute Engine
+  VM's service account. kista asks the server itself, at its fixed address
+  `http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/`, with
+  `Metadata-Flavor: Google`; the answer must carry the same header and is read up to 64 KiB. At
+  every token refresh, kista first reads the account's `email` and refuses to sign or store unless it equals
+  `principal`: a changed annotation could otherwise hand out another account. On GKE without Workload Identity, or in a `hostNetwork` pod, the server would
+  otherwise hand out the node's account. IPv6-only Compute Engine is not supported yet.
+- **An `external_account` file**: workload identity federation, for kista outside Google Cloud
+  (AKS, EKS, any cluster with an OIDC issuer). kista parses the file strictly and builds the token
+  source from the parsed parts only: the Google library opens no file and calls nothing but STS and
+  IAM Credentials. The rules are below.
+- **A `service_account` key file**: only with `profile: dev`. Its `token_uri` must be
+  `https://oauth2.googleapis.com/token`, its `universe_domain` absent or `googleapis.com`, and, when
+  `principal` is set, its `client_email` must equal it.
+- **Every other type is refused**: `authorized_user` (a gcloud login),
+  `external_account_authorized_user`, `impersonated_service_account`, `gdch_service_account`.
+
+The credentials file must be a regular file that nobody but its owner may write (no group or other
+write bit), at most 64 KiB. It may be a symlink, as a Kubernetes ConfigMap's projection is: the
+link is followed. An `external_account` file holds no secret, but whoever may edit it chooses
+kista's identity.
+
+**What an `external_account` file must hold.** An unknown field is refused.
+
+| Field | Accepted |
+| --- | --- |
+| `type` | `external_account` |
+| `audience` | a workload identity pool provider: `//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`, pool and provider `[a-z0-9-]{4,32}` |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:jwt` |
+| `token_url` | `https://sts.googleapis.com/v1/token` |
+| `token_info_url` | absent, or `https://sts.googleapis.com/v1/introspect` |
+| `service_account_impersonation_url` | exactly `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/<principal>:generateAccessToken`; required outside `profile: dev` |
+| `service_account_impersonation.token_lifetime_seconds` | absent, or `600` to `3600` |
+| `universe_domain` | absent, or `googleapis.com` |
+| `quota_project_id` | any |
+| `credential_source` | `file`, an absolute path, with `format` absent, `text`, or `json` with `subject_token_field_name` |
+| `workforce_pool_user_project`, `client_id`, `client_secret` | refused: workforce pools and client credentials are for people, not kista |
+
+- **Only `file` credential sources.** The file is a Kubernetes projected ServiceAccount token whose
+  audience is the provider. kista reads it through its symlink at every exchange, accepts the
+  volume's mode, and refuses an empty file or one holding more than one token.
+- **`aws1` and `url` sources are refused.** On EKS and AKS they answer with the node's identity
+  (EC2's instance role, the Azure VM's identity), which every pod on the node shares.
+- **`executable` and `certificate` sources are refused.** An executable source runs a program the
+  file names; certificate (X.509) federation is not supported.
+
+**Steering variables.** Outside `profile: dev`, kista refuses to start while any of these is set:
+
+- `GOOGLE_APPLICATION_CREDENTIALS`, `GCE_METADATA_HOST`, `GCE_METADATA_IP`, `GCE_METADATA_ROOT`;
+- `STORAGE_EMULATOR_HOST`, `GOOGLE_API_USE_CLIENT_CERTIFICATE`, `GOOGLE_API_USE_MTLS_ENDPOINT`;
+- `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES`, `CLOUDSDK_CONFIG`;
+- `GOOGLE_CLOUD_UNIVERSE_DOMAIN`, unless it is `googleapis.com`.
+
+`GOOGLE_CLOUD_PROJECT` is ignored.
+
+- **Scope.** Tokens are asked for with `https://www.googleapis.com/auth/cloud-platform`: IAM is the
+  limit, not scopes. A Compute Engine VM needs that access scope.
+- **Refresh.** Tokens are cached and refreshed 225 seconds before they expire, since the metadata
+  server itself hands out a cached token until about five minutes are left. Nothing is fetched at
+  startup, and a slow metadata server or STS never holds a call past its deadline.
+- **The client** ignores proxy environment variables, never follows redirects, and requires TLS 1.2
+  or later. The link-local metadata address is the only plain-http request; no Google token is ever
+  sent over http.
+
+### What the key must look like
+
+kista reads the key version, the key and the public key, and refuses the key unless:
+
+- the version's `name` is its own resource name, and its `state` is `ENABLED`;
+- its `algorithm` is `RSA_SIGN_PKCS1_2048_SHA256`;
+- its `protectionLevel` is `HSM` or `HSM_SINGLE_TENANT` (also `SOFTWARE` with `require_hsm: false`);
+- it has no `importJob` (imported material is refused) and no `externalProtectionLevelOptions`;
+- the key's `purpose` is `ASYMMETRIC_SIGN`, and `importOnly` is false;
+- the key carries the label `kista-purpose` with its role's value: `channel-signing` for a channel
+  key, `attestation-signing` for an [attestation key](attachments.md);
+- `getPublicKey` names the same version, with the version's `algorithm` and `protectionLevel`; its
+  `pemCrc32c` matches the PEM (CRC32C); the PEM is an RSA public key, the same one at every
+  re-check.
+
+Signing is `POST <version>:asymmetricSign` with `digest.sha256` and `digestCrc32c`. The answer must
+have `verifiedDigestCrc32c: true`, a `signatureCrc32c` that matches the signature, a `name` equal to
+the version, and an accepted protection level. A CRC mismatch is retried once, as Google advises,
+then refused. Each call makes at most 3 attempts, on `429`, `5xx` and connection failures. An error
+keeps the HTTP status and Google's status word (`PERMISSION_DENIED`), nothing else.
+
+```bash
+gcloud kms keyrings create kista --project acme-kista --location europe-west4
+gcloud kms keys create ext-prod --project acme-kista --keyring kista --location europe-west4 \
+  --purpose asymmetric-signing --default-algorithm rsa-sign-pkcs1-2048-sha256 \
+  --protection-level hsm --labels kista-purpose=channel-signing
+```
+
+The reference is `gcp:ext-prod/1`, with the version number:
+
+```bash
+kista admin -config kista.yaml key check -signer gcp:ext-prod/1
+```
+
+### Permissions
+
+kista needs to read the key and sign with it, nothing more. Make a custom role with exactly four
+permissions and grant it to kista's service account on each key. `roles/cloudkms.signer` alone is
+not enough: it cannot read the key or its public key.
+
+```bash
+gcloud iam roles create kistaSigner --project acme-kista --title "kista signer" --permissions \
+  cloudkms.cryptoKeyVersions.useToSign,cloudkms.cryptoKeyVersions.viewPublicKey,cloudkms.cryptoKeyVersions.get,cloudkms.cryptoKeys.get
+
+gcloud iam service-accounts create kista-signer --project acme-kista
+gcloud kms keys add-iam-policy-binding ext-prod --project acme-kista --keyring kista --location europe-west4 \
+  --member serviceAccount:kista-signer@acme-kista.iam.gserviceaccount.com \
+  --role projects/acme-kista/roles/kistaSigner
+```
+
+Keep `cloudkms.cryptoKeys.update` (it changes labels), `cloudkms.cryptoKeys.create`,
+`cloudkms.cryptoKeyVersions.create`, the import-job permissions and `setIamPolicy` away from kista's
+account: whoever sets the label decides which keys kista accepts.
+
+### GKE Workload Identity
+
+Bind kista's Kubernetes ServiceAccount to the service account, and leave `credentials_file` empty:
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding kista-signer@acme-kista.iam.gserviceaccount.com \
+  --role roles/iam.workloadIdentityUser \
+  --member "serviceAccount:acme-kista.svc.id.goog[kista/kista]"
+kubectl annotate serviceaccount kista --namespace kista \
+  iam.gke.io/gcp-service-account=kista-signer@acme-kista.iam.gserviceaccount.com
+```
+
+The metadata server then reports that account, and kista compares it with `principal`. kista needs
+a service account to compare: granting roles to the Kubernetes ServiceAccount directly, without the
+annotation, does not give it one.
+
+### Outside Google Cloud: AKS and EKS
+
+Federate the cluster's OIDC issuer with a workload identity pool, let the Kubernetes
+ServiceAccount impersonate kista's service account, and produce an `external_account` file whose
+credential source is a projected token:
+
+```bash
+ISSUER=$(az aks show -g kista-rg -n kista-aks --query oidcIssuerProfile.issuerUrl -o tsv)
+# EKS: aws eks describe-cluster --name kista-eks --query cluster.identity.oidc.issuer --output text
+NUMBER=$(gcloud projects describe acme-kista --format 'value(projectNumber)')
+
+gcloud iam workload-identity-pools create kista --project acme-kista --location global
+gcloud iam workload-identity-pools providers create-oidc kista-aks --project acme-kista --location global \
+  --workload-identity-pool kista --issuer-uri "$ISSUER" \
+  --attribute-mapping google.subject=assertion.sub
+gcloud iam service-accounts add-iam-policy-binding kista-signer@acme-kista.iam.gserviceaccount.com \
+  --role roles/iam.workloadIdentityUser \
+  --member "principal://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/kista/subject/system:serviceaccount:kista:kista"
+
+gcloud iam workload-identity-pools create-cred-config \
+  projects/$NUMBER/locations/global/workloadIdentityPools/kista/providers/kista-aks \
+  --service-account kista-signer@acme-kista.iam.gserviceaccount.com \
+  --credential-source-file /var/run/secrets/gcp/token \
+  --output-file gcp.json
+kubectl create configmap kista-gcp --namespace kista --from-file gcp.json
+```
+
+Mount the file and a projected token whose audience is the provider (the provider's default
+allowed audience is its full name with `https:` in front):
+
+```yaml
+volumes:
+  - name: gcp-token
+    projected:
+      sources:
+        - serviceAccountToken:
+            path: token
+            audience: https://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/kista/providers/kista-aks
+            expirationSeconds: 3600
+  - name: gcp-config
+    configMap: { name: kista-gcp }
+# kista's container mounts gcp-token at /var/run/secrets/gcp and gcp-config at /etc/kista/gcp
+```
+
+Then set `credentials_file: /etc/kista/gcp/gcp.json`. Do not use `--aws` or `--azure` with
+`create-cred-config`: they make `aws1` and `url` sources, which kista refuses.
+
+`deploy/gcp/up.sh` builds all of this but the cluster side in a disposable project: a key ring with
+a channel key and an attestation key, the service account and its custom role, a private bucket,
+and optionally a pool for GitHub Actions. `deploy/gcp/down.sh` deletes the project. See
+[Development](development.md#a-disposable-gcp-stack).
+
 ## Registering a key
 
 A key becomes a channel's key in two steps: check it, then add it.
@@ -527,8 +757,8 @@ server log. See [HTTP API](api.md).
 | `kista admin key resign <tenant>/<channel>` | sign releases with the active key; move the serving key |
 | `kista admin attestation-key add <tenant> <signer-ref> [-active]` | register a tenant's attestation key |
 
-`key check` opens a key for the channel purpose, so on Azure and AWS it refuses a key tagged
-`attestation-signing`.
+`key check` opens a key for the channel purpose, so on Azure, AWS and Google Cloud it refuses a key
+tagged or labelled `attestation-signing`.
 
 ## Fingerprints
 
@@ -547,8 +777,9 @@ One key holds one role. Two mechanisms keep the roles apart:
 - **The fingerprint registry.** A fingerprint exists once on the server, across channel keys and
   attestation keys. The same key can never serve two channels, two tenants, or a channel and a
   feed.
-- **The purpose tag**, where the backend has tags. On Azure and AWS the `kista-purpose` tag must be
-  `channel-signing` for a channel key and `attestation-signing` for an attestation key. A file key
+- **The purpose tag**, where the backend has tags. On Azure and AWS the `kista-purpose` tag, and on
+  Google Cloud the `kista-purpose` label, must be `channel-signing` for a channel key and
+  `attestation-signing` for an attestation key. A file key
   and a Vault Transit key have no tags and rely on the registry.
 
 Attestation keys sign the statements a tenant's feed serves; they live in the same sources. See
@@ -559,6 +790,8 @@ Attestation keys sign the statements a tenant's feed serves; they live in the sa
 kista's policy gives it no right to change keys. Watch the backend's own audit log for changes to
 them: the Vault audit device, the Azure Activity Log (key create, import, update, delete), AWS
 CloudTrail (`CreateKey`, `ImportKeyMaterial`, `TagResource`, `UntagResource`, `PutKeyPolicy`,
-`DisableKey`, `ScheduleKeyDeletion`). On kista's
+`DisableKey`, `ScheduleKeyDeletion`), Google Cloud Audit Logs for Cloud KMS (`CreateCryptoKey`,
+`CreateCryptoKeyVersion`, `ImportCryptoKeyVersion`, `UpdateCryptoKey`, `DestroyCryptoKeyVersion`,
+`SetIamPolicy`; Admin Activity logs are always on). On kista's
 side, the events `key.add`, `key.activate`, `key.retire`, `key.resign` and
 `attestation_key.add|activate|retire` record every change (see [Observability](observability.md)).

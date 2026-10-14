@@ -54,8 +54,8 @@ A channel's prefix is permanent: DuckDB records it with each install. See
 Every signed channel has a **key set**: one active key, which signs new releases, plus trusted
 keys. The channel's `.well-known/duckdb-extension-repo.json` lists the active key and every trusted
 key, and DuckDB pins them when the repository is created. A key is RSA-2048 and lives in a key source: a key file for
-development, HashiCorp Vault / OpenBao Transit, Azure Key Vault / Managed HSM, or AWS KMS. Google
-Cloud KMS is not available yet.
+development, HashiCorp Vault / OpenBao Transit, Azure Key Vault / Managed HSM, AWS KMS or Google
+Cloud KMS.
 
 A `staging` channel signs whatever a publisher uploads, so its key must never be trusted where the
 `prod` key is. Rotation adds a key as trusted, makes it active, re-signs the releases and retires
@@ -110,8 +110,8 @@ mirrors only. See [Upstreams](upstreams.md).
 ## Storage domains
 
 Bodies are stored once per **storage domain**, however many channels, tenants and upstreams serve
-them; signatures are stored per release. A domain is a local directory, an S3-compatible bucket or
-an Azure Blob container. Every tenant belongs to one domain (`default` unless given at creation), and
+them; signatures are stored per release. A domain is a local directory, an S3-compatible bucket, an
+Azure Blob container or a Google Cloud Storage bucket. Every tenant belongs to one domain (`default` unless given at creation), and
 deduplication happens only inside a domain, so data residency can be kept by giving a tenant its own
 domain. Bodies no release needs any more are removed by garbage collection. See
 [Storage](storage.md).
