@@ -267,8 +267,9 @@ steering variables, the scope and the refresh (see
 [Signing keys](signing-keys.md#google-cloud-kms)). A source and a domain may name the same
 service account.
 
-- **Uploads.** An object up to 16 MiB is one upload (`uploadType=media`), with its CRC32C in
-  `x-goog-hash`; GCS refuses the object when the bytes do not match. A larger one is a resumable
+- **Uploads.** An object up to 16 MiB is one multipart upload: the object resource with its
+  CRC32C, then the bytes; GCS refuses the object when the bytes do not match. (A media upload is
+  not used: the JSON API ignores `x-goog-hash` there.) A larger one is a resumable
   upload in 16 MiB chunks, started with the length and the CRC32C in the object resource. Its
   session URI must be on the store's endpoint and upload path before any byte is sent, and is never
   logged. A `308` continues from the bytes GCS acknowledged; a failed chunk is followed by a status

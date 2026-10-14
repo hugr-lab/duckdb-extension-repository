@@ -7,8 +7,10 @@ package gcs
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -146,14 +148,23 @@ func (s *Store) Put(ctx context.Context, key string, r io.ReaderAt, size int64) 
 	up := s.base.String() + "/upload/storage/v1/b/" + escape(s.cfg.Bucket) + "/o?name=" + url.QueryEscape(s.name(key))
 	var got object
 	if size <= s.chunk {
+		// multipart, not media: GCS checks a crc32c given in the metadata, and ignores x-goog-hash
+		// on a JSON API media upload (verified live)
+		var rnd [16]byte
+		_, _ = crand.Read(rnd[:])
+		boundary := hex.EncodeToString(rnd[:])
+		meta, _ := json.Marshal(map[string]string{"crc32c": sum, "contentType": "application/octet-stream"})
+		head := "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + string(meta) +
+			"\r\n--" + boundary + "\r\nContent-Type: application/octet-stream\r\n\r\n"
+		tail := "\r\n--" + boundary + "--\r\n"
 		resp, err := s.do(ctx, 3, func() (*http.Request, error) {
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, up+"&uploadType=media", io.NewSectionReader(r, 0, size))
+			body := io.MultiReader(strings.NewReader(head), io.NewSectionReader(r, 0, size), strings.NewReader(tail))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, up+"&uploadType=multipart", body)
 			if err != nil {
 				return nil, err
 			}
-			req.ContentLength = size
-			req.Header.Set("Content-Type", "application/octet-stream")
-			req.Header.Set("X-Goog-Hash", "crc32c="+sum)
+			req.ContentLength = int64(len(head)) + size + int64(len(tail))
+			req.Header.Set("Content-Type", "multipart/related; boundary="+boundary)
 			return req, nil
 		}, http.StatusOK)
 		if err != nil {

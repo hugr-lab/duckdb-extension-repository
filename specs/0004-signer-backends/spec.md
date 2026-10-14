@@ -533,8 +533,11 @@ the two differ.
 - **Calls.** At most 3 attempts, on `429` and `5xx`, with bounded backoff. An error keeps the HTTP
   status and Google's `status` word (`PERMISSION_DENIED`), and nothing else.
 - **Tests.** There is no Cloud KMS emulator. An `httptest` fake speaks the REST shapes, and the
-  contract suite and the known answer run against it. Live tests come later, against a project
-  that `deploy/gcp/up.sh` creates and `deploy/gcp/down.sh` deletes.
+  contract suite and the known answer run against it. The live tests (`-tags live`, run by
+  `deploy/gcp/live.sh`) sign with real HSM keys in a project that `deploy/gcp/up.sh` creates and
+  `deploy/gcp/down.sh` deletes, with a token of the principal got by impersonation. In GitHub
+  Actions (`gcp-live.yml`) they run through kista's own `external_account` path, with GitHub's
+  OIDC token as the file source. The metadata server is covered by fakes only.
 
 **Kubernetes Secrets** hold the private key itself. One is mounted into `signers.file_dir` and used
 as a `file` key, under the development-or-opt-in rule.
