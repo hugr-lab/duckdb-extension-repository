@@ -4,7 +4,7 @@
 
 # The console: files, not a binary, so built once on the build's platform. The same gates as CI:
 # the licence check and the audit, then the build.
-FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS console
+FROM --platform=$BUILDPLATFORM node:26-alpine@sha256:143494b1da2945f061539253adc65e4f1569ddf07da2d384c022c791a9d90a4a AS console
 # its packages end up in the binary: the SBOM scans this stage too
 ARG BUILDKIT_SBOM_SCAN_STAGE=true
 WORKDIR /web
