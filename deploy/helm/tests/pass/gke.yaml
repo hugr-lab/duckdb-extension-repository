@@ -1,0 +1,40 @@
+# GKE: Workload Identity for Cloud KMS keys and GCS, GKE Ingress with a BackendConfig; Vault with a
+# projected token
+gcp:
+  serviceAccount: kista-signer@acme-kista.iam.gserviceaccount.com
+config:
+  store:
+    kind: postgres
+    dsn: postgres://kista@10.1.0.3:5432/kista
+    login: {password_file: /etc/kista/secrets/db/password}
+  serve:
+    public_url: https://kista.example.com
+    trusted_proxies: [35.191.0.0/16, 130.211.0.0/22]
+  signers:
+    sources:
+      - name: gkms
+        kind: gcpkms
+        allow: ["kista-"]
+        gcpkms:
+          key_ring: projects/acme-kista/locations/europe-west1/keyRings/kista
+          principal: kista-signer@acme-kista.iam.gserviceaccount.com
+  blob:
+    domains:
+      - name: default
+        kind: gcs
+        gcs:
+          bucket: acme-kista
+          principal: kista-signer@acme-kista.iam.gserviceaccount.com
+secretVolumes:
+  - {name: db, secretName: kista-db, mountPath: /etc/kista/secrets/db}
+projectedTokens:
+  - {name: vault, mountPath: /var/run/secrets/kista/vault, audience: vault, expirationSeconds: 1800}
+gke:
+  backendConfig:
+    enabled: true
+networkPolicy:
+  loadBalancerRanges: [35.191.0.0/16, 130.211.0.0/22]
+ingress:
+  enabled: true
+  className: gce
+  hosts: [{host: kista.example.com}]

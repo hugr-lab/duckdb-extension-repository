@@ -1,0 +1,17 @@
+apiVersion: v2
+name: kista
+description: kista, a trusted repository for DuckDB extensions (spec 0013)
+type: application
+# release.yml packages the chart with --version X.Y.Z --app-version vX.Y.Z
+version: 0.0.0-dev
+appVersion: edge
+# the native preStop sleep action
+kubeVersion: ">=1.30.0-0"
+home: https://hugr-lab.github.io/duckdb-extension-repository/
+sources:
+  - https://github.com/hugr-lab/duckdb-extension-repository
+
+keywords: [duckdb, extensions, repository]
+annotations:
+  org.opencontainers.image.source: https://github.com/hugr-lab/duckdb-extension-repository
+  org.opencontainers.image.licenses: Apache-2.0

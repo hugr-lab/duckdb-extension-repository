@@ -321,15 +321,16 @@ release take the build's output as workflow artifacts and run no repository or n
 
 To release, tag a commit on `main` and push the tag: `git tag -s v1.2.0 && git push origin
 v1.2.0`. The workflow refuses a tag that is not on `main`. If signing or the release fails after
-the push, re-run the failed jobs: the publish job accepts a version tag that already holds the
-same build. A broken build is fixed with a new version, never by moving the tag.
+the push, re-run the failed jobs (not all jobs: a rebuild is a different build): the publish job
+accepts a version tag that already holds the same build. A broken build is fixed with a new version, never by moving the tag.
 
 **Before the first release**, once:
 
 1. Merge to `main` before the first tag: a push to `main` creates the package
    `ghcr.io/hugr-lab/kista`. Check that it is linked to this repository (the image index's
    `org.opencontainers.image.source` annotation links it, and gives the repository's Actions
-   access), then make it public; the organisation must allow public packages.
+   access), then make it public; the organisation must allow public packages. The first release
+   creates the chart's package, `ghcr.io/hugr-lab/charts/kista`: make it public the same way.
 2. Add a tag ruleset for `v*` in the repository settings: only maintainers may create a version
    tag, and nobody may update or delete one.
 3. Cut `v0.1.0-rc.1` and verify its image and a binary as [Deployment](deployment/index.md#verifying)

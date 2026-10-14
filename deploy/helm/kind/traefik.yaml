@@ -1,0 +1,11 @@
+# Traefik for the kind test: node ports the cluster config maps to the host.
+service:
+  type: NodePort
+ports:
+  web:
+    nodePort: 30080
+  websecure:
+    nodePort: 30443
+ingressClass:
+  enabled: true
+  isDefaultClass: true

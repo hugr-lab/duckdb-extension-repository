@@ -7,7 +7,7 @@ title: Deployment
 kista ships as a container image and as binaries for linux and darwin, published from this
 repository and signed. Until the first version tag, the only published image is `:edge`, built
 from `main`; the version images and the binaries come with the first release. This page says what is published, how to verify it, and how to run the
-image with Docker. A Helm chart for Kubernetes follows (spec 0013, phase 1c).
+image with Docker. [Kubernetes](kubernetes.md) covers the Helm chart.
 
 The design is in
 [spec 0013](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0013-deployment/spec.md).
@@ -18,6 +18,7 @@ The design is in
 | --- | --- | --- |
 | The image, `linux/amd64` and `linux/arm64` | `ghcr.io/hugr-lab/kista:vX.Y.Z` | a tag `vX.Y.Z` (`release.yml`) |
 | The image, the newest `main` | `ghcr.io/hugr-lab/kista:edge` and `:sha-<commit>` (12 hex digits) | every push to `main` (`image.yml`) |
+| The Helm chart, version `X.Y.Z` (its default image is `:vX.Y.Z`) | `oci://ghcr.io/hugr-lab/charts/kista` | a tag `vX.Y.Z` (`release.yml`) |
 | The binaries: `kista-vX.Y.Z-{linux,darwin}-{amd64,arm64}`, `SHA256SUMS`, a `.sigstore.json` bundle for each | the GitHub release `vX.Y.Z` | a tag `vX.Y.Z` (`release.yml`) |
 
 - There is no `:latest`. A deployment names a version, and is best pinned by digest:
@@ -43,7 +44,7 @@ The design is in
 
 ## Verifying
 
-Every image and binary is signed with cosign, keylessly: the signature's certificate names the
+Every image, chart and binary is signed with cosign, keylessly: the signature's certificate names the
 GitHub workflow that built it, and the signature is logged in Rekor, the public transparency log.
 Verify the identity, not only that a signature exists. The signatures are Sigstore bundles,
 stored in the registry as OCI referrers: the commands below need cosign 3 or later, and an
@@ -56,6 +57,9 @@ cosign verify ghcr.io/hugr-lab/kista@sha256:<digest> \
   --certificate-identity https://github.com/hugr-lab/duckdb-extension-repository/.github/workflows/release.yml@refs/tags/v1.2.0 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+A release chart, the same way: `cosign verify ghcr.io/hugr-lab/charts/kista@sha256:<digest>` with
+the same identity (the release notes give the chart's digest).
 
 An edge image is signed by `image.yml` on `main` (resolve `:edge` to its digest first, with
 `crane digest` or `docker buildx imagetools inspect`, and deploy that digest):

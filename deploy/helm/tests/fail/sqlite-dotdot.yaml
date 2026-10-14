@@ -1,0 +1,5 @@
+# want: must be a clean path
+config:
+  store: {kind: sqlite, sqlite: {path: /var/lib/kista/data/../tmp/kista.db}}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+networkPolicy: {ingressController: {namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: traefik}}, podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}}}

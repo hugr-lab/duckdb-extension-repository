@@ -1,0 +1,12 @@
+{{- if gt (int (include "kista.replicas" .)) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kista.fullname" . }}
+  labels: {{- include "kista.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: {{- include "kista.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+{{- end }}

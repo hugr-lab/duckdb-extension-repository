@@ -1,0 +1,9 @@
+{{- $_ := include "kista.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kista.fullname" . }}
+  labels: {{- include "kista.labels" . | nindent 4 }}
+data:
+  kista.yaml: |
+    {{- include "kista.config" . | nindent 4 }}

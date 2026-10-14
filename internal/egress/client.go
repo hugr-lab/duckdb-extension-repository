@@ -216,7 +216,9 @@ func normalHost(h string) string {
 	return strings.TrimSuffix(strings.ToLower(h), ".")
 }
 
-// Get fetches a URL: a 200 answer of at most MaxBytes, its body and headers.
+// Get fetches a URL: a 200 answer of at most MaxBytes, its body and headers. It accepts JSON and a
+// JWK Set's own type (RFC 7517): an issuer such as the Kubernetes API server answers a JWKS request
+// that accepts only application/json with 406.
 func (c *Client) Get(ctx context.Context, raw string) ([]byte, http.Header, error) {
 	u, err := c.checkURL(raw)
 	if err != nil {
@@ -228,14 +230,14 @@ func (c *Client) Get(ctx context.Context, raw string) ([]byte, http.Header, erro
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: not an absolute URL", ErrRefused)
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "application/json, application/jwk-set+json")
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, nil, doErr(err, u)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("%w from %s", ErrStatus, u.Hostname())
+		return nil, nil, fmt.Errorf("%w %d from %s", ErrStatus, resp.StatusCode, u.Hostname())
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBytes+1))
 	if err != nil {

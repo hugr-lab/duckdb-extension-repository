@@ -1,0 +1,42 @@
+# PostgreSQL and S3 with key files from Secrets, three replicas, an admin job
+replicas: 3
+image:
+  digest: sha256:0b5019f0b9d8049c419bd7164e7478aee119a640e1546bf91476e2e962b80774
+config:
+  store:
+    kind: postgres
+    dsn: postgres://kista@db.example.com:5432/kista?sslmode=verify-full
+    login:
+      password_file: /etc/kista/secrets/db/password
+  serve:
+    public_url: https://kista.example.com
+    trusted_proxies: [10.244.0.0/16]
+    drain_timeout: 10s
+    shutdown_timeout: 1m
+  blob:
+    max_body: 2GiB
+    max_ingests: 8
+    domains:
+      - name: default
+        kind: s3
+        s3:
+          endpoint: https://s3.example.com
+          bucket: kista
+          region: us-east-1
+          lookup: path
+          sse: none
+          access_key_file: /etc/kista/secrets/s3/access-key
+          secret_key_file: /etc/kista/secrets/s3/secret-key
+secretVolumes:
+  - {name: db, secretName: kista-db, mountPath: /etc/kista/secrets/db}
+  - {name: s3, secretName: kista-s3, mountPath: /etc/kista/secrets/s3}
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: http://otel-collector:4318
+adminJobs:
+  - {name: blob-verify, args: [blob, verify], schedule: "0 3 * * 0"}
+  - {name: gc, args: [gc, run]}
+networkPolicy:
+  ingressController:
+    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: traefik}}
+    podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}

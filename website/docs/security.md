@@ -317,6 +317,10 @@ send events to a store the database administrators do not control. See
 - Keep `staging` and `prod` keys apart.
 - Send events to an external log pipeline.
 - Protect the database credentials as you protect the keys.
+- Deploy the image by digest and verify its signature ([Deployment](deployment/index.md#verifying)).
+- On Kubernetes, follow the chart's hardening list ([Kubernetes](deployment/kubernetes.md#hardening)):
+  the NetworkPolicy on, egress to `169.254.169.254` blocked where no metadata identity is used,
+  and the namespace's RBAC treated as the administration boundary.
 
 ## Reporting a vulnerability
 

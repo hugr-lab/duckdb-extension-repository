@@ -1,9 +1,10 @@
 name: release
 
-# A release (spec 0013), on a tag vX.Y.Z: the image ghcr.io/hugr-lab/kista:vX.Y.Z and the binaries
-# for linux and darwin on the GitHub release, all signed (cosign, keyless) and attested. The build
-# job holds no token that can push, sign or release, and uses no build cache; the jobs that do run no
-# repository code. A version already in GHCR is never overwritten.
+# A release (spec 0013), on a tag vX.Y.Z: the image ghcr.io/hugr-lab/kista:vX.Y.Z, the Helm chart
+# oci://ghcr.io/hugr-lab/charts/kista X.Y.Z and the binaries for linux and darwin on the GitHub
+# release, all signed (cosign, keyless) and attested. The build job holds no token that can push,
+# sign or release, and uses no build cache; the jobs that do run no repository code. A version
+# already in GHCR is never overwritten.
 
 on:
   push:
@@ -17,6 +18,7 @@ concurrency:
 
 env:
   REPO: ghcr.io/hugr-lab/kista
+  CHARTS: ghcr.io/hugr-lab/charts
 
 jobs:
   build:
@@ -74,6 +76,26 @@ jobs:
           chmod 0755 dist/kista-*
           (cd dist && sha256sum kista-* > SHA256SUMS && cat SHA256SUMS)
           "dist/kista-$VERSION-linux-amd64" version
+      - name: helm
+        run: |
+          curl -fsSL --retry 3 -o helm.tgz https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz
+          echo "86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb  helm.tgz" | sha256sum -c
+          mkdir -p "$RUNNER_TEMP/bin" && tar -xzf helm.tgz -C "$RUNNER_TEMP/bin" --strip-components 1 linux-amd64/helm && rm helm.tgz
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: package the chart
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir chart
+          helm lint --strict deploy/helm/kista -f deploy/helm/kind/values.yaml
+          helm package deploy/helm/kista --version "${TAG#v}" --app-version "$TAG" -d chart
+          ls -l chart
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: chart
+          path: chart/
+          retention-days: 1
+          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image
@@ -99,6 +121,7 @@ jobs:
       artifact-metadata: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
+      chart: ${{ steps.chart.outputs.digest }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -108,6 +131,16 @@ jobs:
         with:
           name: binaries
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: chart
+          path: chart
+      - name: helm
+        run: |
+          curl -fsSL --retry 3 -o helm.tgz https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz
+          echo "86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb  helm.tgz" | sha256sum -c
+          mkdir -p "$RUNNER_TEMP/bin" && tar -xzf helm.tgz -C "$RUNNER_TEMP/bin" --strip-components 1 linux-amd64/helm && rm helm.tgz
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: crane
         run: |
           curl -fsSL --retry 3 -o crane.tgz \
@@ -140,11 +173,38 @@ jobs:
           esac
           pushed=$(crane push image "$REPO:$TAG")
           [ "$pushed" = "$REPO@$digest" ] || { echo "pushed $pushed, built $digest" >&2; exit 1; }
-      - name: sign the image and the binaries
+      - id: chart
+        name: push the chart to oci://ghcr.io/hugr-lab/charts (never over an existing version)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
+          tgz="chart/kista-${TAG#v}.tgz"
+          layer="sha256:$(sha256sum "$tgz" | cut -d' ' -f1)"
+          ref="$CHARTS/kista:${TAG#v}"
+          if out=$(crane digest "$ref" 2>&1); then
+            # a re-run after a failed signing: the same package is already there
+            have=$(crane manifest "$ref" | jq -r '.layers[0].digest')
+            [ "$have" = "$layer" ] || { echo "$ref already exists: a version is never overwritten" >&2; exit 1; }
+            echo "digest=$out" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$out" in
+            *MANIFEST_UNKNOWN*|*NAME_UNKNOWN*|*"404 Not Found"*) ;;
+            *) echo "cannot tell whether $ref exists: $out" >&2; exit 1 ;;
+          esac
+          helm push "$tgz" "oci://$CHARTS"
+          [ "$(crane manifest "$ref" | jq -r '.layers[0].digest')" = "$layer" ] || { echo "pushed another package" >&2; exit 1; }
+          echo "digest=$(crane digest "$ref")" >> "$GITHUB_OUTPUT"
+      - name: sign the image, the chart and the binaries
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
+          CHART_DIGEST: ${{ steps.chart.outputs.digest }}
         run: |
           cosign sign --yes "$REPO@$DIGEST"
+          cosign sign --yes "$CHARTS/kista@$CHART_DIGEST"
           for f in dist/kista-* dist/SHA256SUMS; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f" >/dev/null
           done
@@ -152,6 +212,11 @@ jobs:
         with:
           subject-name: ${{ env.REPO }}
           subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.CHARTS }}/kista
+          subject-digest: ${{ steps.chart.outputs.digest }}
           push-to-registry: true
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -179,14 +244,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           DIGEST: ${{ needs.publish.outputs.digest }}
+          CHART_DIGEST: ${{ needs.publish.outputs.chart }}
         run: |
           cat > notes.md <<EOF
           The image: \`$REPO:$TAG\`, digest \`$DIGEST\` (linux/amd64, linux/arm64). Deploy by digest.
 
-          Verify it, and a binary with its \`.sigstore.json\` bundle:
+          The chart: \`helm install kista oci://$CHARTS/kista --version ${TAG#v} --set image.digest=$DIGEST -f values.yaml\`
+          (chart digest \`$CHART_DIGEST\`).
+
+          Verify the image, the chart, and a binary with its \`.sigstore.json\` bundle:
 
           \`\`\`
           cosign verify $REPO@$DIGEST \\
+            --certificate-identity https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/$TAG \\
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          cosign verify $CHARTS/kista@$CHART_DIGEST \\
             --certificate-identity https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/$TAG \\
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           cosign verify-blob --bundle kista-$TAG-linux-amd64.sigstore.json \\

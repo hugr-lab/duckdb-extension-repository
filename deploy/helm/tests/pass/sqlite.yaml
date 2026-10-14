@@ -1,0 +1,18 @@
+# SQLite: one replica, the database and fs blobs on the persistent volume, behind an ingress
+config:
+  store:
+    kind: sqlite
+  serve:
+    public_url: https://kista.example.com
+    trusted_proxies: [10.244.0.0/16]
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+  hosts: [{host: kista.example.com}]
+  tls: [{secretName: kista-tls, hosts: [kista.example.com]}]
+networkPolicy:
+  ingressController:
+    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: traefik}}
+    podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}

@@ -1,0 +1,39 @@
+# EKS: IRSA for S3; behind an ALB with IP targets, so no ingress-nginx in the NetworkPolicy
+aws:
+  irsa:
+    roleArn: arn:aws:iam::123456789012:role/kista
+config:
+  store:
+    kind: postgres
+    dsn: postgres://kista@db:5432/kista
+    login: {password_file: /etc/kista/secrets/db/password}
+  serve:
+    public_url: https://kista.example.com
+    trusted_proxies: [10.0.0.0/16]
+  blob:
+    domains:
+      - name: default
+        kind: s3
+        s3:
+          endpoint: https://s3.us-east-1.amazonaws.com
+          bucket: kista
+          region: us-east-1
+          lookup: dns
+          sse: s3
+          account: "123456789012"
+          identity: {kind: irsa, role_arn: arn:aws:iam::123456789012:role/kista}
+secretVolumes:
+  - {name: db, secretName: kista-db, mountPath: /etc/kista/secrets/db}
+networkPolicy:
+  ingressController:
+    namespaceSelector: {}
+    podSelector: {matchLabels: {app: none}}
+  loadBalancerRanges: [10.0.0.0/16]
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-port: "8081"
+    alb.ingress.kubernetes.io/healthcheck-path: /readyz
+  hosts: [{host: kista.example.com}]

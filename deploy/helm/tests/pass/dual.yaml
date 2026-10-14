@@ -1,0 +1,18 @@
+# mode tls: a dual listener with the certificate from a Secret, a LoadBalancer Service, fs blobs
+# on a ReadWriteMany volume
+mode: tls
+tlsSecret: kista-tls
+config:
+  store:
+    kind: postgres
+    dsn: postgres://kista@db:5432/kista
+    login: {password_file: /etc/kista/secrets/db/password}
+  serve:
+    public_url: https://kista.example.com
+blobVolume:
+  enabled: true
+  storageClass: nfs
+secretVolumes:
+  - {name: db, secretName: kista-db, mountPath: /etc/kista/secrets/db}
+service:
+  loadBalancerSourceRanges: [203.0.113.0/24]

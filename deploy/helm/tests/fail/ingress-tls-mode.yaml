@@ -1,0 +1,7 @@
+# want: mode tls terminates TLS in the pod
+mode: tls
+tlsSecret: kista-tls
+config:
+  store: {kind: sqlite}
+  serve: {public_url: https://kista.example.com}
+ingress: {enabled: true, hosts: [{host: kista.example.com}]}

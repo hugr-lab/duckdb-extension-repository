@@ -1,0 +1,61 @@
+{{- range .Values.adminJobs }}
+{{- if or (not .name) (not .args) }}
+{{- fail "adminJobs: each needs name and args" }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  # a CronJob's name: at most 52 characters (its Jobs add a suffix)
+  name: {{ include "kista.name" (list $ (printf "admin-%s" .name) 52) }}
+  labels: {{- include "kista.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  # no schedule: suspended, for kubectl create job <job> --from=cronjob/<this name>
+  schedule: {{ .schedule | default "0 0 31 2 *" | quote }}
+  suspend: {{ not .schedule }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            {{- include "kista.selectorLabels" $ | nindent 12 }}
+            app.kubernetes.io/component: admin
+            {{- if $.Values.azure.workloadIdentity.clientId }}
+            azure.workload.identity/use: "true"
+            {{- end }}
+          annotations:
+            checksum/config: {{ include "kista.config" $ | sha256sum }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "kista.serviceAccountName" $ }}
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          {{- with $.Values.imagePullSecrets }}
+          imagePullSecrets: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{- include "kista.podSecurityContext" $ | nindent 12 }}
+          containers:
+            - name: kista
+              image: {{ include "kista.image" $ }}
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              args: {{- toYaml (concat (list "admin" "-config" "/etc/kista/kista.yaml") .args) | nindent 16 }}
+              env: {{- include "kista.env" $ | nindent 16 }}
+              {{- with $.Values.envFrom }}
+              envFrom: {{- toYaml . | nindent 16 }}
+              {{- end }}
+              securityContext: {{- include "kista.securityContext" $ | nindent 16 }}
+              resources: {{- include "kista.resources" $ | nindent 16 }}
+              volumeMounts: {{- include "kista.mounts" $ | nindent 16 }}
+          volumes: {{- include "kista.volumes" $ | nindent 12 }}
+          {{- with $.Values.nodeSelector }}
+          nodeSelector: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.tolerations }}
+          tolerations: {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

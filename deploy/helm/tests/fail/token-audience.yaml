@@ -1,0 +1,5 @@
+# want: must not be the API server's
+config:
+  store: {kind: sqlite}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+projectedTokens: [{name: vault, mountPath: /var/run/secrets/kista/vault, audience: "https://kubernetes.default.svc.cluster.local"}]

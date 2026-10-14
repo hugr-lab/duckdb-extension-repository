@@ -1,0 +1,5 @@
+# want: refused with SQLite
+config:
+  store: {kind: sqlite}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+adminJobs: [{name: verify, args: [blob, verify]}]

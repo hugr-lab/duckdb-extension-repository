@@ -80,6 +80,14 @@ func TestGet(t *testing.T) {
 			_, _ = io.WriteString(w, strings.Repeat("x", 2048))
 		case "/redirect":
 			http.Redirect(w, r, "/ok", http.StatusFound)
+		case "/jwks":
+			// as the Kubernetes API server: 406 unless the JWK Set type is acceptable
+			if !strings.Contains(r.Header.Get("Accept"), "application/jwk-set+json") {
+				http.Error(w, "not acceptable", http.StatusNotAcceptable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/jwk-set+json")
+			_, _ = io.WriteString(w, `{"keys":[]}`)
 		default:
 			http.Error(w, "secret body", http.StatusTeapot)
 		}
@@ -100,6 +108,12 @@ func TestGet(t *testing.T) {
 	// the test certificate is for 127.0.0.1/example.com; dial by address with the host checked
 	if b, _, err := c.Get(ctx, "https://127.0.0.1:"+itoa(port)+"/ok"); err != nil || string(b) != `{"ok":true}` {
 		t.Fatalf("ok: %q %v", b, err)
+	}
+	if b, _, err := c.Get(ctx, "https://127.0.0.1:"+itoa(port)+"/jwks"); err != nil || string(b) != `{"keys":[]}` {
+		t.Fatalf("a JWK Set: %q %v", b, err)
+	}
+	if _, _, err := c.Get(ctx, "https://127.0.0.1:"+itoa(port)+"/teapot"); err == nil || !strings.Contains(err.Error(), "418") {
+		t.Fatalf("the status is named: %v", err)
 	}
 	for name, tc := range map[string]struct {
 		url  string

@@ -1,0 +1,192 @@
+# kista's Helm chart (spec 0013). The documentation:
+# https://hugr-lab.github.io/duckdb-extension-repository/docs/deployment/kubernetes
+
+image:
+  repository: ghcr.io/hugr-lab/kista
+  # default: the chart's appVersion
+  tag: ""
+  # sha256:…: deploy by digest (the release notes give it); wins over tag
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# kista's configuration file (kista.yaml), as YAML: see Configuration in the documentation. It goes
+# into a ConfigMap at /etc/kista/kista.yaml; a change rolls the pods.
+# - No secret values: kista refuses a password in a DSN or a token inline. Secrets are files from
+#   secretVolumes (below), named here by their path.
+# - Write sizes as strings with units (max_body: 1GiB): Helm turns large numbers into floats.
+# - The chart writes, in what it renders:
+#   - a health listener {addr: ":8081", scheme: health} for the probes (do not define one, and do
+#     not use :8081);
+#   - the serving listener on :8443, unless serve.listeners is set (it must then listen on :8443):
+#     https behind_proxy (mode behind_proxy) or dual with the certificate from tlsSecret (mode tls);
+#   - blob.spool_dir: /var/lib/kista/tmp/spool, on an emptyDir;
+#   - with store.kind sqlite: store.sqlite.path /var/lib/kista/data/kista.db and, without
+#     blob.domains, an fs domain at /var/lib/kista/data/blobs, both on the persistent volume.
+# - serve.public_url is the base of the token audiences: the URL clients use.
+# - serve.resign: turn it on only where this pod may sign (spec 0003).
+# - store.migrate: auto (the default) migrates at start under the store's lock. A migration that
+#   raises min_reader makes older pods unready at once; to avoid the short gap, set check and run
+#   kista admin migrate first (Upgrading in the documentation).
+config: {}
+
+# behind_proxy: a TLS-terminating ingress or L7 load balancer in front, sending X-Forwarded-For and
+# X-Forwarded-Proto; config.serve.trusted_proxies must name its addresses (in practice the pod
+# CIDR, which the NetworkPolicy below narrows to the ingress controller's pods). The hop from the
+# ingress to the pod is plain http and carries Bearer tokens.
+# tls: kista terminates TLS itself on a dual listener (DuckDB's http bootstrap and https on one
+# port), with the certificate from tlsSecret, behind an L4 load balancer or TLS passthrough.
+mode: behind_proxy
+# mode tls: a kubernetes.io/tls Secret (tls.crt, tls.key), mounted at /etc/kista/tls
+tlsSecret: ""
+
+# config.profile dev relaxes key and identity rules; the chart refuses it unless this is true
+devProfile: false
+
+# Ignored with store.kind sqlite (one replica). More than one needs blob domains every replica
+# sees: s3, azureblob or gcs, or fs on blobVolume with ReadWriteMany.
+replicas: 2
+
+# Secrets, each mounted as a directory (mode 0440, group 65532), never with subPath: a rotated
+# Secret reaches the pod. kista reads the database password, the Vault token, the S3 keys and the
+# TLS files again when it uses them; the OTLP headers_file only at start.
+#   - name: db
+#     secretName: kista-db
+#     mountPath: /etc/kista/secrets/db     # config: store.login.password_file: /etc/kista/secrets/db/password
+secretVolumes: []
+
+# Service account tokens for Vault or OpenBao jwt/kubernetes auth, or a GCP external_account file
+# source. The audience must not be the API server's; expirationSeconds 600..3600.
+#   - name: vault
+#     mountPath: /var/run/secrets/kista/vault   # the file is <mountPath>/token
+#     audience: vault
+#     expirationSeconds: 3600
+projectedTokens: []
+
+# Extra environment: OTEL_* and the like, secret values through secretKeyRef. A KISTA_* variable
+# overrides the setting it names (the store DSN, public_url); an unknown or file-only one stops
+# kista. Configuration belongs in config.
+env: []
+envFrom: []
+
+serviceAccount:
+  create: true
+  # default: the release's full name
+  name: ""
+  annotations: {}
+
+# One identity per cloud. The chart writes the annotation (and label) and checks the config.
+azure:
+  workloadIdentity:
+    # AKS workload identity: equal to every azure identity's client_id with kind workload in config
+    clientId: ""
+aws:
+  irsa:
+    # EKS IAM roles for service accounts: equal to every identity's role_arn with kind irsa in
+    # config. EKS Pod Identity needs nothing here.
+    roleArn: ""
+gcp:
+  # GKE Workload Identity: equal to the principal of every gcpkms source and gcs domain that uses
+  # the metadata server (no credentials_file)
+  serviceAccount: ""
+
+# SQLite: the database and the fs blobs on one ReadWriteOnce volume of block storage (not Azure
+# Files or NFS: SQLite's locking and WAL fail there).
+persistence:
+  size: 10Gi
+  storageClass: ""
+  existingClaim: ""
+
+# An fs blob domain shared by the replicas, mounted at /var/lib/kista/blobs (the default domain's
+# root): ReadWriteMany for more than one replica. Another mode means one pod at a time (Recreate,
+# no adminJobs).
+blobVolume:
+  enabled: false
+  size: 100Gi
+  storageClass: ""
+  accessMode: ReadWriteMany
+  existingClaim: ""
+
+# The spool emptyDir at /var/lib/kista/tmp. Empty: (2 × blob.max_ingests + 1) × blob.max_body. The
+# pod requests as much ephemeral storage, unless resources.requests names it.
+spool:
+  sizeLimit: ""
+
+service:
+  # default: ClusterIP with mode behind_proxy (port 80), LoadBalancer with mode tls (80 and 443)
+  type: ""
+  annotations: {}
+  # mode tls: Local keeps the client addresses
+  externalTrafficPolicy: Local
+  loadBalancerSourceRanges: []
+
+# mode behind_proxy. DuckDB follows no redirect: serve plain http on the hosts DuckDB uses, without
+# an http→https redirect (Traefik does not redirect unless told to), so its http bootstrap works
+# (spec 0006). AWS ALB with IP targets: alb.ingress.kubernetes.io/healthcheck-port:
+# "8081" and alb.ingress.kubernetes.io/healthcheck-path: /readyz.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # - host: kista.example.com      (an entry without host: every host)
+  hosts: []
+  # - secretName: kista-tls
+  #   hosts: [kista.example.com]
+  tls: []
+
+# GKE Ingress (NEG): a BackendConfig that checks /readyz on 8081, not the serving port.
+gke:
+  backendConfig:
+    enabled: false
+
+# Who may reach the pods. Default: on with mode behind_proxy (port 8443 only from the ingress
+# controller's pods and loadBalancerRanges), off with mode tls. With it on, name the ingress
+# controller's pods (or give loadBalancerRanges): its podSelector, and its namespaceSelector unless
+# it runs in kista's namespace. For example Traefik's:
+#   namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: traefik}}
+#   podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+networkPolicy:
+  enabled: null
+  ingressController:
+    namespaceSelector: {}
+    podSelector: {}
+  # load balancers that reach the pods directly, also for their health checks on 8081 (GKE:
+  # 35.191.0.0/16, 130.211.0.0/22); put them in config.serve.trusted_proxies too
+  loadBalancerRanges: []
+  # for CNIs that do not exempt the kubelet's probes
+  nodeCIDRs: []
+
+podDisruptionBudget:
+  minAvailable: 1
+
+# One CronJob per entry, running kista admin with the pods' config, Secrets and identity; suspended
+# without a schedule. Refused with SQLite (run kubectl exec there).
+#   - name: blob-verify
+#     args: [blob, verify]
+#     schedule: "0 3 * * 0"
+adminJobs: []
+
+probes:
+  # the first start may migrate: this long before liveness applies
+  startupSeconds: 300
+
+# preStop sleeps this long (the endpoints update before the drain)
+preStopSeconds: 5
+# empty: preStop + drain_timeout + 2 × shutdown_timeout + 21s + 10s (101 with the defaults)
+terminationGracePeriodSeconds: null
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+# by zone and by node, ScheduleAnyway
+topologySpread: true
+priorityClassName: ""

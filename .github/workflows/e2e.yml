@@ -1,13 +1,16 @@
 name: e2e
 
 # DuckDB at e2e/DUCKDB_PIN against signed repositories (spec 0002): on any server code change, since
-# the cases go through serving, tokens, publication and upstreams, not only the file format.
+# the cases go through serving, tokens, publication and upstreams, not only the file format. Then the
+# Helm chart on kind (spec 0013) when the chart, the image or the file rules change, and nightly.
 on:
   pull_request:
-    paths: [internal/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, .github/workflows/e2e.yml]
+    paths: [internal/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, Dockerfile, .dockerignore, deploy/helm/**, .github/workflows/e2e.yml]
   push:
     branches: [main]
-    paths: [internal/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, .github/workflows/e2e.yml]
+    paths: [internal/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, Dockerfile, .dockerignore, deploy/helm/**, .github/workflows/e2e.yml]
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       os:
@@ -22,6 +25,8 @@ permissions:
 jobs:
   e2e:
     runs-on: ${{ inputs.os || 'ubuntu-24.04' }}
+    outputs:
+      build: ${{ steps.key.outputs.build }}
     env:
       GOWORK: off
       E2E_BUILD: ${{ github.workspace }}/e2e/.build
@@ -105,3 +110,59 @@ jobs:
             echo KISTA_TEST_REQUIRE_BLOB=1
           } >> "$GITHUB_ENV"
       - run: make e2e
+
+  kind:
+    # The Helm chart on kind (deploy/helm/kind/run.sh): two replicas behind Traefik with the
+    # NetworkPolicy, PostgreSQL, S3 and OpenBao, DuckDB through the ingress, a rolling restart. On
+    # changes to the chart, the image or the file rules; on main and nightly always.
+    needs: e2e
+    if: ${{ !inputs.os || inputs.os == 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      GOWORK: off
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: changed
+        name: what changed
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          changed=$(git diff --name-only "$BASE" HEAD)
+          if grep -E '^(deploy/helm/|Dockerfile$|\.dockerignore$|cmd/kista/|internal/(secretfile|egress|serve|config)/|e2e/remote_test\.go$|\.github/workflows/e2e\.yml$)' <<<"$changed" >/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.changed.outputs.run
+        with:
+          go-version-file: go.mod
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.changed.outputs.run
+        with:
+          path: |
+            e2e/.build/lib
+            e2e/.build/include
+            e2e/.build/extensions
+          key: ${{ needs.e2e.outputs.build }}
+          fail-on-cache-miss: true
+      - name: kind and helm
+        if: steps.changed.outputs.run
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin" && cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o bin/kind https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  bin/kind" | sha256sum -c
+          chmod +x bin/kind
+          curl -fsSL --retry 3 -o helm.tgz https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz
+          echo "86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb  helm.tgz" | sha256sum -c
+          tar -xzf helm.tgz -C bin --strip-components 1 linux-amd64/helm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - if: steps.changed.outputs.run
+        run: |
+          # DuckDB resolves kista.localhost itself; pin it to the address kind's ports listen on
+          echo '127.0.0.1 kista.localhost' | sudo tee -a /etc/hosts >/dev/null
+          make e2e-runner && deploy/helm/kind/run.sh

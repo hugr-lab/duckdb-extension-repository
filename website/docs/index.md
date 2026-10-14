@@ -104,8 +104,8 @@ These pages say how to run and use kista; the specs say why it works the way it 
 kista is in early development. Signed and passthrough channels, publication and promotion,
 upstreams (mirror, pull-through, private upstreams), tokens and grants, attachments and the feed,
 events, storage garbage collection and the administration console are in place. kista ships as
-a signed container image and, from the first release, signed binaries for linux and darwin
-([Deployment](deployment/index.md)); a Helm chart is to come.
+a signed container image and, from the first release, a signed Helm chart and signed binaries for
+linux and darwin ([Deployment](deployment/index.md)).
 
 ## License
 

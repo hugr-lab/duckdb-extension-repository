@@ -1,0 +1,6 @@
+# want: one listener must use it
+config:
+  store: {kind: sqlite}
+  serve:
+    public_url: https://kista.example.com
+    listeners: [{addr: ":9443", scheme: http}]

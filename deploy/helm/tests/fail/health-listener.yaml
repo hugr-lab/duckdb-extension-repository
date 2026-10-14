@@ -1,0 +1,7 @@
+# want: do not define one
+config:
+  store: {kind: sqlite}
+  serve:
+    public_url: https://kista.example.com
+    trusted_proxies: [10.0.0.0/8]
+    listeners: [{addr: ":8443", scheme: https, behind_proxy: true}, {addr: ":9000", scheme: health}]

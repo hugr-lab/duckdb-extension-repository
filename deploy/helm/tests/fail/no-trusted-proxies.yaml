@@ -1,0 +1,4 @@
+# want: needs config.serve.trusted_proxies
+config:
+  store: {kind: sqlite}
+  serve: {public_url: https://kista.example.com}

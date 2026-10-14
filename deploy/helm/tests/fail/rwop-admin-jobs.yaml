@@ -1,0 +1,8 @@
+# want: a second pod cannot mount the volume
+replicas: 1
+config:
+  store: {kind: postgres, dsn: postgres://kista@db/kista}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+blobVolume: {enabled: true, accessMode: ReadWriteOncePod}
+adminJobs: [{name: v, args: [blob, verify]}]
+networkPolicy: {ingressController: {namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: traefik}}, podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}}}
