@@ -286,10 +286,14 @@ Delivery, each phase a pull request with its own reviews:
     GRANT rds_iam TO kista;
     GRANT kista TO <master>;
     ALTER DATABASE kista OWNER TO kista;
+    ALTER SCHEMA public OWNER TO kista;
+    REVOKE kista FROM <master>;
     ```
 
-    and makes `kista` the owner of schema `public`, so migrations can create tables on PostgreSQL
-    15 and later.
+    The master is a member of `kista` only for the ownership change: a role holding `kista`
+    inherits `rds_iam`, and RDS then refuses its password (found in the live run).
+
+    so migrations can create tables on PostgreSQL 15 and later.
   - `terraform_data` with `local-exec` runs it through `aws ecs run-task`, waits for it to stop,
     checks its exit code, and retries while IAM propagates.
 - **The CA.** The region's RDS CA bundle is a file in the recipe, with its checksum, and goes into

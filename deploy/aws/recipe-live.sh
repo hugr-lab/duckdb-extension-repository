@@ -21,7 +21,7 @@ set -euo pipefail
 cmd=${1:?usage: recipe-live.sh up | check | down | leftovers}
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
-export AWS_REGION=${AWS_REGION:-eu-central-1} AWS_PAGER=""
+export AWS_REGION=${AWS_REGION:-eu-central-1} AWS_PAGER="" GOWORK=off
 zone=${KISTA_LIVE_ZONE:?set KISTA_LIVE_ZONE to a Route 53 hosted zone of the account}
 host=${KISTA_LIVE_HOST:-kista.$zone}
 node=${KISTA_LIVE_NODE:-t4g.medium}
@@ -32,7 +32,7 @@ work=$here/.state-live
 mkdir -p "$work" && chmod 700 "$work"
 export KUBECONFIG=$work/kubeconfig
 account=$(aws sts get-caller-identity --query Account --output text)
-# the AWS Load Balancer Controller, pinned; its IAM policy from the same tag
+# the AWS Load Balancer Controller, pinned (its chart has the same version); its IAM policy from the same tag
 lbc_version=v3.6.0
 
 step() { printf '\n== %s\n' "$*"; }
@@ -121,9 +121,9 @@ up() {
 
 	step "db-init: the IAM user kista, owner of the database and of schema public"
 	kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-	kubectl -n "$ns" delete secret db-init pod/db-init --ignore-not-found >/dev/null
+	kubectl -n "$ns" delete secret/db-init pod/db-init --ignore-not-found >/dev/null
 	aws secretsmanager get-secret-value --secret-id "$secret" --query SecretString --output text |
-		jq -r .password | kubectl -n "$ns" create secret generic db-init --from-file=password=/dev/stdin >/dev/null
+		jq -j .password | kubectl -n "$ns" create secret generic db-init --from-file=password=/dev/stdin >/dev/null
 	kubectl -n "$ns" apply -f - >/dev/null <<EOF
 apiVersion: v1
 kind: Pod
@@ -135,19 +135,30 @@ spec:
       image: postgres:17-alpine
       env:
         - {name: PGPASSWORD, valueFrom: {secretKeyRef: {name: db-init, key: password}}}
+      # the kubelet turns \$\$ into \$ in args: \$\$\$\$ here is PostgreSQL's \$\$
       command: [psql, "host=$endpoint dbname=kista user=kistaadmin sslmode=require", -v, ON_ERROR_STOP=1, -c]
       args:
         - |
-          DO \$\$ BEGIN
+          DO \$\$\$\$ BEGIN
             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'kista') THEN CREATE ROLE kista LOGIN; END IF;
-          END \$\$;
+          END \$\$\$\$;
           GRANT rds_iam TO kista;
           GRANT kista TO kistaadmin;
           ALTER DATABASE kista OWNER TO kista;
           ALTER SCHEMA public OWNER TO kista;
+          -- kistaadmin must not keep kista's membership: it would inherit rds_iam, and RDS would
+          -- refuse its password from then on
+          REVOKE kista FROM kistaadmin;
 EOF
-	kubectl -n "$ns" wait --for=jsonpath='{.status.phase}'=Succeeded pod/db-init --timeout 3m ||
-		{ kubectl -n "$ns" logs db-init; exit 1; }
+	for i in $(seq 1 90); do
+		phase=$(kubectl -n "$ns" get pod db-init -o jsonpath='{.status.phase}')
+		case $phase in
+		Succeeded) break ;;
+		Failed) kubectl -n "$ns" logs db-init; exit 1 ;;
+		esac
+		[ "$i" = 90 ] && { kubectl -n "$ns" describe pod db-init; exit 1; }
+		sleep 2
+	done
 	kubectl -n "$ns" delete secret db-init >/dev/null
 	kubectl -n "$ns" delete pod db-init >/dev/null
 
@@ -187,9 +198,12 @@ EOF
 	helm repo add eks https://aws.github.io/eks-charts >/dev/null 2>&1 || true
 	helm repo update eks >/dev/null
 	helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller -n kube-system \
-		--version "$(helm search repo eks/aws-load-balancer-controller --versions -o json | jq -r --arg v "${lbc_version#v}" '[.[] | select(.app_version == $v)][0].version')" \
+		--version "${lbc_version#v}" \
 		--set clusterName="$name" --set serviceAccount.create=false --set serviceAccount.name=aws-load-balancer-controller \
 		--set region="$AWS_REGION" --set vpcId="$vpc" --wait --timeout 5m >/dev/null
+	# each upgrade renders a new webhook certificate; running pods keep the old one until restarted
+	kubectl -n kube-system rollout restart deploy/aws-load-balancer-controller >/dev/null
+	kubectl -n kube-system rollout status deploy/aws-load-balancer-controller --timeout 5m >/dev/null
 
 	step "ACM: a certificate for $host, validated in $zone"
 	zoneid=$(aws route53 list-hosted-zones-by-name --dns-name "$zone." --query 'HostedZones[0].Id' --output text | sed 's|/hostedzone/||')
@@ -207,11 +221,16 @@ EOF
 	save validation "$rname $rvalue"
 	aws acm wait certificate-validated --certificate-arn "$cert"
 
-	step "kista: the chart, the configuration from the environment-free ConfigMap, IRSA everywhere"
+	step "kista: the chart, the configuration in a ConfigMap, IRSA everywhere"
+	# the controller holds a rollout until the ALB has a new pod healthy before the next goes
+	kubectl label namespace "$ns" elbv2.k8s.aws/pod-readiness-gate-inject=enabled --overwrite >/dev/null
 	{
 		cat <<EOF
 image: {repository: $(get image), digest: "$(get digest)", pullPolicy: Always}
-replicaCount: 2
+replicas: 2
+# an ALB stops sending to a deregistered target seconds after the endpoint goes: wait that long
+# before draining
+preStopSeconds: 20
 aws: {irsa: {roleArn: $role}}
 networkPolicy: {enabled: false}
 ingress:
@@ -273,14 +292,26 @@ EOF
 		sleep 5
 	done
 	lbzone=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?DNSName=='$lb'].CanonicalHostedZoneId | [0]" --output text)
-	aws route53 change-resource-record-sets --hosted-zone-id "$zoneid" --change-batch "{\"Changes\":[{\"Action\":\"UPSERT\",
+	change=$(aws route53 change-resource-record-sets --hosted-zone-id "$zoneid" --change-batch "{\"Changes\":[{\"Action\":\"UPSERT\",
 		\"ResourceRecordSet\":{\"Name\":\"$host\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$lbzone\",
-		\"DNSName\":\"dualstack.$lb\",\"EvaluateTargetHealth\":false}}}]}" >/dev/null
+		\"DNSName\":\"dualstack.$lb\",\"EvaluateTargetHealth\":false}}}]}" --query ChangeInfo.Id --output text)
+	# before anything looks the name up: a resolver caches the miss for the zone's negative TTL
+	aws route53 wait resource-record-sets-changed --id "$change"
 	save lb "$lb"
 	echo "up: done; next: recipe-live.sh check"
 }
 
 check() {
+	step "$host resolves here"
+	for i in $(seq 1 120); do
+		[ -n "$(dig +short "$host" | head -1)" ] && break
+		if [ "$i" = 1 ] && [ -n "$(dig +short @8.8.8.8 "$host" | head -1)" ]; then
+			echo "the public DNS has it, this machine's resolver does not yet (a cached miss: up to the zone's negative TTL)"
+		fi
+		[ "$i" = 120 ] && { echo "$host does not resolve here" >&2; exit 1; }
+		sleep 10
+	done
+
 	step "the load balancer answers (http and https, no redirect)"
 	for scheme in http https; do
 		for i in $(seq 1 60); do
@@ -301,7 +332,7 @@ check() {
 	ka key check -signer "aws:$key"
 	[[ $(ka key list acme/prod) == *"aws:$key"* ]] || ka key add acme/prod -signer "aws:$key" -active
 	[[ $(ka version list) == *"$version"* ]] || ka version add "$version" -kind "$vkind"
-	ka channel versions acme/prod -add "$version" >/dev/null
+	ka channel versions acme/prod -add "$version" >/dev/null 2>&1 || true # already there on a second check
 	ka release add acme/prod - -name httpfs <"$duck/extensions/httpfs.duckdb_extension" || true
 	ka release add acme/prod - -name loadable_extension_demo -private <"$duck/extensions/loadable_extension_demo.duckdb_extension" || true
 	[[ $(ka issuer list acme) == *eks* ]] || ka issuer add acme -name eks -url "$(get issuer)"
@@ -328,12 +359,14 @@ check() {
 	echo "clients: $(echo "$clients" | tr '\n' ' ') (this machine: $me)"
 	echo "$clients" | grep -q "^${me%.*}\." || { echo "no event from this machine's address" >&2; exit 1; }
 
-	step "a rolling restart, /readyz through the load balancer throughout"
+	step "a rolling restart, a channel's .well-known through the load balancer throughout"
 	: >"$work/polls"
 	rm -f "$work/stop"
 	(
 		while [ ! -e "$work/stop" ]; do
-			curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 "https://$host/readyz" >>"$work/polls" 2>/dev/null || echo fail >>"$work/polls"
+			# a request, not /readyz: a draining pod answers /readyz 503 on purpose while it serves
+			curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 "https://$host/acme/prod/.well-known/duckdb-extension-repo.json" \
+				>>"$work/polls" 2>/dev/null || echo fail >>"$work/polls"
 			sleep 0.2
 		done
 	) &

@@ -197,7 +197,11 @@ ranges in `trusted_proxies` and `networkPolicy.loadBalancerRanges`:
   `130.211.0.0/22`.
 - **AWS Load Balancer Controller, IP targets.** Ingress annotations
   `alb.ingress.kubernetes.io/healthcheck-port: "8081"` and
-  `alb.ingress.kubernetes.io/healthcheck-path: /readyz`; the ranges are the ALB's subnets.
+  `alb.ingress.kubernetes.io/healthcheck-path: /readyz`; the ranges are the ALB's subnets. An ALB
+  keeps sending to a target for some seconds after its endpoint goes, longer than the chart's
+  default `preStopSeconds: 5`: set `preStopSeconds: 20`, and label the namespace
+  `elbv2.k8s.aws/pod-readiness-gate-inject=enabled` so a rollout waits for the ALB to see each new
+  pod healthy. Without both, a rolling restart answers some requests `503` (measured on EKS).
 - **Azure Application Gateway for Containers.** A `HealthCheckPolicy` for port 8081, path
   `/readyz`; the range is the gateway's subnet.
 
