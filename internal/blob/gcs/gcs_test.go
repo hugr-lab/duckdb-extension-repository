@@ -3,10 +3,14 @@ package gcs_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -334,6 +338,47 @@ func TestResumableProtocol(t *testing.T) {
 	f.alwaysFail = true
 	if err := put(f, s); err == nil || f.deleted != 1 {
 		t.Fatalf("a failing session: %v, cancelled %d", err, f.deleted)
+	}
+}
+
+// A small object is one multipart upload whose metadata carries the CRC32C, which GCS checks.
+func TestMultipartUpload(t *testing.T) {
+	data := blobtest.Data(100<<10, 5)
+	var meta map[string]string
+	var got []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mt, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if r.URL.Query().Get("uploadType") != "multipart" || err != nil || mt != "multipart/related" ||
+			r.ContentLength <= int64(len(data)) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mr := multipart.NewReader(r.Body, params["boundary"])
+		p, err := mr.NextPart()
+		if err != nil || p.Header.Get("Content-Type") != "application/json; charset=UTF-8" || json.NewDecoder(p).Decode(&meta) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if p, err = mr.NextPart(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		got, _ = io.ReadAll(p)
+		if _, err := mr.NextPart(); err != io.EOF {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"size": strconv.Itoa(len(got)), "crc32c": meta["crc32c"], "generation": "1"})
+	}))
+	defer srv.Close()
+	s := newStore(t, gcs.Config{Bucket: bucket, Prefix: "p/", Endpoint: srv.URL, Tokens: tokens()})
+	if err := s.Put(context.Background(), blobtest.Key(data), bytes.NewReader(data), int64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+	sum := crc32.Checksum(data, crc32.MakeTable(crc32.Castagnoli))
+	want := base64.StdEncoding.EncodeToString([]byte{byte(sum >> 24), byte(sum >> 16), byte(sum >> 8), byte(sum)})
+	if !bytes.Equal(got, data) || meta["crc32c"] != want {
+		t.Fatalf("body %d bytes, metadata %v, want crc32c %s", len(got), meta, want)
 	}
 }
 

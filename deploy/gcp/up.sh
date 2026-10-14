@@ -48,6 +48,12 @@ done
 # kista's service account, with a role that signs and reads key metadata and nothing else
 sa=kista-signer@$project.iam.gserviceaccount.com
 gcloud iam service-accounts create kista-signer --project "$project" --display-name kista
+# the operator may act as it (no key): deploy/gcp/live.sh gets the live tests' token so
+me=$(gcloud config get-value account 2>/dev/null)
+member=user:$me
+case $me in *.gserviceaccount.com) member=serviceAccount:$me ;; esac
+gcloud iam service-accounts add-iam-policy-binding "$sa" --project "$project" \
+	--member "$member" --role roles/iam.serviceAccountTokenCreator >/dev/null
 gcloud iam roles create kistaSigner --project "$project" --title "kista signer" --permissions \
 	cloudkms.cryptoKeyVersions.useToSign,cloudkms.cryptoKeyVersions.viewPublicKey,cloudkms.cryptoKeyVersions.get,cloudkms.cryptoKeys.get
 for k in ext-channel ext-attestation; do
@@ -61,6 +67,7 @@ gcloud storage buckets create "gs://$bucket" --project "$project" --location "$r
 	--uniform-bucket-level-access --public-access-prevention
 gcloud storage buckets add-iam-policy-binding "gs://$bucket" --member "serviceAccount:$sa" \
 	--role roles/storage.objectUser >/dev/null
+printf 'region=%s\nsa=%s\nbucket=%s\nsoftware=%s\n' "$region" "$sa" "$bucket" "$([ "$protection" = software ] && echo 1 || echo 0)" >>"$state"
 
 if [ -n "${KISTA_GCP_GITHUB_REPO:-}" ]; then
 	number=$(gcloud projects describe "$project" --format 'value(projectNumber)')
@@ -94,5 +101,6 @@ blob:
       gcs: { bucket: $bucket, principal: $sa }
 
 service account: $sa
+live tests: deploy/gcp/live.sh $project
 remove everything: deploy/gcp/down.sh $project
 CONF

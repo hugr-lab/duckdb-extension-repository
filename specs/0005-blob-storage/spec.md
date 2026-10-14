@@ -216,7 +216,9 @@ REST, with no Google SDK.
   credentials come from spec 0004's `internal/cloud/gcp`.
 - **Object names** in `/o/<name>` are escaped with `/` as `%2F`.
 - **Put:**
-  - An object up to 16 MiB is one upload (`uploadType=media`), with its CRC32C in `x-goog-hash`.
+  - An object up to 16 MiB is one multipart upload (`uploadType=multipart`): the object resource
+    with its CRC32C, then the bytes. A media upload is not used, because the JSON API ignores
+    `x-goog-hash` there (found live, 2026-10-14: a wrong hash was stored with `200`).
   - A larger one is a resumable upload:
     - It is started with `X-Upload-Content-Length` and the CRC32C in the object resource.
     - Its session URI must be on the store's endpoint, on the `/upload/storage/v1/b/<bucket>/o`
@@ -224,13 +226,15 @@ REST, with no Google SDK.
     - Chunks of 16 MiB are read from the spool file (`ReadAt`). A `308` continues from its `Range`
       header, which may acknowledge fewer bytes than were sent.
     - A failed chunk is followed by a backoff (honouring `Retry-After`) and a status query
-      (`Content-Range: bytes */<total>`) before it is sent again. A 4xx other than 408 and 429 ends the upload at once. Each chunk has three failures,
-      and the whole upload a bounded number of rounds.
+      (`Content-Range: bytes */<total>`) before it is sent again. A 4xx other than 408 and 429
+      ends the upload at once. Each chunk has three failures, and the whole upload a bounded
+      number of rounds.
     - A failed upload is cancelled with a fresh deadline (`DELETE`; `499` is success).
   - Either kind becomes visible only when complete. The final answer's `crc32c` and `size` must
     match kista's. Otherwise that generation is deleted (`ifGenerationMatch`), so a later writer's
-    object is not, and the Put fails. GCS refuses a wrong `x-goog-hash` itself, which
-    fake-gcs-server does not emulate; the live tests will prove it.
+    object is not, and the Put fails. GCS itself refuses bytes whose CRC32C differs from the
+    object resource's (`400`), for multipart and resumable uploads alike; fake-gcs-server does not
+    emulate it, and the live tests prove it.
 - **Get:**
   - Offset 0 with no length sends no `Range` and wants `200`. Otherwise a `Range`, and a `206`
     whose `Content-Range` starts at the offset.

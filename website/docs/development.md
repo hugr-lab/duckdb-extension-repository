@@ -162,8 +162,9 @@ make test
 
 ### A disposable GCP stack
 
-Live tests against Google Cloud come later. `deploy/gcp/up.sh` builds a real stack for them, and
-for trying kista by hand, in a Google Cloud project of its own; `deploy/gcp/down.sh` deletes it.
+`deploy/gcp/up.sh` builds a real stack for the live tests, and for trying kista by hand, in a
+Google Cloud project of its own; `deploy/gcp/live.sh` runs the live tests against it;
+`deploy/gcp/down.sh` deletes it.
 
 A dedicated project is the only clean way out: Cloud KMS key rings and keys can never be deleted,
 only their versions destroyed. Deleting the project removes the keys, the bucket and its objects,
@@ -172,6 +173,7 @@ the service account, the role and the federation together.
 ```bash
 KISTA_GCP_BILLING=XXXXXX-XXXXXX-XXXXXX deploy/gcp/up.sh            # a new project kista-<date>-<n>
 KISTA_GCP_BILLING=XXXXXX-XXXXXX-XXXXXX deploy/gcp/up.sh kista-dev  # or a given id
+deploy/gcp/live.sh kista-dev                                       # the live tests
 deploy/gcp/down.sh kista-dev
 ```
 
@@ -189,14 +191,23 @@ Storage, IAM, IAM Credentials and STS. It makes:
 - a key ring `kista` with two keys, `ext-channel` (labelled `kista-purpose=channel-signing`) and
   `ext-attestation` (`attestation-signing`);
 - the service account `kista-signer` and a custom role `kistaSigner` with the four Cloud KMS
-  permissions, bound on each key;
+  permissions, bound on each key; the account running `up.sh` gets
+  `roles/iam.serviceAccountTokenCreator` on it, so `live.sh` acts as it without a key;
 - a private bucket `<project>-bodies` (uniform bucket-level access, public access prevention), with
   `roles/storage.objectUser` for the service account;
 - with `KISTA_GCP_GITHUB_REPO`, a workload identity pool `kista` with a provider `github` that
   admits only that repository.
 
-It prints the `signers` and `blob` configuration for the stack, and records the project in
-`deploy/gcp/.state-<project>` (git-ignored). The project id must start with `kista-`.
+It prints the `signers` and `blob` configuration for the stack, and records the project, region,
+service account and bucket in `deploy/gcp/.state-<project>` (git-ignored). The project id must
+start with `kista-`.
+
+`live.sh` gets an access token of `kista-signer` by impersonation and runs `go test -tags live`
+on `gcpkms` and `gcs`, with extra `go test` flags passed on (`-v`). The tests sign with both keys
+and verify as DuckDB does, refuse the attestation key as a channel key, run the blob contract suite
+on the bucket, upload 20 MiB in two resumable chunks and read across the boundary, check that the
+bucket is private, and check that GCS refuses bytes whose CRC32C differs from the one sent. They
+cover the credential paths (metadata server, `external_account`) only through fakes.
 
 `down.sh` deletes only a project whose id starts with `kista-` and that carries the label
 `purpose=kista-test`. It asks for the project id to be typed again unless given `--yes`. Google
