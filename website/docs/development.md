@@ -196,7 +196,7 @@ Storage, IAM, IAM Credentials and STS. It makes:
 - a private bucket `<project>-bodies` (uniform bucket-level access, public access prevention), with
   `roles/storage.objectUser` for the service account;
 - with `KISTA_GCP_GITHUB_REPO`, a workload identity pool `kista` with a provider `github` that
-  admits only that repository.
+  admits only that repository (`deploy/gcp/github.sh`, which also adds it to a stack later).
 
 It prints the `signers` and `blob` configuration for the stack, and records the project, region,
 service account and bucket in `deploy/gcp/.state-<project>` (git-ignored). The project id must
@@ -207,7 +207,16 @@ on `gcpkms` and `gcs`, with extra `go test` flags passed on (`-v`). The tests si
 and verify as DuckDB does, refuse the attestation key as a channel key, run the blob contract suite
 on the bucket, upload 20 MiB in two resumable chunks and read across the boundary, check that the
 bucket is private, and check that GCS refuses bytes whose CRC32C differs from the one sent. They
-cover the credential paths (metadata server, `external_account`) only through fakes.
+cover the metadata server only through fakes.
+
+The same tests run in GitHub Actions (`.github/workflows/gcp-live.yml`, on demand and on pull
+requests that touch the GCP code) through kista's own `external_account` path: the job writes
+GitHub's OIDC token to a file and an `external_account` file with that file source, impersonating
+the principal, so no key exists. `deploy/gcp/github.sh <project> <owner/repo>` (or `up.sh` with
+`KISTA_GCP_GITHUB_REPO`) creates the federation and prints the repository variables the workflow
+reads: `KISTA_GCP_PROVIDER`, `KISTA_GCP_PRINCIPAL`, `KISTA_GCP_KEYRING`, `KISTA_GCP_BUCKET`.
+Without them the job is skipped. Once the stack is deleted, delete the variables too
+(`gh variable delete`).
 
 `down.sh` deletes only a project whose id starts with `kista-` and that carries the label
 `purpose=kista-test`. It asks for the project id to be typed again unless given `--yes`. Google

@@ -12,22 +12,41 @@ import (
 
 	"golang.org/x/oauth2"
 
+	gcpcloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/gcp"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/gcpkms"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 )
 
-// TestLive signs with real Cloud KMS keys, the stack deploy/gcp/up.sh makes: KISTA_LIVE_GCP_KEYRING
-// (projects/<p>/locations/<l>/keyRings/kista) and KISTA_LIVE_GCP_TOKEN (an access token of the
-// stack's service account; make live-gcp gets one by impersonation). KISTA_LIVE_GCP_SOFTWARE=1 for
-// a stack with software keys. Run with make live-gcp, or go test -tags live.
-func TestLive(t *testing.T) {
-	ring, token := os.Getenv("KISTA_LIVE_GCP_KEYRING"), os.Getenv("KISTA_LIVE_GCP_TOKEN")
-	if ring == "" || token == "" {
-		t.Skip("KISTA_LIVE_GCP_KEYRING / KISTA_LIVE_GCP_TOKEN are not set")
+// liveTokens are the stack's service account: an external_account file through kista's own
+// credentials (KISTA_LIVE_GCP_CREDENTIALS and KISTA_LIVE_GCP_PRINCIPAL, as in GitHub Actions), or
+// an access token got by impersonation (KISTA_LIVE_GCP_TOKEN, deploy/gcp/live.sh).
+func liveTokens(t *testing.T) oauth2.TokenSource {
+	t.Helper()
+	if f := os.Getenv("KISTA_LIVE_GCP_CREDENTIALS"); f != "" {
+		ts, err := gcpcloud.TokenSource(f, os.Getenv("KISTA_LIVE_GCP_PRINCIPAL"), gcpcloud.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ts
 	}
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: "Bearer"})
+	if tok := os.Getenv("KISTA_LIVE_GCP_TOKEN"); tok != "" {
+		return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: tok, TokenType: "Bearer"})
+	}
+	t.Skip("neither KISTA_LIVE_GCP_CREDENTIALS nor KISTA_LIVE_GCP_TOKEN is set")
+	return nil
+}
+
+// TestLive signs with real Cloud KMS keys, the stack deploy/gcp/up.sh makes: KISTA_LIVE_GCP_KEYRING
+// (projects/<p>/locations/<l>/keyRings/kista), with liveTokens. KISTA_LIVE_GCP_SOFTWARE=1 for a
+// stack with software keys. Run with deploy/gcp/live.sh, or go test -tags live.
+func TestLive(t *testing.T) {
+	ring := os.Getenv("KISTA_LIVE_GCP_KEYRING")
+	if ring == "" {
+		t.Skip("KISTA_LIVE_GCP_KEYRING is not set")
+	}
+	ts := liveTokens(t)
 	reg := keysource.NewRegistry(signer.Resolver{})
 	if err := reg.Add("gcp", gcpkms.New(ring, ts, os.Getenv("KISTA_LIVE_GCP_SOFTWARE") != "1", nil, gcpkms.Options{}),
 		keysource.Options{Allow: []string{"ext-"}}); err != nil {

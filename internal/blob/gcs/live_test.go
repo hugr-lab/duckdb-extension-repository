@@ -18,18 +18,38 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/blobtest"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/gcs"
+	gcpcloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/gcp"
 )
 
-// The live tests run against the bucket deploy/gcp/up.sh makes: KISTA_LIVE_GCS_BUCKET and
-// KISTA_LIVE_GCP_TOKEN (an access token of the stack's service account). Every run writes under a
-// prefix of its own; down.sh removes the bucket with the project.
+// The live tests run against the bucket deploy/gcp/up.sh makes (KISTA_LIVE_GCS_BUCKET), with
+// liveTokens. Every run writes under a prefix of its own; down.sh removes the bucket with the
+// project.
 func live(t *testing.T) (string, oauth2.TokenSource) {
 	t.Helper()
-	bucket, token := os.Getenv("KISTA_LIVE_GCS_BUCKET"), os.Getenv("KISTA_LIVE_GCP_TOKEN")
-	if bucket == "" || token == "" {
-		t.Skip("KISTA_LIVE_GCS_BUCKET / KISTA_LIVE_GCP_TOKEN are not set")
+	bucket := os.Getenv("KISTA_LIVE_GCS_BUCKET")
+	if bucket == "" {
+		t.Skip("KISTA_LIVE_GCS_BUCKET is not set")
 	}
-	return bucket, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: "Bearer"})
+	return bucket, liveTokens(t)
+}
+
+// liveTokens are the stack's service account: an external_account file through kista's own
+// credentials (KISTA_LIVE_GCP_CREDENTIALS and KISTA_LIVE_GCP_PRINCIPAL, as in GitHub Actions), or
+// an access token got by impersonation (KISTA_LIVE_GCP_TOKEN, deploy/gcp/live.sh).
+func liveTokens(t *testing.T) oauth2.TokenSource {
+	t.Helper()
+	if f := os.Getenv("KISTA_LIVE_GCP_CREDENTIALS"); f != "" {
+		ts, err := gcpcloud.TokenSource(f, os.Getenv("KISTA_LIVE_GCP_PRINCIPAL"), gcpcloud.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ts
+	}
+	if tok := os.Getenv("KISTA_LIVE_GCP_TOKEN"); tok != "" {
+		return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: tok, TokenType: "Bearer"})
+	}
+	t.Skip("neither KISTA_LIVE_GCP_CREDENTIALS nor KISTA_LIVE_GCP_TOKEN is set")
+	return nil
 }
 
 func liveStore(t *testing.T, bucket string, ts oauth2.TokenSource) blob.Store {
