@@ -37,6 +37,12 @@ variable "public_subnet_ids" {
   description = "With vpc_id: the load balancer's subnets. Their CIDRs are kista's trusted_proxies."
 }
 
+variable "private_route_table_ids" {
+  type        = list(string)
+  default     = []
+  description = "With vpc_id and vpc_endpoints: the private subnets' route tables, for the S3 gateway endpoint."
+}
+
 variable "vpc_endpoints" {
   type        = bool
   default     = false
@@ -62,7 +68,11 @@ variable "certificate_arn" {
 
 variable "image" {
   type        = string
-  description = "kista's image, by version or digest (ghcr.io/hugr-lab/kista:vX.Y.Z or …@sha256:…); never edge."
+  description = "kista's image, by version or digest (ghcr.io/hugr-lab/kista:vX.Y.Z or …@sha256:…); never a moving tag."
+  validation {
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.image)) || !can(regex(":(edge|latest)$", var.image))
+    error_message = "image: a version tag or a digest; :edge and :latest move (pin edge by its digest instead)."
+  }
 }
 
 variable "cpu_architecture" {
@@ -135,7 +145,7 @@ variable "db_engine_version" {
 variable "rds_ca_pem" {
   type        = string
   default     = null
-  description = "The region's RDS CA bundle (PEM); none: fetched from AWS's trust store over https at plan time."
+  description = "The region's RDS CA bundle (PEM, the regional one: the global bundle overflows the task definition); none: fetched from AWS's trust store over https at plan time."
 }
 
 variable "deletion_protection" {

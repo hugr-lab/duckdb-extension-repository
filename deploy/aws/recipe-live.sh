@@ -215,7 +215,7 @@ EOF
 	step "ACM: a certificate for $host, validated in $zone"
 	zoneid=$(aws route53 list-hosted-zones-by-name --dns-name "$zone." --query 'HostedZones[0].Id' --output text | sed 's|/hostedzone/||')
 	save zoneid "$zoneid"
-	cert=$(aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$host' || DomainName=='$ehost'].CertificateArn | [0]" --output text)
+	cert=$(aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$host'].CertificateArn | [0]" --output text)
 	if [ "$cert" = None ]; then
 		cert=$(aws acm request-certificate --domain-name "$host" --validation-method DNS --tags "$tag" --query CertificateArn --output text)
 		sleep 10
@@ -409,7 +409,7 @@ server_admins       = "['subject:eks|system:serviceaccount:$ns:ops']"
 deletion_protection = false
 key_deletion_days   = 7
 EOF
-	tf init -input=false >/dev/null
+	tf init -input=false -lockfile=readonly >/dev/null
 	tf apply -input=false -auto-approve -state="$work/ecs.tfstate" -var-file="$work/ecs.tfvars"
 }
 
@@ -483,6 +483,19 @@ ecs_check() {
 	jq -r '.signature_keys[0]' "$work/ecs-wellknown.json" >"$work/ecs-channel.pem"
 	grep -q "BEGIN PUBLIC KEY" "$work/ecs-channel.pem"
 
+	step "an admin command as a task: blob check, with the recipe's command definition"
+	sg=$(tf output -state="$work/ecs.tfstate" -raw task_security_group)
+	subnets=$(tf output -state="$work/ecs.tfstate" -json private_subnet_ids | jq -r 'join(",")')
+	cluster=$(tf output -state="$work/ecs.tfstate" -raw cluster)
+	arn=$(aws ecs run-task --cluster "$cluster" --launch-type FARGATE --task-definition "$(tf output -state="$work/ecs.tfstate" -raw command_task_definition)" \
+		--network-configuration "awsvpcConfiguration={subnets=[$subnets],securityGroups=[$sg],assignPublicIp=DISABLED}" \
+		--overrides '{"containerOverrides":[{"name":"kista","command":["admin","-config","env:KISTA_CONFIG","blob","check"]}]}' \
+		--query 'tasks[0].taskArn' --output text)
+	aws ecs wait tasks-stopped --cluster "$cluster" --tasks "$arn"
+	code=$(aws ecs describe-tasks --cluster "$cluster" --tasks "$arn" --query 'tasks[0].containers[0].exitCode' --output text)
+	echo "blob check: exit $code"
+	[ "$code" = 0 ]
+
 	step "DuckDB through the load balancer"
 	KISTA_E2E_DUCKDB=$duck KISTA_E2E_URL=https://$ehost KISTA_E2E_CHANNEL=acme/prod KISTA_E2E_CA=/etc/ssl/cert.pem \
 		KISTA_E2E_KEY="$work/ecs-channel.pem" \
@@ -523,8 +536,11 @@ ecs_check() {
 ecs_down() {
 	[ -f "$work/ecs.tfstate" ] || return 0
 	step "the ECS recipe"
-	tf init -input=false >/dev/null
+	tf init -input=false -lockfile=readonly >/dev/null
 	tf destroy -input=false -auto-approve -state="$work/ecs.tfstate" -var-file="$work/ecs.tfvars"
+	# destroy deregisters task definitions; deleting them leaves nothing tagged behind
+	arns=$(aws ecs list-task-definitions --status INACTIVE --family-prefix "$name-ecs" --query 'taskDefinitionArns' --output text)
+	[ -z "$arns" ] || [ "$arns" = None ] || aws ecs delete-task-definitions --task-definitions $arns >/dev/null
 }
 
 down() {
@@ -629,7 +645,7 @@ leftovers() {
 	aws ec2 describe-vpcs --filters "Name=tag:alpha.eksctl.io/cluster-name,Values=$name" --query 'Vpcs[].VpcId' --output text | sed '/^$/d; s/^/LEFT vpc: /'
 	aws ec2 describe-addresses --filters "Name=tag:alpha.eksctl.io/cluster-name,Values=$name" --query 'Addresses[].AllocationId' --output text | sed '/^$/d; s/^/LEFT eip: /'
 	aws ecr describe-repositories --query "repositories[?starts_with(repositoryName, '$name')].repositoryName" --output text 2>/dev/null | sed '/^$/d; s/^/LEFT ecr: /'
-	aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$host'].CertificateArn" --output text | sed '/^$/d; s/^/LEFT cert: /'
+	aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$host' || DomainName=='$ehost'].CertificateArn" --output text | sed '/^$/d; s/^/LEFT cert: /'
 	aws logs describe-log-groups --query "logGroups[?contains(logGroupName, '$name')].logGroupName" --output text | sed '/^$/d; s/^/LEFT log group: /'
 	zoneid=$(aws route53 list-hosted-zones-by-name --dns-name "$zone." --query 'HostedZones[0].Id' --output text | sed 's|/hostedzone/||')
 	aws route53 list-resource-record-sets --hosted-zone-id "$zoneid" --query "ResourceRecordSets[?Name=='$host.' || Name=='$ehost.'].Name" --output text | sed '/^$/d; s/^/LEFT dns: /'

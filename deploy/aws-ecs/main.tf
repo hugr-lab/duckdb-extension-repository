@@ -102,10 +102,6 @@ data "aws_subnet" "public" {
   id    = local.public_subnet_ids[count.index]
 }
 
-data "aws_vpc" "this" {
-  id = local.vpc_id
-}
-
 # ---- security groups: the load balancer is the only way in
 
 resource "aws_security_group" "lb" {
@@ -147,10 +143,21 @@ resource "aws_vpc_security_group_ingress_rule" "task" {
   referenced_security_group_id = aws_security_group.lb.id
 }
 
-resource "aws_vpc_security_group_egress_rule" "task" {
+# out: https (the image, KMS, S3, STS, logs, issuers, upstreams) and the database
+resource "aws_vpc_security_group_egress_rule" "task_https" {
   security_group_id = aws_security_group.task.id
-  ip_protocol       = "-1"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
   cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_egress_rule" "task_db" {
+  security_group_id            = aws_security_group.task.id
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  referenced_security_group_id = aws_security_group.db.id
 }
 
 resource "aws_security_group" "db" {
@@ -174,13 +181,14 @@ resource "aws_security_group" "endpoints" {
   vpc_id      = local.vpc_id
 }
 
+# the tasks and db-init (its secret and its log go through the endpoints when private DNS is on)
 resource "aws_vpc_security_group_ingress_rule" "endpoints" {
-  count                        = var.vpc_endpoints ? 1 : 0
+  for_each                     = var.vpc_endpoints ? { task = aws_security_group.task.id, db_init = aws_security_group.db_init.id } : {}
   security_group_id            = aws_security_group.endpoints[0].id
   ip_protocol                  = "tcp"
   from_port                    = 443
   to_port                      = 443
-  referenced_security_group_id = aws_security_group.task.id
+  referenced_security_group_id = each.value
 }
 
 resource "aws_vpc_endpoint" "interface" {
@@ -194,11 +202,11 @@ resource "aws_vpc_endpoint" "interface" {
 }
 
 resource "aws_vpc_endpoint" "s3" {
-  count             = var.vpc_endpoints && local.own_vpc ? 1 : 0
+  count             = var.vpc_endpoints && (local.own_vpc || length(var.private_route_table_ids) > 0) ? 1 : 0
   vpc_id            = local.vpc_id
   service_name      = "com.amazonaws.${var.region}.s3"
   vpc_endpoint_type = "Gateway"
-  route_table_ids   = [aws_route_table.private[0].id]
+  route_table_ids   = local.own_vpc ? [aws_route_table.private[0].id] : var.private_route_table_ids
 }
 
 # ---- the channel key: RSA_2048 SIGN_VERIFY, its purpose tag what the task role's policy matches
@@ -208,7 +216,9 @@ resource "aws_kms_key" "channel" {
   customer_master_key_spec = "RSA_2048"
   key_usage                = "SIGN_VERIFY"
   deletion_window_in_days  = var.key_deletion_days
-  tags                     = { "kista-purpose" = "channel-signing" }
+  # kista-deployment scopes the task role to this deployment's keys: kista-purpose alone would
+  # give every kista in the account every channel key
+  tags = { "kista-purpose" = "channel-signing", "kista-deployment" = local.name }
 }
 
 resource "aws_kms_alias" "channel" {
@@ -229,6 +239,22 @@ resource "aws_s3_bucket_public_access_block" "bodies" {
   ignore_public_acls      = true
   block_public_policy     = true
   restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_policy" "bodies" {
+  bucket = aws_s3_bucket.bodies.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "TLSOnly"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource  = [aws_s3_bucket.bodies.arn, "${aws_s3_bucket.bodies.arn}/*"]
+      Condition = { Bool = { "aws:SecureTransport" = "false" } }
+    }]
+  })
+  depends_on = [aws_s3_bucket_public_access_block.bodies]
 }
 
 resource "aws_s3_bucket_ownership_controls" "bodies" {
@@ -265,6 +291,17 @@ resource "aws_s3_bucket_lifecycle_configuration" "bodies" {
 resource "aws_db_subnet_group" "db" {
   name       = local.name
   subnet_ids = local.private_subnet_ids
+  lifecycle {
+    precondition {
+      condition     = local.own_vpc || (length(var.private_subnet_ids) >= 2 && length(var.public_subnet_ids) >= 2)
+      error_message = "with vpc_id, give private_subnet_ids and public_subnet_ids, two AZs each"
+    }
+  }
+}
+
+# a destroy of a protected deployment keeps a final snapshot, named apart from any earlier one
+resource "random_id" "snapshot" {
+  byte_length = 4
 }
 
 resource "aws_db_instance" "db" {
@@ -286,7 +323,7 @@ resource "aws_db_instance" "db" {
   backup_retention_period             = 7
   deletion_protection                 = var.deletion_protection
   skip_final_snapshot                 = !var.deletion_protection
-  final_snapshot_identifier           = var.deletion_protection ? "${local.name}-final" : null
+  final_snapshot_identifier           = var.deletion_protection ? "${local.name}-final-${random_id.snapshot.hex}" : null
   apply_immediately                   = true
 }
 
@@ -329,9 +366,9 @@ resource "aws_iam_role" "task" {
 }
 
 data "aws_iam_policy_document" "task" {
-  # every key whose purpose tag is kista's: a key added later with the tag needs no policy change.
-  # Whoever may tag keys in this account may make one kista's: deny tagging kista-purpose in
-  # production (an SCP or a permissions boundary).
+  # this deployment's keys, by their tags: a key added later with both tags needs no policy change.
+  # Whoever may tag keys in this account may make one kista's: deny tagging kista-purpose and
+  # kista-deployment in production (an SCP or a permissions boundary).
   statement {
     actions   = ["kms:DescribeKey", "kms:ListResourceTags", "kms:GetPublicKey", "kms:Sign"]
     resources = ["arn:${local.partition}:kms:${var.region}:${local.account}:key/*"]
@@ -339,6 +376,11 @@ data "aws_iam_policy_document" "task" {
       test     = "StringEquals"
       variable = "aws:ResourceTag/kista-purpose"
       values   = ["channel-signing", "attestation-signing"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/kista-deployment"
+      values   = [local.name]
     }
   }
   statement {
@@ -454,6 +496,7 @@ locals {
     # the spool lives in the image's /var/lib/kista/tmp (owned by kista's uid) on the task's disk:
     # a Fargate bind mount there would be root-owned, and kista could not write it
     readonlyRootFilesystem = false
+    linuxParameters        = { capabilities = { drop = ["ALL"] }, initProcessEnabled = false }
     environment            = [{ name = "KISTA_CONFIG", value = local.config }]
     logConfiguration = {
       logDriver = "awslogs"
@@ -540,21 +583,14 @@ resource "aws_ecs_task_definition" "db_init" {
     cpu_architecture        = var.cpu_architecture
   }
   container_definitions = jsonencode([{
-    name      = "psql"
-    image     = "postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"
-    essential = true
-    secrets   = [{ name = "PGPASSWORD", valueFrom = "${aws_db_instance.db.master_user_secret[0].secret_arn}:password::" }]
-    command = ["psql", "host=${aws_db_instance.db.address} dbname=kista user=kistaadmin sslmode=require", "-v", "ON_ERROR_STOP=1", "-c", <<-SQL
-      DO $$ BEGIN
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'kista') THEN CREATE ROLE kista LOGIN; END IF;
-      END $$;
-      GRANT rds_iam TO kista;
-      GRANT kista TO kistaadmin;
-      ALTER DATABASE kista OWNER TO kista;
-      ALTER SCHEMA public OWNER TO kista;
-      REVOKE kista FROM kistaadmin;
-    SQL
-    ]
+    name        = "psql"
+    image       = "postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"
+    essential   = true
+    secrets     = [{ name = "PGPASSWORD", valueFrom = "${aws_db_instance.db.master_user_secret[0].secret_arn}:password::" }]
+    environment = [{ name = "RDS_CA", value = local.rds_ca }, { name = "SQL", value = local.db_init_sql }]
+    # the master password goes only to the server the region's CA vouches for
+    entryPoint = ["sh", "-c"]
+    command    = ["printf '%s' \"$RDS_CA\" >/tmp/rds-ca.pem && psql \"host=${aws_db_instance.db.address} dbname=kista user=kistaadmin sslmode=verify-full sslrootcert=/tmp/rds-ca.pem\" -v ON_ERROR_STOP=1 -c \"$SQL\""]
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -564,6 +600,19 @@ resource "aws_ecs_task_definition" "db_init" {
       }
     }
   }])
+}
+
+locals {
+  db_init_sql = <<-SQL
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'kista') THEN CREATE ROLE kista LOGIN; END IF;
+      END $$;
+      GRANT rds_iam TO kista;
+      GRANT kista TO kistaadmin;
+      ALTER DATABASE kista OWNER TO kista;
+      ALTER SCHEMA public OWNER TO kista;
+      REVOKE kista FROM kistaadmin;
+    SQL
 }
 
 resource "aws_vpc_security_group_ingress_rule" "db_init" {
@@ -580,31 +629,47 @@ resource "aws_security_group" "db_init" {
   vpc_id      = local.vpc_id
 }
 
-resource "aws_vpc_security_group_egress_rule" "db_init" {
+resource "aws_vpc_security_group_egress_rule" "db_init_https" {
   security_group_id = aws_security_group.db_init.id
-  ip_protocol       = "-1"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
   cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_egress_rule" "db_init_db" {
+  security_group_id            = aws_security_group.db_init.id
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  referenced_security_group_id = aws_security_group.db.id
 }
 
 # run it once, where Terraform runs (the AWS CLI), and wait for its exit code; IAM and the secret
 # take a moment to propagate, so it is tried a few times
 resource "terraform_data" "db_init" {
   triggers_replace = [aws_db_instance.db.resource_id]
+  depends_on = [
+    aws_vpc_security_group_ingress_rule.db_init, aws_vpc_security_group_egress_rule.db_init_https,
+    aws_vpc_security_group_egress_rule.db_init_db, aws_iam_role_policy.db_init, aws_iam_role_policy_attachment.db_init,
+    aws_route_table_association.private, aws_vpc_endpoint.interface, aws_vpc_security_group_ingress_rule.endpoints,
+  ]
   provisioner "local-exec" {
     interpreter = ["/bin/bash", "-c"]
     command     = <<-EOT
       set -euo pipefail
-      for try in 1 2 3 4 5; do
+      for try in 1 2 3 4 5 6; do
+        [ "$try" = 1 ] || sleep 20
         arn=$(aws ecs run-task --region ${var.region} --cluster ${aws_ecs_cluster.cluster.name} --launch-type FARGATE \
           --task-definition ${aws_ecs_task_definition.db_init.arn} \
           --network-configuration "awsvpcConfiguration={subnets=[${join(",", local.private_subnet_ids)}],securityGroups=[${aws_security_group.db_init.id}],assignPublicIp=DISABLED}" \
-          --query 'tasks[0].taskArn' --output text)
-        aws ecs wait tasks-stopped --region ${var.region} --cluster ${aws_ecs_cluster.cluster.name} --tasks "$arn"
-        code=$(aws ecs describe-tasks --region ${var.region} --cluster ${aws_ecs_cluster.cluster.name} --tasks "$arn" \
-          --query 'tasks[0].containers[0].exitCode' --output text)
+          --query 'tasks[0].taskArn' --output text) || { echo "db-init: run-task failed (try $try)" >&2; continue; }
+        case "$arn" in arn:*) ;; *) echo "db-init: no task started (try $try)" >&2; continue ;; esac
+        aws ecs wait tasks-stopped --region ${var.region} --cluster ${aws_ecs_cluster.cluster.name} --tasks "$arn" || continue
+        read -r code reason < <(aws ecs describe-tasks --region ${var.region} --cluster ${aws_ecs_cluster.cluster.name} --tasks "$arn" \
+          --query 'tasks[0].[containers[0].exitCode, stoppedReason]' --output text)
         [ "$code" = 0 ] && exit 0
-        echo "db-init: exit $code (try $try); its log is in ${aws_cloudwatch_log_group.logs.name}, prefix db-init" >&2
-        sleep 20
+        echo "db-init: exit $code, $reason (try $try); its log is in ${aws_cloudwatch_log_group.logs.name}, prefix db-init" >&2
       done
       exit 1
     EOT
@@ -689,7 +754,9 @@ resource "aws_lb_listener" "https" {
   }
 }
 
-# plain http is forwarded, not redirected: DuckDB's bootstrap and passthrough autoload need it
+# plain http is forwarded, not redirected: DuckDB's bootstrap and passthrough autoload need it. The
+# API and the console go to https, so a token sent to http:// by mistake is not forwarded (kista
+# would ignore it, but it would have crossed the network in the clear).
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.lb.arn
   port              = 80
@@ -697,6 +764,24 @@ resource "aws_lb_listener" "http" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.kista.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "http_to_https" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 10
+  condition {
+    path_pattern {
+      values = ["/api/*", "/console", "/console/*"]
+    }
+  }
+  action {
+    type = "redirect"
+    redirect {
+      protocol    = "HTTPS"
+      port        = "443"
+      status_code = "HTTP_301"
+    }
   }
 }
 
@@ -737,5 +822,6 @@ resource "aws_ecs_service" "kista" {
     enable   = true
     rollback = true
   }
-  depends_on = [aws_lb_listener.https, aws_lb_listener.http, terraform_data.db_init, aws_iam_role_policy.task]
+  depends_on = [aws_lb_listener.https, aws_lb_listener.http, terraform_data.db_init, aws_iam_role_policy.task,
+  aws_iam_role_policy_attachment.execution]
 }

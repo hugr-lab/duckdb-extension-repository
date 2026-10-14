@@ -220,8 +220,8 @@ jobs:
           KISTA_TEST_REQUIRE_HELM: "1"
 
   terraform:
-    # The cloud recipes (spec 0020): formatted and valid, with no cloud and no credentials; the
-    # providers come from the committed lock file.
+    # The cloud recipes (spec 0020): formatted, valid, and their plans and refusals tested with mock
+    # providers; no cloud, no credentials; the providers come from the committed lock file.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -240,4 +240,5 @@ jobs:
             terraform -chdir="$m" fmt -check -recursive -diff
             terraform -chdir="$m" init -backend=false -input=false -lockfile=readonly
             terraform -chdir="$m" validate
+            terraform -chdir="$m" test
           done

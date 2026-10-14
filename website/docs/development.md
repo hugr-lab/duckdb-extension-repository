@@ -225,6 +225,29 @@ Without them the job is skipped. Once the stack is deleted, delete the variables
 Cloud keeps a deleted project recoverable for 30 days (`gcloud projects undelete <project>`), then
 purges it; the key versions are destroyed then.
 
+### Live runs on AWS
+
+`deploy/aws/recipe-live.sh` deploys kista on AWS for real and runs the kind test's checks through a
+load balancer: EKS through the chart (`up`, `check`) and the ECS recipe in `deploy/aws-ecs`
+(`ecs-up`, `ecs-check`, which needs `up`'s cluster for its server administrator's tokens). It
+costs money while it runs: a run needs the owner's yes, and is deleted the same day or when the
+cloud work it serves is done.
+
+```bash
+export AWS_PROFILE=<an IAM user or role for the run> KISTA_LIVE_ZONE=<a Route 53 zone of the account>
+deploy/aws/recipe-live.sh up && deploy/aws/recipe-live.sh check
+deploy/aws/recipe-live.sh ecs-up && deploy/aws/recipe-live.sh ecs-check
+deploy/aws/recipe-live.sh down && deploy/aws/recipe-live.sh leftovers
+```
+
+- Needs `aws`, `eksctl`, `kubectl`, `helm`, `docker`, `jq`, `go`, `terraform`, and the DuckDB e2e
+  build (`make e2e-build`).
+- `KISTA_LIVE_HOST` and `KISTA_LIVE_ECS_HOST` default to `kista.` and `kista-ecs.` in the zone;
+  `KISTA_LIVE_NODE` (`t4g.medium`) picks arm64 nodes, so the image builds natively on Apple silicon.
+- Every resource carries `purpose=kista-live` and a `kista-live` name. `leftovers` must print
+  nothing marked `LEFT` after `down`; KMS keys pending deletion (7 days) are expected. Delete the
+  run's IAM user afterwards.
+
 ## Lint
 
 ```bash

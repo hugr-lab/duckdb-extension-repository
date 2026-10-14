@@ -1,6 +1,6 @@
 # Spec 0020: Cloud recipes: AWS and GCP in Terraform, Azure in Bicep
 
-- **Status**: accepted; phase 0 implemented; phases 1-4 to come
+- **Status**: accepted; phases 0 and 1 implemented; phases 2-4 to come
 - **Date**: 2026-10-14
 - **Author**: vgsml, Claude
 
@@ -181,7 +181,7 @@ Delivery, each phase a pull request with its own reviews:
   command task receive it as `KISTA_CONFIG`, read through `-config env:KISTA_CONFIG`.
   - It declares the health listener `{addr: ":8081", scheme: health}`.
   - It declares the serving listener `:8443` as `https` with `behind_proxy`.
-  - It sets `spool_dir` to the spool volume.
+  - It sets `spool_dir` under `/var/lib/kista/tmp`.
 
   The cloud's identity fills `aws`, `gcp` or `azure` and each source's and domain's identity, with
   the `account` fields kista checks (spec 0004: the AWS account, the expected bucket owner).
@@ -220,8 +220,9 @@ Delivery, each phase a pull request with its own reviews:
     `kubectl exec`, or Container Apps jobs.
 - **CI**, with no cloud and no credentials, in `ci.yml` beside the `chart` job, with binaries pinned
   by SHA-256 as Helm's are:
-  - `terraform`: Terraform 1.12, then `fmt -check -recursive`, `init -backend=false`, `validate`,
-    and `terraform test` with `mock_provider` for the variable validations;
+  - `terraform`: Terraform 1.16.6, then `fmt -check -recursive`, `init -backend=false
+    -lockfile=readonly`, `validate`, and `terraform test` with mock providers: the plan's shape and
+    the refusals (variable validations and preconditions);
   - `bicep`: `az bicep build`, warnings treated as errors.
 
   Mock providers need Terraform 1.7, but users still need only 1.5: the tests are CI's.
@@ -253,110 +254,108 @@ Delivery, each phase a pull request with its own reviews:
 
 - **The task role** `<prefix>-task`, with no key. It may:
   - call `kms:DescribeKey`, `kms:ListResourceTags`, `kms:GetPublicKey` and `kms:Sign` on keys in its
-    account and region whose tag `kista-purpose` is `channel-signing` or `attestation-signing`
-    (condition `aws:ResourceTag/kista-purpose`), so a key added later with the tag is usable without
-    a policy change;
+    account and region tagged `kista-purpose` (`channel-signing` or `attestation-signing`) **and**
+    `kista-deployment=<prefix>`. A key added later with both tags is usable without a policy change;
+    the second tag keeps one deployment (staging) from signing with another's (production) keys;
   - call `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` and `s3:AbortMultipartUpload` on the
     bucket's objects, and `s3:ListBucket` and `s3:ListBucketMultipartUploads` on the bucket;
-  - with SSE-KMS, call `kms:GenerateDataKey` and `kms:Decrypt` on that key;
   - call `rds-db:connect` on `arn:aws:rds-db:<region>:<account>:dbuser:<DbiResourceId>/kista`.
 
-  The README notes that anyone allowed `kms:TagResource` can make a key usable by kista. In
-  production an SCP or a permissions boundary should deny tagging `kista-purpose`.
+  Anyone allowed `kms:TagResource` can make a key usable by kista: in production an SCP or a
+  permissions boundary denies tagging `kista-purpose` and `kista-deployment` (the docs say so).
 - **The execution roles.** The service's pulls the image and writes logs. `db-init` has an
-  execution role of its own, and only that role may read the master password's secret.
-- **KMS.** One channel key: `RSA_2048`, `SIGN_VERIFY`, tagged `kista-purpose=channel-signing`, with
-  `key_deletion_days`. Further keys are made with `aws kms create-key`, as the docs show.
-- **S3.**
-  - A bucket with public access blocked and `BucketOwnerEnforced`.
-  - SSE-S3, or SSE-KMS if asked.
-  - No versioning: bodies are content-addressed.
-  - A lifecycle rule `AbortIncompleteMultipartUpload` after 7 days, the backstop spec 0005 promises.
+  execution role of its own, and only that role may read the master password's secret. Who may
+  pass it (`iam:PassRole`) to a task of their own can read that password: the docs say so.
+- **KMS.** One channel key: `RSA_2048`, `SIGN_VERIFY`, tagged as above, with `key_deletion_days`.
+  Further keys: `aws kms create-key` with both tags, as the docs show. `deletion_protection` does
+  not cover the key; the docs warn that a destroy schedules its deletion.
+- **S3.** Public access blocked, `BucketOwnerEnforced`, SSE-S3, a policy denying requests without
+  TLS, no versioning (bodies are content-addressed; versioning for recovery is the docs' production
+  advice), and an `AbortIncompleteMultipartUpload` rule after 7 days, the backstop spec 0005
+  promises.
 - **RDS.**
   - PostgreSQL 17 with IAM authentication, in private subnets, not publicly accessible, encrypted,
-    with backups.
-  - `ca_cert_identifier` is pinned, so the recipe's CA bundle matches it.
+    with backups; a final snapshot with a random suffix when protected.
+  - `ca_cert_identifier` is pinned, so the region's CA bundle matches it.
   - The master password is managed by RDS in Secrets Manager.
-- **`db-init`.** A one-time task with the image `postgres:17-alpine` (pinned by digest) and `psql`,
-  the master password passed through ECS `secrets`.
-  - It runs:
+- **The CA.** The region's RDS bundle (4.6 KB; the global one would overflow the 64 KiB task
+  definition) is fetched over https from AWS's trust store at plan time, or given as `rds_ca_pem`.
+  It goes into the configuration as `store.ca_pem`: no file in the task.
+- **`db-init`.** A one-time task with `postgres:17-alpine` (pinned by digest): the master password
+  through ECS `secrets`, `psql` with `verify-full` against the same CA. It runs, in one
+  transaction:
 
-    ```sql
-    CREATE ROLE kista LOGIN;
-    GRANT rds_iam TO kista;
-    GRANT kista TO <master>;
-    ALTER DATABASE kista OWNER TO kista;
-    ALTER SCHEMA public OWNER TO kista;
-    REVOKE kista FROM <master>;
-    ```
+  ```sql
+  CREATE ROLE kista LOGIN;            -- unless it exists
+  GRANT rds_iam TO kista;
+  GRANT kista TO <master>;
+  ALTER DATABASE kista OWNER TO kista;
+  ALTER SCHEMA public OWNER TO kista; -- migrations create tables (PostgreSQL 15+)
+  REVOKE kista FROM <master>;
+  ```
 
-    The master is a member of `kista` only for the ownership change: a role holding `kista`
-    inherits `rds_iam`, and RDS then refuses its password (found in the live run).
-
-    so migrations can create tables on PostgreSQL 15 and later.
-  - `terraform_data` with `local-exec` runs it through `aws ecs run-task`, waits for it to stop,
-    checks its exit code, and retries while IAM propagates.
-- **The CA.** The region's RDS CA bundle is a file in the recipe, with its checksum, and goes into
-  the configuration as `store.ca_pem`: no download at apply time, and no file in the task.
+  The master is a member of `kista` only for the ownership change: a role holding `kista` inherits
+  `rds_iam`, and RDS then refuses its password (found in the live run). `terraform_data` runs it
+  through `aws ecs run-task` where Terraform runs (bash and the AWS CLI), waits for it, checks its
+  exit code, and tries again while IAM propagates or no task starts, printing the stop reason. It
+  depends explicitly on its security group rules, its role and the network.
 - **ECS.**
-  - A cluster, and the service on Fargate in private subnets with no public IP.
-  - `ephemeral_storage` sized for the spool.
+  - A cluster, and the service on Fargate in private subnets with no public IP; all capabilities
+    dropped.
+  - `ephemeral_storage` sized for the spool, checked by a precondition.
   - The spool in the image's `/var/lib/kista/tmp` (owned by kista's uid) on the task's disk. The
     root filesystem stays writable: the live run found that a Fargate bind mount at that path is
     root-owned, and kista (uid 65532) cannot write it.
-  - `wait_for_steady_state` and the deployment circuit breaker.
-  - A `health_check_grace_period_seconds` covering startup.
+  - `wait_for_steady_state`, the deployment circuit breaker, and a health-check grace period.
 - **The load balancer.**
   - An ALB with the TLS policy `ELBSecurityPolicy-TLS13-1-2-2021-06` and an ACM certificate,
-    DNS-validated in `route53_zone_id`, or a given `certificate_arn`.
-  - Listeners on 80 and 443 forward to one target group on `:8443`, over `HTTP1`, with the health
-    check on port 8081 at `/readyz`. The idle timeout stays at 60 seconds.
-  - The task security group admits the ALB's security group on 8443 and 8081, and nothing else.
-  - `trusted_proxies` is the CIDRs of the ALB's subnets: ALB nodes change addresses within them.
+    DNS-validated in `route53_zone_id`, or a given `certificate_arn`; invalid header fields dropped.
+  - Port 443 and port 80 forward to one target group on `:8443` (`HTTP1`), health checks on 8081 at
+    `/readyz`, idle timeout 60 seconds. On port 80, `/api/*` and `/console*` are redirected to https,
+    so a token sent to `http://` by mistake is not forwarded in the clear.
+  - The task security group admits the ALB's on 8443 and 8081, and nothing else. Egress: 443
+    anywhere and 5432 to the database.
+  - `trusted_proxies` is the CIDRs of the ALB's subnets: ALB nodes change addresses within them. The
+    trust rests on the security group: widening it makes `X-Forwarded-For` spoofable from those
+    subnets (the docs say so).
+- **The configuration** is one document in `KISTA_CONFIG`, read with `-config env:KISTA_CONFIG`; it
+  sets `spool_dir` under `/var/lib/kista/tmp`.
 - **Commands.** A task definition `<prefix>-command` with the same configuration, run with
-  `aws ecs run-task --overrides`. The README lists `migrate`, `blob check` and `blob gc -apply`.
+  `aws ecs run-task --overrides` (`admin -config env:KISTA_CONFIG <command>`).
 - **The network.**
-  - A VPC over two AZs with one NAT gateway, unless `vpc_id` names one. One NAT gateway suits a
-    trial; production uses one per AZ.
-  - Optional VPC endpoints for KMS, S3, Secrets Manager and Logs.
+  - A VPC over two AZs with one NAT gateway, unless `vpc_id` names one (with two private and two
+    public subnets, checked). One NAT gateway suits a trial; production uses one per AZ.
+  - `vpc_endpoints`: interface endpoints for KMS, Secrets Manager and Logs (admitting the tasks and
+    db-init), and the S3 gateway endpoint on the recipe's private route table, or on
+    `private_route_table_ids` in a given VPC.
   - NAT is needed in any case: kista pulls from ghcr.io and reaches its issuers and upstreams.
+- **The image** is a version or a digest; `:edge` and `:latest` are refused unless pinned by digest.
 
-**Live runs** (`deploy/aws/recipe-live.sh`, eu-central-1, an IAM user or SSO role made for the run):
+**Live runs** (`deploy/aws/recipe-live.sh up | check | ecs-up | ecs-check | down | leftovers`,
+eu-central-1, an IAM user made for the runs and deleted afterwards):
 
-1. **EKS through the chart.**
-   - eksctl makes a cluster with OIDC and two nodes, and the AWS Load Balancer Controller with
-     IRSA.
-   - The script makes the KMS key, bucket and RDS instance in eksctl's VPC, all tagged.
-   - kista's service account uses IRSA.
-   - `check` runs, with the configuration from a ConfigMap as the chart does.
-2. **The ECS recipe**, applied whole with `deletion_protection=false`, `skip_final_snapshot` and
-   `key_deletion_days=7`, at a name in a Route 53 zone the operator gives. Then `check`.
-3. **`down`, in order:**
-   - uninstall the chart, and wait until the controller has removed its ALB, target groups and
-     security groups (otherwise the VPC cannot go);
-   - `eksctl delete cluster --wait`, which also removes its CloudFormation stacks and the OIDC
-     provider;
-   - `terraform destroy`;
-   - empty and delete the bucket;
-   - schedule the KMS keys for deletion and remove their aliases;
-   - delete the log groups (ECS, RDS exports, EKS control plane), the IAM roles and the policies.
-4. **`leftovers`** checks, by tag and by prefix:
-   - the tagging API;
-   - IAM;
-   - `elbv2`;
-   - RDS instances and snapshots;
-   - `logs`;
-   - CloudFormation;
-   - Elastic IPs;
-   - ENIs.
+1. **EKS through the chart** (`up`, `check`): eksctl makes a cluster with OIDC and two nodes, and
+   the AWS Load Balancer Controller with IRSA; the script makes the KMS key, bucket and RDS instance
+   in eksctl's VPC, all tagged; kista's service account uses IRSA; `check` administers through
+   `kubectl exec`.
+2. **The ECS recipe** (`ecs-up`, `ecs-check`), applied whole with `deletion_protection=false` and
+   `key_deletion_days=7`, at a name in a Route 53 zone the operator gives, with up's image. Its
+   server issuer is the EKS cluster's OIDC issuer, so `ecs-check` administers through the API as a
+   service account of that cluster (the ECS run needs `up`'s cluster). It also runs `blob check` as
+   a task with the command definition.
+3. **`down`, in order:** `terraform destroy` and the task definitions; the chart, waiting until the
+   controller has removed its ALB, target groups and security groups; RDS, its subnet group and
+   security group; `eksctl delete cluster --wait`; the IAM policies and roles; the KMS key
+   scheduled for deletion and its alias; the bucket emptied and deleted; the image repository; the
+   certificate.
+4. **`leftovers`** checks, by tag and by prefix: the tagging API (KMS keys pending deletion are
+   expected), IAM roles, policies and the OIDC provider, EKS, ECS, buckets, CloudFormation, RDS
+   instances and snapshots, load balancers, VPCs, Elastic IPs, ECR, certificates, log groups and
+   the DNS records.
 
-   The owner deletes the run's IAM user afterwards.
-
-tresor-server's run reported account obstacles, which the docs page lists as observations to check
-first:
-- an organisation's SCP that allowed only Bedrock;
-- Identity Center sourced from Builder ID, which could not assign accounts;
-- no console sign-in for IAM users on the Free plan.
+The account obstacles tresor-server's run met are listed on the docs page as things to check
+first: an organisation's SCP that allowed only some services, and Identity Center sourced from
+Builder ID, which could not assign accounts.
 
 ### Phase 2: GCP
 
@@ -522,7 +521,7 @@ An addendum details this phase before its code.
   - `security.md`: workload identities, no live secret in Terraform's state, and the tag-condition
     advice;
   - `development.md`: the recipe live runs, their approval, `down` and `leftovers`.
-- **Each recipe's README** is a short version of its page.
+- **Each recipe's README** says what it is and how to apply it, and points at its page.
 
 ### Changes to earlier specs
 
