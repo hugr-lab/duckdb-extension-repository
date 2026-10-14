@@ -1,0 +1,21 @@
+# The image builds from cmd/, internal/, web/console and go.mod/go.sum (Dockerfile): everything
+# else stays out, and so does a local console build, so it never reaches the Go stage.
+*
+!cmd/
+!internal/
+!go.mod
+!go.sum
+!web/console/
+web/console/node_modules/
+web/console/.env*
+web/console/.npmrc
+web/console/dist/*
+!web/console/dist/.gitkeep
+web/console/e2e/
+web/console/playwright.config.ts
+web/console/test-results/
+web/console/playwright-report/
+web/console/blob-report/
+web/console/tsconfig.tsbuildinfo
+**/*_test.go
+**/testdata/

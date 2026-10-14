@@ -1,0 +1,14 @@
+# The image's smoke test (deploy/docker/smoke.sh): the smallest config that starts, SQLite and the
+# fs blob store beside it under /var/lib/kista, a plain listener and the probe listener.
+profile: dev
+store:
+  kind: sqlite
+  sqlite:
+    path: /var/lib/kista/kista.db
+serve:
+  public_url: http://127.0.0.1:8080
+  listeners:
+    - addr: 0.0.0.0:8080
+      scheme: http
+    - addr: 0.0.0.0:8081
+      scheme: health

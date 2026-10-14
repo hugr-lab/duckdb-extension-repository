@@ -44,6 +44,7 @@ make build
 | Target | What it does |
 | --- | --- |
 | `build` | `go build -o bin/kista ./cmd/kista` |
+| `image` | Build the image for this machine's platform as `kista:dev` and run its smoke test (`deploy/docker/smoke.sh`) |
 | `test` | `go test ./...` |
 | `lint` | `go vet ./...` and `golangci-lint run ./...` |
 | `test-db` / `test-db-down` | Start / stop PostgreSQL 17 and SQL Server 2022 in Docker Compose (`internal/store/testdb/compose.yaml`) |
@@ -297,6 +298,42 @@ The build fails on a broken link or anchor. Pull requests that touch `website/` 
 
 Write pages in plain, short sentences. In prose, escape `<` and `{` (or put them in backticks), or
 the MDX build fails. Link between pages with relative `.md` paths.
+
+## Images and releases
+
+The `Dockerfile` at the root builds the console (with its licence check and `npm audit`), then
+kista with the console embedded, into a distroless image ([Deployment](deployment/index.md)).
+`make image` builds it for this machine and runs `deploy/docker/smoke.sh`: `kista version`, then
+`kista serve` as uid `65532` on a read-only root filesystem until `/readyz` answers.
+
+Two workflows publish:
+
+- **`image.yml`.** On a pull request it builds `linux/amd64` and `linux/arm64` and runs the smoke
+  test on amd64; it pushes nothing. On `main` it also pushes `:sha-<commit>` and `:edge`, then
+  signs the image and attests its provenance.
+- **`release.yml`.** On a tag `vX.Y.Z` (or `vX.Y.Z-rc.N`, published as a pre-release) it builds
+  the image and the binaries without a build cache, pushes `:vX.Y.Z` unless that tag already
+  exists, signs and attests them, and creates the GitHub release with the binaries,
+  `SHA256SUMS` and the signature bundles.
+
+In both, the build job has read access to the repository only. The jobs that push, sign or
+release take the build's output as workflow artifacts and run no repository or npm code.
+
+To release, tag a commit on `main` and push the tag: `git tag -s v1.2.0 && git push origin
+v1.2.0`. The workflow refuses a tag that is not on `main`. If signing or the release fails after
+the push, re-run the failed jobs: the publish job accepts a version tag that already holds the
+same build. A broken build is fixed with a new version, never by moving the tag.
+
+**Before the first release**, once:
+
+1. Merge to `main` before the first tag: a push to `main` creates the package
+   `ghcr.io/hugr-lab/kista`. Check that it is linked to this repository (the image index's
+   `org.opencontainers.image.source` annotation links it, and gives the repository's Actions
+   access), then make it public; the organisation must allow public packages.
+2. Add a tag ruleset for `v*` in the repository settings: only maintainers may create a version
+   tag, and nobody may update or delete one.
+3. Cut `v0.1.0-rc.1` and verify its image and a binary as [Deployment](deployment/index.md#verifying)
+   shows.
 
 ## Specs and the working process
 

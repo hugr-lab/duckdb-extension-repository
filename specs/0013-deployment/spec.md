@@ -1,6 +1,6 @@
 # Spec 0013: Deployment: image, Helm chart, Azure
 
-- **Status**: accepted; phase 1a (server changes) implemented, 1b (image and releases) and 1c (chart) to come
+- **Status**: accepted; phases 1a (server changes) and 1b (image and releases) implemented, 1c (chart) to come
 - **Date**: 2026-10-14
 - **Author**: vgsml, Claude
 
@@ -136,7 +136,8 @@ organisation that writes its own manifests runs into these problems:
 
 #### The image
 
-- **Dockerfile.** It lives at the repository root and has three stages:
+- **Dockerfile.** It lives at the repository root and has three stages, plus a `binary` stage for
+  the release binaries (below):
   - `node:22-alpine` on `$BUILDPLATFORM` builds the console: `npm ci`, the licence gate
     (`npm run licenses`), `npm audit --omit=dev --audit-level=high`, then `npm run build`, as CI
     does. Its SBOM is scanned (`BUILDKIT_SBOM_SCAN_STAGE`), since its packages end up in the
@@ -166,7 +167,11 @@ organisation that writes its own manifests runs into these problems:
     sees the runner's OIDC token. Binaries and the chart are uploaded as workflow artifacts.
   - The jobs that push, sign or create the release (`packages: write`, `id-token: write`,
     `contents: write`, `attestations: write`) run no repository or npm code. They take digests and
-    artifacts from the build jobs.
+    artifacts from the build jobs. The build job writes the image as an OCI layout (with buildx's
+    SBOM) and uploads it; the publish job pushes it with `crane` (a pinned release, checked by
+    its SHA-256) and refuses unless the registry's digest is the built one. Releases are signed
+    in that job too, and the GitHub release is created by a third job with `contents: write`
+    only.
   - Tag builds use no build cache.
   - Tags `v*` are protected by a ruleset. A release refuses to overwrite an existing version tag in
     GHCR.
@@ -178,10 +183,11 @@ organisation that writes its own manifests runs into these problems:
     It carries buildx's SBOM, and a build provenance attestation from
     `actions/attest-build-provenance`. The docs claim no SLSA level beyond what that action
     states.
-- **The chart:** `helm package --version X.Y.Z --app-version vX.Y.Z`, pushed to
+- **The chart** (phase 1c): `helm package --version X.Y.Z --app-version vX.Y.Z`, pushed to
   `oci://ghcr.io/hugr-lab/charts` (so `oci://ghcr.io/hugr-lab/charts/kista`), signed by digest
   in the same way. It has an `org.opencontainers.image.source` annotation.
-- **Binaries:** `kista` for linux and darwin, amd64 and arm64, on the GitHub release, with
+- **Binaries:** `kista` for linux and darwin, amd64 and arm64 (`kista-vX.Y.Z-<os>-<arch>`, built
+  by the Dockerfile's `binary` stage, so with the same console gates), on the GitHub release, with
   `SHA256SUMS` and cosign `sign-blob --bundle` files. The darwin builds are not notarised, and the
   docs say how to clear the quarantine attribute.
 - **Verifying.** The docs show `cosign verify` with `--certificate-identity` set to the release
