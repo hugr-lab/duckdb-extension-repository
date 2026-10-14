@@ -19,9 +19,9 @@ import (
 func serveCmd(args, env []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("kista serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "", "config file")
+	cfgPath := fs.String("config", "", "config file, or env:NAME for a variable holding it")
 	if err := fs.Parse(args); err != nil || *cfgPath == "" || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: kista serve -config <file>")
+		fmt.Fprintln(stderr, "usage: kista serve -config <file|env:NAME>")
 		return 2
 	}
 	cfg, err := config.Load(*cfgPath, env)

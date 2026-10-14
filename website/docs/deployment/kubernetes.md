@@ -138,9 +138,9 @@ label) the platform needs, and the chart checks it against the configuration bot
 | Platform | Value | The chart writes | The configuration |
 | --- | --- | --- | --- |
 | AKS workload identity | `azure.workloadIdentity.clientId` | annotation `azure.workload.identity/client-id`, pod label `azure.workload.identity/use` | every identity with `kind: workload` has this `client_id` |
-| EKS IRSA | `aws.irsa.roleArn` | annotation `eks.amazonaws.com/role-arn` | every identity with `kind: irsa` has this `role_arn` |
+| EKS IRSA | `aws.irsa.roleArn` | annotation `eks.amazonaws.com/role-arn` | every identity with `kind: irsa` (sources, domains, `aws.identity`) has this `role_arn` |
 | EKS Pod Identity | none | nothing | `kind: pod_identity` |
-| GKE Workload Identity | `gcp.serviceAccount` | annotation `iam.gke.io/gcp-service-account` | every `gcpkms` source and `gcs` domain without `credentials_file` has this `principal` |
+| GKE Workload Identity | `gcp.serviceAccount` | annotation `iam.gke.io/gcp-service-account` | every `gcpkms` source, `gcs` domain and the `gcp` database login without `credentials_file` has this `principal` |
 
 `projectedTokens` adds service account tokens with your own audience, for Vault or OpenBao
 `kubernetes` or `jwt` auth, or a GCP `external_account` file on AKS or EKS. The audience must not
@@ -197,7 +197,11 @@ ranges in `trusted_proxies` and `networkPolicy.loadBalancerRanges`:
   `130.211.0.0/22`.
 - **AWS Load Balancer Controller, IP targets.** Ingress annotations
   `alb.ingress.kubernetes.io/healthcheck-port: "8081"` and
-  `alb.ingress.kubernetes.io/healthcheck-path: /readyz`; the ranges are the ALB's subnets.
+  `alb.ingress.kubernetes.io/healthcheck-path: /readyz`; the ranges are the ALB's subnets. An ALB
+  keeps sending to a target for some seconds after its endpoint goes, longer than the chart's
+  default `preStopSeconds: 5`: set `preStopSeconds: 20`, and label the namespace
+  `elbv2.k8s.aws/pod-readiness-gate-inject=enabled` so a rollout waits for the ALB to see each new
+  pod healthy. Without both, a rolling restart answers some requests `503` (measured on EKS).
 - **Azure Application Gateway for Containers.** A `HealthCheckPolicy` for port 8081, path
   `/readyz`; the range is the gateway's subnet.
 

@@ -49,7 +49,7 @@ var (
 	pg = &server{
 		pwEnv: "KISTA_TEST_POSTGRES_PASSWORD",
 		open: func(ctx context.Context, dsn string, l store.Login) (*store.Store, error) {
-			return store.OpenPostgres(ctx, dsn, l, 4)
+			return store.OpenPostgres(ctx, dsn, l, 4, nil)
 		},
 		create: func(n string) string { return "CREATE DATABASE " + n },
 		drop:   func(n string) string { return "DROP DATABASE IF EXISTS " + n + " WITH (FORCE)" },

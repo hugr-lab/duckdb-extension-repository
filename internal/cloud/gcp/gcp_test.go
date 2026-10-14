@@ -222,3 +222,67 @@ func TestFilesAndKeys(t *testing.T) {
 		t.Errorf("a 0644 file of kista's own: %v", err)
 	}
 }
+
+// The database login's token (spec 0020): asked for sqlservice.login only, never cloud-platform.
+func TestMetadataScopes(t *testing.T) {
+	var asked string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Metadata-Flavor", "Google")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/email"):
+			w.Write([]byte(principal))
+		case strings.HasSuffix(r.URL.Path, "/token"):
+			asked = r.URL.Query().Get("scopes")
+			w.Write([]byte(`{"access_token":"ya29.sql","expires_in":3599,"token_type":"Bearer"}`))
+		}
+	}))
+	defer srv.Close()
+	ts, err := TokenSource("", principal, Options{Env: env(nil, nil), MetadataURL: srv.URL + "/sa/", Scopes: []string{SQLLoginScope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := ts.Token(); err != nil || tok.AccessToken != "ya29.sql" {
+		t.Fatalf("%+v %v", tok, err)
+	}
+	if asked != SQLLoginScope {
+		t.Fatalf("scopes %q", asked)
+	}
+}
+
+// roundTrip answers the federation's calls in process.
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// Federation with impersonation (spec 0020): the impersonated token is asked for the given scopes
+// only; the STS token, which stays in process, is what carries cloud-platform.
+func TestExternalAccountScopes(t *testing.T) {
+	var impersonation map[string]any
+	hc := &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		rec := httptest.NewRecorder()
+		rec.Header().Set("Content-Type", "application/json")
+		switch r.URL.Host {
+		case "sts.googleapis.com":
+			rec.WriteString(`{"access_token":"sts-token","issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"Bearer","expires_in":3600}`)
+		case "iamcredentials.googleapis.com":
+			_ = json.NewDecoder(r.Body).Decode(&impersonation)
+			rec.WriteString(`{"accessToken":"ya29.sql","expireTime":"2099-01-01T00:00:00Z"}`)
+		default:
+			rec.WriteHeader(http.StatusNotFound)
+		}
+		return rec.Result(), nil
+	})}
+	files := map[string]string{"/etc/gcp/creds.json": external(nil), "/var/run/secrets/tokens/gcp-token": "eyJ.a.b"}
+	ts, err := TokenSource("/etc/gcp/creds.json", principal, Options{Env: env(nil, files), HTTPClient: hc, Scopes: []string{SQLLoginScope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := ts.Token()
+	if err != nil || tok.AccessToken != "ya29.sql" {
+		t.Fatalf("%+v %v", tok, err)
+	}
+	scope, _ := json.Marshal(impersonation["scope"])
+	if string(scope) != `["`+SQLLoginScope+`"]` {
+		t.Fatalf("the impersonated token's scope: %s", scope)
+	}
+}

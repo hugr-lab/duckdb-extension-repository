@@ -455,7 +455,7 @@ func TestOpenRefusesInsecure(t *testing.T) {
 		"host=127.0.0.1,db.example sslmode=prefer",
 		"postgres://u@db.example/x?sslmode=require",
 	} {
-		if _, err := store.OpenPostgres(ctx, dsn, nil, 1); err == nil || !strings.Contains(err.Error(), "verify-full") {
+		if _, err := store.OpenPostgres(ctx, dsn, nil, 1, nil); err == nil || !strings.Contains(err.Error(), "verify-full") {
 			t.Errorf("%s: %v", dsn, err)
 		}
 	}
@@ -487,10 +487,10 @@ func TestOpenRefusesInsecure(t *testing.T) {
 			}
 		}
 	}
-	if _, err := store.OpenPostgres(ctx, "postgres://u:secret@db.example/x?sslmode=verify-full", nil, 1); err == nil || strings.Contains(err.Error(), "secret") {
+	if _, err := store.OpenPostgres(ctx, "postgres://u:secret@db.example/x?sslmode=verify-full", nil, 1, nil); err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("password DSN: %v", err)
 	}
-	if _, err := store.OpenPostgres(ctx, "postgres://u@db.example/x?sslmode=require", nil, 1); err == nil || !strings.Contains(err.Error(), "verify-full") {
+	if _, err := store.OpenPostgres(ctx, "postgres://u@db.example/x?sslmode=require", nil, 1, nil); err == nil || !strings.Contains(err.Error(), "verify-full") {
 		t.Fatalf("sslmode: %v", err)
 	}
 	if _, err := store.OpenSQLServer(ctx, "sqlserver://u@db.example?database=x&encrypt=disable", nil, 1); err == nil || !strings.Contains(err.Error(), "encrypt") {

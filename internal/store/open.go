@@ -3,14 +3,17 @@ package store
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +33,27 @@ import (
 type Login interface {
 	Password(ctx context.Context) (string, error)
 }
+
+// Target is the connection a login is for: a token login binds its token to it (spec 0020).
+type Target struct {
+	Host string
+	Port uint16
+	User string
+}
+
+// TokenLogin makes a token for each new connection from the connection's target: RDS IAM and
+// Cloud SQL IAM authentication (spec 0020). It needs a single-host DSN.
+type TokenLogin struct {
+	For func(ctx context.Context, t Target) (string, error)
+}
+
+// Password implements Login; a token login needs the target, so the store calls PasswordFor.
+func (TokenLogin) Password(context.Context) (string, error) {
+	return "", errors.New("store: a token login needs the connection's host")
+}
+
+// PasswordFor returns the token for the connection.
+func (l TokenLogin) PasswordFor(ctx context.Context, t Target) (string, error) { return l.For(ctx, t) }
 
 // PasswordLogin reads the password from an environment variable or a file, on every connection, so
 // a rotated secret is picked up without a restart.
@@ -97,6 +121,99 @@ func DSNHasPassword(dsn string) bool {
 		}
 	}
 	return kvPassword.MatchString(dsn)
+}
+
+var kvRootCert = regexp.MustCompile(`(?i)(^|[\s;:&?])sslrootcert\s*=`)
+
+// DSNHasRootCert reports whether a DSN names a CA file (sslrootcert).
+func DSNHasRootCert(dsn string) bool {
+	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" {
+		for k := range u.Query() {
+			if strings.EqualFold(k, "sslrootcert") {
+				return true
+			}
+		}
+	}
+	return kvRootCert.MatchString(dsn)
+}
+
+// ValidCAPEM reports whether s is one or more PEM certificates and nothing else.
+func ValidCAPEM(s string) bool {
+	_, err := caPool([]byte(s))
+	return err == nil
+}
+
+func caPool(b []byte) (*x509.CertPool, error) {
+	pool, n := x509.NewCertPool(), 0
+	for rest := b; ; {
+		var blk *pem.Block
+		blk, rest = pem.Decode(rest)
+		if blk == nil {
+			if strings.TrimSpace(string(rest)) != "" {
+				return nil, errors.New("store: ca_pem holds something that is not a PEM certificate")
+			}
+			break
+		}
+		c, err := x509.ParseCertificate(blk.Bytes)
+		if blk.Type != "CERTIFICATE" || err != nil {
+			return nil, errors.New("store: ca_pem holds something that is not a PEM certificate")
+		}
+		pool.AddCert(c)
+		n++
+	}
+	if n == 0 {
+		return nil, errors.New("store: ca_pem holds no certificate")
+	}
+	return pool, nil
+}
+
+// applyCA makes caPEM the only CA every TLS host of cfg is checked against.
+func applyCA(cfg *pgx.ConnConfig, caPEM []byte) error {
+	pool, err := caPool(caPEM)
+	if err != nil {
+		return err
+	}
+	used := false
+	for _, h := range pgHosts(cfg) {
+		if h.tls != nil {
+			h.tls.RootCAs, used = pool, true
+		}
+	}
+	if !used {
+		return errors.New("store: ca_pem is given, but no host is reached over TLS")
+	}
+	return nil
+}
+
+// PGTarget is what a PostgreSQL DSN connects to, as pgx parses it.
+type PGTarget struct {
+	Hosts int    // distinct host:port pairs, the main one and every fallback
+	Host  string // the main host
+	User  string // the user pgx would log in as
+	TLS   bool   // some host is reached over TLS
+}
+
+// PostgresTarget parses a PostgreSQL DSN the way OpenPostgres does.
+func PostgresTarget(dsn string) (PGTarget, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return PGTarget{}, errors.New("store: not a PostgreSQL DSN")
+	}
+	t := PGTarget{Hosts: pgDistinctHosts(cfg), Host: cfg.Host, User: cfg.User}
+	for _, h := range pgHosts(cfg) {
+		t.TLS = t.TLS || h.tls != nil
+	}
+	return t, nil
+}
+
+// pgDistinctHosts counts the host:port pairs pgx may dial: sslmode prefer and allow add a fallback
+// for the same host (TLS, then plaintext), which is still one host.
+func pgDistinctHosts(cfg *pgx.ConnConfig) int {
+	seen := map[string]bool{net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))): true}
+	for _, f := range cfg.Fallbacks {
+		seen[net.JoinHostPort(f.Host, strconv.Itoa(int(f.Port)))] = true
+	}
+	return len(seen)
 }
 
 // IsLoopbackHost reports whether a host name or address is the local machine.
@@ -245,17 +362,30 @@ func OpenSQLite(ctx context.Context, path string) (*Store, error) {
 	return newStore(db, SQLite), nil
 }
 
-// OpenPostgres opens PostgreSQL. Off loopback the DSN must have sslmode=verify-full.
-func OpenPostgres(ctx context.Context, dsn string, login Login, maxOpen int) (*Store, error) {
+// OpenPostgres opens PostgreSQL. Off loopback the DSN must have sslmode=verify-full. caPEM, when
+// given, is the only CA the server's certificate is checked against (spec 0020: store.ca_pem).
+func OpenPostgres(ctx context.Context, dsn string, login Login, maxOpen int, caPEM []byte) (*Store, error) {
 	if DSNHasPassword(dsn) {
 		return nil, errDSNPassword
+	}
+	if len(caPEM) > 0 && (DSNHasRootCert(dsn) || os.Getenv("PGSSLROOTCERT") != "") { // before parsing: pgx reads the file
+		return nil, errors.New("store: ca_pem and sslrootcert (the DSN's or PGSSLROOTCERT) do not go together")
 	}
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, errors.New("store: not a PostgreSQL DSN")
 	}
+	if len(caPEM) > 0 {
+		if err := applyCA(cfg, caPEM); err != nil {
+			return nil, err
+		}
+	}
 	if err := pgCheckTLS(cfg); err != nil {
 		return nil, err
+	}
+	tl, tokens := login.(TokenLogin)
+	if tokens && pgDistinctHosts(cfg) > 1 {
+		return nil, errors.New("store: a token login needs a DSN with one host")
 	}
 	if cfg.ConnectTimeout == 0 {
 		cfg.ConnectTimeout = 10 * time.Second
@@ -265,7 +395,13 @@ func OpenPostgres(ctx context.Context, dsn string, login Login, maxOpen int) (*S
 		if login == nil {
 			return nil
 		}
-		pw, err := login.Password(ctx)
+		var pw string
+		var err error
+		if tokens {
+			pw, err = tl.PasswordFor(ctx, Target{Host: cc.Host, Port: cc.Port, User: cc.User})
+		} else {
+			pw, err = login.Password(ctx)
+		}
 		if err != nil {
 			return err
 		}

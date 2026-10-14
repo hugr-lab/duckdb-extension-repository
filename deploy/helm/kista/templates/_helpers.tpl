@@ -285,10 +285,10 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- range $irsa -}}{{- if ne . $role -}}{{- fail (printf "config: irsa role_arn %s is not aws.irsa.roleArn %s" . $role) -}}{{- end -}}{{- end -}}
 {{- $gsa := $v.gcp.serviceAccount -}}
 {{- if and $gsa (not $principals) -}}
-{{- fail "gcp.serviceAccount: no gcpkms source or gcs domain in config uses the metadata server" -}}
+{{- fail "gcp.serviceAccount: nothing in config (gcpkms source, gcs domain, gcp database login) uses the metadata server" -}}
 {{- end -}}
 {{- if and $principals (not $gsa) -}}
-{{- fail "config: a gcpkms source or gcs domain uses the metadata server (no credentials_file): set gcp.serviceAccount (GKE Workload Identity)" -}}
+{{- fail "config: a gcpkms source, gcs domain or the gcp database login uses the metadata server (no credentials_file): set gcp.serviceAccount (GKE Workload Identity)" -}}
 {{- end -}}
 {{- if $gsa -}}
 {{- range $principals -}}{{- if ne . $gsa -}}{{- fail (printf "config: principal %s is not gcp.serviceAccount %s" . $gsa) -}}{{- end -}}{{- end -}}

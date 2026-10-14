@@ -1,0 +1,8 @@
+# want: is not aws.irsa.roleArn
+aws: {irsa: {roleArn: arn:aws:iam::123456789012:role/kista}}
+config:
+  aws: {region: eu-central-1, identity: {kind: irsa, role_arn: arn:aws:iam::123456789012:role/kista-db}}
+  store: {kind: postgres, dsn: 'postgres://kista@db.example/kista?sslmode=verify-full', login: {kind: aws}}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+  blob: {domains: [{name: default, kind: s3, s3: {endpoint: https://s3.eu-central-1.amazonaws.com, bucket: kista, region: eu-central-1, lookup: dns, sse: s3, account: "123456789012", identity: {kind: irsa, role_arn: arn:aws:iam::123456789012:role/kista}}}]}
+networkPolicy: {enabled: false}

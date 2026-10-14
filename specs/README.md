@@ -18,9 +18,10 @@ and it is superseded by a new spec when a decision changes.
 | [0009](0009-upstreams/spec.md) | Upstreams: mirror, passthrough, pull-through, private upstreams | implemented |
 | [0010](0010-audit/spec.md) | Audit events, download statistics, metrics | implemented |
 | [0011](0011-attachments/spec.md) | Attachments and the feed | implemented |
-| [0013](0013-deployment/spec.md) | Deployment: image, Helm chart, Azure | phase 1 implemented; phase 2 (Azure) to come |
+| [0013](0013-deployment/spec.md) | Deployment: image, Helm chart, Azure | phase 1 implemented; phase 2 moved to 0020 |
 | [0015](0015-console/spec.md) | Administration console, the micro-frontend contract | implemented |
 | [0016](0016-storage-gc/spec.md) | Storage garbage collection, purging yanked releases | implemented |
 | [0017](0017-extension-groups/spec.md) | Extension groups: grants on named sets of extensions | implemented |
 | [0018](0018-blob-verify/spec.md) | Verifying stored bodies | implemented |
 | [0019](0019-tenant-deletion/spec.md) | Deleting a tenant | implemented |
+| [0020](0020-cloud-recipes/spec.md) | Cloud recipes: AWS and GCP in Terraform, Azure in Bicep | phase 0 implemented |

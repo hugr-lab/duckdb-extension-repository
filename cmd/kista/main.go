@@ -2,8 +2,8 @@
 //
 //	kista ext inspect <file> [--key <pub>]...   metadata, body hash, size, signature fingerprint
 //	kista ext verify  <file> --key <pub>...     exit 0 if any key verifies the signature
-//	kista admin -config <file> <command> ...    the server administrator's CLI (kista admin help)
-//	kista serve -config <file>                  the repository server (spec 0006)
+//	kista admin -config <file|env:NAME> <command> ... the server administrator's CLI (kista admin help)
+//	kista serve -config <file|env:NAME>         the repository server (spec 0006)
 //	kista version                               kista's version (DuckDB versions: kista admin version)
 package main
 
@@ -40,8 +40,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(args) < 2 || args[0] != "ext" {
 		fmt.Fprintln(stderr, "usage: kista ext inspect|verify <file> [--key <public key file>]...")
-		fmt.Fprintln(stderr, "       kista admin -config <file> <command> ...   (kista admin help)")
-		fmt.Fprintln(stderr, "       kista serve -config <file>")
+		fmt.Fprintln(stderr, "       kista admin -config <file|env:NAME> <command> ...   (kista admin help)")
+		fmt.Fprintln(stderr, "       kista serve -config <file|env:NAME>")
 		fmt.Fprintln(stderr, "       kista version                              (DuckDB versions: kista admin version)")
 		return 2
 	}
