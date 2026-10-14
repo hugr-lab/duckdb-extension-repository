@@ -50,8 +50,8 @@ jobs:
             for i in $(seq 1 30); do curl -sf http://127.0.0.1:$p/v1/sys/health >/dev/null && break; sleep 1; done
             curl -sf http://127.0.0.1:$p/v1/sys/health >/dev/null || { docker logs vault; docker logs openbao; exit 1; }
           done
-      - name: S3-compatible server (SeaweedFS) and Azurite
-        run: make test-s3 test-azurite
+      - name: S3-compatible server (SeaweedFS), Azurite and moto (AWS KMS)
+        run: make test-s3 test-azurite test-moto
       - run: go vet ./...
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
@@ -73,6 +73,8 @@ jobs:
           KISTA_TEST_S3: http://kista-test:kista-test-secret@127.0.0.1:58333/kista-test
           KISTA_TEST_AZUREBLOB: http://127.0.0.1:50000/devstoreaccount1
           KISTA_TEST_REQUIRE_BLOB: "1"
+          KISTA_TEST_MOTO: http://127.0.0.1:55000
+          KISTA_TEST_REQUIRE_MOTO: "1"
         run: go test -race ./...
 
   console:

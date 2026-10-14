@@ -3,7 +3,7 @@ export GOWORK := off
 
 E2E_BUILD ?= $(CURDIR)/e2e/.build
 
-.PHONY: build docs console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down lint e2e-duckdb e2e-runner e2e-build e2e
+.PHONY: build docs console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down test-moto test-moto-down lint e2e-duckdb e2e-runner e2e-build e2e
 
 build:
 	go build -o bin/kista ./cmd/kista
@@ -73,6 +73,21 @@ test-azurite:
 
 test-azurite-down:
 	docker rm -f kista-test-azurite
+
+# moto, an AWS emulator, for the awskms source (spec 0004 phase 3; pinned by digest); then run make
+# test with KISTA_TEST_MOTO=http://127.0.0.1:55000. It hashes a DIGEST message again, so the known
+# answer is tested against a fake (see the spec).
+MOTO := motoserver/moto:5.1.22@sha256:1e3802c95726373544967b428201c548f0247c15b00db2d96a5ba0a77d8643b8
+
+test-moto:
+	-docker rm -f kista-test-moto >/dev/null 2>&1
+	@$(call pull,$(MOTO))
+	docker run -d --name kista-test-moto -p 127.0.0.1:55000:5000 $(MOTO)
+	@for i in $$(seq 1 60); do curl -sf http://127.0.0.1:55000/moto-api/ >/dev/null && exit 0; sleep 1; done; \
+		docker logs kista-test-moto; exit 1
+
+test-moto-down:
+	docker rm -f kista-test-moto
 
 lint:
 	go vet ./...

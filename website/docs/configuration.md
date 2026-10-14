@@ -108,6 +108,7 @@ kista serve -config /etc/kista/kista.yaml
 | Vault / OpenBao | `https` address; `software_keys: true` required | `http` on loopback allowed; `software_keys` not required |
 | Azure Key Vault | `require_hsm` stays on | `require_hsm: false` allowed |
 | Azure identity | `managed`, or `workload` with `client_id` and `tenant_id` | `default` (the developer credential chain) allowed; `workload` without ids allowed |
+| AWS identity (KMS sources, S3 domains) | a platform identity; steering `AWS_*` variables refused | steering variables not checked; for `awskms`, `identity.kind: static` (key files) and `endpoint_url` on loopback (the moto emulator) allowed |
 | `serve.public_url` | `https` | `http` on loopback allowed |
 | Egress | no plain http | `egress.allow_loopback_http: true` allowed, which also lets server issuers, OTLP sinks and credential token URLs use http on loopback |
 | S3 endpoint | `https` | `http` on loopback allowed |
@@ -135,8 +136,8 @@ The metadata database. See [State](state.md) for the engines, DSNs, logins and r
 ## azure
 
 The service's own Azure identity. It is used by the `entra` database login and by upstream
-credentials with `client_auth: azure`. Key sources and Azure Blob domains have their own `identity`
-blocks.
+credentials with `client_auth: azure`. Key sources, S3 domains and Azure Blob domains have their
+own `identity` blocks.
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -172,15 +173,27 @@ Each entry of `signers.sources`:
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `name` | string | required | `[a-z][a-z0-9-]{0,15}`, unique. Reserved: `file`, `vault`, `azurekv`, `awskms`, `gcpkms`, `pkcs11`, `http`, `https`, `arn`, `projects`. A signer reference is `<name>:<key>`. |
-| `kind` | `vault`, `azurekv` | required | `awskms` and `gcpkms` are recognised but not available yet (later phases of spec 0004); the loader refuses them. |
-| `allow` | list of key-name prefixes | required | Which keys of the source may be used; `"*"` for any. For `azurekv`, prefixes are written in lower case. |
+| `kind` | `vault`, `azurekv`, `awskms` | required | `gcpkms` is recognised but not available yet (a later phase of spec 0004); the loader refuses it. |
+| `allow` | list of key-name prefixes | required | Which keys of the source may be used; `"*"` for any. For `azurekv`, prefixes are written in lower case. For `awskms`, whole key ids (`mrk-` ids only with `allow_multi_region`) or `"*"`. |
 | `max_concurrency` | integer | `4` | Signing calls in flight to this source. |
 | `recheck` | duration | `10m` | How often key properties are re-read; `0..10m`. |
 | `timeout` | duration | `10s` | Per call; `1s..60s`. |
 | `health_key` | string | none | Accepted by the loader; not used by this version. |
-| `identity` | block | none | `kind`, `client_id`, `tenant_id` as in `azure.identity`. Required for `azurekv`; refused for `vault`. |
+| `identity` | block | none | Required for `azurekv` and `awskms`; refused for `vault`. Its fields are below. |
 | `vault` | block | | Exactly one block matching `kind`. |
 | `azurekv` | block | | |
+| `awskms` | block | | |
+
+`identity` block of a source:
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `kind` | `managed`, `workload`, `default` (Azure); `pod_identity`, `irsa`, `imds`, `ecs`, `static` (AWS) | required | `default` and `static` only with `profile: dev`. |
+| `client_id` | string | none | Azure only, as in `azure.identity`. Required for `workload` outside dev. |
+| `tenant_id` | string | none | Azure only. Required for `workload` outside dev. |
+| `role_arn` | IAM role ARN | none | AWS `irsa` only, and required there: the role the ServiceAccount is bound to, in the region's partition. `AWS_ROLE_ARN` must equal it. |
+| `access_key_file` | absolute path | none | AWS `static` only, and required there. Mode `0600` or narrower. |
+| `secret_key_file` | absolute path | none | AWS `static` only, and required there. Mode `0600` or narrower. |
 
 `vault` block (HashiCorp Vault or OpenBao Transit):
 
@@ -204,6 +217,17 @@ Each entry of `signers.sources`:
 | `managed_hsm` | string | none | Or a Managed HSM name. Exactly one of `vault` and `managed_hsm`. 3-24 letters, digits and dashes. |
 | `cloud` | `public`, `china`, `usgov` | `public` | |
 | `require_hsm` | boolean | `true` | Only RSA-HSM keys. `false` only with `profile: dev`. |
+
+`awskms` block (AWS KMS):
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `region` | string | required | A region such as `eu-central-1`. The partition follows from it. |
+| `account` | string | required | The 12-digit account that holds the keys. Quote it in YAML. |
+| `role_arn` | IAM role ARN | none | A role to assume after the identity, in the region's partition. The only way to reach a key in another account. |
+| `allow_multi_region` | boolean | `false` | Accept multi-Region keys (`mrk-` ids). |
+| `fips` | boolean | `false` | Use the FIPS endpoints of KMS, and of STS in the `us-` regions. Only in the `aws` and `aws-us-gov` partitions; not with `endpoint_url`. |
+| `endpoint_url` | URL | none | The moto emulator only: `profile: dev`, `http` or `https` on a loopback host, with `identity.kind: static`. Replaces the KMS and STS endpoints. |
 
 ## blob
 
@@ -231,9 +255,12 @@ Each domain:
 | `s3.lookup` | `path`, `dns` | required | Addressing style. A bucket with dots over https needs `path`. |
 | `s3.sse` | `none`, `s3`, `kms` | required | Server-side encryption. |
 | `s3.kms_key_id` | string | none | Required with `sse: kms`, refused otherwise. |
-| `s3.access_key_file` | absolute path | required | |
-| `s3.secret_key_file` | absolute path | required | |
-| `s3.ca_file` | absolute path | system roots | Trust only this CA bundle. |
+| `s3.access_key_file` | absolute path | required without `identity` | Refused with `identity`. |
+| `s3.secret_key_file` | absolute path | required without `identity` | Refused with `identity`. |
+| `s3.ca_file` | absolute path | system roots | Trust only this CA bundle. Refused with `identity`. |
+| `s3.identity` | block | none | An AWS platform identity instead of the key files: `kind` `pod_identity`, `irsa` (with `role_arn`), `imds` or `ecs`; not `static`. The endpoint must then be AWS S3 in `s3.region`: `https://s3.<region>.amazonaws.com` or its dualstack, FIPS or `.amazonaws.com.cn` form, no port. |
+| `s3.role_arn` | IAM role ARN | none | With `identity` only: a role to assume after it, in the region's partition. |
+| `s3.account` | string | none | With `identity` only, and required there: the bucket owner's 12-digit account, sent as `x-amz-expected-bucket-owner`. |
 | `azureblob.account` | string | required | 3-24 lower-case letters and digits. |
 | `azureblob.container` | string | required | 3-63 lower-case letters, digits and single dashes. |
 | `azureblob.prefix` | string | empty | As for S3. |

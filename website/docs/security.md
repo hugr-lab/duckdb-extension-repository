@@ -58,16 +58,20 @@ records the rejection as an `upstream.rejected` event.
 ## Key custody
 
 - **Private keys never leave the signer.** Production keys live in HashiCorp Vault / OpenBao
-  Transit, Azure Key Vault or Azure Managed HSM; kista sends a 32-byte digest and receives a
-  signature. The database stores public keys and signer references only.
+  Transit, Azure Key Vault, Azure Managed HSM or AWS KMS; kista sends a 32-byte digest and receives
+  a signature. The database stores public keys and signer references only.
 - **Keys are checked, not trusted.** RSA-2048 with `e = 65537`; signing only; not exportable; not
-  imported; version pinned; HSM-backed on Azure by default; properties re-read while in use; every
-  signature verified against the registered public key and the key identity the backend reports.
+  imported; version pinned; HSM-backed on Azure by default; tagged with their purpose on Azure and
+  AWS; properties re-read while in use; every signature verified against the registered public key
+  and the key identity the backend reports.
 - **References come from the server administrator only.** A reference names a configured source and
   a key inside it, limited by the source's allow list. It never carries a host, so no tenant can make
   kista call another vault with its identity.
-- **Credentials come from the platform**: managed or workload identity, Kubernetes or JWT login,
-  Vault Agent token files. Steering environment variables are refused outside `profile: dev`.
+- **Credentials come from the platform**: managed or workload identity, EKS Pod Identity, IRSA,
+  ECS task roles, EC2 instance profiles, Kubernetes or JWT login, Vault Agent token files. Steering
+  environment variables are refused outside `profile: dev`. An S3 domain with an AWS identity
+  follows the same rules; it is accepted only for AWS S3 hosts, and every request names the bucket's
+  expected owner.
 - **File keys** are for development, or need an explicit `signers.allow_file: true`; the file must
   be mode `0600`, owned by kista's user, and not a symlink.
 - Signing happens when a release is made, never on a download, so a KMS outage stops publishing,

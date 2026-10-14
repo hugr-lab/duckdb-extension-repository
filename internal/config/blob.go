@@ -12,6 +12,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	awscloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/aws"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -50,6 +51,11 @@ type S3Domain struct {
 	AccessKeyFile string `yaml:"access_key_file"`
 	SecretKeyFile string `yaml:"secret_key_file"`
 	CAFile        string `yaml:"ca_file"` // trust only this CA bundle (an internal CA); empty: system roots
+	// Identity is the AWS platform identity instead of the key files (spec 0005 phase 3a), on an AWS
+	// S3 endpoint only; RoleARN an optional AssumeRole after it.
+	Identity *Identity `yaml:"identity"`
+	RoleARN  string    `yaml:"role_arn"`
+	Account  string    `yaml:"account"` // with identity: the bucket's owner, sent as x-amz-expected-bucket-owner
 }
 
 // AzureBlobDomain is an Azure Blob Storage container and prefix.
@@ -300,8 +306,34 @@ func validateS3(bad func(string, ...any), where string, s S3Domain, dev bool) {
 	if s.CAFile != "" && !filepath.IsAbs(s.CAFile) {
 		bad("%s.s3.ca_file must be an absolute path", where)
 	}
-	if !filepath.IsAbs(s.AccessKeyFile) || !filepath.IsAbs(s.SecretKeyFile) {
-		bad("%s.s3: access_key_file and secret_key_file must be absolute paths", where)
+	if s.Identity == nil {
+		if !filepath.IsAbs(s.AccessKeyFile) || !filepath.IsAbs(s.SecretKeyFile) {
+			bad("%s.s3: access_key_file and secret_key_file must be absolute paths (or an AWS identity)", where)
+		}
+		if s.RoleARN != "" || s.Account != "" {
+			bad("%s.s3: role_arn and account go with an AWS identity", where)
+		}
+		return
+	}
+	if !awscloud.ValidAccount(s.Account) {
+		bad("%s.s3.account is required with an AWS identity: the bucket owner's 12-digit account", where)
+	}
+	if s.CAFile != "" {
+		bad("%s.s3.ca_file is refused with an AWS identity: AWS endpoints are verified against the system roots", where)
+	}
+	if s.AccessKeyFile != "" || s.SecretKeyFile != "" {
+		bad("%s.s3: set either the key files or an AWS identity, not both", where)
+	}
+	if s.Identity.Kind == "static" {
+		bad("%s.s3.identity.kind static: use access_key_file and secret_key_file", where)
+	} else {
+		validateAWSIdentity(bad, where+".s3", s.Identity, s.Region, false)
+	}
+	if s.RoleARN != "" && !awscloud.ValidRoleARN(s.RoleARN, s.Region) {
+		bad("%s.s3.role_arn must be an IAM role ARN in the region's partition", where)
+	}
+	if u, err := url.Parse(s.Endpoint); err != nil || u.Scheme != "https" || u.Port() != "" || !awscloud.S3Host(u.Hostname(), s.Region) {
+		bad("%s.s3: an AWS identity goes only to AWS S3: endpoint https://s3.<region>.amazonaws.com (or its .cn, fips or dualstack form)", where)
 	}
 }
 
@@ -348,6 +380,9 @@ func validateAzureBlob(bad func(string, ...any), where string, a AzureBlobDomain
 	if a.Identity == nil {
 		bad("%s.azureblob.identity is required", where)
 		return
+	}
+	if a.Identity.RoleARN != "" || a.Identity.AccessKeyFile != "" || a.Identity.SecretKeyFile != "" {
+		bad("%s.azureblob.identity: role_arn and the key files are AWS's", where)
 	}
 	switch a.Identity.Kind {
 	case "managed":

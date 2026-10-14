@@ -148,7 +148,8 @@ signers:
 		"empty prefix":     strings.Replace(ok, `allow: ["ext-"]`, `allow: [""]`, 1),
 		"http remote":      strings.Replace(ok, "https://bao.internal:8200", "http://bao.internal:8200", 1),
 		"no software_keys": strings.Replace(ok, "software_keys: true", "software_keys: false", 1),
-		"later kind":       strings.Replace(ok, "kind: vault", "kind: awskms", 1),
+		"later kind":       strings.Replace(ok, "kind: vault", "kind: gcpkms", 1),
+		"awskms no block":  strings.Replace(ok, "kind: vault", "kind: awskms", 1),
 		"unknown kind":     strings.Replace(ok, "kind: vault", "kind: pkcs11", 1),
 		"relative token":   strings.Replace(ok, "/var/run/secrets/kista/vault", "vault", 1),
 		"no role":          strings.Replace(ok, "role: kista, ", "", 1),
@@ -229,5 +230,39 @@ signers:
 `
 	if _, err := Load(write(t, dev), nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An awskms source (spec 0004 phase 3): region, account, key ids in allow, an AWS identity.
+func TestAWSKMSSource(t *testing.T) {
+	src := func(fields, identity, allow string) string {
+		return base + "signers:\n  sources:\n    - name: aws\n      kind: awskms\n      awskms: { " + fields + " }\n" +
+			"      identity: " + identity + "\n      allow: " + allow + "\n"
+	}
+	okF, okID, okAllow := `region: eu-central-1, account: "123456789012"`, "{ kind: pod_identity }", `["1234abcd-12ab-34cd-56ef-1234567890ab"]`
+	if _, err := Load(write(t, src(okF, okID, okAllow)), nil); err != nil {
+		t.Fatalf("ok: %v", err)
+	}
+	if _, err := Load(write(t, src(okF+`, fips: true, role_arn: "arn:aws:iam::210987654321:role/keys"`, okID, `["*"]`)), nil); err != nil {
+		t.Fatalf("fips, assume role, any key: %v", err)
+	}
+	if _, err := Load(write(t, "profile: dev\nrotation: { min_trusted: 0s, min_demoted: 0s }\n"+strings.Replace(src(okF+`, endpoint_url: "http://127.0.0.1:5000"`,
+		"{ kind: static, access_key_file: /a, secret_key_file: /s }", okAllow), "/var/lib/kista/kista.db", "/tmp/k.db", 1)), nil); err != nil {
+		t.Fatalf("dev emulator: %v", err)
+	}
+	for name, c := range map[string][3]string{
+		"no region":            {`account: "123456789012"`, okID, okAllow},
+		"bad account":          {`region: eu-central-1, account: "1234"`, okID, okAllow},
+		"endpoint outside dev": {okF + `, endpoint_url: "http://127.0.0.1:5000"`, okID, okAllow},
+		"role other partition": {okF + `, role_arn: "arn:aws-cn:iam::123456789012:role/x"`, okID, okAllow},
+		"prefix allow":         {okF, okID, `["1234"]`},
+		"mrk without multi":    {okF, okID, `["mrk-0123456789abcdef0123456789abcdef"]`},
+		"static outside dev":   {okF, "{ kind: static, access_key_file: /a, secret_key_file: /s }", okAllow},
+		"azure identity":       {okF, "{ kind: managed }", okAllow},
+		"irsa no role":         {okF, "{ kind: irsa }", okAllow},
+	} {
+		if _, err := Load(write(t, src(c[0], c[1], c[2])), nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

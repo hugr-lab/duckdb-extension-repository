@@ -19,7 +19,7 @@ func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, nam
 		return store.Publisher{}, err
 	}
 	p := store.Publisher{TenantID: t.ID, Name: name, CreatedBy: a.String()}
-	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		if err := tx.InsertPublisher(ctx, &p); err != nil {
 			return err
 		}
@@ -44,7 +44,7 @@ func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, 
 	if err != nil {
 		return err
 	}
-	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		if err := tx.DeletePublisher(ctx, t.ID, name); err != nil {
 			return err
 		}
@@ -72,7 +72,7 @@ func (s *AuthAdmin) AddGitHubCredential(ctx context.Context, a authz.Actor, tena
 		return c, err
 	}
 	c.CreatedBy = a.String()
-	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		p, err := tx.GetPublisher(ctx, t.ID, publisher)
 		if err != nil {
 			return err
@@ -94,7 +94,7 @@ func (s *AuthAdmin) RemoveGitHubCredential(ctx context.Context, a authz.Actor, t
 	if err != nil {
 		return err
 	}
-	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		p, err := tx.GetPublisher(ctx, t.ID, publisher)
 		if err != nil {
 			return err
@@ -126,7 +126,7 @@ func (s *AuthAdmin) AddAPIKey(ctx context.Context, a authz.Actor, tenant, publis
 		return store.APIKey{}, "", err
 	}
 	k := store.APIKey{Prefix: prefix, Hash: hash, ExpiresAt: expires, CreatedBy: a.String()}
-	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		p, err := tx.GetPublisher(ctx, t.ID, publisher)
 		if err != nil {
 			return err
@@ -159,7 +159,7 @@ func (s *AuthAdmin) RemoveAPIKey(ctx context.Context, a authz.Actor, tenant, pub
 	if err != nil {
 		return err
 	}
-	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		p, err := tx.GetPublisher(ctx, t.ID, publisher)
 		if err != nil {
 			return err

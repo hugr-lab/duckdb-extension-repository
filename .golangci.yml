@@ -17,3 +17,5 @@ linters:
     rules:
       - path: _test\.go
         linters: [errcheck]
+formatters:
+  enable: [gofmt] # an unformatted file fails the lint, not only a reviewer

@@ -96,7 +96,7 @@ type Deletion struct {
 	ChannelIDs    []string
 	RunLeases     []string // its upstreams' and feeds' run leases, removed with the tombstone
 	Passes        int64
-	Failures      int64 // failed passes in a row, for the backoff
+	Failures      int64  // failed passes in a row, for the backoff
 	Table         string // the table the last pass reached
 	DeletedRows   int64
 	LastError     string // the last failed pass's error class

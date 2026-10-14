@@ -25,12 +25,12 @@ Designs: specs [0005](https://github.com/hugr-lab/duckdb-extension-repository/bl
 | Kind | Store | Status |
 | --- | --- | --- |
 | `fs` | a local directory or a mounted volume | available |
-| `s3` | S3-compatible: AWS S3, Cloudflare R2, MinIO, SeaweedFS, others | available, with static key files |
+| `s3` | S3-compatible: AWS S3, Cloudflare R2, MinIO, SeaweedFS, others | available: static key files, or an AWS platform identity on AWS S3 |
 | `azureblob` | Azure Blob Storage | available |
 | `gcs` | Google Cloud Storage | not available yet |
 
-Platform identity for `s3` on AWS (IRSA, EKS Pod Identity, instance roles) is not available yet:
-`s3` authenticates with an access key and secret read from files.
+An `s3` domain authenticates with an access key and secret read from files, or, on AWS S3 only,
+with the platform's identity (EKS Pod Identity, IRSA, ECS task roles, EC2 instance profiles).
 
 ## Storage domains
 
@@ -147,13 +147,16 @@ blob:
 | `lookup` | `path` or `dns`. A bucket name with dots needs `path` over https (the certificate would not match) |
 | `sse` | required: `none`, `s3` or `kms`. R2 and MinIO without KMS take `none`; AWS takes `s3` or `kms` |
 | `kms_key_id` | required with `sse: kms`, refused otherwise |
-| `access_key_file`, `secret_key_file` | absolute paths to the access key id and the secret |
-| `ca_file` | trust only this CA bundle (an internal CA); empty: the system roots |
+| `access_key_file`, `secret_key_file` | absolute paths to the access key id and the secret; required unless `identity` is set |
+| `ca_file` | trust only this CA bundle (an internal CA); empty: the system roots. Refused with `identity` |
+| `identity` | an AWS platform identity instead of the key files: `kind` `pod_identity`, `irsa` (with `role_arn`), `imds` or `ecs` |
+| `role_arn` | with `identity` only: optional, an IAM role ARN in the region's partition, assumed after the identity |
+| `account` | with `identity` only, and required there: the bucket owner's 12-digit account |
 
-- **Credentials** come only from the two files. Each must be a regular file with mode `0600` or
-  narrower; they are read again for every request, so a rotated secret is picked up without a
-  restart. `AWS_*` and `MINIO_*` variables, `~/.aws/credentials` and container credential
-  endpoints are never used.
+- **Credentials** come only from the two files, or from `identity` (below). Each file must be a
+  regular file with mode `0600` or narrower; they are read again for every request, so a rotated
+  secret is picked up without a restart. The S3 client's own providers (`AWS_*` and `MINIO_*`
+  variables, `~/.aws/credentials`, container credential endpoints) are never used.
 - Requests ignore proxy environment variables and never follow redirects; there are at most 3
   attempts per call.
 - Large objects go up as a multipart upload, aborted on any error. The garbage collector aborts
@@ -161,6 +164,46 @@ blob:
   `AbortIncompleteMultipartUpload` lifecycle rule.
 - For residency on R2, use a jurisdiction endpoint such as
   `https://<account>.eu.r2.cloudflarestorage.com`.
+
+### Platform identity on AWS
+
+```yaml title="kista.yaml"
+blob:
+  domains:
+    - name: default
+      kind: s3
+      s3:
+        endpoint: https://s3.eu-central-1.amazonaws.com
+        bucket: acme-kista
+        prefix: bodies/
+        region: eu-central-1
+        lookup: dns
+        sse: s3
+        account: "123456789012"      # the bucket's owner
+        identity: { kind: irsa, role_arn: "arn:aws:iam::123456789012:role/kista" }
+```
+
+- The identity kinds, the platform variables kista reads, and the steering variables it refuses
+  outside `profile: dev` are those of an AWS KMS key source (see
+  [Signing keys](signing-keys.md#aws-kms)). `static` is refused here: use `access_key_file` and
+  `secret_key_file`.
+- Exactly one of the key files and `identity` is set.
+- **AWS S3 only.** With `identity`, the endpoint is `https://` with no port, and its host is one of
+  `s3.<region>`, `s3.dualstack.<region>`, `s3-fips.<region>` or `s3-fips.dualstack.<region>`
+  followed by `.amazonaws.com`, or `s3.<region>` or `s3.dualstack.<region>` followed by
+  `.amazonaws.com.cn`, where `<region>` is the domain's `region`. So the credentials never go to
+  another host. This covers the `aws`, `aws-us-gov` and `aws-cn` partitions; the legacy global
+  endpoints, PrivateLink endpoints and the ISO and EUSC partitions are not accepted yet.
+- `ca_file` is refused: AWS endpoints are verified against the system roots.
+- **The bucket owner.** Every signed request carries `x-amz-expected-bucket-owner: <account>`. S3
+  then refuses a bucket that another account owns, for example one deleted and re-created by
+  someone else, so bodies are never written into it.
+- **The host.** Signed requests go only to the configured endpoint, or its virtual-hosted form
+  (`<bucket>.<endpoint>`); anything else is refused. kista turns off minio-go's automatic switch to
+  dual-stack hosts unless the endpoint is a `dualstack` one.
+- Credentials are cached, and refreshed five minutes (jittered) before they expire; each retrieval
+  has its own 30-second deadline. The STS calls (`irsa`, `role_arn`) go to the domain's region, and
+  to STS's FIPS endpoint when the endpoint is an `s3-fips.` one.
 
 **Permissions** on the bucket and prefix: `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`,
 `s3:ListBucket`; for the collector's clean-up of incomplete uploads, `s3:ListBucketMultipartUploads`

@@ -1,6 +1,6 @@
 # Spec 0005: Blob storage for extension bodies
 
-- **Status**: phases 1-2 implemented; 3 deferred
+- **Status**: phases 1, 2 and 3a implemented; 3b (`gcs`) deferred
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -24,8 +24,9 @@ Delivery is phased, like spec 0004:
 1. the interface, the contract suite, `fs`, `s3` with static key files (MinIO, Cloudflare R2,
    S3-compatible stores), the service, and migration 0002;
 2. `azureblob`, with spec 0004's Azure credentials;
-3. **deferred with the AWS/GCP work**: platform identity for `s3` on AWS (IRSA, Pod Identity,
-   instance roles, through a hardened `internal/cloud/aws`), and `gcs`.
+3. with the AWS/GCP work: (3a) platform identity for `s3` on AWS (IRSA, Pod Identity, instance
+   roles, through a hardened `internal/cloud/aws`), with spec 0004's phase 3; (3b) `gcs`, with its
+   phase 4.
 
 ## Problem
 
@@ -135,8 +136,38 @@ type Store interface {
   `secret_key_file`, mode `0600` or narrower, re-read on every signing so rotated files are picked
   up), wrapped in kista's own `credentials.Provider`. minio-go's IAM,
   chain, environment and file providers are never used: they read `AWS_*`, `MINIO_*`,
-  `~/.aws/credentials` and container-credential URLs from the environment. Platform identity for AWS
-  is deferred to phase 3.
+  `~/.aws/credentials` and container-credential URLs from the environment.
+- **Platform identity on AWS** (phase 3a, with spec 0004's `awskms`):
+  - Instead of the key files, an `s3` domain may name `identity: { kind: pod_identity | irsa |
+    imds | ecs }` (with `identity.role_arn` for `irsa`), an optional `role_arn` to assume after it,
+    and `account`.
+  - Its credentials come from `internal/cloud/aws`, exactly as an `awskms` source's do, in the
+    domain's `region`.
+  - kista's provider hands them to minio-go with the session token and the expiry. It reports
+    itself expired at every request, and serves from the SDK's cache, which refreshes ahead of
+    expiry. A retrieval has its own bounded deadline.
+  - Exactly one of the key files and `identity` is set.
+- **Identity goes only to AWS S3.**
+  - The endpoint is `https://` with no port. Its host, lowercased, is one of these, where
+    `<region>` is the domain's `region`:
+    - `s3.<region>`, `s3.dualstack.<region>`, `s3-fips.<region>` or `s3-fips.dualstack.<region>`,
+      followed by `.amazonaws.com`;
+    - `s3.<region>` or `s3.dualstack.<region>`, followed by `.amazonaws.com.cn`.
+  - So platform identity for `s3` is on `aws`, `aws-us-gov` and `aws-cn` only. The legacy global
+    forms, PrivateLink endpoints and the ISO and EUSC partitions are not accepted yet.
+  - `ca_file` is refused with `identity`: AWS endpoints are verified against the system roots.
+  - Every request carries `x-amz-expected-bucket-owner: <account>`, set by kista's transport. S3
+    then refuses a bucket that another account owns, for example one deleted and re-created by
+    someone else, so private extensions are never written into it.
+    - S3 requires every `x-amz-*` header to be signed, and minio-go has no option for a header on
+      every request. So the transport adds it and signs the request again (SigV4, the same
+      credentials, payload hash and time).
+    - A request it cannot sign so (streamed or trailer payloads, which minio-go uses only over
+      http) is refused, never sent unsigned.
+  - The same transport refuses a request to any host but the configured endpoint or its
+    virtual-hosted form. minio-go rebuilds AWS hosts from its own region map, and turns dual-stack
+    on for every AWS endpoint; kista turns that off unless the endpoint is a `dualstack` one.
+  - With an `s3-fips.` endpoint, STS is reached at its FIPS endpoint too.
 - **Put:** a single PUT, or a multipart upload from the spool file (`ReadAt`, no buffering), aborted
   on every error; kista aborts it itself with a fresh deadline, since minio-go's own abort uses the
   call's context and sends nothing once that is cancelled.

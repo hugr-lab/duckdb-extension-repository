@@ -6,11 +6,13 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/azureblob"
 	blobfs "github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/s3"
+	awscloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/aws"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/cloud/azure"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -41,11 +43,20 @@ func BlobStores(cfg config.Config) ([]blob.Domain, error) {
 			if err != nil {
 				return fail(fmt.Errorf("app: storage domain %s: invalid endpoint", d.Name))
 			}
-			s, err := s3.New(s3.Config{
-				Endpoint: u.Host, Secure: u.Scheme == "https", Bucket: d.S3.Bucket, Prefix: d.S3.Prefix,
+			sc := s3.Config{
+				Endpoint: strings.ToLower(u.Host), Secure: u.Scheme == "https", Bucket: d.S3.Bucket, Prefix: d.S3.Prefix,
 				Region: d.S3.Region, PathStyle: d.S3.Lookup == "path", SSE: d.S3.SSE, KMSKeyID: d.S3.KMSKeyID,
 				AccessKeyFile: d.S3.AccessKeyFile, SecretKeyFile: d.S3.SecretKeyFile, CAFile: d.S3.CAFile, Timeout: timeout,
-			})
+			}
+			if d.S3.Identity != nil { // spec 0005 phase 3a: an AWS platform identity, AWS S3 only (config)
+				creds, err := awscloud.Credentials(AWSIdentity(d.S3.Identity, d.S3.RoleARN), d.S3.Region,
+					awscloud.Options{Dev: cfg.Profile == config.ProfileDev, FIPS: strings.HasPrefix(u.Hostname(), "s3-fips.")})
+				if err != nil {
+					return fail(fmt.Errorf("app: storage domain %s: %w", d.Name, err))
+				}
+				sc.AWS, sc.ExpectedOwner = creds, d.S3.Account
+			}
+			s, err := s3.New(sc)
 			if err != nil {
 				return fail(fmt.Errorf("app: storage domain %s: %w", d.Name, err))
 			}

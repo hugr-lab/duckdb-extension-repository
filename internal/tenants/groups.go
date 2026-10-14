@@ -61,7 +61,7 @@ func (s *AuthAdmin) CreateExtensionGroup(ctx context.Context, a authz.Actor, ten
 		return store.ExtensionGroup{}, err
 	}
 	g := store.ExtensionGroup{TenantID: t.ID, Name: name, Description: description, CreatedBy: a.String()}
-	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		if err := tx.InsertExtensionGroup(ctx, &g); err != nil {
 			return err
 		}
@@ -146,7 +146,7 @@ func (s *AuthAdmin) SetExtensionGroupDescription(ctx context.Context, a authz.Ac
 		return store.ExtensionGroup{}, err
 	}
 	var g store.ExtensionGroup
-	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		if g, err = tx.GetExtensionGroup(ctx, t.ID, name); err != nil {
 			return err
 		}
@@ -168,7 +168,7 @@ func (s *AuthAdmin) RemoveExtensionGroup(ctx context.Context, a authz.Actor, ten
 	if err != nil {
 		return err
 	}
-	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		g, err := tx.GetExtensionGroup(ctx, t.ID, name)
 		if err != nil {
 			return err
@@ -219,7 +219,7 @@ func (s *AuthAdmin) ChangeExtensionGroupMembers(ctx context.Context, a authz.Act
 			return nil, nil, fmt.Errorf("%w: %s is both added and removed", store.ErrInvalid, n)
 		}
 	}
-	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/"+t.ID}, func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		g, err := tx.GetExtensionGroup(ctx, t.ID, name)
 		if err != nil {
 			return err
