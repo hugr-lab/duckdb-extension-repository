@@ -138,9 +138,9 @@ label) the platform needs, and the chart checks it against the configuration bot
 | Platform | Value | The chart writes | The configuration |
 | --- | --- | --- | --- |
 | AKS workload identity | `azure.workloadIdentity.clientId` | annotation `azure.workload.identity/client-id`, pod label `azure.workload.identity/use` | every identity with `kind: workload` has this `client_id` |
-| EKS IRSA | `aws.irsa.roleArn` | annotation `eks.amazonaws.com/role-arn` | every identity with `kind: irsa` has this `role_arn` |
+| EKS IRSA | `aws.irsa.roleArn` | annotation `eks.amazonaws.com/role-arn` | every identity with `kind: irsa` (sources, domains, `aws.identity`) has this `role_arn` |
 | EKS Pod Identity | none | nothing | `kind: pod_identity` |
-| GKE Workload Identity | `gcp.serviceAccount` | annotation `iam.gke.io/gcp-service-account` | every `gcpkms` source and `gcs` domain without `credentials_file` has this `principal` |
+| GKE Workload Identity | `gcp.serviceAccount` | annotation `iam.gke.io/gcp-service-account` | every `gcpkms` source, `gcs` domain and the `gcp` database login without `credentials_file` has this `principal` |
 
 `projectedTokens` adds service account tokens with your own audience, for Vault or OpenBao
 `kubernetes` or `jwt` auth, or a GCP `external_account` file on AKS or EKS. The audience must not

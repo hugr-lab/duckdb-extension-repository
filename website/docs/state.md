@@ -67,6 +67,8 @@ store:
   contradicting parameter cannot slip past it, and every fallback host of a multi-host DSN counts.
   On loopback (or a Unix socket path) any `sslmode` is accepted.
 - `PGPASSWORD` and `.pgpass` are never used: the password comes only from `store.login`.
+- The server's CA: the DSN's `sslrootcert`, or `store.ca_pem` inline (not both, and not with
+  `PGSSLROOTCERT`), or else the system roots. `ca_pem` needs a host reached over TLS.
 - The connect timeout is 10 seconds unless the DSN sets `connect_timeout`.
 
 ## SQL Server

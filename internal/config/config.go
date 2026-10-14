@@ -84,8 +84,8 @@ type Store struct {
 	Migrate      string `yaml:"migrate"` // auto | check
 	SQLite       SQLite `yaml:"sqlite"`
 	// CAPEM is the PostgreSQL server's CA, inline (spec 0020): public data, for platforms that
-	// mount no file; it replaces the DSN's sslrootcert.
-	CAPEM string `yaml:"ca_pem"`
+	// mount no file; it replaces the DSN's sslrootcert. File-only: a trust anchor is no override.
+	CAPEM string `yaml:"ca_pem" kista:"fileonly"`
 }
 
 // Login says how the database password or token is obtained.
@@ -258,9 +258,10 @@ func Load(path string, env []string) (Config, error) {
 			return Config{}, errors.New("config: env:<NAME> needs a variable name ([A-Z_][A-Z0-9_]*)")
 		}
 		v, found := "", false
-		for _, kv := range env {
+		for _, kv := range env { // the first, as os.Getenv
 			if k, val, _ := strings.Cut(kv, "="); k == name {
 				v, found = val, true
+				break
 			}
 		}
 		switch {
@@ -351,6 +352,9 @@ func applyEnv(cfg *Config, env []string, configVar string) error {
 		byEnv[s.env] = s
 	}
 	var errs, unknown []string
+	if _, ok := byEnv[configVar]; ok {
+		return fmt.Errorf("config: %s is a kista setting; name the variable holding the configuration otherwise", configVar)
+	}
 	for _, kv := range env {
 		name, val, _ := strings.Cut(kv, "=")
 		if !strings.HasPrefix(name, envPrefix) || reserved(name) {
@@ -482,6 +486,10 @@ func (c Config) Validate() error {
 			bad("store.ca_pem must hold PEM certificates, and nothing else")
 		case store.DSNHasRootCert(c.Store.DSN):
 			bad("store.ca_pem and the DSN's sslrootcert do not go together: give the CA once")
+		default:
+			if t, err := store.PostgresTarget(c.Store.DSN); err == nil && !t.TLS {
+				bad("store.ca_pem is given, but the DSN reaches no host over TLS")
+			}
 		}
 	}
 	if c.AWS != (AWS{}) {
@@ -694,6 +702,9 @@ func validateAWSKMS(bad func(string, ...any), where string, a AWSKMSSource, id *
 
 var awsKeyID = regexp.MustCompile(`^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$`)
 
+// rdsHost is an RDS or Aurora endpoint, with its region.
+var rdsHost = regexp.MustCompile(`\.([a-z]{2}(?:-[a-z]+)+-\d)\.rds\.amazonaws\.com(?:\.cn)?\.?$`)
+
 // validateTokenLogin checks the aws and gcp database logins (spec 0020): PostgreSQL, one host (a
 // token is bound to it), no password setting, and the identity the token comes from.
 func validateTokenLogin(bad func(string, ...any), c Config) {
@@ -716,6 +727,10 @@ func validateTokenLogin(bad func(string, ...any), c Config) {
 	case "aws":
 		if c.AWS.Region == "" || c.AWS.Identity == nil {
 			bad("store.login aws needs aws.region and aws.identity")
+		}
+		// a token is signed for the database's region: an RDS endpoint names it
+		if m := rdsHost.FindStringSubmatch(strings.ToLower(t.Host)); m != nil && m[1] != c.AWS.Region {
+			bad("store.login aws: the database is in %s, aws.region is %s; the token is signed for aws.region", m[1], c.AWS.Region)
 		}
 	case "gcp":
 		switch {

@@ -8,9 +8,9 @@ title: Command reference
 
 | Command | What it does |
 | --- | --- |
-| `kista serve -config <file>` | runs the repository server |
+| `kista serve -config <file|env:NAME>` | runs the repository server |
 | `kista ext inspect` and `kista ext verify` | read an extension file on disk; no config, no database |
-| `kista admin -config <file> <command> ...` | the server administrator's CLI |
+| `kista admin -config <file|env:NAME> <command> ...` | the server administrator's CLI |
 | `kista version` | prints kista's own version |
 
 Build it with `make build` (writes `bin/kista`) or `go build ./cmd/kista`.
@@ -42,7 +42,7 @@ running `kista serve` takes it. Without a server, nothing runs.
 
 ## Conventions
 
-- `-config <file>` comes **before** the command: `kista admin -config /etc/kista/kista.yaml tenant list`.
+- `-config <file>` (or `-config env:NAME`, a variable holding the YAML: [Configuration](../configuration.md#the-file)) comes **before** the command: `kista admin -config /etc/kista/kista.yaml tenant list`.
 - A command's own flags may come before or after its positional arguments.
 - Flags take one dash (`-force`); Go's flag parser also accepts two (`--force`).
 - `<tenant>/<channel>` addresses a channel, such as `acme/prod`.

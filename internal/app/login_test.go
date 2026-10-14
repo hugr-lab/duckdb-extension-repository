@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -64,5 +66,38 @@ func TestCloudSQLLoginFake(t *testing.T) {
 	tok, err := l.(store.TokenLogin).PasswordFor(context.Background(), store.Target{Host: "h", Port: 5432, User: "u"})
 	if err != nil || tok != "kista-dev-fake" {
 		t.Fatalf("%q %v", tok, err)
+	}
+}
+
+// The gcp login asks the metadata server for sqlservice.login only, never cloud-platform.
+func TestCloudSQLLoginScope(t *testing.T) {
+	const principal = "kista-db@acme-kista.iam.gserviceaccount.com"
+	var asked string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Metadata-Flavor", "Google")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/email"):
+			w.Write([]byte(principal))
+		case strings.HasSuffix(r.URL.Path, "/token"):
+			asked = r.URL.Query().Get("scopes")
+			w.Write([]byte(`{"access_token":"ya29.sql","expires_in":3599,"token_type":"Bearer"}`))
+		}
+	}))
+	defer srv.Close()
+	metadataURL = srv.URL + "/sa/"
+	defer func() { metadataURL = "" }()
+	cfg := config.Default()
+	cfg.Profile = config.ProfileDev // no steering check against the test's environment
+	cfg.GCP = config.GCP{GCPCreds: config.GCPCreds{Principal: principal}}
+	l, err := cloudSQLLogin(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := l.(store.TokenLogin).PasswordFor(context.Background(), store.Target{Host: "h", Port: 5432, User: "kista-db@acme-kista.iam"})
+	if err != nil || tok != "ya29.sql" {
+		t.Fatalf("%q %v", tok, err)
+	}
+	if asked != "https://www.googleapis.com/auth/sqlservice.login" {
+		t.Fatalf("scopes %q", asked)
 	}
 }

@@ -4,13 +4,13 @@ title: Configuration
 
 # Configuration
 
-kista reads one YAML file and then applies `KISTA_*` environment overrides. This page lists every
+kista reads one YAML document (a file, or a variable with `-config env:NAME`) and then applies `KISTA_*` environment overrides. This page lists every
 setting: its type, its default and its limits. The pages linked from each section explain how to use
 it.
 
 ## The file
 
-Both commands take the file with `-config`; neither looks for a file on its own.
+Both commands take the file with `-config` (or `-config env:NAME`, below); neither looks for a file on its own.
 
 ```bash
 kista serve -config /etc/kista/kista.yaml
@@ -32,6 +32,11 @@ kista admin -config /etc/kista/kista.yaml tenant list
   may start with `KISTA_` (`KISTA_CONFIG`). The configuration holds no secret (they stay in their
   own files and identities), but whoever can describe the task or the app can read it: keep it
   that way.
+- With `env:`, whoever can set that variable decides every setting, file-only ones included: the
+  file-only boundary becomes "who can edit the task's or the app's environment", the same people
+  who could replace a mounted file. A platform that lets less trusted operators set `KISTA_*`
+  overrides should not hold the configuration in a `KISTA_` variable. The variable may not be
+  named after a setting.
 
 ```bash
 kista serve -config env:KISTA_CONFIG
@@ -75,8 +80,8 @@ Every setting that is not file-only can be overridden by a variable named after 
 | `rotation.min_demoted` | `KISTA_ROTATION__MIN_DEMOTED` |
 | `serve.public_url` | `KISTA_SERVE__PUBLIC_URL` |
 
-That is the complete list. Everything else is **file-only**: `profile`, `azure.identity.kind`, and
-the whole of `signers`, `blob`, `egress`, `auth`, `publish`, `upstreams`, `events`, `statistics`,
+That is the complete list. Everything else is **file-only**: `profile`, `azure.identity.kind`, `store.ca_pem`, and
+the whole of `aws`, `gcp`, `signers`, `blob`, `egress`, `auth`, `publish`, `upstreams`, `events`, `statistics`,
 `telemetry`, `gc`, `ui`, `attachments`, `tenants`, and every `serve` setting but `public_url`. Each of these
 switches a guard on or off, or decides what kista may reach, so it cannot be changed by whoever
 controls the process environment.
@@ -87,8 +92,9 @@ The rules of the loader:
 - A `KISTA_` variable that names a file-only setting is an error (`... can only be set in the config
   file`), not a silent no-op.
 - A `KISTA_` variable that names no setting is an error (`KISTA_STORE__DNS is not a kista setting`).
-  The one exception is the variable that `store.login.password_env` names: you may call it
-  `KISTA_DB_PASSWORD`, and it is read as the password, not as a setting.
+  The exceptions are the variable that `store.login.password_env` names (you may call it
+  `KISTA_DB_PASSWORD`, and it is read as the password, not as a setting) and the one
+  `-config env:` names, which holds the configuration.
 - Variables starting with `KISTA_TEST_`, `KISTA_E2E_` and `KISTA_LIVE_` are test switches and are
   ignored by the loader.
 - Durations, integers and booleans are parsed as in the file; a bad value is reported by variable
@@ -118,7 +124,7 @@ kista serve -config /etc/kista/kista.yaml
 | Vault / OpenBao | `https` address; `software_keys: true` required | `http` on loopback allowed; `software_keys` not required |
 | Azure Key Vault | `require_hsm` stays on | `require_hsm: false` allowed |
 | Azure identity | `managed`, or `workload` with `client_id` and `tenant_id` | `default` (the developer credential chain) allowed; `workload` without ids allowed |
-| AWS identity (KMS sources, S3 domains) | a platform identity; steering `AWS_*` variables refused | steering variables not checked; for `awskms`, `identity.kind: static` (key files) and `endpoint_url` on loopback (the moto emulator) allowed |
+| AWS identity (KMS sources, S3 domains, the `aws` database login) | a platform identity; steering `AWS_*` variables refused | steering variables not checked; for `awskms`, `identity.kind: static` (key files) and `endpoint_url` on loopback (the moto emulator) allowed |
 | `serve.public_url` | `https` | `http` on loopback allowed |
 | Egress | no plain http | `egress.allow_loopback_http: true` allowed, which also lets server issuers, OTLP sinks and credential token URLs use http on loopback |
 | S3 endpoint | `https` | `http` on loopback allowed |
@@ -167,7 +173,8 @@ today the `aws` and `gcp` database logins ([State](state.md#logins)). Both secti
 | `aws.region` | string | none | A region such as `eu-central-1`. Required with `aws.identity`. |
 | `aws.identity` | block | none | As a key source's `identity`: `pod_identity`, `irsa` (with `role_arn`), `imds`, `ecs`; `static` only with `profile: dev`. |
 | `gcp.principal` | string | none | The service account kista acts as (`<name>@<project>.iam.gserviceaccount.com`); required outside dev. |
-| `gcp.credentials_file` | path | none | An `external_account` file; absent, the metadata server. As a `gcpkms` source's. |
+| `gcp.credentials_file` | path | none | An `external_account` file (a `service_account` key only with `profile: dev`); absent, the metadata server. As a `gcpkms` source's. |
+| `gcp.endpoint_url` | URL | none | The tests' fake: only with `profile: dev`, on loopback, without `credentials_file`. |
 
 ## rotation
 

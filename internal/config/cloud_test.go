@@ -124,3 +124,42 @@ func TestCloudLogins(t *testing.T) {
 		t.Errorf("aws from the environment: %v", err)
 	}
 }
+
+// The review's edges: the region a token is signed for, a CA with no TLS host, overrides that may
+// not name a trust anchor or the configuration's own variable, and one host behind sslmode prefer.
+func TestCloudLoginEdges(t *testing.T) {
+	ca := testCA(t)
+	awsID := "aws: { region: eu-central-1, identity: { kind: ecs } }\n"
+	pg := func(dsn, login string) string {
+		return "store:\n  kind: postgres\n  dsn: '" + dsn + "'\n  login: " + login + "\n"
+	}
+	bad := map[string]struct {
+		body string
+		env  []string
+		want string
+	}{
+		"an RDS endpoint in another region": {pg("postgres://kista@db.abc.us-east-1.rds.amazonaws.com/kista?sslmode=verify-full", "{ kind: aws }") + awsID,
+			nil, "the database is in us-east-1"},
+		"ca_pem with no TLS host": {pg("postgres://kista@127.0.0.1/kista?sslmode=disable", "{ kind: password }") + "  ca_pem: |\n" + indent(ca) + "\n",
+			nil, "no host over TLS"},
+		"ca_pem from the environment": {base, []string{"KISTA_STORE__CA_PEM=x"}, "can only be set in the config file"},
+	}
+	for name, c := range bad {
+		if _, err := Load(write(t, c.body), c.env); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got %v, want %q", name, err, c.want)
+		}
+	}
+	if _, err := Load(write(t, pg("postgres://kista@db.abc.eu-central-1.rds.amazonaws.com./kista?sslmode=verify-full", "{ kind: aws }")+awsID), nil); err != nil {
+		t.Errorf("an RDS endpoint in aws.region: %v", err)
+	}
+	if _, err := Load(write(t, pg("postgres://kista@127.0.0.1:5432/kista", "{ kind: aws }")+awsID), nil); err != nil {
+		t.Errorf("sslmode prefer's fallback is the same host: %v", err)
+	}
+	if _, err := Load("env:KISTA_STORE__DSN", []string{"KISTA_STORE__DSN=" + base}); err == nil || !strings.Contains(err.Error(), "is a kista setting") {
+		t.Errorf("a configuration variable named after a setting: %v", err)
+	}
+	cfg, err := Load("env:APP_CONFIG", []string{"APP_CONFIG=" + base, "APP_CONFIG=store: { kind: postgres }\n"})
+	if err != nil || cfg.Store.Kind != "sqlite" {
+		t.Errorf("the first of two, as os.Getenv: %+v %v", cfg.Store, err)
+	}
+}

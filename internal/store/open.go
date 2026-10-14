@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,10 +167,30 @@ func caPool(b []byte) (*x509.CertPool, error) {
 	return pool, nil
 }
 
+// applyCA makes caPEM the only CA every TLS host of cfg is checked against.
+func applyCA(cfg *pgx.ConnConfig, caPEM []byte) error {
+	pool, err := caPool(caPEM)
+	if err != nil {
+		return err
+	}
+	used := false
+	for _, h := range pgHosts(cfg) {
+		if h.tls != nil {
+			h.tls.RootCAs, used = pool, true
+		}
+	}
+	if !used {
+		return errors.New("store: ca_pem is given, but no host is reached over TLS")
+	}
+	return nil
+}
+
 // PGTarget is what a PostgreSQL DSN connects to, as pgx parses it.
 type PGTarget struct {
-	Hosts int    // the main host and every fallback
+	Hosts int    // distinct host:port pairs, the main one and every fallback
+	Host  string // the main host
 	User  string // the user pgx would log in as
+	TLS   bool   // some host is reached over TLS
 }
 
 // PostgresTarget parses a PostgreSQL DSN the way OpenPostgres does.
@@ -178,7 +199,21 @@ func PostgresTarget(dsn string) (PGTarget, error) {
 	if err != nil {
 		return PGTarget{}, errors.New("store: not a PostgreSQL DSN")
 	}
-	return PGTarget{Hosts: len(pgHosts(cfg)), User: cfg.User}, nil
+	t := PGTarget{Hosts: pgDistinctHosts(cfg), Host: cfg.Host, User: cfg.User}
+	for _, h := range pgHosts(cfg) {
+		t.TLS = t.TLS || h.tls != nil
+	}
+	return t, nil
+}
+
+// pgDistinctHosts counts the host:port pairs pgx may dial: sslmode prefer and allow add a fallback
+// for the same host (TLS, then plaintext), which is still one host.
+func pgDistinctHosts(cfg *pgx.ConnConfig) int {
+	seen := map[string]bool{net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))): true}
+	for _, f := range cfg.Fallbacks {
+		seen[net.JoinHostPort(f.Host, strconv.Itoa(int(f.Port)))] = true
+	}
+	return len(seen)
 }
 
 // IsLoopbackHost reports whether a host name or address is the local machine.
@@ -333,29 +368,23 @@ func OpenPostgres(ctx context.Context, dsn string, login Login, maxOpen int, caP
 	if DSNHasPassword(dsn) {
 		return nil, errDSNPassword
 	}
-	if len(caPEM) > 0 && DSNHasRootCert(dsn) { // before parsing: pgx reads sslrootcert's file
-		return nil, errors.New("store: ca_pem and the DSN's sslrootcert do not go together")
+	if len(caPEM) > 0 && (DSNHasRootCert(dsn) || os.Getenv("PGSSLROOTCERT") != "") { // before parsing: pgx reads the file
+		return nil, errors.New("store: ca_pem and sslrootcert (the DSN's or PGSSLROOTCERT) do not go together")
 	}
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, errors.New("store: not a PostgreSQL DSN")
 	}
 	if len(caPEM) > 0 {
-		pool, err := caPool(caPEM)
-		if err != nil {
+		if err := applyCA(cfg, caPEM); err != nil {
 			return nil, err
-		}
-		for _, h := range pgHosts(cfg) {
-			if h.tls != nil {
-				h.tls.RootCAs = pool
-			}
 		}
 	}
 	if err := pgCheckTLS(cfg); err != nil {
 		return nil, err
 	}
 	tl, tokens := login.(TokenLogin)
-	if tokens && len(cfg.Fallbacks) > 0 {
+	if tokens && pgDistinctHosts(cfg) > 1 {
 		return nil, errors.New("store: a token login needs a DSN with one host")
 	}
 	if cfg.ConnectTimeout == 0 {

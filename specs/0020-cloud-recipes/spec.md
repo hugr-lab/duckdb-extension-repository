@@ -92,8 +92,8 @@ Delivery, each phase a pull request with its own reviews:
 ### Phase 0: server changes
 
 - **Configuration from the environment.**
-  - `-config env:<NAME>` reads the YAML from the variable `NAME`, at most 1 MiB, for `serve`,
-    `admin` and `check`. It is decoded exactly as a file is: known fields only, then the `KISTA_*`
+  - `-config env:<NAME>` reads the YAML from the variable `NAME`, at most 1 MiB, for `serve` and
+    `admin` (all its subcommands). The variable may not be named after a setting. It is decoded exactly as a file is: known fields only, then the `KISTA_*`
     overrides.
   - The configuration is not a secret: secrets stay in their own files and identities (spec
     0013), so a variable is a fit carrier.
@@ -129,8 +129,8 @@ Delivery, each phase a pull request with its own reviews:
   - `gcp.TokenSource` therefore takes the scope as a parameter, where it is hard-coded today.
   - The DSN's user must be the principal without `.gserviceaccount.com`, which is Cloud SQL's name
     for an IAM service-account user. The config check enforces it.
-- **Rules for both logins.** Both need PostgreSQL with `verify-full` and a CA, from `store.ca_pem`
-  or `sslrootcert`. The config check refuses:
+- **Rules for both logins.** Both need PostgreSQL with `verify-full`; the CA comes from
+  `store.ca_pem`, `sslrootcert`, or the system roots (which hold neither RDS's nor Cloud SQL's). The config check refuses:
   - a password setting beside them, and beside `entra` too, which today accepts one silently;
   - `aws` without `aws.region` and `aws.identity`;
   - `gcp` without `gcp.principal`.
@@ -326,7 +326,7 @@ Delivery, each phase a pull request with its own reviews:
    - kista's service account uses IRSA.
    - `check` runs, with the configuration from a ConfigMap as the chart does.
 2. **The ECS recipe**, applied whole with `deletion_protection=false`, `skip_final_snapshot` and
-   `key_deletion_days=7`, at `kista.aws.hugr-lab.com` in the delegated zone. Then `check`.
+   `key_deletion_days=7`, at a name in a Route 53 zone the operator gives. Then `check`.
 3. **`down`, in order:**
    - uninstall the chart, and wait until the controller has removed its ALB, target groups and
      security groups (otherwise the VPC cannot go);
@@ -425,7 +425,7 @@ GKE with the chart avoids it, and spec 0013 tried its parts (`gke.sh`).
   balancer. `deploy/gcp/gke.sh` has the same gap; it is removed, and this run replaces it.
 
 **Live run** (`deploy/gcp/recipe-live.sh`):
-- The recipe runs in a project of its own, under `gcp.hugr-lab.com` or the domain the owner gives.
+- The recipe runs in a project of its own, under a domain the operator gives.
 - `check` runs through the load balancer.
 - `down` deletes the project, the only clean way out for Cloud KMS key rings (spec 0004).
 - `leftovers` confirms the project is `DELETE_REQUESTED`.
@@ -548,8 +548,13 @@ An addendum details this phase before its code.
   - Storage: one bucket or container, with only the actions kista calls.
   - Database: one user. The Azure trade-off above is the exception, and it is stated.
   - Spec 0004's checks at open still apply: purpose tag, key spec, HSM, operations.
-- **The configuration in the environment** holds no secret. The config check refuses secrets in
-  the places it can see (`store.dsn`). The docs say who can read a task's or an app's environment.
+- **The configuration in the environment** holds no secret. With `env:`, whoever can set that
+  variable decides every setting, file-only ones included: the boundary becomes who can edit the
+  task's or the app's environment, the people who could replace a mounted file. `store.ca_pem` is
+  file-only, since a trust anchor is no override. The `gcp` token is not bound to a host, as a
+  password or an Entra token is not: whoever can change `store.dsn` can receive it. The config
+  check refuses secrets in the places it can see (`store.dsn`), and the docs say who can read a
+  task's or an app's environment.
 - **Private by default.** Database and bucket have no public access, and the service is reached
   only through the load balancer.
   - `trusted_proxies` names the load balancer's ranges.
@@ -569,13 +574,14 @@ An addendum details this phase before its code.
 - **Phase 0 (Go):**
   - `-config env:`: the size cap, known fields, the overrides after it, a missing variable;
   - `store.ca_pem` with `verify-full`, combined with `sslrootcert` (refused), and an invalid PEM;
-  - the `aws` login: `BuildAuthToken` with a fixed clock and static test credentials, the
+  - the `aws` login: `BuildAuthToken` with static test credentials (the token's host, port, user, region and expiry), the
     connection's host, port and user, and a multi-host DSN refused;
   - the `gcp` login: a fake metadata server asked for `sqlservice.login` only, and the DSN user
     rule;
   - config validation of the new sections and kinds, including a password beside `entra` now
     refused;
-  - the trailing-dot SAN against a test certificate, with and without code;
+  - the trailing-dot SAN: with the dot it verifies, without it it does not, through a real TLS handshake with `ca_pem`;
+  - a token login against the test PostgreSQL: the store asks it with the connection's host, port and user;
   - the chart's checks on the new identities.
 - **CI:**
   - `terraform fmt`, `validate` and `terraform test` with mock providers;

@@ -224,11 +224,14 @@ func rdsLogin(cfg config.Config) (store.Login, error) {
 	return store.TokenLogin{For: func(ctx context.Context, t store.Target) (string, error) {
 		tok, err := rdsauth.BuildAuthToken(ctx, net.JoinHostPort(t.Host, strconv.Itoa(int(t.Port))), region, t.User, creds)
 		if err != nil {
-			return "", errors.New("store: the service's AWS identity did not give a database token")
+			return "", fmt.Errorf("store: the service's AWS identity did not give a database token: %w", err)
 		}
 		return tok, nil
 	}}, nil
 }
+
+// metadataURL replaces the metadata server for the gcp database login in tests.
+var metadataURL string
 
 // cloudSQLLogin is Cloud SQL IAM database authentication (spec 0020): an access token of the
 // service's principal, scoped to the database login only.
@@ -240,7 +243,7 @@ func cloudSQLLogin(cfg config.Config) (store.Login, error) {
 	} else {
 		var err error
 		ts, err = gcpcloud.TokenSource(c.CredentialsFile, c.Principal, gcpcloud.Options{Dev: cfg.Profile == config.ProfileDev,
-			HTTPClient: gcpcloud.HTTPClient(), Scopes: []string{gcpcloud.SQLLoginScope}})
+			HTTPClient: gcpcloud.HTTPClient(), Scopes: []string{gcpcloud.SQLLoginScope}, MetadataURL: metadataURL})
 		if err != nil {
 			return nil, fmt.Errorf("app: store.login gcp: %w", err)
 		}
@@ -248,7 +251,7 @@ func cloudSQLLogin(cfg config.Config) (store.Login, error) {
 	return store.TokenLogin{For: func(ctx context.Context, _ store.Target) (string, error) {
 		tok, err := gcpcloud.Token(ctx, ts)
 		if err != nil {
-			return "", errors.New("store: the service's Google identity did not give a database token")
+			return "", fmt.Errorf("store: the service's Google identity did not give a database token: %w", err)
 		}
 		return tok.AccessToken, nil
 	}}, nil
