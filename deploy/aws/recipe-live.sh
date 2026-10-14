@@ -5,7 +5,12 @@
 # test's checks through the load balancer: DuckDB installs a private extension with a token from the
 # cluster's own OIDC issuer.
 #
-#   deploy/aws/recipe-live.sh up | check | down | leftovers
+#   deploy/aws/recipe-live.sh up | check | ecs-up | ecs-check | down | leftovers
+#
+# ecs-up applies the ECS recipe (deploy/aws-ecs) with the image up built, at kista-ecs.$KISTA_LIVE_ZONE
+# (KISTA_LIVE_ECS_HOST), and ecs-check runs the same checks through the management API: its server
+# administrator is a service account of the EKS cluster (a server issuer), so the ECS run needs up's
+# cluster. down destroys both. Needs terraform besides.
 #
 # Every resource carries the tag purpose=kista-live and names starting kista-live. `down` deletes
 # them all (the KMS key is scheduled for deletion, 7 days); `leftovers` lists whatever remains and
@@ -18,7 +23,7 @@
 # DuckDB e2e build (make e2e-build) for check.
 set -euo pipefail
 
-cmd=${1:?usage: recipe-live.sh up | check | down | leftovers}
+cmd=${1:?usage: recipe-live.sh up | check | ecs-up | ecs-check | down | leftovers}
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 export AWS_REGION=${AWS_REGION:-eu-central-1} AWS_PAGER="" GOWORK=off
@@ -34,6 +39,8 @@ export KUBECONFIG=$work/kubeconfig
 account=$(aws sts get-caller-identity --query Account --output text)
 # the AWS Load Balancer Controller, pinned (its chart has the same version); its IAM policy from the same tag
 lbc_version=v3.6.0
+ehost=${KISTA_LIVE_ECS_HOST:-kista-ecs.$zone}
+export TF_DATA_DIR=$work/terraform
 
 step() { printf '\n== %s\n' "$*"; }
 save() { echo "$1=$2" >>"$work/state"; }
@@ -208,7 +215,7 @@ EOF
 	step "ACM: a certificate for $host, validated in $zone"
 	zoneid=$(aws route53 list-hosted-zones-by-name --dns-name "$zone." --query 'HostedZones[0].Id' --output text | sed 's|/hostedzone/||')
 	save zoneid "$zoneid"
-	cert=$(aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$host'].CertificateArn | [0]" --output text)
+	cert=$(aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$host' || DomainName=='$ehost'].CertificateArn | [0]" --output text)
 	if [ "$cert" = None ]; then
 		cert=$(aws acm request-certificate --domain-name "$host" --validation-method DNS --tags "$tag" --query CertificateArn --output text)
 		sleep 10
@@ -384,7 +391,144 @@ check() {
 	echo "check: ok"
 }
 
+tf() { terraform -chdir="$repo/deploy/aws-ecs" "$@"; }
+
+ecs_up() {
+	step "the ECS recipe (deploy/aws-ecs), with the image up built, at $ehost"
+	[ -n "$(get digest)" ] || { echo "ecs-up: run up first (the image, and the server issuer)" >&2; exit 1; }
+	zoneid=$(aws route53 list-hosted-zones-by-name --dns-name "$zone." --query 'HostedZones[0].Id' --output text | sed 's|/hostedzone/||')
+	cat >"$work/ecs.tfvars" <<EOF
+region              = "$AWS_REGION"
+prefix              = "$name-ecs"
+tags                = { purpose = "$name" }
+domain              = "$ehost"
+route53_zone_id     = "$zoneid"
+image               = "$(get image)@$(get digest)"
+server_issuers      = "[{name: eks, url: '$(get issuer)', required_claims: {sub: 'system:serviceaccount:$ns:ops'}}]"
+server_admins       = "['subject:eks|system:serviceaccount:$ns:ops']"
+deletion_protection = false
+key_deletion_days   = 7
+EOF
+	tf init -input=false >/dev/null
+	tf apply -input=false -auto-approve -state="$work/ecs.tfstate" -var-file="$work/ecs.tfvars"
+}
+
+# api METHOD PATH TOKEN [curl args]: the management API of the ECS deployment
+api() {
+	local m=$1 p=$2 tok=$3
+	shift 3
+	curl -sS -X "$m" -H "Authorization: Bearer $tok" "https://$ehost/api/v1/$p" "$@"
+}
+
+# ok METHOD PATH TOKEN [curl args]: a setup call; 409 means a second ecs-check found it done
+ok() {
+	local code
+	code=$(api "$@" -o "$work/api.out" -w '%{http_code}')
+	case $code in
+	200 | 201 | 409) ;;
+	*) echo "$1 $2: $code" >&2; cat "$work/api.out" >&2; exit 1 ;;
+	esac
+}
+
+ecs_check() {
+	step "$ehost resolves here, and answers over http and https"
+	for i in $(seq 1 120); do
+		[ -n "$(dig +short "$ehost" | head -1)" ] && break
+		[ "$i" = 120 ] && { echo "$ehost does not resolve here" >&2; exit 1; }
+		sleep 10
+	done
+	for scheme in http https; do
+		for i in $(seq 1 60); do
+			[ "$(curl -s -o /dev/null -w '%{http_code}' "$scheme://$ehost/readyz")" = 200 ] && break
+			[ "$i" = 60 ] && { echo "$scheme://$ehost/readyz never answered 200" >&2; exit 1; }
+			sleep 5
+		done
+	done
+
+	step "the first administration through the API: the server administrator is EKS's $ns/ops"
+	for sa in ops alice; do
+		kubectl -n "$ns" get serviceaccount "$sa" >/dev/null 2>&1 || kubectl -n "$ns" create serviceaccount "$sa" >/dev/null
+	done
+	srv=$(kubectl -n "$ns" create token ops --audience "https://$ehost" --duration 1h)
+	ten=$(kubectl -n "$ns" create token ops --audience "https://$ehost/acme" --duration 1h)
+	api GET whoami "$srv" -f | jq -e '.administrator == true' >/dev/null
+	key=$(tf output -state="$work/ecs.tfstate" -raw channel_signer)
+	duck=$repo/e2e/.build
+	go build -o "$work/kista" "$repo/cmd/kista"
+	field() { "$work/kista" ext inspect "$1" | awk -F': *' -v k="$2" '$1 == k {print $2}'; }
+	version=$(field "$duck/extensions/httpfs.duckdb_extension" "duckdb version")
+	case "$version" in v*) vkind=release ;; *) vkind=dev ;; esac
+	json='Content-Type: application/json'
+	ok POST tenants "$srv" -H "$json" -d '{"name":"acme"}'
+	ok POST tenants/acme/channels "$srv" -H "$json" -d '{"name":"prod","kind":"signed"}'
+	ok POST duckdb-versions "$srv" -H "$json" -d "$(jq -cn --arg n "$version" --arg k "$vkind" '{name: $n, kind: $k}')"
+	ok POST tenants/acme/channels/prod/duckdb-versions "$srv" -H "$json" -d "$(jq -cn --arg v "$version" '{duckdb_version: $v}')"
+	ok POST tenants/acme/channels/prod/keys "$srv" -H "$json" -d "$(jq -cn --arg s "$key" '{signer_ref: $s, active: true}')"
+	ok POST tenants/acme/issuers "$srv" -H "$json" -d "$(jq -cn --arg u "$(get issuer)" '{name: "eks", url: $u}')"
+	for g in ops:publish alice:install; do
+		ok POST tenants/acme/grants "$srv" -H "$json" -d "$(jq -cn --arg p "subject:eks|system:serviceaccount:$ns:${g%%:*}" \
+			--arg v "${g##*:}" '{principal: $p, verbs: [$v], channel: "prod"}')"
+	done
+	# httpfs is DuckDB's (a reserved name): publishing it needs a grant that names it
+	ok POST tenants/acme/grants "$srv" -H "$json" -d "$(jq -cn --arg p "subject:eks|system:serviceaccount:$ns:ops" \
+		'{principal: $p, verbs: ["publish"], channel: "prod", extension: "httpfs"}')"
+
+	step "publication through the load balancer: signed by KMS, stored in S3"
+	for ext in httpfs:public loadable_extension_demo:private; do
+		f=$duck/extensions/${ext%%:*}.duckdb_extension
+		ok POST "tenants/acme/channels/prod/extensions/${ext%%:*}/releases?version=$(field "$f" "extension version")&platform=$(field "$f" platform)&visibility=${ext##*:}" \
+			"$ten" -H 'Content-Type: application/octet-stream' --data-binary "@$f"
+	done
+	curl -sf "https://$ehost/acme/prod/.well-known/duckdb-extension-repo.json" >"$work/ecs-wellknown.json"
+	jq -r '.signature_keys[0]' "$work/ecs-wellknown.json" >"$work/ecs-channel.pem"
+	grep -q "BEGIN PUBLIC KEY" "$work/ecs-channel.pem"
+
+	step "DuckDB through the load balancer"
+	KISTA_E2E_DUCKDB=$duck KISTA_E2E_URL=https://$ehost KISTA_E2E_CHANNEL=acme/prod KISTA_E2E_CA=/etc/ssl/cert.pem \
+		KISTA_E2E_KEY="$work/ecs-channel.pem" \
+		KISTA_E2E_TOKEN=$(kubectl -n "$ns" create token alice --audience "https://$ehost/acme" --duration 1h) \
+		go test -count=1 -run '^TestRemote$' -v "$repo/e2e/"
+
+	step "the audit records the caller's address, not the load balancer's"
+	me=$(curl -sf https://checkip.amazonaws.com)
+	clients=$(api GET "tenants/acme/events?limit=100" "$srv" -f | jq -r '.. | .client? // empty' | sort -u)
+	echo "clients: $(echo "$clients" | tr '\n' ' ') (this machine: $me)"
+	echo "$clients" | grep -q "^${me%.*}\." || { echo "no event from this machine's address" >&2; exit 1; }
+
+	step "a new deployment, a channel's .well-known through the load balancer throughout"
+	: >"$work/ecs-polls"
+	rm -f "$work/stop"
+	(
+		while [ ! -e "$work/stop" ]; do
+			curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 "https://$ehost/acme/prod/.well-known/duckdb-extension-repo.json" \
+				>>"$work/ecs-polls" 2>/dev/null || echo fail >>"$work/ecs-polls"
+			sleep 0.2
+		done
+	) &
+	poller=$!
+	cluster=$(tf output -state="$work/ecs.tfstate" -raw cluster)
+	aws ecs update-service --cluster "$cluster" --service kista --force-new-deployment >/dev/null
+	aws ecs wait services-stable --cluster "$cluster" --services kista
+	sleep 40 # the old tasks drain (deregistration_delay 30)
+	touch "$work/stop"
+	wait "$poller"
+	total=$(wc -l <"$work/ecs-polls")
+	bad=$(grep -cvx 200 "$work/ecs-polls" || true)
+	echo "polls: $total, not 200: $bad"
+	[ "$total" -gt 20 ] && [ "$bad" = 0 ]
+	echo
+	echo "ecs-check: ok"
+}
+
+ecs_down() {
+	[ -f "$work/ecs.tfstate" ] || return 0
+	step "the ECS recipe"
+	tf init -input=false >/dev/null
+	tf destroy -input=false -auto-approve -state="$work/ecs.tfstate" -var-file="$work/ecs.tfvars"
+}
+
 down() {
+	ecs_down
 	step "kista and its load balancer"
 	if [ -f "$KUBECONFIG" ] && kubectl get ns "$ns" >/dev/null 2>&1; then
 		helm uninstall kista -n "$ns" --wait 2>/dev/null || true
@@ -475,6 +619,8 @@ leftovers() {
 			echo "LEFT oidc provider: $p"
 	done
 	aws eks list-clusters --query "clusters[?starts_with(@, '$name')]" --output text | sed '/^$/d; s/^/LEFT eks: /'
+	aws ecs list-clusters --query "clusterArns[?contains(@, '$name')]" --output text | sed '/^$/d; s/^/LEFT ecs: /'
+	aws s3api list-buckets --query "Buckets[?starts_with(Name, '$name')].Name" --output text | sed '/^$/d; s/^/LEFT bucket: /'
 	aws cloudformation list-stacks --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE DELETE_FAILED ROLLBACK_COMPLETE \
 		--query "StackSummaries[?contains(StackName, '$name')].StackName" --output text | tr '\t' '\n' | sed '/^$/d; s/^/LEFT stack: /'
 	aws rds describe-db-instances --query "DBInstances[?starts_with(DBInstanceIdentifier, '$name')].DBInstanceIdentifier" --output text | sed '/^$/d; s/^/LEFT rds: /'
@@ -486,11 +632,12 @@ leftovers() {
 	aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$host'].CertificateArn" --output text | sed '/^$/d; s/^/LEFT cert: /'
 	aws logs describe-log-groups --query "logGroups[?contains(logGroupName, '$name')].logGroupName" --output text | sed '/^$/d; s/^/LEFT log group: /'
 	zoneid=$(aws route53 list-hosted-zones-by-name --dns-name "$zone." --query 'HostedZones[0].Id' --output text | sed 's|/hostedzone/||')
-	aws route53 list-resource-record-sets --hosted-zone-id "$zoneid" --query "ResourceRecordSets[?Name=='$host.'].Name" --output text | sed '/^$/d; s/^/LEFT dns: /'
+	aws route53 list-resource-record-sets --hosted-zone-id "$zoneid" --query "ResourceRecordSets[?Name=='$host.' || Name=='$ehost.'].Name" --output text | sed '/^$/d; s/^/LEFT dns: /'
 	echo "leftovers: done (anything marked LEFT is still there)"
 }
 
 case $cmd in
 up | check | down | leftovers) "$cmd" ;;
-*) echo "usage: recipe-live.sh up | check | down | leftovers" >&2; exit 2 ;;
+ecs-up | ecs-check) "${cmd/-/_}" ;;
+*) echo "usage: recipe-live.sh up | check | ecs-up | ecs-check | down | leftovers" >&2; exit 2 ;;
 esac

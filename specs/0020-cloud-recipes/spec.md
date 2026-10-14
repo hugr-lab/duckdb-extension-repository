@@ -301,11 +301,11 @@ Delivery, each phase a pull request with its own reviews:
 - **ECS.**
   - A cluster, and the service on Fargate in private subnets with no public IP.
   - `ephemeral_storage` sized for the spool.
-  - `readonlyRootFilesystem`, with a task volume at `/var/lib/kista/tmp` (TMPDIR and the spool).
+  - The spool in the image's `/var/lib/kista/tmp` (owned by kista's uid) on the task's disk. The
+    root filesystem stays writable: the live run found that a Fargate bind mount at that path is
+    root-owned, and kista (uid 65532) cannot write it.
   - `wait_for_steady_state` and the deployment circuit breaker.
   - A `health_check_grace_period_seconds` covering startup.
-  - The live run confirms that the volume is writable by uid 65532. If Fargate mounts it root-owned,
-    the image declares it a `VOLUME`, which Fargate creates with the image's ownership.
 - **The load balancer.**
   - An ALB with the TLS policy `ELBSecurityPolicy-TLS13-1-2-2021-06` and an ACM certificate,
     DNS-validated in `route53_zone_id`, or a given `certificate_arn`.

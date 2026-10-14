@@ -7,7 +7,8 @@ title: Deployment
 kista ships as a container image and as binaries for linux and darwin, published from this
 repository and signed. Until the first version tag, the only published image is `:edge`, built
 from `main`; the version images and the binaries come with the first release. This page says what is published, how to verify it, and how to run the
-image with Docker. [Kubernetes](kubernetes.md) covers the Helm chart.
+image with Docker. [Kubernetes](kubernetes.md) covers the Helm chart, [AWS](aws.md) the ECS
+recipe in Terraform.
 
 The design is in
 [spec 0013](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0013-deployment/spec.md).
