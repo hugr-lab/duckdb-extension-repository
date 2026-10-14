@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # kista's image (spec 0013): one static binary with the console embedded, in a distroless image, as
 # uid and gid 65532. buildx builds linux/amd64 and linux/arm64; Go cross-compiles, so no emulation.
 # Every base image is pinned by digest (Dependabot updates them).
