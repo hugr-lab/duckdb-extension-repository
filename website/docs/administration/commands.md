@@ -8,9 +8,9 @@ title: Command reference
 
 | Command | What it does |
 | --- | --- |
-| `kista serve -config <file|env:NAME>` | runs the repository server |
+| `kista serve -config <file\|env:NAME>` | runs the repository server |
 | `kista ext inspect` and `kista ext verify` | read an extension file on disk; no config, no database |
-| `kista admin -config <file|env:NAME> <command> ...` | the server administrator's CLI |
+| `kista admin -config <file\|env:NAME> <command> ...` | the server administrator's CLI |
 | `kista version` | prints kista's own version |
 
 Build it with `make build` (writes `bin/kista`) or `go build ./cmd/kista`.
