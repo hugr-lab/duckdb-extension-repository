@@ -30,7 +30,7 @@ type Serve struct {
 // Listener is one address kista serves on.
 type Listener struct {
 	Addr        string     `yaml:"addr"`
-	Scheme      string     `yaml:"scheme"` // https | http | dual
+	Scheme      string     `yaml:"scheme"` // https | http | dual | health
 	TLS         *TLSConfig `yaml:"tls"`
 	BehindProxy bool       `yaml:"behind_proxy"`
 }
@@ -100,7 +100,7 @@ func validateServe(bad func(string, ...any), c Config) {
 			bad("serve.public_url must be https")
 		}
 	}
-	seen := map[string]bool{}
+	seen, health := map[string]bool{}, 0
 	for i, l := range s.Listeners {
 		where := fmt.Sprintf("serve.listeners[%d]", i)
 		if _, _, err := net.SplitHostPort(l.Addr); err != nil {
@@ -123,12 +123,22 @@ func validateServe(bad func(string, ...any), c Config) {
 			if l.TLS != nil || l.BehindProxy {
 				bad("%s: an http listener has neither tls nor behind_proxy", where)
 			}
+		case "health":
+			if l.TLS != nil || l.BehindProxy {
+				bad("%s: a health listener has neither tls nor behind_proxy", where)
+			}
+			if health++; health == 2 {
+				bad("%s: there is at most one health listener", where)
+			}
 		default:
-			bad("%s.scheme must be https, http or dual", where)
+			bad("%s.scheme must be https, http, dual or health", where)
 		}
 		if l.TLS != nil && (!filepath.IsAbs(l.TLS.CertFile) || !filepath.IsAbs(l.TLS.KeyFile)) {
 			bad("%s.tls: cert_file and key_file must be absolute paths", where)
 		}
+	}
+	if health > 0 && health == len(s.Listeners) {
+		bad("serve.listeners: a health listener serves probes only; another listener is needed")
 	}
 	for _, l := range s.Listeners {
 		if l.BehindProxy && len(s.TrustedProxies) == 0 {

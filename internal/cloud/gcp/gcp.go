@@ -25,6 +25,8 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/google/externalaccount"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 // Scope is the scope kista asks for: IAM is the limit, not scopes.
@@ -65,7 +67,7 @@ func HTTPClient() *http.Client {
 type Env struct {
 	Environ  func() []string
 	ReadFile func(string) ([]byte, error) // the credentials file
-	// ReadToken reads a projected token file: a symlink into a timestamped directory, any mode
+	// ReadToken reads a projected token file (spec 0013: owned by root or kista, any read bits)
 	ReadToken func(string) ([]byte, error)
 }
 
@@ -374,36 +376,17 @@ func (m *metadataSource) Token() (*oauth2.Token, error) {
 	return &oauth2.Token{AccessToken: t.AccessToken, TokenType: "Bearer", Expiry: time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)}, nil
 }
 
-// readCredentialsFile reads a credentials file: a regular file nobody but its owner may write. An
-// external_account file holds no secret, but who may edit it chooses kista's identity. It may be a
-// Kubernetes ConfigMap's projection, a symlink into a timestamped directory, which is followed.
+// readCredentialsFile reads a credentials file: public material (spec 0013), owned by root (a
+// ConfigMap's projection, through its link) or by kista, and nobody else may write it. An
+// external_account file holds no secret, but who may edit it chooses kista's identity.
 func readCredentialsFile(path string) ([]byte, error) {
-	return readRegular(path, true)
+	return secretfile.Read(path, secretfile.Public, secretfile.SmallLimit)
 }
 
-// readTokenFile reads a projected token: a regular file, any mode (the volume's), through its link.
+// readTokenFile reads a projected token (spec 0013): owned by root or kista, any read bits, through
+// its link inside its directory.
 func readTokenFile(path string) ([]byte, error) {
-	return readRegular(path, false)
-}
-
-func readRegular(path string, ownerWrite bool) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !st.Mode().IsRegular() || ownerWrite && (st.Mode().Perm()&0o022 != 0 || !ownedByUs(st)) {
-		return nil, fmt.Errorf("gcp: %s must be a regular file nobody else may write, owned by root or kista's user", path)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, 64<<10+1))
-	if err != nil || len(b) > 64<<10 {
-		return nil, errors.New("gcp: the file could not be read whole")
-	}
-	return b, nil
+	return secretfile.Read(path, secretfile.Token, secretfile.SmallLimit)
 }
 
 // ErrPrincipal is the metadata server's account differing from the configured principal.

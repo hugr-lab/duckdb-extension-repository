@@ -155,9 +155,12 @@ blob:
 | `role_arn` | with `identity` only: optional, an IAM role ARN in the region's partition, assumed after the identity |
 | `account` | with `identity` only, and required there: the bucket owner's 12-digit account |
 
-- **Credentials** come only from the two files, or from `identity` (below). Each file must be a
-  regular file with mode `0600` or narrower; they are read again for every request, so a rotated
-  secret is picked up without a restart. The S3 client's own providers (`AWS_*` and `MINIO_*`
+- **Credentials** come only from the two files, or from `identity` (below). Each file is a secret
+  file, at most 4 KiB: owned by kista's user with mode `0600` or narrower, or root-owned with
+  kista's group and mode `0440` or narrower (see
+  [Files kista reads](security.md#files-kista-reads)). They are read again for every request, so
+  a rotated secret is picked up without a restart. `ca_file` is public material, owned by root or
+  kista's user. The S3 client's own providers (`AWS_*` and `MINIO_*`
   variables, `~/.aws/credentials`, container credential endpoints) are never used.
 - Requests ignore proxy environment variables and never follow redirects; there are at most 3
   attempts per call.
@@ -222,7 +225,7 @@ Turn on S3 Block Public Access. A versioned bucket, or one with object lock, kee
 | `cloud` | `public` (default), `china` or `usgov` |
 | `prefix` | empty, or lowercase segments each ending with `/` |
 | `identity` | required: `kind` `managed` or `workload` (with `client_id`, `tenant_id`), or `default` with `profile: dev` only |
-| `endpoint`, `account_key_file` | the Azurite emulator only: both together, `profile: dev`, an `http` loopback URL ending with `/<account>`, no `cloud`, no `identity` |
+| `endpoint`, `account_key_file` | the Azurite emulator only: both together, `profile: dev`, an `http` loopback URL ending with `/<account>`, no `cloud`, no `identity`. The key file is a [secret file](security.md#files-kista-reads), at most 4 KiB |
 
 The host is `<account>.blob.core.windows.net`, `<account>.blob.core.chinacloudapi.cn` or
 `<account>.blob.core.usgovcloudapi.net`. Identities follow the same rules as Azure Key Vault

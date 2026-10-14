@@ -13,13 +13,14 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"golang.org/x/net/idna"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 // Errors, one per class; messages carry the host and nothing else.
@@ -74,9 +75,9 @@ func New(cfg Config) (*Client, error) {
 	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if cfg.CAFile != "" {
-		pem, err := os.ReadFile(cfg.CAFile)
+		pem, err := secretfile.Read(cfg.CAFile, secretfile.Public, secretfile.LargeLimit)
 		if err != nil {
-			return nil, errors.New("egress: cannot read ca_file")
+			return nil, fmt.Errorf("egress: ca_file: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {

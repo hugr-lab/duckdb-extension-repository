@@ -95,7 +95,7 @@ connection:
 | `store.login` | Where the secret comes from |
 | --- | --- |
 | `kind: password`, `password_env: NAME` | The environment variable `NAME`, read on every new connection. Unset or empty is an error naming the variable. |
-| `kind: password`, `password_file: /path` | The file, read on every new connection; trailing newlines are trimmed. |
+| `kind: password`, `password_file: /path` | The file, read on every new connection; trailing newlines are trimmed. It is a secret file ([Files kista reads](security.md#files-kista-reads)): owned by kista's user with mode `0600` or narrower, or root-owned with kista's group and mode `0440` or narrower. |
 | `kind: password` with neither | No password (for example trust or peer authentication on a socket). |
 | `kind: entra` | A Microsoft Entra token from the service's Azure identity (`azure.identity`), for Azure Database for PostgreSQL Flexible Server or Azure SQL. |
 
@@ -151,7 +151,8 @@ kista needs no external lock service; the database is the coordination point.
 Background work that should run on one replica at a time holds a **lease**: a row in the `leases`
 table with a holder (the replica's host name plus a random id), an expiry and a version. A replica
 takes a lease that is free or expired, renews it while it works, and releases it when done; a
-replica that dies simply lets it expire. Leases in use:
+replica that dies simply lets it expire. So does a replica whose runner is still busy when a
+shutdown's wait for it ends (`serve.shutdown_timeout`). Leases in use:
 
 | Lease | Work |
 | --- | --- |
@@ -163,6 +164,7 @@ replica that dies simply lets it expire. Leases in use:
 | `kista/events/sink/<name>` | Delivery to one event sink. |
 | `kista/statistics/daily` | The daily statistics pass. |
 | `kista/blob/gc/<domain>` | Storage garbage collection of a domain. |
+| `kista/tenant-delete/<id>` | The tenant reaper on one deleting tenant: its rows in batches, later the sweeps of its tombstone. |
 
 Leases compare times written by different replicas, so keep the replicas' clocks synchronised
 (NTP). A released lease is set slightly in the past (5 seconds) so a replica whose clock is a little
@@ -215,8 +217,9 @@ start, with `store: the database needs a newer kista binary`, only when that val
 newest migration it knows. An additive migration keeps `min_reader` where it was, so an older
 replica can keep running and restart during a rolling upgrade; a migration that changes or removes
 something older code relies on raises it. Many migrations so far have raised it; the newest,
-`0018_feeds`, raised it to 18, so today a binary that does not know migration 18 does not start
-against a database that has it. See [Upgrading](administration/upgrading.md) for the procedure.
+`0019_tenant_deletion`, raised it to 19, so today a binary that does not know migration 19 does
+not start against a database that has it. See [Upgrading](administration/upgrading.md) for the
+procedure.
 
 `/readyz` checks the database and the schema level on every replica, so a replica whose binary no
 longer fits the database is taken out of rotation.

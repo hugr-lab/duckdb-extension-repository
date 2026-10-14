@@ -16,7 +16,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -32,6 +31,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/transport"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 // Config configures a store. Exactly one of Credential and AccountKeyFile is set.
@@ -126,17 +126,11 @@ func New(cfg Config) (*Store, error) {
 }
 
 func readKey(path string) (string, error) {
-	f, err := os.Open(path)
+	b, err := secretfile.Read(path, secretfile.Secret, 4096)
 	if err != nil {
-		return "", errors.New("blob/azureblob: cannot open the account key file")
+		return "", fmt.Errorf("blob/azureblob: the account key file: %w", err)
 	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 {
-		return "", errors.New("blob/azureblob: the account key file must be a regular file with mode 0600 or narrower")
-	}
-	b, err := io.ReadAll(io.LimitReader(f, 4096))
-	if err != nil || strings.TrimSpace(string(b)) == "" {
+	if strings.TrimSpace(string(b)) == "" {
 		return "", errors.New("blob/azureblob: cannot read the account key file")
 	}
 	return strings.TrimSpace(string(b)), nil

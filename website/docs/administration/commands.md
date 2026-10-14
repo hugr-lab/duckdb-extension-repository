@@ -4,13 +4,14 @@ title: Command reference
 
 # Command reference
 
-`kista` is one binary with three command groups:
+`kista` is one binary with three command groups and a version command:
 
 | Command | What it does |
 | --- | --- |
 | `kista serve -config <file>` | runs the repository server |
 | `kista ext inspect` and `kista ext verify` | read an extension file on disk; no config, no database |
 | `kista admin -config <file> <command> ...` | the server administrator's CLI |
+| `kista version` | prints kista's own version |
 
 Build it with `make build` (writes `bin/kista`) or `go build ./cmd/kista`.
 
@@ -64,10 +65,50 @@ exits `2`.
 kista serve -config /etc/kista/kista.yaml
 ```
 
-Runs the server until `SIGTERM` or `SIGINT`. Logs are JSON lines on stdout. With `profile: dev` it
-logs a warning at start. Exit status: `0` after a clean shutdown, `1` when the configuration cannot
-be loaded or the server fails, `2` on a usage error. What it serves and how it shuts down is in
+Runs the server until `SIGTERM` or `SIGINT`. Logs are JSON lines on stdout. At start it logs its
+version, the Go version and the platform; with `profile: dev` it also logs a warning. Exit status:
+`0` after a clean shutdown, `1` when the configuration cannot be loaded or the server fails, `2` on
+a usage error, and the signal's status after a second signal (below). What it serves is in
 [Configuration](../configuration.md) and [Using kista from DuckDB](../duckdb.md).
+
+On `SIGTERM` or `SIGINT`:
+
+1. `/readyz` fails, and kista waits `serve.drain_timeout` (5 seconds by default), so load
+   balancers stop sending.
+2. The listeners shut down. Downloads still running after `serve.shutdown_timeout` (30 seconds by
+   default) are aborted.
+3. The background runners (re-signer, upstreams and pull-through fetches, feeds, the tenant
+   reaper, event retention and sinks, daily statistics, garbage collection) stop and release their
+   leases, within one more `serve.shutdown_timeout`. A runner still busy then is abandoned, and its
+   lease in the database expires as it would after a crash; another replica takes the work over
+   then.
+4. The event writer writes what the runners and the drain recorded, and the download counter its
+   last counts, within 11 seconds of their own, so a stuck runner cannot take that time from them.
+5. Metrics are flushed, for up to 10 seconds.
+6. The storage service and the database close. Closing the database waits for queries still in
+   progress, so a runner abandoned in the middle of one can delay the exit a little.
+
+A wait that runs out is logged as an error. From the signal to the exit takes at most
+`drain_timeout + 2 × shutdown_timeout + 21s` (86 seconds with the defaults), plus closing the
+database and the storage. A second `SIGTERM` or `SIGINT` (another Ctrl-C) ends the process at
+once; the exit status is then the signal's, as the shell reports it (`143` for `SIGTERM`, `130`
+for `SIGINT`).
+
+## kista version
+
+```bash
+kista version        # or kista --version
+```
+
+Prints kista's version, the Go version it was built with and the platform, then exits `0`:
+
+```text
+kista v1.2.3 (go1.27.2, linux/amd64)
+```
+
+A build without a version set prints `dev`. This is kista's own version. The DuckDB versions a
+server serves are a different thing, listed by `kista admin version list` (see
+[DuckDB versions](#duckdb-versions)).
 
 ## kista ext
 

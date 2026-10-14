@@ -50,11 +50,17 @@ serve:
 		"tiny write timeout":  {base + "serve: { write_idle_timeout: 10ms }\n", nil, "at least 1s"},
 		"negative downloads":  {base + "serve: { max_downloads: -1 }\n", nil, "negative"},
 		"api rate alone":      {base + "serve: { api_rate: 5 }\n", nil, "set together"},
+		"health with tls":     {base + "serve: { listeners: [{ addr: ':1', scheme: http }, { addr: ':2', scheme: health, tls: { cert_file: /a, key_file: /b } }] }\n", nil, "health listener has neither"},
+		"two health":          {base + "serve: { listeners: [{ addr: ':1', scheme: http }, { addr: ':2', scheme: health }, { addr: ':3', scheme: health }] }\n", nil, "at most one health"},
+		"health only":         {base + "serve: { listeners: [{ addr: ':2', scheme: health }] }\n", nil, "another listener is needed"},
 	} {
 		_, err := Load(write(t, c.file), c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v, want %q", name, err, c.want)
 		}
+	}
+	if _, err := Load(write(t, base+"serve: { listeners: [{ addr: ':1', scheme: http }, { addr: ':8081', scheme: health }] }\n"), nil); err != nil {
+		t.Fatalf("a health listener: %v", err)
 	}
 	dev := "profile: dev\nrotation: { min_trusted: 1h, min_demoted: 1h }\n" + base + "serve: { public_url: 'http://127.0.0.1:8080' }\n"
 	if _, err := Load(write(t, dev), nil); err != nil {

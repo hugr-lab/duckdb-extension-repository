@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/textproto"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/sinks"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -56,9 +56,9 @@ func headersFile(path string) (http.Header, error) {
 	if path == "" {
 		return h, nil
 	}
-	b, err := os.ReadFile(path)
+	b, err := secretfile.Read(path, secretfile.Secret, secretfile.SmallLimit)
 	if err != nil {
-		return nil, errors.New("cannot read headers_file")
+		return nil, fmt.Errorf("headers_file: %w", err)
 	}
 	sc := bufio.NewScanner(bytes.NewReader(b))
 	for n := 1; sc.Scan(); n++ {

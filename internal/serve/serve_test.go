@@ -672,6 +672,83 @@ func TestBehindProxyRefusesPeers(t *testing.T) {
 	}
 }
 
+// A health listener (spec 0013) answers the probes from any peer, behind_proxy or not, and nothing
+// else; it logs nothing.
+func TestHealthListener(t *testing.T) {
+	en := newEnv(t, Options{}, "https")
+	var logged bytes.Buffer
+	en.h.log = slog.New(slog.NewJSONHandler(&logged, nil))
+	en.h.o.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	hl, _ := net.Listen("tcp", "127.0.0.1:0")
+	srv := &Server{Handler: en.h, Log: slog.New(slog.DiscardHandler), DrainTimeout: time.Millisecond, ShutdownTimeout: time.Second,
+		Listeners: []Listener{{Listener: config.Listener{Addr: ln.Addr().String(), Scheme: "https", BehindProxy: true}, Net: ln},
+			{Listener: config.Listener{Addr: hl.Addr().String(), Scheme: "health"}, Net: hl}}}
+	rctx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(rctx) }()
+	defer func() { cancel(); <-done }()
+	time.Sleep(50 * time.Millisecond)
+	base := "http://" + hl.Addr().String()
+	get := func(method, path string) (int, string) {
+		t.Helper()
+		req, _ := http.NewRequest(method, base+path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode, string(b)
+	}
+	en.h.SetReady(false)
+	if c, _ := get("GET", "/readyz"); c != 503 {
+		t.Fatalf("not ready: %d", c)
+	}
+	en.h.SetReady(true)
+	for _, c := range []struct {
+		method, path string
+		code         int
+		body         string
+	}{
+		{"GET", "/healthz", 200, "ok\n"},
+		{"GET", "/readyz", 200, "ready\n"},
+		{"HEAD", "/readyz", 200, ""},
+		{"GET", "/readyz?x=1", 404, ""},
+		{"POST", "/healthz", 404, ""},
+		{"GET", "/.well-known/duckdb-extension-repo.json", 404, ""},
+		{"GET", "/", 404, ""},
+		{"GET", "/api/v1/tenants", 404, ""},
+		{"GET", "/%68ealthz", 404, ""},
+		{"GET", "/readyz?", 404, ""},
+		{"GET", "/healthz/", 404, ""},
+	} {
+		if code, body := get(c.method, c.path); code != c.code || body != c.body {
+			t.Errorf("%s %s: %d %q", c.method, c.path, code, body)
+		}
+	}
+	opts, _ := http.NewRequest("OPTIONS", base, nil)
+	opts.URL.Opaque, opts.URL.Path = "*", ""
+	if resp, err := http.DefaultClient.Do(opts); err != nil || resp.StatusCode != 404 {
+		t.Errorf("OPTIONS *: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
+	withBody, _ := http.NewRequest("GET", base+"/readyz", strings.NewReader("x"))
+	if resp, err := http.DefaultClient.Do(withBody); err != nil || resp.StatusCode != 400 {
+		t.Errorf("a GET with a body: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
+	if logged.Len() != 0 {
+		t.Fatalf("the health listener logged: %s", logged.String())
+	}
+	en.h.SetStopping()
+	if c, _ := get("GET", "/readyz"); c != 503 {
+		t.Fatalf("stopping: %d", c)
+	}
+}
+
 // Spec 0010: X-Request-Id is a trusted proxy's only, and well formed; otherwise a new id.
 func TestRequestID(t *testing.T) {
 	h := &Handler{o: Options{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}}}

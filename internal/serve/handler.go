@@ -131,6 +131,32 @@ func NewHandler(st *store.Store, ks *keys.Service, bs *blob.Service, o Options) 
 // SetReady sets what /readyz answers, until SetStopping.
 func (h *Handler) SetReady(ok bool) { h.ready.Store(ok) }
 
+// Health is a health listener's handler (spec 0013): GET and HEAD on /healthz and /readyz, the
+// same answers as on the other listeners, and 404 for anything else. It writes no access log, no
+// event and no metric: the kubelet calls it every few seconds.
+func (h *Handler) Health() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		switch rt := parseRoute(r); {
+		case r.ContentLength > 0 || len(r.TransferEncoding) > 0:
+			plain(w, http.StatusBadRequest, body400)
+		case rt.kind == routeHealthz:
+			plain(w, http.StatusOK, []byte("ok\n"))
+		case rt.kind == routeReadyz:
+			if h.ready.Load() && !h.stopping.Load() {
+				plain(w, http.StatusOK, []byte("ready\n"))
+			} else {
+				plain(w, http.StatusServiceUnavailable, body503)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+}
+
 // SetStopping makes /readyz fail for good: the server is draining.
 func (h *Handler) SetStopping() { h.stopping.Store(true) }
 

@@ -128,7 +128,7 @@ The metadata database. See [State](state.md) for the engines, DSNs, logins and r
 | `store.dsn` | string | none | PostgreSQL or SQL Server connection string. Required for those two. Must not contain a password. |
 | `store.login.kind` | `password`, `entra` | `password` | How the password or token is obtained. `entra` needs `postgres` or `sqlserver`. |
 | `store.login.password_env` | variable name | none | The variable holding the password, re-read on every new connection. |
-| `store.login.password_file` | path | none | A file holding the password (trailing newlines are trimmed), re-read on every new connection. Not together with `password_env`. |
+| `store.login.password_file` | path | none | A file holding the password (trailing newlines are trimmed), re-read on every new connection. Not together with `password_env`. A secret file: see [Files kista reads](security.md#files-kista-reads). |
 | `store.max_open_conns` | integer | `10` | The connection pool size (PostgreSQL and SQL Server). |
 | `store.migrate` | `auto`, `check` | `auto` | `auto` applies pending migrations at start; `check` only verifies the schema. |
 | `store.sqlite.path` | path | none | The SQLite file. Required for `sqlite`. May not contain `?`, `#` or `%`. |
@@ -193,8 +193,8 @@ Each entry of `signers.sources`:
 | `client_id` | string | none | Azure only, as in `azure.identity`. Required for `workload` outside dev. |
 | `tenant_id` | string | none | Azure only. Required for `workload` outside dev. |
 | `role_arn` | IAM role ARN | none | AWS `irsa` only, and required there: the role the ServiceAccount is bound to, in the region's partition. `AWS_ROLE_ARN` must equal it. |
-| `access_key_file` | absolute path | none | AWS `static` only, and required there. Mode `0600` or narrower. |
-| `secret_key_file` | absolute path | none | AWS `static` only, and required there. Mode `0600` or narrower. |
+| `access_key_file` | absolute path | none | AWS `static` only, and required there. A secret file ([Files kista reads](security.md#files-kista-reads)). |
+| `secret_key_file` | absolute path | none | AWS `static` only, and required there. A secret file ([Files kista reads](security.md#files-kista-reads)). |
 
 `vault` block (HashiCorp Vault or OpenBao Transit):
 
@@ -203,11 +203,11 @@ Each entry of `signers.sources`:
 | `address` | URL | required | `https://host[:port]`, no path. `http` only on loopback with `profile: dev`. |
 | `namespace` | string | none | Letters, digits, `_`, `-` and `/`. |
 | `mount` | string | required | The Transit mount, a relative path. |
-| `ca_file` | path | none | The CA bundle to trust for the address. |
+| `ca_file` | path | none | The CA bundle to trust for the address. Owned by root or kista's user. |
 | `auth.kind` | `kubernetes`, `jwt`, `token_file` | required | No static tokens in the config, no AppRole. |
 | `auth.mount` | string | `kubernetes` or `jwt` | The auth mount path. |
 | `auth.role` | string | none | Required for `kubernetes` and `jwt`. |
-| `auth.token_file` | absolute path | required | The projected service-account token, the JWT, or Vault Agent's token. |
+| `auth.token_file` | absolute path | required | The projected service-account token, the JWT, or Vault Agent's token. A Vault token (`kind: token_file`) is a secret file; a projected token or JWT is a token file: owned by root or kista's user, any read bits; nobody but the owner may write it ([Files kista reads](security.md#files-kista-reads)). |
 | `software_keys` | boolean | `false` | Must be `true` outside dev: an acknowledgement that Transit keys are software keys. |
 
 `azurekv` block (Azure Key Vault or Managed HSM):
@@ -237,7 +237,7 @@ Each entry of `signers.sources`:
 | `key_ring` | string | required | `projects/<project id>/locations/<location>/keyRings/<ring>`; the project by its id, not its number. |
 | `principal` | service account email | none | The service account kista acts as, `<name>@<project>.iam.gserviceaccount.com`. Required outside dev. |
 | `require_hsm` | boolean | `true` | Only `HSM` and `HSM_SINGLE_TENANT` keys. `false` (also `SOFTWARE`) only with `profile: dev`. |
-| `credentials_file` | absolute path | none | Absent: the metadata server. Otherwise an `external_account` file; a `service_account` key file only with `profile: dev`. |
+| `credentials_file` | absolute path | none | Absent: the metadata server. Otherwise an `external_account` file; a `service_account` key file only with `profile: dev`. Public material: owned by root or kista's user ([Files kista reads](security.md#files-kista-reads)). A `service_account` key holds a private key, yet is checked as public: a gap accepted in dev only. |
 | `endpoint_url` | URL | none | The tests' fake only: `profile: dev`, `http` or `https` on a loopback host, without `credentials_file`. Requests carry a fixed test token. |
 
 ## blob
@@ -266,9 +266,9 @@ Each domain:
 | `s3.lookup` | `path`, `dns` | required | Addressing style. A bucket with dots over https needs `path`. |
 | `s3.sse` | `none`, `s3`, `kms` | required | Server-side encryption. |
 | `s3.kms_key_id` | string | none | Required with `sse: kms`, refused otherwise. |
-| `s3.access_key_file` | absolute path | required without `identity` | Refused with `identity`. |
-| `s3.secret_key_file` | absolute path | required without `identity` | Refused with `identity`. |
-| `s3.ca_file` | absolute path | system roots | Trust only this CA bundle. Refused with `identity`. |
+| `s3.access_key_file` | absolute path | required without `identity` | Refused with `identity`. A secret file ([Files kista reads](security.md#files-kista-reads)). |
+| `s3.secret_key_file` | absolute path | required without `identity` | Refused with `identity`. A secret file. |
+| `s3.ca_file` | absolute path | system roots | Trust only this CA bundle. Refused with `identity`. Owned by root or kista's user. |
 | `s3.identity` | block | none | An AWS platform identity instead of the key files: `kind` `pod_identity`, `irsa` (with `role_arn`), `imds` or `ecs`; not `static`. The endpoint must then be AWS S3 in `s3.region`: `https://s3.<region>.amazonaws.com` or its dualstack, FIPS or `.amazonaws.com.cn` form, no port. |
 | `s3.role_arn` | IAM role ARN | none | With `identity` only: a role to assume after it, in the region's partition. |
 | `s3.account` | string | none | With `identity` only, and required there: the bucket owner's 12-digit account, sent as `x-amz-expected-bucket-owner`. |
@@ -278,7 +278,7 @@ Each domain:
 | `azureblob.cloud` | `public`, `china`, `usgov` | `public` | |
 | `azureblob.identity` | block | required | `managed` or `workload` (`default` in dev). |
 | `azureblob.endpoint` | URL | none | Azurite only, dev only: `http://<loopback host:port>/<account>`. |
-| `azureblob.account_key_file` | absolute path | none | Azurite only, dev only, with `endpoint` and without `identity`. |
+| `azureblob.account_key_file` | absolute path | none | Azurite only, dev only, with `endpoint` and without `identity`. A secret file. |
 | `gcs.bucket` | string | required | 3-63 lower-case letters, digits, `-` and `_`; no dots, no `goog`. |
 | `gcs.prefix` | string | empty | As for S3. |
 | `gcs.principal` | service account email | none | As in `gcpkms`. Required outside dev. |
@@ -305,7 +305,7 @@ bootstrap.
 | `serve.min_rate` | size | `16KiB` | Least average rate (per second) of a download, and of a publication upload through the API. |
 | `serve.write_idle_timeout` | duration | `30s` | The window `min_rate` is measured over; at least `1s`. |
 | `serve.drain_timeout` | duration | `5s` | `/readyz` fails this long before shutdown starts. |
-| `serve.shutdown_timeout` | duration | `30s` | Then downloads still running are aborted. |
+| `serve.shutdown_timeout` | duration | `30s` | Then downloads still running are aborted. It also bounds the wait for the background runners after it; the event writer and the download counter then get 11 seconds of their own ([kista serve](administration/commands.md#kista-serve)). |
 | `serve.api_rate` | number | `20` | Requests per second per client on `/api/`. Set together with `api_burst`. |
 | `serve.api_burst` | integer | `40` | Burst for `api_rate`. |
 
@@ -314,9 +314,33 @@ Each listener:
 | Setting | Type | Meaning |
 | --- | --- | --- |
 | `addr` | `host:port` | Unique. `":443"` listens on every address. |
-| `scheme` | `https`, `http`, `dual` | `https` has exactly one of `tls` and `behind_proxy`. `http` has neither and serves public releases only. `dual` needs `tls`: one port serving TLS or plain http by the first byte. |
-| `tls.cert_file`, `tls.key_file` | absolute paths | Reloaded when the files change. |
+| `scheme` | `https`, `http`, `dual`, `health` | `https` has exactly one of `tls` and `behind_proxy`. `http` has neither and serves public releases only. `dual` needs `tls`: one port serving TLS or plain http by the first byte. `health` has neither: probes only (below). |
+| `tls.cert_file`, `tls.key_file` | absolute paths | Reloaded when the files change (checked at most once a minute); a failed reload is logged as a warning and the current certificate stays. The certificate is public material, the key a secret file ([Files kista reads](security.md#files-kista-reads)). |
 | `behind_proxy` | boolean | TLS is terminated in front; `X-Forwarded-Proto` can only downgrade a request to http. |
+
+A `health` listener is a probe port, for the kubelet's liveness and readiness probes and a load
+balancer's health check. Never expose it in a Service or to clients: a load balancer that checks
+it must reach the pod port directly (see the chart notes in
+[spec 0013](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0013-deployment/spec.md)).
+
+- It is plain http. It answers only `GET` and `HEAD` on `/healthz` and `/readyz`, with no query
+  string (not even an empty `?`), the same answers as on the other listeners. Paths are matched
+  as on the other listeners, without unescaping. Everything else gets `404` with no body,
+  `OPTIONS *` included; a `GET` with a body gets `400`, as on the other listeners.
+- It writes no access log, no event and no metric.
+- Its timeouts are short: 5 seconds to read a request or write an answer, 30 seconds idle, and
+  `MaxHeaderBytes` 1 KiB (Go's server reads up to 4 KiB more).
+- It takes neither `tls` nor `behind_proxy`. There is at most one, and a configuration with only a
+  `health` listener is refused.
+- `/healthz` and `/readyz` keep answering on every other listener.
+
+```yaml title="kista.yaml"
+serve:
+  trusted_proxies: [10.0.0.0/8]
+  listeners:
+    - { addr: ":8443", scheme: https, behind_proxy: true }
+    - { addr: ":8081", scheme: health }
+```
 
 ## egress
 
@@ -331,7 +355,7 @@ feeds, OTLP sinks. The whole block is file-only. See [Upstreams](upstreams.md) a
 | `egress.allow[].ports` | list of ports | `[443]` | |
 | `egress.allow_loopback_http` | boolean | `false` | Plain http to loopback; `profile: dev` only. |
 | `egress.proxy` | URL | none | An explicit `http://host:port` proxy. `HTTP_PROXY` and friends are never read. |
-| `egress.ca_file` | absolute path | system roots | Trust only this CA bundle (a private IdP). |
+| `egress.ca_file` | absolute path | system roots | Trust only this CA bundle (a private IdP). Owned by root or kista's user. |
 | `egress.timeout` | duration | `10s` | Per request; `1s..60s`. |
 
 The deployment's own `public_url` host is always refused.
@@ -399,16 +423,16 @@ Each credential:
 | `prefixes` | list of URLs | https upstream prefixes it is sent to. Required. |
 | `allow_public` | boolean | Releases it brings may be made public. Default `false`. |
 | `kind` | `token_file`, `client_credentials` | |
-| `token_file` | absolute path | `token_file`: the bearer token, read from the file. |
+| `token_file` | absolute path | `token_file`: the bearer token, read from the file. A token file: owned by root or kista's user, any read bits; nobody but the owner may write it ([Files kista reads](security.md#files-kista-reads)). |
 | `token_url` | URL | `client_credentials`: the token endpoint, https. |
 | `client_id` | string | `client_credentials`: required. |
 | `scope`, `audience` | string | Optional token request parameters. |
 | `client_auth` | `azure`, `file`, `key_file`, `secret` | How the client authenticates. `azure` uses `azure.identity`. |
-| `assertion_file` | absolute path | `file`: a client assertion read from the file. |
-| `key_file` | absolute path | `key_file`: ZITADEL's JSON key or a PEM key. |
+| `assertion_file` | absolute path | `file`: a client assertion read from the file. A token file, as `token_file`. |
+| `key_file` | absolute path | `key_file`: ZITADEL's JSON key or a PEM key. A secret file ([Files kista reads](security.md#files-kista-reads)). |
 | `key_id` | string | `key_file` with a PEM key. |
 | `assertion_audience` | string | `key_file`: the JWT's `aud`; default `token_url`. |
-| `client_secret_file`, `client_secret_env` | path / variable | `secret`: exactly one. |
+| `client_secret_file`, `client_secret_env` | path / variable | `secret`: exactly one. The file is a secret file. |
 | `allow` | list | The token endpoint's private addresses (`cidr`, `ports`), beside `egress.allow`. `client_credentials` only. |
 
 ## events
@@ -435,7 +459,7 @@ Each sink:
 | `unmasked` | boolean | `false` | Send server administrators' and the CLI's identities on tenants' events as they are (by default they show as `server`). |
 | `url` | URL | | `otlp`: an OTLP/HTTP logs endpoint, https. |
 | `allow` | list | none | `otlp`: private addresses of the endpoint (`cidr`, `ports`). |
-| `headers_file` | absolute path | none | `otlp`: `Name: value` lines. |
+| `headers_file` | absolute path | none | `otlp`: `Name: value` lines. A secret file ([Files kista reads](security.md#files-kista-reads)). |
 | `timeout` | duration | `10s` | `otlp`: `1s..60s`. |
 | `path` | absolute path or `-` | | `jsonl`: the file, or `-` for stdout. Unique per sink. |
 | `max_size` | size | `100MiB` | `jsonl`: a file's size before it rotates. |

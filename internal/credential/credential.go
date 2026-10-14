@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 // Errors, one per class; none carries a token, a secret or an identity provider's answer.
@@ -168,9 +169,9 @@ func (c *Credential) Invalidate(tok string) { c.src.invalidate(tok) }
 type tokenFile struct{ path string }
 
 func (t *tokenFile) token(context.Context) (string, error) {
-	b, err := os.ReadFile(t.path)
+	b, err := secretfile.Read(t.path, secretfile.Token, secretfile.SmallLimit)
 	if err != nil {
-		return "", fmt.Errorf("%w: the token file cannot be read", ErrToken)
+		return "", fmt.Errorf("%w: the token file: %w", ErrToken, err)
 	}
 	tok := strings.TrimSpace(string(b))
 	if tok == "" || strings.ContainsAny(tok, " \r\n\t") {
@@ -225,9 +226,12 @@ func newClientCredentials(c config.Credential, d Deps) (*clientCredentials, erro
 		cc.assert = func(ctx context.Context) (string, error) { return d.Azure(ctx, aud+"/.default") }
 	case "file":
 		cc.assert = func(context.Context) (string, error) {
-			b, err := os.ReadFile(c.AssertionFile)
-			if err != nil || strings.TrimSpace(string(b)) == "" {
-				return "", fmt.Errorf("%w: the assertion file cannot be read", ErrToken)
+			b, err := secretfile.Read(c.AssertionFile, secretfile.Token, secretfile.SmallLimit)
+			if err != nil {
+				return "", fmt.Errorf("%w: the assertion file: %w", ErrToken, err)
+			}
+			if strings.TrimSpace(string(b)) == "" {
+				return "", fmt.Errorf("%w: the assertion file is empty", ErrToken)
 			}
 			return strings.TrimSpace(string(b)), nil
 		}
@@ -248,9 +252,9 @@ func newClientCredentials(c config.Credential, d Deps) (*clientCredentials, erro
 		cc.secret = func() (string, error) {
 			v := os.Getenv(c.ClientSecretEnv)
 			if c.ClientSecretFile != "" {
-				b, err := os.ReadFile(c.ClientSecretFile)
+				b, err := secretfile.Read(c.ClientSecretFile, secretfile.Secret, secretfile.SmallLimit)
 				if err != nil {
-					return "", fmt.Errorf("%w: the client secret file cannot be read", ErrToken)
+					return "", fmt.Errorf("%w: the client secret file: %w", ErrToken, err)
 				}
 				v = string(b)
 			}
@@ -426,9 +430,9 @@ func (k *keyFile) get() (*signer, error) {
 
 // readKey reads a key file: ZITADEL's JSON ({keyId, key, clientId}), or a PEM RSA key with key_id.
 func readKey(c config.Credential) (*signer, error) {
-	b, err := os.ReadFile(c.KeyFile)
+	b, err := secretfile.Read(c.KeyFile, secretfile.Secret, secretfile.SmallLimit)
 	if err != nil {
-		return nil, errors.New("the key file cannot be read")
+		return nil, fmt.Errorf("the key file: %w", err)
 	}
 	kid, raw := c.KeyID, b
 	var z struct {

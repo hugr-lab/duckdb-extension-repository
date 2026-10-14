@@ -25,8 +25,11 @@ and [0004](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/spe
 | `awskms` | AWS KMS | available |
 | `gcpkms` | Google Cloud KMS | available |
 
-PKCS#11 hardware HSMs are not available either. A Kubernetes Secret is not a backend: mounted into
-`signers.file_dir`, it is a file key.
+PKCS#11 hardware HSMs are not available either. A Kubernetes Secret is not a backend, and a
+Secret mounted into `signers.file_dir` is refused (its files are links, root-owned; see
+[File keys](#file-keys)). A channel key in a Secret is readable by anyone with `get secrets` in the
+namespace, sits in etcd, and often in GitOps sources. Keep channel keys in a KMS, an HSM or Vault
+Transit.
 
 ## Signer references
 
@@ -164,6 +167,11 @@ chmod 0600 /etc/kista/keys/dev-channel.pem
 kista admin -config kista.yaml key check -signer file:dev-channel.pem
 ```
 
+This rule is stricter than the one for other files kista reads
+([Files kista reads](security.md#files-kista-reads)): a key file cannot be a link and must be
+owned by the user kista runs as; a Secret volume's root-owned, group-readable files are refused,
+so a Kubernetes Secret mounted into `signers.file_dir` does not work.
+
 A file key has no tags, so its role is held by the fingerprint registry alone (see
 [Purposes](#purposes)). Keep file keys for development and tests; a production key belongs in a
 vault or KMS.
@@ -199,11 +207,14 @@ variables are ignored.
 - `jwt`: the same login with a JWT read from the token file.
 - `token_file`: the file holds a Vault token, kept fresh by Vault Agent.
 
-Token files must be regular files with mode `0600` or narrower (on Kubernetes, set the projected
-volume's `defaultMode`); they are read again on expiry. A token is renewed on the first request
-after two thirds of its lease; if the new login fails the old token is used until it expires. A
-`403` causes one re-login. Requests use TLS 1.2 or later, never follow redirects, and ignore proxy
-environment variables.
+The token file follows [Files kista reads](security.md#files-kista-reads). With `kubernetes` and
+`jwt` it is a projected token: owned by root or kista's user, any read bits; nobody but the
+owner may write it. With `token_file` it holds a Vault token, a secret: owned by kista's user
+with mode `0600` or narrower, or root-owned with kista's group and mode `0440` or narrower.
+`vault.ca_file` is public material, owned by root or kista's user. The token file is read again
+on expiry. A token is renewed on the first request after two thirds of its lease; if the new
+login fails the old token is used until it expires. A `403` causes one re-login. Requests use
+TLS 1.2 or later, never follow redirects, and ignore proxy environment variables.
 
 ### What the key and the policy must look like
 
@@ -380,12 +391,15 @@ column stops kista.
 - `irsa` takes the role from the configuration. Whoever edits the ServiceAccount's annotation can
   change `AWS_ROLE_ARN`, but not kista's identity: kista then refuses to start.
 - The token files of `pod_identity` and `irsa` are Kubernetes projected tokens: kista follows
-  their symlink, accepts the volume's mode, reads them again for every retrieval and refuses an
-  empty one.
+  a relative link inside the token's directory, wants the file owned by root or kista's user
+  (any read bits; nobody but the owner may write it), reads it again for every retrieval and
+  refuses an empty one ([Files kista reads](security.md#files-kista-reads)).
 - `imds` in a container needs the instance's metadata hop limit raised to `2`. With `imds`,
   `AWS_EC2_METADATA_DISABLED=true` stops kista outside `profile: dev`.
-- `static` reads `identity.access_key_file` and `identity.secret_key_file`, each a regular file
-  (not a symlink) with mode `0600` or narrower. It is for development against the emulator.
+- `static` reads `identity.access_key_file` and `identity.secret_key_file`, each a secret file
+  ([Files kista reads](security.md#files-kista-reads)): owned by kista's user with mode `0600` or
+  narrower, or root-owned with kista's group and mode `0440` or narrower. A relative link inside
+  the file's directory is followed. It is for development against the emulator.
 - Credentials are cached, and refreshed five minutes (jittered) before they expire. Nothing is
   fetched at startup.
 - STS, KMS and the platform's credential endpoints are reached through a client that ignores proxy
@@ -547,10 +561,12 @@ Credentials (no `~/.config/gcloud`, no well-known file).
 - **Every other type is refused**: `authorized_user` (a gcloud login),
   `external_account_authorized_user`, `impersonated_service_account`, `gdch_service_account`.
 
-The credentials file must be a regular file that nobody but its owner may write (no group or other
-write bit), at most 64 KiB. It may be a symlink, as a Kubernetes ConfigMap's projection is: the
-link is followed. An `external_account` file holds no secret, but whoever may edit it chooses
-kista's identity.
+The credentials file is public material ([Files kista reads](security.md#files-kista-reads)): a
+regular file owned by root or by kista's user, that nobody but its owner may write (no group or
+other write bit), at most 64 KiB. Its links are followed, as in a Kubernetes ConfigMap's
+projection. An `external_account` file holds no secret, but whoever may edit it chooses kista's
+identity. With `profile: dev` it may be a `service_account` key, which holds a private key, yet it
+is checked as public: a gap accepted in dev only.
 
 **What an `external_account` file must hold.** An unknown field is refused.
 
@@ -569,8 +585,9 @@ kista's identity.
 | `workforce_pool_user_project`, `client_id`, `client_secret` | refused: workforce pools and client credentials are for people, not kista |
 
 - **Only `file` credential sources.** The file is a Kubernetes projected ServiceAccount token whose
-  audience is the provider. kista reads it through its symlink at every exchange, accepts the
-  volume's mode, and refuses an empty file or one holding more than one token.
+  audience is the provider. kista reads it at every exchange, through a relative link inside the
+  token's directory; it must be owned by root or kista's user (any read bits; nobody but the
+  owner may write it). An empty file, or one holding more than one token, is refused.
 - **`aws1` and `url` sources are refused.** On EKS and AKS they answer with the node's identity
   (EC2's instance role, the Azure VM's identity), which every pod on the node shares.
 - **`executable` and `certificate` sources are refused.** An executable source runs a program the

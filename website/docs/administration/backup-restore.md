@@ -20,7 +20,8 @@ backup.
 Also part of a deployment, and backed up with your configuration management:
 
 - the configuration file and the files it names (TLS certificates, the database password file,
-  storage access key files, upstream credential files, CA bundles);
+  storage access key files, upstream credential files, CA bundles); a restored file must keep the
+  owner and mode [Files kista reads](../security.md#files-kista-reads) asks for;
 - event sink files, if a `jsonl` sink writes to disk (they are copies of the events; the database
   keeps its own for `events.retention`).
 

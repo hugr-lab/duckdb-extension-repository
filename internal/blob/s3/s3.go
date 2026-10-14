@@ -11,7 +11,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/transport"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 // Config configures a store.
@@ -68,21 +68,9 @@ var errCredentials = errors.New("blob/s3: credentials")
 type fileProvider struct{ access, secret string }
 
 func readSecret(path string) (string, error) {
-	f, err := os.Open(path)
+	b, err := secretfile.Read(path, secretfile.Secret, 4096)
 	if err != nil {
-		return "", fmt.Errorf("%w: cannot open a credential file", errCredentials)
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return "", fmt.Errorf("%w: cannot stat a credential file", errCredentials)
-	}
-	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 {
-		return "", fmt.Errorf("%w: a credential file must be a regular file with mode 0600 or narrower", errCredentials)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, 4096))
-	if err != nil {
-		return "", fmt.Errorf("%w: cannot read a credential file", errCredentials)
+		return "", fmt.Errorf("%w: %w", errCredentials, err)
 	}
 	v := strings.TrimSpace(string(b))
 	if v == "" {

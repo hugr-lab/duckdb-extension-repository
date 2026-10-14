@@ -337,12 +337,12 @@ upstreams:
 
 | Field | Meaning |
 | --- | --- |
-| `kind: token_file` | `token_file`: an absolute path, read at every fetch |
+| `kind: token_file` | `token_file`: an absolute path, read at every fetch. A token file: owned by root or kista's user, any read bits; nobody but the owner may write it ([Files kista reads](security.md#files-kista-reads)) |
 | `kind: client_credentials` | `token_url` (https), `client_id`, `scope` or `audience`, and `client_auth` |
 | `client_auth: azure` | kista's own managed or workload identity (`azure.identity`) as the client assertion |
-| `client_auth: file` | `assertion_file`: a projected token read at each request |
-| `client_auth: key_file` | `private_key_jwt` with `key_file` (ZITADEL's JSON, or PEM with `key_id`); `assertion_audience` the JWT's `aud` (default `token_url`) |
-| `client_auth: secret` | `client_secret_file` or `client_secret_env`: the last resort |
+| `client_auth: file` | `assertion_file`: a projected token read at each request; a token file, as `token_file` |
+| `client_auth: key_file` | `private_key_jwt` with `key_file` (ZITADEL's JSON, or PEM with `key_id`); `assertion_audience` the JWT's `aud` (default `token_url`). The key file is a secret file |
+| `client_auth: secret` | `client_secret_file` or `client_secret_env`: the last resort. The file is a secret file |
 | `allow` | CIDRs with ports where the token endpoint lives, beside `egress.allow` (`client_credentials` only) |
 
 ```bash

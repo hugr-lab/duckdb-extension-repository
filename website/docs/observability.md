@@ -217,7 +217,7 @@ events:                       # file-only
 | `unmasked` | send server administrators' and the CLI's identities on tenants' events as they are |
 | `url` (otlp) | the collector's OTLP/HTTP logs URL; `https` (plain `http` to loopback only with profile `dev` and `egress.allow_loopback_http`) |
 | `allow` (otlp) | addresses the sink may reach besides `egress.allow` (`cidr` and `ports`) |
-| `headers_file` (otlp) | an absolute path to `Name: value` lines (`#` comments), for authentication headers |
+| `headers_file` (otlp) | an absolute path to `Name: value` lines (`#` comments), for authentication headers. A secret file ([Files kista reads](security.md#files-kista-reads)) |
 | `timeout` (otlp) | per request, 1s to 60s (default 10s) |
 | `path` (jsonl) | `-` for stdout, or an absolute file path |
 | `max_size`, `keep` (jsonl) | rotate at this size (default 100 MiB), keeping this many old files (0 to 100; 0 means 5) |
@@ -358,6 +358,11 @@ The `kista admin` commands write their messages to stderr.
 
 Both answer `GET` and `HEAD` on every listener, without a token. Use `/healthz` for liveness and
 `/readyz` for readiness behind a load balancer.
+
+A `health` listener ([Configuration](configuration.md#serve)) serves only these two paths, on a
+port of its own, for the kubelet's probes and a load balancer's health check. It writes no access
+log, no event and no metric, so probes do not fill the logs. Do not expose it in a Service; a
+load balancer that checks it must reach the pod port directly.
 
 ## Configuration summary
 

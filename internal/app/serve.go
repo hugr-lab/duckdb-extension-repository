@@ -192,7 +192,25 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	bg, stop := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	defer func() { stop(); wg.Wait() }() // the re-signer releases its lease before the store closes
+	// the event writer and the download counter, started below, outlive the runners
+	evCtx, evStop := context.WithCancel(context.WithoutCancel(ctx))
+	var evDone, cntDone chan struct{} // nil until started
+	// shutdown (spec 0013): the runners release their leases within shutdown_timeout (one still busy
+	// then is abandoned, and its lease expires as after a crash); then the event writer writes what
+	// they and the drain recorded, and the counter its last counts, in a window of their own, so a
+	// stuck runner cannot take it from them
+	defer func() {
+		stop()
+		wgDone := make(chan struct{})
+		go func() { wg.Wait(); close(wgDone) }() // left behind with an abandoned runner: the process exits
+		waitBounded(wgDone, time.Now().Add(lim.ShutdownTimeout), log, "the background runners")
+		evStop()
+		if evDone != nil {
+			flushed := time.Now().Add(flushWindow)
+			waitBounded(evDone, flushed, log, "the event writer")
+			waitBounded(cntDone, flushed, log, "the download counter")
+		}
+	}()
 	wg.Add(2)
 	go func() { defer wg.Done(); readiness(bg, st, h) }()
 	go func() { defer wg.Done(); publicCheck(bg, bs, h) }()
@@ -213,13 +231,9 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	wg.Add(1)
 	go func() { defer wg.Done(); pruner.Run(bg) }()
 	// the writer outlives the listeners: refusals while draining are written
-	evCtx, evStop := context.WithCancel(context.WithoutCancel(ctx))
-	evDone := make(chan struct{})
+	evDone, cntDone = make(chan struct{}), make(chan struct{})
 	go func() { defer close(evDone); events.Run(evCtx) }()
-	defer func() { evStop(); <-evDone }()
-	cntDone := make(chan struct{})
 	go func() { defer close(cntDone); downloads.Run(evCtx) }() // counts of draining downloads too
-	defer func() { evStop(); <-cntDone }()
 	// storage garbage collection (spec 0016): the resolver always, full passes every gc.interval
 	collector := Collector(cfg, st, bs, instance, log)
 	wg.Add(1)
@@ -240,6 +254,21 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	go func() { defer wg.Done(); puller.Run(bg) }()
 	go func() { defer wg.Done(); reaper.Run(bg) }()
 	return srv.Run(ctx)
+}
+
+// flushWindow is the event writer's and the download counter's time to write their last rows at
+// shutdown: the writer's own final flush is bounded by 10 seconds.
+const flushWindow = 11 * time.Second
+
+// waitBounded waits for done until the deadline, and says what it gave up on.
+func waitBounded(done <-chan struct{}, deadline time.Time, log *slog.Logger, what string) {
+	t := time.NewTimer(time.Until(deadline))
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		log.Error("serve: shutdown did not wait any longer for " + what)
+	}
 }
 
 // ServerAuth builds server identity (spec 0007): the server issuers with a verifier and an egress

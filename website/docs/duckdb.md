@@ -75,8 +75,9 @@ serve:
 ```
 
 A `dual` listener (`scheme: dual`, with `tls`) answers TLS and plain `http` on one port. Behind a TLS
-proxy, use `scheme: https` with `behind_proxy: true` and set `serve.trusted_proxies`. See
-[Configuration](configuration.md) for every listener setting.
+proxy, use `scheme: https` with `behind_proxy: true` and set `serve.trusted_proxies`. The key file
+follows [Files kista reads](security.md#files-kista-reads). A `health` listener adds a probe port
+that DuckDB never uses. See [Configuration](configuration.md) for every listener setting.
 
 ## Allowing repositories
 

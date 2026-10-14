@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 func TestHTTPRefused(t *testing.T) {
@@ -34,11 +36,15 @@ func TestTokenFileMode(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "t")
 	os.WriteFile(p, []byte("x"), 0o644)
 	os.Chmod(p, 0o644)
-	if _, err := readTokenFile(p); err == nil {
-		t.Fatal("a world-readable token file was accepted")
+	if _, err := readTokenFile(p, secretfile.Secret); err == nil {
+		t.Fatal("a world-readable Vault token file was accepted")
+	}
+	// a service account JWT is a projected token: the volume's mode is accepted (spec 0013)
+	if tok, err := readTokenFile(p, secretfile.Token); err != nil || tok != "x" {
+		t.Fatal(tok, err)
 	}
 	os.Chmod(p, 0o600)
-	if tok, err := readTokenFile(p); err != nil || tok != "x" {
+	if tok, err := readTokenFile(p, secretfile.Secret); err != nil || tok != "x" {
 		t.Fatal(tok, err)
 	}
 }
@@ -109,7 +115,7 @@ func TestTokenFileRules(t *testing.T) {
 		p := filepath.Join(dir, name)
 		os.WriteFile(p, []byte(c.body), c.mode)
 		os.Chmod(p, c.mode)
-		if _, err := readTokenFile(p); err == nil {
+		if _, err := readTokenFile(p, secretfile.Secret); err == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}

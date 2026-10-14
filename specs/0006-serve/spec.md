@@ -195,19 +195,31 @@ serve:                                          # file-only (spec 0003 rules), e
   min_rate: 16KiB                               # per second, over write_idle_timeout
   write_idle_timeout: 30s
   drain_timeout: 5s                             # /readyz fails this long before shutdown starts
-  shutdown_timeout: 30s                         # then downloads still running are aborted
+  shutdown_timeout: 30s                         # then downloads still running are aborted; also
+                                                # bounds the wait for the background runners
+                                                # after it (spec 0013)
 ```
 
 **Listeners.** Each declares a scheme:
 
-- `https` with `tls` (a certificate, reloaded when its files change), or with `behind_proxy: true`:
-  TLS is terminated in front. A request whose `X-Forwarded-Proto` is anything but exactly one
+- `https` with `tls` (a certificate, reloaded when its files change; a failed reload is logged at
+  `warn` and the current certificate stays), or with `behind_proxy: true`: TLS is terminated in
+  front. A request whose `X-Forwarded-Proto` is anything but exactly one
   `https` is treated as plain http: the header can only downgrade, never upgrade.
   `trusted_proxies` is required with a `behind_proxy` listener (otherwise every client would look
   like the proxy), and requests from other peers are refused and logged.
 - `http`: public releases only; an `Authorization` header is ignored.
 - `dual` (with `tls`): one port that serves TLS when the first byte is a TLS handshake and plain
   http otherwise.
+- `health` (spec 0013): a probe port for the kubelet and load balancers' health checks, never
+  exposed in a Service (a load balancer must reach the pod port directly; see spec 0013's chart
+  notes). Plain http, with neither `tls` nor `behind_proxy`; at most one, and never the only
+  listener. Its own small handler answers `GET` and `HEAD` on `/healthz` and `/readyz` (no query
+  string, not even an empty `?`; paths are not unescaped, as on the main router) from the same
+  readiness state, and `404` with no body to anything else, `OPTIONS *` included. A `GET` with a
+  body is a `400`, as on the main listeners. No access log, no event, no metric. Short server
+  timeouts: 5 s to read or write, 30 s idle, and `MaxHeaderBytes` 1 KiB (Go's server reads up to
+  4 KiB more).
 
 Addresses are unique; an `https` listener has exactly one of `tls` and `behind_proxy`. kista never
 decides a scheme from a client header.
@@ -311,7 +323,12 @@ paths. `Range`, `If-Range` and `If-None-Match` are looked at only after the auth
   shutting down. A blob domain found public is not a readiness failure (it would take every tenant
   down): that domain's tenants are served `503` after the decision, and it is logged as an error.
 - On `SIGTERM`: `/readyz` fails, a drain period passes, `Shutdown` runs with a bound, then remaining
-  downloads are aborted; the re-signer stops and releases its lease.
+  downloads are aborted; the re-signer stops and releases its lease. Since spec 0013 the waits
+  after `Shutdown` are bounded too: the background runners get one more `shutdown_timeout` (a
+  runner still busy then is abandoned, and its lease expires as after a crash), then the event
+  writer and the download counter 11 s of their own, and metrics up to 10 s; then the blob service
+  and the store close. The total is at most `drain_timeout + 2 × shutdown_timeout + 21 s`, plus
+  closing the store and storage. A second signal ends the process at once.
 - Logs: one access line per request (method, path, status, bytes, duration, client address,
   listener). Never a header value, a token, or a query string.
 

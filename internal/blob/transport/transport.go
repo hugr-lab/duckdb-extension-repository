@@ -8,19 +8,21 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 )
 
 // New returns the transport. caFile, if set, is the only trusted CA bundle.
 func New(timeout time.Duration, caFile string) (*http.Transport, error) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if caFile != "" {
-		pem, err := os.ReadFile(caFile)
+		pem, err := secretfile.Read(caFile, secretfile.Public, secretfile.LargeLimit)
 		if err != nil {
-			return nil, errors.New("blob: cannot read ca_file")
+			return nil, fmt.Errorf("blob: ca_file: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {
