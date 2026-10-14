@@ -26,6 +26,16 @@ kista admin -config /etc/kista/kista.yaml tenant list
 - YAML decoding errors and `KISTA_` variable errors never echo values, so a misplaced secret does not
   end up in a log. (Validation errors may quote a non-secret value, such as a CIDR or an origin.)
 - The file is read at start. A change takes effect when the process restarts.
+- On a platform that mounts no file from configuration (ECS on Fargate, Azure Container Apps),
+  `-config env:NAME` reads the same YAML from the environment variable `NAME` instead, at most
+  1 MiB. It is decoded exactly as a file, and the `KISTA_` overrides apply after it. The variable
+  may start with `KISTA_` (`KISTA_CONFIG`). The configuration holds no secret (they stay in their
+  own files and identities), but whoever can describe the task or the app can read it: keep it
+  that way.
+
+```bash
+kista serve -config env:KISTA_CONFIG
+```
 
 Value types used in the tables below:
 
@@ -126,9 +136,10 @@ The metadata database. See [State](state.md) for the engines, DSNs, logins and r
 | --- | --- | --- | --- |
 | `store.kind` | `postgres`, `sqlserver`, `sqlite` | none (required) | The engine. |
 | `store.dsn` | string | none | PostgreSQL or SQL Server connection string. Required for those two. Must not contain a password. |
-| `store.login.kind` | `password`, `entra` | `password` | How the password or token is obtained. `entra` needs `postgres` or `sqlserver`. |
-| `store.login.password_env` | variable name | none | The variable holding the password, re-read on every new connection. |
-| `store.login.password_file` | path | none | A file holding the password (trailing newlines are trimmed), re-read on every new connection. Not together with `password_env`. A secret file: see [Files kista reads](security.md#files-kista-reads). |
+| `store.login.kind` | `password`, `entra`, `aws`, `gcp` | `password` | How the password or token is obtained. `entra` needs `postgres` or `sqlserver`; `aws` (RDS IAM) and `gcp` (Cloud SQL IAM) need `postgres` and a DSN with one host. |
+| `store.login.password_env` | variable name | none | The variable holding the password, re-read on every new connection. Only with `password`. |
+| `store.login.password_file` | path | none | A file holding the password (trailing newlines are trimmed), re-read on every new connection. Not together with `password_env`; only with `password`. A secret file: see [Files kista reads](security.md#files-kista-reads). |
+| `store.ca_pem` | PEM certificates | none | The PostgreSQL server's CA, inline, instead of a file named by the DSN's `sslrootcert` (not both). The only CA the server's certificate is checked against; `verify-full` still applies. |
 | `store.max_open_conns` | integer | `10` | The connection pool size (PostgreSQL and SQL Server). |
 | `store.migrate` | `auto`, `check` | `auto` | `auto` applies pending migrations at start; `check` only verifies the schema. |
 | `store.sqlite.path` | path | none | The SQLite file. Required for `sqlite`. May not contain `?`, `#` or `%`. |
@@ -145,6 +156,18 @@ own `identity` blocks.
 | `azure.identity.kind` | `managed`, `workload`, `default` | none | File-only. `default` (the developer credential chain) only with `profile: dev`. |
 | `azure.identity.client_id` | string | none | The user-assigned identity's or the app's client id. Required for `workload` outside dev. |
 | `azure.identity.tenant_id` | string | none | The Entra tenant. Required for `workload` outside dev. |
+
+## aws and gcp
+
+The service's own AWS and Google Cloud identities, for what is not a key source or a blob domain:
+today the `aws` and `gcp` database logins ([State](state.md#logins)). Both sections are file-only.
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `aws.region` | string | none | A region such as `eu-central-1`. Required with `aws.identity`. |
+| `aws.identity` | block | none | As a key source's `identity`: `pod_identity`, `irsa` (with `role_arn`), `imds`, `ecs`; `static` only with `profile: dev`. |
+| `gcp.principal` | string | none | The service account kista acts as (`<name>@<project>.iam.gserviceaccount.com`); required outside dev. |
+| `gcp.credentials_file` | path | none | An `external_account` file; absent, the metadata server. As a `gcpkms` source's. |
 
 ## rotation
 

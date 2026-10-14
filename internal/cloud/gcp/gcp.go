@@ -91,7 +91,13 @@ type Options struct {
 	Env        Env
 	// MetadataURL replaces the metadata server's base URL (tests); empty in production.
 	MetadataURL string
+	// Scopes are the token's scopes; none: Scope. The database login asks for SQLLoginScope only,
+	// so a database server never holds a token good for every API (spec 0020).
+	Scopes []string
 }
+
+// SQLLoginScope is Cloud SQL IAM database authentication's scope.
+const SQLLoginScope = "https://www.googleapis.com/auth/sqlservice.login"
 
 // metadataBase is the metadata server's default service account, at its fixed address.
 const metadataBase = "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/"
@@ -116,19 +122,23 @@ func TokenSource(credentialsFile, principal string, o Options) (oauth2.TokenSour
 	if hc == nil {
 		hc = HTTPClient()
 	}
+	scopes := o.Scopes
+	if len(scopes) == 0 {
+		scopes = []string{Scope}
+	}
 	var ts oauth2.TokenSource
 	if credentialsFile == "" {
 		base := o.MetadataURL
 		if base == "" {
 			base = metadataBase
 		}
-		ts = &metadataSource{base: base, principal: principal, hc: hc}
+		ts = &metadataSource{base: base, principal: principal, hc: hc, scopes: scopes}
 	} else {
 		b, err := env.ReadFile(credentialsFile)
 		if err != nil {
 			return nil, fmt.Errorf("gcp: credentials_file could not be read: %w", err)
 		}
-		if ts, err = fromFile(b, principal, hc, o.Dev, env); err != nil {
+		if ts, err = fromFile(b, principal, hc, o.Dev, env, scopes); err != nil {
 			return nil, err
 		}
 	}
@@ -154,7 +164,7 @@ func steering(environ []string) string {
 }
 
 // fromFile builds a token source from a credentials file of an accepted type.
-func fromFile(b []byte, principal string, hc *http.Client, dev bool, env Env) (oauth2.TokenSource, error) {
+func fromFile(b []byte, principal string, hc *http.Client, dev bool, env Env, scopes []string) (oauth2.TokenSource, error) {
 	var head struct {
 		Type string `json:"type"`
 	}
@@ -163,7 +173,7 @@ func fromFile(b []byte, principal string, hc *http.Client, dev bool, env Env) (o
 	}
 	switch head.Type {
 	case "external_account":
-		return externalAccount(b, principal, hc, dev, env)
+		return externalAccount(b, principal, hc, dev, env, scopes)
 	case "service_account":
 		if !dev {
 			return nil, errors.New("gcp: a service_account key file is allowed only with profile dev; use the metadata server or workload identity federation")
@@ -183,7 +193,7 @@ func fromFile(b []byte, principal string, hc *http.Client, dev bool, env Env) (o
 			return nil, errors.New("gcp: the service account key is not the principal's")
 		}
 		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, hc)
-		c, err := google.CredentialsFromJSONWithTypeAndParams(ctx, b, google.ServiceAccount, google.CredentialsParams{Scopes: []string{Scope}})
+		c, err := google.CredentialsFromJSONWithTypeAndParams(ctx, b, google.ServiceAccount, google.CredentialsParams{Scopes: scopes})
 		if err != nil {
 			return nil, errors.New("gcp: the service account key file could not be used")
 		}
@@ -227,7 +237,7 @@ var audienceRule = regexp.MustCompile(`^//iam\.googleapis\.com/projects/\d{1,20}
 // externalAccount parses and checks an external_account file, and builds its token source from the
 // parsed parts only; the projected token is read by kista (a SubjectTokenSupplier), so the library
 // opens no file and calls nothing but STS and IAM Credentials.
-func externalAccount(b []byte, principal string, hc *http.Client, dev bool, env Env) (oauth2.TokenSource, error) {
+func externalAccount(b []byte, principal string, hc *http.Client, dev bool, env Env, scopes []string) (oauth2.TokenSource, error) {
 	var f externalFile
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
@@ -281,7 +291,7 @@ func externalAccount(b []byte, principal string, hc *http.Client, dev bool, env 
 		ServiceAccountImpersonationURL:             f.ServiceAccountImpersonationURL,
 		ServiceAccountImpersonationLifetimeSeconds: lifetime,
 		SubjectTokenSupplier:                       projectedToken{path: cs.File, format: cs.Format, read: env.ReadToken},
-		QuotaProjectID:                             f.QuotaProjectID, Scopes: []string{Scope}, UniverseDomain: "googleapis.com",
+		QuotaProjectID:                             f.QuotaProjectID, Scopes: scopes, UniverseDomain: "googleapis.com",
 	}
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, hc) // never cancelled: refreshes use it
 	ts, err := externalaccount.NewTokenSource(ctx, conf)
@@ -324,6 +334,7 @@ type metadataSource struct {
 	base      string
 	principal string
 	hc        *http.Client
+	scopes    []string
 	mu        sync.Mutex
 }
 
@@ -362,7 +373,7 @@ func (m *metadataSource) Token() (*oauth2.Token, error) {
 			return nil, ErrPrincipal
 		}
 	}
-	b, err := m.get("token?scopes=" + url.QueryEscape(Scope))
+	b, err := m.get("token?scopes=" + url.QueryEscape(strings.Join(m.scopes, ",")))
 	if err != nil {
 		return nil, err
 	}

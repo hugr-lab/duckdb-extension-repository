@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -30,6 +32,27 @@ import (
 type Login interface {
 	Password(ctx context.Context) (string, error)
 }
+
+// Target is the connection a login is for: a token login binds its token to it (spec 0020).
+type Target struct {
+	Host string
+	Port uint16
+	User string
+}
+
+// TokenLogin makes a token for each new connection from the connection's target: RDS IAM and
+// Cloud SQL IAM authentication (spec 0020). It needs a single-host DSN.
+type TokenLogin struct {
+	For func(ctx context.Context, t Target) (string, error)
+}
+
+// Password implements Login; a token login needs the target, so the store calls PasswordFor.
+func (TokenLogin) Password(context.Context) (string, error) {
+	return "", errors.New("store: a token login needs the connection's host")
+}
+
+// PasswordFor returns the token for the connection.
+func (l TokenLogin) PasswordFor(ctx context.Context, t Target) (string, error) { return l.For(ctx, t) }
 
 // PasswordLogin reads the password from an environment variable or a file, on every connection, so
 // a rotated secret is picked up without a restart.
@@ -97,6 +120,65 @@ func DSNHasPassword(dsn string) bool {
 		}
 	}
 	return kvPassword.MatchString(dsn)
+}
+
+var kvRootCert = regexp.MustCompile(`(?i)(^|[\s;:&?])sslrootcert\s*=`)
+
+// DSNHasRootCert reports whether a DSN names a CA file (sslrootcert).
+func DSNHasRootCert(dsn string) bool {
+	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" {
+		for k := range u.Query() {
+			if strings.EqualFold(k, "sslrootcert") {
+				return true
+			}
+		}
+	}
+	return kvRootCert.MatchString(dsn)
+}
+
+// ValidCAPEM reports whether s is one or more PEM certificates and nothing else.
+func ValidCAPEM(s string) bool {
+	_, err := caPool([]byte(s))
+	return err == nil
+}
+
+func caPool(b []byte) (*x509.CertPool, error) {
+	pool, n := x509.NewCertPool(), 0
+	for rest := b; ; {
+		var blk *pem.Block
+		blk, rest = pem.Decode(rest)
+		if blk == nil {
+			if strings.TrimSpace(string(rest)) != "" {
+				return nil, errors.New("store: ca_pem holds something that is not a PEM certificate")
+			}
+			break
+		}
+		c, err := x509.ParseCertificate(blk.Bytes)
+		if blk.Type != "CERTIFICATE" || err != nil {
+			return nil, errors.New("store: ca_pem holds something that is not a PEM certificate")
+		}
+		pool.AddCert(c)
+		n++
+	}
+	if n == 0 {
+		return nil, errors.New("store: ca_pem holds no certificate")
+	}
+	return pool, nil
+}
+
+// PGTarget is what a PostgreSQL DSN connects to, as pgx parses it.
+type PGTarget struct {
+	Hosts int    // the main host and every fallback
+	User  string // the user pgx would log in as
+}
+
+// PostgresTarget parses a PostgreSQL DSN the way OpenPostgres does.
+func PostgresTarget(dsn string) (PGTarget, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return PGTarget{}, errors.New("store: not a PostgreSQL DSN")
+	}
+	return PGTarget{Hosts: len(pgHosts(cfg)), User: cfg.User}, nil
 }
 
 // IsLoopbackHost reports whether a host name or address is the local machine.
@@ -245,17 +327,36 @@ func OpenSQLite(ctx context.Context, path string) (*Store, error) {
 	return newStore(db, SQLite), nil
 }
 
-// OpenPostgres opens PostgreSQL. Off loopback the DSN must have sslmode=verify-full.
-func OpenPostgres(ctx context.Context, dsn string, login Login, maxOpen int) (*Store, error) {
+// OpenPostgres opens PostgreSQL. Off loopback the DSN must have sslmode=verify-full. caPEM, when
+// given, is the only CA the server's certificate is checked against (spec 0020: store.ca_pem).
+func OpenPostgres(ctx context.Context, dsn string, login Login, maxOpen int, caPEM []byte) (*Store, error) {
 	if DSNHasPassword(dsn) {
 		return nil, errDSNPassword
+	}
+	if len(caPEM) > 0 && DSNHasRootCert(dsn) { // before parsing: pgx reads sslrootcert's file
+		return nil, errors.New("store: ca_pem and the DSN's sslrootcert do not go together")
 	}
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, errors.New("store: not a PostgreSQL DSN")
 	}
+	if len(caPEM) > 0 {
+		pool, err := caPool(caPEM)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range pgHosts(cfg) {
+			if h.tls != nil {
+				h.tls.RootCAs = pool
+			}
+		}
+	}
 	if err := pgCheckTLS(cfg); err != nil {
 		return nil, err
+	}
+	tl, tokens := login.(TokenLogin)
+	if tokens && len(cfg.Fallbacks) > 0 {
+		return nil, errors.New("store: a token login needs a DSN with one host")
 	}
 	if cfg.ConnectTimeout == 0 {
 		cfg.ConnectTimeout = 10 * time.Second
@@ -265,7 +366,13 @@ func OpenPostgres(ctx context.Context, dsn string, login Login, maxOpen int) (*S
 		if login == nil {
 			return nil
 		}
-		pw, err := login.Password(ctx)
+		var pw string
+		var err error
+		if tokens {
+			pw, err = tl.PasswordFor(ctx, Target{Host: cc.Host, Port: cc.Port, User: cc.User})
+		} else {
+			pw, err = login.Password(ctx)
+		}
 		if err != nil {
 			return err
 		}

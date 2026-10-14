@@ -1,0 +1,29 @@
+# EKS with RDS IAM authentication (spec 0020): the database login and S3 through one IRSA role
+aws:
+  irsa:
+    roleArn: arn:aws:iam::123456789012:role/kista
+config:
+  aws:
+    region: eu-central-1
+    identity: {kind: irsa, role_arn: arn:aws:iam::123456789012:role/kista}
+  store:
+    kind: postgres
+    dsn: postgres://kista@kista.abcdefghijkl.eu-central-1.rds.amazonaws.com:5432/kista?sslmode=verify-full
+    login: {kind: aws}
+  serve:
+    public_url: https://kista.example.com
+    trusted_proxies: [10.0.0.0/16]
+  blob:
+    domains:
+      - name: default
+        kind: s3
+        s3:
+          endpoint: https://s3.eu-central-1.amazonaws.com
+          bucket: kista
+          region: eu-central-1
+          lookup: dns
+          sse: s3
+          account: "123456789012"
+          identity: {kind: irsa, role_arn: arn:aws:iam::123456789012:role/kista}
+networkPolicy:
+  enabled: false

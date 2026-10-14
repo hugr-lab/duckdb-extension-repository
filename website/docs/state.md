@@ -98,6 +98,10 @@ connection:
 | `kind: password`, `password_file: /path` | The file, read on every new connection; trailing newlines are trimmed. It is a secret file ([Files kista reads](security.md#files-kista-reads)): owned by kista's user with mode `0600` or narrower, or root-owned with kista's group and mode `0440` or narrower. |
 | `kind: password` with neither | No password (for example trust or peer authentication on a socket). |
 | `kind: entra` | A Microsoft Entra token from the service's Azure identity (`azure.identity`), for Azure Database for PostgreSQL Flexible Server or Azure SQL. |
+| `kind: aws` | An RDS IAM authentication token, signed locally with the service's AWS identity (`aws`) for the connection's host, port and user. PostgreSQL on RDS or Aurora. |
+| `kind: gcp` | A Cloud SQL IAM authentication token of the service's Google principal (`gcp`), scoped to `sqlservice.login` only. PostgreSQL on Cloud SQL. |
+
+`entra`, `aws` and `gcp` take no `password_env` or `password_file`: the token is the password.
 
 Because the secret is read per connection, a rotated password (a re-mounted secret file, or a
 changed variable in a process that re-reads it) is picked up without a restart, as soon as the pool
@@ -121,6 +125,41 @@ The token scope is `https://ossrdbms-aad.database.windows.net/.default` for Post
 `https://database.windows.net/.default` for SQL Server. `azure.cloud` (`public`, `china`, `usgov`)
 picks the Entra authority. The database role or user mapped to the identity is created in the
 database as usual for Entra authentication.
+
+For `aws`, the token is made for each new connection and is good for 15 minutes; a connection
+outlives it. It is bound to one host, so the DSN may name only one. The database user is granted
+`rds_iam`, and the identity `rds-db:connect` on it:
+
+```yaml title="kista.yaml"
+store:
+  kind: postgres
+  dsn: postgres://kista@kista.abcdefghijkl.eu-central-1.rds.amazonaws.com:5432/kista?sslmode=verify-full
+  login: { kind: aws }
+  ca_pem: |
+    -----BEGIN CERTIFICATE-----
+    …the region's RDS CA bundle…
+    -----END CERTIFICATE-----
+aws:
+  region: eu-central-1
+  identity: { kind: ecs }
+```
+
+For `gcp`, the database user is Cloud SQL's name for the IAM user: the principal without
+`.gserviceaccount.com`, which the loader checks. The token never carries the `cloud-platform`
+scope, so the database server never holds a token good for other APIs. An instance whose
+certificates come from `GOOGLE_MANAGED_CAS_CA` is named with a trailing dot in its certificate
+(`….sql.goog.`): write the host with that dot, and `verify-full` matches it.
+
+```yaml title="kista.yaml"
+store:
+  kind: postgres
+  dsn: host=abc123.def456.europe-west4.sql.goog. user=kista@acme-kista.iam dbname=kista sslmode=verify-full
+  login: { kind: gcp }
+  ca_pem: |
+    …the instance's server CA…
+gcp:
+  principal: kista@acme-kista.iam.gserviceaccount.com
+```
 
 ## Connections
 

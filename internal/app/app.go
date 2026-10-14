@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"sync"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	rdsauth "github.com/aws/aws-sdk-go-v2/feature/rds/auth"
 	"golang.org/x/oauth2"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
@@ -58,6 +61,18 @@ func OpenStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 			scope = store.ScopeSQLServer
 		}
 		login = store.EntraLogin{Credential: cred, Scope: scope}
+	case "aws":
+		l, err := rdsLogin(cfg)
+		if err != nil {
+			return nil, err
+		}
+		login = l
+	case "gcp":
+		l, err := cloudSQLLogin(cfg)
+		if err != nil {
+			return nil, err
+		}
+		login = l
 	default:
 		login = store.PasswordLogin{Env: cfg.Store.Login.PasswordEnv, File: cfg.Store.Login.PasswordFile}
 	}
@@ -69,7 +84,7 @@ func OpenStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 	case "sqlite":
 		s, err = store.OpenSQLite(ctx, cfg.Store.SQLite.Path)
 	case "postgres":
-		s, err = store.OpenPostgres(ctx, cfg.Store.DSN, login, cfg.Store.MaxOpenConns)
+		s, err = store.OpenPostgres(ctx, cfg.Store.DSN, login, cfg.Store.MaxOpenConns, []byte(cfg.Store.CAPEM))
 	case "sqlserver":
 		s, err = store.OpenSQLServer(ctx, cfg.Store.DSN, login, cfg.Store.MaxOpenConns)
 	default:
@@ -195,6 +210,48 @@ func KeySources(cfg config.Config) (*keysource.Registry, error) {
 		}
 	}
 	return reg, nil
+}
+
+// rdsLogin is RDS IAM authentication (spec 0020): a token signed locally with the service's AWS
+// identity for each new connection, bound to its host, port and user, good for 15 minutes.
+func rdsLogin(cfg config.Config) (store.Login, error) {
+	creds, err := awscloud.Credentials(AWSIdentity(cfg.AWS.Identity, ""), cfg.AWS.Region,
+		awscloud.Options{Dev: cfg.Profile == config.ProfileDev})
+	if err != nil {
+		return nil, fmt.Errorf("app: store.login aws: %w", err)
+	}
+	region := cfg.AWS.Region
+	return store.TokenLogin{For: func(ctx context.Context, t store.Target) (string, error) {
+		tok, err := rdsauth.BuildAuthToken(ctx, net.JoinHostPort(t.Host, strconv.Itoa(int(t.Port))), region, t.User, creds)
+		if err != nil {
+			return "", errors.New("store: the service's AWS identity did not give a database token")
+		}
+		return tok, nil
+	}}, nil
+}
+
+// cloudSQLLogin is Cloud SQL IAM database authentication (spec 0020): an access token of the
+// service's principal, scoped to the database login only.
+func cloudSQLLogin(cfg config.Config) (store.Login, error) {
+	c := cfg.GCP.GCPCreds
+	var ts oauth2.TokenSource
+	if c.EndpointURL != "" {
+		ts = gcpcloud.StaticToken()
+	} else {
+		var err error
+		ts, err = gcpcloud.TokenSource(c.CredentialsFile, c.Principal, gcpcloud.Options{Dev: cfg.Profile == config.ProfileDev,
+			HTTPClient: gcpcloud.HTTPClient(), Scopes: []string{gcpcloud.SQLLoginScope}})
+		if err != nil {
+			return nil, fmt.Errorf("app: store.login gcp: %w", err)
+		}
+	}
+	return store.TokenLogin{For: func(ctx context.Context, _ store.Target) (string, error) {
+		tok, err := gcpcloud.Token(ctx, ts)
+		if err != nil {
+			return "", errors.New("store: the service's Google identity did not give a database token")
+		}
+		return tok.AccessToken, nil
+	}}, nil
 }
 
 // GCPTokens are the Google credentials of a source or a domain (spec 0004 phase 4), with the HTTP

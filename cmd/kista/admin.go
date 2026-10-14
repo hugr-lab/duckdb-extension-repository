@@ -32,7 +32,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
-const adminUsage = `usage: kista admin -config <file> <command> ...
+const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
 
   migrate                                         apply pending migrations
   check                                           verify the schema without changing it
@@ -147,7 +147,7 @@ func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 func admin(args, env []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("kista admin", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "", "config file")
+	cfgPath := fs.String("config", "", "config file, or env:NAME for a variable holding it")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

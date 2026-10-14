@@ -1,6 +1,6 @@
 # Spec 0020: Cloud recipes: AWS and GCP in Terraform, Azure in Bicep
 
-- **Status**: draft
+- **Status**: accepted; phase 0 implemented; phases 1-4 to come
 - **Date**: 2026-10-14
 - **Author**: vgsml, Claude
 
@@ -107,7 +107,7 @@ Delivery, each phase a pull request with its own reviews:
     DSN.
   - `pgCheckTLS` treats it as a CA source.
 - **Top-level identities** for what is not a key source or a blob domain:
-  - `aws: {region, account, identity}`: `identity` takes the `aws.Credentials` kinds that sources
+  - `aws: {region, identity}`: `identity` takes the `aws.Credentials` kinds that sources
     already use: `pod_identity`, `irsa` with `role_arn`, `imds`, `ecs`, and `static` in profile
     `dev` only.
   - `gcp: {principal, credentials_file}`: the same fields and rules as a source's `GCPCreds`.
@@ -115,8 +115,8 @@ Delivery, each phase a pull request with its own reviews:
     - `gcp.principal` must equal `gcp.serviceAccount`;
     - `aws.identity.role_arn` must equal `aws.irsa.roleArn`.
 - **The `aws` database login:** RDS IAM authentication.
-  - The `Login` interface gains the connection's host, port and user: `Password(ctx, host, port,
-    user)`. `entra` and `password` ignore them.
+  - A token login gets the connection's host, port and user from the store (`TokenLogin.PasswordFor`,
+    called from pgx's `BeforeConnect`); `entra` and `password` keep `Password(ctx)`.
   - The token comes from aws-sdk-go-v2's `feature/rds/auth.BuildAuthToken`. It is signed locally
     for `rds-db:connect` with the top-level `aws` identity, and lives for 15 minutes.
   - A token is made per new connection. A connection outlives its token, and the pool's existing
@@ -136,10 +136,9 @@ Delivery, each phase a pull request with its own reviews:
   - `gcp` without `gcp.principal`.
 - **Cloud SQL's trailing dot.** Certificates issued under `GOOGLE_MANAGED_CAS_CA` name the
   instance as `….sql.goog.`; tresor-server's live run hit this.
-  - Go's host name check compares a SAN that is not a valid pattern exactly. A DSN host written
-    with the trailing dot may therefore verify with no code change.
-  - Phase 0 tests that first, against a certificate with such a SAN. Only if it fails does the
-    store's TLS check learn to treat `name.` and `name` as one name, checking the same chain.
+  - Go's host name check compares a SAN that is not a valid pattern exactly, and pgx checks the
+    DSN's host as written. A DSN host written with the trailing dot therefore verifies with no code
+    change (phase 0's test proves it); the docs say to write it so.
 
 ### Common to the recipes
 

@@ -33,9 +33,13 @@ const (
 
 // Config is kista's configuration.
 type Config struct {
-	Profile  string   `yaml:"profile" kista:"fileonly"`
-	Store    Store    `yaml:"store"`
-	Azure    Azure    `yaml:"azure"`
+	Profile string `yaml:"profile" kista:"fileonly"`
+	Store   Store  `yaml:"store"`
+	Azure   Azure  `yaml:"azure"`
+	// AWS and GCP are the service's own identities on those clouds, for what is not a key source or
+	// a blob domain: the database login (spec 0020).
+	AWS      AWS      `yaml:"aws" kista:"fileonly"`
+	GCP      GCP      `yaml:"gcp" kista:"fileonly"`
 	Rotation Rotation `yaml:"rotation"`
 	Signers  Signers  `yaml:"signers" kista:"fileonly"`
 	Blob     Blob     `yaml:"blob" kista:"fileonly"`
@@ -79,11 +83,14 @@ type Store struct {
 	MaxOpenConns int    `yaml:"max_open_conns"`
 	Migrate      string `yaml:"migrate"` // auto | check
 	SQLite       SQLite `yaml:"sqlite"`
+	// CAPEM is the PostgreSQL server's CA, inline (spec 0020): public data, for platforms that
+	// mount no file; it replaces the DSN's sslrootcert.
+	CAPEM string `yaml:"ca_pem"`
 }
 
 // Login says how the database password or token is obtained.
 type Login struct {
-	Kind         string `yaml:"kind"` // password | entra
+	Kind         string `yaml:"kind"` // password | entra | aws | gcp
 	PasswordEnv  string `yaml:"password_env"`
 	PasswordFile string `yaml:"password_file"`
 }
@@ -97,6 +104,17 @@ type SQLite struct {
 type Azure struct {
 	Identity Identity `yaml:"identity"`
 	Cloud    string   `yaml:"cloud"` // public (default) | china | usgov; for the entra database login
+}
+
+// AWS is the service's AWS identity outside key sources and blob domains (spec 0020).
+type AWS struct {
+	Region   string    `yaml:"region"`
+	Identity *Identity `yaml:"identity"`
+}
+
+// GCP is the service's Google Cloud identity outside key sources and blob domains (spec 0020).
+type GCP struct {
+	GCPCreds `yaml:",inline"`
 }
 
 // Identity is an Azure credential choice.
@@ -222,22 +240,50 @@ const envPrefix = "KISTA_"
 // reservedEnv are KISTA_ variables that are not settings: test and harness switches.
 var reservedEnvPrefixes = []string{"KISTA_TEST_", "KISTA_E2E_", "KISTA_LIVE_"}
 
-// Load reads the file at path (empty: defaults only) and applies KISTA_ overrides from env. env is
-// os.Environ() in production; tests pass their own.
+// MaxEnvConfig bounds a configuration read from a variable (spec 0020).
+const MaxEnvConfig = 1 << 20
+
+// envConfigName is the name a variable holding the configuration may have.
+var envConfigName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
+
+// Load reads the configuration and applies KISTA_ overrides from env. path is a file, or
+// env:<NAME> for a variable of env holding the YAML (spec 0020: platforms that mount no file), or
+// empty for the defaults only. env is os.Environ() in production; tests pass their own.
 func Load(path string, env []string) (Config, error) {
 	cfg := Default()
-	if path != "" {
-		data, err := os.ReadFile(path)
-		if err != nil {
+	var data []byte
+	from, configVar := path, ""
+	if name, ok := strings.CutPrefix(path, "env:"); ok {
+		if !envConfigName.MatchString(name) {
+			return Config{}, errors.New("config: env:<NAME> needs a variable name ([A-Z_][A-Z0-9_]*)")
+		}
+		v, found := "", false
+		for _, kv := range env {
+			if k, val, _ := strings.Cut(kv, "="); k == name {
+				v, found = val, true
+			}
+		}
+		switch {
+		case !found || strings.TrimSpace(v) == "":
+			return Config{}, fmt.Errorf("config: the variable %s is not set", name)
+		case len(v) > MaxEnvConfig:
+			return Config{}, fmt.Errorf("config: the variable %s is larger than %d bytes", name, MaxEnvConfig)
+		}
+		data, from, configVar = []byte(v), "the variable "+name, name
+	} else if path != "" {
+		var err error
+		if data, err = os.ReadFile(path); err != nil {
 			return Config{}, fmt.Errorf("config: %w", err)
 		}
+	}
+	if data != nil {
 		dec := yaml.NewDecoder(bytes.NewReader(data))
 		dec.KnownFields(true)
 		if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) { // an empty file keeps the defaults
-			return Config{}, fmt.Errorf("config: %s: %s", path, scrub(err))
+			return Config{}, fmt.Errorf("config: %s: %s", from, scrub(err))
 		}
 	}
-	if err := applyEnv(&cfg, env); err != nil {
+	if err := applyEnv(&cfg, env, configVar); err != nil {
 		return Config{}, err
 	}
 	if err := cfg.Validate(); err != nil {
@@ -297,7 +343,7 @@ func settings(v reflect.Value, prefix, path string, fileOnly bool, out *[]settin
 	}
 }
 
-func applyEnv(cfg *Config, env []string) error {
+func applyEnv(cfg *Config, env []string, configVar string) error {
 	var all []setting
 	settings(reflect.ValueOf(cfg).Elem(), envPrefix, "", false, &all)
 	byEnv := map[string]setting{}
@@ -323,9 +369,10 @@ func applyEnv(cfg *Config, env []string) error {
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 		}
 	}
-	// a variable named by password_env (after the overrides) holds a secret, not a setting
+	// a variable named by password_env (after the overrides) holds a secret, and the one -config
+	// env: names holds the configuration itself: neither is a setting
 	for _, name := range unknown {
-		if name != cfg.Store.Login.PasswordEnv {
+		if name != cfg.Store.Login.PasswordEnv && name != configVar {
 			errs = append(errs, fmt.Sprintf("%s is not a kista setting", name))
 		}
 	}
@@ -409,6 +456,7 @@ func (c Config) Validate() error {
 	if c.Store.Migrate != "auto" && c.Store.Migrate != "check" {
 		bad("store.migrate must be auto or check")
 	}
+	pwSet := c.Store.Login.PasswordEnv != "" || c.Store.Login.PasswordFile != ""
 	switch c.Store.Login.Kind {
 	case "password":
 		if c.Store.Login.PasswordEnv != "" && c.Store.Login.PasswordFile != "" {
@@ -418,8 +466,32 @@ func (c Config) Validate() error {
 		if c.Store.Kind == "sqlite" {
 			bad("store.login entra needs postgres or sqlserver")
 		}
+		if pwSet {
+			bad("store.login entra takes no password_env or password_file: the token is the password")
+		}
+	case "aws", "gcp":
+		validateTokenLogin(bad, c)
 	default:
-		bad("store.login.kind must be password or entra")
+		bad("store.login.kind must be password, entra, aws or gcp")
+	}
+	if c.Store.CAPEM != "" {
+		switch {
+		case c.Store.Kind != "postgres":
+			bad("store.ca_pem is for postgres")
+		case !store.ValidCAPEM(c.Store.CAPEM):
+			bad("store.ca_pem must hold PEM certificates, and nothing else")
+		case store.DSNHasRootCert(c.Store.DSN):
+			bad("store.ca_pem and the DSN's sslrootcert do not go together: give the CA once")
+		}
+	}
+	if c.AWS != (AWS{}) {
+		if !awscloud.ValidRegion(c.AWS.Region) {
+			bad("aws.region is required, a region such as eu-central-1")
+		}
+		validateAWSIdentity(bad, "aws", c.AWS.Identity, c.AWS.Region, dev)
+	}
+	if c.GCP != (GCP{}) {
+		validateGCPCreds(bad, "gcp", c.GCP.GCPCreds, dev)
 	}
 	switch c.Azure.Cloud {
 	case "", "public", "china", "usgov":
@@ -621,6 +693,39 @@ func validateAWSKMS(bad func(string, ...any), where string, a AWSKMSSource, id *
 }
 
 var awsKeyID = regexp.MustCompile(`^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$`)
+
+// validateTokenLogin checks the aws and gcp database logins (spec 0020): PostgreSQL, one host (a
+// token is bound to it), no password setting, and the identity the token comes from.
+func validateTokenLogin(bad func(string, ...any), c Config) {
+	kind := c.Store.Login.Kind
+	if c.Store.Kind != "postgres" {
+		bad("store.login %s needs postgres", kind)
+		return
+	}
+	if c.Store.Login.PasswordEnv != "" || c.Store.Login.PasswordFile != "" {
+		bad("store.login %s takes no password_env or password_file: the token is the password", kind)
+	}
+	t, err := store.PostgresTarget(c.Store.DSN)
+	if err != nil {
+		return // store.dsn's own check reports it
+	}
+	if t.Hosts != 1 {
+		bad("store.login %s needs a DSN with one host: a token is bound to the host it was made for", kind)
+	}
+	switch kind {
+	case "aws":
+		if c.AWS.Region == "" || c.AWS.Identity == nil {
+			bad("store.login aws needs aws.region and aws.identity")
+		}
+	case "gcp":
+		switch {
+		case c.GCP.Principal == "":
+			bad("store.login gcp needs gcp.principal, the service account kista logs in as")
+		case t.User != strings.TrimSuffix(c.GCP.Principal, ".gserviceaccount.com"):
+			bad("store.login gcp: the DSN's user must be gcp.principal without .gserviceaccount.com (Cloud SQL's name for the IAM user)")
+		}
+	}
+}
 
 // validateGCPCreds checks how kista reaches Google Cloud (specs 0004 phase 4, 0005 phase 3b).
 func validateGCPCreds(bad func(string, ...any), where string, c GCPCreds, dev bool) {

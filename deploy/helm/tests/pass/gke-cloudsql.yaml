@@ -1,0 +1,37 @@
+# GKE with Cloud SQL IAM authentication (spec 0020): the database login is the Workload Identity
+# principal, the server's CA inline, the instance's name written with Cloud SQL's trailing dot
+gcp:
+  serviceAccount: kista-db@acme-kista.iam.gserviceaccount.com
+config:
+  gcp:
+    principal: kista-db@acme-kista.iam.gserviceaccount.com
+  store:
+    kind: postgres
+    dsn: host=abc123.def456.europe-west4.sql.goog. user=kista-db@acme-kista.iam dbname=kista sslmode=verify-full
+    login: {kind: gcp}
+    ca_pem: |
+      -----BEGIN CERTIFICATE-----
+      MIIBcDCCARagAwIBAgIUc6LXwrorUQoNC+etIj61TvZarCwwCgYIKoZIzj0EAwIw
+      HjEcMBoGA1UEAwwTa2lzdGEtY2hhcnQtdGVzdC1jYTAeFw0yNjEwMTQxOTM4MTla
+      Fw0zNjEwMTExOTM4MTlaMB4xHDAaBgNVBAMME2tpc3RhLWNoYXJ0LXRlc3QtY2Ew
+      WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARXOLzdrWtz+A88D8cX123La8NCBvpB
+      eqptJOTokbxN6gVQU2wzLb/8C1zqNe9VRx64KbueVU64BE0D5SnuNnRbozIwMDAd
+      BgNVHQ4EFgQUieUd50ZJyfKHJehsW/FbVfSrduYwDwYDVR0TAQH/BAUwAwEB/zAK
+      BggqhkjOPQQDAgNIADBFAiEAtBfkZulTTPNnw+x1avVJuQAWiFSqWdnQFwWjaSco
+      DooCICeUZw8ohckrTpIoLTFkiMlIntcg7+ne4ForiOJiELD3
+      -----END CERTIFICATE-----
+  serve:
+    public_url: https://kista.example.com
+    trusted_proxies: [35.191.0.0/16, 130.211.0.0/22, 203.0.113.10/32]
+  blob:
+    domains:
+      - name: default
+        kind: gcs
+        gcs:
+          bucket: acme-kista
+          principal: kista-db@acme-kista.iam.gserviceaccount.com
+gke:
+  backendConfig:
+    enabled: true
+networkPolicy:
+  loadBalancerRanges: [35.191.0.0/16, 130.211.0.0/22]

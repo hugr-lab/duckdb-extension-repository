@@ -1,6 +1,6 @@
 # Spec 0013: Deployment: image, Helm chart, Azure
 
-- **Status**: phase 1 implemented (1a server changes, 1b image and releases, 1c chart); phase 2 (Azure) to come
+- **Status**: phase 1 implemented (1a server changes, 1b image and releases, 1c chart); phase 2 (Azure) moved to spec 0020
 - **Date**: 2026-10-14
 - **Author**: vgsml, Claude
 
@@ -368,6 +368,9 @@ organisation that writes its own manifests runs into these problems:
   - `state.md`'s lease table lacks `kista/tenant-delete/<id>`.
 
 ### Phase 2: Azure (outline; a phase 2 addendum details it before its code)
+
+Superseded by spec 0020 (cloud recipes): the Container Apps Bicep is its phase 3, the bootstrap
+and the Marketplace package its phase 4. The outline below is kept as it was written.
 
 - **Bicep for Azure Container Apps** (`deploy/azure`), like tresor-server's:
   - a user-assigned managed identity;
