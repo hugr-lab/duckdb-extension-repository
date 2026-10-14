@@ -324,7 +324,7 @@ func TestRemovedSink(t *testing.T) {
 		if done == nil {
 			time.Sleep(window)
 		} else {
-			waitFor(t, "the removed sink's bit cleared", done)
+			waitFor(t, "the removed sink's bit cleared and its tombstone dropped", done)
 		}
 		cancel()
 		<-stopped
@@ -342,7 +342,15 @@ func TestRemovedSink(t *testing.T) {
 	short, cancel := context.WithTimeout(ctx, time.Millisecond)
 	(&sinks.Manager{Store: st, Resolver: resolver, Holder: "test", Log: slog.New(slog.DiscardHandler), Refresh: time.Millisecond}).Run(short)
 	cancel()
-	run(0, func() bool { return pending() == 0 })
+	// the bit is cleared first, the tombstone dropped after: wait for both, or a cancel between the
+	// two leaves the tombstone behind
+	run(0, func() bool {
+		if pending() != 0 {
+			return false
+		}
+		reg, err := st.RegisterSinks(ctx, nil) // nil: read only
+		return err == nil && len(reg) == 1 && reg[0].Name == "new"
+	})
 	reg, err := st.RegisterSinks(ctx, []string{"new"})
 	if err != nil || len(reg) != 1 || reg[0].Name != "new" {
 		t.Fatalf("old is forgotten: %+v %v", reg, err)
