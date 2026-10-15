@@ -1,7 +1,7 @@
 # Spec 0014: Bundles for air-gapped sites
 
 - **Status**: draft
-- **Date**: 2026-10-14
+- **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
 ## Summary
@@ -15,9 +15,10 @@ The cycle has three steps:
 
 1. **Plan.** The site writes a **plan** from its own configuration: its bundle-mode upstreams,
    their allowlists and platforms, its channels' DuckDB versions, and what it already holds.
-2. **Build.** On a connected machine, `kista bundle build` fetches the plan's cells as a mirror
-   would, checks them, and writes one tar. It is a client tool and needs no kista server. The
-   builder signs the bundle's manifest with a **bundle key** that the site pinned beforehand.
+2. **Export.** A connected kista that mirrors the plan's sources, a gateway kista of the
+   organisation or Enterest, exports the plan's cells: each file exactly as its source served it,
+   from what its mirrors already fetched and verified. `kista admin bundle export` writes one tar
+   and signs its manifest with a **bundle key** that the site pinned beforehand.
 3. **Import.** The site imports the bundle into its **bundle-mode upstreams**. A file is released
    only if all of these hold:
    - its signature verifies with a key the site pinned for that source;
@@ -33,18 +34,24 @@ The bundle key's signature says that this file is what the source served for thi
 bundle was built. The second one is what stops whoever carries the bundle from swapping in an old,
 authentic, vulnerable build.
 
+**kista and Enterest.** kista holds everything a site and a gateway need: the plan, the export, the
+import, the format and the trust model. Air-gapped organisations run kista, and the boundary they
+trust is open code. Bundles as a **service** are Enterest's: curated sets, a subscriber's plan
+exported on a schedule with Enterest's reports (phase 1b) and its private extensions, delivered to
+the subscriber's object store. Enterest does it with the same `kista admin bundle export`.
+
 Delivery, each phase a pull request:
 
 - **1a. Extensions**:
   - bundle-mode upstreams;
   - bundle keys;
-  - the plan, the builder and `inspect`;
+  - the plan, the export and `inspect`;
   - the import from a file, from standard input or from the site's object store;
   - the import records and the CLI;
   - the console's changes to its upstream forms;
   - the docs, including installing kista itself offline.
-- **1b. Statements**: bundle-mode feeds. The builder pulls a source's statements and documents for
-  the bodies the site offers, and the import verifies them as spec 0011's feed client does.
+- **1b. Statements**: bundle-mode feeds. The export carries the statements and documents its feeds
+  hold for the bodies the site offers, and the import verifies them as spec 0011's feed client does.
 - **2. Upload over the API**: an upload route and a console page, for administrators who cannot run
   `kista admin` beside the server and cannot write to its object store.
 
@@ -105,7 +112,7 @@ It differs in these ways:
   below).
 - **It takes no credential.** Spec 0009 phase 3 credentials are how kista authenticates to a source,
   and this upstream contacts none. Creation with a credential is `400`, and so is
-  `POST …/credential` on a bundle-mode upstream. The builder authenticates instead, and the site's
+  `POST …/credential` on a bundle-mode upstream. The exporting kista's upstream authenticates instead, and the site's
   configuration plays the credential's part for visibility (Visibility).
 - **A passthrough channel takes it** when its kind is `duckdb-core`. The passthrough guard that
   today admits mirrors only admits bundle mode too; pull-through stays refused.
@@ -118,7 +125,7 @@ The console's add form offers `bundle`, and its "Sync now" button is hidden for 
 
 ### Bundle keys
 
-A bundle key signs a bundle's manifest. It lives with the builder on the connected side. It is an
+A bundle key signs a bundle's manifest. It lives with the exporting kista on the connected side. It is an
 Ed25519 key in a PEM file:
 
 ```sh
@@ -173,7 +180,7 @@ no secret:
 - **Cells.** The cells are the union of the upstreams' matrices: the channel's DuckDB versions,
   the platforms and the allowlisted names. Each cell has `versions` from the entry's filter. For a
   merged cell `versions` is the union of the filters, and an empty filter (meaning any version)
-  makes the union empty. The builder uses `versions` only to skip files the import would refuse;
+  makes the union empty. The export uses `versions` only to skip files the import would refuse;
   the import applies each upstream's own filter.
 - **Dev versions.** A channel's `dev` DuckDB versions (source ids) are left out of core and
   community cells, since DuckDB publishes nothing for them. A repository source keeps them: another
@@ -184,8 +191,8 @@ no secret:
   lacks is fetched in full. `body_hash` is spec 0002's composite hash of the body without the
   signature, in hex, as cells store it.
 - **Size.** A plan holds at most 100,000 cells.
-- **Hand-written plans.** A plan may be written by hand. The builder validates it with spec 0009's
-  grammars before making any request.
+- **Hand-written plans.** A plan may be written by hand. The export validates it with spec 0009's
+  grammars before reading anything.
 
 ### Keys for repository sources
 
@@ -195,78 +202,101 @@ Pinning a repository source's key on the site needs its fingerprint from somewhe
   subscription's console.
 - **From the connected side.** `kista bundle keys <prefix>` fetches the source's `.well-known` file
   and prints each key's fingerprint, for comparison with what the publisher published.
-- **From the builder.** The builder prints every source's listed fingerprints in its summary.
+- **From the export.** The export prints every source's listed fingerprints in its summary.
   `kista bundle inspect` marks each one as pinned on the site or listed but not pinned, which is how
   an operator notices a key rotation at the source.
 
 The media are never the authority for a fingerprint. Neither is the plan: a plan only repeats the
 site's pins.
 
-### Building a bundle
+### Exporting a bundle
+
+A bundle is made by a **connected kista** that mirrors the plan's sources: a gateway kista the
+organisation runs on the connected side, or Enterest for its subscribers. It exports what its
+mirrors already fetched, verified and recorded (spec 0009), so the bundle path adds no second
+fetcher.
 
 ```sh
-kista bundle build -plan plan.json -key bundle-key.pem -o acme-2026-10.kbundle \
-    [-token <prefix>=<file>]… [-ca-file <pem>] [-tmp-dir <dir>] [-concurrency 4] \
-    [-max-body 1GiB] [-allow-private] [-allow-loopback-http]
+kista admin bundle export <tenant> -plan plan.json -key bundle-key.pem -o acme-2026-10.kbundle \
+    [-sync] [-private <prefix>]… [-tmp-dir <dir>]
 ```
 
-`kista bundle` is a client command beside `kista ext` (spec 0002). It reads no server configuration
-and opens no database. The builder signs with its key only if the key's fingerprint is among the
-plan's `bundle_keys`; otherwise it stops before fetching anything.
+`<tenant>` is the exporting kista's tenant whose upstreams and channels serve the plan; it need not
+share the site's tenant name. The export signs only if the key's fingerprint is among the plan's
+`bundle_keys`; otherwise it stops before reading anything. It validates the plan with spec 0009's
+grammars first: a plan is input, whoever wrote it.
 
-For each source:
+For each source in the plan:
 
-1. **Keys.**
-   - Core and community use DuckDB's keys compiled into kista (`internal/upstream/duckdbkeys`).
-   - A repository source's `<prefix>/.well-known/duckdb-extension-repo.json` is fetched (at most
-     64 KiB) and kept as it came. A source whose file lists none of the plan's keys fails as a
-     whole.
-2. **Cells.** Each cell is fetched from spec 0009's path, `<prefix>/<version>/<platform>/<name>.duckdb_extension.gz`,
-   under these rules:
-   - **Size.** The compressed answer may be up to `-max-body` plus 1 MiB, and the inflated file up
-     to `-max-body` plus 256 bytes.
-   - **Transport.** No redirects, and https only; plain http is allowed only to loopback, with
-     `-allow-loopback-http`. Private and loopback addresses are refused unless `-allow-private`.
-     The builder checks addresses at every dial, as spec 0006's egress does.
-   - **Conditional requests.** `If-None-Match` is sent with the plan's `etag` when there is one.
-     The answers:
-     - `304` records the cell `unchanged`, and the cell carries no file;
-     - a `304` to a request that was not conditional is `failed`;
-     - `404` is `missing`.
-3. **Checks.** The builder checks what the import will check, so useless bytes are not carried.
-   - **Signature:** it verifies with the source's keys.
-   - **Footer:** the platform is the cell's, and an exact build (`cpp`, `C_STRUCT_UNSTABLE`) names
-     the cell's DuckDB version.
-   - **Version filter:** the extension version is on `versions`, when a filter is given.
+1. **Where the files come from.**
+   - **An upstream of the exporting tenant** of the same source: the same kind for core and
+     community, the same normalised prefix for a repository. It must be active, in `mirror` or
+     `pull-through` mode. When several match, a cell is taken from the first that holds it, in the
+     order of their names.
+   - **Or one of the exporting kista's own channels**, in any of its tenants, when a repository
+     source's prefix is `<serve.public_url>/<tenant>/<channel>`: Enterest exporting its own
+     extensions to a subscriber, or a gateway kista exporting what it publishes. A private release
+     is exported only to a plan whose source the exporting administrator vouches for: the export
+     names such sources with `-private <prefix>`, so private extensions never leave by accident.
+   - A source with neither fails as a whole: "not mirrored here".
+2. **The files are what the source served.**
+   - From an upstream, a cell's file is its release's body followed by the **original signature**
+     (`releases.origin_signature`, spec 0009): byte for byte what the source served, verifiable with
+     the source's keys. A release without an original signature is not exported.
+   - From an own channel, it is the file as the channel serves it: the body followed by the
+     channel key's signature.
+   - Nothing is re-signed by the exporting kista: the site trusts the source's keys and the bundle
+     key, not the gateway's channel keys.
+3. **Keys.**
+   - Core and community: DuckDB's keys compiled into kista (`internal/upstream/duckdbkeys`).
+   - A repository source: the export fetches `<prefix>/.well-known/duckdb-extension-repo.json` (at
+     most 64 KiB) through the upstream's egress and credential, as a mirror's key check does, and
+     keeps it as it came; for an own channel it writes the channel's own file. A source whose file
+     lists none of the plan's keys fails as a whole.
+4. **Cells.** For each plan cell, the exporting upstream's cell record (spec 0009) decides:
+   - **released or unchanged**, with a current release: its file is exported, unless its body hash
+     equals the plan's `body_hash`, or its ETag the plan's `etag`, which records `unchanged`
+     without a file;
+   - **missing**, or no record: `missing`;
+   - **rejected**: `rejected` with the mirror's reason;
+   - **yanked** on the exporting side: `rejected`, "yanked on the exporting kista": the gateway's
+     administrator withdrew it, and the site decides for itself what it already holds;
+   - **outside the exporting upstream's matrix** (its allowlist, platforms or channel's DuckDB
+     versions): `missing`, with that reason. The summary lists these, so the gateway's
+     administrator widens the allowlist.
 
-   A failed check records the cell `rejected` with its reason, and the file stays out of the
-   bundle. A body whose hash equals the plan's `body_hash` is recorded `unchanged`, also without
-   its file. The import runs every check again, with spec 0008's file checks added.
-4. **Tokens.**
-   - **Matching.** A token goes to the source whose prefix the `-token` prefix covers, compared as
-     spec 0009's credentials are (scheme, host, port, path segment boundary). `-token` on a core or
-     community source is refused.
-   - **Sending.** The token file is read at each request. The token goes in
-     `Authorization: Bearer` and is never sent on a redirect, since there are none.
-   - **Containment.** The token reaches no file, log line or error.
-   - **Refusals.** A `401` or `403` fails the source as a whole and names the status. When an
-     authenticated source answers `404` for every cell, the builder warns: kista answers a token
-     without the grant as missing (spec 0006).
+   For an own channel, the cell is the channel's current release for (name, platform, DuckDB
+   version), or `missing`.
+5. **Checks.** Each exported file is checked again as the import will check it: the signature with
+   the source's keys, the footer against the cell, the version filter. A failure records `rejected`
+   and leaves the file out. The import runs every check once more, with spec 0008's file checks.
 
-Files are fetched `-concurrency` at a time (default 4, at most 2 per host). Each file is kept as the
-source served it, gzip-compressed, in `-tmp-dir` (default: the system temporary directory). The tar
-is then written to a temporary name beside `-o`, deleting each file once it is appended, and
-renamed when complete. The builder prints the disk it needs before it starts: the plan's cell count
-times `-max-body` is the upper bound.
+`-sync` first runs the matching mirror-mode upstreams (spec 0009's `sync`) and waits for them;
+pull-through upstreams export what they hold. Without it, the export reads the state as it is.
 
-The summary lists, per source:
-- cells per outcome;
-- bytes;
-- the listed fingerprints;
-- the first 20 problems.
+**Writing.** Files are read from the blob domain, gzip-compressed into `-tmp-dir` (default
+`TMPDIR`), and hashed; the manifest is then written first and the files after it, each deleted once
+appended, to a temporary name beside `-o`, renamed when complete. The export prints the disk it
+needs before it starts.
 
-The builder exits non-zero when a source failed as a whole. Rejected cells alone do not fail the
-build, as they do not fail a mirror's run.
+**Provenance.** A cell carries the exporting release's `etag`, `fetched_at` and source URL. The
+manifest's `exporter` names the exporting kista's version and `serve.public_url`, for the record
+only: the site's trust is the bundle key.
+
+**Authenticated sources.** A source is `authenticated` in the manifest when the exporting upstream
+holds a credential (spec 0009 phase 3), or when it is an own channel's private release: the site's
+`bundle_sources` then decide visibility (Visibility).
+
+**Audit.** The exporting kista records a **`bundle.export`** event: the plan's SHA-256, the
+manifest's `id`, the bundle key's fingerprint, counts per outcome, the actor. The bundle itself is
+not kept.
+
+The summary lists, per source: cells per outcome, bytes, the listed fingerprints, and the first 20
+problems. The export exits non-zero when a source failed as a whole; rejected and missing cells
+alone do not fail it.
+
+**Who exports.** A server administrator of the exporting kista, through `kista admin`: the export
+reads every key source's public keys and the blob domain. An API route is phase 2.
 
 ### The bundle
 
@@ -289,9 +319,9 @@ The manifest:
 ```json
 {
   "format": "kista-bundle/v1",
-  "id": "0192…",                              // a UUIDv7 made by the builder
+  "id": "0192…",                              // a UUIDv7 made by the export
   "created_at": "2026-10-14T12:30:00Z",
-  "builder": "kista v0.3.0",
+  "exporter": {"version": "kista v0.3.0", "public_url": "https://gateway.example.org"},
   "plan": {"tenant": "acme", "created_at": "2026-10-14T12:00:00Z", "sha256": "…"},
   "sources": [
     {"kind": "repository", "prefix": "https://enterest.hugr-lab.com/acme/prod",
@@ -403,7 +433,7 @@ The import reads the bundle once, front to back, and never extracts it.
    - `missing` records `missing`.
    - `unchanged` keeps the target's record when it has one; otherwise the cell is recorded
      `missing` with "not in this bundle and not held".
-   - `rejected` records `rejected` with the builder's reason prefixed `bundle:`, control characters
+   - `rejected` records `rejected` with the export's reason prefixed `bundle:`, control characters
      stripped.
    - A `fetched` cell whose file never arrived, because the tar ended early, is `failed`.
    - Cells the bundle does not mention keep their records. A bundle may be partial, and the import
@@ -460,7 +490,7 @@ Each import, dry runs included, is a row in **`bundle_imports`**:
 | `tenant_id` | |
 | `manifest_id` | |
 | `manifest_created_at` | |
-| `builder` | |
+| `exporter` | the manifest's, as data |
 | `bundle_key` | the fingerprint |
 | `input_sha256` | the SHA-256 of every byte read from the input, end of archive included; for a `blob:` input the object's bytes |
 | `dry_run` | |
@@ -479,7 +509,7 @@ Each import, dry runs included, is a row in **`bundle_imports`**:
 A mirror's releases from a credentialed source are private unless the credential sets
 `allow_public` (spec 0009 phase 3): a paid subscription's extensions are not the tenant's to
 publish. Bundle mode keeps the rule. The signed manifest's `authenticated` flag says whether the
-builder needed a token for a source, and the site's configuration plays the credential's part:
+exporting upstream held a credential for a source, and the site's configuration plays the credential's part:
 
 ```yaml
 upstreams:
@@ -504,7 +534,7 @@ upstreams:
   that is its visibility for unauthenticated sources, as a mirror's is.
 - **Passthrough.** A passthrough channel is public by nature and takes `duckdb-core` only, which is
   never authenticated: the rule does not reach it.
-- **Not DRM.** The flag is the builder's word, and the bundle key's holder could leave it out.
+- **Not DRM.** The flag is the exporter's word, and the bundle key's holder could leave it out.
   This is the honest-user control spec 0001 sets for licensing. It prevents the accident, not the
   deliberate act; an administrator could add the bodies by hand just as well.
 
@@ -524,19 +554,18 @@ A feed's `mode` (new; default `online`) gains **`bundle`**:
   - which of the plan's sources' new bodies it may also be offered. By default these are the
     sources of upstreams in the feed's offer selection, so a body from source A is never disclosed
     to feed B outside B's offer.
-- **The builder.**
-  - It fetches the source's `/attestation-keys` and keeps the file as it came, like a
-    `.well-known` file.
-  - It posts the bodies to `/feed` with their cursors, adds the bodies of files it bundles for an
-    allowed source with no cursor, and follows `more`.
-  - It fetches each statement's document from the fixed path, `/feed/documents/<issuer id>`.
-  - It checks size, content hash (spec 0011's `ContentHash`) and signature against a pinned key.
-  - It writes, after the files:
-    - `feeds/<n>/attestation-keys.json`;
-    - the answers as `feeds/<n>/batch-<k>.json` (each at most 1 MiB);
-    - each document as `feeds/<n>/documents/<issuer id>` (each within spec 0011's limit), after its
-      batch.
+- **The export** takes what the exporting kista's own feed of the same URL holds (spec 0011 keeps
+  statements as their issuer signed them, with their documents); it does not contact the feed.
+  - It writes the feed's attestation keys file as the feed client last fetched it.
+  - For each body the plan offers, and each body it exports for an allowed source, it writes the
+    statements past the plan's cursor as `feeds/<n>/batch-<k>.json` (each at most 1 MiB), after the
+    files.
+  - It writes each statement's document as `feeds/<n>/documents/<issuer id>` (each within spec
+    0011's limit), after its batch.
+  - It checks size, content hash (spec 0011's `ContentHash`) and signature against the plan's
+    pinned keys, as the import will.
 
+  The covered range is what the exporting feed has read through for each body.
   The manifest's `feeds` section names every entry with its hash and size. Per body, it gives the
   `after_seq` sent and the `seq` the source reported as read through: the range the batches cover
   completely.
@@ -575,7 +604,9 @@ route out, so the page cannot drift:
   - The first bundle key and its pin.
   - The bundle-mode upstreams for the case in Problem, with a passthrough channel for autoload.
   - The channel's DuckDB versions, with C API maximums for C API extensions (spec 0006).
-  - Plan, build, carry, import, with `-dry-run` first.
+  - The gateway kista on the connected side: its mirror-mode upstreams for the same sources, the
+    bundle key beside it, and the export.
+  - Plan, export, carry, import, with `-dry-run` first.
   - Sizing (below).
   - A slot holds one body forever, so a wrong body is a permanent `conflict` for that version.
 
@@ -597,8 +628,9 @@ route out, so the page cannot drift:
   - A credential on a bundle-mode upstream is refused with `400`, both at creation and through
     `POST …/credential`.
 - **CLI.**
-  - Client side: `kista bundle keygen|keys|build|inspect`.
-  - Site side: `kista admin bundle plan|import|list|show`.
+  - Anywhere, offline: `kista bundle keygen|keys|inspect`.
+  - The connected side: `kista admin bundle export`.
+  - The site: `kista admin bundle plan|import|list|show`.
 - **`kista bundle inspect <bundle> [-plan <plan>]`** works offline:
   - it checks the manifest's signature with the bundle's key;
   - it checks every file's hash and size;
@@ -620,12 +652,14 @@ route out, so the page cannot drift:
 Spec 0010's catalogue gains:
 
 - **`bundle.import`**, with:
-  - `import` (the record's id), `manifest`, `created_at`, `builder`, `bundle_key`, `input_sha256`,
+  - `import` (the record's id), `manifest`, `created_at`, `exporter`, `bundle_key`, `input_sha256`,
     `dry_run`, `state`;
   - `targets`: the upstream names, with counts only up to `MaxData`, since the full counts are on
     the record.
 
   Its subject is the tenant. The actor is the event's actor.
+- **`bundle.export`**, on the exporting kista: the plan's SHA-256, `manifest`, `bundle_key`, counts
+  per outcome. Its subject is the exporting tenant.
 - **`upstream.run`** gains `bundle` (the manifest's id).
 - **`upstream.release`** gains `bundle`, so the audit alone answers "which bundle brought this
   release, and who imported it".
@@ -673,14 +707,15 @@ The config check refuses:
 ```text
 internal/bundle          the plan and the manifest (types, validation, canonical order),
                          signing and verifying, the tar reader and writer
-internal/bundle/build    the builder: keys, fetches, the client-side checks, tokens, the summary
+internal/bundle/export   the export: sources from upstreams and own channels, files with their
+                         original signatures, the checks, the summary
 internal/upstream        + bundle mode (no sync, no credential, no egress port check, passthrough);
                          the import: targets, leases, freshness, per-cell intake, current releases
 internal/release         + Ingest split: the file's checks once, the cell's checks and insert per
                          cell; MayPublish for "bundle:" pseudo-credentials
 internal/blob            + the imports/ prefix, read-only to kista, outside the collector
 internal/attachment      + bundle-mode feeds (1b)
-cmd/kista                + bundle keygen|keys|build|inspect, admin bundle plan|import|list|show
+cmd/kista                + bundle keygen|keys|inspect, admin bundle export|plan|import|list|show
 web/console              + bundle mode on the upstream forms; provenance fields
 ```
 
@@ -747,13 +782,18 @@ These pages are updated in the same PR:
     one spool, not one per cell. The cells it can fill are bounded by its footer: its name and
     platform, and the targets' DuckDB versions.
   - Idle and slow input end the import, and leases never outlive it.
-- **Tokens.**
-  - The builder sends a token only to a prefix it covers, over https, never on a redirect, never to
-    DuckDB's repositories.
-  - The builder refuses private and loopback addresses unless told otherwise, so a hand-written plan
-    cannot make it probe an internal host with a token.
-  - No token reaches the bundle, a log or an error.
+- **Tokens and the network.**
+  - The export makes no request of its own but the repository sources' `.well-known` files, through
+    the matching upstream's egress and credential, as a mirror does (spec 0009): the plan cannot
+    point it anywhere its upstreams do not already go.
+  - No credential reaches the bundle, a log or an error.
   - The plan and the bundle hold no secret. Bundle-mode upstreams and feeds hold no credential.
+- **The gateway is not trusted by the site.** Its files carry the source's own signature, never a
+  key of the gateway's: a compromised gateway can withhold or, with the bundle key, choose among
+  authentic builds, as a carrier with the key could. It cannot forge one.
+- **Who exports.** A server administrator of the exporting kista. A plan discloses the site's
+  configuration to the exporting side: to Enterest, for its subscribers, that is part of the
+  service, and the docs say so.
 - **Paid extensions.** Files from an authenticated source are private unless the site's
   `bundle_sources` allow otherwise for that tenant. The marker survives promotion. It is an
   honest-user control, like licensing.
@@ -763,7 +803,7 @@ These pages are updated in the same PR:
   - The manifest names its tenant, and importing it into another tenant needs `-any-tenant`.
 - **Isolation.** An import fills one tenant's upstreams. Bodies are shared within a storage domain
   as spec 0005 shares them.
-- **Untrusted text.** Builder reasons are bounded, control characters are stripped, and they are
+- **Untrusted text.** The export's reasons are bounded, control characters are stripped, and they are
   shown as data.
 - **Disclosure.** A plan names the tenant's sources, allowlists, platforms, DuckDB versions and the
   hashes it holds; a bundle adds what was fetched. Both are as sensitive as the site's configuration.
@@ -777,20 +817,19 @@ These pages are updated in the same PR:
   - `etag` and `body_hash` given only when every sharing upstream agrees.
   - Dev versions left out for DuckDB's kinds.
   - The cell cap.
-- **Builder**, against a fake repository and a fake core source (a URL override and test keys):
-  - verified files;
-  - a wrong key, another platform, another DuckDB version, a version filter;
-  - `304` (conditional and not), `404`;
-  - a body equal to `body_hash`;
-  - redirects and private addresses refused;
-  - the token sent only to the prefix it covers, never to core, and absent from the bundle and the
-    output;
-  - `401`;
-  - a source whose keys file lists no pinned key;
-  - the caps and a gzip bomb;
-  - a hand-written plan with a bad grammar;
-  - an unpinned bundle key;
-  - an interrupted build leaving no output.
+- **Export**, from a store and blob domain the tests seed (mirrored cells with original
+  signatures, an own channel, test keys and a fake repository for `.well-known`):
+  - files exported byte for byte as the source served them, verifiable with its keys;
+  - an own channel's files with the channel's signature;
+  - `unchanged` by `body_hash` and by ETag;
+  - missing, rejected and yanked cells, and cells outside the exporting matrix;
+  - a release without an original signature left out;
+  - two upstreams of one source, the first holding the cell wins;
+  - a source mirrored nowhere fails as a whole; a `.well-known` listing no planned key fails it;
+  - `-sync` runs the mirror-mode upstreams first;
+  - an unpinned bundle key stops before reading; a hand-written plan with a bad grammar;
+  - an interrupted export leaving no output;
+  - the `bundle.export` event; no credential in the bundle or the output.
 - **Import**, from bundles the tests write:
   - **Valid imports and repeats.** A valid import. A repeat releases nothing. An older bundle is
     `stale`. The same id resumes.
@@ -825,8 +864,9 @@ These pages are updated in the same PR:
   - SQLite's rebuild keeps every child table's rows.
   - `bundle_imports`.
 - **e2e** (pinned DuckDB):
-  1. A second kista in the harness serves a signed channel.
-  2. `kista bundle build` makes a bundle from it.
+  1. A second kista in the harness, the gateway, mirrors a repository source (a third kista's signed
+     channel) and DuckDB's core test files.
+  2. `kista admin bundle export` on the gateway makes a bundle from the site's plan.
   3. A first kista whose egress refuses the second imports the bundle into a bundle-mode upstream.
   4. DuckDB runs `INSTALL … FROM` and `LOAD` against the first kista.
   5. A new version at the source, a second bundle; the new version is current.
@@ -851,13 +891,16 @@ These pages are updated in the same PR:
 - **Signing with a source key, or with an exporting kista's channel key.** Either lets only the
   source make bundles, and DuckDB's own repositories never will. A bundle key belongs to whoever
   builds for the site, which is the party the site trusts to visit the internet on its behalf.
-- **A server-side export (`kista admin bundle export <channel>`).**
-  - It needs a kista on the connected side and administrator access to it, which an Enterest
-    subscriber does not have.
-  - It would ship files re-signed with the exporting channel's key, so the site would trust one key
-    more.
-  - The builder fetches from any DuckDB repository with what a DuckDB client has. A connected kista
-    remains a valid source through its channels.
+- **A client-side builder (`kista bundle build`)**, fetching the plan's cells itself with what a
+  DuckDB client has, no kista needed on the connected side. This was the first design. It repeats
+  spec 0009's fetching, key handling, credentials, egress rules and checks in a second
+  implementation, and Enterest would hand subscribers tokens to run it rather than export for them.
+  The export reuses the mirror, ships the same bytes (`origin_signature` keeps each source's
+  signature), and needs a gateway kista, which an organisation already running kista can afford. A
+  builder can still be added later for sites with no connected kista.
+- **An export re-signed by the gateway's channel keys.** The site would then trust the gateway's
+  keys besides the sources'. Exporting the original signatures keeps the gateway out of the trust
+  chain.
 - **Importing as `release add` in a loop.** This loses verification, passthrough, reservation,
   shadows and the cells: the problem itself.
 - **A `bundle` kind instead of a mode.** The kind says what the source is, and decides its keys and
