@@ -498,7 +498,9 @@ Workload Identity trusts `kista/kista` in every cluster of the project.
   delegated subnet for PostgreSQL and one for private endpoints. The live run found that the
   environment's Envoy reaches kista not from that subnet but from the platform's reserved ranges
   (`100.100.0.0/17`, `100.100.128.0/19`, `100.100.160.0/19`, `100.100.192.0/19`), which no subnet
-  of the operator's may use: those are `trusted_proxies`, and the audit records the client.
+  of the operator's may use: those are `trusted_proxies`, and the audit records the client. The
+  environment is therefore the trust boundary, kista's alone: another app in it could claim any
+  client address. The docs say so.
 - **Key Vault Premium.**
   - `enableRbacAuthorization`, and `purge_protection` as a parameter (on by default; the live run
     turns it off and uses a name unique to the run).
@@ -524,14 +526,15 @@ Workload Identity trusts `kista/kista` in every cluster of the project.
 - **The environment and the app.**
   - External ingress with `allowInsecure: true`, so http is served without a redirect.
   - Probes on `:8081` (Container Apps allows a probe port other than the ingress port).
-  - An `EmptyDir` volume at `/var/lib/kista/tmp`, with `TMPDIR` pointing there.
+  - An `EmptyDir` volume at `/var/lib/kista/tmp`, where the image's `TMPDIR` already points.
   - Spool sizes validated against the CPU chosen.
   - The configuration in `KISTA_CONFIG`.
 - **Admin jobs.** One manual Container Apps job per command:
   - `migrate`;
   - `blob check`;
   - `blob verify`;
-  - `blob gc -apply`, with the `-force` decision left to `gc.interval`.
+  - `blob gc -apply`, which kista refuses without `-force` while `gc.interval` is 0: the recipe's
+    `gcInterval` (24h by default) sets it.
 
   Each command is its own job because `az containerapp job start --args` replaces the template,
   environment included; tresor-server found this.
@@ -572,6 +575,14 @@ What the live run found:
   (Entra login, a private endpoint) both passed `check`: 393 and 350 polls through a new revision,
   all `200`. Switching the store on the same container is refused, rightly: kista marks the blob
   domain for its store; the run recreated the container.
+
+The reviews added: the environment named as the trust boundary (another app in it could claim any
+client address); `gcInterval` (24h), without which the `blob-gc` job is always refused (its pass
+then ran live); a role name unique in the tenant; `vaultCreateMode: recover` for a redeployment
+while the old vault is soft-deleted; `serve.shutdown_timeout` 120s with a 300-second grace, so a
+rollout does not cut transfers at 35 seconds; a fail-fast `prefix` check; the live script's role
+removal before the group, a strict wait for the new revision, tokens kept off command lines, and a
+check that a token with a forged `X-Forwarded-Proto` over http is not honoured (`404`, live).
 
 ### Phase 4: bootstrap and the Marketplace
 

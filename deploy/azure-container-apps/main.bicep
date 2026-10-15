@@ -6,7 +6,7 @@
 
 targetScope = 'resourceGroup'
 
-@description('Names every resource. Lower-case letters, digits and hyphens.')
+@description('Names every resource: lower-case letters, digits and hyphens, starting with a letter and not ending with a hyphen.')
 @minLength(2)
 @maxLength(10)
 param prefix string = 'kista'
@@ -57,12 +57,19 @@ param maxBodyMib int = 1024
 @minValue(1)
 param maxIngests int = 2
 
+@description('gc.interval: between scheduled garbage collection passes (1h..168h); empty, none, and the blob-gc job then refuses -apply without -force.')
+param gcInterval string = '24h'
+
 @description('Key Vault purge protection: a deleted vault and its keys stay recoverable for the retention period. Off only for a trial.')
 param purgeProtection bool = true
 
 @minValue(7)
 @maxValue(90)
 param softDeleteDays int = 90
+
+@description('recover: take back the vault (and its channel key) a deleted deployment of the same group and prefix left in soft delete; default: a new vault.')
+@allowed(['default', 'recover'])
+param vaultCreateMode string = 'default'
 
 param tags object = {}
 
@@ -85,6 +92,9 @@ var sizes = {
 // the spool, (2 × max_ingests + 1) × max_body, on the replica's ephemeral storage with 1 GiB to spare
 var ephemeralMib = sizes[cpu].ephemeralMib
 var spoolMib = (2 * maxIngests + 1) * maxBodyMib
+var prefixCheck = toLower(prefix) == prefix && contains('abcdefghijklmnopqrstuvwxyz', first(prefix)) && !endsWith(prefix, '-')
+  ? 'ok'
+  : int('prefix: lower-case letters, digits and hyphens, starting with a letter and not ending with a hyphen')
 var spoolCheck = spoolMib <= ephemeralMib - 1024 ? 'ok' : int('the spool, (2 x maxIngests + 1) x maxBodyMib, exceeds the replica\'s ephemeral storage less 1 GiB')
 
 // ---- the identity: no key; every service admits it by role
@@ -136,6 +146,7 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   tags: allTags
   properties: {
     tenantId: tenantId
+    createMode: vaultCreateMode
     sku: { family: 'A', name: 'premium' }
     enableRbacAuthorization: true
     enableSoftDelete: true
@@ -162,7 +173,8 @@ resource channelKey 'Microsoft.KeyVault/vaults/keys@2023-07-01' = {
 resource signerRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: guid(resourceGroup().id, prefix, 'kista-signer')
   properties: {
-    roleName: 'kista key signer (${resourceGroup().name}/${prefix})'
+    // unique in the tenant: the subscription, the group and the prefix
+    roleName: 'kista key signer (${subscription().subscriptionId}/${resourceGroup().name}/${prefix})'
     description: 'Read and sign with Key Vault keys: kista\'s channel signing.'
     type: 'CustomRole'
     assignableScopes: [resourceGroup().id]
@@ -317,6 +329,9 @@ var config = {
   store: store
   serve: {
     public_url: 'https://${host}'
+    // a rollout lets transfers run up to two minutes (the ingress cuts any at 240 seconds); the
+    // grace period below covers drain + 2 × this + 21 seconds
+    shutdown_timeout: '120s'
     trusted_proxies: platformRanges
     listeners: [
       { addr: ':8443', scheme: 'https', behind_proxy: true }
@@ -346,6 +361,7 @@ var config = {
       }
     ]
   }
+  gc: empty(gcInterval) ? {} : { interval: gcInterval }
   auth: union(
     { server_issuers: serverIssuers, server_admins: serverAdmins },
     empty(serverAudiences) ? {} : { server_audiences: serverAudiences }
@@ -364,7 +380,7 @@ var volumes = [{ name: 'tmp', storageType: 'EmptyDir' }]
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: name
   location: location
-  tags: union(allTags, { 'kista-spool': spoolCheck })
+  tags: union(allTags, { 'kista-spool': spoolCheck, 'kista-prefix': prefixCheck })
   identity: { type: 'UserAssigned', userAssignedIdentities: { '${identity.id}': {} } }
   properties: {
     environmentId: env.id
@@ -392,7 +408,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         })
       ]
       volumes: volumes
-      terminationGracePeriodSeconds: 120
+      terminationGracePeriodSeconds: 300
       scale: { minReplicas: replicas, maxReplicas: replicas }
     }
   }

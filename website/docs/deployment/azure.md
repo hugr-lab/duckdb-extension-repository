@@ -90,7 +90,9 @@ az containerapp job execution list -g kista -n kista-blob-check -o table
 ```
 
 `<prefix>-migrate`, `-blob-check`, `-blob-verify` and `-blob-gc` run `kista admin` with the app's
-configuration and identity. Each command is a job of its own: `az containerapp job start --args`
+configuration and identity. `gcInterval` (24 hours by default) sets `gc.interval`: kista then
+collects on schedule, and `-blob-gc` may apply a pass at once; with it empty, `-apply` needs
+`-force` ([Commands](../administration/commands.md)). Each command is a job of its own: `az containerapp job start --args`
 replaces the whole template, the configuration included.
 
 ## The network
@@ -98,7 +100,10 @@ replaces the whole template, the configuration included.
 - **Trusted proxies.** The environment's Envoy reaches the replicas from the platform's reserved
   ranges (`100.100.0.0/17`, `100.100.128.0/19`, `100.100.160.0/19`, `100.100.192.0/19`; measured
   live), which no subnet of yours may use. Those are `serve.trusted_proxies`; the audit records
-  the caller's address.
+  the caller's address. **The environment is the trust boundary:** keep it kista's alone. Another
+  app in it can reach kista's replicas from those ranges and claim any client address (the audit,
+  the per-client limits) or `X-Forwarded-Proto: https`; Container Apps has no network policy
+  between an environment's apps.
 - http and https both serve, without a redirect: DuckDB's bootstrap needs plain http, and kista
   ignores a token sent over plain http.
 - The database has no public endpoint. Key Vault and Storage are reached on their public
@@ -123,14 +128,27 @@ replaces the whole template, the configuration included.
 - Keep `purgeProtection` on: a deleted vault and its keys stay recoverable, and every signature the
   channel served depends on the key.
 - **Who may act as kista.** Anyone allowed to assign the identity to a resource
-  (`Microsoft.ManagedIdentity/userAssignedIdentities/*/assign/action`), or to change the app or a
-  job, acts as kista. Keep both to the platform's operators.
+  (`Microsoft.ManagedIdentity/userAssignedIdentities/*/assign/action`), to add a federated
+  credential to it (`…/federatedIdentityCredentials/write`, which Contributor on the group holds:
+  tokens as kista from outside Azure), or to change the app or a job, acts as kista. Keep all three
+  to the platform's operators.
 - Blob soft delete keeps deleted bodies 7 days; lengthen it to guard against deletion by a
   compromised identity (garbage collection deletes bodies, so it may).
 - Pin the image by digest; more replicas and a larger database SKU.
 
 ## Destroy
 
-Delete the resource group, then purge the vault (with purge protection on, it waits out its
-retention) and delete the custom role, which outlives the group:
-`az role definition delete --name '<the role id>'`.
+Delete the role's assignment and the custom role first (a role definition outlives the group, and
+goes only without assignments), then the resource group:
+
+```sh
+role=$(az role definition list --custom-role-only true --scope "$(az group show -n kista --query id -o tsv)" --query '[0].name' -o tsv)
+az role assignment list --all --role "$role" --query '[].id' -o tsv | xargs -n1 az role assignment delete --ids
+az role definition delete --name "$role" --scope "$(az group show -n kista --query id -o tsv)"
+az group delete -n kista
+```
+
+The vault stays in soft delete for its retention. Purge it (`az keyvault purge`) unless purge
+protection is on; then it waits out the retention. A new deployment of the same group and prefix
+before that takes it back with `vaultCreateMode: 'recover'`, the channel key with it, which is
+usually what you want: every signature the channel served depends on that key.

@@ -12,7 +12,7 @@
 # `leftovers` lists whatever of the run's remains. The run's state is in deploy/azure/.state-live
 # (the client secret among it, mode 0600; it expires in two days and goes with its app).
 #
-# Optional: KISTA_AZURE_LOCATION (westeurope), KISTA_AZURE_DATABASE (postgres or sqlserver),
+# Optional: KISTA_AZURE_LOCATION (northeurope), KISTA_AZURE_DATABASE (postgres or sqlserver),
 # KISTA_LIVE_IMAGE (ghcr.io/hugr-lab/kista:edge, pinned by its digest at up). The subscription is
 # az's current one; the signed-in account needs Owner (the recipe makes a role definition) and may
 # create app registrations. Needs az with bicep, jq, curl, go; the DuckDB e2e build
@@ -23,7 +23,7 @@ cmd=${1:?usage: recipe-live.sh up | check | down | leftovers}
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 export GOWORK=off
-location=${KISTA_AZURE_LOCATION:-westeurope}
+location=${KISTA_AZURE_LOCATION:-northeurope}
 database=${KISTA_AZURE_DATABASE:-postgres}
 name=kista-live
 work=$here/.state-live
@@ -130,13 +130,18 @@ up() {
 		-p @"$work/parameters.json" -o none ||
 		az deployment group create -g "$group" -n kista -f "$repo/deploy/azure-container-apps/main.bicep" \
 			-p @"$work/parameters.json" -o none
+	# the custom role outlives the group: down deletes it by this id
+	save role "$(az role definition list --custom-role-only true --scope "$(az group show -n "$group" --query id -o tsv)" \
+		--query "[?contains(roleName, '/$group/')].id | [0]" -o tsv)"
 	echo "up: kista at $(out url)"
 }
 
+# the token goes in a header file, not on the command line
 api() {
 	local method=$1 path=$2 tok=$3
 	shift 3
-	curl -sS -X "$method" -H "Authorization: Bearer $tok" "$@" "$(out url)/api/v1/$path"
+	(umask 077; printf 'Authorization: Bearer %s\n' "$tok" >"$work/auth")
+	curl -sS -X "$method" -H @"$work/auth" "$@" "$url/api/v1/$path"
 }
 
 # a 2xx, or a 409 (it exists: check runs again)
@@ -151,7 +156,6 @@ ok() {
 
 check() {
 	group=$(get group)
-	url=$(out url)
 	step "$url answers over http and https"
 	for scheme in http https; do
 		for i in $(seq 1 60); do
@@ -166,6 +170,11 @@ check() {
 	ten=$(token "$(get acme_app)")
 	acme_aud=$(claims "$ten" | jq -r .aud)
 	api GET whoami "$srv" -f | jq -e '.administrator == true' >/dev/null
+	# over plain http a token is ignored, even with a forged X-Forwarded-Proto: Envoy sets it
+	(umask 077; printf 'Authorization: Bearer %s\n' "$srv" >"$work/auth")
+	code=$(curl -s -o /dev/null -w '%{http_code}' -H @"$work/auth" -H 'X-Forwarded-Proto: https' "http://${url#https://}/api/v1/whoami")
+	echo "whoami over http with a forged X-Forwarded-Proto: $code"
+	[ "$code" != 200 ] || { echo "a token was honoured over http" >&2; exit 1; }
 	key=$(out channelSigner)
 	duck=$repo/e2e/.build
 	go build -o "$work/kista" "$repo/cmd/kista"
@@ -230,10 +239,14 @@ check() {
 		done
 	) &
 	poller=$!
-	az containerapp update -g "$group" -n kista-live --revision-suffix "r$(date +%H%M%S)" -o none
+	suffix=r$(date +%H%M%S)
+	az containerapp update -g "$group" -n kista-live --revision-suffix "$suffix" -o none
+	# the new revision ready and the only active one
 	for i in $(seq 1 60); do
-		[ "$(az containerapp show -g "$group" -n kista-live --query properties.runningStatus -o tsv)" = Running ] &&
+		ready=$(az containerapp show -g "$group" -n kista-live --query properties.latestReadyRevisionName -o tsv)
+		[ "$ready" = "kista-live--$suffix" ] &&
 			[ "$(az containerapp revision list -g "$group" -n kista-live --query "length([?properties.active])" -o tsv)" = 1 ] && break
+		[ "$i" = 60 ] && { touch "$work/stop"; echo "the revision $suffix never took over" >&2; exit 1; }
 		sleep 10
 	done
 	sleep 60
@@ -250,19 +263,20 @@ check() {
 down() {
 	group=$(get group)
 	[ -n "$group" ] || { echo "down: no group in $work/state" >&2; exit 1; }
-	vault=$(out vault 2>/dev/null || true)
-	role=$(az role definition list --custom-role-only true --scope "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$group" \
-		--query "[?starts_with(roleName, 'kista key signer ($group/')].name" -o tsv 2>/dev/null || true)
+	# the group's vault, also after a deployment that failed before its outputs
+	vault=$(az keyvault list -g "$group" --query '[0].name' -o tsv 2>/dev/null || true)
+	role=$(get role)
+	if [ -n "$role" ] && az group exists -n "$group" | grep -q true; then
+		# the role's assignments first: a role definition goes only without them, and outlives the group
+		step "the custom role"
+		az role assignment list --all --role "$role" --query '[].id' -o tsv | while read -r a; do az role assignment delete --ids "$a"; done
+		az role definition delete --name "$role" --scope "$(az group show -n "$group" --query id -o tsv)"
+	fi
 	step "the resource group $group"
-	az group exists -n "$group" | grep -q true && az group delete -n "$group" --yes
+	if az group exists -n "$group" | grep -q true; then az group delete -n "$group" --yes; fi
 	if [ -n "$vault" ]; then
 		step "the vault $vault, purged"
-		az keyvault purge -n "$vault" -l "$location" 2>/dev/null || true
-	fi
-	if [ -n "$role" ]; then
-		step "the custom role"
-		az role definition delete --name "$role" --scope "/subscriptions/$(az account show --query id -o tsv)" 2>/dev/null ||
-			az role definition delete --name "$role"
+		az keyvault purge -n "$vault"
 	fi
 	step "the app registrations"
 	for a in "$group-server" "$group-acme"; do
@@ -278,10 +292,12 @@ leftovers() {
 	az group exists -n "$group" | grep -q false || echo "LEFT group $group"
 	az resource list --tag "purpose=$name" --query '[].id' -o tsv | sed 's|^|LEFT |'
 	az keyvault list-deleted --query "[?starts_with(name, '$name')].name" -o tsv | sed 's|^|LEFT soft-deleted vault |'
-	az role definition list --custom-role-only true --query "[?starts_with(roleName, 'kista key signer ($name')].roleName" -o tsv | sed 's|^|LEFT role |'
+	az role definition list --custom-role-only true --query "[?contains(roleName, '/$name-')].roleName" -o tsv | sed 's|^|LEFT role |'
 	az ad app list --display-name "$name" --query '[].displayName' -o tsv | sed 's|^|LEFT app |'
 }
 
+url=""
+[ "$cmd" = check ] && url=$(out url)
 case $cmd in
 up) up ;;
 check) check ;;
