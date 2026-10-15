@@ -75,9 +75,11 @@ func bundleKeygen(args []string, stdout io.Writer) error {
 	}
 	if _, err := f.Write(pemBytes); err != nil {
 		f.Close()
+		os.Remove(*out)
 		return err
 	}
 	if err := f.Close(); err != nil {
+		os.Remove(*out)
 		return err
 	}
 	fmt.Fprintln(stdout, fp)
@@ -162,6 +164,9 @@ func bundleSign(args []string, stdout io.Writer) error {
 	if err := bundle.DecodeStrict(planData, &plan); err != nil {
 		return err
 	}
+	if err := plan.Validate(); err != nil {
+		return err
+	}
 	kb, err := os.ReadFile(*keyFile)
 	if err != nil {
 		return err
@@ -179,46 +184,96 @@ func bundleSign(args []string, stdout io.Writer) error {
 		return err
 	}
 	defer src.Close()
-	b, err := bundle.Open(src, time.Time{})
+	b, err := bundle.Open(src, time.Time{}, nil)
 	if err != nil {
 		return err
 	}
 	if b.Signed {
 		return errors.New("the bundle is already signed")
 	}
-	if b.Manifest.Plan.SHA256 != sha(planData) {
+	m := b.Manifest
+	if m.Plan.SHA256 != sha(planData) {
 		return errors.New("the bundle answers another plan")
+	}
+	if err := withinPlan(m, &plan); err != nil {
+		return err
+	}
+	if _, err := os.Stat(*out); err == nil {
+		return fmt.Errorf("%s exists", *out)
+	}
+	cells := map[string]bundle.Cell{}
+	for _, s := range m.Sources {
+		for _, c := range s.Cells {
+			if c.Outcome == bundle.Fetched {
+				cells[c.File] = c
+			}
+		}
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(*out), ".kista-bundle-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmp.Name())
+	defer tmp.Close()
 	w := bundle.NewWriter(tmp)
 	if err := bundle.WriteHead(w, b.ManifestBytes, priv); err != nil {
-		tmp.Close()
 		return err
 	}
+	wellKnown, files := 0, 0
 	for {
 		it, err := b.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			tmp.Close()
 			return err
 		}
-		name := it.File
-		if it.WellKnown != nil {
-			name = it.WellKnown.WellKnown.Path
+		if s := it.WellKnown; s != nil {
+			if err := w.Entry(s.WellKnown.Path, int64(len(it.Data)), strings.NewReader(string(it.Data))); err != nil {
+				return err
+			}
+			wellKnown++
+			continue
 		}
-		if err := w.Entry(name, it.Size, it.R); err != nil {
-			tmp.Close()
+		// copy the file while checking it inflates to what the manifest says: a signature vouches
+		// for the bundle's contents, not only its manifest
+		c := cells[it.File]
+		pr, pw := io.Pipe()
+		checked := make(chan error, 1)
+		go func() {
+			n, h, err := bundle.Inflate(pr, c.InflatedSize, io.Discard)
+			if err == nil && (n != c.InflatedSize || h != c.SHA256) {
+				err = errors.New("the inflated file's size or hash differs from the manifest's")
+			}
+			pr.CloseWithError(err)
+			checked <- err
+		}()
+		err = w.Entry(it.File, it.Size, io.TeeReader(it.R, pw))
+		pw.CloseWithError(err)
+		if cerr := <-checked; cerr != nil {
+			return fmt.Errorf("%s: %w", it.File, cerr)
+		}
+		if err != nil {
 			return err
+		}
+		files++
+	}
+	wantWK := 0
+	for _, s := range m.Sources {
+		if s.WellKnown != nil {
+			wantWK++
 		}
 	}
+	if !b.Ended() || files != len(cells) || wellKnown != wantWK {
+		return fmt.Errorf("the bundle is incomplete: %d of %d files, %d of %d .well-known files", files, len(cells), wellKnown, wantWK)
+	}
 	if err := w.Close(); err != nil {
-		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -231,27 +286,42 @@ func bundleSign(args []string, stdout io.Writer) error {
 	return nil
 }
 
-// inspectSummary is what kista bundle inspect reports.
-type inspectSummary struct {
-	outcomes          map[string]int
-	files, bytes, inf int64
-	maxInflated       int64
-	problems          []string
+// withinPlan refuses a manifest with a source or a cell its plan did not ask for.
+func withinPlan(m *bundle.Manifest, p *bundle.Plan) error {
+	asked := map[string]map[[3]string]bool{}
+	for _, s := range p.Sources {
+		cs := map[[3]string]bool{}
+		for _, c := range s.Cells {
+			cs[[3]string{c.DuckDBVersion, c.Platform, c.Name}] = true
+		}
+		asked[s.Kind+"\x00"+s.Prefix] = cs
+	}
+	for _, s := range m.Sources {
+		cs, ok := asked[s.Kind+"\x00"+s.Prefix]
+		if !ok {
+			return fmt.Errorf("the plan asks for no source %s %s", s.Kind, s.Prefix)
+		}
+		for _, c := range s.Cells {
+			if !cs[[3]string{c.DuckDBVersion, c.Platform, c.Name}] {
+				return fmt.Errorf("the plan asks for no cell %s %s %s of %s %s", c.DuckDBVersion, c.Platform, c.Name, s.Kind, s.Prefix)
+			}
+		}
+	}
+	return nil
 }
 
-func (s *inspectSummary) problem(format string, args ...any) {
-	if len(s.problems) < 50 {
-		s.problems = append(s.problems, fmt.Sprintf(format, args...))
-	}
-}
+// defaultMaxBody is blob.max_body's default: inspect has no configuration to read it from.
+const defaultMaxBody = 1 << 30
 
 // bundleInspect checks a bundle offline: the manifest's signature with the bundle's own key, every
-// entry's hash and size, every file's source signature and footer. With -plan it adds the site's
-// pins: whether the bundle key is pinned, and each source's keys pinned, listed only or missing.
-// Without -plan a bundle is reported consistent, not trusted.
+// entry's hash and size, every file's source signature, footer and spec 0008's checks. With -plan
+// it adds the site's pins and filters: whether the bundle key is pinned, each source's keys pinned,
+// listed only or missing, and the cells' version filters. Without -plan a bundle is reported
+// consistent, not trusted.
 func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	planFile := fs.String("plan", "", "the site's plan, for its pins")
+	maxBody := fs.Int64("max-body", defaultMaxBody, "the largest file to inflate (the site's blob.max_body), in bytes")
 	var file string
 	for len(args) > 0 {
 		if err := fs.Parse(args); err != nil {
@@ -265,7 +335,7 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 		}
 	}
 	if file == "" {
-		return false, errors.New("usage: kista bundle inspect <bundle> [-plan <plan.json>]")
+		return false, errors.New("usage: kista bundle inspect <bundle> [-plan <plan.json>] [-max-body <bytes>]")
 	}
 	var plan *bundle.Plan
 	var planSHA string
@@ -281,151 +351,157 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 		if err := plan.Validate(); err != nil {
 			return false, err
 		}
-		sum := sha256.Sum256(data)
-		planSHA = hex.EncodeToString(sum[:])
+		planSHA = sha(data)
 	}
 	f, err := os.Open(file)
 	if err != nil {
 		return false, err
 	}
 	defer f.Close()
-	b, err := bundle.Open(f, time.Now())
+	b, err := bundle.Open(f, time.Now(), nil)
 	if err != nil {
 		return false, err
 	}
 	m := b.Manifest
-	sum := &inspectSummary{outcomes: map[string]int{}}
+	var problems []string
+	problem := func(format string, args ...any) {
+		if len(problems) < 50 {
+			problems = append(problems, fmt.Sprintf(format, args...))
+		}
+	}
 	switch {
 	case !b.Signed:
-		sum.problem("unsigned: kista bundle sign signs it")
+		problem("unsigned: kista bundle sign signs it")
 	case bundle.Verify(b.Pub, b.ManifestBytes, b.Sig) != nil:
-		sum.problem("the manifest's signature does not verify with the bundle's key")
+		problem("the manifest's signature does not verify with the bundle's key")
 	}
 	fmt.Fprintf(stdout, "bundle %s, made %s by %s (%s), for tenant %s\n", m.ID, m.CreatedAt.Format(time.RFC3339),
 		m.Exporter.PublicURL, m.Exporter.Version, m.Plan.Tenant)
 	if b.Signed {
 		pinned := ""
 		if plan != nil {
-			pinned = map[bool]string{true: " (pinned by the plan)", false: " (NOT pinned by the plan)"}[slices.Contains(plan.BundleKeys, b.Fingerprint)]
-			if !slices.Contains(plan.BundleKeys, b.Fingerprint) {
-				sum.problem("the bundle key %s is not pinned by the plan", b.Fingerprint)
+			ok := slices.Contains(plan.BundleKeys, b.Fingerprint)
+			pinned = map[bool]string{true: " (pinned by the plan)", false: " (NOT pinned by the plan)"}[ok]
+			if !ok {
+				problem("the bundle key %s is not pinned by the plan", b.Fingerprint)
 			}
 		}
 		fmt.Fprintf(stdout, "bundle key %s%s\n", b.Fingerprint, pinned)
 	}
 	if plan != nil && planSHA != m.Plan.SHA256 {
-		fmt.Fprintf(stdout, "note: the bundle answers another plan (sha256 %s), made %s\n", m.Plan.SHA256, m.Plan.CreatedAt.Format(time.RFC3339))
+		problem("the bundle answers another plan (sha256 %s, made %s)", m.Plan.SHA256, m.Plan.CreatedAt.Format(time.RFC3339))
 	}
 	planKeys := map[string][]string{}
+	planVersions := map[string]map[[3]string][]string{}
 	if plan != nil {
 		for _, s := range plan.Sources {
-			planKeys[s.Kind+"\x00"+s.Prefix] = s.Keys
-		}
-	}
-	// the keys each source's files verify with
-	keys := map[string][]*rsa.PublicKey{}
-	for i := range m.Sources {
-		s := &m.Sources[i]
-		switch s.Kind {
-		case store.UpstreamCore:
-			keys[s.Kind] = duckdbkeys.Core()
-		case store.UpstreamCommunity:
-			keys[s.Kind] = duckdbkeys.Community()
-		}
-		for _, c := range s.Cells {
-			sum.outcomes[c.Outcome]++
-		}
-	}
-	// cells by file, to check each file against every cell it fills
-	byFile := map[string][]bundle.Cell{}
-	srcOf := map[string]*bundle.Source{}
-	for i := range m.Sources {
-		for _, c := range m.Sources[i].Cells {
-			if c.Outcome == bundle.Fetched {
-				byFile[c.File] = append(byFile[c.File], c)
-				srcOf[c.File] = &m.Sources[i]
+			k := s.Kind + "\x00" + s.Prefix
+			planKeys[k] = s.Keys
+			planVersions[k] = map[[3]string][]string{}
+			for _, c := range s.Cells {
+				planVersions[k][[3]string{c.DuckDBVersion, c.Platform, c.Name}] = c.Versions
 			}
 		}
 	}
-	tmpDir := os.TempDir()
+	outcomes := map[string]int{}
+	for _, s := range m.Sources {
+		for _, c := range s.Cells {
+			outcomes[c.Outcome]++
+		}
+	}
+	// the keys each source's files verify with: DuckDB's, or the .well-known file's (the plan's
+	// pins among them, with -plan)
+	repoKeys := map[*bundle.Source][]*rsa.PublicKey{}
+	opts := bundle.CheckOptions{FileChecks: true, Keys: func(s *bundle.Source) []*rsa.PublicKey {
+		switch s.Kind {
+		case store.UpstreamCore:
+			return duckdbkeys.Core()
+		case store.UpstreamCommunity:
+			return duckdbkeys.Community()
+		}
+		return repoKeys[s]
+	}}
+	if plan != nil {
+		opts.Versions = func(r bundle.Ref) []string {
+			return planVersions[r.Source.Kind+"\x00"+r.Source.Prefix][[3]string{r.Cell.DuckDBVersion, r.Cell.Platform, r.Cell.Name}]
+		}
+	}
+	byFile := m.CellsByFile()
+	var files, size, inflated, largest int64
 	for {
 		it, err := b.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			sum.problem("%v", err)
+			problem("%v", err)
 			break
 		}
 		if s := it.WellKnown; s != nil {
-			data, err := io.ReadAll(it.R)
+			ks, err := wellKnownKeys(it.Data)
 			if err != nil {
-				sum.problem("%s: %v", s.Prefix, err)
+				problem("%s: %v", s.Prefix, err)
 				continue
 			}
-			if sha(data) != s.WellKnown.SHA256 {
-				sum.problem("%s: the .well-known file's hash differs from the manifest's", s.Prefix)
-				continue
-			}
-			ks, err := wellKnownKeys(data)
-			if err != nil {
-				sum.problem("%s: %v", s.Prefix, err)
-				continue
-			}
+			k := s.Kind + "\x00" + s.Prefix
 			var listed []string
-			for _, k := range ks {
-				fp := extfile.Fingerprint(k)
+			for _, key := range ks {
+				fp := extfile.Fingerprint(key)
 				listed = append(listed, fp)
 				state := ""
 				if plan != nil {
-					state = map[bool]string{true: " pinned", false: " listed, not pinned"}[slices.Contains(planKeys[s.Kind+"\x00"+s.Prefix], fp)]
+					state = map[bool]string{true: " pinned", false: " listed, not pinned"}[slices.Contains(planKeys[k], fp)]
 				}
 				fmt.Fprintf(stdout, "source %s key %s%s\n", s.Prefix, fp, state)
 			}
 			if plan != nil {
-				for _, fp := range planKeys[s.Kind+"\x00"+s.Prefix] {
+				for _, fp := range planKeys[k] {
 					if !slices.Contains(listed, fp) {
 						fmt.Fprintf(stdout, "source %s key %s pinned, not listed\n", s.Prefix, fp)
 					}
 				}
-				ks = slices.DeleteFunc(ks, func(k *rsa.PublicKey) bool {
-					return !slices.Contains(planKeys[s.Kind+"\x00"+s.Prefix], extfile.Fingerprint(k))
-				})
+				ks = slices.DeleteFunc(ks, func(key *rsa.PublicKey) bool { return !slices.Contains(planKeys[k], extfile.Fingerprint(key)) })
 			}
-			keys[s.Kind+"\x00"+s.Prefix] = ks
+			repoKeys[s] = ks
 			continue
 		}
-		cells := byFile[it.File]
-		src := srcOf[it.File]
-		sum.files++
-		sum.bytes += it.Size
-		sum.inf += cells[0].InflatedSize
-		sum.maxInflated = max(sum.maxInflated, cells[0].InflatedSize)
-		inspectFile(it, cells, src, keys, tmpDir, sum)
+		refs := byFile[it.File]
+		files++
+		size += it.Size
+		c0 := refs[0].Cell
+		inflated += c0.InflatedSize
+		largest = max(largest, c0.InflatedSize)
+		if c0.InflatedSize > *maxBody+extfile.SignatureSize {
+			problem("%s: %d bytes inflated, over -max-body", it.File, c0.InflatedSize)
+			continue
+		}
+		for _, e := range inspectFile(it, refs, opts) {
+			problem("%s: %v", it.File, e)
+		}
 	}
-	if !b.Ended() && len(sum.problems) == 0 {
-		sum.problem("the bundle ends before its end of archive")
+	if missing := b.Missing(); len(missing) > 0 && b.Ended() {
+		problem("the manifest names entries the bundle lacks: %s", strings.Join(missing, ", "))
 	}
-	if int(sum.files) != len(byFile) {
-		sum.problem("%d files named in the manifest are not in the bundle", len(byFile)-int(sum.files))
+	if !b.Ended() && len(problems) == 0 {
+		problem("the bundle ends before its end of archive")
 	}
-	outs := make([]string, 0, len(sum.outcomes))
-	for o, n := range sum.outcomes {
+	outs := make([]string, 0, len(outcomes))
+	for o, n := range outcomes {
 		outs = append(outs, fmt.Sprintf("%s %d", o, n))
 	}
 	slices.Sort(outs)
-	fmt.Fprintf(stdout, "cells: %s\nfiles: %d, %d bytes, %d inflated\nthe import needs about %d bytes of spool\n", strings.Join(outs, ", "),
-		sum.files, sum.bytes, sum.inf, sum.maxInflated)
+	fmt.Fprintf(stdout, "cells: %s\nfiles: %d, %d bytes, %d inflated\nthe import needs about %d bytes of spool\n",
+		strings.Join(outs, ", "), files, size, inflated, largest)
 	if b.Ended() {
 		fmt.Fprintf(stdout, "sha256 %s\n", b.SHA256())
 	}
 	if b.Skipped() > 0 {
 		fmt.Fprintf(stdout, "%d bytes of entries read through\n", b.Skipped())
 	}
-	for _, p := range sum.problems {
+	for _, p := range problems {
 		fmt.Fprintf(stdout, "problem: %s\n", p)
 	}
-	if len(sum.problems) > 0 {
+	if len(problems) > 0 {
 		return false, nil
 	}
 	if plan == nil {
@@ -437,46 +513,26 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 }
 
 // inspectFile inflates one file into a temporary file and checks it against every cell it fills.
-func inspectFile(it bundle.Item, cells []bundle.Cell, src *bundle.Source, keys map[string][]*rsa.PublicKey, tmpDir string, sum *inspectSummary) {
-	c0 := cells[0]
-	tmp, err := os.CreateTemp(tmpDir, "kista-inspect-*")
+func inspectFile(it bundle.Item, refs []bundle.Ref, opts bundle.CheckOptions) []error {
+	c0 := refs[0].Cell
+	tmp, err := os.CreateTemp("", "kista-inspect-*")
 	if err != nil {
-		sum.problem("%s: %v", it.File, err)
-		return
+		return []error{err}
 	}
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 	n, h, err := bundle.Inflate(it.R, c0.InflatedSize, tmp)
 	if err != nil {
-		sum.problem("%s: %v", it.File, err)
-		return
+		return []error{err}
 	}
 	if n != c0.InflatedSize || h != c0.SHA256 {
-		sum.problem("%s: the inflated file's size or hash differs from the manifest's", it.File)
-		return
+		return []error{errors.New("the inflated file's size or hash differs from the manifest's")}
 	}
 	ef, err := extfile.Open(tmp, n, n)
 	if err != nil {
-		sum.problem("%s: %v", it.File, err)
-		return
+		return []error{err}
 	}
-	if ef.Hash.String() != c0.BodyHash {
-		sum.problem("%s: the body hash differs from the manifest's", it.File)
-	}
-	k := keys[src.Kind]
-	if src.Kind == store.UpstreamRepo {
-		k = keys[src.Kind+"\x00"+src.Prefix]
-	}
-	if _, ok := extfile.Verify(ef.Hash, ef.Signature, k); !ok {
-		sum.problem("%s (%s): the signature does not verify with the source's keys", it.File, c0.Name)
-	}
-	for _, c := range cells {
-		md := ef.Metadata
-		exact := md.ABI == extfile.ABICPP || md.ABI == extfile.ABICStructUnstable
-		if md.Platform != c.Platform || exact && md.DuckDBVersion != c.DuckDBVersion {
-			sum.problem("%s: its footer (%s, %s) is not cell %s %s %s", it.File, md.Platform, md.DuckDBVersion, c.DuckDBVersion, c.Platform, c.Name)
-		}
-	}
+	return bundle.CheckFile(ef, refs, opts)
 }
 
 func sha(b []byte) string {

@@ -157,7 +157,7 @@ Bundle keys and bundles for air-gapped sites (spec 0014). No configuration, no d
 kista bundle keygen -o <key.pem>
 kista bundle keys <https://host/tenant/channel>
 kista bundle sign -key <key.pem> -plan <plan.json> -in <unsigned bundle> -o <bundle>
-kista bundle inspect <bundle> [-plan <plan.json>]
+kista bundle inspect <bundle> [-plan <plan.json>] [-max-body <bytes>]
 ```
 
 - `keygen` writes a new Ed25519 bundle key (PKCS#8 PEM, mode `0600`, never over an existing file)
@@ -165,10 +165,14 @@ kista bundle inspect <bundle> [-plan <plan.json>]
 - `keys` fetches a repository's `.well-known` file and prints its keys' fingerprints, to compare
   with what the publisher published before pinning one. Never trust the media for a fingerprint.
 - `sign` signs a bundle exported unsigned, on a machine that holds the key: the key must be among
-  the plan's bundle keys, and the bundle must answer that plan. It copies the bundle once.
+  the plan's bundle keys, the bundle must answer that plan and ask for nothing else, and be
+  complete, its files inflating to the manifest's sizes and hashes. It copies the bundle once and
+  never writes over an existing file.
 - `inspect` checks a bundle offline: the manifest's signature, every entry's hash and size, every
-  file's source signature and footer. With `-plan` it also says whether the bundle key is pinned,
-  and each source key pinned, listed only or missing. It prints the cells per outcome, the sizes,
+  file's source signature, footer and the file checks publication runs. With `-plan` it also says
+  whether the bundle key is pinned, and each source key pinned, listed only or missing, applies the
+  plan's version filters, and reports a bundle answering another plan. `-max-body` (default 1 GiB,
+  the site's `blob.max_body`) bounds what it inflates. It prints the cells per outcome, the sizes,
   the spool an import needs and the bundle's SHA-256, and exits `1` on any problem. Without
   `-plan`, a bundle is reported consistent, not trusted.
 
@@ -336,7 +340,7 @@ See [Publishing](../publishing.md).
 | `upstream key add` or `remove` `<tenant> <name> <fingerprint>` | a `repository` upstream's pinned keys |
 | `shadow list <tenant>` | core names the tenant replaced: its passthrough channels do not serve them |
 | `shadow remove <tenant> <name>` | serves DuckDB's build of that name from passthrough channels again |
-| `bundle plan <tenant> [-upstream <name,...>] [-o <plan.json>]` | the plan of the tenant's bundle-mode upstreams (all, or the named ones), with the bundle keys pinned for the tenant (`upstreams.bundle_keys`); to standard output without `-o` |
+| `bundle plan <tenant> [-upstream <name,...>] [-o <plan.json>]` | the plan of the tenant's active bundle-mode upstreams (all, or the named ones), with the bundle keys pinned for the tenant (`upstreams.bundle_keys`); to standard output without `-o` |
 
 `upstream add` flags: `-extensions <name,...>` or `*`, `-prefix <https://...>` and
 `-keys <sha256:...,...>` (for `repository`), `-public`, `-mode mirror`, `-mode pull-through` or

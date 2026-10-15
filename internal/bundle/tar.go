@@ -93,10 +93,11 @@ func (w *Writer) SHA256() string { return hex.EncodeToString(w.h.Sum(nil)) }
 // RawEntry is one tar entry as the reader saw it. Only a Regular entry is ever used; the others
 // are read through and counted.
 type RawEntry struct {
-	Name    string
-	Size    int64
-	Regular bool   // a plain file: typeflag '0', not sparse
-	Why     string // why it is not Regular
+	Name     string
+	Size     int64
+	Regular  bool   // a plain file: typeflag '0', not sparse
+	Why      string // why it is not Regular
+	Overhead int64  // its headers (a PAX header's included) and its data's padding
 }
 
 // Reader reads a bundle front to back from its raw headers. It does not use archive/tar, which
@@ -143,10 +144,11 @@ func (t *Reader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// Skip reads the rest of the current entry through, counting it toward the skipped bytes.
-func (t *Reader) Skip() error {
+// Skip reads the rest of the current entry through, counting it, its headers and its padding
+// toward the skipped bytes.
+func (t *Reader) Skip(e RawEntry) error {
 	n, err := io.Copy(io.Discard, t)
-	t.skipped += n
+	t.skipped += n + e.Overhead
 	return err
 }
 
@@ -168,11 +170,13 @@ func (t *Reader) Next() (RawEntry, error) {
 		t.pad = 0
 	}
 	var pax map[string]string
+	var overhead int64
 	for {
 		var hdr [block]byte
 		if _, err := io.ReadFull(t.r, hdr[:]); err != nil {
 			return RawEntry{}, unexpected(err)
 		}
+		overhead += block
 		if hdr == [block]byte{} {
 			if _, err := io.ReadFull(t.r, hdr[:]); err != nil {
 				return RawEntry{}, unexpected(err)
@@ -199,6 +203,9 @@ func (t *Reader) Next() (RawEntry, error) {
 		}
 		typ := hdr[156]
 		if typ == 'x' { // a PAX header for the next entry: its records may rename or resize it
+			if pax != nil {
+				return RawEntry{}, fmt.Errorf("%w: a PAX header after a PAX header", ErrMalformed)
+			}
 			if size > maxHead*16 {
 				return RawEntry{}, fmt.Errorf("%w: a PAX header of %d bytes", ErrMalformed, size)
 			}
@@ -212,6 +219,7 @@ func (t *Reader) Next() (RawEntry, error) {
 			if pax, err = paxRecords(data); err != nil {
 				return RawEntry{}, err
 			}
+			overhead += size + (block-size%block)%block
 			continue
 		}
 		e := RawEntry{Name: name, Size: size}
@@ -232,6 +240,7 @@ func (t *Reader) Next() (RawEntry, error) {
 			e.Regular = true
 		}
 		t.remain, t.pad = e.Size, (block-e.Size%block)%block
+		e.Overhead = overhead + t.pad
 		return e, nil
 	}
 }

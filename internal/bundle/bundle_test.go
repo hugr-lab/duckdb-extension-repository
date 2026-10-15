@@ -122,8 +122,10 @@ func readAll(t *testing.T, b *bundle.Bundle) (wk, files []string, err error) {
 		if err != nil {
 			return wk, files, err
 		}
-		if _, err := io.Copy(io.Discard, it.R); err != nil {
-			return wk, files, err
+		if it.R != nil {
+			if _, err := io.Copy(io.Discard, it.R); err != nil {
+				return wk, files, err
+			}
 		}
 		if it.WellKnown != nil {
 			wk = append(wk, it.WellKnown.Prefix)
@@ -283,7 +285,7 @@ func TestRoundTrip(t *testing.T) {
 	f := newFixture(t)
 	priv, fp := key(t)
 	data, wsum := f.write(t, priv)
-	b, err := bundle.Open(bytes.NewReader(data), t0)
+	b, err := bundle.Open(bytes.NewReader(data), t0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +304,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 	// unsigned: refused by Check; trailing bytes after the end of archive are never read
 	data, _ = f.write(t, nil)
-	b, err = bundle.Open(io.MultiReader(bytes.NewReader(data), errReader{}), t0)
+	b, err = bundle.Open(io.MultiReader(bytes.NewReader(data), errReader{}), t0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +318,7 @@ func TestRoundTrip(t *testing.T) {
 	data, _ = f.write(t, priv)
 	edited := bytes.Replace(data, []byte(`"tenant":"acme"`), []byte(`"tenant":"acmf"`), 1)
 	edited = fixChecksum(t, edited, 0)
-	if b, err := bundle.Open(bytes.NewReader(edited), t0); err != nil || b.Check(func(string) bool { return true }) == nil {
+	if b, err := bundle.Open(bytes.NewReader(edited), t0, nil); err != nil || b.Check(func(string) bool { return true }) == nil {
 		t.Errorf("an edited manifest: %v", err)
 	}
 }
@@ -404,13 +406,13 @@ func TestReaderRefusals(t *testing.T) {
 	for name, data := range map[string][]byte{
 		"a dot-dot name":   cat(head, src, entry("../etc/passwd", '0', []byte("x")), files, eoa),
 		"an absolute name": cat(head, src, entry("/etc/passwd", '0', []byte("x")), files, eoa),
-		"a symlink":        cat(head, src, entry(order[0]+"x", '2', nil), files, eoa),
+		"a symlink":        cat(head, src, entry(order[0], '2', nil), files, eoa), // a link named as a file
 		"a PAX global":     cat(head, src, entry("g", 'g', pax(map[string]string{"path": order[0]})), files, eoa),
-		"a GNU long name":  cat(head, src, entry("././@LongLink", 'L', []byte(order[0])), files, eoa),
+		"a GNU long name":  cat(head, src, entry("././@LongLink", 'L', []byte(order[0])), entry("x", '0', f.files[order[0]]), files, eoa),
 		"a sparse file":    cat(head, src, entry("p", 'x', pax(map[string]string{"GNU.sparse.size": "10"})), first, second, eoa),
 		"a second copy":    cat(head, src, first, first, second, eoa),
 	} {
-		b, err := bundle.Open(bytes.NewReader(data), t0)
+		b, err := bundle.Open(bytes.NewReader(data), t0, nil)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -422,7 +424,7 @@ func TestReaderRefusals(t *testing.T) {
 		if err != io.EOF || len(got) != want {
 			t.Errorf("%s: %v %v", name, got, err)
 		}
-		if name != "a second copy" && name != "a sparse file" && b.Skipped() == 0 && name != "a symlink" {
+		if b.Skipped() == 0 {
 			t.Errorf("%s: nothing counted as skipped", name)
 		}
 	}
@@ -433,18 +435,34 @@ func TestReaderRefusals(t *testing.T) {
 		"files out of order":  cat(head, src, second, first, eoa),
 		"a zero block alone":  cat(head, src, files, make([]byte, 512), header("x", 0, '0', "ustar\x0000")),
 		"over the skip cap":   cat(head, src, big, files, eoa),
-		"a GNU header":        cat(head, src, append(header(order[0], int64(len(f.files[order[0]])), '0', "ustar  \x00"), f.files[order[0]]...)),
+		"a GNU header": cat(head, src, append(append(header(order[0], int64(len(f.files[order[0]])), '0', "ustar  \x00"), f.files[order[0]]...),
+			make([]byte, (512-len(f.files[order[0]])%512)%512)...), second, eoa),
+		"a PAX chain": cat(head, src, entry("p", 'x', pax(map[string]string{"comment": "a"})), entry("q", 'x', pax(map[string]string{"comment": "b"})),
+			files, eoa),
 	} {
-		b, err := bundle.Open(bytes.NewReader(data), t0)
+		b, err := bundle.Open(bytes.NewReader(data), t0, nil)
 		if err != nil {
 			t.Fatalf("%s: open: %v", name, err)
 		}
-		if _, _, err := readAll(t, b); err == io.EOF {
-			t.Errorf("%s: accepted", name)
+		if _, _, err := readAll(t, b); !errors.Is(err, bundle.ErrMalformed) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// the skip cap counts headers and padding: zero-size entries and PAX headers are not free
+	for name, unit := range map[string][]byte{
+		"zero-size entries": entry("junk", '0', nil),
+		"PAX headers":       cat(entry("p", 'x', pax(map[string]string{"comment": strings.Repeat("c", 60000)})), entry("junk", '0', nil)),
+	} {
+		b, err := bundle.Open(io.MultiReader(bytes.NewReader(cat(head, src)), &repeat{unit: unit}), t0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := readAll(t, b); !errors.Is(err, bundle.ErrMalformed) || !strings.Contains(err.Error(), "read through") {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 	// a truncated tar: what came before stays, then io.ErrUnexpectedEOF
-	b, _ := bundle.Open(bytes.NewReader(cat(head, src, first, second[:520])), t0)
+	b, _ := bundle.Open(bytes.NewReader(cat(head, src, first, second[:520])), t0, nil)
 	if _, got, err := readAll(t, b); !errors.Is(err, io.ErrUnexpectedEOF) || len(got) != 1 {
 		t.Errorf("truncated: %v %v", got, err)
 	}
@@ -461,8 +479,10 @@ func TestReaderRefusals(t *testing.T) {
 		"a truncated head":       head[:600],
 		"a bad header checksum":  cat(func() []byte { h := entry(bundle.ManifestEntry, '0', f.manifest(t)); h[0] = 'K'; return h }(), eoa),
 		"an RSA key as the .pub": cat(entry(bundle.ManifestEntry, '0', f.manifest(t)), sig, entry(bundle.PubEntry, '0', rsaPEM(t)), eoa),
+		"a link second":          cat(entry(bundle.ManifestEntry, '0', f.manifest(t)), entry("x", '2', nil), src, eoa),
+		"a PAX global second":    cat(entry(bundle.ManifestEntry, '0', f.manifest(t)), entry("g", 'g', nil), src, eoa),
 	} {
-		if _, err := bundle.Open(bytes.NewReader(data), t0); err == nil {
+		if _, err := bundle.Open(bytes.NewReader(data), t0, nil); err == nil {
 			t.Errorf("%s: opened", name)
 		}
 	}
@@ -525,5 +545,93 @@ func TestText(t *testing.T) {
 	}
 	if got := bundle.Text("ééé", 5); got != "éé" {
 		t.Errorf("%q", got)
+	}
+}
+
+// repeat yields unit over and over: an input with no end.
+type repeat struct {
+	unit []byte
+	off  int
+}
+
+func (r *repeat) Read(p []byte) (int, error) {
+	n := 0
+	for n < len(p) {
+		c := copy(p[n:], r.unit[r.off:])
+		n += c
+		r.off = (r.off + c) % len(r.unit)
+	}
+	return n, nil
+}
+
+// With pins, the key and the signature are checked before the manifest is parsed.
+func TestOpenPinned(t *testing.T) {
+	f := newFixture(t)
+	priv, fp := key(t)
+	data, _ := f.write(t, priv)
+	if _, err := bundle.Open(bytes.NewReader(data), t0, func(s string) bool { return s == fp }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bundle.Open(bytes.NewReader(data), t0, func(string) bool { return false }); err == nil {
+		t.Error("an unpinned key")
+	}
+	// an unsigned bundle whose manifest would not even parse: refused as unsigned, never parsed
+	bad := append(entry(bundle.ManifestEntry, '0', []byte("{not json")), make([]byte, 1024)...)
+	if _, err := bundle.Open(bytes.NewReader(bad), t0, func(string) bool { return true }); !errors.Is(err, bundle.ErrUnsigned) {
+		t.Errorf("unsigned: %v", err)
+	}
+	if _, err := bundle.Open(bytes.NewReader(bad), t0, nil); !errors.Is(err, bundle.ErrInvalid) {
+		t.Errorf("without pins the manifest is parsed: %v", err)
+	}
+}
+
+func TestStrictKeys(t *testing.T) {
+	var v struct {
+		Outcome string `json:"outcome"`
+	}
+	for _, doc := range []string{`{"outcome":"missing","OUTCOME":"fetched"}`, `{"Outcome":"x"}`, `{"\u017fources":1}`, `{"outcome\u0000":"x"}`} {
+		if err := bundle.DecodeStrict([]byte(doc), &v); !errors.Is(err, bundle.ErrInvalid) {
+			t.Errorf("%s: %v", doc, err)
+		}
+	}
+}
+
+func TestManifestLimits(t *testing.T) {
+	for name, change := range map[string]func(m *bundle.Manifest){
+		"a .well-known over 64 KiB": func(m *bundle.Manifest) { m.Sources[1].WellKnown.Size = 64<<10 + 1 },
+		"sources/0":                 func(m *bundle.Manifest) { m.Sources[1].WellKnown.Path = "sources/0/well-known.json" },
+		"sources/123456":            func(m *bundle.Manifest) { m.Sources[1].WellKnown.Path = "sources/123456/well-known.json" },
+		"upper-case hex": func(m *bundle.Manifest) {
+			c := &m.Sources[1].Cells[0]
+			c.SHA256 = strings.ToUpper(c.SHA256)
+			c.File = "files/" + c.SHA256 + ".gz"
+		},
+		"an etag with a control": func(m *bundle.Manifest) { m.Sources[1].Cells[0].ETag = "\"x\x07\"" },
+		"an etag over 256":       func(m *bundle.Manifest) { m.Sources[1].Cells[0].ETag = strings.Repeat("e", 257) },
+		"a detail with a control": func(m *bundle.Manifest) {
+			m.Sources[0].Cells[1].Detail = "a\x1b[2Jb"
+		},
+		"over 100,000 cells": func(m *bundle.Manifest) {
+			for i := range 100001 {
+				m.Sources[0].Cells = append(m.Sources[0].Cells, bundle.Cell{DuckDBVersion: "v2.0.0", Platform: "linux_amd64",
+					Name: fmt.Sprintf("e%06d", i), Outcome: bundle.Missing})
+			}
+		},
+	} {
+		g := newFixture(t)
+		change(&g.m)
+		if err := g.m.Validate(t0); !errors.Is(err, bundle.ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// a file shared by two cells is ordered by the lowest DuckDB version among them, v2.9 before v2.10
+	g := newFixture(t)
+	acl, tresor := g.m.Sources[1].Cells[0], g.m.Sources[1].Cells[1]
+	acl.DuckDBVersion, tresor.DuckDBVersion = "v2.10.0", "v2.10.0"
+	early := tresor
+	early.DuckDBVersion, early.Name = "v2.9.0", "acl" // tresor's file also fills acl at v2.9.0
+	g.m.Sources[1].Cells = []bundle.Cell{acl, early, tresor}
+	if order := g.m.FileOrder(); len(order) != 2 || order[0] != tresor.File {
+		t.Errorf("order: %v (want %s first)", order, tresor.File)
 	}
 }

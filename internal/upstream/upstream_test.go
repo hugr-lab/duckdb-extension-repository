@@ -1038,5 +1038,21 @@ func TestPlan(t *testing.T) {
 		if err != nil || len(one.Sources) != 1 || one.Sources[0].Kind != store.UpstreamCore {
 			t.Errorf("one upstream: %+v %v", one, err)
 		}
+		if _, err := en.up.Plan(ctx, admin, "acme", []string{"nope"}, []string{fp("9")}); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("an unknown upstream: %v", err)
+		}
+		// a paused upstream is left out, and refused when named; core-a alone then holds json, and
+		// core-b's cell no longer spoils the agreement
+		u, _ := en.up.Get(ctx, admin, "acme", "core-b")
+		if _, err := en.up.Set(ctx, admin, "acme", "core-b", "", store.UpstreamPaused, u.Version); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := en.up.Plan(ctx, admin, "acme", []string{"core-b"}, []string{fp("9")}); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("a paused upstream named: %v", err)
+		}
+		p, err = en.up.Plan(ctx, admin, "acme", nil, []string{fp("9")})
+		if err != nil || len(p.Sources[0].Cells) != 1 || p.Sources[0].Cells[0].BodyHash != h("a") {
+			t.Errorf("paused left out: %+v %v", p.Sources, err)
+		}
 	})
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 )
@@ -38,8 +39,9 @@ func (h *Head) Check(pinned func(fingerprint string) bool) error {
 
 // Item is a used entry after the head: a source's .well-known file, or an extension file.
 type Item struct {
-	WellKnown *Source // the source whose .well-known file this is
-	File      string  // files/<sha256>.gz
+	WellKnown *Source // the source whose .well-known file this is: Data, its hash checked
+	Data      []byte
+	File      string // files/<sha256>.gz: R, its size checked
 	Size      int64
 	R         io.Reader // the entry's bytes; read it before Next
 }
@@ -59,8 +61,10 @@ type Bundle struct {
 }
 
 // Open reads a bundle's head and validates its manifest; now is the importing host's clock (zero:
-// no future-skew rule). The signature is checked by Head.Check.
-func Open(r io.Reader, now time.Time) (*Bundle, error) {
+// no future-skew rule). With pinned, the key's pin and the signature are checked before the
+// manifest is parsed, so an unsigned or foreign bundle costs no parsing (the import); without it,
+// Head.Check checks them later (inspect, sign).
+func Open(r io.Reader, now time.Time, pinned func(fingerprint string) bool) (*Bundle, error) {
 	t := NewReader(r)
 	b := &Bundle{t: t, sources: map[string]*Source{}, files: map[string]int64{}, order: map[string]int{}, seen: map[string]bool{},
 		lastFile: -1}
@@ -76,14 +80,6 @@ func Open(r io.Reader, now time.Time) (*Bundle, error) {
 	}
 	sum := sha256.Sum256(b.ManifestBytes)
 	b.ManifestSHA = hex.EncodeToString(sum[:])
-	var m Manifest
-	if err := DecodeStrict(b.ManifestBytes, &m); err != nil {
-		return nil, err
-	}
-	if err := m.Validate(now); err != nil {
-		return nil, err
-	}
-	b.Manifest = &m
 	e, err = t.Next()
 	if err != nil && err != io.EOF {
 		return nil, headErr(err)
@@ -110,8 +106,8 @@ func Open(r io.Reader, now time.Time) (*Bundle, error) {
 		}
 		b.Signed, b.Fingerprint = true, Fingerprint(b.Pub)
 	} else if err == nil {
-		if !e.Regular && (e.Name == SigEntry || e.Name == PubEntry) {
-			return nil, fmt.Errorf("%w: %s", ErrMalformed, e.Why)
+		if !e.Regular { // among the first three entries, anything but a plain file refuses the bundle
+			return nil, fmt.Errorf("%w: %s among the first entries", ErrMalformed, e.Why)
 		}
 		if e.Name == PubEntry {
 			return nil, fmt.Errorf("%w: %s without %s", ErrMalformed, PubEntry, SigEntry)
@@ -120,6 +116,19 @@ func Open(r io.Reader, now time.Time) (*Bundle, error) {
 	} else {
 		b.pending = nil // io.EOF: a bundle of no files
 	}
+	if pinned != nil {
+		if err := b.Check(pinned); err != nil {
+			return nil, err
+		}
+	}
+	var m Manifest
+	if err := DecodeStrict(b.ManifestBytes, &m); err != nil {
+		return nil, err
+	}
+	if err := m.Validate(now); err != nil {
+		return nil, err
+	}
+	b.Manifest = &m
 	for i := range m.Sources {
 		if w := m.Sources[i].WellKnown; w != nil {
 			b.sources[w.Path] = &m.Sources[i]
@@ -159,21 +168,31 @@ func (b *Bundle) Next() (Item, error) {
 		if b.t.Skipped()+b.skippable(e) > MaxSkipped {
 			return Item{}, fmt.Errorf("%w: over %d bytes of entries read through", ErrMalformed, MaxSkipped)
 		}
+		if strings.HasPrefix(e.Name, "sources/") && b.inFiles {
+			return Item{}, fmt.Errorf("%w: %s after the files", ErrMalformed, e.Name)
+		}
+		if strings.HasPrefix(e.Name, "files/") {
+			b.inFiles = true
+		}
 		if !e.Regular || b.seen[e.Name] || e.Name == ManifestEntry || e.Name == SigEntry || e.Name == PubEntry {
-			if err := b.t.Skip(); err != nil {
+			if err := b.t.Skip(e); err != nil {
 				return Item{}, err
 			}
 			continue
 		}
 		if src, ok := b.sources[e.Name]; ok {
-			if b.inFiles {
-				return Item{}, fmt.Errorf("%w: %s after the files", ErrMalformed, e.Name)
-			}
 			if e.Size != src.WellKnown.Size {
 				return Item{}, fmt.Errorf("%w: %s is %d bytes, the manifest says %d", ErrMalformed, e.Name, e.Size, src.WellKnown.Size)
 			}
+			data, err := io.ReadAll(b.t)
+			if err != nil {
+				return Item{}, err
+			}
+			if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != src.WellKnown.SHA256 {
+				return Item{}, fmt.Errorf("%w: %s differs from the manifest's hash", ErrMalformed, e.Name)
+			}
 			b.seen[e.Name] = true
-			return Item{WellKnown: src, Size: e.Size, R: b.t}, nil
+			return Item{WellKnown: src, Data: data, Size: e.Size}, nil
 		}
 		if size, ok := b.files[e.Name]; ok {
 			if e.Size != size {
@@ -184,14 +203,10 @@ func (b *Bundle) Next() (Item, error) {
 			} else {
 				b.lastFile = pos
 			}
-			b.inFiles = true
 			b.seen[e.Name] = true
 			return Item{File: e.Name, Size: e.Size, R: b.t}, nil
 		}
-		if strings.HasPrefix(e.Name, "sources/") && b.inFiles {
-			return Item{}, fmt.Errorf("%w: %s after the files", ErrMalformed, e.Name)
-		}
-		if err := b.t.Skip(); err != nil { // unnamed: read through
+		if err := b.t.Skip(e); err != nil { // unnamed: read through
 			return Item{}, err
 		}
 	}
@@ -201,7 +216,24 @@ func (b *Bundle) skippable(e RawEntry) int64 {
 	if e.Regular && !b.seen[e.Name] && (b.sources[e.Name] != nil || b.files[e.Name] != 0) {
 		return 0
 	}
-	return e.Size
+	return e.Size + e.Overhead
+}
+
+// Missing lists the entries the manifest names that were not read: complete only after io.EOF.
+func (b *Bundle) Missing() []string {
+	var out []string
+	for p := range b.sources {
+		if !b.seen[p] {
+			out = append(out, p)
+		}
+	}
+	for p := range b.files {
+		if !b.seen[p] {
+			out = append(out, p)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // SHA256 is the SHA-256 of every byte read through the end-of-archive blocks: the bundle's

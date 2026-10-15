@@ -12,7 +12,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// Plan writes a site's bundle plan (spec 0014): its bundle-mode upstreams (all, or the named ones)
+// Plan writes a site's bundle plan (spec 0014): its active bundle-mode upstreams (all, or the named ones)
 // as sources and cells, with what it holds. bundleKeys are the fingerprints pinned for the tenant.
 func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, names, bundleKeys []string) (bundle.Plan, error) {
 	t, err := s.tenant(ctx, a, tenant)
@@ -36,9 +36,13 @@ func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, names,
 			if all[i].Mode != store.ModeBundle {
 				return fmt.Errorf("%w: upstream %s is not in bundle mode", store.ErrInvalid, n)
 			}
+			if all[i].State != store.UpstreamActive {
+				return fmt.Errorf("%w: upstream %s is paused: an import would not fill it", store.ErrInvalid, n)
+			}
 		}
+		// paused ones are left out: an import fills active upstreams only
 		for _, u := range all {
-			if u.Mode == store.ModeBundle && (len(names) == 0 || slices.Contains(names, u.Name)) {
+			if u.Mode == store.ModeBundle && u.State == store.UpstreamActive && (len(names) == 0 || slices.Contains(names, u.Name)) {
 				ups = append(ups, u)
 			}
 		}

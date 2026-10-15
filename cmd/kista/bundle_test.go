@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,19 +15,27 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/symbols/symtest"
 )
 
 // bundleFixture writes an unsigned bundle of one signed extension from a repository source, and
 // its plan pinning the bundle key and the source's key.
 func bundleFixture(t *testing.T, dir, bundleFP string, edit func(*bundle.Manifest)) (plan, unsigned string) {
 	t.Helper()
-	ext, pub := writeExtension(t)
-	file, _ := os.ReadFile(ext)
-	pubPEM, _ := os.ReadFile(pub)
-	k, err := extfile.ParsePublicKey(string(pubPEM))
+	// an ELF exporting x's entry point, signed: what spec 0008's checks accept
+	rk, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
+	k := &rk.PublicKey
+	block, _ := extfile.EncodeMetadata(extfile.Metadata{Platform: "linux_amd64", DuckDBVersion: "v2.0.0", ExtensionVersion: "1.0", ABI: extfile.ABICPP})
+	body := append(symtest.ELF("x_duckdb_cpp_init"), extfile.MetadataPrefix...)
+	body = append(body, block[:]...)
+	h, _, _ := extfile.HashBody(bytes.NewReader(body), 1<<20)
+	sig, _ := rsa.SignPKCS1v15(nil, rk, crypto.SHA256, h[:])
+	file := append(body, sig...)
+	pemStr, _ := extfile.MarshalPublicKeyPEM(k)
+	pubPEM := []byte(pemStr)
 	ef, err := extfile.Open(bytes.NewReader(file), int64(len(file)), 1<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -36,15 +47,9 @@ func bundleFixture(t *testing.T, dir, bundleFP string, edit func(*bundle.Manifes
 	wk, _ := json.Marshal(map[string]any{"signature_keys": []string{string(pubPEM)}})
 	const prefix = "https://src.example.org/acme/prod"
 	now := time.Now().UTC().Truncate(time.Second)
-	p := bundle.Plan{Format: bundle.PlanFormat, CreatedAt: now, Tenant: "acme", BundleKeys: []string{bundleFP},
-		Sources: []bundle.PlanSource{{Kind: "repository", Prefix: prefix, Keys: []string{extfile.Fingerprint(k)},
-			Cells: []bundle.PlanCell{{DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "x", Versions: []string{}}}}}}
-	planData, _ := json.Marshal(p)
-	plan = filepath.Join(dir, "plan.json")
-	os.WriteFile(plan, planData, 0o644)
 	m := bundle.Manifest{Format: bundle.ManifestFormat, ID: "0192f0c4-1b2a-7c3d-8e4f-0123456789ab", CreatedAt: now,
 		Exporter: bundle.Exporter{Version: "kista test", PublicURL: "https://gw.example.org"},
-		Plan:     bundle.PlanRef{Tenant: "acme", CreatedAt: now, SHA256: sha(planData)},
+		Plan:     bundle.PlanRef{Tenant: "acme", CreatedAt: now},
 		Sources: []bundle.Source{{Kind: "repository", Prefix: prefix,
 			WellKnown: &bundle.FileRef{Path: "sources/1/well-known.json", SHA256: sha(wk), Size: int64(len(wk))},
 			Cells: []bundle.Cell{{DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "x", Outcome: bundle.Fetched,
@@ -53,6 +58,19 @@ func bundleFixture(t *testing.T, dir, bundleFP string, edit func(*bundle.Manifes
 	if edit != nil {
 		edit(&m)
 	}
+	// the plan asks for exactly the manifest's cells
+	p := bundle.Plan{Format: bundle.PlanFormat, CreatedAt: now, Tenant: "acme", BundleKeys: []string{bundleFP}}
+	for _, src := range m.Sources {
+		ps := bundle.PlanSource{Kind: src.Kind, Prefix: src.Prefix, Keys: []string{extfile.Fingerprint(k)}}
+		for _, c := range src.Cells {
+			ps.Cells = append(ps.Cells, bundle.PlanCell{DuckDBVersion: c.DuckDBVersion, Platform: c.Platform, Name: c.Name, Versions: []string{}})
+		}
+		p.Sources = append(p.Sources, ps)
+	}
+	planData, _ := json.Marshal(p)
+	plan = filepath.Join(dir, "plan.json")
+	os.WriteFile(plan, planData, 0o644)
+	m.Plan.SHA256 = sha(planData)
 	md, _ := json.Marshal(m)
 	var out bytes.Buffer
 	w := bundle.NewWriter(&out)
@@ -115,6 +133,8 @@ func TestBundleCLI(t *testing.T) {
 	for name, edit := range map[string]func(*bundle.Manifest){
 		"another DuckDB version": func(m *bundle.Manifest) { m.Sources[0].Cells[0].DuckDBVersion = "v2.1.0" },
 		"another body hash":      func(m *bundle.Manifest) { m.Sources[0].Cells[0].BodyHash = strings.Repeat("0", 64) },
+		"another platform":       func(m *bundle.Manifest) { m.Sources[0].Cells[0].Platform = "linux_arm64" },
+		"another name":           func(m *bundle.Manifest) { m.Sources[0].Cells[0].Name = "y" }, // y's entry point is absent
 	} {
 		d := t.TempDir()
 		p, u := bundleFixture(t, d, fp, edit)

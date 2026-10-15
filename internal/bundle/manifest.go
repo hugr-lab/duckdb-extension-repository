@@ -130,6 +130,7 @@ type Cell struct {
 
 var (
 	hexRE    = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	keyRE    = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 	fpRE     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	uuid7RE  = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	filePath = regexp.MustCompile(`^files/[0-9a-f]{64}\.gz$`)
@@ -180,6 +181,11 @@ func noDuplicateKeys(data []byte) error {
 		}
 		if _, delim := t.(json.Delim); !delim && top != nil && top.obj && top.key {
 			k, _ := t.(string)
+			// Go matches fields without regard to case (Unicode folding too): only plain lower-case
+			// keys, as every field is, so that no two keys can name one field
+			if !keyRE.MatchString(k) {
+				return fmt.Errorf("%w: the key %q is not lower-case ASCII", ErrInvalid, k)
+			}
 			if top.keys[k] {
 				return fmt.Errorf("%w: the key %q twice in one object", ErrInvalid, k)
 			}
@@ -416,7 +422,7 @@ func (m *Manifest) Validate(now time.Time) error {
 }
 
 func (c Cell) validate() error {
-	if len(c.ETag) > MaxETag || len(c.Detail) > MaxDetail || Text(c.Detail, MaxDetail) != c.Detail {
+	if len(c.ETag) > MaxETag || Text(c.ETag, MaxETag) != c.ETag || len(c.Detail) > MaxDetail || Text(c.Detail, MaxDetail) != c.Detail {
 		return errors.New("etag or detail")
 	}
 	if c.BodyHash != "" && !hexRE.MatchString(c.BodyHash) {
