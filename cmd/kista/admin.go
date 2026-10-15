@@ -122,6 +122,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   events list [-server] [-kind <k>] [-subject <prefix>] [-actor <a>] [-since <RFC 3339>] [-limit <n>]
               [-follow] [-format table|jsonl] [<tenant>]          the event buffer (spec 0010), newest first
   shadow list <tenant>                            core names the tenant replaced: passthrough channels do not serve them
+  bundle plan <tenant> [-upstream <name,...>] [-o <plan.json>]   what the tenant's bundle-mode upstreams ask for (spec 0014)
   shadow remove <tenant> <name>                   serve DuckDB's build again from passthrough channels
   block add <tenant> <body-hash> -reason <text>   ban a body tenant-wide: its releases are yanked
   block list <tenant>
@@ -302,6 +303,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.upstream(ctx, sub, args[min(2, len(args)):])
 	case "shadow":
 		return a.shadow(ctx, sub, args[min(2, len(args)):])
+	case "bundle":
+		return a.bundle(ctx, sub, args[min(2, len(args)):])
 	case "events":
 		return a.events(ctx, sub, args[min(2, len(args)):])
 	case "blob":
@@ -1938,4 +1941,42 @@ func tsOpt(t time.Time) string {
 		return ""
 	}
 	return ts(t)
+}
+
+// bundle is spec 0014's site side.
+func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("bundle "+sub, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	names := fs.String("upstream", "", "")
+	out := fs.String("o", "", "")
+	pos, err := flags(fs, args)
+	if err != nil {
+		return err
+	}
+	switch {
+	case sub == "plan" && len(pos) == 1:
+		plan, err := a.svc.Upstreams.Plan(ctx, a.actor, pos[0], commaList(*names), a.cfg.BundleKeysFor(pos[0]))
+		if err != nil {
+			return err
+		}
+		data, err := json.MarshalIndent(plan, "", "  ")
+		if err != nil {
+			return err
+		}
+		data = append(data, '\n')
+		if *out == "" {
+			_, err = a.out.Write(data)
+			return err
+		}
+		if err := os.WriteFile(*out, data, 0o644); err != nil {
+			return err
+		}
+		cells := 0
+		for _, s := range plan.Sources {
+			cells += len(s.Cells)
+		}
+		a.logf("bundle plan %s: %d sources, %d cells -> %s", pos[0], len(plan.Sources), cells, *out)
+		return nil
+	}
+	return errUsage
 }

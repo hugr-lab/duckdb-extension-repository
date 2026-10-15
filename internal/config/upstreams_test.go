@@ -76,3 +76,30 @@ func TestUpstreamCredentials(t *testing.T) {
 		}
 	}
 }
+
+// Spec 0014: bundle keys are pinned per tenant.
+func TestBundleKeys(t *testing.T) {
+	fp := func(c string) string { return "sha256:" + strings.Repeat(c, 64) }
+	cfg, err := Load(write(t, base+"upstreams: { bundle_keys: [{ fingerprint: "+fp("a")+", tenants: [acme] }, { fingerprint: "+
+		fp("b")+", tenants: ['*'] }] }\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.BundleKeysFor("acme"); len(got) != 2 {
+		t.Errorf("acme: %v", got)
+	}
+	if got := cfg.BundleKeysFor("other"); len(got) != 1 || got[0] != fp("b") {
+		t.Errorf("other: %v", got)
+	}
+	for name, file := range map[string]string{
+		"a bad fingerprint": "upstreams: { bundle_keys: [{ fingerprint: sha256:XYZ, tenants: [acme] }] }\n",
+		"no tenants":        "upstreams: { bundle_keys: [{ fingerprint: " + fp("a") + " }] }\n",
+		"a bad tenant":      "upstreams: { bundle_keys: [{ fingerprint: " + fp("a") + ", tenants: ['A!'] }] }\n",
+		"twice":             "upstreams: { bundle_keys: [{ fingerprint: " + fp("a") + ", tenants: [a] }, { fingerprint: " + fp("a") + ", tenants: [b] }] }\n",
+		"a flat list":       "upstreams: { bundle_keys: [" + fp("a") + "] }\n",
+	} {
+		if _, err := Load(write(t, base+file), nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

@@ -10,6 +10,7 @@ title: Command reference
 | --- | --- |
 | `kista serve -config <file\|env:NAME>` | runs the repository server |
 | `kista ext inspect` and `kista ext verify` | read an extension file on disk; no config, no database |
+| `kista bundle keygen\|keys\|sign\|inspect` | bundle keys and bundles ([Bundles](#kista-bundle)); no config, no database |
 | `kista admin -config <file\|env:NAME> <command> ...` | the server administrator's CLI |
 | `kista version` | prints kista's own version |
 
@@ -147,6 +148,29 @@ signature and exits `0`, or exits `1` with
 
 The body hash is the value the API and `kista admin release list` show, and the one `block` and
 `attachment` commands take.
+
+## kista bundle
+
+Bundle keys and bundles for air-gapped sites (spec 0014). No configuration, no database.
+
+```text
+kista bundle keygen -o <key.pem>
+kista bundle keys <https://host/tenant/channel>
+kista bundle sign -key <key.pem> -plan <plan.json> -in <unsigned bundle> -o <bundle>
+kista bundle inspect <bundle> [-plan <plan.json>]
+```
+
+- `keygen` writes a new Ed25519 bundle key (PKCS#8 PEM, mode `0600`, never over an existing file)
+  and prints its fingerprint, `sha256:<hex>`, the value a site pins in `upstreams.bundle_keys`.
+- `keys` fetches a repository's `.well-known` file and prints its keys' fingerprints, to compare
+  with what the publisher published before pinning one. Never trust the media for a fingerprint.
+- `sign` signs a bundle exported unsigned, on a machine that holds the key: the key must be among
+  the plan's bundle keys, and the bundle must answer that plan. It copies the bundle once.
+- `inspect` checks a bundle offline: the manifest's signature, every entry's hash and size, every
+  file's source signature and footer. With `-plan` it also says whether the bundle key is pinned,
+  and each source key pinned, listed only or missing. It prints the cells per outcome, the sizes,
+  the spool an import needs and the bundle's SHA-256, and exits `1` on any problem. Without
+  `-plan`, a bundle is reported consistent, not trusted.
 
 ## Database
 
@@ -299,8 +323,8 @@ See [Publishing](../publishing.md).
 | Command | What it does |
 | --- | --- |
 | `upstream add <tenant> <name> -kind <k> -channel <c> -platforms <p,...> [flags]` | adds an upstream; `-kind` is `duckdb-core`, `duckdb-community` or `repository` |
-| `upstream list <tenant>` | `NAME`, `KIND`, `STATE`, `VISIBILITY`, `EXTENSIONS`, `LAST RUN` |
-| `upstream show <tenant> <name>` | its settings, entries, requested run and last run |
+| `upstream list <tenant>` | `NAME`, `KIND`, `MODE`, `STATE`, `VISIBILITY`, `EXTENSIONS`, `LAST RUN` |
+| `upstream show <tenant> <name>` | its settings, entries, requested run, last run and, in bundle mode, the last bundle |
 | `upstream remove`, `pause`, `resume`, `public`, `private` `<tenant> <name>` | |
 | `upstream sync <tenant> <name> [-dry-run]` | requests a run; a running `kista serve` takes it |
 | `upstream cells <tenant> <name> [-outcome <outcome>]` | `DUCKDB`, `PLATFORM`, `NAME`, `OUTCOME`, `FETCHED`, `DETAIL` |
@@ -312,6 +336,7 @@ See [Publishing](../publishing.md).
 | `upstream key add` or `remove` `<tenant> <name> <fingerprint>` | a `repository` upstream's pinned keys |
 | `shadow list <tenant>` | core names the tenant replaced: its passthrough channels do not serve them |
 | `shadow remove <tenant> <name>` | serves DuckDB's build of that name from passthrough channels again |
+| `bundle plan <tenant> [-upstream <name,...>] [-o <plan.json>]` | the plan of the tenant's bundle-mode upstreams (all, or the named ones), with the bundle keys pinned for the tenant (`upstreams.bundle_keys`); to standard output without `-o` |
 
 `upstream add` flags: `-extensions <name,...>` or `*`, `-prefix <https://...>` and
 `-keys <sha256:...,...>` (for `repository`), `-public`, `-mode mirror`, `-mode pull-through` or

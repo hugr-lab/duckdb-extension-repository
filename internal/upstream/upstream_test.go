@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"io"
 	"log/slog"
 	"net/http"
@@ -937,4 +938,105 @@ func TestBundleMode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Spec 0014: a plan merges a tenant's bundle-mode upstreams by source, unions their keys, cells
+// and version filters, leaves development builds out of DuckDB's sources, and states what the site
+// holds only where every sharing upstream agrees.
+func TestPlan(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		must(t, func() error { _, err := en.ten.AddVersion(ctx, admin, "eb0d9df1a2", "dev", nil); return err })
+		must(t, func() error {
+			_, err := en.ten.SetChannelVersions(ctx, admin, "acme", "prod", []string{"eb0d9df1a2"}, nil)
+			return err
+		})
+		must(t, func() error {
+			_, err := en.ten.SetChannelVersions(ctx, admin, "acme", "mirror", []string{"v2.0.0"}, nil)
+			return err
+		})
+		fp := func(c string) string { return "sha256:" + strings.Repeat(c, 64) }
+		const prefix = "https://src.example.org/acme/prod"
+		add := func(sp upstream.Spec) store.Upstream {
+			t.Helper()
+			sp.Mode = store.ModeBundle
+			if sp.Platforms == nil {
+				sp.Platforms = []string{"linux_amd64"}
+			}
+			u, err := en.up.Add(ctx, admin, "acme", sp)
+			if err != nil {
+				t.Fatalf("%s: %v", sp.Name, err)
+			}
+			return u
+		}
+		coreA := add(upstream.Spec{Name: "core-a", Kind: store.UpstreamCore, Channel: "mirror", Entries: []store.UpstreamEntry{{Name: "json"}}})
+		coreB := add(upstream.Spec{Name: "core-b", Kind: store.UpstreamCore, Channel: "prod",
+			Entries: []store.UpstreamEntry{{Name: "json", Versions: []string{"1.0.0"}}}})
+		repoA := add(upstream.Spec{Name: "repo-a", Kind: store.UpstreamRepo, Prefix: prefix, Channel: "prod", Keys: []string{fp("1")},
+			Entries: []store.UpstreamEntry{{Name: "x", Versions: []string{"1.0"}}}})
+		repoB := add(upstream.Spec{Name: "repo-b", Kind: store.UpstreamRepo, Prefix: prefix + "/", Channel: "other", Keys: []string{fp("2")},
+			Entries: []store.UpstreamEntry{{Name: "x"}}})
+		if _, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "tresor"})); err != nil { // a mirror: not planned
+			t.Fatal(err)
+		}
+		h := func(c string) string { return strings.Repeat(c, 64) }
+		must(t, func() error {
+			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+				for _, c := range []store.UpstreamCell{
+					{UpstreamID: coreA.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "json", ETag: `"e"`, BodyHash: h("a"), Outcome: store.CellReleased},
+					{UpstreamID: coreB.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "json", ETag: `"e"`, BodyHash: h("a"), Outcome: store.CellUnchanged},
+					{UpstreamID: repoA.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "x", ETag: `"1"`, BodyHash: h("b"), Outcome: store.CellReleased},
+					{UpstreamID: repoB.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "x", ETag: `"2"`, BodyHash: h("c"), Outcome: store.CellReleased},
+					{UpstreamID: repoA.ID, DuckDBVersion: "eb0d9df1a2", Platform: "linux_amd64", Name: "x", Outcome: store.CellMissing},
+				} {
+					c.FetchedAt = time.Now()
+					if err := tx.PutCell(ctx, c); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		})
+		if _, err := en.up.Plan(ctx, admin, "acme", nil, nil); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("no bundle key: %v", err)
+		}
+		if _, err := en.up.Plan(ctx, admin, "acme", []string{"acme-repo"}, []string{fp("9")}); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("a mirror named: %v", err)
+		}
+		p, err := en.up.Plan(ctx, admin, "acme", nil, []string{fp("9")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p.Sources) != 2 || p.Sources[0].Kind != store.UpstreamCore || p.Sources[1].Prefix != prefix {
+			t.Fatalf("sources: %+v", p.Sources)
+		}
+		core := p.Sources[0].Cells
+		if len(core) != 1 || core[0].DuckDBVersion != "v2.0.0" || len(core[0].Versions) != 0 || core[0].BodyHash != h("a") || core[0].ETag != `"e"` {
+			t.Errorf("core cells (no dev build, any version, held): %+v", core)
+		}
+		repo := p.Sources[1]
+		if len(repo.Keys) != 2 || len(repo.Cells) != 2 {
+			t.Fatalf("repository: %+v", repo)
+		}
+		for _, c := range repo.Cells {
+			switch c.DuckDBVersion {
+			case "v2.0.0": // two upstreams disagree on what they hold; one takes any version
+				if c.BodyHash != "" || c.ETag != "" || len(c.Versions) != 0 {
+					t.Errorf("v2.0.0: %+v", c)
+				}
+			case "eb0d9df1a2": // another kista may serve a development build; only repo-a asks, with its filter
+				if c.BodyHash != "" || len(c.Versions) != 1 || c.Versions[0] != "1.0" {
+					t.Errorf("eb0d9df1a2: %+v", c)
+				}
+			default:
+				t.Errorf("a cell %+v", c)
+			}
+		}
+		if p.Tenant != "acme" || p.Format != bundle.PlanFormat || p.BundleKeys[0] != fp("9") {
+			t.Errorf("the plan: %+v", p)
+		}
+		one, err := en.up.Plan(ctx, admin, "acme", []string{"core-a"}, []string{fp("9")})
+		if err != nil || len(one.Sources) != 1 || one.Sources[0].Kind != store.UpstreamCore {
+			t.Errorf("one upstream: %+v %v", one, err)
+		}
+	})
 }

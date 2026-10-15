@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a part 1 (bundle mode) implemented; parts 2-5, 1b and 2 to come
+- **Status**: accepted; phase 1a parts 1 (bundle mode) and 2 (the format, keys and plan) implemented; parts 3-5, 1b and 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -240,7 +240,7 @@ fetcher.
 ```sh
 kista admin bundle export <tenant> -plan plan.json (-key bundle-key.pem | -unsigned) -o acme-2026-10.kbundle \
     [-sync] [-private <prefix>]…
-kista bundle sign -key bundle-key.pem -in acme-2026-10.unsigned -o acme-2026-10.kbundle   # offline
+kista bundle sign -key bundle-key.pem -plan plan.json -in acme-2026-10.unsigned -o acme-2026-10.kbundle   # offline
 ```
 
 `<tenant>` is the exporting kista's tenant whose upstreams and channels serve the plan; it need not
