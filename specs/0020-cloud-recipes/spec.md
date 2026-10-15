@@ -1,6 +1,6 @@
 # Spec 0020: Cloud recipes: AWS and GCP in Terraform, Azure in Bicep
 
-- **Status**: accepted; phases 0-2 implemented; phases 3-4 to come
+- **Status**: accepted; phases 0-3 implemented; phase 4 to come
 - **Date**: 2026-10-14
 - **Author**: vgsml, Claude
 
@@ -494,9 +494,13 @@ Workload Identity trusts `kista/kista` in every cluster of the project.
 **The recipe** (`deploy/azure-container-apps`, `main.bicep` with modules) makes:
 
 - **The kista identity.** A user-assigned managed identity.
-- **The network.** A VNet with an infrastructure subnet for the Container Apps environment. This
-  is what gives `trusted_proxies` a range of the operator's own: the environment's Envoy reaches
-  kista from that subnet. The live run confirms which address kista sees.
+- **The network.** A VNet with an infrastructure subnet for the Container Apps environment, a
+  delegated subnet for PostgreSQL and one for private endpoints. The live run found that the
+  environment's Envoy reaches kista not from that subnet but from the platform's reserved ranges
+  (`100.100.0.0/17`, `100.100.128.0/19`, `100.100.160.0/19`, `100.100.192.0/19`), which no subnet
+  of the operator's may use: those are `trusted_proxies`, and the audit records the client. The
+  environment is therefore the trust boundary, kista's alone: another app in it could claim any
+  client address. The docs say so.
 - **Key Vault Premium.**
   - `enableRbacAuthorization`, and `purge_protection` as a parameter (on by default; the live run
     turns it off and uses a name unique to the run).
@@ -522,14 +526,15 @@ Workload Identity trusts `kista/kista` in every cluster of the project.
 - **The environment and the app.**
   - External ingress with `allowInsecure: true`, so http is served without a redirect.
   - Probes on `:8081` (Container Apps allows a probe port other than the ingress port).
-  - An `EmptyDir` volume at `/var/lib/kista/tmp`, with `TMPDIR` pointing there.
+  - An `EmptyDir` volume at `/var/lib/kista/tmp`, where the image's `TMPDIR` already points.
   - Spool sizes validated against the CPU chosen.
   - The configuration in `KISTA_CONFIG`.
 - **Admin jobs.** One manual Container Apps job per command:
   - `migrate`;
   - `blob check`;
   - `blob verify`;
-  - `blob gc -apply`, with the `-force` decision left to `gc.interval`.
+  - `blob gc -apply`, which kista refuses without `-force` while `gc.interval` is 0: the recipe's
+    `gcInterval` (24h by default) sets it.
 
   Each command is its own job because `az containerapp job start --args` replaces the template,
   environment included; tresor-server found this.
@@ -537,12 +542,47 @@ Workload Identity trusts `kista/kista` in every cluster of the project.
   The docs say what that means for large files on slow links, and recommend publishing from a
   runner in the same region.
 
-**Live run** (`deploy/azure/recipe-live.sh`):
-- The recipe runs in a resource group of its own, with purge protection off.
-- The first administration is done through the management API as the configured server admin.
-- `check` runs.
-- `down` deletes the group and purges the vault.
-- `leftovers` checks the subscription for the run's tag and for soft-deleted vaults.
+**Live run** (`deploy/azure/recipe-live.sh up | check | down | leftovers`, northeurope, the owner's
+az login):
+- The recipe runs in a resource group of its own, with purge protection off and a 7-day soft
+  delete.
+- **Administration is Entra's**, the owner's choice: two app registrations, one whose tokens carry
+  the server's audience and one for tenant acme's, the first also the caller (client credentials,
+  a secret that expires in two days). v2.0 tokens carry the resource app's client id in `aud` and
+  the caller's in `azp`: `auth.server_audiences` is the server app's id, the server issuer
+  `https://login.microsoftonline.com/<tenant>/v2.0` with `required_claims: {azp: …}`, the server
+  administrator `subject:entra|<the caller's object id>`, and tenant acme's audience its app's id,
+  assigned through the API.
+- `check` as on AWS and GCP, through the ingress and the API; the admin command is the
+  `blob-check` job; a new revision under polling.
+- `down` deletes the group, purges the vault, deletes the custom role (it outlives the group) and
+  the app registrations; `leftovers` checks the run's tag, soft-deleted vaults, roles and apps.
+
+What the live run found:
+- **Identifier URIs.** A tenant's default policy refuses `api://<name>` without a verified domain:
+  the apps use `api://<app id>`, and v2.0 tokens are set through Graph (`az ad app update --set
+  api.…` fails on a new app with no `api` object).
+- **Regions.** The subscription was refused westeurope outright; PostgreSQL Flexible Server was
+  restricted in germanywestcentral and Azure SQL in northeurope, per subscription. The run went to
+  northeurope; `databaseLocation` puts Azure SQL in another region (swedencentral), its private
+  endpoint in the VNet's.
+- **ARM's arithmetic** takes no floats: the sizes are a table by vCPU.
+- **A new subnet** was not yet visible to PostgreSQL five seconds after the VNet: the script deploys
+  once more on a failure. The failed attempt's rollback removed the private zone's VNet link; the
+  next deployment put it back.
+- **Trusted proxies**, above.
+- **Both stores.** PostgreSQL (Entra login, `verify-full` against the bundled roots) and Azure SQL
+  (Entra login, a private endpoint) both passed `check`: 393 and 350 polls through a new revision,
+  all `200`. Switching the store on the same container is refused, rightly: kista marks the blob
+  domain for its store; the run recreated the container.
+
+The reviews added: the environment named as the trust boundary (another app in it could claim any
+client address); `gcInterval` (24h), without which the `blob-gc` job is always refused (its pass
+then ran live); a role name unique in the tenant; `vaultCreateMode: recover` for a redeployment
+while the old vault is soft-deleted; `serve.shutdown_timeout` 120s with a 300-second grace, so a
+rollout does not cut transfers at 35 seconds; a fail-fast `prefix` check; the live script's role
+removal before the group, a strict wait for the new revision, tokens kept off command lines, and a
+check that a token with a forged `X-Forwarded-Proto` over http is not honoured (`404`, live).
 
 ### Phase 4: bootstrap and the Marketplace
 

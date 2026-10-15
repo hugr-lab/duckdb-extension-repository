@@ -242,3 +242,26 @@ jobs:
             terraform -chdir="$m" validate
             terraform -chdir="$m" test
           done
+
+  bicep:
+    # The Azure recipe (spec 0020): it builds, its parameters example too, and the linter is clean;
+    # no cloud, no credentials.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bicep
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bin/bicep" https://github.com/Azure/bicep/releases/download/v0.47.16/bicep-linux-x64
+          echo "64c345a58e0c3e48b1bc98a4e62d6b3adb1d238281297de3400aeafb2697aa5a  $RUNNER_TEMP/bin/bicep" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/bin/bicep"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: |
+          cd deploy/azure-container-apps
+          bicep lint main.bicep --diagnostics-format sarif > lint.sarif
+          jq -e '[.runs[].results[]] | length == 0' lint.sarif || { jq '.runs[].results[]' lint.sarif; exit 1; }
+          bicep build main.bicep --stdout > /dev/null
+          bicep build-params examples/trial.bicepparam --stdout > /dev/null
