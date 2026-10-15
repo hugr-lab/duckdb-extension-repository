@@ -866,39 +866,75 @@ func (en *env) releasesIn(t *testing.T, channel, name string) []store.Candidate 
 }
 
 // Spec 0014: a bundle-mode upstream never contacts its source: its prefix is an identity (no
-// egress port check, no .well-known fetch), it takes no credential and no run, and a passthrough
-// channel takes a core one.
+// egress port check, no .well-known fetch, https only), it takes no credential, it is never run
+// or made due, and a passthrough channel takes a core one.
 func TestBundleMode(t *testing.T) {
-	each(t, func(t *testing.T, en *env) {
-		sp := en.spec(store.UpstreamEntry{Name: "tresor"})
-		sp.Name, sp.Mode = "air", store.ModeBundle
-		sp.Prefix = "https://air.example.org:9443/acme/prod"    // a port egress does not reach, a host never resolved
-		sp.Keys = []string{"sha256:" + strings.Repeat("1", 64)} // listed nowhere: checked at import
-		u, err := en.up.Add(ctx, admin, "acme", sp)
-		if err != nil || u.Mode != store.ModeBundle || u.Prefix != "https://air.example.org:9443/acme/prod" {
-			t.Fatalf("a bundle-mode repository upstream: %+v %v", u, err)
-		}
-		if g, _ := en.repo.count("/.well-known/duckdb-extension-repo.json"); g != 0 {
-			t.Errorf("the source was contacted: %d", g)
-		}
-		if _, err := en.up.Sync(ctx, admin, "acme", "air", false); !errors.Is(err, upstream.ErrBundle) {
-			t.Errorf("sync: %v", err)
-		}
-		if _, err := en.up.SetCredential(ctx, admin, "acme", "air", "any", u.Version); !errors.Is(err, store.ErrInvalid) {
-			t.Errorf("a credential on the route: %v", err)
-		}
-		sp.Name, sp.Credential = "air-cred", "any"
-		if _, err := en.up.Add(ctx, admin, "acme", sp); !errors.Is(err, store.ErrInvalid) {
-			t.Errorf("a credential at creation: %v", err)
-		}
-		en.run.Once(ctx)
-		if u, _ = en.up.Get(ctx, admin, "acme", "air"); !u.LastRunAt.IsZero() || !u.NextRunAt.IsZero() {
-			t.Errorf("a bundle-mode upstream was scheduled or run: %+v", u)
-		}
-		core := upstream.Spec{Name: "air-core", Kind: store.UpstreamCore, Channel: "mirror", Mode: store.ModeBundle,
-			Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "json"}}}
-		if u, err := en.up.Add(ctx, admin, "acme", core); err != nil || u.Visibility != store.Public {
-			t.Fatalf("a core bundle-mode upstream into a passthrough channel: %+v %v", u, err)
-		}
-	})
+	for _, e := range storetest.Engines(t) {
+		t.Run(e.Name, func(t *testing.T) {
+			en := newEnvWith(t, e, 1<<20, egress.Config{}) // no loopback: egress's port rule applies
+			en.up.Config.Interval = time.Hour              // scheduling on
+			sp := en.spec(store.UpstreamEntry{Name: "tresor"})
+			sp.Name, sp.Prefix = "air", "https://air.example.org:9443/acme/prod" // a port egress does not reach
+			sp.Keys = []string{"sha256:" + strings.Repeat("1", 64)}              // listed nowhere: checked at import
+			if _, err := en.up.Add(ctx, admin, "acme", sp); err == nil || !strings.Contains(err.Error(), "egress does not reach that port") {
+				t.Fatalf("the same prefix in mirror mode: %v", err)
+			}
+			sp.Mode = store.ModeBundle
+			u, err := en.up.Add(ctx, admin, "acme", sp)
+			if err != nil || u.Mode != store.ModeBundle || u.Prefix != "https://air.example.org:9443/acme/prod" {
+				t.Fatalf("a bundle-mode repository upstream: %+v %v", u, err)
+			}
+			if g, _ := en.repo.count("/.well-known/duckdb-extension-repo.json"); g != 0 {
+				t.Errorf("a source was contacted: %d", g)
+			}
+			http := sp
+			http.Name, http.Prefix = "air-http", "http://air.example.org/acme/prod"
+			if _, err := en.up.Add(ctx, admin, "acme", http); !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("an http prefix: %v", err)
+			}
+			for _, dry := range []bool{false, true} {
+				if _, err := en.up.Sync(ctx, admin, "acme", "air", dry); !errors.Is(err, upstream.ErrBundle) {
+					t.Errorf("sync (dry %v): %v", dry, err)
+				}
+			}
+			if _, err := en.up.SetCredential(ctx, admin, "acme", "air", "any", u.Version); !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("a credential on the route: %v", err)
+			}
+			cred := sp
+			cred.Name, cred.Credential = "air-cred", "any"
+			if _, err := en.up.Add(ctx, admin, "acme", cred); !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("a credential at creation: %v", err)
+			}
+			// everything that makes a mirror due leaves it alone: pause and resume, a platform, an
+			// entry, a DuckDB version of its channel
+			u, _ = en.up.Get(ctx, admin, "acme", "air")
+			if u, err = en.up.Set(ctx, admin, "acme", "air", "", store.UpstreamPaused, u.Version); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := en.up.Sync(ctx, admin, "acme", "air", false); !errors.Is(err, upstream.ErrBundle) {
+				t.Errorf("sync while paused: %v (the mode answers first)", err)
+			}
+			if _, err := en.up.Set(ctx, admin, "acme", "air", "", store.UpstreamActive, u.Version); err != nil {
+				t.Fatal(err)
+			}
+			must(t, func() error { return en.up.AddPlatform(ctx, admin, "acme", "air", "linux_arm64") })
+			must(t, func() error {
+				_, err := en.up.PutEntry(ctx, admin, "acme", "air", store.UpstreamEntry{Name: "other"})
+				return err
+			})
+			must(t, func() error {
+				_, err := en.ten.SetChannelVersions(ctx, admin, "acme", "prod", []string{"v2.1.0"}, nil)
+				return err
+			})
+			en.run.Once(ctx)
+			if u, _ = en.up.Get(ctx, admin, "acme", "air"); !u.LastRunAt.IsZero() || !u.NextRunAt.IsZero() || !u.RequestedAt.IsZero() {
+				t.Errorf("a bundle-mode upstream was scheduled or run: %+v", u)
+			}
+			core := upstream.Spec{Name: "air-core", Kind: store.UpstreamCore, Channel: "mirror", Mode: store.ModeBundle,
+				Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "json"}}}
+			if u, err := en.up.Add(ctx, admin, "acme", core); err != nil || u.Visibility != store.Public {
+				t.Fatalf("a core bundle-mode upstream into a passthrough channel: %+v %v", u, err)
+			}
+		})
+	}
 }

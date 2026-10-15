@@ -185,7 +185,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 			return u, fmt.Errorf("%w: a passthrough channel takes duckdb-core upstreams only", store.ErrInvalid)
 		}
 		if u.Mode == store.ModePullThrough { // its callers carry no token: nothing would ever pull
-			return u, fmt.Errorf("%w: a passthrough channel takes mirrors only", store.ErrInvalid)
+			return u, fmt.Errorf("%w: a passthrough channel takes no pull-through upstream", store.ErrInvalid)
 		}
 		if askedPrivate {
 			return u, fmt.Errorf("%w: a passthrough channel's releases are public", store.ErrInvalid)
@@ -313,7 +313,7 @@ func (s *Service) checkPrefix(raw, mode string) (string, error) {
 	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") {
 		return bad("no user info, query or fragment")
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
+	if u.Scheme != "https" && (u.Scheme != "http" || mode == store.ModeBundle) { // http (loopback, dev) is egress's rule, checked by a fetch
 		return bad("not https")
 	}
 	for _, seg := range strings.Split(u.Path, "/") {
@@ -675,14 +675,14 @@ func (s *Service) Sync(ctx context.Context, a authz.Actor, tenant, name string, 
 		if u, err = tx.GetUpstream(ctx, t.ID, name); err != nil {
 			return err
 		}
-		if u.State != store.UpstreamActive {
-			return ErrPaused
-		}
-		switch u.Mode {
+		switch u.Mode { // before the state: resuming would not help
 		case store.ModePullThrough:
 			return ErrPullThrough
 		case store.ModeBundle:
 			return ErrBundle
+		}
+		if u.State != store.UpstreamActive {
+			return ErrPaused
 		}
 		return tx.RequestUpstreamRun(ctx, &u, dryRun) // the record's version stays: a request is not a change
 	})

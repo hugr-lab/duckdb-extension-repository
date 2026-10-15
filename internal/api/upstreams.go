@@ -41,6 +41,7 @@ type upstreamJSON struct {
 	// bundle mode (spec 0014): the last imported manifest
 	BundleID        string `json:"bundle_id,omitempty"`
 	BundleCreatedAt string `json:"bundle_created_at,omitempty"`
+	BundleManifest  string `json:"bundle_manifest_sha256,omitempty"`
 	ETag            string `json:"etag"`
 }
 
@@ -59,7 +60,7 @@ func (h *Handler) upstreamOf(u store.Upstream, channels map[string]string, c cal
 		Visibility: u.Visibility, State: u.State, Run: "idle", Keys: nonNil(u.Keys), Platforms: nonNil(u.Platforms),
 		Extensions: []entryJSON{}, LastRunAt: timeOf(u.LastRunAt), CreatedAt: timeOf(u.CreatedAt),
 		CreatedBy: createdBy(u.CreatedBy, c), Credential: u.Credential, BundleID: u.BundleID,
-		BundleCreatedAt: timeOf(u.BundleCreatedAt), ETag: versionTag(u.Version)}
+		BundleCreatedAt: timeOf(u.BundleCreatedAt), BundleManifest: u.BundleManifestSHA256, ETag: versionTag(u.Version)}
 	switch {
 	case !u.RequestedAt.IsZero() && u.RequestDryRun:
 		o.Run = "dry_run_requested"

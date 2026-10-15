@@ -2,8 +2,11 @@
 -- spec 0014: bundle-mode upstreams and bundle imports; an older replica would fetch a bundle-mode
 -- upstream online, or give it a credential
 DECLARE @n sysname = (SELECT name FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID('upstreams') AND definition LIKE '%pull-through%');
-EXEC ('ALTER TABLE upstreams DROP CONSTRAINT ' + @n)
+IF @n IS NULL THROW 50000, 'migration 0020: the upstreams mode CHECK was not found', 1;
+DECLARE @q nvarchar(300) = N'ALTER TABLE upstreams DROP CONSTRAINT ' + QUOTENAME(@n);
+EXEC (@q)
 -- +statement
+-- named from here on (PostgreSQL's is upstreams_mode_check, SQLite's is in the table)
 ALTER TABLE upstreams ADD CONSTRAINT ck_upstreams_mode CHECK (mode IN ('mirror', 'pull-through', 'bundle'))
 -- +statement
 ALTER TABLE upstreams ADD bundle_id nvarchar(36) COLLATE Latin1_General_100_BIN2 NULL

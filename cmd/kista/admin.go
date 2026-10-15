@@ -1365,13 +1365,16 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 		return err
 	}
 	show := func(u store.Upstream) {
-		fmt.Fprintf(a.out, "name: %s\nkind: %s\nstate: %s\nvisibility: %s\nplatforms: %s\n", u.Name, u.Kind, u.State, u.Visibility,
-			strings.Join(u.Platforms, ","))
+		fmt.Fprintf(a.out, "name: %s\nkind: %s\nmode: %s\nstate: %s\nvisibility: %s\nplatforms: %s\n", u.Name, u.Kind, u.Mode, u.State,
+			u.Visibility, strings.Join(u.Platforms, ","))
 		if u.Prefix != "" {
 			fmt.Fprintf(a.out, "prefix: %s\nkeys: %s\n", u.Prefix, strings.Join(u.Keys, ","))
 		}
 		if u.Credential != "" {
 			fmt.Fprintf(a.out, "credential: %s\n", u.Credential)
+		}
+		if u.BundleID != "" {
+			fmt.Fprintf(a.out, "last bundle: %s (made %s)\n", u.BundleID, ts(u.BundleCreatedAt))
 		}
 		for _, e := range u.Entries {
 			fmt.Fprintf(a.out, "extension: %s %s%s\n", e.Name, strings.Join(e.Versions, ","), map[bool]string{true: " (allow reserved)"}[e.AllowReserved])
@@ -1403,13 +1406,13 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 		if err != nil {
 			return err
 		}
-		a.table("NAME\tKIND\tSTATE\tVISIBILITY\tEXTENSIONS\tLAST RUN", func(w io.Writer) {
+		a.table("NAME\tKIND\tMODE\tSTATE\tVISIBILITY\tEXTENSIONS\tLAST RUN", func(w io.Writer) {
 			for _, u := range us {
 				last := "-"
 				if !u.LastRunAt.IsZero() {
 					last = ts(u.LastRunAt)
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n", u.Name, u.Kind, u.State, u.Visibility, len(u.Entries), last)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", u.Name, u.Kind, u.Mode, u.State, u.Visibility, len(u.Entries), last)
 			}
 		})
 	case sub == "show" && len(pos) == 2:

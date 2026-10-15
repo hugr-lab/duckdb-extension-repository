@@ -260,8 +260,8 @@ start, with `store: the database needs a newer kista binary`, only when that val
 newest migration it knows. An additive migration keeps `min_reader` where it was, so an older
 replica can keep running and restart during a rolling upgrade; a migration that changes or removes
 something older code relies on raises it. Many migrations so far have raised it; the newest,
-`0019_tenant_deletion`, raised it to 19, so today a binary that does not know migration 19 does
-not start against a database that has it. See [Upgrading](administration/upgrading.md) for the
+`0020_bundles`, raised it to 20, so today a binary that does not know migration 20 does not start
+against a database that has it. See [Upgrading](administration/upgrading.md) for the
 procedure.
 
 `/readyz` checks the database and the schema level on every replica, so a replica whose binary no

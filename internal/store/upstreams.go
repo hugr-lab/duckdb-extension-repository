@@ -467,14 +467,16 @@ func (s *Store) DueUpstreams(ctx context.Context, now time.Time, scheduled bool)
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		var err error
 		if !scheduled {
-			out, err = tx.strings(ctx, "SELECT id FROM upstreams WHERE state = ? AND requested_at IS NOT NULL AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) ORDER BY id", UpstreamActive)
+			out, err = tx.strings(ctx, "SELECT id FROM upstreams WHERE state = ? AND mode <> ? AND requested_at IS NOT NULL AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) ORDER BY id",
+				UpstreamActive, ModeBundle)
 			return err
 		}
 		// requested runs first, then the longest due
-		out, err = tx.strings(ctx, `SELECT id FROM upstreams WHERE state = ? AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) AND (requested_at IS NOT NULL OR
+		// a bundle-mode upstream is never run, even with a request (spec 0014)
+		out, err = tx.strings(ctx, `SELECT id FROM upstreams WHERE state = ? AND mode <> ? AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) AND (requested_at IS NOT NULL OR
 (mode = ? AND (next_run_at IS NULL OR next_run_at <= ?)))
 ORDER BY CASE WHEN requested_at IS NULL THEN 1 ELSE 0 END, CASE WHEN next_run_at IS NULL THEN 0 ELSE 1 END, next_run_at, id`,
-			UpstreamActive, ModeMirror, s.d.timeArg(now))
+			UpstreamActive, ModeBundle, ModeMirror, s.d.timeArg(now))
 		return err
 	})
 	return out, err
@@ -606,7 +608,7 @@ func (t *Tx) StartUpstreamRun(ctx context.Context, id string, scheduled bool) (r
 	}
 	requested = !u.RequestedAt.IsZero()
 	due := scheduled && u.Mode == ModeMirror && !u.NextRunAt.After(t.Now()) // a zero next run: never run
-	if u.State != UpstreamActive || !requested && !due {
+	if u.State != UpstreamActive || u.Mode == ModeBundle || !requested && !due {
 		return false, false, false, nil
 	}
 	_, err = t.exec(ctx, "UPDATE upstreams SET requested_at = NULL, request_dry_run = ? WHERE id = ?", false, id)

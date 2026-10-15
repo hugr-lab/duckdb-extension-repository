@@ -44,8 +44,8 @@ Delivery, each phase a pull request:
 
 - **1a. Extensions**, in five pull requests, in this order:
   1. migration 0020, bundle mode and its guards (sync, credential, egress, the online key fetch,
-     passthrough), the console's upstream forms (no "Sync now", "Dry run" or credential for bundle
-     mode), the reaper entry;
+     passthrough), the API record's and `upstream show`'s last-bundle fields, the console's upstream
+     forms (no "Sync now", "Dry run" or credential for bundle mode), the reaper entry;
   2. `internal/bundle`: the format, validation, canonical order, signing and verifying, the tar
      reader and writer; `kista bundle keygen|keys|sign|inspect` and `kista admin bundle plan`;
   3. the import: the intake split, the records, the events, `bundle keys` per tenant,
@@ -122,7 +122,7 @@ It differs in these ways:
 `mode` is fixed at creation. A site that gets a network link later adds a mirror and removes the
 bundle-mode upstream: the releases stay with the channel (spec 0009).
 
-`kista admin upstream list` and `show` print the mode. The API's upstream record carries it already.
+`kista admin upstream list` prints the mode, and `show` the mode and the last bundle. The API's upstream record carries it already.
 The console's add form offers `bundle`, and its "Sync now" button is hidden for bundle mode.
 
 ### Bundle keys
@@ -263,8 +263,8 @@ For each source in the plan, taken in canonical order (kind, then normalised pre
      planned that prefix.
    - A source with neither fails as a whole: "not mirrored here".
 2. **Keys.** The export checks with the **plan's** keys, which are the site's pins:
-   - core and community: DuckDB's keys as the upstream service holds them (compiled in; the tests'
-     override, `upstream.Service.DuckDB`, in tests);
+   - core and community: DuckDB's keys as the upstream service holds them: compiled in, or
+     `upstream.Service.DuckDB` in tests;
    - a repository source: the export fetches `<prefix>/.well-known/duckdb-extension-repo.json` (at
      most 64 KiB) through the matching upstream's egress and credential, as a mirror's key check
      does, and keeps it as it came; for an own channel it writes the channel's own file. A source
@@ -404,7 +404,7 @@ The manifest:
   - one file per cell;
   - every reference to a file giving the same sizes;
   - `etag` at most 256 bytes, `detail` at most 1,000 bytes and `exporter`'s fields at most 256
-    bytes, of printable UTF-8 (control characters stripped before they are stored or shown);
+    bytes (the stored record at most 1,000), of printable UTF-8 (control characters stripped before they are stored or shown);
   - `fetched_at` and `created_at` in RFC 3339, and `id` a UUIDv7;
   - `created_at` at most 10 minutes past the importing host's clock;
   - at most 100,000 cells and 50,000 files.
@@ -822,7 +822,7 @@ These pages are updated in the same PR:
 - `website/docs/upstreams.md`: bundle mode;
 - `configuration.md`: the settings above;
 - `administration/commands.md`;
-- `api.md`: the mode, and `409` on `sync`;
+- `api.md`: nothing beyond the record's fields (the mode's rules are on the Upstreams page);
 - `observability.md`: the events;
 - `security.md`: the trust model above;
 - `deployment/kubernetes.md`: the import's disk, `importHeadroom`, and import as a Job;

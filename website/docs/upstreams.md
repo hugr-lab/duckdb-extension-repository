@@ -134,7 +134,8 @@ Over the API, the same record is `POST /api/v1/tenants/{t}/upstreams` with a JSO
 ```
 
 For a `repository` upstream, kista reads the upstream's `.well-known/duckdb-extension-repo.json` when
-the upstream is added and at the start of every run; only keys whose fingerprints are pinned are
+the upstream is added and at the start of every run (not in [bundle mode](#bundle-mode), which reads
+the file a bundle carries); only keys whose fingerprints are pinned are
 used. Adding an upstream whose file lists none of its pinned keys is `400`. A rotation at the
 upstream is followed by pinning the new fingerprint, never automatically. On the upstream kista,
 `kista admin key list <tenant>/<channel>` shows each key's fingerprint.
@@ -320,8 +321,9 @@ pinned keys, channel, platforms, allowlist, visibility, state), but kista never 
 - a passthrough channel takes a `duckdb-core` one.
 
 Bundles are made by a connected kista and imported with `kista admin bundle import` (spec 0014; the
-import arrives in a later release). The upstream's record shows the last bundle imported
-(`bundle_id`, `bundle_created_at`).
+import arrives in a later release). The upstream's record shows its mode and the last bundle
+imported (`bundle_id`, `bundle_created_at`), over the API, in the console and in
+`kista admin upstream show`.
 
 ```bash
 kista admin -config /etc/kista/kista.yaml upstream add acme core -mode bundle \

@@ -201,8 +201,19 @@ func TestPullThroughOffers(t *testing.T) {
 		Mode: store.ModeBundle, Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "x"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if r := m.call(t, "POST", "/api/v1/tenants/acme/upstreams/air/sync", m.toks["tenant admin"], ""); r.status != 409 {
-		t.Errorf("sync a bundle-mode upstream: %d", r.status)
+	for _, q := range []string{"", "?dry_run=true"} {
+		if r := m.call(t, "POST", "/api/v1/tenants/acme/upstreams/air/sync"+q, m.toks["tenant admin"], ""); r.status != 409 {
+			t.Errorf("sync%s a bundle-mode upstream: %d", q, r.status)
+		}
+	}
+	if r := m.call(t, "POST", "/api/v1/tenants/acme/upstreams/air/credential", m.toks["tenant admin"], `{"credential":"any"}`,
+		"If-Match", "*"); r.status != 400 {
+		t.Errorf("a credential on a bundle-mode upstream: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", "/api/v1/tenants/acme/upstreams", m.toks["tenant admin"], `{"name":"air2","kind":"repository",`+
+		`"prefix":"https://air.example.org/a/b","keys":["sha256:`+strings.Repeat("1", 64)+`"],"channel":"prod","mode":"bundle",`+
+		`"platforms":["linux_amd64"],"extensions":[{"name":"x"}],"credential":"any"}`); r.status != 400 {
+		t.Errorf("a bundle-mode upstream created with a credential: %d %s", r.status, r.body)
 	}
 	// a core name, an alias, the versioned path, an existing release, a platform it does not fetch: no offer
 	for _, path := range []string{"/acme/prod/v2.0.0/linux_amd64/json.duckdb_extension.gz",
