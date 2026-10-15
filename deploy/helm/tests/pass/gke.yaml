@@ -36,6 +36,8 @@ gke:
     drainingTimeoutSec: 60
   managedCertificate:
     enabled: true
+  frontendConfig:
+    sslPolicy: kista-tls
 networkPolicy:
   loadBalancerRanges: [35.191.0.0/16, 130.211.0.0/22]
 ingress:
@@ -44,5 +46,7 @@ ingress:
   annotations:
     kubernetes.io/ingress.class: gce
     kubernetes.io/ingress.global-static-ip-name: kista
-  hosts: [{host: kista.example.com}]
+    # a certificate of the operator's own stays beside the chart's
+    networking.gke.io/managed-certificates: corp-cert
+  hosts: [{host: kista.example.com}, {host: kista.example.com}]
 minReadySeconds: 60

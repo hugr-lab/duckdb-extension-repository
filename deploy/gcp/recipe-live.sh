@@ -6,9 +6,10 @@
 # checks through the load balancer and the management API: the server administrator and DuckDB's
 # tokens come from the cluster's own OIDC issuer.
 #
-#   deploy/gcp/recipe-live.sh up | check | down | leftovers
+#   deploy/gcp/recipe-live.sh up | check | destroy | down | leftovers
 #
-# `down` deletes the project (the only clean way out for Cloud KMS key rings) and the DNS record;
+# `destroy` runs terraform destroy and lists what it left, the project kept (a later `up` applies
+# again in it). `down` deletes the project (the only clean way out for Cloud KMS key rings) and the DNS record;
 # `leftovers` confirms the project is DELETE_REQUESTED and the record gone. The run's state is in
 # deploy/gcp/.state-live.
 #
@@ -22,7 +23,7 @@
 # (make e2e-build) for check.
 set -euo pipefail
 
-cmd=${1:?usage: recipe-live.sh up | check | down | leftovers}
+cmd=${1:?usage: recipe-live.sh up | check | destroy | down | leftovers}
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 export GOWORK=off AWS_PAGER=""
@@ -79,6 +80,7 @@ up() {
 			token=$(curl -sf "https://ghcr.io/token?scope=repository:$repo_path:pull" | jq -r .token)
 			digest=$(curl -sfI -H "Authorization: Bearer $token" -H 'Accept: application/vnd.oci.image.index.v1+json' \
 				"https://ghcr.io/v2/$repo_path/manifests/$tagname" | tr -d '\r' | sed -n 's/^docker-content-digest: //Ip')
+			[ -n "$digest" ] || { echo "up: no digest for $ref" >&2; exit 1; }
 			ref=${ref%:*}@$digest
 		fi
 		image=$ref
@@ -102,7 +104,7 @@ server_admins       = "['subject:gke|system:serviceaccount:$ns:ops']"
 deletion_protection = false
 EOF
 	step "the GKE recipe (deploy/gcp-gke): the cluster, Cloud SQL, KMS, GCS, the chart; about 30 minutes"
-	GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token)
+	GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud config config-helper --force-auth-refresh --format='value(credential.access_token)')
 	export GOOGLE_OAUTH_ACCESS_TOKEN
 	tf init -input=false -lockfile=readonly >/dev/null
 	tf apply -input=false -auto-approve -state="$work/terraform.tfstate" -var-file="$work/live.tfvars"
@@ -240,6 +242,22 @@ check() {
 	echo "check: ok"
 }
 
+# terraform destroy of the recipe, the project kept: what an operator's destroy does
+destroy() {
+	step "terraform destroy (the project stays; down deletes it)"
+	GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud config config-helper --force-auth-refresh --format='value(credential.access_token)')
+	export GOOGLE_OAUTH_ACCESS_TOKEN
+	tf destroy -input=false -auto-approve -state="$work/terraform.tfstate" -var-file="$work/live.tfvars"
+	step "what the destroy left in $(get project) (the project's default network and Compute account aside)"
+	for r in "container clusters" "sql instances" "compute addresses" "compute network-endpoint-groups" \
+		"compute networks" "compute ssl-policies" "dns managed-zones" "iam service-accounts"; do
+		# shellcheck disable=SC2086
+		gcloud $r list --project "$(get project)" --format='value(name)' 2>/dev/null |
+			grep -vx -e default -e '.*-compute@developer.gserviceaccount.com' | sed "s|^|LEFT $r: |" || true
+	done
+	gcloud storage buckets list --project "$(get project)" --format='value(name)' | sed 's|^|LEFT bucket: |'
+}
+
 down() {
 	project=$(get project)
 	[ -n "$project" ] || { echo "down: no project in $work/state" >&2; exit 1; }
@@ -256,6 +274,7 @@ down() {
 
 leftovers() {
 	project=$(get project)
+	[ -n "$project" ] || { echo "leftovers: no project in $work/state" >&2; exit 1; }
 	state=$(gcloud projects describe "$project" --format='value(lifecycleState)' 2>/dev/null || echo gone)
 	echo "project $project: $state"
 	[ "$state" = DELETE_REQUESTED ] || [ "$state" = gone ]
@@ -269,7 +288,8 @@ leftovers() {
 case $cmd in
 up) up ;;
 check) check ;;
+destroy) destroy ;;
 down) down ;;
 leftovers) leftovers ;;
-*) echo "usage: recipe-live.sh up | check | down | leftovers" >&2; exit 2 ;;
+*) echo "usage: recipe-live.sh up | check | destroy | down | leftovers" >&2; exit 2 ;;
 esac

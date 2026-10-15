@@ -22,10 +22,10 @@ memory (the spool would cost as much). The design is in
 | **The cluster** | GKE Autopilot with private nodes and Workload Identity, on the REGULAR release channel |
 | **The identity** | a service account `<prefix>-kista`, no key: kista's Kubernetes service account acts as it through Workload Identity. It holds `cloudkms.signerVerifier` and `cloudkms.viewer` on the key ring, `storage.objectUser` on the bucket, and `cloudsql.instanceUser` with a condition naming the instance |
 | **Cloud KMS** | a key ring `<prefix>` and a channel key `<prefix>-channel`: `RSA_SIGN_PKCS1_2048_SHA256`, protection level `HSM`, label `kista-purpose=channel-signing` |
-| **GCS** | a bucket `<project>-<prefix>`: uniform access, public access prevented, incomplete uploads aborted after 7 days |
+| **GCS** | a bucket `<project>-<prefix>`: uniform access, public access prevented, GCS's default soft delete (7 days) |
 | **Cloud SQL** | PostgreSQL 17 on a private IP (private services access), TLS only, IAM authentication, backups with point-in-time recovery; the Google-managed CA (`GOOGLE_MANAGED_CAS_CA`), whose certificates name the instance's DNS name, served by a private Cloud DNS zone on the network |
 | **db-init** | a one-time Job (`postgres:17-alpine`, `verify-full`) that grants the IAM user what kista's migrations need, then replaces the built-in `postgres` user's password with one printed nowhere |
-| **The chart** | from `oci://ghcr.io/hugr-lab/charts` at `chart_version` (or a local path), with a GKE Ingress, a global static IP, a Google-managed certificate, the `BackendConfig` and the NetworkPolicy for Google's front ends |
+| **The chart** | from `oci://ghcr.io/hugr-lab/charts` at `chart_version` (or a local path), with a GKE Ingress, a global static IP, a Google-managed certificate, the `BackendConfig`, an SSL policy of TLS 1.2 and up, and the NetworkPolicy for Google's front ends |
 | **The network** | a VPC with a subnetwork, Cloud NAT and private services access, unless `network` names yours |
 
 The database login is the service account itself: kista asks the metadata server for a token
@@ -38,10 +38,12 @@ that name's record to the customer: the recipe's private zone serves it.
 
 Terraform 1.5 or later (or OpenTofu), credentials for the project (`gcloud auth
 application-default login`, or a token in `GOOGLE_OAUTH_ACCESS_TOKEN`), and a project with
-billing. A project of kista's own is the clean way out: Cloud KMS never deletes a key ring, so
-re-applying in a project where `<prefix>` once existed needs another prefix. Keep the state in a
-remote, encrypted, access-controlled backend: it holds the built-in user's password, dead after
-db-init, and maps the deployment.
+billing. A project of kista's own is the clean way out: Cloud KMS never deletes a key ring or a
+key, so the recipe names its key ring `<prefix>-<random>` and a re-apply after a destroy makes a
+new one. Keep the state in a
+remote, encrypted, access-controlled backend: it holds the built-in user's password (live until
+db-init succeeds, dead after) and the access token Terraform used (about an hour), and maps the
+deployment.
 
 ```sh
 cd deploy/gcp-gke
@@ -62,7 +64,8 @@ terraform output ip                  # point the domain here
   ([Configuration](../configuration.md#auth)), as YAML in a string. A server issuer needs
   `required_claims`.
 - **`master_authorized_cidrs`** limits who may reach the cluster's API server; Terraform must be
-  among them.
+  among them. Empty (the default), the API server takes connections from any address, guarded by
+  Google's authentication and IAM.
 
 ## The first administration
 
@@ -96,7 +99,8 @@ Scheduled commands are the chart's `adminJobs` ([Kubernetes](kubernetes.md)).
 - http and https both serve, without a redirect: DuckDB's bootstrap needs plain http, and kista
   ignores a token sent over plain http.
 - `gke.backendConfig.timeoutSec` is 600 seconds: GKE's default of 30 limits a whole response, and
-  would cut large publishes and downloads.
+  would cut large publishes and downloads. On a pod a rollout replaces, `serve.shutdown_timeout` bounds the
+  transfers still running ([Commands](../administration/commands.md#kista-serve)).
 - **Rolling updates.** GKE's NEG readiness gate can pass before the load balancer has checked a new
   pod; a rollout that then removes the old pods leaves no healthy backend for a few seconds
   (measured: `502 failed_to_pick_backend`). The recipe sets the chart's `minReadySeconds: 60`, so a
@@ -104,7 +108,8 @@ Scheduled commands are the chart's `adminJobs` ([Kubernetes](kubernetes.md)).
   `BackendConfig`'s connection draining of 30 seconds.
 - Cloud NAT is needed: kista pulls its image from ghcr.io and reaches its issuers and upstreams.
 - A given `network` needs Cloud NAT (or another way out) and private services access already;
-  the recipe makes neither there.
+  the recipe makes neither there. GKE then adds the pods' and services' secondary ranges to the
+  subnetwork itself, which a Shared VPC's host subnetwork does not allow.
 
 ## Limits
 
@@ -119,14 +124,19 @@ Scheduled commands are the chart's `adminJobs` ([Kubernetes](kubernetes.md)).
 - Keep `replicas` at 2 or more; a larger `db_tier`, `availability_type = "REGIONAL"` on the
   database (in `main.tf`), `master_authorized_cidrs`.
 - `deletion_protection` stays on: the cluster and the database refuse a destroy, and the bucket
-  keeps its objects. It does not cover the key: a destroy schedules the key's versions for
-  destruction (30 days), and every signature the channel served depends on it. Restore a version
-  with `gcloud kms keys versions restore` if that was a mistake.
+  keeps its objects. The key goes only after the database, so it stays too. A destroy still
+  removes the rest before it fails: the chart (kista stops serving), the service account and its
+  roles, the DNS record. A key's versions, once destroyed, are scheduled for destruction (30
+  days), and every signature the channel served depends on them: restore one with
+  `gcloud kms keys versions restore` if that was a mistake.
 - **Who may act as kista.** Anyone allowed `iam.serviceAccounts.getAccessToken` on the service
-  account, or to run pods with kista's Kubernetes service account in its namespace, acts as kista.
-  Keep both to the platform's operators.
-- Bucket versioning or soft delete guards against deletion by a compromised identity (garbage
-  collection deletes bodies, so it may).
+  account acts as kista. So does a pod with service account `kista` in namespace `kista` in **any**
+  GKE cluster of the project: Workload Identity names the project's pool, not one cluster. Keep
+  kista in a project of its own (also the clean way out for Cloud KMS), or keep who may create that
+  namespace in the project's other clusters to the platform's operators.
+- GCS keeps deleted objects for 7 days by default (soft delete): lengthen it, or turn on
+  versioning, to guard against deletion by a compromised identity (garbage collection deletes
+  bodies, so it may).
 - Pin the image by digest.
 
 ## Destroy

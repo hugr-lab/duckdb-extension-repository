@@ -139,7 +139,8 @@ gke:
   backendConfig:
     enabled: false
     # the load balancer's limit on a whole response (GKE's default is 30 seconds): above the time a
-    # large publish or download takes
+    # large publish or download takes. On a pod being replaced, serve.shutdown_timeout bounds
+    # transfers still running, not this.
     timeoutSec: 600
     # a removed pod's requests in flight finish within this long (GKE's default is 0: cut at once)
     drainingTimeoutSec: 30
@@ -148,6 +149,10 @@ gke:
   # ingress.annotations kubernetes.io/ingress.global-static-ip-name.
   managedCertificate:
     enabled: false
+  # a FrontendConfig naming a Compute Engine SSL policy for the Ingress's https: without one, GKE's
+  # default accepts TLS 1.0 (gcloud compute ssl-policies create … --min-tls-version 1.2)
+  frontendConfig:
+    sslPolicy: ""
 
 # Who may reach the pods. Default: on with mode behind_proxy (port 8443 only from the ingress
 # controller's pods and loadBalancerRanges), off with mode tls. With it on, name the ingress

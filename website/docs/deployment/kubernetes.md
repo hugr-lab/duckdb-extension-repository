@@ -199,7 +199,9 @@ ranges in `trusted_proxies` and `networkPolicy.loadBalancerRanges`:
   downloads). GKE Autopilot has no `IngressClass` object: take the Ingress with the annotation
   `kubernetes.io/ingress.class: gce`, not `className`. `gke.managedCertificate.enabled: true`
   renders a Google-managed certificate for the Ingress's hosts and names it on the Ingress; a
-  global static IP is the annotation `kubernetes.io/ingress.global-static-ip-name`. The external
+  global static IP is the annotation `kubernetes.io/ingress.global-static-ip-name`. GKE's default
+  SSL policy accepts TLS 1.0: `gke.frontendConfig.sslPolicy` names one of yours (TLS 1.2 and up)
+  in a `FrontendConfig` on the Ingress. The external
   load balancer appends its own address to `X-Forwarded-For`: put the static IP's `/32` in
   `trusted_proxies` too, or every client appears as the load balancer. GKE's NEG readiness gate
   can pass before the load balancer has checked a new pod, so a rolling restart may leave no

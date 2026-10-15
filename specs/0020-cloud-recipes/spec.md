@@ -429,8 +429,8 @@ GKE with the chart avoids it, and spec 0013 tried its parts (`gke.sh`).
     - the spool sizes: Autopilot gives a pod at most 10 GiB of ephemeral storage, so the plan
       refuses a spool larger than that;
     - `preStopSeconds: 20`, so a pod leaves the NEG before it stops serving.
-  - The live run may install a local chart path and an `:sha-<commit>` digest before the first
-    release.
+  - Before the first release, the live run installs this checkout's chart and `:edge` pinned by
+    its digest.
 - **The address.**
   - A global static IP and a Google-managed certificate for `domain`. DNS must point at the IP
     before the certificate is issued, which can take tens of minutes; the README says so.
@@ -445,14 +445,18 @@ gcloud login):
 - `up` makes a project of its own (`kista-live-<mmdd>-<n>`, labelled `purpose=kista-live`) on a
   billing account the operator gives, and applies the recipe whole with `deletion_protection=false`,
   `:edge` pinned by its digest and this checkout's chart. Terraform gets a token from
-  `gcloud auth print-access-token`. The host is one the operator gives; with a Route 53 zone the
-  script writes and removes its A record. `up` waits for the name and the managed certificate.
+  `gcloud config config-helper --force-auth-refresh`: a fresh hour, where `print-access-token`
+  may hand back a cached token about to expire (it cut a live destroy). The host is one the
+  operator gives; with a Route 53 zone the script writes and removes its A record. `up` waits for
+  the name and the managed certificate.
 - The server issuer is the cluster's own OIDC issuer, known before the cluster exists
   (`container.googleapis.com/v1/projects/<p>/locations/<r>/clusters/<name>`). `check`
   administers through the API as the cluster's `kista/ops`, as the ECS run does: tenant, channel,
   the Cloud KMS key, issuer, grants; publishes through the load balancer; runs `blob check` with
   `kubectl exec`; DuckDB's `TestRemote`; the audit's client address; a rolling restart under
   polling.
+- `destroy` runs the recipe's `terraform destroy` with the project kept and lists what is left;
+  a later `up` applies again in the same project.
 - `down` deletes the project, the only clean way out for Cloud KMS key rings (spec 0004), and the
   record; `leftovers` confirms the project is `DELETE_REQUESTED`.
 
@@ -474,6 +478,16 @@ What the live run found, now in the recipe and the chart:
 - **The audit** records the caller's address through the external load balancer, with the static
   IP's `/32` in `trusted_proxies`.
 - The first Autopilot node in a new project took about 15 minutes to come up.
+- **Destroy** removed all 20 resources, leaving only the project's default network and Compute
+  account; the chart's uninstall took 5 minutes (the Ingress's load balancer goes first), the
+  cluster's deletion 5. A re-apply in the same project works because the key ring's name carries
+  a random suffix: Cloud KMS keeps a destroyed key ring and key, and the same name would collide.
+
+The reviews added: an SSL policy of TLS 1.2 and up on the Ingress (GKE's default accepts TLS 1.0;
+the chart's `gke.frontendConfig.sslPolicy` renders a `FrontendConfig`), the database depending on
+the key (so a protected destroy fails before the key goes), `db-init` running again when the
+instance is replaced, whole-number validations for the spool's sizes, and the docs' note that
+Workload Identity trusts `kista/kista` in every cluster of the project.
 
 ### Phase 3: Azure
 
@@ -583,7 +597,9 @@ An addendum details this phase before its code.
   - KMS, the bucket and the database are reached with the workload's identity.
   - RDS's master password stays in Secrets Manager, readable only by `db-init`'s execution role.
   - GCP's built-in password is changed by `db-init` after its single use.
-  - Terraform's state holds no working secret.
+  - Terraform's state holds no lasting secret: GCP's built-in password is live there (and in the
+    `db-init` Secret) only until `db-init` succeeds, and the provider's access token for the
+    cluster, about an hour.
 - **Narrow tokens.**
   - The database receives a `sqlservice.login` token (GCP) or an RDS token for one host and user
     (AWS), never a general cloud token.

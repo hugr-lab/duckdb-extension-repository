@@ -258,6 +258,7 @@ needs the owner's yes, and is deleted the same day or when the cloud work it ser
 ```bash
 export KISTA_GCP_BILLING=<billing account> KISTA_LIVE_HOST=<a name you can point at an address>
 deploy/gcp/recipe-live.sh up && deploy/gcp/recipe-live.sh check
+deploy/gcp/recipe-live.sh destroy        # optional: the recipe's own destroy
 deploy/gcp/recipe-live.sh down && deploy/gcp/recipe-live.sh leftovers
 ```
 
@@ -267,6 +268,8 @@ deploy/gcp/recipe-live.sh down && deploy/gcp/recipe-live.sh leftovers
   host's A record with the AWS CLI; without it, point the host at the address `up` prints.
 - The image is `:edge` pinned by its digest at `up` (`KISTA_LIVE_IMAGE` for another), and the chart
   this checkout's.
+- `destroy` runs `terraform destroy` with the project kept and lists what it left; a later `up`
+  applies again in the same project (the key ring gets a new name).
 - `down` deletes the project (30 days pending deletion, not billed); `leftovers` confirms it.
 
 ## Lint

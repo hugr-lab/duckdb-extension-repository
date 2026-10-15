@@ -56,7 +56,7 @@ variable "image" {
   type        = string
   description = "kista's image: ghcr.io/hugr-lab/kista:vX.Y.Z or …@sha256:…"
   validation {
-    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.image)) || !can(regex(":(edge|latest)$", var.image))
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.image)) || (!can(regex("@", var.image)) && !can(regex(":(edge|latest)$", var.image)))
     error_message = "image: a version or a digest; a moving tag (:edge, :latest) only pinned by digest"
   }
 }
@@ -92,11 +92,19 @@ variable "max_body_mib" {
   type        = number
   default     = 1024
   description = "blob.max_body in MiB."
+  validation {
+    condition     = var.max_body_mib >= 1 && floor(var.max_body_mib) == var.max_body_mib
+    error_message = "max_body_mib: a whole number of MiB"
+  }
 }
 
 variable "max_ingests" {
   type    = number
   default = 4
+  validation {
+    condition     = var.max_ingests >= 1 && floor(var.max_ingests) == var.max_ingests
+    error_message = "max_ingests: a whole number, at least 1"
+  }
 }
 
 # ---- the database

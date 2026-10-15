@@ -312,6 +312,15 @@
             }
           }
         },
+        "frontendConfig": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sslPolicy": {
+              "type": "string"
+            }
+          }
+        },
         "managedCertificate": {
           "type": "object",
           "additionalProperties": false,
@@ -415,7 +424,7 @@
     "minReadySeconds": {
       "type": "integer",
       "minimum": 0,
-      "maximum": 600
+      "maximum": 599
     },
     "terminationGracePeriodSeconds": {
       "type": [

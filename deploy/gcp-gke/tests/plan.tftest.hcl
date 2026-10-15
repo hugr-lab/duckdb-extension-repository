@@ -110,6 +110,15 @@ run "a_given_network_and_zone" {
     error_message = "a given network: none made; the domain's record in the zone"
   }
   assert {
+    condition = alltrue([
+      google_container_cluster.gke.network == var.network,
+      google_container_cluster.gke.subnetwork == var.subnetwork,
+      google_sql_database_instance.db.settings[0].ip_configuration[0].private_network == var.network,
+      one(one(google_dns_managed_zone.db.private_visibility_config).networks).network_url == var.network,
+    ])
+    error_message = "a given network: the cluster, the database and the private zone on it"
+  }
+  assert {
     condition     = local.image_repo == "ghcr.io/hugr-lab/kista" && local.image_tag == "" && local.image_digest == "sha256:0b5019f0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     error_message = "the image by digest"
   }
@@ -145,4 +154,20 @@ run "a_spool_too_large" {
     max_body_mib = 2048
   }
   expect_failures = [helm_release.kista]
+}
+
+run "a_digest_without_sha256" {
+  command = plan
+  variables {
+    image = "ghcr.io/hugr-lab/kista@"
+  }
+  expect_failures = [var.image]
+}
+
+run "no_ingests" {
+  command = plan
+  variables {
+    max_ingests = 0
+  }
+  expect_failures = [var.max_ingests]
 }

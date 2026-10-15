@@ -159,8 +159,13 @@ resource "google_service_account_iam_member" "workload_identity" {
 
 # ---- Cloud KMS: a key ring of the deployment's own; key rings are never deleted
 
+# Cloud KMS never deletes a key ring or a key: a re-apply after a destroy needs new names
+resource "random_id" "ring" {
+  byte_length = 3
+}
+
 resource "google_kms_key_ring" "kista" {
-  name       = local.name
+  name       = "${local.name}-${random_id.ring.hex}"
   location   = var.region
   depends_on = [google_project_service.apis]
 }
@@ -191,15 +196,8 @@ resource "google_storage_bucket" "bodies" {
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
   force_destroy               = !var.deletion_protection
-  # spec 0005's backstop for uploads a crash left behind
-  lifecycle_rule {
-    condition {
-      age = 7
-    }
-    action {
-      type = "AbortIncompleteMultipartUpload"
-    }
-  }
+  # kista uploads with the JSON API: an interrupted resumable session expires on its own within a
+  # week and is no object; soft delete keeps deleted objects 7 days (GCS's default)
   depends_on = [google_project_service.apis]
 }
 
@@ -251,7 +249,8 @@ resource "google_sql_database_instance" "db" {
     }
   }
 
-  depends_on = [google_project_service.apis, google_service_networking_connection.psa]
+  # destroyed before the key: with deletion protection, its refusal stops a destroy before the key
+  depends_on = [google_project_service.apis, google_service_networking_connection.psa, google_kms_crypto_key.channel]
 }
 
 # owned by the IAM user's objects once kista migrates: Terraform cannot drop them
@@ -420,6 +419,8 @@ resource "kubernetes_job_v1" "db_init" {
     # plan would replace the Job and run it again with the dead password. Run it again on purpose
     # with -replace (the docs say how).
     ignore_changes = [spec, metadata[0].annotations]
+    # a new instance needs its grants: it takes the same built-in password, live on it
+    replace_triggered_by = [google_sql_database_instance.db.id]
   }
   depends_on = [google_sql_database.kista, google_sql_user.kista, google_dns_record_set.db]
 }
@@ -429,6 +430,14 @@ resource "kubernetes_job_v1" "db_init" {
 resource "google_compute_global_address" "ip" {
   name       = "${local.name}-ip"
   depends_on = [google_project_service.apis]
+}
+
+# TLS 1.2 and up on the load balancer's https (GKE's default policy accepts TLS 1.0)
+resource "google_compute_ssl_policy" "tls" {
+  name            = "${local.name}-tls"
+  profile         = "MODERN"
+  min_tls_version = "TLS_1_2"
+  depends_on      = [google_project_service.apis]
 }
 
 resource "google_dns_record_set" "domain" {
@@ -493,6 +502,7 @@ locals {
     gke = {
       backendConfig      = { enabled = true, timeoutSec = 600 }
       managedCertificate = { enabled = true }
+      frontendConfig     = { sslPolicy = google_compute_ssl_policy.tls.name }
     }
     ingress = {
       enabled = true
