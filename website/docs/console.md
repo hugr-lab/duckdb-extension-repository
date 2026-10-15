@@ -150,7 +150,7 @@ them; channel and extension administrators see their channels and extensions; au
 | Channel: Keys | channel administrators | trusted, active and serving keys, key events, re-sign progress; activate and retire a trusted key; a server administrator adds a key by signer reference |
 | Extension page | extension administrators | its releases, its **Reports**, and (tenant administrators) who may use it and through which grant |
 | Release page | extension administrators | build, body hash, provenance, origin, state history; yank, deprecate, activate, make current, public or private, purge (typing the name to confirm); its Reports |
-| **Upstreams** | tenant administrators | upstreams: add, sync and dry run, pause, resume, public, private, remove; platforms, pinned keys, credential, allowlist; last run and cells; the tenant's shadows; **Feeds** |
+| **Upstreams** | tenant administrators | upstreams: add, sync and dry run, pause, resume, public, private, remove; platforms, pinned keys, credential, allowlist (sync, dry run and the credential not for bundle mode, which shows its last bundle); last run and cells; the tenant's shadows; **Feeds** |
 | **Groups** | tenant administrators, group administrators (read only) | extension groups: members, description, grants, recent events, removal |
 | **Access** | tenant administrators | principals with their grant counts; a principal's grants; grant and revoke |
 | **Identity** | tenant administrators | issuer records and their console clients; the tenant's audiences (changed by a server administrator) |

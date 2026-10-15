@@ -38,7 +38,11 @@ type upstreamJSON struct {
 	CreatedAt  string          `json:"created_at"`
 	CreatedBy  string          `json:"created_by"`
 	Credential string          `json:"credential,omitempty"` // a configured credential's name (spec 0009 phase 3)
-	ETag       string          `json:"etag"`
+	// bundle mode (spec 0014): the last imported manifest
+	BundleID        string `json:"bundle_id,omitempty"`
+	BundleCreatedAt string `json:"bundle_created_at,omitempty"`
+	BundleManifest  string `json:"bundle_manifest_sha256,omitempty"`
+	ETag            string `json:"etag"`
 }
 
 type cellJSON struct {
@@ -55,7 +59,8 @@ func (h *Handler) upstreamOf(u store.Upstream, channels map[string]string, c cal
 	o := upstreamJSON{Name: u.Name, Kind: u.Kind, Prefix: u.Prefix, Channel: channels[u.ChannelID], Mode: u.Mode,
 		Visibility: u.Visibility, State: u.State, Run: "idle", Keys: nonNil(u.Keys), Platforms: nonNil(u.Platforms),
 		Extensions: []entryJSON{}, LastRunAt: timeOf(u.LastRunAt), CreatedAt: timeOf(u.CreatedAt),
-		CreatedBy: createdBy(u.CreatedBy, c), Credential: u.Credential, ETag: versionTag(u.Version)}
+		CreatedBy: createdBy(u.CreatedBy, c), Credential: u.Credential, BundleID: u.BundleID,
+		BundleCreatedAt: timeOf(u.BundleCreatedAt), BundleManifest: u.BundleManifestSHA256, ETag: versionTag(u.Version)}
 	switch {
 	case !u.RequestedAt.IsZero() && u.RequestDryRun:
 		o.Run = "dry_run_requested"
@@ -88,7 +93,8 @@ func (h *Handler) channelNames(w http.ResponseWriter, r *http.Request, tenant st
 // upstreamErr maps the upstream service's refusals before the common mapping.
 func (h *Handler) upstreamErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, upstream.ErrCollision), errors.Is(err, upstream.ErrPaused), errors.Is(err, upstream.ErrPullThrough):
+	case errors.Is(err, upstream.ErrCollision), errors.Is(err, upstream.ErrPaused), errors.Is(err, upstream.ErrPullThrough),
+		errors.Is(err, upstream.ErrBundle):
 		problem(w, http.StatusConflict, typeConflict, publicRefusal(err))
 	case errors.Is(err, upstream.ErrNoKeys):
 		problem(w, http.StatusBadRequest, typeInvalid, publicRefusal(err))

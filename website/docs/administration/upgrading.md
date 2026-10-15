@@ -23,7 +23,7 @@ release binary, both verified as [Deployment](../deployment/index.md) says; or b
   replicas starting together never apply one twice.
 - Applied migrations are recorded in the table `schema_migrations` (`version`, `name`,
   `min_reader`, `applied_at`).
-- A binary's **schema level** is the number of migrations it carries. This release carries 19.
+- A binary's **schema level** is the number of migrations it carries. This release carries 20.
 
 ### Who migrates: `store.migrate`
 

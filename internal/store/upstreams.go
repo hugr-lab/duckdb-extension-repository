@@ -16,6 +16,7 @@ const (
 
 	ModeMirror      = "mirror"
 	ModePullThrough = "pull-through"
+	ModeBundle      = "bundle" // filled only by bundle imports; never contacts its source (spec 0014)
 
 	UpstreamActive = "active"
 	UpstreamPaused = "paused"
@@ -56,6 +57,10 @@ type Upstream struct {
 	CreatedBy                                   string
 	Credential                                  string // a configured credential's name (spec 0009 phase 3); "": none
 
+	// bundle mode's freshness mark (spec 0014): the last imported manifest
+	BundleID, BundleManifestSHA256 string
+	BundleCreatedAt                time.Time
+
 	Keys      []string // fingerprints
 	Platforms []string
 	Entries   []UpstreamEntry
@@ -80,15 +85,17 @@ type UpstreamCell struct {
 func TenantUpstreamLock(tenantID string) string { return "kista/tenant-upstreams/" + tenantID }
 
 const upstreamCols = `id, tenant_id, name, kind, prefix, channel_id, mode, visibility, state, version, requested_at,
-request_dry_run, next_run_at, last_run_at, last_run, created_at, created_by, credential`
+request_dry_run, next_run_at, last_run_at, last_run, created_at, created_by, credential, bundle_id, bundle_created_at,
+bundle_manifest_sha256`
 
 func scanUpstream(r interface{ Scan(...any) error }) (Upstream, error) {
 	var u Upstream
-	var prefix, lastRun, cred sql.NullString
+	var prefix, lastRun, cred, bundleID, bundleSHA sql.NullString
 	err := r.Scan(&u.ID, &u.TenantID, &u.Name, &u.Kind, &prefix, &u.ChannelID, &u.Mode, &u.Visibility, &u.State, &u.Version,
 		scanTime{&u.RequestedAt}, &u.RequestDryRun, scanTime{&u.NextRunAt}, scanTime{&u.LastRunAt}, &lastRun,
-		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred)
+		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred, &bundleID, scanTime{&u.BundleCreatedAt}, &bundleSHA)
 	u.Prefix, u.LastRun, u.Credential = prefix.String, lastRun.String, cred.String
+	u.BundleID, u.BundleManifestSHA256 = bundleID.String, bundleSHA.String
 	return u, err
 }
 
@@ -113,10 +120,10 @@ func (t *Tx) InsertUpstream(ctx context.Context, u *Upstream) error {
 		return fmt.Errorf("%w: a tenant holds at most %d upstreams", ErrInvalid, MaxUpstreams)
 	}
 	u.ID, u.CreatedAt, u.Version = NewID(), t.Now(), 1
-	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		u.ID, u.TenantID, u.Name, u.Kind, nullable(u.Prefix), u.ChannelID, u.Mode, u.Visibility, u.State, u.Version,
 		t.s.d.nullTimeArg(u.RequestedAt), u.RequestDryRun, t.s.d.nullTimeArg(u.NextRunAt), nil, nil,
-		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential))
+		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential), nil, nil, nil)
 	if err := t.s.mapErr(err, "upstream "+u.Name); err != nil {
 		return err
 	}
@@ -460,14 +467,16 @@ func (s *Store) DueUpstreams(ctx context.Context, now time.Time, scheduled bool)
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		var err error
 		if !scheduled {
-			out, err = tx.strings(ctx, "SELECT id FROM upstreams WHERE state = ? AND requested_at IS NOT NULL AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) ORDER BY id", UpstreamActive)
+			out, err = tx.strings(ctx, "SELECT id FROM upstreams WHERE state = ? AND mode <> ? AND requested_at IS NOT NULL AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) ORDER BY id",
+				UpstreamActive, ModeBundle)
 			return err
 		}
 		// requested runs first, then the longest due
-		out, err = tx.strings(ctx, `SELECT id FROM upstreams WHERE state = ? AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) AND (requested_at IS NOT NULL OR
+		// a bundle-mode upstream is never run, even with a request (spec 0014)
+		out, err = tx.strings(ctx, `SELECT id FROM upstreams WHERE state = ? AND mode <> ? AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) AND (requested_at IS NOT NULL OR
 (mode = ? AND (next_run_at IS NULL OR next_run_at <= ?)))
 ORDER BY CASE WHEN requested_at IS NULL THEN 1 ELSE 0 END, CASE WHEN next_run_at IS NULL THEN 0 ELSE 1 END, next_run_at, id`,
-			UpstreamActive, ModeMirror, s.d.timeArg(now))
+			UpstreamActive, ModeBundle, ModeMirror, s.d.timeArg(now))
 		return err
 	})
 	return out, err
@@ -599,7 +608,7 @@ func (t *Tx) StartUpstreamRun(ctx context.Context, id string, scheduled bool) (r
 	}
 	requested = !u.RequestedAt.IsZero()
 	due := scheduled && u.Mode == ModeMirror && !u.NextRunAt.After(t.Now()) // a zero next run: never run
-	if u.State != UpstreamActive || !requested && !due {
+	if u.State != UpstreamActive || u.Mode == ModeBundle || !requested && !due {
 		return false, false, false, nil
 	}
 	_, err = t.exec(ctx, "UPDATE upstreams SET requested_at = NULL, request_dry_run = ? WHERE id = ?", false, id)

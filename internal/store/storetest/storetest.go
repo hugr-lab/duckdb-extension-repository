@@ -229,7 +229,7 @@ func Reset(ctx context.Context, st *store.Store) error {
 	if err := store.ExecRaw(ctx, st, "UPDATE channels SET serving_key_id = NULL"); err != nil {
 		return err
 	}
-	for _, table := range []string{"events", "event_sinks", "download_counts", "download_installers", "purged_slots", "upstream_cells", "upstream_versions", "upstream_entries", "upstream_platforms", "upstream_keys", "upstreams", "shadows", "blocks", "feed_cursors", "feed_channels", "feed_keys", "feeds", "statements", "statement_counters", "attachments", "extension_group_grants", "extension_group_members", "extension_groups", "grants", "api_keys", "publisher_github", "publishers", "issuers", "tenant_audiences", "release_signatures", "releases", "builds", "key_events", "channel_keys", "attestation_keys",
+	for _, table := range []string{"events", "event_sinks", "download_counts", "download_installers", "purged_slots", "upstream_cells", "upstream_versions", "upstream_entries", "upstream_platforms", "upstream_keys", "upstreams", "bundle_imports", "shadows", "blocks", "feed_cursors", "feed_channels", "feed_keys", "feeds", "statements", "statement_counters", "attachments", "extension_group_grants", "extension_group_members", "extension_groups", "grants", "api_keys", "publisher_github", "publishers", "issuers", "tenant_audiences", "release_signatures", "releases", "builds", "key_events", "channel_keys", "attestation_keys",
 		"key_fingerprints", "channel_duckdb_versions", "duckdb_version_c_apis", "channels", "duckdb_versions",
 		"tenant_deletions", "tenants", "blobs", "storage_domains", "deployment", "leases"} {
 		if err := store.ExecRaw(ctx, st, "DELETE FROM "+table); err != nil {

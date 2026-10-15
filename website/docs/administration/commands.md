@@ -314,8 +314,8 @@ See [Publishing](../publishing.md).
 | `shadow remove <tenant> <name>` | serves DuckDB's build of that name from passthrough channels again |
 
 `upstream add` flags: `-extensions <name,...>` or `*`, `-prefix <https://...>` and
-`-keys <sha256:...,...>` (for `repository`), `-public`, `-mode mirror` or `-mode pull-through`,
-`-credential <name>`. See [Upstreams](../upstreams.md).
+`-keys <sha256:...,...>` (for `repository`), `-public`, `-mode mirror`, `-mode pull-through` or
+`-mode bundle`, `-credential <name>`. See [Upstreams](../upstreams.md).
 
 ## Attachments, attestation keys and feeds
 

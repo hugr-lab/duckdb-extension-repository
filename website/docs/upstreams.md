@@ -30,6 +30,7 @@ a request. The design reasoning is in
 | --- | --- |
 | `mirror` (default) | runs on a schedule and on demand, fetching every cell of its matrix |
 | `pull-through` | never runs; a granted caller's miss on a DuckDB route fetches that one binary in the background |
+| `bundle` | never contacts its source: only bundle imports fill it, on an air-gapped site ([Bundle mode](#bundle-mode)) |
 
 An upstream feeds exactly one channel. Two channels fed from the same source are two upstreams;
 bodies are stored once per storage domain either way. A name is on the allowlist of at most one
@@ -116,7 +117,7 @@ kista admin -config /etc/kista/kista.yaml upstream add acme hugr \
 | `-prefix` | `prefix` | `repository` only: an `https://` URL with an optional port and path (fixed) |
 | `-keys` | `keys` | `repository` only, at least one: `sha256:<64 lowercase hex>` |
 | `-public` | `visibility` | releases it makes from now on are public; default `private` |
-| `-mode` | `mode` | `mirror` (default) or `pull-through` (fixed) |
+| `-mode` | `mode` | `mirror` (default), `pull-through` or `bundle` (fixed) |
 | `-credential` | `credential` | `repository` only: a configured credential's name (see [Private upstreams](#private-upstreams)) |
 
 Over the API, the same record is `POST /api/v1/tenants/{t}/upstreams` with a JSON body:
@@ -133,7 +134,8 @@ Over the API, the same record is `POST /api/v1/tenants/{t}/upstreams` with a JSO
 ```
 
 For a `repository` upstream, kista reads the upstream's `.well-known/duckdb-extension-repo.json` when
-the upstream is added and at the start of every run; only keys whose fingerprints are pinned are
+the upstream is added and at the start of every run (not in [bundle mode](#bundle-mode), which reads
+the file a bundle carries); only keys whose fingerprints are pinned are
 used. Adding an upstream whose file lists none of its pinned keys is `400`. A rotation at the
 upstream is followed by pinning the new fingerprint, never automatically. On the upstream kista,
 `kista admin key list <tenant>/<channel>` shows each key's fingerprint.
@@ -175,8 +177,8 @@ change them per release (see [Publishing](publishing.md#changing-a-release)).
   the upstream makes it due at once. A run interrupted by an error or a lost lease is due again after
   5 minutes.
 - **On demand**: `sync` sets a request; a running `kista serve` takes it within 30 seconds. A request
-  that arrives during a run is served by another run right after it. A sync of a paused or
-  pull-through upstream is `409`.
+  that arrives during a run is served by another run right after it. A sync of a paused,
+  pull-through or bundle-mode upstream is `409`.
 - **Dry run** (`?dry_run=true`, `-dry-run`): fetches and checks every cell without releasing,
   committing or touching the cells and the schedule. Its counts (`would_release` for a cell it would
   release) and first 20 problems go to `last_run`.
@@ -259,8 +261,8 @@ kista admin -config /etc/kista/kista.yaml upstream add acme duckdb \
 SET autoinstall_extension_repository = 'http://kista.example.com/acme/core';
 ```
 
-- It is fed by `duckdb-core` mirror upstreams only. Community and repository binaries would never
-  load from it; pull-through is refused (its callers carry no token).
+- It is fed by `duckdb-core` mirror or bundle-mode upstreams only. Community and repository binaries
+  would never load from it; pull-through is refused (its callers carry no token).
 - Its releases are public and served without tokens, over `http` and `https`, `GET` and `HEAD`. A
   token is never looked at, and a miss is `404`. It has no keys and no `.well-known` file. Setting an
   upstream or a release of it private is refused.
@@ -304,6 +306,28 @@ no name in the tenant. Limits per replica: 256 queued misses (32 per tenant), 4 
 ```bash
 kista admin -config /etc/kista/kista.yaml upstream add acme community-pt \
   -kind duckdb-community -channel prod -platforms linux_amd64 -extensions '*' -mode pull-through
+```
+
+## Bundle mode
+
+A `bundle` upstream is for an air-gapped site. It is the same record as a mirror's (kind, prefix,
+pinned keys, channel, platforms, allowlist, visibility, state), but kista never contacts its source:
+
+- it is never run, and `sync` is `409`;
+- a `repository` prefix is only the source's identity: its port is not checked against egress, and
+  the source's `.well-known` file is not fetched when it is added (the pinned keys are checked when
+  a bundle is imported, against the file the bundle carries);
+- it takes no credential (`400`, at creation and on the credential route);
+- a passthrough channel takes a `duckdb-core` one.
+
+Bundles are made by a connected kista and imported with `kista admin bundle import` (spec 0014; the
+import arrives in a later release). The upstream's record shows its mode and the last bundle
+imported (`bundle_id`, `bundle_created_at`), over the API, in the console and in
+`kista admin upstream show`.
+
+```bash
+kista admin -config /etc/kista/kista.yaml upstream add acme core -mode bundle \
+  -kind duckdb-core -channel core -platforms linux_amd64 -extensions httpfs,spatial
 ```
 
 ## Private upstreams
