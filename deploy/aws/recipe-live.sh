@@ -538,9 +538,20 @@ ecs_down() {
 	step "the ECS recipe"
 	tf init -input=false -lockfile=readonly >/dev/null
 	tf destroy -input=false -auto-approve -state="$work/ecs.tfstate" -var-file="$work/ecs.tfvars"
-	# destroy deregisters task definitions; deleting them leaves nothing tagged behind
-	arns=$(aws ecs list-task-definitions --status INACTIVE --family-prefix "$name-ecs" --query 'taskDefinitionArns' --output text)
-	[ -z "$arns" ] || [ "$arns" = None ] || aws ecs delete-task-definitions --task-definitions $arns >/dev/null
+	# destroy deregisters the revisions it knows; earlier ones may still be active, and a deregistered
+	# one shows as INACTIVE only after a while. Deregister and delete each, one at a time (a batch
+	# takes at most 10), until none is left.
+	for i in $(seq 1 12); do
+		for a in $(aws ecs list-task-definitions --status ACTIVE --family-prefix "$name-ecs" --query 'taskDefinitionArns[]' --output text); do
+			aws ecs deregister-task-definition --task-definition "$a" >/dev/null
+		done
+		left=$(aws ecs list-task-definitions --status INACTIVE --family-prefix "$name-ecs" --query 'taskDefinitionArns[]' --output text)
+		for a in $left; do
+			aws ecs delete-task-definitions --task-definitions "$a" >/dev/null
+		done
+		[ -z "$left" ] && [ -z "$(aws ecs list-task-definitions --status ACTIVE --family-prefix "$name-ecs" --query 'taskDefinitionArns[]' --output text)" ] && break
+		sleep 10
+	done
 }
 
 down() {
