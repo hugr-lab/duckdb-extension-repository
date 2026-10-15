@@ -75,11 +75,11 @@ func bundleKeygen(args []string, stdout io.Writer) error {
 	}
 	if _, err := f.Write(pemBytes); err != nil {
 		f.Close()
-		os.Remove(*out)
+		_ = os.Remove(*out)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(*out)
+		_ = os.Remove(*out)
 		return err
 	}
 	fmt.Fprintln(stdout, fp)
@@ -213,7 +213,7 @@ func bundleSign(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	defer tmp.Close()
 	w := bundle.NewWriter(tmp)
 	if err := bundle.WriteHead(w, b.ManifestBytes, priv); err != nil {
@@ -519,7 +519,7 @@ func inspectFile(it bundle.Item, refs []bundle.Ref, opts bundle.CheckOptions) []
 	if err != nil {
 		return []error{err}
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	defer tmp.Close()
 	n, h, err := bundle.Inflate(it.R, c0.InflatedSize, tmp)
 	if err != nil {

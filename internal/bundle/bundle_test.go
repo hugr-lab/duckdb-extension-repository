@@ -540,7 +540,7 @@ func TestCanonical(t *testing.T) {
 }
 
 func TestText(t *testing.T) {
-	if got := bundle.Text("a\x1b[2Jb‮c", 100); got != "a[2Jbc" {
+	if got := bundle.Text("a\x1b[2Jb\u202ec", 100); got != "a[2Jbc" {
 		t.Errorf("%q", got)
 	}
 	if got := bundle.Text("ééé", 5); got != "éé" {
