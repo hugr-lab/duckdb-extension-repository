@@ -299,6 +299,20 @@
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "timeoutSec": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 86400
+            }
+          }
+        },
+        "managedCertificate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
             }
           }
         }

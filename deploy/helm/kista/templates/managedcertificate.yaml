@@ -1,0 +1,17 @@
+{{- if .Values.gke.managedCertificate.enabled }}
+{{- $domains := list }}
+{{- range .Values.ingress.hosts }}
+{{- with .host }}{{ $domains = append $domains . }}{{ end }}
+{{- end }}
+{{- if not (and .Values.ingress.enabled $domains) }}
+{{- fail "gke.managedCertificate: needs the Ingress with at least one host" }}
+{{- end }}
+# Google issues it once the hosts resolve to the Ingress's address
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: {{ include "kista.fullname" . }}
+  labels: {{- include "kista.labels" . | nindent 4 }}
+spec:
+  domains: {{- toYaml $domains | nindent 4 }}
+{{- end }}

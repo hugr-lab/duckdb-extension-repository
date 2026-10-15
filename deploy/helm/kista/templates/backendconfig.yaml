@@ -6,6 +6,8 @@ metadata:
   name: {{ include "kista.fullname" . }}
   labels: {{- include "kista.labels" . | nindent 4 }}
 spec:
+  # the whole response, not idle time: a slow publish or download needs more than GKE's 30 seconds
+  timeoutSec: {{ .Values.gke.backendConfig.timeoutSec }}
   healthCheck:
     type: HTTP
     port: 8081

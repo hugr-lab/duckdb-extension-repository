@@ -491,7 +491,8 @@ and the Marketplace package its phase 4. The outline below is kept as it was wri
 - **GKE, by hand.** `deploy/gcp/gke.sh` adds a GKE Autopilot cluster to a stack made by
   `deploy/gcp/up.sh`. It installs the chart with GKE Workload Identity, a GKE Ingress and the
   `BackendConfig`. This proves spec 0004 phase 4's metadata-server path, and the load-balancer
-  health check, live. `down.sh` still removes everything with the project.
+  health check, live. `down.sh` still removes everything with the project. (Spec 0020 phase 2
+  replaced it with the GKE recipe and `deploy/gcp/recipe-live.sh`.)
 
 ## Alternatives considered
 

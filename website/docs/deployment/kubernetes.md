@@ -194,7 +194,14 @@ ranges in `trusted_proxies` and `networkPolicy.loadBalancerRanges`:
 
 - **GKE Ingress (NEG).** `gke.backendConfig.enabled: true` renders a `BackendConfig` for 8081
   `/readyz` and the Service annotations. The checks come from `35.191.0.0/16` and
-  `130.211.0.0/22`.
+  `130.211.0.0/22`. The `BackendConfig` also sets the load balancer's limit on a whole response,
+  `gke.backendConfig.timeoutSec` (600 seconds; GKE's default of 30 cuts large publishes and
+  downloads). GKE Autopilot has no `IngressClass` object: take the Ingress with the annotation
+  `kubernetes.io/ingress.class: gce`, not `className`. `gke.managedCertificate.enabled: true`
+  renders a Google-managed certificate for the Ingress's hosts and names it on the Ingress; a
+  global static IP is the annotation `kubernetes.io/ingress.global-static-ip-name`. The external
+  load balancer appends its own address to `X-Forwarded-For`: put the static IP's `/32` in
+  `trusted_proxies` too, or every client appears as the load balancer. [GCP](gcp.md) has a recipe.
 - **AWS Load Balancer Controller, IP targets.** Ingress annotations
   `alb.ingress.kubernetes.io/healthcheck-port: "8081"` and
   `alb.ingress.kubernetes.io/healthcheck-path: /readyz`; the ranges are the ALB's subnets. An ALB

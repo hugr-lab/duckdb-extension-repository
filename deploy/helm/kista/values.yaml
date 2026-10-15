@@ -138,6 +138,14 @@ ingress:
 gke:
   backendConfig:
     enabled: false
+    # the load balancer's limit on a whole response (GKE's default is 30 seconds): above the time a
+    # large publish or download takes
+    timeoutSec: 600
+  # a Google-managed certificate for the Ingress's hosts, named on the Ingress. The hosts' DNS must
+  # point at the load balancer before Google issues it (tens of minutes). A global static IP:
+  # ingress.annotations kubernetes.io/ingress.global-static-ip-name.
+  managedCertificate:
+    enabled: false
 
 # Who may reach the pods. Default: on with mode behind_proxy (port 8443 only from the ingress
 # controller's pods and loadBalancerRanges), off with mode tls. With it on, name the ingress

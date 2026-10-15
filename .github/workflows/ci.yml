@@ -236,7 +236,7 @@ jobs:
           unzip -q tf.zip terraform -d bin
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: |
-          for m in deploy/aws-ecs; do
+          for m in deploy/aws-ecs deploy/gcp-gke; do
             terraform -chdir="$m" fmt -check -recursive -diff
             terraform -chdir="$m" init -backend=false -input=false -lockfile=readonly
             terraform -chdir="$m" validate
