@@ -273,7 +273,7 @@ var reapSteps = []reapStep{
 	{"publisher_github", "publisher_id IN (SELECT id FROM publishers WHERE tenant_id = ?)", false}, {"publishers", ofTenant, false},
 	{"upstream_cells", ofUpstreams, false}, {"upstream_versions", ofUpstreams, false}, {"upstream_entries", ofUpstreams, false},
 	{"upstream_platforms", ofUpstreams, false}, {"upstream_keys", ofUpstreams, false}, {"upstreams", ofTenant, false},
-	{"shadows", ofTenant, false}, {"blocks", ofTenant, false},
+	{"bundle_imports", ofTenant, false}, {"shadows", ofTenant, false}, {"blocks", ofTenant, false},
 	// by indexed columns: release_signatures by key, releases by channel
 	{"release_signatures", "key_id IN (SELECT id FROM channel_keys WHERE tenant_id = ?)", false}, {"releases", ofChannels, false},
 	{"purged_slots", "", true}, {"builds", ofTenant, false},

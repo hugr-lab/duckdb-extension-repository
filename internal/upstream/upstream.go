@@ -44,6 +44,8 @@ var (
 	ErrCollision = errors.New("upstream")
 	// ErrPullThrough is a run asked of a pull-through upstream, which fetches on a miss (409).
 	ErrPullThrough = errors.New("upstream: a pull-through upstream fetches on a miss, not in runs")
+	// ErrBundle is a run asked of a bundle-mode upstream, which only bundle imports fill (409).
+	ErrBundle = errors.New("upstream: a bundle-mode upstream is filled by bundle imports, not runs")
 	// ErrPaused is a run asked of a paused upstream (409).
 	ErrPaused = errors.New("upstream: the upstream is paused; resume it first")
 )
@@ -138,7 +140,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 			return u, fmt.Errorf("%w: a %s upstream takes no prefix or keys", store.ErrInvalid, sp.Kind)
 		}
 	case store.UpstreamRepo:
-		if u.Prefix, err = s.checkPrefix(sp.Prefix); err != nil {
+		if u.Prefix, err = s.checkPrefix(sp.Prefix, sp.Mode); err != nil {
 			return u, err
 		}
 		if len(sp.Keys) == 0 {
@@ -147,8 +149,8 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 	default:
 		return u, fmt.Errorf("%w: kind %q (duckdb-core, duckdb-community or repository)", store.ErrInvalid, sp.Kind)
 	}
-	if sp.Mode != store.ModeMirror && sp.Mode != store.ModePullThrough {
-		return u, fmt.Errorf("%w: mode %q (mirror or pull-through)", store.ErrInvalid, sp.Mode)
+	if sp.Mode != store.ModeMirror && sp.Mode != store.ModePullThrough && sp.Mode != store.ModeBundle {
+		return u, fmt.Errorf("%w: mode %q (mirror, pull-through or bundle)", store.ErrInvalid, sp.Mode)
 	}
 	if sp.Visibility != store.Public && sp.Visibility != store.Private {
 		return u, fmt.Errorf("%w: visibility %q", store.ErrInvalid, sp.Visibility)
@@ -191,13 +193,16 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 		u.Visibility = store.Public // public by nature
 	}
 	if sp.Credential != "" {
+		if u.Mode == store.ModeBundle { // it contacts no source; the exporting side authenticates (spec 0014)
+			return u, errBundleCredential
+		}
 		if err := s.checkCredential(sp.Credential, tenant, u, sp.Visibility == store.Public); err != nil {
 			return u, err
 		}
 		u.Credential = sp.Credential
 	}
 	u.ChannelID = sc.Channel.ID
-	if u.Kind == store.UpstreamRepo {
+	if u.Kind == store.UpstreamRepo && u.Mode != store.ModeBundle { // bundle mode: checked at import, from the bundle
 		if _, err := s.repoKeys(ctx, u); err != nil {
 			return u, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 		}
@@ -260,6 +265,8 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 	return u, err
 }
 
+var errBundleCredential = fmt.Errorf("%w: a bundle-mode upstream contacts no source and takes no credential", store.ErrInvalid)
+
 // checkCredential checks that an upstream may use a credential: a repository upstream of a tenant
 // the credential lists, at a prefix it covers; public only when the credential allows it.
 func (s *Service) checkCredential(name, tenant string, u store.Upstream, public bool) error {
@@ -280,6 +287,9 @@ func (s *Service) checkCredential(name, tenant string, u store.Upstream, public 
 // upstream takes a credential only when the credential allows public releases.
 func (s *Service) SetCredential(ctx context.Context, a authz.Actor, tenant, name, cred string, expected int64) (store.Upstream, error) {
 	return s.change(ctx, a, tenant, name, "credential", map[string]any{"value": cred}, func(tx *store.Tx, u *store.Upstream) error {
+		if u.Mode == store.ModeBundle {
+			return errBundleCredential
+		}
 		if cred != "" {
 			if err := s.checkCredential(cred, tenant, *u, u.Visibility == store.Public); err != nil {
 				return err
@@ -290,8 +300,9 @@ func (s *Service) SetCredential(ctx context.Context, a authz.Actor, tenant, name
 }
 
 // checkPrefix normalises a repository prefix: https (http to loopback in development), no user
-// info, query, fragment or dot segments, and a port egress may reach.
-func (s *Service) checkPrefix(raw string) (string, error) {
+// info, query, fragment or dot segments, and a port egress may reach. A bundle-mode upstream never
+// contacts its prefix, which is only the source's identity: its port is not checked.
+func (s *Service) checkPrefix(raw, mode string) (string, error) {
 	bad := func(why string) (string, error) {
 		return "", fmt.Errorf("%w: prefix %q: %s", store.ErrInvalid, raw, why)
 	}
@@ -315,7 +326,7 @@ func (s *Service) checkPrefix(raw string) (string, error) {
 	}
 	if p := u.Port(); p != "" {
 		n, err := strconv.ParseUint(p, 10, 16)
-		if err != nil || !s.Fetch.PortAllowed(uint16(n)) {
+		if err != nil || mode != store.ModeBundle && !s.Fetch.PortAllowed(uint16(n)) {
 			return bad("egress does not reach that port")
 		}
 	}
@@ -667,8 +678,11 @@ func (s *Service) Sync(ctx context.Context, a authz.Actor, tenant, name string, 
 		if u.State != store.UpstreamActive {
 			return ErrPaused
 		}
-		if u.Mode == store.ModePullThrough {
+		switch u.Mode {
+		case store.ModePullThrough:
 			return ErrPullThrough
+		case store.ModeBundle:
+			return ErrBundle
 		}
 		return tx.RequestUpstreamRun(ctx, &u, dryRun) // the record's version stays: a request is not a change
 	})

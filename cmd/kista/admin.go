@@ -109,7 +109,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   publisher key remove <tenant> <name> <key-id>
   upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
                -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
-               [-mode mirror|pull-through] [-credential <name>]
+               [-mode mirror|pull-through|bundle] [-credential <name>]
   upstream credential <tenant> <name> <credential|->   a private upstream's credential (- clears it)
   upstream credentials                            the configured credentials (names, tenants, prefixes)
   upstream list <tenant>

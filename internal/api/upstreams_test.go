@@ -196,6 +196,14 @@ func TestPullThroughOffers(t *testing.T) {
 	if r := m.call(t, "POST", "/api/v1/tenants/acme/upstreams/pull/sync", m.toks["tenant admin"], ""); r.status != 409 {
 		t.Errorf("sync a pull-through upstream: %d", r.status)
 	}
+	// nor is a bundle-mode one (spec 0014)
+	if _, err := m.ups.Add(ctx, admin, "acme", upstream.Spec{Name: "air", Kind: store.UpstreamCommunity, Channel: "prod",
+		Mode: store.ModeBundle, Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "x"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if r := m.call(t, "POST", "/api/v1/tenants/acme/upstreams/air/sync", m.toks["tenant admin"], ""); r.status != 409 {
+		t.Errorf("sync a bundle-mode upstream: %d", r.status)
+	}
 	// a core name, an alias, the versioned path, an existing release, a platform it does not fetch: no offer
 	for _, path := range []string{"/acme/prod/v2.0.0/linux_amd64/json.duckdb_extension.gz",
 		"/acme/prod/v2.0.0/linux_amd64/postgres.duckdb_extension.gz",

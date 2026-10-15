@@ -864,3 +864,41 @@ func (en *env) releasesIn(t *testing.T, channel, name string) []store.Candidate 
 	}
 	return rs
 }
+
+// Spec 0014: a bundle-mode upstream never contacts its source: its prefix is an identity (no
+// egress port check, no .well-known fetch), it takes no credential and no run, and a passthrough
+// channel takes a core one.
+func TestBundleMode(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		sp := en.spec(store.UpstreamEntry{Name: "tresor"})
+		sp.Name, sp.Mode = "air", store.ModeBundle
+		sp.Prefix = "https://air.example.org:9443/acme/prod"    // a port egress does not reach, a host never resolved
+		sp.Keys = []string{"sha256:" + strings.Repeat("1", 64)} // listed nowhere: checked at import
+		u, err := en.up.Add(ctx, admin, "acme", sp)
+		if err != nil || u.Mode != store.ModeBundle || u.Prefix != "https://air.example.org:9443/acme/prod" {
+			t.Fatalf("a bundle-mode repository upstream: %+v %v", u, err)
+		}
+		if g, _ := en.repo.count("/.well-known/duckdb-extension-repo.json"); g != 0 {
+			t.Errorf("the source was contacted: %d", g)
+		}
+		if _, err := en.up.Sync(ctx, admin, "acme", "air", false); !errors.Is(err, upstream.ErrBundle) {
+			t.Errorf("sync: %v", err)
+		}
+		if _, err := en.up.SetCredential(ctx, admin, "acme", "air", "any", u.Version); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("a credential on the route: %v", err)
+		}
+		sp.Name, sp.Credential = "air-cred", "any"
+		if _, err := en.up.Add(ctx, admin, "acme", sp); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("a credential at creation: %v", err)
+		}
+		en.run.Once(ctx)
+		if u, _ = en.up.Get(ctx, admin, "acme", "air"); !u.LastRunAt.IsZero() || !u.NextRunAt.IsZero() {
+			t.Errorf("a bundle-mode upstream was scheduled or run: %+v", u)
+		}
+		core := upstream.Spec{Name: "air-core", Kind: store.UpstreamCore, Channel: "mirror", Mode: store.ModeBundle,
+			Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "json"}}}
+		if u, err := en.up.Add(ctx, admin, "acme", core); err != nil || u.Visibility != store.Public {
+			t.Fatalf("a core bundle-mode upstream into a passthrough channel: %+v %v", u, err)
+		}
+	})
+}

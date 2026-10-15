@@ -43,6 +43,8 @@ export interface Upstream {
   created_at: string
   created_by: string
   credential?: string
+  bundle_id?: string
+  bundle_created_at?: string
   etag: string
 }
 
@@ -211,15 +213,15 @@ function NewUpstream() {
               {(channels.data?.data.channels ?? []).map((c) => <option key={c.name} value={c.name}>{c.name} ({c.kind})</option>)}
             </select>
           </Field>
-          <Field label="Mode" hint="pull-through: fetched when first asked for">
-            <select className="field" value={f.mode} onChange={set('mode')}><option>mirror</option><option>pull-through</option></select>
+          <Field label="Mode" hint={f.mode === 'bundle' ? 'filled only by bundle imports, for an air-gapped site' : 'pull-through: fetched when first asked for'}>
+            <select className="field" value={f.mode} onChange={set('mode')}><option>mirror</option><option>pull-through</option><option>bundle</option></select>
           </Field>
           <Field label="New releases are">
             <select className="field" value={f.visibility} onChange={set('visibility')}><option>private</option><option>public</option></select>
           </Field>
-          {repo && <Field label="Repository prefix" hint="https://…, its .well-known must list a pinned key"><input className="field font-mono" required type="url" value={f.prefix} onChange={set('prefix')} /></Field>}
+          {repo && <Field label="Repository prefix" hint={f.mode === 'bundle' ? 'https://…, the source’s identity: never contacted' : 'https://…, its .well-known must list a pinned key'}><input className="field font-mono" required type="url" value={f.prefix} onChange={set('prefix')} /></Field>}
           {repo && <Field label="Pinned keys" hint="sha256:… fingerprints, separated by commas"><input className="field font-mono" required value={f.keys} onChange={set('keys')} /></Field>}
-          {repo && <Field label="Credential" hint="a configured credential's name, for a private repository"><input className="field font-mono" value={f.credential} onChange={set('credential')} /></Field>}
+          {repo && f.mode !== 'bundle' && <Field label="Credential" hint="a configured credential's name, for a private repository"><input className="field font-mono" value={f.credential} onChange={set('credential')} /></Field>}
         </div>
         <div className="flex flex-col gap-1">
           <span className="text-[13px] font-semibold text-ink">Platforms</span>
@@ -278,6 +280,7 @@ function UpstreamView({ name }: { name: string }) {
     ['New releases are', u.visibility],
     ['Signature keys', u.kind === 'repository' ? `${u.keys.length} pinned (below)` : `DuckDB ${u.kind === 'duckdb-core' ? 'core' : 'community'}'s own, from the pin`],
     ['Allowlist', `${u.extensions.length} ${u.extensions.length === 1 ? 'entry' : 'entries'} × ${u.platforms.length} platforms, for each DuckDB version the channel serves`],
+    ...(u.mode === 'bundle' ? [['Last bundle', u.bundle_id ? <><Mono>{u.bundle_id}</Mono>, made {when(u.bundle_created_at!)}</> : 'none imported yet'] as [string, React.ReactNode]] : []),
     ['Added', `${when(u.created_at)} by ${u.created_by}`],
   ]
   const w = pending ? words[pending] : null
@@ -286,8 +289,8 @@ function UpstreamView({ name }: { name: string }) {
       <PageTitle eyebrow={<Link to={`${base}/upstreams`} className="no-underline">Upstreams</Link>} title={<span className="font-mono">{u.name}</span>}>
         <span className="flex gap-1 pb-1"><Badge>{u.state}</Badge><Badge>{u.visibility}</Badge>{u.run !== 'idle' && <span className="chip bg-warning-soft text-warning">{runWords[u.run]}</span>}</span>
         <div role="group" aria-label="upstream actions" className="ml-auto flex flex-wrap gap-2">
-          <Button tone="brand" disabled={busy || u.state !== 'active'} onClick={() => setPending('sync')}>Sync now</Button>
-          <Button tone="outline" disabled={busy || u.state !== 'active'} onClick={() => setPending('dry')}>Dry run</Button>
+          {u.mode !== 'bundle' && <Button tone="brand" disabled={busy || u.state !== 'active'} onClick={() => setPending('sync')}>Sync now</Button>}
+          {u.mode !== 'bundle' && <Button tone="outline" disabled={busy || u.state !== 'active'} onClick={() => setPending('dry')}>Dry run</Button>}
           <Button tone="outline" disabled={busy} onClick={() => setPending(u.state === 'active' ? 'pause' : 'resume')}>{u.state === 'active' ? 'Pause' : 'Resume'}</Button>
           <Button tone="outline" disabled={busy} onClick={() => setPending(u.visibility === 'public' ? 'private' : 'public')}>Make {u.visibility === 'public' ? 'private' : 'public'}</Button>
           <Button tone="danger-outline" disabled={busy} onClick={() => setPending('remove')}>Remove…</Button>
@@ -413,7 +416,7 @@ function Items({ u, path, etag, onChanged }: { u: Upstream; path: string; etag: 
     </span>
   )
   return (
-    <Card title={repo ? 'Platforms, keys and credential' : 'Platforms'}>
+    <Card title={repo ? (u.mode === 'bundle' ? 'Platforms and keys' : 'Platforms, keys and credential') : 'Platforms'}>
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-2">
           {repo && <span className="text-[13px] font-semibold">Platforms</span>}
@@ -436,7 +439,7 @@ function Items({ u, path, etag, onChanged }: { u: Upstream; path: string; etag: 
             </form>
           </div>
         )}
-        {repo && (
+        {repo && u.mode !== 'bundle' && (
           <form className="flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); run(() => client.post(`${path}/credential`, { ifMatch: etag, body: { credential } })) }}>
             <Field label="Credential" hint="a configured credential's name; empty clears it"><input className="field font-mono" value={credential} onChange={(e) => setCredential(e.target.value)} /></Field>
             <Button type="submit" disabled={busy || credential === (u.credential ?? '')}>Save</Button>
