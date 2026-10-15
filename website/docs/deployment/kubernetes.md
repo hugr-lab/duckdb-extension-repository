@@ -201,7 +201,11 @@ ranges in `trusted_proxies` and `networkPolicy.loadBalancerRanges`:
   renders a Google-managed certificate for the Ingress's hosts and names it on the Ingress; a
   global static IP is the annotation `kubernetes.io/ingress.global-static-ip-name`. The external
   load balancer appends its own address to `X-Forwarded-For`: put the static IP's `/32` in
-  `trusted_proxies` too, or every client appears as the load balancer. [GCP](gcp.md) has a recipe.
+  `trusted_proxies` too, or every client appears as the load balancer. GKE's NEG readiness gate
+  can pass before the load balancer has checked a new pod, so a rolling restart may leave no
+  healthy backend for seconds: set `minReadySeconds: 60` and `preStopSeconds: 20`
+  (`gke.backendConfig.drainingTimeoutSec`, 30, lets requests in flight finish). [GCP](gcp.md) has
+  a recipe.
 - **AWS Load Balancer Controller, IP targets.** Ingress annotations
   `alb.ingress.kubernetes.io/healthcheck-port: "8081"` and
   `alb.ingress.kubernetes.io/healthcheck-path: /readyz`; the ranges are the ALB's subnets. An ALB

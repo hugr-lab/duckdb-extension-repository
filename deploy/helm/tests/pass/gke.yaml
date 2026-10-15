@@ -33,6 +33,7 @@ gke:
   backendConfig:
     enabled: true
     timeoutSec: 900
+    drainingTimeoutSec: 60
   managedCertificate:
     enabled: true
 networkPolicy:
@@ -44,3 +45,4 @@ ingress:
     kubernetes.io/ingress.class: gce
     kubernetes.io/ingress.global-static-ip-name: kista
   hosts: [{host: kista.example.com}]
+minReadySeconds: 60

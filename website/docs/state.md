@@ -150,12 +150,14 @@ For `gcp`, the database user is Cloud SQL's name for the IAM user: the principal
 `.gserviceaccount.com`, which the loader checks. The token never carries the `cloud-platform`
 scope, so the database server never holds a token good for other APIs. An instance whose
 certificates come from `GOOGLE_MANAGED_CAS_CA` is named with a trailing dot in its certificate
-(`….sql.goog.`): write the host with that dot, and `verify-full` matches it.
+(`….sql.goog.`, or `….sql-psa.goog.` on private services access): write the host with that dot,
+and `verify-full` matches it. On private services access the name resolves nowhere until a
+private Cloud DNS zone serves it ([GCP](deployment/gcp.md)).
 
 ```yaml title="kista.yaml"
 store:
   kind: postgres
-  dsn: host=abc123.def456.europe-west4.sql.goog. user=kista@acme-kista.iam dbname=kista sslmode=verify-full
+  dsn: host=abc123.def456.europe-west4.sql-psa.goog. user=kista@acme-kista.iam dbname=kista sslmode=verify-full
   login: { kind: gcp }
   ca_pem: |
     …the instance's server CA…

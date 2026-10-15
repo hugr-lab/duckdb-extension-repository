@@ -285,8 +285,9 @@ data "google_sql_ca_certs" "db" {
 locals {
   # the database user of a service account: its email without .gserviceaccount.com
   db_user = trimsuffix(google_service_account.kista.email, ".gserviceaccount.com")
-  # the certificate names the DNS name with its trailing dot; so does the DSN
-  db_host = "${trimsuffix(google_sql_database_instance.db.dns_name, ".")}."
+  # the instance's name on private services access (…sql-psa.goog.), which its certificate names
+  # with the trailing dot; so does the DSN. Cloud SQL leaves its record to the customer.
+  db_host = "${trimsuffix(one([for d in google_sql_database_instance.db.dns_names : d.name if d.connection_type == "PRIVATE_SERVICES_ACCESS"]), ".")}."
   db_ca   = join("", [for c in data.google_sql_ca_certs.db.certs : c.cert])
 }
 
@@ -414,6 +415,12 @@ resource "kubernetes_job_v1" "db_init" {
   timeouts {
     create = "15m"
   }
+  lifecycle {
+    # Autopilot fills in the pod template and annotates the Job: without this, every
+    # plan would replace the Job and run it again with the dead password. Run it again on purpose
+    # with -replace (the docs say how).
+    ignore_changes = [spec, metadata[0].annotations]
+  }
   depends_on = [google_sql_database.kista, google_sql_user.kista, google_dns_record_set.db]
 }
 
@@ -499,6 +506,9 @@ locals {
     networkPolicy = { loadBalancerRanges = local.gfe }
     # the load balancer drops a pod from its NEG before the pod stops serving
     preStopSeconds = 20
+    # GKE's NEG readiness gate can pass before the load balancer has checked a new pod: a rollout
+    # waits this long before it removes an old one
+    minReadySeconds = 60
   }
 }
 

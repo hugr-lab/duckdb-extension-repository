@@ -8,7 +8,10 @@ mock_provider "google" {
     defaults = { endpoint = "203.0.113.1", master_auth = [{ cluster_ca_certificate = "Y2E=" }] }
   }
   mock_resource "google_sql_database_instance" {
-    defaults = { dns_name = "abc123.def456.europe-west1.sql.goog.", private_ip_address = "10.50.0.3" }
+    defaults = {
+      dns_names          = [{ name = "abc123.def456.europe-west1.sql-psa.goog.", connection_type = "PRIVATE_SERVICES_ACCESS", dns_scope = "INSTANCE" }]
+      private_ip_address = "10.50.0.3"
+    }
   }
   mock_resource "google_compute_global_address" {
     defaults = { address = "203.0.113.10" }
@@ -73,7 +76,7 @@ run "own_vpc" {
     error_message = "the database: private, TLS only, the CA that names its DNS name"
   }
   assert {
-    condition     = local.db_host == "abc123.def456.europe-west1.sql.goog." && google_sql_user.kista.name == "kista-kista@acme-kista.iam"
+    condition     = local.db_host == "abc123.def456.europe-west1.sql-psa.goog." && google_sql_user.kista.name == "kista-kista@acme-kista.iam"
     error_message = "the DSN: the instance's DNS name with its trailing dot, the service account's database user"
   }
   assert {

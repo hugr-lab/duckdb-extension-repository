@@ -1,6 +1,6 @@
 # Spec 0020: Cloud recipes: AWS and GCP in Terraform, Azure in Bicep
 
-- **Status**: accepted; phases 0 and 1 implemented; phases 2-4 to come
+- **Status**: accepted; phases 0-2 implemented; phases 3-4 to come
 - **Date**: 2026-10-14
 - **Author**: vgsml, Claude
 
@@ -135,7 +135,8 @@ Delivery, each phase a pull request with its own reviews:
   - `aws` without `aws.region` and `aws.identity`;
   - `gcp` without `gcp.principal`.
 - **Cloud SQL's trailing dot.** Certificates issued under `GOOGLE_MANAGED_CAS_CA` name the
-  instance as `….sql.goog.`; tresor-server's live run hit this.
+  instance as `….sql.goog.` (`….sql-psa.goog.` on private services access, the instance's
+  `dnsNames` entry, which phase 2's live run found); tresor-server's live run hit this.
   - Go's host name check compares a SAN that is not a valid pattern exactly, and pgx checks the
     DSN's host as written. A DSN host written with the trailing dot therefore verifies with no code
     change (phase 0's test proves it); the docs say to write it so.
@@ -373,8 +374,10 @@ GKE with the chart avoids it, and spec 0013 tried its parts (`gke.sh`).
   whole response, which cuts slow publishes and downloads.
 - `gke.managedCertificate`, a `ManagedCertificate` for the Ingress hosts. Rendering it in the chart
   avoids `kubernetes_manifest`, which needs a live API server at plan time.
-- The Ingress annotations for a global static IP and the certificate, through the existing
-  `ingress.annotations`.
+- The Ingress annotation for a global static IP, through the existing `ingress.annotations`; the
+  certificate's annotation is the chart's, with `gke.managedCertificate`.
+- `gke.backendConfig.drainingTimeoutSec`, default 30 (GKE's is 0), and `minReadySeconds`, default
+  0: the live run's rolling restarts (below).
 
 **The recipe** (`deploy/gcp-gke`, providers `google`, `helm` and `kubernetes`) makes:
 
@@ -437,11 +440,40 @@ GKE with the chart avoids it, and spec 0013 tried its parts (`gke.sh`).
   takes the rightmost untrusted hop, so without the `/32` every client would appear as the load
   balancer. `deploy/gcp/gke.sh` has the same gap; it is removed, and this run replaces it.
 
-**Live run** (`deploy/gcp/recipe-live.sh`):
-- The recipe runs in a project of its own, under a domain the operator gives.
-- `check` runs through the load balancer.
-- `down` deletes the project, the only clean way out for Cloud KMS key rings (spec 0004).
-- `leftovers` confirms the project is `DELETE_REQUESTED`.
+**Live run** (`deploy/gcp/recipe-live.sh up | check | down | leftovers`, europe-west1, the owner's
+gcloud login):
+- `up` makes a project of its own (`kista-live-<mmdd>-<n>`, labelled `purpose=kista-live`) on a
+  billing account the operator gives, and applies the recipe whole with `deletion_protection=false`,
+  `:edge` pinned by its digest and this checkout's chart. Terraform gets a token from
+  `gcloud auth print-access-token`. The host is one the operator gives; with a Route 53 zone the
+  script writes and removes its A record. `up` waits for the name and the managed certificate.
+- The server issuer is the cluster's own OIDC issuer, known before the cluster exists
+  (`container.googleapis.com/v1/projects/<p>/locations/<r>/clusters/<name>`). `check`
+  administers through the API as the cluster's `kista/ops`, as the ECS run does: tenant, channel,
+  the Cloud KMS key, issuer, grants; publishes through the load balancer; runs `blob check` with
+  `kubectl exec`; DuckDB's `TestRemote`; the audit's client address; a rolling restart under
+  polling.
+- `down` deletes the project, the only clean way out for Cloud KMS key rings (spec 0004), and the
+  record; `leftovers` confirms the project is `DELETE_REQUESTED`.
+
+What the live run found, now in the recipe and the chart:
+- **The instance's name.** On private services access the instance's `dnsName` is empty; its
+  name is in `dnsNames` (`….sql-psa.goog.`, `recordManager: CUSTOMER`), and the certificate names
+  it with the trailing dot. The recipe takes that entry; `verify-full` matches.
+- **No ownership change.** `db-init`'s grants (above) work; the IAM user's migrations create
+  kista's tables.
+- **Autopilot rewrites the Job.** It fills in the pod template and annotates the Job, so a plain
+  `kubernetes_job_v1` was replaced on every apply and ran again with the dead password. The Job
+  ignores changes to its spec and annotations; `-replace=random_password.root
+  -replace=kubernetes_job_v1.db_init` runs it again on purpose (tried live).
+- **Rolling restarts.** GKE's NEG readiness gate passed before the load balancer had checked a new
+  pod ("NEG is not attached to any BackendService with health checking"), and a restart then left
+  no healthy backend: one run 1 of 249 polls `502 failed_to_pick_backend`, another 26. The chart
+  gained `minReadySeconds` (the recipe sets 60) and `gke.backendConfig.drainingTimeoutSec` (30);
+  afterwards two restarts gave 610 and 631 polls, all `200`.
+- **The audit** records the caller's address through the external load balancer, with the static
+  IP's `/32` in `trusted_proxies`.
+- The first Autopilot node in a new project took about 15 minutes to come up.
 
 ### Phase 3: Azure
 

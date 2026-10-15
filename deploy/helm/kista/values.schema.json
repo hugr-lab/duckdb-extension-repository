@@ -304,6 +304,11 @@
               "type": "integer",
               "minimum": 30,
               "maximum": 86400
+            },
+            "drainingTimeoutSec": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3600
             }
           }
         },
@@ -406,6 +411,11 @@
     "preStopSeconds": {
       "type": "integer",
       "minimum": 1
+    },
+    "minReadySeconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 600
     },
     "terminationGracePeriodSeconds": {
       "type": [

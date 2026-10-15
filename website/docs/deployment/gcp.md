@@ -30,8 +30,9 @@ memory (the spool would cost as much). The design is in
 
 The database login is the service account itself: kista asks the metadata server for a token
 scoped to Cloud SQL login only, for each connection ([State](../state.md#logins)). The DSN names
-the instance's DNS name with its trailing dot, as the certificate does, and `store.ca_pem` holds
-the instance's CA.
+the instance's name on private services access (`….sql-psa.goog.`, from its `dnsNames`) with its
+trailing dot, as the certificate does, and `store.ca_pem` holds the instance's CA. Cloud SQL leaves
+that name's record to the customer: the recipe's private zone serves it.
 
 ## Deploy
 
@@ -96,6 +97,11 @@ Scheduled commands are the chart's `adminJobs` ([Kubernetes](kubernetes.md)).
   ignores a token sent over plain http.
 - `gke.backendConfig.timeoutSec` is 600 seconds: GKE's default of 30 limits a whole response, and
   would cut large publishes and downloads.
+- **Rolling updates.** GKE's NEG readiness gate can pass before the load balancer has checked a new
+  pod; a rollout that then removes the old pods leaves no healthy backend for a few seconds
+  (measured: `502 failed_to_pick_backend`). The recipe sets the chart's `minReadySeconds: 60`, so a
+  new pod serves through the load balancer before an old one goes, `preStopSeconds: 20`, and the
+  `BackendConfig`'s connection draining of 30 seconds.
 - Cloud NAT is needed: kista pulls its image from ghcr.io and reaches its issuers and upstreams.
 - A given `network` needs Cloud NAT (or another way out) and private services access already;
   the recipe makes neither there.

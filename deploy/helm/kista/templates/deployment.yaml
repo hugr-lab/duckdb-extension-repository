@@ -7,6 +7,11 @@ metadata:
 spec:
   replicas: {{ include "kista.replicas" . }}
   revisionHistoryLimit: 5
+  {{- with .Values.minReadySeconds }}
+  # a new pod counts as available only after this long ready: time for a load balancer that checks
+  # it on its own to see it healthy before an old pod goes
+  minReadySeconds: {{ . }}
+  {{- end }}
   selector:
     matchLabels: {{- include "kista.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: server

@@ -37,7 +37,7 @@ export KUBECONFIG=$work/kubeconfig TF_DATA_DIR=$work/terraform
 
 step() { printf '\n== %s\n' "$*"; }
 save() { echo "$1=$2" >>"$work/state"; }
-get() { sed -n "s/^$1=//p" "$work/state" 2>/dev/null | tail -1; }
+get() { [ -f "$work/state" ] && sed -n "s/^$1=//p" "$work/state" | tail -1 || true; }
 tf() { terraform -chdir="$repo/deploy/gcp-gke" "$@"; }
 out() { tf output -state="$work/terraform.tfstate" -raw "$1"; }
 ka() { kubectl -n "$ns" exec -i deploy/kista -- /kista admin -config /etc/kista/kista.yaml "$@"; }
@@ -63,7 +63,7 @@ up() {
 		parent=()
 		[ -n "${KISTA_GCP_FOLDER:-}" ] && parent=(--folder "$KISTA_GCP_FOLDER")
 		[ -n "${KISTA_GCP_ORG:-}" ] && parent=(--organization "$KISTA_GCP_ORG")
-		gcloud projects create "$project" --labels "purpose=$name" "${parent[@]}"
+		gcloud projects create "$project" --labels "purpose=$name" ${parent[@]+"${parent[@]}"}
 	fi
 	gcloud billing projects link "$project" --billing-account "$KISTA_GCP_BILLING" >/dev/null
 	gcloud services enable --project "$project" compute.googleapis.com container.googleapis.com sqladmin.googleapis.com \

@@ -8,6 +8,8 @@ metadata:
 spec:
   # the whole response, not idle time: a slow publish or download needs more than GKE's 30 seconds
   timeoutSec: {{ .Values.gke.backendConfig.timeoutSec }}
+  connectionDraining:
+    drainingTimeoutSec: {{ .Values.gke.backendConfig.drainingTimeoutSec }}
   healthCheck:
     type: HTTP
     port: 8081
