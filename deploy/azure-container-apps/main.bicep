@@ -13,6 +13,9 @@ param prefix string = 'kista'
 
 param location string = resourceGroup().location
 
+@description('Azure SQL\'s region, when the subscription may not create servers in location (a private endpoint reaches it from the VNet); PostgreSQL stays in location, in its delegated subnet.')
+param databaseLocation string = location
+
 @description('kista\'s image: ghcr.io/hugr-lab/kista:vX.Y.Z or …@sha256:… (a moving tag only pinned by digest).')
 param image string
 
@@ -68,9 +71,19 @@ var unique = uniqueString(resourceGroup().id, prefix)
 var tenantId = subscription().tenantId
 var allTags = union({ app: 'kista', prefix: prefix }, tags)
 var infraCidr = '10.50.0.0/23'
+// the environment's Envoy reaches the replicas from the platform's reserved ranges (measured live),
+// which no subnet of the operator's may use
+var platformRanges = ['100.100.0.0/17', '100.100.128.0/19', '100.100.160.0/19', '100.100.192.0/19']
 
+// Consumption's sizes: memory 2 GiB per vCPU; ephemeral storage 2, 4 or 8 GiB (above 1 vCPU)
+var sizes = {
+  '0.5': { memory: '1Gi', ephemeralMib: 2048 }
+  '1.0': { memory: '2Gi', ephemeralMib: 4096 }
+  '2.0': { memory: '4Gi', ephemeralMib: 8192 }
+  '4.0': { memory: '8Gi', ephemeralMib: 8192 }
+}
 // the spool, (2 × max_ingests + 1) × max_body, on the replica's ephemeral storage with 1 GiB to spare
-var ephemeralMib = json(cpu) > 1 ? 8192 : int(json(cpu) * 4096)
+var ephemeralMib = sizes[cpu].ephemeralMib
 var spoolMib = (2 * maxIngests + 1) * maxBodyMib
 var spoolCheck = spoolMib <= ephemeralMib - 1024 ? 'ok' : int('the spool, (2 x maxIngests + 1) x maxBodyMib, exceeds the replica\'s ephemeral storage less 1 GiB')
 
@@ -82,7 +95,7 @@ resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
   tags: allTags
 }
 
-// ---- the network: the environment's subnet is the range kista trusts for X-Forwarded-For
+// ---- the network: the environment's subnet, the database's, and private endpoints
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: '${name}-vnet'
@@ -239,7 +252,8 @@ module sql 'modules/sql.bicep' = if (database == 'sqlserver') {
   name: '${name}-sql'
   params: {
     name: '${name}-${unique}'
-    location: location
+    location: databaseLocation
+    endpointLocation: location
     tags: allTags
     subnetId: '${vnet.id}/subnets/endpoints'
     vnetId: vnet.id
@@ -303,8 +317,7 @@ var config = {
   store: store
   serve: {
     public_url: 'https://${host}'
-    // the environment's Envoy reaches the replicas from its subnet
-    trusted_proxies: [infraCidr]
+    trusted_proxies: platformRanges
     listeners: [
       { addr: ':8443', scheme: 'https', behind_proxy: true }
       { addr: ':8081', scheme: 'health' }
@@ -339,12 +352,11 @@ var config = {
   )
 }
 
-var memory = '${int(json(cpu) * 2)}Gi'
 var container_ = {
   name: 'kista'
   image: image
   env: [{ name: 'KISTA_CONFIG', value: string(config) }]
-  resources: { cpu: json(cpu), memory: json(cpu) < 1 ? '1Gi' : memory }
+  resources: { cpu: json(cpu), memory: sizes[cpu].memory }
   volumeMounts: [{ volumeName: 'tmp', mountPath: '/var/lib/kista/tmp' }]
 }
 var volumes = [{ name: 'tmp', storageType: 'EmptyDir' }]

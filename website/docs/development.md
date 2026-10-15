@@ -272,6 +272,26 @@ deploy/gcp/recipe-live.sh down && deploy/gcp/recipe-live.sh leftovers
   applies again in the same project (the key ring gets a new name).
 - `down` deletes the project (30 days pending deletion, not billed); `leftovers` confirms it.
 
+### Live runs on Azure
+
+`deploy/azure/recipe-live.sh` deploys the Container Apps recipe in `deploy/azure-container-apps` in
+a resource group of its own and runs the same checks through Container Apps' ingress and the API.
+Administration is Entra ID's: the script registers two apps (the server's audience and tenant
+acme's), and the first, with a client secret that expires in two days, is the caller. It costs
+money while it runs: a run needs the owner's yes, and is deleted the same day or when the cloud work
+it serves is done.
+
+```bash
+az login                                   # an Owner of the subscription, allowed to register apps
+KISTA_AZURE_LOCATION=<region> deploy/azure/recipe-live.sh up && deploy/azure/recipe-live.sh check
+deploy/azure/recipe-live.sh down && deploy/azure/recipe-live.sh leftovers
+```
+
+- Needs `az` with Bicep, `jq`, `curl`, `go`, and the DuckDB e2e build (`make e2e-build`).
+- `KISTA_AZURE_DATABASE=sqlserver` deploys Azure SQL instead of PostgreSQL.
+- `down` deletes the group, purges the vault, deletes the custom role (which outlives the group)
+  and the app registrations; `leftovers` must print nothing.
+
 ## Lint
 
 ```bash

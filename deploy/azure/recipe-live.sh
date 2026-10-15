@@ -36,16 +36,18 @@ out() { az deployment group show -g "$(get group)" -n kista --query "properties.
 # the claims of a JWT's payload
 claims() { local p=${1#*.}; p=${p%%.*}; p=$(printf '%s' "$p" | tr '_-' '/+'); while [ $((${#p} % 4)) != 0 ]; do p="$p="; done; printf '%s' "$p" | base64 -d; }
 
-# an Entra app registration: its app id; made once, with its service principal
+# an Entra app registration, made once with its service principal: its app id. Its identifier URI
+# is api://<app id> (a tenant's default policy refuses other api:// names without a verified
+# domain), and it issues v2.0 tokens (the issuer https://login.microsoftonline.com/<tenant>/v2.0).
 app() {
-	local display=$1 id
+	local display=$1 id oid
 	id=$(az ad app list --display-name "$display" --query '[0].appId' -o tsv)
-	if [ -z "$id" ]; then
-		id=$(az ad app create --display-name "$display" --identifier-uris "api://$display" --query appId -o tsv)
-		# v2.0 tokens: the issuer https://login.microsoftonline.com/<tenant>/v2.0
-		az ad app update --id "$id" --set api.requestedAccessTokenVersion=2
-		az ad sp create --id "$id" >/dev/null
-	fi
+	[ -n "$id" ] || id=$(az ad app create --display-name "$display" --query appId -o tsv)
+	[ -n "$id" ] || return 1
+	oid=$(az ad app show --id "$id" --query id -o tsv)
+	az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/applications/$oid" --headers Content-Type=application/json \
+		--body "$(jq -cn --arg u "api://$id" '{api: {requestedAccessTokenVersion: 2}, identifierUris: [$u]}')" >/dev/null || return 1
+	az ad sp show --id "$id" >/dev/null 2>&1 || az ad sp create --id "$id" >/dev/null || return 1
 	echo "$id"
 }
 
@@ -66,20 +68,20 @@ up() {
 	save tenant "$tenant"
 
 	step "Entra: the server's and tenant acme's app registrations, and the client's secret"
-	server=$(app "$group-server")
-	acme=$(app "$group-acme")
+	server=$(app "$group-server") && [ -n "$server" ] || { echo "up: no app $group-server" >&2; exit 1; }
+	acme=$(app "$group-acme") && [ -n "$acme" ] || { echo "up: no app $group-acme" >&2; exit 1; }
 	save client "$server"
-	save server_app "$group-server"
-	save acme_app "$group-acme"
+	save server_app "$server"
+	save acme_app "$acme"
 	if [ ! -s "$work/secret" ]; then
 		(umask 077; az ad app credential reset --id "$server" --display-name live --end-date "$(date -u -v+2d +%Y-%m-%d 2>/dev/null || date -u -d +2days +%Y-%m-%d)" \
 			--query password -o tsv | tr -d '\n' >"$work/secret")
 	fi
 	# a new secret and a new principal take a while to work
 	for i in $(seq 1 30); do
-		t=$(token "$group-server" 2>/dev/null || true)
+		t=$(token "$server" 2>/dev/null || true)
 		[ -n "$t" ] && [ "$t" != null ] && break
-		[ "$i" = 30 ] && { echo "up: no token for api://$group-server" >&2; exit 1; }
+		[ "$i" = 30 ] && { echo "up: no token for api://$server" >&2; exit 1; }
 		sleep 10
 	done
 	claims "$t" | jq '{iss, aud, sub, azp, ver}'
@@ -123,8 +125,11 @@ up() {
 			softDeleteDays: {value: 7},
 			tags: {value: {purpose: "kista-live"}}
 		}}' >"$work/parameters.json"
+	# once more on a failure: a new subnet is not always visible yet to the resource it is delegated to
 	az deployment group create -g "$group" -n kista -f "$repo/deploy/azure-container-apps/main.bicep" \
-		-p @"$work/parameters.json" -o none
+		-p @"$work/parameters.json" -o none ||
+		az deployment group create -g "$group" -n kista -f "$repo/deploy/azure-container-apps/main.bicep" \
+			-p @"$work/parameters.json" -o none
 	echo "up: kista at $(out url)"
 }
 
@@ -260,9 +265,9 @@ down() {
 			az role definition delete --name "$role"
 	fi
 	step "the app registrations"
-	for a in "$(get server_app)" "$(get acme_app)"; do
+	for a in "$group-server" "$group-acme"; do
 		id=$(az ad app list --display-name "$a" --query '[0].id' -o tsv)
-		[ -n "$id" ] && az ad app delete --id "$id"
+		[ -z "$id" ] || az ad app delete --id "$id"
 	done
 	rm -f "$work/secret"
 }

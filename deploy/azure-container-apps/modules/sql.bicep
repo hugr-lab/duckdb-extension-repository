@@ -4,6 +4,7 @@
 
 param name string
 param location string
+param endpointLocation string
 param tags object
 param subnetId string
 param vnetId string
@@ -57,7 +58,7 @@ resource link 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01'
 
 resource endpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
   name: '${name}-sql'
-  location: location
+  location: endpointLocation
   tags: tags
   properties: {
     subnet: { id: subnetId }
