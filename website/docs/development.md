@@ -248,6 +248,30 @@ deploy/aws/recipe-live.sh down && deploy/aws/recipe-live.sh leftovers
   nothing marked `LEFT` after `down`; KMS keys pending deletion (7 days) are expected. Delete the
   run's IAM user afterwards.
 
+### Live runs on GCP
+
+`deploy/gcp/recipe-live.sh` applies the GKE recipe in `deploy/gcp-gke` in a Google Cloud project of
+its own and runs the same checks through the load balancer and the API; the server administrator
+and DuckDB's tokens come from the cluster's own OIDC issuer. It costs money while it runs: a run
+needs the owner's yes, and is deleted the same day or when the cloud work it serves is done.
+
+```bash
+export KISTA_GCP_BILLING=<billing account> KISTA_LIVE_HOST=<a name you can point at an address>
+deploy/gcp/recipe-live.sh up && deploy/gcp/recipe-live.sh check
+deploy/gcp/recipe-live.sh destroy        # optional: the recipe's own destroy
+deploy/gcp/recipe-live.sh down && deploy/gcp/recipe-live.sh leftovers
+```
+
+- Needs `gcloud` with `gke-gcloud-auth-plugin`, `terraform`, `kubectl`, `jq`, `dig`, `go`, and the
+  DuckDB e2e build (`make e2e-build`).
+- With `KISTA_LIVE_ROUTE53_ZONE` (a Route 53 zone the host is in) the script writes and removes the
+  host's A record with the AWS CLI; without it, point the host at the address `up` prints.
+- The image is `:edge` pinned by its digest at `up` (`KISTA_LIVE_IMAGE` for another), and the chart
+  this checkout's.
+- `destroy` runs `terraform destroy` with the project kept and lists what it left; a later `up`
+  applies again in the same project (the key ring gets a new name).
+- `down` deletes the project (30 days pending deletion, not billed); `leftovers` confirms it.
+
 ## Lint
 
 ```bash

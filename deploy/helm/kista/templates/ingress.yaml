@@ -7,7 +7,16 @@ kind: Ingress
 metadata:
   name: {{ include "kista.fullname" . }}
   labels: {{- include "kista.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- $ann := deepCopy (.Values.ingress.annotations | default dict) -}}
+  {{- if .Values.gke.managedCertificate.enabled }}
+  {{- $certs := list (include "kista.fullname" .) }}
+  {{- with get $ann "networking.gke.io/managed-certificates" }}{{ $certs = prepend $certs . }}{{ end }}
+  {{- $_ := set $ann "networking.gke.io/managed-certificates" (join "," $certs) }}
+  {{- end }}
+  {{- if .Values.gke.frontendConfig.sslPolicy }}
+  {{- $_ := set $ann "networking.gke.io/v1beta1.FrontendConfig" (include "kista.fullname" .) }}
+  {{- end }}
+  {{- with $ann }}
   annotations: {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:

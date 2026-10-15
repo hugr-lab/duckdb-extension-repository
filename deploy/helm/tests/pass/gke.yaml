@@ -1,5 +1,5 @@
-# GKE: Workload Identity for Cloud KMS keys and GCS, GKE Ingress with a BackendConfig; Vault with a
-# projected token
+# GKE: Workload Identity for Cloud KMS keys and GCS, GKE Ingress with a BackendConfig, a global
+# static IP and a Google-managed certificate; Vault with a projected token
 gcp:
   serviceAccount: kista-signer@acme-kista.iam.gserviceaccount.com
 config:
@@ -32,9 +32,21 @@ projectedTokens:
 gke:
   backendConfig:
     enabled: true
+    timeoutSec: 900
+    drainingTimeoutSec: 60
+  managedCertificate:
+    enabled: true
+  frontendConfig:
+    sslPolicy: kista-tls
 networkPolicy:
   loadBalancerRanges: [35.191.0.0/16, 130.211.0.0/22]
 ingress:
   enabled: true
-  className: gce
-  hosts: [{host: kista.example.com}]
+  # GKE's controller takes an Ingress by this annotation (Autopilot has no IngressClass object)
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: kista
+    # a certificate of the operator's own stays beside the chart's
+    networking.gke.io/managed-certificates: corp-cert
+  hosts: [{host: kista.example.com}, {host: kista.example.com}]
+minReadySeconds: 60

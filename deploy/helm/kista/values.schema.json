@@ -299,6 +299,34 @@
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "timeoutSec": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 86400
+            },
+            "drainingTimeoutSec": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3600
+            }
+          }
+        },
+        "frontendConfig": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sslPolicy": {
+              "type": "string"
+            }
+          }
+        },
+        "managedCertificate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
             }
           }
         }
@@ -392,6 +420,11 @@
     "preStopSeconds": {
       "type": "integer",
       "minimum": 1
+    },
+    "minReadySeconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 599
     },
     "terminationGracePeriodSeconds": {
       "type": [

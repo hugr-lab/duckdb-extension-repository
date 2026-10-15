@@ -1,3 +1,3 @@
-# the stacks up.sh made, and gke.sh's kubeconfigs
+# the stacks up.sh made, and recipe-live.sh's state
 .state-*
 .kubeconfig-*

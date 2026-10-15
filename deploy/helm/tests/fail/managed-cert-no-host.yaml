@@ -1,0 +1,19 @@
+# want: gke.managedCertificate: needs the Ingress with at least one host
+config:
+  store:
+    kind: sqlite
+  serve:
+    public_url: https://kista.example.com
+    trusted_proxies: [35.191.0.0/16, 130.211.0.0/22]
+gke:
+  backendConfig:
+    enabled: true
+  managedCertificate:
+    enabled: true
+ingress:
+  enabled: true
+  annotations:
+    kubernetes.io/ingress.class: gce
+  hosts: [{}]
+networkPolicy:
+  loadBalancerRanges: [35.191.0.0/16, 130.211.0.0/22]

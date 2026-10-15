@@ -138,6 +138,21 @@ ingress:
 gke:
   backendConfig:
     enabled: false
+    # the load balancer's limit on a whole response (GKE's default is 30 seconds): above the time a
+    # large publish or download takes. On a pod being replaced, serve.shutdown_timeout bounds
+    # transfers still running, not this.
+    timeoutSec: 600
+    # a removed pod's requests in flight finish within this long (GKE's default is 0: cut at once)
+    drainingTimeoutSec: 30
+  # a Google-managed certificate for the Ingress's hosts, named on the Ingress. The hosts' DNS must
+  # point at the load balancer before Google issues it (tens of minutes). A global static IP:
+  # ingress.annotations kubernetes.io/ingress.global-static-ip-name.
+  managedCertificate:
+    enabled: false
+  # a FrontendConfig naming a Compute Engine SSL policy for the Ingress's https: without one, GKE's
+  # default accepts TLS 1.0 (gcloud compute ssl-policies create … --min-tls-version 1.2)
+  frontendConfig:
+    sslPolicy: ""
 
 # Who may reach the pods. Default: on with mode behind_proxy (port 8443 only from the ingress
 # controller's pods and loadBalancerRanges), off with mode tls. With it on, name the ingress
@@ -172,6 +187,10 @@ probes:
 
 # preStop sleeps this long (the endpoints update before the drain)
 preStopSeconds: 5
+# A rolling update waits this long after a new pod is ready before it removes an old one. GKE's NEG
+# readiness gate can pass before the load balancer has checked the pod (measured on Autopilot: every
+# backend unhealthy for seconds during a restart): 60 there.
+minReadySeconds: 0
 # empty: preStop + drain_timeout + 2 × shutdown_timeout + 21s + 10s (101 with the defaults)
 terminationGracePeriodSeconds: null
 

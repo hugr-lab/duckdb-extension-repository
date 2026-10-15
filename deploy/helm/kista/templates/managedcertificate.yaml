@@ -1,0 +1,26 @@
+{{- if .Values.gke.managedCertificate.enabled }}
+{{- $domains := list }}
+{{- range .Values.ingress.hosts }}
+{{- with .host }}{{ $domains = append $domains . }}{{ end }}
+{{- end }}
+{{- $domains = uniq $domains }}
+{{- if not (and .Values.ingress.enabled $domains) }}
+{{- fail "gke.managedCertificate: needs the Ingress with at least one host" }}
+{{- end }}
+{{- range $domains }}
+{{- if hasPrefix "*" . }}
+{{- fail (printf "gke.managedCertificate: Google-managed certificates take no wildcard host (%s)" .) }}
+{{- end }}
+{{- end }}
+{{- if gt (len $domains) 100 }}
+{{- fail "gke.managedCertificate: at most 100 hosts" }}
+{{- end }}
+# Google issues it once the hosts resolve to the Ingress's address
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: {{ include "kista.fullname" . }}
+  labels: {{- include "kista.labels" . | nindent 4 }}
+spec:
+  domains: {{- toYaml $domains | nindent 4 }}
+{{- end }}

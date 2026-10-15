@@ -14,7 +14,7 @@ for f in tests/pass/*.yaml kind/values.yaml; do
 	helm lint --strict "$chart" -f "$f" >/dev/null || { echo "FAIL lint $f"; helm lint --strict "$chart" -f "$f"; fails=$((fails + 1)); continue; }
 	for name in t a-release-name-at-the-limit-of-fifty-three-characters; do
 		if ! helm template "$name" "$chart" -f "$f" --kube-version "$k8s" |
-			kubeconform -strict -summary=false -kubernetes-version "$k8s" -skip BackendConfig; then
+			kubeconform -strict -summary=false -kubernetes-version "$k8s" -skip BackendConfig,ManagedCertificate,FrontendConfig; then
 			echo "FAIL kubeconform $f ($name)"
 			fails=$((fails + 1))
 		fi
