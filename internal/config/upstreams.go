@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -19,6 +20,26 @@ type Upstreams struct {
 	NegativeTTL  time.Duration `yaml:"negative_ttl"`  // a pull-through miss is not retried within it; default 1h
 	// Credentials are the named credentials private upstreams use (phase 3).
 	Credentials []Credential `yaml:"credentials"`
+	// BundleKeys are the bundle keys a site accepts, per tenant (spec 0014).
+	BundleKeys []BundleKey `yaml:"bundle_keys"`
+}
+
+// BundleKey pins a bundle key's fingerprint for some tenants (spec 0014): bundles signed by it may
+// be imported into them.
+type BundleKey struct {
+	Fingerprint string   `yaml:"fingerprint"`
+	Tenants     []string `yaml:"tenants"` // tenant names, or "*"
+}
+
+// BundleKeysFor returns the fingerprints pinned for a tenant.
+func (c Config) BundleKeysFor(tenant string) []string {
+	var out []string
+	for _, k := range c.Upstreams.BundleKeys {
+		if slices.Contains(k.Tenants, "*") || slices.Contains(k.Tenants, tenant) {
+			out = append(out, k.Fingerprint)
+		}
+	}
+	return out
 }
 
 // Credential is how kista obtains a token for a private upstream (spec 0009 phase 3): no secret
@@ -166,4 +187,25 @@ func validateUpstreams(bad func(string, ...any), c Config) {
 			bad("%s.kind must be client_credentials or token_file", where)
 		}
 	}
+	if len(u.BundleKeys) > 10 {
+		bad("upstreams.bundle_keys: at most 10")
+	}
+	fps := map[string]bool{}
+	for i, k := range u.BundleKeys {
+		where := fmt.Sprintf("upstreams.bundle_keys[%d]", i)
+		if !bundleFP.MatchString(k.Fingerprint) || fps[k.Fingerprint] {
+			bad("%s.fingerprint must be sha256:<64 lowercase hex> and unique", where)
+		}
+		fps[k.Fingerprint] = true
+		if len(k.Tenants) == 0 {
+			bad("%s.tenants names the tenants it may sign for (or *)", where)
+		}
+		for _, t := range k.Tenants {
+			if t != "*" && !tenantName.MatchString(t) {
+				bad("%s.tenants: %q is not a tenant name or *", where, t)
+			}
+		}
+	}
 }
+
+var bundleFP = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)

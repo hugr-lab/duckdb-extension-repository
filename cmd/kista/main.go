@@ -2,6 +2,7 @@
 //
 //	kista ext inspect <file> [--key <pub>]...   metadata, body hash, size, signature fingerprint
 //	kista ext verify  <file> --key <pub>...     exit 0 if any key verifies the signature
+//	kista bundle keygen|keys|sign|inspect ...   bundle keys and bundles, offline (spec 0014)
 //	kista admin -config <file|env:NAME> <command> ... the server administrator's CLI (kista admin help)
 //	kista serve -config <file|env:NAME>         the repository server (spec 0006)
 //	kista version                               kista's version (DuckDB versions: kista admin version)
@@ -34,12 +35,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		makeTmpdir(os.Getenv("TMPDIR"))
 		return serveCmd(args[1:], os.Environ(), stderr)
 	}
+	if len(args) >= 1 && args[0] == "bundle" {
+		return bundleCmd(args[1:], stdout, stderr)
+	}
 	if len(args) == 1 && (args[0] == "version" || args[0] == "--version" || args[0] == "-version") {
 		fmt.Fprintln(stdout, app.VersionLine())
 		return 0
 	}
 	if len(args) < 2 || args[0] != "ext" {
 		fmt.Fprintln(stderr, "usage: kista ext inspect|verify <file> [--key <public key file>]...")
+		fmt.Fprintln(stderr, "       kista bundle keygen|keys|sign|inspect ...           (kista bundle)")
 		fmt.Fprintln(stderr, "       kista admin -config <file|env:NAME> <command> ...   (kista admin help)")
 		fmt.Fprintln(stderr, "       kista serve -config <file|env:NAME>")
 		fmt.Fprintln(stderr, "       kista version                              (DuckDB versions: kista admin version)")

@@ -443,6 +443,7 @@ Upstream runs and the credentials of private upstreams. The whole block is file-
 | `upstreams.interval` | duration | `6h` | Between a mirror's scheduled runs; `15m..168h`. |
 | `upstreams.negative_ttl` | duration | `1h` | A pull-through miss is not retried within it; `1m..24h`. |
 | `upstreams.credentials` | list | none | Named credentials, below. |
+| `upstreams.bundle_keys` | list | none | Bundle keys a site accepts ([Bundle mode](upstreams.md#bundle-mode)), at most 10: each `{fingerprint: "sha256:<hex>", tenants: [<name>…] or ["*"]}`. A bundle is imported into a tenant only when its key is pinned for that tenant. Read at start. |
 
 Each credential:
 

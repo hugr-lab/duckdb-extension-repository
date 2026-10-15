@@ -103,7 +103,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddKey": {"upstream.change"}, "RemoveKey": {"upstream.change"}, "RemoveShadow": {"shadow.remove"},
 		"SetCredential": {"upstream.change"},
 		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
-		"Sync":          nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil,
+		"Sync":          nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil, "Plan": nil,
 	},
 	"attachment.Service": {
 		"Attach": {"attachment.add"}, "SetFlags": {"attachment.change"}, "Remove": {"attachment.remove"},

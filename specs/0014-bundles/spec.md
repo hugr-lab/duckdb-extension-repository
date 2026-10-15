@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a part 1 (bundle mode) implemented; parts 2-5, 1b and 2 to come
+- **Status**: accepted; phase 1a parts 1 (bundle mode) and 2 (the format, keys and plan) implemented; parts 3-5, 1b and 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -171,8 +171,9 @@ upstreams:
 kista admin bundle plan <tenant> [-upstream <name>,…] [-o plan.json]
 ```
 
-The plan lists the tenant's bundle-mode upstreams (all of them, or the named ones) as JSON. It holds
-no secret:
+The plan lists the tenant's active bundle-mode upstreams (all of them, or the named ones; a paused
+one is left out, and refused when named, since an import fills active upstreams only) as JSON. It
+holds no secret:
 
 ```json
 {
@@ -240,13 +241,15 @@ fetcher.
 ```sh
 kista admin bundle export <tenant> -plan plan.json (-key bundle-key.pem | -unsigned) -o acme-2026-10.kbundle \
     [-sync] [-private <prefix>]…
-kista bundle sign -key bundle-key.pem -in acme-2026-10.unsigned -o acme-2026-10.kbundle   # offline
+kista bundle sign -key bundle-key.pem -plan plan.json -in acme-2026-10.unsigned -o acme-2026-10.kbundle   # offline
 ```
 
 `<tenant>` is the exporting kista's tenant whose upstreams and channels serve the plan; it need not
 share the site's tenant name. With `-key`, the export signs only if the key's fingerprint is among
-the plan's `bundle_keys`, and stops before reading anything otherwise; `kista bundle sign` makes
-the same check. The plan is validated with spec 0009's grammars first: a plan is input, whoever
+the plan's `bundle_keys`, and stops before reading anything otherwise. `kista bundle sign` makes
+the same check against the plan it is given, validates that plan, and refuses a bundle that
+answers another plan, holds a source or cell the plan did not ask for, is incomplete, or whose
+files do not inflate to the manifest's sizes and hashes: a signature vouches for the contents. The plan is validated with spec 0009's grammars first: a plan is input, whoever
 wrote it.
 
 For each source in the plan, taken in canonical order (kind, then normalised prefix):
@@ -1011,7 +1014,8 @@ These pages are updated in the same PR:
   - SQLite's rebuild keeps every child table's rows.
   - `bundle_imports`, and the reaper's completeness test with it.
 - **e2e** (pinned DuckDB), in-process as the harness runs kista today (`e2e/upstream_test.go`):
-  1. A source kista serves a signed channel.
+  1. A source kista serves a signed channel over https (a test CA): a bundle-mode prefix is https
+     only.
   2. A gateway kista mirrors it; the export package makes a bundle from the site's plan.
   3. A site kista whose egress refuses every address imports the bundle into a bundle-mode upstream.
   4. DuckDB runs `INSTALL … FROM` and `LOAD` against the site.
