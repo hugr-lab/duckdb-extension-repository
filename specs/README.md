@@ -24,4 +24,4 @@ and it is superseded by a new spec when a decision changes.
 | [0017](0017-extension-groups/spec.md) | Extension groups: grants on named sets of extensions | implemented |
 | [0018](0018-blob-verify/spec.md) | Verifying stored bodies | implemented |
 | [0019](0019-tenant-deletion/spec.md) | Deleting a tenant | implemented |
-| [0020](0020-cloud-recipes/spec.md) | Cloud recipes: AWS and GCP in Terraform, Azure in Bicep | phase 0 implemented |
+| [0020](0020-cloud-recipes/spec.md) | Cloud recipes: AWS and GCP in Terraform, Azure in Bicep | phases 0-1 implemented; 2-4 to come |

@@ -11,7 +11,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Deployment',
       link: {type: 'doc', id: 'deployment/index'},
-      items: ['deployment/kubernetes'],
+      items: ['deployment/kubernetes', 'deployment/aws'],
     },
     'state',
     'signing-keys',

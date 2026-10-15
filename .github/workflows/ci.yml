@@ -218,3 +218,27 @@ jobs:
       - run: go test -count=1 ./deploy/helm/chartcheck/
         env:
           KISTA_TEST_REQUIRE_HELM: "1"
+
+  terraform:
+    # The cloud recipes (spec 0020): formatted, valid, and their plans and refusals tested with mock
+    # providers; no cloud, no credentials; the providers come from the committed lock file.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: terraform
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin" && cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o tf.zip https://releases.hashicorp.com/terraform/1.16.6/terraform_1.16.6_linux_amd64.zip
+          echo "38034b38d03096399a7a1264a14561a8029b2b496fd1f169452656e53968f1b7  tf.zip" | sha256sum -c
+          unzip -q tf.zip terraform -d bin
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: |
+          for m in deploy/aws-ecs; do
+            terraform -chdir="$m" fmt -check -recursive -diff
+            terraform -chdir="$m" init -backend=false -input=false -lockfile=readonly
+            terraform -chdir="$m" validate
+            terraform -chdir="$m" test
+          done

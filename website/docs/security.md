@@ -316,7 +316,10 @@ send events to a store the database administrators do not control. See
 - Block public access on buckets and containers.
 - Keep `staging` and `prod` keys apart.
 - Send events to an external log pipeline.
-- Protect the database credentials as you protect the keys.
+- Protect the database credentials as you protect the keys; on AWS and GCP, log in with the
+  workload's identity (`store.login.kind: aws` or `gcp`) instead of a password.
+- On a cloud, scope signing to one deployment's keys and deny tagging them to anyone else (the
+  [AWS](deployment/aws.md#for-production) recipe's `kista-purpose` and `kista-deployment` tags).
 - Deploy the image by digest and verify its signature ([Deployment](deployment/index.md#verifying)).
 - On Kubernetes, follow the chart's hardening list ([Kubernetes](deployment/kubernetes.md#hardening)):
   the NetworkPolicy on, egress to `169.254.169.254` blocked where no metadata identity is used,
