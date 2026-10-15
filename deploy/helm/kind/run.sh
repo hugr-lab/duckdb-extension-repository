@@ -186,7 +186,7 @@ kubectl -n "$ns" rollout status deploy/postgres deploy/seaweedfs deploy/openbao 
 step "the S3 bucket"
 weed() { kubectl -n "$ns" exec deploy/seaweedfs -- sh -c "echo '$1' | weed shell" 2>&1; }
 for i in $(seq 1 30); do
-	weed "s3.bucket.create -name kista" >/dev/null
+	weed "s3.bucket.create -name kista" >/dev/null || true # the exec fails while SeaweedFS starts
 	weed s3.bucket.list | grep -qw kista && break
 	[ "$i" = 30 ] && { weed s3.bucket.list; exit 1; }
 	sleep 2
