@@ -77,6 +77,7 @@ type Result struct {
 	Error    string         `json:"error,omitempty"` // the run failed before its cells
 	Counts   map[string]int `json:"counts"`
 	Problems []CellNote     `json:"problems,omitempty"` // the first 20 cells that were not released or unchanged
+	Bundle   string         `json:"bundle,omitempty"`   // a bundle import's manifest id (spec 0014)
 
 	actor string // the run's actor, for its event
 }

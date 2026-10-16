@@ -42,6 +42,10 @@ const (
 	Rejected  = "rejected"
 )
 
+// MaxGzip is the largest gzip entry a file of n bytes may come in: deflate's stored blocks and a
+// header's optional fields leave far less overhead.
+func MaxGzip(n int64) int64 { return n + n/64 + 64<<10 }
+
 // ErrInvalid is a plan or manifest that breaks the format.
 var ErrInvalid = errors.New("bundle: invalid")
 
@@ -407,6 +411,14 @@ func (m *Manifest) Validate(now time.Time) error {
 			if err := c.validate(); err != nil {
 				return fmt.Errorf("%w: cell %v: %w", ErrInvalid, ck, err)
 			}
+			// fetched_at guards a cell against older builds at the site: never after the bundle itself
+			if c.FetchedAt.After(m.CreatedAt) {
+				return fmt.Errorf("%w: cell %v: fetched_at is after the manifest's created_at", ErrInvalid, ck)
+			}
+			// DuckDB's repositories need no credential: only a repository source is authenticated
+			if c.Authenticated && s.Kind != store.UpstreamRepo {
+				return fmt.Errorf("%w: cell %v: a %s cell is never authenticated", ErrInvalid, ck, s.Kind)
+			}
 			if c.Outcome == Fetched {
 				if prev, ok := files[c.File]; ok && (prev.Size != c.Size || prev.InflatedSize != c.InflatedSize || prev.BodyHash != c.BodyHash) {
 					return fmt.Errorf("%w: file %s referenced with different sizes", ErrInvalid, c.File)
@@ -434,6 +446,11 @@ func (c Cell) validate() error {
 		if !filePath.MatchString(c.File) || c.File != "files/"+c.SHA256+".gz" || c.Size <= 0 || c.InflatedSize <= 256 ||
 			c.BodyHash == "" || c.FetchedAt.IsZero() {
 			return errors.New("a fetched cell names its file, hash, sizes, body_hash and fetched_at")
+		}
+		// gzip never needs to be much larger than what it holds: an entry padded with empty blocks
+		// would hold an import's leases for nothing
+		if c.Size > MaxGzip(c.InflatedSize) {
+			return errors.New("the gzip entry is far larger than the file it holds")
 		}
 	case Unchanged:
 		if hasFile || c.BodyHash == "" || c.FetchedAt.IsZero() {

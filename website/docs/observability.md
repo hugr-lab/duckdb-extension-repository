@@ -91,9 +91,11 @@ are all the kinds in `internal/audit`:
 | Upstreams | `upstream.add` | `upstream:<name>` | `name`, `kind`, `prefix`, `channel`, `mode`, `visibility`, `keys`, `platforms`, `extensions`, `credential` |
 | | `upstream.remove` | `upstream:<name>` | `name` |
 | | `upstream.change` | `upstream:<name>` | `name`, `change`, `value`, `versions`, `allow_reserved`, `visibility`, `state` |
-| | `upstream.release` | `channel:<channel>/ext:<name>/release:<id>` | `upstream`, `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `url`, `key` |
+| | `upstream.release` | `channel:<channel>/ext:<name>/release:<id>` | `upstream`, `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `url`, `key`, `bundle` (an import's manifest) |
 | | `upstream.rejected` | `upstream:<name>` | `upstream`, `duckdb_version`, `platform`, `name`, `outcome` |
-| | `upstream.run` | `upstream:<name>` | `upstream`, `dry_run`, `counts`, `error` |
+| | `upstream.run` | `upstream:<name>` | `upstream`, `dry_run`, `counts`, `error`, `bundle` (an import's manifest) |
+| | `bundle.import` | `tenant:<name>` | `import`, `manifest`, `created_at`, `exporter`, `bundle_key`, `input_sha256`, `dry_run`, `state`, `targets` (counts per upstream) |
+| | `bundle.reset` | `upstream:<name>` | `upstream`, `manifest`, `created_at` (the mark it cleared) |
 | | `shadow.add`, `shadow.remove` | `shadow:<name>` | `name` |
 | Attachments and feeds | `attachment.add` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `size` |
 | | `attachment.change` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `change`, `statement` |

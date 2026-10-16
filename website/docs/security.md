@@ -262,6 +262,30 @@ signature, and the fingerprint registry (and on Azure, AWS and Google Cloud the
 accepts statements only under keys it pinned, only for bodies it holds, and verifies every field it
 shows; content is fetched only from the fixed path under the configured feed URL, through egress.
 
+## Bundles
+
+An air-gapped site takes extensions from **bundles** a connected kista exports
+([Importing a bundle](upstreams.md#importing-a-bundle)). The trust comes from the site:
+
+- **Bundle keys.** Every bundle is signed with an Ed25519 key, and is imported into a tenant only
+  when that key's fingerprint is pinned for the tenant in the configuration (`upstreams.bundle_keys`):
+  one tenant's key holder cannot sign for another tenant. Sign offline (`kista bundle sign`) rather
+  than on an internet-facing gateway.
+- **Source keys.** Every file must still verify with the source's keys as the site pinned them:
+  DuckDB's compiled-in keys, or a repository's pinned fingerprints, looked up in the bundle's copy
+  of its `.well-known` file. The bundle key vouches for what the bundle contains, never for a file.
+- **Freshness.** A bundle-mode upstream refuses bundles older than the last one it imported, and a
+  cell refuses a build fetched at its source earlier than the newest one it held (also after a
+  bundle marked it missing). This stops a lagging or second exporter from rolling a cell back. The
+  fetch time is the bundle key holder's word, though: the holder can withhold builds, and could
+  bring back an older authentic build by signing it with a new time. Pin exact versions in the
+  allowlist where that matters.
+- **Visibility.** A cell the exporting side needed a credential for stays private unless
+  `upstreams.bundle_sources` allows that source for the tenant. The flag is the exporter's word: an
+  honest-user control, not DRM.
+- **Input.** The manifest, the tar and its order are checked, entries outside the manifest are read
+  through and capped, sizes are bounded by `blob.max_body`, and one file at a time is spooled.
+
 ## Tenant deletion
 
 - **Two steps, server administrators only.** A tenant is suspended first and can be deleted only
@@ -304,6 +328,7 @@ send events to a store the database administrators do not control. See
 | The object store | chunk digests and content hashes in the database |
 | Tenants' issuer records and feed URLs | the egress guard |
 | Feed sources | pinned keys, signed fields, content hashes |
+| Bundles and their media | pinned bundle keys, then every file against the pinned source keys, freshness per upstream and cell |
 | Clients | grants, constant `401` / `404`, download and rate limits |
 
 ## Hardening checklist

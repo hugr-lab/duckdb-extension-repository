@@ -22,3 +22,10 @@ func SetVerifyPage(n int) (restore func()) {
 	verifyPage = n
 	return func() { verifyPage = old }
 }
+
+// SetImportPause sets the wait before an import object is re-opened, until the test ends.
+func SetImportPause(t interface{ Cleanup(func()) }, d time.Duration) {
+	old := importPause
+	importPause = d
+	t.Cleanup(func() { importPause = old })
+}

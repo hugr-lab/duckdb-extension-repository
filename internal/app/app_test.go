@@ -43,12 +43,18 @@ func TestServicesWithAuthzKeepCredentials(t *testing.T) {
 	cfg.Store = config.Store{Kind: "sqlite", SQLite: config.SQLite{Path: "/tmp/x.db"}, Migrate: "auto", Login: config.Login{Kind: "password"}}
 	cfg.Upstreams.Credentials = []config.Credential{{Name: "c", Tenants: []string{"acme"}, Prefixes: []string{"https://u.example/"},
 		Kind: "token_file", TokenFile: "/t", AllowPublic: true}}
+	cfg.Upstreams.BundleSources = []config.BundleSource{{Prefixes: []string{"https://b.example/"}, Tenants: []string{"acme"}, AllowPublic: true}}
 	svc, err := NewServices(cfg, nil, authz.ServerAdmin{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := svc.WithAuthz(authz.ServerAdmin{})
-	if m.Upstreams.Credentials["c"] == nil || m.Releases.MayPublish == nil || !m.Releases.MayPublish("c") || m.Releases.MayPublish("x") {
+	if m.Upstreams.Credentials["c"] == nil || m.Releases.MayPublish == nil || !m.Releases.MayPublish("acme", "c") || m.Releases.MayPublish("acme", "x") {
 		t.Fatal("the credentials are lost")
+	}
+	// spec 0014: a bundle's pseudo-credential follows upstreams.bundle_sources, per tenant
+	if !m.Releases.MayPublish("acme", "bundle:https://b.example/x") || m.Releases.MayPublish("beta", "bundle:https://b.example/x") ||
+		m.Releases.MayPublish("acme", "bundle:https://c.example/x") {
+		t.Error("bundle_sources")
 	}
 }

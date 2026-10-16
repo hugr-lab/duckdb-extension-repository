@@ -130,13 +130,15 @@ func (r Registry) For(name, tenant, prefix string) (*Credential, error) {
 
 // covers reports whether a prefix is under one of the credential's: the same scheme, host and port,
 // and a path at or below the credential's on a segment boundary.
-func (c *Credential) covers(prefix string) bool {
+func (c *Credential) covers(prefix string) bool { return covers(c.prefixes, prefix) }
+
+func covers(prefixes []*url.URL, prefix string) bool {
 	u, err := url.Parse(prefix)
 	if err != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
 		slices.Contains(strings.Split(u.Path, "/"), "..") {
 		return false
 	}
-	for _, p := range c.prefixes {
+	for _, p := range prefixes {
 		if !strings.EqualFold(u.Scheme, p.Scheme) || !strings.EqualFold(u.Hostname(), p.Hostname()) || port(u) != port(p) {
 			continue
 		}
@@ -148,6 +150,60 @@ func (c *Credential) covers(prefix string) bool {
 	}
 	return false
 }
+
+// BundleSources are upstreams.bundle_sources (spec 0014): which authenticated bundle sources'
+// releases may be public in which tenants.
+type BundleSources []BundleSource
+
+// BundleSource is one entry.
+type BundleSource struct {
+	all         bool
+	tenants     map[string]bool
+	prefixes    []*url.URL
+	allowPublic bool
+}
+
+// NewBundleSources builds the entries; the configuration was validated.
+func NewBundleSources(cfgs []config.BundleSource) (BundleSources, error) {
+	var out BundleSources
+	for i, c := range cfgs {
+		b := BundleSource{tenants: map[string]bool{}, allowPublic: c.AllowPublic}
+		for _, t := range c.Tenants {
+			b.all = b.all || t == "*"
+			b.tenants[t] = true
+		}
+		for _, p := range c.Prefixes {
+			u, err := url.Parse(p)
+			if err != nil {
+				return nil, fmt.Errorf("bundle_sources[%d]: a prefix: %w", i, err)
+			}
+			b.prefixes = append(b.prefixes, u)
+		}
+		out = append(out, b)
+	}
+	return out, nil
+}
+
+// AllowPublic reports whether an entry for the tenant covers the source prefix and allows public
+// releases.
+func (bs BundleSources) AllowPublic(tenant, prefix string) bool {
+	for _, b := range bs {
+		if b.allowPublic && (b.all || b.tenants[tenant]) && covers(b.prefixes, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// BundlePrefix is the prefix a "bundle:" pseudo-credential names (spec 0014); ok is false for a
+// configured credential's name.
+func BundlePrefix(credential string) (prefix string, ok bool) {
+	return strings.CutPrefix(credential, BundleCredential)
+}
+
+// BundleCredential prefixes the pseudo-credential a release from an authenticated bundle cell
+// records in its provenance (spec 0014); credential names never contain ":".
+const BundleCredential = "bundle:"
 
 func port(u *url.URL) string {
 	if p := u.Port(); p != "" {

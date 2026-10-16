@@ -23,7 +23,8 @@ type Ingest struct {
 	Versions                      []string // accepted extension versions; none: any
 	Keys                          []*rsa.PublicKey
 	Visibility                    string
-	DryRun                        bool // check only: nothing is committed or released
+	DryRun                        bool   // check only: nothing is committed or released
+	Bundle                        string // the bundle's manifest id, for the event (spec 0014)
 	// Provenance makes the release's provenance from the fingerprint of the key that verified.
 	Provenance func(key string) string
 }
@@ -122,9 +123,12 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	rs, existed, err := s.commitAndRelease(ctx, sp, &it, func(ctx context.Context, it item) ([]store.Release, bool, error) {
 		return s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {
 			r := made[0]
-			return tx.Event(ctx, c.TenantID, a.String(), "upstream.release", releaseSubject(c, r),
-				map[string]any{"upstream": in.Upstream, "release": r.ID, "name": r.Name, "version": r.ExtVersion, "platform": r.Platform,
-					"slot": r.Slot, "body_hash": it.b.BodyHash, "url": in.URL, "key": key})
+			data := map[string]any{"upstream": in.Upstream, "release": r.ID, "name": r.Name, "version": r.ExtVersion, "platform": r.Platform,
+				"slot": r.Slot, "body_hash": it.b.BodyHash, "url": in.URL, "key": key}
+			if in.Bundle != "" {
+				data["bundle"] = in.Bundle
+			}
+			return tx.Event(ctx, c.TenantID, a.String(), "upstream.release", releaseSubject(c, r), data)
 		})
 	})
 	if err != nil {

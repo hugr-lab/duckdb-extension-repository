@@ -116,7 +116,7 @@ func (s section) Close() error { return s.f.Close() }
 
 // Get implements blob.Store.
 func (s *Store) Get(_ context.Context, key string, off, n int64) (io.ReadCloser, error) {
-	if err := blob.ValidKey(key); err != nil {
+	if err := blob.ValidReadKey(key); err != nil {
 		return nil, err
 	}
 	if off < 0 {
@@ -142,7 +142,7 @@ func (s *Store) Get(_ context.Context, key string, off, n int64) (io.ReadCloser,
 
 // Stat implements blob.Store.
 func (s *Store) Stat(_ context.Context, key string) (int64, error) {
-	if err := blob.ValidKey(key); err != nil {
+	if err := blob.ValidReadKey(key); err != nil {
 		return 0, err
 	}
 	fi, err := s.root.Stat(key)

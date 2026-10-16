@@ -173,16 +173,19 @@ var catalogue = map[Kind][]string{
 	"upstream.add":      {"name", "kind", "prefix", "channel", "mode", "visibility", "keys", "platforms", "extensions", "credential"},
 	"upstream.remove":   {"name"},
 	"upstream.change":   {"name", "change", "value", "versions", "allow_reserved", "visibility", "state"},
-	"upstream.release":  {"upstream", "release", "name", "version", "platform", "slot", "body_hash", "url", "key"},
+	"upstream.release":  {"upstream", "release", "name", "version", "platform", "slot", "body_hash", "url", "key", "bundle"},
 	"upstream.rejected": {"upstream", "duckdb_version", "platform", "name", "outcome"},
-	"upstream.run":      {"upstream", "dry_run", "counts", "error"},
-	"shadow.add":        {"name"},
-	"shadow.remove":     {"name"},
-	"auth.failure":      {"reason", "route", "count"},
-	"authz.refused":     {"route", "verb", "status", "count"},
-	"install":           {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
-	"audit.dropped":     {"counts", "sink"},
-	"storage.gc":        {"domain", "builds", "bodies", "marked", "streams", "tmp", "attachments", "uploads", "bytes", "claims", "resolved", "dry_run", "error"},
+	"upstream.run":      {"upstream", "dry_run", "counts", "error", "bundle"},
+	// bundles (spec 0014): targets last, since a truncated event keeps its first fields
+	"bundle.import": {"import", "manifest", "created_at", "exporter", "bundle_key", "input_sha256", "dry_run", "state", "targets"},
+	"bundle.reset":  {"upstream", "manifest", "created_at"},
+	"shadow.add":    {"name"},
+	"shadow.remove": {"name"},
+	"auth.failure":  {"reason", "route", "count"},
+	"authz.refused": {"route", "verb", "status", "count"},
+	"install":       {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
+	"audit.dropped": {"counts", "sink"},
+	"storage.gc":    {"domain", "builds", "bodies", "marked", "streams", "tmp", "attachments", "uploads", "bytes", "claims", "resolved", "dry_run", "error"},
 	"storage.verify": {"domain", "full", "mark", "unmark", "checked", "ok", "skipped", "marked_ok", "missing", "short", "long",
 		"corrupt", "record", "unreadable", "marked", "unmarked", "bytes", "error"},
 	"audit.sink":     {"sink", "state", "class", "status"},
@@ -222,6 +225,10 @@ func SubjectForm(k Kind) string {
 		return "sink:<name>"
 	case "auth.failure", "authz.refused", "request.failed":
 		return "route:<route>"
+	case "bundle.import":
+		return "tenant:<name>"
+	case "bundle.reset":
+		return "upstream:<name>"
 	}
 	if strings.HasPrefix(string(k), "publisher.github.") {
 		return "publisher:<name>/github:<id>"

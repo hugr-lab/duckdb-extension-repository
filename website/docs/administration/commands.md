@@ -341,6 +341,10 @@ See [Publishing](../publishing.md).
 | `shadow list <tenant>` | core names the tenant replaced: its passthrough channels do not serve them |
 | `shadow remove <tenant> <name>` | serves DuckDB's build of that name from passthrough channels again |
 | `bundle plan <tenant> [-upstream <name,...>] [-o <plan.json>]` | the plan of the tenant's active bundle-mode upstreams (all, or the named ones), with the bundle keys pinned for the tenant (`upstreams.bundle_keys`); to standard output without `-o` |
+| `bundle import <tenant> <file\|-\|blob:<domain>/imports/<name>> [-upstream <name,...>] [-dry-run] [-any-tenant]` | imports a signed bundle into the tenant's bundle-mode upstreams; prints `UPSTREAM`, `STATUS`, `COUNTS`, `DETAIL` and exits `1` unless every target was imported and the bundle read whole ([Importing a bundle](../upstreams.md#importing-a-bundle)) |
+| `bundle list <tenant> [-limit <n>]` | the tenant's imports, newest first (`-limit` 50 by default): `ID`, `STARTED`, `STATE`, `DRY RUN`, `MANIFEST`, `CREATED` |
+| `bundle show <tenant> <import id>` | one import: its manifest, exporter, bundle key, input SHA-256 and counts per target |
+| `bundle reset <tenant> <upstream>` | clears a bundle-mode upstream's last-bundle mark, so it takes older bundles again |
 
 `upstream add` flags: `-extensions <name,...>` or `*`, `-prefix <https://...>` and
 `-keys <sha256:...,...>` (for `repository`), `-public`, `-mode mirror`, `-mode pull-through` or
