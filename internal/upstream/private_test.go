@@ -229,7 +229,7 @@ func TestPrivateUpstreamRules(t *testing.T) {
 			if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "tresor", rel.ID, release.SetPublic, 0); err == nil {
 				t.Fatal("a subscription's release made public")
 			}
-			en.rel.MayPublish = func(c string) bool { return c == "open" }
+			en.rel.MayPublish = func(_, c string) bool { return c == "open" }
 			if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "tresor", rel.ID, release.SetPrivate, 0); err != nil {
 				t.Fatal(err)
 			}

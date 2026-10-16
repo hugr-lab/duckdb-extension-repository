@@ -22,6 +22,16 @@ type Upstreams struct {
 	Credentials []Credential `yaml:"credentials"`
 	// BundleKeys are the bundle keys a site accepts, per tenant (spec 0014).
 	BundleKeys []BundleKey `yaml:"bundle_keys"`
+	// BundleSources say which authenticated bundle sources' releases may be public (spec 0014).
+	BundleSources []BundleSource `yaml:"bundle_sources"`
+}
+
+// BundleSource plays a credential's part for bundle imports (spec 0014): releases from cells the
+// exporting side needed a credential for, from these prefixes, into these tenants, may be public.
+type BundleSource struct {
+	Prefixes    []string `yaml:"prefixes"` // https source prefixes
+	Tenants     []string `yaml:"tenants"`  // tenant names, or "*"
+	AllowPublic bool     `yaml:"allow_public"`
 }
 
 // BundleKey pins a bundle key's fingerprint for some tenants (spec 0014): bundles signed by it may
@@ -133,9 +143,7 @@ func validateUpstreams(bad func(string, ...any), c Config) {
 			bad("%s.prefixes names the upstream prefixes it is sent to", where)
 		}
 		for j, p := range cr.Prefixes {
-			pu, err := url.Parse(p)
-			if err != nil || pu.Scheme != "https" || pu.Host == "" || pu.User != nil || pu.RawQuery != "" || pu.Fragment != "" ||
-				strings.Contains(pu.Path, "..") {
+			if !httpsPrefix(p) {
 				bad("%s.prefixes[%d] must be an https URL without user info, query or fragment", where, j)
 			}
 		}
@@ -206,6 +214,35 @@ func validateUpstreams(bad func(string, ...any), c Config) {
 			}
 		}
 	}
+	if len(u.BundleSources) > 100 {
+		bad("upstreams.bundle_sources: at most 100")
+	}
+	for i, b := range u.BundleSources {
+		where := fmt.Sprintf("upstreams.bundle_sources[%d]", i)
+		if len(b.Tenants) == 0 {
+			bad("%s.tenants names the tenants it applies to (or *)", where)
+		}
+		for _, t := range b.Tenants {
+			if t != "*" && !tenantName.MatchString(t) {
+				bad("%s.tenants: %q is not a tenant name or *", where, t)
+			}
+		}
+		if len(b.Prefixes) == 0 {
+			bad("%s.prefixes names the bundle sources it covers", where)
+		}
+		for j, p := range b.Prefixes {
+			if !httpsPrefix(p) {
+				bad("%s.prefixes[%d] must be an https URL without user info, query or fragment", where, j)
+			}
+		}
+	}
+}
+
+// httpsPrefix reports whether p is an https URL prefix without user info, query, fragment or "..".
+func httpsPrefix(p string) bool {
+	pu, err := url.Parse(p)
+	return err == nil && pu.Scheme == "https" && pu.Host != "" && pu.User == nil && pu.RawQuery == "" &&
+		pu.Fragment == "" && !strings.Contains(pu.Path, "..")
 }
 
 var bundleFP = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)

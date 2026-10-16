@@ -352,3 +352,37 @@ func TestKeyRotation(t *testing.T) {
 	}
 	verify(t, assertion(), &k2.PublicKey)
 }
+
+// Spec 0014: upstreams.bundle_sources allow an authenticated bundle source's releases to be public
+// per tenant and prefix, as a credential's prefixes cover an upstream's.
+func TestBundleSources(t *testing.T) {
+	bs, err := credential.NewBundleSources([]config.BundleSource{
+		{Prefixes: []string{"https://Kista.example/acme/"}, Tenants: []string{"acme"}, AllowPublic: true},
+		{Prefixes: []string{"https://kista.example/closed"}, Tenants: []string{"*"}},
+		{Prefixes: []string{"https://open.example"}, Tenants: []string{"*"}, AllowPublic: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		tenant, prefix string
+		want           bool
+	}{
+		{"acme", "https://kista.example/acme/prod", true},
+		{"beta", "https://kista.example/acme/prod", false},
+		{"acme", "https://kista.example/acmecorp/prod", false},
+		{"acme", "https://kista.example/closed/x", false},
+		{"beta", "https://open.example/any/thing", true},
+		{"beta", "https://open.example:8443/any", false},
+	} {
+		if got := bs.AllowPublic(c.tenant, c.prefix); got != c.want {
+			t.Errorf("%s %s: %v", c.tenant, c.prefix, got)
+		}
+	}
+	if p, ok := credential.BundlePrefix("bundle:https://a.example/x"); !ok || p != "https://a.example/x" {
+		t.Errorf("BundlePrefix: %q %v", p, ok)
+	}
+	if _, ok := credential.BundlePrefix("subscription"); ok {
+		t.Error("a credential's name is no bundle prefix")
+	}
+}

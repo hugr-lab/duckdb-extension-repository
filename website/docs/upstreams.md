@@ -320,8 +320,8 @@ pinned keys, channel, platforms, allowlist, visibility, state), but kista never 
 - it takes no credential (`400`, at creation and on the credential route);
 - a passthrough channel takes a `duckdb-core` one.
 
-Bundles are made by a connected kista and imported with `kista admin bundle import` (spec 0014; the
-import arrives in a later release). The upstream's record shows its mode and the last bundle
+Bundles are made by a connected kista (spec 0014; the export arrives in a later release) and
+imported with `kista admin bundle import`. The upstream's record shows its mode and the last bundle
 imported (`bundle_id`, `bundle_created_at`), over the API, in the console and in
 `kista admin upstream show`.
 
@@ -329,6 +329,81 @@ imported (`bundle_id`, `bundle_created_at`), over the API, in the console and in
 kista admin -config /etc/kista/kista.yaml upstream add acme core -mode bundle \
   -kind duckdb-core -channel core -platforms linux_amd64 -extensions httpfs,spatial
 ```
+
+### Importing a bundle
+
+```bash
+kista admin -config /etc/kista/kista.yaml bundle import acme acme.kbundle [-upstream core] [-dry-run]
+# from standard input, in a pod without a shell:
+kubectl exec -i deploy/kista -- /kista admin -config /etc/kista/kista.yaml bundle import acme - < acme.kbundle
+# from the object store, after uploading with the store's own tools (they resume a broken upload):
+kista admin -config /etc/kista/kista.yaml bundle import acme blob:default/imports/acme-2026-10-16.kbundle
+```
+
+A bundle is read once, front to back, and never extracted. The import:
+
+1. **Checks the head.** The bundle's key must be pinned for the tenant in `upstreams.bundle_keys`,
+   the manifest's signature must verify, the manifest must be valid, and its plan must name the
+   tenant (`-any-tenant` imports a bundle planned for another). Any failure refuses the bundle
+   before anything is taken in, and leaves no record.
+2. **Selects the targets**: the tenant's active bundle-mode upstreams, or the `-upstream` ones,
+   each matched to a source of the bundle by kind or by prefix. Naming an upstream that is paused,
+   not in bundle mode or without a source in the bundle refuses the import, and so does a bundle
+   that serves none of the tenant's upstreams. A target another import or run is
+   holding is `busy`. A target refuses as `stale` a bundle ordered (by `created_at`, then id)
+   before the last one it imported, the same id with another manifest, and a bundle whose plan is
+   older than the upstream. The last bundle is recorded on the target before its first release.
+3. **Takes in each file** once: inflated into the spool, its size and hash checked against the
+   manifest, then, for each target cell it fills, the intake of a fetched file above: the signature
+   with the target's keys (DuckDB's for core and community; for a repository, those of the bundle's
+   copy of the source's `.well-known` file whose fingerprints the target pinned), the footer, the
+   file checks, the slot. A release becomes current as it is inserted, as in a run.
+4. **Records the cells without a file**: `missing`, `rejected` (with the exporter's reason after
+   `bundle:`), `unchanged` (kept only when the site holds that body; otherwise `missing`), and a
+   file that never came, `failed`. Cells the bundle does not mention keep their records.
+
+**No downgrade.** A cell that held a body takes another only if the bundle's copy was fetched at
+its source later than the cell's (`fetched_at`); otherwise it is counted `stale` and keeps what it
+holds. The cell's record keeps the newest body it held through `missing`, `rejected` and `failed`
+outcomes, and a gzip entry or file that does not match the signed manifest (damaged media) is
+`failed`, leaving the record as it was. Repeating an import releases nothing new (its cells are
+`unchanged`), and importing the same bundle after an interruption resumes it.
+
+**Stalls and limits.** An input that sends nothing for 5 minutes, or less than `upstreams.min_rate`
+once 30 seconds of waiting have passed, ends the import; what completed stays (each release is
+atomic). One file is spooled at a time: the spool (`blob.spool_dir`) needs about `blob.max_body`
+free, beside what `kista serve` uses. The import ends at the tar's end-of-archive blocks.
+
+**`imports/`.** `blob:<domain>/imports/<name>` reads an object under the domain's `imports/`
+prefix, `<name>` matching `[a-z0-9][a-z0-9._-]{0,127}`. kista only reads there: it never writes,
+lists or deletes `imports/`, and the storage collector never touches it. Remove the object after
+the import. A broken read is resumed at its offset up to 5 times.
+
+**Dry run.** `-dry-run` runs every check, spool included, and changes no release, cell or mark. It
+records the targets' last run (counted `would_release`) and the import record.
+
+**Records.** Each import, dry runs included, is recorded with its manifest, bundle key, input
+SHA-256 (of every byte through the tar's end) and counts per target; a `running` record whose lease
+expired shows as `failed (interrupted)`. Each target's run is recorded as a run's, with `bundle`
+naming the manifest; the command prints a line per target and exits `1` when a target failed, was
+busy or stale, or the import stopped early (the bundle truncated, malformed or stalled; a lost
+lease; the tenant's deletion). Importing and `bundle reset` are a server administrator's acts.
+
+```bash
+kista admin -config /etc/kista/kista.yaml bundle list acme
+kista admin -config /etc/kista/kista.yaml bundle show acme <import id>
+kista admin -config /etc/kista/kista.yaml bundle reset acme core   # clears the last-bundle mark
+```
+
+`bundle reset` lets a target take bundles older than the last one it imported again: the recovery
+when a bundle carried a wrong `created_at`. It is audited (`bundle.reset`).
+
+**Provenance and visibility.** A release from a bundle records its source's URL, the manifest's
+ETag and fetch time, the verifying key, `bundle` (the manifest's id) and `imported_at`. A cell the
+exporting side needed a credential for (`authenticated` in the manifest) is private, whatever the
+upstream's visibility, and its provenance records `credential: "bundle:<prefix>"`: it can be made
+public, or promoted as public, only where `upstreams.bundle_sources` allows that source for the
+tenant ([Configuration](configuration.md)).
 
 ## Private upstreams
 

@@ -46,6 +46,7 @@ var (
 	streamKey = regexp.MustCompile(`^streams/[0-9a-f]{64}$`)
 	tmpKey    = regexp.MustCompile(`^tmp/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	attachKey = regexp.MustCompile(`^attachments/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	importKey = regexp.MustCompile(`^imports/[a-z0-9][a-z0-9._-]{0,127}$`)
 	prefixRe  = regexp.MustCompile(`^([a-z0-9][a-z0-9_-]{0,62}/){0,4}$`)
 )
 
@@ -56,6 +57,24 @@ func ValidKey(key string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: %q", ErrKey, key)
+}
+
+// ValidReadKey checks a key read (Get, Stat): ValidKey's, or imports/<name>, an object the operator
+// uploaded for a bundle import (spec 0014). kista never writes, deletes or lists imports/.
+func ValidReadKey(key string) error {
+	if importKey.MatchString(key) && !strings.Contains(key, "..") {
+		return nil
+	}
+	return ValidKey(key)
+}
+
+// ImportKey is the key of an operator's upload for a bundle import (spec 0014).
+func ImportKey(name string) (string, error) {
+	k := "imports/" + name
+	if !importKey.MatchString(k) || strings.Contains(k, "..") {
+		return "", fmt.Errorf("%w: an import's name must match [a-z0-9][a-z0-9._-]{0,127}", ErrKey)
+	}
+	return k, nil
 }
 
 // ValidListPrefix checks a List prefix.

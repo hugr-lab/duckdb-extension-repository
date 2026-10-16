@@ -103,3 +103,22 @@ func TestBundleKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestBundleSources(t *testing.T) {
+	if _, err := Load(write(t, base+"upstreams: { bundle_sources: [{ prefixes: ['https://kista.example.org/acme/'], tenants: [acme], "+
+		"allow_public: true }] }\n"), nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, file := range map[string]string{
+		"no prefixes":   "upstreams: { bundle_sources: [{ tenants: [acme] }] }\n",
+		"no tenants":    "upstreams: { bundle_sources: [{ prefixes: ['https://a.example/'] }] }\n",
+		"http":          "upstreams: { bundle_sources: [{ prefixes: ['http://a.example/'], tenants: [acme] }] }\n",
+		"user info":     "upstreams: { bundle_sources: [{ prefixes: ['https://u@a.example/'], tenants: [acme] }] }\n",
+		"a bad tenant":  "upstreams: { bundle_sources: [{ prefixes: ['https://a.example/'], tenants: ['A!'] }] }\n",
+		"a dot segment": "upstreams: { bundle_sources: [{ prefixes: ['https://a.example/x/../y'], tenants: [acme] }] }\n",
+	} {
+		if _, err := Load(write(t, base+file), nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

@@ -122,8 +122,13 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   events list [-server] [-kind <k>] [-subject <prefix>] [-actor <a>] [-since <RFC 3339>] [-limit <n>]
               [-follow] [-format table|jsonl] [<tenant>]          the event buffer (spec 0010), newest first
   shadow list <tenant>                            core names the tenant replaced: passthrough channels do not serve them
-  bundle plan <tenant> [-upstream <name,...>] [-o <plan.json>]   what the tenant's bundle-mode upstreams ask for (spec 0014)
   shadow remove <tenant> <name>                   serve DuckDB's build again from passthrough channels
+  bundle plan <tenant> [-upstream <name,...>] [-o <plan.json>]   what the tenant's bundle-mode upstreams ask for (spec 0014)
+  bundle import <tenant> <file|-|blob:<domain>/imports/<name>> [-upstream <name,...>] [-dry-run] [-any-tenant]
+                                                              take a signed bundle into the bundle-mode upstreams
+  bundle list <tenant> [-limit <n>]                           the tenant's bundle imports, the newest first
+  bundle show <tenant> <import id>                            one import: its manifest, bundle key and counts
+  bundle reset <tenant> <upstream>                            clear an upstream's bundle mark (it takes older bundles)
   block add <tenant> <body-hash> -reason <text>   ban a body tenant-wide: its releases are yanked
   block list <tenant>
   block remove <tenant> <body-hash>
@@ -142,6 +147,9 @@ type multi []string
 
 func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
+
+// stdin is what "-" reads (tests replace it).
+var stdin io.Reader = os.Stdin
 
 // admin runs `kista admin`. It is the server administrator's CLI: it runs as the service's OS user,
 // with the service's config, and calls the same services the HTTP API will.
@@ -189,7 +197,7 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "kista admin:", err)
 		return 1
 	}
-	a := &adminCmd{in: os.Stdin, cfg: cfg, svc: svc, actor: authz.OSActor(), out: stdout, errw: stderr}
+	a := &adminCmd{in: stdin, cfg: cfg, svc: svc, actor: authz.OSActor(), out: stdout, errw: stderr}
 	if err := a.dispatch(ctx, rest); err != nil {
 		if errors.Is(err, errUsage) {
 			fmt.Fprint(stderr, adminUsage)
@@ -1949,11 +1957,50 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 	fs.SetOutput(io.Discard)
 	names := fs.String("upstream", "", "")
 	out := fs.String("o", "", "")
+	dryRun := fs.Bool("dry-run", false, "")
+	anyTenant := fs.Bool("any-tenant", false, "")
+	limit := fs.Int("limit", 50, "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	switch {
+	case sub == "import" && len(pos) == 2:
+		return a.bundleImport(ctx, pos[0], pos[1], upstream.ImportOptions{Upstreams: commaList(*names), DryRun: *dryRun,
+			AnyTenant: *anyTenant, BundleKeys: a.cfg.BundleKeysFor(pos[0])})
+	case sub == "list" && len(pos) == 1:
+		is, err := a.svc.Upstreams.Imports(ctx, a.actor, pos[0], *limit)
+		if err != nil {
+			return err
+		}
+		a.table("ID\tSTARTED\tSTATE\tDRY RUN\tMANIFEST\tCREATED", func(w io.Writer) {
+			for _, i := range is {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%t\t%s\t%s\n", i.ID, ts(i.StartedAt), importState(i), i.DryRun, i.ManifestID, ts(i.ManifestCreatedAt))
+			}
+		})
+	case sub == "show" && len(pos) == 2:
+		i, err := a.svc.Upstreams.GetImport(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "import       %s\nstate        %s\ndry run      %t\nmanifest     %s (created %s, sha256 %s)\n",
+			i.ID, importState(i), i.DryRun, i.ManifestID, ts(i.ManifestCreatedAt), i.ManifestSHA256)
+		fmt.Fprintf(a.out, "exporter     %s\nbundle key   %s\ninput sha256 %s\nstarted      %s by %s\n",
+			i.Exporter, i.BundleKey, i.InputSHA256, ts(i.StartedAt), i.Actor)
+		if !i.FinishedAt.IsZero() {
+			fmt.Fprintf(a.out, "finished     %s\n", ts(i.FinishedAt))
+		}
+		var counts any
+		if json.Unmarshal([]byte(i.Counts), &counts) == nil {
+			b, _ := json.MarshalIndent(counts, "", "  ")
+			fmt.Fprintf(a.out, "counts       %s\n", b)
+		}
+	case sub == "reset" && len(pos) == 2:
+		u, err := a.svc.Upstreams.ResetBundle(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		a.logf("bundle reset %s/%s (it last imported %s)", pos[0], u.Name, orNone(u.BundleID))
 	case sub == "plan" && len(pos) == 1:
 		plan, err := a.svc.Upstreams.Plan(ctx, a.actor, pos[0], commaList(*names), a.cfg.BundleKeysFor(pos[0]))
 		if err != nil {
@@ -1977,6 +2024,113 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 		}
 		a.logf("bundle plan %s: %d sources, %d cells -> %s", pos[0], len(plan.Sources), cells, *out)
 		return nil
+	default:
+		return errUsage
 	}
-	return errUsage
+	return nil
+}
+
+// errImportFailed ends an import some target of which failed, or whose bundle stopped early.
+var errImportFailed = errors.New("the import did not complete: see above")
+
+// bundleImport imports a bundle from a file, standard input ("-") or an object the operator
+// uploaded to a domain's imports/ prefix ("blob:<domain>/imports/<name>").
+func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstream.ImportOptions) error {
+	svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.NewTextHandler(a.errw, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = svc.Close() }()
+	a.svc.WithBlob(svc)
+	var in io.Reader
+	switch {
+	case src == "-":
+		in = a.in
+	case strings.HasPrefix(src, "blob:"):
+		domain, name, ok := strings.Cut(strings.TrimPrefix(src, "blob:"), "/imports/")
+		if !ok {
+			return fmt.Errorf("%w: blob:<domain>/imports/<name>", errUsage)
+		}
+		rc, _, err := svc.OpenImport(ctx, domain, name)
+		if err != nil {
+			return err
+		}
+		defer rc.Close()
+		in = rc
+	default:
+		f, err := os.Open(src)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		in = f
+	}
+	host, _ := os.Hostname()
+	o.Holder = fmt.Sprintf("admin/%s/%d", host, os.Getpid())
+	res, err := a.svc.Upstreams.Import(ctx, a.actor, tenant, in, o)
+	if err != nil {
+		return err
+	}
+	i := res.Import
+	what := "bundle import"
+	if i.DryRun {
+		what = "bundle import (dry run)"
+	}
+	a.logf("%s %s: %s, manifest %s, %s", what, tenant, i.ID, i.ManifestID, i.State)
+	a.table("UPSTREAM\tSTATUS\tCOUNTS\tDETAIL", func(w io.Writer) {
+		for _, t := range res.Targets {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Upstream, t.Status, countsText(t.Result.Counts), t.Detail)
+		}
+	})
+	for _, t := range res.Targets {
+		for _, p := range t.Result.Problems {
+			fmt.Fprintf(a.out, "  %s %s %s %s: %s %s\n", t.Upstream, p.DuckDBVersion, p.Platform, p.Name, p.Outcome, p.Detail)
+		}
+	}
+	if res.Unplanned > 0 {
+		fmt.Fprintf(a.out, "%d cells of the bundle are in no target's matrix\n", res.Unplanned)
+	}
+	if res.Skipped > 0 {
+		fmt.Fprintf(a.out, "%d bytes of entries were read through\n", res.Skipped)
+	}
+	if res.Problem != "" {
+		fmt.Fprintf(a.out, "the import stopped (%s): %q\n", res.Stop, res.Problem)
+	}
+	if i.InputSHA256 != "" {
+		fmt.Fprintf(a.out, "input sha256 %s\n", i.InputSHA256)
+	}
+	if i.State != store.ImportDone {
+		return errImportFailed
+	}
+	return nil
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
+func importState(i store.BundleImport) string {
+	if i.Interrupted {
+		return "failed (interrupted)"
+	}
+	return i.State
+}
+
+func countsText(c map[string]int) string {
+	keys := make([]string, 0, len(c))
+	for k := range c {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s %d", k, c[k]))
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ", ")
 }

@@ -445,3 +445,12 @@ storage domain as `attachments/<id>`, one object per attachment with no deduplic
 checked against the content hash in the record. The collector removes the attachments of bodies
 the tenant no longer holds (and has not blocked), superseded versions older than a year, and
 objects without a record older than the grace. `blob verify` checks extension bodies only.
+
+## Bundle uploads
+
+An operator may upload a bundle for an air-gapped site into a domain's `imports/<name>` (inside its
+configured prefix) with the store's own tools, and import it with
+`kista admin bundle import <tenant> blob:<domain>/imports/<name>`
+([Importing a bundle](upstreams.md#importing-a-bundle)). kista only reads `imports/`: every backend
+refuses to write, delete or list it, and the collector never touches it. Remove the object after
+the import.

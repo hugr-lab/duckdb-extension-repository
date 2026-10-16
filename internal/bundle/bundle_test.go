@@ -224,10 +224,15 @@ func TestManifestValidate(t *testing.T) {
 		"a file path":              func(m *bundle.Manifest) { m.Sources[1].Cells[0].File = "files/../x.gz" },
 		"a file not its hash":      func(m *bundle.Manifest) { m.Sources[1].Cells[0].SHA256 = strings.Repeat("e", 64) },
 		"no fetched_at":            func(m *bundle.Manifest) { m.Sources[1].Cells[0].FetchedAt = time.Time{} },
-		"unchanged with a file":    func(m *bundle.Manifest) { m.Sources[0].Cells[0].File = m.Sources[1].Cells[0].File },
-		"unchanged without hash":   func(m *bundle.Manifest) { m.Sources[0].Cells[0].BodyHash = "" },
-		"a long detail":            func(m *bundle.Manifest) { m.Sources[0].Cells[1].Detail = strings.Repeat("d", 1001) },
-		"a bad platform":           func(m *bundle.Manifest) { m.Sources[0].Cells[1].Platform = "../x" },
+		"fetched after the bundle": func(m *bundle.Manifest) { m.Sources[1].Cells[0].FetchedAt = m.CreatedAt.Add(time.Second) },
+		"a padded gzip entry": func(m *bundle.Manifest) {
+			m.Sources[1].Cells[0].Size = bundle.MaxGzip(m.Sources[1].Cells[0].InflatedSize) + 1
+		},
+		"an authenticated core":  func(m *bundle.Manifest) { m.Sources[0].Cells[0].Authenticated = true },
+		"unchanged with a file":  func(m *bundle.Manifest) { m.Sources[0].Cells[0].File = m.Sources[1].Cells[0].File },
+		"unchanged without hash": func(m *bundle.Manifest) { m.Sources[0].Cells[0].BodyHash = "" },
+		"a long detail":          func(m *bundle.Manifest) { m.Sources[0].Cells[1].Detail = strings.Repeat("d", 1001) },
+		"a bad platform":         func(m *bundle.Manifest) { m.Sources[0].Cells[1].Platform = "../x" },
 		"one file, two sizes": func(m *bundle.Manifest) {
 			c := m.Sources[1].Cells[0]
 			c.DuckDBVersion, c.Size = "v2.1.0", c.Size+1

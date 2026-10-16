@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a parts 1 (bundle mode) and 2 (the format, keys and plan) implemented; parts 3-5, 1b and 2 to come
+- **Status**: accepted; phase 1a parts 1 (bundle mode), 2 (the format, keys and plan) and 3 (the import) implemented; parts 4-5, 1b and 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -48,8 +48,8 @@ Delivery, each phase a pull request:
      forms (no "Sync now", "Dry run" or credential for bundle mode), the reaper entry;
   2. `internal/bundle`: the format, validation, canonical order, signing and verifying, the tar
      reader and writer; `kista bundle keygen|keys|sign|inspect` and `kista admin bundle plan`;
-  3. the import: the intake split, the records, the events, `bundle keys` per tenant,
-     `bundle_sources` and `MayPublish`, `bundle reset`; tested with bundles the tests write;
+  3. the import: the records, the events, `bundle_sources` and `MayPublish`, `bundle reset`, the
+     blob store's read-only `imports/` prefix; tested with bundles the tests write;
   4. the export, then the e2e test;
   5. the air-gapped docs page and its CI job.
 - **1b. Statements**: bundle-mode feeds. The export carries the statements and documents its feeds
@@ -161,7 +161,9 @@ upstreams:
 - **What the key's holder can do.** Choose what the site receives, within the site's allowlists and
   filters and the sources' signatures: withhold, mark cells `missing` or `rejected`, leave out the
   `authenticated` flag, or offer an older authentic build. The import's per-cell freshness (Importing
-  a bundle) refuses an older build for a cell the site already holds newer. A site that subscribes
+  a bundle) refuses an older build for a cell the site already holds newer by the manifest's
+  `fetched_at`; that time is the holder's word, so the rule stops a lagging or second exporter, not
+  the holder, who could sign an old build with a new time. A site that subscribes
   to Enterest trusts Enterest's key this far; an organisation's own gateway, its own. Keys in KMSs and
   vaults (spec 0004's key sources) are a follow-up.
 
@@ -409,7 +411,12 @@ The manifest:
   - `etag` at most 256 bytes, `detail` at most 1,000 bytes and `exporter`'s fields at most 256
     bytes (the stored record at most 1,000), of printable UTF-8 (control characters stripped before they are stored or shown);
   - `fetched_at` and `created_at` in RFC 3339, and `id` a UUIDv7;
-  - `created_at` at most 10 minutes past the importing host's clock;
+  - `created_at` at most 10 minutes past the importing host's clock, and no cell's `fetched_at`
+    after `created_at`;
+  - a gzip entry at most `inflated_size` + 1/64 of it + 64 KiB, so an entry padded with empty
+    deflate blocks cannot hold an import's leases for nothing;
+  - `authenticated` only on a `repository` source's cells (DuckDB's repositories need no
+    credential);
   - at most 100,000 cells and 50,000 files.
 - **Order.** Sources come in canonical order (kind, then normalised prefix). Files appear in
   canonical order: by source, then name, then platform, then the lowest DuckDB version among the
@@ -451,9 +458,11 @@ prints the same value.
 
    Any failure refuses the bundle before anything is released.
 2. **Targets.**
-   - **Selection.** The import selects the tenant's active bundle-mode upstreams, or the named ones.
-     A target is matched to a source by kind (core, community) or by normalised prefix (repository).
-     An upstream without a source in the bundle is not touched.
+   - **Selection.** The import selects the tenant's active bundle-mode upstreams, or the named ones
+     (a named one that is paused, not in bundle mode or without a source in the bundle refuses the
+     import). A target is matched to a source by kind (core, community) or by normalised prefix
+     (repository). An upstream without a source in the bundle is not touched; a bundle that serves
+     none of the tenant's upstreams is refused, leaving no record.
    - **Leases first.** The import takes `kista/upstream/<id>` for each target and renews it, then
      checks that the tenant is writable, as a run does, so spec 0019's reaper never sees a gap. A
      target already leased (a run or another import) is reported `busy` and skipped. An import into
@@ -484,19 +493,24 @@ prints the same value.
    - **Skipped entries.** Unnamed entries, other entry types and second copies are read through
      without being stored, and counted. Their total size is capped at 64 MiB: past the cap the
      bundle is refused from that point on.
-   - **Once per file.** The file is checked once: the signature with each target's keys, spec
-     0008's file checks, the footer parsed. The spool stays open until the file's last cell, so the
-     re-commit spec 0009 makes when a Build disappears meanwhile (`ErrBuildGone`) still works.
+   - **Once per file.** The file is inflated, hashed and parsed once. Each target cell then goes
+     through the same intake as a run's fetched file (`release.Ingest`): the signature with that
+     target's keys, the footer, spec 0008's file checks. These are cheap beside the inflate and the
+     commit, and the body is committed once per channel: a later cell of the same slot finds the
+     release. The spool stays open until the file's last cell, so the re-commit spec 0009 makes when
+     a Build disappears meanwhile (`ErrBuildGone`) still works.
    - **Per cell.** For each target cell the file fills, the import re-reads the target as a run
      does (spec 0009's freshness):
      - a target paused or removed meanwhile stops, and its run ends `failed`;
      - an entry or platform removed meanwhile, or an unpinned key, applies to the next cell;
      - a tenant now being deleted stops the import.
 
-     **No downgrade per cell.** When the site's cell already holds a different body, the bundle's
-     file is taken only if its `fetched_at` is later than the site's cell's; otherwise the cell is
-     `stale` and keeps what it holds. A second exporter, or a gateway whose mirror lagged, cannot
-     replace a newer build with an older authentic one.
+     **No downgrade per cell.** When the site's cell already holds a different body (a conditional
+     outcome with a body hash), the bundle's file is taken only if its `fetched_at` is later than
+     the site's cell's; otherwise the cell is counted `stale` and keeps its record and what it
+     holds. A second exporter, or a gateway whose mirror lagged, cannot replace a newer build with
+     an older authentic one. For the same reason a `failed` cell (a transient intake failure, or a
+     file that never came) never overwrites a record of what the cell holds.
 
      It then runs the cell's checks (the footer against the cell, the entry's version filter) and the
      locked part of the intake: block, shadow, slot, Build, release. The cell's outcome is recorded
@@ -510,23 +524,28 @@ prints the same value.
      cell is recorded `missing` with "not in this bundle and not held".
    - `rejected` records `rejected` with the export's reason prefixed `bundle:`, control characters
      stripped.
-   - A `fetched` cell whose file never arrived, because the tar ended early, is `failed`.
+   - A `fetched` cell whose file never arrived, because the tar ended early or left it out, is
+     `failed`.
    - Cells the bundle does not mention keep their records. A bundle may be partial, and the import
      never prunes cells: a run removes cells outside the matrix, and the next plan leaves them out.
 6. **Current releases.** A run makes every release it inserts current for its DuckDB version: the
    release gets the next sequence number, and serving picks the newest servable release per DuckDB
-   version (spec 0008). The import does the same, deferred to the end so the tar's order never
-   decides: after the stream, every release it inserted gets its sequence number per (name,
-   platform), in ascending canonical DuckDB-version order, under the channel lock.
+   version (spec 0008). The import does the same, at insert. The tar's order cannot decide anything
+   a run would not: the reader enforces the canonical file order (by source, name, platform and
+   lowest DuckDB version), so releases are inserted per (name, platform) in ascending DuckDB-version
+   order, as a run inserts them.
    - A cell whose slot already held its body (`unchanged`, `yanked`) changes nothing. As in a run,
      an administrator's choice of current survives every import that brings nothing new.
-   - Releases from an import that stopped early are made current in the same way, for the cells it
-     completed. **On a resume**, a release still not current whose provenance names this manifest's
-     `id` is made current as if inserted now, so a crash between insert and step 6 strands nothing.
+   - An import that stopped early leaves its inserted releases current, as an interrupted run
+     does; a resume finds them `unchanged` and continues. Nothing waits for a later step, so a crash
+     strands nothing.
 7. **End.** Each target's run is recorded as a run's is: start, end, counts per outcome and the
    first 20 problems, with `bundle` naming the manifest's `id`. The leases are released. The command
-   prints a summary per upstream and exits non-zero if any target failed, or if the tar was
-   truncated or malformed. What completed stays: each release is atomic.
+   prints a summary per upstream and exits non-zero if any target failed, was `busy` or `stale`, or
+   if the import stopped early (the tar truncated, malformed or stalled; a lost lease; the tenant's
+   deletion). The record's `state` is `failed` in the same cases. What completed stays: each
+   release is atomic. A stopped import records nothing more on its cells after a lost lease or a
+   deletion.
 
 **Stalls.**
 - An input that delivers nothing for 5 minutes ends the import, which then completes as at step 7.
@@ -535,6 +554,9 @@ prints the same value.
   blocked, then exits the process.
 - An import's leases never outlive these limits. Spec 0019's deletion waits for upstream leases and
   is never blocked indefinitely.
+- The time counted is the time the import waits for input; the time it spends committing a file is
+  not. The import reads its input through a pump, and the watchdog ends the import by closing the
+  pump's pipe, so the import completes step 7 although the pump's read may never return.
 - An import ends at the end-of-archive blocks of the tar and does not wait for end of input, which
   some `exec` transports never deliver.
 
@@ -577,7 +599,7 @@ Each import, dry runs included, is a row in **`bundle_imports`**:
 | `bundle_key` | the fingerprint |
 | `input_sha256` | the SHA-256 of every byte through the end-of-archive blocks, whatever the input |
 | `dry_run` | |
-| `state` | `running`, `done` or `failed`; a `running` row whose leases have expired is shown as, and at the next import of the tenant rewritten to, `failed`, "interrupted" |
+| `state` | `running`, `done` or `failed`; a `running` row whose lease (`kista/bundle-import/<id>`, held while it runs) has expired is shown as, and at the next import of the tenant rewritten to, `failed`, "interrupted" |
 | `counts` | JSON, per target and outcome |
 | `started_at`, `finished_at`, `actor` | |
 
@@ -799,7 +821,7 @@ is set explicitly.
 
 The config check refuses:
 - malformed fingerprints, entries without `tenants`, and more than 10 entries;
-- `bundle_sources` entries without `prefixes` or `tenants`;
+- `bundle_sources` entries without `prefixes` or `tenants`, and more than 100 entries;
 - prefixes that are not https.
 
 ### Package layout
@@ -811,8 +833,8 @@ internal/bundle/export   the export: sources from upstreams and own channels, fi
                          original signatures, the checks, the summary
 internal/upstream        + bundle mode (no sync, no credential, no egress port check, passthrough);
                          the import: targets, leases, freshness, per-cell intake, current releases
-internal/release         + Ingest split: the file's checks once, the cell's checks and insert per
-                         cell; MayPublish for "bundle:" pseudo-credentials
+internal/release         + Ingest names the bundle in its event; MayPublish takes the tenant, for
+                         "bundle:" pseudo-credentials
 internal/blob            + the imports/ prefix, read-only to kista, outside the collector
 internal/attachment      + bundle-mode feeds (1b)
 cmd/kista                + bundle keygen|keys|sign|inspect, admin bundle export|plan|import|list|show|reset
@@ -870,12 +892,19 @@ These pages are updated in the same PR:
     blocks.
   - **No downgrade per cell.** A cell the site holds with another body is replaced only by a file
     confirmed at the source later than the site's own record: a second exporter, or a lagging
-    gateway, cannot bring an older authentic build back.
+    gateway, cannot bring an older authentic build back. The record keeps the newest body the cell
+    held and its fetch time through `missing`, `rejected` and `failed` outcomes (a high-water
+    mark), so marking a cell missing first does not open the door. A cell's `fetched_at` may not be
+    later than the manifest's `created_at`, itself at most 10 minutes ahead of the site's clock, so
+    a wrong clock blocks a cell for minutes, not for good. Damaged media (a gzip entry or inflated
+    file that does not match the signed manifest) fail the cell and leave its record.
   - **Additional defence.** A site that wants it pins exact versions in the entries' `versions`.
 - **What the bundle key's holder can do.** They choose what the site receives, within the site's
   allowlists, filters and the sources' signatures: withhold, mark cells `rejected` or `missing`,
   leave out an `authenticated` flag, or offer an authentic build older than what a cell would
-  otherwise get, though never older than what the site holds. The holder is the exporting side: an
+  otherwise get. The `fetched_at` the no-downgrade rule compares is the holder's word: the holder,
+  unlike a lagging or second exporter, can bring back an older authentic build by signing it with
+  a new time. Pinning exact versions (below) is the defence against that. The holder is the exporting side: an
   organisation's gateway, or Enterest for its subscribers. Signing offline (`-unsigned`, then
   `kista bundle sign`) keeps the key off the internet-facing gateway; the docs recommend it. Keys
   are pinned per tenant, so one tenant's key holder cannot sign for another.
@@ -912,6 +941,8 @@ These pages are updated in the same PR:
   `bundle_sources` allow otherwise for that tenant. The marker survives promotion. It is an
   honest-user control, like licensing.
 - **Who imports.** Only a server administrator, through `kista admin` (1a) or the upload route (2).
+  The service checks it (`Import` and `ResetBundle` require the server-wide admin verb), so phase
+  2's route inherits the rule.
   - A tenant administrator configures the bundle-mode upstreams, their allowlists and pinned keys,
     which bound what any import may release into the tenant.
   - The manifest names its tenant, and importing it into another tenant needs `-any-tenant`.
@@ -995,7 +1026,7 @@ These pages are updated in the same PR:
     refused; the refusals.
   - **Changes during an import.** A target paused or removed meanwhile; a tenant deleted meanwhile;
     a matrix over its cap.
-  - **Dry run** records only `last_run` and its event.
+  - **Dry run** records `last_run`, its event and the import record, and no cell, mark or release.
   - **Concurrency.** Two imports at once: one is `busy`.
   - **Input.** Standard input (the watchdog ends a blocked read), a `blob:` input under the store's
     prefix with a transient error re-opened at its offset, `imports/` refused for writing, and idle

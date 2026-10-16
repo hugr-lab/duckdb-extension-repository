@@ -103,7 +103,9 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddKey": {"upstream.change"}, "RemoveKey": {"upstream.change"}, "RemoveShadow": {"shadow.remove"},
 		"SetCredential": {"upstream.change"},
 		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
-		"Sync":          nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil, "Plan": nil,
+		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected"},
+		"ResetBundle":   {"bundle.reset"}, "Imports": nil, "GetImport": nil,
+		"Sync": nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil, "Plan": nil,
 	},
 	"attachment.Service": {
 		"Attach": {"attachment.add"}, "SetFlags": {"attachment.change"}, "Remove": {"attachment.remove"},
@@ -458,6 +460,13 @@ func TestCoverage(t *testing.T) {
 		return err
 	}), "upstream.change")
 	en.expect("upstream.Service.Remove", do(func() error { return en.up.Remove(rctx, admin, "acme", "core", 0) }), "upstream.remove")
+	en.expect("upstream.Service.Add", do(func() error {
+		_, err := en.up.Add(rctx, admin, "acme", upstream.Spec{Name: "offline", Kind: store.UpstreamCore, Mode: store.ModeBundle,
+			Channel: "staging", Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "inet"}}})
+		return err
+	}), "upstream.add")
+	en.expect("upstream.Service.ResetBundle", do(func() error { _, err := en.up.ResetBundle(rctx, admin, "acme", "offline"); return err }),
+		"bundle.reset")
 	// attachments (spec 0011): on acl's body, then on it blocked
 	att := &attachment.Service{Store: st, Blob: bs, Authz: authz.ServerAdmin{}}
 	aclBody := ext(t, nil, "acl", "1.0")
@@ -609,9 +618,10 @@ func TestCoverage(t *testing.T) {
 	if after := en.count(); after != before {
 		t.Errorf("writes refused on a deleting tenant still wrote %d events", after-before)
 	}
-	// every registered writer ran (Ingest and RunUpstream: in internal/upstream's tests, which
+	// every registered writer ran (Ingest, RunUpstream and Import: in internal/upstream's tests, which
 	// check their events)
-	elsewhere := map[string]bool{"release.Service.Ingest": true, "upstream.Service.RunUpstream": true, "attachment.Feeds.RunFeed": true}
+	elsewhere := map[string]bool{"release.Service.Ingest": true, "upstream.Service.RunUpstream": true, "attachment.Feeds.RunFeed": true,
+		"upstream.Service.Import": true}
 	for svc, ms := range writes {
 		for m, kinds := range ms {
 			if kinds != nil && !en.hit[svc+"."+m] && !elsewhere[svc+"."+m] {

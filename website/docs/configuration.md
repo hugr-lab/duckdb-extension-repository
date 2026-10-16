@@ -439,11 +439,12 @@ Upstream runs and the credentials of private upstreams. The whole block is file-
 | --- | --- | --- | --- |
 | `upstreams.concurrency` | integer | `4` | Upstream runs at once per replica, and cells fetched at once by them; `1..32`. |
 | `upstreams.fetch_timeout` | duration | `10m` | One file's download; `1m..2h`. |
-| `upstreams.min_rate` | size | `64KiB` | A download's least rate; at least `1KiB`. |
+| `upstreams.min_rate` | size | `64KiB` | A download's least rate, and a bundle import's input's; at least `1KiB`. |
 | `upstreams.interval` | duration | `6h` | Between a mirror's scheduled runs; `15m..168h`. |
 | `upstreams.negative_ttl` | duration | `1h` | A pull-through miss is not retried within it; `1m..24h`. |
 | `upstreams.credentials` | list | none | Named credentials, below. |
 | `upstreams.bundle_keys` | list | none | Bundle keys a site accepts ([Bundle mode](upstreams.md#bundle-mode)), at most 10: each `{fingerprint: "sha256:<hex>", tenants: [<name>…] or ["*"]}`. A bundle is imported into a tenant only when its key is pinned for that tenant. Read at start. |
+| `upstreams.bundle_sources` | list | none | Which authenticated bundle sources' releases may be public ([Importing a bundle](upstreams.md#importing-a-bundle)), at most 100: each `{prefixes: [<https URL>…], tenants: [<name>…] or ["*"], allow_public: true}`. A prefix covers a source at or below its path, on the same host and port. Without an entry, a release from an authenticated cell stays private. Read at start (by the CLI, when it runs). |
 
 Each credential:
 

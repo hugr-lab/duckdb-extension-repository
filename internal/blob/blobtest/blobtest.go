@@ -92,6 +92,31 @@ func (f failingReader) ReadAt(p []byte, off int64) (int, error) {
 
 // Run runs the contract suite.
 func Run(t *testing.T, h Harness) {
+	t.Run("imports are read only", func(t *testing.T) {
+		// spec 0014: kista reads what the operator uploaded under imports/, never writes, deletes or lists it
+		s := h.New(t)
+		key := "imports/acme-1.kbundle"
+		if _, err := s.Stat(ctx, key); !errors.Is(err, blob.ErrNotFound) {
+			t.Errorf("stat of a missing import: %v", err)
+		}
+		if _, err := s.Get(ctx, key, 0, -1); !errors.Is(err, blob.ErrNotFound) {
+			t.Errorf("get of a missing import: %v", err)
+		}
+		if err := s.Put(ctx, key, bytes.NewReader([]byte("x")), 1); !errors.Is(err, blob.ErrKey) {
+			t.Errorf("put: %v", err)
+		}
+		if err := s.Delete(ctx, key); !errors.Is(err, blob.ErrKey) {
+			t.Errorf("delete: %v", err)
+		}
+		if err := s.List(ctx, "imports/", func(string, int64, time.Time) error { return nil }); !errors.Is(err, blob.ErrKey) {
+			t.Errorf("list: %v", err)
+		}
+		for _, k := range []string{"imports/../kista-domain.json", "imports/", "imports/a/b", "imports/.hidden", "imports/A"} {
+			if _, err := s.Stat(ctx, k); !errors.Is(err, blob.ErrKey) {
+				t.Errorf("stat %q: %v", k, err)
+			}
+		}
+	})
 	t.Run("put get stat list delete", func(t *testing.T) {
 		s := h.New(t)
 		data := Data(3<<20+17, 1)

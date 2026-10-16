@@ -301,8 +301,19 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	if err != nil {
 		return nil, err
 	}
-	// what a private upstream brought becomes public only as its credential allows (spec 0009 phase 3)
-	rel.MayPublish = func(name string) bool { c, ok := creds[name]; return ok && c.AllowPublic }
+	bundles, err := credential.NewBundleSources(cfg.Upstreams.BundleSources)
+	if err != nil {
+		return nil, err
+	}
+	// what a private upstream brought becomes public only as its credential allows (spec 0009 phase
+	// 3), and what an authenticated bundle source brought as upstreams.bundle_sources allows (0014)
+	rel.MayPublish = func(tenant, name string) bool {
+		if prefix, ok := credential.BundlePrefix(name); ok {
+			return bundles.AllowPublic(tenant, prefix)
+		}
+		c, ok := creds[name]
+		return ok && c.AllowPublic
+	}
 	// a purge before every replica keeps purged slots could see its slot refilled (spec 0016)
 	rel.PurgeOff = cfg.GCSettings().Interval == 0
 	at := &attachment.Service{Store: s, Authz: az, MaxSize: cfg.Attachments.MaxSize, Keys: ks, PublicURL: cfg.Serve.PublicURL}

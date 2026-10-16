@@ -45,9 +45,10 @@ type Service struct {
 	Authz   authz.Authorizer
 	// CoreKeys replaces DuckDB's core keys (tests); nil is the pin's (spec 0009: shadows).
 	CoreKeys []*rsa.PublicKey
-	// MayPublish reports whether a private upstream's credential (spec 0009 phase 3) allows the
-	// releases it brought to be public; nil allows none.
-	MayPublish func(credential string) bool
+	// MayPublish reports whether a private upstream's credential (spec 0009 phase 3), or a bundle
+	// import's "bundle:<prefix>" pseudo-credential (spec 0014), allows the releases it brought into
+	// the tenant to be public; nil allows none.
+	MayPublish func(tenant, credential string) bool
 
 	// PurgeOff refuses purges (spec 0016 phase 2): replicas may still run a version that does not
 	// know purged slots and would refill them. kista sets it while gc.interval is 0 (the rollout
@@ -740,7 +741,7 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 				return refuse()
 			}
 			// a subscription's extensions are not the tenant's to publish (spec 0009 phase 3)
-			if cr := CredentialOf(r); c == SetPublic && cr != "" && (s.MayPublish == nil || !s.MayPublish(cr)) {
+			if cr := CredentialOf(r); c == SetPublic && cr != "" && (s.MayPublish == nil || !s.MayPublish(tenant, cr)) {
 				return fmt.Errorf("%w: the release came through credential %s, which does not allow public releases", ErrState, cr)
 			}
 			if c == SetPrivate && ch.Kind == store.ChannelPassthrough {

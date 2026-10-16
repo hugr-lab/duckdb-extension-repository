@@ -169,7 +169,7 @@ func (b *Bundle) Next() (Item, error) {
 			return Item{}, fmt.Errorf("%w: over %d bytes of entries read through", ErrMalformed, MaxSkipped)
 		}
 		if strings.HasPrefix(e.Name, "sources/") && b.inFiles {
-			return Item{}, fmt.Errorf("%w: %s after the files", ErrMalformed, e.Name)
+			return Item{}, fmt.Errorf("%w: %q after the files", ErrMalformed, Text(e.Name, 256))
 		}
 		if strings.HasPrefix(e.Name, "files/") {
 			b.inFiles = true

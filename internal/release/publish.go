@@ -119,7 +119,7 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 			return nil, false, fmt.Errorf("%w: %s %s %s was added unchecked; publish it to check it", ErrState, r.Name, r.ExtVersion, r.Platform)
 		}
 		vis := r.Visibility
-		if cr := CredentialOf(r.Release); o.Private || cr != "" && (s.MayPublish == nil || !s.MayPublish(cr)) {
+		if cr := CredentialOf(r.Release); o.Private || cr != "" && (s.MayPublish == nil || !s.MayPublish(tenant, cr)) {
 			vis = store.Private // a private upstream's release is public only as its credential allows now
 		}
 		pm := map[string]any{}

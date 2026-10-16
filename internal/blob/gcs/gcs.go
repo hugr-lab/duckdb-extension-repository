@@ -362,7 +362,7 @@ func (b body) Close() error { return b.rc.Close() }
 
 // Get implements blob.Store: one ranged media download.
 func (s *Store) Get(ctx context.Context, key string, off, n int64) (io.ReadCloser, error) {
-	if err := blob.ValidKey(key); err != nil {
+	if err := blob.ValidReadKey(key); err != nil {
 		return nil, err
 	}
 	if off < 0 {
@@ -405,7 +405,7 @@ func (s *Store) Get(ctx context.Context, key string, off, n int64) (io.ReadClose
 
 // Stat implements blob.Store.
 func (s *Store) Stat(ctx context.Context, key string) (int64, error) {
-	if err := blob.ValidKey(key); err != nil {
+	if err := blob.ValidReadKey(key); err != nil {
 		return 0, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
