@@ -709,19 +709,25 @@ func (s *Service) Cells(ctx context.Context, a authz.Actor, tenant, name, outcom
 
 // keys returns the keys a run verifies with.
 func (s *Service) keys(ctx context.Context, u store.Upstream) ([]*rsa.PublicKey, error) {
-	switch u.Kind {
-	case store.UpstreamCore:
-		if s.DuckDB.CoreKeys != nil {
-			return s.DuckDB.CoreKeys, nil
-		}
-		return duckdbkeys.Core(), nil
-	case store.UpstreamCommunity:
-		if s.DuckDB.CommunityKeys != nil {
-			return s.DuckDB.CommunityKeys, nil
-		}
-		return duckdbkeys.Community(), nil
+	if u.Kind != store.UpstreamRepo {
+		return s.duckdbKeys(u.Kind), nil
 	}
 	return s.repoKeys(ctx, u)
+}
+
+// duckdbKeys are the keys DuckDB signs a kind's files with: compiled in, or the tests' override.
+func (s *Service) duckdbKeys(kind string) []*rsa.PublicKey {
+	switch {
+	case kind == store.UpstreamCore && s.DuckDB.CoreKeys != nil:
+		return s.DuckDB.CoreKeys
+	case kind == store.UpstreamCore:
+		return duckdbkeys.Core()
+	case kind == store.UpstreamCommunity && s.DuckDB.CommunityKeys != nil:
+		return s.DuckDB.CommunityKeys
+	case kind == store.UpstreamCommunity:
+		return duckdbkeys.Community()
+	}
+	return nil
 }
 
 // maxWellKnown is the most of a .well-known file read, as DuckDB reads it.

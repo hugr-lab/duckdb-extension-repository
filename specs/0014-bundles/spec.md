@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a parts 1 (bundle mode), 2 (the format, keys and plan) and 3 (the import) implemented; parts 4-5, 1b and 2 to come
+- **Status**: accepted; phase 1a parts 1 (bundle mode), 2 (the format, keys and plan), 3 (the import) and 4 (the export) implemented; part 5, 1b and 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -266,19 +266,27 @@ For each source in the plan, taken in canonical order (kind, then normalised pre
      or a gateway exporting what it publishes. A passthrough channel has no key of its own and is
      never a source. Here the site trusts the exporting kista's channel key, which it pinned when it
      planned that prefix.
+   - The upstreams come first: an own channel is the source only when no active mirror or
+     pull-through upstream matches, and only with an https `serve.public_url`.
    - A source with neither fails as a whole: "not mirrored here".
 2. **Keys.** The export checks with the **plan's** keys, which are the site's pins:
    - core and community: DuckDB's keys as the upstream service holds them: compiled in, or
      `upstream.Service.DuckDB` in tests;
    - a repository source: the export fetches `<prefix>/.well-known/duckdb-extension-repo.json` (at
-     most 64 KiB) through the matching upstream's egress and credential, as a mirror's key check
-     does, and keeps it as it came; for an own channel it writes the channel's own file. A source
+     most 64 KiB) through egress, without a credential (the file is public by design, spec 0001),
+     as a mirror's key check does, and keeps it as it came; for an own channel it writes the channel's own file. A source
      whose file lists none of the plan's keys fails as a whole.
 3. **The release decides, not the cell record.** A cell record is written only by runs and
    pull-through misses, so a yank, a block or a `release current` made since would not show in it.
    For each plan cell the export looks up the release that serves the cell on the exporting side:
    the channel's servable release for (name, platform, the cell's DuckDB version), the one DuckDB
-   would install from that channel now. Then:
+   would install from that channel now. Two things narrow it, so that the export never skips a file
+   the site could take for one it would refuse:
+   - when the plan cell lists `versions`, the newest servable release among them;
+   - unless `-private` covers the source, the view of a caller without install: public releases
+     only.
+
+   Then:
 
    | On the exporting side | Exported as |
    | --- | --- |
@@ -290,6 +298,8 @@ For each source in the plan, taken in canonical order (kind, then normalised pre
    | no release, a pull-through upstream never asked for the cell | `missing`, "never fetched by pull-through" |
    | outside the exporting upstream's matrix (allowlist, platforms, DuckDB versions) | `missing`, "outside the exporting matrix" |
    | a private release (private channel, or `private` visibility) not covered by `-private` | `rejected`, "private on the exporting kista" |
+   | releases, none of the plan cell's `versions` | `missing`, "no release of the plan's versions on the exporting kista" |
+   | a release whose stored body cannot be read (missing, or marked corrupt) | `rejected`, "the body is not available on the exporting kista" |
 
    **`unchanged`**: the release's body hash equals the plan cell's `body_hash`. The cell then carries
    that `body_hash` and no file. The plan's ETag alone never decides.
@@ -310,23 +320,30 @@ For each source in the plan, taken in canonical order (kind, then normalised pre
 **Private releases.** `-private <prefix>` names the plan sources whose private releases may leave:
 an own channel's private builds, or a credentialed mirror's (spec 0009 phase 3) private releases.
 Without it, they are `rejected`. It covers `<tenant>` only, so an operator cannot export another
-tenant's private builds on a plan.
+tenant's private builds on a plan. A prefix that names no repository source of the plan refuses the
+export; DuckDB's kinds take none, so their private releases never leave.
 
 **`-sync`** first runs the matching mirror-mode upstreams (spec 0009's `sync`) and waits for them;
-pull-through upstreams export what they hold, and their never-asked cells are reported as such.
+pull-through upstreams export what they hold, and their never-asked cells are reported as such. A
+run that fails, or an upstream paused meanwhile, stops the export before anything is written.
 
 **Per-cell fields.** Each exported cell carries `fetched_at`: the time the exporting side last
 confirmed the cell against the source (the cell record's, so a mirror that keeps answering
-`unchanged` keeps it fresh), or for an own channel the release's `released_at`. It carries `etag`
+`unchanged` keeps it fresh), or for an own channel the release's `released_at`. The cell record
+speaks for the release only while it holds the same body: otherwise (the source moved on and the
+mirror refused the new build) it is the release's own fetch time from its provenance, so a newer
+confirmation never dates an older body. It carries `etag`
 when the cell record has one. `authenticated` is per cell: true when the release came through a
-credentialed upstream, or is an own channel's private release. The site computes each cell's URL
+credentialed upstream or is private on the exporting side (a mirror's private release, or an own
+channel's): a release `-private` let leave stays private at the site. The site computes each cell's URL
 itself.
 
 **Writing.** Files go straight from the blob domain into the tar: the stored gzip stream of the
 body, with the signature appended as a gzip tail (`extfile.GzipTail`), so no temporary copy is
 made. The manifest goes first and needs every file's size and SHA-256, so the export reads each
 body twice: once to hash, then to write. The tar is written to a temporary name beside `-o`, and
-renamed when complete; the output is the only disk it needs. `-unsigned` writes the manifest
+linked into place when complete (never over a file that appeared meanwhile), owner-only (`0600`):
+the output is the only disk it needs. `-unsigned` writes the manifest
 without the signature and key entries; `kista bundle sign` copies the bundle once, inserting them
 after the manifest, and refuses one already signed.
 
@@ -334,12 +351,15 @@ after the manifest, and refuses one already signed.
 256 bytes of printable text, for the record only: the site's trust is the bundle key.
 
 **Audit.** The exporting kista records a **`bundle.export`** event: the plan's SHA-256, the
-manifest's `id` and SHA-256, the bundle key's fingerprint (none when unsigned), counts per outcome,
-the actor. `kista bundle sign` is a client command and records nothing; the import records the key.
+manifest's `id` and SHA-256, the bundle key's fingerprint (none when unsigned), counts per outcome
+(with `failed_sources`), the actor; its fields are `plan`, `manifest`, `manifest_sha256`,
+`bundle_key` and `counts`. `kista bundle sign` is a client command and records nothing; the import records the key.
 
 The summary lists, per source: cells per outcome, bytes, the listed fingerprints, the first 20
 problems, and the bundle's SHA-256 as the import will compute it (below). The export exits non-zero
-when a source failed as a whole; rejected and missing cells alone do not fail it.
+when a source failed as a whole; rejected and missing cells alone do not fail it. A failed source is
+left out of the manifest, and the bundle of the other sources is still written: the site's targets of
+that source find no source in it and are left alone.
 
 **Who exports.** A server administrator of the exporting kista, through `kista admin`. A plan
 discloses the site's configuration to the exporting side: to Enterest, for its subscribers, that is
@@ -829,10 +849,11 @@ The config check refuses:
 ```text
 internal/bundle          the plan and the manifest (types, validation, canonical order),
                          signing and verifying, the tar reader and writer
-internal/bundle/export   the export: sources from upstreams and own channels, files with their
-                         original signatures, the checks, the summary
 internal/upstream        + bundle mode (no sync, no credential, no egress port check, passthrough);
-                         the import: targets, leases, freshness, per-cell intake, current releases
+                         the plan; the import: targets, leases, freshness, per-cell intake, current
+                         releases; the export: sources from upstreams and own channels, files with
+                         their original signatures, the checks, the summary (beside the plan and the
+                         import, whose reads of upstreams, cells and keys it shares)
 internal/release         + Ingest names the bundle in its event; MayPublish takes the tenant, for
                          "bundle:" pseudo-credentials
 internal/blob            + the imports/ prefix, read-only to kista, outside the collector
@@ -930,7 +951,7 @@ These pages are updated in the same PR:
   - Idle and slow input end the import, and leases never outlive it.
 - **Tokens and the network.**
   - The export makes no request of its own but the repository sources' `.well-known` files, through
-    the matching upstream's egress and credential, as a mirror does (spec 0009): the plan cannot
+    egress and without a credential, as a mirror's key check does (spec 0009): the plan cannot
     point it anywhere its upstreams do not already go.
   - No credential reaches the bundle, a log or an error.
   - The plan and the bundle hold no secret. Bundle-mode upstreams and feeds hold no credential.
@@ -972,28 +993,31 @@ These pages are updated in the same PR:
 - **`kista bundle inspect` and `sign`**: a consistent bundle, each kind of inconsistency the import
   refuses, `-plan` marking keys pinned, listed or missing; `sign` on an unsigned bundle, on a signed
   one (refused), with a key the plan does not list (refused).
-- **Export**, from a store and blob domain the tests seed (mirrored cells with original
-  signatures, an own channel, test keys and a fake repository for `.well-known`):
+- **Export** (`internal/upstream`, beside the import's fakes, and round trips through the import),
+  from a store and blob domain the tests seed (mirrored cells with original signatures, an own
+  channel, test keys and a fake https repository for `.well-known`):
   - files exported as body ‖ original signature, verifiable with the plan's keys;
   - an own channel's files signed by a key in both the pins and its `.well-known`, after a key
     rotation too; an own passthrough channel refused as a source;
   - `unchanged` by `body_hash` only (an equal ETag alone exports the file);
   - every row of the outcome table: a yank, a block, a hidden deprecation and a `release current`
     made after the run, all decided by the release, not the stale cell record; another source's or a
-    published release; `conflict`, `shadowed`; pull-through cells never asked; cells outside the
-    exporting matrix;
+    published release; the mirror's refusal; pull-through cells never asked; cells outside the
+    exporting matrix; none of the plan's versions;
   - private releases, of an own channel and of a credentialed mirror, only with `-private`, and
     only of `<tenant>`; `authenticated` per cell;
-  - a release without an original signature `rejected`;
+  - a release without an original signature `rejected` (a defensive branch: no route makes an
+    upstream release without one, so it has no test);
   - `fetched_at` from the cell record (kept fresh by `unchanged` runs) and `released_at` for own
     channels;
   - the files written from the stored gzip with a gzip tail, read twice, no temporary copy;
-    `-unsigned` then `kista bundle sign` gives the same bundle as `-key`;
+    `-unsigned` then `kista bundle sign` imports as a bundle exported with `-key` does (the two
+    differ only in their ids and times);
   - two upstreams of one source, the first holding the cell wins;
   - a source mirrored nowhere fails as a whole; a `.well-known` listing no planned key fails it;
   - `-sync` runs the mirror-mode upstreams first;
   - an unpinned bundle key stops before reading; a hand-written plan with a bad grammar;
-  - an interrupted export leaving no output;
+  - a refused export leaving no output (the CLI writes a temporary file, linked into place when complete);
   - the `bundle.export` event; no credential in the bundle or the output.
 - **Import**, from bundles the tests write:
   - **Valid imports and repeats.** A valid import. A repeat releases nothing. An older bundle is

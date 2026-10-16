@@ -104,7 +104,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetCredential": {"upstream.change"},
 		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
 		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected"},
-		"ResetBundle":   {"bundle.reset"}, "Imports": nil, "GetImport": nil,
+		"ResetBundle":   {"bundle.reset"}, "Imports": nil, "GetImport": nil, "Export": {"bundle.export"},
 		"Sync": nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil, "Plan": nil,
 	},
 	"attachment.Service": {
@@ -618,10 +618,10 @@ func TestCoverage(t *testing.T) {
 	if after := en.count(); after != before {
 		t.Errorf("writes refused on a deleting tenant still wrote %d events", after-before)
 	}
-	// every registered writer ran (Ingest, RunUpstream and Import: in internal/upstream's tests, which
+	// every registered writer ran (Ingest, RunUpstream, Import and Export: in internal/upstream's tests, which
 	// check their events)
 	elsewhere := map[string]bool{"release.Service.Ingest": true, "upstream.Service.RunUpstream": true, "attachment.Feeds.RunFeed": true,
-		"upstream.Service.Import": true}
+		"upstream.Service.Import": true, "upstream.Service.Export": true}
 	for svc, ms := range writes {
 		for m, kinds := range ms {
 			if kinds != nil && !en.hit[svc+"."+m] && !elsewhere[svc+"."+m] {

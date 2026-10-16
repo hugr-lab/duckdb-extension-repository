@@ -1,0 +1,836 @@
+package upstream
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+)
+
+// ExportOptions are a bundle export's (spec 0014).
+type ExportOptions struct {
+	Plan []byte             // the site's plan, as written
+	Key  ed25519.PrivateKey // the bundle key; nil: an unsigned bundle, for kista bundle sign
+	// Private names the plan's repository sources whose private releases may leave.
+	Private []string
+	Sync    bool   // run the matching mirror-mode upstreams first, and wait for them
+	Holder  string // the runs' leases' holder, with Sync
+	// PublicURL is serve.public_url: a repository source at <PublicURL>/<tenant>/<channel> is an own
+	// channel. Version is the exporter's version. Both go to the manifest, for the record.
+	PublicURL, Version string
+}
+
+// ExportSource is one plan source's part of an export.
+type ExportSource struct {
+	Kind     string         `json:"kind"`
+	Prefix   string         `json:"prefix,omitempty"`
+	From     string         `json:"from,omitempty"` // the upstreams or the own channel the files came from
+	Counts   map[string]int `json:"counts"`
+	Bytes    int64          `json:"bytes"`              // its files' gzip entries
+	Keys     []string       `json:"keys,omitempty"`     // the fingerprints its .well-known file lists
+	Problems []CellNote     `json:"problems,omitempty"` // the first 20 cells not exported
+	Error    string         `json:"error,omitempty"`    // it failed as a whole: it is not in the bundle
+}
+
+// ExportResult is an export's summary.
+type ExportResult struct {
+	ID             string         `json:"id"`
+	CreatedAt      time.Time      `json:"created_at"`
+	PlanSHA256     string         `json:"plan_sha256"`
+	ManifestSHA256 string         `json:"manifest_sha256"`
+	BundleKey      string         `json:"bundle_key,omitempty"` // none: unsigned
+	SHA256         string         `json:"sha256"`               // the bundle's, as the import computes it
+	Files          int            `json:"files"`
+	Bytes          int64          `json:"bytes"`
+	Sources        []ExportSource `json:"sources"`
+}
+
+// Failed reports whether a source failed as a whole.
+func (r ExportResult) Failed() bool {
+	return slices.ContainsFunc(r.Sources, func(s ExportSource) bool { return s.Error != "" })
+}
+
+// Export errors.
+var (
+	// ErrExportKey is a bundle key the plan does not list: the export stops before reading anything.
+	ErrExportKey = errors.New("upstream: the bundle key is not among the plan's bundle keys")
+	// ErrExportPrivate is a -private prefix that names no repository source of the plan.
+	ErrExportPrivate = errors.New("upstream: -private names no repository source of the plan")
+)
+
+// The export's reasons for cells it does not export.
+const (
+	whyWithdrawn   = "withdrawn on the exporting kista"
+	whyOtherSource = "not this source's build"
+	whyPullThrough = "never fetched by pull-through"
+	whyMatrix      = "outside the exporting matrix"
+	whyPrivate     = "private on the exporting kista"
+	whyNoOrigin    = "no original signature on the exporting kista"
+	whyNoBody      = "the body is not available on the exporting kista"
+	whyVersions    = "no release of the plan's versions on the exporting kista"
+)
+
+// xsource is a plan source being exported.
+type xsource struct {
+	plan    *bundle.PlanSource
+	out     ExportSource
+	ups     []*xupstream // matching upstreams, by name
+	ch      *xchannel    // or an own channel
+	keys    []*rsa.PublicKey
+	wk      []byte
+	names   map[string]bool // the tenant's upstreams of this source: a release "from this source"
+	private bool
+	cells   []bundle.Cell
+	files   map[int]*xfile         // by index into cells: fetched cells' files
+	filters map[[3]string][]string // the plan cells' versions
+}
+
+type xupstream struct {
+	u     store.Upstream
+	snap  *release.Snapshot
+	cells map[[3]string]store.UpstreamCell
+}
+
+type xchannel struct {
+	ch   store.Channel
+	snap *release.Snapshot
+	sign []store.Key // keys both pinned and listed, the serving key first
+}
+
+// xfile is a file the bundle carries: a stored body and the signature that follows it.
+type xfile struct {
+	rec     store.Blob
+	sig     []byte
+	path    string
+	sha     string
+	size    int64 // the gzip entry
+	inflate int64 // body ‖ signature
+	md      extfile.Metadata
+	err     error // the stored body could not be read
+	hashed  bool
+}
+
+// Export writes a bundle answering a site's plan to w (spec 0014, Exporting a bundle): for each
+// plan source, the files this tenant's mirrors or own channels hold for its cells, each with the
+// signature its source made, checked with the plan's pins as the import will check them. Nothing
+// is re-signed: the bundle key signs only the manifest. The error is a refusal or a failure
+// before the bundle was complete; a source that fails as a whole is reported in the result and
+// left out. Exporting is a server administrator's act.
+func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io.Writer, o ExportOptions) (ExportResult, error) {
+	var res ExportResult
+	t, err := s.serverTenant(ctx, a, tenant)
+	if err != nil {
+		return res, err
+	}
+	var plan bundle.Plan
+	if err := bundle.DecodeStrict(o.Plan, &plan); err != nil {
+		return res, err
+	}
+	if err := plan.Validate(); err != nil {
+		return res, err
+	}
+	sum := sha256.Sum256(o.Plan)
+	res.PlanSHA256 = hex.EncodeToString(sum[:])
+	if o.Key != nil {
+		res.BundleKey = bundle.Fingerprint(o.Key.Public().(ed25519.PublicKey))
+		if !slices.Contains(plan.BundleKeys, res.BundleKey) {
+			return res, fmt.Errorf("%w: %s", ErrExportKey, res.BundleKey)
+		}
+	}
+	private := map[string]bool{}
+	for _, p := range o.Private {
+		p = strings.TrimSuffix(p, "/")
+		if !slices.ContainsFunc(plan.Sources, func(ps bundle.PlanSource) bool { return ps.Kind == store.UpstreamRepo && ps.Prefix == p }) {
+			return res, fmt.Errorf("%w: %s", ErrExportPrivate, p)
+		}
+		private[p] = true
+	}
+	if s.Blob == nil {
+		return res, errors.New("upstream: the export needs a blob service")
+	}
+	var ups []store.Upstream
+	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		ups, err = tx.ListUpstreams(ctx, t.ID)
+		return err
+	}); err != nil {
+		return res, err
+	}
+	if o.Sync {
+		if err := s.exportSync(ctx, a, t, ups, &plan, o.Holder); err != nil {
+			return res, err
+		}
+	}
+	channels, err := s.Store.ListChannels(ctx, t.Name)
+	if err != nil {
+		return res, err
+	}
+	now := s.Store.Now().UTC()
+	snaps := &release.Snapshots{Store: s.Store}
+	x := &exporter{s: s, t: t, now: now, snaps: snaps, ups: map[string]*xupstream{}, files: map[string]*xfile{}}
+	own := ownPrefix(o.PublicURL, t.Name)
+	var srcs []*xsource
+	for i := range plan.Sources {
+		ps := &plan.Sources[i]
+		src := &xsource{plan: ps, private: private[ps.Prefix], names: map[string]bool{}, files: map[int]*xfile{},
+			out: ExportSource{Kind: ps.Kind, Prefix: ps.Prefix, Counts: map[string]int{}}}
+		srcs = append(srcs, src)
+		if err := x.source(ctx, src, ups, channels, own); err != nil {
+			if ctx.Err() != nil {
+				return res, ctx.Err()
+			}
+			src.out.Error = err.Error()
+			continue
+		}
+		if err := x.cells(ctx, src); err != nil {
+			return res, err
+		}
+	}
+
+	// the manifest: every fetched file read once to hash and check it
+	m := bundle.Manifest{Format: bundle.ManifestFormat, ID: store.NewID(), CreatedAt: now,
+		Exporter: bundle.Exporter{Version: bundle.Text(o.Version, bundle.MaxExporter), PublicURL: bundle.Text(o.PublicURL, bundle.MaxExporter)},
+		Plan:     bundle.PlanRef{Tenant: plan.Tenant, CreatedAt: plan.CreatedAt, SHA256: res.PlanSHA256}}
+	wellKnown := map[string][]byte{}
+	byPath := map[string]*xfile{}
+	for _, src := range srcs {
+		if src.out.Error != "" {
+			continue
+		}
+		bs := bundle.Source{Kind: src.plan.Kind, Prefix: src.plan.Prefix, Cells: []bundle.Cell{}}
+		counted := map[string]bool{}
+		if src.wk != nil {
+			p := fmt.Sprintf("sources/%d/well-known.json", len(wellKnown)+1)
+			ws := sha256.Sum256(src.wk)
+			bs.WellKnown = &bundle.FileRef{Path: p, SHA256: hex.EncodeToString(ws[:]), Size: int64(len(src.wk))}
+			wellKnown[p] = src.wk
+		}
+		for i, c := range src.cells {
+			if f := src.files[i]; f != nil {
+				if err := x.hash(ctx, f); err != nil {
+					return res, err
+				}
+				c = x.check(src, c, f)
+				if c.Outcome == bundle.Fetched {
+					byPath[f.path] = f
+					if !counted[f.path] { // each file once per source, as the bundle holds it
+						counted[f.path] = true
+						src.out.Bytes += f.size
+					}
+				}
+			}
+			src.out.Counts[c.Outcome]++
+			if (c.Outcome == bundle.Missing || c.Outcome == bundle.Rejected) && len(src.out.Problems) < maxProblems {
+				src.out.Problems = append(src.out.Problems, CellNote{DuckDBVersion: c.DuckDBVersion, Platform: c.Platform, Name: c.Name,
+					Outcome: c.Outcome, Detail: c.Detail})
+			}
+			bs.Cells = append(bs.Cells, c)
+		}
+		m.Sources = append(m.Sources, bs)
+	}
+	if m.Sources == nil {
+		m.Sources = []bundle.Source{}
+	}
+	bundle.Canonical(m.Sources)
+	if err := m.Validate(time.Time{}); err != nil {
+		return res, fmt.Errorf("upstream: the export made an invalid manifest: %w", err)
+	}
+	md, err := json.Marshal(m)
+	if err != nil {
+		return res, err
+	}
+	ms := sha256.Sum256(md)
+	res.ID, res.CreatedAt, res.ManifestSHA256 = m.ID, m.CreatedAt, hex.EncodeToString(ms[:])
+
+	// the bundle: the head, the sources' .well-known files, then the files in canonical order,
+	// straight from the stored streams
+	bw := bundle.NewWriter(w)
+	if err := bundle.WriteHead(bw, md, o.Key); err != nil {
+		return res, err
+	}
+	for _, src := range m.Sources {
+		if src.WellKnown != nil {
+			data := wellKnown[src.WellKnown.Path]
+			if err := bw.Entry(src.WellKnown.Path, int64(len(data)), strings.NewReader(string(data))); err != nil {
+				return res, err
+			}
+		}
+	}
+	for _, p := range m.FileOrder() {
+		f := byPath[p]
+		gz, err := s.Blob.OpenGzip(ctx, f.rec, f.sig)
+		if err != nil {
+			return res, fmt.Errorf("upstream: %s: %w", p, err)
+		}
+		r := gz.NewReader(ctx)
+		err = bw.Entry(p, gz.Size, r)
+		_ = r.Close()
+		if err != nil {
+			return res, fmt.Errorf("upstream: %s: %w", p, err)
+		}
+		res.Files++
+		res.Bytes += gz.Size
+	}
+	if err := bw.Close(); err != nil {
+		return res, err
+	}
+	res.SHA256 = bw.SHA256()
+	for _, src := range srcs {
+		res.Sources = append(res.Sources, src.out)
+	}
+	counts := map[string]int{}
+	for _, src := range res.Sources {
+		for k, n := range src.Counts {
+			counts[k] += n
+		}
+		if src.Error != "" {
+			counts["failed_sources"]++
+		}
+	}
+	err = s.Store.InTenantTx(ctx, t.ID, nil, func(tx *store.Tx) error {
+		return tx.Event(ctx, t.ID, a.String(), "bundle.export", "tenant:"+t.Name, map[string]any{"plan": res.PlanSHA256,
+			"manifest": res.ID, "manifest_sha256": res.ManifestSHA256, "bundle_key": res.BundleKey, "counts": counts})
+	})
+	return res, err
+}
+
+// ownPrefix is where the tenant's own channels are, in a plan's normalised form: <public url>/<tenant>.
+func ownPrefix(publicURL, tenant string) string {
+	u, err := url.Parse(strings.TrimSuffix(publicURL, "/"))
+	if publicURL == "" || err != nil || u.Scheme != "https" {
+		return ""
+	}
+	u.Host = strings.ToLower(strings.TrimSuffix(u.Host, ":443"))
+	return u.String() + "/" + tenant
+}
+
+type exporter struct {
+	s     *Service
+	t     store.Tenant
+	now   time.Time
+	snaps *release.Snapshots
+	ups   map[string]*xupstream // by upstream id
+	files map[string]*xfile     // by body hash and signature: each read once
+}
+
+// source finds where a plan source's files come from and its keys: the tenant's active mirror or
+// pull-through upstreams of the source, or its own signed channel. An error fails the source.
+func (x *exporter) source(ctx context.Context, src *xsource, ups []store.Upstream, channels []store.Channel, own string) error {
+	ps := src.plan
+	same := func(u store.Upstream) bool {
+		return u.Kind == ps.Kind && (ps.Kind != store.UpstreamRepo || u.Prefix == ps.Prefix)
+	}
+	var names []string
+	for _, u := range ups {
+		if !same(u) {
+			continue
+		}
+		src.names[u.Name] = true
+		if u.State != store.UpstreamActive || u.Mode != store.ModeMirror && u.Mode != store.ModePullThrough {
+			continue
+		}
+		xu, err := x.upstream(ctx, u)
+		if err != nil {
+			return err
+		}
+		src.ups = append(src.ups, xu)
+		names = append(names, u.Name)
+	}
+	slices.SortFunc(src.ups, func(a, b *xupstream) int { return strings.Compare(a.u.Name, b.u.Name) })
+	slices.Sort(names)
+	if len(src.ups) > 0 {
+		src.out.From = "upstreams " + strings.Join(names, ",")
+	} else if own != "" && ps.Kind == store.UpstreamRepo && strings.HasPrefix(ps.Prefix, own+"/") {
+		name := strings.TrimPrefix(ps.Prefix, own+"/")
+		i := slices.IndexFunc(channels, func(c store.Channel) bool { return c.Name == name })
+		if i >= 0 && channels[i].Kind == store.ChannelPassthrough {
+			return errors.New("a passthrough channel has no key of its own and is never a source")
+		}
+		if i >= 0 {
+			snap, err := x.snaps.Get(ctx, channels[i])
+			if err != nil {
+				return err
+			}
+			src.ch = &xchannel{ch: channels[i], snap: snap}
+			src.out.From = "channel " + name
+		}
+	}
+	if len(src.ups) == 0 && src.ch == nil {
+		return errors.New("not mirrored here")
+	}
+	switch {
+	case ps.Kind != store.UpstreamRepo:
+		src.keys = x.s.duckdbKeys(ps.Kind)
+		return nil
+	case src.ch != nil:
+		wk, _, err := (&keys.Service{Store: x.s.Store}).WellKnownOf(ctx, src.ch.ch)
+		if err != nil {
+			return err
+		}
+		src.wk = wk
+	default:
+		// as a mirror's key check fetches it: public by design, through egress
+		wk, _, err := x.s.Fetch.Get(ctx, ps.Prefix+"/.well-known/duckdb-extension-repo.json")
+		if err != nil {
+			return fmt.Errorf("the .well-known file: %w", err)
+		}
+		if len(wk) > bundle.MaxWellKnown {
+			return fmt.Errorf("the .well-known file is over %d bytes", bundle.MaxWellKnown)
+		}
+		src.wk = wk
+	}
+	var doc struct {
+		Keys []string `json:"signature_keys"`
+	}
+	if err := json.Unmarshal(src.wk, &doc); err != nil {
+		return fmt.Errorf("the .well-known file is not valid: %w", err)
+	}
+	for _, k := range doc.Keys {
+		pub, err := extfile.ParsePublicKey(k)
+		if err != nil {
+			continue
+		}
+		fp := extfile.Fingerprint(pub)
+		if !slices.Contains(src.out.Keys, fp) {
+			src.out.Keys = append(src.out.Keys, fp)
+		}
+		if slices.Contains(ps.Keys, fp) {
+			src.keys = append(src.keys, pub)
+		}
+	}
+	src.keys = extfile.DedupKeys(src.keys)
+	if len(src.keys) == 0 {
+		return errors.New("the .well-known file lists none of the plan's keys")
+	}
+	if src.ch != nil {
+		// a site that still pins a key the channel rotated away from receives files it can verify
+		for _, k := range src.ch.snap.Keys {
+			if (k.State == store.KeyActive || k.State == store.KeyTrusted) && slices.Contains(ps.Keys, k.Fingerprint) &&
+				slices.Contains(src.out.Keys, k.Fingerprint) {
+				src.ch.sign = append(src.ch.sign, k)
+			}
+		}
+		slices.SortStableFunc(src.ch.sign, func(a, b store.Key) int {
+			switch {
+			case a.ID == src.ch.ch.ServingKeyID:
+				return -1
+			case b.ID == src.ch.ch.ServingKeyID:
+				return 1
+			}
+			return 0
+		})
+	}
+	return nil
+}
+
+// upstream reads an exporting upstream's channel snapshot and cell records, once per export.
+func (x *exporter) upstream(ctx context.Context, u store.Upstream) (*xupstream, error) {
+	if xu := x.ups[u.ID]; xu != nil {
+		return xu, nil
+	}
+	sc, err := x.s.Store.ServeChannelByID(ctx, u.ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	snap, err := x.snaps.Get(ctx, sc.Channel)
+	if err != nil {
+		return nil, err
+	}
+	xu := &xupstream{u: u, snap: snap}
+	if err := x.s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		xu.cells, err = tx.Cells(ctx, u.ID)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	x.ups[u.ID] = xu
+	return xu, nil
+}
+
+// cells decides each plan cell's outcome on the exporting side.
+func (x *exporter) cells(ctx context.Context, src *xsource) error {
+	src.filters = map[[3]string][]string{}
+	for _, pc := range src.plan.Cells {
+		src.filters[[3]string{pc.DuckDBVersion, pc.Platform, pc.Name}] = pc.Versions
+		var c bundle.Cell
+		var f *xfile
+		var err error
+		if src.ch != nil {
+			c, f, err = x.fromChannel(ctx, src, pc)
+		} else {
+			c, f, err = x.fromUpstreams(ctx, src, pc)
+		}
+		if err != nil {
+			return err
+		}
+		c.DuckDBVersion, c.Platform, c.Name = pc.DuckDBVersion, pc.Platform, pc.Name
+		c.Detail = bundle.Text(c.Detail, bundle.MaxDetail)
+		if f != nil {
+			src.files[len(src.cells)] = f
+		}
+		src.cells = append(src.cells, c)
+	}
+	return nil
+}
+
+// view is the releases a cell may take: the plan's versions, and private ones only with -private.
+func view(pc bundle.PlanCell, private bool) (all, allowed release.Visible) {
+	all = func(c *store.Candidate) bool {
+		return len(pc.Versions) == 0 || slices.Contains(pc.Versions, c.ExtVersion)
+	}
+	return all, func(c *store.Candidate) bool { return all(c) && (private || c.Visibility == store.Public) }
+}
+
+// unservable explains a cell the channel serves nothing for in the view: a private release, a
+// withdrawn one, or none of the plan's versions; missing with no reason otherwise.
+func unservable(snap *release.Snapshot, pc bundle.PlanCell, all release.Visible) (bundle.Cell, bool) {
+	if snap.Flat(pc.DuckDBVersion, pc.Platform, pc.Name, all) != nil {
+		return rejected(whyPrivate), true
+	}
+	for _, c := range snap.Group(pc.Name, pc.Platform) {
+		if all(c) && release.Serves(c, pc.DuckDBVersion, snap.CAPIs) && (c.State == store.ReleaseYanked || c.State == store.ReleaseDeprecated) {
+			return rejected(whyWithdrawn), true
+		}
+	}
+	if len(pc.Versions) > 0 && snap.Flat(pc.DuckDBVersion, pc.Platform, pc.Name, release.Everything) != nil {
+		return missing(whyVersions), true
+	}
+	return missing(""), false
+}
+
+func missing(why string) bundle.Cell  { return bundle.Cell{Outcome: bundle.Missing, Detail: why} }
+func rejected(why string) bundle.Cell { return bundle.Cell{Outcome: bundle.Rejected, Detail: why} }
+
+// fromUpstreams takes a cell from the first upstream that holds a servable release of this
+// source for it; otherwise it reports the first upstream whose matrix holds the cell.
+func (x *exporter) fromUpstreams(ctx context.Context, src *xsource, pc bundle.PlanCell) (bundle.Cell, *xfile, error) {
+	var first *bundle.Cell
+	for _, xu := range src.ups {
+		c, f, err := x.fromUpstream(ctx, src, xu, pc)
+		if err != nil || c.Outcome == bundle.Fetched || c.Outcome == bundle.Unchanged {
+			return c, f, err
+		}
+		if first == nil && c.Detail != whyMatrix {
+			first = &c
+		}
+	}
+	if first != nil {
+		return *first, nil, nil
+	}
+	return missing(whyMatrix), nil, nil
+}
+
+func (x *exporter) fromUpstream(ctx context.Context, src *xsource, xu *xupstream, pc bundle.PlanCell) (bundle.Cell, *xfile, error) {
+	u := xu.u
+	_, served := xu.snap.CAPIs[pc.DuckDBVersion]
+	if !served || !slices.Contains(u.Platforms, pc.Platform) || !slices.ContainsFunc(u.Entries, func(e store.UpstreamEntry) bool {
+		return e.Name == pc.Name || e.Name == "*" && u.Mode == store.ModePullThrough
+	}) {
+		return missing(whyMatrix), nil, nil
+	}
+	key := [3]string{pc.DuckDBVersion, pc.Platform, pc.Name}
+	all, allowed := view(pc, src.private)
+	best := xu.snap.Flat(pc.DuckDBVersion, pc.Platform, pc.Name, allowed)
+	if best == nil {
+		if c, ok := unservable(xu.snap, pc, all); ok {
+			return c, nil, nil
+		}
+		rec, ok := xu.cells[key]
+		switch {
+		case !ok && u.Mode == store.ModePullThrough:
+			return missing(whyPullThrough), nil, nil
+		case !ok:
+			return missing(""), nil, nil
+		case slices.Contains([]string{store.CellRejected, store.CellBlocked, store.CellShadowed, store.CellConflict}, rec.Outcome):
+			return rejected(cmpOr(rec.Detail, rec.Outcome)), nil, nil
+		case rec.Outcome == store.CellFailed:
+			return missing("the last fetch failed"), nil, nil // the fetch's own error stays on the exporting side
+		}
+		return missing(rec.Detail), nil, nil
+	}
+	var prov struct {
+		Upstream   string `json:"upstream"`
+		Credential string `json:"credential"`
+		FetchedAt  string `json:"fetched_at"`
+	}
+	_ = json.Unmarshal([]byte(best.Provenance), &prov)
+	if best.Origin != store.OriginUpstream || !src.names[prov.Upstream] {
+		return rejected(whyOtherSource), nil, nil
+	}
+	// authenticated: it came through a credential, or it is private here (-private let it leave)
+	c := bundle.Cell{BodyHash: best.BodyHash,
+		Authenticated: (prov.Credential != "" || best.Visibility == store.Private) && src.plan.Kind == store.UpstreamRepo}
+	// fetched_at is when the source last confirmed this body for the cell: the cell record while it
+	// still holds the body (unchanged runs keep it fresh), else when the release was fetched
+	rec, ok := xu.cells[key]
+	if prov.Upstream != u.Name {
+		if other := x.byName(prov.Upstream); other != nil {
+			rec, ok = other.cells[key]
+		}
+	}
+	if ok && rec.BodyHash == best.BodyHash && !rec.FetchedAt.IsZero() {
+		c.FetchedAt, c.ETag = rec.FetchedAt, bundle.Text(rec.ETag, bundle.MaxETag)
+	} else if ft, err := time.Parse(time.RFC3339, prov.FetchedAt); err == nil {
+		c.FetchedAt = ft
+	} else {
+		c.FetchedAt = best.CreatedAt
+	}
+	c.FetchedAt = x.clamp(c.FetchedAt)
+	if pc.BodyHash == best.BodyHash { // the plan's ETag alone never decides
+		c.Outcome = bundle.Unchanged
+		return c, nil, nil
+	}
+	sig, err := x.s.Store.OriginSignature(ctx, best.ID)
+	if errors.Is(err, store.ErrNotFound) || err == nil && len(sig) != extfile.SignatureSize {
+		return rejected(whyNoOrigin), nil, nil
+	}
+	if err != nil {
+		return bundle.Cell{}, nil, err
+	}
+	return x.file(ctx, c, best.BodyHash, sig)
+}
+
+// byName finds an exporting upstream already read, by name.
+func (x *exporter) byName(name string) *xupstream {
+	for _, xu := range x.ups {
+		if xu.u.Name == name {
+			return xu
+		}
+	}
+	return nil
+}
+
+// fromChannel takes a cell from an own signed channel: its servable release with a signature by a
+// key the plan pins.
+func (x *exporter) fromChannel(ctx context.Context, src *xsource, pc bundle.PlanCell) (bundle.Cell, *xfile, error) {
+	snap := src.ch.snap
+	if _, served := snap.CAPIs[pc.DuckDBVersion]; !served {
+		return missing(whyMatrix), nil, nil
+	}
+	all, allowed := view(pc, src.private)
+	best := snap.Flat(pc.DuckDBVersion, pc.Platform, pc.Name, allowed)
+	if best == nil {
+		c, _ := unservable(snap, pc, all)
+		return c, nil, nil
+	}
+	c := bundle.Cell{BodyHash: best.BodyHash, FetchedAt: x.clamp(best.CreatedAt), Authenticated: best.Visibility == store.Private}
+	if pc.BodyHash == best.BodyHash {
+		c.Outcome = bundle.Unchanged
+		return c, nil, nil
+	}
+	for _, k := range src.ch.sign {
+		sig, err := x.s.Store.Signature(ctx, best.ID, k.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return bundle.Cell{}, nil, err
+		}
+		return x.file(ctx, c, best.BodyHash, sig)
+	}
+	return rejected("no signature by a key the plan pins"), nil, nil
+}
+
+// clamp keeps a time at or before the manifest's created_at, as validation requires.
+func (x *exporter) clamp(t time.Time) time.Time {
+	if t.After(x.now) {
+		return x.now
+	}
+	return t.UTC()
+}
+
+// file names the stored body a fetched cell carries, shared by every cell with the same body and
+// signature.
+func (x *exporter) file(ctx context.Context, c bundle.Cell, bodyHash string, sig []byte) (bundle.Cell, *xfile, error) {
+	k := bodyHash + "/" + hex.EncodeToString(sig)
+	f := x.files[k]
+	if f == nil {
+		rec, err := x.s.Store.GetBlob(ctx, x.t.StorageDomain, bodyHash)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return rejected(whyNoBody), nil, nil
+		case err != nil:
+			return bundle.Cell{}, nil, err
+		case !rec.CorruptAt.IsZero():
+			return rejected(whyNoBody), nil, nil
+		}
+		f = &xfile{rec: rec, sig: sig}
+		x.files[k] = f
+	}
+	c.Outcome = bundle.Fetched
+	return c, f, nil
+}
+
+// hash reads a file once, inflated from its verified stored stream: its SHA-256 and size, and the
+// footer the checks need. A body that cannot be read is the cell's refusal, not the export's.
+func (x *exporter) hash(ctx context.Context, f *xfile) error {
+	if f.hashed {
+		return nil
+	}
+	f.hashed = true
+	plain, err := x.s.Blob.OpenPlain(ctx, f.rec, f.sig)
+	if err != nil {
+		f.err = err
+		return nil
+	}
+	gz, err := x.s.Blob.OpenGzip(ctx, f.rec, f.sig)
+	if err != nil {
+		f.err = err
+		return nil
+	}
+	r := plain.NewReader(ctx)
+	defer func() { _ = r.Close() }()
+	h := sha256.New()
+	tail := &tailWriter{n: extfile.FooterSize}
+	n, err := io.Copy(io.MultiWriter(h, tail), r)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil || n != plain.Size || len(tail.b) < extfile.FooterSize {
+		f.err = fmt.Errorf("reading the stored body: %v", err)
+		return nil
+	}
+	var block [extfile.MetadataSize]byte
+	copy(block[:], tail.b[:extfile.MetadataSize])
+	if f.md, err = extfile.ParseMetadata(block); err != nil {
+		f.err = err
+		return nil
+	}
+	f.sha = hex.EncodeToString(h.Sum(nil))
+	f.path, f.size, f.inflate = "files/"+f.sha+".gz", gz.Size, n
+	return nil
+}
+
+// check runs the import's checks on a fetched cell's file with the plan's pins: the signature,
+// the footer against the cell, the version filter. A failure leaves the file out.
+func (x *exporter) check(src *xsource, c bundle.Cell, f *xfile) bundle.Cell {
+	refuse := func(why string) bundle.Cell {
+		r := rejected(bundle.Text(why, bundle.MaxDetail))
+		r.DuckDBVersion, r.Platform, r.Name = c.DuckDBVersion, c.Platform, c.Name
+		return r
+	}
+	if f.err != nil {
+		return refuse(whyNoBody)
+	}
+	var hash extfile.BodyHash
+	if b, err := hex.DecodeString(f.rec.BodyHash); err == nil && len(b) == len(hash) {
+		copy(hash[:], b)
+	}
+	ef := &extfile.File{BodySize: f.rec.BodyLen, Metadata: f.md, Hash: hash, Signature: f.sig}
+	c.File, c.SHA256, c.Size, c.InflatedSize = f.path, f.sha, f.size, f.inflate
+	errs := bundle.CheckFile(ef, []bundle.Ref{{Source: &bundle.Source{Kind: src.plan.Kind, Prefix: src.plan.Prefix}, Cell: c}},
+		bundle.CheckOptions{
+			Keys: func(*bundle.Source) []*rsa.PublicKey { return src.keys },
+			Versions: func(r bundle.Ref) []string {
+				return src.filters[[3]string{r.Cell.DuckDBVersion, r.Cell.Platform, r.Cell.Name}]
+			},
+		})
+	if len(errs) > 0 {
+		return refuse(errs[0].Error())
+	}
+	return c
+}
+
+// tailWriter keeps the last n bytes written.
+type tailWriter struct {
+	n int
+	b []byte
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) > t.n {
+		t.b = append(t.b[:0], t.b[len(t.b)-t.n:]...)
+	}
+	return len(p), nil
+}
+
+func cmpOr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// exportSync runs the tenant's active mirror-mode upstreams of the plan's sources on this process
+// and waits for them; a run another replica holds is waited for, then requested again.
+func (s *Service) exportSync(ctx context.Context, a authz.Actor, t store.Tenant, ups []store.Upstream, plan *bundle.Plan, holder string) error {
+	for _, u := range ups {
+		if u.Mode != store.ModeMirror || u.State != store.UpstreamActive ||
+			!slices.ContainsFunc(plan.Sources, func(ps bundle.PlanSource) bool {
+				return ps.Kind == u.Kind && (u.Kind != store.UpstreamRepo || ps.Prefix == u.Prefix)
+			}) {
+			continue
+		}
+		if err := s.runNow(ctx, a, t.Name, u, holder); err != nil {
+			return fmt.Errorf("upstream %s: %w", u.Name, err)
+		}
+	}
+	return nil
+}
+
+// syncPoll is how often runNow looks again while another replica runs the upstream.
+var syncPoll = 2 * time.Second
+
+// runNow requests a run of an upstream and runs it here under its lease.
+func (s *Service) runNow(ctx context.Context, a authz.Actor, tenant string, u store.Upstream, holder string) error {
+	if _, err := s.Sync(ctx, a, tenant, u.Name, false); err != nil {
+		return err
+	}
+	lease := "kista/upstream/" + u.ID
+	for {
+		held, err := s.Store.AcquireLease(ctx, lease, holder, leaseTTL)
+		if err != nil {
+			return err
+		}
+		if held {
+			renew := func(ctx context.Context) error {
+				if ok, err := s.Store.AcquireLease(ctx, lease, holder, leaseTTL); err != nil || !ok {
+					return errors.New("upstream: the run's lease was lost")
+				}
+				return nil
+			}
+			res, err := s.RunUpstream(ctx, u.ID, renew)
+			_ = s.Store.ReleaseLease(context.WithoutCancel(ctx), lease, holder)
+			switch {
+			case errors.Is(err, ErrNotDue): // another replica took the request and finished it, or a pause
+				if paused, err := s.paused(ctx, u.ID); err != nil || paused {
+					return cmpErr(err, ErrPaused)
+				}
+				return nil
+			case err != nil:
+				return err
+			case res.Error != "":
+				return fmt.Errorf("the run stopped: %s", res.Error)
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(syncPoll):
+		}
+	}
+}
+
+func cmpErr(err, fallback error) error {
+	if err != nil {
+		return err
+	}
+	return fallback
+}

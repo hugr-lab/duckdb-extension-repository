@@ -320,8 +320,9 @@ pinned keys, channel, platforms, allowlist, visibility, state), but kista never 
 - it takes no credential (`400`, at creation and on the credential route);
 - a passthrough channel takes a `duckdb-core` one.
 
-Bundles are made by a connected kista (spec 0014; the export arrives in a later release) and
-imported with `kista admin bundle import`. The upstream's record shows its mode and the last bundle
+The site writes a plan (`kista admin bundle plan`), a connected kista exports a bundle answering it
+([Exporting a bundle](#exporting-a-bundle)), and the site imports it with
+`kista admin bundle import`. The upstream's record shows its mode and the last bundle
 imported (`bundle_id`, `bundle_created_at`), over the API, in the console and in
 `kista admin upstream show`.
 
@@ -329,6 +330,69 @@ imported (`bundle_id`, `bundle_created_at`), over the API, in the console and in
 kista admin -config /etc/kista/kista.yaml upstream add acme core -mode bundle \
   -kind duckdb-core -channel core -platforms linux_amd64 -extensions httpfs,spatial
 ```
+
+### Exporting a bundle
+
+A bundle is made on the connected side by a kista that mirrors the plan's sources: a gateway kista
+of the organisation, or a provider exporting for its subscribers. It exports what its mirrors
+already fetched and verified: it fetches no extension of its own (`-sync` runs its mirrors first).
+
+```bash
+# at the site: what its bundle-mode upstreams ask for, and what they hold
+kista admin -config /etc/kista/kista.yaml bundle plan acme -o plan.json
+# on the gateway: unsigned, then signed on a machine that holds the bundle key (recommended)
+kista admin -config /etc/kista/kista.yaml bundle export gw -plan plan.json -unsigned -o acme.unsigned -sync
+kista bundle sign -key bundle-key.pem -plan plan.json -in acme.unsigned -o acme.kbundle
+# or signed as it is written, the key on the gateway
+kista admin -config /etc/kista/kista.yaml bundle export gw -plan plan.json -key bundle-key.pem -o acme.kbundle
+```
+
+`<tenant>` is the gateway's tenant whose upstreams serve the plan; it need not be named as the
+site's. The plan is validated first, and `-key` must be among its bundle keys, before anything is
+read. For each of the plan's sources:
+
+- **Where the files come from**: the tenant's active `mirror` or `pull-through` upstreams of the
+  same source (the same kind and, for a repository, the same normalised prefix), the first by name
+  that holds a servable release for a cell; or, when none matches, for a repository prefix
+  `<serve.public_url>/<tenant>/<channel>` (an https `public_url`), the tenant's own signed channel. A source with neither fails as a whole ("not mirrored here"), and so does one
+  whose `.well-known` file lists none of the plan's pinned keys (fetched through egress as a
+  mirror's key check fetches it; an own channel's is its own). A passthrough channel is never a
+  source.
+- **The release decides**, not the cell record: each cell takes the release DuckDB would install
+  from the channel now, among the plan's versions for the cell.
+
+| On the gateway | In the bundle |
+| --- | --- |
+| a servable release from this source | its file: the stored body with the signature its source made (an own channel: a signature by a key the plan pins, the serving key first) |
+| that release, whose body the site already holds (`body_hash` in the plan) | `unchanged`, no file |
+| yanked (a block too) or deprecated | `rejected`, "withdrawn on the exporting kista" |
+| a release of another origin (published, promoted, another source) | `rejected`, "not this source's build" |
+| private, without `-private <prefix>` | `rejected`, "private on the exporting kista" |
+| no release; the mirror refused the cell | `rejected`, with the mirror's reason |
+| no release; missing, or never asked by a pull-through upstream | `missing` |
+| releases, but none of the plan's versions for the cell | `missing`, "no release of the plan's versions on the exporting kista" |
+| a stored body that cannot be read (missing, or marked corrupt) | `rejected`, "the body is not available on the exporting kista" |
+| an own channel's release without a signature by a key the plan pins | `rejected`, "no signature by a key the plan pins" |
+| outside every exporting upstream's channel versions, platforms or allowlist | `missing`, "outside the exporting matrix" |
+
+Each file is checked as the import will check it (the signature with the plan's keys, the footer,
+the versions); a failure is `rejected`. Nothing is re-signed. A cell carries `fetched_at`, when the
+source last confirmed that body (the cell record's, kept fresh by unchanged runs; an own channel's
+release time), its ETag, and `authenticated` when its release came through a credential or is
+private on the gateway, so a release `-private` let out stays private at the site.
+
+`-private <prefix>` (repeatable) names a repository source of the plan whose private releases may
+leave: a credentialed or private mirror's, or an own channel's. DuckDB's kinds take no `-private`:
+their private releases stay. `-sync` first runs the tenant's matching mirror-mode upstreams and
+waits for them; a run that fails or an upstream paused meanwhile stops the export, with no bundle. The bundle is written to a temporary file beside `-o` and linked into
+place when complete, never over an existing file, readable by its owner only (`0600`: it is as
+sensitive as the plan; the directory's file system must support hard links), so an interrupted export leaves nothing; it streams the stored files, read once to hash
+and once to write, and needs no other disk. The command prints each source's counts, bytes, the
+fingerprints its `.well-known` file lists (compare them with the site's pins to notice a rotation),
+the first 20 cells not exported, and the bundle's SHA-256 as the import computes it. It exits `1`
+when a source failed as a whole, after writing the bundle of the others. Exporting is a server
+administrator's act, recorded as `bundle.export`. A plan discloses the site's configuration to the
+gateway: its sources, allowlists, platforms, DuckDB versions and the bodies it holds.
 
 ### Importing a bundle
 

@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -22,6 +24,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
@@ -126,6 +129,8 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   bundle plan <tenant> [-upstream <name,...>] [-o <plan.json>]   what the tenant's bundle-mode upstreams ask for (spec 0014)
   bundle import <tenant> <file|-|blob:<domain>/imports/<name>> [-upstream <name,...>] [-dry-run] [-any-tenant]
                                                               take a signed bundle into the bundle-mode upstreams
+  bundle export <tenant> -plan <plan.json> (-key <key.pem> | -unsigned) -o <out> [-sync] [-private <prefix>]...
+                                                              a bundle answering a site's plan, from this tenant's mirrors
   bundle list <tenant> [-limit <n>]                           the tenant's bundle imports, the newest first
   bundle show <tenant> <import id>                            one import: its manifest, bundle key and counts
   bundle reset <tenant> <upstream>                            clear an upstream's bundle mark (it takes older bundles)
@@ -1960,11 +1965,22 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 	dryRun := fs.Bool("dry-run", false, "")
 	anyTenant := fs.Bool("any-tenant", false, "")
 	limit := fs.Int("limit", 50, "")
+	planFile := fs.String("plan", "", "")
+	keyFile := fs.String("key", "", "")
+	unsigned := fs.Bool("unsigned", false, "")
+	syncFirst := fs.Bool("sync", false, "")
+	var private keyFlags
+	fs.Var(&private, "private", "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	switch {
+	case sub == "export" && len(pos) == 1:
+		if *planFile == "" || *out == "" || (*keyFile == "") == !*unsigned {
+			return fmt.Errorf("%w: bundle export needs -plan, -o, and -key or -unsigned", errUsage)
+		}
+		return a.bundleExport(ctx, pos[0], *planFile, *keyFile, *out, upstream.ExportOptions{Private: private, Sync: *syncFirst})
 	case sub == "import" && len(pos) == 2:
 		return a.bundleImport(ctx, pos[0], pos[1], upstream.ImportOptions{Upstreams: commaList(*names), DryRun: *dryRun,
 			AnyTenant: *anyTenant, BundleKeys: a.cfg.BundleKeysFor(pos[0])})
@@ -2026,6 +2042,88 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 		return nil
 	default:
 		return errUsage
+	}
+	return nil
+}
+
+// errExportFailed ends an export some source of which failed as a whole.
+var errExportFailed = errors.New("a source of the plan failed as a whole: see above")
+
+// bundleExport writes a bundle answering a plan: to a temporary file beside the output, linked
+// when complete, so an interrupted export leaves no output.
+func (a *adminCmd) bundleExport(ctx context.Context, tenant, planFile, keyFile, out string, o upstream.ExportOptions) (err error) {
+	if o.Plan, err = os.ReadFile(planFile); err != nil {
+		return err
+	}
+	if keyFile != "" {
+		kb, err := os.ReadFile(keyFile)
+		if err != nil {
+			return err
+		}
+		if o.Key, err = bundle.ParsePrivateKey(kb); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(out); !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%s exists, or cannot be checked: %v", out, err)
+	}
+	svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.NewTextHandler(a.errw, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = svc.Close() }()
+	a.svc.WithBlob(svc)
+	tmp, err := os.CreateTemp(filepath.Dir(out), ".kista-bundle-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+	}()
+	host, _ := os.Hostname()
+	o.Holder = fmt.Sprintf("admin/%s/%d", host, os.Getpid())
+	o.PublicURL, o.Version = a.cfg.Serve.PublicURL, "kista "+app.Version
+	res, err := a.svc.Upstreams.Export(ctx, a.actor, tenant, tmp, o)
+	if err != nil {
+		return err
+	}
+	// the bundle stays the owner's (0600, as created): it is as sensitive as the site's configuration
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// a link never replaces a file that appeared at the output meanwhile
+	if err := os.Link(tmp.Name(), out); err != nil {
+		return err
+	}
+	signed := "unsigned: kista bundle sign signs it"
+	if res.BundleKey != "" {
+		signed = "signed with " + res.BundleKey
+	}
+	a.logf("bundle export %s: %s, %d files, %d bytes, %s -> %s", tenant, res.ID, res.Files, res.Bytes, signed, out)
+	a.table("KIND\tPREFIX\tFROM\tCOUNTS\tBYTES\tERROR", func(w io.Writer) {
+		for _, s := range res.Sources {
+			why := ""
+			if s.Error != "" {
+				why = fmt.Sprintf("%q", s.Error) // it may quote a remote answer
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n", s.Kind, orNone(s.Prefix), orNone(s.From), countsText(s.Counts), s.Bytes, why)
+		}
+	})
+	for _, s := range res.Sources {
+		for _, k := range s.Keys {
+			fmt.Fprintf(a.out, "  %s lists key %s\n", s.Prefix, k)
+		}
+		for _, p := range s.Problems {
+			fmt.Fprintf(a.out, "  %s %s %s %s: %s %q\n", orNone(s.Prefix), p.DuckDBVersion, p.Platform, p.Name, p.Outcome, p.Detail)
+		}
+	}
+	fmt.Fprintf(a.out, "plan sha256 %s\nmanifest sha256 %s\nsha256 %s\n", res.PlanSHA256, res.ManifestSHA256, res.SHA256)
+	if res.Failed() {
+		return errExportFailed
 	}
 	return nil
 }
