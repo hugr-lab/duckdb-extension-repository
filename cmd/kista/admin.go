@@ -129,7 +129,8 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
               [-follow] [-format table|jsonl] [<tenant>]          the event buffer (spec 0010), newest first
   shadow list <tenant>                            core names the tenant replaced: passthrough channels do not serve them
   shadow remove <tenant> <name>                   serve DuckDB's build again from passthrough channels
-  bundle plan <tenant> [-upstream <name,...>] [-o <plan.json>]   what the tenant's bundle-mode upstreams ask for (spec 0014)
+  bundle plan <tenant> [-upstream <name,...>] [-feed <name,...>] [-o <plan.json>]   what the tenant's bundle-mode upstreams
+           and feeds ask for (spec 0014); with only one of -upstream and -feed, the other kind is left out
   bundle import <tenant> <file|-|blob:<domain>/imports/<name>> [-upstream <name,...>] [-dry-run] [-any-tenant]
                                                               take a signed bundle into the bundle-mode upstreams
   bundle export <tenant> -plan <plan.json> (-key <key.pem> | -unsigned) -o <out> [-sync] [-private <prefix>]...
@@ -1976,6 +1977,7 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 	fs := flag.NewFlagSet("bundle "+sub, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	names := fs.String("upstream", "", "")
+	feedNames := fs.String("feed", "", "")
 	out := fs.String("o", "", "")
 	dryRun := fs.Bool("dry-run", false, "")
 	anyTenant := fs.Bool("any-tenant", false, "")
@@ -2033,7 +2035,8 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 		}
 		a.logf("bundle reset %s/%s (it last imported %s)", pos[0], u.Name, orNone(u.BundleID))
 	case sub == "plan" && len(pos) == 1:
-		plan, err := a.svc.Upstreams.Plan(ctx, a.actor, pos[0], commaList(*names), a.cfg.BundleKeysFor(pos[0]))
+		plan, err := a.svc.Upstreams.Plan(ctx, a.actor, pos[0], upstream.PlanTargets{Upstreams: commaList(*names), Feeds: commaList(*feedNames)},
+			a.cfg.BundleKeysFor(pos[0]))
 		if err != nil {
 			return err
 		}
@@ -2053,7 +2056,11 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 		for _, s := range plan.Sources {
 			cells += len(s.Cells)
 		}
-		a.logf("bundle plan %s: %d sources, %d cells -> %s", pos[0], len(plan.Sources), cells, *out)
+		bodies := 0
+		for _, f := range plan.Feeds {
+			bodies += len(f.Bodies)
+		}
+		a.logf("bundle plan %s: %d sources, %d cells, %d feeds, %d feed bodies -> %s", pos[0], len(plan.Sources), cells, len(plan.Feeds), bodies, *out)
 		return nil
 	default:
 		return errUsage
@@ -2205,6 +2212,9 @@ func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstr
 	}
 	if res.Skipped > 0 {
 		fmt.Fprintf(a.out, "%d bytes of entries were read through\n", res.Skipped)
+	}
+	if res.Feeds > 0 {
+		fmt.Fprintf(a.out, "the bundle carries %d feeds: their statements are not imported by this version\n", res.Feeds)
 	}
 	if res.Problem != "" {
 		fmt.Fprintf(a.out, "the import stopped (%s): %q\n", res.Stop, res.Problem)

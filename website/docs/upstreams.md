@@ -320,7 +320,10 @@ pinned keys, channel, platforms, allowlist, visibility, state), but kista never 
 - it takes no credential (`400`, at creation and on the credential route);
 - a passthrough channel takes a `duckdb-core` one.
 
-The site writes a plan (`kista admin bundle plan`), a connected kista exports a bundle answering it
+The site writes a plan (`kista admin bundle plan`): its bundle-mode upstreams' cells and, from spec
+0014 phase 1b, its bundle-mode feeds with the bodies they offer and the last statement received
+([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites); exports and imports do not
+carry statements yet). A connected kista exports a bundle answering it
 ([Exporting a bundle](#exporting-a-bundle)), and the site imports it with
 `kista admin bundle import`. [Air-gapped sites](deployment/air-gapped.md) walks through the whole
 cycle, with bringing kista itself in. The upstream's record shows its mode and the last bundle

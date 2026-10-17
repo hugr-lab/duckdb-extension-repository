@@ -43,6 +43,7 @@ type bundler struct {
 	fp      string
 	wk      []byte
 	created time.Time
+	feeds   map[string][]byte // feed entries the edit names, written after the files
 }
 
 func (en *env) bundler(t *testing.T) *bundler {
@@ -124,6 +125,11 @@ func (bu *bundler) make(cells []bcell, edit func(*bundle.Manifest)) ([]byte, str
 	for _, p := range m.FileOrder() {
 		if f, ok := files[p]; ok {
 			_ = w.Entry(p, int64(len(f)), bytes.NewReader(f))
+		}
+	}
+	for _, f := range m.Feeds {
+		for _, e := range f.Entries {
+			_ = w.Entry(e.Path, int64(len(bu.feeds[e.Path])), bytes.NewReader(bu.feeds[e.Path]))
 		}
 	}
 	if err := w.Close(); err != nil {
@@ -614,6 +620,28 @@ func TestImportInterruptedAndSlow(t *testing.T) {
 			Idle: time.Minute, Floor: 300 * time.Millisecond})
 		if err == nil || !strings.Contains(err.Error(), "bytes per second") {
 			t.Errorf("a trickle: %v", err)
+		}
+	})
+}
+
+// Spec 0014 phase 1b, part 2: a bundle carrying feeds imports its files as before; its feed entries
+// are read through (they are imported from part 4).
+func TestImportReadsFeedsThrough(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		bu := en.bundler(t)
+		en.bundleUpstream(t, "air", "x")
+		keys := []byte(`{"keys":[]}`)
+		batch, _ := bundle.MarshalBatch(nil)
+		bu.feeds = map[string][]byte{"feeds/1/attestation-keys.json": keys, "feeds/1/batch-1.json": batch}
+		x1 := signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "x_duckdb_cpp_init")
+		data, _ := bu.make([]bcell{{v: "v2.0.0", name: "x", file: x1}}, func(m *bundle.Manifest) {
+			m.Feeds = []bundle.Feed{{URL: "https://gw.example.org/api/v1/tenants/reviews", Entries: []bundle.FileRef{
+				{Path: "feeds/1/attestation-keys.json", SHA256: hexSHA(keys), Size: int64(len(keys))},
+				{Path: "feeds/1/batch-1.json", SHA256: hexSHA(batch), Size: int64(len(batch))}}, Bodies: []bundle.FeedBody{}}}
+		})
+		res := en.importB(t, bu, data, upstream.ImportOptions{})
+		if tr := target(t, res, "air"); tr.Status != upstream.TargetImported || tr.Result.Counts[store.CellReleased] != 1 || res.Feeds != 1 {
+			t.Fatalf("import: %+v %d feeds", tr, res.Feeds)
 		}
 	})
 }

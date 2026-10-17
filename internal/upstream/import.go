@@ -56,6 +56,7 @@ type ImportResult struct {
 	Import    store.BundleImport `json:"-"`
 	Targets   []TargetResult     `json:"targets"`
 	Unplanned int                `json:"unplanned"`         // bundle cells outside every target's matrix
+	Feeds     int                `json:"feeds"`             // feeds the bundle carries, not imported yet (spec 0014 phase 1b)
 	Skipped   int64              `json:"skipped_bytes"`     // entries read through
 	Problem   string             `json:"problem,omitempty"` // why the import stopped early
 	Stop      string             `json:"stop,omitempty"`    // its class: bundle (truncated, malformed, stalled), interrupted, deleting
@@ -203,6 +204,7 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 		}
 	}
 	out.Unplanned = unplanned(m, targets)
+	out.Feeds = len(m.Feeds)
 	streamErr := s.stream(ictx, a, t, b, targets, o.DryRun)
 	if cause := context.Cause(ictx); cause != nil && !errors.Is(cause, context.Canceled) {
 		streamErr = cause // the watchdog, a lost lease
@@ -454,6 +456,9 @@ func (s *Service) stream(ctx context.Context, a authz.Actor, t store.Tenant, b *
 		}
 		if it.WellKnown != nil {
 			wellKnown(targets, it.WellKnown, it.Data)
+			continue
+		}
+		if it.Feed != nil { // statements come in with spec 0014 phase 1b's feed import; read through until then
 			continue
 		}
 		// a repository target whose .well-known entry never came before the files fills nothing

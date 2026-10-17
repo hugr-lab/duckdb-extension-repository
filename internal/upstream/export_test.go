@@ -83,7 +83,7 @@ func (g *gateway) air(t *testing.T, entries ...string) {
 
 func (g *gateway) plan(t *testing.T) bundle.Plan {
 	t.Helper()
-	p, err := g.up.Plan(ctx, admin, "site", nil, []string{g.fp})
+	p, err := g.up.Plan(ctx, admin, "site", upstream.PlanTargets{}, []string{g.fp})
 	if err != nil {
 		t.Fatal(err)
 	}

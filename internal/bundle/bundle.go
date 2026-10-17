@@ -37,13 +37,27 @@ func (h *Head) Check(pinned func(fingerprint string) bool) error {
 	return Verify(h.Pub, h.ManifestBytes, h.Sig)
 }
 
-// Item is a used entry after the head: a source's .well-known file, or an extension file.
+// Item is a used entry after the head: a source's .well-known file, an extension file, or a feed's
+// entry (phase 1b).
 type Item struct {
 	WellKnown *Source // the source whose .well-known file this is: Data, its hash checked
 	Data      []byte
 	File      string // files/<sha256>.gz: R, its size checked
 	Size      int64
 	R         io.Reader // the entry's bytes; read it before Next
+
+	// a feed's entry: Feed's Entries[Entry], its bytes in Data when its size and hash match the
+	// manifest; Damaged says why the feed's target fails (an entry missing, out of order, or
+	// differing from the manifest), once and for every later entry of the feed
+	Feed      *Feed
+	FeedIndex int
+	Entry     int
+	Damaged   string
+}
+
+type feedState struct {
+	next    int    // the next entry expected
+	damaged string // why the feed's entries cannot be trusted whole
 }
 
 // Bundle reads a bundle once, front to back: the head, then the items in order. Unnamed entries,
@@ -58,6 +72,11 @@ type Bundle struct {
 	lastFile int
 	seen     map[string]bool
 	inFiles  bool
+	// feeds (phase 1b): each entry's feed and place, and each feed's progress
+	feedAt  map[string][2]int
+	feeds   []feedState
+	inFeeds bool
+	curFeed int
 }
 
 // Open reads a bundle's head and validates its manifest; now is the importing host's clock (zero:
@@ -67,7 +86,7 @@ type Bundle struct {
 func Open(r io.Reader, now time.Time, pinned func(fingerprint string) bool) (*Bundle, error) {
 	t := NewReader(r)
 	b := &Bundle{t: t, sources: map[string]*Source{}, files: map[string]int64{}, order: map[string]int{}, seen: map[string]bool{},
-		lastFile: -1}
+		lastFile: -1, feedAt: map[string][2]int{}}
 	e, err := t.Next()
 	if err != nil {
 		return nil, headErr(err)
@@ -144,6 +163,12 @@ func Open(r io.Reader, now time.Time, pinned func(fingerprint string) bool) (*Bu
 			}
 		}
 	}
+	b.feeds = make([]feedState, len(m.Feeds))
+	for fi, f := range m.Feeds {
+		for ei, e := range f.Entries {
+			b.feedAt[e.Path] = [2]int{fi, ei}
+		}
+	}
 	return b, nil
 }
 
@@ -170,6 +195,9 @@ func (b *Bundle) Next() (Item, error) {
 		}
 		if strings.HasPrefix(e.Name, "sources/") && b.inFiles {
 			return Item{}, fmt.Errorf("%w: %q after the files", ErrMalformed, Text(e.Name, 256))
+		}
+		if (strings.HasPrefix(e.Name, "sources/") || strings.HasPrefix(e.Name, "files/")) && b.inFeeds {
+			return Item{}, fmt.Errorf("%w: %q after the feeds", ErrMalformed, Text(e.Name, 256))
 		}
 		if strings.HasPrefix(e.Name, "files/") {
 			b.inFiles = true
@@ -206,14 +234,79 @@ func (b *Bundle) Next() (Item, error) {
 			b.seen[e.Name] = true
 			return Item{File: e.Name, Size: e.Size, R: b.t}, nil
 		}
+		if at, ok := b.feedAt[e.Name]; ok {
+			return b.feedItem(e, at[0], at[1])
+		}
 		if err := b.t.Skip(e); err != nil { // unnamed: read through
 			return Item{}, err
 		}
 	}
 }
 
+// feedItem reads a feed's entry: in its place, its bytes matching the manifest, or the feed marked
+// damaged (spec 0014: a damaged feed fails its target only).
+func (b *Bundle) feedItem(e RawEntry, fi, ei int) (Item, error) {
+	b.inFeeds = true
+	f, st := &b.Manifest.Feeds[fi], &b.feeds[fi]
+	ref := f.Entries[ei]
+	b.seen[e.Name] = true
+	switch {
+	case st.damaged != "":
+	case fi < b.curFeed:
+		st.damaged = fmt.Sprintf("%s after a later feed's entries", ref.Path)
+	case ei > st.next:
+		st.damaged = f.Entries[st.next].Path + " is missing"
+	}
+	b.curFeed = max(b.curFeed, fi)
+	st.next = max(st.next, ei+1)
+	it := Item{Feed: f, FeedIndex: fi, Entry: ei, Size: e.Size}
+	if e.Size > MaxDocument { // past any feed entry's limit: not damage, a bundle to refuse
+		return Item{}, fmt.Errorf("%w: %s is %d bytes", ErrMalformed, ref.Path, e.Size)
+	}
+	if e.Size != ref.Size {
+		// read through without counting toward MaxSkipped: a damaged feed fails its target only,
+		// and the size cap above bounds each entry
+		if _, err := io.Copy(io.Discard, b.t); err != nil {
+			return Item{}, err
+		}
+		if st.damaged == "" {
+			st.damaged = fmt.Sprintf("%s is %d bytes, the manifest says %d", ref.Path, e.Size, ref.Size)
+		}
+	} else {
+		data, err := io.ReadAll(b.t)
+		if err != nil {
+			return Item{}, err
+		}
+		if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != ref.SHA256 {
+			if st.damaged == "" {
+				st.damaged = ref.Path + " differs from the manifest's hash"
+			}
+		} else {
+			it.Data = data
+		}
+	}
+	it.Damaged = st.damaged
+	return it, nil
+}
+
+// FeedWhole reports whether every entry of the manifest's fi-th feed was read, in order, as the
+// manifest says: only then may its target's cursors move.
+func (b *Bundle) FeedWhole(fi int) bool {
+	st := b.feeds[fi]
+	if st.damaged != "" || st.next != len(b.Manifest.Feeds[fi].Entries) {
+		return false
+	}
+	for _, e := range b.Manifest.Feeds[fi].Entries {
+		if !b.seen[e.Path] {
+			return false
+		}
+	}
+	return true
+}
+
 func (b *Bundle) skippable(e RawEntry) int64 {
-	if e.Regular && !b.seen[e.Name] && (b.sources[e.Name] != nil || b.files[e.Name] != 0) {
+	_, feed := b.feedAt[e.Name]
+	if e.Regular && !b.seen[e.Name] && (b.sources[e.Name] != nil || b.files[e.Name] != 0 || feed) {
 		return 0
 	}
 	return e.Size + e.Overhead
@@ -228,6 +321,11 @@ func (b *Bundle) Missing() []string {
 		}
 	}
 	for p := range b.files {
+		if !b.seen[p] {
+			out = append(out, p)
+		}
+	}
+	for p := range b.feedAt {
 		if !b.seen[p] {
 			out = append(out, p)
 		}
