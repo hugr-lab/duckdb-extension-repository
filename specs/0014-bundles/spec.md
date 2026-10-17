@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17), its part 1 (bundle-mode and export feeds) implemented; 2 to come
+- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17), parts 1 (bundle-mode and export feeds) and 2 (the plan and the format) implemented; 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -406,9 +406,9 @@ the keys file first, then each batch followed by the documents it names. Their n
 `feeds/[1-9][0-9]{0,1}/attestation-keys.json`, `feeds/[1-9][0-9]{0,1}/batch-[1-9][0-9]{0,5}\.json`
 and `feeds/[1-9][0-9]{0,1}/documents/[0-9a-f]{64}`: an issuer id has no grammar of its own (spec
 0011 bounds only its length), so it never names an entry. Every one is named in the manifest with
-its SHA-256 and size. A feed entry whose bytes differ from the manifest fails that feed's target;
-a `sources/` or `files/` entry after a `feeds/` one stops the import as a malformed tar does
-(Importing, phase 1b).
+its SHA-256 and size. A feed entry that is missing, out of its place, or whose size or bytes differ
+from the manifest fails that feed's target; a `sources/` or `files/` entry after a `feeds/` one, and
+a feed entry over 16 MiB, stop the import as a malformed tar does (Importing, phase 1b).
 
 An unsigned bundle (`-unsigned`) lacks the second and third entries until `kista bundle sign` adds
 them; the import refuses it.
@@ -749,8 +749,9 @@ same body and under a key the storing feed pins. A run writes cursors and what i
 tenant's feed lock, and only in the export setting it started with (`export_epoch`): a change of
 `export` overtakes it, and it stops.
 
-**The plan** gains `feeds`, one per active bundle-mode feed of the tenant (or per `-feed` one), each
-with:
+**The plan** gains `feeds`: the tenant's active bundle-mode feeds (or the `-feed` ones), merged by
+URL as sources are (keys and kinds united, an empty kinds list winning; per body the lowest cursor
+among them, so no feed's range starts above its own), each with:
 - the feed's URL, its pinned attestation key fingerprints, and the kinds it accepts;
 - `bodies`: each body the feed offers now (spec 0011's "bodies offered", which counts bundle-imported
   releases, whose origin is `upstream`) with the last `seq` received, `0` for none;
@@ -800,8 +801,9 @@ same issuer (the URL normalised as spec 0011 normalises it). It contacts no feed
     feed's answer, each batch at most 1 MiB;
   - `feeds/<n>/documents/<content hash hex>`: a document's content, uncompressed, after the batch
     that first names it, once per feed.
-- **The manifest** gains `feeds`, each with its URL, the keys file's hash and size, every batch's and
-  document's name, hash and size, and per body `after_seq` and `seq`. The signed manifest pins every
+- **The manifest** gains `feeds`, each with its URL, its `entries` in the order the tar carries them
+  (the keys file, then each batch and the documents it first names: name, hash and size), and per
+  body `after_seq` and `seq`. The signed manifest pins every
   entry, so a carrier can drop neither a batch nor a withdrawal.
 - **Limits.** At most 50 feeds, 100,000 statements and 100,000 documents per feed, and a feed's part
   of the manifest under 16 MiB; past one, the feed fails as a whole.

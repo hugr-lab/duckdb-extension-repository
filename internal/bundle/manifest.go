@@ -56,6 +56,7 @@ type Plan struct {
 	Tenant     string       `json:"tenant"`
 	BundleKeys []string     `json:"bundle_keys"`
 	Sources    []PlanSource `json:"sources"`
+	Feeds      []PlanFeed   `json:"feeds,omitempty"` // phase 1b
 }
 
 // PlanSource is one source: a kind, and for a repository its normalised prefix and pinned keys.
@@ -85,6 +86,7 @@ type Manifest struct {
 	Exporter  Exporter  `json:"exporter"`
 	Plan      PlanRef   `json:"plan"`
 	Sources   []Source  `json:"sources"`
+	Feeds     []Feed    `json:"feeds,omitempty"` // phase 1b
 }
 
 // Exporter names the exporting kista, for the record only.
@@ -340,7 +342,7 @@ func (p *Plan) Validate() error {
 			}
 		}
 	}
-	return nil
+	return validatePlanFeeds(p.Feeds, len(p.Sources))
 }
 
 // Validate checks a manifest before anything else (spec 0014, The bundle). now is the importing
@@ -430,7 +432,7 @@ func (m *Manifest) Validate(now time.Time) error {
 	if len(files) > MaxFiles {
 		return fmt.Errorf("%w: over %d files", ErrInvalid, MaxFiles)
 	}
-	return nil
+	return validateFeeds(m.Feeds)
 }
 
 func (c Cell) validate() error {

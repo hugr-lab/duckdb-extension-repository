@@ -12,9 +12,18 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// Plan writes a site's bundle plan (spec 0014): its active bundle-mode upstreams (all, or the named ones)
-// as sources and cells, with what it holds. bundleKeys are the fingerprints pinned for the tenant.
-func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, names, bundleKeys []string) (bundle.Plan, error) {
+// PlanTargets names what a plan asks for: with neither, every active bundle-mode upstream and feed;
+// with only one of the two, the other kind is left out.
+type PlanTargets struct {
+	Upstreams, Feeds []string
+}
+
+// Plan writes a site's bundle plan (spec 0014): its active bundle-mode upstreams as sources and
+// cells, with what it holds, and its active bundle-mode feeds with the bodies they offer and the last
+// seq received (phase 1b). bundleKeys are the fingerprints pinned for the tenant.
+func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, sel PlanTargets, bundleKeys []string) (bundle.Plan, error) {
+	names := sel.Upstreams
+	noUpstreams := len(sel.Upstreams) == 0 && len(sel.Feeds) > 0
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return bundle.Plan{}, err
@@ -42,7 +51,7 @@ func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, names,
 		}
 		// paused ones are left out: an import fills active upstreams only
 		for _, u := range all {
-			if u.Mode == store.ModeBundle && u.State == store.UpstreamActive && (len(names) == 0 || slices.Contains(names, u.Name)) {
+			if !noUpstreams && u.Mode == store.ModeBundle && u.State == store.UpstreamActive && (len(names) == 0 || slices.Contains(names, u.Name)) {
 				ups = append(ups, u)
 			}
 		}
@@ -170,5 +179,116 @@ func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, names,
 	if plan.Sources == nil {
 		plan.Sources = []bundle.PlanSource{}
 	}
+	if len(sel.Upstreams) == 0 || len(sel.Feeds) > 0 {
+		if plan.Feeds, err = s.planFeeds(ctx, t, sel.Feeds, ups, plan.Sources); err != nil {
+			return bundle.Plan{}, err
+		}
+	}
 	return plan, plan.Validate()
+}
+
+// planFeeds lists a plan's feeds (spec 0014 phase 1b): the tenant's active bundle-mode feeds (all,
+// or the named ones), merged by URL, each with the bodies it offers now and the last seq received
+// (the lowest among feeds of one URL, so no feed's range starts above its cursor), and the plan's
+// sources whose files it may then be offered.
+func (s *Service) planFeeds(ctx context.Context, t store.Tenant, names []string, ups []store.Upstream, sources []bundle.PlanSource) ([]bundle.PlanFeed, error) {
+	var feeds []store.Feed
+	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		all, err := tx.ListFeeds(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		for _, n := range names {
+			i := slices.IndexFunc(all, func(f store.Feed) bool { return f.Name == n })
+			switch {
+			case i < 0:
+				return fmt.Errorf("%w: feed %s", store.ErrNotFound, n)
+			case all[i].Mode != store.FeedBundle:
+				return fmt.Errorf("%w: feed %s is not in bundle mode", store.ErrInvalid, n)
+			case all[i].State != store.FeedActive:
+				return fmt.Errorf("%w: feed %s is paused: an import would not fill it", store.ErrInvalid, n)
+			}
+		}
+		for _, f := range all {
+			if f.Mode == store.FeedBundle && f.State == store.FeedActive && (len(names) == 0 || slices.Contains(names, f.Name)) {
+				feeds = append(feeds, f)
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	index := map[string]int{}
+	for i, src := range sources {
+		index[src.Kind+"\x00"+src.Prefix] = i
+	}
+	byURL := map[string]*bundle.PlanFeed{}
+	every := map[string]bool{} // a feed of the URL accepts every kind
+	cursors := map[string]map[string]int64{}
+	total := 0
+	for _, f := range feeds {
+		pf := byURL[f.URL]
+		if pf == nil {
+			pf = &bundle.PlanFeed{URL: f.URL}
+			byURL[f.URL], cursors[f.URL] = pf, map[string]int64{}
+		}
+		pf.Keys = union(pf.Keys, f.Keys)
+		if len(f.Kinds) == 0 {
+			every[f.URL] = true
+		}
+		pf.Kinds = union(pf.Kinds, f.Kinds)
+		for _, u := range ups { // the sources whose new bodies this feed's offer takes
+			if f.Offer == store.OfferChannels && !slices.Contains(f.Channels, u.ChannelID) {
+				continue
+			}
+			if i, ok := index[u.Kind+"\x00"+u.Prefix]; ok && !slices.Contains(pf.Sources, i) {
+				pf.Sources = append(pf.Sources, i)
+			}
+		}
+		bodies, err := s.Store.OfferedBodies(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+		cur, err := s.Store.FeedCursors(ctx, f.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range bodies {
+			seq, seen := cursors[f.URL][b]
+			if !seen {
+				if total++; total > bundle.MaxFeedBodies {
+					return nil, fmt.Errorf("%w: the plan would hold over %d feed bodies (feed %s)", store.ErrInvalid, bundle.MaxFeedBodies, f.Name)
+				}
+				seq = cur[b]
+			}
+			cursors[f.URL][b] = min(seq, cur[b])
+		}
+	}
+	var out []bundle.PlanFeed
+	for u, pf := range byURL {
+		if every[u] {
+			pf.Kinds = []string{}
+		}
+		slices.Sort(pf.Sources)
+		for b, seq := range cursors[u] {
+			pf.Bodies = append(pf.Bodies, bundle.PlanBody{BodyHash: b, Seq: seq})
+		}
+		slices.SortFunc(pf.Bodies, func(a, b bundle.PlanBody) int { return strings.Compare(a.BodyHash, b.BodyHash) })
+		if pf.Sources == nil {
+			pf.Sources = []int{}
+		}
+		if pf.Bodies == nil {
+			pf.Bodies = []bundle.PlanBody{}
+		}
+		out = append(out, *pf)
+	}
+	slices.SortFunc(out, func(a, b bundle.PlanFeed) int { return strings.Compare(a.URL, b.URL) })
+	return out, nil
+}
+
+// union adds ys to xs, sorted, each once.
+func union(xs, ys []string) []string {
+	out := slices.Concat(xs, ys)
+	slices.Sort(out)
+	return slices.Compact(out)
 }

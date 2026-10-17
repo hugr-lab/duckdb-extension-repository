@@ -997,13 +997,13 @@ func TestPlan(t *testing.T) {
 				return nil
 			})
 		})
-		if _, err := en.up.Plan(ctx, admin, "acme", nil, nil); !errors.Is(err, store.ErrInvalid) {
+		if _, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{}, nil); !errors.Is(err, store.ErrInvalid) {
 			t.Errorf("no bundle key: %v", err)
 		}
-		if _, err := en.up.Plan(ctx, admin, "acme", []string{"acme-repo"}, []string{fp("9")}); !errors.Is(err, store.ErrInvalid) {
+		if _, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{Upstreams: []string{"acme-repo"}}, []string{fp("9")}); !errors.Is(err, store.ErrInvalid) {
 			t.Errorf("a mirror named: %v", err)
 		}
-		p, err := en.up.Plan(ctx, admin, "acme", nil, []string{fp("9")})
+		p, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{}, []string{fp("9")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1035,11 +1035,11 @@ func TestPlan(t *testing.T) {
 		if p.Tenant != "acme" || p.Format != bundle.PlanFormat || p.BundleKeys[0] != fp("9") {
 			t.Errorf("the plan: %+v", p)
 		}
-		one, err := en.up.Plan(ctx, admin, "acme", []string{"core-a"}, []string{fp("9")})
+		one, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{Upstreams: []string{"core-a"}}, []string{fp("9")})
 		if err != nil || len(one.Sources) != 1 || one.Sources[0].Kind != store.UpstreamCore {
 			t.Errorf("one upstream: %+v %v", one, err)
 		}
-		if _, err := en.up.Plan(ctx, admin, "acme", []string{"nope"}, []string{fp("9")}); !errors.Is(err, store.ErrNotFound) {
+		if _, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{Upstreams: []string{"nope"}}, []string{fp("9")}); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("an unknown upstream: %v", err)
 		}
 		// a paused upstream is left out, and refused when named; core-a alone then holds json, and
@@ -1048,12 +1048,93 @@ func TestPlan(t *testing.T) {
 		if _, err := en.up.Set(ctx, admin, "acme", "core-b", "", store.UpstreamPaused, u.Version); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := en.up.Plan(ctx, admin, "acme", []string{"core-b"}, []string{fp("9")}); !errors.Is(err, store.ErrInvalid) {
+		if _, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{Upstreams: []string{"core-b"}}, []string{fp("9")}); !errors.Is(err, store.ErrInvalid) {
 			t.Errorf("a paused upstream named: %v", err)
 		}
-		p, err = en.up.Plan(ctx, admin, "acme", nil, []string{fp("9")})
+		p, err = en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{}, []string{fp("9")})
 		if err != nil || len(p.Sources[0].Cells) != 1 || p.Sources[0].Cells[0].BodyHash != h("a") {
 			t.Errorf("paused left out: %+v %v", p.Sources, err)
+		}
+	})
+}
+
+// Spec 0014 phase 1b: a plan's feeds are the active bundle-mode feeds, merged by URL: their keys
+// and kinds united (one accepting every kind makes it every kind), the bodies offered with the
+// lowest cursor among them, and the plan's sources each one's offer takes; -feed and -upstream
+// alone leave the other kind out.
+func TestPlanFeeds(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		fp := func(c string) string { return "sha256:" + strings.Repeat(c, 64) }
+		file := signed(t, en.key, cpp("1.0", "v2.0.0"), 9, "tresor_duckdb_cpp_init")
+		if _, _, err := en.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(file), release.AddOptions{Name: "tresor"}); err != nil {
+			t.Fatal(err)
+		}
+		ef, err := extfile.Open(bytes.NewReader(file), int64(len(file)), 1<<30)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := ef.Hash.String()
+		up, err := en.up.Add(ctx, admin, "acme", upstream.Spec{Name: "air", Kind: store.UpstreamCore, Channel: "mirror", Mode: store.ModeBundle,
+			Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "json"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tn, _ := en.st.GetTenant(ctx, "acme")
+		prod, _ := en.st.GetChannel(ctx, "acme", "prod")
+		const url = "https://src.example.org/api/v1/tenants/reviews"
+		feed := func(name string, f store.Feed) store.Feed {
+			t.Helper()
+			f.TenantID, f.Name, f.URL, f.CreatedBy = tn.ID, name, url, "os:1:t"
+			if f.Mode == "" {
+				f.Mode = store.FeedBundle
+			}
+			if f.Offer == "" {
+				f.Offer = store.OfferUpstreams
+			}
+			must(t, func() error { return en.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertFeed(ctx, &f) }) })
+			return f
+		}
+		a := feed("a", store.Feed{Keys: []string{fp("1")}, Kinds: []string{store.KindReview}, Offer: store.OfferChannels, Channels: []string{prod.ID}})
+		b := feed("b", store.Feed{Keys: []string{fp("2")}, Offer: store.OfferChannels, Channels: []string{prod.ID}})
+		feed("online", store.Feed{Keys: []string{fp("3")}, Mode: store.FeedOnline, Credential: "src"}) // never planned
+		must(t, func() error {
+			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+				if err := tx.SetFeedCursor(ctx, a.ID, body, 7); err != nil {
+					return err
+				}
+				return tx.SetFeedCursor(ctx, b.ID, body, 4)
+			})
+		})
+		p, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{}, []string{fp("9")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p.Sources) != 1 || len(p.Feeds) != 1 {
+			t.Fatalf("plan: %+v", p)
+		}
+		f := p.Feeds[0]
+		if f.URL != url || len(f.Keys) != 2 || len(f.Kinds) != 0 || len(f.Bodies) != 1 || f.Bodies[0].BodyHash != body || f.Bodies[0].Seq != 4 ||
+			len(f.Sources) != 0 {
+			t.Fatalf("the feed: %+v", f) // the channels offer takes prod; the bundle-mode upstream is into mirror
+		}
+		// an upstreams offer takes the bundle-mode upstreams' sources; the tenant's own release is not offered
+		feed("c", store.Feed{Keys: []string{fp("4")}})
+		p, err = en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{Feeds: []string{"c"}}, []string{fp("9")})
+		if err != nil || len(p.Sources) != 0 || len(p.Feeds) != 1 || len(p.Feeds[0].Bodies) != 0 {
+			t.Fatalf("-feed alone: %+v %v", p, err)
+		}
+		p, err = en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{Upstreams: []string{up.Name}}, []string{fp("9")})
+		if err != nil || len(p.Sources) != 1 || len(p.Feeds) != 0 {
+			t.Fatalf("-upstream alone: %+v %v", p, err)
+		}
+		p, err = en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{Upstreams: []string{up.Name}, Feeds: []string{"c"}}, []string{fp("9")})
+		if err != nil || len(p.Feeds) != 1 || len(p.Feeds[0].Sources) != 1 || p.Feeds[0].Sources[0] != 0 {
+			t.Fatalf("both: %+v %v", p, err)
+		}
+		for _, name := range []string{"online", "nope"} {
+			if _, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{Feeds: []string{name}}, []string{fp("9")}); err == nil {
+				t.Errorf("%s named", name)
+			}
 		}
 	})
 }

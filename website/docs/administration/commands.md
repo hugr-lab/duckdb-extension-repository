@@ -166,8 +166,9 @@ kista bundle inspect <bundle> [-plan <plan.json>] [-max-body <bytes>]
   with what the publisher published before pinning one. Never trust the media for a fingerprint.
 - `sign` signs a bundle exported unsigned, on a machine that holds the key: the key must be among
   the plan's bundle keys, the bundle must answer that plan and ask for nothing else, and be
-  complete, its files inflating to the manifest's sizes and hashes. It copies the bundle once and
-  never writes over an existing file.
+  complete, its files inflating to the manifest's sizes and hashes. A feed's entries must be whole,
+  and each feed body must start at the plan's cursor (or at `0` for a body of a file the bundle
+  brings for the feed's sources). It copies the bundle once and never writes over an existing file.
 - `inspect` checks a bundle offline: the manifest's signature, every entry's hash and size, every
   file's source signature, footer and the file checks publication runs. With `-plan` it also says
   whether the bundle key is pinned, and each source key pinned, listed only or missing, applies the
@@ -175,6 +176,11 @@ kista bundle inspect <bundle> [-plan <plan.json>] [-max-body <bytes>]
   the site's `blob.max_body`) bounds what it inflates. It prints the cells per outcome, the sizes,
   the spool an import needs and the bundle's SHA-256, and exits `1` on any problem. Without
   `-plan`, a bundle is reported consistent, not trusted.
+- `inspect` also checks a bundle's feeds (spec 0014 phase 1b): their entries' order, hashes and
+  sizes, each statement's signature against the bundle's keys file (with `-plan`, only the keys the
+  plan's feed pins, each printed as pinned or listed only), its issuer, its body within a covered
+  range, and a stored statement's document present. It prints the feeds' statements, withdrawals,
+  statements without content and documents.
 
 ## Database
 
@@ -340,7 +346,7 @@ See [Publishing](../publishing.md).
 | `upstream key add` or `remove` `<tenant> <name> <fingerprint>` | a `repository` upstream's pinned keys |
 | `shadow list <tenant>` | core names the tenant replaced: its passthrough channels do not serve them |
 | `shadow remove <tenant> <name>` | serves DuckDB's build of that name from passthrough channels again |
-| `bundle plan <tenant> [-upstream <name,...>] [-o <plan.json>]` | the plan of the tenant's active bundle-mode upstreams (all, or the named ones), with the bundle keys pinned for the tenant (`upstreams.bundle_keys`); to standard output without `-o` |
+| `bundle plan <tenant> [-upstream <name,...>] [-feed <name,...>] [-o <plan.json>]` | the plan of the tenant's active bundle-mode upstreams and feeds (all, or the named ones; with only one of `-upstream` and `-feed`, the other kind is left out), with the bundle keys pinned for the tenant (`upstreams.bundle_keys`); to standard output without `-o` |
 | `bundle export <tenant> -plan <plan.json> (-key <key.pem> \| -unsigned) -o <out> [-sync] [-private <prefix>]...` | exports a bundle answering a site's plan from this tenant's mirrors and own channels; prints `KIND`, `PREFIX`, `FROM`, `COUNTS`, `BYTES`, `ERROR` per source, the listed key fingerprints, the first 20 cells not exported and the bundle's SHA-256, and exits `1` when a source failed as a whole ([Exporting a bundle](../upstreams.md#exporting-a-bundle)) |
 | `bundle import <tenant> <file\|-\|blob:<domain>/imports/<name>> [-upstream <name,...>] [-dry-run] [-any-tenant]` | imports a signed bundle into the tenant's bundle-mode upstreams; prints `UPSTREAM`, `STATUS`, `COUNTS`, `DETAIL` and exits `1` unless every target was imported and the bundle read whole ([Importing a bundle](../upstreams.md#importing-a-bundle)) |
 | `bundle list <tenant> [-limit <n>]` | the tenant's imports, newest first (`-limit` 50 by default): `ID`, `STARTED`, `STATE`, `DRY RUN`, `MANIFEST`, `CREATED` |

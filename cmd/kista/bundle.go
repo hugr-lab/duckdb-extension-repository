@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rsa"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -219,7 +221,7 @@ func bundleSign(args []string, stdout io.Writer) error {
 	if err := bundle.WriteHead(w, b.ManifestBytes, priv); err != nil {
 		return err
 	}
-	wellKnown, files := 0, 0
+	wellKnown, files, feedEntries := 0, 0, 0
 	for {
 		it, err := b.Next()
 		if err == io.EOF {
@@ -227,6 +229,16 @@ func bundleSign(args []string, stdout io.Writer) error {
 		}
 		if err != nil {
 			return err
+		}
+		if it.Feed != nil { // a feed's entry, its bytes checked against the manifest by the reader
+			if it.Damaged != "" {
+				return fmt.Errorf("feed %s: %s", it.Feed.URL, it.Damaged)
+			}
+			if err := w.Entry(it.Feed.Entries[it.Entry].Path, int64(len(it.Data)), strings.NewReader(string(it.Data))); err != nil {
+				return err
+			}
+			feedEntries++
+			continue
 		}
 		if s := it.WellKnown; s != nil {
 			if err := w.Entry(s.WellKnown.Path, int64(len(it.Data)), strings.NewReader(string(it.Data))); err != nil {
@@ -264,8 +276,13 @@ func bundleSign(args []string, stdout io.Writer) error {
 			wantWK++
 		}
 	}
-	if !b.Ended() || files != len(cells) || wellKnown != wantWK {
-		return fmt.Errorf("the bundle is incomplete: %d of %d files, %d of %d .well-known files", files, len(cells), wellKnown, wantWK)
+	wantFeed := 0
+	for _, f := range m.Feeds {
+		wantFeed += len(f.Entries)
+	}
+	if !b.Ended() || files != len(cells) || wellKnown != wantWK || feedEntries != wantFeed {
+		return fmt.Errorf("the bundle is incomplete: %d of %d files, %d of %d .well-known files, %d of %d feed entries",
+			files, len(cells), wellKnown, wantWK, feedEntries, wantFeed)
 	}
 	if err := w.Close(); err != nil {
 		return err
@@ -286,8 +303,13 @@ func bundleSign(args []string, stdout io.Writer) error {
 	return nil
 }
 
-// withinPlan refuses a manifest with a source or a cell its plan did not ask for.
+// withinPlan refuses a manifest with a source or a cell its plan did not ask for, a feed it did not
+// ask for, or a feed body it did not offer with that cursor (or bring, from 0, in a file of one of
+// the feed's sources).
 func withinPlan(m *bundle.Manifest, p *bundle.Plan) error {
+	if err := feedsWithinPlan(m, p); err != nil {
+		return err
+	}
 	asked := map[string]map[[3]string]bool{}
 	for _, s := range p.Sources {
 		cs := map[[3]string]bool{}
@@ -308,6 +330,63 @@ func withinPlan(m *bundle.Manifest, p *bundle.Plan) error {
 		}
 	}
 	return nil
+}
+
+func feedsWithinPlan(m *bundle.Manifest, p *bundle.Plan) error {
+	for _, f := range m.Feeds {
+		i := slices.IndexFunc(p.Feeds, func(pf bundle.PlanFeed) bool { return pf.URL == f.URL })
+		if i < 0 {
+			return fmt.Errorf("the plan asks for no feed %s", f.URL)
+		}
+		pf := p.Feeds[i]
+		offered := map[string]int64{}
+		for _, b := range pf.Bodies {
+			offered[b.BodyHash] = b.Seq
+		}
+		brought := map[string]bool{} // bodies of files the bundle brings from the feed's sources
+		for _, si := range pf.Sources {
+			ps := p.Sources[si]
+			for _, s := range m.Sources {
+				if s.Kind != ps.Kind || s.Prefix != ps.Prefix {
+					continue
+				}
+				for _, c := range s.Cells {
+					if c.Outcome == bundle.Fetched {
+						brought[c.BodyHash] = true
+					}
+				}
+			}
+		}
+		for _, b := range f.Bodies {
+			seq, ok := offered[b.BodyHash]
+			switch {
+			case ok && b.AfterSeq != seq:
+				return fmt.Errorf("feed %s: body %s starts after %d, the plan's cursor is %d", f.URL, b.BodyHash, b.AfterSeq, seq)
+			case !ok && (b.AfterSeq != 0 || !brought[b.BodyHash]):
+				return fmt.Errorf("feed %s: body %s is neither offered by the plan nor brought for the feed's sources", f.URL, b.BodyHash)
+			}
+		}
+	}
+	return nil
+}
+
+// feedKeys parses a feed source's attestation keys file (spec 0011): its public keys by fingerprint.
+func feedKeys(data []byte) (map[string]*rsa.PublicKey, error) {
+	var doc struct {
+		Keys []struct {
+			PublicKey string `json:"public_key"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("the attestation keys file does not parse: %w", err)
+	}
+	out := map[string]*rsa.PublicKey{}
+	for _, k := range doc.Keys {
+		if pub, err := extfile.ParsePublicKey(k.PublicKey); err == nil {
+			out[extfile.Fingerprint(pub)] = pub
+		}
+	}
+	return out, nil
 }
 
 // defaultMaxBody is blob.max_body's default: inspect has no configuration to read it from.
@@ -432,6 +511,12 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 	}
 	byFile := m.CellsByFile()
 	var files, size, inflated, largest int64
+	fc := feedCheck{plan: plan, problem: problem, out: stdout, keys: map[int]map[string]*rsa.PublicKey{}, counts: map[string]int{}}
+	if plan != nil {
+		if err := feedsWithinPlan(m, plan); err != nil {
+			problem("%v", err)
+		}
+	}
 	for {
 		it, err := b.Next()
 		if err == io.EOF {
@@ -440,6 +525,10 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 		if err != nil {
 			problem("%v", err)
 			break
+		}
+		if it.Feed != nil {
+			fc.entry(it)
+			continue
 		}
 		if s := it.WellKnown; s != nil {
 			ks, err := wellKnownKeys(it.Data)
@@ -496,6 +585,10 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 	slices.Sort(outs)
 	fmt.Fprintf(stdout, "cells: %s\nfiles: %d, %d bytes, %d inflated\nthe import needs about %d bytes of spool\n",
 		strings.Join(outs, ", "), files, size, inflated, largest)
+	if len(m.Feeds) > 0 {
+		fmt.Fprintf(stdout, "feeds: %d, statements %d (withdrawals %d, without content %d), documents %d, %d bytes\n", len(m.Feeds),
+			fc.counts["statements"], fc.counts["withdrawals"], fc.counts["without content"], fc.counts["documents"], fc.counts["bytes"])
+	}
 	if b.Ended() {
 		fmt.Fprintf(stdout, "sha256 %s\n", b.SHA256())
 	}
@@ -542,4 +635,106 @@ func inspectFile(it bundle.Item, refs []bundle.Ref, opts bundle.CheckOptions) []
 func sha(b []byte) string {
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
+}
+
+// feedCheck checks a bundle's feed entries as they come (spec 0014 phase 1b): each statement's
+// signature against the bundle's keys file (with -plan, only the plan's pinned keys), its issuer, its
+// body within a covered range, and a stored statement's document present.
+type feedCheck struct {
+	plan    *bundle.Plan
+	problem func(string, ...any)
+	out     io.Writer
+	keys    map[int]map[string]*rsa.PublicKey // by feed index
+	counts  map[string]int
+	damaged map[int]bool
+}
+
+func (c *feedCheck) entry(it bundle.Item) {
+	f := it.Feed
+	if it.Damaged != "" {
+		if c.damaged == nil {
+			c.damaged = map[int]bool{}
+		}
+		if !c.damaged[it.FeedIndex] {
+			c.damaged[it.FeedIndex] = true
+			c.problem("feed %s: %s", f.URL, it.Damaged)
+		}
+		return
+	}
+	ref := f.Entries[it.Entry]
+	fe, _ := bundle.ParseFeedEntry(ref.Path)
+	switch {
+	case fe.Keys:
+		ks, err := feedKeys(it.Data)
+		if err != nil {
+			c.problem("feed %s: %v", f.URL, err)
+			return
+		}
+		var pinned []string
+		if c.plan != nil {
+			if i := slices.IndexFunc(c.plan.Feeds, func(pf bundle.PlanFeed) bool { return pf.URL == f.URL }); i >= 0 {
+				pinned = c.plan.Feeds[i].Keys
+			}
+		}
+		fps := make([]string, 0, len(ks))
+		for fp := range ks {
+			fps = append(fps, fp)
+		}
+		slices.Sort(fps)
+		for _, fp := range fps {
+			state := ""
+			if c.plan != nil {
+				state = map[bool]string{true: " pinned", false: " listed, not pinned"}[slices.Contains(pinned, fp)]
+				if !slices.Contains(pinned, fp) {
+					delete(ks, fp)
+				}
+			}
+			fmt.Fprintf(c.out, "feed %s key %s%s\n", f.URL, fp, state)
+		}
+		c.keys[it.FeedIndex] = ks
+	case fe.Batch > 0:
+		entries, err := bundle.ParseBatch(it.Data)
+		if err != nil {
+			c.problem("feed %s: %s: %v", f.URL, ref.Path, err)
+			return
+		}
+		ranges := map[string][2]int64{}
+		for _, b := range f.Bodies {
+			ranges[b.BodyHash] = [2]int64{b.AfterSeq, b.Seq}
+		}
+		docs := map[string]bool{}
+		for _, e := range f.Entries {
+			if d, ok := bundle.ParseFeedEntry(e.Path); ok && d.Document != "" {
+				docs[d.Document] = true
+			}
+		}
+		for _, e := range entries {
+			stmt, _ := base64.StdEncoding.DecodeString(e.Statement)
+			sig, _ := base64.StdEncoding.DecodeString(e.Signature)
+			c.counts["statements"]++
+			st, err := attachment.Verify(stmt, sig, c.keys[it.FeedIndex])
+			if err != nil {
+				c.problem("feed %s: a statement does not verify with the keys file's keys: %v", f.URL, err)
+				continue
+			}
+			r, ok := ranges[st.BodyHash]
+			switch {
+			case st.Issuer != f.URL:
+				c.problem("feed %s: statement %d names another issuer", f.URL, st.Seq)
+			case !ok || st.Seq <= r[0] || st.Seq > r[1]:
+				c.problem("feed %s: statement %d of body %s is outside its covered range", f.URL, st.Seq, st.BodyHash)
+			}
+			switch {
+			case st.Withdrawn:
+				c.counts["withdrawals"]++
+			case e.Note != "":
+				c.counts["without content"]++
+			case !docs[st.ContentHash]:
+				c.problem("feed %s: statement %d's document is not in the bundle", f.URL, st.Seq)
+			}
+		}
+	default:
+		c.counts["documents"]++
+		c.counts["bytes"] += len(it.Data)
+	}
 }

@@ -76,7 +76,7 @@ func TestBundleAirGapped(t *testing.T) {
 	// plan at the site, export with -sync at the gateway, import at the site
 	cycle := func() upstream.TargetResult {
 		t.Helper()
-		plan, err := siteUp.Plan(ctx, serveAdmin, "acme", nil, []string{bundleFP})
+		plan, err := siteUp.Plan(ctx, serveAdmin, "acme", upstream.PlanTargets{}, []string{bundleFP})
 		if err != nil {
 			t.Fatal(err)
 		}

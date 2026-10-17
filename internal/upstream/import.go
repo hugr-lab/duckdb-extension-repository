@@ -456,6 +456,9 @@ func (s *Service) stream(ctx context.Context, a authz.Actor, t store.Tenant, b *
 			wellKnown(targets, it.WellKnown, it.Data)
 			continue
 		}
+		if it.Feed != nil { // statements come in with spec 0014 phase 1b's feed import; read through until then
+			continue
+		}
 		// a repository target whose .well-known entry never came before the files fills nothing
 		for _, tg := range targets {
 			if tg.active() && !tg.keyed {
