@@ -96,7 +96,7 @@ are all the kinds in `internal/audit`:
 | | `upstream.run` | `upstream:<name>` | `upstream`, `dry_run`, `counts`, `error`, `bundle` (an import's manifest) |
 | | `bundle.import` | `tenant:<name>` | `import`, `manifest`, `created_at`, `exporter`, `bundle_key`, `input_sha256`, `dry_run`, `state`, `targets` (counts per upstream) |
 | | `bundle.reset` | `upstream:<name>` | `upstream`, `manifest`, `created_at` (the mark it cleared) |
-| | `bundle.export` | `tenant:<name>` | `plan` (its SHA-256), `manifest`, `manifest_sha256`, `bundle_key` (none when unsigned), `counts` (per outcome, and `failed_sources`) |
+| | `bundle.export` | `tenant:<name>` | `plan` (its SHA-256), `manifest`, `manifest_sha256`, `bundle_key` (none when unsigned), `counts` (per outcome, and `failed_sources`; per feed `feed_bodies`, `feed_statements`, `feed_withdrawals`, `feed_without_content`, `feed_documents`, and `failed_feeds`) |
 | | `shadow.add`, `shadow.remove` | `shadow:<name>` | `name` |
 | Attachments and feeds | `attachment.add` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `size` |
 | | `attachment.change` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `change`, `statement` |

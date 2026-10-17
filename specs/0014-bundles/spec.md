@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17), its parts 1 (bundle-mode and export feeds) and 2 (the plan and the format) implemented; phase 2 to come
+- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17), its parts 1 (bundle-mode and export feeds), 2 (the plan and the format) and 3 (the export) implemented; phase 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -808,10 +808,17 @@ same issuer (the URL normalised as spec 0011 normalises it). It contacts no feed
   (the keys file, then each batch and the documents it first names: name, hash and size), and per
   body `after_seq` and `seq`. The signed manifest pins every
   entry, so a carrier can drop neither a batch nor a withdrawal.
-- **Limits.** At most 50 feeds, 100,000 statements and 100,000 documents per feed, and a feed's part
-  of the manifest under 16 MiB; past one, the feed fails as a whole.
-- **The result** prints per feed the chosen feed's status and last success (so a stale gateway
-  shows), bodies, statements, withdrawals, statements without content, documents and bytes, and a
+- **Limits.** At most 50 feeds, 100,000 statements and 100,000 documents per feed, a feed's part of
+  the manifest under 16 MiB, and the whole manifest under 64 MiB; past one, the feed fails as a
+  whole.
+- **A consistent read.** The cursors, refusals, kept statements and documents are not read in one
+  snapshot. After reading a feed, the export reads its candidates' export setting and the cursors
+  it used again: a feed whose `export` changed or whose cursor went (the collector) fails, "changed
+  during the export".
+- **Kinds.** A document of a kind the site's feed does not take goes without content, with a note:
+  online, the site refuses it before fetching, so its content never leaves the source.
+- **The result** prints per feed the most recently successful candidate's status and last success
+  (so a stale gateway shows), bodies, statements, withdrawals, statements without content, documents and bytes, and a
   failure; `bundle.export` counts them.
 
 **Disclosure.** As online, the site discloses the hashes it offers to each source; they pass through
@@ -976,7 +983,7 @@ Spec 0010's catalogue gains:
     the record.
 
   Its subject is the tenant. The actor is the event's actor.
-- **`bundle.export`**, on the exporting kista: the plan's SHA-256, `manifest`, `bundle_key`, counts
+- **`bundle.export`**, on the exporting kista (with phase 1b's `feed_*` counts and `failed_feeds`): the plan's SHA-256, `manifest`, `bundle_key`, counts
   per outcome. Its subject is the exporting tenant.
 - **`bundle.reset`**: the target and the mark it cleared.
 - The new kinds and fields join the audit's field allowlist (`internal/audit`) and its coverage
