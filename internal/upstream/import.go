@@ -241,6 +241,7 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 			s.prepare(ctx, tg, m, b.ManifestSHA, o.DryRun)
 		}
 	}
+	defer s.feedSpools(fts)()
 	for _, ft := range fts {
 		if ft.held {
 			s.prepareFeed(ctx, t, ft, m, b.ManifestSHA, o.DryRun)
@@ -355,10 +356,7 @@ func (s *Service) importTargets(ctx context.Context, t store.Tenant, m *bundle.M
 		}
 		out = append(out, tg)
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("%w: no active bundle-mode upstream of tenant %s has a source in the bundle", store.ErrInvalid, t.Name)
-	}
-	return out, nil
+	return out, nil // none is the caller's to refuse: the bundle may serve feeds only
 }
 
 // matrix is an upstream's cells as a run computes them; nil when it is over a cap (the target

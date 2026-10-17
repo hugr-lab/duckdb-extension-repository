@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"encoding/pem"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
@@ -370,5 +372,71 @@ func TestFeedKeptPins(t *testing.T) {
 	tn, _ := sub.st.GetTenant(ctx, "acme")
 	if k, _ := sub.st.FeedKeptOf(ctx, tn.ID, feedURL, body, 0, 100); len(k) != 0 {
 		t.Fatalf("kept rows stay: %+v", k)
+	}
+}
+
+// A bundle-mode feed's import holds a body at a statement that does not verify, or that comes out of
+// seq order: nothing after it is applied, and the cursor stops just below it (spec 0014 phase 1b).
+func TestFeedImportHolds(t *testing.T) {
+	srv := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+	sub := newSubscriber(t, srv, "T")
+	key, stranger := mustKey(t), mustKey(t)
+	fp := extfile.Fingerprint(&key.PublicKey)
+	url := "https://src.example.org/api/v1/tenants/src"
+	f, err := sub.feeds.Add(ctx, admin, "acme", attachment.FeedSpec{Name: "air", URL: url, Keys: []string{fp}, Mode: store.FeedBundle,
+		Offer: store.OfferChannels, Channels: []string{"prod"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.st.InTx(ctx, "", func(tx *store.Tx) error {
+		return tx.SetFeedBundleMark(ctx, f.ID, "b-1", time.Now(), strings.Repeat("a", 64))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := tresorBody(t, func(p string) map[string]any { return getJSON(t, sub.env, p) })
+	tn, _ := sub.st.GetTenant(ctx, "acme")
+	content := []byte(review)
+	sign := func(k *rsa.PrivateKey, seq int64) attachment.BundleStatement {
+		s := attachment.Statement{Issuer: url, Key: fp, IssuerID: "d" + time.Duration(seq).String(), Seq: seq, BodyHash: body,
+			Kind: store.KindReview, MediaType: attachment.Review, ContentHash: blob.ContentHash(content), Size: int64(len(content)),
+			Title: "Review", IssuedAt: "2026-10-03T12:00:00Z", Origin: "tenant", Audience: "readers"}
+		b, _ := s.Canonical()
+		sig, err := attachment.Sign(ctx, keySigner{k}, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return attachment.BundleStatement{Statement: b, Signature: sig}
+	}
+	der := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: mustDER(t, &key.PublicKey)})
+	keysFile, _ := json.Marshal(map[string]any{"keys": []any{map[string]any{"public_key": string(der)}}})
+	for name, c := range map[string]struct {
+		stmts []attachment.BundleStatement
+		want  int64
+	}{
+		"a bad signature": {[]attachment.BundleStatement{sign(key, 1), sign(stranger, 2), sign(key, 3)}, 1},
+		"out of order":    {[]attachment.BundleStatement{sign(key, 5), sign(key, 4), sign(key, 6)}, 5},
+	} {
+		spool := attachment.NewDocSpool(t.TempDir(), 0)
+		if err := spool.Put(blob.ContentHash(content), content); err != nil {
+			t.Fatal(err)
+		}
+		fi, err := sub.feeds.ImportFeed(ctx, tn, mustFeed(t, sub, "air"), "b-1", map[string][2]int64{body: {0, 10}}, nil, spool, false,
+			func(context.Context) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		fi.Keys(keysFile)
+		if err := fi.Batch(ctx, c.stmts); err != nil {
+			t.Fatal(err)
+		}
+		res, err := fi.Finish(ctx, "os:1:t", true)
+		if err != nil || res.Counts["held"] != 1 {
+			t.Fatalf("%s: %+v %v", name, res, err)
+		}
+		if cur, _ := sub.st.FeedCursors(ctx, f.ID); cur[body] != c.want {
+			t.Errorf("%s: cursor %v, want %d", name, cur, c.want)
+		}
+		spool.Close()
 	}
 }

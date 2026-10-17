@@ -435,6 +435,7 @@ type Refusal struct {
 	IssuerID string `json:"issuer_id,omitempty"`
 	BodyHash string `json:"body_hash,omitempty"`
 	Reason   string `json:"reason"`
+	Note     string `json:"note,omitempty"` // a bundle's: the exporting side's word on a statement without content
 }
 
 const (

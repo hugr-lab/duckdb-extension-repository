@@ -239,7 +239,8 @@ bundle back changes nothing. In Kubernetes, the import runs in the serving pod o
   the bundle key, pin the new key beside the old one, then remove the old one.
 - **Statements.** Reviews and other signed statements travel the same way: an export feed on the
   gateway, a bundle-mode feed at the site, in the same bundles
-  ([Feeds for air-gapped sites](../attachments.md#feeds-for-air-gapped-sites)).
+  ([Feeds for air-gapped sites](../attachments.md#feeds-for-air-gapped-sites)). A `gap` makes the
+  import exit `1`: write a new plan ([Importing a bundle](../upstreams.md#importing-a-bundle)).
 - **Autoload.** DuckDB autoloads from the passthrough channel over plain http: set
   `autoinstall_extension_repository` on the clients, and give the site a listener DuckDB's
   built-in client can reach ([Using kista from DuckDB](../duckdb.md#autoloading-and-the-passthrough-channel)).

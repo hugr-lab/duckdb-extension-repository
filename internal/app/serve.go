@@ -222,6 +222,9 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// upstream runs (spec 0009): every replica polls; a run's lease keeps it on one
 	// downloads a crash left behind are swept: the directory is this replica's (blob.spool_dir)
 	_ = os.RemoveAll(svc.Upstreams.TempDir)
+	if svc.Feeds != nil && svc.Feeds.TempDir != "" { // a bundle import's documents a crash left behind
+		_ = os.RemoveAll(svc.Feeds.TempDir)
+	}
 	if err := os.MkdirAll(svc.Upstreams.TempDir, 0o700); err != nil {
 		return fmt.Errorf("app: the upstream download directory: %w", err)
 	}

@@ -132,7 +132,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   bundle plan <tenant> [-upstream <name,...>] [-feed <name,...>] [-o <plan.json>]   what the tenant's bundle-mode upstreams
            and feeds ask for (spec 0014); with only one of -upstream and -feed, the other kind is left out
   bundle import <tenant> <file|-|blob:<domain>/imports/<name>> [-upstream <name,...>] [-feed <name,...>] [-dry-run] [-any-tenant]
-                                                              take a signed bundle into the bundle-mode upstreams
+                                                              take a signed bundle into the bundle-mode upstreams and feeds
   bundle export <tenant> -plan <plan.json> (-key <key.pem> | -unsigned) -o <out> [-sync] [-private <prefix>]...
                                                               a bundle answering a site's plan, from this tenant's mirrors
   bundle list <tenant> [-limit <n>]                           the tenant's bundle imports, the newest first
@@ -2029,13 +2029,13 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 			b, _ := json.MarshalIndent(counts, "", "  ")
 			fmt.Fprintf(a.out, "counts       %s\n", b)
 		}
-	case sub == "reset" && len(pos) == 1 && *feedNames != "":
+	case sub == "reset" && len(pos) == 1 && *feedNames != "" && !strings.Contains(*feedNames, ","):
 		f, err := a.svc.Upstreams.ResetFeedBundle(ctx, a.actor, pos[0], *feedNames)
 		if err != nil {
 			return err
 		}
 		a.logf("bundle reset %s feed %s (it last imported %s; its cursors reset)", pos[0], f.Name, orNone(f.BundleID))
-	case sub == "reset" && len(pos) == 2:
+	case sub == "reset" && len(pos) == 2 && *feedNames == "":
 		u, err := a.svc.Upstreams.ResetBundle(ctx, a.actor, pos[0], pos[1])
 		if err != nil {
 			return err
@@ -2247,7 +2247,7 @@ func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstr
 		fmt.Fprintf(a.out, "%d bytes of entries were read through\n", res.Skipped)
 	}
 	if res.Feeds > 0 {
-		fmt.Fprintf(a.out, "%d feeds of the bundle are no feed target's\n", res.Feeds)
+		fmt.Fprintf(a.out, "%d feeds of the bundle matched no feed target\n", res.Feeds)
 	}
 	if res.Gaps > 0 {
 		fmt.Fprintf(a.out, "%d feed bodies took nothing: their range does not start where the feed is (write a new plan)\n", res.Gaps)

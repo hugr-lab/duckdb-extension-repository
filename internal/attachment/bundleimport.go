@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -44,8 +42,8 @@ type FeedImport struct {
 	gap      map[string]bool  // body: its range does not start where the feed is
 
 	pending []BundleStatement // the last batch: applied once its documents were read
-	docs    map[string]string // content hash: its spooled file
-	dir     string
+	docs    *DocSpool         // the bundle feed's documents, shared with its other targets
+	prev    map[string]int64  // body: the last seq seen in the bundle (statements come in seq order)
 	keys    bool
 	err     error // the target failed: nothing more is applied
 }
@@ -54,13 +52,13 @@ type FeedImport struct {
 // bodies the bundle brings, counted as held by a dry run. The caller holds the feed's lease
 // (kista/feed/<id>) and renews it with renew.
 func (f *Feeds) ImportFeed(ctx context.Context, t store.Tenant, fd store.Feed, manifestID string, ranges map[string][2]int64, extra []string,
-	dryRun bool, renew func(context.Context) error) (*FeedImport, error) {
+	docs *DocSpool, dryRun bool, renew func(context.Context) error) (*FeedImport, error) {
 	if fd.Mode != store.FeedBundle {
 		return nil, fmt.Errorf("%w: feed %s is not in bundle mode", store.ErrInvalid, fd.Name)
 	}
 	fi := &FeedImport{f: f, dryRun: dryRun, started: time.Now().UTC(), bundle: manifestID, ranges: ranges, offered: map[string]bool{},
 		extra: map[string]bool{}, verified: map[string]int64{}, last: map[string]int64{}, held: map[string]bool{}, gap: map[string]bool{},
-		docs: map[string]string{}}
+		docs: docs, prev: map[string]int64{}}
 	fi.r = &run{f: f, fd: fd, t: t, res: &RunResult{Started: fi.started, Counts: map[string]int{}}, renew: renew}
 	fi.r.content = fi.content
 	for _, b := range extra {
@@ -124,40 +122,14 @@ func (fi *FeedImport) Batch(ctx context.Context, stmts []BundleStatement) error 
 	return nil
 }
 
-// Document spools a document's content, its hash checked by the bundle's reader.
-func (fi *FeedImport) Document(hash string, content []byte) error {
-	if fi.err != nil {
-		return nil
-	}
-	if fi.dir == "" {
-		if fi.f.TempDir != "" {
-			if err := os.MkdirAll(fi.f.TempDir, 0o700); err != nil {
-				return err
-			}
-		}
-		d, err := os.MkdirTemp(fi.f.TempDir, "kista-feed-import-*")
-		if err != nil {
-			return err
-		}
-		fi.dir = d
-	}
-	p := filepath.Join(fi.dir, hash)
-	if err := os.WriteFile(p, content, 0o600); err != nil {
-		return err
-	}
-	fi.docs[hash] = p
-	return nil
-}
-
 // content gives a document's content from the bundle: none carried is a refusal for good.
 func (fi *FeedImport) content(_ context.Context, st Statement) ([]byte, string, error) {
-	p, ok := fi.docs[st.ContentHash]
-	if !ok {
-		return nil, "bundle: no content", nil
-	}
-	b, err := os.ReadFile(p)
-	if err != nil {
+	b, ok, err := fi.docs.Get(st.ContentHash)
+	switch {
+	case err != nil:
 		return nil, "", transient{err}
+	case !ok:
+		return nil, "bundle: no content", nil
 	}
 	return b, "", nil
 }
@@ -221,6 +193,11 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 		return nil
 	}
 	rg, ok := fi.ranges[st.BodyHash]
+	if ok && st.Seq <= fi.prev[st.BodyHash] { // the exporter writes a body's statements in seq order
+		hold("bundle: out of order")
+		return nil
+	}
+	fi.prev[st.BodyHash] = max(fi.prev[st.BodyHash], st.Seq)
 	switch {
 	case !ok || st.Seq <= rg[0] || st.Seq > rg[1]:
 		r.refuse(st, "bundle: outside its range")
@@ -246,15 +223,20 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 		r.res.Counts["failed"]++
 		r.f.Log.Warn("attachment: a bundle's document failed", "feed", r.fd.Name, "issuer_id", st.IssuerID, "error", tr.err)
 		return nil
-	case err != nil:
+	case err != nil && ctx.Err() != nil:
 		return err
+	case err != nil: // a store error fails this target only
+		fi.Fail(err)
+		return nil
 	case reason != "":
-		if reason == "bundle: no content" && s.Note != "" {
-			reason = "bundle: no content (" + s.Note + ")"
-		}
 		r.refuse(st, reason)
+		if reason == "bundle: no content" && s.Note != "" && len(r.res.Refused) > 0 {
+			if x := &r.res.Refused[len(r.res.Refused)-1]; x.IssuerID == st.IssuerID {
+				x.Note = s.Note // the exporting side's word, kept beside the fixed reason
+			}
+		}
 	}
-	fi.last[st.BodyHash] = st.Seq
+	fi.last[st.BodyHash] = max(fi.last[st.BodyHash], st.Seq)
 	return nil
 }
 
@@ -299,20 +281,16 @@ func (fi *FeedImport) check(st Statement, s BundleStatement) {
 // or before (stricter than a run, which caps by the whole run's), or to the last statement taken
 // before a hold. It records the feed's run (a dry run only its event) and returns it.
 func (fi *FeedImport) Finish(ctx context.Context, actor string, whole bool) (RunResult, error) {
-	defer func() {
-		if fi.dir != "" {
-			_ = os.RemoveAll(fi.dir)
-		}
-	}()
+	if !whole { // the last batch's documents may not have come, and the lease may be gone: apply nothing more
+		fi.Fail(errors.New("attachment: the bundle's entries of the feed were not read whole"))
+	}
 	if err := fi.flush(ctx); err != nil {
 		fi.Fail(err)
 	}
 	r := fi.r
-	if fi.err == nil && !whole {
-		fi.Fail(errors.New("attachment: the bundle's entries of the feed were not read whole"))
-	}
 	fctx := context.WithoutCancel(ctx)
 	if fi.err == nil && !fi.dryRun {
+		moves := map[string]int64{}
 		for body, rg := range fi.ranges {
 			if fi.gap[body] || !fi.offered[body] {
 				continue
@@ -321,13 +299,29 @@ func (fi *FeedImport) Finish(ctx context.Context, actor string, whole bool) (Run
 			if fi.held[body] {
 				to = fi.last[body]
 			}
-			if to <= fi.cursors[body] {
-				continue
+			if to > fi.cursors[body] {
+				moves[body] = to
 			}
-			if err := fi.f.Store.InTenantTx(fctx, r.t.ID, nil, func(tx *store.Tx) error { return tx.SetFeedCursor(fctx, r.fd.ID, body, to) }); err != nil {
-				fi.Fail(err)
-				break
+		}
+		// under the feed lock, and only while the feed is as the import found it: a reset, a pause or
+		// a removal meanwhile wins
+		err := fi.f.Store.InTenantTx(fctx, r.t.ID, []string{store.FeedLock(r.t.ID)}, func(tx *store.Tx) error {
+			f, err := tx.GetFeedByID(fctx, r.fd.ID)
+			if err != nil {
+				return err
 			}
+			if f.Mode != store.FeedBundle || f.State != store.FeedActive || f.BundleID != fi.bundle {
+				return errors.New("attachment: the feed was reset, paused or changed during the import")
+			}
+			for body, to := range moves {
+				if err := tx.SetFeedCursor(fctx, r.fd.ID, body, to); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			fi.Fail(err)
 		}
 	}
 	res := *r.res

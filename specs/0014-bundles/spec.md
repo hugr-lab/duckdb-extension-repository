@@ -865,7 +865,8 @@ once its feed's last entry was read: statements stored before an interruption st
 no-op), and its cursors wait for a whole read. A target's last-bundle mark is recorded as an
 upstream's: once its lease is held, before its first statement.
 
-**Dry run** checks everything and stores nothing: no statement, cursor, mark or status. It treats
+**Dry run** checks each statement's signature, issuer, kind, title, size, media type and content,
+quotas and `supersedes` aside, and stores nothing: no statement, cursor, mark or status. It treats
 the bodies and documents the bundle would bring as held, so its counts (`would_*`) are approximate
 where statements depend on each other in the bundle (a withdrawal or a `supersedes` of a document
 it carries). It records `feed.run` (with `bundle` and `dry_run`) and the target's counts. **Records**: `bundle_imports`
@@ -873,7 +874,8 @@ counts per target, feeds as `feed:<name>`; `bundle list` and `show` print them. 
 `1` when a feed target failed, was busy or stale.
 
 **`bundle reset <tenant> -feed <name>`** clears a bundle-mode feed's last-bundle mark and resets
-its cursors, so a later bundle takes its history again (statements held are no-ops): the recovery
+its cursors, so a bundle answering a new plan takes its history again (statements already stored
+are no-ops): the recovery
 after a bundle whose key holder left statements out or whose gateway lacked their content. It is
 audited (`bundle.reset`, naming `feed:<name>`).
 
@@ -1086,8 +1088,8 @@ These pages are updated in the same PR:
 
 Phase 1b updates, each with the PR whose behaviour it describes: `attachments.md` (bundle mode,
 `export` and what it keeps), `api.md`, `administration/commands.md`, `observability.md`,
-`upstreams.md` (statements in a bundle), `security.md` and `deployment/air-gapped.md` (a feed in the
-cycle).
+`upstreams.md` (statements in a bundle), `security.md` and `deployment/air-gapped.md` (a
+statements bullet).
 
 ### Changes to earlier specs
 
@@ -1337,13 +1339,14 @@ cycle).
     ended below a statement that does not verify or a document that cannot be read; batches at
     1 MiB; documents by content hash, once; a tombstone carried without content, a missing live
     object ending the range; the limits; no credential in the bundle.
-  - **Import.** Statements checked and applied as spec 0011's client does, arriving for a body the
-    same bundle brings; refused: an unpinned key, another issuer, a body outside the offer, a
-    document that does not match, content not carried; a withdrawal refused at the gateway still
-    applied; `gap` when `after_seq` is above the cursor; the cursor never past a verified
-    statement, never back, held below an unverified one, moved only after a whole read; a damaged
-    entry failing its target only; `gap` exiting `1`; stale and busy targets; dry run with what the
-    bundle brings treated as held; `bundle reset -feed`.
+  - **Import.** Statements checked and applied with the shared client code, arriving for a body
+    the same bundle brings; content not carried refused with the exporting side's note; a keys
+    file without a pinned key failing the target; the cursor no further than a verified statement,
+    never back, held below a statement that does not verify or comes out of order, moved only
+    after a whole read; a damaged batch and a truncated bundle failing the feed only; `gap` exiting
+    `1`; stale and busy targets; `-feed`; a bundle of feeds only imported with no flag; dry run
+    with what the bundle brings treated as held; `bundle reset -feed`. Another issuer and a body
+    outside the offer are refused by the shared checks the online client's tests cover.
   - **Round trips** in-process (`internal/upstream`): a gateway's export feed and a site's
     bundle-mode feed through export and import, with the body the same bundle brings; a refusal
     local to the gateway judged again at the site; a withdrawal in a later bundle; a damaged batch;

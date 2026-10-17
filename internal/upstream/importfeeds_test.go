@@ -139,7 +139,7 @@ func TestImportFeeds(t *testing.T) {
 			r := g.importSite(t, data)
 			tr := feedTarget(r)
 			if tr.Status != upstream.TargetImported || tr.FeedRun.Counts["received"] != 1 || len(tr.FeedRun.Refused) != 1 ||
-				tr.FeedRun.Refused[0].Reason != "bundle: no content (limits)" {
+				tr.FeedRun.Refused[0].Reason != "bundle: no content" || tr.FeedRun.Refused[0].Note != "limits" {
 				t.Fatalf("import: %+v %+v", tr, tr.FeedRun)
 			}
 			if d := siteDocs(); len(d) != 1 || d[0].IssuerID != "d1" || d[0].Issuer != feedURL {
@@ -200,6 +200,79 @@ func TestImportFeeds(t *testing.T) {
 			}
 			if c, _ := g.st.FeedCursors(ctx, f.ID); c[body] != 0 {
 				t.Fatalf("a gap moved the cursor: %v", c)
+			}
+
+			// a plan of the feed alone: a bundle without sources, imported with no flag
+			p3, err := g.up.Plan(ctx, admin, "site", upstream.PlanTargets{Feeds: []string{"enterest"}}, []string{g.fp})
+			if err != nil || len(p3.Sources) != 0 || len(p3.Feeds) != 1 {
+				t.Fatalf("a feed's plan: %+v %v", p3, err)
+			}
+			_, data3 := g.export(t, p3, upstream.ExportOptions{})
+			r = g.importSite(t, data3)
+			if len(r.Targets) != 1 || feedTarget(r).Status != upstream.TargetImported {
+				t.Fatalf("a feed-only bundle: %+v", r.Targets)
+			}
+			if c, _ := g.st.FeedCursors(ctx, f.ID); c[body] != 3 {
+				t.Fatalf("the cursor after a feed-only bundle: %v", c)
+			}
+			// an older bundle is stale; -feed names the feed alone; a held lease makes it busy
+			if r := g.importSite(t, data2); feedTarget(r).Status != upstream.TargetStale {
+				t.Fatalf("an older bundle: %+v", feedTarget(r))
+			}
+			_, data4 := g.export(t, g.plan(t), upstream.ExportOptions{})
+			r, err = g.up.Import(ctx, admin, "site", bytes.NewReader(data4), upstream.ImportOptions{BundleKeys: []string{g.fp}, Holder: "test",
+				Feeds: []string{"enterest"}})
+			if err != nil || len(r.Targets) != 1 || r.Targets[0].Feed != "enterest" {
+				t.Fatalf("-feed: %+v %v", r, err)
+			}
+			_, data5 := g.export(t, g.plan(t), upstream.ExportOptions{})
+			if ok, err := g.st.AcquireLease(ctx, "kista/feed/"+f.ID, "a run", time.Minute); err != nil || !ok {
+				t.Fatal(err)
+			}
+			if r := g.importSite(t, data5); feedTarget(r).Status != upstream.TargetBusy {
+				t.Fatalf("a held lease: %+v", feedTarget(r))
+			}
+			_ = g.st.ReleaseLease(ctx, "kista/feed/"+f.ID, "a run")
+
+			// a statement under a key the feed no longer pins holds its body; a truncated bundle
+			// fails the feed and moves no cursor
+			wb2, wsig2, _ := src.statement(4, "d9", body, nil, withdrawal)
+			must(t, func() error {
+				return g.st.InTx(ctx, "", func(tx *store.Tx) error {
+					if err := tx.SetFeedCursor(ctx, gw.ID, body, 12); err != nil {
+						return err
+					}
+					_, err := tx.KeepFeedStatement(ctx, store.FeedKept{TenantID: gwT.ID, Issuer: feedURL, IssuerID: "d9", BodyHash: body, Seq: 4,
+						Statement: string(wb2), Signature: wsig2})
+					return err
+				})
+			})
+			_, data6 := g.export(t, g.plan(t), upstream.ExportOptions{})
+			cut := data6[:bytes.Index(data6, []byte(`[{"statement":"`))+10]
+			r, err = g.up.Import(ctx, admin, "site", bytes.NewReader(cut), upstream.ImportOptions{BundleKeys: []string{g.fp}, Holder: "test"})
+			if err != nil || feedTarget(r).Status != upstream.TargetFailed {
+				t.Fatalf("truncated: %+v %v", r, err)
+			}
+			other := extfile.Fingerprint(&mustRSA(t).PublicKey)
+			if _, err := feeds.Change(ctx, admin, "site", "enterest", attachment.FeedChange{Keys: &[]string{other}}, 0); err != nil {
+				t.Fatal(err)
+			}
+			r = g.importSite(t, data6)
+			if tr := feedTarget(r); tr.Status != upstream.TargetFailed || !strings.Contains(tr.Detail, "pinned") {
+				t.Fatalf("no pinned key: %+v", tr) // the keys file lists none of the feed's pins: the target fails
+			}
+			if c, _ := g.st.FeedCursors(ctx, f.ID); c[body] != 3 {
+				t.Fatalf("the cursor moved: %v", c)
+			}
+			// a second key pinned beside another: the statements verify with the first only
+			if _, err := feeds.Change(ctx, admin, "site", "enterest", attachment.FeedChange{Keys: &[]string{src.fp, other}}, 0); err != nil {
+				t.Fatal(err)
+			}
+			if r := g.importSite(t, data6); feedTarget(r).Status != upstream.TargetImported {
+				t.Fatalf("the feed again: %+v", feedTarget(r))
+			}
+			if c, _ := g.st.FeedCursors(ctx, f.ID); c[body] != 4 {
+				t.Fatalf("the cursor after: %v", c)
 			}
 		})
 	}

@@ -27,6 +27,23 @@ type ftarget struct {
 	detail string
 	imp    *attachment.FeedImport
 	res    attachment.RunResult
+	spool  *attachment.DocSpool // its bundle feed's documents, shared with the other targets of it
+}
+
+// feedSpools gives the targets of one bundle feed one document spool.
+func (s *Service) feedSpools(fts []*ftarget) func() {
+	spools := map[int]*attachment.DocSpool{}
+	for _, ft := range fts {
+		if spools[ft.fi] == nil {
+			spools[ft.fi] = attachment.NewDocSpool(s.Feeds.TempDir, 0)
+		}
+		ft.spool = spools[ft.fi]
+	}
+	return func() {
+		for _, sp := range spools {
+			sp.Close()
+		}
+	}
 }
 
 // feedTargets selects the tenant's bundle-mode feeds the import fills: the named ones (each must
@@ -122,7 +139,7 @@ func (s *Service) prepareFeed(ctx context.Context, t store.Tenant, ft *ftarget, 
 			}
 		}
 	}
-	ft.imp, err = s.Feeds.ImportFeed(ctx, t, ft.f, m.ID, ranges, brought, dryRun, func(context.Context) error { return nil })
+	ft.imp, err = s.Feeds.ImportFeed(ctx, t, ft.f, m.ID, ranges, brought, ft.spool, dryRun, func(context.Context) error { return nil })
 	if err != nil {
 		ft.status, ft.detail = TargetFailed, err.Error()
 	}
@@ -149,22 +166,32 @@ func (s *Service) feedEntry(ctx context.Context, it bundle.Item, fts []*ftarget)
 			batch = append(batch, attachment.BundleStatement{Statement: st, Signature: sig, Note: e.Note})
 		}
 	}
+	if it.Damaged == "" && fe.Document != "" { // once for the feed's targets
+		var spool *attachment.DocSpool
+		for _, ft := range fts {
+			if ft.fi == it.FeedIndex && ft.active() {
+				spool = ft.spool
+			}
+		}
+		if spool == nil {
+			return nil
+		}
+		if err := spool.Put(fe.Document, it.Data); err != nil {
+			it.Damaged = err.Error()
+		}
+	}
 	for _, ft := range fts {
 		if ft.fi != it.FeedIndex || !ft.active() {
 			continue
 		}
 		switch {
 		case it.Damaged != "":
-			ft.imp.Fail(fmt.Errorf("%w: %s", bundle.ErrMalformed, it.Damaged))
+			ft.imp.Fail(fmt.Errorf("%w: %s", errFailed, it.Damaged))
 		case fe.Keys:
 			ft.imp.Keys(it.Data)
 		case fe.Batch > 0:
 			if err := ft.imp.Batch(ctx, batch); err != nil {
 				return err
-			}
-		default:
-			if err := ft.imp.Document(fe.Document, it.Data); err != nil {
-				ft.imp.Fail(err)
 			}
 		}
 	}

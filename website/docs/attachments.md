@@ -425,7 +425,10 @@ A feed's state is `active` or `paused`. `feed show` and the API give the last er
 success, the next run, whether a run is requested, and the last run's result: counts (`offered`,
 `received`, `superseded`, `withdrawn`, `updated`, `duplicate`, `failed`, `refused`; for an export
 feed also `kept`, statements about documents not held, `held`, statements waiting at the cap, and
-`overtaken`, a run stopped by a change of `export`) and up to 20 refusals with their reasons.
+`overtaken`, a run stopped by a change of `export`; for a bundle import `gap`, `not offered`,
+`would_store`, `would_withdraw`, and `held`, statements that did not verify or came out of order)
+and up to 20 refusals with their reasons (from a bundle also `bundle: no content`, with the
+exporting side's note, and `bundle: outside its range`).
 
 ### How a subscriber verifies
 
@@ -478,7 +481,7 @@ site's import takes them into its bundle-mode feeds
   so egress need not reach it, and it takes no credential (`400`);
 - it never runs: it is not scheduled, adding or resuming it requests no run, and `sync` answers
   `409`;
-- its status is `new` until a bundle brings its statements, then that import's (`ok` or `failing`);
+- its status is `new` until an import takes it as a target, then that import's (`ok` or `failing`);
   its record shows the last bundle imported (`bundle_id`, `bundle_created_at`);
 - its pinned keys, kinds, readers and offer work as an online feed's: they decide what the site
   asks for in a plan and what it takes in.

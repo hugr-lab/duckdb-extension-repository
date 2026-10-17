@@ -431,7 +431,7 @@ leaves: a statement's signed `audience` travels with it, and the site applies it
 ### Importing a bundle
 
 ```bash
-kista admin -config /etc/kista/kista.yaml bundle import acme acme.kbundle [-upstream core] [-dry-run]
+kista admin -config /etc/kista/kista.yaml bundle import acme acme.kbundle [-upstream core] [-feed reviews] [-dry-run]
 # from standard input, in a pod without a shell:
 kubectl exec -i deploy/kista -- /kista admin -config /etc/kista/kista.yaml bundle import acme - < acme.kbundle
 # from the object store, after uploading with the store's own tools (they resume a broken upload):
@@ -447,7 +447,8 @@ A bundle is read once, front to back, and never extracted. The import:
 2. **Selects the targets**: the tenant's active bundle-mode upstreams, or the `-upstream` ones,
    each matched to a source of the bundle by kind or by prefix. Naming an upstream that is paused,
    not in bundle mode or without a source in the bundle refuses the import, and so does a bundle
-   that serves none of the tenant's upstreams. A target another import or run is
+   that serves none of the tenant's upstreams or feeds (its bundle-mode feeds are targets too:
+   Statements, below). A target another import or run is
    holding is `busy`. A target refuses as `stale` a bundle ordered (by `created_at`, then id)
    before the last one it imported, the same id with another manifest, and a bundle whose plan is
    older than the upstream. The last bundle is recorded on the target before its first release.
@@ -484,7 +485,7 @@ records the targets' last run (counted `would_release`) and the import record.
 SHA-256 (of every byte through the tar's end) and counts per target; a `running` record whose lease
 expired shows as `failed (interrupted)`. Each target's run is recorded as a run's, with `bundle`
 naming the manifest; the command prints a line per target and exits `1` when a target failed, was
-busy or stale, or the import stopped early (the bundle truncated, malformed or stalled; a lost
+busy or stale, a feed body was a gap, or the import stopped early (the bundle truncated, malformed or stalled; a lost
 lease; the tenant's deletion). Importing and `bundle reset` are a server administrator's acts.
 
 ```bash
@@ -500,7 +501,7 @@ when a bundle carried a wrong `created_at`. It is audited (`bundle.reset`).
 the bundle brings is held when its statements arrive. Its feed targets are the tenant's active
 bundle-mode feeds whose URL is a feed of the bundle, or the `-feed` ones (with only one of
 `-upstream` and `-feed`, the other kind takes no target). Each is taken under its feed's lease
-(an online run of it is `busy`), and is `stale` as an upstream target is.
+(another import holding it makes it `busy`), and is `stale` as an upstream target is.
 
 - **Each statement is judged here**, as an online run judges it: the signature with a key the feed
   pins (the bundle's keys file gives the public keys, used only by fingerprint), the issuer, the
@@ -515,11 +516,21 @@ bundle-mode feeds whose URL is a feed of the bundle, or the `-feed` ones (with o
 - **A gap.** A body whose range does not start at the feed's cursor takes nothing (a plan written
   before a reset, or a cursor the collector removed): the target stays `imported`, and the
   command exits `1`. Write a new plan.
-- A dry run judges every statement, the bodies the bundle brings counted as held, and stores
-  nothing (`would_store`, `would_withdraw`, refusals).
-- `bundle reset <tenant> -feed <name>` clears a feed's last-bundle mark and resets its cursors: the
-  next bundle takes its history again (statements held are no-ops). Use it after a bundle that left
-  statements out or lacked their content.
+- A dry run checks each statement's signature, issuer, kind, title, size, media type and content,
+  the bodies the bundle brings counted as held, and stores nothing (`would_store`,
+  `would_withdraw`, refusals). Quotas and `supersedes` are judged by a real import only.
+- **A statement out of seq order** within its body holds the body too.
+- `bundle reset <tenant> -feed <name>` clears a feed's last-bundle mark and resets its cursors.
+  Write a new plan after it: the bundle answering it takes the feed's history again (statements
+  already stored are no-ops). Use it after a bundle that left statements out or lacked their
+  content.
+- **Setting up the site's feed.** Add it with the source's tenant URL, exactly as the gateway's
+  export feed has it: statements name it as their issuer, and the import matches feeds by it. Pin
+  the source's attestation keys (`-key`), not the bundle key, after comparing them out of band: the
+  bundle's keys file is unsigned. Its offer must include the bodies the bundle brings: the default
+  `upstreams` offer does; with `-channels`, name the bundle-mode upstreams' channels. A body it does
+  not offer takes nothing (`not offered`).
+  `kista admin feed add acme reviews -mode bundle -url https://<source>/api/v1/tenants/<t> -key sha256:<fp>`
 
 The command prints a line per target, feeds as `feed:<name>`, and each feed's refusals.
 
