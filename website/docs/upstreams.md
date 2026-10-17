@@ -322,7 +322,7 @@ pinned keys, channel, platforms, allowlist, visibility, state), but kista never 
 
 The site writes a plan (`kista admin bundle plan`): its bundle-mode upstreams' cells and, from spec
 0014 phase 1b, its bundle-mode feeds with the bodies they offer and the last statement received
-([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites); exports carry statements, imports do not take them yet). A connected kista exports a bundle answering it
+([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites); exports carry statements and imports take them). A connected kista exports a bundle answering it
 ([Exporting a bundle](#exporting-a-bundle)), and the site imports it with
 `kista admin bundle import`. [Air-gapped sites](deployment/air-gapped.md) walks through the whole
 cycle, with bringing kista itself in. The upstream's record shows its mode and the last bundle
@@ -399,7 +399,7 @@ gateway: its sources, allowlists, platforms, DuckDB versions and the bodies it h
 
 **Statements** (spec 0014 phase 1b). For each of the plan's feeds, the export carries what the
 tenant's export feeds of the same URL hold ([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites)).
-It contacts no feed. Imports do not take statements yet.
+It contacts no feed.
 
 On the gateway, subscribe to the source with `export` set
 (`kista admin feed add <tenant> <name> -url … -credential … -key … -export`, or
@@ -495,6 +495,33 @@ kista admin -config /etc/kista/kista.yaml bundle reset acme core   # clears the 
 
 `bundle reset` lets a target take bundles older than the last one it imported again: the recovery
 when a bundle carried a wrong `created_at`. It is audited (`bundle.reset`).
+
+**Statements** (spec 0014 phase 1b). The import reads a bundle's feeds after its files, so a body
+the bundle brings is held when its statements arrive. Its feed targets are the tenant's active
+bundle-mode feeds whose URL is a feed of the bundle, or the `-feed` ones (with only one of
+`-upstream` and `-feed`, the other kind takes no target). Each is taken under its feed's lease
+(an online run of it is `busy`), and is `stale` as an upstream target is.
+
+- **Each statement is judged here**, as an online run judges it: the signature with a key the feed
+  pins (the bundle's keys file gives the public keys, used only by fingerprint), the issuer, the
+  kinds, media type, title and size, the quotas, `supersedes`, withdrawals and the audience rule,
+  and the body offered by the feed now. The exporting side's note is only recorded.
+- **Content** comes from the bundle, checked against the statement. A statement whose content the
+  bundle does not carry is refused, `bundle: no content (<note>)`.
+- **A statement that does not verify** holds its body: nothing after it is applied.
+- **Cursors** move only once the feed's entries were read whole: to the end of the body's range,
+  but no further than a statement verified in this bundle or before. A damaged feed entry fails
+  that target only, and its cursors stay.
+- **A gap.** A body whose range does not start at the feed's cursor takes nothing (a plan written
+  before a reset, or a cursor the collector removed): the target stays `imported`, and the
+  command exits `1`. Write a new plan.
+- A dry run judges every statement, the bodies the bundle brings counted as held, and stores
+  nothing (`would_store`, `would_withdraw`, refusals).
+- `bundle reset <tenant> -feed <name>` clears a feed's last-bundle mark and resets its cursors: the
+  next bundle takes its history again (statements held are no-ops). Use it after a bundle that left
+  statements out or lacked their content.
+
+The command prints a line per target, feeds as `feed:<name>`, and each feed's refusals.
 
 **Provenance and visibility.** A release from a bundle records its source's URL, the manifest's
 ETag and fetch time, the verifying key, `bundle` (the manifest's id) and `imported_at`. A cell the

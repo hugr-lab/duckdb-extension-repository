@@ -103,8 +103,8 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddKey": {"upstream.change"}, "RemoveKey": {"upstream.change"}, "RemoveShadow": {"shadow.remove"},
 		"SetCredential": {"upstream.change"},
 		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
-		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected"},
-		"ResetBundle":   {"bundle.reset"}, "Imports": nil, "GetImport": nil, "Export": {"bundle.export"},
+		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected", "feed.run"},
+		"ResetBundle":   {"bundle.reset"}, "ResetFeedBundle": {"bundle.reset"}, "Imports": nil, "GetImport": nil, "Export": {"bundle.export"},
 		"Sync": nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil, "Plan": nil,
 	},
 	"attachment.Service": {
@@ -115,7 +115,7 @@ var writes = map[string]map[string][]audit.Kind{
 	},
 	"attachment.Feeds": {
 		"Add": {"feed.add"}, "Change": {"feed.change"}, "Remove": {"feed.remove"}, "RunFeed": {"feed.run"},
-		"List": nil, "Get": nil, "Sync": nil,
+		"List": nil, "Get": nil, "Sync": nil, "ImportFeed": nil, // the import's run is recorded by Import
 	},
 }
 
@@ -621,7 +621,7 @@ func TestCoverage(t *testing.T) {
 	// every registered writer ran (Ingest, RunUpstream, Import and Export: in internal/upstream's tests, which
 	// check their events)
 	elsewhere := map[string]bool{"release.Service.Ingest": true, "upstream.Service.RunUpstream": true, "attachment.Feeds.RunFeed": true,
-		"upstream.Service.Import": true, "upstream.Service.Export": true}
+		"upstream.Service.Import": true, "upstream.Service.Export": true, "upstream.Service.ResetFeedBundle": true}
 	for svc, ms := range writes {
 		for m, kinds := range ms {
 			if kinds != nil && !en.hit[svc+"."+m] && !elsewhere[svc+"."+m] {

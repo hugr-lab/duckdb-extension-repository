@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"io"
 	"net/http"
 	"net/url"
@@ -78,7 +79,10 @@ type Service struct {
 	MaxBody    int64
 	MaxIngests int
 	TempDir    string // downloads; "" is the system's
-	Log        Logger
+	// Feeds takes a bundle's statements into bundle-mode feeds (spec 0014 phase 1b); nil: a bundle's
+	// feeds are read through
+	Feeds *attachment.Feeds
+	Log   Logger
 	// DuckDB replaces DuckDB's repositories and keys (tests); the zero value is the real ones.
 	DuckDB DuckDB
 	// Credentials are the configured credentials private upstreams use (phase 3).

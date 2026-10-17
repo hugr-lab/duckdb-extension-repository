@@ -219,3 +219,10 @@ func (s *Store) FeedDocumentsOf(ctx context.Context, tenantID, issuer, bodyHash 
 	return s.listAttachments(ctx, "SELECT "+attachmentCols+` FROM attachments WHERE tenant_id = ? AND origin = ? AND issuer = ?
 AND body_hash = ? AND seq > ? AND seq <= ? AND statement IS NOT NULL ORDER BY seq`, tenantID, AttachedByFeed, issuer, bodyHash, after, upTo)
 }
+
+// SetFeedBundleMark records the last bundle a bundle-mode feed imported (zero values clear it).
+func (t *Tx) SetFeedBundleMark(ctx context.Context, feedID, id string, createdAt time.Time, manifestSHA string) error {
+	_, err := t.exec(ctx, "UPDATE feeds SET bundle_id = ?, bundle_created_at = ?, bundle_manifest_sha256 = ? WHERE id = ?",
+		nullable(id), t.s.d.nullTimeArg(createdAt), nullable(manifestSHA), feedID)
+	return err
+}

@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17), its parts 1 (bundle-mode and export feeds), 2 (the plan and the format) and 3 (the export) implemented; phase 2 to come
+- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b implemented (parts 1 bundle-mode and export feeds, 2 the plan and the format, 3 the export, 4 the import); phase 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -1344,10 +1344,11 @@ cycle).
     statement, never back, held below an unverified one, moved only after a whole read; a damaged
     entry failing its target only; `gap` exiting `1`; stale and busy targets; dry run with what the
     bundle brings treated as held; `bundle reset -feed`.
-  - **Round trips**: export then import between a gateway and a site the tests seed, after a
-    rotation and with a gateway refusing by kind and by quota.
-  - **e2e.** The air-gapped test's source issues a statement about the release, the gateway's
-    `export` feed receives it, and the site's bundle-mode feed takes it in with the release.
+  - **Round trips** in-process (`internal/upstream`): a gateway's export feed and a site's
+    bundle-mode feed through export and import, with the body the same bundle brings; a refusal
+    local to the gateway judged again at the site; a withdrawal in a later bundle; a damaged batch;
+    a reset and the gap after it. The DuckDB end-to-end test stays as 1a's: DuckDB reads no
+    statement, so the round trips cover the path.
 - **2.** An upload, the size limit, server administrators only, and one import per upload across
   replicas.
 

@@ -51,6 +51,9 @@ type Feeds struct {
 	// Interval is the time between scheduled runs of a feed (0: only requested runs).
 	Interval time.Duration
 	Log      *slog.Logger
+	// TempDir holds a bundle import's documents while their batch is applied (spec 0014); "": the
+	// system's
+	TempDir string
 }
 
 // FeedSpec is what an administrator gives to add a feed.
@@ -473,6 +476,9 @@ type run struct {
 	token    string
 	// quota: an export feed held a body at the quota; the run ends failing
 	quota bool
+	// content reads a new document's content: from its source (a run), or from a bundle (spec 0014);
+	// a reason refuses the statement for good
+	content func(ctx context.Context, st Statement) ([]byte, string, error)
 }
 
 // RunFeed runs a feed if it is requested or due; renew keeps the run's lease.
@@ -824,6 +830,27 @@ func (r *run) write(ctx context.Context, attachments bool, fn func(*store.Tx) er
 	})
 }
 
+// download fetches a new document's content from the fixed path under the feed's URL.
+func (r *run) download(ctx context.Context, st Statement) ([]byte, string, error) {
+	if err := r.renew(ctx); err != nil {
+		return nil, "", err
+	}
+	var buf bytes.Buffer
+	_, err := r.f.Fetch.Download(ctx, r.fd.URL+"/feed/documents/"+url.PathEscape(st.IssuerID),
+		egress.DownloadOptions{MaxBytes: st.Size, Timeout: 2 * time.Minute, MinRate: 16 << 10, Header: r.header}, &buf)
+	switch {
+	case errors.Is(err, egress.ErrNotFound):
+		return nil, "", transient{err} // no longer offered (the next answer leaves the offer out), or a glitch
+	case errors.Is(err, egress.ErrAuth):
+		return nil, "", fmt.Errorf("%w: %w", errAuth, err)
+	case errors.Is(err, egress.ErrTooLarge):
+		return nil, "content", nil
+	case err != nil:
+		return nil, "", transient{err}
+	}
+	return buf.Bytes(), "", nil
+}
+
 // keepRefusal keeps an export feed's refusal with the statement's bytes (spec 0014).
 func (r *run) keepRefusal(ctx context.Context, st Statement, stmt, sig []byte, reason string) error {
 	err := r.write(ctx, true, func(tx *store.Tx) error {
@@ -965,24 +992,15 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		}
 		return "", err
 	}
-	// a new document: its content from the fixed path, checked against the statement
-	if err := r.renew(ctx); err != nil {
-		return "", err
+	// a new document: its content, checked against the statement
+	read := r.content
+	if read == nil {
+		read = r.download
 	}
-	var buf bytes.Buffer
-	_, err = r.f.Fetch.Download(ctx, r.fd.URL+"/feed/documents/"+url.PathEscape(st.IssuerID),
-		egress.DownloadOptions{MaxBytes: st.Size, Timeout: 2 * time.Minute, MinRate: 16 << 10, Header: r.header}, &buf)
-	switch {
-	case errors.Is(err, egress.ErrNotFound):
-		return "", transient{err} // no longer offered (the next answer leaves the offer out), or a glitch
-	case errors.Is(err, egress.ErrAuth):
-		return "", fmt.Errorf("%w: %w", errAuth, err)
-	case errors.Is(err, egress.ErrTooLarge):
-		return "content", nil
-	case err != nil:
-		return "", transient{err}
+	content, why, err := read(ctx, st)
+	if err != nil || why != "" {
+		return why, err
 	}
-	content := buf.Bytes()
 	if int64(len(content)) != st.Size || blob.ContentHash(content) != st.ContentHash {
 		return "content", nil
 	}

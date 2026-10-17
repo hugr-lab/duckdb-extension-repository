@@ -465,12 +465,12 @@ Each run records a `feed.run` event (see [Observability](observability.md)).
 
 ## Feeds for air-gapped sites
 
-An air-gapped site will take statements in bundles, as it takes extension files
-([Bundle mode](upstreams.md#bundle-mode), spec 0014 phase 1b). This version has the two kinds of
-feed the bundles need. A plan lists the site's bundle-mode feeds, with the bodies each offers and
-the last statement received. An export carries the statements an export feed holds
-([Exporting a bundle](upstreams.md#exporting-a-bundle)). Imports do not take statements yet: until
-they do, a bundle-mode feed receives nothing.
+An air-gapped site takes statements in bundles, as it takes extension files
+([Bundle mode](upstreams.md#bundle-mode), spec 0014 phase 1b). A plan lists the site's bundle-mode
+feeds, with the bodies each offers and the last statement received. A gateway's export carries the
+statements its export feeds hold ([Exporting a bundle](upstreams.md#exporting-a-bundle)), and the
+site's import takes them into its bundle-mode feeds
+([Importing a bundle](upstreams.md#importing-a-bundle)).
 
 **A bundle-mode feed** (`-mode bundle`, `"mode": "bundle"`), at the site:
 
@@ -478,10 +478,10 @@ they do, a bundle-mode feed receives nothing.
   so egress need not reach it, and it takes no credential (`400`);
 - it never runs: it is not scheduled, adding or resuming it requests no run, and `sync` answers
   `409`;
-- its status stays `new`; its record will show the last bundle imported (`bundle_id`,
-  `bundle_created_at`);
-- its pinned keys, kinds, readers and offer are set as an online feed's: they decide what the site
-  asks for in a plan, and will decide what it takes in.
+- its status is `new` until a bundle brings its statements, then that import's (`ok` or `failing`);
+  its record shows the last bundle imported (`bundle_id`, `bundle_created_at`);
+- its pinned keys, kinds, readers and offer work as an online feed's: they decide what the site
+  asks for in a plan and what it takes in.
 
 **An export feed** (`-export`, `"export": true`), on a gateway: an online feed that also keeps what a
 bundle needs to answer a site's plan.
@@ -489,8 +489,8 @@ bundle needs to answer a site's plan.
 - **The keys file**: the source's `GET …/attestation-keys` answer, kept by each run that verified
   it (`keys_file_at` in the record). A file over 64 KiB, or not UTF-8, fails the run (`failing`).
 - **Its refusals for good**, each with the statement's signed bytes: the reasons above, except
-  `unrequested`. They still count under `refused` in a run. The site will judge each statement
-  again itself.
+  `unrequested`. They still count under `refused` in a run. The site judges each statement again
+  itself.
 - **Statements about documents the tenant does not hold**: a withdrawal of a document never stored,
   and any statement about one removed here (by an administrator, or by the collector after it was
   superseded for a year). A site may hold the document. A run counts them as `kept`. When the
