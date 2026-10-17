@@ -304,16 +304,41 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- end -}}
 {{- end -}}
 
-{{/* The spool emptyDir's size. */}}
+{{/* A Kubernetes quantity (bytes, or a number with Ki, Mi, Gi, Ti) in Mi, rounded up: (list name value). */}}
+{{- define "kista.quantityMi" -}}
+{{- $name := index . 0 -}}
+{{- $v := index . 1 -}}
+{{- /* a number in a values file is a float64, which toString writes as 1.073741824e+09 */ -}}
+{{- if or (kindIs "float64" $v) (kindIs "int64" $v) (kindIs "int" $v) -}}{{- $v = int64 $v -}}{{- end -}}
+{{- $s := toString $v -}}
+{{- if not (regexMatch "^[0-9]{1,20}(Ki|Mi|Gi|Ti)?$" $s) -}}
+{{- fail (printf "%s: a quantity like 2Gi (bytes, Ki, Mi, Gi or Ti), not %q" $name $s) -}}
+{{- end -}}
+{{- $n := float64 (regexFind "^[0-9]+" $s) -}}
+{{- if hasSuffix "Ti" $s -}}{{- $n = mulf $n 1048576.0 -}}
+{{- else if hasSuffix "Gi" $s -}}{{- $n = mulf $n 1024.0 -}}
+{{- else if hasSuffix "Ki" $s -}}{{- $n = divf $n 1024.0 -}}
+{{- else if not (hasSuffix "Mi" $s) -}}{{- $n = divf $n 1048576.0 -}}
+{{- end -}}
+{{- if gt $n 1000000000000.0 -}}
+{{- fail (printf "%s: %s is too large" $name $s) -}}
+{{- end -}}
+{{- ceil $n | int -}}
+{{- end -}}
+
+{{/* The spool emptyDir's size: spool.sizeLimit, or the server's ingests, plus spool.importHeadroom. */}}
 {{- define "kista.spoolSize" -}}
-{{- if .Values.spool.sizeLimit -}}
+{{- $headroom := int (include "kista.quantityMi" (list "spool.importHeadroom" (.Values.spool.importHeadroom | default 0))) -}}
+{{- if and .Values.spool.sizeLimit (eq $headroom 0) -}}
 {{- .Values.spool.sizeLimit -}}
+{{- else if .Values.spool.sizeLimit -}}
+{{- printf "%dMi" (add (int (include "kista.quantityMi" (list "spool.sizeLimit" .Values.spool.sizeLimit))) $headroom) -}}
 {{- else -}}
 {{- $c := .Values.config | default dict -}}
 {{- $body := int (include "kista.mib" (dig "blob" "max_body" "1GiB" $c)) -}}
 {{- $ingests := int (dig "blob" "max_ingests" 4 $c) -}}
 {{- if lt $ingests 1 -}}{{- $ingests = 4 -}}{{- end -}}
-{{- printf "%dMi" (mul $body (add 1 (mul 2 $ingests))) -}}
+{{- printf "%dMi" (add (mul $body (add 1 (mul 2 $ingests))) $headroom) -}}
 {{- end -}}
 {{- end -}}
 

@@ -1,0 +1,7 @@
+# want: spool.importHeadroom: a quantity like 2Gi
+config:
+  store: {kind: sqlite}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+spool:
+  importHeadroom: 2GiB
+networkPolicy: {enabled: false}

@@ -1,4 +1,5 @@
-# SQLite: one replica, the database and fs blobs on the persistent volume, behind an ingress
+# SQLite: one replica, the database and fs blobs on the persistent volume, behind an ingress; disk
+# for a bundle import in the pod
 config:
   store:
     kind: sqlite
@@ -16,3 +17,5 @@ networkPolicy:
   ingressController:
     namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: traefik}}
     podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+spool:
+  importHeadroom: 2Gi

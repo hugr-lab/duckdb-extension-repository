@@ -221,6 +221,12 @@
       "properties": {
         "sizeLimit": {
           "type": "string"
+        },
+        "importHeadroom": {
+          "type": [
+            "string",
+            "integer"
+          ]
         }
       }
     },

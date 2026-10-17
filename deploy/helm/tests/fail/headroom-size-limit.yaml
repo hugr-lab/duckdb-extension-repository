@@ -1,0 +1,8 @@
+# want: spool.sizeLimit: a quantity like 2Gi
+config:
+  store: {kind: sqlite}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+spool:
+  sizeLimit: 10G
+  importHeadroom: 1Gi
+networkPolicy: {enabled: false}

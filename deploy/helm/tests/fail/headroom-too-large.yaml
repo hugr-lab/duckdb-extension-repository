@@ -1,0 +1,7 @@
+# want: spool.importHeadroom: 99999999999999999999Ti is too large
+config:
+  store: {kind: sqlite}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+spool:
+  importHeadroom: 99999999999999999999Ti
+networkPolicy: {enabled: false}
