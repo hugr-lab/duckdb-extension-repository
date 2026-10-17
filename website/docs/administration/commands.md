@@ -176,11 +176,12 @@ kista bundle inspect <bundle> [-plan <plan.json>] [-max-body <bytes>]
   the site's `blob.max_body`) bounds what it inflates. It prints the cells per outcome, the sizes,
   the spool an import needs and the bundle's SHA-256, and exits `1` on any problem. Without
   `-plan`, a bundle is reported consistent, not trusted.
-- `inspect` also checks a bundle's feeds (spec 0014 phase 1b): their entries' order, hashes and
-  sizes, each statement's signature against the bundle's keys file (with `-plan`, only the keys the
-  plan's feed pins, each printed as pinned or listed only), its issuer, its body within a covered
-  range, and a stored statement's document present. It prints the feeds' statements, withdrawals,
-  statements without content and documents.
+  For a bundle's feeds (spec 0014 phase 1b; no export writes them yet), `inspect` checks their
+  entries' order, hashes and sizes, each statement's signature against the bundle's keys file (with
+  `-plan`, only the keys the plan's feed pins, printed `pinned` or `listed, not pinned`), its
+  issuer, its body within a covered range, and that a statement with content has its document after
+  the batch that names it. It prints the feeds' statements, withdrawals, statements without content
+  and documents.
 
 ## Database
 

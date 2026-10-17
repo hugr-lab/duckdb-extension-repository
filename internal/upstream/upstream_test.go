@@ -1131,7 +1131,8 @@ func TestPlanFeeds(t *testing.T) {
 		if err != nil || len(p.Feeds) != 1 || len(p.Feeds[0].Sources) != 1 || p.Feeds[0].Sources[0] != 0 {
 			t.Fatalf("both: %+v %v", p, err)
 		}
-		for _, name := range []string{"online", "nope"} {
+		feed("paused", store.Feed{Keys: []string{fp("5")}, State: store.FeedPaused})
+		for _, name := range []string{"online", "nope", "paused"} {
 			if _, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{Feeds: []string{name}}, []string{fp("9")}); err == nil {
 				t.Errorf("%s named", name)
 			}

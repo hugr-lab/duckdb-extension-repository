@@ -370,25 +370,6 @@ func feedsWithinPlan(m *bundle.Manifest, p *bundle.Plan) error {
 	return nil
 }
 
-// feedKeys parses a feed source's attestation keys file (spec 0011): its public keys by fingerprint.
-func feedKeys(data []byte) (map[string]*rsa.PublicKey, error) {
-	var doc struct {
-		Keys []struct {
-			PublicKey string `json:"public_key"`
-		} `json:"keys"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("the attestation keys file does not parse: %w", err)
-	}
-	out := map[string]*rsa.PublicKey{}
-	for _, k := range doc.Keys {
-		if pub, err := extfile.ParsePublicKey(k.PublicKey); err == nil {
-			out[extfile.Fingerprint(pub)] = pub
-		}
-	}
-	return out, nil
-}
-
 // defaultMaxBody is blob.max_body's default: inspect has no configuration to read it from.
 const defaultMaxBody = 1 << 30
 
@@ -572,6 +553,9 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 			problem("%s: %v", it.File, e)
 		}
 	}
+	if b.Ended() {
+		fc.finish()
+	}
 	if missing := b.Missing(); len(missing) > 0 && b.Ended() {
 		problem("the manifest names entries the bundle lacks: %s", strings.Join(missing, ", "))
 	}
@@ -647,6 +631,23 @@ type feedCheck struct {
 	keys    map[int]map[string]*rsa.PublicKey // by feed index
 	counts  map[string]int
 	damaged map[int]bool
+	// the feed being read: its bodies' ranges, and the documents its batches named so far with the
+	// size their statements give
+	cur    int
+	ranges map[string][2]int64
+	named  map[string]int64
+}
+
+// at starts reading a feed's entries: its ranges built once per feed.
+func (c *feedCheck) at(fi int, f *bundle.Feed) {
+	if c.ranges != nil && c.cur == fi {
+		return
+	}
+	c.finish() // the previous feed's
+	c.cur, c.ranges, c.named = fi, map[string][2]int64{}, map[string]int64{}
+	for _, b := range f.Bodies {
+		c.ranges[b.BodyHash] = [2]int64{b.AfterSeq, b.Seq}
+	}
 }
 
 func (c *feedCheck) entry(it bundle.Item) {
@@ -663,9 +664,10 @@ func (c *feedCheck) entry(it bundle.Item) {
 	}
 	ref := f.Entries[it.Entry]
 	fe, _ := bundle.ParseFeedEntry(ref.Path)
+	c.at(it.FeedIndex, f)
 	switch {
 	case fe.Keys:
-		ks, err := feedKeys(it.Data)
+		ks, err := attachment.ParseKeysFile(it.Data)
 		if err != nil {
 			c.problem("feed %s: %v", f.URL, err)
 			return
@@ -698,16 +700,6 @@ func (c *feedCheck) entry(it bundle.Item) {
 			c.problem("feed %s: %s: %v", f.URL, ref.Path, err)
 			return
 		}
-		ranges := map[string][2]int64{}
-		for _, b := range f.Bodies {
-			ranges[b.BodyHash] = [2]int64{b.AfterSeq, b.Seq}
-		}
-		docs := map[string]bool{}
-		for _, e := range f.Entries {
-			if d, ok := bundle.ParseFeedEntry(e.Path); ok && d.Document != "" {
-				docs[d.Document] = true
-			}
-		}
 		for _, e := range entries {
 			stmt, _ := base64.StdEncoding.DecodeString(e.Statement)
 			sig, _ := base64.StdEncoding.DecodeString(e.Signature)
@@ -717,7 +709,7 @@ func (c *feedCheck) entry(it bundle.Item) {
 				c.problem("feed %s: a statement does not verify with the keys file's keys: %v", f.URL, err)
 				continue
 			}
-			r, ok := ranges[st.BodyHash]
+			r, ok := c.ranges[st.BodyHash]
 			switch {
 			case st.Issuer != f.URL:
 				c.problem("feed %s: statement %d names another issuer", f.URL, st.Seq)
@@ -729,12 +721,35 @@ func (c *feedCheck) entry(it bundle.Item) {
 				c.counts["withdrawals"]++
 			case e.Note != "":
 				c.counts["without content"]++
-			case !docs[st.ContentHash]:
-				c.problem("feed %s: statement %d's document is not in the bundle", f.URL, st.Seq)
+			default:
+				if _, ok := c.named[st.ContentHash]; !ok {
+					c.named[st.ContentHash] = st.Size
+				}
+				c.counts["contents"]++
 			}
 		}
 	default:
+		size, ok := c.named[fe.Document]
+		switch {
+		case !ok:
+			c.problem("feed %s: document %s comes before a batch names it", f.URL, fe.Document)
+		case size != int64(len(it.Data)):
+			c.problem("feed %s: document %s is %d bytes, its statement says %d", f.URL, fe.Document, len(it.Data), size)
+		}
+		c.named[fe.Document] = -1 // carried
 		c.counts["documents"]++
 		c.counts["bytes"] += len(it.Data)
+	}
+}
+
+// finish reports the last feed's statements whose document never came.
+func (c *feedCheck) finish() {
+	if c.ranges == nil {
+		return
+	}
+	for h, size := range c.named {
+		if size >= 0 {
+			c.problem("a statement's document %s is not in the bundle", h)
+		}
 	}
 }

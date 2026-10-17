@@ -240,3 +240,83 @@ func TestFeedValidate(t *testing.T) {
 		}
 	}
 }
+
+// Two feeds: an earlier feed's entry after a later feed's damages the earlier one only; entries of
+// the wrong size, however many, damage their feed and never refuse the bundle; an entry over 16 MiB
+// refuses it.
+func TestFeedEntriesAcrossFeeds(t *testing.T) {
+	f, data := feedFixture(t)
+	second := bundle.Feed{URL: "https://gw.example.org/api/v1/tenants/scans", Bodies: []bundle.FeedBody{}}
+	for _, e := range f.m.Feeds[0].Entries[:2] {
+		p := strings.Replace(e.Path, "feeds/1/", "feeds/2/", 1)
+		data[p] = data[e.Path]
+		second.Entries = append(second.Entries, bundle.FileRef{Path: p, SHA256: e.SHA256, Size: e.Size})
+	}
+	f.m.Feeds = append(f.m.Feeds, second)
+	if err := f.m.Validate(t0); err != nil {
+		t.Fatal(err)
+	}
+	read := func(order []string, d map[string][]byte) ([]string, []bool, error) {
+		t.Helper()
+		b, err := bundle.Open(bytes.NewReader(writeFeeds(t, f, d, nil, order)), t0, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		damaged := map[int]string{}
+		for {
+			it, err := b.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return nil, nil, err
+			}
+			if it.R != nil {
+				io.Copy(io.Discard, it.R)
+			}
+			if it.Feed != nil && it.Damaged != "" && damaged[it.FeedIndex] == "" {
+				damaged[it.FeedIndex] = it.Damaged
+			}
+		}
+		return []string{damaged[0], damaged[1]}, []bool{b.FeedWhole(0), b.FeedWhole(1)}, nil
+	}
+	one, two := f.m.Feeds[0].Entries, f.m.Feeds[1].Entries
+	paths := func(es ...bundle.FileRef) []string {
+		var out []string
+		for _, e := range es {
+			out = append(out, e.Path)
+		}
+		return out
+	}
+	// in order: both whole
+	order := append(paths(one...), paths(two...)...)
+	if dmg, whole, err := read(order, data); err != nil || dmg[0] != "" || dmg[1] != "" || !whole[0] || !whole[1] {
+		t.Fatalf("in order: %v %v %v", dmg, whole, err)
+	}
+	// the first feed's last entry after the second feed's: the first only is damaged
+	order = append(append(paths(one[:4]...), paths(two...)...), one[4].Path)
+	if dmg, whole, err := read(order, data); err != nil || !strings.Contains(dmg[0], "after a later feed") || dmg[1] != "" || whole[0] || !whole[1] {
+		t.Fatalf("interleaved: %v %v %v", dmg, whole, err)
+	}
+	// every entry of the first feed a byte short: damaged, the bundle still read
+	short := map[string][]byte{}
+	for k, v := range data {
+		short[k] = v
+		if strings.HasPrefix(k, "feeds/1/") {
+			short[k] = v[:len(v)-1]
+		}
+	}
+	order = append(paths(one...), paths(two...)...)
+	if dmg, whole, err := read(order, short); err != nil || !strings.Contains(dmg[0], "the manifest says") || !whole[1] {
+		t.Fatalf("short entries: %v %v %v", dmg, whole, err)
+	}
+	// an entry over 16 MiB refuses the bundle
+	big := map[string][]byte{}
+	for k, v := range data {
+		big[k] = v
+	}
+	big[one[2].Path] = make([]byte, bundle.MaxDocument+1)
+	if _, _, err := read(order, big); !errors.Is(err, bundle.ErrMalformed) {
+		t.Fatalf("an entry over 16 MiB: %v", err)
+	}
+}

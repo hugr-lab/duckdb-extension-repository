@@ -264,7 +264,9 @@ func (b *Bundle) feedItem(e RawEntry, fi, ei int) (Item, error) {
 		return Item{}, fmt.Errorf("%w: %s is %d bytes", ErrMalformed, ref.Path, e.Size)
 	}
 	if e.Size != ref.Size {
-		if err := b.t.Skip(e); err != nil {
+		// read through without counting toward MaxSkipped: a damaged feed fails its target only,
+		// and the size cap above bounds each entry
+		if _, err := io.Copy(io.Discard, b.t); err != nil {
 			return Item{}, err
 		}
 		if st.damaged == "" {

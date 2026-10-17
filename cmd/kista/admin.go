@@ -2213,6 +2213,9 @@ func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstr
 	if res.Skipped > 0 {
 		fmt.Fprintf(a.out, "%d bytes of entries were read through\n", res.Skipped)
 	}
+	if res.Feeds > 0 {
+		fmt.Fprintf(a.out, "the bundle carries %d feeds: their statements are not imported by this version\n", res.Feeds)
+	}
 	if res.Problem != "" {
 		fmt.Fprintf(a.out, "the import stopped (%s): %q\n", res.Stop, res.Problem)
 	}

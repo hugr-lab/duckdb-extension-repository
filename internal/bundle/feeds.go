@@ -21,6 +21,8 @@ const (
 	MaxKeysFile    = 64 << 10
 	MaxBatch       = 1 << 20
 	MaxDocument    = attachment.MaxConfigurableSize
+	// MaxPlanFeedKeys caps a plan feed's keys: the feeds of one URL merged, each pinning up to 10
+	MaxPlanFeedKeys = MaxFeeds * 10
 )
 
 // PlanFeed is one of a site's bundle-mode feeds (merged by URL): what it pins and accepts, the bodies
@@ -56,7 +58,8 @@ type FeedBody struct {
 }
 
 // BatchEntry is a statement in a batch, as a feed's answer carries it, with the exporting side's
-// unsigned note when the bundle carries no content for it (the gateway's refusal or removal).
+// unsigned note on every statement the bundle carries no content for, a withdrawal aside: why the
+// exporting side holds none (its refusal's reason, a removal, a document it never held).
 type BatchEntry struct {
 	Statement string `json:"statement"`
 	Signature string `json:"signature"`
@@ -103,8 +106,8 @@ func validatePlanFeeds(feeds []PlanFeed, sources int) error {
 		if i > 0 && feeds[i-1].URL >= f.URL {
 			return fmt.Errorf("%w: feeds out of canonical order, or a URL twice", ErrInvalid)
 		}
-		if len(f.Keys) == 0 || len(f.Keys) > 10 {
-			return fmt.Errorf("%w: feed %s pins 1 to 10 keys", ErrInvalid, f.URL)
+		if len(f.Keys) == 0 || len(f.Keys) > MaxPlanFeedKeys {
+			return fmt.Errorf("%w: feed %s pins 1 to %d keys", ErrInvalid, f.URL, MaxPlanFeedKeys)
 		}
 		for j, k := range f.Keys {
 			if !fpRE.MatchString(k) || j > 0 && f.Keys[j-1] >= k {
@@ -161,7 +164,6 @@ func validateFeeds(feeds []Feed) error {
 	if len(feeds) > MaxFeeds {
 		return fmt.Errorf("%w: over %d feeds", ErrInvalid, MaxFeeds)
 	}
-	bodies := 0
 	for i, f := range feeds {
 		n := i + 1
 		if err := ValidFeedURL(f.URL); err != nil {
@@ -197,10 +199,11 @@ func validateFeeds(feeds []Feed) error {
 				docs[fe.Document] = true
 			}
 		}
+		// a feed's bodies: the plan's, and those of the files the bundle brings for its sources
+		if len(f.Bodies) > MaxFeedBodies+MaxFiles {
+			return fmt.Errorf("%w: feed %s: over %d bodies", ErrInvalid, f.URL, MaxFeedBodies+MaxFiles)
+		}
 		for j, b := range f.Bodies {
-			if bodies++; bodies > MaxFeedBodies {
-				return fmt.Errorf("%w: over %d feed bodies", ErrInvalid, MaxFeedBodies)
-			}
 			if !hexRE.MatchString(b.BodyHash) || b.AfterSeq < 0 || b.Seq < b.AfterSeq || j > 0 && f.Bodies[j-1].BodyHash >= b.BodyHash {
 				return fmt.Errorf("%w: feed %s: bodies sorted, each once, 0 <= after_seq <= seq", ErrInvalid, f.URL)
 			}

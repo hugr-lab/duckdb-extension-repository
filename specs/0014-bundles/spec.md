@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17), parts 1 (bundle-mode and export feeds) and 2 (the plan and the format) implemented; 2 to come
+- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17), its parts 1 (bundle-mode and export feeds) and 2 (the plan and the format) implemented; phase 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -186,10 +186,10 @@ upstreams:
 ### The plan
 
 ```sh
-kista admin bundle plan <tenant> [-upstream <name>,…] [-o plan.json]
+kista admin bundle plan <tenant> [-upstream <name>,…] [-feed <name>,…] [-o plan.json]
 ```
 
-The plan lists the tenant's active bundle-mode upstreams (all of them, or the named ones; a paused
+The plan lists the tenant's active bundle-mode upstreams (and, from phase 1b, feeds: below) (all of them, or the named ones; a paused
 one is left out, and refused when named, since an import fills active upstreams only) as JSON. It
 holds no secret:
 
@@ -402,7 +402,7 @@ feeds/<n>/documents/<sha256 hex>       1b: a document's content, by its content 
 ```
 
 Feed entries (phase 1b) come after every file, feed by feed in the manifest's order; within a feed,
-the keys file first, then each batch followed by the documents it names. Their names match
+the keys file first, then each batch followed by the documents it first names. Their names match
 `feeds/[1-9][0-9]{0,1}/attestation-keys.json`, `feeds/[1-9][0-9]{0,1}/batch-[1-9][0-9]{0,5}\.json`
 and `feeds/[1-9][0-9]{0,1}/documents/[0-9a-f]{64}`: an issuer id has no grammar of its own (spec
 0011 bounds only its length), so it never names an entry. Every one is named in the manifest with
@@ -749,7 +749,8 @@ same body and under a key the storing feed pins. A run writes cursors and what i
 tenant's feed lock, and only in the export setting it started with (`export_epoch`): a change of
 `export` overtakes it, and it stops.
 
-**The plan** gains `feeds`: the tenant's active bundle-mode feeds (or the `-feed` ones), merged by
+**The plan** gains `feeds`: the tenant's active bundle-mode feeds (or the `-feed` ones; a named one
+that is paused, online or unknown is refused, as a named upstream is), merged by
 URL as sources are (keys and kinds united, an empty kinds list winning; per body the lowest cursor
 among them, so no feed's range starts above its own), each with:
 - the feed's URL, its pinned attestation key fingerprints, and the kinds it accepts;
@@ -785,8 +786,10 @@ same issuer (the URL normalised as spec 0011 normalises it). It contacts no feed
     stores a document once): the statement's bytes and signature, with the document's content; a
     removed (tombstoned) document's statement without content, as a kept one;
   - from the kept statements of the issuer and body: their bytes and signature, without content;
-  - from the chosen feed's refusals: their bytes and signature, without content, with the gateway's
-    reason as an unsigned note.
+  - from the chosen feed's refusals: their bytes and signature, without content.
+
+  Every statement carried without content, a withdrawal aside, has an unsigned note saying why: the
+  refusal's reason, "removed on the exporting kista", or "not held on the exporting kista".
 
   At one `seq`, a stored statement wins over a kept one, and a kept one over a refusal. A document
   updated by another feed past the chosen cursor arrives with a later range.
@@ -846,10 +849,11 @@ one it imported, the same `id` with another manifest, or a plan older than the f
 
 Entries are checked as they are read: each batch (at most 1 MiB, in memory) against its hash before
 any of its statements is applied, each document (spooled, at most `attachments.max_size`) against
-its hash. A feed entry that is missing or whose bytes differ from the manifest fails that feed's
-target, as damaged media: nothing more of it is applied and its cursors stay; the other targets go
-on. An unnamed entry is skipped, as in 1a. A `sources/` or `files/` entry after a `feeds/` entry
-stops the import as a malformed tar does; what was applied stays. A target's cursors move only
+its hash. A feed entry that is missing, out of its place, or whose size or bytes differ from the
+manifest fails that feed's target, as damaged media: nothing more of it is applied and its cursors
+stay; the other targets go on. An unnamed entry is skipped, as in 1a. A `sources/` or `files/`
+entry after a `feeds/` entry, or a feed entry over 16 MiB, stops the import as a malformed tar does;
+what was applied stays. A target's cursors move only
 once its feed's last entry was read: statements stored before an interruption stay (a repeat is a
 no-op), and its cursors wait for a whole read. A target's last-bundle mark is recorded as an
 upstream's: once its lease is held, before its first statement.
@@ -867,8 +871,9 @@ after a bundle whose key holder left statements out or whose gateway lacked thei
 audited (`bundle.reset`, naming `feed:<name>`).
 
 **`kista bundle inspect`** checks the feed entries' hashes and order, and each statement's signature
-against the bundle's keys file; with `-plan`, it says whether each key is pinned by the plan's feed
-or only listed, and checks each body against the plan. **`kista bundle sign`** refuses a bundle with
+against the bundle's keys file, its issuer, its range, and that a statement with content has its
+document in the bundle after the batch that names it, of the size it gives; with `-plan`, it says
+whether each key is pinned by the plan's feed or only listed, and checks each body against the plan. **`kista bundle sign`** refuses a bundle with
 a feed the plan did not ask for, a body neither in the feed's `bodies` nor of a file the bundle
 carries for the feed's `sources`, or an `after_seq` other than the plan's cursor.
 

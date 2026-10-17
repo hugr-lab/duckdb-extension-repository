@@ -618,21 +618,13 @@ func (r *run) keys(ctx context.Context) (map[string]*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	var doc struct {
-		Keys []struct {
-			PublicKey string `json:"public_key"`
-		} `json:"keys"`
-	}
-	if err := json.Unmarshal(b, &doc); err != nil {
-		return nil, fmt.Errorf("%w: the source's attestation keys do not parse", ErrStatement)
+	all, err := ParseKeysFile(b)
+	if err != nil {
+		return nil, err
 	}
 	out := map[string]*rsa.PublicKey{}
-	for _, k := range doc.Keys {
-		pub, err := extfile.ParsePublicKey(k.PublicKey)
-		if err != nil {
-			continue
-		}
-		if fp := extfile.Fingerprint(pub); slices.Contains(r.fd.Keys, fp) {
+	for fp, pub := range all {
+		if slices.Contains(r.fd.Keys, fp) {
 			out[fp] = pub
 		}
 	}
@@ -645,6 +637,27 @@ func (r *run) keys(ctx context.Context) (map[string]*rsa.PublicKey, error) {
 		}
 		if err := r.write(ctx, false, func(tx *store.Tx) error { return tx.SetFeedKeysFile(ctx, r.fd.ID, b) }); err != nil {
 			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// ParseKeysFile reads a source's attestation keys file (GET …/attestation-keys): its public keys by
+// fingerprint, a key that does not parse left out. A feed run and a bundle's reader share it, so they
+// see the same keys.
+func ParseKeysFile(b []byte) (map[string]*rsa.PublicKey, error) {
+	var doc struct {
+		Keys []struct {
+			PublicKey string `json:"public_key"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return nil, fmt.Errorf("%w: the source's attestation keys do not parse", ErrStatement)
+	}
+	out := map[string]*rsa.PublicKey{}
+	for _, k := range doc.Keys {
+		if pub, err := extfile.ParsePublicKey(k.PublicKey); err == nil {
+			out[extfile.Fingerprint(pub)] = pub
 		}
 	}
 	return out, nil

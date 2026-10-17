@@ -640,8 +640,8 @@ func TestImportReadsFeedsThrough(t *testing.T) {
 				{Path: "feeds/1/batch-1.json", SHA256: hexSHA(batch), Size: int64(len(batch))}}, Bodies: []bundle.FeedBody{}}}
 		})
 		res := en.importB(t, bu, data, upstream.ImportOptions{})
-		if tr := target(t, res, "air"); tr.Status != upstream.TargetImported || tr.Result.Counts[store.CellReleased] != 1 {
-			t.Fatalf("import: %+v", tr)
+		if tr := target(t, res, "air"); tr.Status != upstream.TargetImported || tr.Result.Counts[store.CellReleased] != 1 || res.Feeds != 1 {
+			t.Fatalf("import: %+v %d feeds", tr, res.Feeds)
 		}
 	})
 }
