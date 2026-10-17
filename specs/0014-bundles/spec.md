@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b implemented (parts 1 bundle-mode and export feeds, 2 the plan and the format, 3 the export, 4 the import); phase 2 designed (2026-10-17), its part 1 (the server) implemented
+- **Status**: implemented; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b implemented (parts 1 bundle-mode and export feeds, 2 the plan and the format, 3 the export, 4 the import); phase 2 implemented (part 1 the server, part 2 the console)
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -1080,7 +1080,8 @@ only by the collector.
 **The console** uploads from a tenant's Upstreams page in the server administrator's scope: a file
 picker, an optional SHA-256 pasted from the export's output, chunks sent with progress and retried,
 the token refreshed, an upload resumed after a reload (its id kept in the browser's storage), and
-the import's result.
+the import's result. For the console mounted in a shell on another origin, CORS on `/api/v1/` allows `PUT`
+and `Content-Digest` and exposes `Retry-After`.
 
 **Audit**: `bundle.upload` (created: its id, size, declared SHA-256, chunk size and options),
 `bundle.upload_complete`, `bundle.upload_abort` (each the administrator's), and the system's
@@ -1514,8 +1515,10 @@ statements bullet).
   chunk gone failing it (`storage`); expiry (a zero-chunk upload, the absolute age, a failed
   upload against a new `complete`), each an event; the chunks deleted after the import, an abort
   and expiry; an orphan under `uploads/` kept within the grace and deleted past it (fs; every
-  store's listing of `uploads/` in the blob conformance tests). Part 2: the console's upload,
-  resumed after a reload (Playwright).
+  store's listing of `uploads/` in the blob conformance tests). Part 2: the console's uploader
+  (vitest: chunks and digests, retries and `Retry-After`, a stop, a resume, an upload completed
+  before, a server's answer that does not match the file) and its upload stopped while a chunk hangs
+  and resumed after a reload (Playwright).
 
 ## Alternatives considered
 

@@ -9,8 +9,8 @@ import (
 // module and its fonts under /ui/mfe/, and the API under /api/v1/. Exact origins only, never
 // credentials: the console sends a bearer token, so a cookie is never needed.
 const (
-	corsAllowHeaders  = "Authorization, Content-Type, If-Match, If-None-Match, traceparent"
-	corsExposeHeaders = "ETag, Location"
+	corsAllowHeaders  = "Authorization, Content-Type, Content-Digest, If-Match, If-None-Match, traceparent"
+	corsExposeHeaders = "ETag, Location, Retry-After"
 	corsMaxAge        = "600"
 )
 
@@ -24,7 +24,7 @@ func (h *Handler) cors(w http.ResponseWriter, r *http.Request) (_ http.ResponseW
 	methods := ""
 	switch {
 	case strings.HasPrefix(p, "/api/v1/") && h.o.API != nil:
-		methods = "GET, HEAD, POST, DELETE"
+		methods = "GET, HEAD, POST, PUT, DELETE" // PUT: a bundle's chunks
 	case strings.HasPrefix(p, "/ui/mfe/") && h.o.Console != nil:
 		methods = "GET, HEAD"
 	default:

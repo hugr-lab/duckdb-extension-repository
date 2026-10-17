@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, Client } from './http'
+import { ApiError, Client, seg } from './http'
 
 type Call = { url: string; init: RequestInit }
 
@@ -103,5 +103,22 @@ describe('Client', () => {
     now = 40_000
     await expect(c.get('/a')).rejects.toMatchObject({ status: 401 })
     expect(onUnauthorized).toHaveBeenCalledTimes(2)
+  })
+
+  it('carries Retry-After on a refusal and passes a signal; refuses a dot segment', async () => {
+    let got: AbortSignal | null | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      got = init.signal
+      return new Response(JSON.stringify({ detail: 'busy' }), { status: 429, headers: { 'Retry-After': '2' } })
+    }))
+    const c = new Client({ base: '/api/v1', prefix: '/tenants/acme/', getToken: async () => 't1' })
+    const ctl = new AbortController()
+    const e = await c.put('/tenants/acme/bundle-uploads/u1/chunks/0', { raw: { body: new Blob(['x']), type: 'application/octet-stream' }, signal: ctl.signal })
+      .catch((e) => e)
+    expect(e).toBeInstanceOf(ApiError)
+    expect((e as ApiError).retryAfter).toBe(2)
+    expect(got).toBe(ctl.signal)
+    expect(() => seg('..')).toThrow()
+    expect(seg('a b')).toBe('a%20b')
   })
 })

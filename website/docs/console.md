@@ -150,7 +150,7 @@ them; channel and extension administrators see their channels and extensions; au
 | Channel: Keys | channel administrators | trusted, active and serving keys, key events, re-sign progress; activate and retire a trusted key; a server administrator adds a key by signer reference |
 | Extension page | extension administrators | its releases, its **Reports**, and (tenant administrators) who may use it and through which grant |
 | Release page | extension administrators | build, body hash, provenance, origin, state history; yank, deprecate, activate, make current, public or private, purge (typing the name to confirm); its Reports |
-| **Upstreams** | tenant administrators | upstreams: add, sync and dry run, pause, resume, public, private, remove; platforms, pinned keys, credential, allowlist (sync, dry run and the credential not for bundle mode, which shows its last bundle); last run and cells; the tenant's shadows; **Feeds** |
+| **Upstreams** | tenant administrators | upstreams: add, sync and dry run, pause, resume, public, private, remove; platforms, pinned keys, credential, allowlist (sync, dry run and the credential not for bundle mode, which shows its last bundle); last run and cells; the tenant's shadows; **Feeds**; in the server scope, **Upload a bundle** |
 | **Groups** | tenant administrators, group administrators (read only) | extension groups: members, description, grants, recent events, removal |
 | **Access** | tenant administrators | principals with their grant counts; a principal's grants; grant and revoke |
 | **Identity** | tenant administrators | issuer records and their console clients; the tenant's audiences (changed by a server administrator) |
@@ -174,6 +174,21 @@ The server scope adds:
 | **DuckDB versions** | list and add DuckDB versions with their maximum C API per major; add a C API |
 | **Server events** | the server's own events |
 
+**Uploading a bundle.** In the server scope, a tenant's Upstreams page has **Upload a bundle**: a
+file picker, an optional SHA-256 pasted from the export's output (the hex, or its `sha256 …` line),
+the upstreams to import into and a dry run. The file is sent in chunks, three at once, with a
+progress bar. A chunk the server is busy for is sent again when its `Retry-After` says; one the
+network drops, that times out or that the server could not read whole is sent again a few times; the
+session's token is renewed as the upload goes. **Stop**, or leaving the page, ends sending at once.
+This browser keeps the upload's id: on the page again (after a reload too), it says how many chunks
+the server has, and picking the same file (name, size and date) resumes it with the options it
+started with, sending only the chunks missing; **Abort it…** gives it up. An upload completed
+meanwhile is followed instead, never sent twice. Once every chunk is there, the page follows the
+import to its end and shows its state, each target's outcome and counts, or why it stopped.
+**Recent uploads** lists the tenant's latest 100 uploads, with **Import again** for a failed one and
+**Abort…** for one uploading, queued or failed. Uploads abandoned or failed count against
+`bundles.max_uploads` until aborted or expired. See [Uploading a bundle](upstreams.md#uploading-a-bundle).
+
 **Deleting a tenant.** A suspended tenant's page has **Delete…**, enabled once the tenant has been
 suspended for `tenants.min_suspended` (until then a note says from when). The dialog says what is
 removed and what stays, reminds you to retire the tenant's keys in their key sources, and asks for
@@ -185,7 +200,8 @@ reference). **Refresh** reloads it. See
 
 Lists are read page by page (50, 100 or 200 rows) from the API's cursors. Name search is a prefix
 search done by the API. Nothing refreshes in the background, except a running re-sign's progress
-every 10 seconds while its view is open. Event data, provenance and documents are rendered as text.
+every 10 seconds while its view is open, and a completed bundle upload's state every 2 seconds
+until its import ends. Event data, provenance and documents are rendered as text.
 
 ## Micro-frontend
 
