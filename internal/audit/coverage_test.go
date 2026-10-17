@@ -104,7 +104,9 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetCredential": {"upstream.change"},
 		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
 		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected", "feed.run"},
-		"ResetBundle":   {"bundle.reset"}, "ResetFeedBundle": {"bundle.reset"}, "Imports": nil, "GetImport": nil, "Export": {"bundle.export"},
+		"ResetBundle":   {"bundle.reset"}, "ResetFeedBundle": {"bundle.reset"}, "Imports": nil,
+		"CreateUpload": {"bundle.upload"}, "CompleteUpload": {"bundle.upload_complete"}, "AbortUpload": {"bundle.upload_abort"},
+		"PutUploadChunk": nil, "GetUpload": nil, "ListUploads": nil, "UploadExpiresAt": nil, "WakeUploads": nil, "GetImport": nil, "Export": {"bundle.export"},
 		"Sync": nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil, "Plan": nil,
 	},
 	"attachment.Service": {
@@ -621,7 +623,8 @@ func TestCoverage(t *testing.T) {
 	// every registered writer ran (Ingest, RunUpstream, Import and Export: in internal/upstream's tests, which
 	// check their events)
 	elsewhere := map[string]bool{"release.Service.Ingest": true, "upstream.Service.RunUpstream": true, "attachment.Feeds.RunFeed": true,
-		"upstream.Service.Import": true, "upstream.Service.Export": true, "upstream.Service.ResetFeedBundle": true}
+		"upstream.Service.Import": true, "upstream.Service.Export": true, "upstream.Service.ResetFeedBundle": true,
+		"upstream.Service.CreateUpload": true, "upstream.Service.CompleteUpload": true, "upstream.Service.AbortUpload": true}
 	for svc, ms := range writes {
 		for m, kinds := range ms {
 			if kinds != nil && !en.hit[svc+"."+m] && !elsewhere[svc+"."+m] {

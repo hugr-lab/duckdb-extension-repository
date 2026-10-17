@@ -46,6 +46,7 @@ var (
 	streamKey = regexp.MustCompile(`^streams/[0-9a-f]{64}$`)
 	tmpKey    = regexp.MustCompile(`^tmp/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	attachKey = regexp.MustCompile(`^attachments/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	uploadKey = regexp.MustCompile(`^uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	importKey = regexp.MustCompile(`^imports/[a-z0-9][a-z0-9._-]{0,127}$`)
 	prefixRe  = regexp.MustCompile(`^([a-z0-9][a-z0-9_-]{0,62}/){0,4}$`)
 )
@@ -53,7 +54,7 @@ var (
 // ValidKey checks a key against the grammar: streams/<64 hex>, tmp/<uuid>, attachments/<uuid> (spec
 // 0011), or the marker.
 func ValidKey(key string) error {
-	if key == MarkerKey || streamKey.MatchString(key) || tmpKey.MatchString(key) || attachKey.MatchString(key) {
+	if key == MarkerKey || streamKey.MatchString(key) || tmpKey.MatchString(key) || attachKey.MatchString(key) || uploadKey.MatchString(key) {
 		return nil
 	}
 	return fmt.Errorf("%w: %q", ErrKey, key)
@@ -79,7 +80,7 @@ func ImportKey(name string) (string, error) {
 
 // ValidListPrefix checks a List prefix.
 func ValidListPrefix(p string) error {
-	if p == "streams/" || p == "tmp/" || p == "attachments/" {
+	if p == "streams/" || p == "tmp/" || p == "attachments/" || p == "uploads/" {
 		return nil
 	}
 	return fmt.Errorf("%w: list prefix %q", ErrKey, p)

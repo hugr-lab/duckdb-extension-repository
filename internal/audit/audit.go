@@ -177,16 +177,20 @@ var catalogue = map[Kind][]string{
 	"upstream.rejected": {"upstream", "duckdb_version", "platform", "name", "outcome"},
 	"upstream.run":      {"upstream", "dry_run", "counts", "error", "bundle"},
 	// bundles (spec 0014): targets last, since a truncated event keeps its first fields
-	"bundle.import": {"import", "manifest", "created_at", "exporter", "bundle_key", "input_sha256", "dry_run", "state", "targets"},
-	"bundle.reset":  {"upstream", "feed", "manifest", "created_at"},
-	"bundle.export": {"plan", "manifest", "manifest_sha256", "bundle_key", "counts"},
-	"shadow.add":    {"name"},
-	"shadow.remove": {"name"},
-	"auth.failure":  {"reason", "route", "count"},
-	"authz.refused": {"route", "verb", "status", "count"},
-	"install":       {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
-	"audit.dropped": {"counts", "sink"},
-	"storage.gc":    {"domain", "builds", "bodies", "marked", "streams", "tmp", "attachments", "uploads", "bytes", "claims", "resolved", "dry_run", "error"},
+	"bundle.import":          {"import", "manifest", "created_at", "exporter", "bundle_key", "input_sha256", "dry_run", "state", "targets"},
+	"bundle.reset":           {"upstream", "feed", "manifest", "created_at"},
+	"bundle.upload":          {"upload", "size", "sha256", "chunk_size", "dry_run", "upstreams", "feeds", "any_tenant"},
+	"bundle.upload_complete": {"upload", "retry"},
+	"bundle.upload_abort":    {"upload"},
+	"bundle.upload_fail":     {"upload", "import", "error"},
+	"bundle.export":          {"plan", "manifest", "manifest_sha256", "bundle_key", "counts"},
+	"shadow.add":             {"name"},
+	"shadow.remove":          {"name"},
+	"auth.failure":           {"reason", "route", "count"},
+	"authz.refused":          {"route", "verb", "status", "count"},
+	"install":                {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
+	"audit.dropped":          {"counts", "sink"},
+	"storage.gc":             {"domain", "builds", "bodies", "marked", "streams", "tmp", "attachments", "uploads", "chunks", "bytes", "claims", "resolved", "dry_run", "error"},
 	"storage.verify": {"domain", "full", "mark", "unmark", "checked", "ok", "skipped", "marked_ok", "missing", "short", "long",
 		"corrupt", "record", "unreadable", "marked", "unmarked", "bytes", "error"},
 	"audit.sink":     {"sink", "state", "class", "status"},
@@ -226,7 +230,7 @@ func SubjectForm(k Kind) string {
 		return "sink:<name>"
 	case "auth.failure", "authz.refused", "request.failed":
 		return "route:<route>"
-	case "bundle.import", "bundle.export":
+	case "bundle.import", "bundle.export", "bundle.upload", "bundle.upload_complete", "bundle.upload_abort", "bundle.upload_fail":
 		return "tenant:<name>"
 	case "bundle.reset":
 		return "upstream:<name> or feed:<name>"

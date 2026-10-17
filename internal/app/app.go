@@ -331,7 +331,7 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		Upstreams: &upstream.Service{Store: s, Releases: rel, Fetch: eg, Authz: az, MaxBody: maxBody, MaxIngests: maxIngests,
 			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
 			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate),
-				Interval: ul.Interval}, Credentials: creds, Feeds: feeds},
+				Interval: ul.Interval}, Credentials: creds, Feeds: feeds, Uploads: uploadSettings(cfg)},
 		Attachments: at,
 		Feeds:       feeds,
 	}, nil
@@ -395,4 +395,11 @@ func serverIssuerURLs(cfg config.Config) []string {
 		out = append(out, s.URL)
 	}
 	return out
+}
+
+// uploadSettings are the bundles block's limits on uploads (spec 0014 phase 2).
+func uploadSettings(cfg config.Config) upstream.UploadSettings {
+	b := cfg.Bundles.Settings()
+	return upstream.UploadSettings{MaxSize: int64(b.MaxSize), ChunkSize: int64(b.ChunkSize), MaxBytes: int64(b.MaxBytes), MaxUploads: b.MaxUploads,
+		TTL: b.UploadTTL, MaxAge: b.UploadMaxAge}
 }

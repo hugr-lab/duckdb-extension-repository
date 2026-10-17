@@ -23,6 +23,9 @@ type Collector struct {
 	Log     *slog.Logger
 	// Event records a pass (the server event storage.gc); nil: none.
 	Event func(ctx context.Context, r Result)
+	// UploadTTL and UploadMaxAge expire bundle uploads (spec 0014 phase 2; bundles.upload_ttl and
+	// upload_max_age); zero: none expires.
+	UploadTTL, UploadMaxAge time.Duration
 }
 
 // Result is what a pass found and, unless a dry run, deleted. A dry run deletes nothing, so its
@@ -32,6 +35,7 @@ type Result struct {
 	DryRun                                        bool
 	Builds, Bodies, Marked, Streams, Tmp, Uploads int
 	Attachments                                   int   // spec 0011: of bodies gone, superseded a year ago, and objects without a record
+	Chunks                                        int   // spec 0014: bundle uploads' chunks deleted
 	Bytes                                         int64 // of the streams, tmp and attachment objects deleted
 	Claims                                        int   // expired claims removed
 	Resolved                                      int   // deleting tombstones another collector left, finished
@@ -165,7 +169,7 @@ func (c *Collector) Pass(ctx context.Context, domain string, dryRun bool) (r Res
 			log = c.Log.Error
 		}
 		log("blob: collected a storage domain", "domain", domain, "dry_run", dryRun, "builds", r.Builds, "bodies", r.Bodies,
-			"marked", r.Marked, "streams", r.Streams, "tmp", r.Tmp, "attachments", r.Attachments, "uploads", r.Uploads, "bytes", r.Bytes, "claims", r.Claims,
+			"marked", r.Marked, "streams", r.Streams, "tmp", r.Tmp, "attachments", r.Attachments, "uploads", r.Uploads, "chunks", r.Chunks, "bytes", r.Bytes, "claims", r.Claims,
 			"resolved", r.Resolved, "error", err)
 		if c.Event != nil {
 			c.Event(context.WithoutCancel(ctx), r)
@@ -183,6 +187,7 @@ func (c *Collector) Pass(ctx context.Context, domain string, dryRun bool) (r Res
 		func() error { return c.tombstones(ctx, d, cutoff, &r) },
 		func() error { return c.leftovers(ctx, d, cutoff, &r) },
 		func() error { return c.attachments(ctx, d, cutoff, &r) },
+		func() error { return c.bundleUploads(ctx, d, cutoff, &r) },
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {

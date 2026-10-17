@@ -562,6 +562,20 @@ Documents about bodies. File-only. See [Attachments](attachments.md).
 | `attachments.max_reads` | integer | `8` | Documents held in memory at once; `0..256`. |
 | `attachments.feed_interval` | duration | `6h` | Between a feed's scheduled runs; at least `5m`. |
 
+## bundles
+
+Bundles uploaded over the API (spec 0014 phase 2). File-only. See
+[Uploading a bundle](upstreams.md#uploading-a-bundle).
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `bundles.max_size` | size | `20GiB` | An upload's largest size; 1 MiB to 1024 GiB. |
+| `bundles.chunk_size` | size | `16MiB` | The largest chunk; 1 to 64 MiB. A client may ask for smaller chunks. |
+| `bundles.upload_ttl` | duration | `24h` | An upload sending no chunk this long expires, and a failed one kept for retry; `1h..168h`. |
+| `bundles.upload_max_age` | duration | `168h` | An upload not completed this long after its creation expires; at least `upload_ttl`, at most `720h`. |
+| `bundles.max_uploads` | integer | `2` | A tenant's uploads not yet imported (failed ones included); `1..20`. |
+| `bundles.max_bytes` | size | `100GiB` | The declared sizes of the server's uploads not yet imported; at least `max_size`. |
+
 ## tenants
 
 The tenant lifecycle. File-only. See

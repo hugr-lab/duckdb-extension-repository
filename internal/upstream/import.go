@@ -36,6 +36,11 @@ type ImportOptions struct {
 	// Idle and Floor end a stalled input: nothing for Idle (default 5m), or less than MinRate once
 	// Floor (default 30s) of waiting has passed. Tests shorten them.
 	Idle, Floor time.Duration
+	// ID is the import record's id (an upload's attempt, spec 0014 phase 2); "": a new one.
+	ID string
+	// Trusted skips the server-administrator check: the upload runner's, the actor checked when the
+	// upload was completed. Only the runner sets it.
+	Trusted bool
 }
 
 // Target statuses in an import's result.
@@ -107,7 +112,13 @@ func (tg *target) active() bool { return tg.status == TargetImported && !tg.stop
 // afterwards problems are in the result and the record. Importing is a server administrator's act.
 func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in io.Reader, o ImportOptions) (ImportResult, error) {
 	var out ImportResult
-	t, err := s.serverTenant(ctx, a, tenant)
+	var t store.Tenant
+	var err error
+	if o.Trusted {
+		t, err = s.Store.GetTenant(ctx, tenant)
+	} else {
+		t, err = s.serverTenant(ctx, a, tenant)
+	}
 	if err != nil {
 		return out, err
 	}
@@ -152,7 +163,7 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 		return out, err
 	}
 	// the record's lease before the record: another import never takes it for an interrupted one
-	rec := store.BundleImport{ID: store.NewID(), TenantID: t.ID, ManifestID: m.ID, ManifestCreatedAt: m.CreatedAt,
+	rec := store.BundleImport{ID: cmp.Or(o.ID, store.NewID()), TenantID: t.ID, ManifestID: m.ID, ManifestCreatedAt: m.CreatedAt,
 		ManifestSHA256: b.ManifestSHA, Exporter: exporterText(m.Exporter), BundleKey: b.Fingerprint, DryRun: o.DryRun, Actor: a.String()}
 	leases := []string{store.ImportLease(rec.ID)}
 	if ok, err := s.Store.AcquireLease(ctx, leases[0], o.Holder, leaseTTL); err != nil || !ok {
