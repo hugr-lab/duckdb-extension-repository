@@ -1,0 +1,614 @@
+# Spec 0012: Licensing and usage reports
+
+- **Status**: accepted
+- **Date**: 2026-10-17
+- **Author**: vgsml, Claude
+
+## Summary
+
+A paid extension needs two things from the repository it came from: a **licence** that says this
+organisation may run it (until when, at which plan, with which limits), and a place to **report
+usage**. This spec gives kista both, without making kista a seller.
+
+- **Enterest sells and issues.** A developer hands an extension to Enterest and sets its terms
+  there: free, a subscription with plans, or a licence. Enterest is the only licence issuer: a
+  licence is a small JWS signed by Enterest's licence key. kista holds no licence key.
+- **kista relays and serves.** An organisation's kista that mirrors Enterest with the
+  organisation's credential (spec 0009 phase 3) receives the organisation's licences for the
+  extensions it mirrors, checks them against the licence keys its operator trusts, and serves them
+  to its own users from the channel they install from. An Enterest tenant serves the licences
+  Enterest imported into it the same way. An air-gapped kista takes a licence file from its
+  administrator.
+- **The SDK checks and reports.** A licensed extension embeds an open C++ SDK (phase 2). It fetches
+  the licence from the repository the extension was installed from, through httpfs with the same
+  http secret as `INSTALL`, verifies it offline against Enterest's public keys compiled in, and
+  gives the developer one call, `Check()`, for the common case ("refuse without a licence") and the
+  plan and limits for the rest. A limit such as "at most 5 attached sources" is the developer's own,
+  not kista's. The SDK also sends **usage reports** (event counts) to the repository; kista keeps
+  them for the organisation's audit (phase 1b) and forwards daily aggregates, without identities,
+  to the upstream the extension came from (phase 1c).
+
+There are no seats in this version: DuckDB has no uninstall, and counting principals would need a
+model this version does not have. The threat model is the honest user (spec 0001): licensing
+prevents the accident, not the deliberate act.
+
+Phases:
+
+- **1a. Licences in kista**: the licence format, the Go reference verifier and test vectors, the
+  `licenses` table, import and removal (API, CLI), the relay from upstreams, the licence routes,
+  events.
+- **1b. Usage reports**: the SDK's route, counts, the `extension.use` audit event, the statistics
+  API.
+- **1c. Forwarding**: daily aggregates to upstreams, and the receiving side a kista offers its
+  downstream kistas.
+- **1d. The console**: a Licences screen, the upstream's usage switch, usage in Statistics.
+- **2. The C++ SDK** (`sdk/cpp`) and end-to-end tests with the pinned DuckDB.
+
+## Problem
+
+- A developer who wants to be paid for an extension has nowhere to say "this organisation may run
+  version 2 at the `pro` plan until March". Without that, a paid extension is either public and
+  unpaid, or private and unusable outside one organisation.
+- An organisation that buys an extension installs it from its own kista (a mirror of Enterest), or
+  its users install it from its Enterest tenant directly. Either way the extension has to learn, on
+  the user's machine, that it is licensed, without the user configuring anything new, and keep
+  working through short outages and on air-gapped sites.
+- An extension file is easy to copy. The simplest control a developer wants is "it does not run
+  without a licence for it here".
+- The organisation wants to see who uses what (audit), and the developer wants to know how the
+  extension is used, at a grain the organisation agrees to. kista sees downloads (spec 0010), not
+  use.
+- Developers want controls of their own ("the `basic` plan attaches at most 2 sources"), which no
+  repository can know or enforce.
+
+## Design
+
+### Who does what
+
+| Party | Does |
+| --- | --- |
+| **Developer** | Builds the extension with the SDK, names its plans and limits in Enterest, and enforces them in code. |
+| **Enterest** (closed) | Catalogue, terms, purchase, billing; issues licences signed with its licence key; imports them into its tenants (the API below); receives forwarded usage. |
+| **kista** (open, this spec) | Verifies, stores and serves licences; relays them downstream; takes usage reports, keeps them, forwards daily aggregates upstream. Never issues a licence. |
+| **SDK** (open, phase 2) | Fetches and verifies the licence, `Check()`, plan and limits, reports usage. |
+| **Organisation's administrator** | Decides who may install (grants), sees licences and usage, switches forwarding off. |
+
+Spec 0001 put licence keys and issuance in the open server. The owner decided otherwise
+(2026-10-17): Enterest is the only root of licence trust, and kista relays. Spec 0001 is updated
+to say so. Spec 0002's and 0003's key-role separation for licence keys applies to Enterest's own
+deployment, where its licence key must be distinct from every channel and attestation key.
+
+### The licence
+
+A licence is a JWS in compact serialisation (RFC 7515), RS256 (RSASSA-PKCS1-v1_5, SHA-256), at most
+16 KiB. The key is **exactly RSA-2048 with `e = 65537`**: the SDK verifies with DuckDB's bundled
+mbedtls wrapper, which takes 256-byte signatures only (`third_party/mbedtls/mbedtls_wrapper.cpp:75`
+on the pin).
+
+**Header**, exactly these members:
+
+```json
+{"alg": "RS256", "typ": "kista-license+jwt", "kid": "sha256:<hex of the SPKI DER's SHA-256>"}
+```
+
+`typ` is the domain separator: a verifier refuses any other value, so a JWT signed for another
+purpose by the same key is never a licence.
+
+**Payload**, a JSON object:
+
+| Member | Required | Meaning |
+| --- | --- | --- |
+| `v` | yes | The format version, `1`. A verifier refuses any other. |
+| `iss` | yes | The issuer's URL (`https://…`), at most 256 bytes. |
+| `jti` | yes | The licence id, `[A-Za-z0-9_-]{1,64}`, unique per issuer. |
+| `sub` | yes | The holder's id at the issuer (an Enterest tenant), at most 128 bytes. |
+| `holder` | no | The holder's display name, at most 200 bytes. |
+| `ext` | yes | The extension name (`[a-z0-9_]{1,64}`, spec 0008). |
+| `versions` | no | `{"min": "1.2", "below": "2.0"}`, either member or both. Absent: every version. |
+| `plan` | yes | `[a-z0-9][a-z0-9_-]{0,31}`. |
+| `limits` | no | An object of at most 64 members, names `[a-z][a-z0-9_]{0,63}`, values `true`/`false`, integers, or strings of at most 256 bytes. Meaning is the developer's. |
+| `iat` | yes | Issued at, seconds since the epoch. |
+| `exp` | yes | Expiry, after `iat`. |
+| `grace` | no | Seconds the licence still works after `exp`, 0 to 7,776,000 (90 days); absent means 604,800 (7 days). |
+
+**Parsing rules**, so the Go and the C++ verifier never read one token differently:
+
+- base64url without padding (RFC 7515 §2), refusing padding, whitespace, other alphabets and
+  non-zero trailing bits;
+- strict UTF-8 JSON (RFC 8259); invalid UTF-8 and unpaired surrogate escapes are refused, never
+  replaced;
+- no duplicate member names at any depth, compared after unescaping (DuckDB's bundled yyjson
+  accepts duplicates, so the SDK walks objects itself);
+- every number is a JSON integer: no fraction, no exponent, within ±(2^53-1); `exp + grace` must be
+  within that too;
+- unknown members are ignored: they are signed, and a change of meaning bumps `v`.
+
+**Versions** are a lowercase `v` optionally, then 1 to 4 dot-separated components of 1 to 9 digits
+without leading zeros (`0` itself allowed), compared component by component, missing ones as zero
+(`1.2` = `1.2.0`). A `min` or `below` not of that form makes the licence `invalid`. An extension
+version not of that form (a commit hash) is outside every range, so a licence with `versions` does
+not cover it.
+
+**Status**, the first row that applies, with a skew of 300 seconds:
+
+| Status | When |
+| --- | --- |
+| `invalid` | Not a licence: format, parsing rule, `typ`, `alg`, a `kid` not among the trusted keys, signature, a payload rule, or `ext` not the extension asking. |
+| `not_covered` | The extension's version is outside `versions`. |
+| `not_yet_valid` | `now + skew < iat`. |
+| `valid` | `now < exp`. |
+| `grace` | `now < exp + grace`. |
+| `expired` | Otherwise. |
+
+The holder is not checked by a verifier: the extension cannot know which organisation runs it.
+A licence copied to another organisation works, and names its holder wherever it goes (in the
+file, in the console, in usage reports). That is the honest-user line.
+
+**Reference verifier, vectors, a test signer.** `internal/license` has `Parse` (header and
+payload, all rules above, no keys) and `Verify(token, keys, ext, version, now) (Claims, Status,
+error)`; with an empty `version` the `not_covered` row is skipped (kista stores licences for a
+name, not a version). A generator (`go run ./internal/license/vectorgen`) writes
+`internal/license/testdata/vectors.json` from a test key committed beside it (named as a test key,
+never trusted by a release build): each case is a token, the extension and version asking, `now`,
+and the expected status and claims, covering every row and parsing rule above, a 3072-bit and a
+1024-bit key, a PSS signature, a `kid` of an untrusted key, and the boundaries of `iat`, `exp` and
+`grace`. RSA PKCS#1 v1.5 is deterministic, so the file is reproducible; CI regenerates it and fails
+on a difference. The C++ SDK's tests (phase 2) read the same file. `vectorgen sign -claims <file>`
+signs with the test key, so a developer can test the SDK locally without Enterest.
+
+### Licences in a tenant (1a)
+
+```text
+licenses  tenant_id, name, license_id, issuer, holder_id, holder, plan, token, key,
+          issued_at, expires_at, grace_until, source ('import' | 'upstream'),
+          upstream_id null, visibility ('private' | 'public'), actor, updated_at, version
+          primary key (tenant_id, name)
+```
+
+One licence per extension name in a tenant, served from every channel of the tenant (the relay
+brings it through one upstream's channel; a promotion carries the extension to others). `token` is
+the JWS as received; the other columns are its verified claims, for listing and for the console.
+Migration 0024, additive, on all three dialects. `licenses` joins spec 0019's reap steps;
+`upstream_id` has no foreign-key cascade: removing an upstream removes its licences explicitly
+(below).
+
+**Trusted keys** are server configuration, never data (a file-only section, as server
+administrators and credentials are):
+
+```yaml
+licenses:
+  keys:                     # the issuers' licence public keys, SPKI PEM; none: licensing is off
+    - |
+      -----BEGIN PUBLIC KEY-----
+      …
+      -----END PUBLIC KEY-----
+  refresh: 6h               # the relay's interval, 1h..24h
+```
+
+kista stores only licences whose status is `valid` or `grace` against these keys, under the name
+they name. Without keys, imports and the relay are refused with `licenses: no trusted keys
+configured`, and the routes below answer as for a missing licence. `GET /api/v1/licenses/keys`
+(server administrators) and the start-up log show the fingerprints. The docs say where Enterest
+publishes its keys; nothing defaults to them. An operator may trust other keys; the SDK will still
+refuse their licences, which the console says.
+
+**Import** (an air-gapped site, or Enterest writing into its own tenants): a tenant administrator
+posts the token; the name is the licence's `ext`. A licence already stored for the name is
+replaced only with `If-Match` on it, whatever its source.
+
+**Relay** from upstreams: every `refresh`, one replica (lease `kista/licenses`) asks each
+`repository` upstream that has a credential and is not paused, tenant by tenant (bundle-mode
+upstreams take no credential and are not asked):
+
+```text
+GET <upstream prefix>/-/licenses        Authorization: Bearer <the credential's token>
+→ 200 {"licenses": ["<jws>", …]}        at most 1,000, at most 8 MiB, through egress
+```
+
+- An answer over either cap, or one that does not parse, is a failure: nothing changes.
+- On `200`, each licence is checked: it verifies, and its `ext` has a release in the upstream's
+  channel whose provenance names this upstream (an upstream does not hand out licences for names it
+  does not supply). A licence that fails is refused with its reason.
+- A licence is stored when there is none for its name, when the stored one came from this upstream
+  and the new one has a later `iat`, or when the new one's `exp` is later than the stored one's
+  (whatever the stored one's source).
+- `200` is authoritative for this upstream: a stored licence whose `source` is this upstream and
+  that the answer leaves out is removed (revocation). Licences from other sources are untouched.
+- `404` means the upstream serves no licences, and `401`, `403`, `5xx` or a network failure is a
+  failure: nothing is removed, and licences from it stay until `grace_until`.
+- Licences past `grace_until` are removed by the same pass, whatever their source.
+- **Removing an upstream** removes its licences in the same transaction, each with a
+  `license.remove` event. **Clearing its credential**, or removing the credential from the
+  configuration, stops the relay; its licences stay until `grace_until`.
+- Each run records `license.sync`. `POST …/upstreams/{u}/licenses/sync` asks for a run now.
+  Spec 0009's credential rules hold: the token goes only to the credential's prefixes, never on a
+  redirect, never logged.
+
+**A changed plan** (an upgrade, a downgrade, a renewal) is a new licence from Enterest with a later
+`iat`; nothing in kista or on the user's machine is reinstalled:
+
+- a relayed licence is replaced at the next relay run (`refresh`, 6 h by default); an administrator
+  who wants it now runs `kista upstream licenses <tenant> <upstream>` or presses Sync in the
+  console. An Enterest tenant has it as soon as Enterest imports it;
+- the SDK asks the repository at every `LOAD` (a conditional request, below), so a user has the new
+  plan at the next `LOAD` in a new process, or at once with `myext_license_refresh()`. The binary is
+  untouched: the licence is not part of it, so `FORCE INSTALL` is neither needed nor enough.
+
+**Visibility.** A licence is `private` by default: served only to a token holding `install` on the
+name in the channel. An organisation whose kista serves its own users without tokens (an internal
+network, public releases) sets the licence `public` (`POST …/licenses/{name}/public`, `If-Match`,
+a `license.change` event): it is then served to whoever is served a public release of the name.
+The console warns that a public licence works for anyone who can reach the channel. A relayed
+licence keeps the visibility its stored predecessor had.
+
+### Routes on a channel prefix
+
+DuckDB never asks for these paths: `-` is not a DuckDB version (`store.ValidDuckDBVersion`), an
+extension name (`[a-z0-9_]{1,64}`), a tenant or channel name, or `.well-known`, so they cannot
+collide with spec 0006's layouts. They are matched before the binary grammar, each with a route
+label of its own for metrics and for `auth.failure` and `authz.refused` (`data.route`).
+
+```text
+GET  <prefix>/-/licenses/<name>     the licence for one extension          1a  label license
+GET  <prefix>/-/licenses            the licences the caller may use here   1a  label licenses
+POST <prefix>/-/usage/<name>        an SDK's usage report                  1b  label usage
+POST <prefix>/-/usage               a downstream kista's daily aggregate   1c  label usage-daily
+```
+
+The `GET` routes take `GET` and `HEAD` and no body, as spec 0006's routes do; the `POST` routes take
+`POST` only, with a JSON body (`405` with `Allow` otherwise). A passthrough channel has none of them
+(`404`).
+
+**Authorisation**, from the path only, before any body is read:
+
+- the caller may use `<name>` here if it holds `install` on `<name>` in this channel and an active
+  or deprecated release of `<name>` exists in it (pull-through names not fetched yet do not count);
+  for a `public` licence, and for usage reports, also anyone who is served a public release of
+  `<name>` here;
+- otherwise the answer is the binary route's answer for a missing path **for this caller** (spec
+  0006: `401` without a valid token, `404` with one), byte-identical, so the routes reveal nothing
+  about names the caller may not see; a missing licence answers the same;
+- on plain `http` a token is ignored, as on the binary routes, so only public licences and public
+  names' reports work there;
+- answers carry `Cache-Control: private, no-store` and `Vary: Authorization`.
+
+`GET …/-/licenses/<name>` answers `200`, `Content-Type: application/jwt`, the token as stored (one
+past `grace_until` is gone), with `ETag` `"<jti>.<iat>"`; `If-None-Match` with it answers `304`.
+`GET …/-/licenses` needs a valid token (anonymous: `401`) and answers
+`{"licenses": [...]}` with the private and public licences of the names the caller may use here.
+It is what a downstream kista's relay reads, so an organisation's kista serves Enterest's licences
+onward to its own regional or air-gapped kistas without any of them issuing anything.
+
+### Usage reports (1b)
+
+**The SDK's report**, `POST <prefix>/-/usage/<name>`, `application/json`, at most 64 KiB:
+
+```json
+{"version": "1.4.0", "platform": "linux_amd64", "duckdb_version": "v2.0.0",
+ "license": "<jti or omitted>", "status": "valid",
+ "events": [{"name": "load", "count": 1},
+            {"name": "attach", "count": 12, "counters": {"sources": 30}}]}
+```
+
+- `version` must be a version of a release of the name the caller may use in this channel, and
+  `platform` and `duckdb_version` follow spec 0006's grammars; otherwise the report is dropped
+  silently (`204`). `status` is the SDK's licence status (`missing` when there is none). Event and
+  counter names are `[a-z][a-z0-9_.]{0,63}`; at most 32 events and 16 counters per event; counts and
+  counter values are integers from 0 to 2^53-1. A report that breaks these rules answers `400` with
+  the rule; this happens only after authorisation.
+- The answer is `204`. A report is the client's claim, not evidence: anyone who may install a public
+  release may send one.
+- **Counts** are summed in memory per `(tenant, channel, name, version, event, counter, day,
+  authenticated)`, where `counter` is `''` for the event's own count. Every minute they are upserted
+  into `usage_counts`, as spec 0010 counts downloads: key order, 500 keys a transaction, the same
+  SQL Server lock pattern (`kista/usage_counts`). The budget is usage's own: 100,000 keys waiting,
+  beyond which reports are dropped and counted in a metric. A burst of reports never takes download
+  counts with it.
+- **Audit**: a report by a token holding `install` on the name is an `extension.use` event:
+  - actor: the principal;
+  - subject: `channel:<c>/ext:<name>`;
+  - `data`: version, platform, DuckDB version, licence id, status, event names.
+
+  An event is written only for the first such report per (principal, channel, name, version, day)
+  on a replica. Dedup runs through a bounded map of its own (100,000 entries, least recently used
+  dropped), capped at 1,000 a day per principal and 100,000 principals a day, through spec 0010's
+  asynchronous writer. A report with a valid token that does not hold `install` (on a public release)
+  counts as authenticated and makes no event, as downloads do. Anonymous reports count and make no
+  event.
+- **Users**: spec 0010's hourly statistics pass also counts, for each finished day, the distinct
+  principals of that day's `extension.use` events. It counts them per (channel, name, version) and
+  stores them in `usage_users`, written only by that pass. No principal is kept.
+- `statistics.usage_accept: false` (default `true`) makes the route answer `204` and keep nothing,
+  for a site that wants no usage data at all.
+
+**Statistics API**:
+
+```text
+GET /api/v1/tenants/{t}/stats/usage?from=&to=&channel=&extension=&group=<d>[,<d>]
+    d: day | channel | extension | version
+    → {from, to, group, rows: [{dimensions…, event, counter, value}], users: [{dimensions…, users}]}
+```
+
+Readers, scopes, `404` outside a scope, and the limits on `from` and `to` are spec 0010's for
+`/stats/downloads`. Values are local counts plus received aggregates (1c).
+
+### Forwarding (1c)
+
+Each `repository` upstream with a credential has `usage`: `forward` (the default) or `off`.
+
+A daily pass runs on one replica (lease `kista/usage/forward`). It skips paused upstreams. For
+each upstream set to `forward`, it sends each of the last 3 days that ended at least an hour ago.
+Each day goes to every `(channel, name, version)` for which the channel has a release of
+`name@version` whose provenance names this upstream (promotions keep it, spec 0009):
+
+```text
+POST <upstream prefix>/-/usage     Authorization: Bearer <the credential's token>
+{"day": "2026-10-17",
+ "reports": [{"extension": "myext", "version": "1.4.0", "users": 42,
+              "events": [{"name": "attach", "count": 380, "counters": {"sources": 912}}]}]}
+```
+
+- The day's totals for those rows are summed over the tenant's channels, authenticated and
+  anonymous, local and received.
+- The request carries no principal, address, channel name or licence id.
+- `users` is left out below 5, so a small organisation's single user is not singled out.
+- At most 1,000 reports and 1 MiB per request; a day that needs more goes in several requests,
+  each with `"part": n` and `"parts": total`.
+- **A day is sent whole and replaces what the upstream holds for it from this caller.** Resending is
+  therefore harmless: the pass sends the last 3 days every day, so late reports reach the upstream,
+  and a failure is retried the next day. `404` means the upstream takes no usage.
+- Each run records `usage.forward`: days sent, skipped (`404`), failed, each with its reason.
+- What a subscriber discloses is exactly that request. The docs say so, `GET /api/v1/credentials`
+  shows which credentials forward usage, and `POST …/upstreams/{u}/usage {"usage": "off"}` stops
+  it.
+
+**The receiving side**, `POST <prefix>/-/usage`, is kista's too. So a regional kista forwards to
+the organisation's kista, and that one forwards to Enterest:
+
+- **Access:** a valid token is required (anonymous: `401`).
+- **Limits:** the body is at most 1 MiB and holds at most 20,000 keys. `day` must be one of the last
+  7 finished days (`400` otherwise).
+- **Scope:** reports for names the caller may not use here are dropped. The answer is `204` whatever
+  was dropped, so it reveals nothing.
+- **Storage:** the rest replaces the caller's rows for that day and channel in `usage_received`,
+  keyed by the caller's principal. All parts of one request group are written in one transaction, so
+  a partial resend never doubles a count.
+- Received rows are added to the statistics and to this kista's own forwarding.
+
+### Data model
+
+```text
+licenses        (above)                                                            1a, 0024
+usage_counts    tenant_id, channel_id, name, ext_version, event, counter, day,
+                authenticated, value; primary key all but value                    1b, 0025
+usage_users     tenant_id, channel_id, name, ext_version, day, users;
+                primary key all but users; replaced by the hourly pass             1b, 0025
+usage_received  tenant_id, channel_id, sender, day, name, ext_version, event,
+                counter, users, value; primary key all but users and value         1c, 0026
+upstreams.usage 'forward' | 'off', not null default 'forward'                      1c, 0026
+```
+
+All of it is additive. The usage tables follow `statistics.retention`, and all of them join spec
+0019's reap steps (its table-list test covers them).
+
+### API and CLI
+
+```text
+GET    /api/v1/licenses/keys                               server administrators (1a)
+GET    /api/v1/tenants/{t}/licenses                        tenant administrators (1a)
+GET    /api/v1/tenants/{t}/licenses/{name}                 tenant administrators, ETag (1a)
+POST   /api/v1/tenants/{t}/licenses                        import, the JWS as the body (1a)
+POST   /api/v1/tenants/{t}/licenses/{name}/public|private  If-Match (1a)
+DELETE /api/v1/tenants/{t}/licenses/{name}                 If-Match (1a)
+POST   /api/v1/tenants/{t}/upstreams/{u}/licenses/sync     tenant administrators, 202 (1a)
+GET    /api/v1/tenants/{t}/stats/usage                     (1b)
+POST   /api/v1/tenants/{t}/upstreams/{u}/usage             {"usage": "forward"|"off"}, If-Match (1c)
+```
+
+- **A licence** is shown as its claims and its state: `name`, `id`, `issuer`, `holder_id`, `holder`,
+  `plan`, `versions`, `limits`, `issued_at`, `expires_at`, `grace_until`, `key`, `source`,
+  `upstream`, `visibility`, `status` (`valid`, `grace`). The response never includes the token; the
+  CLI's `token` command reads it from the licence route.
+- **CLI:**
+  - `kista license list|show|import|remove|public|private <tenant> …`;
+  - `kista license verify <file> [-key <pem>]`: offline, prints the claims and the status against the
+    configured keys or the given one;
+  - `kista upstream licenses <tenant> <upstream>`: sync now;
+  - `kista upstream usage <tenant> <upstream> forward|off`.
+
+### Events
+
+New catalogue entries, with their subject forms in `audit.SubjectForm` and its coverage test:
+
+| Event | Actor | Subject | Data |
+| --- | --- | --- | --- |
+| `license.import` | the administrator | `license:<name>` | licence id, issuer, holder, plan, expiry, the replaced licence's id |
+| `license.change` | the administrator | `license:<name>` | `visibility` |
+| `license.remove` | the administrator, or `system:licenses` | `license:<name>` | licence id, why (`admin`, `revoked`, `expired`, `upstream removed`) |
+| `license.sync` | `system:licenses` | `upstream:<u>` | received, stored, replaced, removed, refused (with reasons), or the failure |
+| `extension.use` | the principal | `channel:<c>/ext:<name>` | (above) |
+| `usage.forward` | `system:usage` | `upstream:<u>` | days sent, skipped, failed |
+| `upstream.change` | the administrator | `upstream:<u>` | `change` `usage`, `value` |
+
+### Console (1d)
+
+- **Licences** (tenant administrators):
+  - the list, with plan, holder, source, visibility, expiry and status; licences expiring within
+    30 days are flagged;
+  - a licence's claims and limits, plus a warning when its key is not one the SDK trusts;
+  - import from a file, making a licence public or private, and removing one;
+  - the last sync per upstream, with its refusals.
+- **Upstreams**: the usage switch, and one sentence on what it forwards.
+- **Statistics**: a Usage tab with events and counters and users, by day, extension and version.
+  Use without a licence (the reports' `status`) is shown apart.
+
+### The SDK (phase 2)
+
+A C++ library under `sdk/cpp` (Apache-2.0), for C++ extensions on the pinned DuckDB. A version for C
+API extensions is a follow-up. The interface the developer sees:
+
+```cpp
+// in the extension's Load: registers the load hook and myext_license()
+kista::License::Register(loader, "myext");
+
+auto &lic = kista::License::Get(context, "myext");  // cached; never throws for status
+lic.Check();                                         // throws unless valid or grace: the one-line gate
+lic.Status();                                        // valid | grace | expired | missing | invalid | …
+lic.Plan();                                          // "pro"
+lic.Limit<int64_t>("max_attached_sources", 1);       // the developer's controls, with a default
+kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
+```
+
+- **`Check()` is the simple case.** Most developers want only "is there a licence for this
+  extension here". `Check()` throws a DuckDB `PermissionException` unless the status is `valid` or
+  `grace`. The message names the extension, the status and what to do: `no licence for myext: ask
+  your administrator, or place myext.kista-license next to the extension`. In `grace` it also logs a
+  warning, once. A developer calls it from a table function's bind or a scalar function's first
+  call: one line per entry point, and after the first call a cached lookup.
+- **`myext_license()`** is a table function `Register` adds. It returns the status, plan, expiry,
+  holder, source (file or repository) and limits, so a user or an administrator can see why a
+  refusal happened. **`myext_license_refresh()`** fetches the licence again now, in a running
+  process (after an upgrade, say), and returns the same row.
+- **Where the licence comes from.** `Register` adds an `ExtensionCallback`. Its `OnExtensionLoaded`
+  fires inside `FinishLoad`, after `ExtensionInstallInfo` is set (`extension_manager.cpp:12-21`,
+  `extension_load.cpp:824-826` on the pin). There the SDK reads the licence in this order:
+  1. A file `<name>.kista-license` beside the extension's own module, found with `dladdr` (or
+     `GetModuleHandleEx` on Windows). DuckDB records no install directory. This file is also how an
+     air-gapped user without a kista places one.
+  2. The repository: `install_info->repository_url`, the prefix as typed in `CREATE EXTENSION
+     REPOSITORY`, with a trailing `/` trimmed (`extension_install_dynamic.cpp:192,287`). It is empty
+     for a static or a `LOAD '<path>'` extension, and then only the file is used.
+  - **The fetch** autoloads httpfs, as `INSTALL` does, and goes through
+    `HTTPTransportManager::CreateSession(context, url)`. httpfs adds the Bearer token of the http
+    secret matching the URL, so a user who could `INSTALL` needs nothing else. The secret must still
+    exist in a later process (persistent, or created again), or only the file works.
+  - **When:** at every load, conditionally (`If-None-Match` with the file's licence), so a changed
+    plan arrives at the next `LOAD` and an unchanged one costs a `304`; again when the licence in use
+    is past half its lifetime, on the next `Get`; and on `myext_license_refresh()`. A 5-second
+    timeout and no retries; a failed fetch keeps the file, and a `404` from the repository keeps it
+    too (a revoked licence simply stops being renewed).
+  - **Where the result goes:** the fetched licence is written beside the module, through a temporary
+    file and a rename, best effort, because the directory may be read-only.
+- **Trust**: Enterest's licence public keys are compiled in. A test build may add the vectors' test
+  key behind a CMake option that a release build refuses. No runtime setting can add a key.
+- **Usage**: counts are summed in memory and sent when a connection closes, or after 10 minutes on
+  the next `Count`. Sending is best effort and never on the query path: a failed send is dropped.
+  The `load` event carries the licence status. DuckDB has no shutdown hook, so the last minutes of a
+  process may be lost.
+- **What the developer decides**: what each status allows (refuse, degrade, warn). The SDK never
+  stops DuckDB by itself.
+- **To confirm in phase 2:**
+  - `MbedTlsWrapper` and `HTTPTransportManager` from a loadable extension on Windows; neither is
+    `DUCKDB_API`;
+  - the callback and the session outside a user's query.
+
+## Security
+
+- **kista issues nothing.** It holds no licence key; it stores only licences that verify against the
+  operator's configured keys. A tenant administrator cannot add a trusted key. A compromised kista
+  could serve a licence to the wrong user of the same organisation, never mint one.
+- **Root of trust in the SDK**: Enterest's keys are compiled into the extension; nothing at run time
+  adds one. A forged licence fails in the SDK even if a kista accepted it.
+- **A licence is private by default.** Only a token holding `install` gets it. A public licence is
+  the administrator's explicit act, with a warning, since anyone who reaches the channel can then
+  copy it. The holder is not checked anywhere.
+- **No existence leaks**:
+  - the licence and usage routes decide from the path, before any body is read, and answer like the
+    binary routes for a missing path, for each caller;
+  - `GET …/-/licenses` lists only names the caller may use;
+  - reports for versions or names outside the caller's view are dropped with `204`.
+- **Relay binding**: an upstream's licences are accepted only for names it supplies. An answer over
+  a cap changes nothing, so a truncated list never revokes.
+- **Tenant isolation**: licences, counts and received aggregates are per tenant; a licence is served
+  only from the channels of the tenant that holds it.
+- **Credentials**: the relay and forwarding use spec 0009's credentials under its rules (prefixes,
+  no redirects, never logged). A downstream caller's `Authorization` is never sent upstream.
+- **Disclosure**: forwarded usage carries no principal, address, channel or licence id, and `users`
+  below 5 is left out. Forwarding is on by default because it is part of buying a licensed
+  extension; one switch stops it, and `statistics.usage_accept` keeps nothing at all.
+- **Counts are claims**: any caller who may install a public release can report. Counts are for
+  audit and trends, never for billing evidence; the docs say so.
+- **DoS**:
+  - body caps: 64 KiB per report, 1 MiB per aggregate, 8 MiB per relay answer;
+  - key caps per request, and versions restricted to the ones served;
+  - usage's own pending budget, apart from downloads';
+  - spec 0010's per-principal caps on events;
+  - received aggregates replace rather than add.
+
+  A report never blocks a download.
+- **Parsing parity**: the format's parsing rules and the shared vectors make the Go and C++
+  verifiers agree on every token, including hostile ones.
+- **The honest-user line** (spec 0001): a patched binary, a rolled-back clock, a copied licence file
+  or `allow_unsigned_extensions` defeat it. Each is a deliberate act; the licence's holder travels
+  with it.
+
+## Testing
+
+- **`internal/license`**: the vectors (every status, every parsing rule, the boundaries), the
+  generator's reproducibility in CI, and fuzzing of `Parse` against the duplicate-member and UTF-8
+  rules.
+- **Store suite** on all three dialects:
+  - `licenses`: replace rules, `If-Match`, removal by source, upstream removal with events;
+  - `usage_counts` upserts;
+  - `usage_users` written by the pass;
+  - `usage_received` replace per (sender, day, channel), several parts in one transaction;
+  - tenant deletion reaps every table.
+- **Relay**, with two kistas in one test:
+  - answers `200`, `404` and `401`, an answer over a cap, a bad signature, an untrusted key;
+  - a licence for a name the upstream does not supply;
+  - replacement by `iat` and by `exp`, revocation by omission, expiry removal, paused and
+    bundle-mode upstreams;
+  - the credential is sent only to its prefix.
+- **Routes**:
+  - the authorisation matrix: anonymous; a token without a grant; a token with `install`; public and
+    private releases; private and public licences; passthrough; pull-through names not fetched yet;
+  - `401` and `404` byte-identical to the binary routes' for the same caller;
+  - `http` against `https`, `no-store`, `405` and the body rules.
+- **Usage**:
+  - report validation; silent drops for unknown versions;
+  - counts per key and usage's own budget;
+  - `extension.use` once per day, with its caps;
+  - `usage_users`;
+  - the statistics API's scopes.
+- **Forwarding**:
+  - the rows chosen by provenance;
+  - no principal in the body; `users` below 5 left out;
+  - resending a day replaces it; parts; `404`;
+  - a three-kista chain;
+  - the receiving side's day window, caps and silent drops.
+- **e2e** (phase 2): the pinned DuckDB runs a test extension built with the SDK and the test key.
+  - `INSTALL` and `LOAD` from a private channel with an http secret; the licence is fetched and
+    written beside the module; status `valid`; a limit is read; `myext_license()` shows the licence.
+  - An upgrade: a new licence with another plan imported into kista; `myext_license_refresh()` and
+    a new process's `LOAD` see it without reinstalling; an unchanged licence answers `304`.
+  - The file is used offline.
+  - An expired or a missing licence is refused by `Check()` with its message; a licence in grace is
+    allowed.
+  - Usage is reported and visible in `/stats/usage`.
+
+## Alternatives considered
+
+- **kista issues licences with a publisher's key (spec 0001's outline).** Every kista would become
+  a potential root, and every tenant administrator a potential issuer. Trust would also be split
+  across keys the SDK cannot know. One issuer, compiled into the SDK, is simpler, and it is where
+  the selling happens.
+- **Seats.** DuckDB has no uninstall and no stable client identity, so a seat model needs check-ins
+  and release. Left out until there is demand. The forwarded `users` count is the data a later model
+  would start from.
+- **Short-lived per-user tokens signed by kista.** kista would need a key the SDK trusts (a
+  delegation chain), which makes it a root again. A per-organisation licence relayed as it is needs
+  nothing.
+- **A licence in a DuckDB secret or a setting.** Every licensed extension would register the same
+  secret type or setting, and they would collide. A file beside the extension does not.
+- **Spec 0011's canonical JSON with a raw signature.** JWS needs no canonicalisation in C++, because
+  the signature covers the bytes sent, and it is widely understood.
+- **Forwarding as increments.** Sending a day once, as a sum to add, loses late reports and
+  double-counts on retries. A whole day that replaces is idempotent.
+
+## Follow-ups
+
+- Licences carried in a bundle (spec 0014), for air-gapped sites without an administrator's import.
+- The SDK for C API extensions.
+- Seats, or concurrent-use limits enforced with check-ins, if Enterest's plans need them.
+- An expected holder per tenant, set by a server administrator, so a licence for another holder is
+  refused at import (useful to Enterest).

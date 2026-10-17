@@ -13,8 +13,8 @@ DuckDB repository (one `PREFIX`, its own signing key). The server mirrors extens
 intake and serves them re-signed with the channel key, or byte-identical with DuckDB's signature
 for core autoloading. It accepts **publications** of new builds, controls who may install, publish
 and administer through **grants** on JWT principals, records installs in an **audit** log, and
-issues **licences** for paid extensions. Binaries are stored once by content; signatures are stored
-per channel.
+serves the **licences** Enterest issues for paid extensions (spec 0012). Binaries are stored once
+by content; signatures are stored per channel.
 
 **Enterest** is our hosted service built on kista (`https://enterest.hugr-lab.com`): a public
 repository, tenants for organisations and publishers, and the paid layer (review reports, global
@@ -69,7 +69,7 @@ extension).
 | **Publisher** | A named identity in a tenant that only publishes and promotes, authenticated by its credentials: trusted-publishing bindings (CI OIDC) and API keys (spec 0008). People publish with their tenant tokens. On Enterest a publisher has an identity across tenants. |
 | **Grant** | `principal × resource × verbs`. Resource: tenant, channel, or extension (explicit release versions later). Verbs: `install`, `publish`, `promote`, `audit` (read events), `admin`. |
 | **Attachment** | Data about a body: a review report, an SBOM, a CVE scan, a provenance statement. Owned by a source (tenant, or Enterest) with its own visibility (and a subscription, for reports). Read only through a Build the caller may see. |
-| **Licence** | A signed token that lets a licensed extension run for a holder (tenant, subject or client) until an expiry. Issued with the publisher's licence key. |
+| **Licence** | A signed token that lets a licensed extension run for a holder (an organisation) until an expiry, at a plan with developer-defined limits. Issued by Enterest only; kista verifies, stores, relays and serves it (spec 0012). |
 | **Event** | Audit: who, what, when, from where, outcome. Covers install, publish, promote, yank, grant, mirror and licence events. |
 
 ### URL layout
@@ -318,19 +318,20 @@ rotation revokes it everywhere.
 
 ### Licensing
 
-Licensing is part of the open server:
+Spec 0012 replaces the outline first written here (2026-10-17):
 
-- A licensed extension has a publisher **licence key** (a `Signer`, separate from channel keys,
-  and with a domain-separated signing input).
-- A grantee with an entitlement obtains a **licence token**: the extension, the holder, the version
-  range, the expiry, and optionally the body hashes it applies to.
-- An open SDK, compiled into the extension, verifies the token offline against the publisher's
-  public key and enforces the expiry with a grace period. Air-gapped sites get long-lived tokens.
+- **Enterest is the only issuer.** A licence is a JWS signed by Enterest's licence key: the
+  extension, the holder, the plan, developer-defined limits, an optional version range, the
+  expiry and a grace period. kista holds no licence key.
+- **kista relays and serves.** It verifies licences against the keys its operator trusts, receives
+  them from a credentialed upstream or an administrator's import, and serves them from the channel
+  an extension was installed from. It takes usage reports and forwards daily aggregates upstream.
+- **An open SDK**, compiled into the extension, fetches the licence from that repository, verifies
+  it offline against Enterest's keys compiled in, and leaves the decision to the developer.
 
 **Threat model.** Licensing is a compliance and honest-user control, not DRM. A tenant controls
 its own signing keys, so a tenant administrator could publish a patched build that skips the check,
-and a self-hoster can allow unsigned extensions. Binding the token to body hashes makes this a
-deliberate act, not an accident. Enterest adds a marketplace and billing on top.
+and a self-hoster can allow unsigned extensions. Enterest adds a marketplace and billing on top.
 
 ### Upstream `enterest` and reports
 
@@ -396,7 +397,7 @@ tresor-server:
 | `internal/api` | The management and index API. |
 | `internal/upstream` | Mirror and pull-through. |
 | `internal/audit` | Events, the hash chain, sinks. |
-| `internal/license` | Licence keys, entitlements, tokens. |
+| `internal/license` | Licence verification, storage, relay and usage reports (spec 0012). |
 | `internal/telemetry` | OpenTelemetry. |
 | `web/` | The administration console (a micro-frontend), embedded in the binary. |
 
@@ -412,7 +413,7 @@ application follows. This is the same shape as tresor-server.
 | publication, promotion, trusted publishing, API keys, yank, block | Extension Intelligence: builds from source, analysis, reports |
 | grants, audit, per-tenant statistics | global download and usage statistics |
 | attachments, the feed (serving and pulling signed statements, spec 0011) | the review analysis, its subscriptions and content |
-| licence keys, entitlements, tokens; the licensing SDK | marketplace and billing for paid extensions |
+| licence verification, relay and serving, usage reports; the licensing SDK | licence issuance, marketplace and billing for paid extensions |
 | administration console, built as a micro-frontend | the cabinet and report views, also micro-frontends |
 | bundles for air-gapped sites, deployment artifacts | managed Azure / sovereign-cloud operations |
 
