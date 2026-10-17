@@ -332,7 +332,7 @@ bootstrap.
 | `serve.resign` | boolean | `false` | Run the re-signer on this replica (signs releases with a channel's active key). |
 | `serve.max_downloads` | integer | `256` | Concurrent body downloads per replica; more get `503` with `Retry-After`. |
 | `serve.max_downloads_per_client` | integer | `8` | Concurrent body downloads per client address. |
-| `serve.min_rate` | size | `16KiB` | Least average rate (per second) of a download, and of a publication upload through the API. |
+| `serve.min_rate` | size | `16KiB` | Least average rate (per second) of a download, and of a publication upload or a bundle chunk through the API. |
 | `serve.write_idle_timeout` | duration | `30s` | The window `min_rate` is measured over; at least `1s`. |
 | `serve.drain_timeout` | duration | `5s` | `/readyz` fails this long before shutdown starts. |
 | `serve.shutdown_timeout` | duration | `30s` | Then downloads still running are aborted. It also bounds the wait for the background runners after it; the event writer and the download counter then get 11 seconds of their own ([kista serve](administration/commands.md#kista-serve)). |

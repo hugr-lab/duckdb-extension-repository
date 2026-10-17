@@ -1057,9 +1057,10 @@ import id in the same transaction.
   only the runner sets it).
 - One upload of a tenant imports at a time (a tenant lease, `kista/bundle-upload-tenant/<tenant
   id>`); a CLI import of the same targets meets the targets' own leases (`busy`).
-- A queued upload of a suspended tenant waits. A deleting tenant's uploads are `aborted`; the
-  reaper does not wait for upload leases: the runner stops at the import's deleting check, and the
-  rows cascade.
+- A queued upload of a suspended tenant waits, and is left out of the queue's scan so it never
+  crowds out another tenant's. A deleting tenant's uploads go with it: the runner stops at the
+  import's deleting check (aborting what is still queued), the reaper does not wait for upload
+  leases and deletes the rows, and the collector sweeps their objects as orphans.
 
 **Expiry and cleanup.** An `uploading` upload expires `bundles.upload_ttl` (default 24 h) after its
 creation or its last chunk, whichever is later, and at the latest `bundles.upload_max_age`
@@ -1501,19 +1502,20 @@ statements bullet).
     local to the gateway judged again at the site; a withdrawal in a later bundle; a damaged batch;
     a reset and the gap after it. The DuckDB end-to-end test stays as 1a's: DuckDB reads no
     statement, so the round trips cover the path.
-- **2.** An upload in chunks, out of order and in parallel; a chunk resent with its digest (a
-  no-op) and with another (`409`), concurrently too; a wrong `Content-Length`, `n` or digest
-  refused; a chunk after `complete`; resuming from the chunks received; `complete` with a chunk
-  missing, twice, and on a failed upload; the declared SHA-256 differing (nothing imported) and
-  absent; a refusal before the import record; the size limits, `max_uploads`, `max_bytes` and the
-  per-upload chunk limit; server administrators only; a suspended and a deleting tenant; one
-  import per upload across replicas (two runners, one lease) and its recovery after the lease
-  expired, and a retake while the targets' leases are still held; a shutdown or a lost lease
-  mid-import leaving the upload queued, not imported; a chunk missing or differing on read;
-  `import_id` before its record exists; expiry (a zero-chunk upload too, the absolute age, and a
-  failed upload's against a new `complete`); the chunks deleted after the import, an abort and
-  expiry, and orphans under `uploads/` on every store (fs included), one younger than the grace
-  kept; the console's upload, resumed after a reload (Playwright).
+- **2.** In-process (`internal/upstream`, `internal/api`) on every engine: an upload in chunks,
+  out of order; a chunk resent with its digest (a no-op) and with another (`409`); a wrong size,
+  `n` or digest refused, a missing or non-canonical `n` and digest at the route; a chunk after
+  `complete`; `complete` with a chunk missing, twice, and on a failed upload; the declared SHA-256
+  differing (nothing imported); a refusal before the import record (no record behind its id);
+  `max_size`, `max_uploads` (an abort freeing room) and `max_bytes`; server administrators only; a
+  suspended tenant refused, its queued upload waiting; all targets busy three times (`busy`); a
+  dead replica's import taken again, and failed `interrupted` once its attempts are used up; an
+  older attempt's end changing nothing; a chunk not readable for now queuing the upload again, a
+  chunk gone failing it (`storage`); expiry (a zero-chunk upload, the absolute age, a failed
+  upload against a new `complete`), each an event; the chunks deleted after the import, an abort
+  and expiry; an orphan under `uploads/` kept within the grace and deleted past it (fs; every
+  store's listing of `uploads/` in the blob conformance tests). Part 2: the console's upload,
+  resumed after a reload (Playwright).
 
 ## Alternatives considered
 

@@ -28,7 +28,7 @@ type uploadJSON struct {
 	Received    []int64                `json:"received,omitempty"`
 	State       string                 `json:"state"`
 	Options     upstream.UploadOptions `json:"options"`
-	ImportID    string                 `json:"import_id,omitempty"` // once its record exists
+	ImportID    string                 `json:"import_id,omitempty"` // once its record exists; a single upload's
 	InputSHA256 string                 `json:"input_sha256,omitempty"`
 	Attempts    int                    `json:"attempts"`
 	Error       string                 `json:"error,omitempty"`
@@ -39,7 +39,9 @@ type uploadJSON struct {
 	ExpiresAt   string                 `json:"expires_at,omitempty"`
 }
 
-func (h *Handler) uploadOf(r *http.Request, u store.BundleUpload, chunks []store.UploadChunk, c caller) uploadJSON {
+// uploadOf is an upload's JSON; one shown alone has its chunks and (once its record exists) its
+// import, a listed one neither: no lookup per upload.
+func (h *Handler) uploadOf(r *http.Request, u store.BundleUpload, chunks []store.UploadChunk, alone bool, c caller) uploadJSON {
 	o := uploadJSON{ID: u.ID, Size: u.Size, SHA256: u.SHA256, ChunkSize: u.ChunkSize, Chunks: u.Chunks(), State: u.State,
 		InputSHA256: u.InputSHA256, Attempts: u.Attempts, Error: u.Error, CreatedBy: createdBy(u.CreatedBy, c),
 		CompletedBy: createdBy(u.CompletedBy, c), CreatedAt: timeOf(u.CreatedAt), UpdatedAt: timeOf(u.UpdatedAt),
@@ -48,7 +50,7 @@ func (h *Handler) uploadOf(r *http.Request, u store.BundleUpload, chunks []store
 	for _, ch := range chunks {
 		o.Received = append(o.Received, ch.N)
 	}
-	if u.ImportID != "" {
+	if u.ImportID != "" && alone {
 		if _, err := h.o.Upstreams.GetImport(r.Context(), mustActor(c), c.tenant.Name, u.ImportID); err == nil {
 			o.ImportID = u.ImportID
 		}
@@ -86,7 +88,7 @@ func (h *Handler) listUploads(w http.ResponseWriter, r *http.Request, c caller, 
 	}
 	out := []uploadJSON{}
 	for _, u := range us {
-		out = append(out, h.uploadOf(r, u, nil, c))
+		out = append(out, h.uploadOf(r, u, nil, false, c))
 	}
 	reply(w, r, http.StatusOK, map[string]any{"uploads": out}, "", noStore)
 }
@@ -111,7 +113,7 @@ func (h *Handler) createUpload(w http.ResponseWriter, r *http.Request, c caller,
 		h.uploadErr(w, err)
 		return
 	}
-	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/bundle-uploads/"+esc(u.ID), h.uploadOf(r, u, nil, c), "")
+	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/bundle-uploads/"+esc(u.ID), h.uploadOf(r, u, nil, false, c), "")
 }
 
 func (h *Handler) getUpload(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -121,7 +123,7 @@ func (h *Handler) getUpload(w http.ResponseWriter, r *http.Request, c caller, p 
 		h.serviceErr(w, err, false)
 		return
 	}
-	reply(w, r, http.StatusOK, h.uploadOf(r, u, chunks, c), "", noStore)
+	reply(w, r, http.StatusOK, h.uploadOf(r, u, chunks, true, c), "", noStore)
 }
 
 func (h *Handler) abortUpload(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -140,7 +142,7 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, c calle
 		h.uploadErr(w, err)
 		return
 	}
-	reply(w, r, http.StatusAccepted, h.uploadOf(r, u, nil, c), "", noStore)
+	reply(w, r, http.StatusAccepted, h.uploadOf(r, u, nil, false, c), "", noStore)
 }
 
 // putChunk takes one chunk: exactly its bytes, with its RFC 9530 Content-Digest (sha-256), read at

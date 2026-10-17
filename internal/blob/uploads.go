@@ -127,13 +127,13 @@ func (c *Collector) orphanChunks(ctx context.Context, d Domain, cutoff time.Time
 	if err != nil {
 		return err
 	}
+	known, err := c.Service.st.ChunkKeys(ctx)
+	if err != nil {
+		return err
+	}
 	return d.Store.List(ctx, "uploads/", func(key string, size int64, modified time.Time) error {
-		if !modified.Before(cutoff) {
-			return nil // a chunk whose row may be committing now
-		}
-		known, err := c.Service.st.ChunkKeyKnown(ctx, key)
-		if err != nil || known {
-			return err
+		if !modified.Before(cutoff) || known[key] {
+			return nil // a chunk whose row may be committing now, or a live one
 		}
 		r.Chunks++
 		r.Bytes += size

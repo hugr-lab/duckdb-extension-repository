@@ -169,17 +169,18 @@ func (r *fakeRepo) touch(version, platform, name string) {
 }
 
 type env struct {
-	blob *blob.Service
-	ks   *keys.Service
-	dir  string
-	st   *store.Store
-	rel  *release.Service
-	up   *upstream.Service
-	ten  *tenants.Service
-	run  *upstream.Runner
-	repo *fakeRepo
-	key  *rsa.PrivateKey
-	fp   string
+	blob    *blob.Service
+	blobDir string // the fs store's root
+	ks      *keys.Service
+	dir     string
+	st      *store.Store
+	rel     *release.Service
+	up      *upstream.Service
+	ten     *tenants.Service
+	run     *upstream.Runner
+	repo    *fakeRepo
+	key     *rsa.PrivateKey
+	fp      string
 }
 
 func newEnv(t *testing.T, e storetest.Engine) *env {
@@ -191,7 +192,8 @@ func newEnvWith(t *testing.T, e storetest.Engine, maxBody int64, ec egress.Confi
 	st := e.Open(t)
 	dir := t.TempDir()
 	ks := &keys.Service{Store: st, Signers: signer.Resolver{FileDir: dir, AllowFile: true}, Authz: authz.ServerAdmin{}}
-	fsStore, err := fs.Open(filepath.Join(t.TempDir(), "blobs"))
+	blobDir := filepath.Join(t.TempDir(), "blobs")
+	fsStore, err := fs.Open(blobDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +212,7 @@ func newEnvWith(t *testing.T, e storetest.Engine, maxBody int64, ec egress.Confi
 		t.Fatal(err)
 	}
 	der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
-	en := &env{blob: bs, ks: ks, dir: dir, st: st, repo: newRepo(t), key: k, fp: extfile.Fingerprint(&k.PublicKey)}
+	en := &env{blob: bs, blobDir: blobDir, ks: ks, dir: dir, st: st, repo: newRepo(t), key: k, fp: extfile.Fingerprint(&k.PublicKey)}
 	en.repo.keys = []string{base64.StdEncoding.EncodeToString(der)}
 	en.rel = &release.Service{Store: st, Blob: bs, Signers: ks, Authz: authz.ServerAdmin{}}
 	en.ten = &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}

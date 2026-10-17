@@ -183,6 +183,7 @@ var catalogue = map[Kind][]string{
 	"bundle.upload_complete": {"upload", "retry"},
 	"bundle.upload_abort":    {"upload"},
 	"bundle.upload_fail":     {"upload", "import", "error"},
+	"bundle.upload_expire":   {"upload", "state"},
 	"bundle.export":          {"plan", "manifest", "manifest_sha256", "bundle_key", "counts"},
 	"shadow.add":             {"name"},
 	"shadow.remove":          {"name"},
@@ -230,7 +231,8 @@ func SubjectForm(k Kind) string {
 		return "sink:<name>"
 	case "auth.failure", "authz.refused", "request.failed":
 		return "route:<route>"
-	case "bundle.import", "bundle.export", "bundle.upload", "bundle.upload_complete", "bundle.upload_abort", "bundle.upload_fail":
+	case "bundle.import", "bundle.export", "bundle.upload", "bundle.upload_complete", "bundle.upload_abort", "bundle.upload_fail",
+		"bundle.upload_expire":
 		return "tenant:<name>"
 	case "bundle.reset":
 		return "upstream:<name> or feed:<name>"

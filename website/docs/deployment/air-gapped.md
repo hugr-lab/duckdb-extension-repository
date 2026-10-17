@@ -227,7 +227,8 @@ bundle back changes nothing. In Kubernetes, the import runs in the serving pod o
 
 ## Before you start
 
-- **Without `kubectl`.** A site that can reach the server's API but not run `kista admin` uploads
+- **Without `kista admin` or the object store.** A site that can reach the server's API, but can
+  neither run `kista admin` beside the server nor write to its object store, uploads
   the bundle over the API instead ([Uploading a bundle](../upstreams.md#uploading-a-bundle)).
 - **Sizing.** The import inflates one file at a time into the spool: about `blob.max_body` free
   beside what the server uses. In Kubernetes, give it `spool.importHeadroom`. The bundle itself is

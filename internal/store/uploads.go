@@ -96,7 +96,9 @@ func (t *Tx) InsertBundleUpload(ctx context.Context, u *BundleUpload, maxUploads
 		return fmt.Errorf("%w: %d uploads of the tenant are not imported yet (at most %d)", ErrConflict, n, maxUploads)
 	}
 	var total sql.NullInt64
-	if err := t.queryRow(ctx, "SELECT SUM(size) FROM bundle_uploads WHERE state IN (?, ?, ?, ?)", liveUploads...).Scan(&total); err != nil {
+	// with the uploads done but not yet swept: their chunks still take the room
+	if err := t.queryRow(ctx, `SELECT SUM(size) FROM bundle_uploads u WHERE state IN (?, ?, ?, ?)
+OR EXISTS (SELECT 1 FROM bundle_upload_chunks c WHERE c.upload_id = u.id)`, liveUploads...).Scan(&total); err != nil {
 		return err
 	}
 	if total.Int64+u.Size > maxBytes {
@@ -168,12 +170,21 @@ const (
 // CommitChunk records a chunk stored as key, only while the upload is uploading and the chunk is
 // not recorded: a chunk's object is never replaced.
 func (t *Tx) CommitChunk(ctx context.Context, c UploadChunk) (string, error) {
+	// the upload's row locked first (a no-op update, on every engine): concurrent commits of a
+	// chunk, and a complete, wait for each other instead of failing a transaction on the insert
+	res, err := t.exec(ctx, "UPDATE bundle_uploads SET updated_at = updated_at WHERE id = ?", c.UploadID)
+	if err != nil {
+		return "", err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "", fmt.Errorf("%w: bundle upload", ErrNotFound)
+	}
 	var state string
 	if err := t.queryRow(ctx, "SELECT state FROM bundle_uploads WHERE id = ?", c.UploadID).Scan(&state); err != nil {
 		return "", notFound(err, "bundle upload")
 	}
 	var have string
-	err := t.queryRow(ctx, "SELECT sha256 FROM bundle_upload_chunks WHERE upload_id = ? AND n = ?", c.UploadID, c.N).Scan(&have)
+	err = t.queryRow(ctx, "SELECT sha256 FROM bundle_upload_chunks WHERE upload_id = ? AND n = ?", c.UploadID, c.N).Scan(&have)
 	switch {
 	case err == nil && have == c.SHA256:
 		return ChunkRetry, nil
@@ -187,9 +198,6 @@ func (t *Tx) CommitChunk(ctx context.Context, c UploadChunk) (string, error) {
 	now := t.Now()
 	if _, err := t.exec(ctx, "INSERT INTO bundle_upload_chunks (upload_id, n, object_key, size, sha256, received_at) VALUES (?, ?, ?, ?, ?, ?)",
 		c.UploadID, c.N, c.Key, c.Size, c.SHA256, t.s.d.timeArg(now)); err != nil {
-		if errors.Is(t.s.mapErr(err, "chunk"), ErrExists) {
-			return ChunkConflict, nil // a concurrent commit of the same chunk won: compare again on retry
-		}
 		return "", err
 	}
 	_, err = t.exec(ctx, "UPDATE bundle_uploads SET last_chunk_at = ?, updated_at = ? WHERE id = ?", t.s.d.timeArg(now), t.s.d.timeArg(now), c.UploadID)
@@ -254,16 +262,30 @@ func (t *Tx) TakeUpload(ctx context.Context, id, importID string) (bool, error) 
 	return t.setUploadState(ctx, id, UploadImporting, []string{UploadQueued}, ", import_id = ?, attempts = attempts + 1", importID)
 }
 
-// RequeueUpload puts an importing upload back in the queue (an interrupted import); retake is a
-// lost-lease upload's: from importing too.
-func (t *Tx) RequeueUpload(ctx context.Context, id string) (bool, error) {
-	return t.setUploadState(ctx, id, UploadQueued, []string{UploadImporting}, "")
+// RequeueUpload puts an importing upload back in the queue, only while it is still the attempt
+// importID (an interrupted import, or a dead replica's).
+func (t *Tx) RequeueUpload(ctx context.Context, id, importID string) (bool, error) {
+	return t.attemptState(ctx, id, importID, UploadQueued, "", "")
 }
 
-// FinishUpload ends an importing upload: imported or failed, with an error class and the input's
-// SHA-256.
-func (t *Tx) FinishUpload(ctx context.Context, id, state, errClass, inputSHA string) (bool, error) {
-	return t.setUploadState(ctx, id, state, []string{UploadImporting}, ", error = ?, input_sha256 = ?", nullable(errClass), nullable(inputSHA))
+// FinishUpload ends an importing upload, only while it is still the attempt importID: imported or
+// failed, with an error class and the input's SHA-256.
+func (t *Tx) FinishUpload(ctx context.Context, id, importID, state, errClass, inputSHA string) (bool, error) {
+	return t.attemptState(ctx, id, importID, state, errClass, inputSHA)
+}
+
+func (t *Tx) attemptState(ctx context.Context, id, importID, state, errClass, inputSHA string) (bool, error) {
+	set, args := "", []any{}
+	if state != UploadQueued {
+		set, args = ", error = ?, input_sha256 = ?", []any{nullable(errClass), nullable(inputSHA)}
+	}
+	res, err := t.exec(ctx, "UPDATE bundle_uploads SET state = ?, updated_at = ?"+set+" WHERE id = ? AND state = ? AND import_id = ?",
+		append(append([]any{state, t.s.d.timeArg(t.Now())}, args...), id, UploadImporting, importID)...)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // FailUpload fails an upload in one of from (a refusal, attempts used up).
@@ -271,10 +293,12 @@ func (t *Tx) FailUpload(ctx context.Context, id, errClass string, from ...string
 	return t.setUploadState(ctx, id, UploadFailed, from, ", error = ?", nullable(errClass))
 }
 
-// UploadsIn lists the ids of uploads in a state, oldest first (the runner's).
+// UploadsIn lists uploads in a state, oldest first (the runner's), leaving out a suspended
+// tenant's: they wait, and never crowd out the others.
 func (s *Store) UploadsIn(ctx context.Context, state string, limit int) ([]BundleUpload, error) {
 	var out []BundleUpload
-	err := s.eachRow(ctx, "SELECT "+uploadCols+" FROM bundle_uploads WHERE state = ? ORDER BY updated_at, id"+s.limit(limit),
+	err := s.eachRow(ctx, "SELECT "+prefixed("u.", uploadCols)+` FROM bundle_uploads u JOIN tenants t ON t.id = u.tenant_id
+WHERE u.state = ? AND (t.suspended_at IS NULL OR t.deleting_at IS NOT NULL) ORDER BY u.updated_at, u.id`+s.limit(limit),
 		[]any{state}, func(sc func(...any) error) error {
 			u, err := scanUpload(scanner(sc))
 			if err == nil {
@@ -285,30 +309,41 @@ func (s *Store) UploadsIn(ctx context.Context, state string, limit int) ([]Bundl
 	return out, err
 }
 
-// ExpireUploads expires, by conditional updates, the uploads of a domain's tenants still
-// uploading past ttl from their creation or last chunk, or maxAge from their creation, and the
-// failed ones past ttl from their failure; it answers how many.
+// ExpireUploads expires, each by a conditional update with its event (bundle.upload_expire), the
+// uploads of a domain's tenants still uploading past ttl from their creation or last chunk, or
+// maxAge from their creation, and the failed ones past ttl from their failure; it answers how many.
 func (s *Store) ExpireUploads(ctx context.Context, domain string, now time.Time, ttl, maxAge time.Duration) (int64, error) {
-	var n int64
-	err := s.tx(ctx, nil, func(t *Tx) error {
-		ofDomain := "tenant_id IN (SELECT id FROM tenants WHERE storage_domain = ?)"
-		res, err := t.exec(ctx, `UPDATE bundle_uploads SET state = ?, updated_at = ? WHERE `+ofDomain+` AND state = ?
-AND (created_at < ? OR (created_at < ? AND (last_chunk_at IS NULL OR last_chunk_at < ?)))`, UploadExpired, t.s.d.timeArg(now), domain,
-			UploadUploading, t.s.d.timeArg(now.Add(-maxAge)), t.s.d.timeArg(now.Add(-ttl)), t.s.d.timeArg(now.Add(-ttl)))
-		if err != nil {
+	type due struct{ id, tenantID, tenant, state string }
+	var all []due
+	err := s.eachRow(ctx, `SELECT u.id, u.tenant_id, t.name, u.state FROM bundle_uploads u JOIN tenants t ON t.id = u.tenant_id
+WHERE t.storage_domain = ? AND ((u.state = ? AND (u.created_at < ? OR (u.created_at < ? AND (u.last_chunk_at IS NULL OR u.last_chunk_at < ?))))
+OR (u.state = ? AND u.updated_at < ?)) ORDER BY u.id`, []any{domain, UploadUploading, s.d.timeArg(now.Add(-maxAge)), s.d.timeArg(now.Add(-ttl)),
+		s.d.timeArg(now.Add(-ttl)), UploadFailed, s.d.timeArg(now.Add(-ttl))}, func(sc func(...any) error) error {
+		var d due
+		if err := sc(&d.id, &d.tenantID, &d.tenant, &d.state); err != nil {
 			return err
 		}
-		a, _ := res.RowsAffected()
-		res, err = t.exec(ctx, `UPDATE bundle_uploads SET state = ?, updated_at = ? WHERE `+ofDomain+` AND state = ? AND updated_at < ?`,
-			UploadExpired, t.s.d.timeArg(now), domain, UploadFailed, t.s.d.timeArg(now.Add(-ttl)))
-		if err != nil {
-			return err
-		}
-		b, _ := res.RowsAffected()
-		n = a + b
+		all = append(all, d)
 		return nil
 	})
-	return n, err
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, d := range all {
+		err := s.tx(ctx, nil, func(t *Tx) error {
+			ok, err := t.setUploadState(ctx, d.id, UploadExpired, []string{d.state}, "")
+			if err != nil || !ok {
+				return err // completed or changed meanwhile: that wins
+			}
+			n++
+			return t.Event(ctx, d.tenantID, "system:gc", "bundle.upload_expire", "tenant:"+d.tenant, map[string]any{"upload": d.id, "state": d.state})
+		})
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // DoneChunks lists up to limit chunks of a domain's uploads that are imported, aborted or expired:
@@ -336,11 +371,18 @@ func (s *Store) DeleteChunkRow(ctx context.Context, uploadID string, n int64) er
 	})
 }
 
-// ChunkKeyKnown reports whether a chunk's row names an object (the collector's orphan check).
-func (s *Store) ChunkKeyKnown(ctx context.Context, key string) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM bundle_upload_chunks WHERE object_key = ?"), key).Scan(&n)
-	return n > 0, err
+// ChunkKeys lists every object a chunk's row names (the collector's orphan check).
+func (s *Store) ChunkKeys(ctx context.Context) (map[string]bool, error) {
+	out := map[string]bool{}
+	err := s.eachRow(ctx, "SELECT object_key FROM bundle_upload_chunks", nil, func(sc func(...any) error) error {
+		var k string
+		if err := sc(&k); err != nil {
+			return err
+		}
+		out[k] = true
+		return nil
+	})
+	return out, err
 }
 
 // AbortTenantUploads aborts a deleting tenant's uploads that are not importing.

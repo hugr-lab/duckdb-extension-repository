@@ -36,7 +36,7 @@ type Result struct {
 	Builds, Bodies, Marked, Streams, Tmp, Uploads int
 	Attachments                                   int   // spec 0011: of bodies gone, superseded a year ago, and objects without a record
 	Chunks                                        int   // spec 0014: bundle uploads' chunks deleted
-	Bytes                                         int64 // of the streams, tmp and attachment objects deleted
+	Bytes                                         int64 // of the objects deleted: streams, tmp, attachments, chunks
 	Claims                                        int   // expired claims removed
 	Resolved                                      int   // deleting tombstones another collector left, finished
 	Skipped                                       bool  // another replica holds the domain's lease

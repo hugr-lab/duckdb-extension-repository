@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -188,7 +190,7 @@ func TestUploadRetries(t *testing.T) {
 				if attempt == 3 {
 					want = store.UploadFailed
 				}
-				if cur.State != want || cur.Attempts != attempt {
+				if cur.State != want || cur.Attempts != attempt || attempt == 3 && cur.Error != "busy" {
 					t.Fatalf("attempt %d: %+v", attempt, cur)
 				}
 			}
@@ -205,6 +207,228 @@ func TestUploadRetries(t *testing.T) {
 			runner.Once(ctx) // imported
 			if cur, _, _ := g.up.GetUpload(ctx, admin, "site", u.ID); cur.State != store.UploadImported {
 				t.Fatalf("after a dead replica: %+v", cur)
+			}
+
+			// taken three times by replicas that died: failed, interrupted; an older attempt's end
+			// changes nothing
+			u2, err := g.up.CreateUpload(ctx, admin, "site", int64(len(data)), "", int64(len(data)), upstream.UploadOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := g.up.PutUploadChunk(ctx, admin, "site", u2.ID, 0, bytes.NewReader(data), int64(len(data)), hexOf(data)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := g.up.CompleteUpload(ctx, admin, "site", u2.ID); err != nil {
+				t.Fatal(err)
+			}
+			var first string
+			for i := range 3 {
+				id := store.NewID()
+				if i == 0 {
+					first = id
+				}
+				if err := g.st.InTx(ctx, "", func(tx *store.Tx) error {
+					if _, err := tx.TakeUpload(ctx, u2.ID, id); err != nil || i == 2 {
+						return err
+					}
+					_, err := tx.RequeueUpload(ctx, u2.ID, id)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := g.st.InTx(ctx, "", func(tx *store.Tx) error {
+				if ok, err := tx.FinishUpload(ctx, u2.ID, first, store.UploadImported, "", ""); err != nil || ok {
+					t.Errorf("an older attempt's end: %v %v", ok, err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			runner.Once(ctx)
+			if cur, _, _ := g.up.GetUpload(ctx, admin, "site", u2.ID); cur.State != store.UploadFailed || cur.Error != "interrupted" || cur.Attempts != 3 {
+				t.Fatalf("attempts used up by dead replicas: %+v", cur)
+			}
+		})
+	}
+}
+
+// An upload's life past its import: a chunk that cannot be read for now puts it back in the
+// queue, one gone fails it; a bundle refused before its record keeps no import; idle and failed
+// uploads expire (each an event) and a completed one does not; the collector deletes the chunks
+// of aborted and expired uploads and the objects no chunk names; max_bytes and a suspended tenant
+// refuse new uploads, and a suspended tenant's queued upload waits.
+func TestUploadLifecycle(t *testing.T) {
+	for _, e := range storetest.Engines(t) {
+		t.Run(e.Name, func(t *testing.T) {
+			g := newGateway(t, e)
+			g.up.Uploads = upstream.UploadSettings{MinChunkSize: 512, MaxUploads: 20, TTL: time.Hour, MaxAge: 2 * time.Hour}
+			g.put(t, "tresor", "1.0", 1)
+			sp := g.spec(store.UpstreamEntry{Name: "tresor"})
+			sp.Visibility = store.Public
+			if _, err := g.up.Add(ctx, admin, "acme", sp); err != nil {
+				t.Fatal(err)
+			}
+			g.sync(t, false)
+			g.air(t, "tresor")
+			_, data := g.export(t, g.plan(t), upstream.ExportOptions{})
+			runner := &upstream.UploadRunner{Service: g.up, Holder: "r1", BundleKeys: func(string) []string { return []string{g.fp} },
+				Log: slog.New(slog.DiscardHandler)}
+			const chunk = int64(4096)
+			part := func(b []byte, n int64) []byte { return b[n*chunk : min(int64(len(b)), (n+1)*chunk)] }
+			create := func(b []byte, sha string) store.BundleUpload {
+				t.Helper()
+				u, err := g.up.CreateUpload(ctx, admin, "site", int64(len(b)), sha, chunk, upstream.UploadOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return u
+			}
+			putN := func(u store.BundleUpload, b []byte, n int64) {
+				t.Helper()
+				if err := g.up.PutUploadChunk(ctx, admin, "site", u.ID, n, bytes.NewReader(part(b, n)), int64(len(part(b, n))), hexOf(part(b, n))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			full := func(b []byte, sha string) store.BundleUpload {
+				t.Helper()
+				u := create(b, sha)
+				for n := int64(0); n < u.Chunks(); n++ {
+					putN(u, b, n)
+				}
+				if _, err := g.up.CompleteUpload(ctx, admin, "site", u.ID); err != nil {
+					t.Fatal(err)
+				}
+				return u
+			}
+			get := func(u store.BundleUpload) (store.BundleUpload, []store.UploadChunk) {
+				t.Helper()
+				cur, chunks, err := g.up.GetUpload(ctx, admin, "site", u.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return cur, chunks
+			}
+
+			// a chunk that cannot be read for now: back in the queue, the attempt counted
+			if os.Geteuid() != 0 {
+				tr := full(data, "")
+				_, chunks := get(tr)
+				p := filepath.Join(g.blobDir, chunks[1].Key)
+				if err := os.Chmod(p, 0); err != nil {
+					t.Fatal(err)
+				}
+				runner.Once(ctx)
+				if cur, _ := get(tr); cur.State != store.UploadQueued || cur.Attempts != 1 || cur.Error != "" {
+					t.Fatalf("a chunk not readable for now: %+v", cur)
+				}
+				if err := os.Chmod(p, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runner.Once(ctx)
+				if cur, _ := get(tr); cur.State != store.UploadImported || cur.Attempts != 2 {
+					t.Fatalf("readable again: %+v", cur)
+				}
+			}
+			// a chunk gone: failed, storage
+			gone := full(data, "")
+			_, chunks := get(gone)
+			if err := g.blob.DeleteChunk(ctx, "default", chunks[0].Key); err != nil {
+				t.Fatal(err)
+			}
+			runner.Once(ctx)
+			if cur, _ := get(gone); cur.State != store.UploadFailed || cur.Error != "storage" {
+				t.Fatalf("a chunk gone: %+v", cur)
+			}
+			// not a bundle: refused before its record, whose id the upload does not show as one
+			junk := bytes.Repeat([]byte("not a bundle "), 100)
+			bad := full(junk, "")
+			runner.Once(ctx)
+			cur, _ := get(bad)
+			if cur.State != store.UploadFailed || cur.Error == "" || cur.Error == "storage" {
+				t.Fatalf("not a bundle: %+v", cur)
+			}
+			if _, err := g.up.GetImport(ctx, admin, "site", cur.ImportID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("the import of a refusal before its record: %v", err)
+			}
+
+			// expiry: idle, too old, failed; a failed one completed again stays
+			real := time.Now().UTC()
+			at := func(d time.Duration) { g.st.Now = func() time.Time { return real.Add(d).Truncate(time.Microsecond) } }
+			at(0)
+			idle := create(data[:10], "")
+			old := create(data, "")
+			putN(old, data, 0)
+			aborted := create(data, "")
+			putN(aborted, data, 0)
+			if err := g.up.AbortUpload(ctx, admin, "site", aborted.ID); err != nil {
+				t.Fatal(err)
+			}
+			again := full(junk, "")
+			runner.Once(ctx) // fails it
+			if _, err := g.up.CompleteUpload(ctx, admin, "site", again.ID); err != nil {
+				t.Fatal(err)
+			}
+			orphan, err := g.blob.PutChunk(ctx, "default", bytes.NewReader(junk), int64(len(junk)), hexOf(junk))
+			if err != nil {
+				t.Fatal(err)
+			}
+			at(90 * time.Minute)
+			putN(old, data, 1) // its last chunk an hour before the pass, its creation over max_age
+			at(150 * time.Minute)
+			col := &blob.Collector{Service: g.blob, Holder: "gc", Grace: 4 * blob.IntakeDeadline, Log: slog.New(slog.DiscardHandler),
+				UploadTTL: time.Hour, UploadMaxAge: 2 * time.Hour}
+			if _, err := col.Pass(ctx, "default", false); err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range []struct {
+				u     store.BundleUpload
+				state string
+			}{{idle, store.UploadExpired}, {old, store.UploadExpired}, {gone, store.UploadExpired}, {bad, store.UploadExpired},
+				{aborted, store.UploadAborted}, {again, store.UploadQueued}} {
+				cur, chunks := get(c.u)
+				if cur.State != c.state {
+					t.Errorf("%s: %+v, want %s", c.u.ID, cur, c.state)
+				}
+				if c.state != store.UploadQueued && len(chunks) != 0 {
+					t.Errorf("%s: chunks left %+v", c.u.ID, chunks)
+				}
+			}
+			// an object no chunk names: kept within the grace, deleted past it
+			if _, err := g.blob.OpenChunk(ctx, "default", orphan); err != nil {
+				t.Errorf("an orphan chunk within the grace: %v", err)
+			}
+			at(5 * time.Hour)
+			if _, err := col.Pass(ctx, "default", false); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := g.blob.OpenChunk(ctx, "default", orphan); !errors.Is(err, blob.ErrNotFound) {
+				t.Errorf("an orphan chunk: %v", err)
+			}
+			if cur, chunks := get(again); cur.State != store.UploadQueued || len(chunks) == 0 {
+				t.Errorf("a queued upload past the grace: %+v", cur)
+			}
+			tn, _ := g.st.GetTenant(ctx, "site")
+			if evs, _ := g.st.ListEvents(ctx, tn.ID, store.EventFilter{Kind: "bundle.upload_expire", Limit: 100}); len(evs) != 4 {
+				t.Errorf("expire events: %d", len(evs))
+			}
+
+			// max_bytes: the queued upload takes the room
+			g.up.Uploads.MaxBytes = int64(len(junk)) + 5
+			if _, err := g.up.CreateUpload(ctx, admin, "site", 10, "", 0, upstream.UploadOptions{}); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("over max_bytes: %v", err)
+			}
+			g.up.Uploads.MaxBytes = 0
+			// a suspended tenant takes no upload; its queued one waits
+			if _, err := g.ten.SetTenantState(ctx, admin, "site", store.TenantSuspended, 0); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := g.up.CreateUpload(ctx, admin, "site", 10, "", 0, upstream.UploadOptions{}); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("a suspended tenant's upload: %v", err)
+			}
+			runner.Once(ctx)
+			if cur, _ := get(again); cur.State != store.UploadQueued || cur.Attempts != 0 {
+				t.Fatalf("a suspended tenant's queued upload: %+v", cur)
 			}
 		})
 	}

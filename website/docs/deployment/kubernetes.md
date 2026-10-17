@@ -295,7 +295,8 @@ kubectl -n kista logs -f job/bundle-import-1
 ```
 
 - **Uploaded over the API** ([Uploading a bundle](../upstreams.md#uploading-a-bundle)), a bundle is
-  imported by a serving replica: its spool needs `spool.importHeadroom` too. Each chunk is one
+  imported by a serving replica: its spool needs `spool.importHeadroom` too, and room for the
+  chunks in flight (`blob.max_ingests × bundles.chunk_size`, each spooled until stored). Each chunk is one
   request of up to `bundles.chunk_size` (16 MiB by default): raise the ingress's body limit to it
   (ingress-nginx: `nginx.ingress.kubernetes.io/proxy-body-size: 16m`; its default is 1 MiB), or
   have the client ask for smaller chunks.
