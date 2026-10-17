@@ -410,13 +410,16 @@ func TestFeedImportHolds(t *testing.T) {
 	}
 	der := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: mustDER(t, &key.PublicKey)})
 	keysFile, _ := json.Marshal(map[string]any{"keys": []any{map[string]any{"public_key": string(der)}}})
-	for name, c := range map[string]struct {
+	// in order: a cursor never moves back
+	for _, c := range []struct {
+		name  string
 		stmts []attachment.BundleStatement
 		want  int64
 	}{
-		"a bad signature": {[]attachment.BundleStatement{sign(key, 1), sign(stranger, 2), sign(key, 3)}, 1},
-		"out of order":    {[]attachment.BundleStatement{sign(key, 5), sign(key, 4), sign(key, 6)}, 5},
+		{"a bad signature", []attachment.BundleStatement{sign(key, 1), sign(stranger, 2), sign(key, 3)}, 1},
+		{"out of order", []attachment.BundleStatement{sign(key, 5), sign(key, 4), sign(key, 6)}, 5},
 	} {
+		name := c.name
 		spool := attachment.NewDocSpool(t.TempDir(), 0)
 		if err := spool.Put(blob.ContentHash(content), content); err != nil {
 			t.Fatal(err)
