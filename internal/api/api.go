@@ -24,6 +24,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -61,6 +62,7 @@ type Options struct {
 	Upstreams        *upstream.Service   // spec 0009
 	Attachments      *attachment.Service // spec 0011; nil: no attachment routes
 	Feeds            *attachment.Feeds   // spec 0011 phase 1b; nil: no feed management routes
+	Licenses         *licenses.Service   // spec 0012; nil: no licence routes
 	Events           Recorder            // spec 0010: refusals and failures; nil: none recorded
 	AdminTokenMaxAge time.Duration       // default 1h
 	// MinSuspended is how long a tenant stays suspended before it may be deleted (spec 0019): 0 is
@@ -679,6 +681,16 @@ func init() {
 		{"tenants/{t}/upstreams/{name}/sync", map[string]rule{http.MethodPost: m(pathAdmin, (*Handler).syncUpstream)}},
 		{"tenants/{t}/upstreams/{name}/credential", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).setCredential)}},
 		{"credentials", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listCredentials)}},
+		// spec 0012: licences (tenant administrators), their relay per upstream, the trusted keys
+		{"licenses/keys", map[string]rule{http.MethodGet: m(serverAdmin, licenseRoute((*Handler).licenseKeys))}},
+		{"tenants/{t}/licenses", map[string]rule{http.MethodGet: m(pathAdmin, licenseRoute((*Handler).listLicenses)),
+			http.MethodPost: {access: pathAdmin, manage: true, raw: true, handle: licenseRoute((*Handler).importLicense)}}},
+		{"tenants/{t}/licenses/{name}", map[string]rule{http.MethodGet: m(pathAdmin, licenseRoute((*Handler).getLicense)),
+			http.MethodDelete: m(pathAdmin, licenseRoute((*Handler).removeLicense))}},
+		{"tenants/{t}/licenses/{name}/public", map[string]rule{http.MethodPost: m(pathAdmin, licenseRoute(licenseVisibility(store.Public)))}},
+		{"tenants/{t}/licenses/{name}/private", map[string]rule{http.MethodPost: m(pathAdmin, licenseRoute(licenseVisibility(store.Private)))}},
+		{"tenants/{t}/upstreams/{name}/licenses", map[string]rule{http.MethodGet: m(pathAdmin, licenseRoute((*Handler).licenseSync))}},
+		{"tenants/{t}/upstreams/{name}/licenses/sync", map[string]rule{http.MethodPost: m(pathAdmin, licenseRoute((*Handler).syncLicenses))}},
 		{"tenants/{t}/upstreams/{name}/cells", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listCells)}},
 		{"tenants/{t}/upstreams/{name}/extensions", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listEntries),
 			http.MethodPost: mb(pathAdmin, (*Handler).putEntry)}},

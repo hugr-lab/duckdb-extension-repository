@@ -28,7 +28,11 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -91,6 +95,8 @@ type mgmt struct {
 	pulls  *fakePuller
 	events *writer.Writer // refusals (spec 0010 phase 1b)
 	att    *attachment.Service
+	lic    *licenses.Service
+	licKey *rsa.PrivateKey // signs licences (the vectors' test-only key, trusted by lic)
 }
 
 // fakePuller records the misses serving offers (spec 0009 phase 2).
@@ -149,7 +155,17 @@ func newMgmt(t *testing.T) *mgmt {
 		t.Fatal(err)
 	}
 	feeds := &attachment.Feeds{Store: en.st, Authz: grants, Attachments: att, Fetch: eg, Credentials: creds, Log: slog.New(slog.DiscardHandler)}
-	apiH := api.New(api.Options{Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths, Events: events,
+	licKey, err := vectors.LoadKey("../license/testdata", vectors.TrustedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	licPEM, _ := extfile.MarshalPublicKeyPEM(&licKey.PublicKey)
+	licKeys, err := license.ParseKeys([]string{licPEM})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := &licenses.Service{Store: en.st, Authz: grants, Keys: licKeys, Fetch: eg, Credentials: creds, Log: slog.New(slog.DiscardHandler)}
+	apiH := api.New(api.Options{Licenses: lic, Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths, Events: events,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
 		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups,
 		Attachments: att, Feeds: feeds, MinSuspended: -1,
@@ -160,7 +176,7 @@ func newMgmt(t *testing.T) *mgmt {
 		WriteIdleTimeout: 10 * time.Second, Puller: pulls})
 	h.SetReady(true)
 	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}, keySvc: &keySvc, ups: ups, pulls: pulls, events: events,
-		att: att}
+		att: att, lic: lic, licKey: licKey}
 
 	// the CLI sets up: tenant other, grants in acme
 	cli := en.adm

@@ -355,6 +355,7 @@ See [Publishing](../publishing.md).
 | `upstream cells <tenant> <name> [-outcome <outcome>]` | `DUCKDB`, `PLATFORM`, `NAME`, `OUTCOME`, `FETCHED`, `DETAIL` |
 | `upstream credential <tenant> <name> <credential>` | sets a private upstream's credential by name; `-` clears it |
 | `upstream credentials` | the credentials in the configuration: `NAME`, `KIND`, `TENANTS`, `PREFIXES`, `PUBLIC` |
+| `upstream licenses <tenant> <name> [-sync]` | the upstream's last licence relay; `-sync` requests one, which a running `kista serve` takes ([Licensing](../licensing.md)) |
 | `upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved]` | adds or replaces an allowlist entry |
 | `upstream extension remove <tenant> <name> <extension>` | |
 | `upstream platform add` or `remove` `<tenant> <name> <platform>` | |
@@ -394,6 +395,20 @@ See [Publishing](../publishing.md).
 | `feed remove <tenant> <name> [-documents]` | its documents stay unless `-documents` | |
 
 See [Attachments](../attachments.md).
+
+## Licences
+
+| Command | What it does |
+| --- | --- |
+| `license keys` | the trusted licence keys (`licenses.keys`), by fingerprint |
+| `license list <tenant>` | `NAME`, `PLAN`, `HOLDER`, `STATUS`, `EXPIRES`, `SOURCE`, `VISIBILITY` |
+| `license show <tenant> <name>` | a licence's claims, limits and state |
+| `license token <tenant> <name>` | the licence as received |
+| `license import <tenant> <file or -> [-replace]` | stores a licence under the extension it names; `-replace` replaces the one stored |
+| `license remove`, `public`, `private` `<tenant> <name>` | |
+| `license verify <file or -> [-key <pem>]` | checks a licence offline against the trusted keys, or the key given, and prints its claims and status |
+
+See [Licensing](../licensing.md).
 
 ## Events
 

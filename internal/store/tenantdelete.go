@@ -170,6 +170,7 @@ func (t *Tx) StartDeletion(ctx context.Context, tn *Tenant, by string) (Deletion
 	for _, q := range []struct{ prefix, sql string }{
 		{"kista/upstream/", "SELECT id FROM upstreams WHERE tenant_id = ? ORDER BY id"},
 		{"kista/feed/", "SELECT id FROM feeds WHERE tenant_id = ? ORDER BY id"},
+		{"kista/licenses/upstream/", "SELECT id FROM upstreams WHERE tenant_id = ? ORDER BY id"},
 	} {
 		if err := t.each(ctx, q.sql, []any{tn.ID}, func(r *sql.Rows) error {
 			var id string
@@ -272,6 +273,7 @@ var reapSteps = []reapStep{
 	{"issuers", ofTenant, false},
 	{"api_keys", "publisher_id IN (SELECT id FROM publishers WHERE tenant_id = ?)", false},
 	{"publisher_github", "publisher_id IN (SELECT id FROM publishers WHERE tenant_id = ?)", false}, {"publishers", ofTenant, false},
+	{"license_syncs", ofTenant, false}, {"licenses", ofTenant, false},
 	{"upstream_cells", ofUpstreams, false}, {"upstream_versions", ofUpstreams, false}, {"upstream_entries", ofUpstreams, false},
 	{"upstream_platforms", ofUpstreams, false}, {"upstream_keys", ofUpstreams, false}, {"upstreams", ofTenant, false},
 	{"bundle_upload_chunks", "upload_id IN (SELECT id FROM bundle_uploads WHERE tenant_id = ?)", false}, {"bundle_uploads", ofTenant, false},
@@ -547,7 +549,8 @@ func (s *Store) DeletionPaused(ctx context.Context, tenantID string, next time.T
 	})
 }
 
-// RunLeases are the leases of a tenant's upstream and feed runs, and its channels' re-signers.
+// RunLeases are the leases of a tenant's upstream, licence relay and feed runs, and its channels'
+// re-signers.
 func (s *Store) RunLeases(ctx context.Context, tenantID string, channelIDs []string) ([]string, error) {
 	var names []string
 	ups, err := s.ids(ctx, "SELECT id FROM upstreams WHERE tenant_id = ?", tenantID)
@@ -555,7 +558,7 @@ func (s *Store) RunLeases(ctx context.Context, tenantID string, channelIDs []str
 		return nil, err
 	}
 	for _, id := range ups {
-		names = append(names, "kista/upstream/"+id)
+		names = append(names, "kista/upstream/"+id, LicenseRelayLease(id))
 	}
 	feeds, err := s.ids(ctx, "SELECT id FROM feeds WHERE tenant_id = ?", tenantID)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"io"
 	"log/slog"
@@ -31,6 +32,9 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -98,7 +102,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
 	},
 	"upstream.Service": {
-		"Add": {"upstream.add"}, "Remove": {"upstream.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
+		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
 		"RemoveEntry": {"upstream.change"}, "AddPlatform": {"upstream.change"}, "RemovePlatform": {"upstream.change"},
 		"AddKey": {"upstream.change"}, "RemoveKey": {"upstream.change"}, "RemoveShadow": {"shadow.remove"},
 		"SetCredential": {"upstream.change"},
@@ -115,6 +119,11 @@ var writes = map[string]map[string][]audit.Kind{
 		"List":                  nil, "Get": nil, "Content": nil, "ReadContent": nil, "BlockedDocuments": nil,
 		"Feed": nil, "FeedDocument": nil,
 	},
+	"licenses.Service": {
+		"Import": {"license.import"}, "Remove": {"license.remove"}, "SetVisibility": {"license.change"},
+		"RunUpstream": {"license.sync", "license.remove"}, "ExpireOnce": {"license.remove"},
+		"Sync": nil, "List": nil, "Get": nil, "Token": nil, "LastSync": nil, "KeyFingerprints": nil, "Serve": nil, "WithAuthz": nil,
+	},
 	"attachment.Feeds": {
 		"Add": {"feed.add"}, "Change": {"feed.change"}, "Remove": {"feed.remove"}, "RunFeed": {"feed.run"},
 		"List": nil, "Get": nil, "Sync": nil, "ImportFeed": nil, // the import's run is recorded by Import
@@ -125,7 +134,7 @@ var writes = map[string]map[string][]audit.Kind{
 func TestRegistry(t *testing.T) {
 	for name, v := range map[string]any{"tenants.Service": &tenants.Service{}, "tenants.AuthAdmin": &tenants.AuthAdmin{},
 		"keys.Service": &keys.Service{}, "release.Service": &release.Service{}, "upstream.Service": &upstream.Service{},
-		"attachment.Service": &attachment.Service{}, "attachment.Feeds": &attachment.Feeds{}} {
+		"attachment.Service": &attachment.Service{}, "attachment.Feeds": &attachment.Feeds{}, "licenses.Service": &licenses.Service{}} {
 		typ := reflect.TypeOf(v)
 		for i := range typ.NumMethod() {
 			m := typ.Method(i).Name
@@ -462,6 +471,27 @@ func TestCoverage(t *testing.T) {
 		return err
 	}), "upstream.change")
 	en.expect("upstream.Service.Remove", do(func() error { return en.up.Remove(rctx, admin, "acme", "core", 0) }), "upstream.remove")
+	// licences (spec 0012): an import, its visibility, its removal
+	licKey, err := vectors.LoadKey("../license/testdata", vectors.TrustedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	licPEM, _ := extfile.MarshalPublicKeyPEM(&licKey.PublicKey)
+	licKeys, err := license.ParseKeys([]string{licPEM})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := &licenses.Service{Store: st, Authz: authz.ServerAdmin{}, Keys: licKeys, Log: slog.New(slog.DiscardHandler)}
+	licTok := vectors.Sign(licKey, vectors.Header(licKey), fmt.Sprintf(
+		`{"v":1,"iss":"https://issuer.example","jti":"l1","sub":"acme","ext":"tresor","plan":"pro","iat":%d,"exp":%d}`,
+		base.Unix()-60, base.Unix()+30*86400))
+	en.expect("licenses.Service.Import", do(func() error { _, err := lic.Import(rctx, admin, "acme", licTok, licenses.Create); return err }),
+		"license.import")
+	en.expect("licenses.Service.SetVisibility", do(func() error {
+		_, err := lic.SetVisibility(rctx, admin, "acme", "tresor", store.Public, 0)
+		return err
+	}), "license.change")
+	en.expect("licenses.Service.Remove", do(func() error { return lic.Remove(rctx, admin, "acme", "tresor", 0) }), "license.remove")
 	en.expect("upstream.Service.Add", do(func() error {
 		_, err := en.up.Add(rctx, admin, "acme", upstream.Spec{Name: "offline", Kind: store.UpstreamCore, Mode: store.ModeBundle,
 			Channel: "staging", Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "inet"}}})
@@ -624,7 +654,9 @@ func TestCoverage(t *testing.T) {
 	// check their events)
 	elsewhere := map[string]bool{"release.Service.Ingest": true, "upstream.Service.RunUpstream": true, "attachment.Feeds.RunFeed": true,
 		"upstream.Service.Import": true, "upstream.Service.Export": true, "upstream.Service.ResetFeedBundle": true,
-		"upstream.Service.CreateUpload": true, "upstream.Service.CompleteUpload": true, "upstream.Service.AbortUpload": true}
+		"upstream.Service.CreateUpload": true, "upstream.Service.CompleteUpload": true, "upstream.Service.AbortUpload": true,
+		// the relay and the expiry pass: in internal/upstream's licence tests
+		"licenses.Service.RunUpstream": true, "licenses.Service.ExpireOnce": true}
 	for svc, ms := range writes {
 		for m, kinds := range ms {
 			if kinds != nil && !en.hit[svc+"."+m] && !elsewhere[svc+"."+m] {

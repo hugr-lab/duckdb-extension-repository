@@ -562,6 +562,15 @@ Documents about bodies. File-only. See [Attachments](attachments.md).
 | `attachments.max_reads` | integer | `8` | Documents held in memory at once; `0..256`. |
 | `attachments.feed_interval` | duration | `6h` | Between a feed's scheduled runs; at least `5m`. |
 
+## licenses
+
+Licensing (spec 0012). File-only. See [Licensing](licensing.md).
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `licenses.keys` | list of strings | none | The issuers' licence public keys kista verifies licences against: SPKI PEM or base64 DER, RSA-2048 with `e = 65537`. None: licensing is off. |
+| `licenses.refresh` | duration | `6h` | Between an upstream's licence relay runs; `1h..24h`. |
+
 ## bundles
 
 Bundles uploaded over the API (spec 0014 phase 2). File-only. See

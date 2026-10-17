@@ -1,6 +1,6 @@
 # Spec 0012: Licensing and usage reports
 
-- **Status**: accepted; phase 1a part 1 implemented (the format, the reference verifier, the vectors)
+- **Status**: accepted; phase 1a implemented (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI)
 - **Date**: 2026-10-17
 - **Author**: vgsml, Claude
 
@@ -179,9 +179,11 @@ licenses  tenant_id, name, license_id, issuer, holder_id, holder, plan, token, k
 One licence per extension name in a tenant, served from every channel of the tenant (the relay
 brings it through one upstream's channel; a promotion carries the extension to others). `token` is
 the JWS as received; the other columns are its verified claims, for listing and for the console.
-Migration 0024, additive, on all three dialects. `licenses` joins spec 0019's reap steps;
-`upstream_id` has no foreign-key cascade: removing an upstream removes its licences explicitly
-(below).
+Migration 0024, additive, on all three dialects (the plan's column is `plan_name`: `PLAN` is a
+reserved word on SQL Server). It also adds `license_syncs` (`upstream_id` primary key, cascading
+with the upstream; `tenant_id`, `requested_at`, `last_run_at`, `last_result`): the relay's state per
+upstream. Both join spec 0019's reap steps; `licenses.upstream_id` has no foreign-key cascade:
+removing an upstream removes its licences explicitly (below).
 
 **Trusted keys** are server configuration, never data (a file-only section, as server
 administrators and credentials are):
@@ -197,19 +199,23 @@ licenses:
 ```
 
 kista stores only licences whose status is `valid` or `grace` against these keys, under the name
-they name. Without keys, imports and the relay are refused with `licenses: no trusted keys
-configured`, and the routes below answer as for a missing licence. `GET /api/v1/licenses/keys`
+they name. Without keys, imports and the relay are refused (the API: `409`, "licensing is off"),
+and the routes below answer as for a missing path, the list route included: an empty list would
+make a downstream relay revoke everything it holds. `GET /api/v1/licenses/keys`
 (server administrators) and the start-up log show the fingerprints. The docs say where Enterest
 publishes its keys; nothing defaults to them. An operator may trust other keys; the SDK will still
 refuse their licences, which the console says.
 
 **Import** (an air-gapped site, or Enterest writing into its own tenants): a tenant administrator
-posts the token; the name is the licence's `ext`. A licence already stored for the name is
-replaced only with `If-Match` on it, whatever its source.
+posts the token; the name is the licence's `ext`. A new licence answers `201` with `Location`. A
+licence already stored for the name is replaced only with `If-Match` on it, whatever its source;
+without one the answer is `409`.
 
-**Relay** from upstreams: every `refresh`, one replica (lease `kista/licenses`) asks each
-`repository` upstream that has a credential and is not paused, tenant by tenant (bundle-mode
-upstreams take no credential and are not asked):
+**Relay** from upstreams: every `refresh`, one replica asks each `repository` upstream of an active
+tenant that has a credential and is not paused (bundle-mode upstreams take no credential and are
+not asked). A run holds the upstream's lease (`kista/licenses/upstream/<id>`, 15 minutes, above a
+run's worst case), checks the upstream is still due once it holds it, and a replica runs at most two
+at once:
 
 ```text
 GET <upstream prefix>/-/licenses        Authorization: Bearer <the credential's token>
@@ -217,21 +223,30 @@ GET <upstream prefix>/-/licenses        Authorization: Bearer <the credential's 
 ```
 
 - An answer over either cap, or one that does not parse, is a failure: nothing changes.
-- On `200`, each licence is checked: it verifies, and its `ext` has a release in the upstream's
-  channel whose provenance names this upstream (an upstream does not hand out licences for names it
-  does not supply). A licence that fails is refused with its reason.
+- On `200`, each licence is checked: it verifies, and the upstream supplies its `ext` (an upstream
+  does not hand out licences for names it does not supply): the upstream brought a build of it into
+  its channel since it was added (a release whose provenance names it, created after it), and a
+  live release of that build is in the tenant, in any channel (a promotion releases the same
+  build, so yanking the mirror's own copy keeps the promoted ones supplied; an upstream removed and
+  added again under the same name supplies only what it brings itself). A licence that fails is
+  refused with its reason.
 - A licence is stored when there is none for its name, when the stored one came from this upstream
-  and the new one has a later `iat`, or when the new one's `exp` is later than the stored one's
-  (whatever the stored one's source).
+  and the new one has a later `iat`, when the new one's `exp` is later than the stored one's
+  (whatever the stored one's source), or when the stored one is past its grace.
+- The answer is applied in one transaction that reads the upstream again: one paused, removed or
+  given another prefix or credential meanwhile takes nothing from it.
 - `200` is authoritative for this upstream: a stored licence whose `source` is this upstream and
   that the answer leaves out is removed (revocation). Licences from other sources are untouched.
 - `404` means the upstream serves no licences, and `401`, `403`, `5xx` or a network failure is a
   failure: nothing is removed, and licences from it stay until `grace_until`.
-- Licences past `grace_until` are removed by the same pass, whatever their source.
+- Licences past `grace_until` are removed, whatever their source, by an expiry pass every replica
+  tries each 30 seconds under one lease (`kista/licenses/expiry`); a tenant being deleted is
+  skipped.
 - **Removing an upstream** removes its licences in the same transaction, each with a
   `license.remove` event. **Clearing its credential**, or removing the credential from the
   configuration, stops the relay; its licences stay until `grace_until`.
-- Each run records `license.sync`. `POST …/upstreams/{u}/licenses/sync` asks for a run now.
+- Each run records `license.sync`. `POST …/upstreams/{u}/licenses/sync` asks for a run now (`409`
+  for an upstream that relays nothing, or a paused one).
   Spec 0009's credential rules hold: the token goes only to the credential's prefixes, never on a
   redirect, never logged.
 
@@ -239,7 +254,7 @@ GET <upstream prefix>/-/licenses        Authorization: Bearer <the credential's 
 `iat`; nothing in kista or on the user's machine is reinstalled:
 
 - a relayed licence is replaced at the next relay run (`refresh`, 6 h by default); an administrator
-  who wants it now runs `kista upstream licenses <tenant> <upstream>` or presses Sync in the
+  who wants it now runs `kista admin upstream licenses <tenant> <upstream> -sync` or presses Sync in the
   console. An Enterest tenant has it as soon as Enterest imports it;
 - the SDK asks the repository at every `LOAD` (a conditional request, below), so a user has the new
   plan at the next `LOAD` in a new process, or at once with `myext_license_refresh()`. The binary is
@@ -411,6 +426,7 @@ GET    /api/v1/tenants/{t}/licenses/{name}                 tenant administrators
 POST   /api/v1/tenants/{t}/licenses                        import, the JWS as the body (1a)
 POST   /api/v1/tenants/{t}/licenses/{name}/public|private  If-Match (1a)
 DELETE /api/v1/tenants/{t}/licenses/{name}                 If-Match (1a)
+GET    /api/v1/tenants/{t}/upstreams/{u}/licenses          the last relay run (1a)
 POST   /api/v1/tenants/{t}/upstreams/{u}/licenses/sync     tenant administrators, 202 (1a)
 GET    /api/v1/tenants/{t}/stats/usage                     (1b)
 POST   /api/v1/tenants/{t}/upstreams/{u}/usage             {"usage": "forward"|"off"}, If-Match (1c)
@@ -418,14 +434,16 @@ POST   /api/v1/tenants/{t}/upstreams/{u}/usage             {"usage": "forward"|"
 
 - **A licence** is shown as its claims and its state: `name`, `id`, `issuer`, `holder_id`, `holder`,
   `plan`, `versions`, `limits`, `issued_at`, `expires_at`, `grace_until`, `key`, `source`,
-  `upstream`, `visibility`, `status` (`valid`, `grace`). The response never includes the token; the
-  CLI's `token` command reads it from the licence route.
-- **CLI:**
-  - `kista license list|show|import|remove|public|private <tenant> …`;
-  - `kista license verify <file> [-key <pem>]`: offline, prints the claims and the status against the
+  `upstream`, `visibility`, `status` (`valid`, `grace`; `expired` between the end of its grace and
+  the expiry pass), with its `etag`. The API never answers the token; the CLI's `token` command
+  reads it.
+- **CLI** (`kista admin`, as every administration command):
+  - `license keys`, `license list <tenant>`, `license show|token|remove|public|private <tenant> <name>`;
+  - `license import <tenant> <file|-> [-replace]`;
+  - `license verify <file|-> [-key <pem>]`: offline, prints the claims and the status against the
     configured keys or the given one;
-  - `kista upstream licenses <tenant> <upstream>`: sync now;
-  - `kista upstream usage <tenant> <upstream> forward|off`.
+  - `upstream licenses <tenant> <upstream> [-sync]`: the last relay run, and a run now;
+  - `upstream usage <tenant> <upstream> forward|off` (1c).
 
 ### Events
 
@@ -436,7 +454,7 @@ New catalogue entries, with their subject forms in `audit.SubjectForm` and its c
 | `license.import` | the administrator | `license:<name>` | licence id, issuer, holder, plan, expiry, the replaced licence's id |
 | `license.change` | the administrator | `license:<name>` | `visibility` |
 | `license.remove` | the administrator, or `system:licenses` | `license:<name>` | licence id, why (`admin`, `revoked`, `expired`, `upstream removed`) |
-| `license.sync` | `system:licenses` | `upstream:<u>` | received, stored, replaced, removed, refused (with reasons), or the failure |
+| `license.sync` | `system:licenses` | `upstream:<u>` | counts (received, stored, replaced, unchanged, removed, refused), the refusals with their rules (a licence's own rule, `not_in_force`, `not_supplied`, `superseded`), or the failure |
 | `extension.use` | the principal | `channel:<c>/ext:<name>` | (above) |
 | `usage.forward` | `system:usage` | `upstream:<u>` | days sent, skipped, failed |
 | `upstream.change` | the administrator | `upstream:<u>` | `change` `usage`, `value` |

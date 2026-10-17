@@ -175,6 +175,14 @@ and it is read only through a release the caller may see. Attachments come from 
 statements about the bodies the tenant holds with its **attestation keys**. See
 [Attachments](attachments.md).
 
+
+## Licences
+
+A **licence** lets a paid extension run for an organisation until an expiry, at a plan with limits
+the extension's developer defines. It is signed by the issuer that sells the extension; kista issues
+none. A tenant holds one per extension name, imported by an administrator or relayed from the
+upstream it mirrors the extension from, and serves it to the callers who may install the extension.
+See [Licensing](licensing.md).
 ## Events
 
 kista records what happens as **events**: installs, publications, promotions, key, grant and

@@ -34,6 +34,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/azurekv"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/gcpkms"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/vault"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -129,6 +130,8 @@ type Services struct {
 	Attachments *attachment.Service
 	// Feeds are the tenants' subscriptions to other repositories' feeds (spec 0011 phase 1b).
 	Feeds *attachment.Feeds
+	// Licenses are the tenants' licences (spec 0012).
+	Licenses *licenses.Service
 }
 
 // WithBlob gives the release, upstream and attachment services a blob service (adding a release
@@ -335,6 +338,8 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 				Interval: ul.Interval}, Credentials: creds, Feeds: feeds, Uploads: uploadSettings(cfg)},
 		Attachments: at,
 		Feeds:       feeds,
+		Licenses: &licenses.Service{Store: s, Authz: az, Keys: cfg.Licenses.TrustedKeys(), Fetch: eg, Credentials: creds,
+			Interval: cfg.Licenses.RefreshOrDefault(), Log: slog.Default()},
 	}, nil
 }
 
@@ -388,7 +393,7 @@ func (s *Services) WithAuthz(az authz.Authorizer) *Services {
 	fd.Attachments = &at
 	up.Feeds = &fd // a bundle's feeds, imported under the copy's authorizer too
 	return &Services{Store: s.Store, Sources: s.Sources, Tenants: &ten, Keys: &ks, Releases: &rel, Auth: &au, Upstreams: up, Attachments: &at,
-		Feeds: &fd}
+		Feeds: &fd, Licenses: s.Licenses.WithAuthz(az)}
 }
 
 func serverIssuerURLs(cfg config.Config) []string {

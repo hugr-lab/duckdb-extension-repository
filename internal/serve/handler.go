@@ -65,6 +65,17 @@ type Options struct {
 	Downloads Counter
 	// Metrics takes downloads and request durations (spec 0010 phase 2b); nil: none.
 	Metrics Metrics
+	// Licenses serves the licences a tenant holds (spec 0012); nil: none, and the licence routes
+	// answer as for a missing path.
+	Licenses Licenses
+}
+
+// Licenses reads the licences a tenant holds while their grace lasts: one by name (ok false for
+// none), and all of them.
+type Licenses interface {
+	Enabled() bool // licensing is on: trusted keys are configured
+	Serve(ctx context.Context, tenantID, name string) (store.License, bool, error)
+	List(ctx context.Context, tenantID string) ([]store.License, error)
 }
 
 // Metrics records downloads and request durations.
@@ -284,6 +295,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case routeWellKnown:
 		h.wellKnown(lw, r, rt)
+	case routeLicense, routeLicenses:
+		h.licenses(lw, r, rt)
 	default:
 		h.binary(lw, r, rt)
 	}
@@ -538,34 +551,44 @@ func bearer(r *http.Request) string {
 // none: no token, or one not accepted, which is recorded as auth.failure), with the request's
 // context carrying the token's display name for its events.
 func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (view, string, *http.Request, error) {
+	installs, actor, r := h.identify(r, sc, "extension")
+	if installs(name) {
+		return viewAll, actor, r, nil
+	}
+	return viewPublic, actor, r, nil
+}
+
+// identify verifies the request's token once: whether it holds install on a name in the channel,
+// and its actor ("" for none). A token that is not accepted is recorded as auth.failure on the
+// route labelled.
+func (h *Handler) identify(r *http.Request, sc store.ServeChannel, label string) (func(name string) bool, string, *http.Request) {
+	none := func(string) bool { return false }
 	tok := bearer(r)
 	// a publisher's API key is never looked up here (spec 0008): it is no token
 	if tok == "" || h.o.Verifier == nil || h.o.Server.IsServerToken(tok) || auth.IsAPIKey(tok) {
-		return viewPublic, "", r, nil
+		return none, "", r
 	}
 	ta, err := h.tenantAuth(r.Context(), sc.Tenant)
 	if err != nil {
 		h.log.Error("serve: reading a tenant's issuers and grants", "tenant", sc.Tenant.Name, "error", err)
-		return viewPublic, "", r, nil // no token: public releases are still served
+		return none, "", r // no token: public releases are still served
 	}
 	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, sc.Tenant.Name, h.o.Providers)
 	id, err := h.o.Verifier.VerifyIdentity(r.Context(), ta, canonical, tok)
 	if err != nil {
 		h.failures.Record(sc.Tenant, "serve", err)
 		if h.o.Events != nil {
-			h.o.Events.Refusal(r.Context(), sc.Tenant.ID, "anonymous", "auth.failure", audit.Refused, "route:extension",
-				map[string]any{"reason": "invalid", "route": r.Method + " extension"})
+			h.o.Events.Refusal(r.Context(), sc.Tenant.ID, "anonymous", "auth.failure", audit.Refused, "route:"+label,
+				map[string]any{"reason": "invalid", "route": r.Method + " " + label})
 		}
-		return viewPublic, "", r, nil // an invalid token is no token: public releases are still served
+		return none, "", r // an invalid token is no token: public releases are still served
 	}
 	actor := authz.Actor{Kind: authz.ActorPrincipal, ID: sc.Tenant.Name + "/" + id.Issuer.ID + "|" + id.Who()}.String()
 	if n := audit.DisplayName(id.Claims); n != "" {
 		r = r.WithContext(audit.WithActorName(r.Context(), n))
 	}
-	if auth.Allows(auth.HeldBy(id.Principals, ta), sc.Channel.ID, name, store.VerbInstall) {
-		return viewAll, actor, r, nil
-	}
-	return viewPublic, actor, r, nil
+	held := auth.HeldBy(id.Principals, ta)
+	return func(name string) bool { return auth.Allows(held, sc.Channel.ID, name, store.VerbInstall) }, actor, r
 }
 
 func (h *Handler) tenantAuth(ctx context.Context, t store.Tenant) (store.TenantAuth, error) {

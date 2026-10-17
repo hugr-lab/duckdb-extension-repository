@@ -32,6 +32,8 @@ LOAD my_ext FROM corp;
   tells an outsider which private extensions exist.
 - Keeps **attachments** next to each binary (an SBOM, a vulnerability report, a review), and can
   receive signed statements about the binaries it holds from another repository's feed.
+- Keeps and serves the **licences** of paid extensions, imported or relayed from the repository that
+  sold them; it never issues one.
 - Records **events** (installs, publications, key and grant changes) and download statistics per
   tenant.
 
@@ -102,7 +104,7 @@ These pages say how to run and use kista; the specs say why it works the way it 
 ## Status
 
 kista is in early development. Signed and passthrough channels, publication and promotion,
-upstreams (mirror, pull-through, bundle mode, private upstreams), tokens and grants, attachments and the feed,
+upstreams (mirror, pull-through, bundle mode, private upstreams), tokens and grants, attachments and the feed, licences,
 events, storage garbage collection and the administration console are in place. kista ships as
 a signed container image and, from the first release, a signed Helm chart and signed binaries for
 linux and darwin ([Deployment](deployment/index.md)).

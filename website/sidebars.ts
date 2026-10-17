@@ -20,6 +20,7 @@ const sidebars: SidebarsConfig = {
     'upstreams',
     'access',
     'attachments',
+    'licensing',
     'api',
     'console',
     {

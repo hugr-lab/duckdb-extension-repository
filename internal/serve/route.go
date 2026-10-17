@@ -19,11 +19,13 @@ const (
 	routeWellKnown
 	routeFlat
 	routeVersioned
+	routeLicense  // <prefix>/-/licenses/<name> (spec 0012)
+	routeLicenses // <prefix>/-/licenses
 )
 
 // String is a route kind's name for metrics.
 func (k routeKind) String() string {
-	return [...]string{"none", "healthz", "readyz", "well-known", "extension", "extension-versioned"}[k]
+	return [...]string{"none", "healthz", "readyz", "well-known", "extension", "extension-versioned", "license", "licenses"}[k]
 }
 
 // route is a parsed request path.
@@ -66,6 +68,18 @@ func parseRoute(r *http.Request) route {
 		return route{}
 	}
 	rt := route{tenant: segs[0], channel: segs[1]}
+	// spec 0012's routes under "-", which is no DuckDB version, extension name or .well-known
+	if segs[2] == "-" {
+		switch {
+		case len(segs) == 4 && segs[3] == "licenses":
+			rt.kind = routeLicenses
+			return rt
+		case len(segs) == 5 && segs[3] == "licenses" && release.ValidName(segs[4]) == nil:
+			rt.kind, rt.name = routeLicense, segs[4]
+			return rt
+		}
+		return route{}
+	}
 	switch len(segs) {
 	case 4:
 		if segs[2] == ".well-known" && segs[3] == wellKnownFn {
