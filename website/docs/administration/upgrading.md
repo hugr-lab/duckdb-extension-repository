@@ -79,9 +79,12 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0014_purged_slots` | 14 | an older replica would refill the slot of a purged release |
 | `0018_feeds` | 18 | an older replica would mark documents feedable without issuing their signed statements |
 | `0019_tenant_deletion` | 19 | an older replica would let a deleting tenant be resumed and keep running its upstreams and feeds |
+| `0020_bundles` | 20 | an older replica would fetch a bundle-mode upstream online, or give it a credential |
+| `0021_bundle_feeds` | 21 | an older replica would run a bundle-mode feed online, or keep no export feed's statements |
+| `0022_bundle_uploads` | 22 | an older replica would not import a completed upload, and its collector would not know `uploads/` |
 
-Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016 and 0017 are additive and keep the previous
-value.
+Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017 and 0023 (the bootstrap's record) are
+additive and keep the previous value.
 
 ## Upgrading one server
 

@@ -1,6 +1,6 @@
 # Spec 0020: Cloud recipes: AWS and GCP in Terraform, Azure in Bicep
 
-- **Status**: accepted; phases 0-3 implemented; phase 4 designed (2026-10-17)
+- **Status**: accepted; phases 0-3 implemented; phase 4 designed (2026-10-17), 4a implemented
 - **Date**: 2026-10-14
 - **Author**: vgsml, Claude
 
@@ -669,7 +669,9 @@ bootstrap:
 - `console.audience` among `tenant.audiences`;
 - principals of the bootstrap's issuer only (`kind:<issuer.name>|value`). `issuer:` and
   `publisher:` principals are refused, and `admin` is refused on a client principal, as
-  `AddGrant` refuses it;
+  `AddGrant` refuses it. A grant on an extension group is refused: the bootstrap makes none;
+- nothing listed twice (versions, audiences, a channel's versions, grants, signer references), an
+  audience under `serve.public_url` or a server audience, and an issuer `issuer add` would refuse;
 - a channel version listed under `versions`, or known already (checked when the bootstrap runs);
 - **a console client refused at a server issuer's URL**. `SetConsoleClient` refuses it (spec 0015),
   and a refusal found only when the bootstrap runs would stop every start. When the tenant's IdP
@@ -709,6 +711,7 @@ The row is a singleton (a fixed primary key), so a second writer gets `ErrExists
 1. **Done already?** The table `bootstrap` (migration 0023, min_reader unchanged at 22) has these
    columns:
    - `id`, fixed at 1;
+   - `state`: `pending` from before the first write, `applied` at the end;
    - `tenant`, the name, not a foreign key;
    - `digest`;
    - `seen_digest`;
@@ -720,20 +723,22 @@ The row is a singleton (a fixed primary key), so a second writer gets `ErrExists
    defaulted struct, so YAML key order does not matter). Signer references carry no key version
    in it, so a key version that changes with a redeploy is not a change.
 
-   When the row exists, nothing is applied. When the section's digest differs from `seen_digest`:
+   When the row is applied, nothing is applied. A pending row (a run that failed after its first
+   write) names the tenant that run made: the next run goes on with it, as with a tenant it made. When the section's digest differs from `seen_digest`:
    - `serve` logs one warning, then records the new `seen_digest`: "the bootstrap section changed
      after it was applied; change the tenant through the API";
-   - `admin bootstrap` exits `1`, listing the differences against `section`, unless `-accept`
-     records the new digest, with the event `bootstrap.accept`.
+   - `admin bootstrap` exits `1`, naming the top-level fields that differ from `section`, unless
+     `-accept` records the new digest, with the event `bootstrap.accept`.
 
    The table has no `tenant_id` column, so the reaper (spec 0019) has nothing to do with it. Its
    row outlives a deleted tenant, so the bootstrap does not apply again.
-2. **Check, before any write.** The bootstrap opens and probes each signer (read only) and
-   discovers the issuer, then compares each object the section names with what exists:
+2. **Check, before any write.** The bootstrap opens and probes each signer for its purpose (read
+   only), and fetches a new issuer's discovery document and JWKS. It then compares each object the
+   section names with what exists:
 
    | Object | The same | Different (refused) |
    | --- | --- | --- |
-   | version | the same kind; the section's C APIs are added if missing | another kind |
+   | version | the same kind; a C API of a major it lacks is added | another kind; another C API for a major it has |
    | tenant (`GetTenantAny`) | active, with the same display name and domain | other values, or suspended, deleting or deleted |
    | audience | assigned to this tenant | assigned to another tenant |
    | channel | the same kind | another kind |
@@ -746,8 +751,9 @@ The row is a singleton (a fixed primary key), so a second writer gets `ErrExists
 
    An absent object is to be created.
 
-   **Adoption.** When the tenant exists and the bootstrap would create anything in it, `serve`
-   refuses. The bootstrap never adds a key, an issuer or a grant to a tenant it did not make. When
+   **Adoption.** When the tenant exists, the bootstrap did not make it (no pending row names it),
+   and the bootstrap would create anything in it, `serve` refuses. Server-wide versions are not the
+   tenant's. The bootstrap never adds a key, an issuer or a grant to a tenant it did not make. When
    everything is present and the same, `serve` records the row and creates nothing. Only
    `admin bootstrap -adopt` creates objects in an existing tenant, and it shows them in its plan
    first.
@@ -767,13 +773,16 @@ The row is a singleton (a fixed primary key), so a second writer gets `ErrExists
 
    Each records its usual event.
 
-   The steps are not one transaction: they are the services' own. When one fails for now (a signer
+   Before the first write, the row is recorded `pending`. The steps are not one transaction: they
+   are the services' own. When one fails for now (a signer
    that cannot be reached, an issuer whose discovery fails, an Azure role assignment that has not
    propagated, which takes minutes on a first install), the bootstrap tries again with backoff for
    up to four minutes. After that `serve` exits non-zero without binding. What was made stays, and
-   no row is recorded. The next start's check finds those objects "the same" and goes on, so the
-   bootstrap converges.
-4. **Done.** The row and the event `bootstrap.apply` are written in one transaction. The event has
+   the row stays pending. The next start's check finds those objects "the same" and goes on, so the
+   bootstrap converges. Only these failures are tried again: a signer, an issuer, the network, a
+   busy database.
+4. **Done.** The row, now `applied`, and the event `bootstrap.apply` are written in one
+   transaction. The event has
    subject `tenant:<name>` and these data:
    - the objects created, by kind;
    - the digest;
@@ -781,12 +790,13 @@ The row is a singleton (a fixed primary key), so a second writer gets `ErrExists
    - kista's version;
    - the host.
 
-**`-dry-run`** prints the plan, one line per object (create, the same, or refused), after the
-read-only probes. It takes no lease.
+**`-dry-run`** prints the plan, one line per object (create, add, the same, or refused), after the
+read-only probes, applied or not. It takes no lease, and exits `1` when an object is refused.
 
-**`-rearm`** deletes the row, with the event `bootstrap.rearm`. A re-armed bootstrap re-creates
-what is absent, so a grant revoked since then comes back; `-dry-run` shows it first. Deleting the
-row by hand does the same, without the event.
+**`-rearm`** deletes the row, with the event `bootstrap.rearm`. The tenant then exists, so the next
+apply needs `admin bootstrap -adopt`. It re-creates what is absent, so a grant revoked since then
+comes back; `-dry-run -adopt` shows it first. Deleting the row by hand does the same, without the
+event.
 
 **What it is not.**
 

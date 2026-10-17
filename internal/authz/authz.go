@@ -80,12 +80,16 @@ type Authorizer interface {
 }
 
 // ServerAdmin allows OS actors (the CLI, running as the service user with the service's config)
-// everything, and nobody else anything.
+// and the configuration's bootstrap (spec 0020 phase 4a) everything, and nobody else anything.
 type ServerAdmin struct{}
+
+// Bootstrap is the actor kista serve applies the configuration's bootstrap as. No request makes
+// a system actor: a token maps to principals of an issuer.
+var Bootstrap = Actor{Kind: ActorSystem, ID: "bootstrap"}
 
 // Allow implements Authorizer.
 func (ServerAdmin) Allow(_ context.Context, a Actor, _ Verb, _ Resource) error {
-	if a.Kind == ActorOS {
+	if a.Kind == ActorOS || a.Kind == Bootstrap.Kind && a.ID == Bootstrap.ID {
 		return nil
 	}
 	return ErrDenied

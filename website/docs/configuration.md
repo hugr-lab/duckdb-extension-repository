@@ -590,6 +590,96 @@ process that takes the delete applies its own value (`kista admin tenant delete`
 that answers `DELETE /api/v1/tenants/{t}`), so `kista admin` and `kista serve` should share the
 configuration.
 
+## bootstrap
+
+What a first start creates, so an install made from a template (the Azure recipe, the Marketplace
+application) starts with its tenant. File-only. It is applied **once**: afterwards the API and the
+console own what it made, and it never undoes an administrator's change.
+
+```yaml
+bootstrap:
+  versions:                              # server-wide, as version add
+    - { version: v1.4.1, kind: release, c_apis: [v1.2.0] }
+  tenant:
+    name: acme
+    display_name: Acme
+    domain: default                      # a blob domain; default: default
+    audiences: [api://kista-acme]        # as tenant audience add
+  channels:
+    - name: prod
+      kind: signed                       # signed (needs key) or passthrough
+      versions: [v1.4.1]                 # added to the channel, never removed
+      key: azure:kista-channel/<version> # a signer reference: the channel's first, active key
+  attestation_key: azure:kista-att/<v>   # optional, the tenant's active attestation key
+  issuer:                                # optional, as issuer add
+    name: entra
+    url: https://login.microsoftonline.com/<tid>/v2.0
+    required_claims: { tid: <tid> }
+    roles_claim: roles
+    client_claim: azp
+    max_lifetime: 12h                    # also jwks_uri, algorithms, groups_claim
+    console: { client_id: <id>, audience: api://kista-acme }   # optional, as issuer console; also scopes, audience_parameter
+  grants:                                # principals of that issuer, as grant add
+    - { principal: "role:entra|kista-admin", verbs: [admin] }  # optional channel and extension
+```
+
+- **Where it runs.** `kista serve` applies it as `system:bootstrap`, after migrations and before its
+  listeners bind, so a replica serves only once the bootstrap is done. Replicas that start together
+  apply it once: one holds the lease `kista/bootstrap`, and the others wait for its record, up to
+  four minutes. `kista admin bootstrap` applies it as the OS user.
+- **Check before any write.** Every object is compared with what exists. It is created when absent,
+  left alone when the same, and refused when different; one refusal refuses the whole bootstrap.
+  Nothing is written, and `serve` exits and lists the differences. Different means, for example:
+  - another channel kind;
+  - a channel whose keys do not include the section's key active;
+  - a key that another channel or tenant holds (compared by fingerprint);
+  - an issuer with any field different;
+  - another console client;
+  - another C API for a major a version already has;
+  - a suspended or deleted tenant.
+
+  The check opens and probes the signers (an attestation key for its own purpose) and fetches a new
+  issuer's discovery document and JWKS.
+- **Existing tenants.** The bootstrap never creates anything in a tenant it did not make. Only
+  `kista admin bootstrap -adopt` does. Server-wide DuckDB versions and C APIs are not a tenant's.
+  A tenant whose objects are all the same is just recorded.
+- **Failures that pass.** A failure that may pass is tried again for up to four minutes, after which
+  `serve` exits without binding:
+  - a signer or an issuer that cannot be reached yet (on a first Azure install, a role assignment
+    can take minutes to propagate);
+  - the network;
+  - a busy database.
+
+  The record is `pending` from before its first write. The next start goes on with the tenant it
+  made, and creates only what is still absent.
+- **Once.** The record (table `bootstrap`) keeps the applied section and its digest. The digest is
+  taken with defaults filled in and Azure and Cloud KMS key versions left out, so a redeployment
+  that renders a new key version is no change. When the section changes later:
+  - `serve` logs one warning and starts;
+  - `kista admin bootstrap` exits `1`, naming the changed fields, until `-accept`.
+
+  `-rearm` forgets the record. The tenant then exists, so the next apply needs `-adopt`, and it
+  makes again whatever is absent, a grant revoked since included.
+- **Validation at load:**
+  - a tenant is required;
+  - names, kinds, verbs, versions, C APIs and signer references are checked;
+  - nothing is listed twice: a version, an audience, a channel or its version, a grant, or a signer
+    reference;
+  - the domain must be a configured blob domain;
+  - an audience may be neither under `serve.public_url` nor a server audience;
+  - the issuer passes the checks of `issuer add` (https, `max_lifetime` within 1m to 7d);
+  - grants name principals of the bootstrap's issuer only, and never `issuer:` (every account),
+    `admin` to a client, or an extension group (the bootstrap makes none);
+  - a grant's channel must be one of the section's channels;
+  - the console's audience must be one of the tenant's;
+  - a console client at a server issuer's URL is refused, since a tenant's console does not sign in
+    there (spec 0015). Such a tenant has no console client: its administrators use the API, or a
+    server administrator uses the console.
+
+It holds no secret: keys are signer references and issuers are public URLs. It does not record who
+changed the configuration; the platform's control-plane log does (the Activity Log, the Kubernetes
+audit log).
+
 ## A complete example
 
 A production replica on PostgreSQL with a password from a file, keys in OpenBao, bodies in S3, TLS

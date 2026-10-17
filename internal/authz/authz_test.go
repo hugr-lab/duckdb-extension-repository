@@ -156,3 +156,23 @@ func TestCoversGroups(t *testing.T) {
 		t.Error("a removed member is covered")
 	}
 }
+
+// Spec 0020 phase 4a: the CLI's OS actors and the configuration's bootstrap are server
+// administrators; no other system actor is, nor a principal spelled like the bootstrap.
+func TestServerAdmin(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		a    authz.Actor
+		want bool
+	}{
+		{authz.Actor{Kind: authz.ActorOS, ID: "0:root"}, true},
+		{authz.Bootstrap, true},
+		{authz.Actor{Kind: authz.ActorSystem, ID: "upstream:acme/core"}, false},
+		{authz.Actor{Kind: authz.ActorPrincipal, ID: "bootstrap"}, false},
+		{authz.Actor{Kind: authz.ActorServer, ID: "bootstrap"}, false},
+	} {
+		if err := (authz.ServerAdmin{}).Allow(ctx, c.a, authz.VerbAdmin, authz.Server); (err == nil) != c.want {
+			t.Errorf("%s: %v", c.a, err)
+		}
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/writer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/bootstrap"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
@@ -186,7 +187,19 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	srv := &serve.Server{Handler: h, Listeners: ls, TrustedProxies: cfg.TrustedProxyPrefixes(),
 		DrainTimeout: lim.DrainTimeout, ShutdownTimeout: lim.ShutdownTimeout, Log: log}
-	// bind every listener before any background work: a port in use fails before a lease is taken
+	// the configuration's bootstrap (spec 0020 phase 4a): a replica serves only once it is done
+	if cfg.Bootstrap.Set() {
+		res, err := bootstrap.Run(ctx, BootstrapDeps(svc, log), cfg.Bootstrap, bootstrap.Options{Actor: authz.Bootstrap,
+			Source: cfg.Source, Version: Version, Host: host, Holder: instance})
+		if err != nil {
+			return fmt.Errorf("serve: bootstrap: %w", err)
+		}
+		if res.Applied {
+			log.Info("serve: bootstrap applied", "tenant", cfg.Bootstrap.Tenant.Name)
+		}
+	}
+	// bind every listener before any background work (the bootstrap's lease apart): a port in use
+	// fails before a lease is taken
 	if err := srv.Bind(); err != nil {
 		return err
 	}
