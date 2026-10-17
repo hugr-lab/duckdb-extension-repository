@@ -70,8 +70,10 @@ Delivery, each phase a pull request:
   Each PR updates the docs of the behaviour it changes: PR 1 `attachments.md`, `api.md`,
   `administration/commands.md`, `observability.md` and the console; PR 2 and 3 `upstreams.md` and
   `commands.md`; PR 4 those, `security.md` and `deployment/air-gapped.md`.
-- **2. Upload over the API**: an upload route and a console page, for administrators who cannot run
-  `kista admin` beside the server and cannot write to its object store.
+- **2. Upload over the API**: chunked, resumable uploads imported by the server, and a console page,
+  for administrators who cannot run `kista admin` beside the server and cannot write to its object
+  store. In two pull requests: (1) migration 0022, the `uploads/` prefix, the routes, the runner,
+  the collector, the docs; (2) the console's upload.
 
 ## Problem
 
@@ -966,13 +968,69 @@ the server's own ingests.
   With `-plan` it adds checks against the plan's pins: is the bundle key pinned, and is each listed
   source key pinned, listed only, or missing. It prints totals, inflated sizes and the import's disk
   need. Without `-plan` it reports the bundle as consistent, not as trusted.
-- **Phase 2.** `POST /api/v1/tenants/{t}/bundles` lets a server administrator upload a bundle as a
-  streamed body, up to `bundles.max_size` (default 20 GiB).
-  - The body goes to the domain's `imports/` prefix, so the collector leaves it alone.
-  - The route answers `202` with the import's id. One replica then imports it under a lease, as the
-    CLI does, and `GET …/bundles/{id}` gives the import record.
-  - The console uploads from the tenant's Upstreams page.
-  - Phase 2 settles resumable uploads and ingress body limits.
+- **Phase 2.** Uploading a bundle over the API in chunks, imported by the server: below.
+
+### Uploading a bundle (phase 2)
+
+Phase 2 is for administrators who cannot run `kista admin` beside the server and cannot write to
+its object store: a bundle uploaded over the API, imported by the server. A bundle is gigabytes,
+and the path to the server has limits of its own: an ingress or proxy caps a request body (nginx
+1 MiB by default, a cloud load balancer or a serverless front end some tens of MiB), and a long
+request breaks. So an upload comes in **chunks**, each its own request, each stored as its own
+object; a broken upload resumes by sending the chunks the server lacks. No object store needs
+multipart support: the import reads the chunks in order as one stream.
+
+**The session.** A server administrator creates an upload:
+
+```text
+POST   /api/v1/tenants/{t}/bundles              {size, sha256, dry_run?, upstreams?, feeds?, any_tenant?}
+                                                → 201 {id, chunk_size, chunks, expires_at}
+PUT    /api/v1/tenants/{t}/bundles/{id}/chunks/{n}   the chunk's bytes            → 204
+GET    /api/v1/tenants/{t}/bundles/{id}         the upload: state, chunks received, its import
+POST   /api/v1/tenants/{t}/bundles/{id}/complete                                  → 202
+DELETE /api/v1/tenants/{t}/bundles/{id}         an upload not yet importing       → 204
+GET    /api/v1/tenants/{t}/bundles              the tenant's uploads and imports, newest first
+```
+
+- `size` is the bundle's size in bytes, at most `bundles.max_size` (default 20 GiB); `sha256` is
+  its SHA-256 (the export prints it), so a damaged or mixed-up upload is refused before it is
+  imported. The options are the CLI's import flags.
+- The server answers the chunk size (`bundles.chunk_size`, default 16 MiB, 1 to 64 MiB) and the
+  number of chunks: chunk `n` (from 0) is the bundle's bytes from `n × chunk_size`, the last one
+  shorter.
+- **A chunk** is a `PUT` of exactly its bytes (`Content-Length` its size), with the
+  `Content-Digest: sha-256=:<base64>:` of RFC 9530. The server reads at most the chunk's size,
+  checks the digest, and stores the chunk as `uploads/<id>/<n>` in the tenant's blob domain. A
+  chunk sent again replaces itself only with the same digest (a retry); another digest is `409`.
+- **Resuming**: `GET` lists the chunks received; the client sends the others, in any order and in
+  parallel.
+- **Complete** checks every chunk is there, and queues the import (`202`). One replica takes it
+  under a lease (`kista/bundle-upload/<id>`), reads the chunks once to check the declared SHA-256
+  (a mismatch fails the upload, and nothing is imported), then reads them again in order as one
+  stream and imports it as `kista admin bundle import` does, with the bundle keys pinned for the
+  tenant. The import's `input_sha256` must equal the declared one too. The upload records the
+  import's id; `GET` shows its record and result.
+- **The chunks go** once the upload is imported, failed or aborted, and with an upload that
+  expires: one not completed within `bundles.upload_ttl` (default 24 h) of its last chunk. The
+  storage collector (spec 0016) deletes them, and the objects under `uploads/` whose upload is
+  gone.
+- **Limits.** At most `bundles.max_uploads` (default 2) uploads per tenant not yet imported, and
+  one import of an upload at a time per tenant. A chunk's request has the server's read timeouts;
+  a stalled chunk is simply sent again.
+
+**The blob layer** gains the `uploads/` prefix: `uploads/<id>/<n>`, written and deleted by kista
+(unlike `imports/`, which kista only reads), listed only by the collector.
+
+**The console** uploads from the tenant's Upstreams page, for a server administrator: a file
+picker, its SHA-256 computed in the browser, chunks sent with progress and retried, an upload
+resumed after a reload (the session's id kept in the browser's storage), and the import's result.
+
+**Who.** Server administrators only, as the CLI's import: an upload changes what every reader of
+the tenant installs. Each act is audited: `bundle.upload` (created, with the size and declared
+SHA-256), `bundle.upload_abort`, and the import's own `bundle.import`.
+
+The CLI needs none of this: `kista admin bundle import` reads a file, standard input or
+`imports/`.
 
 ### Events
 
@@ -994,6 +1052,8 @@ Spec 0010's catalogue gains:
 - **`upstream.release`** gains `bundle`, so the audit alone answers "which bundle brought this
   release, and who imported it".
 - **`upstream.rejected`** is made when a cell changes into a refusal, as in a run.
+- **Phase 2.** `bundle.upload` (an upload created: its id, size and declared SHA-256) and
+  `bundle.upload_abort`, subject `tenant:<name>`; the import records `bundle.import` as the CLI's.
 - **Phase 1b.** `feed.run` gains `bundle` (the manifest's id) and `dry_run` for an import's target
   feed; `bundle.import`'s targets name feeds too (`feed:<name>`); `bundle.export`'s counts gain the
   feeds'; `bundle.reset` names `feed:<name>`; `feed.add` gains `mode` and `export`, and
@@ -1033,7 +1093,13 @@ gaps.
 - both join the reaper's steps (`feed_refusals` before `feeds`) and the collector's step beside
   `DeleteGoneFeedCursors`.
 
-Phase 2 adds the upload state to `bundle_imports`.
+**Migration 0022** (phase 2), on all three dialects, with `-- +min_reader 22` (an older replica
+would not import a completed upload, and its collector would not know `uploads/`):
+- **`bundle_uploads`**: `id`, `tenant_id`, `size`, `sha256`, `chunk_size`, `options` (JSON: dry
+  run, upstreams, feeds, any tenant), `state` (`uploading`, `queued`, `importing`, `imported`,
+  `failed`, `aborted`, `expired`), `import_id` (null), `error`, `created_by`, `created_at`,
+  `updated_at`; deleted with the tenant;
+- **`bundle_upload_chunks`** `(upload_id, n)`: `size`, `sha256`, `received_at`, `ON DELETE CASCADE`.
 
 ### Configuration
 
@@ -1042,6 +1108,9 @@ Phase 2 adds the upload state to `bundle_imports`.
 | `upstreams.bundle_keys` | 1a |
 | `upstreams.bundle_sources` | 1a |
 | `bundles.max_size` | 2 |
+| `bundles.chunk_size` | 2 |
+| `bundles.upload_ttl` | 2 |
+| `bundles.max_uploads` | 2 |
 | The chart's `spool.importHeadroom` | 1a |
 
 Phase 1b adds no setting: `export` and the mode are a feed's.
@@ -1066,7 +1135,8 @@ internal/upstream        + bundle mode (no sync, no credential, no egress port c
                          import, whose reads of upstreams, cells and keys it shares)
 internal/release         + Ingest names the bundle in its event; MayPublish takes the tenant, for
                          "bundle:" pseudo-credentials
-internal/blob            + the imports/ prefix, read-only to kista, outside the collector
+internal/blob            + the imports/ prefix, read-only to kista, outside the collector; the
+                         uploads/ prefix (phase 2), swept by the collector
 internal/attachment      + bundle-mode feeds; `export` and what it keeps; the client's checks
                          shared by a run and a bundle import (1b)
 internal/bundle          + the plan's and the manifest's feeds, the feed entries (1b)
@@ -1085,6 +1155,11 @@ These pages are updated in the same PR:
 - `security.md`: the trust model above;
 - `deployment/kubernetes.md`: the import's disk, `importHeadroom`, and import as a Job;
 - the new `deployment/air-gapped.md`, with its sidebar entry.
+
+Phase 2 updates `api.md` (the upload routes), `upstreams.md` (Uploading a bundle),
+`configuration.md`, `observability.md`, `storage.md` (the `uploads/` prefix), `console.md`,
+`deployment/kubernetes.md` (ingress body limits need no change: chunks fit) and
+`deployment/air-gapped.md`.
 
 Phase 1b updates, each with the PR whose behaviour it describes: `attachments.md` (bundle mode,
 `export` and what it keeps), `api.md`, `administration/commands.md`, `observability.md`,
@@ -1352,8 +1427,13 @@ statements bullet).
     local to the gateway judged again at the site; a withdrawal in a later bundle; a damaged batch;
     a reset and the gap after it. The DuckDB end-to-end test stays as 1a's: DuckDB reads no
     statement, so the round trips cover the path.
-- **2.** An upload, the size limit, server administrators only, and one import per upload across
-  replicas.
+- **2.** An upload in chunks, out of order and in parallel; a chunk resent with its digest (a
+  no-op) and with another (`409`); a wrong `Content-Length` or digest refused; resuming from the
+  chunks received; complete with a chunk missing refused; the declared SHA-256 differing (the dry
+  pass fails, nothing changes); the size limit and `max_uploads`; server administrators only; one
+  import per upload across replicas (two runners, one lease); the chunks deleted after the import,
+  an abort and expiry, and orphans under `uploads/`; the console's upload, resumed after a reload
+  (Playwright).
 
 ## Alternatives considered
 
