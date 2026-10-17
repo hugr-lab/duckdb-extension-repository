@@ -398,6 +398,23 @@ when a source failed as a whole, after writing the bundle of the others. Exporti
 administrator's act, recorded as `bundle.export`. A plan discloses the site's configuration to the
 gateway: its sources, allowlists, platforms, DuckDB versions and the bodies it holds.
 
+**Statements** (spec 0014 phase 1b). For each of the plan's feeds, the export carries what the
+tenant's export feeds of the same URL hold ([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites)).
+It contacts no feed. Imports do not take statements yet.
+
+- **Which feed**: an online feed of the URL with `export` set, whose kinds include every kind the
+  site's feed accepts, and which kept a keys file. Without one the feed fails as a whole ("not
+  subscribed here", "not kept for export", "accepts fewer kinds", "never ran"), the bundle carries
+  the others, and the command exits `1`. With several, each body takes the one that read furthest.
+- **Which bodies**: those the plan offers, and from the start those of the files the bundle brings
+  for the feed's sources. Each body's range runs from the plan's cursor to what the gateway read.
+- **What**: each statement as its issuer signed it. A stored document's content goes with it. A
+  refusal, a statement about a document removed here, or one about a document never held goes
+  without content, with a note saying why. The range ends just below a statement that does not
+  verify with the plan's keys, or whose stored document cannot be read: the site moves no further.
+- The command prints per feed where it came from, those feeds' status and last success (so a
+  stale gateway shows), its counts and bytes.
+
 ### Importing a bundle
 
 ```bash

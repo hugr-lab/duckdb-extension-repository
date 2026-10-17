@@ -468,8 +468,9 @@ Each run records a `feed.run` event (see [Observability](observability.md)).
 An air-gapped site will take statements in bundles, as it takes extension files
 ([Bundle mode](upstreams.md#bundle-mode), spec 0014 phase 1b). This version has the two kinds of
 feed the bundles need, and a plan lists the site's bundle-mode feeds with the bodies each offers and
-the last statement received. Exports and imports do not carry statements yet. Until they do, a
-bundle-mode feed receives nothing, and an export feed only gathers what a later export will need.
+the last statement received, and an export carries the statements an export feed holds
+([Exporting a bundle](upstreams.md#exporting-a-bundle)). Imports do not take them yet: until they
+do, a bundle-mode feed receives nothing.
 
 **A bundle-mode feed** (`-mode bundle`, `"mode": "bundle"`), at the site:
 

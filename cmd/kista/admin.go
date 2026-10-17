@@ -2069,7 +2069,7 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 }
 
 // errExportFailed ends an export some source of which failed as a whole.
-var errExportFailed = errors.New("a source of the plan failed as a whole: see above")
+var errExportFailed = errors.New("a source or a feed of the plan failed as a whole: see above")
 
 // bundleExport writes a bundle answering a plan: to a temporary file beside the output, linked
 // when complete, so an interrupted export leaves no output.
@@ -2142,6 +2142,17 @@ func (a *adminCmd) bundleExport(ctx context.Context, tenant, planFile, keyFile, 
 		for _, p := range s.Problems {
 			fmt.Fprintf(a.out, "  %s %s %s %s: %s %q\n", orNone(s.Prefix), p.DuckDBVersion, p.Platform, p.Name, p.Outcome, p.Detail)
 		}
+	}
+	if len(res.Feeds) > 0 {
+		a.table("FEED\tFROM\tSTATUS\tLAST SUCCESS\tCOUNTS\tBYTES\tERROR", func(w io.Writer) {
+			for _, f := range res.Feeds {
+				last := "-"
+				if !f.LastSuccess.IsZero() {
+					last = ts(f.LastSuccess)
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", f.URL, orNone(f.From), orNone(f.Status), last, countsText(f.Counts), f.Bytes, f.Error)
+			}
+		})
 	}
 	fmt.Fprintf(a.out, "plan sha256 %s\nmanifest sha256 %s\nsha256 %s\n", res.PlanSHA256, res.ManifestSHA256, res.SHA256)
 	if res.Failed() {

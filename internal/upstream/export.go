@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -59,11 +60,13 @@ type ExportResult struct {
 	Files          int            `json:"files"`
 	Bytes          int64          `json:"bytes"`
 	Sources        []ExportSource `json:"sources"`
+	Feeds          []ExportFeed   `json:"feeds,omitempty"` // phase 1b
 }
 
-// Failed reports whether a source failed as a whole.
+// Failed reports whether a source or a feed failed as a whole.
 func (r ExportResult) Failed() bool {
-	return slices.ContainsFunc(r.Sources, func(s ExportSource) bool { return s.Error != "" })
+	return slices.ContainsFunc(r.Sources, func(s ExportSource) bool { return s.Error != "" }) ||
+		slices.ContainsFunc(r.Feeds, func(f ExportFeed) bool { return f.Error != "" })
 }
 
 // Export errors.
@@ -247,6 +250,26 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 		m.Sources = []bundle.Source{}
 	}
 	bundle.Canonical(m.Sources)
+	// the feeds (phase 1b): their batches spooled, so the manifest can name their hashes
+	var feeds []*xfeed
+	var spool *os.File
+	if len(plan.Feeds) > 0 {
+		if s.TempDir != "" {
+			if err := os.MkdirAll(s.TempDir, 0o700); err != nil {
+				return res, err
+			}
+		}
+		if spool, err = os.CreateTemp(s.TempDir, "kista-export-feeds-*"); err != nil {
+			return res, err
+		}
+		defer func() { _ = spool.Close(); _ = os.Remove(spool.Name()) }()
+		if feeds, res.Feeds, err = x.feeds(ctx, &plan, &m, spool); err != nil {
+			return res, err
+		}
+		for _, f := range feeds {
+			m.Feeds = append(m.Feeds, f.m)
+		}
+	}
 	if err := m.Validate(time.Time{}); err != nil {
 		return res, fmt.Errorf("upstream: the export made an invalid manifest: %w", err)
 	}
@@ -286,6 +309,9 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 		res.Files++
 		res.Bytes += gz.Size
 	}
+	if err := x.writeFeeds(ctx, bw, feeds, spool); err != nil {
+		return res, err
+	}
 	if err := bw.Close(); err != nil {
 		return res, err
 	}
@@ -300,6 +326,14 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 		}
 		if src.Error != "" {
 			counts["failed_sources"]++
+		}
+	}
+	for _, f := range res.Feeds {
+		for k, n := range f.Counts {
+			counts["feed_"+k] += n
+		}
+		if f.Error != "" {
+			counts["failed_feeds"]++
 		}
 	}
 	err = s.Store.InTenantTx(ctx, t.ID, nil, func(tx *store.Tx) error {

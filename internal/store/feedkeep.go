@@ -211,3 +211,11 @@ func (t *Tx) DropFeedExport(ctx context.Context, f Feed) error {
 	_, err := t.exec(ctx, "DELETE FROM feed_kept WHERE tenant_id = ? AND issuer = ?", f.TenantID, f.URL)
 	return err
 }
+
+// FeedDocumentsOf lists a tenant's documents of an issuer for a body whose statement's seq is in
+// (after, upTo], tombstones too, in seq order (spec 0014: what an export carries, whichever feed
+// stored them).
+func (s *Store) FeedDocumentsOf(ctx context.Context, tenantID, issuer, bodyHash string, after, upTo int64) ([]Attachment, error) {
+	return s.listAttachments(ctx, "SELECT "+attachmentCols+` FROM attachments WHERE tenant_id = ? AND origin = ? AND issuer = ?
+AND body_hash = ? AND seq > ? AND seq <= ? AND statement IS NOT NULL ORDER BY seq`, tenantID, AttachedByFeed, issuer, bodyHash, after, upTo)
+}
