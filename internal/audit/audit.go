@@ -179,6 +179,7 @@ var catalogue = map[Kind][]string{
 	// bundles (spec 0014): targets last, since a truncated event keeps its first fields
 	"bundle.import": {"import", "manifest", "created_at", "exporter", "bundle_key", "input_sha256", "dry_run", "state", "targets"},
 	"bundle.reset":  {"upstream", "manifest", "created_at"},
+	"bundle.export": {"plan", "manifest", "manifest_sha256", "bundle_key", "counts"},
 	"shadow.add":    {"name"},
 	"shadow.remove": {"name"},
 	"auth.failure":  {"reason", "route", "count"},
@@ -225,7 +226,7 @@ func SubjectForm(k Kind) string {
 		return "sink:<name>"
 	case "auth.failure", "authz.refused", "request.failed":
 		return "route:<route>"
-	case "bundle.import":
+	case "bundle.import", "bundle.export":
 		return "tenant:<name>"
 	case "bundle.reset":
 		return "upstream:<name>"

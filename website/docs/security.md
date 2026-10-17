@@ -265,7 +265,8 @@ shows; content is fetched only from the fixed path under the configured feed URL
 ## Bundles
 
 An air-gapped site takes extensions from **bundles** a connected kista exports
-([Importing a bundle](upstreams.md#importing-a-bundle)). The trust comes from the site:
+([Exporting a bundle](upstreams.md#exporting-a-bundle), [Importing a bundle](upstreams.md#importing-a-bundle)).
+The trust comes from the site:
 
 - **Bundle keys.** Every bundle is signed with an Ed25519 key, and is imported into a tenant only
   when that key's fingerprint is pinned for the tenant in the configuration (`upstreams.bundle_keys`):
@@ -285,6 +286,13 @@ An air-gapped site takes extensions from **bundles** a connected kista exports
   honest-user control, not DRM.
 - **Input.** The manifest, the tar and its order are checked, entries outside the manifest are read
   through and capped, sizes are bounded by `blob.max_body`, and one file at a time is spooled.
+- **The gateway.** The export ships each mirrored file with the signature its source made, never a
+  key of the gateway's: a gateway without the bundle key can only withhold. An own channel exported
+  as a source is the exception, signed by the channel's key the site pinned. Apart from `-sync`,
+  which runs the mirrors, the export contacts nothing but the sources' `.well-known` files, through
+  egress, and no credential reaches a bundle.
+  A plan discloses the site's sources, allowlists, platforms, DuckDB versions and held bodies to
+  whoever exports it.
 
 ## Tenant deletion
 
