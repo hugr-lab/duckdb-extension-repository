@@ -176,7 +176,7 @@ kista bundle inspect <bundle> [-plan <plan.json>] [-max-body <bytes>]
   the site's `blob.max_body`) bounds what it inflates. It prints the cells per outcome, the sizes,
   the spool an import needs and the bundle's SHA-256, and exits `1` on any problem. Without
   `-plan`, a bundle is reported consistent, not trusted.
-  For a bundle's feeds (spec 0014 phase 1b; the import does not take them yet), `inspect` checks their
+  For a bundle's feeds (spec 0014 phase 1b), `inspect` checks their
   entries' order, hashes and sizes, each statement's signature against the bundle's keys file (with
   `-plan`, only the keys the plan's feed pins, printed `pinned` or `listed, not pinned`), its
   issuer, its body within a covered range, and that a statement with content has its document after
@@ -349,10 +349,11 @@ See [Publishing](../publishing.md).
 | `shadow remove <tenant> <name>` | serves DuckDB's build of that name from passthrough channels again |
 | `bundle plan <tenant> [-upstream <name,...>] [-feed <name,...>] [-o <plan.json>]` | the plan of the tenant's active bundle-mode upstreams and feeds (all, or the named ones; with only one of `-upstream` and `-feed`, the other kind is left out), with the bundle keys pinned for the tenant (`upstreams.bundle_keys`); to standard output without `-o` |
 | `bundle export <tenant> -plan <plan.json> (-key <key.pem> \| -unsigned) -o <out> [-sync] [-private <prefix>]...` | exports a bundle answering a site's plan from this tenant's mirrors and own channels; prints `KIND`, `PREFIX`, `FROM`, `COUNTS`, `BYTES`, `ERROR` per source and `FEED`, `FROM`, `STATUS`, `LAST SUCCESS`, `COUNTS`, `BYTES`, `ERROR` per feed, the listed key fingerprints, the first 20 cells not exported and the bundle's SHA-256, and exits `1` when a source or a feed failed as a whole ([Exporting a bundle](../upstreams.md#exporting-a-bundle)) |
-| `bundle import <tenant> <file\|-\|blob:<domain>/imports/<name>> [-upstream <name,...>] [-dry-run] [-any-tenant]` | imports a signed bundle into the tenant's bundle-mode upstreams; prints `UPSTREAM`, `STATUS`, `COUNTS`, `DETAIL` and exits `1` unless every target was imported and the bundle read whole ([Importing a bundle](../upstreams.md#importing-a-bundle)) |
+| `bundle import <tenant> <file\|-\|blob:<domain>/imports/<name>> [-upstream <name,...>] [-feed <name,...>] [-dry-run] [-any-tenant]` | imports a signed bundle into the tenant's bundle-mode upstreams and feeds (with only one of `-upstream` and `-feed`, the other kind takes no target); prints `TARGET`, `STATUS`, `COUNTS`, `DETAIL` (feeds as `feed:<name>`) and exits `1` unless every target was imported, the bundle read whole and no feed body was a gap ([Importing a bundle](../upstreams.md#importing-a-bundle)) |
 | `bundle list <tenant> [-limit <n>]` | the tenant's imports, newest first (`-limit` 50 by default): `ID`, `STARTED`, `STATE`, `DRY RUN`, `MANIFEST`, `CREATED` |
 | `bundle show <tenant> <import id>` | one import: its manifest, exporter, bundle key, input SHA-256 and counts per target |
 | `bundle reset <tenant> <upstream>` | clears a bundle-mode upstream's last-bundle mark, so it takes older bundles again |
+| `bundle reset <tenant> -feed <name>` | clears a bundle-mode feed's last-bundle mark and resets its cursors, so the next bundle takes its history again |
 
 `upstream add` flags: `-extensions <name,...>` or `*`, `-prefix <https://...>` and
 `-keys <sha256:...,...>` (for `repository`), `-public`, `-mode mirror`, `-mode pull-through` or
@@ -372,7 +373,7 @@ See [Publishing](../publishing.md).
 | `attestation-key list <tenant>` | `ID`, `FINGERPRINT`, `STATE`, `TRUSTED SINCE`, `SIGNER` | |
 | `attestation-key activate` or `retire` `<tenant> <id or fingerprint> [-force]` | as channel keys; only a trusted key can be retired | |
 | `feed add <tenant> <name> -url https://<host>/api/v1/tenants/<t> -credential <c> -key <fp,...> [-kinds <k,...>] [-readers] [-channels <c,...>] [-export]` | subscribes to another repository's feed; `-export` keeps what a bundle needs ([Feeds for air-gapped sites](../attachments.md#feeds-for-air-gapped-sites)) | |
-| `feed add <tenant> <name> -mode bundle -url … -key <fp,...> [-kinds …] [-readers] [-channels …]` | a bundle-mode feed, for statements in bundles (not imported yet); no credential, never run | |
+| `feed add <tenant> <name> -mode bundle -url … -key <fp,...> [-kinds …] [-readers] [-channels …]` | a bundle-mode feed: its statements arrive in bundles; no credential, never run | |
 | `feed list <tenant>` | `NAME`, `URL`, `MODE`, `STATE`, `STATUS`, `LAST SUCCESS`, `KINDS`, `READERS`, `EXPORT` | |
 | `feed show`, `sync`, `pause`, `resume` `<tenant> <name>` | `show` gives the mode, export, when the keys file was kept and the last bundle; `sync` requests a run that a running `kista serve` takes, refused for a bundle-mode feed | |
 | `feed set <tenant> <name> [-credential <c>] [-key <fp,...>] [-kinds <k,...> or -] [-readers=true or false] [-export=true or false]` | changes a subscription; `-kinds -` accepts every kind; `-export=true` resets the cursors and reads the history again, `-export=false` deletes what it kept | |

@@ -19,7 +19,7 @@ and it is superseded by a new spec when a decision changes.
 | [0010](0010-audit/spec.md) | Audit events, download statistics, metrics | implemented |
 | [0011](0011-attachments/spec.md) | Attachments and the feed | implemented |
 | [0013](0013-deployment/spec.md) | Deployment: image, Helm chart, Azure | phase 1 implemented; phase 2 moved to 0020 |
-| [0014](0014-bundles/spec.md) | Bundles for air-gapped sites | phase 1a implemented, 1b parts 1-3 implemented |
+| [0014](0014-bundles/spec.md) | Bundles for air-gapped sites | phase 1a implemented, 1b implemented |
 | [0015](0015-console/spec.md) | Administration console, the micro-frontend contract | implemented |
 | [0016](0016-storage-gc/spec.md) | Storage garbage collection, purging yanked releases | implemented |
 | [0017](0017-extension-groups/spec.md) | Extension groups: grants on named sets of extensions | implemented |

@@ -94,8 +94,8 @@ are all the kinds in `internal/audit`:
 | | `upstream.release` | `channel:<channel>/ext:<name>/release:<id>` | `upstream`, `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `url`, `key`, `bundle` (an import's manifest) |
 | | `upstream.rejected` | `upstream:<name>` | `upstream`, `duckdb_version`, `platform`, `name`, `outcome` |
 | | `upstream.run` | `upstream:<name>` | `upstream`, `dry_run`, `counts`, `error`, `bundle` (an import's manifest) |
-| | `bundle.import` | `tenant:<name>` | `import`, `manifest`, `created_at`, `exporter`, `bundle_key`, `input_sha256`, `dry_run`, `state`, `targets` (counts per upstream) |
-| | `bundle.reset` | `upstream:<name>` | `upstream`, `manifest`, `created_at` (the mark it cleared) |
+| | `bundle.import` | `tenant:<name>` | `import`, `manifest`, `created_at`, `exporter`, `bundle_key`, `input_sha256`, `dry_run`, `state`, `targets` (counts per upstream, and per feed as `feed:<name>`) |
+| | `bundle.reset` | `upstream:<name>` or `feed:<name>` | `upstream` or `feed`, `manifest`, `created_at` (the mark it cleared; a feed's cursors are reset too) |
 | | `bundle.export` | `tenant:<name>` | `plan` (its SHA-256), `manifest`, `manifest_sha256`, `bundle_key` (none when unsigned), `counts` (per outcome, and `failed_sources`; per feed `feed_bodies`, `feed_statements`, `feed_withdrawals`, `feed_without_content`, `feed_documents`, and `failed_feeds`) |
 | | `shadow.add`, `shadow.remove` | `shadow:<name>` | `name` |
 | Attachments and feeds | `attachment.add` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `size` |
@@ -106,7 +106,7 @@ are all the kinds in `internal/audit`:
 | | `feed.add` | `feed:<name>` | `name`, `url`, `credential`, `kinds`, `readers`, `offer`, `channels`, `keys`, `mode`, `export` |
 | | `feed.change` | `feed:<name>` | `name`, `change` (with `export`, `cursors: reset` or `kept: dropped`) |
 | | `feed.remove` | `feed:<name>` | `name`, `documents`, `export` |
-| | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `error` (a class: `unauthorized`, `refused`, `unreachable`, `credential`, `token`, `keys`, `limits`, `failed`) |
+| | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `bundle` and `dry_run` (an import's), `error` (a class: `unauthorized`, `refused`, `unreachable`, `credential`, `token`, `keys`, `limits`, `failed`) |
 | Access | `auth.failure` | `route:<route>` | `reason`, `route`, `count` |
 | | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count` |
 | | `install` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `duckdb_version`, `body_hash`, `user_agent` |

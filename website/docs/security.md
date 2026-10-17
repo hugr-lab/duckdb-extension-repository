@@ -293,6 +293,14 @@ The trust comes from the site:
   egress, and no credential reaches a bundle.
   A plan discloses the site's sources, allowlists, platforms, DuckDB versions and held bodies to
   whoever exports it.
+- **Statements** (spec 0014 phase 1b). They stay signed by their issuer and are judged at the site
+  under its own pins; the bundle's keys file is unsigned and used only by fingerprint. Neither a
+  carrier nor the bundle key's holder can forge, change or reorder a statement. The holder can leave
+  statements out of a range, a withdrawal among them, and withhold documents: a source's numbering
+  has gaps, so a range cannot prove it is whole. The site applies every withdrawal it receives and
+  moves a cursor no further than a statement it verified; `bundle reset -feed` takes the history
+  again from another bundle. A gateway's export feeds keep what they refused and statements about
+  documents they do not hold within a cap of their own, apart from the documents quota.
 
 ## Tenant deletion
 

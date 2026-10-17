@@ -134,7 +134,7 @@ var catalogue = map[Kind][]string{
 	"feed.add":                 {"name", "url", "credential", "kinds", "readers", "offer", "channels", "keys", "mode", "export"},
 	"feed.remove":              {"name", "documents", "export"},
 	"feed.change":              {"name", "change"},
-	"feed.run":                 {"feed", "counts", "refused", "error"},
+	"feed.run":                 {"feed", "counts", "refused", "error", "bundle", "dry_run"},
 	// identity
 	"issuer.add":              {"name", "url", "algorithms"},
 	"issuer.remove":           {"name", "url"},
@@ -178,7 +178,7 @@ var catalogue = map[Kind][]string{
 	"upstream.run":      {"upstream", "dry_run", "counts", "error", "bundle"},
 	// bundles (spec 0014): targets last, since a truncated event keeps its first fields
 	"bundle.import": {"import", "manifest", "created_at", "exporter", "bundle_key", "input_sha256", "dry_run", "state", "targets"},
-	"bundle.reset":  {"upstream", "manifest", "created_at"},
+	"bundle.reset":  {"upstream", "feed", "manifest", "created_at"},
 	"bundle.export": {"plan", "manifest", "manifest_sha256", "bundle_key", "counts"},
 	"shadow.add":    {"name"},
 	"shadow.remove": {"name"},
@@ -229,7 +229,7 @@ func SubjectForm(k Kind) string {
 	case "bundle.import", "bundle.export":
 		return "tenant:<name>"
 	case "bundle.reset":
-		return "upstream:<name>"
+		return "upstream:<name> or feed:<name>"
 	}
 	if strings.HasPrefix(string(k), "publisher.github.") {
 		return "publisher:<name>/github:<id>"

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
@@ -24,7 +25,10 @@ import (
 
 // ImportOptions are a bundle import's (spec 0014).
 type ImportOptions struct {
-	Upstreams  []string // the targets by name; none: every active bundle-mode upstream
+	Upstreams []string // the targets by name; none: every active bundle-mode upstream
+	// Feeds are the feed targets by name; none: every active bundle-mode feed (phase 1b). With only
+	// one of Upstreams and Feeds, the other kind takes no target.
+	Feeds      []string
 	DryRun     bool
 	AnyTenant  bool     // import a bundle whose plan names another tenant
 	BundleKeys []string // the fingerprints pinned for the tenant (upstreams.bundle_keys)
@@ -42,12 +46,14 @@ const (
 	TargetFailed   = "failed"   // keys, matrix, a pause, or the bundle ended before its files
 )
 
-// TargetResult is one upstream's part of an import.
+// TargetResult is one upstream's or feed's part of an import.
 type TargetResult struct {
-	Upstream string `json:"upstream"`
-	Status   string `json:"status"`
-	Detail   string `json:"detail,omitempty"`
-	Result   Result `json:"run"`
+	Upstream string                `json:"upstream,omitempty"`
+	Feed     string                `json:"feed,omitempty"` // phase 1b
+	Status   string                `json:"status"`
+	Detail   string                `json:"detail,omitempty"`
+	Result   Result                `json:"run"`
+	FeedRun  *attachment.RunResult `json:"feed_run,omitempty"`
 }
 
 // ImportResult is an import's outcome: its record, each target's, and what the bundle held that
@@ -56,7 +62,8 @@ type ImportResult struct {
 	Import    store.BundleImport `json:"-"`
 	Targets   []TargetResult     `json:"targets"`
 	Unplanned int                `json:"unplanned"`         // bundle cells outside every target's matrix
-	Feeds     int                `json:"feeds"`             // feeds the bundle carries, not imported yet (spec 0014 phase 1b)
+	Feeds     int                `json:"feeds"`             // feeds the bundle carries that no target took (phase 1b)
+	Gaps      int                `json:"gaps"`              // feed bodies whose range did not start at the feed's cursor: write a new plan
 	Skipped   int64              `json:"skipped_bytes"`     // entries read through
 	Problem   string             `json:"problem,omitempty"` // why the import stopped early
 	Stop      string             `json:"stop,omitempty"`    // its class: bundle (truncated, malformed, stalled), interrupted, deleting
@@ -126,9 +133,20 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 	if m.Plan.Tenant != t.Name && !o.AnyTenant {
 		return out, fmt.Errorf("%w: %s, not %s (-any-tenant imports it)", ErrBundleTenant, m.Plan.Tenant, t.Name)
 	}
-	targets, err := s.importTargets(ctx, t, m, o.Upstreams)
-	if err != nil {
-		return out, err
+	var targets []*target
+	if len(o.Upstreams) > 0 || len(o.Feeds) == 0 {
+		if targets, err = s.importTargets(ctx, t, m, o.Upstreams); err != nil {
+			return out, err
+		}
+	}
+	var fts []*ftarget
+	if len(o.Feeds) > 0 || len(o.Upstreams) == 0 {
+		if fts, err = s.feedTargets(ctx, t, m, o.Feeds); err != nil {
+			return out, err
+		}
+	}
+	if len(targets) == 0 && len(fts) == 0 {
+		return out, fmt.Errorf("%w: no active bundle-mode upstream or feed of tenant %s has a source or feed in the bundle", store.ErrInvalid, t.Name)
 	}
 	if err := s.failInterrupted(ctx, t.ID); err != nil {
 		return out, err
@@ -163,6 +181,21 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 			leases = append(leases, tg.lease)
 		}
 	}
+	for _, ft := range fts { // a feed's lease is its runs': an online run and an import exclude each other
+		if leaseErr != nil {
+			continue
+		}
+		held, err := s.Store.AcquireLease(ctx, ft.lease, o.Holder, leaseTTL)
+		switch {
+		case err != nil:
+			leaseErr = err
+		case !held:
+			ft.status = TargetBusy
+		default:
+			ft.held = true
+			leases = append(leases, ft.lease)
+		}
+	}
 	// the leases are renewed while the import runs; the renewal ends before they are released
 	var renewal sync.WaitGroup
 	renewal.Add(1)
@@ -190,12 +223,17 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 		cancel(nil)
 		renewal.Wait()
 		s.releaseLeases(ctx, targets, o.Holder)
+		for _, ft := range fts {
+			if ft.held {
+				_ = s.Store.ReleaseLease(context.WithoutCancel(ctx), ft.lease, o.Holder)
+			}
+		}
 	}()
 	if leaseErr == nil {
 		leaseErr = s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.WritableTenant(ctx, t.ID, false) })
 	}
 	if leaseErr != nil {
-		s.finishImport(ctx, a, t, &rec, b, &out, targets, leaseErr)
+		s.finishImport(ctx, a, t, &rec, b, &out, targets, fts, leaseErr)
 		return out, leaseErr
 	}
 	for _, tg := range targets {
@@ -203,9 +241,19 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 			s.prepare(ctx, tg, m, b.ManifestSHA, o.DryRun)
 		}
 	}
+	defer s.feedSpools(fts)()
+	for _, ft := range fts {
+		if ft.held {
+			s.prepareFeed(ctx, t, ft, m, b.ManifestSHA, o.DryRun)
+		}
+	}
 	out.Unplanned = unplanned(m, targets)
-	out.Feeds = len(m.Feeds)
-	streamErr := s.stream(ictx, a, t, b, targets, o.DryRun)
+	for fi := range m.Feeds {
+		if !slices.ContainsFunc(fts, func(ft *ftarget) bool { return ft.fi == fi }) {
+			out.Feeds++
+		}
+	}
+	streamErr := s.stream(ictx, a, t, b, targets, fts, o.DryRun)
 	if cause := context.Cause(ictx); cause != nil && !errors.Is(cause, context.Canceled) {
 		streamErr = cause // the watchdog, a lost lease
 	} else if streamErr == nil && ctx.Err() != nil {
@@ -216,7 +264,9 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 	if stopClass(streamErr) == "bundle" || streamErr == nil {
 		s.leftovers(ictx, t, targets, o.DryRun, b.Ended())
 	}
-	s.finishImport(ctx, a, t, &rec, b, &out, targets, streamErr)
+	// a feed's cursors move only after a whole read; a stopped import moves none
+	s.finishFeeds(ctx, a, b, fts, streamErr != nil)
+	s.finishImport(ctx, a, t, &rec, b, &out, targets, fts, streamErr)
 	return out, nil
 }
 
@@ -306,10 +356,7 @@ func (s *Service) importTargets(ctx context.Context, t store.Tenant, m *bundle.M
 		}
 		out = append(out, tg)
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("%w: no active bundle-mode upstream of tenant %s has a source in the bundle", store.ErrInvalid, t.Name)
-	}
-	return out, nil
+	return out, nil // none is the caller's to refuse: the bundle may serve feeds only
 }
 
 // matrix is an upstream's cells as a run computes them; nil when it is over a cap (the target
@@ -444,7 +491,7 @@ func wellKnown(targets []*target, src *bundle.Source, data []byte) {
 
 // stream reads the bundle's items in order and takes each file into the target cells it fills. It
 // returns the bundle's own failure (truncated, malformed, stalled), or a stop.
-func (s *Service) stream(ctx context.Context, a authz.Actor, t store.Tenant, b *bundle.Bundle, targets []*target, dryRun bool) error {
+func (s *Service) stream(ctx context.Context, a authz.Actor, t store.Tenant, b *bundle.Bundle, targets []*target, fts []*ftarget, dryRun bool) error {
 	byFile := b.Manifest.CellsByFile()
 	for {
 		it, err := b.Next()
@@ -458,7 +505,10 @@ func (s *Service) stream(ctx context.Context, a authz.Actor, t store.Tenant, b *
 			wellKnown(targets, it.WellKnown, it.Data)
 			continue
 		}
-		if it.Feed != nil { // statements come in with spec 0014 phase 1b's feed import; read through until then
+		if it.Feed != nil { // statements, after the files (phase 1b)
+			if err := s.feedEntry(ctx, it, fts); err != nil {
+				return err
+			}
 			continue
 		}
 		// a repository target whose .well-known entry never came before the files fills nothing
@@ -818,7 +868,7 @@ func unplanned(m *bundle.Manifest, targets []*target) int {
 
 // finishImport records each leased target's run and the import's end.
 func (s *Service) finishImport(ctx context.Context, a authz.Actor, t store.Tenant, rec *store.BundleImport, b *bundle.Bundle,
-	out *ImportResult, targets []*target, problem error) {
+	out *ImportResult, targets []*target, fts []*ftarget, problem error) {
 	fctx := context.WithoutCancel(ctx)
 	ended := time.Now().UTC()
 	failed := problem != nil
@@ -873,6 +923,24 @@ func (s *Service) finishImport(ctx context.Context, a authz.Actor, t store.Tenan
 		targetCounts[tg.u.Name] = tg.res.Counts
 		counts[tg.u.Name] = map[string]any{"status": tr.Status, "counts": tg.res.Counts}
 	}
+	for _, ft := range fts {
+		tr := TargetResult{Feed: ft.f.Name, Status: ft.status, Detail: ft.detail}
+		if ft.held && ft.imp != nil {
+			res := ft.res
+			tr.FeedRun = &res
+			out.Gaps += ft.imp.Gaps()
+		}
+		if tr.Status == TargetFailed || tr.Status == TargetBusy || tr.Status == TargetStale {
+			failed = true
+		}
+		out.Targets = append(out.Targets, tr)
+		var c map[string]int
+		if tr.FeedRun != nil {
+			c = tr.FeedRun.Counts
+		}
+		targetCounts["feed:"+ft.f.Name] = c
+		counts["feed:"+ft.f.Name] = map[string]any{"status": tr.Status, "counts": c}
+	}
 	out.Skipped = b.Skipped()
 	rec.State = store.ImportDone
 	if failed {
@@ -882,7 +950,7 @@ func (s *Service) finishImport(ctx context.Context, a authz.Actor, t store.Tenan
 		rec.InputSHA256 = b.SHA256()
 	}
 	all, _ := json.Marshal(map[string]any{"targets": counts, "unplanned": out.Unplanned, "skipped_bytes": out.Skipped,
-		"problem": out.Problem})
+		"problem": out.Problem, "gaps": out.Gaps})
 	rec.Counts = string(all)
 	// the record first and on its own: an event that fails never leaves it running
 	if err := s.Store.InTenantTx(fctx, t.ID, nil, func(tx *store.Tx) error { return tx.FinishBundleImport(fctx, rec) }); err != nil {

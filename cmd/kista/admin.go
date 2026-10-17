@@ -131,13 +131,14 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   shadow remove <tenant> <name>                   serve DuckDB's build again from passthrough channels
   bundle plan <tenant> [-upstream <name,...>] [-feed <name,...>] [-o <plan.json>]   what the tenant's bundle-mode upstreams
            and feeds ask for (spec 0014); with only one of -upstream and -feed, the other kind is left out
-  bundle import <tenant> <file|-|blob:<domain>/imports/<name>> [-upstream <name,...>] [-dry-run] [-any-tenant]
-                                                              take a signed bundle into the bundle-mode upstreams
+  bundle import <tenant> <file|-|blob:<domain>/imports/<name>> [-upstream <name,...>] [-feed <name,...>] [-dry-run] [-any-tenant]
+                                                              take a signed bundle into the bundle-mode upstreams and feeds
   bundle export <tenant> -plan <plan.json> (-key <key.pem> | -unsigned) -o <out> [-sync] [-private <prefix>]...
                                                               a bundle answering a site's plan, from this tenant's mirrors
   bundle list <tenant> [-limit <n>]                           the tenant's bundle imports, the newest first
   bundle show <tenant> <import id>                            one import: its manifest, bundle key and counts
   bundle reset <tenant> <upstream>                            clear an upstream's bundle mark (it takes older bundles)
+  bundle reset <tenant> -feed <name>                          clear a feed's bundle mark and reset its cursors
   block add <tenant> <body-hash> -reason <text>   ban a body tenant-wide: its releases are yanked
   block list <tenant>
   block remove <tenant> <body-hash>
@@ -1999,8 +2000,8 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 		}
 		return a.bundleExport(ctx, pos[0], *planFile, *keyFile, *out, upstream.ExportOptions{Private: private, Sync: *syncFirst})
 	case sub == "import" && len(pos) == 2:
-		return a.bundleImport(ctx, pos[0], pos[1], upstream.ImportOptions{Upstreams: commaList(*names), DryRun: *dryRun,
-			AnyTenant: *anyTenant, BundleKeys: a.cfg.BundleKeysFor(pos[0])})
+		return a.bundleImport(ctx, pos[0], pos[1], upstream.ImportOptions{Upstreams: commaList(*names), Feeds: commaList(*feedNames),
+			DryRun: *dryRun, AnyTenant: *anyTenant, BundleKeys: a.cfg.BundleKeysFor(pos[0])})
 	case sub == "list" && len(pos) == 1:
 		is, err := a.svc.Upstreams.Imports(ctx, a.actor, pos[0], *limit)
 		if err != nil {
@@ -2028,7 +2029,13 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 			b, _ := json.MarshalIndent(counts, "", "  ")
 			fmt.Fprintf(a.out, "counts       %s\n", b)
 		}
-	case sub == "reset" && len(pos) == 2:
+	case sub == "reset" && len(pos) == 1 && *feedNames != "" && !strings.Contains(*feedNames, ","):
+		f, err := a.svc.Upstreams.ResetFeedBundle(ctx, a.actor, pos[0], *feedNames)
+		if err != nil {
+			return err
+		}
+		a.logf("bundle reset %s feed %s (it last imported %s; its cursors reset)", pos[0], f.Name, orNone(f.BundleID))
+	case sub == "reset" && len(pos) == 2 && *feedNames == "":
 		u, err := a.svc.Upstreams.ResetBundle(ctx, a.actor, pos[0], pos[1])
 		if err != nil {
 			return err
@@ -2208,11 +2215,26 @@ func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstr
 		what = "bundle import (dry run)"
 	}
 	a.logf("%s %s: %s, manifest %s, %s", what, tenant, i.ID, i.ManifestID, i.State)
-	a.table("UPSTREAM\tSTATUS\tCOUNTS\tDETAIL", func(w io.Writer) {
+	a.table("TARGET\tSTATUS\tCOUNTS\tDETAIL", func(w io.Writer) {
 		for _, t := range res.Targets {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Upstream, t.Status, countsText(t.Result.Counts), t.Detail)
+			name, counts := t.Upstream, t.Result.Counts
+			if t.Feed != "" {
+				name, counts = "feed:"+t.Feed, nil
+				if t.FeedRun != nil {
+					counts = t.FeedRun.Counts
+				}
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, t.Status, countsText(counts), t.Detail)
 		}
 	})
+	for _, t := range res.Targets {
+		if t.FeedRun == nil {
+			continue
+		}
+		for _, r := range t.FeedRun.Refused {
+			fmt.Fprintf(a.out, "  feed:%s %s %s: %s\n", t.Feed, r.BodyHash, r.IssuerID, r.Reason)
+		}
+	}
 	for _, t := range res.Targets {
 		for _, p := range t.Result.Problems {
 			fmt.Fprintf(a.out, "  %s %s %s %s: %s %s\n", t.Upstream, p.DuckDBVersion, p.Platform, p.Name, p.Outcome, p.Detail)
@@ -2225,7 +2247,10 @@ func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstr
 		fmt.Fprintf(a.out, "%d bytes of entries were read through\n", res.Skipped)
 	}
 	if res.Feeds > 0 {
-		fmt.Fprintf(a.out, "the bundle carries %d feeds: their statements are not imported by this version\n", res.Feeds)
+		fmt.Fprintf(a.out, "%d feeds of the bundle matched no feed target\n", res.Feeds)
+	}
+	if res.Gaps > 0 {
+		fmt.Fprintf(a.out, "%d feed bodies took nothing: their range does not start where the feed is (write a new plan)\n", res.Gaps)
 	}
 	if res.Problem != "" {
 		fmt.Fprintf(a.out, "the import stopped (%s): %q\n", res.Stop, res.Problem)
@@ -2233,7 +2258,7 @@ func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstr
 	if i.InputSHA256 != "" {
 		fmt.Fprintf(a.out, "input sha256 %s\n", i.InputSHA256)
 	}
-	if i.State != store.ImportDone {
+	if i.State != store.ImportDone || res.Gaps > 0 {
 		return errImportFailed
 	}
 	return nil

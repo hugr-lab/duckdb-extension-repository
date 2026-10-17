@@ -317,6 +317,8 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	// a purge before every replica keeps purged slots could see its slot refilled (spec 0016)
 	rel.PurgeOff = cfg.GCSettings().Interval == 0
 	at := &attachment.Service{Store: s, Authz: az, MaxSize: cfg.Attachments.MaxSize, Keys: ks, PublicURL: cfg.Serve.PublicURL}
+	feeds := &attachment.Feeds{Store: s, Authz: az, Attachments: at, Fetch: eg, Credentials: creds,
+		Interval: cfg.Attachments.FeedIntervalOrDefault(), Log: slog.Default(), TempDir: filepath.Join(cfg.SpoolDir(), "feeds")}
 	return &Services{
 		Store:    s,
 		Sources:  reg,
@@ -329,10 +331,9 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		Upstreams: &upstream.Service{Store: s, Releases: rel, Fetch: eg, Authz: az, MaxBody: maxBody, MaxIngests: maxIngests,
 			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
 			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate),
-				Interval: ul.Interval}, Credentials: creds},
+				Interval: ul.Interval}, Credentials: creds, Feeds: feeds},
 		Attachments: at,
-		Feeds: &attachment.Feeds{Store: s, Authz: az, Attachments: at, Fetch: eg, Credentials: creds,
-			Interval: cfg.Attachments.FeedIntervalOrDefault(), Log: slog.Default()},
+		Feeds:       feeds,
 	}, nil
 }
 
