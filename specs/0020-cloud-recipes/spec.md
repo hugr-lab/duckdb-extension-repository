@@ -1,6 +1,6 @@
 # Spec 0020: Cloud recipes: AWS and GCP in Terraform, Azure in Bicep
 
-- **Status**: accepted; phases 0-3 implemented; phase 4 to come
+- **Status**: accepted; phases 0-3 implemented; phase 4 designed (2026-10-17)
 - **Date**: 2026-10-14
 - **Author**: vgsml, Claude
 
@@ -586,19 +586,334 @@ check that a token with a forged `X-Forwarded-Proto` over http is not honoured (
 
 ### Phase 4: bootstrap and the Marketplace
 
-This is spec 0013's outline, less the Bicep, which moved to phase 3:
+This is spec 0013's outline, less the Bicep, which moved to phase 3. The addendum below
+(2026-10-17) details it. The owner decided three things for it:
 
-- **The `bootstrap` section** creates, once and idempotently, with events:
-  - the first tenant;
-  - its channel;
-  - its versions;
-  - its keys;
-  - its issuer;
-  - its admin grant.
-- **The Marketplace package** is built from phase 3's Bicep. It needs role-definition rights in the
-  managed resource group.
+- **The bootstrap applies once.** Afterwards the API and the console own what it made, and the
+  bootstrap never undoes an administrator's change.
+- **The Marketplace offer is a managed application whose customer keeps full access.** It has no
+  deny assignment. The customer rotates keys, runs the jobs, sets the domain and upgrades, as with
+  the recipe.
+- **The publisher's access** to the managed resource group is **read-only**. It has no write
+  authorization and no just-in-time elevation.
 
-An addendum details this phase before its code.
+The owner first chose a `ReadOnly` lock with just-in-time elevation. The reviews then showed four
+problems with that:
+
+- **Signing may break.** The managed application's deny assignment may refuse Key Vault `sign` to
+  kista's own identity in the group.
+- **The customer cannot operate the install.** It can neither start a job, rotate a key nor bind
+  its domain.
+- **JIT costs the customer.** It needs Entra ID P2 on the customer's side.
+- **JIT gives away the channel key.** A just-in-time Contributor can sign as the customer's channel
+  and leave lasting access behind.
+
+Delivery: two pull requests, each with its own reviews.
+
+- **4a.** The bootstrap: server, CLI, tests on every engine, docs.
+- **4b.** The Marketplace package: Bicep changes, `createUiDefinition.json`, the build and CI, the
+  release asset, a live run through a service-catalog definition, docs.
+
+#### 4a. The bootstrap
+
+**The problem.** A managed install, or any install driven by a template, starts with an empty
+database. Someone then runs `kista admin` by hand: `version add`, `tenant create`,
+`tenant audience add`, `channel create`, `channel versions`, `key add -active`, `issuer add`,
+`issuer console` and `grant add`. On Container Apps each of those is a one-off job, and the
+Marketplace has nobody who would run them.
+
+**The section.** A file-only `bootstrap` block names what a first start creates. Each field is a
+parameter of the service call the admin command makes, so the bootstrap gains no rule of its own.
+
+```yaml
+bootstrap:
+  versions:                              # server-wide (Tenants.AddVersion, AddVersionCAPI)
+    - { version: v1.4.1, kind: release, c_apis: [v1.2.0] }
+  tenant:                                # Tenants.CreateTenant
+    name: acme
+    display_name: Acme
+    domain: default                      # a configured blob domain
+    audiences: [api://kista-acme]        # AuthAdmin.AddAudience: Entra issues no aud for a URL it does not verify
+  channels:
+    - name: prod
+      kind: signed                       # signed | passthrough
+      versions: [v1.4.1]                 # Tenants.SetChannelVersions (added, never removed)
+      key: azure:kista-channel/<version> # Keys.Add as the channel's active key
+  attestation_key: azure:kista-att/<v>   # optional, Keys.AddAttestation, active
+  issuer:                                # optional: the tenant's own IdP (AuthAdmin.AddIssuer)
+    name: entra
+    url: https://login.microsoftonline.com/<tid>/v2.0
+    jwks_uri: ""                         # optional, as -jwks-uri
+    algorithms: [RS256]                  # optional, as -alg
+    required_claims: { tid: <tid> }      # as -require k=v
+    roles_claim: roles
+    groups_claim: ""
+    client_claim: azp
+    max_lifetime: 12h
+    console:                             # optional (SetConsoleClient)
+      client_id: <client id>
+      scopes: ""
+      audience: api://kista-acme         # one of tenant.audiences
+      audience_parameter: ""
+  grants:                                # AuthAdmin.AddGrant
+    - principal: "role:entra|kista-admin"
+      verbs: [admin]
+      channel: ""                        # optional scope: channel, extension or extension_group
+```
+
+**Validation at load** (`validateBootstrap`), with the same parsers the commands use:
+
+- names, kinds, verbs and durations;
+- `tenant.domain` among `blob.domains`;
+- signer references, parsed;
+- `console.audience` among `tenant.audiences`;
+- principals of the bootstrap's issuer only (`kind:<issuer.name>|value`). `issuer:` and
+  `publisher:` principals are refused, and `admin` is refused on a client principal, as
+  `AddGrant` refuses it;
+- a channel version listed under `versions`, or known already (checked when the bootstrap runs);
+- **a console client refused at a server issuer's URL**. `SetConsoleClient` refuses it (spec 0015),
+  and a refusal found only when the bootstrap runs would stop every start. When the tenant's IdP
+  is the server administrators' directory, the tenant has no console client of its own, and its
+  administrators use the API, or a server administrator uses the console.
+
+**Where it runs.**
+
+- **`kista serve`**, after migrations and the services, and before the listeners bind: a replica
+  serves only once the bootstrap is done.
+- **`kista admin bootstrap [-dry-run] [-adopt] [-accept] [-rearm]`**, for operators and for a
+  recipe's job (the flags are explained below).
+
+**The actor.**
+
+- **`serve`** acts as `system:bootstrap`. The services' authorizer (`authz.ServerAdmin`) admits
+  exactly that system actor besides OS actors.
+- **The CLI** acts as its OS user, as every admin command does.
+
+The bootstrap row records which actor applied it. The `system` kind is never built from a request:
+a token maps to issuer principals, and a test checks that a principal spelled `system:bootstrap`
+is refused.
+
+**One apply across replicas.** The bootstrap holds the lease `kista/bootstrap`
+(`store.AcquireLease`, renewed while it applies). A transaction lock across the services' own
+transactions would deadlock on SQLite, where every transaction is `BEGIN IMMEDIATE`. It would also
+hold a connection while Key Vault and Entra are called.
+
+A replica that does not get the lease waits until either the bootstrap row exists or the lease is
+free, then looks again. It waits up to four minutes, under the platforms' startup budgets, and then
+exits non-zero.
+
+The row is a singleton (a fixed primary key), so a second writer gets `ErrExists`, which means done.
+
+**The steps.**
+
+1. **Done already?** The table `bootstrap` (migration 0023, min_reader unchanged at 22) has these
+   columns:
+   - `id`, fixed at 1;
+   - `tenant`, the name, not a foreign key;
+   - `digest`;
+   - `seen_digest`;
+   - `section`, the applied section as JSON;
+   - `applied_at`;
+   - `actor`.
+
+   The digest is the SHA-256 of the parsed section's canonical JSON (`encoding/json` of the
+   defaulted struct, so YAML key order does not matter). Signer references carry no key version
+   in it, so a key version that changes with a redeploy is not a change.
+
+   When the row exists, nothing is applied. When the section's digest differs from `seen_digest`:
+   - `serve` logs one warning, then records the new `seen_digest`: "the bootstrap section changed
+     after it was applied; change the tenant through the API";
+   - `admin bootstrap` exits `1`, listing the differences against `section`, unless `-accept`
+     records the new digest, with the event `bootstrap.accept`.
+
+   The table has no `tenant_id` column, so the reaper (spec 0019) has nothing to do with it. Its
+   row outlives a deleted tenant, so the bootstrap does not apply again.
+2. **Check, before any write.** The bootstrap opens and probes each signer (read only) and
+   discovers the issuer, then compares each object the section names with what exists:
+
+   | Object | The same | Different (refused) |
+   | --- | --- | --- |
+   | version | the same kind; the section's C APIs are added if missing | another kind |
+   | tenant (`GetTenantAny`) | active, with the same display name and domain | other values, or suspended, deleting or deleted |
+   | audience | assigned to this tenant | assigned to another tenant |
+   | channel | the same kind | another kind |
+   | channel versions | missing ones added, none removed | — |
+   | channel key | the channel's active key has the section key's fingerprint | the channel has other keys; the fingerprint is another channel's |
+   | attestation key | the tenant's active attestation key has that fingerprint | another active one; the fingerprint is used elsewhere |
+   | issuer (by name) | every field the section sets is equal | any field differs; the same URL under another name |
+   | console client | the same client ID, audience, scopes and parameter | any of them differs |
+   | grant | a grant with that principal, the same verbs and the same scope | — (absent: to create) |
+
+   An absent object is to be created.
+
+   **Adoption.** When the tenant exists and the bootstrap would create anything in it, `serve`
+   refuses. The bootstrap never adds a key, an issuer or a grant to a tenant it did not make. When
+   everything is present and the same, `serve` records the row and creates nothing. Only
+   `admin bootstrap -adopt` creates objects in an existing tenant, and it shows them in its plan
+   first.
+
+   A refusal stops the whole bootstrap: nothing is written, and `serve` exits non-zero with the
+   differences listed.
+3. **Apply.** The plan's creations run through the services in this order:
+   1. versions and their C APIs;
+   2. the tenant;
+   3. its audiences;
+   4. its channels;
+   5. channel versions;
+   6. channel keys;
+   7. the attestation key;
+   8. the issuer, then its console client;
+   9. grants.
+
+   Each records its usual event.
+
+   The steps are not one transaction: they are the services' own. When one fails for now (a signer
+   that cannot be reached, an issuer whose discovery fails, an Azure role assignment that has not
+   propagated, which takes minutes on a first install), the bootstrap tries again with backoff for
+   up to four minutes. After that `serve` exits non-zero without binding. What was made stays, and
+   no row is recorded. The next start's check finds those objects "the same" and goes on, so the
+   bootstrap converges.
+4. **Done.** The row and the event `bootstrap.apply` are written in one transaction. The event has
+   subject `tenant:<name>` and these data:
+   - the objects created, by kind;
+   - the digest;
+   - the configuration's source (a file path, or `env:NAME`);
+   - kista's version;
+   - the host.
+
+**`-dry-run`** prints the plan, one line per object (create, the same, or refused), after the
+read-only probes. It takes no lease.
+
+**`-rearm`** deletes the row, with the event `bootstrap.rearm`. A re-armed bootstrap re-creates
+what is absent, so a grant revoked since then comes back; `-dry-run` shows it first. Deleting the
+row by hand does the same, without the event.
+
+**What it is not.**
+
+- It is not a reconciler: a grant revoked later stays revoked, and a key rotated later stays
+  rotated.
+- It makes one tenant. More are made through the API, as today.
+- It holds no secret: keys are signer references, and issuers are public URLs.
+- Server administrators are not part of it: `auth.server_admins` is configuration already.
+- It does not say who changed the configuration. That is in the platform's control-plane log (the
+  Activity Log for Container Apps, the Kubernetes audit log), which the docs tell operators to
+  keep.
+
+#### 4b. The Marketplace package
+
+**Changes to the Bicep** (`deploy/azure-container-apps/main.bicep`):
+
+- **`signerRole`**, `custom` (the default, as today) or `builtin`.
+  - The custom role moves to the **key's** scope (tresor-server's recipe makes the same choice),
+    and the attestation key gets its own assignment.
+  - The package uses `builtin`, which assigns **Key Vault Crypto User** on the key. It does not
+    create a role definition, a directory object that would outlive the managed resource group
+    and that a managed application's deployment cannot be relied on to create.
+  - The built-in role is narrower in scope than a vault-wide role, but it allows more operations
+    than the custom one: `update`, `backup`, `encrypt`, `decrypt`, `wrap`, `unwrap`. The keys are
+    created with `keyOps: [sign, verify]`, and azurekv refuses a key that allows more. That does not
+    bind an identity that holds `update`; the docs say so.
+- **An attestation key**, optional: RSA-HSM, tag `kista-purpose: attestation-signing`, with its
+  own role assignment.
+- **`bootstrap`**, a plain `object` parameter (a user-defined type would make the template
+  `languageVersion` 2.0, which managed applications refuse). It is passed into the configuration
+  as the `bootstrap` section. Its key references are filled in from the template's own keys, so
+  nobody types a key version.
+- **A `bootstrap` job** beside `migrate`, which runs `admin bootstrap -dry-run` by default; with
+  full access, the customer starts it.
+
+**The package**, `deploy/azure-marketplace/`:
+
+- **`build.sh`** does, in order:
+  1. `az bicep build` of `main.bicep` into `mainTemplate.json`.
+  2. Fails unless the template is at `languageVersion` 1.0.
+  3. Pins **`image` to the release's digest** (`ghcr.io/hugr-lab/kista@sha256:…`), as a fixed
+     value, never a UI field. It fails on a tag.
+  4. Forces `signerRole=builtin`.
+  5. Adds the customer-usage-attribution deployment `pid-<tracking id>`, from a variable that holds
+     the plan's ID. Partner Center cannot inject it into a template that has nested deployments,
+     and the database modules are nested deployments.
+  6. Checks that every `createUiDefinition` output maps to a parameter, and that no parameter
+     without a default is left unmapped.
+  7. Writes `app.zip` reproducibly: fixed timestamps and order.
+- **`createUiDefinition.json`**, in three steps. The customer prepares the Entra app registrations
+  beforehand, as the docs page describes; the UI checks their IDs as GUIDs and cannot create them.
+  1. **Basics**: region, the deployment's prefix, and the database (PostgreSQL by default, or SQL
+     Server).
+  2. **Server administrators**:
+     - their Entra tenant;
+     - the API app's client ID, which is the audience;
+     - the app role their tokens carry;
+     - the console's client ID.
+
+     They become a server issuer, `server_audiences`, `server_admins` (`role:…`) and the console
+     client. App roles are preferred to groups: groups need `groupMembershipClaims`, and past about
+     200 groups the token carries none.
+  3. **First tenant**:
+     - its name and channel name;
+     - the DuckDB version to serve, from a list fixed in the package with its C API;
+     - its Entra tenant, its API app's client ID (its audience) and its administrators' app role.
+
+     These become the bootstrap's tenant, audience, issuer and grant. Its console client is offered
+     only when the tenant's directory is not the server administrators' (see above).
+
+  The UI checks, read only (`ArmApiControl` GET), that the resource providers the template uses
+  are registered:
+  - `Microsoft.App`;
+  - `Microsoft.DBforPostgreSQL` or `Microsoft.Sql`;
+  - `Microsoft.KeyVault`;
+  - `Microsoft.Storage`;
+  - `Microsoft.OperationalInsights`;
+  - `Microsoft.Network`;
+  - `Microsoft.ManagedIdentity`.
+
+  A step is blocked while one is not registered, and an info box gives the
+  `az provider register` commands. The UI registers nothing itself: registration needs a
+  subscription-level permission the buyer may not have.
+- **The plan's settings**, which the owner enters in Partner Center:
+  - customer access: **full access** (no deny assignment);
+  - publisher access: read-only. No authorization with write and no JIT. If Partner Center asks for
+    an authorization, it is Reader;
+  - the docs page states both settings, and what read-only shows the publisher:
+    - the app's configuration (`KISTA_CONFIG`, which holds no secret);
+    - the resources' metadata;
+    - the Log Analytics workspace, which holds the request and audit logs.
+
+    The customer may remove that access by deleting the authorization's role assignment.
+- **CI** (the `bicep` job) runs:
+  - `build.sh`;
+  - `az bicep build`, with warnings as errors;
+  - Microsoft's certification checks, `Test-AzMarketplacePackage` (arm-ttk) under `pwsh`, on the
+    unzipped package. Its red results fail the job.
+
+  The template's `apiVersions` are brought up to date to pass them.
+- **The release** attaches `kista-azure-app-<version>.zip`, with its SHA-256 and a keyless
+  signature, like the other assets. Before uploading it to Partner Center, the owner verifies the
+  zip against the signed asset. The docs publish the SHA-256 for each plan version.
+- **Upgrades.** With full access, the customer upgrades by changing the app's and the jobs' image
+  to a new release's digest, as the recipe's docs say, or by deploying a new plan version.
+  Deployments are incremental.
+- **Deletion.** Deleting the application deletes the managed resource group. The vault stays
+  soft-deleted for its retention (with purge protection, it cannot be purged). The Container Apps
+  environment's infrastructure group goes with the environment.
+
+**Live run.** `deploy/azure/recipe-live.sh managed-app up | check | down | leftovers`:
+
+1. It makes a **service-catalog** definition from the release asset (or a local build before the
+   first release). The definition has lock `None` and a Reader authorization for a principal
+   other than the runner.
+2. It deploys an application from the definition, with the trial answers.
+3. It checks:
+   - the bootstrap made the tenant: its `.well-known`, a channel key signing, the
+     `bootstrap.apply` event;
+   - the managed resource group has no deny assignment;
+   - the runner can start the `bootstrap` job.
+4. It deletes everything and checks for leftovers. The run sets `purgeProtection` off, so the vault
+   is purged.
+
+Service catalog is the Marketplace's path without Partner Center. The run needs the owner's yes
+before `up`, as every live run does. **Publishing the offer** in Partner Center is the owner's
+step, after the live run.
 
 ### Docs
 
@@ -617,6 +932,16 @@ An addendum details this phase before its code.
   - `security.md`: workload identities, no live secret in Terraform's state, and the tag-condition
     advice;
   - `development.md`: the recipe live runs, their approval, `down` and `leftovers`.
+- **Phase 4:**
+  - `configuration.md`: the `bootstrap` section;
+  - `administration/commands.md`: `admin bootstrap`;
+  - `deployment/azure.md`: the `signerRole` and `bootstrap` parameters, the attestation key, and
+    a section on the Marketplace application:
+    - the Entra app registrations to prepare;
+    - what the customer gets: full access;
+    - what the publisher's read-only access shows;
+    - upgrades and deletion;
+  - `observability.md`: `bootstrap.apply` and the actor `system:bootstrap`.
 - **Each recipe's README** says what it is and how to apply it, and points at its page.
 
 ### Changes to earlier specs
@@ -661,6 +986,17 @@ An addendum details this phase before its code.
   - `trusted_proxies` names the load balancer's ranges.
   - The network rules admit only the load balancer: security groups, the NetworkPolicy, the VNet.
   - The live run checks that the audit records the caller's address.
+- **The bootstrap** holds no secret. It never undoes an administrator's change: it applies once,
+  and refuses objects that exist and differ instead of overwriting them. It never adds a key, an
+  issuer or a grant to a tenant it did not make, unless `-adopt` is given. Its events carry the
+  configuration's source and `system:bootstrap`, an actor no request can produce. Who changed the
+  configuration is in the platform's control-plane log.
+- **The managed application.** The customer keeps full access to its resources, so the security
+  of its keys and data is in its own hands, as with the recipe. The publisher holds read-only
+  access: configuration with no secret, resource metadata and the logs. It has no write access and
+  no elevation, so it can neither sign as the customer's channel nor change the image. The image
+  is pinned by digest in the package, and the package is a signed release asset. The signer's
+  built-in role is on one key only, and its extra operations are stated.
 - **The CA inline.** `store.ca_pem` replaces a file, not a check: `verify-full` still applies, and
   pgx's system roots are not added beside it.
 - **Live runs.**
@@ -684,9 +1020,39 @@ An addendum details this phase before its code.
   - the trailing-dot SAN: with the dot it verifies, without it it does not, through a real TLS handshake with `ca_pem`;
   - a token login against the test PostgreSQL: the store asks it with the connection's host, port and user;
   - the chart's checks on the new identities.
+- **Phase 4a (Go, every engine):**
+  - validation:
+    - the section's fields;
+    - a console client at a server issuer's URL;
+    - principals of another issuer;
+    - `KISTA_BOOTSTRAP_*` refused, since the section is file-only;
+  - a first apply on an empty database: each object with its usual event, then the row and
+    `bootstrap.apply` (subject, source, digest);
+  - the authorizer admits `system:bootstrap` and no other system actor; a principal spelled
+    `system:bootstrap` is refused;
+  - a second start: nothing applied. With a changed section, `serve` warns once and
+    `admin bootstrap` exits `1`; `-accept` records the new digest;
+  - the digest stable across YAML key order and key versions;
+  - each "different" row of the table refused, with nothing written:
+    - another kind;
+    - a suspended or deleted tenant;
+    - an audience held by another tenant;
+    - a channel with another key;
+    - a fingerprint used elsewhere;
+    - an issuer whose `required_claims` differ;
+    - another console client;
+  - adoption: `serve` refuses to create in an existing tenant, and records the row when everything
+    is the same; `-adopt` creates;
+  - a failure midway: `serve` exits non-zero without binding, and the next start converges;
+  - two replicas (on SQLite, a `serve` and an `admin bootstrap`): one apply, and a replica that
+    times out waiting for the lease;
+  - `-dry-run` takes no lease and writes nothing;
+  - `-rearm` with its event;
+  - `serve` does not bind before the bootstrap ends.
 - **CI:**
   - `terraform fmt`, `validate` and `terraform test` with mock providers;
-  - `az bicep build`.
+  - `az bicep build`; from 4b, `deploy/azure-marketplace/build.sh` (its `languageVersion`, image
+    digest and mapping checks) and `Test-AzMarketplacePackage`.
 - **Live**, once per phase: `check`, then `down`, then `leftovers` empty but for timed retentions.
 
 ## Alternatives considered
