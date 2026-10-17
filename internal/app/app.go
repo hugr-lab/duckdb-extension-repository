@@ -22,6 +22,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/bootstrap"
 	awscloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/aws"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/cloud/azure"
 	gcpcloud "github.com/hugr-lab/duckdb-extension-repository/internal/cloud/gcp"
@@ -396,6 +397,11 @@ func serverIssuerURLs(cfg config.Config) []string {
 		out = append(out, s.URL)
 	}
 	return out
+}
+
+// BootstrapDeps are the services the configuration's bootstrap acts through (spec 0020 phase 4a).
+func BootstrapDeps(svc *Services, log *slog.Logger) bootstrap.Deps {
+	return bootstrap.Deps{Store: svc.Store, Tenants: svc.Tenants, Auth: svc.Auth, Keys: svc.Keys, Log: log}
 }
 
 // uploadSettings are the bundles block's limits on uploads (spec 0014 phase 2).

@@ -194,6 +194,20 @@ kista bundle inspect <bundle> [-plan <plan.json>] [-max-body <bytes>]
 `backup` on PostgreSQL or SQL Server fails: use the database's own backups. See
 [Backup and restore](backup-restore.md).
 
+## Bootstrap
+
+| Command | What it does |
+| --- | --- |
+| `bootstrap [-adopt]` | applies the configuration's `bootstrap` section once, printing its plan; `-adopt` also creates objects in a tenant the bootstrap did not make |
+| `bootstrap -dry-run` | prints the plan (create, add, same or refused, one line per object) after opening the signers and fetching a new issuer's keys; takes no lease, writes nothing; exits `1` when an object is refused |
+| `bootstrap -accept` | takes a changed section as the applied one, without applying it (`bootstrap.accept`) |
+| `bootstrap -rearm` | forgets that it was applied (`bootstrap.rearm`); the next apply needs `-adopt` for the tenant it made |
+
+`bootstrap` exits `1` when an object exists and differs (nothing written), when a failure persists
+past four minutes, and when the section changed since it was applied (naming the fields, until
+`-accept`). `-accept` and `-rearm` without a record fail; either with another flag is a usage error.
+See [bootstrap](../configuration.md#bootstrap).
+
 ## DuckDB versions
 
 DuckDB versions are server-wide. A channel serves a subset of them.

@@ -494,6 +494,11 @@ func (r *UploadRunner) importUpload(ctx context.Context, t store.Tenant, u store
 	var o UploadOptions
 	_ = json.Unmarshal([]byte(u.Options), &o)
 	kind, id, _ := strings.Cut(u.CompletedBy, ":")
+	if k := authz.ActorKind(kind); k != authz.ActorServer && k != authz.ActorOS {
+		// server administrators complete uploads: a stored actor of any other kind (a system
+		// actor above all) is never taken as one
+		return store.UploadFailed, "refused", ""
+	}
 	actor := authz.Actor{Kind: authz.ActorKind(kind), ID: id}
 	cr := &chunkReader{ctx: ctx, s: s, domain: t.StorageDomain, chunks: chunks}
 	defer cr.Close()

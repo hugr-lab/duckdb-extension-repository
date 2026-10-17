@@ -66,6 +66,11 @@ type Config struct {
 	Bundles Bundles `yaml:"bundles" kista:"fileonly"`
 	// Tenants configures deleting tenants (spec 0019).
 	Tenants Tenants `yaml:"tenants" kista:"fileonly"`
+	// Bootstrap names what a first start creates (spec 0020 phase 4a).
+	Bootstrap Bootstrap `yaml:"bootstrap" kista:"fileonly"`
+	// Source is where the configuration was read from: a file's path, env:NAME, or "" (the
+	// defaults). Set by Load; never configured.
+	Source string `yaml:"-"`
 }
 
 // Tenants holds the tenant lifecycle settings.
@@ -289,6 +294,7 @@ func Load(path string, env []string) (Config, error) {
 	if err := applyEnv(&cfg, env, configVar); err != nil {
 		return Config{}, err
 	}
+	cfg.Source = path
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -627,6 +633,7 @@ func (c Config) Validate() error {
 	validateAttachments(bad, c)
 	validateBundles(bad, c)
 	validateUI(bad, c)
+	validateBootstrap(bad, c)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

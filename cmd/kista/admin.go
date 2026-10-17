@@ -24,6 +24,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/bootstrap"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
@@ -40,6 +41,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   migrate                                         apply pending migrations
   check                                           verify the schema without changing it
   backup <file>                                   consistent copy of a SQLite store
+  bootstrap [-dry-run] [-adopt] [-accept] [-rearm]   apply the config's bootstrap section once (spec 0020):
+                                                  -dry-run prints the plan; -adopt creates in an existing tenant;
+                                                  -accept takes a changed section as applied; -rearm forgets it was applied
   tenant create <name> [-display-name …] [-domain <storage domain>]
   tenant list [-state active,suspended,deleting,deleted]   every state but deleted by default
   tenant show <name>                              its record; a deleting one's progress and keys to retire
@@ -291,6 +295,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		}
 		fmt.Fprintln(a.out, string(doc))
 		return nil
+	case "bootstrap":
+		return a.bootstrap(ctx, args[1:])
 	case "tenant":
 		return a.tenant(ctx, sub, args[min(2, len(args)):])
 	case "version":
@@ -2292,4 +2298,53 @@ func countsText(c map[string]int) string {
 		return "-"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// bootstrap applies, plans, accepts or re-arms the configuration's bootstrap section (spec 0020
+// phase 4a), as the OS user.
+func (a *adminCmd) bootstrap(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dry := fs.Bool("dry-run", false, "")
+	adopt := fs.Bool("adopt", false, "")
+	accept := fs.Bool("accept", false, "")
+	rearm := fs.Bool("rearm", false, "")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) != 0 || *accept && *rearm || (*accept || *rearm) && (*dry || *adopt) {
+		return errUsage
+	}
+	d := app.BootstrapDeps(a.svc, slog.New(slog.NewTextHandler(a.errw, nil)))
+	switch {
+	case *rearm:
+		if err := bootstrap.Rearm(ctx, d, a.actor); err != nil {
+			return err
+		}
+		a.logf("bootstrap rearm")
+		return nil
+	case !a.cfg.Bootstrap.Set():
+		return errors.New("the config has no bootstrap section")
+	case *accept:
+		if err := bootstrap.Accept(ctx, d, a.cfg.Bootstrap, a.actor); err != nil {
+			return err
+		}
+		a.logf("bootstrap accept")
+		return nil
+	}
+	host, _ := os.Hostname()
+	res, err := bootstrap.Run(ctx, d, a.cfg.Bootstrap, bootstrap.Options{Actor: a.actor, DryRun: *dry, Adopt: *adopt,
+		Source: a.cfg.Source, Version: app.Version, Host: host, Holder: host + "/" + store.NewID()})
+	for _, i := range res.Plan.Items {
+		fmt.Fprintln(a.out, i)
+	}
+	switch {
+	case err != nil:
+		return err
+	case *dry && len(res.Plan.Refusals()) > 0:
+		return fmt.Errorf("%w: %d objects", bootstrap.ErrRefused, len(res.Plan.Refusals()))
+	case res.Already:
+		fmt.Fprintln(a.out, "bootstrap: applied already")
+	case res.Applied:
+		a.logf("bootstrap %s", a.cfg.Bootstrap.Tenant.Name)
+	}
+	return nil
 }
