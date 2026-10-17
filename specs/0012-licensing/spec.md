@@ -1,6 +1,6 @@
 # Spec 0012: Licensing and usage reports
 
-- **Status**: accepted
+- **Status**: accepted; phase 1a part 1 implemented (the format, the reference verifier, the vectors)
 - **Date**: 2026-10-17
 - **Author**: vgsml, Claude
 
@@ -88,7 +88,7 @@ on the pin).
 **Header**, exactly these members:
 
 ```json
-{"alg": "RS256", "typ": "kista-license+jwt", "kid": "sha256:<hex of the SPKI DER's SHA-256>"}
+{"alg": "RS256", "typ": "kista-license+jwt", "kid": "sha256:<64 lowercase hex digits: the SPKI DER's SHA-256>"}
 ```
 
 `typ` is the domain separator: a verifier refuses any other value, so a JWT signed for another
@@ -99,15 +99,15 @@ purpose by the same key is never a licence.
 | Member | Required | Meaning |
 | --- | --- | --- |
 | `v` | yes | The format version, `1`. A verifier refuses any other. |
-| `iss` | yes | The issuer's URL (`https://…`), at most 256 bytes. |
+| `iss` | yes | The issuer's URL: `https://` and at least one more byte, all printable ASCII (0x21-0x7E), at most 256 bytes. |
 | `jti` | yes | The licence id, `[A-Za-z0-9_-]{1,64}`, unique per issuer. |
-| `sub` | yes | The holder's id at the issuer (an Enterest tenant), at most 128 bytes. |
+| `sub` | yes | The holder's id at the issuer (an Enterest tenant), 1 to 128 bytes. |
 | `holder` | no | The holder's display name, at most 200 bytes. |
 | `ext` | yes | The extension name (`[a-z0-9_]{1,64}`, spec 0008). |
 | `versions` | no | `{"min": "1.2", "below": "2.0"}`, either member or both. Absent: every version. |
 | `plan` | yes | `[a-z0-9][a-z0-9_-]{0,31}`. |
 | `limits` | no | An object of at most 64 members, names `[a-z][a-z0-9_]{0,63}`, values `true`/`false`, integers, or strings of at most 256 bytes. Meaning is the developer's. |
-| `iat` | yes | Issued at, seconds since the epoch. |
+| `iat` | yes | Issued at, seconds since the epoch, not negative. |
 | `exp` | yes | Expiry, after `iat`. |
 | `grace` | no | Seconds the licence still works after `exp`, 0 to 7,776,000 (90 days); absent means 604,800 (7 days). |
 
@@ -115,8 +115,12 @@ purpose by the same key is never a licence.
 
 - base64url without padding (RFC 7515 §2), refusing padding, whitespace, other alphabets and
   non-zero trailing bits;
-- strict UTF-8 JSON (RFC 8259); invalid UTF-8 and unpaired surrogate escapes are refused, never
-  replaced;
+- strict UTF-8 JSON (RFC 8259), whitespace only space, tab, line feed and carriage return (no
+  byte order mark); invalid UTF-8 (overlong forms, encoded surrogates, beyond U+10FFFF) and
+  unpaired surrogate escapes are refused, never replaced; U+0000 is refused in every string and
+  member name, escaped or not (a C string would end there);
+- the top-level value is level 1, and no array or object is deeper than level 32;
+- lengths are counted in bytes of the decoded UTF-8 value, not of its escaped form;
 - no duplicate member names at any depth, compared after unescaping (DuckDB's bundled yyjson
   accepts duplicates, so the SDK walks objects itself);
 - every number is a JSON integer: no fraction, no exponent, within ±(2^53-1); `exp + grace` must be
@@ -125,7 +129,8 @@ purpose by the same key is never a licence.
 
 **Versions** are a lowercase `v` optionally, then 1 to 4 dot-separated components of 1 to 9 digits
 without leading zeros (`0` itself allowed), compared component by component, missing ones as zero
-(`1.2` = `1.2.0`). A `min` or `below` not of that form makes the licence `invalid`. An extension
+(`1.2` = `1.2.0`). A `min` or `below` not of that form makes the licence `invalid`; a `min` not
+below `below` is allowed and covers nothing. An extension
 version not of that form (a commit hash) is outside every range, so a licence with `versions` does
 not cover it.
 
@@ -145,14 +150,20 @@ A licence copied to another organisation works, and names its holder wherever it
 file, in the console, in usage reports). That is the honest-user line.
 
 **Reference verifier, vectors, a test signer.** `internal/license` has `Parse` (header and
-payload, all rules above, no keys) and `Verify(token, keys, ext, version, now) (Claims, Status,
-error)`; with an empty `version` the `not_covered` row is skipped (kista stores licences for a
-name, not a version). A generator (`go run ./internal/license/vectorgen`) writes
+payload, all rules above, no keys; also how a stored licence's claims are read back),
+`Token.Verify(keys)` (the key and the signature), `Claims.Status(ext, version, now)` and
+`Verify(token, keys, ext, version, now)`, all three in one, which the vectors describe; with an
+empty `version` the `not_covered` row is skipped (kista stores licences for a name, not a
+version). A refusal is a `license.Error` with its rule; `ErrUntrustedKey`, `ErrSignature` and
+`ErrWrongExtension` are the ones a caller tells apart. A generator (`go run ./internal/license/vectorgen`) writes
 `internal/license/testdata/vectors.json` from a test key committed beside it (named as a test key,
 never trusted by a release build): each case is a token, the extension and version asking, `now`,
-and the expected status and claims, covering every row and parsing rule above, a 3072-bit and a
-1024-bit key, a PSS signature, a `kid` of an untrusted key, and the boundaries of `iat`, `exp` and
-`grace`. RSA PKCS#1 v1.5 is deterministic, so the file is reproducible; CI regenerates it and fails
+the expected status and claims, and for an invalid token the stable code of the rule it breaks
+(`license.Rule*`: `json_duplicate`, `iss`, `kid_untrusted`, `signature`, …), so the C++ verifier is
+checked to refuse each token for the same reason. They cover every row and parsing rule above
+with both sides of each boundary, a 3072-bit and a 1024-bit key (named by their own and by the
+trusted `kid`), a PSS signature, and the order of the status rows. The generator signs with plain
+modular arithmetic, so no library's key-size policy or random salt changes the file. RSA PKCS#1 v1.5 is deterministic, so the file is reproducible; CI regenerates it and fails
 on a difference. The C++ SDK's tests (phase 2) read the same file. `vectorgen sign -claims <file>`
 signs with the test key, so a developer can test the SDK locally without Enterest.
 
