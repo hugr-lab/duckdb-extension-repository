@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b and 2 to come
+- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17); 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -54,6 +54,22 @@ Delivery, each phase a pull request:
   5. the air-gapped docs page and its CI job.
 - **1b. Statements**: bundle-mode feeds. The export carries the statements and documents its feeds
   hold for the bodies the site offers, and the import verifies them as spec 0011's feed client does.
+  In four pull requests, in this order:
+  1. migration 0021: feed mode `bundle` and its guards (credential, egress, sync, the runner), the
+     feeds' last-bundle marks; `export` and what such a feed keeps (the keys file, permanent
+     refusals, statements about documents it does not hold); the reaper and the collector; the API,
+     CLI and console fields;
+  2. the plan's and the manifest's `feeds`, the feed entries in the tar reader and writer,
+     `kista bundle inspect` over them, and `kista admin bundle plan` with feeds;
+  3. spec 0011's client checks factored out of the run (a statement checked and applied with its
+     content from a fetch or from a bundle), then the export of feeds; tested with gateways the
+     tests seed;
+  4. the import of feeds, its records and events, `bundle reset -feed`, round trips through the
+     export, the docs, and the e2e test extended with a feed.
+
+  Each PR updates the docs of the behaviour it changes: PR 1 `attachments.md`, `api.md`,
+  `administration/commands.md`, `observability.md` and the console; PR 2 and 3 `upstreams.md` and
+  `commands.md`; PR 4 those, `security.md` and `deployment/air-gapped.md`.
 - **2. Upload over the API**: an upload route and a console page, for administrators who cannot run
   `kista admin` beside the server and cannot write to its object store.
 
@@ -379,7 +395,20 @@ kista-bundle.pub                       the bundle key's public key (PEM, Ed25519
 sources/<n>/well-known.json            a repository source's .well-known file; all before any file
 files/<sha256 hex>.gz                  an extension file, gzip-compressed (one member, nothing after
                                        it); named by the SHA-256 of the inflated file (body ‖ signature)
+feeds/<n>/attestation-keys.json        1b: a feed's keys file, at most 64 KiB; after every file
+feeds/<n>/batch-<k>.json               1b: statements, at most 1 MiB
+feeds/<n>/documents/<sha256 hex>       1b: a document's content, by its content hash, after the
+                                       batch that first names it
 ```
+
+Feed entries (phase 1b) come after every file, feed by feed in the manifest's order; within a feed,
+the keys file first, then each batch followed by the documents it names. Their names match
+`feeds/[1-9][0-9]{0,1}/attestation-keys.json`, `feeds/[1-9][0-9]{0,1}/batch-[1-9][0-9]{0,5}\.json`
+and `feeds/[1-9][0-9]{0,1}/documents/[0-9a-f]{64}`: an issuer id has no grammar of its own (spec
+0011 bounds only its length), so it never names an entry. Every one is named in the manifest with
+its SHA-256 and size. A feed entry whose bytes differ from the manifest fails that feed's target;
+a `sources/` or `files/` entry after a `feeds/` one stops the import as a malformed tar does
+(Importing, phase 1b).
 
 An unsigned bundle (`-unsigned`) lacks the second and third entries until `kista bundle sign` adds
 them; the import refuses it.
@@ -482,7 +511,7 @@ prints the same value.
      (a named one that is paused, not in bundle mode or without a source in the bundle refuses the
      import). A target is matched to a source by kind (core, community) or by normalised prefix
      (repository). An upstream without a source in the bundle is not touched; a bundle that serves
-     none of the tenant's upstreams is refused, leaving no record.
+     none of the tenant's upstreams (nor, from 1b, its feeds) is refused, leaving no record.
    - **Leases first.** The import takes `kista/upstream/<id>` for each target and renews it, then
      checks that the tenant is writable, as a run does, so spec 0019's reaper never sees a gap. A
      target already leased (a run or another import) is reported `busy` and skipped. An import into
@@ -671,52 +700,171 @@ upstreams:
 
 ### Statements in a bundle (phase 1b)
 
-A feed's `mode` (new; default `online`) gains **`bundle`**:
+A feed (spec 0011) gains a `mode`: `online` (the default, today's feed) or **`bundle`**. A
+bundle-mode feed is to statements what a bundle-mode upstream is to files. The mode is set at
+creation; a change to it is `400`.
 
-- **Like a bundle-mode upstream, it never runs.**
-  - No contact with its URL: the URL is the issuer's identity.
-  - No credential, and no `sync`.
-  - Its status stays `new` until an import and then reflects the last import (`ok` or `failing`).
-- **The plan** gains `feeds`, each with:
-  - the feed's URL;
-  - its pinned attestation keys;
-  - the kinds it accepts;
-  - per body the feed would offer (spec 0011's selection, as it is now), the last `seq` received;
-  - which of the plan's sources' new bodies it may also be offered. By default these are the
-    sources of upstreams in the feed's offer selection, so a body from source A is never disclosed
-    to feed B outside B's offer.
-- **The export** takes what the exporting kista's own feed of the same URL holds (spec 0011 keeps
-  statements as their issuer signed them, with their documents); it does not contact the feed.
-  - It writes the feed's attestation keys file as the feed client last fetched it.
-  - For each body the plan offers, and each body it exports for an allowed source, it writes the
-    statements past the plan's cursor as `feeds/<n>/batch-<k>.json` (each at most 1 MiB), after the
-    files.
-  - It writes each statement's document as `feeds/<n>/documents/<issuer id>` (each within spec
-    0011's limit), after its batch.
-  - It checks size, content hash (spec 0011's `ContentHash`) and signature against the plan's
-    pinned keys, as the import will.
+**Bundle-mode feeds.** Like a bundle-mode upstream, it never runs:
+- kista never contacts its URL, which is only the issuer's identity: the URL must still be https,
+  but its port is not checked against egress; it takes no credential (`400`, at creation and on a
+  change); `sync` answers `409`; adding or resuming it requests no run, and the runner never picks
+  it;
+- its status is `new` until a bundle brings its statements, then that import's (`ok`, or `failing`
+  with its error);
+- it keeps the feed's other settings: the pinned attestation keys, the kinds accepted (empty: every
+  kind, as online), `readers`, and the bodies offered (`upstreams` or named `channels`), which decide
+  what it asks for and takes in, as online;
+- its record shows the last bundle imported (`bundle_id`, `bundle_created_at`), as an upstream's.
 
-  The covered range is what the exporting feed has read through for each body, clamped below any
-  statement the gateway's feed removed (a tombstone, spec 0011), so a range declared complete never
-  hides a statement.
-  The manifest's `feeds` section names every entry with its hash and size. Per body, it gives the
-  `after_seq` sent and the `seq` the source reported as read through: the range the batches cover
-  completely.
-- **The import** checks what spec 0011's feed client checks:
-  - the issuer is the feed's URL;
-  - the signature verifies with a pinned key;
-  - the canonical form;
-  - the kinds;
-  - the quotas;
-  - `supersedes` and withdrawals;
-  - the audience rule;
-  - the body is in the feed's offer selection now, and the tenant still holds it.
+**What a gateway's feed keeps.** An online feed keeps the statements it stored and drops the rest.
+To answer a site's plan, an online feed with **`export`** set (a new setting, off by default; a
+tenant administrator's, like the feed's other settings) also keeps:
+- **the keys file**: the source's `GET …/attestation-keys` answer as the last run fetched it (at
+  most 64 KiB), with its fetch time;
+- **its permanent refusals**, per (feed, body): the `seq`, the reason and the statement's bytes and
+  signature. Every permanent refusal follows verification (a statement that does not verify holds
+  the cursor instead), so the bytes are always there. The reasons are those spec 0011's client
+  records as permanent, except `unrequested`, which has no body: a kind not accepted, the media
+  type, the title, the size, `changed`, `body`, `content`, `document`, a body not held, `limits`;
+- **statements about documents it does not hold**: a withdrawal of a document it never stored, and
+  any statement about a document it removed (a tombstone, made by an administrator or by the
+  collector's `RemoveSuperseded`), which today leaves the tombstone at its old `seq`. Per document,
+  the highest `seq` is kept. Storing the document later applies a kept withdrawal with a higher
+  `seq` and deletes the row.
 
-  A cursor advances only within the range the signed manifest says the batches cover. A carrier
-  cannot drop a withdrawal: the manifest pins every batch's hash. Statements are imported after the
-  files, so a body the bundle brings is held when its statements arrive.
-- **Disclosure.** As online, the site discloses the hashes it offers to each source. They pass
-  through the plan, and the operator who carries the plan sees them.
+Setting `export` resets the feed's cursors, so its next run reads the whole history again and keeps
+what it refused before (a statement held already is a no-op). A feed's refusals go when `export` is
+cleared or the feed is deleted; the kept statements of an issuer go when no feed of that URL with
+`export` remains. Both go with the body's cursors when the collector removes them.
+
+Kept refusals and statements count against the tenant's quota of feed documents (100,000, spec
+0011), so they can keep new documents from arriving. Today a document over the quota is refused
+with `limits` and the cursor passes it. With `export`, a statement that cannot be stored, refused
+or kept within the quota holds its body's cursor instead; the other bodies go on, and the run ends
+`failing` with `limits` until documents are removed or `export` is cleared. The other `limits`
+refusals (the heads per kind, an unresolved `supersedes` past its cap) stay permanent refusals,
+kept as such.
+
+**The plan** gains `feeds`, one per active bundle-mode feed of the tenant (or per `-feed` one), each
+with:
+- the feed's URL, its pinned attestation key fingerprints, and the kinds it accepts;
+- `bodies`: each body the feed offers now (spec 0011's "bodies offered", which counts bundle-imported
+  releases, whose origin is `upstream`) with the last `seq` received, `0` for none;
+- `sources`: the plan's sources (indexes, in range, each once) whose files the bundle may bring and
+  the feed may then offer. A feed offering `upstreams` names the sources of every bundle-mode
+  upstream; one offering `channels` names those of the bundle-mode upstreams into its channels.
+  Since sources are merged across upstreams, this is an approximation; it only keeps out of the
+  bundle statements the import would refuse.
+
+`kista admin bundle plan -feed <name,...>` names the feeds, as `-upstream` names upstreams; with
+only one of the two, the other kind is left out. A plan may have feeds and no sources. It holds at
+most 100,000 feed bodies across its feeds, beside its 100,000 cells; past that the plan fails,
+naming the feed. The formats stay `kista-bundle-plan/v1` and `kista-bundle/v1`, with `feeds`
+optional: no release carries phase 1a alone, so no reader refuses the new field.
+
+**The export.** For each of the plan's feeds, the exporter takes what its tenant holds from the
+same issuer (the URL normalised as spec 0011 normalises it). It contacts no feed.
+- **Which feed.** The candidates are the tenant's online feeds of that URL with `export` set, whose
+  kinds include every kind the plan's feed accepts (an empty list on either side meaning every
+  kind), and with a keys file. With none, the feed fails as a whole: "not subscribed here", "not
+  kept for export", "accepts fewer kinds" or "never ran"; the bundle carries the others and the
+  command exits `1`. With several, each body takes the candidate whose cursor for it is highest,
+  and the keys file is the most recently fetched.
+- **Which bodies.** The plan's `bodies`, and, from `0`, each body of a file the bundle exports for
+  one of the feed's `sources`.
+- **The range** for a body is `(after_seq, seq]`: `after_seq` is the plan's cursor, `seq` the chosen
+  feed's cursor (what the gateway read through, spec 0011). A body the gateway never received has
+  no range and gets nothing.
+- **What it carries**, in `seq` order, for each `seq` in the range it holds a statement for:
+  - from the tenant's documents of the issuer and body (whichever feed stored them, since spec 0011
+    stores a document once): the statement's bytes and signature, with the document's content; a
+    removed (tombstoned) document's statement without content, as a kept one;
+  - from the kept statements of the issuer and body: their bytes and signature, without content;
+  - from the chosen feed's refusals: their bytes and signature, without content, with the gateway's
+    reason as an unsigned note.
+
+  At one `seq`, a stored statement wins over a kept one, and a kept one over a refusal. A document
+  updated by another feed past the chosen cursor arrives with a later range.
+- **Its own checks**, as the import will check: each statement verifies with a key the plan pins
+  and names the feed's URL as its issuer, and each document's size and `ContentHash` match its
+  statement. The first statement of a body that does not verify with the plan's keys, or whose live
+  document cannot be read (its object missing, or marked corrupt), ends that body's range just below
+  it, as an unverified statement holds a cursor online.
+- **The entries**, after every file, feed by feed in plan order:
+  - `feeds/<n>/attestation-keys.json`: the keys file;
+  - `feeds/<n>/batch-<k>.json`, `k` from `1`: `[{statement, signature, note}]`, base64 as in the
+    feed's answer, each batch at most 1 MiB;
+  - `feeds/<n>/documents/<content hash hex>`: a document's content, uncompressed, after the batch
+    that first names it, once per feed.
+- **The manifest** gains `feeds`, each with its URL, the keys file's hash and size, every batch's and
+  document's name, hash and size, and per body `after_seq` and `seq`. The signed manifest pins every
+  entry, so a carrier can drop neither a batch nor a withdrawal.
+- **Limits.** At most 50 feeds, 100,000 statements and 100,000 documents per feed, and a feed's part
+  of the manifest under 16 MiB; past one, the feed fails as a whole.
+- **The result** prints per feed the chosen feed's status and last success (so a stale gateway
+  shows), bodies, statements, withdrawals, statements without content, documents and bytes, and a
+  failure; `bundle.export` counts them.
+
+**Disclosure.** As online, the site discloses the hashes it offers to each source; they pass through
+the plan, and the gateway and the operator who carries it see them. The gateway's grant at the
+source, not the site's, decides what the source answered: a narrower grant gives ranges that are
+complete but empty.
+
+**The import** reads the feed entries after the files, so a body the bundle brings is held when its
+statements arrive. Its targets are the tenant's active bundle-mode feeds whose URL is one of the
+bundle's feeds, or the `-feed` ones; naming a feed that is paused, online, or without a feed in the
+bundle refuses the import, and a bundle that serves none of the tenant's upstreams or feeds is
+refused. Each target is taken under its lease (`kista/feed/<id>`, shared with online runs: a
+target held is `busy`) and is `stale`, as an upstream target, for a bundle ordered before the last
+one it imported, the same `id` with another manifest, or a plan older than the feed. For each body:
+- a body outside the feed's offer now, or no longer held, takes nothing and gets no cursor;
+- a body whose `after_seq` is above the feed's cursor takes nothing and is counted `gap`: the range
+  does not start where the site is (a plan written before `bundle reset -feed`, or before the
+  collector removed the cursor of a body held again). A `gap` leaves the target `ok` and makes the
+  command exit `1`: write a new plan;
+- each statement passes the checks of spec 0011's client, the code shared with an online run: the
+  issuer is the feed's URL, the signature verifies with a key the feed pins (the bundle's keys file
+  gives the public keys, used only by fingerprint), the canonical form, the kinds, the media type,
+  title and size, the quotas, `supersedes`, withdrawals and the audience rule. The site judges
+  every statement itself; the gateway's note is only recorded;
+- a withdrawal is judged as online, whatever the gateway did with it; one about a document the site
+  does not hold changes nothing (a bundle-mode feed keeps nothing for export);
+- a document's content comes from the bundle, checked against its statement's size and hash. A
+  statement that needs content the bundle does not carry is refused, "bundle: no content (<the
+  gateway's note>)";
+- a statement that does not verify holds the body: nothing after it is applied;
+- the cursor moves, never back, to the range's `seq`, but no further than the highest `seq` of a
+  statement for the body verified in this bundle or before. Online caps the high-water by the
+  highest `seq` verified in the whole run; the import caps it per body, which is stricter. A range
+  without a verified statement moves nothing, and the next plan asks for it again.
+
+Entries are checked as they are read: each batch (at most 1 MiB, in memory) against its hash before
+any of its statements is applied, each document (spooled, at most `attachments.max_size`) against
+its hash. A feed entry that is missing or whose bytes differ from the manifest fails that feed's
+target, as damaged media: nothing more of it is applied and its cursors stay; the other targets go
+on. An unnamed entry is skipped, as in 1a. A `sources/` or `files/` entry after a `feeds/` entry
+stops the import as a malformed tar does; what was applied stays. A target's cursors move only
+once its feed's last entry was read: statements stored before an interruption stay (a repeat is a
+no-op), and its cursors wait for a whole read. A target's last-bundle mark is recorded as an
+upstream's: once its lease is held, before its first statement.
+
+**Dry run** checks everything and stores nothing: no statement, cursor, mark or status. It treats
+the bodies and documents the bundle would bring as held, so its counts (`would_*`) are approximate
+where statements depend on each other in the bundle (a withdrawal or a `supersedes` of a document
+it carries). It records `feed.run` (with `bundle` and `dry_run`) and the target's counts. **Records**: `bundle_imports`
+counts per target, feeds as `feed:<name>`; `bundle list` and `show` print them. The command exits
+`1` when a feed target failed, was busy or stale.
+
+**`bundle reset <tenant> -feed <name>`** clears a bundle-mode feed's last-bundle mark and resets
+its cursors, so a later bundle takes its history again (statements held are no-ops): the recovery
+after a bundle whose key holder left statements out or whose gateway lacked their content. It is
+audited (`bundle.reset`, naming `feed:<name>`).
+
+**`kista bundle inspect`** checks the feed entries' hashes and order, and each statement's signature
+against the bundle's keys file; with `-plan`, it says whether each key is pinned by the plan's feed
+or only listed, and checks each body against the plan. **`kista bundle sign`** refuses a bundle with
+a feed the plan did not ask for, a body neither in the feed's `bodies` nor of a file the bundle
+carries for the feed's `sources`, or an `after_seq` other than the plan's cursor.
 
 ### Installing kista offline
 
@@ -769,6 +917,17 @@ the server's own ingests.
 
 ### API and CLI
 
+- **Feeds (1b).**
+  - `mode: "bundle"` on `POST /api/v1/tenants/{t}/feeds`, and `-mode bundle` on
+    `kista admin feed add`; the record and `feed show` give `mode`, `bundle_id` and
+    `bundle_created_at`; the console's feed form offers the mode, and no "Sync now" or credential
+    for bundle mode.
+  - `sync` on a bundle-mode feed answers `409`, and a credential is refused with `400`.
+  - `export` on an online feed (`POST …/feeds` and a change), `-export` on `feed add` and
+    `feed set`; refused on a bundle-mode feed (`400`).
+  - `kista admin bundle plan|import … -feed <name,...>` names feeds, as `-upstream` names
+    upstreams; with only one of the two, the other kind is left out. `kista admin bundle reset
+    <tenant> -feed <name>`.
 - **Upstreams.**
   - `mode: "bundle"` on `POST /api/v1/tenants/{t}/upstreams`, and `-mode bundle` on
     `kista admin upstream add`.
@@ -815,6 +974,10 @@ Spec 0010's catalogue gains:
 - **`upstream.release`** gains `bundle`, so the audit alone answers "which bundle brought this
   release, and who imported it".
 - **`upstream.rejected`** is made when a cell changes into a refusal, as in a run.
+- **Phase 1b.** `feed.run` gains `bundle` (the manifest's id) and `dry_run` for an import's target
+  feed; `bundle.import`'s targets name feeds too (`feed:<name>`); `bundle.export`'s counts gain the
+  feeds'; `bundle.reset` names `feed:<name>`; `feed.add` gains `mode` and `export`, and
+  `feed.change` records a change of `export`.
 
 `website/docs/observability.md` lists the new kind and fields.
 
@@ -836,8 +999,21 @@ Spec 0010's catalogue gains:
 - **`upstreams.bundle_id`, `bundle_created_at` and `bundle_manifest_sha256`**, null.
 - **`bundle_imports`**, above.
 
-Phase 1b adds `feeds.mode` (`online` | `bundle`) and the feeds' import marks, with their own
-`min_reader`. Phase 2 adds the upload state to `bundle_imports`.
+**Migration 0021** (phase 1b), on all three dialects, with `-- +min_reader 21`: an older replica
+would run a bundle-mode feed online, and would not keep what an `export` feed keeps, leaving silent
+gaps.
+- `feeds.mode`, `online` | `bundle`, not null, default `online`, with its CHECK (a new column: no
+  rebuild); `feeds.export`, a boolean, default false;
+- `feeds.bundle_id`, `bundle_created_at` and `bundle_manifest_sha256`, null;
+- `feeds.attestation_keys` (the keys file's bytes) and `attestation_keys_at`, null;
+- **`feed_refusals`** `(feed_id, body_hash, seq)` primary key, `ON DELETE CASCADE` from `feeds`:
+  `reason`, `statement`, `signature` (not null), `refused_at`;
+- **`feed_kept`** `(tenant_id, issuer, issuer_id)` primary key: `body_hash`, `seq`, `statement`,
+  `signature`, `kept_at`, indexed on `(tenant_id, issuer, body_hash, seq)`;
+- both join the reaper's steps (`feed_refusals` before `feeds`) and the collector's step beside
+  `DeleteGoneFeedCursors`.
+
+Phase 2 adds the upload state to `bundle_imports`.
 
 ### Configuration
 
@@ -847,6 +1023,8 @@ Phase 1b adds `feeds.mode` (`online` | `bundle`) and the feeds' import marks, wi
 | `upstreams.bundle_sources` | 1a |
 | `bundles.max_size` | 2 |
 | The chart's `spool.importHeadroom` | 1a |
+
+Phase 1b adds no setting: `export` and the mode are a feed's.
 
 `spool.importHeadroom` adds to the spool emptyDir's limit and request, also when `spool.sizeLimit`
 is set explicitly.
@@ -869,7 +1047,9 @@ internal/upstream        + bundle mode (no sync, no credential, no egress port c
 internal/release         + Ingest names the bundle in its event; MayPublish takes the tenant, for
                          "bundle:" pseudo-credentials
 internal/blob            + the imports/ prefix, read-only to kista, outside the collector
-internal/attachment      + bundle-mode feeds (1b)
+internal/attachment      + bundle-mode feeds; `export` and what it keeps; the client's checks
+                         shared by a run and a bundle import (1b)
+internal/bundle          + the plan's and the manifest's feeds, the feed entries (1b)
 cmd/kista                + bundle keygen|keys|sign|inspect, admin bundle export|plan|import|list|show|reset
 web/console              + bundle mode on the upstream forms; provenance fields
 ```
@@ -885,6 +1065,11 @@ These pages are updated in the same PR:
 - `security.md`: the trust model above;
 - `deployment/kubernetes.md`: the import's disk, `importHeadroom`, and import as a Job;
 - the new `deployment/air-gapped.md`, with its sidebar entry.
+
+Phase 1b updates, each with the PR whose behaviour it describes: `attachments.md` (bundle mode,
+`export` and what it keeps), `api.md`, `administration/commands.md`, `observability.md`,
+`upstreams.md` (statements in a bundle), `security.md` and `deployment/air-gapped.md` (a feed in the
+cycle).
 
 ### Changes to earlier specs
 
@@ -902,7 +1087,10 @@ These pages are updated in the same PR:
   `upstream.release`.
 - **0008**: `release.MayPublish` takes the tenant.
 - **0019**: the reaper deletes `bundle_imports`.
-- **0011 (1b)**: feeds gain mode `bundle`.
+- **0011 (1b)**: feeds gain mode `bundle` and `export`; an `export` feed keeps its keys file, its
+  permanent refusals and statements about documents it does not hold.
+- **0019 (1b)**: the reaper deletes `feed_refusals` and `feed_kept`.
+- **0016 (1b)**: the collector deletes them with the body's feed cursors.
 - **0013**: the chart's `spool.importHeadroom`.
 - **0001**: the follow-up for bundles points here.
 
@@ -983,6 +1171,19 @@ These pages are updated in the same PR:
   as spec 0005 shares them.
 - **Untrusted text.** The export's reasons are bounded, control characters are stripped, and they are
   shown as data.
+- **Statements in a bundle (1b).**
+  - Statements stay signed by their issuer and are checked at the site under its own pins; the
+    keys file is unsigned and used only by fingerprint. Neither a carrier nor the bundle key's
+    holder can forge, change or reorder a statement.
+  - The bundle key's holder (or whoever signs an unsigned export) can leave statements out of a
+    range, a withdrawal among them, and withhold documents: the source's numbering has gaps, so a
+    range cannot prove it is whole. The site judges every statement itself, applies every
+    withdrawal it receives, and moves a cursor no further than a statement it verified, so an empty
+    or forged range moves nothing. `bundle reset -feed` takes the history again from another
+    bundle. A per-body checkpoint signed by the issuer is a follow-up.
+  - A gateway's `export` feed keeps refused statements and statements about documents it does not
+    hold, within the tenant's quota of feed documents, so a source cannot grow them without
+    bound.
 - **Disclosure.** A plan names the tenant's sources, allowlists, platforms, DuckDB versions and the
   hashes it holds; a bundle adds what was fetched. Both are as sensitive as the site's configuration.
   The docs say so.
@@ -1099,14 +1300,35 @@ These pages are updated in the same PR:
   in the volume and the request; malformed quantities refused (`deploy/helm/chartcheck`,
   `deploy/helm/tests/fail`).
 - **1b.**
-  - Statements in a bundle are verified, stored and cursored as spec 0011's client does.
-  - Statements arrive for a body the same bundle brings.
-  - These are refused:
-    - a statement by an unpinned key;
-    - one from another issuer;
-    - one for a body outside the offer;
-    - a batch whose hash does not match the manifest.
-  - A cursor never passes the covered range.
+  - **Mode.** A bundle-mode feed is never run, requested or synced (`409`), takes no credential
+    (`400`), skips the egress port check but not https; its mode never changes (`400`). Migration
+    0021 on all three dialects; the reaper's completeness test with the new tables.
+  - **`export`.** Setting it resets the cursors; the feed then keeps its keys file, every permanent
+    refusal (bytes and signature), a withdrawal of a document never stored, a statement about a
+    tombstone (the highest `seq`), a kept withdrawal applied when the document arrives; past the
+    quota the body's cursor held and the run `failing`, the other bodies going on; clearing it
+    deletes the feed's refusals, and the kept statements once no `export` feed of the URL remains;
+    the collector removes them with the cursors.
+  - **Plan.** Bodies with their cursors, `0` for none; `sources` per offer; `-feed` and
+    `-upstream` alone; the cap.
+  - **Export.** The candidates by `export`, kinds (empty ones too) and keys file, and each failure
+    as a whole; the highest cursor among several; the range `(after_seq, seq]`; stored statements by
+    issuer whichever feed stored them, kept ones and refusals, the precedence at one `seq`; a body
+    the bundle brings from an allowed source with its whole history, none from another; the range
+    ended below a statement that does not verify or a document that cannot be read; batches at
+    1 MiB; documents by content hash, once; a tombstone carried without content, a missing live
+    object ending the range; the limits; no credential in the bundle.
+  - **Import.** Statements checked and applied as spec 0011's client does, arriving for a body the
+    same bundle brings; refused: an unpinned key, another issuer, a body outside the offer, a
+    document that does not match, content not carried; a withdrawal refused at the gateway still
+    applied; `gap` when `after_seq` is above the cursor; the cursor never past a verified
+    statement, never back, held below an unverified one, moved only after a whole read; a damaged
+    entry failing its target only; `gap` exiting `1`; stale and busy targets; dry run with what the
+    bundle brings treated as held; `bundle reset -feed`.
+  - **Round trips**: export then import between a gateway and a site the tests seed, after a
+    rotation and with a gateway refusing by kind and by quota.
+  - **e2e.** The air-gapped test's source issues a statement about the release, the gateway's
+    `export` feed receives it, and the site's bundle-mode feed takes it in with the release.
 - **2.** An upload, the size limit, server administrators only, and one import per upload across
   replicas.
 
@@ -1145,6 +1367,8 @@ These pages are updated in the same PR:
 - **Events and statistics leaving the site** (spec 0010): a bundle in the other direction, signed by
   the site, for an organisation's central audit.
 - **Bundle keys in key sources** (spec 0004's vaults and KMSs) instead of a PEM file.
+- **Issuer-signed checkpoints** (1b): a source signing, per body, the highest `seq` it has issued,
+  so a range can prove it is whole and a bundle cannot leave statements out unseen.
 - **Yanking by bundle:** `kista admin release yank -bundle <id>`.
 - **OCI layouts as a second carrier.**
 - **Relaying feeds onward** (spec 0011): a connected kista relaying a source's statements into
