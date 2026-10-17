@@ -1,6 +1,6 @@
 # Spec 0020: Cloud recipes: AWS and GCP in Terraform, Azure in Bicep
 
-- **Status**: accepted; phases 0-3 implemented; phase 4 designed (2026-10-17), 4a implemented
+- **Status**: accepted; phases 0-3 implemented; phase 4 designed (2026-10-17), 4a implemented, 4b implemented with its live run to come
 - **Date**: 2026-10-14
 - **Author**: vgsml, Claude
 
@@ -829,8 +829,11 @@ event.
   `languageVersion` 2.0, which managed applications refuse). It is passed into the configuration
   as the `bootstrap` section. Its key references are filled in from the template's own keys, so
   nobody types a key version.
-- **A `bootstrap` job** beside `migrate`, which runs `admin bootstrap -dry-run` by default; with
-  full access, the customer starts it.
+- **A `bootstrap` job** beside `migrate`, which runs `admin bootstrap -dry-run`; with full access,
+  the customer starts it.
+- **`serverConsoleClients`**, the server console's client (`ui.server_clients`).
+- **API versions** recent enough for Microsoft's checks (under two years), and the public URL output
+  named `address` (the checks want a property named `url` built with `uri()`).
 
 **The package**, `deploy/azure-marketplace/`:
 
@@ -840,13 +843,16 @@ event.
   3. Pins **`image` to the release's digest** (`ghcr.io/hugr-lab/kista@sha256:…`), as a fixed
      value, never a UI field. It fails on a tag.
   4. Forces `signerRole=builtin`.
-  5. Adds the customer-usage-attribution deployment `pid-<tracking id>`, from a variable that holds
-     the plan's ID. Partner Center cannot inject it into a template that has nested deployments,
+  5. Adds the customer-usage-attribution deployment named by the plan's tracking ID exactly as
+     Partner Center shows it (`pid-…`), from the repository variable `KISTA_MARKETPLACE_PID`. Partner Center cannot inject it into a template that has nested deployments,
      and the database modules are nested deployments.
   6. Checks that every `createUiDefinition` output maps to a parameter, and that no parameter
      without a default is left unmapped.
-  7. Writes `app.zip` reproducibly: fixed timestamps and order.
-- **`createUiDefinition.json`**, in three steps. The customer prepares the Entra app registrations
+  7. Writes `app.zip` reproducibly: fixed timestamps (UTC), modes and order; a byte-identical
+     rebuild needs the same bicep.
+
+  It also fixes `image` by `allowedValues`, so a deployment through the API cannot run another.
+- **`createUiDefinition.json`**, in four steps. The customer prepares the Entra app registrations
   beforehand, as the docs page describes; the UI checks their IDs as GUIDs and cannot create them.
   1. **Basics**: region, the deployment's prefix, and the database (PostgreSQL by default, or SQL
      Server).
@@ -861,11 +867,17 @@ event.
      200 groups the token carries none.
   3. **First tenant**:
      - its name and channel name;
-     - the DuckDB version to serve, from a list fixed in the package with its C API;
+     - the DuckDB version to serve, from a list fixed in the package with its C API (v2.0.0, C API
+       v1.5.6, to begin with);
      - its Entra tenant, its API app's client ID (its audience) and its administrators' app role.
 
      These become the bootstrap's tenant, audience, issuer and grant. Its console client is offered
      only when the tenant's directory is not the server administrators' (see above).
+  4. **Size**: vCPUs, replicas, the largest extension file (512 MiB with 1 vCPU), and an
+     attestation key.
+
+  Each console client's scopes include `<API app id>/.default`: without it, Entra issues the
+  console a Microsoft Graph token.
 
   The UI checks, read only (`ArmApiControl` GET), that the resource providers the template uses
   are registered:
@@ -877,8 +889,9 @@ event.
   - `Microsoft.Network`;
   - `Microsoft.ManagedIdentity`.
 
-  A step is blocked while one is not registered, and an info box gives the
-  `az provider register` commands. The UI registers nothing itself: registration needs a
+  While one is not, an info box warns and gives the `az provider register` commands; it does not
+  block, since a buyer without read on the subscription would be blocked wrongly, and the
+  deployment fails clearly anyway. The UI registers nothing itself: registration needs a
   subscription-level permission the buyer may not have.
 - **The plan's settings**, which the owner enters in Partner Center:
   - customer access: **full access** (no deny assignment);
@@ -892,14 +905,16 @@ event.
     The customer may remove that access by deleting the authorization's role assignment.
 - **CI** (the `bicep` job) runs:
   - `build.sh`;
-  - `az bicep build`, with warnings as errors;
-  - Microsoft's certification checks, `Test-AzMarketplacePackage` (arm-ttk) under `pwsh`, on the
-    unzipped package. Its red results fail the job.
+  - `bicep lint` with no result, and `bicep build`;
+  - Microsoft's certification checks, arm-ttk's `Test-AzTemplate` under `pwsh`, on the unzipped
+    package built with an attribution ID. Any failed check fails the job.
 
   The template's `apiVersions` are brought up to date to pass them.
 - **The release** attaches `kista-azure-app-<version>.zip`, with its SHA-256 and a keyless
-  signature, like the other assets. Before uploading it to Partner Center, the owner verifies the
-  zip against the signed asset. The docs publish the SHA-256 for each plan version.
+  signature, like the other assets. It is built in the release's build job, which holds no token:
+  the image's digest is known there, from the OCI index the publish job pushes and checks. The
+  signing job runs no repository code. Before uploading it to Partner Center, the owner verifies the
+  zip against the signed asset (its SHA-256 is in the release's `SHA256SUMS`).
 - **Upgrades.** With full access, the customer upgrades by changing the app's and the jobs' image
   to a new release's digest, as the recipe's docs say, or by deploying a new plan version.
   Deployments are incremental.
@@ -907,15 +922,16 @@ event.
   soft-deleted for its retention (with purge protection, it cannot be purged). The Container Apps
   environment's infrastructure group goes with the environment.
 
-**Live run.** `deploy/azure/recipe-live.sh managed-app up | check | down | leftovers`:
+**Live run.** `deploy/azure/managed-app-live.sh up | check | down | leftovers`:
 
-1. It makes a **service-catalog** definition from the release asset (or a local build before the
-   first release). The definition has lock `None` and a Reader authorization for a principal
+1. It builds the package for the image it runs and makes a **service-catalog** definition from it. The definition has lock `None` and a Reader authorization for a principal
    other than the runner.
-2. It deploys an application from the definition, with the trial answers.
+2. It deploys an application from the definition, with parameters equivalent to the UI's answers
+   (the form's own expressions run only in the portal, so a changed form is tried in its sandbox).
 3. It checks:
-   - the bootstrap made the tenant: its `.well-known`, a channel key signing, the
-     `bootstrap.apply` event;
+   - the bootstrap made the tenant: its channel serves the channel key, the `bootstrap.apply`
+     event by `system:bootstrap`, the attestation key added;
+   - a server and a tenant administrator act by their Entra app roles;
    - the managed resource group has no deny assignment;
    - the runner can start the `bootstrap` job.
 4. It deletes everything and checks for leftovers. The run sets `purgeProtection` off, so the vault
@@ -980,7 +996,8 @@ step, after the live run.
     (AWS), never a general cloud token.
   - Tokens are made per connection and never logged.
 - **Least privilege.**
-  - KMS: AWS keys by purpose tag, GCP by key ring, Azure by a custom role on one vault.
+  - KMS: AWS keys by purpose tag, GCP by key ring, Azure by a role on each key (custom, or the
+    built-in Key Vault Crypto User in the Marketplace package).
   - Storage: one bucket or container, with only the actions kista calls.
   - Database: one user. The Azure trade-off above is the exception, and it is stated.
   - Spec 0004's checks at open still apply: purpose tag, key spec, HSM, operations.

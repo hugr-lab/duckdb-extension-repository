@@ -74,8 +74,20 @@ jobs:
             cp "out/$p/kista" "dist/kista-$VERSION-${p/_/-}"
           done
           chmod 0755 dist/kista-*
-          (cd dist && sha256sum kista-* > SHA256SUMS && cat SHA256SUMS)
           "dist/kista-$VERSION-linux-amd64" version
+      - name: the Azure Marketplace package (spec 0020), its image pinned by the digest built above
+        env:
+          VERSION: ${{ github.ref_name }}
+          KISTA_MARKETPLACE_PID: ${{ vars.KISTA_MARKETPLACE_PID }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bin/bicep" https://github.com/Azure/bicep/releases/download/v0.47.16/bicep-linux-x64
+          echo "64c345a58e0c3e48b1bc98a4e62d6b3adb1d238281297de3400aeafb2697aa5a  $RUNNER_TEMP/bin/bicep" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/bin/bicep"
+          PATH="$RUNNER_TEMP/bin:$PATH" deploy/azure-marketplace/build.sh \
+            "$REPO@$(jq -r '.manifests[0].digest' image/index.json)" "dist/kista-azure-app-$VERSION.zip"
+      - name: checksums
+        run: (cd dist && sha256sum kista-* > SHA256SUMS && cat SHA256SUMS)
       - name: helm
         run: |
           curl -fsSL --retry 3 -o helm.tgz https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz
@@ -251,6 +263,9 @@ jobs:
 
           The chart: \`helm install kista oci://$CHARTS/kista --version ${TAG#v} --set image.digest=$DIGEST -f values.yaml\`
           (chart digest \`$CHART_DIGEST\`).
+
+          The Azure Marketplace package: \`kista-azure-app-$TAG.zip\`, its image pinned to the digest above, signed and
+          in \`SHA256SUMS\` like the binaries.
 
           Verify the image, the chart, and a binary with its \`.sigstore.json\` bundle:
 

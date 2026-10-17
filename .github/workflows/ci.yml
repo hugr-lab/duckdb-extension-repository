@@ -265,3 +265,19 @@ jobs:
           jq -e '[.runs[].results[]] | length == 0' lint.sarif || { jq '.runs[].results[]' lint.sarif; exit 1; }
           bicep build main.bicep --stdout > /dev/null
           bicep build-params examples/trial.bicepparam --stdout > /dev/null
+      - name: the Marketplace package, and Microsoft's certification checks on it (arm-ttk)
+        run: |
+          # with an attribution ID, as a release builds it
+          KISTA_MARKETPLACE_PID=pid-00000000-0000-0000-0000-000000000000-partnercenter \
+            deploy/azure-marketplace/build.sh "ghcr.io/hugr-lab/kista@sha256:$(printf '0%.0s' $(seq 64))" "$RUNNER_TEMP/app.zip"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/arm-ttk.zip" https://github.com/Azure/arm-ttk/releases/download/20260213/arm-ttk.zip
+          echo "2a2d21f17cc31299ba2c78caf97def3c1f9f37eb3a7bab7900cda18c95d4c657  $RUNNER_TEMP/arm-ttk.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/arm-ttk.zip" -d "$RUNNER_TEMP/arm-ttk"
+          unzip -q "$RUNNER_TEMP/app.zip" -d "$RUNNER_TEMP/app"
+          pwsh -NoProfile -Command '
+            Import-Module "$env:RUNNER_TEMP/arm-ttk/arm-ttk/arm-ttk/arm-ttk.psd1"
+            $r = Test-AzTemplate -TemplatePath "$env:RUNNER_TEMP/app"
+            $bad = @($r | Where-Object { -not $_.Passed })
+            $bad | ForEach-Object { $_.Name; $_.Errors | ForEach-Object { "  " + $_.Exception.Message } }
+            "arm-ttk: $($r.Count) checks, $($bad.Count) failed"
+            if ($bad.Count -gt 0 -or $r.Count -eq 0) { exit 1 }'

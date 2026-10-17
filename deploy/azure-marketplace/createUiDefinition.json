@@ -1,0 +1,374 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "config": {
+      "isWizard": true,
+      "basics": {
+        "description": "kista, a trusted repository for DuckDB extensions, on Azure Container Apps: its own managed identity, a channel key in a Key Vault HSM, Blob Storage and a database, in this application's managed resource group. You keep full access to them; the publisher can only read. Prepare the Entra app registrations first: https://hugr-lab.github.io/duckdb-extension-repository/docs/deployment/azure#the-marketplace-application",
+        "location": {
+          "label": "Region",
+          "toolTip": "Where every resource of kista goes.",
+          "resourceTypes": [
+            "Microsoft.App/containerApps",
+            "Microsoft.KeyVault/vaults",
+            "Microsoft.Storage/storageAccounts"
+          ]
+        }
+      }
+    },
+    "basics": [
+      {
+        "name": "prefix",
+        "type": "Microsoft.Common.TextBox",
+        "label": "Name prefix",
+        "defaultValue": "kista",
+        "toolTip": "Names every resource: 2 to 10 lower-case letters, digits and hyphens, starting with a letter and not ending with a hyphen.",
+        "constraints": {
+          "required": true,
+          "regex": "^[a-z][a-z0-9-]{0,8}[a-z0-9]$",
+          "validationMessage": "2 to 10 lower-case letters, digits and hyphens, starting with a letter and not ending with a hyphen."
+        }
+      },
+      {
+        "name": "database",
+        "type": "Microsoft.Common.DropDown",
+        "label": "Database",
+        "defaultValue": "PostgreSQL Flexible Server",
+        "toolTip": "kista's store, reached with Entra authentication only.",
+        "constraints": {
+          "allowedValues": [
+            {
+              "label": "PostgreSQL Flexible Server",
+              "value": "postgres"
+            },
+            {
+              "label": "Azure SQL",
+              "value": "sqlserver"
+            }
+          ],
+          "required": true
+        }
+      },
+      {
+        "name": "providerApp",
+        "type": "Microsoft.Solutions.ArmApiControl",
+        "request": {
+          "method": "GET",
+          "path": "[concat(subscription().id, '/providers/Microsoft.App?api-version=2021-04-01')]"
+        }
+      },
+      {
+        "name": "providerKeyVault",
+        "type": "Microsoft.Solutions.ArmApiControl",
+        "request": {
+          "method": "GET",
+          "path": "[concat(subscription().id, '/providers/Microsoft.KeyVault?api-version=2021-04-01')]"
+        }
+      },
+      {
+        "name": "providerStorage",
+        "type": "Microsoft.Solutions.ArmApiControl",
+        "request": {
+          "method": "GET",
+          "path": "[concat(subscription().id, '/providers/Microsoft.Storage?api-version=2021-04-01')]"
+        }
+      },
+      {
+        "name": "providerLogs",
+        "type": "Microsoft.Solutions.ArmApiControl",
+        "request": {
+          "method": "GET",
+          "path": "[concat(subscription().id, '/providers/Microsoft.OperationalInsights?api-version=2021-04-01')]"
+        }
+      },
+      {
+        "name": "providerNetwork",
+        "type": "Microsoft.Solutions.ArmApiControl",
+        "request": {
+          "method": "GET",
+          "path": "[concat(subscription().id, '/providers/Microsoft.Network?api-version=2021-04-01')]"
+        }
+      },
+      {
+        "name": "providerIdentity",
+        "type": "Microsoft.Solutions.ArmApiControl",
+        "request": {
+          "method": "GET",
+          "path": "[concat(subscription().id, '/providers/Microsoft.ManagedIdentity?api-version=2021-04-01')]"
+        }
+      },
+      {
+        "name": "providerDatabase",
+        "type": "Microsoft.Solutions.ArmApiControl",
+        "request": {
+          "method": "GET",
+          "path": "[concat(subscription().id, '/providers/', if(equals(basics('database'), 'sqlserver'), 'Microsoft.Sql', 'Microsoft.DBforPostgreSQL'), '?api-version=2021-04-01')]"
+        }
+      },
+      {
+        "name": "providersMissing",
+        "type": "Microsoft.Common.InfoBox",
+        "visible": "[not(and(equals(basics('providerApp').registrationState, 'Registered'), equals(basics('providerKeyVault').registrationState, 'Registered'), equals(basics('providerStorage').registrationState, 'Registered'), equals(basics('providerLogs').registrationState, 'Registered'), equals(basics('providerNetwork').registrationState, 'Registered'), equals(basics('providerIdentity').registrationState, 'Registered'), equals(basics('providerDatabase').registrationState, 'Registered')))]",
+        "options": {
+          "icon": "Warning",
+          "text": "The subscription has not registered every resource provider kista uses. The deployment fails until they are; register them first: az provider register -n Microsoft.App; az provider register -n Microsoft.KeyVault; az provider register -n Microsoft.Storage; az provider register -n Microsoft.OperationalInsights; az provider register -n Microsoft.Network; az provider register -n Microsoft.ManagedIdentity; and Microsoft.DBforPostgreSQL or Microsoft.Sql."
+        }
+      }
+    ],
+    "steps": [
+      {
+        "name": "admins",
+        "label": "Server administrators",
+        "elements": [
+          {
+            "name": "intro",
+            "type": "Microsoft.Common.TextBlock",
+            "options": {
+              "text": "The people who administer kista sign in with Microsoft Entra ID, through an API app registration whose tokens carry an app role, and the console's app registration."
+            }
+          },
+          {
+            "name": "tenantId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Entra tenant ID",
+            "defaultValue": "[subscription().tenantId]",
+            "constraints": {
+              "required": true,
+              "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "validationMessage": "A GUID."
+            },
+            "toolTip": "The directory (tenant) ID of the Entra ID the administrators sign in at."
+          },
+          {
+            "name": "apiAppId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "The API app's client ID (the server audience)",
+            "constraints": {
+              "required": true,
+              "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "validationMessage": "A GUID."
+            },
+            "toolTip": "The application (client) ID of the API app registration: Entra's v2.0 tokens carry it as their audience."
+          },
+          {
+            "name": "adminRole",
+            "type": "Microsoft.Common.TextBox",
+            "label": "The administrators' app role",
+            "defaultValue": "kista-admin",
+            "toolTip": "The value of the API app's role assigned to the administrators; their tokens carry it in roles.",
+            "constraints": {
+              "required": true,
+              "regex": "^[A-Za-z0-9._-]{1,120}$",
+              "validationMessage": "Letters, digits, dots, underscores and hyphens."
+            }
+          },
+          {
+            "name": "consoleAppId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "The console app's client ID",
+            "toolTip": "A single-page application registration; add the redirect URI https://<kista's host>/ui/server/callback after the deployment.",
+            "constraints": {
+              "required": true,
+              "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "validationMessage": "A GUID."
+            }
+          }
+        ]
+      },
+      {
+        "name": "tenant",
+        "label": "First tenant",
+        "elements": [
+          {
+            "name": "name",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Tenant name",
+            "defaultValue": "main",
+            "toolTip": "The path segment of the tenant's repositories: https://<host>/<tenant>/<channel>/.",
+            "constraints": {
+              "required": true,
+              "regex": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "validationMessage": "Lower-case letters, digits and hyphens."
+            }
+          },
+          {
+            "name": "channel",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Channel name",
+            "defaultValue": "prod",
+            "constraints": {
+              "required": true,
+              "regex": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "validationMessage": "Lower-case letters, digits and hyphens."
+            },
+            "toolTip": "The tenant's first channel: a DuckDB repository signed with the channel key."
+          },
+          {
+            "name": "duckdb",
+            "type": "Microsoft.Common.DropDown",
+            "label": "DuckDB version served",
+            "defaultValue": "v2.0.0",
+            "toolTip": "The DuckDB version the channel serves at first, with its C API; more are added afterwards.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "v2.0.0",
+                  "value": "v2.0.0|v1.5.6"
+                }
+              ],
+              "required": true
+            }
+          },
+          {
+            "name": "tenantId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "The tenant's Entra tenant ID",
+            "defaultValue": "[steps('admins').tenantId]",
+            "constraints": {
+              "required": true,
+              "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "validationMessage": "A GUID."
+            },
+            "toolTip": "The directory (tenant) ID of the Entra ID the tenant's administrators sign in at."
+          },
+          {
+            "name": "apiAppId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "The tenant's API app client ID (its audience)",
+            "toolTip": "Another app registration than the server's.",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "regex": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "message": "A GUID."
+                },
+                {
+                  "isValid": "[not(equals(steps('tenant').apiAppId, steps('admins').apiAppId))]",
+                  "message": "The tenant's API app must not be the server's."
+                }
+              ]
+            }
+          },
+          {
+            "name": "adminRole",
+            "type": "Microsoft.Common.TextBox",
+            "label": "The tenant administrators' app role",
+            "defaultValue": "kista-tenant-admin",
+            "constraints": {
+              "required": true,
+              "regex": "^[A-Za-z0-9._-]{1,120}$",
+              "validationMessage": "Letters, digits, dots, underscores and hyphens."
+            },
+            "toolTip": "The value of an app role of the API app, assigned to the administrators."
+          },
+          {
+            "name": "sameDirectory",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": "[equals(steps('tenant').tenantId, steps('admins').tenantId)]",
+            "options": {
+              "icon": "Info",
+              "text": "The tenant signs in at the server administrators' directory: it gets no console client of its own (a tenant's console never signs in at a server issuer). Its administrators use the API, and server administrators open it in the server console."
+            }
+          },
+          {
+            "name": "consoleAppId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "The tenant console's client ID (optional)",
+            "visible": "[not(equals(steps('tenant').tenantId, steps('admins').tenantId))]",
+            "constraints": {
+              "required": false,
+              "regex": "^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$",
+              "validationMessage": "A GUID, or empty."
+            },
+            "toolTip": "The application (client) ID of the console's single-page app registration."
+          }
+        ]
+      },
+      {
+        "name": "sizing",
+        "label": "Size",
+        "elements": [
+          {
+            "name": "cpu",
+            "type": "Microsoft.Common.DropDown",
+            "label": "vCPUs per replica",
+            "defaultValue": "2",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "1",
+                  "value": "1.0"
+                },
+                {
+                  "label": "2",
+                  "value": "2.0"
+                },
+                {
+                  "label": "4",
+                  "value": "4.0"
+                }
+              ],
+              "required": true
+            },
+            "toolTip": "vCPUs per replica; memory is 2 GiB per vCPU."
+          },
+          {
+            "name": "replicas",
+            "type": "Microsoft.Common.Slider",
+            "label": "Replicas",
+            "min": 1,
+            "max": 10,
+            "defaultValue": 2,
+            "showStepMarkers": false,
+            "toolTip": "kista replicas serving behind Container Apps' ingress."
+          },
+          {
+            "name": "maxBodyMib",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Largest extension file",
+            "defaultValue": "512 MiB",
+            "toolTip": "blob.max_body, the largest extension file; with 1 vCPU, 512 MiB whatever is chosen (a replica's spool fits no more).",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "512 MiB",
+                  "value": 512
+                },
+                {
+                  "label": "1 GiB",
+                  "value": 1024
+                }
+              ],
+              "required": true
+            }
+          },
+          {
+            "name": "attestationKey",
+            "type": "Microsoft.Common.CheckBox",
+            "label": "An attestation key for the tenant's signed statements",
+            "defaultValue": false,
+            "toolTip": "A second Key Vault key that signs the tenant's feed statements (spec 0011)."
+          }
+        ]
+      }
+    ],
+    "outputs": {
+      "location": "[location()]",
+      "prefix": "[basics('prefix')]",
+      "database": "[basics('database')]",
+      "cpu": "[steps('sizing').cpu]",
+      "replicas": "[steps('sizing').replicas]",
+      "maxBodyMib": "[if(equals(steps('sizing').cpu, '1.0'), 512, steps('sizing').maxBodyMib)]",
+      "maxIngests": 2,
+      "attestationKey": "[steps('sizing').attestationKey]",
+      "serverIssuers": "[parse(concat('[{\"name\":\"entra\",\"url\":\"https://login.microsoftonline.com/', steps('admins').tenantId, '/v2.0\",\"required_claims\":{\"tid\":\"', steps('admins').tenantId, '\"},\"roles_claim\":\"roles\"}]'))]",
+      "serverAudiences": "[parse(concat('[\"', steps('admins').apiAppId, '\"]'))]",
+      "serverAdmins": "[parse(concat('[\"role:entra|', steps('admins').adminRole, '\"]'))]",
+      "serverConsoleClients": "[parse(concat('[{\"issuer\":\"entra\",\"client_id\":\"', steps('admins').consoleAppId, '\",\"scopes\":[\"openid\",\"profile\",\"offline_access\",\"', steps('admins').apiAppId, '/.default\"]}]'))]",
+      "bootstrap": "[parse(concat('{\"versions\":[', concat('{\"version\":\"', first(split(steps('tenant').duckdb, '|')), '\",\"kind\":\"release\",\"c_apis\":[\"', last(split(steps('tenant').duckdb, '|')), '\"]}'), '],\"tenant\":{\"name\":\"', steps('tenant').name, '\",\"audiences\":[\"', steps('tenant').apiAppId, '\"]},\"channel\":{\"name\":\"', steps('tenant').channel, '\",\"versions\":[\"', first(split(steps('tenant').duckdb, '|')), '\"]},\"issuer\":{\"name\":\"entra\",\"url\":\"https://login.microsoftonline.com/', steps('tenant').tenantId, '/v2.0\",\"required_claims\":{\"tid\":\"', steps('tenant').tenantId, '\"},\"roles_claim\":\"roles\"', if(or(equals(steps('tenant').tenantId, steps('admins').tenantId), empty(steps('tenant').consoleAppId)), '', concat(',\"console\":{\"client_id\":\"', steps('tenant').consoleAppId, '\",\"audience\":\"', steps('tenant').apiAppId, '\",\"scopes\":\"openid profile offline_access ', steps('tenant').apiAppId, '/.default\"}')), '},\"grants\":[{\"principal\":\"role:entra|', steps('tenant').adminRole, '\",\"verbs\":[\"admin\"]}]}'))]"
+    }
+  }
+}

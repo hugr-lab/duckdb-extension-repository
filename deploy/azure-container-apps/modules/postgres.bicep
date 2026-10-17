@@ -29,7 +29,7 @@ resource link 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01'
   }
 }
 
-resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
+resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2025-08-01' = {
   name: name
   location: location
   tags: tags
@@ -49,7 +49,7 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   dependsOn: [link]
 }
 
-resource admin 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = {
+resource admin 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2025-08-01' = {
   parent: server
   name: adminPrincipalId
   properties: {
@@ -59,7 +59,7 @@ resource admin 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08
   }
 }
 
-resource db 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = {
+resource db 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2025-08-01' = {
   parent: server
   name: 'kista'
   properties: { charset: 'UTF8', collation: 'en_US.utf8' }

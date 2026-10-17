@@ -12,7 +12,7 @@ param sku string
 param adminClientId string
 param adminName string
 
-resource server 'Microsoft.Sql/servers@2023-08-01' = {
+resource server 'Microsoft.Sql/servers@2025-01-01' = {
   name: name
   location: location
   tags: tags
@@ -30,7 +30,7 @@ resource server 'Microsoft.Sql/servers@2023-08-01' = {
   }
 }
 
-resource db 'Microsoft.Sql/servers/databases@2023-08-01' = {
+resource db 'Microsoft.Sql/servers/databases@2025-01-01' = {
   parent: server
   name: 'kista'
   location: location
@@ -56,7 +56,7 @@ resource link 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01'
   }
 }
 
-resource endpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+resource endpoint 'Microsoft.Network/privateEndpoints@2025-05-01' = {
   name: '${name}-sql'
   location: endpointLocation
   tags: tags
@@ -68,7 +68,7 @@ resource endpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
   }
 }
 
-resource zoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+resource zoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2025-05-01' = {
   parent: endpoint
   name: 'default'
   properties: {
