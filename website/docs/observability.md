@@ -81,6 +81,10 @@ are all the kinds in `internal/audit`:
 | | `publisher.github.remove` | `publisher:<name>/github:<id>` | `publisher`, `credential` |
 | | `publisher.key.add` | `publisher:<name>/key:<id>` | `publisher`, `key`, `prefix`, `expires_at` |
 | | `publisher.key.remove` | `publisher:<name>/key:<id>` | `publisher`, `key` |
+| Licences | `license.import` | `license:<name>` | `name`, `license`, `issuer`, `holder`, `plan`, `expires_at`, `replaced` |
+| | `license.change` | `license:<name>` | `name`, `license`, `visibility` |
+| | `license.remove` | `license:<name>` | `name`, `license`, `reason` (`admin`, `revoked`, `expired`, `upstream removed`) |
+| | `license.sync` | `upstream:<name>` | `upstream`, `counts`, `error`, `refused` (the system's relay run) |
 | Releases | `release.add` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `visibility`, `current`, `shadows` |
 | | `release.publish` | the release | as `release.add`, and `provenance` |
 | | `release.promote` | `channel:<channel>/ext:<name>` | `releases`, `name`, `from_channel`, `version`, `shadows`, `provenance` |
@@ -316,7 +320,7 @@ Export errors go to kista's log, at most once a minute.
 | `kista.upstream.cells` | gauge, `{cell}` | `kista.outcome`: upstream cells per outcome |
 
 `http.route` is never a path: `api`, `ui`, `cors`, `extension`, `extension-versioned`,
-`well-known`, `healthz`, `readyz`, `none` (no route matched) or `other`.
+`well-known`, `license`, `licenses`, `healthz`, `readyz`, `none` (no route matched) or `other`.
 
 `kista.events.pending` and `kista.upstream.cells` are read from the database at each export and are
 the same on every replica: take the maximum across `service.instance.id`, not the sum. A sink's name

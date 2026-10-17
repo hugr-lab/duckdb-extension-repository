@@ -176,6 +176,11 @@ var catalogue = map[Kind][]string{
 	"upstream.release":  {"upstream", "release", "name", "version", "platform", "slot", "body_hash", "url", "key", "bundle"},
 	"upstream.rejected": {"upstream", "duckdb_version", "platform", "name", "outcome"},
 	"upstream.run":      {"upstream", "dry_run", "counts", "error", "bundle"},
+	// licences (spec 0012): refused last, since a truncated event keeps its first fields
+	"license.import": {"name", "license", "issuer", "holder", "plan", "expires_at", "replaced"},
+	"license.change": {"name", "license", "visibility"},
+	"license.remove": {"name", "license", "reason"},
+	"license.sync":   {"upstream", "counts", "error", "refused"},
 	// bundles (spec 0014): targets last, since a truncated event keeps its first fields
 	"bundle.import":          {"import", "manifest", "created_at", "exporter", "bundle_key", "input_sha256", "dry_run", "state", "targets"},
 	"bundle.reset":           {"upstream", "feed", "manifest", "created_at"},
@@ -240,6 +245,8 @@ func SubjectForm(k Kind) string {
 		return "tenant:<name>"
 	case "bundle.reset":
 		return "upstream:<name> or feed:<name>"
+	case "license.sync":
+		return "upstream:<name>"
 	}
 	if strings.HasPrefix(string(k), "publisher.github.") {
 		return "publisher:<name>/github:<id>"
@@ -252,7 +259,7 @@ func SubjectForm(k Kind) string {
 		"channel": "channel:<channel>", "key": "channel:<channel>/key:<id>", "issuer": "issuer:<name>", "grant": "grant:<id>",
 		"publisher": "publisher:<name>", "release": release, "block": "block:<body hash>", "upstream": "upstream:<name>",
 		"shadow": "shadow:<name>", "extension_group": "extension-group:<name>", "attachment": "ext:<name>/attachment:<id>",
-		"attestation_key": "attestation-key:<id>", "feed": "feed:<name>"}[prefix]
+		"attestation_key": "attestation-key:<id>", "feed": "feed:<name>", "license": "license:<name>"}[prefix]
 }
 
 // Known reports whether a kind is in the catalogue.

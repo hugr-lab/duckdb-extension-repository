@@ -21,6 +21,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bootstrap"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
@@ -109,7 +110,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	apiHandler := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
 		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
 		Server: server, Providers: providers, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
-		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, Attachments: mgmt.Attachments, Feeds: mgmt.Feeds, MaxBody: maxBody,
+		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, Attachments: mgmt.Attachments, Feeds: mgmt.Feeds, Licenses: mgmt.Licenses, MaxBody: maxBody,
 		MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events,
 		MinSuspended: apiMinSuspended(cfg.Tenants.MinSuspended),
@@ -176,6 +177,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		ui = c
 	}
 	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Console: ui, CORSOrigins: corsOrigins, Puller: puller, Events: events, Downloads: downloads, Metrics: metrics,
+		Licenses:  licenses.Served{Service: svc.Licenses},
 		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
@@ -264,6 +266,14 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	fr := &attachment.Runner{Feeds: svc.Feeds, Holder: host + "/" + store.NewID(), Log: log}
 	// bundles uploaded over the API, imported once complete (spec 0014 phase 2)
 	br := &upstream.UploadRunner{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), BundleKeys: cfg.BundleKeysFor, Log: log}
+	// licences (spec 0012): the relay from credentialed upstreams, and licences past their grace removed
+	svc.Licenses.Log = log
+	lr := &licenses.Runner{Service: svc.Licenses, Holder: host + "/" + store.NewID()}
+	wg.Add(1)
+	go func() { defer wg.Done(); lr.Run(bg) }()
+	if len(svc.Licenses.Keys) > 0 {
+		log.Info("serve: licensing on", "keys", svc.Licenses.KeyFingerprints())
+	}
 	// deleting tenants (spec 0019): their rows in batches, then their tombstones
 	reaper := &tenantsvc.Reaper{Store: st, Holder: host + "/" + store.NewID(), Log: log}
 	wg.Add(4)

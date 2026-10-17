@@ -161,7 +161,8 @@ of another origin) is `409` until an administrator drops the entry or yanks thos
 The upstream's `ETag` moves with every change to it or its lists; a sync does not move it.
 
 **Removing** an upstream keeps the releases it made (they belong to the channel; yank them if you
-want them gone) and removes its cells; the names it provided stop being reserved.
+want them gone) and removes its cells and the licences it relayed (each a `license.remove`, reason
+`upstream removed`; see [Licensing](licensing.md)); the names it provided stop being reserved.
 
 **Pausing** an upstream stops runs after the cell in progress, and holds the current release:
 narrowing an entry's `versions` holds a version too.
@@ -604,6 +605,9 @@ A `repository` upstream whose channel serves private releases (another kista's p
 a token that the upstream's tenant accepts: a JWT from one of its issuers, with its audience, for a
 principal it grants `install` (see [Access](access.md)). kista obtains it without static secrets where
 the platform has an identity.
+
+The credential also reads the upstream's licences for this kista, at `<prefix>/-/licenses`, when
+licensing is on ([Licensing](licensing.md)).
 
 **Credentials are configuration, never data.** The operator names them in `upstreams.credentials`;
 a tenant administrator picks one by name. The database and the API hold the name only.

@@ -62,6 +62,8 @@ type Config struct {
 	UI UI `yaml:"ui" kista:"fileonly"`
 	// Attachments configures documents about bodies (spec 0011).
 	Attachments Attachments `yaml:"attachments" kista:"fileonly"`
+	// Licenses configures licensing (spec 0012): the trusted licence keys and the relay.
+	Licenses Licenses `yaml:"licenses" kista:"fileonly"`
 	// Bundles configures bundles uploaded over the API (spec 0014 phase 2).
 	Bundles Bundles `yaml:"bundles" kista:"fileonly"`
 	// Tenants configures deleting tenants (spec 0019).
@@ -632,6 +634,7 @@ func (c Config) Validate() error {
 	validateGC(bad, c)
 	validateAttachments(bad, c)
 	validateBundles(bad, c)
+	validateLicenses(bad, c)
 	validateUI(bad, c)
 	validateBootstrap(bad, c)
 	if len(errs) > 0 {

@@ -32,6 +32,8 @@ Every channel answers these paths under its prefix:
 | `/<tenant>/<channel>/.well-known/duckdb-extension-repo.json` | the channel's trusted keys, `{"signature_keys": ["-----BEGIN PUBLIC KEY-----…"]}`; signed channels only, always public |
 | `/<tenant>/<channel>/<duckdb_version>/<platform>/<name>.duckdb_extension.gz` | the **flat** path: the current release for that DuckDB version and platform |
 | `/<tenant>/<channel>/<name>/<ext_version>/<duckdb_version>/<platform>/<name>.duckdb_extension.gz` | the **versioned** path: one extension version |
+| `/<tenant>/<channel>/-/licenses/<name>` | the licence a licensed extension's SDK reads; signed channels only ([Licensing](licensing.md)) |
+| `/<tenant>/<channel>/-/licenses` | the licences the caller may use in the channel, for a downstream kista's relay |
 
 - `<duckdb_version>` is DuckDB's release tag (`v2.0.0`) or, on a development build, its source id
   (`eb0d9df48e`). `<platform>` is what `PRAGMA platform` returns (`linux_amd64`, `osx_arm64`, ...).

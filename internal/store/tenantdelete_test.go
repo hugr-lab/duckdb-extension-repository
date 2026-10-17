@@ -63,6 +63,10 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO upstream_versions (upstream_id, name, ext_version) VALUES (?, 'json', '1.0')", []any{id("u")}},
 		{"INSERT INTO upstream_cells (upstream_id, duckdb_version, platform, name, outcome, fetched_at) VALUES (?, 'v2.0.0', 'linux_amd64', 'json', 'missing', ?)",
 			[]any{id("u"), now}},
+		{"INSERT INTO licenses (tenant_id, name, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, expires_at, " +
+			"grace_until, source, upstream_id, visibility, actor, updated_at, version) VALUES (?, 'json', 'l1', 'https://i.example', 'acme', '', " +
+			"'pro', 't', ?, 1, 2, 3, 'upstream', ?, 'private', 'system:licenses', ?, 1)", []any{tid, fp("l"), id("u"), now}},
+		{"INSERT INTO license_syncs (upstream_id, tenant_id, last_run_at, last_result) VALUES (?, ?, ?, '{}')", []any{id("u"), tid, now}},
 		{"INSERT INTO publishers (id, tenant_id, name, created_at, created_by) VALUES (?, ?, 'ci', ?, 'os:1:t')", []any{id("p"), tid, now}},
 		{"INSERT INTO publisher_github (id, publisher_id, provider, owner_id, repository_id, workflow, created_at, created_by) " +
 			"VALUES (?, ?, 'github', '1', '2', 'ci.yml', ?, 'os:1:t')", []any{id("g"), id("p"), now}},

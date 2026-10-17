@@ -534,10 +534,30 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string
 	if err != nil {
 		return err
 	}
-	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
+	locks := []string{store.TenantUpstreamLock(t.ID), store.LicenseLock(t.ID)}
+	return s.Store.InTenantTxForUpdate(ctx, t.ID, locks, func(tx *store.Tx) error {
 		u, err := tx.GetUpstream(ctx, t.ID, name)
 		if err != nil {
 			return err
+		}
+		// DeleteUpstream checks the version too; checked here first, so no licence goes for a stale
+		// request
+		if expected != 0 && expected != u.Version {
+			return store.ErrConflict
+		}
+		// the licences it relayed go with it (spec 0012), each recorded
+		ls, err := tx.UpstreamLicenses(ctx, u.ID)
+		if err != nil {
+			return err
+		}
+		for _, l := range ls {
+			if err := tx.DeleteLicense(ctx, l, 0); err != nil {
+				return err
+			}
+			if err := tx.Event(ctx, t.ID, a.String(), "license.remove", "license:"+l.Name,
+				map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "upstream removed"}); err != nil {
+				return err
+			}
 		}
 		if err := tx.DeleteUpstream(ctx, u, expected); err != nil {
 			return err

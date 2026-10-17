@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -126,9 +127,17 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   upstream show|remove|pause|resume|public|private <tenant> <name>
   upstream sync <tenant> <name> [-dry-run]        a running kista serve takes the run
   upstream cells <tenant> <name> [-outcome <outcome>]
+  upstream licenses <tenant> <name> [-sync]        the upstream's last licence relay (spec 0012); -sync asks for one now
   upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved]
   upstream extension remove <tenant> <name> <extension>
   upstream platform|key add|remove <tenant> <name> <platform|fingerprint>
+  license keys                                    the trusted licence keys (licenses.keys), by fingerprint
+  license list <tenant>
+  license show|token <tenant> <name>              a licence's claims and state, or its token as received
+  license import <tenant> <file|-> [-replace]     store a licence (a compact JWS) under the extension it names;
+                                                  -replace replaces the licence stored for that extension
+  license remove|public|private <tenant> <name>
+  license verify <file|-> [-key <pem>]            check a licence offline against the trusted keys or the given one
   events list [-server] [-kind <k>] [-subject <prefix>] [-actor <a>] [-since <RFC 3339>] [-limit <n>]
               [-follow] [-format table|jsonl] [<tenant>]          the event buffer (spec 0010), newest first
   shadow list <tenant>                            core names the tenant replaced: passthrough channels do not serve them
@@ -327,6 +336,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.upstream(ctx, sub, args[min(2, len(args)):])
 	case "shadow":
 		return a.shadow(ctx, sub, args[min(2, len(args)):])
+	case "license":
+		return a.license(ctx, sub, args[min(2, len(args)):])
 	case "bundle":
 		return a.bundle(ctx, sub, args[min(2, len(args)):])
 	case "events":
@@ -1387,6 +1398,7 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 	outcome := fs.String("outcome", "", "")
 	mode := fs.String("mode", "", "")
 	cred := fs.String("credential", "", "")
+	sync := fs.Bool("sync", false, "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
@@ -1480,6 +1492,35 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 			return err
 		}
 		a.logf("upstream sync %s %s (dry run: %v): a running kista serve takes it", pos[0], pos[1], *dryRun)
+	case sub == "licenses" && len(pos) == 2:
+		if *sync {
+			if err := a.svc.Licenses.Sync(ctx, a.actor, pos[0], pos[1]); err != nil {
+				return err
+			}
+			a.logf("upstream licenses %s %s: a running kista serve takes the relay", pos[0], pos[1])
+		}
+		at, res, err := a.svc.Licenses.LastSync(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		label := "last relay"
+		if *sync {
+			label = "previous relay" // the one requested has not run yet
+		}
+		if res == nil {
+			fmt.Fprintf(a.out, "%s: never\n", label)
+			return nil
+		}
+		fmt.Fprintf(a.out, "%s: %s\n", label, ts(at))
+		if res.Error != "" {
+			fmt.Fprintf(a.out, "error: %s\n", res.Error)
+		}
+		for _, k := range slices.Sorted(maps.Keys(res.Counts)) {
+			fmt.Fprintf(a.out, "%s: %d\n", k, res.Counts[k])
+		}
+		for _, r := range res.Refused {
+			fmt.Fprintf(a.out, "refused: %s %s (%s): %s\n", r.Name, r.ID, r.Rule, r.Reason)
+		}
 	case sub == "cells" && len(pos) == 2:
 		var after [3]string
 		a.table("DUCKDB\tPLATFORM\tNAME\tOUTCOME\tFETCHED\tDETAIL", func(w io.Writer) {

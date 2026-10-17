@@ -123,6 +123,28 @@ func (s *Snapshot) serving(name string) bool {
 	return s.Channel.ServingKeyID != ""
 }
 
+// Live reports whether the channel serves a release of name that the view sees: active or
+// deprecated, its body not blocked, under one of the channel's DuckDB versions (spec 0012: a
+// licence and a usage report need one, so neither answers where every binary path would not).
+func (s *Snapshot) Live(name string, vis Visible) bool {
+	if !s.serving(name) {
+		return false
+	}
+	for _, p := range s.platforms[name] {
+		for _, c := range s.groups[group{name, p}] {
+			if (c.State != store.ReleaseActive && c.State != store.ReleaseDeprecated) || s.Blocked[c.BodyHash] || !vis(c) {
+				continue
+			}
+			for v := range s.CAPIs {
+				if Serves(c, v, s.CAPIs) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // Flat is what the flat path serves for (DuckDB version, platform, name) in a view: among the active
 // releases with a seq that serve the version, the highest seq. A signed channel without a serving
 // key serves nothing.

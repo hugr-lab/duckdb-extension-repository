@@ -65,7 +65,8 @@ its writer (a `sub` or a client claim). Either failure answers `401`.
   most 64 KiB (`413`). Unknown and duplicate keys are refused (`400`). A route that takes no body
   refuses one.
 - **Raw bodies**: the publication route takes the extension file (`application/octet-stream`); the
-  attachment route takes the document with its media type. Both need `Content-Length`.
+  attachment route takes the document with its media type; a licence import takes the licence (at
+  most 16 KiB). All need `Content-Length`.
 - Every answer carries `X-Content-Type-Options: nosniff` and `Vary: Authorization`.
 - **Index answers** have an ETag over their bytes and answer `304` to a matching `If-None-Match`.
   `Cache-Control` is `public, no-cache` for an anonymous answer and `private, no-cache` otherwise.
@@ -288,6 +289,24 @@ See [Publishing](publishing.md).
 | `GET credentials` | server: the configured upstream credentials (names, tenants, prefixes) |
 
 See [Upstreams](upstreams.md).
+
+### Licences
+
+| Route | Who |
+| --- | --- |
+| `GET tenants/{t}/licenses`; `GET, DELETE …/licenses/{name}` | tenant admin |
+| `POST tenants/{t}/licenses` (the licence as the body; `If-Match` to replace one) | tenant admin |
+| `POST …/licenses/{name}/public`, `/private` (`If-Match`) | tenant admin |
+| `GET …/upstreams/{name}/licenses`; `POST …/upstreams/{name}/licenses/sync` | tenant admin |
+| `GET licenses/keys` | server: the trusted licence keys' fingerprints |
+
+A licence is answered as its claims and state (`name`, `id`, `issuer`, `holder_id`, `holder`, `plan`,
+`versions`, `limits`, `issued_at`, `expires_at`, `grace_until`, `key`, `source`, `upstream`,
+`visibility`, `status`, `etag`), never with the token. An import of a new licence answers `201`
+with `Location`; over a stored one without `If-Match`, `409`. `GET …/upstreams/{name}/licenses`
+answers the last relay run, `{"last_run_at", "result": {"counts", "refused", "error"}}`, and the sync
+request (`202`) answers the same; `409` for an upstream that relays nothing or is paused, and while
+licensing is off. `GET licenses/keys` answers `{"keys": ["sha256:…"]}`. See [Licensing](licensing.md).
 
 ### Identity, grants and groups
 
