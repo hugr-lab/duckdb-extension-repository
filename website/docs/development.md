@@ -160,6 +160,7 @@ make test
 | `reserved` | `make reserved`, then fails if the committed lists changed |
 | `e2e` (own workflow) | DuckDB at the pin against kista, on pull requests and pushes to `main` that touch `internal/`, `cmd/`, `e2e/`, `go.mod`, `go.sum` or the `Makefile`, or on demand |
 | `docs-build` (own workflow) | This site, on changes under `website/` |
+| `air-gapped` (own workflow) | `deploy/air-gapped/test.sh`: the [Air-gapped sites](deployment/air-gapped.md) page's shell blocks, the site's in a container on an internal Docker network, against the last release (`:edge` before the first) and kista built from the commit; on changes to the page, the test, `internal/`, `cmd/`, `go.mod` or `go.sum`, and weekly |
 
 ### A disposable GCP stack
 
@@ -362,6 +363,11 @@ make docs                            # the production build, as CI runs it
 
 The build fails on a broken link or anchor. Pull requests that touch `website/` are built by the
 `docs-build` workflow; `main` is deployed to GitHub Pages.
+
+A shell block on the Air-gapped sites page marked `ci=connected` or `ci=site` (in the fence's
+meta, after the title) is run by the `air-gapped` workflow, in order; `ci=connected-release` and
+`ci=site-release` only once a release exists. Run it locally with
+`TOOLS=<linux cosign, oras and gh> deploy/air-gapped/test.sh`.
 
 Write pages in plain, short sentences. In prose, escape `<` and `{` (or put them in backticks), or
 the MDX build fails. Link between pages with relative `.md` paths.

@@ -49,3 +49,68 @@ func TestRenderedConfig(t *testing.T) {
 		})
 	}
 }
+
+// The spool emptyDir's limit and the pod's ephemeral-storage request: the server's ingests, or
+// spool.sizeLimit, plus spool.importHeadroom (spec 0014).
+func TestSpoolSize(t *testing.T) {
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		if os.Getenv("KISTA_TEST_REQUIRE_HELM") != "" {
+			t.Fatal("helm is not on the PATH")
+		}
+		t.Skip("helm is not on the PATH")
+	}
+	for _, c := range []struct {
+		set  []string
+		want string
+	}{
+		{nil, "34816Mi"}, // (2 × 8 + 1) × 2GiB
+		{[]string{"spool.importHeadroom=2Gi"}, "36864Mi"},
+		{[]string{"spool.importHeadroom=0"}, "34816Mi"},
+		{[]string{"spool.importHeadroom=512Mi", "config.blob.max_body=256MiB", "config.blob.max_ingests=1"}, "1280Mi"},
+		{[]string{"spool.sizeLimit=10G"}, "10G"},
+		{[]string{"spool.sizeLimit=10Gi", "spool.importHeadroom=2Gi"}, "12288Mi"},
+		{[]string{"spool.sizeLimit=1Ti", "spool.importHeadroom=1048576"}, "1048577Mi"},
+	} {
+		args := []string{"template", "t", "../kista", "-f", "../tests/pass/postgres-s3.yaml", "--show-only", "templates/deployment.yaml"}
+		for _, s := range c.set {
+			args = append(args, "--set", s)
+		}
+		out, err := exec.Command(helm, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: helm template: %v\n%s", c.set, err, out)
+		}
+		var d struct {
+			Spec struct {
+				Template struct {
+					Spec struct {
+						Containers []struct {
+							Resources struct {
+								Requests map[string]string `yaml:"requests"`
+							} `yaml:"resources"`
+						} `yaml:"containers"`
+						Volumes []struct {
+							Name     string `yaml:"name"`
+							EmptyDir *struct {
+								SizeLimit string `yaml:"sizeLimit"`
+							} `yaml:"emptyDir"`
+						} `yaml:"volumes"`
+					} `yaml:"spec"`
+				} `yaml:"template"`
+			} `yaml:"spec"`
+		}
+		if err := yaml.NewDecoder(bytes.NewReader(out)).Decode(&d); err != nil {
+			t.Fatal(err)
+		}
+		limit := ""
+		for _, v := range d.Spec.Template.Spec.Volumes {
+			if v.Name == "tmp" && v.EmptyDir != nil {
+				limit = v.EmptyDir.SizeLimit
+			}
+		}
+		if limit != c.want || len(d.Spec.Template.Spec.Containers) == 0 ||
+			d.Spec.Template.Spec.Containers[0].Resources.Requests["ephemeral-storage"] != c.want {
+			t.Errorf("%v: limit %q, requests %v; want %s", c.set, limit, d.Spec.Template.Spec.Containers, c.want)
+		}
+	}
+}

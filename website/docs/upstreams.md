@@ -322,7 +322,8 @@ pinned keys, channel, platforms, allowlist, visibility, state), but kista never 
 
 The site writes a plan (`kista admin bundle plan`), a connected kista exports a bundle answering it
 ([Exporting a bundle](#exporting-a-bundle)), and the site imports it with
-`kista admin bundle import`. The upstream's record shows its mode and the last bundle
+`kista admin bundle import`. [Air-gapped sites](deployment/air-gapped.md) walks through the whole
+cycle, with bringing kista itself in. The upstream's record shows its mode and the last bundle
 imported (`bundle_id`, `bundle_created_at`), over the API, in the console and in
 `kista admin upstream show`.
 

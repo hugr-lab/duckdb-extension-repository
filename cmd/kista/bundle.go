@@ -375,8 +375,12 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 	case bundle.Verify(b.Pub, b.ManifestBytes, b.Sig) != nil:
 		problem("the manifest's signature does not verify with the bundle's key")
 	}
+	by := m.Exporter.PublicURL
+	if by == "" {
+		by = "a kista without a public URL"
+	}
 	fmt.Fprintf(stdout, "bundle %s, made %s by %s (%s), for tenant %s\n", m.ID, m.CreatedAt.Format(time.RFC3339),
-		m.Exporter.PublicURL, m.Exporter.Version, m.Plan.Tenant)
+		by, m.Exporter.Version, m.Plan.Tenant)
 	if b.Signed {
 		pinned := ""
 		if plan != nil {

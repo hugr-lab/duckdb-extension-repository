@@ -398,6 +398,12 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 	if !dryRun && conditional[prev.Outcome] {
 		etag = prev.ETag
 	}
+	// kista serve creates the directory at start; kista admin bundle export -sync runs here without it
+	if s.TempDir != "" {
+		if err := os.MkdirAll(s.TempDir, 0o700); err != nil {
+			return fail(store.CellFailed, err)
+		}
+	}
 	tmp, err := os.CreateTemp(s.TempDir, "kista-upstream-*")
 	if err != nil {
 		return fail(store.CellFailed, err)

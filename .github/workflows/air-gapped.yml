@@ -1,0 +1,48 @@
+name: air-gapped
+
+# The Air-gapped sites page (website/docs/deployment/air-gapped.md, spec 0014) run as written: its
+# connected-side blocks in a container with a network, its site blocks in one on an internal Docker
+# network (deploy/air-gapped/test.sh). On a change to the page, the bundle code or the test, and
+# weekly: the last release and Sigstore's trusted root change without a commit here.
+on:
+  pull_request:
+    paths: [website/docs/deployment/air-gapped.md, deploy/air-gapped/**, internal/**, cmd/**, go.mod, go.sum, .github/workflows/air-gapped.yml]
+  push:
+    branches: [main]
+    paths: [website/docs/deployment/air-gapped.md, deploy/air-gapped/**, internal/**, cmd/**, go.mod, go.sum, .github/workflows/air-gapped.yml]
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: air-gapped-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  air-gapped:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: oras
+        run: |
+          curl -fsSL --retry 3 -o oras.tgz \
+            https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_linux_amd64.tar.gz
+          echo "f27adb935022d94df8dc77719c322dda592c78a0d57a6f7dcdd8d900b248c454  oras.tgz" | sha256sum -c
+          mkdir -p "$RUNNER_TEMP/bin" && tar -xzf oras.tgz -C "$RUNNER_TEMP/bin" oras && rm oras.tgz
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: deploy/air-gapped/test.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: deploy/air-gapped/test.sh

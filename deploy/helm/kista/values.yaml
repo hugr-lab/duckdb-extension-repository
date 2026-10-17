@@ -111,6 +111,10 @@ blobVolume:
 # pod requests as much ephemeral storage, unless resources.requests names it.
 spool:
   sizeLimit: ""
+  # Added to the size above, also to an explicit sizeLimit: disk for `kista admin bundle import`
+  # run in the serving pod, which inflates one file at a time (about blob.max_body). A quantity
+  # (bytes, Ki, Mi, Gi, Ti); with it, sizeLimit takes the same form.
+  importHeadroom: 0
 
 service:
   # default: ClusterIP with mode behind_proxy (port 80), LoadBalancer with mode tls (80 and 443)

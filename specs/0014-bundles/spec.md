@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a parts 1 (bundle mode), 2 (the format, keys and plan), 3 (the import) and 4 (the export) implemented; part 5, 1b and 2 to come
+- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b and 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -721,26 +721,33 @@ A feed's `mode` (new; default `online`) gains **`bundle`**:
 ### Installing kista offline
 
 The image, the chart and the binaries are signed (spec 0013). Phase 1a adds an "Air-gapped sites"
-page to the docs, under Deployment. Its commands run in CI so the page cannot drift. Signatures and
-attestations exist for released versions only, so the test is pinned to the last release: an online
-stage pulls it (`cosign save`, the chart, `gh attestation trusted-root`), and an offline stage, in a
-container without a network (`--network none`) with a local registry, loads and verifies them:
+page to the docs, under Deployment. Its shell blocks run in CI (`deploy/air-gapped/test.sh`,
+workflow `air-gapped`), so the page cannot drift: a block's fence carries `ci=connected` or
+`ci=site`, and the test runs them in order. The connected side's blocks run in a container with a
+network. The site's run in a container on an internal Docker network whose only other member is the
+site's registry (TLS, its own CA), and the test first checks that the site reaches nothing outside.
+The artifacts verified are the last release's. Before the first release, they are `:edge`'s, signed
+by `image.yml`, and the blocks marked `ci=*-release` (the chart, the binary) are skipped. The cycle
+runs with kista built from the commit, so the page is tested against the code beside it. The test
+also runs weekly, since the last release and Sigstore's trusted root change without a commit:
 
-- **Image and chart.** Both are OCI artifacts, signed by digest. They are copied with their
-  signatures and attestations into the site's registry (`cosign save`/`cosign load`, or
-  `oras copy` with referrers), keeping the digests. Inside the site, `cosign verify` checks them
-  offline against a Sigstore trusted root saved beside them. Which cosign v3 flags carry the new
-  bundle format and referrers is settled by the CI test, and the page pins the cosign version.
-- **Build provenance.** GitHub's attestation is verified offline with
-  `gh attestation verify --bundle … --custom-trusted-root`.
+- **Image and chart.** Both are OCI artifacts, signed by digest. `oras copy -r` copies them with
+  their referrers (the signature and the provenance, Sigstore bundles) into an OCI layout on the
+  media, and from it into the site's registry, keeping the digests. Inside the site,
+  `cosign verify --trusted-root` checks them offline against Sigstore's trusted root, which
+  `cosign initialize` fetched through TUF on the connected side. The page is tested with cosign
+  v3.1.3 and oras v1.3.4.
+- **Build provenance.** The image's attestation is a referrer too: `cosign verify-attestation
+  --type slsaprovenance1` verifies it offline with the same trusted root and identity.
+  `gh attestation verify` would need a GitHub login even offline, so the site needs no gh.
 - **Binaries.** These are verified as on the Deployment page, with their `.sigstore.json` files.
 - **Values.** The chart's `image.repository` points at the site's registry.
 - **The cycle.**
   - The first bundle key and its pin.
   - The bundle-mode upstreams for the case in Problem, with a passthrough channel for autoload.
   - The channel's DuckDB versions, with C API maximums for C API extensions (spec 0006).
-  - The gateway kista on the connected side: its mirror-mode upstreams for the same sources, the
-    bundle key beside it, and the export.
+  - The gateway kista on the connected side: its mirror-mode upstreams for the same sources (public
+    for DuckDB's kinds, whose private releases never leave), the bundle key, and the export.
   - Plan, export, carry, import, with `-dry-run` first.
   - Sizing (below).
   - A slot holds one body forever, so a wrong body is a permanent `conflict` for that version.
@@ -750,7 +757,9 @@ the server's own ingests.
 - In Kubernetes, `kubectl exec` runs it in the serving pod, whose spool emptyDir is sized for the
   server's ingests (spec 0013) and is also the pod's `TMPDIR`; the root filesystem is read-only.
   The chart gains `spool.importHeadroom` (default `0`), which adds to the emptyDir's limit and its
-  ephemeral-storage request, also over an explicit `spool.sizeLimit`.
+  ephemeral-storage request, also over an explicit `spool.sizeLimit`. Both are Kubernetes
+  quantities (bytes, `Ki`, `Mi`, `Gi`, `Ti`) when added; a `sizeLimit` with no headroom is kept as
+  written.
 - With PostgreSQL, the import can run in a separate pod instead, as a Job with the server's
   configuration and its own emptyDir. A SQLite deployment has a single writer volume, so it imports
   in the serving pod.
@@ -1079,8 +1088,13 @@ These pages are updated in the same PR:
   The DuckDB pin is a development build, for which DuckDB publishes no core files, and the pinned
   DuckDB refuses core files signed with test keys. Core sources and passthrough are therefore
   covered by unit tests, with the keys from `upstream.Service.DuckDB` (the existing test override).
-- **Docs.** The offline install's commands run in CI as described there, pinned to the last
-  release, the offline stage without a network.
+- **Docs.** The Air-gapped sites page's shell blocks run in CI as described in "Installing kista
+  offline": the last release's image (`:edge` before the first), verified at a site that reaches
+  only its registry, and a cycle with DuckDB's `json` and `httpfs` from `extensions.duckdb.org`
+  through a gateway into a site's passthrough channel.
+- **The chart.** `spool.importHeadroom` added to the computed size and to an explicit `sizeLimit`,
+  in the volume and the request; malformed quantities refused (`deploy/helm/chartcheck`,
+  `deploy/helm/tests/fail`).
 - **1b.**
   - Statements in a bundle are verified, stored and cursored as spec 0011's client does.
   - Statements arrive for a body the same bundle brings.

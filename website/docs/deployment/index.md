@@ -9,7 +9,8 @@ repository and signed. Until the first version tag, the only published image is 
 from `main`; the version images and the binaries come with the first release. This page says what is published, how to verify it, and how to run the
 image with Docker. [Kubernetes](kubernetes.md) covers the Helm chart, [AWS](aws.md) the ECS
 recipe in Terraform, [GCP](gcp.md) the GKE recipe in Terraform, [Azure](azure.md) the Container
-Apps recipe in Bicep.
+Apps recipe in Bicep, and [Air-gapped sites](air-gapped.md) bringing kista and extensions into a
+site without a route to the internet.
 
 The design is in
 [spec 0013](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0013-deployment/spec.md).

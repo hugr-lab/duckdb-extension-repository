@@ -1,0 +1,225 @@
+---
+title: Air-gapped sites
+---
+
+# Air-gapped sites
+
+An air-gapped site runs kista without a route to the internet. Two things cross its boundary, on
+media its operators carry:
+
+- **kista itself**: the image, the chart and the binary, verified inside the site against the
+  signatures made when they were built ([Verifying](index.md#verifying)).
+- **Extensions**, in bundles. A gateway kista on the connected side mirrors the sources the site
+  needs; the site writes a plan, the gateway exports a bundle answering it, and the site imports
+  the bundle into its bundle-mode upstreams ([Bundle mode](../upstreams.md#bundle-mode)).
+
+CI runs this page's shell blocks (`.github/workflows/air-gapped.yml`): those on the connected side
+in a container with a network, those at the site in a container whose only network reaches the
+site's registry. It verifies the last release's image, chart and binary, and runs the cycle with
+kista built from the same commit as the page, so a command that stops working fails the job. The
+Helm install is the only command it does not run. The design is in
+[spec 0014](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0014-bundles/spec.md).
+
+## What crosses
+
+| What | Made on the connected side by | Checked at the site by |
+| --- | --- | --- |
+| The image, with its signature and provenance, as an OCI layout | `oras copy -r` (the referrers too) | `cosign verify`, `cosign verify-attestation` |
+| The chart, with its signature | `oras copy -r` | `cosign verify` |
+| The binary, its `.sigstore.json` and `SHA256SUMS` | `gh release download` | `sha256sum`, `cosign verify-blob` |
+| Sigstore's trusted root | `cosign initialize` | nothing: it is the trust anchor |
+| The bundle key's fingerprint | `kista bundle keygen` | the site pins it |
+| The plan (site to gateway) | `kista admin bundle plan` | the gateway checks it |
+| A bundle (gateway to site) | `kista admin bundle export` | `kista bundle inspect`, the import |
+
+- **Tools.** The site needs cosign 3 (this page is tested with v3.1.3) and oras, approved and
+  brought in by the site's own process. The connected side also uses gh, to download the release.
+- **The trusted root.** cosign fetches it through Sigstore's TUF repository and verifies it against
+  the TUF root it embeds. It changes when Sigstore rotates a key: carry a fresh one with each
+  release you bring in.
+- **The fingerprint** is the one value that must not come from the media: compare it with the
+  one the keygen printed, through a channel the carrier cannot change (read it out over the
+  phone, or print it on paper).
+
+## The variables
+
+The blocks below use these variables; set them in each shell.
+
+```bash
+VERSION=v1.2.0                                  # the kista release
+WORKFLOW=hugr-lab/duckdb-extension-repository/.github/workflows/release.yml
+IDENTITY=https://github.com/$WORKFLOW@refs/tags/$VERSION   # who signed it
+SITE_REGISTRY=registry.site.internal            # the site's OCI registry
+PLATFORM=linux_amd64                            # the site's DuckDB platforms
+DUCKDB_VERSION=v2.0.0                           # and its DuckDB versions
+GATEWAY_SIGNER=vault:kista/gateway              # the gateway mirror's signing key
+SITE_SIGNER=vault:kista/prod                    # the site channel's signing key
+```
+
+`ka` stands for `kista admin -config /etc/kista/kista.yaml`, on the gateway and at the site.
+
+## Bringing kista in
+
+On the connected side, copy the image with its signature and provenance (OCI referrers) into a
+directory on the media, with Sigstore's trusted root (`cosign initialize` fetches it, verified,
+into `~/.sigstore`). Compare the digest with the release notes.
+
+```bash title="On the connected side" ci=connected
+mkdir -p transfer
+oras resolve ghcr.io/hugr-lab/kista:$VERSION > transfer/kista.digest
+oras copy -r ghcr.io/hugr-lab/kista@$(cat transfer/kista.digest) --to-oci-layout transfer/kista:$VERSION
+cosign initialize
+cp ~/.sigstore/root/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json transfer/
+```
+
+The chart and the binary, the same way:
+
+```bash title="On the connected side" ci=connected-release
+oras resolve ghcr.io/hugr-lab/charts/kista:${VERSION#v} > transfer/chart.digest
+oras copy -r ghcr.io/hugr-lab/charts/kista@$(cat transfer/chart.digest) --to-oci-layout transfer/chart:${VERSION#v}
+gh release download $VERSION -R hugr-lab/duckdb-extension-repository -D transfer \
+  -p "kista-$VERSION-linux-amd64*" -p SHA256SUMS
+```
+
+At the site, push the image into the site's registry, keeping its digest and referrers, then
+verify its signature and its build provenance there. Nothing reaches beyond the registry: the
+trusted root replaces Sigstore's online services.
+
+```bash title="At the site" ci=site
+DIGEST=$(cat transfer/kista.digest)
+oras copy -r --from-oci-layout transfer/kista:$VERSION $SITE_REGISTRY/hugr-lab/kista:$VERSION
+cosign verify $SITE_REGISTRY/hugr-lab/kista@$DIGEST --trusted-root transfer/trusted_root.json \
+  --certificate-identity "$IDENTITY" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-attestation $SITE_REGISTRY/hugr-lab/kista@$DIGEST --type slsaprovenance1 \
+  --trusted-root transfer/trusted_root.json \
+  --certificate-identity "$IDENTITY" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The chart and the binary:
+
+```bash title="At the site" ci=site-release
+CHART=$(cat transfer/chart.digest)
+oras copy -r --from-oci-layout transfer/chart:${VERSION#v} $SITE_REGISTRY/hugr-lab/charts/kista:${VERSION#v}
+cosign verify $SITE_REGISTRY/hugr-lab/charts/kista@$CHART --trusted-root transfer/trusted_root.json \
+  --certificate-identity "$IDENTITY" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+(cd transfer && sha256sum -c SHA256SUMS --ignore-missing)
+cosign verify-blob transfer/kista-$VERSION-linux-amd64 \
+  --bundle transfer/kista-$VERSION-linux-amd64.sigstore.json --trusted-root transfer/trusted_root.json \
+  --certificate-identity "$IDENTITY" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Install with the chart from the site's registry, the image by digest
+([Kubernetes](kubernetes.md)):
+
+```bash
+helm install kista oci://$SITE_REGISTRY/hugr-lab/charts/kista --version ${VERSION#v} \
+  -n kista --create-namespace -f values.yaml \
+  --set image.repository=$SITE_REGISTRY/hugr-lab/kista --set image.digest=$DIGEST
+```
+
+An admission policy at the site (the sigstore policy-controller, Kyverno) verifies the same way,
+given the same trusted root.
+
+## The gateway
+
+The gateway is a kista on the connected side that mirrors what the site needs. A
+[Getting started](../getting-started.md) setup is enough for one. Its mirrors of DuckDB's core and
+community extensions must be **public**: a bundle never carries a private release of DuckDB's kinds.
+Here it mirrors DuckDB's `json` and `httpfs` core extensions:
+
+```bash title="On the connected side (the gateway)" ci=connected
+ka migrate
+ka tenant create gw
+ka channel create gw/core -kind signed
+ka version add $DUCKDB_VERSION -kind release
+ka channel versions gw/core -add $DUCKDB_VERSION
+ka key add gw/core -signer "$GATEWAY_SIGNER" -active
+ka upstream add gw core -kind duckdb-core -channel core -platforms $PLATFORM -extensions json,httpfs -public
+```
+
+## The bundle key
+
+The bundle key signs each bundle's manifest; the site imports only bundles signed by a key it
+pinned. Make it on a machine that is not the gateway, and keep it there: export unsigned and sign
+there ([Exporting a bundle](../upstreams.md#exporting-a-bundle)). This page keeps it beside the
+gateway, for brevity.
+
+```bash title="On the connected side" ci=connected
+kista bundle keygen -o bundle-key.pem | tee transfer/bundle-key.fingerprint
+```
+
+At the site, pin its fingerprint for the tenant in `kista.yaml`, then restart the server:
+
+```yaml title="/etc/kista/kista.yaml at the site" ci=site-config
+upstreams:
+  bundle_keys:
+    - fingerprint: "sha256:…"   # what keygen printed
+      tenants: [acme]
+```
+
+## The site
+
+The site's bundle-mode upstreams say what it takes in: here DuckDB's core extensions into a
+**passthrough** channel, so DuckDB autoloads them from the site with DuckDB's own signature
+([Passthrough channels](../upstreams.md#passthrough-channels)). A signed channel takes core,
+community or another kista's extensions the same way, re-signed with its own key. The channel's
+DuckDB versions are those of the site's DuckDB, with the C API maximums C API extensions need
+([Getting started](../getting-started.md#tell-kista-which-duckdb-versions-the-channel-serves)).
+
+```bash title="At the site" ci=site
+ka migrate
+ka tenant create acme
+ka channel create acme/core -kind passthrough
+ka version add $DUCKDB_VERSION -kind release
+ka channel versions acme/core -add $DUCKDB_VERSION
+ka upstream add acme core -mode bundle -kind duckdb-core -channel core -platforms $PLATFORM \
+  -extensions json,httpfs -public
+```
+
+## The cycle
+
+Each cycle carries a plan out and a bundle back.
+
+1. **Plan**, at the site: what the bundle-mode upstreams ask for, what the site already holds,
+   and the pinned bundle keys.
+
+   ```bash title="At the site" ci=site
+   ka bundle plan acme -o transfer/plan.json
+   ```
+
+2. **Export**, on the gateway: `-sync` runs the gateway's mirrors first.
+
+   ```bash title="On the connected side (the gateway)" ci=connected
+   ka bundle export gw -plan transfer/plan.json -key bundle-key.pem -o transfer/acme.kbundle -sync
+   ```
+
+   It prints what each source gave and what it could not, and exits `1` when a source failed as a
+   whole. A plan names the site's sources, platforms, versions and the bodies it holds: treat it as
+   the site's configuration, and the bundle as the extensions it carries.
+
+3. **Import**, at the site: inspect the bundle against the plan, try it with `-dry-run`, then
+   import it.
+
+   ```bash title="At the site" ci=site
+   kista bundle inspect transfer/acme.kbundle -plan transfer/plan.json
+   ka bundle import acme transfer/acme.kbundle -dry-run
+   ka bundle import acme transfer/acme.kbundle
+   ka upstream cells acme core
+   ```
+
+The next cycle starts with a new plan. A bundle older than the last one imported is refused, and
+a cell takes a body only when it is newer at its source than the one it holds, so carrying an old
+bundle back changes nothing. In Kubernetes, the import runs in the serving pod or as a Job
+([Importing a bundle](kubernetes.md#importing-a-bundle)).
+
+## Before you start
+
+- **Sizing.** The import inflates one file at a time into the spool: about `blob.max_body` free
+  beside what the server uses. In Kubernetes, give it `spool.importHeadroom`. The bundle itself is
+  read once, from a file, standard input or the object store, and never extracted.
+- **A slot holds one body forever.** Once a release is in a slot (its DuckDB version, platform and
+  name), another body for the same version is a `conflict`, permanently. Check a bundle from a new
+  source with `kista bundle inspect` and `-dry-run` before its first import.
+- **Rotation.** When a source rotates its key, the export lists the new fingerprint: pin it at
+  the site before the old key leaves the source's `.well-known` file. When you rotate the bundle
+  key, pin the new key beside the old one, then remove the old one.

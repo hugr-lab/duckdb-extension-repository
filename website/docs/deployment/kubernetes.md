@@ -81,7 +81,8 @@ kubectl -n kista create secret generic kista-s3 --from-file access-key=./ak --fr
     `externalTrafficPolicy: Local`, so client addresses are kept. Use it with an L4 load
     balancer or TLS passthrough.
 - **`blob.spool_dir`** `/var/lib/kista/tmp/spool`, on an `emptyDir` at `/var/lib/kista/tmp` (also
-  `TMPDIR`). Its size limit is `(2 × max_ingests + 1) × max_body` unless `spool.sizeLimit` is set.
+  `TMPDIR`). Its size limit is `(2 × max_ingests + 1) × max_body` unless `spool.sizeLimit` is set,
+  plus `spool.importHeadroom` ([Importing a bundle](#importing-a-bundle)).
 - **With SQLite**: `store.sqlite.path` `/var/lib/kista/data/kista.db` and, without `blob.domains`,
   an `fs` domain at `/var/lib/kista/data/blobs`, both on one `ReadWriteOnce` volume.
 
@@ -229,6 +230,9 @@ ranges in `trusted_proxies` and `networkPolicy.loadBalancerRanges`:
 - Shutdown: `preStop` sleeps 5 s so the endpoints drop the pod first, then kista drains.
   `terminationGracePeriodSeconds` is `preStop + drain_timeout + 2 × shutdown_timeout + 21 s +
   10 s`, 101 s with the defaults ([kista serve](../administration/commands.md#kista-serve)).
+- The spool `emptyDir` at `/var/lib/kista/tmp`, also `TMPDIR`: `(2 × max_ingests + 1) × max_body`,
+  or `spool.sizeLimit`, plus `spool.importHeadroom` ([Importing a bundle](#importing-a-bundle)).
+  The pod requests as much ephemeral storage.
 - Topology spread by zone and by node, `ScheduleAnyway`, so small clusters still schedule.
 - Requests of 100m CPU and 128Mi memory, a 512Mi memory limit.
 
@@ -253,6 +257,38 @@ volume. Run the command through `kubectl exec` there.
 ```yaml
 adminJobs:
   - {name: blob-verify, args: [blob, verify], schedule: "0 3 * * 0"}
+```
+
+### Importing a bundle
+
+An air-gapped site imports bundles ([Air-gapped sites](air-gapped.md)). The import inflates one
+file at a time into the spool, about `blob.max_body`, beside what the server's own ingests use.
+The spool `emptyDir` is sized for the server alone, so give it the import's share with
+`spool.importHeadroom`. The chart adds it to the volume's limit and to the pod's
+ephemeral-storage request, also over an explicit `spool.sizeLimit`, which must then be a quantity
+in bytes, `Ki`, `Mi`, `Gi` or `Ti`. A `resources.requests` entry for `ephemeral-storage` is kept
+as written.
+
+```yaml
+spool:
+  importHeadroom: 1Gi   # blob.max_body
+```
+
+- **In the serving pod**, the bundle on standard input:
+  `kubectl -n kista exec -i deploy/kista -- /kista admin -config /etc/kista/kista.yaml bundle import acme - < acme.kbundle`.
+  With SQLite, whose single volume only the serving pod mounts, this is the only way.
+- **As a Job**, with PostgreSQL or SQL Server and an object-store blob domain: upload the bundle under the
+  domain's `imports/` prefix with the store's own tools, then run a suspended `adminJobs` entry.
+  The Job has the pods' configuration and identity and its own spool `emptyDir`, of the same size.
+
+```yaml
+adminJobs:
+  - {name: bundle-import, args: [bundle, import, acme, "blob:default/imports/acme.kbundle"]}
+```
+
+```bash
+kubectl -n kista create job bundle-import-1 --from=cronjob/kista-admin-bundle-import
+kubectl -n kista logs -f job/bundle-import-1
 ```
 
 Every command in a pod runs as `os:65532:nonroot`, so the audit log cannot tell who ran it. **The
