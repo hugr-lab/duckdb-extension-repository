@@ -61,24 +61,34 @@ func TestSpoolSize(t *testing.T) {
 		t.Skip("helm is not on the PATH")
 	}
 	for _, c := range []struct {
-		set  []string
-		want string
+		set    []string
+		values string // a values file: its numbers are float64 to Helm
+		want   string
 	}{
-		{nil, "34816Mi"}, // (2 × 8 + 1) × 2GiB
-		{[]string{"spool.importHeadroom=2Gi"}, "36864Mi"},
-		{[]string{"spool.importHeadroom=0"}, "34816Mi"},
-		{[]string{"spool.importHeadroom=512Mi", "config.blob.max_body=256MiB", "config.blob.max_ingests=1"}, "1280Mi"},
-		{[]string{"spool.sizeLimit=10G"}, "10G"},
-		{[]string{"spool.sizeLimit=10Gi", "spool.importHeadroom=2Gi"}, "12288Mi"},
-		{[]string{"spool.sizeLimit=1Ti", "spool.importHeadroom=1048576"}, "1048577Mi"},
+		{nil, "", "34816Mi"}, // (2 × 8 + 1) × 2GiB
+		{[]string{"spool.importHeadroom=2Gi"}, "", "36864Mi"},
+		{[]string{"spool.importHeadroom=0"}, "", "34816Mi"},
+		{[]string{"spool.importHeadroom=512Mi", "config.blob.max_body=256MiB", "config.blob.max_ingests=1"}, "", "1280Mi"},
+		{[]string{"spool.sizeLimit=10G"}, "", "10G"},
+		{[]string{"spool.sizeLimit=10Gi", "spool.importHeadroom=2Gi"}, "", "12288Mi"},
+		{[]string{"spool.sizeLimit=1Ti", "spool.importHeadroom=1048576"}, "", "1048577Mi"},
+		{nil, "spool: {importHeadroom: 1073741824}", "35840Mi"},
+		{nil, "spool: {sizeLimit: 10Gi, importHeadroom: 0}", "10Gi"},
 	} {
 		args := []string{"template", "t", "../kista", "-f", "../tests/pass/postgres-s3.yaml", "--show-only", "templates/deployment.yaml"}
+		if c.values != "" {
+			f := filepath.Join(t.TempDir(), "values.yaml")
+			if err := os.WriteFile(f, []byte(c.values), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args = append(args, "-f", f)
+		}
 		for _, s := range c.set {
 			args = append(args, "--set", s)
 		}
 		out, err := exec.Command(helm, args...).CombinedOutput()
 		if err != nil {
-			t.Fatalf("%v: helm template: %v\n%s", c.set, err, out)
+			t.Fatalf("%v %s: helm template: %v\n%s", c.set, c.values, err, out)
 		}
 		var d struct {
 			Spec struct {
@@ -110,7 +120,7 @@ func TestSpoolSize(t *testing.T) {
 		}
 		if limit != c.want || len(d.Spec.Template.Spec.Containers) == 0 ||
 			d.Spec.Template.Spec.Containers[0].Resources.Requests["ephemeral-storage"] != c.want {
-			t.Errorf("%v: limit %q, requests %v; want %s", c.set, limit, d.Spec.Template.Spec.Containers, c.want)
+			t.Errorf("%v %s: limit %q, requests %v; want %s", c.set, c.values, limit, d.Spec.Template.Spec.Containers, c.want)
 		}
 	}
 }

@@ -723,8 +723,9 @@ A feed's `mode` (new; default `online`) gains **`bundle`**:
 The image, the chart and the binaries are signed (spec 0013). Phase 1a adds an "Air-gapped sites"
 page to the docs, under Deployment. Its shell blocks run in CI (`deploy/air-gapped/test.sh`,
 workflow `air-gapped`), so the page cannot drift: a block's fence carries `ci=connected` or
-`ci=site`, and the test runs them in order. The connected side's blocks run in a container with a
-network. The site's run in a container on an internal Docker network whose only other member is the
+`ci=site`, and the test runs them in order. Each side works in its own directory; only `transfer/`
+(the media) is shared, and the values the page carries out of band come from the connected side's
+directory. The connected side's blocks run in a container with a network. The site's run in a container on an internal Docker network whose only other member is the
 site's registry (TLS, its own CA), and the test first checks that the site reaches nothing outside.
 The artifacts verified are the last release's. Before the first release, they are `:edge`'s, signed
 by `image.yml`, and the blocks marked `ci=*-release` (the chart, the binary) are skipped. The cycle
@@ -735,12 +736,14 @@ also runs weekly, since the last release and Sigstore's trusted root change with
   their referrers (the signature and the provenance, Sigstore bundles) into an OCI layout on the
   media, and from it into the site's registry, keeping the digests. Inside the site,
   `cosign verify --trusted-root` checks them offline against Sigstore's trusted root, which
-  `cosign initialize` fetched through TUF on the connected side. The page is tested with cosign
+  `cosign initialize` fetched through TUF on the connected side. The root travels on the media, so
+  its SHA-256 travels out of band, like the bundle key's fingerprint: a forged root would let the
+  carrier sign anything as the release. The page is tested with cosign
   v3.1.3 and oras v1.3.4.
 - **Build provenance.** The image's attestation is a referrer too: `cosign verify-attestation
   --type slsaprovenance1` verifies it offline with the same trusted root and identity.
   `gh attestation verify` would need a GitHub login even offline, so the site needs no gh.
-- **Binaries.** These are verified as on the Deployment page, with their `.sigstore.json` files.
+- **Binaries.** These are verified with `cosign verify-blob` and their `.sigstore.json` files.
 - **Values.** The chart's `image.repository` points at the site's registry.
 - **The cycle.**
   - The first bundle key and its pin.

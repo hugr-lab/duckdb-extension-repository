@@ -276,10 +276,12 @@ spool:
 
 - **In the serving pod**, the bundle on standard input:
   `kubectl -n kista exec -i deploy/kista -- /kista admin -config /etc/kista/kista.yaml bundle import acme - < acme.kbundle`.
-  With SQLite, whose single volume only the serving pod mounts, this is the only way.
-- **As a Job**, with PostgreSQL or SQL Server and an object-store blob domain: upload the bundle under the
-  domain's `imports/` prefix with the store's own tools, then run a suspended `adminJobs` entry.
+  With SQLite, or a `blobVolume` that is not `ReadWriteMany`, this is the only way: a second pod
+  cannot mount the volume.
+- **As a Job**, wherever `adminJobs` are allowed: upload the bundle under the blob domain's
+  `imports/` prefix (with the object store's own tools), then run a suspended `adminJobs` entry.
   The Job has the pods' configuration and identity and its own spool `emptyDir`, of the same size.
+  The entry names one object: upload each bundle under that name, and remove it after the import.
 
 ```yaml
 adminJobs:
@@ -287,6 +289,7 @@ adminJobs:
 ```
 
 ```bash
+# the CronJob is <release>-admin-bundle-import: kista-admin-bundle-import for a release named kista
 kubectl -n kista create job bundle-import-1 --from=cronjob/kista-admin-bundle-import
 kubectl -n kista logs -f job/bundle-import-1
 ```

@@ -307,8 +307,11 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{/* A Kubernetes quantity (bytes, or a number with Ki, Mi, Gi, Ti) in Mi, rounded up: (list name value). */}}
 {{- define "kista.quantityMi" -}}
 {{- $name := index . 0 -}}
-{{- $s := toString (index . 1) -}}
-{{- if not (regexMatch "^[0-9]+(Ki|Mi|Gi|Ti)?$" $s) -}}
+{{- $v := index . 1 -}}
+{{- /* a number in a values file is a float64, which toString writes as 1.073741824e+09 */ -}}
+{{- if or (kindIs "float64" $v) (kindIs "int64" $v) (kindIs "int" $v) -}}{{- $v = int64 $v -}}{{- end -}}
+{{- $s := toString $v -}}
+{{- if not (regexMatch "^[0-9]{1,20}(Ki|Mi|Gi|Ti)?$" $s) -}}
 {{- fail (printf "%s: a quantity like 2Gi (bytes, Ki, Mi, Gi or Ti), not %q" $name $s) -}}
 {{- end -}}
 {{- $n := float64 (regexFind "^[0-9]+" $s) -}}
@@ -316,6 +319,9 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- else if hasSuffix "Gi" $s -}}{{- $n = mulf $n 1024.0 -}}
 {{- else if hasSuffix "Ki" $s -}}{{- $n = divf $n 1024.0 -}}
 {{- else if not (hasSuffix "Mi" $s) -}}{{- $n = divf $n 1048576.0 -}}
+{{- end -}}
+{{- if gt $n 1000000000000.0 -}}
+{{- fail (printf "%s: %s is too large" $name $s) -}}
 {{- end -}}
 {{- ceil $n | int -}}
 {{- end -}}

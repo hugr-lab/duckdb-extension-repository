@@ -89,7 +89,8 @@ cosign verify-blob kista-v1.2.0-linux-amd64 \
   workflows:
   `gh attestation verify oci://ghcr.io/hugr-lab/kista@sha256:<digest> --repo hugr-lab/duckdb-extension-repository --signer-workflow hugr-lab/duckdb-extension-repository/.github/workflows/release.yml`
   (`image.yml` for an edge image), or the same with a binary's path. kista claims no SLSA level
-  beyond what that action states.
+  beyond what that action states. Offline, `cosign verify-attestation` checks the image's
+  provenance without a GitHub login ([Air-gapped sites](air-gapped.md)).
 - **SBOM.** Each image carries an SPDX SBOM of its packages, the console's npm packages among
   them: `docker buildx imagetools inspect ghcr.io/hugr-lab/kista:v1.2.0 --format '{{ json .SBOM }}'`.
   The SBOM is part of the signed image index, so the image's signature covers it.
