@@ -454,3 +454,9 @@ configured prefix) with the store's own tools, and import it with
 ([Importing a bundle](upstreams.md#importing-a-bundle)). kista only reads `imports/`: every backend
 refuses to write, delete or list it, and the collector never touches it. Remove the object after
 the import.
+
+A bundle uploaded over the API ([Uploading a bundle](upstreams.md#uploading-a-bundle)) is stored
+in the tenant's domain as one object per chunk, `uploads/<uuid>`, which kista writes and deletes.
+The collector deletes the chunks of uploads that were imported, aborted or expired, and the objects
+under `uploads/` older than its grace that no chunk names (a crash's, a deleted tenant's); its
+`storage.gc` event counts them as `chunks`.

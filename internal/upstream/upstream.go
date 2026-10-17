@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -82,7 +83,11 @@ type Service struct {
 	// Feeds takes a bundle's statements into bundle-mode feeds (spec 0014 phase 1b); nil: a bundle's
 	// feeds are read through
 	Feeds *attachment.Feeds
-	Log   Logger
+	// Uploads are the limits on bundles uploaded over the API (spec 0014 phase 2)
+	Uploads     UploadSettings
+	wakeOnce    sync.Once
+	wakeUploads chan struct{}
+	Log         Logger
 	// DuckDB replaces DuckDB's repositories and keys (tests); the zero value is the real ones.
 	DuckDB DuckDB
 	// Credentials are the configured credentials private upstreams use (phase 3).

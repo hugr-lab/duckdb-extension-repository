@@ -318,6 +318,20 @@ See [Access](access.md).
 
 See [Attachments and the feed](attachments.md).
 
+### Bundles
+
+| Route | Who |
+| --- | --- |
+| `GET, POST tenants/{t}/bundle-uploads`; `GET, DELETE …/bundle-uploads/{id}`; `POST …/{id}/complete` | server |
+| `PUT tenants/{t}/bundle-uploads/{id}/chunks/{n}` (the chunk's bytes, with `Content-Digest: sha-256=:…:`) | server |
+| `GET tenants/{t}/bundle-imports`, `GET …/bundle-imports/{id}` | server |
+
+An upload's state, a suspended tenant, a limit or another chunk for the same number answer `409`; a
+chunk whose bytes do not match its `Content-Digest` or its size, `400`; a chunk number past the
+last, `404`; a chunk without `Content-Length`, `411`; too many chunks at once, `429` with
+`Retry-After`. See
+[Uploading a bundle](upstreams.md#uploading-a-bundle).
+
 ### Events and statistics
 
 | Route | Who |

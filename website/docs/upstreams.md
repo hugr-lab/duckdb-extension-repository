@@ -541,6 +541,62 @@ upstream's visibility, and its provenance records `credential: "bundle:<prefix>"
 public, or promoted as public, only where `upstreams.bundle_sources` allows that source for the
 tenant ([Configuration](configuration.md)).
 
+### Uploading a bundle
+
+A server administrator who cannot run `kista admin` beside the server, nor write to its object
+store, uploads a bundle over the API, and the server imports it. The upload comes in chunks, each
+its own request, so an ingress's body limit and a broken connection are no obstacle; a broken
+upload resumes with the chunks the server lacks.
+
+```bash
+T=https://kista.example.com/api/v1/tenants/acme
+F=acme.kbundle
+# create: the size, optionally the SHA-256 the export printed, and the import's options
+ID=$(curl -sSf -X POST "$T/bundle-uploads" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"size\": $(wc -c < "$F"), \"sha256\": \"<hex>\", \"upstreams\": [\"core\"]}" | jq -r .id)
+# cut the chunks by the chunk size the server answered (here the default 16 MiB), each sent with
+# its SHA-256 as an RFC 9530 Content-Digest; a chunk sent again after a failure is no harm
+CS=16777216
+N=$(curl -sSf "$T/bundle-uploads/$ID" -H "Authorization: Bearer $TOKEN" | jq -r .chunks)
+for n in $(seq 0 $((N - 1))); do
+  dd if="$F" of=chunk bs=$CS skip=$n count=1 2>/dev/null
+  curl -sSf --retry 5 -X PUT "$T/bundle-uploads/$ID/chunks/$n" -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Digest: sha-256=:$(openssl dgst -sha256 -binary chunk | base64):" --data-binary @chunk
+done
+# when every chunk is there
+curl -sSf -X POST "$T/bundle-uploads/$ID/complete" -H "Authorization: Bearer $TOKEN"
+curl -sSf "$T/bundle-uploads/$ID" -H "Authorization: Bearer $TOKEN"     # state, chunks received, import_id
+curl -sSf "$T/bundle-imports/<import_id>" -H "Authorization: Bearer $TOKEN"
+```
+
+- **Creating** answers the upload's `id`, the chunk size it took (`bundles.chunk_size`, 16 MiB by
+  default, or less if the request asks with `chunk_size`, from 1 MiB), the number of chunks and
+  when it expires. Chunk `n` (from 0) is the bundle's bytes from `n × chunk_size`. `size` is at most
+  `bundles.max_size`. A tenant has at most `bundles.max_uploads` uploads not yet imported, and the
+  server `bundles.max_bytes` of uploads whose chunks it keeps (`409` past either).
+- **A chunk** is exactly its bytes (`Content-Length` its size), with its `Content-Digest`. It is
+  spooled, checked and stored once: the same chunk sent again is a no-op, another one for the same
+  number is `409`. A replica takes at most 4 chunks of one upload at once, sharing the replica's
+  `blob.max_ingests` (`429` past that, with `Retry-After`: send it again). `GET` on the upload lists
+  the chunks received, so a broken upload resumes with the ones missing. A long upload outlives a
+  token: refresh it as the upload goes.
+- **Complete** queues the import (`202`) once every chunk is there; a second call changes nothing.
+  The administrator who completes it is the import's actor. A replica imports it, as
+  `kista admin bundle import` does, with the bundle keys pinned for the tenant; the record is at
+  `bundle-imports/<import_id>` (`import_id` shows once the record exists). Given a `sha256`, the
+  chunks are checked against it first, and a mismatch imports nothing. An import stopped by a
+  shutdown, by a chunk the store could not read for now, or whose targets were all busy, is queued
+  again, three times at most (then it fails, `interrupted` or `busy`); `complete` on a `failed`
+  upload queues it again.
+- **A suspended tenant** takes no new upload, chunk or complete; its queued uploads wait until it is
+  resumed. A deleted tenant's uploads go with it, their chunks swept by the collector.
+- **Expiry**: an upload sending no chunk for `bundles.upload_ttl` (24 h) expires, at the latest
+  `bundles.upload_max_age` (7 days) after its creation, and a failed one `upload_ttl` after its
+  failure. `DELETE` aborts one not importing. The collector expires them, deletes the chunks of
+  uploads imported, aborted or expired, and the objects under `uploads/` no chunk names.
+- Each act is audited: `bundle.upload`, `bundle.upload_complete`, `bundle.upload_abort`, and the
+  system's `bundle.upload_fail` and `bundle.upload_expire`; chunks are not.
+
 ## Private upstreams
 
 A `repository` upstream whose channel serves private releases (another kista's private channel) needs

@@ -95,6 +95,7 @@ are all the kinds in `internal/audit`:
 | | `upstream.rejected` | `upstream:<name>` | `upstream`, `duckdb_version`, `platform`, `name`, `outcome` |
 | | `upstream.run` | `upstream:<name>` | `upstream`, `dry_run`, `counts`, `error`, `bundle` (an import's manifest) |
 | | `bundle.import` | `tenant:<name>` | `import`, `manifest`, `created_at`, `exporter`, `bundle_key`, `input_sha256`, `dry_run`, `state`, `targets` (counts per upstream, and per feed as `feed:<name>`) |
+| | `bundle.upload`, `bundle.upload_complete`, `bundle.upload_abort`, `bundle.upload_fail`, `bundle.upload_expire` | `tenant:<name>` | `upload`; created: `size`, `sha256`, `chunk_size`, `dry_run`, `upstreams`, `feeds`, `any_tenant`; complete: `retry`; fail (the system's): `import`, `error` (a class: `sha256`, `storage`, `interrupted`, `busy`, `another tenant`, `bundle key not pinned`, `refused`, `not found`, `malformed`, `failed`); expire (the collector's): `state` (the one it left) |
 | | `bundle.reset` | `upstream:<name>` or `feed:<name>` | `upstream` or `feed`, `manifest`, `created_at` (the mark it cleared; a feed's cursors are reset too) |
 | | `bundle.export` | `tenant:<name>` | `plan` (its SHA-256), `manifest`, `manifest_sha256`, `bundle_key` (none when unsigned), `counts` (per outcome, and `failed_sources`; per feed `feed_bodies`, `feed_statements`, `feed_withdrawals`, `feed_without_content`, `feed_documents`, and `failed_feeds`) |
 | | `shadow.add`, `shadow.remove` | `shadow:<name>` | `name` |
@@ -111,7 +112,7 @@ are all the kinds in `internal/audit`:
 | | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count` |
 | | `install` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `duckdb_version`, `body_hash`, `user_agent` |
 | | `request.failed` | `route:<route>` | `route`, `status`, `count` |
-| Storage | `storage.gc` | `domain:<domain>` | `domain`, `builds`, `bodies`, `marked`, `streams`, `tmp`, `attachments`, `uploads`, `bytes`, `claims`, `resolved`, `dry_run`, `error` |
+| Storage | `storage.gc` | `domain:<domain>` | `domain`, `builds`, `bodies`, `marked`, `streams`, `tmp`, `attachments`, `uploads`, `chunks` (bundle uploads' chunks), `bytes`, `claims`, `resolved`, `dry_run`, `error` |
 | | `storage.verify` | `domain:<domain>` | `domain`, `full`, `mark`, `unmark`, `checked`, `ok`, `skipped`, `marked_ok`, `missing`, `short`, `long`, `corrupt`, `record`, `unreadable`, `marked`, `unmarked`, `bytes`, `error` |
 | The log itself | `audit.dropped` | `server` | `counts`, `sink` |
 | | `audit.sink` | `sink:<name>` | `sink`, `state`, `class`, `status` |

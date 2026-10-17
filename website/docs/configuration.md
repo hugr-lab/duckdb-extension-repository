@@ -332,7 +332,7 @@ bootstrap.
 | `serve.resign` | boolean | `false` | Run the re-signer on this replica (signs releases with a channel's active key). |
 | `serve.max_downloads` | integer | `256` | Concurrent body downloads per replica; more get `503` with `Retry-After`. |
 | `serve.max_downloads_per_client` | integer | `8` | Concurrent body downloads per client address. |
-| `serve.min_rate` | size | `16KiB` | Least average rate (per second) of a download, and of a publication upload through the API. |
+| `serve.min_rate` | size | `16KiB` | Least average rate (per second) of a download, and of a publication upload or a bundle chunk through the API. |
 | `serve.write_idle_timeout` | duration | `30s` | The window `min_rate` is measured over; at least `1s`. |
 | `serve.drain_timeout` | duration | `5s` | `/readyz` fails this long before shutdown starts. |
 | `serve.shutdown_timeout` | duration | `30s` | Then downloads still running are aborted. It also bounds the wait for the background runners after it; the event writer and the download counter then get 11 seconds of their own ([kista serve](administration/commands.md#kista-serve)). |
@@ -561,6 +561,20 @@ Documents about bodies. File-only. See [Attachments](attachments.md).
 | `attachments.max_size` | integer (bytes) | `4194304` (4 MiB) | The largest document; 64 KiB to 16 MiB. A plain number of bytes: suffixes are not accepted here. |
 | `attachments.max_reads` | integer | `8` | Documents held in memory at once; `0..256`. |
 | `attachments.feed_interval` | duration | `6h` | Between a feed's scheduled runs; at least `5m`. |
+
+## bundles
+
+Bundles uploaded over the API (spec 0014 phase 2). File-only. See
+[Uploading a bundle](upstreams.md#uploading-a-bundle).
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `bundles.max_size` | size | `20GiB` | An upload's largest size; 1 MiB to 1024 GiB. |
+| `bundles.chunk_size` | size | `16MiB` | The largest chunk; 1 to 64 MiB. A client may ask for smaller chunks. |
+| `bundles.upload_ttl` | duration | `24h` | An upload sending no chunk this long expires, and a failed one kept for retry; `1h..168h`. |
+| `bundles.upload_max_age` | duration | `168h` | An upload not completed this long after its creation expires; at least `upload_ttl`, at most `720h`. |
+| `bundles.max_uploads` | integer | `2` | A tenant's uploads not yet imported (failed ones included); `1..20`. |
+| `bundles.max_bytes` | size | `100GiB` | The declared sizes of the server's uploads not yet imported; at least `max_size`. |
 
 ## tenants
 

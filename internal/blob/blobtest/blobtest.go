@@ -293,26 +293,31 @@ func Run(t *testing.T, h Harness) {
 		}
 	})
 
-	t.Run("list attachments", func(t *testing.T) { // spec 0011
-		s := h.New(t)
-		key := "attachments/" + uuid.NewString()
-		if err := s.Put(ctx, key, strings.NewReader("doc"), 3); err != nil {
-			t.Fatal(err)
-		}
-		var found []string
-		if err := s.List(ctx, "attachments/", func(k string, size int64, _ time.Time) error {
-			if size != 3 {
-				t.Errorf("%s: size %d", k, size)
+	for _, prefix := range []string{"attachments/", "uploads/"} { // specs 0011 and 0014
+		t.Run("list "+prefix, func(t *testing.T) {
+			s := h.New(t)
+			key := prefix + uuid.NewString()
+			if err := s.Put(ctx, key, strings.NewReader("doc"), 3); err != nil {
+				t.Fatal(err)
 			}
-			found = append(found, k)
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if len(found) != 1 || found[0] != key {
-			t.Fatalf("listed %v", found)
-		}
-	})
+			var found []string
+			if err := s.List(ctx, prefix, func(k string, size int64, _ time.Time) error {
+				if size != 3 {
+					t.Errorf("%s: size %d", k, size)
+				}
+				found = append(found, k)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(found) != 1 || found[0] != key {
+				t.Fatalf("listed %v", found)
+			}
+			if err := s.Delete(ctx, key); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 
 	t.Run("not anonymous", func(t *testing.T) {
 		s := h.New(t)

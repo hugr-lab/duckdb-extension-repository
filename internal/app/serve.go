@@ -249,11 +249,15 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	go func() { defer wg.Done(); m.Run(bg) }()
 	ur := &upstream.Runner{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log}
 	fr := &attachment.Runner{Feeds: svc.Feeds, Holder: host + "/" + store.NewID(), Log: log}
+	// bundles uploaded over the API, imported once complete (spec 0014 phase 2)
+	br := &upstream.UploadRunner{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), BundleKeys: cfg.BundleKeysFor, Log: log}
 	// deleting tenants (spec 0019): their rows in batches, then their tombstones
 	reaper := &tenantsvc.Reaper{Store: st, Holder: host + "/" + store.NewID(), Log: log}
 	wg.Add(4)
 	go func() { defer wg.Done(); ur.Run(bg) }()
 	go func() { defer wg.Done(); fr.Run(bg) }()
+	wg.Add(1)
+	go func() { defer wg.Done(); br.Run(bg) }()
 	go func() { defer wg.Done(); puller.Run(bg) }()
 	go func() { defer wg.Done(); reaper.Run(bg) }()
 	return srv.Run(ctx)

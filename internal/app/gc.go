@@ -14,11 +14,13 @@ import (
 // Collector is the storage garbage collector (spec 0016), recording each pass as storage.gc (failed
 // when the pass stopped on an error).
 func Collector(cfg config.Config, st *store.Store, bs *blob.Service, holder string, log *slog.Logger) *blob.Collector {
+	bundles := cfg.Bundles.Settings()
 	return &blob.Collector{Service: bs, Holder: holder, Grace: cfg.GCSettings().Grace, Log: log,
+		UploadTTL: bundles.UploadTTL, UploadMaxAge: bundles.UploadMaxAge,
 		Event: func(ctx context.Context, r blob.Result) {
 			outcome := audit.OK
 			data := map[string]any{"domain": r.Domain, "builds": r.Builds, "bodies": r.Bodies, "marked": r.Marked, "streams": r.Streams,
-				"tmp": r.Tmp, "attachments": r.Attachments, "uploads": r.Uploads, "bytes": r.Bytes, "claims": r.Claims, "resolved": r.Resolved, "dry_run": r.DryRun}
+				"tmp": r.Tmp, "attachments": r.Attachments, "uploads": r.Uploads, "chunks": r.Chunks, "bytes": r.Bytes, "claims": r.Claims, "resolved": r.Resolved, "dry_run": r.DryRun}
 			if r.Err != nil {
 				outcome, data["error"] = audit.Failed, storageClass(r.Err)
 			}
