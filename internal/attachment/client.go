@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
@@ -59,13 +60,22 @@ type FeedSpec struct {
 	Readers               bool
 	Offer                 string
 	Channels              []string // channel names, for the channels offer
+	// Mode is store.FeedOnline (the default) or store.FeedBundle: statements arrive in bundles
+	// (spec 0014), never from the URL
+	Mode string
+	// Export keeps what a bundle needs to answer a site's plan (online feeds only)
+	Export bool
 }
+
+// ErrBundle is a run asked of a bundle-mode feed: it never runs (spec 0014).
+var ErrBundle = errors.New("attachment: a bundle-mode feed is never run: its statements arrive in bundles")
 
 var feedPath = regexp.MustCompile(`^(/[A-Za-z0-9._~-]+)*/api/v1/tenants/[a-z0-9][a-z0-9-]{0,62}$`)
 
 // checkFeedURL normalises a feed URL: https://<host>[:port][/<path>]/api/v1/tenants/<t>, no user
-// info, query or fragment, at a port egress may reach.
-func (f *Feeds) checkFeedURL(raw string) (string, error) {
+// info, query or fragment, at a port egress may reach (unless egress is false: a bundle-mode feed's
+// URL is only its issuer's identity).
+func (f *Feeds) checkFeedURL(raw string, egress bool) (string, error) {
 	bad := func(why string) (string, error) {
 		return "", fmt.Errorf("%w: feed URL %q: %s", store.ErrInvalid, raw, why)
 	}
@@ -84,7 +94,7 @@ func (f *Feeds) checkFeedURL(raw string) (string, error) {
 	}
 	if p := u.Port(); p != "" {
 		n, err := strconv.ParseUint(p, 10, 16)
-		if err != nil || !f.Fetch.PortAllowed(uint16(n)) {
+		if err != nil || egress && !f.Fetch.PortAllowed(uint16(n)) {
 			return bad("egress does not reach that port")
 		}
 		if n == 443 { // the default port is dropped: one feed, one form (its statements' issuer)
@@ -144,12 +154,26 @@ func (f *Feeds) Add(ctx context.Context, a authz.Actor, tenant string, sp FeedSp
 	if err != nil {
 		return store.Feed{}, err
 	}
-	u, err := f.checkFeedURL(sp.URL)
+	if sp.Mode == "" {
+		sp.Mode = store.FeedOnline
+	}
+	bundle := sp.Mode == store.FeedBundle
+	switch {
+	case sp.Mode != store.FeedOnline && !bundle:
+		return store.Feed{}, fmt.Errorf("%w: mode %q (online or bundle)", store.ErrInvalid, sp.Mode)
+	case bundle && sp.Credential != "":
+		return store.Feed{}, fmt.Errorf("%w: a bundle-mode feed takes no credential: kista never contacts its source", store.ErrInvalid)
+	case bundle && sp.Export:
+		return store.Feed{}, fmt.Errorf("%w: export is for online feeds", store.ErrInvalid)
+	}
+	u, err := f.checkFeedURL(sp.URL, !bundle)
 	if err != nil {
 		return store.Feed{}, err
 	}
-	if err := f.checkCredential(sp.Credential, tenant, u); err != nil {
-		return store.Feed{}, err
+	if !bundle {
+		if err := f.checkCredential(sp.Credential, tenant, u); err != nil {
+			return store.Feed{}, err
+		}
 	}
 	keys := dedup(sp.Keys)
 	for _, k := range keys {
@@ -168,7 +192,7 @@ func (f *Feeds) Add(ctx context.Context, a authz.Actor, tenant string, sp FeedSp
 		return store.Feed{}, fmt.Errorf("%w: offer is upstreams, or channels with the channels named", store.ErrInvalid)
 	}
 	fd := store.Feed{TenantID: t.ID, Name: sp.Name, URL: u, Credential: sp.Credential, Keys: keys, Kinds: kinds, Readers: sp.Readers,
-		Offer: sp.Offer, CreatedBy: a.String()}
+		Offer: sp.Offer, Mode: sp.Mode, Export: sp.Export, CreatedBy: a.String()}
 	var names []string
 	for _, c := range dedup(sp.Channels) {
 		ch, err := f.Store.GetChannel(ctx, tenant, c)
@@ -181,11 +205,14 @@ func (f *Feeds) Add(ctx context.Context, a authz.Actor, tenant string, sp FeedSp
 		if err := tx.InsertFeed(ctx, &fd); err != nil {
 			return err
 		}
-		if err := tx.RequestFeedRun(ctx, &fd); err != nil {
-			return err
+		if !bundle {
+			if err := tx.RequestFeedRun(ctx, &fd); err != nil {
+				return err
+			}
 		}
 		return tx.Event(ctx, t.ID, a.String(), "feed.add", "feed:"+fd.Name, map[string]any{"name": fd.Name, "url": fd.URL,
-			"credential": fd.Credential, "kinds": fd.Kinds, "readers": fd.Readers, "offer": fd.Offer, "channels": names, "keys": fd.Keys})
+			"credential": fd.Credential, "kinds": fd.Kinds, "readers": fd.Readers, "offer": fd.Offer, "channels": names, "keys": fd.Keys,
+			"mode": fd.Mode, "export": fd.Export})
 	})
 	return fd, err
 }
@@ -225,9 +252,12 @@ type FeedChange struct {
 	Kinds      *[]string `json:"kinds,omitempty"`
 	Readers    *bool     `json:"readers,omitempty"`
 	Keys       *[]string `json:"keys,omitempty"`
+	Export     *bool     `json:"export,omitempty"`
 }
 
-// Change changes a feed (expected: its version, 0 for any). Resuming a feed asks for a run.
+// Change changes a feed (expected: its version, 0 for any). Resuming an online feed asks for a run.
+// Setting export resets its cursors, so its next run reads the whole history again and keeps what
+// it refused before; clearing it drops what it kept (spec 0014).
 func (f *Feeds) Change(ctx context.Context, a authz.Actor, tenant, name string, ch FeedChange, expected int64) (store.Feed, error) {
 	t, err := f.admin(ctx, a, tenant)
 	if err != nil {
@@ -249,7 +279,11 @@ func (f *Feeds) Change(ctx context.Context, a authz.Actor, tenant, name string, 
 			}
 			change["state"], fd.State = *ch.State, *ch.State
 		}
+		bundle := fd.Mode == store.FeedBundle
 		if ch.Credential != nil && *ch.Credential != fd.Credential {
+			if bundle {
+				return fmt.Errorf("%w: a bundle-mode feed takes no credential: kista never contacts its source", store.ErrInvalid)
+			}
 			if err := f.checkCredential(*ch.Credential, tenant, fd.URL); err != nil {
 				return err
 			}
@@ -278,6 +312,12 @@ func (f *Feeds) Change(ctx context.Context, a authz.Actor, tenant, name string, 
 				change["keys"], fd.Keys = k, k
 			}
 		}
+		if ch.Export != nil && *ch.Export != fd.Export {
+			if bundle {
+				return fmt.Errorf("%w: export is for online feeds", store.ErrInvalid)
+			}
+			change["export"], fd.Export = *ch.Export, *ch.Export
+		}
 		out = fd
 		if len(change) == 0 {
 			return nil
@@ -285,7 +325,19 @@ func (f *Feeds) Change(ctx context.Context, a authz.Actor, tenant, name string, 
 		if err := tx.SetFeed(ctx, &fd, expected); err != nil {
 			return err
 		}
-		if change["state"] == store.FeedActive {
+		switch change["export"] {
+		case true:
+			if err := tx.ResetFeedCursors(ctx, fd.ID); err != nil {
+				return err
+			}
+			change["cursors"] = "reset"
+		case false:
+			if err := tx.DropFeedExport(ctx, fd); err != nil {
+				return err
+			}
+			change["kept"] = "dropped"
+		}
+		if !bundle && fd.State == store.FeedActive && (change["state"] == store.FeedActive || change["export"] == true) {
 			if err := tx.RequestFeedRun(ctx, &fd); err != nil {
 				return err
 			}
@@ -325,10 +377,15 @@ func (f *Feeds) Remove(ctx context.Context, a authz.Actor, tenant, name string, 
 				return err
 			}
 		}
+		if fd.Export {
+			if err := tx.DropFeedExport(ctx, fd); err != nil {
+				return err
+			}
+		}
 		if err := tx.DeleteFeed(ctx, fd, expected); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "feed.remove", "feed:"+fd.Name, map[string]any{"name": fd.Name, "documents": n})
+		return tx.Event(ctx, t.ID, a.String(), "feed.remove", "feed:"+fd.Name, map[string]any{"name": fd.Name, "documents": n, "export": fd.Export})
 	})
 }
 
@@ -343,6 +400,9 @@ func (f *Feeds) Sync(ctx context.Context, a authz.Actor, tenant, name string) (s
 		fd, err := tx.GetFeed(ctx, t.ID, name)
 		if err != nil {
 			return err
+		}
+		if fd.Mode == store.FeedBundle {
+			return ErrBundle
 		}
 		if fd.State != store.FeedActive {
 			return fmt.Errorf("%w: the feed is paused", store.ErrInvalid)
@@ -383,6 +443,14 @@ const (
 // errAuth marks a run the source refused (the feed's status: unauthorized).
 var errAuth = errors.New("attachment: the source refuses the feed's credential")
 
+// errHeldByQuota is an export feed's refusal or statement that could not be kept within the cap on
+// what export feeds keep: its body's cursor holds, so no gap is silent (spec 0014).
+var errHeldByQuota = errors.New("attachment: what export feeds keep is at its cap; statements wait")
+
+// errOvertaken is a run whose feed's export setting changed meanwhile: the change reset or dropped
+// what it would write and asked for another run, so this one stops.
+var errOvertaken = errors.New("attachment: the feed's export setting changed during the run")
+
 // transient is a failure that leaves a body's cursor, so the next run tries again.
 type transient struct{ err error }
 
@@ -403,6 +471,8 @@ type run struct {
 	header   http.Header
 	cred     *credential.Credential
 	token    string
+	// quota: an export feed held a body at the quota; the run ends failing
+	quota bool
 }
 
 // RunFeed runs a feed if it is requested or due; renew keeps the run's lease.
@@ -478,6 +548,8 @@ func runClass(err error) string {
 		return "token"
 	case errors.Is(err, ErrStatement):
 		return "keys"
+	case errors.Is(err, errHeldByQuota):
+		return "limits"
 	}
 	return "failed"
 }
@@ -498,7 +570,10 @@ func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) err
 	if err := r.authorize(ctx); err != nil {
 		return err
 	}
-	if r.pinned, err = r.keys(ctx); err != nil {
+	if r.pinned, err = r.keys(ctx); errors.Is(err, errOvertaken) {
+		r.res.Counts["overtaken"]++
+		return nil
+	} else if err != nil {
 		return err
 	}
 	bodies, err := f.Store.OfferedBodies(ctx, r.fd)
@@ -514,9 +589,15 @@ func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) err
 		if err := renew(ctx); err != nil {
 			return err
 		}
-		if err := r.batch(ctx, bodies[start:min(start+MaxFeedBodies, len(bodies))], cursors); err != nil {
+		if err := r.batch(ctx, bodies[start:min(start+MaxFeedBodies, len(bodies))], cursors); errors.Is(err, errOvertaken) {
+			r.res.Counts["overtaken"]++
+			return nil
+		} else if err != nil {
 			return err
 		}
+	}
+	if r.quota {
+		return errHeldByQuota
 	}
 	return nil
 }
@@ -557,6 +638,14 @@ func (r *run) keys(ctx context.Context) (map[string]*rsa.PublicKey, error) {
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%w: the source publishes none of the pinned keys", ErrStatement)
+	}
+	if r.fd.Export { // the file a bundle carries to a site (spec 0014), once it served this run
+		if len(b) > store.MaxFeedKeysFile || !utf8.Valid(b) {
+			return nil, fmt.Errorf("%w: the source's attestation keys file is over %d bytes, or not UTF-8", ErrStatement, store.MaxFeedKeysFile)
+		}
+		if err := r.write(ctx, false, func(tx *store.Tx) error { return tx.SetFeedKeysFile(ctx, r.fd.ID, b) }); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -621,7 +710,7 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 		}
 		for _, h := range ans.Bodies {
 			if sent[h.BodyHash] && !failed[h.BodyHash] && h.Seq > cursors[h.BodyHash] && h.Seq <= r.verified {
-				if err := r.f.Store.InTenantTx(ctx, r.t.ID, nil, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, h.BodyHash, h.Seq) }); err != nil {
+				if err := r.write(ctx, false, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, h.BodyHash, h.Seq) }); err != nil {
 					return err
 				}
 				cursors[h.BodyHash] = h.Seq
@@ -675,8 +764,15 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 		return nil // after a failure, the body's later statements wait for the next run; or a replay
 	}
 	reason, err := r.store(ctx, st, stmt, sig)
+	if err == nil && reason != "" && r.fd.Export {
+		err = r.keepRefusal(ctx, st, stmt, sig, reason)
+	}
 	var tr transient
 	switch {
+	case errors.Is(err, errHeldByQuota):
+		failed[st.BodyHash], r.quota = true, true
+		r.res.Counts["held"]++
+		return nil
 	case errors.As(err, &tr):
 		failed[st.BodyHash] = true
 		r.res.Counts["failed"]++
@@ -687,9 +783,84 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 	case reason != "":
 		r.refuse(st, reason)
 	}
-	err = r.f.Store.InTenantTx(ctx, r.t.ID, nil, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, st.BodyHash, st.Seq) })
+	err = r.write(ctx, false, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, st.BodyHash, st.Seq) })
 	if err == nil {
 		cursors[st.BodyHash] = st.Seq
+	}
+	return err
+}
+
+// write runs one of a run's writes (a cursor, what an export feed keeps) under the tenant's feed
+// lock, and only while the feed's export setting is the one the run started with: a change of
+// export resets or drops what the run would write, under the same lock (spec 0014), and asks for
+// another run.
+func (r *run) write(ctx context.Context, attachments bool, fn func(*store.Tx) error) error {
+	locks := []string{store.FeedLock(r.t.ID)}
+	if attachments {
+		locks = append(locks, lock(r.t))
+	}
+	return r.f.Store.InTenantTx(ctx, r.t.ID, locks, func(tx *store.Tx) error {
+		ok, err := tx.FeedEpochIs(ctx, r.fd.ID, r.fd.ExportEpoch)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errOvertaken
+		}
+		return fn(tx)
+	})
+}
+
+// keepRefusal keeps an export feed's refusal with the statement's bytes (spec 0014).
+func (r *run) keepRefusal(ctx context.Context, st Statement, stmt, sig []byte, reason string) error {
+	err := r.write(ctx, true, func(tx *store.Tx) error {
+		return tx.KeepFeedRefusal(ctx, r.t.ID, store.FeedRefusal{FeedID: r.fd.ID, BodyHash: st.BodyHash, Seq: st.Seq, Reason: reason,
+			Statement: string(stmt), Signature: base64.StdEncoding.EncodeToString(sig)})
+	})
+	if errors.Is(err, store.ErrQuota) {
+		return errHeldByQuota
+	}
+	return err
+}
+
+// keep keeps an export feed's statement about a document the tenant does not hold: a withdrawal of
+// one never stored, or any statement about one removed here (spec 0014). Other feeds keep nothing.
+func (r *run) keep(ctx context.Context, st Statement, stmt, sig []byte) error {
+	if !r.fd.Export {
+		return nil
+	}
+	changed, withdrew := false, false
+	sigText := base64.StdEncoding.EncodeToString(sig)
+	err := r.write(ctx, true, func(tx *store.Tx) error {
+		changed, withdrew = false, false
+		// read again under the lock: another feed of the source may have stored it meanwhile
+		a, err := tx.FeedAttachment(ctx, r.t.ID, st.Issuer, st.IssuerID)
+		switch {
+		case err == nil && a.RemovedAt.IsZero():
+			if !st.Withdrawn || a.Seq >= st.Seq || a.BodyHash != st.BodyHash {
+				return nil // held now: what it says is the online path's to judge at the next run
+			}
+			err := tx.WithdrawFeedAttachment(ctx, &a, st.Seq, string(stmt), sigText)
+			withdrew = err == nil
+			if errors.Is(err, store.ErrConflict) {
+				return nil
+			}
+			return err
+		case err != nil && !errors.Is(err, store.ErrNotFound):
+			return err
+		}
+		changed, err = tx.KeepFeedStatement(ctx, store.FeedKept{TenantID: r.t.ID, Issuer: st.Issuer, IssuerID: st.IssuerID, BodyHash: st.BodyHash,
+			Seq: st.Seq, Statement: string(stmt), Signature: sigText})
+		return err
+	})
+	if errors.Is(err, store.ErrQuota) {
+		return errHeldByQuota
+	}
+	if changed {
+		r.res.Counts["kept"]++
+	}
+	if withdrew {
+		r.res.Counts["withdrawn"]++
 	}
 	return err
 }
@@ -713,8 +884,11 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 	}
 	sigText := base64.StdEncoding.EncodeToString(sig)
 	if st.Withdrawn {
-		if existing == nil || !existing.RemovedAt.IsZero() || existing.Seq >= st.Seq {
-			return "", nil // nothing held of it, or already newer
+		if existing == nil || !existing.RemovedAt.IsZero() && existing.Seq < st.Seq {
+			return "", r.keep(ctx, st, stmt, sig) // nothing held of it: an export feed keeps it for a site
+		}
+		if !existing.RemovedAt.IsZero() || existing.Seq >= st.Seq {
+			return "", nil // already newer
 		}
 		if existing.BodyHash != st.BodyHash {
 			return "body", nil
@@ -754,7 +928,10 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 	if existing != nil {
 		switch {
 		case !existing.RemovedAt.IsZero():
-			return "", nil // removed here: the tombstone keeps it out
+			if existing.Seq < st.Seq {
+				return "", r.keep(ctx, st, stmt, sig) // the tombstone keeps it out here; a site may hold it
+			}
+			return "", nil
 		case existing.Seq >= st.Seq:
 			return "", nil
 		case existing.BodyHash != st.BodyHash || existing.Kind != st.Kind || existing.ContentHash != st.ContentHash:
@@ -826,10 +1003,15 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		case errors.Is(err, store.ErrInvalid):
 			reason = "limits"
 			return nil
+		case err != nil:
+			return err
 		}
-		return err
+		return applyKept(ctx, tx, &rec, r.fd.Keys)
 	})
 	if err != nil || reason != "" {
+		if errors.Is(err, errHeldByQuota) {
+			reason = ""
+		}
 		dctx := context.WithoutCancel(ctx)
 		if _, gerr := r.f.Store.GetAttachment(dctx, t.ID, rec.ID); errors.Is(gerr, store.ErrNotFound) {
 			_ = r.f.Attachments.Blob.DeleteAttachment(dctx, t.StorageDomain, rec.ID)
@@ -845,4 +1027,26 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		r.res.Counts["superseded"]++
 	}
 	return "", nil
+}
+
+// applyKept applies to a document just stored what an export feed kept about it while it was not
+// held: a later withdrawal of the same body, signed by a key the storing feed pins, marks it; the
+// kept row goes either way (spec 0014).
+func applyKept(ctx context.Context, tx *store.Tx, rec *store.Attachment, pinned []string) error {
+	k, ok, err := tx.GetFeedKept(ctx, rec.TenantID, rec.Issuer, rec.IssuerID)
+	if err != nil || !ok {
+		return err
+	}
+	var w struct {
+		Withdrawn bool   `json:"withdrawn"`
+		Key       string `json:"key"`
+		BodyHash  string `json:"body_hash"`
+	}
+	if k.Seq > rec.Seq && json.Unmarshal([]byte(k.Statement), &w) == nil && w.Withdrawn && w.BodyHash == rec.BodyHash &&
+		slices.Contains(pinned, w.Key) {
+		if err := tx.WithdrawFeedAttachment(ctx, rec, k.Seq, k.Statement, k.Signature); err != nil {
+			return err
+		}
+	}
+	return tx.DeleteFeedKept(ctx, rec.TenantID, rec.Issuer, rec.IssuerID)
 }

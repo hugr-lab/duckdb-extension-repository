@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17); 2 to come
+- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17), its part 1 (bundle-mode and export feeds) implemented; 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 
@@ -737,13 +737,17 @@ what it refused before (a statement held already is a no-op). A feed's refusals 
 cleared or the feed is deleted; the kept statements of an issuer go when no feed of that URL with
 `export` remains. Both go with the body's cursors when the collector removes them.
 
-Kept refusals and statements count against the tenant's quota of feed documents (100,000, spec
-0011), so they can keep new documents from arriving. Today a document over the quota is refused
-with `limits` and the cursor passes it. With `export`, a statement that cannot be stored, refused
-or kept within the quota holds its body's cursor instead; the other bodies go on, and the run ends
-`failing` with `limits` until documents are removed or `export` is cleared. The other `limits`
-refusals (the heads per kind, an unresolved `supersedes` past its cap) stay permanent refusals,
-kept as such.
+Kept refusals and statements have a cap of their own per tenant (100,000 together), apart from the
+quota of feed documents (spec 0011): a source flooding what an export feed keeps never costs another
+source a document. Past the cap, a statement an export feed cannot keep holds its body's cursor; the
+other bodies go on, and the run ends `failing` with `limits` until the collector removes bodies or
+`export` is cleared. Every `limits` refusal of spec 0011 (the documents quota, the heads per kind, an
+unresolved `supersedes` past its cap) stays a refusal, kept as such. A kept statement is written
+under the attachments lock after reading the document again: one stored meanwhile by another feed
+is withdrawn at once instead. A kept withdrawal applies to a document stored later only for the
+same body and under a key the storing feed pins. A run writes cursors and what it keeps under the
+tenant's feed lock, and only in the export setting it started with (`export_epoch`): a change of
+`export` overtakes it, and it stops.
 
 **The plan** gains `feeds`, one per active bundle-mode feed of the tenant (or per `-feed` one), each
 with:
@@ -1003,7 +1007,7 @@ Spec 0010's catalogue gains:
 would run a bundle-mode feed online, and would not keep what an `export` feed keeps, leaving silent
 gaps.
 - `feeds.mode`, `online` | `bundle`, not null, default `online`, with its CHECK (a new column: no
-  rebuild); `feeds.export`, a boolean, default false;
+  rebuild); `feeds.export`, a boolean, default false; `feeds.export_epoch`, counting its changes;
 - `feeds.bundle_id`, `bundle_created_at` and `bundle_manifest_sha256`, null;
 - `feeds.attestation_keys` (the keys file's bytes) and `attestation_keys_at`, null;
 - **`feed_refusals`** `(feed_id, body_hash, seq)` primary key, `ON DELETE CASCADE` from `feeds`:
@@ -1182,8 +1186,8 @@ cycle).
     or forged range moves nothing. `bundle reset -feed` takes the history again from another
     bundle. A per-body checkpoint signed by the issuer is a follow-up.
   - A gateway's `export` feed keeps refused statements and statements about documents it does not
-    hold, within the tenant's quota of feed documents, so a source cannot grow them without
-    bound.
+    hold, within a cap of its own per tenant, so a source can neither grow them without bound nor
+    cost another source a document.
 - **Disclosure.** A plan names the tenant's sources, allowlists, platforms, DuckDB versions and the
   hashes it holds; a bundle adds what was fetched. Both are as sensitive as the site's configuration.
   The docs say so.
@@ -1305,8 +1309,9 @@ cycle).
     0021 on all three dialects; the reaper's completeness test with the new tables.
   - **`export`.** Setting it resets the cursors; the feed then keeps its keys file, every permanent
     refusal (bytes and signature), a withdrawal of a document never stored, a statement about a
-    tombstone (the highest `seq`), a kept withdrawal applied when the document arrives; past the
-    quota the body's cursor held and the run `failing`, the other bodies going on; clearing it
+    tombstone (the highest `seq`), a kept withdrawal applied when the document arrives (same body,
+    a pinned key); past its cap the body's cursor held and the run `failing`, the other bodies
+    going on, and other feeds unaffected; a run overtaken by a change of `export` writes nothing; clearing it
     deletes the feed's refusals, and the kept statements once no `export` feed of the URL remains;
     the collector removes them with the cursors.
   - **Plan.** Bodies with their cursors, `0` for none; `sources` per offer; `-feed` and

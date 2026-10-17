@@ -262,7 +262,8 @@ const (
 // reapSteps is the order the reaper deletes a tenant's rows in (spec 0019). TestReapCompleteness
 // classifies every table of the schema against it.
 var reapSteps = []reapStep{
-	{"feed_cursors", ofFeeds, false}, {"feed_channels", ofFeeds, false}, {"feed_keys", ofFeeds, false}, {"feeds", ofTenant, false},
+	{"feed_refusals", ofFeeds, false}, {"feed_cursors", ofFeeds, false}, {"feed_channels", ofFeeds, false}, {"feed_keys", ofFeeds, false},
+	{"feeds", ofTenant, false}, {"feed_kept", ofTenant, false},
 	{"statements", ofTenant, false}, {"statement_counters", ofTenant, false},
 	{"attachments", ofTenant, false},
 	{"attestation_keys", ofTenant, false},

@@ -223,8 +223,29 @@ func TestFeedRecords(t *testing.T) {
 			return err
 		})
 		inTx(t, s, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, byChannel.ID, strings.Repeat("d", 64), 4) })
+		// what an export feed keeps (spec 0014) goes with the cursors of bodies no longer held
+		gone := strings.Repeat("d", 64)
+		for _, h := range []string{b.BodyHash, gone} {
+			inTx(t, s, func(tx *store.Tx) error {
+				if err := tx.KeepFeedRefusal(ctx, tn.ID, store.FeedRefusal{FeedID: byChannel.ID, BodyHash: h, Seq: 5, Reason: "kind",
+					Statement: "{}", Signature: "s"}); err != nil {
+					return err
+				}
+				_, err := tx.KeepFeedStatement(ctx, store.FeedKept{TenantID: tn.ID, Issuer: f.URL, IssuerID: "k-" + h[:4], BodyHash: h, Seq: 6,
+					Statement: "{}", Signature: "s"})
+				return err
+			})
+		}
 		if n, err := s.DeleteGoneFeedCursors(ctx, "default"); err != nil || n != 1 {
 			t.Fatalf("gone cursors: %d %v", n, err)
+		}
+		for _, h := range []string{b.BodyHash, gone} {
+			want := map[bool]int{true: 1, false: 0}[h == b.BodyHash]
+			r, _ := s.FeedRefusals(ctx, byChannel.ID, h, 0, 100)
+			k, _ := s.FeedKeptOf(ctx, tn.ID, f.URL, h, 0, 100)
+			if len(r) != want || len(k) != want {
+				t.Fatalf("%s: refusals %d, kept %d; want %d", h[:4], len(r), len(k), want)
+			}
 		}
 		if cur, _ := s.FeedCursors(ctx, f.ID); cur[b.BodyHash] != 7 {
 			t.Fatalf("a held body's cursor went: %v", cur)

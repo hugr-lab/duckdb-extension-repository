@@ -92,6 +92,10 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO feed_keys (feed_id, fingerprint) VALUES (?, ?)", []any{id("f"), fp("d")}},
 		{"INSERT INTO feed_channels (feed_id, channel_id) VALUES (?, ?)", []any{id("f"), cid}},
 		{"INSERT INTO feed_cursors (feed_id, body_hash, seq) VALUES (?, ?, 1)", []any{id("f"), hash}},
+		{"INSERT INTO feed_refusals (feed_id, body_hash, seq, reason, statement, signature, refused_at) VALUES (?, ?, 2, 'kind', '{}', 'x', ?)",
+			[]any{id("f"), hash, now}},
+		{"INSERT INTO feed_kept (tenant_id, issuer, issuer_id, body_hash, seq, statement, signature, kept_at) VALUES (?, 'https://src.example/api/v1/tenants/x', ?, ?, 3, '{}', 'x', ?)",
+			[]any{tid, id("k"), hash, now}},
 		{"INSERT INTO download_counts (tenant_id, channel_id, name, ext_version, platform, duckdb_version, day, authenticated, count) " +
 			"VALUES (?, ?, 'acl', '1.0', 'linux_amd64', 'v2.0.0', '2026-10-11', ?, 3)", []any{tid, cid, false}},
 		{"INSERT INTO download_installers (tenant_id, channel_id, name, ext_version, platform, day, installers) " +
@@ -111,7 +115,7 @@ func rowsOf(t *testing.T, s *store.Store, tenantID, channelID string) map[string
 	for _, table := range store.ReapTables() {
 		where, arg := "tenant_id = ?", tenantID
 		switch table {
-		case "feed_cursors", "feed_channels", "feed_keys":
+		case "feed_cursors", "feed_channels", "feed_keys", "feed_refusals":
 			where = "feed_id IN (SELECT id FROM feeds WHERE tenant_id = ?)"
 		case "upstream_cells", "upstream_versions", "upstream_entries", "upstream_platforms", "upstream_keys":
 			where = "upstream_id IN (SELECT id FROM upstreams WHERE tenant_id = ?)"
