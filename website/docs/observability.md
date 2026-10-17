@@ -104,9 +104,9 @@ are all the kinds in `internal/audit`:
 | | `attestation_key.add` | `attestation-key:<id>` | `key`, `fingerprint`, `scheme`, `state` |
 | | `attestation_key.activate`, `attestation_key.retire` | `attestation-key:<id>` | `key`, `fingerprint`, `from`, `forced` |
 | | `feed.add` | `feed:<name>` | `name`, `url`, `credential`, `kinds`, `readers`, `offer`, `channels`, `keys`, `mode`, `export` |
-| | `feed.change` | `feed:<name>` | `name`, `change` |
-| | `feed.remove` | `feed:<name>` | `name`, `documents` |
-| | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `error` |
+| | `feed.change` | `feed:<name>` | `name`, `change` (with `export`, `cursors: reset` or `kept: dropped`) |
+| | `feed.remove` | `feed:<name>` | `name`, `documents`, `export` |
+| | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `error` (a class: `unauthorized`, `refused`, `unreachable`, `credential`, `token`, `keys`, `limits`, `failed`) |
 | Access | `auth.failure` | `route:<route>` | `reason`, `route`, `count` |
 | | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count` |
 | | `install` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `duckdb_version`, `body_hash`, `user_agent` |

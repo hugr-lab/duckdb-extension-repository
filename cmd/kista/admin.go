@@ -73,11 +73,11 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   feed add <tenant> <name> -url https://<host>/api/v1/tenants/<t> -credential <c> -key <fingerprint,...>
            [-kinds <k,...>] [-readers] [-channels <c,...>] [-export]   a subscription to another repository's feed
   feed add <tenant> <name> -mode bundle -url … -key <fingerprint,...> [-kinds …] [-readers] [-channels …]
-           its statements arrive in bundles (spec 0014): no credential, never run
+           for statements in bundles (spec 0014; not carried yet): no credential, never run
   feed list <tenant>
   feed show|sync|pause|resume <tenant> <name>    a running kista serve takes a requested run
   feed set <tenant> <name> [-credential <c>] [-key <fp,...>] [-kinds <k,...|->] [-readers=true|false]
-           [-export=true|false]                  export: keep what a bundle needs; setting it reads the history again
+           [-export=true|false]                  keep what a bundle needs: =true reads the history again, =false drops it
   feed remove <tenant> <name> [-documents]       its documents stay unless -documents
   extension-group add <tenant> <group> [-description …]   a named set of extension names (spec 0017)
   extension-group list <tenant>

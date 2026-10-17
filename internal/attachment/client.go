@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
@@ -329,10 +330,12 @@ func (f *Feeds) Change(ctx context.Context, a authz.Actor, tenant, name string, 
 			if err := tx.ResetFeedCursors(ctx, fd.ID); err != nil {
 				return err
 			}
+			change["cursors"] = "reset"
 		case false:
 			if err := tx.DropFeedExport(ctx, fd); err != nil {
 				return err
 			}
+			change["kept"] = "dropped"
 		}
 		if !bundle && fd.State == store.FeedActive && (change["state"] == store.FeedActive || change["export"] == true) {
 			if err := tx.RequestFeedRun(ctx, &fd); err != nil {
@@ -382,7 +385,7 @@ func (f *Feeds) Remove(ctx context.Context, a authz.Actor, tenant, name string, 
 		if err := tx.DeleteFeed(ctx, fd, expected); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "feed.remove", "feed:"+fd.Name, map[string]any{"name": fd.Name, "documents": n})
+		return tx.Event(ctx, t.ID, a.String(), "feed.remove", "feed:"+fd.Name, map[string]any{"name": fd.Name, "documents": n, "export": fd.Export})
 	})
 }
 
@@ -440,9 +443,13 @@ const (
 // errAuth marks a run the source refused (the feed's status: unauthorized).
 var errAuth = errors.New("attachment: the source refuses the feed's credential")
 
-// errHeldByQuota is an export feed's statement that could not be stored, refused or kept within the
-// tenant's quota of feed documents: its body's cursor holds, so no gap is silent (spec 0014).
-var errHeldByQuota = errors.New("attachment: the feed documents quota is reached; statements wait")
+// errHeldByQuota is an export feed's refusal or statement that could not be kept within the cap on
+// what export feeds keep: its body's cursor holds, so no gap is silent (spec 0014).
+var errHeldByQuota = errors.New("attachment: what export feeds keep is at its cap; statements wait")
+
+// errOvertaken is a run whose feed's export setting changed meanwhile: the change reset or dropped
+// what it would write and asked for another run, so this one stops.
+var errOvertaken = errors.New("attachment: the feed's export setting changed during the run")
 
 // transient is a failure that leaves a body's cursor, so the next run tries again.
 type transient struct{ err error }
@@ -563,7 +570,10 @@ func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) err
 	if err := r.authorize(ctx); err != nil {
 		return err
 	}
-	if r.pinned, err = r.keys(ctx); err != nil {
+	if r.pinned, err = r.keys(ctx); errors.Is(err, errOvertaken) {
+		r.res.Counts["overtaken"]++
+		return nil
+	} else if err != nil {
 		return err
 	}
 	bodies, err := f.Store.OfferedBodies(ctx, r.fd)
@@ -579,7 +589,10 @@ func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) err
 		if err := renew(ctx); err != nil {
 			return err
 		}
-		if err := r.batch(ctx, bodies[start:min(start+MaxFeedBodies, len(bodies))], cursors); err != nil {
+		if err := r.batch(ctx, bodies[start:min(start+MaxFeedBodies, len(bodies))], cursors); errors.Is(err, errOvertaken) {
+			r.res.Counts["overtaken"]++
+			return nil
+		} else if err != nil {
 			return err
 		}
 	}
@@ -605,14 +618,6 @@ func (r *run) keys(ctx context.Context) (map[string]*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	if r.fd.Export { // the file a bundle carries to a site (spec 0014)
-		if len(b) > store.MaxFeedKeysFile {
-			return nil, fmt.Errorf("%w: the source's attestation keys file is over %d bytes", ErrStatement, store.MaxFeedKeysFile)
-		}
-		if err := r.write(ctx, false, func(tx *store.Tx) error { return tx.SetFeedKeysFile(ctx, r.fd.ID, b) }); err != nil {
-			return nil, err
-		}
-	}
 	var doc struct {
 		Keys []struct {
 			PublicKey string `json:"public_key"`
@@ -633,6 +638,14 @@ func (r *run) keys(ctx context.Context) (map[string]*rsa.PublicKey, error) {
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%w: the source publishes none of the pinned keys", ErrStatement)
+	}
+	if r.fd.Export { // the file a bundle carries to a site (spec 0014), once it served this run
+		if len(b) > store.MaxFeedKeysFile || !utf8.Valid(b) {
+			return nil, fmt.Errorf("%w: the source's attestation keys file is over %d bytes, or not UTF-8", ErrStatement, store.MaxFeedKeysFile)
+		}
+		if err := r.write(ctx, false, func(tx *store.Tx) error { return tx.SetFeedKeysFile(ctx, r.fd.ID, b) }); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -787,8 +800,12 @@ func (r *run) write(ctx context.Context, attachments bool, fn func(*store.Tx) er
 		locks = append(locks, lock(r.t))
 	}
 	return r.f.Store.InTenantTx(ctx, r.t.ID, locks, func(tx *store.Tx) error {
-		if ok, err := tx.FeedEpochIs(ctx, r.fd.ID, r.fd.ExportEpoch); err != nil || !ok {
+		ok, err := tx.FeedEpochIs(ctx, r.fd.ID, r.fd.ExportEpoch)
+		if err != nil {
 			return err
+		}
+		if !ok {
+			return errOvertaken
 		}
 		return fn(tx)
 	})
@@ -812,15 +829,38 @@ func (r *run) keep(ctx context.Context, st Statement, stmt, sig []byte) error {
 	if !r.fd.Export {
 		return nil
 	}
+	changed, withdrew := false, false
+	sigText := base64.StdEncoding.EncodeToString(sig)
 	err := r.write(ctx, true, func(tx *store.Tx) error {
-		return tx.KeepFeedStatement(ctx, store.FeedKept{TenantID: r.t.ID, Issuer: st.Issuer, IssuerID: st.IssuerID, BodyHash: st.BodyHash,
-			Seq: st.Seq, Statement: string(stmt), Signature: base64.StdEncoding.EncodeToString(sig)})
+		changed, withdrew = false, false
+		// read again under the lock: another feed of the source may have stored it meanwhile
+		a, err := tx.FeedAttachment(ctx, r.t.ID, st.Issuer, st.IssuerID)
+		switch {
+		case err == nil && a.RemovedAt.IsZero():
+			if !st.Withdrawn || a.Seq >= st.Seq || a.BodyHash != st.BodyHash {
+				return nil // held now: what it says is the online path's to judge at the next run
+			}
+			err := tx.WithdrawFeedAttachment(ctx, &a, st.Seq, string(stmt), sigText)
+			withdrew = err == nil
+			if errors.Is(err, store.ErrConflict) {
+				return nil
+			}
+			return err
+		case err != nil && !errors.Is(err, store.ErrNotFound):
+			return err
+		}
+		changed, err = tx.KeepFeedStatement(ctx, store.FeedKept{TenantID: r.t.ID, Issuer: st.Issuer, IssuerID: st.IssuerID, BodyHash: st.BodyHash,
+			Seq: st.Seq, Statement: string(stmt), Signature: sigText})
+		return err
 	})
 	if errors.Is(err, store.ErrQuota) {
 		return errHeldByQuota
 	}
-	if err == nil {
+	if changed {
 		r.res.Counts["kept"]++
+	}
+	if withdrew {
+		r.res.Counts["withdrawn"]++
 	}
 	return err
 }
@@ -960,15 +1000,13 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		case errors.Is(err, store.ErrExists):
 			reason = "duplicate" // another feed stored it first
 			return nil
-		case errors.Is(err, store.ErrQuota) && r.fd.Export:
-			return errHeldByQuota
 		case errors.Is(err, store.ErrInvalid):
 			reason = "limits"
 			return nil
 		case err != nil:
 			return err
 		}
-		return applyKept(ctx, tx, &rec)
+		return applyKept(ctx, tx, &rec, r.fd.Keys)
 	})
 	if err != nil || reason != "" {
 		if errors.Is(err, errHeldByQuota) {
@@ -992,16 +1030,20 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 }
 
 // applyKept applies to a document just stored what an export feed kept about it while it was not
-// held: a later withdrawal marks it; the kept row goes either way (spec 0014).
-func applyKept(ctx context.Context, tx *store.Tx, rec *store.Attachment) error {
+// held: a later withdrawal of the same body, signed by a key the storing feed pins, marks it; the
+// kept row goes either way (spec 0014).
+func applyKept(ctx context.Context, tx *store.Tx, rec *store.Attachment, pinned []string) error {
 	k, ok, err := tx.GetFeedKept(ctx, rec.TenantID, rec.Issuer, rec.IssuerID)
 	if err != nil || !ok {
 		return err
 	}
 	var w struct {
-		Withdrawn bool `json:"withdrawn"`
+		Withdrawn bool   `json:"withdrawn"`
+		Key       string `json:"key"`
+		BodyHash  string `json:"body_hash"`
 	}
-	if k.Seq > rec.Seq && json.Unmarshal([]byte(k.Statement), &w) == nil && w.Withdrawn {
+	if k.Seq > rec.Seq && json.Unmarshal([]byte(k.Statement), &w) == nil && w.Withdrawn && w.BodyHash == rec.BodyHash &&
+		slices.Contains(pinned, w.Key) {
 		if err := tx.WithdrawFeedAttachment(ctx, rec, k.Seq, k.Statement, k.Signature); err != nil {
 			return err
 		}

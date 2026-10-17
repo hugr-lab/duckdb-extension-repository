@@ -231,8 +231,9 @@ func TestFeedRecords(t *testing.T) {
 					Statement: "{}", Signature: "s"}); err != nil {
 					return err
 				}
-				return tx.KeepFeedStatement(ctx, store.FeedKept{TenantID: tn.ID, Issuer: f.URL, IssuerID: "k-" + h[:4], BodyHash: h, Seq: 6,
+				_, err := tx.KeepFeedStatement(ctx, store.FeedKept{TenantID: tn.ID, Issuer: f.URL, IssuerID: "k-" + h[:4], BodyHash: h, Seq: 6,
 					Statement: "{}", Signature: "s"})
+				return err
 			})
 		}
 		if n, err := s.DeleteGoneFeedCursors(ctx, "default"); err != nil || n != 1 {

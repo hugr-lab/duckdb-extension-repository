@@ -68,8 +68,14 @@ const statusWords: Record<Feed['status'], string> = { new: 'not run yet', ok: 'o
 /** A bundle-mode feed's last bundle, or an export feed's keys file, in a line. */
 export function feedBundleLine(f: Feed) {
   if (f.mode === 'bundle') return f.bundle_id ? `last bundle ${f.bundle_id}` : 'no bundle imported yet'
-  if (f.export) return f.keys_file_at ? 'kept for export' : 'kept for export from its next run'
+  if (f.export) return f.keys_file_at ? `kept for export, keys file of ${when(f.keys_file_at)}` : 'kept for export from its next run'
   return ''
+}
+
+/** A feed's status in words: a bundle-mode feed never runs. */
+export function feedStatus(f: Feed) {
+  if (f.mode === 'bundle' && f.status === 'new') return 'no bundle yet'
+  return statusWords[f.status] ?? f.status
 }
 
 /** A run's counts, those above zero, in a line. */
@@ -82,6 +88,7 @@ export function Feeds() {
   const { data, error, loading, reload } = useLoad(() => client.get<{ feeds: Feed[] }>(`${api}/feeds`), [api])
   const [adding, setAdding] = useState(false)
   const [removing, setRemoving] = useState<Feed | null>(null)
+  const [exporting, setExporting] = useState<Feed | null>(null)
   const [documents, setDocuments] = useState(false)
   const { busy, failure, act } = useAction('The feed', reload)
   const feeds = data?.data.feeds ?? []
@@ -113,17 +120,17 @@ export function Feeds() {
               <span className="text-[13px]">
                 {f.last_run_at ? when(f.last_run_at) : <span className="text-ink-muted">never</span>}
                 {f.last_success_at && f.last_success_at !== f.last_run_at && <div className="text-ink-muted">last success {when(f.last_success_at)}</div>}
-                <div className="text-ink-muted">{feedCounts(f)}</div>
+                <div className="text-ink-muted" title="held: statements waiting at the cap on what export feeds keep">{feedCounts(f)}</div>
                 {f.last_error && <div className="text-danger break-words">{f.last_error}</div>}
                 {f.run_requested && <div className="text-warning">a sync is requested</div>}
               </span>
             )],
-            ['State', (f) => <span className="flex flex-wrap gap-1"><Badge>{f.state}</Badge><Badge>{statusWords[f.status] ?? f.status}</Badge></span>],
+            ['State', (f) => <span className="flex flex-wrap gap-1"><Badge>{f.state}</Badge><Badge>{feedStatus(f)}</Badge></span>],
             ['', (f) => (
               <span className="flex flex-wrap gap-1.5">
                 {f.mode !== 'bundle' && <Button disabled={busy || f.state !== 'active'} onClick={() => act(() => client.post(`${api}/feeds/${seg(f.name)}/sync`)).then(reload)}>Sync</Button>}
                 {f.mode !== 'bundle' && (
-                  <Button tone="outline" disabled={busy} onClick={() => change(f, { export: !f.export })}>
+                  <Button tone="outline" disabled={busy} onClick={() => setExporting(f)}>
                     {f.export ? 'Stop keeping for export' : 'Keep for export'}
                   </Button>
                 )}
@@ -136,6 +143,20 @@ export function Feeds() {
           ]} />
         )}
       </div>
+      <Confirm open={exporting !== null} title={exporting?.export ? `Stop keeping ${exporting.name} for export?` : `Keep ${exporting?.name ?? ''} for export?`}
+        confirm={exporting?.export ? 'Stop keeping' : 'Keep for export'} danger={exporting?.export}
+        onConfirm={() => {
+          const f = exporting!
+          setExporting(null)
+          change(f, { export: !f.export })
+        }}
+        onClose={() => setExporting(null)}>
+        {exporting?.export
+          ? <p>Deletes the refusals and the keys file this feed kept for bundles, and the statements kept about its source's documents
+            once no other feed of the source keeps them.</p>
+          : <p>Reads the source's whole history again, and keeps what bundles for air-gapped sites need: the keys file, its refusals,
+            statements about documents not held. What it keeps counts against a cap of its own (100,000).</p>}
+      </Confirm>
       <Confirm open={removing !== null} title={`Remove the feed ${removing?.name ?? ''}?`} confirm="Remove" danger
         onConfirm={() => {
           const f = removing!

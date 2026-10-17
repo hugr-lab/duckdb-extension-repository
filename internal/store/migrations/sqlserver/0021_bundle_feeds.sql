@@ -39,7 +39,8 @@ CREATE TABLE feed_kept (
 	statement nvarchar(max) NOT NULL,
 	signature nvarchar(512) COLLATE Latin1_General_100_BIN2 NOT NULL,
 	kept_at   datetime2(6) NOT NULL,
-	PRIMARY KEY (tenant_id, issuer, issuer_id)
+	-- nonclustered: over the 900 bytes a clustered key takes, as attachments' issuer key
+	PRIMARY KEY NONCLUSTERED (tenant_id, issuer, issuer_id)
 )
 -- +statement
 CREATE INDEX ix_feed_kept_body ON feed_kept (tenant_id, issuer, body_hash, seq)

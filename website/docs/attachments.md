@@ -369,7 +369,7 @@ kista admin -config kista.yaml feed add bigcorp enterest \
 | Kinds | `-kinds` / `kinds` | the kinds accepted; none: every kind |
 | Readers | `-readers` / `readers` | allow documents whose signed `audience` is `readers` to arrive as `readers` |
 | Offer | `-channels` / `offer`, `channels` | which body hashes are sent to the source (below) |
-| Mode | `-mode` / `mode` | `online` (the default) or `bundle`: the statements arrive in bundles ([Feeds for air-gapped sites](#feeds-for-air-gapped-sites)); set at creation |
+| Mode | `-mode` / `mode` | `online` (the default) or `bundle`: for statements in bundles ([Feeds for air-gapped sites](#feeds-for-air-gapped-sites)); set at creation |
 | Export | `-export` / `export` | an online feed keeps what a bundle needs ([Feeds for air-gapped sites](#feeds-for-air-gapped-sites)) |
 
 **Offer.** By default (`offer: upstreams`) the subscriber sends only the bodies it released from
@@ -416,15 +416,16 @@ pass to another feed of the same source if there is one, and otherwise are remov
 
 | Status | Meaning |
 | --- | --- |
-| `new` | never run |
+| `new` | never run; for a bundle-mode feed, no bundle imported yet |
 | `ok` | the last run completed |
 | `unauthorized` | the source answered the feed request with `404` (the credential's principal does not hold `feed`, or there is no such tenant), or refused the token twice; the next run is at the normal interval |
-| `failing` | the last run failed (network, egress, credential, none of the pinned keys published, an export feed at the quota, …); retried after 5 minutes |
+| `failing` | the last run failed (network, egress, credential, none of the pinned keys published, an export feed at its cap, …); retried after 5 minutes |
 
 A feed's state is `active` or `paused`. `feed show` and the API give the last error, the last
 success, the next run, whether a run is requested, and the last run's result: counts (`offered`,
-`received`, `superseded`, `withdrawn`, `updated`, `duplicate`, `failed`, `refused`, and for an
-export feed `kept` and `held`) and up to 20 refusals with their reasons.
+`received`, `superseded`, `withdrawn`, `updated`, `duplicate`, `failed`, `refused`; for an export
+feed also `kept`, statements about documents not held, `held`, statements waiting at the cap, and
+`overtaken`, a run stopped by a change of `export`) and up to 20 refusals with their reasons.
 
 ### How a subscriber verifies
 
@@ -464,8 +465,10 @@ Each run records a `feed.run` event (see [Observability](observability.md)).
 
 ## Feeds for air-gapped sites
 
-An air-gapped site takes statements in bundles, as it takes extension files
-([Bundle mode](upstreams.md#bundle-mode), spec 0014). Two settings serve it.
+An air-gapped site will take statements in bundles, as it takes extension files
+([Bundle mode](upstreams.md#bundle-mode), spec 0014 phase 1b). This version has the two kinds of
+feed the bundles need; plans, exports and imports do not carry statements yet. Until they do, a
+bundle-mode feed receives nothing, and an export feed only gathers what a later export will need.
 
 **A bundle-mode feed** (`-mode bundle`, `"mode": "bundle"`), at the site:
 
@@ -473,33 +476,37 @@ An air-gapped site takes statements in bundles, as it takes extension files
   so egress need not reach it, and it takes no credential (`400`);
 - it never runs: it is not scheduled, adding or resuming it requests no run, and `sync` answers
   `409`;
-- its status is `new` until a bundle brings its statements; its record shows the last bundle
-  imported (`bundle_id`, `bundle_created_at`);
-- its pinned keys, kinds, readers and offer work as an online feed's: they decide what it asks for
-  in a plan and what it takes in.
+- its status stays `new`; its record will show the last bundle imported (`bundle_id`,
+  `bundle_created_at`);
+- its pinned keys, kinds, readers and offer are set as an online feed's: they will decide what the
+  site asks for and what it takes in.
 
-**An export feed** (`-export`, `"export": true`), on the gateway that exports bundles: an online
-feed that also keeps what a bundle needs to answer a site's plan.
+**An export feed** (`-export`, `"export": true`), on a gateway: an online feed that also keeps what a
+bundle needs to answer a site's plan.
 
-- **The keys file**: the source's `GET …/attestation-keys` answer as the last run fetched it (at
-  most 64 KiB; `keys_file_at` in the record).
+- **The keys file**: the source's `GET …/attestation-keys` answer, kept by each run that verified
+  it (`keys_file_at` in the record). A file over 64 KiB, or not UTF-8, fails the run (`failing`).
 - **Its refusals for good**, each with the statement's signed bytes: the reasons above, except
-  `unrequested`. The site judges each statement again itself.
+  `unrequested`. They still count under `refused` in a run. The site will judge each statement
+  again itself.
 - **Statements about documents the tenant does not hold**: a withdrawal of a document never stored,
   and any statement about one removed here (by an administrator, or by the collector after it was
-  superseded for a year). A site may hold the document. When the document arrives later through
-  another feed, a kept withdrawal of it applies.
+  superseded for a year). A site may hold the document. A run counts them as `kept`. When the
+  document arrives later through another feed of the source, a kept withdrawal of it applies if
+  that feed pins the key that signed it.
 
-Setting `export` resets the feed's cursors: its next run reads the whole history again and keeps
-what it refused before. Clearing it deletes the feed's refusals and keys file; the kept statements
-of a source go when no feed of its URL has `export` left. Everything kept goes with the body's
-cursors when the collector removes them.
+**Changing it.** Setting `export` (`-export=true`) resets the feed's cursors and, on an active feed,
+requests a run: it reads the whole history again and keeps what it refused before. Clearing it
+(`-export=false`), or removing the feed, deletes its refusals and keys file; the kept statements of a
+source go when no feed of its URL has `export` left. A run that the change overtakes stops and
+writes nothing (`overtaken`). The collector deletes a body's refusals and kept statements with its
+cursors.
 
-What an export feed keeps counts against the tenant's quota of feed documents (100,000), so it can
-keep new documents from arriving. Past the quota, a statement that cannot be stored, refused or kept
-holds its body's cursor, the other bodies go on, and the run ends `failing`: no statement is passed
-over unseen. Remove documents or clear `export`. The heads per kind and an unresolved `supersedes`
-stay refusals (`limits`).
+**A cap of its own.** A tenant's export feeds keep at most 100,000 refusals and statements together,
+apart from the quota of feed documents, so a source never costs another source a document. Past the
+cap, a statement an export feed cannot keep holds its body's cursor (`held` in the run), the other
+bodies go on, and the run ends `failing` (`limits`): nothing is passed over unseen. Room comes back
+as the collector removes bodies no longer held, or when `export` is cleared on a feed.
 
 ## Configuration
 
@@ -525,7 +532,7 @@ The block is file-only: there are no `KISTA_ATTACHMENTS_*` variables. Statements
 | --- | --- | --- |
 | `attachment.add`, `attachment.change`, `attachment.remove` | `ext:<name>/attachment:<id>`; `block:<body hash>/attachment:<id>` for a removal through a block | a document attached, its visibility or feedable flag changed, removed; on a change or removal, `statement` is the seq issued with it |
 | `attestation_key.add`, `.activate`, `.retire` | `attestation-key:<id>` | the key lifecycle |
-| `feed.add`, `feed.change`, `feed.remove` | `feed:<name>` | a subscription changed; `feed.add` gives its `mode` and `export` |
+| `feed.add`, `feed.change`, `feed.remove` | `feed:<name>` | a subscription changed; `feed.add` gives its `mode` and `export`; a change of `export` records `cursors: reset` or `kept: dropped` |
 | `feed.run` | `feed:<name>` | a run's counts, refusals by reason, and an error class |
 
 A source does not record one event per feed request; refusals are `authz.refused`.

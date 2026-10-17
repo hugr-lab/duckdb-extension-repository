@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -200,25 +201,25 @@ func TestFeedExport(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	if res := sub.run(t, "late-export"); res.Error != "" {
+	if res := sub.run(t, "late-export"); res.Error != "" || res.Counts["overtaken"] != 1 {
 		t.Fatalf("overtaken: %+v", res)
 	}
 	le := mustFeed(t, sub, "late-export")
 	if cur, _ := sub.st.FeedCursors(ctx, le.ID); len(cur) != 0 || le.RequestedAt.IsZero() || !le.Export {
 		t.Fatalf("an overtaken run wrote cursors %v, or no run is requested: %+v", cur, le)
 	}
-	if res := sub.run(t, "late-export"); res.Error != "" || res.Counts["kept"] == 0 {
+	if res := sub.run(t, "late-export"); res.Error != "" || res.Counts["refused"] != 1 { // the kept statements are there already
 		t.Fatalf("the run after: %+v", res)
 	}
 	if r, _ := sub.st.FeedRefusals(ctx, le.ID, body, 0, 100); len(r) != 1 || r[0].Reason != "content" { // it accepts every kind
 		t.Fatalf("refusals after: %+v", r)
 	}
 
-	// past the quota, an export feed's body waits and the run fails with limits
+	// past the cap on what export feeds keep, an export feed's body waits and the run fails with limits
 	if err := store.ExecRaw(ctx, sub.st, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
 INSERT INTO feed_kept (tenant_id, issuer, issuer_id, body_hash, seq, statement, signature, kept_at)
 SELECT ?, 'https://filler.example/api/v1/tenants/x', 'f' || i, ?, i, '{}', 'x', '2026-10-17T00:00:00Z' FROM n`,
-		store.MaxTenantAttachments, tn.ID, body); err != nil {
+		store.MaxFeedKept, tn.ID, body); err != nil {
 		t.Fatal(err)
 	}
 	wire = append(wire, stmt(8, "another-sbom", sbom))
@@ -295,5 +296,79 @@ func TestFeedBundleMode(t *testing.T) {
 	}
 	if _, err := sub.feeds.RunFeed(ctx, f.ID, nil); !errors.Is(err, attachment.ErrNotDue) {
 		t.Fatalf("run: %v", err)
+	}
+}
+
+// A kept withdrawal applies to a document stored later only when the storing feed pins the key that
+// signed it, and only for the same body (spec 0014).
+func TestFeedKeptPins(t *testing.T) {
+	key, other := mustKey(t), mustKey(t)
+	fp, otherFP := extfile.Fingerprint(&key.PublicKey), extfile.Fingerprint(&other.PublicKey)
+	cdx := []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}`)
+	var wire []attachment.WireStatement
+	var keysFile []byte
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/attestation-keys"):
+			_, _ = w.Write(keysFile)
+		case strings.HasSuffix(r.URL.Path, "/feed"):
+			_ = json.NewEncoder(w).Encode(attachment.FeedAnswer{Statements: wire, Bodies: []attachment.HighWater{}})
+		default:
+			_, _ = w.Write(cdx)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	var ks []any
+	for _, k := range []*rsa.PrivateKey{key, other} {
+		ks = append(ks, map[string]any{"fingerprint": extfile.Fingerprint(&k.PublicKey),
+			"public_key": string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: mustDER(t, &k.PublicKey)}))})
+	}
+	keysFile, _ = json.Marshal(map[string]any{"keys": ks})
+	feedURL := srv.URL + "/api/v1/tenants/src"
+	sub := newSubscriber(t, srv, "T")
+	body := tresorBody(t, func(p string) map[string]any { return getJSON(t, sub.env, p) })
+	sign := func(k *rsa.PrivateKey, seq int64, id string, withdrawn bool) attachment.WireStatement {
+		s := attachment.Statement{Issuer: feedURL, Key: extfile.Fingerprint(&k.PublicKey), IssuerID: id, Seq: seq, BodyHash: body,
+			Kind: store.KindSBOM, MediaType: attachment.CycloneDX, ContentHash: blob.ContentHash(cdx), Size: int64(len(cdx)), Title: "SBOM",
+			IssuedAt: "2026-10-03T12:00:00Z", Origin: "tenant", Audience: "administrators"}
+		if withdrawn {
+			s.Withdrawn, s.Kind, s.MediaType, s.ContentHash, s.Size, s.Title = true, "", "", "", 0, ""
+		}
+		b, _ := s.Canonical()
+		sig, err := attachment.Sign(ctx, keySigner{k}, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return attachment.WireStatement{Statement: base64.StdEncoding.EncodeToString(b), Signature: base64.StdEncoding.EncodeToString(sig)}
+	}
+	add := func(name string, kinds, keys []string) {
+		if _, err := sub.feeds.Add(ctx, admin, "acme", attachment.FeedSpec{Name: name, URL: feedURL, Credential: "src", Keys: keys,
+			Kinds: kinds, Export: true, Offer: store.OfferChannels, Channels: []string{"prod"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// "reviews" refuses the SBOMs by kind and keeps their withdrawals: one signed by each key
+	wire = []attachment.WireStatement{sign(key, 1, "a", false), sign(key, 2, "b", false), sign(other, 3, "a", true), sign(key, 4, "b", true)}
+	add("reviews", []string{store.KindReview}, []string{fp, otherFP})
+	if res := sub.run(t, "reviews"); res.Error != "" || res.Counts["kept"] != 2 {
+		t.Fatalf("reviews: %+v", res)
+	}
+	// "sboms" pins only the first key: it stores both documents; b's withdrawal (its key) applies, a's
+	// (a key it does not pin) does not; both kept rows go
+	wire = wire[:2]
+	add("sboms", nil, []string{fp})
+	if res := sub.run(t, "sboms"); res.Error != "" || res.Counts["received"] != 2 {
+		t.Fatalf("sboms: %+v", res)
+	}
+	got := map[string]bool{}
+	for _, d := range sub.docs(t, body) {
+		got[d.IssuerID] = !d.WithdrawnAt.IsZero()
+	}
+	if len(got) != 2 || got["a"] || !got["b"] {
+		t.Fatalf("withdrawn: %v", got)
+	}
+	tn, _ := sub.st.GetTenant(ctx, "acme")
+	if k, _ := sub.st.FeedKeptOf(ctx, tn.ID, feedURL, body, 0, 100); len(k) != 0 {
+		t.Fatalf("kept rows stay: %+v", k)
 	}
 }

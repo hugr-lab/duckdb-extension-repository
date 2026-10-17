@@ -11,8 +11,12 @@ import (
 // file, the statements it refused for good, and statements about documents the tenant does not
 // hold (a withdrawal of one never stored, any statement about a removed one).
 
-// ErrQuota is the tenant's quota of feed documents reached; it wraps into ErrInvalid.
-var ErrQuota = errors.New("store: the feed documents quota is reached")
+// MaxFeedKept caps what a tenant's export feeds keep (refusals and statements together), apart from
+// the documents quota, so a source flooding it never costs another source a document (spec 0014).
+const MaxFeedKept = 100000
+
+// ErrQuota is MaxFeedKept reached; it wraps into ErrInvalid.
+var ErrQuota = errors.New("store: what export feeds keep is at its cap")
 
 // FeedRefusal is a statement an export feed refused for good, with its bytes and signature.
 type FeedRefusal struct {
@@ -33,14 +37,9 @@ type FeedKept struct {
 	KeptAt                               time.Time
 }
 
-// feedDocuments counts what fills the tenant's quota of feed documents: the documents its feeds
-// brought (not removed), the refusals and the statements its export feeds keep.
-func (t *Tx) feedDocuments(ctx context.Context, tenantID string) (int, error) {
-	var docs, refused, kept int
-	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM attachments WHERE tenant_id = ? AND removed_at IS NULL AND origin = ?",
-		tenantID, AttachedByFeed).Scan(&docs); err != nil {
-		return 0, err
-	}
+// feedKept counts what the tenant's export feeds keep: refusals and statements.
+func (t *Tx) feedKept(ctx context.Context, tenantID string) (int, error) {
+	var refused, kept int
 	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM feed_refusals WHERE feed_id IN (SELECT id FROM feeds WHERE tenant_id = ?)",
 		tenantID).Scan(&refused); err != nil {
 		return 0, err
@@ -48,11 +47,11 @@ func (t *Tx) feedDocuments(ctx context.Context, tenantID string) (int, error) {
 	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM feed_kept WHERE tenant_id = ?", tenantID).Scan(&kept); err != nil {
 		return 0, err
 	}
-	return docs + refused + kept, nil
+	return refused + kept, nil
 }
 
 func quotaErr() error {
-	return fmt.Errorf("%w: %w: a tenant holds at most %d documents from feeds (with what export feeds keep)", ErrInvalid, ErrQuota, MaxTenantAttachments)
+	return fmt.Errorf("%w: %w: export feeds keep at most %d refusals and statements per tenant", ErrInvalid, ErrQuota, MaxFeedKept)
 }
 
 // FeedEpochIs reports whether a feed's export setting is still the one a run started with: a run
@@ -103,11 +102,11 @@ func (t *Tx) KeepFeedRefusal(ctx context.Context, tenantID string, r FeedRefusal
 		r.FeedID, r.BodyHash, r.Seq).Scan(&have); err != nil || have > 0 {
 		return err
 	}
-	n, err := t.feedDocuments(ctx, tenantID)
+	n, err := t.feedKept(ctx, tenantID)
 	if err != nil {
 		return err
 	}
-	if n >= MaxTenantAttachments {
+	if n >= MaxFeedKept {
 		return quotaErr()
 	}
 	_, err = t.exec(ctx, "INSERT INTO feed_refusals (feed_id, body_hash, seq, reason, statement, signature, refused_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -131,30 +130,31 @@ WHERE feed_id = ? AND body_hash = ? AND seq > ? AND seq <= ? ORDER BY seq`, []an
 }
 
 // KeepFeedStatement keeps a statement about a document the tenant does not hold: per document, the
-// highest seq. The caller holds the tenant's attachment lock: the quota is counted here.
-func (t *Tx) KeepFeedStatement(ctx context.Context, k FeedKept) error {
+// highest seq. It answers whether the row was added or raised. The caller holds the tenant's
+// attachment lock: the cap is counted here.
+func (t *Tx) KeepFeedStatement(ctx context.Context, k FeedKept) (bool, error) {
 	cur, ok, err := t.GetFeedKept(ctx, k.TenantID, k.Issuer, k.IssuerID)
 	switch {
 	case err != nil:
-		return err
+		return false, err
 	case ok && cur.Seq >= k.Seq:
-		return nil
+		return false, nil
 	case ok:
 		_, err := t.exec(ctx, `UPDATE feed_kept SET body_hash = ?, seq = ?, statement = ?, signature = ?, kept_at = ?
 WHERE tenant_id = ? AND issuer = ? AND issuer_id = ? AND seq < ?`, k.BodyHash, k.Seq, k.Statement, k.Signature, t.s.d.timeArg(t.Now()),
 			k.TenantID, k.Issuer, k.IssuerID, k.Seq)
-		return err
+		return err == nil, err
 	}
-	n, err := t.feedDocuments(ctx, k.TenantID)
+	n, err := t.feedKept(ctx, k.TenantID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if n >= MaxTenantAttachments {
-		return quotaErr()
+	if n >= MaxFeedKept {
+		return false, quotaErr()
 	}
 	_, err = t.exec(ctx, `INSERT INTO feed_kept (tenant_id, issuer, issuer_id, body_hash, seq, statement, signature, kept_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, k.TenantID, k.Issuer, k.IssuerID, k.BodyHash, k.Seq, k.Statement, k.Signature, t.s.d.timeArg(t.Now()))
-	return t.s.mapErr(err, "kept statement")
+	return err == nil, t.s.mapErr(err, "kept statement")
 }
 
 // GetFeedKept reads the statement kept about a document.

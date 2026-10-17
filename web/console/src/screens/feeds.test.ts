@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { feedBody, feedBundleLine, feedCounts, type Feed, feedKinds } from './Feeds'
+import { feedBody, feedBundleLine, feedCounts, feedStatus, type Feed, feedKinds } from './Feeds'
 import { originText } from './Reports'
 
 // Spec 0011 phase 1b in the console: what a new feed sends, a run in a line, who stands behind a document.
@@ -22,6 +22,9 @@ describe('feeds', () => {
     expect(feedBundleLine({ mode: 'bundle', bundle_id: 'b-1' } as Feed)).toBe('last bundle b-1')
     expect(feedBundleLine({ mode: 'online', export: true } as Feed)).toBe('kept for export from its next run')
     expect(feedBundleLine({ mode: 'online', export: false } as Feed)).toBe('')
+    expect(feedBundleLine({ mode: 'online', export: true, keys_file_at: '2026-10-17T10:00:00Z' } as Feed)).toMatch(/^kept for export, keys file of /)
+    expect(feedStatus({ mode: 'bundle', status: 'new' } as Feed)).toBe('no bundle yet')
+    expect(feedStatus({ mode: 'online', status: 'new' } as Feed)).toBe('not run yet')
   })
   it('reads a run as its counts', () => {
     expect(feedCounts({ last_run: { counts: { offered: 40, received: 2, refused: 1, withdrawn: 0 } } } as unknown as Feed)).toBe('received 2 · refused 1')
