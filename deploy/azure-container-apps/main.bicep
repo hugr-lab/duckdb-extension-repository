@@ -31,6 +31,9 @@ param serverAudiences array = []
 @description('auth.server_admins.')
 param serverAdmins array
 
+@description('ui.server_clients: the console\'s client ID at each server issuer, as { issuer, client_id }; empty: the server console signs in nowhere.')
+param serverConsoleClients array = []
+
 @description('The store: PostgreSQL Flexible Server or Azure SQL, Entra authentication only.')
 @allowed(['postgres', 'sqlserver'])
 param database string = 'postgres'
@@ -48,13 +51,16 @@ param sqlSku string = 'GP_S_Gen5_1'
 param cpu string = '2.0'
 
 @minValue(1)
+@maxValue(30)
 param replicas int = 2
 
 @description('blob.max_body in MiB.')
 @minValue(1)
+@maxValue(4096)
 param maxBodyMib int = 1024
 
 @minValue(1)
+@maxValue(16)
 param maxIngests int = 2
 
 @description('gc.interval: between scheduled garbage collection passes (1h..168h); empty, none, and the blob-gc job then refuses -apply without -force.')
@@ -70,6 +76,16 @@ param softDeleteDays int = 90
 @description('recover: take back the vault (and its channel key) a deleted deployment of the same group and prefix left in soft delete; default: a new vault.')
 @allowed(['default', 'recover'])
 param vaultCreateMode string = 'default'
+
+@description('The signer\'s role on each key: custom (a role that may only read and sign, which needs Owner or User Access Administrator on the group), or builtin (Key Vault Crypto User, which also allows update, backup, encrypt, decrypt, wrap and unwrap; the Marketplace package\'s, which makes no role definition).')
+@allowed(['custom', 'builtin'])
+param signerRole string = 'custom'
+
+@description('An attestation key beside the channel key: the tenant\'s feed statements are signed with it (spec 0011).')
+param attestationKey bool = false
+
+@description('The bootstrap a first start applies (spec 0020 phase 4a), without keys: { versions, tenant, channel: { name, versions }, issuer, grants }. The channel gets the channel key, the tenant the attestation key; empty: no bootstrap.')
+param bootstrap object = {}
 
 param tags object = {}
 
@@ -99,7 +115,7 @@ var spoolCheck = spoolMib <= ephemeralMib - 1024 ? 'ok' : int('the spool, (2 x m
 
 // ---- the identity: no key; every service admits it by role
 
-resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' = {
   name: '${name}-identity'
   location: location
   tags: allTags
@@ -107,7 +123,7 @@ resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
 
 // ---- the network: the environment's subnet, the database's, and private endpoints
 
-resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+resource vnet 'Microsoft.Network/virtualNetworks@2025-05-01' = {
   name: '${name}-vnet'
   location: location
   tags: allTags
@@ -140,7 +156,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
 
 // ---- Key Vault Premium: the channel key in an HSM; kista may read and sign, nothing else
 
-resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+resource vault 'Microsoft.KeyVault/vaults@2025-05-01' = {
   name: take('${name}-${unique}', 24)
   location: location
   tags: allTags
@@ -156,7 +172,7 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-resource channelKey 'Microsoft.KeyVault/vaults/keys@2023-07-01' = {
+resource channelKey 'Microsoft.KeyVault/vaults/keys@2025-05-01' = {
   parent: vault
   name: '${name}-channel'
   tags: { 'kista-purpose': 'channel-signing' }
@@ -169,8 +185,20 @@ resource channelKey 'Microsoft.KeyVault/vaults/keys@2023-07-01' = {
   }
 }
 
+resource attestationKey_ 'Microsoft.KeyVault/vaults/keys@2025-05-01' = if (attestationKey) {
+  parent: vault
+  name: '${name}-attestation'
+  tags: { 'kista-purpose': 'attestation-signing' }
+  properties: {
+    kty: 'RSA-HSM'
+    keySize: 2048
+    keyOps: ['sign', 'verify']
+    attributes: { enabled: true, exportable: false }
+  }
+}
+
 // creating a role definition needs Owner or User Access Administrator on the group
-resource signerRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+resource customRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = if (signerRole == 'custom') {
   name: guid(resourceGroup().id, prefix, 'kista-signer')
   properties: {
     // unique in the tenant: the subscription, the group and the prefix
@@ -180,20 +208,32 @@ resource signerRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
     assignableScopes: [resourceGroup().id]
     permissions: [
       {
-        actions: []
-        notActions: []
         dataActions: ['Microsoft.KeyVault/vaults/keys/read', 'Microsoft.KeyVault/vaults/keys/sign/action']
-        notDataActions: []
       }
     ]
   }
 }
 
+// Key Vault Crypto User: read, sign and verify, and update, backup, encrypt, decrypt, wrap, unwrap
+var cryptoUser = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '12338af0-0e69-4776-bea7-57ae8d297424')
+var signerRoleId = signerRole == 'custom' ? customRole.id : cryptoUser
+
+// on each key, not the vault: the identity reaches no other key
 resource signerAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: vault
-  name: guid(vault.id, identity.id, signerRole.id)
+  scope: channelKey
+  name: guid(channelKey.id, identity.id, signerRoleId)
   properties: {
-    roleDefinitionId: signerRole.id
+    roleDefinitionId: signerRoleId
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource attestationAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (attestationKey) {
+  scope: attestationKey_
+  name: guid(attestationKey_.id, identity.id, signerRoleId)
+  properties: {
+    roleDefinitionId: signerRoleId
     principalId: identity.properties.principalId
     principalType: 'ServicePrincipal'
   }
@@ -201,7 +241,7 @@ resource signerAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 
 // ---- Blob Storage: no shared keys, no public access; the identity on its container only
 
-resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+resource storage 'Microsoft.Storage/storageAccounts@2025-06-01' = {
   name: take('${replace(name, '-', '')}${unique}', 24)
   location: location
   tags: allTags
@@ -216,7 +256,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
-resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2025-06-01' = {
   parent: storage
   name: 'default'
   properties: {
@@ -224,7 +264,7 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
   }
 }
 
-resource container 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+resource container 'Microsoft.Storage/storageAccounts/blobServices/containers@2025-06-01' = {
   parent: blobService
   name: 'kista'
   properties: { publicAccess: 'None' }
@@ -290,7 +330,7 @@ var store = database == 'postgres'
 
 // ---- Container Apps
 
-resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+resource logs 'Microsoft.OperationalInsights/workspaces@2025-07-01' = {
   name: '${name}-logs'
   location: location
   tags: allTags
@@ -300,7 +340,7 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   }
 }
 
-resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
+resource env 'Microsoft.App/managedEnvironments@2025-07-01' = {
   name: '${name}-env'
   location: location
   tags: allTags
@@ -321,6 +361,21 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
 }
 
 var host = empty(domain) ? '${name}.${env.properties.defaultDomain}' : domain
+var channelSigner = 'azure:${channelKey.name}/${last(split(channelKey.properties.keyUriWithVersion, '/'))}'
+var attestationSigner = attestationKey ? 'azure:${attestationKey_.name}/${last(split(attestationKey_!.properties.keyUriWithVersion, '/'))}' : ''
+// the bootstrap's channel is signed with the channel key; its tenant attests with the attestation key
+var bootstrapChannel = contains(bootstrap, 'channel')
+  ? [union(bootstrap.channel, { kind: 'signed', key: channelSigner })] // the template's key, never another
+  : []
+var bootstrapSection = empty(bootstrap)
+  ? {}
+  : union(
+      { tenant: bootstrap.tenant, channels: bootstrapChannel },
+      contains(bootstrap, 'versions') ? { versions: bootstrap.versions } : {},
+      contains(bootstrap, 'issuer') ? { issuer: bootstrap.issuer } : {},
+      contains(bootstrap, 'grants') ? { grants: bootstrap.grants } : {},
+      attestationKey ? { attestation_key: attestationSigner } : {}
+    )
 var managed = { kind: 'managed', client_id: identity.properties.clientId }
 
 // kista's configuration: JSON is YAML, read with -config env:KISTA_CONFIG
@@ -366,6 +421,8 @@ var config = {
     { server_issuers: serverIssuers, server_admins: serverAdmins },
     empty(serverAudiences) ? {} : { server_audiences: serverAudiences }
   )
+  ui: empty(serverConsoleClients) ? {} : { server_clients: serverConsoleClients }
+  bootstrap: bootstrapSection
 }
 
 var container_ = {
@@ -377,7 +434,7 @@ var container_ = {
 }
 var volumes = [{ name: 'tmp', storageType: 'EmptyDir' }]
 
-resource app 'Microsoft.App/containerApps@2024-03-01' = {
+resource app 'Microsoft.App/containerApps@2025-07-01' = {
   name: name
   location: location
   tags: union(allTags, { 'kista-spool': spoolCheck, 'kista-prefix': prefixCheck })
@@ -412,19 +469,23 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       scale: { minReplicas: replicas, maxReplicas: replicas }
     }
   }
-  dependsOn: [signerAssignment, blobAssignment]
+  dependsOn: [signerAssignment, attestationAssignment, blobAssignment]
 }
 
 // ---- admin commands: one manual job each (a start with --args would replace the whole template)
 
-var commands = [
-  { name: 'migrate', args: ['migrate'] }
-  { name: 'blob-check', args: ['blob', 'check'] }
-  { name: 'blob-verify', args: ['blob', 'verify'] }
-  { name: 'blob-gc', args: ['blob', 'gc', '-apply'] }
-]
+var commands = concat(
+  [
+    { name: 'migrate', args: ['migrate'] }
+    { name: 'blob-check', args: ['blob', 'check'] }
+    { name: 'blob-verify', args: ['blob', 'verify'] }
+    { name: 'blob-gc', args: ['blob', 'gc', '-apply'] }
+  ],
+  // the bootstrap's plan against the store (serve applies it); a plan only
+  empty(bootstrap) ? [] : [{ name: 'bootstrap', args: ['bootstrap', '-dry-run'] }]
+)
 
-resource jobs 'Microsoft.App/jobs@2024-03-01' = [
+resource jobs 'Microsoft.App/jobs@2025-07-01' = [
   for c in commands: {
     name: '${name}-${c.name}'
     location: location
@@ -444,15 +505,17 @@ resource jobs 'Microsoft.App/jobs@2024-03-01' = [
         volumes: volumes
       }
     }
-    dependsOn: [signerAssignment, blobAssignment]
+    dependsOn: [signerAssignment, attestationAssignment, blobAssignment]
   }
 ]
 
-output url string = 'https://${host}'
+// the public URL (not named url: the Marketplace's checks want a URL property built with uri())
+output address string = 'https://${host}'
 output fqdn string = app.properties.configuration.ingress.fqdn
 output identityClientId string = identity.properties.clientId
 output identityPrincipalId string = identity.properties.principalId
-output channelSigner string = 'azure:${channelKey.name}/${last(split(channelKey.properties.keyUriWithVersion, '/'))}'
+output channelSigner string = channelSigner
+output attestationSigner string = attestationSigner
 output vault string = vault.name
 output storageAccount string = storage.name
 output environment string = env.name

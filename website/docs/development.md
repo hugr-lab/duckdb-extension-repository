@@ -293,6 +293,29 @@ deploy/azure/recipe-live.sh down && deploy/azure/recipe-live.sh leftovers
 - `down` deletes the group, purges the vault, deletes the custom role (which outlives the group)
   and the app registrations; `leftovers` must print nothing.
 
+`deploy/azure/managed-app-live.sh` runs the Marketplace package (`deploy/azure-marketplace`) as a
+service-catalog managed application: it builds the package, makes a definition (lock `None`, Reader
+for a principal other than the runner) and an application from it with the answers the UI gives
+(the parameters equivalent to the UI's answers, administrators by Entra app role). Its resources are
+tagged `purpose=kista-live` (and `run=kista-ma`). `check` proves:
+- the bootstrap made tenant `main`: its channel serves the channel key, and its attestation key was
+  added;
+- a server and a tenant administrator act by their roles;
+- the managed group has no deny assignment;
+- the runner can start a job.
+
+```bash
+deploy/azure/managed-app-live.sh up && deploy/azure/managed-app-live.sh check
+deploy/azure/managed-app-live.sh down && deploy/azure/managed-app-live.sh leftovers
+```
+
+It also needs the owner's yes. It needs `az` with Bicep, `jq`, `curl` and `zip`.
+
+`deploy/azure-marketplace/build.sh <image@sha256:…> <out.zip>` builds the package locally; a
+byte-identical rebuild of a release's needs bicep 0.47.16. Run Microsoft's checks on it as CI does:
+arm-ttk's `Test-AzTemplate` on the unzipped package, under `pwsh`. The form's expressions run only in
+the portal: try a changed `createUiDefinition.json` in its sandbox before a release.
+
 ## Lint
 
 ```bash

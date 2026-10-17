@@ -133,7 +133,7 @@ up() {
 	# the custom role outlives the group: down deletes it by this id
 	save role "$(az role definition list --custom-role-only true --scope "$(az group show -n "$group" --query id -o tsv)" \
 		--query "[?contains(roleName, '/$group/')].id | [0]" -o tsv)"
-	echo "up: kista at $(out url)"
+	echo "up: kista at $(out address)"
 }
 
 # the token goes in a header file, not on the command line
@@ -297,7 +297,7 @@ leftovers() {
 }
 
 url=""
-[ "$cmd" = check ] && url=$(out url)
+[ "$cmd" = check ] && url=$(out address)
 case $cmd in
 up) up ;;
 check) check ;;

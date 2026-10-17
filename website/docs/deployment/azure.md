@@ -18,11 +18,11 @@ The design is in
 | | |
 | --- | --- |
 | **The identity** | a user-assigned managed identity, the only credential: no key, no password |
-| **Key Vault** | Premium, RBAC authorization, purge protection (a parameter, on by default); a channel key `<prefix>-channel`, `RSA-HSM` 2048, `sign` and `verify` only, not exportable, tagged `kista-purpose=channel-signing`; a custom role that may only read keys and sign, assigned to the identity on the vault |
+| **Key Vault** | Premium, RBAC authorization, purge protection (a parameter, on by default); a channel key `<prefix>-channel`, `RSA-HSM` 2048, `sign` and `verify` only, not exportable, tagged `kista-purpose=channel-signing`; with `attestationKey`, an attestation key `<prefix>-attestation` tagged `kista-purpose=attestation-signing`; the signer's role assigned to the identity on each key, not the vault (`signerRole`: a custom role that may only read keys and sign, or the built-in Key Vault Crypto User) |
 | **The database** | PostgreSQL Flexible Server in a delegated subnet with a private DNS zone, or Azure SQL behind a private endpoint (`database: 'sqlserver'`); Entra authentication only, the identity its Entra administrator |
 | **Blob Storage** | shared keys disabled, no public access, TLS 1.2, a private container; `Storage Blob Data Contributor` on that container only |
 | **Container Apps** | an environment in the recipe's VNet (Consumption); the app with external ingress serving http and https without a redirect, probes on `:8081`, the spool on an `EmptyDir` |
-| **Jobs** | one manual job per command: `migrate`, `blob check`, `blob verify`, `blob gc -apply` |
+| **Jobs** | one manual job per command: `migrate`, `blob check`, `blob verify`, `blob gc -apply`, and with a `bootstrap`, `bootstrap -dry-run` (its plan against the store) |
 | **Log Analytics** | the environment's logs |
 
 kista's configuration is one document in the variable `KISTA_CONFIG`, read with
@@ -33,13 +33,15 @@ Azure Database for PostgreSQL chains to, in `store.ca_pem`
 ## Deploy
 
 The Azure CLI with Bicep, and an account that is **Owner** (or User Access Administrator and
-Contributor) of the resource group: the recipe creates a role definition and role assignments.
+Contributor) of the resource group: with `signerRole: custom` the recipe creates a role definition,
+and either way role assignments (Role Based Access Control Administrator and Contributor suffice for
+`builtin`).
 
 ```sh
 az group create -n kista -l northeurope
 cp deploy/azure-container-apps/examples/trial.bicepparam my.bicepparam   # image, issuers, admins
 az deployment group create -g kista -f deploy/azure-container-apps/main.bicep -p my.bicepparam
-az deployment group show -g kista -n main --query properties.outputs.url.value -o tsv
+az deployment group show -g kista -n main --query properties.outputs.address.value -o tsv
 ```
 
 - **`image`** is a version or a digest: `ghcr.io/hugr-lab/kista:vX.Y.Z` or `…@sha256:…`. Pin a
@@ -52,6 +54,24 @@ az deployment group show -g kista -n main --query properties.outputs.url.value -
   `az postgres flexible-server list-skus -l <region>`; a `reason` means restricted) and Azure SQL
   ("not accepting creation of new … SQL Database servers"). With Azure SQL, `databaseLocation`
   puts the server in another region; its private endpoint stays in the VNet's.
+- **`signerRole`**: `custom` (the default) makes a role that may only read keys and sign, which
+  needs Owner or User Access Administrator. `builtin` assigns Key Vault Crypto User instead, which
+  makes no role definition, but also allows `update`, `backup`, `encrypt`, `decrypt`, `wrap` and
+  `unwrap` on the key. The keys allow only `sign` and `verify`, and kista refuses a key that allows
+  more; an identity that holds `update` could still change that, or the key's `kista-purpose` tag
+  (kista then refuses the key: a denial of service, not a misuse).
+- **Upgrading a deployment of the earlier recipe**, which assigned the signer's role on the vault:
+  the redeployment assigns it on each key, and leaves the vault-wide assignment, which then still
+  reaches every key in the vault. Delete it:
+  `az role assignment delete --scope <vault id> --assignee <the identity's principal id>`.
+- **`bootstrap`** makes the first tenant at the first start (see
+  [bootstrap](../configuration.md#bootstrap)), as
+  `{ versions, tenant, channel: { name, versions }, issuer, grants }`. The template registers its
+  channel key for the channel and, with `attestationKey`, its attestation key for the tenant, so no
+  key version is ever typed.
+- **`serverConsoleClients`** sets the server console's clients (`ui.server_clients`), as
+  `{ issuer, client_id, scopes }`. With Entra, the scopes must include `<the API app id>/.default`, or
+  Entra issues the console a Microsoft Graph token.
 - **Switching the store** (PostgreSQL to Azure SQL, or a new server) needs an empty container:
   kista marks the blob domain for its store and refuses a domain marked for another.
 
@@ -89,7 +109,8 @@ az containerapp job start -g kista -n kista-blob-check
 az containerapp job execution list -g kista -n kista-blob-check -o table
 ```
 
-`<prefix>-migrate`, `-blob-check`, `-blob-verify` and `-blob-gc` run `kista admin` with the app's
+`<prefix>-migrate`, `-blob-check`, `-blob-verify`, `-blob-gc` (and, with a `bootstrap`,
+`-bootstrap`, its plan) run `kista admin` with the app's
 configuration and identity. `gcInterval` (24 hours by default) sets `gc.interval`: kista then
 collects on schedule, and `-blob-gc` may apply a pass at once; with it empty, `-apply` needs
 `-force` ([Commands](../administration/commands.md)). Each command is a job of its own: `az containerapp job start --args`
@@ -136,15 +157,68 @@ replaces the whole template, the configuration included.
   compromised identity (garbage collection deletes bodies, so it may).
 - Pin the image by digest; more replicas and a larger database SKU.
 
+## The Marketplace application
+
+kista is also offered as an Azure Marketplace **managed application** built from this recipe
+(`deploy/azure-marketplace`, the release asset `kista-azure-app-<version>.zip`). Its resources sit in
+a managed resource group in your subscription.
+
+- **You keep full access.** The application has no deny assignment, so you rotate keys, start the
+  jobs, bind your domain and upgrade, as with the recipe. That holds for principals with rights on
+  the subscription. A role on the application's own resource group alone does not reach the managed
+  one.
+- **The publisher can only read.** The publisher holds Reader on the managed resource group, with no
+  write access and no just-in-time elevation. Reader shows:
+  - the app's configuration (`KISTA_CONFIG`, which holds no secret);
+  - the resources' metadata;
+  - the Log Analytics workspace, with kista's request and audit logs.
+
+  It shows no database row, blob or key material. The logs hold your users' identities and
+  addresses. To keep them from the publisher, set the workspace's access mode to require
+  workspace permissions, or delete the publisher's role assignment (an update of the application
+  may restore it).
+- **Before you buy**, prepare in Entra ID:
+  - an API app registration for the server, with v2.0 tokens
+    (`api.requestedAccessTokenVersion: 2`) and an app role (`kista-admin`) assigned to the
+    administrators;
+  - a single-page app for the server console, with a delegated permission on the server API app,
+    consented;
+  - an API app for the first tenant, also with v2.0 tokens and its own role (`kista-tenant-admin`);
+  - optionally, in another directory, a single-page app for the tenant's console, with a delegated
+    permission on the tenant API app.
+
+  The UI asks for their IDs; it creates no app registration. Use app roles rather than groups:
+  groups need group claims, and past about 200 groups a token carries none. When the tenant signs
+  in at the same directory as the server administrators, it gets no console client of its own:
+  its administrators use the API, and server administrators open it in the server console.
+- **After deployment**, add `https://<kista's host>/ui/server/callback` as the server console app's
+  redirect URI, and `https://<kista's host>/ui/t/<tenant>/callback` as the tenant console app's. A
+  custom domain is bound as with the recipe.
+- **What it pins.** The package pins kista's image by digest and uses the built-in signer role
+  (`signerRole: builtin`). The template makes the keys. At the first start, the bootstrap makes the
+  tenant and its channel, registers the keys, and adds the issuer and the administrators' grant.
+  The UI does not check that the subscription's resource providers are registered for you; it warns,
+  and the deployment fails until they are.
+- **Upgrades.** Change the app's and the jobs' image to a new release's digest, or create a new
+  application from the new plan version.
+- **Deleting the application** deletes the managed resource group. The vault stays soft-deleted
+  for its retention.
+- **Verify the package** against the release: `kista-azure-app-<version>.zip` is signed like the
+  binaries (`cosign verify-blob` with its `.sigstore.json`), and its SHA-256 is in `SHA256SUMS`.
+
 ## Destroy
 
-Delete the role's assignment and the custom role first (a role definition outlives the group, and
-goes only without assignments), then the resource group:
+With `signerRole: custom`, delete the role's assignments (one per key) and the custom role first:
+a role definition outlives the group, and goes only without assignments. Then delete the resource
+group; with `builtin`, that is all.
 
 ```sh
-role=$(az role definition list --custom-role-only true --scope "$(az group show -n kista --query id -o tsv)" --query '[0].name' -o tsv)
-az role assignment list --all --role "$role" --query '[].id' -o tsv | xargs -n1 az role assignment delete --ids
-az role definition delete --name "$role" --scope "$(az group show -n kista --query id -o tsv)"
+scope=$(az group show -n kista --query id -o tsv)
+role=$(az role definition list --custom-role-only true --scope "$scope" --query '[0].name' -o tsv)
+if [ -n "$role" ]; then   # never an empty --role: that lists every assignment
+  az role assignment list --all --role "$role" --query '[].id' -o tsv | xargs -n1 az role assignment delete --ids
+  az role definition delete --name "$role" --scope "$scope"
+fi
 az group delete -n kista
 ```
 
