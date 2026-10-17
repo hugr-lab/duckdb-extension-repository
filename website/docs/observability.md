@@ -103,7 +103,7 @@ are all the kinds in `internal/audit`:
 | | `attachment.remove` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `size`, `statement` |
 | | `attestation_key.add` | `attestation-key:<id>` | `key`, `fingerprint`, `scheme`, `state` |
 | | `attestation_key.activate`, `attestation_key.retire` | `attestation-key:<id>` | `key`, `fingerprint`, `from`, `forced` |
-| | `feed.add` | `feed:<name>` | `name`, `url`, `credential`, `kinds`, `readers`, `offer`, `channels`, `keys` |
+| | `feed.add` | `feed:<name>` | `name`, `url`, `credential`, `kinds`, `readers`, `offer`, `channels`, `keys`, `mode`, `export` |
 | | `feed.change` | `feed:<name>` | `name`, `change` |
 | | `feed.remove` | `feed:<name>` | `name`, `documents` |
 | | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `error` |

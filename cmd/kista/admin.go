@@ -71,10 +71,13 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   attestation-key list <tenant>
   attestation-key activate|retire <tenant> <id|fingerprint> [-force]
   feed add <tenant> <name> -url https://<host>/api/v1/tenants/<t> -credential <c> -key <fingerprint,...>
-           [-kinds <k,...>] [-readers] [-channels <c,...>]   a subscription to another repository's feed
+           [-kinds <k,...>] [-readers] [-channels <c,...>] [-export]   a subscription to another repository's feed
+  feed add <tenant> <name> -mode bundle -url … -key <fingerprint,...> [-kinds …] [-readers] [-channels …]
+           its statements arrive in bundles (spec 0014): no credential, never run
   feed list <tenant>
   feed show|sync|pause|resume <tenant> <name>    a running kista serve takes a requested run
   feed set <tenant> <name> [-credential <c>] [-key <fp,...>] [-kinds <k,...|->] [-readers=true|false]
+           [-export=true|false]                  export: keep what a bundle needs; setting it reads the history again
   feed remove <tenant> <name> [-documents]       its documents stay unless -documents
   extension-group add <tenant> <group> [-description …]   a named set of extension names (spec 0017)
   extension-group list <tenant>
@@ -1843,10 +1846,12 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 	cred := fs.String("credential", "", "")
 	keys := fs.String("key", "", "")
 	kinds := fs.String("kinds", "", "")
-	var readers optBool
+	var readers, export optBool
 	fs.Var(&readers, "readers", "")
+	fs.Var(&export, "export", "")
 	channels := fs.String("channels", "", "")
 	documents := fs.Bool("documents", false, "")
+	mode := fs.String("mode", "", "")
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) < 1 {
 		return errUsage
@@ -1855,7 +1860,7 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 	switch {
 	case sub == "add" && len(pos) == 2 && *feedURL != "":
 		sp := attachment.FeedSpec{Name: pos[1], URL: *feedURL, Credential: *cred, Keys: csv(*keys), Kinds: csv(*kinds),
-			Readers: readers.v, Channels: csv(*channels)}
+			Readers: readers.v, Channels: csv(*channels), Mode: *mode, Export: export.v}
 		if len(sp.Channels) > 0 {
 			sp.Offer = store.OfferChannels
 		}
@@ -1863,19 +1868,20 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		a.logf("feed add %s %s (%s)", pos[0], fd.Name, fd.URL)
+		a.logf("feed add %s %s (%s, %s)", pos[0], fd.Name, fd.URL, fd.Mode)
 	case sub == "list" && len(pos) == 1:
 		fds, err := f.List(ctx, a.actor, pos[0])
 		if err != nil {
 			return err
 		}
-		a.table("NAME\tURL\tSTATE\tSTATUS\tLAST SUCCESS\tKINDS\tREADERS", func(w io.Writer) {
+		a.table("NAME\tURL\tMODE\tSTATE\tSTATUS\tLAST SUCCESS\tKINDS\tREADERS\tEXPORT", func(w io.Writer) {
 			for _, fd := range fds {
 				last := "-"
 				if !fd.LastSuccessAt.IsZero() {
 					last = ts(fd.LastSuccessAt)
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%v\n", fd.Name, fd.URL, fd.State, fd.Status, last, strings.Join(fd.Kinds, ","), fd.Readers)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%v\t%v\n", fd.Name, fd.URL, fd.Mode, fd.State, fd.Status, last,
+					strings.Join(fd.Kinds, ","), fd.Readers, fd.Export)
 			}
 		})
 	case sub == "show" && len(pos) == 2:
@@ -1887,9 +1893,15 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 		if !fd.LastSuccessAt.IsZero() {
 			last = ts(fd.LastSuccessAt)
 		}
-		fmt.Fprintf(a.out, "%s %s\nstate %s, status %s %s\nlast success %s\ncredential %s\nkeys %s\nkinds %s, readers %v, offer %s\nlast run %s\n",
-			fd.Name, fd.URL, fd.State, fd.Status, fd.LastError, last, fd.Credential, strings.Join(fd.Keys, ","), strings.Join(fd.Kinds, ","),
-			fd.Readers, fd.Offer, fd.LastRun)
+		fmt.Fprintf(a.out, "%s %s\nmode %s, export %v\nstate %s, status %s %s\nlast success %s\ncredential %s\nkeys %s\nkinds %s, readers %v, offer %s\nlast run %s\n",
+			fd.Name, fd.URL, fd.Mode, fd.Export, fd.State, fd.Status, fd.LastError, last, fd.Credential, strings.Join(fd.Keys, ","),
+			strings.Join(fd.Kinds, ","), fd.Readers, fd.Offer, fd.LastRun)
+		if !fd.KeysFileAt.IsZero() {
+			fmt.Fprintf(a.out, "keys file kept %s\n", ts(fd.KeysFileAt))
+		}
+		if fd.BundleID != "" {
+			fmt.Fprintf(a.out, "last bundle %s, created %s\n", fd.BundleID, ts(fd.BundleCreatedAt))
+		}
 	case sub == "sync" && len(pos) == 2:
 		if _, err := f.Sync(ctx, a.actor, pos[0], pos[1]); err != nil {
 			return err
@@ -1919,6 +1931,9 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 		}
 		if readers.set {
 			ch.Readers = &readers.v
+		}
+		if export.set {
+			ch.Export = &export.v
 		}
 		if _, err := f.Change(ctx, a.actor, pos[0], pos[1], ch, 0); err != nil {
 			return err

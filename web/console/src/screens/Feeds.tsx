@@ -7,7 +7,8 @@ import { entryNames } from '../lib/names'
 
 // Feeds (spec 0011 phase 1b): the other repositories whose signed statements about the bodies the
 // tenant holds it subscribes to: an organisation's kista taking Enterest's reviews, or a public
-// kista's.
+// kista's. A bundle-mode feed (spec 0014) takes them from bundles, at an air-gapped site; an export
+// feed keeps what a bundle needs, on a gateway.
 
 export interface Feed {
   name: string
@@ -18,6 +19,11 @@ export interface Feed {
   readers: boolean
   offer: 'upstreams' | 'channels'
   channels?: string[]
+  mode: 'online' | 'bundle'
+  export: boolean
+  keys_file_at?: string
+  bundle_id?: string
+  bundle_created_at?: string
   state: string
   status: 'new' | 'ok' | 'unauthorized' | 'failing'
   last_error?: string
@@ -39,18 +45,32 @@ export interface FeedForm {
   readers: boolean
   offer: 'upstreams' | 'channels'
   channels: string[]
+  mode: 'online' | 'bundle'
+  export: boolean
 }
 
-/** The body of POST …/feeds: every kind is none named; channels only for the channels offer. */
+/** The body of POST …/feeds: every kind is none named; channels only for the channels offer; a
+ * bundle-mode feed has no credential and no export. */
 export function feedBody(f: FeedForm) {
-  const body: Record<string, unknown> = { name: f.name, url: f.url, credential: f.credential, keys: entryNames(f.keys), readers: f.readers,
-    offer: f.offer }
+  const body: Record<string, unknown> = { name: f.name, url: f.url, keys: entryNames(f.keys), readers: f.readers, offer: f.offer }
+  if (f.mode === 'bundle') body.mode = 'bundle'
+  else {
+    body.credential = f.credential
+    if (f.export) body.export = true
+  }
   if (f.kinds.length > 0 && f.kinds.length < feedKinds.length) body.kinds = f.kinds
   if (f.offer === 'channels') body.channels = f.channels
   return body
 }
 
 const statusWords: Record<Feed['status'], string> = { new: 'not run yet', ok: 'ok', unauthorized: 'credential refused', failing: 'failing' }
+
+/** A bundle-mode feed's last bundle, or an export feed's keys file, in a line. */
+export function feedBundleLine(f: Feed) {
+  if (f.mode === 'bundle') return f.bundle_id ? `last bundle ${f.bundle_id}` : 'no bundle imported yet'
+  if (f.export) return f.keys_file_at ? 'kept for export' : 'kept for export from its next run'
+  return ''
+}
 
 /** A run's counts, those above zero, in a line. */
 export function feedCounts(f: Feed) {
@@ -76,7 +96,12 @@ export function Feeds() {
         {error ? <ErrorBox error={error} /> : loading && !data ? <Loading /> : feeds.length === 0 ? <Empty>No feeds.</Empty> : (
           <Table rows={feeds} rowKey={(f) => f.name} columns={[
             ['Feed', (f) => <Mono>{f.name}</Mono>],
-            ['Source', (f) => <Mono>{f.url}</Mono>],
+            ['Source', (f) => (
+              <span className="text-[13px]">
+                <Mono>{f.url}</Mono>
+                <div className="text-ink-muted">{f.mode === 'bundle' ? 'from bundles' : 'online'}{feedBundleLine(f) ? ` · ${feedBundleLine(f)}` : ''}</div>
+              </span>
+            )],
             ['Takes', (f) => (
               <span className="text-[13px]">
                 {f.kinds.length === 0 ? 'every kind' : f.kinds.join(', ')}
@@ -96,7 +121,12 @@ export function Feeds() {
             ['State', (f) => <span className="flex flex-wrap gap-1"><Badge>{f.state}</Badge><Badge>{statusWords[f.status] ?? f.status}</Badge></span>],
             ['', (f) => (
               <span className="flex flex-wrap gap-1.5">
-                <Button disabled={busy || f.state !== 'active'} onClick={() => act(() => client.post(`${api}/feeds/${seg(f.name)}/sync`)).then(reload)}>Sync</Button>
+                {f.mode !== 'bundle' && <Button disabled={busy || f.state !== 'active'} onClick={() => act(() => client.post(`${api}/feeds/${seg(f.name)}/sync`)).then(reload)}>Sync</Button>}
+                {f.mode !== 'bundle' && (
+                  <Button tone="outline" disabled={busy} onClick={() => change(f, { export: !f.export })}>
+                    {f.export ? 'Stop keeping for export' : 'Keep for export'}
+                  </Button>
+                )}
                 <Button tone="outline" disabled={busy} onClick={() => change(f, { state: f.state === 'active' ? 'paused' : 'active' })}>
                   {f.state === 'active' ? 'Pause' : 'Resume'}
                 </Button>
@@ -126,7 +156,9 @@ export function Feeds() {
 function NewFeed({ onDone }: { onDone: () => void }) {
   const { client, api } = useTenant()
   const channels = useLoad(() => client.get<{ channels: { name: string }[] }>(`${api}/channels`), [api])
-  const [f, setF] = useState<FeedForm>({ name: '', url: '', credential: '', keys: '', kinds: [...feedKinds], readers: false, offer: 'upstreams', channels: [] })
+  const [f, setF] = useState<FeedForm>({ name: '', url: '', credential: '', keys: '', kinds: [...feedKinds], readers: false, offer: 'upstreams', channels: [],
+    mode: 'online', export: false })
+  const bundle = f.mode === 'bundle'
   const { busy, failure, act } = useAction()
   const set = (k: 'name' | 'url' | 'credential' | 'keys') => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value })
   const submit = async (e: React.FormEvent) => {
@@ -135,14 +167,22 @@ function NewFeed({ onDone }: { onDone: () => void }) {
   }
   return (
     <form onSubmit={submit} className="flex flex-col gap-4 rounded-md border border-line p-4">
+      <div className="flex flex-col gap-1">
+        <span className="text-[13px] font-semibold text-ink">Mode</span>
+        <Chips label="mode" value={f.mode} options={[['online', 'Online: runs against the source'], ['bundle', 'Bundle: statements arrive in bundles']]}
+          onChange={(mode) => setF({ ...f, mode })} />
+      </div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field label="Name"><input className="field font-mono" required pattern="[a-z0-9][a-z0-9-]{0,62}" value={f.name} onChange={set('name')} /></Field>
-        <Field label="Source URL" hint="https://<host>/api/v1/tenants/<tenant>: the source tenant, the identity its statements name">
+        <Field label="Source URL" hint={bundle ? 'https://<host>/api/v1/tenants/<tenant>: the identity its statements name; never contacted'
+          : 'https://<host>/api/v1/tenants/<tenant>: the source tenant, the identity its statements name'}>
           <input className="field font-mono" required type="url" value={f.url} onChange={set('url')} />
         </Field>
-        <Field label="Credential" hint="a configured credential's name; its principal holds feed at the source">
-          <input className="field font-mono" required value={f.credential} onChange={set('credential')} />
-        </Field>
+        {!bundle && (
+          <Field label="Credential" hint="a configured credential's name; its principal holds feed at the source">
+            <input className="field font-mono" required value={f.credential} onChange={set('credential')} />
+          </Field>
+        )}
         <Field label="Pinned keys" hint="the source's attestation key fingerprints (sha256:…), separated by commas">
           <input className="field font-mono" required value={f.keys} onChange={set('keys')} />
         </Field>
@@ -165,6 +205,12 @@ function NewFeed({ onDone }: { onDone: () => void }) {
         <input type="checkbox" checked={f.readers} onChange={(e) => setF({ ...f, readers: e.target.checked })} />
         Show to readers the documents the source lets subscribers show (a paid review shown on a public release is published to anyone)
       </label>
+      {!bundle && (
+        <label className="flex items-center gap-2 text-[13px]">
+          <input type="checkbox" checked={f.export} onChange={(e) => setF({ ...f, export: e.target.checked })} />
+          Keep for export: this kista exports bundles of these statements for air-gapped sites
+        </label>
+      )}
       {failure != null && <ErrorBox error={failure} />}
       <div><Button type="submit" tone="brand" disabled={busy || f.kinds.length === 0 || f.offer === 'channels' && f.channels.length === 0}>Add</Button></div>
     </form>

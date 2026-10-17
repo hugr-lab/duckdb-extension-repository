@@ -369,6 +369,8 @@ kista admin -config kista.yaml feed add bigcorp enterest \
 | Kinds | `-kinds` / `kinds` | the kinds accepted; none: every kind |
 | Readers | `-readers` / `readers` | allow documents whose signed `audience` is `readers` to arrive as `readers` |
 | Offer | `-channels` / `offer`, `channels` | which body hashes are sent to the source (below) |
+| Mode | `-mode` / `mode` | `online` (the default) or `bundle`: the statements arrive in bundles ([Feeds for air-gapped sites](#feeds-for-air-gapped-sites)); set at creation |
+| Export | `-export` / `export` | an online feed keeps what a bundle needs ([Feeds for air-gapped sites](#feeds-for-air-gapped-sites)) |
 
 **Offer.** By default (`offer: upstreams`) the subscriber sends only the bodies it released from
 upstreams, never ones it published itself. With `-channels a,b` (`offer: channels`) it sends the
@@ -391,18 +393,19 @@ kista admin -config kista.yaml feed set bigcorp enterest -key sha256:<a>,sha256:
 kista admin -config kista.yaml feed remove bigcorp enterest [-documents]
 ```
 
-`set` changes the credential, pinned keys, kinds (`-` clears them: every kind) and readers. The
-source URL and the offer cannot change; remove and add the feed instead.
+`set` changes the credential, pinned keys, kinds (`-` clears them: every kind), readers and
+export (`-export=true|false`). The source URL, the offer and the mode cannot change; remove and add
+the feed instead.
 
 | Route | Who |
 | --- | --- |
 | `GET, POST /api/v1/tenants/{t}/feeds` | tenant administrators |
 | `GET …/feeds/{name}` | tenant administrators: the feed with its ETag |
-| `POST …/feeds/{name}` `{state, credential, kinds, readers, keys}` (`If-Match`) | tenant administrators: each field given is changed; `state` is `active` or `paused` |
+| `POST …/feeds/{name}` `{state, credential, kinds, readers, keys, export}` (`If-Match`) | tenant administrators: each field given is changed; `state` is `active` or `paused`; `mode` cannot change (`400`) |
 | `DELETE …/feeds/{name}[?documents=true]` (`If-Match`) | tenant administrators |
-| `POST …/feeds/{name}/sync` | tenant administrators: requests a run (`202`); refused while the feed is paused |
+| `POST …/feeds/{name}/sync` | tenant administrators: requests a run (`202`); refused while the feed is paused, and for a bundle-mode feed (`409`) |
 
-Adding a feed and resuming one request a run. Otherwise a feed runs every
+Adding an online feed and resuming one request a run. Otherwise a feed runs every
 `attachments.feed_interval` (default 6 h, at least 5 min) with up to 10% jitter, and 5 minutes after
 a failing run.
 
@@ -416,12 +419,12 @@ pass to another feed of the same source if there is one, and otherwise are remov
 | `new` | never run |
 | `ok` | the last run completed |
 | `unauthorized` | the source answered the feed request with `404` (the credential's principal does not hold `feed`, or there is no such tenant), or refused the token twice; the next run is at the normal interval |
-| `failing` | the last run failed (network, egress, credential, none of the pinned keys published, …); retried after 5 minutes |
+| `failing` | the last run failed (network, egress, credential, none of the pinned keys published, an export feed at the quota, …); retried after 5 minutes |
 
 A feed's state is `active` or `paused`. `feed show` and the API give the last error, the last
 success, the next run, whether a run is requested, and the last run's result: counts (`offered`,
-`received`, `superseded`, `withdrawn`, `updated`, `duplicate`, `failed`, `refused`) and up to 20
-refusals with their reasons.
+`received`, `superseded`, `withdrawn`, `updated`, `duplicate`, `failed`, `refused`, and for an
+export feed `kept` and `held`) and up to 20 refusals with their reasons.
 
 ### How a subscriber verifies
 
@@ -459,6 +462,45 @@ The same document reaching the tenant through two feeds is stored once.
 
 Each run records a `feed.run` event (see [Observability](observability.md)).
 
+## Feeds for air-gapped sites
+
+An air-gapped site takes statements in bundles, as it takes extension files
+([Bundle mode](upstreams.md#bundle-mode), spec 0014). Two settings serve it.
+
+**A bundle-mode feed** (`-mode bundle`, `"mode": "bundle"`), at the site:
+
+- its URL is only the identity its statements name: it must be https, but kista never contacts it,
+  so egress need not reach it, and it takes no credential (`400`);
+- it never runs: it is not scheduled, adding or resuming it requests no run, and `sync` answers
+  `409`;
+- its status is `new` until a bundle brings its statements; its record shows the last bundle
+  imported (`bundle_id`, `bundle_created_at`);
+- its pinned keys, kinds, readers and offer work as an online feed's: they decide what it asks for
+  in a plan and what it takes in.
+
+**An export feed** (`-export`, `"export": true`), on the gateway that exports bundles: an online
+feed that also keeps what a bundle needs to answer a site's plan.
+
+- **The keys file**: the source's `GET …/attestation-keys` answer as the last run fetched it (at
+  most 64 KiB; `keys_file_at` in the record).
+- **Its refusals for good**, each with the statement's signed bytes: the reasons above, except
+  `unrequested`. The site judges each statement again itself.
+- **Statements about documents the tenant does not hold**: a withdrawal of a document never stored,
+  and any statement about one removed here (by an administrator, or by the collector after it was
+  superseded for a year). A site may hold the document. When the document arrives later through
+  another feed, a kept withdrawal of it applies.
+
+Setting `export` resets the feed's cursors: its next run reads the whole history again and keeps
+what it refused before. Clearing it deletes the feed's refusals and keys file; the kept statements
+of a source go when no feed of its URL has `export` left. Everything kept goes with the body's
+cursors when the collector removes them.
+
+What an export feed keeps counts against the tenant's quota of feed documents (100,000), so it can
+keep new documents from arriving. Past the quota, a statement that cannot be stored, refused or kept
+holds its body's cursor, the other bodies go on, and the run ends `failing`: no statement is passed
+over unseen. Remove documents or clear `export`. The heads per kind and an unresolved `supersedes`
+stay refusals (`limits`).
+
 ## Configuration
 
 ```yaml title="kista.yaml"
@@ -483,7 +525,7 @@ The block is file-only: there are no `KISTA_ATTACHMENTS_*` variables. Statements
 | --- | --- | --- |
 | `attachment.add`, `attachment.change`, `attachment.remove` | `ext:<name>/attachment:<id>`; `block:<body hash>/attachment:<id>` for a removal through a block | a document attached, its visibility or feedable flag changed, removed; on a change or removal, `statement` is the seq issued with it |
 | `attestation_key.add`, `.activate`, `.retire` | `attestation-key:<id>` | the key lifecycle |
-| `feed.add`, `feed.change`, `feed.remove` | `feed:<name>` | a subscription changed |
+| `feed.add`, `feed.change`, `feed.remove` | `feed:<name>` | a subscription changed; `feed.add` gives its `mode` and `export` |
 | `feed.run` | `feed:<name>` | a run's counts, refusals by reason, and an error class |
 
 A source does not record one event per feed request; refusals are `authz.refused`.

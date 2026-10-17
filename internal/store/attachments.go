@@ -96,15 +96,18 @@ func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
 	// the tenant's own documents and those its feeds bring are counted apart: a source never fills
 	// the tenant's own quota
 	var total int
-	same := "origin <> ?"
 	if a.Origin == AttachedByFeed {
-		same = "origin = ?"
-	}
-	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM attachments WHERE tenant_id = ? AND removed_at IS NULL AND "+same,
+		n, err := t.feedDocuments(ctx, a.TenantID) // with what export feeds keep (spec 0014)
+		if err != nil {
+			return err
+		}
+		if n >= MaxTenantAttachments {
+			return quotaErr()
+		}
+	} else if err := t.queryRow(ctx, "SELECT COUNT(*) FROM attachments WHERE tenant_id = ? AND removed_at IS NULL AND origin <> ?",
 		a.TenantID, AttachedByFeed).Scan(&total); err != nil {
 		return err
-	}
-	if total >= MaxTenantAttachments {
+	} else if total >= MaxTenantAttachments {
 		return fmt.Errorf("%w: a tenant holds at most %d attachments (and as many from feeds)", ErrInvalid, MaxTenantAttachments)
 	}
 	unresolved := false

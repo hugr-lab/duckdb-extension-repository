@@ -314,7 +314,7 @@ See [Access](access.md).
 | `POST tenants/{t}/attestation-keys` | server |
 | `GET tenants/{t}/attestation-keys/{id}`; `POST …/{id}/activate`, `/retire` | tenant admin |
 | `POST tenants/{t}/feed`; `GET tenants/{t}/feed/documents/{issuer_id}` | principal holding `feed` (not a management route) |
-| `GET, POST tenants/{t}/feeds`; `GET, POST, DELETE …/feeds/{name}`; `POST …/feeds/{name}/sync` | tenant admin |
+| `GET, POST tenants/{t}/feeds`; `GET, POST, DELETE …/feeds/{name}`; `POST …/feeds/{name}/sync` (`409` for a bundle-mode feed) | tenant admin |
 
 See [Attachments and the feed](attachments.md).
 

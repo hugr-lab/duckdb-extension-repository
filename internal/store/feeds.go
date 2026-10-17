@@ -200,6 +200,9 @@ const (
 	OfferUpstreams = "upstreams" // the bodies whose Builds came from upstreams (the default)
 	OfferChannels  = "channels"  // the bodies released in named channels
 
+	FeedOnline = "online" // the feed's mode: run against its source (the default)
+	FeedBundle = "bundle" // the feed's mode: statements arrive in bundles (spec 0014)
+
 	FeedNew          = "new"
 	FeedOK           = "ok"
 	FeedUnauthorized = "unauthorized"
@@ -210,6 +213,8 @@ const (
 const (
 	MaxFeeds    = 50
 	MaxFeedKeys = 10
+	// MaxFeedKeysFile caps the source's attestation keys file an export feed keeps (spec 0014).
+	MaxFeedKeysFile = 64 << 10
 )
 
 // Feed is a source a tenant subscribes to for documents about the bodies it holds.
@@ -218,12 +223,21 @@ type Feed struct {
 	Kinds                               []string // accepted kinds; none: every kind
 	Readers                             bool     // statements whose audience is readers may be shown to readers
 	Offer, State                        string
-	Version                             int64
-	RequestedAt, NextRunAt, LastRunAt   time.Time
-	LastRun                             string // JSON
-	Status, LastError                   string
-	LastSuccessAt, CreatedAt            time.Time
-	CreatedBy                           string
+	Mode                                string // FeedOnline or FeedBundle; set at creation
+	// Export keeps what a bundle needs to answer a site's plan (spec 0014): the keys file, permanent
+	// refusals, statements about documents not held
+	Export                            bool
+	ExportEpoch                       int64 // counts the changes of Export: a run writes only in its own
+	Version                           int64
+	RequestedAt, NextRunAt, LastRunAt time.Time
+	LastRun                           string // JSON
+	Status, LastError                 string
+	LastSuccessAt, CreatedAt          time.Time
+	CreatedBy                         string
+	// the last bundle imported into a bundle-mode feed (spec 0014)
+	BundleID, BundleManifestSHA256 string
+	BundleCreatedAt                time.Time
+	KeysFileAt                     time.Time // when an export feed last kept its source's keys file
 
 	Keys     []string // pinned attestation key fingerprints
 	Channels []string // channel ids, for OfferChannels
@@ -233,16 +247,19 @@ type Feed struct {
 func FeedLock(tenantID string) string { return "kista/feeds/" + tenantID }
 
 const feedCols = `id, tenant_id, name, url, credential, kinds, readers, offer, state, version, requested_at, next_run_at,
-last_run_at, last_run, status, last_success_at, last_error, created_at, created_by`
+last_run_at, last_run, status, last_success_at, last_error, created_at, created_by, mode, export, bundle_id, bundle_created_at,
+bundle_manifest_sha256, attestation_keys_at, export_epoch`
 
 func scanFeed(scan func(...any) error) (Feed, error) {
 	var f Feed
-	var cred, lastRun, lastErr sql.NullString
+	var cred, lastRun, lastErr, bundleID, bundleSHA sql.NullString
 	var kinds string
 	err := scan(&f.ID, &f.TenantID, &f.Name, &f.URL, &cred, &kinds, &f.Readers, &f.Offer, &f.State, &f.Version,
 		scanTime{&f.RequestedAt}, scanTime{&f.NextRunAt}, scanTime{&f.LastRunAt}, &lastRun, &f.Status, scanTime{&f.LastSuccessAt},
-		&lastErr, scanTime{&f.CreatedAt}, &f.CreatedBy)
+		&lastErr, scanTime{&f.CreatedAt}, &f.CreatedBy, &f.Mode, &f.Export, &bundleID, scanTime{&f.BundleCreatedAt}, &bundleSHA,
+		scanTime{&f.KeysFileAt}, &f.ExportEpoch)
 	f.Credential, f.LastRun, f.LastError = cred.String, lastRun.String, lastErr.String
+	f.BundleID, f.BundleManifestSHA256 = bundleID.String, bundleSHA.String
 	if kinds != "" {
 		f.Kinds = strings.Split(kinds, ",")
 	}
@@ -269,9 +286,15 @@ func (t *Tx) InsertFeed(ctx context.Context, f *Feed) error {
 	if f.State == "" {
 		f.State = FeedActive
 	}
+	if f.Mode == "" {
+		f.Mode = FeedOnline
+	}
+	if f.Mode != FeedOnline && f.Mode != FeedBundle || f.Mode == FeedBundle && (f.Credential != "" || f.Export) {
+		return fmt.Errorf("%w: a feed's mode is online, or bundle without a credential or export", ErrInvalid)
+	}
 	_, err := t.exec(ctx, `INSERT INTO feeds (id, tenant_id, name, url, credential, kinds, readers, offer, state, version, status,
-created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, f.ID, f.TenantID, f.Name, f.URL, nullable(f.Credential),
-		strings.Join(f.Kinds, ","), f.Readers, f.Offer, f.State, f.Version, f.Status, t.s.d.timeArg(f.CreatedAt), f.CreatedBy)
+created_at, created_by, mode, export) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, f.ID, f.TenantID, f.Name, f.URL, nullable(f.Credential),
+		strings.Join(f.Kinds, ","), f.Readers, f.Offer, f.State, f.Version, f.Status, t.s.d.timeArg(f.CreatedAt), f.CreatedBy, f.Mode, f.Export)
 	if err != nil {
 		return t.s.mapErr(err, "feed")
 	}
@@ -343,7 +366,7 @@ func (t *Tx) ListFeeds(ctx context.Context, tenantID string) ([]Feed, error) {
 }
 
 // SetFeed changes a feed's settings (compare-and-set on its version; expected 0 takes the record's):
-// its state, credential, accepted kinds, readers and pinned keys.
+// its state, credential, accepted kinds, readers, export and pinned keys. Its mode never changes.
 func (t *Tx) SetFeed(ctx context.Context, f *Feed, expected int64) error {
 	if expected == 0 {
 		expected = f.Version
@@ -351,9 +374,16 @@ func (t *Tx) SetFeed(ctx context.Context, f *Feed, expected int64) error {
 	if len(f.Keys) == 0 || len(f.Keys) > MaxFeedKeys {
 		return fmt.Errorf("%w: a feed pins 1 to %d keys", ErrInvalid, MaxFeedKeys)
 	}
-	err := t.cas(ctx, "UPDATE feeds SET state = ?, credential = ?, kinds = ?, readers = ?, version = version + 1 WHERE id = ? AND version = ?",
-		[]any{f.State, nullable(f.Credential), strings.Join(f.Kinds, ","), f.Readers, f.ID, expected}, func() { f.Version = expected + 1 })
+	if f.Mode == FeedBundle && (f.Credential != "" || f.Export) {
+		return fmt.Errorf("%w: a bundle-mode feed takes no credential and no export", ErrInvalid)
+	}
+	err := t.cas(ctx, `UPDATE feeds SET state = ?, credential = ?, kinds = ?, readers = ?, export = ?,
+export_epoch = CASE WHEN export = ? THEN export_epoch ELSE export_epoch + 1 END, version = version + 1 WHERE id = ? AND version = ? AND mode = ?`,
+		[]any{f.State, nullable(f.Credential), strings.Join(f.Kinds, ","), f.Readers, f.Export, f.Export, f.ID, expected, f.Mode}, func() { f.Version = expected + 1 })
 	if err != nil {
+		return err
+	}
+	if err := t.queryRow(ctx, "SELECT export_epoch FROM feeds WHERE id = ?", f.ID).Scan(&f.ExportEpoch); err != nil {
 		return err
 	}
 	if _, err := t.exec(ctx, "DELETE FROM feed_keys WHERE feed_id = ?", f.ID); err != nil {
@@ -402,12 +432,12 @@ func (s *Store) DueFeeds(ctx context.Context, now time.Time, scheduled bool) ([]
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		var err error
 		if !scheduled {
-			out, err = tx.strings(ctx, "SELECT id FROM feeds WHERE state = ? AND requested_at IS NOT NULL AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) ORDER BY id", FeedActive)
+			out, err = tx.strings(ctx, "SELECT id FROM feeds WHERE state = ? AND mode = ? AND requested_at IS NOT NULL AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) ORDER BY id", FeedActive, FeedOnline)
 			return err
 		}
-		out, err = tx.strings(ctx, `SELECT id FROM feeds WHERE state = ? AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) AND (requested_at IS NOT NULL OR next_run_at IS NULL OR next_run_at <= ?)
+		out, err = tx.strings(ctx, `SELECT id FROM feeds WHERE state = ? AND mode = ? AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL) AND (requested_at IS NOT NULL OR next_run_at IS NULL OR next_run_at <= ?)
 ORDER BY CASE WHEN requested_at IS NULL THEN 1 ELSE 0 END, CASE WHEN next_run_at IS NULL THEN 0 ELSE 1 END, next_run_at, id`,
-			FeedActive, s.d.timeArg(now))
+			FeedActive, FeedOnline, s.d.timeArg(now))
 		return err
 	})
 	return out, err
@@ -421,7 +451,7 @@ func (t *Tx) StartFeedRun(ctx context.Context, id string, scheduled bool) (Feed,
 		return f, false, err
 	}
 	due := scheduled && !f.NextRunAt.After(t.Now())
-	if f.State != FeedActive || f.RequestedAt.IsZero() && !due {
+	if f.State != FeedActive || f.Mode != FeedOnline || f.RequestedAt.IsZero() && !due {
 		return f, false, nil
 	}
 	_, err = t.exec(ctx, "UPDATE feeds SET requested_at = NULL WHERE id = ?", id)
@@ -508,7 +538,7 @@ func (t *Tx) SetFeedCursor(ctx context.Context, feedID, bodyHash string, seq int
 
 // DeleteGoneFeedCursors deletes the cursors of bodies a domain's tenants no longer hold and have not
 // blocked (spec 0011: a body's feed state goes with its documents, so a body held again receives its
-// history again), and answers how many.
+// history again), with what export feeds kept for them, and answers how many cursors.
 func (s *Store) DeleteGoneFeedCursors(ctx context.Context, domain string) (int64, error) {
 	var n int64
 	err := s.tx(ctx, nil, func(t *Tx) error {
@@ -519,7 +549,19 @@ WHERE f.id = feed_cursors.feed_id AND k.body_hash = feed_cursors.body_hash)`, do
 		if err != nil {
 			return err
 		}
-		n, err = res.RowsAffected()
+		if n, err = res.RowsAffected(); err != nil {
+			return err
+		}
+		// what export feeds keep goes with the cursors (spec 0014)
+		if _, err := t.exec(ctx, `DELETE FROM feed_refusals WHERE feed_id IN (SELECT f.id FROM feeds f JOIN tenants t ON t.id = f.tenant_id
+WHERE t.storage_domain = ?) AND NOT EXISTS (SELECT 1 FROM feeds f JOIN builds b ON b.tenant_id = f.tenant_id WHERE f.id = feed_refusals.feed_id
+AND b.body_hash = feed_refusals.body_hash) AND NOT EXISTS (SELECT 1 FROM feeds f JOIN blocks k ON k.tenant_id = f.tenant_id
+WHERE f.id = feed_refusals.feed_id AND k.body_hash = feed_refusals.body_hash)`, domain); err != nil {
+			return err
+		}
+		_, err = t.exec(ctx, `DELETE FROM feed_kept WHERE tenant_id IN (SELECT id FROM tenants WHERE storage_domain = ?)
+AND NOT EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = feed_kept.tenant_id AND b.body_hash = feed_kept.body_hash)
+AND NOT EXISTS (SELECT 1 FROM blocks k WHERE k.tenant_id = feed_kept.tenant_id AND k.body_hash = feed_kept.body_hash)`, domain)
 		return err
 	})
 	return n, err

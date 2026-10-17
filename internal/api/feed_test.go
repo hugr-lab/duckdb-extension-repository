@@ -505,6 +505,20 @@ func TestFeedRoutes(t *testing.T) {
 	if r := m.call(t, "GET", T+"/feeds/src", tom, ""); r.status != 404 {
 		t.Fatalf("removed: %d", r.status)
 	}
+	// a bundle-mode feed (spec 0014): never synced, its mode never changed
+	air := `{"name":"air","url":"https://source.example/api/v1/tenants/x","mode":"bundle","keys":["sha256:` + strings.Repeat("a", 64) + `"]}`
+	r = m.call(t, "POST", T+"/feeds", tom, air)
+	if r.status != 201 || r.json(t)["mode"] != "bundle" || r.json(t)["export"] != false || r.json(t)["run_requested"] != false {
+		t.Fatalf("a bundle-mode feed: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", T+"/feeds/air/sync", tom, ""); r.status != 409 {
+		t.Fatalf("sync of a bundle-mode feed: %d", r.status)
+	}
+	for _, ch := range []string{`{"mode":"online"}`, `{"export":true}`, `{"credential":"src"}`} {
+		if r := m.call(t, "POST", T+"/feeds/air", tom, ch, "If-Match", "*"); r.status != 400 {
+			t.Errorf("%s: %d %s", ch, r.status, r.body)
+		}
+	}
 }
 
 func versionTag(v int64) string { return `"v` + strconv.FormatInt(v, 10) + `"` }

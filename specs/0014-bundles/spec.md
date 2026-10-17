@@ -1,6 +1,6 @@
 # Spec 0014: Bundles for air-gapped sites
 
-- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17); 2 to come
+- **Status**: accepted; phase 1a implemented (parts 1 bundle mode, 2 the format, keys and plan, 3 the import, 4 the export, 5 the air-gapped page and its CI job); 1b designed (2026-10-17), its part 1 (bundle-mode and export feeds) implemented; 2 to come
 - **Date**: 2026-10-14, revised 2026-10-15 (the export from a connected kista replaces the builder)
 - **Author**: vgsml, Claude
 

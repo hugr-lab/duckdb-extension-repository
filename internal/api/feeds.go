@@ -158,6 +158,11 @@ type feedJSON struct {
 	Readers       bool            `json:"readers"`
 	Offer         string          `json:"offer"`
 	Channels      []string        `json:"channels,omitempty"`
+	Mode          string          `json:"mode"`
+	Export        bool            `json:"export"`
+	KeysFileAt    string          `json:"keys_file_at,omitempty"`
+	BundleID      string          `json:"bundle_id,omitempty"`
+	BundleCreated string          `json:"bundle_created_at,omitempty"`
 	State         string          `json:"state"`
 	Status        string          `json:"status"`
 	LastError     string          `json:"last_error,omitempty"`
@@ -175,7 +180,8 @@ func (h *Handler) feedOf(r *http.Request, f store.Feed, c caller) feedJSON {
 	o := feedJSON{Name: f.Name, URL: f.URL, Credential: f.Credential, Keys: f.Keys, Kinds: f.Kinds, Readers: f.Readers, Offer: f.Offer,
 		State: f.State, Status: f.Status, LastError: f.LastError, LastSuccessAt: timeOf(f.LastSuccessAt), LastRunAt: timeOf(f.LastRunAt),
 		NextRunAt: timeOf(f.NextRunAt), RunRequested: !f.RequestedAt.IsZero(), CreatedAt: timeOf(f.CreatedAt),
-		CreatedBy: createdBy(f.CreatedBy, c), ETag: versionTag(f.Version)}
+		CreatedBy: createdBy(f.CreatedBy, c), ETag: versionTag(f.Version), Mode: f.Mode, Export: f.Export, KeysFileAt: timeOf(f.KeysFileAt),
+		BundleID: f.BundleID, BundleCreated: timeOf(f.BundleCreatedAt)}
 	if o.Keys == nil {
 		o.Keys = []string{}
 	}
@@ -235,13 +241,15 @@ func (h *Handler) addFeed(w http.ResponseWriter, r *http.Request, c caller, p pa
 		Readers    bool     `json:"readers"`
 		Offer      string   `json:"offer"`
 		Channels   []string `json:"channels"`
+		Mode       string   `json:"mode"`
+		Export     bool     `json:"export"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	a, _ := c.actor()
 	f, err := h.o.Feeds.Add(r.Context(), a, p["t"], attachment.FeedSpec{Name: in.Name, URL: in.URL, Credential: in.Credential,
-		Keys: in.Keys, Kinds: in.Kinds, Readers: in.Readers, Offer: in.Offer, Channels: in.Channels})
+		Keys: in.Keys, Kinds: in.Kinds, Readers: in.Readers, Offer: in.Offer, Channels: in.Channels, Mode: in.Mode, Export: in.Export})
 	if err != nil {
 		h.serviceErr(w, err, true)
 		return
@@ -280,6 +288,10 @@ func (h *Handler) changeFeed(w http.ResponseWriter, r *http.Request, c caller, p
 func (h *Handler) syncFeed(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
 	f, err := h.o.Feeds.Sync(r.Context(), a, p["t"], p["name"])
+	if errors.Is(err, attachment.ErrBundle) {
+		problem(w, http.StatusConflict, typeConflict, "a bundle-mode feed is never run: its statements arrive in bundles")
+		return
+	}
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
