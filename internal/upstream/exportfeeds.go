@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -29,7 +30,7 @@ import (
 type ExportFeed struct {
 	URL         string         `json:"url"`
 	From        string         `json:"from,omitempty"`   // the export feeds it came from
-	Status      string         `json:"status,omitempty"` // theirs: a stale gateway shows
+	Status      string         `json:"status,omitempty"` // the most recently successful candidate's, so a stale gateway shows
 	LastSuccess time.Time      `json:"last_success,omitzero"`
 	Counts      map[string]int `json:"counts"` // bodies, statements, withdrawals, without_content, documents
 	Bytes       int64          `json:"bytes"`  // batches and documents
@@ -43,8 +44,11 @@ const (
 	whyFewerKinds    = "accepts fewer kinds"
 	whyNeverRan      = "never ran"
 	whyFeedLimits    = "over the bundle's limits for a feed"
+	whyFeedChanged   = "changed during the export: export again"
 	noteRemoved      = "removed on the exporting kista"
 	noteNotHeld      = "not held on the exporting kista"
+	noteRefused      = "refused on the exporting kista"
+	noteKind         = "a kind the site's feed does not take"
 )
 
 // Limits on a feed's part of an export.
@@ -93,7 +97,7 @@ func covers(have, want []string) bool {
 
 // feeds builds the plan's feeds from the tenant's export feeds, spooling their batches to spool. It
 // returns the feeds that made it, in plan order, and every feed's summary.
-func (x *exporter) feeds(ctx context.Context, plan *bundle.Plan, m *bundle.Manifest, spool *os.File) ([]*xfeed, []ExportFeed, error) {
+func (x *exporter) feeds(ctx context.Context, plan *bundle.Plan, m *bundle.Manifest, spool *os.File, budget int) ([]*xfeed, []ExportFeed, error) {
 	if len(plan.Feeds) == 0 {
 		return nil, nil, nil
 	}
@@ -110,12 +114,27 @@ func (x *exporter) feeds(ctx context.Context, plan *bundle.Plan, m *bundle.Manif
 	for i := range plan.Feeds {
 		pf := &plan.Feeds[i]
 		out := ExportFeed{URL: pf.URL, Counts: map[string]int{}}
+		start, err := spool.Seek(0, io.SeekEnd)
+		if err != nil {
+			return nil, nil, err
+		}
 		f, err := x.feed(ctx, plan, pf, m, all, spool, &out, len(made)+1)
+		if err == nil { // the whole manifest stays readable: a feed past what is left fails alone
+			if b, merr := json.Marshal(f.m); merr != nil || len(b)+1 > budget {
+				err = feedFails(whyFeedLimits)
+			} else {
+				budget -= len(b) + 1
+			}
+		}
 		switch {
 		case err != nil && ctx.Err() != nil:
 			return nil, nil, ctx.Err()
 		case errors.Is(err, errFeedFails):
-			out.Error = strings.TrimPrefix(err.Error(), errFeedFails.Error()+": ")
+			// nothing of it is in the bundle: neither its counts nor its spooled batches
+			out.Error, out.Counts, out.Bytes = strings.TrimPrefix(err.Error(), errFeedFails.Error()+": "), map[string]int{}, 0
+			if terr := spool.Truncate(start); terr != nil {
+				return nil, nil, terr
+			}
 		case err != nil:
 			return nil, nil, err
 		default:
@@ -231,6 +250,7 @@ func (x *exporter) feed(ctx context.Context, plan *bundle.Plan, pf *bundle.PlanF
 	sort.Strings(bodies)
 
 	var stmts []xstatement
+	used := map[string]string{} // body: the candidate whose cursor ends its range
 	for _, body := range bodies {
 		from := after[body]
 		best, upTo := store.Feed{}, from
@@ -250,11 +270,20 @@ func (x *exporter) feed(ctx context.Context, plan *bundle.Plan, pf *bundle.PlanF
 			continue
 		}
 		stmts = append(stmts, got...)
+		if len(stmts) > maxFeedStatements {
+			return nil, feedFails(whyFeedLimits)
+		}
 		xf.m.Bodies = append(xf.m.Bodies, bundle.FeedBody{BodyHash: body, AfterSeq: from, Seq: end})
+		used[body] = best.ID
 		out.Counts["bodies"]++
 	}
-	if len(stmts) > maxFeedStatements {
-		return nil, feedFails(whyFeedLimits)
+	// the reads above are not one snapshot: a change of export (its refusals and kept statements
+	// dropped) or the collector (a body's rows gone with its cursor) meanwhile would leave a range
+	// that hides statements; such a feed fails, to be exported again
+	if changed, err := x.changed(ctx, cands, cursors, used); err != nil {
+		return nil, err
+	} else if changed {
+		return nil, feedFails(whyFeedChanged)
 	}
 	if err := x.spoolFeed(xf, stmts, spool, n, out); err != nil {
 		return nil, err
@@ -266,6 +295,38 @@ func (x *exporter) feed(ctx context.Context, plan *bundle.Plan, pf *bundle.PlanF
 		return nil, feedFails(whyFeedLimits)
 	}
 	return xf, nil
+}
+
+// changed reports whether a candidate's export setting or a used cursor moved since they were read.
+func (x *exporter) changed(ctx context.Context, cands []store.Feed, cursors map[string]map[string]int64, used map[string]string) (bool, error) {
+	var now []store.Feed
+	if err := x.s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		var err error
+		now, err = tx.ListFeeds(ctx, x.t.ID)
+		return err
+	}); err != nil {
+		return false, err
+	}
+	for _, c := range cands {
+		i := slices.IndexFunc(now, func(f store.Feed) bool { return f.ID == c.ID })
+		if i < 0 || !now[i].Export || now[i].ExportEpoch != c.ExportEpoch {
+			return true, nil
+		}
+	}
+	again := map[string]map[string]int64{}
+	for body, id := range used {
+		if again[id] == nil {
+			cur, err := x.s.Store.FeedCursors(ctx, id)
+			if err != nil {
+				return false, err
+			}
+			again[id] = cur
+		}
+		if again[id][body] < cursors[id][body] {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // bodyStatements collects a body's statements in (from, upTo] as the tenant holds them: its
@@ -285,7 +346,11 @@ func (x *exporter) bodyStatements(ctx context.Context, pf *bundle.PlanFeed, pinn
 		return nil, 0, err
 	}
 	for _, r := range refusals {
-		bySeq[r.Seq] = cand{stmt: r.Statement, sig: r.Signature, note: bundle.Text(r.Reason, bundle.MaxDetail)}
+		note := bundle.Text(r.Reason, bundle.MaxDetail)
+		if note == "" {
+			note = noteRefused
+		}
+		bySeq[r.Seq] = cand{stmt: r.Statement, sig: r.Signature, note: note}
 	}
 	kept, err := x.s.Store.FeedKeptOf(ctx, x.t.ID, pf.URL, body, from, upTo)
 	if err != nil {
@@ -329,6 +394,9 @@ func (x *exporter) bodyStatements(ctx context.Context, pf *bundle.PlanFeed, pinn
 		switch {
 		case st.Withdrawn:
 			xs.note = ""
+		case c.doc != nil && len(pf.Kinds) > 0 && !slices.Contains(pf.Kinds, st.Kind):
+			// online, the site's feed refuses it before fetching: its content does not leave
+			xs.note = noteKind
 		case c.doc != nil && c.doc.ContentHash == st.ContentHash && c.doc.Size == st.Size:
 			err := x.s.Blob.ReadAttachment(ctx, x.t.StorageDomain, c.doc.ID, st.ContentHash, st.Size, func([]byte) error { return nil })
 			if errors.Is(err, blob.ErrCorrupt) {
@@ -424,8 +492,9 @@ func (x *exporter) writeFeeds(ctx context.Context, bw *bundle.Writer, feeds []*x
 			}
 			i++
 			for _, d := range b.docs {
+				// removed meanwhile (the collector, an administrator), it fails the export: export again
 				err := x.s.Blob.ReadAttachment(ctx, x.t.StorageDomain, d.ID, d.ContentHash, d.Size, func(content []byte) error {
-					return bw.Entry(e[i].Path, int64(len(content)), strings.NewReader(string(content)))
+					return bw.Entry(e[i].Path, int64(len(content)), bytes.NewReader(content))
 				})
 				if err != nil {
 					return fmt.Errorf("upstream: feed %s: %s: %w", xf.m.URL, e[i].Path, err)

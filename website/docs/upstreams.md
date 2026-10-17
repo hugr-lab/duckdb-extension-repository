@@ -322,8 +322,7 @@ pinned keys, channel, platforms, allowlist, visibility, state), but kista never 
 
 The site writes a plan (`kista admin bundle plan`): its bundle-mode upstreams' cells and, from spec
 0014 phase 1b, its bundle-mode feeds with the bodies they offer and the last statement received
-([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites); exports and imports do not
-carry statements yet). A connected kista exports a bundle answering it
+([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites); exports carry statements, imports do not take them yet). A connected kista exports a bundle answering it
 ([Exporting a bundle](#exporting-a-bundle)), and the site imports it with
 `kista admin bundle import`. [Air-gapped sites](deployment/air-gapped.md) walks through the whole
 cycle, with bringing kista itself in. The upstream's record shows its mode and the last bundle
@@ -394,7 +393,7 @@ sensitive as the plan; the directory's file system must support hard links), so 
 and once to write, and needs no other disk. The command prints each source's counts, bytes, the
 fingerprints its `.well-known` file lists (compare them with the site's pins to notice a rotation),
 the first 20 cells not exported, and the bundle's SHA-256 as the import computes it. It exits `1`
-when a source failed as a whole, after writing the bundle of the others. Exporting is a server
+when a source or a feed failed as a whole, after writing the bundle of the others. Exporting is a server
 administrator's act, recorded as `bundle.export`. A plan discloses the site's configuration to the
 gateway: its sources, allowlists, platforms, DuckDB versions and the bodies it holds.
 
@@ -402,18 +401,32 @@ gateway: its sources, allowlists, platforms, DuckDB versions and the bodies it h
 tenant's export feeds of the same URL hold ([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites)).
 It contacts no feed. Imports do not take statements yet.
 
+On the gateway, subscribe to the source with `export` set
+(`kista admin feed add <tenant> <name> -url … -credential … -key … -export`, or
+`feed set … -export=true` on an existing feed), and let it run once: setting `export` resets its
+cursors, and a feed that never ran has no keys file. The gateway receives statements only for the
+bodies it holds itself, under its own grant at the source: a body it does not mirror, or a narrower
+grant, gives the site nothing for it. The server administrator who runs the export decides what
+leaves: a statement's signed `audience` travels with it, and the site applies its own `readers`.
+
 - **Which feed**: an online feed of the URL with `export` set, whose kinds include every kind the
   site's feed accepts, and which kept a keys file. Without one the feed fails as a whole ("not
   subscribed here", "not kept for export", "accepts fewer kinds", "never ran"), the bundle carries
   the others, and the command exits `1`. With several, each body takes the one that read furthest.
 - **Which bodies**: those the plan offers, and from the start those of the files the bundle brings
   for the feed's sources. Each body's range runs from the plan's cursor to what the gateway read.
-- **What**: each statement as its issuer signed it. A stored document's content goes with it. A
-  refusal, a statement about a document removed here, or one about a document never held goes
-  without content, with a note saying why. The range ends just below a statement that does not
-  verify with the plan's keys, or whose stored document cannot be read: the site moves no further.
-- The command prints per feed where it came from, those feeds' status and last success (so a
-  stale gateway shows), its counts and bytes.
+- **What**: each statement as its issuer signed it. A stored document's content goes with it,
+  unless its kind is one the site's feed does not take. A withdrawal goes as signed, without
+  content. A refusal, a statement about a document removed here, one about a document never held,
+  or one of a kind the site does not take goes without content, with a note saying why. The range
+  ends just below a statement that does not verify with the plan's keys or names another issuer,
+  or whose stored document cannot be read or does not match it: the site moves no further.
+- **Limits**: past 100,000 statements or documents, a 16 MiB part of the manifest, or what is left
+  of the manifest's 64 MiB, a feed fails as a whole ("over the bundle's limits for a feed"). A feed
+  whose export setting or cursors changed while it was read fails too ("changed during the export"):
+  export again. A document removed between reading and writing fails the whole export.
+- The command prints per feed the export feeds it came from, the most recently successful one's
+  status and last success (so a stale gateway shows), its counts and bytes.
 
 ### Importing a bundle
 

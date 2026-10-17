@@ -245,6 +245,63 @@ func TestExportFeeds(t *testing.T) {
 					t.Errorf("seq %d: note %q, want %q", q, notes[q], n)
 				}
 			}
+			if evs := g.events(t, "bundle.export"); len(evs) == 0 || !strings.Contains(evs[0].Data, `"feed_statements":5`) ||
+				!strings.Contains(evs[0].Data, `"failed_feeds":2`) {
+				t.Errorf("the event: %+v", evs)
+			}
+
+			// a kind the site's feed does not take: its content does not leave
+			p.Feeds[0].Kinds = []string{store.KindSBOM}
+			res, _ = g.export(t, p, upstream.ExportOptions{})
+			// the lost document no longer ends b1's range: its content would not leave anyway
+			if c := res.Feeds[0].Counts; res.Feeds[0].Error != "" || c["documents"] != 0 || c["without_content"] != 5 || c["statements"] != 6 {
+				t.Fatalf("another kind: %+v", res.Feeds[0])
+			}
+			p.Feeds[0].Kinds = []string{store.KindReview}
+
+			// over 1 MiB of statements: several batches, a document after the batch that first names it
+			for q := int64(6); q < 1206; q++ {
+				wb, wsig, _ := src.statement(q, "w"+strings.Repeat("x", 40)+string(rune('a'+q%26))+time.Duration(q).String(), b3, nil, withdrawal)
+				must(t, func() error {
+					return g.st.InTx(ctx, "", func(tx *store.Tx) error {
+						_, err := tx.KeepFeedStatement(ctx, store.FeedKept{TenantID: tn.ID, Issuer: feedURL, IssuerID: "w" + time.Duration(q).String(),
+							BodyHash: b3, Seq: q, Statement: string(wb), Signature: wsig})
+						return err
+					})
+				})
+			}
+			first := doc
+			doc = []byte(`{"schema":"kista.review.v1","verdict":"rejected"}`) // another content: its own entry
+			store1(1250, "late", b3, src)
+			doc = first
+			must(t, func() error {
+				return g.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, gw.ID, b3, 1300) })
+			})
+			p.Feeds = p.Feeds[:1]
+			res, data = g.export(t, p, upstream.ExportOptions{})
+			if res.Feeds[0].Error != "" || res.Feeds[0].Counts["statements"] != 5+1201 {
+				t.Fatalf("many statements: %+v", res.Feeds[0])
+			}
+			b, err = bundle.Open(bytes.NewReader(data), time.Now(), func(string) bool { return true })
+			if err != nil {
+				t.Fatal(err)
+			}
+			var kinds []string
+			for _, e := range b.Manifest.Feeds[0].Entries {
+				fe, _ := bundle.ParseFeedEntry(e.Path)
+				switch {
+				case fe.Keys:
+					kinds = append(kinds, "keys")
+				case fe.Batch > 0:
+					kinds = append(kinds, "batch")
+				default:
+					kinds = append(kinds, "doc")
+				}
+			}
+			if got := strings.Join(kinds, ","); got != "keys,batch,doc,batch,doc" {
+				t.Fatalf("entries: %s", got) // d1's document after the first batch, late's after the batch that names it
+			}
+
 			// the plan pins another key: nothing verifies, the ranges are empty and the bodies left out
 			p.Feeds = p.Feeds[:1]
 			p.Feeds[0].Keys = []string{"sha256:" + strings.Repeat("f", 64)}

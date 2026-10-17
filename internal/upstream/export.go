@@ -263,7 +263,11 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 			return res, err
 		}
 		defer func() { _ = spool.Close(); _ = os.Remove(spool.Name()) }()
-		if feeds, res.Feeds, err = x.feeds(ctx, &plan, &m, spool); err != nil {
+		base, err := json.Marshal(m)
+		if err != nil {
+			return res, err
+		}
+		if feeds, res.Feeds, err = x.feeds(ctx, &plan, &m, spool, bundle.MaxManifest-len(base)); err != nil {
 			return res, err
 		}
 		for _, f := range feeds {

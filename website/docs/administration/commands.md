@@ -176,7 +176,7 @@ kista bundle inspect <bundle> [-plan <plan.json>] [-max-body <bytes>]
   the site's `blob.max_body`) bounds what it inflates. It prints the cells per outcome, the sizes,
   the spool an import needs and the bundle's SHA-256, and exits `1` on any problem. Without
   `-plan`, a bundle is reported consistent, not trusted.
-  For a bundle's feeds (spec 0014 phase 1b; no export writes them yet), `inspect` checks their
+  For a bundle's feeds (spec 0014 phase 1b; the import does not take them yet), `inspect` checks their
   entries' order, hashes and sizes, each statement's signature against the bundle's keys file (with
   `-plan`, only the keys the plan's feed pins, printed `pinned` or `listed, not pinned`), its
   issuer, its body within a covered range, and that a statement with content has its document after
@@ -372,7 +372,7 @@ See [Publishing](../publishing.md).
 | `attestation-key list <tenant>` | `ID`, `FINGERPRINT`, `STATE`, `TRUSTED SINCE`, `SIGNER` | |
 | `attestation-key activate` or `retire` `<tenant> <id or fingerprint> [-force]` | as channel keys; only a trusted key can be retired | |
 | `feed add <tenant> <name> -url https://<host>/api/v1/tenants/<t> -credential <c> -key <fp,...> [-kinds <k,...>] [-readers] [-channels <c,...>] [-export]` | subscribes to another repository's feed; `-export` keeps what a bundle needs ([Feeds for air-gapped sites](../attachments.md#feeds-for-air-gapped-sites)) | |
-| `feed add <tenant> <name> -mode bundle -url … -key <fp,...> [-kinds …] [-readers] [-channels …]` | a bundle-mode feed, for statements in bundles (not carried yet); no credential, never run | |
+| `feed add <tenant> <name> -mode bundle -url … -key <fp,...> [-kinds …] [-readers] [-channels …]` | a bundle-mode feed, for statements in bundles (not imported yet); no credential, never run | |
 | `feed list <tenant>` | `NAME`, `URL`, `MODE`, `STATE`, `STATUS`, `LAST SUCCESS`, `KINDS`, `READERS`, `EXPORT` | |
 | `feed show`, `sync`, `pause`, `resume` `<tenant> <name>` | `show` gives the mode, export, when the keys file was kept and the last bundle; `sync` requests a run that a running `kista serve` takes, refused for a bundle-mode feed | |
 | `feed set <tenant> <name> [-credential <c>] [-key <fp,...>] [-kinds <k,...> or -] [-readers=true or false] [-export=true or false]` | changes a subscription; `-kinds -` accepts every kind; `-export=true` resets the cursors and reads the history again, `-export=false` deletes what it kept | |

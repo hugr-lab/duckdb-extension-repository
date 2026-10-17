@@ -237,6 +237,9 @@ bundle back changes nothing. In Kubernetes, the import runs in the serving pod o
   you notice. Pin it at the site only after comparing it with the publisher's own fingerprint,
   given out of band, before the old key leaves the source's `.well-known` file. When you rotate
   the bundle key, pin the new key beside the old one, then remove the old one.
+- **Statements.** A site's bundle-mode feeds are in its plan, and a gateway's export feeds export
+  their statements, but this version imports no statement yet
+  ([Feeds for air-gapped sites](../attachments.md#feeds-for-air-gapped-sites)).
 - **Autoload.** DuckDB autoloads from the passthrough channel over plain http: set
   `autoinstall_extension_repository` on the clients, and give the site a listener DuckDB's
   built-in client can reach ([Using kista from DuckDB](../duckdb.md#autoloading-and-the-passthrough-channel)).
