@@ -6,6 +6,7 @@ import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, fingerprintSeg, seg } from '../lib/http'
 import { entryNames } from '../lib/names'
 import { platforms } from './Channel'
+import { BundleUploads } from './BundleUploads'
 import { Feeds } from './Feeds'
 
 // Upstreams (spec 0009; console phase 2b): where a channel's mirrored extensions come from, what is
@@ -107,7 +108,7 @@ export function upstreamBody(f: UpstreamForm, plats: string[]) {
 }
 
 export function Upstreams() {
-  const { client, api, base } = useTenant()
+  const { client, api, base, perms } = useTenant()
   const [adding, setAdding] = useState(false)
   const list = usePaged<Upstream>(async (cursor, limit) => {
     const q = new URLSearchParams({ limit: String(limit) })
@@ -144,6 +145,7 @@ export function Upstreams() {
       )}
       <Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />
       <Note>Each upstream feeds one channel. Two upstreams of a channel never supply the same name: one source decides its current release.</Note>
+      {perms.server && <BundleUploads />}
       <Shadows />
       <Feeds />
     </>

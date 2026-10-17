@@ -145,8 +145,10 @@ one the answer is `429`. See
 ### CORS
 
 CORS is off unless `ui.allowed_origins` lists exact origins (for the console mounted in a shell on
-another origin). Then `/api/v1/*` allows those origins, no credentials, the headers
-`Authorization, Content-Type, If-Match, If-None-Match, traceparent`, and exposes `ETag, Location`.
+another origin). Then `/api/v1/*` allows those origins, no credentials, the methods
+`GET, HEAD, POST, PUT, DELETE`, the headers
+`Authorization, Content-Type, Content-Digest, If-Match, If-None-Match, traceparent`, and exposes
+`ETag, Location, Retry-After`.
 See [Console](console.md).
 
 ## Who may call

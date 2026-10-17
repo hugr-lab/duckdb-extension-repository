@@ -385,6 +385,7 @@ func (s *Services) WithAuthz(az authz.Authorizer) *Services {
 	up.Releases = &rel
 	at.Keys = &ks
 	fd.Attachments = &at
+	up.Feeds = &fd // a bundle's feeds, imported under the copy's authorizer too
 	return &Services{Store: s.Store, Sources: s.Sources, Tenants: &ten, Keys: &ks, Releases: &rel, Auth: &au, Upstreams: up, Attachments: &at,
 		Feeds: &fd}
 }

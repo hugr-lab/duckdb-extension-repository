@@ -97,6 +97,7 @@ auth:
   server_admins: [ "role:ops|kista-admin" ]
 gc: { interval: 24h }  # every replica runs this version: purging is on (spec 0016)
 tenants: { min_suspended: 0s }  # spec 0019: deleted at once in the suite
+bundles: { chunk_size: 1MiB }  # spec 0014: an upload of a few MiB in several chunks
 ui:
   environment: e2e
   allowed_origins: [ $host ]

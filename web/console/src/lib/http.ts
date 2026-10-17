@@ -5,6 +5,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Retry-After's seconds, when the answer had one. */
+    readonly retryAfter?: number,
   ) {
     super(message)
   }
@@ -39,6 +41,8 @@ export interface RequestOptions {
   raw?: { body: Blob; type: string }
   /** More request headers (e.g. Kista-Title). */
   headers?: Record<string, string>
+  /** Ends the request (a bundle's chunk stopped or timed out). */
+  signal?: AbortSignal
 }
 
 const reserved = new Set(['authorization', 'if-match', 'content-type', 'accept', 'cookie'])
@@ -49,11 +53,19 @@ export class Client {
 
   constructor(private readonly o: ClientOptions) {}
 
+  /** The API's base the client was made for. */
+  get base() {
+    return this.o.base
+  }
+
   get<T>(path: string, opts: RequestOptions = {}) {
     return this.request<T>('GET', path, opts)
   }
   post<T>(path: string, opts: RequestOptions = {}) {
     return this.request<T>('POST', path, opts)
+  }
+  put<T>(path: string, opts: RequestOptions = {}) {
+    return this.request<T>('PUT', path, opts)
   }
   del<T>(path: string, opts: RequestOptions = {}) {
     return this.request<T>('DELETE', path, opts)
@@ -94,7 +106,8 @@ export class Client {
     }
     if (!res.ok) {
       const detail = (data as { detail?: string; title?: string } | undefined) ?? {}
-      throw new ApiError(res.status, detail.detail || detail.title || `${res.status}`)
+      const after = Number(res.headers.get('Retry-After') ?? '')
+      throw new ApiError(res.status, detail.detail || detail.title || `${res.status}`, Number.isFinite(after) && after > 0 ? after : undefined)
     }
     return { status: res.status, data: data as T, etag: res.headers.get('ETag') ?? '' }
   }
@@ -132,7 +145,7 @@ export class Client {
       headers['Content-Type'] = 'application/json'
       body = JSON.stringify(opts.body)
     }
-    return fetch(this.o.base + path, { method, headers, body, credentials: 'omit', cache: 'no-store' })
+    return fetch(this.o.base + path, { method, headers, body, credentials: 'omit', cache: 'no-store', signal: opts.signal })
   }
 
   private token(renew: boolean): Promise<string> {
@@ -149,8 +162,11 @@ export class Client {
   }
 }
 
-/** A path segment, escaped. */
-export const seg = (s: string) => encodeURIComponent(s)
+/** A path segment, escaped; "." and ".." are refused (the URL parser would resolve them). */
+export const seg = (s: string) => {
+  if (s === '.' || s === '..') throw new Error(`kista console: ${JSON.stringify(s)} is no path segment`)
+  return encodeURIComponent(s)
+}
 
 /** A key fingerprint as a path segment: sha256:… with its colon as is (the API refuses escaped
  * paths; a fingerprint has no other character to escape). */

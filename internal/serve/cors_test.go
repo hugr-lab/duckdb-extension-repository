@@ -46,6 +46,10 @@ func TestCORS(t *testing.T) {
 		!strings.Contains(vary(w), "Origin") || len(reached) != 0 {
 		t.Fatalf("preflight: %d %v %v", w.Code, w.Header(), reached)
 	}
+	// a bundle's chunk (spec 0014): PUT with its Content-Digest; Retry-After readable on a 429
+	if h := w.Header(); !strings.Contains(h.Get("Access-Control-Allow-Methods"), "PUT") || !strings.Contains(h.Get("Access-Control-Allow-Headers"), "Content-Digest") {
+		t.Errorf("a chunk's preflight: %v", h)
+	}
 	if m := do("https", "OPTIONS", "/ui/mfe/kista.js", pre(shell)...).Header().Get("Access-Control-Allow-Methods"); m != "GET, HEAD" {
 		t.Errorf("the module's methods: %q", m)
 	}
@@ -57,6 +61,7 @@ func TestCORS(t *testing.T) {
 	reached = nil
 	w = do("https", "GET", "/api/v1/info", "Origin", shell)
 	if w.Header().Get("Access-Control-Allow-Origin") != shell || !strings.Contains(w.Header().Get("Access-Control-Expose-Headers"), "ETag") ||
+		!strings.Contains(w.Header().Get("Access-Control-Expose-Headers"), "Retry-After") ||
 		vary(w) != "Authorization,Origin" || len(reached) != 1 {
 		t.Errorf("a request from the shell: %v %v", w.Header(), reached)
 	}

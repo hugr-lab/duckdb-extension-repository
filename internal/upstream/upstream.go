@@ -791,8 +791,12 @@ func (s *Service) prefix(u store.Upstream) string {
 // WithAuthz returns a service with another authorizer, sharing the configuration (a run's gates
 // are its own).
 func (s *Service) WithAuthz(az authz.Authorizer) *Service {
-	return &Service{Store: s.Store, Releases: s.Releases, Blob: s.Blob, Fetch: s.Fetch, Authz: az, Config: s.Config,
-		MaxBody: s.MaxBody, MaxIngests: s.MaxIngests, TempDir: s.TempDir, Log: s.Log, DuckDB: s.DuckDB, Credentials: s.Credentials}
+	c := &Service{Store: s.Store, Releases: s.Releases, Blob: s.Blob, Fetch: s.Fetch, Authz: az, Config: s.Config,
+		MaxBody: s.MaxBody, MaxIngests: s.MaxIngests, TempDir: s.TempDir, Feeds: s.Feeds, Uploads: s.Uploads, Log: s.Log,
+		DuckDB: s.DuckDB, Credentials: s.Credentials}
+	wake := s.WakeUploads() // one channel: an upload the API completes wakes this replica's runner
+	c.wakeOnce.Do(func() { c.wakeUploads = wake })
+	return c
 }
 
 // Shadows lists a tenant's shadows (spec 0009): core names it replaced, which its passthrough

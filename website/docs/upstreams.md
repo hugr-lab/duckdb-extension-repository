@@ -544,7 +544,8 @@ tenant ([Configuration](configuration.md)).
 ### Uploading a bundle
 
 A server administrator who cannot run `kista admin` beside the server, nor write to its object
-store, uploads a bundle over the API, and the server imports it. The upload comes in chunks, each
+store, uploads a bundle over the API (or from the console: a tenant's Upstreams page in the server
+scope, see [Console](console.md#screens)), and the server imports it. The upload comes in chunks, each
 its own request, so an ingress's body limit and a broken connection are no obstacle; a broken
 upload resumes with the chunks the server lacks.
 
