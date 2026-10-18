@@ -205,8 +205,8 @@ func TestStatistics(t *testing.T) {
 		key("prod", "acl", true): 5, key("staging", "acl", true): 7}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.st.PutInstallers(ctx, today, map[store.InstallerKey]int64{{TenantID: acme.ID, ChannelID: ids["prod"], Name: "tresor",
-		ExtVersion: "1.0", Platform: "linux_amd64"}: 2}); err != nil {
+	if err := m.st.PutDaily(ctx, today, store.Daily{Installers: map[store.InstallerKey]int64{{TenantID: acme.ID, ChannelID: ids["prod"], Name: "tresor",
+		ExtVersion: "1.0", Platform: "linux_amd64"}: 2}}); err != nil {
 		t.Fatal(err)
 	}
 	total := func(who, q string) (int, int64) {
@@ -317,5 +317,83 @@ func TestStatistics(t *testing.T) {
 	if rel.status != 200 || len(rs) != 1 || rs[0].(map[string]any)["last_7_days"] != float64(5) ||
 		rs[0].(map[string]any)["last_download_day"] != today {
 		t.Fatalf("releases for the extension's admin: %d %s", rel.status, rel.body)
+	}
+}
+
+// Spec 0012 phase 1b: usage statistics, read with download statistics' scopes; rows stay per event
+// and counter, and users come apart.
+func TestUsageStatistics(t *testing.T) {
+	m := newMgmt(t)
+	const T = "/api/v1/tenants/acme"
+	acme, _ := m.st.GetTenant(ctx, "acme")
+	chs, _ := m.st.ListChannels(ctx, "acme")
+	ids := map[string]string{}
+	for _, c := range chs {
+		ids[c.Name] = c.ID
+	}
+	today := store.DayOf(m.st.Now())
+	key := func(ch, name, version, event, counter, status string, authd bool) store.UsageKey {
+		return store.UsageKey{TenantID: acme.ID, ChannelID: ids[ch], Name: name, ExtVersion: version, Event: event, Counter: counter,
+			Status: status, Day: today, Authenticated: authd}
+	}
+	if _, err := m.st.AddUsageCounts(ctx, map[store.UsageKey]int64{
+		key("prod", "tresor", "1.0", "attach", "", "valid", true): 3, key("prod", "tresor", "1.1", "attach", "", "valid", false): 2,
+		key("prod", "tresor", "1.0", "attach", "sources", "valid", true): 9, key("prod", "tresor", "1.0", "attach", "", "missing", true): 4,
+		key("staging", "acl", "1.0", "load", "", "valid", true): 7}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.st.PutDaily(ctx, today, store.Daily{Users: map[store.UsageUserKey]int64{
+		{TenantID: acme.ID, ChannelID: ids["prod"], Name: "tresor", ExtVersion: "1.0", Day: today}: 2,
+		{TenantID: acme.ID, ChannelID: ids["prod"], Name: "tresor", ExtVersion: "1.1", Day: today}: 1,
+		{TenantID: acme.ID, ChannelID: ids["staging"], Name: "acl", ExtVersion: "1.0", Day: today}: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	get := func(who, q string) (int, map[string]any) {
+		r := m.call(t, "GET", T+"/stats/usage"+q, m.toks[who], "")
+		if r.status != 200 {
+			return r.status, nil
+		}
+		return 200, r.json(t)
+	}
+	status, r := get("tenant admin", "?group=extension")
+	if status != 200 {
+		t.Fatalf("tenant admin: %d", status)
+	}
+	rows, users := r["rows"].([]any), r["users"].([]any)
+	row := func(i int) map[string]any { return rows[i].(map[string]any) }
+	// acl load; tresor attach (all statuses summed), tresor attach.sources
+	if len(rows) != 3 || row(0)["extension"] != "acl" || row(0)["value"] != float64(7) || row(1)["event"] != "attach" ||
+		row(1)["counter"] != nil || row(1)["value"] != float64(9) || row(1)["authenticated"] != float64(7) ||
+		row(2)["counter"] != "sources" || row(2)["value"] != float64(9) {
+		t.Fatalf("by extension: %v", r)
+	}
+	if len(users) != 2 || users[1].(map[string]any)["users"] != float64(3) {
+		t.Fatalf("users by extension: %v", users)
+	}
+	// by status: use without a licence apart
+	_, r = get("tenant admin", "?group=status&extension=tresor")
+	if rows := r["rows"].([]any); len(rows) != 3 || rows[0].(map[string]any)["status"] != "missing" || rows[0].(map[string]any)["value"] != float64(4) {
+		t.Fatalf("by status: %v", r)
+	}
+	// a version is an extension's
+	if _, r = get("tenant admin", "?group=version"); r["group"].([]any)[1] != "extension" {
+		t.Fatalf("group: %v", r["group"])
+	}
+	// scopes: an extension's admin reads its extension only; install reads none
+	if status, r := get("ext admin", "?group=extension"); status != 200 || len(r["rows"].([]any)) != 2 || len(r["users"].([]any)) != 1 {
+		t.Fatalf("ext admin: %d %v", status, r)
+	}
+	for who, want := range map[string]int{"anonymous": 401, "install": 404, "no grants": 404} {
+		if status, _ := get(who, ""); status != want {
+			t.Errorf("%s: %d, want %d", who, status, want)
+		}
+	}
+	if status, _ := get("ext admin", "?extension=acl"); status != 404 {
+		t.Errorf("ext admin beyond its scope: %d", status)
+	}
+	for _, q := range []string{"?group=platform", "?from=2020-01-01&to=2026-01-01"} {
+		if status, _ := get("tenant admin", q); status != 400 {
+			t.Errorf("%s: %d", q, status)
+		}
 	}
 }

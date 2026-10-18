@@ -49,8 +49,11 @@ func TestEventsConfig(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if s := cfg.StatisticsSettings(); s.Retention != DefaultStatisticsRetention {
-		t.Errorf("statistics default: %v", s.Retention)
+	if s := cfg.StatisticsSettings(); s.Retention != DefaultStatisticsRetention || !s.UsageAccepted() {
+		t.Errorf("statistics default: %v %v", s.Retention, s.UsageAccepted())
+	}
+	if c, err := Load(write(t, base+"statistics: { usage_accept: false }\n"), nil); err != nil || c.StatisticsSettings().UsageAccepted() {
+		t.Errorf("statistics.usage_accept false: %v", err)
 	}
 	if _, err := Load(write(t, base), []string{"KISTA_EVENTS__RETENTION=1h"}); err == nil {
 		t.Error("events from the environment")

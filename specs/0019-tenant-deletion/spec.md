@@ -163,7 +163,7 @@ others reference. It also means an older binary sees the tenant as suspended, an
       the channel ids in the deletion record), `builds`: each through an indexed column;
   12. `key_events`, `channel_keys`;
   13. `channel_duckdb_versions`, `channels`;
-  14. `download_counts`, `download_installers`;
+  14. `download_counts`, `download_installers`, `usage_counts`, `usage_users` (spec 0012);
   15. the tombstone.
 - **Batches.** A batch deletes at most 1,000 rows in its own transaction, through a bounded
   subquery rather than a list of keys (composite keys would exceed SQL Server's 2,100 parameters):

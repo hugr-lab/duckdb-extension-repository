@@ -501,7 +501,8 @@ Each sink:
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `statistics.retention` | duration | `26280h` (3 years) | How long download counts and installers are kept; 30 days to 10 years. |
+| `statistics.retention` | duration | `26280h` (3 years) | How long download counts and installers, and usage counts and users, are kept; 30 days to 10 years. |
+| `statistics.usage_accept` | bool | `true` | `false` answers licensed extensions' usage reports and keeps nothing ([Licensing](licensing.md#usage-reports)). |
 
 File-only. See [Observability](observability.md).
 

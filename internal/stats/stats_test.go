@@ -68,7 +68,7 @@ func TestCounterAndDaily(t *testing.T) {
 	}
 	now := time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC)
 	st.Now = func() time.Time { return now }
-	c := &stats.Counter{Store: st, Log: slog.New(slog.DiscardHandler)}
+	c := stats.Downloads(st, slog.New(slog.DiscardHandler))
 	k := store.DownloadKey{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Platform: "linux_amd64",
 		DuckDBVersion: "v2.0.0", Day: "2026-10-08"}
 	for range 3 {
@@ -84,6 +84,17 @@ func TestCounterAndDaily(t *testing.T) {
 	for _, who := range []string{"principal:acme/i|alice", "principal:acme/i|alice", "principal:acme/i|bob"} {
 		e, err := st.NewEvent(ctx, tn.ID, who, "install", audit.OK, "channel:prod/ext:acl/release:r1",
 			map[string]any{"release": "r1", "name": "acl", "version": "1.0", "platform": "linux_amd64"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.InsertEvents(ctx, []store.Event{e}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// usage of 2026-10-08 (spec 0012 phase 1b): alice twice and bob on 1.0, alice on 1.1
+	for _, u := range [][2]string{{"principal:acme/i|alice", "1.0"}, {"principal:acme/i|alice", "1.0"}, {"principal:acme/i|bob", "1.0"},
+		{"principal:acme/i|alice", "1.1"}} {
+		e, err := st.NewEvent(ctx, tn.ID, u[0], "extension.use", audit.OK, "channel:prod/ext:acl", map[string]any{"version": u[1]})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -112,6 +123,14 @@ func TestCounterAndDaily(t *testing.T) {
 	if count != 4 || installers != 2 {
 		t.Fatalf("counts and installers: %+v", rows)
 	}
+	urows, err := st.UsageRows(ctx, tn.ID, store.StatsFilter{From: "2026-10-08", To: "2026-10-08"}, 100, nil)
+	users := map[string]int64{}
+	for _, r := range urows {
+		users[r.ExtVersion] += r.Users
+	}
+	if err != nil || users["1.0"] != 2 || users["1.1"] != 1 || len(urows) != 2 {
+		t.Fatalf("usage users: %+v %v", urows, err)
+	}
 	if done, _ := st.StatisticsDayDone(ctx, "2026-10-02"); !done {
 		t.Fatal("a week of days counted (none had installs)")
 	}
@@ -132,5 +151,34 @@ func TestCounterAndDaily(t *testing.T) {
 	d.Once(ctx)
 	if rows, _ := st.DownloadRows(ctx, tn.ID, store.StatsFilter{From: "2026-01-01", To: "2027-12-31"}, 100, nil); len(rows) != 0 {
 		t.Fatalf("after the retention: %+v", rows)
+	}
+}
+
+// A counter's budget is its own: a report whose new keys would go beyond it is dropped whole and
+// counted; counts of keys already waiting are still added.
+func TestCountsBudget(t *testing.T) {
+	var written map[string]int64
+	c := &stats.Counts[string]{Max: 4, Log: slog.New(slog.DiscardHandler), What: "test",
+		Write: func(_ context.Context, m map[string]int64) ([]string, error) { written = m; return nil, nil }}
+	if !c.AddAll(map[string]int64{"a": 1, "b": 2, "c": 3}) {
+		t.Fatal("within the budget")
+	}
+	if c.AddAll(map[string]int64{"a": 1, "d": 1, "e": 1}) || c.Dropped() != 1 {
+		t.Fatalf("beyond the budget: dropped %d", c.Dropped())
+	}
+	if !c.AddAll(map[string]int64{"a": 1, "d": 1}) {
+		t.Fatal("up to the budget")
+	}
+	for range 2 {
+		if !c.AddAll(map[string]int64{"c": stats.MaxCount}) {
+			t.Fatal("adding to a key waiting")
+		}
+	}
+	c.Flush(ctx)
+	if written["c"] != stats.MaxCount {
+		t.Fatalf("a sum saturates: %d", written["c"])
+	}
+	if written["a"] != 2 || written["d"] != 1 || written["e"] != 0 || len(written) != 4 {
+		t.Fatalf("written: %v", written)
 	}
 }

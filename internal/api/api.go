@@ -649,6 +649,7 @@ func init() {
 		// spec 0010 phase 2a: download statistics
 		{"tenants/{t}/stats/downloads", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsDownloads)}},
 		{"tenants/{t}/stats/releases", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsReleases)}},
+		{"tenants/{t}/stats/usage", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsUsage)}},
 		{"events/{id}", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvent)}},
 		{"event-kinds", idx((*Handler).eventKinds)},
 		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listPublishers),

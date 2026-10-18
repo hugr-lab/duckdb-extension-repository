@@ -5,8 +5,8 @@ title: State
 # State
 
 kista keeps its metadata in one database: tenants, channels, keys and their states, DuckDB versions,
-releases and their signatures, issuers, grants, publishers, upstreams, attachments, events and
-download statistics. Extension bodies are not in the database; they live in blob storage (see
+releases and their signatures, issuers, grants, publishers, upstreams, attachments, licences,
+events, and download and usage statistics. Extension bodies are not in the database; they live in blob storage (see
 [Storage](storage.md)). Signing keys are not in it either: only their public keys and signer
 references are (see [Signing keys](signing-keys.md)).
 

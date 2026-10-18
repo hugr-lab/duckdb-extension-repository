@@ -1,6 +1,6 @@
 # Spec 0012: Licensing and usage reports
 
-- **Status**: accepted; phase 1a implemented (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI)
+- **Status**: accepted; phases 1a (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI) and 1b (usage reports) implemented
 - **Date**: 2026-10-17
 - **Author**: vgsml, Claude
 
@@ -320,14 +320,22 @@ onward to its own regional or air-gapped kistas without any of them issuing anyt
   `platform` and `duckdb_version` follow spec 0006's grammars; otherwise the report is dropped
   silently (`204`). `status` is the SDK's licence status (`missing` when there is none). Event and
   counter names are `[a-z][a-z0-9_.]{0,63}`; at most 32 events and 16 counters per event; counts and
-  counter values are integers from 0 to 2^53-1. A report that breaks these rules answers `400` with
-  the rule; this happens only after authorisation.
+  counter values are integers from 0 to 2^53-1; `version`, `platform`, `duckdb_version` and
+  `status` are required, and `license` is a licence id. A report that breaks these rules answers
+  `400` with the rule, as `<rule>: <message>` (`json`, `version`, `status`, `license`, `events`,
+  `name`, `value`; `415` and `content` without `application/json`, `413` and `size` over 64 KiB);
+  this happens only after authorisation. Unknown members are ignored, so a later SDK may send more.
 - The answer is `204`. A report is the client's claim, not evidence: anyone who may install a public
   release may send one.
-- **Counts** are summed in memory per `(tenant, channel, name, version, event, counter, day,
-  authenticated)`, where `counter` is `''` for the event's own count. Every minute they are upserted
+- **Counts** are summed in memory per `(tenant, channel, name, version, event, counter, status, day,
+  authenticated)`, where `counter` is `''` for the event's own count and `status` is the report's,
+  so use without a licence can be shown apart (1d). Every minute they are upserted
   into `usage_counts`, as spec 0010 counts downloads: key order, 500 keys a transaction, the same
-  SQL Server lock pattern (`kista/usage_counts`). The budget is usage's own: 100,000 keys waiting,
+  SQL Server lock pattern (`kista/usage_counts`). Sums saturate at 2^53-1, in memory and in the
+  database, so the sum of claims never overflows. Event names are the client's, so a replica keeps
+  at most 256 distinct (event, counter, status) keys per (channel, name, version) a day; a report
+  adding more is dropped whole and counted in the metric. The body is read within 10 seconds. The
+  budget is usage's own: 100,000 keys waiting,
   beyond which reports are dropped and counted in a metric. A burst of reports never takes download
   counts with it.
 - **Audit**: a report by a token holding `install` on the name is an `extension.use` event:
@@ -351,8 +359,9 @@ onward to its own regional or air-gapped kistas without any of them issuing anyt
 
 ```text
 GET /api/v1/tenants/{t}/stats/usage?from=&to=&channel=&extension=&group=<d>[,<d>]
-    d: day | channel | extension | version
-    → {from, to, group, rows: [{dimensions…, event, counter, value}], users: [{dimensions…, users}]}
+    d: day | channel | extension | version | status
+    → {from, to, group, rows: [{dimensions…, event, counter, value, authenticated}],
+       users: [{dimensions…, users}]}
 ```
 
 Readers, scopes, `404` outside a scope, and the limits on `from` and `to` are spec 0010's for
@@ -405,8 +414,8 @@ the organisation's kista, and that one forwards to Enterest:
 
 ```text
 licenses        (above)                                                            1a, 0024
-usage_counts    tenant_id, channel_id, name, ext_version, event, counter, day,
-                authenticated, value; primary key all but value                    1b, 0025
+usage_counts    tenant_id, channel_id, name, ext_version, event, counter, status,
+                day, authenticated, value; primary key all but value               1b, 0025
 usage_users     tenant_id, channel_id, name, ext_version, day, users;
                 primary key all but users; replaced by the hourly pass             1b, 0025
 usage_received  tenant_id, channel_id, sender, day, name, ext_version, event,

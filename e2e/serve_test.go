@@ -86,8 +86,8 @@ type kista struct {
 	handler *serve.Handler
 	ten     *tenants.Service
 	blob    *blob.Service
-	events  *writer.Writer // install events (spec 0010 phase 2)
-	counts  *stats.Counter // download counts
+	events  *writer.Writer                   // install events (spec 0010 phase 2)
+	counts  *stats.Counts[store.DownloadKey] // download counts
 }
 
 func (k *kista) httpURL() string  { return "http://" + k.addr + "/acme/prod" }
@@ -160,7 +160,7 @@ func startKistaWith(t *testing.T, b *build, verifier *auth.Verifier) *kista {
 		Authz:     grants, Tenants: &mten, Auth: &tenants.AuthAdmin{Store: st, Authz: grants, PublicURL: "https://" + k.addr},
 		Keys: &mks, Releases: &release.Service{Store: st, Blob: bs, Signers: &mks, Authz: grants}})
 	k.events = &writer.Writer{Store: st, Log: slog.New(slog.DiscardHandler)}
-	k.counts = &stats.Counter{Store: st, Log: slog.New(slog.DiscardHandler)}
+	k.counts = stats.Downloads(st, slog.New(slog.DiscardHandler))
 	k.handler = serve.NewHandler(st, ks, bs, serve.Options{MaxDownloads: 16, MaxDownloadsPerClient: 16, MinRate: 1024,
 		Events: k.events, Downloads: k.counts,
 		WriteIdleTimeout: 30 * time.Second, Log: slog.New(slog.NewJSONHandler(&k.access, nil)), Verifier: verifier,

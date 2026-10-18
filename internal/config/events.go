@@ -137,10 +137,16 @@ func validateEvents(bad func(string, ...any), c Config) {
 	}
 }
 
-// Statistics configures download statistics (spec 0010 phase 2a).
+// Statistics configures download statistics (spec 0010 phase 2a) and usage reports (spec 0012
+// phase 1b).
 type Statistics struct {
 	Retention time.Duration `yaml:"retention"` // default 3 years
+	// UsageAccept false answers usage reports and keeps nothing; default true.
+	UsageAccept *bool `yaml:"usage_accept"`
 }
+
+// UsageAccepted reports whether usage reports are kept (statistics.usage_accept, default true).
+func (s Statistics) UsageAccepted() bool { return s.UsageAccept == nil || *s.UsageAccept }
 
 // DefaultStatisticsRetention is how long counts and installers are kept.
 const DefaultStatisticsRetention = 3 * 365 * 24 * time.Hour

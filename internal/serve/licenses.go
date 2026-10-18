@@ -16,29 +16,12 @@ import (
 // private licence goes to a token holding install on the name, a public one also to whoever is
 // served a public release of it; everything else answers as a missing path does for the caller.
 func (h *Handler) licenses(w http.ResponseWriter, r *http.Request, rt route) {
+	cc, r, ok := h.caller(w, r, rt)
+	if !ok {
+		return
+	}
 	ctx := r.Context()
-	sc, err := h.st.GetServeChannel(ctx, rt.tenant, rt.channel)
-	if err != nil || sc.Tenant.State != store.TenantActive {
-		h.storeError(w, err)
-		return
-	}
-	if sc.Channel.Kind != store.ChannelSigned {
-		notFound(w) // a passthrough channel has no licences
-		return
-	}
-	installs, actor, r := h.identify(r, sc, rt.kind.String())
-	missing := func() {
-		if actor != "" {
-			notFound(w) // a valid token without the grant, or no licence: the same
-		} else {
-			h.missing(w)
-		}
-	}
-	snap, err := h.rv.snaps.Get(ctx, sc.Channel)
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
+	sc, installs, actor, snap, missing := cc.sc, cc.installs, cc.actor, cc.snap, cc.missing
 	// may reports whether the caller may have a licence for a name in this channel
 	may := func(l store.License) bool {
 		if installs(l.Name) && snap.Live(l.Name, release.Everything) {
@@ -84,14 +67,15 @@ func (h *Handler) licenses(w http.ResponseWriter, r *http.Request, rt route) {
 	// decided from the snapshot first: a caller who could have no licence costs no database read
 	could := installs(rt.name) && snap.Live(rt.name, release.Everything) || snap.Live(rt.name, release.PublicOnly)
 	var l store.License
-	ok := false
+	found := false
 	if could {
-		if l, ok, err = h.o.Licenses.Serve(ctx, sc.Tenant.ID, rt.name); err != nil {
+		var err error
+		if l, found, err = h.o.Licenses.Serve(ctx, sc.Tenant.ID, rt.name); err != nil {
 			h.fail(w, err)
 			return
 		}
 	}
-	if !ok || !may(l) {
+	if !found || !may(l) {
 		missing()
 		// a valid token without install on the name: refused, as on the binary routes
 		if actor != "" && !installs(rt.name) && h.o.Events != nil {
@@ -121,4 +105,41 @@ func licenseHeaders(hd http.Header) {
 	hd.Set("X-Content-Type-Options", "nosniff")
 	hd.Set("Cache-Control", "private, no-store")
 	hd.Set("Vary", "Authorization")
+}
+
+// channelCaller is who calls a spec 0012 route of a signed channel, and the channel's snapshot.
+type channelCaller struct {
+	sc       store.ServeChannel
+	installs func(name string) bool
+	actor    string // "" for no valid token
+	snap     *release.Snapshot
+	missing  func() // the answer of a missing path for this caller
+}
+
+// caller reads the channel and the caller of a spec 0012 route; false when it answered (a missing
+// tenant or channel, a passthrough channel, a failure).
+func (h *Handler) caller(w http.ResponseWriter, r *http.Request, rt route) (channelCaller, *http.Request, bool) {
+	ctx := r.Context()
+	sc, err := h.st.GetServeChannel(ctx, rt.tenant, rt.channel)
+	if err != nil || sc.Tenant.State != store.TenantActive {
+		h.storeError(w, err)
+		return channelCaller{}, r, false
+	}
+	if sc.Channel.Kind != store.ChannelSigned {
+		notFound(w) // a passthrough channel has no licences and takes no reports
+		return channelCaller{}, r, false
+	}
+	installs, actor, r := h.identify(r, sc, rt.kind.String())
+	snap, err := h.rv.snaps.Get(ctx, sc.Channel)
+	if err != nil {
+		h.fail(w, err)
+		return channelCaller{}, r, false
+	}
+	return channelCaller{sc: sc, installs: installs, actor: actor, snap: snap, missing: func() {
+		if actor != "" {
+			notFound(w) // a valid token without the grant, or nothing there: the same
+		} else {
+			h.missing(w)
+		}
+	}}, r, true
 }

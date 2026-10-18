@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,35 +27,46 @@ func DayOf(t time.Time) string { return t.UTC().Format(time.DateOnly) }
 // Server an update, then an insert where none was updated, under the lock kista/download_counts.
 // On an error, the counts of the transactions that committed are not returned: done holds them.
 func (s *Store) AddDownloadCounts(ctx context.Context, counts map[DownloadKey]int64) (done []DownloadKey, err error) {
-	keys := make([]DownloadKey, 0, len(counts))
-	for k := range counts {
-		keys = append(keys, k)
-	}
-	slices.SortFunc(keys, func(a, b DownloadKey) int {
+	return addCounts(ctx, s, "kista/download_counts", counts, func(a, b DownloadKey) int {
 		return cmp.Or(cmp.Compare(a.TenantID, b.TenantID), cmp.Compare(a.ChannelID, b.ChannelID), cmp.Compare(a.Name, b.Name),
 			cmp.Compare(a.ExtVersion, b.ExtVersion), cmp.Compare(a.Platform, b.Platform), cmp.Compare(a.DuckDBVersion, b.DuckDBVersion),
 			cmp.Compare(a.Day, b.Day), cmp.Compare(boolInt(a.Authenticated), boolInt(b.Authenticated)))
+	}, func(k DownloadKey) string { return k.TenantID }, func(tx *Tx, k DownloadKey, n int64) error {
+		return tx.upsertCount(ctx, "download_counts", "count",
+			[]string{"tenant_id", "channel_id", "name", "ext_version", "platform", "duckdb_version", "day", "authenticated"},
+			[]any{k.TenantID, k.ChannelID, k.Name, k.ExtVersion, k.Platform, k.DuckDBVersion, k.Day, k.Authenticated}, n)
 	})
-	lock := ""
-	if s.d.Name == "sqlserver" {
-		lock = "kista/download_counts"
+}
+
+// addCounts adds counts in key order, in transactions of at most 500 keys, skipping the keys of
+// tenants being deleted (spec 0019); on SQL Server under lock. done holds the keys of the
+// transactions that committed.
+func addCounts[K comparable](ctx context.Context, s *Store, lock string, counts map[K]int64, order func(a, b K) int,
+	tenant func(K) string, add func(tx *Tx, k K, n int64) error) (done []K, err error) {
+	keys := make([]K, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, order)
+	if s.d.Name != "sqlserver" {
+		lock = ""
 	}
 	for len(keys) > 0 {
 		batch := keys[:min(len(keys), 500)]
 		if err := s.InTx(ctx, lock, func(tx *Tx) error {
 			ids := make([]string, 0, len(batch))
 			for _, k := range batch {
-				ids = append(ids, k.TenantID)
+				ids = append(ids, tenant(k))
 			}
 			closed, err := tx.closedTenants(ctx, ids)
 			if err != nil {
 				return err
 			}
 			for _, k := range batch {
-				if closed[k.TenantID] {
+				if closed[tenant(k)] {
 					continue // spec 0019: done, so the counter does not keep it
 				}
-				if err := tx.addDownloadCount(ctx, k, counts[k]); err != nil {
+				if err := add(tx, k, counts[k]); err != nil {
 					return err
 				}
 			}
@@ -68,24 +80,25 @@ func (s *Store) AddDownloadCounts(ctx context.Context, counts map[DownloadKey]in
 	return done, nil
 }
 
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}
+// MaxCount is the most a stored count holds: additions saturate there (2^53-1, exact in JSON), so
+// that the sum of clients' claims never overflows a bigint.
+const MaxCount = 1<<53 - 1
 
-func (tx *Tx) addDownloadCount(ctx context.Context, k DownloadKey, n int64) error {
-	args := []any{k.TenantID, k.ChannelID, k.Name, k.ExtVersion, k.Platform, k.DuckDBVersion, k.Day, k.Authenticated}
+// upsertCount adds n to the row of table keyed by cols = args, saturating at MaxCount: an insert
+// that adds on conflict, or on SQL Server an update, then an insert where none was updated.
+func (tx *Tx) upsertCount(ctx context.Context, table, col string, cols []string, args []any, n int64) error {
+	list := strings.Join(cols, ", ")
+	marks := strings.Repeat("?, ", len(cols)) + "?"
 	if tx.s.d.Name != "sqlserver" {
-		_, err := tx.exec(ctx, "INSERT INTO download_counts (tenant_id, channel_id, name, ext_version, platform, duckdb_version, "+
-			"day, authenticated, count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tenant_id, channel_id, name, ext_version, "+
-			"platform, duckdb_version, day, authenticated) DO UPDATE SET count = download_counts.count + excluded.count",
-			append(args, n)...)
+		cur := table + "." + col
+		_, err := tx.exec(ctx, "INSERT INTO "+table+" ("+list+", "+col+") VALUES ("+marks+") ON CONFLICT ("+list+") DO UPDATE SET "+
+			col+" = CASE WHEN "+cur+" > "+maxCount+" - excluded."+col+" THEN "+maxCount+" ELSE "+cur+" + excluded."+col+" END",
+			append(args, min(n, MaxCount))...)
 		return err
 	}
-	res, err := tx.exec(ctx, "UPDATE download_counts SET count = count + ? WHERE tenant_id = ? AND channel_id = ? AND name = ? "+
-		"AND ext_version = ? AND platform = ? AND duckdb_version = ? AND day = ? AND authenticated = ?", append([]any{n}, args...)...)
+	n = min(n, MaxCount)
+	res, err := tx.exec(ctx, "UPDATE "+table+" SET "+col+" = CASE WHEN "+col+" > "+maxCount+" - ? THEN "+maxCount+" ELSE "+col+" + ? END WHERE "+
+		strings.Join(cols, " = ? AND ")+" = ?", append([]any{n, n}, args...)...)
 	if err != nil {
 		return err
 	}
@@ -93,9 +106,17 @@ func (tx *Tx) addDownloadCount(ctx context.Context, k DownloadKey, n int64) erro
 	if err != nil || m == 1 {
 		return err
 	}
-	_, err = tx.exec(ctx, "INSERT INTO download_counts (tenant_id, channel_id, name, ext_version, platform, duckdb_version, "+
-		"day, authenticated, count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", append(args, n)...)
+	_, err = tx.exec(ctx, "INSERT INTO "+table+" ("+list+", "+col+") VALUES ("+marks+")", append(args, n)...)
 	return err
+}
+
+var maxCount = strconv.FormatInt(MaxCount, 10)
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // InstallerKey is what daily installers are counted by.
@@ -113,28 +134,49 @@ func (s *Store) StatisticsDayDone(ctx context.Context, day string) (bool, error)
 	return err == nil, err
 }
 
-// PutInstallers stores a day's installers (replacing what a pass interrupted before it left) and
-// marks the day done, in one transaction; the day's lock orders two passes that both believe they
-// hold the daily lease (one lost it mid-pass).
-func (s *Store) PutInstallers(ctx context.Context, day string, rows map[InstallerKey]int64) error {
+// Daily is a finished day's distinct principals: installers per release (spec 0010) and users of
+// usage reports per (channel, name, version) (spec 0012 phase 1b).
+type Daily struct {
+	Installers map[InstallerKey]int64
+	Users      map[UsageUserKey]int64
+}
+
+// PutDaily stores a day's installers and users (replacing what a pass interrupted before it left)
+// and marks the day done, in one transaction; the day's lock orders two passes that both believe
+// they hold the daily lease (one lost it mid-pass).
+func (s *Store) PutDaily(ctx context.Context, day string, d Daily) error {
 	return s.InTx(ctx, "kista/statistics/"+day, func(tx *Tx) error {
-		if _, err := tx.exec(ctx, "DELETE FROM download_installers WHERE day = ?", day); err != nil {
-			return err
+		for _, t := range []string{"download_installers", "usage_users"} {
+			if _, err := tx.exec(ctx, "DELETE FROM "+t+" WHERE day = ?", day); err != nil {
+				return err
+			}
 		}
-		ids := make([]string, 0, len(rows))
-		for k := range rows {
+		ids := make([]string, 0, len(d.Installers)+len(d.Users))
+		for k := range d.Installers {
+			ids = append(ids, k.TenantID)
+		}
+		for k := range d.Users {
 			ids = append(ids, k.TenantID)
 		}
 		closed, err := tx.closedTenants(ctx, ids)
 		if err != nil {
 			return err
 		}
-		for k, n := range rows {
+		for k, n := range d.Installers {
 			if closed[k.TenantID] {
 				continue
 			}
 			if _, err := tx.exec(ctx, "INSERT INTO download_installers (tenant_id, channel_id, name, ext_version, platform, day, installers) "+
 				"VALUES (?, ?, ?, ?, ?, ?, ?)", k.TenantID, k.ChannelID, k.Name, k.ExtVersion, k.Platform, day, n); err != nil {
+				return err
+			}
+		}
+		for k, n := range d.Users {
+			if closed[k.TenantID] {
+				continue
+			}
+			if _, err := tx.exec(ctx, "INSERT INTO usage_users (tenant_id, channel_id, name, ext_version, day, users) "+
+				"VALUES (?, ?, ?, ?, ?, ?)", k.TenantID, k.ChannelID, k.Name, k.ExtVersion, day, n); err != nil {
 				return err
 			}
 		}
@@ -146,10 +188,10 @@ func (s *Store) PutInstallers(ctx context.Context, day string, rows map[Installe
 	})
 }
 
-// PruneStatistics deletes counts, installers and day marks before a day.
+// PruneStatistics deletes counts, installers, usage and day marks before a day.
 func (s *Store) PruneStatistics(ctx context.Context, before string) (int, error) {
 	total := 0
-	for _, t := range []string{"download_counts", "download_installers", "statistics_days"} {
+	for _, t := range []string{"download_counts", "download_installers", "usage_counts", "usage_users", "statistics_days"} {
 		res, err := s.db.ExecContext(ctx, s.d.rebind("DELETE FROM "+t+" WHERE day < ?"), before)
 		if err != nil {
 			return total, err
@@ -311,9 +353,14 @@ func (s *Store) ReleaseStats(ctx context.Context, tenantID, today string, f Stat
 	return out, nil
 }
 
-// InstallEvents calls fn with every install event of a tenant's day, in pages, oldest first (the
-// index on tenant_id, kind, at).
+// InstallEvents calls fn with every install event of a tenant's day, in pages, oldest first.
 func (s *Store) InstallEvents(ctx context.Context, tenantID, day string, fn func(Event) error) error {
+	return s.DayEvents(ctx, tenantID, "install", day, fn)
+}
+
+// DayEvents calls fn with every event of a kind in a tenant's day, in pages, oldest first (the
+// index on tenant_id, kind, at).
+func (s *Store) DayEvents(ctx context.Context, tenantID, kind, day string, fn func(Event) error) error {
 	from, err := time.Parse(time.DateOnly, day)
 	if err != nil {
 		return fmt.Errorf("%w: a day", ErrInvalid)
@@ -322,8 +369,8 @@ func (s *Store) InstallEvents(ctx context.Context, tenantID, day string, fn func
 	var afterAt time.Time
 	afterID := ""
 	for {
-		q := "SELECT " + eventCols + " FROM events WHERE tenant_id = ? AND kind = 'install' AND at >= ? AND at < ?"
-		args := []any{tenantID, s.d.timeArg(from), s.d.timeArg(to)}
+		q := "SELECT " + eventCols + " FROM events WHERE tenant_id = ? AND kind = ? AND at >= ? AND at < ?"
+		args := []any{tenantID, kind, s.d.timeArg(from), s.d.timeArg(to)}
 		if afterID != "" {
 			q += " AND (at > ? OR at = ? AND id > ?)"
 			args = append(args, s.d.timeArg(afterAt), s.d.timeArg(afterAt), afterID)

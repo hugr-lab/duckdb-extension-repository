@@ -284,6 +284,7 @@ var reapSteps = []reapStep{
 	{"key_events", "key_id IN (SELECT id FROM channel_keys WHERE tenant_id = ?)", false}, {"channel_keys", ofTenant, false},
 	{"channel_duckdb_versions", ofChannels, false}, {"channels", ofTenant, false},
 	{"download_counts", ofTenant, false}, {"download_installers", ofTenant, false},
+	{"usage_counts", ofTenant, false}, {"usage_users", ofTenant, false},
 }
 
 // KeptTables hold a deleted tenant's rows for good (spec 0019): its tombstone, its deletion record,
