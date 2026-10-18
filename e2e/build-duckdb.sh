@@ -4,7 +4,8 @@
 # Produces in <out>:
 #   lib/libduckdb.{so,dylib}  the library the runner links (build-runner.sh)
 #   include/duckdb.h          its C API header
-#   extensions/               loadable_extension_demo, demo_capi, httpfs (unsigned, as built)
+#   extensions/               loadable_extension_demo, demo_capi, httpfs, kista_demo (unsigned, as
+#                             built; kista_demo is sdk/cpp's test extension, with the SDK's test key)
 #   sdk/                      what the kista C++ SDK builds against (sdk/cpp, spec 0012): DuckDB's
 #                             headers (include/, third_party/), lib/libduckdb_mbedtls.a and libduckdb
 # and, as working directories, src/ (the verified checkout) and build/ (the cmake tree). CI caches
@@ -14,6 +15,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/.." && pwd)
 out=${1:?usage: build-duckdb.sh <out>}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
@@ -60,16 +62,16 @@ cmake -S "$src" -B "$build" -G Ninja \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DSTATICALLY_LINK_EXTENSIONS=core_functions \
 	-DBUILD_EXTENSIONS=demo_capi \
-	-DDUCKDB_EXTENSION_CONFIGS="$src/.github/config/extensions/httpfs.cmake" \
+	-DDUCKDB_EXTENSION_CONFIGS="$src/.github/config/extensions/httpfs.cmake;$root/sdk/cpp/test/extension/config.cmake" \
 	-DBUILD_UNITTESTS=ON -DBUILD_SHELL=OFF \
 	${openssl_root:+-DOPENSSL_ROOT_DIR="$openssl_root"} \
 	${launcher[@]+"${launcher[@]}"}
 
 ninja -C "$build" duckdb loadable_extension_demo_loadable_extension \
-	demo_capi_loadable_extension httpfs_loadable_extension
+	demo_capi_loadable_extension httpfs_loadable_extension kista_demo_loadable_extension
 
 mkdir -p "$out/extensions"
-for name in loadable_extension_demo demo_capi httpfs; do
+for name in loadable_extension_demo demo_capi httpfs kista_demo; do
 	file=$(find "$build" -name "$name.duckdb_extension" -type f | head -1)
 	[ -n "$file" ] || { echo "$name.duckdb_extension not built" >&2; exit 1; }
 	cp "$file" "$out/extensions/"

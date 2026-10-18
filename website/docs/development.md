@@ -344,15 +344,19 @@ make e2e
 
 - The first build takes 30-45 minutes; with ccache installed, a rebuild takes minutes.
 - The build goes to `e2e/.build` (override with `E2E_BUILD=/path`): `lib/libduckdb`,
-  `include/duckdb.h`, the test extensions (`loadable_extension_demo`, `demo_capi`, `httpfs`,
-  unsigned as built) and the `runner`.
+  `include/duckdb.h`, the test extensions (`loadable_extension_demo`, `demo_capi`, `httpfs`, and
+  `kista_demo`, built from `sdk/cpp/test/extension` with the C++ SDK and its test key; unsigned as
+  built) and the `runner`. An SDK change rebuilds `kista_demo` with the rest (ccache keeps it
+  short).
 - The checkout is verified against `DUCKDB_COMMIT` and must have no local changes.
 - `make e2e` sets `KISTA_E2E_DUCKDB` to the build directory; without it the e2e cases skip.
 - The build also fills `e2e/.build/sdk` with what the C++ SDK builds against: DuckDB's headers,
   its bundled mbedtls and the library. `make sdk-test` runs
   every licence vector (`internal/license/testdata/vectors.json`) through the C++ verifier, which
   must agree with the Go one on each status, rule and claim, and checks that the library an
-  extension links (`kista_sdk`) trusts no test key.
+  extension links (`kista_sdk`) trusts no test key. `e2e/sdk_test.go` runs `kista_demo` against
+  kista serve: the licence fetched with an http secret and kept beside the module, an upgrade, the
+  file offline, `Check()` on an expired or a missing licence, and usage in the statistics.
 
 ## The console
 

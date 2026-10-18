@@ -25,6 +25,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
@@ -88,6 +90,9 @@ type kista struct {
 	blob    *blob.Service
 	events  *writer.Writer                   // install events (spec 0010 phase 2)
 	counts  *stats.Counts[store.DownloadKey] // download counts
+	// licences and usage reports (spec 0012), with startKistaLicensed
+	licenses *licenses.Service
+	usage    *stats.Counts[store.UsageKey]
 }
 
 func (k *kista) httpURL() string  { return "http://" + k.addr + "/acme/prod" }
@@ -97,6 +102,13 @@ func startKista(t *testing.T, b *build) *kista { return startKistaWith(t, b, nil
 
 // startKistaWith starts kista serve with a token verifier (nil: anonymous callers only).
 func startKistaWith(t *testing.T, b *build, verifier *auth.Verifier) *kista {
+	t.Helper()
+	return startKistaLicensed(t, b, verifier, nil)
+}
+
+// startKistaLicensed starts kista serve with licensing on for the trusted licence keys (spec 0012:
+// the licence and usage routes; none: off).
+func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, licenseKeys license.Keys) *kista {
 	t.Helper()
 	ctx := context.Background()
 	st, err := store.OpenSQLite(ctx, filepath.Join(t.TempDir(), "kista.db"))
@@ -161,8 +173,15 @@ func startKistaWith(t *testing.T, b *build, verifier *auth.Verifier) *kista {
 		Keys: &mks, Releases: &release.Service{Store: st, Blob: bs, Signers: &mks, Authz: grants}})
 	k.events = &writer.Writer{Store: st, Log: slog.New(slog.DiscardHandler)}
 	k.counts = stats.Downloads(st, slog.New(slog.DiscardHandler))
+	var served serve.Licenses
+	var usage serve.UsageCounter
+	if len(licenseKeys) > 0 {
+		k.licenses = &licenses.Service{Store: st, Authz: authz.ServerAdmin{}, Keys: licenseKeys, Log: slog.New(slog.DiscardHandler)}
+		k.usage = stats.Usage(st, slog.New(slog.DiscardHandler))
+		served, usage = licenses.Served{Service: k.licenses}, k.usage
+	}
 	k.handler = serve.NewHandler(st, ks, bs, serve.Options{MaxDownloads: 16, MaxDownloadsPerClient: 16, MinRate: 1024,
-		Events: k.events, Downloads: k.counts,
+		Events: k.events, Downloads: k.counts, Licenses: served, Usage: usage,
 		WriteIdleTimeout: 30 * time.Second, Log: slog.New(slog.NewJSONHandler(&k.access, nil)), Verifier: verifier,
 		PublicURL: "https://" + k.addr, Auths: auths, Snapshots: snaps, API: apiH})
 	k.handler.SetReady(true)

@@ -48,7 +48,7 @@ func needBuild(t *testing.T) *build {
 
 func loadBuild(dir string) (*build, error) {
 	b := &build{dir: dir, runner: filepath.Join(dir, "runner"), extensions: map[string]string{}}
-	for _, name := range []string{"loadable_extension_demo", "demo_capi", "httpfs"} {
+	for _, name := range []string{"loadable_extension_demo", "demo_capi", "httpfs", "kista_demo"} {
 		p := filepath.Join(dir, "extensions", name+".duckdb_extension")
 		if _, err := os.Stat(p); err != nil {
 			return nil, fmt.Errorf("e2e build: %w", err)

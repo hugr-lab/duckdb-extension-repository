@@ -1,6 +1,6 @@
 # Spec 0012: Licensing and usage reports
 
-- **Status**: accepted; phases 1a (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI), 1b (usage reports), 1c (forwarding), 1d (the console) and 2 part 1 (the SDK's verifier) implemented
+- **Status**: implemented; phases 1a (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI), 1b (usage reports), 1c (forwarding), 1d (the console) and 2 (the C++ SDK: part 1 the verifier, part 2 the DuckDB side) implemented
 - **Date**: 2026-10-17
 - **Author**: vgsml, Claude
 
@@ -516,7 +516,7 @@ API extensions is a follow-up. The interface the developer sees:
 // in the extension's Load: registers the load hook and myext_license()
 kista::License::Register(loader, "myext");
 
-auto &lic = kista::License::Get(context, "myext");  // cached; never throws for status
+auto lic = kista::License::Get(context, "myext");   // cached; never throws for status
 lic.Check();                                         // throws unless valid or grace: the one-line gate
 lic.Status();                                        // valid | grace | expired | missing | invalid | …
 lic.Plan();                                          // "pro"
@@ -530,8 +530,9 @@ kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
   your administrator, or place myext.kista-license next to the extension`. In `grace` it also logs a
   warning, once. A developer calls it from a table function's bind or a scalar function's first
   call: one line per entry point, and after the first call a cached lookup.
-- **`myext_license()`** is a table function `Register` adds. It returns the status, plan, expiry,
-  holder, source (file or repository) and limits, so a user or an administrator can see why a
+- **`myext_license()`** is a table function `Register` adds. It returns the status, plan, holder,
+  holder id, licence id, issuer, issue and expiry times, the end of grace, the source (file or
+  repository), the limits (as JSON) and a message, so a user or an administrator can see why a
   refusal happened. **`myext_license_refresh()`** fetches the licence again now, in a running
   process (after an upgrade, say), and returns the same row.
 - **Where the licence comes from.** `Register` adds an `ExtensionCallback`. Its `OnExtensionLoaded`
@@ -542,38 +543,67 @@ kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
      air-gapped user without a kista places one.
   2. The repository: `install_info->repository_url`, the prefix as typed in `CREATE EXTENSION
      REPOSITORY`, with a trailing `/` trimmed (`extension_install_dynamic.cpp:192,287`). It is empty
-     for a static or a `LOAD '<path>'` extension, and then only the file is used.
+     for a static or a `LOAD '<path>'` extension, and a local (non-http) repository counts as none:
+     then only the file is used.
   - **The fetch** autoloads httpfs, as `INSTALL` does, and goes through
     `HTTPTransportManager::CreateSession(context, url)`. httpfs adds the Bearer token of the http
     secret matching the URL, so a user who could `INSTALL` needs nothing else. The secret must still
     exist in a later process (persistent, or created again), or only the file works.
   - **When:** at every load, conditionally (`If-None-Match` with the file's licence), so a changed
     plan arrives at the next `LOAD` and an unchanged one costs a `304`; again when the licence in use
-    is past half its lifetime, on the next `Get`; and on `myext_license_refresh()`. A 5-second
-    timeout and no retries; a failed fetch keeps the file, and a `404` from the repository keeps it
-    too (a revoked licence simply stops being renewed).
+    is past half its lifetime, on the next `Get`, at most hourly; and on `myext_license_refresh()`.
+    A 5-second timeout and no retries; a failed fetch keeps the file, and a `404` from the repository
+    keeps it too (a revoked licence simply stops being renewed).
+  - **The load hook's connection** (confirmed on the pin): `OnExtensionLoaded` has no
+    `ClientContext`, so the SDK opens a connection of its own, in a transaction. It sees the http
+    secret and global settings, but not the user's session settings (a session-only
+    `ca_cert_file`, say). A fetch there that gets no answer settling it (anything but `200`, `304` or
+    `404`) is made again once, on the first `Get`, with the user's context. After that, `Get` asks
+    at most hourly while there is no answer, no usable licence, or the licence is past half its
+    lifetime. HTTP never runs under the SDK's own lock.
+  - **No downgrade:** a licence from the repository replaces a usable one (`valid` or `grace`) only
+    if it is usable too and not older (`iat`). A stale or compromised repository cannot swap a
+    working licence for an expired or older one. A licence that does not verify is never kept. The
+    body is read up to the licence's maximum size.
+  - **The file** is written through a temporary file of its own, created exclusively and never
+    through a link, flushed, then renamed. Only a regular file is read.
   - **Where the result goes:** the fetched licence is written beside the module, through a temporary
     file and a rename, best effort, because the directory may be read-only.
 - **Trust**: Enterest's licence public keys are compiled in. A test build may add the vectors' test
   key, only through a separate test-only library (amended in phase 2: no build option can put it
   into the library an extension links). No runtime setting can add a key.
-- **Usage**: counts are summed in memory and sent when a connection closes, or after 10 minutes on
-  the next `Count`. Sending is best effort and never on the query path: a failed send is dropped.
-  The `load` event carries the licence status. DuckDB has no shutdown hook, so the last minutes of a
-  process may be lost.
+- **Usage**:
+  - **When it is sent.** Counts are summed in memory and sent when a connection closes, or by the
+    first `Count` 10 minutes after the last send. Sending is best effort and never on the query
+    path: a failed send is dropped. DuckDB has no shutdown hook, so the last minutes of a process
+    may be lost.
+  - **Statuses.** Each event is counted under the licence status at the time it happens, and a
+    report is sent per status. The `load` event therefore carries the status the load ended with;
+    when the load's fetch was deferred, it carries the status once that fetch has settled.
+  - **At a close.** DuckDB holds its connection lock when a connection closes, so the SDK cannot
+    open a connection there. It sends with the closing connection's context instead, in a
+    transaction of its own, with a 2-second timeout. After a send that got no answer, sends pause
+    for 10 minutes, so an unreachable repository does not stall every close.
+  - **The 10-minute send** runs on a thread of its own. The thread holds the database only while
+    sending, and an exit handler waits briefly for it.
+- **Where DuckDB 2.0 keeps the module**: an extension installed from a named repository is under
+  `<extension directory>/<version>/<platform>/repositories/<name>/`, and the licence file is kept
+  there, beside it.
 - **What the developer decides**: what each status allows (refuse, degrade, warn). The SDK never
   stops DuckDB by itself.
-- **Delivery:** part 1 is the verifier (`include/kista/license.hpp`: the strict JSON, the parsing
+- **Delivery** (both parts implemented): part 1 is the verifier (`include/kista/license.hpp`: the strict JSON, the parsing
   rules, the key, the signature with DuckDB's bundled mbedtls, the status), checked against every
   vector in CI (`make sdk-test`, on the DuckDB build at the pin). The test key is only in a
   separate test-only library (`kista_sdk_testkey`), never in `kista_sdk`, which an extension links; part 2 is the DuckDB side above
   (`Register`, the fetch and the file, `Check`, the table functions, usage) and the e2e cases.
   Enterest's keys are added to `src/keys.cpp` when published; until then a release build trusts
   none.
-- **To confirm in phase 2:**
-  - `MbedTlsWrapper` and `HTTPTransportManager` from a loadable extension on Windows; neither is
-    `DUCKDB_API`;
-  - the callback and the session outside a user's query.
+- **Confirmed in phase 2** (the e2e, in CI on Linux and run locally on macOS):
+  - DuckDB links each loadable extension statically with DuckDB itself
+    (`EXTENSION_STATIC_BUILD`), mbedtls included. `MbedTlsWrapper` and `HTTPTransportManager` are
+    therefore the extension's own copies, and the hidden symbols do not matter.
+  - The callback and the session work outside a user's query, with the caveat above.
+  - Windows (`GetModuleHandleEx` for the module) is written but not tested yet: a follow-up.
 
 ## Security
 
@@ -683,6 +713,8 @@ kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
 
 - Licences carried in a bundle (spec 0014), for air-gapped sites without an administrator's import.
 - The SDK for C API extensions.
+- The SDK on Windows, tested (the module lookup with `GetModuleHandleEx` is written, not run).
+- Enterest's licence keys in `sdk/cpp/src/keys.cpp` once they are published.
 - Seats, or concurrent-use limits enforced with check-ins, if Enterest's plans need them.
 - An expected holder per tenant, set by a server administrator, so a licence for another holder is
   refused at import (useful to Enterest).

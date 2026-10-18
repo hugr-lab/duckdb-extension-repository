@@ -49,7 +49,8 @@ jobs:
         id: key
         run: |
           echo "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
-          pin=$(cat e2e/DUCKDB_PIN e2e/build-duckdb.sh | openssl dgst -sha256 | awk '{print substr($NF,1,16)}')
+          # the build includes sdk/cpp's test extension (kista_demo): an SDK change rebuilds it, ccache warm
+          pin=$(cat e2e/DUCKDB_PIN e2e/build-duckdb.sh $(git ls-files sdk/cpp | sort) | openssl dgst -sha256 | awk '{print substr($NF,1,16)}')
           cc=$(cc --version | head -1 | openssl dgst -sha256 | awk '{print substr($NF,1,8)}')
           echo "build=duckdb-e2e-${{ runner.os }}-${{ runner.arch }}-$pin-$cc" >> "$GITHUB_OUTPUT"
           echo "ccache=ccache-e2e-${{ runner.os }}-${{ runner.arch }}-$pin" >> "$GITHUB_OUTPUT"
