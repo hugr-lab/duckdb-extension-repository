@@ -132,8 +132,9 @@ while licensing is off every licence route answers as a missing path.
 
 ## Usage reports
 
-An extension's SDK reports how it is used to the repository it was installed from, with the same
-http secret:
+An extension reports its use, through the SDK, to the repository it was installed from, with the
+same http secret. The C++ SDK sends one event with a count of 1 per call; the format allows more, so
+a client may aggregate first:
 
 ```text
 POST <prefix>/-/usage/<name>      Content-Type: application/json, at most 64 KiB → 204
@@ -142,7 +143,7 @@ POST <prefix>/-/usage/<name>      Content-Type: application/json, at most 64 KiB
 ```json
 {"version": "1.4.0", "platform": "linux_amd64", "duckdb_version": "v2.0.0",
  "license": "lic-1", "status": "valid",
- "events": [{"name": "load", "count": 1},
+ "events": [{"name": "query", "count": 1},
             {"name": "attach", "count": 12, "counters": {"sources": 30}}]}
 ```
 
@@ -168,7 +169,9 @@ POST <prefix>/-/usage/<name>      Content-Type: application/json, at most 64 KiB
   event, the first per (principal, channel, extension, version, day) on a replica. Once a day has
   ended, the hourly statistics pass counts that day's distinct **users** per (channel, extension,
   version) from these events. Anonymous reports, and reports by a token without `install`, count and
-  make no event.
+  make no event. A principal counts as a user only on a day its extension sent a report: the SDK
+  reports nothing by itself, so an extension that reports nothing has no users here (installs are
+  under Downloads).
 - `statistics.usage_accept: false` answers `204` to every report it would take, and keeps nothing;
   who may report is still decided first.
 
@@ -269,7 +272,8 @@ kista::License::Register(loader, "myext");
 auto lic = kista::License::Get(context, "myext");
 lic.Check();                                     // throws unless valid or grace
 lic.Limit<int64_t>("max_attached_sources", 1);   // the developer's controls, with a default
-kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
+kista::Usage::Send(context, "myext", "attach", {{"sources", 3}});       // now; true when taken
+kista::Usage::SendAsync(context, "myext", "attach", {{"sources", 3}});  // from a thread of its own
 ```
 
 - **Where the licence comes from.** When the extension loads, the SDK reads the file
@@ -280,8 +284,13 @@ kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
 - **What a user sees.** `SELECT * FROM myext_license()` shows the status, plan, holder, expiry,
   source, limits, and why. `myext_license_refresh()` fetches the licence again now: after an
   upgrade, a running process sees the new plan without reinstalling.
-- **Usage.** It is reported to the same repository when a connection closes, and on the first use
-  10 minutes after the last report.
+- **Usage.** The extension reports what it wants, when it wants, to the same repository: one call
+  is one report of one event with its counters, under the licence status of the moment. `Send`
+  waits for the answer (a 5-second connect and stall timeout, no retries) and answers `true` when the repository
+  answered 2xx: delivered, not necessarily counted. `SendAsync` sends from a thread of its own, with
+  a connection of its own that does not see the caller's session settings. The SDK keeps nothing,
+  retries nothing and reports nothing on its own: installs and downloads are counted by kista
+  already.
 - **Trust.** The SDK trusts only the issuer's keys compiled into it. Until Enterest publishes its
   keys, a build trusts none. A test build can trust the licence vectors' test key, through a
   separate test-only library.

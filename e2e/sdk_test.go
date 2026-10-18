@@ -28,8 +28,9 @@ import (
 
 // Spec 0012 phase 2: the pinned DuckDB runs kista_demo, a C++ extension built with the kista SDK
 // and the licence vectors' test key (sdk/cpp/test/extension), against kista serve with licensing
-// on. kista_demo_use(n) needs a licence (Check), reads the max_attached_sources limit and counts
-// an attach event with a sources counter.
+// on. kista_demo_use(n) needs a licence (Check), reads the max_attached_sources limit and reports
+// an attach event with a sources counter (Usage::Send); kista_demo_use_async(n) reports it with
+// Usage::SendAsync.
 func TestSDKLicense(t *testing.T) {
 	b := needBuild(t)
 	ext, ok := b.extensions["kista_demo"]
@@ -106,7 +107,8 @@ func TestSDKLicense(t *testing.T) {
 	}
 
 	// INSTALL and LOAD from the private channel: the licence is fetched with the http secret,
-	// written beside the module, valid; a limit is read; usage is reported
+	// written beside the module, valid; a limit is read; usage is reported, at once and only what
+	// the extension sends (nothing at load, nothing when the connection closes)
 	mark := k.mark()
 	res := newSession(t, b, opts).exec(append(boot, secret, "INSTALL kista_demo FROM r", "LOAD kista_demo FROM r", licenseRow,
 		"SELECT * FROM kista_demo_use(3)", "SELECT * FROM kista_demo_use(9)")...)
@@ -116,7 +118,7 @@ func TestSDKLicense(t *testing.T) {
 		got[4] != "lic-pro" || got[5] != `{"max_attached_sources":5}` {
 		t.Fatalf("the licence: %v", got)
 	}
-	if got := row(t, res[n+1]); got[0] != "pro" || got[1] != "5" {
+	if got := row(t, res[n+1]); got[0] != "pro" || got[1] != "5" || got[2] != "true" {
 		t.Fatalf("kista_demo_use(3): %v", got)
 	}
 	mustFail(t, res[n+2], "allows 5 sources")
@@ -127,8 +129,34 @@ func TestSDKLicense(t *testing.T) {
 		t.Fatalf("the licence fetch: %v", got)
 	}
 	if got := k.statuses("/-/usage/kista_demo", mark); len(got) != 1 || got[0] != 204 {
-		t.Fatalf("the usage report, sent when the connection closed: %v", got)
+		t.Fatalf("the usage report, sent by kista_demo_use(3): %v", got)
 	}
+
+	// at LOAD itself, with nothing calling the extension: the hook's own connection sees a global
+	// setting and the http secret (a session-only setting, as above, defers it to the first use);
+	// SendAsync's connection sees them too
+	mark = k.mark()
+	global := append([]string{}, boot...)
+	global[3] = "SET GLOBAL ca_cert_file = " + sqlString(testCA(t).caFile)
+	res = newSession(t, b, opts).exec(append(global, secret, "LOAD kista_demo FROM r", "SELECT * FROM kista_demo_use_async(2)")...)
+	mustOK(t, res)
+	if got := k.statuses("/-/licenses/kista_demo", mark); len(got) != 1 || got[0] != 304 {
+		t.Fatalf("the fetch at LOAD: %v", got)
+	}
+	if got := row(t, res[len(res)-1]); got[0] != "pro" || got[2] != nil {
+		t.Fatalf("kista_demo_use_async(2): %v", got)
+	}
+	for i := 0; ; i++ {
+		got := k.statuses("/-/usage/kista_demo", mark)
+		if len(got) == 1 && got[0] == 204 {
+			break
+		}
+		if i == 100 {
+			t.Fatalf("the usage report, sent by kista_demo_use_async(2): %v", got)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	// the usage, read as an administrator reads it: GET …/stats/usage
 	k.usage.Flush(ctx)
 	pool := x509.NewCertPool()
@@ -156,18 +184,8 @@ func TestSDKLicense(t *testing.T) {
 	for _, r := range stats.Rows {
 		counts[r.Event+"/"+r.Counter+"/"+r.Status+"/"+r.Version] += r.Value
 	}
-	if len(counts) != 3 || counts["load//valid/1.2.0"] != 1 || counts["attach//valid/1.2.0"] != 1 || counts["attach/sources/valid/1.2.0"] != 3 {
+	if len(counts) != 2 || counts["attach//valid/1.2.0"] != 2 || counts["attach/sources/valid/1.2.0"] != 5 {
 		t.Fatalf("usage in /stats/usage: %v", counts)
-	}
-
-	// at LOAD itself, with nothing calling the extension: the hook's own connection sees a global
-	// setting and the http secret (a session-only setting, as above, defers it to the first use)
-	mark = k.mark()
-	global := append([]string{}, boot...)
-	global[3] = "SET GLOBAL ca_cert_file = " + sqlString(testCA(t).caFile)
-	mustOK(t, newSession(t, b, opts).exec(append(global, secret, "LOAD kista_demo FROM r")...))
-	if got := k.statuses("/-/licenses/kista_demo", mark); len(got) != 1 || got[0] != 304 {
-		t.Fatalf("the fetch at LOAD: %v", got)
 	}
 
 	// an unchanged licence answers 304 (here at the first use: the session's own ca_cert_file)

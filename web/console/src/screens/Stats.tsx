@@ -241,7 +241,7 @@ function Usage({ span, setSpan }: { span: number; setSpan: (n: number) => void }
               ['Received', (r) => (r as UsageLine).received || ''],
             ]} />
           )}
-          <Note>Users are the distinct principals that used a version on a day, summed over the days, versions and channels not grouped by. Without a licence: reported with any status but valid or grace. Received: forwarded by downstream kistas, statuses not told apart.</Note>
+          <Note>Users are the distinct principals whose extension reported use of a version on a day, summed over the days, versions and channels not grouped by. Without a licence: reported with any status but valid or grace. Received: forwarded by downstream kistas, statuses not told apart.</Note>
         </div>
       </Card>
     </>
