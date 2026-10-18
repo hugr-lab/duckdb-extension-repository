@@ -29,6 +29,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/telemetry"
 	tenantsvc "github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/usage"
 	"github.com/hugr-lab/duckdb-extension-repository/web/console"
 )
 
@@ -123,8 +124,9 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// usage reports (spec 0012 phase 1b): counts of their own, unless statistics.usage_accept is false
 	reports := stats.Usage(st, log)
 	var usageCounter serve.UsageCounter
+	var received serve.Received
 	if cfg.StatisticsSettings().UsageAccepted() {
-		usageCounter = reports
+		usageCounter, received = reports, st
 	}
 	// OpenTelemetry metrics (spec 0010 phase 2b): where they go is the OTEL_* environment's
 	mp, flushMetrics, err := telemetry.Setup(ctx, telemetry.Options{Version: Version, Instance: instance,
@@ -184,7 +186,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		ui = c
 	}
 	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Console: ui, CORSOrigins: corsOrigins, Puller: puller, Events: events, Downloads: downloads, Metrics: metrics,
-		Licenses: licenses.Served{Service: svc.Licenses}, Usage: usageCounter,
+		Licenses: licenses.Served{Service: svc.Licenses}, Usage: usageCounter, Received: received,
 		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
@@ -280,6 +282,10 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	lr := &licenses.Runner{Service: svc.Licenses, Holder: host + "/" + store.NewID()}
 	wg.Add(1)
 	go func() { defer wg.Done(); lr.Run(bg) }()
+	// usage forwarded daily to the upstreams that supplied the versions used (spec 0012 phase 1c)
+	fw := &usage.Forwarder{Store: st, Post: eg, Credentials: svc.Upstreams.Credentials, Holder: instance, Log: log}
+	wg.Add(1)
+	go func() { defer wg.Done(); fw.Run(bg) }()
 	if len(svc.Licenses.Keys) > 0 {
 		log.Info("serve: licensing on", "keys", svc.Licenses.KeyFingerprints())
 	}

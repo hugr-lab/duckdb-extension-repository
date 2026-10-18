@@ -19,6 +19,10 @@ const (
 	ModeBundle      = "bundle" // filled only by bundle imports; never contacts its source (spec 0014)
 
 	UpstreamActive = "active"
+
+	// an upstream's usage (spec 0012 phase 1c): forwarded daily, or not
+	UsageForward   = "forward"
+	UsageOff       = "off"
 	UpstreamPaused = "paused"
 
 	OriginUpstream = "upstream"
@@ -56,6 +60,7 @@ type Upstream struct {
 	CreatedAt                                   time.Time
 	CreatedBy                                   string
 	Credential                                  string // a configured credential's name (spec 0009 phase 3); "": none
+	Usage                                       string // UsageForward or UsageOff (spec 0012 phase 1c)
 
 	// bundle mode's freshness mark (spec 0014): the last imported manifest
 	BundleID, BundleManifestSHA256 string
@@ -86,14 +91,14 @@ func TenantUpstreamLock(tenantID string) string { return "kista/tenant-upstreams
 
 const upstreamCols = `id, tenant_id, name, kind, prefix, channel_id, mode, visibility, state, version, requested_at,
 request_dry_run, next_run_at, last_run_at, last_run, created_at, created_by, credential, bundle_id, bundle_created_at,
-bundle_manifest_sha256`
+bundle_manifest_sha256, usage`
 
 func scanUpstream(r interface{ Scan(...any) error }) (Upstream, error) {
 	var u Upstream
 	var prefix, lastRun, cred, bundleID, bundleSHA sql.NullString
 	err := r.Scan(&u.ID, &u.TenantID, &u.Name, &u.Kind, &prefix, &u.ChannelID, &u.Mode, &u.Visibility, &u.State, &u.Version,
 		scanTime{&u.RequestedAt}, &u.RequestDryRun, scanTime{&u.NextRunAt}, scanTime{&u.LastRunAt}, &lastRun,
-		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred, &bundleID, scanTime{&u.BundleCreatedAt}, &bundleSHA)
+		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred, &bundleID, scanTime{&u.BundleCreatedAt}, &bundleSHA, &u.Usage)
 	u.Prefix, u.LastRun, u.Credential = prefix.String, lastRun.String, cred.String
 	u.BundleID, u.BundleManifestSHA256 = bundleID.String, bundleSHA.String
 	return u, err
@@ -120,10 +125,13 @@ func (t *Tx) InsertUpstream(ctx context.Context, u *Upstream) error {
 		return fmt.Errorf("%w: a tenant holds at most %d upstreams", ErrInvalid, MaxUpstreams)
 	}
 	u.ID, u.CreatedAt, u.Version = NewID(), t.Now(), 1
-	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	if u.Usage == "" {
+		u.Usage = UsageForward
+	}
+	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		u.ID, u.TenantID, u.Name, u.Kind, nullable(u.Prefix), u.ChannelID, u.Mode, u.Visibility, u.State, u.Version,
 		t.s.d.nullTimeArg(u.RequestedAt), u.RequestDryRun, t.s.d.nullTimeArg(u.NextRunAt), nil, nil,
-		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential), nil, nil, nil)
+		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential), nil, nil, nil, u.Usage)
 	if err := t.s.mapErr(err, "upstream "+u.Name); err != nil {
 		return err
 	}
@@ -290,6 +298,18 @@ func (t *Tx) SetUpstreamCredential(ctx context.Context, u *Upstream, credential 
 	}
 	return t.cas(ctx, "UPDATE upstreams SET credential = ?, version = version + 1 WHERE id = ? AND version = ?",
 		[]any{nullable(credential), u.ID, expected}, func() { u.Credential, u.Version = credential, expected+1 })
+}
+
+// SetUpstreamUsage sets whether an upstream gets this tenant's usage (spec 0012 phase 1c).
+func (t *Tx) SetUpstreamUsage(ctx context.Context, u *Upstream, usage string, expected int64) error {
+	if usage != UsageForward && usage != UsageOff {
+		return fmt.Errorf("%w: usage is %s or %s", ErrInvalid, UsageForward, UsageOff)
+	}
+	if expected == 0 {
+		expected = u.Version
+	}
+	return t.cas(ctx, "UPDATE upstreams SET usage = ?, version = version + 1 WHERE id = ? AND version = ?",
+		[]any{usage, u.ID, expected}, func() { u.Usage, u.Version = usage, expected+1 })
 }
 
 // BumpUpstream moves an upstream's version: its keys, platforms or entries changed.

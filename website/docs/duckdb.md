@@ -35,6 +35,7 @@ Every channel answers these paths under its prefix:
 | `/<tenant>/<channel>/-/licenses/<name>` | the licence a licensed extension's SDK reads; signed channels only ([Licensing](licensing.md)) |
 | `/<tenant>/<channel>/-/licenses` | the licences the caller may use in the channel, for a downstream kista's relay |
 | `/<tenant>/<channel>/-/usage/<name>` | `POST`: a licensed extension's usage report; signed channels only ([Licensing](licensing.md#usage-reports)) |
+| `/<tenant>/<channel>/-/usage` | `POST`: a downstream kista's daily usage; signed channels only ([Licensing](licensing.md#forwarding-usage-upstream)) |
 
 - `<duckdb_version>` is DuckDB's release tag (`v2.0.0`) or, on a development build, its source id
   (`eb0d9df48e`). `<platform>` is what `PRAGMA platform` returns (`linux_amd64`, `osx_arm64`, ...).

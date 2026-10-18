@@ -354,8 +354,9 @@ See [Publishing](../publishing.md).
 | `upstream sync <tenant> <name> [-dry-run]` | requests a run; a running `kista serve` takes it |
 | `upstream cells <tenant> <name> [-outcome <outcome>]` | `DUCKDB`, `PLATFORM`, `NAME`, `OUTCOME`, `FETCHED`, `DETAIL` |
 | `upstream credential <tenant> <name> <credential>` | sets a private upstream's credential by name; `-` clears it |
-| `upstream credentials` | the credentials in the configuration: `NAME`, `KIND`, `TENANTS`, `PREFIXES`, `PUBLIC` |
+| `upstream credentials` | the credentials in the configuration: `NAME`, `KIND`, `TENANTS`, `PREFIXES`, `PUBLIC`, `FORWARDS USAGE` |
 | `upstream licenses <tenant> <name> [-sync]` | the upstream's last licence relay; `-sync` requests one, which a running `kista serve` takes ([Licensing](../licensing.md)) |
+| `upstream usage <tenant> <name> [forward\|off]` | the upstream's usage switch and its last forwarding run; `forward` or `off` sets it ([Licensing](../licensing.md#forwarding-usage-upstream)) |
 | `upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved]` | adds or replaces an allowlist entry |
 | `upstream extension remove <tenant> <name> <extension>` | |
 | `upstream platform add` or `remove` `<tenant> <name> <platform>` | |

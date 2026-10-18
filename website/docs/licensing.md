@@ -12,8 +12,8 @@ and kista stores only licences that verify against the issuer keys its operator 
 The design reasoning is in
 [spec 0012](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0012-licensing/spec.md).
 This page covers what kista does today: licences in a tenant, the relay from upstreams, the routes
-an extension's SDK reads, and the usage reports it sends. Forwarding usage upstream and the C++ SDK
-come in later phases.
+an extension's SDK reads, the usage reports it sends, and the daily usage forwarded upstream. The C++
+SDK comes in a later phase.
 
 ## The licence
 
@@ -178,9 +178,70 @@ GET /api/v1/tenants/{t}/stats/usage?from=&to=&channel=&extension=&group=<d>[,<d>
 ```
 
 Rows are always per event and counter (`counter` absent for the event's own count). `status` sets use
-without a licence apart; `users` are summed over the stored rows (per channel, extension, version and
+without a licence apart, and aggregates received from downstream kistas apart as `received`; `users` are summed over the stored rows (per channel, extension, version and
 day), so a principal on two days, versions or channels counts twice when those are not grouped by;
 users are never by `status`.
+
+## Forwarding usage upstream
+
+An organisation that buys an extension tells its seller how the extension is used: kista forwards
+daily aggregates, never reports or identities, to the upstream that supplied it. An organisation's
+kista forwards to Enterest; a regional kista forwards to the organisation's.
+
+Each `repository` upstream with a credential has a usage switch, `forward` (the default) or `off`:
+
+```bash
+kista admin upstream usage acme enterest off       # stop forwarding
+kista admin upstream usage acme enterest           # the switch and the last run
+```
+
+Over the API: `POST …/upstreams/{name}/usage {"usage": "off"}` with `If-Match`, and
+`GET …/upstreams/{name}/usage` for the last run. `GET /api/v1/credentials` lists, for each
+credential, the upstreams that forward usage with it (`forwards_usage`).
+
+Once a day, one replica sends each upstream set to `forward` (active, with a credential) the last 3
+days that ended at least an hour ago:
+
+```text
+POST <upstream prefix>/-/usage     Authorization: Bearer <the credential's token>
+{"day": "2026-10-17", "part": 1, "parts": 1,
+ "reports": [{"extension": "myext", "version": "1.4.0", "users": 42,
+              "events": [{"name": "attach", "count": 380, "counters": {"sources": 912}}]}]}
+```
+
+- **What is sent**: the versions the upstream brought into its channel since it was added, each with
+  its counts summed over the channels that hold that build (a promotion releases the same build
+  elsewhere; the same version from another source is not counted), all callers and licence
+  statuses, local and received from downstream.
+- **What is not**: no principal, address, channel name or licence id; `sender` is the upstream
+  record's random id. `users` is left out below 5, so a small organisation's single user is not
+  singled out, and a version with nothing else to say is left out. A version's report holds at most
+  1,024 counts. This request is all a subscriber discloses.
+- **Each day is sent whole and replaces** what the upstream holds for it from this kista, so sending
+  it again is harmless: a late report reaches the upstream the next day, and a failed day is sent
+  again. A large day goes in parts (at most 1,000 reports, 20,000 counts and 1 MiB each); the first
+  part clears the day, and each part replaces the versions it carries. A part that fails does not
+  stop the others, so the upstream may hold a partial day until the next run.
+- An upstream answering `404` takes no usage: the day is skipped. Each run is a `usage.forward`
+  event with the days sent, skipped and failed (with why).
+
+**Receiving.** `POST <prefix>/-/usage` is kista's own route too:
+
+- it needs a valid token (anonymous: `401`) and `application/json` (`415`); the body is at most
+  1 MiB (`413`), 1,000 reports, 20,000 counts and 1,024 counts per report, `part` is within 1..`parts` (at most 1,000), and
+  `day` is one of the last 7 finished days (`400` with the rule otherwise);
+- a report is kept only for an extension the caller holds `install` on, at a version live in that
+  channel: counts and users are the sender's claims. The others are dropped, and the answer is
+  `204` all the same;
+- the rest replace what that sender sent for the day in that channel. The sender is kept only as a
+  digest of its principal and `sender` (pseudonymous). Each request kept is a `usage.receive`
+  event;
+- kistas forward up a tree: two kistas forwarding the same versions to each other would count each
+  other's totals again;
+- received counts appear in `/stats/usage` with the status `received`, their users with the
+  others, and are forwarded on with this kista's own usage.
+
+`statistics.usage_accept: false` keeps no received aggregate either.
 
 ## What licensing does not do
 
@@ -191,6 +252,7 @@ another organisation defeat it; the licence names its holder wherever it goes.
 ## Events
 
 `license.import`, `license.change` (visibility), `license.remove` (with the reason: `admin`,
-`revoked`, `expired`, `upstream removed`), `license.sync` (each relay run) and `extension.use` (a
-usage report by a principal holding `install`). See
+`revoked`, `expired`, `upstream removed`), `license.sync` (each relay run), `extension.use` (a
+usage report by a principal holding `install`), `usage.forward` (each forwarding run), `usage.receive` (each aggregate taken from downstream) and
+`upstream.change` with `change: usage`. See
 [Observability](observability.md).

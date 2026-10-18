@@ -69,6 +69,9 @@ type fakeRepo struct {
 	auths     []string          // the Authorization headers of file requests
 	wellAuth  []string          // the Authorization headers of .well-known requests
 	redirects map[string]string // path → where it redirects
+	// usage, when set, takes POST <prefix>/-/usage (spec 0012 phase 1c); posts are their bodies
+	usage bool
+	posts [][]byte
 }
 
 // authorizations returns the Authorization headers of file requests so far.
@@ -121,6 +124,16 @@ func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 				w.WriteHeader(map[bool]int{true: http.StatusUnauthorized, false: http.StatusForbidden}[strings.HasPrefix(q.Header.Get("Authorization"), "Bearer stale")])
 				return
 			}
+		}
+		if q.Method == http.MethodPost {
+			if !r.usage || q.URL.Path != "/-/usage" {
+				http.NotFound(w, q)
+				return
+			}
+			b, _ := io.ReadAll(q.Body)
+			r.posts = append(r.posts, b)
+			w.WriteHeader(http.StatusNoContent)
+			return
 		}
 		b, ok := r.files[q.URL.Path]
 		if !ok {

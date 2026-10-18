@@ -106,6 +106,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"RemoveEntry": {"upstream.change"}, "AddPlatform": {"upstream.change"}, "RemovePlatform": {"upstream.change"},
 		"AddKey": {"upstream.change"}, "RemoveKey": {"upstream.change"}, "RemoveShadow": {"shadow.remove"},
 		"SetCredential": {"upstream.change"},
+		"SetUsage":      {"upstream.change"},
 		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
 		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected", "feed.run"},
 		"ResetBundle":   {"bundle.reset"}, "ResetFeedBundle": {"bundle.reset"}, "Imports": nil,
@@ -468,6 +469,10 @@ func TestCoverage(t *testing.T) {
 	en.up.Credentials = creds
 	en.expect("upstream.Service.SetCredential", do(func() error {
 		_, err := en.up.SetCredential(rctx, admin, "acme", "repo", "repo-token", 0)
+		return err
+	}), "upstream.change")
+	en.expect("upstream.Service.SetUsage", do(func() error {
+		_, err := en.up.SetUsage(rctx, admin, "acme", "repo", store.UsageOff, 0)
 		return err
 	}), "upstream.change")
 	en.expect("upstream.Service.Remove", do(func() error { return en.up.Remove(rctx, admin, "acme", "core", 0) }), "upstream.remove")

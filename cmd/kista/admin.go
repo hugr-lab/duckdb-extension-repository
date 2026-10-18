@@ -35,6 +35,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/usage"
 )
 
 const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
@@ -122,12 +123,13 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
                [-mode mirror|pull-through|bundle] [-credential <name>]
   upstream credential <tenant> <name> <credential|->   a private upstream's credential (- clears it)
-  upstream credentials                            the configured credentials (names, tenants, prefixes)
+  upstream credentials                            the configured credentials (names, tenants, prefixes, who forwards usage)
   upstream list <tenant>
   upstream show|remove|pause|resume|public|private <tenant> <name>
   upstream sync <tenant> <name> [-dry-run]        a running kista serve takes the run
   upstream cells <tenant> <name> [-outcome <outcome>]
   upstream licenses <tenant> <name> [-sync]        the upstream's last licence relay (spec 0012); -sync asks for one now
+  upstream usage <tenant> <name> [forward|off]     the upstream's last usage forwarding (spec 0012); forward or off sets it
   upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved]
   upstream extension remove <tenant> <name> <extension>
   upstream platform|key add|remove <tenant> <name> <platform|fingerprint>
@@ -1482,9 +1484,20 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 		}
 		a.logf("upstream credential %s %s %s", pos[0], pos[1], pos[2])
 	case sub == "credentials" && len(pos) == 0:
-		a.table("NAME\tKIND\tTENANTS\tPREFIXES\tPUBLIC", func(w io.Writer) {
+		fws, err := a.svc.Upstreams.Store.UsageForwarders(ctx)
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tKIND\tTENANTS\tPREFIXES\tPUBLIC\tFORWARDS USAGE", func(w io.Writer) {
 			for _, i := range a.svc.Upstreams.Credentials.Infos() {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\n", i.Name, i.Kind, strings.Join(i.Tenants, ","), strings.Join(i.Prefixes, ","), i.AllowPublic)
+				var by []string
+				for _, f := range fws {
+					if f.Credential == i.Name {
+						by = append(by, f.Tenant+"/"+f.Upstream)
+					}
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\t%s\n", i.Name, i.Kind, strings.Join(i.Tenants, ","), strings.Join(i.Prefixes, ","), i.AllowPublic,
+					strings.Join(by, ","))
 			}
 		})
 	case sub == "sync" && len(pos) == 2:
@@ -1520,6 +1533,34 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 		}
 		for _, r := range res.Refused {
 			fmt.Fprintf(a.out, "refused: %s %s (%s): %s\n", r.Name, r.ID, r.Rule, r.Reason)
+		}
+	case sub == "usage" && (len(pos) == 2 || len(pos) == 3):
+		if len(pos) == 3 {
+			if _, err := a.svc.Upstreams.SetUsage(ctx, a.actor, pos[0], pos[1], pos[2], 0); err != nil {
+				return err
+			}
+		}
+		u, err := a.svc.Upstreams.Get(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "usage: %s\n", u.Usage)
+		at, res, err := a.svc.Upstreams.Store.GetUsageForward(ctx, u.ID)
+		if err != nil {
+			return err
+		}
+		if res == "" {
+			fmt.Fprintln(a.out, "last forwarding: never")
+			return nil
+		}
+		var r usage.ForwardResult
+		if err := json.Unmarshal([]byte(res), &r); err != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "last forwarding: %s\nsent: %s\nskipped (the upstream takes no usage): %s\n", ts(at),
+			strings.Join(r.Sent, " "), strings.Join(r.Skipped, " "))
+		for _, f := range r.Failed {
+			fmt.Fprintf(a.out, "failed: %s: %s\n", f.Day, f.Reason)
 		}
 	case sub == "cells" && len(pos) == 2:
 		var after [3]string

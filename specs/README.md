@@ -18,7 +18,7 @@ and it is superseded by a new spec when a decision changes.
 | [0009](0009-upstreams/spec.md) | Upstreams: mirror, passthrough, pull-through, private upstreams | implemented |
 | [0010](0010-audit/spec.md) | Audit events, download statistics, metrics | implemented |
 | [0011](0011-attachments/spec.md) | Attachments and the feed | implemented |
-| [0012](0012-licensing/spec.md) | Licensing and usage reports | accepted; phases 1a and 1b implemented |
+| [0012](0012-licensing/spec.md) | Licensing and usage reports | accepted; phases 1a, 1b and 1c implemented |
 | [0013](0013-deployment/spec.md) | Deployment: image, Helm chart, Azure | phase 1 implemented; phase 2 moved to 0020 |
 | [0014](0014-bundles/spec.md) | Bundles for air-gapped sites | implemented (phases 1a, 1b, 2) |
 | [0015](0015-console/spec.md) | Administration console, the micro-frontend contract | implemented |

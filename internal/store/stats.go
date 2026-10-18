@@ -191,7 +191,7 @@ func (s *Store) PutDaily(ctx context.Context, day string, d Daily) error {
 // PruneStatistics deletes counts, installers, usage and day marks before a day.
 func (s *Store) PruneStatistics(ctx context.Context, before string) (int, error) {
 	total := 0
-	for _, t := range []string{"download_counts", "download_installers", "usage_counts", "usage_users", "statistics_days"} {
+	for _, t := range []string{"download_counts", "download_installers", "usage_counts", "usage_users", "usage_received", "statistics_days"} {
 		res, err := s.db.ExecContext(ctx, s.d.rebind("DELETE FROM "+t+" WHERE day < ?"), before)
 		if err != nil {
 			return total, err

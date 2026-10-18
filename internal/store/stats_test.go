@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -252,6 +253,62 @@ func TestUsageStatistics(t *testing.T) {
 		n := 0
 		if err := s.DayEvents(ctx, tn.ID, "extension.use", "2026-10-09", func(store.Event) error { n++; return nil }); err != nil || n != 1 {
 			t.Fatalf("use events: %d %v", n, err)
+		}
+	})
+}
+
+// Spec 0012 phase 1c: a sender's day is cleared by its first part, and each part replaces the
+// versions it carries; received counts are read with the tenant's usage.
+func TestUsageReceived(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		tn, ch := fixture(t, s)
+		const day = "2026-10-09"
+		a := []store.ReceivedRow{{Name: "acl", ExtVersion: "1.0", Users: 6}, {Name: "acl", ExtVersion: "1.0", Event: "load", Value: 3}}
+		b := []store.ReceivedRow{{Name: "tresor", ExtVersion: "2.0", Event: "load", Value: 5}}
+		put := func(sender string, first bool, rows ...[]store.ReceivedRow) {
+			t.Helper()
+			if err := s.PutReceived(ctx, tn.ID, ch.ID, sender, day, first, slices.Concat(rows...)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		read := func() map[string]int64 {
+			t.Helper()
+			rows, err := s.UsageRows(ctx, tn.ID, store.StatsFilter{From: day, To: day}, 100, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := map[string]int64{}
+			for _, r := range rows {
+				if r.Event == "" {
+					out[r.Name+" users"] += r.Users
+				} else if r.Status == store.StatusReceived {
+					out[r.Name+" "+r.Event] += r.Value
+				}
+			}
+			return out
+		}
+		put("s1", true, a, b)
+		put("s1", true, a, b) // the day again: replaced, not added
+		put("s2", true, a)    // another sender adds
+		if got := read(); got["acl load"] != 6 || got["acl users"] != 12 || got["tresor load"] != 5 {
+			t.Fatalf("two senders: %v", got)
+		}
+		// part 2 of s1 carries tresor again: replaced; acl from part 1 stays
+		put("s1", false, []store.ReceivedRow{{Name: "tresor", ExtVersion: "2.0", Event: "load", Value: 7}})
+		if got := read(); got["tresor load"] != 7 || got["acl load"] != 6 {
+			t.Fatalf("a later part: %v", got)
+		}
+		// a first part without tresor clears it
+		put("s1", true, a)
+		if got := read(); got["tresor load"] != 0 || got["acl load"] != 6 {
+			t.Fatalf("the day sent again without tresor: %v", got)
+		}
+		if _, err := s.PruneStatistics(ctx, "2026-10-10"); err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := store.CountRaw(ctx, s, "usage_received", "tenant_id = ?", tn.ID); n != 0 {
+			t.Fatalf("received rows past the retention: %d", n)
 		}
 	})
 }

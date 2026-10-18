@@ -308,6 +308,14 @@ func (s *Service) SetCredential(ctx context.Context, a authz.Actor, tenant, name
 	})
 }
 
+// SetUsage sets whether the upstream gets this tenant's usage daily (spec 0012 phase 1c): forward
+// or off. A bundle-mode upstream contacts nothing, so it forwards nothing.
+func (s *Service) SetUsage(ctx context.Context, a authz.Actor, tenant, name, value string, expected int64) (store.Upstream, error) {
+	return s.change(ctx, a, tenant, name, "usage", map[string]any{"value": value}, func(tx *store.Tx, u *store.Upstream) error {
+		return tx.SetUpstreamUsage(ctx, u, value, expected)
+	})
+}
+
 // checkPrefix normalises a repository prefix: https (http to loopback in development), no user
 // info, query, fragment or dot segments, and a port egress may reach. A bundle-mode upstream never
 // contacts its prefix, which is only the source's identity: its port is not checked.
