@@ -210,3 +210,37 @@ func TestSentinels(t *testing.T) {
 		t.Fatalf("limit %v %v", n, ok)
 	}
 }
+
+// The C++ SDK's test build trusts the vectors' test key (sdk/cpp/src/keys.cpp): the same key, and
+// only behind KISTA_SDK_TEST_KEY.
+func TestSDKTestKey(t *testing.T) {
+	src, err := os.ReadFile("../../sdk/cpp/src/keys.cpp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	start := strings.Index(s, "#ifdef KISTA_SDK_TEST_KEY")
+	end := strings.Index(s[start+1:], "#endif")
+	if start < 0 || end < 0 {
+		t.Fatal("the test key is not behind #ifdef KISTA_SDK_TEST_KEY")
+	}
+	var pem strings.Builder
+	for _, line := range strings.Split(s[start:start+1+end], "\n") {
+		if i, j := strings.Index(line, `"`), strings.LastIndex(line, `\n"`); i >= 0 && j > i {
+			pem.WriteString(line[i+1:j] + "\n")
+		}
+	}
+	b, err := os.ReadFile("testdata/vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Keys) != 1 || pem.String() != v.Keys[0] {
+		t.Fatalf("the SDK's test key:\n%s\nthe vectors' key:\n%v", pem.String(), v.Keys)
+	}
+}

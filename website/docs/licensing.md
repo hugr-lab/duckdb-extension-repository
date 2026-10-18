@@ -13,7 +13,8 @@ The design reasoning is in
 [spec 0012](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0012-licensing/spec.md).
 This page covers what kista does today: licences in a tenant, the relay from upstreams, the routes
 an extension's SDK reads, the usage reports it sends, and the daily usage forwarded upstream. The C++
-SDK comes in a later phase.
+SDK (`sdk/cpp`) is being built: its licence verifier is there and agrees with kista's on every test
+vector; how an extension registers it, fetches its licence and reports usage comes next.
 
 ## The licence
 

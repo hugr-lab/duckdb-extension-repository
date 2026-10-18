@@ -5,8 +5,10 @@
 #   lib/libduckdb.{so,dylib}  the library the runner links (build-runner.sh)
 #   include/duckdb.h          its C API header
 #   extensions/               loadable_extension_demo, demo_capi, httpfs (unsigned, as built)
+#   sdk/                      what the kista C++ SDK builds against (sdk/cpp, spec 0012): DuckDB's
+#                             headers (include/, third_party/), lib/libduckdb_mbedtls.a and libduckdb
 # and, as working directories, src/ (the verified checkout) and build/ (the cmake tree). CI caches
-# only lib/, include/ and extensions/.
+# only lib/, include/, extensions/ and sdk/.
 #
 # kista depends on DuckDB only: nothing here comes from another hugr-lab repository.
 set -euo pipefail
@@ -78,4 +80,12 @@ lib=$(find "$build/src" -maxdepth 1 \( -name 'libduckdb.so' -o -name 'libduckdb.
 mkdir -p "$out/lib" "$out/include"
 cp "$lib" "$out/lib/"
 cp "$src/src/include/duckdb.h" "$out/include/"
+# the SDK's dependencies: DuckDB's headers as an extension built with DuckDB's CMake sees them, the
+# bundled mbedtls an extension links statically, and the library for the rest
+rm -rf "$out/sdk"
+mkdir -p "$out/sdk/lib"
+cp -R "$src/src/include" "$out/sdk/include"
+(cd "$src" && find third_party -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.hh' -o -name '*.ipp' -o -name '*.inc' \) |
+	while read -r f; do mkdir -p "$out/sdk/$(dirname "$f")" && cp "$f" "$out/sdk/$f"; done)
+cp "$build/third_party/mbedtls/libduckdb_mbedtls.a" "$lib" "$out/sdk/lib/"
 echo "built DuckDB $DUCKDB_COMMIT into $out"

@@ -15,7 +15,7 @@ follow the specs process described at the end.
 | Docker | the PostgreSQL, SQL Server, S3, Azurite, moto and fake-gcs-server test suites, the console end-to-end run |
 | `golangci-lint` v2 (CI uses v2.14.0) | `make lint` |
 | Node 22 and npm | the console and this site |
-| CMake, Ninja, a C/C++ compiler, OpenSSL and libcurl headers; ccache recommended | `make e2e-build` |
+| CMake, Ninja, a C/C++ compiler, OpenSSL and libcurl headers; ccache recommended | `make e2e-build`, `make sdk-test` |
 
 Every make target runs with `GOWORK=off`, so a `go.work` in a parent directory cannot change what
 is built. Run plain `go` commands the same way (`GOWORK=off go test ./...`) when such a file
@@ -56,6 +56,7 @@ make build
 | `e2e-runner` | Build the small C runner linked against that DuckDB |
 | `e2e-build` | Both of the above |
 | `e2e` | Run the DuckDB end-to-end cases (`go test -count=1 ./e2e/...`) |
+| `sdk-test` | Build the C++ SDK (`sdk/cpp`) against that DuckDB and check it against the licence vectors |
 | `console` | `npm ci` and `npm run build` in `web/console` |
 | `console-test` | The console's type check, unit tests and license check |
 | `console-e2e` | The console end to end with Keycloak and Playwright |
@@ -347,6 +348,11 @@ make e2e
   unsigned as built) and the `runner`.
 - The checkout is verified against `DUCKDB_COMMIT` and must have no local changes.
 - `make e2e` sets `KISTA_E2E_DUCKDB` to the build directory; without it the e2e cases skip.
+- The build also fills `e2e/.build/sdk` with what the C++ SDK builds against: DuckDB's headers,
+  its bundled mbedtls and the library. `make sdk-test` runs
+  every licence vector (`internal/license/testdata/vectors.json`) through the C++ verifier, which
+  must agree with the Go one on each status, rule and claim, and checks that the library an
+  extension links (`kista_sdk`) trusts no test key.
 
 ## The console
 
