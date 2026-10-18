@@ -9,6 +9,8 @@ root="$(cd "$console/../.." && pwd)"
 kc_port="${E2E_KC_PORT:-18790}"
 kista_port="${E2E_KISTA_PORT:-18743}"
 host_port="${E2E_HOST_PORT:-18444}"
+# another repository a tenant adds as an upstream (spec 0012 phase 1d): its .well-known only
+repo_port="${E2E_REPO_PORT:-18791}"
 # the micro-frontend's test platform (mfe-host), on another origin than kista
 host="http://127.0.0.1:$host_port"
 kc="http://127.0.0.1:$kc_port"
@@ -78,6 +80,15 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/at
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/s.pem" 2>/dev/null  # tenant scratch's (spec 0019)
 (cd "$root" && GOWORK=off go build -o "$work/kista" ./cmd/kista && GOWORK=off go run ./web/console/e2e/fixture "$work/tresor.duckdb_extension" 1.0 a \
 	&& GOWORK=off go run ./web/console/e2e/fixture "$work/hello.duckdb_extension" 1.0 b)
+# spec 0012: the licence vectors' test-only key is trusted; a licence for tresor, 20 days long, to import
+lic_key="$(openssl pkey -in "$root/internal/license/testdata/test-only-2048.pem" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')"
+now=$(date +%s)
+printf '{"v":1,"iss":"https://issuer.example","jti":"lic-e2e","sub":"acme","holder":"Acme Test","ext":"tresor","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}' \
+	"$now" "$((now + 20 * 86400))" >"$work/claims.json"
+(cd "$root" && GOWORK=off go run ./internal/license/vectorgen sign -claims "$work/claims.json") >"$work/tresor.kista-license"
+mkdir -p "$work/org/acme/.well-known"
+printf '{"signature_keys":["%s"]}' "$lic_key" >"$work/org/acme/.well-known/duckdb-extension-repo.json"
+repo_key="sha256:$(printf '%s' "$lic_key" | base64 -d | openssl dgst -sha256 | awk '{print $NF}')"
 cat >"$work/kista.yaml" <<YAML
 profile: dev
 store: { kind: sqlite, sqlite: { path: $work/k.db } }
@@ -88,7 +99,7 @@ serve:
   api_rate: 100
   api_burst: 200
   listeners: [ { addr: 127.0.0.1:$kista_port, scheme: https, tls: { cert_file: $work/cert.pem, key_file: $work/key.pem } } ]
-egress: { allow_loopback_http: true, allow: [ { cidr: 127.0.0.1/32, ports: [$kc_port] } ] }
+egress: { allow_loopback_http: true, allow: [ { cidr: 127.0.0.1/32, ports: [$kc_port, $repo_port] } ] }
 auth:
   server_issuers:
     - { name: ops, url: $kc/realms/ops, required_claims: { azp: kista-server-console }, roles_claim: realm_access.roles }
@@ -98,6 +109,7 @@ auth:
 gc: { interval: 24h }  # every replica runs this version: purging is on (spec 0016)
 tenants: { min_suspended: 0s }  # spec 0019: deleted at once in the suite
 bundles: { chunk_size: 1MiB }  # spec 0014: an upload of a few MiB in several chunks
+licenses: { keys: [ "$lic_key" ] }  # spec 0012
 ui:
   environment: e2e
   allowed_origins: [ $host ]
@@ -130,6 +142,10 @@ pids+=($!)
 for i in $(seq 1 60); do curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null && break; sleep 1; done
 curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null || { cat "$work/kista.log"; exit 1; }
 
+python3 -m http.server --bind 127.0.0.1 --directory "$work/org" "$repo_port" >"$work/repo.log" 2>&1 &
+pids+=($!)
+for i in $(seq 1 30); do curl -sf "http://127.0.0.1:$repo_port/acme/.well-known/duckdb-extension-repo.json" >/dev/null && break; sleep 1; done
+
 echo "e2e: the test platform"
 cd "$console"
 HOST_PORT="$host_port" npx vite -c vite.host.config.ts >"$work/host.log" 2>&1 &
@@ -138,4 +154,4 @@ for i in $(seq 1 30); do curl -sf "$host/" >/dev/null && break; sleep 1; done
 curl -sf "$host/" >/dev/null || { cat "$work/host.log"; exit 1; }
 
 echo "e2e: Playwright"
-E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }
+E2E_LICENSE="$work/tresor.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }

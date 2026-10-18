@@ -1,6 +1,6 @@
 # Spec 0012: Licensing and usage reports
 
-- **Status**: accepted; phases 1a (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI), 1b (usage reports) and 1c (forwarding) implemented
+- **Status**: accepted; phases 1a (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI), 1b (usage reports), 1c (forwarding) and 1d (the console) implemented
 - **Date**: 2026-10-17
 - **Author**: vgsml, Claude
 
@@ -361,7 +361,7 @@ onward to its own regional or air-gapped kistas without any of them issuing anyt
 GET /api/v1/tenants/{t}/stats/usage?from=&to=&channel=&extension=&group=<d>[,<d>]
     d: day | channel | extension | version | status
     → {from, to, group, rows: [{dimensions…, event, counter, value, authenticated}],
-       users: [{dimensions…, users}]}
+       users: [{dimensions…, users}]}     grouped by status, received users carry "received" (1d)
 ```
 
 Readers, scopes, `404` outside a scope, and the limits on `from` and `to` are spec 0010's for
@@ -495,12 +495,16 @@ New catalogue entries, with their subject forms in `audit.SubjectForm` and its c
 - **Licences** (tenant administrators):
   - the list, with plan, holder, source, visibility, expiry and status; licences expiring within
     30 days are flagged;
-  - a licence's claims and limits, plus a warning when its key is not one the SDK trusts;
+  - a licence's claims and limits, and the fingerprint of the key that signed it. kista cannot know
+    which keys an extension's SDK compiles in, so instead of a warning per licence the page says
+    that a licence signed by a key other than the extension's issuer's is stored and refused by the
+    extension (amended in 1d);
   - import from a file, making a licence public or private, and removing one;
   - the last sync per upstream, with its refusals.
 - **Upstreams**: the usage switch, and one sentence on what it forwards.
 - **Statistics**: a Usage tab with events and counters and users, by day, extension and version.
-  Use without a licence (the reports' `status`) is shown apart.
+  Use without a licence (the reports' `status`) is shown apart, and so are aggregates received from
+  downstream kistas: `/stats/usage` marks received users `received` when grouped by `status`.
 
 ### The SDK (phase 2)
 

@@ -362,6 +362,7 @@ type usageUsersJSON struct {
 	Channel   string `json:"channel,omitempty"`
 	Extension string `json:"extension,omitempty"`
 	Version   string `json:"version,omitempty"`
+	Status    string `json:"status,omitempty"` // grouped by status: "received" for a downstream's, else none
 	Users     int64  `json:"users"`
 }
 
@@ -406,10 +407,11 @@ func (h *Handler) statsUsage(w http.ResponseWriter, r *http.Request, c caller, p
 	for _, row := range rows {
 		k := usageKey{day: pick("day", row.Day), channel: pick("channel", sr.names[row.ChannelID]), extension: pick("extension", row.Name),
 			version: pick("version", row.ExtVersion)}
-		if row.Event == "" { // a day's users
+		if row.Event == "" { // a day's users: this kista's (any status), or received
+			k.status = pick("status", row.Status)
 			o := users[k]
 			if o == nil {
-				o = &usageUsersJSON{Day: k.day, Channel: k.channel, Extension: k.extension, Version: k.version}
+				o = &usageUsersJSON{Day: k.day, Channel: k.channel, Extension: k.extension, Version: k.version, Status: k.status}
 				users[k] = o
 			}
 			o.Users = addCount(o.Users, row.Users)
@@ -439,7 +441,7 @@ func (h *Handler) statsUsage(w http.ResponseWriter, r *http.Request, c caller, p
 	}
 	slices.SortFunc(userList, func(a, b usageUsersJSON) int {
 		return cmp.Or(cmp.Compare(a.Day, b.Day), cmp.Compare(a.Channel, b.Channel), cmp.Compare(a.Extension, b.Extension),
-			cmp.Compare(a.Version, b.Version))
+			cmp.Compare(a.Version, b.Version), cmp.Compare(a.Status, b.Status))
 	})
 	reply(w, r, http.StatusOK, map[string]any{"from": sr.f.From, "to": sr.f.To, "group": group, "rows": rowList, "users": userList}, "", noStore)
 }
