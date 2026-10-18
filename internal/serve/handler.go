@@ -27,6 +27,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/telemetry"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/usage"
 )
 
 // Options configure a Handler.
@@ -68,6 +69,16 @@ type Options struct {
 	// Licenses serves the licences a tenant holds (spec 0012); nil: none, and the licence routes
 	// answer as for a missing path.
 	Licenses Licenses
+	// Usage counts usage reports (spec 0012 phase 1b); nil: reports are answered and nothing is
+	// kept (statistics.usage_accept false).
+	Usage UsageCounter
+}
+
+// UsageCounter counts usage reports: all of a report's counts, or none (false: over the budget);
+// Drop counts a report dropped before.
+type UsageCounter interface {
+	AddAll(map[store.UsageKey]int64) bool
+	Drop()
 }
 
 // Licenses reads the licences a tenant holds while their grace lasts: one by name (ok false for
@@ -113,8 +124,10 @@ type Handler struct {
 	mu        sync.Mutex
 	perClient map[string]int
 
-	failures *auth.FailureLog
-	installs stats.Installs
+	failures  *auth.FailureLog
+	installs  stats.Installs
+	uses      stats.Installs // the first extension.use of a (principal, channel, name, version, day)
+	usageKeys usage.Keys     // the distinct keys reports make per (channel, name, version) a day
 
 	ready         atomic.Bool
 	stopping      atomic.Bool
@@ -215,7 +228,9 @@ func plain(w http.ResponseWriter, status int, body []byte) {
 	case http.StatusUnauthorized:
 		hd.Set("WWW-Authenticate", `Bearer realm="kista"`)
 	case http.StatusMethodNotAllowed:
-		hd.Set("Allow", "GET, HEAD")
+		if hd.Get("Allow") == "" {
+			hd.Set("Allow", "GET, HEAD")
+		}
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
@@ -274,6 +289,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route = rt.kind.String()
 	if rt.kind == routeNone {
 		notFound(lw)
+		return
+	}
+	if rt.kind == routeUsage {
+		// spec 0012: a POST with a JSON body, the one route that takes one
+		if r.Method != http.MethodPost {
+			lw.Header().Set("Allow", http.MethodPost)
+			plain(lw, http.StatusMethodNotAllowed, body405)
+			return
+		}
+		h.usage(lw, r, rt)
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {

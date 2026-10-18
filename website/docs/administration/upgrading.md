@@ -83,10 +83,13 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0021_bundle_feeds` | 21 | an older replica would run a bundle-mode feed online, or keep no export feed's statements |
 | `0022_bundle_uploads` | 22 | an older replica would not import a completed upload, and its collector would not know `uploads/` |
 
-Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record) and 0024
-(licences) are additive and keep the previous value. During a rolling upgrade to the release with
-0024, an upstream removed through an older replica leaves the licences it relayed: they are served
-until their grace ends, or until an administrator removes them (`kista admin license remove`).
+Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
+(licences) and 0025 (usage reports) are additive and keep the previous value. During a rolling
+upgrade to the release with 0024, an upstream removed through an older replica leaves the licences
+it relayed: they are served until their grace ends, or until an administrator removes them
+(`kista admin license remove`). During one to the release with 0025, older replicas answer usage
+reports `404`, a day the statistics pass counts on an older replica gets no usage users, and a
+tenant deleted by an older replica's reaper leaves its usage rows until `statistics.retention`.
 
 ## Upgrading one server
 

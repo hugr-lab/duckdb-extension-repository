@@ -339,3 +339,107 @@ func (h *Handler) refused(w http.ResponseWriter, r *http.Request, c caller) {
 	note(w, func(sw *statusWriter) { sw.refused, sw.actor = true, c })
 	notFound(w)
 }
+
+// usageDims are what usage statistics group by: rows are always per event and counter.
+var usageDims = []string{"day", "channel", "extension", "version", "status"}
+
+type usageKey struct{ day, channel, extension, version, status, event, counter string }
+
+type usageRowJSON struct {
+	Day           string `json:"day,omitempty"`
+	Channel       string `json:"channel,omitempty"`
+	Extension     string `json:"extension,omitempty"`
+	Version       string `json:"version,omitempty"`
+	Status        string `json:"status,omitempty"`
+	Event         string `json:"event"`
+	Counter       string `json:"counter,omitempty"`
+	Value         int64  `json:"value"`
+	Authenticated int64  `json:"authenticated"`
+}
+
+type usageUsersJSON struct {
+	Day       string `json:"day,omitempty"`
+	Channel   string `json:"channel,omitempty"`
+	Extension string `json:"extension,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Users     int64  `json:"users"`
+}
+
+// statsUsage answers GET …/stats/usage?from=&to=&channel=&extension=&group=d[,d] (spec 0012 phase
+// 1b): the usage reports' counts per event and counter, and the days' users (summed over the kept
+// rows: a principal on two days counts twice), with download statistics' readers and scopes.
+func (h *Handler) statsUsage(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	sr, ok := h.statsRequestOf(w, r, c, true)
+	if !ok {
+		return
+	}
+	group := []string{"day"}
+	if g := r.URL.Query().Get("group"); g != "" {
+		group = strings.Split(g, ",")
+		for _, d := range group {
+			if !slices.Contains(usageDims, d) {
+				problem(w, http.StatusBadRequest, typeInvalid, "group takes "+strings.Join(usageDims, ", "))
+				return
+			}
+		}
+	}
+	has := func(d string) bool { return slices.Contains(group, d) }
+	if has("version") && !has("extension") {
+		group = append(group, "extension") // a version is an extension's
+	}
+	rows, err := h.o.Store.UsageRows(r.Context(), c.tenant.ID, sr.f, maxStatsRows, sr.keep)
+	if errors.Is(err, store.ErrInvalid) {
+		problem(w, http.StatusBadRequest, typeInvalid, "more than 100,000 rows: narrow the range")
+		return
+	}
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	pick := func(d, v string) string {
+		if has(d) {
+			return v
+		}
+		return ""
+	}
+	counts, users := map[usageKey]*usageRowJSON{}, map[usageKey]*usageUsersJSON{}
+	for _, row := range rows {
+		k := usageKey{day: pick("day", row.Day), channel: pick("channel", sr.names[row.ChannelID]), extension: pick("extension", row.Name),
+			version: pick("version", row.ExtVersion)}
+		if row.Event == "" { // a day's users
+			o := users[k]
+			if o == nil {
+				o = &usageUsersJSON{Day: k.day, Channel: k.channel, Extension: k.extension, Version: k.version}
+				users[k] = o
+			}
+			o.Users += row.Users
+			continue
+		}
+		k.status, k.event, k.counter = pick("status", row.Status), row.Event, row.Counter
+		o := counts[k]
+		if o == nil {
+			o = &usageRowJSON{Day: k.day, Channel: k.channel, Extension: k.extension, Version: k.version, Status: k.status,
+				Event: k.event, Counter: k.counter}
+			counts[k] = o
+		}
+		o.Value += row.Value
+		o.Authenticated += row.Authenticated
+	}
+	rowList := make([]usageRowJSON, 0, len(counts))
+	for _, o := range counts {
+		rowList = append(rowList, *o)
+	}
+	slices.SortFunc(rowList, func(a, b usageRowJSON) int {
+		return cmp.Or(cmp.Compare(a.Day, b.Day), cmp.Compare(a.Channel, b.Channel), cmp.Compare(a.Extension, b.Extension),
+			cmp.Compare(a.Version, b.Version), cmp.Compare(a.Status, b.Status), cmp.Compare(a.Event, b.Event), cmp.Compare(a.Counter, b.Counter))
+	})
+	userList := make([]usageUsersJSON, 0, len(users))
+	for _, o := range users {
+		userList = append(userList, *o)
+	}
+	slices.SortFunc(userList, func(a, b usageUsersJSON) int {
+		return cmp.Or(cmp.Compare(a.Day, b.Day), cmp.Compare(a.Channel, b.Channel), cmp.Compare(a.Extension, b.Extension),
+			cmp.Compare(a.Version, b.Version))
+	})
+	reply(w, r, http.StatusOK, map[string]any{"from": sr.f.From, "to": sr.f.To, "group": group, "rows": rowList, "users": userList}, "", noStore)
+}

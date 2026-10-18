@@ -116,6 +116,7 @@ are all the kinds in `internal/audit`:
 | Access | `auth.failure` | `route:<route>` | `reason`, `route`, `count` |
 | | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count` |
 | | `install` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `duckdb_version`, `body_hash`, `user_agent` |
+| | `extension.use` | `channel:<channel>/ext:<name>` | `version`, `platform`, `duckdb_version`, `license`, `status`, `events` |
 | | `request.failed` | `route:<route>` | `route`, `status`, `count` |
 | Storage | `storage.gc` | `domain:<domain>` | `domain`, `builds`, `bodies`, `marked`, `streams`, `tmp`, `attachments`, `uploads`, `chunks` (bundle uploads' chunks), `bytes`, `claims`, `resolved`, `dry_run`, `error` |
 | | `storage.verify` | `domain:<domain>` | `domain`, `full`, `mark`, `unmark`, `checked`, `ok`, `skipped`, `marked_ok`, `missing`, `short`, `long`, `corrupt`, `record`, `unreadable`, `marked`, `unmarked`, `bytes`, `error` |
@@ -134,6 +135,9 @@ Notes on some kinds:
   tenant, actor and kind to one a second, each carrying `count`, the requests it stands for.
 - `install` is an authenticated download by a principal holding `install` on it: the first per
   (principal, release, client network, day) on a replica, at most 1,000 a day per principal.
+- `extension.use` is a usage report by a principal holding `install` on the extension
+  ([Licensing](licensing.md#usage-reports)): the first per (principal, channel, extension, version,
+  day) on a replica, with the same caps.
 - `audit.dropped` counts events the asynchronous writer or the retention pass had to drop
   (`system:audit`, `system:retention`).
 - The background actors are `system:upstream:<tenant>/<name>`, `system:feed:<tenant>/<name>`,
@@ -291,6 +295,11 @@ GET /api/v1/tenants/{t}/stats/releases?channel=&extension=
 The console's **Statistics** section shows these. Counts are not evidence: anyone may download a
 public release.
 
+Usage reports from licensed extensions' SDKs are counted the same way, with a budget of their own,
+and read at `GET /api/v1/tenants/{t}/stats/usage`: see [Licensing](licensing.md#usage-reports).
+`statistics.usage_accept: false` keeps none of them. Usage counts and users follow
+`statistics.retention`.
+
 ## Metrics
 
 kista exports OpenTelemetry metrics over OTLP/HTTP with protobuf, configured from the standard
@@ -316,11 +325,12 @@ Export errors go to kista's log, at most once a minute.
 | `kista.uploads.active` | gauge, `{upload}` | this replica's uploads in progress |
 | `kista.upstream.pull.queue` | gauge, `{miss}` | pull-through misses waiting on this replica |
 | `kista.events.dropped` | counter, `{event}` | events this replica's writer dropped |
+| `kista.usage.dropped` | counter, `{report}` | usage reports this replica did not count: over usage's budgets, or keys lost while the database failed |
 | `kista.events.pending` | gauge, `{event}` | `kista.sink`: events waiting per sink |
 | `kista.upstream.cells` | gauge, `{cell}` | `kista.outcome`: upstream cells per outcome |
 
 `http.route` is never a path: `api`, `ui`, `cors`, `extension`, `extension-versioned`,
-`well-known`, `license`, `licenses`, `healthz`, `readyz`, `none` (no route matched) or `other`.
+`well-known`, `license`, `licenses`, `usage`, `healthz`, `readyz`, `none` (no route matched) or `other`.
 
 `kista.events.pending` and `kista.upstream.cells` are read from the database at each export and are
 the same on every replica: take the maximum across `service.instance.id`, not the sum. A sink's name
@@ -383,6 +393,7 @@ load balancer that checks it must reach the pod port directly.
 | `events.resource` | none | attributes for OTLP exports |
 | `events.sinks` | none | at most 16 |
 | `statistics.retention` | 26280h (3 years) | 30 days to 10 years |
+| `statistics.usage_accept` | `true` | `false` keeps no usage reports |
 | `telemetry.metrics.tenants` | none | tenant names or `*` |
 | `telemetry.metrics.labels` | none | `version`, `platform`, `duckdb_version` |
 | `telemetry.metrics.max_series` | 10,000 | 100 to 1,000,000 |

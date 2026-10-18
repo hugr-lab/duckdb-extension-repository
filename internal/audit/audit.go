@@ -199,6 +199,7 @@ var catalogue = map[Kind][]string{
 	"auth.failure":     {"reason", "route", "count"},
 	"authz.refused":    {"route", "verb", "status", "count"},
 	"install":          {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
+	"extension.use":    {"version", "platform", "duckdb_version", "license", "status", "events"},
 	"audit.dropped":    {"counts", "sink"},
 	"storage.gc":       {"domain", "builds", "bodies", "marked", "streams", "tmp", "attachments", "uploads", "chunks", "bytes", "claims", "resolved", "dry_run", "error"},
 	"storage.verify": {"domain", "full", "mark", "unmark", "checked", "ok", "skipped", "marked_ok", "missing", "short", "long",
@@ -228,7 +229,7 @@ type KindInfo struct {
 func SubjectForm(k Kind) string {
 	const release = "channel:<channel>/ext:<name>/release:<id>"
 	switch k {
-	case "release.promote":
+	case "release.promote", "extension.use":
 		return "channel:<channel>/ext:<name>"
 	case "upstream.release", "install":
 		return release

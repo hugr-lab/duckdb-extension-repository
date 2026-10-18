@@ -126,13 +126,17 @@ func (s *Snapshot) serving(name string) bool {
 // Live reports whether the channel serves a release of name that the view sees: active or
 // deprecated, its body not blocked, under one of the channel's DuckDB versions (spec 0012: a
 // licence and a usage report need one, so neither answers where every binary path would not).
-func (s *Snapshot) Live(name string, vis Visible) bool {
+func (s *Snapshot) Live(name string, vis Visible) bool { return s.LiveVersion(name, "", vis) }
+
+// LiveVersion is Live for the releases of one extension version ("" for any).
+func (s *Snapshot) LiveVersion(name, extVersion string, vis Visible) bool {
 	if !s.serving(name) {
 		return false
 	}
 	for _, p := range s.platforms[name] {
 		for _, c := range s.groups[group{name, p}] {
-			if (c.State != store.ReleaseActive && c.State != store.ReleaseDeprecated) || s.Blocked[c.BodyHash] || !vis(c) {
+			if (c.State != store.ReleaseActive && c.State != store.ReleaseDeprecated) || s.Blocked[c.BodyHash] || !vis(c) ||
+				extVersion != "" && c.ExtVersion != extVersion {
 				continue
 			}
 			for v := range s.CAPIs {

@@ -12,50 +12,77 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// maxKeys bounds the counts waiting in memory: at it they are added at once; at twice it (the store
-// failing) further downloads are not counted, and logged.
-const maxKeys = 100000
-
-// Counter counts downloads in memory and adds them to the store every minute.
-type Counter struct {
-	Store *store.Store
+// Counts counts in memory per key and writes the counts every minute: downloads (spec 0010 phase
+// 2a) and usage reports (spec 0012 phase 1b), each with its own budget.
+type Counts[K comparable] struct {
+	Write func(ctx context.Context, counts map[K]int64) (done []K, err error)
 	Log   *slog.Logger
+	What  string        // what is counted, for the logs: "downloads"
+	Max   int           // keys waiting at most: at half they are written at once, beyond Max not counted
 	Every time.Duration // default 1m
 
 	mu      sync.Mutex
-	counts  map[store.DownloadKey]int64
-	lost    int64 // downloads not counted since the last log
-	failing bool  // the last flush failed: wait for the ticker
+	counts  map[K]int64
+	lost    int64 // units not counted since the last log
+	dropped atomic.Int64
+	failing bool // the last flush failed: wait for the ticker
 	full    chan struct{}
 	once    sync.Once
 }
 
-func (c *Counter) init() {
+// Downloads counts downloads: 100,000 keys waiting are written at once, and beyond 200,000 (the
+// store failing) further downloads are not counted, and logged.
+func Downloads(st *store.Store, log *slog.Logger) *Counts[store.DownloadKey] {
+	return &Counts[store.DownloadKey]{Write: st.AddDownloadCounts, Log: log, What: "downloads", Max: 200000}
+}
+
+// Usage counts usage reports: a budget of its own, 100,000 keys waiting, so that a burst of reports
+// never takes download counts with it.
+func Usage(st *store.Store, log *slog.Logger) *Counts[store.UsageKey] {
+	return &Counts[store.UsageKey]{Write: st.AddUsageCounts, Log: log, What: "usage reports", Max: 100000}
+}
+
+func (c *Counts[K]) init() {
 	c.once.Do(func() {
-		c.counts = map[store.DownloadKey]int64{}
+		c.counts = map[K]int64{}
 		c.full = make(chan struct{}, 1)
-		if c.Every == 0 {
-			c.Every = time.Minute
-		}
+		c.Every = cmp.Or(c.Every, time.Minute)
+		c.Max = cmp.Or(c.Max, 100000)
 	})
 }
 
-// Add counts one download.
-func (c *Counter) Add(k store.DownloadKey) {
+// Add counts one.
+func (c *Counts[K]) Add(k K) {
+	c.AddAll(map[K]int64{k: 1})
+}
+
+// AddAll counts all of counts, or none of them when its new keys would take the keys waiting beyond
+// Max (false: dropped, and counted in Dropped).
+func (c *Counts[K]) AddAll(counts map[K]int64) bool {
 	c.init()
 	c.mu.Lock()
-	if _, ok := c.counts[k]; !ok && len(c.counts) >= 2*maxKeys {
+	added := 0
+	for k := range counts {
+		if _, ok := c.counts[k]; !ok {
+			added++
+		}
+	}
+	if len(c.counts)+added > c.Max {
 		c.lost++
 		c.mu.Unlock()
-		return
+		c.dropped.Add(1)
+		return false
 	}
-	c.counts[k]++
-	full := len(c.counts) >= maxKeys && !c.failing
+	for k, n := range counts {
+		c.counts[k] = sum(c.counts[k], n)
+	}
+	full := len(c.counts) >= c.Max/2 && !c.failing
 	c.mu.Unlock()
 	if full {
 		select {
@@ -63,10 +90,29 @@ func (c *Counter) Add(k store.DownloadKey) {
 		default:
 		}
 	}
+	return true
 }
 
-// Run adds the counts every Every until ctx is done, then once more (for at most 10 seconds).
-func (c *Counter) Run(ctx context.Context) {
+// MaxCount is the most a count holds: sums stop there (a client's claims cannot overflow them).
+const MaxCount = store.MaxCount
+
+// sum adds two counts, saturating at MaxCount.
+func sum(a, b int64) int64 {
+	if a > MaxCount-b {
+		return MaxCount
+	}
+	return a + b
+}
+
+// Drop counts a call dropped before it reached the counter.
+func (c *Counts[K]) Drop() { c.dropped.Add(1) }
+
+// Dropped is how many Add and AddAll calls were not counted since the start, plus the keys lost
+// while the store failed.
+func (c *Counts[K]) Dropped() int64 { return c.dropped.Load() }
+
+// Run writes the counts every Every until ctx is done, then once more (for at most 10 seconds).
+func (c *Counts[K]) Run(ctx context.Context) {
 	c.init()
 	t := time.NewTicker(c.Every)
 	defer t.Stop()
@@ -84,33 +130,40 @@ func (c *Counter) Run(ctx context.Context) {
 	}
 }
 
-// Flush adds the counts now; the counts of the batches the store refused are kept for the next
+// Flush writes the counts now; the counts of the batches the store refused are kept for the next
 // time.
-func (c *Counter) Flush(ctx context.Context) {
+func (c *Counts[K]) Flush(ctx context.Context) {
 	c.init()
 	c.mu.Lock()
 	counts, lost := c.counts, c.lost
-	c.counts, c.lost = map[store.DownloadKey]int64{}, 0
+	c.counts, c.lost = map[K]int64{}, 0
 	c.mu.Unlock()
 	if lost > 0 {
-		c.Log.Error("stats: downloads not counted: the store has failed for long", "downloads", lost)
+		c.Log.Error("stats: "+c.What+" not counted: too many keys waiting (the store failing, or a burst)", "not_counted", lost)
 	}
-	done, err := c.Store.AddDownloadCounts(ctx, counts)
+	if len(counts) == 0 {
+		c.mu.Lock()
+		c.failing = false
+		c.mu.Unlock()
+		return
+	}
+	done, err := c.Write(ctx, counts)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.failing = err != nil
 	if err == nil {
 		return
 	}
-	c.Log.Error("stats: adding download counts", "keys", len(counts)-len(done), "error", err)
+	c.Log.Error("stats: writing the counts of "+c.What, "keys", len(counts)-len(done), "error", err)
 	for _, k := range done {
 		delete(counts, k)
 	}
 	for k, n := range counts {
-		if _, ok := c.counts[k]; ok || len(c.counts) < 2*maxKeys {
-			c.counts[k] += n
+		if _, ok := c.counts[k]; ok || len(c.counts) < c.Max {
+			c.counts[k] = sum(c.counts[k], n)
 		} else {
 			c.lost += n
+			c.dropped.Add(1)
 		}
 	}
 }
@@ -250,13 +303,14 @@ func (d *Daily) Once(ctx context.Context) {
 	}
 }
 
-// count counts a day's distinct installers per (channel, release) in every tenant and stores them.
+// count counts a day's distinct installers per (channel, release) and users of usage reports per
+// (channel, name, version) in every tenant, and stores them.
 func (d *Daily) count(ctx context.Context, day string) error {
 	tenants, err := d.Store.ListTenants(ctx)
 	if err != nil {
 		return err
 	}
-	rows := map[store.InstallerKey]int64{}
+	out := store.Daily{Installers: map[store.InstallerKey]int64{}, Users: map[store.UsageUserKey]int64{}}
 	for _, t := range tenants {
 		if !t.DeletingAt.IsZero() {
 			continue // spec 0019: its statistics go with it
@@ -269,7 +323,7 @@ func (d *Daily) count(ctx context.Context, day string) error {
 		for _, c := range chans {
 			ids[c.Name] = c.ID
 		}
-		seen := map[store.InstallerKey]map[string]bool{}
+		installers := map[store.InstallerKey]map[string]bool{}
 		err = d.Store.InstallEvents(ctx, t.ID, day, func(e store.Event) error {
 			var f struct {
 				Name     string `json:"name"`
@@ -285,19 +339,46 @@ func (d *Daily) count(ctx context.Context, day string) error {
 			if id == "" || f.Name == "" {
 				return nil
 			}
-			k := store.InstallerKey{TenantID: t.ID, ChannelID: id, Name: f.Name, ExtVersion: f.Version, Platform: f.Platform, Day: day}
-			if seen[k] == nil {
-				seen[k] = map[string]bool{}
-			}
-			seen[k][e.Actor] = true
+			add(installers, store.InstallerKey{TenantID: t.ID, ChannelID: id, Name: f.Name, ExtVersion: f.Version, Platform: f.Platform, Day: day}, e.Actor)
 			return nil
 		})
 		if err != nil {
 			return err
 		}
-		for k, who := range seen {
-			rows[k] = int64(len(who))
+		users := map[store.UsageUserKey]map[string]bool{}
+		err = d.Store.DayEvents(ctx, t.ID, "extension.use", day, func(e store.Event) error {
+			var f struct {
+				Version string `json:"version"`
+			}
+			if json.Unmarshal([]byte(e.Data), &f) != nil || f.Version == "" {
+				return nil
+			}
+			// channel:<channel>/ext:<name>
+			ch, ext, ok := strings.Cut(strings.TrimPrefix(e.Subject, "channel:"), "/ext:")
+			id := ids[ch]
+			if id == "" || !ok || ext == "" {
+				return nil
+			}
+			add(users, store.UsageUserKey{TenantID: t.ID, ChannelID: id, Name: ext, ExtVersion: f.Version, Day: day}, e.Actor)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		for k, who := range installers {
+			out.Installers[k] = int64(len(who))
+		}
+		for k, who := range users {
+			out.Users[k] = int64(len(who))
 		}
 	}
-	return d.Store.PutInstallers(ctx, day, rows)
+	return d.Store.PutDaily(ctx, day, out)
+}
+
+// add remembers a principal under a key.
+func add[K comparable](m map[K]map[string]bool, k K, actor string) {
+	if m[k] == nil {
+		m[k] = map[string]bool{}
+	}
+	m[k][actor] = true
 }

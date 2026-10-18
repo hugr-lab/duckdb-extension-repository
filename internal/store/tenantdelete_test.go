@@ -108,6 +108,9 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 			"VALUES (?, ?, 'acl', '1.0', 'linux_amd64', 'v2.0.0', '2026-10-11', ?, 3)", []any{tid, cid, false}},
 		{"INSERT INTO download_installers (tenant_id, channel_id, name, ext_version, platform, day, installers) " +
 			"VALUES (?, ?, 'acl', '1.0', 'linux_amd64', '2026-10-11', 2)", []any{tid, cid}},
+		{"INSERT INTO usage_counts (tenant_id, channel_id, name, ext_version, event, counter, status, day, authenticated, value) " +
+			"VALUES (?, ?, 'acl', '1.0', 'load', '', 'valid', '2026-10-11', ?, 3)", []any{tid, cid, true}},
+		{"INSERT INTO usage_users (tenant_id, channel_id, name, ext_version, day, users) VALUES (?, ?, 'acl', '1.0', '2026-10-11', 2)", []any{tid, cid}},
 	} {
 		if err := store.ExecRaw(ctx, s, q.sql, q.args...); err != nil {
 			t.Fatalf("%s: %v", q.sql, err)
@@ -216,11 +219,22 @@ func TestReapTenant(t *testing.T) {
 			t.Error("a download count written for a deleting tenant")
 		}
 		ik := store.InstallerKey{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", ExtVersion: "9.9", Platform: "linux_amd64", Day: "2026-10-12"}
-		if err := s.PutInstallers(ctx, "2026-10-12", map[store.InstallerKey]int64{ik: 1}); err != nil {
+		if err := s.PutDaily(ctx, "2026-10-12", store.Daily{Installers: map[store.InstallerKey]int64{ik: 1},
+			Users: map[store.UsageUserKey]int64{{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", ExtVersion: "9.9", Day: "2026-10-12"}: 1}}); err != nil {
 			t.Fatal(err)
 		}
 		if n, _ := store.CountRaw(ctx, s, "download_installers", "tenant_id = ? AND day = '2026-10-12'", gone.ID); n != 0 {
 			t.Error("installers written for a deleting tenant")
+		}
+		if n, _ := store.CountRaw(ctx, s, "usage_users", "tenant_id = ? AND day = '2026-10-12'", gone.ID); n != 0 {
+			t.Error("usage users written for a deleting tenant")
+		}
+		uk := store.UsageKey{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", ExtVersion: "9.9", Event: "load", Status: "valid", Day: "2026-10-12"}
+		if done, err := s.AddUsageCounts(ctx, map[store.UsageKey]int64{uk: 1}); err != nil || len(done) != 1 {
+			t.Fatalf("usage counts: %v %v", done, err)
+		}
+		if n, _ := store.CountRaw(ctx, s, "usage_counts", "tenant_id = ? AND ext_version = '9.9'", gone.ID); n != 0 {
+			t.Error("a usage count written for a deleting tenant")
 		}
 		err = s.InTx(ctx, "", func(tx *store.Tx) error {
 			b := store.Build{TenantID: gone.ID, Name: "acl", ExtVersion: "2.0", Platform: "linux_amd64", ABI: "cpp", DuckDBVersion: "v2.0.0",

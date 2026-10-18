@@ -11,8 +11,9 @@ and kista stores only licences that verify against the issuer keys its operator 
 
 The design reasoning is in
 [spec 0012](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0012-licensing/spec.md).
-This page covers what kista does today: licences in a tenant, the relay from upstreams, and the
-routes an extension's SDK reads. Usage reports and the C++ SDK come in later phases.
+This page covers what kista does today: licences in a tenant, the relay from upstreams, the routes
+an extension's SDK reads, and the usage reports it sends. Forwarding usage upstream and the C++ SDK
+come in later phases.
 
 ## The licence
 
@@ -121,6 +122,66 @@ Over plain `http` a token is ignored, as on the extension routes, so only public
 served there, and the list route always answers `401`. A passthrough channel has no licences, and
 while licensing is off every licence route answers as a missing path.
 
+## Usage reports
+
+An extension's SDK reports how it is used to the repository it was installed from, with the same
+http secret:
+
+```text
+POST <prefix>/-/usage/<name>      Content-Type: application/json, at most 64 KiB → 204
+```
+
+```json
+{"version": "1.4.0", "platform": "linux_amd64", "duckdb_version": "v2.0.0",
+ "license": "lic-1", "status": "valid",
+ "events": [{"name": "load", "count": 1},
+            {"name": "attach", "count": 12, "counters": {"sources": 30}}]}
+```
+
+- **Who may report** is decided from the path, as for a licence: a token holding `install` on the
+  extension in that channel, or anyone served a public release of it. Everyone else gets the answer
+  of a missing path, and the body is not read.
+- **The rules**: `status` is the SDK's licence status (`valid`, `grace`, `expired`, `not_yet_valid`,
+  `not_covered`, `invalid`, or `missing` without a licence); `license` is the licence's id; event and
+  counter names are `[a-z][a-z0-9_.]{0,63}`; at most 32 events and 16 counters per event; counts are
+  integers from 0 to 2^53-1; `version`, `platform`, `duckdb_version` and `status` are required. A
+  report breaking them answers `400` with the rule, as `<rule>: <message>`: `json`, `version`,
+  `status`, `license`, `events`, `name` or `value`; `415` (`content`) without `application/json`,
+  `413` (`size`) over 64 KiB. The rules are stable: an SDK's tests may rely on them.
+- A report for a version the caller is not served in that channel, or with a malformed `platform` or
+  `duckdb_version`, is dropped and answered `204` all the same.
+- **Counts** are kept per (channel, extension, version, event, counter, licence status, day,
+  authenticated), with no principal and no address, and written every minute. A count stops at
+  2^53-1. Usage has a budget of its own (100,000 keys waiting): a burst of reports beyond it is
+  dropped (`kista.usage.dropped`) and never takes download counts with it. A replica also keeps at
+  most 256 distinct (event, counter, status) keys per channel, extension and version a day; a report
+  adding more is dropped the same way, so an extension should use a fixed set of event names.
+- **Audit**: a report by a principal holding `install` on the extension is an `extension.use`
+  event, the first per (principal, channel, extension, version, day) on a replica. Once a day has
+  ended, the hourly statistics pass counts that day's distinct **users** per (channel, extension,
+  version) from these events. Anonymous reports, and reports by a token without `install`, count and
+  make no event.
+- `statistics.usage_accept: false` answers `204` to every report it would take, and keeps nothing;
+  who may report is still decided first.
+
+Counts are claims, not evidence: anyone who may install a public release can report. They are for
+audit and trends, never for billing.
+
+Read them with the download statistics' scopes ([Observability](observability.md#download-statistics)):
+
+```text
+GET /api/v1/tenants/{t}/stats/usage?from=&to=&channel=&extension=&group=<d>[,<d>]
+    d: day | channel | extension | version | status
+    → {from, to, group,
+       rows:  [{dimensions…, event, counter, value, authenticated}],
+       users: [{dimensions…, users}]}
+```
+
+Rows are always per event and counter (`counter` absent for the event's own count). `status` sets use
+without a licence apart; `users` are summed over the stored rows (per channel, extension, version and
+day), so a principal on two days, versions or channels counts twice when those are not grouped by;
+users are never by `status`.
+
 ## What licensing does not do
 
 Licensing protects honest users from accidents, not against deliberate acts. A patched binary, an
@@ -130,5 +191,6 @@ another organisation defeat it; the licence names its holder wherever it goes.
 ## Events
 
 `license.import`, `license.change` (visibility), `license.remove` (with the reason: `admin`,
-`revoked`, `expired`, `upstream removed`) and `license.sync` (each relay run). See
+`revoked`, `expired`, `upstream removed`), `license.sync` (each relay run) and `extension.use` (a
+usage report by a principal holding `install`). See
 [Observability](observability.md).

@@ -21,11 +21,12 @@ const (
 	routeVersioned
 	routeLicense  // <prefix>/-/licenses/<name> (spec 0012)
 	routeLicenses // <prefix>/-/licenses
+	routeUsage    // <prefix>/-/usage/<name> (spec 0012 phase 1b)
 )
 
 // String is a route kind's name for metrics.
 func (k routeKind) String() string {
-	return [...]string{"none", "healthz", "readyz", "well-known", "extension", "extension-versioned", "license", "licenses"}[k]
+	return [...]string{"none", "healthz", "readyz", "well-known", "extension", "extension-versioned", "license", "licenses", "usage"}[k]
 }
 
 // route is a parsed request path.
@@ -76,6 +77,9 @@ func parseRoute(r *http.Request) route {
 			return rt
 		case len(segs) == 5 && segs[3] == "licenses" && release.ValidName(segs[4]) == nil:
 			rt.kind, rt.name = routeLicense, segs[4]
+			return rt
+		case len(segs) == 5 && segs[3] == "usage" && release.ValidName(segs[4]) == nil:
+			rt.kind, rt.name = routeUsage, segs[4]
 			return rt
 		}
 		return route{}

@@ -119,7 +119,13 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	puller := &upstream.Puller{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log,
 		NegativeTTL: cfg.UpstreamLimits().NegativeTTL}
 	// download statistics (spec 0010 phase 2a): counts every minute, installers once a day
-	downloads := &stats.Counter{Store: st, Log: log}
+	downloads := stats.Downloads(st, log)
+	// usage reports (spec 0012 phase 1b): counts of their own, unless statistics.usage_accept is false
+	reports := stats.Usage(st, log)
+	var usageCounter serve.UsageCounter
+	if cfg.StatisticsSettings().UsageAccepted() {
+		usageCounter = reports
+	}
 	// OpenTelemetry metrics (spec 0010 phase 2b): where they go is the OTEL_* environment's
 	mp, flushMetrics, err := telemetry.Setup(ctx, telemetry.Options{Version: Version, Instance: instance,
 		MaxSeries: cfg.TelemetrySettings().Metrics.MaxSeries, Log: log})
@@ -146,6 +152,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		UploadsActive: apiHandler.UploadsActive,
 		PullQueue:     puller.Queued,
 		EventsDropped: events.Dropped,
+		UsageDropped:  reports.Dropped,
 		EventsPending: func(ctx context.Context) (map[string]int64, error) {
 			counts, err := st.PendingCounts(ctx, resolver.Masks())
 			if err != nil {
@@ -177,7 +184,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		ui = c
 	}
 	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Console: ui, CORSOrigins: corsOrigins, Puller: puller, Events: events, Downloads: downloads, Metrics: metrics,
-		Licenses:  licenses.Served{Service: svc.Licenses},
+		Licenses: licenses.Served{Service: svc.Licenses}, Usage: usageCounter,
 		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
@@ -209,7 +216,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	var wg sync.WaitGroup
 	// the event writer and the download counter, started below, outlive the runners
 	evCtx, evStop := context.WithCancel(context.WithoutCancel(ctx))
-	var evDone, cntDone chan struct{} // nil until started
+	var evDone, cntDone, useDone chan struct{} // nil until started
 	// shutdown (spec 0013): the runners release their leases within shutdown_timeout (one still busy
 	// then is abandoned, and its lease expires as after a crash); then the event writer writes what
 	// they and the drain recorded, and the counter its last counts, in a window of their own, so a
@@ -224,6 +231,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			flushed := time.Now().Add(flushWindow)
 			waitBounded(evDone, flushed, log, "the event writer")
 			waitBounded(cntDone, flushed, log, "the download counter")
+			waitBounded(useDone, flushed, log, "the usage counter")
 		}
 	}()
 	wg.Add(2)
@@ -249,9 +257,10 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	wg.Add(1)
 	go func() { defer wg.Done(); pruner.Run(bg) }()
 	// the writer outlives the listeners: refusals while draining are written
-	evDone, cntDone = make(chan struct{}), make(chan struct{})
+	evDone, cntDone, useDone = make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() { defer close(evDone); events.Run(evCtx) }()
 	go func() { defer close(cntDone); downloads.Run(evCtx) }() // counts of draining downloads too
+	go func() { defer close(useDone); reports.Run(evCtx) }()
 	// storage garbage collection (spec 0016): the resolver always, full passes every gc.interval
 	collector := Collector(cfg, st, bs, instance, log)
 	wg.Add(1)

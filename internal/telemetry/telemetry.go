@@ -142,6 +142,7 @@ type Gauges struct {
 	UploadsActive   func() int64
 	PullQueue       func() int64
 	EventsDropped   func() int64                                        // cumulative
+	UsageDropped    func() int64                                        // cumulative
 	EventsPending   func(ctx context.Context) (map[string]int64, error) // per sink
 	UpstreamCells   func(ctx context.Context) (map[string]int64, error) // per outcome
 }
@@ -209,6 +210,7 @@ func New(mp metric.MeterProvider, tenants Tenants, labels Labels, g Gauges) (*Me
 		{"kista.uploads.active", "{upload}", "Uploads being received", false, value(g.UploadsActive), g.UploadsActive != nil},
 		{"kista.upstream.pull.queue", "{miss}", "Pull-through misses waiting", false, value(g.PullQueue), g.PullQueue != nil},
 		{"kista.events.dropped", "{event}", "Events dropped by the asynchronous writer", true, value(g.EventsDropped), g.EventsDropped != nil},
+		{"kista.usage.dropped", "{report}", "Usage reports not counted: over usage's budgets, or keys lost while the store failed", true, value(g.UsageDropped), g.UsageDropped != nil},
 		{"kista.events.pending", "{event}", "Events waiting for a sink", false, per("kista.sink", g.EventsPending), g.EventsPending != nil},
 		{"kista.upstream.cells", "{cell}", "Upstream cells by outcome", false, per("kista.outcome", g.UpstreamCells), g.UpstreamCells != nil},
 	} {

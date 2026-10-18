@@ -28,8 +28,8 @@ func TestStatistics(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := s.PutInstallers(ctx, "2026-10-09", map[store.InstallerKey]int64{
-			{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Platform: "linux_amd64"}: 2}); err != nil {
+		if err := s.PutDaily(ctx, "2026-10-09", store.Daily{Installers: map[store.InstallerKey]int64{
+			{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Platform: "linux_amd64"}: 2}}); err != nil {
 			t.Fatal(err)
 		}
 		if done, err := s.StatisticsDayDone(ctx, "2026-10-09"); err != nil || !done {
@@ -168,6 +168,90 @@ func TestMetricsQueries(t *testing.T) {
 		m, err = s.CellOutcomes(ctx)
 		if err != nil || m[store.CellReleased] != 2 || m[store.CellFailed] != 1 || len(m) != 2 {
 			t.Fatalf("cells: %v %v", m, err)
+		}
+	})
+}
+
+// Spec 0012 phase 1b: usage counts add up per key, and a day's users are replaced by the pass.
+func TestUsageStatistics(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		tn, ch := fixture(t, s)
+		k := store.UsageKey{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Event: "attach", Status: "valid",
+			Day: "2026-10-09", Authenticated: true}
+		ctr := k
+		ctr.Counter = "sources"
+		anon := k
+		anon.Authenticated, anon.Status = false, "missing"
+		old := k
+		old.Day = "2026-09-01"
+		var wg sync.WaitGroup
+		for range 2 { // two replicas at once: added, then added to
+			wg.Go(func() {
+				if _, err := s.AddUsageCounts(ctx, map[store.UsageKey]int64{k: 3, ctr: 10, anon: 1, old: 5}); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+		wg.Wait()
+		users := func(n int64) store.Daily {
+			return store.Daily{Users: map[store.UsageUserKey]int64{{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Day: "2026-10-09"}: n}}
+		}
+		for _, n := range []int64{4, 2} { // a pass interrupted, then done: replaced
+			if err := s.PutDaily(ctx, "2026-10-09", users(n)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rows, err := s.UsageRows(ctx, tn.ID, store.StatsFilter{From: "2026-10-01", To: "2026-10-09", Name: "acl"}, 100, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]int64{}
+		for _, r := range rows {
+			got[r.Event+"/"+r.Counter+"/"+r.Status] += r.Value
+			got["auth"] += r.Authenticated
+			got["users"] += r.Users
+		}
+		if got["attach//valid"] != 6 || got["attach/sources/valid"] != 20 || got["attach//missing"] != 2 || got["auth"] != 26 ||
+			got["users"] != 2 || len(rows) != 4 {
+			t.Fatalf("rows: %v %+v", got, rows)
+		}
+		// clients' claims saturate at 2^53-1 rather than overflow the column
+		big := k
+		big.Event = "big"
+		for range 3 {
+			if _, err := s.AddUsageCounts(ctx, map[store.UsageKey]int64{big: store.MaxCount}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if rows, err := s.UsageRows(ctx, tn.ID, store.StatsFilter{From: "2026-10-09", To: "2026-10-09", Name: "acl"}, 100, nil); err != nil {
+			t.Fatal(err)
+		} else {
+			for _, r := range rows {
+				if r.Event == "big" && r.Value != store.MaxCount {
+					t.Fatalf("saturated: %d", r.Value)
+				}
+			}
+		}
+		if _, err := s.UsageRows(ctx, tn.ID, store.StatsFilter{From: "2026-01-01", To: "2026-12-31"}, 2, nil); err == nil {
+			t.Fatal("more rows than the limit")
+		}
+		if rows, err := s.UsageRows(ctx, tn.ID, store.StatsFilter{From: "2026-01-01", To: "2026-12-31"}, 1,
+			func(_, name string) bool { return name == "none" }); err != nil || len(rows) != 0 {
+			t.Fatalf("nothing kept: %+v %v", rows, err)
+		}
+		if n, err := s.PruneStatistics(ctx, "2026-10-01"); err != nil || n != 1 {
+			t.Fatalf("prune: %d %v", n, err)
+		}
+		// extension.use events of a day
+		s.Now = func() time.Time { return time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC) }
+		ev, _ := s.NewEvent(ctx, tn.ID, "principal:x", "extension.use", audit.OK, "channel:prod/ext:acl", map[string]any{"version": "1.0"})
+		if err := s.InsertEvents(ctx, []store.Event{ev}); err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		if err := s.DayEvents(ctx, tn.ID, "extension.use", "2026-10-09", func(store.Event) error { n++; return nil }); err != nil || n != 1 {
+			t.Fatalf("use events: %d %v", n, err)
 		}
 	})
 }
