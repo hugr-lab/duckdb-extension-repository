@@ -24,7 +24,8 @@ usage**. This spec gives kista both, without making kista a seller.
   http secret as `INSTALL`, verifies it offline against Enterest's public keys compiled in, and
   gives the developer one call, `Check()`, for the common case ("refuse without a licence") and the
   plan and limits for the rest. A limit such as "at most 5 attached sources" is the developer's own,
-  not kista's. The SDK also sends **usage reports** (event counts) to the repository; kista keeps
+  not kista's. The SDK also delivers the **usage reports** the extension makes (events with counters) to the
+  repository; kista keeps
   them for the organisation's audit (phase 1b) and forwards daily aggregates, without identities,
   to the upstream the extension came from (phase 1c).
 
@@ -308,12 +309,14 @@ onward to its own regional or air-gapped kistas without any of them issuing anyt
 
 ### Usage reports (1b)
 
-**The SDK's report**, `POST <prefix>/-/usage/<name>`, `application/json`, at most 64 KiB:
+**A usage report**, `POST <prefix>/-/usage/<name>`, `application/json`, at most 64 KiB. The C++
+SDK sends one event with a count of 1 per call; the format allows up to 32 events with any counts,
+so an extension or another client may aggregate first:
 
 ```json
 {"version": "1.4.0", "platform": "linux_amd64", "duckdb_version": "v2.0.0",
  "license": "<jti or omitted>", "status": "valid",
- "events": [{"name": "load", "count": 1},
+ "events": [{"name": "query", "count": 1},
             {"name": "attach", "count": 12, "counters": {"sources": 30}}]}
 ```
 
@@ -352,7 +355,9 @@ onward to its own regional or air-gapped kistas without any of them issuing anyt
   event.
 - **Users**: spec 0010's hourly statistics pass also counts, for each finished day, the distinct
   principals of that day's `extension.use` events. It counts them per (channel, name, version) and
-  stores them in `usage_users`, written only by that pass. No principal is kept.
+  stores them in `usage_users`, written only by that pass. No principal is kept. A principal is a
+  user only on a day its extension sent a report: the SDK reports nothing by itself, so an extension
+  that reports nothing has no users here (installs are under downloads).
 - `statistics.usage_accept: false` (default `true`) makes the route answer `204` and keep nothing,
   for a site that wants no usage data at all.
 
@@ -521,7 +526,8 @@ lic.Check();                                         // throws unless valid or g
 lic.Status();                                        // valid | grace | expired | missing | invalid | …
 lic.Plan();                                          // "pro"
 lic.Limit<int64_t>("max_attached_sources", 1);       // the developer's controls, with a default
-kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
+kista::Usage::Send(context, "myext", "attach", {{"sources", 3}});       // now; true when taken
+kista::Usage::SendAsync(context, "myext", "attach", {{"sources", 3}});  // from a thread of its own
 ```
 
 - **`Check()` is the simple case.** Most developers want only "is there a licence for this
@@ -572,20 +578,39 @@ kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
 - **Trust**: Enterest's licence public keys are compiled in. A test build may add the vectors' test
   key, only through a separate test-only library (amended in phase 2: no build option can put it
   into the library an extension links). No runtime setting can add a key.
-- **Usage**:
-  - **When it is sent.** Counts are summed in memory and sent when a connection closes, or by the
-    first `Count` 10 minutes after the last send. Sending is best effort and never on the query
-    path: a failed send is dropped. DuckDB has no shutdown hook, so the last minutes of a process
-    may be lost.
-  - **Statuses.** Each event is counted under the licence status at the time it happens, and a
-    report is sent per status. The `load` event therefore carries the status the load ended with;
-    when the load's fetch was deferred, it carries the status once that fetch has settled.
-  - **At a close.** DuckDB holds its connection lock when a connection closes, so the SDK cannot
-    open a connection there. It sends with the closing connection's context instead, in a
-    transaction of its own, with a 2-second timeout. After a send that got no answer, sends pause
-    for 10 minutes, so an unreachable repository does not stall every close.
-  - **The 10-minute send** runs on a thread of its own. The thread holds the database only while
-    sending, and an exit handler waits briefly for it.
+- **Usage** (amended after phase 2 part 2: the SDK no longer counts or decides when to send):
+  - **What the SDK does.** It delivers a report when the extension asks, and nothing else. One
+    call is one report of one event (a count of 1) with the extension's counters, under the licence
+    status of the moment, to the repository the extension was installed from, with the http secret
+    matching the report's URL as the sending context sees it (normally the one `INSTALL` used). Nothing is sent at load or when a connection closes, nothing is kept in memory
+    or on disk, and a failed report is not retried. The status is what the SDK knows at the time:
+    after a load whose fetch was deferred, it settles at the first `License::Get`, so an extension
+    calls `Get` first when the status matters.
+  - **What the extension decides.** Which events and counters, when, how often, whether to
+    aggregate first, and what to do when a report fails. Installs and downloads are counted by kista
+    already (spec 0010), so the SDK reports no `load` event of its own. Users (above) come only
+    from reports, so they count the principals whose extension reported something that day.
+  - **`Send`** posts with the caller's context (in its transaction, or one of its own outside a
+    query) with a 5-second connect and stall timeout and no retries, and waits for the answer. It answers `true` when
+    the repository answered 2xx. kista answers `204` to reports it drops silently too (an unserved
+    version, usage turned off), so `true` means delivered, not counted. It is called from the thread
+    running the context's query, or with no query running; never from a `ClientContextState`
+    callback (`QueryEnd`), where DuckDB holds the context's lock and `Send` would wait on it.
+  - **`SendAsync`** posts from a thread of its own, with a connection of its own: it sees the http
+    secret and global settings, not the caller's session settings, nor a connection- or
+    transaction-scoped secret (a report then goes without a token and a private channel refuses
+    it). It returns at once; with 16 of
+    the extension's reports on their way in the process, it drops the new one, silently. The thread
+    holds the database until the report is sent, so a short program that closes it at once still
+    reports (the database closes after the report); at exit the process waits up to 6 seconds for
+    such threads, not necessarily until they finish.
+  - **Rules.** A report whose names, number of counters or values break the report's rules is not
+    sent (`Send` answers `false`). Nothing is sent when `Register` was not called, the extension has no
+    version, or it was not installed from an http repository.
+  - **Why the SDK does no more.** An earlier design summed counts and sent them when a connection closed. A
+    connection is not the extension's lifecycle: a server with a pool closes connections all the
+    time, and that send ran under DuckDB's connection lock; a killed process lost its counts anyway.
+    The extension knows its own lifecycle; the SDK does not.
 - **Where DuckDB 2.0 keeps the module**: an extension installed from a named repository is under
   `<extension directory>/<version>/<platform>/repositories/<name>/`, and the licence file is kept
   there, beside it.
@@ -595,7 +620,8 @@ kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
   rules, the key, the signature with DuckDB's bundled mbedtls, the status), checked against every
   vector in CI (`make sdk-test`, on the DuckDB build at the pin). The test key is only in a
   separate test-only library (`kista_sdk_testkey`), never in `kista_sdk`, which an extension links; part 2 is the DuckDB side above
-  (`Register`, the fetch and the file, `Check`, the table functions, usage) and the e2e cases.
+  (`Register`, the fetch and the file, `Check`, the table functions, usage) and the e2e cases. Usage
+  was then reduced to `Send` and `SendAsync` (above).
   Enterest's keys are added to `src/keys.cpp` when published; until then a release build trusts
   none.
 - **Confirmed in phase 2** (the e2e, in CI on Linux and run locally on macOS):
@@ -639,6 +665,16 @@ kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
   - received aggregates replace rather than add.
 
   A report never blocks a download.
+- **The SDK's requests**: the licence fetch and the usage reports go only to the repository the
+  extension was installed from, never through a redirect, with the http secret that matches the URL.
+  - **Session settings.** `Send` and a fetch on `Get` use the caller's session, its TLS and proxy
+    settings included (that is how a session's `ca_cert_file` works). A site where untrusted users
+    run SQL against a secret they cannot read keeps them from changing HTTP settings (duckdb-acl).
+  - **Trusted repository.** The timeout bounds a connect and a stall, not a slow answer, and a
+    report's answer is read whole: the repository is the one the user installed code from, so it is
+    trusted with the extension's requests as with its binary.
+  - **Plain http.** An extension installed from an `http://` repository fetches and reports over
+    plain http, as `INSTALL` downloaded it.
 - **Parsing parity**: the format's parsing rules and the shared vectors make the Go and C++
   verifiers agree on every token, including hostile ones.
 - **The honest-user line** (spec 0001): a patched binary, a rolled-back clock, a copied licence file
@@ -688,7 +724,8 @@ kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
   - The file is used offline.
   - An expired or a missing licence is refused by `Check()` with its message; a licence in grace is
     allowed.
-  - Usage is reported and visible in `/stats/usage`.
+  - Usage reported by `Send` (its answer) and by `SendAsync` reaches kista and is visible in
+    `/stats/usage`; nothing is reported at load or when a connection closes.
 
 ## Alternatives considered
 
