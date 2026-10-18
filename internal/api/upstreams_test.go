@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -292,5 +293,69 @@ func TestUpstreamKeyPath(t *testing.T) {
 	}
 	if r := m.call(t, "DELETE", U+k1, ta, ""); r.status != 400 {
 		t.Errorf("the last pinned key: %d %s", r.status, r.body)
+	}
+}
+
+// Spec 0012 phase 1c: an upstream's usage switch, its last forwarding run, and the credentials that
+// carry usage.
+func TestUpstreamUsage(t *testing.T) {
+	m := newMgmt(t)
+	creds, err := credential.New([]config.Credential{{Name: "sub", Tenants: []string{"acme"}, Prefixes: []string{"https://repo.example/acme/"},
+		Kind: "token_file", TokenFile: "/run/secrets/token"}}, credential.Deps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ups.Credentials = creds
+	acme, _ := m.st.GetTenant(ctx, "acme")
+	ch, _ := m.st.GetChannel(ctx, "acme", "staging")
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+		u := store.Upstream{TenantID: acme.ID, Name: "repo", Kind: store.UpstreamRepo, Prefix: "https://repo.example/acme/", ChannelID: ch.ID,
+			Mode: store.ModeMirror, Visibility: store.Private, State: store.UpstreamActive, CreatedBy: "os:1:t", Credential: "sub"}
+		return tx.InsertUpstream(ctx, &u)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const U = "/api/v1/tenants/acme/upstreams/repo"
+	ta := m.toks["tenant admin"]
+	if r := m.call(t, "GET", U, ta, "").json(t); r["usage"] != "forward" {
+		t.Fatalf("usage defaults to forward: %v", r)
+	}
+	forwards := func() string {
+		r := m.call(t, "GET", "/api/v1/credentials", m.toks["server admin"], "")
+		var out struct {
+			Credentials []struct {
+				Forwards []map[string]string `json:"forwards_usage"`
+			}
+		}
+		if err := json.Unmarshal(r.body, &out); err != nil || len(out.Credentials) != 1 {
+			t.Fatalf("credentials: %s %v", r.body, err)
+		}
+		b, _ := json.Marshal(out.Credentials[0].Forwards)
+		return string(b)
+	}
+	if f := forwards(); f != `[{"tenant":"acme","upstream":"repo"}]` {
+		t.Fatalf("forwards_usage: %s", f)
+	}
+	if r := m.call(t, "GET", U+"/usage", ta, "").json(t); r["usage"] != "forward" || r["result"] != nil {
+		t.Fatalf("no run yet: %v", r)
+	}
+	if r := m.call(t, "POST", U+"/usage", ta, `{"usage":"off"}`); r.status != 428 {
+		t.Fatalf("without If-Match: %d", r.status)
+	}
+	if r := m.call(t, "POST", U+"/usage", ta, `{"usage":"sometimes"}`, "If-Match", "*"); r.status != 400 {
+		t.Fatalf("a bad value: %d", r.status)
+	}
+	if r := m.call(t, "POST", U+"/usage", ta, `{"usage":"off"}`, "If-Match", "*"); r.status != 200 || r.json(t)["usage"] != "off" {
+		t.Fatalf("off: %d %s", r.status, r.body)
+	}
+	if f := forwards(); f != `[]` {
+		t.Fatalf("forwards_usage while off: %s", f)
+	}
+	evs, _ := m.st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "upstream.change", Limit: 1})
+	if len(evs) != 1 || !strings.Contains(evs[0].Data, `"change":"usage"`) || !strings.Contains(evs[0].Data, `"value":"off"`) {
+		t.Fatalf("upstream.change: %+v", evs)
+	}
+	if r := m.call(t, "POST", U+"/usage", m.toks["install"], `{"usage":"forward"}`, "If-Match", "*"); r.status != 404 {
+		t.Fatalf("an installer: %d", r.status)
 	}
 }

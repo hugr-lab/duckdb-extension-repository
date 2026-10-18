@@ -155,15 +155,16 @@ others reference. It also means an older binary sees the tenant as suspended, an
   5. `extension_group_grants`, `extension_group_members`, `extension_groups`;
   6. `grants`, `issuer_console_clients`, `issuers`;
   7. `api_keys`, `publisher_github`, `publishers`;
-  8. `upstream_cells`, `upstream_versions`, `upstream_entries`, `upstream_platforms`,
-     `upstream_keys`, `upstreams`, and their lease rows;
+  8. `license_syncs`, `licenses`, `usage_forwards` (spec 0012), `upstream_cells`,
+     `upstream_versions`, `upstream_entries`, `upstream_platforms`, `upstream_keys`, `upstreams`,
+     and their lease rows;
   9. `shadows`, `blocks`;
   10. `UPDATE channels SET serving_key_id = NULL` for the tenant's channels;
   11. `release_signatures` (by the tenant's keys), `releases` (by its channels), `purged_slots` (by
       the channel ids in the deletion record), `builds`: each through an indexed column;
   12. `key_events`, `channel_keys`;
   13. `channel_duckdb_versions`, `channels`;
-  14. `download_counts`, `download_installers`, `usage_counts`, `usage_users` (spec 0012);
+  14. `download_counts`, `download_installers`, `usage_counts`, `usage_users`, `usage_received` (spec 0012);
   15. the tombstone.
 - **Batches.** A batch deletes at most 1,000 rows in its own transaction, through a bounded
   subquery rather than a list of keys (composite keys would exceed SQL Server's 2,100 parameters):

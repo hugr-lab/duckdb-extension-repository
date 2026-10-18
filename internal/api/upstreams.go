@@ -38,6 +38,7 @@ type upstreamJSON struct {
 	CreatedAt  string          `json:"created_at"`
 	CreatedBy  string          `json:"created_by"`
 	Credential string          `json:"credential,omitempty"` // a configured credential's name (spec 0009 phase 3)
+	Usage      string          `json:"usage"`                // forward | off (spec 0012 phase 1c)
 	// bundle mode (spec 0014): the last imported manifest
 	BundleID        string `json:"bundle_id,omitempty"`
 	BundleCreatedAt string `json:"bundle_created_at,omitempty"`
@@ -59,7 +60,7 @@ func (h *Handler) upstreamOf(u store.Upstream, channels map[string]string, c cal
 	o := upstreamJSON{Name: u.Name, Kind: u.Kind, Prefix: u.Prefix, Channel: channels[u.ChannelID], Mode: u.Mode,
 		Visibility: u.Visibility, State: u.State, Run: "idle", Keys: nonNil(u.Keys), Platforms: nonNil(u.Platforms),
 		Extensions: []entryJSON{}, LastRunAt: timeOf(u.LastRunAt), CreatedAt: timeOf(u.CreatedAt),
-		CreatedBy: createdBy(u.CreatedBy, c), Credential: u.Credential, BundleID: u.BundleID,
+		CreatedBy: createdBy(u.CreatedBy, c), Credential: u.Credential, Usage: u.Usage, BundleID: u.BundleID,
 		BundleCreatedAt: timeOf(u.BundleCreatedAt), BundleManifest: u.BundleManifestSHA256, ETag: versionTag(u.Version)}
 	switch {
 	case !u.RequestedAt.IsZero() && u.RequestDryRun:
@@ -469,14 +470,72 @@ func (h *Handler) setCredential(w http.ResponseWriter, r *http.Request, c caller
 	h.replyUpstream(w, r, c, p, u, http.StatusOK)
 }
 
+// setUsage sets whether an upstream gets this tenant's usage: POST …/upstreams/{name}/usage
+// {"usage": "forward"|"off"}, If-Match.
+func (h *Handler) setUsage(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	expected, ok := expectedVersion(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Usage string `json:"usage"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	if in.Usage != store.UsageForward && in.Usage != store.UsageOff {
+		problem(w, http.StatusBadRequest, typeInvalid, "usage is forward or off")
+		return
+	}
+	a, _ := c.actor()
+	u, err := h.o.Upstreams.SetUsage(r.Context(), a, p["t"], p["name"], in.Usage, expected)
+	if err != nil {
+		h.upstreamErr(w, err)
+		return
+	}
+	h.replyUpstream(w, r, c, p, u, http.StatusOK)
+}
+
+// usageForward answers an upstream's last usage forwarding run: GET …/upstreams/{name}/usage.
+func (h *Handler) usageForward(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	u, err := h.o.Upstreams.Get(r.Context(), a, p["t"], p["name"])
+	if err != nil {
+		h.upstreamErr(w, err)
+		return
+	}
+	at, res, err := h.o.Store.GetUsageForward(r.Context(), u.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	out := map[string]any{"usage": u.Usage, "last_run_at": timeOf(at), "result": nil}
+	if res != "" {
+		out["result"] = json.RawMessage(res)
+	}
+	reply(w, r, http.StatusOK, out, "", noStore)
+}
+
 // listCredentials answers GET /api/v1/credentials: the configured credentials' names, tenants and
 // prefixes, never their settings (server administrators).
 func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	out := []map[string]any{}
 	if h.o.Upstreams != nil {
+		// which credentials carry the tenants' usage upstream (spec 0012 phase 1c)
+		fws, err := h.o.Store.UsageForwarders(r.Context())
+		if err != nil {
+			h.fail(w, err)
+			return
+		}
 		for _, i := range h.o.Upstreams.Credentials.Infos() {
+			usage := []map[string]string{}
+			for _, f := range fws {
+				if f.Credential == i.Name {
+					usage = append(usage, map[string]string{"tenant": f.Tenant, "upstream": f.Upstream})
+				}
+			}
 			out = append(out, map[string]any{"name": i.Name, "kind": i.Kind, "tenants": nonNil(i.Tenants),
-				"prefixes": nonNil(i.Prefixes), "allow_public": i.AllowPublic})
+				"prefixes": nonNil(i.Prefixes), "allow_public": i.AllowPublic, "forwards_usage": usage})
 		}
 	}
 	reply(w, r, http.StatusOK, map[string]any{"credentials": out}, "", noStore)

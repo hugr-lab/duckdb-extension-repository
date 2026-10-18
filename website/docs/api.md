@@ -286,7 +286,7 @@ See [Publishing](publishing.md).
 | `GET, POST …/upstreams/{name}/platforms`; `DELETE …/platforms/{item}` | tenant admin |
 | `GET, POST …/upstreams/{name}/keys`; `DELETE …/keys/{item}` | tenant admin |
 | `GET tenants/{t}/shadows`; `DELETE tenants/{t}/shadows/{name}` | tenant admin |
-| `GET credentials` | server: the configured upstream credentials (names, tenants, prefixes) |
+| `GET credentials` | server: the configured upstream credentials (names, tenants, prefixes, and the upstreams that forward usage with each) |
 
 See [Upstreams](upstreams.md).
 
@@ -298,6 +298,7 @@ See [Upstreams](upstreams.md).
 | `POST tenants/{t}/licenses` (the licence as the body; `If-Match` to replace one) | tenant admin |
 | `POST …/licenses/{name}/public`, `/private` (`If-Match`) | tenant admin |
 | `GET …/upstreams/{name}/licenses`; `POST …/upstreams/{name}/licenses/sync` | tenant admin |
+| `GET …/upstreams/{name}/usage`; `POST …/upstreams/{name}/usage {"usage": "forward"\|"off"}` (`If-Match`) | tenant admin: the usage switch and the last forwarding run |
 | `GET licenses/keys` | server: the trusted licence keys' fingerprints |
 
 A licence is answered as its claims and state (`name`, `id`, `issuer`, `holder_id`, `holder`, `plan`,

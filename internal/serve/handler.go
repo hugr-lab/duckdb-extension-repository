@@ -72,6 +72,14 @@ type Options struct {
 	// Usage counts usage reports (spec 0012 phase 1b); nil: reports are answered and nothing is
 	// kept (statistics.usage_accept false).
 	Usage UsageCounter
+	// Received stores downstream kistas' daily aggregates (spec 0012 phase 1c); nil: they are
+	// answered and nothing is kept (statistics.usage_accept false).
+	Received Received
+}
+
+// Received stores a downstream kista's daily aggregate (spec 0012 phase 1c).
+type Received interface {
+	PutReceived(ctx context.Context, tenantID, channelID, sender, day string, first bool, rows []store.ReceivedRow) error
 }
 
 // UsageCounter counts usage reports: all of a report's counts, or none (false: over the budget);
@@ -291,14 +299,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		notFound(lw)
 		return
 	}
-	if rt.kind == routeUsage {
-		// spec 0012: a POST with a JSON body, the one route that takes one
+	if rt.kind == routeUsage || rt.kind == routeDaily {
+		// spec 0012: a POST with a JSON body, the routes that take one
 		if r.Method != http.MethodPost {
 			lw.Header().Set("Allow", http.MethodPost)
 			plain(lw, http.StatusMethodNotAllowed, body405)
 			return
 		}
-		h.usage(lw, r, rt)
+		if rt.kind == routeDaily {
+			h.daily(lw, r, rt)
+		} else {
+			h.usage(lw, r, rt)
+		}
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {

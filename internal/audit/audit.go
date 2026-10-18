@@ -200,6 +200,8 @@ var catalogue = map[Kind][]string{
 	"authz.refused":    {"route", "verb", "status", "count"},
 	"install":          {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
 	"extension.use":    {"version", "platform", "duckdb_version", "license", "status", "events"},
+	"usage.forward":    {"upstream", "sent", "skipped", "failed"},
+	"usage.receive":    {"day", "part", "parts", "sender", "reports", "dropped"},
 	"audit.dropped":    {"counts", "sink"},
 	"storage.gc":       {"domain", "builds", "bodies", "marked", "streams", "tmp", "attachments", "uploads", "chunks", "bytes", "claims", "resolved", "dry_run", "error"},
 	"storage.verify": {"domain", "full", "mark", "unmark", "checked", "ok", "skipped", "marked_ok", "missing", "short", "long",
@@ -246,7 +248,7 @@ func SubjectForm(k Kind) string {
 		return "tenant:<name>"
 	case "bundle.reset":
 		return "upstream:<name> or feed:<name>"
-	case "license.sync":
+	case "license.sync", "usage.forward":
 		return "upstream:<name>"
 	}
 	if strings.HasPrefix(string(k), "publisher.github.") {
@@ -258,7 +260,7 @@ func SubjectForm(k Kind) string {
 	prefix, _, _ := strings.Cut(string(k), ".")
 	return map[string]string{"tenant": "tenant:<name>", "audience": "tenant:<name>", "version": "version:<name>",
 		"channel": "channel:<channel>", "key": "channel:<channel>/key:<id>", "issuer": "issuer:<name>", "grant": "grant:<id>",
-		"publisher": "publisher:<name>", "release": release, "block": "block:<body hash>", "upstream": "upstream:<name>",
+		"publisher": "publisher:<name>", "release": release, "usage": "channel:<channel>", "block": "block:<body hash>", "upstream": "upstream:<name>",
 		"shadow": "shadow:<name>", "extension_group": "extension-group:<name>", "attachment": "ext:<name>/attachment:<id>",
 		"attestation_key": "attestation-key:<id>", "feed": "feed:<name>", "license": "license:<name>"}[prefix]
 }

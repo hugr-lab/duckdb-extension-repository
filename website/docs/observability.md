@@ -117,6 +117,8 @@ are all the kinds in `internal/audit`:
 | | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count` |
 | | `install` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `duckdb_version`, `body_hash`, `user_agent` |
 | | `extension.use` | `channel:<channel>/ext:<name>` | `version`, `platform`, `duckdb_version`, `license`, `status`, `events` |
+| | `usage.forward` | `upstream:<name>` | `upstream`, `sent`, `skipped`, `failed` |
+| | `usage.receive` | `channel:<channel>` | `day`, `part`, `parts`, `sender`, `reports`, `dropped` |
 | | `request.failed` | `route:<route>` | `route`, `status`, `count` |
 | Storage | `storage.gc` | `domain:<domain>` | `domain`, `builds`, `bodies`, `marked`, `streams`, `tmp`, `attachments`, `uploads`, `chunks` (bundle uploads' chunks), `bytes`, `claims`, `resolved`, `dry_run`, `error` |
 | | `storage.verify` | `domain:<domain>` | `domain`, `full`, `mark`, `unmark`, `checked`, `ok`, `skipped`, `marked_ok`, `missing`, `short`, `long`, `corrupt`, `record`, `unreadable`, `marked`, `unmarked`, `bytes`, `error` |
@@ -330,7 +332,7 @@ Export errors go to kista's log, at most once a minute.
 | `kista.upstream.cells` | gauge, `{cell}` | `kista.outcome`: upstream cells per outcome |
 
 `http.route` is never a path: `api`, `ui`, `cors`, `extension`, `extension-versioned`,
-`well-known`, `license`, `licenses`, `usage`, `healthz`, `readyz`, `none` (no route matched) or `other`.
+`well-known`, `license`, `licenses`, `usage`, `usage-daily`, `healthz`, `readyz`, `none` (no route matched) or `other`.
 
 `kista.events.pending` and `kista.upstream.cells` are read from the database at each export and are
 the same on every replica: take the maximum across `service.instance.id`, not the sum. A sink's name

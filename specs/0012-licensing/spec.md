@@ -1,6 +1,6 @@
 # Spec 0012: Licensing and usage reports
 
-- **Status**: accepted; phases 1a (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI) and 1b (usage reports) implemented
+- **Status**: accepted; phases 1a (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI), 1b (usage reports) and 1c (forwarding) implemented
 - **Date**: 2026-10-17
 - **Author**: vgsml, Claude
 
@@ -373,42 +373,60 @@ Each `repository` upstream with a credential has `usage`: `forward` (the default
 
 A daily pass runs on one replica (lease `kista/usage/forward`). It skips paused upstreams. For
 each upstream set to `forward`, it sends each of the last 3 days that ended at least an hour ago.
-Each day goes to every `(channel, name, version)` for which the channel has a release of
-`name@version` whose provenance names this upstream (promotions keep it, spec 0009):
+Each day carries the `(name, version)` pairs the upstream brought into its channel since it was
+added, counted only in the channels that hold a release of such a build (the build-based rule of
+the relay: a promotion releases the same build elsewhere; the same version from another source is
+not this upstream's):
 
 ```text
 POST <upstream prefix>/-/usage     Authorization: Bearer <the credential's token>
-{"day": "2026-10-17",
+{"day": "2026-10-17", "sender": "<the upstream's id>", "part": 1, "parts": 1,
  "reports": [{"extension": "myext", "version": "1.4.0", "users": 42,
               "events": [{"name": "attach", "count": 380, "counters": {"sources": 912}}]}]}
 ```
 
 - The day's totals for those rows are summed over the tenant's channels, authenticated and
   anonymous, local and received.
-- The request carries no principal, address, channel name or licence id.
+- The request carries no principal, address, channel name or licence id. `sender` is the upstream
+  record's random id: it keeps two upstreams of one kista that share a credential apart at the
+  receiver.
 - `users` is left out below 5, so a small organisation's single user is not singled out.
-- At most 1,000 reports and 1 MiB per request; a day that needs more goes in several requests,
-  each with `"part": n` and `"parts": total`.
-- **A day is sent whole and replaces what the upstream holds for it from this caller.** Resending is
-  therefore harmless: the pass sends the last 3 days every day, so late reports reach the upstream,
+- At most 1,000 reports, 20,000 counts and 1 MiB per request; a day that needs more goes in several
+  requests, each with `"part": n` and `"parts": total`. A day with nothing is sent as one empty
+  part. A version's report holds at most 1,024 counts (counters beyond are cut, by name), and a
+  version with neither events nor users is left out.
+- **A day is sent whole and replaces what the upstream holds for it from this caller**: the first
+  part clears the caller's day, and each part replaces the `(name, version)` pairs it carries (a
+  pair is never split). A part that fails does not stop the next ones, so the receiver may hold a
+  partial day until the next run; a day failing on its last run stays partial. Resending, whole or
+  in part, is therefore harmless: the pass sends the last 3 days every day, so late reports reach the upstream,
   and a failure is retried the next day. `404` means the upstream takes no usage.
 - Each run records `usage.forward`: days sent, skipped (`404`), failed, each with its reason.
 - What a subscriber discloses is exactly that request. The docs say so, `GET /api/v1/credentials`
-  shows which credentials forward usage, and `POST …/upstreams/{u}/usage {"usage": "off"}` stops
-  it.
+  shows which credentials forward usage (`forwards_usage`), and `POST …/upstreams/{u}/usage
+  {"usage": "off"}` stops it. `GET …/upstreams/{u}/usage` answers the switch and the last run,
+  kept in `usage_forwards`.
 
 **The receiving side**, `POST <prefix>/-/usage`, is kista's too. So a regional kista forwards to
 the organisation's kista, and that one forwards to Enterest:
 
 - **Access:** a valid token is required (anonymous: `401`).
-- **Limits:** the body is at most 1 MiB and holds at most 20,000 keys. `day` must be one of the last
-  7 finished days (`400` otherwise).
-- **Scope:** reports for names the caller may not use here are dropped. The answer is `204` whatever
-  was dropped, so it reveals nothing.
-- **Storage:** the rest replaces the caller's rows for that day and channel in `usage_received`,
-  keyed by the caller's principal. All parts of one request group are written in one transaction, so
-  a partial resend never doubles a count.
-- Received rows are added to the statistics and to this kista's own forwarding.
+- **Limits:** `application/json` (`415` otherwise), at most 1 MiB (`413`), read within 30 seconds;
+  at most 1,000 reports, 20,000 keys and 1,024 keys per report, `part` within 1..`parts` and `parts` at most 1,000, and
+  `day` one of the last 7 finished days (`400` with the rule otherwise).
+- **Scope:** a report is kept only for a name the caller holds `install` on, at a live version: its
+  counts and users are the sender's claims, and a public release's could be made up by anyone.
+  Reports for other names are dropped. The answer is `204` whatever was dropped, so it reveals
+  nothing. Each request kept is a `usage.receive` event (actor the principal, subject the channel,
+  with the day, part, sender digest and the reports kept and dropped).
+- **Storage:** the rest replaces the caller's rows in `usage_received` for that day and channel, as
+  the sender's rule above says, each part in one transaction, so a resend never doubles a count. The
+  sender is kept as the SHA-256 of the principal and the `sender` field (pseudonymous: whoever can
+  guess a principal can recompute it; the key stays within SQL Server's index limit). A version's
+  users are a row with an empty event; rows are inserted 100 to a statement.
+- Received rows are added to the statistics (status `received`, since statuses are not forwarded)
+  and to this kista's own forwarding. Two kistas forwarding the same versions to each other would
+  count each other's totals again; a chain is a tree, never a cycle.
 
 ### Data model
 
@@ -421,6 +439,7 @@ usage_users     tenant_id, channel_id, name, ext_version, day, users;
 usage_received  tenant_id, channel_id, sender, day, name, ext_version, event,
                 counter, users, value; primary key all but users and value         1c, 0026
 upstreams.usage 'forward' | 'off', not null default 'forward'                      1c, 0026
+usage_forwards  upstream_id (pk, cascade), tenant_id, last_run_at, last_result      1c, 0026
 ```
 
 All of it is additive. The usage tables follow `statistics.retention`, and all of them join spec
@@ -439,6 +458,7 @@ GET    /api/v1/tenants/{t}/upstreams/{u}/licenses          the last relay run (1
 POST   /api/v1/tenants/{t}/upstreams/{u}/licenses/sync     tenant administrators, 202 (1a)
 GET    /api/v1/tenants/{t}/stats/usage                     (1b)
 POST   /api/v1/tenants/{t}/upstreams/{u}/usage             {"usage": "forward"|"off"}, If-Match (1c)
+GET    /api/v1/tenants/{t}/upstreams/{u}/usage             the switch and the last forwarding run (1c)
 ```
 
 - **A licence** is shown as its claims and its state: `name`, `id`, `issuer`, `holder_id`, `holder`,
@@ -452,7 +472,8 @@ POST   /api/v1/tenants/{t}/upstreams/{u}/usage             {"usage": "forward"|"
   - `license verify <file|-> [-key <pem>]`: offline, prints the claims and the status against the
     configured keys or the given one;
   - `upstream licenses <tenant> <upstream> [-sync]`: the last relay run, and a run now;
-  - `upstream usage <tenant> <upstream> forward|off` (1c).
+  - `upstream usage <tenant> <upstream> [forward|off]` (1c): the switch and the last run, and a
+    change.
 
 ### Events
 
@@ -466,6 +487,7 @@ New catalogue entries, with their subject forms in `audit.SubjectForm` and its c
 | `license.sync` | `system:licenses` | `upstream:<u>` | counts (received, stored, replaced, unchanged, removed, refused), the refusals with their rules (a licence's own rule, `not_in_force`, `not_supplied`, `superseded`), or the failure |
 | `extension.use` | the principal | `channel:<c>/ext:<name>` | (above) |
 | `usage.forward` | `system:usage` | `upstream:<u>` | days sent, skipped, failed |
+| `usage.receive` | the downstream's principal | `channel:<c>` | day, part, parts, sender digest, reports kept and dropped |
 | `upstream.change` | the administrator | `upstream:<u>` | `change` `usage`, `value` |
 
 ### Console (1d)
@@ -612,7 +634,8 @@ kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
   - the rows chosen by provenance;
   - no principal in the body; `users` below 5 left out;
   - resending a day replaces it; parts; `404`;
-  - a three-kista chain;
+  - the sender's bodies pass the receiver's parser, and received rows are forwarded on (the chain,
+    link by link, in place of a three-kista test);
   - the receiving side's day window, caps and silent drops.
 - **e2e** (phase 2): the pinned DuckDB runs a test extension built with the SDK and the test key.
   - `INSTALL` and `LOAD` from a private channel with an http secret; the licence is fetched and

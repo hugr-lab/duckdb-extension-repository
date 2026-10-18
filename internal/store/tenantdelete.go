@@ -273,7 +273,7 @@ var reapSteps = []reapStep{
 	{"issuers", ofTenant, false},
 	{"api_keys", "publisher_id IN (SELECT id FROM publishers WHERE tenant_id = ?)", false},
 	{"publisher_github", "publisher_id IN (SELECT id FROM publishers WHERE tenant_id = ?)", false}, {"publishers", ofTenant, false},
-	{"license_syncs", ofTenant, false}, {"licenses", ofTenant, false},
+	{"license_syncs", ofTenant, false}, {"licenses", ofTenant, false}, {"usage_forwards", ofTenant, false},
 	{"upstream_cells", ofUpstreams, false}, {"upstream_versions", ofUpstreams, false}, {"upstream_entries", ofUpstreams, false},
 	{"upstream_platforms", ofUpstreams, false}, {"upstream_keys", ofUpstreams, false}, {"upstreams", ofTenant, false},
 	{"bundle_upload_chunks", "upload_id IN (SELECT id FROM bundle_uploads WHERE tenant_id = ?)", false}, {"bundle_uploads", ofTenant, false},
@@ -284,7 +284,7 @@ var reapSteps = []reapStep{
 	{"key_events", "key_id IN (SELECT id FROM channel_keys WHERE tenant_id = ?)", false}, {"channel_keys", ofTenant, false},
 	{"channel_duckdb_versions", ofChannels, false}, {"channels", ofTenant, false},
 	{"download_counts", ofTenant, false}, {"download_installers", ofTenant, false},
-	{"usage_counts", ofTenant, false}, {"usage_users", ofTenant, false},
+	{"usage_counts", ofTenant, false}, {"usage_users", ofTenant, false}, {"usage_received", ofTenant, false},
 }
 
 // KeptTables hold a deleted tenant's rows for good (spec 0019): its tombstone, its deletion record,

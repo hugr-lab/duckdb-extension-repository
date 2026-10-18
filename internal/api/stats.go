@@ -412,7 +412,7 @@ func (h *Handler) statsUsage(w http.ResponseWriter, r *http.Request, c caller, p
 				o = &usageUsersJSON{Day: k.day, Channel: k.channel, Extension: k.extension, Version: k.version}
 				users[k] = o
 			}
-			o.Users += row.Users
+			o.Users = addCount(o.Users, row.Users)
 			continue
 		}
 		k.status, k.event, k.counter = pick("status", row.Status), row.Event, row.Counter
@@ -422,8 +422,8 @@ func (h *Handler) statsUsage(w http.ResponseWriter, r *http.Request, c caller, p
 				Event: k.event, Counter: k.counter}
 			counts[k] = o
 		}
-		o.Value += row.Value
-		o.Authenticated += row.Authenticated
+		o.Value = addCount(o.Value, row.Value)
+		o.Authenticated = addCount(o.Authenticated, row.Authenticated)
 	}
 	rowList := make([]usageRowJSON, 0, len(counts))
 	for _, o := range counts {
@@ -443,3 +443,7 @@ func (h *Handler) statsUsage(w http.ResponseWriter, r *http.Request, c caller, p
 	})
 	reply(w, r, http.StatusOK, map[string]any{"from": sr.f.From, "to": sr.f.To, "group": group, "rows": rowList, "users": userList}, "", noStore)
 }
+
+// addCount adds stored counts (each within 0..store.MaxCount), stopping at store.MaxCount: clients'
+// claims summed over many rows never overflow.
+func addCount(a, b int64) int64 { return min(a+b, store.MaxCount) }

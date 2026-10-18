@@ -23,7 +23,7 @@ release binary, both verified as [Deployment](../deployment/index.md) says; or b
   replicas starting together never apply one twice.
 - Applied migrations are recorded in the table `schema_migrations` (`version`, `name`,
   `min_reader`, `applied_at`).
-- A binary's **schema level** is the number of migrations it carries. This release carries 20.
+- A binary's **schema level** is the number of migrations it carries. This release carries 26.
 
 ### Who migrates: `store.migrate`
 
@@ -84,12 +84,17 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0022_bundle_uploads` | 22 | an older replica would not import a completed upload, and its collector would not know `uploads/` |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
-(licences) and 0025 (usage reports) are additive and keep the previous value. During a rolling
+(licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
 upgrade to the release with 0024, an upstream removed through an older replica leaves the licences
 it relayed: they are served until their grace ends, or until an administrator removes them
 (`kista admin license remove`). During one to the release with 0025, older replicas answer usage
 reports `404`, a day the statistics pass counts on an older replica gets no usage users, and a
 tenant deleted by an older replica's reaper leaves its usage rows until `statistics.retention`.
+Usage forwarding starts with the release that has 0026: the first replica on it forwards to every
+credentialed upstream, all of which start at `forward`. An upstream receives only usage it
+supplied, and only if it takes usage (an upstream that answers `404` gets nothing). To keep an
+upstream from receiving it, run `kista admin migrate` and then
+`kista admin upstream usage <tenant> <name> off` before the new `kista serve` starts.
 
 ## Upgrading one server
 

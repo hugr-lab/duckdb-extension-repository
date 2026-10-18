@@ -156,6 +156,7 @@ of another origin) is `409` until an administrator drops the entry or yanks thos
 | `POST /{name}/sync[?dry_run=true]` | `upstream sync <tenant> <name> [-dry-run]` |
 | `GET /{name}/cells[?outcome=…]` | `upstream cells <tenant> <name> [-outcome <outcome>]` |
 | `POST /{name}/credential {"credential": name or ""}` (`If-Match`) | `upstream credential <tenant> <name> <credential>\|-` |
+| `POST /{name}/usage {"usage": "forward" or "off"}` (`If-Match`); `GET /{name}/usage` | `upstream usage <tenant> <name> [forward\|off]` ([forwarding usage](licensing.md#forwarding-usage-upstream)) |
 
 `POST /{name}/extensions` on an existing name replaces its `versions` and `allow_reserved` (`200`).
 The upstream's `ETag` moves with every change to it or its lists; a sync does not move it.
@@ -607,7 +608,9 @@ principal it grants `install` (see [Access](access.md)). kista obtains it withou
 the platform has an identity.
 
 The credential also reads the upstream's licences for this kista, at `<prefix>/-/licenses`, when
-licensing is on ([Licensing](licensing.md)).
+licensing is on, and sends it this tenant's daily usage of the versions it supplied, at
+`<prefix>/-/usage`, unless the upstream's `usage` is `off`
+([Licensing](licensing.md#forwarding-usage-upstream)).
 
 **Credentials are configuration, never data.** The operator names them in `upstreams.credentials`;
 a tenant administrator picks one by name. The database and the API hold the name only.
