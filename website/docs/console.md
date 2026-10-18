@@ -150,14 +150,15 @@ them; channel and extension administrators see their channels and extensions; au
 | Channel: Keys | channel administrators | trusted, active and serving keys, key events, re-sign progress; activate and retire a trusted key; a server administrator adds a key by signer reference |
 | Extension page | extension administrators | its releases, its **Reports**, and (tenant administrators) who may use it and through which grant |
 | Release page | extension administrators | build, body hash, provenance, origin, state history; yank, deprecate, activate, make current, public or private, purge (typing the name to confirm); its Reports |
-| **Upstreams** | tenant administrators | upstreams: add, sync and dry run, pause, resume, public, private, remove; platforms, pinned keys, credential, allowlist (sync, dry run and the credential not for bundle mode, which shows its last bundle); last run and cells; the tenant's shadows; **Feeds**; in the server scope, **Upload a bundle** |
+| **Upstreams** | tenant administrators | upstreams: add, sync and dry run, pause, resume, public, private, remove; platforms, pinned keys, credential, allowlist (sync, dry run and the credential not for bundle mode, which shows its last bundle); last run and cells; a repository upstream's usage forwarding (on or off) and its last run; the tenant's shadows; **Feeds**; in the server scope, **Upload a bundle** |
 | **Groups** | tenant administrators, group administrators (read only) | extension groups: members, description, grants, recent events, removal |
 | **Access** | tenant administrators | principals with their grant counts; a principal's grants; grant and revoke |
 | **Identity** | tenant administrators | issuer records and their console clients; the tenant's audiences (changed by a server administrator) |
 | **Publishers** | tenant administrators | publishers, their GitHub workflows (trusted publishing), API keys (shown once), and what they may publish |
 | **Blocks** | tenant administrators | block a body by its hash with a reason (its releases are yanked in every channel); unblock |
+| **Licences** | tenant administrators | the tenant's licences (expiring within 30 days flagged); a licence's claims and limits; import a file, replace, public or private, remove; each relaying upstream's last run, refusals and **Sync now**. When the server trusts no licence keys, an import is refused as "licensing is off". See [Licensing](licensing.md) |
 | **Events** | auditors | the tenant's events with the API's filters, and an event's detail |
-| **Statistics** | administrators, auditors | downloads per day over 7, 30 or 90 days, and by extension, version or platform, within the caller's grants |
+| **Statistics** | administrators, auditors | **Downloads**: per day over 7, 30 or 90 days, and by extension, version or platform; **Usage**: the users per day, and users and events by day, extension or version, with use without a valid licence and counts received from downstream kistas apart; within the caller's grants |
 
 **Reports** lists the documents attached to a release's body: kind, title, origin (the tenant, a
 publisher, or a feed and its verified issuer), date, expiry, and summary. Administrators download a

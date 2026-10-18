@@ -144,8 +144,8 @@ func (s *Store) PutReceived(ctx context.Context, tenantID, channelID, sender, da
 }
 
 // receivedRows adds a tenant's received aggregates to UsageRows' out, summed over their senders
-// (saturating at MaxCount, as stored counts do): counts with Status StatusReceived (a downstream's,
-// whose statuses are not forwarded), users with Event "".
+// (saturating at MaxCount, as stored counts do), with Status StatusReceived (a downstream's
+// statuses are not forwarded): counts, and users with Event "".
 func (s *Store) receivedRows(ctx context.Context, where string, args []any, add func(UsageRow) error) error {
 	type key struct{ channel, name, version, event, counter, day string }
 	sums := map[key][2]int64{}
@@ -168,11 +168,12 @@ func (s *Store) receivedRows(ctx context.Context, where string, args []any, add 
 		return err
 	}
 	for _, k := range order {
-		r := UsageRow{ChannelID: k.channel, Name: k.name, ExtVersion: k.version, Event: k.event, Counter: k.counter, Day: k.day}
+		r := UsageRow{ChannelID: k.channel, Name: k.name, ExtVersion: k.version, Event: k.event, Counter: k.counter, Day: k.day,
+			Status: StatusReceived}
 		if k.event == "" {
 			r.Users = sums[k][0]
 		} else {
-			r.Status, r.Value = StatusReceived, sums[k][1]
+			r.Value = sums[k][1]
 		}
 		if err := add(r); err != nil {
 			return err

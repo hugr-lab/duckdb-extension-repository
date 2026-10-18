@@ -363,7 +363,7 @@ last, `404`; a chunk without `Content-Length`, `411`; too many chunks at once, `
 | `GET events[...]`, `GET events/{id}` | server: the server's own events |
 | `GET tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=` | principal: everything with `audit`, otherwise what its `admin`, `publish` or `promote` grants cover |
 | `GET tenants/{t}/stats/releases?channel=&extension=` | the same |
-| `GET tenants/{t}/stats/usage?from=&to=&channel=&extension=&group=` | the same; usage reports ([Licensing](licensing.md#usage-reports)) |
+| `GET tenants/{t}/stats/usage?from=&to=&channel=&extension=&group=` | the same; usage reports, users received from downstream marked `received` when grouped by `status` ([Licensing](licensing.md#usage-reports)) |
 
 See [Observability](observability.md).
 

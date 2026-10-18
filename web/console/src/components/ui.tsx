@@ -48,6 +48,12 @@ const badgeTone: Record<string, string> = {
   aborted: 'bg-surface-soft text-ink-muted',
   expired: 'bg-surface-soft text-ink-muted',
   public: 'bg-surface-soft text-ink-muted',
+  // licences (spec 0012)
+  valid: 'bg-success-soft text-success',
+  grace: 'bg-warning-soft text-warning',
+  not_yet_valid: 'bg-warning-soft text-warning',
+  not_covered: 'bg-warning-soft text-warning',
+  invalid: 'bg-danger-soft text-danger',
   private: 'border border-line text-ink',
   mixed: 'border border-line text-ink',
 }

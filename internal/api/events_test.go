@@ -348,6 +348,11 @@ func TestUsageStatistics(t *testing.T) {
 		{TenantID: acme.ID, ChannelID: ids["staging"], Name: "acl", ExtVersion: "1.0", Day: today}: 5}}); err != nil {
 		t.Fatal(err)
 	}
+	// a downstream kista's aggregate (phase 1c), shown apart when grouped by status
+	if err := m.st.PutReceived(ctx, acme.ID, ids["prod"], "downstream", today, true, []store.ReceivedRow{
+		{Name: "tresor", ExtVersion: "1.0", Users: 6}, {Name: "tresor", ExtVersion: "1.0", Event: "attach", Value: 10}}); err != nil {
+		t.Fatal(err)
+	}
 	get := func(who, q string) (int, map[string]any) {
 		r := m.call(t, "GET", T+"/stats/usage"+q, m.toks[who], "")
 		if r.status != 200 {
@@ -363,17 +368,22 @@ func TestUsageStatistics(t *testing.T) {
 	row := func(i int) map[string]any { return rows[i].(map[string]any) }
 	// acl load; tresor attach (all statuses summed), tresor attach.sources
 	if len(rows) != 3 || row(0)["extension"] != "acl" || row(0)["value"] != float64(7) || row(1)["event"] != "attach" ||
-		row(1)["counter"] != nil || row(1)["value"] != float64(9) || row(1)["authenticated"] != float64(7) ||
+		row(1)["counter"] != nil || row(1)["value"] != float64(19) || row(1)["authenticated"] != float64(7) ||
 		row(2)["counter"] != "sources" || row(2)["value"] != float64(9) {
 		t.Fatalf("by extension: %v", r)
 	}
-	if len(users) != 2 || users[1].(map[string]any)["users"] != float64(3) {
+	if len(users) != 2 || users[1].(map[string]any)["users"] != float64(9) || users[1].(map[string]any)["status"] != nil {
 		t.Fatalf("users by extension: %v", users)
 	}
-	// by status: use without a licence apart
+	// by status: use without a licence apart, and what was received
 	_, r = get("tenant admin", "?group=status&extension=tresor")
-	if rows := r["rows"].([]any); len(rows) != 3 || rows[0].(map[string]any)["status"] != "missing" || rows[0].(map[string]any)["value"] != float64(4) {
+	if rows := r["rows"].([]any); len(rows) != 4 || rows[0].(map[string]any)["status"] != "missing" || rows[0].(map[string]any)["value"] != float64(4) ||
+		rows[1].(map[string]any)["status"] != "received" || rows[1].(map[string]any)["value"] != float64(10) {
 		t.Fatalf("by status: %v", r)
+	}
+	if users := r["users"].([]any); len(users) != 2 || users[0].(map[string]any)["status"] != nil || users[0].(map[string]any)["users"] != float64(3) ||
+		users[1].(map[string]any)["status"] != "received" || users[1].(map[string]any)["users"] != float64(6) {
+		t.Fatalf("users by status: %v", users)
 	}
 	// a version is an extension's
 	if _, r = get("tenant admin", "?group=version"); r["group"].([]any)[1] != "extension" {

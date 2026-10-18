@@ -95,6 +95,8 @@ credentialed upstream, all of which start at `forward`. An upstream receives onl
 supplied, and only if it takes usage (an upstream that answers `404` gets nothing). To keep an
 upstream from receiving it, run `kista admin migrate` and then
 `kista admin upstream usage <tenant> <name> off` before the new `kista serve` starts.
+`/stats/usage` grouped by `status` now answers users received from downstream kistas in their own
+row (`status: received`) beside this kista's; a client that sums `users` sees the same totals.
 
 ## Upgrading one server
 

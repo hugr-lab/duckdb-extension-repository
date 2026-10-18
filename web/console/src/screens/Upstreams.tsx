@@ -44,6 +44,7 @@ export interface Upstream {
   created_at: string
   created_by: string
   credential?: string
+  usage: 'forward' | 'off'
   bundle_id?: string
   bundle_created_at?: string
   etag: string
@@ -307,6 +308,7 @@ function UpstreamView({ name }: { name: string }) {
         </dl>
       </Card>
       <LastRun u={u} onRefresh={up.reload} />
+      {u.kind === 'repository' && u.mode !== 'bundle' && <Usage u={u} path={path} etag={etag} onChanged={up.reload} />}
       <Allowlist path={path} onChanged={up.reload} />
       <Items key={u.etag} u={u} path={path} etag={etag} onChanged={up.reload} />
       <Cells path={path} />
@@ -338,6 +340,51 @@ function LastRun({ u, onRefresh }: { u: Upstream; onRefresh: () => void }) {
           )}
         </div>
       )}
+    </Card>
+  )
+}
+
+interface UsageRun {
+  usage: 'forward' | 'off'
+  last_run_at?: string
+  result: { sent: string[]; skipped: string[]; failed: { day: string; reason: string }[] } | null
+}
+
+/** Whether the upstream gets this tenant's daily usage of what it supplied (spec 0012 phase 1c),
+ * and the last forwarding run. */
+function Usage({ u, path, etag, onChanged }: { u: Upstream; path: string; etag: string; onChanged: () => void }) {
+  const { client } = useTenant()
+  const run = useLoad(() => client.get<UsageRun>(`${path}/usage`), [path])
+  const [pending, setPending] = useState(false)
+  const { busy, failure, act } = useAction('The upstream', onChanged)
+  const next = u.usage === 'forward' ? 'off' : 'forward'
+  const r = run.data?.data
+  const change = async () => {
+    setPending(false)
+    if (await act(() => client.post(`${path}/usage`, { ifMatch: etag, body: { usage: next } }))) {
+      onChanged()
+      run.reload()
+    }
+  }
+  return (
+    <Card title="Usage forwarding" actions={<Button tone="outline" disabled={busy} onClick={() => setPending(true)}>{u.usage === 'forward' ? 'Stop forwarding…' : 'Forward…'}</Button>}>
+      <div className="flex flex-col gap-3">
+        <p className="m-0">{u.usage === 'forward' ? <><Badge>forward</Badge> Once a day</> : <><Badge>off</Badge> When on, once a day</>} this tenant sends the upstream how the versions it supplied were used, including what downstream kistas forwarded: per day, extension and version, the events, counters and number of users (none below 5). No principal, address, channel or licence goes.</p>
+        {!u.credential && <Note>Only an upstream with a credential gets usage.</Note>}
+        {run.loading && !run.data ? <Loading /> : run.error ? <ErrorBox error={run.error} /> : !r?.last_run_at ? <span className="text-ink-muted">Never forwarded.</span> : (
+          <div className="flex flex-col gap-2 text-[13px]">
+            <span>Last run {when(r.last_run_at)}: {[r.result?.sent.length && `sent ${r.result.sent.join(', ')}`, r.result?.skipped.length && `skipped ${r.result.skipped.join(', ')} (the upstream takes no usage)`].filter(Boolean).join(' · ') || 'nothing sent'}</span>
+            {(r.result?.failed ?? []).map((f) => <span key={f.day} className="text-danger">{f.day}: {f.reason}</span>)}
+          </div>
+        )}
+        {failure != null && <ErrorBox error={failure} />}
+      </div>
+      <Confirm open={pending} title={next === 'off' ? `Stop forwarding usage to ${u.name}?` : `Forward usage to ${u.name}?`} confirm={next === 'off' ? 'Stop' : 'Forward'}
+        onConfirm={change} onClose={() => setPending(false)}>
+        <p>{next === 'off'
+          ? 'The upstream gets no more usage from this tenant; what it received stays there.'
+          : 'From the next daily run the upstream gets the last three finished days, and every day after.'}</p>
+      </Confirm>
     </Card>
   )
 }

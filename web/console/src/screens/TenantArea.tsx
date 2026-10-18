@@ -1,5 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { Ban, BarChart3, Boxes, CloudDownload, Fingerprint, List, Package, Send, ShieldCheck } from 'lucide-react'
+import { Ban, BarChart3, Boxes, CloudDownload, Fingerprint, KeyRound, List, Package, Send, ShieldCheck } from 'lucide-react'
 import { useTenant } from '../lib/context'
 import { useSections, type NavItem } from '../lib/frame'
 import { Empty } from '../components/ui'
@@ -10,6 +10,7 @@ import { Channels } from './Channels'
 import { Events } from './Events'
 import { GroupPage, Groups } from './Groups'
 import { Identity } from './Identity'
+import { Licenses } from './Licenses'
 import { PublisherPage, Publishers } from './Publishers'
 import { UpstreamPage, Upstreams } from './Upstreams'
 import { Release } from './Release'
@@ -30,6 +31,7 @@ export function TenantArea({ label }: { label?: React.ReactNode }) {
     tabs.push({ to: `${base}/identity`, label: 'Identity', icon: Fingerprint })
     tabs.push({ to: `${base}/publishers`, label: 'Publishers', icon: Send })
     tabs.push({ to: `${base}/blocks`, label: 'Blocks', icon: Ban })
+    tabs.push({ to: `${base}/licenses`, label: 'Licences', icon: KeyRound })
   }
   if (perms.canAudit) tabs.push({ to: `${base}/events`, label: 'Events', icon: List })
   if (admin || perms.canAudit) tabs.push({ to: `${base}/stats`, label: 'Statistics', icon: BarChart3 }) // the API scopes them to the caller's grants
@@ -45,6 +47,7 @@ export function TenantArea({ label }: { label?: React.ReactNode }) {
       <Route path="upstreams" element={<Upstreams />} />
       <Route path="upstreams/:name" element={<UpstreamPage />} />
       <Route path="blocks" element={<Blocks />} />
+      <Route path="licenses" element={<Licenses />} />
       <Route path="groups" element={<Groups />} />
       <Route path="groups/:g" element={<GroupPage />} />
       <Route path="access" element={<Access />} />

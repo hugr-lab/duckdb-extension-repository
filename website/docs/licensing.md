@@ -88,6 +88,14 @@ is removed, whatever its source.
 stored, replaced, unchanged, removed, refused with reasons) and with `-sync` asks for one now;
 the API has `GET` and `POST …/upstreams/{name}/licenses[/sync]`.
 
+**In the console**, tenant administrators have **Licences**: the tenant's licences with plan,
+holder, source, visibility, expiry and status (one expiring within 30 days, or in its grace, is
+flagged); a licence's claims, limits and the fingerprint of the key that signed it; importing a file
+(a licence already stored for the extension is replaced after a confirmation), making one public or
+private, and removing one; and each relaying upstream's last run with its refusals, and **Sync now**.
+kista cannot tell which keys an extension's SDK trusts: the page says that a licence signed by a key
+other than the extension's issuer's is stored here and refused by the extension.
+
 ### A changed plan
 
 An upgrade, a downgrade or a renewal is a new licence from the issuer. Nothing is reinstalled: a
@@ -174,13 +182,18 @@ GET /api/v1/tenants/{t}/stats/usage?from=&to=&channel=&extension=&group=<d>[,<d>
     d: day | channel | extension | version | status
     → {from, to, group,
        rows:  [{dimensions…, event, counter, value, authenticated}],
-       users: [{dimensions…, users}]}
+       users: [{dimensions…, users}]}     grouped by status, received users carry status "received"
 ```
 
 Rows are always per event and counter (`counter` absent for the event's own count). `status` sets use
 without a licence apart, and aggregates received from downstream kistas apart as `received`; `users` are summed over the stored rows (per channel, extension, version and
-day), so a principal on two days, versions or channels counts twice when those are not grouped by;
-users are never by `status`.
+day), so a principal on two days, versions or channels counts twice when those are not grouped by.
+Grouped by `status`, users are this kista's (no status: a principal is counted whatever the status
+it reported) or received (`received`).
+
+The console shows the same under **Statistics → Usage**: users per day, then users and events by
+day, extension or version, with use without a valid licence (any status but `valid` or `grace`) and
+received counts in their own columns.
 
 ## Forwarding usage upstream
 
@@ -238,8 +251,8 @@ POST <upstream prefix>/-/usage     Authorization: Bearer <the credential's token
   event;
 - kistas forward up a tree: two kistas forwarding the same versions to each other would count each
   other's totals again;
-- received counts appear in `/stats/usage` with the status `received`, their users with the
-  others, and are forwarded on with this kista's own usage.
+- received counts and users appear in `/stats/usage` with the status `received` (users are told
+  apart when grouped by `status`), and are forwarded on with this kista's own usage.
 
 `statistics.usage_accept: false` keeps no received aggregate either.
 
