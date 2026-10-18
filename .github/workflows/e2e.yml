@@ -2,13 +2,14 @@ name: e2e
 
 # DuckDB at e2e/DUCKDB_PIN against signed repositories (spec 0002): on any server code change, since
 # the cases go through serving, tokens, publication and upstreams, not only the file format. Then the
-# Helm chart on kind (spec 0013) when the chart, the image or the file rules change, and nightly.
+# Helm chart on kind (spec 0013) when the chart, the image or the file rules change, and nightly. The
+# C++ SDK (sdk/cpp, spec 0012) is built and tested against the same DuckDB build.
 on:
   pull_request:
-    paths: [internal/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, Dockerfile, .dockerignore, deploy/helm/**, .github/workflows/e2e.yml]
+    paths: [internal/**, cmd/**, e2e/**, sdk/**, go.mod, go.sum, Makefile, Dockerfile, .dockerignore, deploy/helm/**, .github/workflows/e2e.yml]
   push:
     branches: [main]
-    paths: [internal/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, Dockerfile, .dockerignore, deploy/helm/**, .github/workflows/e2e.yml]
+    paths: [internal/**, cmd/**, e2e/**, sdk/**, go.mod, go.sum, Makefile, Dockerfile, .dockerignore, deploy/helm/**, .github/workflows/e2e.yml]
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -52,7 +53,7 @@ jobs:
           cc=$(cc --version | head -1 | openssl dgst -sha256 | awk '{print substr($NF,1,8)}')
           echo "build=duckdb-e2e-${{ runner.os }}-${{ runner.arch }}-$pin-$cc" >> "$GITHUB_OUTPUT"
           echo "ccache=ccache-e2e-${{ runner.os }}-${{ runner.arch }}-$pin" >> "$GITHUB_OUTPUT"
-      # Only the build output is cached (lib, include, extensions). It is saved right after the build,
+      # Only the build output is cached (lib, include, extensions, sdk). It is saved right after the build,
       # so a failing test run does not throw a 30-45 minute build away.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: build
@@ -61,12 +62,15 @@ jobs:
             e2e/.build/lib
             e2e/.build/include
             e2e/.build/extensions
+            e2e/.build/sdk
           key: ${{ steps.key.outputs.build }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.build.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/ccache
           key: ${{ steps.key.outputs.ccache }}
+          # a changed build script keeps the pin's objects: an earlier cache is still warm
+          restore-keys: ccache-e2e-${{ runner.os }}-${{ runner.arch }}-
       - name: build DuckDB at the pin
         if: steps.build.outputs.cache-hit != 'true'
         run: make e2e-duckdb
@@ -77,6 +81,7 @@ jobs:
             e2e/.build/lib
             e2e/.build/include
             e2e/.build/extensions
+            e2e/.build/sdk
           key: ${{ steps.key.outputs.build }}
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.build.outputs.cache-hit != 'true'
@@ -84,6 +89,8 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ${{ steps.key.outputs.ccache }}
       - run: make e2e-runner
+      - name: the C++ SDK against the licence vectors
+        run: make sdk-test
       - name: Vault and OpenBao (dev mode)
         if: runner.os == 'Linux'
         run: |
@@ -148,6 +155,7 @@ jobs:
             e2e/.build/lib
             e2e/.build/include
             e2e/.build/extensions
+            e2e/.build/sdk
           key: ${{ needs.e2e.outputs.build }}
           fail-on-cache-miss: true
       - name: kind and helm

@@ -3,7 +3,7 @@ export GOWORK := off
 
 E2E_BUILD ?= $(CURDIR)/e2e/.build
 
-.PHONY: build image docs console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down test-moto test-moto-down test-gcs test-gcs-down lint e2e-duckdb e2e-runner e2e-build e2e
+.PHONY: build image docs console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down test-moto test-moto-down test-gcs test-gcs-down lint e2e-duckdb e2e-runner e2e-build e2e sdk-test
 
 build:
 	go build -o bin/kista ./cmd/kista
@@ -122,6 +122,14 @@ e2e-runner:
 	./e2e/build-runner.sh $(E2E_BUILD)
 
 e2e-build: e2e-duckdb e2e-runner
+
+# The C++ SDK (sdk/cpp, spec 0012) against DuckDB at the pin (make e2e-duckdb first): the licence
+# vectors through the C++ verifier.
+SDK_BUILD ?= $(E2E_BUILD)/sdk-build
+sdk-test:
+	cmake -S sdk/cpp -B $(SDK_BUILD) -G Ninja -DKISTA_DUCKDB_DEPS=$(abspath $(E2E_BUILD))/sdk
+	ninja -C $(SDK_BUILD)
+	ctest --test-dir $(SDK_BUILD) --output-on-failure
 
 e2e:
 	KISTA_E2E_DUCKDB=$(E2E_BUILD) go test -count=1 ./e2e/...

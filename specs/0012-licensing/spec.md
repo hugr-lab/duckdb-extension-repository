@@ -1,6 +1,6 @@
 # Spec 0012: Licensing and usage reports
 
-- **Status**: accepted; phases 1a (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI), 1b (usage reports), 1c (forwarding) and 1d (the console) implemented
+- **Status**: accepted; phases 1a (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI), 1b (usage reports), 1c (forwarding), 1d (the console) and 2 part 1 (the SDK's verifier) implemented
 - **Date**: 2026-10-17
 - **Author**: vgsml, Claude
 
@@ -42,7 +42,8 @@ Phases:
 - **1c. Forwarding**: daily aggregates to upstreams, and the receiving side a kista offers its
   downstream kistas.
 - **1d. The console**: a Licences screen, the upstream's usage switch, usage in Statistics.
-- **2. The C++ SDK** (`sdk/cpp`) and end-to-end tests with the pinned DuckDB.
+- **2. The C++ SDK** (`sdk/cpp`) and end-to-end tests with the pinned DuckDB: part 1 the verifier,
+  part 2 the DuckDB side and the e2e cases.
 
 ## Problem
 
@@ -554,13 +555,21 @@ kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
   - **Where the result goes:** the fetched licence is written beside the module, through a temporary
     file and a rename, best effort, because the directory may be read-only.
 - **Trust**: Enterest's licence public keys are compiled in. A test build may add the vectors' test
-  key behind a CMake option that a release build refuses. No runtime setting can add a key.
+  key, only through a separate test-only library (amended in phase 2: no build option can put it
+  into the library an extension links). No runtime setting can add a key.
 - **Usage**: counts are summed in memory and sent when a connection closes, or after 10 minutes on
   the next `Count`. Sending is best effort and never on the query path: a failed send is dropped.
   The `load` event carries the licence status. DuckDB has no shutdown hook, so the last minutes of a
   process may be lost.
 - **What the developer decides**: what each status allows (refuse, degrade, warn). The SDK never
   stops DuckDB by itself.
+- **Delivery:** part 1 is the verifier (`include/kista/license.hpp`: the strict JSON, the parsing
+  rules, the key, the signature with DuckDB's bundled mbedtls, the status), checked against every
+  vector in CI (`make sdk-test`, on the DuckDB build at the pin). The test key is only in a
+  separate test-only library (`kista_sdk_testkey`), never in `kista_sdk`, which an extension links; part 2 is the DuckDB side above
+  (`Register`, the fetch and the file, `Check`, the table functions, usage) and the e2e cases.
+  Enterest's keys are added to `src/keys.cpp` when published; until then a release build trusts
+  none.
 - **To confirm in phase 2:**
   - `MbedTlsWrapper` and `HTTPTransportManager` from a loadable extension on Windows; neither is
     `DUCKDB_API`;
