@@ -12,9 +12,8 @@ and kista stores only licences that verify against the issuer keys its operator 
 The design reasoning is in
 [spec 0012](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0012-licensing/spec.md).
 This page covers what kista does today: licences in a tenant, the relay from upstreams, the routes
-an extension's SDK reads, the usage reports it sends, and the daily usage forwarded upstream. The C++
-SDK (`sdk/cpp`) is being built: its licence verifier is there and agrees with kista's on every test
-vector; how an extension registers it, fetches its licence and reports usage comes next.
+an extension's SDK reads, the usage reports it sends, the daily usage forwarded upstream, and the C++
+SDK an extension embeds.
 
 ## The licence
 
@@ -256,6 +255,39 @@ POST <upstream prefix>/-/usage     Authorization: Bearer <the credential's token
   apart when grouped by `status`), and are forwarded on with this kista's own usage.
 
 `statistics.usage_accept: false` keeps no received aggregate either.
+
+## The C++ SDK
+
+A C++ DuckDB extension embeds the SDK (`sdk/cpp` in kista's repository, Apache-2.0) to check its
+licence and report its usage:
+
+```cpp
+// in the extension's Load
+kista::License::Register(loader, "myext");
+
+// where a licence matters
+auto lic = kista::License::Get(context, "myext");
+lic.Check();                                     // throws unless valid or grace
+lic.Limit<int64_t>("max_attached_sources", 1);   // the developer's controls, with a default
+kista::Usage::Count(context, "myext", "attach", {{"sources", 3}});
+```
+
+- **Where the licence comes from.** When the extension loads, the SDK reads the file
+  `myext.kista-license` beside its module. Then it asks the repository the extension was installed
+  from, with the http secret `INSTALL` used. A new licence is kept beside the module, and an
+  unchanged one costs a `304`. A user can therefore place the file by hand; an air-gapped site does
+  so.
+- **What a user sees.** `SELECT * FROM myext_license()` shows the status, plan, holder, expiry,
+  source, limits, and why. `myext_license_refresh()` fetches the licence again now: after an
+  upgrade, a running process sees the new plan without reinstalling.
+- **Usage.** It is reported to the same repository when a connection closes, and on the first use
+  10 minutes after the last report.
+- **Trust.** The SDK trusts only the issuer's keys compiled into it. Until Enterest publishes its
+  keys, a build trusts none. A test build can trust the licence vectors' test key, through a
+  separate test-only library.
+
+The SDK's README covers building, the session caveat at load and the test key. The SDK for C API
+extensions, and the SDK on Windows, are follow-ups.
 
 ## What licensing does not do
 
