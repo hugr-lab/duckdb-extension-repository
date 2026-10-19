@@ -56,7 +56,7 @@ make build
 | `e2e-runner` | Build the small C runner linked against that DuckDB |
 | `e2e-build` | Both of the above |
 | `e2e` | Run the DuckDB end-to-end cases (`go test -count=1 ./e2e/...`) |
-| `sdk-test` | Build the C++ SDK (`sdk/cpp`) against that DuckDB and check it against the licence vectors |
+| `sdk-test` | Build the C++ SDK (from hugr-lab/extension-ci-tools at `e2e/CI_TOOLS_PIN`) against that DuckDB and check it against the licence vectors |
 | `console` | `npm ci` and `npm run build` in `web/console` |
 | `console-test` | The console's type check, unit tests and license check |
 | `console-e2e` | The console end to end with Keycloak and Playwright |
@@ -345,9 +345,12 @@ make e2e
 - The first build takes 30-45 minutes; with ccache installed, a rebuild takes minutes.
 - The build goes to `e2e/.build` (override with `E2E_BUILD=/path`): `lib/libduckdb`,
   `include/duckdb.h`, the test extensions (`loadable_extension_demo`, `demo_capi`, `httpfs`, and
-  `kista_demo`, built from `sdk/cpp/test/extension` with the C++ SDK and its test key; unsigned as
-  built) and the `runner`. An SDK change rebuilds `kista_demo` with the rest (ccache keeps it
-  short).
+  `kista_demo`, built with the C++ SDK and its test key; unsigned as built) and the `runner`.
+- The C++ SDK is not in this repository: it is in hugr-lab's fork of extension-ci-tools
+  ([The developer kit](#the-developer-kit-for-extensions)). `e2e/CI_TOOLS_PIN` names the fork's
+  commit, as `e2e/DUCKDB_PIN` names DuckDB's. `e2e/fetch-ci-tools.sh` checks it out into
+  `e2e/.build/ci-tools`, and `kista_demo` is built from its `kista/sdk/cpp/test/extension`. A new
+  pin rebuilds `kista_demo` with the rest (ccache keeps it short).
 - The checkout is verified against `DUCKDB_COMMIT` and must have no local changes.
 - `make e2e` sets `KISTA_E2E_DUCKDB` to the build directory; without it the e2e cases skip.
 - The build also fills `e2e/.build/sdk` with what the C++ SDK builds against: DuckDB's headers,
@@ -356,9 +359,36 @@ make e2e
   must agree with the Go one on each status, rule and claim. It also checks the key blocks
   (`kista_sdk_license_keys`, spec 0021): a target trusts exactly its own keys, a target without
   them does not link, and malformed key files are refused at configure time.
+- The SDK's tests use a copy of the licence vectors, kept in the fork. `e2e/sdk_test.go` checks that
+  the pinned fork's copy and test keys are this repository's `internal/license/testdata`. A change
+  to the vectors here therefore needs the fork's copy updated (`kista/scripts/kista-vectors.sh`) and
+  a new pin.
 - `e2e/sdk_test.go` reads `kista_demo`'s key block back, and runs `kista_demo` against kista
   serve: the licence fetched with an http secret and kept beside the module, an upgrade, the
   file offline, `Check()` on an expired or a missing licence, and usage in the statistics.
+
+## The developer kit for extensions
+
+Extension developers build and publish with hugr-lab's fork of DuckDB's extension-ci-tools,
+[hugr-lab/extension-ci-tools](https://github.com/hugr-lab/extension-ci-tools) (spec 0022; its
+[KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md)). It holds:
+
+- **the C++ SDK** (`kista/sdk/cpp`): licences and usage reports ([Licensing](licensing.md#the-c-sdk));
+- **`_kista_publish.yml`**: publishes a distribution build to a kista channel from GitHub Actions,
+  with GitHub's OIDC token ([Trusted publishing](publishing.md#trusted-publishing-github-actions))
+  or an API key;
+- **`makefiles/kista.Makefile`**: the licence keys at build time.
+
+There are two kinds of extension:
+
+- **An open extension** (also in DuckDB's community repository) builds with DuckDB's own
+  extension-ci-tools, exactly as the community builds it, and uses only the fork's publication job.
+  The community's build replaces an extension's `extension-ci-tools` with DuckDB's, so an open
+  extension's build must not depend on the fork.
+- **A licensed extension** has the fork as its `extension-ci-tools` submodule and links the SDK. Its
+  build is `make release KISTA_LICENSE_KEYS='<pem>;…'`, which is how Enterest's builders build it:
+  - `KISTA_LICENSE_KEYS` names one to four PEM public keys;
+  - without it, the build takes the committed `license-key.pem`.
 
 ## The console
 

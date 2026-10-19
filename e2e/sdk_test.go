@@ -300,3 +300,52 @@ func TestSDKLicense(t *testing.T) {
 	mustOK(t, res[:len(res)-1])
 	mustFail(t, res[len(res)-1], "kid_untrusted")
 }
+
+// Spec 0022: the kista SDK in hugr-lab's extension-ci-tools at e2e/CI_TOOLS_PIN tests against
+// kista's own licence vectors: its copy (kista/sdk/cpp/test/vectors) is internal/license/testdata,
+// its test key is the vectors' key and src/keys.cpp names that key's fingerprint for TrustsTestKey,
+// and its untrusted key file is the vectors' untrusted key.
+func TestSDKFromCITools(t *testing.T) {
+	b := needBuild(t)
+	sdk := filepath.Join(b.dir, "ci-tools", "kista", "sdk", "cpp")
+	if _, err := os.Stat(sdk); err != nil {
+		t.Fatalf("the SDK's checkout (e2e/fetch-ci-tools.sh): %v", err)
+	}
+	read := func(p string) []byte {
+		t.Helper()
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	for _, f := range []string{"vectors.json", "test-only-2048.pem"} {
+		if string(read(filepath.Join(sdk, "test", "vectors", f))) != string(read(filepath.Join("..", "internal", "license", "testdata", f))) {
+			t.Errorf("the SDK's test/vectors/%s is not kista's internal/license/testdata/%s: run kista/scripts/kista-vectors.sh in extension-ci-tools", f, f)
+		}
+	}
+	var v struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.Unmarshal(read("../internal/license/testdata/vectors.json"), &v); err != nil {
+		t.Fatal(err)
+	}
+	pub := string(read(filepath.Join(sdk, "test", "keys", "test-only-2048.pub.pem")))
+	if len(v.Keys) != 1 || pub != v.Keys[0] {
+		t.Fatalf("the SDK's test key:\n%s\nthe vectors' key:\n%v", pub, v.Keys)
+	}
+	signKey, err := vectors.LoadKey("../internal/license/testdata", vectors.TrustedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kid := vectors.Kid(&signKey.PublicKey); !strings.Contains(string(read(filepath.Join(sdk, "src", "keys.cpp"))), `kTestKid = "`+kid+`"`) {
+		t.Errorf("the SDK's src/keys.cpp does not name the test key's fingerprint %s", kid)
+	}
+	untrusted, err := vectors.LoadKey("../internal/license/testdata", vectors.UntrustedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want, _ := extfile.MarshalPublicKeyPEM(&untrusted.PublicKey); string(read(filepath.Join(sdk, "test", "keys", "test-only-untrusted-2048.pub.pem"))) != want {
+		t.Error("the SDK's untrusted key file is not the vectors' untrusted key")
+	}
+}

@@ -1,6 +1,6 @@
 # Spec 0022: The developer kit
 
-- **Status**: accepted
+- **Status**: accepted; phase 1 (the fork and kista's switch) implemented
 - **Date**: 2026-10-19
 - **Author**: vgsml, Claude
 

@@ -377,6 +377,27 @@ jobs:
             "$KISTA/api/v1/tenants/acme/channels/staging/extensions/acl/releases?version=${GITHUB_REF_NAME}&platform=linux_amd64"
 ```
 
+**With the developer kit.** hugr-lab's fork of extension-ci-tools has a reusable job that does the
+above for every platform of a distribution build: `_kista_publish.yml`, after DuckDB's
+`_extension_distribution.yml` (or the fork's, for a licensed extension). It reads each build's
+version and platform from its footer, skips wasm builds (refused, above), and retries a `429` or a
+`5xx`. The token's `workflow_ref` names the calling workflow, so the binding names the extension's
+own workflow file. See [Development](development.md#the-developer-kit-for-extensions) and the fork's
+[KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md).
+
+```yaml title=".github/workflows/distribution.yml"
+jobs:
+  build:
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
+    with: {extension_name: acl, duckdb_version: v2.0-cyanoptera, ci_tools_version: main}
+  kista:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions: {id-token: write, contents: read}
+    uses: hugr-lab/extension-ci-tools/.github/workflows/_kista_publish.yml@main
+    with: {extension_name: acl, kista_url: 'https://kista.example.com', tenant: acme, channel: staging}
+```
+
 The provenance of the release records the provider, owner and repository ids and names, workflow,
 ref, commit, run id and attempt. A GitHub Enterprise Server is another entry of
 `publish.providers` (`https://<host>/_services/token`), named with `-provider`.

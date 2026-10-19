@@ -123,11 +123,12 @@ e2e-runner:
 
 e2e-build: e2e-duckdb e2e-runner
 
-# The C++ SDK (sdk/cpp, spec 0012) against DuckDB at the pin (make e2e-duckdb first): the licence
-# vectors through the C++ verifier.
-SDK_BUILD ?= $(E2E_BUILD)/sdk-build
+# The C++ SDK (spec 0012; in hugr-lab/extension-ci-tools at e2e/CI_TOOLS_PIN, spec 0022) against
+# DuckDB at the pin (make e2e-duckdb first): the licence vectors through the C++ verifier.
+SDK_BUILD ?= $(E2E_BUILD)/kista-sdk-build
 sdk-test:
-	cmake -S sdk/cpp -B $(SDK_BUILD) -G Ninja -DKISTA_DUCKDB_DEPS=$(abspath $(E2E_BUILD))/sdk
+	./e2e/fetch-ci-tools.sh $(E2E_BUILD)
+	cmake -S $(E2E_BUILD)/ci-tools/kista/sdk/cpp -B $(SDK_BUILD) -G Ninja -DKISTA_DUCKDB_DEPS=$(abspath $(E2E_BUILD))/sdk
 	ninja -C $(SDK_BUILD)
 	ctest --test-dir $(SDK_BUILD) --output-on-failure
 

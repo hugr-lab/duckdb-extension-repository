@@ -28,4 +28,4 @@ and it is superseded by a new spec when a decision changes.
 | [0019](0019-tenant-deletion/spec.md) | Deleting a tenant | implemented |
 | [0020](0020-cloud-recipes/spec.md) | Cloud recipes: AWS and GCP in Terraform, Azure in Bicep | phases 0-3, 4a and 4b implemented; 4b's live run to come |
 | [0021](0021-licence-keys/spec.md) | Licence keys in the build, and licences in bundles | implemented |
-| [0022](0022-developer-kit/spec.md) | The developer kit: the extension-ci-tools fork with the SDK, the template, publishing from CI | accepted |
+| [0022](0022-developer-kit/spec.md) | The developer kit: the extension-ci-tools fork with the SDK, the template, publishing from CI | accepted; phase 1 implemented |
