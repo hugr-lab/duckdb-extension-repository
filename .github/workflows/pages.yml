@@ -33,6 +33,9 @@ jobs:
           cache-dependency-path: website/package-lock.json
       - name: npm ci && docusaurus build
         working-directory: website
+        env:
+          # while the hugr-lab.com copy exists, it is the canonical one (docusaurus.config.ts)
+          DOCS_CANONICAL: ${{ vars.DOCS_IONOS == 'true' && 'https://hugr-lab.com/docs/duckdb-extension-repository/' || '' }}
         run: |
           npm ci
           npx docusaurus build

@@ -15,6 +15,11 @@ const site = ionos
   : {url: 'https://hugr-lab.github.io', baseUrl: '/duckdb-extension-repository/', home: 'https://hugr-lab.github.io/',
       impressum: 'https://hugr-lab.github.io/impressum/', datenschutz: 'https://hugr-lab.github.io/datenschutz/'};
 
+// While the hugr-lab.com copy exists (DOCS_IONOS on), pages.yml sets DOCS_CANONICAL for the GitHub
+// Pages build: its pages then name the hugr-lab.com copy as canonical (src/theme/SiteMetadata), and
+// it has no sitemap of its own. Old github.io links keep working; search keeps hugr-lab.com.
+const canonicalBase = ionos ? '' : process.env.DOCS_CANONICAL ?? '';
+
 const config: Config = {
   title: 'kista',
   tagline: 'A trusted repository for DuckDB extensions: mirrored, checked, re-signed with your key.',
@@ -24,7 +29,7 @@ const config: Config = {
   baseUrl: site.baseUrl,
   baseUrlIssueBanner: false,
   trailingSlash: true,
-  customFields: {docsTarget: ionos ? 'ionos' : 'github'},
+  customFields: {docsTarget: ionos ? 'ionos' : 'github', canonicalBase},
 
   organizationName: 'hugr-lab',
   projectName: 'duckdb-extension-repository',
@@ -49,6 +54,7 @@ const config: Config = {
           editUrl: 'https://github.com/hugr-lab/duckdb-extension-repository/tree/main/website/',
         },
         blog: false,
+        sitemap: canonicalBase ? false : undefined,
         theme: {
           customCss: [
             require.resolve('@fontsource/quicksand/latin-400.css'),
