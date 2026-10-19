@@ -1,6 +1,6 @@
 # Spec 0022: The developer kit
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-10-19
 - **Author**: vgsml, Claude
 
