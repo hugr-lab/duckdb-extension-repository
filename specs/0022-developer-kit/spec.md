@@ -219,7 +219,8 @@ What each kind gets:
   - the fork as the submodule, at the commit the workflow pins;
   - the SDK in `CMakeLists.txt` and `include kista.Makefile` in the `Makefile`;
     - `kista::License::Register` in the load function (with its `<name>_license()` table function);
-    - a function that needs a licence (`Check`, `Limit`);
+    - a function that needs a licence: `Check` and `Limit` in its bind, once per query, never per
+      chunk; the SQL test checks the refusal without a licence;
     - `kista_sdk` installed with the extension into DuckDB's export set, which needs it;
   - `license-key.pem`: the SDK's test key. The SDK takes a bare PEM block, so the comment that says
     so is in `CMakeLists.txt` and the README;
@@ -229,8 +230,10 @@ What each kind gets:
 **The test key does not leave.** The licensed workflow fails a tag build whose `license-key.pem`
 is one of the SDK's test keys (`scripts/check-license-key.sh`), and says to put the issuer's public
 key there.
-- It compares the keys as DER, so a re-wrapped or CRLF copy is caught too.
-- A local build that trusts `license-key.pem` warns instead, and so does the SDK at load.
+- The check compares the keys as DER, so a re-wrapped or CRLF copy is caught too.
+- A local build warns instead when a key it trusts (`license-key.pem` or `KISTA_LICENSE_KEYS`) is
+  one of the SDK's test keys, compared as text with whitespace removed. The SDK also warns at load,
+  by the key's fingerprint.
 
 **All platforms are built**, wasm included, as DuckDB's matrix has them. The publication skips
 what kista refuses.
