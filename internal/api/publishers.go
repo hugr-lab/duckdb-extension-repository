@@ -27,6 +27,8 @@ type publisherJSON struct {
 	CreatedAt string       `json:"created_at"`
 	CreatedBy string       `json:"created_by"`
 	GitHub    []githubJSON `json:"github"`
+	// LicenseKeys: a trusted source of licence keys (spec 0021)
+	LicenseKeys bool `json:"license_keys"`
 }
 
 func githubOf(g store.GitHubCredential, c caller) githubJSON {
@@ -35,7 +37,8 @@ func githubOf(g store.GitHubCredential, c caller) githubJSON {
 }
 
 func publisherOf(p store.Publisher, c caller) publisherJSON {
-	o := publisherJSON{Name: p.Name, CreatedAt: timeOf(p.CreatedAt), CreatedBy: createdBy(p.CreatedBy, c), GitHub: []githubJSON{}}
+	o := publisherJSON{Name: p.Name, CreatedAt: timeOf(p.CreatedAt), CreatedBy: createdBy(p.CreatedBy, c), GitHub: []githubJSON{},
+		LicenseKeys: p.LicenseKeys}
 	for _, g := range p.GitHub {
 		o.GitHub = append(o.GitHub, githubOf(g, c))
 	}
@@ -97,6 +100,19 @@ func (h *Handler) getPublisher(w http.ResponseWriter, r *http.Request, c caller,
 		}
 	}
 	notFound(w)
+}
+
+// publisherLicenseKeys marks a publisher a source of licence keys, or unmarks it (spec 0021).
+func publisherLicenseKeys(on bool) handler {
+	return func(h *Handler, w http.ResponseWriter, r *http.Request, c caller, p params) {
+		a, _ := c.actor()
+		pb, err := h.o.Auth.SetPublisherLicenseKeys(r.Context(), a, p["t"], p["name"], on)
+		if err != nil {
+			h.serviceErr(w, err, false)
+			return
+		}
+		reply(w, r, http.StatusOK, publisherOf(pb, c), "", noStore)
+	}
 }
 
 func (h *Handler) removePublisher(w http.ResponseWriter, r *http.Request, c caller, p params) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { expiry, peek, syncLine } from './Licenses'
+import { declared, expiry, peek, sourcesLine, syncLine } from './Licenses'
 import { usageLines } from './Stats'
 
 // Spec 0012 phase 1d: the Licences screen and the Usage tab.
@@ -23,6 +23,14 @@ describe('licences', () => {
     expect(expiry(l('valid', '2026-10-19T00:00:00Z'), now)).toBe('expires in 1 day')
     expect(expiry(l('grace', '2026-10-10T00:00:00Z', '2026-10-25T00:00:00Z'), now)).toBe('in grace: 7 days left')
     expect(expiry(l('expired', '2026-10-01T00:00:00Z'), now)).toBe('')
+  })
+  it('reads the licence keys of live builds (spec 0021)', () => {
+    const names = [{ name: 'tresor', keys: [{ kid: 'sha256:aa', builds: 2, sources: [
+      { kind: 'publisher' as const, name: 'tresor-ci' }, { kind: 'upstream' as const, name: 'enterest' }] }] }]
+    expect(sourcesLine(names[0].keys[0].sources)).toBe('publisher tresor-ci · upstream enterest')
+    expect(declared(names, 'tresor', 'sha256:aa')).toBe(true)
+    expect(declared(names, 'tresor', 'sha256:bb')).toBe(false)
+    expect(declared(names, 'acl', 'sha256:aa')).toBe(false)
   })
   it('reads a relay run in a line', () => {
     expect(syncLine({ counts: { received: 3, stored: 1, unchanged: 2, refused: 0 } })).toBe('received 3 · stored 1 · unchanged 2')

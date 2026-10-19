@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Pager, Table, when } from '../components/ui'
+import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Pager, Table, when } from '../components/ui'
 import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
 import { GrantForm, GrantsList, useGrants } from './Access'
@@ -25,6 +25,8 @@ interface Publisher {
   created_at: string
   created_by: string
   github: GitHub[]
+  /** a source of licence keys (spec 0021): marked by a server administrator */
+  license_keys?: boolean
 }
 
 interface APIKey {
@@ -77,7 +79,12 @@ export function Publishers() {
           rows={list.items}
           rowKey={(p) => p.name}
           columns={[
-            ['Publisher', (p) => <Link className="font-mono font-medium no-underline" to={`${base}/publishers/${seg(p.name)}`}>{p.name}</Link>],
+            ['Publisher', (p) => (
+              <span className="flex items-center gap-2">
+                <Link className="font-mono font-medium no-underline" to={`${base}/publishers/${seg(p.name)}`}>{p.name}</Link>
+                {p.license_keys && <Badge>licence keys</Badge>}
+              </span>
+            )],
             ['Trusted publishing', (p) => (p.github.length ? p.github.map((g) => g.workflow).join(', ') : <span className="text-ink-muted">none</span>)],
             ['Added', (p) => when(p.created_at)],
           ]}
@@ -121,6 +128,11 @@ function PublisherView({ name }: { name: string }) {
         <span className="ml-auto"><Button tone="danger-outline" onClick={() => setRemoving(true)}>Remove…</Button></span>
       </PageTitle>
       {failure != null && <ErrorBox error={failure} />}
+      {p.license_keys && (
+        <Note>A source of licence keys: its publications record the licence keys their builds declare, which this tenant's licences verify
+          against. A server administrator marked it, and only a server administrator changes its workflows, API keys and grants: a change made here is refused.
+          Removing it drops the keys it brought.</Note>
+      )}
       <Workflows publisher={p} onChanged={pub.reload} />
       <Keys publisher={p.name} />
       <PublisherGrants publisher={p.name} />

@@ -272,6 +272,12 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin |
 | `GET, POST …/publishers/{name}/github`; `GET, DELETE …/github/{id}` | tenant admin |
 | `GET, POST …/publishers/{name}/keys`; `DELETE …/keys/{id}` | tenant admin |
+| `POST, DELETE …/publishers/{name}/license-keys` | server: mark a publisher a source of licence keys, or unmark it |
+
+A publisher answers with `license_keys` (true when marked). While it is marked, adding or removing its
+GitHub workflows, API keys and grants is a server administrator's (`404` to a tenant
+administrator). A marked publisher's publication of a body whose key block is malformed answers
+`400` (`license_keys`).
 
 See [Publishing](publishing.md).
 
@@ -299,7 +305,7 @@ See [Upstreams](upstreams.md).
 | `POST …/licenses/{name}/public`, `/private` (`If-Match`) | tenant admin |
 | `GET …/upstreams/{name}/licenses`; `POST …/upstreams/{name}/licenses/sync` | tenant admin |
 | `GET …/upstreams/{name}/usage`; `POST …/upstreams/{name}/usage {"usage": "forward"\|"off"}` (`If-Match`) | tenant admin: the usage switch and the last forwarding run |
-| `GET licenses/keys` | server: the trusted licence keys' fingerprints |
+| `GET tenants/{t}/license-keys`, `GET …/license-keys/{name}` | tenant admin: the licence keys of the tenant's live builds |
 
 A licence is answered as its claims and state (`name`, `id`, `issuer`, `holder_id`, `holder`, `plan`,
 `versions`, `limits`, `issued_at`, `expires_at`, `grace_until`, `key`, `source`, `upstream`,
@@ -307,7 +313,10 @@ A licence is answered as its claims and state (`name`, `id`, `issuer`, `holder_i
 with `Location`; over a stored one without `If-Match`, `409`. `GET …/upstreams/{name}/licenses`
 answers the last relay run, `{"last_run_at", "result": {"counts", "refused", "error"}}`, and the sync
 request (`202`) answers the same; `409` for an upstream that relays nothing or is paused, and while
-licensing is off. `GET licenses/keys` answers `{"keys": ["sha256:…"]}`. See [Licensing](licensing.md).
+licensing is off (an import too). An import or a relayed licence verifies against a key a live build of its
+extension declares (spec 0021); without one it is refused (`400`, `kid_untrusted`).
+`GET …/license-keys` answers `{"names": [{"name", "keys": [{"kid", "sources": [{"kind":
+"publisher"|"upstream", "name"}], "builds": n}]}]}`. See [Licensing](licensing.md).
 
 ### Identity, grants and groups
 

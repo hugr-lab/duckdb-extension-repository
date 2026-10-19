@@ -28,9 +28,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -96,7 +94,7 @@ type mgmt struct {
 	events *writer.Writer // refusals (spec 0010 phase 1b)
 	att    *attachment.Service
 	lic    *licenses.Service
-	licKey *rsa.PrivateKey // signs licences (the vectors' test-only key, trusted by lic)
+	licKey *rsa.PrivateKey // signs licences (the vectors' test-only key)
 }
 
 // fakePuller records the misses serving offers (spec 0009 phase 2).
@@ -159,12 +157,7 @@ func newMgmt(t *testing.T) *mgmt {
 	if err != nil {
 		t.Fatal(err)
 	}
-	licPEM, _ := extfile.MarshalPublicKeyPEM(&licKey.PublicKey)
-	licKeys, err := license.ParseKeys([]string{licPEM})
-	if err != nil {
-		t.Fatal(err)
-	}
-	lic := &licenses.Service{Store: en.st, Authz: grants, Keys: licKeys, Fetch: eg, Credentials: creds, Log: slog.New(slog.DiscardHandler)}
+	lic := &licenses.Service{Store: en.st, Authz: grants, Enabled: true, Fetch: eg, Credentials: creds, Log: slog.New(slog.DiscardHandler)}
 	apiH := api.New(api.Options{Licenses: lic, Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths, Events: events,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
 		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups,

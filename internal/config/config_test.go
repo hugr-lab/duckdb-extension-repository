@@ -63,6 +63,8 @@ func TestRefused(t *testing.T) {
 		{"relative key dir", base + "signers: { file_dir: keys }\n", nil, "absolute"},
 		{"min_demoted floor", base + "rotation: { min_demoted: 23h59m }\n", nil, "cannot be below"},
 		{"min_suspended floor", base + "tenants: { min_suspended: 1h }\n", nil, "tenants.min_suspended"},
+		{"a refused key that is not a key id", base + "licenses: { refuse_keys: [ 'sha256:AB' ] }\n", nil, "licenses.refuse_keys: entry 1"},
+		{"licensing off from env", base, []string{"KISTA_LICENSES__ENABLED=false"}, "can only be set in the config file"},
 		{"min_suspended from env", base, []string{"KISTA_TENANTS__MIN_SUSPENDED=48h"}, "can only be set in the config file"},
 		{"min_suspended negative in dev", "profile: dev\nstore: { kind: sqlite, sqlite: { path: /tmp/k.db } }\nrotation: { min_trusted: 1h, min_demoted: 1h }\ntenants: { min_suspended: -1s }\n", nil, "tenants.min_suspended"},
 		{"password in dsn", "store: { kind: postgres, dsn: 'postgres://k:secret@db.example/k?sslmode=verify-full' }\n", nil, "must not contain a password"},
@@ -74,6 +76,19 @@ func TestRefused(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v, want %q", c.name, err, c.want)
 		}
+	}
+}
+
+// Spec 0021: licensing is on by default; licenses.keys is accepted (and ignored, with a warning).
+func TestLicenses(t *testing.T) {
+	cfg, err := Load(write(t, base), nil)
+	if err != nil || !cfg.Licenses.On() || len(cfg.Licenses.Refused()) != 0 {
+		t.Fatalf("defaults: %+v %v", cfg.Licenses, err)
+	}
+	kid := "sha256:" + strings.Repeat("ab", 32)
+	cfg, err = Load(write(t, base+"licenses: { enabled: false, refuse_keys: [ '"+kid+"' ], keys: [ 'old' ] }\n"), nil)
+	if err != nil || cfg.Licenses.On() || !cfg.Licenses.Refused()[kid] || len(cfg.Licenses.Keys) != 1 {
+		t.Fatalf("set: %+v %v", cfg.Licenses, err)
 	}
 }
 

@@ -565,11 +565,14 @@ Documents about bodies. File-only. See [Attachments](attachments.md).
 
 ## licenses
 
-Licensing (spec 0012). File-only. See [Licensing](licensing.md).
+Licensing (spec 0012, spec 0021). File-only. Licences verify against the keys the extensions' builds
+declare, never a key configured here. See [Licensing](licensing.md).
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `licenses.keys` | list of strings | none | The issuers' licence public keys kista verifies licences against: SPKI PEM or base64 DER, RSA-2048 with `e = 65537`. None: licensing is off. |
+| `licenses.enabled` | boolean | `true` | Off: the routes extensions read (`<prefix>/-/licenses`) answer as a missing path; imports and relay requests answer `409`, and no relay runs. |
+| `licenses.refuse_keys` | list of key ids | none | Key ids (`sha256:<64 lowercase hex>`, as `kista ext inspect` prints) that count nowhere: on import, relay or serving. For a leaked key while builds that declare it are live. |
+| `licenses.keys` | list of strings | none | Spec 0012's trusted keys. Accepted and ignored, with a warning at start; the next release refuses it. |
 | `licenses.refresh` | duration | `6h` | Between an upstream's licence relay runs; `1h..24h`. |
 
 ## bundles

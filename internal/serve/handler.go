@@ -92,7 +92,7 @@ type UsageCounter interface {
 // Licenses reads the licences a tenant holds while their grace lasts: one by name (ok false for
 // none), and all of them.
 type Licenses interface {
-	Enabled() bool // licensing is on: trusted keys are configured
+	Enabled() bool // licensing is on (licenses.enabled)
 	Serve(ctx context.Context, tenantID, name string) (store.License, bool, error)
 	List(ctx context.Context, tenantID string) ([]store.License, error)
 }

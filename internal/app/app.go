@@ -338,7 +338,7 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 				Interval: ul.Interval}, Credentials: creds, Feeds: feeds, Uploads: uploadSettings(cfg)},
 		Attachments: at,
 		Feeds:       feeds,
-		Licenses: &licenses.Service{Store: s, Authz: az, Keys: cfg.Licenses.TrustedKeys(), Fetch: eg, Credentials: creds,
+		Licenses: &licenses.Service{Store: s, Authz: az, Enabled: cfg.Licenses.On(), Refuse: cfg.Licenses.Refused(), Fetch: eg, Credentials: creds,
 			Interval: cfg.Licenses.RefreshOrDefault(), Log: slog.Default()},
 	}, nil
 }

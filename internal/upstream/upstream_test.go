@@ -279,11 +279,17 @@ func cpp(ver, duckdb string) extfile.Metadata {
 // distinct pad makes distinct bodies.
 func signed(t *testing.T, key *rsa.PrivateKey, m extfile.Metadata, pad int, exports ...string) []byte {
 	t.Helper()
+	return signedWith(t, key, m, make([]byte, pad), exports...)
+}
+
+// signedWith is signed with extra bytes after the code: a pad, or a licence key block (spec 0021).
+func signedWith(t *testing.T, key *rsa.PrivateKey, m extfile.Metadata, extra []byte, exports ...string) []byte {
+	t.Helper()
 	block, err := extfile.EncodeMetadata(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := append(symtest.ELF(exports...), make([]byte, pad)...)
+	b := append(symtest.ELF(exports...), extra...)
 	b = append(b, extfile.MetadataPrefix...)
 	b = append(b, block[:]...)
 	sig := make([]byte, extfile.SignatureSize)

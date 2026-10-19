@@ -7,7 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -74,17 +74,9 @@ func TestSDKLicense(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	der, err := x509.MarshalPKIXPublicKey(&signKey.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	trusted, err := license.ParseKeys([]string{string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))})
-	if err != nil {
-		t.Fatal(err)
-	}
 	idpKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	idp := &e2eIDP{key: idpKey}
-	k := startKistaLicensed(t, b, &auth.Verifier{Fetch: idp}, trusted)
+	k := startKistaLicensed(t, b, &auth.Verifier{Fetch: idp}, true) // no key configured anywhere (spec 0021)
 	ctx := context.Background()
 	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: "https://" + k.addr}
 	if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
@@ -100,7 +92,6 @@ func TestSDKLicense(t *testing.T) {
 		t.Fatal(err)
 	}
 	k.release("httpfs", release.AddOptions{})
-	k.release("kista_demo", release.AddOptions{Private: true})
 	pemKey := k.pem(t, k.activeKey(t))
 	token := idp.token(t, "alice", "api://kista-acme")
 
@@ -112,6 +103,17 @@ func TestSDKLicense(t *testing.T) {
 	}
 	sign := func(id, plan string, iat, exp int64, extra string) string {
 		return signWith(signKey, id, plan, iat, exp, extra)
+	}
+	// spec 0021: published by an unmarked publisher, kista_demo's key counts for nothing; published
+	// again by a marked one, its key block is the key its licences verify against
+	if st := k.publish(t, "kista_demo", k.publisherKey(t, "other-ci", false)); st != 201 {
+		t.Fatalf("an unmarked publication: %d", st)
+	}
+	if _, err := k.licenses.Import(ctx, serveAdmin, "acme", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
+		t.Fatalf("a licence for a build published by an unmarked publisher: %v", err)
+	}
+	if st := k.publish(t, "kista_demo", k.publisherKey(t, "ci", true)); st != 200 {
+		t.Fatalf("the marked publication: %d", st)
 	}
 	stored, err := k.licenses.Import(ctx, serveAdmin, "acme", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create)
 	if err != nil {

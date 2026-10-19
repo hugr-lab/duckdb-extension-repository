@@ -32,6 +32,9 @@ func (h *Handler) publishErr(w http.ResponseWriter, err error, bodyRef bool) {
 		problem(w, http.StatusRequestEntityTooLarge, typeTooLarge, "the file is larger than this server accepts")
 	case errors.Is(err, extfile.ErrMalformed):
 		problem(w, http.StatusBadRequest, typeInvalid, "the file is not a DuckDB extension: "+publicMessage(err))
+	case errors.Is(err, release.ErrLicenseKeys):
+		problem(w, http.StatusBadRequest, typeInvalid, "the file's licence key block is malformed (license_keys): "+
+			"a publisher marked as a source of licence keys publishes only builds whose keys kista reads (kista ext inspect)")
 	case errors.Is(err, release.ErrBlocked):
 		problem(w, http.StatusConflict, typeConflict, "the body is blocked in this tenant")
 	default:
@@ -158,13 +161,28 @@ func (h *Handler) publishRelease(w http.ResponseWriter, r *http.Request, c calle
 		rate: float64(h.o.MinRate), end: now.Add(time.Minute + time.Duration(float64(r.ContentLength)/float64(h.o.MinRate)*float64(time.Second)))}
 	rel, existed, err := h.o.Releases.Add(r.Context(), a, p["t"], p["c"], body, release.AddOptions{
 		Name: p["ext"], Private: private, NotCurrent: notCurrent, NoWait: true,
-		Publish: &release.Publication{Version: version, Platform: platform, Provenance: provenance(a, c)},
+		Publish: &release.Publication{Version: version, Platform: platform, Provenance: provenance(a, c), KeySources: keySources(c)},
 	})
 	if err != nil {
 		h.publishErr(w, err, false)
 		return
 	}
 	h.answerReleases(w, r, c, p, []store.Release{rel}, existed, true)
+}
+
+// keySources are the ids of the caller's matched publishers marked as sources of licence keys
+// (spec 0021).
+func keySources(c caller) []string {
+	if c.pub == nil {
+		return nil
+	}
+	var out []string
+	for _, m := range c.pub.Publishers {
+		if m.Publisher.LicenseKeys {
+			out = append(out, m.Publisher.ID)
+		}
+	}
+	return out
 }
 
 // provenance of a publication: the actor, and for trusted publishing the run (spec 0008).

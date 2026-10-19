@@ -35,7 +35,7 @@ func (h *Handler) licenseErr(w http.ResponseWriter, err error) {
 	var le *license.Error
 	switch {
 	case errors.Is(err, licenses.ErrOff):
-		problem(w, http.StatusConflict, typeConflict, "licensing is off: the server trusts no licence keys (licenses.keys)")
+		problem(w, http.StatusConflict, typeConflict, "licensing is off on this server (licenses.enabled: false)")
 	case errors.Is(err, licenses.ErrRefused) && errors.As(err, &le):
 		problem(w, http.StatusBadRequest, typeInvalid, "the licence is refused ("+le.Rule+"): "+strings.TrimPrefix(le.Error(), "license: "))
 	case errors.Is(err, licenses.ErrNotLive):
@@ -51,9 +51,15 @@ func (h *Handler) licenseErr(w http.ResponseWriter, err error) {
 	}
 }
 
-// licenseKeys answers the trusted licence keys' fingerprints (server administrators).
+// licenseKeys answers the licence keys of the tenant's live builds, by name (spec 0021).
 func (h *Handler) licenseKeys(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	reply(w, r, http.StatusOK, map[string]any{"keys": h.o.Licenses.KeyFingerprints()}, "", noStore)
+	a, _ := c.actor()
+	ks, err := h.o.Licenses.LicenseKeys(r.Context(), a, p["t"], p["name"])
+	if err != nil {
+		h.licenseErr(w, err)
+		return
+	}
+	reply(w, r, http.StatusOK, map[string]any{"names": ks}, "", noStore)
 }
 
 func (h *Handler) listLicenses(w http.ResponseWriter, r *http.Request, c caller, p params) {

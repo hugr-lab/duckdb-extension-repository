@@ -23,7 +23,7 @@ release binary, both verified as [Deployment](../deployment/index.md) says; or b
   replicas starting together never apply one twice.
 - Applied migrations are recorded in the table `schema_migrations` (`version`, `name`,
   `min_reader`, `applied_at`).
-- A binary's **schema level** is the number of migrations it carries. This release carries 26.
+- A binary's **schema level** is the number of migrations it carries. This release carries 27.
 
 ### Who migrates: `store.migrate`
 
@@ -82,6 +82,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0020_bundles` | 20 | an older replica would fetch a bundle-mode upstream online, or give it a credential |
 | `0021_bundle_feeds` | 21 | an older replica would run a bundle-mode feed online, or keep no export feed's statements |
 | `0022_bundle_uploads` | 22 | an older replica would not import a completed upload, and its collector would not know `uploads/` |
+| `0027_license_keys` | 27 | an older replica would let a tenant administrator change a marked publisher's credentials, and would verify licences against `licenses.keys` |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -153,6 +154,27 @@ so the operator declares it:
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
 ## Upgrading to this release
+
+### Licence keys in the builds (spec 0021)
+
+Licences no longer verify against `licenses.keys`. They verify against the keys an extension's live
+builds declare in their key blocks, recorded when a trusted source brought the build: a publisher a
+server administrator marked, or a `repository` upstream. See
+[Licensing](../licensing.md#the-keys-a-licence-verifies-against).
+
+- **Migration `0027_license_keys`** adds the table `build_license_keys` and the column
+  `publishers.license_keys`, and raises `min_reader` to 27: stop every older replica first.
+- **`licenses.keys` is ignored**, with a warning at start. Remove it: the next release refuses it.
+  The routes it fed are gone: `GET /api/v1/licenses/keys` and `kista admin license keys` without
+  a tenant. `kista admin license verify` now needs `-key`.
+- **Existing builds carry no keys.** Builds published or mirrored before this release have none
+  recorded, and builds made with an earlier SDK have no key block. A stored licence is accepted and
+  served again only once its extension is rebuilt with this SDK and published by a marked publisher
+  or mirrored again. No issuer publishes keys yet, so this concerns test deployments only.
+- **Licensing is on by default.** A deployment that ran without keys, so with licensing off, now has
+  the licence routes and relays licences from its credentialed upstreams. `licenses.enabled: false`
+  keeps it off.
+- **A leaked key** is taken out with `licenses.refuse_keys`.
 
 ### Files kista reads
 

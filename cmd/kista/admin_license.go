@@ -15,8 +15,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// license manages a tenant's licences (spec 0012): kista stores what verifies against
-// licenses.keys, and issues nothing.
+// license manages a tenant's licences (spec 0012): kista stores what verifies against a key its
+// extension's live builds declare (spec 0021), and issues nothing.
 func (a *adminCmd) license(ctx context.Context, sub string, args []string) error {
 	fs := flag.NewFlagSet("license", flag.ContinueOnError)
 	replace := fs.Bool("replace", false, "")
@@ -54,10 +54,26 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 		return strings.TrimSpace(string(b)), err
 	}
 	switch {
-	case sub == "keys" && len(pos) == 0:
-		for _, fp := range ls.KeyFingerprints() {
-			fmt.Fprintln(a.out, fp)
+	case sub == "keys" && (len(pos) == 1 || len(pos) == 2):
+		name := ""
+		if len(pos) == 2 {
+			name = pos[1]
 		}
+		nks, err := ls.LicenseKeys(ctx, a.actor, pos[0], name)
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tKEY\tBUILDS\tSOURCES", func(w io.Writer) {
+			for _, nk := range nks {
+				for _, k := range nk.Keys {
+					srcs := make([]string, 0, len(k.Sources))
+					for _, s := range k.Sources {
+						srcs = append(srcs, s.Kind+":"+s.Name)
+					}
+					fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", nk.Name, k.Kid, k.Builds, strings.Join(srcs, ","))
+				}
+			}
+		})
 	case sub == "list" && len(pos) == 1:
 		vs, err := ls.List(ctx, a.actor, pos[0])
 		if err != nil {
@@ -113,15 +129,16 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 		if err != nil {
 			return err
 		}
-		keys := ls.Keys
-		if *keyFile != "" {
-			b, err := os.ReadFile(*keyFile)
-			if err != nil {
-				return err
-			}
-			if keys, err = license.ParseKeys([]string{string(b)}); err != nil {
-				return err
-			}
+		if *keyFile == "" {
+			return fmt.Errorf("license verify: -key <pem> names the public key to verify with")
+		}
+		b, err := os.ReadFile(*keyFile)
+		if err != nil {
+			return err
+		}
+		keys, err := license.ParseKeys([]string{string(b)})
+		if err != nil {
+			return err
 		}
 		t, err := license.Parse(tok)
 		if err != nil {
@@ -130,8 +147,8 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 		if err := t.Verify(keys); err != nil {
 			return err
 		}
-		b, _ := json.MarshalIndent(t.Claims, "", "  ")
-		fmt.Fprintf(a.out, "%s\nstatus: %s\n", b, t.StatusAt(time.Now()))
+		claims, _ := json.MarshalIndent(t.Claims, "", "  ")
+		fmt.Fprintf(a.out, "%s\nstatus: %s\n", claims, t.StatusAt(time.Now()))
 	default:
 		return errUsage
 	}

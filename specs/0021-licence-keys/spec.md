@@ -1,6 +1,6 @@
 # Spec 0021: Licence keys in the build, and licences in bundles
 
-- **Status**: accepted; phase 1 part 1 (the SDK and the reader) implemented
+- **Status**: accepted; phase 1 (the key in the build: the SDK, the reader, and kista) implemented
 - **Date**: 2026-10-18
 - **Author**: vgsml, Claude
 
@@ -120,8 +120,10 @@ licence keys, each with its **source**, only when a trusted intake carries its b
   - DuckDB's core and community upstreams: anyone can publish a community extension, and their keys
     say nothing about licences;
   - an unmarked publisher, a principal, or `release add` (the CLI or `POST …/releases`);
-  - an upstream run that finds the body `unchanged` or gets a `304`, because it does not read the
-    body.
+  - an upstream run that gets a `304`, because it does not read the body. A run that downloads a
+    body its slot already holds (`unchanged`) does read it, and records its keys.
+- **A source that is gone.** A key counts only while its source exists: an intake that raced its
+  source's removal records nothing, or a row nothing counts.
 - **Recording later.** When a trusted intake carries a body whose build has no keys from that
   source, the keys are recorded. The release versions of the channels holding it are bumped, so
   served snapshots pick them up.
@@ -133,12 +135,16 @@ licence keys, each with its **source**, only when a trusted intake carries its b
   unmarks it. Each records a new `publisher.change` event. In the CLI: `kista admin publisher
   license-keys <tenant> <name> on|off`. `GET …/publishers` and `publisher list` show the mark.
 - **While marked, the server administrator controls it.** Adding or removing its API keys, its
-  GitHub bindings and its grants is a server administrator's act, refused to tenant administrators
-  (`404`, as for a route they cannot reach). A tenant administrator can still remove the publisher,
+  GitHub bindings and its grants, and changing the members of an extension group its grants name,
+  is a server administrator's act, refused to tenant administrators (`404`, as for a route they
+  cannot reach). A publisher is marked only while it holds no API key and no GitHub binding (`400`
+  otherwise): credentials a tenant administrator made before the mark would outlive it. A tenant administrator can still remove the publisher,
   which drops its keys. So a tenant administrator cannot point a marked publisher at builds of their
   own.
 - **A malformed block is refused.** A marked publisher's publication whose body has a malformed
   block is refused (`400`, rule `license_keys`).
+- **The publisher itself.** A credential can match several publishers. A publication records keys
+  for each matched marked publisher that holds `publish` on the name by its own grants.
 - **Unmarking** keeps the keys already recorded. Removing the publisher drops them.
 
 ### Verifying licences
@@ -154,12 +160,14 @@ refused by the server (`licenses.refuse_keys`, below) never count.
 | a bundle through bundle-mode upstream U | the same, for U |
 
 - **Rule order.** A relayed or bundled licence is checked for `not_supplied` first (spec 0012), then
-  for its key (`kid_untrusted`). A name with no keys refuses every licence with `kid_untrusted`,
+  for its key (`kid_untrusted`). A licence refused for its key that this upstream relayed before
+  stays stored (not served while no live build declares its key), rather than being revoked. A name with no keys refuses every licence with `kid_untrusted`,
   saying that no live build of the name declares a licence key. The keys are read inside the
   tenant's transaction, after the supply check.
 - **Replacing.** Spec 0012's replacement rules hold, with one more condition. A licence from one
   source replaces a stored licence from another source only when both are signed with the same key,
-  or the stored one is past its grace. An administrator's import with `If-Match` still replaces any
+  or the stored one is past its grace, or its key counts nowhere (refused, or declared by no live
+  build of the name). An administrator's import with `If-Match` still replaces any
   licence. So an upstream added in another channel cannot displace a working licence with one signed
   by its own key.
 - **Serving.** `GET <prefix>/-/licenses/<name>`, and the list, serve a licence in channel C only when
@@ -181,7 +189,9 @@ refused by the server (`licenses.refuse_keys`, below) never count.
   - `licenses.keys` is accepted and ignored, with a start-up warning, in the release that ships this
     phase, and refused in the release after.
   - The routes it fed are removed: `GET /api/v1/licenses/keys` and `kista admin license keys`.
+- **Offline checks.** `kista admin license verify` takes the key to check against (`-key`).
 - **What a tenant administrator sees.** `GET /api/v1/tenants/{t}/license-keys[/{name}]` answers
+  the keys of live builds, without those the server refuses:
   `{"names": [{"name", "keys": [{"kid", "sources": [{"kind": "publisher"|"upstream", "name"}],
   "builds": n}]}]}`. The CLI's form is `kista admin license keys <tenant> [<name>]`, and the
   console's Licences screen shows it.
@@ -237,7 +247,9 @@ refused by the server (`licenses.refuse_keys`, below) never count.
 
 ### Data model
 
-Migration 0027, additive, on all three dialects:
+Migration 0027, on all three dialects. Its schema change is additive, but it raises `min_reader` to
+27: an older replica would let a tenant administrator change a marked publisher's credentials and
+would verify licences against `licenses.keys`.
 
 ```text
 build_license_keys   tenant_id, build_id (cascade), kid, pem, source_kind ('publisher' | 'upstream'),

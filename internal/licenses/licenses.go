@@ -1,6 +1,7 @@
 // Package licenses keeps a tenant's licences (spec 0012 phase 1a): an administrator's import, the
 // relay from credentialed upstreams, removal and visibility, and what the DuckDB routes serve.
-// kista issues nothing: every licence it stores verifies against the operator's trusted keys.
+// kista issues nothing: every licence it stores verifies against a key that a live build of its
+// extension declares, recorded from a trusted source (spec 0021).
 package licenses
 
 import (
@@ -8,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
-	"slices"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -20,7 +19,7 @@ import (
 
 // Errors a caller maps to answers.
 var (
-	ErrOff      = errors.New("licenses: no trusted keys configured")
+	ErrOff      = errors.New("licenses: licensing is off (licenses.enabled: false)")
 	ErrRefused  = errors.New("licenses: the licence is refused")      // with its rule
 	ErrNotLive  = errors.New("licenses: the licence is not in force") // expired, or not yet valid
 	ErrExists   = errors.New("licenses: a licence is stored for this extension; replace it with If-Match")
@@ -36,8 +35,10 @@ const Create = -1
 type Service struct {
 	Store *store.Store
 	Authz authz.Authorizer
-	// Keys are the trusted licence keys (config licenses.keys); none: licensing is off.
-	Keys license.Keys
+	// Enabled is licenses.enabled: off, the licence routes and the relay are off.
+	Enabled bool
+	// Refuse are the kids that count nowhere (licenses.refuse_keys, spec 0021).
+	Refuse map[string]bool
 	// Fetch and Credentials are the relay's (spec 0009's egress client and credentials).
 	Fetch       Fetcher
 	Credentials credential.Registry
@@ -114,13 +115,6 @@ func (s *Service) upstreamName(ctx context.Context, id string) (string, error) {
 	return name, err
 }
 
-// KeyFingerprints are the trusted keys' fingerprints (for server administrators).
-func (s *Service) KeyFingerprints() []string {
-	out := slices.Collect(maps.Keys(s.Keys))
-	slices.Sort(out)
-	return out
-}
-
 // List lists a tenant's licences.
 func (s *Service) List(ctx context.Context, a authz.Actor, tenant string) ([]View, error) {
 	t, err := s.tenant(ctx, a, tenant)
@@ -161,17 +155,14 @@ func (s *Service) Token(ctx context.Context, a authz.Actor, tenant, name string)
 	return l.Token, err
 }
 
-// check verifies a token for storing: a licence by the trusted keys, in force now (valid or in
-// grace). It returns the parsed token.
-func (s *Service) check(token string) (*license.Token, error) {
-	if len(s.Keys) == 0 {
+// parse reads a token for storing: a licence in force now (valid or in grace), its signature not
+// verified yet (verify, with the name's keys).
+func (s *Service) parse(token string) (*license.Token, error) {
+	if !s.Enabled {
 		return nil, ErrOff
 	}
 	t, err := license.Parse(token)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrRefused, err)
-	}
-	if err := t.Verify(s.Keys); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrRefused, err)
 	}
 	switch st := t.StatusAt(s.Store.Now()); st {
@@ -180,6 +171,37 @@ func (s *Service) check(token string) (*license.Token, error) {
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrNotLive, st)
 	}
+}
+
+// verify checks a token's signature against keys: those of the live builds of its name, all of
+// them or one source's (spec 0021). A key the server refuses counts nowhere.
+func (s *Service) verify(t *license.Token, keys []store.LicenseKey, whose string) error {
+	if s.Refuse[t.Key] {
+		return fmt.Errorf("%w: %w", ErrRefused, &license.Error{Rule: license.RuleKeyUntrusted,
+			Msg: "key " + t.Key + " is refused by the server (licenses.refuse_keys)"})
+	}
+	pems := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if !s.Refuse[k.Kid] {
+			pems = append(pems, k.PEM)
+		}
+	}
+	if len(pems) == 0 {
+		return fmt.Errorf("%w: %w", ErrRefused, &license.Error{Rule: license.RuleKeyUntrusted,
+			Msg: "no live build of " + t.Extension + whose + " declares a licence key"})
+	}
+	ks, err := license.ParseKeys(pems)
+	if err != nil { // recorded keys were checked when read from the binary
+		return err
+	}
+	if err := t.Verify(ks); err != nil {
+		var le *license.Error
+		if errors.As(err, &le) && le.Rule == license.RuleKeyUntrusted {
+			err = &license.Error{Rule: license.RuleKeyUntrusted, Msg: "key " + t.Key + " is declared by no live build of " + t.Extension + whose}
+		}
+		return fmt.Errorf("%w: %w", ErrRefused, err)
+	}
+	return nil
 }
 
 func record(t *license.Token, tenantID, token, actor string) store.License {
@@ -196,13 +218,21 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, token strin
 	if err != nil {
 		return View{}, err
 	}
-	tok, err := s.check(token)
+	tok, err := s.parse(token)
 	if err != nil {
 		return View{}, err
 	}
 	l := record(tok, t.ID, token, a.String())
 	l.Source = store.LicenseImport
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
+		// the keys of the name's live builds, from any trusted source, anywhere in the tenant
+		keys, err := tx.LiveLicenseKeys(ctx, t.ID, l.Name, "", "")
+		if err != nil {
+			return err
+		}
+		if err := s.verify(tok, keys, ""); err != nil {
+			return err
+		}
 		old, err := tx.GetLicense(ctx, t.ID, l.Name)
 		replaced := ""
 		switch {
@@ -286,12 +316,12 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, name
 // Served adapts the service to the DuckDB routes (serve.Licenses).
 type Served struct{ *Service }
 
-// Enabled reports whether licensing is on (trusted keys are configured).
-func (s Served) Enabled() bool { return len(s.Keys) > 0 }
+// Enabled reports whether licensing is on (licenses.enabled).
+func (s Served) Enabled() bool { return s.Service.Enabled }
 
-// List is every licence of a tenant whose grace lasts.
+// List is every licence of a tenant whose grace lasts and whose key the server does not refuse.
 func (s Served) List(ctx context.Context, tenantID string) ([]store.License, error) {
-	if len(s.Keys) == 0 {
+	if !s.Service.Enabled {
 		return nil, nil
 	}
 	ls, err := s.Store.ListLicenses(ctx, tenantID)
@@ -301,7 +331,7 @@ func (s Served) List(ctx context.Context, tenantID string) ([]store.License, err
 	now := s.Store.Now().Unix()
 	out := ls[:0]
 	for _, l := range ls {
-		if now < l.GraceUntil {
+		if now < l.GraceUntil && !s.Refuse[l.Key] {
 			out = append(out, l)
 		}
 	}
@@ -309,9 +339,10 @@ func (s Served) List(ctx context.Context, tenantID string) ([]store.License, err
 }
 
 // Serve is what a DuckDB route serves for a name in a tenant: the stored licence while its grace
-// lasts (ok false: none, or past its grace).
+// lasts and its key is not refused (ok false: none, past its grace, or refused). The route serves
+// it only in a channel where a live build declares its key.
 func (s *Service) Serve(ctx context.Context, tenantID, name string) (store.License, bool, error) {
-	if len(s.Keys) == 0 {
+	if !s.Enabled {
 		return store.License{}, false, nil
 	}
 	l, err := s.Store.GetLicense(ctx, tenantID, name)
@@ -321,5 +352,44 @@ func (s *Service) Serve(ctx context.Context, tenantID, name string) (store.Licen
 	if err != nil {
 		return l, false, err
 	}
-	return l, s.Store.Now().Unix() < l.GraceUntil, nil
+	return l, s.Store.Now().Unix() < l.GraceUntil && !s.Refuse[l.Key], nil
+}
+
+// NameKeys are the licence keys of a name's live builds (spec 0021).
+type NameKeys struct {
+	Name string    `json:"name"`
+	Keys []KeyView `json:"keys"`
+}
+
+// KeyView is a licence key, the trusted sources that brought it and the number of live builds that
+// declare it.
+type KeyView struct {
+	Kid     string            `json:"kid"`
+	Sources []store.KeySource `json:"sources"`
+	Builds  int               `json:"builds"`
+}
+
+// LicenseKeys lists the keys a tenant's licences are verified with: those of its live builds, by
+// name (one name, or all: name ""), without the keys the server refuses.
+func (s *Service) LicenseKeys(ctx context.Context, a authz.Actor, tenant, name string) ([]NameKeys, error) {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return nil, err
+	}
+	ks, err := s.Store.TenantLicenseKeys(ctx, t.ID, name)
+	if err != nil {
+		return nil, err
+	}
+	out := []NameKeys{}
+	for _, k := range ks {
+		if s.Refuse[k.Kid] {
+			continue
+		}
+		if len(out) == 0 || out[len(out)-1].Name != k.Name {
+			out = append(out, NameKeys{Name: k.Name})
+		}
+		last := &out[len(out)-1]
+		last.Keys = append(last.Keys, KeyView{Kid: k.Kid, Sources: k.Sources, Builds: k.Builds})
+	}
+	return out, nil
 }

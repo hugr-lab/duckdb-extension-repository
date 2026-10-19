@@ -22,12 +22,13 @@ func (h *Handler) licenses(w http.ResponseWriter, r *http.Request, rt route) {
 	}
 	ctx := r.Context()
 	sc, installs, actor, snap, missing := cc.sc, cc.installs, cc.actor, cc.snap, cc.missing
-	// may reports whether the caller may have a licence for a name in this channel
+	// may reports whether the caller may have a licence for a name in this channel: a live build
+	// the caller sees declares its key (spec 0021)
 	may := func(l store.License) bool {
-		if installs(l.Name) && snap.Live(l.Name, release.Everything) {
+		if installs(l.Name) && snap.LiveKey(l.Name, l.Key, release.Everything) {
 			return true
 		}
-		return l.Visibility == store.Public && snap.Live(l.Name, release.PublicOnly)
+		return l.Visibility == store.Public && snap.LiveKey(l.Name, l.Key, release.PublicOnly)
 	}
 	// licensing off: as a missing path, so a downstream relay changes nothing (an empty list would
 	// revoke everything it holds)

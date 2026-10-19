@@ -1,8 +1,9 @@
 import { expect, test, type Page } from '@playwright/test'
 
-// Licences and usage in the console (spec 0012 phase 1d). e2e/run.sh trusts the licence vectors'
-// test-only key, signed a 20-day licence for tresor (E2E_LICENSE), and serves another repository's
-// .well-known (E2E_REPO_URL, its key E2E_REPO_KEY).
+// Licences and usage in the console (spec 0012 phase 1d). e2e/run.sh published vault with a key
+// block declaring the licence vectors' test-only key, as a marked publisher (spec 0021), signed a
+// 20-day licence for vault (E2E_LICENSE), and serves another repository's .well-known (E2E_REPO_URL,
+// its key E2E_REPO_KEY).
 
 const pw = (name: string) => process.env[`E2E_PW_${name.toUpperCase()}`] ?? ''
 
@@ -22,22 +23,24 @@ test('a licence: imported from a file, its claims read, made public, removed', a
   await nav(page, 'Licences').click()
   await expect(page.getByText('No licences.')).toBeVisible()
   await expect(page.getByText('No upstream relays licences.')).toBeVisible()
+  const keys = page.locator('section', { has: page.getByRole('heading', { name: 'Licence keys' }) })
+  await expect(keys.getByRole('row', { name: /vault/ }).getByText('publisher vault-ci')).toBeVisible()
 
   await page.getByLabel('licence file').setInputFiles(process.env.E2E_LICENSE ?? '')
   await expect(page.getByText('plan pro, held by Acme Test')).toBeVisible()
   await page.getByRole('button', { name: 'Import', exact: true }).click()
-  const row = page.getByRole('row', { name: /tresor/ })
+  const row = page.getByRole('row', { name: /^vault pro/ })
   await expect(row.getByText('expires in 20 days')).toBeVisible()
   await expect(row.getByText('valid', { exact: true })).toBeVisible()
 
   // opened on import: its claims and limits
   await expect(page.getByRole('cell', { name: 'max_attached_sources' })).toBeVisible()
   await expect(page.getByText('lic-e2e')).toBeVisible()
-  await expect(page.getByText(/accepts a licence only when its SDK trusts the key/)).toBeVisible()
+  await expect(page.getByText(/accepts a licence only when its own key block holds the key/)).toBeVisible()
 
   // the same file again replaces it, after a confirmation
   await page.getByLabel('licence file').setInputFiles(process.env.E2E_LICENSE ?? '')
-  await expect(page.getByText('It replaces the licence stored for tresor (imported).')).toBeVisible()
+  await expect(page.getByText('It replaces the licence stored for vault (imported).')).toBeVisible()
   await page.getByRole('button', { name: 'Replace…' }).click()
   await confirm(page, 'Replace')
   await expect(page.getByLabel('licence file')).toHaveValue('')

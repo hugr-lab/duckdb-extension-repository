@@ -32,12 +32,12 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/symbols/symtest"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
@@ -79,7 +79,7 @@ var writes = map[string]map[string][]audit.Kind{
 	"tenants.AuthAdmin": {
 		"AddIssuer": {"issuer.add"}, "RemoveIssuer": {"issuer.remove"}, "AddAudience": {"audience.add"},
 		"RemoveAudience": {"audience.remove"}, "AddGrant": {"grant.add"}, "RemoveGrant": {"grant.remove"},
-		"AddPublisher": {"publisher.add"}, "RemovePublisher": {"publisher.remove"},
+		"AddPublisher": {"publisher.add"}, "RemovePublisher": {"publisher.remove"}, "SetPublisherLicenseKeys": {"publisher.change"},
 		"AddGitHubCredential": {"publisher.github.add"}, "RemoveGitHubCredential": {"publisher.github.remove"},
 		"AddAPIKey": {"publisher.key.add"}, "RemoveAPIKey": {"publisher.key.remove"},
 		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil,
@@ -123,7 +123,7 @@ var writes = map[string]map[string][]audit.Kind{
 	"licenses.Service": {
 		"Import": {"license.import"}, "Remove": {"license.remove"}, "SetVisibility": {"license.change"},
 		"RunUpstream": {"license.sync", "license.remove"}, "ExpireOnce": {"license.remove"},
-		"Sync": nil, "List": nil, "Get": nil, "Token": nil, "LastSync": nil, "KeyFingerprints": nil, "Serve": nil, "WithAuthz": nil,
+		"Sync": nil, "List": nil, "Get": nil, "Token": nil, "LastSync": nil, "LicenseKeys": nil, "Serve": nil, "WithAuthz": nil,
 	},
 	"attachment.Feeds": {
 		"Add": {"feed.add"}, "Change": {"feed.change"}, "Remove": {"feed.remove"}, "RunFeed": {"feed.run"},
@@ -386,6 +386,10 @@ func TestCoverage(t *testing.T) {
 		return err
 	}), "publisher.key.add")
 	en.expect("tenants.AuthAdmin.RemoveAPIKey", do(func() error { return en.adm.RemoveAPIKey(rctx, admin, "acme", "ci", apiKey) }), "publisher.key.remove")
+	en.expect("tenants.AuthAdmin.SetPublisherLicenseKeys", do(func() error {
+		_, err := en.adm.SetPublisherLicenseKeys(rctx, admin, "acme", "ci", true)
+		return err
+	}), "publisher.change")
 	en.expect("tenants.AuthAdmin.RemovePublisher", do(func() error { return en.adm.RemovePublisher(rctx, admin, "acme", "ci") }), "publisher.remove")
 	// releases
 	var relID string
@@ -481,12 +485,10 @@ func TestCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	licPEM, _ := extfile.MarshalPublicKeyPEM(&licKey.PublicKey)
-	licKeys, err := license.ParseKeys([]string{licPEM})
-	if err != nil {
+	if _, err := storetest.LicenseKey(ctx, st, en.tenantID(), "tresor", store.KeySourcePublisher, "p", &licKey.PublicKey); err != nil {
 		t.Fatal(err)
 	}
-	lic := &licenses.Service{Store: st, Authz: authz.ServerAdmin{}, Keys: licKeys, Log: slog.New(slog.DiscardHandler)}
+	lic := &licenses.Service{Store: st, Authz: authz.ServerAdmin{}, Enabled: true, Log: slog.New(slog.DiscardHandler)}
 	licTok := vectors.Sign(licKey, vectors.Header(licKey), fmt.Sprintf(
 		`{"v":1,"iss":"https://issuer.example","jti":"l1","sub":"acme","ext":"tresor","plan":"pro","iat":%d,"exp":%d}`,
 		base.Unix()-60, base.Unix()+30*86400))

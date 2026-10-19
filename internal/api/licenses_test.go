@@ -3,11 +3,23 @@ package api_test
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
+
+func (m *mgmt) tenantID(t *testing.T) string {
+	t.Helper()
+	tn, err := m.st.GetTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tn.ID
+}
 
 func (m *mgmt) licence(ext, plan string) string {
 	now := time.Now().Unix()
@@ -22,18 +34,28 @@ func TestLicenseRoutes(t *testing.T) {
 	const T = "/api/v1/tenants/acme/licenses"
 	tom := m.toks["tenant admin"]
 
-	// the trusted keys: server administrators only
-	if r := m.call(t, "GET", "/api/v1/licenses/keys", m.toks["server admin"], ""); r.status != 200 ||
-		fmt.Sprint(r.json(t)["keys"]) != "["+vectors.Kid(&m.licKey.PublicKey)+"]" {
-		t.Fatalf("keys: %d %s", r.status, r.body)
+	// spec 0021: no live build of tresor declares a key yet
+	pro := m.licence("tresor", "pro")
+	if r := m.call(t, "POST", T, tom, pro); r.status != 400 || !strings.Contains(string(r.body), "kid_untrusted") {
+		t.Fatalf("an import with no key: %d %s", r.status, r.body)
 	}
-	if r := m.call(t, "GET", "/api/v1/licenses/keys", tom, ""); r.status != 404 {
-		t.Fatalf("keys to a tenant administrator: %d", r.status)
+	if r := m.call(t, "GET", "/api/v1/licenses/keys", m.toks["server admin"], ""); r.status != 404 {
+		t.Fatalf("the old keys route: %d", r.status)
+	}
+	kid, err := storetest.LicenseKey(ctx, m.st, m.tenantID(t), "tresor", store.KeySourcePublisher, "nobody", &m.licKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := m.call(t, "GET", "/api/v1/tenants/acme/license-keys/tresor", tom, "")
+	if ks := fmt.Sprint(r.json(t)["names"]); r.status != 200 || !strings.Contains(ks, kid) || !strings.Contains(ks, "builds:3") {
+		t.Fatalf("license keys: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", "/api/v1/tenants/acme/license-keys", m.toks["install"], ""); r.status != 404 {
+		t.Fatalf("license keys to an installer: %d", r.status)
 	}
 
 	// an import, then one over it without If-Match, then with it
-	pro := m.licence("tresor", "pro")
-	r := m.call(t, "POST", T, tom, pro)
+	r = m.call(t, "POST", T, tom, pro)
 	if r.status != 201 || r.header.Get("Location") != T+"/tresor" || r.json(t)["plan"] != "pro" || r.json(t)["status"] != "valid" ||
 		r.json(t)["source"] != "import" {
 		t.Fatalf("an import: %d %s", r.status, r.body)

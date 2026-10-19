@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,11 +12,22 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
 
-// Spec 0012: kista admin license, against the vectors' test-only key in licenses.keys.
+// Spec 0012: kista admin license, with the vectors' test-only key declared by a build of the name
+// (spec 0021).
 func TestAdminLicense(t *testing.T) {
 	dir := t.TempDir()
+	keys := filepath.Join(dir, "keys")
+	if err := os.Mkdir(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := signer.GenerateKeyFile(filepath.Join(keys, "a.pem")); err != nil {
+		t.Fatal(err)
+	}
 	k, err := vectors.LoadKey("../../internal/license/testdata", vectors.TrustedKey)
 	if err != nil {
 		t.Fatal(err)
@@ -25,10 +37,10 @@ func TestAdminLicense(t *testing.T) {
 	if err := os.WriteFile(keyFile, []byte(pubPEM), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	indented := "    " + strings.ReplaceAll(strings.TrimSpace(pubPEM), "\n", "\n      ")
+	db := filepath.Join(dir, "k.db")
 	cfg := filepath.Join(dir, "kista.yaml")
-	if err := os.WriteFile(cfg, []byte("profile: dev\nstore: { kind: sqlite, sqlite: { path: "+filepath.Join(dir, "k.db")+" } }\n"+
-		"licenses:\n  keys:\n  - |\n  "+indented+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg, []byte("profile: dev\nstore: { kind: sqlite, sqlite: { path: "+db+" } }\nsigners: { file_dir: "+keys+" }\n"),
+		0o600); err != nil {
 		t.Fatal(err)
 	}
 	run := func(want int, in string, args ...string) string {
@@ -50,11 +62,50 @@ func TestAdminLicense(t *testing.T) {
 	}
 	run(0, "", "migrate")
 	run(0, "", "tenant", "create", "acme")
-	if got := run(0, "", "license", "keys"); strings.TrimSpace(got) != vectors.Kid(&k.PublicKey) {
-		t.Fatalf("keys: %q", got)
+	run(0, "", "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6")
+	run(0, "", "channel", "create", "acme/prod", "-kind", "signed")
+	run(0, "", "channel", "versions", "acme/prod", "-add", "v2.0.0")
+	run(0, "", "key", "add", "acme/prod", "-signer", "file:a.pem", "-active")
+	file := filepath.Join(dir, "tresor.duckdb_extension")
+	block, err := extfile.EncodeMetadata(extfile.Metadata{Platform: "linux_amd64", DuckDBVersion: "v2.0.0", ExtensionVersion: "1.0", ABI: extfile.ABICPP})
+	if err != nil {
+		t.Fatal(err)
 	}
+	body := append(append(bytes.Repeat([]byte{1}, 5000), extfile.MetadataPrefix...), block[:]...)
+	if err := os.WriteFile(file, append(body, make([]byte, extfile.SignatureSize)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run(0, "", "release", "add", "acme/prod", file, "-name", "tresor", "-unchecked")
 	lic := filepath.Join(dir, "tresor.lic")
 	_ = os.WriteFile(lic, []byte(sign("pro")+"\n"), 0o600)
+	run(0, "", "publisher", "add", "acme", "ci")
+	run(0, "", "publisher", "license-keys", "acme", "ci", "on")
+	if got := run(0, "", "publisher", "list", "acme"); !strings.Contains(got, "LICENSE KEYS") || len(strings.Fields(strings.Split(got, "\n")[1])) < 2 || strings.Fields(strings.Split(got, "\n")[1])[1] != "yes" {
+		t.Fatalf("publisher list: %q", got)
+	}
+	run(2, "", "publisher", "license-keys", "acme", "ci", "maybe")
+	run(0, "", "publisher", "license-keys", "acme", "ci", "off")
+	run(1, "", "license", "import", "acme", lic) // no live build of tresor declares a key
+	if got := run(0, "", "license", "keys", "acme"); strings.Contains(got, "tresor") {
+		t.Fatalf("keys before any were recorded: %q", got)
+	}
+	// a trusted intake of a body declaring the key, as a marked publisher's publication records it
+	st, err := store.OpenSQLite(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn, err := st.GetTenant(context.Background(), "acme")
+	if err == nil {
+		_, err = storetest.LicenseKey(context.Background(), st, tn.ID, "tresor", store.KeySourcePublisher, "ci", &k.PublicKey)
+	}
+	st.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run(0, "", "license", "keys", "acme", "tresor"); !strings.Contains(got, vectors.Kid(&k.PublicKey)) ||
+		!strings.Contains(got, "publisher:ci") {
+		t.Fatalf("keys: %q", got)
+	}
 	run(0, "", "license", "import", "acme", lic)
 	run(1, "", "license", "import", "acme", "-", "-replace") // nothing on stdin
 	run(1, sign("max"), "license", "import", "acme", "-")    // a licence is stored: -replace replaces it
@@ -72,7 +123,8 @@ func TestAdminLicense(t *testing.T) {
 	if got := run(0, "", "license", "verify", lic, "-key", keyFile); !strings.Contains(got, `"plan": "pro"`) || !strings.Contains(got, "status: valid") {
 		t.Fatalf("verify: %q", got)
 	}
-	run(1, "", "license", "verify", filepath.Join(dir, "nope"))
+	run(1, "", "license", "verify", filepath.Join(dir, "nope"), "-key", keyFile)
+	run(1, "", "license", "verify", lic) // no -key
 	run(0, "", "license", "remove", "acme", "tresor")
 	run(1, "", "license", "show", "acme", "tresor")
 }

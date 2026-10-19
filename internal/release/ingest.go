@@ -25,6 +25,9 @@ type Ingest struct {
 	Visibility                    string
 	DryRun                        bool   // check only: nothing is committed or released
 	Bundle                        string // the bundle's manifest id, for the event (spec 0014)
+	// KeySource is the upstream's id when it is a trusted source of licence keys (a repository
+	// upstream, spec 0021): a new release records the build's keys for it. "": none.
+	KeySource string
 	// Provenance makes the release's provenance from the fingerprint of the key that verified.
 	Provenance func(key string) string
 }
@@ -82,6 +85,9 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	if in.Provenance != nil {
 		it.provenance = in.Provenance(key)
 	}
+	if in.KeySource != "" && f.LicenseKeys.Err == nil && len(f.LicenseKeys.Keys) > 0 {
+		it.keys, it.keyKind, it.keySources = licenseKeys(f), store.KeySourceUpstream, []string{in.KeySource}
+	}
 	// the slot and the shadow before the body is stored (both are checked again under the lock)
 	var existing *store.Release
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
@@ -102,6 +108,19 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		return res, err
 	}
 	if existing != nil {
+		// spec 0021: the body was fetched, so a trusted source records the keys it declares on the
+		// slot's build, which may predate them (an earlier release, or another source's)
+		if len(it.keySources) > 0 && !in.DryRun {
+			bb := it.b
+			if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+				if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
+					return err
+				}
+				return recordKeys(ctx, tx, bb, it)
+			}); err != nil {
+				return res, err
+			}
+		}
 		res.Release, res.Existed = *existing, true
 		return res, nil
 	}

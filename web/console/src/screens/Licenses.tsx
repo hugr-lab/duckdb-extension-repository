@@ -7,8 +7,9 @@ import { seg } from '../lib/http'
 import type { Upstream } from './Upstreams'
 
 // Licences (spec 0012 phase 1d): the tenant's licences, imported by its administrators or relayed
-// from its credentialed upstreams. kista issues none: it stores what verifies against the server's
-// licence keys and serves it to the extensions' SDK.
+// from its credentialed upstreams. kista issues none: it stores what verifies against a key the
+// extension's live builds declare (spec 0021: their key blocks, recorded from a marked publisher or
+// a repository upstream) and serves it to the extensions' SDK.
 
 export interface License {
   name: string
@@ -28,6 +29,23 @@ export interface License {
   visibility: 'public' | 'private'
   status: string
   etag: string
+}
+
+/** A licence key of a name's live builds, the trusted sources that brought it, and how many live
+ * builds declare it (spec 0021). */
+export interface NameKeys {
+  name: string
+  keys: { kid: string; sources: { kind: 'publisher' | 'upstream'; name: string }[]; builds: number }[]
+}
+
+/** The sources of a key in a line: publisher acl-ci · upstream enterest. */
+export function sourcesLine(sources: NameKeys['keys'][number]['sources']) {
+  return sources.map((s) => `${s.kind} ${s.name}`).join(' · ')
+}
+
+/** Whether a live build of name declares kid: a licence signed with another key is not served. */
+export function declared(keys: NameKeys[], name: string, kid: string) {
+  return keys.some((n) => n.name === name && n.keys.some((k) => k.kid === kid))
 }
 
 interface SyncResult {
@@ -78,9 +96,11 @@ export function Licenses() {
   const { client, api } = useTenant()
   const [open, setOpen] = useState('')
   const list = useLoad(() => client.get<{ licenses: License[] }>(`${api}/licenses`), [api])
+  const keys = useLoad(() => client.get<{ names: NameKeys[] }>(`${api}/license-keys`), [api])
   if (list.loading && !list.data) return <Loading />
   if (list.error) return <ErrorBox error={list.error} />
   const ls = list.data!.data.licenses
+  const nks = keys.data?.data.names
   const selected = ls.find((l) => l.name === open)
   return (
     <>
@@ -104,13 +124,17 @@ export function Licenses() {
               ['Expires', (l) => (
                 <span className="text-[13px]">{when(l.expires_at)}{expiry(l) && <div className="text-warning">{expiry(l)}</div>}</span>
               )],
-              ['Status', (l) => <Badge>{l.status}</Badge>],
+              ['Status', (l) => (
+                <span className="flex flex-wrap items-center gap-2"><Badge>{l.status}</Badge>
+                  {nks && !declared(nks, l.name, l.key) && <span className="text-[13px] text-warning">not served: no live build in any channel declares its key</span>}</span>
+              )],
             ]}
           />
         )}
       </Card>
       {selected && <LicenseView key={selected.name} l={selected} onChanged={() => { list.reload() }} onRemoved={() => { setOpen(''); list.reload() }} />}
       <Import licenses={ls} onImported={(name) => { setOpen(name); list.reload() }} onStale={list.reload} />
+      <Keys names={nks} loading={keys.loading} error={keys.error} reload={keys.reload} />
       <Relays />
     </>
   )
@@ -163,7 +187,7 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
             ['Value', (x) => <Mono>{String(x.value)}</Mono>],
           ]} />
         ) : <Empty>No limits: the extension's defaults apply.</Empty>}
-        <Note>The extension enforces the plan and limits, not kista. It accepts a licence only when its SDK trusts the key that signed it: a key this server trusts that is not its issuer's is refused by the extension.</Note>
+        <Note>The extension enforces the plan and limits, not kista. A build accepts a licence only when its own key block holds the key that signed it. kista serves the licence in a channel only while a live build there declares that key.</Note>
         {l.visibility === 'public' && <Note>Public: anyone who is served a public release of {l.name} here gets this licence, and can copy it.</Note>}
         {failure != null && <ErrorBox error={failure} />}
       </div>
@@ -215,7 +239,7 @@ function Import({ licenses, onImported, onStale }: { licenses: License[]; onImpo
   return (
     <Card title="Import a licence">
       <div className="flex flex-col gap-3">
-        <Note>For an air-gapped site, or a licence received by other means. It must verify against this server's licence keys (licenses.keys in its configuration; without any, licensing is off) and be in force.</Note>
+        <Note>For an air-gapped site, or a licence received by other means. It must be in force and verify against a key that a live build of its extension declares (Licence keys, below).</Note>
         <input ref={file} aria-label="licence file" type="file" onChange={(e) => pick(e.target.files?.[0])} />
         {bad && <ErrorBox error="This file is no licence." />}
         {p && !bad && (
@@ -228,6 +252,26 @@ function Import({ licenses, onImported, onStale }: { licenses: License[]; onImpo
       <Confirm open={replacing} title={`Replace the licence for ${p?.ext ?? ''}?`} confirm="Replace" danger onConfirm={send} onClose={() => setReplacing(false)}>
         <p>The stored licence goes; extensions get this one at their next load. Its visibility stays.</p>
       </Confirm>
+    </Card>
+  )
+}
+
+/** The licence keys of the tenant's live builds, by name, with their sources (spec 0021). */
+function Keys({ names, loading, error, reload }: { names?: NameKeys[]; loading: boolean; error?: unknown; reload: () => void }) {
+  const rows = (names ?? []).flatMap((n) => n.keys.map((k) => ({ name: n.name, ...k })))
+  return (
+    <Card title="Licence keys" actions={<Button onClick={reload}>Refresh</Button>}>
+      <div className="flex flex-col gap-3">
+        <Note>The keys licences verify against: those declared in the key blocks of live builds, recorded when a trusted source brought the build (a publisher a server administrator marked, or a repository upstream). A build published another way declares nothing here.</Note>
+        {loading && !names ? <Loading /> : error ? <ErrorBox error={error} /> : rows.length === 0 ? <Empty>No live build declares a licence key.</Empty> : (
+          <Table rows={rows} rowKey={(r) => `${r.name}|${r.kid}`} columns={[
+            ['Extension', (r) => <Mono>{r.name}</Mono>],
+            ['Key', (r) => <Mono>{r.kid}</Mono>],
+            ['Builds', (r) => r.builds],
+            ['Sources', (r) => <span className="text-[13px]">{sourcesLine(r.sources)}</span>],
+          ]} />
+        )}
+      </div>
     </Card>
   )
 }
