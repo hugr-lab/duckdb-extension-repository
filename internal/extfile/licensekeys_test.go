@@ -129,7 +129,7 @@ func TestLicenseKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	e3 := *k1
-	e3.PublicKey.E = 3
+	e3.E = 3
 	headers := strings.Replace(p1, "-----\n", "-----\nProc-Type: 4,ENCRYPTED\n\n", 1)
 	malformed := map[string][]byte{
 		"differing blocks":  append(append([]byte(nil), one...), encodeKeys(t, p1)...),
