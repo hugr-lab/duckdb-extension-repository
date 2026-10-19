@@ -124,6 +124,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"Import": {"license.import"}, "Remove": {"license.remove"}, "SetVisibility": {"license.change"},
 		"RunUpstream": {"license.sync", "license.remove"}, "ExpireOnce": {"license.remove"},
 		"Sync": nil, "List": nil, "Get": nil, "Token": nil, "LastSync": nil, "LicenseKeys": nil, "Serve": nil, "WithAuthz": nil,
+		"Exportable": nil, "ApplyBundle": nil, // a bundle's licences are recorded by the import's bundle.import
 	},
 	"attachment.Feeds": {
 		"Add": {"feed.add"}, "Change": {"feed.change"}, "Remove": {"feed.remove"}, "RunFeed": {"feed.run"},

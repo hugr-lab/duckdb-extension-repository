@@ -38,7 +38,15 @@ export interface BundleImport {
   input_sha256?: string
   dry_run: boolean
   state: string
-  counts?: { targets?: Record<string, ImportTarget>; problem?: string; gaps?: number; skipped_bytes?: number; unplanned?: unknown }
+  counts?: {
+    targets?: Record<string, ImportTarget>
+    problem?: string
+    gaps?: number
+    skipped_bytes?: number
+    unplanned?: unknown
+    /** the licences the bundle carried (spec 0021) */
+    licenses?: { counts?: Record<string, number> | null; refused?: { name?: string; rule: string; reason: string }[]; error?: string }
+  }
   started_at: string
   finished_at?: string
   actor: string

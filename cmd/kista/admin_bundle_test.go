@@ -12,6 +12,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/symbols/symtest"
 )
@@ -226,6 +227,32 @@ func TestAdminBundleExport(t *testing.T) {
 			t.Errorf("a refused export left %s", e.Name())
 		}
 	}
+	// spec 0021: the plan asks for licences, and the exporter agrees, or is told it did not
+	admin(2, "bundle", "plan", "site", "-license-holder", "acme-corp", "-o", filepath.Join(dir, "x.json"))
+	lplan := filepath.Join(dir, "lplan.json")
+	admin(0, "bundle", "plan", "site", "-licenses", "-license-holder", "acme-corp", "-o", lplan)
+	if pd, _ := os.ReadFile(lplan); !strings.Contains(string(pd), `"licenses": true`) || !strings.Contains(string(pd), `"license_holder": "acme-corp"`) {
+		t.Fatalf("the plan: %s", pd)
+	}
+	if got := admin(0, "bundle", "export", "acme", "-plan", lplan, "-unsigned", "-o", filepath.Join(dir, "l1.unsigned")); !strings.Contains(got, "export -licenses carries them") {
+		t.Fatalf("export without -licenses: %s", got)
+	}
+	if got := admin(0, "bundle", "export", "acme", "-plan", plan, "-unsigned", "-licenses", "-o", filepath.Join(dir, "l2.unsigned")); !strings.Contains(got, "the plan asks for no licences") {
+		t.Fatalf("export -licenses of a plan without: %s", got)
+	}
+	lsigned := filepath.Join(dir, "l3.kbundle")
+	// acme holds no licence: the bundle carries none, and says why
+	if got := admin(0, "bundle", "export", "acme", "-plan", lplan, "-key", bundleKey, "-licenses", "-o", lsigned); !strings.Contains(got,
+		`no licence in force for the bundle's names of holder "acme-corp"`) {
+		t.Fatalf("export -licenses: %s", got)
+	}
+	admin(2, "bundle", "export", "acme", "-plan", lplan, "-key", bundleKey, "-license-holder", "x", "-o", filepath.Join(dir, "l4.kbundle"))
+	admin(2, "bundle", "import", "site", lsigned, "-licenses")
+	out.Reset()
+	if code := run([]string{"bundle", "inspect", lsigned, "-plan", lplan}, &out, &errb); code != 0 || !strings.Contains(out.String(), `the plan asks for licences, of holder "acme-corp"`) {
+		t.Fatalf("inspect: %d %s", code, out.String())
+	}
+
 	// a source mirrored nowhere fails the export, which still writes the rest
 	var p bundle.Plan
 	pd, _ := os.ReadFile(plan)
@@ -241,5 +268,37 @@ func TestAdminBundleExport(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "e.kbundle")); err != nil {
 		t.Errorf("the bundle of the other sources: %v", err)
+	}
+}
+
+// Spec 0021: signing offline checks the bundle's licence request against the plan, and each
+// licence's extension and holder.
+func TestWithinPlanLicenses(t *testing.T) {
+	key, err := vectors.LoadKey("../../internal/license/testdata", vectors.TrustedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := func(ext, sub string) string {
+		return vectors.Sign(key, vectors.Header(key), `{"v":1,"iss":"https://issuer.example","jti":"l","sub":"`+sub+`","ext":"`+ext+
+			`","plan":"pro","iat":1,"exp":4102444800}`)
+	}
+	plan := &bundle.Plan{Licenses: true, LicenseHolder: "acme"}
+	m := &bundle.Manifest{Plan: bundle.PlanRef{Licenses: true, LicenseHolder: "acme"}, Sources: []bundle.Source{{Kind: "repository",
+		Prefix: "https://src.example/acme/prod", Licenses: []bundle.License{{Name: "x", Token: tok("x", "acme")}}}}}
+	plan.Sources = []bundle.PlanSource{{Kind: "repository", Prefix: "https://src.example/acme/prod"}}
+	if err := withinPlan(m, plan); err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]func(){
+		"another request": func() { m.Plan.LicenseHolder = "" },
+		"another holder":  func() { m.Sources[0].Licenses[0].Token = tok("x", "other") },
+		"another name":    func() { m.Sources[0].Licenses[0].Token = tok("y", "acme") },
+		"not a licence":   func() { m.Sources[0].Licenses[0].Token = "a.b.c" },
+	} {
+		m.Plan.LicenseHolder, m.Sources[0].Licenses[0].Token = "acme", tok("x", "acme")
+		change()
+		if err := withinPlan(m, plan); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

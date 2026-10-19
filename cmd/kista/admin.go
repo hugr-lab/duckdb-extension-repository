@@ -146,12 +146,14 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
               [-follow] [-format table|jsonl] [<tenant>]          the event buffer (spec 0010), newest first
   shadow list <tenant>                            core names the tenant replaced: passthrough channels do not serve them
   shadow remove <tenant> <name>                   serve DuckDB's build again from passthrough channels
-  bundle plan <tenant> [-upstream <name,...>] [-feed <name,...>] [-o <plan.json>]   what the tenant's bundle-mode upstreams
-           and feeds ask for (spec 0014); with only one of -upstream and -feed, the other kind is left out
+  bundle plan <tenant> [-upstream <name,...>] [-feed <name,...>] [-licenses [-license-holder <sub>]] [-o <plan.json>]
+           what the tenant's bundle-mode upstreams and feeds ask for (spec 0014); with only one of -upstream and
+           -feed, the other kind is left out; -licenses asks for the licences of the names whose files come
   bundle import <tenant> <file|-|blob:<domain>/imports/<name>> [-upstream <name,...>] [-feed <name,...>] [-dry-run] [-any-tenant]
                                                               take a signed bundle into the bundle-mode upstreams and feeds
-  bundle export <tenant> -plan <plan.json> (-key <key.pem> | -unsigned) -o <out> [-sync] [-private <prefix>]...
-                                                              a bundle answering a site's plan, from this tenant's mirrors
+  bundle export <tenant> -plan <plan.json> (-key <key.pem> | -unsigned) -o <out> [-sync] [-private <prefix>]... [-licenses]
+                                                              a bundle answering a site's plan, from this tenant's mirrors;
+                                                              -licenses carries the licences the plan asks for
   bundle list <tenant> [-limit <n>]                           the tenant's bundle imports, the newest first
   bundle show <tenant> <import id>                            one import: its manifest, bundle key and counts
   bundle reset <tenant> <upstream>                            clear an upstream's bundle mark (it takes older bundles)
@@ -2086,18 +2088,24 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 	keyFile := fs.String("key", "", "")
 	unsigned := fs.Bool("unsigned", false, "")
 	syncFirst := fs.Bool("sync", false, "")
+	withLicenses := fs.Bool("licenses", false, "")
+	holder := fs.String("license-holder", "", "")
 	var private keyFlags
 	fs.Var(&private, "private", "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
+	if *holder != "" && sub != "plan" || *withLicenses && sub != "plan" && sub != "export" {
+		return fmt.Errorf("%w: -licenses is for bundle plan and export, -license-holder for bundle plan", errUsage)
+	}
 	switch {
 	case sub == "export" && len(pos) == 1:
 		if *planFile == "" || *out == "" || (*keyFile == "") == !*unsigned {
 			return fmt.Errorf("%w: bundle export needs -plan, -o, and -key or -unsigned", errUsage)
 		}
-		return a.bundleExport(ctx, pos[0], *planFile, *keyFile, *out, upstream.ExportOptions{Private: private, Sync: *syncFirst})
+		return a.bundleExport(ctx, pos[0], *planFile, *keyFile, *out, upstream.ExportOptions{Private: private, Sync: *syncFirst,
+			Licenses: *withLicenses})
 	case sub == "import" && len(pos) == 2:
 		return a.bundleImport(ctx, pos[0], pos[1], upstream.ImportOptions{Upstreams: commaList(*names), Feeds: commaList(*feedNames),
 			DryRun: *dryRun, AnyTenant: *anyTenant, BundleKeys: a.cfg.BundleKeysFor(pos[0])})
@@ -2141,8 +2149,11 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 		}
 		a.logf("bundle reset %s/%s (it last imported %s)", pos[0], u.Name, orNone(u.BundleID))
 	case sub == "plan" && len(pos) == 1:
-		plan, err := a.svc.Upstreams.Plan(ctx, a.actor, pos[0], upstream.PlanTargets{Upstreams: commaList(*names), Feeds: commaList(*feedNames)},
-			a.cfg.BundleKeysFor(pos[0]))
+		if *holder != "" && !*withLicenses {
+			return fmt.Errorf("%w: -license-holder needs -licenses", errUsage)
+		}
+		plan, err := a.svc.Upstreams.Plan(ctx, a.actor, pos[0], upstream.PlanTargets{Upstreams: commaList(*names), Feeds: commaList(*feedNames),
+			Licenses: *withLicenses, LicenseHolder: *holder}, a.cfg.BundleKeysFor(pos[0]))
 		if err != nil {
 			return err
 		}
@@ -2248,6 +2259,16 @@ func (a *adminCmd) bundleExport(ctx context.Context, tenant, planFile, keyFile, 
 		for _, p := range s.Problems {
 			fmt.Fprintf(a.out, "  %s %s %s %s: %s %q\n", orNone(s.Prefix), p.DuckDBVersion, p.Platform, p.Name, p.Outcome, p.Detail)
 		}
+		// the exporter sees what leaves: each licence's name and holder
+		for _, l := range s.Licenses {
+			fmt.Fprintf(a.out, "  %s licence %s, holder %q %q, expires %s\n", s.Prefix, l.Name, l.HolderID, l.Holder, ts(l.ExpiresAt))
+		}
+		if s.LicensesLeftOut > 0 {
+			fmt.Fprintf(a.out, "  %s: %d licences over %d left out\n", s.Prefix, s.LicensesLeftOut, bundle.MaxLicenses)
+		}
+	}
+	if res.LicenseNote != "" {
+		fmt.Fprintln(a.out, res.LicenseNote)
 	}
 	if len(res.Feeds) > 0 {
 		a.table("FEED\tFROM\tSTATUS\tLAST SUCCESS\tCOUNTS\tBYTES\tERROR", func(w io.Writer) {
@@ -2339,6 +2360,15 @@ func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstr
 			fmt.Fprintf(a.out, "  %s %s %s %s: %s %s\n", t.Upstream, p.DuckDBVersion, p.Platform, p.Name, p.Outcome, p.Detail)
 		}
 	}
+	if l := res.Licenses; l != nil {
+		fmt.Fprintf(a.out, "licences: %s\n", countsText(l.Counts))
+		for _, r := range l.Refused {
+			fmt.Fprintf(a.out, "  licence %s %s: %s %q\n", r.Name, r.ID, r.Rule, r.Reason)
+		}
+		if l.Error != "" {
+			fmt.Fprintf(a.out, "  licences not stored: %q\n", l.Error)
+		}
+	}
 	if res.Unplanned > 0 {
 		fmt.Fprintf(a.out, "%d cells of the bundle are in no target's matrix\n", res.Unplanned)
 	}
@@ -2357,7 +2387,7 @@ func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstr
 	if i.InputSHA256 != "" {
 		fmt.Fprintf(a.out, "input sha256 %s\n", i.InputSHA256)
 	}
-	if i.State != store.ImportDone || res.Gaps > 0 {
+	if i.State != store.ImportDone || res.Gaps > 0 || res.Licenses != nil && res.Licenses.Error != "" {
 		return errImportFailed
 	}
 	return nil

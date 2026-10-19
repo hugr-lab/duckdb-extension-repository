@@ -83,9 +83,9 @@ at start; the next release refuses it.
 
 ## Licences in a tenant
 
-A tenant holds one licence per extension name. It comes from one of two places.
+A tenant holds one licence per extension name. It comes from one of three places.
 
-**An administrator's import**, for an air-gapped site or a licence received by other means:
+**An administrator's import**, for a licence received by other means:
 
 ```bash
 kista admin license import acme tresor.lic             # a new licence
@@ -120,6 +120,16 @@ serves no licences and changes nothing, and so does a failure (the credential re
 or `403`, a network error, an answer over 1,000 licences or 8 MiB). Removing the upstream removes its licences; clearing its
 credential stops the relay, and its licences stay until their grace ends. A licence past its grace
 is removed, whatever its source.
+
+**A bundle**, for an air-gapped site. The site's plan asks for licences
+(`kista admin bundle plan -licenses`, optionally with the holder it expects), the exporting kista
+carries the licences it holds for the names whose files the bundle carries
+(`bundle export -licenses`), and the import takes each into the first bundle-mode upstream of its
+source that supplies the name. It is checked as a relayed licence is, against the keys that
+upstream's builds declare; it never replaces an administrator's import, and a bundle never revokes
+one ([Exporting a bundle](upstreams.md#exporting-a-bundle),
+[Importing a bundle](upstreams.md#importing-a-bundle),
+[Air-gapped sites](deployment/air-gapped.md#licences)).
 
 `kista admin upstream licenses <tenant> <upstream> [-sync]` shows the last relay run (received,
 stored, replaced, unchanged, removed, refused with reasons) and with `-sync` asks for one now;
@@ -319,8 +329,8 @@ kista::Usage::SendAsync(context, "myext", "attach", {{"sources", 3}});  // from 
 - **Where the licence comes from.** When the extension loads, the SDK reads the file
   `myext.kista-license` beside its module. Then it asks the repository the extension was installed
   from, with the http secret `INSTALL` used. A new licence is kept beside the module, and an
-  unchanged one costs a `304`. A user can therefore place the file by hand; an air-gapped site does
-  so.
+  unchanged one costs a `304`. A user can therefore place the file by hand. An air-gapped site's
+  kista receives its licences in bundles, and serves them as any other.
 - **What a user sees.** `SELECT * FROM myext_license()` shows the status, plan, holder, expiry,
   source, limits, and why. `myext_license_refresh()` fetches the licence again now: after an
   upgrade, a running process sees the new plan without reinstalling.
@@ -350,5 +360,6 @@ another organisation defeat it; the licence names its holder wherever it goes.
 `license.import`, `license.change` (visibility), `license.remove` (with the reason: `admin`,
 `revoked`, `expired`, `upstream removed`), `license.sync` (each relay run), `extension.use` (a
 usage report by a principal holding `install`), `usage.forward` (each forwarding run), `usage.receive` (each aggregate taken from downstream) and
-`upstream.change` with `change: usage`. See
+`upstream.change` with `change: usage`. The licences a bundle carried are in its
+`bundle.import` event and import record. See
 [Observability](observability.md).

@@ -13,9 +13,12 @@ import (
 )
 
 // PlanTargets names what a plan asks for: with neither, every active bundle-mode upstream and feed;
-// with only one of the two, the other kind is left out.
+// with only one of the two, the other kind is left out. Licenses asks for the licences of the names
+// whose files come, of LicenseHolder only when it is set (spec 0021).
 type PlanTargets struct {
 	Upstreams, Feeds []string
+	Licenses         bool
+	LicenseHolder    string
 }
 
 // Plan writes a site's bundle plan (spec 0014): its active bundle-mode upstreams as sources and
@@ -147,7 +150,8 @@ func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, sel Pl
 			}
 		}
 	}
-	plan := bundle.Plan{Format: bundle.PlanFormat, CreatedAt: s.Store.Now().UTC(), Tenant: t.Name, BundleKeys: bundleKeys}
+	plan := bundle.Plan{Format: bundle.PlanFormat, CreatedAt: s.Store.Now().UTC(), Tenant: t.Name, BundleKeys: bundleKeys,
+		Licenses: sel.Licenses, LicenseHolder: sel.LicenseHolder}
 	for _, src := range sources {
 		ps := bundle.PlanSource{Kind: src.kind, Prefix: src.prefix, Keys: src.keys, Cells: []bundle.PlanCell{}}
 		slices.Sort(ps.Keys)

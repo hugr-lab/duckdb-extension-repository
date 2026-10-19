@@ -19,6 +19,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -72,6 +73,8 @@ type ImportResult struct {
 	Skipped   int64              `json:"skipped_bytes"`     // entries read through
 	Problem   string             `json:"problem,omitempty"` // why the import stopped early
 	Stop      string             `json:"stop,omitempty"`    // its class: bundle (truncated, malformed, stalled), interrupted, deleting
+	// Licenses are the licences the bundle carried, as the site took them (spec 0021).
+	Licenses *licenses.Result `json:"licenses,omitempty"`
 }
 
 // Errors of an import.
@@ -275,6 +278,9 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 	if stopClass(streamErr) == "bundle" || streamErr == nil {
 		s.leftovers(ictx, t, targets, o.DryRun, b.Ended())
 	}
+	if streamErr == nil { // after the files, whose keys they need; a bundle read whole only
+		out.Licenses = s.importLicenses(ictx, a, t, m, targets, o.DryRun)
+	}
 	// a feed's cursors move only after a whole read; a stopped import moves none
 	s.finishFeeds(ctx, a, b, fts, streamErr != nil)
 	s.finishImport(ctx, a, t, &rec, b, &out, targets, fts, streamErr)
@@ -350,6 +356,8 @@ func (s *Service) importTargets(ctx context.Context, t store.Tenant, m *bundle.M
 			return nil, fmt.Errorf("%w: the bundle holds no source of upstream %s", store.ErrInvalid, n)
 		}
 	}
+	// by name, in Go's order: a collation never decides which target a licence goes to
+	slices.SortFunc(all, func(a, b store.Upstream) int { return strings.Compare(a.Name, b.Name) })
 	var out []*target
 	for _, u := range all {
 		if u.Mode != store.ModeBundle || u.State != store.UpstreamActive || len(names) > 0 && !slices.Contains(names, u.Name) {
@@ -858,6 +866,47 @@ func (s *Service) leftovers(ctx context.Context, t store.Tenant, targets []*targ
 	}
 }
 
+// importLicenses takes the licences the bundle carries (spec 0021), each for the targets its
+// source fills that are still taking the bundle, in their order; nil when it carries none.
+func (s *Service) importLicenses(ctx context.Context, a authz.Actor, t store.Tenant, m *bundle.Manifest, targets []*target, dryRun bool) *licenses.Result {
+	var ls []licenses.BundleLicense
+	seen := map[[2]string]int{} // a licence carried by several sources is taken once, by any of their targets
+	for i := range m.Sources {
+		src := &m.Sources[i]
+		var ups []store.Upstream
+		selected := false
+		for _, tg := range targets {
+			if tg.src == src {
+				selected = true
+				if tg.active() {
+					ups = append(ups, tg.u)
+				}
+			}
+		}
+		if !selected {
+			continue // a source the import does not take (-upstream, -feed): its licences are not asked for
+		}
+		for _, l := range src.Licenses {
+			k := [2]string{l.Name, l.Token}
+			if j, ok := seen[k]; ok {
+				ls[j].Upstreams = append(ls[j].Upstreams, ups...)
+				continue
+			}
+			seen[k] = len(ls)
+			ls = append(ls, licenses.BundleLicense{Name: l.Name, Token: l.Token, Upstreams: slices.Clone(ups)})
+		}
+	}
+	if len(ls) == 0 {
+		return nil
+	}
+	lic := s.Licenses
+	if lic == nil {
+		lic = &licenses.Service{Store: s.Store} // licensing off: each is refused
+	}
+	res := lic.ApplyBundle(context.WithoutCancel(ctx), t, a.String(), m.Plan.LicenseHolder, ls, dryRun)
+	return &res
+}
+
 // bundleDetail is an exporter's reason as the site records it.
 func bundleDetail(d string) string {
 	if d = bundle.Text(d, 900); d == "" {
@@ -963,17 +1012,24 @@ func (s *Service) finishImport(ctx context.Context, a authz.Actor, t store.Tenan
 	if b.Ended() {
 		rec.InputSHA256 = b.SHA256()
 	}
-	all, _ := json.Marshal(map[string]any{"targets": counts, "unplanned": out.Unplanned, "skipped_bytes": out.Skipped,
-		"problem": out.Problem, "gaps": out.Gaps})
+	record := map[string]any{"targets": counts, "unplanned": out.Unplanned, "skipped_bytes": out.Skipped,
+		"problem": out.Problem, "gaps": out.Gaps}
+	if out.Licenses != nil {
+		record["licenses"] = out.Licenses
+	}
+	all, _ := json.Marshal(record)
 	rec.Counts = string(all)
 	// the record first and on its own: an event that fails never leaves it running
 	if err := s.Store.InTenantTx(fctx, t.ID, nil, func(tx *store.Tx) error { return tx.FinishBundleImport(fctx, rec) }); err != nil {
 		s.Log.Warn("upstream: recording a bundle import", "import", rec.ID, "error", err)
 	}
+	fields := map[string]any{"import": rec.ID, "manifest": rec.ManifestID, "created_at": rec.ManifestCreatedAt, "exporter": rec.Exporter,
+		"bundle_key": rec.BundleKey, "input_sha256": rec.InputSHA256, "dry_run": rec.DryRun, "state": rec.State, "targets": targetCounts}
+	if out.Licenses != nil {
+		fields["licenses"] = out.Licenses
+	}
 	err := s.Store.InTenantTx(fctx, t.ID, nil, func(tx *store.Tx) error {
-		return tx.Event(fctx, t.ID, a.String(), "bundle.import", "tenant:"+t.Name, map[string]any{"import": rec.ID,
-			"manifest": rec.ManifestID, "created_at": rec.ManifestCreatedAt, "exporter": rec.Exporter, "bundle_key": rec.BundleKey,
-			"input_sha256": rec.InputSHA256, "dry_run": rec.DryRun, "state": rec.State, "targets": targetCounts})
+		return tx.Event(fctx, t.ID, a.String(), "bundle.import", "tenant:"+t.Name, fields)
 	})
 	if err != nil {
 		s.Log.Warn("upstream: recording a bundle import", "import", rec.ID, "error", err)

@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -30,6 +31,10 @@ const (
 	MaxETag      = 256
 	MaxDetail    = 1000
 	MaxExporter  = 256
+	// MaxLicenses bounds the licences a source carries (spec 0021); MaxHolder a plan's expected
+	// licence holder, as a licence's sub.
+	MaxLicenses = 1000
+	MaxHolder   = 128
 	// FutureSkew is how far past the importing host's clock a manifest's created_at may be.
 	FutureSkew = 10 * time.Minute
 )
@@ -57,6 +62,10 @@ type Plan struct {
 	BundleKeys []string     `json:"bundle_keys"`
 	Sources    []PlanSource `json:"sources"`
 	Feeds      []PlanFeed   `json:"feeds,omitempty"` // phase 1b
+	// Licenses asks for the licences of the names whose files come (spec 0021), of LicenseHolder
+	// only when it is set: a licence's sub.
+	Licenses      bool   `json:"licenses,omitempty"`
+	LicenseHolder string `json:"license_holder,omitempty"`
 }
 
 // PlanSource is one source: a kind, and for a repository its normalised prefix and pinned keys.
@@ -100,6 +109,9 @@ type PlanRef struct {
 	Tenant    string    `json:"tenant"`
 	CreatedAt time.Time `json:"created_at"`
 	SHA256    string    `json:"sha256"`
+	// the plan's licence request, so that the site, which keeps no plan, checks the holder
+	Licenses      bool   `json:"licenses,omitempty"`
+	LicenseHolder string `json:"license_holder,omitempty"`
 }
 
 // Source is one source's cells, and for a repository its .well-known file.
@@ -108,6 +120,15 @@ type Source struct {
 	Prefix    string   `json:"prefix,omitempty"`
 	WellKnown *FileRef `json:"well_known,omitempty"`
 	Cells     []Cell   `json:"cells"`
+	// Licenses are the exporting tenant's licences of names whose files the source carries, by
+	// name (spec 0021): a repository source's, when the plan asks.
+	Licenses []License `json:"licenses,omitempty"`
+}
+
+// License is a licence a bundle carries: the token as the exporting kista stored it.
+type License struct {
+	Name  string `json:"name"`
+	Token string `json:"token"`
 }
 
 // FileRef names an entry by path, hash and size.
@@ -141,6 +162,7 @@ var (
 	uuid7RE  = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	filePath = regexp.MustCompile(`^files/[0-9a-f]{64}\.gz$`)
 	wkPath   = regexp.MustCompile(`^sources/[1-9][0-9]{0,4}/well-known\.json$`)
+	tokenRE  = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`)
 )
 
 // DecodeStrict decodes JSON into v refusing unknown fields, duplicate keys and trailing data.
@@ -303,6 +325,9 @@ func (p *Plan) Validate() error {
 			return fmt.Errorf("%w: bundle key %q", ErrInvalid, k)
 		}
 	}
+	if err := checkHolder(p.Licenses, p.LicenseHolder); err != nil {
+		return err
+	}
 	seen, cells := map[string]bool{}, 0
 	for i, s := range p.Sources {
 		if err := checkSource(s.Kind, s.Prefix, s.Keys); err != nil {
@@ -370,6 +395,9 @@ func (m *Manifest) Validate(now time.Time) error {
 	if !hexRE.MatchString(m.Plan.SHA256) {
 		return fmt.Errorf("%w: plan sha256", ErrInvalid)
 	}
+	if err := checkHolder(m.Plan.Licenses, m.Plan.LicenseHolder); err != nil {
+		return err
+	}
 	seen, cells := map[string]bool{}, 0
 	files := map[string]Cell{}
 	wk := map[string]bool{}
@@ -428,11 +456,66 @@ func (m *Manifest) Validate(now time.Time) error {
 				files[c.File] = c
 			}
 		}
+		if err := s.validateLicenses(m.Plan.Licenses); err != nil {
+			return err
+		}
 	}
 	if len(files) > MaxFiles {
 		return fmt.Errorf("%w: over %d files", ErrInvalid, MaxFiles)
 	}
 	return validateFeeds(m.Feeds)
+}
+
+// checkHolder checks a plan's licence request: a holder only with licences, as a licence's sub.
+func checkHolder(licenses bool, holder string) error {
+	if holder == "" {
+		return nil
+	}
+	if !licenses {
+		return fmt.Errorf("%w: license_holder without licenses", ErrInvalid)
+	}
+	if len(holder) > MaxHolder || Text(holder, MaxHolder) != holder {
+		return fmt.Errorf("%w: license_holder: at most %d bytes of printable text", ErrInvalid, MaxHolder)
+	}
+	return nil
+}
+
+// validateLicenses checks a source's licences: only when the plan asked, a repository source's, by
+// name in order, each of a name whose file the source carries or the site holds, each a compact
+// token within a licence's size. The token's claims are the import's to check.
+func (s Source) validateLicenses(asked bool) error {
+	if len(s.Licenses) == 0 {
+		return nil
+	}
+	switch {
+	case !asked:
+		return fmt.Errorf("%w: source %s carries licences the plan did not ask for", ErrInvalid, s.Prefix)
+	case s.Kind != store.UpstreamRepo:
+		return fmt.Errorf("%w: a %s source carries no licences", ErrInvalid, s.Kind)
+	case len(s.Licenses) > MaxLicenses:
+		return fmt.Errorf("%w: source %s carries over %d licences", ErrInvalid, s.Prefix, MaxLicenses)
+	}
+	held := map[string]bool{}
+	for _, c := range s.Cells {
+		if c.Outcome == Fetched || c.Outcome == Unchanged {
+			held[c.Name] = true
+		}
+	}
+	for i, l := range s.Licenses {
+		if err := release.ValidName(l.Name); err != nil {
+			return fmt.Errorf("%w: licence: %w", ErrInvalid, err)
+		}
+		if i > 0 && l.Name <= s.Licenses[i-1].Name {
+			return fmt.Errorf("%w: source %s: licences out of order or twice (%s)", ErrInvalid, s.Prefix, l.Name)
+		}
+		if !held[l.Name] {
+			return fmt.Errorf("%w: source %s carries a licence of %s without its files", ErrInvalid, s.Prefix, l.Name)
+		}
+		if len(l.Token) > license.MaxSize || !tokenRE.MatchString(l.Token) {
+			return fmt.Errorf("%w: source %s: the licence of %s is not a compact token of at most %d bytes", ErrInvalid, s.Prefix, l.Name, license.MaxSize)
+		}
+	}
+	return nil
 }
 
 func (c Cell) validate() error {

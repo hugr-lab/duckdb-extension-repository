@@ -431,6 +431,27 @@ leaves: a statement's signed `audience` travels with it, and the site applies it
 - The command prints per feed the export feeds it came from, the most recently successful one's
   status and last success (so a stale gateway shows), its counts and bytes.
 
+**Licences** (spec 0021). A bundle carries licences only when the site's plan asks
+(`bundle plan -licenses`, optionally `-license-holder <sub>`) and the exporter agrees
+(`bundle export -licenses`). Without the flag none go, and the command says so; a plan that asks
+for none gets none, with the flag or without. For each repository source the bundle carries:
+
+- the licences the tenant holds for the names whose files are in the bundle (`fetched` cells) or
+  that the site holds already (`unchanged`): a private release's name only under `-private`, as
+  for its file;
+- only those in force (valid, or in grace) whose key the server does not refuse
+  (`licenses.refuse_keys`);
+- only those of the holder the plan names, when it names one;
+- at most 1,000, by name (the command says how many it left out).
+
+The token goes as stored, and the manifest's signature covers it, with the plan's request. The
+command prints each licence's name, holder and expiry: what leaves is the exporter's to see. When it carries
+none although both asked, it says so (none in force for the bundle's names, of the plan's holder). A plan
+that asks for licences, and a bundle that carries them, need a kista of the release that brought
+licences in bundles, or a later one, on both sides:
+an older one refuses them, as plans and manifests are decoded strictly. A bundle without licences
+is the same document as before.
+
 ### Importing a bundle
 
 ```bash
@@ -536,6 +557,32 @@ bundle-mode feeds whose URL is a feed of the bundle, or the `-feed` ones (with o
   `kista admin feed add acme reviews -mode bundle -url https://<source>/api/v1/tenants/<t> -key sha256:<fp>`
 
 The command prints a line per target, feeds as `feed:<name>`, and each feed's refusals.
+
+**Licences** (spec 0021). After the files, when the bundle was read whole, the import takes each
+licence the bundle carries, once (one carried by two sources is taken once, by any of their targets).
+A source the import takes no target of (`-upstream`, `-feed`) is passed over. For each licence:
+
+- **The target**: of the bundle-mode upstreams the licence's source fills in this import (those
+  that took the bundle: not `busy`, `stale` or failed), the first by name that supplies the name,
+  as a relaying upstream must ([Licensing](licensing.md#licences-in-a-tenant)). None: refused, `not_supplied`
+  or `no_target`.
+- **The checks**: the licence is in force (`not_in_force`), of the name it is carried for
+  (`ext_mismatch`), of the holder the plan named (`holder_mismatch`), and signed with a key that
+  the target's live builds declare, as the bundle brought them (`kid_untrusted`) ([The keys a licence verifies against](licensing.md#the-keys-a-licence-verifies-against)).
+  Licensing off at the site refuses each (`off`).
+- **Replacing**: the relay's rules ([Licensing](licensing.md#licences-in-a-tenant)), except that a
+  bundle's licence never replaces one an administrator imported here (`superseded`). It is stored
+  with source `upstream`, naming the target, and keeps the stored licence's visibility.
+- **No revocation.** A bundle may be partial: a licence it leaves out stays, and ends at its `exp`
+  plus grace through the expiry pass. A bundle-mode upstream has no relay. Removing the upstream
+  removes its licences.
+- **A dry run** stores nothing and counts what it would: it verifies against the keys recorded
+  before it, so a first import's licences need the real import.
+
+The command prints the licences' counts (`stored`, `replaced`, `unchanged`, `refused`) and each
+refusal with its rule and reason, and exits `1` when the licences could not be stored at all. The
+import record's counts and the `bundle.import` event carry
+them under `licenses`, and the console shows them with the import.
 
 **Provenance and visibility.** A release from a bundle records its source's URL, the manifest's
 ETag and fetch time, the verifying key, `bundle` (the manifest's id) and `imported_at`. A cell the

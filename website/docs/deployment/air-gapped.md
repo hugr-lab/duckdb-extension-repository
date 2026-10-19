@@ -35,7 +35,7 @@ nothing on it that it cannot verify against two values that come another way.
 | The binary and its `.sigstore.json` | `gh release download` | `cosign verify-blob` |
 | Sigstore's trusted root | `cosign initialize` | its SHA-256, carried out of band |
 | The plan (site to gateway) | `kista admin bundle plan` at the site | the gateway checks it |
-| A bundle (gateway to site) | `kista admin bundle export` | the import, with the pinned bundle key |
+| A bundle (gateway to site), with the licences the plan asks for | `kista admin bundle export` | the import, with the pinned bundle key |
 
 - **Out of band.** Two values must not come from the media: the trusted root's SHA-256 and the
   bundle key's fingerprint. Carry them through a channel the carrier cannot change: read them out
@@ -224,6 +224,30 @@ The next cycle starts with a new plan. A bundle older than the last one imported
 a cell takes a body only when it is newer at its source than the one it holds, so carrying an old
 bundle back changes nothing. In Kubernetes, the import runs in the serving pod or as a Job
 ([Importing a bundle](kubernetes.md#importing-a-bundle)).
+
+## Licences
+
+A licensed extension needs its licence at the site as well ([Licensing](../licensing.md)). A
+site without a route to the issuer receives it in the bundle, beside the extension's files:
+
+- **The site asks**: `ka bundle plan acme -licenses -o plan.json`. With
+  `-license-holder <sub>` it names the holder it expects: the gateway carries no other holder's
+  licence, and the import takes none.
+- **The gateway agrees**: `ka bundle export gw … -licenses`. Without the flag it carries none, and
+  says so. It carries, for each repository source, the licences its tenant holds for the names
+  whose files the bundle carries or the site already holds, in force, at most 1,000 per source; a
+  private release's name only with `-private`. It prints each licence's name, holder and expiry.
+  Its tenant holds them as any tenant does: imported by an administrator, or relayed from a
+  credentialed upstream such as the issuer's.
+- **The import** takes each licence after the files, into the first bundle-mode upstream of its
+  source that supplies the name, verified with the keys that upstream's builds declare. A licence
+  an administrator imported at the site is never replaced by a bundle's, and a bundle removes no
+  licence: one ends at its expiry plus grace. The import prints the licences stored, replaced,
+  unchanged and refused, with each refusal's reason
+  ([Importing a bundle](../upstreams.md#importing-a-bundle)).
+
+Both sides need a kista of the release that brought licences in bundles, or a later one: an older
+one refuses a plan that asks for licences, and a bundle that carries them.
 
 ## Before you start
 

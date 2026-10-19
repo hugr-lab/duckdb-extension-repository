@@ -25,6 +25,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -92,6 +93,8 @@ type Service struct {
 	DuckDB DuckDB
 	// Credentials are the configured credentials private upstreams use (phase 3).
 	Credentials credential.Registry
+	// Licenses are the tenant's licences a bundle carries out and in (spec 0021); nil: none.
+	Licenses *licenses.Service
 
 	gate gates
 }
@@ -821,7 +824,7 @@ func (s *Service) prefix(u store.Upstream) string {
 func (s *Service) WithAuthz(az authz.Authorizer) *Service {
 	c := &Service{Store: s.Store, Releases: s.Releases, Blob: s.Blob, Fetch: s.Fetch, Authz: az, Config: s.Config,
 		MaxBody: s.MaxBody, MaxIngests: s.MaxIngests, TempDir: s.TempDir, Feeds: s.Feeds, Uploads: s.Uploads, Log: s.Log,
-		DuckDB: s.DuckDB, Credentials: s.Credentials}
+		DuckDB: s.DuckDB, Credentials: s.Credentials, Licenses: s.Licenses}
 	wake := s.WakeUploads() // one channel: an upload the API completes wakes this replica's runner
 	c.wakeOnce.Do(func() { c.wakeUploads = wake })
 	return c

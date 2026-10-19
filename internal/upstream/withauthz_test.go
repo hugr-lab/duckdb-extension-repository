@@ -10,6 +10,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -21,7 +22,7 @@ func TestWithAuthzKeepsEverything(t *testing.T) {
 	s := &Service{Store: &store.Store{}, Releases: &release.Service{}, Blob: &blob.Service{}, Fetch: &egress.Client{}, Authz: authz.ServerAdmin{},
 		Config: Config{Concurrency: 3}, MaxBody: 5, MaxIngests: 2, TempDir: "/x", Feeds: &attachment.Feeds{},
 		Uploads: UploadSettings{ChunkSize: 1 << 20, MaxUploads: 7}, Log: slog.Default(), DuckDB: DuckDB{CoreURL: "https://core.example"},
-		Credentials: credential.Registry{"c": nil}}
+		Credentials: credential.Registry{"c": nil}, Licenses: &licenses.Service{}}
 	sv := reflect.ValueOf(s).Elem()
 	for i := 0; i < sv.NumField(); i++ {
 		if f := sv.Type().Field(i); f.IsExported() && sv.Field(i).IsZero() {

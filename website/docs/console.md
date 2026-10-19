@@ -185,7 +185,8 @@ This browser keeps the upload's id: on the page again (after a reload too), it s
 the server has, and picking the same file (name, size and date) resumes it with the options it
 started with, sending only the chunks missing; **Abort it…** gives it up. An upload completed
 meanwhile is followed instead, never sent twice. Once every chunk is there, the page follows the
-import to its end and shows its state, each target's outcome and counts, or why it stopped.
+import to its end and shows its state, each target's outcome and counts, the licences the bundle
+carried (stored, replaced, unchanged, refused, with each refusal's rule), or why it stopped.
 **Recent uploads** lists the tenant's latest 100 uploads, with **Import again** for a failed one and
 **Abort…** for one uploading, queued or failed. Uploads abandoned or failed count against
 `bundles.max_uploads` until aborted or expired. See [Uploading a bundle](upstreams.md#uploading-a-bundle).

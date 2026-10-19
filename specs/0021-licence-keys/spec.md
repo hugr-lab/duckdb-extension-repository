@@ -1,6 +1,6 @@
 # Spec 0021: Licence keys in the build, and licences in bundles
 
-- **Status**: accepted; phase 1 (the key in the build: the SDK, the reader, and kista) implemented
+- **Status**: implemented (phase 1, the key in the build; phase 2, licences in bundles)
 - **Date**: 2026-10-18
 - **Author**: vgsml, Claude
 
@@ -237,6 +237,27 @@ refused by the server (`licenses.refuse_keys`, below) never count.
   licence ends at its `exp` plus grace, through the expiry pass. A bundle-mode upstream has no relay.
 - **Records.** The import record's counts and the `bundle.import` event gain licences stored,
   unchanged and refused, each refusal with its reason.
+- **As implemented.**
+  - The manifest's `plan` reference repeats the plan's `licenses` and `license_holder`, under the
+    manifest's signature: the site keeps no plan, and checks the holder against this.
+  - A source's licences are sorted by name, each name once, and each of a name with a `fetched` or
+    `unchanged` cell in that source. Each token is a compact token of at most 16 KiB. Validation
+    refuses licences in a manifest whose plan did not ask, and on a DuckDB source.
+  - The import counts `replaced` beside `stored`, `unchanged` and `refused`, as the relay does. Its
+    refusals add `off` (licensing off at the site), `no_target` (no target of the source took the
+    bundle) and `holder_mismatch`.
+  - A dry run verifies against the keys recorded before it, so a first import's licences need the
+    real import.
+  - Licences are taken only from a bundle read whole. A licence carried by two sources is taken
+    once, with the targets of both. A source the import takes no target of (`-upstream`, `-feed`)
+    is passed over; a busy, stale or failed target refuses its source's licences as `no_target`.
+    Targets are ordered by name in Go, not by the database's collation. A bundle's licence never
+    replaces an administrator's import, even one past its grace: the expiry pass removes that.
+  - `kista admin bundle import` exits `1` when the licences could not be stored at all; refusals
+    do not change the exit code. The export says when it carries none although both sides asked.
+  - `kista bundle sign` writes its output `0600`, as the export does.
+  - `kista bundle sign` and `kista bundle inspect` check the licence request against the plan, and
+    each licence's extension and holder.
 
 ### Changes to spec 0012
 
@@ -303,6 +324,14 @@ to the audit's event kinds.
   - **The holder.** The site can pin the holder it expects.
   - **Precedence.** A bundle's licence never replaces an administrator's import.
   - **Tampering.** The manifest's signature covers the licences, so a carrier cannot change them.
+  - **One licence per name.** A second trusted source that supplies a build of the same name, with
+    keys of its own, can store the first licence for that name. It then holds the name against
+    another source's licence signed with another key until its grace ends or its key counts nowhere,
+    as for the relay. Pinning a source is trusting it for the names it supplies; an administrator
+    removes such a licence, or the source.
+  - **The holder check is the exporter's word.** The site keeps no plan: it checks the holder
+    against the plan's request the signed manifest repeats. The issuer's signature and the target's
+    keys are the checks that matter.
 - **The honest-user line** is unchanged. A patched binary with a key of its own defeats its own
   check, as before.
 
