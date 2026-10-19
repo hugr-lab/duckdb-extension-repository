@@ -70,7 +70,10 @@ A licensed extension is never built by the community, so it may depend on the fo
 ```text
 kista/sdk/cpp/                       the C++ SDK, moved from kista's sdk/cpp with its history
 kista/sdk/cpp/VERSION                the SDK's version (semver); tagged sdk-v<version>
-kista/sdk/cpp/test/vectors/          a copy of kista's licence vectors and test keys
+kista/sdk/cpp/test/vectors/          a copy of kista's licence vectors and test key
+kista/DUCKDB_PIN                     the DuckDB commit the SDK is tested against (kista's own)
+kista/scripts/sdk-test.sh            DuckDB at the pin with kista_demo, then the SDK's tests
+kista/scripts/kista-vectors.sh       copies or checks the vectors against a kista checkout
 makefiles/kista.Makefile             KISTA_LICENSE_KEYS into EXT_FLAGS
 scripts/kista_publish.py             the publication client (Python, standard library only)
 .github/workflows/_kista_publish.yml the publication job
@@ -89,15 +92,17 @@ KISTA.md                             what the fork adds, and what of DuckDB's it
 **The licence keys at build time.** `makefiles/kista.Makefile`, included by a licensed extension's
 `Makefile` after DuckDB's:
 - turns `KISTA_LICENSE_KEYS` (one to four PEM paths, separated by `;`) into
-  `-DKISTA_LICENSE_KEYS=...` in `EXT_FLAGS`;
-- the extension's CMake passes it to `kista_sdk_license_keys`, defaulting to its committed
-  `license-key.pem`.
+  `-DKISTA_LICENSE_KEYS=...` in `EXT_FLAGS`, always, so a build directory configured with keys before
+  does not keep them; a value with a quote is refused;
+- the extension's CMake passes it to `kista_sdk_license_keys`, and takes its committed
+  `license-key.pem` when it is empty.
 
 **The vectors.**
 - kista's `internal/license/testdata` stays the source of truth: the Go verifier and its generator
   are there.
 - The fork keeps a copy, with the kista commit it came from in
-  `kista/sdk/cpp/test/vectors/FROM`, and `scripts/kista_vectors.sh <kista checkout>` updates it.
+  `kista/sdk/cpp/test/vectors/FROM`, and `kista/scripts/kista-vectors.sh <kista checkout>` updates
+  it. The fork's CI checks the copy against that commit, which must be on kista's main.
 - kista's e2e checks that the pinned fork's copy and test keys equal its own (Testing). So a
   change to the licence format fails kista's CI until the fork has the same vectors.
 
@@ -115,10 +120,10 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     permissions: {id-token: write, contents: read}
-    uses: hugr-lab/extension-ci-tools/.github/workflows/_kista_publish.yml@main
+    uses: hugr-lab/extension-ci-tools/.github/workflows/_kista_publish.yml@<commit>
     with:
       extension_name: myext
-      duckdb_version: v2.0-cyanoptera
+      ci_tools_version: <the same commit>        # the publication script the job runs
       kista_url: ${{ vars.KISTA_URL }}           # the kista's public URL
       tenant: ${{ vars.KISTA_TENANT }}
       channel: ${{ vars.KISTA_CHANNEL }}
@@ -127,33 +132,45 @@ jobs:
 ```
 
 **Inputs.**
-- `extension_name`, `duckdb_version`, `kista_url`, `tenant` and `channel`.
+- `extension_name`, `kista_url`, `tenant` and `channel`.
+- `ci_tools_version` (required): the fork's commit to take the script from, the same as the
+  workflow's own `@<commit>`. A reusable workflow cannot learn its own ref, and a default of `main`
+  would run unpinned code beside the caller's token.
 - `visibility`: `private` by default, as kista's own default.
-- `artifact_postfix` and `exclude_archs`, as the distribution workflow's.
-- `ci_tools_version`: the fork's ref for the script, by default the workflow's own.
+- `artifact_postfix`, as the distribution workflow's.
+- `environment`: the GitHub environment the job runs in, for a publisher binding that names one.
+  A job that calls a reusable workflow cannot set an environment itself.
+
+The job grants itself `id-token: write`; a called workflow's permissions are at most the caller's,
+so the caller grants it too.
 
 **What it does.** It downloads the build's artifacts
-(`<ext>-<duckdb_version>-extension-<arch><postfix>`), then runs `scripts/kista_publish.py`. For
-each `.duckdb_extension`, the script:
+(`<ext>-<duckdb_version>-extension-<arch><postfix>`), then runs `scripts/kista_publish.py` with the
+inputs passed through the environment, never through the shell. It takes only
+`<ext>.duckdb_extension` files of artifact directories ending `-extension-<arch><postfix>`. For
+each, the script:
 
 1. **Reads the footer.** It takes the extension version and platform from DuckDB's metadata footer,
    as `kista ext inspect` reads them. A file without a valid footer fails the job.
-2. **Skips wasm.** kista refuses wasm builds (spec 0008), so the script skips them and says so in
-   the log and the job summary. The template builds wasm (below); when kista accepts wasm, the
-   skip goes.
+2. **Skips wasm** (a `.duckdb_extension.wasm` file). kista refuses wasm builds (spec 0008), so the
+   script skips them and says so in the log and the job summary. The template builds wasm (below);
+   when kista accepts wasm, the skip goes.
 3. **Uploads.** It posts to kista's publication route:
    ```text
    POST <kista_url>/api/v1/tenants/<tenant>/channels/<channel>/extensions/<name>/releases?version=…&platform=…
    ```
    - The request carries `Content-Length`, `application/octet-stream` and `visibility`.
    - The extension's own build is uploaded as it is: kista signs it with the channel's key.
-4. **Authenticates.** With `KISTA_API_KEY` it uses the key. Otherwise it requests GitHub's OIDC
-   token with audience `<kista_url>/<tenant>` (spec 0008).
+4. **Authenticates.** With `KISTA_API_KEY` it uses the key. Otherwise it requests a fresh GitHub
+   OIDC token for each file (they live minutes), with audience `<kista_url>/<tenant>` (spec 0008).
+   - The URL must be https (http only to a loopback address), and redirects are refused, so a token
+     never goes to another host.
    - The token's `workflow_ref` names the caller's workflow, not this reusable one, so the
      publisher's GitHub binding names the developer's workflow file, as today.
 5. **Reads the answer.**
    - `201` is published; `200` means already published, with the same body.
-   - `429` and `5xx` are retried three times with backoff.
+   - `429`, `5xx` and a broken connection are retried three times, with backoff or `Retry-After`
+     (at most a minute).
    - Anything else fails the job, with kista's error. For example, `400` when the channel does not
      serve the build's DuckDB version, or `409` for another body in a published slot.
    - The job summary lists each platform's outcome.
@@ -244,7 +261,7 @@ checkout:
 **Docs.**
 - `development.md` is rewritten around the kit: the two kinds, the template, the publication job
   and the build contract.
-- `publishing.md` gains "From GitHub Actions with the kit", beside the `curl` example.
+- `publishing.md` gains "With the developer kit", beside the `curl` example.
 - `licensing.md` points to the SDK's new home.
 - The SDK's README moves with it.
 
@@ -266,9 +283,10 @@ Nothing changes in kista's server, API or schema.
   - The fork pins nothing of the developer's.
   - The developer pins the fork, by submodule commit and by the reusable workflow's ref.
   - Pinning the workflow by commit, as for any third-party action, is recommended in the README.
-- **The test key.** A licensed extension cannot reach a tag build with the SDK's test key. The SDK
-  itself lets a release build assert it does not trust that key (`kista::TrustsTestKey()`,
-  spec 0021).
+- **The test key.** A licensed extension made from the template cannot reach a tag build with the
+  SDK's test key (phase 2). The SDK itself lets a release build assert it does not trust that key
+  (`kista::TrustsTestKey()`, spec 0021). kista does not refuse it at publication, by the owner's
+  decision: licences are Enterest's to issue, and Enterest checks the keys of what it builds.
 - **Licence keys.** Only public keys are in the repository or the build. Enterest sets them for its
   builds and checks them in the binary. kista records them only from trusted sources (spec 0021),
   so a key in a developer's own build counts only if the developer's publisher is marked.
@@ -293,7 +311,9 @@ Nothing changes in kista's server, API or schema.
 
 **kista's e2e:**
 - `kista_demo` built from the pinned fork, as today's SDK tests: licence, relay and bundle;
-- the vectors and test-key cross-check against the fork's checkout.
+- the vectors and test-key cross-check against the fork's checkout, and the fork's DuckDB pin
+  against kista's;
+- the pin must be a commit of the fork's main (`e2e/fetch-ci-tools.sh`).
 
 **By hand, once, before the first release:** the OIDC path from a real tag in a scratch repository
 made from the template, to a kista with a GitHub binding. GitHub's token cannot be made in a test.

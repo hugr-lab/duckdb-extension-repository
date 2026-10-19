@@ -15,9 +15,16 @@ if [ ! -d "$dir/.git" ]; then
 	git init -q "$dir"
 	git -C "$dir" remote add origin "${CI_TOOLS_GIT_URL:-$CI_TOOLS_REPO}"
 fi
+git -C "$dir" remote set-url origin "${CI_TOOLS_GIT_URL:-$CI_TOOLS_REPO}"
 if [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)" != "$CI_TOOLS_COMMIT" ]; then
-	git -C "$dir" fetch -q --depth 1 origin "$CI_TOOLS_COMMIT"
-	git -C "$dir" checkout -q --detach FETCH_HEAD
+	# the pin must be a commit of the fork's main: GitHub serves a commit by hash from any fork of a
+	# repository, so the hash alone does not say hugr-lab published it
+	git -C "$dir" fetch -q --filter=blob:none origin main
+	if ! git -C "$dir" merge-base --is-ancestor "$CI_TOOLS_COMMIT" origin/main; then
+		echo "$CI_TOOLS_COMMIT is not a commit of extension-ci-tools' main" >&2
+		exit 1
+	fi
+	git -C "$dir" checkout -q --detach "$CI_TOOLS_COMMIT"
 fi
 if [ "$(git -C "$dir" rev-parse HEAD)" != "$CI_TOOLS_COMMIT" ]; then
 	echo "the extension-ci-tools checkout is not $CI_TOOLS_COMMIT" >&2

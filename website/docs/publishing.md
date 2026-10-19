@@ -382,7 +382,9 @@ above for every platform of a distribution build: `_kista_publish.yml`, after Du
 `_extension_distribution.yml` (or the fork's, for a licensed extension). It reads each build's
 version and platform from its footer, skips wasm builds (refused, above), and retries a `429` or a
 `5xx`. The token's `workflow_ref` names the calling workflow, so the binding names the extension's
-own workflow file. See [Development](development.md#the-developer-kit-for-extensions) and the fork's
+own workflow file. Pin the workflow to a commit and give the same commit as `ci_tools_version`. A
+job that calls a reusable workflow cannot set an environment: for a binding that names one, pass it
+as the `environment` input. See [Development](development.md#the-developer-kit-for-extensions) and the fork's
 [KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md).
 
 ```yaml title=".github/workflows/distribution.yml"
@@ -394,8 +396,9 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     permissions: {id-token: write, contents: read}
-    uses: hugr-lab/extension-ci-tools/.github/workflows/_kista_publish.yml@main
-    with: {extension_name: acl, kista_url: 'https://kista.example.com', tenant: acme, channel: staging}
+    uses: hugr-lab/extension-ci-tools/.github/workflows/_kista_publish.yml@<commit>
+    with: {extension_name: acl, ci_tools_version: <commit>, kista_url: 'https://kista.example.com',
+           tenant: acme, channel: staging}
 ```
 
 The provenance of the release records the provider, owner and repository ids and names, workflow,
