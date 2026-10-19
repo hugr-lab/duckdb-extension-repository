@@ -323,6 +323,8 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	at := &attachment.Service{Store: s, Authz: az, MaxSize: cfg.Attachments.MaxSize, Keys: ks, PublicURL: cfg.Serve.PublicURL}
 	feeds := &attachment.Feeds{Store: s, Authz: az, Attachments: at, Fetch: eg, Credentials: creds,
 		Interval: cfg.Attachments.FeedIntervalOrDefault(), Log: slog.Default(), TempDir: filepath.Join(cfg.SpoolDir(), "feeds")}
+	lic := &licenses.Service{Store: s, Authz: az, Enabled: cfg.Licenses.On(), Refuse: cfg.Licenses.Refused(), Fetch: eg, Credentials: creds,
+		Interval: cfg.Licenses.RefreshOrDefault(), Log: slog.Default()}
 	return &Services{
 		Store:    s,
 		Sources:  reg,
@@ -335,11 +337,10 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		Upstreams: &upstream.Service{Store: s, Releases: rel, Fetch: eg, Authz: az, MaxBody: maxBody, MaxIngests: maxIngests,
 			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
 			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate),
-				Interval: ul.Interval}, Credentials: creds, Feeds: feeds, Uploads: uploadSettings(cfg)},
+				Interval: ul.Interval}, Credentials: creds, Feeds: feeds, Uploads: uploadSettings(cfg), Licenses: lic},
 		Attachments: at,
 		Feeds:       feeds,
-		Licenses: &licenses.Service{Store: s, Authz: az, Enabled: cfg.Licenses.On(), Refuse: cfg.Licenses.Refused(), Fetch: eg, Credentials: creds,
-			Interval: cfg.Licenses.RefreshOrDefault(), Log: slog.Default()},
+		Licenses:    lic,
 	}, nil
 }
 

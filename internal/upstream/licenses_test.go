@@ -50,9 +50,14 @@ func newLicensor(t *testing.T) *licensor {
 
 // sign is a licence for ext at plan, issued at iat and expiring at exp (seconds).
 func (l *licensor) sign(ext, plan string, iat, exp int64) string {
+	return l.signFor("acme", ext, plan, iat, exp)
+}
+
+// signFor signs a licence of the holder sub.
+func (l *licensor) signFor(sub, ext, plan string, iat, exp int64) string {
 	l.n++
-	p := fmt.Sprintf(`{"v":1,"iss":"https://issuer.example","jti":"lic-%d","sub":"acme","holder":"Acme","ext":%q,"plan":%q,"iat":%d,"exp":%d}`,
-		l.n, ext, plan, iat, exp)
+	p := fmt.Sprintf(`{"v":1,"iss":"https://issuer.example","jti":"lic-%d","sub":%q,"holder":"Acme","ext":%q,"plan":%q,"iat":%d,"exp":%d}`,
+		l.n, sub, ext, plan, iat, exp)
 	return vectors.Sign(l.key, vectors.Header(l.key), p)
 }
 

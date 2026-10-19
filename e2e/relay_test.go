@@ -38,19 +38,7 @@ func TestSDKLicenseRelay(t *testing.T) {
 	ctx := context.Background()
 	idpKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	idp := &e2eIDP{key: idpKey}
-	setup := func(k *kista, aud, sub string) {
-		t.Helper()
-		adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: "https://" + k.addr}
-		if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
-			t.Fatal(err)
-		}
-		if err := adm.AddAudience(ctx, serveAdmin, "acme", aud); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|"+sub, []string{"install"}, tenants.GrantOn{Channel: "prod"}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	setup := func(k *kista, aud, sub string) { t.Helper(); k.installer(t, idp, aud, sub) }
 
 	// the upstream: kista_demo from a marked publisher, and its licence
 	src := startKistaLicensed(t, b, &auth.Verifier{Fetch: idp}, true)
@@ -133,5 +121,21 @@ func TestSDKLicenseRelay(t *testing.T) {
 	mustOK(t, r)
 	if got := r[len(r)-1].Rows; len(got) != 1 || got[0][0] != "valid" || got[0][1] != "pro" || got[0][2] != "repository" {
 		t.Fatalf("the licence from the downstream: %v", got)
+	}
+}
+
+// installer trusts the test issuer in acme with an audience, and grants sub install on prod.
+func (k *kista) installer(t *testing.T, idp *e2eIDP, aud, sub string) {
+	t.Helper()
+	ctx := context.Background()
+	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: "https://" + k.addr}
+	if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adm.AddAudience(ctx, serveAdmin, "acme", aud); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|"+sub, []string{"install"}, tenants.GrantOn{Channel: "prod"}); err != nil {
+		t.Fatal(err)
 	}
 }

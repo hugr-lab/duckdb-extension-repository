@@ -22,6 +22,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream/duckdbkeys"
 )
@@ -310,6 +311,12 @@ func withinPlan(m *bundle.Manifest, p *bundle.Plan) error {
 	if err := feedsWithinPlan(m, p); err != nil {
 		return err
 	}
+	if m.Plan.Licenses != p.Licenses || m.Plan.LicenseHolder != p.LicenseHolder {
+		return errors.New("the bundle's licence request differs from the plan's")
+	}
+	if ps := licenceProblems(m); len(ps) > 0 {
+		return errors.New(ps[0])
+	}
 	asked := map[string]map[[3]string]bool{}
 	for _, s := range p.Sources {
 		cs := map[[3]string]bool{}
@@ -330,6 +337,27 @@ func withinPlan(m *bundle.Manifest, p *bundle.Plan) error {
 		}
 	}
 	return nil
+}
+
+// licenceProblems lists the licences a manifest carries that are not what they are carried as: a
+// token that does not parse, of another extension, or of another holder than the plan named. The
+// site checks them again, with their signatures.
+func licenceProblems(m *bundle.Manifest) []string {
+	var out []string
+	for _, s := range m.Sources {
+		for _, l := range s.Licenses {
+			t, err := license.Parse(l.Token)
+			switch {
+			case err != nil:
+				out = append(out, fmt.Sprintf("%s: the licence of %s: %v", s.Prefix, l.Name, err))
+			case t.Extension != l.Name:
+				out = append(out, fmt.Sprintf("%s: the licence carried for %s is of %s", s.Prefix, l.Name, t.Extension))
+			case m.Plan.LicenseHolder != "" && t.HolderID != m.Plan.LicenseHolder:
+				out = append(out, fmt.Sprintf("%s: the licence of %s is of holder %q, the plan expects %q", s.Prefix, l.Name, t.HolderID, m.Plan.LicenseHolder))
+			}
+		}
+	}
+	return out
 }
 
 func feedsWithinPlan(m *bundle.Manifest, p *bundle.Plan) error {
@@ -472,6 +500,25 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 		for _, c := range s.Cells {
 			outcomes[c.Outcome]++
 		}
+		for _, l := range s.Licenses {
+			if t, err := license.Parse(l.Token); err == nil {
+				fmt.Fprintf(stdout, "source %s licence %s, holder %s %q, key %s, expires %s\n", s.Prefix, l.Name, t.HolderID,
+					bundle.Text(t.Holder, 200), t.Key, time.Unix(t.ExpiresAt, 0).UTC().Format(time.RFC3339))
+			}
+		}
+	}
+	if m.Plan.Licenses {
+		holder := "any holder"
+		if m.Plan.LicenseHolder != "" {
+			holder = fmt.Sprintf("holder %q", m.Plan.LicenseHolder)
+		}
+		fmt.Fprintf(stdout, "the plan asks for licences, of %s\n", holder)
+	}
+	if plan != nil && (m.Plan.Licenses != plan.Licenses || m.Plan.LicenseHolder != plan.LicenseHolder) {
+		problem("the bundle's licence request differs from the plan's")
+	}
+	for _, p := range licenceProblems(m) {
+		problem("%s", p)
 	}
 	// the keys each source's files verify with: DuckDB's, or the .well-known file's (the plan's
 	// pins among them, with -plan)

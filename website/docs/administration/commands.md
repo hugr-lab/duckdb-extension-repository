@@ -171,14 +171,16 @@ kista bundle inspect <bundle> [-plan <plan.json>] [-max-body <bytes>]
 - `keys` fetches a repository's `.well-known` file and prints its keys' fingerprints, to compare
   with what the publisher published before pinning one. Never trust the media for a fingerprint.
 - `sign` signs a bundle exported unsigned, on a machine that holds the key: the key must be among
-  the plan's bundle keys, the bundle must answer that plan and ask for nothing else, and be
+  the plan's bundle keys, the bundle must answer that plan and ask for nothing else (its licence
+  request the plan's, each licence of the name it is carried for and of the holder the plan names), and be
   complete, its files inflating to the manifest's sizes and hashes. A feed's entries must be whole,
   and each feed body must start at the plan's cursor (or at `0` for a body of a file the bundle
   brings for the feed's sources). It copies the bundle once and never writes over an existing file.
 - `inspect` checks a bundle offline: the manifest's signature, every entry's hash and size, every
   file's source signature, footer and the file checks publication runs. With `-plan` it also says
   whether the bundle key is pinned, and each source key pinned, listed only or missing, applies the
-  plan's version filters, and reports a bundle answering another plan. `-max-body` (default 1 GiB,
+  plan's version filters, and reports a bundle answering another plan. It lists each licence the
+  bundle carries (name, holder, key, expiry), and reports one not of its name or of the plan's holder. `-max-body` (default 1 GiB,
   the site's `blob.max_body`) bounds what it inflates. It prints the cells per outcome, the sizes,
   the spool an import needs and the bundle's SHA-256, and exits `1` on any problem. Without
   `-plan`, a bundle is reported consistent, not trusted.
@@ -370,11 +372,11 @@ See [Publishing](../publishing.md).
 | `upstream key add` or `remove` `<tenant> <name> <fingerprint>` | a `repository` upstream's pinned keys |
 | `shadow list <tenant>` | core names the tenant replaced: its passthrough channels do not serve them |
 | `shadow remove <tenant> <name>` | serves DuckDB's build of that name from passthrough channels again |
-| `bundle plan <tenant> [-upstream <name,...>] [-feed <name,...>] [-o <plan.json>]` | the plan of the tenant's active bundle-mode upstreams and feeds (all, or the named ones; with only one of `-upstream` and `-feed`, the other kind is left out), with the bundle keys pinned for the tenant (`upstreams.bundle_keys`); to standard output without `-o` |
-| `bundle export <tenant> -plan <plan.json> (-key <key.pem> \| -unsigned) -o <out> [-sync] [-private <prefix>]...` | exports a bundle answering a site's plan from this tenant's mirrors and own channels; prints `KIND`, `PREFIX`, `FROM`, `COUNTS`, `BYTES`, `ERROR` per source and `FEED`, `FROM`, `STATUS`, `LAST SUCCESS`, `COUNTS`, `BYTES`, `ERROR` per feed, the listed key fingerprints, the first 20 cells not exported and the bundle's SHA-256, and exits `1` when a source or a feed failed as a whole ([Exporting a bundle](../upstreams.md#exporting-a-bundle)) |
-| `bundle import <tenant> <file\|-\|blob:<domain>/imports/<name>> [-upstream <name,...>] [-feed <name,...>] [-dry-run] [-any-tenant]` | imports a signed bundle into the tenant's bundle-mode upstreams and feeds (with only one of `-upstream` and `-feed`, the other kind takes no target); prints `TARGET`, `STATUS`, `COUNTS`, `DETAIL` (feeds as `feed:<name>`) and exits `1` unless every target was imported, the bundle read whole and no feed body was a gap ([Importing a bundle](../upstreams.md#importing-a-bundle)) |
+| `bundle plan <tenant> [-upstream <name,...>] [-feed <name,...>] [-licenses [-license-holder <sub>]] [-o <plan.json>]` | the plan of the tenant's active bundle-mode upstreams and feeds (all, or the named ones; with only one of `-upstream` and `-feed`, the other kind is left out), with the bundle keys pinned for the tenant (`upstreams.bundle_keys`); to standard output without `-o`. `-licenses` asks for the licences of the names whose files come, of the holder `-license-holder` names (a licence's `sub`) when given |
+| `bundle export <tenant> -plan <plan.json> (-key <key.pem> \| -unsigned) -o <out> [-sync] [-private <prefix>]... [-licenses]` | exports a bundle answering a site's plan from this tenant's mirrors and own channels; prints `KIND`, `PREFIX`, `FROM`, `COUNTS`, `BYTES`, `ERROR` per source and `FEED`, `FROM`, `STATUS`, `LAST SUCCESS`, `COUNTS`, `BYTES`, `ERROR` per feed, the listed key fingerprints, the first 20 cells not exported, each licence carried (name, holder, expiry) and the bundle's SHA-256, and exits `1` when a source or a feed failed as a whole. `-licenses` carries the licences the plan asks for; without it none go, and it says so ([Exporting a bundle](../upstreams.md#exporting-a-bundle)) |
+| `bundle import <tenant> <file\|-\|blob:<domain>/imports/<name>> [-upstream <name,...>] [-feed <name,...>] [-dry-run] [-any-tenant]` | imports a signed bundle into the tenant's bundle-mode upstreams and feeds (with only one of `-upstream` and `-feed`, the other kind takes no target); prints `TARGET`, `STATUS`, `COUNTS`, `DETAIL` (feeds as `feed:<name>`), the licences' counts and refusals, and exits `1` unless every target was imported, the bundle read whole and no feed body was a gap ([Importing a bundle](../upstreams.md#importing-a-bundle)) |
 | `bundle list <tenant> [-limit <n>]` | the tenant's imports, newest first (`-limit` 50 by default): `ID`, `STARTED`, `STATE`, `DRY RUN`, `MANIFEST`, `CREATED` |
-| `bundle show <tenant> <import id>` | one import: its manifest, exporter, bundle key, input SHA-256 and counts per target |
+| `bundle show <tenant> <import id>` | one import: its manifest, exporter, bundle key, input SHA-256, counts per target and the licences it took |
 | `bundle reset <tenant> <upstream>` | clears a bundle-mode upstream's last-bundle mark, so it takes older bundles again |
 | `bundle reset <tenant> -feed <name>` | clears a bundle-mode feed's last-bundle mark and resets its cursors, so the next bundle takes its history again |
 

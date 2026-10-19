@@ -1,6 +1,6 @@
 # Spec 0021: Licence keys in the build, and licences in bundles
 
-- **Status**: accepted; phase 1 (the key in the build: the SDK, the reader, and kista) implemented
+- **Status**: implemented (phase 1, the key in the build; phase 2, licences in bundles)
 - **Date**: 2026-10-18
 - **Author**: vgsml, Claude
 
@@ -237,6 +237,19 @@ refused by the server (`licenses.refuse_keys`, below) never count.
   licence ends at its `exp` plus grace, through the expiry pass. A bundle-mode upstream has no relay.
 - **Records.** The import record's counts and the `bundle.import` event gain licences stored,
   unchanged and refused, each refusal with its reason.
+- **As implemented.**
+  - The manifest's `plan` reference repeats the plan's `licenses` and `license_holder`, under the
+    manifest's signature: the site keeps no plan, and checks the holder against this.
+  - A source's licences are sorted by name, each name once, and each of a name with a `fetched` or
+    `unchanged` cell in that source. Each token is a compact token of at most 16 KiB. Validation
+    refuses licences in a manifest whose plan did not ask, and on a DuckDB source.
+  - The import counts `replaced` beside `stored`, `unchanged` and `refused`, as the relay does. Its
+    refusals add `off` (licensing off at the site), `no_target` (no target of the source took the
+    bundle) and `holder_mismatch`.
+  - A dry run verifies against the keys recorded before it, so a first import's licences need the
+    real import.
+  - `kista bundle sign` and `kista bundle inspect` check the licence request against the plan, and
+    each licence's extension and holder.
 
 ### Changes to spec 0012
 

@@ -128,6 +128,9 @@ describe('bundle uploads', () => {
     expect(importProblem(rec)).toBe('')
     expect(importProblem({ counts: { problem: 'bundle: truncated' } })).toBe('bundle: truncated')
     expect(importLines({})).toEqual([])
+    // spec 0021: the licences a bundle carried
+    const lic = { counts: { licenses: { counts: { received: 2, stored: 1, refused: 1 }, refused: [{ name: 'vault', rule: 'kid_untrusted', reason: 'x' }] } } }
+    expect(importLines(lic)).toEqual(['licences: refused 1 · stored 1', 'licence vault: kid_untrusted'])
   })
 
   it('answers an upload completed before, never uploading it again', async () => {

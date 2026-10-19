@@ -45,6 +45,13 @@ export function importLines(i?: Pick<BundleImport, 'counts'>): string[] {
     return `${name}: ${t?.status ?? '?'}${c.length ? ` · ${c.join(' · ')}` : ''}`
   })
   if (i?.counts?.gaps) out.push(`gaps ${i.counts.gaps}`)
+  const lic = i?.counts?.licenses
+  if (lic) {
+    const c = Object.entries(lic.counts ?? {}).filter(([k, n]) => k !== 'received' && n > 0).sort(([a], [b]) => a.localeCompare(b)).map(([k, n]) => `${k} ${n}`)
+    out.push(`licences: ${c.length ? c.join(' · ') : 'none'}`)
+    for (const r of lic.refused ?? []) out.push(`licence ${r.name ?? '?'}: ${r.rule}`)
+    if (lic.error) out.push(`licences not stored: ${lic.error}`)
+  }
   return out
 }
 

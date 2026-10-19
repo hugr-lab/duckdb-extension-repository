@@ -20,6 +20,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -32,6 +33,8 @@ type ExportOptions struct {
 	Private []string
 	Sync    bool   // run the matching mirror-mode upstreams first, and wait for them
 	Holder  string // the runs' leases' holder, with Sync
+	// Licenses agrees to carry the licences the plan asks for (spec 0021); without it none go.
+	Licenses bool
 	// PublicURL is serve.public_url: a repository source at <PublicURL>/<tenant>/<channel> is an own
 	// channel. Version is the exporter's version. Both go to the manifest, for the record.
 	PublicURL, Version string
@@ -47,6 +50,17 @@ type ExportSource struct {
 	Keys     []string       `json:"keys,omitempty"`     // the fingerprints its .well-known file lists
 	Problems []CellNote     `json:"problems,omitempty"` // the first 20 cells not exported
 	Error    string         `json:"error,omitempty"`    // it failed as a whole: it is not in the bundle
+	// Licenses are the licences it carries (spec 0021); LicensesLeftOut those over the bound.
+	Licenses        []ExportLicense `json:"licenses,omitempty"`
+	LicensesLeftOut int             `json:"licenses_left_out,omitempty"`
+}
+
+// ExportLicense is a licence a bundle carries, as the exporter is shown it.
+type ExportLicense struct {
+	Name      string    `json:"name"`
+	HolderID  string    `json:"holder_id"`
+	Holder    string    `json:"holder,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // ExportResult is an export's summary.
@@ -61,6 +75,8 @@ type ExportResult struct {
 	Bytes          int64          `json:"bytes"`
 	Sources        []ExportSource `json:"sources"`
 	Feeds          []ExportFeed   `json:"feeds,omitempty"` // phase 1b
+	// LicenseNote says why no licences were carried although the plan or the exporter asked.
+	LicenseNote string `json:"license_note,omitempty"`
 }
 
 // Failed reports whether a source or a feed failed as a whole.
@@ -208,7 +224,13 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 	// the manifest: every fetched file read once to hash and check it
 	m := bundle.Manifest{Format: bundle.ManifestFormat, ID: store.NewID(), CreatedAt: now,
 		Exporter: bundle.Exporter{Version: bundle.Text(o.Version, bundle.MaxExporter), PublicURL: bundle.Text(o.PublicURL, bundle.MaxExporter)},
-		Plan:     bundle.PlanRef{Tenant: plan.Tenant, CreatedAt: plan.CreatedAt, SHA256: res.PlanSHA256}}
+		Plan: bundle.PlanRef{Tenant: plan.Tenant, CreatedAt: plan.CreatedAt, SHA256: res.PlanSHA256, Licenses: plan.Licenses,
+			LicenseHolder: plan.LicenseHolder}}
+	held, err := s.exportable(ctx, t, &plan, o, &res)
+	if err != nil {
+		return res, err
+	}
+	carried := 0
 	wellKnown := map[string][]byte{}
 	byPath := map[string]*xfile{}
 	for _, src := range srcs {
@@ -243,6 +265,10 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 					Outcome: c.Outcome, Detail: c.Detail})
 			}
 			bs.Cells = append(bs.Cells, c)
+		}
+		if held != nil && bs.Kind == store.UpstreamRepo {
+			bs.Licenses, src.out.Licenses, src.out.LicensesLeftOut = carry(bs.Cells, held)
+			carried += len(bs.Licenses)
 		}
 		m.Sources = append(m.Sources, bs)
 	}
@@ -332,6 +358,9 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 			counts["failed_sources"]++
 		}
 	}
+	if carried > 0 {
+		counts["licenses"] = carried
+	}
 	for _, f := range res.Feeds {
 		for k, n := range f.Counts {
 			counts["feed_"+k] += n
@@ -345,6 +374,59 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 			"manifest": res.ID, "manifest_sha256": res.ManifestSHA256, "bundle_key": res.BundleKey, "counts": counts})
 	})
 	return res, err
+}
+
+// exportable is the tenant's licences an export may carry (spec 0021): only when the plan asks and
+// the exporter agrees, and licensing is on here; nil carries none, and the result says why.
+func (s *Service) exportable(ctx context.Context, t store.Tenant, plan *bundle.Plan, o ExportOptions, res *ExportResult) ([]store.License, error) {
+	switch {
+	case plan.Licenses && !o.Licenses:
+		res.LicenseNote = "the plan asks for licences: none carried (export -licenses carries them)"
+		return nil, nil
+	case !plan.Licenses && o.Licenses:
+		res.LicenseNote = "the plan asks for no licences: none carried"
+		return nil, nil
+	case !plan.Licenses:
+		return nil, nil
+	case s.Licenses == nil:
+		res.LicenseNote = "licensing is off here: none carried"
+		return nil, nil
+	}
+	held, err := s.Licenses.Exportable(ctx, t.ID, plan.LicenseHolder)
+	if errors.Is(err, licenses.ErrOff) {
+		res.LicenseNote = "licensing is off here: none carried"
+		return nil, nil
+	}
+	if held == nil {
+		held = []store.License{}
+	}
+	return held, err
+}
+
+// carry picks a source's licences: those of names whose files it carries or the site holds, by
+// name, at most bundle.MaxLicenses; left are the ones over.
+func carry(cells []bundle.Cell, held []store.License) (out []bundle.License, shown []ExportLicense, left int) {
+	names := map[string]bool{}
+	for _, c := range cells {
+		if c.Outcome == bundle.Fetched || c.Outcome == bundle.Unchanged {
+			names[c.Name] = true
+		}
+	}
+	ls := slices.Clone(held)
+	slices.SortFunc(ls, func(a, b store.License) int { return strings.Compare(a.Name, b.Name) })
+	for _, l := range ls {
+		if !names[l.Name] {
+			continue
+		}
+		if len(out) == bundle.MaxLicenses {
+			left++
+			continue
+		}
+		out = append(out, bundle.License{Name: l.Name, Token: l.Token})
+		shown = append(shown, ExportLicense{Name: l.Name, HolderID: l.HolderID, Holder: bundle.Text(l.Holder, 200),
+			ExpiresAt: time.Unix(l.ExpiresAt, 0).UTC()})
+	}
+	return out, shown, left
 }
 
 // ownPrefix is where the tenant's own channels are, in a plan's normalised form: <public url>/<tenant>.
