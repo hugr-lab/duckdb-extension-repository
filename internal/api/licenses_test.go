@@ -14,7 +14,7 @@ import (
 
 func (m *mgmt) tenantID(t *testing.T) string {
 	t.Helper()
-	tn, err := m.env.st.GetTenant(ctx, "acme")
+	tn, err := m.st.GetTenant(ctx, "acme")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestLicenseRoutes(t *testing.T) {
 	if r := m.call(t, "GET", "/api/v1/licenses/keys", m.toks["server admin"], ""); r.status != 404 {
 		t.Fatalf("the old keys route: %d", r.status)
 	}
-	kid, err := storetest.LicenseKey(ctx, m.env.st, m.tenantID(t), "tresor", store.KeySourcePublisher, "nobody", &m.licKey.PublicKey)
+	kid, err := storetest.LicenseKey(ctx, m.st, m.tenantID(t), "tresor", store.KeySourcePublisher, "nobody", &m.licKey.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}

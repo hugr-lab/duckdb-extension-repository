@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"slices"
 )
 
@@ -206,12 +207,7 @@ WHERE b.tenant_id = ? AND ` + liveBuild
 	return out, rows.Err()
 }
 
-func scanStrings(rows interface {
-	Next() bool
-	Scan(...any) error
-	Err() error
-	Close() error
-}) ([]string, error) {
+func scanStrings(rows *sql.Rows) ([]string, error) {
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
