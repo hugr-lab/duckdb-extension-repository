@@ -1,6 +1,6 @@
-/* The site's theme: Infima's variables, in the Hugr Lab sites' teal. */
-
-@import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;600&display=swap');
+/* The site's theme: Infima's variables, in the Hugr Lab sites' teal. Quicksand is served with the
+   site (@fontsource/quicksand, SIL OFL 1.1, loaded in docusaurus.config.ts): the site requests
+   nothing from another host. */
 
 :root {
   --ifm-font-family-base: 'Quicksand', system-ui, -apple-system, sans-serif;

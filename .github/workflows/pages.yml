@@ -1,4 +1,5 @@
-# The docs site on GitHub Pages (https://hugr-lab.github.io/duckdb-extension-repository/), from main.
+# The docs site on GitHub Pages (https://hugr-lab.github.io/duckdb-extension-repository/), from main;
+# with DOCS_IONOS set, also built for hugr-lab.com/docs/duckdb-extension-repository/ and uploaded to IONOS.
 # docs-build.yml is the pull requests' gate; this one never runs on a pull request, so it never
 # cancels a deploy in flight.
 name: Docs site
@@ -35,6 +36,27 @@ jobs:
         run: |
           npm ci
           npx docusaurus build
+      # the second build, for hugr-lab.com on IONOS: only once DOCS_IONOS is set, and only from main
+      # or a dispatch (this workflow never runs on a pull request)
+      - name: Build for hugr-lab.com
+        if: ${{ vars.DOCS_IONOS == 'true' }}
+        working-directory: website
+        env:
+          DOCS_TARGET: ionos
+        run: npm run build -- --out-dir build-ionos
+      - name: Upload to hugr-lab.com (IONOS)
+        if: ${{ vars.DOCS_IONOS == 'true' }}
+        env:
+          HOST: ${{ secrets.IONOS_SFTP_HOST }}
+          USER: ${{ secrets.IONOS_SFTP_USER }}
+          LFTP_PASSWORD: ${{ secrets.IONOS_SFTP_PASSWORD }}
+          REMOTE: ${{ vars.IONOS_DOCS_ROOT || '/hugr-lab/docs' }}/duckdb-extension-repository
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+          # mirrors the build into the docs folder for this product; nothing outside it is touched
+          lftp --env-password -u "$USER" -e "set sftp:auto-confirm yes; set net:max-retries 3; \
+            mirror --reverse --delete --verbose website/build-ionos/ $REMOTE; bye" \
+            "sftp://$HOST"
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:

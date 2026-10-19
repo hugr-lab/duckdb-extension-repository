@@ -33,3 +33,8 @@ jobs:
         run: |
           npm ci
           npx docusaurus build
+      - name: docusaurus build for hugr-lab.com (not uploaded)
+        working-directory: website
+        env:
+          DOCS_TARGET: ionos
+        run: npx docusaurus build --out-dir build-ionos

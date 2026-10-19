@@ -6,14 +6,25 @@ import type * as Preset from '@docusaurus/preset-classic';
 // workflow (.github/workflows/pages.yml) to https://hugr-lab.github.io/duckdb-extension-repository/.
 // The specs (specs/) are the design record; this site is how to run and use the server.
 
+// The same docs are built twice: for GitHub Pages (default) and for hugr-lab.com on IONOS
+// (DOCS_TARGET=ionos, uploaded by pages.yml). Neither requests anything from another host.
+const ionos = process.env.DOCS_TARGET === 'ionos';
+const site = ionos
+  ? {url: 'https://hugr-lab.com', baseUrl: '/docs/duckdb-extension-repository/', home: 'https://hugr-lab.com/',
+      impressum: 'https://hugr-lab.com/impressum/', datenschutz: 'https://hugr-lab.com/datenschutz/'}
+  : {url: 'https://hugr-lab.github.io', baseUrl: '/duckdb-extension-repository/', home: 'https://hugr-lab.github.io/',
+      impressum: 'https://hugr-lab.github.io/impressum/', datenschutz: 'https://hugr-lab.github.io/datenschutz/'};
+
 const config: Config = {
   title: 'kista',
   tagline: 'A trusted repository for DuckDB extensions: mirrored, checked, re-signed with your key.',
   favicon: 'img/favicon.svg',
 
-  url: 'https://hugr-lab.github.io',
-  baseUrl: '/duckdb-extension-repository/',
+  url: site.url,
+  baseUrl: site.baseUrl,
+  baseUrlIssueBanner: false,
   trailingSlash: true,
+  customFields: {docsTarget: ionos ? 'ionos' : 'github'},
 
   organizationName: 'hugr-lab',
   projectName: 'duckdb-extension-repository',
@@ -39,7 +50,11 @@ const config: Config = {
         },
         blog: false,
         theme: {
-          customCss: './src/css/custom.css',
+          customCss: [
+            require.resolve('@fontsource/quicksand/latin-400.css'),
+            require.resolve('@fontsource/quicksand/latin-600.css'),
+            './src/css/custom.css',
+          ],
         },
       } satisfies Preset.Options,
     ],
@@ -100,9 +115,16 @@ const config: Config = {
         {
           title: 'Hugr Lab',
           items: [
-            {label: 'Main site', href: 'https://hugr-lab.github.io/'},
+            {label: 'Main site', href: site.home},
             {label: 'tresor', href: 'https://hugr-lab.github.io/tresor/'},
             {label: 'GitHub', href: 'https://github.com/hugr-lab/duckdb-extension-repository'},
+          ],
+        },
+        {
+          title: 'Legal',
+          items: [
+            {label: 'Impressum', href: site.impressum},
+            {label: 'Datenschutz', href: site.datenschutz},
           ],
         },
       ],
