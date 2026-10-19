@@ -1,4 +1,5 @@
-# The docs site on GitHub Pages (https://hugr-lab.github.io/duckdb-extension-repository/), from main.
+# The docs site on GitHub Pages (https://hugr-lab.github.io/duckdb-extension-repository/), from main;
+# with DOCS_IONOS set, also built for hugr-lab.com/docs/duckdb-extension-repository/ and uploaded to IONOS.
 # docs-build.yml is the pull requests' gate; this one never runs on a pull request, so it never
 # cancels a deploy in flight.
 name: Docs site
@@ -53,3 +54,44 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  # the second build, for hugr-lab.com on IONOS: after Pages, so a failed upload never holds Pages
+  # back; only once DOCS_IONOS is set, from main or a dispatch (never on a pull request)
+  ionos:
+    name: hugr-lab.com
+    needs: deploy
+    if: ${{ vars.DOCS_IONOS == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: npm ci
+        working-directory: website
+        run: npm ci
+      - name: Build for hugr-lab.com
+        working-directory: website
+        env:
+          DOCS_TARGET: ionos
+        run: npm run build -- --out-dir build-ionos
+      - name: Check the hugr-lab.com copy requests no other server
+        working-directory: website
+        run: |
+          found=$(grep -rhoE "(src=\"|srcset=\"|url\(|@import )['\"]?https?://[^\"') ]+" build-ionos | sort -u || true)
+          if [ -n "$found" ]; then echo "third-party requests in the hugr-lab.com build:"; echo "$found"; exit 1; fi
+      - name: Upload to hugr-lab.com (IONOS)
+        env:
+          HOST: ${{ secrets.IONOS_SFTP_HOST }}
+          USER: ${{ secrets.IONOS_SFTP_USER }}
+          LFTP_PASSWORD: ${{ secrets.IONOS_SFTP_PASSWORD }}
+          REMOTE: ${{ vars.IONOS_DOCS_ROOT || '/hugr-lab/docs' }}/duckdb-extension-repository
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+          # mirrors the build into the docs folder for this product; nothing outside it is touched
+          lftp --env-password -u "$USER" -e "set sftp:auto-confirm yes; set net:max-retries 3; \
+            mirror --reverse --delete --verbose website/build-ionos/ $REMOTE; bye" \
+            "sftp://$HOST"
