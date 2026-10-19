@@ -42,7 +42,8 @@ with `400`, naming the check.
    channel's signature.
 
 To see what a file's footer says before you publish it, run `kista ext inspect <file>`: it prints
-the platform, ABI, DuckDB or C API version, extension version and body hash.
+the platform, ABI, DuckDB or C API version, extension version, body hash, and the licence keys
+of an extension built with the kista SDK.
 
 The channel must also serve the build's DuckDB version: a `cpp` or `c_struct_unstable` build needs
 its exact DuckDB version in the channel's list, a `c_struct` build a channel version whose C API

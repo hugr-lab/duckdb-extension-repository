@@ -15,6 +15,12 @@ import (
 // writeExtension writes a small signed extension and the signer's public key; it returns their paths.
 func writeExtension(t *testing.T) (ext, pub string) {
 	t.Helper()
+	return writeExtensionCode(t, []byte("code"))
+}
+
+// writeExtensionCode is writeExtension with the body's code given.
+func writeExtensionCode(t *testing.T, code []byte) (ext, pub string) {
+	t.Helper()
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "key.pem")
 	if err := signer.GenerateKeyFile(keyPath); err != nil {
@@ -28,7 +34,7 @@ func writeExtension(t *testing.T) (ext, pub string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := append([]byte("code"), extfile.MetadataPrefix...)
+	body := append(append([]byte(nil), code...), extfile.MetadataPrefix...)
 	body = append(body, block[:]...)
 	h, _, err := extfile.HashBody(bytes.NewReader(body), int64(len(body)))
 	if err != nil {
@@ -67,6 +73,7 @@ func TestCLI(t *testing.T) {
 		out  string
 	}{
 		{[]string{"ext", "inspect", ext}, 0, "platform:          linux_amd64"},
+		{[]string{"ext", "inspect", ext}, 0, "licence keys:      none (no key block)"},
 		{[]string{"ext", "inspect", ext, "--key", pub}, 0, "signature:         sha256:"},
 		{[]string{"ext", "verify", ext, "--key", pub}, 0, "sha256:"},
 		{[]string{"ext", "verify", "--key", otherPub, "--key", pub, ext}, 0, "sha256:"},
@@ -86,6 +93,42 @@ func TestCLI(t *testing.T) {
 		}
 		if !strings.Contains(stdout.String(), c.out) {
 			t.Errorf("%v: output %q lacks %q", c.args, stdout.String(), c.out)
+		}
+	}
+}
+
+func TestInspectLicenseKeys(t *testing.T) {
+	var pems []string
+	var want []string
+	for range 2 {
+		path := filepath.Join(t.TempDir(), "k.pem")
+		if err := signer.GenerateKeyFile(path); err != nil {
+			t.Fatal(err)
+		}
+		s, _ := signer.OpenFile(path)
+		p, _ := extfile.MarshalPublicKeyPEM(s.Public())
+		pems = append(pems, p)
+		want = append(want, extfile.Fingerprint(s.Public()))
+	}
+	block, err := extfile.EncodeLicenseKeys(pems...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad, _ := extfile.EncodeLicenseKeys(pems[0] + "x")
+	for _, c := range []struct {
+		code []byte
+		out  string
+	}{
+		{append([]byte("code"), block...), "licence keys:      " + want[0] + "\n                   " + want[1] + "\n"},
+		{append([]byte("code"), bad...), "licence keys:      none (licence keys: malformed: key 1: "},
+	} {
+		ext, _ := writeExtensionCode(t, c.code)
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"ext", "inspect", ext}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), c.out) {
+			t.Errorf("output %q lacks %q", stdout.String(), c.out)
 		}
 	}
 }

@@ -196,6 +196,20 @@ func inspect(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "duckdb version:    %s\n", m.DuckDBVersion)
 	}
 	fmt.Fprintf(stdout, "extension version: %s\n", m.ExtensionVersion)
+	switch lk := ext.LicenseKeys; {
+	case lk.Err != nil:
+		fmt.Fprintf(stdout, "licence keys:      none (%v)\n", lk.Err)
+	case len(lk.Keys) == 0:
+		fmt.Fprintln(stdout, "licence keys:      none (no key block)")
+	default:
+		for i, k := range lk.Keys {
+			label := "licence keys:"
+			if i > 0 {
+				label = ""
+			}
+			fmt.Fprintf(stdout, "%-18s %s\n", label, k.Kid)
+		}
+	}
 	if len(keys) > 0 {
 		if fp, ok := verifyWith(ext, keys); ok {
 			fmt.Fprintf(stdout, "signature:         %s\n", fp)

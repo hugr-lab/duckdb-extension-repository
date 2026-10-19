@@ -15,9 +15,12 @@ type File struct {
 	HasPrefix bool // the 22-byte MetadataPrefix precedes the metadata block
 	Hash      BodyHash
 	Signature []byte // the trailing 256 bytes, as found
+	// LicenseKeys are the licence keys the body declares (spec 0021), read in the hashing pass.
+	LicenseKeys LicenseKeys
 }
 
-// Open parses an extension of the given size from r: the metadata, the body hash and the signature.
+// Open parses an extension of the given size from r: the metadata, the body hash, the licence keys
+// and the signature.
 // It refuses files smaller than FooterSize or larger than maxSize before hashing.
 func Open(r io.ReaderAt, size, maxSize int64) (*File, error) {
 	if size < FooterSize {
@@ -45,7 +48,8 @@ func Open(r io.ReaderAt, size, maxSize int64) (*File, error) {
 		}
 	}
 
-	h, n, err := HashBody(io.NewSectionReader(r, 0, f.BodySize), f.BodySize)
+	var scan magicScanner
+	h, n, err := HashBody(io.TeeReader(io.NewSectionReader(r, 0, f.BodySize), &scan), f.BodySize)
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +57,9 @@ func Open(r io.ReaderAt, size, maxSize int64) (*File, error) {
 		return nil, fmt.Errorf("extfile: short body read: %d of %d bytes", n, f.BodySize)
 	}
 	f.Hash = h
+	if f.LicenseKeys, err = scan.keys(r, f.BodySize); err != nil {
+		return nil, err
+	}
 
 	f.Signature = make([]byte, SignatureSize)
 	if err := readAt(r, f.Signature, f.BodySize); err != nil {

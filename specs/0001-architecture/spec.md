@@ -327,7 +327,8 @@ Spec 0012 replaces the outline first written here (2026-10-17):
   them from a credentialed upstream or an administrator's import, and serves them from the channel
   an extension was installed from. It takes usage reports and forwards daily aggregates upstream.
 - **An open SDK**, compiled into the extension, fetches the licence from that repository, verifies
-  it offline against Enterest's keys compiled in, and leaves the decision to the developer.
+  it offline against the licence keys its build names (spec 0021), and leaves the decision to the
+  developer.
 
 **Threat model.** Licensing is a compliance and honest-user control, not DRM. A tenant controls
 its own signing keys, so a tenant administrator could publish a patched build that skips the check,

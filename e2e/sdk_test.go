@@ -18,6 +18,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
@@ -25,6 +26,38 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
+
+// Spec 0021: kista_demo, built in DuckDB's tree with kista_sdk_testkey, carries the test key's block,
+// and kista reads it from the binary; DuckDB's own extensions carry none.
+func TestSDKKeyBlock(t *testing.T) {
+	b := needBuild(t)
+	signKey, err := vectors.LoadKey("../internal/license/testdata", vectors.TrustedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range b.extensions {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fi, _ := f.Stat()
+		ef, err := extfile.Open(f, fi.Size(), 1<<30)
+		f.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		lk := ef.LicenseKeys
+		if name != "kista_demo" {
+			if lk.Err != nil || len(lk.Keys) != 0 {
+				t.Errorf("%s: licence keys %+v, want none", name, lk)
+			}
+			continue
+		}
+		if lk.Err != nil || len(lk.Keys) != 1 || lk.Keys[0].Kid != vectors.Kid(&signKey.PublicKey) {
+			t.Errorf("kista_demo: licence keys %+v, want the test key %s", lk, vectors.Kid(&signKey.PublicKey))
+		}
+	}
+}
 
 // Spec 0012 phase 2: the pinned DuckDB runs kista_demo, a C++ extension built with the kista SDK
 // and the licence vectors' test key (sdk/cpp/test/extension), against kista serve with licensing

@@ -48,9 +48,10 @@ any issuer's keys; take them from your issuer. `kista admin license keys` and
 `GET /api/v1/licenses/keys` (server administrators) list the trusted fingerprints, and the start-up
 log names them. Without keys, imports and relays are refused, and no licence is served.
 
-Trusting a key in kista does not make an extension trust it: the extension's SDK has its issuer's
-keys compiled in. A licence signed by any other key is stored by kista and refused by the
-extension.
+Trusting a key in kista does not make an extension trust it: each build of an extension names its
+licence keys (`kista_sdk_license_keys`; see the SDK's README), and trusts those alone. A licence
+signed by any other key is stored by kista and refused by the extension. `kista ext inspect <file>`
+prints the keys a binary names.
 
 ## Licences in a tenant
 
@@ -291,12 +292,13 @@ kista::Usage::SendAsync(context, "myext", "attach", {{"sources", 3}});  // from 
   a connection of its own that does not see the caller's session settings. The SDK keeps nothing,
   retries nothing and reports nothing on its own: installs and downloads are counted by kista
   already.
-- **Trust.** The SDK trusts only the issuer's keys compiled into it. Until Enterest publishes its
-  keys, a build trusts none. A test build can trust the licence vectors' test key, through a
-  separate test-only library.
+- **Trust.** Each build names its licence keys (`kista_sdk_license_keys`), and trusts only those:
+  the SDK has none of its own. A build without them does not link (or, on macOS with
+  `-undefined dynamic_lookup`, does not load). A test build can trust the licence vectors' test
+  key, through a separate test-only library.
 
-The SDK's README covers building, the session caveat at load and the test key. The SDK for C API
-extensions, and the SDK on Windows, are follow-ups.
+The SDK's README covers building, the licence keys, the session caveat at load and the test key.
+The SDK for C API extensions, and the SDK on Windows, are follow-ups.
 
 ## What licensing does not do
 

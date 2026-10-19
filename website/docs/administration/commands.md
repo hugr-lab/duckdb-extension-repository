@@ -123,7 +123,7 @@ kista ext verify  <file> -key <public key file> [-key ...]
 A public key file is SPKI PEM or base64 DER, at most 64 KiB. `-key` is repeatable. Files up to
 1 GiB are read.
 
-**`ext inspect`** prints the footer metadata and the body hash:
+**`ext inspect`** prints the footer metadata, the body hash and the licence keys:
 
 ```text
 file:              httpfs.duckdb_extension
@@ -134,12 +134,18 @@ platform:          linux_amd64
 abi:               CPP
 duckdb version:    v2.0.0
 extension version: 1.0
+licence keys:      none (no key block)
 signature:         sha256:...
 ```
 
-For a `C_STRUCT` build it prints `c api version:` instead of `duckdb version:`. The `signature:` line
-appears only with `-key`: the fingerprint of the key that verifies the signature, or
-`not by any given key`. It exits `0` whether or not the signature verifies, `1` if a file cannot be
+For a `C_STRUCT` build it prints `c api version:` instead of `duckdb version:`. `licence keys:`
+lists the fingerprints of the keys the build names for its licences (the key block of the kista
+SDK, spec 0021), one per line; `none (no key block)` for an extension without one, or
+`none (licence keys: malformed: …)` with the reason when the block does not parse, or the binary
+holds blocks that differ.
+
+The `signature:` line appears only with `-key`: the fingerprint of the key that verifies the
+signature, or `not by any given key`. It exits `0` whether or not the signature verifies, `1` if a file cannot be
 read or parsed, `2` on a usage error.
 
 **`ext verify`** needs at least one `-key`. It prints the fingerprint of the key that verifies the
