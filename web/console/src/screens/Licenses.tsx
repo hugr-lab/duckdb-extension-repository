@@ -126,7 +126,7 @@ export function Licenses() {
               )],
               ['Status', (l) => (
                 <span className="flex flex-wrap items-center gap-2"><Badge>{l.status}</Badge>
-                  {nks && !declared(nks, l.name, l.key) && <span className="text-[13px] text-warning">not served: no live build declares its key</span>}</span>
+                  {nks && !declared(nks, l.name, l.key) && <span className="text-[13px] text-warning">not served: no live build in any channel declares its key</span>}</span>
               )],
             ]}
           />

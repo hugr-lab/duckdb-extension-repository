@@ -46,12 +46,15 @@ itself. It **records** a build's keys only when a trusted source brought the bod
 | a `repository` upstream | a mirror run or a pull-through downloads the body, or a bundle import brings it |
 
 Nothing else records keys: DuckDB's core and community upstreams, an unmarked publisher, a
-principal, `release add`, and an upstream run that finds the body unchanged or gets a `304`.
+principal, `release add`, and an upstream run that gets a `304` (it does not read the body). A
+key whose source is gone counts for nothing.
 
 - **Marking a publisher** is a server administrator's act: `kista admin publisher license-keys
   <tenant> <name> on|off`, or `POST`/`DELETE /api/v1/tenants/{t}/publishers/{name}/license-keys`.
-  While marked, its API keys, GitHub workflows and grants are changed by a server administrator only;
-  a tenant administrator can still remove it. See [Publishing](publishing.md#sources-of-licence-keys).
+  A publisher is marked only while it holds no API key and no GitHub workflow; the server
+  administrator adds them afterwards. While marked, its API keys, GitHub workflows, grants and the
+  members of extension groups its grants name are changed by a server administrator only; a tenant
+  administrator can still remove it. See [Publishing](publishing.md#sources-of-licence-keys).
 - **A malformed key block** in a marked publisher's publication is refused (`400`, `license_keys`).
 - **Removing a source** (the publisher, or the upstream) drops the keys it brought. Unmarking a
   publisher keeps them.
@@ -69,7 +72,7 @@ Licensing is on by default:
 
 ```yaml
 licenses:
-  enabled: true        # false: the licence routes answer as a missing path; imports and relays are refused
+  enabled: true        # false: <prefix>/-/licenses answers as a missing path; imports and relays are refused
   refuse_keys: []      # key ids (sha256:…) that count nowhere: a leaked key, while builds declaring it are live
   refresh: 6h          # the relay's interval
 ```
@@ -106,8 +109,11 @@ that is not paused ([private upstreams](upstreams.md#private-upstreams)) is aske
   (`kid_untrusted`);
 - it replaces the stored licence when it is newer from the same upstream, or lasts longer. From
   another source, it replaces it only when both are signed with the same key, or the stored one's
-  grace has ended. So an upstream added in another channel cannot displace a working licence with
-  one signed by a key of its own.
+  grace has ended, or no live build declares its key any more (or the server refuses that key). So
+  an upstream added in another channel cannot displace a working licence with one signed by a key
+  of its own;
+- a licence refused for its key stays stored if this upstream relayed it before: it is not served
+  while no live build declares its key, and it ends with its grace.
 
 A licence the upstream stops listing is removed (revoked). A `404` from the upstream means it
 serves no licences and changes nothing, and so does a failure (the credential refused with `401`

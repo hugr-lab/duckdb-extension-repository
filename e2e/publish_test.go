@@ -28,11 +28,11 @@ func (k *kista) publisherKey(t *testing.T, name string, marked bool) string {
 	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "publisher:"+name, []string{"publish"}, tenants.GrantOn{Channel: "prod"}); err != nil {
 		t.Fatal(err)
 	}
+	k.markPublisher(t, name, marked) // before its credentials: a publisher holding any is not marked
 	_, key, err := adm.AddAPIKey(ctx, serveAdmin, "acme", name, time.Now().Add(24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	k.markPublisher(t, name, marked)
 	return key
 }
 

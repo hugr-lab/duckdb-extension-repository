@@ -108,6 +108,19 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		return res, err
 	}
 	if existing != nil {
+		// spec 0021: the body was fetched, so a trusted source records the keys it declares on the
+		// slot's build, which may predate them (an earlier release, or another source's)
+		if len(it.keySources) > 0 && !in.DryRun {
+			bb := it.b
+			if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+				if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
+					return err
+				}
+				return recordKeys(ctx, tx, bb, it)
+			}); err != nil {
+				return res, err
+			}
+		}
 		res.Release, res.Existed = *existing, true
 		return res, nil
 	}

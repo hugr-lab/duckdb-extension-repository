@@ -14,9 +14,14 @@ const (
 // LicenseKey is a licence key a build declares in its key block: its kid and its PEM.
 type LicenseKey struct{ Kid, PEM string }
 
+// sourceExists is the condition that key row k's source still exists: a key recorded by an intake
+// that raced its source's removal counts for nothing.
+const sourceExists = `(k.source_kind = 'publisher' AND EXISTS (SELECT 1 FROM publishers sp WHERE sp.id = k.source_id)
+OR k.source_kind = 'upstream' AND EXISTS (SELECT 1 FROM upstreams su WHERE su.id = k.source_id))`
+
 // liveBuild is the condition that build b is live in its tenant (spec 0021): an active or
-// deprecated release in a signed channel, and its body not blocked.
-const liveBuild = `EXISTS (SELECT 1 FROM releases r JOIN channels c ON c.id = r.channel_id
+// deprecated release in a signed channel, and its body not blocked; and k's source exists.
+const liveBuild = sourceExists + ` AND EXISTS (SELECT 1 FROM releases r JOIN channels c ON c.id = r.channel_id
 WHERE r.build_id = b.id AND r.state IN ('active', 'deprecated') AND c.kind = 'signed')
 AND NOT EXISTS (SELECT 1 FROM blocks x WHERE x.tenant_id = b.tenant_id AND x.body_hash = b.body_hash)`
 
@@ -26,6 +31,20 @@ AND NOT EXISTS (SELECT 1 FROM blocks x WHERE x.tenant_id = b.tenant_id AND x.bod
 func (t *Tx) RecordLicenseKeys(ctx context.Context, tenantID, buildID, kind, sourceID string, keys []LicenseKey) (bool, error) {
 	if len(keys) == 0 {
 		return false, nil
+	}
+	// the source as it is now: a publisher removed or unmarked, or an upstream removed, since the
+	// intake began records nothing
+	q := "SELECT COUNT(*) FROM upstreams WHERE id = ?"
+	if kind == KeySourcePublisher {
+		q = "SELECT COUNT(*) FROM publishers WHERE id = ? AND license_keys = ?"
+	}
+	args := []any{sourceID}
+	if kind == KeySourcePublisher {
+		args = append(args, true)
+	}
+	var n int
+	if err := t.queryRow(ctx, q, args...).Scan(&n); err != nil || n == 0 {
+		return false, err
 	}
 	rows, err := t.query(ctx, "SELECT kid FROM build_license_keys WHERE build_id = ? AND source_kind = ? AND source_id = ?",
 		buildID, kind, sourceID)
@@ -51,20 +70,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, tenantID, buildID, k.Kid, k.PEM, kind, sourceID, 
 	if !added {
 		return false, nil
 	}
-	return true, t.bumpBuildChannels(ctx, "SELECT DISTINCT channel_id FROM releases WHERE build_id = ?", buildID)
+	return true, t.bumpBuildChannels(ctx, "SELECT DISTINCT channel_id FROM releases WHERE build_id = ? ORDER BY channel_id", buildID)
 }
 
 // DeleteLicenseKeysOf drops the keys a source brought, from every build, and bumps the release
 // version of each channel holding one of those builds.
 func (t *Tx) DeleteLicenseKeysOf(ctx context.Context, kind, sourceID string) error {
 	if err := t.bumpBuildChannels(ctx, `SELECT DISTINCT r.channel_id FROM releases r
-WHERE r.build_id IN (SELECT build_id FROM build_license_keys WHERE source_kind = ? AND source_id = ?)`, kind, sourceID); err != nil {
+WHERE r.build_id IN (SELECT build_id FROM build_license_keys WHERE source_kind = ? AND source_id = ?) ORDER BY r.channel_id`, kind, sourceID); err != nil {
 		return err
 	}
 	_, err := t.exec(ctx, "DELETE FROM build_license_keys WHERE source_kind = ? AND source_id = ?", kind, sourceID)
 	return err
 }
 
+// bumpBuildChannels bumps the channels q lists, in id order (no deadlock between two of them).
 func (t *Tx) bumpBuildChannels(ctx context.Context, q string, args ...any) error {
 	rows, err := t.query(ctx, q, args...)
 	if err != nil {
@@ -112,7 +132,7 @@ WHERE b.tenant_id = ? AND b.name = ? AND ` + liveBuild
 // what a served snapshot carries.
 func (s *Store) BuildKids(ctx context.Context, channelID string) (map[string][]string, error) {
 	rows, err := s.query(ctx, `SELECT DISTINCT k.build_id, k.kid FROM build_license_keys k
-WHERE k.build_id IN (SELECT build_id FROM releases WHERE channel_id = ?) ORDER BY k.build_id, k.kid`, channelID)
+WHERE k.build_id IN (SELECT build_id FROM releases WHERE channel_id = ?) AND `+sourceExists+` ORDER BY k.build_id, k.kid`, channelID)
 	if err != nil {
 		return nil, err
 	}

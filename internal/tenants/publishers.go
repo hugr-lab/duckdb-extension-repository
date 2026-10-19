@@ -65,6 +65,20 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 	}
 	var p store.Publisher
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
+		if on {
+			// credentials a tenant administrator made before the mark would outlive it: the server
+			// administrator adds them once it is marked
+			cur, err := tx.GetPublisher(ctx, t.ID, name)
+			if err != nil {
+				return err
+			}
+			if n, err := tx.PublisherCredentials(ctx, cur.ID); err != nil {
+				return err
+			} else if n > 0 && !cur.LicenseKeys {
+				return fmt.Errorf("%w: publisher %s holds API keys or GitHub workflows (%d); remove them, mark it, then add them "+
+					"again as a server administrator", store.ErrInvalid, name, n)
+			}
+		}
 		if p, err = tx.SetPublisherLicenseKeys(ctx, t.ID, name, on); err != nil {
 			return err
 		}

@@ -592,6 +592,12 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				out = append(out, r)
 				made = append(made, r)
 			}
+			// spec 0021: the keys a trusted intake carried, with its release, in one transaction
+			for _, it := range items {
+				if err := recordKeys(ctx, tx, it.b, it); err != nil {
+					return err
+				}
+			}
 			if existing == len(items) {
 				return nil
 			}
@@ -812,12 +818,7 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 		// two intakes of one body race on the build's insert; the loser finds the winner's build
 		for try := 0; ; try++ {
 			bb := it.b
-			err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
-				if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
-					return err
-				}
-				return recordKeys(ctx, tx, bb, *it)
-			})
+			err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &bb) })
 			if err == nil {
 				it.b = bb
 				break

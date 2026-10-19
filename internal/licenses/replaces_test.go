@@ -31,8 +31,12 @@ func TestReplaces(t *testing.T) {
 		{"an import, another key, longer", stored(store.LicenseImport, "", "A"), relayed("u", "B", 200, 9000), false},
 		{"past its grace, another key", store.License{Source: store.LicenseImport, Key: "A", GraceUntil: now}, relayed("u", "B", 200, 1500), true},
 	} {
-		if got := replaces(c.old, c.l, now); got != c.replaces {
+		if got := replaces(c.old, c.l, now, false); got != c.replaces {
 			t.Errorf("%s: %v, want %v", c.name, got, c.replaces)
 		}
+	}
+	// a stored licence whose key counts nowhere holds the name for nobody
+	if !replaces(stored(store.LicenseImport, "", "A"), relayed("u", "B", 200, 1500), now, true) {
+		t.Error("a dead key's licence is not replaced")
 	}
 }

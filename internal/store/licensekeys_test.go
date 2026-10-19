@@ -16,6 +16,21 @@ func TestLicenseKeys(t *testing.T) {
 		tn, prod := fixture(t, s)
 		mirror := store.Channel{TenantID: tn.ID, Name: "mirror", Kind: store.ChannelPassthrough}
 		inTx(t, s, func(tx *store.Tx) error { return tx.CreateChannel(ctx, &mirror) })
+		// the sources: a marked publisher and an upstream
+		p1 := store.Publisher{TenantID: tn.ID, Name: "p1", CreatedBy: "os:1:t"}
+		inTx(t, s, func(tx *store.Tx) error {
+			if err := tx.InsertPublisher(ctx, &p1); err != nil {
+				return err
+			}
+			_, err := tx.SetPublisherLicenseKeys(ctx, tn.ID, "p1", true)
+			return err
+		})
+		u1 := store.NewID()
+		if err := store.ExecRaw(ctx, s, "INSERT INTO upstreams (id, tenant_id, name, kind, channel_id, mode, visibility, state, version, "+
+			"request_dry_run, created_at, created_by) VALUES (?, ?, 'u1', 'repository', ?, 'mirror', 'public', 'active', 1, ?, ?, 'os:1:t')",
+			u1, tn.ID, prod.ID, false, store.TimeArg(s, s.Now())); err != nil {
+			t.Fatal(err)
+		}
 		k1 := store.LicenseKey{Kid: "sha256:" + strings.Repeat("1", 64), PEM: "pem-1"}
 		k2 := store.LicenseKey{Kid: "sha256:" + strings.Repeat("2", 64), PEM: "pem-2"}
 		release := func(ch store.Channel, ver, hash string) (store.Build, store.Release) {
@@ -62,16 +77,16 @@ func TestLicenseKeys(t *testing.T) {
 
 		// recorded once per (build, kid, source); a new record bumps the channels holding the build
 		v := version()
-		if !record(b1, store.KeySourcePublisher, "p1", k1, k2) || version() != v+1 {
+		if !record(b1, store.KeySourcePublisher, p1.ID, k1, k2) || version() != v+1 {
 			t.Fatal("the first record")
 		}
-		if record(b1, store.KeySourcePublisher, "p1", k1) || version() != v+1 {
+		if record(b1, store.KeySourcePublisher, p1.ID, k1) || version() != v+1 {
 			t.Fatal("a record again")
 		}
-		if !record(b1, store.KeySourceUpstream, "u1", k1) || !record(b2, store.KeySourceUpstream, "u1", k2) {
+		if !record(b1, store.KeySourceUpstream, u1, k1) || !record(b2, store.KeySourceUpstream, u1, k2) {
 			t.Fatal("another source's record")
 		}
-		if record(b1, store.KeySourceUpstream, "u1") {
+		if record(b1, store.KeySourceUpstream, u1) {
 			t.Fatal("no keys recorded something")
 		}
 
@@ -79,7 +94,7 @@ func TestLicenseKeys(t *testing.T) {
 		if got := live("", ""); got != "1:pem-1,2:pem-2" {
 			t.Fatalf("live keys: %q", got)
 		}
-		if got := live(store.KeySourceUpstream, "u1"); got != "1:pem-1" {
+		if got := live(store.KeySourceUpstream, u1); got != "1:pem-1" {
 			t.Fatalf("u1's live keys (b2 is in a passthrough channel only): %q", got)
 		}
 		ks, err := s.TenantLicenseKeys(ctx, tn.ID, "")
@@ -111,9 +126,21 @@ func TestLicenseKeys(t *testing.T) {
 			t.Fatalf("a blocked body's keys: %q", got)
 		}
 
+		// a source that is gone records nothing, and its keys count for nothing
+		if record(b1, store.KeySourceUpstream, "gone", k2) || record(b1, store.KeySourcePublisher, "gone", k2) {
+			t.Fatal("a missing source recorded keys")
+		}
+		if err := store.ExecRaw(ctx, s, "INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at) "+
+			"VALUES (?, ?, ?, 'pem-3', 'upstream', 'gone', ?)", tn.ID, b1.ID, "sha256:"+strings.Repeat("3", 64), store.TimeArg(s, s.Now())); err != nil {
+			t.Fatal(err)
+		}
+		if kids, _ := s.BuildKids(ctx, prod.ID); len(kids[b1.ID]) != 2 {
+			t.Fatalf("an orphan key counts: %v", kids)
+		}
+
 		// removing a source drops what it brought, and bumps the channels
 		v = version()
-		inTx(t, s, func(tx *store.Tx) error { return tx.DeleteLicenseKeysOf(ctx, store.KeySourcePublisher, "p1") })
+		inTx(t, s, func(tx *store.Tx) error { return tx.DeleteLicenseKeysOf(ctx, store.KeySourcePublisher, p1.ID) })
 		if kids, _ := s.BuildKids(ctx, prod.ID); fmt.Sprint(kids[b1.ID]) != "["+k1.Kid+"]" || version() != v+1 {
 			t.Fatalf("after removing p1: %v", kids)
 		}

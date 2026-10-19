@@ -41,7 +41,7 @@ func TestLicenseKeySources(t *testing.T) {
 	}
 	kid := vectors.Kid(&m.licKey.PublicKey)
 	exp := time.Now().Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339)
-	publisher := func(name string) string {
+	publisher := func(name string) {
 		t.Helper()
 		if r := m.call(t, "POST", T+"/publishers", ta, `{"name":"`+name+`"}`); r.status != 201 {
 			t.Fatalf("publisher %s: %d %s", name, r.status, r.body)
@@ -49,11 +49,14 @@ func TestLicenseKeySources(t *testing.T) {
 		if r := m.call(t, "POST", T+"/grants", ta, `{"principal":"publisher:`+name+`","verbs":["publish"],"channel":"prod"}`); r.status != 201 {
 			t.Fatalf("grant: %d %s", r.status, r.body)
 		}
-		r := m.call(t, "POST", T+"/publishers/"+name+"/keys", ta, `{"expires_at":"`+exp+`"}`)
+	}
+	apiKey := func(name, tok string) (string, string) {
+		t.Helper()
+		r := m.call(t, "POST", T+"/publishers/"+name+"/keys", tok, `{"expires_at":"`+exp+`"}`)
 		if r.status != 201 {
 			t.Fatalf("key: %d %s", r.status, r.body)
 		}
-		return r.json(t)["key"].(string)
+		return r.json(t)["key"].(string), r.json(t)["id"].(string)
 	}
 	keys := func() string {
 		t.Helper()
@@ -64,7 +67,9 @@ func TestLicenseKeySources(t *testing.T) {
 		return fmt.Sprint(r.json(t)["names"])
 	}
 	const P = T + "/channels/prod/extensions/"
-	issuer, other := publisher("issuer-ci"), publisher("other-ci")
+	publisher("issuer-ci")
+	publisher("other-ci")
+	other, _ := apiKey("other-ci", ta)
 
 	// an unmarked publisher's publication records nothing
 	if r := m.upload(t, P+"newext/releases?version=1.0&platform=linux_amd64", other, keyed(t, "1.0", block, "newext_duckdb_cpp_init")); r.status != 201 {
@@ -84,6 +89,17 @@ func TestLicenseKeySources(t *testing.T) {
 	if r := m.call(t, "GET", T+"/publishers/issuer-ci", ta, ""); r.json(t)["license_keys"] != true {
 		t.Fatalf("the mark is not shown: %s", r.body)
 	}
+	// a publisher holding credentials a tenant administrator made is not marked
+	if r := m.call(t, "POST", T+"/publishers/other-ci/license-keys", sa, ""); r.status != 400 {
+		t.Fatalf("marking a publisher with an API key: %d %s", r.status, r.body)
+	}
+	// its credentials come from the server administrator once it is marked
+	issuer, issuerKeyID := apiKey("issuer-ci", sa)
+	gh := m.call(t, "POST", T+"/publishers/issuer-ci/github", sa, `{"owner_id":"1","repository_id":"2","workflow":"o/r/.github/workflows/w.yml"}`)
+	if gh.status != 201 {
+		t.Fatalf("a server administrator's GitHub workflow: %d %s", gh.status, gh.body)
+	}
+	ghID := gh.json(t)["id"].(string)
 
 	// marked: its credentials and grants are the server administrator's
 	var grantID string
@@ -96,7 +112,9 @@ func TestLicenseKeySources(t *testing.T) {
 		{"POST", T + "/publishers/issuer-ci/keys", `{"expires_at":"` + exp + `"}`},
 		{"POST", T + "/grants", `{"principal":"publisher:issuer-ci","verbs":["publish"],"channel":"staging"}`},
 		{"DELETE", T + "/grants/" + grantID, ""},
-		{"POST", T + "/publishers/issuer-ci/github", `{"owner_id":"1","repository_id":"2","workflow":"o/r/.github/workflows/w.yml"}`},
+		{"POST", T + "/publishers/issuer-ci/github", `{"owner_id":"3","repository_id":"4","workflow":"o/r/.github/workflows/w.yml"}`},
+		{"DELETE", T + "/publishers/issuer-ci/keys/" + issuerKeyID, ""},
+		{"DELETE", T + "/publishers/issuer-ci/github/" + ghID, ""},
 	} {
 		if r := m.call(t, c.method, c.path, ta, c.body); r.status != 404 {
 			t.Errorf("a tenant administrator's %s %s on a marked publisher: %d %s", c.method, c.path, r.status, r.body)
@@ -104,6 +122,19 @@ func TestLicenseKeySources(t *testing.T) {
 	}
 	if r := m.call(t, "POST", T+"/grants", sa, `{"principal":"publisher:issuer-ci","verbs":["publish"],"channel":"staging"}`); r.status != 201 {
 		t.Fatalf("a server administrator's grant to a marked publisher: %d %s", r.status, r.body)
+	}
+	// a group a marked publisher's grant names: its members are the server administrator's too
+	if r := m.call(t, "POST", T+"/extension-groups", ta, `{"name":"issued"}`); r.status != 201 {
+		t.Fatalf("group: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", T+"/grants", sa, `{"principal":"publisher:issuer-ci","verbs":["publish"],"extension_group":"issued"}`); r.status != 201 {
+		t.Fatalf("a group grant to a marked publisher: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", T+"/extension-groups/issued/members", ta, `{"add":["acl"]}`); r.status != 404 {
+		t.Fatalf("a tenant administrator widens a marked publisher's group: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", T+"/extension-groups/issued/members", sa, `{"add":["acl"]}`); r.status != 200 {
+		t.Fatalf("a server administrator's member change: %d %s", r.status, r.body)
 	}
 
 	// a malformed block is refused; a sound one records the key
@@ -130,13 +161,22 @@ func TestLicenseKeySources(t *testing.T) {
 	if got := keys(); !strings.Contains(got, kid) {
 		t.Fatalf("keys after unmarking: %s", got)
 	}
-	if r := m.call(t, "POST", T+"/publishers/issuer-ci/license-keys", sa, ""); r.status != 200 {
-		t.Fatalf("mark again: %d", r.status)
+	// unmarked, its credentials are a tenant administrator's again: marking it again needs none
+	if r := m.call(t, "POST", T+"/publishers/issuer-ci/license-keys", sa, ""); r.status != 400 {
+		t.Fatalf("mark again with credentials: %d", r.status)
 	}
 	if r := m.call(t, "DELETE", T+"/publishers/issuer-ci", ta, ""); r.status != 204 {
-		t.Fatalf("a tenant administrator removes a marked publisher: %d %s", r.status, r.body)
+		t.Fatalf("a tenant administrator removes the publisher: %d %s", r.status, r.body)
 	}
 	if got := keys(); got != "[]" {
 		t.Fatalf("keys after removing the publisher: %s", got)
+	}
+	// a tenant administrator can remove a marked publisher
+	publisher("gone-ci")
+	if r := m.call(t, "POST", T+"/publishers/gone-ci/license-keys", sa, ""); r.status != 200 {
+		t.Fatalf("mark: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "DELETE", T+"/publishers/gone-ci", ta, ""); r.status != 204 {
+		t.Fatalf("a tenant administrator removes a marked publisher: %d %s", r.status, r.body)
 	}
 }

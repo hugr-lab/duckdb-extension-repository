@@ -219,10 +219,28 @@ func (s *AuthAdmin) ChangeExtensionGroupMembers(ctx context.Context, a authz.Act
 			return nil, nil, fmt.Errorf("%w: %s is both added and removed", store.ErrInvalid, n)
 		}
 	}
+	ta, err := s.Store.GetTenantAuth(ctx, t.ID) // the group's publisher grants (grants never change)
+	if err != nil {
+		return nil, nil, err
+	}
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		g, err := tx.GetExtensionGroup(ctx, t.ID, name)
 		if err != nil {
 			return err
+		}
+		// spec 0021: the members widen or narrow a marked publisher's grants on the group, which
+		// are the server administrator's
+		for _, gr := range ta.GroupGrants {
+			if gr.ExtensionGroupID != g.ID || gr.PublisherName == "" {
+				continue
+			}
+			p, err := tx.GetPublisher(ctx, t.ID, gr.PublisherName)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+			if err := s.marked(ctx, a, p); err != nil {
+				return err
+			}
 		}
 		if added, removed, err = tx.ChangeGroupMembers(ctx, g, add, remove, a.String()); err != nil {
 			return err

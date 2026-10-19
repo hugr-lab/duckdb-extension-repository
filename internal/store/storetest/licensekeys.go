@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"crypto/rsa"
+	"errors"
 	"fmt"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
@@ -11,8 +12,29 @@ import (
 
 // LicenseKey records pub as a licence key of every build of name in the tenant, brought by the
 // source (kind, id), and bumps the tenant's channels: a test's stand-in for a trusted intake of a
-// body whose key block declares the key (spec 0021). It returns the key's kid.
-func LicenseKey(ctx context.Context, st *store.Store, tenantID, name, kind, sourceID string, pub *rsa.PublicKey) (string, error) {
+// body whose key block declares the key (spec 0021). For a publisher, source is its name, and a
+// marked publisher of that name is added when the tenant has none; for an upstream, its id. It
+// returns the key's kid.
+func LicenseKey(ctx context.Context, st *store.Store, tenantID, name, kind, source string, pub *rsa.PublicKey) (string, error) {
+	sourceID := source
+	if kind == store.KeySourcePublisher {
+		err := st.InTx(ctx, "", func(tx *store.Tx) error {
+			p, err := tx.GetPublisher(ctx, tenantID, source)
+			if errors.Is(err, store.ErrNotFound) {
+				p = store.Publisher{TenantID: tenantID, Name: source, CreatedBy: "os:0:test"}
+				err = tx.InsertPublisher(ctx, &p)
+			}
+			if err != nil {
+				return err
+			}
+			sourceID = p.ID
+			_, err = tx.SetPublisherLicenseKeys(ctx, tenantID, source, true)
+			return err
+		})
+		if err != nil {
+			return "", err
+		}
+	}
 	pem, err := extfile.MarshalPublicKeyPEM(pub)
 	if err != nil {
 		return "", err

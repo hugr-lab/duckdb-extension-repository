@@ -106,15 +106,13 @@ func TestSDKLicense(t *testing.T) {
 	}
 	// spec 0021: published by an unmarked publisher, kista_demo's key counts for nothing; published
 	// again by a marked one, its key block is the key its licences verify against
-	key := k.publisherKey(t, "ci", false)
-	if st := k.publish(t, "kista_demo", key); st != 201 {
+	if st := k.publish(t, "kista_demo", k.publisherKey(t, "other-ci", false)); st != 201 {
 		t.Fatalf("an unmarked publication: %d", st)
 	}
 	if _, err := k.licenses.Import(ctx, serveAdmin, "acme", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
 		t.Fatalf("a licence for a build published by an unmarked publisher: %v", err)
 	}
-	k.markPublisher(t, "ci", true)
-	if st := k.publish(t, "kista_demo", key); st != 200 {
+	if st := k.publish(t, "kista_demo", k.publisherKey(t, "ci", true)); st != 200 {
 		t.Fatalf("the marked publication: %d", st)
 	}
 	stored, err := k.licenses.Import(ctx, serveAdmin, "acme", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create)

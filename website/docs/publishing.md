@@ -409,7 +409,10 @@ trusted source brings the build. A publisher is one when a **server administrato
 example the build pipeline of the issuer that signs the extension's licences:
 
 ```bash
+kista admin -config /etc/kista/kista.yaml publisher add acme tresor-ci
 kista admin -config /etc/kista/kista.yaml publisher license-keys acme tresor-ci on   # off unmarks it
+kista admin -config /etc/kista/kista.yaml grant add acme -principal publisher:tresor-ci -verb publish -channel prod -extension tresor
+kista admin -config /etc/kista/kista.yaml publisher key add acme tresor-ci -expires 90d
 ```
 
 Over the API: `POST` (mark) and `DELETE` (unmark) `/api/v1/tenants/{t}/publishers/{name}/license-keys`,
@@ -421,10 +424,13 @@ server administrators only. Each records a `publisher.change` event.
   credential does not lend it its mark.
 - **A malformed key block is refused**: `400`, with `license_keys` in the detail. `kista ext
   inspect <file>` shows what kista reads.
-- **Its credentials and grants are the server administrator's.** While it is marked, adding or
-  removing its GitHub workflows, API keys and grants is refused to a tenant administrator (`404`).
-  A tenant administrator can still remove the publisher, which drops the keys it brought.
-- **Unmarking** keeps the keys already recorded.
+- **Its credentials and grants are the server administrator's.** A publisher holding an API key
+  or a GitHub workflow is not marked (`400`): credentials a tenant administrator made would outlive
+  the mark. While it is marked, adding or removing its GitHub workflows, API keys and grants, and
+  changing the members of an extension group its grants name, is refused to a tenant administrator
+  (`404`). A tenant administrator can still remove the publisher, which drops the keys it brought.
+- **Unmarking** keeps the keys already recorded. Its credentials are then a tenant administrator's
+  again, so marking it again needs it to hold none.
 
 Publications by any other publisher, by a principal, and `release add` record no keys.
 

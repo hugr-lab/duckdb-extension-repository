@@ -130,7 +130,7 @@ function PublisherView({ name }: { name: string }) {
       {failure != null && <ErrorBox error={failure} />}
       {p.license_keys && (
         <Note>A source of licence keys: its publications record the licence keys their builds declare, which this tenant's licences verify
-          against. A server administrator marked it, and only a server administrator changes its workflows, API keys and grants.
+          against. A server administrator marked it, and only a server administrator changes its workflows, API keys and grants: a change made here is refused.
           Removing it drops the keys it brought.</Note>
       )}
       <Workflows publisher={p} onChanged={pub.reload} />

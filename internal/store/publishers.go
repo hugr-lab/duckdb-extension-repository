@@ -71,6 +71,16 @@ func (t *Tx) GetPublisher(ctx context.Context, tenantID, name string) (Publisher
 	return p, notFound(err, "publisher "+name)
 }
 
+// PublisherCredentials counts a publisher's API keys and GitHub credentials.
+func (t *Tx) PublisherCredentials(ctx context.Context, publisherID string) (int, error) {
+	var keys, gh int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM api_keys WHERE publisher_id = ?", publisherID).Scan(&keys); err != nil {
+		return 0, err
+	}
+	err := t.queryRow(ctx, "SELECT COUNT(*) FROM publisher_github WHERE publisher_id = ?", publisherID).Scan(&gh)
+	return keys + gh, err
+}
+
 // SetPublisherLicenseKeys marks a publisher a trusted source of licence keys, or unmarks it
 // (spec 0021). Unmarking keeps the keys it brought; removing the publisher drops them.
 func (t *Tx) SetPublisherLicenseKeys(ctx context.Context, tenantID, name string, on bool) (Publisher, error) {

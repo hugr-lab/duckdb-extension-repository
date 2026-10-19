@@ -313,7 +313,7 @@ A licence is answered as its claims and state (`name`, `id`, `issuer`, `holder_i
 with `Location`; over a stored one without `If-Match`, `409`. `GET …/upstreams/{name}/licenses`
 answers the last relay run, `{"last_run_at", "result": {"counts", "refused", "error"}}`, and the sync
 request (`202`) answers the same; `409` for an upstream that relays nothing or is paused, and while
-licensing is off. An import or a relayed licence verifies against a key a live build of its
+licensing is off (an import too). An import or a relayed licence verifies against a key a live build of its
 extension declares (spec 0021); without one it is refused (`400`, `kid_untrusted`).
 `GET …/license-keys` answers `{"names": [{"name", "keys": [{"kid", "sources": [{"kind":
 "publisher"|"upstream", "name"}], "builds": n}]}]}`. See [Licensing](licensing.md).
