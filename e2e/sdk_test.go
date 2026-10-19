@@ -60,10 +60,10 @@ func TestSDKKeyBlock(t *testing.T) {
 }
 
 // Spec 0012 phase 2: the pinned DuckDB runs kista_demo, a C++ extension built with the kista SDK
-// and the licence vectors' test key (sdk/cpp/test/extension), against kista serve with licensing
-// on. kista_demo_use(n) needs a licence (Check), reads the max_attached_sources limit and reports
-// an attach event with a sources counter (Usage::Send); kista_demo_use_async(n) reports it with
-// Usage::SendAsync.
+// and the licence vectors' test key (kista/sdk/cpp/test/extension in extension-ci-tools), against
+// kista serve with licensing on. kista_demo_use(n) needs a licence (Check), reads the
+// max_attached_sources limit and reports an attach event with a sources counter (Usage::Send);
+// kista_demo_use_async(n) reports it with Usage::SendAsync.
 func TestSDKLicense(t *testing.T) {
 	b := needBuild(t)
 	ext, ok := b.extensions["kista_demo"]
@@ -299,4 +299,67 @@ func TestSDKLicense(t *testing.T) {
 	res = offline(t, signWith(other, "lic-other", "pro", now-60, now+86400, ""))
 	mustOK(t, res[:len(res)-1])
 	mustFail(t, res[len(res)-1], "kid_untrusted")
+}
+
+// Spec 0022: the kista SDK in hugr-lab's extension-ci-tools at e2e/CI_TOOLS_PIN tests against
+// kista's own licence vectors: its copy (kista/sdk/cpp/test/vectors) is internal/license/testdata,
+// its test key is the vectors' key and src/keys.cpp names that key's fingerprint for TrustsTestKey,
+// and its untrusted key file is the vectors' untrusted key.
+func TestSDKFromCITools(t *testing.T) {
+	b := needBuild(t)
+	sdk := filepath.Join(b.dir, "ci-tools", "kista", "sdk", "cpp")
+	if _, err := os.Stat(sdk); err != nil {
+		t.Fatalf("the SDK's checkout (e2e/fetch-ci-tools.sh): %v", err)
+	}
+	read := func(p string) []byte {
+		t.Helper()
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	for _, f := range []string{"vectors.json", "test-only-2048.pem"} {
+		if string(read(filepath.Join(sdk, "test", "vectors", f))) != string(read(filepath.Join("..", "internal", "license", "testdata", f))) {
+			t.Errorf("the SDK's test/vectors/%s is not kista's internal/license/testdata/%s: run kista/scripts/kista-vectors.sh in extension-ci-tools", f, f)
+		}
+	}
+	var v struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.Unmarshal(read("../internal/license/testdata/vectors.json"), &v); err != nil {
+		t.Fatal(err)
+	}
+	pub := string(read(filepath.Join(sdk, "test", "keys", "test-only-2048.pub.pem")))
+	if len(v.Keys) != 1 || pub != v.Keys[0] {
+		t.Fatalf("the SDK's test key:\n%s\nthe vectors' key:\n%v", pub, v.Keys)
+	}
+	signKey, err := vectors.LoadKey("../internal/license/testdata", vectors.TrustedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kid := vectors.Kid(&signKey.PublicKey); !strings.Contains(string(read(filepath.Join(sdk, "src", "keys.cpp"))), `kTestKid = "`+kid+`"`) {
+		t.Errorf("the SDK's src/keys.cpp does not name the test key's fingerprint %s", kid)
+	}
+	// the SDK is tested there against the DuckDB kista is tested against here
+	pin := func(p string) string {
+		t.Helper()
+		for _, l := range strings.Split(string(read(p)), "\n") {
+			if strings.HasPrefix(l, "DUCKDB_COMMIT=") {
+				return l
+			}
+		}
+		t.Fatalf("%s names no DUCKDB_COMMIT", p)
+		return ""
+	}
+	if got, want := pin(filepath.Join(b.dir, "ci-tools", "kista", "DUCKDB_PIN")), pin("DUCKDB_PIN"); got != want {
+		t.Errorf("extension-ci-tools' kista/DUCKDB_PIN says %s, e2e/DUCKDB_PIN %s", got, want)
+	}
+	untrusted, err := vectors.LoadKey("../internal/license/testdata", vectors.UntrustedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want, _ := extfile.MarshalPublicKeyPEM(&untrusted.PublicKey); string(read(filepath.Join(sdk, "test", "keys", "test-only-untrusted-2048.pub.pem"))) != want {
+		t.Error("the SDK's untrusted key file is not the vectors' untrusted key")
+	}
 }

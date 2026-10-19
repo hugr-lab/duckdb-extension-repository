@@ -3,13 +3,14 @@ name: e2e
 # DuckDB at e2e/DUCKDB_PIN against signed repositories (spec 0002): on any server code change, since
 # the cases go through serving, tokens, publication and upstreams, not only the file format. Then the
 # Helm chart on kind (spec 0013) when the chart, the image or the file rules change, and nightly. The
-# C++ SDK (sdk/cpp, spec 0012) is built and tested against the same DuckDB build.
+# C++ SDK (spec 0012; in hugr-lab/extension-ci-tools at e2e/CI_TOOLS_PIN, spec 0022) is built and
+# tested against the same DuckDB build.
 on:
   pull_request:
-    paths: [internal/**, cmd/**, e2e/**, sdk/**, go.mod, go.sum, Makefile, Dockerfile, .dockerignore, deploy/helm/**, .github/workflows/e2e.yml]
+    paths: [internal/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, Dockerfile, .dockerignore, deploy/helm/**, .github/workflows/e2e.yml]
   push:
     branches: [main]
-    paths: [internal/**, cmd/**, e2e/**, sdk/**, go.mod, go.sum, Makefile, Dockerfile, .dockerignore, deploy/helm/**, .github/workflows/e2e.yml]
+    paths: [internal/**, cmd/**, e2e/**, go.mod, go.sum, Makefile, Dockerfile, .dockerignore, deploy/helm/**, .github/workflows/e2e.yml]
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -49,8 +50,9 @@ jobs:
         id: key
         run: |
           echo "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
-          # the build includes sdk/cpp's test extension (kista_demo): an SDK change rebuilds it, ccache warm
-          pin=$(cat e2e/DUCKDB_PIN e2e/build-duckdb.sh $(git ls-files sdk/cpp | sort) | openssl dgst -sha256 | awk '{print substr($NF,1,16)}')
+          # the build includes the SDK's test extension (kista_demo): a new extension-ci-tools pin rebuilds
+          # it, ccache warm
+          pin=$(cat e2e/DUCKDB_PIN e2e/CI_TOOLS_PIN e2e/build-duckdb.sh e2e/fetch-ci-tools.sh | openssl dgst -sha256 | awk '{print substr($NF,1,16)}')
           cc=$(cc --version | head -1 | openssl dgst -sha256 | awk '{print substr($NF,1,8)}')
           echo "build=duckdb-e2e-${{ runner.os }}-${{ runner.arch }}-$pin-$cc" >> "$GITHUB_OUTPUT"
           echo "ccache=ccache-e2e-${{ runner.os }}-${{ runner.arch }}-$pin" >> "$GITHUB_OUTPUT"

@@ -5,17 +5,18 @@
 #   lib/libduckdb.{so,dylib}  the library the runner links (build-runner.sh)
 #   include/duckdb.h          its C API header
 #   extensions/               loadable_extension_demo, demo_capi, httpfs, kista_demo (unsigned, as
-#                             built; kista_demo is sdk/cpp's test extension, with the SDK's test key)
-#   sdk/                      what the kista C++ SDK builds against (sdk/cpp, spec 0012): DuckDB's
-#                             headers (include/, third_party/), lib/libduckdb_mbedtls.a and libduckdb
+#                             built; kista_demo is the kista SDK's test extension, with its test key)
+#   sdk/                      what the kista C++ SDK builds against (spec 0012): DuckDB's headers
+#                             (include/, third_party/), lib/libduckdb_mbedtls.a and libduckdb
+#   ci-tools/                 hugr-lab's extension-ci-tools at e2e/CI_TOOLS_PIN: the kista C++ SDK
+#                             (kista/sdk/cpp, spec 0022), which kista_demo is built from
 # and, as working directories, src/ (the verified checkout) and build/ (the cmake tree). CI caches
 # only lib/, include/, extensions/ and sdk/.
 #
-# kista depends on DuckDB only: nothing here comes from another hugr-lab repository.
+# kista depends on DuckDB, and on the kista SDK in hugr-lab's extension-ci-tools, both pinned.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/.." && pwd)
 out=${1:?usage: build-duckdb.sh <out>}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
@@ -45,6 +46,9 @@ if ! grep -q "GIT_TAG $HTTPFS_COMMIT" "$src/.github/config/extensions/httpfs.cma
 	exit 1
 fi
 
+"$here/fetch-ci-tools.sh" "$out"
+sdk="$out/ci-tools/kista/sdk/cpp"
+
 openssl_root=""
 if [ "$(uname)" = Darwin ] && command -v brew >/dev/null; then
 	openssl_root=$(brew --prefix openssl@3)
@@ -62,7 +66,7 @@ cmake -S "$src" -B "$build" -G Ninja \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DSTATICALLY_LINK_EXTENSIONS=core_functions \
 	-DBUILD_EXTENSIONS=demo_capi \
-	-DDUCKDB_EXTENSION_CONFIGS="$src/.github/config/extensions/httpfs.cmake;$root/sdk/cpp/test/extension/config.cmake" \
+	-DDUCKDB_EXTENSION_CONFIGS="$src/.github/config/extensions/httpfs.cmake;$sdk/test/extension/config.cmake" \
 	-DBUILD_UNITTESTS=ON -DBUILD_SHELL=OFF \
 	${openssl_root:+-DOPENSSL_ROOT_DIR="$openssl_root"} \
 	${launcher[@]+"${launcher[@]}"}

@@ -311,7 +311,9 @@ POST <upstream prefix>/-/usage     Authorization: Bearer <the credential's token
 
 ## The C++ SDK
 
-A C++ DuckDB extension embeds the SDK (`sdk/cpp` in kista's repository, Apache-2.0) to check its
+A C++ DuckDB extension embeds the SDK (`kista/sdk/cpp` in
+[hugr-lab/extension-ci-tools](https://github.com/hugr-lab/extension-ci-tools), the developer kit,
+Apache-2.0; see [Development](development.md#the-developer-kit-for-extensions)) to check its
 licence and report its usage:
 
 ```cpp
