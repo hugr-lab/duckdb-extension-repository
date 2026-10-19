@@ -272,6 +272,9 @@ func (t *Tx) DeleteUpstream(ctx context.Context, u Upstream, expected int64) err
 			return err
 		}
 	}
+	if err := t.DeleteLicenseKeysOf(ctx, KeySourceUpstream, u.ID); err != nil {
+		return err // spec 0021: the keys it brought go with it
+	}
 	return t.cas(ctx, "DELETE FROM upstreams WHERE id = ? AND version = ?", []any{u.ID, u.Version}, func() {})
 }
 

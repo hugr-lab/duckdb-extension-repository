@@ -658,6 +658,9 @@ func init() {
 			http.MethodDelete: m(pathAdmin, (*Handler).removePublisher)}},
 		{"tenants/{t}/publishers/{name}/github", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listGitHub),
 			http.MethodPost: mb(pathAdmin, (*Handler).addGitHub)}},
+		// spec 0021: marking a publisher a source of licence keys (server administrators)
+		{"tenants/{t}/publishers/{name}/license-keys", map[string]rule{http.MethodPost: m(serverAdmin, publisherLicenseKeys(true)),
+			http.MethodDelete: m(serverAdmin, publisherLicenseKeys(false))}},
 		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listAPIKeys),
 			http.MethodPost: mb(pathAdmin, (*Handler).addAPIKey)}},
 		{"tenants/{t}/publishers/{name}/keys/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeAPIKey)}},
@@ -684,8 +687,9 @@ func init() {
 		{"tenants/{t}/upstreams/{name}/usage", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).usageForward),
 			http.MethodPost: mb(pathAdmin, (*Handler).setUsage)}},
 		{"credentials", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listCredentials)}},
-		// spec 0012: licences (tenant administrators), their relay per upstream, the trusted keys
-		{"licenses/keys", map[string]rule{http.MethodGet: m(serverAdmin, licenseRoute((*Handler).licenseKeys))}},
+		// spec 0012: licences (tenant administrators), their relay per upstream; spec 0021: the keys
+		{"tenants/{t}/license-keys", map[string]rule{http.MethodGet: m(pathAdmin, licenseRoute((*Handler).licenseKeys))}},
+		{"tenants/{t}/license-keys/{name}", map[string]rule{http.MethodGet: m(pathAdmin, licenseRoute((*Handler).licenseKeys))}},
 		{"tenants/{t}/licenses", map[string]rule{http.MethodGet: m(pathAdmin, licenseRoute((*Handler).listLicenses)),
 			http.MethodPost: {access: pathAdmin, manage: true, raw: true, handle: licenseRoute((*Handler).importLicense)}}},
 		{"tenants/{t}/licenses/{name}", map[string]rule{http.MethodGet: m(pathAdmin, licenseRoute((*Handler).getLicense)),

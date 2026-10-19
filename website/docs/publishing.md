@@ -401,6 +401,33 @@ kista admin -config /etc/kista/kista.yaml publisher key add acme ci -expires 90d
 
 Use it as the Bearer token: `-H "Authorization: Bearer $KISTA_API_KEY"`.
 
+### Sources of licence keys
+
+A licensed extension's build declares its licence keys in a key block (see
+[Licensing](licensing.md#the-keys-a-licence-verifies-against)). kista records them only when a
+trusted source brings the build. A publisher is one when a **server administrator marks** it, for
+example the build pipeline of the issuer that signs the extension's licences:
+
+```bash
+kista admin -config /etc/kista/kista.yaml publisher license-keys acme tresor-ci on   # off unmarks it
+```
+
+Over the API: `POST` (mark) and `DELETE` (unmark) `/api/v1/tenants/{t}/publishers/{name}/license-keys`,
+server administrators only. Each records a `publisher.change` event.
+
+- **Its publications record keys.** Each publication by the marked publisher records the keys the
+  body declares, including a publication of a body that is already released (from an unmarked path,
+  say). The publisher must hold `publish` on the name itself: another publisher matched by the same
+  credential does not lend it its mark.
+- **A malformed key block is refused**: `400`, with `license_keys` in the detail. `kista ext
+  inspect <file>` shows what kista reads.
+- **Its credentials and grants are the server administrator's.** While it is marked, adding or
+  removing its GitHub workflows, API keys and grants is refused to a tenant administrator (`404`).
+  A tenant administrator can still remove the publisher, which drops the keys it brought.
+- **Unmarking** keeps the keys already recorded.
+
+Publications by any other publisher, by a principal, and `release add` record no keys.
+
 ## Provenance in the index
 
 Every release has an `origin`: `admin` (the CLI), `publication`, `promotion` or `upstream`. Its

@@ -63,7 +63,7 @@ func (s *Service) Sync(ctx context.Context, a authz.Actor, tenant, name string) 
 	if err != nil {
 		return err
 	}
-	if len(s.Keys) == 0 {
+	if !s.Enabled {
 		return ErrOff
 	}
 	var u store.Upstream
@@ -131,7 +131,7 @@ func (s *Service) RunUpstream(ctx context.Context, upstreamID string) (Result, e
 	if t.State != store.TenantActive {
 		return res, nil
 	}
-	if len(s.Keys) == 0 {
+	if !s.Enabled {
 		res.Error = ErrOff.Error()
 	} else if !relays(u) || u.State != store.UpstreamActive {
 		res.Error = ErrUpstream.Error()
@@ -219,7 +219,7 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 	}
 	var ok []item
 	for _, token := range tokens {
-		tok, err := s.check(token)
+		tok, err := s.parse(token)
 		if err != nil {
 			rule := "not_in_force"
 			var le *license.Error
@@ -261,6 +261,20 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 					Reason: "the upstream supplies no release of " + name + " here"})
 				continue
 			}
+			// spec 0021: only the keys this upstream brought, on live builds of the name
+			keys, err := tx.LiveLicenseKeys(ctx, t.ID, name, store.KeySourceUpstream, u.ID)
+			if err != nil {
+				return err
+			}
+			if err := s.verify(it.tok, keys, " from this upstream"); err != nil {
+				rule := license.RuleKeyUntrusted
+				var le *license.Error
+				if errors.As(err, &le) {
+					rule = le.Rule
+				}
+				refused = append(refused, Refusal{Name: name, ID: it.tok.ID, Rule: rule, Reason: err.Error()})
+				continue
+			}
 			keep[name] = true
 			l := record(it.tok, t.ID, it.token, actor)
 			l.Source, l.UpstreamID = store.LicenseUpstream, u.ID
@@ -273,7 +287,7 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 			case old.Token == it.token:
 				counts["unchanged"]++
 				continue
-			case old.UpstreamID == u.ID && l.IssuedAt > old.IssuedAt || l.ExpiresAt > old.ExpiresAt || old.GraceUntil <= s.Store.Now().Unix():
+			case replaces(old, l, s.Store.Now().Unix()):
 				l.Visibility = old.Visibility
 			default:
 				refused = append(refused, Refusal{Name: name, ID: it.tok.ID, Rule: "superseded",
@@ -318,6 +332,20 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 		res.refuse(r.Name, r.ID, r.Rule, r.Reason)
 	}
 	return nil
+}
+
+// replaces reports whether a relayed licence l replaces the stored one (spec 0012's rules, with spec
+// 0021's condition): once the stored one's grace has ended; otherwise when l is a later licence from
+// the same upstream or lasts longer, and, from another source, is signed with the same key.
+func replaces(old, l store.License, now int64) bool {
+	if old.GraceUntil <= now {
+		return true
+	}
+	same := old.Source == store.LicenseUpstream && old.UpstreamID == l.UpstreamID
+	if !same && old.Key != l.Key {
+		return false
+	}
+	return same && l.IssuedAt > old.IssuedAt || l.ExpiresAt > old.ExpiresAt
 }
 
 // ExpireOnce removes, across tenants, the licences whose grace has ended (license.remove, reason
@@ -384,7 +412,7 @@ func (r *Runner) Once(ctx context.Context) {
 
 func (r *Runner) poll(ctx context.Context) {
 	s := r.Service
-	if len(s.Keys) == 0 {
+	if !s.Enabled {
 		return
 	}
 	r.mu.Lock()

@@ -1,6 +1,7 @@
 package upstream_test
 
 import (
+	"bytes"
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
@@ -22,11 +23,12 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
 
-// licensor signs licences with the vectors' test-only key, as an issuer would.
+// licensor signs licences with the vectors' test-only key, as an issuer would; block is the key
+// block its builds carry (spec 0021).
 type licensor struct {
-	key  *rsa.PrivateKey
-	keys license.Keys
-	n    int
+	key   *rsa.PrivateKey
+	block []byte
+	n     int
 }
 
 func newLicensor(t *testing.T) *licensor {
@@ -39,11 +41,11 @@ func newLicensor(t *testing.T) *licensor {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ks, err := license.ParseKeys([]string{pemKey})
+	block, err := extfile.EncodeLicenseKeys(pemKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &licensor{key: k, keys: ks}
+	return &licensor{key: k, block: block}
 }
 
 // sign is a licence for ext at plan, issued at iat and expiring at exp (seconds).
@@ -72,7 +74,9 @@ func TestLicenseRelay(t *testing.T) {
 			if err := os.WriteFile(tokenFile, []byte("T-sub\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			en.repo.put("v2.0.0", "linux_amd64", "tresor", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "tresor_duckdb_cpp_init"))
+			lic := newLicensor(t)
+			// the build declares the licensor's key: the mirror run records it for the upstream (spec 0021)
+			en.repo.put("v2.0.0", "linux_amd64", "tresor", signedWith(t, en.key, cpp("1.0", "v2.0.0"), lic.block, "tresor_duckdb_cpp_init"))
 			sp := en.spec(store.UpstreamEntry{Name: "tresor"})
 			sp.Credential = "sub"
 			u, err := en.up.Add(ctx, admin, "acme", sp)
@@ -82,8 +86,7 @@ func TestLicenseRelay(t *testing.T) {
 			if r := en.sync(t, false); r.Counts[store.CellReleased] != 1 {
 				t.Fatalf("a run: %+v", r)
 			}
-			lic := newLicensor(t)
-			svc := &licenses.Service{Store: en.st, Authz: authz.ServerAdmin{}, Keys: lic.keys, Fetch: en.up.Fetch,
+			svc := &licenses.Service{Store: en.st, Authz: authz.ServerAdmin{}, Enabled: true, Fetch: en.up.Fetch,
 				Credentials: en.up.Credentials, Interval: time.Hour, Log: slog.New(slog.DiscardHandler)}
 			now := en.st.Now().Unix()
 			day := int64(24 * 3600)
@@ -282,13 +285,29 @@ func TestLicenseImport(t *testing.T) {
 		t.Run(e.Name, func(t *testing.T) {
 			en := newEnv(t, e)
 			lic := newLicensor(t)
-			svc := &licenses.Service{Store: en.st, Authz: authz.ServerAdmin{}, Keys: lic.keys, Log: slog.New(slog.DiscardHandler)}
+			svc := &licenses.Service{Store: en.st, Authz: authz.ServerAdmin{}, Enabled: true, Log: slog.New(slog.DiscardHandler)}
 			now := en.st.Now().Unix()
 			day := int64(24 * 3600)
 			ok := lic.sign("tresor", "pro", now-60, now+day)
 			off := &licenses.Service{Store: en.st, Authz: authz.ServerAdmin{}}
 			if _, err := off.Import(ctx, admin, "acme", ok, licenses.Create); !errors.Is(err, licenses.ErrOff) {
+				t.Fatalf("licensing off: %v", err)
+			}
+			// spec 0021: a name with no live build declaring a key takes no licence
+			if _, err := svc.Import(ctx, admin, "acme", ok, licenses.Create); !errors.Is(err, license.ErrUntrustedKey) ||
+				!strings.Contains(err.Error(), "no live build of tresor declares a licence key") {
 				t.Fatalf("no keys: %v", err)
+			}
+			if _, _, err := en.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(signedWith(t, nil, cpp("1.0", "v2.0.0"), lic.block,
+				"tresor_duckdb_cpp_init")), release.AddOptions{Name: "tresor"}); err != nil {
+				t.Fatal(err)
+			}
+			// an administrator's add is no trusted source: still no key
+			if _, err := svc.Import(ctx, admin, "acme", ok, licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
+				t.Fatalf("an administrator's add recorded keys: %v", err)
+			}
+			if _, err := storetest.LicenseKey(ctx, en.st, en.tenantID(t), "tresor", store.KeySourcePublisher, "p", &lic.key.PublicKey); err != nil {
+				t.Fatal(err)
 			}
 			if _, err := svc.Import(ctx, admin, "acme", lic.sign("tresor", "pro", now-40*day, now-30*day), licenses.Create); !errors.Is(err, licenses.ErrNotLive) {
 				t.Fatalf("an expired licence: %v", err)

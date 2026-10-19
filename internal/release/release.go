@@ -111,6 +111,9 @@ type AddOptions struct {
 type Publication struct {
 	Version, Platform string
 	Provenance        string // JSON, recorded on the release
+	// KeySources are the ids of the matched publishers marked as sources of licence keys (spec
+	// 0021). Those that hold publish on the name themselves record the build's keys.
+	KeySources []string
 }
 
 func (o AddOptions) visibility() string {
@@ -168,6 +171,9 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		if !res.Reserved {
 			it.recheck = s.reservedCheck(a, authz.VerbPublish, res)
 		}
+		if err := s.publisherKeys(ctx, a, res, p.KeySources, sp.File(), &it); err != nil {
+			return store.Release{}, false, err
+		}
 	}
 	if !o.Unchecked {
 		if err := CheckFile(sp.File(), o.Name); err != nil {
@@ -203,9 +209,16 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 				return store.Release{}, false, err
 			}
 		}
-		if it.b.Checked { // publishing the same body with the checks marks its Build checked
+		// publishing the same body with the checks marks its Build checked, and a marked publisher's
+		// publication records its keys (spec 0021)
+		if it.b.Checked || len(it.keySources) > 0 {
 			bb := it.b
-			if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &bb) }); err != nil {
+			if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+				if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
+					return err
+				}
+				return recordKeys(ctx, tx, bb, it)
+			}); err != nil {
 				return store.Release{}, false, err
 			}
 		}
@@ -244,6 +257,10 @@ type item struct {
 	notCurrent         bool
 	origin, provenance string
 	originSignature    []byte // an upstream release's (spec 0009)
+	// keys are the build's licence keys, recorded for each of keySources, of kind keyKind (spec 0021)
+	keys       []store.LicenseKey
+	keyKind    string
+	keySources []string
 	// recheck authorizes again as for a reserved name; insert calls it under the locks when an
 	// upstream of the tenant provides the name (spec 0009). Nil: no check.
 	recheck func(context.Context) error
@@ -795,7 +812,12 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 		// two intakes of one body race on the build's insert; the loser finds the winner's build
 		for try := 0; ; try++ {
 			bb := it.b
-			err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &bb) })
+			err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+				if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
+					return err
+				}
+				return recordKeys(ctx, tx, bb, *it)
+			})
 			if err == nil {
 				it.b = bb
 				break

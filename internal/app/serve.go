@@ -95,6 +95,10 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if len(cfg.Licenses.Keys) > 0 { // spec 0021: refused in the next release
+		log.Warn("serve: licenses.keys is ignored: licences verify against the keys in the extensions' builds (spec 0021); remove it",
+			"keys", len(cfg.Licenses.Keys))
+	}
 	// spec 0004: a vault source's keys are software keys (acknowledged with software_keys outside dev), said at every start
 	for _, s := range cfg.Signers.Sources {
 		if s.Kind == "vault" {
@@ -286,8 +290,8 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	fw := &usage.Forwarder{Store: st, Post: eg, Credentials: svc.Upstreams.Credentials, Holder: instance, Log: log}
 	wg.Add(1)
 	go func() { defer wg.Done(); fw.Run(bg) }()
-	if len(svc.Licenses.Keys) > 0 {
-		log.Info("serve: licensing on", "keys", svc.Licenses.KeyFingerprints())
+	if !svc.Licenses.Enabled {
+		log.Info("serve: licensing off (licenses.enabled: false)")
 	}
 	// deleting tenants (spec 0019): their rows in batches, then their tombstones
 	reaper := &tenantsvc.Reaper{Store: st, Holder: host + "/" + store.NewID(), Log: log}

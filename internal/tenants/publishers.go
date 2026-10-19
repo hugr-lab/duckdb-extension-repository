@@ -52,6 +52,37 @@ func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, 
 	})
 }
 
+// SetPublisherLicenseKeys marks a publisher a trusted source of licence keys, or unmarks it (spec
+// 0021): a server administrator's act. While marked, its credentials and grants are the server
+// administrator's to change; unmarking keeps the keys it brought.
+func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, tenant, name string, on bool) (store.Publisher, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
+		return store.Publisher{}, err
+	}
+	t, err := s.Store.GetTenant(ctx, tenant)
+	if err != nil {
+		return store.Publisher{}, err
+	}
+	var p store.Publisher
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
+		if p, err = tx.SetPublisherLicenseKeys(ctx, t.ID, name, on); err != nil {
+			return err
+		}
+		return tx.Event(ctx, t.ID, a.String(), "publisher.change", "publisher:"+p.Name,
+			map[string]any{"name": p.Name, "license_keys": on})
+	})
+	return p, err
+}
+
+// marked refuses a change to a marked publisher's credentials or grants unless a server
+// administrator makes it (spec 0021): a tenant administrator cannot point it at builds of their own.
+func (s *AuthAdmin) marked(ctx context.Context, a authz.Actor, p store.Publisher) error {
+	if !p.LicenseKeys {
+		return nil
+	}
+	return s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server)
+}
+
 // AddGitHubCredential binds a publisher to GitHub Actions runs of a provider.
 func (s *AuthAdmin) AddGitHubCredential(ctx context.Context, a authz.Actor, tenant, publisher string, c store.GitHubCredential) (store.GitHubCredential, error) {
 	t, err := s.tenant(ctx, a, tenant)
@@ -77,6 +108,9 @@ func (s *AuthAdmin) AddGitHubCredential(ctx context.Context, a authz.Actor, tena
 		if err != nil {
 			return err
 		}
+		if err := s.marked(ctx, a, p); err != nil {
+			return err
+		}
 		c.PublisherID = p.ID
 		if err := tx.InsertGitHubCredential(ctx, t.ID, &c); err != nil {
 			return err
@@ -97,6 +131,9 @@ func (s *AuthAdmin) RemoveGitHubCredential(ctx context.Context, a authz.Actor, t
 	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		p, err := tx.GetPublisher(ctx, t.ID, publisher)
 		if err != nil {
+			return err
+		}
+		if err := s.marked(ctx, a, p); err != nil {
 			return err
 		}
 		if err := tx.DeleteGitHubCredential(ctx, t.ID, p.ID, id); err != nil {
@@ -131,6 +168,9 @@ func (s *AuthAdmin) AddAPIKey(ctx context.Context, a authz.Actor, tenant, publis
 		if err != nil {
 			return err
 		}
+		if err := s.marked(ctx, a, p); err != nil {
+			return err
+		}
 		k.PublisherID = p.ID
 		if err := tx.InsertAPIKey(ctx, &k); err != nil {
 			return err
@@ -162,6 +202,9 @@ func (s *AuthAdmin) RemoveAPIKey(ctx context.Context, a authz.Actor, tenant, pub
 	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		p, err := tx.GetPublisher(ctx, t.ID, publisher)
 		if err != nil {
+			return err
+		}
+		if err := s.marked(ctx, a, p); err != nil {
 			return err
 		}
 		if err := tx.DeleteAPIKey(ctx, p.ID, id); err != nil {

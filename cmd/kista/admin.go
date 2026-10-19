@@ -113,6 +113,8 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                   [-private] [-not-current]               release Builds of another channel here
   publisher add|remove <tenant> <name>          an identity that only publishes and promotes
   publisher list <tenant>
+  publisher license-keys <tenant> <name> on|off  mark it a source of licence keys (spec 0021): its publications
+                   record the builds' keys; its credentials and grants are then a server administrator's
   publisher github add <tenant> <name> -owner-id <id> -repository-id <id> -workflow <owner/repo/path>
                    [-ref <pattern>] [-environment <env>] [-provider github]
   publisher github remove <tenant> <name> <credential-id>
@@ -133,13 +135,13 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved]
   upstream extension remove <tenant> <name> <extension>
   upstream platform|key add|remove <tenant> <name> <platform|fingerprint>
-  license keys                                    the trusted licence keys (licenses.keys), by fingerprint
+  license keys <tenant> [<name>]                  the licence keys of the tenant's live builds, by name and source
   license list <tenant>
   license show|token <tenant> <name>              a licence's claims and state, or its token as received
   license import <tenant> <file|-> [-replace]     store a licence (a compact JWS) under the extension it names;
                                                   -replace replaces the licence stored for that extension
   license remove|public|private <tenant> <name>
-  license verify <file|-> [-key <pem>]            check a licence offline against the trusted keys or the given one
+  license verify <file|-> -key <pem>              check a licence offline against a public key
   events list [-server] [-kind <k>] [-subject <prefix>] [-actor <a>] [-since <RFC 3339>] [-limit <n>]
               [-follow] [-format table|jsonl] [<tenant>]          the event buffer (spec 0010), newest first
   shadow list <tenant>                            core names the tenant replaced: passthrough channels do not serve them
@@ -1265,19 +1267,28 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 			return err
 		}
 		a.logf("publisher remove %s %s", pos[0], pos[1])
+	case sub == "license-keys" && len(pos) == 3 && (pos[2] == "on" || pos[2] == "off"):
+		if _, err := a.svc.Auth.SetPublisherLicenseKeys(ctx, a.actor, pos[0], pos[1], pos[2] == "on"); err != nil {
+			return err
+		}
+		a.logf("publisher license-keys %s %s %s", pos[0], pos[1], pos[2])
 	case sub == "list" && len(pos) == 1:
 		ps, err := a.svc.Auth.ListPublishers(ctx, a.actor, pos[0])
 		if err != nil {
 			return err
 		}
-		a.table("PUBLISHER\tCREDENTIAL\tPROVIDER\tOWNER ID\tREPOSITORY ID\tWORKFLOW\tREF\tENVIRONMENT", func(w io.Writer) {
+		a.table("PUBLISHER\tLICENSE KEYS\tCREDENTIAL\tPROVIDER\tOWNER ID\tREPOSITORY ID\tWORKFLOW\tREF\tENVIRONMENT", func(w io.Writer) {
 			for _, p := range ps {
+				mark := "-"
+				if p.LicenseKeys {
+					mark = "yes"
+				}
 				if len(p.GitHub) == 0 {
-					fmt.Fprintf(w, "%s\t-\t\t\t\t\t\t\n", p.Name)
+					fmt.Fprintf(w, "%s\t%s\t-\t\t\t\t\t\t\n", p.Name, mark)
 				}
 				for _, g := range p.GitHub {
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, g.ID, g.Provider, g.OwnerID, g.RepositoryID, g.Workflow,
-						g.Ref, g.Environment)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, mark, g.ID, g.Provider, g.OwnerID, g.RepositoryID,
+						g.Workflow, g.Ref, g.Environment)
 				}
 			}
 		})

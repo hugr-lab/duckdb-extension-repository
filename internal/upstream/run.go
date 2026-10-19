@@ -491,6 +491,9 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 			b, _ := json.Marshal(p)
 			return string(b)
 		}}
+	if u.Kind == store.UpstreamRepo {
+		in.KeySource = u.ID // spec 0021: a repository upstream is a trusted source of licence keys
+	}
 	got, err := s.Releases.Ingest(ctx, a, sc, sp, in)
 	rec.BodyHash = got.Hash
 	switch {

@@ -25,6 +25,9 @@ type Ingest struct {
 	Visibility                    string
 	DryRun                        bool   // check only: nothing is committed or released
 	Bundle                        string // the bundle's manifest id, for the event (spec 0014)
+	// KeySource is the upstream's id when it is a trusted source of licence keys (a repository
+	// upstream, spec 0021): a new release records the build's keys for it. "": none.
+	KeySource string
 	// Provenance makes the release's provenance from the fingerprint of the key that verified.
 	Provenance func(key string) string
 }
@@ -81,6 +84,9 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	it := item{b: b, visibility: in.Visibility, origin: store.OriginUpstream, originSignature: f.Signature}
 	if in.Provenance != nil {
 		it.provenance = in.Provenance(key)
+	}
+	if in.KeySource != "" && f.LicenseKeys.Err == nil && len(f.LicenseKeys.Keys) > 0 {
+		it.keys, it.keyKind, it.keySources = licenseKeys(f), store.KeySourceUpstream, []string{in.KeySource}
 	}
 	// the slot and the shadow before the body is stored (both are checked again under the lock)
 	var existing *store.Release

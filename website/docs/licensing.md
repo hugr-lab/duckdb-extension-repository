@@ -7,10 +7,11 @@ title: Licensing
 A paid extension checks, on the user's machine, that its organisation holds a **licence** for it.
 kista keeps the organisation's licences and serves them to its users from the channel they install
 from. kista issues nothing: a licence is signed by the issuer that sells the extension (Enterest),
-and kista stores only licences that verify against the issuer keys its operator trusts.
+and kista stores only licences that verify against a key the extension's own builds declare.
 
 The design reasoning is in
-[spec 0012](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0012-licensing/spec.md).
+[spec 0012](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0012-licensing/spec.md)
+and, for the keys, [spec 0021](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0021-licence-keys/spec.md).
 This page covers what kista does today: licences in a tenant, the relay from upstreams, the routes
 an extension's SDK reads, the usage reports it sends, the daily usage forwarded upstream, and the C++
 SDK an extension embeds.
@@ -27,31 +28,55 @@ naming:
 - when it was issued, when it **expires**, and a **grace** period after that (7 days unless the
   licence says otherwise, at most 90).
 
-`kista admin license verify <file> [-key <pem>]` prints a licence's claims and status offline.
+`kista admin license verify <file> -key <pem>` prints a licence's claims and status offline, checked
+against the given public key.
 
-## Turning licensing on
+## The keys a licence verifies against
 
-Licensing is off until the server trusts at least one issuer key:
+Each build of a licensed extension carries its licence keys in a **key block**, written by the SDK
+at build time (`kista_sdk_license_keys`; see the SDK's README). The extension trusts those keys
+alone. `kista ext inspect <file>` prints them.
+
+kista reads the key block from every body it takes in, but a string in a binary proves nothing by
+itself. It **records** a build's keys only when a trusted source brought the body:
+
+| Source | When |
+| --- | --- |
+| a publisher a server administrator **marked** as a source of licence keys | its publication carries the body, including a body already released |
+| a `repository` upstream | a mirror run or a pull-through downloads the body, or a bundle import brings it |
+
+Nothing else records keys: DuckDB's core and community upstreams, an unmarked publisher, a
+principal, `release add`, and an upstream run that finds the body unchanged or gets a `304`.
+
+- **Marking a publisher** is a server administrator's act: `kista admin publisher license-keys
+  <tenant> <name> on|off`, or `POST`/`DELETE /api/v1/tenants/{t}/publishers/{name}/license-keys`.
+  While marked, its API keys, GitHub workflows and grants are changed by a server administrator only;
+  a tenant administrator can still remove it. See [Publishing](publishing.md#sources-of-licence-keys).
+- **A malformed key block** in a marked publisher's publication is refused (`400`, `license_keys`).
+- **Removing a source** (the publisher, or the upstream) drops the keys it brought. Unmarking a
+  publisher keeps them.
+
+A licence counts only against the keys of **live** builds of its extension: a release that is
+`active` or `deprecated`, in a signed channel, whose body is not blocked. Yanking or blocking every
+build that declares a key takes that key out.
+
+`kista admin license keys <tenant> [<name>]` and `GET /api/v1/tenants/{t}/license-keys[/{name}]`
+list each name's keys, the sources that brought each, and how many live builds declare it.
+
+## On and off
+
+Licensing is on by default:
 
 ```yaml
 licenses:
-  keys:
-    - |
-      -----BEGIN PUBLIC KEY-----
-      …the issuer's licence key, as it publishes it…
-      -----END PUBLIC KEY-----
-  refresh: 6h
+  enabled: true        # false: the licence routes answer as a missing path; imports and relays are refused
+  refuse_keys: []      # key ids (sha256:…) that count nowhere: a leaked key, while builds declaring it are live
+  refresh: 6h          # the relay's interval
 ```
 
-The keys are configuration, never data: a tenant administrator cannot add one. Nothing defaults to
-any issuer's keys; take them from your issuer. `kista admin license keys` and
-`GET /api/v1/licenses/keys` (server administrators) list the trusted fingerprints, and the start-up
-log names them. Without keys, imports and relays are refused, and no licence is served.
-
-Trusting a key in kista does not make an extension trust it: each build of an extension names its
-licence keys (`kista_sdk_license_keys`; see the SDK's README), and trusts those alone. A licence
-signed by any other key is stored by kista and refused by the extension. `kista ext inspect <file>`
-prints the keys a binary names.
+These settings are file-only. A key in `refuse_keys` is never accepted on import or relay and never
+served. `licenses.keys`, the trusted keys of earlier releases, is accepted and ignored with a warning
+at start; the next release refuses it.
 
 ## Licences in a tenant
 
@@ -66,18 +91,23 @@ kista admin license import acme tresor.lic -replace    # replaces the one stored
 
 Over the API the token is the body of `POST /api/v1/tenants/{t}/licenses`; replacing a stored
 licence needs `If-Match` with its ETag. The licence must verify and be in force (valid, or in its
-grace) when it is imported.
+grace) when it is imported, against a key of a live build of its extension, from any source,
+anywhere in the tenant. A name with no such key takes no licence (`kid_untrusted`).
 
 **The relay from an upstream.** A `repository` upstream with a credential
 that is not paused ([private upstreams](upstreams.md#private-upstreams)) is asked for the licences its credential holds, every
 `licenses.refresh` (6 hours by default), at `<upstream prefix>/-/licenses`. For each licence:
 
-- it must verify and be in force;
+- it must be in force;
 - the upstream must supply that extension: it brought a build of it into its channel since it was
   added, and a live release of that build is in this tenant (a promotion releases the same build).
-  An upstream does not hand out licences for names it does not supply;
-- it replaces the stored licence when it is newer from the same upstream, or lasts longer; a
-  shorter licence from elsewhere leaves the stored one in place.
+  An upstream does not hand out licences for names it does not supply (`not_supplied`);
+- it must verify against a key **this upstream** brought, on a live build of the extension
+  (`kid_untrusted`);
+- it replaces the stored licence when it is newer from the same upstream, or lasts longer. From
+  another source, it replaces it only when both are signed with the same key, or the stored one's
+  grace has ended. So an upstream added in another channel cannot displace a working licence with
+  one signed by a key of its own.
 
 A licence the upstream stops listing is removed (revoked). A `404` from the upstream means it
 serves no licences and changes nothing, and so does a failure (the credential refused with `401`
@@ -93,9 +123,9 @@ the API has `GET` and `POST …/upstreams/{name}/licenses[/sync]`.
 holder, source, visibility, expiry and status (one expiring within 30 days, or in its grace, is
 flagged); a licence's claims, limits and the fingerprint of the key that signed it; importing a file
 (a licence already stored for the extension is replaced after a confirmation), making one public or
-private, and removing one; and each relaying upstream's last run with its refusals, and **Sync now**.
-kista cannot tell which keys an extension's SDK trusts: the page says that a licence signed by a key
-other than the extension's issuer's is stored here and refused by the extension.
+private, and removing one; the **licence keys** of the tenant's live builds, with their sources; and
+each relaying upstream's last run with its refusals, and **Sync now**. A licence whose key no live
+build declares is flagged: it is not served.
 
 ### A changed plan
 
@@ -119,8 +149,11 @@ licences on to its regional or air-gapped kistas.
 
 Who gets a licence:
 
+- a licence is served in a channel only while a live (active or deprecated) release there declares
+  the key that signed it. A licence that no live build in the channel declares stays stored, and
+  is not served there;
 - a **private** licence (the default) goes to a token holding `install` on the extension in that
-  channel, where a live (active or deprecated) release of it exists;
+  channel;
 - a **public** licence (`kista admin license public <tenant> <name>`) also goes to whoever is served a
   public release of the extension there: for a kista that serves its own users without tokens, on
   an internal network. Anyone who reaches the channel can then copy it;

@@ -10,17 +10,16 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
 
-// licenseEnv is an env with licensing on: the vectors' test key trusted, and licences signed
-// with it imported for the names given.
+// licenseEnv is an env with licensing on, and sign, which signs a licence for a name with the
+// vectors' test key after recording that key on the name's builds (spec 0021).
 func licenseEnv(t *testing.T, scheme string) (*env, *fakeIDP, *tenants.AuthAdmin, *licenses.Service, func(ext string) string) {
 	t.Helper()
 	en, idp, adm := authEnv(t, scheme)
@@ -28,16 +27,18 @@ func licenseEnv(t *testing.T, scheme string) (*env, *fakeIDP, *tenants.AuthAdmin
 	if err != nil {
 		t.Fatal(err)
 	}
-	pemKey, _ := extfile.MarshalPublicKeyPEM(&k.PublicKey)
-	ks, err := license.ParseKeys([]string{pemKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	svc := &licenses.Service{Store: en.st, Authz: authz.ServerAdmin{}, Keys: ks, Log: slog.New(slog.DiscardHandler)}
+	svc := &licenses.Service{Store: en.st, Authz: authz.ServerAdmin{}, Enabled: true, Log: slog.New(slog.DiscardHandler)}
 	en.h.o.Licenses = licenses.Served{Service: svc}
 	n := 0
 	sign := func(ext string) string {
 		n++
+		tn, err := en.st.GetTenant(ctx, "acme")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := storetest.LicenseKey(ctx, en.st, tn.ID, ext, store.KeySourcePublisher, "ci", &k.PublicKey); err != nil {
+			t.Fatal(err)
+		}
 		now := time.Now().Unix()
 		return vectors.Sign(k, vectors.Header(k), fmt.Sprintf(
 			`{"v":1,"iss":"https://issuer.example","jti":"lic-%d","sub":"acme","ext":%q,"plan":"pro","iat":%d,"exp":%d}`, n, ext, now-60, now+86400))
@@ -49,7 +50,7 @@ func licenseEnv(t *testing.T, scheme string) (*env, *fakeIDP, *tenants.AuthAdmin
 // have a licence exactly as a missing path.
 func TestLicenseRoutes(t *testing.T) {
 	en, idp, adm, svc, sign := licenseEnv(t, "https")
-	en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
+	tresor := en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
 	secret := en.add(t, ext(t, 2000, 2, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "secret", Private: true})
 	en.add(t, ext(t, 2000, 3, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "nolic"})
 	tresorTok, secretTok := sign("tresor"), sign("secret")
@@ -127,12 +128,31 @@ func TestLicenseRoutes(t *testing.T) {
 	}
 	same("a yanked release's licence", get(lic+"secret", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
 
-	// a passthrough channel has none; licensing off serves none
+	// a passthrough channel has none; a refused key, or licensing off, serves none
 	if c := get("/acme/mirror/-/licenses/tresor", nil); c.status != 404 {
 		t.Fatalf("passthrough: %d", c.status)
 	}
-	svc.Keys = nil
+	v, err := svc.Get(ctx, admin, "acme", "tresor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Refuse = map[string]bool{v.Key: true}
+	same("a refused key", get(lic+"tresor", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
+	svc.Refuse = nil
+	svc.Enabled = false
 	same("licensing off", get(lic+"tresor", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
+	svc.Enabled = true
+
+	// spec 0021: served only where a live build declares its key: tresor 1.0 is yanked, and 1.1
+	// declares none
+	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", tresor.ID, release.Yank, 0); err != nil {
+		t.Fatal(err)
+	}
+	en.add(t, ext(t, 2000, 4, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor"})
+	same("no live build declares the key", get(lic+"tresor", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
+	if _, err := svc.Get(ctx, admin, "acme", "tresor"); err != nil {
+		t.Fatalf("the licence is no longer stored: %v", err)
+	}
 
 	// paths under "-" that are not licence routes
 	for _, p := range []string{"/acme/prod/-", "/acme/prod/-/x", "/acme/prod/-/licenses/Bad", "/acme/prod/-/licenses/a/b"} {

@@ -16,6 +16,8 @@ type Publisher struct {
 	CreatedAt          time.Time
 	CreatedBy          string
 	GitHub             []GitHubCredential
+	// LicenseKeys marks it a trusted source of licence keys (spec 0021), a server administrator's act.
+	LicenseKeys bool
 }
 
 // GitHubCredential binds a publisher to GitHub Actions runs: immutable owner and repository ids, a
@@ -64,9 +66,23 @@ func (t *Tx) InsertPublisher(ctx context.Context, p *Publisher) error {
 // GetPublisher reads a tenant's publisher by name.
 func (t *Tx) GetPublisher(ctx context.Context, tenantID, name string) (Publisher, error) {
 	var p Publisher
-	err := t.queryRow(ctx, "SELECT id, tenant_id, name, created_at, created_by FROM publishers WHERE tenant_id = ? AND name = ?",
-		tenantID, name).Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy)
+	err := t.queryRow(ctx, "SELECT id, tenant_id, name, created_at, created_by, license_keys FROM publishers WHERE tenant_id = ? AND name = ?",
+		tenantID, name).Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys)
 	return p, notFound(err, "publisher "+name)
+}
+
+// SetPublisherLicenseKeys marks a publisher a trusted source of licence keys, or unmarks it
+// (spec 0021). Unmarking keeps the keys it brought; removing the publisher drops them.
+func (t *Tx) SetPublisherLicenseKeys(ctx context.Context, tenantID, name string, on bool) (Publisher, error) {
+	p, err := t.GetPublisher(ctx, tenantID, name)
+	if err != nil {
+		return p, err
+	}
+	if _, err := t.exec(ctx, "UPDATE publishers SET license_keys = ? WHERE id = ?", on, p.ID); err != nil {
+		return p, err
+	}
+	p.LicenseKeys = on
+	return p, t.BumpAuth(ctx, tenantID)
 }
 
 // DeletePublisher removes a publisher, its credentials and its grants.
@@ -81,6 +97,9 @@ func (t *Tx) DeletePublisher(ctx context.Context, tenantID, name string) error {
 		if _, err := t.exec(ctx, q, p.ID); err != nil {
 			return err
 		}
+	}
+	if err := t.DeleteLicenseKeysOf(ctx, KeySourcePublisher, p.ID); err != nil {
+		return err
 	}
 	return t.BumpAuth(ctx, tenantID)
 }
@@ -134,7 +153,7 @@ func (t *Tx) DeleteGitHubCredential(ctx context.Context, tenantID, publisherID, 
 
 // publishers reads a tenant's publishers with their credentials, by name.
 func publishers(ctx context.Context, query queryFn, tenantID string) ([]Publisher, error) {
-	rows, err := query(ctx, `SELECT p.id, p.tenant_id, p.name, p.created_at, p.created_by, g.id, g.provider,
+	rows, err := query(ctx, `SELECT p.id, p.tenant_id, p.name, p.created_at, p.created_by, p.license_keys, g.id, g.provider,
 g.owner_id, g.repository_id, g.workflow, g.ref, g.environment, g.created_at, g.created_by
 FROM publishers p LEFT JOIN publisher_github g ON g.publisher_id = p.id WHERE p.tenant_id = ? ORDER BY p.name, g.created_at, g.id`, tenantID)
 	if err != nil {
@@ -146,7 +165,7 @@ FROM publishers p LEFT JOIN publisher_github g ON g.publisher_id = p.id WHERE p.
 		var p Publisher
 		var gid, prov, owner, repo, wf, ref, env, gby sql.NullString
 		var gt time.Time // scanTime takes NULL as the zero time
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &gid, &prov, &owner, &repo, &wf, &ref,
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys, &gid, &prov, &owner, &repo, &wf, &ref,
 			&env, scanTime{&gt}, &gby); err != nil {
 			return nil, err
 		}
@@ -259,11 +278,11 @@ func (s *Store) APIKeys(ctx context.Context, publisherID string) ([]APIKey, erro
 func (s *Store) APIKeyByHash(ctx context.Context, hash string) (APIKey, Publisher, error) {
 	var p Publisher
 	row := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT k.id, k.publisher_id, k.prefix, k.hash, k.expires_at, k.created_at, k.created_by,
-k.last_used_at, p.tenant_id, p.name, p.created_at, p.created_by FROM api_keys k JOIN publishers p ON p.id = k.publisher_id
+k.last_used_at, p.tenant_id, p.name, p.created_at, p.created_by, p.license_keys FROM api_keys k JOIN publishers p ON p.id = k.publisher_id
 WHERE k.hash = ?`), hash)
 	var k APIKey
 	err := row.Scan(&k.ID, &k.PublisherID, &k.Prefix, &k.Hash, scanTime{&k.ExpiresAt}, scanTime{&k.CreatedAt}, &k.CreatedBy,
-		scanTime{&k.LastUsedAt}, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy)
+		scanTime{&k.LastUsedAt}, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys)
 	p.ID = k.PublisherID
 	return k, p, notFound(err, "key")
 }

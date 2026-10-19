@@ -153,6 +153,7 @@ var catalogue = map[Kind][]string{
 	"extension_group.members": {"added", "removed"},
 	"publisher.add":           {"name"},
 	"publisher.remove":        {"name"},
+	"publisher.change":        {"name", "license_keys"},
 	"publisher.github.add":    {"publisher", "credential", "owner_id", "repository_id", "workflow", "ref", "environment"},
 	"publisher.github.remove": {"publisher", "credential"},
 	"publisher.key.add":       {"publisher", "key", "prefix", "expires_at"},

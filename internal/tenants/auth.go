@@ -252,6 +252,9 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 			if err != nil {
 				return err
 			}
+			if err := s.marked(ctx, a, p); err != nil {
+				return err
+			}
 			g.PublisherID, g.PublisherName = p.ID, p.Name
 		} else {
 			rec, err := tx.GetIssuer(ctx, t.ID, issuer)
@@ -332,13 +335,22 @@ func (s *AuthAdmin) RemoveGrant(ctx context.Context, a authz.Actor, tenant, id s
 	if err != nil {
 		return err
 	}
-	fields := map[string]any{}
+	fields, publisher := map[string]any{}, ""
 	for _, g := range allGrants(ta) {
 		if g.ID == id {
-			fields = grantFields(g)
+			fields, publisher = grantFields(g), g.PublisherName
 		}
 	}
 	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
+		if publisher != "" {
+			p, err := tx.GetPublisher(ctx, t.ID, publisher)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+			if err := s.marked(ctx, a, p); err != nil {
+				return err
+			}
+		}
 		before, err := tx.TenantAdminGrants(ctx, t.ID)
 		if err != nil {
 			return err

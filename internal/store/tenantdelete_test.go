@@ -46,6 +46,8 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO releases (id, tenant_id, channel_id, build_id, name, ext_version, platform, slot, state, visibility, seq, created_at, " +
 			"created_by, state_changed_at, state_changed_by, version, origin) VALUES (?, ?, ?, ?, 'acl', '1.0', 'linux_amd64', 'v2.0.0', 'active', " +
 			"'public', 1, ?, 'os:1:t', ?, 'os:1:t', 1, 'admin')", []any{id("r"), tid, cid, id("b"), now, now}},
+		{"INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at) VALUES (?, ?, ?, 'pem', 'upstream', ?, ?)",
+			[]any{tid, id("b"), "sha256:" + hash, id("u"), now}},
 		{"INSERT INTO release_signatures (release_id, channel_id, key_id, signature, created_at) VALUES (?, ?, ?, ?, ?)", []any{id("r"), cid, key.ID, sig, now}},
 		{"UPDATE channels SET serving_key_id = ? WHERE id = ?", []any{key.ID, cid}},
 		{"INSERT INTO purged_slots (channel_id, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at) " +

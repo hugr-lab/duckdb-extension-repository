@@ -1,6 +1,6 @@
 # Spec 0021: Licence keys in the build, and licences in bundles
 
-- **Status**: accepted; phase 1 part 1 (the SDK and the reader) implemented
+- **Status**: accepted; phase 1 (the key in the build: the SDK, the reader, and kista) implemented
 - **Date**: 2026-10-18
 - **Author**: vgsml, Claude
 
@@ -139,6 +139,8 @@ licence keys, each with its **source**, only when a trusted intake carries its b
   own.
 - **A malformed block is refused.** A marked publisher's publication whose body has a malformed
   block is refused (`400`, rule `license_keys`).
+- **The publisher itself.** A credential can match several publishers. A publication records keys
+  for each matched marked publisher that holds `publish` on the name by its own grants.
 - **Unmarking** keeps the keys already recorded. Removing the publisher drops them.
 
 ### Verifying licences
@@ -181,7 +183,9 @@ refused by the server (`licenses.refuse_keys`, below) never count.
   - `licenses.keys` is accepted and ignored, with a start-up warning, in the release that ships this
     phase, and refused in the release after.
   - The routes it fed are removed: `GET /api/v1/licenses/keys` and `kista admin license keys`.
+- **Offline checks.** `kista admin license verify` takes the key to check against (`-key`).
 - **What a tenant administrator sees.** `GET /api/v1/tenants/{t}/license-keys[/{name}]` answers
+  the keys of live builds, without those the server refuses:
   `{"names": [{"name", "keys": [{"kid", "sources": [{"kind": "publisher"|"upstream", "name"}],
   "builds": n}]}]}`. The CLI's form is `kista admin license keys <tenant> [<name>]`, and the
   console's Licences screen shows it.
@@ -237,7 +241,9 @@ refused by the server (`licenses.refuse_keys`, below) never count.
 
 ### Data model
 
-Migration 0027, additive, on all three dialects:
+Migration 0027, on all three dialects. Its schema change is additive, but it raises `min_reader` to
+27: an older replica would let a tenant administrator change a marked publisher's credentials and
+would verify licences against `licenses.keys`.
 
 ```text
 build_license_keys   tenant_id, build_id (cascade), kid, pem, source_kind ('publisher' | 'upstream'),

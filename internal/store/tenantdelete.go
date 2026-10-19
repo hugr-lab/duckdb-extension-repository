@@ -280,7 +280,7 @@ var reapSteps = []reapStep{
 	{"bundle_imports", ofTenant, false}, {"shadows", ofTenant, false}, {"blocks", ofTenant, false},
 	// by indexed columns: release_signatures by key, releases by channel
 	{"release_signatures", "key_id IN (SELECT id FROM channel_keys WHERE tenant_id = ?)", false}, {"releases", ofChannels, false},
-	{"purged_slots", "", true}, {"builds", ofTenant, false},
+	{"purged_slots", "", true}, {"build_license_keys", ofTenant, false}, {"builds", ofTenant, false},
 	{"key_events", "key_id IN (SELECT id FROM channel_keys WHERE tenant_id = ?)", false}, {"channel_keys", ofTenant, false},
 	{"channel_duckdb_versions", ofChannels, false}, {"channels", ofTenant, false},
 	{"download_counts", ofTenant, false}, {"download_installers", ofTenant, false},

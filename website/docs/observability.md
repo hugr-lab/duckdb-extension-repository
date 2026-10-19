@@ -77,6 +77,7 @@ are all the kinds in `internal/audit`:
 | | `extension_group.change` | `extension-group:<name>` | `description` |
 | | `extension_group.members` | `extension-group:<name>` | `added`, `removed` |
 | | `publisher.add`, `publisher.remove` | `publisher:<name>` | `name` |
+| | `publisher.change` | `publisher:<name>` | `name`, `license_keys` (marked or unmarked as a source of licence keys, spec 0021) |
 | | `publisher.github.add` | `publisher:<name>/github:<id>` | `publisher`, `credential`, `owner_id`, `repository_id`, `workflow`, `ref`, `environment` |
 | | `publisher.github.remove` | `publisher:<name>/github:<id>` | `publisher`, `credential` |
 | | `publisher.key.add` | `publisher:<name>/key:<id>` | `publisher`, `key`, `prefix`, `expires_at` |

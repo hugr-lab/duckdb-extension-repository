@@ -25,7 +25,6 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
@@ -103,12 +102,12 @@ func startKista(t *testing.T, b *build) *kista { return startKistaWith(t, b, nil
 // startKistaWith starts kista serve with a token verifier (nil: anonymous callers only).
 func startKistaWith(t *testing.T, b *build, verifier *auth.Verifier) *kista {
 	t.Helper()
-	return startKistaLicensed(t, b, verifier, nil)
+	return startKistaLicensed(t, b, verifier, false)
 }
 
-// startKistaLicensed starts kista serve with licensing on for the trusted licence keys (spec 0012:
-// the licence and usage routes; none: off).
-func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, licenseKeys license.Keys) *kista {
+// startKistaLicensed starts kista serve, with licensing on when licensed (spec 0012: the licence
+// and usage routes; spec 0021: licences verify against the keys the builds declare).
+func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, licensed bool) *kista {
 	t.Helper()
 	ctx := context.Background()
 	st, err := store.OpenSQLite(ctx, filepath.Join(t.TempDir(), "kista.db"))
@@ -175,8 +174,8 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 	k.counts = stats.Downloads(st, slog.New(slog.DiscardHandler))
 	var served serve.Licenses
 	var usage serve.UsageCounter
-	if len(licenseKeys) > 0 {
-		k.licenses = &licenses.Service{Store: st, Authz: authz.ServerAdmin{}, Keys: licenseKeys, Log: slog.New(slog.DiscardHandler)}
+	if licensed {
+		k.licenses = &licenses.Service{Store: st, Authz: authz.ServerAdmin{}, Enabled: true, Log: slog.New(slog.DiscardHandler)}
 		k.usage = stats.Usage(st, slog.New(slog.DiscardHandler))
 		served, usage = licenses.Served{Service: k.licenses}, k.usage
 	}

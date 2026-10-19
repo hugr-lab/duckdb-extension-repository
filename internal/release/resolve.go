@@ -35,6 +35,9 @@ type Snapshot struct {
 	// name an upstream of the channel lists; upstream changes bump the tenant's channels.
 	PullThrough []store.PullThrough
 	Listed      map[string]bool
+	// Kids are the licence key ids recorded for each of the channel's builds, by build id (spec
+	// 0021); recording or dropping keys bumps release_version on the channels holding the build.
+	Kids map[string][]string
 
 	groups    map[group][]*store.Candidate // by (name, platform), in Releases order
 	platforms map[string][]string          // by name, sorted
@@ -130,13 +133,23 @@ func (s *Snapshot) Live(name string, vis Visible) bool { return s.LiveVersion(na
 
 // LiveVersion is Live for the releases of one extension version ("" for any).
 func (s *Snapshot) LiveVersion(name, extVersion string, vis Visible) bool {
+	return s.live(name, extVersion, "", vis)
+}
+
+// LiveKey is Live for the releases whose build declares the licence key kid (spec 0021: a licence
+// is served in a channel only where a live build declares its key).
+func (s *Snapshot) LiveKey(name, kid string, vis Visible) bool {
+	return kid != "" && s.live(name, "", kid, vis)
+}
+
+func (s *Snapshot) live(name, extVersion, kid string, vis Visible) bool {
 	if !s.serving(name) {
 		return false
 	}
 	for _, p := range s.platforms[name] {
 		for _, c := range s.groups[group{name, p}] {
 			if (c.State != store.ReleaseActive && c.State != store.ReleaseDeprecated) || s.Blocked[c.BodyHash] || !vis(c) ||
-				extVersion != "" && c.ExtVersion != extVersion {
+				extVersion != "" && c.ExtVersion != extVersion || kid != "" && !slices.Contains(s.Kids[c.BuildID], kid) {
 				continue
 			}
 			for v := range s.CAPIs {
@@ -367,6 +380,9 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 	}
 	if c.Kind == store.ChannelSigned {
 		if snap.PullThrough, snap.Listed, err = s.Store.ChannelPullThrough(ctx, c.ID); err != nil {
+			return nil, err
+		}
+		if snap.Kids, err = s.Store.BuildKids(ctx, c.ID); err != nil {
 			return nil, err
 		}
 	}

@@ -78,14 +78,17 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/a.
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/b.pem" 2>/dev/null  # added from the console (2b)
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/att.pem" 2>/dev/null  # the feed's (spec 0011)
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/s.pem" 2>/dev/null  # tenant scratch's (spec 0019)
+# spec 0021: vault's build declares the licence vectors' test-only key; a licence for vault, 20 days
+# long, to import
+openssl pkey -in "$root/internal/license/testdata/test-only-2048.pem" -pubout -out "$work/lic.pub.pem" 2>/dev/null
 (cd "$root" && GOWORK=off go build -o "$work/kista" ./cmd/kista && GOWORK=off go run ./web/console/e2e/fixture "$work/tresor.duckdb_extension" 1.0 a \
-	&& GOWORK=off go run ./web/console/e2e/fixture "$work/hello.duckdb_extension" 1.0 b)
-# spec 0012: the licence vectors' test-only key is trusted; a licence for tresor, 20 days long, to import
+	&& GOWORK=off go run ./web/console/e2e/fixture "$work/hello.duckdb_extension" 1.0 b \
+	&& GOWORK=off go run ./web/console/e2e/fixture "$work/vault.duckdb_extension" 1.0 c vault "$work/lic.pub.pem")
 lic_key="$(openssl pkey -in "$root/internal/license/testdata/test-only-2048.pem" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')"
 now=$(date +%s)
-printf '{"v":1,"iss":"https://issuer.example","jti":"lic-e2e","sub":"acme","holder":"Acme Test","ext":"tresor","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}' \
+printf '{"v":1,"iss":"https://issuer.example","jti":"lic-e2e","sub":"acme","holder":"Acme Test","ext":"vault","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}' \
 	"$now" "$((now + 20 * 86400))" >"$work/claims.json"
-(cd "$root" && GOWORK=off go run ./internal/license/vectorgen sign -claims "$work/claims.json") >"$work/tresor.kista-license"
+(cd "$root" && GOWORK=off go run ./internal/license/vectorgen sign -claims "$work/claims.json") >"$work/vault.kista-license"
 mkdir -p "$work/org/acme/.well-known"
 printf '{"signature_keys":["%s"]}' "$lic_key" >"$work/org/acme/.well-known/duckdb-extension-repo.json"
 repo_key="sha256:$(printf '%s' "$lic_key" | base64 -d | openssl dgst -sha256 | awk '{print $NF}')"
@@ -109,7 +112,6 @@ auth:
 gc: { interval: 24h }  # every replica runs this version: purging is on (spec 0016)
 tenants: { min_suspended: 0s }  # spec 0019: deleted at once in the suite
 bundles: { chunk_size: 1MiB }  # spec 0014: an upload of a few MiB in several chunks
-licenses: { keys: [ "$lic_key" ] }  # spec 0012
 ui:
   environment: e2e
   allowed_origins: [ $host ]
@@ -133,6 +135,12 @@ k extension-group add acme platform -description "What every hugr node installs"
 k extension-group members acme platform -add tresor
 k grant add acme -principal "role:kc|platform-team" -verb admin -extension-group platform
 k release add acme/prod "$work/tresor.duckdb_extension" -name tresor -unchecked
+# spec 0021: a publisher a server administrator marked publishes vault (below), which records its
+# licence key
+k publisher add acme vault-ci
+k grant add acme -principal publisher:vault-ci -verb publish -channel prod -extension vault
+k publisher license-keys acme vault-ci on
+pub_key="$("$work/kista" admin -config "$work/kista.yaml" publisher key add acme vault-ci -expires 1d)"
 k release add acme/prod "$work/hello.duckdb_extension" -name hello_acme -unchecked
 k tenant create scratch -display-name Scratch   # deleted from the console (spec 0019)
 k channel create scratch/prod -kind signed
@@ -141,6 +149,10 @@ k key add scratch/prod -signer file:s.pem -active
 pids+=($!)
 for i in $(seq 1 60); do curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null && break; sleep 1; done
 curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null || { cat "$work/kista.log"; exit 1; }
+curl -skf --resolve "kista.test:$kista_port:127.0.0.1" -H "Authorization: Bearer $pub_key" -H "Content-Type: application/octet-stream" \
+	--data-binary "@$work/vault.duckdb_extension" \
+	"$kista/api/v1/tenants/acme/channels/prod/extensions/vault/releases?version=1.0&platform=linux_amd64" >/dev/null \
+	|| { echo "e2e: the marked publication failed"; tail -20 "$work/kista.log"; exit 1; }
 
 python3 -m http.server --bind 127.0.0.1 --directory "$work/org" "$repo_port" >"$work/repo.log" 2>&1 &
 pids+=($!)
@@ -154,4 +166,4 @@ for i in $(seq 1 30); do curl -sf "$host/" >/dev/null && break; sleep 1; done
 curl -sf "$host/" >/dev/null || { cat "$work/host.log"; exit 1; }
 
 echo "e2e: Playwright"
-E2E_LICENSE="$work/tresor.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }
+E2E_LICENSE="$work/vault.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }
