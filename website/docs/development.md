@@ -389,6 +389,35 @@ There are two kinds of extension:
   build is `make release KISTA_LICENSE_KEYS='<pem>;…'`, which is how Enterest's builders build it:
   - `KISTA_LICENSE_KEYS` names one to four PEM public keys;
   - without it, the build takes the committed `license-key.pem`.
+  - In CI it calls the fork's `_extension_distribution.yml` with
+    `override_ci_tools_repository: hugr-lab/extension-ci-tools`. That workflow checks out DuckDB's
+    ci-tools by default, which has no SDK.
+
+### Starting an extension: the template
+
+[hugr-lab/extension-template](https://github.com/hugr-lab/extension-template) is DuckDB's C++
+extension template with the kit, built against the DuckDB commit kista is tested against
+(`e2e/DUCKDB_PIN`, `v2.0-cyanoptera`). Make a repository from it, clone it with its submodules, and
+run once:
+
+```bash
+./bootstrap.sh <name>              # an open extension
+./bootstrap.sh <name> --licensed   # a licensed one
+```
+
+- **What bootstrap does.** It renames the example extension, puts the kind's files in place,
+  formats the sources as DuckDB's format check wants them, and stages the result. For a licensed
+  extension it also points `extension-ci-tools` at the fork.
+- **Both kinds.** `.github/workflows/distribution.yml` builds every platform of DuckDB's matrix. On a
+  `v*` tag it publishes to the kista named by the repository's `KISTA_URL`, `KISTA_TENANT` and
+  `KISTA_CHANNEL` variables, with OIDC or a `KISTA_API_KEY` secret.
+- **A licensed one** shows the SDK in use: `Register`, `Check`, `Limit` and `<name>_license()`.
+  - Its `license-key.pem` starts as the SDK's test key.
+  - A local build warns about it, and a tag build fails until the key is the issuer's public key.
+
+The extension's README covers the rest: the publisher binding, marking the publisher for licence
+keys, and updating DuckDB. The template's own CI publishes a copy of each kind to a kista built from
+a pinned commit, then installs and loads both with DuckDB.
 
 ## The console
 

@@ -384,14 +384,17 @@ version and platform from its footer, skips wasm builds (refused, above), and re
 `5xx`. The token's `workflow_ref` names the calling workflow, so the binding names the extension's
 own workflow file. Pin the workflow to a commit and give the same commit as `ci_tools_version`. A
 job that calls a reusable workflow cannot set an environment: for a binding that names one, pass it
-as the `environment` input. See [Development](development.md#the-developer-kit-for-extensions) and the fork's
+as the `environment` input. A licensed extension's build also passes
+`override_ci_tools_repository: hugr-lab/extension-ci-tools`. The
+[extension template](development.md#starting-an-extension-the-template) sets all of this up. See
+[Development](development.md#the-developer-kit-for-extensions) and the fork's
 [KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md).
 
 ```yaml title=".github/workflows/distribution.yml"
 jobs:
   build:
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
-    with: {extension_name: acl, duckdb_version: v2.0-cyanoptera, ci_tools_version: main}
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@<ci-tools commit>
+    with: {extension_name: acl, ci_tools_version: <ci-tools commit>}   # DuckDB: the duckdb submodule
   kista:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')

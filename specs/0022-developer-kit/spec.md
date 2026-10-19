@@ -1,6 +1,6 @@
 # Spec 0022: The developer kit
 
-- **Status**: accepted; phase 1 (the fork and kista's switch) implemented
+- **Status**: implemented (phase 1: the fork and kista's switch; phase 2: the template)
 - **Date**: 2026-10-19
 - **Author**: vgsml, Claude
 
@@ -113,9 +113,10 @@ A reusable workflow that a developer's workflow calls after the distribution bui
 ```yaml
 jobs:
   build:
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main   # an open extension
-    # uses: hugr-lab/extension-ci-tools/.github/workflows/_extension_distribution.yml@main   (a licensed one)
-    with: {extension_name: myext, duckdb_version: v2.0-cyanoptera, ci_tools_version: main}
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@<commit>   # an open extension
+    with: {extension_name: myext, ci_tools_version: <the same commit>}
+    # a licensed one: hugr-lab/extension-ci-tools/.github/workflows/_extension_distribution.yml@<commit>,
+    # also with override_ci_tools_repository: hugr-lab/extension-ci-tools (the default is DuckDB's)
   kista:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
@@ -185,16 +186,29 @@ Without the job, it takes only an API key: OIDC exists only inside GitHub Action
 
 ### The template: `hugr-lab/extension-template`
 
-A GitHub template repository, from DuckDB's C++ `extension-template`, with:
+A GitHub template repository, from DuckDB's C++ `extension-template` with its history, with:
 - `bootstrap.sh`;
-- the two kinds' workflows and Makefiles;
-- a README for each kind, and the specs layout our extensions use (`specs/`).
+- the two kinds' files under `kinds/open` and `kinds/licensed`, put over the root by bootstrap. The
+  root stays DuckDB's template, so merges from it stay simple;
+- a README for the template and one for each kind, and the specs layout our extensions use
+  (`specs/`).
+
+**DuckDB 2.0** (the owner's decision). DuckDB's template builds the last 1.x release and has no 2.0
+branch. Ours builds `v2.0-cyanoptera`, because the SDK is tested there and trusted repositories
+(`CREATE EXTENSION REPOSITORY`) are a 2.0 feature.
+- The `duckdb` submodule is kista's pin (`e2e/DUCKDB_PIN`), and the distribution workflows build the
+  submodule's commit.
+- The open kind's ci-tools are DuckDB's `v2.0-cyanoptera`, pinned by commit.
+- DuckDB's example builds and passes on it unchanged.
 
 **Bootstrap:** `./bootstrap.sh <name> [--licensed]`, run once in a fresh copy. It:
-- checks the name (`[a-z][a-z0-9_]*`, as kista's names);
-- renames the sources, tests and CMake targets;
-- writes the extension's `README.md`;
-- removes the other kind's files and itself.
+- checks the name (`[a-z][a-z0-9_]{0,63}`: one of kista's names, and a C++ identifier);
+- renames the sources, tests, CMake targets and workflows;
+- puts the kind's files and `README.md` in place;
+- formats the sources as DuckDB's format check wants them (`make format-fix`, with the tool versions
+  of `_extension_code_quality.yml`, in a temporary venv when they are not installed). The renamed
+  lines change length, and DuckDB 2.0's check also rewraps DuckDB's own example;
+- removes the other kind's files, the template's own and itself, and stages the result.
 
 What each kind gets:
 - **Open:**
@@ -202,15 +216,21 @@ What each kind gets:
   - `.github/workflows/distribution.yml`: the build, and on a `v*` tag the publication to kista when
     `KISTA_URL` is set.
 - **Licensed:**
-  - the fork as the submodule;
-  - the SDK in `CMakeLists.txt` (`kista::License::Register` in the load function, a
-    `<name>_license()` table function) and `include kista.Makefile` in the `Makefile`;
-  - `license-key.pem`: the SDK's test key, with a comment that says so;
-  - the same workflow, building with the fork.
+  - the fork as the submodule, at the commit the workflow pins;
+  - the SDK in `CMakeLists.txt` and `include kista.Makefile` in the `Makefile`;
+    - `kista::License::Register` in the load function (with its `<name>_license()` table function);
+    - a function that needs a licence (`Check`, `Limit`);
+    - `kista_sdk` installed with the extension into DuckDB's export set, which needs it;
+  - `license-key.pem`: the SDK's test key. The SDK takes a bare PEM block, so the comment that says
+    so is in `CMakeLists.txt` and the README;
+  - the same workflow, building with the fork. It passes `override_ci_tools_repository`, since the
+    distribution workflow otherwise checks out DuckDB's ci-tools, which has no SDK.
 
 **The test key does not leave.** The licensed workflow fails a tag build whose `license-key.pem`
-is the SDK's test key, and says to put the issuer's public key there. The same check is a CMake
-warning in a local build.
+is one of the SDK's test keys (`scripts/check-license-key.sh`), and says to put the issuer's public
+key there.
+- It compares the keys as DER, so a re-wrapped or CRLF copy is caught too.
+- A local build that trusts `license-key.pem` warns instead, and so does the SDK at load.
 
 **All platforms are built**, wasm included, as DuckDB's matrix has them. The publication skips
 what kista refuses.
@@ -302,12 +322,16 @@ Nothing changes in kista's server, API or schema.
 
 **The template's CI:**
 - bootstrap both kinds;
-- build each on `linux_amd64`;
+- build each on `linux_amd64`, with `make test` and DuckDB's format check;
 - start a kista built from a pinned commit, with a tenant, a channel and a publisher API key;
 - publish both builds with `kista_publish.py`;
 - with DuckDB at the pin, `INSTALL` and `LOAD` each from that kista. The licensed one reports its
-  licence status as `missing`.
-- A tag build of a licensed copy that still has the test key fails the check.
+  licence status as `missing`, and the SDK warns that it trusts the test key.
+- `scripts/test-bootstrap.sh` checks the bootstrap without a build: the names refused, what each
+  kind leaves, and the key check (a tag build with any of the SDK's test keys fails, also re-wrapped
+  or CRLF; an issuer's key passes).
+- Before the merge, each kind was bootstrapped on a scratch branch and its distribution workflow ran
+  DuckDB's whole matrix: Linux, macOS, Windows (MSVC and mingw) and wasm all built.
 
 **kista's e2e:**
 - `kista_demo` built from the pinned fork, as today's SDK tests: licence, relay and bundle;
@@ -352,6 +376,10 @@ made from the template, to a kista with a GitHub binding. GitHub's token cannot 
 - kista's `development.md` updated for the template.
 
 ## Follow-ups
+
+- **SQL tests in the distribution build.** On DuckDB 2.0, DuckDB's distribution workflow skips an
+  extension's own SQL tests (`require <name>` skips them: the test run finds no extension), for both
+  kinds and every platform. `make test` runs them, and the template's CI does. To raise with DuckDB.
 
 - **wasm in kista.** Accepting and serving wasm builds is a kista spec of its own. Then the
   publication stops skipping them.
