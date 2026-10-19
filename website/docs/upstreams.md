@@ -445,8 +445,10 @@ for none gets none, with the flag or without. For each repository source the bun
 - at most 1,000, by name (the command says how many it left out).
 
 The token goes as stored, and the manifest's signature covers it, with the plan's request. The
-command prints each licence's name, holder and expiry: what leaves is the exporter's to see. A plan
-that asks for licences, and a bundle that carries them, need a kista with spec 0021 on both sides:
+command prints each licence's name, holder and expiry: what leaves is the exporter's to see. When it carries
+none although both asked, it says so (none in force for the bundle's names, of the plan's holder). A plan
+that asks for licences, and a bundle that carries them, need a kista of the release that brought
+licences in bundles, or a later one, on both sides:
 an older one refuses them, as plans and manifests are decoded strictly. A bundle without licences
 is the same document as before.
 
@@ -556,15 +558,17 @@ bundle-mode feeds whose URL is a feed of the bundle, or the `-feed` ones (with o
 
 The command prints a line per target, feeds as `feed:<name>`, and each feed's refusals.
 
-**Licences** (spec 0021). After the files, the import takes each licence the bundle carries, once:
+**Licences** (spec 0021). After the files, when the bundle was read whole, the import takes each
+licence the bundle carries, once (one carried by two sources is taken once, by any of their targets).
+A source the import takes no target of (`-upstream`, `-feed`) is passed over. For each licence:
 
 - **The target**: of the bundle-mode upstreams the licence's source fills in this import (those
   that took the bundle: not `busy`, `stale` or failed), the first by name that supplies the name,
   as a relaying upstream must ([Licensing](licensing.md#licences-in-a-tenant)). None: refused, `not_supplied`
   or `no_target`.
-- **The checks**: the licence is in force, of the name it is carried for, of the holder the plan
-  named (`holder_mismatch`), and signed with a key that the target's live builds declare, as the
-  bundle brought them ([The keys a licence verifies against](licensing.md#the-keys-a-licence-verifies-against)).
+- **The checks**: the licence is in force (`not_in_force`), of the name it is carried for
+  (`ext_mismatch`), of the holder the plan named (`holder_mismatch`), and signed with a key that
+  the target's live builds declare, as the bundle brought them (`kid_untrusted`) ([The keys a licence verifies against](licensing.md#the-keys-a-licence-verifies-against)).
   Licensing off at the site refuses each (`off`).
 - **Replacing**: the relay's rules ([Licensing](licensing.md#licences-in-a-tenant)), except that a
   bundle's licence never replaces one an administrator imported here (`superseded`). It is stored
@@ -576,7 +580,8 @@ The command prints a line per target, feeds as `feed:<name>`, and each feed's re
   before it, so a first import's licences need the real import.
 
 The command prints the licences' counts (`stored`, `replaced`, `unchanged`, `refused`) and each
-refusal with its rule and reason. The import record's counts and the `bundle.import` event carry
+refusal with its rule and reason, and exits `1` when the licences could not be stored at all. The
+import record's counts and the `bundle.import` event carry
 them under `licenses`, and the console shows them with the import.
 
 **Provenance and visibility.** A release from a bundle records its source's URL, the manifest's

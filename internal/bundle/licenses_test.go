@@ -77,15 +77,21 @@ func TestManifestLicenses(t *testing.T) {
 		Sources   []oldSource     `json:"sources"`
 		Feeds     []bundle.Feed   `json:"feeds,omitempty"`
 	}
-	data, err := json.Marshal(with().m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := bundle.DecodeStrict(data, &oldManifest{}); !errors.Is(err, bundle.ErrInvalid) {
-		t.Errorf("an older reader took a manifest with licences: %v", err)
+	// the plan's request and a source's licences, each on its own
+	asked, carrying := with(), with()
+	asked.m.Sources[1].Licenses = nil
+	carrying.m.Plan.Licenses, carrying.m.Plan.LicenseHolder = false, ""
+	for name, m := range map[string]bundle.Manifest{"the request": asked.m, "the licences": carrying.m} {
+		data, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bundle.DecodeStrict(data, &oldManifest{}); !errors.Is(err, bundle.ErrInvalid) {
+			t.Errorf("an older reader took a manifest with %s: %v", name, err)
+		}
 	}
 	// a bundle without licences is the same document as before
-	data, err = json.Marshal(newFixture(t).m)
+	data, err := json.Marshal(newFixture(t).m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +105,27 @@ func TestPlanLicenses(t *testing.T) {
 		Sources: []bundle.PlanSource{}, Licenses: true, LicenseHolder: "acme-corp"}
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	// an older exporter, which knows no licence request, refuses the plan
+	type oldPlan struct {
+		Format     string              `json:"format"`
+		CreatedAt  time.Time           `json:"created_at"`
+		Tenant     string              `json:"tenant"`
+		BundleKeys []string            `json:"bundle_keys"`
+		Sources    []bundle.PlanSource `json:"sources"`
+		Feeds      []bundle.PlanFeed   `json:"feeds,omitempty"`
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bundle.DecodeStrict(data, &oldPlan{}); !errors.Is(err, bundle.ErrInvalid) {
+		t.Errorf("an older exporter took a plan asking for licences: %v", err)
+	}
+	q := p
+	q.Licenses, q.LicenseHolder = false, ""
+	if data, _ = json.Marshal(q); bundle.DecodeStrict(data, &oldPlan{}) != nil {
+		t.Error("a plan without licences is not the same document as before")
 	}
 	for name, change := range map[string]func(p *bundle.Plan){
 		"a holder without licences": func(p *bundle.Plan) { p.Licenses = false },

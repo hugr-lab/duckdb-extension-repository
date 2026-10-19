@@ -360,6 +360,11 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 	}
 	if carried > 0 {
 		counts["licenses"] = carried
+	} else if held != nil {
+		res.LicenseNote = "no licence in force for the bundle's names"
+		if plan.LicenseHolder != "" {
+			res.LicenseNote += fmt.Sprintf(" of holder %q", plan.LicenseHolder)
+		}
 	}
 	for _, f := range res.Feeds {
 		for k, n := range f.Counts {

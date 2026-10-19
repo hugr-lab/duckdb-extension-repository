@@ -35,7 +35,7 @@ nothing on it that it cannot verify against two values that come another way.
 | The binary and its `.sigstore.json` | `gh release download` | `cosign verify-blob` |
 | Sigstore's trusted root | `cosign initialize` | its SHA-256, carried out of band |
 | The plan (site to gateway) | `kista admin bundle plan` at the site | the gateway checks it |
-| A bundle (gateway to site) | `kista admin bundle export` | the import, with the pinned bundle key |
+| A bundle (gateway to site), with the licences the plan asks for | `kista admin bundle export` | the import, with the pinned bundle key |
 
 - **Out of band.** Two values must not come from the media: the trusted root's SHA-256 and the
   bundle key's fingerprint. Carry them through a channel the carrier cannot change: read them out
@@ -246,8 +246,8 @@ site without a route to the issuer receives it in the bundle, beside the extensi
   unchanged and refused, with each refusal's reason
   ([Importing a bundle](../upstreams.md#importing-a-bundle)).
 
-Both sides need a kista with spec 0021: an older one refuses a plan that asks for licences, and a
-bundle that carries them.
+Both sides need a kista of the release that brought licences in bundles, or a later one: an older
+one refuses a plan that asks for licences, and a bundle that carries them.
 
 ## Before you start
 

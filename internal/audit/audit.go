@@ -182,8 +182,9 @@ var catalogue = map[Kind][]string{
 	"license.change": {"name", "license", "visibility"},
 	"license.remove": {"name", "license", "reason"},
 	"license.sync":   {"upstream", "counts", "error", "refused"},
-	// bundles (spec 0014): targets last, since a truncated event keeps its first fields
-	"bundle.import":          {"import", "manifest", "created_at", "exporter", "bundle_key", "input_sha256", "dry_run", "state", "targets", "licenses"},
+	// bundles (spec 0014): targets last, since a truncated event keeps its first fields; a bundle's
+	// licences (spec 0021) before them
+	"bundle.import":          {"import", "manifest", "created_at", "exporter", "bundle_key", "input_sha256", "dry_run", "state", "licenses", "targets"},
 	"bundle.reset":           {"upstream", "feed", "manifest", "created_at"},
 	"bundle.upload":          {"upload", "size", "sha256", "chunk_size", "dry_run", "upstreams", "feeds", "any_tenant"},
 	"bundle.upload_complete": {"upload", "retry"},

@@ -288,7 +288,8 @@ func bundleSign(args []string, stdout io.Writer) error {
 	if err := w.Close(); err != nil {
 		return err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	// the owner's only, as the export writes it: a bundle may carry licences (spec 0021)
+	if err := tmp.Chmod(0o600); err != nil {
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
@@ -502,7 +503,7 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 		}
 		for _, l := range s.Licenses {
 			if t, err := license.Parse(l.Token); err == nil {
-				fmt.Fprintf(stdout, "source %s licence %s, holder %s %q, key %s, expires %s\n", s.Prefix, l.Name, t.HolderID,
+				fmt.Fprintf(stdout, "source %s licence %s, holder %q %q, key %s, expires %s\n", s.Prefix, l.Name, t.HolderID,
 					bundle.Text(t.Holder, 200), t.Key, time.Unix(t.ExpiresAt, 0).UTC().Format(time.RFC3339))
 			}
 		}

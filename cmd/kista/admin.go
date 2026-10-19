@@ -2096,6 +2096,9 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 	if err != nil {
 		return err
 	}
+	if *holder != "" && sub != "plan" || *withLicenses && sub != "plan" && sub != "export" {
+		return fmt.Errorf("%w: -licenses is for bundle plan and export, -license-holder for bundle plan", errUsage)
+	}
 	switch {
 	case sub == "export" && len(pos) == 1:
 		if *planFile == "" || *out == "" || (*keyFile == "") == !*unsigned {
@@ -2258,7 +2261,7 @@ func (a *adminCmd) bundleExport(ctx context.Context, tenant, planFile, keyFile, 
 		}
 		// the exporter sees what leaves: each licence's name and holder
 		for _, l := range s.Licenses {
-			fmt.Fprintf(a.out, "  %s licence %s, holder %s %q, expires %s\n", s.Prefix, l.Name, l.HolderID, l.Holder, ts(l.ExpiresAt))
+			fmt.Fprintf(a.out, "  %s licence %s, holder %q %q, expires %s\n", s.Prefix, l.Name, l.HolderID, l.Holder, ts(l.ExpiresAt))
 		}
 		if s.LicensesLeftOut > 0 {
 			fmt.Fprintf(a.out, "  %s: %d licences over %d left out\n", s.Prefix, s.LicensesLeftOut, bundle.MaxLicenses)
@@ -2384,7 +2387,7 @@ func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstr
 	if i.InputSHA256 != "" {
 		fmt.Fprintf(a.out, "input sha256 %s\n", i.InputSHA256)
 	}
-	if i.State != store.ImportDone || res.Gaps > 0 {
+	if i.State != store.ImportDone || res.Gaps > 0 || res.Licenses != nil && res.Licenses.Error != "" {
 		return errImportFailed
 	}
 	return nil

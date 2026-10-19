@@ -241,10 +241,13 @@ func TestAdminBundleExport(t *testing.T) {
 		t.Fatalf("export -licenses of a plan without: %s", got)
 	}
 	lsigned := filepath.Join(dir, "l3.kbundle")
-	if got := admin(0, "bundle", "export", "acme", "-plan", lplan, "-key", bundleKey, "-licenses", "-o", lsigned); strings.Contains(got, "licences: none") ||
-		strings.Contains(got, "carries them") {
+	// acme holds no licence: the bundle carries none, and says why
+	if got := admin(0, "bundle", "export", "acme", "-plan", lplan, "-key", bundleKey, "-licenses", "-o", lsigned); !strings.Contains(got,
+		`no licence in force for the bundle's names of holder "acme-corp"`) {
 		t.Fatalf("export -licenses: %s", got)
 	}
+	admin(2, "bundle", "export", "acme", "-plan", lplan, "-key", bundleKey, "-license-holder", "x", "-o", filepath.Join(dir, "l4.kbundle"))
+	admin(2, "bundle", "import", "site", lsigned, "-licenses")
 	out.Reset()
 	if code := run([]string{"bundle", "inspect", lsigned, "-plan", lplan}, &out, &errb); code != 0 || !strings.Contains(out.String(), `the plan asks for licences, of holder "acme-corp"`) {
 		t.Fatalf("inspect: %d %s", code, out.String())

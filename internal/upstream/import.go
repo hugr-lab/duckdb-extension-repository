@@ -277,7 +277,9 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 	// running the upstream, and a deleting tenant takes no writes
 	if stopClass(streamErr) == "bundle" || streamErr == nil {
 		s.leftovers(ictx, t, targets, o.DryRun, b.Ended())
-		out.Licenses = s.importLicenses(ictx, a, t, m, targets, o.DryRun) // after the files, whose keys they need
+	}
+	if streamErr == nil { // after the files, whose keys they need; a bundle read whole only
+		out.Licenses = s.importLicenses(ictx, a, t, m, targets, o.DryRun)
 	}
 	// a feed's cursors move only after a whole read; a stopped import moves none
 	s.finishFeeds(ctx, a, b, fts, streamErr != nil)
@@ -354,6 +356,8 @@ func (s *Service) importTargets(ctx context.Context, t store.Tenant, m *bundle.M
 			return nil, fmt.Errorf("%w: the bundle holds no source of upstream %s", store.ErrInvalid, n)
 		}
 	}
+	// by name, in Go's order: a collation never decides which target a licence goes to
+	slices.SortFunc(all, func(a, b store.Upstream) int { return strings.Compare(a.Name, b.Name) })
 	var out []*target
 	for _, u := range all {
 		if u.Mode != store.ModeBundle || u.State != store.UpstreamActive || len(names) > 0 && !slices.Contains(names, u.Name) {
@@ -866,16 +870,30 @@ func (s *Service) leftovers(ctx context.Context, t store.Tenant, targets []*targ
 // source fills that are still taking the bundle, in their order; nil when it carries none.
 func (s *Service) importLicenses(ctx context.Context, a authz.Actor, t store.Tenant, m *bundle.Manifest, targets []*target, dryRun bool) *licenses.Result {
 	var ls []licenses.BundleLicense
+	seen := map[[2]string]int{} // a licence carried by several sources is taken once, by any of their targets
 	for i := range m.Sources {
 		src := &m.Sources[i]
 		var ups []store.Upstream
+		selected := false
 		for _, tg := range targets {
-			if tg.src == src && tg.active() {
-				ups = append(ups, tg.u)
+			if tg.src == src {
+				selected = true
+				if tg.active() {
+					ups = append(ups, tg.u)
+				}
 			}
 		}
+		if !selected {
+			continue // a source the import does not take (-upstream, -feed): its licences are not asked for
+		}
 		for _, l := range src.Licenses {
-			ls = append(ls, licenses.BundleLicense{Name: l.Name, Token: l.Token, Upstreams: ups})
+			k := [2]string{l.Name, l.Token}
+			if j, ok := seen[k]; ok {
+				ls[j].Upstreams = append(ls[j].Upstreams, ups...)
+				continue
+			}
+			seen[k] = len(ls)
+			ls = append(ls, licenses.BundleLicense{Name: l.Name, Token: l.Token, Upstreams: slices.Clone(ups)})
 		}
 	}
 	if len(ls) == 0 {
