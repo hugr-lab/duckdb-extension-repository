@@ -577,7 +577,8 @@ kista::Usage::SendAsync(context, "myext", "attach", {{"sources", 3}});  // from 
     file and a rename, best effort, because the directory may be read-only.
 - **Trust**: Enterest's licence public keys are compiled in. A test build may add the vectors' test
   key, only through a separate test-only library (amended in phase 2: no build option can put it
-  into the library an extension links). No runtime setting can add a key.
+  into the library an extension links). No runtime setting can add a key. Superseded by spec 0021:
+  each build names its licence keys (`kista_sdk_license_keys`); the SDK holds none.
 - **Usage** (amended after phase 2 part 2: the SDK no longer counts or decides when to send):
   - **What the SDK does.** It delivers a report when the extension asks, and nothing else. One
     call is one report of one event (a count of 1) with the extension's counters, under the licence
@@ -622,8 +623,8 @@ kista::Usage::SendAsync(context, "myext", "attach", {{"sources", 3}});  // from 
   separate test-only library (`kista_sdk_testkey`), never in `kista_sdk`, which an extension links; part 2 is the DuckDB side above
   (`Register`, the fetch and the file, `Check`, the table functions, usage) and the e2e cases. Usage
   was then reduced to `Send` and `SendAsync` (above).
-  Enterest's keys are added to `src/keys.cpp` when published; until then a release build trusts
-  none.
+  Enterest's keys were to be added to `src/keys.cpp` when published; spec 0021 replaced that with
+  keys each build names.
 - **Confirmed in phase 2** (the e2e, in CI on Linux and run locally on macOS):
   - DuckDB links each loadable extension statically with DuckDB itself
     (`EXTENSION_STATIC_BUILD`), mbedtls included. `MbedTlsWrapper` and `HTTPTransportManager` are
@@ -636,8 +637,9 @@ kista::Usage::SendAsync(context, "myext", "attach", {{"sources", 3}});  // from 
 - **kista issues nothing.** It holds no licence key; it stores only licences that verify against the
   operator's configured keys. A tenant administrator cannot add a trusted key. A compromised kista
   could serve a licence to the wrong user of the same organisation, never mint one.
-- **Root of trust in the SDK**: Enterest's keys are compiled into the extension; nothing at run time
-  adds one. A forged licence fails in the SDK even if a kista accepted it.
+- **Root of trust in the SDK**: Enterest's keys are compiled into the extension (since spec 0021,
+  the keys its build names); nothing at run time adds one. A forged licence fails in the SDK even
+  if a kista accepted it.
 - **A licence is private by default.** Only a token holding `install` gets it. A public licence is
   the administrator's explicit act, with a warning, since anyone who reaches the channel can then
   copy it. The holder is not checked anywhere.
@@ -751,7 +753,8 @@ kista::Usage::SendAsync(context, "myext", "attach", {{"sources", 3}});  // from 
 - Licences carried in a bundle (spec 0014), for air-gapped sites without an administrator's import.
 - The SDK for C API extensions.
 - The SDK on Windows, tested (the module lookup with `GetModuleHandleEx` is written, not run).
-- Enterest's licence keys in `sdk/cpp/src/keys.cpp` once they are published.
+- ~~Enterest's licence keys in `sdk/cpp/src/keys.cpp` once they are published.~~ Superseded by
+  spec 0021: each build names its licence keys.
 - Seats, or concurrent-use limits enforced with check-ins, if Enterest's plans need them.
 - An expected holder per tenant, set by a server administrator, so a licence for another holder is
   refused at import (useful to Enterest).

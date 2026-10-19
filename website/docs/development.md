@@ -353,9 +353,11 @@ make e2e
 - The build also fills `e2e/.build/sdk` with what the C++ SDK builds against: DuckDB's headers,
   its bundled mbedtls and the library. `make sdk-test` runs
   every licence vector (`internal/license/testdata/vectors.json`) through the C++ verifier, which
-  must agree with the Go one on each status, rule and claim, and checks that the library an
-  extension links (`kista_sdk`) trusts no test key. `e2e/sdk_test.go` runs `kista_demo` against
-  kista serve: the licence fetched with an http secret and kept beside the module, an upgrade, the
+  must agree with the Go one on each status, rule and claim. It also checks the key blocks
+  (`kista_sdk_license_keys`, spec 0021): a target trusts exactly its own keys, a target without
+  them does not link, and malformed key files are refused at configure time.
+- `e2e/sdk_test.go` reads `kista_demo`'s key block back, and runs `kista_demo` against kista
+  serve: the licence fetched with an http secret and kept beside the module, an upgrade, the
   file offline, `Check()` on an expired or a missing licence, and usage in the statistics.
 
 ## The console

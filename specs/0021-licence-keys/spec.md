@@ -1,6 +1,6 @@
 # Spec 0021: Licence keys in the build, and licences in bundles
 
-- **Status**: draft
+- **Status**: accepted; phase 1 part 1 (the SDK and the reader) implemented
 - **Date**: 2026-10-18
 - **Author**: vgsml, Claude
 
@@ -49,16 +49,25 @@ kista_sdk_license_keys(myext_extension          ${CMAKE_CURRENT_SOURCE_DIR}/lice
 
 - **Per target.** `kista_sdk_license_keys(<target> <pem>…)` takes one to four PEM files. It
   generates a source file with the target's key block and adds it to the target. The SDK library
-  holds no keys. It refers to the key block's symbol, so an extension that links the SDK without
-  calling the function fails to link, with an error naming the function.
-  - The configure step checks that each file holds exactly one `PUBLIC KEY` PEM block.
+  holds no keys. It refers to the key block's symbol, `kista_sdk_license_keys`, so an extension that
+  links the SDK without calling the function fails to link, with an error naming the function.
+  - **Hidden.** The symbol, and the SDK, have hidden visibility. A hidden reference is resolved when
+    the module links, so even a shared library that may leave symbols undefined (Linux) fails to
+    link, and an extension never binds to another loaded module's block. The exception is macOS
+    with `-undefined dynamic_lookup` (DuckDB's non-static extension builds), where an undefined
+    symbol carries no visibility: such a build fails to load, since no module exports a block.
+  - The configure step checks that each file holds exactly one `PUBLIC KEY` PEM block, in the
+    canonical form `openssl pkey -pubout` writes (64-column base64; CRLF line ends are normalised),
+    and no key given twice.
   - The full check (RSA-2048, `e = 65537`) is the SDK's at run time and kista's at intake.
-  - Several extensions can be built in one tree, each with its own keys.
+  - Several extensions can be built in one tree, each with its own keys. Two licensed extensions
+    cannot be linked statically into one DuckDB: their blocks share the symbol.
 - **No issuer keys in the SDK.** The SDK has no compiled-in issuer keys (`kIssuerKeys` in `keys.cpp`
   goes); each build brings its own.
-- **The test key.** `kista_sdk_testkey` is the key block of the licence vectors' test key, as a
-  library to link instead of calling the function. `kista_demo` links it, so the e2e cases carry a
-  real block. `TrustsTestKey()` stays.
+- **The test key.** `kista_sdk_testkey` is the key block of the licence vectors' test key, as an
+  interface library to link instead of calling the function (each target that links it compiles
+  its own copy of the block). `kista_demo` links it, so the e2e cases carry a real block.
+  `TrustsTestKey()` stays.
 - **Layout.** The block is one constant byte array, defined once, with external linkage and marked
   used:
 
@@ -78,9 +87,11 @@ kista_sdk_license_keys(myext_extension          ${CMAKE_CURRENT_SOURCE_DIR}/lice
 **Reading the block.** kista reads the body: the file without its 256-byte signature, where the
 block lies before DuckDB's metadata.
 - It scans for every occurrence of the magic, streaming, during the pass that hashes the body.
+  More than 16 occurrences is malformed.
 - **Parsing is strict:**
   - the count is 1 to 4, and each length 1 to 2,048;
-  - each key is exactly one `PUBLIC KEY` PEM block, with no other bytes;
+  - each key is exactly one `PUBLIC KEY` PEM block in the canonical encoding (no headers, 64-column
+    base64, LF line ends), with no other bytes;
   - its DER re-encodes identically, and it is RSA-2048 with `e = 65537`;
   - no key appears twice;
   - the end marker follows the last key.
