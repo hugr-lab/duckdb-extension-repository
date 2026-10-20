@@ -1,6 +1,6 @@
 # Spec 0023: Publisher keys: signed requests from any CI
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-10-19
 - **Author**: vgsml, Claude
 
