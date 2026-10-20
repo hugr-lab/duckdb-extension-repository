@@ -464,3 +464,8 @@ capabilities:
 {{ toYaml . }}
 {{- end }}
 {{- end -}}
+
+{{/* The namespace of every namespaced object: namespaceOverride, else the release's (spec 0024). */}}
+{{- define "kista.namespace" -}}
+{{- .Values.namespaceOverride | default .Release.Namespace -}}
+{{- end -}}

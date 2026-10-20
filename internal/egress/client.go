@@ -237,7 +237,7 @@ func (c *Client) Get(ctx context.Context, raw string) ([]byte, http.Header, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("%w %d from %s", ErrStatus, resp.StatusCode, u.Hostname())
+		return nil, nil, &StatusError{Status: resp.StatusCode, Host: u.Hostname()}
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBytes+1))
 	if err != nil {
@@ -331,6 +331,11 @@ func (e *StatusError) Error() string {
 
 // Unwrap makes a StatusError ErrStatus.
 func (e *StatusError) Unwrap() error { return ErrStatus }
+
+// Temporary reports an answer that may pass: a 5xx, or 429.
+func (e *StatusError) Temporary() bool {
+	return e.Status >= 500 || e.Status == http.StatusTooManyRequests
+}
 
 // AuthError is an answer 401 or 403 (errors.Is ErrAuth).
 type AuthError struct {

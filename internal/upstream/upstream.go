@@ -12,10 +12,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"io"
 	"net/http"
-	"net/url"
-	"path"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +27,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream/duckdbkeys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream/upspec"
 )
 
 // DuckDB's repositories, over https (spec 0009).
@@ -130,10 +128,15 @@ func (s *Service) tenant(ctx context.Context, a authz.Actor, name string) (store
 // Add creates an upstream (spec 0009). A repository's .well-known file must list a pinned key; a
 // name with a live replacement in the channel, or on another upstream of the channel, is refused.
 func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec) (store.Upstream, error) {
-	t, err := s.tenant(ctx, a, tenant)
-	if err != nil {
-		return store.Upstream{}, err
-	}
+	return s.add(ctx, a, tenant, sp)
+}
+
+// CheckSource makes Add's checks of the upstream itself, for a channel of channelKind in tenant:
+// its fields, the passthrough rules, its credential (from configuration), and a repository's
+// .well-known read through egress with a pinned key among its keys. It reads nothing of the store,
+// so the bootstrap checks an upstream of a tenant or channel it has not made yet (spec 0024). The
+// answer is the upstream as Add would record it (defaulted, normalised), without ids.
+func (s *Service) CheckSource(ctx context.Context, tenant string, sp Spec, channelKind string) (store.Upstream, error) {
 	if sp.Mode == "" {
 		sp.Mode = store.ModeMirror
 	}
@@ -141,18 +144,19 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 	if sp.Visibility == "" {
 		sp.Visibility = store.Private
 	}
-	u := store.Upstream{TenantID: t.ID, Name: sp.Name, Kind: sp.Kind, Mode: sp.Mode, Visibility: sp.Visibility,
-		State: store.UpstreamActive, CreatedBy: a.String()}
+	u := store.Upstream{Name: sp.Name, Kind: sp.Kind, Mode: sp.Mode, Visibility: sp.Visibility, State: store.UpstreamActive}
 	if err := store.ValidName(sp.Name); err != nil {
 		return u, err
 	}
+	var err error
 	switch sp.Kind {
 	case store.UpstreamCore, store.UpstreamCommunity:
 		if sp.Prefix != "" || len(sp.Keys) > 0 {
 			return u, fmt.Errorf("%w: a %s upstream takes no prefix or keys", store.ErrInvalid, sp.Kind)
 		}
 	case store.UpstreamRepo:
-		if u.Prefix, err = s.checkPrefix(sp.Prefix, sp.Mode); err != nil {
+		portAllowed := func(p uint16) bool { return s.Fetch != nil && s.Fetch.PortAllowed(p) }
+		if u.Prefix, err = upspec.Prefix(sp.Prefix, sp.Mode, portAllowed); err != nil {
 			return u, err
 		}
 		if len(sp.Keys) == 0 {
@@ -168,7 +172,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 		return u, fmt.Errorf("%w: visibility %q", store.ErrInvalid, sp.Visibility)
 	}
 	for _, k := range sp.Keys {
-		if err := checkFingerprint(k); err != nil {
+		if err := upspec.Fingerprint(k); err != nil {
 			return u, err
 		}
 	}
@@ -180,18 +184,14 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 			return u, err
 		}
 	}
-	for i := range sp.Entries {
-		if err := checkEntry(sp.Kind, sp.Mode, &sp.Entries[i]); err != nil {
+	entries := slices.Clone(sp.Entries)
+	for i := range entries {
+		if err := upspec.Entry(sp.Kind, sp.Mode, &entries[i]); err != nil {
 			return u, err
 		}
 	}
-	u.Keys, u.Platforms, u.Entries = dedup(sp.Keys), dedup(sp.Platforms), sp.Entries
-	sc, err := s.Store.GetServeChannel(ctx, tenant, sp.Channel)
-	if err != nil {
-		return u, err
-	}
-	passthrough := sc.Channel.Kind == store.ChannelPassthrough
-	if passthrough {
+	u.Keys, u.Platforms, u.Entries = upspec.Dedup(sp.Keys), upspec.Dedup(sp.Platforms), entries
+	if channelKind == store.ChannelPassthrough {
 		// DuckDB checks a core-typed repository against its core keys only: nothing else would load
 		if u.Kind != store.UpstreamCore {
 			return u, fmt.Errorf("%w: a passthrough channel takes duckdb-core upstreams only", store.ErrInvalid)
@@ -213,68 +213,136 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec
 		}
 		u.Credential = sp.Credential
 	}
-	u.ChannelID = sc.Channel.ID
 	if u.Kind == store.UpstreamRepo && u.Mode != store.ModeBundle { // bundle mode: checked at import, from the bundle
 		if _, err := s.repoKeys(ctx, u); err != nil {
+			var se *egress.StatusError
+			if errors.Is(err, egress.ErrConnect) || errors.As(err, &se) && se.Temporary() {
+				// still ErrInvalid for the API (400, as before); the bootstrap tries ErrSourceFetch again
+				return u, fmt.Errorf("%w: %w: %w", ErrSourceFetch, store.ErrInvalid, err)
+			}
 			return u, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 		}
 	}
+	return u, nil
+}
+
+// ErrSourceFetch is a source's .well-known that cannot be read for now: no connection, a timeout, a
+// 5xx or 429 (a bootstrap tries again; spec 0024).
+var ErrSourceFetch = errors.New("upstream: the source cannot be read for now")
+
+func (s *Service) add(ctx context.Context, a authz.Actor, tenant string, sp Spec) (store.Upstream, error) {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return store.Upstream{}, err
+	}
+	u, passthrough, err := s.prepareAdd(ctx, a, t, sp)
+	if err != nil {
+		return u, err
+	}
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
-		if _, err := tx.GetUpstream(ctx, t.ID, u.Name); err == nil {
-			return fmt.Errorf("%w: upstream %s", store.ErrExists, u.Name)
-		} else if !errors.Is(err, store.ErrNotFound) {
-			return err
-		}
-		names := make([]string, len(u.Entries))
-		for i, e := range u.Entries {
-			names[i] = e.Name
-		}
-		if err := s.collisions(ctx, tx, u, names); err != nil {
-			return err
-		}
-		if passthrough { // once per tenant: replacements made before 1b become shadows
-			first, err := tx.TakeShadowBackfill(ctx, t.ID)
-			if err != nil {
-				return err
-			}
-			if first {
-				builds, err := tx.LiveSignedBuilds(ctx, t.ID)
-				if err != nil {
-					return err
-				}
-				for _, b := range builds {
-					if reserved.Kind(b.Name) == reserved.Core && !s.Releases.DuckDBCore(b) {
-						added, err := tx.AddShadow(ctx, t.ID, b.Name, a.String())
-						if err != nil {
-							return err
-						}
-						if added {
-							if err := tx.Event(ctx, t.ID, a.String(), "shadow.add", "shadow:"+b.Name, map[string]any{"name": b.Name}); err != nil {
-								return err
-							}
-						}
-					}
-				}
-			}
-		}
-		if err := tx.InsertUpstream(ctx, &u); err != nil {
-			return err
-		}
-		entries := make([]string, len(u.Entries))
-		for i, e := range u.Entries {
-			entries[i] = e.Name
-		}
-		if err := tx.Event(ctx, t.ID, a.String(), "upstream.add", "upstream:"+u.Name, map[string]any{"name": u.Name, "kind": u.Kind,
-			"prefix": u.Prefix, "channel": sp.Channel, "mode": u.Mode, "visibility": u.Visibility, "keys": u.Keys,
-			"platforms": u.Platforms, "extensions": entries, "credential": u.Credential}); err != nil {
-			return err
-		}
-		if err := s.checkCells(ctx, tx, u); err != nil {
+		if err := s.insert(ctx, tx, a, t, &u, sp.Channel, passthrough); err != nil {
 			return err
 		}
 		return bumpTenant(ctx, tx, t.ID)
 	})
 	return u, err
+}
+
+// prepareAdd makes the checks of the upstream itself (CheckSource) for its channel in tenant t.
+func (s *Service) prepareAdd(ctx context.Context, a authz.Actor, t store.Tenant, sp Spec) (store.Upstream, bool, error) {
+	sc, err := s.Store.GetServeChannel(ctx, t.Name, sp.Channel)
+	if err != nil {
+		return store.Upstream{}, false, err
+	}
+	u, err := s.CheckSource(ctx, t.Name, sp, sc.Channel.Kind)
+	u.TenantID, u.CreatedBy, u.ChannelID = t.ID, a.String(), sc.Channel.ID
+	return u, sc.Channel.Kind == store.ChannelPassthrough, err
+}
+
+// CheckAddAll makes every check Add would make for each upstream, in order, as if each before it had
+// been added (the bootstrap's check, spec 0024): the sources' .well-known reads, then one
+// transaction of Add's own writes, rolled back. It answers the index of the first upstream refused,
+// with its error; -1 and nil when Add would take them all.
+func (s *Service) CheckAddAll(ctx context.Context, a authz.Actor, tenant string, sps []Spec) (int, error) {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return 0, err
+	}
+	us := make([]store.Upstream, len(sps))
+	pass := make([]bool, len(sps))
+	for i, sp := range sps {
+		if us[i], pass[i], err = s.prepareAdd(ctx, a, t, sp); err != nil {
+			return i, err
+		}
+	}
+	failed := -1
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
+		for i := range us {
+			if err := s.insert(ctx, tx, a, t, &us[i], sps[i].Channel, pass[i]); err != nil {
+				failed = i
+				return err
+			}
+		}
+		return errPlanned
+	})
+	if errors.Is(err, errPlanned) {
+		return -1, nil
+	}
+	return max(failed, 0), err
+}
+
+// errPlanned rolls CheckAddAll's transaction back.
+var errPlanned = errors.New("upstream: planned, not added")
+
+// insert records an upstream under the tenant's upstream lock: a name not taken, no collision in its
+// channel, the shadows of a first passthrough upstream, its event, and the limits.
+func (s *Service) insert(ctx context.Context, tx *store.Tx, a authz.Actor, t store.Tenant, u *store.Upstream, channel string, passthrough bool) error {
+	if _, err := tx.GetUpstream(ctx, t.ID, u.Name); err == nil {
+		return fmt.Errorf("%w: upstream %s", store.ErrExists, u.Name)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	names := make([]string, len(u.Entries))
+	for i, e := range u.Entries {
+		names[i] = e.Name
+	}
+	if err := s.collisions(ctx, tx, *u, names); err != nil {
+		return err
+	}
+	if passthrough { // once per tenant: replacements made before 1b become shadows
+		first, err := tx.TakeShadowBackfill(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		if first {
+			builds, err := tx.LiveSignedBuilds(ctx, t.ID)
+			if err != nil {
+				return err
+			}
+			for _, b := range builds {
+				if reserved.Kind(b.Name) == reserved.Core && !s.Releases.DuckDBCore(b) {
+					added, err := tx.AddShadow(ctx, t.ID, b.Name, a.String())
+					if err != nil {
+						return err
+					}
+					if added {
+						if err := tx.Event(ctx, t.ID, a.String(), "shadow.add", "shadow:"+b.Name, map[string]any{"name": b.Name}); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := tx.InsertUpstream(ctx, u); err != nil {
+		return err
+	}
+	if err := tx.Event(ctx, t.ID, a.String(), "upstream.add", "upstream:"+u.Name, map[string]any{"name": u.Name, "kind": u.Kind,
+		"prefix": u.Prefix, "channel": channel, "mode": u.Mode, "visibility": u.Visibility, "keys": u.Keys,
+		"platforms": u.Platforms, "extensions": names, "credential": u.Credential}); err != nil {
+		return err
+	}
+	return s.checkCells(ctx, tx, *u)
 }
 
 var errBundleCredential = fmt.Errorf("%w: a bundle-mode upstream contacts no source and takes no credential", store.ErrInvalid)
@@ -317,94 +385,6 @@ func (s *Service) SetUsage(ctx context.Context, a authz.Actor, tenant, name, val
 	return s.change(ctx, a, tenant, name, "usage", map[string]any{"value": value}, func(tx *store.Tx, u *store.Upstream) error {
 		return tx.SetUpstreamUsage(ctx, u, value, expected)
 	})
-}
-
-// checkPrefix normalises a repository prefix: https (http to loopback in development), no user
-// info, query, fragment or dot segments, and a port egress may reach. A bundle-mode upstream never
-// contacts its prefix, which is only the source's identity: its port is not checked.
-func (s *Service) checkPrefix(raw, mode string) (string, error) {
-	bad := func(why string) (string, error) {
-		return "", fmt.Errorf("%w: prefix %q: %s", store.ErrInvalid, raw, why)
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.Opaque != "" {
-		return bad("not an absolute URL")
-	}
-	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") {
-		return bad("no user info, query or fragment")
-	}
-	if u.Scheme != "https" && (u.Scheme != "http" || mode == store.ModeBundle) { // http (loopback, dev) is egress's rule, checked by a fetch
-		return bad("not https")
-	}
-	for _, seg := range strings.Split(u.Path, "/") {
-		if seg == "." || seg == ".." {
-			return bad("dot segments")
-		}
-	}
-	if u.RawPath != "" {
-		return bad("escaped path characters")
-	}
-	if p := u.Port(); p != "" {
-		n, err := strconv.ParseUint(p, 10, 16)
-		if err != nil || mode != store.ModeBundle && !s.Fetch.PortAllowed(uint16(n)) {
-			return bad("egress does not reach that port")
-		}
-	}
-	u.Path = strings.TrimRight(path.Clean("/"+u.Path), "/")
-	u.Scheme, u.Host = strings.ToLower(u.Scheme), strings.ToLower(u.Host)
-	if u.Port() == map[string]string{"https": "443", "http": "80"}[u.Scheme] {
-		u.Host = u.Hostname() // the default port is dropped: one upstream, one form
-		if strings.Contains(u.Host, ":") {
-			u.Host = "[" + u.Host + "]"
-		}
-	}
-	return u.String(), nil
-}
-
-func checkFingerprint(fp string) error {
-	h, ok := strings.CutPrefix(fp, "sha256:")
-	if !ok || len(h) != 64 || strings.Trim(h, "0123456789abcdef") != "" {
-		return fmt.Errorf("%w: key fingerprint %q (sha256:<64 lowercase hex>)", store.ErrInvalid, fp)
-	}
-	return nil
-}
-
-// checkEntry validates an allowlist entry for an upstream of kind (spec 0009): a canonical name,
-// reserved names only from their own repository unless allow_reserved, valid versions.
-func checkEntry(kind, mode string, e *store.UpstreamEntry) error {
-	if e.Name == "*" { // any name: pull-through only, never a reserved name, no versions
-		if mode != store.ModePullThrough || len(e.Versions) > 0 || e.AllowReserved {
-			return fmt.Errorf("%w: \"*\" is a pull-through upstream's entry, without versions or allow_reserved", store.ErrInvalid)
-		}
-		if kind == store.UpstreamCore { // every core name is reserved: "*" would take none
-			return fmt.Errorf("%w: \"*\" takes no core name; list them", store.ErrInvalid)
-		}
-		return nil
-	}
-	if c := reserved.Canonical(e.Name); c != "" {
-		return fmt.Errorf("%w: %q is an alias; DuckDB installs it as %q", store.ErrInvalid, e.Name, c)
-	}
-	if err := release.ValidName(e.Name); err != nil {
-		return err
-	}
-	switch k := reserved.Kind(e.Name); {
-	case k == reserved.Core && kind != store.UpstreamCore && !e.AllowReserved,
-		k == reserved.Community && kind != store.UpstreamCommunity && !e.AllowReserved:
-		return fmt.Errorf("%w: %q is a DuckDB %s name; a %s upstream provides it only with allow_reserved", store.ErrInvalid, e.Name, k, kind)
-	}
-	for _, v := range e.Versions {
-		if err := release.ValidExtVersion(v); err != nil {
-			return err
-		}
-	}
-	e.Versions = dedup(e.Versions)
-	return nil
-}
-
-func dedup(xs []string) []string {
-	out := slices.Clone(xs)
-	slices.Sort(out)
-	return slices.Compact(out)
 }
 
 // collisions refuses names another upstream of the channel lists or a live replacement holds in
@@ -622,7 +602,7 @@ func (s *Service) PutEntry(ctx context.Context, a authz.Actor, tenant, name stri
 	created := false
 	_, err := s.change(ctx, a, tenant, name, "extension.put", map[string]any{"value": e.Name, "versions": e.Versions,
 		"allow_reserved": e.AllowReserved}, func(tx *store.Tx, u *store.Upstream) error {
-		if err := checkEntry(u.Kind, u.Mode, &e); err != nil {
+		if err := upspec.Entry(u.Kind, u.Mode, &e); err != nil {
 			return err
 		}
 		created = !slices.ContainsFunc(u.Entries, func(x store.UpstreamEntry) bool { return x.Name == e.Name })
@@ -680,7 +660,7 @@ func (s *Service) RemovePlatform(ctx context.Context, a authz.Actor, tenant, nam
 
 // AddKey pins a key fingerprint of a repository upstream.
 func (s *Service) AddKey(ctx context.Context, a authz.Actor, tenant, name, fingerprint string) error {
-	if err := checkFingerprint(fingerprint); err != nil {
+	if err := upspec.Fingerprint(fingerprint); err != nil {
 		return err
 	}
 	_, err := s.change(ctx, a, tenant, name, "key.add", map[string]any{"value": fingerprint}, func(tx *store.Tx, u *store.Upstream) error {

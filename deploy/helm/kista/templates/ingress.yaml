@@ -6,6 +6,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "kista.fullname" . }}
+  namespace: {{ include "kista.namespace" $ }}
   labels: {{- include "kista.labels" . | nindent 4 }}
   {{- $ann := deepCopy (.Values.ingress.annotations | default dict) -}}
   {{- if .Values.gke.managedCertificate.enabled }}

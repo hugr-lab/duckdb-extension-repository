@@ -1,0 +1,4 @@
+# want: namespaceOverride
+namespaceOverride: Not_A_Namespace
+config:
+  store: {kind: sqlite, path: /var/lib/kista/kista.db}

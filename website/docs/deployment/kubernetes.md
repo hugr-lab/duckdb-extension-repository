@@ -98,6 +98,31 @@ Write sizes as strings with units (`max_body: 1GiB`): Helm turns large numbers i
 - the NetworkPolicy without the ingress controller's pods or load-balancer ranges;
 - `profile: dev` without `devProfile: true`: it relaxes the key and identity rules.
 
+## Another namespace
+
+`namespaceOverride` puts every object the chart makes in that namespace instead of the release's
+(spec 0024). An umbrella chart uses it to install kista apart from the platform, whose namespace is
+a trust boundary of its own. The chart creates no namespace:
+create it, with its labels (Pod Security Admission, the ones the NetworkPolicy selects on).
+
+- **What must live there too:** everything a pod or the Ingress refers to: `tlsSecret`,
+  `secretVolumes`, `imagePullSecrets`, the Secrets of `envFrom`, `existingClaim`, and the Ingress's
+  TLS Secrets.
+- **Cloud identities name the namespace:** the IRSA role's trust (`sub`), the Azure federated
+  credential's subject, and the GKE Workload Identity member name it, so they name the override.
+- **The NetworkPolicy** selects the ingress controller's pods in kista's namespace unless
+  `networkPolicy.ingressController.namespaceSelector` names the controller's. Clients (DuckDB,
+  nodes) reach kista through the ingress, at `serve.public_url`.
+- **A namespace made by the umbrella** is deleted by its `helm uninstall`, and with it everything in
+  it, the volumes' claims included. Create the namespace outside that release, or annotate the
+  Namespace object `helm.sh/resource-policy: keep`; a StorageClass with `reclaimPolicy: Retain`
+  keeps the disks.
+- **`helm template`** renders the namespace too: give it `-n` (or the override), or the objects
+  name the current context's namespace.
+- **Egress at startup.** A bootstrap with upstreams reads their `.well-known` before serving: in a
+  cluster that denies egress by default, a policy of the umbrella's must let kista's pods reach them
+  on 443, and DNS. The chart's NetworkPolicy covers ingress only.
+
 ## Storage and replicas
 
 - **PostgreSQL or SQL Server** with a remote blob store (`s3`, `azureblob`, `gcs`) runs any

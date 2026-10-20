@@ -28,6 +28,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream/upspec"
 )
 
 // ErrRefused is a bootstrap that would change what exists: nothing is written.
@@ -42,7 +44,9 @@ type Deps struct {
 	Tenants *tenants.Service
 	Auth    *tenants.AuthAdmin
 	Keys    *keys.Service
-	Log     *slog.Logger
+	// Upstreams makes the section's upstreams (spec 0024).
+	Upstreams *upstream.Service
+	Log       *slog.Logger
 }
 
 // Options say how one run goes.
@@ -228,7 +232,8 @@ func orDefault(d, def time.Duration) time.Duration {
 // propagated), the network, a busy database. Anything else is not tried again.
 func transient(err error) bool {
 	var ne net.Error
-	return errors.Is(err, keys.ErrSigner) || errors.Is(err, tenants.ErrIssuerFetch) || errors.Is(err, store.ErrBusy) || errors.As(err, &ne)
+	return errors.Is(err, keys.ErrSigner) || errors.Is(err, tenants.ErrIssuerFetch) || errors.Is(err, upstream.ErrSourceFetch) ||
+		errors.Is(err, store.ErrBusy) || errors.As(err, &ne)
 }
 
 // applied looks at the record. A pending one is not done. When the bootstrap was applied, a section
@@ -614,6 +619,12 @@ func Check(ctx context.Context, d Deps, b config.Bootstrap, o Options) (Plan, er
 			item("grant", g.Key(), Create, "")
 		}
 	}
+	// a tenant the bootstrap did not make, without -adopt, is refused below whatever its upstreams
+	// are: the sources are not read then, so the refusal is the answer, not a wait on the network
+	readSources := !p.TenantExists || p.Resumed || o.Adopt
+	if err := checkUpstreams(ctx, d, b, o, p.TenantExists, readSources, item); err != nil {
+		return p, err
+	}
 	// adoption: nothing is made in a tenant the bootstrap did not make, unless asked
 	if p.TenantExists && !p.Resumed && p.tenantChanges() && !o.Adopt {
 		item("tenant", tb.Name, Refused, "it exists and the bootstrap would change it: kista admin bootstrap -adopt")
@@ -791,6 +802,15 @@ func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section stri
 			made("grant", g.Key())
 		}
 	}
+	// 10. the upstreams (spec 0024): due for a first run once made
+	for _, ub := range b.Upstreams {
+		if p.action("upstream", ub.Name) == Create {
+			if _, err := d.Upstreams.Add(ctx, a, tb.Name, upstreamSpec(ub)); err != nil {
+				return res, err
+			}
+			made("upstream", ub.Name)
+		}
+	}
 	t, err := d.Store.GetTenant(ctx, tb.Name)
 	if err != nil {
 		return res, err
@@ -866,4 +886,185 @@ func tenantID(ctx context.Context, d Deps, name string) string {
 		return ""
 	}
 	return t.ID
+}
+
+// upstreamSpec is a section's upstream as upstream add takes it.
+func upstreamSpec(u config.BootstrapUpstream) upstream.Spec {
+	return upstream.Spec{Name: u.Name, Kind: u.Kind, Prefix: u.Prefix, Channel: u.Channel, Mode: u.Mode,
+		Visibility: u.Visibility, Credential: u.Credential, Keys: u.Keys, Platforms: u.Platforms, Entries: u.StoreEntries()}
+}
+
+// checkUpstreams plans the section's upstreams (spec 0024): one that exists is the same or refused;
+// an absent one is checked as upstream add checks it, its source's .well-known read, so a refusal is
+// found before any write. In a channel that exists, against what it holds, all of them together
+// (CheckAddAll); in one the bootstrap is to make, the upstream itself (CheckSource), its collisions
+// and limits having been checked at load. A source not reachable for now is
+// upstream.ErrSourceFetch, which the bootstrap tries again.
+func checkUpstreams(ctx context.Context, d Deps, b config.Bootstrap, o Options, tenantExists, readSources bool,
+	item func(kind, name string, a Action, detail string, args ...any)) error {
+	if len(b.Upstreams) == 0 {
+		return nil
+	}
+	kinds := map[string]string{}
+	for _, ch := range b.Channels {
+		kinds[ch.Name] = ch.Kind
+	}
+	var tenantID string
+	if tenantExists {
+		t, err := d.Store.GetTenantAny(ctx, b.Tenant.Name)
+		if err != nil {
+			return err
+		}
+		if t.State != store.TenantActive || !t.DeletingAt.IsZero() {
+			return nil // the tenant itself is refused: nothing more to check in it
+		}
+		tenantID = t.ID
+	}
+	var inChannels []config.BootstrapUpstream
+	for _, ub := range b.Upstreams {
+		sp := upstreamSpec(ub)
+		var chID string
+		if tenantExists {
+			sc, err := d.Store.GetServeChannel(ctx, b.Tenant.Name, ub.Channel)
+			switch {
+			case err == nil:
+				chID, kinds[ub.Channel] = sc.Channel.ID, sc.Channel.Kind
+			case !errors.Is(err, store.ErrNotFound):
+				return err
+			}
+		}
+		var cur *store.Upstream
+		if tenantID != "" {
+			err := d.Store.InTx(ctx, "", func(tx *store.Tx) error {
+				u, err := tx.GetUpstream(ctx, tenantID, ub.Name)
+				if err == nil {
+					cur = &u
+				}
+				return err
+			})
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+		}
+		if cur != nil {
+			if why := upstreamDiff(*cur, ub, chID); why != "" {
+				item("upstream", ub.Name, Refused, "its %s differs", why)
+			} else {
+				item("upstream", ub.Name, Same, "")
+			}
+			continue
+		}
+		if !readSources {
+			item("upstream", ub.Name, Create, "%s %s (not checked: the tenant needs -adopt)", ub.Kind, ub.Channel)
+			continue
+		}
+		if chID != "" {
+			inChannels = append(inChannels, ub)
+			continue
+		}
+		_, err := d.Upstreams.CheckSource(ctx, b.Tenant.Name, sp, kinds[ub.Channel])
+		if err := classify(err, ub, item); err != nil {
+			return err
+		}
+	}
+	// the tenant's count with the new ones (an adopted tenant holds upstreams of its own)
+	if tenantID != "" {
+		var have []store.Upstream
+		if err := d.Store.InTx(ctx, "", func(tx *store.Tx) error {
+			var err error
+			have, err = tx.ListUpstreams(ctx, tenantID)
+			return err
+		}); err != nil {
+			return err
+		}
+		absent := 0
+		for _, ub := range b.Upstreams {
+			if !slices.ContainsFunc(have, func(u store.Upstream) bool { return u.Name == ub.Name }) {
+				absent++
+			}
+		}
+		if len(have)+absent > store.MaxUpstreams {
+			item("upstream", "*", Refused, "the tenant would hold %d upstreams (at most %d)", len(have)+absent, store.MaxUpstreams)
+		}
+	}
+	// the upstreams of channels that exist: checked together, each as if those before it were
+	// added, so two of the section's never pass alone and collide in the apply
+	for len(inChannels) > 0 {
+		sps := make([]upstream.Spec, len(inChannels))
+		for i, ub := range inChannels {
+			sps[i] = upstreamSpec(ub)
+		}
+		i, err := d.Upstreams.CheckAddAll(ctx, o.Actor, b.Tenant.Name, sps)
+		if err == nil {
+			for _, ub := range inChannels {
+				if err := classify(nil, ub, item); err != nil {
+					return err
+				}
+			}
+			break
+		}
+		if err := classify(err, inChannels[i], item); err != nil {
+			return err
+		}
+		inChannels = slices.Delete(inChannels, i, i+1)
+	}
+	return nil
+}
+
+// classify makes a check's answer a plan item: created, or refused; a source not reachable for now
+// (or anything else) is the bootstrap's error.
+func classify(err error, ub config.BootstrapUpstream, item func(kind, name string, a Action, detail string, args ...any)) error {
+	name := ub.Name
+	switch {
+	case err == nil:
+		item("upstream", name, Create, "%s %s", ub.Kind, ub.Channel)
+	case errors.Is(err, upstream.ErrSourceFetch):
+		return err
+	case errors.Is(err, store.ErrInvalid), errors.Is(err, upstream.ErrCollision), errors.Is(err, store.ErrExists),
+		errors.Is(err, upstream.ErrNoKeys), errors.Is(err, store.ErrNotFound):
+		item("upstream", name, Refused, "%v", err)
+	default:
+		return err
+	}
+	return nil
+}
+
+// upstreamDiff names the first field an existing upstream has otherwise than the section's
+// (defaulted, so normalised as upstream add normalises it); more keys, platforms or entries than the
+// section lists are the administrator's.
+func upstreamDiff(cur store.Upstream, want config.BootstrapUpstream, channelID string) string {
+	switch {
+	case cur.Kind != want.Kind:
+		return "kind"
+	case cur.Prefix != want.Prefix:
+		return "prefix"
+	case channelID == "" || cur.ChannelID != channelID:
+		return "channel"
+	case cur.Mode != want.Mode:
+		return "mode"
+	case cur.Visibility != want.Visibility:
+		return "visibility"
+	case cur.Credential != want.Credential:
+		return "credential"
+	}
+	for _, k := range want.Keys {
+		if !slices.Contains(cur.Keys, k) {
+			return "keys (" + k + " is not pinned)"
+		}
+	}
+	for _, pl := range want.Platforms {
+		if !slices.Contains(cur.Platforms, pl) {
+			return "platforms (" + pl + " is not fetched)"
+		}
+	}
+	for _, e := range want.StoreEntries() {
+		i := slices.IndexFunc(cur.Entries, func(x store.UpstreamEntry) bool { return x.Name == e.Name })
+		if i < 0 {
+			return "allowlist (" + e.Name + " is not on it)"
+		}
+		if have := cur.Entries[i]; !slices.Equal(upspec.Dedup(have.Versions), e.Versions) || have.AllowReserved != e.AllowReserved {
+			return "allowlist entry " + e.Name
+		}
+	}
+	return ""
 }

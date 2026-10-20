@@ -1,10 +1,10 @@
-kista {{ include "kista.version" . }}, release {{ .Release.Name }} in {{ .Release.Namespace }}.
+kista {{ include "kista.version" . }}, release {{ .Release.Name }}; kista in namespace {{ include "kista.namespace" . }}.
 
 Wait for the pods to be ready:
-  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "kista.fullname" . }}
+  kubectl -n {{ include "kista.namespace" . }} rollout status deploy/{{ include "kista.fullname" . }}
 
 The first administration, in a pod (the image has no shell; kubectl exec runs kista directly):
-  alias ka='kubectl -n {{ .Release.Namespace }} exec -i deploy/{{ include "kista.fullname" . }} -- /kista admin -config /etc/kista/kista.yaml'
+  alias ka='kubectl -n {{ include "kista.namespace" . }} exec -i deploy/{{ include "kista.fullname" . }} -- /kista admin -config /etc/kista/kista.yaml'
   ka migrate
   ka tenant create acme
   ka channel create acme/prod -kind signed

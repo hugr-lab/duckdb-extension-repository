@@ -4,6 +4,7 @@ apiVersion: networking.gke.io/v1beta1
 kind: FrontendConfig
 metadata:
   name: {{ include "kista.fullname" $ }}
+  namespace: {{ include "kista.namespace" $ }}
   labels: {{- include "kista.labels" $ | nindent 4 }}
 spec:
   sslPolicy: {{ . | quote }}

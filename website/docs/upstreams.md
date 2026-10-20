@@ -143,6 +143,14 @@ upstream is followed by pinning the new fingerprint, never automatically. On the
 Adding an upstream or an entry whose name already has a live replacement in its channel (a release
 of another origin) is `409` until an administrator drops the entry or yanks those releases.
 
+### From the bootstrap
+
+An install made from a template can make its channels' upstreams on its first start: the
+`bootstrap` section's `upstreams` take the fields of `upstream add`, and are checked, made and
+recorded once, with the rest of the section
+([configuration](configuration.md#bootstrap), spec 0024). A new mirror is due at once. Upstreams
+wanted later are added here, as above: the bootstrap is not a reconciler.
+
 ## Changing an upstream
 
 | Route (under `/api/v1/tenants/{t}/upstreams`) | CLI |

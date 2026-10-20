@@ -634,6 +634,22 @@ bootstrap:
     console: { client_id: <id>, audience: api://kista-acme }   # optional, as issuer console; also scopes, audience_parameter
   grants:                                # principals of that issuer, as grant add
     - { principal: "role:entra|kista-admin", verbs: [admin] }  # optional channel and extension
+  upstreams:                             # optional, as upstream add (spec 0024)
+    - name: core
+      kind: duckdb-core                  # duckdb-core, duckdb-community or repository
+      channel: prod                      # one of the section's channels
+      platforms: [linux_amd64, linux_arm64]
+      extensions: [ { name: httpfs } ]   # also versions, allow_reserved
+      visibility: public                 # default: private (public on a passthrough channel)
+    - name: vendor
+      kind: repository
+      prefix: https://repo.example.com/vendor/prod
+      keys: ["sha256:<fingerprint>"]     # pinned: one of them signs the source
+      credential: vendor-acme            # optional: one of upstreams.credentials
+      mode: mirror                       # or pull-through
+      channel: prod
+      platforms: [linux_amd64]
+      extensions: [ { name: acl } ]
 ```
 
 - **Where it runs.** `kista serve` applies it as `system:bootstrap`, after migrations and before its
@@ -652,7 +668,15 @@ bootstrap:
   - a suspended or deleted tenant.
 
   The check opens and probes the signers (an attestation key for its own purpose) and fetches a new
-  issuer's discovery document and JWKS.
+  issuer's discovery document and JWKS. For an upstream, it makes the checks `upstream add` makes:
+  - a source's `.well-known` is read, and one of the pinned keys must be in it;
+  - in a channel that exists, a name another upstream lists, or a replacement holds, is refused;
+  - so are the limits.
+
+  An upstream that exists is the same when its kind, prefix, channel, mode, visibility and
+  credential are, its keys and platforms include the section's, and each of the section's names is
+  on its allowlist with the same versions and `allow_reserved`. More than the section lists is the
+  administrator's.
 - **Existing tenants.** The bootstrap never creates anything in a tenant it did not make. Only
   `kista admin bootstrap -adopt` does. Server-wide DuckDB versions and C APIs are not a tenant's.
   A tenant whose objects are all the same is just recorded.
@@ -660,6 +684,10 @@ bootstrap:
   `serve` exits without binding:
   - a signer or an issuer that cannot be reached yet (on a first Azure install, a role assignment
     can take minutes to propagate);
+  - an upstream's `.well-known` that cannot be reached: no connection, a timeout, a 5xx or 429.
+    Any other answer (a 404 included) is a refusal, and so is a host name that does not resolve:
+    egress answers it as it answers an address it refuses, so no tenant learns which internal names
+    exist. DNS must work when kista starts;
   - the network;
   - a busy database.
 
@@ -676,8 +704,8 @@ bootstrap:
 - **Validation at load:**
   - a tenant is required;
   - names, kinds, verbs, versions, C APIs and signer references are checked;
-  - nothing is listed twice: a version, an audience, a channel or its version, a grant, or a signer
-    reference;
+  - nothing is listed twice: a version, an audience, a channel or its version, a grant, a signer
+    reference, an upstream, a name within an upstream, or a name on two upstreams of one channel;
   - the domain must be a configured blob domain;
   - an audience may be neither under `serve.public_url` nor a server audience;
   - the issuer passes the checks of `issuer add` (https, `max_lifetime` within 1m to 7d);
@@ -685,9 +713,32 @@ bootstrap:
     `admin` to a client, or an extension group (the bootstrap makes none);
   - a grant's channel must be one of the section's channels;
   - the console's audience must be one of the tenant's;
+  - an upstream passes `upstream add`'s checks of its fields:
+    - name, kind, mode (mirror or pull-through), visibility, platforms, a prefix that is https on a
+      port egress reaches, and pinned fingerprints;
+    - the allowlist: at least one name for a mirror, canonical names, reserved names only from
+      their own repository unless `allow_reserved`, and `"*"` only on a pull-through upstream;
+    - its channel is one of the section's. A passthrough channel takes `duckdb-core` mirrors only,
+      with public releases;
+    - a credential names one of `upstreams.credentials` that is for this tenant, covers the prefix,
+      and allows public releases when the upstream makes them;
+    - the limits: 100 upstreams, 1,000 names, 100 versions per name, 10 keys, and 20,000 cells per
+      upstream (and 100,000 per tenant) counted from the section's channels;
   - a console client at a server issuer's URL is refused, since a tenant's console does not sign in
     there (spec 0015). Such a tenant has no console client: its administrators use the API, or a
     server administrator uses the console.
+
+**Upstreams.** A new mirror is due at once, so its first run starts when the upstream workers do,
+on whichever replica takes it. A credential's token is first fetched by that run, and a failure
+there shows in the run's status and events (spec 0009), not in the bootstrap. The bootstrap reads
+each source's `.well-known` at startup, so a source must be reachable then: one at a private
+address needs its CIDR in `egress.allow`, and a cluster that denies egress by default needs a policy
+of its own that lets kista's pods reach the sources on 443, and DNS (the chart's NetworkPolicy
+covers ingress only). A source that cannot be reached is tried again for four minutes; then `serve`
+exits.
+An upstream added to the section after the bootstrap was applied gets only the warning above: make
+it with `kista admin upstream add` or the API. `-rearm` then `-adopt` would make it too, but it also
+restores grants revoked since, so run `-dry-run -adopt` first.
 
 It holds no secret: keys are signer references and issuers are public URLs. It does not record who
 changed the configuration; the platform's control-plane log does (the Activity Log, the Kubernetes

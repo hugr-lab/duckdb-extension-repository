@@ -20,6 +20,7 @@ apiVersion: networking.gke.io/v1
 kind: ManagedCertificate
 metadata:
   name: {{ include "kista.fullname" . }}
+  namespace: {{ include "kista.namespace" $ }}
   labels: {{- include "kista.labels" . | nindent 4 }}
 spec:
   domains: {{- toYaml $domains | nindent 4 }}

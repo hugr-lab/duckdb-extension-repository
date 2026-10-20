@@ -44,7 +44,8 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   check                                           verify the schema without changing it
   backup <file>                                   consistent copy of a SQLite store
   bootstrap [-dry-run] [-adopt] [-accept] [-rearm]   apply the config's bootstrap section once (spec 0020):
-                                                  -dry-run prints the plan; -adopt creates in an existing tenant;
+                                                  -dry-run prints the plan (reading signers, issuers and upstreams);
+                                                  -adopt creates in an existing tenant;
                                                   -accept takes a changed section as applied; -rearm forgets it was applied
   tenant create <name> [-display-name …] [-domain <storage domain>]
   tenant list [-state active,suspended,deleting,deleted]   every state but deleted by default

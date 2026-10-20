@@ -2,13 +2,17 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream/upspec"
 )
 
 // Bootstrap names what a first start creates (spec 0020 phase 4a): DuckDB versions, one tenant
@@ -21,6 +25,41 @@ type Bootstrap struct {
 	AttestationKey string             `yaml:"attestation_key" json:"attestation_key,omitempty"` // a signer reference, added active
 	Issuer         *BootstrapIssuer   `yaml:"issuer" json:"issuer,omitempty"`
 	Grants         []BootstrapGrant   `yaml:"grants" json:"grants,omitempty"`
+	// Upstreams are the channels' upstreams (upstream add, spec 0024); omitempty keeps the digest of
+	// a section without them as it was.
+	Upstreams []BootstrapUpstream `yaml:"upstreams" json:"upstreams,omitempty"`
+}
+
+// BootstrapUpstream is an upstream of one of the section's channels (upstream add, spec 0009): a
+// mirror or pull-through upstream; bundle mode is an operator's, never the bootstrap's.
+type BootstrapUpstream struct {
+	Name       string                   `yaml:"name" json:"name,omitempty"`
+	Kind       string                   `yaml:"kind" json:"kind,omitempty"`
+	Prefix     string                   `yaml:"prefix" json:"prefix,omitempty"`
+	Keys       []string                 `yaml:"keys" json:"keys,omitempty"`
+	Channel    string                   `yaml:"channel" json:"channel,omitempty"`
+	Mode       string                   `yaml:"mode" json:"mode,omitempty"`
+	Platforms  []string                 `yaml:"platforms" json:"platforms,omitempty"`
+	Extensions []BootstrapUpstreamEntry `yaml:"extensions" json:"extensions,omitempty"`
+	Visibility string                   `yaml:"visibility" json:"visibility,omitempty"`
+	Credential string                   `yaml:"credential" json:"credential,omitempty"`
+}
+
+// BootstrapUpstreamEntry is an allowlist entry: a name, the versions taken (none: any), and whether
+// a reserved name comes from a repository that is not its own.
+type BootstrapUpstreamEntry struct {
+	Name          string   `yaml:"name" json:"name,omitempty"`
+	Versions      []string `yaml:"versions" json:"versions,omitempty"`
+	AllowReserved bool     `yaml:"allow_reserved" json:"allow_reserved,omitempty"`
+}
+
+// StoreEntries are the allowlist as the store holds it.
+func (u BootstrapUpstream) StoreEntries() []store.UpstreamEntry {
+	out := make([]store.UpstreamEntry, len(u.Extensions))
+	for i, e := range u.Extensions {
+		out[i] = store.UpstreamEntry{Name: e.Name, Versions: e.Versions, AllowReserved: e.AllowReserved}
+	}
+	return out
 }
 
 // BootstrapVersion is a server-wide DuckDB version (version add).
@@ -117,6 +156,36 @@ func (b Bootstrap) Defaulted() Bootstrap {
 		cc.Scopes = strings.Join(cc.ScopeList(), " ")
 		is.Console, b.Issuer = &cc, &is
 	}
+	if len(b.Upstreams) > 0 {
+		kinds := map[string]string{}
+		for _, ch := range b.Channels {
+			kinds[ch.Name] = ch.Kind
+		}
+		ups := make([]BootstrapUpstream, len(b.Upstreams))
+		for i, u := range b.Upstreams {
+			if u.Mode == "" {
+				u.Mode = store.ModeMirror
+			}
+			if u.Visibility == "" {
+				u.Visibility = store.Private
+				if kinds[u.Channel] == store.ChannelPassthrough {
+					u.Visibility = store.Public
+				}
+			}
+			if p, err := upspec.Prefix(u.Prefix, u.Mode, func(uint16) bool { return true }); err == nil && u.Prefix != "" {
+				u.Prefix = p
+			}
+			u.Keys, u.Platforms = upspec.Dedup(u.Keys), upspec.Dedup(u.Platforms)
+			ext := make([]BootstrapUpstreamEntry, len(u.Extensions))
+			for j, e := range u.Extensions {
+				e.Versions = upspec.Dedup(e.Versions)
+				ext[j] = e
+			}
+			u.Extensions = ext
+			ups[i] = u
+		}
+		b.Upstreams = ups
+	}
 	return b
 }
 
@@ -150,7 +219,7 @@ var (
 func validateBootstrap(bad func(string, ...any), c Config) {
 	b := c.Bootstrap
 	if !b.Set() {
-		if len(b.Channels) > 0 || b.Issuer != nil || len(b.Grants) > 0 || b.AttestationKey != "" {
+		if len(b.Channels) > 0 || b.Issuer != nil || len(b.Grants) > 0 || b.AttestationKey != "" || len(b.Upstreams) > 0 {
 			bad("bootstrap needs a tenant")
 		}
 		return
@@ -291,6 +360,7 @@ func validateBootstrap(bad func(string, ...any), c Config) {
 		}
 		once("grant", g.Key())
 	}
+	validateBootstrapUpstreams(bad, c, once)
 }
 
 func issuerNameOr(is *BootstrapIssuer) string {
@@ -298,4 +368,167 @@ func issuerNameOr(is *BootstrapIssuer) string {
 		return "<issuer>"
 	}
 	return is.Name
+}
+
+// validateBootstrapUpstreams checks the section's upstreams with upstream add's own field checks
+// (spec 0024); what depends on what exists (collisions, a source's keys) is the bootstrap's check.
+func validateBootstrapUpstreams(bad func(string, ...any), c Config, once func(what, v string)) {
+	b := c.Bootstrap
+	kinds, versions := map[string]string{}, map[string]int{}
+	for _, ch := range b.Channels {
+		kinds[ch.Name], versions[ch.Name] = ch.Kind, len(ch.Versions)
+	}
+	if len(b.Upstreams) > store.MaxUpstreams {
+		bad("bootstrap.upstreams: at most %d", store.MaxUpstreams)
+	}
+	portAllowed := func(p uint16) bool {
+		if p == 443 || c.loopbackHTTP() {
+			return true
+		}
+		for _, a := range c.Egress.Allow {
+			if slices.Contains(a.Ports, p) {
+				return true
+			}
+		}
+		return false
+	}
+	creds := map[string]Credential{}
+	for _, cr := range c.Upstreams.Credentials {
+		creds[cr.Name] = cr
+	}
+	tenantCells := 0
+	for i, u := range b.Defaulted().Upstreams {
+		where := fmt.Sprintf("bootstrap.upstreams[%d]", i)
+		if err := store.ValidName(u.Name); err != nil {
+			bad("%s.name: %v", where, err)
+		}
+		once("upstream", u.Name)
+		kind, known := kinds[u.Channel]
+		if !known {
+			bad("%s.channel %q is none of bootstrap.channels", where, u.Channel)
+		}
+		switch u.Mode {
+		case store.ModeMirror, store.ModePullThrough:
+		default:
+			bad("%s.mode must be %s or %s (bundle mode is an operator's)", where, store.ModeMirror, store.ModePullThrough)
+		}
+		if u.Visibility != store.Public && u.Visibility != store.Private {
+			bad("%s.visibility must be %s or %s", where, store.Public, store.Private)
+		}
+		switch u.Kind {
+		case store.UpstreamCore, store.UpstreamCommunity:
+			if u.Prefix != "" || len(u.Keys) > 0 {
+				bad("%s: a %s upstream takes no prefix or keys", where, u.Kind)
+			}
+			if u.Credential != "" {
+				bad("%s.credential: only a repository upstream takes one", where)
+			}
+		case store.UpstreamRepo:
+			if _, err := upspec.Prefix(u.Prefix, u.Mode, portAllowed); err != nil {
+				bad("%s.prefix: %v", where, err)
+			} else if strings.HasPrefix(strings.ToLower(u.Prefix), "http://") && (!c.loopbackHTTP() || !loopbackHost(u.Prefix)) {
+				// plain http reaches loopback only, in development (egress); a fetch would refuse it
+				bad("%s.prefix: not https", where)
+			}
+			if len(u.Keys) == 0 {
+				bad("%s.keys: a repository upstream pins at least one key", where)
+			}
+		default:
+			bad("%s.kind must be %s, %s or %s", where, store.UpstreamCore, store.UpstreamCommunity, store.UpstreamRepo)
+		}
+		if len(u.Keys) > store.MaxUpstreamKeys {
+			bad("%s.keys: at most %d", where, store.MaxUpstreamKeys)
+		}
+		for _, k := range u.Keys {
+			if err := upspec.Fingerprint(k); err != nil {
+				bad("%s.keys: %v", where, err)
+			}
+		}
+		if len(u.Platforms) == 0 {
+			bad("%s.platforms: at least one", where)
+		}
+		for _, p := range u.Platforms {
+			if err := release.ValidPlatform(p); err != nil {
+				bad("%s.platforms: %v", where, err)
+			}
+		}
+		if u.Mode == store.ModeMirror && len(u.Extensions) == 0 {
+			bad("%s.extensions: a mirror names at least one", where)
+		}
+		if len(u.Extensions) > store.MaxUpstreamEntries {
+			bad("%s.extensions: at most %d", where, store.MaxUpstreamEntries)
+		}
+		names := map[string]bool{}
+		for j, e := range u.StoreEntries() {
+			if err := upspec.Entry(u.Kind, u.Mode, &e); err != nil {
+				bad("%s.extensions[%d]: %v", where, j, err)
+			}
+			if len(e.Versions) > store.MaxEntryVersions {
+				bad("%s.extensions[%d].versions: at most %d", where, j, store.MaxEntryVersions)
+			}
+			if names[e.Name] {
+				bad("%s.extensions: %q is listed twice", where, e.Name)
+			}
+			names[e.Name] = true
+			// one source decides a name in a channel ("*" included: two would collide)
+			once("extension of channel "+u.Channel, e.Name)
+		}
+		if kind == store.ChannelPassthrough {
+			switch {
+			case u.Kind != store.UpstreamCore:
+				bad("%s: a passthrough channel takes duckdb-core upstreams only", where)
+			case u.Mode != store.ModeMirror:
+				bad("%s: a passthrough channel takes mirrors only", where)
+			case u.Visibility != store.Public:
+				bad("%s: a passthrough channel's releases are public", where)
+			}
+		}
+		if u.Credential != "" && u.Kind == store.UpstreamRepo && u.Prefix != "" {
+			cr, ok := creds[u.Credential]
+			switch prefix := u.Prefix; { // Defaulted normalised it
+			case !ok:
+				bad("%s.credential %q is none of upstreams.credentials", where, u.Credential)
+			case !slices.Contains(cr.Tenants, "*") && !slices.Contains(cr.Tenants, b.Tenant.Name):
+				bad("%s.credential %q is not for tenant %s (its tenants)", where, u.Credential, b.Tenant.Name)
+			case !upspec.Covers(parsePrefixes(cr.Prefixes), prefix):
+				bad("%s.credential %q is not sent to %s (its prefixes)", where, u.Credential, prefix)
+			case u.Visibility == store.Public && !cr.AllowPublic:
+				bad("%s.credential %q does not allow public releases (allow_public)", where, u.Credential)
+			}
+		}
+		// the matrix: the channel's DuckDB versions × platforms × entries, as the store counts them
+		cells := versions[u.Channel] * len(u.Platforms) * len(names)
+		if cells > store.MaxUpstreamCells {
+			bad("%s: its matrix would be %d cells (at most %d)", where, cells, store.MaxUpstreamCells)
+		}
+		tenantCells += cells
+	}
+	if tenantCells > store.MaxTenantCells {
+		bad("bootstrap.upstreams: the tenant's upstreams would fetch %d cells (at most %d)", tenantCells, store.MaxTenantCells)
+	}
+}
+
+func parsePrefixes(raw []string) []*url.URL {
+	var out []*url.URL
+	for _, p := range raw {
+		if u, err := url.Parse(p); err == nil {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// loopbackHost reports whether a URL's host is loopback (localhost, 127.0.0.0/8, ::1), the only
+// place egress takes plain http to, in development.
+func loopbackHost(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
