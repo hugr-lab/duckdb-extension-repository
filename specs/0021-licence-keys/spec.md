@@ -1,6 +1,6 @@
 # Spec 0021: Licence keys in the build, and licences in bundles
 
-- **Status**: implemented (phase 1, the key in the build; phase 2, licences in bundles)
+- **Status**: implemented (phase 1, the key in the build; phase 2, licences in bundles). A marked publisher's credentials are its keys since spec [0023](../0023-publisher-keys/spec.md)
 - **Date**: 2026-10-18
 - **Author**: vgsml, Claude
 

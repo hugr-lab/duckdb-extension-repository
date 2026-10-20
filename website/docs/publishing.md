@@ -153,7 +153,7 @@ same body was already released in that slot with the same choices):
 | Status | Meaning |
 | --- | --- |
 | `400` | a footer, prefix, format or entry-point mismatch; an unknown query parameter; a DuckDB version the channel does not serve; an upload that ended before its length |
-| `401` | no valid token, or a stale one |
+| `401` | no valid token, or a stale one; for a publisher's signed request, see [Signed requests](#signed-requests) |
 | `404` | the token may not publish this name in this channel (also for a reserved name without a grant naming it) |
 | `408` | the upload was slower than `serve.min_rate` |
 | `409` | the slot holds another body or other choices; the body is blocked; the channel has no active key |
@@ -215,6 +215,9 @@ curl --fail-with-body -sS -X POST \
   -d '{"from_channel":"staging","version":"v0.3.0"}' \
   https://kista.example.com/api/v1/tenants/acme/channels/prod/extensions/acl/releases/promote
 ```
+
+A publisher promotes with a [signed request](#signed-requests) whose `sha256` is that of the exact
+JSON bytes sent (`--data-binary`).
 
 - Promoting a **version** takes every active release of (`ext`, `version`) in the source: every
   platform and every slot. All of them are inserted, or none (a slot conflict on any is `409` for
@@ -353,7 +356,9 @@ sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 signed-at 2026-10-19T12:00:00Z
 ```
 
-- `path` is the request's path and query, exactly as sent.
+- `path` is the request's path and query, exactly as sent: the same parameters in the same order,
+  encoded the same way (a `+` in a version is sent, and stated, as `%2B`). A reverse proxy in front
+  of kista must pass the request URI unchanged.
 - `sha256` is the plain SHA-256 of the request body: the file for a publication, the JSON for a
   promotion, and the SHA-256 of nothing for a `GET`.
 - `signed-at` is UTC, to the second.
@@ -370,7 +375,7 @@ ssh-keygen -Y sign -f publisher_key -n kista-request@v1 < statement > statement.
 
 | Answer | When |
 | --- | --- |
-| `400` | the headers or the statement are malformed; `method` or `path` is not this request's; a request carries both a signature and `Authorization`; the body's SHA-256 is not the statement's (checked as it is read, before anything is written) |
+| `400` | the headers or the statement are malformed; the signature is malformed, of a key type kista does not take, or not in the namespace `kista-request@v1` or with a hash other than `sha256` and `sha512`; `method` or `path` is not this request's; a request carries both a signature and `Authorization`; the body's SHA-256 is not the statement's (checked as it is read, before anything is written) |
 | `401` | `signed-at` is more than five minutes from kista's clock; the key is not one of the tenant's, or it expired; the signature does not verify |
 | `404` | the publisher's grants do not cover the request, as for any caller |
 
@@ -379,44 +384,75 @@ clock can be told apart; it does not say which check failed. A client sending `E
 100-continue` gets its `401` or `404` before the file.
 
 A captured request can be replayed only within its five minutes, to the same path, with the same
-body: a publication then answers the existing release (`200`) and changes nothing.
+body: a publication then answers the existing release (`200`) and changes nothing; a promotion
+promotes the same; an attachment is added again. The statement and the signature a release keeps
+are shown to the extension's administrators only, so another publisher of the channel cannot
+replay them.
 
 ### Publishing from CI
 
-The script of the [developer kit](development.md#the-developer-kit-for-extensions),
-`kista_publish.py` in hugr-lab's fork of extension-ci-tools, does all of the above for every build of
-a distribution: it reads each build's version and platform from its footer, skips wasm builds
-(refused, above), signs each request, and retries a `429` or a `5xx` (signing again). It needs only
-Python 3 and OpenSSH, so it runs in any CI. On GitHub, its reusable job `_kista_publish.yml` runs it
-after the distribution build; the [extension template](development.md#starting-an-extension-the-template)
-sets it up.
-
-By hand, with `curl`:
+Any CI publishes with a shell, OpenSSH 8.1 or later (`openssh-client` on Debian and Ubuntu,
+`openssh-keygen` on Alpine), `curl`, and the private key as a secret:
 
 ```bash
+# the key, from a secret; ssh-keygen wants a file of mode 0600 ending in a newline
+install -m 600 "$KISTA_PUBLISHER_KEY_FILE" publisher_key   # a file variable (GitLab), or
+# printf '%s' "$KISTA_PUBLISHER_KEY_B64" | base64 -d > publisher_key && chmod 600 publisher_key
+# (the key in base64: GitLab's masked variables hold no newlines)
+
+KISTA=https://kista.example.com
+sha256() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1; }
+signed() {   # signed <method> <path and query> [file]: the two headers' values, one per line
+  { printf 'kista-request v1\nmethod %s\npath %s\n' "$1" "$2"
+    printf 'sha256 %s\n' "$( if [ -n "${3:-}" ]; then sha256 < "$3"; else printf '' | sha256; fi )"
+    printf 'signed-at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > statement
+  ssh-keygen -Y sign -q -f publisher_key -n kista-request@v1 < statement > statement.sig
+  base64 < statement | tr -d '\r\n'; echo
+  grep -v -- ----- statement.sig | tr -d '\r\n'; echo
+}
+
+# first, the key and its grants: whoami
+W=/api/v1/tenants/acme/whoami
+{ read -r ST; read -r SIG; } < <(signed GET "$W")
+curl --fail-with-body -sS "$KISTA$W" -H "Kista-Statement: $ST" -H "Kista-Signature: $SIG"
+
+# then each build
 FILE=build/release/extension/acl/acl.duckdb_extension
-PATHQ="/api/v1/tenants/acme/channels/staging/extensions/acl/releases?version=1.4.0&platform=linux_amd64"
-printf 'kista-request v1\nmethod POST\npath %s\nsha256 %s\nsigned-at %s\n' "$PATHQ" \
-  "$(sha256sum "$FILE" | cut -d' ' -f1)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > statement
-ssh-keygen -Y sign -q -f publisher_key -n kista-request@v1 < statement > statement.sig
-curl --fail-with-body -sS -X POST "https://kista.example.com$PATHQ" \
-  -H "Kista-Statement: $(base64 < statement | tr -d '\n')" \
-  -H "Kista-Signature: $(grep -v -- ----- statement.sig | tr -d '\n')" \
+P="/api/v1/tenants/acme/channels/staging/extensions/acl/releases?version=1.4.0&platform=linux_amd64"
+{ read -r ST; read -r SIG; } < <(signed POST "$P" "$FILE")
+curl --fail-with-body -sS -X POST "$KISTA$P" -H "Kista-Statement: $ST" -H "Kista-Signature: $SIG" \
   -H "Content-Type: application/octet-stream" --data-binary @"$FILE"
 ```
 
-`ssh-keygen` needs the private key in a file of mode `0600`, ending in a newline (CI secret stores
-often strip it). A client written in Go can sign with `golang.org/x/crypto/ssh` instead, for example
-over a KMS's signer (`ssh.NewSignerFromSigner`).
+A retry signs again, so it never outlives `signed-at`. A client written in Go can sign with
+`golang.org/x/crypto/ssh` instead, for example over a KMS's signer (`ssh.NewSignerFromSigner`).
+
+```yaml title=".gitlab-ci.yml"
+publish:
+  stage: deploy
+  image: alpine:3
+  rules: [{if: $CI_COMMIT_TAG =~ /^v/}]
+  script:
+    - apk add --no-cache bash curl openssh-keygen
+    - bash scripts/publish.sh   # the commands above; KISTA_PUBLISHER_KEY_FILE is a protected File variable
+```
+
+**The developer kit.** The [extension template](development.md#starting-an-extension-the-template)
+publishes from GitHub Actions with the fork's `kista_publish.py`, which does the above for every
+build of a distribution: it reads each build's version and platform from its footer, skips wasm
+builds (refused, above), signs each request, and retries a `429`, `503` or `408`, signing again.
+Signing is in the fork from spec 0023's second phase; until then, the fork's job publishes with the
+removed credentials, so publish with the commands above.
 
 The release keeps the statement and the signature as they came (`publisher_statement`,
-`publisher_signature` in its management answer), and its provenance records the credential,
-`key:<fingerprint>`. The signature carries the public key, so who asked for this body at this path
-can be checked after the key is removed.
+`publisher_signature` in its management answer, for the extension's administrators), and its
+provenance records the credential, `key:<fingerprint>`. The signature carries the public key, so who
+asked for this body at this path can be checked after the key is removed.
 
 GitHub Actions trusted publishing and API keys (before spec 0023) are removed: a configuration with
-`publish.providers` is refused at startup, and an issuer record cannot have GitHub Actions' token
-URL, since any workflow can request a token from it for any audience.
+`publish.providers` is refused at startup. An issuer record cannot have a CI token issuer's URL
+(GitHub Actions', GitHub Enterprise's), since any workflow there can request a token for any
+audience; records that had one stay unused.
 
 ### Sources of licence keys
 

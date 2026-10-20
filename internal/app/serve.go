@@ -71,7 +71,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	} else {
 		for _, r := range recs {
 			if auth.RefusedIssuer(r[2]) {
-				log.Warn("serve: an issuer record has GitHub Actions' URL and is not used; a publisher signs its requests with a key (spec 0023)",
+				log.Warn("serve: an issuer record has a CI token issuer's URL (GitHub Actions, GitHub Enterprise) and is not used; a publisher signs its requests with a key (spec 0023)",
 					"tenant_id", r[0], "issuer", r[1], "url", r[2])
 			}
 		}

@@ -324,8 +324,11 @@ func (t *Tx) InsertRelease(ctx context.Context, r *Release, actor string) error 
 	if r.Origin == "" {
 		r.Origin = OriginAdmin
 	}
-	if len(r.Provenance) > 4000 || len(r.PublisherStatement) > 4096 || len(r.PublisherSignature) > 1400 {
+	if len(r.Provenance) > 4000 {
 		return fmt.Errorf("%w: provenance is too long", ErrInvalid)
+	}
+	if len(r.PublisherStatement) > 4096 || len(r.PublisherSignature) > 1400 {
+		return fmt.Errorf("%w: a signed request's statement or signature is too long", ErrInvalid)
 	}
 	_, err := t.exec(ctx, `INSERT INTO releases (id, tenant_id, channel_id, build_id, name, ext_version, platform, slot, state,
 visibility, seq, created_at, created_by, state_changed_at, state_changed_by, version, origin, provenance, origin_signature,

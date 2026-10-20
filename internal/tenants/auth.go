@@ -70,7 +70,7 @@ func (s *AuthAdmin) AddIssuer(ctx context.Context, a authz.Actor, tenant string,
 		return store.Issuer{}, err
 	}
 	if auth.RefusedIssuer(is.URL) {
-		return store.Issuer{}, fmt.Errorf("%w: %s issues tokens to any GitHub workflow for any audience; a publisher signs its "+
+		return store.Issuer{}, fmt.Errorf("%w: %s is a CI token issuer's: it issues tokens to any workflow for any audience; a publisher signs its "+
 			"requests with a key instead (spec 0023)", store.ErrInvalid, is.URL)
 	}
 	jwksURI := is.JWKSURI

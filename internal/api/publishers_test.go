@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
+	"io"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -74,7 +77,7 @@ func TestSignedPublishing(t *testing.T) {
 	}
 	// an issuer record cannot take GitHub Actions' URL
 	if r := m.call(t, "POST", T+"/issuers", ta, `{"name":"gh","url":"`+auth.GitHubActionsIssuer+`","required_claims":{"repository_owner_id":"10"}}`); r.status != 400 ||
-		!strings.Contains(string(r.body), "any GitHub workflow") {
+		!strings.Contains(string(r.body), "CI token issuer") {
 		t.Errorf("an issuer record at GitHub's URL: %d %s", r.status, r.body)
 	}
 
@@ -89,9 +92,13 @@ func TestSignedPublishing(t *testing.T) {
 	if prov["provider"] != "key" || prov["actor"] != nil || len(prov["credentials"].([]any)) != 1 || prov["credentials"].([]any)[0] != "key:"+k.fp {
 		t.Errorf("the publication's provenance (to the publisher: no actor): %v", prov)
 	}
-	// the signed request is kept, and verifies with the key
-	st, _ := rel["publisher_statement"].(string)
-	sig, _ := base64.StdEncoding.DecodeString(rel["publisher_signature"].(string))
+	// the signed request is kept, and verifies with the key (administrators see it, not publishers)
+	if rel["publisher_statement"] != nil {
+		t.Errorf("the publisher sees its signed request: %v", rel)
+	}
+	adm := m.call(t, "GET", S+"/"+rel["id"].(string), ta, "").json(t)
+	st, _ := adm["publisher_statement"].(string)
+	sig, _ := base64.StdEncoding.DecodeString(adm["publisher_signature"].(string))
 	if !strings.Contains(st, "path "+S+"?version=1.0&platform=linux_amd64\n") {
 		t.Errorf("the statement kept: %q", st)
 	}
@@ -116,8 +123,9 @@ func TestSignedPublishing(t *testing.T) {
 		t.Fatalf("promote by a signed request: %d %s", r.status, r.body)
 	}
 	pr := r.json(t)["releases"].([]any)[0].(map[string]any)
+	pa := m.call(t, "GET", T+"/channels/prod/extensions/newext/releases/"+pr["id"].(string), ta, "").json(t)
 	if pp, _ := pr["provenance"].(map[string]any); pp["from_channel"] != "staging" || pp["provider"] != "key" ||
-		!strings.Contains(pr["publisher_statement"].(string), "/releases/promote\n") {
+		!strings.Contains(fmt.Sprint(pa["publisher_statement"]), "/releases/promote\n") {
 		t.Errorf("a promotion's provenance and statement: %v", pr)
 	}
 	w := m.call(t, "GET", T+"/whoami", ci, "").json(t)
@@ -183,21 +191,19 @@ func TestSignedRefusals(t *testing.T) {
 	pub := S + "?version=1.0&platform=linux_amd64"
 	file := built(t, "1.0", "newext_duckdb_cpp_init")
 
-	// a request signed for something else: its own headers over another path, method or body
-	signedFor := func(method, path string, body []byte) (string, string) {
+	// headers signed for one request, sent with another
+	signedFor := func(method, path string, body []byte) []string {
 		st := auth.NewStatement(method, path, body, time.Now())
 		sig, err := auth.SignStatement(k.s, st)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return base64.StdEncoding.EncodeToString(st), base64.StdEncoding.EncodeToString(sig)
+		return []string{auth.StatementHeader, base64.StdEncoding.EncodeToString(st), auth.SignatureHeader, base64.StdEncoding.EncodeToString(sig)}
 	}
-	send := func(method, path string, body []byte, hdr ...string) resp {
-		req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	send := func(method, path string, body io.Reader, length int64, hdr ...string) resp {
+		req := httptest.NewRequest(method, path, body)
+		req.ContentLength = length
 		req.Header.Set("Content-Type", "application/octet-stream")
-		if method == "GET" {
-			req.ContentLength = 0
-		}
 		for i := 0; i+1 < len(hdr); i += 2 {
 			req.Header.Add(hdr[i], hdr[i+1])
 		}
@@ -205,41 +211,54 @@ func TestSignedRefusals(t *testing.T) {
 		m.h.ServeHTTP(rec, serve.WithHTTPS(req))
 		return resp{rec.Code, rec.Header(), rec.Body.Bytes()}
 	}
-	stP, sigP := signedFor("POST", pub, file)
+	none := func() io.Reader { return bytes.NewReader(nil) }
+	pubHdr := signedFor("POST", pub, file)
+	getHdr := signedFor("GET", S, nil)
 	other := append(append([]byte{}, file...), 0) // one byte more: another hash
-	stG, sigG := signedFor("GET", S, nil)
 	for name, tc := range map[string]struct {
 		method, path string
 		body         []byte
 		hdr          []string
 		want         int
+		detail       string
 	}{
-		"another path":       {"GET", S + "?x=1", nil, []string{auth.StatementHeader, stG, auth.SignatureHeader, sigG}, 400},
-		"another method":     {"POST", S, nil, []string{auth.StatementHeader, stG, auth.SignatureHeader, sigG}, 400},
-		"another query":      {"POST", S + "?version=1.0&platform=linux_arm64", file, []string{auth.StatementHeader, stP, auth.SignatureHeader, sigP}, 400},
-		"no signature":       {"GET", S, nil, []string{auth.StatementHeader, stG}, 400},
-		"twice":              {"GET", S, nil, []string{auth.StatementHeader, stG, auth.StatementHeader, stG, auth.SignatureHeader, sigG}, 400},
-		"with Authorization": {"GET", S, nil, []string{auth.StatementHeader, stG, auth.SignatureHeader, sigG, "Authorization", "Bearer " + ta}, 400},
-		"not base64":         {"GET", S, nil, []string{auth.StatementHeader, "!!", auth.SignatureHeader, sigG}, 400},
-		"bad signature":      {"GET", S, nil, []string{auth.StatementHeader, stG, auth.SignatureHeader, sigP}, 401},
-		"another body":       {"POST", pub, other, []string{auth.StatementHeader, stP, auth.SignatureHeader, sigP}, 400},
+		// each would be accepted were the check missing: the request itself is a valid one
+		"another path":       {"GET", S, nil, signedFor("GET", T+"/whoami", nil), 400, "path"},
+		"another method":     {"GET", S, nil, signedFor("POST", S, nil), 400, "method"},
+		"HEAD for GET":       {"HEAD", S, nil, getHdr, 400, "method"},
+		"another order":      {"POST", S + "?platform=linux_amd64&version=1.0", file, pubHdr, 400, "path"},
+		"another body":       {"POST", pub, other, pubHdr, 400, "not the signed one"},
+		"no body":            {"POST", pub, nil, pubHdr, 400, "not the signed one"},
+		"no signature":       {"GET", S, nil, getHdr[:2], 400, "once each"},
+		"twice":              {"GET", S, nil, append(append([]string{}, getHdr...), getHdr[:2]...), 400, "once each"},
+		"with Authorization": {"GET", S, nil, append(append([]string{}, getHdr...), "Authorization", "Bearer "+ta), 400, "no Authorization"},
+		"not base64":         {"GET", S, nil, []string{auth.StatementHeader, "!!", auth.SignatureHeader, getHdr[3]}, 400, "base64"},
+		"bad signature":      {"GET", S, nil, []string{getHdr[0], getHdr[1], getHdr[2], pubHdr[3]}, 401, "kista's clock"},
 	} {
-		r := send(tc.method, tc.path, tc.body, tc.hdr...)
-		if r.status != tc.want {
+		r := send(tc.method, tc.path, bytes.NewReader(tc.body), int64(len(tc.body)), tc.hdr...)
+		if r.status != tc.want || tc.method != "HEAD" && !strings.Contains(string(r.body), tc.detail) {
 			t.Errorf("%s: %d %s", name, r.status, r.body)
 		}
-		if tc.want == 401 && (!strings.Contains(string(r.body), k.fp) || !strings.Contains(string(r.body), "kista's clock")) {
-			t.Errorf("%s: the 401 names neither the key nor the clock: %s", name, r.body)
+		if tc.want == 401 && !strings.Contains(string(r.body), k.fp) {
+			t.Errorf("%s: the 401 does not name the key: %s", name, r.body)
 		}
 	}
-	// the body that is not the signed one wrote nothing
+	// HEAD signed as HEAD is a GET's answer
+	if r := send("HEAD", S, none(), 0, signedFor("HEAD", S, nil)...); r.status != 200 {
+		t.Errorf("HEAD: %d %s", r.status, r.body)
+	}
+	// a GET whose statement names a body
+	if r := send("GET", S, none(), 0, signedFor("GET", S, []byte("x"))...); r.status != 400 {
+		t.Errorf("a GET with a body's hash: %d", r.status)
+	}
+	// nothing was written by the bodies that were not the signed ones
 	if got := m.call(t, "GET", S, ta, "").json(t)["releases"].([]any); len(got) != 0 {
 		t.Fatalf("a release from a body that is not the signed one: %v", got)
 	}
-	// a GET whose statement names a body
-	stB, sigB := signedFor("GET", S, []byte("x"))
-	if r := send("GET", S, nil, auth.StatementHeader, stB, auth.SignatureHeader, sigB); r.status != 400 {
-		t.Errorf("a GET with a body's hash: %d", r.status)
+	// Expect: 100-continue: a refused request is answered before its body is read
+	read := &watchReader{}
+	if r := send("POST", pub, read, int64(len(file)), "Expect", "100-continue", pubHdr[0], pubHdr[1], pubHdr[2], getHdr[3]); r.status != 401 || read.n > 0 {
+		t.Errorf("100-continue: %d, %d bytes read", r.status, read.n)
 	}
 	// signed-at more than five minutes away, either way
 	for _, d := range []time.Duration{-6 * time.Minute, 6 * time.Minute} {
@@ -292,5 +311,122 @@ func TestSignedRefusals(t *testing.T) {
 		if r := m.call(t, "GET", path, ta, ""); r.status != 404 {
 			t.Errorf("%s: %d", path, r.status)
 		}
+	}
+}
+
+// watchReader counts what is read of a body.
+type watchReader struct{ n int }
+
+func (w *watchReader) Read(p []byte) (int, error) {
+	w.n += len(p)
+	return 0, io.EOF
+}
+
+// Spec 0023: the same headers sent again (a replay within the five minutes) change nothing; a
+// promotion's and an attachment's bodies are checked as a publication's.
+func TestSignedReplayPromotionAttachment(t *testing.T) {
+	m := newMgmt(t)
+	ta := m.toks["tenant admin"]
+	const T = "/api/v1/tenants/acme"
+	m.call(t, "POST", T+"/publishers", ta, `{"name":"ext-ci"}`)
+	m.call(t, "POST", T+"/grants", ta, `{"principal":"publisher:ext-ci","verbs":["publish"],"channel":"staging"}`)
+	m.call(t, "POST", T+"/grants", ta, `{"principal":"publisher:ext-ci","verbs":["promote"],"channel":"prod","extension":"newext"}`)
+	// attachments are an extension's, in every channel: a grant without a channel (spec 0011)
+	m.call(t, "POST", T+"/grants", ta, `{"principal":"publisher:ext-ci","verbs":["publish"],"extension":"newext"}`)
+	k := m.signers[m.addKey(t, ta, "acme", "ext-ci")]
+	S := T + "/channels/staging/extensions/newext/releases"
+	signedReq := func(method, path, ctype string, body []byte, hdr []string) resp {
+		req := httptest.NewRequest(method, path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", ctype)
+		req.Header.Set("Kista-Title", "SBOM") // an attachment's; other routes ignore it
+		if hdr == nil {
+			st := auth.NewStatement(method, path, body, time.Now())
+			sig, err := auth.SignStatement(k.s, st)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hdr = []string{auth.StatementHeader, base64.StdEncoding.EncodeToString(st), auth.SignatureHeader, base64.StdEncoding.EncodeToString(sig)}
+		}
+		for i := 0; i+1 < len(hdr); i += 2 {
+			req.Header.Set(hdr[i], hdr[i+1])
+		}
+		rec := httptest.NewRecorder()
+		m.h.ServeHTTP(rec, serve.WithHTTPS(req))
+		return resp{rec.Code, rec.Header(), rec.Body.Bytes()}
+	}
+	headersOf := func(method, path string, body []byte) []string {
+		st := auth.NewStatement(method, path, body, time.Now())
+		sig, _ := auth.SignStatement(k.s, st)
+		return []string{auth.StatementHeader, base64.StdEncoding.EncodeToString(st), auth.SignatureHeader, base64.StdEncoding.EncodeToString(sig)}
+	}
+	seqs := func() string {
+		var out []string
+		for _, x := range m.call(t, "GET", S, ta, "").json(t)["releases"].([]any) {
+			r := x.(map[string]any)
+			out = append(out, fmt.Sprint(r["version"], ":", r["seq"]))
+		}
+		sort.Strings(out)
+		return strings.Join(out, ",")
+	}
+	// the same headers twice: 201, then the existing release, changing nothing (current included)
+	f10 := built(t, "1.0", "newext_duckdb_cpp_init")
+	h10 := headersOf("POST", S+"?version=1.0&platform=linux_amd64", f10)
+	if r := signedReq("POST", S+"?version=1.0&platform=linux_amd64", "application/octet-stream", f10, h10); r.status != 201 {
+		t.Fatalf("publish 1.0: %d %s", r.status, r.body)
+	}
+	if r := signedReq("POST", S+"?version=1.1&platform=linux_amd64", "application/octet-stream", built(t, "1.1", "newext_duckdb_cpp_init"), nil); r.status != 201 {
+		t.Fatalf("publish 1.1: %d %s", r.status, r.body)
+	}
+	before := seqs()
+	if r := signedReq("POST", S+"?version=1.0&platform=linux_amd64", "application/octet-stream", f10, h10); r.status != 200 {
+		t.Fatalf("the same headers again: %d %s", r.status, r.body)
+	}
+	if after := seqs(); after != before {
+		t.Fatalf("a replay changed the channel: %s, then %s", before, after)
+	}
+	// a promotion: its JSON is the signed body
+	P := T + "/channels/prod/extensions/newext/releases/promote"
+	signed10 := []byte(`{"from_channel":"staging","version":"1.0"}`)
+	h := headersOf("POST", P, signed10)
+	if r := signedReq("POST", P, "application/json", []byte(`{"from_channel":"staging","version":"1.1"}`), h); r.status != 400 ||
+		!strings.Contains(string(r.body), "not the signed one") {
+		t.Fatalf("a promotion of another version: %d %s", r.status, r.body)
+	}
+	if got := m.call(t, "GET", T+"/channels/prod/extensions/newext/releases", ta, "").json(t)["releases"].([]any); len(got) != 0 {
+		t.Fatalf("promoted with a body that is not the signed one: %v", got)
+	}
+	if r := signedReq("POST", P, "application/json", signed10, h); r.status != 201 {
+		t.Fatalf("promote: %d %s", r.status, r.body)
+	}
+	if r := signedReq("POST", P, "application/json", signed10, h); r.status != 200 {
+		t.Fatalf("the promotion's headers again: %d %s", r.status, r.body)
+	}
+	// the signed request is the administrators' to see, not another publisher's
+	rel := m.call(t, "GET", T+"/channels/prod/extensions/newext/releases", ta, "").json(t)["releases"].([]any)[0].(map[string]any)
+	if rel["publisher_statement"] == nil {
+		t.Fatalf("the administrator does not see the signed request: %v", rel)
+	}
+	if got := m.call(t, "GET", S, m.hold(k), "").json(t)["releases"].([]any)[0].(map[string]any); got["publisher_statement"] != nil {
+		t.Fatalf("a publisher sees the signed request: %v", got)
+	}
+	// an attachment: the document is the signed body
+	var body string
+	for _, x := range m.call(t, "GET", S, ta, "").json(t)["releases"].([]any) {
+		if r := x.(map[string]any); r["version"] == "1.0" {
+			body = r["body_hash"].(string)
+		}
+	}
+	A := T + "/extensions/newext/attachments?body_hash=" + body + "&kind=sbom"
+	sbom := []byte(`{"bomFormat":"CycloneDX","specVersion":"1.5","components":[]}`)
+	ha := headersOf("POST", A, sbom)
+	if r := signedReq("POST", A, "application/vnd.cyclonedx+json", []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}`), ha); r.status != 400 ||
+		!strings.Contains(string(r.body), "not the signed one") {
+		t.Fatalf("an attachment that is not the signed one: %d %s", r.status, r.body)
+	}
+	if r := signedReq("POST", A, "application/vnd.cyclonedx+json", sbom, ha); r.status != 201 {
+		t.Fatalf("attach by a signed request: %d %s", r.status, r.body)
+	}
+	if got := m.call(t, "GET", T+"/extensions/newext/attachments", ta, "").json(t)["attachments"].([]any); len(got) != 1 {
+		t.Fatalf("attachments: %v", got)
 	}
 }

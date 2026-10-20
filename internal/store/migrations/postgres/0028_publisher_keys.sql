@@ -8,7 +8,7 @@ DROP TABLE api_keys
 CREATE TABLE publisher_keys (
 	id           varchar(36) PRIMARY KEY,
 	tenant_id    varchar(36) NOT NULL REFERENCES tenants (id),
-	publisher_id varchar(36) NOT NULL REFERENCES publishers (id) ON DELETE CASCADE,
+	publisher_id varchar(36) NOT NULL,
 	type         varchar(32) NOT NULL,
 	public_key   varchar(400) NOT NULL,
 	fingerprint  varchar(64) NOT NULL,
@@ -17,7 +17,9 @@ CREATE TABLE publisher_keys (
 	created_at   timestamptz NOT NULL,
 	created_by   varchar(400) NOT NULL,
 	last_used_at timestamptz,
-	UNIQUE (tenant_id, fingerprint)
+	UNIQUE (tenant_id, fingerprint),
+	-- the key's tenant is its publisher's
+	FOREIGN KEY (publisher_id, tenant_id) REFERENCES publishers (id, tenant_id) ON DELETE CASCADE
 )
 -- +statement
 CREATE INDEX ix_publisher_keys_publisher ON publisher_keys (publisher_id)

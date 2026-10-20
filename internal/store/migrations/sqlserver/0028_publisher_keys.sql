@@ -8,7 +8,7 @@ DROP TABLE api_keys
 CREATE TABLE publisher_keys (
 	id           nvarchar(36) COLLATE Latin1_General_100_BIN2 PRIMARY KEY,
 	tenant_id    nvarchar(36) COLLATE Latin1_General_100_BIN2 NOT NULL REFERENCES tenants (id) ON DELETE NO ACTION,
-	publisher_id nvarchar(36) COLLATE Latin1_General_100_BIN2 NOT NULL REFERENCES publishers (id) ON DELETE CASCADE,
+	publisher_id nvarchar(36) COLLATE Latin1_General_100_BIN2 NOT NULL,
 	type         nvarchar(32) COLLATE Latin1_General_100_BIN2 NOT NULL,
 	public_key   nvarchar(400) COLLATE Latin1_General_100_BIN2 NOT NULL,
 	fingerprint  nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
@@ -17,7 +17,9 @@ CREATE TABLE publisher_keys (
 	created_at   datetime2(6) NOT NULL,
 	created_by   nvarchar(400) COLLATE Latin1_General_100_BIN2 NOT NULL,
 	last_used_at datetime2(6) NULL,
-	CONSTRAINT uq_publisher_keys_fingerprint UNIQUE (tenant_id, fingerprint)
+	CONSTRAINT uq_publisher_keys_fingerprint UNIQUE (tenant_id, fingerprint),
+	-- the key's tenant is its publisher's
+	CONSTRAINT fk_publisher_keys_publisher FOREIGN KEY (publisher_id, tenant_id) REFERENCES publishers (id, tenant_id) ON DELETE CASCADE
 )
 -- +statement
 CREATE INDEX ix_publisher_keys_publisher ON publisher_keys (publisher_id)

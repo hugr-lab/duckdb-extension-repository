@@ -1,6 +1,6 @@
 # Spec 0010: Audit events and download statistics
 
-- **Status**: implemented (phases 1a, 1b, 2a, 2b)
+- **Status**: implemented (phases 1a, 1b, 2a, 2b). The `publisher.github.*` events and the API key's prefix in `publisher.key.*` are replaced by spec [0023](../0023-publisher-keys/spec.md)'s key events
 - **Date**: 2026-10-09
 - **Author**: vgsml, Claude
 

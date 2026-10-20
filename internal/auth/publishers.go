@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -42,9 +43,18 @@ func (p Publication) Provenance(actor string) string {
 // installs or administration would let any repository in (spec 0008, kept by spec 0023).
 const GitHubActionsIssuer = "https://token.actions.githubusercontent.com"
 
-// RefusedIssuer reports whether an issuer URL may not be an issuer record's.
-func RefusedIssuer(url string) bool {
-	return strings.TrimSuffix(url, "/") == GitHubActionsIssuer
+// RefusedIssuer reports whether an issuer URL is a CI token issuer's that no issuer record may have:
+// GitHub Actions' (with an enterprise's path), GitHub Enterprise Cloud's with data residency
+// (token.actions.<name>.ghe.com), and a GitHub Enterprise Server's (/_services/token). Each issues
+// tokens to any of its workflows for any audience. Records at such URLs, once disabled by
+// publish.providers (spec 0008), stay disabled now that it is gone.
+func RefusedIssuer(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return strings.HasPrefix(host, "token.actions.") || strings.HasSuffix(strings.TrimSuffix(u.Path, "/"), "/_services/token")
 }
 
 // IsRetiredAPIKey reports whether a Bearer has the shape of a retired API key (spec 0008's

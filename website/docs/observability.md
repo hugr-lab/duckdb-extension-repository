@@ -79,7 +79,7 @@ are all the kinds in `internal/audit`:
 | | `publisher.add`, `publisher.remove` | `publisher:<name>` | `name` |
 | | `publisher.change` | `publisher:<name>` | `name`, `license_keys` (marked or unmarked as a source of licence keys, spec 0021) |
 | | `publisher.key.add` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `expires_at` (a public SSH key, spec 0023) |
-| | `publisher.key.remove` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint` |
+| | `publisher.key.remove` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title` |
 | Licences | `license.import` | `license:<name>` | `name`, `license`, `issuer`, `holder`, `plan`, `expires_at`, `replaced` |
 | | `license.change` | `license:<name>` | `name`, `license`, `visibility` |
 | | `license.remove` | `license:<name>` | `name`, `license`, `reason` (`admin`, `revoked`, `expired`, `upstream removed`) |

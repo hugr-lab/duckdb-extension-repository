@@ -93,8 +93,9 @@ also set "assignment required" on the app registration.
 Over the API (tenant administrators): `GET, POST /api/v1/tenants/{t}/issuers`,
 `GET /issuers/{name}`, `DELETE /issuers/{name}` with `If-Match` (an issuer's ETag is its id).
 Removing a record removes its grants, so a record added later under the same name starts with none.
-A record cannot have GitHub Actions' token URL (`https://token.actions.githubusercontent.com`): any
-workflow can request a token from it for any audience. CI publishes as a publisher instead (see
+A record cannot have a CI token issuer's URL: GitHub Actions' (`https://token.actions.githubusercontent.com`,
+or `token.actions.<name>.ghe.com`) or a GitHub Enterprise Server's (`…/_services/token`). Any
+workflow there can request a token for any audience. CI publishes as a publisher instead (see
 [Publishing](publishing.md#publishers)).
 
 ### Audiences

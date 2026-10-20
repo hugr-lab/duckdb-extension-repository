@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"os"
 	"os/exec"
@@ -202,13 +203,17 @@ func TestParsePublicKey(t *testing.T) {
 // An issuer record at GitHub Actions' URL is never used (spec 0008, kept by 0023): any workflow can
 // request a token from it for any audience.
 func TestGitHubIssuerRefused(t *testing.T) {
-	for _, u := range []string{GitHubActionsIssuer, GitHubActionsIssuer + "/"} {
+	for _, u := range []string{GitHubActionsIssuer, GitHubActionsIssuer + "/", GitHubActionsIssuer + "/acme-enterprise",
+		"https://TOKEN.actions.githubusercontent.com", "https://token.actions.acme.ghe.com", "https://ghes.example.com/_services/token",
+		"https://ghes.example.com/_services/token/"} {
 		if !RefusedIssuer(u) {
-			t.Fatalf("%s accepted", u)
+			t.Errorf("%s accepted", u)
 		}
 	}
-	if RefusedIssuer("https://token.actions.githubusercontent.com.example") || RefusedIssuer("https://idp.example") {
-		t.Fatal("another issuer refused")
+	for _, u := range []string{"https://idp.example", "https://login.example/token", "https://actions.example/realms/x"} {
+		if RefusedIssuer(u) {
+			t.Errorf("%s refused", u)
+		}
 	}
 	ta := store.TenantAuth{Issuers: []store.Issuer{{Name: "gh", URL: GitHubActionsIssuer}, {Name: "corp", URL: "https://idp.example"}}}
 	got, canonical := ForTenant(ta, "https://kista.example", "acme")
@@ -287,5 +292,65 @@ func TestSignStatementOpenSSH(t *testing.T) {
 	cmd.Stdin = bytes.NewReader(st)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("ssh-keygen -Y verify: %v\n%s", err, out)
+	}
+}
+
+// sshsigFields splits an SSHSIG blob into its five strings, and join puts them back with a version.
+func sshsigFields(t *testing.T, blob []byte) [][]byte {
+	t.Helper()
+	b := blob[len(sshsigMagic)+4:]
+	var out [][]byte
+	for range 5 {
+		v, rest, ok := sshString(b)
+		if !ok {
+			t.Fatal("not an SSHSIG blob")
+		}
+		out, b = append(out, v), rest
+	}
+	return out
+}
+
+func joinSSHSIG(version uint32, f [][]byte) string {
+	b := binary.BigEndian.AppendUint32([]byte(sshsigMagic), version)
+	for _, x := range f {
+		b = appendSSHString(b, x)
+	}
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// Each field of the SSH signature is checked: the version, the reserved string, the hash algorithm,
+// and the signature's format against the key's type. A certificate's key line is refused.
+func TestSSHSIGFields(t *testing.T) {
+	st := base64.StdEncoding.EncodeToString([]byte(vector(t, "statement")))
+	blob, _ := base64.StdEncoding.DecodeString(unarmor(t, vector(t, "ed25519.sig")))
+	good := sshsigFields(t, blob)
+	if _, err := ParseSignedRequest(st, joinSSHSIG(1, good)); err != nil {
+		t.Fatalf("the vector put back together: %v", err)
+	}
+	with := func(i int, v []byte) [][]byte {
+		f := append([][]byte{}, good...)
+		f[i] = v
+		return f
+	}
+	_, rest, _ := sshString(good[4])
+	p256, _ := base64.StdEncoding.DecodeString(unarmor(t, vector(t, "p256.sig")))
+	for name, sig := range map[string]string{
+		"version 2":        joinSSHSIG(2, good),
+		"reserved":         joinSSHSIG(1, with(2, []byte("x"))),
+		"hash md5":         joinSSHSIG(1, with(3, []byte("md5"))),
+		"hash SHA512":      joinSSHSIG(1, with(3, []byte("SHA512"))),
+		"another format":   joinSSHSIG(1, with(4, append(appendSSHString(nil, []byte("ecdsa-sha2-nistp256")), rest...))),
+		"another key":      joinSSHSIG(1, with(0, sshsigFields(t, p256)[0])),
+		"rsa-sha2 format":  joinSSHSIG(1, with(4, append(appendSSHString(nil, []byte("rsa-sha2-512")), rest...))),
+		"namespace prefix": joinSSHSIG(1, with(1, []byte("kista-request@v1x"))),
+	} {
+		r, err := ParseSignedRequest(st, sig)
+		if err == nil {
+			// parsed: it must not verify with the registered key either
+			err = r.Verify(registered(t, "ed25519.pub").Wire)
+		}
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

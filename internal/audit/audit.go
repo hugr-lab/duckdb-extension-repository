@@ -155,7 +155,7 @@ var catalogue = map[Kind][]string{
 	"publisher.remove":        {"name"},
 	"publisher.change":        {"name", "license_keys"},
 	"publisher.key.add":       {"publisher", "key", "fingerprint", "type", "title", "expires_at"},
-	"publisher.key.remove":    {"publisher", "key", "fingerprint"},
+	"publisher.key.remove":    {"publisher", "key", "fingerprint", "type", "title"},
 	// releases
 	"release.add":       {"release", "name", "version", "platform", "slot", "body_hash", "visibility", "current", "shadows"},
 	"release.publish":   {"release", "name", "version", "platform", "slot", "body_hash", "visibility", "current", "shadows", "provenance"},

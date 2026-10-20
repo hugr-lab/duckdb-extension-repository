@@ -172,16 +172,15 @@ created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, k.ID, k.TenantID
 	return t.s.mapErr(err, "key "+k.Fingerprint+" in this tenant")
 }
 
-// DeletePublisherKey removes a publisher's key and returns its fingerprint. Keys are looked up on
-// every request, never cached, so no cache is bumped.
-func (t *Tx) DeletePublisherKey(ctx context.Context, publisherID, id string) (string, error) {
-	var fp string
-	err := t.queryRow(ctx, "SELECT fingerprint FROM publisher_keys WHERE id = ? AND publisher_id = ?", id, publisherID).Scan(&fp)
+// DeletePublisherKey removes a publisher's key and returns it. Keys are looked up on every request,
+// never cached, so no cache is bumped.
+func (t *Tx) DeletePublisherKey(ctx context.Context, publisherID, id string) (PublisherKey, error) {
+	k, err := scanPublisherKey(t.queryRow(ctx, "SELECT "+publisherKeyCols+" FROM publisher_keys WHERE id = ? AND publisher_id = ?", id, publisherID))
 	if err := notFound(err, "key "+id); err != nil {
-		return "", err
+		return k, err
 	}
 	_, err = t.exec(ctx, "DELETE FROM publisher_keys WHERE id = ? AND publisher_id = ?", id, publisherID)
-	return fp, err
+	return k, err
 }
 
 const publisherKeyCols = "id, tenant_id, publisher_id, type, public_key, fingerprint, title, expires_at, created_at, created_by, last_used_at"

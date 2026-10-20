@@ -117,7 +117,7 @@ func validateAuth(bad func(string, ...any), c Config) {
 		}
 		names[s.Name] = true
 		if auth.RefusedIssuer(s.URL) {
-			bad("auth.server_issuers[%d]: %s issues tokens to any GitHub workflow for any audience", i, s.URL)
+			bad("auth.server_issuers[%d]: %s is a CI token issuer's: it issues tokens to any workflow for any audience", i, s.URL)
 		}
 	}
 	for i, s := range a.ServerAdmins {

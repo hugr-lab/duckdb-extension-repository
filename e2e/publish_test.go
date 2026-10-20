@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -118,4 +120,77 @@ func (k *kista) publish(t *testing.T, name string, key ssh.Signer) int {
 		t.Logf("publish %s: %d %s", name, resp.StatusCode, b)
 	}
 	return resp.StatusCode
+}
+
+// Spec 0023: the publishing page's commands, run as written against kista with OpenSSH and curl:
+// whoami, then a publication, both signed with ssh-keygen. Skipped without bash, ssh-keygen or curl.
+func TestPublishRecipe(t *testing.T) {
+	b := needBuild(t)
+	for _, tool := range []string{"bash", "ssh-keygen", "curl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip("no " + tool)
+		}
+	}
+	k := startKista(t, b)
+	dir := t.TempDir()
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "e2e", "-f", filepath.Join(dir, "key")).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v %s", err, out)
+	}
+	pub, err := os.ReadFile(filepath.Join(dir, "key.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}}
+	if _, err := adm.AddPublisher(ctx, serveAdmin, "acme", "doc-ci"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "publisher:doc-ci", []string{"publish"}, tenants.GrantOn{Channel: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adm.AddPublisherKey(ctx, serveAdmin, "acme", "doc-ci", string(pub), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	// the page's block, pointed at this kista, its prod channel and the demo
+	page, err := os.ReadFile("../website/docs/publishing.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, ok := strings.Cut(string(page), "### Publishing from CI")
+	if ok {
+		_, rest, ok = strings.Cut(rest, "```bash\n")
+	}
+	script, _, _ := strings.Cut(rest, "```")
+	if !ok || script == "" {
+		t.Fatal("no bash block under Publishing from CI")
+	}
+	data, err := os.ReadFile(k.b.extensions["kista_demo"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ef, err := extfile.Open(bytes.NewReader(data), int64(len(data)), 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range [][2]string{
+		{"https://kista.example.com", "https://" + k.addr},
+		{"build/release/extension/acl/acl.duckdb_extension", k.b.extensions["kista_demo"]},
+		{"/channels/staging/extensions/acl/releases?version=1.4.0&platform=linux_amd64",
+			"/channels/prod/extensions/kista_demo/releases?version=" + ef.Metadata.ExtensionVersion + "&platform=" + ef.Metadata.Platform},
+	} {
+		if !strings.Contains(script, r[0]) {
+			t.Fatalf("the page's block no longer has %q", r[0])
+		}
+		script = strings.ReplaceAll(script, r[0], r[1])
+	}
+	cmd := exec.Command("bash", "-euo", "pipefail", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "KISTA_PUBLISHER_KEY_FILE="+filepath.Join(dir, "key"), "CURL_CA_BUNDLE="+testCA(t).caFile)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the page's commands: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), `"publisher":"doc-ci"`) || !strings.Contains(string(out), `"origin":"publication"`) {
+		t.Fatalf("whoami and the publication: %s", out)
+	}
 }

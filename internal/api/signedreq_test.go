@@ -83,3 +83,17 @@ func (m *mgmt) authorize(t *testing.T, req *http.Request, token string, body []b
 	req.Header.Set(auth.StatementHeader, base64.StdEncoding.EncodeToString(st))
 	req.Header.Set(auth.SignatureHeader, base64.StdEncoding.EncodeToString(sig))
 }
+
+// uploadSignedFor publishes sent with a signer's headers made for signed: a body that is not the
+// signed one.
+func (m *mgmt) uploadSignedFor(t *testing.T, path, handle string, signed, sent []byte) resp {
+	t.Helper()
+	k := m.signers[handle]
+	st := auth.NewStatement("POST", path, signed, time.Now())
+	sig, err := auth.SignStatement(k.s, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m.upload(t, path, "", sent, auth.StatementHeader, base64.StdEncoding.EncodeToString(st),
+		auth.SignatureHeader, base64.StdEncoding.EncodeToString(sig))
+}

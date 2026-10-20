@@ -3,6 +3,7 @@ package store_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +158,62 @@ func TestPublisherKeyRecords(t *testing.T) {
 		inTx(t, s, func(tx *store.Tx) error { _, err := tx.DeletePublisherKey(ctx, p.ID, k.ID); return err })
 		if _, _, err := s.PublisherKeyByFingerprint(ctx, tn.ID, k.Fingerprint); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("a removed key: %v", err)
+		}
+	})
+}
+
+// Migration 0028 (spec 0023) drops GitHub credentials and API keys and keeps publishers and their
+// grants; it raises the minimum reader to 28, since an older binary would read the dropped tables.
+func TestMigrationPublisherKeys(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Fresh(t, 1)[0]
+		if err := store.MigrateTo(ctx, s, 27); err != nil {
+			t.Fatal(err)
+		}
+		now := store.TimeArg(s, time.Now())
+		const tid, pid = "t0000000-0000-0000-0000-000000000000", "p0000000-0000-0000-0000-000000000000"
+		for _, q := range []struct {
+			sql  string
+			args []any
+		}{
+			{"INSERT INTO tenants (id, name, display_name, state, created_at, version) VALUES (?, 'acme', '', 'active', ?, 1)", []any{tid, now}},
+			{"INSERT INTO publishers (id, tenant_id, name, created_at, created_by) VALUES (?, ?, 'ci', ?, 'os:1:t')", []any{pid, tid, now}},
+			{"INSERT INTO publisher_github (id, publisher_id, provider, owner_id, repository_id, workflow, created_at, created_by) " +
+				"VALUES ('g0000000-0000-0000-0000-000000000000', ?, 'github', '1', '2', 'o/r/.github/workflows/w.yml', ?, 'os:1:t')", []any{pid, now}},
+			{"INSERT INTO api_keys (id, publisher_id, prefix, hash, expires_at, created_at, created_by) " +
+				"VALUES ('k0000000-0000-0000-0000-000000000000', ?, '0a1b2c3d', ?, ?, ?, 'os:1:t')", []any{pid, strings.Repeat("ab", 32), now, now}},
+		} {
+			if err := store.ExecRaw(ctx, s, q.sql, q.args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		ta, err := s.GetTenantAuth(ctx, tid)
+		if err != nil || len(ta.Publishers) != 1 || ta.Publishers[0].Name != "ci" {
+			t.Fatalf("publishers after 0028: %+v %v", ta.Publishers, err)
+		}
+		for _, table := range []string{"publisher_github", "api_keys"} {
+			if _, err := store.CountRaw(ctx, s, table, "1 = 1"); err == nil {
+				t.Errorf("%s is still there", table)
+			}
+		}
+		if n, err := store.CountRaw(ctx, s, "schema_migrations", "version = 28 AND min_reader = 28"); err != nil || n != 1 {
+			t.Fatalf("0028's min_reader: %d %v", n, err)
+		}
+		if _, err := store.CountRaw(ctx, s, "publisher_keys", "1 = 1"); err != nil {
+			t.Fatalf("publisher_keys: %v", err)
+		}
+		// a key's tenant is its publisher's, even in another existing tenant
+		const other = "o0000000-0000-0000-0000-000000000000"
+		if err := store.ExecRaw(ctx, s, "INSERT INTO tenants (id, name, display_name, state, created_at, version) VALUES (?, 'other', '', 'active', ?, 1)",
+			other, now); err != nil {
+			t.Fatal(err)
+		}
+		bad := testKey(other, pid, 1)
+		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertPublisherKey(ctx, &bad) }); err == nil {
+			t.Fatal("a key in another tenant than its publisher's")
 		}
 	})
 }

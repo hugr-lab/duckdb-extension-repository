@@ -131,6 +131,14 @@ func TestLicenseKeySources(t *testing.T) {
 		!strings.Contains(string(r.body), "license_keys") {
 		t.Fatalf("a malformed block: %d %s", r.status, r.body)
 	}
+	// a keyed body that is not the signed one records nothing, and releases nothing
+	if r := m.uploadSignedFor(t, P+"newext/releases?version=1.2&platform=linux_amd64", issuer, keyed(t, "1.2", nil, "newext_duckdb_cpp_init"),
+		keyed(t, "1.2", block, "newext_duckdb_cpp_init")); r.status != 400 || !strings.Contains(string(r.body), "not the signed one") {
+		t.Fatalf("a body that is not the signed one: %d %s", r.status, r.body)
+	}
+	if got := keys(); got != "[]" {
+		t.Fatalf("keys from a body that is not the signed one: %s", got)
+	}
 	// the body the unmarked publisher released, published again by the marked one
 	if r := m.upload(t, P+"newext/releases?version=1.0&platform=linux_amd64", issuer, keyed(t, "1.0", block, "newext_duckdb_cpp_init")); r.status != 200 {
 		t.Fatalf("publish again: %d %s", r.status, r.body)
@@ -140,6 +148,12 @@ func TestLicenseKeySources(t *testing.T) {
 	}
 	if r := m.call(t, "POST", T+"/licenses", ta, m.licence("newext", "pro")); r.status != 201 {
 		t.Fatalf("an import against the recorded key: %d %s", r.status, r.body)
+	}
+
+	// the server administrator removes a marked publisher's key
+	spare := m.addKey(t, sa, "acme", "issuer-ci")
+	if r := m.call(t, "DELETE", T+"/publishers/issuer-ci/keys/"+m.signers[spare].id, sa, ""); r.status != 204 {
+		t.Fatalf("a server administrator removes a marked publisher's key: %d %s", r.status, r.body)
 	}
 
 	// unmarking keeps the keys; removing the publisher drops them

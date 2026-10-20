@@ -10,7 +10,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// Publishers (spec 0008): identities that only publish and promote, authenticated by credentials.
+// Publishers (spec 0008): identities that only publish and promote, authenticated by their keys (spec 0023).
 
 // AddPublisher adds a publisher to a tenant.
 func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, name string) (store.Publisher, error) {
@@ -28,7 +28,7 @@ func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, nam
 	return p, err
 }
 
-// ListPublishers lists a tenant's publishers with their credentials.
+// ListPublishers lists a tenant's publishers.
 func (s *AuthAdmin) ListPublishers(ctx context.Context, a authz.Actor, tenant string) ([]store.Publisher, error) {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
@@ -38,7 +38,7 @@ func (s *AuthAdmin) ListPublishers(ctx context.Context, a authz.Actor, tenant st
 	return ta.Publishers, err
 }
 
-// RemovePublisher removes a publisher, its credentials and its grants.
+// RemovePublisher removes a publisher, its keys and its grants.
 func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, name string) error {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
@@ -53,7 +53,7 @@ func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, 
 }
 
 // SetPublisherLicenseKeys marks a publisher a trusted source of licence keys, or unmarks it (spec
-// 0021): a server administrator's act. While marked, its credentials and grants are the server
+// 0021): a server administrator's act. While marked, its keys and grants are the server
 // administrator's to change; unmarking keeps the keys it brought.
 func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, tenant, name string, on bool) (store.Publisher, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
@@ -66,7 +66,7 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 	var p store.Publisher
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		if on {
-			// credentials a tenant administrator made before the mark would outlive it: the server
+			// keys a tenant administrator registered before the mark would outlive it: the server
 			// administrator adds them once it is marked
 			cur, err := tx.GetPublisher(ctx, t.ID, name)
 			if err != nil {
@@ -88,7 +88,7 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 	return p, err
 }
 
-// marked refuses a change to a marked publisher's credentials or grants unless a server
+// marked refuses a change to a marked publisher's keys or grants unless a server
 // administrator makes it (spec 0021): a tenant administrator cannot point it at builds of their own.
 func (s *AuthAdmin) marked(ctx context.Context, a authz.Actor, p store.Publisher) error {
 	if !p.LicenseKeys {
@@ -180,12 +180,12 @@ func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenan
 		if err := s.marked(ctx, a, p); err != nil {
 			return err
 		}
-		fp, err := tx.DeletePublisherKey(ctx, p.ID, id)
+		k, err := tx.DeletePublisherKey(ctx, p.ID, id)
 		if err != nil {
 			return err
 		}
 		return tx.Event(ctx, t.ID, a.String(), "publisher.key.remove", "publisher:"+p.Name+"/key:"+id,
-			map[string]any{"publisher": p.Name, "key": id, "fingerprint": fp})
+			map[string]any{"publisher": p.Name, "key": id, "fingerprint": k.Fingerprint, "type": k.Type, "title": k.Title})
 	})
 }
 

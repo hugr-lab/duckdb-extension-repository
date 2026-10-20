@@ -99,7 +99,7 @@ func TestPublishConfig(t *testing.T) {
 		"per principal":                 {base + "publish: { max_per_principal: 9, max_per_tenant: 4 }\n", nil, "cannot exceed"},
 		"over the default tenant limit": {base + "publish: { max_per_principal: 16 }\n", nil, "cannot exceed"},
 		"tenant under the default":      {base + "publish: { max_per_tenant: 1 }\n", nil, "cannot exceed"},
-		"server issuer at the provider": {base + "serve: { public_url: https://k.example }\nauth: { server_issuers: [ { name: ops, url: 'https://token.actions.githubusercontent.com', required_claims: { a: b } } ] }\n", nil, "any GitHub workflow"},
+		"server issuer at the provider": {base + "serve: { public_url: https://k.example }\nauth: { server_issuers: [ { name: ops, url: 'https://token.actions.githubusercontent.com', required_claims: { a: b } } ] }\n", nil, "CI token issuer"},
 	} {
 		_, err := Load(write(t, c.file), c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {

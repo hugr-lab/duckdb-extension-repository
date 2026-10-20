@@ -408,7 +408,7 @@ Each server issuer:
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `name` | string | required | `[a-z][a-z0-9-]{0,15}`, unique. |
-| `url` | URL | required | The issuer URL, https (http on loopback only with dev and `egress.allow_loopback_http`). Unique, and not GitHub Actions' token URL. |
+| `url` | URL | required | The issuer URL, https (http on loopback only with dev and `egress.allow_loopback_http`). Unique, and not a CI token issuer's URL (GitHub Actions', GitHub Enterprise's). |
 | `jwks_uri` | URL | discovered | |
 | `algorithms` | list | all supported | Of `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `EdDSA`. |
 | `required_claims` | map | required | Claims every token must carry, at most 16. Mandatory for a server issuer. |

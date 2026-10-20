@@ -851,9 +851,10 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			}
 			// the body must be the signed one: none for a route without a body, and otherwise checked
 			// at its end, before anything is written
-			if !ru.body && !ru.raw {
+			if !ru.body && !ru.raw || r.ContentLength == 0 {
+				// no body to check as it is read: the statement must name an empty one
 				if sr.Statement.SHA256 != auth.EmptySHA256 {
-					problem(w, http.StatusBadRequest, typeInvalid, "the statement's sha256 is not an empty body's")
+					problem(w, http.StatusBadRequest, typeInvalid, "the body is not the signed one: the statement names a body, the request has none")
 					return caller{}, false
 				}
 			} else {

@@ -365,10 +365,12 @@ func releaseView(x store.Candidate, c caller, admin bool, provided map[string]bo
 	o := releaseJSON{ID: x.ID, Name: x.Name, Version: x.ExtVersion, Platform: x.Platform, Slot: x.Slot, ABI: x.ABI,
 		DuckDBVersion: x.DuckDBVersion, State: x.State, Visibility: x.Visibility, Seq: x.Seq, BodyHash: x.BodyHash,
 		CreatedAt: timeOf(x.CreatedAt), StateChangedAt: timeOf(x.StateChangedAt), Origin: x.Origin,
-		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(x, provided), ETag: versionTag(x.Version),
-		PublisherStatement: x.PublisherStatement, PublisherSignature: x.PublisherSignature}
+		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(x, provided), ETag: versionTag(x.Version)}
 	if admin {
 		o.CreatedBy, o.StateChangedBy = createdBy(x.CreatedBy, c), createdBy(x.StateChangedBy, c)
+		// administrators only, as who made it: another publisher of the channel could otherwise
+		// replay a promotion's signed request within its five minutes (spec 0023)
+		o.PublisherStatement, o.PublisherSignature = x.PublisherStatement, x.PublisherSignature
 	}
 	if x.CAPI != nil {
 		o.CAPI = x.CAPI.String()

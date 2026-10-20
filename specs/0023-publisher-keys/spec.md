@@ -75,9 +75,10 @@ own tenant gives them nothing they could not do directly. A key in another tenan
 for this tenant's requests.
 
 ```text
-publisher_keys   id, tenant_id, publisher_id, type, public_key (wire form), fingerprint, title,
-                 expires_at null, created_at, created_by, last_used_at null
-                 unique (tenant_id, fingerprint)
+publisher_keys   id, tenant_id, publisher_id, type, public_key (the OpenSSH line, no comment),
+                 fingerprint, title, expires_at null, created_at, created_by, last_used_at null
+                 unique (tenant_id, fingerprint); (publisher_id, tenant_id) references publishers,
+                 so a key's tenant is its publisher's
 ```
 
 **Management**: the tenant `admin`. For a publisher marked as a source of licence keys (spec 0021),
@@ -93,7 +94,7 @@ marked, adding or removing its keys is a server administrator's act, as its cred
   key list` and `publisher key remove`.
 - **Console**: the publisher screen lists, adds and removes keys.
 - **Audit**: `publisher.key.add` and `publisher.key.remove`, with the fingerprint, type and title
-  (spec 0010).
+  (spec 0010), and the expiry when added.
 
 **Rotation**:
 1. Add the new key.
@@ -157,7 +158,10 @@ ssh-keygen -Y sign -f publisher_key -n kista-request@v1 < statement > statement.
 
 **kista checks, in order:**
 1. **Before the body.**
-   - The headers and the statement must parse (`400`).
+   - The headers, the statement and the SSHSIG blob must parse (`400`): a key type kista does not
+     take, another namespace, a hash other than `sha256` and `sha512`, a non-empty reserved field
+     or a signature format that is not the key's is a malformed request. These depend only on the
+     request, so they say nothing about the tenant.
    - `method` and `path` must equal the request's (`400`).
    - `signed-at` must be within five minutes of the server's clock, either way (`401`).
    - The key and the signature must verify (`401`).
@@ -165,10 +169,12 @@ ssh-keygen -Y sign -f publisher_key -n kista-request@v1 < statement > statement.
      including the `404` that says nothing about what exists.
 
    A `100-continue` client gets its `401` or `404` before it sends the file.
-2. **The body.** It is hashed as it is read. If its SHA-256 differs from the statement's, the answer
-   is `400` ("the body is not the signed one"), before anything is written to the store: the hash
-   check is in `release.Add` after the spool and before any store write (licence keys, release,
-   Build state). A promotion's JSON is checked the same way before it is parsed.
+2. **The body.** It is hashed as it is read, and at its end (its `Content-Length`) a SHA-256 that is
+   not the statement's fails the read: `400` ("the body is not the signed one"). Every route open to
+   publishers reads its body to the end before it writes anything (the spool before `release.Add`'s
+   first store write, the JSON before it is parsed, an attachment before it is stored), so nothing
+   is written. A route without a body, or a request with `Content-Length: 0`, must state the empty
+   body's hash.
 3. Then everything as in spec 0008.
 
 A `401` names the fingerprint kista found and its clock, so a developer can tell a wrong key from a
@@ -184,8 +190,11 @@ What it can do then:
 - **A publication** answers the existing release (`200`) and changes nothing, `current` included.
 - **A promotion of a version** may also promote a platform that reached the source channel within
   those minutes, which the publisher's grant already allows.
+- **An attachment** is added again (spec 0011 keeps every document), with the same content.
 
-No nonce is needed.
+No nonce is needed. The statement and the signature a release keeps are shown to the extension's
+administrators only, like who made it: another publisher of the channel could otherwise replay a
+promotion within its minutes.
 
 ### Provenance
 
@@ -193,8 +202,9 @@ A release made by a publisher keeps:
 - the actor, `publisher:<tenant>/<name>`, and the credential, `key:<fingerprint>`, in `provenance`
   (spec 0008's JSON, within its 4,000 bytes);
 - the statement and the signature as they came, in two columns of their own on the release
-  (`publisher_statement`, at most 4 KiB, and `publisher_signature`, at most 1 KiB; `nvarchar(max)`
-  is not needed).
+  (`publisher_statement`, at most 4 KiB, and `publisher_signature`, the SSHSIG blob of at most 1 KiB
+  in base64, at most 1,400 characters; `nvarchar(max)` is not needed). They are shown to the
+  extension's administrators.
 
 The SSHSIG blob carries the public key. So anyone can later check that this key asked for a body
 with this SHA-256 at this path, even after the key is removed. kista's own `body_hash` (the file
@@ -209,10 +219,13 @@ without its signature) is beside it. Spec 0008's provenance before this spec kee
   - `kista admin publisher github`;
   - the provider verifier and `publish.providers`. A configuration that still sets
     `publish.providers` is refused at startup, naming this spec.
-- **Kept from it**: an issuer record, tenant or server, at GitHub Actions' token URL
-  (`https://token.actions.githubusercontent.com`) is still refused, and an existing one stays
-  disabled. Any GitHub workflow can request a token for any audience, so trusting that issuer for
-  install or administration would let any repository in.
+- **Kept from it**: an issuer record, tenant or server, at a CI token issuer's URL is still refused,
+  and an existing one stays disabled. Any workflow there can request a token for any audience, so
+  trusting that issuer for install or administration would let any repository in. With
+  `publish.providers` gone, the URLs are matched by pattern, so a record once disabled by a GitHub
+  Enterprise Server provider stays disabled: a host starting `token.actions.` (GitHub Actions, with
+  an enterprise's path, and GitHub Enterprise Cloud's `token.actions.<name>.ghe.com`), or a path
+  ending `/_services/token` (GitHub Enterprise Server).
 - **API keys**:
   - `api_keys`, and the `kista_…` Bearer.
   - On the DuckDB routes a `kista_` Bearer is still taken as no token (spec 0008), so a stale
@@ -390,7 +403,8 @@ Between the phases, the template's CI stays on its pinned kista commit.
   - the key never printed.
 - **End to end**:
   - the template's CI publishes both kinds with a generated key, then DuckDB installs them;
-  - kista's e2e publishes `kista_demo` the same way.
+  - kista's e2e publishes `kista_demo` the same way, and runs the Publishing page's commands as
+    written (`ssh-keygen` and `curl`).
 
 ## Alternatives considered
 

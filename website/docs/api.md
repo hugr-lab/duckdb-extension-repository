@@ -116,7 +116,8 @@ Errors are `application/problem+json`:
 | `too-many-requests` | `429`, with `Retry-After` |
 | `unavailable` | `503`; with `Retry-After: 1` when the store or the storage collector is busy |
 
-`401` and `404` have constant bytes and no `detail`. Other answers to an allowed caller carry a
+`401` and `404` have constant bytes and no `detail`, except a publisher's signed request's `401`,
+which names the key's fingerprint kista found and kista's clock ([spec 0023](publishing.md#signed-requests)). Other answers to an allowed caller carry a
 `detail`: a fixed message, or for an invalid value the service's own wording of the value and the
 rule (at most 300 bytes). It is never an internal error.
 
