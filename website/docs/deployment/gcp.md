@@ -58,8 +58,7 @@ terraform output ip                  # point the domain here
   certificate once the name resolves to that address, which can take tens of minutes; until then
   https fails and http works.
 - **`image`** is a version or a digest: `ghcr.io/hugr-lab/kista:vX.Y.Z` or `…@sha256:…`. Moving
-  tags (`:edge`, `:latest`) are refused unless pinned by digest. Before the first release, pin
-  `:edge` by its digest and give the chart as a local path (`chart = "../helm/kista"`).
+  tags (`:edge`, `:latest`) are refused unless pinned by digest.
 - **`server_issuers`** and **`server_admins`** are `auth.server_issuers` and `auth.server_admins`
   ([Configuration](../configuration.md#auth)), as YAML in a string. A server issuer needs
   `required_claims`.

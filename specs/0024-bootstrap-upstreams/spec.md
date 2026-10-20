@@ -1,6 +1,6 @@
 # Spec 0024: The bootstrap's upstreams, and the chart in another namespace
 
-- **Status**: implemented (the first release follows, as below)
+- **Status**: implemented; released in v0.1.0 (2026-10-20)
 - **Date**: 2026-10-20
 - **Author**: vgsml, Claude
 

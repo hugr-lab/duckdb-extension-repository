@@ -5,9 +5,9 @@ title: Deployment
 # Deployment
 
 kista ships as a container image and as binaries for linux and darwin, published from this
-repository and signed. Until the first version tag, the only published image is `:edge`, built
-from `main`; the version images and the binaries come with the first release. This page says what is published, how to verify it, and how to run the
-image with Docker. [Kubernetes](kubernetes.md) covers the Helm chart, [AWS](aws.md) the ECS
+repository and signed: each version tag publishes the image, the Helm chart and the binaries, and
+`main` publishes the `:edge` image. This page says what is published, how to verify it, and how to
+run the image with Docker. [Kubernetes](kubernetes.md) covers the Helm chart, [AWS](aws.md) the ECS
 recipe in Terraform, [GCP](gcp.md) the GKE recipe in Terraform, [Azure](azure.md) the Container
 Apps recipe in Bicep, and [Air-gapped sites](air-gapped.md) bringing kista and extensions into a
 site without a route to the internet.

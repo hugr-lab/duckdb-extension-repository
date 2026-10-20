@@ -19,9 +19,8 @@ CI runs this page (`.github/workflows/air-gapped.yml`), so a command that stops 
 job. It runs the shell blocks titled "On the connected side" in a container with a network, and
 those titled "At the site" in a container whose only network reaches the site's registry. It sets
 the variables below to its own values (`file:` signers, an older DuckDB release), and it does not
-run the Helm install. Its kista is built from the same commit as the page. The image it verifies
-is the last release's; until the first release it verifies `:edge` and skips the chart and the
-binary.
+run the Helm install. Its kista is built from the same commit as the page. The image, the chart and
+the binary it verifies are the last release's (not a release candidate's).
 
 ## What crosses
 

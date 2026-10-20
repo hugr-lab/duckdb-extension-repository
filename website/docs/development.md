@@ -161,7 +161,7 @@ make test
 | `reserved` | `make reserved`, then fails if the committed lists changed |
 | `e2e` (own workflow) | DuckDB at the pin against kista, on pull requests and pushes to `main` that touch `internal/`, `cmd/`, `e2e/`, `go.mod`, `go.sum` or the `Makefile`, or on demand |
 | `docs-build` (own workflow) | This site, on changes under `website/` |
-| `air-gapped` (own workflow) | `deploy/air-gapped/test.sh`: the [Air-gapped sites](deployment/air-gapped.md) page's shell blocks, the site's in a container on an internal Docker network, against the last release (`:edge` before the first) and kista built from the commit; on changes to the page, the test, `internal/`, `cmd/`, `go.mod` or `go.sum`, and weekly |
+| `air-gapped` (own workflow) | `deploy/air-gapped/test.sh`: the [Air-gapped sites](deployment/air-gapped.md) page's shell blocks, the site's in a container on an internal Docker network, against the last release and kista built from the commit; on changes to the page, the test, `internal/`, `cmd/`, `go.mod` or `go.sum`, and weekly |
 
 ### A disposable GCP stack
 
@@ -492,17 +492,13 @@ v1.2.0`. The workflow refuses a tag that is not on `main`. If signing or the rel
 the push, re-run the failed jobs (not all jobs: a rebuild is a different build): the publish job
 accepts a version tag that already holds the same build. A broken build is fixed with a new version, never by moving the tag.
 
-**Before the first release**, once:
-
-1. Merge to `main` before the first tag: a push to `main` creates the package
-   `ghcr.io/hugr-lab/kista`. Check that it is linked to this repository (the image index's
-   `org.opencontainers.image.source` annotation links it, and gives the repository's Actions
-   access), then make it public; the organisation must allow public packages. The first release
-   creates the chart's package, `ghcr.io/hugr-lab/charts/kista`: make it public the same way.
-2. Add a tag ruleset for `v*` in the repository settings: only maintainers may create a version
-   tag, and nobody may update or delete one.
-3. Cut `v0.1.0-rc.1` and verify its image and a binary as [Deployment](deployment/index.md#verifying)
-   shows.
+The packages `ghcr.io/hugr-lab/kista` and `ghcr.io/hugr-lab/charts/kista` are public and linked to
+this repository (the image index's `org.opencontainers.image.source` annotation links them, and
+gives the repository's Actions access). Two tag rulesets guard `v*`: only maintainers and admins
+may create a version tag, and nobody may update or delete one. Cut a release candidate first
+(`vX.Y.Z-rc.N`) and verify its image, its chart and a binary as
+[Deployment](deployment/index.md#verifying) shows; after a release, run the `air-gapped` workflow
+by hand (it tests the last release, and otherwise waits for its weekly run).
 
 ## Specs and the working process
 
