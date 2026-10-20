@@ -25,7 +25,7 @@ LOAD my_ext FROM corp;
 - **Passes core extensions through** unchanged in a passthrough channel, byte-identical to
   `extensions.duckdb.org`, so DuckDB can still autoload them from your own server.
 - **Publishes** your own extension builds into signed channels, from the command line, the HTTP API
-  or CI (trusted publishing and API keys), and **promotes** a tested build from one channel to
+  or CI of any forge (signed with the publisher's SSH key), and **promotes** a tested build from one channel to
   another.
 - Serves **public and private** extensions. A public release is served to anyone; a private one only
   to a caller with a Bearer token from one of the tenant's issuers and an `install` grant. Nothing

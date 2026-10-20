@@ -17,6 +17,9 @@ export interface Release {
   state_changed_by?: string
   origin: string
   provenance?: unknown
+  /** a publisher's signed request, as it came (spec 0023): the statement, and the SSH signature in base64 */
+  publisher_statement?: string
+  publisher_signature?: string
   shadows?: string
   etag: string
 }

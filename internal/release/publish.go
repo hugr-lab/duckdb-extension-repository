@@ -21,9 +21,11 @@ type PromoteOptions struct {
 	Version    string // an extension version
 	Private    bool   // narrow the visibility (a promotion never widens it)
 	NotCurrent bool
-	// Provenance is a JSON object of the promoter's facts (a publisher's run), merged into each
-	// release's provenance.
+	// Provenance is a JSON object of the promoter's facts (a publisher's credential), merged into
+	// each release's provenance.
 	Provenance string
+	// Statement and Signature are a publisher's signed request (spec 0023), recorded on each release.
+	Statement, Signature string
 }
 
 // Promote releases Builds of name that are in channel o.From in channel, with channel's signature,
@@ -135,7 +137,8 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 			prov, _ = json.Marshal(map[string]string{"actor": a.String(), "from_channel": o.From, "from_release": r.ID,
 				"credential": CredentialOf(r.Release)})
 		}
-		it := item{b: b, visibility: vis, notCurrent: o.NotCurrent, origin: store.OriginPromotion, provenance: string(prov)}
+		it := item{b: b, visibility: vis, notCurrent: o.NotCurrent, origin: store.OriginPromotion, provenance: string(prov),
+			statement: o.Statement, signature: o.Signature}
 		if t := res(channel); !t.Reserved {
 			it.recheck = s.reservedCheck(a, authz.VerbPromote, t)
 		}

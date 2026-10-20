@@ -351,8 +351,12 @@ type releaseJSON struct {
 	StateChangedBy string `json:"state_changed_by,omitempty"`
 	Origin         string `json:"origin"`
 	Provenance     any    `json:"provenance,omitempty"`
-	Shadows        string `json:"shadows,omitempty"`
-	ETag           string `json:"etag"`
+	// PublisherStatement and PublisherSignature are a publisher's signed request as it came (spec
+	// 0023): anyone with its key can check later who asked for this body at this path.
+	PublisherStatement string `json:"publisher_statement,omitempty"`
+	PublisherSignature string `json:"publisher_signature,omitempty"`
+	Shadows            string `json:"shadows,omitempty"`
+	ETag               string `json:"etag"`
 }
 
 // releaseView is a release for its readers: the extension's administrators see who changed it,
@@ -361,7 +365,8 @@ func releaseView(x store.Candidate, c caller, admin bool, provided map[string]bo
 	o := releaseJSON{ID: x.ID, Name: x.Name, Version: x.ExtVersion, Platform: x.Platform, Slot: x.Slot, ABI: x.ABI,
 		DuckDBVersion: x.DuckDBVersion, State: x.State, Visibility: x.Visibility, Seq: x.Seq, BodyHash: x.BodyHash,
 		CreatedAt: timeOf(x.CreatedAt), StateChangedAt: timeOf(x.StateChangedAt), Origin: x.Origin,
-		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(x, provided), ETag: versionTag(x.Version)}
+		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(x, provided), ETag: versionTag(x.Version),
+		PublisherStatement: x.PublisherStatement, PublisherSignature: x.PublisherSignature}
 	if admin {
 		o.CreatedBy, o.StateChangedBy = createdBy(x.CreatedBy, c), createdBy(x.StateChangedBy, c)
 	}

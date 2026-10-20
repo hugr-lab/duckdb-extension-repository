@@ -6,8 +6,8 @@ title: Publishing and promotion
 
 Your own builds reach a channel in one of three ways:
 
-- **over the API**: a person with a tenant token, or a **publisher** (CI through GitHub Actions
-  trusted publishing, or an API key), uploads the file into a signed channel;
+- **over the API**: a person with a tenant token, or a **publisher** (CI of any forge, signing its
+  requests with its key), uploads the file into a signed channel;
 - **with the CLI** on the server: `kista admin release add`, as the server administrator;
 - **by promotion**: a release already in one channel (usually `staging`) is released in another
   (`prod`) with that channel's signature. Nothing is copied.
@@ -173,13 +173,9 @@ for the CLI and upstream intake. The counters are per replica.
 publish:                     # file-only
   max_per_principal: 2       # 1..64, default 2
   max_per_tenant: 8          # 1..256, default 8
-  providers:                 # trusted-publishing issuers; default: GitHub Actions alone
-    - name: github
-      url: https://token.actions.githubusercontent.com
 ```
 
-`providers` is covered under [trusted publishing](#trusted-publishing-github-actions). See
-[Configuration](configuration.md) for every setting.
+See [Configuration](configuration.md) for every setting.
 
 ## Publishing with the CLI
 
@@ -286,8 +282,10 @@ publisher, remove its grants or the publisher.
 ## Publishers
 
 A **publisher** is a named identity in a tenant that may only publish and promote. Grants name it
-as `publisher:<name>`; its credentials authenticate it, and they can change without touching its
-grants.
+as `publisher:<name>`. It authenticates by **signing its requests** with its developer's SSH key,
+whose public half is registered on it, like an SSH key on GitHub: CI on GitHub, GitLab, Gitea or
+anywhere else publishes the same way, and kista holds no secret that publishes. Its keys can change
+without touching its grants.
 
 What a publisher may do, whatever its grants say: publish, promote, read the releases its grants
 cover, add attachments to what it publishes (see [Attachments](attachments.md)), and
@@ -295,138 +293,130 @@ cover, add attachments to what it publishes (see [Attachments](attachments.md)),
 `publish` and `promote`.
 
 ```bash
+# the developer: a key for CI (the private half becomes a CI secret)
+ssh-keygen -t ed25519 -N '' -C acl-ci -f publisher_key
+
 # a tenant administrator, or the server administrator with the CLI
 kista admin -config /etc/kista/kista.yaml publisher add acme ci
+kista admin -config /etc/kista/kista.yaml publisher key add acme ci publisher_key.pub -expires 365d
 kista admin -config /etc/kista/kista.yaml grant add acme -principal publisher:ci -verb publish -channel staging
 kista admin -config /etc/kista/kista.yaml grant add acme -principal publisher:ci -verb publish -channel staging -extension httpfs
 ```
 
-The second grant is needed only for a reserved name. One publisher per family of extensions keeps
+The last grant is needed only for a reserved name. One publisher per family of extensions keeps
 grants readable; a grant may also name an extension group (see [Access](access.md)).
 
 Over the API (tenant administrators):
 
 | Route (under `/api/v1/tenants/{t}`) | |
 | --- | --- |
-| `GET /publishers`, `POST /publishers {"name": …}` | list, add |
+| `GET /publishers`, `POST /publishers {"name": …}` | list, add; a publisher's answer lists its keys |
 | `GET /publishers/{name}`, `DELETE /publishers/{name}` | read, remove |
-| `GET /publishers/{name}/github`, `POST /publishers/{name}/github` | list, add GitHub credentials |
-| `GET /publishers/{name}/github/{id}`, `DELETE /publishers/{name}/github/{id}` | read, remove one |
-| `GET /publishers/{name}/keys`, `POST /publishers/{name}/keys` | list, issue API keys |
-| `DELETE /publishers/{name}/keys/{id}` | remove a key |
+| `GET /publishers/{name}/keys`, `POST /publishers/{name}/keys {"public_key": …, "expires_at": …}` | list, register a key |
+| `GET /publishers/{name}/keys/{id}`, `DELETE /publishers/{name}/keys/{id}` | read, remove one |
 
-Removing a publisher removes its credentials and grants; caches drop it at the next request.
+Removing a publisher removes its keys and grants; caches drop it at the next request.
 
-### Trusted publishing (GitHub Actions)
+### Keys
 
-A GitHub credential binds a publisher to one workflow of one repository, by GitHub's immutable ids.
-The workflow requests an OIDC token from GitHub, and kista verifies it; no secret is stored anywhere.
+- **Types**: `ssh-ed25519` (recommended) and `ecdsa-sha2-nistp256`, for a key held in a KMS. RSA,
+  DSA, certificates and hardware (`sk-`) keys are refused.
+- **The input** is the line of the `.pub` file `ssh-keygen` writes: `ssh-ed25519 AAAA… comment`. The
+  comment becomes the key's title (printable ASCII, at most 100 characters).
+- **A key is known by its fingerprint**, `SHA256:…`, as `ssh-keygen -lf publisher_key.pub` prints
+  it. A fingerprint is unique in a tenant (`409`); the same key may serve publishers of other
+  tenants.
+- **Expiry** is optional: `-expires` takes `<days>d` or an RFC 3339 time, within a year; over the
+  API, `expires_at` in RFC 3339. A year is recommended. An expired key verifies nothing.
+- **A publisher holds at most 10 keys**, expired ones included.
+- **Removing a key** stops it at once: keys are looked up on every request, never cached.
 
-```bash
-# the ids (digit strings, never names)
-gh api repos/hugr-lab/duckdb-acl --jq '.owner.id, .id'
+**Rotation**: register the new key, replace the CI secret, watch the old key's `last_used_at` stop
+(`publisher key list`), then remove the old key.
 
-kista admin -config /etc/kista/kista.yaml publisher github add acme ci \
-  -owner-id 123456 -repository-id 789012 \
-  -workflow hugr-lab/duckdb-acl/.github/workflows/release.yml \
-  -ref 'refs/tags/v*' -environment release
+### Signed requests
+
+A publisher's request carries two headers and no `Authorization`:
+
+```text
+Kista-Statement: <the statement, standard base64>
+Kista-Signature: <the SSH signature, standard base64 on one line, without its armor lines>
 ```
 
-| Field | Matches |
+The **statement** names the request exactly: five lines, each ending in LF.
+
+```text
+kista-request v1
+method POST
+path /api/v1/tenants/acme/channels/staging/extensions/acl/releases?version=1.4.0&platform=linux_amd64
+sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+signed-at 2026-10-19T12:00:00Z
+```
+
+- `path` is the request's path and query, exactly as sent.
+- `sha256` is the plain SHA-256 of the request body: the file for a publication, the JSON for a
+  promotion, and the SHA-256 of nothing for a `GET`.
+- `signed-at` is UTC, to the second.
+
+The **signature** is OpenSSH's `ssh-keygen -Y sign` over the statement in the namespace
+`kista-request@v1`, so a signature made for git commits or anything else never verifies here.
+OpenSSH 8.1 or later makes it; any CI host has it.
+
+```bash
+ssh-keygen -Y sign -f publisher_key -n kista-request@v1 < statement > statement.sig
+```
+
+**What kista checks**:
+
+| Answer | When |
 | --- | --- |
-| `owner_id`, `repository_id` | the `repository_owner_id` and `repository_id` claims. A renamed or re-created repository does not inherit the binding |
-| `workflow` (required) | the `workflow_ref` claim without its `@<ref>`: `<owner>/<repo>/.github/workflows/<file>`. Renaming the repository means updating this field |
-| `ref` (optional) | a pattern over the `ref` claim: `*` within a segment, `**` across (`refs/tags/v*`) |
-| `environment` (optional) | the `environment` claim exactly, so GitHub's environment protection (required reviewers, branch and tag rules) gates the job. Recommended for a publisher that holds `promote` or publishes outside `staging` |
-| `provider` | the provider's name in `publish.providers` (default `github`) |
+| `400` | the headers or the statement are malformed; `method` or `path` is not this request's; a request carries both a signature and `Authorization`; the body's SHA-256 is not the statement's (checked as it is read, before anything is written) |
+| `401` | `signed-at` is more than five minutes from kista's clock; the key is not one of the tenant's, or it expired; the signature does not verify |
+| `404` | the publisher's grants do not cover the request, as for any caller |
 
-kista also requires:
+A `401` names the key's fingerprint that kista found and kista's clock, so a wrong key and a skewed
+clock can be told apart; it does not say which check failed. A client sending `Expect:
+100-continue` gets its `401` or `404` before the file.
 
-- `aud` is the tenant's canonical audience, `<serve.public_url>/<tenant>`; an assigned audience is
-  not accepted;
-- a lifetime of at most an hour, and `iat` within `auth.admin_token_max_age`;
-- `event_name` is not `pull_request`, `pull_request_target`, `workflow_run` or `merge_group` (they run
-  code a contributor controls with the base repository's identity).
+A captured request can be replayed only within its five minutes, to the same path, with the same
+body: a publication then answers the existing release (`200`) and changes nothing.
 
-A token whose run matches no credential of the path's tenant is `401`. A tenant issuer record cannot
-have a provider's URL.
+### Publishing from CI
 
-```yaml title=".github/workflows/release.yml"
-on:
-  push:
-    tags: ["v*"]
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      # ... build build/release/extension/acl/acl.duckdb_extension ...
-      - name: Publish to kista
-        env:
-          KISTA: https://kista.example.com
-        run: |
-          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$KISTA/acme" | jq -r .value)
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary @build/release/extension/acl/acl.duckdb_extension \
-            "$KISTA/api/v1/tenants/acme/channels/staging/extensions/acl/releases?version=${GITHUB_REF_NAME}&platform=linux_amd64"
-```
+The script of the [developer kit](development.md#the-developer-kit-for-extensions),
+`kista_publish.py` in hugr-lab's fork of extension-ci-tools, does all of the above for every build of
+a distribution: it reads each build's version and platform from its footer, skips wasm builds
+(refused, above), signs each request, and retries a `429` or a `5xx` (signing again). It needs only
+Python 3 and OpenSSH, so it runs in any CI. On GitHub, its reusable job `_kista_publish.yml` runs it
+after the distribution build; the [extension template](development.md#starting-an-extension-the-template)
+sets it up.
 
-**With the developer kit.** hugr-lab's fork of extension-ci-tools has a reusable job that does the
-above for every platform of a distribution build: `_kista_publish.yml`, after DuckDB's
-`_extension_distribution.yml` (or the fork's, for a licensed extension). It reads each build's
-version and platform from its footer, skips wasm builds (refused, above), and retries a `429` or a
-`5xx`. The token's `workflow_ref` names the calling workflow, so the binding names the extension's
-own workflow file. Pin the workflow to a commit and give the same commit as `ci_tools_version`. A
-job that calls a reusable workflow cannot set an environment: for a binding that names one, pass it
-as the `environment` input. A licensed extension's build also passes
-`override_ci_tools_repository: hugr-lab/extension-ci-tools`. The
-[extension template](development.md#starting-an-extension-the-template) sets all of this up. See
-[Development](development.md#the-developer-kit-for-extensions) and the fork's
-[KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md).
-
-```yaml title=".github/workflows/distribution.yml"
-jobs:
-  build:
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@<ci-tools commit>
-    with: {extension_name: acl, ci_tools_version: <ci-tools commit>}   # DuckDB: the duckdb submodule
-  kista:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions: {id-token: write, contents: read}
-    uses: hugr-lab/extension-ci-tools/.github/workflows/_kista_publish.yml@<commit>
-    with: {extension_name: acl, ci_tools_version: <commit>, kista_url: 'https://kista.example.com',
-           tenant: acme, channel: staging}
-```
-
-The provenance of the release records the provider, owner and repository ids and names, workflow,
-ref, commit, run id and attempt. A GitHub Enterprise Server is another entry of
-`publish.providers` (`https://<host>/_services/token`), named with `-provider`.
-`publish.providers: []` turns trusted publishing off. Other CI providers are not available yet.
-
-### API keys
-
-For CI without OIDC, a publisher can hold API keys:
+By hand, with `curl`:
 
 ```bash
-kista admin -config /etc/kista/kista.yaml publisher key add acme ci -expires 90d
-# prints kista_<prefix>_<secret> once
+FILE=build/release/extension/acl/acl.duckdb_extension
+PATHQ="/api/v1/tenants/acme/channels/staging/extensions/acl/releases?version=1.4.0&platform=linux_amd64"
+printf 'kista-request v1\nmethod POST\npath %s\nsha256 %s\nsigned-at %s\n' "$PATHQ" \
+  "$(sha256sum "$FILE" | cut -d' ' -f1)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > statement
+ssh-keygen -Y sign -q -f publisher_key -n kista-request@v1 < statement > statement.sig
+curl --fail-with-body -sS -X POST "https://kista.example.com$PATHQ" \
+  -H "Kista-Statement: $(base64 < statement | tr -d '\n')" \
+  -H "Kista-Signature: $(grep -v -- ----- statement.sig | tr -d '\n')" \
+  -H "Content-Type: application/octet-stream" --data-binary @"$FILE"
 ```
 
-- A key expires within a year (366 days). `-expires` takes `<days>d` or an RFC 3339 time; over the
-  API, `POST /publishers/{name}/keys {"expires_at": "<RFC 3339>"}` answers `201` with the key, the
-  only time it is shown.
-- A publisher holds at most 10 unexpired keys; issue the new key before removing the old one.
-- Only the SHA-256 of the key is stored. Removing a key (`publisher key remove`) stops it at once.
-- A key is accepted only on the routes publishers use, and only in its own tenant. Elsewhere the API
-  answers `401`, and the DuckDB routes treat it as no token.
+`ssh-keygen` needs the private key in a file of mode `0600`, ending in a newline (CI secret stores
+often strip it). A client written in Go can sign with `golang.org/x/crypto/ssh` instead, for example
+over a KMS's signer (`ssh.NewSignerFromSigner`).
 
-Use it as the Bearer token: `-H "Authorization: Bearer $KISTA_API_KEY"`.
+The release keeps the statement and the signature as they came (`publisher_statement`,
+`publisher_signature` in its management answer), and its provenance records the credential,
+`key:<fingerprint>`. The signature carries the public key, so who asked for this body at this path
+can be checked after the key is removed.
+
+GitHub Actions trusted publishing and API keys (before spec 0023) are removed: a configuration with
+`publish.providers` is refused at startup, and an issuer record cannot have GitHub Actions' token
+URL, since any workflow can request a token from it for any audience.
 
 ### Sources of licence keys
 
@@ -439,7 +429,7 @@ example the build pipeline of the issuer that signs the extension's licences:
 kista admin -config /etc/kista/kista.yaml publisher add acme tresor-ci
 kista admin -config /etc/kista/kista.yaml publisher license-keys acme tresor-ci on   # off unmarks it
 kista admin -config /etc/kista/kista.yaml grant add acme -principal publisher:tresor-ci -verb publish -channel prod -extension tresor
-kista admin -config /etc/kista/kista.yaml publisher key add acme tresor-ci -expires 90d
+kista admin -config /etc/kista/kista.yaml publisher key add acme tresor-ci tresor-ci.pub -expires 365d
 ```
 
 Over the API: `POST` (mark) and `DELETE` (unmark) `/api/v1/tenants/{t}/publishers/{name}/license-keys`,
@@ -447,15 +437,14 @@ server administrators only. Each records a `publisher.change` event.
 
 - **Its publications record keys.** Each publication by the marked publisher records the keys the
   body declares, including a publication of a body that is already released (from an unmarked path,
-  say). The publisher must hold `publish` on the name itself: another publisher matched by the same
-  credential does not lend it its mark.
+  say). The publisher must hold `publish` on the name itself.
 - **A malformed key block is refused**: `400`, with `license_keys` in the detail. `kista ext
   inspect <file>` shows what kista reads.
-- **Its credentials and grants are the server administrator's.** A publisher holding an API key
-  or a GitHub workflow is not marked (`400`): credentials a tenant administrator made would outlive
-  the mark. While it is marked, adding or removing its GitHub workflows, API keys and grants, and
-  changing the members of an extension group its grants name, is refused to a tenant administrator
-  (`404`). A tenant administrator can still remove the publisher, which drops the keys it brought.
+- **Its keys and grants are the server administrator's.** A publisher holding a key is not marked
+  (`400`): keys a tenant administrator registered would outlive the mark. While it is marked,
+  adding or removing its keys and grants, and changing the members of an extension group its grants
+  name, is refused to a tenant administrator (`404`). A tenant administrator can still remove the
+  publisher, which drops the licence keys it brought.
 - **Unmarking** keeps the keys already recorded. Its credentials are then a tenant administrator's
   again, so marking it again needs it to hold none.
 
@@ -464,8 +453,7 @@ Publications by any other publisher, by a principal, and `release add` record no
 ## Provenance in the index
 
 Every release has an `origin`: `admin` (the CLI), `publication`, `promotion` or `upstream`. Its
-`provenance` (the actor, the run for trusted publishing, the source channel and release for a
-promotion) is shown to the extension's administrators and to holders of `publish` or `promote`
+`provenance` (the actor, a publisher's key, the source channel and release for a promotion) is shown to the extension's administrators and to holders of `publish` or `promote`
 covering it. Who made the release is shown to administrators only, not to publishers.
 
 ## Signatures and key rotation

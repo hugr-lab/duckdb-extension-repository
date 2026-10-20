@@ -408,7 +408,7 @@ Each server issuer:
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `name` | string | required | `[a-z][a-z0-9-]{0,15}`, unique. |
-| `url` | URL | required | The issuer URL, https (http on loopback only with dev and `egress.allow_loopback_http`). Unique, and not a trusted-publishing provider's URL. |
+| `url` | URL | required | The issuer URL, https (http on loopback only with dev and `egress.allow_loopback_http`). Unique, and not GitHub Actions' token URL. |
 | `jwks_uri` | URL | discovered | |
 | `algorithms` | list | all supported | Of `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `EdDSA`. |
 | `required_claims` | map | required | Claims every token must carry, at most 16. Mandatory for a server issuer. |
@@ -421,14 +421,14 @@ refused, since every account of the issuer would be an administrator.
 
 ## publish
 
-Publication limits and trusted-publishing providers. The whole block is file-only. See
+Publication limits. The whole block is file-only. See
 [Publishing](publishing.md).
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `publish.max_per_principal` | integer | `2` | Uploads at once per principal; `1..64`, not above `max_per_tenant` (each at its default when left out: `max_per_principal: 16` alone is refused, as is `max_per_tenant: 1` alone). |
 | `publish.max_per_tenant` | integer | `8` | Uploads at once per tenant; `1..256`. |
-| `publish.providers` | list | GitHub Actions | Trusted-publishing issuers, each `name` (`[a-z][a-z0-9-]{0,31}`) and `url` (https, no trailing slash). Absent: GitHub Actions (`https://token.actions.githubusercontent.com`) alone. An empty list `[]` turns trusted publishing off. |
+| `publish.providers` | | | Removed with trusted publishing (spec 0023): a configuration that sets it, even to `[]`, is refused. Publishers sign their requests with keys. |
 
 ## upstreams
 

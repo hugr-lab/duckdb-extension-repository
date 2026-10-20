@@ -167,8 +167,7 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 	mten.Authz = grants
 	apiH := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
 		PublicURL: "https://" + k.addr, Log: slog.New(slog.DiscardHandler), KistaVersion: "e2e",
-		Providers: e2eProviders(verifier),
-		Authz:     grants, Tenants: &mten, Auth: &tenants.AuthAdmin{Store: st, Authz: grants, PublicURL: "https://" + k.addr},
+		Authz: grants, Tenants: &mten, Auth: &tenants.AuthAdmin{Store: st, Authz: grants, PublicURL: "https://" + k.addr},
 		Keys: &mks, Releases: &release.Service{Store: st, Blob: bs, Signers: &mks, Authz: grants}})
 	k.events = &writer.Writer{Store: st, Log: slog.New(slog.DiscardHandler)}
 	k.counts = stats.Downloads(st, slog.New(slog.DiscardHandler))
@@ -353,14 +352,6 @@ func TestServeRotation(t *testing.T) {
 	if !strings.Contains(strings.ToLower(res[1].Error), "signature") {
 		t.Fatalf("install with the old key only failed for another reason: %s", res[1].Error)
 	}
-}
-
-// e2eProviders is the fake GitHub Actions provider, through the verifier's fetcher.
-func e2eProviders(v *auth.Verifier) auth.Providers {
-	if v == nil {
-		return nil
-	}
-	return auth.Providers{{Name: "github", URL: e2eGitHub, Verifier: &auth.Verifier{Fetch: v.Fetch}}}
 }
 
 // Spec 0019: once a tenant's deletion starts, and after its tombstone, DuckDB meets what it meets

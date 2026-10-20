@@ -14,7 +14,7 @@ and it is superseded by a new spec when a decision changes.
 | [0005](0005-blob-storage/spec.md) | Blob storage for extension bodies | phases 1, 2, 3a and 3b implemented |
 | [0006](0006-serve/spec.md) | Serving, tokens and grants | implemented |
 | [0007](0007-api/spec.md) | The HTTP API: index and management | implemented |
-| [0008](0008-publication/spec.md) | Publication and promotion | implemented |
+| [0008](0008-publication/spec.md) | Publication and promotion | implemented; publisher credentials superseded by 0023 |
 | [0009](0009-upstreams/spec.md) | Upstreams: mirror, passthrough, pull-through, private upstreams | implemented |
 | [0010](0010-audit/spec.md) | Audit events, download statistics, metrics | implemented |
 | [0011](0011-attachments/spec.md) | Attachments and the feed | implemented |
@@ -29,4 +29,4 @@ and it is superseded by a new spec when a decision changes.
 | [0020](0020-cloud-recipes/spec.md) | Cloud recipes: AWS and GCP in Terraform, Azure in Bicep | phases 0-3, 4a and 4b implemented; 4b's live run to come |
 | [0021](0021-licence-keys/spec.md) | Licence keys in the build, and licences in bundles | implemented |
 | [0022](0022-developer-kit/spec.md) | The developer kit: the extension-ci-tools fork with the SDK, the template, publishing from CI | implemented |
-| [0023](0023-publisher-keys/spec.md) | Publisher keys: signed requests from any CI | accepted |
+| [0023](0023-publisher-keys/spec.md) | Publisher keys: signed requests from any CI | phase 1 implemented |

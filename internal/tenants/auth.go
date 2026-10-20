@@ -23,8 +23,6 @@ type AuthAdmin struct {
 	AllowHTTP bool         // issuer URLs on loopback over http (profile dev)
 	// ServerAudiences are the server tokens' audiences (spec 0007): no tenant may be assigned one.
 	ServerAudiences []string
-	// Providers are the trusted-publishing issuers (spec 0008): no issuer record may have their URLs.
-	Providers auth.Providers
 	// ServerIssuerURLs are the server issuers' URLs (spec 0007): a tenant's console may not sign in
 	// there, or a tenant could lead a server administrator to act inside it unawares (spec 0015).
 	ServerIssuerURLs []string
@@ -71,8 +69,9 @@ func (s *AuthAdmin) AddIssuer(ctx context.Context, a authz.Actor, tenant string,
 	if err := auth.CheckIssuer(&is, s.AllowHTTP); err != nil {
 		return store.Issuer{}, err
 	}
-	if s.Providers.Has(is.URL) {
-		return store.Issuer{}, fmt.Errorf("%w: %s is a trusted-publishing provider: add a publisher with its credential instead", store.ErrInvalid, is.URL)
+	if auth.RefusedIssuer(is.URL) {
+		return store.Issuer{}, fmt.Errorf("%w: %s issues tokens to any GitHub workflow for any audience; a publisher signs its "+
+			"requests with a key instead (spec 0023)", store.ErrInvalid, is.URL)
 	}
 	jwksURI := is.JWKSURI
 	if jwksURI == "" {

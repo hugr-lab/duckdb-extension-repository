@@ -32,21 +32,15 @@ import (
 
 // Spec 0006 phase 2: a private release over https with a Bearer token from an http secret.
 
-const (
-	e2eIssuer = "https://idp.e2e.example"
-	e2eGitHub = "https://token.actions.e2e.example" // a trusted-publishing provider (spec 0008)
-)
+const e2eIssuer = "https://idp.e2e.example"
 
 type e2eIDP struct{ key *rsa.PrivateKey }
 
 func (f *e2eIDP) Get(_ context.Context, url string) ([]byte, http.Header, error) {
-	for _, iss := range []string{e2eIssuer, e2eGitHub} {
-		if url == iss+"/.well-known/openid-configuration" {
-			return []byte(`{"issuer":"` + iss + `","jwks_uri":"` + iss + `/jwks"}`), http.Header{}, nil
-		}
-	}
 	switch url {
-	case e2eIssuer + "/jwks", e2eGitHub + "/jwks":
+	case e2eIssuer + "/.well-known/openid-configuration":
+		return []byte(`{"issuer":"` + e2eIssuer + `","jwks_uri":"` + e2eIssuer + `/jwks"}`), http.Header{}, nil
+	case e2eIssuer + "/jwks":
 		b, _ := json.Marshal(map[string]any{"keys": []any{map[string]any{"kty": "RSA", "kid": "k1",
 			"n": base64.RawURLEncoding.EncodeToString(f.key.N.Bytes()),
 			"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(f.key.E)).Bytes())}}})
@@ -58,14 +52,6 @@ func (f *e2eIDP) Get(_ context.Context, url string) ([]byte, http.Header, error)
 func (f *e2eIDP) token(t *testing.T, sub, aud string) string {
 	t.Helper()
 	return f.sign(t, map[string]any{"iss": e2eIssuer, "sub": sub, "aud": aud})
-}
-
-// run is a GitHub Actions OIDC token of hugr-lab/duckdb-acl's release workflow.
-func (f *e2eIDP) run(t *testing.T, aud string) string {
-	t.Helper()
-	return f.sign(t, map[string]any{"iss": e2eGitHub, "sub": "repo:hugr-lab/duckdb-acl:ref:refs/tags/v1.0", "aud": aud,
-		"repository_owner_id": "10", "repository_id": "20", "repository": "hugr-lab/duckdb-acl", "ref": "refs/tags/v1.0",
-		"workflow_ref": "hugr-lab/duckdb-acl/.github/workflows/release.yml@refs/tags/v1.0", "event_name": "push", "sha": "abc"})
 }
 
 func (f *e2eIDP) sign(t *testing.T, claims map[string]any) string {
@@ -289,8 +275,7 @@ func TestPublishPromoteInstall(t *testing.T) {
 	k := startKistaWith(t, b, &auth.Verifier{Fetch: idp})
 	ctx := context.Background()
 	aud := "https://" + k.addr + "/acme"
-	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: aud[:len(aud)-5],
-		Providers: auth.Providers{{Name: "github", URL: e2eGitHub}}}
+	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: aud[:len(aud)-5]}
 	if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
 		t.Fatal(err)
 	}
@@ -307,12 +292,12 @@ func TestPublishPromoteInstall(t *testing.T) {
 	if _, err := k.keys.Add(ctx, serveAdmin, "acme", "staging", "file:s.pem", true); err != nil {
 		t.Fatal(err)
 	}
-	// CI is a publisher bound to the release workflow (trusted publishing)
+	// CI is a publisher that signs its requests with its key (spec 0023)
 	if _, err := adm.AddPublisher(ctx, serveAdmin, "acme", "ci"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adm.AddGitHubCredential(ctx, serveAdmin, "acme", "ci", store.GitHubCredential{OwnerID: "10", RepositoryID: "20",
-		Workflow: "hugr-lab/duckdb-acl/.github/workflows/release.yml", Ref: "refs/tags/v*"}); err != nil {
+	ci := publisherSigner(t)
+	if _, err := adm.AddPublisherKey(ctx, serveAdmin, "acme", "ci", authorizedKey(ci), time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, g := range []struct{ principal, verb, channel, ext string }{
@@ -339,11 +324,11 @@ func TestPublishPromoteInstall(t *testing.T) {
 	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
 	call := func(method, path, sub, ctype string, body []byte) (int, map[string]any) {
 		req, _ := http.NewRequest(method, "https://"+k.addr+path, bytes.NewReader(body))
-		tok := idp.token(t, sub, aud)
 		if sub == "ci" {
-			tok = idp.run(t, aud)
+			signRequest(t, req, ci, body)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+idp.token(t, sub, aud))
 		}
-		req.Header.Set("Authorization", "Bearer "+tok)
 		if ctype != "" {
 			req.Header.Set("Content-Type", ctype)
 		}

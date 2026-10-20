@@ -82,8 +82,8 @@ of the tenant at once, for example after a CVE. See [Publishing](publishing.md).
 
 **Publication** uploads a new build into a channel, usually `staging`. kista checks the footer
 against the declared extension version and platform (the footer carries no name), and checks that
-the binary exports the entry point DuckDB calls for the name it is published under. People publish with a token; CI publishes as a **publisher**, with
-trusted publishing (a GitHub Actions OIDC token bound to the repository's ids) or an API key.
+the binary exports the entry point DuckDB calls for the name it is published under. People publish with a token; CI publishes as a **publisher**,
+signing its requests with an SSH key registered in kista, from any forge's CI.
 
 **Promotion** releases a build that is already in one channel in another channel of the tenant,
 signed with the target channel's key. No body is uploaded again. Promotion needs `promote` on the

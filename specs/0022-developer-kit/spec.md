@@ -1,6 +1,6 @@
 # Spec 0022: The developer kit
 
-- **Status**: implemented (phase 1: the fork and kista's switch; phase 2: the template)
+- **Status**: implemented (phase 1: the fork and kista's switch; phase 2: the template). The publish step's authentication (OIDC or an API key) is superseded by [0023](../0023-publisher-keys/spec.md): it signs with a publisher key
 - **Date**: 2026-10-19
 - **Author**: vgsml, Claude
 

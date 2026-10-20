@@ -1,6 +1,6 @@
 # Spec 0023: Publisher keys: signed requests from any CI
 
-- **Status**: accepted
+- **Status**: accepted; phase 1 (kista) implemented
 - **Date**: 2026-10-19
 - **Author**: vgsml, Claude
 
@@ -333,6 +333,10 @@ Between the phases, the template's CI stays on its pinned kista commit.
 
   A captured request cannot be sent to another slot, channel, tenant or route, and cannot carry
   another body. The body check comes before any write.
+- **What a signature does not bind:** other headers. An attachment's title and media type (spec
+  0011, `Kista-Title`, `Content-Type`) are the publisher's to state; a captured request replayed
+  within its five minutes could restate them with the same document, which the publisher's grant
+  already allows.
 - **Fails closed.** Each of these is refused, and nothing is written:
   - a key that is removed or expired;
   - a statement that does not match the request;

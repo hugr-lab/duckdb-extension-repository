@@ -154,10 +154,8 @@ var catalogue = map[Kind][]string{
 	"publisher.add":           {"name"},
 	"publisher.remove":        {"name"},
 	"publisher.change":        {"name", "license_keys"},
-	"publisher.github.add":    {"publisher", "credential", "owner_id", "repository_id", "workflow", "ref", "environment"},
-	"publisher.github.remove": {"publisher", "credential"},
-	"publisher.key.add":       {"publisher", "key", "prefix", "expires_at"},
-	"publisher.key.remove":    {"publisher", "key"},
+	"publisher.key.add":       {"publisher", "key", "fingerprint", "type", "title", "expires_at"},
+	"publisher.key.remove":    {"publisher", "key", "fingerprint"},
 	// releases
 	"release.add":       {"release", "name", "version", "platform", "slot", "body_hash", "visibility", "current", "shadows"},
 	"release.publish":   {"release", "name", "version", "platform", "slot", "body_hash", "visibility", "current", "shadows", "provenance"},
@@ -252,9 +250,6 @@ func SubjectForm(k Kind) string {
 		return "upstream:<name> or feed:<name>"
 	case "license.sync", "usage.forward":
 		return "upstream:<name>"
-	}
-	if strings.HasPrefix(string(k), "publisher.github.") {
-		return "publisher:<name>/github:<id>"
 	}
 	if strings.HasPrefix(string(k), "publisher.key.") {
 		return "publisher:<name>/key:<id>"

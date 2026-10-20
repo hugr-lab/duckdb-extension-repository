@@ -21,6 +21,8 @@ import (
 // publishErr maps a publication's or promotion's errors.
 func (h *Handler) publishErr(w http.ResponseWriter, err error, bodyRef bool) {
 	switch {
+	case errors.Is(err, errBodyNotSigned):
+		problem(w, http.StatusBadRequest, typeInvalid, "the body is not the signed one: its SHA-256 is not the statement's")
 	case errors.Is(err, blob.ErrRead) && errors.Is(err, os.ErrDeadlineExceeded):
 		problem(w, http.StatusRequestTimeout, typeInvalid, "the upload was slower than this server accepts")
 	case errors.Is(err, blob.ErrRead):
@@ -161,7 +163,8 @@ func (h *Handler) publishRelease(w http.ResponseWriter, r *http.Request, c calle
 		rate: float64(h.o.MinRate), end: now.Add(time.Minute + time.Duration(float64(r.ContentLength)/float64(h.o.MinRate)*float64(time.Second)))}
 	rel, existed, err := h.o.Releases.Add(r.Context(), a, p["t"], p["c"], body, release.AddOptions{
 		Name: p["ext"], Private: private, NotCurrent: notCurrent, NoWait: true,
-		Publish: &release.Publication{Version: version, Platform: platform, Provenance: provenance(a, c), KeySources: keySources(c)},
+		Publish: &release.Publication{Version: version, Platform: platform, Provenance: provenance(a, c), KeySources: keySources(c),
+			Statement: c.statement(), Signature: c.signature()},
 	})
 	if err != nil {
 		h.publishErr(w, err, false)
@@ -185,7 +188,7 @@ func keySources(c caller) []string {
 	return out
 }
 
-// provenance of a publication: the actor, and for trusted publishing the run (spec 0008).
+// provenance of a publication: the actor, and a publisher's credential (spec 0008, 0023).
 func provenance(a authz.Actor, c caller) string {
 	if c.pub != nil {
 		return c.pub.Provenance(a.String())
@@ -216,8 +219,8 @@ func (h *Handler) promoteRelease(w http.ResponseWriter, r *http.Request, c calle
 	}
 	o.NotCurrent = in.Current != nil && !*in.Current
 	a, _ := c.actor()
-	if c.pub != nil { // a publisher's promotion records its run too
-		o.Provenance = c.pub.Provenance(a.String())
+	if c.pub != nil { // a publisher's promotion records its credential and signed request too
+		o.Provenance, o.Statement, o.Signature = c.pub.Provenance(a.String()), c.statement(), c.signature()
 	}
 	rels, existed, err := h.o.Releases.Promote(r.Context(), a, p["t"], p["c"], p["ext"], o)
 	if err != nil {

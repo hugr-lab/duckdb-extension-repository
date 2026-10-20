@@ -75,7 +75,7 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 			if n, err := tx.PublisherCredentials(ctx, cur.ID); err != nil {
 				return err
 			} else if n > 0 && !cur.LicenseKeys {
-				return fmt.Errorf("%w: publisher %s holds API keys or GitHub workflows (%d); remove them, mark it, then add them "+
+				return fmt.Errorf("%w: publisher %s holds keys (%d); remove them, mark it, then add them "+
 					"again as a server administrator", store.ErrInvalid, name, n)
 			}
 		}
@@ -97,86 +97,25 @@ func (s *AuthAdmin) marked(ctx context.Context, a authz.Actor, p store.Publisher
 	return s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server)
 }
 
-// AddGitHubCredential binds a publisher to GitHub Actions runs of a provider.
-func (s *AuthAdmin) AddGitHubCredential(ctx context.Context, a authz.Actor, tenant, publisher string, c store.GitHubCredential) (store.GitHubCredential, error) {
-	t, err := s.tenant(ctx, a, tenant)
-	if err != nil {
-		return c, err
-	}
-	if c.Provider == "" {
-		c.Provider = "github"
-	}
-	known := false
-	for _, p := range s.Providers {
-		known = known || p.Name == c.Provider
-	}
-	if !known {
-		return c, fmt.Errorf("%w: provider %q is not configured (publish.providers)", store.ErrInvalid, c.Provider)
-	}
-	if err := auth.CheckRefPattern(c.Ref); err != nil {
-		return c, err
-	}
-	c.CreatedBy = a.String()
-	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
-		p, err := tx.GetPublisher(ctx, t.ID, publisher)
-		if err != nil {
-			return err
-		}
-		if err := s.marked(ctx, a, p); err != nil {
-			return err
-		}
-		c.PublisherID = p.ID
-		if err := tx.InsertGitHubCredential(ctx, t.ID, &c); err != nil {
-			return err
-		}
-		return tx.Event(ctx, t.ID, a.String(), "publisher.github.add", "publisher:"+p.Name+"/github:"+c.ID,
-			map[string]any{"publisher": p.Name, "credential": c.ID, "owner_id": c.OwnerID, "repository_id": c.RepositoryID,
-				"workflow": c.Workflow, "ref": c.Ref, "environment": c.Environment})
-	})
-	return c, err
-}
-
-// RemoveGitHubCredential removes a credential of a publisher.
-func (s *AuthAdmin) RemoveGitHubCredential(ctx context.Context, a authz.Actor, tenant, publisher, id string) error {
-	t, err := s.tenant(ctx, a, tenant)
-	if err != nil {
-		return err
-	}
-	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
-		p, err := tx.GetPublisher(ctx, t.ID, publisher)
-		if err != nil {
-			return err
-		}
-		if err := s.marked(ctx, a, p); err != nil {
-			return err
-		}
-		if err := tx.DeleteGitHubCredential(ctx, t.ID, p.ID, id); err != nil {
-			return err
-		}
-		return tx.Event(ctx, t.ID, a.String(), "publisher.github.remove", "publisher:"+p.Name+"/github:"+id,
-			map[string]any{"publisher": p.Name, "credential": id})
-	})
-}
-
-// MaxKeyLifetime is the longest an API key may live.
+// MaxKeyLifetime is the furthest a key's expiry may be.
 const MaxKeyLifetime = 366 * 24 * time.Hour
 
-// AddAPIKey issues a key for a publisher, valid until expires (required, within a year). The key
-// is returned once; only its hash is kept.
-func (s *AuthAdmin) AddAPIKey(ctx context.Context, a authz.Actor, tenant, publisher string, expires time.Time) (store.APIKey, string, error) {
+// AddPublisherKey registers a public SSH key on a publisher (spec 0023): an OpenSSH line, Ed25519
+// or ECDSA P-256, unique in the tenant; expires is optional (zero: none), within a year.
+func (s *AuthAdmin) AddPublisherKey(ctx context.Context, a authz.Actor, tenant, publisher, line string, expires time.Time) (store.PublisherKey, error) {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
-		return store.APIKey{}, "", err
+		return store.PublisherKey{}, err
 	}
-	now := s.Store.Now()
-	if !expires.After(now) || expires.Sub(now) > MaxKeyLifetime {
-		return store.APIKey{}, "", fmt.Errorf("%w: a key expires within a year", store.ErrInvalid)
-	}
-	key, prefix, hash, err := auth.NewAPIKey()
+	pk, err := auth.ParsePublicKey(line)
 	if err != nil {
-		return store.APIKey{}, "", err
+		return store.PublisherKey{}, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 	}
-	k := store.APIKey{Prefix: prefix, Hash: hash, ExpiresAt: expires, CreatedBy: a.String()}
+	if now := s.Store.Now(); !expires.IsZero() && (!expires.After(now) || expires.Sub(now) > MaxKeyLifetime) {
+		return store.PublisherKey{}, fmt.Errorf("%w: a key expires within a year, or never", store.ErrInvalid)
+	}
+	k := store.PublisherKey{TenantID: t.ID, Type: pk.Type, PublicKey: auth.AuthorizedKey(pk.Wire), Fingerprint: pk.Fingerprint,
+		Title: pk.Title, ExpiresAt: expires, CreatedBy: a.String()}
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		p, err := tx.GetPublisher(ctx, t.ID, publisher)
 		if err != nil {
@@ -186,29 +125,49 @@ func (s *AuthAdmin) AddAPIKey(ctx context.Context, a authz.Actor, tenant, publis
 			return err
 		}
 		k.PublisherID = p.ID
-		if err := tx.InsertAPIKey(ctx, &k); err != nil {
+		if err := tx.InsertPublisherKey(ctx, &k); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "publisher.key.add", "publisher:"+p.Name+"/key:"+k.ID,
-			map[string]any{"publisher": p.Name, "key": k.ID, "prefix": k.Prefix, "expires_at": k.ExpiresAt})
+		f := map[string]any{"publisher": p.Name, "key": k.ID, "fingerprint": k.Fingerprint, "type": k.Type, "title": k.Title}
+		if !expires.IsZero() {
+			f["expires_at"] = expires
+		}
+		return tx.Event(ctx, t.ID, a.String(), "publisher.key.add", "publisher:"+p.Name+"/key:"+k.ID, f)
 	})
 	if err != nil {
-		return store.APIKey{}, "", err
+		return store.PublisherKey{}, err
 	}
-	return k, key, nil
+	return k, nil
 }
 
-// ListAPIKeys lists a publisher's keys (never the keys themselves).
-func (s *AuthAdmin) ListAPIKeys(ctx context.Context, a authz.Actor, tenant, publisher string) ([]store.APIKey, error) {
+// ListPublisherKeys lists a publisher's keys.
+func (s *AuthAdmin) ListPublisherKeys(ctx context.Context, a authz.Actor, tenant, publisher string) ([]store.PublisherKey, error) {
 	p, err := s.publisher(ctx, a, tenant, publisher)
 	if err != nil {
 		return nil, err
 	}
-	return s.Store.APIKeys(ctx, p.ID)
+	return s.Store.PublisherKeys(ctx, p.TenantID, p.ID)
 }
 
-// RemoveAPIKey removes a key: it stops working at once.
-func (s *AuthAdmin) RemoveAPIKey(ctx context.Context, a authz.Actor, tenant, publisher, id string) error {
+// TenantPublisherKeys lists every key of a tenant's publishers, by publisher id.
+func (s *AuthAdmin) TenantPublisherKeys(ctx context.Context, a authz.Actor, tenant string) (map[string][]store.PublisherKey, error) {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return nil, err
+	}
+	ks, err := s.Store.PublisherKeys(ctx, t.ID, "")
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]store.PublisherKey{}
+	for _, k := range ks {
+		out[k.PublisherID] = append(out[k.PublisherID], k)
+	}
+	return out, nil
+}
+
+// RemovePublisherKey removes a key: it stops working at once.
+func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenant, publisher, id string) error {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return err
@@ -221,11 +180,12 @@ func (s *AuthAdmin) RemoveAPIKey(ctx context.Context, a authz.Actor, tenant, pub
 		if err := s.marked(ctx, a, p); err != nil {
 			return err
 		}
-		if err := tx.DeleteAPIKey(ctx, p.ID, id); err != nil {
+		fp, err := tx.DeletePublisherKey(ctx, p.ID, id)
+		if err != nil {
 			return err
 		}
 		return tx.Event(ctx, t.ID, a.String(), "publisher.key.remove", "publisher:"+p.Name+"/key:"+id,
-			map[string]any{"publisher": p.Name, "key": id})
+			map[string]any{"publisher": p.Name, "key": id, "fingerprint": fp})
 	})
 }
 

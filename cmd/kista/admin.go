@@ -115,10 +115,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   publisher list <tenant>
   publisher license-keys <tenant> <name> on|off  mark it a source of licence keys (spec 0021): its publications
                    record the builds' keys; its credentials and grants are then a server administrator's
-  publisher github add <tenant> <name> -owner-id <id> -repository-id <id> -workflow <owner/repo/path>
-                   [-ref <pattern>] [-environment <env>] [-provider github]
-  publisher github remove <tenant> <name> <credential-id>
-  publisher key add <tenant> <name> -expires <90d|RFC 3339>   prints the key, once
+  publisher key add <tenant> <name> <file.pub|-> [-expires <365d|RFC 3339>]
+                   register a public SSH key (ssh-ed25519 or ecdsa-sha2-nistp256): the publisher signs its
+                   requests with it (spec 0023)
   publisher key list <tenant> <name>
   publisher key remove <tenant> <name> <key-id>
   upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
@@ -1245,14 +1244,11 @@ func (a *adminCmd) block(ctx context.Context, sub string, args []string) error {
 }
 
 func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) error {
-	if sub == "github" || sub == "key" {
+	if sub == "key" {
 		if len(args) == 0 {
 			return errUsage
 		}
-		if sub == "key" {
-			return a.publisherKey(ctx, args[0], args[1:])
-		}
-		return a.publisherGitHub(ctx, args[0], args[1:])
+		return a.publisherKey(ctx, args[0], args[1:])
 	}
 	pos, err := flags(flag.NewFlagSet("publisher", flag.ContinueOnError), args)
 	if err != nil {
@@ -1279,53 +1275,24 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
-		a.table("PUBLISHER\tLICENSE KEYS\tCREDENTIAL\tPROVIDER\tOWNER ID\tREPOSITORY ID\tWORKFLOW\tREF\tENVIRONMENT", func(w io.Writer) {
+		keys, err := a.svc.Auth.TenantPublisherKeys(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		a.table("PUBLISHER\tLICENSE KEYS\tKEY\tFINGERPRINT\tTITLE", func(w io.Writer) {
 			for _, p := range ps {
 				mark := "-"
 				if p.LicenseKeys {
 					mark = "yes"
 				}
-				if len(p.GitHub) == 0 {
-					fmt.Fprintf(w, "%s\t%s\t-\t\t\t\t\t\t\n", p.Name, mark)
+				if len(keys[p.ID]) == 0 {
+					fmt.Fprintf(w, "%s\t%s\t-\t\t\n", p.Name, mark)
 				}
-				for _, g := range p.GitHub {
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, mark, g.ID, g.Provider, g.OwnerID, g.RepositoryID,
-						g.Workflow, g.Ref, g.Environment)
+				for _, k := range keys[p.ID] {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.Name, mark, k.ID, k.Fingerprint, k.Title)
 				}
 			}
 		})
-	default:
-		return errUsage
-	}
-	return nil
-}
-
-func (a *adminCmd) publisherGitHub(ctx context.Context, sub string, args []string) error {
-	fs := flag.NewFlagSet("publisher github", flag.ContinueOnError)
-	owner := fs.String("owner-id", "", "")
-	repo := fs.String("repository-id", "", "")
-	workflow := fs.String("workflow", "", "")
-	ref := fs.String("ref", "", "")
-	env := fs.String("environment", "", "")
-	provider := fs.String("provider", "github", "")
-	pos, err := flags(fs, args)
-	if err != nil {
-		return errUsage
-	}
-	switch {
-	case sub == "add" && len(pos) == 2 && *owner != "" && *repo != "" && *workflow != "":
-		g, err := a.svc.Auth.AddGitHubCredential(ctx, a.actor, pos[0], pos[1], store.GitHubCredential{Provider: *provider,
-			OwnerID: *owner, RepositoryID: *repo, Workflow: *workflow, Ref: *ref, Environment: *env})
-		if err != nil {
-			return err
-		}
-		a.logf("publisher github add %s %s %s", pos[0], pos[1], g.ID)
-		fmt.Fprintln(a.out, g.ID)
-	case sub == "remove" && len(pos) == 3:
-		if err := a.svc.Auth.RemoveGitHubCredential(ctx, a.actor, pos[0], pos[1], pos[2]); err != nil {
-			return err
-		}
-		a.logf("publisher github remove %s %s %s", pos[0], pos[1], pos[2])
 	default:
 		return errUsage
 	}
@@ -1340,41 +1307,59 @@ func (a *adminCmd) publisherKey(ctx context.Context, sub string, args []string) 
 		return errUsage
 	}
 	switch {
-	case sub == "add" && len(pos) == 2 && *expires != "":
+	case sub == "add" && len(pos) == 3:
 		var at time.Time
-		if d, ok := strings.CutSuffix(*expires, "d"); ok {
-			n, err := strconv.Atoi(d)
-			if err != nil || n <= 0 || n > 366 {
+		if *expires != "" {
+			if d, ok := strings.CutSuffix(*expires, "d"); ok {
+				n, err := strconv.Atoi(d)
+				if err != nil || n <= 0 || n > 366 {
+					return fmt.Errorf("%w: -expires <days>d or an RFC 3339 time", errUsage)
+				}
+				at = time.Now().Add(time.Duration(n) * 24 * time.Hour)
+			} else if at, err = time.Parse(time.RFC3339, *expires); err != nil {
 				return fmt.Errorf("%w: -expires <days>d or an RFC 3339 time", errUsage)
 			}
-			at = time.Now().Add(time.Duration(n) * 24 * time.Hour)
-		} else if at, err = time.Parse(time.RFC3339, *expires); err != nil {
-			return fmt.Errorf("%w: -expires <days>d or an RFC 3339 time", errUsage)
 		}
-		k, key, err := a.svc.Auth.AddAPIKey(ctx, a.actor, pos[0], pos[1], at)
+		in := a.in
+		if pos[2] != "-" {
+			f, err := os.Open(pos[2])
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			in = f
+		}
+		line, err := io.ReadAll(io.LimitReader(in, 4096))
 		if err != nil {
 			return err
 		}
-		a.logf("publisher key add %s %s %s (expires %s)", pos[0], pos[1], k.Prefix, ts(k.ExpiresAt))
-		fmt.Fprintln(a.out, key)
+		k, err := a.svc.Auth.AddPublisherKey(ctx, a.actor, pos[0], pos[1], string(line), at)
+		if err != nil {
+			return err
+		}
+		a.logf("publisher key add %s %s %s %s", pos[0], pos[1], k.ID, k.Fingerprint)
+		fmt.Fprintln(a.out, k.ID)
 	case *expires != "":
 		return errUsage // -expires is add's
 	case sub == "list" && len(pos) == 2:
-		ks, err := a.svc.Auth.ListAPIKeys(ctx, a.actor, pos[0], pos[1])
+		ks, err := a.svc.Auth.ListPublisherKeys(ctx, a.actor, pos[0], pos[1])
 		if err != nil {
 			return err
 		}
-		a.table("ID\tPREFIX\tEXPIRES\tLAST USED\tCREATED\tBY", func(w io.Writer) {
+		a.table("ID\tFINGERPRINT\tTYPE\tTITLE\tEXPIRES\tLAST USED\tCREATED\tBY", func(w io.Writer) {
 			for _, k := range ks {
-				used := "-"
+				exp, used := "-", "-"
+				if !k.ExpiresAt.IsZero() {
+					exp = ts(k.ExpiresAt)
+				}
 				if !k.LastUsedAt.IsZero() {
 					used = ts(k.LastUsedAt)
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", k.ID, k.Prefix, ts(k.ExpiresAt), used, ts(k.CreatedAt), k.CreatedBy)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", k.ID, k.Fingerprint, k.Type, k.Title, exp, used, ts(k.CreatedAt), k.CreatedBy)
 			}
 		})
 	case sub == "remove" && len(pos) == 3:
-		if err := a.svc.Auth.RemoveAPIKey(ctx, a.actor, pos[0], pos[1], pos[2]); err != nil {
+		if err := a.svc.Auth.RemovePublisherKey(ctx, a.actor, pos[0], pos[1], pos[2]); err != nil {
 			return err
 		}
 		a.logf("publisher key remove %s %s %s", pos[0], pos[1], pos[2])

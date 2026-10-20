@@ -50,8 +50,6 @@ type Options struct {
 
 	// Server verifies server tokens (nil: none are accepted).
 	Server *auth.Server
-	// Providers verify trusted-publishing tokens (spec 0008).
-	Providers auth.Providers
 	// Authz, Tenants and Auth are management's authorizer and services (with that authorizer); nil
 	// Tenants or Auth: no management routes.
 	Authz            authz.Authorizer
@@ -172,8 +170,14 @@ var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
 func problem(w http.ResponseWriter, status int, typ, detail string) {
+	writeProblem(w, status, typ, detail, status != http.StatusUnauthorized && status != http.StatusNotFound)
+}
+
+// writeProblem writes a problem; its detail only when shown is set (a 401 and a 404 carry none,
+// except a signed request's 401, which names the key and the clock: spec 0023).
+func writeProblem(w http.ResponseWriter, status int, typ, detail string, shown bool) {
 	body := map[string]any{"type": "urn:kista:problem:" + typ, "title": titles[typ], "status": status}
-	if detail != "" && status != http.StatusUnauthorized && status != http.StatusNotFound {
+	if detail != "" && shown {
 		body["detail"] = detail
 	}
 	b, _ := json.Marshal(body)
@@ -327,12 +331,13 @@ func (l *limiter) retryAfter() string {
 type caller struct {
 	tenant     store.Tenant // on tenant routes
 	ta         store.TenantAuth
-	principals auth.Principals   // a tenant token's
-	id         auth.Identity     // a verified token's identity
-	verified   bool              // a valid token (server or tenant)
-	server     bool              // a valid server token
-	admin      bool              // a server administrator's
-	pub        *auth.Publication // a publisher's credential (spec 0008)
+	principals auth.Principals     // a tenant token's
+	id         auth.Identity       // a verified token's identity
+	verified   bool                // a valid token (server or tenant)
+	server     bool                // a valid server token
+	admin      bool                // a server administrator's
+	pub        *auth.Publication   // a publisher's credential (spec 0008)
+	signed     *auth.SignedRequest // a publisher's signed request (spec 0023)
 }
 
 func (c caller) anonymous() bool { return !c.verified }
@@ -403,59 +408,13 @@ func (h *Handler) identifyTenant(ctx context.Context, t store.Tenant, tok string
 	if err != nil {
 		return c, err
 	}
-	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, t.Name, h.o.Providers)
-	// a trusted-publishing provider's token is verified against the provider only (spec 0008)
-	if p := h.o.Providers.For(auth.Issuer(tok)); p != nil {
-		pub, err := p.Verify(ctx, ta, canonical, tok)
-		if err != nil {
-			h.failures.Record(t, "api", err)
-			return c, errToken
-		}
-		c.principals, c.ta, c.id, c.verified, c.pub = pub.Identity.Principals, ta, pub.Identity, true, &pub
-		return c, nil
-	}
+	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, t.Name)
 	id, err := h.o.Verifier.VerifyIdentity(ctx, ta, canonical, tok)
 	if err != nil {
 		h.failures.Record(t, "api", err)
 		return c, errToken
 	}
 	c.principals, c.ta, c.id, c.verified = id.Principals, ta, id, true
-	return c, nil
-}
-
-// identifyAPIKey finds a publisher's key by its hash: the key's tenant must be the path's, and it
-// must not have expired (spec 0008).
-func (h *Handler) identifyAPIKey(ctx context.Context, t store.Tenant, tok string) (caller, error) {
-	c := caller{tenant: t}
-	if !auth.WellFormedAPIKey(tok) {
-		return c, errToken
-	}
-	k, p, err := h.o.Store.APIKeyByHash(ctx, auth.APIKeyHash(tok))
-	if errors.Is(err, store.ErrNotFound) {
-		return c, errToken
-	}
-	if err != nil {
-		return c, err
-	}
-	now := h.o.Now()
-	if p.TenantID != t.ID || !now.Before(k.ExpiresAt) {
-		return c, errToken
-	}
-	if now.Sub(k.LastUsedAt) > time.Hour {
-		if err := h.o.Store.TouchAPIKey(ctx, k.ID); err != nil {
-			h.o.Log.Warn("api: recording a key's use", "error", err)
-		}
-	}
-	ta, err := h.o.Auths.Get(ctx, t)
-	if err != nil {
-		return c, err
-	}
-	// a key is issued now for the freshness check (admin_token_max_age): its expiry and its removal
-	// bound it, and it reaches publication and promotion only
-	id := auth.Identity{Principals: auth.Principals{auth.PublisherKey(p.ID): true}, IssuedAt: now}
-	c.principals, c.ta, c.id, c.verified = id.Principals, ta, id, true
-	c.pub = &auth.Publication{Identity: id, Provider: "apikey",
-		Publishers: []auth.MatchedPublisher{{Publisher: p, Credential: "key:" + k.ID}}}
 	return c, nil
 }
 
@@ -656,16 +615,14 @@ func init() {
 			http.MethodPost: mb(pathAdmin, (*Handler).addPublisher)}},
 		{"tenants/{t}/publishers/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getPublisher),
 			http.MethodDelete: m(pathAdmin, (*Handler).removePublisher)}},
-		{"tenants/{t}/publishers/{name}/github", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listGitHub),
-			http.MethodPost: mb(pathAdmin, (*Handler).addGitHub)}},
 		// spec 0021: marking a publisher a source of licence keys (server administrators)
 		{"tenants/{t}/publishers/{name}/license-keys", map[string]rule{http.MethodPost: m(serverAdmin, publisherLicenseKeys(true)),
 			http.MethodDelete: m(serverAdmin, publisherLicenseKeys(false))}},
-		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listAPIKeys),
-			http.MethodPost: mb(pathAdmin, (*Handler).addAPIKey)}},
-		{"tenants/{t}/publishers/{name}/keys/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeAPIKey)}},
-		{"tenants/{t}/publishers/{name}/github/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGitHub),
-			http.MethodDelete: m(pathAdmin, (*Handler).removeGitHub)}},
+		// spec 0023: a publisher's public SSH keys
+		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listPublisherKeys),
+			http.MethodPost: mb(pathAdmin, (*Handler).addPublisherKey)}},
+		{"tenants/{t}/publishers/{name}/keys/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getPublisherKey),
+			http.MethodDelete: m(pathAdmin, (*Handler).removePublisherKey)}},
 		{"tenants/{t}/blocks", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listBlocks),
 			http.MethodPost: mb(pathAdmin, (*Handler).addBlock)}},
 		{"tenants/{t}/blocks/{hash}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getBlock),
@@ -826,21 +783,29 @@ func (c caller) logName() string {
 // 404 for one that may not see or do it.
 func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru rule, p params) (caller, bool) {
 	ctx := r.Context()
-	tok, sent := bearer(r)
 	failed := func(reason string) { note(w, func(sw *statusWriter) { sw.authFailure = reason }) }
+	// a publisher's signed request (spec 0023): malformed, or not naming this request, is 400
+	st, sig, signed, bad := signedHeaders(r)
+	if bad != "" {
+		problem(w, http.StatusBadRequest, typeInvalid, bad)
+		return caller{}, false
+	}
+	var sr auth.SignedRequest
+	if signed {
+		var err error
+		if sr, err = parseSigned(r, st, sig); err != nil {
+			problem(w, http.StatusBadRequest, typeInvalid, strings.TrimPrefix(err.Error(), "auth: "))
+			return caller{}, false
+		}
+	}
+	tok, sent := bearer(r)
 	if sent && tok == "" {
 		failed("malformed")
 		unauthorized(w)
 		return caller{}, false
 	}
-	if !sent && ru.access != public {
+	if !sent && !signed && ru.access != public {
 		unauthorized(w) // without a token, anything not public is 401 before anything is looked up
-		return caller{}, false
-	}
-	// an API key (spec 0008) is looked up only on the routes publishers use
-	if auth.IsAPIKey(tok) && (!ru.publishers || p["t"] == "") {
-		failed("api_key_route")
-		unauthorized(w)
 		return caller{}, false
 	}
 	c, isServer, err := h.identifyServer(ctx, tok)
@@ -867,12 +832,35 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		}
 		c.tenant = t
 		note(w, func(sw *statusWriter) { sw.tenant = t })
-		if sent && !isServer {
-			identify := h.identifyTenant
-			if auth.IsAPIKey(tok) {
-				identify = h.identifyAPIKey
+		switch {
+		case signed && !ru.publishers:
+			if ru.access != public {
+				failed("publisher_route")
+				unauthorized(w) // a publisher's signed request is not a token for this route
+				return caller{}, false
 			}
-			if c, err = identify(ctx, t, tok); err != nil {
+			c = caller{tenant: t} // the public view
+		case signed:
+			var sf *signedFailure
+			if c, err = h.identifySigned(ctx, t, sr); errors.As(err, &sf) {
+				sf.write(w)
+				return caller{}, false
+			} else if err != nil {
+				h.fail(w, err)
+				return caller{}, false
+			}
+			// the body must be the signed one: none for a route without a body, and otherwise checked
+			// at its end, before anything is written
+			if !ru.body && !ru.raw {
+				if sr.Statement.SHA256 != auth.EmptySHA256 {
+					problem(w, http.StatusBadRequest, typeInvalid, "the statement's sha256 is not an empty body's")
+					return caller{}, false
+				}
+			} else {
+				r.Body = newHashedBody(r.Body, sr.Statement.SHA256, r.ContentLength)
+			}
+		case sent && !isServer:
+			if c, err = h.identifyTenant(ctx, t, tok); err != nil {
 				if errors.Is(err, errToken) {
 					failed("invalid")
 					unauthorized(w)
@@ -881,15 +869,13 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 				}
 				return caller{}, false
 			}
-			if c.pub != nil && !ru.publishers {
-				if ru.access != public {
-					failed("publisher_route")
-					unauthorized(w) // a publisher's credential is not a token for this route
-					return caller{}, false
-				}
-				c = caller{tenant: t} // the public view
-			}
 		}
+	case signed && ru.access != public:
+		failed("publisher_route")
+		unauthorized(w) // routes without a tenant take server tokens only
+		return caller{}, false
+	case signed:
+		c = caller{}
 	case sent && !isServer && ru.access != public:
 		// routes without a tenant take server tokens only
 		if rt.pattern == "whoami" {

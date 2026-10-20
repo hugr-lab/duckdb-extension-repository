@@ -19,7 +19,6 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/sinks"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bootstrap"
@@ -332,7 +331,7 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		Keys:     ks,
 		Releases: rel,
 		Auth: &tenants.AuthAdmin{Store: s, Authz: az, Fetch: eg, PublicURL: cfg.Serve.PublicURL,
-			AllowHTTP: cfg.Egress.AllowLoopbackHTTP, ServerAudiences: cfg.ServerAudiences(), Providers: Providers(cfg, eg),
+			AllowHTTP: cfg.Egress.AllowLoopbackHTTP, ServerAudiences: cfg.ServerAudiences(),
 			ServerIssuerURLs: serverIssuerURLs(cfg)},
 		Upstreams: &upstream.Service{Store: s, Releases: rel, Fetch: eg, Authz: az, MaxBody: maxBody, MaxIngests: maxIngests,
 			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
@@ -373,15 +372,6 @@ func Credentials(cfg config.Config) (credential.Registry, error) {
 		}
 	}
 	return credential.New(cfg.Upstreams.Credentials, d)
-}
-
-// Providers builds the trusted-publishing providers (spec 0008), each with a verifier of its own.
-func Providers(cfg config.Config, f auth.Fetcher) auth.Providers {
-	var out auth.Providers
-	for _, p := range cfg.PublishProviders() {
-		out = append(out, auth.Provider{Name: p.Name, URL: p.URL, Verifier: &auth.Verifier{Fetch: f}})
-	}
-	return out
 }
 
 // WithAuthz returns the services with another authorizer (the API's), sharing everything else.

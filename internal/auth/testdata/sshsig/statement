@@ -1,0 +1,5 @@
+kista-request v1
+method POST
+path /api/v1/tenants/acme/channels/staging/extensions/acl/releases?platform=linux_amd64&version=1.4.0
+sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+signed-at 2026-10-19T12:00:00Z

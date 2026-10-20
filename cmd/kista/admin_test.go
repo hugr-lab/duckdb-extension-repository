@@ -16,13 +16,16 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 )
 
 // TestAdminCLI drives kista admin end to end on SQLite.
+
+// publisherKeyLine is a publisher's public key (spec 0023's vectors).
+const publisherKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIvmAKxjbOkVN7MhsYLLHONcPMZXvhAR+JPGbBHEmWgz ci ed25519"
+
 func TestAdminCLI(t *testing.T) {
 	dir := t.TempDir()
 	keys := filepath.Join(dir, "keys")
@@ -267,47 +270,38 @@ func TestAdminCLI(t *testing.T) {
 	run(1, "grant", "add", "acme", "-principal", "server:corp|alice", "-verb", "install")
 	run(1, "grant", "add", "acme", "-principal", "subject:corp|alice", "-verb", "read")
 	run(1, "grant", "add", "acme", "-principal", "issuer:corp", "-verb", "publish") // never issuer-wide (spec 0008)
-	// publishers (spec 0008): a GitHub credential, publish only
+	// publishers (spec 0008) and their keys (spec 0023), publish only
 	run(0, "publisher", "add", "acme", "acl-ci")
 	run(1, "publisher", "add", "acme", "acl-ci")
-	cred := strings.TrimSpace(run(0, "publisher", "github", "add", "acme", "acl-ci", "-owner-id", "10", "-repository-id", "20",
-		"-workflow", "hugr-lab/duckdb-acl/.github/workflows/release.yml", "-ref", "refs/tags/v*"))
-	run(1, "publisher", "github", "add", "acme", "acl-ci", "-owner-id", "hugr-lab", "-repository-id", "20", "-workflow", "a/b/c.yml")
-	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, cred) || !strings.Contains(got, "refs/tags/v*") {
-		t.Fatalf("publisher list: %q", got)
-	}
 	run(1, "grant", "add", "acme", "-principal", "publisher:acl-ci", "-verb", "install")
 	run(0, "grant", "add", "acme", "-principal", "publisher:acl-ci", "-verb", "publish", "-channel", "prod", "-extension", "acl")
 	if got := run(0, "grant", "list", "acme"); !strings.Contains(got, "publisher:acl-ci") {
 		t.Fatalf("grant list: %q", got)
 	}
-	// API keys (spec 0008 phase 2): shown once, listed by prefix, an expiry required
-	key := strings.TrimSpace(run(0, "publisher", "key", "add", "acme", "acl-ci", "-expires", "90d"))
-	if !strings.HasPrefix(key, "kista_") {
-		t.Fatalf("key add: %q", key)
+	pub := filepath.Join(t.TempDir(), "ci.pub")
+	if err := os.WriteFile(pub, []byte(publisherKeyLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	keyID := strings.TrimSpace(run(0, "publisher", "key", "add", "acme", "acl-ci", pub, "-expires", "90d"))
+	run(1, "publisher", "key", "add", "acme", "acl-ci", pub) // the same key
 	run(2, "publisher", "key", "add", "acme", "acl-ci")
-	run(2, "publisher", "key", "add", "acme", "acl-ci", "-expires", "400d")
-	run(1, "publisher", "key", "add", "acme", "acl-ci", "-expires", "2001-01-01T00:00:00Z")
+	run(2, "publisher", "key", "add", "acme", "acl-ci", pub, "-expires", "400d")
+	run(1, "publisher", "key", "add", "acme", "acl-ci", pub, "-expires", "2001-01-01T00:00:00Z")
 	run(2, "publisher", "key", "list", "acme", "acl-ci", "-expires", "9d")
-	run(2, "publisher", "key", "add", "acme", "acl-ci", "-expires", "soon")
-	run(0, "publisher", "key", "add", "acme", "acl-ci", "-expires", time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	run(2, "publisher", "key", "add", "acme", "acl-ci", pub, "-expires", "soon")
+	run(1, "publisher", "key", "add", "acme", "acl-ci", filepath.Join(t.TempDir(), "missing.pub"))
 	got := run(0, "publisher", "key", "list", "acme", "acl-ci")
-	if strings.Contains(got, key) || !strings.Contains(got, key[6:14]) {
+	if !strings.Contains(got, keyID) || !strings.Contains(got, "ssh-ed25519") || !strings.Contains(got, "ci ed25519") {
 		t.Fatalf("key list: %q", got)
 	}
-	var keyID string
-	for _, l := range strings.Split(got, "\n") {
-		if f := strings.Fields(l); len(f) > 1 && f[1] == key[6:14] {
-			keyID = f[0]
-		}
+	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, keyID) {
+		t.Fatalf("publisher list: %q", got)
 	}
 	run(0, "publisher", "key", "remove", "acme", "acl-ci", keyID)
 	run(1, "publisher", "key", "remove", "acme", "acl-ci", keyID)
-	if got := run(0, "publisher", "key", "list", "acme", "acl-ci"); strings.Contains(got, key[6:14]) {
+	if got := run(0, "publisher", "key", "list", "acme", "acl-ci"); strings.Contains(got, keyID) {
 		t.Fatalf("a removed key: %q", got)
 	}
-	run(0, "publisher", "github", "remove", "acme", "acl-ci", cred)
 	run(0, "publisher", "remove", "acme", "acl-ci")
 	if got := run(0, "grant", "list", "acme"); strings.Contains(got, "publisher:acl-ci") {
 		t.Fatalf("a removed publisher's grant: %q", got)

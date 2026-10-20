@@ -154,7 +154,7 @@ them; channel and extension administrators see their channels and extensions; au
 | **Groups** | tenant administrators, group administrators (read only) | extension groups: members, description, grants, recent events, removal |
 | **Access** | tenant administrators | principals with their grant counts; a principal's grants; grant and revoke |
 | **Identity** | tenant administrators | issuer records and their console clients; the tenant's audiences (changed by a server administrator) |
-| **Publishers** | tenant administrators | publishers, their GitHub workflows (trusted publishing), API keys (shown once), and what they may publish |
+| **Publishers** | tenant administrators | publishers, their keys (the public SSH keys their CI signs with: register, remove, last used), and what they may publish. A release made by a publisher shows its signed request |
 | **Blocks** | tenant administrators | block a body by its hash with a reason (its releases are yanked in every channel); unblock |
 | **Licences** | tenant administrators | the tenant's licences (expiring within 30 days flagged); a licence's claims and limits; import a file, replace, public or private, remove; each relaying upstream's last run, refusals and **Sync now**; the licence keys of the tenant's live builds and their sources, with a licence whose key no live build in any channel declares flagged as not served. A publisher marked as a source of licence keys is badged on **Publishers**. See [Licensing](licensing.md) |
 | **Events** | auditors | the tenant's events with the API's filters, and an event's detail |

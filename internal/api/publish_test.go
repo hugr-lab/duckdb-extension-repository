@@ -35,9 +35,6 @@ func (m *mgmt) upload(t *testing.T, path, token string, file []byte, hdr ...stri
 	t.Helper()
 	req := httptest.NewRequest("POST", path, bytes.NewReader(file))
 	req.Header.Set("Content-Type", "application/octet-stream")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 	for i := 0; i+1 < len(hdr); i += 2 {
 		if hdr[i] == "Content-Length" {
 			req.ContentLength, _ = strconv.ParseInt(hdr[i+1], 10, 64)
@@ -45,6 +42,7 @@ func (m *mgmt) upload(t *testing.T, path, token string, file []byte, hdr ...stri
 		}
 		req.Header.Set(hdr[i], hdr[i+1])
 	}
+	m.authorize(t, req, token, file)
 	rec := httptest.NewRecorder()
 	m.h.ServeHTTP(rec, serve.WithHTTPS(req))
 	return resp{rec.Code, rec.Header(), rec.Body.Bytes()}

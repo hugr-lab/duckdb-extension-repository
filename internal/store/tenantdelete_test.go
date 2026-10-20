@@ -73,10 +73,8 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO usage_received (tenant_id, channel_id, sender, day, name, ext_version, event, counter, users, value) " +
 			"VALUES (?, ?, 'x', '2026-10-11', 'acl', '1.0', 'load', '', 0, 4)", []any{tid, cid}},
 		{"INSERT INTO publishers (id, tenant_id, name, created_at, created_by) VALUES (?, ?, 'ci', ?, 'os:1:t')", []any{id("p"), tid, now}},
-		{"INSERT INTO publisher_github (id, publisher_id, provider, owner_id, repository_id, workflow, created_at, created_by) " +
-			"VALUES (?, ?, 'github', '1', '2', 'ci.yml', ?, 'os:1:t')", []any{id("g"), id("p"), now}},
-		{"INSERT INTO api_keys (id, publisher_id, prefix, hash, expires_at, created_at, created_by) VALUES (?, ?, 'kst_', ?, ?, ?, 'os:1:t')",
-			[]any{id("k"), id("p"), hash, now, now}},
+		{"INSERT INTO publisher_keys (id, tenant_id, publisher_id, type, public_key, fingerprint, title, created_at, created_by) " +
+			"VALUES (?, ?, ?, 'ssh-ed25519', 'ssh-ed25519 AAAA', ?, '', ?, 'os:1:t')", []any{id("k"), tid, id("p"), "SHA256:" + hash[:43], now}},
 		{"INSERT INTO issuers (id, tenant_id, name, url, algorithms, required_claims, roles_claim, groups_claim, client_claim, max_token_lifetime, " +
 			"created_at, created_by) VALUES (?, ?, 'corp', 'https://idp.example', '[]', '{}', '', '', '', 3600, ?, 'os:1:t')", []any{id("i"), tid, now}},
 		{"INSERT INTO issuer_console_clients (issuer_id, client_id, scopes, audience_parameter, audience, created_at, created_by) " +
@@ -139,8 +137,6 @@ func rowsOf(t *testing.T, s *store.Store, tenantID, channelID string) map[string
 			where = "upstream_id IN (SELECT id FROM upstreams WHERE tenant_id = ?)"
 		case "issuer_console_clients":
 			where = "issuer_id IN (SELECT id FROM issuers WHERE tenant_id = ?)"
-		case "api_keys", "publisher_github":
-			where = "publisher_id IN (SELECT id FROM publishers WHERE tenant_id = ?)"
 		case "release_signatures", "channel_duckdb_versions", "purged_slots":
 			where, arg = "channel_id = ?", channelID
 		case "key_events":

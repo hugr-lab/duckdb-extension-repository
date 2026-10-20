@@ -10,37 +10,37 @@ import (
 
 // Spec 0008: publishers and their credentials (tenant administrators).
 
-type githubJSON struct {
-	ID           string `json:"id"`
-	Provider     string `json:"provider"`
-	OwnerID      string `json:"owner_id"`
-	RepositoryID string `json:"repository_id"`
-	Workflow     string `json:"workflow"`
-	Ref          string `json:"ref,omitempty"`
-	Environment  string `json:"environment,omitempty"`
-	CreatedAt    string `json:"created_at"`
-	CreatedBy    string `json:"created_by"`
+type publisherKeyJSON struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Fingerprint string `json:"fingerprint"`
+	Title       string `json:"title"`
+	PublicKey   string `json:"public_key"`
+	ExpiresAt   string `json:"expires_at,omitempty"`
+	CreatedAt   string `json:"created_at"`
+	CreatedBy   string `json:"created_by"`
+	LastUsedAt  string `json:"last_used_at,omitempty"`
 }
 
 type publisherJSON struct {
-	Name      string       `json:"name"`
-	CreatedAt string       `json:"created_at"`
-	CreatedBy string       `json:"created_by"`
-	GitHub    []githubJSON `json:"github"`
+	Name      string             `json:"name"`
+	CreatedAt string             `json:"created_at"`
+	CreatedBy string             `json:"created_by"`
+	Keys      []publisherKeyJSON `json:"keys"`
 	// LicenseKeys: a trusted source of licence keys (spec 0021)
 	LicenseKeys bool `json:"license_keys"`
 }
 
-func githubOf(g store.GitHubCredential, c caller) githubJSON {
-	return githubJSON{ID: g.ID, Provider: g.Provider, OwnerID: g.OwnerID, RepositoryID: g.RepositoryID, Workflow: g.Workflow,
-		Ref: g.Ref, Environment: g.Environment, CreatedAt: timeOf(g.CreatedAt), CreatedBy: createdBy(g.CreatedBy, c)}
+func publisherKeyOf(k store.PublisherKey, c caller) publisherKeyJSON {
+	return publisherKeyJSON{ID: k.ID, Type: k.Type, Fingerprint: k.Fingerprint, Title: k.Title, PublicKey: k.PublicKey,
+		ExpiresAt: timeOf(k.ExpiresAt), CreatedAt: timeOf(k.CreatedAt), CreatedBy: createdBy(k.CreatedBy, c), LastUsedAt: timeOf(k.LastUsedAt)}
 }
 
-func publisherOf(p store.Publisher, c caller) publisherJSON {
-	o := publisherJSON{Name: p.Name, CreatedAt: timeOf(p.CreatedAt), CreatedBy: createdBy(p.CreatedBy, c), GitHub: []githubJSON{},
+func publisherOf(p store.Publisher, keys []store.PublisherKey, c caller) publisherJSON {
+	o := publisherJSON{Name: p.Name, CreatedAt: timeOf(p.CreatedAt), CreatedBy: createdBy(p.CreatedBy, c), Keys: []publisherKeyJSON{},
 		LicenseKeys: p.LicenseKeys}
-	for _, g := range p.GitHub {
-		o.GitHub = append(o.GitHub, githubOf(g, c))
+	for _, k := range keys {
+		o.Keys = append(o.Keys, publisherKeyOf(k, c))
 	}
 	return o
 }
@@ -65,9 +65,15 @@ func (h *Handler) listPublishers(w http.ResponseWriter, r *http.Request, c calle
 		return
 	}
 	ps, next := paged(ps, func(x store.Publisher) string { return x.Name }, limit, after)
+	a, _ := c.actor()
+	keys, err := h.o.Auth.TenantPublisherKeys(r.Context(), a, p["t"])
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
 	out := []publisherJSON{}
 	for _, x := range ps {
-		out = append(out, publisherOf(x, c))
+		out = append(out, publisherOf(x, keys[x.ID], c))
 	}
 	reply(w, r, http.StatusOK, list("publishers", out, next), "", noStore)
 }
@@ -85,7 +91,7 @@ func (h *Handler) addPublisher(w http.ResponseWriter, r *http.Request, c caller,
 		h.serviceErr(w, err, false)
 		return
 	}
-	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/publishers/"+esc(pb.Name), publisherOf(pb, c), "-")
+	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/publishers/"+esc(pb.Name), publisherOf(pb, nil, c), "-")
 }
 
 func (h *Handler) getPublisher(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -95,7 +101,13 @@ func (h *Handler) getPublisher(w http.ResponseWriter, r *http.Request, c caller,
 	}
 	for _, x := range ps {
 		if x.Name == p["name"] {
-			reply(w, r, http.StatusOK, publisherOf(x, c), "", noStore)
+			a, _ := c.actor()
+			keys, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], x.Name)
+			if err != nil {
+				h.serviceErr(w, err, false)
+				return
+			}
+			reply(w, r, http.StatusOK, publisherOf(x, keys, c), "", noStore)
 			return
 		}
 	}
@@ -111,77 +123,18 @@ func publisherLicenseKeys(on bool) handler {
 			h.serviceErr(w, err, false)
 			return
 		}
-		reply(w, r, http.StatusOK, publisherOf(pb, c), "", noStore)
+		keys, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], pb.Name)
+		if err != nil {
+			h.serviceErr(w, err, false)
+			return
+		}
+		reply(w, r, http.StatusOK, publisherOf(pb, keys, c), "", noStore)
 	}
 }
 
 func (h *Handler) removePublisher(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
 	if err := h.o.Auth.RemovePublisher(r.Context(), a, p["t"], p["name"]); err != nil {
-		h.serviceErr(w, err, false)
-		return
-	}
-	noContent(w)
-}
-
-func (h *Handler) listGitHub(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	ps, ok := h.tenantPublishers(w, r, c, p)
-	if !ok {
-		return
-	}
-	for _, x := range ps {
-		if x.Name == p["name"] {
-			reply(w, r, http.StatusOK, map[string]any{"github": publisherOf(x, c).GitHub}, "", noStore)
-			return
-		}
-	}
-	notFound(w)
-}
-
-func (h *Handler) addGitHub(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	var in struct {
-		Provider     string `json:"provider"`
-		OwnerID      string `json:"owner_id"`
-		RepositoryID string `json:"repository_id"`
-		Workflow     string `json:"workflow"`
-		Ref          string `json:"ref"`
-		Environment  string `json:"environment"`
-	}
-	if !body(w, r, &in) {
-		return
-	}
-	a, _ := c.actor()
-	g, err := h.o.Auth.AddGitHubCredential(r.Context(), a, p["t"], p["name"], store.GitHubCredential{Provider: in.Provider,
-		OwnerID: in.OwnerID, RepositoryID: in.RepositoryID, Workflow: in.Workflow, Ref: in.Ref, Environment: in.Environment})
-	if err != nil {
-		h.serviceErr(w, err, false)
-		return
-	}
-	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/publishers/"+esc(p["name"])+"/github/"+esc(g.ID), githubOf(g, c), "-")
-}
-
-func (h *Handler) getGitHub(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	ps, ok := h.tenantPublishers(w, r, c, p)
-	if !ok {
-		return
-	}
-	for _, x := range ps {
-		if x.Name != p["name"] {
-			continue
-		}
-		for _, g := range x.GitHub {
-			if g.ID == p["id"] {
-				reply(w, r, http.StatusOK, githubOf(g, c), "", noStore)
-				return
-			}
-		}
-	}
-	notFound(w)
-}
-
-func (h *Handler) removeGitHub(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	a, _ := c.actor()
-	if err := h.o.Auth.RemoveGitHubCredential(r.Context(), a, p["t"], p["name"], p["id"]); err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
@@ -207,64 +160,68 @@ func publisherWhoami(c caller) map[string]any {
 		"holds_admin": false}
 }
 
-type apiKeyJSON struct {
-	ID         string `json:"id"`
-	Prefix     string `json:"prefix"`
-	Key        string `json:"key,omitempty"` // only in the answer that issues it
-	ExpiresAt  string `json:"expires_at"`
-	CreatedAt  string `json:"created_at"`
-	CreatedBy  string `json:"created_by"`
-	LastUsedAt string `json:"last_used_at,omitempty"`
-}
-
-func apiKeyOf(k store.APIKey, c caller) apiKeyJSON {
-	return apiKeyJSON{ID: k.ID, Prefix: k.Prefix, ExpiresAt: timeOf(k.ExpiresAt), CreatedAt: timeOf(k.CreatedAt),
-		CreatedBy: createdBy(k.CreatedBy, c), LastUsedAt: timeOf(k.LastUsedAt)}
-}
-
-// listAPIKeys lists a publisher's keys: ids and prefixes, never the keys.
-func (h *Handler) listAPIKeys(w http.ResponseWriter, r *http.Request, c caller, p params) {
+// listPublisherKeys lists a publisher's keys.
+func (h *Handler) listPublisherKeys(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	ks, err := h.o.Auth.ListAPIKeys(r.Context(), a, p["t"], p["name"])
+	ks, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], p["name"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
-	out := []apiKeyJSON{}
+	out := []publisherKeyJSON{}
 	for _, k := range ks {
-		out = append(out, apiKeyOf(k, c))
+		out = append(out, publisherKeyOf(k, c))
 	}
 	reply(w, r, http.StatusOK, map[string]any{"keys": out}, "", noStore)
 }
 
-// addAPIKey issues a publisher's API key; the key is in this answer only.
-func (h *Handler) addAPIKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	var in struct {
-		ExpiresAt string `json:"expires_at"` // RFC 3339, within a year
-	}
-	if !body(w, r, &in) {
-		return
-	}
-	exp, err := time.Parse(time.RFC3339, in.ExpiresAt)
-	if err != nil {
-		problem(w, http.StatusBadRequest, typeInvalid, "expires_at is an RFC 3339 time within a year")
-		return
-	}
+// getPublisherKey reads one of a publisher's keys.
+func (h *Handler) getPublisherKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	k, key, err := h.o.Auth.AddAPIKey(r.Context(), a, p["t"], p["name"], exp)
+	ks, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], p["name"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
-	out := apiKeyOf(k, c)
-	out.Key = key
-	reply(w, r, http.StatusCreated, out, "-", noStore) // no Location: a key has no GET of its own
+	for _, k := range ks {
+		if k.ID == p["id"] {
+			reply(w, r, http.StatusOK, publisherKeyOf(k, c), "", noStore)
+			return
+		}
+	}
+	notFound(w)
 }
 
-// removeAPIKey removes a publisher's key; it stops working at once.
-func (h *Handler) removeAPIKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
+// addPublisherKey registers a publisher's public SSH key (spec 0023).
+func (h *Handler) addPublisherKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	var in struct {
+		PublicKey string `json:"public_key"` // an OpenSSH line
+		ExpiresAt string `json:"expires_at"` // RFC 3339, within a year; "": never
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	var exp time.Time
+	if in.ExpiresAt != "" {
+		var err error
+		if exp, err = time.Parse(time.RFC3339, in.ExpiresAt); err != nil {
+			problem(w, http.StatusBadRequest, typeInvalid, "expires_at is an RFC 3339 time within a year, or absent")
+			return
+		}
+	}
 	a, _ := c.actor()
-	if err := h.o.Auth.RemoveAPIKey(r.Context(), a, p["t"], p["name"], p["id"]); err != nil {
+	k, err := h.o.Auth.AddPublisherKey(r.Context(), a, p["t"], p["name"], in.PublicKey, exp)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/publishers/"+esc(p["name"])+"/keys/"+esc(k.ID), publisherKeyOf(k, c), "-")
+}
+
+// removePublisherKey removes a publisher's key; it stops working at once.
+func (h *Handler) removePublisherKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	if err := h.o.Auth.RemovePublisherKey(r.Context(), a, p["t"], p["name"], p["id"]); err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}

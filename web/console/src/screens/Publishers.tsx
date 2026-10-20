@@ -5,38 +5,28 @@ import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
 import { GrantForm, GrantsList, useGrants } from './Access'
 
-// Publishers (spec 0008; console phase 2a): identities that only publish and promote, from CI by
-// trusted publishing (GitHub Actions OIDC) or with an API key. They never sign in here.
+// Publishers (spec 0008, 0023; console phase 2a): identities that only publish and promote, from CI
+// of any forge, signing their requests with an SSH key registered here. They never sign in here.
 
-interface GitHub {
+interface PublisherKey {
   id: string
-  provider: string
-  owner_id: string
-  repository_id: string
-  workflow: string
-  ref?: string
-  environment?: string
+  type: string
+  fingerprint: string
+  title: string
+  public_key: string
+  expires_at?: string
   created_at: string
   created_by: string
+  last_used_at?: string
 }
 
 interface Publisher {
   name: string
   created_at: string
   created_by: string
-  github: GitHub[]
+  keys: PublisherKey[]
   /** a source of licence keys (spec 0021): marked by a server administrator */
   license_keys?: boolean
-}
-
-interface APIKey {
-  id: string
-  prefix: string
-  key?: string
-  expires_at: string
-  created_at: string
-  created_by: string
-  last_used_at?: string
 }
 
 export function Publishers() {
@@ -85,7 +75,7 @@ export function Publishers() {
                 {p.license_keys && <Badge>licence keys</Badge>}
               </span>
             )],
-            ['Trusted publishing', (p) => (p.github.length ? p.github.map((g) => g.workflow).join(', ') : <span className="text-ink-muted">none</span>)],
+            ['Keys', (p) => (p.keys.length ? p.keys.map((k) => k.title || k.fingerprint).join(', ') : <span className="text-ink-muted">none</span>)],
             ['Added', (p) => when(p.created_at)],
           ]}
         />
@@ -95,13 +85,13 @@ export function Publishers() {
   )
 }
 
-/** One publisher, its state kept per publisher: a key shown once never shows on another's page. */
+/** One publisher, its state kept per publisher. */
 export function PublisherPage() {
   const { name = '' } = useParams()
   return <PublisherView key={name} name={name} />
 }
 
-/** One publisher: its GitHub workflows, API keys and grants. */
+/** One publisher: its keys and grants. */
 function PublisherView({ name }: { name: string }) {
   const { client, api, base } = useTenant()
   const nav = useNavigate()
@@ -130,28 +120,27 @@ function PublisherView({ name }: { name: string }) {
       {failure != null && <ErrorBox error={failure} />}
       {p.license_keys && (
         <Note>A source of licence keys: its publications record the licence keys their builds declare, which this tenant's licences verify
-          against. A server administrator marked it, and only a server administrator changes its workflows, API keys and grants: a change made here is refused.
+          against. A server administrator marked it, and only a server administrator changes its keys and grants: a change made here is refused.
           Removing it drops the keys it brought.</Note>
       )}
-      <Workflows publisher={p} onChanged={pub.reload} />
-      <Keys publisher={p.name} />
+      <Keys publisher={p} onChanged={pub.reload} />
       <PublisherGrants publisher={p.name} />
       <Confirm open={removing} title={`Remove the publisher ${p.name}?`} confirm="Remove" danger onConfirm={remove} onClose={() => setRemoving(false)}>
-        <p>Its workflows, API keys and grants go with it: CI using them can no longer publish.</p>
+        <p>Its keys and grants go with it: CI signing with them can no longer publish.</p>
       </Confirm>
     </>
   )
 }
 
-function Workflows({ publisher, onChanged }: { publisher: Publisher; onChanged: () => void }) {
+function Keys({ publisher, onChanged }: { publisher: Publisher; onChanged: () => void }) {
   const { client, api } = useTenant()
-  const path = `${api}/publishers/${seg(publisher.name)}/github`
+  const path = `${api}/publishers/${seg(publisher.name)}/keys`
   const [adding, setAdding] = useState(false)
-  const [f, setF] = useState({ owner_id: '', repository_id: '', workflow: '', ref: '', environment: '' })
-  const [removing, setRemoving] = useState<GitHub | null>(null)
+  const [line, setLine] = useState('')
+  const [days, setDays] = useState(365)
+  const [removing, setRemoving] = useState<PublisherKey | null>(null)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<unknown>(null)
-  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value })
   const act = async (fn: () => Promise<unknown>) => {
     if (busy) return
     setBusy(true)
@@ -159,118 +148,55 @@ function Workflows({ publisher, onChanged }: { publisher: Publisher; onChanged: 
     try {
       await fn()
       setAdding(false)
+      setLine('')
     } catch (e) {
       setFailure(e)
     }
     setBusy(false)
     onChanged()
   }
+  const add = (e: React.FormEvent) => {
+    e.preventDefault()
+    const body: { public_key: string; expires_at?: string } = { public_key: line.trim() }
+    if (days > 0) body.expires_at = new Date(Date.now() + days * 86_400_000).toISOString().replace(/\.\d+Z$/, 'Z')
+    act(() => client.post(path, { body }))
+  }
   return (
-    <Card title="Trusted publishing" actions={<Button tone="outline" onClick={() => setAdding(!adding)}>{adding ? 'Close' : '+ GitHub workflow'}</Button>}>
+    <Card title="Keys" actions={<Button tone="outline" onClick={() => setAdding(!adding)}>{adding ? 'Close' : '+ Key'}</Button>}>
       <div className="flex flex-col gap-4">
         {adding && (
-          <form className="flex flex-col gap-4" onSubmit={(e) => { e.preventDefault(); act(() => client.post(path, { body: { ...f, provider: 'github' } })) }}>
-            <Note>A GitHub Actions OIDC token of this workflow publishes as this publisher. Owner and repository are numeric ids: they survive renames, names do not.</Note>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Owner id"><input className="field font-mono" required inputMode="numeric" value={f.owner_id} onChange={set('owner_id')} /></Field>
-              <Field label="Repository id"><input className="field font-mono" required inputMode="numeric" value={f.repository_id} onChange={set('repository_id')} /></Field>
-              <Field label="Workflow" hint="owner/repo/.github/workflows/release.yml"><input className="field font-mono" required value={f.workflow} onChange={set('workflow')} /></Field>
-              <Field label="Ref" hint="a pattern: refs/tags/v*; empty: any"><input className="field font-mono" value={f.ref} onChange={set('ref')} /></Field>
-              <Field label="Environment" hint="empty: any"><input className="field font-mono" value={f.environment} onChange={set('environment')} /></Field>
-            </div>
+          <form className="flex flex-col gap-4" onSubmit={add}>
+            <Note>The public half of the SSH key CI signs its requests with: the line of its .pub file. Make one with
+              <Mono>ssh-keygen -t ed25519 -N '' -C ci -f publisher_key</Mono>; the private half stays a CI secret.</Note>
+            <Field label="Public key" hint="ssh-ed25519 AAAA… comment, or ecdsa-sha2-nistp256">
+              <textarea className="field font-mono" required rows={2} value={line} onChange={(e) => setLine(e.target.value)} />
+            </Field>
+            <label className="flex items-center gap-2 text-[13px] text-ink-muted">expires
+              <select className="field py-1 text-[13px]" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+                {[90, 180, 365].map((d) => <option key={d} value={d}>in {d} days</option>)}
+                <option value={0}>never</option>
+              </select>
+            </label>
             <div><Button type="submit" tone="brand" disabled={busy}>Add</Button></div>
           </form>
         )}
         {failure != null && <ErrorBox error={failure} />}
-        {publisher.github.length === 0 ? <Empty>No workflow publishes as {publisher.name}.</Empty> : (
+        {publisher.keys.length === 0 ? <Empty>No key signs as {publisher.name}.</Empty> : (
           <Table
-            rows={publisher.github}
-            rowKey={(g) => g.id}
-            columns={[
-              ['Workflow', (g) => <Mono>{g.workflow}</Mono>],
-              ['Repository', (g) => <span className="text-[13px] text-ink-muted">owner {g.owner_id} · repository {g.repository_id}</span>],
-              ['Ref', (g) => <Mono>{g.ref || 'any'}</Mono>],
-              ['Environment', (g) => <Mono>{g.environment || 'any'}</Mono>],
-              ['', (g) => <Button tone="danger-outline" onClick={() => setRemoving(g)}>Remove…</Button>],
-            ]}
-          />
-        )}
-      </div>
-      <Confirm open={removing !== null} title="Remove this workflow?" confirm="Remove" danger
-        onConfirm={() => { const g = removing!; setRemoving(null); act(() => client.del(`${path}/${seg(g.id)}`)) }} onClose={() => setRemoving(null)}>
-        <p>{removing && <Mono>{removing.workflow}</Mono>} can no longer publish as {publisher.name}.</p>
-      </Confirm>
-    </Card>
-  )
-}
-
-function Keys({ publisher }: { publisher: string }) {
-  const { client, api } = useTenant()
-  const path = `${api}/publishers/${seg(publisher)}/keys`
-  const keys = useLoad(() => client.get<{ keys: APIKey[] }>(path), [path])
-  const [days, setDays] = useState(90)
-  const [issued, setIssued] = useState<APIKey | null>(null)
-  const [revoking, setRevoking] = useState<APIKey | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [failure, setFailure] = useState<unknown>(null)
-  const issue = async () => {
-    if (busy) return
-    setBusy(true)
-    setFailure(null)
-    try {
-      const expires = new Date(Date.now() + days * 86_400_000).toISOString().replace(/\.\d+Z$/, 'Z')
-      const r = await client.post<APIKey>(path, { body: { expires_at: expires } })
-      setIssued(r.data)
-    } catch (e) {
-      setFailure(e)
-    }
-    setBusy(false)
-    keys.reload()
-  }
-  const revoke = async () => {
-    const k = revoking!
-    setRevoking(null)
-    try {
-      await client.del(`${path}/${seg(k.id)}`)
-    } catch (e) {
-      setFailure(e)
-    }
-    keys.reload()
-  }
-  return (
-    <Card title="API keys" actions={
-      <span className="flex items-center gap-2">
-        <label className="flex items-center gap-2 text-[13px] text-ink-muted">valid for
-          <select className="field py-1 text-[13px]" value={days} onChange={(e) => setDays(Number(e.target.value))}>
-            {[30, 90, 180, 365].map((d) => <option key={d} value={d}>{d} days</option>)}
-          </select>
-        </label>
-        <Button tone="outline" disabled={busy || !!issued} onClick={issue}>+ API key</Button>
-      </span>}>
-      <div className="flex flex-col gap-4">
-        {issued?.key && (
-          <div role="status" className="flex flex-col gap-2 rounded-md border border-success bg-success-soft p-4">
-            <strong>The key, shown this once: copy it now.</strong>
-            <Mono>{issued.key}</Mono>
-            <div><Button onClick={() => setIssued(null)}>I have copied it</Button></div>
-          </div>
-        )}
-        {failure != null && <ErrorBox error={failure} />}
-        {keys.error ? <ErrorBox error={keys.error} /> : keys.loading && !keys.data ? <Loading /> : keys.data!.data.keys.length === 0 ? <Empty>No API keys.</Empty> : (
-          <Table
-            rows={keys.data!.data.keys}
+            rows={publisher.keys}
             rowKey={(k) => k.id}
             columns={[
-              ['Key', (k) => <Mono>{k.prefix}…</Mono>],
-              ['Expires', (k) => when(k.expires_at)],
+              ['Key', (k) => <span className="flex flex-col"><Mono>{k.fingerprint}</Mono><span className="text-[13px] text-ink-muted">{k.type}{k.title && ` · ${k.title}`}</span></span>],
+              ['Expires', (k) => (k.expires_at ? when(k.expires_at) : <span className="text-ink-muted">never</span>)],
               ['Last used', (k) => (k.last_used_at ? when(k.last_used_at) : <span className="text-ink-muted">never</span>)],
-              ['', (k) => <Button tone="danger-outline" onClick={() => setRevoking(k)}>Revoke…</Button>],
+              ['', (k) => <Button tone="danger-outline" onClick={() => setRemoving(k)}>Remove…</Button>],
             ]}
           />
         )}
       </div>
-      <Confirm open={revoking !== null} title="Revoke this key?" confirm="Revoke" danger onConfirm={revoke} onClose={() => setRevoking(null)}>
-        <p>{revoking && <Mono>{revoking.prefix}…</Mono>} stops working at once.</p>
+      <Confirm open={removing !== null} title="Remove this key?" confirm="Remove" danger
+        onConfirm={() => { const k = removing!; setRemoving(null); act(() => client.del(`${path}/${seg(k.id)}`)) }} onClose={() => setRemoving(null)}>
+        <p>{removing && <Mono>{removing.fingerprint}</Mono>} stops working at once: CI signing with it can no longer publish as {publisher.name}.</p>
       </Confirm>
     </Card>
   )

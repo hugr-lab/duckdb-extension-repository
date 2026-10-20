@@ -44,9 +44,6 @@ type Options struct {
 	Verifier *auth.Verifier
 	// Server recognises server tokens (spec 0007), which the DuckDB routes treat as no token.
 	Server *auth.Server
-	// Providers are the trusted-publishing providers (spec 0008): tenant records at their URLs are
-	// never used, and their tokens are no token on the DuckDB routes.
-	Providers auth.Providers
 	// Auths and Snapshots are shared with the API (created here when nil).
 	Auths     *auth.TenantAuths
 	Snapshots *release.Snapshots
@@ -601,8 +598,8 @@ func (h *Handler) decide(r *http.Request, sc store.ServeChannel, name string) (v
 func (h *Handler) identify(r *http.Request, sc store.ServeChannel, label string) (func(name string) bool, string, *http.Request) {
 	none := func(string) bool { return false }
 	tok := bearer(r)
-	// a publisher's API key is never looked up here (spec 0008): it is no token
-	if tok == "" || h.o.Verifier == nil || h.o.Server.IsServerToken(tok) || auth.IsAPIKey(tok) {
+	// a retired API key (spec 0008, 0023) is no token, so a stale configuration still installs public releases
+	if tok == "" || h.o.Verifier == nil || h.o.Server.IsServerToken(tok) || auth.IsRetiredAPIKey(tok) {
 		return none, "", r
 	}
 	ta, err := h.tenantAuth(r.Context(), sc.Tenant)
@@ -610,7 +607,7 @@ func (h *Handler) identify(r *http.Request, sc store.ServeChannel, label string)
 		h.log.Error("serve: reading a tenant's issuers and grants", "tenant", sc.Tenant.Name, "error", err)
 		return none, "", r // no token: public releases are still served
 	}
-	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, sc.Tenant.Name, h.o.Providers)
+	ta, canonical := auth.ForTenant(ta, h.o.PublicURL, sc.Tenant.Name)
 	id, err := h.o.Verifier.VerifyIdentity(r.Context(), ta, canonical, tok)
 	if err != nil {
 		h.failures.Record(sc.Tenant, "serve", err)

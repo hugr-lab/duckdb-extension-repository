@@ -274,6 +274,10 @@ func (h *Handler) addAttachment(w http.ResponseWriter, r *http.Request, c caller
 	}
 	defer done()
 	b, err := io.ReadAll(io.LimitReader(r.Body, r.ContentLength))
+	if errors.Is(err, errBodyNotSigned) {
+		problem(w, http.StatusBadRequest, typeInvalid, "the body is not the signed one: its SHA-256 is not the statement's")
+		return
+	}
 	if err != nil || int64(len(b)) != r.ContentLength {
 		problem(w, http.StatusBadRequest, typeInvalid, "the body ended before its Content-Length")
 		return

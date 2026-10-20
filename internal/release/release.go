@@ -111,6 +111,8 @@ type AddOptions struct {
 type Publication struct {
 	Version, Platform string
 	Provenance        string // JSON, recorded on the release
+	// Statement and Signature are the publisher's signed request (spec 0023), recorded on the release.
+	Statement, Signature string
 	// KeySources are the ids of the matched publishers marked as sources of licence keys (spec
 	// 0021). Those that hold publish on the name themselves record the build's keys.
 	KeySources []string
@@ -166,7 +168,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 			return store.Release{}, false, fmt.Errorf("%w: the file's footer says version %q, platform %q; the request says %q, %q",
 				store.ErrInvalid, b.ExtVersion, b.Platform, p.Version, p.Platform)
 		}
-		it.origin, it.provenance = store.OriginPublication, p.Provenance
+		it.origin, it.provenance, it.statement, it.signature = store.OriginPublication, p.Provenance, p.Statement, p.Signature
 		it.b.Origin = store.OriginPublication
 		if !res.Reserved {
 			it.recheck = s.reservedCheck(a, authz.VerbPublish, res)
@@ -256,7 +258,9 @@ type item struct {
 	visibility         string
 	notCurrent         bool
 	origin, provenance string
-	originSignature    []byte // an upstream release's (spec 0009)
+	// statement and signature are a publisher's signed request (spec 0023)
+	statement, signature string
+	originSignature      []byte // an upstream release's (spec 0009)
 	// keys are the build's licence keys, recorded for each of keySources, of kind keyKind (spec 0021)
 	keys       []store.LicenseKey
 	keyKind    string
@@ -551,7 +555,8 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				}
 				r := store.Release{TenantID: b.TenantID, ChannelID: channelID, BuildID: b.ID, Name: b.Name,
 					ExtVersion: b.ExtVersion, Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive,
-					Visibility: it.visibility, Origin: it.origin, Provenance: it.provenance, OriginSignature: it.originSignature}
+					Visibility: it.visibility, Origin: it.origin, Provenance: it.provenance, OriginSignature: it.originSignature,
+					PublisherStatement: it.statement, PublisherSignature: it.signature}
 				if !it.notCurrent {
 					if r.Seq, err = tx.NextSeq(ctx, channelID); err != nil {
 						return err

@@ -62,7 +62,7 @@ its own.
 | Promote releases between channels | `release promote` | the `promote` verb | no |
 | Blocks | `block` | tenant admin | yes |
 | Issuers, console clients, grants, extension groups | `issuer`, `grant`, `extension-group` | tenant admin | yes |
-| Publishers, GitHub credentials, API keys | `publisher` | tenant admin | yes |
+| Publishers and their keys | `publisher` | tenant admin | yes |
 | Upstreams, shadows | `upstream`, `shadow` | tenant admin | yes |
 | Attachments | `attachment` | extension admin, publishers (SBOM and provenance); `readers` and feedable: tenant admin | yes |
 | Attestation keys | `attestation-key` | add: server; activate and retire: tenant admin | no |
