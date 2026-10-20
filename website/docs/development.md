@@ -374,12 +374,10 @@ Extension developers build and publish with hugr-lab's fork of DuckDB's extensio
 [KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md)). It holds:
 
 - **the C++ SDK** (`kista/sdk/cpp`): licences and usage reports ([Licensing](licensing.md#the-c-sdk));
-- **`scripts/kista_publish.py`**: publishes a distribution build to a kista channel. From spec
-  0023's second phase it signs each request with the publisher's SSH key
-  ([Signed requests](publishing.md#signed-requests)), needs only Python 3 and OpenSSH, and runs in
-  any CI; **`_kista_publish.yml`** runs it from GitHub Actions, the key in the `KISTA_PUBLISHER_KEY`
-  secret. Until then it uses the credentials kista no longer takes: publish as
-  [Publishing from CI](publishing.md#publishing-from-ci) shows;
+- **`scripts/kista_publish.py`**: publishes a distribution build to a kista channel, each request
+  signed with the publisher's SSH key ([Signed requests](publishing.md#signed-requests)); it needs
+  only Python 3 and OpenSSH, so it runs in any CI. **`_kista_publish.yml`** runs it from GitHub
+  Actions, the key in the `KISTA_PUBLISHER_KEY` secret;
 - **`makefiles/kista.Makefile`**: the licence keys at build time.
 
 There are two kinds of extension:
@@ -413,8 +411,7 @@ run once:
   extension it also points `extension-ci-tools` at the fork.
 - **Both kinds.** `.github/workflows/distribution.yml` builds every platform of DuckDB's matrix. On a
   `v*` tag it publishes to the kista named by the repository's `KISTA_URL`, `KISTA_TENANT` and
-  `KISTA_CHANNEL` variables, signed with the publisher key in the `KISTA_PUBLISHER_KEY` secret (from
-  spec 0023's second phase).
+  `KISTA_CHANNEL` variables, signed with the publisher key in the `KISTA_PUBLISHER_KEY` secret.
 - **A licensed one** shows the SDK in use: `Register`, `Check`, `Limit` and `<name>_license()`.
   - Its `license-key.pem` starts as the SDK's test key.
   - A local build warns about it, and a tag build fails until the key is the issuer's public key.

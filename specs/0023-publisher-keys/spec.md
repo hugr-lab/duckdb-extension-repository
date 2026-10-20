@@ -1,6 +1,6 @@
 # Spec 0023: Publisher keys: signed requests from any CI
 
-- **Status**: accepted; phase 1 (kista) implemented
+- **Status**: implemented (phase 1: kista; phase 2: the fork, tagged `sdk-v0.2.0`, and the template)
 - **Date**: 2026-10-19
 - **Author**: vgsml, Claude
 
@@ -256,16 +256,17 @@ The release notes say that each publisher needs a key.
     final newline, because CI secret stores strip them and `ssh-keygen` then fails with a misleading
     message. It removes the file at the end and never prints the key.
   - **Each request.** It writes the statement, signs it with `ssh-keygen -Y sign`, and sends the two
-    headers. It signs again on every retry after `429`, `503` or `408`, so a retry never outlives
-    `signed-at`.
-  - **Before the first request.** It checks that `ssh-keygen -Y` exists (OpenSSH 8.1 or later), and
-    otherwise says what to install.
+    headers. It signs again on every retry (after `429`, `408`, a `5xx` or a broken connection), so
+    a retry never outlives `signed-at`.
+  - **Before the first request.** It reads the key with `ssh-keygen -l`, so a missing `ssh-keygen`
+    or a key it cannot read fails before anything is sent, saying what to install; an `ssh-keygen`
+    without `-Y` (before OpenSSH 8.1) is named as such.
   - **Modes.** `--check` calls `whoami` with a signed request, so the key and its grants are tested
     before the first tag. `--dry-run` prints the statements and the key's fingerprint.
   - **Requirements.** It needs only Python 3 and OpenSSH, so it runs in any CI. It runs on the CI
     host, not in DuckDB's build containers, whose OpenSSH may be older.
 - **`_kista_publish.yml`** takes the secret `KISTA_PUBLISHER_KEY` (required), with no `id-token:
-  write`. Its `environment` input stays: a GitHub environment is where the secret is kept, behind the
+  write`, and runs `--check` before it uploads. Its `environment` input stays: a GitHub environment is where the secret is kept, behind the
   environment's protection rules (reviewers, which tags).
 - **The fork** is tagged anew (`sdk-v0.2.0`), and `KISTA.md`'s publishing sections are rewritten.
 - **The template**:
@@ -274,8 +275,8 @@ The release notes say that each publisher needs a key.
   - the READMEs say how to make a key (`ssh-keygen -t ed25519 -N '' -C ci -f publisher_key`),
     register its `.pub` in kista, and store the private half as an environment secret;
   - `test-kista.sh` registers a generated key instead of issuing an API key.
-- **Other CI.** kista's Publishing page gains a GitLab CI and a Gitea example: build with `make
-  release`, then run `kista_publish.py`. GitLab's masked variables cannot hold newlines, so the key
+- **Other CI.** kista's Publishing page gains commands any CI runs (`ssh-keygen` and `curl`) and a
+  GitLab CI example; `kista_publish.py` runs there too. GitLab's masked variables cannot hold newlines, so the key
   goes in a File variable or as base64.
 - **The kit only publishes.** Promotion is a release manager's act, with a token or a signed request
   of their own tooling.
