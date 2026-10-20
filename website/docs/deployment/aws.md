@@ -58,8 +58,8 @@ terraform output url
   `certificate_arn` (an issued ACM certificate) and point the name at `lb_dns_name` yourself, or
   delegate a subdomain to a Route 53 zone once.
 - **`image`** is a version or a digest: `ghcr.io/hugr-lab/kista:vX.Y.Z` or `…@sha256:…`. Moving tags
-  (`:edge`, `:latest`) are refused unless pinned by digest; before the first release, pin `:edge`
-  by its digest. Fargate pulls the image from ghcr.io through the NAT gateway.
+  (`:edge`, `:latest`) are refused unless pinned by digest. Fargate pulls the image from ghcr.io
+  through the NAT gateway.
 - **`server_issuers`** and **`server_admins`** are `auth.server_issuers` and `auth.server_admins`
   ([Configuration](../configuration.md#auth)), as YAML in a string: the identity provider whose
   people administer kista. A server issuer needs `required_claims`.
