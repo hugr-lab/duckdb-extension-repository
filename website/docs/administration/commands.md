@@ -208,7 +208,7 @@ kista bundle inspect <bundle> [-plan <plan.json>] [-max-body <bytes>]
 | Command | What it does |
 | --- | --- |
 | `bootstrap [-adopt]` | applies the configuration's `bootstrap` section once, printing its plan; `-adopt` also creates objects in a tenant the bootstrap did not make |
-| `bootstrap -dry-run` | prints the plan (create, add, same or refused, one line per object) after opening the signers and fetching a new issuer's keys; takes no lease, writes nothing; exits `1` when an object is refused |
+| `bootstrap -dry-run` | prints the plan (create, add, same or refused, one line per object) after opening the signers, fetching a new issuer's keys and reading each new upstream's `.well-known` (the network, as the bootstrap does); takes no lease, writes nothing; exits `1` when an object is refused |
 | `bootstrap -accept` | takes a changed section as the applied one, without applying it (`bootstrap.accept`) |
 | `bootstrap -rearm` | forgets that it was applied (`bootstrap.rearm`); the next apply needs `-adopt` for the tenant it made |
 

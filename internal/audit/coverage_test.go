@@ -111,6 +111,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"CreateUpload": {"bundle.upload"}, "CompleteUpload": {"bundle.upload_complete"}, "AbortUpload": {"bundle.upload_abort"},
 		"PutUploadChunk": nil, "GetUpload": nil, "ListUploads": nil, "UploadExpiresAt": nil, "WakeUploads": nil, "GetImport": nil, "Export": {"bundle.export"},
 		"Sync": nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil, "Plan": nil,
+		"CheckAddAll": nil, "CheckSource": nil, // read only (spec 0024): the bootstrap's check
 	},
 	"attachment.Service": {
 		"Attach": {"attachment.add"}, "SetFlags": {"attachment.change"}, "Remove": {"attachment.remove"},

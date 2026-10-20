@@ -27,6 +27,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream/upspec"
 )
 
 // Errors, one per class; none carries a token, a secret or an identity provider's answer.
@@ -130,26 +131,7 @@ func (r Registry) For(name, tenant, prefix string) (*Credential, error) {
 
 // covers reports whether a prefix is under one of the credential's: the same scheme, host and port,
 // and a path at or below the credential's on a segment boundary.
-func (c *Credential) covers(prefix string) bool { return covers(c.prefixes, prefix) }
-
-func covers(prefixes []*url.URL, prefix string) bool {
-	u, err := url.Parse(prefix)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
-		slices.Contains(strings.Split(u.Path, "/"), "..") {
-		return false
-	}
-	for _, p := range prefixes {
-		if !strings.EqualFold(u.Scheme, p.Scheme) || !strings.EqualFold(u.Hostname(), p.Hostname()) || port(u) != port(p) {
-			continue
-		}
-		base := strings.TrimSuffix(p.EscapedPath(), "/")
-		path := u.EscapedPath()
-		if base == "" || path == base || strings.HasPrefix(path, base+"/") {
-			return true
-		}
-	}
-	return false
-}
+func (c *Credential) covers(prefix string) bool { return upspec.Covers(c.prefixes, prefix) }
 
 // BundleSources are upstreams.bundle_sources (spec 0014): which authenticated bundle sources'
 // releases may be public in which tenants.
@@ -188,7 +170,7 @@ func NewBundleSources(cfgs []config.BundleSource) (BundleSources, error) {
 // releases.
 func (bs BundleSources) AllowPublic(tenant, prefix string) bool {
 	for _, b := range bs {
-		if b.allowPublic && (b.all || b.tenants[tenant]) && covers(b.prefixes, prefix) {
+		if b.allowPublic && (b.all || b.tenants[tenant]) && upspec.Covers(b.prefixes, prefix) {
 			return true
 		}
 	}
@@ -204,13 +186,6 @@ func BundlePrefix(credential string) (prefix string, ok bool) {
 // BundleCredential prefixes the pseudo-credential a release from an authenticated bundle cell
 // records in its provenance (spec 0014); credential names never contain ":".
 const BundleCredential = "bundle:"
-
-func port(u *url.URL) string {
-	if p := u.Port(); p != "" {
-		return p
-	}
-	return "443"
-}
 
 // Token returns a token to send as Bearer.
 func (c *Credential) Token(ctx context.Context) (string, error) { return c.src.token(ctx) }

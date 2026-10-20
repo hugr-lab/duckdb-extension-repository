@@ -397,7 +397,7 @@ func serverIssuerURLs(cfg config.Config) []string {
 
 // BootstrapDeps are the services the configuration's bootstrap acts through (spec 0020 phase 4a).
 func BootstrapDeps(svc *Services, log *slog.Logger) bootstrap.Deps {
-	return bootstrap.Deps{Store: svc.Store, Tenants: svc.Tenants, Auth: svc.Auth, Keys: svc.Keys, Log: log}
+	return bootstrap.Deps{Store: svc.Store, Tenants: svc.Tenants, Auth: svc.Auth, Keys: svc.Keys, Upstreams: svc.Upstreams, Log: log}
 }
 
 // uploadSettings are the bundles block's limits on uploads (spec 0014 phase 2).

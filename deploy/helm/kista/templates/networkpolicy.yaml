@@ -6,6 +6,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ include "kista.fullname" . }}
+  namespace: {{ include "kista.namespace" $ }}
   labels: {{- include "kista.labels" . | nindent 4 }}
 spec:
   podSelector:

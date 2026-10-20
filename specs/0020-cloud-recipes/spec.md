@@ -616,6 +616,8 @@ Delivery: two pull requests, each with its own reviews.
 
 #### 4a. The bootstrap
 
+(Spec 0024 adds the section's upstreams, as a tenth step after the grants.)
+
 **The problem.** A managed install, or any install driven by a template, starts with an empty
 database. Someone then runs `kista admin` by hand: `version add`, `tenant create`,
 `tenant audience add`, `channel create`, `channel versions`, `key add -active`, `issuer add`,

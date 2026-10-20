@@ -30,6 +30,10 @@ imagePullSecrets: []
 #   kista admin migrate first (Upgrading in the documentation).
 config: {}
 
+# The namespace of every object the chart makes; empty: the release's (spec 0024). An umbrella chart
+# sets it to install kista in a namespace of its own. The chart creates no namespace.
+namespaceOverride: ""
+
 # behind_proxy: a TLS-terminating ingress or L7 load balancer in front, sending X-Forwarded-For and
 # X-Forwarded-Proto; config.serve.trusted_proxies must name its addresses (in practice the pod
 # CIDR, which the NetworkPolicy below narrows to the ingress controller's pods). The hop from the

@@ -40,6 +40,11 @@
       "type": "object",
       "description": "kista.yaml"
     },
+    "namespaceOverride": {
+      "type": "string",
+      "description": "the namespace of every object; empty: the release's",
+      "pattern": "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)?$"
+    },
     "mode": {
       "enum": [
         "behind_proxy",

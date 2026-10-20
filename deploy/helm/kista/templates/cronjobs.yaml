@@ -8,6 +8,7 @@ kind: CronJob
 metadata:
   # a CronJob's name: at most 52 characters (its Jobs add a suffix)
   name: {{ include "kista.name" (list $ (printf "admin-%s" .name) 52) }}
+  namespace: {{ include "kista.namespace" $ }}
   labels: {{- include "kista.labels" $ | nindent 4 }}
     app.kubernetes.io/component: admin
 spec:

@@ -124,3 +124,66 @@ func TestSpoolSize(t *testing.T) {
 		}
 	}
 }
+
+// namespaceOverride puts every object the chart makes in that namespace; without it, each takes
+// the release's (spec 0024).
+func TestNamespaceOverride(t *testing.T) {
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		if os.Getenv("KISTA_TEST_REQUIRE_HELM") != "" {
+			t.Fatal("helm is not on the PATH")
+		}
+		t.Skip("helm is not on the PATH")
+	}
+	files, err := filepath.Glob("../tests/pass/*.yaml")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no values files: %v", err)
+	}
+	for _, f := range append(files, "../kind/values.yaml") {
+		t.Run(filepath.Base(f), func(t *testing.T) {
+			render := func(extra ...string) map[string]string {
+				t.Helper()
+				args := []string{"template", "t", "../kista", "-n", "the-release", "-f", f}
+				if filepath.Base(f) == "values.yaml" { // the kind values allow admin jobs: a CronJob too
+					args = append(args, "--set", "adminJobs[0].name=reap", "--set", "adminJobs[0].args={reap}")
+				}
+				args = append(args, extra...)
+				out, err := exec.Command(helm, args...).CombinedOutput()
+				if err != nil {
+					t.Fatalf("helm template: %v\n%s", err, out)
+				}
+				got := map[string]string{}
+				dec := yaml.NewDecoder(bytes.NewReader(out))
+				for {
+					var doc struct {
+						Kind     string `yaml:"kind"`
+						Metadata struct {
+							Name      string `yaml:"name"`
+							Namespace string `yaml:"namespace"`
+						} `yaml:"metadata"`
+					}
+					if err := dec.Decode(&doc); err != nil {
+						break
+					}
+					if doc.Kind != "" {
+						got[doc.Kind+"/"+doc.Metadata.Name] = doc.Metadata.Namespace
+					}
+				}
+				if len(got) < 4 {
+					t.Fatalf("only %d objects rendered: %v", len(got), got)
+				}
+				return got
+			}
+			for obj, ns := range render() {
+				if ns != "the-release" {
+					t.Errorf("%s in %q without namespaceOverride", obj, ns)
+				}
+			}
+			for obj, ns := range render("--set", "namespaceOverride=kista") {
+				if ns != "kista" {
+					t.Errorf("%s in %q with namespaceOverride", obj, ns)
+				}
+			}
+		})
+	}
+}

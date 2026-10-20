@@ -1160,3 +1160,47 @@ func TestPlanFeeds(t *testing.T) {
 		}
 	})
 }
+
+// Spec 0024: CheckAddAll makes Add's checks for several upstreams, each as if those before it were
+// added, and writes nothing; it names the first one refused. Add refuses what it refuses.
+func TestCheckAddAll(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		tn, _ := en.st.GetTenant(ctx, "acme")
+		events := func() int {
+			evs, _ := en.st.ListEvents(ctx, tn.ID, store.EventFilter{Limit: 1000})
+			return len(evs)
+		}
+		before := events()
+		a := en.spec(store.UpstreamEntry{Name: "tresor"})
+		b := upstream.Spec{Name: "core", Kind: store.UpstreamCore, Channel: "other", Platforms: []string{"linux_amd64"},
+			Entries: []store.UpstreamEntry{{Name: "json"}}}
+		if i, err := en.up.CheckAddAll(ctx, admin, "acme", []upstream.Spec{a, b}); err != nil || i != -1 {
+			t.Fatalf("both: %d %v", i, err)
+		}
+		if ups, _ := en.up.List(ctx, admin, "acme"); len(ups) != 0 || events() != before {
+			t.Fatalf("written: %d upstreams, %d events", len(ups), events()-before)
+		}
+		// two that collide with each other: the second is named
+		c := b
+		c.Name = "core2"
+		i, err := en.up.CheckAddAll(ctx, admin, "acme", []upstream.Spec{a, b, c})
+		if !errors.Is(err, upstream.ErrCollision) || i != 2 {
+			t.Fatalf("a collision among them: %d %v", i, err)
+		}
+		// Add takes the first two, and refuses the third as CheckAddAll did
+		for _, sp := range []upstream.Spec{a, b} {
+			if _, err := en.up.Add(ctx, admin, "acme", sp); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := en.up.Add(ctx, admin, "acme", c); !errors.Is(err, upstream.ErrCollision) {
+			t.Fatalf("add: %v", err)
+		}
+		// a field refused names its upstream before anything is read of the store
+		bad := a
+		bad.Name, bad.Keys = "bad", []string{"sha256:XYZ"}
+		if i, err := en.up.CheckAddAll(ctx, admin, "acme", []upstream.Spec{b, bad}); !errors.Is(err, store.ErrInvalid) || i != 1 {
+			t.Fatalf("a bad field: %d %v", i, err)
+		}
+	})
+}

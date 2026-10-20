@@ -4,6 +4,7 @@ apiVersion: cloud.google.com/v1
 kind: BackendConfig
 metadata:
   name: {{ include "kista.fullname" . }}
+  namespace: {{ include "kista.namespace" $ }}
   labels: {{- include "kista.labels" . | nindent 4 }}
 spec:
   # the whole response, not idle time: a slow publish or download needs more than GKE's 30 seconds

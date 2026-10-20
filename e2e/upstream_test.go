@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/bootstrap"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
@@ -75,6 +77,51 @@ func TestUpstreamMirror(t *testing.T) {
 		"INSTALL loadable_extension_demo FROM m",
 	)
 	mustFail(t, res[1], "signature")
+}
+
+// Spec 0024: the bootstrap makes a channel's upstream (here at another kista), checked before it
+// writes; the upstream is due at once, its first run mirrors the release, and DuckDB at the pin
+// installs it from the mirror.
+func TestUpstreamBootstrap(t *testing.T) {
+	b := needBuild(t)
+	ctx := context.Background()
+	src := startKista(t, b)
+	src.release("loadable_extension_demo", release.AddOptions{})
+	dst := startKista(t, b)
+	_, port, _ := net.SplitHostPort(src.addr)
+	eg, err := egress.New(egress.Config{AllowLoopbackHTTP: true, OwnHost: "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &upstream.Service{Store: dst.st, Releases: dst.rel, Blob: dst.blob, Fetch: eg, Authz: authz.ServerAdmin{},
+		MaxBody: 256 << 20, MaxIngests: 2, TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler),
+		// scheduled runs, as serve always has them (upstreams.interval, 6h by default): a new mirror is due
+		Config: upstream.Config{Interval: 6 * time.Hour}}
+	key := dst.activeKey(t)
+	section := config.Bootstrap{
+		Tenant:   config.BootstrapTenant{Name: "acme"},
+		Channels: []config.BootstrapChannel{{Name: "prod", Kind: store.ChannelSigned, Versions: []string{b.versionDir}, Key: key.SignerRef}},
+		Upstreams: []config.BootstrapUpstream{{Name: "src", Kind: store.UpstreamRepo, Prefix: "http://localhost:" + port + "/acme/prod",
+			Keys: []string{src.activeKey(t).Fingerprint}, Channel: "prod", Platforms: []string{b.platform}, Visibility: store.Public,
+			Extensions: []config.BootstrapUpstreamEntry{{Name: "loadable_extension_demo"}}}},
+	}
+	d := bootstrap.Deps{Store: dst.st, Tenants: dst.ten, Auth: &tenants.AuthAdmin{Store: dst.st, Authz: authz.ServerAdmin{}},
+		Keys: dst.keys, Upstreams: up, Log: slog.New(slog.DiscardHandler)}
+	// the tenant exists (startKista made it): the bootstrap adopts it, as kista admin bootstrap -adopt
+	res, err := bootstrap.Run(ctx, d, section, bootstrap.Options{Actor: authz.Bootstrap, Holder: "e2e", Adopt: true, Retry: time.Minute})
+	if err != nil || !res.Applied {
+		t.Fatalf("the bootstrap: %+v %v", res, err)
+	}
+	(&upstream.Runner{Service: up, Holder: "e2e", Log: slog.New(slog.DiscardHandler)}).Once(ctx)
+	cells, err := up.Cells(ctx, serveAdmin, "acme", "src", "", [3]string{}, 10)
+	if err != nil || len(cells) != 1 || cells[0].Outcome != store.CellReleased {
+		t.Fatalf("the first run: %+v %v", cells, err)
+	}
+	mustOK(t, newSession(t, b, nil).exec(
+		createRepo("m", dst.httpURL(), dst.pem(t, key)),
+		"INSTALL loadable_extension_demo FROM m",
+		"LOAD loadable_extension_demo FROM m",
+	))
 }
 
 // Spec 0009 phase 3: a kista mirrors another kista's private channel with a token_file credential
