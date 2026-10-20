@@ -140,7 +140,9 @@ k release add acme/prod "$work/tresor.duckdb_extension" -name tresor -unchecked
 k publisher add acme vault-ci
 k grant add acme -principal publisher:vault-ci -verb publish -channel prod -extension vault
 k publisher license-keys acme vault-ci on
-pub_key="$("$work/kista" admin -config "$work/kista.yaml" publisher key add acme vault-ci -expires 1d)"
+# its key (spec 0023): the publication below is signed with it
+ssh-keygen -q -t ed25519 -N '' -C vault-ci -f "$work/vault-ci"
+k publisher key add acme vault-ci "$work/vault-ci.pub" -expires 1d
 k release add acme/prod "$work/hello.duckdb_extension" -name hello_acme -unchecked
 k tenant create scratch -display-name Scratch   # deleted from the console (spec 0019)
 k channel create scratch/prod -kind signed
@@ -149,9 +151,15 @@ k key add scratch/prod -signer file:s.pem -active
 pids+=($!)
 for i in $(seq 1 60); do curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null && break; sleep 1; done
 curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null || { cat "$work/kista.log"; exit 1; }
-curl -skf --resolve "kista.test:$kista_port:127.0.0.1" -H "Authorization: Bearer $pub_key" -H "Content-Type: application/octet-stream" \
-	--data-binary "@$work/vault.duckdb_extension" \
-	"$kista/api/v1/tenants/acme/channels/prod/extensions/vault/releases?version=1.0&platform=linux_amd64" >/dev/null \
+pub_path="/api/v1/tenants/acme/channels/prod/extensions/vault/releases?version=1.0&platform=linux_amd64"
+pub_hash="$( { sha256sum 2>/dev/null || shasum -a 256; } < "$work/vault.duckdb_extension" | cut -d' ' -f1)"
+printf 'kista-request v1\nmethod POST\npath %s\nsha256 %s\nsigned-at %s\n' "$pub_path" "$pub_hash" \
+	"$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$work/statement"
+ssh-keygen -Y sign -q -f "$work/vault-ci" -n kista-request@v1 <"$work/statement" >"$work/statement.sig"
+curl -skf --resolve "kista.test:$kista_port:127.0.0.1" -H "Content-Type: application/octet-stream" \
+	-H "Kista-Statement: $(base64 <"$work/statement" | tr -d '\r\n')" \
+	-H "Kista-Signature: $(grep -v -- ----- "$work/statement.sig" | tr -d '\r\n')" \
+	--data-binary "@$work/vault.duckdb_extension" "$kista$pub_path" >/dev/null \
 	|| { echo "e2e: the marked publication failed"; tail -20 "$work/kista.log"; exit 1; }
 
 python3 -m http.server --bind 127.0.0.1 --directory "$work/org" "$repo_port" >"$work/repo.log" 2>&1 &
