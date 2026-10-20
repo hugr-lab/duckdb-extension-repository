@@ -39,7 +39,7 @@ Changes write their event in the same database transaction as the change, so a c
 commit or roll back together. Refusals, authentication failures, failures and install events go
 through an asynchronous writer and can be lost in a crash.
 
-Events never carry tokens, API keys (only their prefix), signer references, credentials or key
+Events never carry tokens, signed requests, signer references, credentials or private key
 material. A failure carries an error class, never an error's text: for `storage.gc` and
 `storage.verify`, `error` is `lease`, `implausible`, `domain`, `interrupted` or `error`, and the text
 is in the server's log or the command's stderr. Validation errors and stale `If-Match` (`400`, `409`, `412`, `428`) are not events:
@@ -78,10 +78,8 @@ are all the kinds in `internal/audit`:
 | | `extension_group.members` | `extension-group:<name>` | `added`, `removed` |
 | | `publisher.add`, `publisher.remove` | `publisher:<name>` | `name` |
 | | `publisher.change` | `publisher:<name>` | `name`, `license_keys` (marked or unmarked as a source of licence keys, spec 0021) |
-| | `publisher.github.add` | `publisher:<name>/github:<id>` | `publisher`, `credential`, `owner_id`, `repository_id`, `workflow`, `ref`, `environment` |
-| | `publisher.github.remove` | `publisher:<name>/github:<id>` | `publisher`, `credential` |
-| | `publisher.key.add` | `publisher:<name>/key:<id>` | `publisher`, `key`, `prefix`, `expires_at` |
-| | `publisher.key.remove` | `publisher:<name>/key:<id>` | `publisher`, `key` |
+| | `publisher.key.add` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `expires_at` (a public SSH key, spec 0023) |
+| | `publisher.key.remove` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title` |
 | Licences | `license.import` | `license:<name>` | `name`, `license`, `issuer`, `holder`, `plan`, `expires_at`, `replaced` |
 | | `license.change` | `license:<name>` | `name`, `license`, `visibility` |
 | | `license.remove` | `license:<name>` | `name`, `license`, `reason` (`admin`, `revoked`, `expired`, `upstream removed`) |
@@ -133,7 +131,9 @@ Notes on some kinds:
   `auth`, `publish`, `upstreams`, `events`, `statistics`, `telemetry`, `tenants`), and the sections changed
   since the previous start.
 - `auth.failure` is recorded for a `401` given to a request that sent a credential; `reason` is
-  `malformed`, `invalid`, `api_key_route`, `publisher_route`, `stale_token` or `unnamed_writer`.
+  `malformed`, `invalid`, `publisher_route`, `stale_token` or `unnamed_writer`, or for a publisher's
+  signed request `signed_stale` (`signed-at` more than five minutes away), `signed_key` (not a key of
+  the tenant, or expired) or `signed_signature`.
   `authz.refused` is a known caller refused. These two and `request.failed` are rate-limited per
   tenant, actor and kind to one a second, each carrying `count`, the requests it stands for.
 - `install` is an authenticated download by a principal holding `install` on it: the first per

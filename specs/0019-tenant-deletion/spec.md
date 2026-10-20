@@ -1,6 +1,6 @@
 # Spec 0019: Deleting a tenant
 
-- **Status**: implemented (accepted 2026-10-12)
+- **Status**: implemented (accepted 2026-10-12). Spec [0023](../0023-publisher-keys/spec.md) replaces `api_keys` and `publisher_github` with `publisher_keys` in the rows reaped
 - **Date**: 2026-10-12
 - **Author**: vgsml, Claude
 

@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
@@ -80,10 +79,9 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddIssuer": {"issuer.add"}, "RemoveIssuer": {"issuer.remove"}, "AddAudience": {"audience.add"},
 		"RemoveAudience": {"audience.remove"}, "AddGrant": {"grant.add"}, "RemoveGrant": {"grant.remove"},
 		"AddPublisher": {"publisher.add"}, "RemovePublisher": {"publisher.remove"}, "SetPublisherLicenseKeys": {"publisher.change"},
-		"AddGitHubCredential": {"publisher.github.add"}, "RemoveGitHubCredential": {"publisher.github.remove"},
-		"AddAPIKey": {"publisher.key.add"}, "RemoveAPIKey": {"publisher.key.remove"},
+		"AddPublisherKey": {"publisher.key.add"}, "RemovePublisherKey": {"publisher.key.remove"},
 		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil,
-		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListAPIKeys": nil,
+		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListPublisherKeys": nil, "TenantPublisherKeys": nil,
 		"CreateExtensionGroup": {"extension_group.add"}, "SetExtensionGroupDescription": {"extension_group.change"},
 		"ChangeExtensionGroupMembers": {"extension_group.members"},
 		"RemoveExtensionGroup":        {"extension_group.members", "extension_group.remove"},
@@ -131,6 +129,9 @@ var writes = map[string]map[string][]audit.Kind{
 		"List": nil, "Get": nil, "Sync": nil, "ImportFeed": nil, // the import's run is recorded by Import
 	},
 }
+
+// publisherKeyLine is a public key (spec 0023's vectors).
+const publisherKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIvmAKxjbOkVN7MhsYLLHONcPMZXvhAR+JPGbBHEmWgz ci ed25519"
 
 // TestRegistry fails when a service gains an exported method the registry does not list.
 func TestRegistry(t *testing.T) {
@@ -279,8 +280,7 @@ func TestCoverage(t *testing.T) {
 	rel := &release.Service{Store: st, Blob: bs, Signers: ks, Authz: authz.ServerAdmin{}}
 	en := &env{st: st, ks: ks, dir: dir, t: t, rel: rel, hit: map[string]bool{},
 		ten: &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }},
-		adm: &tenants.AuthAdmin{Store: st, Authz: authz.ServerAdmin{}, Fetch: &fakeIDP{idpKey}, PublicURL: "https://kista.example",
-			Providers: auth.Providers{{Name: "github", URL: "https://token.actions.githubusercontent.com"}}},
+		adm: &tenants.AuthAdmin{Store: st, Authz: authz.ServerAdmin{}, Fetch: &fakeIDP{idpKey}, PublicURL: "https://kista.example"},
 		up: &upstream.Service{Store: st, Releases: rel, Blob: bs, Authz: authz.ServerAdmin{}, MaxBody: 1 << 20, MaxIngests: 4, Fetch: repoFetch{},
 			Log: slog.New(slog.DiscardHandler)},
 	}
@@ -374,19 +374,13 @@ func TestCoverage(t *testing.T) {
 	en.expect("tenants.AuthAdmin.RemoveExtensionGroup", do(func() error { return en.adm.RemoveExtensionGroup(rctx, admin, "acme", "platform", 0) }),
 		"extension_group.members", "extension_group.remove")
 	en.expect("tenants.AuthAdmin.AddPublisher", do(func() error { _, err := en.adm.AddPublisher(rctx, admin, "acme", "ci"); return err }), "publisher.add")
-	var cred, apiKey string
-	en.expect("tenants.AuthAdmin.AddGitHubCredential", do(func() error {
-		c, err := en.adm.AddGitHubCredential(rctx, admin, "acme", "ci", store.GitHubCredential{OwnerID: "1", RepositoryID: "2", Workflow: "o/r/.github/workflows/w.yml"})
-		cred = c.ID
-		return err
-	}), "publisher.github.add")
-	en.expect("tenants.AuthAdmin.RemoveGitHubCredential", do(func() error { return en.adm.RemoveGitHubCredential(rctx, admin, "acme", "ci", cred) }), "publisher.github.remove")
-	en.expect("tenants.AuthAdmin.AddAPIKey", do(func() error {
-		k, _, err := en.adm.AddAPIKey(rctx, admin, "acme", "ci", time.Now().Add(24*time.Hour))
-		apiKey = k.ID
+	var pubKey string
+	en.expect("tenants.AuthAdmin.AddPublisherKey", do(func() error {
+		k, err := en.adm.AddPublisherKey(rctx, admin, "acme", "ci", publisherKeyLine, time.Now().Add(24*time.Hour))
+		pubKey = k.ID
 		return err
 	}), "publisher.key.add")
-	en.expect("tenants.AuthAdmin.RemoveAPIKey", do(func() error { return en.adm.RemoveAPIKey(rctx, admin, "acme", "ci", apiKey) }), "publisher.key.remove")
+	en.expect("tenants.AuthAdmin.RemovePublisherKey", do(func() error { return en.adm.RemovePublisherKey(rctx, admin, "acme", "ci", pubKey) }), "publisher.key.remove")
 	en.expect("tenants.AuthAdmin.SetPublisherLicenseKeys", do(func() error {
 		_, err := en.adm.SetPublisherLicenseKeys(rctx, admin, "acme", "ci", true)
 		return err

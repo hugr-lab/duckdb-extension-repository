@@ -106,6 +106,15 @@ export function Release() {
           <pre className="m-0 overflow-x-auto rounded-md bg-surface-soft p-4 font-mono text-[13px]">{JSON.stringify(r.provenance, null, 2)}</pre>
         </Card>
       )}
+      {r.publisher_statement && (
+        <Card title="Signed request">
+          <div className="flex flex-col gap-2">
+            <span className="text-[13px] text-ink-muted">What the publisher's key signed: this body's SHA-256 at this path. The signature carries the key, so it can be checked after the key is removed.</span>
+            <pre className="m-0 overflow-x-auto rounded-md bg-surface-soft p-4 font-mono text-[13px]">{r.publisher_statement}</pre>
+            <pre className="m-0 overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-surface-soft p-4 font-mono text-[13px]">{r.publisher_signature}</pre>
+          </div>
+        </Card>
+      )}
       <Reports ext={r.name} body={r.body_hash} />
       <Confirm
         open={pending !== null}

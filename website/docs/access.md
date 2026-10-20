@@ -49,8 +49,8 @@ LOAD tresor;
 
 - Tokens are read only on `https` listeners; an `http` listener ignores `Authorization`.
 - A token issued by tresor (or any issuer of the tenant) must carry the tenant's audience (below).
-- A server administrator's token, a trusted-publishing token and a publisher's API key are no token
-  on the DuckDB routes.
+- A server administrator's token is no token on the DuckDB routes, and so is a `kista_…` Bearer (a
+  publisher's API key before spec 0023), so a stale configuration still installs public releases.
 - An issuer record's `max_token_lifetime` (default 24h, at most 7 days) bounds how long a token in a
   persistent DuckDB secret can live.
 
@@ -93,8 +93,10 @@ also set "assignment required" on the app registration.
 Over the API (tenant administrators): `GET, POST /api/v1/tenants/{t}/issuers`,
 `GET /issuers/{name}`, `DELETE /issuers/{name}` with `If-Match` (an issuer's ETag is its id).
 Removing a record removes its grants, so a record added later under the same name starts with none.
-A record cannot have a trusted-publishing provider's URL (see
-[Publishing](publishing.md#trusted-publishing-github-actions)).
+A record cannot have a CI token issuer's URL: GitHub Actions' (`https://token.actions.githubusercontent.com`,
+or `token.actions.<name>.ghe.com`) or a GitHub Enterprise Server's (`…/_services/token`). Any
+workflow there can request a token for any audience. CI publishes as a publisher instead (see
+[Publishing](publishing.md#publishers)).
 
 ### Audiences
 

@@ -377,7 +377,7 @@ type TenantAuth struct {
 	Issuers    []Issuer
 	Audiences  []string
 	Grants     []Grant
-	Publishers []Publisher // with their GitHub credentials (spec 0008)
+	Publishers []Publisher // spec 0008; their keys are looked up per request (spec 0023)
 	// GroupGrants are the grants on extension groups (spec 0017), each with its group's Members;
 	// Groups are the tenant's groups by id.
 	GroupGrants []Grant

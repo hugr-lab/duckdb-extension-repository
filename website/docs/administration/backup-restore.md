@@ -173,8 +173,8 @@ A restored database is the state at the time of its backup:
 - **Releases.** Releases made after the backup are gone, and their slots are free again. Bodies
   uploaded after the backup are orphans in the store and are collected after `gc.grace` once
   `gc.interval` is set, or by `kista admin blob gc -apply`.
-- **Grants, issuers, publishers and upstreams** go back too; publisher API keys created after the
-  backup no longer work.
+- **Grants, issuers, publishers and upstreams** go back too; publisher keys registered after the
+  backup no longer work, and keys removed since are back: remove them again.
 - **Objects deleted since the backup** (by the collector, or by hand) show up as `missing` in
   `blob verify`.
 - **Events and statistics** after the backup are lost from the database; copies sent to event sinks

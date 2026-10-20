@@ -40,7 +40,9 @@ func body(w http.ResponseWriter, r *http.Request, v any) bool {
 	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if errors.Is(err, errBodyNotSigned) {
+			problem(w, http.StatusBadRequest, typeInvalid, "the body is not the signed one: its SHA-256 is not the statement's")
+		} else if errors.As(err, &tooLarge) {
 			problem(w, http.StatusRequestEntityTooLarge, typeTooLarge, "the body is at most 64 KiB")
 		} else {
 			problem(w, http.StatusBadRequest, typeInvalid, "the body could not be read")

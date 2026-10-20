@@ -95,6 +95,9 @@ type mgmt struct {
 	att    *attachment.Service
 	lic    *licenses.Service
 	licKey *rsa.PrivateKey // signs licences (the vectors' test-only key)
+	// signers are publisher keys by handle ("sig:<n>"), which call and upload take as a token and
+	// sign the request with (spec 0023)
+	signers map[string]*pubSigner
 }
 
 // fakePuller records the misses serving offers (spec 0009 phase 2).
@@ -123,8 +126,7 @@ func (f *fakePuller) take() []release.Miss {
 func newMgmt(t *testing.T) *mgmt {
 	t.Helper()
 	en := newEnv(t)
-	ks := idps{idpURL: en.idp.key, opsURL: mustKey(t), otherIdPURL: mustKey(t), ghURL: mustKey(t)}
-	providers := auth.Providers{{Name: "github", URL: ghURL, Verifier: &auth.Verifier{Fetch: ks}}}
+	ks := idps{idpURL: en.idp.key, opsURL: mustKey(t), otherIdPURL: mustKey(t)}
 	server := &auth.Server{
 		Issuers: []store.Issuer{{ID: auth.ServerIssuerID("ops"), Name: "ops", URL: opsURL, Algorithms: auth.Algorithms,
 			RequiredClaims: map[string]string{"tid": "t1"}, RolesClaim: []string{"roles"}, MaxTokenLifetime: 24 * time.Hour}},
@@ -136,7 +138,7 @@ func newMgmt(t *testing.T) *mgmt {
 	grants := authz.Grants{Store: en.st, Auths: auths}
 	ten := &tenants.Service{Store: en.st, Authz: grants, HasDomain: func(d string) bool { return d == "default" }}
 	adm := &tenants.AuthAdmin{Store: en.st, Authz: grants, Fetch: ks, PublicURL: publicURL, ServerAudiences: []string{serverAud},
-		Providers: providers, ServerIssuerURLs: []string{opsURL}}
+		ServerIssuerURLs: []string{opsURL}}
 	keySvc, relSvc := *en.keys, *en.rel
 	keySvc.Authz, relSvc.Authz, relSvc.Signers = grants, grants, &keySvc
 	eg, err := egress.New(egress.Config{AllowLoopbackHTTP: true})
@@ -160,7 +162,7 @@ func newMgmt(t *testing.T) *mgmt {
 	lic := &licenses.Service{Store: en.st, Authz: grants, Enabled: true, Fetch: eg, Credentials: creds, Log: slog.New(slog.DiscardHandler)}
 	apiH := api.New(api.Options{Licenses: lic, Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths, Events: events,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
-		Server: server, Providers: providers, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups,
+		Server: server, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups,
 		Attachments: att, Feeds: feeds, MinSuspended: -1,
 		Console: &api.Console{Environment: "test", AdminTokenMaxAge: 3600, Audience: serverAud}})
 	pulls := &fakePuller{}
@@ -236,12 +238,10 @@ func (m *mgmt) call(t *testing.T, method, path, token, body string, hdr ...strin
 	} else {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 	for i := 0; i+1 < len(hdr); i += 2 {
 		req.Header.Set(hdr[i], hdr[i+1])
 	}
+	m.authorize(t, req, token, []byte(body))
 	rec := httptest.NewRecorder()
 	m.h.ServeHTTP(rec, serve.WithHTTPS(req))
 	return resp{rec.Code, rec.Header(), rec.Body.Bytes()}

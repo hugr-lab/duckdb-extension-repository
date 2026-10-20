@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
@@ -40,7 +39,6 @@ func TestLicenseKeySources(t *testing.T) {
 		t.Fatal(err)
 	}
 	kid := vectors.Kid(&m.licKey.PublicKey)
-	exp := time.Now().Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339)
 	publisher := func(name string) {
 		t.Helper()
 		if r := m.call(t, "POST", T+"/publishers", ta, `{"name":"`+name+`"}`); r.status != 201 {
@@ -50,13 +48,10 @@ func TestLicenseKeySources(t *testing.T) {
 			t.Fatalf("grant: %d %s", r.status, r.body)
 		}
 	}
-	apiKey := func(name, tok string) (string, string) {
+	pubKey := func(name, tok string) (string, string) {
 		t.Helper()
-		r := m.call(t, "POST", T+"/publishers/"+name+"/keys", tok, `{"expires_at":"`+exp+`"}`)
-		if r.status != 201 {
-			t.Fatalf("key: %d %s", r.status, r.body)
-		}
-		return r.json(t)["key"].(string), r.json(t)["id"].(string)
+		h := m.addKey(t, tok, "acme", name)
+		return h, m.signers[h].id
 	}
 	keys := func() string {
 		t.Helper()
@@ -69,7 +64,7 @@ func TestLicenseKeySources(t *testing.T) {
 	const P = T + "/channels/prod/extensions/"
 	publisher("issuer-ci")
 	publisher("other-ci")
-	other, _ := apiKey("other-ci", ta)
+	other, _ := pubKey("other-ci", ta)
 
 	// an unmarked publisher's publication records nothing
 	if r := m.upload(t, P+"newext/releases?version=1.0&platform=linux_amd64", other, keyed(t, "1.0", block, "newext_duckdb_cpp_init")); r.status != 201 {
@@ -91,15 +86,10 @@ func TestLicenseKeySources(t *testing.T) {
 	}
 	// a publisher holding credentials a tenant administrator made is not marked
 	if r := m.call(t, "POST", T+"/publishers/other-ci/license-keys", sa, ""); r.status != 400 {
-		t.Fatalf("marking a publisher with an API key: %d %s", r.status, r.body)
+		t.Fatalf("marking a publisher with a key: %d %s", r.status, r.body)
 	}
 	// its credentials come from the server administrator once it is marked
-	issuer, issuerKeyID := apiKey("issuer-ci", sa)
-	gh := m.call(t, "POST", T+"/publishers/issuer-ci/github", sa, `{"owner_id":"1","repository_id":"2","workflow":"o/r/.github/workflows/w.yml"}`)
-	if gh.status != 201 {
-		t.Fatalf("a server administrator's GitHub workflow: %d %s", gh.status, gh.body)
-	}
-	ghID := gh.json(t)["id"].(string)
+	issuer, issuerKeyID := pubKey("issuer-ci", sa)
 
 	// marked: its credentials and grants are the server administrator's
 	var grantID string
@@ -109,12 +99,10 @@ func TestLicenseKeySources(t *testing.T) {
 		}
 	}
 	for _, c := range []struct{ method, path, body string }{
-		{"POST", T + "/publishers/issuer-ci/keys", `{"expires_at":"` + exp + `"}`},
+		{"POST", T + "/publishers/issuer-ci/keys", `{"public_key":"` + newSigner(t).authKey + `"}`},
 		{"POST", T + "/grants", `{"principal":"publisher:issuer-ci","verbs":["publish"],"channel":"staging"}`},
 		{"DELETE", T + "/grants/" + grantID, ""},
-		{"POST", T + "/publishers/issuer-ci/github", `{"owner_id":"3","repository_id":"4","workflow":"o/r/.github/workflows/w.yml"}`},
 		{"DELETE", T + "/publishers/issuer-ci/keys/" + issuerKeyID, ""},
-		{"DELETE", T + "/publishers/issuer-ci/github/" + ghID, ""},
 	} {
 		if r := m.call(t, c.method, c.path, ta, c.body); r.status != 404 {
 			t.Errorf("a tenant administrator's %s %s on a marked publisher: %d %s", c.method, c.path, r.status, r.body)
@@ -143,6 +131,14 @@ func TestLicenseKeySources(t *testing.T) {
 		!strings.Contains(string(r.body), "license_keys") {
 		t.Fatalf("a malformed block: %d %s", r.status, r.body)
 	}
+	// a keyed body that is not the signed one records nothing, and releases nothing
+	if r := m.uploadSignedFor(t, P+"newext/releases?version=1.2&platform=linux_amd64", issuer, keyed(t, "1.2", nil, "newext_duckdb_cpp_init"),
+		keyed(t, "1.2", block, "newext_duckdb_cpp_init")); r.status != 400 || !strings.Contains(string(r.body), "not the signed one") {
+		t.Fatalf("a body that is not the signed one: %d %s", r.status, r.body)
+	}
+	if got := keys(); got != "[]" {
+		t.Fatalf("keys from a body that is not the signed one: %s", got)
+	}
 	// the body the unmarked publisher released, published again by the marked one
 	if r := m.upload(t, P+"newext/releases?version=1.0&platform=linux_amd64", issuer, keyed(t, "1.0", block, "newext_duckdb_cpp_init")); r.status != 200 {
 		t.Fatalf("publish again: %d %s", r.status, r.body)
@@ -152,6 +148,12 @@ func TestLicenseKeySources(t *testing.T) {
 	}
 	if r := m.call(t, "POST", T+"/licenses", ta, m.licence("newext", "pro")); r.status != 201 {
 		t.Fatalf("an import against the recorded key: %d %s", r.status, r.body)
+	}
+
+	// the server administrator removes a marked publisher's key
+	spare := m.addKey(t, sa, "acme", "issuer-ci")
+	if r := m.call(t, "DELETE", T+"/publishers/issuer-ci/keys/"+m.signers[spare].id, sa, ""); r.status != 204 {
+		t.Fatalf("a server administrator removes a marked publisher's key: %d %s", r.status, r.body)
 	}
 
 	// unmarking keeps the keys; removing the publisher drops them

@@ -66,13 +66,12 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	auths, snaps := &auth.TenantAuths{Store: st}, &release.Snapshots{Store: st}
 	grants := authz.Grants{Store: st, Auths: auths}
-	providers := svc.Auth.Providers
 	if recs, err := st.IssuerURLs(ctx); err != nil {
 		log.Error("serve: reading issuer records", "error", err)
 	} else {
 		for _, r := range recs {
-			if providers.Has(r[2]) {
-				log.Warn("serve: an issuer record has a trusted-publishing provider's URL and is not used; add a publisher instead",
+			if auth.RefusedIssuer(r[2]) {
+				log.Warn("serve: an issuer record has a CI token issuer's URL (GitHub Actions, GitHub Enterprise) and is not used; a publisher signs its requests with a key (spec 0023)",
 					"tenant_id", r[0], "issuer", r[1], "url", r[2])
 			}
 		}
@@ -114,7 +113,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	mgmt := svc.WithAuthz(grants)
 	apiHandler := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
 		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
-		Server: server, Providers: providers, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
+		Server: server, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
 		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, Attachments: mgmt.Attachments, Feeds: mgmt.Feeds, Licenses: mgmt.Licenses, MaxBody: maxBody,
 		MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events,
@@ -191,7 +190,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	h := serve.NewHandler(st, svc.Keys, bs, serve.Options{Console: ui, CORSOrigins: corsOrigins, Puller: puller, Events: events, Downloads: downloads, Metrics: metrics,
 		Licenses: licenses.Served{Service: svc.Licenses}, Usage: usageCounter, Received: received,
-		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Providers: providers, Auths: auths, Snapshots: snaps, API: apiHandler,
+		PublicURL: cfg.Serve.PublicURL, Verifier: verifier, Server: server, Auths: auths, Snapshots: snaps, API: apiHandler,
 		MaxDownloads: lim.MaxDownloads, MaxDownloadsPerClient: lim.MaxDownloadsPerClient, MinRate: int64(lim.MinRate),
 		WriteIdleTimeout: lim.WriteIdleTimeout, TrustedProxies: cfg.TrustedProxyPrefixes(), Log: log,
 	})

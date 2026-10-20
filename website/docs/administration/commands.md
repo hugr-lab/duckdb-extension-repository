@@ -343,13 +343,11 @@ A principal is `subject:<issuer>|<value>`, `role:<issuer>|<value>`, `group:<issu
 | Command | What it does | Output |
 | --- | --- | --- |
 | `publisher add <tenant> <name>`, `publisher remove <tenant> <name>` | an identity that only publishes and promotes | |
-| `publisher list <tenant>` | `PUBLISHER`, `LICENSE KEYS`, `CREDENTIAL`, `PROVIDER`, `OWNER ID`, `REPOSITORY ID`, `WORKFLOW`, `REF`, `ENVIRONMENT` | |
+| `publisher list <tenant>` | `PUBLISHER`, `LICENSE KEYS`, `KEY`, `FINGERPRINT`, `TITLE` | |
 | `publisher license-keys <tenant> <name> on or off` | marks it a source of licence keys (spec 0021), or unmarks it: a server administrator's act | |
-| `publisher github add <tenant> <name> -owner-id <id> -repository-id <id> -workflow <owner/repo/path> [-ref <pattern>] [-environment <env>] [-provider github]` | a trusted-publishing credential | the credential id |
-| `publisher github remove <tenant> <name> <credential id>` | removes it | |
-| `publisher key add <tenant> <name> -expires <days>d or <RFC 3339 time>` | an API key; days from 1 to 366 | the key, printed once |
-| `publisher key list <tenant> <name>` | `ID`, `PREFIX`, `EXPIRES`, `LAST USED`, `CREATED`, `BY` | |
-| `publisher key remove <tenant> <name> <key id>` | revokes it | |
+| `publisher key add <tenant> <name> <file.pub or -> [-expires <days>d or <RFC 3339 time>]` | registers a public SSH key (`ssh-ed25519` or `ecdsa-sha2-nistp256`) the publisher signs its requests with (spec 0023); an expiry within a year, or none | the key id |
+| `publisher key list <tenant> <name>` | `ID`, `FINGERPRINT`, `TYPE`, `TITLE`, `EXPIRES`, `LAST USED`, `CREATED`, `BY` | |
+| `publisher key remove <tenant> <name> <key id>` | removes it: it stops at once | |
 
 See [Publishing](../publishing.md).
 

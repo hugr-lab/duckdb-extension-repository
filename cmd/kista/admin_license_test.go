@@ -84,7 +84,11 @@ func TestAdminLicense(t *testing.T) {
 		t.Fatalf("publisher list: %q", got)
 	}
 	run(2, "", "publisher", "license-keys", "acme", "ci", "maybe")
+	// a marked publisher's keys are the server administrator's: the CLI is one (spec 0021, 0023)
+	keyID := strings.TrimSpace(run(0, publisherKeyLine, "publisher", "key", "add", "acme", "ci", "-"))
 	run(0, "", "publisher", "license-keys", "acme", "ci", "off")
+	run(1, "", "publisher", "license-keys", "acme", "ci", "on") // not while it holds a key
+	run(0, "", "publisher", "key", "remove", "acme", "ci", keyID)
 	run(1, "", "license", "import", "acme", lic) // no live build of tresor declares a key
 	if got := run(0, "", "license", "keys", "acme"); strings.Contains(got, "tresor") {
 		t.Fatalf("keys before any were recorded: %q", got)

@@ -177,9 +177,11 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
 - **Server administrators** come from the configuration file (`auth.server_admins`, principals of
   `auth.server_issuers`, which must have required claims). The `kista admin` CLI acts as the server
   administrator: it runs as the service's OS user with the service's configuration.
-- **Publishers** authenticate with trusted-publishing CI tokens (bound to immutable repository and
-  owner ids) or API keys. API keys are stored as SHA-256 hashes, expire, and are accepted only on
-  the publishers' routes.
+- **Publishers** sign each request with their developer's SSH key (spec 0023). kista stores only
+  public keys, so a copy of its database cannot publish. A signature binds the method, the path and
+  query, the body's SHA-256 and a time within five minutes, so a captured request cannot be sent
+  elsewhere or with another body; the body is checked before anything is written. Signed requests
+  are accepted only on the publishers' routes.
 - **DuckDB clients** send the token from an http secret. Its `SCOPE` must end with a slash
   (`https://host/acme/prod/`): DuckDB matches scopes by string prefix, so without the slash the
   token would also be sent to `https://host/acme/prod2/`.

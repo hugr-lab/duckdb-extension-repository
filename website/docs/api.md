@@ -33,10 +33,10 @@ tokens, so there is no CSRF surface.
 | --- | --- |
 | A **tenant token**: issued by one of the tenant's issuer records, for one of its audiences | that tenant's routes, `/api/v1/tenants/{t}/…` |
 | A **server token**: issued by a server issuer (`auth.server_issuers`), for a server audience | routes without a tenant; on tenant routes a server administrator acts with every right |
-| A **publisher credential**: an API key or a trusted-publishing token | its tenant's `whoami`, and the publication, promotion, release-read and attachment routes only |
+| A publisher's **signed request**: `Kista-Statement` and `Kista-Signature`, signed with one of its keys, no `Authorization` | its tenant's `whoami`, and the publication, promotion, release-read and attachment routes only |
 
 Server and tenant audiences are disjoint, so a token is one or the other. See [Access](access.md)
-for issuers, principals and grants, and [Publishing](publishing.md) for publisher credentials.
+for issuers, principals and grants, and [Publishing](publishing.md#signed-requests) for signed requests.
 
 - A request without a token on a route that is not public answers `401`.
 - A token that does not verify answers `401` on the API (the DuckDB routes fall back to anonymous
@@ -116,7 +116,8 @@ Errors are `application/problem+json`:
 | `too-many-requests` | `429`, with `Retry-After` |
 | `unavailable` | `503`; with `Retry-After: 1` when the store or the storage collector is busy |
 
-`401` and `404` have constant bytes and no `detail`. Other answers to an allowed caller carry a
+`401` and `404` have constant bytes and no `detail`, except a publisher's signed request's `401`,
+which names the key's fingerprint kista found and kista's clock ([spec 0023](publishing.md#signed-requests)). Other answers to an allowed caller carry a
 `detail`: a fixed message, or for an invalid value the service's own wording of the value and the
 rule (at most 300 bytes). It is never an internal error.
 
@@ -271,12 +272,11 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `GET, POST tenants/{t}/blocks`; `GET, DELETE tenants/{t}/blocks/{hash}` | tenant admin |
 | `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin |
 | `GET, POST …/publishers/{name}/github`; `GET, DELETE …/github/{id}` | tenant admin |
-| `GET, POST …/publishers/{name}/keys`; `DELETE …/keys/{id}` | tenant admin |
+| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin |
 | `POST, DELETE …/publishers/{name}/license-keys` | server: mark a publisher a source of licence keys, or unmark it |
 
-A publisher answers with `license_keys` (true when marked). While it is marked, adding or removing its
-GitHub workflows, API keys and grants is a server administrator's (`404` to a tenant
-administrator). A marked publisher's publication of a body whose key block is malformed answers
+A publisher answers with its `keys` and `license_keys` (true when marked). While it is marked, adding
+or removing its keys and grants is a server administrator's (`404` to a tenant administrator). A marked publisher's publication of a body whose key block is malformed answers
 `400` (`license_keys`).
 
 See [Publishing](publishing.md).

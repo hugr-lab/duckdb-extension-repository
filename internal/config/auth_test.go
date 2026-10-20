@@ -85,18 +85,8 @@ func TestPublishConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ps := cfg.PublishProviders(); len(ps) != 1 || ps[0] != GitHubActions {
-		t.Fatalf("default providers: %v", ps)
-	}
 	if a, b := cfg.PublishLimits(); a != 2 || b != 8 {
 		t.Fatalf("default limits: %d %d", a, b)
-	}
-	if off, err := Load(write(t, base+"publish: { providers: [] }\n"), nil); err != nil || len(off.PublishProviders()) != 0 {
-		t.Fatalf("trusted publishing off: %v", err)
-	}
-	ghes := base + "publish: { providers: [ { name: ghes, url: 'https://ghes.example/_services/token' } ] }\n"
-	if cfg, err := Load(write(t, ghes), nil); err != nil || cfg.PublishProviders()[0].Name != "ghes" {
-		t.Fatalf("a GHES provider: %v", err)
 	}
 	for name, c := range map[string]struct {
 		file string
@@ -104,14 +94,12 @@ func TestPublishConfig(t *testing.T) {
 		want string
 	}{
 		"from env":                      {base, []string{"KISTA_PUBLISH__MAX_PER_TENANT=4"}, "can only be set in the config file"},
-		"http provider":                 {base + "publish: { providers: [ { name: gh, url: 'http://x.example' } ] }\n", nil, "https issuer URL"},
-		"trailing slash":                {base + "publish: { providers: [ { name: gh, url: 'https://x.example/' } ] }\n", nil, "trailing slash"},
-		"bad name":                      {base + "publish: { providers: [ { name: GH, url: 'https://x.example' } ] }\n", nil, "name must match"},
-		"twice":                         {base + "publish: { providers: [ { name: gh, url: 'https://x.example' }, { name: gh, url: 'https://y.example' } ] }\n", nil, "used twice"},
+		"providers (spec 0023)":         {base + "publish: { providers: [ { name: gh, url: 'https://x.example' } ] }\n", nil, "removed (spec 0023)"},
+		"providers off (spec 0023)":     {base + "publish: { providers: [] }\n", nil, "removed (spec 0023)"},
 		"per principal":                 {base + "publish: { max_per_principal: 9, max_per_tenant: 4 }\n", nil, "cannot exceed"},
 		"over the default tenant limit": {base + "publish: { max_per_principal: 16 }\n", nil, "cannot exceed"},
 		"tenant under the default":      {base + "publish: { max_per_tenant: 1 }\n", nil, "cannot exceed"},
-		"server issuer at the provider": {base + "serve: { public_url: https://k.example }\nauth: { server_issuers: [ { name: ops, url: 'https://token.actions.githubusercontent.com', required_claims: { a: b } } ] }\n", nil, "trusted-publishing provider"},
+		"server issuer at the provider": {base + "serve: { public_url: https://k.example }\nauth: { server_issuers: [ { name: ops, url: 'https://token.actions.githubusercontent.com', required_claims: { a: b } } ] }\n", nil, "CI token issuer"},
 	} {
 		_, err := Load(write(t, c.file), c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {

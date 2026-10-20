@@ -1,6 +1,6 @@
 # Spec 0008: Publication and promotion
 
-- **Status**: implemented (phase 1a: publication, promotion, reserved names, blocks; 1b: publishers, trusted publishing; 2: API keys)
+- **Status**: implemented (phase 1a: publication, promotion, reserved names, blocks; 1b: publishers, trusted publishing; 2: API keys). Trusted publishing, API keys and the publisher's Bearer token are superseded by [0023](../0023-publisher-keys/spec.md): publishers sign their requests with keys
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 
