@@ -440,9 +440,10 @@ publish:
 **The developer kit.** The [extension template](development.md#starting-an-extension-the-template)
 publishes from GitHub Actions with the fork's `kista_publish.py`, which does the above for every
 build of a distribution: it reads each build's version and platform from its footer, skips wasm
-builds (refused, above), signs each request, and retries a `429`, `503` or `408`, signing again.
-Signing is in the fork from spec 0023's second phase; until then, the fork's job publishes with the
-removed credentials, so publish with the commands above.
+builds (refused, above), signs each request, and retries a `429`, a `408`, a `5xx` or a broken
+connection, signing again. Its `--check` signs a `whoami` first. It needs only Python 3 and OpenSSH,
+so it also runs in another CI: see the fork's
+[KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md).
 
 The release keeps the statement and the signature as they came (`publisher_statement`,
 `publisher_signature` in its management answer, for the extension's administrators), and its
