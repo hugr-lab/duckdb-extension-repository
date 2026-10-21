@@ -106,6 +106,7 @@ organisation)".
 ## Follow-ups
 
 - None for Enterest. A customer's own kista may set the same holder on the tenant it relays into.
-- The console: show the tenant's `holder_id`, and let a server administrator set and clear it.
+- ~~The console: show the tenant's `holder_id`, and let a server administrator set and clear it.~~
+  Done: the server scope's new tenant form, tenants list and tenant page (website `console.md`).
 - The configuration's bootstrap (spec 0020) setting a tenant's holder.
 - A machine-readable `rule` member in a licence refusal's problem (today the rule is in `detail`).
