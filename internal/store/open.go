@@ -36,11 +36,11 @@ type Login interface {
 	Password(ctx context.Context) (string, error)
 }
 
-// Rejecter is a login told when the database rejected the password it gave (PostgreSQL SQLSTATE
-// 28P01, SQL Server error 18456), so a cached password is not used again (spec 0027). The attempt
-// that was rejected fails; the pool's next one asks the login again.
+// Rejecter is a login told when the database rejected a password it gave (PostgreSQL SQLSTATE
+// 28P01, SQL Server error 18456), and which one, so a cached password is not used again (spec
+// 0027). The attempt that was rejected fails; the pool's next one asks the login again.
 type Rejecter interface {
-	Rejected()
+	Rejected(password string)
 }
 
 // rejecting tells a Rejecter login about a rejected password on the driver's connect path.
@@ -50,10 +50,21 @@ type rejecting struct {
 	rejected func(error) bool
 }
 
+// usedKey carries, through a connection attempt's context, where the password it used is noted.
+type usedKey struct{}
+
+// notePassword notes the password a connection attempt uses, for rejecting.Connect.
+func notePassword(ctx context.Context, pw string) {
+	if p, ok := ctx.Value(usedKey{}).(*string); ok {
+		*p = pw
+	}
+}
+
 func (r rejecting) Connect(ctx context.Context) (driver.Conn, error) {
-	c, err := r.Connector.Connect(ctx)
+	var used string
+	c, err := r.Connector.Connect(context.WithValue(ctx, usedKey{}, &used))
 	if err != nil && r.rejected(err) {
-		r.login.Rejected()
+		r.login.Rejected(used)
 	}
 	return c, err
 }
@@ -476,6 +487,7 @@ func OpenPostgres(ctx context.Context, dsn string, login Login, maxOpen int, caP
 		if err != nil {
 			return err
 		}
+		notePassword(ctx, pw)
 		cc.Password = pw
 		return nil
 	}))
@@ -547,6 +559,7 @@ func (p *passwordConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
+		notePassword(ctx, pw)
 		cfg.Password = pw
 	}
 	return mssql.NewConnectorConfig(cfg).Connect(ctx)

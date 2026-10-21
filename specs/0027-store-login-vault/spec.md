@@ -84,9 +84,14 @@ store:
   - Later, a failed read ends the cache, and new connections fail with a fixed error that names the
     source (`store: vault login: status 403`), never a value. Existing connections continue.
     `/readyz` follows the database, as today.
-- **A rejected password** (SQLSTATE `28P01`, SQL Server error 18456) clears the cache. The next
-  connection reads Vault again; the refused attempt is not retried in place, so there is no loop
-  (open question 6).
+- **A rejected password** (SQLSTATE `28P01`, SQL Server error 18456) clears the cache, when the
+  rejected password is the cached one (the connector tells the login which password it used). The
+  next connection reads Vault again; the refused attempt is not retried in place, so there is no
+  loop (open question 6).
+- **One read at a time, shared** (added in review, 2026-10-21): callers that arrive during a read
+  wait for it and share its answer, an error included, unless the reader's own context ended it.
+  A failed read answers for itself for 5 seconds, so a Vault that does not answer is not asked by
+  every caller in turn. The login's `String` and `Format` never show the password.
 - **Errors and logs** never carry the password, the token or a response body. `vaultapi`
   guarantees this already, and the planted-value scan of spec 0004's tests covers the new paths.
 - **Metrics** (OpenTelemetry names, as kista's others): `kista.store.login` (a counter by

@@ -209,9 +209,13 @@ store:
   store's open, so kista does not start, as with a database that is down. **Later**, a failed read
   ends the cache, and new connections fail with a fixed error naming the source and a status
   (`store: vault login: status 403`), never a value; open connections continue, and `/readyz`
-  follows the database as before.
+  follows the database as before. The failure answers for itself for 5 seconds, so a Vault that
+  does not answer is not asked again by every new connection.
+- **One read at a time**: new connections that arrive while kista reads Vault wait for that read
+  and share its answer, password or error.
 - **A rejected password** (PostgreSQL SQLSTATE `28P01`, SQL Server error 18456) drops the cached
-  one: that connection attempt fails, and the next one reads Vault again.
+  one, if it is the one rejected (a connection begun before a rotation does not drop the newer
+  password): that connection attempt fails, and the next one reads Vault again.
 - **Nothing is written**: the password lives in kista's memory for at most `cache` or the static
   role's TTL, never on disk, in a log, an error or a metric. Errors never carry Vault's response
   bodies or the token.
@@ -233,7 +237,9 @@ path "database/static-creds/kista" { capabilities = ["read"] }
 Metrics: `kista.store.login` (counter, `kista.login.kind` and `kista.outcome`: `vault`, `cached`,
 `error`, `rejected`), `kista.store.login.duration` (the Vault reads' latency) and
 `kista.store.login.expiry` (seconds the cached password has left); see
-[Observability](observability.md#metrics).
+[Observability](observability.md#metrics). `kista serve` counts from its first read, the store's
+open at start included; a connection attempt that its caller abandoned (its context ended) is not
+counted. `kista admin` commands export no metrics.
 
 ## Connections
 

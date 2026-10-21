@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,6 +46,13 @@ const (
 // StaticMargin is how long before a static role's rotation its password stops being cached.
 const StaticMargin = 30 * time.Second
 
+// FailureTTL is how long a failed read answers for itself: new connections in that window get the
+// same error without a Vault call, so a Vault that does not answer is not asked once per caller.
+const FailureTTL = 5 * time.Second
+
+// maxPending bounds the reads remembered for an observer set later (the store's open at start).
+const maxPending = 16
+
 // Options say where the password is.
 type Options struct {
 	Kind    string // KV or StaticRole
@@ -60,18 +68,36 @@ type Options struct {
 	Now func() time.Time
 }
 
-// Login is a store.Login (and store.Rejecter) reading Vault.
+// flight is one read of Vault, which the callers that arrive meanwhile wait for and share.
+type flight struct {
+	done chan struct{}
+	pw   string
+	err  error
+	// abandoned: the leader's own context ended it; the waiters read again themselves
+	abandoned bool
+}
+
+type observation struct {
+	outcome string
+	d       time.Duration
+}
+
+// Login is a store.Login (and store.Rejecter) reading Vault. Its String and Format never show the
+// password.
 type Login struct {
 	api Requester
 	o   Options
-	sem chan struct{} // one read at a time: a burst of new connections makes one Vault call
 
-	mu    sync.Mutex
-	pw    string
-	until time.Time
+	mu          sync.Mutex
+	pw          string
+	until       time.Time
+	cur         *flight // the read in progress, if any
+	failErr     error   // the last read's failure, answered until failedUntil
+	failedUntil time.Time
+	pending     []observation // reads before an observer was set
 
-	observe atomic.Pointer[func(outcome string, d time.Duration)]
-	counts  sync.Map // outcome -> *atomic.Int64
+	observe func(outcome string, d time.Duration) // under mu
+	counts  sync.Map                              // outcome -> *atomic.Int64
 }
 
 // New returns a login. It contacts nothing: the store's first connection does.
@@ -92,18 +118,52 @@ func New(api Requester, o Options) (*Login, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Login{api: api, o: o, sem: make(chan struct{}, 1)}, nil
+	return &Login{api: api, o: o}, nil
 }
 
-// Observe sets a function told about each Vault read: its outcome and duration (metrics).
-func (l *Login) Observe(f func(outcome string, d time.Duration)) { l.observe.Store(&f) }
+// String names the login's secret, never the password.
+func (l *Login) String() string {
+	if l.o.Kind == KV {
+		return "vault login (kv " + l.o.Mount + "/" + l.o.Path + "#" + l.o.Field + ")"
+	}
+	return "vault login (static_role " + l.o.Mount + "/" + l.o.Name + ")"
+}
+
+// Format prints String for every verb, %#v and %+v included, so no formatting shows the cache.
+func (l *Login) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, l.String()) }
+
+// Observe sets a function told about each Vault read: its outcome and duration (metrics). The
+// reads made before it is set (the store's open at start) are told at once.
+func (l *Login) Observe(f func(outcome string, d time.Duration)) {
+	l.mu.Lock()
+	l.observe = f
+	pending := l.pending
+	l.pending = nil
+	l.mu.Unlock()
+	for _, p := range pending {
+		f(p.outcome, p.d)
+	}
+}
+
+func (l *Login) observed(outcome string, d time.Duration) {
+	l.mu.Lock()
+	f := l.observe
+	if f == nil && len(l.pending) < maxPending {
+		l.pending = append(l.pending, observation{outcome, d})
+	}
+	l.mu.Unlock()
+	if f != nil {
+		f(outcome, d)
+	}
+}
 
 func (l *Login) count(outcome string) {
 	c, _ := l.counts.LoadOrStore(outcome, new(atomic.Int64))
 	c.(*atomic.Int64).Add(1)
 }
 
-// Counts are the requests for a password so far, by outcome.
+// Counts are the requests for a password so far, by outcome. A caller whose own context ended is
+// not counted.
 func (l *Login) Counts() map[string]int64 {
 	out := map[string]int64{}
 	l.counts.Range(func(k, v any) bool {
@@ -123,58 +183,96 @@ func (l *Login) Expiry() time.Duration {
 	return max(0, l.until.Sub(l.o.Now()))
 }
 
-func (l *Login) cached() (string, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.pw != "" && l.o.Now().Before(l.until) {
-		return l.pw, true
-	}
-	return "", false
-}
-
-func (l *Login) set(pw string, ttl time.Duration) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if ttl <= 0 {
-		pw = ""
-	}
-	l.pw, l.until = pw, l.o.Now().Add(ttl)
-}
-
-// Password implements store.Login: the cached password, or a read of Vault.
+// Password implements store.Login: the cached password; or the answer of a read in progress; or,
+// within FailureTTL of a failed read, its error; or a read of Vault.
 func (l *Login) Password(ctx context.Context) (string, error) {
-	if pw, ok := l.cached(); ok {
-		l.count(OutcomeCached)
-		return pw, nil
+	for {
+		l.mu.Lock()
+		now := l.o.Now()
+		switch {
+		case l.pw != "" && now.Before(l.until):
+			pw := l.pw
+			l.mu.Unlock()
+			l.count(OutcomeCached)
+			return pw, nil
+		case l.failErr != nil && now.Before(l.failedUntil):
+			err := l.failErr
+			l.mu.Unlock()
+			l.count(OutcomeError)
+			return "", err
+		}
+		if f := l.cur; f != nil { // share the read in progress
+			l.mu.Unlock()
+			select {
+			case <-f.done:
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+			if f.abandoned {
+				continue
+			}
+			if f.err != nil {
+				l.count(OutcomeError)
+			} else {
+				l.count(OutcomeCached)
+			}
+			return f.pw, f.err
+		}
+		f := &flight{done: make(chan struct{})}
+		l.cur = f
+		l.mu.Unlock()
+		return l.lead(ctx, f)
 	}
-	select {
-	case l.sem <- struct{}{}:
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-	defer func() { <-l.sem }()
-	if pw, ok := l.cached(); ok { // read by the caller we waited for
-		l.count(OutcomeCached)
-		return pw, nil
-	}
+}
+
+// lead reads Vault for everyone waiting on f.
+func (l *Login) lead(ctx context.Context, f *flight) (string, error) {
 	start := l.o.Now()
 	pw, ttl, err := l.read(ctx)
-	outcome := OutcomeVault
-	if err != nil {
-		outcome, pw, ttl = OutcomeError, "", 0 // a failed read ends the cache
+	d := l.o.Now().Sub(start)
+	l.mu.Lock()
+	l.cur = nil
+	switch {
+	case err == nil:
+		if ttl > 0 {
+			l.pw, l.until = pw, l.o.Now().Add(ttl)
+		} else {
+			l.pw, l.until = "", time.Time{}
+		}
+		l.failErr = nil
+	case ctx.Err() != nil: // the caller's own end: no failure of Vault's, nothing to share
+		f.abandoned = true
+	default: // a failed read ends the cache and answers for itself a moment
+		l.pw, l.until = "", time.Time{}
+		l.failErr, l.failedUntil = err, l.o.Now().Add(FailureTTL)
 	}
-	l.set(pw, ttl)
-	l.count(outcome)
-	if f := l.observe.Load(); f != nil {
-		(*f)(outcome, l.o.Now().Sub(start))
+	f.pw, f.err = pw, err
+	close(f.done)
+	l.mu.Unlock()
+	switch {
+	case err == nil:
+		l.count(OutcomeVault)
+		l.observed(OutcomeVault, d)
+	case !f.abandoned:
+		l.count(OutcomeError)
+		l.observed(OutcomeError, d)
 	}
 	return pw, err
 }
 
-// Rejected implements store.Rejecter: the database refused the password, so it is not used again.
-func (l *Login) Rejected() {
-	l.set("", 0)
-	l.count(OutcomeRejected)
+// Rejected implements store.Rejecter: the database refused a password this login gave, so it is
+// not used again. Only the password the cache holds is dropped: a rejection of an older one (a
+// connection begun before a rotation) leaves a newer password in place.
+func (l *Login) Rejected(password string) {
+	l.mu.Lock()
+	drop := password != "" && password == l.pw
+	if drop {
+		l.pw, l.until = "", time.Time{}
+	}
+	l.mu.Unlock()
+	if drop {
+		l.count(OutcomeRejected)
+	}
 }
 
 // read reads the password and how long it may be cached.

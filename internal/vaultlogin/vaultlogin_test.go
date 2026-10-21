@@ -3,6 +3,7 @@ package vaultlogin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -237,7 +238,8 @@ func TestStaticRoleOtherUser(t *testing.T) {
 	}
 }
 
-// A failed read ends the cache and answers a fixed error; a Vault error's body never shows.
+// A failed read ends the cache and answers a fixed error, for itself during FailureTTL; a Vault
+// error's body never shows.
 func TestFailures(t *testing.T) {
 	f, c := newFake(t), newClock()
 	l := must[*Login](t)(New(f.client(t), kvOpts(c)))
@@ -251,26 +253,51 @@ func TestFailures(t *testing.T) {
 	if l.Expiry() != 0 {
 		t.Fatal("the cache outlived a failed read")
 	}
+	// within FailureTTL the failure answers without a Vault call
+	calls := f.calls.Load()
+	f.set(func(f *fake) { f.status = 0 })
+	if _, err := l.Password(ctx); err == nil || err.Error() != "store: vault login: status 403" || f.calls.Load() != calls {
+		t.Fatalf("got %v after %d calls", err, f.calls.Load()-calls)
+	}
+	c.add(FailureTTL)
 	f.set(func(f *fake) { f.status = http.StatusInternalServerError })
 	if _, err := l.Password(ctx); err == nil || strings.Contains(err.Error(), planted) || !strings.Contains(err.Error(), "status 500") {
 		t.Fatalf("got %v", err)
 	}
 	// Vault gone
+	c.add(FailureTTL)
 	f.srv.Close()
 	if _, err := l.Password(ctx); err == nil || err.Error() != "store: vault login: Vault did not answer" {
 		t.Fatalf("got %v", err)
 	}
-	if got := l.Counts()[OutcomeError]; got != 3 {
+	if got := l.Counts()[OutcomeError]; got != 4 {
 		t.Fatalf("%d errors counted", got)
+	}
+	// Vault back, after FailureTTL
+	f2 := newFake(t)
+	l2 := must[*Login](t)(New(f2.client(t), kvOpts(c)))
+	f2.set(func(f *fake) { f.status = http.StatusForbidden })
+	_, _ = l2.Password(ctx)
+	f2.set(func(f *fake) { f.status = 0 })
+	c.add(FailureTTL)
+	if pw := must[string](t)(l2.Password(ctx)); pw != "pw-1" {
+		t.Fatalf("after FailureTTL: %q", pw)
 	}
 }
 
-// A password the database rejected is dropped: the next connection reads Vault again.
+// A password the database rejected is dropped: the next connection reads Vault again. A rejection
+// of another password than the cached one (an older connection's) keeps the cache.
 func TestRejected(t *testing.T) {
 	f, c := newFake(t), newClock()
 	l := must[*Login](t)(New(f.client(t), kvOpts(c)))
 	must[string](t)(l.Password(ctx))
-	l.Rejected()
+	for _, old := range []string{"an-older-password", ""} {
+		l.Rejected(old)
+		if l.Expiry() == 0 {
+			t.Fatalf("a rejection of %q dropped the cached password", old)
+		}
+	}
+	l.Rejected("pw-1")
 	if l.Expiry() != 0 {
 		t.Fatal("the cache outlived a rejection")
 	}
@@ -280,7 +307,7 @@ func TestRejected(t *testing.T) {
 	}
 }
 
-// A burst of new connections while Vault answers slowly makes one call.
+// A burst of new connections while Vault answers slowly makes one call, and all share its answer.
 func TestBurst(t *testing.T) {
 	f, c := newFake(t), newClock()
 	f.release = make(chan struct{})
@@ -306,18 +333,105 @@ func TestBurst(t *testing.T) {
 	}
 }
 
-// A caller waiting for another's read gives up with its context.
-func TestWaitHonoursContext(t *testing.T) {
+// A Vault that does not answer: the waiters share the leader's error instead of each reading in
+// turn, and the next callers get it from the failure's short cache.
+func TestBlackHole(t *testing.T) {
+	f, c := newFake(t), newClock()
+	f.release = make(chan struct{}) // never answers until the test ends
+	t.Cleanup(func() { close(f.release) })
+	p := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(p, []byte(f.token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	api, err := vaultapi.New(vaultapi.Config{Address: f.srv.URL, AuthKind: vaultapi.AuthTokenFile, TokenFile: p, AllowHTTP: true,
+		Timeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := must[*Login](t)(New(api, kvOpts(c)))
+	var reads atomic.Int64
+	l.Observe(func(string, time.Duration) { reads.Add(1) })
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Go(func() {
+			if _, err := l.Password(ctx); err == nil || err.Error() != "store: vault login: Vault did not answer" {
+				t.Errorf("got %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if _, err := l.Password(ctx); err == nil {
+		t.Fatal("a black-holed Vault answered")
+	}
+	if n := reads.Load(); n != 1 {
+		t.Fatalf("%d reads of a Vault that does not answer", n)
+	}
+	if got := l.Counts()[OutcomeError]; got != 11 {
+		t.Fatalf("%d errors counted", got)
+	}
+}
+
+// A caller waiting for another's read gives up with its context; a leader's own cancellation is
+// neither an error to share nor one to count, and a waiter then reads itself.
+func TestContexts(t *testing.T) {
 	f, c := newFake(t), newClock()
 	f.release = make(chan struct{})
-	defer close(f.release)
 	l := must[*Login](t)(New(f.client(t), kvOpts(c)))
-	go func() { _, _ = l.Password(ctx) }()
+	lctx, lcancel := context.WithCancel(ctx)
+	leader := make(chan error, 1)
+	go func() { _, err := l.Password(lctx); leader <- err }()
 	time.Sleep(50 * time.Millisecond)
-	cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-	defer cancel()
-	if _, err := l.Password(cctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("got %v", err)
+	wctx, wcancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer wcancel()
+	if _, err := l.Password(wctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiter: got %v", err)
+	}
+	// a waiter that outlives the leader's cancellation reads Vault itself
+	waiter := make(chan string, 1)
+	go func() { pw, _ := l.Password(ctx); waiter <- pw }()
+	time.Sleep(50 * time.Millisecond)
+	lcancel()
+	if err := <-leader; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leader: got %v", err)
+	}
+	close(f.release)
+	if pw := <-waiter; pw != "pw-1" {
+		t.Fatalf("the waiter got %q", pw)
+	}
+	if got := l.Counts(); got[OutcomeError] != 0 || got[OutcomeVault] != 1 {
+		t.Fatalf("counts %v", got)
+	}
+	if l.failErr != nil {
+		t.Fatal("a cancellation was cached as a failure")
+	}
+}
+
+// The reads before an observer is set (the store's open at start) reach it when it is set.
+func TestObserveLater(t *testing.T) {
+	f, c := newFake(t), newClock()
+	l := must[*Login](t)(New(f.client(t), kvOpts(c)))
+	must[string](t)(l.Password(ctx))
+	var got []string
+	l.Observe(func(o string, _ time.Duration) { got = append(got, o) })
+	c.add(time.Minute)
+	must[string](t)(l.Password(ctx))
+	if len(got) != 2 || got[0] != OutcomeVault || got[1] != OutcomeVault {
+		t.Fatalf("observed %v", got)
+	}
+}
+
+// No formatting of the login shows its password.
+func TestRedacted(t *testing.T) {
+	f, c := newFake(t), newClock()
+	l := must[*Login](t)(New(f.client(t), kvOpts(c)))
+	must[string](t)(l.Password(ctx))
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x"} {
+		if s := fmt.Sprintf(verb, l); strings.Contains(s, "pw-1") || !strings.Contains(s, "secret/kista/db") {
+			t.Errorf("%s: %q", verb, s)
+		}
+	}
+	if s := fmt.Sprintf("%v", struct{ L *Login }{l}); strings.Contains(s, "pw-1") {
+		t.Errorf("nested: %q", s)
 	}
 }
 

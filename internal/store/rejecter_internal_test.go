@@ -19,6 +19,7 @@ type rotating struct {
 	good     string
 	stale    bool
 	rejected int
+	wrong    []string // rejections of another password than the stale one
 }
 
 func (r *rotating) Password(context.Context) (string, error) {
@@ -30,17 +31,25 @@ func (r *rotating) Password(context.Context) (string, error) {
 	return r.good, nil
 }
 
-func (r *rotating) Rejected() {
+func (r *rotating) Rejected(pw string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if pw != "stale-password" {
+		r.wrong = append(r.wrong, pw)
+		return
+	}
 	r.stale = false
 	r.rejected++
 }
 
 type fakeConnector struct{ err error }
 
-func (f fakeConnector) Connect(context.Context) (driver.Conn, error) { return nil, f.err }
-func (fakeConnector) Driver() driver.Driver                          { return nil }
+// Connect uses the stale password, as a driver's connect would ask the login for it.
+func (f fakeConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	notePassword(ctx, "stale-password")
+	return nil, f.err
+}
+func (fakeConnector) Driver() driver.Driver { return nil }
 
 func TestRejected(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -96,8 +105,8 @@ func TestRejectedOnServers(t *testing.T) {
 				s.Close()
 				t.Fatal("opened with a stale password")
 			}
-			if l.rejected != 1 {
-				t.Fatalf("the login was told %d times", l.rejected)
+			if l.rejected != 1 || len(l.wrong) != 0 {
+				t.Fatalf("the login was told %d times of the stale password, and of %v", l.rejected, l.wrong)
 			}
 			s, err := open()
 			if err != nil {

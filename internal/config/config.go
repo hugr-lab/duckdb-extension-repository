@@ -980,7 +980,7 @@ func loopbackURL(s string) bool {
 }
 
 func validateVault(bad func(string, ...any), where string, v VaultSource, dev bool) {
-	validateVaultConn(bad, where+".vault", v.Address, v.Namespace, v.Auth, dev)
+	validateVaultConn(bad, where+".vault", v.Address, v.Namespace, v.CAFile, v.Auth, dev)
 	if v.Mount == "" || strings.ContainsAny(v.Mount, "?#%") || strings.Contains(v.Mount, "..") || strings.HasPrefix(v.Mount, "/") {
 		bad("%s.vault.mount must be a relative mount path", where)
 	}
@@ -991,7 +991,7 @@ func validateVault(bad func(string, ...any), where string, v VaultSource, dev bo
 
 // validateVaultConn checks how kista reaches a Vault: a key source's (spec 0004) and the database
 // login's (spec 0027) by the same rules.
-func validateVaultConn(bad func(string, ...any), where, address, namespace string, auth VaultAuth, dev bool) {
+func validateVaultConn(bad func(string, ...any), where, address, namespace, caFile string, auth VaultAuth, dev bool) {
 	u, err := url.Parse(address)
 	switch {
 	case err != nil || u.Host == "" || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.User != nil:
@@ -1018,6 +1018,12 @@ func validateVaultConn(bad func(string, ...any), where, address, namespace strin
 	if !strings.HasPrefix(auth.TokenFile, "/") {
 		bad("%s.auth.token_file must be an absolute path", where)
 	}
+	if auth.Mount != "" && !vaultPath(auth.Mount) {
+		bad("%s.auth.mount must be a relative mount path", where)
+	}
+	if caFile != "" && !filepath.IsAbs(caFile) {
+		bad("%s.ca_file must be an absolute path", where)
+	}
 }
 
 // vaultPath is a relative Vault path: a mount, a KV path, a role.
@@ -1043,13 +1049,7 @@ func validateVaultLogin(bad func(string, ...any), c Config, pwSet, dev bool) {
 		bad("store.login vault needs the store.login.vault block")
 		return
 	}
-	validateVaultConn(bad, "store.login.vault", v.Address, v.Namespace, v.Auth, dev)
-	if v.CAFile != "" && !filepath.IsAbs(v.CAFile) {
-		bad("store.login.vault.ca_file must be an absolute path")
-	}
-	if v.Auth.Mount != "" && !vaultPath(v.Auth.Mount) {
-		bad("store.login.vault.auth.mount must be a relative mount path")
-	}
+	validateVaultConn(bad, "store.login.vault", v.Address, v.Namespace, v.CAFile, v.Auth, dev)
 	if v.DynamicRole != nil {
 		bad("store.login.vault.dynamic_role: dynamic database credentials are not available in this version (spec 0027 phase 2); use kv or static_role")
 	}
