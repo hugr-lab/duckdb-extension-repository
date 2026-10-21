@@ -1,6 +1,6 @@
 # Spec 0027: The database password from Vault or OpenBao
 
-- **Status**: phase 1 implemented (2026-10-21), but for the kind case (Testing); phase 2 deferred
+- **Status**: phase 1 implemented (2026-10-21), its kind case in the bench with its first run to come; phase 2 deferred
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 
@@ -151,8 +151,9 @@ egress NetworkPolicy (spec 0025) needs an `extraRules` entry for Vault.
   plain login. SQL Server's static role is tested later (decided 2026-10-21, open question 4). The
   static role's test needs `KISTA_TEST_VAULT_POSTGRES`: the PostgreSQL as Vault reaches it from its
   container.
-- **kind**: the bench's OpenBao serves the database password, in place of the `kista-db` Secret
-  (to come).
+- **kind**: the bench's OpenBao serves the database password from KV v2, read with a Kubernetes
+  auth role of its own, in place of the `kista-db` Secret, which kista no longer mounts; the
+  bench's other steps run on that login.
 
 ## Alternatives considered
 
