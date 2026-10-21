@@ -1,0 +1,9 @@
+# want: configTemplate: config.store.dsn calls lookup
+configTemplate: true
+config:
+  store:
+    kind: postgres
+    dsn: 'postgres://kista:{{ (lookup "v1" "Secret" "db" "pw").data.password | b64dec }}@db/kista'
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+  blob: {domains: [{name: default, kind: s3, s3: {endpoint: https://s3.example.com, bucket: b, region: r, lookup: path, sse: none}}]}
+networkPolicy: {loadBalancerRanges: [10.1.0.0/16]}

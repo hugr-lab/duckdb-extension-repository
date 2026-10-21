@@ -32,8 +32,11 @@ config: {}
 
 # true: every string in config holding "{{" is a template, rendered by tpl with the chart's root
 # context (spec 0025), so a parent chart can write store.dsn: "host={{ .Values.global.db.host }} …".
-# A template renders within its own string and cannot add keys. A literal "{{" is then written
-# {{ "{{" }}. Off (the default), config is taken as written.
+# A template renders within its own string and cannot add keys; it reads values only (lookup, tpl,
+# include, template and getHostByName are refused), renders once per helm run, and should be
+# deterministic. A missing value renders as nothing: write {{ required "…" .Values.… }}; a string
+# that renders empty is refused. A literal "{{" is then written {{ "{{" }}. The identity values
+# (azure, aws, gcp) are not templated. Off (the default), config is taken as written.
 configTemplate: false
 
 # The namespace of every object the chart makes; empty: the release's (spec 0024). An umbrella chart
@@ -188,26 +191,33 @@ networkPolicy:
   # Off by default. On: a second NetworkPolicy on every pod of the release (the server and the
   # admin jobs) admits only DNS, public https, the private networks the config allows (egress.allow,
   # auth.server_egress_allow, upstreams.credentials[].allow, events.sinks[].allow, each with its
-  # ports), the cloudMetadata endpoints and extraRules. The chart refuses it without a rule for a
-  # PostgreSQL or SQL Server database, or without the metadata endpoint the config's identity uses.
+  # ports, less the ranges kista never reaches), egress.proxy when it is an IP address, the
+  # cloudMetadata endpoints and extraRules. The chart refuses it without any extraRules for a
+  # PostgreSQL or SQL Server database or a proxy named by host, or without the metadata endpoint the
+  # config's identity uses. The documentation has the recipes per platform.
   egress:
     enabled: false
-    # UDP and TCP to the cluster's DNS pods. Both selectors empty: k8s-app: kube-dns in kube-system
-    # (EKS, AKS, GKE, k3s, kind). A podSelector alone: those pods in kista's namespace; a
-    # namespaceSelector alone is refused. OpenShift: namespaceSelector {matchLabels:
+    # UDP and TCP on ports to the cluster's DNS pods. Both selectors empty: k8s-app: kube-dns in
+    # kube-system (EKS, AKS, GKE with kube-dns, k3s, kind; Gardener's CoreDNS on 8053). A
+    # podSelector alone: those pods in kista's namespace; a namespaceSelector alone, or a selector
+    # that selects every pod, is refused. OpenShift: namespaceSelector {matchLabels:
     # {kubernetes.io/metadata.name: openshift-dns}}, podSelector {matchLabels:
     # {dns.operator.openshift.io/daemonset-dns: default}}, ports [5353].
-    # NodeLocal DNSCache (169.254.20.10): dns.enabled false and an extraRules entry.
+    # ipBlocks: DNS that is no pod: NodeLocal DNSCache (169.254.20.10/32, and in iptables mode the
+    # kube-dns Service's ClusterIP), GKE Cloud DNS (169.254.20.10/32 on Autopilot, 169.254.169.254/32
+    # in cluster scope). Each {cidr, ports (default: ports)}.
     dns:
       enabled: true
       namespaceSelector: {}
       podSelector: {}
-      ports: [53]
+      ports: [53, 8053]
+      ipBlocks: []
     # These ports on every public address: upstreams, issuers, cloud APIs and KMSs, public blob
     # stores. A cidr ending in /0 leaves out its family's ranges in except: the private and special
-    # ranges kista's own egress refuses unless the config allows them (but ::ffff:0:0/96: an
-    # IPv4-mapped address never goes on the wire, and a strict API server refuses it). Another cidr
-    # is taken as written.
+    # ranges kista's own egress refuses unless the config allows them, and their NAT64 forms under
+    # 64:ff9b::/96 (kista decides on the IPv4 address inside), but ::ffff:0:0/96 (an IPv4-mapped
+    # address never goes on the wire, and a strict API server refuses it). Another cidr is taken as
+    # written.
     public:
       enabled: true
       ports: [443]
@@ -232,9 +242,27 @@ networkPolicy:
         - 224.0.0.0/4
         - 240.0.0.0/4
         - 168.63.129.16/32
-        - "::/128"
-        - "::1/128"
+        - "::/96"
         - "::ffff:0:0:0/96"
+        - "64:ff9b::/104"
+        - "64:ff9b::a00:0/104"
+        - "64:ff9b::6440:0/106"
+        - "64:ff9b::7f00:0/104"
+        - "64:ff9b::a9fe:0/112"
+        - "64:ff9b::ac10:0/108"
+        - "64:ff9b::c000:0/120"
+        - "64:ff9b::c000:200/120"
+        - "64:ff9b::c01f:c400/120"
+        - "64:ff9b::c034:c100/120"
+        - "64:ff9b::c058:6300/120"
+        - "64:ff9b::c0a8:0/112"
+        - "64:ff9b::c0af:3000/120"
+        - "64:ff9b::c612:0/111"
+        - "64:ff9b::c633:6400/120"
+        - "64:ff9b::cb00:7100/120"
+        - "64:ff9b::e000:0/100"
+        - "64:ff9b::f000:0/100"
+        - "64:ff9b::a83f:8110/128"
         - "64:ff9b:1::/48"
         - "100::/64"
         - "2001::/23"
@@ -251,7 +279,10 @@ networkPolicy:
     # workload identity need none: they reach public endpoints on 443.
     cloudMetadata: []
     # NetworkPolicy egress rules, rendered as given: the database, a Vault or OpenBao, an OTel
-    # collector, an in-cluster S3, a token service. For example:
+    # collector, an in-cluster S3, a token service. Each names its peers (to, at least one, none
+    # empty) and, if it has ports, at least one: a rule without them would admit every peer or port.
+    # A peer in the cluster is best named by its pods: policies match after the Service's
+    # translation. For example:
     #   - to: [{ipBlock: {cidr: 10.20.0.5/32}}]
     #     ports: [{port: 5432, protocol: TCP}]
     #   - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openbao}},

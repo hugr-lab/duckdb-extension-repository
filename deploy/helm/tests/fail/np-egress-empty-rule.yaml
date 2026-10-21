@@ -1,4 +1,4 @@
-# want: minProperties
+# want: missing property 'to'
 config:
   store: {kind: sqlite}
   serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}

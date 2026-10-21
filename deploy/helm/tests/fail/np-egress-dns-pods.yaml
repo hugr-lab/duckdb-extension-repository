@@ -1,4 +1,4 @@
-# want: networkPolicy.egress.dns: a namespaceSelector alone
+# want: networkPolicy.egress.dns: a podSelector without matchLabels or matchExpressions
 config:
   store: {kind: sqlite}
   serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}

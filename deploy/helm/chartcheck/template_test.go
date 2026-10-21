@@ -1,6 +1,9 @@
 package chartcheck
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,5 +91,62 @@ func TestConfigTemplate(t *testing.T) {
 	esc := render(`config: {blob: {domains: [{name: default, kind: s3, s3: {endpoint: https://s3.example.com, bucket: '{{ "{{" }}x', region: r, lookup: path, sse: none}}]}}`)
 	if got := bucket(esc); got != "{{x" {
 		t.Errorf("escaped: bucket %q", got)
+	}
+}
+
+// The templates render once per helm run: the ConfigMap and the pods' checksum/config agree even
+// with a function whose result changes on every call.
+func TestConfigTemplateOnce(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "values.yaml")
+	values := "config: {blob: {domains: [{name: default, kind: s3, s3: {endpoint: https://s3.example.com, " +
+		"bucket: '{{ randAlphaNum 16 | lower }}', region: r, lookup: path, sse: none}}]}}\n" +
+		"adminJobs: [{name: gc, args: [gc, run]}]\n"
+	if err := os.WriteFile(f, []byte(values), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(helmRun(t, "-f", "../tests/pass/config-template.yaml", "-f", f)))
+	var data string
+	var sums []string
+	for {
+		var doc struct {
+			Kind string            `yaml:"kind"`
+			Data map[string]string `yaml:"data"`
+			Spec struct {
+				Template struct {
+					Metadata struct {
+						Annotations map[string]string `yaml:"annotations"`
+					} `yaml:"metadata"`
+				} `yaml:"template"`
+				JobTemplate struct {
+					Spec struct {
+						Template struct {
+							Metadata struct {
+								Annotations map[string]string `yaml:"annotations"`
+							} `yaml:"metadata"`
+						} `yaml:"template"`
+					} `yaml:"spec"`
+				} `yaml:"jobTemplate"`
+			} `yaml:"spec"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+		switch doc.Kind {
+		case "ConfigMap":
+			data = doc.Data["kista.yaml"]
+		case "Deployment":
+			sums = append(sums, doc.Spec.Template.Metadata.Annotations["checksum/config"])
+		case "CronJob":
+			sums = append(sums, doc.Spec.JobTemplate.Spec.Template.Metadata.Annotations["checksum/config"])
+		}
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSuffix(data, "\n")))
+	if len(sums) != 2 || data == "" {
+		t.Fatalf("want a ConfigMap and two checksums, got %q and %v", data, sums)
+	}
+	for _, s := range sums {
+		if s != hex.EncodeToString(sum[:]) {
+			t.Errorf("checksum/config %s is not the ConfigMap's %x:\n%s", s, sum, data)
+		}
 	}
 }
