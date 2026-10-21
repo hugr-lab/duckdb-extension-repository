@@ -74,7 +74,10 @@ The point is to accept exactly a Secret volume, and refuse a look-alike made by 
 1. **The mount** (Linux only; other platforms refuse the kind). `/proc/self/mountinfo` shows
    `dir` as a mount point, `tmpfs`, mounted read-only (`ro`). The kubelet mounts Secret volumes, and
    projected volumes with Secret sources, as read-only tmpfs. A ConfigMap volume (on the node's
-   disk), a `hostPath`, a PVC or a writable `emptyDir` with `medium: Memory` are refused.
+   disk), a `hostPath`, a PVC or a writable `emptyDir` with `medium: Memory` are refused. The mount
+   is identified positively, by its device (mountinfo's `major:minor`): `stat(dir)` and the opened
+   key file's `fstat` must carry it, so a later mount over a parent that hides `dir`, or a file
+   mounted over the key with `subPath`, is refused (added in review, 2026-10-21).
 2. **The layout**: the kubelet's atomic writer.
    - `<dir>/..data` is a relative link to a `..<timestamp>` directory inside `dir`.
    - `<dir>/<name>` is the relative link `..data/<name>`.

@@ -12,9 +12,10 @@ import (
 
 // Mount is one line of /proc/self/mountinfo, the fields the source reads.
 type Mount struct {
-	Point   string   // the mount point, unescaped
-	Options []string // the per-mount options (ro or rw, and the rest)
-	FSType  string
+	Major, Minor uint32   // the mounted filesystem's device (field 3, major:minor)
+	Point        string   // the mount point, unescaped
+	Options      []string // the per-mount options (ro or rw, and the rest)
+	FSType       string
 }
 
 // ParseMountInfo parses /proc/self/mountinfo (proc(5)): "id parent major:minor root point options
@@ -38,7 +39,14 @@ func ParseMountInfo(data []byte) ([]Mount, error) {
 		if err != nil {
 			return nil, fmt.Errorf("kubesecret: mountinfo line %d: %v", n, err)
 		}
-		out = append(out, Mount{Point: point, Options: strings.Split(f[5], ","), FSType: f[sep+1]})
+		maj, mnr, ok := strings.Cut(f[2], ":")
+		major, err1 := strconv.ParseUint(maj, 10, 32)
+		minor, err2 := strconv.ParseUint(mnr, 10, 32)
+		if !ok || err1 != nil || err2 != nil {
+			return nil, fmt.Errorf("kubesecret: mountinfo line %d has no major:minor device", n)
+		}
+		out = append(out, Mount{Major: uint32(major), Minor: uint32(minor), Point: point,
+			Options: strings.Split(f[5], ","), FSType: f[sep+1]})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("kubesecret: reading mountinfo: %v", err)
@@ -71,12 +79,14 @@ func unescape(s string) (string, error) {
 }
 
 // CheckMount checks that dir is a mount point, tmpfs, mounted read-only, as the kubelet mounts a
-// Secret volume (and a projected one). The last line for dir is the mount in effect: a later mount
-// on the same point hides the earlier ones.
-func CheckMount(mountinfo []byte, dir string) error {
+// Secret volume (and a projected one), and returns that mount. The last line for dir is the mount
+// in effect on that point: a later mount on the same point hides the earlier ones. Whether dir, and
+// the files under it, really are on it is the caller's check of their devices (a mount over a
+// parent directory hides dir's own, which still has its line).
+func CheckMount(mountinfo []byte, dir string) (Mount, error) {
 	mounts, err := ParseMountInfo(mountinfo)
 	if err != nil {
-		return err
+		return Mount{}, err
 	}
 	var m *Mount
 	for i := range mounts {
@@ -86,11 +96,11 @@ func CheckMount(mountinfo []byte, dir string) error {
 	}
 	switch {
 	case m == nil:
-		return fmt.Errorf("kubesecret: %s is not a mount point: mount the Secret volume there", dir)
+		return Mount{}, fmt.Errorf("kubesecret: %s is not a mount point: mount the Secret volume there", dir)
 	case m.FSType != "tmpfs":
-		return fmt.Errorf("kubesecret: %s is a %s mount, not tmpfs: a Secret volume is tmpfs (a ConfigMap, hostPath or PVC is not)", dir, m.FSType)
+		return Mount{}, fmt.Errorf("kubesecret: %s is a %s mount, not tmpfs: a Secret volume is tmpfs (a ConfigMap, hostPath or PVC is not)", dir, m.FSType)
 	case !slices.Contains(m.Options, "ro"):
-		return fmt.Errorf("kubesecret: %s is mounted read-write: a Secret volume is mounted read-only (an emptyDir is not)", dir)
+		return Mount{}, fmt.Errorf("kubesecret: %s is mounted read-write: a Secret volume is mounted read-only (an emptyDir is not)", dir)
 	}
-	return nil
+	return *m, nil
 }

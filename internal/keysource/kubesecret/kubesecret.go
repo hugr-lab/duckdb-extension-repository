@@ -7,7 +7,9 @@
 // made by mistake:
 //
 //  1. the mount: the source's directory is a mount point, tmpfs, mounted read-only (Linux only:
-//     /proc/self/mountinfo; other platforms refuse the kind);
+//     /proc/self/mountinfo; other platforms refuse the kind), and positively the one the directory
+//     and the key file are on: both carry the mount's device (major:minor), so a mount over a parent
+//     that hides the directory, or a file bind-mounted over the key (a subPath), is refused;
 //  2. the layout: the kubelet's atomic writer, <dir>/..data a relative link to a ..<timestamp>
 //     directory, <dir>/<name> the relative link ..data/<name>, the file opened inside dir
 //     (os.OpenRoot), so no link may leave it;
@@ -44,6 +46,10 @@ const Kind = "kubesecret"
 
 // ErrUnsupported is the kind on a platform without /proc/self/mountinfo.
 var ErrUnsupported = errors.New("kubesecret: this kind needs Linux: it checks /proc/self/mountinfo that the directory is a Secret volume")
+
+// swapRetry is how long a check that found a file missing waits before it looks again: the
+// kubelet's ..data swap may be in flight.
+const swapRetry = 20 * time.Millisecond
 
 // Options are the source's test seams; production leaves them zero.
 type Options struct {
@@ -104,29 +110,37 @@ type handle struct {
 
 // Open implements keysource.Backend: every check, then the key. A kubesecret source holds channel
 // keys only (spec 0026, open question 4).
-func (s *Source) Open(_ context.Context, k keysource.Key) (keysource.Handle, error) {
+func (s *Source) Open(ctx context.Context, k keysource.Key) (keysource.Handle, error) {
 	if k.Purpose != "" && k.Purpose != keysource.PurposeChannel {
 		return nil, fmt.Errorf("%w: a kubesecret source holds channel keys only, not %s keys", keysource.ErrKey, k.Purpose)
 	}
-	key, err := s.load(k.Name)
+	key, err := s.load(ctx, k.Name)
 	if err != nil {
 		return nil, err
 	}
 	return &handle{s: s, name: k.Name, key: key}, nil
 }
 
-// load runs every check and parses the key. A failure is retried once after a moment: the
-// kubelet's ..data swap may be in flight.
-func (s *Source) load(name string) (*rsa.PrivateKey, error) {
-	key, err := s.loadOnce(name)
-	if err != nil && !errors.Is(err, ErrUnsupported) {
-		time.Sleep(20 * time.Millisecond)
-		key, err = s.loadOnce(name)
+// load runs every check and parses the key. A file found missing is looked for once more after a
+// moment, for a ..data swap in flight; any other failure (a mount, an owner, a mode, a key that does
+// not fit) is final.
+func (s *Source) load(ctx context.Context, name string) (*rsa.PrivateKey, error) {
+	key, err := s.loadOnce(ctx, name)
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(swapRetry):
+		}
+		key, err = s.loadOnce(ctx, name)
 	}
 	return key, err
 }
 
-func (s *Source) loadOnce(name string) (*rsa.PrivateKey, error) {
+func (s *Source) loadOnce(ctx context.Context, name string) (*rsa.PrivateKey, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !keyName.MatchString(name) {
 		return nil, fmt.Errorf("%w: %q is not a Secret data key", keysource.ErrKey, name)
 	}
@@ -137,13 +151,21 @@ func (s *Source) loadOnce(name string) (*rsa.PrivateKey, error) {
 		}
 		return nil, fmt.Errorf("%w: kubesecret: reading the mount table: %v", keysource.ErrKey, err)
 	}
-	if err := CheckMount(mi, s.dir); err != nil {
+	m, err := CheckMount(mi, s.dir)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", keysource.ErrKey, err)
+	}
+	di, err := os.Stat(s.dir)
+	if err != nil {
+		return nil, fmt.Errorf("%w: kubesecret: %s: %w", keysource.ErrKey, s.dir, unwrapPath(err))
+	}
+	if err := checkDevice(m, di, s.dir+" is not on the mount the mount table names for it (a later mount over a parent hides it?)"); err != nil {
 		return nil, fmt.Errorf("%w: %w", keysource.ErrKey, err)
 	}
 	if err := s.checkLayout(name); err != nil {
 		return nil, fmt.Errorf("%w: %w", keysource.ErrKey, err)
 	}
-	data, err := s.read(name)
+	data, err := s.read(m, name)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", keysource.ErrKey, err)
 	}
@@ -154,32 +176,47 @@ func (s *Source) loadOnce(name string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
+// checkDevice requires a file to be on the mount: its device is the mount's major:minor.
+func checkDevice(m Mount, fi fs.FileInfo, refusal string) error {
+	major, minor, ok := devOf(fi)
+	if !ok {
+		return errors.New("kubesecret: this platform reports no device numbers")
+	}
+	if major != m.Major || minor != m.Minor {
+		return fmt.Errorf("kubesecret: %s (device %d:%d, the mount's %d:%d)", refusal, major, minor, m.Major, m.Minor)
+	}
+	return nil
+}
+
 // checkLayout checks the atomic writer's links: ..data a relative link to a ..<timestamp> directory
 // inside dir, and <name> the relative link ..data/<name>.
 func (s *Source) checkLayout(name string) error {
 	data := filepath.Join(s.dir, "..data")
 	li, err := os.Lstat(data)
 	if err != nil {
-		return fmt.Errorf("kubesecret: %s has no ..data link: not a Secret volume (%v)", s.dir, unwrapPath(err))
+		return fmt.Errorf("kubesecret: %s has no ..data link: not a Secret volume (%w)", s.dir, unwrapPath(err))
 	}
 	if li.Mode()&fs.ModeSymlink == 0 {
 		return fmt.Errorf("kubesecret: %s/..data is not a link: not a Secret volume", s.dir)
 	}
 	target, err := os.Readlink(data)
 	if err != nil {
-		return fmt.Errorf("kubesecret: %s/..data: %v", s.dir, unwrapPath(err))
+		return fmt.Errorf("kubesecret: %s/..data: %w", s.dir, unwrapPath(err))
 	}
 	if !strings.HasPrefix(target, "..") || target == ".." || target == "..data" || strings.ContainsAny(target, `/\`) {
 		return fmt.Errorf("kubesecret: %s/..data must link to a ..<timestamp> directory beside it", s.dir)
 	}
 	ti, err := os.Lstat(filepath.Join(s.dir, target))
-	if err != nil || !ti.IsDir() {
+	if err != nil {
+		return fmt.Errorf("kubesecret: %s/..data does not lead to a directory beside it: %w", s.dir, unwrapPath(err))
+	}
+	if !ti.IsDir() {
 		return fmt.Errorf("kubesecret: %s/..data does not lead to a directory beside it", s.dir)
 	}
 	p := filepath.Join(s.dir, name)
 	ni, err := os.Lstat(p)
 	if err != nil {
-		return fmt.Errorf("kubesecret: %s: %v", p, unwrapPath(err))
+		return fmt.Errorf("kubesecret: %s: %w", p, unwrapPath(err))
 	}
 	if ni.Mode()&fs.ModeSymlink == 0 {
 		return fmt.Errorf("kubesecret: %s is not the link ..data/%s a Secret volume has", p, name)
@@ -190,34 +227,37 @@ func (s *Source) checkLayout(name string) error {
 	return nil
 }
 
-// read opens the key inside dir (no link may leave it) and checks the file: regular, one link,
-// root-owned with kista's group (not 0), mode 0440 or narrower; at most 64 KiB.
-func (s *Source) read(name string) ([]byte, error) {
+// read opens the key inside dir (no link may leave it) and checks the file: on the mount, regular,
+// one link, root-owned with kista's group (not 0), mode 0440 or narrower; at most 64 KiB.
+func (s *Source) read(m Mount, name string) ([]byte, error) {
 	root, err := os.OpenRoot(s.dir)
 	if err != nil {
-		return nil, fmt.Errorf("kubesecret: %s cannot be opened (kista must be able to read it): %v", s.dir, unwrapPath(err))
+		return nil, fmt.Errorf("kubesecret: %s cannot be opened (kista must be able to read it): %w", s.dir, unwrapPath(err))
 	}
 	defer func() { _ = root.Close() }()
 	p := filepath.Join(s.dir, name)
 	// the file behind the links, before it is opened: a FIFO or a device is refused without an open
 	before, err := root.Stat(name)
 	if err != nil {
-		return nil, fmt.Errorf("kubesecret: %s: %v (a link may not leave the directory, nor be absolute)", p, unwrapPath(err))
+		return nil, fmt.Errorf("kubesecret: %s: %w (a link may not leave the directory, nor be absolute)", p, unwrapPath(err))
 	}
 	if !before.Mode().IsRegular() {
 		return nil, fmt.Errorf("kubesecret: %s is not a regular file", p)
 	}
 	f, err := root.Open(name)
 	if err != nil {
-		return nil, fmt.Errorf("kubesecret: %s: %v", p, unwrapPath(err))
+		return nil, fmt.Errorf("kubesecret: %s: %w", p, unwrapPath(err))
 	}
 	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("kubesecret: %s: %v", p, unwrapPath(err))
+		return nil, fmt.Errorf("kubesecret: %s: %w", p, unwrapPath(err))
 	}
 	if !fi.Mode().IsRegular() || !os.SameFile(before, fi) {
 		return nil, fmt.Errorf("kubesecret: %s changed while it was opened", p)
+	}
+	if err := checkDevice(m, fi, p+" is on another filesystem than the Secret volume (a file mounted over it, with subPath?)"); err != nil {
+		return nil, err
 	}
 	if err := s.checkFile(p, fi); err != nil {
 		return nil, err
@@ -272,8 +312,8 @@ func (h *handle) Identity() string { return h.name }
 
 // Check implements keysource.Handle: the file is read again with every check, and must hold the
 // same key. A key changed under its name, or a file gone, fails closed.
-func (h *handle) Check(context.Context) error {
-	key, err := h.s.load(h.name)
+func (h *handle) Check(ctx context.Context) error {
+	key, err := h.s.load(ctx, h.name)
 	if err != nil {
 		return err
 	}

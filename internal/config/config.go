@@ -682,9 +682,9 @@ func validateKubeSecret(bad func(string, ...any), where string, i int, c Config,
 			bad("%s.kubesecret.dir overlaps signers.sources[%d]'s: one Secret volume per source", where, j)
 		}
 	}
-	for _, f := range c.secretFiles() {
-		if pathWithin(f.path, k.Dir) {
-			bad("%s.kubesecret.dir holds %s: a source's directory holds its keys only", where, f.name)
+	for _, f := range c.SecretFiles() {
+		if pathWithin(f.Path, k.Dir) {
+			bad("%s.kubesecret.dir holds %s: a source's directory holds its keys only", where, f.Name)
 		}
 	}
 }
@@ -694,28 +694,69 @@ func pathWithin(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
 }
 
-type namedPath struct{ name, path string }
+// NamedPath is a file the configuration names, with the setting that names it.
+type NamedPath struct{ Name, Path string }
 
-// secretFiles are the files the configuration names that hold secrets, by setting name.
-func (c Config) secretFiles() []namedPath {
-	var out []namedPath
+// SecretFiles are the files the configuration names that hold secrets (passwords, keys, tokens,
+// headers), by setting name: every such setting, in one place, for the checks that must know them
+// all (a kubesecret source's directory holds none of them). Public material (ca_file, cert_file)
+// is not listed; a credentials_file is, as it may hold a service account key in dev.
+func (c Config) SecretFiles() []NamedPath {
+	var out []NamedPath
 	add := func(name, p string) {
 		if p != "" {
-			out = append(out, namedPath{name, filepath.Clean(p)})
+			out = append(out, NamedPath{name, filepath.Clean(p)})
+		}
+	}
+	identity := func(where string, id *Identity) {
+		if id != nil {
+			add(where+".access_key_file", id.AccessKeyFile)
+			add(where+".secret_key_file", id.SecretKeyFile)
 		}
 	}
 	add("store.login.password_file", c.Store.Login.PasswordFile)
+	identity("azure.identity", &c.Azure.Identity)
+	identity("aws.identity", c.AWS.Identity)
+	add("gcp.credentials_file", c.GCP.CredentialsFile)
 	for j, s := range c.Signers.Sources {
+		where := fmt.Sprintf("signers.sources[%d]", j)
 		if s.Vault != nil {
-			add(fmt.Sprintf("signers.sources[%d].vault.auth.token_file", j), s.Vault.Auth.TokenFile)
+			add(where+".vault.auth.token_file", s.Vault.Auth.TokenFile)
 		}
-		if s.Identity != nil {
-			add(fmt.Sprintf("signers.sources[%d].identity.access_key_file", j), s.Identity.AccessKeyFile)
-			add(fmt.Sprintf("signers.sources[%d].identity.secret_key_file", j), s.Identity.SecretKeyFile)
-		}
+		identity(where+".identity", s.Identity)
 		if s.GCPKMS != nil {
-			add(fmt.Sprintf("signers.sources[%d].gcpkms.credentials_file", j), s.GCPKMS.CredentialsFile)
+			add(where+".gcpkms.credentials_file", s.GCPKMS.CredentialsFile)
 		}
+	}
+	for j, d := range c.Blob.Domains {
+		where := fmt.Sprintf("blob.domains[%d]", j)
+		if d.S3 != nil {
+			add(where+".s3.access_key_file", d.S3.AccessKeyFile)
+			add(where+".s3.secret_key_file", d.S3.SecretKeyFile)
+			identity(where+".s3.identity", d.S3.Identity)
+		}
+		if d.AzureBlob != nil {
+			add(where+".azureblob.account_key_file", d.AzureBlob.AccountKeyFile)
+			identity(where+".azureblob.identity", d.AzureBlob.Identity)
+		}
+		if d.GCS != nil {
+			add(where+".gcs.credentials_file", d.GCS.CredentialsFile)
+		}
+	}
+	for j, l := range c.Serve.Listeners {
+		if l.TLS != nil {
+			add(fmt.Sprintf("serve.listeners[%d].tls.key_file", j), l.TLS.KeyFile)
+		}
+	}
+	for j, s := range c.Events.Sinks {
+		add(fmt.Sprintf("events.sinks[%d].headers_file", j), s.HeadersFile)
+	}
+	for j, cr := range c.Upstreams.Credentials {
+		where := fmt.Sprintf("upstreams.credentials[%d]", j)
+		add(where+".token_file", cr.TokenFile)
+		add(where+".assertion_file", cr.AssertionFile)
+		add(where+".key_file", cr.KeyFile)
+		add(where+".client_secret_file", cr.ClientSecretFile)
 	}
 	return out
 }

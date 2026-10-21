@@ -260,9 +260,12 @@ ka key add acme/prod -signer k8s:ext-prod -active
 
 kista checks at every open that `dir` is a read-only tmpfs mount (Linux only), that the files have
 the kubelet's layout, and that each key file is root-owned with kista's group (`fsGroup` 65532) and
-mode `0440` or narrower. A ConfigMap, a `hostPath`, a PVC or an `emptyDir` is refused. Never
-rewrite a key under the same data key: add a new name, register it, and remove the old one only
-once its key is retired.
+mode `0440` or narrower. The directory and each key file must be on that mount (the same device),
+so a ConfigMap item mounted over a key with `subPath` is refused too, as are a ConfigMap, a
+`hostPath`, a PVC or an `emptyDir`. Never rewrite a key under the same data key: add a new name
+with `kubectl patch` (see [Rotation](../signing-keys.md#rotation); the key's file above is gone),
+register it, and remove the old one only once its key is retired. A `secretVolumes` entry with
+`items` mounts only the keys it lists: add each new key there as well.
 
 ## Cloud identities
 

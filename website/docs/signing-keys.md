@@ -791,7 +791,9 @@ name is the version: a key is never replaced under the same name.
 At every open, and again every `recheck` (default and at most `10m`) while the key is in use:
 
 1. **The mount** (Linux only; on other platforms the kind is refused with an error saying so):
-   `/proc/self/mountinfo` shows `dir` as a mount point, `tmpfs`, mounted read-only. The kubelet
+   `/proc/self/mountinfo` shows `dir` as a mount point, `tmpfs`, mounted read-only, and `dir` and
+   the key file are on that mount's device (its `major:minor`): a later mount over a parent that
+   hides `dir`, or a file mounted over the key with `subPath`, is refused. The kubelet
    mounts Secret volumes (and projected volumes) so; a ConfigMap volume (on the node's disk), a
    `hostPath`, a PVC or a writable `emptyDir` with `medium: Memory` are refused.
 2. **The layout** of the kubelet's atomic writer: `<dir>/..data` is a relative link to a
@@ -857,16 +859,26 @@ kista's rotation (trusted, then active, then retired) is unchanged:
 Never rewrite a key under the same name: the next check refuses it by its fingerprint, and the
 channel stops signing.
 
+Add the new data key to the Secret in place, without the old key's file (which you should not
+keep): a JSON patch that adds `/data/<new name>`. An `add` on a name that exists replaces it, so
+check the name is new first.
+
 ```bash
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out ext-prod-2027.pem
-kubectl -n kista create secret generic kista-signing-prod \
-  --from-file=ext-prod=ext-prod.pem --from-file=ext-prod-2027=ext-prod-2027.pem \
-  --dry-run=client -o yaml | kubectl apply -f -
-shred -u ext-prod-2027.pem
+# only when the name is new: an add on an existing name would replace that key
+test -z "$(kubectl -n kista get secret kista-signing-prod -o jsonpath='{.data.ext-prod-2027}')" &&
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out ext-prod-2027.pem &&
+  kubectl -n kista patch secret kista-signing-prod --type json \
+    -p "[{\"op\":\"add\",\"path\":\"/data/ext-prod-2027\",\"value\":\"$(base64 <ext-prod-2027.pem | tr -d '\n')\"}]" &&
+  shred -u ext-prod-2027.pem
 ```
 
 The kubelet updates a mounted Secret within a minute or so; `key check` shows when the new name
-resolves. The [Kubernetes page](deployment/kubernetes.md#signing-keys-from-a-secret) shows the
+resolves. A Secret volume that lists its keys (`items`, in a pod spec or the chart's
+`secretVolumes`) mounts only those: add each new key there too, which rolls the pods.
+
+Outside the chart, the pod's `fsGroup` must equal kista's primary group (`runAsGroup`): the
+kubelet gives the files that group, and kista requires it to be its own. The chart sets both to
+65532. The [Kubernetes page](deployment/kubernetes.md#signing-keys-from-a-secret) shows the
 chart's values.
 
 ## Registering a key

@@ -49,14 +49,22 @@ type volume struct {
 	dir  string
 	gen  int
 	mode os.FileMode
+	gid  uint32 // the group standing in for fsGroup: the files' and the source's
 }
+
+// testGroup stands in for fsGroup when the tests run in group 0 (as root): group 0 is refused by
+// design, so the files are given this group instead.
+const testGroup = 65532
 
 func newVolume(t *testing.T, files map[string][]byte) *volume {
 	t.Helper()
-	if os.Getegid() == 0 {
-		t.Skip("the tests stand in kista's group for fsGroup; group 0 is refused by design")
+	v := &volume{t: t, dir: filepath.Join(t.TempDir(), "prod"), mode: 0o440, gid: uint32(os.Getegid())} //nolint:gosec // a gid fits
+	if v.gid == 0 {
+		if os.Geteuid() != 0 {
+			t.Skip("running in group 0 but not as root: no other group can stand in for fsGroup (group 0 is refused by design)")
+		}
+		v.gid = testGroup
 	}
-	v := &volume{t: t, dir: filepath.Join(t.TempDir(), "prod"), mode: 0o440}
 	if err := os.Mkdir(v.dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +87,11 @@ func (v *volume) write(files map[string][]byte) {
 		}
 		if err := os.Chmod(p, v.mode); err != nil {
 			v.t.Fatal(err)
+		}
+		if v.gid != uint32(os.Getegid()) { //nolint:gosec // a gid fits
+			if err := os.Chown(p, -1, int(v.gid)); err != nil {
+				v.t.Fatal(err)
+			}
 		}
 		link := filepath.Join(v.dir, name)
 		if _, err := os.Lstat(link); errors.Is(err, os.ErrNotExist) {
@@ -106,9 +119,23 @@ func (v *volume) current() string {
 	return filepath.Join(v.dir, ts)
 }
 
-// mountLine is a Secret volume's line in the shape kind's (containerd) mountinfo shows it.
-func mountLine(dir, opts, fstype string) string {
-	return fmt.Sprintf("1361 1342 0:310 / %s %s - %s tmpfs rw,size=16271356k,inode64\n", dir, opts, fstype)
+// mountLine is the volume's line in the shape kind's (containerd) mountinfo shows a Secret volume,
+// with the device the directory really is on.
+func (v *volume) mountLine(opts, fstype string) string {
+	v.t.Helper()
+	fi, err := os.Stat(v.dir)
+	if err != nil {
+		v.t.Fatal(err)
+	}
+	major, minor, ok := devOf(fi)
+	if !ok {
+		v.t.Fatal("no device numbers")
+	}
+	return deviceLine(major, minor, v.dir, opts, fstype)
+}
+
+func deviceLine(major, minor uint32, dir, opts, fstype string) string {
+	return fmt.Sprintf("1361 1342 %d:%d / %s %s - %s tmpfs rw,size=16271356k,inode64\n", major, minor, dir, opts, fstype)
 }
 
 const baseMounts = "1342 1100 0:290 / / rw,relatime master:1 - overlay overlay rw,lowerdir=/x,upperdir=/y,workdir=/z\n" +
@@ -116,8 +143,8 @@ const baseMounts = "1342 1100 0:290 / / rw,relatime master:1 - overlay overlay r
 
 func (v *volume) source(t *testing.T, mounts string) *Source {
 	t.Helper()
-	uid, gid := uint32(os.Geteuid()), uint32(os.Getegid()) //nolint:gosec // ids fit
-	s, err := New(v.dir, Options{MountInfo: func() ([]byte, error) { return []byte(mounts), nil }, Owner: &uid, Group: &gid})
+	uid := uint32(os.Geteuid()) //nolint:gosec // a uid fits
+	s, err := New(v.dir, Options{MountInfo: func() ([]byte, error) { return []byte(mounts), nil }, Owner: &uid, Group: &v.gid})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +152,7 @@ func (v *volume) source(t *testing.T, mounts string) *Source {
 }
 
 func (v *volume) secretSource(t *testing.T) *Source {
-	return v.source(t, baseMounts+mountLine(v.dir, "ro,relatime", "tmpfs"))
+	return v.source(t, baseMounts+v.mountLine("ro,relatime", "tmpfs"))
 }
 
 func registry(t *testing.T, s *Source, opts keysource.Options) *keysource.Registry {
@@ -249,6 +276,9 @@ func TestParseMountInfo(t *testing.T) {
 	if err != nil || len(ms) != 8 {
 		t.Fatalf("%d mounts, %v", len(ms), err)
 	}
+	if ms[2].Major != 0 || ms[2].Minor != 310 || ms[5].Major != 259 || ms[5].Minor != 1 {
+		t.Fatalf("devices: %+v %+v", ms[2], ms[5])
+	}
 	for dir, want := range map[string]string{
 		"/etc/kista/signing/prod": "",
 		"/etc/kista/eks":          "",
@@ -259,7 +289,7 @@ func TestParseMountInfo(t *testing.T) {
 		"/etc/kista":              "not a mount point",
 		"/etc/kista/signing":      "not a mount point",
 	} {
-		err := CheckMount([]byte(table), dir)
+		_, err := CheckMount([]byte(table), dir)
 		switch {
 		case want == "" && err != nil:
 			t.Errorf("%s: %v", dir, err)
@@ -269,10 +299,16 @@ func TestParseMountInfo(t *testing.T) {
 	}
 	// the last mount on a point is the one in effect
 	stacked := table + "1400 1361 0:400 / /etc/kista/signing/prod rw,relatime - tmpfs tmpfs rw\n"
-	if err := CheckMount([]byte(stacked), "/etc/kista/signing/prod"); err == nil {
+	if _, err := CheckMount([]byte(stacked), "/etc/kista/signing/prod"); err == nil {
 		t.Error("a writable mount over the Secret volume accepted")
 	}
-	for _, bad := range []string{"1 2 3\n", "1 2 0:1 / /x ro - \n", "1 2 0:1 / /x\\04 ro - tmpfs tmpfs rw\n", "1 2 0:1 / /x\\999 ro - tmpfs tmpfs rw\n"} {
+	// a read-only tmpfs over a writable one is the mount in effect
+	roOverRW := table + "1400 1363 0:401 / /etc/kista/mem ro,relatime - tmpfs tmpfs rw\n"
+	if m, err := CheckMount([]byte(roOverRW), "/etc/kista/mem"); err != nil || m.Minor != 401 {
+		t.Errorf("ro over rw: %+v %v", m, err)
+	}
+	for _, bad := range []string{"1 2 3\n", "1 2 0:1 / /x ro - \n", "1 2 0:1 / /x\\04 ro - tmpfs tmpfs rw\n", "1 2 0:1 / /x\\999 ro - tmpfs tmpfs rw\n",
+		"1 2 nodev / /x ro - tmpfs tmpfs rw\n", "1 2 0:x / /x ro - tmpfs tmpfs rw\n"} {
 		if _, err := ParseMountInfo([]byte(bad)); err == nil {
 			t.Errorf("%q parsed", bad)
 		}
@@ -294,10 +330,21 @@ func TestMountRefusals(t *testing.T) {
 		refused(t, v.source(t, baseMounts), "k8s:ext-prod", "not a mount point")
 	})
 	t.Run("a ConfigMap on disk", func(t *testing.T) {
-		refused(t, v.source(t, baseMounts+mountLine(v.dir, "ro,relatime", "ext4")), "k8s:ext-prod", "not tmpfs")
+		refused(t, v.source(t, baseMounts+v.mountLine("ro,relatime", "ext4")), "k8s:ext-prod", "not tmpfs")
 	})
 	t.Run("writable tmpfs", func(t *testing.T) {
-		refused(t, v.source(t, baseMounts+mountLine(v.dir, "rw,relatime", "tmpfs")), "k8s:ext-prod", "read-write")
+		refused(t, v.source(t, baseMounts+v.mountLine("rw,relatime", "tmpfs")), "k8s:ext-prod", "read-write")
+	})
+	t.Run("a read-only mount over a writable one", func(t *testing.T) {
+		s := v.source(t, baseMounts+deviceLine(0, 999, v.dir, "rw,relatime", "tmpfs")+v.mountLine("ro,relatime", "tmpfs"))
+		if _, err := registry(t, s, keysource.Options{}).Open(ctx, "k8s:ext-prod"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("the directory not on its mount (a later mount over a parent hides it)", func(t *testing.T) {
+		fi, _ := os.Stat(v.dir)
+		major, minor, _ := devOf(fi)
+		refused(t, v.source(t, baseMounts+deviceLine(major, minor+1, v.dir, "ro,relatime", "tmpfs")), "k8s:ext-prod", "is not on the mount")
 	})
 	t.Run("an unreadable table", func(t *testing.T) {
 		refused(t, v.source(t, "garbage\n"), "k8s:ext-prod", "format")
@@ -332,7 +379,7 @@ func TestLayoutRefusals(t *testing.T) {
 			must(t, os.WriteFile(filepath.Join(v.dir, "..x"), nil, 0o600))
 			relink(t, filepath.Join(v.dir, "..data"), "..x")
 		}, "does not lead to a directory"},
-		"the key a plain file (a ConfigMap's layout on disk, or a copy)": {func(t *testing.T, v *volume) {
+		"the key a plain file (a copy)": {func(t *testing.T, v *volume) {
 			must(t, os.Remove(filepath.Join(v.dir, "ext-prod")))
 			must(t, os.WriteFile(filepath.Join(v.dir, "ext-prod"), pemOf(t, key2048), 0o440))
 		}, "not the link"},
@@ -387,9 +434,10 @@ func TestFileRefusals(t *testing.T) {
 		}
 	})
 	v := newVolume(t, map[string][]byte{"ext-prod": pemOf(t, key2048)})
-	uid, gid := uint32(os.Geteuid()), uint32(os.Getegid()) //nolint:gosec // ids fit
+	uid, gid := uint32(os.Geteuid()), v.gid //nolint:gosec // a uid fits
+	line := v.mountLine("ro", "tmpfs")
 	sec := func(owner, group uint32) *Source {
-		s, _ := New(v.dir, Options{MountInfo: func() ([]byte, error) { return []byte(mountLine(v.dir, "ro", "tmpfs")), nil },
+		s, _ := New(v.dir, Options{MountInfo: func() ([]byte, error) { return []byte(line), nil },
 			Owner: &owner, Group: &group})
 		return s
 	}
@@ -444,9 +492,9 @@ func TestRecheck(t *testing.T) {
 	h := extfile.BodyHash(sha256.Sum256([]byte("body")))
 	open := func(t *testing.T, mounts *atomic.Value) (*volume, func() error) {
 		v := newVolume(t, map[string][]byte{"ext-prod": pemOf(t, key2048)})
-		mounts.Store(baseMounts + mountLine(v.dir, "ro,relatime", "tmpfs"))
-		uid, gid := uint32(os.Geteuid()), uint32(os.Getegid()) //nolint:gosec // ids fit
-		s, _ := New(v.dir, Options{MountInfo: func() ([]byte, error) { return []byte(mounts.Load().(string)), nil }, Owner: &uid, Group: &gid})
+		mounts.Store(baseMounts + v.mountLine("ro,relatime", "tmpfs"))
+		uid := uint32(os.Geteuid()) //nolint:gosec // a uid fits
+		s, _ := New(v.dir, Options{MountInfo: func() ([]byte, error) { return []byte(mounts.Load().(string)), nil }, Owner: &uid, Group: &v.gid})
 		sg, err := registry(t, s, keysource.Options{Recheck: time.Nanosecond}).Open(ctx, "k8s:ext-prod")
 		if err != nil {
 			t.Fatal(err)
@@ -487,6 +535,74 @@ func TestRecheck(t *testing.T) {
 	})
 }
 
+// A file on another device than the mount (a ConfigMap item mounted with subPath over the key) is
+// refused; the same file on the mount's device passes.
+func TestCheckDevice(t *testing.T) {
+	v := newVolume(t, map[string][]byte{"ext-prod": pemOf(t, key2048)})
+	fi, err := os.Stat(filepath.Join(v.current(), "ext-prod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	major, minor, ok := devOf(fi)
+	if !ok {
+		t.Fatal("no device numbers")
+	}
+	if err := checkDevice(Mount{Major: major, Minor: minor}, fi, "x"); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []Mount{{Major: major, Minor: minor + 1}, {Major: major + 1, Minor: minor}} {
+		if err := checkDevice(m, fi, "the key is on another filesystem"); err == nil || !strings.Contains(err.Error(), "another filesystem") {
+			t.Errorf("%+v: %v", m, err)
+		}
+	}
+}
+
+// Opens honour the caller's context, and only a file found missing (a ..data swap in flight) is
+// looked for again: a mode, an owner or a mount that does not fit is final.
+func TestLoadRetries(t *testing.T) {
+	counting := func(v *volume, line string) (*Source, *atomic.Int64) {
+		var n atomic.Int64
+		uid := uint32(os.Geteuid()) //nolint:gosec // a uid fits
+		s, _ := New(v.dir, Options{MountInfo: func() ([]byte, error) { n.Add(1); return []byte(line), nil }, Owner: &uid, Group: &v.gid})
+		return s, &n
+	}
+	t.Run("a cancelled context", func(t *testing.T) {
+		v := newVolume(t, map[string][]byte{"ext-prod": pemOf(t, key2048)})
+		s, n := counting(v, v.mountLine("ro", "tmpfs"))
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := registry(t, s, keysource.Options{}).Open(cctx, "k8s:ext-prod"); !errors.Is(err, context.Canceled) || n.Load() != 0 {
+			t.Fatalf("got %v after %d reads", err, n.Load())
+		}
+	})
+	t.Run("a wrong mode is final", func(t *testing.T) {
+		v := newVolume(t, map[string][]byte{"ext-prod": pemOf(t, key2048)})
+		must(t, os.Chmod(filepath.Join(v.current(), "ext-prod"), 0o640))
+		s, n := counting(v, v.mountLine("ro", "tmpfs"))
+		refused(t, s, "k8s:ext-prod", "mode 0440 or narrower")
+		if n.Load() != 1 {
+			t.Fatalf("%d attempts", n.Load())
+		}
+	})
+	t.Run("a writable mount is final", func(t *testing.T) {
+		v := newVolume(t, map[string][]byte{"ext-prod": pemOf(t, key2048)})
+		s, n := counting(v, v.mountLine("rw", "tmpfs"))
+		refused(t, s, "k8s:ext-prod", "read-write")
+		if n.Load() != 1 {
+			t.Fatalf("%d attempts", n.Load())
+		}
+	})
+	t.Run("a missing file is looked for again", func(t *testing.T) {
+		v := newVolume(t, map[string][]byte{"ext-prod": pemOf(t, key2048)})
+		must(t, os.Remove(filepath.Join(v.current(), "ext-prod")))
+		s, n := counting(v, v.mountLine("ro", "tmpfs"))
+		refused(t, s, "k8s:ext-prod", "ext-prod")
+		if n.Load() != 2 {
+			t.Fatalf("%d attempts", n.Load())
+		}
+	})
+}
+
 // TestRealVolume opens a real Secret-like volume with the production checks, no seam: the
 // directory KISTA_TEST_KUBESECRET_DIR is a read-only tmpfs mount (Linux) in the kubelet's layout,
 // holding ext-test, root-owned with this process's group and mode 0440. A writable or missing mount
@@ -507,13 +623,23 @@ func TestRealVolume(t *testing.T) {
 	if _, err := sg.Sign(ctx, extfile.BodyHash(sha256.Sum256([]byte("body")))); err != nil {
 		t.Fatal(err)
 	}
-	if rw := os.Getenv("KISTA_TEST_KUBESECRET_RW_DIR"); rw != "" {
-		s, err := New(rw, Options{})
+	// refused look-alikes, each named by a variable: a writable tmpfs; a file bind-mounted over the
+	// key (a subPath); a volume hidden by a later mount over its parent, with its path made again
+	for env, want := range map[string]string{
+		"KISTA_TEST_KUBESECRET_RW_DIR":      "read-write",
+		"KISTA_TEST_KUBESECRET_SUBPATH_DIR": "another filesystem",
+		"KISTA_TEST_KUBESECRET_HIDDEN_DIR":  "is not on the mount",
+	} {
+		dir := os.Getenv(env)
+		if dir == "" {
+			continue
+		}
+		s, err := New(dir, Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := registry(t, s, keysource.Options{}).Open(ctx, "k8s:ext-test"); !errors.Is(err, keysource.ErrKey) {
-			t.Fatalf("a writable mount: %v", err)
+		if _, err := registry(t, s, keysource.Options{}).Open(ctx, "k8s:ext-test"); !errors.Is(err, keysource.ErrKey) || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", env, err, want)
 		}
 	}
 }
