@@ -171,7 +171,7 @@ The server scope adds:
 
 | Section | What it does |
 | --- | --- |
-| **Tenants** | every tenant but deleted ones (name, state, storage domain); create, suspend, resume, delete; open a tenant with every right |
+| **Tenants** | every tenant but deleted ones (name, state, storage domain, expected holder); create (optionally with an expected holder), suspend, resume, delete; set and clear a tenant's expected holder; open a tenant with every right |
 | **DuckDB versions** | list and add DuckDB versions with their maximum C API per major; add a C API |
 | **Server events** | the server's own events |
 
@@ -190,6 +190,13 @@ carried (stored, replaced, unchanged, refused, with each refusal's rule), or why
 **Recent uploads** lists the tenant's latest 100 uploads, with **Import again** for a failed one and
 **Abort…** for one uploading, queued or failed. Uploads abandoned or failed count against
 `bundles.max_uploads` until aborted or expired. See [Uploading a bundle](upstreams.md#uploading-a-bundle).
+
+**A tenant's expected holder.** A tenant's page in the server scope shows the holder its licences
+must name, or none. **Set holder…** (or **Change holder…**) asks for the holder id, a licence's
+`sub` of 1 to 128 bytes; **Clear holder…** removes it after a confirmation. Both send the tenant's
+`If-Match`. Setting it while the tenant holds a licence of another holder is refused, and the page
+shows kista's message naming those licences: remove them first. The new tenant form takes an
+optional expected holder too. See [An expected holder](licensing.md#an-expected-holder).
 
 **Deleting a tenant.** A suspended tenant's page has **Delete…**, enabled once the tenant has been
 suspended for `tenants.min_suspended` (until then a note says from when). The dialog says what is

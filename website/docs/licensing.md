@@ -160,7 +160,9 @@ kista admin tenant holder acme -clear
 ```
 
 Over the API it is `holder_id` in `POST /api/v1/tenants`, and `PUT`/`DELETE
-/api/v1/tenants/{t}/holder` ([The expected holder](api.md#the-expected-holder)). With a holder set,
+/api/v1/tenants/{t}/holder` ([The expected holder](api.md#the-expected-holder)). In the
+[console](console.md#screens)'s server scope, the new tenant form takes it, the tenants list shows
+it, and a tenant's page sets and clears it. With a holder set,
 every path that stores a licence in the tenant refuses one of another holder, after its signature
 is checked and before anything is written:
 

@@ -90,3 +90,50 @@ test('an upstream stops and resumes forwarding usage; the Usage tab', async ({ p
   await expect(page.getByText('No usage reported in this range.')).toBeVisible()
   await expect(page.getByText(/Without a licence: reported with any status but valid or grace/)).toBeVisible()
 })
+
+// Spec 0028: a server administrator gives a new tenant an expected holder, and sets and clears
+// acme's; another holder than a stored licence's is refused, kista naming the licence.
+test("a tenant's expected holder: given at creation, refused over another holder's licence, set and cleared", async ({ page }) => {
+  await signIn(page, '/ui/server/', 'root')
+  await page.getByRole('button', { name: 'New tenant' }).click()
+  await page.getByLabel('Name', { exact: true }).fill('held')
+  await page.getByLabel('Expected holder').fill('a'.repeat(129))
+  await page.getByRole('button', { name: 'Create' }).click()
+  await expect(page.getByRole('alert')).toContainText('1 to 128 bytes')
+  await page.getByLabel('Expected holder').fill('org-held')
+  await page.getByRole('button', { name: 'Create' }).click()
+  await expect(page.getByRole('heading', { name: 'held' })).toBeVisible()
+  await expect(page.getByRole('group', { name: 'expected holder' }).getByText('org-held', { exact: true })).toBeVisible()
+  await nav(page, 'Tenants').click()
+  await expect(page.getByRole('cell', { name: 'org-held', exact: true })).toBeVisible()
+
+  // acme holds a licence of holder acme
+  await page.getByRole('link', { name: 'acme', exact: true }).click()
+  const holder = page.getByRole('group', { name: 'expected holder' })
+  await expect(holder.getByText('none: licences of any holder are stored')).toBeVisible()
+  await nav(page, 'Licences').click()
+  await page.getByLabel('licence file').setInputFiles(process.env.E2E_LICENSE ?? '')
+  await page.getByRole('button', { name: 'Import', exact: true }).click()
+  await expect(page.getByRole('row', { name: /^vault pro/ })).toBeVisible()
+
+  await holder.getByRole('button', { name: 'Set holder…' }).click()
+  await page.getByRole('dialog').getByLabel('holder id').fill('org-other')
+  await confirm(page, 'Set')
+  await expect(page.getByRole('alert')).toContainText('remove them first: vault (lic-e2e, holder "acme")')
+  await expect(holder.getByText('none: licences of any holder are stored')).toBeVisible()
+
+  await holder.getByRole('button', { name: 'Set holder…' }).click()
+  await page.getByRole('dialog').getByLabel('holder id').fill('acme')
+  await confirm(page, 'Set')
+  await expect(holder.getByText('acme', { exact: true })).toBeVisible()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+
+  await holder.getByRole('button', { name: 'Clear holder…' }).click()
+  await confirm(page, 'Clear')
+  await expect(holder.getByText('none: licences of any holder are stored')).toBeVisible()
+
+  // the licence removed again
+  await page.getByRole('button', { name: 'Remove…' }).click()
+  await confirm(page, 'Remove')
+  await expect(page.getByText('No licences.')).toBeVisible()
+})

@@ -35,6 +35,8 @@ export interface Tenant {
     finished_at?: string
     keys: DeletionKey[]
   }
+  /** The holder its licences must name (spec 0028), when one is set. */
+  holder_id?: string
   etag: string
 }
 
@@ -71,9 +73,23 @@ export function Server({ client, root }: { client: Client; root: string }) {
   )
 }
 
+export interface NewTenantForm {
+  name: string
+  display_name: string
+  storage_domain: string
+  holder_id: string
+}
+
+/** A new tenant's request (POST /tenants): an empty holder id is none, so it is left out. The API
+ * checks the rest (a holder id is 1 to 128 bytes without U+0000, as a licence's sub). */
+export function newTenantBody(f: NewTenantForm) {
+  const { holder_id, ...rest } = f
+  return holder_id === '' ? rest : { ...rest, holder_id }
+}
+
 function NewTenant({ client, root }: { client: Client; root: string }) {
   const nav = useNavigate()
-  const [f, setF] = useState({ name: '', display_name: '', storage_domain: '' })
+  const [f, setF] = useState<NewTenantForm>({ name: '', display_name: '', storage_domain: '', holder_id: '' })
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<unknown>(null)
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value })
@@ -83,7 +99,7 @@ function NewTenant({ client, root }: { client: Client; root: string }) {
     setBusy(true)
     setFailure(null)
     try {
-      await client.post('/tenants', { body: f })
+      await client.post('/tenants', { body: newTenantBody(f) })
       nav(`${root}/tenants/${seg(f.name)}`)
     } catch (err) {
       setFailure(err)
@@ -93,10 +109,13 @@ function NewTenant({ client, root }: { client: Client; root: string }) {
   return (
     <Card title="New tenant">
       <form className="flex flex-col gap-4" onSubmit={submit}>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 gap-4">
           <Field label="Name" hint="its path: /acme/…, lowercase letters, digits and -"><input className="field font-mono" required pattern="[a-z0-9][a-z0-9-]{0,62}" value={f.name} onChange={set('name')} /></Field>
           <Field label="Display name"><input className="field" maxLength={200} value={f.display_name} onChange={set('display_name')} /></Field>
           <Field label="Storage domain" hint="empty: the default one"><input className="field font-mono" value={f.storage_domain} onChange={set('storage_domain')} /></Field>
+          <Field label="Expected holder" hint="optional: the holder id (a licence's sub, 1 to 128 bytes) its licences must name; empty: any">
+            <input className="field font-mono" value={f.holder_id} onChange={set('holder_id')} />
+          </Field>
         </div>
         {failure != null && <ErrorBox error={failure} />}
         <div><Button type="submit" tone="brand" disabled={busy}>Create</Button></div>
@@ -129,6 +148,7 @@ function Tenants({ client, root }: { client: Client; root: string }) {
             ['Name', (t) => t.display_name ?? ''],
             ['State', (t) => <Badge>{t.state}</Badge>],
             ['Storage domain', (t) => <span className="font-mono text-[13px] text-ink-muted">{t.storage_domain ?? ''}</span>],
+            ['Expected holder', (t) => (t.holder_id ? <Mono>{t.holder_id}</Mono> : '')],
             ['Created', (t) => when(t.created_at)],
           ]}
         />
@@ -181,6 +201,7 @@ function ServerTenantView({ t, client, root }: { t: string; client: Client; root
           </span>
         )}
       </div>
+      {tn && <Holder client={client} t={t} holder={tn.holder_id} etag={info.data!.etag || tn.etag} reload={info.reload} />}
       {suspended && tn?.deletable_at && !deletable(tn, new Date()) && <Note>It may be deleted from {when(tn.deletable_at)} (tenants.min_suspended).</Note>}
       {suspended && tn && !tn.deletable_at && <Note>An older version suspended it: resume it and suspend it again before deleting it.</Note>}
       {failure != null && <ErrorBox error={failure} />}
@@ -199,6 +220,50 @@ function ServerTenantView({ t, client, root }: { t: string; client: Client; root
       </Confirm>
       <TenantArea label={label} />
     </TenantContext.Provider>
+  )
+}
+
+/** A tenant's expected holder (spec 0028): the holder id its licences must name (their sub). A
+ * server administrator sets and clears it with the tenant's ETag; setting it while the tenant holds
+ * a licence of another holder is refused (409, kista naming them), and a 412 reads the tenant again. */
+export function Holder({ client, t, holder, etag, reload }: { client: Client; t: string; holder?: string; etag: string; reload: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  const [value, setValue] = useState('')
+  const { busy, failure, act } = useAction('The tenant', reload)
+  const path = `/tenants/${seg(t)}/holder`
+  const set = async () => {
+    setEditing(false)
+    if (await act(() => client.put(path, { body: { holder_id: value }, ifMatch: etag }))) reload()
+  }
+  const clear = async () => {
+    setClearing(false)
+    if (await act(() => client.del(path, { ifMatch: etag }))) reload()
+  }
+  return (
+    <>
+      <div role="group" aria-label="expected holder" className="flex flex-wrap items-center gap-3 text-[13px]">
+        <span className="font-semibold">Expected holder</span>
+        {holder ? <Mono>{holder}</Mono> : <span className="text-ink-muted">none: licences of any holder are stored</span>}
+        <span className="ml-auto flex gap-2">
+          <Button tone="outline" disabled={busy} onClick={() => { setValue(holder ?? ''); setEditing(true) }}>{holder ? 'Change holder…' : 'Set holder…'}</Button>
+          {holder && <Button tone="danger-outline" disabled={busy} onClick={() => setClearing(true)}>Clear holder…</Button>}
+        </span>
+      </div>
+      {failure != null && <ErrorBox error={failure} />}
+      <Confirm open={editing} title={`The expected holder of ${t}`} confirm="Set" disabled={busy || value === '' || value === holder}
+        onConfirm={set} onClose={() => setEditing(false)}>
+        <p>kista then refuses a licence of another holder on every path that stores one: an import, an upstream's relay, a
+          bundle. Setting it is refused while the tenant holds a licence of another holder: remove those first.</p>
+        <label className="block">
+          Holder id, as a licence's <Mono>sub</Mono> (1 to 128 bytes):
+          <input data-autofocus aria-label="holder id" className="field mt-1 w-full font-mono" value={value} onChange={(e) => setValue(e.target.value)} />
+        </label>
+      </Confirm>
+      <Confirm open={clearing} title={`Clear the expected holder of ${t}?`} confirm="Clear" danger onConfirm={clear} onClose={() => setClearing(false)}>
+        <p>Licences of any holder may then be stored in the tenant. Those stored stay.</p>
+      </Confirm>
+    </>
   )
 }
 
