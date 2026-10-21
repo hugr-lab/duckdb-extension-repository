@@ -47,10 +47,12 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   -dry-run prints the plan (reading signers, issuers and upstreams);
                                                   -adopt creates in an existing tenant;
                                                   -accept takes a changed section as applied; -rearm forgets it was applied
-  tenant create <name> [-display-name …] [-domain <storage domain>]
+  tenant create <name> [-display-name …] [-domain <storage domain>] [-holder-id <id>]
+                                                  -holder-id: the holder its licences must name (spec 0028)
   tenant list [-state active,suspended,deleting,deleted]   every state but deleted by default
   tenant show <name>                              its record; a deleting one's progress and keys to retire
   tenant suspend|resume <name>
+  tenant holder <name> <id>|-clear                set or clear the holder its licences must name (the licences' sub)
   tenant delete <name> -confirm <name>            a tenant suspended for tenants.min_suspended (spec 0019)
   tenant reap <name> [-force]                     remove a deleting tenant's rows here, after the settle period;
                                                   -force: now, when no kista serve or other command runs
@@ -403,18 +405,37 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 	confirm := fs.String("confirm", "", "")
 	force := fs.Bool("force", false, "")
 	states := fs.String("state", "", "")
+	holder := fs.String("holder-id", "", "")
+	clearHolder := fs.Bool("clear", false, "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	switch {
 	case sub == "create" && len(pos) == 1:
-		t, err := a.svc.Tenants.CreateTenant(ctx, a.actor, pos[0], *display, *domain)
+		t, err := a.svc.Tenants.CreateTenant(ctx, a.actor, pos[0], *display, *domain, *holder)
 		if err != nil {
 			return err
 		}
 		a.logf("tenant create %s", t.Name)
 		fmt.Fprintln(a.out, t.ID)
+	case sub == "holder" && (len(pos) == 2 && !*clearHolder || len(pos) == 1 && *clearHolder):
+		id := ""
+		if !*clearHolder {
+			// an empty id (an unset variable) never clears it: -clear does
+			if id = pos[1]; id == "" {
+				return errors.New("tenant holder: the holder id is empty; -clear clears it")
+			}
+		}
+		t, err := a.svc.Tenants.SetTenantHolder(ctx, a.actor, pos[0], id, 0)
+		if err != nil {
+			return err
+		}
+		if id == "" {
+			a.logf("tenant holder %s cleared", t.Name)
+		} else {
+			a.logf("tenant holder %s %q", t.Name, id)
+		}
 	case sub == "list" && len(pos) == 0:
 		var phases []string
 		if *states != "" {
@@ -472,6 +493,7 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 		line("state", t.Phase())
 		line("display name", t.DisplayName)
 		line("storage domain", t.StorageDomain)
+		line("holder id", t.HolderID)
 		line("created", ts(t.CreatedAt))
 		line("suspended", tsOpt(t.SuspendedAt))
 		line("deletable from", tsOpt(tenants.DeletableAt(t, a.cfg.Tenants.MinSuspended)))

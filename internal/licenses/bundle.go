@@ -12,8 +12,22 @@ import (
 const (
 	RuleOff      = "off"             // licensing is off at the site
 	RuleNoTarget = "no_target"       // no bundle-mode upstream of the source took the bundle
-	RuleHolder   = "holder_mismatch" // not of the holder the plan named
+	RuleHolder   = "holder_mismatch" // not of the holder the plan named, or the tenant expects (spec 0028)
 )
+
+// holderRefusal is the refusal of a licence of another holder than its tenant expects (spec
+// 0028), read in the transaction that would store it; nil when the tenant takes it.
+func holderRefusal(ctx context.Context, tx *store.Tx, tenantID string, tok *license.Token) (*Refusal, error) {
+	err := tx.CheckLicenseHolder(ctx, tenantID, tok.HolderID)
+	var hm *store.HolderMismatch
+	switch {
+	case err == nil:
+		return nil, nil
+	case errors.As(err, &hm):
+		return &Refusal{Name: tok.Extension, ID: tok.ID, Rule: RuleHolder, Reason: hm.Error()}, nil
+	}
+	return nil, err
+}
 
 // Exportable lists the licences of a tenant a bundle may carry (spec 0021), by name: those in
 // force, whose key the server does not refuse, and of holder when one is named. Off, none.
@@ -136,6 +150,13 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 					rule = le.Rule
 				}
 				refused = append(refused, Refusal{Name: name, ID: it.tok.ID, Rule: rule, Reason: err.Error()})
+				continue
+			}
+			// spec 0028: the tenant's expected holder, besides the plan's (checked by both, a dry run too)
+			if r, err := holderRefusal(ctx, tx, t.ID, it.tok); err != nil {
+				return err
+			} else if r != nil {
+				refused = append(refused, *r)
 				continue
 			}
 			l := record(it.tok, t.ID, it.Token, actor)

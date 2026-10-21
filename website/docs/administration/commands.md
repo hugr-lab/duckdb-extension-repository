@@ -237,9 +237,10 @@ kista admin -config kista.yaml version add v2.0.0 -kind release -c-api v1.5.6 -c
 
 | Command | What it does | Output |
 | --- | --- | --- |
-| `tenant create <name> [-display-name <text>] [-domain <storage domain>]` | creates a tenant; without `-domain` it lives in `default`; the domain must be configured and never changes; a deleted tenant's name is refused | the tenant id |
+| `tenant create <name> [-display-name <text>] [-domain <storage domain>] [-holder-id <id>]` | creates a tenant; without `-domain` it lives in `default`; the domain must be configured and never changes; a deleted tenant's name is refused; `-holder-id` sets the holder its licences must name | the tenant id |
 | `tenant list [-state <s>,…]` | the tenants in the given states (`active`, `suspended`, `deleting`, `deleted`); by default every state but `deleted` | `NAME`, `STATE`, `DOMAIN`, `DISPLAY NAME`, `CREATED` |
-| `tenant show <name>` | a tenant in any state: its record, and when a suspended one becomes deletable; for a deleting or deleted one, who started the deletion and when, its progress, the last error and the keys to retire | `name:`, `state:`, `deletable from:`, `deletion by:`, … one per line |
+| `tenant show <name>` | a tenant in any state: its record (with its expected holder, when set), and when a suspended one becomes deletable; for a deleting or deleted one, who started the deletion and when, its progress, the last error and the keys to retire | `name:`, `state:`, `holder id:`, `deletable from:`, `deletion by:`, … one per line |
+| `tenant holder <name> <id>`, `tenant holder <name> -clear` | sets or clears the holder the tenant's licences must name (their `sub`, 1 to 128 bytes; an empty id is refused, only `-clear` clears it; setting the holder it has, or clearing none, changes nothing); every path that stores a licence then refuses another holder's (`holder_mismatch`); setting it is refused while the tenant holds a licence of another holder, naming those licences ([An expected holder](../licensing.md#an-expected-holder)) | |
 | `tenant suspend <name>`, `tenant resume <name>` | a suspended tenant is served nothing and its API answers `404` except to server administrators; both are refused once a deletion started | |
 | `tenant delete <name> -confirm <name>` | deletes a tenant suspended for at least `tenants.min_suspended`; the name is given twice; cannot be undone; warns when `gc.interval` is `0` | the keys to retire in their key sources (`KIND`, `ID`, `FINGERPRINT`, `SIGNER`) |
 | `tenant reap <name> [-force]` | removes a deleting tenant's rows in this process and writes its tombstone; refused before the settle period (2 hours after the delete) ends, saying how long remains; `-force` skips the wait, only when no `kista serve` and no other command runs | `tenant <name> deleted` |
@@ -415,7 +416,7 @@ See [Attachments](../attachments.md).
 | `license list <tenant>` | `NAME`, `PLAN`, `HOLDER`, `STATUS`, `EXPIRES`, `SOURCE`, `VISIBILITY` |
 | `license show <tenant> <name>` | a licence's claims, limits and state |
 | `license token <tenant> <name>` | the licence as received |
-| `license import <tenant> <file or -> [-replace]` | stores a licence under the extension it names; `-replace` replaces the one stored |
+| `license import <tenant> <file or -> [-replace]` | stores a licence under the extension it names; `-replace` replaces the one stored; a refusal names its rule (`kid_untrusted`, `holder_mismatch`, …) |
 | `license remove`, `public`, `private` `<tenant> <name>` | |
 | `license verify <file or -> -key <pem>` | checks a licence offline against the key given, and prints its claims and status |
 

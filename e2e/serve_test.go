@@ -137,7 +137,7 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 			t.Fatal(err)
 		}
 	}
-	_, err = ten.CreateTenant(ctx, serveAdmin, "acme", "", "")
+	_, err = ten.CreateTenant(ctx, serveAdmin, "acme", "", "", "")
 	must(err)
 	kind := "dev"
 	if isRelease(b.versionDir) {

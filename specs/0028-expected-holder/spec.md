@@ -1,6 +1,6 @@
 # Spec 0028: An expected holder per tenant
 
-- **Status**: accepted (2026-10-21)
+- **Status**: implemented (2026-10-21)
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 
@@ -29,9 +29,11 @@ Spec 0012's table also says that `sub` is "an Enterest tenant". It is an Enteres
 
 ### The setting
 
-- **Data.** Each tenant gets a `holder_id` column: nullable, 1 to 128 bytes, the same rule as a
-  licence's `sub`. The migration is additive and covers all three dialects. Null means no expected
-  holder, which is today's behaviour.
+- **Data.** Each tenant gets a `holder_id` column: 1 to 128 bytes, the same rule as a
+  licence's `sub`, without U+0000. The migration covers all three dialects. The column is
+  nullable, but the migration raises `min_reader` to 29, since an older replica would store
+  licences without the check. Null means no expected holder, which is today's behaviour. A deleted
+  tenant's tombstone clears it, as it blanks the display name.
 - **Who sets it.** Only server administrators. A tenant administrator may read it but not change it:
   someone who could clear it would defeat it.
   - `POST /api/v1/tenants` takes an optional `holder_id`.
@@ -44,6 +46,9 @@ Spec 0012's table also says that `sub` is "an Enterest tenant". It is an Enteres
   holder, setting the holder is refused (`409`, naming those licences). The administrator removes
   them first. Nothing is removed silently.
 - **Events.** A `tenant.holder` event records the old and the new holder.
+- **Idempotent.** Setting the holder a tenant already has, or clearing none, changes nothing: `200`
+  with the same ETag, and no event. A provisioning service may `PUT` it on every run.
+- **The CLI** refuses an empty id (an unset variable): only `-clear` clears it.
 
 ### Enforcement
 
@@ -101,3 +106,6 @@ organisation)".
 ## Follow-ups
 
 - None for Enterest. A customer's own kista may set the same holder on the tenant it relays into.
+- The console: show the tenant's `holder_id`, and let a server administrator set and clear it.
+- The configuration's bootstrap (spec 0020) setting a tenant's holder.
+- A machine-readable `rule` member in a licence refusal's problem (today the rule is in `detail`).

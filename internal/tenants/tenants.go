@@ -21,8 +21,9 @@ type Service struct {
 }
 
 // CreateTenant creates a tenant (server-wide action) in a storage domain (empty: the default one),
-// which must be configured and never changes.
-func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, displayName, domain string) (store.Tenant, error) {
+// which must be configured and never changes, with the holder its licences must name (spec 0028;
+// empty: none).
+func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, displayName, domain, holderID string) (store.Tenant, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return store.Tenant{}, err
 	}
@@ -32,13 +33,16 @@ func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, display
 	if s.HasDomain == nil || !s.HasDomain(domain) {
 		return store.Tenant{}, fmt.Errorf("%w: storage domain %q is not configured", store.ErrInvalid, domain)
 	}
-	t := store.Tenant{Name: name, DisplayName: displayName, StorageDomain: domain}
+	t := store.Tenant{Name: name, DisplayName: displayName, StorageDomain: domain, HolderID: holderID}
 	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		if err := tx.CreateTenant(ctx, &t); err != nil {
 			return err
 		}
-		return tx.Event(ctx, "", a.String(), "tenant.create", "tenant:"+t.Name,
-			map[string]any{"name": t.Name, "display_name": t.DisplayName, "storage_domain": t.StorageDomain})
+		fields := map[string]any{"name": t.Name, "display_name": t.DisplayName, "storage_domain": t.StorageDomain}
+		if t.HolderID != "" {
+			fields["holder_id"] = t.HolderID
+		}
+		return tx.Event(ctx, "", a.String(), "tenant.create", "tenant:"+t.Name, fields)
 	})
 	if errors.Is(err, store.ErrExists) {
 		// spec 0019: a tombstone keeps its name for good

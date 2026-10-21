@@ -22,7 +22,7 @@ A licence is a small signed token (a JWS, `typ` `kista-license+jwt`, RS256 with 
 naming:
 
 - the **extension** it is for, and optionally a **version range**;
-- the **holder** (the organisation at the issuer) and its display name;
+- the **holder**: its id at the issuer (`sub`; for Enterest, an organisation) and its display name;
 - the **plan** (`pro`, `enterprise`, …) and **limits** the extension's developer defines
   (`{"max_attached_sources": 5}`): kista carries them, the extension enforces them;
 - when it was issued, when it **expires**, and a **grace** period after that (7 days unless the
@@ -111,6 +111,7 @@ that is not paused ([private upstreams](upstreams.md#private-upstreams)) is aske
   An upstream does not hand out licences for names it does not supply (`not_supplied`);
 - it must verify against a key **this upstream** brought, on a live build of the extension
   (`kid_untrusted`);
+- it must name the tenant's [expected holder](#an-expected-holder), when one is set (`holder_mismatch`);
 - it replaces the stored licence when it is newer from the same upstream, or lasts longer. From
   another source, it replaces it only when both are signed with the same key, or the stored one's
   grace has ended, or no live build declares its key any more (or the server refuses that key). So
@@ -146,6 +147,36 @@ flagged); a licence's claims, limits and the fingerprint of the key that signed 
 private, and removing one; the **licence keys** of the tenant's live builds, with their sources; and
 each relaying upstream's last run with its refusals, and **Sync now**. A licence whose key no live
 build declares is flagged: it is not served.
+
+### An expected holder
+
+A tenant belongs to one holder, but kista does not know which unless it is told. A server
+administrator may set the holder a tenant's licences must name, their `sub`:
+
+```bash
+kista admin tenant create acme -holder-id org-7f3a   # at creation
+kista admin tenant holder acme org-7f3a              # later
+kista admin tenant holder acme -clear
+```
+
+Over the API it is `holder_id` in `POST /api/v1/tenants`, and `PUT`/`DELETE
+/api/v1/tenants/{t}/holder` ([The expected holder](api.md#the-expected-holder)). With a holder set,
+every path that stores a licence in the tenant refuses one of another holder, after its signature
+is checked and before anything is written:
+
+| Path | The refusal |
+| --- | --- |
+| an import (`kista admin license import`, `POST …/licenses`) | `400`, `holder_mismatch`, naming the expected and the given holder |
+| the relay from an upstream | refused with the reason `holder_mismatch`, counted in the run and its `license.sync` event; the others are stored |
+| a bundle's import | refused with the reason `holder_mismatch`, counted in the import's record and its `bundle.import` event |
+
+A licence stored before for that name stays, so a relay naming another holder revokes nothing. Only
+a server administrator sets or clears the holder: a tenant administrator sees it (`tenant show`, the
+tenant record) and cannot change it. Setting it while the tenant holds a licence of another holder
+is refused, naming those licences: remove them first. Each change is a `tenant.holder` event.
+
+A bundle plan's holder (`-license-holder`) is a separate check, made by the exporting kista; the
+tenant's is made by the importing one.
 
 ### A changed plan
 
@@ -359,11 +390,13 @@ The SDK for C API extensions, and the SDK on Windows, are follow-ups.
 
 Licensing protects honest users from accidents, not against deliberate acts. A patched binary, an
 extension loaded with `allow_unsigned_extensions`, a rolled-back clock or a licence copied to
-another organisation defeat it; the licence names its holder wherever it goes.
+another organisation defeat it; the licence names its holder wherever it goes. An
+[expected holder](#an-expected-holder) keeps a licence out of the wrong tenant of one kista; it does
+not stop a holder copying its own licence elsewhere.
 
 ## Events
 
-`license.import`, `license.change` (visibility), `license.remove` (with the reason: `admin`,
+`tenant.holder` (the expected holder set or cleared), `license.import`, `license.change` (visibility), `license.remove` (with the reason: `admin`,
 `revoked`, `expired`, `upstream removed`), `license.sync` (each relay run), `extension.use` (a
 usage report by a principal holding `install`), `usage.forward` (each forwarding run), `usage.receive` (each aggregate taken from downstream) and
 `upstream.change` with `change: usage`. The licences a bundle carried are in its

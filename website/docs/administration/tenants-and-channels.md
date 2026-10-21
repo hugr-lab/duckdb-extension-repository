@@ -53,6 +53,10 @@ ka tenant list
 
 `tenant create` prints the new tenant's id. Only server administrators create tenants.
 
+`-holder-id <id>` sets the holder the tenant's licences must name (their `sub`); `ka tenant holder
+<name> <id>|-clear` sets or clears it later. Only server administrators change it; the tenant's
+administrators see it. See [An expected holder](../licensing.md#an-expected-holder).
+
 ### Storage domains
 
 A tenant's extension bodies live in one **storage domain**, a named store configured under

@@ -177,7 +177,7 @@ func newMgmt(t *testing.T) *mgmt {
 	// the CLI sets up: tenant other, grants in acme
 	cli := en.adm
 	cli.Fetch = ks
-	if _, err := en.ten.CreateTenant(ctx, admin, "other", "", ""); err != nil {
+	if _, err := en.ten.CreateTenant(ctx, admin, "other", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cli.AddIssuer(ctx, admin, "other", store.Issuer{Name: "corp", URL: otherIdPURL}); err != nil {
@@ -291,6 +291,8 @@ func TestManagementAccess(t *testing.T) {
 		{"POST", "/api/v1/duckdb-versions/v2.0.0/c-apis", `{"c_api":"v3.0.0"}`, ok(200, "server admin"), nil},
 		{"POST", T + "/audiences/remove", `{"audience":"api://acme"}`, ok(200, "server admin"), nil},
 		{"POST", "/api/v1/tenants/other/suspend", "", ok(200, "server admin"), []string{"If-Match", `"v1"`}},
+		{"PUT", T + "/holder", `{"holder_id":"org-1"}`, ok(200, "server admin"), []string{"If-Match", "*"}},
+		{"DELETE", T + "/holder", "", ok(200, "server admin"), []string{"If-Match", "*"}},
 	}
 	var ref401, ref404 *resp
 	// the server administrator goes last: its writes (a suspension) do not change what the others get

@@ -719,7 +719,7 @@ func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section stri
 		}
 	}
 	if p.action("tenant", tb.Name) == Create {
-		if _, err := d.Tenants.CreateTenant(ctx, a, tb.Name, tb.DisplayName, tb.Domain); err != nil {
+		if _, err := d.Tenants.CreateTenant(ctx, a, tb.Name, tb.DisplayName, tb.Domain, ""); err != nil {
 			return res, err
 		}
 		made("tenant", tb.Name)

@@ -94,7 +94,7 @@ func newEnv(t *testing.T, o Options, scheme string) *env {
 	}
 	t.Cleanup(func() { bs.Close() })
 	ten := &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
-	mustDo(t, func() error { _, err := ten.CreateTenant(ctx, admin, "acme", "", ""); return err })
+	mustDo(t, func() error { _, err := ten.CreateTenant(ctx, admin, "acme", "", "", ""); return err })
 	mustDo(t, func() error {
 		_, err := ten.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6", "v2.0.0"})
 		return err

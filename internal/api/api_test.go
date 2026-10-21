@@ -137,7 +137,7 @@ func newEnv(t *testing.T) *env {
 			t.Fatal(err)
 		}
 	}
-	must(ten.CreateTenant(ctx, admin, "acme", "", ""))
+	must(ten.CreateTenant(ctx, admin, "acme", "", "", ""))
 	must(ten.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6", "v2.0.0"}))
 	must(ten.AddVersion(ctx, admin, "v1.9.0", "release", []string{"v1.4.0"}))
 	for _, ch := range []string{"prod", "staging"} {

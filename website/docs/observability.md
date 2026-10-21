@@ -56,7 +56,8 @@ are all the kinds in `internal/audit`:
 
 | Group | Kind | Subject | Data fields |
 | --- | --- | --- | --- |
-| Tenants and server | `tenant.create` | `tenant:<name>` | `name`, `display_name`, `storage_domain` |
+| Tenants and server | `tenant.create` | `tenant:<name>` | `name`, `display_name`, `storage_domain`, `holder_id` (when set) |
+| | `tenant.holder` | `tenant:<name>` | `old`, `new` (the expected holder; empty: none) |
 | | `tenant.suspend`, `tenant.resume` | `tenant:<name>` | none |
 | | `tenant.delete` | `tenant:<name>` | `channels` (a count), `suspended_at`, `keys` (the fingerprints) |
 | | `tenant.purge` | `tenant:<name>` | `rows`, `passes`, `late`, `error` |

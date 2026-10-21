@@ -109,7 +109,7 @@ func TestServePrivate(t *testing.T) {
 	}
 	// a second tenant with the same IdP and its own audience
 	ten := &tenants.Service{Store: k.st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
-	if _, err := ten.CreateTenant(ctx, serveAdmin, "beta", "", ""); err != nil {
+	if _, err := ten.CreateTenant(ctx, serveAdmin, "beta", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := adm.AddIssuer(ctx, serveAdmin, "beta", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {

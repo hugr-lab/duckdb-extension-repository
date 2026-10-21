@@ -233,7 +233,7 @@ func newEnvWith(t *testing.T, e storetest.Engine, maxBody int64, ec egress.Confi
 	en.up = &upstream.Service{Store: st, Releases: en.rel, Blob: bs, Fetch: eg, Authz: authz.ServerAdmin{},
 		MaxBody: maxBody, MaxIngests: 4, TempDir: filepath.Join(t.TempDir(), "spool", "upstream"), Log: slog.New(slog.DiscardHandler)}
 	en.run = &upstream.Runner{Service: en.up, Holder: "test", Log: slog.New(slog.DiscardHandler)}
-	must(t, func() error { _, err := en.ten.CreateTenant(ctx, admin, "acme", "", ""); return err })
+	must(t, func() error { _, err := en.ten.CreateTenant(ctx, admin, "acme", "", "", ""); return err })
 	must(t, func() error {
 		_, err := en.ten.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6", "v2.0.0"})
 		return err

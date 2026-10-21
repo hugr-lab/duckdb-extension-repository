@@ -338,6 +338,7 @@ type tenantOut struct {
 	SuspendedAt   string       `json:"suspended_at,omitempty"`
 	DeletableAt   string       `json:"deletable_at,omitempty"` // server administrators only
 	Deletion      *deletionOut `json:"deletion,omitempty"`     // server administrators only
+	HolderID      string       `json:"holder_id,omitempty"`    // the holder its licences must name (spec 0028)
 	ETag          string       `json:"etag"`
 }
 
@@ -380,7 +381,7 @@ func versionTag(v int64) string { return `"v` + strconv.FormatInt(v, 10) + `"` }
 
 func tenantOf(t store.Tenant, c caller) tenantOut {
 	o := tenantOut{Name: t.Name, DisplayName: t.DisplayName, State: t.Phase(), CreatedAt: t.CreatedAt.UTC().Format(time.RFC3339),
-		SuspendedAt: rfc3339(t.SuspendedAt), ETag: versionTag(t.Version)}
+		SuspendedAt: rfc3339(t.SuspendedAt), HolderID: t.HolderID, ETag: versionTag(t.Version)}
 	if c.admin {
 		o.StorageDomain = t.StorageDomain
 	}
@@ -416,12 +417,13 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request, c caller,
 		Name          string `json:"name"`
 		DisplayName   string `json:"display_name"`
 		StorageDomain string `json:"storage_domain"`
+		HolderID      string `json:"holder_id"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	a, _ := c.actor()
-	t, err := h.o.Tenants.CreateTenant(r.Context(), a, in.Name, in.DisplayName, in.StorageDomain)
+	t, err := h.o.Tenants.CreateTenant(r.Context(), a, in.Name, in.DisplayName, in.StorageDomain, in.HolderID)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -481,22 +483,69 @@ func (h *Handler) resume(w http.ResponseWriter, r *http.Request, c caller, p par
 	h.setTenantState(w, r, c, p, store.TenantActive)
 }
 
-func (h *Handler) setTenantState(w http.ResponseWriter, r *http.Request, c caller, p params, state string) {
+// tenantVersion reads a tenant's required If-Match: its version, or 0 for * (any version).
+func tenantVersion(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	tag, ok := ifMatch(w, r)
+	if !ok {
+		return 0, false
+	}
+	if tag == "" {
+		return 0, true
+	}
+	n, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(tag, `"v`), `"`), 10, 64)
+	if err != nil || n <= 0 || versionTag(n) != tag {
+		problem(w, http.StatusPreconditionFailed, typePrecondition, "it changed: read it again")
+		return 0, false
+	}
+	return n, true
+}
+
+func (h *Handler) setTenantState(w http.ResponseWriter, r *http.Request, c caller, p params, state string) {
+	n, ok := tenantVersion(w, r)
 	if !ok {
 		return
 	}
-	var n int64 // 0 for *: any version
-	if tag != "" {
-		var err error
-		n, err = strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(tag, `"v`), `"`), 10, 64)
-		if err != nil || n <= 0 || versionTag(n) != tag {
-			problem(w, http.StatusPreconditionFailed, typePrecondition, "it changed: read it again")
-			return
-		}
-	}
 	a, _ := c.actor()
 	t, err := h.o.Tenants.SetTenantState(r.Context(), a, p["t"], state, n)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	reply(w, r, http.StatusOK, h.withDeletion(tenantOf(t, c), t, nil, c), versionTag(t.Version), noStore)
+}
+
+// setTenantHolder sets the holder a tenant's licences must name (spec 0028): server administrators
+// only, If-Match on the tenant; 409 while it holds a licence of another holder.
+func (h *Handler) setTenantHolder(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	n, ok := tenantVersion(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		HolderID string `json:"holder_id"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	if in.HolderID == "" {
+		problem(w, http.StatusBadRequest, typeInvalid, "holder_id is required: 1 to 128 bytes, as a licence's sub (DELETE clears it)")
+		return
+	}
+	h.tenantHolder(w, r, c, p, in.HolderID, n)
+}
+
+// clearTenantHolder clears a tenant's expected holder (spec 0028).
+func (h *Handler) clearTenantHolder(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	n, ok := tenantVersion(w, r)
+	if !ok {
+		return
+	}
+	h.tenantHolder(w, r, c, p, "", n)
+}
+
+func (h *Handler) tenantHolder(w http.ResponseWriter, r *http.Request, c caller, p params, holder string, n int64) {
+	a, _ := c.actor()
+	t, err := h.o.Tenants.SetTenantHolder(r.Context(), a, p["t"], holder, n)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return

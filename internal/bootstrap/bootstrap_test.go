@@ -255,24 +255,24 @@ func TestBootstrapRefuses(t *testing.T) {
 				setup func(t *testing.T, en *env, b *config.Bootstrap)
 			}{
 				{"another display name", func(t *testing.T, en *env, b *config.Bootstrap) {
-					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Other", ""); return err })
+					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Other", "", ""); return err })
 				}},
 				{"a suspended tenant", func(t *testing.T, en *env, b *config.Bootstrap) {
-					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Acme", ""); return err })
+					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Acme", "", ""); return err })
 					must(t, func() error {
 						_, err := en.d.Tenants.SetTenantState(ctx, cli, "acme", store.TenantSuspended, 0)
 						return err
 					})
 				}},
 				{"an audience of another tenant", func(t *testing.T, en *env, b *config.Bootstrap) {
-					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "other", "", ""); return err })
+					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "other", "", "", ""); return err })
 					must(t, func() error { return en.d.Auth.AddAudience(ctx, cli, "other", "api://kista-acme") })
 				}},
 				{"a version of another kind", func(t *testing.T, en *env, b *config.Bootstrap) {
 					must(t, func() error { _, err := en.d.Tenants.AddVersion(ctx, cli, "v1.4.1", "dev", nil); return err })
 				}},
 				{"a key another channel holds", func(t *testing.T, en *env, b *config.Bootstrap) {
-					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "other", "", ""); return err })
+					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "other", "", "", ""); return err })
 					must(t, func() error {
 						_, err := en.d.Tenants.CreateChannel(ctx, cli, "other", "prod", store.ChannelSigned)
 						return err
@@ -280,7 +280,7 @@ func TestBootstrapRefuses(t *testing.T) {
 					must(t, func() error { _, err := en.d.Keys.Add(ctx, cli, "other", "prod", "file:a.pem", true); return err })
 				}},
 				{"a channel with another key", func(t *testing.T, en *env, b *config.Bootstrap) {
-					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Acme", ""); return err })
+					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Acme", "", ""); return err })
 					must(t, func() error {
 						_, err := en.d.Tenants.CreateChannel(ctx, cli, "acme", "prod", store.ChannelSigned)
 						return err
@@ -288,7 +288,7 @@ func TestBootstrapRefuses(t *testing.T) {
 					must(t, func() error { _, err := en.d.Keys.Add(ctx, cli, "acme", "prod", "file:other.pem", true); return err })
 				}},
 				{"an issuer whose required claims differ", func(t *testing.T, en *env, b *config.Bootstrap) {
-					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Acme", ""); return err })
+					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Acme", "", ""); return err })
 					is, _ := b.Issuer.IssuerRecord()
 					is.RequiredClaims = map[string]string{}
 					must(t, func() error { _, err := en.d.Auth.AddIssuer(ctx, cli, "acme", is); return err })
@@ -323,7 +323,7 @@ func TestBootstrapAdopts(t *testing.T) {
 		t.Run(e.Name, func(t *testing.T) {
 			en := newEnv(t, e)
 			cli := authz.OSActor()
-			must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Acme", ""); return err })
+			must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Acme", "", ""); return err })
 			b := section()
 			if _, err := bootstrap.Run(ctx, en.d, b, serveOpts); !errors.Is(err, bootstrap.ErrRefused) {
 				t.Fatalf("serve created in an existing tenant: %v", err)

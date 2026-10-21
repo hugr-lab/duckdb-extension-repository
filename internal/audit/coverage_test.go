@@ -71,7 +71,7 @@ func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 // until it is listed.
 var writes = map[string]map[string][]audit.Kind{
 	"tenants.Service": {
-		"CreateTenant": {"tenant.create"}, "SetTenantState": {"tenant.suspend", "tenant.resume"}, "Delete": {"tenant.delete"}, "Show": nil,
+		"CreateTenant": {"tenant.create"}, "SetTenantState": {"tenant.suspend", "tenant.resume"}, "SetTenantHolder": {"tenant.holder"}, "Delete": {"tenant.delete"}, "Show": nil,
 		"AddVersion": {"version.add"}, "AddVersionCAPI": {"version.c_apis"}, "CreateChannel": {"channel.create"},
 		"SetChannelVersions": {"channel.versions"},
 		"ListTenants":        nil, "GetTenant": nil, "ListVersions": nil, "ListChannels": nil, "ChannelVersions": nil,
@@ -289,7 +289,7 @@ func TestCoverage(t *testing.T) {
 	rctx := audit.WithRequest(ctx, audit.Request{Client: "198.51.100.9", ID: "r1"})
 	do := func(f func() error) func() error { return f }
 
-	en.expect("tenants.Service.CreateTenant", do(func() error { _, err := en.ten.CreateTenant(rctx, admin, "acme", "Acme", ""); return err }), "tenant.create")
+	en.expect("tenants.Service.CreateTenant", do(func() error { _, err := en.ten.CreateTenant(rctx, admin, "acme", "Acme", "", ""); return err }), "tenant.create")
 	en.expect("tenants.Service.AddVersion", do(func() error {
 		_, err := en.ten.AddVersion(rctx, admin, "v2.0.0", "release", []string{"v1.5.6"})
 		return err
@@ -310,6 +310,11 @@ func TestCoverage(t *testing.T) {
 		"tenant.suspend")
 	en.expect("tenants.Service.SetTenantState", do(func() error { _, err := en.ten.SetTenantState(rctx, admin, "acme", store.TenantActive, 0); return err }),
 		"tenant.resume")
+	// spec 0028: set, then cleared (the licences below are of no particular holder)
+	for _, h := range []string{"org-1", ""} {
+		en.expect("tenants.Service.SetTenantHolder", do(func() error { _, err := en.ten.SetTenantHolder(rctx, admin, "acme", h, 0); return err }),
+			"tenant.holder")
+	}
 	// keys
 	var keyIDs []string
 	for _, f := range []string{"a.pem", "b.pem", "s.pem"} {

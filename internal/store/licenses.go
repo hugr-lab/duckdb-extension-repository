@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Licence sources and visibilities (spec 0012).
@@ -81,10 +84,89 @@ func (s *Store) ListLicenses(ctx context.Context, tenantID string) ([]License, e
 	return out, rows.Err()
 }
 
+// ErrHolderMismatch is a licence whose holder is not the one its tenant expects (spec 0028); the
+// error is a *HolderMismatch.
+var ErrHolderMismatch = errors.New("store: the licence names another holder than its tenant expects")
+
+// HolderMismatch names the holder a tenant expects and the one a licence names.
+type HolderMismatch struct{ Expected, Given string }
+
+func (e *HolderMismatch) Error() string {
+	return fmt.Sprintf("the tenant takes licences of holder %q only; this one is of %q", e.Expected, e.Given)
+}
+
+// Is makes a HolderMismatch an ErrHolderMismatch.
+func (e *HolderMismatch) Is(target error) bool { return target == ErrHolderMismatch }
+
+// ValidHolderID checks a tenant's expected holder: 1 to 128 bytes, as a licence's sub (spec 0028),
+// of UTF-8 without U+0000 (PostgreSQL stores no NUL; elsewhere it would be a holder no licence
+// matches). Other control characters stay, as a sub may carry them escaped.
+func ValidHolderID(id string) error {
+	if id == "" || len(id) > 128 || !utf8.ValidString(id) || strings.ContainsRune(id, 0) {
+		return fmt.Errorf("%w: a holder id is 1 to 128 bytes of UTF-8 without U+0000, as a licence's sub", ErrInvalid)
+	}
+	return nil
+}
+
+// CheckLicenseHolder refuses (a *HolderMismatch) a licence of holderID when its tenant expects
+// another holder (spec 0028). It reads the tenant's row with a shared lock held until commit: a
+// write later in the same transaction sees the holder as it is, since changing the holder waits
+// for the transaction (SetTenantHolder updates the row, after taking the licence lock every
+// licence write holds).
+func (t *Tx) CheckLicenseHolder(ctx context.Context, tenantID, holderID string) error {
+	var expected sql.NullString
+	if err := t.queryRow(ctx, t.lockedTenantQuery("SELECT holder_id FROM tenants", "id = ?", false), tenantID).Scan(&expected); err != nil {
+		return notFound(err, "tenant")
+	}
+	if expected.Valid && expected.String != holderID {
+		return &HolderMismatch{Expected: expected.String, Given: holderID}
+	}
+	return nil
+}
+
+// OtherHolderLicenses lists a tenant's licences of a holder other than holderID, by name. It
+// compares here, byte for byte, as CheckLicenseHolder does: SQL Server's comparison ignores
+// trailing spaces.
+func (t *Tx) OtherHolderLicenses(ctx context.Context, tenantID, holderID string) ([]License, error) {
+	rows, err := t.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? ORDER BY name", tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []License
+	for rows.Next() {
+		l, err := scanLicense(rows)
+		if err != nil {
+			return nil, err
+		}
+		if l.HolderID != holderID {
+			out = append(out, l)
+		}
+	}
+	return out, rows.Err()
+}
+
+// SetTenantHolder sets (holder "": clears) the holder a tenant's licences must name, if the
+// tenant's version is still tn.Version and its deletion has not started (spec 0028). The caller
+// holds the tenant's licence lock and has checked the licences stored (OtherHolderLicenses).
+func (t *Tx) SetTenantHolder(ctx context.Context, tn *Tenant, holder string) error {
+	if holder != "" {
+		if err := ValidHolderID(holder); err != nil {
+			return err
+		}
+	}
+	return t.cas(ctx, "UPDATE tenants SET holder_id = ?, version = version + 1 WHERE id = ? AND version = ? AND deleting_at IS NULL",
+		[]any{nullable(holder), tn.ID, tn.Version}, func() { tn.HolderID = holder; tn.Version++ })
+}
+
 // PutLicense stores a licence for its name: a new row, or a replacement of the row at version
 // expected (ErrConflict otherwise; 0 when there is none). The caller holds the tenant's licence
-// lock and has verified the licence.
+// lock and has verified the licence. A licence of another holder than its tenant expects is
+// refused here, whatever the path (spec 0028: a *HolderMismatch, nothing written).
 func (t *Tx) PutLicense(ctx context.Context, l *License, expected int64) error {
+	if err := t.CheckLicenseHolder(ctx, l.TenantID, l.HolderID); err != nil {
+		return err
+	}
 	l.UpdatedAt = t.Now()
 	if expected == 0 {
 		l.Version = 1

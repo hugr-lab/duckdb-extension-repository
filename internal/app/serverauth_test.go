@@ -26,7 +26,7 @@ func TestServerAuthAudienceConflict(t *testing.T) {
 	}
 	admin := authz.Actor{Kind: authz.ActorOS, ID: "1:test"}
 	ten := &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(string) bool { return true }}
-	if _, err := ten.CreateTenant(ctx, admin, "acme", "", ""); err != nil {
+	if _, err := ten.CreateTenant(ctx, admin, "acme", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	adm := &tenants.AuthAdmin{Store: st, Authz: authz.ServerAdmin{}, PublicURL: "https://kista.example"}

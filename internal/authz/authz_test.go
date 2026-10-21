@@ -208,7 +208,7 @@ func TestLicenseManagerAllow(t *testing.T) {
 	st := storetest.Engines(t)[0].Open(t)
 	ten := &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
 	for _, n := range []string{"acme", "idle"} {
-		if _, err := ten.CreateTenant(ctx, cli, n, "", ""); err != nil {
+		if _, err := ten.CreateTenant(ctx, cli, n, "", "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

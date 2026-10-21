@@ -103,7 +103,7 @@ purpose by the same key is never a licence.
 | `v` | yes | The format version, `1`. A verifier refuses any other. |
 | `iss` | yes | The issuer's URL: `https://` and at least one more byte, all printable ASCII (0x21-0x7E), at most 256 bytes. |
 | `jti` | yes | The licence id, `[A-Za-z0-9_-]{1,64}`, unique per issuer. |
-| `sub` | yes | The holder's id at the issuer (an Enterest tenant), 1 to 128 bytes. |
+| `sub` | yes | The holder's id at the issuer (for Enterest, an organisation), 1 to 128 bytes. |
 | `holder` | no | The holder's display name, at most 200 bytes. |
 | `ext` | yes | The extension name (`[a-z0-9_]{1,64}`, spec 0008). |
 | `versions` | no | `{"min": "1.2", "below": "2.0"}`, either member or both. Absent: every version. |
@@ -647,7 +647,7 @@ kista::Usage::SendAsync(context, "myext", "attach", {{"sources", 3}});  // from 
   if a kista accepted it.
 - **A licence is private by default.** Only a token holding `install` gets it. A public licence is
   the administrator's explicit act, with a warning, since anyone who reaches the channel can then
-  copy it. The holder is not checked anywhere.
+  copy it. The holder is not checked, unless the tenant expects one (spec 0028).
 - **No existence leaks**:
   - the licence and usage routes decide from the path, before any body is read, and answer like the
     binary routes for a missing path, for each caller;
@@ -761,5 +761,5 @@ kista::Usage::SendAsync(context, "myext", "attach", {{"sources", 3}});  // from 
 - ~~Enterest's licence keys in `sdk/cpp/src/keys.cpp` once they are published.~~ Superseded by
   spec 0021: each build names its licence keys.
 - Seats, or concurrent-use limits enforced with check-ins, if Enterest's plans need them.
-- An expected holder per tenant, set by a server administrator, so a licence for another holder is
-  refused at import (useful to Enterest).
+- ~~An expected holder per tenant, set by a server administrator, so a licence for another holder is
+  refused at import (useful to Enterest).~~ Done in spec 0028, on every path that stores a licence.

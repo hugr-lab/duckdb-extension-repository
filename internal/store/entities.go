@@ -43,6 +43,8 @@ type Tenant struct {
 	// spec 0019: when it was suspended (zero while active, and for one an older binary suspended),
 	// when its deletion started, and when its tombstone was written
 	SuspendedAt, DeletingAt, DeletedAt time.Time
+	// HolderID is the holder its licences must name, their sub (spec 0028); empty, none
+	HolderID string
 }
 
 // Phase is the tenant's state as the API shows it: active, suspended, deleting or deleted (spec
@@ -104,12 +106,14 @@ type KeyEvent struct {
 
 // --- reads (outside transactions) ---
 
-const tenantCols = "id, name, display_name, state, storage_domain, auth_version, created_at, version, suspended_at, deleting_at, deleted_at"
+const tenantCols = "id, name, display_name, state, storage_domain, auth_version, created_at, version, suspended_at, deleting_at, deleted_at, holder_id"
 
 func scanTenant(r interface{ Scan(...any) error }) (Tenant, error) {
 	var t Tenant
+	var holder sql.NullString
 	err := r.Scan(&t.ID, &t.Name, &t.DisplayName, &t.State, &t.StorageDomain, &t.AuthVersion, scanTime{&t.CreatedAt}, &t.Version,
-		scanTime{&t.SuspendedAt}, scanTime{&t.DeletingAt}, scanTime{&t.DeletedAt})
+		scanTime{&t.SuspendedAt}, scanTime{&t.DeletingAt}, scanTime{&t.DeletedAt}, &holder)
+	t.HolderID = holder.String
 	return t, err
 }
 
@@ -350,9 +354,14 @@ func (t *Tx) CreateTenant(ctx context.Context, tn *Tenant) error {
 	if err := ValidDomain(tn.StorageDomain); err != nil {
 		return err
 	}
+	if tn.HolderID != "" {
+		if err := ValidHolderID(tn.HolderID); err != nil {
+			return err
+		}
+	}
 	tn.ID, tn.CreatedAt, tn.Version = NewID(), t.Now(), 1
-	_, err := t.exec(ctx, "INSERT INTO tenants (id, name, display_name, state, storage_domain, created_at, version) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		tn.ID, tn.Name, tn.DisplayName, tn.State, tn.StorageDomain, t.s.d.timeArg(tn.CreatedAt), tn.Version)
+	_, err := t.exec(ctx, "INSERT INTO tenants (id, name, display_name, state, storage_domain, created_at, version, holder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		tn.ID, tn.Name, tn.DisplayName, tn.State, tn.StorageDomain, t.s.d.timeArg(tn.CreatedAt), tn.Version, nullable(tn.HolderID))
 	return t.s.mapErr(err, "tenant "+tn.Name)
 }
 

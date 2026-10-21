@@ -16,7 +16,7 @@ import (
 // with its channel. n makes its ids and fingerprints distinct from another fullTenant's.
 func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, store.Channel) {
 	t.Helper()
-	tn := store.Tenant{Name: name}
+	tn := store.Tenant{Name: name, DisplayName: "The " + name, HolderID: "org-" + name}
 	ch := store.Channel{Name: "prod", Kind: store.ChannelSigned}
 	inTx(t, s, func(tx *store.Tx) error {
 		if err := tx.CreateTenant(ctx, &tn); err != nil {
@@ -307,7 +307,7 @@ func TestReapTenant(t *testing.T) {
 			t.Errorf("the other tenant changed: %v, was %v", after, before)
 		}
 		tomb, err := s.GetTenantAny(ctx, "gone")
-		if err != nil || tomb.Phase() != store.TenantDeleted || tomb.DisplayName != "" {
+		if err != nil || tomb.Phase() != store.TenantDeleted || tomb.DisplayName != "" || tomb.HolderID != "" { // spec 0028: no holder kept
 			t.Fatalf("tombstone: %+v %v", tomb, err)
 		}
 		if _, err := s.GetTenant(ctx, "gone"); !errors.Is(err, store.ErrDeleted) {

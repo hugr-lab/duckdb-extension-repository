@@ -44,7 +44,7 @@ func TestServeBootstrapBeforeBind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Tenants.CreateTenant(ctx, authz.OSActor(), "acme", "Other", ""); err != nil {
+	if _, err := svc.Tenants.CreateTenant(ctx, authz.OSActor(), "acme", "Other", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()

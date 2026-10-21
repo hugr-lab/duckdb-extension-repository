@@ -575,7 +575,8 @@ A source the import takes no target of (`-upstream`, `-feed`) is passed over. Fo
   as a relaying upstream must ([Licensing](licensing.md#licences-in-a-tenant)). None: refused, `not_supplied`
   or `no_target`.
 - **The checks**: the licence is in force (`not_in_force`), of the name it is carried for
-  (`ext_mismatch`), of the holder the plan named (`holder_mismatch`), and signed with a key that
+  (`ext_mismatch`), of the holder the plan named and of the holder this tenant expects, when either
+  is set (`holder_mismatch`; [An expected holder](licensing.md#an-expected-holder)), and signed with a key that
   the target's live builds declare, as the bundle brought them (`kid_untrusted`) ([The keys a licence verifies against](licensing.md#the-keys-a-licence-verifies-against)).
   Licensing off at the site refuses each (`off`).
 - **Replacing**: the relay's rules ([Licensing](licensing.md#licences-in-a-tenant)), except that a
