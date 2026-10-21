@@ -182,6 +182,7 @@ All paths are relative to `/api/v1`. `{t}` is a tenant, `{c}` a channel.
 | `GET tenants[?state=]`, `POST tenants`; `POST tenants/{t}/suspend`, `/resume` | server |
 | `GET tenants/{t}` | tenant admin; a deleting or deleted tenant: server |
 | `DELETE tenants/{t}` | server: [deleting a tenant](#deleting-a-tenant) |
+| `PUT tenants/{t}/holder {"holder_id"}`, `DELETE tenants/{t}/holder` (`If-Match`) | server: [the expected holder](#the-expected-holder) |
 | `GET tenants/{t}/audiences` | tenant admin |
 | `POST tenants/{t}/audiences`, `POST tenants/{t}/audiences/remove` | server |
 
@@ -190,7 +191,7 @@ All paths are relative to `/api/v1`. `{t}` is a tenant, `{c}` a channel.
 ```json
 {"name": "acme", "display_name": "Acme Corp", "state": "suspended", "storage_domain": "default",
  "created_at": "2026-10-01T09:00:00Z", "suspended_at": "2026-10-02T09:00:00Z",
- "deletable_at": "2026-10-09T09:00:00Z", "etag": "\"v7\""}
+ "deletable_at": "2026-10-09T09:00:00Z", "holder_id": "org-7f3a", "etag": "\"v7\""}
 ```
 
 - `state` is `active`, `suspended`, `deleting` or `deleted`.
@@ -202,8 +203,25 @@ All paths are relative to `/api/v1`. `{t}` is a tenant, `{c}` a channel.
   `deleted_rows`, `last_error` (a class: `lease`, `interrupted` or `error`), `next_attempt_at`
   (until it finishes), `finished_at`, and `keys`, the keys to retire (`kind` `channel` or
   `attestation`, `id`, `fingerprint`, `signer_ref`).
+- `holder_id` is the holder the tenant's licences must name, when one is set (its administrators
+  see it too).
 - `GET tenants?state=deleting,deleted` lists the tenants in those states (`400` for another value).
   Without `state`, every state but `deleted` is listed.
+- `POST tenants` takes `name`, and optionally `display_name`, `storage_domain` and `holder_id`.
+
+#### The expected holder
+
+A server administrator may set the holder a tenant's licences must name: their `sub`, 1 to 128
+bytes. kista then refuses, on every path that stores a licence, one of another holder (see
+[Licensing](licensing.md#an-expected-holder)). A tenant administrator reads it on the tenant record,
+and cannot change or clear it.
+
+- `PUT tenants/{t}/holder` with `{"holder_id": "…"}` sets it, `DELETE tenants/{t}/holder` clears it.
+  Both answer the tenant record, and need `If-Match` with the tenant's ETag (or `*`): `428` without
+  one, `412` when it is stale. Each change is a `tenant.holder` event with the `old` and the `new`
+  holder.
+- Setting it while the tenant holds a licence of another holder answers `409`, naming those
+  licences; remove them first. Nothing is removed for you.
 
 #### Deleting a tenant
 
@@ -315,7 +333,9 @@ with `Location`; over a stored one without `If-Match`, `409`. `GET …/upstreams
 answers the last relay run, `{"last_run_at", "result": {"counts", "refused", "error"}}`, and the sync
 request (`202`) answers the same; `409` for an upstream that relays nothing or is paused, and while
 licensing is off (an import too). An import or a relayed licence verifies against a key a live build of its
-extension declares (spec 0021); without one it is refused (`400`, `kid_untrusted`).
+extension declares (spec 0021); without one it is refused (`400`, `kid_untrusted`). In a tenant with
+an [expected holder](#the-expected-holder), an import of another holder's licence answers `400`
+with `holder_mismatch` in its detail, naming the expected and the given holder.
 `GET …/license-keys` answers `{"names": [{"name", "keys": [{"kid", "sources": [{"kind":
 "publisher"|"upstream", "name"}], "builds": n}]}]}`. See [Licensing](licensing.md).
 

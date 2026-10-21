@@ -1,6 +1,6 @@
 # Spec 0028: An expected holder per tenant
 
-- **Status**: accepted (2026-10-21)
+- **Status**: implemented (2026-10-21)
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 
@@ -30,8 +30,9 @@ Spec 0012's table also says that `sub` is "an Enterest tenant". It is an Enteres
 ### The setting
 
 - **Data.** Each tenant gets a `holder_id` column: nullable, 1 to 128 bytes, the same rule as a
-  licence's `sub`. The migration is additive and covers all three dialects. Null means no expected
-  holder, which is today's behaviour.
+  licence's `sub`. The migration is additive and covers all three dialects; its `min_reader` is
+  its own level (29), since an older replica would store licences without the check. Null means no
+  expected holder, which is today's behaviour.
 - **Who sets it.** Only server administrators. A tenant administrator may read it but not change it:
   someone who could clear it would defeat it.
   - `POST /api/v1/tenants` takes an optional `holder_id`.

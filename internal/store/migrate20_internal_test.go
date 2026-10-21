@@ -28,10 +28,12 @@ func TestMigration20KeepsUpstreamChildren(t *testing.T) {
 			break
 		}
 	}
-	tn := Tenant{Name: "acme"}
+	// the tenant as the schema of the time has it (no holder_id: migration 0029)
+	tn := Tenant{ID: NewID(), Name: "acme"}
 	ch := Channel{Name: "prod", Kind: ChannelSigned}
 	if err := s.InTx(ctx, "", func(tx *Tx) error {
-		if err := tx.CreateTenant(ctx, &tn); err != nil {
+		if _, err := tx.exec(ctx, "INSERT INTO tenants (id, name, display_name, state, storage_domain, created_at, version) VALUES (?, ?, '', 'active', 'default', ?, 1)",
+			tn.ID, tn.Name, s.d.timeArg(s.Now())); err != nil {
 			return err
 		}
 		ch.TenantID = tn.ID

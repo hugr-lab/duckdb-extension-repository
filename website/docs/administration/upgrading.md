@@ -23,7 +23,7 @@ release binary, both verified as [Deployment](../deployment/index.md) says; or b
   replicas starting together never apply one twice.
 - Applied migrations are recorded in the table `schema_migrations` (`version`, `name`,
   `min_reader`, `applied_at`).
-- A binary's **schema level** is the number of migrations it carries. This release carries 27.
+- A binary's **schema level** is the number of migrations it carries. This release carries 29.
 
 ### Who migrates: `store.migrate`
 
@@ -83,6 +83,8 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0021_bundle_feeds` | 21 | an older replica would run a bundle-mode feed online, or keep no export feed's statements |
 | `0022_bundle_uploads` | 22 | an older replica would not import a completed upload, and its collector would not know `uploads/` |
 | `0027_license_keys` | 27 | an older replica would let a tenant administrator change a marked publisher's credentials, and would verify licences against `licenses.keys` |
+| `0028_publisher_keys` | 28 | GitHub trusted publishing and API keys are removed: an older replica would still read their tables |
+| `0029_tenant_holder` | 29 | an older replica would store a licence of another holder than the tenant expects |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -154,6 +156,16 @@ so the operator declares it:
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
 ## Upgrading to this release
+
+### An expected holder per tenant (spec 0028)
+
+A server administrator may set the holder a tenant's licences must name
+([An expected holder](../licensing.md#an-expected-holder)).
+
+- **Migration `0029_tenant_holder`** adds the nullable column `tenants.holder_id` and raises
+  `min_reader` to 29: stop every older replica first, since one would store licences without the
+  check.
+- Nothing changes until a holder is set: every tenant starts with none.
 
 ### Licence keys in the builds (spec 0021)
 

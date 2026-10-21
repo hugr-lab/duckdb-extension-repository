@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -111,6 +112,11 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 		}
 		v, err := ls.Import(ctx, a.actor, pos[0], tok, expected)
 		if err != nil {
+			// the rule, as the API names it (spec 0028: holder_mismatch)
+			var le *license.Error
+			if errors.Is(err, licenses.ErrRefused) && errors.As(err, &le) {
+				return fmt.Errorf("the licence is refused (%s): %s", le.Rule, strings.TrimPrefix(le.Error(), "license: "))
+			}
 			return err
 		}
 		a.logf("license import %s %s (%s, plan %s, until %s)", pos[0], v.Name, v.ID, v.Plan, v.ExpiresAt)

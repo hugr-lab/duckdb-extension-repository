@@ -22,7 +22,7 @@ func TestDeleteAndReap(t *testing.T) {
 		t.Run(e.Name, func(t *testing.T) {
 			st := e.Open(t)
 			svc := &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
-			if _, err := svc.CreateTenant(ctx, admin, "gone", "", ""); err != nil {
+			if _, err := svc.CreateTenant(ctx, admin, "gone", "", "", ""); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := svc.CreateChannel(ctx, admin, "gone", "prod", store.ChannelSigned); err != nil {

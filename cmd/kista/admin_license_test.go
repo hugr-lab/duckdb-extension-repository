@@ -124,6 +124,43 @@ func TestAdminLicense(t *testing.T) {
 		t.Fatalf("token: %q", got)
 	}
 	run(0, "", "license", "public", "acme", "tresor")
+
+	// spec 0028: the expected holder, set and cleared by the CLI, and enforced on its import
+	stderrOf := func(want int, in string, args ...string) string {
+		t.Helper()
+		var out, errw bytes.Buffer
+		old := stdin
+		stdin = strings.NewReader(in)
+		defer func() { stdin = old }()
+		if code := admin(append([]string{"-config", cfg}, args...), nil, &out, &errw); code != want {
+			t.Fatalf("%v: exit %d, want %d\n%s", args, code, want, errw.String())
+		}
+		return errw.String()
+	}
+	if got := stderrOf(1, "", "tenant", "holder", "acme", "org-1"); !strings.Contains(got, "tresor (lic-max, holder acme)") {
+		t.Fatalf("the holder over another holder's licence: %q", got)
+	}
+	run(2, "", "tenant", "holder", "acme")
+	run(2, "", "tenant", "holder", "acme", "acme", "-clear")
+	run(0, "", "tenant", "holder", "acme", "acme")
+	if got := run(0, "", "tenant", "show", "acme"); !strings.Contains(got, "holder id:") || !strings.Contains(got, " acme\n") {
+		t.Fatalf("show with a holder: %q", got)
+	}
+	other := vectors.Sign(k, vectors.Header(k), fmt.Sprintf(
+		`{"v":1,"iss":"https://issuer.example","jti":"lic-other","sub":"org-2","ext":"tresor","plan":"other","iat":%d,"exp":%d}`, now-60, now+86400))
+	if got := stderrOf(1, other, "license", "import", "acme", "-", "-replace"); !strings.Contains(got, "holder_mismatch") {
+		t.Fatalf("another holder's import: %q", got)
+	}
+	run(0, "", "tenant", "holder", "acme", "-clear")
+	if got := run(0, "", "tenant", "show", "acme"); strings.Contains(got, "holder id") {
+		t.Fatalf("show after the clear: %q", got)
+	}
+	run(0, "", "tenant", "create", "beta", "-holder-id", "org-b")
+	if got := run(0, "", "tenant", "show", "beta"); !strings.Contains(got, "org-b") {
+		t.Fatalf("show beta: %q", got)
+	}
+	run(1, "", "tenant", "create", "gamma", "-holder-id", strings.Repeat("a", 129))
+
 	if got := run(0, "", "license", "verify", lic, "-key", keyFile); !strings.Contains(got, `"plan": "pro"`) || !strings.Contains(got, "status: valid") {
 		t.Fatalf("verify: %q", got)
 	}

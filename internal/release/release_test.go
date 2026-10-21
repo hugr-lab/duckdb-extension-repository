@@ -66,7 +66,7 @@ func newEnv(t *testing.T, e storetest.Engine) *env {
 	en := &env{st: st, keys: ks, dir: dir, blobs: fsStore,
 		rel: &release.Service{Store: st, Blob: bs, Signers: ks, Authz: authz.ServerAdmin{}},
 		ten: &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}}
-	must(t, func() error { _, err := en.ten.CreateTenant(ctx, admin, "acme", "", ""); return err })
+	must(t, func() error { _, err := en.ten.CreateTenant(ctx, admin, "acme", "", "", ""); return err })
 	must(t, func() error {
 		_, err := en.ten.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6", "v2.0.0"})
 		return err

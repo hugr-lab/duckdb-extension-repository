@@ -207,6 +207,16 @@ func (s *Service) verify(t *license.Token, keys []store.LicenseKey, whose string
 	return nil
 }
 
+// holderRefused turns the store's refusal of a licence of another holder than its tenant expects
+// (spec 0028) into a licence refusal by the rule holder_mismatch; any other error is unchanged.
+func holderRefused(err error) error {
+	var hm *store.HolderMismatch
+	if !errors.As(err, &hm) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrRefused, &license.Error{Rule: RuleHolder, Msg: hm.Error()})
+}
+
 func record(t *license.Token, tenantID, token, actor string) store.License {
 	return store.License{TenantID: tenantID, Name: t.Extension, LicenseID: t.ID, Issuer: t.Issuer, HolderID: t.HolderID,
 		Holder: t.Holder, Plan: t.Plan, Token: token, Key: t.Key, IssuedAt: t.IssuedAt, ExpiresAt: t.ExpiresAt,
@@ -236,6 +246,10 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, token strin
 		if err := s.verify(tok, keys, ""); err != nil {
 			return err
 		}
+		// spec 0028: the tenant's expected holder, as it is in this transaction
+		if err := tx.CheckLicenseHolder(ctx, t.ID, l.HolderID); err != nil {
+			return holderRefused(err)
+		}
 		old, err := tx.GetLicense(ctx, t.ID, l.Name)
 		replaced := ""
 		switch {
@@ -254,7 +268,7 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, token strin
 			l.Visibility, replaced = old.Visibility, old.LicenseID
 		}
 		if err := tx.PutLicense(ctx, &l, old.Version); err != nil {
-			return err
+			return holderRefused(err)
 		}
 		return tx.Event(ctx, t.ID, a.String(), "license.import", "license:"+l.Name, map[string]any{"name": l.Name,
 			"license": l.LicenseID, "issuer": l.Issuer, "holder": l.HolderID, "plan": l.Plan, "expires_at": seconds(l.ExpiresAt),

@@ -279,6 +279,14 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 				refused = append(refused, Refusal{Name: name, ID: it.tok.ID, Rule: rule, Reason: err.Error()})
 				continue
 			}
+			// spec 0028: a licence of another holder than the tenant expects is refused; one stored
+			// for the name from this upstream, of the holder expected, stays until its grace ends
+			if r, err := holderRefusal(ctx, tx, t.ID, it.tok); err != nil {
+				return err
+			} else if r != nil {
+				refused = append(refused, *r)
+				continue
+			}
 			keep[name] = true
 			l := record(it.tok, t.ID, it.token, actor)
 			l.Source, l.UpstreamID = store.LicenseUpstream, u.ID
