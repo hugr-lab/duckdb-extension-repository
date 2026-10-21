@@ -104,7 +104,7 @@ kista version        # or kista --version
 Prints kista's version, the Go version it was built with and the platform, then exits `0`:
 
 ```text
-kista v1.2.3 (go1.27.2, linux/amd64)
+kista v1.2.3 (go1.27.3, linux/amd64)
 ```
 
 A build without a version set prints `dev`. This is kista's own version. The DuckDB versions a

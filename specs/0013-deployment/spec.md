@@ -142,7 +142,7 @@ organisation that writes its own manifests runs into these problems:
     (`npm run licenses`), `npm audit --omit=dev --audit-level=high`, then `npm run build`, as CI
     does. Its SBOM is scanned (`BUILDKIT_SBOM_SCAN_STAGE`), since its packages end up in the
     binary.
-  - `golang:1.27.2` on `$BUILDPLATFORM` cross-compiles with `CGO_ENABLED=0`, `-trimpath` and
+  - `golang:1.27.3` on `$BUILDPLATFORM` cross-compiles with `CGO_ENABLED=0`, `-trimpath` and
     `-ldflags "-s -w -X …/internal/app.Version=$VERSION"`, with the console embedded.
   - `gcr.io/distroless/static-debian12:nonroot` holds the binary at `/kista`, runs as uid and gid
     65532, and carries the CA certificates.

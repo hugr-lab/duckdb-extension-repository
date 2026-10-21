@@ -30,7 +30,7 @@ The design is in
 - A version tag is never overwritten: the release workflow refuses to push a version that is
   already in the registry.
 - Every image and binary embeds the administration console and reports its version:
-  `kista version` prints, for example, `kista v1.2.0 (go1.27.2, linux/amd64)`. Edge builds report
+  `kista version` prints, for example, `kista v1.2.0 (go1.27.3, linux/amd64)`. Edge builds report
   `edge-<commit>`.
 
 ## The image
