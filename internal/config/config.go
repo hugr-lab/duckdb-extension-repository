@@ -182,14 +182,15 @@ type Signers struct {
 // reference <source>:<key> picks a key inside it; the reference never carries a host.
 type Source struct {
 	Name           string         `yaml:"name"`
-	Kind           string         `yaml:"kind"` // vault | azurekv | awskms | gcpkms
+	Kind           string         `yaml:"kind"` // vault | azurekv | awskms | gcpkms | kubesecret
 	Allow          []string       `yaml:"allow"`
 	MaxConcurrency int            `yaml:"max_concurrency"`
 	HealthKey      string         `yaml:"health_key"`
 	Vault          *VaultSource   `yaml:"vault"`
 	AzureKV        *AzureKVSource `yaml:"azurekv"`
-	AWSKMS         *AWSKMSSource  `yaml:"awskms"` // phase 3
-	GCPKMS         *GCPKMSSource  `yaml:"gcpkms"` // phase 4
+	AWSKMS         *AWSKMSSource  `yaml:"awskms"`     // phase 3
+	GCPKMS         *GCPKMSSource  `yaml:"gcpkms"`     // phase 4
+	KubeSecret     *KubeSecret    `yaml:"kubesecret"` // spec 0026
 	Identity       *Identity      `yaml:"identity"`
 	Recheck        time.Duration  `yaml:"recheck"` // how often key properties are re-read; default and maximum 10m
 	Timeout        time.Duration  `yaml:"timeout"` // per call; default 10s, 1s..60s
@@ -203,6 +204,15 @@ type VaultSource struct {
 	CAFile       string    `yaml:"ca_file"`
 	Auth         VaultAuth `yaml:"auth"`
 	SoftwareKeys bool      `yaml:"software_keys"` // required outside dev: Transit keys are software keys
+}
+
+// KubeSecret is a Kubernetes Secret volume holding RSA keys (spec 0026): the cluster's protection,
+// weaker than every other source, acknowledged explicitly.
+type KubeSecret struct {
+	Dir string `yaml:"dir"` // the Secret volume's mountPath
+	// EtcdEncryptionAtRest is the operator's statement that the cluster encrypts Secrets at rest;
+	// required outside dev. kista cannot check it.
+	EtcdEncryptionAtRest bool `yaml:"etcd_encryption_at_rest"`
 }
 
 // AzureKVSource is an Azure Key Vault or Managed HSM.
@@ -223,9 +233,9 @@ type VaultAuth struct {
 
 // SourceKinds are the backends; reservedSourceNames cannot name a source.
 var (
-	SourceKinds         = []string{"vault", "azurekv", "awskms", "gcpkms"}
+	SourceKinds         = []string{"vault", "azurekv", "awskms", "gcpkms", "kubesecret"}
 	reservedSourceNames = map[string]bool{"file": true, "vault": true, "azurekv": true, "awskms": true,
-		"gcpkms": true, "pkcs11": true, "http": true, "https": true, "arn": true, "projects": true}
+		"gcpkms": true, "kubesecret": true, "pkcs11": true, "http": true, "https": true, "arn": true, "projects": true}
 	sourceName     = regexp.MustCompile(`^[a-z][a-z0-9-]{0,15}$`)
 	vaultNamespace = regexp.MustCompile(`^[A-Za-z0-9_/-]*$`)
 )
@@ -573,8 +583,11 @@ func (c Config) Validate() error {
 		if src.Kind == "vault" && src.Identity != nil {
 			bad("%s.identity is not used by kind vault (it logs in through vault.auth)", where)
 		}
+		if src.Kind == "kubesecret" && src.Identity != nil {
+			bad("%s.identity is not used by kind kubesecret (it reads a mounted Secret)", where)
+		}
 		blocks := 0
-		for _, set := range []bool{src.Vault != nil, src.AzureKV != nil, src.AWSKMS != nil, src.GCPKMS != nil} {
+		for _, set := range []bool{src.Vault != nil, src.AzureKV != nil, src.AWSKMS != nil, src.GCPKMS != nil, src.KubeSecret != nil} {
 			if set {
 				blocks++
 			}
@@ -618,6 +631,12 @@ func (c Config) Validate() error {
 				bad("%s.gcpkms.require_hsm: false is allowed only with profile dev", where)
 			}
 			validateGCPCreds(bad, where+".gcpkms", src.GCPKMS.GCPCreds, dev)
+		case "kubesecret":
+			if src.KubeSecret == nil || blocks != 1 {
+				bad("%s: kind kubesecret needs exactly one block, kubesecret", where)
+				continue
+			}
+			validateKubeSecret(bad, where, i, c, dev)
 		default:
 			bad("%s.kind must be one of %s", where, strings.Join(SourceKinds, ", "))
 		}
@@ -641,6 +660,64 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// validateKubeSecret checks a kubesecret source (spec 0026): an absolute, clean directory of its
+// own, apart from signers.file_dir, another source's directory and the other secret files the
+// configuration names, and the acknowledgment outside dev.
+func validateKubeSecret(bad func(string, ...any), where string, i int, c Config, dev bool) {
+	k := c.Signers.Sources[i].KubeSecret
+	if !filepath.IsAbs(k.Dir) || filepath.Clean(k.Dir) != k.Dir || k.Dir == "/" {
+		bad("%s.kubesecret.dir must be an absolute, clean path below /: the Secret volume's mountPath", where)
+		return
+	}
+	if !dev && !k.EtcdEncryptionAtRest {
+		bad("%s.kubesecret.etcd_encryption_at_rest must be true outside profile dev: the keys are protected by the cluster's encryption of Secrets at rest and its RBAC, nothing more", where)
+	}
+	if d := filepath.Clean(c.Signers.FileDir); c.Signers.FileDir != "" && (pathWithin(k.Dir, d) || pathWithin(d, k.Dir)) {
+		bad("%s.kubesecret.dir must not overlap signers.file_dir", where)
+	}
+	for j, o := range c.Signers.Sources {
+		if j != i && o.Kind == "kubesecret" && o.KubeSecret != nil && (pathWithin(k.Dir, o.KubeSecret.Dir) || pathWithin(o.KubeSecret.Dir, k.Dir)) {
+			bad("%s.kubesecret.dir overlaps signers.sources[%d]'s: one Secret volume per source", where, j)
+		}
+	}
+	for _, f := range c.secretFiles() {
+		if pathWithin(f.path, k.Dir) {
+			bad("%s.kubesecret.dir holds %s: a source's directory holds its keys only", where, f.name)
+		}
+	}
+}
+
+// pathWithin reports whether p is dir or below it (both clean and absolute).
+func pathWithin(p, dir string) bool {
+	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
+}
+
+type namedPath struct{ name, path string }
+
+// secretFiles are the files the configuration names that hold secrets, by setting name.
+func (c Config) secretFiles() []namedPath {
+	var out []namedPath
+	add := func(name, p string) {
+		if p != "" {
+			out = append(out, namedPath{name, filepath.Clean(p)})
+		}
+	}
+	add("store.login.password_file", c.Store.Login.PasswordFile)
+	for j, s := range c.Signers.Sources {
+		if s.Vault != nil {
+			add(fmt.Sprintf("signers.sources[%d].vault.auth.token_file", j), s.Vault.Auth.TokenFile)
+		}
+		if s.Identity != nil {
+			add(fmt.Sprintf("signers.sources[%d].identity.access_key_file", j), s.Identity.AccessKeyFile)
+			add(fmt.Sprintf("signers.sources[%d].identity.secret_key_file", j), s.Identity.SecretKeyFile)
+		}
+		if s.GCPKMS != nil {
+			add(fmt.Sprintf("signers.sources[%d].gcpkms.credentials_file", j), s.GCPKMS.CredentialsFile)
+		}
+	}
+	return out
 }
 
 var azureName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{1,22}[A-Za-z0-9]$`)

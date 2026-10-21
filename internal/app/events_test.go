@@ -56,6 +56,29 @@ func TestServerStart(t *testing.T) {
 	if d := last(); !slices.Equal(d.Changed, []string{"egress", "serve"}) {
 		t.Fatalf("changed: %+v", d)
 	}
+	if _, err := st.LastEvent(ctx, audit.ServerTenant, "signer.source.weak"); err == nil {
+		t.Fatal("signer.source.weak without a kubesecret source")
+	}
+	// spec 0026: a kubesecret source is recorded at every start, once per source
+	cfg.Signers.Sources = []config.Source{
+		{Name: "k8s", Kind: "kubesecret", Allow: []string{"ext-"}, KubeSecret: &config.KubeSecret{Dir: "/etc/kista/signing", EtcdEncryptionAtRest: true}},
+		{Name: "bao", Kind: "vault", Allow: []string{"*"}, Vault: &config.VaultSource{}},
+	}
+	for range 2 {
+		if err := ServerStart(ctx, cfg, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evs, err := st.ListEvents(ctx, audit.ServerTenant, store.EventFilter{Kind: "signer.source.weak"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("%d signer.source.weak events after two starts", len(evs))
+	}
+	if e := evs[0]; e.Subject != "source:k8s" || !strings.Contains(e.Data, `"protection":"kubesecret"`) || !strings.Contains(e.Data, `"kind":"kubesecret"`) {
+		t.Fatalf("%+v", e)
+	}
 }
 
 func TestHeadersFile(t *testing.T) {

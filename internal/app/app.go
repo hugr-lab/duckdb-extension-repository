@@ -32,6 +32,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/awskms"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/azurekv"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/gcpkms"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/kubesecret"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource/vault"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -206,6 +207,15 @@ func KeySources(cfg config.Config) (*keysource.Registry, error) {
 			}
 			requireHSM := g.RequireHSM == nil || *g.RequireHSM
 			if err := reg.Add(src.Name, gcpkms.New(g.KeyRing, ts, requireHSM, hc, gcpkms.Options{Endpoint: g.EndpointURL}), opts); err != nil {
+				return nil, err
+			}
+		case "kubesecret":
+			// spec 0026: the Secret volume is checked at every open, not here
+			b, err := kubesecret.New(src.KubeSecret.Dir, kubesecret.Options{})
+			if err != nil {
+				return nil, fmt.Errorf("app: source %s: %w", src.Name, err)
+			}
+			if err := reg.Add(src.Name, b, opts); err != nil {
 				return nil, err
 			}
 		default:

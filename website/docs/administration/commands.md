@@ -263,15 +263,17 @@ See [Tenants and channels](tenants-and-channels.md) and
 
 | Command | What it does | Output |
 | --- | --- | --- |
-| `key check -signer <ref>` | opens a key, checks it (RSA-2048, `e = 65537`, the source's rules) and signs a probe; stores nothing | `<ref> <fingerprint>` |
+| `key check -signer <ref>` | opens a key, checks it (RSA-2048, `e = 65537`, the source's rules) and signs a probe; stores nothing | `<ref> <fingerprint> protection=<tier>` |
 | `key add <tenant>/<channel> -signer <ref> [-active]` | registers a key as `trusted`; `-active` only for a channel that never had a key | `<key id> <fingerprint>` |
-| `key list <tenant>/<channel>` | `ID`, `FINGERPRINT`, `STATE`, `SIGNER`, `TRUSTED SINCE`, `STATE CHANGED` | |
+| `key list <tenant>/<channel>` | `ID`, `FINGERPRINT`, `STATE`, `SIGNER`, `PROTECTION`, `TRUSTED SINCE`, `STATE CHANGED` | |
 | `key activate <tenant>/<channel> <key id or fingerprint> [-force]` | makes a trusted key active and demotes the current one; refused before `rotation.min_trusted` unless `-force` | a reminder on stderr that existing releases keep the old signatures until a re-sign |
 | `key retire <tenant>/<channel> <key id or fingerprint> [-force]` | removes a trusted key from `.well-known` for good; refused before `rotation.min_demoted` unless `-force`; always refused for the active key and the serving key | |
 | `key resign <tenant>/<channel>` | signs every non-yanked release with the active key, then moves the serving key to it; runs in the foreground | the count and whether the serving key moved, on stderr |
 | `key events <tenant>/<channel>` | the key history: `AT`, `KEY`, `FROM`, `TO`, `ACTOR`, `FORCED` | |
 
 A signer reference is `file:<name>` or `<source>:<key>` (see [Signing keys](../signing-keys.md)).
+The protection tier is the source's: `file`, `kubesecret` (a Kubernetes Secret, the weakest),
+`software` (Vault Transit) or `kms`; `-` for a reference whose source is no longer configured.
 `key check`, `key add` and `key resign` need access to the key source. See
 [Key rotation](key-rotation.md).
 

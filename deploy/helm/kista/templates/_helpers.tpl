@@ -444,6 +444,17 @@ imds:
 {{- if hasKey $names (printf "s-%s" .name) -}}{{- fail (printf "secretVolumes: %s twice" .name) -}}{{- end -}}
 {{- $_ := set $names (printf "s-%s" .name) true -}}
 {{- end -}}
+{{- /* a kubesecret key source reads a Secret volume (spec 0026): its dir is a secretVolumes mount */ -}}
+{{- range (dig "signers" "sources" list $c) -}}
+{{- if eq (toString .kind) "kubesecret" -}}
+{{- $dir := toString (dig "kubesecret" "dir" "" .) -}}
+{{- $found := false -}}
+{{- range $v.secretVolumes -}}{{- if eq (clean (toString .mountPath)) $dir -}}{{- $found = true -}}{{- end -}}{{- end -}}
+{{- if not $found -}}
+{{- fail (printf "config.signers.sources %s: kind kubesecret reads a Secret volume; its dir %s must be the mountPath of a secretVolumes entry" (toString .name) $dir) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- range $v.projectedTokens -}}
 {{- if hasKey $names (printf "t-%s" .name) -}}{{- fail (printf "projectedTokens: %s twice" .name) -}}{{- end -}}
 {{- $_ := set $names (printf "t-%s" .name) true -}}

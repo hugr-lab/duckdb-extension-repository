@@ -251,7 +251,7 @@ channel. See [Using kista from DuckDB](duckdb.md).
 | --- | --- |
 | `POST tenants/{t}/channels` | tenant admin |
 | `GET, POST tenants/{t}/channels/{c}/duckdb-versions`; `DELETE …/duckdb-versions/{v}` | channel admin |
-| `GET tenants/{t}/channels/{c}/keys` | channel admin: keys, serving and active key, re-sign progress |
+| `GET tenants/{t}/channels/{c}/keys` | channel admin: keys, serving and active key, re-sign progress; a server administrator also sees each key's `signer_ref` and `protection` tier |
 | `POST tenants/{t}/channels/{c}/keys` | server: a key by signer reference |
 | `GET …/keys/events`, `GET …/keys/{id}` | channel admin |
 | `POST …/keys/{id}/activate`, `/retire` (`?force=true` for server) | channel admin |

@@ -120,10 +120,12 @@ var catalogue = map[Kind][]string{
 	"version.add":    {"version", "kind", "c_apis"},
 	"version.c_apis": {"version", "c_api"},
 	"server.start":   {"version", "schema", "digests", "changed"},
+	// a key source weaker than a vault or a KMS, at every start (spec 0026)
+	"signer.source.weak": {"source", "kind", "protection"},
 	// channels and keys
 	"channel.create":   {"name", "kind"},
 	"channel.versions": {"added", "removed"},
-	"key.add":          {"key", "fingerprint", "scheme", "state"},
+	"key.add":          {"key", "fingerprint", "scheme", "state", "protection"},
 	"key.activate":     {"key", "fingerprint", "from", "forced"},
 	"key.retire":       {"key", "fingerprint", "from", "forced"},
 	"key.resign":       {"key", "fingerprint", "signatures"},
@@ -239,6 +241,8 @@ func SubjectForm(k Kind) string {
 		return "server"
 	case "storage.gc", "storage.verify":
 		return "domain:<domain>"
+	case "signer.source.weak":
+		return "source:<name>"
 	case "audit.sink":
 		return "sink:<name>"
 	case "auth.failure", "authz.refused", "request.failed":

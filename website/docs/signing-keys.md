@@ -24,12 +24,19 @@ and [0004](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/spe
 | `azurekv` | Azure Key Vault or Azure Key Vault Managed HSM | available |
 | `awskms` | AWS KMS | available |
 | `gcpkms` | Google Cloud KMS | available |
+| `kubesecret` | a Kubernetes Secret volume | available, as an explicit opt-in: the weakest source |
 
-PKCS#11 hardware HSMs are not available either. A Kubernetes Secret is not a backend, and a
-Secret mounted into `signers.file_dir` is refused (its files are links, root-owned; see
-[File keys](#file-keys)). A channel key in a Secret is readable by anyone with `get secrets` in the
-namespace, sits in etcd, and often in GitOps sources. Keep channel keys in a KMS, an HSM or Vault
-Transit.
+PKCS#11 hardware HSMs are not available either. A channel key in a Kubernetes Secret is readable
+by anyone with `get secrets` in the namespace, sits in etcd, and often in GitOps sources. Keep
+channel keys in a KMS, an HSM or Vault Transit. Where none exists, a `kubesecret` source accepts a
+Secret volume, with an acknowledgment and the checks of [Kubernetes Secrets](#kubernetes-secrets);
+a Secret mounted into `signers.file_dir` is still refused (its files are links, root-owned; see
+[File keys](#file-keys)).
+
+Each source kind has a **protection tier**, which `key check`, `key list`, the management API and
+`key.add` events show: `file` (a key file), `kubesecret` (a Kubernetes Secret), `software` (Vault
+Transit: software keys in Vault's barrier) and `kms` (Azure Key Vault or Managed HSM, AWS KMS,
+Google Cloud KMS).
 
 ## Signer references
 
@@ -43,6 +50,7 @@ the first `:`; the rest is parsed by that source's kind.
 | `azurekv` | `<source>:<name>/<version>` | `[0-9A-Za-z-]{1,127}`, compared lowercased | 32 lowercase hex characters (an empty version would mean "latest") |
 | `awskms` | `<source>:<key-id>` | a key id: a UUID in lowercase hex, or `mrk-` and 32 lowercase hex characters (a multi-Region key, with `allow_multi_region`). Aliases and ARNs are refused | the key id itself: an asymmetric KMS key is never rotated |
 | `gcpkms` | `<source>:<key>/<version>` | a CryptoKey id in the source's key ring, `[A-Za-z0-9_-]{1,63}` | the CryptoKeyVersion number, `[1-9][0-9]{0,9}` (required) |
+| `kubesecret` | `<source>:<name>` | a Secret data key without dots, `[A-Za-z0-9_-]{1,63}` | the name itself: a key is never replaced under its name |
 
 - A reference never carries a host, URL, account or path. Hosts, mounts and namespaces come only
   from the configuration, so a reference can only pick a key inside a source the administrator
@@ -100,20 +108,26 @@ signers:
         key_ring: projects/acme-kista/locations/europe-west4/keyRings/kista
         principal: kista-signer@acme-kista.iam.gserviceaccount.com
       allow: ["ext-"]
+    - name: k8s
+      kind: kubesecret
+      kubesecret:
+        dir: /etc/kista/signing/prod   # a Secret volume's mountPath
+        etcd_encryption_at_rest: true  # required outside profile dev
+      allow: ["ext-"]
 ```
 
 ### Settings of a source
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `name` | required | `[a-z][a-z0-9-]{0,15}`, unique. Reserved: `file`, `vault`, `azurekv`, `awskms`, `gcpkms`, `pkcs11`, `http`, `https`, `arn`, `projects` |
-| `kind` | required | `vault`, `azurekv`, `awskms` or `gcpkms`; exactly one matching block (`vault:`, `azurekv:`, `awskms:` or `gcpkms:`) |
+| `name` | required | `[a-z][a-z0-9-]{0,15}`, unique. Reserved: `file`, `vault`, `azurekv`, `awskms`, `gcpkms`, `kubesecret`, `pkcs11`, `http`, `https`, `arn`, `projects` |
+| `kind` | required | `vault`, `azurekv`, `awskms`, `gcpkms` or `kubesecret`; exactly one matching block (`vault:`, `azurekv:`, `awskms:`, `gcpkms:` or `kubesecret:`) |
 | `allow` | required | key-name prefixes the source may use; `"*"` for any key. An empty list, or an empty prefix, is refused. For `awskms`, whole key ids or `"*"` |
 | `max_concurrency` | `4` | concurrent opens and signs through this source |
 | `timeout` | `10s` | per call, `1s` to `60s` |
 | `recheck` | `10m` | how often a key's properties are read again while it is in use; at most `10m` |
 | `health_key` | none | accepted by the configuration; this build does not use it |
-| `identity` | none | required for `azurekv` and `awskms`, with that cloud's kinds; refused on `vault` and `gcpkms` (which use `vault.auth`, and `principal` and `credentials_file`) |
+| `identity` | none | required for `azurekv` and `awskms`, with that cloud's kinds; refused on `vault`, `gcpkms` and `kubesecret` (which use `vault.auth`, `principal` and `credentials_file`, and a mounted Secret) |
 
 **Allow lists** are plain prefixes, matched after the key name passed its kind's rule: `ext-`
 admits `ext-prod` but not `extra`. For `azurekv`, names are matched lowercased, so prefixes must be
@@ -170,7 +184,9 @@ kista admin -config kista.yaml key check -signer file:dev-channel.pem
 This rule is stricter than the one for other files kista reads
 ([Files kista reads](security.md#files-kista-reads)): a key file cannot be a link and must be
 owned by the user kista runs as; a Secret volume's root-owned, group-readable files are refused,
-so a Kubernetes Secret mounted into `signers.file_dir` does not work.
+so a Kubernetes Secret mounted into `signers.file_dir` does not work. A `kubesecret` source
+accepts exactly a Secret volume, with its own checks and warnings (see
+[Kubernetes Secrets](#kubernetes-secrets)).
 
 A file key has no tags, so its role is held by the fingerprint registry alone (see
 [Purposes](#purposes)). Keep file keys for development and tests; a production key belongs in a
@@ -733,6 +749,126 @@ a channel key and an attestation key, the service account and its custom role, a
 and optionally a pool for GitHub Actions. `deploy/gcp/down.sh` deletes the project. See
 [Development](development.md#a-disposable-gcp-stack).
 
+## Kubernetes Secrets
+
+:::danger The weakest source, chosen explicitly
+
+A `kubesecret` source signs with RSA keys held in a Kubernetes Secret. Its protection is the
+cluster's: whoever reads Secrets in kista's namespace, or etcd's disks unencrypted, has the keys,
+and with them can sign extensions that every DuckDB client of the channel accepts. There is no
+HSM, no non-exportability and no usage log. Prefer a [KMS](#key-sources) or
+[Vault Transit](#hashicorp-vault-and-openbao-transit); use this source only where neither exists
+(OTC, Hetzner, IONOS, STACKIT without a Vault or OpenBao), and read the whole section first.
+
+:::
+
+It is opt-in three times over: the source is configured, it carries a required acknowledgment,
+and kista checks at every open that the files really come from a Secret volume. The `file` signer
+does not change: a Secret mounted into `signers.file_dir` is still refused.
+
+```yaml title="kista.yaml"
+signers:
+  sources:
+    - name: k8s
+      kind: kubesecret
+      allow: ["ext-"]                       # key-name prefixes, as for every source
+      kubesecret:
+        dir: /etc/kista/signing/prod        # the Secret volume's mountPath
+        etcd_encryption_at_rest: true       # required outside profile dev
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `kubesecret.dir` | the Secret volume's `mountPath`: absolute and clean. It must not overlap `signers.file_dir` or another `kubesecret` source's directory, and must not hold another secret file the configuration names (the database password, a Vault token). One Secret volume per source |
+| `kubesecret.etcd_encryption_at_rest` | must be `true` outside `profile: dev`: your statement that the cluster encrypts Secrets at rest. kista cannot check it; it logs it at every start |
+
+A reference is `<source>:<name>` and opens `<dir>/<name>`. The name is a Secret data key without
+dots, `[A-Za-z0-9_-]{1,63}` (never `..data` or a timestamped directory), and passes `allow`. The
+name is the version: a key is never replaced under the same name.
+
+### What kista checks
+
+At every open, and again every `recheck` (default and at most `10m`) while the key is in use:
+
+1. **The mount** (Linux only; on other platforms the kind is refused with an error saying so):
+   `/proc/self/mountinfo` shows `dir` as a mount point, `tmpfs`, mounted read-only. The kubelet
+   mounts Secret volumes (and projected volumes) so; a ConfigMap volume (on the node's disk), a
+   `hostPath`, a PVC or a writable `emptyDir` with `medium: Memory` are refused.
+2. **The layout** of the kubelet's atomic writer: `<dir>/..data` is a relative link to a
+   `..<timestamp>` directory beside it, and `<dir>/<name>` is the relative link `..data/<name>`.
+   The file is opened inside `dir`, so no link may leave it, and an absolute link is refused.
+3. **The file**: a regular file with one hard link, owned by root with kista's group (not 0), mode
+   `0440` or narrower: a Secret volume's file under `fsGroup`. A file owned by kista's own user is
+   refused here: it is not a Secret volume's.
+4. **The key**: one unencrypted PKCS#8 or PKCS#1 RSA key, 2048 bits, `e = 65537`, at most 64 KiB,
+   as for [file keys](#file-keys); then [the contract every key meets](#the-contract-every-key-meets),
+   including the public key and fingerprint against the registered key.
+
+A different key under the same name, a file that is gone, or a mount that no longer fits stops
+the key from signing. Checks 1 and 2 catch a misconfiguration; they are no defence against whoever
+controls the pod spec. The parsed key stays in kista's memory, as a file key does; it is never
+logged or written anywhere.
+
+A projected volume passes the same checks. Use one only with Secret sources: a ConfigMap source in
+it would put the key in a ConfigMap. The chart mounts plain Secret volumes (`secretVolumes`).
+
+A `kubesecret` source holds channel keys only: an attestation key through it is refused.
+
+### Making it visible
+
+- `kista serve` logs a warning at every start for each `kubesecret` source, with its `dir` and the
+  acknowledgment.
+- Each start records a `signer.source.weak` event per source (subject `source:<name>`), so an
+  auditor finds it without reading the configuration.
+- `key add` records `key.add` with `protection: kubesecret`; `key check`, `key list` and the
+  management API show the protection tier (see [Registering a key](#registering-a-key)).
+- The `.well-known` document does not show it: clients trust the channel's key; how it is stored
+  is the operator's business.
+
+### What you take on
+
+- **Etcd encryption at rest is required.** On a cluster whose control plane you run, configure an
+  `EncryptionConfiguration`, ideally with a KMS provider; on k3s, start the servers with
+  `--secrets-encryption`. On a managed cluster, check what the provider does: it is often not
+  stated, and kista's documentation verifies no provider's default for you.
+- **RBAC on Secrets in kista's namespace is access to the key.** That covers `get`, `list` and
+  `watch` on Secrets; the right to create pods, Jobs or CronJobs there (a pod can mount any Secret
+  of its namespace); `exec` into kista's pods; and the nodes, since a kubelet holds the Secrets of
+  its pods.
+- **Copies.** Backups (Velero, etcd snapshots), GitOps sources (Sealed Secrets, SOPS) and
+  `kubectl get -o yaml` output are copies of the key. An API server audit policy that logs `get`
+  and `list` on Secrets in the namespace is the only record of a read.
+- **No HSM, no non-exportability, no usage log** of signatures beyond kista's own events.
+- **A compromise** means anyone holding the key can sign extensions the channel's clients accept.
+  Rotate (below) and retire the old key at once; the minimums of
+  [Key rotation](administration/key-rotation.md#emergency-revocation) apply outside dev.
+
+### Rotation
+
+kista's rotation (trusted, then active, then retired) is unchanged:
+
+1. Add the new key under a **new** data key name, in the source's Secret (one Secret volume per
+   source), for example `ext-prod-2027`.
+2. `kista admin key add acme/prod -signer k8s:ext-prod-2027`, and activate it after
+   `rotation.min_trusted`.
+3. Remove the old data key only once its key is retired: a reference that no longer resolves fails
+   closed, and a retired key signs nothing.
+
+Never rewrite a key under the same name: the next check refuses it by its fingerprint, and the
+channel stops signing.
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out ext-prod-2027.pem
+kubectl -n kista create secret generic kista-signing-prod \
+  --from-file=ext-prod=ext-prod.pem --from-file=ext-prod-2027=ext-prod-2027.pem \
+  --dry-run=client -o yaml | kubectl apply -f -
+shred -u ext-prod-2027.pem
+```
+
+The kubelet updates a mounted Secret within a minute or so; `key check` shows when the new name
+resolves. The [Kubernetes page](deployment/kubernetes.md#signing-keys-from-a-secret) shows the
+chart's values.
+
 ## Registering a key
 
 A key becomes a channel's key in two steps: check it, then add it.
@@ -745,14 +881,15 @@ kista admin -config kista.yaml key check -signer prod:ext-prod/0123456789abcdef0
 kista admin -config kista.yaml key add acme/prod -signer prod:ext-prod/0123456789abcdef0123456789abcdef
 ```
 
-`key check` prints the reference and the key's fingerprint. `key add`:
+`key check` prints the reference, the key's fingerprint and its protection tier
+(`file:dev.pem sha256:… protection=file`). `key add`:
 
 1. opens the reference and checks the key (RSA-2048, `e = 65537`, the contract above);
 2. signs a probe (`SHA-256("kista key probe")`) and verifies it;
 3. refuses a fingerprint already registered anywhere on the server;
 4. refuses more than 16 non-retired keys in the channel, or a `.well-known` document over 64 KiB;
 5. stores the public key and the reference, never the private key, and records a `key.add` event
-   (with the source's scheme, never the full reference).
+   (with the source's scheme and the protection tier, never the full reference).
 
 The new key starts `trusted`. Only a channel that never had a key may take its first key as
 `active` directly; afterwards, activation waits `rotation.min_trusted` (see
@@ -767,7 +904,7 @@ server log. See [HTTP API](api.md).
 | --- | --- |
 | `kista admin key check -signer <ref>` | open, check, probe; stores nothing |
 | `kista admin key add <tenant>/<channel> -signer <ref> [-active]` | register a channel key |
-| `kista admin key list <tenant>/<channel>` | id, fingerprint, state, signer reference, dates |
+| `kista admin key list <tenant>/<channel>` | id, fingerprint, state, signer reference, protection tier, dates |
 | `kista admin key activate <tenant>/<channel> <key-id\|fingerprint> [-force]` | make it the signing key |
 | `kista admin key retire <tenant>/<channel> <key-id\|fingerprint> [-force]` | remove it from `.well-known` |
 | `kista admin key events <tenant>/<channel>` | the key's state transitions |
@@ -775,7 +912,8 @@ server log. See [HTTP API](api.md).
 | `kista admin attestation-key add <tenant> <signer-ref> [-active]` | register a tenant's attestation key |
 
 `key check` opens a key for the channel purpose, so on Azure, AWS and Google Cloud it refuses a key
-tagged or labelled `attestation-signing`.
+tagged or labelled `attestation-signing`. The API's key objects carry `protection` next to
+`signer_ref`, for server administrators only.
 
 ## Fingerprints
 
@@ -797,7 +935,8 @@ One key holds one role. Two mechanisms keep the roles apart:
 - **The purpose tag**, where the backend has tags. On Azure and AWS the `kista-purpose` tag, and on
   Google Cloud the `kista-purpose` label, must be `channel-signing` for a channel key and
   `attestation-signing` for an attestation key. A file key
-  and a Vault Transit key have no tags and rely on the registry.
+  and a Vault Transit key have no tags and rely on the registry. A `kubesecret` source opens
+  channel keys only.
 
 Attestation keys sign the statements a tenant's feed serves; they live in the same sources. See
 [Attachments](attachments.md).
@@ -812,3 +951,6 @@ CloudTrail (`CreateKey`, `ImportKeyMaterial`, `TagResource`, `UntagResource`, `P
 `SetIamPolicy`; Admin Activity logs are always on). On kista's
 side, the events `key.add`, `key.activate`, `key.retire`, `key.resign` and
 `attestation_key.add|activate|retire` record every change (see [Observability](observability.md)).
+A `kubesecret` source has no backend log: an API server audit policy logging reads of Secrets in
+kista's namespace is the only record, and `signer.source.weak` marks every start with such a
+source.

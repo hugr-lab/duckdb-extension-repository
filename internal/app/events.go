@@ -19,6 +19,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit/sinks"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/secretfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -88,7 +89,8 @@ func securitySettings(cfg config.Config) map[string]any {
 }
 
 // ServerStart records server.start: kista's version, the schema level, the digests of the
-// security-relevant settings, and the names of those changed since the previous start.
+// security-relevant settings, and the names of those changed since the previous start; and
+// signer.source.weak for each kubesecret key source (spec 0026).
 func ServerStart(ctx context.Context, cfg config.Config, st *store.Store) error {
 	digests := map[string]string{}
 	for k, v := range securitySettings(cfg) {
@@ -126,5 +128,19 @@ func ServerStart(ctx context.Context, cfg config.Config, st *store.Store) error 
 	if err != nil {
 		return err
 	}
-	return st.InsertEvents(ctx, []store.Event{e})
+	events := []store.Event{e}
+	// spec 0026: a source weaker than a vault or a KMS, recorded at every start, once per source, so
+	// an auditor finds it without reading the configuration
+	for _, s := range cfg.Signers.Sources {
+		if s.Kind != "kubesecret" {
+			continue
+		}
+		w, err := st.NewEvent(ctx, "", "system:serve", "signer.source.weak", audit.OK, "source:"+s.Name,
+			map[string]any{"source": s.Name, "kind": s.Kind, "protection": keysource.ProtectionKubeSecret})
+		if err != nil {
+			return err
+		}
+		events = append(events, w)
+	}
+	return st.InsertEvents(ctx, events)
 }

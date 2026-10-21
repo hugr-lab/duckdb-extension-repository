@@ -66,6 +66,7 @@ replicas: 2
 #   - name: db
 #     secretName: kista-db
 #     mountPath: /etc/kista/secrets/db     # config: store.login.password_file: /etc/kista/secrets/db/password
+# A kubesecret key source (spec 0026) reads one of these: its dir must be the entry's mountPath.
 secretVolumes: []
 
 # Service account tokens for Vault or OpenBao jwt/kubernetes auth, or a GCP external_account file

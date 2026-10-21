@@ -1,6 +1,6 @@
 # Spec 0026: Signing keys from a Kubernetes Secret, as an explicit opt-in
 
-- **Status**: accepted (2026-10-21)
+- **Status**: implemented (2026-10-21), but for the kind case (Testing), which is to come
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 
@@ -178,12 +178,16 @@ Prominently, on [Signing keys](../../website/docs/signing-keys.md) and the Kuber
 ## Testing
 
 - **Unit tests** (`internal/keysource/kubesecret`):
-  - the mountinfo parser, on recorded lines from kind, EKS and k3s;
+  - the mountinfo parser, on lines in the shapes kind, EKS and k3s show (a Secret, a ConfigMap, an
+    `emptyDir` in memory, an escaped path, a mount stacked over another);
   - the layout checks on a directory built like the atomic writer's, with the mount check injected;
   - refusals: not a mount point, not `tmpfs`, `rw`, a ConfigMap's layout on disk, a link leaving
     `dir`, an absolute link, a dotted name, owner and mode outside shape (b), shape (a), two hard
     links, a key of the wrong size, a key changed under its name, a file removed;
-  - the known answer, through the contract suite.
+  - the known answer, through the contract suite;
+  - on Linux, with no seam, a real read-only tmpfs in the atomic writer's layout, owned as the
+    kubelet writes it (`KISTA_TEST_KUBESECRET_DIR`; run in a privileged container as a non-root
+    user), and a writable tmpfs refused.
 - **Config**: the acknowledgment required outside dev, `dir` rules, reserved names.
 - **Chart**: a pass fixture with a `kubesecret` source on a `secretVolumes` mount, and a fail
   fixture with `dir` on no Secret.

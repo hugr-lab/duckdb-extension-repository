@@ -93,13 +93,14 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "key", "activate", "acme/prod", b[1])
 	run(1, "key", "retire", "acme/prod", b[0]) // the active key
 	run(0, "key", "retire", "acme/prod", a[0])
-	if !strings.Contains(run(0, "key", "list", "acme/prod"), "retired") {
-		t.Fatal("key list")
+	if got := run(0, "key", "list", "acme/prod"); !strings.Contains(got, "retired") || !strings.Contains(got, "PROTECTION") ||
+		!strings.Contains(got, "file:a.pem  file ") {
+		t.Fatalf("key list: %q", got)
 	}
 	if n := strings.Count(run(0, "key", "events", "acme/prod"), "os:"); n != 5 {
 		t.Fatalf("%d events", n)
 	}
-	if got := run(0, "key", "check", "-signer", "file:a.pem"); !strings.HasPrefix(got, "file:a.pem sha256:") {
+	if got := run(0, "key", "check", "-signer", "file:a.pem"); !strings.HasPrefix(got, "file:a.pem sha256:") || !strings.HasSuffix(got, " protection=file\n") {
 		t.Fatalf("key check: %q", got)
 	}
 	run(1, "key", "check", "-signer", "nope:x")

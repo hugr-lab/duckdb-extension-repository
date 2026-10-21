@@ -11,3 +11,13 @@ The first administration, in a pod (the image has no shell; kubectl exec runs ki
 
 Anyone who may exec into these pods, create Jobs or read Secrets in this namespace acts as kista's
 server administrator: the namespace's RBAC is the boundary.
+{{- $c := include "kista.config" . | fromYaml }}
+{{- range (dig "signers" "sources" list $c) }}
+{{- if eq (toString .kind) "kubesecret" }}
+
+WARNING: key source {{ .name }} signs with keys from a Kubernetes Secret ({{ dig "kubesecret" "dir" "" . }}).
+They are protected by the cluster's etcd encryption at rest and its RBAC on Secrets, not by an HSM
+or a KMS: whoever reads Secrets in this namespace, creates pods here, or reads etcd's disks or
+backups has the keys, and can sign extensions this channel's clients accept.
+{{- end }}
+{{- end }}

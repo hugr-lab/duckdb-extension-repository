@@ -196,24 +196,25 @@ Where signing keys may come from. The whole block is file-only. See
 | --- | --- | --- | --- |
 | `signers.allow_file` | boolean | `false` | Allow `file:` signer references outside `profile: dev`. |
 | `signers.file_dir` | absolute path | none | The only directory `file:` references resolve in. Without it, `file:` references are refused in every profile. |
-| `signers.sources` | list | none | Named vault or KMS sources. |
+| `signers.sources` | list | none | Named vault, KMS or Kubernetes Secret sources. |
 
 Each entry of `signers.sources`:
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `name` | string | required | `[a-z][a-z0-9-]{0,15}`, unique. Reserved: `file`, `vault`, `azurekv`, `awskms`, `gcpkms`, `pkcs11`, `http`, `https`, `arn`, `projects`. A signer reference is `<name>:<key>`. |
-| `kind` | `vault`, `azurekv`, `awskms`, `gcpkms` | required | |
+| `name` | string | required | `[a-z][a-z0-9-]{0,15}`, unique. Reserved: `file`, `vault`, `azurekv`, `awskms`, `gcpkms`, `kubesecret`, `pkcs11`, `http`, `https`, `arn`, `projects`. A signer reference is `<name>:<key>`. |
+| `kind` | `vault`, `azurekv`, `awskms`, `gcpkms`, `kubesecret` | required | |
 | `allow` | list of key-name prefixes | required | Which keys of the source may be used; `"*"` for any. For `azurekv`, prefixes are written in lower case. For `awskms`, whole key ids (`mrk-` ids only with `allow_multi_region`) or `"*"`. For `gcpkms`, CryptoKey id prefixes. |
 | `max_concurrency` | integer | `4` | Signing calls in flight to this source. |
 | `recheck` | duration | `10m` | How often key properties are re-read; `0..10m`. |
 | `timeout` | duration | `10s` | Per call; `1s..60s`. |
 | `health_key` | string | none | Accepted by the loader; not used by this version. |
-| `identity` | block | none | Required for `azurekv` and `awskms`; refused for `vault` and `gcpkms`. Its fields are below. |
+| `identity` | block | none | Required for `azurekv` and `awskms`; refused for `vault`, `gcpkms` and `kubesecret`. Its fields are below. |
 | `vault` | block | | Exactly one block matching `kind`. |
 | `azurekv` | block | | |
 | `awskms` | block | | |
 | `gcpkms` | block | | |
+| `kubesecret` | block | | |
 
 `identity` block of a source:
 
@@ -269,6 +270,14 @@ Each entry of `signers.sources`:
 | `require_hsm` | boolean | `true` | Only `HSM` and `HSM_SINGLE_TENANT` keys. `false` (also `SOFTWARE`) only with `profile: dev`. |
 | `credentials_file` | absolute path | none | Absent: the metadata server. Otherwise an `external_account` file; a `service_account` key file only with `profile: dev`. Public material: owned by root or kista's user ([Files kista reads](security.md#files-kista-reads)). A `service_account` key holds a private key, yet is checked as public: a gap accepted in dev only. |
 | `endpoint_url` | URL | none | The tests' fake only: `profile: dev`, `http` or `https` on a loopback host, without `credentials_file`. Requests carry a fixed test token. |
+
+`kubesecret` block (a Kubernetes Secret volume; the weakest source, see
+[Kubernetes Secrets](signing-keys.md#kubernetes-secrets)):
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `dir` | absolute path | required | The Secret volume's `mountPath`, clean. Must not overlap `signers.file_dir` or another `kubesecret` source's `dir`, nor hold another secret file the configuration names. Checked at every open: a read-only tmpfs mount (Linux only), the kubelet's layout, root-owned files with kista's group and mode `0440` or narrower. |
+| `etcd_encryption_at_rest` | boolean | `false` | Must be `true` outside dev: your statement that the cluster encrypts Secrets at rest. kista cannot check it, and logs it at every start. |
 
 ## blob
 

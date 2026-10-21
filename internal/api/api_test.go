@@ -29,6 +29,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
@@ -121,7 +122,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	ks := &keys.Service{Store: st, Signers: signer.Resolver{FileDir: dir, AllowFile: true}, Authz: authz.ServerAdmin{}}
+	ks := &keys.Service{Store: st, Signers: keysource.NewRegistry(signer.Resolver{FileDir: dir, AllowFile: true}), Authz: authz.ServerAdmin{}}
 	fst, _ := fs.Open(filepath.Join(t.TempDir(), "blobs"))
 	bs, err := blob.NewService(ctx, st, []blob.Domain{{Name: "default", Kind: "fs", Store: fst}},
 		blob.Options{SpoolDir: filepath.Join(t.TempDir(), "spool"), MaxBody: 1 << 20, MaxIngests: 4, Log: slog.New(slog.DiscardHandler)})

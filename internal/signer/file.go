@@ -16,8 +16,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 )
 
-// maxKeyFile bounds the size of a key file read into memory.
-const maxKeyFile = 64 << 10
+// MaxKeyFile bounds the size of a key file read into memory.
+const MaxKeyFile = 64 << 10
 
 // File is a Signer backed by an unencrypted PEM private key file. It is for development and tests:
 // production configuration must opt in explicitly (spec 0002).
@@ -45,14 +45,14 @@ func OpenFile(path string) (*File, error) {
 	if err := checkKeyFile(path, fi); err != nil {
 		return nil, err
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxKeyFile+1))
+	data, err := io.ReadAll(io.LimitReader(f, MaxKeyFile+1))
 	if err != nil {
 		return nil, fmt.Errorf("signer: reading %s: %w", path, err)
 	}
-	if len(data) > maxKeyFile {
-		return nil, fmt.Errorf("signer: %s is larger than %d bytes", path, maxKeyFile)
+	if len(data) > MaxKeyFile {
+		return nil, fmt.Errorf("signer: %s is larger than %d bytes", path, MaxKeyFile)
 	}
-	key, err := parsePrivateKey(data)
+	key, err := ParsePrivateKey(data)
 	if err != nil {
 		return nil, fmt.Errorf("signer: %s: %w", path, err)
 	}
@@ -85,7 +85,10 @@ func checkKeyFile(path string, fi os.FileInfo) error {
 	return nil
 }
 
-func parsePrivateKey(data []byte) (*rsa.PrivateKey, error) {
+// ParsePrivateKey parses a key file's content: exactly one unencrypted PEM block, PKCS#8 or PKCS#1,
+// holding a valid RSA key that passes extfile.CheckKey (2048 bits, e = 65537). Errors never carry
+// the content.
+func ParsePrivateKey(data []byte) (*rsa.PrivateKey, error) {
 	block, rest := pem.Decode(data)
 	if block == nil {
 		return nil, errors.New("no PEM block")

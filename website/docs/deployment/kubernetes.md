@@ -211,6 +211,59 @@ credential refresh), the TLS certificate and key (when they change). An OTLP eve
 chart sets `enableServiceLinks: false`, so a Service named `kista` injects no `KISTA_*`
 variables.
 
+## Signing keys from a Secret
+
+Channel keys belong in a KMS or in Vault or OpenBao Transit
+([Signing keys](../signing-keys.md#key-sources)). On a cloud where kista supports no KMS and no
+Vault runs, a `kubesecret` key source signs with RSA keys from a Secret volume
+([Kubernetes Secrets](../signing-keys.md#kubernetes-secrets)). It is the weakest source, and an
+explicit choice:
+
+- **Etcd encryption at rest is required**, and `etcd_encryption_at_rest: true` is your statement
+  that the cluster has it. Self-managed: an `EncryptionConfiguration`, ideally with a KMS
+  provider; k3s: `--secrets-encryption`. Managed: check what the provider does; it is often not
+  stated.
+- **RBAC on Secrets in this namespace is access to the key**: `get`, `list` and `watch` on
+  Secrets, the right to create pods, Jobs or CronJobs here (a pod can mount any Secret of its
+  namespace), `exec` into kista's pods, and the nodes (a kubelet holds its pods' Secrets).
+- **Copies**: Velero backups, etcd snapshots, Sealed Secrets or SOPS sources, and
+  `kubectl get -o yaml` output all hold the key. Only an API server audit policy that logs `get`
+  and `list` on Secrets here records a read.
+- **No HSM, no non-exportability, no usage log** beyond kista's events. Whoever has the key signs
+  extensions the channel's clients accept: rotate, and retire the old key at once.
+
+The Secret is mounted with `secretVolumes`, and the source's `dir` is its `mountPath`; the chart
+refuses a `kubesecret` source whose `dir` is not a `secretVolumes` mount, and its install notes
+repeat the warning. One Secret volume per source; each data key is a key name.
+
+```yaml title="values.yaml"
+config:
+  signers:
+    sources:
+      - name: k8s
+        kind: kubesecret
+        allow: ["ext-"]
+        kubesecret:
+          dir: /etc/kista/signing/prod
+          etcd_encryption_at_rest: true
+secretVolumes:
+  - {name: signing, secretName: kista-signing-prod, mountPath: /etc/kista/signing/prod}
+```
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out ext-prod.pem
+kubectl -n kista create secret generic kista-signing-prod --from-file=ext-prod=ext-prod.pem
+shred -u ext-prod.pem
+ka key check -signer k8s:ext-prod      # prints protection=kubesecret
+ka key add acme/prod -signer k8s:ext-prod -active
+```
+
+kista checks at every open that `dir` is a read-only tmpfs mount (Linux only), that the files have
+the kubelet's layout, and that each key file is root-owned with kista's group (`fsGroup` 65532) and
+mode `0440` or narrower. A ConfigMap, a `hostPath`, a PVC or an `emptyDir` is refused. Never
+rewrite a key under the same data key: add a new name, register it, and remove the old one only
+once its key is retired.
+
 ## Cloud identities
 
 kista needs no Kubernetes API credentials, so the chart never mounts the service account's API
