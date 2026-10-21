@@ -1,0 +1,6 @@
+# want: add imds to networkPolicy.egress.cloudMetadata
+config:
+  store: {kind: sqlite}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+  blob: {domains: [{name: default, kind: s3, s3: {endpoint: https://s3.us-east-1.amazonaws.com, bucket: b, region: us-east-1, lookup: dns, sse: s3, account: "123456789012", identity: {kind: imds}}}]}
+networkPolicy: {loadBalancerRanges: [10.1.0.0/16], egress: {enabled: true, cloudMetadata: [gke]}}

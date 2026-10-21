@@ -1,0 +1,7 @@
+# want: add gke to networkPolicy.egress.cloudMetadata
+gcp: {serviceAccount: kista@acme.iam.gserviceaccount.com}
+config:
+  store: {kind: sqlite}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+  blob: {domains: [{name: default, kind: gcs, gcs: {bucket: b, principal: kista@acme.iam.gserviceaccount.com}}]}
+networkPolicy: {loadBalancerRanges: [10.1.0.0/16], egress: {enabled: true}}

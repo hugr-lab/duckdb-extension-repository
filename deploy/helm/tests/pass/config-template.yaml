@@ -1,0 +1,31 @@
+# configTemplate (spec 0025): an umbrella chart's globals in kista's config, rendered by tpl
+global:
+  database: {host: db.platform.svc, name: kista}
+  kista: {host: kista.example.com, podCIDR: 10.244.0.0/16}
+configTemplate: true
+config:
+  store:
+    kind: postgres
+    dsn: postgres://kista@{{ .Values.global.database.host }}:5432/{{ .Values.global.database.name }}?sslmode=verify-full
+    login: {password_file: /etc/kista/secrets/db/password}
+  serve:
+    public_url: https://{{ .Values.global.kista.host }}
+    trusted_proxies: ["{{ .Values.global.kista.podCIDR }}"]
+  blob:
+    domains:
+      - name: default
+        kind: s3
+        s3:
+          endpoint: https://s3.example.com
+          bucket: "{{ .Release.Name }}-bodies"
+          region: us-east-1
+          lookup: path
+          sse: none
+          access_key_file: /etc/kista/secrets/s3/access-key
+          secret_key_file: /etc/kista/secrets/s3/secret-key
+secretVolumes:
+  - {name: db, secretName: kista-db, mountPath: /etc/kista/secrets/db}
+  - {name: s3, secretName: kista-s3, mountPath: /etc/kista/secrets/s3}
+networkPolicy:
+  ingressController:
+    podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}

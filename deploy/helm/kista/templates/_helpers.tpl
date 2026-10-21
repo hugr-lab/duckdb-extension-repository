@@ -50,8 +50,63 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- end -}}
 {{- end -}}
 
+{{/* The config values, each string with "{{" rendered by tpl with configTemplate (spec 0025):
+     (dict "root" $ "out" $out) sets $out.v. Off: the values as they are. Rendered once per helm
+     run and kept on the root context, so the ConfigMap, its checksum and the checks see one
+     result. */}}
+{{- define "kista.userConfig" -}}
+{{- $c := .root.Values.config | default dict -}}
+{{- if .root.Values.configTemplate -}}
+{{- if not (hasKey .root "kistaRenderedConfig") -}}
+{{- $acc := dict -}}
+{{- include "kista.tplNode" (dict "node" $c "root" .root "out" $acc "path" "config") -}}
+{{- $_ := set .root "kistaRenderedConfig" $acc.v -}}
+{{- end -}}
+{{- $c = get .root "kistaRenderedConfig" -}}
+{{- end -}}
+{{- $_ := set .out "v" $c -}}
+{{- end -}}
+
+{{/* A copy of a tree with tpl applied to each string that holds "{{": (dict "node" "root" "out"
+     "path"). A template renders within its string, so it cannot add keys; it may read values
+     only (no lookup, tpl, include, template or getHostByName), and must not render empty. */}}
+{{- define "kista.tplNode" -}}
+{{- $root := .root -}}{{- $path := .path -}}
+{{- if kindIs "map" .node -}}
+{{- $m := dict -}}
+{{- range $k, $v := .node -}}
+{{- $acc := dict -}}
+{{- include "kista.tplNode" (dict "node" $v "root" $root "out" $acc "path" (printf "%s.%s" $path $k)) -}}
+{{- $_ := set $m $k $acc.v -}}
+{{- end -}}
+{{- $_ := set .out "v" $m -}}
+{{- else if kindIs "slice" .node -}}
+{{- $l := list -}}
+{{- range $i, $v := .node -}}
+{{- $acc := dict -}}
+{{- include "kista.tplNode" (dict "node" $v "root" $root "out" $acc "path" (printf "%s[%d]" $path $i)) -}}
+{{- $l = append $l $acc.v -}}
+{{- end -}}
+{{- $_ := set .out "v" $l -}}
+{{- else if and (kindIs "string" .node) (contains "{{" .node) -}}
+{{- range regexFindAll "(?s)\\{\\{.*?\\}\\}" .node -1 -}}
+{{- with regexFind "\\b(lookup|tpl|include|template|getHostByName)\\b" . -}}
+{{- fail (printf "configTemplate: %s calls %s; a config template may read values only" $path .) -}}
+{{- end -}}
+{{- end -}}
+{{- $r := tpl .node $root -}}
+{{- if not (trim $r) -}}
+{{- fail (printf "configTemplate: %s renders empty (a missing value?); write {{ required \"…\" .Values.… }} to name it" $path) -}}
+{{- end -}}
+{{- $_ := set .out "v" $r -}}
+{{- else -}}
+{{- $_ := set .out "v" .node -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "kista.sqlite" -}}
-{{- if eq (dig "store" "kind" "" (.Values.config | default dict)) "sqlite" -}}true{{- end -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- if eq (dig "store" "kind" "" $out.v) "sqlite" -}}true{{- end -}}
 {{- end -}}
 
 {{/* One pod at a time: SQLite, or fs blobs on a volume that is not ReadWriteMany. */}}
@@ -69,6 +124,168 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- if kindIs "invalid" $np -}}
 {{- if eq .Values.mode "behind_proxy" -}}true{{- end -}}
 {{- else if $np -}}true{{- end -}}
+{{- end -}}
+
+{{/* UDP and TCP ports as NetworkPolicy ports (DNS). */}}
+{{- define "kista.dnsPorts" -}}
+{{- $out := list -}}
+{{- range . -}}{{- $out = concat $out (list (dict "port" (int .) "protocol" "UDP") (dict "port" (int .) "protocol" "TCP")) -}}{{- end -}}
+{{- toYaml $out -}}
+{{- end -}}
+
+{{/* TCP ports as NetworkPolicy ports. */}}
+{{- define "kista.tcpPorts" -}}
+{{- $out := list -}}
+{{- range . -}}{{- $out = append $out (dict "port" (int .) "protocol" "TCP") -}}{{- end -}}
+{{- toYaml $out -}}
+{{- end -}}
+
+{{/* The cloud metadata endpoints by name (networkPolicy.egress.cloudMetadata): (list cidr port). */}}
+{{- define "kista.metadataEndpoints" -}}
+gke:
+  # the GKE metadata server (Workload Identity): Dataplane V2, and 1.21 and later
+  - [169.254.169.254/32, 80]
+  - [169.254.169.252/32, 988]
+aws-pod-identity:
+  # the EKS Pod Identity agent
+  - [169.254.170.23/32, 80]
+  - ["fd00:ec2::23/128", 80]
+imds:
+  # the instance metadata service: EC2 (identity kind imds), Azure (kind managed)
+  - [169.254.169.254/32, 80]
+{{- end -}}
+
+{{/* The ranges kista never reaches, even when the config allows them (internal/egress, never). */}}
+{{- define "kista.neverRanges" -}}
+[169.254.0.0/16, 168.63.129.16/32, 100.100.100.200/32, "fe80::/10", "fd00:ec2::/112"]
+{{- end -}}
+
+{{/* A CIDR's address as bits: 32 or 128 characters; empty when the chart cannot read it. */}}
+{{- define "kista.cidrBits" -}}
+{{- $addr := index (splitList "/" .) 0 -}}
+{{- if and (contains ":" $addr) (not (contains "." $addr)) -}}
+{{- $halves := splitList "::" (lower $addr) -}}
+{{- $left := list -}}{{- with index $halves 0 -}}{{- $left = splitList ":" . -}}{{- end -}}
+{{- $right := list -}}{{- if gt (len $halves) 1 -}}{{- with index $halves 1 -}}{{- $right = splitList ":" . -}}{{- end -}}{{- end -}}
+{{- $groups := $left -}}
+{{- if gt (len $halves) 1 -}}
+{{- range until (int (sub 8 (add (len $left) (len $right)))) -}}{{- $groups = append $groups "0" -}}{{- end -}}
+{{- end -}}
+{{- $groups = concat $groups $right -}}
+{{- $hex := dict "0" "0000" "1" "0001" "2" "0010" "3" "0011" "4" "0100" "5" "0101" "6" "0110" "7" "0111" "8" "1000" "9" "1001" "a" "1010" "b" "1011" "c" "1100" "d" "1101" "e" "1110" "f" "1111" -}}
+{{- $bits := "" -}}
+{{- range $groups -}}
+{{- $g := printf "%s%s" (repeat (int (sub 4 (len .))) "0") . -}}
+{{- range $c := splitList "" $g -}}{{- $bits = printf "%s%s" $bits (get $hex $c) -}}{{- end -}}
+{{- end -}}
+{{- if eq (len $bits) 128 -}}{{- $bits -}}{{- end -}}
+{{- else if regexMatch "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$" $addr -}}
+{{- range splitList "." $addr -}}{{- printf "%08b" (atoi .) -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Whether the first CIDR contains the second (same family, as far as the chart can read them):
+     (list outer inner). */}}
+{{- define "kista.cidrContains" -}}
+{{- $o := index . 0 -}}{{- $i := index . 1 -}}
+{{- $ob := include "kista.cidrBits" $o -}}{{- $ib := include "kista.cidrBits" $i -}}
+{{- $on := atoi (last (splitList "/" $o)) -}}{{- $in := atoi (last (splitList "/" $i)) -}}
+{{- if and $ob (eq (len $ob) (len $ib)) (le $on $in) (le $on (len $ob)) -}}
+{{- if eq (trunc $on $ob) (trunc $on $ib) -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* An ipBlock rule to a CIDR on TCP ports, less the ranges kista never reaches; none when the
+     CIDR lies inside one of them: (list cidr ports). */}}
+{{- define "kista.allowRule" -}}
+{{- $cidr := index . 0 -}}
+{{- $inside := false -}}{{- $except := list -}}
+{{- range $n := include "kista.neverRanges" . | fromYamlArray -}}
+{{- if include "kista.cidrContains" (list $n $cidr) -}}{{- $inside = true -}}
+{{- else if include "kista.cidrContains" (list $cidr $n) -}}{{- $except = append $except $n -}}
+{{- end -}}
+{{- end -}}
+{{- if not $inside -}}
+{{- $block := dict "cidr" $cidr -}}
+{{- if $except -}}{{- $_ := set $block "except" $except -}}{{- end -}}
+{{- toYaml (list (dict "to" (list (dict "ipBlock" $block)) "ports" (include "kista.tcpPorts" (index . 1) | fromYamlArray))) -}}
+{{- else -}}
+[]
+{{- end -}}
+{{- end -}}
+
+{{/* config.egress.proxy, rendered, as JSON: [host, port, whether host is an IP address]. */}}
+{{- define "kista.proxy" -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- $proxy := toString (dig "egress" "proxy" "" $out.v) -}}
+{{- if $proxy -}}
+{{- $u := urlParse $proxy -}}
+{{- $host := $u.hostname -}}
+{{- $port := regexFind "[0-9]+$" $u.host -}}
+{{- $ip := or (regexMatch "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$" $host) (contains ":" $host) -}}
+{{- toJson (list $host $port $ip) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The egress NetworkPolicy's rules (spec 0025), as a YAML list. */}}
+{{- define "kista.egressRules" -}}
+{{- $eg := .Values.networkPolicy.egress -}}
+{{- $rules := list -}}
+{{- /* DNS: UDP and TCP to the cluster's DNS pods, and to DNS that is no pod */ -}}
+{{- if $eg.dns.enabled -}}
+{{- $peer := dict "podSelector" $eg.dns.podSelector -}}
+{{- with $eg.dns.namespaceSelector -}}{{- $_ := set $peer "namespaceSelector" . -}}{{- end -}}
+{{- if not (or $eg.dns.podSelector $eg.dns.namespaceSelector) -}}
+{{- /* the default: kube-dns or CoreDNS, as EKS, AKS, GKE, k3s, kind and Gardener label them */ -}}
+{{- $peer = dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) "podSelector" (dict "matchLabels" (dict "k8s-app" "kube-dns")) -}}
+{{- end -}}
+{{- $rules = append $rules (dict "to" (list $peer) "ports" (include "kista.dnsPorts" $eg.dns.ports | fromYamlArray)) -}}
+{{- range $eg.dns.ipBlocks -}}
+{{- $rules = append $rules (dict "to" (list (dict "ipBlock" (dict "cidr" .cidr))) "ports" (include "kista.dnsPorts" (.ports | default $eg.dns.ports) | fromYamlArray)) -}}
+{{- end -}}
+{{- end -}}
+{{- /* public https: every address but the private and special ranges, as kista's egress */ -}}
+{{- if $eg.public.enabled -}}
+{{- $to := list -}}
+{{- range $cidr := $eg.public.cidrs -}}
+{{- $block := dict "cidr" $cidr -}}
+{{- if hasSuffix "/0" $cidr -}}
+{{- $v6 := contains ":" $cidr -}}
+{{- $except := list -}}
+{{- range $eg.public.except -}}{{- if eq (contains ":" .) $v6 -}}{{- $except = append $except . -}}{{- end -}}{{- end -}}
+{{- if $except -}}{{- $_ := set $block "except" $except -}}{{- end -}}
+{{- end -}}
+{{- $to = append $to (dict "ipBlock" $block) -}}
+{{- end -}}
+{{- $rules = append $rules (dict "to" $to "ports" (include "kista.tcpPorts" $eg.public.ports | fromYamlArray)) -}}
+{{- end -}}
+{{- /* the private networks kista's configuration allows: egress.allow, auth.server_egress_allow,
+       upstreams.credentials[].allow, events.sinks[].allow; less what kista never reaches */ -}}
+{{- $acc := dict "maps" list -}}
+{{- include "kista.walk" (dict "node" (include "kista.config" . | fromYaml) "acc" $acc) -}}
+{{- range $acc.maps -}}
+{{- if hasKey . "cidr" -}}
+{{- $rules = concat $rules (include "kista.allowRule" (list (toString .cidr) (.ports | default (list 443))) | fromYamlArray) -}}
+{{- end -}}
+{{- end -}}
+{{- /* egress.proxy at an IP address; a host name needs extraRules (kista.validate) */ -}}
+{{- with include "kista.proxy" . -}}
+{{- $p := fromJsonArray . -}}
+{{- if index $p 2 -}}
+{{- $cidr := printf "%s/32" (index $p 0) -}}{{- if contains ":" (index $p 0) -}}{{- $cidr = printf "%s/128" (index $p 0) -}}{{- end -}}
+{{- $rules = concat $rules (include "kista.allowRule" (list $cidr (list (index $p 1))) | fromYamlArray) -}}
+{{- end -}}
+{{- end -}}
+{{- /* the cloud metadata endpoints the identity uses */ -}}
+{{- $endpoints := include "kista.metadataEndpoints" . | fromYaml -}}
+{{- range $eg.cloudMetadata -}}
+{{- range get $endpoints . -}}
+{{- $rules = append $rules (dict "to" (list (dict "ipBlock" (dict "cidr" (index . 0)))) "ports" (list (dict "port" (int (index . 1)) "protocol" "TCP"))) -}}
+{{- end -}}
+{{- end -}}
+{{- /* the operator's own: the database, a key source, a collector, a token service */ -}}
+{{- $rules = concat $rules ($eg.extraRules | default list) -}}
+{{- toYaml $rules -}}
 {{- end -}}
 
 {{/* Whether a path is dir or under it. */}}
@@ -121,7 +338,8 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 
 {{/* kista.yaml as the pods read it: config with the chart's keys (values.yaml says which). */}}
 {{- define "kista.config" -}}
-{{- $c := deepCopy (.Values.config | default dict) -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- $c := deepCopy $out.v -}}
 {{- $serve := get $c "serve" | default dict -}}
 {{- $_ := set $c "serve" $serve -}}
 {{- $listeners := list -}}
@@ -153,7 +371,8 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{/* The checks helm install fails on (spec 0013). */}}
 {{- define "kista.validate" -}}
 {{- $v := .Values -}}
-{{- $user := $v.config | default dict -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- $user := $out.v -}}
 {{- $c := include "kista.config" . | fromYaml -}}
 {{- if not (dig "store" "kind" "" $user) -}}
 {{- fail "config.store.kind is required" -}}
@@ -302,6 +521,34 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- if and $ic.namespaceSelector (not $ic.podSelector) -}}
 {{- fail "networkPolicy.ingressController: a namespaceSelector alone admits every pod in those namespaces; add the controller's podSelector" -}}
 {{- end -}}
+{{- /* the egress NetworkPolicy (spec 0025): what the chart can tell kista needs */ -}}
+{{- $eg := $np.egress -}}
+{{- if $eg.enabled -}}
+{{- $dnsPods := $eg.dns.podSelector | default dict -}}
+{{- if and $eg.dns.enabled (or $eg.dns.podSelector $eg.dns.namespaceSelector) (not (or $dnsPods.matchLabels $dnsPods.matchExpressions)) -}}
+{{- fail "networkPolicy.egress.dns: a podSelector without matchLabels or matchExpressions (or none, beside a namespaceSelector) admits every pod; name the DNS pods" -}}
+{{- end -}}
+{{- if and (not $sqlite) (not $eg.extraRules) -}}
+{{- fail (printf "networkPolicy.egress: kista must reach its %s database; add a rule for it to networkPolicy.egress.extraRules" (toString $c.store.kind)) -}}
+{{- end -}}
+{{- with include "kista.proxy" . -}}
+{{- $p := fromJsonArray . -}}
+{{- if and (not (index $p 2)) (not $eg.extraRules) -}}
+{{- fail (printf "networkPolicy.egress: config.egress.proxy names the host %s, which the chart cannot resolve; add a rule for the proxy to networkPolicy.egress.extraRules" (index $p 0)) -}}
+{{- end -}}
+{{- end -}}
+{{- $kinds := list -}}
+{{- range $acc.maps -}}{{- if hasKey . "kind" -}}{{- $kinds = append $kinds (toString .kind) -}}{{- end -}}{{- end -}}
+{{- $need := dict -}}
+{{- if $principals -}}{{- $_ := set $need "gke" "a gcpkms source, gcs domain or gcp database login without credentials_file (the GKE metadata server)" -}}{{- end -}}
+{{- if has "pod_identity" $kinds -}}{{- $_ := set $need "aws-pod-identity" "an AWS identity of kind pod_identity (the EKS Pod Identity agent)" -}}{{- end -}}
+{{- if or (has "imds" $kinds) (has "managed" $kinds) -}}{{- $_ := set $need "imds" "an identity of kind imds or managed (the instance metadata service)" -}}{{- end -}}
+{{- range $name, $why := $need -}}
+{{- if not (has $name $eg.cloudMetadata) -}}
+{{- fail (printf "networkPolicy.egress: the config uses %s; add %s to networkPolicy.egress.cloudMetadata" $why $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/* A Kubernetes quantity (bytes, or a number with Ki, Mi, Gi, Ti) in Mi, rounded up: (list name value). */}}
@@ -334,7 +581,8 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- else if .Values.spool.sizeLimit -}}
 {{- printf "%dMi" (add (int (include "kista.quantityMi" (list "spool.sizeLimit" .Values.spool.sizeLimit))) $headroom) -}}
 {{- else -}}
-{{- $c := .Values.config | default dict -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- $c := $out.v -}}
 {{- $body := int (include "kista.mib" (dig "blob" "max_body" "1GiB" $c)) -}}
 {{- $ingests := int (dig "blob" "max_ingests" 4 $c) -}}
 {{- if lt $ingests 1 -}}{{- $ingests = 4 -}}{{- end -}}
@@ -357,7 +605,8 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- if not (kindIs "invalid" .Values.terminationGracePeriodSeconds) -}}
 {{- int .Values.terminationGracePeriodSeconds -}}
 {{- else -}}
-{{- $c := .Values.config | default dict -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- $c := $out.v -}}
 {{- $drain := int (include "kista.seconds" (dig "serve" "drain_timeout" "5s" $c)) -}}
 {{- $shut := int (include "kista.seconds" (dig "serve" "shutdown_timeout" "30s" $c)) -}}
 {{- add (int .Values.preStopSeconds) $drain (mul 2 $shut) 21 10 -}}

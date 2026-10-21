@@ -1,0 +1,6 @@
+# want: nil pointer evaluating
+configTemplate: true
+config:
+  store: {kind: sqlite}
+  serve: {public_url: "https://{{ .Values.global.kista.host }}", trusted_proxies: [10.0.0.0/8]}
+networkPolicy: {loadBalancerRanges: [10.1.0.0/16]}

@@ -1,0 +1,6 @@
+# want: config.egress.proxy names the host proxy.corp.example
+config:
+  store: {kind: sqlite}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+  egress: {proxy: "http://proxy.corp.example:3128"}
+networkPolicy: {loadBalancerRanges: [10.1.0.0/16], egress: {enabled: true}}

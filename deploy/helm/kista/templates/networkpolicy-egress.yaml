@@ -1,0 +1,24 @@
+{{- $_ := include "kista.validate" . -}}
+{{- $eg := .Values.networkPolicy.egress }}
+{{- if $eg.enabled }}
+{{- $rules := include "kista.egressRules" . | fromYamlArray }}
+
+# What kista's pods may reach (spec 0025); everything else is refused.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kista.name" (list . "egress") }}
+  namespace: {{ include "kista.namespace" $ }}
+  labels: {{- include "kista.labels" . | nindent 4 }}
+spec:
+  # every pod of the release: the server and the admin jobs
+  podSelector:
+    matchLabels: {{- include "kista.selectorLabels" . | nindent 6 }}
+  policyTypes: [Egress]
+  {{- if $rules }}
+  egress: {{- toYaml $rules | nindent 4 }}
+  {{- else }}
+  # nothing listed: no egress at all
+  egress: []
+  {{- end }}
+{{- end }}

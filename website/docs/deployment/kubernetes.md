@@ -96,6 +96,12 @@ Write sizes as strings with units (`max_body: 1GiB`): Helm turns large numbers i
   `ReadWriteMany` `blobVolume`;
 - an identity in the values that does not match the configuration (below);
 - the NetworkPolicy without the ingress controller's pods or load-balancer ranges;
+- the egress NetworkPolicy without any `extraRules` for the database or a proxy named by host,
+  without the metadata endpoint the configuration's cloud identity uses, or with a rule that
+  would admit everything ([What kista may reach](#what-kista-may-reach));
+- with `configTemplate`, a config template that calls `lookup` (or `tpl`, `include`,
+  `template`, `getHostByName`) or renders empty
+  ([Values from a parent chart](#values-from-a-parent-chart));
 - `profile: dev` without `devProfile: true`: it relaxes the key and identity rules.
 
 ## Another namespace
@@ -120,8 +126,59 @@ create it, with its labels (Pod Security Admission, the ones the NetworkPolicy s
 - **`helm template`** renders the namespace too: give it `-n` (or the override), or the objects
   name the current context's namespace.
 - **Egress at startup.** A bootstrap with upstreams reads their `.well-known` before serving: in a
-  cluster that denies egress by default, a policy of the umbrella's must let kista's pods reach them
-  on 443, and DNS. The chart's NetworkPolicy covers ingress only.
+  cluster that denies egress by default, kista's pods must reach them on 443, and DNS.
+  `networkPolicy.egress` admits exactly that and what else kista needs
+  ([What kista may reach](#what-kista-may-reach)); without it, a policy of the umbrella's must.
+
+## Values from a parent chart
+
+`configTemplate: true` lets a parent (umbrella) chart write kista's `config` with its own values:
+every string in `config` that holds `{{` is rendered by Helm's `tpl` with the chart's root
+context, `.Values.global` included (spec 0025). It is off by default, so a configuration with a
+literal `{{` keeps working.
+
+```yaml title="the umbrella's values.yaml"
+global:
+  database: {host: db.platform.svc}
+  kista: {host: kista.example.com}
+kista:
+  namespaceOverride: kista
+  configTemplate: true
+  config:
+    store:
+      kind: postgres
+      dsn: postgres://kista@{{ required "global.database.host" .Values.global.database.host }}:5432/kista?sslmode=verify-full
+      login: {password_file: /etc/kista/secrets/db/password}
+    serve:
+      public_url: https://{{ required "global.kista.host" .Values.global.kista.host }}
+```
+
+- **`required` for every value.** Helm's `tpl` renders a missing value as nothing, so
+  `{{ .Values.global.database.host }}` with no such value gives a DSN without a host, and kista
+  may accept it. `required` makes `helm install` fail with the value's name instead. The chart
+  refuses a string that renders entirely empty, and a template that reads through a missing map
+  (`.Values.global.nope.host`) fails anyway; a missing value inside a longer string is caught
+  only by `required`.
+- **Values only.** A config template may read values, `.Release` and `.Chart`, with Helm's
+  functions. `lookup`, `tpl`, `include`, `template` and `getHostByName` are refused before
+  rendering: `lookup` would run at install with the installer's credentials and could copy a
+  Secret into the ConfigMap.
+- **Deterministic.** The templates render once per `helm install` or `upgrade`, and the
+  ConfigMap, its checksum on the pods and the chart's checks all use that one result. Even so,
+  `now`, `randAlphaNum` or `uuidv4` would change the configuration, and roll the pods, at every
+  upgrade: keep the templates to values.
+- **Within its string.** Each template renders inside the string that holds it, so a value can
+  never add a key to the configuration: a global holding `"db\nprofile: dev"` stays a part of the
+  DSN. The rendered result is a string; a number, a boolean or a list cannot be templated.
+- **Checked after rendering.** The chart's checks and kista's own (no password in a DSN, no
+  token inline: secrets stay files from `secretVolumes`) apply to the rendered configuration,
+  as they would to the same text written out.
+- **Only `config`.** The identity values are not templated: `azure.workloadIdentity.clientId`,
+  `aws.irsa.roleArn` and `gcp.serviceAccount` are written as literals, equal to what the rendered
+  configuration names.
+- **A literal `{{`** is then written `{{ "{{" }}`.
+- **What the pods read** is in the ConfigMap, rendered; a change of a value the templates use rolls
+  the pods.
 
 ## Storage and replicas
 
@@ -244,6 +301,112 @@ ranges in `trusted_proxies` and `networkPolicy.loadBalancerRanges`:
 - **Azure Application Gateway for Containers.** A `HealthCheckPolicy` for port 8081, path
   `/readyz`; the range is the gateway's subnet.
 
+## What kista may reach
+
+`networkPolicy.egress.enabled: true` adds a second NetworkPolicy, `kista-egress` for a release
+named `kista`, on every pod of the release: the server and the `adminJobs`. It is off by default,
+and apart from `networkPolicy.enabled`, which is the ingress policy. With it on, kista's pods
+reach only:
+
+| What | The rule | Values |
+| --- | --- | --- |
+| DNS | UDP and TCP 53 and 8053 to `k8s-app: kube-dns` in `kube-system`; DNS that is no pod by address | `dns.podSelector`, `dns.namespaceSelector`, `dns.ports`, `dns.ipBlocks`; `dns.enabled: false` |
+| Public https | TCP 443 to `0.0.0.0/0` and `::/0`, except the private and special ranges | `public.ports`, `public.cidrs`, `public.except`; `public.enabled: false` |
+| Private networks the configuration allows | each entry of `egress.allow`, `auth.server_egress_allow`, `upstreams.credentials[].allow` and `events.sinks[].allow`, with its ports (443 by default), less the ranges kista never reaches | the configuration |
+| The proxy | `egress.proxy` on its port, when it names an IP address | the configuration |
+| The cloud identity's metadata endpoint | `gke`: `169.254.169.254:80` and `169.254.169.252:988`; `aws-pod-identity`: `169.254.170.23:80` and `[fd00:ec2::23]:80`; `imds`: `169.254.169.254:80` | `cloudMetadata` |
+| Everything else | your NetworkPolicy egress rules, rendered as given | `extraRules` |
+
+**Public https** mirrors kista's own egress: it refuses the private and special ranges (RFC 1918,
+CGNAT, link-local and with it the cloud metadata, loopback, ULA, documentation, multicast) unless
+the configuration allows them, and reaches a public address only on 443. The IPv6 block also
+leaves out the NAT64 form (`64:ff9b::/96`) of each refused IPv4 range, since kista judges such an
+address by the IPv4 address inside. That covers the upstreams, the issuers, the cloud APIs and
+KMSs, and public blob stores. `public.cidrs: [0.0.0.0/0]` drops the IPv6 block; a `cidr` that
+does not end in `/0` is taken as written, without `except`.
+
+**The private networks the configuration allows** get a rule each, without the ranges kista never
+reaches even when allowed (link-local and with it the metadata endpoints, `fd00:ec2::/112`,
+`168.63.129.16`, `100.100.100.200`): an allowed `0.0.0.0/0` becomes `0.0.0.0/0` with those as
+`except`, and an allowed network inside them gets no rule. Such an entry may name a Service's
+ClusterIP or a LoadBalancer IP that kista dials: most CNIs match a policy after the Service's
+translation, against the pod's address, so add an `extraRules` entry naming the pods behind it.
+
+**`extraRules`** holds what the chart cannot tell from the configuration: the database, a Vault or
+OpenBao key source, an OpenTelemetry collector, an S3 in the cluster, a token service on a
+private address, a proxy named by host. Each rule names its peers (`to`, at least one, none
+empty) and, if it has `ports`, at least one: a rule without them would admit every peer or every
+port, and is refused.
+
+**What `helm install` refuses**, as a guard rather than a proof (any `extraRules` entry satisfies
+the first two, since the chart cannot tell what a rule is for):
+
+- PostgreSQL or SQL Server without any `extraRules`;
+- an `egress.proxy` named by host (not an IP address) without any `extraRules`;
+- a configuration whose identity needs a `cloudMetadata` entry it lacks: `gke` for a `gcpkms`
+  source, `gcs` domain or `gcp` database login without `credentials_file` (GKE Workload
+  Identity); `aws-pod-identity` for an AWS identity of kind `pod_identity`; `imds` for kind `imds`
+  or an Azure identity of kind `managed`;
+- a DNS `podSelector` that selects every pod (none beside a `namespaceSelector`, or one without
+  `matchLabels` and `matchExpressions`).
+
+IRSA and Azure workload identity need no metadata endpoint: they reach STS and Entra ID on 443. A
+regional STS or KMS endpoint behind a VPC endpoint has a private address: add it to
+`extraRules`.
+
+```yaml
+networkPolicy:
+  egress:
+    enabled: true
+    extraRules:
+      # the database
+      - to: [{ipBlock: {cidr: 10.20.0.5/32}}]
+        ports: [{port: 5432, protocol: TCP}]
+      # OpenBao in the cluster, for a vault key source
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openbao}}
+            podSelector: {matchLabels: {app.kubernetes.io/name: openbao}}
+        ports: [{port: 8200, protocol: TCP}]
+      # the OpenTelemetry collector
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: observability}}
+            podSelector: {matchLabels: {app.kubernetes.io/name: otel-collector}}
+        ports: [{port: 4318, protocol: TCP}]
+```
+
+### DNS per platform
+
+The default reaches the DNS pods labelled `k8s-app: kube-dns` in `kube-system` on ports 53 and
+8053. A CNI matches the policy after the kube-dns Service's translation, so the port is the pods'
+own.
+
+| Platform | What to set |
+| --- | --- |
+| EKS, AKS, k3s, kind, GKE with kube-dns | nothing |
+| Gardener (STACKIT SKE) | nothing: CoreDNS listens on 8053 behind the Service |
+| GKE with Cloud DNS, Autopilot | `dns.ipBlocks: [{cidr: 169.254.20.10/32}]` |
+| GKE with Cloud DNS, cluster scope (Standard) | `dns.ipBlocks: [{cidr: 169.254.169.254/32, ports: [53]}]` |
+| NodeLocal DNSCache | `dns.ipBlocks: [{cidr: 169.254.20.10/32}, {cidr: <the kube-dns Service's ClusterIP>/32}]`: in iptables mode the cache answers on the ClusterIP itself, untranslated |
+| OpenShift | the selectors and port below |
+
+```yaml
+networkPolicy:
+  egress:
+    dns:
+      namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+      podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+      ports: [5353]
+```
+
+Each `dns.ipBlocks` entry takes `ports` (default `dns.ports`), UDP and TCP each.
+
+### Notes
+
+- **A peer in the cluster** is best named by its pods, for the same reason: an `ipBlock` with a
+  Service's ClusterIP may match nothing.
+- **The probes need nothing**: the kubelet's requests are ingress, and their answers belong to
+  them. Neither do image pulls, which the node makes.
+
 ## The pods
 
 - Non-root (uid and gid `65532`), a read-only root filesystem, every capability dropped,
@@ -347,7 +510,8 @@ pods turn unready. The order and the rules are in [Upgrading](../administration/
 
 - Pod Security Admission `restricted` on the namespace: the chart's pods meet it.
 - Keep the NetworkPolicy on, with the ingress controller's pods named exactly.
-- Restrict egress: block `169.254.169.254` where no metadata identity is used. On EKS, set the
+- Restrict egress with `networkPolicy.egress` ([What kista may reach](#what-kista-may-reach)): it
+  blocks `169.254.169.254` unless the identity needs it. On EKS, set the
   instance metadata hop limit to 1 so pods cannot use the node's role, unless kista's AWS
   identity is `kind: imds` (IRSA and Pod Identity do not use the instance metadata).
 - Deploy by digest, and verify signatures at admission ([Deployment](index.md#verifying)).
