@@ -487,11 +487,13 @@ locals {
         gcs  = { bucket = google_storage_bucket.bodies.name, principal = google_service_account.kista.email }
       }]
     }
-    auth = {
-      server_issuers = yamldecode(var.server_issuers)
-      server_admins  = yamldecode(var.server_admins)
-    }
+    auth = local.auth
   }
+  # server_license_admins only when given: an empty list leaves the configuration as it was
+  auth = merge(
+    { server_issuers = yamldecode(var.server_issuers), server_admins = yamldecode(var.server_admins) },
+    { for k, v in { server_license_admins = yamldecode(var.server_license_admins) } : k => v if try(length(v), 1) > 0 },
+  )
 
   values = {
     image          = { repository = local.image_repo, tag = local.image_tag, digest = local.image_digest }

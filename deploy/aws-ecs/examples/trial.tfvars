@@ -9,3 +9,5 @@ server_issuers      = "[{name: corp, url: 'https://login.example.com/realms/corp
 server_admins       = "['role:corp|kista-admin']"
 deletion_protection = false
 key_deletion_days   = 7
+# optional: licence managers, who manage every tenant's licences and nothing else (spec 0029)
+# server_license_admins = "['role:corp|kista-licenses']"

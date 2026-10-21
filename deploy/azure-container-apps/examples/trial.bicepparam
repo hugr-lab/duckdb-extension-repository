@@ -16,5 +16,7 @@ param serverIssuers = [
 ]
 param serverAudiences = ['22222222-2222-2222-2222-222222222222']
 param serverAdmins = ['subject:entra|33333333-3333-3333-3333-333333333333']
+// optional: licence managers, who manage every tenant's licences and nothing else (spec 0029)
+// param serverLicenseAdmins = ['subject:entra|44444444-4444-4444-4444-444444444444']
 param purgeProtection = false
 param softDeleteDays = 7
