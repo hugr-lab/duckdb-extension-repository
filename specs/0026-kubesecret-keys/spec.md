@@ -1,6 +1,6 @@
 # Spec 0026: Signing keys from a Kubernetes Secret, as an explicit opt-in
 
-- **Status**: implemented (2026-10-21), but for the kind case (Testing), which is to come
+- **Status**: implemented (2026-10-21); the kind case (Testing) is in the bench, its first run to come
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 
@@ -193,7 +193,8 @@ Prominently, on [Signing keys](../../website/docs/signing-keys.md) and the Kuber
   fixture with `dir` on no Secret.
 - **kind** (`deploy/helm/kind/run.sh`): a Secret with a key, a release signed through it, and
   DuckDB's `INSTALL` verifying the signature. A key rewritten under its name is refused at the next
-  revalidation.
+  revalidation: once every pod's `key check` shows the new key, the bench adds a new release
+  (`kista_demo`) and wants the fingerprint mismatch.
 
 ## Alternatives considered
 

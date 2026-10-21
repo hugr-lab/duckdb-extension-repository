@@ -1,6 +1,6 @@
 # kista in the kind test (run.sh): two replicas behind Traefik with the NetworkPolicy, PostgreSQL
-# and SeaweedFS (S3) with their secrets from Secrets, OpenBao Transit through a projected token, and
-# the cluster itself as the token issuer.
+# and SeaweedFS (S3) with their secrets from Secrets, OpenBao Transit through a projected token, a
+# channel key in a Kubernetes Secret (spec 0026), and the cluster itself as the token issuer.
 image:
   repository: kista
   tag: e2e
@@ -32,6 +32,14 @@ config:
             kind: kubernetes
             role: kista
             token_file: /var/run/secrets/kista/bao/token
+      # spec 0026: a channel key in a Secret volume. kind does not encrypt Secrets at rest: the
+      # acknowledgment here is the test's, never a statement about this cluster.
+      - name: k8s
+        kind: kubesecret
+        allow: ["ext-"]
+        kubesecret:
+          dir: /etc/kista/signing/k8s
+          etcd_encryption_at_rest: true
   blob:
     max_body: 256MiB
     max_ingests: 2
@@ -55,6 +63,7 @@ secretVolumes:
   - {name: db, secretName: kista-db, mountPath: /etc/kista/secrets/db}
   - {name: s3, secretName: kista-s3, mountPath: /etc/kista/secrets/s3}
   - {name: ca, secretName: kista-ca, mountPath: /etc/kista/secrets/ca}
+  - {name: signing, secretName: kista-signing, mountPath: /etc/kista/signing/k8s}
 projectedTokens:
   - {name: bao, mountPath: /var/run/secrets/kista/bao, audience: openbao, expirationSeconds: 3600}
 ingress:

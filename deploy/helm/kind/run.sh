@@ -7,6 +7,9 @@
 #     cluster's service account issuer, a grant, two releases);
 #   - DuckDB at e2e/DUCKDB_PIN through the ingress (TestRemote): httpfs over http, a private
 #     extension over https, refused without a token and installed with one;
+#   - a channel whose key is in a Kubernetes Secret (spec 0026, kind kubesecret): the start warning,
+#     the audit event, the protection tier, DuckDB through the ingress again, then the key rewritten
+#     under its name and refused at the next signature (a new release, kista_demo);
 #   - a rolling restart, with /readyz polled through the ingress throughout.
 #
 #   deploy/helm/kind/run.sh            needs docker, kind, kubectl, helm, openssl, jq, curl, go,
@@ -214,6 +217,12 @@ step "the CAs kista trusts: the test CA and the API server's"
 kubectl -n "$ns" get cm kube-root-ca.crt -o jsonpath='{.data.ca\.crt}' >"$work/kube-ca.crt"
 kubectl -n "$ns" create secret generic kista-ca --from-file ca.crt="$work/ca.crt" --from-file kube-ca.crt="$work/kube-ca.crt"
 
+step "a channel key in a Kubernetes Secret (spec 0026)"
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/ext-k8s.pem" 2>/dev/null
+kubectl -n "$ns" create secret generic kista-signing --from-file ext-k8s="$work/ext-k8s.pem"
+# its fingerprint: sha256 over the public key's SPKI DER
+k8sfp=sha256:$(openssl pkey -in "$work/ext-k8s.pem" -pubout -outform DER | openssl dgst -sha256 | awk '{print $NF}')
+
 step "kista"
 helm install kista "$repo/deploy/helm/kista" -n "$ns" -f "$here/values.yaml" --wait --timeout 5m
 kubectl -n "$ns" get pods -l app.kubernetes.io/name=kista -o wide
@@ -233,11 +242,12 @@ spec:
   containers:
     - name: stat
       image: $BUSYBOX
-      command: [sh, -c, 'stat -L -c "%n %u %g %a %h" /s/db/password /s/ca/ca.crt /t/token']
-      volumeMounts: [{name: db, mountPath: /s/db}, {name: ca, mountPath: /s/ca}, {name: t, mountPath: /t}]
+      command: [sh, -c, 'stat -L -c "%n %u %g %a %h" /s/db/password /s/ca/ca.crt /s/signing/ext-k8s /t/token']
+      volumeMounts: [{name: db, mountPath: /s/db}, {name: ca, mountPath: /s/ca}, {name: signing, mountPath: /s/signing}, {name: t, mountPath: /t}]
   volumes:
     - {name: db, secret: {secretName: kista-db, defaultMode: 0440}}
     - {name: ca, secret: {secretName: kista-ca, defaultMode: 0440}}
+    - {name: signing, secret: {secretName: kista-signing, defaultMode: 0440}}
     - name: t
       projected:
         sources: [{serviceAccountToken: {audience: openbao, expirationSeconds: 3600, path: token}}]
@@ -247,6 +257,7 @@ kubectl -n "$ns" logs shapes | tee "$work/shapes"
 # a Secret: root, group 65532 (fsGroup), 0440, one link; a token: root or 65532, nobody else writes it
 grep -qx '/s/db/password 0 65532 440 1' "$work/shapes"
 grep -qx '/s/ca/ca.crt 0 65532 440 1' "$work/shapes"
+grep -qx '/s/signing/ext-k8s 0 65532 440 1' "$work/shapes"
 read -r _ uid _ mode _ < <(grep '^/t/token ' "$work/shapes")
 case "$uid" in 0 | 65532) ;; *) echo "token owner $uid" >&2; exit 1 ;; esac
 case "${mode: -2}" in *[2367]*) echo "token mode $mode: writable by others" >&2; exit 1 ;; esac
@@ -286,6 +297,60 @@ KISTA_E2E_DUCKDB=$duck KISTA_E2E_URL=https://kista.localhost KISTA_E2E_CHANNEL=a
 	KISTA_E2E_KEY="$work/channel.pem" \
 	KISTA_E2E_TOKEN=$(kubectl -n "$ns" create token alice --audience https://kista.localhost/acme --duration 1h) \
 	go test -count=1 -run '^TestRemote$' -v "$repo/e2e/"
+
+step "a channel signed with a key from a Kubernetes Secret (spec 0026)"
+# said at every start, and recorded once per source (outputs to files first: grep -q in a pipe
+# could end the writer early, which pipefail reports)
+kubectl -n "$ns" logs deploy/kista -c kista >"$work/kista.log"
+grep -q "holds its keys in a Kubernetes Secret" "$work/kista.log" || { echo "no start warning for the kubesecret source" >&2; exit 1; }
+ka events list -server -kind signer.source.weak >"$work/weak"
+grep -q "source:k8s" "$work/weak" || { cat "$work/weak"; echo "no signer.source.weak event" >&2; exit 1; }
+check=$(ka key check -signer k8s:ext-k8s)
+echo "$check"
+[ "$check" = "k8s:ext-k8s $k8sfp protection=kubesecret" ] || { echo "key check: want k8s:ext-k8s $k8sfp protection=kubesecret" >&2; exit 1; }
+ka channel create acme/k8s -kind signed
+ka key add acme/k8s -signer k8s:ext-k8s -active
+ka key list acme/k8s >"$work/k8s-keys"
+grep -q "k8s:ext-k8s  *kubesecret " "$work/k8s-keys" || { cat "$work/k8s-keys"; exit 1; }
+ka events list acme -kind key.add -format jsonl >"$work/key-add"
+grep -q '"protection":"kubesecret"' "$work/key-add" || { echo "key.add without protection" >&2; exit 1; }
+ka channel versions acme/k8s -add "$version"
+ka release add acme/k8s - -name httpfs <"$duck/extensions/httpfs.duckdb_extension"
+ka release add acme/k8s - -name loadable_extension_demo -private <"$duck/extensions/loadable_extension_demo.duckdb_extension"
+ka grant add acme -principal "subject:k8s|system:serviceaccount:$ns:alice" -verb install -channel k8s
+curlk -f https://kista.localhost/acme/k8s/.well-known/duckdb-extension-repo.json >"$work/wellknown-k8s.json"
+jq -r '.signature_keys[0]' "$work/wellknown-k8s.json" >"$work/k8s.pem"
+served=sha256:$(openssl pkey -pubin -in "$work/k8s.pem" -outform DER | openssl dgst -sha256 | awk '{print $NF}')
+[ "$served" = "$k8sfp" ] || { echo "the channel serves $served, not the Secret's key $k8sfp" >&2; exit 1; }
+KISTA_E2E_DUCKDB=$duck KISTA_E2E_URL=https://kista.localhost KISTA_E2E_CHANNEL=acme/k8s KISTA_E2E_CA="$work/ca.crt" \
+	KISTA_E2E_KEY="$work/k8s.pem" \
+	KISTA_E2E_TOKEN=$(kubectl -n "$ns" create token alice --audience https://kista.localhost/acme --duration 1h) \
+	go test -count=1 -run '^TestRemote$' -v "$repo/e2e/"
+# another key under the same name: every pod sees it once the kubelet has updated the volume (key
+# check opens the name afresh and registers nothing), and the next signature compares it with the
+# registered key and refuses it. That signature is a new release's: adding an existing one again
+# signs nothing.
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/ext-k8s-2.pem" 2>/dev/null
+kubectl -n "$ns" create secret generic kista-signing --from-file ext-k8s="$work/ext-k8s-2.pem" --dry-run=client -o yaml |
+	kubectl -n "$ns" apply -f -
+for p in $(kubectl -n "$ns" get pod -l app.kubernetes.io/component=server -o jsonpath='{.items[*].metadata.name}'); do
+	for i in $(seq 1 90); do
+		# a check during the kubelet's swap may fail: try again
+		now=$(kubectl -n "$ns" exec "$p" -c kista -- /kista admin -config /etc/kista/kista.yaml key check -signer k8s:ext-k8s 2>/dev/null |
+			awk '{print $2}') || now=
+		[ -n "$now" ] && [ "$now" != "$k8sfp" ] && break
+		[ "$i" = 90 ] && { echo "pod $p still has the old key after 3 minutes" >&2; exit 1; }
+		sleep 2
+	done
+done
+if out=$(ka release add acme/k8s - -name kista_demo -private <"$duck/extensions/kista_demo.duckdb_extension" 2>&1); then
+	echo "a key rewritten under its name still signed" >&2
+	exit 1
+fi
+case "$out" in
+*"not the registered key"*) echo "a key rewritten under its name: refused ($out)" ;;
+*) echo "$out" >&2; exit 1 ;;
+esac
 
 step "the NetworkPolicy: 8443 only from the ingress controller's pods"
 # both probes are in kista's pod CIDR, which trusted_proxies trusts: only the policy tells them apart
