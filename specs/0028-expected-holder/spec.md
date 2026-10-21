@@ -1,6 +1,6 @@
 # Spec 0028: An expected holder per tenant
 
-- **Status**: draft
+- **Status**: accepted (2026-10-21)
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 

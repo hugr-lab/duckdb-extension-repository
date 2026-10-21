@@ -1,6 +1,6 @@
 # Spec 0029: Licence managers
 
-- **Status**: draft
+- **Status**: accepted (2026-10-21)
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 
