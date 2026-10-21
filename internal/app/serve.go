@@ -30,6 +30,7 @@ import (
 	tenantsvc "github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/usage"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/vaultlogin"
 	"github.com/hugr-lab/duckdb-extension-repository/web/console"
 )
 
@@ -154,7 +155,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}()
 	var served atomic.Pointer[serve.Handler] // the gauge may be read before the handler is made
 	tenants := metricTenants(cfg)
-	metrics, err := telemetry.New(mp, tenants, metricLabels(cfg), telemetry.Gauges{
+	metrics, err := telemetry.New(mp, tenants, metricLabels(cfg), withStoreLogin(st.Login, telemetry.Gauges{
 		Log: log,
 		DownloadsActive: func() int64 {
 			if h := served.Load(); h != nil {
@@ -174,9 +175,12 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			return sinkNames(cfg, tenants, counts), nil
 		},
 		UpstreamCells: st.CellOutcomes,
-	})
+	}))
 	if err != nil {
 		return err
+	}
+	if vl, ok := st.Login.(*vaultlogin.Login); ok {
+		vl.Observe(metrics.StoreLoginCall) // spec 0027: the Vault reads' latency
 	}
 	if telemetry.Enabled() {
 		log.Info("serve: exporting OpenTelemetry metrics")
@@ -436,4 +440,13 @@ func apiMinSuspended(d time.Duration) time.Duration {
 		return -1
 	}
 	return d
+}
+
+// withStoreLogin adds the database login's metrics when it reads Vault (spec 0027).
+func withStoreLogin(l store.Login, g telemetry.Gauges) telemetry.Gauges {
+	if vl, ok := l.(*vaultlogin.Login); ok {
+		g.StoreLogin, g.StoreLoginCounts = "vault", vl.Counts
+		g.StoreLoginExpiry = func() int64 { return int64(vl.Expiry() / time.Second) }
+	}
+	return g
 }

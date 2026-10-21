@@ -336,6 +336,9 @@ Export errors go to kista's log, at most once a minute.
 | `kista.usage.dropped` | counter, `{report}` | usage reports this replica did not count: over usage's budgets, or keys lost while the database failed |
 | `kista.events.pending` | gauge, `{event}` | `kista.sink`: events waiting per sink |
 | `kista.upstream.cells` | gauge, `{cell}` | `kista.outcome`: upstream cells per outcome |
+| `kista.store.login` | counter, `{request}` | with `store.login.kind: vault`: `kista.login.kind`, `kista.outcome` (`vault`: read from Vault, `cached`, `error`, `rejected`: the database refused the password) |
+| `kista.store.login.duration` | histogram, seconds | with `store.login.kind: vault`: the Vault reads, by `kista.login.kind` and `kista.outcome` |
+| `kista.store.login.expiry` | gauge, seconds | with `store.login.kind: vault`: how long the cached password may still be used; `0` when none is cached |
 
 `http.route` is never a path: `api`, `ui`, `cors`, `extension`, `extension-versioned`,
 `well-known`, `license`, `licenses`, `usage`, `usage-daily`, `healthz`, `readyz`, `none` (no route matched) or `other`.

@@ -33,4 +33,4 @@ and it is superseded by a new spec when a decision changes.
 | [0024](0024-bootstrap-upstreams/spec.md) | The bootstrap's upstreams, and the chart in another namespace | implemented |
 | [0025](0025-chart-umbrella/spec.md) | The chart in an umbrella: an egress NetworkPolicy and a templated config | implemented |
 | [0026](0026-kubesecret-keys/spec.md) | Signing keys from a Kubernetes Secret, as an explicit opt-in | implemented; the kind run to come |
-| [0027](0027-store-login-vault/spec.md) | The database password from Vault or OpenBao | accepted (phase 1) |
+| [0027](0027-store-login-vault/spec.md) | The database password from Vault or OpenBao | phase 1 implemented; the kind case to come; phase 2 deferred |

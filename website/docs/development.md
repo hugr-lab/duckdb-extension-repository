@@ -149,6 +149,12 @@ KISTA_TEST_REQUIRE_VAULT=1 \
 make test
 ```
 
+The database login's tests (spec 0027) also need the store suite's PostgreSQL (`make test-db` and
+`KISTA_TEST_POSTGRES`). The static-role test lets Vault's database secrets engine manage a role
+there: `KISTA_TEST_VAULT_POSTGRES` names that PostgreSQL as Vault and OpenBao reach it from their
+containers (`host.docker.internal:56432`; on Linux, start the containers with
+`--add-host=host.docker.internal:host-gateway`, as CI does). Without it, that test is skipped.
+
 ### What CI runs
 
 | Job | Runs |

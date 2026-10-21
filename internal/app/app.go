@@ -41,6 +41,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/vaultapi"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/vaultlogin"
 )
 
 // OpenStore opens the configured store and migrates it (store.migrate auto) or checks it (check).
@@ -71,6 +72,12 @@ func OpenStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 		login = l
 	case "gcp":
 		l, err := cloudSQLLogin(cfg)
+		if err != nil {
+			return nil, err
+		}
+		login = l
+	case "vault":
+		l, err := VaultLogin(cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -241,6 +248,37 @@ func rdsLogin(cfg config.Config) (store.Login, error) {
 		}
 		return tok, nil
 	}}, nil
+}
+
+// VaultLogin is the database password from Vault or OpenBao (spec 0027): a client of its own (never
+// a key source's, whose role signs), a KV v2 field or a static role's password, the DSN's user.
+func VaultLogin(cfg config.Config) (*vaultlogin.Login, error) {
+	v := cfg.Store.Login.Vault
+	api, err := vaultapi.New(vaultapi.Config{
+		Address: v.Address, Namespace: v.Namespace, CAFile: v.CAFile,
+		AuthKind: v.Auth.Kind, AuthMount: v.Auth.Mount, Role: v.Auth.Role, TokenFile: v.Auth.TokenFile,
+		AllowHTTP: cfg.Profile == config.ProfileDev,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("app: store.login vault: %w", err)
+	}
+	user, err := store.DSNUser(cfg.Store.Kind, cfg.Store.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("app: store.login vault: %w", err)
+	}
+	o := vaultlogin.Options{User: user}
+	switch {
+	case v.KV != nil:
+		o.Kind, o.Mount, o.Path, o.Field, o.Version, o.Cache = vaultlogin.KV, v.KV.Mount, v.KV.Path, v.KV.Field, v.KV.Version,
+			v.VaultLoginCacheOrDefault()
+	case v.StaticRole != nil:
+		o.Kind, o.Mount, o.Name = vaultlogin.StaticRole, v.StaticRole.Mount, v.StaticRole.Name
+	}
+	l, err := vaultlogin.New(api, o)
+	if err != nil {
+		return nil, fmt.Errorf("app: store.login vault: %w", err)
+	}
+	return l, nil
 }
 
 // metadataURL replaces the metadata server for the gcp database login in tests.

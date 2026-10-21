@@ -102,8 +102,10 @@ connection:
 | `kind: entra` | A Microsoft Entra token from the service's Azure identity (`azure.identity`), for Azure Database for PostgreSQL Flexible Server or Azure SQL. |
 | `kind: aws` | An RDS IAM authentication token, signed locally with the service's AWS identity (`aws`) for the connection's host, port and user. PostgreSQL on RDS or Aurora. |
 | `kind: gcp` | A Cloud SQL IAM authentication token of the service's Google principal (`gcp`), scoped to `sqlservice.login` only. PostgreSQL on Cloud SQL. |
+| `kind: vault` | HashiCorp Vault or OpenBao: a KV v2 secret's field, or a database secrets engine static role's password, read by kista itself and cached briefly. PostgreSQL or SQL Server. See [below](#the-password-from-vault-or-openbao). |
 
 `entra`, `aws` and `gcp` take no `password_env` or `password_file`: the token is the password.
+`vault` takes neither either: Vault holds the password.
 
 Because the secret is read per connection, a rotated password (a re-mounted secret file, or a
 changed variable in a process that re-reads it) is picked up without a restart, as soon as the pool
@@ -164,6 +166,74 @@ store:
 gcp:
   principal: kista@acme-kista.iam.gserviceaccount.com
 ```
+
+### The password from Vault or OpenBao
+
+**First choice, with no change to kista:** let External Secrets Operator, the Vault Secrets
+Operator, the Vault CSI provider or the Vault Agent injector write the password to a file, and name
+it with `password_file`. kista reads that file for every new connection, so a rotation takes effect
+without a restart. Both shapes these tools write are accepted: a Secret volume (root-owned, kista's
+group, `0440`), or a file owned by kista's user at `0600` or narrower.
+
+Without such a component, `kind: vault` makes kista read the password from Vault or OpenBao itself,
+logging in as a `vault` key source does ([Signing keys](signing-keys.md#authentication)):
+
+```yaml title="kista.yaml"
+store:
+  kind: postgres
+  dsn: postgres://kista@db.internal:5432/kista?sslmode=verify-full
+  login:
+    kind: vault
+    vault:
+      address: https://bao.internal:8200
+      ca_file: /etc/kista/secrets/ca/bao-ca.pem
+      auth: {kind: kubernetes, role: kista-db, token_file: /var/run/secrets/kista/bao/token}
+      # one of:
+      kv: {mount: secret, path: kista/db, field: password}       # KV v2
+      # static_role: {mount: database, name: kista}             # database secrets engine
+      cache: 1m                                                  # kv only; 0s..10m
+```
+
+- **`kv`** reads `GET /v1/<mount>/data/<path>` (with `?version=N` when `version` pins one) and takes
+  the string field `field`. The password is kept for `cache`, so a burst of new connections makes
+  one Vault call; unpinned, a rotation in Vault takes effect within `cache`. KV v2 only.
+- **`static_role`** reads `GET /v1/<mount>/static-creds/<name>`: Vault rotates the password of an
+  existing database user on a schedule. kista keeps the password until the answer's `ttl` less 30
+  seconds, then reads it again. The answer's `username` must be the DSN's user, or the login is
+  refused. Connections opened before a rotation keep working (PostgreSQL and SQL Server check the
+  password at login only); the pool recycles them within 30 minutes. The database secrets engine
+  is tested with PostgreSQL; SQL Server's plugin works the same way, but is not tested yet.
+- **The user** comes from the DSN. Dynamic credentials (`dynamic_role`, a new user per lease) are
+  not in this version.
+- **At start**, a Vault that cannot be reached, a login that fails or a missing field fails the
+  store's open, so kista does not start, as with a database that is down. **Later**, a failed read
+  ends the cache, and new connections fail with a fixed error naming the source and a status
+  (`store: vault login: status 403`), never a value; open connections continue, and `/readyz`
+  follows the database as before.
+- **A rejected password** (PostgreSQL SQLSTATE `28P01`, SQL Server error 18456) drops the cached
+  one: that connection attempt fails, and the next one reads Vault again.
+- **Nothing is written**: the password lives in kista's memory for at most `cache` or the static
+  role's TTL, never on disk, in a log, an error or a metric. Errors never carry Vault's response
+  bodies or the token.
+- **Separate clients**: the login and a `vault` key source on the same Vault use separate clients
+  and should use separate roles. The database role reads one path; the signing role signs with one
+  key.
+- `kista admin` commands and the chart's CronJobs read the same configuration, so they use the same
+  login.
+
+The least privilege for the login's Vault role is one path, nothing else:
+
+```hcl
+# kv
+path "secret/data/kista/db" { capabilities = ["read"] }
+# or a static role
+path "database/static-creds/kista" { capabilities = ["read"] }
+```
+
+Metrics: `kista.store.login` (counter, `kista.login.kind` and `kista.outcome`: `vault`, `cached`,
+`error`, `rejected`), `kista.store.login.duration` (the Vault reads' latency) and
+`kista.store.login.expiry` (seconds the cached password has left); see
+[Observability](observability.md#metrics).
 
 ## Connections
 

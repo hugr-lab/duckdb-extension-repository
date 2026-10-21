@@ -112,10 +112,20 @@ func (s Server) NewTransit(t testing.TB) *Transit {
 	return tr
 }
 
-// WriteToken creates a token with the given policies and writes it to a 0600 file.
-func (tr *Transit) WriteToken(t testing.TB, policies ...string) string {
+// Random is a short random suffix for mount, policy and role names.
+func Random() string { return random() }
+
+// Policy writes an ACL policy and removes it when the test ends.
+func (s Server) Policy(t testing.TB, name, rules string) {
 	t.Helper()
-	out := tr.Root(t, http.MethodPost, "auth/token/create", map[string]any{"policies": policies, "ttl": "1h", "no_default_policy": true})
+	s.Root(t, http.MethodPut, "sys/policies/acl/"+name, map[string]any{"policy": rules})
+	t.Cleanup(func() { s.Root(t, http.MethodDelete, "sys/policies/acl/"+name, nil) })
+}
+
+// WriteToken creates a token with the given policies and writes it to a 0600 file.
+func (s Server) WriteToken(t testing.TB, policies ...string) string {
+	t.Helper()
+	out := s.Root(t, http.MethodPost, "auth/token/create", map[string]any{"policies": policies, "ttl": "1h", "no_default_policy": true})
 	auth, _ := out["auth"].(map[string]any)
 	tok, _ := auth["client_token"].(string)
 	path := filepath.Join(t.TempDir(), "token")

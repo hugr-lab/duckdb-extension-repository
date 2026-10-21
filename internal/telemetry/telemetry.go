@@ -145,6 +145,11 @@ type Gauges struct {
 	UsageDropped    func() int64                                        // cumulative
 	EventsPending   func(ctx context.Context) (map[string]int64, error) // per sink
 	UpstreamCells   func(ctx context.Context) (map[string]int64, error) // per outcome
+	// StoreLogin is the database login's kind when it reads a secret service (spec 0027: vault),
+	// with its requests by outcome (cumulative) and the seconds its cached password has left.
+	StoreLogin       string
+	StoreLoginCounts func() map[string]int64
+	StoreLoginExpiry func() int64
 }
 
 // Metrics are kista's instruments.
@@ -153,12 +158,14 @@ type Metrics struct {
 	labels    Labels
 	downloads metric.Int64Counter
 	duration  metric.Float64Histogram
+	login     metric.Float64Histogram
+	loginKind string
 	reg       metric.Registration
 }
 
 // New makes the instruments on a meter provider.
 func New(mp metric.MeterProvider, tenants Tenants, labels Labels, g Gauges) (*Metrics, error) {
-	m := &Metrics{tenants: tenants, labels: labels}
+	m := &Metrics{tenants: tenants, labels: labels, loginKind: g.StoreLogin}
 	meter := mp.Meter(Name)
 	var err error
 	if m.downloads, err = meter.Int64Counter("kista.downloads", metric.WithUnit("{download}"),
@@ -168,6 +175,11 @@ func New(mp metric.MeterProvider, tenants Tenants, labels Labels, g Gauges) (*Me
 	if m.duration, err = meter.Float64Histogram("http.server.request.duration", metric.WithUnit("s"),
 		metric.WithDescription("Duration of HTTP server requests"),
 		metric.WithExplicitBucketBoundaries(0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10, 30, 60)); err != nil {
+		return nil, err
+	}
+	if m.login, err = meter.Float64Histogram("kista.store.login.duration", metric.WithUnit("s"),
+		metric.WithDescription("Duration of the database login's reads of its secret service (Vault)"),
+		metric.WithExplicitBucketBoundaries(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30)); err != nil {
 		return nil, err
 	}
 	type cb struct {
@@ -213,6 +225,18 @@ func New(mp metric.MeterProvider, tenants Tenants, labels Labels, g Gauges) (*Me
 		{"kista.usage.dropped", "{report}", "Usage reports not counted: over usage's budgets, or keys lost while the store failed", true, value(g.UsageDropped), g.UsageDropped != nil},
 		{"kista.events.pending", "{event}", "Events waiting for a sink", false, per("kista.sink", g.EventsPending), g.EventsPending != nil},
 		{"kista.upstream.cells", "{cell}", "Upstream cells by outcome", false, per("kista.outcome", g.UpstreamCells), g.UpstreamCells != nil},
+		{"kista.store.login", "{request}", "The database login's password requests by outcome: vault, cached, error, rejected", true,
+			func(_ context.Context, o metric.Observer, i metric.Int64Observable) error {
+				for k, v := range g.StoreLoginCounts() {
+					o.ObserveInt64(i, v, metric.WithAttributes(attribute.String("kista.login.kind", g.StoreLogin), attribute.String("kista.outcome", k)))
+				}
+				return nil
+			}, g.StoreLoginCounts != nil},
+		{"kista.store.login.expiry", "s", "Seconds the database login's cached password has left; 0 when none is cached", false,
+			func(_ context.Context, o metric.Observer, i metric.Int64Observable) error {
+				o.ObserveInt64(i, g.StoreLoginExpiry(), metric.WithAttributes(attribute.String("kista.login.kind", g.StoreLogin)))
+				return nil
+			}, g.StoreLoginExpiry != nil},
 	} {
 		if !d.on {
 			continue
@@ -266,6 +290,16 @@ func (m *Metrics) Downloaded(ctx context.Context, d Download) {
 		}
 	}
 	m.downloads.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// StoreLoginCall records a read of the database login's secret service (spec 0027): its outcome and
+// duration.
+func (m *Metrics) StoreLoginCall(outcome string, d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.login.Record(context.Background(), d.Seconds(), metric.WithAttributes(attribute.String("kista.login.kind", m.loginKind),
+		attribute.String("kista.outcome", outcome)))
 }
 
 // Request records a request's duration: route is a route's pattern, never a path.

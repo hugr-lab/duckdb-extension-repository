@@ -269,8 +269,9 @@ func (c *Client) login(ctx context.Context) (string, time.Duration, error) {
 	return "", 0, errors.New("vault: unknown auth kind")
 }
 
-// Do sends an authenticated request to /v1/<path> and decodes the JSON answer into out. The call
-// makes at most 3 attempts in total; a 403 may use one of them on a request with a new token.
+// Do sends an authenticated request to /v1/<path> (a query after "?" is sent as one) and decodes the
+// JSON answer into out. The call makes at most 3 attempts in total; a 403 may use one of them on a
+// request with a new token.
 func (c *Client) Do(ctx context.Context, method, path string, body, out any) error {
 	tok, err := c.authToken(ctx, "")
 	if err != nil {
@@ -297,7 +298,8 @@ func (c *Client) do(ctx context.Context, token, method, path string, body, out a
 		}
 	}
 	u := *c.base
-	u.Path = "/v1/" + path
+	path, query, _ := strings.Cut(path, "?") // a query the caller built (a KV version), never input
+	u.Path, u.RawQuery = "/v1/"+path, query
 	var lastErr error
 	attempt := 0
 	for ; attempt < attempts; attempt++ {
