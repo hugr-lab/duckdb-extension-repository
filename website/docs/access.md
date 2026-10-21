@@ -246,18 +246,19 @@ Administrators of a channel, an extension or an extension group administer that 
 **Licence managers** (spec 0029) are a server-wide role for a job that writes licences, such as a
 licence reconciler: a principal of a server issuer listed in `auth.server_license_admins`. On every
 tenant that is active (not suspended, not being deleted) a licence manager may list, read, import,
-replace, remove and re-show licences, and read the licence keys the live releases declare:
+replace and remove licences, make one private, and read the licence keys the live releases declare:
 
 - `GET, POST /api/v1/tenants/{t}/licenses`, `GET, DELETE …/licenses/{name}`,
-  `POST …/licenses/{name}/public|private`;
+  `POST …/licenses/{name}/private`;
 - `GET /api/v1/tenants/{t}/license-keys`, `GET …/license-keys/{name}`.
 
-Nothing else: not the upstreams' licence relay (`…/upstreams/{u}/licenses[/sync]`, the tenant
-administrators'), no other tenant route, no server route; those answer `404` as to any caller who
-may not use them. A licence still has to verify against a key a live release declares. The role is
-configuration only: no API call grants it. Its acts are recorded as
-`license-manager:<issuer>|<who>`; a tenant's readers see `license-manager`, without the name. A
-principal in both lists is a server administrator.
+Nothing else. It cannot make a licence public (`…/public`, the tenant administrators'), since a
+public licence is served to anyone served a public release. It cannot call the upstreams' licence
+relay (`…/upstreams/{u}/licenses[/sync]`, the tenant administrators'), any other tenant route or
+any server route. Those answer `404`, as to any caller who may not use them. A licence still has
+to verify against a key a live release declares. The role is configuration only: no API call
+grants it. Its acts are recorded as `license-manager:<issuer>|<who>`; a tenant's readers see
+`license-manager`, without the name. A principal in both lists is a server administrator.
 
 ```yaml title="kista.yaml"
 auth:                                  # file-only; changes take effect at restart
@@ -270,7 +271,7 @@ auth:                                  # file-only; changes take effect at resta
   server_admins:
     - role:ops|kista-admin             # kind:issuer|value; issuer: is refused
   server_license_admins:               # licence managers: every tenant's licences, nothing else
-    - client:ops|licence-reconciler    # checked as server_admins
+    - role:ops|kista-licenses          # checked as server_admins
   server_egress_allow: []              # CIDRs reached only by the server issuers' fetcher
   admin_token_max_age: 1h              # management needs a token issued this recently; 1m..24h
 ```

@@ -329,16 +329,16 @@ func (l *limiter) retryAfter() string {
 // caller is who asks: anonymous, a server token (an administrator's, a licence manager's, or
 // neither), or a tenant token's principals.
 type caller struct {
-	tenant     store.Tenant // on tenant routes
-	ta         store.TenantAuth
-	principals auth.Principals     // a tenant token's
-	id         auth.Identity       // a verified token's identity
-	verified   bool                // a valid token (server or tenant)
-	server     bool                // a valid server token
-	admin      bool                // a server administrator's
-	licenses   bool                // a licence manager's (spec 0029); with admin, it acts as an administrator
-	pub        *auth.Publication   // a publisher's credential (spec 0008)
-	signed     *auth.SignedRequest // a publisher's signed request (spec 0023)
+	tenant         store.Tenant // on tenant routes
+	ta             store.TenantAuth
+	principals     auth.Principals     // a tenant token's
+	id             auth.Identity       // a verified token's identity
+	verified       bool                // a valid token (server or tenant)
+	server         bool                // a valid server token
+	admin          bool                // a server administrator's
+	licenseManager bool                // a licence manager's (spec 0029); with admin, it acts as an administrator
+	pub            *auth.Publication   // a publisher's credential (spec 0008)
+	signed         *auth.SignedRequest // a publisher's signed request (spec 0023)
 }
 
 func (c caller) anonymous() bool { return !c.verified }
@@ -352,7 +352,7 @@ func (c caller) actor() (authz.Actor, bool) {
 	switch {
 	case c.admin:
 		return authz.Actor{Kind: authz.ActorServer, ID: c.id.Issuer.Name + "|" + c.id.Who()}, true
-	case c.licenses:
+	case c.licenseManager:
 		// spec 0029: the services allow it license on a tenant, and nothing else
 		return authz.Actor{Kind: authz.ActorLicenseManager, ID: c.id.Issuer.Name + "|" + c.id.Who()}, true
 	case c.pub != nil:
@@ -399,7 +399,7 @@ func (h *Handler) identifyServer(ctx context.Context, tok string) (caller, bool,
 		h.failures.Record(store.Tenant{Name: "(server)"}, "api", err)
 		return caller{}, true, errToken
 	}
-	return caller{id: id, verified: true, server: true, admin: roles.Admin, licenses: roles.LicenseManager}, true, nil
+	return caller{id: id, verified: true, server: true, admin: roles.Admin, licenseManager: roles.LicenseManager}, true, nil
 }
 
 // identifyTenant verifies a tenant token against the tenant (spec 0006).
@@ -649,15 +649,15 @@ func init() {
 		{"tenants/{t}/upstreams/{name}/usage", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).usageForward),
 			http.MethodPost: mb(pathAdmin, (*Handler).setUsage)}},
 		{"credentials", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listCredentials)}},
-		// spec 0012: licences (tenant administrators and, spec 0029, licence managers), their relay
-		// per upstream (tenant administrators only); spec 0021: the keys
+		// spec 0012: licences (tenant administrators and, spec 0029, licence managers, who never make one
+		// public), their relay per upstream (tenant administrators only); spec 0021: the keys
 		{"tenants/{t}/license-keys", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).licenseKeys))}},
 		{"tenants/{t}/license-keys/{name}", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).licenseKeys))}},
 		{"tenants/{t}/licenses", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).listLicenses)),
 			http.MethodPost: {access: licenseAdmin, manage: true, raw: true, handle: licenseRoute((*Handler).importLicense)}}},
 		{"tenants/{t}/licenses/{name}", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).getLicense)),
 			http.MethodDelete: m(licenseAdmin, licenseRoute((*Handler).removeLicense))}},
-		{"tenants/{t}/licenses/{name}/public", map[string]rule{http.MethodPost: m(licenseAdmin, licenseRoute(licenseVisibility(store.Public)))}},
+		{"tenants/{t}/licenses/{name}/public", map[string]rule{http.MethodPost: m(pathAdmin, licenseRoute(licenseVisibility(store.Public)))}},
 		{"tenants/{t}/licenses/{name}/private", map[string]rule{http.MethodPost: m(licenseAdmin, licenseRoute(licenseVisibility(store.Private)))}},
 		{"tenants/{t}/upstreams/{name}/licenses", map[string]rule{http.MethodGet: m(pathAdmin, licenseRoute((*Handler).licenseSync))}},
 		{"tenants/{t}/upstreams/{name}/licenses/sync", map[string]rule{http.MethodPost: m(pathAdmin, licenseRoute((*Handler).syncLicenses))}},
@@ -915,7 +915,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			return refuse()
 		}
 	case licenseAdmin:
-		if c.licenses {
+		if c.licenseManager {
 			break // the licence service allows it license on the tenant, and nothing else
 		}
 		fallthrough

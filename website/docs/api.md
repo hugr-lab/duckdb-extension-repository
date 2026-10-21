@@ -44,8 +44,7 @@ for issuers, principals and grants, and [Publishing](publishing.md#signed-reques
 - A valid token that may not see or do something answers `404`, with the same bytes as a resource
   that does not exist.
 - Authorisation is decided from the path first, before the body is read or `If-Match` compared.
-- An unknown or suspended tenant answers `404` to everyone but server administrators; a licence
-  manager gets `404` too.
+- An unknown or suspended tenant answers `404` to everyone but server administrators.
 - A tenant whose deletion started (`deleting` or `deleted`) answers the unknown tenant's `404`, the
   same bytes and headers, to every caller. Server administrators alone still reach its record
   (`GET tenants/{t}`), `DELETE tenants/{t}` and its events; see [Deleting a tenant](#deleting-a-tenant).
@@ -163,7 +162,6 @@ The tables below use these names:
 | public | anyone; a tenant token, if sent, selects the caller's view |
 | server | a server administrator |
 | tenant admin | `admin` on the tenant (or a server administrator) |
-| licence admin | a tenant admin, or a licence manager (`auth.server_license_admins`, spec 0029) |
 | channel admin, extension admin | `admin` on that channel or extension (a tenant admin is both) |
 | auditor | `audit` on the tenant (`admin` on the tenant implies it) |
 | principal | any principal of a tenant token; the route decides what it shows |
@@ -302,12 +300,13 @@ See [Upstreams](upstreams.md).
 
 | Route | Who |
 | --- | --- |
-| `GET tenants/{t}/licenses`; `GET, DELETE …/licenses/{name}` | licence admin |
-| `POST tenants/{t}/licenses` (the licence as the body; `If-Match` to replace one) | licence admin |
-| `POST …/licenses/{name}/public`, `/private` (`If-Match`) | licence admin |
+| `GET tenants/{t}/licenses`; `GET, DELETE …/licenses/{name}` | a tenant admin or a licence manager |
+| `POST tenants/{t}/licenses` (the licence as the body; `If-Match` to replace one) | a tenant admin or a licence manager |
+| `POST …/licenses/{name}/private` (`If-Match`) | a tenant admin or a licence manager |
+| `POST …/licenses/{name}/public` (`If-Match`) | tenant admin |
 | `GET …/upstreams/{name}/licenses`; `POST …/upstreams/{name}/licenses/sync` | tenant admin |
 | `GET …/upstreams/{name}/usage`; `POST …/upstreams/{name}/usage {"usage": "forward"\|"off"}` (`If-Match`) | tenant admin: the usage switch and the last forwarding run |
-| `GET tenants/{t}/license-keys`, `GET …/license-keys/{name}` | licence admin: the licence keys of the tenant's live builds |
+| `GET tenants/{t}/license-keys`, `GET …/license-keys/{name}` | a tenant admin or a licence manager: the licence keys of the tenant's live builds |
 
 A licence is answered as its claims and state (`name`, `id`, `issuer`, `holder_id`, `holder`, `plan`,
 `versions`, `limits`, `issued_at`, `expires_at`, `grace_until`, `key`, `source`, `upstream`,

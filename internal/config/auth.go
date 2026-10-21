@@ -131,19 +131,38 @@ func validateAuth(bad func(string, ...any), c Config) {
 			bad("auth.server_issuers[%d]: %s is a CI token issuer's: it issues tokens to any workflow for any audience", i, s.URL)
 		}
 	}
+	// the claim each principal kind is read from: without it on its issuer, it never matches
+	claimOf := map[string]func(ServerIssuer) (string, string){
+		store.PrincipalRole:   func(s ServerIssuer) (string, string) { return s.RolesClaim, "roles_claim" },
+		store.PrincipalGroup:  func(s ServerIssuer) (string, string) { return s.GroupsClaim, "groups_claim" },
+		store.PrincipalClient: func(s ServerIssuer) (string, string) { return s.ClientClaim, "client_claim" },
+	}
+	byName := map[string]ServerIssuer{}
+	for _, s := range a.ServerIssuers {
+		if _, ok := byName[s.Name]; !ok {
+			byName[s.Name] = s
+		}
+	}
 	for _, l := range []struct {
 		name, role string
 		list       []string
 	}{{"server_admins", "an administrator", a.ServerAdmins}, {"server_license_admins", "a licence manager", a.ServerLicenseAdmins}} {
 		for i, s := range l.list {
 			kind, issuer, _, err := auth.ParsePrincipalKey(s)
+			is, known := byName[issuer]
 			switch {
 			case err != nil:
 				bad("auth.%s[%d]: %q is kind:issuer|value", l.name, i, s)
 			case kind == store.PrincipalIssuer:
 				bad("auth.%s[%d]: issuer: is refused (every account of the issuer would be %s)", l.name, i, l.role)
-			case !names[issuer]:
+			case kind == store.PrincipalPublisher:
+				bad("auth.%s[%d]: publisher: is refused (a tenant's publisher, not a principal of a server issuer)", l.name, i)
+			case !known:
 				bad("auth.%s[%d]: %s is not a server issuer", l.name, i, issuer)
+			case claimOf[kind] != nil:
+				if claim, setting := claimOf[kind](is); claim == "" {
+					bad("auth.%s[%d]: %s never matches: the server issuer %s has no %s", l.name, i, s, issuer, setting)
+				}
 			}
 		}
 	}

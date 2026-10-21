@@ -8,6 +8,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
 
 func TestCovers(t *testing.T) {
@@ -194,6 +196,40 @@ func TestServerAdmin(t *testing.T) {
 	} {
 		if err := (authz.ServerAdmin{}).Allow(ctx, c.a, authz.VerbAdmin, authz.Server); (err == nil) != c.want {
 			t.Errorf("%s: %v", c.a, err)
+		}
+	}
+}
+
+// Spec 0029: the API's authorizer allows a licence manager license on an active tenant, and
+// nothing else: not an unknown or a suspended tenant, not another verb.
+func TestLicenseManagerAllow(t *testing.T) {
+	ctx := context.Background()
+	cli := authz.Actor{Kind: authz.ActorOS, ID: "1:t"}
+	st := storetest.Engines(t)[0].Open(t)
+	ten := &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
+	for _, n := range []string{"acme", "idle"} {
+		if _, err := ten.CreateTenant(ctx, cli, n, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ten.SetTenantState(ctx, cli, "idle", store.TenantSuspended, 0); err != nil {
+		t.Fatal(err)
+	}
+	gz := authz.Grants{Store: st, Auths: &auth.TenantAuths{Store: st}}
+	lm := authz.Actor{Kind: authz.ActorLicenseManager, ID: "ops|reconciler"}
+	if err := gz.Allow(ctx, lm, authz.VerbLicense, authz.Resource{Tenant: "acme"}); err != nil {
+		t.Errorf("license on an active tenant: %v", err)
+	}
+	for _, c := range []struct {
+		verb   authz.Verb
+		tenant string
+	}{
+		{authz.VerbLicense, "nope"}, {authz.VerbLicense, "idle"},
+		{authz.VerbAdmin, "acme"}, {authz.VerbAudit, "acme"}, {authz.VerbFeed, "acme"}, {authz.Verb(store.VerbInstall), "acme"},
+		{authz.VerbPublish, "acme"}, {authz.VerbPromote, "acme"},
+	} {
+		if err := gz.Allow(ctx, lm, c.verb, authz.Resource{Tenant: c.tenant}); !errors.Is(err, authz.ErrDenied) {
+			t.Errorf("%s on %s: %v", c.verb, c.tenant, err)
 		}
 	}
 }

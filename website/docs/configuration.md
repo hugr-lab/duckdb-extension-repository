@@ -450,8 +450,10 @@ Each server issuer:
 
 A server administrator is written `kind:issuer|value`, where `kind` is `subject`, `role`, `group`
 or `client`, and `issuer` is a server issuer's name: `role:ops|kista-admin`. `issuer:<name>` is
-refused, since every account of the issuer would be an administrator. A licence manager is written
-and checked the same way: `client:ops|licence-reconciler`.
+refused, since every account of the issuer would be an administrator, and so is `publisher:`. A
+`role:`, `group:` or `client:` principal needs its issuer's `roles_claim`, `groups_claim` or
+`client_claim`; without it the principal could never match and is refused. A licence manager is
+written and checked the same way: `role:ops|kista-licenses`.
 
 ## publish
 
@@ -522,7 +524,7 @@ Each sink:
 | `kind` | `otlp`, `jsonl` | required | |
 | `tenants` | list | none | Tenant names, or `"*"`. |
 | `server` | boolean | `false` | The server's own events too. |
-| `unmasked` | boolean | `false` | Send server administrators' and the CLI's identities on tenants' events as they are (by default they show as `server`). |
+| `unmasked` | boolean | `false` | Send server administrators', licence managers' and the CLI's identities on tenants' events as they are (by default they show as `server`, or `license-manager`). |
 | `url` | URL | | `otlp`: an OTLP/HTTP logs endpoint, https. |
 | `allow` | list | none | `otlp`: private addresses of the endpoint (`cidr`, `ports`). |
 | `headers_file` | absolute path | none | `otlp`: `Name: value` lines. A secret file ([Files kista reads](security.md#files-kista-reads)). |

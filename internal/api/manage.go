@@ -246,7 +246,7 @@ func (h *Handler) serverWhoami(w http.ResponseWriter, r *http.Request, c caller,
 	}
 	sort.Strings(ps)
 	reply(w, r, http.StatusOK, map[string]any{"issuer": c.id.Issuer.Name, "principals": nonNil(ps), "administrator": c.admin,
-		"license_manager": c.licenses}, "", "private, no-store")
+		"license_manager": c.licenseManager}, "", "private, no-store")
 }
 
 // --- DuckDB versions ---

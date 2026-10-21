@@ -92,21 +92,30 @@ func TestLicenseManager(t *testing.T) {
 		if r.status != 200 || r.json(t)["plan"] != "max" {
 			t.Fatalf("%s: get: %d %s", tn, r.status, r.body)
 		}
-		for _, v := range []string{"public", "private"} {
-			r = m.call(t, "POST", T+"/licenses/tresor/"+v, lm, "", "If-Match", r.header.Get("ETag"))
-			if r.status != 200 || r.json(t)["visibility"] != v {
-				t.Fatalf("%s: %s: %d %s", tn, v, r.status, r.body)
-			}
+		// public is the tenant administrators' alone (its token is then served to anyone); a licence
+		// manager restores private
+		if r := m.call(t, "POST", T+"/licenses/tresor/public", lm, "", "If-Match", r.header.Get("ETag")); r.status != 404 {
+			t.Fatalf("%s: public by a licence manager: %d %s", tn, r.status, r.body)
+		}
+		r = m.call(t, "POST", T+"/licenses/tresor/public", admins[tn], "", "If-Match", r.header.Get("ETag"))
+		if r.status != 200 || r.json(t)["visibility"] != "public" {
+			t.Fatalf("%s: public by the tenant administrator: %d %s", tn, r.status, r.body)
+		}
+		r = m.call(t, "POST", T+"/licenses/tresor/private", lm, "", "If-Match", r.header.Get("ETag"))
+		if r.status != 200 || r.json(t)["visibility"] != "private" {
+			t.Fatalf("%s: private: %d %s", tn, r.status, r.body)
 		}
 		if r := m.call(t, "DELETE", T+"/licenses/tresor", lm, "", "If-Match", r.header.Get("ETag")); r.status != 204 {
 			t.Fatalf("%s: delete: %d %s", tn, r.status, r.body)
 		}
 		// its acts carry its actor
+		evID := ""
 		for _, kind := range []string{"license.import", "license.change", "license.remove"} {
 			evs, err := m.st.ListEvents(ctx, tenant.ID, store.EventFilter{Kind: kind, Limit: 10})
 			if err != nil || len(evs) == 0 || evs[0].Actor != lmActor {
-				t.Errorf("%s: %s events: %v %+v", tn, kind, err, evs)
+				t.Fatalf("%s: %s events: %v %+v", tn, kind, err, evs)
 			}
+			evID = evs[0].ID
 		}
 
 		// nothing else: the upstreams' relay, the tenant's other routes, the server's (404 is the
@@ -135,6 +144,14 @@ func TestLicenseManager(t *testing.T) {
 			{"GET", T + "/stats/usage", ""}, {"GET", T + "/feeds", ""}, {"GET", T + "/shadows", ""},
 			{"POST", T + "/suspend", ""}, {"POST", T + "/resume", ""}, {"DELETE", T, ""}, {"GET", T + "/bundle-uploads", ""},
 			{"POST", T + "/channels/prod/keys", `{"signer_ref":"file:x.pem"}`},
+			{"GET", T + "/upstreams/air/usage", ""}, {"POST", T + "/upstreams/air/usage", `{"usage":"off"}`},
+			{"GET", T + "/upstreams/air/cells", ""}, {"GET", T + "/whoami", ""}, {"GET", T + "/events/" + evID, ""},
+			{"POST", T + "/audiences", `{"audience":"api://x"}`}, {"POST", T + "/audiences/remove", `{"audience":"api://x"}`},
+			{"POST", T + "/channels/prod/extensions/tresor/releases", "x"},
+			{"POST", T + "/channels/prod/extensions/tresor/releases/promote", `{"id":"x"}`},
+			{"GET", T + "/extensions/tresor/attachments", ""}, {"POST", T + "/extensions/tresor/attachments", "x"},
+			{"POST", T + "/bundle-uploads", `{"size":1}`}, {"GET", T + "/bundle-imports", ""},
+			{"GET", T + "/attestation-keys/x", ""}, {"POST", T + "/feed", `{}`},
 		} {
 			if r := m.call(t, c.method, c.path, lm, c.body, "If-Match", "*"); r.status != 404 {
 				t.Errorf("%s %s as a licence manager: %d %s", c.method, c.path, r.status, r.body)
@@ -145,6 +162,7 @@ func TestLicenseManager(t *testing.T) {
 		{"GET", "/api/v1/tenants", ""}, {"POST", "/api/v1/tenants", `{"name":"x1"}`}, {"GET", "/api/v1/events", ""},
 		{"GET", "/api/v1/credentials", ""}, {"POST", "/api/v1/duckdb-versions", `{"name":"v2.1.0","kind":"release","c_api_maxima":["v1.5.6"]}`},
 		{"POST", "/api/v1/duckdb-versions/v2.0.0/c-apis", `{"c_api":"v3.0.0"}`},
+		{"GET", "/api/v1/events/00000000-0000-7000-8000-000000000000", ""},
 	} {
 		if r := m.call(t, c.method, c.path, lm, c.body); r.status != 404 {
 			t.Errorf("%s %s as a licence manager: %d %s", c.method, c.path, r.status, r.body)
@@ -216,8 +234,34 @@ func TestLicenseManager(t *testing.T) {
 	if r := m.call(t, "GET", "/api/v1/tenants/other/licenses", m.toks["server admin"], ""); r.status != 200 {
 		t.Errorf("a suspended tenant's licences to the server administrator: %d", r.status)
 	}
-	// an unknown tenant: 404
-	if r := m.call(t, "GET", "/api/v1/tenants/nope/licenses", lm, ""); r.status != 404 {
-		t.Errorf("an unknown tenant: %d", r.status)
+	// a tenant whose deletion started (spec 0019) too, with the unknown tenant's bytes
+	tag = m.call(t, "GET", "/api/v1/tenants/other", m.toks["server admin"], "").header.Get("ETag")
+	if r := m.call(t, "DELETE", "/api/v1/tenants/other", m.toks["server admin"], "", "If-Match", tag); r.status >= 300 {
+		t.Fatalf("delete: %d %s", r.status, r.body)
+	}
+	unknown := m.call(t, "GET", "/api/v1/tenants/nope/licenses", lm, "")
+	if unknown.status != 404 {
+		t.Errorf("an unknown tenant: %d", unknown.status)
+	}
+	for _, c := range []struct{ method, path, body string }{
+		{"GET", "/api/v1/tenants/other/licenses", ""}, {"POST", "/api/v1/tenants/other/licenses", m.licenceFor("other", "pro")},
+		{"GET", "/api/v1/tenants/other/license-keys", ""},
+	} {
+		if r := m.call(t, c.method, c.path, lm, c.body); r.status != 404 || !bytes.Equal(r.body, unknown.body) {
+			t.Errorf("%s %s of a deleting tenant to a licence manager: %d %s", c.method, c.path, r.status, r.body)
+		}
+	}
+
+	// a write needs a named writer, a licence manager's too
+	unnamed := m.keys.sign(t, opsURL, map[string]any{"aud": serverAud, "tid": "t1", "roles": []any{"kista.licenses"}, "sub": nil})
+	if r := m.call(t, "POST", "/api/v1/tenants/acme/licenses", unnamed, m.licenceFor("acme", "pro")); r.status != 401 {
+		t.Errorf("an unnamed licence manager's import: %d %s", r.status, r.body)
+	}
+	// licensing off: an import is refused as for anyone (409)
+	m.lic.Enabled = false
+	r := m.call(t, "POST", "/api/v1/tenants/acme/licenses", lm, m.licenceFor("acme", "pro"))
+	m.lic.Enabled = true
+	if r.status != 409 || !strings.Contains(string(r.body), "licensing is off") {
+		t.Errorf("an import with licensing off: %d %s", r.status, r.body)
 	}
 }

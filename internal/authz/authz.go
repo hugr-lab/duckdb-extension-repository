@@ -118,11 +118,16 @@ func (g Grants) Allow(ctx context.Context, a Actor, verb Verb, r Resource) error
 		if verb != VerbLicense || r.Tenant == "" || r.Channel != "" || r.Extension != "" || r.ExtensionGroup != "" {
 			return ErrDenied
 		}
-		if _, err := g.Store.GetTenant(ctx, r.Tenant); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return ErrDenied
-			}
+		// an active tenant only: the API refuses the others first, and so does this whatever
+		// reaches the service
+		t, err := g.Store.GetTenant(ctx, r.Tenant)
+		switch {
+		case errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleting) || errors.Is(err, store.ErrDeleted):
+			return ErrDenied
+		case err != nil:
 			return err
+		case t.State != store.TenantActive:
+			return ErrDenied
 		}
 		return nil
 	case ActorPrincipal:

@@ -428,7 +428,8 @@ func (f *fakeSender) records() []sinks.Record {
 }
 
 // A collector that refuses large batches gets smaller ones; an event it refuses alone is dropped
-// and counted, never blocking the sink. Server identities on tenants' events are masked.
+// and counted, never blocking the sink. Server identities on tenants' events are masked, a licence
+// manager's too (spec 0029).
 func TestRefusedBatchesAndMasking(t *testing.T) {
 	st := openStore(t)
 	acme := tenant(t, st, "acme")
@@ -447,6 +448,12 @@ func TestRefusedBatchesAndMasking(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.InTx(ctx, "", func(tx *store.Tx) error {
+		return tx.Event(audit.WithRequest(ctx, audit.Request{Client: "198.51.100.8", ActorName: "Reconciler"}), acme.ID,
+			"license-manager:ops|reconciler", "license.import", "license:tresor", map[string]any{"name": "tresor"})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	f := &fakeSender{max: 3, refuse: ids[7]}
 	m := &sinks.Manager{Store: st, Resolver: resolver, Holder: "test", Log: slog.New(slog.DiscardHandler), Every: time.Millisecond,
 		MaxBackoff: time.Millisecond, Sinks: []sinks.Sink{{Name: "s", Selection: sinks.SelectionOf(cfg[0]), Sender: f}}}
@@ -454,14 +461,14 @@ func TestRefusedBatchesAndMasking(t *testing.T) {
 	done := make(chan struct{})
 	go func() { m.Run(c); close(done) }()
 	// 20 events; the refused one's audit.dropped is never sent to the sink that refused it
-	waitFor(t, "delivery", func() bool { return len(f.records()) == 20 })
+	waitFor(t, "delivery", func() bool { return len(f.records()) == 21 })
 	cancel()
 	<-done
 	got := map[string]sinks.Record{}
 	for _, r := range f.records() {
 		got[r.ID] = r
 	}
-	if _, ok := got[ids[7]]; ok || len(got) != 20 {
+	if _, ok := got[ids[7]]; ok || len(got) != 21 {
 		t.Fatalf("the refused event: %d records", len(got))
 	}
 	drops, _ := st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "audit.dropped"})
@@ -471,6 +478,9 @@ func TestRefusedBatchesAndMasking(t *testing.T) {
 	for _, r := range got {
 		if r.Subject == "grant:admin" && (r.Actor != "server" || r.ActorName != "" || r.Client != "") {
 			t.Fatalf("a server identity reached a tenant's sink: %+v", r)
+		}
+		if r.Subject == "license:tresor" && (r.Actor != "license-manager" || r.ActorName != "" || r.Client != "") {
+			t.Fatalf("a licence manager's identity reached a tenant's sink: %+v", r)
 		}
 	}
 }

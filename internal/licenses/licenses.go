@@ -287,9 +287,15 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string
 	})
 }
 
-// SetVisibility makes a licence private or public (expected: its version; 0 any).
+// SetVisibility makes a licence private or public (expected: its version; 0 any). Making one public
+// is an administrator's (spec 0029): a public licence's token is served to anyone served a public
+// release of the name, so a licence manager only makes one private.
 func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, name, visibility string, expected int64) (View, error) {
-	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
+	verb := authz.VerbLicense
+	if visibility != store.Private {
+		verb = authz.VerbAdmin
+	}
+	t, err := s.tenant(ctx, a, verb, tenant)
 	if err != nil {
 		return View{}, err
 	}

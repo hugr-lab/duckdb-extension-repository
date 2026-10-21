@@ -25,27 +25,30 @@ choices today:
 
 - **Configuration.** `auth.server_license_admins` is a list of principals of the server issuers,
   checked as `server_admins` is (`kind:issuer|value`; a whole issuer is refused). It is file-only,
-  like the server administrators.
+  like the server administrators. For both lists, `publisher:` is refused by name. A `role:`,
+  `group:` or `client:` principal of a server issuer without `roles_claim`, `groups_claim` or
+  `client_claim` is refused too, since it could never match.
 - **What a licence manager may do**, on every tenant that is not being deleted (nor suspended: a
   suspended tenant is unknown to it, as to the tenant's administrators):
   - `GET /api/v1/tenants/{t}/licenses` and `GET …/licenses/{name}`;
   - `POST …/licenses` (import, and replacement with `If-Match`);
   - `DELETE …/licenses/{name}`;
-  - `POST …/licenses/{name}/public|private`;
+  - `POST …/licenses/{name}/private` (never `…/public`: see Security);
   - `GET …/license-keys` and `GET …/license-keys/{name}`, to see which keys the live releases
     declare (the reconciler's `kid_untrusted` case).
-- **What it may not do:** anything else. That includes the tenant's other routes, the upstreams'
-  licence relay (`…/upstreams/{u}/licenses[/sync]`, which belongs to the tenant's administrators),
-  and every server route.
+- **What it may not do:** anything else. That includes making a licence public, the tenant's other
+  routes, the upstreams' licence relay (`…/upstreams/{u}/licenses[/sync]`, which belongs to the
+  tenant's administrators), and every server route.
 - **Implementation.**
   - A new access kind, `licenseAdmin`, is satisfied by `pathAdmin` or by a principal in
     `server_license_admins`.
   - The licence routes above use it.
   - `whoami` reports the role (`license_manager: true`).
   - The services see a licence manager as an actor of its own kind, `license-manager`. The API's
-    authorizer allows it one verb, `license`, on a tenant, and nothing else. The licence service
-    asks for `license` on the routes above and keeps `admin` for the relay. A tenant-wide `admin`
-    implies `license`. No grant can give it, since it is not a grant verb.
+    authorizer allows it one verb, `license`, on an active tenant, and nothing else. The licence
+    service asks for `license` on the routes above. It keeps `admin` for making a licence public
+    and for the relay. A tenant-wide `admin` implies `license`. No grant can give it, since it is
+    not a grant verb.
   - A principal in both lists is a server administrator.
 - **Events.** A licence manager's acts carry its actor as every other actor's do (`license.import`,
   `license.remove`, `license.change`): `license-manager:<issuer>|<who>`. A tenant's readers see
@@ -53,11 +56,15 @@ choices today:
 
 ## Security
 
-- **Narrower than today.** A leaked licence manager's token can import, replace, remove and re-show
-  licences. It cannot publish, block, add upstreams or keys, or touch a tenant's records. A licence
-  still has to verify against a key that a live release declares (spec 0021), and must name the
-  tenant's expected holder (spec 0028). So the token cannot bring a licence that the extension's
-  key did not sign.
+- **Narrower than today.** A leaked licence manager's token can import, replace and remove
+  licences and make them private. It cannot publish, block, add upstreams or keys, or touch a
+  tenant's records. A licence still has to verify against a key that a live release declares
+  (spec 0021), and must name the tenant's expected holder (spec 0028). So the token cannot bring a
+  licence that the extension's key did not sign.
+- **Never public.** A public licence's token is served to anyone served a public release of the
+  name (`<prefix>/-/licenses`, anonymous included). With `…/public`, a leaked token could publish a
+  customer's paid licence to everyone. Enterest's reconciler only ever restores `private`, so making
+  a licence public stays the tenant administrators' act.
 - **No implied rights.** Being a licence manager implies nothing else, and server administrators
   keep everything they have.
 - **Configuration only.** The role cannot be granted over the API. It is file-only so that an API
@@ -65,7 +72,9 @@ choices today:
 
 ## Testing
 
-- The configuration: validation, and the refusal of a whole issuer.
+- The configuration: validation, and the refusal of a whole issuer, a publisher, and a principal
+  whose issuer lacks its claim.
+- `…/public` answers `404` to a licence manager; `…/private` works.
 - A licence manager on two tenants: every licence route works; the upstreams' relay routes, the
   tenant's other routes and the server routes are refused. The answer is the API's `404`, which
   stands for forbidden (spec 0007).
@@ -81,3 +90,5 @@ choices today:
 ## Follow-ups
 
 - A tenant-level `license` verb, if someone needs it.
+- The cloud recipes (bicep, terraform, the marketplace UI) do not expose `server_license_admins`
+  yet.
