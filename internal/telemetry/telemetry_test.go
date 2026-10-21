@@ -50,6 +50,10 @@ func TestMetrics(t *testing.T) {
 		EventsPending:   func(context.Context) (map[string]int64, error) { return map[string]int64{"collector": 5}, nil },
 		// a failing gauge is left out, never the whole collection
 		UpstreamCells: func(context.Context) (map[string]int64, error) { return nil, errors.New("the store is down") },
+		// the database login from Vault (spec 0027)
+		StoreLogin:       "vault",
+		StoreLoginCounts: func() map[string]int64 { return map[string]int64{"vault": 2, "cached": 9} },
+		StoreLoginExpiry: func() int64 { return 42 },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +64,7 @@ func TestMetrics(t *testing.T) {
 		Platform: "linux_amd64"})
 	m.Request(ctx, "GET", "extension", 200, 30*time.Millisecond)
 	m.Request(ctx, "BREW", "extension", 200, 30*time.Millisecond)
+	m.StoreLoginCall("vault", 20*time.Millisecond)
 	got := collect(t, r)
 	sum := got["kista.downloads"].Data.(metricdata.Sum[int64])
 	if len(sum.DataPoints) != 2 {
@@ -101,6 +106,23 @@ func TestMetrics(t *testing.T) {
 	p := got["kista.events.pending"].Data.(metricdata.Gauge[int64])
 	if v, _ := p.DataPoints[0].Attributes.Value(attribute.Key("kista.sink")); v.AsString() != "collector" || p.DataPoints[0].Value != 5 {
 		t.Fatalf("pending: %+v", p)
+	}
+	logins := got["kista.store.login"].Data.(metricdata.Sum[int64])
+	if len(logins.DataPoints) != 2 || !logins.IsMonotonic {
+		t.Fatalf("logins: %+v", logins)
+	}
+	for _, dp := range logins.DataPoints {
+		kind, _ := dp.Attributes.Value("kista.login.kind")
+		outcome, _ := dp.Attributes.Value("kista.outcome")
+		if kind.AsString() != "vault" || map[string]int64{"vault": 2, "cached": 9}[outcome.AsString()] != dp.Value {
+			t.Fatalf("a login series: %v %d", dp.Attributes, dp.Value)
+		}
+	}
+	if g := got["kista.store.login.expiry"].Data.(metricdata.Gauge[int64]); g.DataPoints[0].Value != 42 {
+		t.Fatalf("expiry: %+v", g)
+	}
+	if lh := got["kista.store.login.duration"].Data.(metricdata.Histogram[float64]); len(lh.DataPoints) != 1 || lh.DataPoints[0].Count != 1 {
+		t.Fatalf("login durations: %+v", lh.DataPoints)
 	}
 	if _, ok := got["kista.uploads.active"]; ok {
 		t.Fatal("an instrument without its source")

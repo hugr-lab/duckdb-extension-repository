@@ -1,6 +1,6 @@
 # Spec 0027: The database password from Vault or OpenBao
 
-- **Status**: accepted (2026-10-21); phase 1 only
+- **Status**: phase 1 implemented (2026-10-21), its kind case in the bench with its first run to come; phase 2 deferred
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 
@@ -84,13 +84,21 @@ store:
   - Later, a failed read ends the cache, and new connections fail with a fixed error that names the
     source (`store: vault login: status 403`), never a value. Existing connections continue.
     `/readyz` follows the database, as today.
-- **A rejected password** (SQLSTATE `28P01`, SQL Server error 18456) clears the cache. The next
-  connection reads Vault again; the refused attempt is not retried in place, so there is no loop
-  (open question 6).
+- **A rejected password** (SQLSTATE `28P01`, SQL Server error 18456) clears the cache, when the
+  rejected password is the cached one (the connector tells the login which password it used). The
+  next connection reads Vault again; the refused attempt is not retried in place, so there is no
+  loop (open question 6).
+- **One read at a time, shared** (added in review, 2026-10-21): callers that arrive during a read
+  wait for it and share its answer, an error included, unless the reader's own context ended it.
+  A failed read answers for itself for 5 seconds, so a Vault that does not answer is not asked by
+  every caller in turn. The login's `String` and `Format` never show the password.
 - **Errors and logs** never carry the password, the token or a response body. `vaultapi`
   guarantees this already, and the planted-value scan of spec 0004's tests covers the new paths.
-- **Metrics**: `kista_store_login_total{kind="vault",outcome}`, the Vault call latency, and, for
-  `static_role`, the seconds until the cached password expires.
+- **Metrics** (OpenTelemetry names, as kista's others): `kista.store.login` (a counter by
+  `kista.login.kind` and `kista.outcome`: `vault`, `cached`, `error`, `rejected`; exported to
+  Prometheus as `kista_store_login_total`), `kista.store.login.duration` (the Vault calls'
+  latency) and `kista.store.login.expiry` (the seconds the cached password has left, for `kv` and
+  `static_role`).
 - **Admin commands and CronJobs** use the same login: they read the same configuration.
 
 ### Phase 2: dynamic credentials (deferred)
@@ -142,9 +150,15 @@ egress NetworkPolicy (spec 0025) needs an `extraRules` entry for Vault.
   - the database secrets engine runs against the store suite's PostgreSQL (`make test-db`), with a
     static role whose rotation the test forces (`POST database/rotate-role/<name>`). New connections
     take the new password; open ones keep working.
-- **The store suite** runs once with `login.kind: vault` on PostgreSQL. SQL Server's static role
-  is tested later (decided 2026-10-21, open question 4).
-- **kind**: the bench's OpenBao serves the database password, in place of the `kista-db` Secret.
+- **The store** opens, migrates and serves queries with `login.kind: vault` on PostgreSQL, from a
+  KV v2 secret and from a static role, on Vault and on OpenBao; a rotation takes one rejected
+  attempt, then Vault is read again. The rejection's detection is also tested on SQL Server with a
+  plain login. SQL Server's static role is tested later (decided 2026-10-21, open question 4). The
+  static role's test needs `KISTA_TEST_VAULT_POSTGRES`: the PostgreSQL as Vault reaches it from its
+  container.
+- **kind**: the bench's OpenBao serves the database password from KV v2, read with a Kubernetes
+  auth role of its own, in place of the `kista-db` Secret, which kista no longer mounts; the
+  bench's other steps run on that login.
 
 ## Alternatives considered
 

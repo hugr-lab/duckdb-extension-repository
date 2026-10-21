@@ -142,13 +142,35 @@ The metadata database. See [State](state.md) for the engines, DSNs, logins and r
 | --- | --- | --- | --- |
 | `store.kind` | `postgres`, `sqlserver`, `sqlite` | none (required) | The engine. |
 | `store.dsn` | string | none | PostgreSQL or SQL Server connection string. Required for those two. Must not contain a password. |
-| `store.login.kind` | `password`, `entra`, `aws`, `gcp` | `password` | How the password or token is obtained. `entra` needs `postgres` or `sqlserver`; `aws` (RDS IAM) and `gcp` (Cloud SQL IAM) need `postgres` and a DSN with one host. |
+| `store.login.kind` | `password`, `entra`, `aws`, `gcp`, `vault` | `password` | How the password or token is obtained. `entra` and `vault` need `postgres` or `sqlserver`; `aws` (RDS IAM) and `gcp` (Cloud SQL IAM) need `postgres` and a DSN with one host. |
 | `store.login.password_env` | variable name | none | The variable holding the password, re-read on every new connection. Only with `password`. |
 | `store.login.password_file` | path | none | A file holding the password (trailing newlines are trimmed), re-read on every new connection. Not together with `password_env`; only with `password`. A secret file: see [Files kista reads](security.md#files-kista-reads). |
+| `store.login.vault` | block | none | The password from HashiCorp Vault or OpenBao; only with `vault`, and file-only. Its settings are below. |
 | `store.ca_pem` | PEM certificates | none | The PostgreSQL server's CA, inline, instead of a file named by the DSN's `sslrootcert` (not both). The only CA the server's certificate is checked against; `verify-full` still applies. |
 | `store.max_open_conns` | integer | `10` | The connection pool size (PostgreSQL and SQL Server). |
 | `store.migrate` | `auto`, `check` | `auto` | `auto` applies pending migrations at start; `check` only verifies the schema. |
 | `store.sqlite.path` | path | none | The SQLite file. Required for `sqlite`. May not contain `?`, `#` or `%`. |
+
+`store.login.vault` (kind `vault`; see [State](state.md#the-password-from-vault-or-openbao)). The
+connection settings are a `vault` key source's, checked by the same rules; the login has a Vault
+client of its own.
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `address` | URL | required | `https://host[:port]`, no path. `http` only on loopback with `profile: dev`. |
+| `namespace` | string | none | A Vault Enterprise or OpenBao namespace: letters, digits, `_`, `-` and `/`. |
+| `ca_file` | absolute path | none | The CA bundle to trust for the address. Public material. |
+| `auth.kind` | `kubernetes`, `jwt`, `token_file` | required | As for a key source: no static token in the config, no AppRole. |
+| `auth.mount` | string | `kubernetes` or `jwt` | The auth mount path, relative. |
+| `auth.role` | string | none | Required for `kubernetes` and `jwt`: a role for the database login only. |
+| `auth.token_file` | absolute path | required | The projected service-account token, the JWT, or Vault Agent's token. |
+| `kv.mount`, `kv.path`, `kv.field` | strings | required for `kv` | A KV v2 secret: `GET /v1/<mount>/data/<path>`, the string field `field`. Relative paths, no `..`. |
+| `kv.version` | integer | `0` | A pinned KV version; `0` reads the latest. |
+| `static_role.mount`, `static_role.name` | strings | required for `static_role` | A database secrets engine static role: `GET /v1/<mount>/static-creds/<name>`. |
+| `cache` | duration | `1m` | `kv` only: how long the password is kept, `0s` to `10m`. A static role's password is kept until its TTL less 30 seconds. |
+
+Exactly one of `kv` and `static_role`. `dynamic_role` (dynamic credentials) is refused: it is not in
+this version.
 
 ## azure
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The chart's kind test (spec 0013): a kind cluster with Traefik, PostgreSQL and SeaweedFS (S3) over
-# TLS, OpenBao Transit with Kubernetes auth; kista from this checkout, installed by the chart with two
-# replicas behind the ingress and the NetworkPolicy. Then:
+# TLS, OpenBao Transit with Kubernetes auth, and OpenBao's KV holding the database password, which
+# kista reads itself (spec 0027); kista from this checkout, installed by the chart with two replicas
+# behind the ingress and the NetworkPolicy. Then:
 #   - the shapes of the mounted files kista reads (stat);
 #   - the first administration through kubectl exec (a tenant, a signed channel, an OpenBao key, the
 #     cluster's service account issuer, a grant, two releases);
@@ -213,6 +214,17 @@ bao write auth/kubernetes/config kubernetes_host=https://kubernetes.default.svc 
 bao write auth/kubernetes/role/kista bound_service_account_names=kista bound_service_account_namespaces="$ns" \
 	audience=openbao token_policies=kista-ext-prod token_ttl=1h >/dev/null
 
+step "OpenBao: the database password in KV v2, read by a role of its own (spec 0027)"
+bao secrets enable -path=kista-kv -version=2 kv >/dev/null
+bao kv put kista-kv/db password="$dbpass" >/dev/null
+bao policy write kista-db - >/dev/null <<'EOF'
+path "kista-kv/data/db" {
+  capabilities = ["read"]
+}
+EOF
+bao write auth/kubernetes/role/kista-db bound_service_account_names=kista bound_service_account_namespaces="$ns" \
+	audience=openbao token_policies=kista-db token_ttl=1h >/dev/null
+
 step "the CAs kista trusts: the test CA and the API server's"
 kubectl -n "$ns" get cm kube-root-ca.crt -o jsonpath='{.data.ca\.crt}' >"$work/kube-ca.crt"
 kubectl -n "$ns" create secret generic kista-ca --from-file ca.crt="$work/ca.crt" --from-file kube-ca.crt="$work/kube-ca.crt"
@@ -297,6 +309,14 @@ KISTA_E2E_DUCKDB=$duck KISTA_E2E_URL=https://kista.localhost KISTA_E2E_CHANNEL=a
 	KISTA_E2E_KEY="$work/channel.pem" \
 	KISTA_E2E_TOKEN=$(kubectl -n "$ns" create token alice --audience https://kista.localhost/acme --duration 1h) \
 	go test -count=1 -run '^TestRemote$' -v "$repo/e2e/"
+
+step "the database password from OpenBao (spec 0027)"
+# kista started, migrated and serves with it (the steps above); every connection's password came
+# from OpenBao, and no Secret holding it is mounted into kista's pods
+kubectl -n "$ns" get deploy kista -o jsonpath='{.spec.template.spec.volumes[*].secret.secretName}' >"$work/kista-secrets"
+cat "$work/kista-secrets"; echo
+case " $(cat "$work/kista-secrets") " in *" kista-db "*) echo "kista still mounts the kista-db Secret" >&2; exit 1 ;; esac
+ka check
 
 step "a channel signed with a key from a Kubernetes Secret (spec 0026)"
 # said at every start, and recorded once per source (outputs to files first: grep -q in a pipe

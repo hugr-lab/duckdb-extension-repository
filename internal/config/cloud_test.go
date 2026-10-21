@@ -103,7 +103,7 @@ func TestCloudLogins(t *testing.T) {
 		"gcp, the full email":       {pg("postgres://kista-db%40acme-kista.iam.gserviceaccount.com@abc.def.sql.goog./kista?sslmode=verify-full", "{ kind: gcp }") + gcpID, "without .gserviceaccount.com"},
 		"gcp without a principal":   {pg("postgres://kista@abc.def.sql.goog./kista?sslmode=verify-full", "{ kind: gcp }"), "needs gcp.principal"},
 		"entra with a password":     {pg(rds, "{ kind: entra, password_file: /run/pw }"), "entra takes no password"},
-		"an unknown login":          {pg(rds, "{ kind: iam }"), "password, entra, aws or gcp"},
+		"an unknown login":          {pg(rds, "{ kind: iam }"), "password, entra, aws, gcp or vault"},
 		"ca_pem not PEM":            {pg(rds, "{ kind: password }") + "  ca_pem: 'hello'\n", "PEM certificates"},
 		"ca_pem with trailing junk": {pg(rds, "{ kind: password }") + "  ca_pem: |\n" + indent(ca+"junk") + "\n", "PEM certificates"},
 		"ca_pem and sslrootcert": {pg(rds+"&sslrootcert=/etc/ca.pem", "{ kind: password }") + "  ca_pem: |\n" + indent(ca) + "\n",

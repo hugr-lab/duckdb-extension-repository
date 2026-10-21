@@ -170,6 +170,9 @@ signers:
 		"no role":          strings.Replace(ok, "role: kista, ", "", 1),
 		"approle":          strings.Replace(ok, "kind: kubernetes", "kind: approle", 1),
 		"mount escapes":    strings.Replace(ok, "mount: transit", "mount: ../sys", 1),
+		"auth mount query": strings.Replace(ok, "auth: { kind: kubernetes,", "auth: { mount: \"kubernetes?x=1\", kind: kubernetes,", 1),
+		"auth mount up":    strings.Replace(ok, "auth: { kind: kubernetes,", "auth: { mount: ../sys, kind: kubernetes,", 1),
+		"relative ca_file": strings.Replace(ok, "mount: transit,", "mount: transit, ca_file: ca.pem,", 1),
 		"duplicate source": ok + `    - name: bao
       kind: vault
       allow: ["*"]

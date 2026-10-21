@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 	mssql "github.com/microsoft/go-mssqldb"
 	"github.com/microsoft/go-mssqldb/msdsn"
@@ -32,6 +34,67 @@ import (
 // one.
 type Login interface {
 	Password(ctx context.Context) (string, error)
+}
+
+// Rejecter is a login told when the database rejected a password it gave (PostgreSQL SQLSTATE
+// 28P01, SQL Server error 18456), and which one, so a cached password is not used again (spec
+// 0027). The attempt that was rejected fails; the pool's next one asks the login again.
+type Rejecter interface {
+	Rejected(password string)
+}
+
+// rejecting tells a Rejecter login about a rejected password on the driver's connect path.
+type rejecting struct {
+	driver.Connector
+	login    Rejecter
+	rejected func(error) bool
+}
+
+// usedKey carries, through a connection attempt's context, where the password it used is noted.
+type usedKey struct{}
+
+// notePassword notes the password a connection attempt uses, for rejecting.Connect.
+func notePassword(ctx context.Context, pw string) {
+	if p, ok := ctx.Value(usedKey{}).(*string); ok {
+		*p = pw
+	}
+}
+
+func (r rejecting) Connect(ctx context.Context) (driver.Conn, error) {
+	var used string
+	c, err := r.Connector.Connect(context.WithValue(ctx, usedKey{}, &used))
+	if err != nil && r.rejected(err) {
+		r.login.Rejected(used)
+	}
+	return c, err
+}
+
+// Close closes the inner connector when it holds anything.
+func (r rejecting) Close() error {
+	if c, ok := r.Connector.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
+
+// withRejecter wraps a connector when the login wants to hear about rejected passwords.
+func withRejecter(c driver.Connector, login Login, rejected func(error) bool) driver.Connector {
+	if r, ok := login.(Rejecter); ok {
+		return rejecting{Connector: c, login: r, rejected: rejected}
+	}
+	return c
+}
+
+// pgRejected is PostgreSQL's invalid_password.
+func pgRejected(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "28P01"
+}
+
+// msRejected is SQL Server's "Login failed for user".
+func msRejected(err error) bool {
+	var me mssql.Error
+	return errors.As(err, &me) && me.Number == 18456
 }
 
 // Target is the connection a login is for: a token login binds its token to it (spec 0020).
@@ -275,6 +338,23 @@ func msHosts(cfg msdsn.Config) []string {
 	return hosts
 }
 
+// DSNUser is the user a DSN of the given kind (postgres, sqlserver) logs in as, by the driver's own
+// parsing.
+func DSNUser(kind, dsn string) (string, error) {
+	switch kind {
+	case "postgres":
+		t, err := PostgresTarget(dsn)
+		return t.User, err
+	case "sqlserver":
+		cfg, err := msdsn.Parse(dsn)
+		if err != nil {
+			return "", errors.New("store: not a SQL Server DSN")
+		}
+		return cfg.User, nil
+	}
+	return "", fmt.Errorf("store: %s has no DSN user", kind)
+}
+
 // DSNIsLocal reports whether every host a DSN of the given kind (postgres, sqlserver) can reach is a
 // loopback address, judged from the driver's own parsing (multi-host and failover included).
 func DSNIsLocal(kind, dsn string) (bool, error) {
@@ -320,6 +400,8 @@ type Store struct {
 	// EventSinks gives an event's pending sinks: the bits of the sinks that take its tenant (spec
 	// 0010 phase 1b); nil: none.
 	EventSinks func(tenantID string) int
+	// Login is the login new connections use; nil for SQLite. Set by the opener.
+	Login Login
 }
 
 func newStore(db *sql.DB, d *Dialect) *Store {
@@ -391,7 +473,7 @@ func OpenPostgres(ctx context.Context, dsn string, login Login, maxOpen int, caP
 		cfg.ConnectTimeout = 10 * time.Second
 	}
 	cfg.Password = "" // never from PGPASSWORD or .pgpass: only the login
-	db := stdlib.OpenDB(*cfg, stdlib.OptionBeforeConnect(func(ctx context.Context, cc *pgx.ConnConfig) error {
+	connector := stdlib.GetConnector(*cfg, stdlib.OptionBeforeConnect(func(ctx context.Context, cc *pgx.ConnConfig) error {
 		if login == nil {
 			return nil
 		}
@@ -405,15 +487,19 @@ func OpenPostgres(ctx context.Context, dsn string, login Login, maxOpen int, caP
 		if err != nil {
 			return err
 		}
+		notePassword(ctx, pw)
 		cc.Password = pw
 		return nil
 	}))
+	db := sql.OpenDB(withRejecter(connector, login, pgRejected))
 	configurePool(db, maxOpen)
 	if err := pingTimeout(ctx, db); err != nil {
 		db.Close()
 		return nil, err
 	}
-	return newStore(db, Postgres), nil
+	s := newStore(db, Postgres)
+	s.Login = login
+	return s, nil
 }
 
 // OpenSQLServer opens SQL Server. Off loopback the DSN must require encryption with certificate
@@ -447,7 +533,7 @@ func OpenSQLServer(ctx context.Context, dsn string, login Login, maxOpen int) (*
 		}
 		connector = c
 	} else {
-		connector = &passwordConnector{cfg: cfg, login: login}
+		connector = withRejecter(&passwordConnector{cfg: cfg, login: login}, login, msRejected)
 	}
 	db := sql.OpenDB(connector)
 	configurePool(db, maxOpen)
@@ -455,7 +541,9 @@ func OpenSQLServer(ctx context.Context, dsn string, login Login, maxOpen int) (*
 		db.Close()
 		return nil, err
 	}
-	return newStore(db, SQLServer), nil
+	s := newStore(db, SQLServer)
+	s.Login = login
+	return s, nil
 }
 
 // passwordConnector sets the password from the login on every new connection.
@@ -471,6 +559,7 @@ func (p *passwordConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
+		notePassword(ctx, pw)
 		cfg.Password = pw
 	}
 	return mssql.NewConnectorConfig(cfg).Connect(ctx)

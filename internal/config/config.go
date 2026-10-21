@@ -99,10 +99,47 @@ type Store struct {
 
 // Login says how the database password or token is obtained.
 type Login struct {
-	Kind         string `yaml:"kind"` // password | entra | aws | gcp
+	Kind         string `yaml:"kind"` // password | entra | aws | gcp | vault
 	PasswordEnv  string `yaml:"password_env"`
 	PasswordFile string `yaml:"password_file"`
+	// Vault is the password from Vault or OpenBao (spec 0027), file-only.
+	Vault *VaultLogin `yaml:"vault" kista:"fileonly"`
 }
+
+// VaultLogin reads the database password from HashiCorp Vault or OpenBao (spec 0027): the
+// connection settings of a vault key source, and one of a KV v2 secret or a database secrets
+// engine static role.
+type VaultLogin struct {
+	Address     string     `yaml:"address"`
+	Namespace   string     `yaml:"namespace"`
+	CAFile      string     `yaml:"ca_file"`
+	Auth        VaultAuth  `yaml:"auth"`
+	KV          *VaultKV   `yaml:"kv"`
+	StaticRole  *VaultRole `yaml:"static_role"`
+	DynamicRole *VaultRole `yaml:"dynamic_role"` // phase 2: refused
+	// Cache is how long a KV password is kept: default 1m, 0s..10m.
+	Cache *time.Duration `yaml:"cache"`
+}
+
+// VaultKV is a password in a KV v2 secret.
+type VaultKV struct {
+	Mount   string `yaml:"mount"`
+	Path    string `yaml:"path"`
+	Field   string `yaml:"field"`
+	Version int    `yaml:"version"` // 0: the latest
+}
+
+// VaultRole is a database secrets engine role.
+type VaultRole struct {
+	Mount string `yaml:"mount"`
+	Name  string `yaml:"name"`
+}
+
+// VaultLoginCache is the KV cache's default and VaultLoginMaxCache its bound.
+const (
+	VaultLoginCache    = time.Minute
+	VaultLoginMaxCache = 10 * time.Minute
+)
 
 // SQLite configures a SQLite store.
 type SQLite struct {
@@ -481,6 +518,9 @@ func (c Config) Validate() error {
 		bad("store.migrate must be auto or check")
 	}
 	pwSet := c.Store.Login.PasswordEnv != "" || c.Store.Login.PasswordFile != ""
+	if c.Store.Login.Vault != nil && c.Store.Login.Kind != "vault" {
+		bad("store.login.vault goes with store.login.kind vault")
+	}
 	switch c.Store.Login.Kind {
 	case "password":
 		if c.Store.Login.PasswordEnv != "" && c.Store.Login.PasswordFile != "" {
@@ -495,8 +535,10 @@ func (c Config) Validate() error {
 		}
 	case "aws", "gcp":
 		validateTokenLogin(bad, c)
+	case "vault":
+		validateVaultLogin(bad, c, pwSet, dev)
 	default:
-		bad("store.login.kind must be password, entra, aws or gcp")
+		bad("store.login.kind must be password, entra, aws, gcp or vault")
 	}
 	if c.Store.CAPEM != "" {
 		switch {
@@ -715,6 +757,9 @@ func (c Config) SecretFiles() []NamedPath {
 		}
 	}
 	add("store.login.password_file", c.Store.Login.PasswordFile)
+	if v := c.Store.Login.Vault; v != nil {
+		add("store.login.vault.auth.token_file", v.Auth.TokenFile)
+	}
 	identity("azure.identity", &c.Azure.Identity)
 	identity("aws.identity", c.AWS.Identity)
 	add("gcp.credentials_file", c.GCP.CredentialsFile)
@@ -935,38 +980,112 @@ func loopbackURL(s string) bool {
 }
 
 func validateVault(bad func(string, ...any), where string, v VaultSource, dev bool) {
-	u, err := url.Parse(v.Address)
-	switch {
-	case err != nil || u.Host == "" || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.User != nil:
-		bad("%s.vault.address must be a scheme://host[:port] URL", where)
-	case u.Scheme == "http":
-		if !dev || !store.IsLoopbackHost(u.Hostname()) {
-			bad("%s.vault.address: plain http only on loopback with profile dev", where)
-		}
-	case u.Scheme != "https":
-		bad("%s.vault.address must be https", where)
-	}
-	if !vaultNamespace.MatchString(v.Namespace) || strings.Contains(v.Namespace, "..") {
-		bad("%s.vault.namespace may contain only letters, digits, _, - and /", where)
-	}
+	validateVaultConn(bad, where+".vault", v.Address, v.Namespace, v.CAFile, v.Auth, dev)
 	if v.Mount == "" || strings.ContainsAny(v.Mount, "?#%") || strings.Contains(v.Mount, "..") || strings.HasPrefix(v.Mount, "/") {
 		bad("%s.vault.mount must be a relative mount path", where)
-	}
-	switch v.Auth.Kind {
-	case "kubernetes", "jwt":
-		if v.Auth.Role == "" {
-			bad("%s.vault.auth.role is required for %s", where, v.Auth.Kind)
-		}
-	case "token_file":
-	default:
-		bad("%s.vault.auth.kind must be kubernetes, jwt or token_file", where)
-	}
-	if !strings.HasPrefix(v.Auth.TokenFile, "/") {
-		bad("%s.vault.auth.token_file must be an absolute path", where)
 	}
 	if !dev && !v.SoftwareKeys {
 		bad("%s.vault.software_keys must be true outside profile dev: Transit keys are software keys", where)
 	}
+}
+
+// validateVaultConn checks how kista reaches a Vault: a key source's (spec 0004) and the database
+// login's (spec 0027) by the same rules.
+func validateVaultConn(bad func(string, ...any), where, address, namespace, caFile string, auth VaultAuth, dev bool) {
+	u, err := url.Parse(address)
+	switch {
+	case err != nil || u.Host == "" || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.User != nil:
+		bad("%s.address must be a scheme://host[:port] URL", where)
+	case u.Scheme == "http":
+		if !dev || !store.IsLoopbackHost(u.Hostname()) {
+			bad("%s.address: plain http only on loopback with profile dev", where)
+		}
+	case u.Scheme != "https":
+		bad("%s.address must be https", where)
+	}
+	if !vaultNamespace.MatchString(namespace) || strings.Contains(namespace, "..") {
+		bad("%s.namespace may contain only letters, digits, _, - and /", where)
+	}
+	switch auth.Kind {
+	case "kubernetes", "jwt":
+		if auth.Role == "" {
+			bad("%s.auth.role is required for %s", where, auth.Kind)
+		}
+	case "token_file":
+	default:
+		bad("%s.auth.kind must be kubernetes, jwt or token_file", where)
+	}
+	if !strings.HasPrefix(auth.TokenFile, "/") {
+		bad("%s.auth.token_file must be an absolute path", where)
+	}
+	if auth.Mount != "" && !vaultPath(auth.Mount) {
+		bad("%s.auth.mount must be a relative mount path", where)
+	}
+	if caFile != "" && !filepath.IsAbs(caFile) {
+		bad("%s.ca_file must be an absolute path", where)
+	}
+}
+
+// vaultPath is a relative Vault path: a mount, a KV path, a role.
+func vaultPath(p string) bool {
+	return p != "" && !strings.ContainsAny(p, "?#% \t\n") && !strings.Contains(p, "..") && !strings.HasPrefix(p, "/") &&
+		!strings.HasSuffix(p, "/") && !strings.Contains(p, "//")
+}
+
+var vaultRoleName = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}$`)
+
+// validateVaultLogin checks store.login kind vault (spec 0027): PostgreSQL or SQL Server, no other
+// password setting, a Vault reached as a key source's is, and exactly one secret: a KV v2 field or
+// a static role. Dynamic credentials are phase 2.
+func validateVaultLogin(bad func(string, ...any), c Config, pwSet, dev bool) {
+	if c.Store.Kind != "postgres" && c.Store.Kind != "sqlserver" {
+		bad("store.login vault needs postgres or sqlserver")
+	}
+	if pwSet {
+		bad("store.login vault takes no password_env or password_file: Vault holds the password")
+	}
+	v := c.Store.Login.Vault
+	if v == nil {
+		bad("store.login vault needs the store.login.vault block")
+		return
+	}
+	validateVaultConn(bad, "store.login.vault", v.Address, v.Namespace, v.CAFile, v.Auth, dev)
+	if v.DynamicRole != nil {
+		bad("store.login.vault.dynamic_role: dynamic database credentials are not available in this version (spec 0027 phase 2); use kv or static_role")
+	}
+	if (v.KV == nil) == (v.StaticRole == nil) {
+		bad("store.login.vault: set exactly one of kv and static_role")
+	}
+	if kv := v.KV; kv != nil {
+		if !vaultPath(kv.Mount) || !vaultPath(kv.Path) {
+			bad("store.login.vault.kv: mount and path must be relative Vault paths")
+		}
+		if kv.Field == "" || len(kv.Field) > 256 {
+			bad("store.login.vault.kv.field is required")
+		}
+		if kv.Version < 0 {
+			bad("store.login.vault.kv.version cannot be negative (0 reads the latest)")
+		}
+	}
+	if r := v.StaticRole; r != nil {
+		if !vaultPath(r.Mount) || !vaultRoleName.MatchString(r.Name) || strings.Contains(r.Name, "..") {
+			bad("store.login.vault.static_role: mount must be a relative Vault path, name a role name ([A-Za-z0-9_.-])")
+		}
+		if v.Cache != nil {
+			bad("store.login.vault.cache is for kv: a static role's password is kept until its rotation")
+		}
+	}
+	if v.Cache != nil && (*v.Cache < 0 || *v.Cache > VaultLoginMaxCache) {
+		bad("store.login.vault.cache must be within 0s..%s", VaultLoginMaxCache)
+	}
+}
+
+// VaultLoginCacheOrDefault is the KV password's cache: store.login.vault.cache, or 1 minute.
+func (v VaultLogin) VaultLoginCacheOrDefault() time.Duration {
+	if v.Cache == nil {
+		return VaultLoginCache
+	}
+	return *v.Cache
 }
 
 // FileSignersAllowed reports whether file: signer references may be used.

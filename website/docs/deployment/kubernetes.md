@@ -301,6 +301,23 @@ config:
           auth: {kind: kubernetes, role: kista, token_file: /var/run/secrets/kista/bao/token}
 ```
 
+The same token can log kista in for its database password (`store.login.kind: vault`, see
+[State](../state.md#the-password-from-vault-or-openbao)), with a Vault role of its own that may read
+the one path; the chart needs nothing more than the token and an `extraRules` entry for Vault:
+
+```yaml
+config:
+  store:
+    kind: postgres
+    dsn: postgres://kista@db.internal:5432/kista?sslmode=verify-full
+    login:
+      kind: vault
+      vault:
+        address: https://bao.internal:8200
+        auth: {kind: kubernetes, role: kista-db, token_file: /var/run/secrets/kista/bao/token}
+        static_role: {mount: database, name: kista}
+```
+
 Channel keys belong in a KMS, an HSM or Transit ([Signing keys](../signing-keys.md)). kista
 refuses a key file from a Kubernetes Secret: a Secret is not a key store.
 
@@ -389,7 +406,7 @@ ClusterIP or a LoadBalancer IP that kista dials: most CNIs match a policy after 
 translation, against the pod's address, so add an `extraRules` entry naming the pods behind it.
 
 **`extraRules`** holds what the chart cannot tell from the configuration: the database, a Vault or
-OpenBao key source, an OpenTelemetry collector, an S3 in the cluster, a token service on a
+OpenBao key source or database login (`store.login.kind: vault`), an OpenTelemetry collector, an S3 in the cluster, a token service on a
 private address, a proxy named by host. Each rule names its peers (`to`, at least one, none
 empty) and, if it has `ports`, at least one: a rule without them would admit every peer or every
 port, and is refused.
