@@ -105,6 +105,14 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 				"source", s.Name)
 		}
 	}
+	// spec 0026: a kubesecret source's keys are as safe as the cluster's Secrets, said at every start
+	for _, s := range cfg.Signers.Sources {
+		if s.Kind == "kubesecret" && s.KubeSecret != nil {
+			log.Warn("serve: a key source holds its keys in a Kubernetes Secret; they are protected by the cluster's etcd encryption at rest "+
+				"and its RBAC on Secrets, not by an HSM or a KMS: whoever reads Secrets in this namespace, or etcd's disks, has the keys",
+				"source", s.Name, "dir", s.KubeSecret.Dir, "etcd_encryption_at_rest", s.KubeSecret.EtcdEncryptionAtRest)
+		}
+	}
 	if err := ServerStart(ctx, cfg, st); err != nil {
 		log.Error("serve: recording server.start", "error", err)
 	}

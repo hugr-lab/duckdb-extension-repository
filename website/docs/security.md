@@ -78,6 +78,11 @@ records the rejection as an `upstream.rejected` event.
   be mode `0600` or narrower, owned by kista's user, and not a symlink. This is stricter than the
   rule for other files (below), on purpose: a Kubernetes Secret mounted into `signers.file_dir` is
   refused.
+- **Keys in a Kubernetes Secret** (`kubesecret`) are an explicit opt-in for clouds without a KMS:
+  protected only by the cluster's etcd encryption and its RBAC on Secrets. The configuration must
+  acknowledge it, kista checks the files come from a read-only Secret volume, and every start logs
+  a warning and records `signer.source.weak`
+  ([Kubernetes Secrets](signing-keys.md#kubernetes-secrets)).
 - Signing happens when a release is made, never on a download, so a KMS outage stops publishing,
   not serving.
 

@@ -635,7 +635,7 @@ func (a *adminCmd) key(ctx context.Context, sub string, args []string) error {
 		if err := keys.Probe(ctx, sg); err != nil {
 			return err
 		}
-		fmt.Fprintln(a.out, sg.ID(), extfile.Fingerprint(sg.Public()))
+		fmt.Fprintln(a.out, sg.ID(), extfile.Fingerprint(sg.Public()), "protection="+a.svc.Sources.Protection(sg.ID()))
 		return nil
 	}
 	if len(pos) < 1 {
@@ -658,9 +658,13 @@ func (a *adminCmd) key(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		a.table("ID\tFINGERPRINT\tSTATE\tSIGNER\tTRUSTED SINCE\tSTATE CHANGED", func(w io.Writer) {
+		a.table("ID\tFINGERPRINT\tSTATE\tSIGNER\tPROTECTION\tTRUSTED SINCE\tSTATE CHANGED", func(w io.Writer) {
 			for _, k := range ks {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", k.ID, k.Fingerprint, k.State, k.SignerRef, ts(k.TrustedSince), ts(k.StateChangedAt))
+				p := a.svc.Sources.Protection(k.SignerRef)
+				if p == "" {
+					p = "-" // a source no longer configured
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", k.ID, k.Fingerprint, k.State, k.SignerRef, p, ts(k.TrustedSince), ts(k.StateChangedAt))
 			}
 		})
 	case (sub == "activate" || sub == "retire") && len(pos) == 2:

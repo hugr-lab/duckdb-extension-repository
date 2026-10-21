@@ -33,6 +33,34 @@ const (
 	PurposeAttestation = "attestation-signing"
 )
 
+// Protection tiers: how a source's keys are held, as `key check`, `key list`, the management API
+// and key.add events name it (spec 0026). Ordered from weakest: a file and a Kubernetes Secret are
+// key material kista reads; Vault Transit keeps software keys in Vault's barrier; a cloud KMS or
+// Managed HSM never hands the key out.
+const (
+	ProtectionFile       = "file"
+	ProtectionKubeSecret = "kubesecret"
+	ProtectionSoftware   = "software"
+	ProtectionKMS        = "kms"
+)
+
+// protections maps a source kind to its tier.
+var protections = map[string]string{"vault": ProtectionSoftware, "azurekv": ProtectionKMS, "awskms": ProtectionKMS,
+	"gcpkms": ProtectionKMS, "kubesecret": ProtectionKubeSecret}
+
+// Protection names the protection tier of the source a reference names; "" for a reference to no
+// configured source.
+func (r *Registry) Protection(ref string) string {
+	name, _, _ := strings.Cut(ref, ":")
+	if name == "file" {
+		return ProtectionFile
+	}
+	if src, ok := r.sources[name]; ok {
+		return protections[src.b.Kind()]
+	}
+	return ""
+}
+
 // Key is a parsed key inside a source: what the backend needs, and how the reference spells it.
 type Key struct {
 	Name    string // the key name, checked against the source's allow list

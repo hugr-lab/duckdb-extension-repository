@@ -62,9 +62,10 @@ are all the kinds in `internal/audit`:
 | | `version.add` | `version:<name>` | `version`, `kind`, `c_apis` |
 | | `version.c_apis` | `version:<name>` | `version`, `c_api` |
 | | `server.start` | `server` | `version`, `schema`, `digests`, `changed` |
+| | `signer.source.weak` | `source:<name>` | `source`, `kind`, `protection` |
 | Channels and keys | `channel.create` | `channel:<channel>` | `name`, `kind` |
 | | `channel.versions` | `channel:<channel>` | `added`, `removed` |
-| | `key.add` | `channel:<channel>/key:<id>` | `key`, `fingerprint`, `scheme`, `state` |
+| | `key.add` | `channel:<channel>/key:<id>` | `key`, `fingerprint`, `scheme`, `state`, `protection` |
 | | `key.activate`, `key.retire` | `channel:<channel>/key:<id>` | `key`, `fingerprint`, `from`, `forced` |
 | | `key.resign` | `channel:<channel>/key:<id>` | `key`, `fingerprint`, `signatures` |
 | Identity | `issuer.add` | `issuer:<name>` | `name`, `url`, `algorithms` |
@@ -130,6 +131,10 @@ Notes on some kinds:
   of each security-relevant configuration section (`profile`, `signers`, `blob`, `serve`, `egress`,
   `auth`, `publish`, `upstreams`, `events`, `statistics`, `telemetry`, `tenants`), and the sections changed
   since the previous start.
+- `signer.source.weak` is recorded with every `server.start`, once per `kubesecret` key source: a
+  source whose keys are only as safe as the cluster's Secrets
+  ([Kubernetes Secrets](signing-keys.md#kubernetes-secrets)). `key.add` carries the key's
+  `protection` tier (`file`, `kubesecret`, `software` or `kms`).
 - `auth.failure` is recorded for a `401` given to a request that sent a credential; `reason` is
   `malformed`, `invalid`, `publisher_route`, `stale_token` or `unnamed_writer`, or for a publisher's
   signed request `signed_stale` (`signed-at` more than five minutes away), `signed_key` (not a key of

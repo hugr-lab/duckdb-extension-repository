@@ -129,13 +129,30 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel, ref s
 			return err
 		}
 		scheme, _, _ := strings.Cut(k.SignerRef, ":") // the source's scheme, never the reference
-		if err := tx.Event(ctx, c.TenantID, a.String(), "key.add", "channel:"+c.Name+"/key:"+k.ID,
-			map[string]any{"key": k.ID, "fingerprint": k.Fingerprint, "scheme": scheme, "state": k.State}); err != nil {
+		data := map[string]any{"key": k.ID, "fingerprint": k.Fingerprint, "scheme": scheme, "state": k.State}
+		if p := Protection(s.Signers, k.SignerRef); p != "" {
+			data["protection"] = p // spec 0026
+		}
+		if err := tx.Event(ctx, c.TenantID, a.String(), "key.add", "channel:"+c.Name+"/key:"+k.ID, data); err != nil {
 			return err
 		}
 		return tx.BumpChannel(ctx, &c)
 	})
 	return k, err
+}
+
+// Protector names how the key a signer reference names is held (keysource.Registry.Protection).
+type Protector interface {
+	Protection(ref string) string
+}
+
+// Protection is the protection tier of a reference's key (spec 0026: file, kubesecret, software,
+// kms), or "" when the opener does not say.
+func Protection(o Opener, ref string) string {
+	if p, ok := o.(Protector); ok {
+		return p.Protection(ref)
+	}
+	return ""
 }
 
 // Probe proves a signer can sign: it signs a fixed body hash and verifies the result against the

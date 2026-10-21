@@ -135,6 +135,7 @@ type keyJSON struct {
 	Fingerprint    string `json:"fingerprint"`
 	State          string `json:"state"`
 	SignerRef      string `json:"signer_ref,omitempty"` // server administrators only
+	Protection     string `json:"protection,omitempty"` // server administrators only (spec 0026)
 	TrustedSince   string `json:"trusted_since,omitempty"`
 	StateChangedAt string `json:"state_changed_at"`
 	StateChangedBy string `json:"state_changed_by"`
@@ -143,12 +144,15 @@ type keyJSON struct {
 	ETag           string `json:"etag"`
 }
 
-func keyOf(k store.Key, c caller) keyJSON {
+func (h *Handler) keyOf(k store.Key, c caller) keyJSON {
 	o := keyJSON{ID: k.ID, Fingerprint: k.Fingerprint, State: k.State, TrustedSince: timeOf(k.TrustedSince),
 		StateChangedAt: timeOf(k.StateChangedAt), StateChangedBy: createdBy(k.StateChangedBy, c), CreatedAt: timeOf(k.CreatedAt),
 		CreatedBy: createdBy(k.CreatedBy, c), ETag: versionTag(k.Version)}
 	if c.admin {
 		o.SignerRef = k.SignerRef
+		if h.o.Keys != nil {
+			o.Protection = keys.Protection(h.o.Keys.Signers, k.SignerRef)
+		}
 	}
 	return o
 }
@@ -179,7 +183,7 @@ func (h *Handler) keyView(w http.ResponseWriter, r *http.Request, c caller, p pa
 	out := map[string]any{}
 	list := []keyJSON{}
 	for _, k := range ks {
-		list = append(list, keyOf(k, c))
+		list = append(list, h.keyOf(k, c))
 		if k.ID == ch.ServingKeyID {
 			out["serving_key"] = k.ID
 		}
@@ -221,7 +225,7 @@ func (h *Handler) getKey(w http.ResponseWriter, r *http.Request, c caller, p par
 	}
 	for _, k := range ks {
 		if k.ID == p["id"] || k.Fingerprint == p["id"] { // as activate and retire take either
-			reply(w, r, http.StatusOK, keyOf(k, c), versionTag(k.Version), noStore)
+			reply(w, r, http.StatusOK, h.keyOf(k, c), versionTag(k.Version), noStore)
 			return
 		}
 	}
@@ -273,7 +277,7 @@ func (h *Handler) addKey(w http.ResponseWriter, r *http.Request, c caller, p par
 		h.keyAddErr(w, err)
 		return
 	}
-	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/channels/"+esc(p["c"])+"/keys/"+esc(k.ID), keyOf(k, c), versionTag(k.Version))
+	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/channels/"+esc(p["c"])+"/keys/"+esc(k.ID), h.keyOf(k, c), versionTag(k.Version))
 }
 
 // keyAddErr: a signer that cannot be opened or refuses the key is the caller's (a server
@@ -319,7 +323,7 @@ func (h *Handler) keyState(w http.ResponseWriter, r *http.Request, c caller, p p
 		h.channelErr(w, err, false)
 		return
 	}
-	reply(w, r, http.StatusOK, keyOf(k, c), versionTag(k.Version), noStore)
+	reply(w, r, http.StatusOK, h.keyOf(k, c), versionTag(k.Version), noStore)
 }
 
 func (h *Handler) activateKey(w http.ResponseWriter, r *http.Request, c caller, p params) {

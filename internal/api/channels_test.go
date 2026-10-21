@@ -248,13 +248,13 @@ func TestKeyManagement(t *testing.T) {
 	if v["active_key"] == nil || v["active_key"] != v["serving_key"] || v["unsigned_by_active"].(float64) != 0 || v["resigner"] != nil {
 		t.Fatalf("key view: %v", v)
 	}
-	if k := v["keys"].([]any)[0].(map[string]any); k["signer_ref"] != nil {
+	if k := v["keys"].([]any)[0].(map[string]any); k["signer_ref"] != nil || k["protection"] != nil {
 		t.Errorf("a channel administrator sees the signer reference: %v", k)
 	}
 
 	// a server administrator registers a key by signer reference
 	r := m.call(t, "POST", K, sa, `{"signer_ref":"file:b.pem"}`)
-	if r.status != 201 || r.json(t)["state"] != "trusted" || r.json(t)["signer_ref"] != "file:b.pem" {
+	if r.status != 201 || r.json(t)["state"] != "trusted" || r.json(t)["signer_ref"] != "file:b.pem" || r.json(t)["protection"] != "file" {
 		t.Fatalf("add key: %d %s", r.status, r.body)
 	}
 	kb, tag := r.json(t)["id"].(string), r.header.Get("ETag")

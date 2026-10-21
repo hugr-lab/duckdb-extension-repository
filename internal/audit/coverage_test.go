@@ -31,6 +31,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -269,7 +270,7 @@ func TestCoverage(t *testing.T) {
 	n := 0
 	st.Now = func() time.Time { n++; return base.Add(time.Duration(n) * time.Millisecond) } // distinct, ordered times
 	dir := t.TempDir()
-	ks := &keys.Service{Store: st, Signers: signer.Resolver{FileDir: dir, AllowFile: true}, Authz: authz.ServerAdmin{}}
+	ks := &keys.Service{Store: st, Signers: keysource.NewRegistry(signer.Resolver{FileDir: dir, AllowFile: true}), Authz: authz.ServerAdmin{}}
 	fsStore, _ := fs.Open(filepath.Join(t.TempDir(), "blobs"))
 	bs, err := blob.NewService(ctx, st, []blob.Domain{{Name: "default", Kind: "fs", Store: fsStore}},
 		blob.Options{SpoolDir: filepath.Join(t.TempDir(), "spool"), MaxBody: 1 << 20, MaxIngests: 4, Log: slog.New(slog.DiscardHandler)})
@@ -674,6 +675,9 @@ func TestCoverage(t *testing.T) {
 		}
 		if e.Kind == "key.add" && bytes.Contains([]byte(e.Data), []byte("a.pem")) {
 			t.Errorf("a signer reference in an event: %s", e.Data)
+		}
+		if e.Kind == "key.add" && !bytes.Contains([]byte(e.Data), []byte(`"protection":"file"`)) {
+			t.Errorf("key.add without the key's protection (spec 0026): %s", e.Data)
 		}
 		if e.Actor != "system:resign" && e.Client != "198.51.100.0/24" {
 			t.Errorf("%s: client %q", e.Kind, e.Client)
