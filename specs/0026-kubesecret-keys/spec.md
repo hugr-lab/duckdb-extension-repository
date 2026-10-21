@@ -1,6 +1,6 @@
 # Spec 0026: Signing keys from a Kubernetes Secret, as an explicit opt-in
 
-- **Status**: draft
+- **Status**: accepted (2026-10-21)
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 
@@ -171,8 +171,9 @@ Prominently, on [Signing keys](../../website/docs/signing-keys.md) and the Kuber
   directory comes from the configuration, the name is one element with no dots, and the file is
   opened inside `dir`.
 - **Separation of roles.** There are no tags, so the role is held by the fingerprint registry and
-  by `allow` prefixes. Licence keys (spec 0012) and attestation keys keep their own sources: the
-  draft proposes to refuse `kubesecret` for licence keys (open question).
+  by `allow` prefixes. Attestation keys keep their own sources: a `kubesecret` source opens
+  channel keys only (decided 2026-10-21, open question 4). Licence keys are not kista's to sign
+  (spec 0012).
 
 ## Testing
 
@@ -209,17 +210,37 @@ Prominently, on [Signing keys](../../website/docs/signing-keys.md) and the Kuber
 
 ## Open questions
 
-1. **The name of the kind**: `kubesecret`, `k8s-secret` or `secret`.
+1. **The name of the kind**: `kubesecret`, `k8s-secret` or `secret`. (decided 2026-10-21)
+   `kubesecret`, as the draft writes it: no other kind has a dash, and `secret` would not say where
+   the secret lives.
 2. **Projected volumes.** Accept a projected volume that mixes a Secret source with others?
-   Projected volumes are tmpfs too, and their layout is the same.
+   Projected volumes are tmpfs too, and their layout is the same. (decided 2026-10-21, the draft
+   gave no recommendation; the conservative option) kista cannot tell a projected volume from a
+   Secret volume, so it accepts both as they come, but nothing invites a mixed one: the chart
+   mounts plain Secret volumes only (`secretVolumes`), and the documentation says a projected
+   volume used as a source must have Secret sources only, since a ConfigMap source in it would put
+   the key in a ConfigMap.
 3. **Detection strictness.** Is the mount check worth its Linux-only code? Without it, the rule is
-   shape (b) plus the layout, and a ConfigMap with a key in it is accepted.
+   shape (b) plus the layout, and a ConfigMap with a key in it is accepted. (decided 2026-10-21)
+   Yes, as designed: the mount check stays, and the kind is refused on other platforms with an
+   error that says why.
 4. **Licence and attestation keys.** Refuse `kubesecret` for licence keys (spec 0012) and the
-   tenants' attestation keys, or allow it with the same acknowledgment?
+   tenants' attestation keys, or allow it with the same acknowledgment? (decided 2026-10-21) Refuse,
+   as the draft proposes: a `kubesecret` source opens a key for the channel-signing purpose only,
+   and an attestation key through it is refused at open. kista signs no licences (Enterest is the
+   licence root, spec 0012), so there is nothing to refuse for them here.
 5. **Dev profile.** Allow it without the acknowledgment in dev (kind), as other acknowledgments are
-   relaxed there?
+   relaxed there? (decided 2026-10-21) Yes, like `vault`'s `software_keys`: the acknowledgment is
+   required outside `profile: dev` only. Every check at open, the start warning and the audit event
+   stay in dev.
 6. **The audit event's name**, and whether a channel served with such a key should be flagged in
-   the console.
+   the console. (decided 2026-10-21) `signer.source.weak`, subject `source:<name>`, with the fields
+   `source`, `kind` and `protection`. No console flag in this spec (the draft gave no
+   recommendation; the conservative option): the management API's `protection` field carries it,
+   and a badge in the console is a follow-up.
 7. **Managed clusters.** Which of OTC CCE, IONOS MK8s, STACKIT SKE and Hetzner (k3s, Talos)
    encrypt Secrets at rest by default, and with which provider. This is for the docs, to be
-   verified per provider.
+   verified per provider. (decided 2026-10-21) The documentation names no provider as verified: it
+   says what to check and how to turn encryption on where the operator runs the control plane, and
+   to ask the provider otherwise. A per-provider table is a documentation follow-up, once each one
+   is verified.

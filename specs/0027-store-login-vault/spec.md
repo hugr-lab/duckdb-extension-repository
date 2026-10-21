@@ -1,6 +1,6 @@
 # Spec 0027: The database password from Vault or OpenBao
 
-- **Status**: draft
+- **Status**: accepted (2026-10-21); phase 1 only
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 
@@ -9,7 +9,8 @@
 A further `store.login` kind, `vault`, makes kista read its database credentials from HashiCorp
 Vault or OpenBao itself. It authenticates as the `vault` signer source does, through the same
 `vaultapi` client and config shape. Phase 1 reads a password at a KV v2 path or a database secrets
-engine static role. Phase 2 (open) takes dynamic credentials with lease renewal.
+engine static role. Phase 2 (deferred, open questions 1 and 2) would take dynamic credentials
+with lease renewal.
 
 **What already works today, with no change to kista:** External Secrets Operator, the Vault
 Secrets Operator, the Vault CSI provider or the Vault Agent injector writes the password to a file,
@@ -84,14 +85,15 @@ store:
     source (`store: vault login: status 403`), never a value. Existing connections continue.
     `/readyz` follows the database, as today.
 - **A rejected password** (SQLSTATE `28P01`, SQL Server error 18456) clears the cache. The next
-  connection reads Vault again: one retry per connection attempt, no loop.
+  connection reads Vault again; the refused attempt is not retried in place, so there is no loop
+  (open question 6).
 - **Errors and logs** never carry the password, the token or a response body. `vaultapi`
   guarantees this already, and the planted-value scan of spec 0004's tests covers the new paths.
 - **Metrics**: `kista_store_login_total{kind="vault",outcome}`, the Vault call latency, and, for
   `static_role`, the seconds until the cached password expires.
 - **Admin commands and CronJobs** use the same login: they read the same configuration.
 
-### Phase 2: dynamic credentials (open)
+### Phase 2: dynamic credentials (deferred)
 
 `GET /v1/<mount>/creds/<name>` makes a new database user with a lease. It brings three changes:
 
@@ -106,7 +108,7 @@ store:
 3. **Ownership.** Objects a migration creates belong to the dynamic user, whom Vault drops later.
    Either migrations run with `store.migrate: check` and an owner identity (`kista admin migrate`
    with a static login), or kista sets a role after connecting (`SET ROLE kista_owner`, a new
-   `store.role`). This is the main open question.
+   `store.role`). This is open question 2, deferred with phase 2.
 
 ### The chart
 
@@ -140,8 +142,8 @@ egress NetworkPolicy (spec 0025) needs an `extraRules` entry for Vault.
   - the database secrets engine runs against the store suite's PostgreSQL (`make test-db`), with a
     static role whose rotation the test forces (`POST database/rotate-role/<name>`). New connections
     take the new password; open ones keep working.
-- **The store suite** runs once with `login.kind: vault` on PostgreSQL. SQL Server follows if the
-  mssql plugin is cheap in CI (open question).
+- **The store suite** runs once with `login.kind: vault` on PostgreSQL. SQL Server's static role
+  is tested later (decided 2026-10-21, open question 4).
 - **kind**: the bench's OpenBao serves the database password, in place of the `kista-db` Secret.
 
 ## Alternatives considered
@@ -159,14 +161,28 @@ egress NetworkPolicy (spec 0025) needs an `extraRules` entry for Vault.
 
 1. **Phase 2 at all?** Dynamic credentials bring renewal, revocation and object ownership. Static
    roles give rotation without them. The proposal is phase 1 only, until someone needs dynamic
-   users.
+   users. (decided 2026-10-21) Phase 1 only, as proposed: `kv` and `static_role`. `dynamic_role`
+   is refused by the configuration; phase 2 needs its own decision when someone asks for it.
 2. **Ownership under dynamic users**: `SET ROLE` (a `store.role` setting) or `migrate: check` with a
-   separate owner login.
-3. **The cache default** for KV (1 minute), and whether KV v1 is needed.
+   separate owner login. (decided 2026-10-21) Deferred with phase 2: the draft gives no
+   recommendation, and phase 1 needs none, since `kv` and `static_role` log in as one fixed user
+   that owns what it migrates, as today.
+3. **The cache default** for KV (1 minute), and whether KV v1 is needed. (decided 2026-10-21) One
+   minute, at most 10, as proposed; KV v2 only. A KV v1 mount answers a v2 read with an error, so a
+   wrong mount fails at start.
 4. **SQL Server**: support `static_role` with Vault's mssql plugin in the same phase, or later?
+   (decided 2026-10-21, the draft gave no firm recommendation; the conservative option) The login
+   is the same on both dialects (it hands a password to the connector, and checks the user against
+   the DSN's), so nothing refuses SQL Server; but phase 1 tests and documents the database secrets
+   engine against PostgreSQL only. A tested SQL Server static role is a follow-up.
 5. **One Vault client per address**, shared between a signer source and the login when both name
    the same Vault and role. This would save logins, but mixes the roles' duties; the proposal is
-   no.
+   no. (decided 2026-10-21) No, as proposed: the login has a client of its own.
 6. **The retry after a rejected password** needs the error from the driver's connect path. Can
    pgx's `BeforeConnect` and the SQL Server connector expose it cleanly, or does the pool's next
-   attempt suffice?
+   attempt suffice? (decided 2026-10-21, the draft gave no recommendation) Both expose it cleanly:
+   the store wraps the connector it already has (pgx's `stdlib.GetConnector`, and kista's own SQL
+   Server connector), sees the driver's error (SQLSTATE `28P01`; SQL Server error 18456) and tells
+   the login, which drops its cached password. The attempt that was refused fails and is not
+   retried in place (the conservative option: no loop by construction); the pool's next attempt
+   reads Vault again.
