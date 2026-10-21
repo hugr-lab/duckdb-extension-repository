@@ -182,6 +182,11 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
 - **Server administrators** come from the configuration file (`auth.server_admins`, principals of
   `auth.server_issuers`, which must have required claims). The `kista admin` CLI acts as the server
   administrator: it runs as the service's OS user with the service's configuration.
+- **Licence managers** (`auth.server_license_admins`, from the configuration file only) manage
+  every tenant's licences and nothing else, so a job that writes licences needs no server
+  administrator's token. A leaked licence manager's token can import, replace, remove and re-show
+  licences, never publish, block or add upstreams or keys; a licence still has to verify against a
+  key a live release declares.
 - **Publishers** sign each request with their developer's SSH key (spec 0023). kista stores only
   public keys, so a copy of its database cannot publish. A signature binds the method, the path and
   query, the body's SHA-256 and a time within five minutes, so a captured request cannot be sent

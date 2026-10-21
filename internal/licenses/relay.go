@@ -59,7 +59,7 @@ func (r *Result) refuse(name, id, rule, reason string) {
 
 // Sync asks for an upstream's relay run now (POST …/upstreams/{u}/licenses/sync).
 func (s *Service) Sync(ctx context.Context, a authz.Actor, tenant, name string) error {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, authz.VerbAdmin, tenant)
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func (s *Service) Sync(ctx context.Context, a authz.Actor, tenant, name string) 
 
 // LastSync is an upstream's last relay run (zero when it never ran).
 func (s *Service) LastSync(ctx context.Context, a authz.Actor, tenant, name string) (time.Time, *Result, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, authz.VerbAdmin, tenant)
 	if err != nil {
 		return time.Time{}, nil, err
 	}

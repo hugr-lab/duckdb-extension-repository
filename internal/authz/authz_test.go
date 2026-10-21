@@ -52,6 +52,12 @@ func TestCovers(t *testing.T) {
 		{"channel admin does not imply feed", g("subject", "me", "prod", "", "admin"), "feed", prod, false},
 		{"extension admin does not feed", g("subject", "me", "", "tresor", "admin"), "feed", prod, false},
 		{"issuer-wide feed is ignored", g("issuer", "", "", "", "feed"), "feed", prod, false},
+		// spec 0029: license, the tenant's licences; only a tenant-wide admin implies it
+		{"tenant admin implies license", g("subject", "me", "", "", "admin"), "license", tenant, true},
+		{"channel admin does not imply license", g("subject", "me", "prod", "", "admin"), "license", tenant, false},
+		{"extension admin does not imply license", g("subject", "me", "", "tresor", "admin"), "license", tenant, false},
+		{"issuer-wide admin does not imply license", g("issuer", "", "", "", "admin"), "license", tenant, false},
+		{"install is not license", g("subject", "me", "", "", "install"), "license", tenant, false},
 	} {
 		if got := authz.Covers(auth.HeldBy(me, store.TenantAuth{Grants: []store.Grant{tc.grant}}), tc.verb, tc.r); got != tc.want {
 			t.Errorf("%s: %v", tc.name, got)
@@ -71,6 +77,21 @@ func TestCovers(t *testing.T) {
 	}
 	if err := gz.Allow(ctx, authz.Actor{Kind: authz.ActorSystem}, authz.VerbAdmin, tenant); !errors.Is(err, authz.ErrDenied) {
 		t.Errorf("a system actor: %v", err)
+	}
+	// spec 0029: a licence manager holds license on a tenant and nothing else (refused before any
+	// lookup; the API's tests show it allowed on a tenant)
+	lm := authz.Actor{Kind: authz.ActorLicenseManager, ID: "ops|reconciler"}
+	for _, c := range []struct {
+		verb authz.Verb
+		r    authz.Resource
+	}{
+		{authz.VerbAdmin, tenant}, {authz.VerbAudit, tenant}, {authz.VerbFeed, prod}, {authz.VerbPublish, tresor},
+		{authz.VerbLicense, authz.Server}, {authz.VerbLicense, prod}, {authz.VerbLicense, tresor},
+		{authz.VerbLicense, authz.Resource{Tenant: "acme", ExtensionGroup: "g"}},
+	} {
+		if err := gz.Allow(ctx, lm, c.verb, c.r); !errors.Is(err, authz.ErrDenied) {
+			t.Errorf("a licence manager, %s on %+v: %v", c.verb, c.r, err)
+		}
 	}
 }
 

@@ -455,8 +455,8 @@ All of it is additive. The usage tables follow `statistics.retention`, and all o
 
 ```text
 GET    /api/v1/licenses/keys                               server administrators (1a)
-GET    /api/v1/tenants/{t}/licenses                        tenant administrators (1a)
-GET    /api/v1/tenants/{t}/licenses/{name}                 tenant administrators, ETag (1a)
+GET    /api/v1/tenants/{t}/licenses                        tenant administrators, licence managers (1a, 0029)
+GET    /api/v1/tenants/{t}/licenses/{name}                 tenant administrators, licence managers, ETag (1a, 0029)
 POST   /api/v1/tenants/{t}/licenses                        import, the JWS as the body (1a)
 POST   /api/v1/tenants/{t}/licenses/{name}/public|private  If-Match (1a)
 DELETE /api/v1/tenants/{t}/licenses/{name}                 If-Match (1a)
@@ -467,6 +467,9 @@ POST   /api/v1/tenants/{t}/upstreams/{u}/usage             {"usage": "forward"|"
 GET    /api/v1/tenants/{t}/upstreams/{u}/usage             the switch and the last forwarding run (1c)
 ```
 
+- **Who.** The licence routes (list, read, import, remove, public/private) and the licence keys'
+  routes are the tenant administrators' and, since spec 0029, the licence managers'
+  (`auth.server_license_admins`); the upstreams' relay routes are the tenant administrators' only.
 - **A licence** is shown as its claims and its state: `name`, `id`, `issuer`, `holder_id`, `holder`,
   `plan`, `versions`, `limits`, `issued_at`, `expires_at`, `grace_until`, `key`, `source`,
   `upstream`, `visibility`, `status` (`valid`, `grace`; `expired` between the end of its grace and

@@ -1,6 +1,7 @@
 // Package authz holds the actor of a request and the authorization hook every service calls
 // (spec 0003). The CLI's server administrator is allowed everything; over the API (spec 0007)
-// server administrators are allowed everything and tenant principals act through their grants.
+// server administrators are allowed everything, licence managers every tenant's licences (spec
+// 0029), and tenant principals act through their grants.
 package authz
 
 import (
@@ -24,6 +25,8 @@ const (
 	ActorServer    ActorKind = "server"    // a server administrator's token (spec 0007)
 	ActorPublisher ActorKind = "publisher" // a publisher's credential (spec 0008): publish and promote only
 	ActorSystem    ActorKind = "system"    // kista itself
+	// ActorLicenseManager is a licence manager's server token (spec 0029): license only
+	ActorLicenseManager ActorKind = "license-manager"
 )
 
 // Actor is who performs an action. Its String form is recorded with every change.
@@ -56,6 +59,9 @@ const (
 	VerbPromote Verb = "promote"
 	VerbAudit   Verb = "audit" // spec 0010: read the tenant's events; admin implies it
 	VerbFeed    Verb = "feed"  // spec 0011: take the tenant's feed in a channel; admin implies it
+	// VerbLicense manages a tenant's licences (spec 0029): admin on the tenant implies it, licence
+	// managers hold it on every tenant and nothing else. No grant gives it (store.Verbs lacks it).
+	VerbLicense Verb = "license"
 )
 
 // Resource is what an action is on: the server (no tenant), a tenant, a channel, an extension in a
@@ -96,8 +102,8 @@ func (ServerAdmin) Allow(_ context.Context, a Actor, _ Verb, _ Resource) error {
 }
 
 // Grants is the API's authorizer: OS and server actors (a server administrator; the API makes
-// server actors of administrators only) are allowed everything; a principal actor what its grants
-// in its own tenant allow.
+// server actors of administrators only) are allowed everything; a licence manager license on a
+// tenant (spec 0029); a principal actor what its grants in its own tenant allow.
 type Grants struct {
 	Store *store.Store
 	Auths *auth.TenantAuths
@@ -107,6 +113,17 @@ type Grants struct {
 func (g Grants) Allow(ctx context.Context, a Actor, verb Verb, r Resource) error {
 	switch a.Kind {
 	case ActorOS, ActorServer:
+		return nil
+	case ActorLicenseManager:
+		if verb != VerbLicense || r.Tenant == "" || r.Channel != "" || r.Extension != "" || r.ExtensionGroup != "" {
+			return ErrDenied
+		}
+		if _, err := g.Store.GetTenant(ctx, r.Tenant); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return ErrDenied
+			}
+			return err
+		}
 		return nil
 	case ActorPrincipal:
 	case ActorPublisher:

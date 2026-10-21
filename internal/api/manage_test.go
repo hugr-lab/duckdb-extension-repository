@@ -121,8 +121,8 @@ func (f *fakePuller) take() []release.Miss {
 }
 
 // newMgmt builds the API with server identity and management: server issuer ops (role
-// kista.admin is a server administrator), tenant acme (issuer corp) and tenant other (issuer
-// corp, at another IdP).
+// kista.admin is a server administrator, role kista.licenses a licence manager), tenant acme
+// (issuer corp) and tenant other (issuer corp, at another IdP).
 func newMgmt(t *testing.T) *mgmt {
 	t.Helper()
 	en := newEnv(t)
@@ -130,9 +130,10 @@ func newMgmt(t *testing.T) *mgmt {
 	server := &auth.Server{
 		Issuers: []store.Issuer{{ID: auth.ServerIssuerID("ops"), Name: "ops", URL: opsURL, Algorithms: auth.Algorithms,
 			RequiredClaims: map[string]string{"tid": "t1"}, RolesClaim: []string{"roles"}, MaxTokenLifetime: 24 * time.Hour}},
-		Audiences: []string{serverAud},
-		Admins:    auth.Principals{{IssuerID: auth.ServerIssuerID("ops"), Kind: store.PrincipalRole, Value: "kista.admin"}: true},
-		Verifier:  &auth.Verifier{Fetch: ks},
+		Audiences:     []string{serverAud},
+		Admins:        auth.Principals{{IssuerID: auth.ServerIssuerID("ops"), Kind: store.PrincipalRole, Value: "kista.admin"}: true},
+		LicenseAdmins: auth.Principals{{IssuerID: auth.ServerIssuerID("ops"), Kind: store.PrincipalRole, Value: "kista.licenses"}: true},
+		Verifier:      &auth.Verifier{Fetch: ks},
 	}
 	auths := &auth.TenantAuths{Store: en.st}
 	grants := authz.Grants{Store: en.st, Auths: auths}
@@ -207,6 +208,8 @@ func newMgmt(t *testing.T) *mgmt {
 		"other admin":  ks.sign(t, otherIdPURL, map[string]any{"sub": "olga", "aud": publicURL + "/other"}),
 		"server admin": ks.sign(t, opsURL, map[string]any{"sub": "root", "aud": serverAud, "tid": "t1", "roles": []any{"kista.admin"}}),
 		"server user":  ks.sign(t, opsURL, map[string]any{"sub": "joe", "aud": serverAud, "tid": "t1"}),
+		// spec 0029: a licence manager
+		"server licence mgr": ks.sign(t, opsURL, map[string]any{"sub": "reconciler", "aud": serverAud, "tid": "t1", "roles": []any{"kista.licenses"}}),
 		"stale admin": ks.sign(t, idpURL, map[string]any{"sub": "tom", "aud": publicURL + "/acme",
 			"iat": time.Now().Add(-2 * time.Hour).Unix()}),
 		"stale server": ks.sign(t, opsURL, map[string]any{"sub": "root", "aud": serverAud, "tid": "t1", "roles": []any{"kista.admin"},
@@ -266,7 +269,7 @@ func TestManagementAccess(t *testing.T) {
 	}
 	grantID := gs[0].ID
 	everyone := []string{"anonymous", "no grants", "install", "ext admin", "channel adm", "tenant admin", "server admin",
-		"server user", "stale admin", "stale server"}
+		"server user", "stale admin", "stale server", "server licence mgr"}
 	cases := []struct {
 		method, path, body string
 		want               want

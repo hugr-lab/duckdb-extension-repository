@@ -243,6 +243,22 @@ request; names already present or absent are skipped). See [commands](administra
 
 Administrators of a channel, an extension or an extension group administer that resource only.
 
+**Licence managers** (spec 0029) are a server-wide role for a job that writes licences, such as a
+licence reconciler: a principal of a server issuer listed in `auth.server_license_admins`. On every
+tenant that is active (not suspended, not being deleted) a licence manager may list, read, import,
+replace, remove and re-show licences, and read the licence keys the live releases declare:
+
+- `GET, POST /api/v1/tenants/{t}/licenses`, `GET, DELETE …/licenses/{name}`,
+  `POST …/licenses/{name}/public|private`;
+- `GET /api/v1/tenants/{t}/license-keys`, `GET …/license-keys/{name}`.
+
+Nothing else: not the upstreams' licence relay (`…/upstreams/{u}/licenses[/sync]`, the tenant
+administrators'), no other tenant route, no server route; those answer `404` as to any caller who
+may not use them. A licence still has to verify against a key a live release declares. The role is
+configuration only: no API call grants it. Its acts are recorded as
+`license-manager:<issuer>|<who>`; a tenant's readers see `license-manager`, without the name. A
+principal in both lists is a server administrator.
+
 ```yaml title="kista.yaml"
 auth:                                  # file-only; changes take effect at restart
   server_issuers:
@@ -253,12 +269,14 @@ auth:                                  # file-only; changes take effect at resta
   server_audiences: []                 # default: [ serve.public_url ]
   server_admins:
     - role:ops|kista-admin             # kind:issuer|value; issuer: is refused
+  server_license_admins:               # licence managers: every tenant's licences, nothing else
+    - client:ops|licence-reconciler    # checked as server_admins
   server_egress_allow: []              # CIDRs reached only by the server issuers' fetcher
   admin_token_max_age: 1h              # management needs a token issued this recently; 1m..24h
 ```
 
 A server issuer's principals never match a tenant's, whatever a tenant names its records. A server
-administrator's identity is at `GET /api/v1/whoami`.
+token's identity is at `GET /api/v1/whoami`, with `administrator` and `license_manager`.
 
 **Fresh tokens for management.** Every management route, reads included, needs a token issued
 within `auth.admin_token_max_age` (default 1h), and a write needs a `sub` or client claim to record
@@ -270,7 +288,8 @@ gets `404`. See [HTTP API](api.md).
 - Management answers that the caller may not see are `404`, the same as for a resource that does not
   exist.
 - A tenant administrator sees `created_by: server` for records a server administrator or the CLI
-  made, and no infrastructure details (signer references, storage domains).
+  made (`license-manager` for a licence manager's acts), and no infrastructure details (signer
+  references, storage domains).
 - The index lists, to a caller with `install`, the private extensions it may install; to anyone else,
   public ones only.
 

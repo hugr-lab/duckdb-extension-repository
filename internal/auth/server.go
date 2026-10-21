@@ -68,7 +68,15 @@ type Server struct {
 	Issuers   []store.Issuer
 	Audiences []string
 	Admins    Principals
-	Verifier  *Verifier
+	// LicenseAdmins are the licence managers' principals (spec 0029)
+	LicenseAdmins Principals
+	Verifier      *Verifier
+}
+
+// ServerRoles are the server roles a server token's principals hold.
+type ServerRoles struct {
+	Admin          bool // a server administrator (spec 0007)
+	LicenseManager bool // a licence manager (spec 0029): every tenant's licences, nothing else
 }
 
 // IsServerToken reports whether a token carries a server audience.
@@ -84,18 +92,18 @@ func (s *Server) IsServerToken(token string) bool {
 	return false
 }
 
-// Verify verifies a server token and reports whether it is a server administrator's.
-func (s *Server) Verify(ctx context.Context, token string) (Identity, bool, error) {
+// Verify verifies a server token and reports the server roles its principals hold.
+func (s *Server) Verify(ctx context.Context, token string) (Identity, ServerRoles, error) {
 	id, err := s.Verifier.VerifyIdentity(ctx, store.TenantAuth{Issuers: s.Issuers, Audiences: s.Audiences}, "", token)
 	if err != nil {
-		return id, false, err
+		return id, ServerRoles{}, err
 	}
+	var r ServerRoles
 	for k := range id.Principals {
-		if s.Admins[k] {
-			return id, true, nil
-		}
+		r.Admin = r.Admin || s.Admins[k]
+		r.LicenseManager = r.LicenseManager || s.LicenseAdmins[k]
 	}
-	return id, false, nil
+	return id, r, nil
 }
 
 // ParsePrincipalKey parses a principal ("subject:<issuer>|<value>", role, group, client alike; or

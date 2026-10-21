@@ -1,6 +1,6 @@
 # Spec 0029: Licence managers
 
-- **Status**: accepted (2026-10-21)
+- **Status**: implemented (2026-10-21)
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 
@@ -26,7 +26,8 @@ choices today:
 - **Configuration.** `auth.server_license_admins` is a list of principals of the server issuers,
   checked as `server_admins` is (`kind:issuer|value`; a whole issuer is refused). It is file-only,
   like the server administrators.
-- **What a licence manager may do**, on every tenant that is not being deleted:
+- **What a licence manager may do**, on every tenant that is not being deleted (nor suspended: a
+  suspended tenant is unknown to it, as to the tenant's administrators):
   - `GET /api/v1/tenants/{t}/licenses` and `GET …/licenses/{name}`;
   - `POST …/licenses` (import, and replacement with `If-Match`);
   - `DELETE …/licenses/{name}`;
@@ -41,8 +42,14 @@ choices today:
     `server_license_admins`.
   - The licence routes above use it.
   - `whoami` reports the role (`license_manager: true`).
+  - The services see a licence manager as an actor of its own kind, `license-manager`. The API's
+    authorizer allows it one verb, `license`, on a tenant, and nothing else. The licence service
+    asks for `license` on the routes above and keeps `admin` for the relay. A tenant-wide `admin`
+    implies `license`. No grant can give it, since it is not a grant verb.
+  - A principal in both lists is a server administrator.
 - **Events.** A licence manager's acts carry its actor as every other actor's do (`license.import`,
-  `license.remove`, `license.change`).
+  `license.remove`, `license.change`): `license-manager:<issuer>|<who>`. A tenant's readers see
+  `license-manager` without the name, as they see `server` for a server administrator.
 
 ## Security
 
@@ -60,7 +67,8 @@ choices today:
 
 - The configuration: validation, and the refusal of a whole issuer.
 - A licence manager on two tenants: every licence route works; the upstreams' relay routes, the
-  tenant's other routes and the server routes answer `403`.
+  tenant's other routes and the server routes are refused. The answer is the API's `404`, which
+  stands for forbidden (spec 0007).
 - A tenant administrator and a server administrator are unchanged.
 - `whoami`.
 

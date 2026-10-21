@@ -54,8 +54,11 @@ func (s *Service) WithAuthz(az authz.Authorizer) *Service {
 	return &c
 }
 
-func (s *Service) tenant(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: name}); err != nil {
+// tenant authorizes verb on the tenant and reads it: license for the licences themselves (spec
+// 0029: a licence manager's, and a tenant administrator's, whom admin implies it), admin for the
+// rest (the upstreams' relay, the stored token).
+func (s *Service) tenant(ctx context.Context, a authz.Actor, verb authz.Verb, name string) (store.Tenant, error) {
+	if err := s.Authz.Allow(ctx, a, verb, authz.Resource{Tenant: name}); err != nil {
 		return store.Tenant{}, err
 	}
 	return s.Store.GetTenant(ctx, name)
@@ -117,7 +120,7 @@ func (s *Service) upstreamName(ctx context.Context, id string) (string, error) {
 
 // List lists a tenant's licences.
 func (s *Service) List(ctx context.Context, a authz.Actor, tenant string) ([]View, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +137,7 @@ func (s *Service) List(ctx context.Context, a authz.Actor, tenant string) ([]Vie
 
 // Get reads a tenant's licence for an extension.
 func (s *Service) Get(ctx context.Context, a authz.Actor, tenant, name string) (View, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return View{}, err
 	}
@@ -147,7 +150,7 @@ func (s *Service) Get(ctx context.Context, a authz.Actor, tenant, name string) (
 
 // Token is the stored licence's token, as received (the CLI's license token).
 func (s *Service) Token(ctx context.Context, a authz.Actor, tenant, name string) (string, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, authz.VerbAdmin, tenant)
 	if err != nil {
 		return "", err
 	}
@@ -214,7 +217,7 @@ func record(t *license.Token, tenantID, token, actor string) store.License {
 // licence's version to replace (If-Match), 0 for whichever is stored (If-Match: *), or Create for
 // none: a stored licence is never replaced without an If-Match.
 func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, token string, expected int64) (View, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return View{}, err
 	}
@@ -267,7 +270,7 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, token strin
 
 // Remove removes a tenant's licence (expected: its version; 0 any).
 func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string, expected int64) error {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return err
 	}
@@ -286,7 +289,7 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string
 
 // SetVisibility makes a licence private or public (expected: its version; 0 any).
 func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, name, visibility string, expected int64) (View, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return View{}, err
 	}
@@ -372,7 +375,7 @@ type KeyView struct {
 // LicenseKeys lists the keys a tenant's licences are verified with: those of its live builds, by
 // name (one name, or all: name ""), without the keys the server refuses.
 func (s *Service) LicenseKeys(ctx context.Context, a authz.Actor, tenant, name string) ([]NameKeys, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return nil, err
 	}

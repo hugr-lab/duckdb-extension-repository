@@ -353,7 +353,8 @@ func ServerAuth(ctx context.Context, cfg config.Config, st *store.Store) (*auth.
 	if err != nil {
 		return nil, err
 	}
-	return &auth.Server{Issuers: issuers, Audiences: auds, Admins: cfg.ServerAdmins(), Verifier: &auth.Verifier{Fetch: eg}}, nil
+	return &auth.Server{Issuers: issuers, Audiences: auds, Admins: cfg.ServerAdmins(), LicenseAdmins: cfg.ServerLicenseAdmins(),
+		Verifier: &auth.Verifier{Fetch: eg}}, nil
 }
 
 // readiness recomputes /readyz every 5 seconds: the store reachable and its schema readable.

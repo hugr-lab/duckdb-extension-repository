@@ -423,8 +423,9 @@ The deployment's own `public_url` host is always refused.
 
 ## auth
 
-Server identity: the issuers whose tokens can make someone a server administrator. The whole block
-is file-only and is read at start. See [Access](access.md).
+Server identity: the issuers whose tokens can make someone a server administrator or a licence
+manager. The whole block is file-only and is read at start, so no API caller can widen a server
+role. See [Access](access.md).
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -432,6 +433,7 @@ is file-only and is read at start. See [Access](access.md).
 | `auth.server_audiences` | list | `[serve.public_url]` | Audiences a server token must carry. Required (or `public_url`) with server issuers. Values under `public_url/` are refused: those are tenants' audiences. |
 | `auth.server_egress_allow` | list | none | Like `egress.allow` (`cidr`, `ports`), reached only by the server issuers' fetcher. |
 | `auth.server_admins` | list | none | Principals of server issuers who are server administrators. |
+| `auth.server_license_admins` | list | none | Principals of server issuers who are licence managers: they manage every tenant's licences and nothing else (spec 0029). |
 | `auth.admin_token_max_age` | duration | `1h` | How recently a management token must have been issued; `1m..24h`. |
 
 Each server issuer:
@@ -448,7 +450,8 @@ Each server issuer:
 
 A server administrator is written `kind:issuer|value`, where `kind` is `subject`, `role`, `group`
 or `client`, and `issuer` is a server issuer's name: `role:ops|kista-admin`. `issuer:<name>` is
-refused, since every account of the issuer would be an administrator.
+refused, since every account of the issuer would be an administrator. A licence manager is written
+and checked the same way: `client:ops|licence-reconciler`.
 
 ## publish
 

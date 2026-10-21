@@ -22,6 +22,7 @@ auth:
   server_audiences: [ "api://kista" ]
   server_egress_allow: [ { cidr: 10.1.0.0/16 } ]
   server_admins: [ "role:ops|kista.admin", "subject:ops|oid-1" ]
+  server_license_admins: [ "client:ops|reconciler" ]
   admin_token_max_age: 30m
 `
 	cfg, err := Load(write(t, ok), nil)
@@ -35,6 +36,12 @@ auth:
 	admins := cfg.ServerAdmins()
 	if len(admins) != 2 || !admins[auth.Key{IssuerID: "server:ops", Kind: store.PrincipalRole, Value: "kista.admin"}] {
 		t.Fatalf("admins: %v", admins)
+	}
+	// spec 0029: the licence managers, apart from the administrators
+	lm := cfg.ServerLicenseAdmins()
+	if len(lm) != 1 || !lm[auth.Key{IssuerID: "server:ops", Kind: store.PrincipalClient, Value: "reconciler"}] ||
+		admins[auth.Key{IssuerID: "server:ops", Kind: store.PrincipalClient, Value: "reconciler"}] {
+		t.Fatalf("licence managers: %v", lm)
 	}
 	if cfg.AdminTokenMaxAge() != 30*time.Minute || cfg.ServerAudiences()[0] != "api://kista" {
 		t.Fatalf("%v %v", cfg.AdminTokenMaxAge(), cfg.ServerAudiences())
@@ -64,10 +71,16 @@ auth:
 		"issuer admin":       {base + iss + "server_audiences: [a], server_admins: [ 'issuer:ops' ] }\n", nil, "issuer: is refused"},
 		"unknown issuer":     {base + iss + "server_audiences: [a], server_admins: [ 'role:corp|x' ] }\n", nil, "not a server issuer"},
 		"bad admin":          {base + iss + "server_audiences: [a], server_admins: [ 'whatever' ] }\n", nil, "kind:issuer|value"},
-		"under public_url":   {base + "serve: { public_url: https://k.example }\n" + iss + "server_audiences: [ 'https://k.example/acme' ] }\n", nil, "canonical"},
-		"bad egress cidr":    {base + "auth: { server_egress_allow: [ { cidr: host.example } ] }\n", nil, "not a CIDR"},
-		"short max age":      {base + "auth: { admin_token_max_age: 10s }\n", nil, "1m..24h"},
-		"bad claim path":     {base + "auth: { server_issuers: [ { name: ops, url: 'https://x.example', roles_claim: 'a..b', required_claims: { a: b } } ] }\n", nil, "claim path"},
+		// spec 0029: licence managers are checked as administrators are, and file-only
+		"issuer licence manager":  {base + iss + "server_audiences: [a], server_license_admins: [ 'issuer:ops' ] }\n", nil, "server_license_admins[0]: issuer: is refused"},
+		"unknown licence issuer":  {base + iss + "server_audiences: [a], server_license_admins: [ 'role:corp|x' ] }\n", nil, "server_license_admins[0]: corp is not a server issuer"},
+		"bad licence manager":     {base + iss + "server_audiences: [a], server_license_admins: [ 'whatever' ] }\n", nil, "server_license_admins[0]: \"whatever\" is kind:issuer|value"},
+		"publisher licence mgr":   {base + iss + "server_audiences: [a], server_license_admins: [ 'publisher:ci' ] }\n", nil, "is not a server issuer"},
+		"licence managers by env": {base, []string{"KISTA_AUTH__SERVER_LICENSE_ADMINS=role:ops|x"}, "can only be set in the config file"},
+		"under public_url":        {base + "serve: { public_url: https://k.example }\n" + iss + "server_audiences: [ 'https://k.example/acme' ] }\n", nil, "canonical"},
+		"bad egress cidr":         {base + "auth: { server_egress_allow: [ { cidr: host.example } ] }\n", nil, "not a CIDR"},
+		"short max age":           {base + "auth: { admin_token_max_age: 10s }\n", nil, "1m..24h"},
+		"bad claim path":          {base + "auth: { server_issuers: [ { name: ops, url: 'https://x.example', roles_claim: 'a..b', required_claims: { a: b } } ] }\n", nil, "claim path"},
 	} {
 		_, err := Load(write(t, c.file), c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {

@@ -35,4 +35,4 @@ and it is superseded by a new spec when a decision changes.
 | [0026](0026-kubesecret-keys/spec.md) | Signing keys from a Kubernetes Secret, as an explicit opt-in | implemented; the kind run to come |
 | [0027](0027-store-login-vault/spec.md) | The database password from Vault or OpenBao | phase 1 implemented; the kind run to come; phase 2 deferred |
 | [0028](0028-expected-holder/spec.md) | An expected holder per tenant | accepted |
-| [0029](0029-licence-managers/spec.md) | Licence managers: a server-wide role for licences only | accepted |
+| [0029](0029-licence-managers/spec.md) | Licence managers: a server-wide role for licences only | implemented |
