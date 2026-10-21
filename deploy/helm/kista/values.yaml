@@ -30,6 +30,12 @@ imagePullSecrets: []
 #   kista admin migrate first (Upgrading in the documentation).
 config: {}
 
+# true: every string in config holding "{{" is a template, rendered by tpl with the chart's root
+# context (spec 0025), so a parent chart can write store.dsn: "host={{ .Values.global.db.host }} …".
+# A template renders within its own string and cannot add keys. A literal "{{" is then written
+# {{ "{{" }}. Off (the default), config is taken as written.
+configTemplate: false
+
 # The namespace of every object the chart makes; empty: the release's (spec 0024). An umbrella chart
 # sets it to install kista in a namespace of its own. The chart creates no namespace.
 namespaceOverride: ""
@@ -178,6 +184,80 @@ networkPolicy:
   loadBalancerRanges: []
   # for CNIs that do not exempt the kubelet's probes
   nodeCIDRs: []
+  # What kista's pods may reach (spec 0025), apart from networkPolicy.enabled, which is ingress.
+  # Off by default. On: a second NetworkPolicy on every pod of the release (the server and the
+  # admin jobs) admits only DNS, public https, the private networks the config allows (egress.allow,
+  # auth.server_egress_allow, upstreams.credentials[].allow, events.sinks[].allow, each with its
+  # ports), the cloudMetadata endpoints and extraRules. The chart refuses it without a rule for a
+  # PostgreSQL or SQL Server database, or without the metadata endpoint the config's identity uses.
+  egress:
+    enabled: false
+    # UDP and TCP to the cluster's DNS pods. Both selectors empty: k8s-app: kube-dns in kube-system
+    # (EKS, AKS, GKE, k3s, kind). A podSelector alone: those pods in kista's namespace; a
+    # namespaceSelector alone is refused. OpenShift: namespaceSelector {matchLabels:
+    # {kubernetes.io/metadata.name: openshift-dns}}, podSelector {matchLabels:
+    # {dns.operator.openshift.io/daemonset-dns: default}}, ports [5353].
+    # NodeLocal DNSCache (169.254.20.10): dns.enabled false and an extraRules entry.
+    dns:
+      enabled: true
+      namespaceSelector: {}
+      podSelector: {}
+      ports: [53]
+    # These ports on every public address: upstreams, issuers, cloud APIs and KMSs, public blob
+    # stores. A cidr ending in /0 leaves out its family's ranges in except: the private and special
+    # ranges kista's own egress refuses unless the config allows them (but ::ffff:0:0/96: an
+    # IPv4-mapped address never goes on the wire, and a strict API server refuses it). Another cidr
+    # is taken as written.
+    public:
+      enabled: true
+      ports: [443]
+      cidrs: [0.0.0.0/0, "::/0"]
+      except:
+        - 0.0.0.0/8
+        - 10.0.0.0/8
+        - 100.64.0.0/10
+        - 127.0.0.0/8
+        - 169.254.0.0/16
+        - 172.16.0.0/12
+        - 192.0.0.0/24
+        - 192.0.2.0/24
+        - 192.31.196.0/24
+        - 192.52.193.0/24
+        - 192.88.99.0/24
+        - 192.168.0.0/16
+        - 192.175.48.0/24
+        - 198.18.0.0/15
+        - 198.51.100.0/24
+        - 203.0.113.0/24
+        - 224.0.0.0/4
+        - 240.0.0.0/4
+        - 168.63.129.16/32
+        - "::/128"
+        - "::1/128"
+        - "::ffff:0:0:0/96"
+        - "64:ff9b:1::/48"
+        - "100::/64"
+        - "2001::/23"
+        - "2001:db8::/32"
+        - "2002::/16"
+        - "3fff::/20"
+        - "5f00::/16"
+        - "fc00::/7"
+        - "fe80::/10"
+        - "fec0::/10"
+        - "ff00::/8"
+    # The metadata endpoints of the config's identity: gke (Workload Identity), aws-pod-identity
+    # (EKS Pod Identity), imds (EC2's instance metadata, Azure's managed identity). IRSA and Azure
+    # workload identity need none: they reach public endpoints on 443.
+    cloudMetadata: []
+    # NetworkPolicy egress rules, rendered as given: the database, a Vault or OpenBao, an OTel
+    # collector, an in-cluster S3, a token service. For example:
+    #   - to: [{ipBlock: {cidr: 10.20.0.5/32}}]
+    #     ports: [{port: 5432, protocol: TCP}]
+    #   - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openbao}},
+    #           podSelector: {matchLabels: {app.kubernetes.io/name: openbao}}}]
+    #     ports: [{port: 8200, protocol: TCP}]
+    extraRules: []
 
 podDisruptionBudget:
   minAvailable: 1

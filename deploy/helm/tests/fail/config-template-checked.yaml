@@ -1,0 +1,7 @@
+# want: config.store.sqlite.path must be a clean path under /var/lib/kista/data
+global: {dataDir: /tmp}
+configTemplate: true
+config:
+  store: {kind: sqlite, sqlite: {path: "{{ .Values.global.dataDir }}/kista.db"}}
+  serve: {public_url: https://kista.example.com, trusted_proxies: [10.0.0.0/8]}
+networkPolicy: {loadBalancerRanges: [10.1.0.0/16]}

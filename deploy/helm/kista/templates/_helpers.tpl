@@ -50,8 +50,48 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- end -}}
 {{- end -}}
 
+{{/* The config values, each string with "{{" rendered by tpl with configTemplate (spec 0025):
+     (dict "root" $ "out" $out) sets $out.v. Off: the values as they are. */}}
+{{- define "kista.userConfig" -}}
+{{- $c := .root.Values.config | default dict -}}
+{{- if .root.Values.configTemplate -}}
+{{- $acc := dict -}}
+{{- include "kista.tplNode" (dict "node" $c "root" .root "out" $acc) -}}
+{{- $c = $acc.v -}}
+{{- end -}}
+{{- $_ := set .out "v" $c -}}
+{{- end -}}
+
+{{/* A copy of a tree with tpl applied to each string that holds "{{": (dict "node" "root" "out"). A
+     template renders within its string, so it cannot add keys. */}}
+{{- define "kista.tplNode" -}}
+{{- $root := .root -}}
+{{- if kindIs "map" .node -}}
+{{- $m := dict -}}
+{{- range $k, $v := .node -}}
+{{- $acc := dict -}}
+{{- include "kista.tplNode" (dict "node" $v "root" $root "out" $acc) -}}
+{{- $_ := set $m $k $acc.v -}}
+{{- end -}}
+{{- $_ := set .out "v" $m -}}
+{{- else if kindIs "slice" .node -}}
+{{- $l := list -}}
+{{- range .node -}}
+{{- $acc := dict -}}
+{{- include "kista.tplNode" (dict "node" . "root" $root "out" $acc) -}}
+{{- $l = append $l $acc.v -}}
+{{- end -}}
+{{- $_ := set .out "v" $l -}}
+{{- else if and (kindIs "string" .node) (contains "{{" .node) -}}
+{{- $_ := set .out "v" (tpl .node $root) -}}
+{{- else -}}
+{{- $_ := set .out "v" .node -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "kista.sqlite" -}}
-{{- if eq (dig "store" "kind" "" (.Values.config | default dict)) "sqlite" -}}true{{- end -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- if eq (dig "store" "kind" "" $out.v) "sqlite" -}}true{{- end -}}
 {{- end -}}
 
 {{/* One pod at a time: SQLite, or fs blobs on a volume that is not ReadWriteMany. */}}
@@ -69,6 +109,82 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- if kindIs "invalid" $np -}}
 {{- if eq .Values.mode "behind_proxy" -}}true{{- end -}}
 {{- else if $np -}}true{{- end -}}
+{{- end -}}
+
+{{/* TCP ports as NetworkPolicy ports. */}}
+{{- define "kista.tcpPorts" -}}
+{{- $out := list -}}
+{{- range . -}}{{- $out = append $out (dict "port" (int .) "protocol" "TCP") -}}{{- end -}}
+{{- toYaml $out -}}
+{{- end -}}
+
+{{/* The cloud metadata endpoints by name (networkPolicy.egress.cloudMetadata): (list cidr port). */}}
+{{- define "kista.metadataEndpoints" -}}
+gke:
+  # the GKE metadata server (Workload Identity): Dataplane V2, and 1.21 and later
+  - [169.254.169.254/32, 80]
+  - [169.254.169.252/32, 988]
+aws-pod-identity:
+  # the EKS Pod Identity agent
+  - [169.254.170.23/32, 80]
+  - ["fd00:ec2::23/128", 80]
+imds:
+  # the instance metadata service: EC2 (identity kind imds), Azure (kind managed)
+  - [169.254.169.254/32, 80]
+{{- end -}}
+
+{{/* The egress NetworkPolicy's rules (spec 0025), as a YAML list. */}}
+{{- define "kista.egressRules" -}}
+{{- $eg := .Values.networkPolicy.egress -}}
+{{- $rules := list -}}
+{{- /* DNS: UDP and TCP to the cluster's DNS pods */ -}}
+{{- if $eg.dns.enabled -}}
+{{- $peer := dict "podSelector" $eg.dns.podSelector -}}
+{{- with $eg.dns.namespaceSelector -}}{{- $_ := set $peer "namespaceSelector" . -}}{{- end -}}
+{{- if not (or $eg.dns.podSelector $eg.dns.namespaceSelector) -}}
+{{- /* the default: kube-dns or CoreDNS, as EKS, AKS, GKE, k3s and kind label them */ -}}
+{{- $peer = dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) "podSelector" (dict "matchLabels" (dict "k8s-app" "kube-dns")) -}}
+{{- end -}}
+{{- $ports := list -}}
+{{- range $eg.dns.ports -}}
+{{- $ports = concat $ports (list (dict "port" (int .) "protocol" "UDP") (dict "port" (int .) "protocol" "TCP")) -}}
+{{- end -}}
+{{- $rules = append $rules (dict "to" (list $peer) "ports" $ports) -}}
+{{- end -}}
+{{- /* public https: every address but the private and special ranges, as kista's egress */ -}}
+{{- if $eg.public.enabled -}}
+{{- $to := list -}}
+{{- range $cidr := $eg.public.cidrs -}}
+{{- $block := dict "cidr" $cidr -}}
+{{- if hasSuffix "/0" $cidr -}}
+{{- $v6 := contains ":" $cidr -}}
+{{- $except := list -}}
+{{- range $eg.public.except -}}{{- if eq (contains ":" .) $v6 -}}{{- $except = append $except . -}}{{- end -}}{{- end -}}
+{{- if $except -}}{{- $_ := set $block "except" $except -}}{{- end -}}
+{{- end -}}
+{{- $to = append $to (dict "ipBlock" $block) -}}
+{{- end -}}
+{{- $rules = append $rules (dict "to" $to "ports" (include "kista.tcpPorts" $eg.public.ports | fromYamlArray)) -}}
+{{- end -}}
+{{- /* the private networks kista's configuration allows: egress.allow, auth.server_egress_allow,
+       upstreams.credentials[].allow, events.sinks[].allow */ -}}
+{{- $acc := dict "maps" list -}}
+{{- include "kista.walk" (dict "node" (include "kista.config" . | fromYaml) "acc" $acc) -}}
+{{- range $acc.maps -}}
+{{- if hasKey . "cidr" -}}
+{{- $rules = append $rules (dict "to" (list (dict "ipBlock" (dict "cidr" (toString .cidr)))) "ports" (include "kista.tcpPorts" (.ports | default (list 443)) | fromYamlArray)) -}}
+{{- end -}}
+{{- end -}}
+{{- /* the cloud metadata endpoints the identity uses */ -}}
+{{- $endpoints := include "kista.metadataEndpoints" . | fromYaml -}}
+{{- range $eg.cloudMetadata -}}
+{{- range get $endpoints . -}}
+{{- $rules = append $rules (dict "to" (list (dict "ipBlock" (dict "cidr" (index . 0)))) "ports" (list (dict "port" (int (index . 1)) "protocol" "TCP"))) -}}
+{{- end -}}
+{{- end -}}
+{{- /* the operator's own: the database, a key source, a collector, a token service */ -}}
+{{- $rules = concat $rules ($eg.extraRules | default list) -}}
+{{- toYaml $rules -}}
 {{- end -}}
 
 {{/* Whether a path is dir or under it. */}}
@@ -121,7 +237,8 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 
 {{/* kista.yaml as the pods read it: config with the chart's keys (values.yaml says which). */}}
 {{- define "kista.config" -}}
-{{- $c := deepCopy (.Values.config | default dict) -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- $c := deepCopy $out.v -}}
 {{- $serve := get $c "serve" | default dict -}}
 {{- $_ := set $c "serve" $serve -}}
 {{- $listeners := list -}}
@@ -153,7 +270,8 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{/* The checks helm install fails on (spec 0013). */}}
 {{- define "kista.validate" -}}
 {{- $v := .Values -}}
-{{- $user := $v.config | default dict -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- $user := $out.v -}}
 {{- $c := include "kista.config" . | fromYaml -}}
 {{- if not (dig "store" "kind" "" $user) -}}
 {{- fail "config.store.kind is required" -}}
@@ -302,6 +420,27 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- if and $ic.namespaceSelector (not $ic.podSelector) -}}
 {{- fail "networkPolicy.ingressController: a namespaceSelector alone admits every pod in those namespaces; add the controller's podSelector" -}}
 {{- end -}}
+{{- /* the egress NetworkPolicy (spec 0025): what the chart can tell kista needs */ -}}
+{{- $eg := $np.egress -}}
+{{- if $eg.enabled -}}
+{{- if and $eg.dns.enabled $eg.dns.namespaceSelector (not $eg.dns.podSelector) -}}
+{{- fail "networkPolicy.egress.dns: a namespaceSelector alone admits every pod in those namespaces; add the DNS pods' podSelector" -}}
+{{- end -}}
+{{- if and (not $sqlite) (not $eg.extraRules) -}}
+{{- fail (printf "networkPolicy.egress: kista must reach its %s database; add a rule for it to networkPolicy.egress.extraRules" (toString $c.store.kind)) -}}
+{{- end -}}
+{{- $kinds := list -}}
+{{- range $acc.maps -}}{{- if hasKey . "kind" -}}{{- $kinds = append $kinds (toString .kind) -}}{{- end -}}{{- end -}}
+{{- $need := dict -}}
+{{- if $principals -}}{{- $_ := set $need "gke" "a gcpkms source, gcs domain or gcp database login without credentials_file (the GKE metadata server)" -}}{{- end -}}
+{{- if has "pod_identity" $kinds -}}{{- $_ := set $need "aws-pod-identity" "an AWS identity of kind pod_identity (the EKS Pod Identity agent)" -}}{{- end -}}
+{{- if or (has "imds" $kinds) (has "managed" $kinds) -}}{{- $_ := set $need "imds" "an identity of kind imds or managed (the instance metadata service)" -}}{{- end -}}
+{{- range $name, $why := $need -}}
+{{- if not (has $name $eg.cloudMetadata) -}}
+{{- fail (printf "networkPolicy.egress: the config uses %s; add %s to networkPolicy.egress.cloudMetadata" $why $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/* A Kubernetes quantity (bytes, or a number with Ki, Mi, Gi, Ti) in Mi, rounded up: (list name value). */}}
@@ -334,7 +473,8 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- else if .Values.spool.sizeLimit -}}
 {{- printf "%dMi" (add (int (include "kista.quantityMi" (list "spool.sizeLimit" .Values.spool.sizeLimit))) $headroom) -}}
 {{- else -}}
-{{- $c := .Values.config | default dict -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- $c := $out.v -}}
 {{- $body := int (include "kista.mib" (dig "blob" "max_body" "1GiB" $c)) -}}
 {{- $ingests := int (dig "blob" "max_ingests" 4 $c) -}}
 {{- if lt $ingests 1 -}}{{- $ingests = 4 -}}{{- end -}}
@@ -357,7 +497,8 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name (.Chart.Version | replace "+" "_") 
 {{- if not (kindIs "invalid" .Values.terminationGracePeriodSeconds) -}}
 {{- int .Values.terminationGracePeriodSeconds -}}
 {{- else -}}
-{{- $c := .Values.config | default dict -}}
+{{- $out := dict -}}{{- include "kista.userConfig" (dict "root" . "out" $out) -}}
+{{- $c := $out.v -}}
 {{- $drain := int (include "kista.seconds" (dig "serve" "drain_timeout" "5s" $c)) -}}
 {{- $shut := int (include "kista.seconds" (dig "serve" "shutdown_timeout" "30s" $c)) -}}
 {{- add (int .Values.preStopSeconds) $drain (mul 2 $shut) 21 10 -}}

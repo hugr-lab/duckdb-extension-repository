@@ -1,0 +1,20 @@
+# The egress NetworkPolicy (spec 0025) with SQLite: no database rule; NodeLocal DNSCache instead of
+# the DNS pods; public https over IPv4 only
+config:
+  store:
+    kind: sqlite
+  serve:
+    public_url: https://kista.example.com
+    trusted_proxies: [10.244.0.0/16]
+networkPolicy:
+  ingressController:
+    podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+  egress:
+    enabled: true
+    dns:
+      enabled: false
+    public:
+      cidrs: [0.0.0.0/0]
+    extraRules:
+      - to: [{ipBlock: {cidr: 169.254.20.10/32}}]
+        ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]

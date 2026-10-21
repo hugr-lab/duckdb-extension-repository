@@ -1,0 +1,63 @@
+# The egress NetworkPolicy (spec 0025): EKS Pod Identity for S3, the database and an OpenBao key
+# source in the cluster, an OTel collector, private networks the config allows, an admin job
+config:
+  store:
+    kind: postgres
+    dsn: postgres://kista@10.20.0.5:5432/kista?sslmode=verify-full
+    login: {password_file: /etc/kista/secrets/db/password}
+  serve:
+    public_url: https://kista.example.com
+    trusted_proxies: [10.244.0.0/16]
+  egress:
+    allow:
+      - {cidr: 10.30.0.0/24}
+      - {cidr: "fd00:30::/64", ports: [443, 8443]}
+  signers:
+    sources:
+      - name: bao
+        kind: vault
+        allow: ["ext-"]
+        vault:
+          address: https://openbao.openbao.svc:8200
+          mount: transit
+          software_keys: true
+          auth: {kind: kubernetes, role: kista, token_file: /var/run/secrets/kista/bao/token}
+  blob:
+    domains:
+      - name: default
+        kind: s3
+        s3:
+          endpoint: https://s3.us-east-1.amazonaws.com
+          bucket: kista
+          region: us-east-1
+          lookup: dns
+          sse: s3
+          account: "123456789012"
+          identity: {kind: pod_identity}
+secretVolumes:
+  - {name: db, secretName: kista-db, mountPath: /etc/kista/secrets/db}
+projectedTokens:
+  - {name: bao, mountPath: /var/run/secrets/kista/bao, audience: openbao}
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: http://otel-collector.observability:4318
+adminJobs:
+  - {name: blob-verify, args: [blob, verify], schedule: "0 3 * * 0"}
+networkPolicy:
+  ingressController:
+    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: traefik}}
+    podSelector: {matchLabels: {app.kubernetes.io/name: traefik}}
+  egress:
+    enabled: true
+    cloudMetadata: [aws-pod-identity]
+    extraRules:
+      - to: [{ipBlock: {cidr: 10.20.0.5/32}}]
+        ports: [{port: 5432, protocol: TCP}]
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openbao}}
+            podSelector: {matchLabels: {app.kubernetes.io/name: openbao}}
+        ports: [{port: 8200, protocol: TCP}]
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: observability}}
+            podSelector: {matchLabels: {app.kubernetes.io/name: otel-collector}}
+        ports: [{port: 4318, protocol: TCP}]

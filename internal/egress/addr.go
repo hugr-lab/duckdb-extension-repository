@@ -117,5 +117,9 @@ func (c *Client) allowed(addr netip.Addr, port uint16) bool {
 	return false
 }
 
+// Refused returns the ranges refused unless allowlisted, and those refused always. The Helm chart's
+// egress NetworkPolicy leaves them out of public https (spec 0025); its test keeps the two in step.
+func Refused() []netip.Prefix { return append(append([]netip.Prefix(nil), special...), never...) }
+
 // Embedded returns the IPv4 addresses an IPv6 address carries (spec 0010 reduces them as IPv4).
 func Embedded(a netip.Addr) []netip.Addr { return embedded(a) }
