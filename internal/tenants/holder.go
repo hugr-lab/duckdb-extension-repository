@@ -2,6 +2,7 @@ package tenants
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -69,13 +70,13 @@ func otherHolders(ls []store.License) string {
 	b.WriteString("the tenant holds licences of another holder; remove them first:")
 	for i, l := range ls {
 		if i == maxNamed {
-			b.WriteString(" …")
+			fmt.Fprintf(&b, ", and %d more", len(ls)-maxNamed)
 			break
 		}
 		if i > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString(" " + l.Name + " (" + l.LicenseID + ", holder " + l.HolderID + ")")
+		fmt.Fprintf(&b, " %s (%s, holder %q)", l.Name, l.LicenseID, l.HolderID)
 	}
 	return b.String()
 }

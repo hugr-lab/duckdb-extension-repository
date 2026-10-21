@@ -221,7 +221,10 @@ and cannot change or clear it.
   one, `412` when it is stale. Each change is a `tenant.holder` event with the `old` and the `new`
   holder.
 - Setting it while the tenant holds a licence of another holder answers `409`, naming those
-  licences; remove them first. Nothing is removed for you.
+  licences (the first 20, and how many more); remove them first. Nothing is removed for you.
+- Setting the holder the tenant already has, or clearing none, changes nothing: `200` with the
+  same ETag and no event. A provisioning service may `PUT` it on every run.
+- A deleting or deleted tenant answers `404`.
 
 #### Deleting a tenant
 

@@ -246,7 +246,9 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, token strin
 		if err := s.verify(tok, keys, ""); err != nil {
 			return err
 		}
-		// spec 0028: the tenant's expected holder, as it is in this transaction
+		// spec 0028: the tenant's expected holder, as it is in this transaction. PutLicense checks it
+		// again, for every path; checking here first refuses another holder's licence before the
+		// stored one is compared (409 without If-Match), so the refusal names the rule
 		if err := tx.CheckLicenseHolder(ctx, t.ID, l.HolderID); err != nil {
 			return holderRefused(err)
 		}

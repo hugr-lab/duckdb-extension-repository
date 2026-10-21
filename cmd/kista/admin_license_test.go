@@ -137,11 +137,19 @@ func TestAdminLicense(t *testing.T) {
 		}
 		return errw.String()
 	}
-	if got := stderrOf(1, "", "tenant", "holder", "acme", "org-1"); !strings.Contains(got, "tresor (lic-max, holder acme)") {
+	if got := stderrOf(1, "", "tenant", "holder", "acme", "org-1"); !strings.Contains(got, `tresor (lic-max, holder "acme")`) {
 		t.Fatalf("the holder over another holder's licence: %q", got)
 	}
 	run(2, "", "tenant", "holder", "acme")
 	run(2, "", "tenant", "holder", "acme", "acme", "-clear")
+	// an empty id (an unset variable) is refused, never a clear; -clear with none set changes nothing
+	if got := stderrOf(1, "", "tenant", "holder", "acme", ""); !strings.Contains(got, "-clear clears it") {
+		t.Fatalf("an empty holder id: %q", got)
+	}
+	run(0, "", "tenant", "holder", "acme", "-clear")
+	if got := stderrOf(1, "", "tenant", "holder", "nope", "org-1"); !strings.Contains(got, "not found") {
+		t.Fatalf("a missing tenant: %q", got)
+	}
 	run(0, "", "tenant", "holder", "acme", "acme")
 	if got := run(0, "", "tenant", "show", "acme"); !strings.Contains(got, "holder id:") || !strings.Contains(got, " acme\n") {
 		t.Fatalf("show with a holder: %q", got)

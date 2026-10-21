@@ -385,7 +385,7 @@ func (s *Store) ReapTenant(ctx context.Context, tn Tenant, d Deletion, progress 
 				return err
 			}
 			now := tx.Now()
-			res, err := tx.exec(ctx, "UPDATE tenants SET deleted_at = ?, display_name = '', version = version + 1 WHERE id = ? AND deleted_at IS NULL",
+			res, err := tx.exec(ctx, "UPDATE tenants SET deleted_at = ?, display_name = '', holder_id = NULL, version = version + 1 WHERE id = ? AND deleted_at IS NULL",
 				tx.s.d.timeArg(now), tn.ID)
 			if err != nil {
 				return err

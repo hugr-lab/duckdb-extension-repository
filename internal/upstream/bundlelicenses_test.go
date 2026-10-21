@@ -355,6 +355,27 @@ func TestBundleLicenses(t *testing.T) {
 				r.Refused[0].Rule != licenses.RuleHolder {
 				t.Fatalf("the tenant's holder, applied: %+v", r)
 			}
+			// the holder the bundle's licences name: stored through the import
+			if _, err := g.ten.SetTenantHolder(ctx, admin, "site", "acme", 0); err != nil {
+				t.Fatal(err)
+			}
+			_, data = g.export(t, plan(""), upstream.ExportOptions{Private: private, Licenses: true})
+			if l := importSite(data, false).Licenses; l == nil || l.Counts["stored"] != 1 || l.Counts["refused"] != 0 || stored().HolderID != "acme" {
+				t.Fatalf("the tenant's holder's licence: %+v", l)
+			}
+			if err := svc.Remove(ctx, admin, "site", "tresor", 0); err != nil {
+				t.Fatal(err)
+			}
+			// a bundle with one of another holder: refused, the other stored
+			mixed := apply("", licenses.BundleLicense{Name: "tresor", Token: lic.signFor("org-x", "tresor", "max", now, now+86400),
+				Upstreams: []store.Upstream{air}}, licenses.BundleLicense{Name: "tresor", Token: tok, Upstreams: []store.Upstream{air}})
+			if mixed.Counts["received"] != 2 || mixed.Counts["refused"] != 1 || mixed.Refused[0].Rule != licenses.RuleHolder ||
+				mixed.Counts["stored"] != 1 || stored().Token != tok {
+				t.Fatalf("a mixed bundle: %+v", mixed)
+			}
+			if err := svc.Remove(ctx, admin, "site", "tresor", 0); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := g.ten.SetTenantHolder(ctx, admin, "site", "", 0); err != nil {
 				t.Fatal(err)
 			}

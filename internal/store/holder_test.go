@@ -28,7 +28,11 @@ func TestTenantHolder(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Open(t)
 		tn := store.Tenant{Name: "acme", HolderID: "org-1"}
-		for _, bad := range []string{strings.Repeat("a", 129), "\xff"} {
+		// migration 0029 raises the minimum reader to 29: an older binary would not check the holder
+		if n, err := store.CountRaw(ctx, s, "schema_migrations", "version = 29 AND min_reader = 29"); err != nil || n != 1 {
+			t.Fatalf("0029's min_reader: %d %v", n, err)
+		}
+		for _, bad := range []string{strings.Repeat("a", 129), "\xff", "org\x001", "\x00"} {
 			x := store.Tenant{Name: "bad", HolderID: bad}
 			if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.CreateTenant(ctx, &x) }); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("holder %q: %v", bad, err)
@@ -55,6 +59,14 @@ func TestTenantHolder(t *testing.T) {
 		}
 		if got, err := s.GetTenant(ctx, "long"); err != nil || got.HolderID != long {
 			t.Fatalf("a holder of 128 bytes read back: %q %v", got.HolderID, err)
+		}
+		// a control character other than U+0000 stays, as a licence's sub may carry it escaped
+		ctl := "org\x01\t1"
+		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.CreateTenant(ctx, &store.Tenant{Name: "ctl", HolderID: ctl}) }); err != nil {
+			t.Fatalf("a holder with a control character: %v", err)
+		}
+		if got, err := s.GetTenant(ctx, "ctl"); err != nil || got.HolderID != ctl {
+			t.Fatalf("a holder with a control character read back: %q %v", got.HolderID, err)
 		}
 
 		// another holder's licence is refused, and nothing is written; the holder's is stored
@@ -116,8 +128,10 @@ func TestTenantHolder(t *testing.T) {
 		if err := putLicense(s, testLicense(tn.ID, "httpfs", "org-2")); err != nil {
 			t.Fatalf("no holder after the clear: %v", err)
 		}
-		if err := set(&tn, strings.Repeat("a", 129)); !errors.Is(err, store.ErrInvalid) {
-			t.Fatalf("a holder of 129 bytes: %v", err)
+		for _, bad := range []string{strings.Repeat("a", 129), "org\x00"} {
+			if err := set(&tn, bad); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("holder %q: %v", bad, err)
+			}
 		}
 		if err := set(&tn, "org-2"); err != nil || tn.HolderID != "org-2" || tn.Version != 3 {
 			t.Fatalf("set: %+v %v", tn, err)

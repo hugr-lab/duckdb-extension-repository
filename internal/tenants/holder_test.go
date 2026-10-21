@@ -3,6 +3,7 @@ package tenants_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -84,7 +85,7 @@ func TestTenantHolder(t *testing.T) {
 			}
 			_, err = svc.SetTenantHolder(ctx, admin, "acme", "org-1", 0)
 			var rf *tenants.Refusal
-			if !errors.As(err, &rf) || !strings.Contains(rf.Reason, "tresor (lic-tresor, holder org-2)") || strings.Contains(rf.Reason, "httpfs") {
+			if !errors.As(err, &rf) || !strings.Contains(rf.Reason, `tresor (lic-tresor, holder "org-2")`) || strings.Contains(rf.Reason, "httpfs") {
 				t.Fatalf("over another holder's licence: %v", err)
 			}
 			if got, _ := st.GetTenant(ctx, "acme"); got.HolderID != "" || got.Version != tn.Version {
@@ -153,6 +154,40 @@ func TestTenantHolder(t *testing.T) {
 			}
 			if err := <-set; !errors.As(err, &rf) || !strings.Contains(rf.Reason, "late") {
 				t.Fatalf("the holder set over a licence written meanwhile: %v", err)
+			}
+		})
+	}
+}
+
+// Spec 0028: a tenant created without a holder records none, and the refusal over many licences of
+// other holders names the first 20 and counts the rest.
+func TestTenantHolderDetails(t *testing.T) {
+	ctx := context.Background()
+	admin := authz.Actor{Kind: authz.ActorOS, ID: "1:t"}
+	for _, e := range storetest.Engines(t) {
+		t.Run(e.Name, func(t *testing.T) {
+			st := e.Open(t)
+			svc := &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
+			tn, err := svc.CreateTenant(ctx, admin, "plain", "", "", "")
+			if err != nil || tn.HolderID != "" {
+				t.Fatalf("create: %+v %v", tn, err)
+			}
+			if n, err := store.CountRaw(ctx, st, "events", "kind = ? AND subject = ?", "tenant.create", "tenant:plain"); err != nil || n != 1 {
+				t.Fatalf("tenant.create: %d %v", n, err)
+			}
+			if n, err := store.CountRaw(ctx, st, "events", "kind = ? AND subject = ? AND data LIKE ?", "tenant.create", "tenant:plain",
+				"%holder_id%"); err != nil || n != 0 {
+				t.Fatalf("tenant.create without a holder names one: %d %v", n, err)
+			}
+			for i := range 23 {
+				if err := storeLicense(ctx, st, tn.ID, fmt.Sprintf("x%02d", i), "org-2"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err = svc.SetTenantHolder(ctx, admin, "plain", "org-1", 0)
+			var rf *tenants.Refusal
+			if !errors.As(err, &rf) || !strings.Contains(rf.Reason, `x19 (lic-x19, holder "org-2"), and 3 more`) || strings.Contains(rf.Reason, "x20") {
+				t.Fatalf("the refusal over 23 licences: %v", err)
 			}
 		})
 	}

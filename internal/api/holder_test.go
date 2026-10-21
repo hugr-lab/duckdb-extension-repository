@@ -102,11 +102,78 @@ func TestTenantHolderRoutes(t *testing.T) {
 		t.Fatalf("no holder, another holder's replacement: %d %s", r.status, r.body)
 	}
 	r = m.call(t, "PUT", T+"/holder", sa, body, "If-Match", "*")
-	if r.status != 409 || !strings.Contains(string(r.body), "holder org-2") {
+	if r.status != 409 || !strings.Contains(string(r.body), `holder \"org-2\"`) {
 		t.Fatalf("over another holder's licence: %d %s", r.status, r.body)
 	}
 	// a tenant administrator still reads the tenant
 	if r := m.call(t, "GET", T, ta, ""); r.status != 200 || r.json(t)["holder_id"] != nil {
 		t.Fatalf("after a refused set: %d %s", r.status, r.body)
+	}
+}
+
+// Spec 0028: setting the holder a tenant has, or clearing none, changes nothing (provisioning PUTs
+// idempotently); the tenant list shows the holder; a deleting tenant's holder is not found.
+func TestTenantHolderIdempotent(t *testing.T) {
+	m := newMgmt(t)
+	sa := m.toks["server admin"]
+	const T = "/api/v1/tenants/beta"
+	holderEvents := func() int64 {
+		t.Helper()
+		n, err := store.CountRaw(ctx, m.st, "events", "kind = ?", "tenant.holder")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	r := m.call(t, "POST", "/api/v1/tenants", sa, `{"name":"beta","holder_id":"org-b"}`)
+	if r.status != 201 {
+		t.Fatalf("create: %d %s", r.status, r.body)
+	}
+	tag := r.header.Get("ETag")
+	r = m.call(t, "GET", "/api/v1/tenants", sa, "")
+	found := false
+	for _, x := range r.json(t)["tenants"].([]any) {
+		if o := x.(map[string]any); o["name"] == "beta" {
+			found = o["holder_id"] == "org-b"
+		}
+	}
+	if r.status != 200 || !found {
+		t.Fatalf("the list: %d %s", r.status, r.body)
+	}
+
+	// the same holder again: 200, the same ETag, no event
+	for _, match := range []string{tag, "*"} {
+		r = m.call(t, "PUT", T+"/holder", sa, `{"holder_id":"org-b"}`, "If-Match", match)
+		if r.status != 200 || r.header.Get("ETag") != tag || r.json(t)["holder_id"] != "org-b" || holderEvents() != 0 {
+			t.Fatalf("the same holder (If-Match %s): %d %s", match, r.status, r.body)
+		}
+	}
+	r = m.call(t, "DELETE", T+"/holder", sa, "", "If-Match", tag)
+	if r.status != 200 || r.header.Get("ETag") == tag || holderEvents() != 1 {
+		t.Fatalf("clear: %d %s", r.status, r.body)
+	}
+	tag = r.header.Get("ETag")
+	// none to clear: 200, the same ETag, no event
+	if r := m.call(t, "DELETE", T+"/holder", sa, "", "If-Match", tag); r.status != 200 || r.header.Get("ETag") != tag || holderEvents() != 1 {
+		t.Fatalf("clear none: %d %s", r.status, r.body)
+	}
+
+	// a deleting tenant: its holder is not found
+	if r := m.call(t, "POST", T+"/suspend", sa, "", "If-Match", tag); r.status != 200 {
+		t.Fatalf("suspend: %d %s", r.status, r.body)
+	} else {
+		tag = r.header.Get("ETag")
+	}
+	if r := m.call(t, "DELETE", T, sa, "", "If-Match", tag); r.status != 202 {
+		t.Fatalf("delete: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "PUT", T+"/holder", sa, `{"holder_id":"org-b"}`, "If-Match", "*"); r.status != 404 {
+		t.Errorf("PUT on a deleting tenant: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "DELETE", T+"/holder", sa, "", "If-Match", "*"); r.status != 404 {
+		t.Errorf("DELETE on a deleting tenant: %d %s", r.status, r.body)
+	}
+	if n := holderEvents(); n != 1 {
+		t.Errorf("tenant.holder events: %d", n)
 	}
 }

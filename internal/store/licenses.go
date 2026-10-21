@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -98,10 +99,11 @@ func (e *HolderMismatch) Error() string {
 func (e *HolderMismatch) Is(target error) bool { return target == ErrHolderMismatch }
 
 // ValidHolderID checks a tenant's expected holder: 1 to 128 bytes, as a licence's sub (spec 0028),
-// and UTF-8.
+// of UTF-8 without U+0000 (PostgreSQL stores no NUL; elsewhere it would be a holder no licence
+// matches). Other control characters stay, as a sub may carry them escaped.
 func ValidHolderID(id string) error {
-	if id == "" || len(id) > 128 || !utf8.ValidString(id) {
-		return fmt.Errorf("%w: a holder id is 1 to 128 bytes of UTF-8, as a licence's sub", ErrInvalid)
+	if id == "" || len(id) > 128 || !utf8.ValidString(id) || strings.ContainsRune(id, 0) {
+		return fmt.Errorf("%w: a holder id is 1 to 128 bytes of UTF-8 without U+0000, as a licence's sub", ErrInvalid)
 	}
 	return nil
 }

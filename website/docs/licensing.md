@@ -111,6 +111,7 @@ that is not paused ([private upstreams](upstreams.md#private-upstreams)) is aske
   An upstream does not hand out licences for names it does not supply (`not_supplied`);
 - it must verify against a key **this upstream** brought, on a live build of the extension
   (`kid_untrusted`);
+- it must name the tenant's [expected holder](#an-expected-holder), when one is set (`holder_mismatch`);
 - it replaces the stored licence when it is newer from the same upstream, or lasts longer. From
   another source, it replaces it only when both are signed with the same key, or the stored one's
   grace has ended, or no live build declares its key any more (or the server refuses that key). So

@@ -422,7 +422,10 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 	case sub == "holder" && (len(pos) == 2 && !*clearHolder || len(pos) == 1 && *clearHolder):
 		id := ""
 		if !*clearHolder {
-			id = pos[1]
+			// an empty id (an unset variable) never clears it: -clear does
+			if id = pos[1]; id == "" {
+				return errors.New("tenant holder: the holder id is empty; -clear clears it")
+			}
 		}
 		t, err := a.svc.Tenants.SetTenantHolder(ctx, a.actor, pos[0], id, 0)
 		if err != nil {

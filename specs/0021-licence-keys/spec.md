@@ -229,7 +229,7 @@ refused by the server (`licenses.refuse_keys`, below) never count.
 - **The import.** It applies each licence after the files, once per licence. Of the bundle-mode
   upstreams the source fills, the licence goes to the first one that supplies the name.
   - The licence is verified against that upstream's keys, and must be of the expected holder if the
-    plan named one.
+    plan named one. Spec 0028 adds the importing tenant's own expected holder, checked as well.
   - Spec 0012's relay rules apply, with the replacement condition above.
   - A bundle's licence never replaces an administrator's import.
   - It is stored with `source` `upstream` and that upstream's id. A dry run stores nothing and counts.
@@ -245,7 +245,7 @@ refused by the server (`licenses.refuse_keys`, below) never count.
     refuses licences in a manifest whose plan did not ask, and on a DuckDB source.
   - The import counts `replaced` beside `stored`, `unchanged` and `refused`, as the relay does. Its
     refusals add `off` (licensing off at the site), `no_target` (no target of the source took the
-    bundle) and `holder_mismatch`.
+    bundle) and `holder_mismatch` (the plan's holder, or since spec 0028 the tenant's).
   - A dry run verifies against the keys recorded before it, so a first import's licences need the
     real import.
   - Licences are taken only from a bundle read whole. A licence carried by two sources is taken
