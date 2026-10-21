@@ -31,3 +31,4 @@ and it is superseded by a new spec when a decision changes.
 | [0022](0022-developer-kit/spec.md) | The developer kit: the extension-ci-tools fork with the SDK, the template, publishing from CI | implemented |
 | [0023](0023-publisher-keys/spec.md) | Publisher keys: signed requests from any CI | implemented |
 | [0024](0024-bootstrap-upstreams/spec.md) | The bootstrap's upstreams, and the chart in another namespace | implemented |
+| [0026](0026-kubesecret-keys/spec.md) | Signing keys from a Kubernetes Secret, as an explicit opt-in | draft |
