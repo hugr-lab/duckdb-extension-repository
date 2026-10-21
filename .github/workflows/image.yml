@@ -104,7 +104,14 @@ jobs:
       - name: sign
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
-        run: cosign sign --yes "$REPO@$DIGEST"
+        # a fresh sign after a failure: Rekor answers 409 to cosign's own retry of an entry it took
+        # ("an equivalent entry already exists"), and a new run signs with a new ephemeral key
+        run: |
+          for i in 1 2 3; do
+            cosign sign --yes "$REPO@$DIGEST" && exit 0
+            sleep $((i * 10))
+          done
+          exit 1
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.REPO }}
