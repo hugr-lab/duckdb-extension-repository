@@ -72,6 +72,10 @@ az deployment group show -g kista -n main --query properties.outputs.address.val
 - **`serverConsoleClients`** sets the server console's clients (`ui.server_clients`), as
   `{ issuer, client_id, scopes }`. With Entra, the scopes must include `<the API app id>/.default`, or
   Entra issues the console a Microsoft Graph token.
+- **`serverLicenseAdmins`** sets the [licence managers](../licensing.md#licences-in-a-tenant)
+  (`auth.server_license_admins`): principals of the server issuers who manage every tenant's
+  licences and nothing else. Empty (the default), there are none, and the configuration leaves the
+  key out.
 - **Switching the store** (PostgreSQL to Azure SQL, or a new server) needs an empty container:
   kista marks the blob domain for its store and refuses a domain marked for another.
 
@@ -181,6 +185,9 @@ a managed resource group in your subscription.
   - an API app registration for the server, with v2.0 tokens
     (`api.requestedAccessTokenVersion: 2`) and an app role (`kista-admin`) assigned to the
     administrators;
+  - optionally, another role of the server API app (`kista-licenses`, say) assigned to the
+    [licence managers](../licensing.md#licences-in-a-tenant), who manage every tenant's licences
+    and nothing else; the UI asks for its value, and empty, there are none;
   - a single-page app for the server console, with a delegated permission on the server API app,
     consented;
   - an API app for the first tenant, also with v2.0 tokens and its own role (`kista-tenant-admin`);

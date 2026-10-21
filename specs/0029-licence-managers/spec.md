@@ -90,5 +90,7 @@ choices today:
 ## Follow-ups
 
 - A tenant-level `license` verb, if someone needs it.
-- The cloud recipes (bicep, terraform, the marketplace UI) do not expose `server_license_admins`
-  yet.
+- ~~The cloud recipes (bicep, terraform, the marketplace UI) do not expose `server_license_admins`
+  yet.~~ Implemented: `server_license_admins` in the AWS and GCP recipes, `serverLicenseAdmins` in
+  the Azure recipe, and an optional licence managers' app role in the Marketplace UI; empty, the
+  configuration leaves the key out.

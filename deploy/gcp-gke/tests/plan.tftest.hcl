@@ -95,6 +95,21 @@ run "own_vpc" {
     condition     = length(google_dns_record_set.domain) == 0
     error_message = "no DNS record without dns_zone"
   }
+  assert {
+    condition     = !contains(keys(local.config.auth), "server_license_admins")
+    error_message = "no licence managers: auth.server_license_admins left out of the configuration"
+  }
+}
+
+run "licence_managers" {
+  command = plan
+  variables {
+    server_license_admins = "['role:corp|kista-licenses']"
+  }
+  assert {
+    condition     = local.auth.server_license_admins == ["role:corp|kista-licenses"] && local.auth.server_admins == ["role:corp|kista-admin"]
+    error_message = "auth.server_license_admins beside auth.server_admins"
+  }
 }
 
 run "a_given_network_and_zone" {

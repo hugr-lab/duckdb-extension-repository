@@ -171,6 +171,7 @@ Delivery, each phase a pull request with its own reviews:
   | `domain` | the public URL's host |
   | `server_issuers` | YAML in a string, the configuration's `auth.server_issuers` |
   | `server_admins` | YAML in a string, the configuration's `auth.server_admins` (principals) |
+  | `server_license_admins` | YAML in a string, `auth.server_license_admins` (spec 0029); empty by default, then left out |
   | `max_body`, `max_ingests` | |
   | `desired_count` | |
   | the database's size | |

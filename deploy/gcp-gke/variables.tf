@@ -83,6 +83,12 @@ variable "server_admins" {
   description = "auth.server_admins as YAML."
 }
 
+variable "server_license_admins" {
+  type        = string
+  default     = "[]"
+  description = "auth.server_license_admins as YAML: the licence managers' principals (spec 0029); empty, none."
+}
+
 variable "replicas" {
   type    = number
   default = 2

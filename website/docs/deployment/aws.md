@@ -63,6 +63,10 @@ terraform output url
 - **`server_issuers`** and **`server_admins`** are `auth.server_issuers` and `auth.server_admins`
   ([Configuration](../configuration.md#auth)), as YAML in a string: the identity provider whose
   people administer kista. A server issuer needs `required_claims`.
+- **`server_license_admins`** is `auth.server_license_admins`, as YAML in a string: the
+  [licence managers](../licensing.md#licences-in-a-tenant), principals of the server issuers who
+  manage every tenant's licences and nothing else. Empty (the default), there are none, and the
+  configuration leaves the key out.
 
 ## The first administration
 

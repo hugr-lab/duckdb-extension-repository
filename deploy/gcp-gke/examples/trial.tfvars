@@ -11,3 +11,5 @@ chart_version = "0.1.0"
 server_issuers      = "[{name: corp, url: 'https://login.example.com/realms/corp', required_claims: {azp: kista}, roles_claim: realm_access.roles}]"
 server_admins       = "['role:corp|kista-admin']"
 deletion_protection = false
+# optional: licence managers, who manage every tenant's licences and nothing else (spec 0029)
+# server_license_admins = "['role:corp|kista-licenses']"

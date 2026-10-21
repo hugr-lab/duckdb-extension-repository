@@ -51,6 +51,22 @@ run "own_vpc" {
     condition     = aws_db_instance.db.iam_database_authentication_enabled && !aws_db_instance.db.publicly_accessible
     error_message = "the database: IAM authentication, private"
   }
+  assert {
+    condition     = !contains(keys(local.auth), "server_license_admins")
+    error_message = "no licence managers: auth.server_license_admins left out of the configuration"
+  }
+}
+
+run "licence_managers" {
+  command = plan
+  variables {
+    server_admins         = "['role:corp|kista-admin']"
+    server_license_admins = "['role:corp|kista-licenses']"
+  }
+  assert {
+    condition     = local.auth.server_license_admins == ["role:corp|kista-licenses"] && local.auth.server_admins == ["role:corp|kista-admin"]
+    error_message = "auth.server_license_admins beside auth.server_admins"
+  }
 }
 
 run "endpoints_in_a_given_vpc" {

@@ -165,6 +165,17 @@
             }
           },
           {
+            "name": "licenseRole",
+            "type": "Microsoft.Common.TextBox",
+            "label": "The licence managers' app role (optional)",
+            "toolTip": "The value of the API app's role assigned to the licence managers, who manage every tenant's licences and nothing else; empty, none.",
+            "constraints": {
+              "required": false,
+              "regex": "^([A-Za-z0-9._-]{1,120})?$",
+              "validationMessage": "Letters, digits, dots, underscores and hyphens, or empty."
+            }
+          },
+          {
             "name": "consoleAppId",
             "type": "Microsoft.Common.TextBox",
             "label": "The console app's client ID",
@@ -367,6 +378,7 @@
       "serverIssuers": "[parse(concat('[{\"name\":\"entra\",\"url\":\"https://login.microsoftonline.com/', steps('admins').tenantId, '/v2.0\",\"required_claims\":{\"tid\":\"', steps('admins').tenantId, '\"},\"roles_claim\":\"roles\"}]'))]",
       "serverAudiences": "[parse(concat('[\"', steps('admins').apiAppId, '\"]'))]",
       "serverAdmins": "[parse(concat('[\"role:entra|', steps('admins').adminRole, '\"]'))]",
+      "serverLicenseAdmins": "[if(empty(steps('admins').licenseRole), parse('[]'), parse(concat('[\"role:entra|', steps('admins').licenseRole, '\"]')))]",
       "serverConsoleClients": "[parse(concat('[{\"issuer\":\"entra\",\"client_id\":\"', steps('admins').consoleAppId, '\",\"scopes\":[\"openid\",\"profile\",\"offline_access\",\"', steps('admins').apiAppId, '/.default\"]}]'))]",
       "bootstrap": "[parse(concat('{\"versions\":[', concat('{\"version\":\"', first(split(steps('tenant').duckdb, '|')), '\",\"kind\":\"release\",\"c_apis\":[\"', last(split(steps('tenant').duckdb, '|')), '\"]}'), '],\"tenant\":{\"name\":\"', steps('tenant').name, '\",\"audiences\":[\"', steps('tenant').apiAppId, '\"]},\"channel\":{\"name\":\"', steps('tenant').channel, '\",\"versions\":[\"', first(split(steps('tenant').duckdb, '|')), '\"]},\"issuer\":{\"name\":\"entra\",\"url\":\"https://login.microsoftonline.com/', steps('tenant').tenantId, '/v2.0\",\"required_claims\":{\"tid\":\"', steps('tenant').tenantId, '\"},\"roles_claim\":\"roles\"', if(or(equals(steps('tenant').tenantId, steps('admins').tenantId), empty(steps('tenant').consoleAppId)), '', concat(',\"console\":{\"client_id\":\"', steps('tenant').consoleAppId, '\",\"audience\":\"', steps('tenant').apiAppId, '\",\"scopes\":\"openid profile offline_access ', steps('tenant').apiAppId, '/.default\"}')), '},\"grants\":[{\"principal\":\"role:entra|', steps('tenant').adminRole, '\",\"verbs\":[\"admin\"]}]}'))]"
     }

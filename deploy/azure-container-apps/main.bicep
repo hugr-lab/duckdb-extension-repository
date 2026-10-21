@@ -31,6 +31,9 @@ param serverAudiences array = []
 @description('auth.server_admins.')
 param serverAdmins array
 
+@description('auth.server_license_admins: the licence managers, who manage every tenant\'s licences and nothing else (spec 0029); empty, none.')
+param serverLicenseAdmins array = []
+
 @description('ui.server_clients: the console\'s client ID at each server issuer, as { issuer, client_id }; empty: the server console signs in nowhere.')
 param serverConsoleClients array = []
 
@@ -419,7 +422,8 @@ var config = {
   gc: empty(gcInterval) ? {} : { interval: gcInterval }
   auth: union(
     { server_issuers: serverIssuers, server_admins: serverAdmins },
-    empty(serverAudiences) ? {} : { server_audiences: serverAudiences }
+    empty(serverAudiences) ? {} : { server_audiences: serverAudiences },
+    empty(serverLicenseAdmins) ? {} : { server_license_admins: serverLicenseAdmins }
   )
   ui: empty(serverConsoleClients) ? {} : { server_clients: serverConsoleClients }
   bootstrap: bootstrapSection
