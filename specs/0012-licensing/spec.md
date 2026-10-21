@@ -454,19 +454,24 @@ All of it is additive. The usage tables follow `statistics.retention`, and all o
 ### API and CLI
 
 ```text
-GET    /api/v1/licenses/keys                               server administrators (1a)
-GET    /api/v1/tenants/{t}/licenses                        tenant administrators (1a)
-GET    /api/v1/tenants/{t}/licenses/{name}                 tenant administrators, ETag (1a)
+GET    /api/v1/tenants/{t}/licenses                        tenant administrators, licence managers (1a, 0029)
+GET    /api/v1/tenants/{t}/licenses/{name}                 tenant administrators, licence managers, ETag (1a, 0029)
 POST   /api/v1/tenants/{t}/licenses                        import, the JWS as the body (1a)
-POST   /api/v1/tenants/{t}/licenses/{name}/public|private  If-Match (1a)
+POST   /api/v1/tenants/{t}/licenses/{name}/public          tenant administrators, If-Match (1a)
+POST   /api/v1/tenants/{t}/licenses/{name}/private         licence managers too, If-Match (1a, 0029)
 DELETE /api/v1/tenants/{t}/licenses/{name}                 If-Match (1a)
 GET    /api/v1/tenants/{t}/upstreams/{u}/licenses          the last relay run (1a)
 POST   /api/v1/tenants/{t}/upstreams/{u}/licenses/sync     tenant administrators, 202 (1a)
+GET    /api/v1/tenants/{t}/license-keys[/{name}]           the live builds' licence keys (0021, 0029)
 GET    /api/v1/tenants/{t}/stats/usage                     (1b)
 POST   /api/v1/tenants/{t}/upstreams/{u}/usage             {"usage": "forward"|"off"}, If-Match (1c)
 GET    /api/v1/tenants/{t}/upstreams/{u}/usage             the switch and the last forwarding run (1c)
 ```
 
+- **Who.** The licence routes and the licence keys' routes are the tenant administrators'. Since
+  spec 0029 the licence managers (`auth.server_license_admins`) may call them too, except
+  `…/public`. Only the tenant administrators make a licence public, and only they call the
+  upstreams' relay routes.
 - **A licence** is shown as its claims and its state: `name`, `id`, `issuer`, `holder_id`, `holder`,
   `plan`, `versions`, `limits`, `issued_at`, `expires_at`, `grace_until`, `key`, `source`,
   `upstream`, `visibility`, `status` (`valid`, `grace`; `expired` between the end of its grace and
@@ -487,9 +492,9 @@ New catalogue entries, with their subject forms in `audit.SubjectForm` and its c
 
 | Event | Actor | Subject | Data |
 | --- | --- | --- | --- |
-| `license.import` | the administrator | `license:<name>` | licence id, issuer, holder, plan, expiry, the replaced licence's id |
-| `license.change` | the administrator | `license:<name>` | `visibility` |
-| `license.remove` | the administrator, or `system:licenses` | `license:<name>` | licence id, why (`admin`, `revoked`, `expired`, `upstream removed`) |
+| `license.import` | the administrator, or a licence manager (0029) | `license:<name>` | licence id, issuer, holder, plan, expiry, the replaced licence's id |
+| `license.change` | the administrator, or a licence manager (0029) | `license:<name>` | `visibility` |
+| `license.remove` | the administrator, a licence manager (0029), or `system:licenses` | `license:<name>` | licence id, why (`admin`, `revoked`, `expired`, `upstream removed`) |
 | `license.sync` | `system:licenses` | `upstream:<u>` | counts (received, stored, replaced, unchanged, removed, refused), the refusals with their rules (a licence's own rule, `not_in_force`, `not_supplied`, `superseded`), or the failure |
 | `extension.use` | the principal | `channel:<c>/ext:<name>` | (above) |
 | `usage.forward` | `system:usage` | `upstream:<u>` | days sent, skipped, failed |

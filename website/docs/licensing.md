@@ -96,6 +96,11 @@ licence needs `If-Match` with its ETag. The licence must verify and be in force 
 grace) when it is imported, against a key of a live build of its extension, from any source,
 anywhere in the tenant. A name with no such key takes no licence (`kid_untrusted`).
 
+Besides the tenant's administrators, a **licence manager** (`auth.server_license_admins`, a
+server-wide role for a job such as a licence reconciler) may call the licence routes of every
+tenant, and nothing else. It cannot make a licence public, call the upstreams' relay or any other
+route. See [Access](access.md#server-administrators-and-tenant-administrators).
+
 **The relay from an upstream.** A `repository` upstream with a credential
 that is not paused ([private upstreams](upstreams.md#private-upstreams)) is asked for the licences its credential holds, every
 `licenses.refresh` (6 hours by default), at `<upstream prefix>/-/licenses`. For each licence:

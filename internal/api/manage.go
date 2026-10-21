@@ -245,8 +245,8 @@ func (h *Handler) serverWhoami(w http.ResponseWriter, r *http.Request, c caller,
 		ps = append(ps, g.Principal())
 	}
 	sort.Strings(ps)
-	reply(w, r, http.StatusOK, map[string]any{"issuer": c.id.Issuer.Name, "principals": nonNil(ps), "administrator": c.admin},
-		"", "private, no-store")
+	reply(w, r, http.StatusOK, map[string]any{"issuer": c.id.Issuer.Name, "principals": nonNil(ps), "administrator": c.admin,
+		"license_manager": c.licenseManager}, "", "private, no-store")
 }
 
 // --- DuckDB versions ---
@@ -565,10 +565,15 @@ type issuerJSON struct {
 func issuerTag(is store.Issuer) string { return `"` + is.ID + `"` }
 
 // createdBy shows who made a record: a server administrator's identity (over the API, or the CLI's
-// OS user) only to server administrators (on Enterest it is the operator's staff).
+// OS user) only to server administrators (on Enterest it is the operator's staff); a licence
+// manager's (spec 0029) shows as its kind alone, the same way.
 func createdBy(by string, c caller) string {
-	if !c.admin && (strings.HasPrefix(by, string(authz.ActorServer)+":") || strings.HasPrefix(by, string(authz.ActorOS)+":")) {
+	switch {
+	case c.admin: // sees who
+	case strings.HasPrefix(by, string(authz.ActorServer)+":") || strings.HasPrefix(by, string(authz.ActorOS)+":"):
 		return string(authz.ActorServer)
+	case strings.HasPrefix(by, string(authz.ActorLicenseManager)+":"):
+		return string(authz.ActorLicenseManager)
 	}
 	return by
 }

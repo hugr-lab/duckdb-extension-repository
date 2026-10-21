@@ -11,13 +11,17 @@ import (
 )
 
 // Auth configures server identity (spec 0007): the server issuers, their audiences, the server
-// administrators. The whole block is file-only; changes take effect at restart.
+// administrators, the licence managers (spec 0029). The whole block is file-only, so no API caller
+// can widen a server role; changes take effect at restart.
 type Auth struct {
 	ServerIssuers     []ServerIssuer `yaml:"server_issuers"`
 	ServerAudiences   []string       `yaml:"server_audiences"`    // default: [ serve.public_url ]
 	ServerEgressAllow []EgressAllow  `yaml:"server_egress_allow"` // reached only by the server issuers' fetcher
 	ServerAdmins      []string       `yaml:"server_admins"`       // principals of the server issuers; issuer: is refused
-	AdminTokenMaxAge  time.Duration  `yaml:"admin_token_max_age"` // default 1h
+	// ServerLicenseAdmins are the licence managers (spec 0029): principals of the server issuers
+	// (issuer: is refused) who manage every tenant's licences and nothing else
+	ServerLicenseAdmins []string      `yaml:"server_license_admins"`
+	AdminTokenMaxAge    time.Duration `yaml:"admin_token_max_age"` // default 1h
 }
 
 // ServerIssuer is an issuer record's fields; required_claims is mandatory.
@@ -82,9 +86,16 @@ func (c Config) ServerAudiences() []string {
 }
 
 // ServerAdmins returns the server administrators' principals (validated).
-func (c Config) ServerAdmins() auth.Principals {
+func (c Config) ServerAdmins() auth.Principals { return serverPrincipals(c.Auth.ServerAdmins) }
+
+// ServerLicenseAdmins returns the licence managers' principals (validated; spec 0029).
+func (c Config) ServerLicenseAdmins() auth.Principals {
+	return serverPrincipals(c.Auth.ServerLicenseAdmins)
+}
+
+func serverPrincipals(list []string) auth.Principals {
 	p := auth.Principals{}
-	for _, s := range c.Auth.ServerAdmins {
+	for _, s := range list {
 		kind, issuer, value, err := auth.ParsePrincipalKey(s)
 		if err == nil && kind != store.PrincipalIssuer {
 			p[auth.Key{IssuerID: auth.ServerIssuerID(issuer), Kind: kind, Value: value}] = true
@@ -120,15 +131,39 @@ func validateAuth(bad func(string, ...any), c Config) {
 			bad("auth.server_issuers[%d]: %s is a CI token issuer's: it issues tokens to any workflow for any audience", i, s.URL)
 		}
 	}
-	for i, s := range a.ServerAdmins {
-		kind, issuer, _, err := auth.ParsePrincipalKey(s)
-		switch {
-		case err != nil:
-			bad("auth.server_admins[%d]: %q is kind:issuer|value", i, s)
-		case kind == store.PrincipalIssuer:
-			bad("auth.server_admins[%d]: issuer: is refused (every account of the issuer would be an administrator)", i)
-		case !names[issuer]:
-			bad("auth.server_admins[%d]: %s is not a server issuer", i, issuer)
+	// the claim each principal kind is read from: without it on its issuer, it never matches
+	claimOf := map[string]func(ServerIssuer) (string, string){
+		store.PrincipalRole:   func(s ServerIssuer) (string, string) { return s.RolesClaim, "roles_claim" },
+		store.PrincipalGroup:  func(s ServerIssuer) (string, string) { return s.GroupsClaim, "groups_claim" },
+		store.PrincipalClient: func(s ServerIssuer) (string, string) { return s.ClientClaim, "client_claim" },
+	}
+	byName := map[string]ServerIssuer{}
+	for _, s := range a.ServerIssuers {
+		if _, ok := byName[s.Name]; !ok {
+			byName[s.Name] = s
+		}
+	}
+	for _, l := range []struct {
+		name, role string
+		list       []string
+	}{{"server_admins", "an administrator", a.ServerAdmins}, {"server_license_admins", "a licence manager", a.ServerLicenseAdmins}} {
+		for i, s := range l.list {
+			kind, issuer, _, err := auth.ParsePrincipalKey(s)
+			is, known := byName[issuer]
+			switch {
+			case err != nil:
+				bad("auth.%s[%d]: %q is kind:issuer|value", l.name, i, s)
+			case kind == store.PrincipalIssuer:
+				bad("auth.%s[%d]: issuer: is refused (every account of the issuer would be %s)", l.name, i, l.role)
+			case kind == store.PrincipalPublisher:
+				bad("auth.%s[%d]: publisher: is refused (a tenant's publisher, not a principal of a server issuer)", l.name, i)
+			case !known:
+				bad("auth.%s[%d]: %s is not a server issuer", l.name, i, issuer)
+			case claimOf[kind] != nil:
+				if claim, setting := claimOf[kind](is); claim == "" {
+					bad("auth.%s[%d]: %s never matches: the server issuer %s has no %s", l.name, i, s, issuer, setting)
+				}
+			}
 		}
 	}
 	p := strings.TrimSuffix(c.Serve.PublicURL, "/")

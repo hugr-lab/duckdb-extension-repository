@@ -423,8 +423,9 @@ The deployment's own `public_url` host is always refused.
 
 ## auth
 
-Server identity: the issuers whose tokens can make someone a server administrator. The whole block
-is file-only and is read at start. See [Access](access.md).
+Server identity: the issuers whose tokens can make someone a server administrator or a licence
+manager. The whole block is file-only and is read at start, so no API caller can widen a server
+role. See [Access](access.md).
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -432,6 +433,7 @@ is file-only and is read at start. See [Access](access.md).
 | `auth.server_audiences` | list | `[serve.public_url]` | Audiences a server token must carry. Required (or `public_url`) with server issuers. Values under `public_url/` are refused: those are tenants' audiences. |
 | `auth.server_egress_allow` | list | none | Like `egress.allow` (`cidr`, `ports`), reached only by the server issuers' fetcher. |
 | `auth.server_admins` | list | none | Principals of server issuers who are server administrators. |
+| `auth.server_license_admins` | list | none | Principals of server issuers who are licence managers: they manage every tenant's licences and nothing else (spec 0029). |
 | `auth.admin_token_max_age` | duration | `1h` | How recently a management token must have been issued; `1m..24h`. |
 
 Each server issuer:
@@ -448,7 +450,10 @@ Each server issuer:
 
 A server administrator is written `kind:issuer|value`, where `kind` is `subject`, `role`, `group`
 or `client`, and `issuer` is a server issuer's name: `role:ops|kista-admin`. `issuer:<name>` is
-refused, since every account of the issuer would be an administrator.
+refused, since every account of the issuer would be an administrator, and so is `publisher:`. A
+`role:`, `group:` or `client:` principal needs its issuer's `roles_claim`, `groups_claim` or
+`client_claim`; without it the principal could never match and is refused. A licence manager is
+written and checked the same way: `role:ops|kista-licenses`.
 
 ## publish
 
@@ -519,7 +524,7 @@ Each sink:
 | `kind` | `otlp`, `jsonl` | required | |
 | `tenants` | list | none | Tenant names, or `"*"`. |
 | `server` | boolean | `false` | The server's own events too. |
-| `unmasked` | boolean | `false` | Send server administrators' and the CLI's identities on tenants' events as they are (by default they show as `server`). |
+| `unmasked` | boolean | `false` | Send server administrators', licence managers' and the CLI's identities on tenants' events as they are (by default they show as `server`, or `license-manager`). |
 | `url` | URL | | `otlp`: an OTLP/HTTP logs endpoint, https. |
 | `allow` | list | none | `otlp`: private addresses of the endpoint (`cidr`, `ports`). |
 | `headers_file` | absolute path | none | `otlp`: `Name: value` lines. A secret file ([Files kista reads](security.md#files-kista-reads)). |

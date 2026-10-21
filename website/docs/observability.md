@@ -28,7 +28,7 @@ Each event has these fields:
 | `at` | when it happened (UTC) |
 | `kind`, `v` | the kind from the catalogue below, and the catalogue's version (1) |
 | `outcome` | `ok`, `refused` (a `401`, or a `404` that stands for forbidden) or `failed` (a `5xx`, a storage pass that failed or found damage, a failing sink) |
-| `actor` | who: `principal:<tenant>/<issuer id>\|sub:<sub>`, `server:<issuer>\|sub:…`, `os:<uid>:<user>` (the CLI), `publisher:<tenant>/<names>`, `system:<what>`, `anonymous` |
+| `actor` | who: `principal:<tenant>/<issuer id>\|sub:<sub>`, `server:<issuer>\|sub:…`, `license-manager:<issuer>\|sub:…` (a licence manager), `os:<uid>:<user>` (the CLI), `publisher:<tenant>/<names>`, `system:<what>`, `anonymous` |
 | `actor_name` | a token's `name`, `preferred_username` or `email` claim, for display |
 | `subject` | the resource as a path, such as `channel:prod/ext:acl/release:<id>` |
 | `data` | the kind's fields only, at most 16 KiB (a larger one is cut and marked `"truncated": true`) |
@@ -46,7 +46,8 @@ is in the server's log or the command's stderr. Validation errors and stale `If-
 nothing happened.
 
 To a tenant's readers, and to sinks unless `unmasked: true`, a server administrator's or the CLI's
-actor on a tenant's event shows as `server`, without name or address.
+actor on a tenant's event shows as `server`, and a licence manager's as `license-manager`, without
+name or address.
 
 ### Event kinds
 
@@ -235,7 +236,7 @@ events:                       # file-only
 | `kind` | `otlp` or `jsonl` |
 | `tenants` | tenant names, or `*` |
 | `server` | also the server's events |
-| `unmasked` | send server administrators' and the CLI's identities on tenants' events as they are |
+| `unmasked` | send server administrators', licence managers' and the CLI's identities on tenants' events as they are |
 | `url` (otlp) | the collector's OTLP/HTTP logs URL; `https` (plain `http` to loopback only with profile `dev` and `egress.allow_loopback_http`) |
 | `allow` (otlp) | addresses the sink may reach besides `egress.allow` (`cidr` and `ports`) |
 | `headers_file` (otlp) | an absolute path to `Name: value` lines (`#` comments), for authentication headers. A secret file ([Files kista reads](security.md#files-kista-reads)) |

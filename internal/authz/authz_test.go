@@ -8,6 +8,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
 
 func TestCovers(t *testing.T) {
@@ -52,6 +54,12 @@ func TestCovers(t *testing.T) {
 		{"channel admin does not imply feed", g("subject", "me", "prod", "", "admin"), "feed", prod, false},
 		{"extension admin does not feed", g("subject", "me", "", "tresor", "admin"), "feed", prod, false},
 		{"issuer-wide feed is ignored", g("issuer", "", "", "", "feed"), "feed", prod, false},
+		// spec 0029: license, the tenant's licences; only a tenant-wide admin implies it
+		{"tenant admin implies license", g("subject", "me", "", "", "admin"), "license", tenant, true},
+		{"channel admin does not imply license", g("subject", "me", "prod", "", "admin"), "license", tenant, false},
+		{"extension admin does not imply license", g("subject", "me", "", "tresor", "admin"), "license", tenant, false},
+		{"issuer-wide admin does not imply license", g("issuer", "", "", "", "admin"), "license", tenant, false},
+		{"install is not license", g("subject", "me", "", "", "install"), "license", tenant, false},
 	} {
 		if got := authz.Covers(auth.HeldBy(me, store.TenantAuth{Grants: []store.Grant{tc.grant}}), tc.verb, tc.r); got != tc.want {
 			t.Errorf("%s: %v", tc.name, got)
@@ -71,6 +79,21 @@ func TestCovers(t *testing.T) {
 	}
 	if err := gz.Allow(ctx, authz.Actor{Kind: authz.ActorSystem}, authz.VerbAdmin, tenant); !errors.Is(err, authz.ErrDenied) {
 		t.Errorf("a system actor: %v", err)
+	}
+	// spec 0029: a licence manager holds license on a tenant and nothing else (refused before any
+	// lookup; the API's tests show it allowed on a tenant)
+	lm := authz.Actor{Kind: authz.ActorLicenseManager, ID: "ops|reconciler"}
+	for _, c := range []struct {
+		verb authz.Verb
+		r    authz.Resource
+	}{
+		{authz.VerbAdmin, tenant}, {authz.VerbAudit, tenant}, {authz.VerbFeed, prod}, {authz.VerbPublish, tresor},
+		{authz.VerbLicense, authz.Server}, {authz.VerbLicense, prod}, {authz.VerbLicense, tresor},
+		{authz.VerbLicense, authz.Resource{Tenant: "acme", ExtensionGroup: "g"}},
+	} {
+		if err := gz.Allow(ctx, lm, c.verb, c.r); !errors.Is(err, authz.ErrDenied) {
+			t.Errorf("a licence manager, %s on %+v: %v", c.verb, c.r, err)
+		}
 	}
 }
 
@@ -173,6 +196,40 @@ func TestServerAdmin(t *testing.T) {
 	} {
 		if err := (authz.ServerAdmin{}).Allow(ctx, c.a, authz.VerbAdmin, authz.Server); (err == nil) != c.want {
 			t.Errorf("%s: %v", c.a, err)
+		}
+	}
+}
+
+// Spec 0029: the API's authorizer allows a licence manager license on an active tenant, and
+// nothing else: not an unknown or a suspended tenant, not another verb.
+func TestLicenseManagerAllow(t *testing.T) {
+	ctx := context.Background()
+	cli := authz.Actor{Kind: authz.ActorOS, ID: "1:t"}
+	st := storetest.Engines(t)[0].Open(t)
+	ten := &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
+	for _, n := range []string{"acme", "idle"} {
+		if _, err := ten.CreateTenant(ctx, cli, n, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ten.SetTenantState(ctx, cli, "idle", store.TenantSuspended, 0); err != nil {
+		t.Fatal(err)
+	}
+	gz := authz.Grants{Store: st, Auths: &auth.TenantAuths{Store: st}}
+	lm := authz.Actor{Kind: authz.ActorLicenseManager, ID: "ops|reconciler"}
+	if err := gz.Allow(ctx, lm, authz.VerbLicense, authz.Resource{Tenant: "acme"}); err != nil {
+		t.Errorf("license on an active tenant: %v", err)
+	}
+	for _, c := range []struct {
+		verb   authz.Verb
+		tenant string
+	}{
+		{authz.VerbLicense, "nope"}, {authz.VerbLicense, "idle"},
+		{authz.VerbAdmin, "acme"}, {authz.VerbAudit, "acme"}, {authz.VerbFeed, "acme"}, {authz.Verb(store.VerbInstall), "acme"},
+		{authz.VerbPublish, "acme"}, {authz.VerbPromote, "acme"},
+	} {
+		if err := gz.Allow(ctx, lm, c.verb, authz.Resource{Tenant: c.tenant}); !errors.Is(err, authz.ErrDenied) {
+			t.Errorf("%s on %s: %v", c.verb, c.tenant, err)
 		}
 	}
 }

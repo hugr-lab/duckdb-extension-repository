@@ -49,7 +49,7 @@ variables {
   domain         = "kista.example.com"
   image          = "ghcr.io/hugr-lab/kista:v0.1.0"
   chart_version  = "0.1.0"
-  server_issuers = "[{name: corp, url: 'https://login.example.com/realms/corp', required_claims: {azp: kista}}]"
+  server_issuers = "[{name: corp, url: 'https://login.example.com/realms/corp', required_claims: {azp: kista}, roles_claim: realm_access.roles}]"
   server_admins  = "['role:corp|kista-admin']"
 }
 
