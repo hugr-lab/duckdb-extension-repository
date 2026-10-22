@@ -3,6 +3,8 @@ package config
 import (
 	"net/url"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/duckdbsrc"
 )
 
 // Reserved configures the server's reserved extension names (spec 0030).
@@ -21,7 +23,7 @@ type CommunitySync struct {
 }
 
 // DefaultCommunitySyncURL is duckdb/community-extensions' default branch, from GitHub.
-const DefaultCommunitySyncURL = "https://codeload.github.com/duckdb/community-extensions/tar.gz/HEAD"
+const DefaultCommunitySyncURL = duckdbsrc.CommunityTarball + "HEAD"
 
 // CommunitySyncSettings returns reserved.community_sync with its defaults.
 func (c Config) CommunitySyncSettings() CommunitySync {
@@ -42,7 +44,7 @@ func validateReserved(bad func(string, ...any), c Config) {
 	}
 	if s.URL != "" {
 		u, err := url.Parse(s.URL)
-		plainOK := u != nil && u.Scheme == "http" && c.Egress.AllowLoopbackHTTP // loopback in dev only (egress checks the host)
+		plainOK := u != nil && u.Scheme == "http" && c.loopbackHTTP() // loopback in dev only (egress checks the host)
 		if err != nil || u.Host == "" || u.User != nil || u.Scheme != "https" && !plainOK {
 			bad("reserved.community_sync.url must be an https URL")
 		}

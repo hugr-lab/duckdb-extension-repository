@@ -121,7 +121,8 @@ var catalogue = map[Kind][]string{
 	"version.add":    {"version", "kind", "c_apis"},
 	"version.c_apis": {"version", "c_api"},
 	// reserved names (spec 0030): a version's core extensions, an administrator's
-	"reserved.add":    {"version", "kind", "names", "source", "forced", "tenants"},
+	"reserved.add":    {"version", "kind", "source", "names", "forced", "tenants", "skipped"}, // source before names: a cut keeps it
+	"reserved.sync":   {"error"},                                                              // a failed community sync pass (spec 0030 part 3)
 	"reserved.remove": {"name", "sources"},
 	// a name reserved in a tenant for a holder (spec 0030 part 2)
 	"reserved.tenant.add":    {"name", "holder", "previous"},
@@ -261,6 +262,8 @@ func SubjectForm(k Kind) string {
 		return "upstream:<name> or feed:<name>"
 	case "reserved.add":
 		return "version:<name>, reserved:<name> or sync:community"
+	case "reserved.sync":
+		return "sync:community"
 	case "reserved.remove", "reserved.tenant.add", "reserved.tenant.remove":
 		return "reserved:<name>"
 	case "license.sync", "usage.forward":

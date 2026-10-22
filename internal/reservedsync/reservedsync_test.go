@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -106,6 +108,43 @@ func TestCommunitySync(t *testing.T) {
 			if added, err := other.Once(ctx); err != nil || len(added) != 0 || hits.Load() != before {
 				t.Fatalf("another replica: %v %v, %d fetches", added, err, hits.Load()-before)
 			}
+			// a name a tenant publishes under is skipped; too many new names are refused
+			tn := store.Tenant{Name: "acme"}
+			ch := store.Channel{Name: "prod", Kind: store.ChannelSigned}
+			if err := st.InTx(ctx, "", func(tx *store.Tx) error {
+				if err := tx.CreateTenant(ctx, &tn); err != nil {
+					return err
+				}
+				ch.TenantID = tn.ID
+				if err := tx.CreateChannel(ctx, &ch); err != nil {
+					return err
+				}
+				b := store.Build{TenantID: tn.ID, Name: "kista_theirs", ExtVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICPP,
+					DuckDBVersion: "v2.0.0", BodyHash: strings.Repeat("a", 64), Origin: store.OriginAdmin, CreatedBy: "os:1:t"}
+				if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
+					return err
+				}
+				r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, ExtVersion: b.ExtVersion,
+					Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public}
+				return tx.InsertRelease(ctx, &r, "os:1:t")
+			}); err != nil {
+				t.Fatal(err)
+			}
+			body.Store(tarball(t, true, "kista_theirs", "kista_comm_d"))
+			if added, err := s.Once(ctx); err != nil || !slices.Equal(added, []string{"kista_comm_d"}) {
+				t.Fatalf("a tenant's name: %v %v", added, err)
+			}
+			if l, _ := st.ListReservedNames(ctx, "kista_theirs"); len(l) != 0 {
+				t.Fatalf("a tenant's name was reserved: %+v", l)
+			}
+			many := make([]string, reservedsync.MaxNew+1)
+			for i := range many {
+				many[i] = fmt.Sprintf("kista_many_%03d", i)
+			}
+			body.Store(tarball(t, true, many...))
+			if added, err := s.Once(ctx); err == nil || len(added) != 0 {
+				t.Fatalf("too many new names: %d %v", len(added), err)
+			}
 			// a failed read, a tarball without its commit: an error, nothing changed
 			v1, _ := st.ReservedVersion(ctx)
 			status.Store(http.StatusBadGateway)
@@ -119,6 +158,18 @@ func TestCommunitySync(t *testing.T) {
 			}
 			if v, _ := st.ReservedVersion(ctx); v != v1 {
 				t.Fatal("a failed pass changed the list")
+			}
+			// Run records a failed pass as an event; it ends with its context
+			rctx, cancel := context.WithCancel(ctx)
+			other.Holder = "c"
+			if err := st.ReleaseLease(ctx, "kista/reserved/community-sync", "a"); err != nil {
+				t.Fatal(err)
+			}
+			go func() { time.Sleep(500 * time.Millisecond); cancel() }()
+			other.Run(rctx)
+			if evs, _ := st.ListEvents(ctx, audit.ServerTenant, store.EventFilter{Kind: "reserved.sync"}); len(evs) != 1 ||
+				evs[0].Outcome != "failed" || !strings.Contains(evs[0].Data, `"error":"fetch"`) {
+				t.Fatalf("the failed pass's event: %+v", evs)
 			}
 		})
 	}
@@ -137,10 +188,11 @@ func TestCommunitySyncNetwork(t *testing.T) {
 	}
 	s := &reservedsync.Sync{Store: st, Fetch: eg, URL: config.DefaultCommunitySyncURL, Every: time.Hour, Holder: "net",
 		Log: slog.New(slog.DiscardHandler)}
+	names, commit, err := s.Read(context.Background())
+	if err != nil || len(commit) != 40 || len(names) < 300 || !slices.Contains(names, "h3") {
+		t.Fatalf("read: %d names at %q: %v", len(names), commit, err)
+	}
 	if _, err := s.Once(context.Background()); err != nil {
 		t.Fatal(err)
-	}
-	if l, _ := st.ListReservedNames(context.Background(), "h3"); len(l) != 1 || l[0].Kind != store.ReservedCommunity {
-		t.Fatalf("h3: %+v", l)
 	}
 }

@@ -177,7 +177,7 @@ kista duckdb community-extensions [ref] | -dir <checkout>
   list lacks `icu`, `json` or `parquet`: DuckDB's sources changed layout. `version add` refuses
   the community list as a version's core extensions.
 - `community-extensions` prints duckdb/community-extensions' extension names (each
-  `extensions/<dir>` and the name its `description.yml` gives), at a ref (default `main`), for
+  `extensions/<dir>` and the name its `description.yml` gives), at a ref (default: its default branch), for
   `reserved add -kind community`.
 
 ## kista bundle

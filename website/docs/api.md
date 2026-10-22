@@ -268,7 +268,7 @@ names](publishing.md#reserved-names); `kista duckdb core-extensions <tag>` print
   `core_extensions_added`, `404` for an unknown version.
 - `GET reserved-names` lists `names`, each with `name`, `kind` (`core` or `community`), `added_at`
   and `sources` (`builtin`, `version:<v>@<commit>`, `upstream:<tenant>/<upstream>`, `bundle:<id>`,
-  `admin:<actor>`); `?name=` reads one.
+  `admin:<actor>`, `community-sync@<commit>`); `?name=` reads one.
 - `POST reserved-names` with `names`, `kind` and `force` reserves names as an administrator's. A
   name that becomes reserved (or goes from community to core) with releases that are not yanked or
   purged in some tenant answers `409`, naming the tenants, unless

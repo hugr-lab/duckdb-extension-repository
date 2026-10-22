@@ -93,7 +93,7 @@ reserved_version        a single row: the list's version, a counter
 4. **The community list.** duckdb/community-extensions grows every week, so a server may follow it:
    - `reserved.community_sync` (off by default): every `interval` (a day by default) the server
      reads the names of `extensions/*/description.yml` in duckdb/community-extensions' default
-     branch (`url`, github.com by default; a mirror of the repository works) and reserves the new
+     branch (`url`, GitHub's codeload by default; a mirror of the repository works) and reserves the new
      ones as community, `source community-sync@<commit>`. It needs egress to that host only, and
      is a server's choice: a registry that mirrors community extensions, or a distributor's
      (Enterest's), turns it on. A failed read is logged and retried at the next interval; it never
@@ -188,10 +188,13 @@ suite checks the migration holds them.
   changes the intake for an existing entry (grandfathered, above) and the shadows of a community name
   that becomes core, so additions are previewed and audited, and an administrator's mistake can be
   undone.
-- **No new trust in the network.** The server never fetches DuckDB's source: an operator's command
-  does, once per version, from github.com, and writes a list a person passes on; the air-gapped path
-  is a file. A name an upstream brings is reserved because its upstream is a DuckDB repository the
-  server already verifies.
+- **Little new trust in the network.** The server never fetches DuckDB's source: an operator's
+  command does, once per version, from github.com, and writes a list a person passes on; the
+  air-gapped path is a file. A name an upstream brings is reserved because its upstream is a DuckDB
+  repository the server already verifies. The community sync, off by default, is the exception: it
+  trusts what its URL serves (TLS, GitHub, DuckDB's review of what is merged into
+  community-extensions). What it changes only narrows who may publish a name, and it leaves a name a
+  tenant has releases under, or a jump of more than 100 names, to an administrator (as built, part 3).
 - **Tenant isolation.** A tenant's reserved names reach only that tenant. Only server and
   distribution admins reserve and release them: a tenant administrator cannot lift a distributor's
   reservation, nor make one that would block another tenant.
@@ -337,6 +340,15 @@ Three parts, each a pull request:
   and reserves only the names the server does not hold yet, so a name already core or community
   gains no source per pass. One `reserved.add` event (`sync:community`, actor
   `system:community-sync`) per pass that added names; the version is bumped once.
+- A name a tenant has releases under is not reserved by the sync (logged, and `skipped` in the
+  event): reserving it would narrow that tenant's wide grants on a third party's say, so an
+  administrator decides (`reserved add -force`). More than 100 new names in one pass is refused as a
+  changed or tampered source. A name reserved between the read and the transaction is left without
+  the sync's source. A failed pass is a `reserved.sync` event with outcome `failed` and an error
+  class, as other background jobs record theirs.
+- After a restart, or an interval made shorter, the lease taken before runs out first. Names the
+  sync reserved stay, as every name DuckDB brought does: a wrong `url` (a fork) adds names nobody
+  publishes under, at worst, since a tenant's names are skipped.
 - The CI's `network` job reads the real repository.
 
 ## Alternatives considered
