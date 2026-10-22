@@ -1,7 +1,6 @@
 # Spec 0030: Reserved names as data, and a distributor's names in a tenant
 
-- **Status**: accepted (2026-10-22); parts 1 (the server's names) and 2 (a tenant's names, the
-  distribution admins) implemented, part 3 (the community sync) to come
+- **Status**: implemented (parts 1, 2 and 3)
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 
@@ -235,7 +234,7 @@ Three parts, each a pull request:
 2. **A tenant's names and the distribution admins** (implemented): `tenant_reserved_names` (its own
    migration, with its `min_reader`), the lookup in that precedence, the role and its calls, the
    reaper.
-3. **The community sync**: `reserved.community_sync`.
+3. **The community sync** (implemented): `reserved.community_sync`.
 
 ### As built (part 1)
 
@@ -325,6 +324,20 @@ Three parts, each a pull request:
   whose addition bumps it).
 - The console shows a tenant's administrators its reserved names, read only, on the publishers
   page.
+
+### As built (part 3)
+
+- `reserved.community_sync` takes `enabled` (off by default), `interval` (24h; 1h..168h) and `url`: a
+  gzip tarball of the repository's default branch as `git archive` writes it, by default GitHub's
+  `codeload.github.com/duckdb/community-extensions/tar.gz/HEAD`. The commit in its pax header names
+  the source; a tarball without one is refused (a mirror serving `git archive` output has it).
+- One replica per interval: the pass takes the lease `kista/reserved/community-sync` for 90% of the
+  interval and does not release it. It streams the tarball through the tenants' egress client
+  (bounded in size, time and pace; `internal/duckdbsrc` keeps only the `description.yml` files),
+  and reserves only the names the server does not hold yet, so a name already core or community
+  gains no source per pass. One `reserved.add` event (`sync:community`, actor
+  `system:community-sync`) per pass that added names; the version is bumped once.
+- The CI's `network` job reads the real repository.
 
 ## Alternatives considered
 

@@ -165,7 +165,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: go test -run TestNetworkIntake -v ./internal/upstream/
+      - run: go test -run 'TestNetworkIntake|TestCommunitySyncNetwork' -v ./internal/upstream/ ./internal/reservedsync/
 
   reserved:
     # DuckDB's extension aliases and keys (spec 0009) are current for the pin (the reserved names are data: spec 0030).

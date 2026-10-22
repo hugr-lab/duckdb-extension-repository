@@ -641,6 +641,33 @@ process that takes the delete applies its own value (`kista admin tenant delete`
 that answers `DELETE /api/v1/tenants/{t}`), so `kista admin` and `kista serve` should share the
 configuration.
 
+## reserved
+
+The server's reserved extension names (spec 0030). File-only. See
+[Reserved names](publishing.md#reserved-names).
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `reserved.community_sync.enabled` | boolean | `false` | Follow duckdb/community-extensions: reserve its new extension names as community. |
+| `reserved.community_sync.interval` | duration | `24h` | Between reads; `1h..168h`. |
+| `reserved.community_sync.url` | URL | `https://codeload.github.com/duckdb/community-extensions/tar.gz/HEAD` | A gzip tarball of the repository's default branch, as `git archive` writes it (its commit in the pax header): GitHub's, or a mirror's. `https`. |
+
+When enabled, one replica per interval reads the tarball through egress (a public host needs no
+`egress.allow` entry; a mirror on a private network does), reads each
+`extensions/<dir>/description.yml`'s name, and reserves the names the server does not hold yet as
+community, with the source `community-sync@<commit>`: one `reserved.add` event (`sync:community`,
+actor `system:community-sync`) with the names. A failed read is logged and tried again at the next
+interval; it never removes a name, and a name already reserved (core, or community from another
+source) is left as it is. A server that does not sync can add the names by hand: `kista duckdb
+community-extensions | ...` then `kista admin reserved add <name>... -kind community`.
+
+```yaml title="kista.yaml"
+reserved:
+  community_sync:
+    enabled: true        # off by default
+    interval: 24h
+```
+
 ## bootstrap
 
 What a first start creates, so an install made from a template (the Azure recipe, the Marketplace

@@ -63,7 +63,7 @@ are all the kinds in `internal/audit`:
 | | `tenant.purge` | `tenant:<name>` | `rows`, `passes`, `late`, `error` |
 | | `version.add` | `version:<name>` | `version`, `kind`, `c_apis` |
 | | `version.c_apis` | `version:<name>` | `version`, `c_api` |
-| | `reserved.add` | `version:<name>` (a version's core extensions) or `reserved:<name>` (an administrator's) | `kind`, `names`, `source`; a version's: `version`; forced over tenants' releases: `forced`, `tenants` |
+| | `reserved.add` | `version:<name>` (a version's core extensions), `reserved:<name>` (an administrator's) or `sync:community` (the community sync) | `kind`, `names`, `source`; a version's: `version`; forced over tenants' releases: `forced`, `tenants` |
 | | `reserved.remove` | `reserved:<name>` | `name`, `sources` |
 | | `reserved.tenant.add`, `reserved.tenant.remove` | `reserved:<name>` (on the tenant's events) | `name`, `holder`; add: `previous` (the holder before, when another) |
 | | `server.start` | `server` | `version`, `schema`, `digests`, `changed` |

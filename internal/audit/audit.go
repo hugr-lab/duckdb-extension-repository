@@ -260,7 +260,7 @@ func SubjectForm(k Kind) string {
 	case "bundle.reset":
 		return "upstream:<name> or feed:<name>"
 	case "reserved.add":
-		return "version:<name> or reserved:<name>"
+		return "version:<name>, reserved:<name> or sync:community"
 	case "reserved.remove", "reserved.tenant.add", "reserved.tenant.remove":
 		return "reserved:<name>"
 	case "license.sync", "usage.forward":
