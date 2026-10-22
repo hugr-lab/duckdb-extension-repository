@@ -46,7 +46,13 @@ reserved_version        a single row: the list's version, a counter
 
 - A `source` says why a name is reserved: `builtin` (the lists kista shipped until this spec,
   loaded by the migration), `version:<duckdb version>@<commit>`, `upstream:<tenant>/<upstream>`,
-  `bundle:<sha256>` or `admin:<principal>`. A name keeps every source it was given.
+  `bundle:<sha256>`, `community-sync@<commit>` or `admin:<principal>`. A name keeps every source it
+  was given, so the versions of DuckDB that have it as core are known.
+- **One list for every DuckDB version.** Core names differ between DuckDB versions (a release adds
+  some, as v2.0.0 added `legacy_parser`). A name core in any registered version is reserved for
+  every version: a channel serves several versions and its clients upgrade, and DuckDB's core names
+  in practice only grow, so a list per version would complicate every check for little. (Serving
+  is per version anyway: a build is served only for the DuckDB version it was built for.)
 - A name is never removed and never changes kind, except from community to core (a community
   extension DuckDB takes in); a name reserved both ways is core. Every insert is insert-if-absent, so
   core always wins a race. The counter is bumped only when a row is inserted or a kind changes.
@@ -85,10 +91,20 @@ reserved_version        a single row: the list's version, a counter
    administrators and distribution admins read; server administrators write). Before an addition
    the answer names the tenants with live releases under the name, and adding is refused without
    `-force` when there are some (the tenants keep them: below).
-4. **The community list at a pinned commit, on request.** `kista duckdb community-extensions [ref]`
-   prints duckdb/community-extensions' names (at a commit, default its main), to pass to `reserved
-   add`. Nothing refreshes it by itself: a community name is reserved when a server mirrors it or an
-   administrator adds it.
+4. **The community list.** duckdb/community-extensions grows every week, so a server may follow it:
+   - `reserved.community_sync` (off by default): every `interval` (a day by default) the server
+     reads the names of `extensions/*/description.yml` in duckdb/community-extensions' default
+     branch (`url`, github.com by default; a mirror of the repository works) and reserves the new
+     ones as community, `source community-sync@<commit>`. It needs egress to that host only, and
+     is a server's choice: a registry that mirrors community extensions, or a distributor's
+     (Enterest's), turns it on. A failed read is logged and retried at the next interval; it never
+     removes a name.
+   - `kista duckdb community-extensions [ref]` prints the same list (at a commit, default the
+     default branch), for a server that does not sync, to pass to `reserved add`.
+
+   A community name matters less than a core one: DuckDB autoloads only core extensions (its
+   `AUTOLOADABLE_EXTENSIONS`), so a community name is installed only by a client that asks for it
+   from a repository, but a tenant should not be able to pass a build off as a community one.
 
 ### What a reservation changes, and what it does not
 
@@ -199,6 +215,8 @@ suite checks the migration holds them.
   and never takes a tenant's reserved name.
 - The CLI's generator against DuckDB's source at v2.0.0 (`legacy_parser` is core) and at a dev
   commit; a list missing a known core name is refused.
+- The community sync against a fake repository: new names reserved, a failed read changes nothing,
+  off by default.
 - The distribution admins: each call allowed, everything else refused.
 - The e2e: a version registered with its core names; a wide `publish` grant refused on one of them
   and on a tenant-reserved name, and allowed with a grant naming it.
