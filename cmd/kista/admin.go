@@ -94,9 +94,18 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   extension-group description <tenant> <group> <text>
   extension-group remove <tenant> <group>        refused while a grant names it
   extension-group members <tenant> <group> [-add a,b,…] [-remove c,…]   lists them without -add/-remove
-  version add <name> -kind release|dev [-c-api v1.5.6]...   one maximum C API per major
+  version add <name> -kind release|dev [-c-api v1.5.6]... -core-extensions <file|-> [-force]
+                                                           one maximum C API per major; the version's
+                                                           core extensions (kista duckdb core-extensions);
+                                                           -force when tenants have releases under them
   version c-api <name> -c-api v2.0.0                       add a major's maximum C API
+  version core-extensions <name> -core-extensions <file|-> [-force]
+                                                           reserve more of the version's core extensions
   version list
+  reserved add <name>... -kind core|community [-force]   reserve extension names server-wide (spec 0030);
+                                                           -force when tenants have releases under them
+  reserved list [-name <name>]                             the reserved names and their sources
+  reserved remove <name>                                   a name administrators alone reserved
   channel create <tenant>/<channel> -kind signed|passthrough
   channel versions <tenant>/<channel> [-add v]... [-remove v]...
   channel list <tenant>
@@ -318,6 +327,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.tenant(ctx, sub, args[min(2, len(args)):])
 	case "version":
 		return a.version(ctx, sub, args[min(2, len(args)):])
+	case "reserved":
+		return a.reserved(ctx, sub, args[min(2, len(args)):])
 	case "channel":
 		return a.channel(ctx, sub, args[min(2, len(args)):])
 	case "key":
@@ -550,17 +561,31 @@ func (a *adminCmd) version(ctx context.Context, sub string, args []string) error
 	kind := fs.String("kind", "", "")
 	var capis multi
 	fs.Var(&capis, "c-api", "")
+	coreFile := fs.String("core-extensions", "", "")
+	force := fs.Bool("force", false, "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
+	core := tenants.CoreExtensions{Force: *force}
+	if *coreFile != "" {
+		if core.Names, core.Commit, err = readCoreExtensions(*coreFile, a.in); err != nil {
+			return err
+		}
+	}
 	switch {
 	case sub == "add" && len(pos) == 1:
-		v, err := a.svc.Tenants.AddVersion(ctx, a.actor, pos[0], *kind, capis)
+		v, added, err := a.svc.Tenants.AddVersion(ctx, a.actor, pos[0], *kind, capis, core)
 		if err != nil {
 			return err
 		}
-		a.logf("version add %s", v.Name)
+		a.logf("version add %s (core extensions newly reserved: %s)", v.Name, joinOrNone(added))
+	case sub == "core-extensions" && len(pos) == 1 && *coreFile != "":
+		added, err := a.svc.Tenants.AddVersionCore(ctx, a.actor, pos[0], core)
+		if err != nil {
+			return err
+		}
+		a.logf("version core-extensions %s (newly reserved: %s)", pos[0], joinOrNone(added))
 	case sub == "c-api" && len(pos) == 1 && len(capis) == 1:
 		v, err := a.svc.Tenants.AddVersionCAPI(ctx, a.actor, pos[0], capis[0])
 		if err != nil {
@@ -972,6 +997,11 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 		gs, err := a.svc.Auth.ListGrants(ctx, a.actor, pos[0])
 		if err != nil {
 			return err
+		}
+		if *extension != "" {
+			if err := reserved.Sync(ctx, a.svc.Store); err != nil { // spec 0030: the server's list
+				return err
+			}
 		}
 		a.grantTable(gs, *group, *extension)
 	case sub == "remove" && len(pos) == 2:
@@ -2482,4 +2512,51 @@ func (a *adminCmd) bootstrap(ctx context.Context, args []string) error {
 		a.logf("bootstrap %s", a.cfg.Bootstrap.Tenant.Name)
 	}
 	return nil
+}
+
+func (a *adminCmd) reserved(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("reserved", flag.ContinueOnError)
+	kind := fs.String("kind", "", "")
+	force := fs.Bool("force", false, "")
+	name := fs.String("name", "", "")
+	pos, err := flags(fs, args)
+	if err != nil {
+		return err
+	}
+	switch {
+	case sub == "add" && len(pos) > 0 && *name == "":
+		res, err := a.svc.Tenants.Reserve(ctx, a.actor, pos, *kind, *force)
+		for n, ts := range res.Tenants {
+			fmt.Fprintf(a.errw, "kista admin: %s has releases in %s\n", n, strings.Join(ts, ", "))
+		}
+		if err != nil {
+			return err
+		}
+		a.logf("reserved add %s (newly reserved: %s)", *kind, joinOrNone(res.Added))
+	case sub == "list" && len(pos) == 0:
+		ns, err := a.svc.Tenants.ListReserved(ctx, a.actor, *name)
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tKIND\tADDED\tSOURCES", func(w io.Writer) {
+			for _, n := range ns {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", n.Name, n.Kind, n.AddedAt.UTC().Format(time.RFC3339), strings.Join(n.Sources, " "))
+			}
+		})
+	case sub == "remove" && len(pos) == 1:
+		if err := a.svc.Tenants.Unreserve(ctx, a.actor, pos[0]); err != nil {
+			return err
+		}
+		a.logf("reserved remove %s", pos[0])
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+func joinOrNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, " ")
 }

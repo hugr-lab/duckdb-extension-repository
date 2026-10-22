@@ -89,6 +89,7 @@ test('a server administrator: a tenant created, suspended and resumed; a version
   await nav(page, 'DuckDB versions').click()
   await page.getByLabel('Version').fill('v2.1.0')
   await page.getByLabel('Maximum C APIs').fill('v1.5.6')
+  await page.getByLabel('Core extensions').fill('# commit d54cbbe3df17e8e5ce68312f483b4155836112aa (duckdb/duckdb v2.1.0)\njson\nparquet\n')
   await page.getByRole('button', { name: 'Add', exact: true }).click()
   await expect(page.getByRole('cell', { name: 'v2.1.0' })).toBeVisible()
 

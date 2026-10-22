@@ -151,6 +151,10 @@ type statsRequest struct {
 // statsRequestOf reads a query's channel and extension (a channel unknown, or beyond the caller's
 // scope, is 404), and from and to when ranged (days; default the 30 days to `to`, or to today).
 func (h *Handler) statsRequestOf(w http.ResponseWriter, r *http.Request, c caller, ranged bool) (statsRequest, bool) {
+	if err := reserved.Sync(r.Context(), h.o.Store); err != nil { // spec 0030: the scope reads the server's list
+		h.fail(w, err)
+		return statsRequest{}, false
+	}
 	scope, ok := statsScopeOf(c)
 	if !ok {
 		h.refused(w, r, c)

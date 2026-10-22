@@ -17,6 +17,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
@@ -34,7 +35,7 @@ func TestNetworkIntake(t *testing.T) {
 	}
 	en := newEnvWith(t, sqlite, 64<<20, egress.Config{})
 	must(t, func() error {
-		_, err := en.ten.AddVersion(ctx, admin, "v1.4.1", "release", []string{"v1.2.0"})
+		_, _, err := en.ten.AddVersion(ctx, admin, "v1.4.1", "release", []string{"v1.2.0"}, tenants.CoreExtensions{Names: []string{"json"}})
 		return err
 	})
 	must(t, func() error {

@@ -168,7 +168,7 @@ jobs:
       - run: go test -run TestNetworkIntake -v ./internal/upstream/
 
   reserved:
-    # The reserved extension names (spec 0008), aliases and DuckDB's keys (spec 0009) are current for the pins.
+    # DuckDB's extension aliases and keys (spec 0009) are current for the pin (the reserved names are data: spec 0030).
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:

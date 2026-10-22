@@ -62,11 +62,14 @@ func (u BootstrapUpstream) StoreEntries() []store.UpstreamEntry {
 	return out
 }
 
-// BootstrapVersion is a server-wide DuckDB version (version add).
+// BootstrapVersion is a server-wide DuckDB version (version add) with its core extensions (spec
+// 0030; kista duckdb core-extensions), required for a version the server does not have.
 type BootstrapVersion struct {
-	Version string   `yaml:"version" json:"version,omitempty"`
-	Kind    string   `yaml:"kind" json:"kind,omitempty"`
-	CAPIs   []string `yaml:"c_apis" json:"c_apis,omitempty"`
+	Version              string   `yaml:"version" json:"version,omitempty"`
+	Kind                 string   `yaml:"kind" json:"kind,omitempty"`
+	CAPIs                []string `yaml:"c_apis" json:"c_apis,omitempty"`
+	CoreExtensions       []string `yaml:"core_extensions" json:"core_extensions,omitempty"`
+	CoreExtensionsCommit string   `yaml:"core_extensions_commit" json:"core_extensions_commit,omitempty"`
 }
 
 // BootstrapTenant is the tenant (tenant create) and its audiences (tenant audience add).
@@ -212,8 +215,10 @@ func (b BootstrapIssuer) IssuerRecord() (store.Issuer, error) {
 }
 
 var (
-	signerRef = regexp.MustCompile(`^[a-z][a-z0-9-]*:\S+$`)
-	capiRule  = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+	signerRef   = regexp.MustCompile(`^[a-z][a-z0-9-]*:\S+$`)
+	capiRule    = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+	coreExtRule = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	commitRule  = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 )
 
 func validateBootstrap(bad func(string, ...any), c Config) {
@@ -236,6 +241,14 @@ func validateBootstrap(bad func(string, ...any), c Config) {
 			if !capiRule.MatchString(ca) {
 				bad("%s.c_apis: %q is not a version", where, ca)
 			}
+		}
+		for _, n := range v.CoreExtensions {
+			if !coreExtRule.MatchString(n) {
+				bad("%s.core_extensions: %q is not an extension name", where, n)
+			}
+		}
+		if c := v.CoreExtensionsCommit; c != "" && !commitRule.MatchString(c) {
+			bad("%s.core_extensions_commit: %q is not a commit", where, c)
 		}
 	}
 	t := b.Tenant

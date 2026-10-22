@@ -426,7 +426,7 @@ func (s *Snapshot) PullThroughFor(version, platform, name string) string {
 		if !p.Platforms[platform] {
 			continue
 		}
-		if p.Names[name] || p.Any && !s.Listed[name] && reserved.Kind(name) == "" && reserved.Canonical(name) == "" {
+		if p.Names[name] || p.Any && !s.Listed[name] && AnyTakes(p.Kind, name) {
 			return p.UpstreamID
 		}
 	}
@@ -436,4 +436,20 @@ func (s *Snapshot) PullThroughFor(version, platform, name string) string {
 // Miss is a cell a pull-through upstream may fetch (spec 0009 phase 2).
 type Miss struct {
 	TenantID, UpstreamID, DuckDBVersion, Platform, Name string
+}
+
+// AnyTakes reports whether an upstream's "*" entry of kind may take name: never an alias, and no
+// reserved name, except that "*" on DuckDB's community repository takes community names, which its
+// own fetches reserve (spec 0030).
+func AnyTakes(kind, name string) bool {
+	if reserved.Canonical(name) != "" {
+		return false
+	}
+	switch reserved.Kind(name) {
+	case "":
+		return true
+	case reserved.Community:
+		return kind == store.UpstreamCommunity
+	}
+	return false
 }

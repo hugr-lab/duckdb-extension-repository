@@ -103,7 +103,8 @@ flowchart TD
    and writes its marker ([Storage](../storage.md)).
 5. **Check each signing key**: `kista admin -config kista.yaml key check -signer <ref>`
    ([Signing keys](../signing-keys.md)).
-6. **Register DuckDB versions**: `version add` with their C API maxima.
+6. **Register DuckDB versions**: `version add` with their C API maxima and their core extensions
+   (`kista duckdb core-extensions`).
 7. **Create the tenant**: `tenant create`, with `-domain` if it does not live in `default`.
 8. **Create channels**: `channel create` (`signed` or `passthrough`), then `channel versions -add`.
 9. **Bind keys** to each signed channel: `key add <tenant>/<channel> -signer <ref> -active`.

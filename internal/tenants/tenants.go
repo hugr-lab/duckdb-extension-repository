@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
@@ -111,18 +113,86 @@ func (s *Service) SetTenantState(ctx context.Context, a authz.Actor, name, state
 
 // AddVersion registers a DuckDB version (server-wide action). kind is release or dev; capis are
 // the maximum C API version it accepts for each major (spec 0006: v1.5.6 and v2.0.0 on the pin).
-func (s *Service) AddVersion(ctx context.Context, a authz.Actor, name, kind string, capis []string) (store.DuckDBVersion, error) {
+// CoreExtensions are a DuckDB version's core extension names, and the commit of DuckDB's source
+// they were read at ("" when the caller does not say) (spec 0030). Force reserves names tenants have
+// releases under, as an administrator's reservation does (Reserve).
+type CoreExtensions struct {
+	Names  []string
+	Commit string
+	Force  bool
+}
+
+var (
+	coreNameRE   = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	coreCommitRE = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+)
+
+func (c CoreExtensions) check() error {
+	if len(c.Names) == 0 {
+		return fmt.Errorf("%w: core_extensions: the version's core extension names (kista duckdb core-extensions <ref>)", store.ErrInvalid)
+	}
+	for _, n := range c.Names {
+		if !coreNameRE.MatchString(n) {
+			return fmt.Errorf("%w: core_extensions: %q is not an extension name", store.ErrInvalid, n)
+		}
+	}
+	if c.Commit != "" && !coreCommitRE.MatchString(c.Commit) {
+		return fmt.Errorf("%w: core_extensions_commit: %q is not a commit", store.ErrInvalid, c.Commit)
+	}
+	return nil
+}
+
+// reserveCore reserves a version's core names (spec 0030) and returns those that were new.
+func reserveCore(ctx context.Context, tx *store.Tx, actor, version string, c CoreExtensions) ([]string, error) {
+	src := "version:" + version
+	if c.Commit != "" {
+		src += "@" + c.Commit
+	}
+	names := slices.Clone(c.Names)
+	slices.Sort(names)
+	var added []string
+	for _, n := range slices.Compact(names) {
+		changed, err := tx.ReserveName(ctx, n, store.ReservedCore, src)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			added = append(added, n)
+		}
+	}
+	if len(added) > 0 {
+		if err := tx.BumpReservedVersion(ctx); err != nil {
+			return nil, err
+		}
+		if err := tx.Event(ctx, "", actor, "reserved.add", "version:"+version, map[string]any{"version": version, "kind": store.ReservedCore,
+			"names": added, "source": src}); err != nil {
+			return nil, err
+		}
+	}
+	return added, nil
+}
+
+// AddVersion registers a DuckDB version with its C APIs and its core extensions, which it reserves
+// (spec 0030); it returns the names that were not reserved before.
+func (s *Service) AddVersion(ctx context.Context, a authz.Actor, name, kind string, capis []string, core CoreExtensions) (store.DuckDBVersion, []string, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
-		return store.DuckDBVersion{}, err
+		return store.DuckDBVersion{}, nil, err
 	}
 	if kind != "release" && kind != "dev" {
-		return store.DuckDBVersion{}, fmt.Errorf("%w: version kind %q (release or dev)", store.ErrInvalid, kind)
+		return store.DuckDBVersion{}, nil, fmt.Errorf("%w: version kind %q (release or dev)", store.ErrInvalid, kind)
 	}
 	parsed, err := parseCAPIs(capis)
 	if err != nil {
-		return store.DuckDBVersion{}, err
+		return store.DuckDBVersion{}, nil, err
+	}
+	if err := core.check(); err != nil {
+		return store.DuckDBVersion{}, nil, err
+	}
+	if err := s.refuseHeld(ctx, core.Names, store.ReservedCore, core.Force); err != nil {
+		return store.DuckDBVersion{}, nil, err
 	}
 	v := store.DuckDBVersion{Name: name, Kind: kind, CAPIs: parsed}
+	var added []string
 	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		if err := tx.AddDuckDBVersion(ctx, &v); err != nil {
 			return err
@@ -132,9 +202,38 @@ func (s *Service) AddVersion(ctx context.Context, a authz.Actor, name, kind stri
 				return err
 			}
 		}
-		return tx.Event(ctx, "", a.String(), "version.add", "version:"+v.Name, map[string]any{"version": v.Name, "kind": kind, "c_apis": capis})
+		if err := tx.Event(ctx, "", a.String(), "version.add", "version:"+v.Name, map[string]any{"version": v.Name, "kind": kind, "c_apis": capis}); err != nil {
+			return err
+		}
+		added, err = reserveCore(ctx, tx, a.String(), v.Name, core)
+		return err
 	})
-	return v, err
+	return v, added, err
+}
+
+// AddVersionCore reserves more core extensions of a registered version (spec 0030): those its
+// registration did not name, or a version registered before core names were taken. It returns the
+// names that were not reserved before.
+func (s *Service) AddVersionCore(ctx context.Context, a authz.Actor, name string, core CoreExtensions) ([]string, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
+		return nil, err
+	}
+	if err := core.check(); err != nil {
+		return nil, err
+	}
+	if err := s.refuseHeld(ctx, core.Names, store.ReservedCore, core.Force); err != nil {
+		return nil, err
+	}
+	var added []string
+	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		if _, err := tx.GetDuckDBVersion(ctx, name); err != nil {
+			return err
+		}
+		var err error
+		added, err = reserveCore(ctx, tx, a.String(), name, core)
+		return err
+	})
+	return added, err
 }
 
 func parseCAPIs(capis []string) ([]store.CAPI, error) {

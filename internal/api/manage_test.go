@@ -32,6 +32,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -282,13 +283,17 @@ func TestManagementAccess(t *testing.T) {
 		{"GET", T + "/issuers/corp", "", ok(200, tenantAdmins...), nil},
 		{"GET", T + "/grants", "", ok(200, tenantAdmins...), nil},
 		{"POST", T + "/audiences", `{"audience":"api://acme"}`, ok(200, "server admin"), nil},
-		{"POST", "/api/v1/duckdb-versions", `{"name":"v2.1.0","kind":"release","c_api_maxima":["v1.5.6"]}`, ok(201, "server admin"), nil},
+		{"POST", "/api/v1/duckdb-versions", `{"name":"v2.1.0","kind":"release","c_api_maxima":["v1.5.6"],"core_extensions":["json"]}`, ok(201, "server admin"), nil},
 		{"POST", T + "/grants", `{"principal":"subject:corp|zed","verbs":["install"]}`, ok(201, tenantAdmins...), nil},
 		{"GET", "/api/v1/duckdb-versions", "", ok(200, append(everyone, "other admin")...), nil},
 		{"GET", "/api/v1/duckdb-versions/v2.0.0", "", ok(200, append(everyone, "other admin")...), nil},
 		{"GET", T + "/channels/prod/extensions", "", ok(200, everyone...), nil},
 		{"GET", T + "/grants/" + grantID, "", ok(200, tenantAdmins...), nil},
 		{"POST", "/api/v1/duckdb-versions/v2.0.0/c-apis", `{"c_api":"v3.0.0"}`, ok(200, "server admin"), nil},
+		{"POST", "/api/v1/duckdb-versions/v2.0.0/core-extensions", `{"core_extensions":["json"]}`, ok(200, "server admin"), nil},
+		{"GET", "/api/v1/reserved-names?name=json", "", ok(200, "server admin"), nil},
+		{"POST", "/api/v1/reserved-names", `{"names":["kista_mgmt_x"],"kind":"community"}`, ok(200, "server admin"), nil},
+		{"DELETE", "/api/v1/reserved-names/kista_mgmt_x", "", ok(204, "server admin"), nil},
 		{"POST", T + "/audiences/remove", `{"audience":"api://acme"}`, ok(200, "server admin"), nil},
 		{"POST", "/api/v1/tenants/other/suspend", "", ok(200, "server admin"), []string{"If-Match", `"v1"`}},
 		{"PUT", T + "/holder", `{"holder_id":"org-1"}`, ok(200, "server admin"), []string{"If-Match", "*"}},
@@ -674,5 +679,72 @@ func TestManagementDetails(t *testing.T) {
 	close(s.gate)
 	if st := <-done; st != 201 {
 		t.Errorf("the first issuer add: %d", st)
+	}
+}
+
+// TestReservedNamesAPI is spec 0030 over the API: a version's core extensions, and an
+// administrator's names, refused without force over tenants' releases.
+func TestReservedNamesAPI(t *testing.T) {
+	t.Cleanup(reserved.SetForTest(reserved.Seed(), 0)) // the process's view follows this test's store
+	m := newMgmt(t)
+	tok := m.toks["server admin"]
+	r := m.call(t, "POST", "/api/v1/duckdb-versions", tok, `{"name":"v2.2.0","kind":"release","c_api_maxima":["v1.5.6"]}`)
+	if r.status != 400 || !strings.Contains(string(r.body), "core_extensions") {
+		t.Fatalf("a version without its core extensions: %d %s", r.status, r.body)
+	}
+	r = m.call(t, "POST", "/api/v1/duckdb-versions", tok,
+		`{"name":"v2.2.0","kind":"release","c_api_maxima":["v1.5.6"],"core_extensions":["json","kista_new_core"],"core_extensions_commit":"abcdef0"}`)
+	if r.status != 201 || !strings.Contains(string(r.body), `"core_extensions_added":["kista_new_core"]`) {
+		t.Fatalf("a version: %d %s", r.status, r.body)
+	}
+	if r = m.call(t, "POST", "/api/v1/duckdb-versions/v9.9.9/core-extensions", tok, `{"core_extensions":["json"]}`); r.status != 404 {
+		t.Fatalf("an unknown version: %d %s", r.status, r.body)
+	}
+	r = m.call(t, "GET", "/api/v1/reserved-names?name=kista_new_core", tok, "")
+	if r.status != 200 || !strings.Contains(string(r.body), `"kind":"core"`) || !strings.Contains(string(r.body), `"version:v2.2.0@abcdef0"`) {
+		t.Fatalf("list: %d %s", r.status, r.body)
+	}
+	// tresor has releases in acme: refused without force, and the tenants named
+	r = m.call(t, "POST", "/api/v1/reserved-names", tok, `{"names":["tresor"],"kind":"community"}`)
+	if r.status != 409 || !strings.Contains(string(r.body), "tresor (acme)") {
+		t.Fatalf("over releases: %d %s", r.status, r.body)
+	}
+	r = m.call(t, "POST", "/api/v1/reserved-names", tok, `{"names":["tresor"],"kind":"community","force":true}`)
+	if r.status != 200 || !strings.Contains(string(r.body), `"added":["tresor"]`) || !strings.Contains(string(r.body), `"tresor":["acme"]`) {
+		t.Fatalf("forced: %d %s", r.status, r.body)
+	}
+	// a reservation that changes nothing needs no force
+	if r = m.call(t, "POST", "/api/v1/reserved-names", tok, `{"names":["tresor"],"kind":"community"}`); r.status != 200 ||
+		!strings.Contains(string(r.body), `"added":[]`) {
+		t.Fatalf("again: %d %s", r.status, r.body)
+	}
+	// a version's core extensions over tenants' releases: refused unless forced, as an administrator's
+	if r = m.call(t, "POST", "/api/v1/duckdb-versions/v2.2.0/core-extensions", tok, `{"core_extensions":["acl"]}`); r.status != 409 ||
+		!strings.Contains(string(r.body), "acl (acme)") {
+		t.Fatalf("a version's name over releases: %d %s", r.status, r.body)
+	}
+	if r = m.call(t, "POST", "/api/v1/duckdb-versions", tok, `{"name":"v2.3.0","kind":"release","core_extensions":["acl"]}`); r.status != 409 {
+		t.Fatalf("a new version's name over releases: %d %s", r.status, r.body)
+	}
+	if r = m.call(t, "POST", "/api/v1/duckdb-versions", tok, `{"name":"v2.3.0","kind":"release","core_extensions":["json"]}`); r.status != 201 ||
+		!strings.Contains(string(r.body), `"core_extensions_added":[]`) {
+		t.Fatalf("a version bringing no new name: %d %s", r.status, r.body)
+	}
+	if r = m.call(t, "POST", "/api/v1/duckdb-versions/v2.2.0/core-extensions", tok, `{"core_extensions":["acl"],"force":true}`); r.status != 200 ||
+		!strings.Contains(string(r.body), `"core_extensions_added":["acl"]`) {
+		t.Fatalf("forced: %d %s", r.status, r.body)
+	}
+	if r = m.call(t, "POST", "/api/v1/reserved-names", tok, `{"names":["Bad"],"kind":"core"}`); r.status != 400 {
+		t.Fatalf("a bad name: %d", r.status)
+	}
+	// a name DuckDB brought stays; an administrator's goes
+	if r = m.call(t, "DELETE", "/api/v1/reserved-names/kista_new_core", tok, ""); r.status != 409 {
+		t.Fatalf("a version's name removed: %d %s", r.status, r.body)
+	}
+	if r = m.call(t, "DELETE", "/api/v1/reserved-names/tresor", tok, ""); r.status != 204 {
+		t.Fatalf("an administrator's name: %d %s", r.status, r.body)
+	}
+	if r = m.call(t, "DELETE", "/api/v1/reserved-names/tresor", tok, ""); r.status != 404 {
+		t.Fatalf("removed twice: %d", r.status)
 	}
 }

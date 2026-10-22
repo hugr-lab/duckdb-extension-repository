@@ -62,7 +62,7 @@ func TestAdminLicense(t *testing.T) {
 	}
 	run(0, "", "migrate")
 	run(0, "", "tenant", "create", "acme")
-	run(0, "", "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6")
+	run(0, "", "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6", "-core-extensions", coreFile(t, "json"))
 	run(0, "", "channel", "create", "acme/prod", "-kind", "signed")
 	run(0, "", "channel", "versions", "acme/prod", "-add", "v2.0.0")
 	run(0, "", "key", "add", "acme/prod", "-signer", "file:a.pem", "-active")

@@ -60,7 +60,7 @@ make build
 | `console` | `npm ci` and `npm run build` in `web/console` |
 | `console-test` | The console's type check, unit tests and license check |
 | `console-e2e` | The console end to end with Keycloak and Playwright |
-| `reserved` | Regenerate the reserved extension names, aliases and DuckDB's keys from the pins |
+| `reserved` | Regenerate DuckDB's extension aliases and keys from the pin (the reserved names are the server's data: `kista duckdb core-extensions`) |
 | `docs` | Build this site as CI does (`npm ci` and `docusaurus build` in `website`) |
 
 ## Tests
@@ -164,7 +164,7 @@ containers (`host.docker.internal:56432`; on Linux, start the containers with
 | `console` | type check, unit tests, licenses, `npm audit`, build |
 | `console-e2e` | `make console`, Playwright's Chromium, `make console-e2e` |
 | `network` | Real DuckDB core and community files through the intake (`KISTA_TEST_NETWORK=1`); depends on DuckDB's servers, so it does not block |
-| `reserved` | `make reserved`, then fails if the committed lists changed |
+| `reserved` | `make reserved`, then fails if the committed aliases or keys changed |
 | `e2e` (own workflow) | DuckDB at the pin against kista, on pull requests and pushes to `main` that touch `internal/`, `cmd/`, `e2e/`, `go.mod`, `go.sum` or the `Makefile`, or on demand |
 | `docs-build` (own workflow) | This site, on changes under `website/` |
 | `air-gapped` (own workflow) | `deploy/air-gapped/test.sh`: the [Air-gapped sites](deployment/air-gapped.md) page's shell blocks, the site's in a container on an internal Docker network, against the last release and kista built from the commit; on changes to the page, the test, `internal/`, `cmd/`, `go.mod` or `go.sum`, and weekly |

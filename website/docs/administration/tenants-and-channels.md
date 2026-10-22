@@ -25,12 +25,15 @@ tenant or channel exists; the list of tenants is not public.
 ## DuckDB versions
 
 A channel serves an explicit list of DuckDB versions, chosen from the server-wide list. Register
-each version once, with the highest C API version it accepts for each C API major:
+each version once, with the highest C API version it accepts for each C API major, and its core
+extensions:
 
 ```bash
-ka version add v2.0.0 -kind release -c-api v1.5.6 -c-api v2.0.0
-ka version add eb0d9df48e -kind dev            # a 10-character source id of a dev build
+kista duckdb core-extensions v2.0.0 >core-v2.0.0.txt
+ka version add v2.0.0 -kind release -c-api v1.5.6 -c-api v2.0.0 -core-extensions core-v2.0.0.txt
+kista duckdb core-extensions eb0d9df48e -trust-commit | ka version add eb0d9df48e -kind dev -core-extensions -
 ka version c-api eb0d9df48e -c-api v2.0.0      # add a major later; an existing one never changes
+ka version core-extensions v2.0.0 -core-extensions more.txt   # reserve names the list missed
 ka version list
 ```
 
@@ -39,6 +42,24 @@ ka version list
   `-kind dev` for source ids (kista checks the form of the name, not that it matches the kind).
 - C API maxima are facts about the engine. They decide which `c_struct` builds a version serves.
   A version without them serves no `c_struct` build.
+- The core extensions are required. Each becomes a reserved core name (with the source
+  `version:<name>@<commit>`), so no grant but one naming the extension publishes under it
+  ([Reserved names](../publishing.md#reserved-names)). `kista duckdb core-extensions <tag or source
+  id>` prints them, read from DuckDB's sources at that ref: the in-tree extensions, the ones
+  DuckDB builds in or autoloads, and the out-of-tree ones its `.github/config` loads. It fails when
+  one of those sources reads empty, or the list lacks `icu`, `json` or `parquet`: DuckDB's sources
+  changed layout, and this kista cannot read them. A source id needs `-trust-commit`: GitHub serves
+  any fork's commit under DuckDB's name, so only you can say the commit is DuckDB's. Versions
+  registered before kista took core extensions keep the names kista knew.
+- A name tenants have releases under (not yanked) is refused unless you pass `-force` (API:
+  `"force": true`), as for an administrator's reservation: the releases stay, and only grants naming
+  the extension reach the name from then on.
+
+### A new DuckDB version
+
+1. `kista duckdb core-extensions <tag>`, then `version add` with it (and its C API maxima).
+2. `channel versions <tenant>/<channel> -add <tag>` for each channel that serves it.
+3. Mirror or publish the version's builds; the core extensions it brought are reserved from step 1.
 
 Only server administrators add versions (CLI, `POST /api/v1/duckdb-versions`, or the console's
 server view).
@@ -280,7 +301,7 @@ Rules:
 ## A complete example
 
 ```bash
-ka version add v2.0.0 -kind release -c-api v1.5.6 -c-api v2.0.0
+kista duckdb core-extensions v2.0.0 | ka version add v2.0.0 -kind release -c-api v1.5.6 -c-api v2.0.0 -core-extensions -
 ka tenant create acme -display-name "Acme Corp"
 ka channel create acme/prod -kind signed
 ka channel versions acme/prod -add v2.0.0

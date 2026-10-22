@@ -2,13 +2,17 @@ package release_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/symbols/symtest"
 )
@@ -313,6 +317,70 @@ func TestBlockRace(t *testing.T) {
 					}
 				}
 			}
+		}
+	})
+}
+
+// wideGrant allows everything but a reserved name: a publish grant that names no extension.
+type wideGrant struct{}
+
+func (wideGrant) Allow(_ context.Context, _ authz.Actor, _ authz.Verb, r authz.Resource) error {
+	if r.Reserved {
+		return authz.ErrDenied
+	}
+	return nil
+}
+
+// reserveAtEOF reserves a name in the store when its body has been read: after the caller was
+// authorized, before the release is inserted, as another replica's reservation would land.
+type reserveAtEOF struct {
+	r    io.Reader
+	do   func()
+	once sync.Once
+}
+
+func (x *reserveAtEOF) Read(p []byte) (int, error) {
+	n, err := x.r.Read(p)
+	if err == io.EOF {
+		x.once.Do(x.do)
+	}
+	return n, err
+}
+
+// TestPublishRecheckReserved is spec 0030's re-check under the locks: a name the server reserved
+// while a publication's body was read is refused to a grant that does not name it.
+func TestPublishRecheckReserved(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
+		svc := *en.rel
+		svc.Authz = wideGrant{}
+		pub := func(name string, then func()) error {
+			file := built(t, cpp("1.0"), name+"_duckdb_cpp_init")
+			body := &reserveAtEOF{r: bytes.NewReader(file), do: then}
+			_, _, err := svc.Add(ctx, admin, "acme", "prod", body, publish(name, "1.0", "linux_amd64"))
+			return err
+		}
+		if err := pub("kista_free", func() {}); err != nil {
+			t.Fatalf("an unreserved name: %v", err)
+		}
+		if err := pub("legacy_parser", func() {}); !errors.Is(err, authz.ErrDenied) {
+			t.Fatalf("a reserved name: %v", err)
+		}
+		err := pub("kista_late", func() {
+			must(t, func() error {
+				return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+					if _, err := tx.ReserveName(ctx, "kista_late", store.ReservedCommunity, "admin:os:1:t"); err != nil {
+						return err
+					}
+					return tx.BumpReservedVersion(ctx)
+				})
+			})
+		})
+		if !errors.Is(err, authz.ErrDenied) {
+			t.Fatalf("a name reserved while the body was read: %v", err)
+		}
+		if rs, _ := en.rel.List(ctx, admin, "acme", "prod", "kista_late"); len(rs) != 0 {
+			t.Fatalf("released: %+v", rs)
 		}
 	})
 }

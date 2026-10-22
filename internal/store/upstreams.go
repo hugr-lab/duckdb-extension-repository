@@ -752,6 +752,7 @@ func (t *Tx) TenantChannelIDs(ctx context.Context, tenantID string) ([]string, e
 // which cells a miss may offer, decided without the database (it is part of the channel's snapshot).
 type PullThrough struct {
 	UpstreamID, TenantID string
+	Kind                 string // the upstream's (spec 0030: "*" on community takes community names)
 	Platforms, Names     map[string]bool
 	Any                  bool // "*": any name no other upstream of the channel lists, and no reserved name
 }
@@ -795,7 +796,7 @@ WHERE u.channel_id = ?`, channelID)
 			if err := tx.upstreamChildren(ctx, &us[i]); err != nil {
 				return err
 			}
-			p := PullThrough{UpstreamID: us[i].ID, TenantID: us[i].TenantID, Platforms: map[string]bool{}, Names: map[string]bool{}}
+			p := PullThrough{UpstreamID: us[i].ID, TenantID: us[i].TenantID, Kind: us[i].Kind, Platforms: map[string]bool{}, Names: map[string]bool{}}
 			for _, x := range us[i].Platforms {
 				p.Platforms[x] = true
 			}

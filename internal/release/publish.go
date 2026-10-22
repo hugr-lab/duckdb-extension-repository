@@ -44,6 +44,9 @@ func (s *Service) Promote(ctx context.Context, a authz.Actor, tenant, channel, n
 }
 
 func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, name string, o PromoteOptions) ([]store.Release, bool, error) {
+	if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030: a name reserved since is seen
+		return nil, false, err
+	}
 	res := func(ch string) authz.Resource {
 		return authz.Resource{Tenant: tenant, Channel: ch, Extension: name, Reserved: reserved.Kind(name) != ""}
 	}

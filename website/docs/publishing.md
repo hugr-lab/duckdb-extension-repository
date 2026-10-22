@@ -78,10 +78,17 @@ A release is `public` (served to anyone) or `private` (served only to a token ho
 
 ## Reserved names
 
-Names DuckDB owns are **reserved**: the core extensions of the pinned DuckDB and the community
-extensions at a pinned commit, generated into `internal/reserved` (`core.txt`, `community.txt`,
-`extra.txt`). Names an upstream of the tenant provides are reserved in that tenant too (see
-[Upstreams](upstreams.md)).
+Names DuckDB owns are **reserved**. The server keeps the list as data, and it only grows:
+
+- the core extensions of every registered DuckDB version, given when the version is registered
+  ([DuckDB versions](administration/tenants-and-channels.md#duckdb-versions));
+- the names a `duckdb-core` or `duckdb-community` upstream mirrors, learned as it mirrors them
+  ([Upstreams](upstreams.md));
+- the names a server administrator adds (`kista admin reserved add`, below);
+- the core and community names kista knew before the list was data (its seed).
+
+A name core in any version is core; a community name may become core, never the other way. Names
+an upstream of the tenant provides are reserved in that tenant too (see [Upstreams](upstreams.md)).
 
 For `publish` and `promote`, a reserved name is reached only by a grant that **names the
 extension**. A tenant-wide or channel-wide grant, or a grant on an extension group, never reaches

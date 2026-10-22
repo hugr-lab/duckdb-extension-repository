@@ -30,6 +30,9 @@ type Ingest struct {
 	KeySource string
 	// Provenance makes the release's provenance from the fingerprint of the key that verified.
 	Provenance func(key string) string
+	// ReserveKind reserves the name (core or community) with ReserveSource when the release is
+	// inserted: a build mirrored from DuckDB's own repositories brings its name (spec 0030). "": none.
+	ReserveKind, ReserveSource string
 }
 
 // Ingested is an intake's result: the release (new or the slot's), whether it existed, and the
@@ -81,7 +84,8 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		}
 		return res, err
 	}
-	it := item{b: b, visibility: in.Visibility, origin: store.OriginUpstream, originSignature: f.Signature}
+	it := item{b: b, visibility: in.Visibility, origin: store.OriginUpstream, originSignature: f.Signature,
+		reserveKind: in.ReserveKind, reserveSource: in.ReserveSource}
 	if in.Provenance != nil {
 		it.provenance = in.Provenance(key)
 	}

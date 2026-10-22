@@ -155,6 +155,31 @@ signature and exits `0`, or exits `1` with
 The body hash is the value the API and `kista admin release list` show, and the one `block` and
 `attachment` commands take.
 
+## kista duckdb
+
+The names DuckDB owns, read from its sources (spec 0030). No configuration, no database.
+
+```text
+kista duckdb core-extensions <tag> | <source id> -trust-commit | -dir <checkout> [-commit <sha>]
+kista duckdb community-extensions [ref] | -dir <checkout>
+```
+
+- `core-extensions` prints a DuckDB version's core extensions, the list `version add
+  -core-extensions` takes: the extensions in its `extension/` directory, the ones it builds in
+  (`internal_extensions[]`), knows functions, settings and types of, or autoloads
+  (`extension_entries.hpp`), and the out-of-tree ones its `.github/config` loads. It streams the
+  source tarball at the ref from `codeload.github.com` (a release tag, or a dev build's source id),
+  keeps the few files it reads in memory and never runs anything it fetched. The first line, `#
+  commit <sha> (...)`, names the commit read; `version add` records it. With `-dir` it reads a
+  checkout instead (`-commit` names its commit). A source id or other commit needs
+  `-trust-commit`: GitHub serves any fork's commit under `duckdb/duckdb`, so the operator vouches
+  for it; a release tag is DuckDB's own. It fails when a source it reads comes out empty, or the
+  list lacks `icu`, `json` or `parquet`: DuckDB's sources changed layout. `version add` refuses
+  the community list as a version's core extensions.
+- `community-extensions` prints duckdb/community-extensions' extension names (each
+  `extensions/<dir>` and the name its `description.yml` gives), at a ref (default `main`), for
+  `reserved add -kind community`.
+
 ## kista bundle
 
 Bundle keys and bundles for air-gapped sites (spec 0014). No configuration, no database.
@@ -223,15 +248,28 @@ DuckDB versions are server-wide. A channel serves a subset of them.
 
 | Command | What it does |
 | --- | --- |
-| `version add <name> -kind release` or `-kind dev` `[-c-api v1.5.6]...` | registers a version: a release tag (`v2.0.0`) or a 10-character source id (`eb0d9df48e`); one `-c-api` per C API major, the highest version of that major the engine accepts |
+| `version add <name> -kind release` or `-kind dev` `[-c-api v1.5.6]... -core-extensions <file or -> [-force]` | registers a version: a release tag (`v2.0.0`) or a 10-character source id (`eb0d9df48e`); one `-c-api` per C API major, the highest version of that major the engine accepts; its core extensions as [`kista duckdb core-extensions`](#kista-duckdb) prints them (required), each reserved as core; a name tenants have releases under needs `-force`, as for `reserved add`; logs the names that were not reserved before |
 | `version c-api <name> -c-api <v>` | adds the maximum for a major the version does not have yet; an existing major is never changed |
+| `version core-extensions <name> -core-extensions <file or -> [-force]` | reserves more core extensions of a registered version |
 | `version list` | `NAME`, `KIND`, `C API` |
 
 Without C API data a version serves no `c_struct` build. Example:
 
 ```bash
-kista admin -config kista.yaml version add v2.0.0 -kind release -c-api v1.5.6 -c-api v2.0.0
+kista duckdb core-extensions v2.0.0 >core.txt
+kista admin -config kista.yaml version add v2.0.0 -kind release -c-api v1.5.6 -c-api v2.0.0 -core-extensions core.txt
 ```
+
+## Reserved names
+
+The server's reserved extension names (spec 0030; [Reserved
+names](../publishing.md#reserved-names)). Server administrators only.
+
+| Command | What it does |
+| --- | --- |
+| `reserved add <name>... -kind core` or `-kind community` `[-force]` | reserves names, with the source `admin:<actor>`; a name that becomes reserved (or community that becomes core) with releases that are not yanked or purged in some tenant is refused, naming the tenants, unless `-force` (the releases stay, and only grants naming the extension reach the name from then on) |
+| `reserved list [-name <name>]` | `NAME`, `KIND`, `ADDED`, `SOURCES` |
+| `reserved remove <name>` | removes a name only administrators reserved; a name a version, an upstream or the seed brought stays |
 
 ## Tenants
 

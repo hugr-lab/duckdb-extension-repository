@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 )
 
 // Build ABIs, release states and visibilities (spec 0006).
@@ -493,6 +495,9 @@ func (s *Store) Signature(ctx context.Context, releaseID, keyID string) ([]byte,
 type ServeChannel struct {
 	Tenant  Tenant
 	Channel Channel
+	// ReservedVersion is the reserved names' version (spec 0030), read with the channel's row: a
+	// change of it means the names changed.
+	ReservedVersion int64
 }
 
 // GetServeChannel reads a tenant and channel by name.
@@ -501,10 +506,16 @@ func (s *Store) GetServeChannel(ctx context.Context, tenant, channel string) (Se
 	var serving sql.NullString
 	t, c := &sc.Tenant, &sc.Channel
 	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT t.id, t.name, t.state, t.storage_domain, t.auth_version, c.id, c.tenant_id,
-c.name, c.kind, c.version, c.serving_key_id, c.release_version FROM channels c JOIN tenants t ON t.id = c.tenant_id
+c.name, c.kind, c.version, c.serving_key_id, c.release_version, (SELECT version FROM reserved_version WHERE id = 1)
+FROM channels c JOIN tenants t ON t.id = c.tenant_id
 WHERE t.name = ? AND c.name = ? AND t.deleting_at IS NULL`), tenant, channel).Scan(&t.ID, &t.Name, &t.State, &t.StorageDomain, &t.AuthVersion, &c.ID, &c.TenantID,
-		&c.Name, &c.Kind, &c.Version, &serving, &c.ReleaseVersion)
+		&c.Name, &c.Kind, &c.Version, &serving, &c.ReleaseVersion, &sc.ReservedVersion)
 	c.ServingKeyID = serving.String
+	if err == nil {
+		// spec 0030: the process's view of the reserved names follows the server's list, so what is
+		// decided on this channel (shadows, pull-through) sees a name reserved since
+		err = reserved.Ensure(ctx, s, sc.ReservedVersion)
+	}
 	return sc, s.closedOr(ctx, tenant, notFound(err, "channel "+tenant+"/"+channel))
 }
 

@@ -126,12 +126,19 @@ extension version: 1.2.0
 ```
 
 The DuckDB version is the release tag (`v2.0.0`) for a release, or the source id (for example
-`eb0d9df48e`) for a development build. Declare it and add it to the channel:
+`eb0d9df48e`) for a development build. Declare it with its core extensions, whose names become
+reserved ([Reserved names](publishing.md#reserved-names)), and add it to the channel:
 
 ```bash
-ka version add v2.0.0 -kind release          # -kind dev for a source id
+kista duckdb core-extensions v2.0.0 >core-v2.0.0.txt   # reads DuckDB's sources at the tag from GitHub
+ka version add v2.0.0 -kind release -core-extensions core-v2.0.0.txt   # -kind dev for a source id
 ka channel versions acme/prod -add v2.0.0
 ```
+
+`kista duckdb core-extensions` needs no configuration: it streams DuckDB's source tarball at the tag
+from `codeload.github.com` and reads the names from its text (a source id needs `-trust-commit`:
+GitHub serves forks' commits under DuckDB's name too). Without GitHub, run it
+on a DuckDB checkout with `-dir <checkout>`, or bring the file from a machine that has it.
 
 An extension built against the C API (`abi: C_STRUCT`) shows a `c api version` instead. It is served
 under every DuckDB version of the channel that accepts that C API, so declare the maximum C API

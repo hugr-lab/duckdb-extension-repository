@@ -48,7 +48,7 @@ func TestAdminBootstrap(t *testing.T) {
 			"signers: { file_dir: " + keys + " }\nserve: { public_url: 'https://kista.example' }\n" +
 			"egress: { ca_file: " + caFile + ", allow: [{ cidr: 127.0.0.1/32, ports: [" + strconv.Itoa(idpPort) + "] }] }\n" +
 			"bootstrap:\n" +
-			"  versions: [ { version: v1.4.1, kind: release, c_apis: [v1.2.0] } ]\n" +
+			"  versions: [ { version: v1.4.1, kind: release, c_apis: [v1.2.0], core_extensions: [json, parquet] } ]\n" +
 			"  tenant: { name: acme, display_name: " + display + " }\n" +
 			"  channels: [ { name: prod, kind: signed, versions: [v1.4.1], key: 'file:a.pem' } ]\n" +
 			"  issuer: { name: idp, url: '" + idp.URL + "', jwks_uri: '" + idp.URL + "/keys', required_claims: { tid: t1 } }\n" +

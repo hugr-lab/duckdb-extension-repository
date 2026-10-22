@@ -72,9 +72,9 @@ func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 var writes = map[string]map[string][]audit.Kind{
 	"tenants.Service": {
 		"CreateTenant": {"tenant.create"}, "SetTenantState": {"tenant.suspend", "tenant.resume"}, "SetTenantHolder": {"tenant.holder"}, "Delete": {"tenant.delete"}, "Show": nil,
-		"AddVersion": {"version.add"}, "AddVersionCAPI": {"version.c_apis"}, "CreateChannel": {"channel.create"},
-		"SetChannelVersions": {"channel.versions"},
-		"ListTenants":        nil, "GetTenant": nil, "ListVersions": nil, "ListChannels": nil, "ChannelVersions": nil,
+		"AddVersion": {"version.add"}, "AddVersionCAPI": {"version.c_apis"}, "AddVersionCore": {"reserved.add"}, "CreateChannel": {"channel.create"},
+		"SetChannelVersions": {"channel.versions"}, "Reserve": {"reserved.add"}, "Unreserve": {"reserved.remove"}, "ListReserved": nil,
+		"ListTenants": nil, "GetTenant": nil, "ListVersions": nil, "ListChannels": nil, "ChannelVersions": nil,
 	},
 	"tenants.AuthAdmin": {
 		"AddIssuer": {"issuer.add"}, "RemoveIssuer": {"issuer.remove"}, "AddAudience": {"audience.add"},
@@ -291,10 +291,19 @@ func TestCoverage(t *testing.T) {
 
 	en.expect("tenants.Service.CreateTenant", do(func() error { _, err := en.ten.CreateTenant(rctx, admin, "acme", "Acme", "", ""); return err }), "tenant.create")
 	en.expect("tenants.Service.AddVersion", do(func() error {
-		_, err := en.ten.AddVersion(rctx, admin, "v2.0.0", "release", []string{"v1.5.6"})
+		_, _, err := en.ten.AddVersion(rctx, admin, "v2.0.0", "release", []string{"v1.5.6"}, tenants.CoreExtensions{Names: []string{"json"}})
 		return err
 	}), "version.add")
 	en.expect("tenants.Service.AddVersionCAPI", do(func() error { _, err := en.ten.AddVersionCAPI(rctx, admin, "v2.0.0", "v2.0.0"); return err }), "version.c_apis")
+	en.expect("tenants.Service.Reserve", do(func() error {
+		_, err := en.ten.Reserve(rctx, admin, []string{"kista_audit_admin"}, store.ReservedCommunity, false)
+		return err
+	}), "reserved.add")
+	en.expect("tenants.Service.Unreserve", do(func() error { return en.ten.Unreserve(rctx, admin, "kista_audit_admin") }), "reserved.remove")
+	en.expect("tenants.Service.AddVersionCore", do(func() error {
+		_, err := en.ten.AddVersionCore(rctx, admin, "v2.0.0", tenants.CoreExtensions{Names: []string{"kista_audit_core"}})
+		return err
+	}), "reserved.add")
 	for _, ch := range []string{"prod", "staging"} {
 		en.expect("tenants.Service.CreateChannel", do(func() error { _, err := en.ten.CreateChannel(rctx, admin, "acme", ch, store.ChannelSigned); return err }),
 			"channel.create")
@@ -582,7 +591,8 @@ func TestCoverage(t *testing.T) {
 	}), "attachment.remove")
 	// spec 0019, the race: a deletion that starts after an operation's checks, before its first
 	// transaction; the operation is refused as a deleting tenant, or writes nothing
-	serverWide := map[string]bool{"tenants.Service.CreateTenant": true, "tenants.Service.AddVersion": true, "tenants.Service.AddVersionCAPI": true}
+	serverWide := map[string]bool{"tenants.Service.CreateTenant": true, "tenants.Service.AddVersion": true, "tenants.Service.AddVersionCAPI": true,
+		"tenants.Service.AddVersionCore": true, "tenants.Service.Reserve": true, "tenants.Service.Unreserve": true}
 	tid := en.tenantID()
 	chans, err := st.ListChannels(ctx, "acme")
 	if err != nil {

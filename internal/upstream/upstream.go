@@ -128,6 +128,9 @@ func (s *Service) tenant(ctx context.Context, a authz.Actor, name string) (store
 // Add creates an upstream (spec 0009). A repository's .well-known file must list a pinned key; a
 // name with a live replacement in the channel, or on another upstream of the channel, is refused.
 func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec) (store.Upstream, error) {
+	if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030: the entries are checked against the server's list
+		return store.Upstream{}, err
+	}
 	return s.add(ctx, a, tenant, sp)
 }
 
@@ -599,6 +602,9 @@ func (s *Service) Set(ctx context.Context, a authz.Actor, tenant, name, visibili
 // PutEntry adds an allowlist entry, or replaces an existing one's versions and allow_reserved; it
 // reports whether the entry is new.
 func (s *Service) PutEntry(ctx context.Context, a authz.Actor, tenant, name string, e store.UpstreamEntry) (bool, error) {
+	if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030
+		return false, err
+	}
 	created := false
 	_, err := s.change(ctx, a, tenant, name, "extension.put", map[string]any{"value": e.Name, "versions": e.Versions,
 		"allow_reserved": e.AllowReserved}, func(tx *store.Tx, u *store.Upstream) error {
