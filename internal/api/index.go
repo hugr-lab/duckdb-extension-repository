@@ -319,7 +319,9 @@ type resolver struct {
 func (h *Handler) indexResolver(w http.ResponseWriter, r *http.Request, c caller, snap *release.Snapshot, name string) (*resolver, bool) {
 	rs := newResolver(snap, c.view(snap.Channel.ID))
 	rs.blocked = snap.Blocked
-	res := authz.Resource{Tenant: c.tenant.Name, Channel: snap.Channel.Name, Extension: name, Reserved: reserved.Kind(name) != ""}
+	// spec 0030: DuckDB's names, the tenant's, its upstreams' (the snapshot holds the last two)
+	res := authz.Resource{Tenant: c.tenant.Name, Channel: snap.Channel.Name, Extension: name,
+		Reserved: reserved.Kind(name) != "" || snap.TenantReserved[name] || snap.Provided[name]}
 	held := c.held()
 	rs.c, rs.admin = c, c.admin || c.principals != nil && authz.Covers(held, store.VerbAdmin, res)
 	rs.provenance = rs.admin

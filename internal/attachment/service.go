@@ -12,7 +12,6 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -87,10 +86,11 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant, ext string,
 		return store.Attachment{}, err
 	}
 	if !admin {
-		if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030
+		kind, err := s.Store.ReservedFor(ctx, tenant, ext) // spec 0030: DuckDB's, the tenant's, its upstreams'
+		if err != nil {
 			return store.Attachment{}, err
 		}
-		ok, err := s.allowed(ctx, a, authz.VerbPublish, authz.Resource{Tenant: tenant, Extension: ext, Reserved: reserved.Kind(ext) != ""})
+		ok, err := s.allowed(ctx, a, authz.VerbPublish, authz.Resource{Tenant: tenant, Extension: ext, Reserved: kind != ""})
 		if err != nil {
 			return store.Attachment{}, err
 		}

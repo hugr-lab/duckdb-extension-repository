@@ -434,6 +434,7 @@ role. See [Access](access.md).
 | `auth.server_egress_allow` | list | none | Like `egress.allow` (`cidr`, `ports`), reached only by the server issuers' fetcher. |
 | `auth.server_admins` | list | none | Principals of server issuers who are server administrators. |
 | `auth.server_license_admins` | list | none | Principals of server issuers who are licence managers: they manage every tenant's licences and nothing else (spec 0029). |
+| `auth.server_distribution_admins` | list | none | Principals of server issuers who are distribution admins: on every tenant they reserve names, mark publishers and manage the marked ones, and grant `publish`, `promote` and `admin` on extensions; nothing else (spec 0030). Not also a licence manager. |
 | `auth.admin_token_max_age` | duration | `1h` | How recently a management token must have been issued; `1m..24h`. |
 
 Each server issuer:
@@ -452,8 +453,9 @@ A server administrator is written `kind:issuer|value`, where `kind` is `subject`
 or `client`, and `issuer` is a server issuer's name: `role:ops|kista-admin`. `issuer:<name>` is
 refused, since every account of the issuer would be an administrator, and so is `publisher:`. A
 `role:`, `group:` or `client:` principal needs its issuer's `roles_claim`, `groups_claim` or
-`client_claim`; without it the principal could never match and is refused. A licence manager is
-written and checked the same way: `role:ops|kista-licenses`.
+`client_claim`; without it the principal could never match and is refused. A licence manager and a
+distribution admin are written and checked the same way: `role:ops|kista-licenses`; a token whose
+principals make it both is refused.
 
 ## publish
 
@@ -524,7 +526,7 @@ Each sink:
 | `kind` | `otlp`, `jsonl` | required | |
 | `tenants` | list | none | Tenant names, or `"*"`. |
 | `server` | boolean | `false` | The server's own events too. |
-| `unmasked` | boolean | `false` | Send server administrators', licence managers' and the CLI's identities on tenants' events as they are (by default they show as `server`, or `license-manager`). |
+| `unmasked` | boolean | `false` | Send server administrators', licence managers', distribution admins' and the CLI's identities on tenants' events as they are (by default they show as `server`, `license-manager` or `distribution-admin`). |
 | `url` | URL | | `otlp`: an OTLP/HTTP logs endpoint, https. |
 | `allow` | list | none | `otlp`: private addresses of the endpoint (`cidr`, `ports`). |
 | `headers_file` | absolute path | none | `otlp`: `Name: value` lines. A secret file ([Files kista reads](security.md#files-kista-reads)). |

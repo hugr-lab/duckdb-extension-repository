@@ -135,3 +135,15 @@ run "a_short_key_window" {
   }
   expect_failures = [var.key_deletion_days]
 }
+
+run "distribution_admins" {
+  command = plan
+  variables {
+    server_admins              = "['role:corp|kista-admin']"
+    server_distribution_admins = "['client:corp|enterest']"
+  }
+  assert {
+    condition     = local.auth.server_distribution_admins == ["client:corp|enterest"] && !contains(keys(local.auth), "server_license_admins")
+    error_message = "auth.server_distribution_admins, and no licence managers"
+  }
+}

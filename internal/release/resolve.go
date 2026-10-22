@@ -28,6 +28,8 @@ type Snapshot struct {
 	// Provided holds the names the tenant's upstreams provide (spec 0009); allowlist changes bump
 	// release_version on every channel of the tenant.
 	Provided map[string]bool
+	// TenantReserved holds the names reserved in the tenant (spec 0030); a change bumps its channels
+	TenantReserved map[string]bool
 	// Shadowed holds, for a passthrough channel, the core names the tenant replaced (spec 0009): the
 	// channel does not serve them. Shadow changes bump the tenant's passthrough channels.
 	Shadowed map[string]bool
@@ -375,6 +377,9 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 	if snap.Blocked, err = s.Store.BlockedHashes(ctx, c.TenantID); err != nil {
 		return nil, err
 	}
+	if snap.TenantReserved, err = s.Store.TenantReservedSet(ctx, c.TenantID); err != nil {
+		return nil, err
+	}
 	if snap.Provided, err = s.Store.ProvidedNames(ctx, c.TenantID); err != nil {
 		return nil, err
 	}
@@ -426,7 +431,7 @@ func (s *Snapshot) PullThroughFor(version, platform, name string) string {
 		if !p.Platforms[platform] {
 			continue
 		}
-		if p.Names[name] || p.Any && !s.Listed[name] && AnyTakes(p.Kind, name) {
+		if p.Names[name] || p.Any && !s.Listed[name] && !s.TenantReserved[name] && !s.Provided[name] && AnyTakes(p.Kind, name) {
 			return p.UpstreamID
 		}
 	}

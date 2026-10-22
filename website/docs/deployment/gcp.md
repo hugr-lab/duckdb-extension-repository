@@ -66,6 +66,10 @@ terraform output ip                  # point the domain here
   [licence managers](../licensing.md#licences-in-a-tenant), principals of the server issuers who
   manage every tenant's licences and nothing else. Empty (the default), there are none, and the
   configuration leaves the key out.
+- **`server_distribution_admins`** is `auth.server_distribution_admins`, as YAML in a string: the
+  [distribution admins](../access.md), principals of the server issuers who reserve names in tenants
+  and manage the publishers they mark. Empty (the default), there are none, and the configuration
+  leaves the key out.
 - **`master_authorized_cidrs`** limits who may reach the cluster's API server; Terraform must be
   among them. Empty (the default), the API server takes connections from any address, guarded by
   Google's authentication and IAM.

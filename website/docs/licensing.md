@@ -49,11 +49,13 @@ Nothing else records keys: DuckDB's core and community upstreams, an unmarked pu
 principal, `release add`, and an upstream run that gets a `304` (it does not read the body). A
 key whose source is gone counts for nothing.
 
-- **Marking a publisher** is a server administrator's act: `kista admin publisher license-keys
+- **Marking a publisher** is a server administrator's act (or a distribution admin's, for a
+  publisher without keys or grants: [Access](access.md)): `kista admin publisher license-keys
   <tenant> <name> on|off`, or `POST`/`DELETE /api/v1/tenants/{t}/publishers/{name}/license-keys`.
   A publisher is marked only while it holds no key; the server administrator registers its keys
   afterwards. While marked, its keys, grants and the members of extension groups its grants name
-  are changed by a server administrator only; a tenant administrator can still remove it. See [Publishing](publishing.md#sources-of-licence-keys).
+  are changed by a server administrator (or a distribution admin) only; a tenant administrator can
+  still remove it. See [Publishing](publishing.md#sources-of-licence-keys).
 - **A malformed key block** in a marked publisher's publication is refused (`400`, `license_keys`).
 - **Removing a source** (the publisher, or the upstream) drops the keys it brought. Unmarking a
   publisher keeps them.

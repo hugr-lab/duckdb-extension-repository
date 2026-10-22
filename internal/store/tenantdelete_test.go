@@ -54,6 +54,7 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 			"VALUES (?, 'old', '0.1', 'linux_amd64', 'v2.0.0', 'cpp', ?, 1, ?, ?)", []any{cid, hash, id("q"), now}},
 		{"INSERT INTO blocks (tenant_id, body_hash, reason, created_at, created_by) VALUES (?, ?, 'CVE', ?, 'os:1:t')", []any{tid, hash, now}},
 		{"INSERT INTO shadows (tenant_id, name, created_at, created_by) VALUES (?, 'json', ?, 'os:1:t')", []any{tid, now}},
+		{"INSERT INTO tenant_reserved_names (tenant_id, name, holder, added_at, added_by) VALUES (?, 'held', 'enterest', ?, 'os:1:t')", []any{tid, now}},
 		{"INSERT INTO bundle_imports (id, tenant_id, manifest_id, manifest_created_at, manifest_sha256, exporter, bundle_key, dry_run, " +
 			"state, counts, started_at, actor) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, 'done', '{}', ?, 'os:1:t')",
 			[]any{id("m"), tid, id("n"), now, hash, fp("d"), false, now}},

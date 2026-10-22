@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,8 +21,12 @@ type Auth struct {
 	ServerAdmins      []string       `yaml:"server_admins"`       // principals of the server issuers; issuer: is refused
 	// ServerLicenseAdmins are the licence managers (spec 0029): principals of the server issuers
 	// (issuer: is refused) who manage every tenant's licences and nothing else
-	ServerLicenseAdmins []string      `yaml:"server_license_admins"`
-	AdminTokenMaxAge    time.Duration `yaml:"admin_token_max_age"` // default 1h
+	ServerLicenseAdmins []string `yaml:"server_license_admins"`
+	// ServerDistributionAdmins are the distribution admins (spec 0030): principals of the server
+	// issuers (issuer: is refused) who, on every tenant, reserve names, mark publishers and manage the
+	// marked ones, and grant publish, promote and admin on extensions; nothing else
+	ServerDistributionAdmins []string      `yaml:"server_distribution_admins"`
+	AdminTokenMaxAge         time.Duration `yaml:"admin_token_max_age"` // default 1h
 }
 
 // ServerIssuer is an issuer record's fields; required_claims is mandatory.
@@ -93,6 +98,11 @@ func (c Config) ServerLicenseAdmins() auth.Principals {
 	return serverPrincipals(c.Auth.ServerLicenseAdmins)
 }
 
+// ServerDistributionAdmins returns the distribution admins' principals (validated; spec 0030).
+func (c Config) ServerDistributionAdmins() auth.Principals {
+	return serverPrincipals(c.Auth.ServerDistributionAdmins)
+}
+
 func serverPrincipals(list []string) auth.Principals {
 	p := auth.Principals{}
 	for _, s := range list {
@@ -146,7 +156,8 @@ func validateAuth(bad func(string, ...any), c Config) {
 	for _, l := range []struct {
 		name, role string
 		list       []string
-	}{{"server_admins", "an administrator", a.ServerAdmins}, {"server_license_admins", "a licence manager", a.ServerLicenseAdmins}} {
+	}{{"server_admins", "an administrator", a.ServerAdmins}, {"server_license_admins", "a licence manager", a.ServerLicenseAdmins},
+		{"server_distribution_admins", "a distribution admin", a.ServerDistributionAdmins}} {
 		for i, s := range l.list {
 			kind, issuer, _, err := auth.ParsePrincipalKey(s)
 			is, known := byName[issuer]
@@ -164,6 +175,12 @@ func validateAuth(bad func(string, ...any), c Config) {
 					bad("auth.%s[%d]: %s never matches: the server issuer %s has no %s", l.name, i, s, issuer, setting)
 				}
 			}
+		}
+	}
+	// a token acts in one narrow role: a principal is a licence manager or a distribution admin
+	for i, s := range a.ServerDistributionAdmins {
+		if slices.Contains(a.ServerLicenseAdmins, s) {
+			bad("auth.server_distribution_admins[%d]: %s is also a licence manager; a principal holds one of the two roles", i, s)
 		}
 	}
 	p := strings.TrimSuffix(c.Serve.PublicURL, "/")

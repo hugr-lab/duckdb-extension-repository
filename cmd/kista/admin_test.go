@@ -91,6 +91,14 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "reserved", "remove", "kista_cli_a")
 	run(1, "reserved", "remove", "kista_test_core") // a version's name stays
 	run(2, "reserved", "remove")
+	// spec 0030 part 2: a name reserved in a tenant
+	run(0, "tenant-reserved", "add", "acme", "acme_tool", "-holder", "enterest")
+	run(1, "tenant-reserved", "add", "acme", "acme_tool") // a holder is required
+	if got := run(0, "tenant-reserved", "list", "acme"); !strings.Contains(got, "acme_tool") || !strings.Contains(got, "enterest") {
+		t.Fatalf("tenant-reserved list: %q", got)
+	}
+	run(0, "tenant-reserved", "remove", "acme", "acme_tool")
+	run(1, "tenant-reserved", "remove", "acme", "acme_tool")
 	run(0, "version", "c-api", "v2.0.0", "-c-api", "v2.0.0")
 	run(1, "version", "c-api", "v2.0.0", "-c-api", "v2.1.0") // a major is never changed
 	if got := run(0, "version", "list"); !strings.Contains(got, "v1.5.6 v2.0.0") {

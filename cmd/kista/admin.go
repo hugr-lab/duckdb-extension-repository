@@ -31,7 +31,6 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
@@ -106,6 +105,10 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                            -force when tenants have releases under them
   reserved list [-name <name>]                             the reserved names and their sources
   reserved remove <name>                                   a name administrators alone reserved
+  tenant-reserved add <tenant> <name> -holder <text>       reserve a name in a tenant for a holder (spec 0030);
+                                                           prints the name's live releases there
+  tenant-reserved remove <tenant> <name>
+  tenant-reserved list <tenant>
   channel create <tenant>/<channel> -kind signed|passthrough
   channel versions <tenant>/<channel> [-add v]... [-remove v]...
   channel list <tenant>
@@ -329,6 +332,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.version(ctx, sub, args[min(2, len(args)):])
 	case "reserved":
 		return a.reserved(ctx, sub, args[min(2, len(args)):])
+	case "tenant-reserved":
+		return a.tenantReserved(ctx, sub, args[min(2, len(args)):])
 	case "channel":
 		return a.channel(ctx, sub, args[min(2, len(args)):])
 	case "key":
@@ -998,12 +1003,15 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
+		isReserved := false
 		if *extension != "" {
-			if err := reserved.Sync(ctx, a.svc.Store); err != nil { // spec 0030: the server's list
+			kind, err := a.svc.Store.ReservedFor(ctx, pos[0], *extension) // spec 0030: DuckDB's, the tenant's, its upstreams'
+			if err != nil {
 				return err
 			}
+			isReserved = kind != ""
 		}
-		a.grantTable(gs, *group, *extension)
+		a.grantTable(gs, *group, *extension, isReserved)
 	case sub == "remove" && len(pos) == 2:
 		if err := a.svc.Auth.RemoveGrant(ctx, a.actor, pos[0], pos[1]); err != nil {
 			return err
@@ -1016,13 +1024,13 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 }
 
 // grantTable prints grants; with group, those on it; with extension, those reaching it (spec 0017).
-func (a *adminCmd) grantTable(gs []store.Grant, group, extension string) {
+func (a *adminCmd) grantTable(gs []store.Grant, group, extension string, isReserved bool) {
 	a.table("ID\tPRINCIPAL\tVERBS\tCHANNEL\tEXTENSION", func(w io.Writer) {
 		for _, g := range gs {
 			if group != "" && g.ExtensionGroupName != group {
 				continue
 			}
-			if extension != "" && !reaches(g, extension) {
+			if extension != "" && !reaches(g, extension, isReserved) {
 				continue
 			}
 			ch, ext := g.ChannelName, g.Extension
@@ -1041,8 +1049,8 @@ func (a *adminCmd) grantTable(gs []store.Grant, group, extension string) {
 }
 
 // reaches reports whether a grant gives some verb on an extension, in its own channel scope.
-func reaches(g store.Grant, extension string) bool {
-	_, verbs := authz.Reaching(g, "", extension, reserved.Kind(extension) != "")
+func reaches(g store.Grant, extension string, isReserved bool) bool {
+	_, verbs := authz.Reaching(g, "", extension, isReserved)
 	return len(verbs) > 0
 }
 
@@ -1201,7 +1209,7 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 			fmt.Fprintf(a.out, "  %s\n", m.Name)
 		}
 		fmt.Fprintln(a.out, "\ngrants:")
-		a.grantTable(gs, g.Name, "")
+		a.grantTable(gs, g.Name, "", false)
 	case sub == "description" && len(pos) == 3:
 		if _, err := a.svc.Auth.SetExtensionGroupDescription(ctx, a.actor, pos[0], pos[1], pos[2], 0); err != nil {
 			return err
@@ -2548,6 +2556,53 @@ func (a *adminCmd) reserved(ctx context.Context, sub string, args []string) erro
 			return err
 		}
 		a.logf("reserved remove %s", pos[0])
+	default:
+		return errUsage
+	}
+	return nil
+}
+
+func (a *adminCmd) tenantReserved(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("tenant-reserved", flag.ContinueOnError)
+	holder := fs.String("holder", "", "")
+	pos, err := flags(fs, args)
+	if err != nil {
+		return err
+	}
+	switch {
+	case sub == "add" && len(pos) == 2:
+		res, err := a.svc.Tenants.ReserveInTenant(ctx, a.actor, pos[0], pos[1], *holder)
+		if err != nil {
+			return err
+		}
+		a.table("CHANNEL\tVERSION\tPLATFORM\tSTATE\tORIGIN", func(w io.Writer) {
+			for _, r := range res.Releases {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Channel, r.Version, r.Platform, r.State, r.Origin)
+			}
+		})
+		switch {
+		case !res.Changed:
+			a.logf("tenant-reserved add %s %s: already held by %s", pos[0], pos[1], res.Holder)
+		case res.Previous != "":
+			a.logf("tenant-reserved add %s %s: holder %s (was %s)", pos[0], pos[1], res.Holder, res.Previous)
+		default:
+			a.logf("tenant-reserved add %s %s: holder %s", pos[0], pos[1], res.Holder)
+		}
+	case sub == "remove" && len(pos) == 2:
+		if err := a.svc.Tenants.ReleaseInTenant(ctx, a.actor, pos[0], pos[1]); err != nil {
+			return err
+		}
+		a.logf("tenant-reserved remove %s %s", pos[0], pos[1])
+	case sub == "list" && len(pos) == 1:
+		rs, err := a.svc.Tenants.ListInTenant(ctx, a.actor, pos[0], "")
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tHOLDER\tADDED\tBY", func(w io.Writer) {
+			for _, r := range rs {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, r.Holder, r.AddedAt.UTC().Format(time.RFC3339), r.AddedBy)
+			}
+		})
 	default:
 		return errUsage
 	}

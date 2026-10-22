@@ -18,7 +18,6 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
@@ -246,7 +245,7 @@ func (h *Handler) serverWhoami(w http.ResponseWriter, r *http.Request, c caller,
 	}
 	sort.Strings(ps)
 	reply(w, r, http.StatusOK, map[string]any{"issuer": c.id.Issuer.Name, "principals": nonNil(ps), "administrator": c.admin,
-		"license_manager": c.licenseManager}, "", "private, no-store")
+		"license_manager": c.licenseManager, "distribution_admin": c.distribution}, "", "private, no-store")
 }
 
 // --- DuckDB versions ---
@@ -659,6 +658,8 @@ func createdBy(by string, c caller) string {
 		return string(authz.ActorServer)
 	case strings.HasPrefix(by, string(authz.ActorLicenseManager)+":"):
 		return string(authz.ActorLicenseManager)
+	case strings.HasPrefix(by, string(authz.ActorDistributionAdmin)+":"):
+		return string(authz.ActorDistributionAdmin)
 	}
 	return by
 }
@@ -791,8 +792,8 @@ func grantOf(g store.Grant, c caller) grantJSON {
 }
 
 // reaching is how a grant reaches an extension and the verbs it gives there (spec 0017).
-func reaching(g store.Grant, tenant, ext string) (string, []string) {
-	return authz.Reaching(g, tenant, ext, reserved.Kind(ext) != "")
+func reaching(g store.Grant, tenant, ext string, isReserved bool) (string, []string) {
+	return authz.Reaching(g, tenant, ext, isReserved)
 }
 
 // grantKey orders grants as the store lists them: (created_at, id).
@@ -826,11 +827,14 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 		problem(w, http.StatusBadRequest, typeInvalid, "extension_group or extension is not a valid name")
 		return
 	}
+	isReserved := false
 	if ext != "" {
-		if err := reserved.Sync(r.Context(), h.o.Store); err != nil { // spec 0030: the server's list as it is
+		kind, err := h.o.Store.ReservedFor(r.Context(), c.tenant.Name, ext) // spec 0030: DuckDB's, the tenant's, its upstreams'
+		if err != nil {
 			h.fail(w, err)
 			return
 		}
+		isReserved = kind != ""
 	}
 	var kept []store.Grant
 	for _, g := range gs {
@@ -838,7 +842,7 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 			continue
 		}
 		if ext != "" {
-			if _, verbs := reaching(g, c.tenant.Name, ext); len(verbs) == 0 {
+			if _, verbs := reaching(g, c.tenant.Name, ext, isReserved); len(verbs) == 0 {
 				continue
 			}
 		}
@@ -849,7 +853,7 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 	for _, g := range kept {
 		o := grantOf(g, c)
 		if ext != "" {
-			o.Via, o.VerbsOnExtension = reaching(g, c.tenant.Name, ext)
+			o.Via, o.VerbsOnExtension = reaching(g, c.tenant.Name, ext, isReserved)
 		}
 		out = append(out, o)
 	}
@@ -981,6 +985,89 @@ func (h *Handler) addReserved(w http.ResponseWriter, r *http.Request, c caller, 
 func (h *Handler) removeReserved(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
 	if err := h.o.Tenants.Unreserve(r.Context(), a, p["name"]); err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	noContent(w)
+}
+
+// --- names reserved in a tenant (spec 0030) ---
+
+type tenantReservedOut struct {
+	Name    string `json:"name"`
+	Holder  string `json:"holder"`
+	AddedAt string `json:"added_at"`
+	AddedBy string `json:"added_by"`
+}
+
+type liveReleaseOut struct {
+	Channel  string `json:"channel"`
+	Version  string `json:"version"`
+	Platform string `json:"platform"`
+	State    string `json:"state"`
+	Origin   string `json:"origin"`
+}
+
+func tenantReservedOf(r store.TenantReservedName, c caller) tenantReservedOut {
+	return tenantReservedOut{Name: r.Name, Holder: r.Holder, AddedAt: rfc3339(r.AddedAt), AddedBy: createdBy(r.AddedBy, c)}
+}
+
+func (h *Handler) listTenantReserved(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	rs, err := h.o.Tenants.ListInTenant(r.Context(), a, p["t"], "")
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	out := []tenantReservedOut{}
+	for _, x := range rs {
+		out = append(out, tenantReservedOf(x, c))
+	}
+	reply(w, r, http.StatusOK, map[string]any{"reserved_names": out}, "", noStore)
+}
+
+func (h *Handler) getTenantReserved(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	rs, err := h.o.Tenants.ListInTenant(r.Context(), a, p["t"], p["name"])
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	if len(rs) == 0 {
+		notFound(w)
+		return
+	}
+	reply(w, r, http.StatusOK, tenantReservedOf(rs[0], c), "", noStore)
+}
+
+func (h *Handler) reserveInTenant(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	var in struct {
+		Holder string `json:"holder"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	a, _ := c.actor()
+	res, err := h.o.Tenants.ReserveInTenant(r.Context(), a, p["t"], p["name"], in.Holder)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	rels := []liveReleaseOut{}
+	for _, x := range res.Releases {
+		rels = append(rels, liveReleaseOut(x))
+	}
+	out := map[string]any{"name": res.Name, "holder": res.Holder, "added_at": rfc3339(res.AddedAt), "added_by": createdBy(res.AddedBy, c),
+		"changed": res.Changed, "releases": rels}
+	if res.Previous != "" && res.Previous != res.Holder {
+		out["previous_holder"] = res.Previous
+	}
+	reply(w, r, http.StatusOK, out, "", noStore)
+}
+
+func (h *Handler) releaseInTenant(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	if err := h.o.Tenants.ReleaseInTenant(r.Context(), a, p["t"], p["name"]); err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}

@@ -36,6 +36,14 @@ type statsScope struct {
 	held          auth.Held
 	plain, groups []store.Grant // the grants giving statistics
 	cache         map[[2]string]bool
+	// the tenant's reserved names and its upstreams' (spec 0030), beside DuckDB's
+	tenantReserved, provided map[string]bool
+}
+
+// reservedName reports whether a name is reserved for the tenant (spec 0030): DuckDB's, the
+// tenant's, or an upstream's.
+func (s *statsScope) reservedName(ext string) bool {
+	return reserved.Kind(ext) != "" || s.tenantReserved[ext] || s.provided[ext]
 }
 
 func (s *statsScope) allow(channel, ext string) bool {
@@ -46,7 +54,7 @@ func (s *statsScope) allow(channel, ext string) bool {
 	if v, ok := s.cache[k]; ok {
 		return v
 	}
-	res := authz.Resource{Tenant: s.c.tenant.Name, Channel: channel, Extension: ext, Reserved: reserved.Kind(ext) != ""}
+	res := authz.Resource{Tenant: s.c.tenant.Name, Channel: channel, Extension: ext, Reserved: s.reservedName(ext)}
 	v := slices.ContainsFunc(statsVerbs, func(verb string) bool { return authz.Covers(s.held, verb, res) })
 	s.cache[k] = v
 	return v
@@ -68,7 +76,7 @@ func (s *statsScope) mayAsk(channel, ext string) bool {
 	if s.all {
 		return true
 	}
-	reservedExt := ext != "" && reserved.Kind(ext) != ""
+	reservedExt := ext != "" && s.reservedName(ext)
 	inChannel := func(g store.Grant) bool { return channel == "" || g.ChannelID == "" || g.ChannelName == channel }
 	plain, groups := s.grants()
 	return slices.ContainsFunc(plain, func(g store.Grant) bool {
@@ -156,6 +164,16 @@ func (h *Handler) statsRequestOf(w http.ResponseWriter, r *http.Request, c calle
 		return statsRequest{}, false
 	}
 	scope, ok := statsScopeOf(c)
+	if ok && !scope.all {
+		var err error
+		if scope.tenantReserved, err = h.o.Store.TenantReservedSet(r.Context(), c.tenant.ID); err == nil {
+			scope.provided, err = h.o.Store.ProvidedNames(r.Context(), c.tenant.ID)
+		}
+		if err != nil {
+			h.fail(w, err)
+			return statsRequest{}, false
+		}
+	}
 	if !ok {
 		h.refused(w, r, c)
 		return statsRequest{}, false

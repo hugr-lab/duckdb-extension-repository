@@ -32,7 +32,7 @@ tokens, so there is no CSRF surface.
 | Token | Used on |
 | --- | --- |
 | A **tenant token**: issued by one of the tenant's issuer records, for one of its audiences | that tenant's routes, `/api/v1/tenants/{t}/…` |
-| A **server token**: issued by a server issuer (`auth.server_issuers`), for a server audience | routes without a tenant; on tenant routes a server administrator acts with every right, a licence manager on the licence routes only |
+| A **server token**: issued by a server issuer (`auth.server_issuers`), for a server audience | routes without a tenant; on tenant routes a server administrator acts with every right, a licence manager on the licence routes only, a distribution admin on a distributor's calls only ([Access](access.md)) |
 | A publisher's **signed request**: `Kista-Statement` and `Kista-Signature`, signed with one of its keys, no `Authorization` | its tenant's `whoami`, and the publication, promotion, release-read and attachment routes only |
 
 Server and tenant audiences are disjoint, so a token is one or the other. See [Access](access.md)
@@ -50,7 +50,7 @@ for issuers, principals and grants, and [Publishing](publishing.md#signed-reques
   (`GET tenants/{t}`), `DELETE tenants/{t}` and its events; see [Deleting a tenant](#deleting-a-tenant).
 - `GET /api/v1/tenants/{t}/whoami` shows a tenant token's principals, the grants that match them,
   `holds_admin` and `holds_audit`. `GET /api/v1/whoami` shows a server token's issuer, principals,
-  `administrator` and `license_manager`. A server token on the tenant `whoami` answers `404`; a
+  `administrator`, `license_manager` and `distribution_admin`. A server token on the tenant `whoami` answers `404`; a
   tenant token on the server `whoami` answers `400`.
 
 ### Fresh tokens for management
@@ -179,7 +179,8 @@ All paths are relative to `/api/v1`. `{t}` is a tenant, `{c}` a channel.
 | `GET console`, `GET tenants/{t}/console` | public: the console's sign-in configuration |
 | `GET duckdb-versions`, `GET duckdb-versions/{v}` | public |
 | `POST duckdb-versions`, `POST duckdb-versions/{v}/c-apis`, `POST duckdb-versions/{v}/core-extensions` | server: [DuckDB versions](#duckdb-versions-and-reserved-names) |
-| `GET reserved-names[?name=]`, `POST reserved-names`, `DELETE reserved-names/{name}` | server: [reserved names](#duckdb-versions-and-reserved-names) |
+| `GET reserved-names[?name=]` | server, a distribution admin: [reserved names](#duckdb-versions-and-reserved-names) |
+| `POST reserved-names`, `DELETE reserved-names/{name}` | server |
 | `GET tenants[?state=]`, `POST tenants`; `POST tenants/{t}/suspend`, `/resume` | server |
 | `GET tenants/{t}` | tenant admin; a deleting or deleted tenant: server |
 | `DELETE tenants/{t}` | server: [deleting a tenant](#deleting-a-tenant) |
@@ -318,13 +319,15 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `POST …/extensions/{ext}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
 | `DELETE …/extensions/{ext}/releases/{id}` | extension admin: purge a yanked release |
 | `GET, POST tenants/{t}/blocks`; `GET, DELETE tenants/{t}/blocks/{hash}` | tenant admin |
-| `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin |
+| `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin; a distribution admin all but `DELETE` |
 | `GET, POST …/publishers/{name}/github`; `GET, DELETE …/github/{id}` | tenant admin |
-| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin |
-| `POST, DELETE …/publishers/{name}/license-keys` | server: mark a publisher a source of licence keys, or unmark it |
+| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a marked publisher |
+| `POST, DELETE …/publishers/{name}/license-keys` | server, a distribution admin: mark a publisher a source of licence keys, or unmark it |
 
-A publisher answers with its `keys` and `license_keys` (true when marked). While it is marked, adding
-or removing its keys and grants is a server administrator's (`404` to a tenant administrator). A marked publisher's publication of a body whose key block is malformed answers
+A publisher answers with its `keys` and `license_keys` (true when marked; to a distribution admin,
+an unmarked publisher's `keys` are empty). While it is marked, adding or removing its keys and
+grants is a server administrator's or a distribution admin's (`404` to a tenant administrator). A
+distribution admin marks a publisher only before it holds keys or grants (`400`). A marked publisher's publication of a body whose key block is malformed answers
 `400` (`license_keys`).
 
 See [Publishing](publishing.md).
@@ -375,15 +378,34 @@ with `holder_mismatch` in its detail, naming the expected and the given holder.
 | --- | --- |
 | `GET, POST tenants/{t}/issuers`; `GET, DELETE …/issuers/{name}` | tenant admin |
 | `POST, DELETE …/issuers/{name}/console` | tenant admin: the console's client at that issuer |
-| `GET tenants/{t}/grants[?principal=&extension_group=&extension=]`, `POST tenants/{t}/grants` | tenant admin |
+| `GET tenants/{t}/grants[?principal=&extension_group=&extension=]`, `POST tenants/{t}/grants` | tenant admin; a distribution admin (`POST`: `publish`, `promote`, `admin` on an extension) |
 | `GET tenants/{t}/grants/principals[?prefix=]` | tenant admin |
-| `GET, DELETE tenants/{t}/grants/{id}` | tenant admin |
+| `GET, DELETE tenants/{t}/grants/{id}` | tenant admin; a distribution admin (`DELETE`: the grants it may add) |
+| `GET tenants/{t}/reserved-names`, `GET …/reserved-names/{name}` | tenant admin, a distribution admin: [names reserved in the tenant](#names-reserved-in-a-tenant) |
+| `PUT, DELETE tenants/{t}/reserved-names/{name}` | server, a distribution admin |
 | `GET tenants/{t}/extension-groups` | principal (tenant admins see all; group administrators theirs) |
 | `POST tenants/{t}/extension-groups` | tenant admin |
 | `GET tenants/{t}/extension-groups/{g}`, `GET …/{g}/members` | tenant admin, the group's administrators |
 | `DELETE …/extension-groups/{g}`; `POST …/{g}/description`, `POST …/{g}/members` | tenant admin |
 
 See [Access](access.md).
+
+#### Names reserved in a tenant
+
+A server administrator or a distribution admin reserves a name in a tenant for a holder (spec 0030):
+in that tenant, `publish` and `promote` reach it only through grants naming the extension
+([Reserved names](publishing.md#reserved-names)).
+
+- `PUT tenants/{t}/reserved-names/{name}` with `{"holder": "…"}` (1 to 128 bytes of text) reserves it,
+  or changes its holder: `200` with `name`, `holder`, `added_at`, `added_by`, `changed`, and
+  `previous_holder` when another held it. `releases` lists the name's releases in the tenant that are
+  not yanked or purged (`channel`, `version`, `platform`, `state`, `origin`), so the holder knows who
+  was there before it; they stay as they are. An alias or an invalid name is `400`. A new name or
+  another holder is a `reserved.tenant.add` event; the same holder again changes nothing.
+- `DELETE tenants/{t}/reserved-names/{name}` releases it (`204`; `404` when not reserved); no release
+  changes. A `reserved.tenant.remove` event.
+- `GET tenants/{t}/reserved-names` lists them (`reserved_names`), `GET …/{name}` reads one: the
+  tenant's administrators read them too, and change none.
 
 ### Attachments and feeds
 

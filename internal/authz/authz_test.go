@@ -95,6 +95,27 @@ func TestCovers(t *testing.T) {
 			t.Errorf("a licence manager, %s on %+v: %v", c.verb, c.r, err)
 		}
 	}
+	// spec 0030: a distribution admin holds distribute on the server and a tenant, nothing else; no
+	// grant gives distribute, admin included
+	da := authz.Actor{Kind: authz.ActorDistributionAdmin, ID: "ops|enterest"}
+	if err := gz.Allow(ctx, da, authz.VerbDistribute, authz.Server); err != nil {
+		t.Errorf("a distribution admin reading the server's names: %v", err)
+	}
+	for _, c := range []struct {
+		verb authz.Verb
+		r    authz.Resource
+	}{
+		{authz.VerbAdmin, tenant}, {authz.VerbAdmin, authz.Server}, {authz.VerbPublish, tresor}, {authz.VerbLicense, tenant},
+		{authz.VerbDistribute, prod}, {authz.VerbDistribute, tresor}, {authz.VerbDistribute, authz.Resource{Tenant: "acme", ExtensionGroup: "g"}},
+	} {
+		if err := gz.Allow(ctx, da, c.verb, c.r); !errors.Is(err, authz.ErrDenied) {
+			t.Errorf("a distribution admin, %s on %+v: %v", c.verb, c.r, err)
+		}
+	}
+	admin := store.Grant{Kind: store.PrincipalSubject, Value: "me", Verbs: []string{store.VerbAdmin}}
+	if authz.GrantCovers(admin, string(authz.VerbDistribute), tenant) {
+		t.Error("a tenant-wide admin grant gives distribute")
+	}
 }
 
 // A grant on an extension group (spec 0017) covers its members as grants on each would, never the

@@ -1,10 +1,12 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"slices"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -103,6 +105,9 @@ func (h *Handler) getPublisher(w http.ResponseWriter, r *http.Request, c caller,
 		if x.Name == p["name"] {
 			a, _ := c.actor()
 			keys, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], x.Name)
+			if errors.Is(err, authz.ErrDenied) && c.distribution {
+				keys, err = nil, nil // an unmarked publisher's keys are not a distribution admin's to read
+			}
 			if err != nil {
 				h.serviceErr(w, err, false)
 				return
@@ -124,6 +129,9 @@ func publisherLicenseKeys(on bool) handler {
 			return
 		}
 		keys, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], pb.Name)
+		if errors.Is(err, authz.ErrDenied) && c.distribution {
+			keys, err = nil, nil // unmarked: its keys are the tenant administrators' to read
+		}
 		if err != nil {
 			h.serviceErr(w, err, false)
 			return

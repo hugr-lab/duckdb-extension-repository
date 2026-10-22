@@ -125,6 +125,7 @@ printf 'json\nparquet\n' >"$work/core.txt" # the version's core extensions (spec
 k version add v2.0.0 -kind release -c-api v1.5.6 -core-extensions "$work/core.txt"
 k tenant create acme -display-name Acme
 k channel create acme/prod -kind signed
+k tenant-reserved add acme acme_tool -holder enterest # spec 0030: shown to the tenant's administrators
 k channel versions acme/prod -add v2.0.0
 k key add acme/prod -signer file:a.pem -active
 k attestation-key add acme file:att.pem -active

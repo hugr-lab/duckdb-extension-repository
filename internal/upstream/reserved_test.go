@@ -1,9 +1,11 @@
 package upstream_test
 
 import (
+	"errors"
 	"slices"
 	"testing"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -61,6 +63,50 @@ func TestPullThroughFollowsReservations(t *testing.T) {
 		}
 		if en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_later") != "" {
 			t.Fatal("a reserved name is taken by * of a repository upstream")
+		}
+	})
+}
+
+// TestTenantReservedUpstreams: a name reserved in the tenant (spec 0030 part 2) is never taken by
+// "*", and an entry for it needs allow_reserved.
+func TestTenantReservedUpstreams(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
+		u, err := en.up.Add(ctx, admin, "acme", en.pullSpec(store.UpstreamEntry{Name: "*"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_held") != u.ID {
+			t.Fatal("a free name is not taken by *")
+		}
+		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "kista_held", "enterest"); err != nil {
+			t.Fatal(err)
+		}
+		if en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_held") != "" {
+			t.Fatal("a tenant-reserved name is taken by *")
+		}
+		// a miss queued, the name reserved before the fetch: the insert refuses it under its locks
+		en.repo.put("v2.0.0", "linux_amd64", "kista_queued", signed(t, en.key, cpp("1.0", "v2.0.0"), 9, "kista_queued_duckdb_cpp_init"))
+		p := en.puller()
+		p.Offer(release.Miss{TenantID: u.TenantID, UpstreamID: u.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "kista_queued"})
+		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "kista_queued", "enterest"); err != nil {
+			t.Fatal(err)
+		}
+		p.Drain(ctx)
+		if rs := en.releases(t, "kista_queued"); len(rs) != 0 {
+			t.Fatalf("a name reserved while its miss was queued was pulled: %+v", rs)
+		}
+		mirror := en.spec(store.UpstreamEntry{Name: "kista_held"})
+		mirror.Name = "mirror"
+		if _, err := en.up.Add(ctx, admin, "acme", mirror); !errors.Is(err, store.ErrInvalid) {
+			t.Fatalf("an entry for a tenant-reserved name: %v", err)
+		}
+		mirror.Entries[0].AllowReserved = true
+		if _, err := en.up.Add(ctx, admin, "acme", mirror); err != nil {
+			t.Fatalf("with allow_reserved: %v", err)
+		}
+		if _, err := en.up.PutEntry(ctx, admin, "acme", "mirror", store.UpstreamEntry{Name: "kista_held"}); !errors.Is(err, store.ErrInvalid) {
+			t.Fatalf("an entry put without allow_reserved: %v", err)
 		}
 	})
 }

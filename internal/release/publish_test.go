@@ -382,5 +382,25 @@ func TestPublishRecheckReserved(t *testing.T) {
 		if rs, _ := en.rel.List(ctx, admin, "acme", "prod", "kista_late"); len(rs) != 0 {
 			t.Fatalf("released: %+v", rs)
 		}
+		// a name reserved in the tenant (spec 0030 part 2): before the call, and while the body is read
+		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "kista_held", "enterest"); err != nil {
+			t.Fatal(err)
+		}
+		if err := pub("kista_held", func() {}); !errors.Is(err, authz.ErrDenied) {
+			t.Fatalf("a tenant-reserved name: %v", err)
+		}
+		err = pub("kista_held_late", func() {
+			if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "kista_held_late", "enterest"); err != nil {
+				t.Error(err)
+			}
+		})
+		if !errors.Is(err, authz.ErrDenied) {
+			t.Fatalf("a name reserved in the tenant while the body was read: %v", err)
+		}
+		// one who may reach a reserved name (a grant naming it; here the CLI) publishes it
+		file := built(t, cpp("1.0"), "kista_held_duckdb_cpp_init")
+		if _, _, err := en.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(file), publish("kista_held", "1.0", "linux_amd64")); err != nil {
+			t.Fatalf("a tenant-reserved name under a grant reaching it: %v", err)
+		}
 	})
 }

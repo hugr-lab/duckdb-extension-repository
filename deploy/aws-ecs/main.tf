@@ -486,10 +486,14 @@ locals {
     }
     auth = local.auth
   })
-  # server_license_admins only when given: an empty list leaves the configuration as it was
+  # server_license_admins and server_distribution_admins only when given: an empty list leaves the
+  # configuration as it was
   auth = merge(
     { server_issuers = yamldecode(var.server_issuers), server_admins = yamldecode(var.server_admins) },
-    { for k, v in { server_license_admins = yamldecode(var.server_license_admins) } : k => v if try(length(v), 1) > 0 },
+    { for k, v in {
+      server_license_admins      = yamldecode(var.server_license_admins)
+      server_distribution_admins = yamldecode(var.server_distribution_admins)
+    } : k => v if try(length(v), 1) > 0 },
   )
   container = {
     name      = "kista"

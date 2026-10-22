@@ -1,7 +1,7 @@
 # Spec 0030: Reserved names as data, and a distributor's names in a tenant
 
-- **Status**: accepted (2026-10-22); part 1 (the server's names) implemented, parts 2 (a tenant's
-  names, the distribution admins) and 3 (the community sync) to come
+- **Status**: accepted (2026-10-22); parts 1 (the server's names) and 2 (a tenant's names, the
+  distribution admins) implemented, part 3 (the community sync) to come
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 
@@ -176,9 +176,9 @@ Migration 0030, in every dialect (PostgreSQL, SQL Server, SQLite):
 
 - `reserved_names` and `reserved_name_sources` created and filled with the builtin lists (`source
   builtin`); `reserved_version` created at 1;
-- `tenant_reserved_names` created;
-- `min_reader 30`: a replica older than this would let a wide `publish` through on a
-  tenant-reserved name.
+- `tenant_reserved_names` created (as built: in migration 0031, with `min_reader 31`);
+- `min_reader 30`: a replica older than this would read only its compiled lists (as built; the
+  tenant-reserved names' reason is migration 0031's `min_reader 31`).
 
 The `.txt` lists stay in the repository as the documented seed of the migration, and the store
 suite checks the migration holds them.
@@ -197,8 +197,11 @@ suite checks the migration holds them.
   distribution admins reserve and release them: a tenant administrator cannot lift a distributor's
   reservation, nor make one that would block another tenant.
 - **The distribution admins** hold a fixed list of calls; a stolen principal of that role can reserve
-  names (an annoyance, undone by a server administrator) and manage the publishers a distributor
-  marked, not read a tenant's channels or change its keys.
+  names (an annoyance, undone by a server administrator), manage the publishers a distributor
+  marked, and grant `publish`, `promote` and `admin` on the names reserved in a tenant: it can
+  publish under those names there, as the distributor does. It cannot take a tenant's publisher with
+  grants, grant on other names, remove the tenant's grants, or change a tenant's keys; it reads a
+  tenant's channels only as a reservation's answer names releases under the name (as built, part 2).
 - **Existence.** The server's reserved names are DuckDB's, public anyway; a tenant's are read only
   by its administrators and the admins above.
 
@@ -229,8 +232,9 @@ Three parts, each a pull request:
    version, a version's core extensions (API, CLI, bootstrap, console, `kista duckdb`), the
    administrator's names, the intake's learning, `"*"` on community, the re-check under the lock,
    the grant explanations, `make reserved` narrowed.
-2. **A tenant's names and the distribution admins**: `tenant_reserved_names` (its own migration, with
-   its `min_reader`), the lookup in that precedence, the role and its calls, the reaper.
+2. **A tenant's names and the distribution admins** (implemented): `tenant_reserved_names` (its own
+   migration, with its `min_reader`), the lookup in that precedence, the role and its calls, the
+   reaper.
 3. **The community sync**: `reserved.community_sync`.
 
 ### As built (part 1)
@@ -272,9 +276,55 @@ Three parts, each a pull request:
   name's source names the upstream or the bundle.
 - A community name that becomes core: the intake records shadows for community-built mirrors of it
   from then on (the shadow decision reads the list in the transaction); the backfill of mirrors
-  that exist, and listing their tenants, come with part 2's lookup.
+  that exist, and listing their tenants, are a follow-up (not in parts 1 and 2).
 - The Marketplace package carries v2.0.0's core extensions in its DuckDB choice, read at the tag's
   commit.
+
+### As built (part 2)
+
+- Migration 0031 creates `tenant_reserved_names` (with `added_by`) and sets `min_reader 31`.
+- **The lookup** is `store.ReservedFor(tenant, name)`: core or community from the synced view, then
+  the tenant's table, then the tenant's upstream entries. Publish, promote, an attachment's
+  `publish`, the publishers' release reads and the grant explanations call it; the index, the
+  statistics scope and pull-through read the tenant's names and its upstreams' from the channel's
+  snapshot (`TenantReserved` beside `Provided`). A reservation bumps every channel of the tenant
+  (their release version), so the snapshots follow. The release insert re-checks the tenant's names
+  under its locks, beside the server's and the upstreams'.
+- A reservation takes the tenant's upstream lock (as an upstream change does) in a transaction that
+  refuses a deleting tenant; an upstream entry for a tenant-reserved name needs `allow_reserved`,
+  checked under the same lock.
+- A reservation needs an active tenant; the holder is 1 to 128 bytes of text without CR, LF or NUL.
+  The answer says `changed` (and `previous_holder`); the same holder again is no change and no
+  event. The reaper removes a deleted tenant's rows. Editing an upstream entry for a tenant-reserved
+  name needs `allow_reserved` too.
+- **The distribution admins** are an actor of their own (`distribution-admin:<issuer>|<who>`) with a
+  verb no grant gives (`distribute`; `admin` does not imply it). The API admits them on the routes of
+  their calls (publishers, a publisher's keys and licence-key mark, grants, the tenant's reserved
+  names, `GET /api/v1/reserved-names`); each service call narrows them, tighter than the design
+  above after review:
+  - publishers: create, list, read (an unmarked one without its keys); mark one only while it holds
+    no keys and no grants (otherwise a tenant's publisher with wide grants would become the
+    distributor's), unmark; keys only of marked publishers; no removal of a publisher;
+  - grants: list and read all; add only `publish`, `promote` and `admin` on a name **reserved in the
+    tenant** (any channel scope), never on the tenant, a channel or a group, never `issuer:`; a
+    publisher principal must be marked; remove only grants a distribution admin made, or a marked
+    publisher's (the tenant's own grants stay its administrators').
+  So a distributor's reach in a tenant is the names reserved there. It may reserve any name, and the
+  answer names the releases under it (channels included): the Security section's "reads no channel"
+  holds for its other calls. A principal may not be both a licence manager and a distribution admin
+  (the configuration is refused, and a token whose principals hold both is refused at
+  verification); one listed with the server administrators acts as one. Tenant events and sinks
+  show `distribution-admin` unless unmasked. The AWS, GCP and Container Apps stacks take
+  `server_distribution_admins` beside `server_license_admins`; the Marketplace package does not.
+- A name `"*"` took is checked again under the release insert's locks (the server's list, the
+  tenant's names, its upstreams' entries): a reservation made while a pull-through miss was queued
+  or fetched wins, and the cell is `shadowed`. `"*"` also leaves out names any upstream of the
+  tenant lists, not only the channel's.
+- A channel created while a reservation commits may keep a snapshot without the name until its next
+  change; only the index's provenance view reads that set (pull-through on it needs an upstream,
+  whose addition bumps it).
+- The console shows a tenant's administrators its reserved names, read only, on the publishers
+  page.
 
 ## Alternatives considered
 

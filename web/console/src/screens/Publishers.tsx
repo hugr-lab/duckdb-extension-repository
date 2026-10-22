@@ -81,7 +81,37 @@ export function Publishers() {
         />
       )}
       <Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />
+      <ReservedNames />
     </>
+  )
+}
+
+interface TenantReserved {
+  name: string
+  holder: string
+  added_at: string
+  added_by: string
+}
+
+/** The names a distributor holds in the tenant (spec 0030): read here, changed by the server's
+ * administrators and distribution admins only. */
+function ReservedNames() {
+  const { client, api } = useTenant()
+  const list = useLoad(() => client.get<{ reserved_names: TenantReserved[] }>(`${api}/reserved-names`), [api])
+  const rows = list.data?.data.reserved_names ?? []
+  // a caller who may not read them, or a replica that does not know them: nothing to show
+  if (list.error instanceof ApiError && list.error.status === 404) return null
+  if (list.error) return <ErrorBox error={list.error} />
+  if (rows.length === 0) return null
+  return (
+    <Card title="Names reserved for a distributor">
+      <Table rows={rows} rowKey={(r) => r.name} columns={[
+        ['Name', (r) => <Mono>{r.name}</Mono>],
+        ['Holder', (r) => r.holder],
+        ['Since', (r) => when(r.added_at)],
+      ]} />
+      <Note>Only a grant that names the extension publishes or promotes it here; a tenant- or channel-wide grant does not.</Note>
+    </Card>
   )
 }
 

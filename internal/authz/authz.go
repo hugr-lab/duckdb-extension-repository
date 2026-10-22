@@ -27,6 +27,8 @@ const (
 	ActorSystem    ActorKind = "system"    // kista itself
 	// ActorLicenseManager is a licence manager's server token (spec 0029): license only
 	ActorLicenseManager ActorKind = "license-manager"
+	// ActorDistributionAdmin is a distribution admin's server token (spec 0030): distribute only
+	ActorDistributionAdmin ActorKind = "distribution-admin"
 )
 
 // Actor is who performs an action. Its String form is recorded with every change.
@@ -62,6 +64,11 @@ const (
 	// VerbLicense manages a tenant's licences (spec 0029): admin on the tenant implies it, licence
 	// managers hold it on every tenant and nothing else. No grant gives it (store.Verbs lacks it).
 	VerbLicense Verb = "license"
+	// VerbDistribute is a distributor's set of calls on a tenant (spec 0030): its reserved names,
+	// marked publishers, and grants on extensions; on the server, reading the reserved names.
+	// Distribution admins hold it on every active tenant and the server, and nothing else; server
+	// administrators hold everything. No grant gives it.
+	VerbDistribute Verb = "distribute"
 )
 
 // Resource is what an action is on: the server (no tenant), a tenant, a channel, an extension in a
@@ -114,6 +121,14 @@ func (g Grants) Allow(ctx context.Context, a Actor, verb Verb, r Resource) error
 	switch a.Kind {
 	case ActorOS, ActorServer:
 		return nil
+	case ActorDistributionAdmin:
+		if verb != VerbDistribute || r.Channel != "" || r.Extension != "" || r.ExtensionGroup != "" {
+			return ErrDenied
+		}
+		if r.Tenant == "" {
+			return nil // the server's reserved names
+		}
+		return activeTenant(ctx, g.Store, r.Tenant)
 	case ActorLicenseManager:
 		if verb != VerbLicense || r.Tenant == "" || r.Channel != "" || r.Extension != "" || r.ExtensionGroup != "" {
 			return ErrDenied
@@ -156,6 +171,20 @@ func (g Grants) Allow(ctx context.Context, a Actor, verb Verb, r Resource) error
 		return nil
 	}
 	return ErrDenied
+}
+
+// activeTenant allows an active tenant only (a server role's calls on a tenant).
+func activeTenant(ctx context.Context, st *store.Store, name string) error {
+	t, err := st.GetTenant(ctx, name)
+	switch {
+	case errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleting) || errors.Is(err, store.ErrDeleted):
+		return ErrDenied
+	case err != nil:
+		return err
+	case t.State != store.TenantActive:
+		return ErrDenied
+	}
+	return nil
 }
 
 // Covers reports whether a caller holds verb on a resource: a grant without a channel or extension
@@ -226,6 +255,9 @@ func Reaching(g store.Grant, tenant, ext string, reserved bool) (via string, ver
 
 // GrantCovers reports whether one grant gives verb on a resource (Covers' rule, per grant).
 func GrantCovers(g store.Grant, verb string, r Resource) bool {
+	if verb == string(VerbDistribute) {
+		return false // spec 0030: a server role's, never a grant's (admin does not imply it)
+	}
 	explicit := verb == store.VerbPublish || verb == store.VerbPromote
 	if g.Kind == store.PrincipalIssuer && (verb == store.VerbAdmin || verb == store.VerbAudit || verb == store.VerbFeed || explicit || !slices.Contains(g.Verbs, verb)) {
 		return false
