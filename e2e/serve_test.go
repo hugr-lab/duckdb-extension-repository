@@ -145,7 +145,7 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 		kind = "release"
 	}
 	// the version's core extensions, read from the build's DuckDB sources (spec 0030)
-	core, err := duckdbsrc.CoreNames(os.DirFS(filepath.Join(b.dir, "src")))
+	core, err := duckdbsrc.CoreNames(os.DirFS(filepath.Join(b.dir, "core-src")))
 	must(err)
 	_, _, err = ten.AddVersion(ctx, serveAdmin, b.versionDir, kind, []string{"v1.5.6", "v2.0.0"}, tenants.CoreExtensions{Names: core})
 	must(err)

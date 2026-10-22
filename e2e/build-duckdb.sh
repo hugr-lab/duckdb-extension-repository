@@ -10,8 +10,10 @@
 #                             (include/, third_party/), lib/libduckdb_mbedtls.a and libduckdb
 #   ci-tools/                 hugr-lab's extension-ci-tools at e2e/CI_TOOLS_PIN: the kista C++ SDK
 #                             (kista/sdk/cpp, spec 0022), which kista_demo is built from
+#   core-src/                 the files of the checkout kista duckdb core-extensions -dir reads (spec
+#                             0030), and COMMIT, the commit they are at
 # and, as working directories, src/ (the verified checkout) and build/ (the cmake tree). CI caches
-# only lib/, include/, extensions/ and sdk/.
+# only lib/, include/, extensions/, sdk/ and core-src/.
 #
 # kista depends on DuckDB, and on the kista SDK in hugr-lab's extension-ci-tools, both pinned.
 set -euo pipefail
@@ -94,4 +96,13 @@ cp -R "$src/src/include" "$out/sdk/include"
 (cd "$src" && find third_party -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.hh' -o -name '*.ipp' -o -name '*.inc' \) |
 	while read -r f; do mkdir -p "$out/sdk/$(dirname "$f")" && cp "$f" "$out/sdk/$f"; done)
 cp "$build/third_party/mbedtls/libduckdb_mbedtls.a" "$lib" "$out/sdk/lib/"
+# spec 0030: the version's core extensions are read from these (kista duckdb core-extensions -dir)
+rm -rf "$out/core-src"
+mkdir -p "$out/core-src/src/main/extension" "$out/core-src/src/include/duckdb/main"
+cp "$src/src/main/extension/extension_helper.cpp" "$out/core-src/src/main/extension/"
+cp "$src/src/include/duckdb/main/extension_entries.hpp" "$out/core-src/src/include/duckdb/main/"
+(cd "$src" && find extension -mindepth 1 -maxdepth 1 -type d) | while read -r d; do mkdir -p "$out/core-src/$d"; done
+(cd "$src" && find .github/config -type f -name '*.cmake') |
+	while read -r f; do mkdir -p "$out/core-src/$(dirname "$f")" && cp "$src/$f" "$out/core-src/$f"; done
+echo "$head" >"$out/core-src/COMMIT"
 echo "built DuckDB $DUCKDB_COMMIT into $out"

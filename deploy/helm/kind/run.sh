@@ -284,7 +284,7 @@ go build -o "$work/kista" "$repo/cmd/kista"
 version=$("$work/kista" ext inspect "$duck/extensions/httpfs.duckdb_extension" | awk -F': *' '/^duckdb version/ {print $2}')
 case "$version" in v*) kind_=release ;; *) kind_=dev ;; esac
 # the version's core extensions, read from the build's DuckDB sources (spec 0030)
-"$work/kista" duckdb core-extensions -dir "$duck/src" -commit "$(git -C "$duck/src" rev-parse HEAD)" | ka version add "$version" -kind "$kind_" -core-extensions -
+"$work/kista" duckdb core-extensions -dir "$duck/core-src" -commit "$(cat "$duck/core-src/COMMIT")" | ka version add "$version" -kind "$kind_" -core-extensions -
 ka channel versions acme/prod -add "$version"
 ka release add acme/prod - -name httpfs <"$duck/extensions/httpfs.duckdb_extension"
 ka release add acme/prod - -name loadable_extension_demo -private <"$duck/extensions/loadable_extension_demo.duckdb_extension"

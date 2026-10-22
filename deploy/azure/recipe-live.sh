@@ -187,8 +187,8 @@ check() {
 	ok POST tenants/acme/audiences "$srv" -H "$json" -d "$(jq -cn --arg a "$acme_aud" '{audience: $a}')"
 	ok POST tenants/acme/channels "$srv" -H "$json" -d '{"name":"prod","kind":"signed"}'
 	# the version's core extensions, read from the build's DuckDB sources (spec 0030)
-	core=$("$work/kista" duckdb core-extensions -dir "$duck/src" | grep -v '^#' | jq -Rsc 'split("\n") | map(select(. != ""))')
-	commit=$(git -C "$duck/src" rev-parse HEAD)
+	core=$("$work/kista" duckdb core-extensions -dir "$duck/core-src" | grep -v '^#' | jq -Rsc 'split("\n") | map(select(. != ""))')
+	commit=$(cat "$duck/core-src/COMMIT")
 	ok POST duckdb-versions "$srv" -H "$json" -d "$(jq -cn --arg n "$version" --arg k "$vkind" --argjson c "$core" --arg cc "$commit" \
 		'{name: $n, kind: $k, core_extensions: $c, core_extensions_commit: $cc}')"
 	ok POST tenants/acme/channels/prod/duckdb-versions "$srv" -H "$json" -d "$(jq -cn --arg v "$version" '{duckdb_version: $v}')"
