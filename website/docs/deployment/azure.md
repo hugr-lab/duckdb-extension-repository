@@ -76,6 +76,10 @@ az deployment group show -g kista -n main --query properties.outputs.address.val
   (`auth.server_license_admins`): principals of the server issuers who manage every tenant's
   licences and nothing else. Empty (the default), there are none, and the configuration leaves the
   key out.
+- **`serverDistributionAdmins`** sets the [distribution admins](../access.md)
+  (`auth.server_distribution_admins`): principals of the server issuers who reserve names in tenants
+  and manage the publishers they mark. Empty (the default), there are none. The Marketplace package
+  does not ask for them: a distributor's server is set up from the template.
 - **Switching the store** (PostgreSQL to Azure SQL, or a new server) needs an empty container:
   kista marks the blob domain for its store and refuses a domain marked for another.
 

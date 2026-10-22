@@ -74,6 +74,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"CreateTenant": {"tenant.create"}, "SetTenantState": {"tenant.suspend", "tenant.resume"}, "SetTenantHolder": {"tenant.holder"}, "Delete": {"tenant.delete"}, "Show": nil,
 		"AddVersion": {"version.add"}, "AddVersionCAPI": {"version.c_apis"}, "AddVersionCore": {"reserved.add"}, "CreateChannel": {"channel.create"},
 		"SetChannelVersions": {"channel.versions"}, "Reserve": {"reserved.add"}, "Unreserve": {"reserved.remove"}, "ListReserved": nil,
+		"ReserveInTenant": {"reserved.tenant.add"}, "ReleaseInTenant": {"reserved.tenant.remove"}, "ListInTenant": nil,
 		"ListTenants": nil, "GetTenant": nil, "ListVersions": nil, "ListChannels": nil, "ChannelVersions": nil,
 	},
 	"tenants.AuthAdmin": {
@@ -390,6 +391,12 @@ func TestCoverage(t *testing.T) {
 	en.expect("tenants.AuthAdmin.RemoveExtensionGroup", do(func() error { return en.adm.RemoveExtensionGroup(rctx, admin, "acme", "platform", 0) }),
 		"extension_group.members", "extension_group.remove")
 	en.expect("tenants.AuthAdmin.AddPublisher", do(func() error { _, err := en.adm.AddPublisher(rctx, admin, "acme", "ci"); return err }), "publisher.add")
+	en.expect("tenants.Service.ReserveInTenant", do(func() error {
+		_, err := en.ten.ReserveInTenant(rctx, admin, "acme", "kista_held", "enterest")
+		return err
+	}), "reserved.tenant.add")
+	en.expect("tenants.Service.ReleaseInTenant", do(func() error { return en.ten.ReleaseInTenant(rctx, admin, "acme", "kista_held") }),
+		"reserved.tenant.remove")
 	var pubKey string
 	en.expect("tenants.AuthAdmin.AddPublisherKey", do(func() error {
 		k, err := en.adm.AddPublisherKey(rctx, admin, "acme", "ci", publisherKeyLine, time.Now().Add(24*time.Hour))

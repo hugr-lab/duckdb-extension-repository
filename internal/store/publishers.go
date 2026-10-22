@@ -58,6 +58,14 @@ func (t *Tx) PublisherCredentials(ctx context.Context, publisherID string) (int,
 	return n, err
 }
 
+// PublisherGrants counts a publisher's grants, those on extension groups included.
+func (t *Tx) PublisherGrants(ctx context.Context, publisherID string) (int, error) {
+	var n int
+	err := t.queryRow(ctx, `SELECT (SELECT COUNT(*) FROM grants WHERE publisher_id = ?) +
+(SELECT COUNT(*) FROM extension_group_grants WHERE publisher_id = ?)`, publisherID, publisherID).Scan(&n)
+	return n, err
+}
+
 // SetPublisherLicenseKeys marks a publisher a trusted source of licence keys, or unmarks it
 // (spec 0021). Unmarking keeps the keys it brought; removing the publisher drops them.
 func (t *Tx) SetPublisherLicenseKeys(ctx context.Context, tenantID, name string, on bool) (Publisher, error) {

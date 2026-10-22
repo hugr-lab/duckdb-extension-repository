@@ -171,7 +171,8 @@ type Record struct {
 
 // recordOf is an event as a sink sends it. A server administrator's or the CLI's identity on a
 // tenant's event shows as "server", without name or address, as to the tenant's readers (spec
-// 0010), and a licence manager's as "license-manager" (spec 0029), unless the sink is unmasked.
+// 0010), a licence manager's as "license-manager" (spec 0029) and a distribution admin's as
+// "distribution-admin" (spec 0030), unless the sink is unmasked.
 func recordOf(e store.Event, tenantName string, unmasked bool) Record {
 	data := json.RawMessage(e.Data)
 	if !json.Valid(data) {
@@ -188,6 +189,8 @@ func recordOf(e store.Event, tenantName string, unmasked bool) Record {
 		r.Actor, r.ActorName, r.Client = "server", "", ""
 	case strings.HasPrefix(e.Actor, "license-manager:"):
 		r.Actor, r.ActorName, r.Client = "license-manager", "", ""
+	case strings.HasPrefix(e.Actor, "distribution-admin:"):
+		r.Actor, r.ActorName, r.Client = "distribution-admin", "", ""
 	}
 	return r
 }

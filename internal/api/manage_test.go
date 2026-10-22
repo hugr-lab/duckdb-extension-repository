@@ -131,10 +131,11 @@ func newMgmt(t *testing.T) *mgmt {
 	server := &auth.Server{
 		Issuers: []store.Issuer{{ID: auth.ServerIssuerID("ops"), Name: "ops", URL: opsURL, Algorithms: auth.Algorithms,
 			RequiredClaims: map[string]string{"tid": "t1"}, RolesClaim: []string{"roles"}, MaxTokenLifetime: 24 * time.Hour}},
-		Audiences:     []string{serverAud},
-		Admins:        auth.Principals{{IssuerID: auth.ServerIssuerID("ops"), Kind: store.PrincipalRole, Value: "kista.admin"}: true},
-		LicenseAdmins: auth.Principals{{IssuerID: auth.ServerIssuerID("ops"), Kind: store.PrincipalRole, Value: "kista.licenses"}: true},
-		Verifier:      &auth.Verifier{Fetch: ks},
+		Audiences:          []string{serverAud},
+		Admins:             auth.Principals{{IssuerID: auth.ServerIssuerID("ops"), Kind: store.PrincipalRole, Value: "kista.admin"}: true},
+		LicenseAdmins:      auth.Principals{{IssuerID: auth.ServerIssuerID("ops"), Kind: store.PrincipalRole, Value: "kista.licenses"}: true},
+		DistributionAdmins: auth.Principals{{IssuerID: auth.ServerIssuerID("ops"), Kind: store.PrincipalRole, Value: "kista.distribution"}: true},
+		Verifier:           &auth.Verifier{Fetch: ks},
 	}
 	auths := &auth.TenantAuths{Store: en.st}
 	grants := authz.Grants{Store: en.st, Auths: auths}
@@ -211,6 +212,8 @@ func newMgmt(t *testing.T) *mgmt {
 		"server user":  ks.sign(t, opsURL, map[string]any{"sub": "joe", "aud": serverAud, "tid": "t1"}),
 		// spec 0029: a licence manager
 		"server licence mgr": ks.sign(t, opsURL, map[string]any{"sub": "reconciler", "aud": serverAud, "tid": "t1", "roles": []any{"kista.licenses"}}),
+		// spec 0030: a distribution admin
+		"server dist admin": ks.sign(t, opsURL, map[string]any{"sub": "distributor", "aud": serverAud, "tid": "t1", "roles": []any{"kista.distribution"}}),
 		"stale admin": ks.sign(t, idpURL, map[string]any{"sub": "tom", "aud": publicURL + "/acme",
 			"iat": time.Now().Add(-2 * time.Hour).Unix()}),
 		"stale server": ks.sign(t, opsURL, map[string]any{"sub": "root", "aud": serverAud, "tid": "t1", "roles": []any{"kista.admin"},
@@ -270,7 +273,8 @@ func TestManagementAccess(t *testing.T) {
 	}
 	grantID := gs[0].ID
 	everyone := []string{"anonymous", "no grants", "install", "ext admin", "channel adm", "tenant admin", "server admin",
-		"server user", "stale admin", "stale server", "server licence mgr"}
+		"server user", "stale admin", "stale server", "server licence mgr", "server dist admin"}
+	distributors := append(slices.Clone(tenantAdmins), "server dist admin")
 	cases := []struct {
 		method, path, body string
 		want               want
@@ -281,17 +285,17 @@ func TestManagementAccess(t *testing.T) {
 		{"GET", T + "/audiences", "", ok(200, tenantAdmins...), nil},
 		{"GET", T + "/issuers", "", ok(200, tenantAdmins...), nil},
 		{"GET", T + "/issuers/corp", "", ok(200, tenantAdmins...), nil},
-		{"GET", T + "/grants", "", ok(200, tenantAdmins...), nil},
+		{"GET", T + "/grants", "", ok(200, distributors...), nil},
 		{"POST", T + "/audiences", `{"audience":"api://acme"}`, ok(200, "server admin"), nil},
 		{"POST", "/api/v1/duckdb-versions", `{"name":"v2.1.0","kind":"release","c_api_maxima":["v1.5.6"],"core_extensions":["json"]}`, ok(201, "server admin"), nil},
 		{"POST", T + "/grants", `{"principal":"subject:corp|zed","verbs":["install"]}`, ok(201, tenantAdmins...), nil},
 		{"GET", "/api/v1/duckdb-versions", "", ok(200, append(everyone, "other admin")...), nil},
 		{"GET", "/api/v1/duckdb-versions/v2.0.0", "", ok(200, append(everyone, "other admin")...), nil},
 		{"GET", T + "/channels/prod/extensions", "", ok(200, everyone...), nil},
-		{"GET", T + "/grants/" + grantID, "", ok(200, tenantAdmins...), nil},
+		{"GET", T + "/grants/" + grantID, "", ok(200, distributors...), nil},
 		{"POST", "/api/v1/duckdb-versions/v2.0.0/c-apis", `{"c_api":"v3.0.0"}`, ok(200, "server admin"), nil},
 		{"POST", "/api/v1/duckdb-versions/v2.0.0/core-extensions", `{"core_extensions":["json"]}`, ok(200, "server admin"), nil},
-		{"GET", "/api/v1/reserved-names?name=json", "", ok(200, "server admin"), nil},
+		{"GET", "/api/v1/reserved-names?name=json", "", ok(200, "server admin", "server dist admin"), nil},
 		{"POST", "/api/v1/reserved-names", `{"names":["kista_mgmt_x"],"kind":"community"}`, ok(200, "server admin"), nil},
 		{"DELETE", "/api/v1/reserved-names/kista_mgmt_x", "", ok(204, "server admin"), nil},
 		{"POST", T + "/audiences/remove", `{"audience":"api://acme"}`, ok(200, "server admin"), nil},

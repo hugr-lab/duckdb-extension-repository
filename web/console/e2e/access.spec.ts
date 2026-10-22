@@ -88,6 +88,10 @@ test('a publisher with a key, and an issuer record, added and removed', async ({
   await page.getByRole('button', { name: 'Remove…' }).first().click()
   await page.getByRole('dialog').getByRole('button', { name: 'Remove' }).click()
   await expect(page.getByRole('heading', { name: 'Publishers' })).toBeVisible()
+  // spec 0030: a name a distributor holds in the tenant, read only
+  const held = page.locator('section', { has: page.getByRole('heading', { name: 'Names reserved for a distributor' }) })
+  await expect(held.getByRole('cell', { name: 'acme_tool' })).toBeVisible()
+  await expect(held.getByRole('cell', { name: 'enterest' })).toBeVisible()
 
   await nav(page, 'Identity').click()
   await page.getByRole('button', { name: 'Add an issuer' }).click()

@@ -197,9 +197,9 @@ Rules:
 - A publisher grant carries `publish` and `promote` only.
 - `audit` is granted on the tenant only; `feed` on the tenant or a channel, never on an extension or
   issuer-wide.
-- For `publish` and `promote`, a **reserved name** (DuckDB's core and community names, and names an
-  upstream of the tenant provides) is reached only by a grant naming that extension, never by a
-  tenant-, channel- or group-wide grant.
+- For `publish` and `promote`, a **reserved name** (DuckDB's core and community names, names
+  reserved in the tenant for a distributor, and names an upstream of the tenant provides) is reached
+  only by a grant naming that extension, never by a tenant-, channel- or group-wide grant.
 - An identical grant is not added twice. A tenant holds at most 1,000 grants, both kinds counted.
 - A tenant administrator cannot remove the last tenant-wide `admin` grant (or an issuer record whose
   removal would remove it); a server administrator or the CLI can.
@@ -260,6 +260,28 @@ to verify against a key a live release declares. The role is configuration only:
 grants it. Its acts are recorded as `license-manager:<issuer>|<who>`; a tenant's readers see
 `license-manager`, without the name. A principal in both lists is a server administrator.
 
+**Distribution admins** (spec 0030) are a server-wide role for a distributor's provisioning, such as
+Enterest's: a principal of a server issuer listed in `auth.server_distribution_admins`. On every
+active tenant a distribution admin may:
+
+- reserve names in the tenant for a holder, and release them (`PUT|DELETE
+  /api/v1/tenants/{t}/reserved-names/{name}`, [Reserved names](publishing.md#reserved-names)); read
+  the server's reserved names (`GET /api/v1/reserved-names`);
+- read the tenant's reserved names;
+- create publishers, mark one (before it holds keys or grants) a source of licence keys and unmark
+  it, and manage a marked publisher's keys and grants: the steps a server administrator alone takes
+  otherwise. The tenant's own publishers stay its administrators';
+- list the tenant's grants and publishers, and add grants of `publish`, `promote` and `admin` on a
+  name reserved in the tenant (in a channel or every channel), never on the tenant, a channel or an
+  extension group, nor for a whole issuer; remove the grants a distribution admin made, or a marked
+  publisher's.
+
+Nothing else: it reads no channel, key or release beyond what those calls answer, and cannot change
+a tenant, a channel or a key set; the rest answers `404`. Its acts are recorded as
+`distribution-admin:<issuer>|<who>`, shown to a tenant's readers as `distribution-admin`. A
+principal is a licence manager or a distribution admin, not both: the configuration is refused, and
+so is a token whose principals hold both.
+
 ```yaml title="kista.yaml"
 auth:                                  # file-only; changes take effect at restart
   server_issuers:
@@ -272,12 +294,15 @@ auth:                                  # file-only; changes take effect at resta
     - role:ops|kista-admin             # kind:issuer|value; issuer: is refused
   server_license_admins:               # licence managers: every tenant's licences, nothing else
     - role:ops|kista-licenses          # checked as server_admins
+  server_distribution_admins:          # distribution admins: a distributor's calls on every tenant
+    - client:ops|enterest              # checked as server_admins
   server_egress_allow: []              # CIDRs reached only by the server issuers' fetcher
   admin_token_max_age: 1h              # management needs a token issued this recently; 1m..24h
 ```
 
 A server issuer's principals never match a tenant's, whatever a tenant names its records. A server
-token's identity is at `GET /api/v1/whoami`, with `administrator` and `license_manager`.
+token's identity is at `GET /api/v1/whoami`, with `administrator`, `license_manager` and
+`distribution_admin`.
 
 **Fresh tokens for management.** Every management route, reads included, needs a token issued
 within `auth.admin_token_max_age` (default 1h), and a write needs a `sub` or client claim to record
@@ -289,7 +314,8 @@ gets `404`. See [HTTP API](api.md).
 - Management answers that the caller may not see are `404`, the same as for a resource that does not
   exist.
 - A tenant administrator sees `created_by: server` for records a server administrator or the CLI
-  made (`license-manager` for a licence manager's acts), and no infrastructure details (signer
+  made (`license-manager` for a licence manager's acts, `distribution-admin` for a distribution
+  admin's), and no infrastructure details (signer
   references, storage domains).
 - The index lists, to a caller with `install`, the private extensions it may install; to anyone else,
   public ones only.

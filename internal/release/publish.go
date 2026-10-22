@@ -9,7 +9,6 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -44,11 +43,12 @@ func (s *Service) Promote(ctx context.Context, a authz.Actor, tenant, channel, n
 }
 
 func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, name string, o PromoteOptions) ([]store.Release, bool, error) {
-	if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030: a name reserved since is seen
+	kind, err := s.Store.ReservedFor(ctx, tenant, name) // spec 0030: DuckDB's, the tenant's, its upstreams'
+	if err != nil {
 		return nil, false, err
 	}
 	res := func(ch string) authz.Resource {
-		return authz.Resource{Tenant: tenant, Channel: ch, Extension: name, Reserved: reserved.Kind(name) != ""}
+		return authz.Resource{Tenant: tenant, Channel: ch, Extension: name, Reserved: kind != ""}
 	}
 	if err := s.Authz.Allow(ctx, a, authz.VerbPromote, res(channel)); err != nil {
 		return nil, false, err

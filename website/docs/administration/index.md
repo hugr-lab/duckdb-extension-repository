@@ -21,6 +21,7 @@ the order of the first day's setup. The pages below go into each task:
 | --- | --- | --- | --- |
 | **Server administrator** | whoever runs `kista admin` as the service's OS user; or a principal listed in `auth.server_admins`, with a token from a server issuer (`auth.server_issuers`) carrying a server audience | the CLI; the API and the console with a server token | everything, in every tenant |
 | **Licence manager** | a principal listed in `auth.server_license_admins`, with a server token | the API with a server token | every tenant's licences (list, read, import, replace, remove, make private) and licence keys; nothing else |
+| **Distribution admin** | a principal listed in `auth.server_distribution_admins`, with a server token | the API with a server token | on every tenant: its reserved names, marked publishers and their keys, and `publish`, `promote` and `admin` grants on extensions; nothing else ([Access](../access.md)) |
 | **Tenant administrator** | a principal of one of the tenant's issuers holding a tenant-wide `admin` grant | the API and the console with a tenant token | the tenant's issuers, grants, extension groups, publishers, upstreams, feeds, channels and releases |
 | **Channel administrator** | `admin` granted on one channel | the API and the console | that channel's DuckDB versions, key activation and retirement, releases |
 | **Extension administrator** | `admin` granted on one extension or extension group (in a channel or all) | the API and the console | that extension's releases; its attachments with a grant in every channel |
@@ -35,8 +36,9 @@ Some operations are **server-only**, whatever the grant, in the CLI and the API 
 - `force` on key activation and retirement;
 - storage operations: `blob check`, `blob verify`, `blob gc` (CLI only).
 
-Server administrators and licence managers come from the configuration file
-(`auth.server_issuers`, `auth.server_admins`, `auth.server_license_admins`) and change only with a
+Server administrators, licence managers and distribution admins come from the configuration file
+(`auth.server_issuers`, `auth.server_admins`, `auth.server_license_admins`,
+`auth.server_distribution_admins`) and change only with a
 restart. Tenant administrators are grants in the database and change at once. A token is either a
 server token or a tenant token, never both: see [Access](../access.md).
 

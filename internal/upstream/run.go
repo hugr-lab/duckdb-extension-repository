@@ -496,6 +496,9 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		in.KeySource = u.ID // spec 0021: a repository upstream is a trusted source of licence keys
 	}
 	in.ReserveKind = reserveKind(u.Kind) // spec 0030: DuckDB's repositories bring their names
+	if !slices.ContainsFunc(u.Entries, func(x store.UpstreamEntry) bool { return x.Name == c.name }) {
+		in.AnyKind = u.Kind // "*" took it: checked again under the insert's locks
+	}
 	in.ReserveSource = "upstream:" + sc.Tenant.Name + "/" + u.Name
 	got, err := s.Releases.Ingest(ctx, a, sc, sp, in)
 	rec.BodyHash = got.Hash

@@ -188,6 +188,14 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   make them private. It can never make one public (which would serve its token to anyone served a
   public release), publish, block, or add upstreams or keys. A licence still has to verify against
   a key a live release declares.
+- **Distribution admins** (`auth.server_distribution_admins`, from the configuration file only)
+  provision a distributor's part of every tenant. A leaked distribution admin's token can reserve
+  names in a tenant (narrowing its wide grants; a server administrator releases them), create and
+  mark fresh publishers, give its marked publishers keys, and grant `publish`, `promote` and `admin`
+  on the names reserved in the tenant: so it can publish under those names there, as the distributor
+  does. It cannot take a tenant's publisher with grants, grant on a name the tenant does not
+  reserve, remove a grant the tenant made, read channels or keys, or change a tenant, a channel or a
+  key set. A reservation's answer names the releases under the name in the tenant.
 - **Publishers** sign each request with their developer's SSH key (spec 0023). kista stores only
   public keys, so a copy of its database cannot publish. A signature binds the method, the path and
   query, the body's SHA-256 and a time within five minutes, so a captured request cannot be sent

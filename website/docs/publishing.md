@@ -88,7 +88,12 @@ Names DuckDB owns are **reserved**. The server keeps the list as data, and it on
 - the core and community names kista knew before the list was data (its seed).
 
 A name core in any version is core; a community name may become core, never the other way. Names
-an upstream of the tenant provides are reserved in that tenant too (see [Upstreams](upstreams.md)).
+an upstream of the tenant provides are reserved in that tenant too (see [Upstreams](upstreams.md)),
+and so are the names a server administrator or a distribution admin reserves in the tenant for a
+holder, a distributor such as Enterest (`kista admin tenant-reserved add <tenant> <name> -holder
+<text>`, [the API](api.md#names-reserved-in-a-tenant)). A tenant's administrators read those, and
+change none; they may still grant `publish` that names the extension, and manage its releases with
+`admin`. A tenant reservation sets no `shadows`.
 
 For `publish` and `promote`, a reserved name is reached only by a grant that **names the
 extension**. A tenant-wide or channel-wide grant, or a grant on an extension group, never reaches
@@ -484,7 +489,8 @@ server administrators only. Each records a `publisher.change` event.
   say). The publisher must hold `publish` on the name itself.
 - **A malformed key block is refused**: `400`, with `license_keys` in the detail. `kista ext
   inspect <file>` shows what kista reads.
-- **Its keys and grants are the server administrator's.** A publisher holding a key is not marked
+- **Its keys and grants are the server administrator's** (or a distribution admin's, spec 0030,
+  which marks only a publisher without keys or grants). A publisher holding a key is not marked
   (`400`): keys a tenant administrator registered would outlive the mark. While it is marked,
   adding or removing its keys and grants, and changing the members of an extension group its grants
   name, is refused to a tenant administrator (`404`). A tenant administrator can still remove the

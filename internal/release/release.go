@@ -131,12 +131,13 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	res := authz.Resource{Tenant: tenant, Channel: channel}
 	verb := authz.VerbAdmin
 	if o.Publish != nil {
-		if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030: a name reserved since is seen
+		kind, err := s.Store.ReservedFor(ctx, tenant, o.Name) // spec 0030: DuckDB's, the tenant's, its upstreams'
+		if err != nil {
 			return store.Release{}, false, err
 		}
 		o.Unchecked = false
 		verb = authz.VerbPublish
-		res = authz.Resource{Tenant: tenant, Channel: channel, Extension: o.Name, Reserved: reserved.Kind(o.Name) != ""}
+		res = authz.Resource{Tenant: tenant, Channel: channel, Extension: o.Name, Reserved: kind != ""}
 	}
 	if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
 		return store.Release{}, false, err
@@ -275,6 +276,9 @@ type item struct {
 	// reserveKind reserves the name with reserveSource when the release is inserted (spec 0030: a
 	// build mirrored from DuckDB's repositories). "": none.
 	reserveKind, reserveSource string
+	// anyKind is the upstream's kind when its "*" took the name: insert refuses the name under the
+	// locks if it is reserved since (as AnyTakes, and the tenant's names and upstreams). "": none.
+	anyKind string
 }
 
 // reservedCheck is an item's recheck: the verb on the resource as a reserved name.
@@ -527,10 +531,19 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					}
 					learned = learned || changed
 				}
+				if it.anyKind != "" {
+					taken, err := anyTakesNow(ctx, tx, b.TenantID, b.Name, it.anyKind)
+					if err != nil {
+						return err
+					}
+					if !taken {
+						return ErrShadowed
+					}
+				}
 				upstream := it.origin == store.OriginUpstream
 				if it.recheck != nil {
-					// a name an upstream of the tenant provides, or one the server reserved since the
-					// caller was authorized (spec 0030), takes a grant that names it
+					// a name an upstream of the tenant provides, or one the server or the tenant reserved
+					// since the caller was authorized (spec 0030), takes a grant that names it
 					provided, err := tx.UpstreamProvides(ctx, b.TenantID, b.Name)
 					if err != nil {
 						return err
@@ -541,6 +554,11 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 							return err
 						}
 						provided = k != ""
+					}
+					if !provided {
+						if provided, err = tx.TenantReserves(ctx, b.TenantID, b.Name); err != nil {
+							return err
+						}
 					}
 					if provided {
 						if err := it.recheck(ctx); err != nil {
@@ -727,10 +745,11 @@ func (s *Service) mayRead(ctx context.Context, a authz.Actor, tenant, channel, n
 	if name == "" || !errors.Is(err, authz.ErrDenied) {
 		return err
 	}
-	if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030: the server's list as it is
+	kind, err := s.Store.ReservedFor(ctx, tenant, name) // spec 0030
+	if err != nil {
 		return err
 	}
-	res.Reserved = reserved.Kind(name) != ""
+	res.Reserved = kind != ""
 	for _, v := range []authz.Verb{authz.VerbPublish, authz.VerbPromote} {
 		if err = s.Authz.Allow(ctx, a, v, res); !errors.Is(err, authz.ErrDenied) {
 			return err
@@ -922,4 +941,18 @@ func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, nam
 		return tx.BumpReleaseVersion(ctx, ch.ID)
 	})
 	return out, err
+}
+
+// anyTakesNow is AnyTakes inside a release's transaction, under its locks: the server's list as it is
+// now, and no name the tenant reserves or an upstream of the tenant lists (spec 0030).
+func anyTakesNow(ctx context.Context, tx *store.Tx, tenantID, name, kind string) (bool, error) {
+	k, err := tx.ReservedKind(ctx, name)
+	if err != nil || k == store.ReservedCore || k == store.ReservedCommunity && kind != store.UpstreamCommunity {
+		return false, err
+	}
+	if held, err := tx.TenantReserves(ctx, tenantID, name); err != nil || held {
+		return false, err
+	}
+	listed, err := tx.UpstreamProvides(ctx, tenantID, name)
+	return !listed, err
 }

@@ -102,6 +102,12 @@ variable "server_license_admins" {
   description = "auth.server_license_admins, YAML in a string: the licence managers' principals (spec 0029); empty, none."
 }
 
+variable "server_distribution_admins" {
+  type        = string
+  default     = "[]"
+  description = "auth.server_distribution_admins, YAML in a string: the distribution admins' principals (spec 0030), who reserve names in tenants and manage the publishers they mark; empty, none."
+}
+
 variable "desired_count" {
   type    = number
   default = 2

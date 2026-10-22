@@ -120,3 +120,81 @@ func TestReservedNames(t *testing.T) {
 		}
 	})
 }
+
+// TestTenantReservedNames is spec 0030 part 2's table and the one lookup: DuckDB's names, then the
+// tenant's, then its upstreams'.
+func TestTenantReservedNames(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
+		s := e.Open(t)
+		tn, ch := fixture(t, s)
+		r := store.TenantReservedName{TenantID: tn.ID, Name: "acme_tool", Holder: "enterest", AddedBy: "os:1:t"}
+		reserve := func(r store.TenantReservedName) (prev string, changed bool) {
+			t.Helper()
+			inTx(t, s, func(tx *store.Tx) (err error) { prev, changed, err = tx.ReserveTenantName(ctx, &r); return })
+			return
+		}
+		if prev, changed := reserve(r); prev != "" || !changed {
+			t.Fatalf("new: %q %v", prev, changed)
+		}
+		if prev, changed := reserve(r); prev != "enterest" || changed {
+			t.Fatalf("again: %q %v", prev, changed)
+		}
+		r.Holder = "other"
+		if prev, changed := reserve(r); prev != "enterest" || !changed {
+			t.Fatalf("another holder: %q %v", prev, changed)
+		}
+		for _, bad := range []string{"", "a\nb", "a\tb", "\x1b[31m", strings.Repeat("h", store.MaxHolder+1)} {
+			r.Holder = bad
+			if err := s.InTx(ctx, "", func(tx *store.Tx) error { _, _, err := tx.ReserveTenantName(ctx, &r); return err }); !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("holder %q: %v", bad, err)
+			}
+		}
+		if l, err := s.ListTenantReservedNames(ctx, tn.ID, ""); err != nil || len(l) != 1 || l[0].Holder != "other" || l[0].AddedBy != "os:1:t" {
+			t.Fatalf("list: %+v %v", l, err)
+		}
+		set, _ := s.TenantReservedSet(ctx, tn.ID)
+		inTx(t, s, func(tx *store.Tx) error {
+			if held, err := tx.TenantReserves(ctx, tn.ID, "acme_tool"); err != nil || !held || !set["acme_tool"] {
+				t.Errorf("reserves: %v %v %v", held, set, err)
+			}
+			return nil
+		})
+		// the lookup, in precedence
+		u := store.Upstream{TenantID: tn.ID, Name: "vendor", Kind: store.UpstreamRepo, ChannelID: ch.ID, Mode: store.ModeMirror,
+			Visibility: "public", State: store.UpstreamActive, Entries: []store.UpstreamEntry{{Name: "vendor_ext"}, {Name: "acme_tool"}, {Name: "json"}}}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertUpstream(ctx, &u) })
+		for name, want := range map[string]string{"json": store.ReservedCore, "acme_tool": store.ReservedTenant, "vendor_ext": store.ReservedUpstream,
+			"free_ext": "", "legacy_parser": store.ReservedCore} {
+			if got, err := s.ReservedFor(ctx, "acme", name); err != nil || got != want {
+				t.Errorf("%s: %q, want %q (%v)", name, got, want, err)
+			}
+		}
+		if got, _ := s.ReservedFor(ctx, "other-tenant", "acme_tool"); got != "" {
+			t.Errorf("another tenant's name: %q", got)
+		}
+		// the name's live releases in the tenant
+		b := cppBuild(tn, "acme_tool", "1.0", "a")
+		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
+		rel := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, ExtVersion: b.ExtVersion,
+			Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertRelease(ctx, &rel, "os:1:t") })
+		if l, err := s.TenantLiveReleases(ctx, tn.ID, "acme_tool"); err != nil || len(l) != 1 || l[0].Channel != "prod" ||
+			l[0].Version != "1.0" || l[0].Origin != store.OriginAdmin {
+			t.Fatalf("live releases: %+v %v", l, err)
+		}
+		// released, and once more
+		inTx(t, s, func(tx *store.Tx) error {
+			if got, err := tx.ReleaseTenantName(ctx, tn.ID, "acme_tool"); err != nil || got.Holder != "other" {
+				t.Errorf("release: %+v %v", got, err)
+			}
+			return nil
+		})
+		if err := s.InTx(ctx, "", func(tx *store.Tx) error { _, err := tx.ReleaseTenantName(ctx, tn.ID, "acme_tool"); return err }); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("released twice: %v", err)
+		}
+		if got, _ := s.ReservedFor(ctx, "acme", "acme_tool"); got != store.ReservedUpstream {
+			t.Fatalf("after its release, the upstream's: %q", got)
+		}
+	})
+}

@@ -123,7 +123,10 @@ var catalogue = map[Kind][]string{
 	// reserved names (spec 0030): a version's core extensions, an administrator's
 	"reserved.add":    {"version", "kind", "names", "source", "forced", "tenants"},
 	"reserved.remove": {"name", "sources"},
-	"server.start":    {"version", "schema", "digests", "changed"},
+	// a name reserved in a tenant for a holder (spec 0030 part 2)
+	"reserved.tenant.add":    {"name", "holder", "previous"},
+	"reserved.tenant.remove": {"name", "holder"},
+	"server.start":           {"version", "schema", "digests", "changed"},
 	// a key source weaker than a vault or a KMS, at every start (spec 0026)
 	"signer.source.weak": {"source", "kind", "protection"},
 	// channels and keys
@@ -258,7 +261,7 @@ func SubjectForm(k Kind) string {
 		return "upstream:<name> or feed:<name>"
 	case "reserved.add":
 		return "version:<name> or reserved:<name>"
-	case "reserved.remove":
+	case "reserved.remove", "reserved.tenant.add", "reserved.tenant.remove":
 		return "reserved:<name>"
 	case "license.sync", "usage.forward":
 		return "upstream:<name>"

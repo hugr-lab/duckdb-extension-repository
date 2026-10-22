@@ -262,7 +262,7 @@ kista admin -config kista.yaml version add v2.0.0 -kind release -c-api v1.5.6 -c
 
 ## Reserved names
 
-The server's reserved extension names (spec 0030; [Reserved
+The server's reserved extension names, and the names reserved in a tenant (spec 0030; [Reserved
 names](../publishing.md#reserved-names)). Server administrators only.
 
 | Command | What it does |
@@ -270,6 +270,9 @@ names](../publishing.md#reserved-names)). Server administrators only.
 | `reserved add <name>... -kind core` or `-kind community` `[-force]` | reserves names, with the source `admin:<actor>`; a name that becomes reserved (or community that becomes core) with releases that are not yanked or purged in some tenant is refused, naming the tenants, unless `-force` (the releases stay, and only grants naming the extension reach the name from then on) |
 | `reserved list [-name <name>]` | `NAME`, `KIND`, `ADDED`, `SOURCES` |
 | `reserved remove <name>` | removes a name only administrators reserved; a name a version, an upstream or the seed brought stays |
+| `tenant-reserved add <tenant> <name> -holder <text>` | reserves a name in a tenant for a holder (or changes its holder); prints the name's live releases there |
+| `tenant-reserved remove <tenant> <name>` | releases it; no release changes |
+| `tenant-reserved list <tenant>` | `NAME`, `HOLDER`, `ADDED`, `BY` |
 
 ## Tenants
 

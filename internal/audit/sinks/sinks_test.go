@@ -454,6 +454,12 @@ func TestRefusedBatchesAndMasking(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.InTx(ctx, "", func(tx *store.Tx) error {
+		return tx.Event(audit.WithRequest(ctx, audit.Request{Client: "198.51.100.9", ActorName: "Enterest"}), acme.ID,
+			"distribution-admin:ops|enterest", "reserved.tenant.add", "reserved:acme_tool", map[string]any{"name": "acme_tool"})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	f := &fakeSender{max: 3, refuse: ids[7]}
 	m := &sinks.Manager{Store: st, Resolver: resolver, Holder: "test", Log: slog.New(slog.DiscardHandler), Every: time.Millisecond,
 		MaxBackoff: time.Millisecond, Sinks: []sinks.Sink{{Name: "s", Selection: sinks.SelectionOf(cfg[0]), Sender: f}}}
@@ -461,14 +467,14 @@ func TestRefusedBatchesAndMasking(t *testing.T) {
 	done := make(chan struct{})
 	go func() { m.Run(c); close(done) }()
 	// 20 events; the refused one's audit.dropped is never sent to the sink that refused it
-	waitFor(t, "delivery", func() bool { return len(f.records()) == 21 })
+	waitFor(t, "delivery", func() bool { return len(f.records()) == 22 })
 	cancel()
 	<-done
 	got := map[string]sinks.Record{}
 	for _, r := range f.records() {
 		got[r.ID] = r
 	}
-	if _, ok := got[ids[7]]; ok || len(got) != 21 {
+	if _, ok := got[ids[7]]; ok || len(got) != 22 {
 		t.Fatalf("the refused event: %d records", len(got))
 	}
 	drops, _ := st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "audit.dropped"})
@@ -481,6 +487,9 @@ func TestRefusedBatchesAndMasking(t *testing.T) {
 		}
 		if r.Subject == "license:tresor" && (r.Actor != "license-manager" || r.ActorName != "" || r.Client != "") {
 			t.Fatalf("a licence manager's identity reached a tenant's sink: %+v", r)
+		}
+		if r.Subject == "reserved:acme_tool" && (r.Actor != "distribution-admin" || r.ActorName != "" || r.Client != "") {
+			t.Fatalf("a distribution admin's identity reached a tenant's sink: %+v", r)
 		}
 	}
 }

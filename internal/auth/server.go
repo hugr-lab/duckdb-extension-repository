@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -70,13 +71,17 @@ type Server struct {
 	Admins    Principals
 	// LicenseAdmins are the licence managers' principals (spec 0029)
 	LicenseAdmins Principals
-	Verifier      *Verifier
+	// DistributionAdmins are the distribution admins' principals (spec 0030)
+	DistributionAdmins Principals
+	Verifier           *Verifier
 }
 
 // ServerRoles are the server roles a server token's principals hold.
 type ServerRoles struct {
 	Admin          bool // a server administrator (spec 0007)
 	LicenseManager bool // a licence manager (spec 0029): every tenant's licences, nothing else
+	// DistributionAdmin: a distribution admin (spec 0030): a distributor's calls on every tenant
+	DistributionAdmin bool
 }
 
 // IsServerToken reports whether a token carries a server audience.
@@ -102,6 +107,12 @@ func (s *Server) Verify(ctx context.Context, token string) (Identity, ServerRole
 	for k := range id.Principals {
 		r.Admin = r.Admin || s.Admins[k]
 		r.LicenseManager = r.LicenseManager || s.LicenseAdmins[k]
+		r.DistributionAdmin = r.DistributionAdmin || s.DistributionAdmins[k]
+	}
+	if r.LicenseManager && r.DistributionAdmin && !r.Admin {
+		// one narrow role per token (spec 0030): its principals holding both is a configuration's
+		// mistake, refused rather than guessed
+		return id, ServerRoles{}, errors.New("auth: the token's principals are both a licence manager and a distribution admin")
 	}
 	return id, r, nil
 }

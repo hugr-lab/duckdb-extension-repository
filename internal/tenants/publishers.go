@@ -14,7 +14,7 @@ import (
 
 // AddPublisher adds a publisher to a tenant.
 func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, name string) (store.Publisher, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
 		return store.Publisher{}, err
 	}
@@ -30,7 +30,7 @@ func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, nam
 
 // ListPublishers lists a tenant's publishers.
 func (s *AuthAdmin) ListPublishers(ctx context.Context, a authz.Actor, tenant string) ([]store.Publisher, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -53,10 +53,14 @@ func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, 
 }
 
 // SetPublisherLicenseKeys marks a publisher a trusted source of licence keys, or unmarks it (spec
-// 0021): a server administrator's act. While marked, its keys and grants are the server
-// administrator's to change; unmarking keeps the keys it brought.
+// 0021): a server administrator's act, or a distribution admin's (spec 0030). While marked, its keys
+// and grants are theirs to change; unmarking keeps the keys it brought.
 func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, tenant, name string, on bool) (store.Publisher, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
+	verb, res := authz.VerbAdmin, authz.Server
+	if distributor(a) {
+		verb, res = authz.VerbDistribute, authz.Resource{Tenant: tenant}
+	}
+	if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
 		return store.Publisher{}, err
 	}
 	t, err := s.Store.GetTenant(ctx, tenant)
@@ -71,6 +75,16 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 			cur, err := tx.GetPublisher(ctx, t.ID, name)
 			if err != nil {
 				return err
+			}
+			if distributor(a) && !cur.LicenseKeys {
+				// spec 0030: a distribution admin marks a publisher of its own making, before it holds
+				// keys or grants; a tenant's publisher with grants would become the distributor's
+				if n, err := tx.PublisherGrants(ctx, cur.ID); err != nil {
+					return err
+				} else if n > 0 {
+					return fmt.Errorf("%w: publisher %s holds grants (%d): a distribution admin marks a publisher before it has any",
+						store.ErrInvalid, name, n)
+				}
 			}
 			if n, err := tx.PublisherCredentials(ctx, cur.ID); err != nil {
 				return err
@@ -89,8 +103,16 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 }
 
 // marked refuses a change to a marked publisher's keys or grants unless a server
-// administrator makes it (spec 0021): a tenant administrator cannot point it at builds of their own.
+// administrator or a distribution admin makes it (spec 0021, 0030): a tenant administrator cannot
+// point it at builds of their own. A distribution admin changes marked publishers only: the
+// tenant's own publishers are its administrators'.
 func (s *AuthAdmin) marked(ctx context.Context, a authz.Actor, p store.Publisher) error {
+	if distributor(a) {
+		if !p.LicenseKeys {
+			return authz.ErrDenied
+		}
+		return nil // the call admitted it on the tenant
+	}
 	if !p.LicenseKeys {
 		return nil
 	}
@@ -103,7 +125,7 @@ const MaxKeyLifetime = 366 * 24 * time.Hour
 // AddPublisherKey registers a public SSH key on a publisher (spec 0023): an OpenSSH line, Ed25519
 // or ECDSA P-256, unique in the tenant; expires is optional (zero: none), within a year.
 func (s *AuthAdmin) AddPublisherKey(ctx context.Context, a authz.Actor, tenant, publisher, line string, expires time.Time) (store.PublisherKey, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
 		return store.PublisherKey{}, err
 	}
@@ -146,12 +168,15 @@ func (s *AuthAdmin) ListPublisherKeys(ctx context.Context, a authz.Actor, tenant
 	if err != nil {
 		return nil, err
 	}
+	if distributor(a) && !p.LicenseKeys {
+		return nil, authz.ErrDenied // a distribution admin's are the marked publishers
+	}
 	return s.Store.PublisherKeys(ctx, p.TenantID, p.ID)
 }
 
 // TenantPublisherKeys lists every key of a tenant's publishers, by publisher id.
 func (s *AuthAdmin) TenantPublisherKeys(ctx context.Context, a authz.Actor, tenant string) (map[string][]store.PublisherKey, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -159,8 +184,21 @@ func (s *AuthAdmin) TenantPublisherKeys(ctx context.Context, a authz.Actor, tena
 	if err != nil {
 		return nil, err
 	}
+	marked := map[string]bool{}
+	if distributor(a) { // a distribution admin's are the marked publishers
+		ta, err := s.Store.GetTenantAuth(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range ta.Publishers {
+			marked[p.ID] = p.LicenseKeys
+		}
+	}
 	out := map[string][]store.PublisherKey{}
 	for _, k := range ks {
+		if distributor(a) && !marked[k.PublisherID] {
+			continue
+		}
 		out[k.PublisherID] = append(out[k.PublisherID], k)
 	}
 	return out, nil
@@ -168,7 +206,7 @@ func (s *AuthAdmin) TenantPublisherKeys(ctx context.Context, a authz.Actor, tena
 
 // RemovePublisherKey removes a key: it stops working at once.
 func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenant, publisher, id string) error {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
 		return err
 	}
@@ -190,7 +228,7 @@ func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenan
 }
 
 func (s *AuthAdmin) publisher(ctx context.Context, a authz.Actor, tenant, name string) (store.Publisher, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
 		return store.Publisher{}, err
 	}

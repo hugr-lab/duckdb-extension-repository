@@ -26,7 +26,6 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
@@ -337,6 +336,7 @@ type caller struct {
 	server         bool                // a valid server token
 	admin          bool                // a server administrator's
 	licenseManager bool                // a licence manager's (spec 0029); with admin, it acts as an administrator
+	distribution   bool                // a distribution admin's (spec 0030); with admin, it acts as an administrator
 	pub            *auth.Publication   // a publisher's credential (spec 0008)
 	signed         *auth.SignedRequest // a publisher's signed request (spec 0023)
 }
@@ -355,6 +355,9 @@ func (c caller) actor() (authz.Actor, bool) {
 	case c.licenseManager:
 		// spec 0029: the services allow it license on a tenant, and nothing else
 		return authz.Actor{Kind: authz.ActorLicenseManager, ID: c.id.Issuer.Name + "|" + c.id.Who()}, true
+	case c.distribution:
+		// spec 0030: the services allow it a distributor's calls, and nothing else
+		return authz.Actor{Kind: authz.ActorDistributionAdmin, ID: c.id.Issuer.Name + "|" + c.id.Who()}, true
 	case c.pub != nil:
 		names := make([]string, 0, len(c.pub.Publishers))
 		for _, m := range c.pub.Publishers {
@@ -399,7 +402,8 @@ func (h *Handler) identifyServer(ctx context.Context, tok string) (caller, bool,
 		h.failures.Record(store.Tenant{Name: "(server)"}, "api", err)
 		return caller{}, true, errToken
 	}
-	return caller{id: id, verified: true, server: true, admin: roles.Admin, licenseManager: roles.LicenseManager}, true, nil
+	return caller{id: id, verified: true, server: true, admin: roles.Admin, licenseManager: roles.LicenseManager,
+		distribution: roles.DistributionAdmin}, true, nil
 }
 
 // identifyTenant verifies a tenant token against the tenant (spec 0006).
@@ -428,13 +432,14 @@ func (h *Handler) identifyTenant(ctx context.Context, t store.Tenant, tok string
 type access int
 
 const (
-	public          access = iota // anyone; a tenant route identifies a token for the view, others ignore one
-	serverToken                   // a valid server token
-	serverAdmin                   // a server administrator
-	pathAdmin                     // admin on the path's resource (tenant, channel {c}, extension {ext}, extension group {g} to read it), or a server administrator
-	pathVerbs                     // any of the rule's verbs on the path's resource (spec 0008: publish, promote), or a server administrator
-	tenantPrincipal               // a token's principal of the path's tenant (its handler decides what it reads), or a server administrator
-	licenseAdmin                  // pathAdmin, or a licence manager (spec 0029): the tenant's licences only
+	public            access = iota // anyone; a tenant route identifies a token for the view, others ignore one
+	serverToken                     // a valid server token
+	serverAdmin                     // a server administrator
+	pathAdmin                       // admin on the path's resource (tenant, channel {c}, extension {ext}, extension group {g} to read it), or a server administrator
+	pathVerbs                       // any of the rule's verbs on the path's resource (spec 0008: publish, promote), or a server administrator
+	tenantPrincipal                 // a token's principal of the path's tenant (its handler decides what it reads), or a server administrator
+	licenseAdmin                    // pathAdmin, or a licence manager (spec 0029): the tenant's licences only
+	distributionAdmin               // pathAdmin, or a distribution admin (spec 0030): its service narrows each call
 )
 
 type handler func(h *Handler, w http.ResponseWriter, r *http.Request, c caller, p params)
@@ -509,9 +514,15 @@ func init() {
 		{"duckdb-versions/{v}/c-apis", map[string]rule{http.MethodPost: mb(serverAdmin, (*Handler).addCAPI)}},
 		{"duckdb-versions/{v}/core-extensions", map[string]rule{http.MethodPost: mb(serverAdmin, (*Handler).addCoreExtensions)}},
 		// spec 0030: the server's reserved extension names
-		{"reserved-names", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listReserved),
+		{"reserved-names", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listReserved),
 			http.MethodPost: mb(serverAdmin, (*Handler).addReserved)}},
 		{"reserved-names/{name}", map[string]rule{http.MethodDelete: m(serverAdmin, (*Handler).removeReserved)}},
+		// spec 0030: names reserved in a tenant (server administrators and distribution admins write;
+		// the tenant's administrators read)
+		{"tenants/{t}/reserved-names", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listTenantReserved)}},
+		{"tenants/{t}/reserved-names/{name}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).getTenantReserved),
+			http.MethodPut:    mb(distributionAdmin, (*Handler).reserveInTenant),
+			http.MethodDelete: m(distributionAdmin, (*Handler).releaseInTenant)}},
 		{"tenants", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listTenants),
 			http.MethodPost: mb(serverAdmin, (*Handler).createTenant)}},
 		{"tenants/{t}", map[string]rule{http.MethodGet: {access: pathAdmin, manage: true, closed: true, handle: (*Handler).getTenant},
@@ -575,11 +586,11 @@ func init() {
 			http.MethodDelete: m(pathAdmin, (*Handler).removeIssuer)}},
 		{"tenants/{t}/issuers/{name}/console", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).setConsoleClient),
 			http.MethodDelete: m(pathAdmin, (*Handler).removeConsoleClient)}},
-		{"tenants/{t}/grants", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listGrants),
-			http.MethodPost: mb(pathAdmin, (*Handler).addGrant)}},
+		{"tenants/{t}/grants", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listGrants),
+			http.MethodPost: mb(distributionAdmin, (*Handler).addGrant)}},
 		{"tenants/{t}/grants/principals", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).grantPrincipals)}}, // before grants/{id}
-		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGrant),
-			http.MethodDelete: m(pathAdmin, (*Handler).removeGrant)}},
+		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).getGrant),
+			http.MethodDelete: m(distributionAdmin, (*Handler).removeGrant)}},
 		// spec 0017: extension groups; the services decide who besides a tenant administrator reads
 		{"tenants/{t}/extension-groups", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).listGroups),
 			http.MethodPost: mb(pathAdmin, (*Handler).createGroup)}},
@@ -624,18 +635,19 @@ func init() {
 		{"tenants/{t}/stats/usage", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsUsage)}},
 		{"events/{id}", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvent)}},
 		{"event-kinds", idx((*Handler).eventKinds)},
-		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listPublishers),
-			http.MethodPost: mb(pathAdmin, (*Handler).addPublisher)}},
-		{"tenants/{t}/publishers/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getPublisher),
+		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listPublishers),
+			http.MethodPost: mb(distributionAdmin, (*Handler).addPublisher)}},
+		{"tenants/{t}/publishers/{name}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).getPublisher),
 			http.MethodDelete: m(pathAdmin, (*Handler).removePublisher)}},
-		// spec 0021: marking a publisher a source of licence keys (server administrators)
-		{"tenants/{t}/publishers/{name}/license-keys", map[string]rule{http.MethodPost: m(serverAdmin, publisherLicenseKeys(true)),
-			http.MethodDelete: m(serverAdmin, publisherLicenseKeys(false))}},
+		// spec 0021: marking a publisher a source of licence keys (server administrators; spec 0030:
+		// distribution admins)
+		{"tenants/{t}/publishers/{name}/license-keys", map[string]rule{http.MethodPost: m(distributionAdmin, publisherLicenseKeys(true)),
+			http.MethodDelete: m(distributionAdmin, publisherLicenseKeys(false))}},
 		// spec 0023: a publisher's public SSH keys
-		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listPublisherKeys),
-			http.MethodPost: mb(pathAdmin, (*Handler).addPublisherKey)}},
-		{"tenants/{t}/publishers/{name}/keys/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getPublisherKey),
-			http.MethodDelete: m(pathAdmin, (*Handler).removePublisherKey)}},
+		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listPublisherKeys),
+			http.MethodPost: mb(distributionAdmin, (*Handler).addPublisherKey)}},
+		{"tenants/{t}/publishers/{name}/keys/{id}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).getPublisherKey),
+			http.MethodDelete: m(distributionAdmin, (*Handler).removePublisherKey)}},
 		{"tenants/{t}/blocks", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listBlocks),
 			http.MethodPost: mb(pathAdmin, (*Handler).addBlock)}},
 		{"tenants/{t}/blocks/{hash}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getBlock),
@@ -927,6 +939,17 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			break // the licence service allows it license on the tenant, and nothing else
 		}
 		fallthrough
+	case distributionAdmin:
+		if ru.access == distributionAdmin && c.distribution && !c.admin {
+			break // the services allow it distribute on the tenant, and narrow each call
+		}
+		if ru.access == distributionAdmin && name == "" {
+			if !c.admin {
+				return refuse()
+			}
+			break // the server's routes: a server administrator
+		}
+		fallthrough
 	case pathAdmin:
 		a, ok := c.actor()
 		if !ok || h.o.Authz == nil {
@@ -953,13 +976,15 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		if !ok || h.o.Authz == nil {
 			return refuse()
 		}
+		res := authz.Resource{Tenant: name, Channel: p["c"], Extension: p["ext"]}
 		if p["ext"] != "" && h.o.Store != nil {
-			if err := reserved.Sync(ctx, h.o.Store); err != nil { // spec 0030
+			kind, err := h.o.Store.ReservedFor(ctx, name, p["ext"]) // spec 0030: DuckDB's, the tenant's, its upstreams'
+			if err != nil {
 				h.fail(w, err)
 				return caller{}, false
 			}
+			res.Reserved = kind != ""
 		}
-		res := authz.Resource{Tenant: name, Channel: p["c"], Extension: p["ext"], Reserved: reserved.Kind(p["ext"]) != ""}
 		allowed := false
 		for _, v := range ru.verbs {
 			err := h.o.Authz.Allow(ctx, a, v, res)

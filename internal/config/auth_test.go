@@ -24,6 +24,7 @@ auth:
   server_admins: [ "role:ops|kista.admin", "subject:ops|oid-1" ]
   # a principal in both lists, and one twice: accepted
   server_license_admins: [ "client:ops|reconciler", "role:ops|kista.admin", "client:ops|reconciler" ]
+  server_distribution_admins: [ "client:ops|enterest" ]
   admin_token_max_age: 30m
 `
 	cfg, err := Load(write(t, ok), nil)
@@ -37,6 +38,10 @@ auth:
 	admins := cfg.ServerAdmins()
 	if len(admins) != 2 || !admins[auth.Key{IssuerID: "server:ops", Kind: store.PrincipalRole, Value: "kista.admin"}] {
 		t.Fatalf("admins: %v", admins)
+	}
+	// spec 0030: the distribution admins
+	if da := cfg.ServerDistributionAdmins(); len(da) != 1 || !da[auth.Key{IssuerID: "server:ops", Kind: store.PrincipalClient, Value: "enterest"}] {
+		t.Fatalf("distribution admins: %v", da)
 	}
 	// spec 0029: the licence managers, apart from the administrators
 	lm := cfg.ServerLicenseAdmins()
@@ -77,7 +82,11 @@ auth:
 		"unknown licence issuer": {base + iss + "server_audiences: [a], server_license_admins: [ 'role:corp|x' ] }\n", nil, "server_license_admins[0]: corp is not a server issuer"},
 		"bad licence manager":    {base + iss + "server_audiences: [a], server_license_admins: [ 'whatever' ] }\n", nil, "server_license_admins[0]: \"whatever\" is kind:issuer|value"},
 		"publisher licence mgr":  {base + iss + "server_audiences: [a], server_license_admins: [ 'publisher:ci' ] }\n", nil, "server_license_admins[0]: publisher: is refused"},
-		"publisher admin":        {base + iss + "server_audiences: [a], server_admins: [ 'publisher:ci' ] }\n", nil, "server_admins[0]: publisher: is refused"},
+		"issuer distribution admin": {base + iss + "server_audiences: [a], server_distribution_admins: [ 'issuer:ops' ] }\n", nil,
+			"server_distribution_admins[0]: issuer: is refused"},
+		"two narrow roles": {base + iss + "server_audiences: [a], server_license_admins: [ 'role:ops|x' ], server_distribution_admins: [ 'role:ops|x' ] }\n", nil,
+			"server_distribution_admins[0]: role:ops|x is also a licence manager"},
+		"publisher admin": {base + iss + "server_audiences: [a], server_admins: [ 'publisher:ci' ] }\n", nil, "server_admins[0]: publisher: is refused"},
 		// a role, group or client principal of an issuer without the claim never matches
 		"role without roles_claim":    {base + iss + "server_audiences: [a], server_license_admins: [ 'role:ops|x' ] }\n", nil, "server_license_admins[0]: role:ops|x never matches: the server issuer ops has no roles_claim"},
 		"group without groups_claim":  {base + iss + "server_audiences: [a], server_admins: [ 'group:ops|x' ] }\n", nil, "server_admins[0]: group:ops|x never matches: the server issuer ops has no groups_claim"},
