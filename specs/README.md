@@ -36,3 +36,4 @@ and it is superseded by a new spec when a decision changes.
 | [0027](0027-store-login-vault/spec.md) | The database password from Vault or OpenBao | phase 1 implemented; the kind run to come; phase 2 deferred |
 | [0028](0028-expected-holder/spec.md) | An expected holder per tenant | implemented |
 | [0029](0029-licence-managers/spec.md) | Licence managers: a server-wide role for licences only | implemented |
+| [0030](0030-reserved-names/spec.md) | Reserved names as data, a distributor's names in a tenant, the distribution admins | accepted |
