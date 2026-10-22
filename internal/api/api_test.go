@@ -138,8 +138,10 @@ func newEnv(t *testing.T) *env {
 		}
 	}
 	must(ten.CreateTenant(ctx, admin, "acme", "", "", ""))
-	must(ten.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6", "v2.0.0"}))
-	must(ten.AddVersion(ctx, admin, "v1.9.0", "release", []string{"v1.4.0"}))
+	for _, v := range [][]string{{"v2.0.0", "v1.5.6", "v2.0.0"}, {"v1.9.0", "v1.4.0"}} {
+		_, _, err := ten.AddVersion(ctx, admin, v[0], "release", v[1:], tenants.CoreExtensions{Names: []string{"json"}})
+		must(nil, err)
+	}
 	for _, ch := range []string{"prod", "staging"} {
 		must(ten.CreateChannel(ctx, admin, "acme", ch, store.ChannelSigned))
 		must(ten.SetChannelVersions(ctx, admin, "acme", ch, []string{"v2.0.0", "v1.9.0"}, nil))

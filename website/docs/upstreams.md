@@ -56,7 +56,14 @@ tenant, 1,000 entries an upstream, 100 versions an entry, 10 pinned keys.
 **Names.** An entry is a canonical name: an alias (`postgres`) is refused with its canonical name
 (`postgres_scanner`). A core name is accepted only from a `duckdb-core` upstream and a community name
 only from a `duckdb-community` upstream, unless the entry sets `allow_reserved` (a tenant that mirrors
-its own build of `httpfs` from another kista says so).
+its own build of `httpfs` from another kista says so). An entry added before its name became
+reserved keeps mirroring it.
+
+A build mirrored from a `duckdb-core` upstream reserves its name server-wide as core, and one from a
+`duckdb-community` upstream as community, with the source `upstream:<tenant>/<upstream>` (a bundle
+import: `bundle:<id>`), in the release's transaction. Those upstreams' bodies are verified with
+DuckDB's own keys, so only DuckDB's names are learned this way ([Reserved
+names](publishing.md#reserved-names)).
 
 ## Intake verification
 
@@ -310,8 +317,10 @@ kista offers the cell to an in-memory queue, after the answer is decided, when:
 
 The client's request still misses; a later `INSTALL` finds the release. `*` is allowed only on a
 pull-through upstream, without versions or `allow_reserved`, and not on `duckdb-core`. It never
-matches a reserved name, an alias, or a name another upstream of the channel lists, and it reserves
-no name in the tenant. Limits per replica: 256 queued misses (32 per tenant), 4 fetches at once and
+matches an alias, a core name or a name another upstream of the channel lists, and it reserves no
+name in the tenant. On a `duckdb-community` upstream it matches community names (each fetch reserves
+its name as community, and the name keeps being pulled through); on any other kind it matches no
+reserved name. Limits per replica: 256 queued misses (32 per tenant), 4 fetches at once and
 60 a minute per tenant, `upstreams.concurrency` fetches at once, 10,000 cells in the negative cache.
 
 ```bash

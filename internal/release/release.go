@@ -131,6 +131,9 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	res := authz.Resource{Tenant: tenant, Channel: channel}
 	verb := authz.VerbAdmin
 	if o.Publish != nil {
+		if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030: a name reserved since is seen
+			return store.Release{}, false, err
+		}
 		o.Unchecked = false
 		verb = authz.VerbPublish
 		res = authz.Resource{Tenant: tenant, Channel: channel, Extension: o.Name, Reserved: reserved.Kind(o.Name) != ""}
@@ -266,8 +269,12 @@ type item struct {
 	keyKind    string
 	keySources []string
 	// recheck authorizes again as for a reserved name; insert calls it under the locks when an
-	// upstream of the tenant provides the name (spec 0009). Nil: no check.
+	// upstream of the tenant provides the name (spec 0009), or the server reserved it since (spec
+	// 0030). Nil: no check.
 	recheck func(context.Context) error
+	// reserveKind reserves the name with reserveSource when the release is inserted (spec 0030: a
+	// build mirrored from DuckDB's repositories). "": none.
+	reserveKind, reserveSource string
 }
 
 // reservedCheck is an item's recheck: the verb on the resource as a reserved name.
@@ -470,6 +477,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 		}
 		err := s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
 			out, made, existing, need = nil, nil, 0, nil
+			learned := false // a name reserved by this intake (spec 0030)
 			c, err := tx.ChannelByID(ctx, channelID)
 			if err != nil {
 				return err
@@ -512,11 +520,27 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					}
 					return err
 				}
+				if it.reserveKind != "" {
+					changed, err := tx.ReserveName(ctx, b.Name, it.reserveKind, it.reserveSource)
+					if err != nil {
+						return err
+					}
+					learned = learned || changed
+				}
 				upstream := it.origin == store.OriginUpstream
 				if it.recheck != nil {
+					// a name an upstream of the tenant provides, or one the server reserved since the
+					// caller was authorized (spec 0030), takes a grant that names it
 					provided, err := tx.UpstreamProvides(ctx, b.TenantID, b.Name)
 					if err != nil {
 						return err
+					}
+					if !provided {
+						k, err := tx.ReservedKind(ctx, b.Name)
+						if err != nil {
+							return err
+						}
+						provided = k != ""
 					}
 					if provided {
 						if err := it.recheck(ctx); err != nil {
@@ -576,7 +600,11 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				// passthrough channels serve, released in a signed channel, shadows DuckDB's build in
 				// those channels until an administrator removes the shadow (spec 0009)
 				if c.Kind == store.ChannelSigned && !s.DuckDBCore(b) {
-					core := reserved.Kind(b.Name) == reserved.Core
+					k, err := tx.ReservedKind(ctx, b.Name) // the server's list as it is now (spec 0030)
+					if err != nil {
+						return err
+					}
+					core := k == reserved.Core
 					if !core {
 						if core, err = tx.PassthroughProvides(ctx, b.TenantID, b.Name); err != nil {
 							return err
@@ -600,6 +628,11 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 			// spec 0021: the keys a trusted intake carried, with its release, in one transaction
 			for _, it := range items {
 				if err := recordKeys(ctx, tx, it.b, it); err != nil {
+					return err
+				}
+			}
+			if learned { // spec 0030: after the names, so they are locked before the version
+				if err := tx.BumpReservedVersion(ctx); err != nil {
 					return err
 				}
 			}
@@ -692,6 +725,9 @@ func (s *Service) mayRead(ctx context.Context, a authz.Actor, tenant, channel, n
 	res := authz.Resource{Tenant: tenant, Channel: channel, Extension: name}
 	err := s.Authz.Allow(ctx, a, authz.VerbAdmin, res)
 	if name == "" || !errors.Is(err, authz.ErrDenied) {
+		return err
+	}
+	if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030: the server's list as it is
 		return err
 	}
 	res.Reserved = reserved.Kind(name) != ""

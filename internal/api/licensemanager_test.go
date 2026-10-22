@@ -160,7 +160,7 @@ func TestLicenseManager(t *testing.T) {
 	}
 	for _, c := range []struct{ method, path, body string }{
 		{"GET", "/api/v1/tenants", ""}, {"POST", "/api/v1/tenants", `{"name":"x1"}`}, {"GET", "/api/v1/events", ""},
-		{"GET", "/api/v1/credentials", ""}, {"POST", "/api/v1/duckdb-versions", `{"name":"v2.1.0","kind":"release","c_api_maxima":["v1.5.6"]}`},
+		{"GET", "/api/v1/credentials", ""}, {"POST", "/api/v1/duckdb-versions", `{"name":"v2.1.0","kind":"release","c_api_maxima":["v1.5.6"],"core_extensions":["json"]}`},
 		{"POST", "/api/v1/duckdb-versions/v2.0.0/c-apis", `{"c_api":"v3.0.0"}`},
 		{"GET", "/api/v1/events/00000000-0000-7000-8000-000000000000", ""},
 	} {

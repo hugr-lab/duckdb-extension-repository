@@ -310,11 +310,30 @@ interface Version {
   c_api_maxima?: string[]
 }
 
+/** coreExtensions reads what kista duckdb core-extensions prints: a name per line, and the commit
+ * its "# commit" line names (spec 0030). */
+export function coreExtensions(text: string): { core_extensions: string[]; core_extensions_commit?: string } {
+  const names: string[] = []
+  let commit: string | undefined
+  for (const raw of text.split('\n')) {
+    const l = raw.trim()
+    if (l.startsWith('#')) {
+      if (l.includes('duckdb/community-extensions')) throw new Error("this is duckdb/community-extensions' list, not a DuckDB version's core extensions")
+      const m = /^#\s*commit\s+([0-9a-f]{7,64})\b/.exec(l)
+      if (m && !commit) commit = m[1]
+    } else if (l) {
+      names.push(l)
+    }
+  }
+  return commit ? { core_extensions: names, core_extensions_commit: commit } : { core_extensions: names }
+}
+
 /** DuckDB versions (server administrators): the ones channels may serve, with a maximum C API per
- * major (spec 0006). */
+ * major (spec 0006) and their core extensions (spec 0030). */
 function Versions({ client }: { client: Client }) {
   const list = useLoad(() => client.get<{ duckdb_versions: Version[] }>('/duckdb-versions'), [])
-  const [f, setF] = useState({ name: '', kind: 'release', capis: '' })
+  const empty = { name: '', kind: 'release', capis: '', core: '' }
+  const [f, setF] = useState(empty)
   const [capi, setCapi] = useState<{ version: string; value: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<unknown>(null)
@@ -324,7 +343,7 @@ function Versions({ client }: { client: Client }) {
     setFailure(null)
     try {
       await fn()
-      setF({ name: '', kind: 'release', capis: '' })
+      setF(empty)
       setCapi(null)
     } catch (e) {
       setFailure(e)
@@ -336,12 +355,15 @@ function Versions({ client }: { client: Client }) {
     <>
       <PageTitle title="DuckDB versions"><span className="pb-1 text-ink-muted">What channels may serve; a channel names its own.</span></PageTitle>
       <Card title="Add a version">
-        <form className="flex flex-col gap-4" onSubmit={(e) => { e.preventDefault(); act(() => client.post('/duckdb-versions', { body: { name: f.name, kind: f.kind, c_api_maxima: f.capis.split(/[\s,]+/).filter(Boolean) } })) }}>
+        <form className="flex flex-col gap-4" onSubmit={(e) => { e.preventDefault(); act(() => client.post('/duckdb-versions', { body: { name: f.name, kind: f.kind, c_api_maxima: f.capis.split(/[\s,]+/).filter(Boolean), ...coreExtensions(f.core) } })) }}>
           <div className="grid grid-cols-3 gap-4">
             <Field label="Version" hint="a release tag (v2.0.0) or a source id"><input className="field font-mono" required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
             <Field label="Kind"><select className="field" value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })}><option>release</option><option>dev</option></select></Field>
             <Field label="Maximum C APIs" hint="one per major: v1.5.6, v2.0.0"><input className="field font-mono" value={f.capis} onChange={(e) => setF({ ...f, capis: e.target.value })} /></Field>
           </div>
+          <Field label="Core extensions" hint="what kista duckdb core-extensions <version> prints: they become reserved names">
+            <textarea className="field h-28 font-mono" required value={f.core} onChange={(e) => setF({ ...f, core: e.target.value })} />
+          </Field>
           <div><Button type="submit" tone="brand" disabled={busy}>Add</Button></div>
         </form>
       </Card>

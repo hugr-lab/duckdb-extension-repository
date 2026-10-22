@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 )
 
@@ -27,6 +28,7 @@ import (
 const publisherKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIvmAKxjbOkVN7MhsYLLHONcPMZXvhAR+JPGbBHEmWgz ci ed25519"
 
 func TestAdminCLI(t *testing.T) {
+	t.Cleanup(reserved.SetForTest(reserved.Seed(), 0)) // the process's view follows this test's store
 	dir := t.TempDir()
 	keys := filepath.Join(dir, "keys")
 	if err := os.Mkdir(keys, 0o700); err != nil {
@@ -71,8 +73,24 @@ func TestAdminCLI(t *testing.T) {
 	if got := run(0, "tenant", "list"); !strings.Contains(got, "acme") || !strings.Contains(got, "default") || strings.Contains(got, "acme-cn") {
 		t.Fatalf("tenant list: %q", got)
 	}
-	run(0, "version", "add", "eb0d9df48e", "-kind", "dev")
-	run(0, "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6")
+	core := coreFile(t, "json", "parquet")
+	run(1, "version", "add", "eb0d9df48e", "-kind", "dev") // without its core extensions (spec 0030)
+	run(0, "version", "add", "eb0d9df48e", "-kind", "dev", "-core-extensions", core)
+	run(0, "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6", "-core-extensions", core)
+	run(0, "version", "core-extensions", "v2.0.0", "-core-extensions", coreFile(t, "json", "kista_test_core"))
+	run(1, "version", "core-extensions", "v9.9.9", "-core-extensions", core) // not registered
+	if got := run(0, "reserved", "list", "-name", "kista_test_core"); !strings.Contains(got, "kista_test_core") || !strings.Contains(got, "core") ||
+		!strings.Contains(got, "version:v2.0.0@d54cbbe0123456789abcdef0123456789abcdef") {
+		t.Fatalf("reserved list: %q", got)
+	}
+	run(0, "reserved", "add", "kista_cli_a", "kista_cli_b", "-kind", "community")
+	run(1, "reserved", "add", "kista_cli_c", "-kind", "tenant")
+	if got := run(0, "reserved", "list"); !strings.Contains(got, "kista_cli_b") || !strings.Contains(got, "legacy_parser") {
+		t.Fatalf("reserved list: %q", got)
+	}
+	run(0, "reserved", "remove", "kista_cli_a")
+	run(1, "reserved", "remove", "kista_test_core") // a version's name stays
+	run(2, "reserved", "remove")
 	run(0, "version", "c-api", "v2.0.0", "-c-api", "v2.0.0")
 	run(1, "version", "c-api", "v2.0.0", "-c-api", "v2.1.0") // a major is never changed
 	if got := run(0, "version", "list"); !strings.Contains(got, "v1.5.6 v2.0.0") {

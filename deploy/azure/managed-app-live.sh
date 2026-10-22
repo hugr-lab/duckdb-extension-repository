@@ -138,14 +138,16 @@ up() {
 	def=$(az managedapp definition show -g "$group" -n kista-def --query id -o tsv)
 
 	step "the application, with the UI's answers; about 20 minutes"
-	jq -n --arg loc "$location" --arg db "$database" --arg iss "$iss" --arg tid "$tenant" --arg server "$server" --arg main "$main" '{
+	# v2.0.0's core extensions (spec 0030), as the Marketplace's DuckDB choice carries them
+	core=$(cd "$repo" && GOWORK=off go run ./cmd/kista duckdb core-extensions v2.0.0 | grep -v '^#' | jq -Rsc 'split("\n") | map(select(. != ""))')
+	jq -n --argjson core "$core" --arg loc "$location" --arg db "$database" --arg iss "$iss" --arg tid "$tenant" --arg server "$server" --arg main "$main" '{
 		location: {value: $loc}, prefix: {value: "kistama"}, database: {value: $db},
 		cpu: {value: "2.0"}, replicas: {value: 1}, maxBodyMib: {value: 512}, maxIngests: {value: 2}, attestationKey: {value: true},
 		serverIssuers: {value: [{name: "entra", url: $iss, required_claims: {tid: $tid}, roles_claim: "roles"}]},
 		serverAudiences: {value: [$server]}, serverAdmins: {value: ["role:entra|kista-admin"]},
 		serverConsoleClients: {value: [{issuer: "entra", client_id: $server, scopes: ["openid", "profile", "offline_access", ($server + "/.default")]}]},
 		bootstrap: {value: {
-			versions: [{version: "v2.0.0", kind: "release", c_apis: ["v1.5.6"]}],
+			versions: [{version: "v2.0.0", kind: "release", c_apis: ["v1.5.6"], core_extensions: $core}],
 			tenant: {name: "main", audiences: [$main]},
 			channel: {name: "prod", versions: ["v2.0.0"]},
 			issuer: {name: "entra", url: $iss, required_claims: {tid: $tid}, roles_claim: "roles"},

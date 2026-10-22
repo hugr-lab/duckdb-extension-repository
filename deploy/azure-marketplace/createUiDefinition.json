@@ -221,12 +221,12 @@
             "type": "Microsoft.Common.DropDown",
             "label": "DuckDB version served",
             "defaultValue": "v2.0.0",
-            "toolTip": "The DuckDB version the channel serves at first, with its C API; more are added afterwards.",
+            "toolTip": "The DuckDB version the channel serves at first, with its C API and its core extensions; more are added afterwards.",
             "constraints": {
               "allowedValues": [
                 {
                   "label": "v2.0.0",
-                  "value": "v2.0.0|v1.5.6"
+                  "value": "v2.0.0|v1.5.6|d54cbbe3df17e8e5ce68312f483b4155836112aa|autocomplete,avro,aws,azure,core_functions,delta,demo_capi,ducklake,encodings,excel,fts,glue,httfps,httpfs,iceberg,icu,inet,json,lance,legacy_parser,loader,motherduck,mysql_scanner,odbc_scanner,parquet,postgres_scanner,quack,spatial,sqlite_scanner,sqlsmith,test_utils,tpcds,tpch,ui,unity_catalog,vortex,vss"
                 }
               ],
               "required": true
@@ -380,7 +380,7 @@
       "serverAdmins": "[parse(concat('[\"role:entra|', steps('admins').adminRole, '\"]'))]",
       "serverLicenseAdmins": "[if(empty(steps('admins').licenseRole), parse('[]'), parse(concat('[\"role:entra|', steps('admins').licenseRole, '\"]')))]",
       "serverConsoleClients": "[parse(concat('[{\"issuer\":\"entra\",\"client_id\":\"', steps('admins').consoleAppId, '\",\"scopes\":[\"openid\",\"profile\",\"offline_access\",\"', steps('admins').apiAppId, '/.default\"]}]'))]",
-      "bootstrap": "[parse(concat('{\"versions\":[', concat('{\"version\":\"', first(split(steps('tenant').duckdb, '|')), '\",\"kind\":\"release\",\"c_apis\":[\"', last(split(steps('tenant').duckdb, '|')), '\"]}'), '],\"tenant\":{\"name\":\"', steps('tenant').name, '\",\"audiences\":[\"', steps('tenant').apiAppId, '\"]},\"channel\":{\"name\":\"', steps('tenant').channel, '\",\"versions\":[\"', first(split(steps('tenant').duckdb, '|')), '\"]},\"issuer\":{\"name\":\"entra\",\"url\":\"https://login.microsoftonline.com/', steps('tenant').tenantId, '/v2.0\",\"required_claims\":{\"tid\":\"', steps('tenant').tenantId, '\"},\"roles_claim\":\"roles\"', if(or(equals(steps('tenant').tenantId, steps('admins').tenantId), empty(steps('tenant').consoleAppId)), '', concat(',\"console\":{\"client_id\":\"', steps('tenant').consoleAppId, '\",\"audience\":\"', steps('tenant').apiAppId, '\",\"scopes\":\"openid profile offline_access ', steps('tenant').apiAppId, '/.default\"}')), '},\"grants\":[{\"principal\":\"role:entra|', steps('tenant').adminRole, '\",\"verbs\":[\"admin\"]}]}'))]"
+      "bootstrap": "[parse(concat('{\"versions\":[', concat('{\"version\":\"', first(split(steps('tenant').duckdb, '|')), '\",\"kind\":\"release\",\"c_apis\":[\"', first(skip(split(steps('tenant').duckdb, '|'), 1)), '\"],\"core_extensions_commit\":\"', first(skip(split(steps('tenant').duckdb, '|'), 2)), '\",\"core_extensions\":[\"', replace(last(split(steps('tenant').duckdb, '|')), ',', '\",\"'), '\"]}'), '],\"tenant\":{\"name\":\"', steps('tenant').name, '\",\"audiences\":[\"', steps('tenant').apiAppId, '\"]},\"channel\":{\"name\":\"', steps('tenant').channel, '\",\"versions\":[\"', first(split(steps('tenant').duckdb, '|')), '\"]},\"issuer\":{\"name\":\"entra\",\"url\":\"https://login.microsoftonline.com/', steps('tenant').tenantId, '/v2.0\",\"required_claims\":{\"tid\":\"', steps('tenant').tenantId, '\"},\"roles_claim\":\"roles\"', if(or(equals(steps('tenant').tenantId, steps('admins').tenantId), empty(steps('tenant').consoleAppId)), '', concat(',\"console\":{\"client_id\":\"', steps('tenant').consoleAppId, '\",\"audience\":\"', steps('tenant').apiAppId, '\",\"scopes\":\"openid profile offline_access ', steps('tenant').apiAppId, '/.default\"}')), '},\"grants\":[{\"principal\":\"role:entra|', steps('tenant').adminRole, '\",\"verbs\":[\"admin\"]}]}'))]"
     }
   }
 }

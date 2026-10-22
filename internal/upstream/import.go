@@ -714,6 +714,8 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 	if u.Kind == store.UpstreamRepo {
 		in.KeySource = u.ID // spec 0021: a repository upstream is a trusted source of licence keys
 	}
+	in.ReserveKind = reserveKind(u.Kind) // spec 0030: a bundle's builds from DuckDB's repositories bring their names
+	in.ReserveSource = "bundle:" + tg.res.Bundle
 	got, err := s.Releases.Ingest(ctx, a, tg.sc, sp, in)
 	rec := store.UpstreamCell{BodyHash: got.Hash}
 	switch {

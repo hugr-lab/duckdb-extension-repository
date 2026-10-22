@@ -7,10 +7,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -86,7 +88,7 @@ func newEnv(t *testing.T, e storetest.Engine) *env {
 
 func section() config.Bootstrap {
 	return config.Bootstrap{
-		Versions:       []config.BootstrapVersion{{Version: "v1.4.1", Kind: "release", CAPIs: []string{"v1.2.0"}}},
+		Versions:       []config.BootstrapVersion{{Version: "v1.4.1", Kind: "release", CAPIs: []string{"v1.2.0"}, CoreExtensions: []string{"json", "parquet"}}},
 		Tenant:         config.BootstrapTenant{Name: "acme", DisplayName: "Acme", Audiences: []string{"api://kista-acme"}},
 		Channels:       []config.BootstrapChannel{{Name: "prod", Kind: store.ChannelSigned, Versions: []string{"v1.4.1"}, Key: "file:a.pem"}},
 		AttestationKey: "file:att.pem",
@@ -269,7 +271,10 @@ func TestBootstrapRefuses(t *testing.T) {
 					must(t, func() error { return en.d.Auth.AddAudience(ctx, cli, "other", "api://kista-acme") })
 				}},
 				{"a version of another kind", func(t *testing.T, en *env, b *config.Bootstrap) {
-					must(t, func() error { _, err := en.d.Tenants.AddVersion(ctx, cli, "v1.4.1", "dev", nil); return err })
+					must(t, func() error {
+						_, _, err := en.d.Tenants.AddVersion(ctx, cli, "v1.4.1", "dev", nil, tenants.CoreExtensions{Names: []string{"json"}})
+						return err
+					})
 				}},
 				{"a key another channel holds", func(t *testing.T, en *env, b *config.Bootstrap) {
 					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "other", "", "", ""); return err })
@@ -473,7 +478,7 @@ func TestBootstrapDetails(t *testing.T) {
 			// re-armed with a version more for prod: only that one is added
 			cli := bootstrap.Options{Actor: authz.OSActor(), Holder: "cli", Adopt: true, Retry: 1}
 			must(t, func() error { return bootstrap.Rearm(ctx, en.d, authz.OSActor()) })
-			b.Versions = append(b.Versions, config.BootstrapVersion{Version: "v1.4.2", Kind: "release"})
+			b.Versions = append(b.Versions, config.BootstrapVersion{Version: "v1.4.2", Kind: "release", CoreExtensions: []string{"json"}})
 			b.Channels[0].Versions = append(b.Channels[0].Versions, "v1.4.2")
 			if res, err := bootstrap.Run(ctx, en.d, b, cli); err != nil || !res.Applied {
 				t.Fatalf("a version added: %+v %v", res, err)
@@ -482,11 +487,29 @@ func TestBootstrapDetails(t *testing.T) {
 			if vs, _ := en.st.ChannelVersions(ctx, ch.ID); len(vs) != 2 {
 				t.Fatalf("channel versions: %v", vs)
 			}
+			// a version's core extensions it did not name (spec 0030): added and reserved
+			must(t, func() error { return bootstrap.Rearm(ctx, en.d, authz.OSActor()) })
+			b.Versions[1].CoreExtensions = []string{"json", "kista_boot_core"}
+			b.Versions[1].CoreExtensionsCommit = "abcdef0"
+			res, err := bootstrap.Run(ctx, en.d, b, cli)
+			if err != nil || !res.Applied || !strings.Contains(fmt.Sprint(res.Plan.Items), "core extensions kista_boot_core") {
+				t.Fatalf("core extensions added: %+v %v", res, err)
+			}
+			if l, _ := en.st.ListReservedNames(ctx, "kista_boot_core"); len(l) != 1 || l[0].Kind != store.ReservedCore ||
+				!slices.Equal(l[0].Sources, []string{"version:v1.4.2@abcdef0"}) {
+				t.Fatalf("reserved: %+v", l)
+			}
 			// another C API of a major the version has: refused
 			must(t, func() error { return bootstrap.Rearm(ctx, en.d, authz.OSActor()) })
 			b.Versions[0].CAPIs = []string{"v1.3.0"}
 			if _, err := bootstrap.Run(ctx, en.d, b, cli); !errors.Is(err, bootstrap.ErrRefused) || !strings.Contains(err.Error(), "C API v1.3.0") {
 				t.Fatalf("another C API: %v", err)
+			}
+			// a new version without its core extensions: refused
+			b.Versions[0].CAPIs = []string{"v1.2.0"}
+			b.Versions = append(b.Versions, config.BootstrapVersion{Version: "v1.4.3", Kind: "release"})
+			if _, err := bootstrap.Run(ctx, en.d, b, cli); !errors.Is(err, bootstrap.ErrRefused) || !strings.Contains(err.Error(), "core_extensions") {
+				t.Fatalf("a version without core extensions: %v", err)
 			}
 		})
 	}

@@ -338,7 +338,8 @@ check() {
 	[[ $(ka channel list acme) == *prod* ]] || ka channel create acme/prod -kind signed
 	ka key check -signer "aws:$key"
 	[[ $(ka key list acme/prod) == *"aws:$key"* ]] || ka key add acme/prod -signer "aws:$key" -active
-	[[ $(ka version list) == *"$version"* ]] || ka version add "$version" -kind "$vkind"
+	[[ $(ka version list) == *"$version"* ]] || # the version's core extensions, from the build's DuckDB sources (spec 0030)
+		"$work/kista" duckdb core-extensions -dir "$duck/core-src" -commit "$(cat "$duck/core-src/COMMIT")" | ka version add "$version" -kind "$vkind" -core-extensions -
 	ka channel versions acme/prod -add "$version" >/dev/null 2>&1 || true # already there on a second check
 	ka release add acme/prod - -name httpfs <"$duck/extensions/httpfs.duckdb_extension" || true
 	ka release add acme/prod - -name loadable_extension_demo -private <"$duck/extensions/loadable_extension_demo.duckdb_extension" || true

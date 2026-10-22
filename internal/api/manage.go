@@ -257,6 +257,13 @@ type versionOut struct {
 	CAPIs []string `json:"c_api_maxima"`
 }
 
+// versionAdded is a registration's answer: the version, and the core extensions it reserved that
+// were not reserved before (spec 0030).
+type versionAdded struct {
+	versionOut
+	CoreAdded []string `json:"core_extensions_added"`
+}
+
 func versionOf(v store.DuckDBVersion) versionOut {
 	o := versionOut{Name: v.Name, Kind: v.Kind, CAPIs: []string{}}
 	for _, c := range v.CAPIs {
@@ -295,20 +302,49 @@ func (h *Handler) duckdbVersion(w http.ResponseWriter, r *http.Request, c caller
 
 func (h *Handler) addDuckDBVersion(w http.ResponseWriter, r *http.Request, c caller, _ params) {
 	var in struct {
-		Name  string   `json:"name"`
-		Kind  string   `json:"kind"`
-		CAPIs []string `json:"c_api_maxima"`
+		Name       string   `json:"name"`
+		Kind       string   `json:"kind"`
+		CAPIs      []string `json:"c_api_maxima"`
+		Core       []string `json:"core_extensions"`
+		CoreCommit string   `json:"core_extensions_commit"`
+		Force      bool     `json:"force"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	a, _ := c.actor()
-	v, err := h.o.Tenants.AddVersion(r.Context(), a, in.Name, in.Kind, in.CAPIs)
+	v, added, err := h.o.Tenants.AddVersion(r.Context(), a, in.Name, in.Kind, in.CAPIs,
+		tenants.CoreExtensions{Names: in.Core, Commit: in.CoreCommit, Force: in.Force})
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
-	created(w, r, "/api/v1/duckdb-versions/"+esc(v.Name), versionOf(v), "-")
+	if added == nil {
+		added = []string{}
+	}
+	created(w, r, "/api/v1/duckdb-versions/"+esc(v.Name), versionAdded{versionOf(v), added}, "-")
+}
+
+// addCoreExtensions reserves more core extensions of a registered version (spec 0030).
+func (h *Handler) addCoreExtensions(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	var in struct {
+		Core       []string `json:"core_extensions"`
+		CoreCommit string   `json:"core_extensions_commit"`
+		Force      bool     `json:"force"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	a, _ := c.actor()
+	added, err := h.o.Tenants.AddVersionCore(r.Context(), a, p["v"], tenants.CoreExtensions{Names: in.Core, Commit: in.CoreCommit, Force: in.Force})
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	if added == nil {
+		added = []string{}
+	}
+	reply(w, r, http.StatusOK, map[string]any{"name": p["v"], "core_extensions_added": added}, "", noStore)
 }
 
 func (h *Handler) addCAPI(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -790,6 +826,12 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 		problem(w, http.StatusBadRequest, typeInvalid, "extension_group or extension is not a valid name")
 		return
 	}
+	if ext != "" {
+		if err := reserved.Sync(r.Context(), h.o.Store); err != nil { // spec 0030: the server's list as it is
+			h.fail(w, err)
+			return
+		}
+	}
 	var kept []store.Grant
 	for _, g := range gs {
 		if pr != "" && g.Principal() != pr || group != "" && g.ExtensionGroupName != group {
@@ -886,6 +928,59 @@ func (h *Handler) getGrant(w http.ResponseWriter, r *http.Request, c caller, p p
 func (h *Handler) removeGrant(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
 	if err := h.o.Auth.RemoveGrant(r.Context(), a, p["t"], p["id"]); err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	noContent(w)
+}
+
+// --- reserved names (spec 0030) ---
+
+type reservedOut struct {
+	Name    string   `json:"name"`
+	Kind    string   `json:"kind"`
+	AddedAt string   `json:"added_at"`
+	Sources []string `json:"sources"`
+}
+
+func (h *Handler) listReserved(w http.ResponseWriter, r *http.Request, c caller, _ params) {
+	a, _ := c.actor()
+	ns, err := h.o.Tenants.ListReserved(r.Context(), a, r.URL.Query().Get("name"))
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	out := []reservedOut{}
+	for _, n := range ns {
+		out = append(out, reservedOut{Name: n.Name, Kind: n.Kind, AddedAt: n.AddedAt.UTC().Format(time.RFC3339), Sources: n.Sources})
+	}
+	reply(w, r, http.StatusOK, map[string]any{"names": out}, "", noStore)
+}
+
+func (h *Handler) addReserved(w http.ResponseWriter, r *http.Request, c caller, _ params) {
+	var in struct {
+		Names []string `json:"names"`
+		Kind  string   `json:"kind"`
+		Force bool     `json:"force"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	a, _ := c.actor()
+	res, err := h.o.Tenants.Reserve(r.Context(), a, in.Names, in.Kind, in.Force)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	if res.Added == nil {
+		res.Added = []string{}
+	}
+	reply(w, r, http.StatusOK, map[string]any{"added": res.Added, "tenants": res.Tenants}, "", noStore)
+}
+
+func (h *Handler) removeReserved(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	if err := h.o.Tenants.Unreserve(r.Context(), a, p["name"]); err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}

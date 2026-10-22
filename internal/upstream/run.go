@@ -23,6 +23,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -494,6 +495,8 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 	if u.Kind == store.UpstreamRepo {
 		in.KeySource = u.ID // spec 0021: a repository upstream is a trusted source of licence keys
 	}
+	in.ReserveKind = reserveKind(u.Kind) // spec 0030: DuckDB's repositories bring their names
+	in.ReserveSource = "upstream:" + sc.Tenant.Name + "/" + u.Name
 	got, err := s.Releases.Ingest(ctx, a, sc, sp, in)
 	rec.BodyHash = got.Hash
 	switch {
@@ -647,4 +650,16 @@ func (s *Service) download(ctx context.Context, cred *credential.Credential, tok
 			return d, err
 		}
 	}
+}
+
+// reserveKind is the kind a build mirrored from an upstream of kind reserves its name as (spec
+// 0030): DuckDB's core repository's are core, its community repository's community; others none.
+func reserveKind(kind string) string {
+	switch kind {
+	case store.UpstreamCore:
+		return reserved.Core
+	case store.UpstreamCommunity:
+		return reserved.Community
+	}
+	return ""
 }

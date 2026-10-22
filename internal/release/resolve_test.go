@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -156,4 +157,24 @@ func TestSnapshotsCache(t *testing.T) {
 			t.Fatal("the old row's request rebuilt an older snapshot")
 		}
 	})
+}
+
+func TestAnyTakes(t *testing.T) {
+	t.Cleanup(reserved.SetForTest(map[string]string{"json": reserved.Core, "h3": reserved.Community}, 1))
+	for _, c := range []struct {
+		kind, name string
+		want       bool
+	}{
+		{store.UpstreamRepo, "tresor", true},
+		{store.UpstreamRepo, "h3", false},
+		{store.UpstreamRepo, "json", false},
+		{store.UpstreamCommunity, "h3", true}, // DuckDB's community repository takes community names
+		{store.UpstreamCommunity, "json", false},
+		{store.UpstreamCore, "json", false},
+		{store.UpstreamCommunity, "http", false}, // an alias
+	} {
+		if got := release.AnyTakes(c.kind, c.name); got != c.want {
+			t.Errorf("%+v: %v", c, got)
+		}
+	}
 }

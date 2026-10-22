@@ -648,7 +648,11 @@ console own what it made, and it never undoes an administrator's change.
 ```yaml
 bootstrap:
   versions:                              # server-wide, as version add
-    - { version: v1.4.1, kind: release, c_apis: [v1.2.0] }
+    - version: v1.4.1
+      kind: release
+      c_apis: [v1.2.0]
+      core_extensions: [autocomplete, core_functions, icu, json, parquet]   # abridged: list all that kista duckdb core-extensions v1.4.1 prints
+      core_extensions_commit: b390a7c3760bd95926fe8aefde20d04b349b472e       # optional: the commit it read
   tenant:
     name: acme
     display_name: Acme
@@ -701,7 +705,11 @@ bootstrap:
   - an issuer with any field different;
   - another console client;
   - another C API for a major a version already has;
+  - a new version without `core_extensions` (spec 0030);
   - a suspended or deleted tenant.
+
+  A version's C APIs and core extensions the server does not have yet are added (`add`), and the
+  core extensions reserved.
 
   The check opens and probes the signers (an attestation key for its own purpose) and fetches a new
   issuer's discovery document and JWKS. For an upstream, it makes the checks `upstream add` makes:

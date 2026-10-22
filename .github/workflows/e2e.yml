@@ -56,7 +56,7 @@ jobs:
           cc=$(cc --version | head -1 | openssl dgst -sha256 | awk '{print substr($NF,1,8)}')
           echo "build=duckdb-e2e-${{ runner.os }}-${{ runner.arch }}-$pin-$cc" >> "$GITHUB_OUTPUT"
           echo "ccache=ccache-e2e-${{ runner.os }}-${{ runner.arch }}-$pin" >> "$GITHUB_OUTPUT"
-      # Only the build output is cached (lib, include, extensions, sdk). It is saved right after the build,
+      # Only the build output is cached (lib, include, extensions, sdk, core-src). It is saved right after the build,
       # so a failing test run does not throw a 30-45 minute build away.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: build
@@ -66,6 +66,7 @@ jobs:
             e2e/.build/include
             e2e/.build/extensions
             e2e/.build/sdk
+            e2e/.build/core-src
           key: ${{ steps.key.outputs.build }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.build.outputs.cache-hit != 'true'
@@ -85,6 +86,7 @@ jobs:
             e2e/.build/include
             e2e/.build/extensions
             e2e/.build/sdk
+            e2e/.build/core-src
           key: ${{ steps.key.outputs.build }}
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.build.outputs.cache-hit != 'true'
@@ -159,6 +161,7 @@ jobs:
             e2e/.build/include
             e2e/.build/extensions
             e2e/.build/sdk
+            e2e/.build/core-src
           key: ${{ needs.e2e.outputs.build }}
           fail-on-cache-miss: true
       - name: kind and helm

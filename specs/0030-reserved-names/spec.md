@@ -1,6 +1,7 @@
 # Spec 0030: Reserved names as data, and a distributor's names in a tenant
 
-- **Status**: accepted (2026-10-22)
+- **Status**: accepted (2026-10-22); part 1 (the server's names) implemented, parts 2 (a tenant's
+  names, the distribution admins) and 3 (the community sync) to come
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 
@@ -46,7 +47,7 @@ reserved_version        a single row: the list's version, a counter
 
 - A `source` says why a name is reserved: `builtin` (the lists kista shipped until this spec,
   loaded by the migration), `version:<duckdb version>@<commit>`, `upstream:<tenant>/<upstream>`,
-  `bundle:<sha256>`, `community-sync@<commit>` or `admin:<principal>`. A name keeps every source it
+  `bundle:<id>`, `community-sync@<commit>` or `admin:<principal>`. A name keeps every source it
   was given, so the versions of DuckDB that have it as core are known.
 - **One list for every DuckDB version.** Core names differ between DuckDB versions (a release adds
   some, as v2.0.0 added `legacy_parser`). A name core in any registered version is reserved for
@@ -76,8 +77,7 @@ reserved_version        a single row: the list's version, a counter
      `kista bundle inspect`): it streams DuckDB's source tarball at `<ref>` (a release tag, or a dev
      build's commit; `codeload.github.com` resolves a 10-character source id) and runs spec 0008's
      generator over it, never executing what it fetched. It prints the names and the commit it read.
-     A version that already has core names gets the list's diff, and a list missing a name already
-     core is refused (a generator that misparsed a new layout fails loudly). An operator without
+     A generator that misparsed a new layout fails loudly (as built: below). An operator without
      github.com writes the file elsewhere and passes it.
    - A version registered before this spec keeps the builtin names.
 2. **An upstream's names.** A build mirrored from a `duckdb-core` upstream reserves its name as core,
@@ -220,6 +220,61 @@ suite checks the migration holds them.
 - The distribution admins: each call allowed, everything else refused.
 - The e2e: a version registered with its core names; a wide `publish` grant refused on one of them
   and on a tenant-reserved name, and allowed with a grant naming it.
+
+## Delivery
+
+Three parts, each a pull request:
+
+1. **The server's names** (implemented): the tables and their seed, the process's view and its
+   version, a version's core extensions (API, CLI, bootstrap, console, `kista duckdb`), the
+   administrator's names, the intake's learning, `"*"` on community, the re-check under the lock,
+   the grant explanations, `make reserved` narrowed.
+2. **A tenant's names and the distribution admins**: `tenant_reserved_names` (its own migration, with
+   its `min_reader`), the lookup in that precedence, the role and its calls, the reaper.
+3. **The community sync**: `reserved.community_sync`.
+
+### As built (part 1)
+
+- Migration 0030 creates the server's tables only; `tenant_reserved_names` comes with part 2.
+- The process's view is an atomic snapshot of the list at a `reserved_version`, seeded from the
+  compiled lists. A channel read (`GetServeChannel`, which reads the version with the channel row)
+  reloads it when the version moved, and the paths that decide on a name (publish, promote, an
+  attachment's `publish`, an upstream's entries, the grant explanations, the release list and the
+  statistics a name's publishers read) reload it before they check. The channel's snapshot and the
+  resolver's cache hold nothing the list decides (`shadows` and `"*"` read the view when asked), so
+  a new name invalidates neither.
+- A transaction reserves its names first and bumps `reserved_version` once, last
+  (`BumpReservedVersion`), so names are always locked before the version and two writers of several
+  names cannot deadlock. A name already reserved as asked, with the source, is only read: an intake
+  of a known name takes no lock on it (SQL Server's `MERGE ... HOLDLOCK` would hold one to commit).
+  A removal deletes the `admin:` sources and then the name only if no source is left, so a source
+  another transaction commits meanwhile keeps the name.
+- A version's core extensions are refused over tenants' releases unless forced, as an
+  administrator's names are; either refusal looks only at names whose kind would change.
+- `kista duckdb core-extensions` guards against a misparse by requiring each source it reads (the
+  entry tables, `AUTOLOADABLE_EXTENSIONS`, the `.github/config` loads) to give names, and the list to
+  hold `icu`, `json` and `parquet`, which every DuckDB version has. It does not compare with the
+  names already core: a version may lawfully lack another's (v1.4.1 has no `legacy_parser`). It
+  reads the pre-2.0 layout too (`{nullptr, nullptr, false}` ends `internal_extensions[]`; checked
+  back to v0.9.2), and a checkout with `-dir` (`-commit` names its commit), which the e2e and the
+  deploy scripts use. A commit ref needs `-trust-commit`: codeload serves a fork's commit under
+  `duckdb/duckdb`'s name. A tarball is bounded in entries kept (each counting at least 512 bytes),
+  bytes kept, and bytes inflated; redirects stay on the host. `version add` refuses the community
+  list as a version's core extensions.
+- `POST duckdb-versions/{v}/core-extensions` and `version core-extensions` answer the names new to
+  the server's list; the bootstrap adds the names of a version it lists that the server does not
+  hold as core.
+- An attachment's `publish` reads the synced list, without the re-check under a lock a release
+  insert makes: it documents a body its publisher released.
+- A bundle's source is `bundle:<id>`, the bundle's manifest id.
+- An administrator's addition records one `reserved.add` event per name; a version's, one for its
+  new names. The intake's learning is not a separate event: the release's records it, and the
+  name's source names the upstream or the bundle.
+- A community name that becomes core: the intake records shadows for community-built mirrors of it
+  from then on (the shadow decision reads the list in the transaction); the backfill of mirrors
+  that exist, and listing their tenants, come with part 2's lookup.
+- The Marketplace package carries v2.0.0's core extensions in its DuckDB choice, read at the tag's
+  commit.
 
 ## Alternatives considered
 

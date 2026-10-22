@@ -293,7 +293,8 @@ var KeptTables = []string{"tenants", "tenant_deletions", "tenant_audiences", "ke
 // GlobalTables are the server's, of no tenant.
 var GlobalTables = []string{"blobs", "blob_claims", "blob_tombstones", "storage_domains", "duckdb_versions", "duckdb_version_c_apis",
 	"deployment", "leases", "event_sinks", "statistics_days", "schema_migrations",
-	"bootstrap"} // spec 0020: the bootstrap names its tenant, and outlives it
+	"bootstrap",                                                   // spec 0020: the bootstrap names its tenant, and outlives it
+	"reserved_names", "reserved_name_sources", "reserved_version"} // spec 0030
 
 // TenantRows counts a tenant's rows in every table the reaper deletes from (purged_slots by the
 // given channel ids).

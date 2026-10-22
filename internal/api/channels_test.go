@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
 
 // Every phase-3 route × caller: a channel administrator reaches its channel only, an extension
@@ -353,7 +354,7 @@ func TestKeyManagement(t *testing.T) {
 	}
 
 	// channel DuckDB versions: add, a missing one is 400, remove, removing again is 404
-	if _, err := m.env.ten.AddVersion(ctx, admin, "v2.1.0", "release", []string{"v1.5.6"}); err != nil {
+	if _, _, err := m.env.ten.AddVersion(ctx, admin, "v2.1.0", "release", []string{"v1.5.6"}, tenants.CoreExtensions{Names: []string{"json"}}); err != nil {
 		t.Fatal(err)
 	}
 	const V = "/api/v1/tenants/acme/channels/prod/duckdb-versions"

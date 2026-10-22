@@ -373,10 +373,18 @@ func Check(ctx context.Context, d Deps, b config.Bootstrap, o Options) (Plan, er
 	for _, v := range have {
 		known[v.Name] = v
 	}
+	reservedKinds, _, err := d.Store.ReservedNames(ctx)
+	if err != nil {
+		return p, err
+	}
 	for _, v := range b.Versions {
 		cur, ok := known[v.Version]
 		if !ok {
-			item("version", v.Version, Create, "")
+			if len(v.CoreExtensions) == 0 {
+				item("version", v.Version, Refused, "a new version needs its core_extensions (kista duckdb core-extensions)")
+			} else {
+				item("version", v.Version, Create, "")
+			}
 			continue
 		}
 		if cur.Kind != v.Kind {
@@ -393,11 +401,18 @@ func Check(ctx context.Context, d Deps, b config.Bootstrap, o Options) (Plan, er
 				other = append(other, fmt.Sprintf("%s (it has %s)", c, cur.CAPIs[i]))
 			}
 		}
+		var adds []string
+		if len(missing) > 0 {
+			adds = append(adds, "C APIs "+strings.Join(missing, ", "))
+		}
+		if core := missingCore(v.CoreExtensions, reservedKinds); len(core) > 0 {
+			adds = append(adds, "core extensions "+strings.Join(core, ", "))
+		}
 		switch {
 		case len(other) > 0:
 			item("version", v.Version, Refused, "C API %s", strings.Join(other, ", "))
-		case len(missing) > 0:
-			item("version", v.Version, Add, "C APIs %s", strings.Join(missing, ", "))
+		case len(adds) > 0:
+			item("version", v.Version, Add, "%s", strings.Join(adds, "; "))
 		default:
 			item("version", v.Version, Same, "")
 		}
@@ -697,7 +712,8 @@ func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section stri
 	for _, v := range b.Versions {
 		switch p.action("version", v.Version) {
 		case Create:
-			if _, err := d.Tenants.AddVersion(ctx, a, v.Version, v.Kind, v.CAPIs); err != nil {
+			core := tenants.CoreExtensions{Names: v.CoreExtensions, Commit: v.CoreExtensionsCommit}
+			if _, _, err := d.Tenants.AddVersion(ctx, a, v.Version, v.Kind, v.CAPIs, core); err != nil {
 				return res, err
 			}
 			made("version", v.Version)
@@ -714,6 +730,15 @@ func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section stri
 						return res, err
 					}
 					made("c_api", v.Version+" "+c)
+				}
+			}
+			if len(v.CoreExtensions) > 0 {
+				added, err := d.Tenants.AddVersionCore(ctx, a, v.Version, tenants.CoreExtensions{Names: v.CoreExtensions, Commit: v.CoreExtensionsCommit})
+				if err != nil {
+					return res, err
+				}
+				for _, n := range added {
+					made("core_extension", v.Version+" "+n)
 				}
 			}
 		}
@@ -1067,4 +1092,15 @@ func upstreamDiff(cur store.Upstream, want config.BootstrapUpstream, channelID s
 		}
 	}
 	return ""
+}
+
+// missingCore lists the names of a version's core extensions the server does not hold as core.
+func missingCore(names []string, kinds map[string]string) []string {
+	var out []string
+	for _, n := range names {
+		if kinds[n] != store.ReservedCore && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }

@@ -235,11 +235,11 @@ func newEnvWith(t *testing.T, e storetest.Engine, maxBody int64, ec egress.Confi
 	en.run = &upstream.Runner{Service: en.up, Holder: "test", Log: slog.New(slog.DiscardHandler)}
 	must(t, func() error { _, err := en.ten.CreateTenant(ctx, admin, "acme", "", "", ""); return err })
 	must(t, func() error {
-		_, err := en.ten.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6", "v2.0.0"})
+		_, _, err := en.ten.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6", "v2.0.0"}, tenants.CoreExtensions{Names: []string{"json"}})
 		return err
 	})
 	must(t, func() error {
-		_, err := en.ten.AddVersion(ctx, admin, "v2.1.0", "release", []string{"v1.6.0", "v2.1.0"})
+		_, _, err := en.ten.AddVersion(ctx, admin, "v2.1.0", "release", []string{"v1.6.0", "v2.1.0"}, tenants.CoreExtensions{Names: []string{"json"}})
 		return err
 	})
 	for name, kind := range map[string]string{"prod": store.ChannelSigned, "other": store.ChannelSigned, "mirror": store.ChannelPassthrough} {
@@ -967,7 +967,10 @@ func TestBundleMode(t *testing.T) {
 // holds only where every sharing upstream agrees.
 func TestPlan(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
-		must(t, func() error { _, err := en.ten.AddVersion(ctx, admin, "eb0d9df1a2", "dev", nil); return err })
+		must(t, func() error {
+			_, _, err := en.ten.AddVersion(ctx, admin, "eb0d9df1a2", "dev", nil, tenants.CoreExtensions{Names: []string{"json"}})
+			return err
+		})
 		must(t, func() error {
 			_, err := en.ten.SetChannelVersions(ctx, admin, "acme", "prod", []string{"eb0d9df1a2"}, nil)
 			return err

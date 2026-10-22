@@ -139,7 +139,8 @@ release of DuckDB's kinds. Here it mirrors DuckDB's `json` and `httpfs` core ext
 ka migrate
 ka tenant create gw
 ka channel create gw/core -kind signed
-ka version add $DUCKDB_VERSION -kind release
+kista duckdb core-extensions $DUCKDB_VERSION >transfer/core-$DUCKDB_VERSION.txt   # from GitHub
+ka version add $DUCKDB_VERSION -kind release -core-extensions transfer/core-$DUCKDB_VERSION.txt
 ka channel versions gw/core -add $DUCKDB_VERSION
 ka key add gw/core -signer "$GATEWAY_SIGNER" -active
 ka upstream add gw core -kind duckdb-core -channel core -platforms $PLATFORM -extensions json,httpfs -public
@@ -174,13 +175,15 @@ them from the site ([Autoloading and the passthrough channel](../duckdb.md#autol
 A signed channel takes core, community or another kista's extensions the same way, re-signed with
 its own key. The channel's DuckDB versions are those of the site's DuckDB, with the C API maximums
 that C API extensions need
-([Getting started](../getting-started.md#tell-kista-which-duckdb-versions-the-channel-serves)).
+([Getting started](../getting-started.md#tell-kista-which-duckdb-versions-the-channel-serves)), and
+their core extensions, which the gateway read from DuckDB's sources and the media carry (a list of
+names the site reserves, and nothing it runs: read it before you register the version).
 
 ```bash title="At the site" ci=site
 ka migrate
 ka tenant create acme
 ka channel create acme/core -kind passthrough
-ka version add $DUCKDB_VERSION -kind release
+ka version add $DUCKDB_VERSION -kind release -core-extensions transfer/core-$DUCKDB_VERSION.txt
 ka channel versions acme/core -add $DUCKDB_VERSION
 ka upstream add acme core -mode bundle -kind duckdb-core -channel core -platforms $PLATFORM \
   -extensions json,httpfs -public   # a passthrough channel's releases are public

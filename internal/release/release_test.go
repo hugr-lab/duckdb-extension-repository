@@ -68,7 +68,7 @@ func newEnv(t *testing.T, e storetest.Engine) *env {
 		ten: &tenants.Service{Store: st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}}
 	must(t, func() error { _, err := en.ten.CreateTenant(ctx, admin, "acme", "", "", ""); return err })
 	must(t, func() error {
-		_, err := en.ten.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6", "v2.0.0"})
+		_, _, err := en.ten.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6", "v2.0.0"}, tenants.CoreExtensions{Names: []string{"json"}})
 		return err
 	})
 	for name, kind := range map[string]string{"prod": store.ChannelSigned, "mirror": store.ChannelPassthrough, "empty": store.ChannelSigned} {

@@ -70,7 +70,7 @@ func TestAdminBundleImport(t *testing.T) {
 	}
 	admin(0, nil, "migrate")
 	admin(0, nil, "tenant", "create", "acme")
-	admin(0, nil, "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6")
+	admin(0, nil, "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6", "-core-extensions", coreFile(t, "json"))
 	admin(0, nil, "channel", "create", "acme/prod", "-kind", "signed")
 	admin(0, nil, "channel", "versions", "acme/prod", "-add", "v2.0.0")
 	admin(0, nil, "key", "add", "acme/prod", "-signer", "file:a.pem", "-active")
@@ -165,7 +165,7 @@ func TestAdminBundleExport(t *testing.T) {
 		return out.String() + errw.String()
 	}
 	admin(0, "migrate")
-	admin(0, "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6")
+	admin(0, "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6", "-core-extensions", coreFile(t, "json"))
 	for i, tn := range []string{"acme", "site"} {
 		admin(0, "tenant", "create", tn)
 		admin(0, "channel", "create", tn+"/prod", "-kind", "signed")

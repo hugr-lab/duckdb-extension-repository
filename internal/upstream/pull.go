@@ -14,7 +14,6 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -245,7 +244,7 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	}
 	e, ok := entry(u, m.Name)
 	if !ok {
-		if _, any := entry(u, "*"); any && reserved.Kind(m.Name) == "" && reserved.Canonical(m.Name) == "" {
+		if _, any := entry(u, "*"); any && release.AnyTakes(u.Kind, m.Name) {
 			// "*" takes no name another upstream of the channel lists (it may have been added since
 			// the snapshot)
 			var owner string

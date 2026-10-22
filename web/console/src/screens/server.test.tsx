@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Client } from '../lib/http'
-import { Holder, deletable, newTenantBody } from './Server'
+import { Holder, coreExtensions, deletable, newTenantBody } from './Server'
 
 describe('deletable', () => {
   const now = new Date('2026-10-12T12:00:00Z')
@@ -108,5 +108,21 @@ describe('Holder', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Set' }))
     expect((await screen.findByRole('alert')).textContent).toContain('The tenant changed meanwhile: it was read again.')
     expect(reload).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Spec 0030: a version's core extensions, pasted as kista duckdb core-extensions prints them.
+describe('coreExtensions', () => {
+  it('reads the names and the commit line', () => {
+    expect(coreExtensions('# commit d54cbbe3df17e8e5ce68312f483b4155836112aa (duckdb/duckdb v2.0.0)\njson\n\n parquet \n')).toEqual({
+      core_extensions: ['json', 'parquet'],
+      core_extensions_commit: 'd54cbbe3df17e8e5ce68312f483b4155836112aa',
+    })
+  })
+  it('refuses the community list', () => {
+    expect(() => coreExtensions('# commit 250f2d603d5b2fc121ec7d1e2067668383e2f192 (duckdb/community-extensions main)\na5')).toThrow()
+  })
+  it('leaves the commit out when no line names one', () => {
+    expect(coreExtensions('# duckdb/duckdb ./src\nicu')).toEqual({ core_extensions: ['icu'] })
   })
 })

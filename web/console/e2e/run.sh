@@ -121,7 +121,8 @@ k() { "$work/kista" admin -config "$work/kista.yaml" "$@" >/dev/null; }
 for i in $(seq 1 90); do curl -sf "$kc/realms/acme/.well-known/openid-configuration" >/dev/null && break; sleep 2; done
 curl -sf "$kc/realms/ops/.well-known/openid-configuration" >/dev/null || { docker logs "$name" | tail -50; exit 1; }
 k migrate
-k version add v2.0.0 -kind release -c-api v1.5.6
+printf 'json\nparquet\n' >"$work/core.txt" # the version's core extensions (spec 0030)
+k version add v2.0.0 -kind release -c-api v1.5.6 -core-extensions "$work/core.txt"
 k tenant create acme -display-name Acme
 k channel create acme/prod -kind signed
 k channel versions acme/prod -add v2.0.0

@@ -24,6 +24,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/duckdbsrc"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -143,7 +144,10 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 	if isRelease(b.versionDir) {
 		kind = "release"
 	}
-	_, err = ten.AddVersion(ctx, serveAdmin, b.versionDir, kind, []string{"v1.5.6", "v2.0.0"})
+	// the version's core extensions, read from the build's DuckDB sources (spec 0030)
+	core, err := duckdbsrc.CoreNames(os.DirFS(filepath.Join(b.dir, "core-src")))
+	must(err)
+	_, _, err = ten.AddVersion(ctx, serveAdmin, b.versionDir, kind, []string{"v1.5.6", "v2.0.0"}, tenants.CoreExtensions{Names: core})
 	must(err)
 	_, err = ten.CreateChannel(ctx, serveAdmin, "acme", "prod", store.ChannelSigned)
 	must(err)

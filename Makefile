@@ -30,8 +30,8 @@ console-e2e:
 test:
 	go test ./...
 
-# The reserved extension names (spec 0008), aliases and DuckDB's keys (spec 0009) from DuckDB at e2e/DUCKDB_PIN and community-extensions at
-# internal/reserved/COMMUNITY_PIN; CI checks the committed lists are current.
+# DuckDB's extension aliases and keys (spec 0009) from DuckDB at e2e/DUCKDB_PIN; CI checks the committed files are current.
+# The reserved names are the server's data since spec 0030 (kista duckdb core-extensions).
 reserved:
 	./internal/reserved/generate.sh
 

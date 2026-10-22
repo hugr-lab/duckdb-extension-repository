@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -46,16 +47,34 @@ func TestTenantsService(t *testing.T) {
 			if _, err := svc.CreateChannel(ctx, admin, "acme", "prod", store.ChannelSigned); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.AddVersion(ctx, admin, "v2.0.0", "nightly", nil); !errors.Is(err, store.ErrInvalid) {
+			if _, _, err := svc.AddVersion(ctx, admin, "v2.0.0", "nightly", nil, tenants.CoreExtensions{Names: []string{"json"}}); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("bad version kind: %v", err)
 			}
 			for _, bad := range [][]string{{"1.2.0"}, {"v1.2.0", "v1.3.0"}} {
-				if _, err := svc.AddVersion(ctx, admin, "v2.0.0", "release", bad); !errors.Is(err, store.ErrInvalid) {
+				if _, _, err := svc.AddVersion(ctx, admin, "v2.0.0", "release", bad, tenants.CoreExtensions{Names: []string{"json"}}); !errors.Is(err, store.ErrInvalid) {
 					t.Fatalf("bad C APIs %v: %v", bad, err)
 				}
 			}
-			if _, err := svc.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6"}); err != nil {
-				t.Fatal(err)
+			// a version's core extensions (spec 0030): required, names, a commit
+			for _, bad := range []tenants.CoreExtensions{{}, {Names: []string{"JSON"}}, {Names: []string{"json"}, Commit: "main"}} {
+				if _, _, err := svc.AddVersion(ctx, admin, "v2.0.0", "release", nil, bad); !errors.Is(err, store.ErrInvalid) {
+					t.Fatalf("core extensions %+v: %v", bad, err)
+				}
+			}
+			_, added, err := svc.AddVersion(ctx, admin, "v2.0.0", "release", []string{"v1.5.6"},
+				tenants.CoreExtensions{Names: []string{"kista_t1", "json", "kista_t1"}, Commit: "d54cbbe"})
+			if err != nil || !slices.Equal(added, []string{"kista_t1"}) {
+				t.Fatalf("added %v %v", added, err)
+			}
+			if added, err := svc.AddVersionCore(ctx, admin, "v2.0.0", tenants.CoreExtensions{Names: []string{"kista_t1", "kista_t2"}}); err != nil ||
+				!slices.Equal(added, []string{"kista_t2"}) {
+				t.Fatalf("more core extensions: %v %v", added, err)
+			}
+			if _, err := svc.AddVersionCore(ctx, admin, "v9.9.9", tenants.CoreExtensions{Names: []string{"json"}}); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("an unknown version: %v", err)
+			}
+			if l, _ := svc.Store.ListReservedNames(ctx, "kista_t1"); len(l) != 1 || !slices.Equal(l[0].Sources, []string{"version:v2.0.0", "version:v2.0.0@d54cbbe"}) {
+				t.Fatalf("sources: %+v", l)
 			}
 			v, err := svc.AddVersionCAPI(ctx, admin, "v2.0.0", "v2.0.0")
 			if err != nil || len(v.CAPIs) != 2 {

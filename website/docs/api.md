@@ -178,7 +178,8 @@ All paths are relative to `/api/v1`. `{t}` is a tenant, `{c}` a channel.
 | `GET whoami` | a server token |
 | `GET console`, `GET tenants/{t}/console` | public: the console's sign-in configuration |
 | `GET duckdb-versions`, `GET duckdb-versions/{v}` | public |
-| `POST duckdb-versions`, `POST duckdb-versions/{v}/c-apis` | server |
+| `POST duckdb-versions`, `POST duckdb-versions/{v}/c-apis`, `POST duckdb-versions/{v}/core-extensions` | server: [DuckDB versions](#duckdb-versions-and-reserved-names) |
+| `GET reserved-names[?name=]`, `POST reserved-names`, `DELETE reserved-names/{name}` | server: [reserved names](#duckdb-versions-and-reserved-names) |
 | `GET tenants[?state=]`, `POST tenants`; `POST tenants/{t}/suspend`, `/resume` | server |
 | `GET tenants/{t}` | tenant admin; a deleting or deleted tenant: server |
 | `DELETE tenants/{t}` | server: [deleting a tenant](#deleting-a-tenant) |
@@ -249,6 +250,32 @@ ETAG=$(curl -sS -D - -o /dev/null -H "Authorization: Bearer $SERVER_TOKEN" \
 curl -sS -X DELETE -H "Authorization: Bearer $SERVER_TOKEN" -H "If-Match: $ETAG" \
   https://extensions.example.com/api/v1/tenants/acme
 ```
+
+#### DuckDB versions and reserved names
+
+A version is registered with its core extensions, which become reserved core names ([Reserved
+names](publishing.md#reserved-names); `kista duckdb core-extensions <tag>` prints them).
+
+- `POST duckdb-versions` takes `name`, `kind` (`release` or `dev`), `c_api_maxima`, and
+  `core_extensions` (required: a list of names) with `core_extensions_commit` (optional: the commit
+  of DuckDB's sources they were read at) and `force`. It answers `201` with the version, and
+  `core_extensions_added`, the names that were not reserved before. Without `core_extensions`:
+  `400`. A name tenants have releases under answers `409`, naming them, unless `force` is true (as
+  for `POST reserved-names`).
+- `POST duckdb-versions/{v}/core-extensions` with `core_extensions` (and `core_extensions_commit`,
+  `force`) reserves more of a registered version's core extensions: `200` with
+  `core_extensions_added`, `404` for an unknown version.
+- `GET reserved-names` lists `names`, each with `name`, `kind` (`core` or `community`), `added_at`
+  and `sources` (`builtin`, `version:<v>@<commit>`, `upstream:<tenant>/<upstream>`, `bundle:<id>`,
+  `admin:<actor>`); `?name=` reads one.
+- `POST reserved-names` with `names`, `kind` and `force` reserves names as an administrator's. A
+  name that becomes reserved (or goes from community to core) with releases that are not yanked or
+  purged in some tenant answers `409`, naming the tenants, unless
+  `force` is true: the releases stay, and only grants naming the extension reach the name from then
+  on. It answers `200` with `added` (the names that were not reserved as that kind before) and
+  `tenants` (the tenants that keep releases, by name). Each name added is a `reserved.add` event.
+- `DELETE reserved-names/{name}` removes a name only administrators reserved (`204`, a
+  `reserved.remove` event); a name a version, an upstream or the seed brought answers `409`.
 
 ### The index
 

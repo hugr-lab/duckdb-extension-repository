@@ -507,6 +507,11 @@ func init() {
 			http.MethodPost: mb(serverAdmin, (*Handler).addDuckDBVersion)}},
 		{"duckdb-versions/{v}", idx((*Handler).duckdbVersion)},
 		{"duckdb-versions/{v}/c-apis", map[string]rule{http.MethodPost: mb(serverAdmin, (*Handler).addCAPI)}},
+		{"duckdb-versions/{v}/core-extensions", map[string]rule{http.MethodPost: mb(serverAdmin, (*Handler).addCoreExtensions)}},
+		// spec 0030: the server's reserved extension names
+		{"reserved-names", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listReserved),
+			http.MethodPost: mb(serverAdmin, (*Handler).addReserved)}},
+		{"reserved-names/{name}", map[string]rule{http.MethodDelete: m(serverAdmin, (*Handler).removeReserved)}},
 		{"tenants", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listTenants),
 			http.MethodPost: mb(serverAdmin, (*Handler).createTenant)}},
 		{"tenants/{t}", map[string]rule{http.MethodGet: {access: pathAdmin, manage: true, closed: true, handle: (*Handler).getTenant},
@@ -947,6 +952,12 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		a, ok := c.actor()
 		if !ok || h.o.Authz == nil {
 			return refuse()
+		}
+		if p["ext"] != "" && h.o.Store != nil {
+			if err := reserved.Sync(ctx, h.o.Store); err != nil { // spec 0030
+				h.fail(w, err)
+				return caller{}, false
+			}
 		}
 		res := authz.Resource{Tenant: name, Channel: p["c"], Extension: p["ext"], Reserved: reserved.Kind(p["ext"]) != ""}
 		allowed := false

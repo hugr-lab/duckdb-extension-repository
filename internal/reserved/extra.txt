@@ -1,2 +1,2 @@
-# Names DuckDB owns that the pin does not show: curated, never shrinking (spec 0008).
+# Core names the pin did not show, curated before spec 0030: part of the seed migration 0030 loads. Frozen.
 jemalloc

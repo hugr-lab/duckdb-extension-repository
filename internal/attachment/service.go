@@ -87,6 +87,9 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant, ext string,
 		return store.Attachment{}, err
 	}
 	if !admin {
+		if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030
+			return store.Attachment{}, err
+		}
 		ok, err := s.allowed(ctx, a, authz.VerbPublish, authz.Resource{Tenant: tenant, Extension: ext, Reserved: reserved.Kind(ext) != ""})
 		if err != nil {
 			return store.Attachment{}, err
