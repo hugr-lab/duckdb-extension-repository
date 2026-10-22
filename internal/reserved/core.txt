@@ -18,6 +18,7 @@ icu
 inet
 json
 lance
+legacy_parser
 loader
 motherduck
 mysql_scanner

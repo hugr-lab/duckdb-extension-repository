@@ -6,7 +6,7 @@ title: Using kista from DuckDB
 
 DuckDB 2.0 uses a kista channel as a trusted extension repository with no plugin. This page shows
 the SQL a client runs, what DuckDB requests, and the server settings each case needs. The behaviour
-described here is that of the DuckDB commit in `e2e/DUCKDB_PIN` (v2.0-cyanoptera), most of it
+described here is that of the DuckDB commit in `e2e/DUCKDB_PIN` (the v2.0.0 release), most of it
 confirmed by kista's end-to-end tests; the source locations are in
 [spec 0001](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0001-architecture/spec.md)
 ("DuckDB behaviour relied on").
