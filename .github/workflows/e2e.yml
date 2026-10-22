@@ -161,6 +161,7 @@ jobs:
             e2e/.build/include
             e2e/.build/extensions
             e2e/.build/sdk
+            e2e/.build/core-src
           key: ${{ needs.e2e.outputs.build }}
           fail-on-cache-miss: true
       - name: kind and helm
