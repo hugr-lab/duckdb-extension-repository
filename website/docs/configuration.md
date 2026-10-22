@@ -406,7 +406,7 @@ serve:
 ## egress
 
 The outbound client for requests kista makes on a tenant's behalf: issuers' JWKS, upstreams,
-feeds, OTLP sinks. The whole block is file-only. See [Upstreams](upstreams.md) and
+feeds, OTLP sinks, and the community sync (`reserved.community_sync`). The whole block is file-only. See [Upstreams](upstreams.md) and
 [Security](security.md).
 
 | Setting | Type | Default | Meaning |
@@ -640,6 +640,37 @@ Outside `profile: dev` it may not be below `24h`; in dev it may be `0`. It may n
 process that takes the delete applies its own value (`kista admin tenant delete`, or the replica
 that answers `DELETE /api/v1/tenants/{t}`), so `kista admin` and `kista serve` should share the
 configuration.
+
+## reserved
+
+The server's reserved extension names (spec 0030). File-only. See
+[Reserved names](publishing.md#reserved-names).
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `reserved.community_sync.enabled` | boolean | `false` | Follow duckdb/community-extensions: reserve its new extension names as community. |
+| `reserved.community_sync.interval` | duration | `24h` | Between reads; `1h..168h`. |
+| `reserved.community_sync.url` | URL | `https://codeload.github.com/duckdb/community-extensions/tar.gz/HEAD` | A gzip tarball of the repository's default branch, as `git archive` writes it (its commit in the pax header): GitHub's, or a mirror's. `https` (http on loopback only with profile `dev` and `egress.allow_loopback_http`); a redirect is not followed. |
+
+When enabled, one replica per interval reads the tarball through egress (a public host needs no
+`egress.allow` entry; a mirror on a private network does), reads each
+`extensions/<dir>/description.yml`'s name, and reserves the names the server does not hold yet as
+community, with the source `community-sync@<commit>`: one `reserved.add` event (`sync:community`,
+actor `system:community-sync`) with the names. A failed read is logged and tried again at the next
+interval (a `reserved.sync` event with outcome `failed`); it never removes a name, and a name
+already reserved (core, or community from another source) is left as it is. Two names are left to
+an administrator instead (logged, and in the event's `skipped`): a name a tenant has releases under,
+which reserving would take from the tenant's wide grants on a third party's say, and more than 100
+new names in one pass, a source that changed too much at once. The sync trusts what the URL serves
+(TLS, and DuckDB's review of what is merged); what it changes only narrows who may publish a name. A server that does not sync can add the names by hand: `kista duckdb
+community-extensions | ...` then `kista admin reserved add <name>... -kind community`.
+
+```yaml title="kista.yaml"
+reserved:
+  community_sync:
+    enabled: true        # off by default
+    interval: 24h
+```
 
 ## bootstrap
 

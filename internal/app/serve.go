@@ -23,6 +23,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reservedsync"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -285,6 +286,12 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	daily := &stats.Daily{Store: st, Holder: instance, Retention: cfg.StatisticsSettings().Retention, EventRetention: ev.Retention, Log: log}
 	wg.Add(1)
 	go func() { defer wg.Done(); daily.Run(bg) }()
+	// spec 0030 part 3: duckdb/community-extensions' new names, reserved as community (off by default)
+	if cs := cfg.CommunitySyncSettings(); cs.Enabled {
+		sync := &reservedsync.Sync{Store: st, Fetch: eg, URL: cs.URL, Every: cs.Interval, Holder: instance, Log: log}
+		wg.Add(1)
+		go func() { defer wg.Done(); sync.Run(bg) }()
+	}
 	m := &sinks.Manager{Store: st, Resolver: resolver, Sinks: eventSinks, Holder: instance, Log: log}
 	wg.Add(1)
 	go func() { defer wg.Done(); m.Run(bg) }()

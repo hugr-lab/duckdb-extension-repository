@@ -18,7 +18,7 @@ import (
 
 const duckdbUsage = `usage: kista duckdb core-extensions <tag> | <commit> -trust-commit | -dir <checkout> [-commit <sha>]
                                                        a DuckDB version's core extensions
-       kista duckdb community-extensions [ref] | -dir <checkout>   duckdb/community-extensions' names`
+       kista duckdb community-extensions [ref] | -dir <checkout>   duckdb/community-extensions' names (default: its default branch)`
 
 // duckdbCmd prints the names DuckDB owns (spec 0030), read from its sources: no server
 // configuration, no database. The core list is what version add -core-extensions takes.
@@ -39,7 +39,7 @@ func duckdbCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, duckdbUsage)
 		return 2
 	}
-	ref := "main"
+	ref := "HEAD" // the default branch
 	if len(pos) == 1 {
 		ref = pos[0]
 	}

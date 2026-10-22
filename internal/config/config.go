@@ -70,6 +70,8 @@ type Config struct {
 	Tenants Tenants `yaml:"tenants" kista:"fileonly"`
 	// Bootstrap names what a first start creates (spec 0020 phase 4a).
 	Bootstrap Bootstrap `yaml:"bootstrap" kista:"fileonly"`
+	// Reserved configures the server's reserved names (spec 0030): the community sync.
+	Reserved Reserved `yaml:"reserved" kista:"fileonly"`
 	// Source is where the configuration was read from: a file's path, env:NAME, or "" (the
 	// defaults). Set by Load; never configured.
 	Source string `yaml:"-"`
@@ -693,6 +695,7 @@ func (c Config) Validate() error {
 	validateStatistics(bad, c)
 	validateTelemetry(bad, c)
 	validateGC(bad, c)
+	validateReserved(bad, c)
 	validateAttachments(bad, c)
 	validateBundles(bad, c)
 	validateLicenses(bad, c)

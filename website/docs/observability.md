@@ -63,8 +63,9 @@ are all the kinds in `internal/audit`:
 | | `tenant.purge` | `tenant:<name>` | `rows`, `passes`, `late`, `error` |
 | | `version.add` | `version:<name>` | `version`, `kind`, `c_apis` |
 | | `version.c_apis` | `version:<name>` | `version`, `c_api` |
-| | `reserved.add` | `version:<name>` (a version's core extensions) or `reserved:<name>` (an administrator's) | `kind`, `names`, `source`; a version's: `version`; forced over tenants' releases: `forced`, `tenants` |
+| | `reserved.add` | `version:<name>` (a version's core extensions), `reserved:<name>` (an administrator's) or `sync:community` (the community sync) | `kind`, `names`, `source`; a version's: `version`; forced over tenants' releases: `forced`, `tenants` |
 | | `reserved.remove` | `reserved:<name>` | `name`, `sources` |
+| | `reserved.sync` | `sync:community` | `error` (a failed community sync pass: `fetch`, `too_many`, `error`) |
 | | `reserved.tenant.add`, `reserved.tenant.remove` | `reserved:<name>` (on the tenant's events) | `name`, `holder`; add: `previous` (the holder before, when another) |
 | | `server.start` | `server` | `version`, `schema`, `digests`, `changed` |
 | | `signer.source.weak` | `source:<name>` | `source`, `kind`, `protection` |
@@ -155,8 +156,10 @@ Notes on some kinds:
   (`system:audit`, `system:retention`).
 - The background actors are `system:upstream:<tenant>/<name>`, `system:feed:<tenant>/<name>`,
   `system:resign`, `system:retention`, `system:serve`, `system:sinks`, `system:audit` and
-  `system:gc` (every garbage collection pass, scheduled or `kista admin blob gc`), and
-  `system:tenant-delete` (the reaper of a deleted tenant).
+  `system:gc` (every garbage collection pass, scheduled or `kista admin blob gc`),
+  `system:tenant-delete` (the reaper of a deleted tenant), and `system:community-sync` (the
+  community sync: `reserved.add` when it reserves names, `reserved.sync` with outcome `failed` and
+  `error` `fetch`, `too_many` or `error` when a pass fails).
 - `tenant.delete` and `tenant.purge` are the tenant's events, like `tenant.suspend`. `tenant.delete`
   is the server administrator's delete: its `keys` are fingerprints, never signer references.
   `tenant.purge` is written when the reaper writes the tombstone (`rows` deleted over `passes`);

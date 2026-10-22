@@ -84,6 +84,9 @@ Names DuckDB owns are **reserved**. The server keeps the list as data, and it on
   ([DuckDB versions](administration/tenants-and-channels.md#duckdb-versions));
 - the names a `duckdb-core` or `duckdb-community` upstream mirrors, learned as it mirrors them
   ([Upstreams](upstreams.md));
+- duckdb/community-extensions' names, read every `interval` (a day by default) when
+  `reserved.community_sync` is on
+  ([Configuration](configuration.md#reserved));
 - the names a server administrator adds (`kista admin reserved add`, below);
 - the core and community names kista knew before the list was data (its seed).
 
