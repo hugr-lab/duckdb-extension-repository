@@ -338,9 +338,9 @@ checks, private extensions behind a token, the stores and the upstream intake. D
 `e2e/DUCKDB_PIN`:
 
 ```bash title="e2e/DUCKDB_PIN"
-DUCKDB_COMMIT=eb0d9df48ee5341ea4ede1a3cba93251cce571df
-DUCKDB_TAG=v2.0-cyanoptera
-HTTPFS_COMMIT=5e34903685e4d429cbb19b063406abdd8ce30591
+DUCKDB_COMMIT=d54cbbe3df17e8e5ce68312f483b4155836112aa
+DUCKDB_TAG=v2.0.0
+HTTPFS_COMMIT=77392a72077a85897db2519fae11e2c0da972b8a
 ```
 
 ```bash
@@ -404,7 +404,7 @@ There are two kinds of extension:
 
 [hugr-lab/extension-template](https://github.com/hugr-lab/extension-template) is DuckDB's C++
 extension template with the kit, built against the DuckDB commit kista is tested against
-(`e2e/DUCKDB_PIN`, `v2.0-cyanoptera`). Make a repository from it, clone it with its submodules, and
+(`e2e/DUCKDB_PIN`, `v2.0.0`). Make a repository from it, clone it with its submodules, and
 run once:
 
 ```bash

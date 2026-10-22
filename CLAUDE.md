@@ -22,7 +22,7 @@ and the DuckDB behaviour the design relies on (with source locations on the duck
 
 - `hugr-lab/duckdb-acl` - the node's access-control extension; its spec 093 (cluster profile) names
   extensions by version and repository and installs them `FROM <repo>`. It is a consumer of kista,
-  not a dependency: kista has its own DuckDB pin (`e2e/DUCKDB_PIN`, v2.0-cyanoptera `eb0d9df`).
+  not a dependency: kista has its own DuckDB pin (`e2e/DUCKDB_PIN`, the v2.0.0 release `d54cbbe`).
 - `hugr-lab/hugr-node` (next) - the node agent, installs only from here.
 - `hugr-lab/tresor` - tokens for private extensions (an http secret with SCOPE on our prefix).
 

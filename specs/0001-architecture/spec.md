@@ -427,6 +427,9 @@ attachments and their feed, events, and the management API.
 
 ### DuckDB behaviour relied on (duckdb pin `eb0d9df`, `v2.0-cyanoptera`)
 
+The source locations below were read at `eb0d9df`. Since 2026-10-22 the pin is the v2.0.0 release
+(`d54cbbe`), where the e2e suite confirms the same behaviour.
+
 Paths are relative to the duckdb source tree.
 
 | Behaviour | Source | Confirmed |

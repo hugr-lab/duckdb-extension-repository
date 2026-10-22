@@ -26,3 +26,5 @@ playwright/.cache/
 .npm/
 npm-debug.log*
 /kista
+
+.env
