@@ -1,6 +1,6 @@
 # Spec 0030: Reserved names as data, and a distributor's names in a tenant
 
-- **Status**: draft
+- **Status**: accepted (2026-10-22)
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 
