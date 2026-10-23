@@ -98,9 +98,8 @@ only); it answers as today.
 (src/include/duckdb/main/http/http_util.hpp:38, http_retry_budget.hpp:124, the delay capped at 20
 seconds, hpp:122), within a retry quota shared per host (hpp:70), and waits 30 seconds for each
 answer (http_util.hpp:37). At `Retry-After: 5` that is about 40 seconds, so DuckDB 2.0's first
-`INSTALL` usually succeeds, also through two lazy kistas. DuckDB 1.x
-retries without honouring `Retry-After`, briefly, and may fail the first `INSTALL`; the person runs
-it again (the docs say so).
+`INSTALL` usually succeeds, also through two lazy kistas (kista serves DuckDB 2.0, whose trusted
+extension repositories it is built for).
 
 ### kista's own fetcher
 
@@ -148,7 +147,7 @@ comes with its first fetch, as for any mirror), visibility, credentials, usage, 
 
 upstreams.md (the modes, the setting, runs, asks, the first request, a comparison with
 pull-through), configuration.md, api.md (`/fetch`, `eager`, `not_asked`), duckdb.md (the first
-`INSTALL` from a lazy channel: DuckDB 2.0 and 1.x), observability.md, security.md, the commands.
+`INSTALL` from a lazy channel), observability.md, security.md, the commands.
 The console's upstream form takes the setting, an entry its `eager` mark; a lazy upstream's page
 shows asked and not-asked cells and **Fetch now**. A downstream kista of a lazy channel is best lazy
 too, or narrow in its platforms: an eager mirror of a lazy channel asks for every cell at every run.
