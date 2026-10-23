@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/url"
 	"slices"
 	"sync"
@@ -21,6 +22,7 @@ import (
 const (
 	pullQueue       = 256   // misses waiting for a worker; a full queue drops a miss
 	pullQueuedShare = 32    // misses one tenant may have waiting
+	pullCallerShare = 8     // misses one caller may have waiting (spec 0032)
 	pullPerTenant   = 4     // fetches at once per tenant
 	pullPerMinute   = 60    // fetches a tenant may start in a minute
 	maxNegative     = 10000 // cells remembered as not to fetch again yet
@@ -30,9 +32,11 @@ const (
 	cellLeaseTTL    = 2 * time.Minute
 )
 
-// Puller fetches the cells authorized callers missed (spec 0009 phase 2). Offer never blocks and
-// never touches the database; workers check the upstream as it is now, take the cell's lease, run
-// the intake and record the outcome. Misses and refusals are remembered for NegativeTTL.
+// Puller fetches the cells authorized callers missed (spec 0009 phase 2) and the cells asked of lazy
+// mirrors (spec 0032). Offer never blocks and never touches the database; workers check the
+// upstream as it is now, take the cell's lease, run the intake and record the outcome. Misses and
+// refusals are remembered for NegativeTTL. Ask records a lazy mirror's ask and tells the request's
+// answer.
 type Puller struct {
 	Service     *Service
 	Holder      string        // this replica
@@ -44,11 +48,22 @@ type Puller struct {
 	mu       sync.Mutex
 	inflight map[string]bool // cells queued or fetching on this replica
 	queued   map[string]int  // misses waiting per tenant
+	callers  map[string]int  // misses waiting per caller
 	tenants  map[string]int  // fetches per tenant
 	started  map[string][]time.Time
 	negative map[string]time.Time // cell -> until
 	keys     map[string]cachedKeys
+	asks     map[string]int64 // lazy asks by outcome, cumulative (metrics)
 }
+
+// Lazy asks' outcomes (spec 0032 metrics): recorded or renewed, answered 503 (the build is coming),
+// fetched (released), dropped (the queue, a share or the tenant's limits).
+const (
+	AskRecorded = "recorded"
+	Ask503      = "answered_503"
+	AskFetched  = "fetched"
+	AskDropped  = "dropped"
+)
 
 type cachedKeys struct {
 	keys []*rsa.PublicKey
@@ -60,7 +75,7 @@ func (p *Puller) init() {
 	p.once.Do(func() {
 		p.queue = make(chan release.Miss, pullQueue)
 		p.inflight, p.queued, p.tenants, p.started = map[string]bool{}, map[string]int{}, map[string]int{}, map[string][]time.Time{}
-		p.negative, p.keys = map[string]time.Time{}, map[string]cachedKeys{}
+		p.negative, p.keys, p.callers, p.asks = map[string]time.Time{}, map[string]cachedKeys{}, map[string]int{}, map[string]int64{}
 		if p.NegativeTTL == 0 {
 			p.NegativeTTL = time.Hour
 		}
@@ -72,39 +87,119 @@ func cellKey(m release.Miss) string {
 }
 
 // Offer queues a miss unless it is not to be fetched again yet, already queued or fetching here, its
-// tenant has its share of the queue waiting, or the queue is full.
+// tenant or caller has its share of the queue waiting, or the queue is full.
 func (p *Puller) Offer(m release.Miss) {
 	p.init()
 	k := cellKey(m)
 	p.mu.Lock()
-	if until, ok := p.negative[k]; ok && time.Now().Before(until) || p.inflight[k] || p.queued[m.TenantID] >= pullQueuedShare {
+	if until, ok := p.negative[k]; ok && time.Now().Before(until) || p.inflight[k] {
+		p.mu.Unlock()
+		return
+	}
+	if p.queued[m.TenantID] >= pullQueuedShare || p.callers[m.Principal] >= pullCallerShare {
+		p.dropped(m)
 		p.mu.Unlock()
 		return
 	}
 	p.inflight[k] = true
 	p.queued[m.TenantID]++
+	p.callers[m.Principal]++
 	p.mu.Unlock()
 	select {
 	case p.queue <- m:
 	default:
 		p.mu.Lock()
 		delete(p.inflight, k)
-		p.dequeued(m.TenantID)
+		p.dequeued(m)
+		p.dropped(m)
 		p.mu.Unlock()
 	}
 }
 
-// dequeued counts a tenant's miss out of the queue (p.mu held).
-func (p *Puller) dequeued(tenant string) {
-	if p.queued[tenant]--; p.queued[tenant] <= 0 {
-		delete(p.queued, tenant)
+// dropped counts a lazy ask's offer not fetched (p.mu held): its ask stays for the next run.
+func (p *Puller) dropped(m release.Miss) {
+	if m.Lazy {
+		p.asks[AskDropped]++
 	}
 }
 
-// admit decides whether a tenant may start a fetch now: at most pullPerTenant at once and
+// dequeued counts a miss out of the queue (p.mu held).
+func (p *Puller) dequeued(m release.Miss) {
+	if p.queued[m.TenantID]--; p.queued[m.TenantID] <= 0 {
+		delete(p.queued, m.TenantID)
+	}
+	if p.callers[m.Principal]--; p.callers[m.Principal] <= 0 {
+		delete(p.callers, m.Principal)
+	}
+}
+
+// askWindow is how long after its ask a cell never fetched is answered as coming (spec 0032), so a
+// fetch that never comes (an offer dropped, a replica stopped) is not answered 503 for ever; a first
+// request on the plain path after it opens the window again, and is offered again. A fetch that
+// cannot start (the upstream's keys unreadable, kista's client refused) records the cell failed.
+const askWindow = 2 * time.Minute
+
+// Ask records a lazy mirror's ask for a missed cell (spec 0032) and tells whether its build is
+// coming: a fetch holds the cell's lease, or the cell was never fetched and was asked for within
+// askWindow (a request on the plain path, which is offered, opens it). Every replica answers alike,
+// from the database; the cell is read outside any write transaction, and the ask written only when
+// it is new, due a renewal, or reopens the window.
+func (p *Puller) Ask(ctx context.Context, plain bool, m release.Miss) (bool, error) {
+	p.init()
+	st, err := p.Service.Store.ReadAsk(ctx, m.UpstreamID, m.DuckDBVersion, m.Platform, m.Name,
+		CellLease(m.UpstreamID, m.DuckDBVersion, m.Platform, m.Name))
+	if err != nil {
+		return false, err
+	}
+	now := p.Service.Store.Now()
+	refresh := store.AskRefresh
+	if plain && !st.Recorded && !st.Leased {
+		refresh = askWindow
+	}
+	if st.AskedAt.IsZero() || now.Sub(st.AskedAt) >= refresh {
+		wrote := false
+		if err := p.Service.Store.InTx(ctx, "", func(tx *store.Tx) error {
+			var err error
+			wrote, err = tx.Ask(ctx, m.UpstreamID, m.DuckDBVersion, m.Platform, m.Name, refresh)
+			return err
+		}); err != nil {
+			return false, err
+		}
+		if wrote {
+			p.mu.Lock()
+			p.asks[AskRecorded]++
+			p.mu.Unlock()
+		}
+		st.AskedAt = now // ours, or another request's just now
+	}
+	return st.Leased || plain && !st.Recorded && now.Sub(st.AskedAt) < askWindow, nil
+}
+
+// Answered503 counts a request answered 503 because its build is coming (metrics).
+func (p *Puller) Answered503() {
+	p.init()
+	p.mu.Lock()
+	p.asks[Ask503]++
+	p.mu.Unlock()
+}
+
+// Asks are the lazy asks' outcomes so far on this replica (metrics, cumulative).
+func (p *Puller) Asks(context.Context) (map[string]int64, error) {
+	p.init()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return maps.Clone(p.asks), nil
+}
+
+// admit decides whether a tenant may start a fetch now: at most pullPerTenant at once, and never
+// every worker (spec 0032: a tenant's fetches waiting on a host do not hold the others back), and
 // pullPerMinute a minute (p.mu held).
 func (p *Puller) admit(tenant string, now time.Time) bool {
-	if p.tenants[tenant] >= pullPerTenant {
+	workers := p.Service.Config.Concurrency
+	if workers <= 0 {
+		workers = 4
+	}
+	if p.tenants[tenant] >= min(pullPerTenant, max(1, workers-1)) {
 		return false
 	}
 	recent := p.started[tenant][:0]
@@ -188,10 +283,11 @@ func (p *Puller) work(ctx context.Context, m release.Miss) {
 		p.mu.Unlock()
 	}()
 	p.mu.Lock()
-	p.dequeued(m.TenantID)
+	p.dequeued(m)
 	if !p.admit(m.TenantID, time.Now()) {
+		p.dropped(m)
 		p.mu.Unlock()
-		return // dropped: a later request retries
+		return // dropped: a later request retries (a lazy ask: the next run fetches it)
 	}
 	p.mu.Unlock()
 	defer func() {
@@ -215,7 +311,13 @@ func (p *Puller) work(ctx context.Context, m release.Miss) {
 		return
 	}
 	switch outcome {
-	case store.CellReleased, "":
+	case store.CellReleased:
+		if m.Lazy {
+			p.mu.Lock()
+			p.asks[AskFetched]++
+			p.mu.Unlock()
+		}
+	case "":
 	case store.CellFailed:
 		p.mu.Lock()
 		p.remember(k, time.Now().Add(failedTTL))
@@ -260,7 +362,8 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 			}
 		}
 	}
-	if u.Mode != store.ModePullThrough || u.State != store.UpstreamActive || !ok || !slices.Contains(u.Platforms, m.Platform) ||
+	lazy := u.Mode == store.ModeMirror && u.FetchMode == store.FetchLazy
+	if u.Mode != store.ModePullThrough && !lazy || u.State != store.UpstreamActive || !ok || !slices.Contains(u.Platforms, m.Platform) ||
 		u.TenantID != m.TenantID {
 		return "", nil
 	}
@@ -284,6 +387,9 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	ctx = lctx
 	keys, err := p.upstreamKeys(ctx, u)
 	if err != nil {
+		if lazy { // spec 0032: a first request is answered 404 now, not 503 while nothing comes
+			p.putFailed(ctx, u, m, "upstream: the repository's keys cannot be read")
+		}
 		return store.CellFailed, err
 	}
 	var prev store.UpstreamCell
@@ -304,12 +410,18 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 		perHost = 2
 	}
 	actor := authz.Actor{Kind: authz.ActorSystem, ID: "upstream:" + sc.Tenant.Name + "/" + u.Name}
-	rec := s.cell(ctx, actor, sc, u, e, keys, base, s.gates().host(pu.Host, perHost),
-		cell{m.DuckDBVersion, m.Platform, m.Name}, prev, false)
+	gate := s.gates().host(pu.Host, perHost)
+	if lazy { // spec 0032: first requests have a gate of their own, one fetch a host and tenant, so a run does not hold them back
+		gate = s.gates().host("ask "+u.TenantID+" "+pu.Host, 1)
+	}
+	rec := s.cell(ctx, actor, sc, u, e, keys, base, gate, cell{m.DuckDBVersion, m.Platform, m.Name}, prev, false, triggerAsk)
 	if ctx.Err() != nil {
 		return "", nil // stopping, or the lease was lost: nothing is recorded
 	}
 	if rec.Outcome == "" { // the identity provider refuses kista's own client: logged, nothing recorded
+		if lazy { // but a lazy mirror's cell is failed (spec 0032), as above
+			p.putFailed(ctx, u, m, "upstream.auth: kista's client is refused")
+		}
 		return "", credential.ErrClient
 	}
 	if rec.FetchedAt.Equal(prev.FetchedAt) && prev.Outcome != "" {
@@ -335,6 +447,18 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 		}
 	}
 	return rec.Outcome, nil
+}
+
+// putFailed records a lazy mirror's cell failed when its fetch cannot start (spec 0032): the cell
+// was asked for and answered 503; the next run, or an ask after a minute, tries again.
+func (p *Puller) putFailed(ctx context.Context, u store.Upstream, m release.Miss, detail string) {
+	wctx := context.WithoutCancel(ctx)
+	if err := p.Service.Store.InTenantTx(wctx, u.TenantID, nil, func(tx *store.Tx) error {
+		return tx.PutCell(wctx, store.UpstreamCell{UpstreamID: u.ID, DuckDBVersion: m.DuckDBVersion, Platform: m.Platform, Name: m.Name,
+			Outcome: store.CellFailed, Detail: detail, FetchedAt: time.Now().UTC()})
+	}); err != nil {
+		p.Log.Warn("upstream: recording a failed cell", "upstream", u.ID, "name", m.Name, "error", err)
+	}
 }
 
 // CellLease is the name of a cell's lease (spec 0009 phase 2, 0032).

@@ -130,7 +130,11 @@ func TestPullThroughSource(t *testing.T) {
 		if sel != "" {
 			s.Selected["x"] = sel
 		}
-		if got := s.PullThroughFor("v2.0.0", "linux_amd64", "x"); got != want {
+		got := ""
+		if p := s.PullThroughFor("v2.0.0", "linux_amd64", "x"); p != nil {
+			got = p.UpstreamID
+		}
+		if got != want {
 			t.Errorf("selected %q: %q, want %q", sel, got, want)
 		}
 	}

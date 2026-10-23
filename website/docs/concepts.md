@@ -99,7 +99,8 @@ An **upstream** is a source a tenant takes builds from, feeding one channel: `du
 (any DuckDB repository, such as another kista, with its keys pinned by fingerprint). It has an
 allowlist of names and platforms, and a mode:
 
-- **mirror**: runs on a schedule and on request, fetching every allowlisted cell;
+- **mirror**: runs on a schedule and on request, fetching every allowlisted cell; a **lazy** mirror
+  fetches only the cells callers asked for and its eager entries;
 - **pull-through**: fetches a missing build when an authorized caller asks for it;
 - **bundle**: never contacts its source; bundles carried to an air-gapped site fill it.
 

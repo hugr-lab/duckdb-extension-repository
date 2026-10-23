@@ -136,7 +136,11 @@ func (s *Service) runUpstream(ctx context.Context, id string, renew func(context
 	}
 	// a lazy upstream's sync fetches its whole matrix (spec 0032); a dry run covers what a run would
 	full := u.FetchMode != store.FetchLazy || requested && !res.DryRun && only == nil
-	runErr := s.run(ctx, u, &res, renew, full, only)
+	trigger := triggerRun
+	if requested {
+		trigger = triggerSync
+	}
+	runErr := s.run(ctx, u, &res, renew, full, only, trigger)
 	if runErr != nil {
 		res.Error = runErr.Error()
 	}
@@ -192,7 +196,8 @@ var errFailed = errors.New("the run failed")
 
 type cell struct{ version, platform, name string }
 
-func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew func(context.Context) error, full bool, only map[[3]string]bool) error {
+func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew func(context.Context) error, full bool, only map[[3]string]bool,
+	trigger string) error {
 	sc, err := s.Store.ServeChannelByID(ctx, u.ChannelID)
 	if err != nil {
 		return err
@@ -376,7 +381,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 						continue
 					}
 				}
-				outcome := s.cell(cctx, actor, sc, cur, e, ks, base, hostGate, c, prev, res.DryRun)
+				outcome := s.cell(cctx, actor, sc, cur, e, ks, base, hostGate, c, prev, res.DryRun, trigger)
 				lost := cctx.Err() != nil
 				done()
 				if outcome.Outcome == "" { // the identity provider refuses kista's own client: the run fails
@@ -465,6 +470,14 @@ var refusal = map[string]bool{store.CellRejected: true, store.CellConflict: true
 // conditional outcomes: the same answer changes nothing, so the last ETag is sent.
 var conditional = map[string]bool{store.CellReleased: true, store.CellUnchanged: true, store.CellYanked: true, store.CellConflict: true}
 
+// What made a cell's fetch, for its upstream.release event (spec 0032): a scheduled run, an
+// administrator's sync (a bundle export's too), or a caller's miss (pull-through, a lazy ask).
+const (
+	triggerRun  = "run"
+	triggerSync = "sync"
+	triggerAsk  = "ask"
+)
+
 // A cell's download answered 503 or 429 is asked again at most fetchRetries times, after a
 // Retry-After of at most maxRetryAfter (spec 0032).
 const (
@@ -474,7 +487,7 @@ const (
 
 // cell fetches and takes in one cell, and returns its record.
 func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel, u store.Upstream, e store.UpstreamEntry,
-	keys []*rsa.PublicKey, base string, hostGate chan struct{}, c cell, prev store.UpstreamCell, dryRun bool) store.UpstreamCell {
+	keys []*rsa.PublicKey, base string, hostGate chan struct{}, c cell, prev store.UpstreamCell, dryRun bool, trigger string) store.UpstreamCell {
 	rec := store.UpstreamCell{UpstreamID: u.ID, DuckDBVersion: c.version, Platform: c.platform, Name: c.name, FetchedAt: time.Now().UTC()}
 	fail := func(outcome string, err error) store.UpstreamCell {
 		rec.Outcome = outcome
@@ -607,6 +620,7 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		vis = store.Private // whatever the upstream's visibility says (spec 0009 phase 3)
 	}
 	in := release.Ingest{Name: c.name, DuckDBVersion: c.version, Platform: c.platform, Upstream: u.Name, UpstreamID: u.ID, URL: url, Versions: e.Versions, Keys: keys,
+		Trigger:    trigger,
 		Visibility: vis, DryRun: dryRun, Provenance: func(key string) string {
 			p := map[string]string{"upstream": u.Name, "kind": u.Kind, "url": url, "etag": d.ETag, "key": key,
 				"fetched_at": rec.FetchedAt.Format(time.RFC3339)}

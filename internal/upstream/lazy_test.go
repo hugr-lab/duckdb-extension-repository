@@ -2,13 +2,16 @@ package upstream_test
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
@@ -60,7 +63,7 @@ func (en *env) ask(t *testing.T, u store.Upstream, v, p, n string) {
 	t.Helper()
 	must(t, func() error {
 		return en.st.InTenantTx(ctx, u.TenantID, nil, func(tx *store.Tx) error {
-			_, err := tx.Ask(ctx, u.ID, v, p, n)
+			_, err := tx.Ask(ctx, u.ID, v, p, n, store.AskRefresh)
 			return err
 		})
 	})
@@ -388,6 +391,169 @@ func TestFetchRetryFreesHost(t *testing.T) {
 		}
 		if d := time.Since(start); d > 3500*time.Millisecond {
 			t.Fatalf("the waits held the host's slot: %v", d)
+		}
+	})
+}
+
+// Spec 0032: a first request asks for a lazy mirror's cell: its build is coming (503) while the cell
+// was never fetched or its lease is held, and every replica answers alike; the puller fetches it
+// (trigger ask), and the cell is then answered as any (404 when the upstream has none).
+func TestLazyAsk(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		u := lazySetup(t, en)
+		snap := en.snapshot(t, "prod")
+		pt := snap.PullThroughFor("v2.0.0", "linux_amd64", "b")
+		if pt == nil || !pt.Lazy || pt.UpstreamID != u.ID {
+			t.Fatalf("the snapshot's lazy mirror: %+v", pt)
+		}
+		miss := func(name string) release.Miss {
+			return release.Miss{TenantID: u.TenantID, UpstreamID: u.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: name,
+				Principal: "user:alice", Lazy: true}
+		}
+		a, b := en.puller(), en.puller()
+		b.Holder = "other"
+		for _, p := range []*upstream.Puller{a, b} {
+			if coming, err := p.Ask(ctx, true, miss("b")); err != nil || !coming {
+				t.Fatalf("a first ask: %v %v", coming, err)
+			}
+		}
+		if got := en.asks(t, u); len(got) != 1 {
+			t.Fatalf("asks: %v", got)
+		}
+		// a fetch holding the cell's lease: coming, on every replica
+		lease := upstream.CellLease(u.ID, "v2.0.0", "linux_amd64", "b")
+		must(t, func() error {
+			_, err := en.st.AcquireLease(ctx, lease, "fetching", time.Minute)
+			return err
+		})
+		must(t, func() error {
+			return store.ExecRaw(ctx, en.st, "INSERT INTO upstream_cells (upstream_id, duckdb_version, platform, name, outcome, fetched_at) VALUES (?, 'v2.0.0', 'linux_amd64', 'b', 'failed', ?)",
+				u.ID, store.TimeArg(en.st, time.Now()))
+		})
+		if coming, err := b.Ask(ctx, true, miss("b")); err != nil || !coming {
+			t.Fatalf("an ask while the lease is held: %v %v", coming, err)
+		}
+		must(t, func() error { return en.st.DeleteLease(ctx, lease, "fetching") })
+		if coming, err := b.Ask(ctx, true, miss("b")); err != nil || coming {
+			t.Fatalf("an ask of a failed cell: %v %v", coming, err)
+		}
+		must(t, func() error { return store.ExecRaw(ctx, en.st, "DELETE FROM upstream_cells WHERE name = 'b'") })
+		// the puller fetches an asked cell of a lazy mirror
+		a.Offer(miss("b"))
+		a.Drain(ctx)
+		if rs := en.releases(t, "b"); len(rs) != 1 {
+			t.Fatalf("b's releases: %+v", rs)
+		}
+		evs, _ := en.st.ListEvents(ctx, u.TenantID, store.EventFilter{Kind: "upstream.release"})
+		found := false
+		for _, e := range evs {
+			found = found || strings.Contains(e.Data, `"name":"b"`) && strings.Contains(e.Data, `"trigger":"ask"`)
+		}
+		if !found {
+			t.Fatalf("upstream.release of an ask: %+v", evs)
+		}
+		if coming, err := a.Ask(ctx, true, miss("b")); err != nil || coming {
+			t.Fatalf("an ask of a fetched cell: %v %v", coming, err)
+		}
+		// a cell the upstream has none of: coming until fetched, then answered as any (404)
+		if coming, _ := a.Ask(ctx, true, miss("c")); !coming {
+			t.Fatal("an ask of a cell never fetched")
+		}
+		must(t, func() error {
+			en.repo.mu.Lock()
+			defer en.repo.mu.Unlock()
+			delete(en.repo.files, cellPath("v2.0.0", "linux_amd64", "c"))
+			return nil
+		})
+		a.Offer(miss("c"))
+		a.Drain(ctx)
+		if coming, _ := a.Ask(ctx, true, miss("c")); coming {
+			t.Fatal("an ask of a missing cell")
+		}
+		asks, _ := a.Asks(ctx)
+		if asks[upstream.AskRecorded] != 2 || asks[upstream.AskFetched] != 1 {
+			t.Fatalf("ask metrics: %v", asks)
+		}
+		// a cell nothing fetched is coming for two minutes after its ask; a plain request after them
+		// opens them again (it is offered again), a versioned one does not
+		b21 := release.Miss{TenantID: u.TenantID, UpstreamID: u.ID, DuckDBVersion: "v2.1.0", Platform: "linux_amd64", Name: "b",
+			Principal: "user:alice", Lazy: true}
+		if coming, _ := a.Ask(ctx, false, b21); coming {
+			t.Fatal("a versioned ask is never coming")
+		}
+		if coming, _ := a.Ask(ctx, true, b21); !coming {
+			t.Fatal("a fresh ask")
+		}
+		later := time.Now().Add(3 * time.Minute).UTC().Truncate(time.Microsecond) // as the store's clock is
+		en.st.Now = func() time.Time { return later }
+		if coming, _ := a.Ask(ctx, false, b21); coming {
+			t.Fatal("a versioned ask past the window")
+		}
+		if coming, _ := a.Ask(ctx, true, b21); !coming {
+			t.Fatal("a plain ask past the window did not open it again")
+		}
+		if at := en.asks(t, u)[[3]string{"v2.1.0", "linux_amd64", "b"}]; !at.Equal(later) {
+			t.Fatalf("the reopened ask's time: %v", at)
+		}
+		en.st.Now = func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
+		// a fetch that cannot start (the repository's keys unreadable) records the cell failed: 404
+		en.repo.mu.Lock()
+		keys := en.repo.keys
+		en.repo.keys = nil
+		en.repo.mu.Unlock()
+		c := en.puller()
+		c.Offer(b21)
+		c.Drain(ctx)
+		if coming, _ := c.Ask(ctx, true, b21); coming {
+			t.Fatal("an ask of a cell whose fetch could not start")
+		}
+		en.repo.mu.Lock()
+		en.repo.keys = keys
+		en.repo.mu.Unlock()
+		// the run fetches the asked cells besides the eager entries
+		r := en.runDue(t, u)
+		if r.Counts[store.CellReleased] != 3 || r.Counts[store.CellUnchanged] != 1 || r.Counts[store.CellMissing] != 1 {
+			t.Fatalf("the run after asks: %+v", r.Counts)
+		}
+	})
+}
+
+// Spec 0032: one caller has at most 8 misses waiting, so one downstream kista's run does not starve
+// the tenant's other callers; a dropped lazy offer keeps its ask for the next run.
+func TestCallerShare(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		u := lazySetup(t, en)
+		p := en.puller()
+		for i := range 10 {
+			p.Offer(release.Miss{TenantID: u.TenantID, UpstreamID: u.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64",
+				Name: fmt.Sprintf("n%d", i), Principal: "client:downstream", Lazy: true})
+		}
+		if q := p.Queued(); q != 8 {
+			t.Fatalf("queued: %d", q)
+		}
+		p.Offer(release.Miss{TenantID: u.TenantID, UpstreamID: u.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "b",
+			Principal: "user:alice", Lazy: true})
+		if q := p.Queued(); q != 9 {
+			t.Fatalf("another caller's miss: %d queued", q)
+		}
+		if asks, _ := p.Asks(ctx); asks[upstream.AskDropped] != 2 {
+			t.Fatalf("dropped: %v", asks)
+		}
+		// pull-through misses take the share too (not counted as asks)
+		for i := range 9 {
+			p.Offer(release.Miss{TenantID: u.TenantID, UpstreamID: u.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64",
+				Name: fmt.Sprintf("p%d", i), Principal: "client:other"})
+		}
+		if q := p.Queued(); q != 17 {
+			t.Fatalf("pull-through misses: %d queued", q)
+		}
+		if asks, _ := p.Asks(ctx); asks[upstream.AskDropped] != 2 {
+			t.Fatalf("dropped after pull-through misses: %v", asks)
+		}
+		// the queue drains: the shares free (nothing here is fetched but b)
+		p.Drain(ctx)
+		if q := p.Queued(); q != 0 {
+			t.Fatalf("queued after draining: %d", q)
 		}
 	})
 }

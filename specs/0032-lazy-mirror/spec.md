@@ -1,6 +1,6 @@
 # Spec 0032: Lazy mirrors
 
-- **Status**: accepted (2026-10-23); phase A implemented
+- **Status**: accepted (2026-10-23); phases A and B implemented
 - **Date**: 2026-10-23
 - **Author**: vgsml, Claude
 
@@ -80,11 +80,13 @@ skips, and counts, a cell another replica holds. Eager upstreams take no cell le
 When a caller holding `install` on (channel, name) misses on the plain path of a DuckDB route, and a
 lazy upstream of the channel has the cell in its matrix, the ask is recorded and the cell offered
 to the pull-through worker (spec 0009, which now takes lazy upstreams too, and a miss's principal
-for its share). In the ask's transaction the cell's row and lease are read, so every replica
+for its share). With the ask the cell's row and lease are read from the database, so every replica
 answers alike:
 
-- `503` with `Retry-After: 5` while the cell was never fetched, or its lease is held (a fetch is
-  running): the build is coming;
+- `503` with `Retry-After: 5` while the cell's lease is held (a fetch is running), or it was never
+  fetched and was asked for on the plain path within the last two minutes, which a plain request
+  after them opens again (and offers the cell again): the build is coming. A fetch that cannot start
+  (the upstream's keys unreadable, kista's client refused) records the cell failed;
 - otherwise today's answer (`404`): the cell was fetched and answered something else (the upstream
   has no such cell, it was rejected, another source holds the name, the body is blocked, the fetch
   failed); a failed cell is fetched again by the next run, or by an ask after the negative cache's
@@ -117,7 +119,7 @@ others asked for.
 First-request fetches share pull-through's limits per tenant (fetches at once and per minute, the
 queue of 32 a tenant), now with a share per caller too (8 queued asks a principal), so one
 downstream kista's run cannot starve the other callers of a tenant. They have a per-host gate of
-their own on each replica (one fetch a host), so a refresh run holding the run's slots for a host
+their own on each replica (one fetch a host per tenant), so a refresh run holding the run's slots for a host
 does not hold a first request back. A dropped offer keeps its ask, so the next run fetches it.
 
 ### What does not change
@@ -129,8 +131,9 @@ comes with its first fetch, as for any mirror), visibility, credentials, usage, 
 
 ### Observability
 
-- Metrics: lazy asks by outcome (`fetched`, `answered_503`, `dropped`), and asks recorded per
-  upstream; the extension route's duration is not held by a wait (there is none).
+- Metrics: lazy first requests by outcome, per replica (asks `recorded`, requests `answered_503`,
+  cells `fetched`, offers `dropped`); the extension route's duration is not held by a wait (there is
+  none).
 - Events: `upstream.release` carries `trigger` (`run`, `sync`, `ask`); an ask's other outcomes are
   the cell's, as a run's are.
 - The cells API answers `not_asked` cells of a lazy upstream with `?outcome=not_asked`, so an

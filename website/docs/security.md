@@ -51,6 +51,11 @@ spooled locally, verified, and the same spool is committed, with no second fetch
 - **Reserved names.** Core and community names, and names an upstream of the tenant provides, can
   be published or promoted only through grants that name them.
 - **Blocks** ban a body hash tenant-wide; every release insert re-checks them.
+- **Fetches on a miss** ([pull-through](upstreams.md#pull-through), [lazy
+  mirrors](upstreams.md#the-first-request)) are caused only by a caller holding `install` on the
+  name, for a name the upstream lists (or `*` for pull-through), bounded per tenant and per caller;
+  a caller without the grant gets the answer it would get without them, so it learns nothing of what
+  is mirrored.
 
 A build that fails any check is rejected: a publisher gets an error answer, and an upstream run
 records the rejection as an `upstream.rejected` event.

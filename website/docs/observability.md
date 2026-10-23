@@ -101,7 +101,7 @@ are all the kinds in `internal/audit`:
 | Upstreams | `upstream.add` | `upstream:<name>` | `name`, `kind`, `prefix`, `channel`, `mode`, `fetch`, `visibility`, `keys`, `platforms`, `extensions`, `credential` |
 | | `upstream.remove` | `upstream:<name>` | `name` |
 | | `upstream.change` | `upstream:<name>` | `name`, `change`, `value`, `versions`, `allow_reserved`, `eager`, `visibility`, `state` |
-| | `upstream.release` | `channel:<channel>/ext:<name>/release:<id>` | `upstream`, `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `url`, `key`, `bundle` (an import's manifest) |
+| | `upstream.release` | `channel:<channel>/ext:<name>/release:<id>` | `upstream`, `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `url`, `key`, `bundle` (an import's manifest), `trigger` (`run`; `sync`, a bundle export's `-sync` too; or `ask`: a caller's miss, pull-through or a lazy mirror's first request; none on a bundle import) |
 | | `upstream.rejected` | `upstream:<name>` | `upstream`, `duckdb_version`, `platform`, `name`, `outcome` |
 | | `upstream.run` | `upstream:<name>` | `upstream`, `dry_run`, `counts`, `error`, `bundle` (an import's manifest) |
 | | `bundle.import` | `tenant:<name>` | `import`, `manifest`, `created_at`, `exporter`, `bundle_key`, `input_sha256`, `dry_run`, `state`, `targets` (counts per upstream, and per feed as `feed:<name>`), `licenses` (when the bundle carried licences: `counts` received, stored, replaced, unchanged, refused; `refused`, the first 20 with `name`, `id`, `rule`, `reason`; `error`) |
@@ -347,6 +347,7 @@ Export errors go to kista's log, at most once a minute.
 | `kista.usage.dropped` | counter, `{report}` | usage reports this replica did not count: over usage's budgets, or keys lost while the database failed |
 | `kista.events.pending` | gauge, `{event}` | `kista.sink`: events waiting per sink |
 | `kista.upstream.cells` | gauge, `{cell}` | `kista.outcome`: upstream cells per outcome |
+| `kista.upstream.asks` | counter, `{ask}` | `kista.outcome`, lazy mirrors' first requests on this replica: `recorded` (asks inserted or renewed), `answered_503` (requests answered 503, DuckDB's retries included), `fetched` (cells released), `dropped` (offers a queue or a limit dropped; the next run fetches the cell) |
 | `kista.store.login` | counter, `{request}` | with `store.login.kind: vault`: `kista.login.kind`, `kista.outcome` (`vault`: read from Vault, `cached` (or shared with a read in progress), `error`, `rejected`: the database refused the cached password); from the first read at start; an attempt its caller abandoned is not counted |
 | `kista.store.login.duration` | histogram, seconds | with `store.login.kind: vault`: the Vault reads, by `kista.login.kind` and `kista.outcome` |
 | `kista.store.login.expiry` | gauge, seconds | with `store.login.kind: vault`: how long the cached password may still be used; `0` when none is cached |

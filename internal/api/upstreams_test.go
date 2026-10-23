@@ -437,3 +437,49 @@ func TestUpstreamFetch(t *testing.T) {
 		t.Fatalf("a pull-through: %d %s", r.status, r.body)
 	}
 }
+
+// Spec 0032: a granted caller's miss of a lazy mirror's cell asks for it: on the plain path it is
+// answered 503 with Retry-After while the build is coming, and offered; the versioned path asks only;
+// callers without the grant ask nothing and get today's answers.
+func TestLazyFirstRequest(t *testing.T) {
+	m := newMgmt(t)
+	if _, err := m.ups.Add(ctx, admin, "acme", upstream.Spec{Name: "core", Kind: store.UpstreamCore, Channel: "prod", FetchMode: store.FetchLazy,
+		Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "spatial"}}}); err != nil {
+		t.Fatal(err)
+	}
+	const flat = "/acme/prod/v2.0.0/linux_amd64/spatial.duckdb_extension.gz"
+	m.pulls.coming = true
+	r := m.call(t, "GET", flat, m.toks["install"], "")
+	if r.status != 503 || r.header.Get("Retry-After") != "5" {
+		t.Fatalf("a first request: %d %v", r.status, r.header)
+	}
+	offers := m.pulls.take()
+	if len(offers) != 1 || !offers[0].Lazy || offers[0].Name != "spatial" || offers[0].Principal == "" || len(m.pulls.asks) != 1 || m.pulls.n503 != 1 {
+		t.Fatalf("offers %+v, asks %+v", offers, m.pulls.asks)
+	}
+	m.pulls.coming = false
+	if r := m.call(t, "GET", flat, m.toks["install"], ""); r.status != 404 {
+		t.Fatalf("a cell fetched and not found: %d", r.status)
+	}
+	m.pulls.take()
+	m.pulls.coming = true
+	if r := m.call(t, "GET", "/acme/prod/spatial/1.0/v2.0.0/linux_amd64/spatial.duckdb_extension.gz", m.toks["install"], ""); r.status != 404 {
+		t.Fatalf("the versioned path: %d", r.status)
+	}
+	if offers := m.pulls.take(); len(offers) != 0 || len(m.pulls.asks) != 3 {
+		t.Fatalf("the versioned path offered %+v, asks %d", offers, len(m.pulls.asks))
+	}
+	for who, want := range map[string]int{"anonymous": 401, "no grants": 404} {
+		if r := m.call(t, "GET", flat, m.toks[who], ""); r.status != want {
+			t.Errorf("%s: %d", who, r.status)
+		}
+	}
+	if offers := m.pulls.take(); len(offers) != 0 || len(m.pulls.asks) != 3 {
+		t.Fatalf("callers without the grant offered %+v, asks %d", offers, len(m.pulls.asks))
+	}
+	// a name the lazy mirror does not list: nothing asked
+	m.call(t, "GET", "/acme/prod/v2.0.0/linux_amd64/h3.duckdb_extension.gz", m.toks["install"], "")
+	if len(m.pulls.asks) != 3 {
+		t.Fatal("an unlisted name was asked")
+	}
+}

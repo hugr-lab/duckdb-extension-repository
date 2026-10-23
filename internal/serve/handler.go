@@ -111,10 +111,17 @@ type Counter interface {
 	Add(store.DownloadKey)
 }
 
-// Puller takes a miss without blocking; it never changes the answer.
+// Puller takes a miss without blocking (spec 0009); of a lazy mirror's cell it records the ask
+// first and tells whether the build is coming (spec 0032).
 type Puller interface {
 	Offer(release.Miss)
+	Ask(ctx context.Context, plain bool, m release.Miss) (bool, error)
+	Answered503()
 }
+
+// retryAfter is a first request's wait for a lazy mirror's build (spec 0032): DuckDB 2.0 retries a
+// 503 after it, eight times at most, each answer awaited 30 seconds.
+const retryAfter = "5"
 
 // Handler serves the DuckDB routes and health.
 type Handler struct {
@@ -128,6 +135,7 @@ type Handler struct {
 
 	mu        sync.Mutex
 	perClient map[string]int
+	askLogged atomic.Int64 // when a failed ask was last logged (unix seconds)
 
 	failures  *auth.FailureLog
 	installs  stats.Installs
@@ -399,25 +407,47 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 		return
 	}
 	if !res.found {
-		if tokenValid {
+		// spec 0009: a caller holding install offers the cell to a pull-through upstream, after the
+		// answer, from the snapshot the resolution used (no database work). Spec 0032: of a lazy
+		// mirror it asks for the cell, on either path, and a first request on the plain path is
+		// answered 503 while the build is coming (DuckDB retries it after Retry-After).
+		var pt *store.PullThrough
+		if v == viewAll && h.o.Puller != nil && sc.Channel.Kind == store.ChannelSigned {
+			if snap, err := h.rv.snaps.Get(ctx, sc.Channel); err == nil {
+				pt = snap.PullThroughFor(rt.duckdbVersion, rt.platform, rt.name)
+			}
+		}
+		var m release.Miss
+		coming := false
+		if pt != nil {
+			m = release.Miss{TenantID: sc.Tenant.ID, UpstreamID: pt.UpstreamID, DuckDBVersion: rt.duckdbVersion, Platform: rt.platform,
+				Name: rt.name, Principal: actor, Lazy: pt.Lazy}
+			if pt.Lazy {
+				c, err := h.o.Puller.Ask(ctx, rt.kind == routeFlat, m)
+				// answered as without the ask; the next request asks again (logged at most once a minute)
+				if last, now := h.askLogged.Load(), time.Now().Unix(); err != nil && now-last >= 60 && h.askLogged.CompareAndSwap(last, now) {
+					h.log.Warn("serve: recording an ask", "tenant", sc.Tenant.Name, "channel", sc.Channel.Name, "error", err)
+				}
+				coming = c && rt.kind == routeFlat
+			}
+		}
+		switch {
+		case coming:
+			h.o.Puller.Answered503()
+			w.Header().Set("Retry-After", retryAfter)
+			plain(w, http.StatusServiceUnavailable, body503)
+		case tokenValid:
 			notFound(w) // a valid token without the grant, or a path that does not exist: the same
 			// without install on the name: refused
 			if actor != "" && v != viewAll && h.o.Events != nil {
 				h.o.Events.Refusal(r.Context(), sc.Tenant.ID, actor, "authz.refused", audit.Refused, "route:extension",
 					map[string]any{"route": r.Method + " extension", "status": http.StatusNotFound})
 			}
-		} else {
+		default:
 			h.missing(w)
 		}
-		// spec 0009: a caller holding install offers the cell to a pull-through upstream, after the
-		// answer, from the snapshot the resolution used (no database work)
-		if v == viewAll && rt.kind == routeFlat && h.o.Puller != nil && sc.Channel.Kind == store.ChannelSigned {
-			if snap, err := h.rv.snaps.Get(ctx, sc.Channel); err == nil {
-				if id := snap.PullThroughFor(rt.duckdbVersion, rt.platform, rt.name); id != "" {
-					h.o.Puller.Offer(release.Miss{TenantID: sc.Tenant.ID, UpstreamID: id, DuckDBVersion: rt.duckdbVersion,
-						Platform: rt.platform, Name: rt.name})
-				}
-			}
+		if pt != nil && rt.kind == routeFlat { // the versioned path fetches nothing: a repository serves its current build
+			h.o.Puller.Offer(m)
 		}
 		return
 	}

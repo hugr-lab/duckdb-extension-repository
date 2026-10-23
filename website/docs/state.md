@@ -276,7 +276,7 @@ shutdown's wait for it ends (`serve.shutdown_timeout`). Leases in use:
 | Lease | Work |
 | --- | --- |
 | `kista/upstream/<id>` | One upstream's run (mirror or sync). |
-| `kista/upstream/<id>/<duckdb version>/<platform>/<name>` | One pull-through fetch; deleted when done. |
+| `kista/upstream/<id>/<duckdb version>/<platform>/<name>` | One fetch of a cell: pull-through, a lazy mirror's first request, or a lazy mirror's run (spec 0032); deleted when done. |
 | `resign/<channel id>` | The re-signer on a channel (replicas with `serve.resign: true`). |
 | `kista/feed/<id>` | One feed's run. |
 | `kista/events/retention` | Event buffer retention. |

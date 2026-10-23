@@ -182,7 +182,7 @@ var catalogue = map[Kind][]string{
 	"upstream.add":      {"name", "kind", "prefix", "channel", "mode", "fetch", "visibility", "keys", "platforms", "extensions", "credential"},
 	"upstream.remove":   {"name"},
 	"upstream.change":   {"name", "change", "value", "versions", "allow_reserved", "eager", "visibility", "state"},
-	"upstream.release":  {"upstream", "release", "name", "version", "platform", "slot", "body_hash", "url", "key", "bundle"},
+	"upstream.release":  {"upstream", "release", "name", "version", "platform", "slot", "body_hash", "url", "key", "bundle", "trigger"},
 	"upstream.rejected": {"upstream", "duckdb_version", "platform", "name", "outcome"},
 	"upstream.run":      {"upstream", "dry_run", "counts", "error", "bundle"},
 	// licences (spec 0012): refused last, since a truncated event keeps its first fields

@@ -47,7 +47,7 @@ func TestPullThroughFollowsReservations(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_later") != u.ID {
+		if ptID(en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_later")) != u.ID {
 			t.Fatal("an unreserved name is not taken by *")
 		}
 		must(t, func() error {
@@ -61,7 +61,7 @@ func TestPullThroughFollowsReservations(t *testing.T) {
 		if err := reserved.Sync(ctx, en.st); err != nil {
 			t.Fatal(err)
 		}
-		if en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_later") != "" {
+		if ptID(en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_later")) != "" {
 			t.Fatal("a reserved name is taken by * of a repository upstream")
 		}
 	})
@@ -76,13 +76,13 @@ func TestTenantReservedUpstreams(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_held") != u.ID {
+		if ptID(en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_held")) != u.ID {
 			t.Fatal("a free name is not taken by *")
 		}
 		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "kista_held", "enterest"); err != nil {
 			t.Fatal(err)
 		}
-		if en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_held") != "" {
+		if ptID(en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_held")) != "" {
 			t.Fatal("a tenant-reserved name is taken by *")
 		}
 		// a miss queued, the name reserved before the fetch: the insert refuses it under its locks

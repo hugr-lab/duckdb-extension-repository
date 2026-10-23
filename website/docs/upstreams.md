@@ -212,7 +212,9 @@ change them per release (see [Publishing](publishing.md#changing-a-release)).
   progress; a removed entry, platform or key applies to the next cell.
 - A cell the upstream answers `503` or `429` with a `Retry-After` of at most 30 seconds is asked
   again after that delay, at most three times, before it is `failed`; the host's slot is free while
-  it waits. Runs, pull-through and bundle exports' syncs alike.
+  it waits. A lazy kista answers a cell it is fetching this way ([The first
+  request](#the-first-request)), so a kista mirroring it usually gets the build within its run. Runs,
+  pull-through and bundle exports' syncs alike.
 
 ```yaml title="kista.yaml"
 upstreams:                   # file-only
@@ -220,7 +222,7 @@ upstreams:                   # file-only
   fetch_timeout: 10m         # one file's download; 1m..2h
   min_rate: 64KiB            # a download's least rate after 30s; at least 1KiB
   interval: 6h               # between a mirror's scheduled runs; 15m..168h
-  negative_ttl: 1h           # pull-through: a miss is not retried within it; 1m..24h
+  negative_ttl: 1h           # pull-through and lazy asks: a refused or missing cell is not fetched again within it; 1m..24h
   credentials: []            # private upstreams, below
 ```
 
@@ -370,8 +372,10 @@ pull-through upstream, without versions or `allow_reserved`, and not on `duckdb-
 matches an alias, a core name, a name reserved in the tenant or a name another upstream of the
 channel lists, and it reserves no name in the tenant. On a `duckdb-community` upstream it matches community names (each fetch reserves
 its name as community, and the name keeps being pulled through); on any other kind it matches no
-reserved name. Limits per replica: 256 queued misses (32 per tenant), 4 fetches at once and
-60 a minute per tenant, `upstreams.concurrency` fetches at once, 10,000 cells in the negative cache.
+reserved name. Limits per replica: 256 queued misses (32 per tenant), 4 fetches at once (and never
+all of `upstreams.concurrency`) and
+60 a minute per tenant, 8 waiting misses a caller, `upstreams.concurrency` fetches at once, 10,000
+cells in the negative cache.
 
 ```bash
 kista admin -config /etc/kista/kista.yaml upstream add acme community-pt \
@@ -384,8 +388,9 @@ A mirror's matrix grows with every name, platform and DuckDB version: fifty of D
 nine platforms and three DuckDB versions are over a thousand bodies, most of which nobody installs. A
 **lazy** mirror (`fetch: lazy`) lists what it may take as any mirror does, but its runs fetch only:
 
-- the cells someone **asked** for: a cell is (DuckDB version, platform, name), so a node asks for
-  the build its own DuckDB version and platform need, and nothing else;
+- the cells someone **asked** for ([The first request](#the-first-request)): a cell is (DuckDB
+  version, platform, name), so a node asks for the build its own DuckDB version and platform need,
+  and nothing else;
 - every cell of an **eager** entry (`-eager`, `"eager": true`), fetched before anyone asks, as an
   eager mirror fetches it.
 
@@ -416,11 +421,45 @@ kista admin -config /etc/kista/kista.yaml upstream extension add acme core httpf
   matrix limits count the whole matrix, lazy or not. Everything else is a mirror's: intake, licence
   keys, the name's source in the channel, reservations, visibility, credentials, usage and events.
 
-Asks are recorded from requests, and the first request for a cell answered while it is fetched, in
-the next phase of [spec
-0032](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0032-lazy-mirror/spec.md);
-until then a lazy mirror fetches its eager entries, the cells it held when it turned lazy, and what a
-sync fetches.
+### The first request
+
+When a caller holding `install` on (channel, name) misses on a DuckDB route of a signed channel, and
+an active lazy mirror of the channel lists the name for that platform and DuckDB version, kista
+records the ask (inserted when absent; its time renewed only when older than an hour, so retries
+cost a read) and reads the cell's record and lease from the database, so every replica answers
+alike:
+
+| The cell | Answer on the plain path |
+| --- | --- |
+| a fetch holds its lease, or it was never fetched | `503` with `Retry-After: 5`: the build is coming |
+| fetched, and answered something else (the upstream has no such cell, it was rejected or blocked, another source holds the name, the fetch failed or could not start) | `404`, as without the mirror |
+
+The cell is then offered to the same worker pull-through uses, which fetches it in the background
+under the cell's lease. DuckDB 2.0 retries a `503` by itself after its `Retry-After` (eight times at
+most, each answer awaited 30 seconds), so the first `INSTALL` usually succeeds within about 40
+seconds ([Using kista from DuckDB](duckdb.md#install-and-load)). A failed fetch is tried again by
+the next run, or by an ask after a minute; a refused or missing one by an ask after
+`upstreams.negative_ttl`. A cell never fetched is answered `503` for two minutes after its ask; a
+plain request after them opens them again and is offered again, so a dropped offer or a stopped
+replica costs a client its retries, never more. A fetch that cannot start (the repository's keys
+unreadable, kista's own client refused) records the cell `failed`. The versioned path records the ask but fetches nothing (a
+repository serves its current build only) and answers as before. Anonymous callers and callers
+without the grant ask nothing and get the answer they would get without the mirror.
+
+Limits: first requests share pull-through's (the queue, 32 waiting misses a tenant, 4 fetches at
+once, never every worker, and 60 a minute per tenant) and have, besides, 8 waiting misses a caller, so one downstream
+kista's run cannot starve the tenant's other callers, and a host gate of their own on each replica,
+one fetch a host per tenant, so a run holding the host's slots does not hold them back (the intake's
+slots are shared). An offer dropped by a limit
+keeps its ask: the next run fetches the cell.
+
+**Mirroring a lazy channel.** Another kista mirroring a lazy channel, with a credential whose
+principal holds `install` there, asks for each cell its run fetches: the first answer is `503`, and
+its fetcher asks again after the `Retry-After`, three times at most ([Runs and
+schedule](#runs-and-schedule)), so it gets the build within its run when the fetch ends within about
+15 seconds, and otherwise at its next run. Without a credential (a public lazy channel) it asks nothing, and gets only
+what others asked for. A downstream kista of a lazy channel is best lazy too, or narrow in its
+platforms: an eager mirror of a lazy channel asks for every cell of its matrix at every run.
 
 ## Bundle mode
 

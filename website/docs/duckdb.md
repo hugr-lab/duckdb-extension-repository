@@ -177,6 +177,11 @@ LOAD my_ext FROM corp;
   load it explicitly with `LOAD httpfs FROM corp`.
 - A `C_STRUCT` (C API) build is served under every DuckDB version of the channel that accepts it;
   a `CPP` or `C_STRUCT_UNSTABLE` build only under its exact DuckDB version.
+- From a channel a [lazy mirror](upstreams.md#lazy-mirrors) fills, the first `INSTALL` of an
+  extension not fetched yet for your DuckDB version and platform is answered `503` with
+  `Retry-After: 5` while kista fetches it, which DuckDB retries by itself, so the `INSTALL` usually
+  succeeds within about 40 seconds. It takes a token with `install` on the extension: an anonymous
+  request asks for nothing.
 
 ## Version pinning
 
@@ -302,3 +307,4 @@ kista admin -config kista.yaml upstream add acme core-pass -kind duckdb-core -ch
 | a private extension fails to install | no httpfs, an `http` prefix, a scope without the trailing slash, a wrong audience, or no `install` grant |
 | `http://host:port` fails after `LOAD httpfs` | the port does not speak TLS; use a `dual` listener |
 | `UPDATE EXTENSIONS` says the extension is not installed | installs from a named repository are updated with `FORCE INSTALL x FROM r` |
+| the first install from a lazily mirrored channel fails after retries | the fetch took longer than DuckDB's retries (a large body, a slow upstream), was dropped by a limit, or could not start (the upstream's keys unreadable); the next run fetches it, or install again |

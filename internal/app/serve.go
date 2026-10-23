@@ -176,6 +176,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			return sinkNames(cfg, tenants, counts), nil
 		},
 		UpstreamCells: st.CellOutcomes,
+		UpstreamAsks:  puller.Asks,
 	}))
 	if err != nil {
 		return err
