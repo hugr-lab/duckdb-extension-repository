@@ -484,7 +484,7 @@ func TestLazyAsk(t *testing.T) {
 		if coming, _ := a.Ask(ctx, true, b21); !coming {
 			t.Fatal("a fresh ask")
 		}
-		later := time.Now().Add(3 * time.Minute)
+		later := time.Now().Add(3 * time.Minute).UTC().Truncate(time.Microsecond) // as the store's clock is
 		en.st.Now = func() time.Time { return later }
 		if coming, _ := a.Ask(ctx, false, b21); coming {
 			t.Fatal("a versioned ask past the window")
@@ -492,7 +492,7 @@ func TestLazyAsk(t *testing.T) {
 		if coming, _ := a.Ask(ctx, true, b21); !coming {
 			t.Fatal("a plain ask past the window did not open it again")
 		}
-		if at := en.asks(t, u)[[3]string{"v2.1.0", "linux_amd64", "b"}]; !at.Equal(later.UTC().Truncate(time.Microsecond)) && !at.Equal(later) {
+		if at := en.asks(t, u)[[3]string{"v2.1.0", "linux_amd64", "b"}]; !at.Equal(later) {
 			t.Fatalf("the reopened ask's time: %v", at)
 		}
 		en.st.Now = func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
