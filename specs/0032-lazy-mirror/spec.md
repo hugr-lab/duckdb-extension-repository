@@ -108,11 +108,13 @@ extension repositories it is built for).
 ### kista's own fetcher
 
 An upstream answering `503` or `429` with `Retry-After` of at most 30 seconds is asked again after
-that delay, at most three times for a cell, before the cell is `failed`: for runs, pull-through and
+that delay, at most ten times for a cell, before the cell is `failed`: for runs, pull-through and
 lazy fetches, of every kind. The retry is the cell's (around the download in the run's cell
 fetch), the partial file truncated and the per-host slot released while it waits. So a kista
 mirroring a lazy channel, with a credential whose principal holds `install` there, gets each build
-on its first run, and a storm of `503`s costs a run at most about a minute and a half a cell. Without a credential (a public lazy channel) it asks nothing, and gets only what
+on its first run when the fetch there ends within about 50 seconds (ten retries at `Retry-After:
+5`; the owner's choice, 2026-10-24, from three), and a storm of `503`s costs a run at most five
+minutes a cell. Without a credential (a public lazy channel) it asks nothing, and gets only what
 others asked for.
 
 ### Limits
@@ -173,7 +175,7 @@ too, or narrow in its platforms: an eager mirror of a lazy channel asks for ever
   asks; a first request answered `503`, then served; a refusal answered `404`; a caller without the
   grant asking nothing; two replicas answering a miss alike; a versioned miss recording an ask; a
   run skipping a cell a fetch holds; the fetcher retrying a `503` with `Retry-After` within a cell,
-  three times at most, its host slot free meanwhile; the per-caller share; switching modes both
+  ten times at most, its host slot free meanwhile; the per-caller share; switching modes both
   ways; a passthrough channel refusing `lazy`.
 - End to end with DuckDB: a lazy mirror of another kista in a signed channel (the tests reach no
   DuckDB repository); `INSTALL` of an

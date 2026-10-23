@@ -211,7 +211,7 @@ change them per release (see [Publishing](publishing.md#changing-a-release)).
 - A run follows the record as it is: pausing or removing the upstream stops it after the cell in
   progress; a removed entry, platform or key applies to the next cell.
 - A cell the upstream answers `503` or `429` with a `Retry-After` of at most 30 seconds is asked
-  again after that delay, at most three times, before it is `failed`; the host's slot is free while
+  again after that delay, at most ten times, before it is `failed`; the host's slot is free while
   it waits. A lazy kista answers a cell it is fetching this way ([The first
   request](#the-first-request)), so a kista mirroring it usually gets the build within its run. Runs,
   pull-through and bundle exports' syncs alike.
@@ -461,9 +461,9 @@ keeps its ask: the next run fetches the cell.
 
 **Mirroring a lazy channel.** Another kista mirroring a lazy channel, with a credential whose
 principal holds `install` there, asks for each cell its run fetches: the first answer is `503`, and
-its fetcher asks again after the `Retry-After`, three times at most ([Runs and
+its fetcher asks again after the `Retry-After`, ten times at most ([Runs and
 schedule](#runs-and-schedule)), so it gets the build within its run when the fetch ends within about
-15 seconds, and otherwise at its next run. Without a credential (a public lazy channel) it asks nothing, and gets only
+50 seconds, and otherwise at its next run. Without a credential (a public lazy channel) it asks nothing, and gets only
 what others asked for. A downstream kista of a lazy channel is best lazy too, or narrow in its
 platforms: an eager mirror of a lazy channel asks for every cell of its matrix at every run.
 
