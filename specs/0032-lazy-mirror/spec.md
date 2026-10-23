@@ -1,6 +1,6 @@
 # Spec 0032: Lazy mirrors
 
-- **Status**: draft
+- **Status**: accepted (2026-10-23)
 - **Date**: 2026-10-23
 - **Author**: vgsml, Claude
 
