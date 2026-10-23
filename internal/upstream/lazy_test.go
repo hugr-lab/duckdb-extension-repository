@@ -283,7 +283,7 @@ func TestLazyRunCellLease(t *testing.T) {
 }
 
 // Spec 0032: kista's fetcher asks again a cell answered 503 with a Retry-After of at most 30
-// seconds, three times at most.
+// seconds, ten times at most.
 func TestFetchRetry(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
 		p := cellPath("v2.0.0", "linux_amd64", "a")
@@ -292,22 +292,22 @@ func TestFetchRetry(t *testing.T) {
 			t.Fatal(err)
 		}
 		en.repo.mu.Lock()
-		en.repo.busy[p] = 3
+		en.repo.busy[p] = 10
 		en.repo.mu.Unlock()
 		if r := en.sync(t, false); r.Counts[store.CellReleased] != 1 {
-			t.Fatalf("three 503s: %+v", r)
+			t.Fatalf("ten 503s: %+v", r)
 		}
-		if g, _ := en.repo.count(p); g != 4 {
+		if g, _ := en.repo.count(p); g != 11 {
 			t.Fatalf("asked %d times", g)
 		}
 		en.repo.put("v2.0.0", "linux_amd64", "a", signed(t, en.key, cpp("1.1", "v2.0.0"), 2, "a_duckdb_cpp_init"))
 		en.repo.mu.Lock()
-		en.repo.busy[p] = 4
+		en.repo.busy[p] = 11
 		en.repo.mu.Unlock()
 		if r := en.sync(t, false); r.Counts[store.CellFailed] != 1 {
-			t.Fatalf("four 503s: %+v", r)
+			t.Fatalf("eleven 503s: %+v", r)
 		}
-		if g, _ := en.repo.count(p); g != 8 {
+		if g, _ := en.repo.count(p); g != 22 {
 			t.Fatalf("asked %d times in all", g)
 		}
 		// 429 alike

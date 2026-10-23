@@ -481,7 +481,7 @@ const (
 // A cell's download answered 503 or 429 is asked again at most fetchRetries times, after a
 // Retry-After of at most maxRetryAfter (spec 0032).
 const (
-	fetchRetries  = 3
+	fetchRetries  = 10 // the owner's choice: about 50 seconds at a lazy kista's Retry-After of 5
 	maxRetryAfter = 30 * time.Second
 )
 
