@@ -384,12 +384,6 @@ kista admin -config /etc/kista/kista.yaml upstream add acme community-pt \
 
 ## Lazy mirrors
 
-A lazy mirror and a pull-through upstream both fetch on demand. Pull-through answers the first
-request `404` and is never run, so a cell it took is never refreshed and `*` may take any name. A
-lazy mirror answers the first request `503` while it fetches, which DuckDB and kista retry; it runs
-on a schedule and keeps every cell asked for current; it takes eager entries and **Fetch now**; and
-it lists its names.
-
 A mirror's matrix grows with every name, platform and DuckDB version: fifty of DuckDB's extensions on
 nine platforms and three DuckDB versions are over a thousand bodies, most of which nobody installs. A
 **lazy** mirror (`fetch: lazy`) lists what it may take as any mirror does, but its runs fetch only:
@@ -426,6 +420,12 @@ kista admin -config /etc/kista/kista.yaml upstream extension add acme core httpf
   carry no token, so no one could ask); a lazy mirror lists its names (no `*`, as any mirror). The
   matrix limits count the whole matrix, lazy or not. Everything else is a mirror's: intake, licence
   keys, the name's source in the channel, reservations, visibility, credentials, usage and events.
+
+**Compared with pull-through.** Both fetch on demand. Pull-through answers the first request `404`
+and is never run, so a cell it took is never refreshed, and `*` may take any name. A lazy mirror
+answers the first request `503` while it fetches, which DuckDB and kista retry; it runs on a
+schedule and keeps every cell asked for current; it takes eager entries and **Fetch now**; and it
+lists its names.
 
 ### The first request
 
