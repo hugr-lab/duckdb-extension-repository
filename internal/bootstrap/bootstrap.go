@@ -5,6 +5,7 @@
 package bootstrap
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -916,7 +917,7 @@ func tenantID(ctx context.Context, d Deps, name string) string {
 // upstreamSpec is a section's upstream as upstream add takes it.
 func upstreamSpec(u config.BootstrapUpstream) upstream.Spec {
 	return upstream.Spec{Name: u.Name, Kind: u.Kind, Prefix: u.Prefix, Channel: u.Channel, Mode: u.Mode,
-		Visibility: u.Visibility, Credential: u.Credential, Keys: u.Keys, Platforms: u.Platforms, Entries: u.StoreEntries()}
+		Visibility: u.Visibility, Credential: u.Credential, FetchMode: u.Fetch, Keys: u.Keys, Platforms: u.Platforms, Entries: u.StoreEntries()}
 }
 
 // checkUpstreams plans the section's upstreams (spec 0024): one that exists is the same or refused;
@@ -1067,6 +1068,8 @@ func upstreamDiff(cur store.Upstream, want config.BootstrapUpstream, channelID s
 		return "channel"
 	case cur.Mode != want.Mode:
 		return "mode"
+	case cur.Mode == store.ModeMirror && cur.FetchMode != cmp.Or(want.Fetch, store.FetchEager):
+		return "fetch"
 	case cur.Visibility != want.Visibility:
 		return "visibility"
 	case cur.Credential != want.Credential:
@@ -1087,7 +1090,8 @@ func upstreamDiff(cur store.Upstream, want config.BootstrapUpstream, channelID s
 		if i < 0 {
 			return "allowlist (" + e.Name + " is not on it)"
 		}
-		if have := cur.Entries[i]; !slices.Equal(upspec.Dedup(have.Versions), e.Versions) || have.AllowReserved != e.AllowReserved {
+		if have := cur.Entries[i]; !slices.Equal(upspec.Dedup(have.Versions), e.Versions) || have.AllowReserved != e.AllowReserved ||
+			have.Eager != e.Eager {
 			return "allowlist entry " + e.Name
 		}
 	}

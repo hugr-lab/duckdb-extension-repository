@@ -97,9 +97,24 @@ const maxProblems = 20
 // would is a dry run's outcome for a cell that would be released.
 const would = "would_release"
 
+// A lazy upstream's run counts (spec 0032): cells of its matrix nobody asked for, which it does not
+// fetch, and cells whose lease another fetch holds, which it skips.
+const (
+	notAsked = "not_asked"
+	busy     = "busy"
+)
+
 // RunUpstream runs one upstream's matrix (the caller holds its lease): it takes the pending request
-// (dry or not), fetches every cell, and records the result. renew keeps the lease.
+// (dry or not), fetches every cell (a lazy upstream's: the cells asked for and its eager entries,
+// every cell when an administrator asked for the run), and records the result. renew keeps the
+// lease.
 func (s *Service) RunUpstream(ctx context.Context, id string, renew func(context.Context) error) (Result, error) {
+	return s.runUpstream(ctx, id, renew, nil)
+}
+
+// runUpstream is RunUpstream; only, when set, is the cells a lazy upstream's run fetches besides
+// those asked for and its eager entries (a bundle export's plan, spec 0032).
+func (s *Service) runUpstream(ctx context.Context, id string, renew func(context.Context) error, only map[[3]string]bool) (Result, error) {
 	res := Result{Started: time.Now().UTC(), Counts: map[string]int{}}
 	var u store.Upstream
 	runnable, requested := false, false
@@ -119,7 +134,9 @@ func (s *Service) RunUpstream(ctx context.Context, id string, renew func(context
 	if !runnable {
 		return res, ErrNotDue
 	}
-	runErr := s.run(ctx, u, &res, renew)
+	// a lazy upstream's sync fetches its whole matrix (spec 0032); a dry run covers what a run would
+	full := u.FetchMode != store.FetchLazy || requested && !res.DryRun && only == nil
+	runErr := s.run(ctx, u, &res, renew, full, only)
 	if runErr != nil {
 		res.Error = runErr.Error()
 	}
@@ -136,7 +153,9 @@ func (s *Service) RunUpstream(ctx context.Context, id string, renew func(context
 		next = res.Ended.Add(s.Config.Interval + time.Duration(rand.Int64N(int64(s.Config.Interval/10)+1)))
 	}
 	err = s.Store.InTenantTx(fctx, u.TenantID, nil, func(tx *store.Tx) error {
-		if interrupted && requested { // a shutdown or a lost lease: the request stays for another run
+		// a shutdown or a lost lease: the request stays for another run (a bundle export's of a lazy
+		// upstream is its own, which it reports failed)
+		if interrupted && requested && only == nil {
 			cur, err := tx.GetUpstreamByID(fctx, id)
 			if err != nil {
 				return err
@@ -173,7 +192,7 @@ var errFailed = errors.New("the run failed")
 
 type cell struct{ version, platform, name string }
 
-func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew func(context.Context) error) error {
+func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew func(context.Context) error, full bool, only map[[3]string]bool) error {
 	sc, err := s.Store.ServeChannelByID(ctx, u.ChannelID)
 	if err != nil {
 		return err
@@ -206,32 +225,59 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 		fingerprints[i] = extfile.Fingerprint(k)
 	}
 	var last map[[3]string]store.UpstreamCell
+	var asks map[[3]string]time.Time
+	lazy := u.FetchMode == store.FetchLazy
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
-		last, err = tx.Cells(ctx, u.ID)
+		if last, err = tx.Cells(ctx, u.ID); err != nil || !lazy {
+			return err
+		}
+		asks, err = tx.Asks(ctx, u.ID)
 		return err
 	}); err != nil {
 		return err
 	}
-	// groups: one (name, platform), its cells in ascending DuckDB-version order
+	// groups: one (name, platform), its cells in ascending DuckDB-version order; a lazy upstream's
+	// run takes the cells asked for and its eager entries' (spec 0032)
 	var groups [][]cell
 	inMatrix := map[[3]string]bool{}
 	for _, e := range u.Entries {
 		for _, p := range u.Platforms {
 			var g []cell
 			for _, v := range versions {
+				k := [3]string{v, p, e.Name}
+				inMatrix[k] = true
+				_, asked := asks[k]
+				// a bundle export's run takes the plan's cells besides, so the scheduled run it may
+				// stand for still keeps the asked cells current
+				if !full && !only[k] && !e.Eager && !asked {
+					if _, fetched := last[k]; !fetched { // as the cells API lists them
+						res.Counts[notAsked]++
+					}
+					continue
+				}
 				g = append(g, cell{v, p, e.Name})
-				inMatrix[[3]string{v, p, e.Name}] = true
 			}
-			groups = append(groups, g)
+			if len(g) > 0 {
+				groups = append(groups, g)
+			}
 		}
 	}
 	if !res.DryRun {
+		gone := func(k [3]string, del func(tx *store.Tx) error) error {
+			if inMatrix[k] {
+				return nil
+			}
+			return s.Store.InTenantTx(ctx, u.TenantID, nil, del)
+		}
 		for k := range last {
-			if !inMatrix[k] {
-				if err := s.Store.InTenantTx(ctx, u.TenantID, nil, func(tx *store.Tx) error { return tx.DeleteCell(ctx, u.ID, k[0], k[1], k[2]) }); err != nil {
-					return err
-				}
+			if err := gone(k, func(tx *store.Tx) error { return tx.DeleteCell(ctx, u.ID, k[0], k[1], k[2]) }); err != nil {
+				return err
+			}
+		}
+		for k := range asks {
+			if err := gone(k, func(tx *store.Tx) error { return tx.DeleteAsk(ctx, u.ID, k[0], k[1], k[2]) }); err != nil {
+				return err
 			}
 		}
 	}
@@ -256,6 +302,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 		}
 	}
 	fresh := freshness(s.Store, u.ID)
+	holder := "run:" + store.NewID() // a lazy upstream's cell leases (spec 0032)
 	// the lease is renewed, and a pause noticed, while cells download (one may take fetch_timeout)
 	rctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -312,13 +359,38 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 					}
 				}
 				prev := last[[3]string{c.version, c.platform, c.name}]
-				outcome := s.cell(rctx, actor, sc, cur, e, ks, base, hostGate, c, prev, res.DryRun)
+				cctx, done := rctx, func() {}
+				// a lazy upstream's run (or one turned lazy meanwhile) and a first request's fetch
+				// never fetch one cell at once
+				if (lazy || cur.FetchMode == store.FetchLazy) && !res.DryRun {
+					var held bool
+					cctx, done, held, err = s.holdCell(rctx, holder, u.ID, c)
+					if err == nil && !held {
+						mu.Lock()
+						res.Counts[busy]++
+						mu.Unlock()
+						continue
+					}
+					if err != nil {
+						note(c, store.CellFailed, err.Error())
+						continue
+					}
+				}
+				outcome := s.cell(cctx, actor, sc, cur, e, ks, base, hostGate, c, prev, res.DryRun)
+				lost := cctx.Err() != nil
+				done()
 				if outcome.Outcome == "" { // the identity provider refuses kista's own client: the run fails
 					cancel(fmt.Errorf("%w: %w", errFailed, credential.ErrClient))
 					return
 				}
 				if rctx.Err() != nil {
 					return // a stopped run records nothing more: another run takes the cell
+				}
+				if lost { // the cell's lease was lost: another fetch takes the cell, and records it
+					mu.Lock()
+					res.Counts[busy]++
+					mu.Unlock()
+					continue
 				}
 				counted := outcome.Outcome
 				if outcome.FetchedAt.Equal(prev.FetchedAt) && prev.Outcome != "" { // a 304: the cell keeps its outcome
@@ -352,6 +424,18 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	if err := context.Cause(rctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
+	if !lazy && !res.DryRun && ctx.Err() == nil {
+		// turned lazy during the run: the cells it recorded since are asked for too
+		if err := s.Store.InTenantTx(ctx, u.TenantID, nil, func(tx *store.Tx) error {
+			cur, err := tx.GetUpstreamByID(ctx, u.ID)
+			if err != nil || cur.FetchMode != store.FetchLazy {
+				return err
+			}
+			return tx.AskFilled(ctx, u.ID)
+		}); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+	}
 	return ctx.Err()
 }
 
@@ -380,6 +464,13 @@ var refusal = map[string]bool{store.CellRejected: true, store.CellConflict: true
 
 // conditional outcomes: the same answer changes nothing, so the last ETag is sent.
 var conditional = map[string]bool{store.CellReleased: true, store.CellUnchanged: true, store.CellYanked: true, store.CellConflict: true}
+
+// A cell's download answered 503 or 429 is asked again at most fetchRetries times, after a
+// Retry-After of at most maxRetryAfter (spec 0032).
+const (
+	fetchRetries  = 3
+	maxRetryAfter = 30 * time.Second
+)
 
 // cell fetches and takes in one cell, and returns its record.
 func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel, u store.Upstream, e store.UpstreamEntry,
@@ -444,13 +535,33 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 	if err != nil {
 		return fail(store.CellFailed, err)
 	}
-	if err := acquire(ctx, hostGate); err != nil {
-		return fail(store.CellFailed, err)
-	}
 	url := base + "/" + c.version + "/" + c.platform + "/" + c.name + ".duckdb_extension.gz"
 	opts := egress.DownloadOptions{ETag: etag, MaxBytes: s.MaxBody + 1<<20, Timeout: timeout, MinRate: rate}
-	d, err := s.download(ctx, cred, tok, url, opts, tmp)
-	<-hostGate
+	var d egress.Download
+	for attempt := 0; ; attempt++ {
+		if err := acquire(ctx, hostGate); err != nil {
+			return fail(store.CellFailed, err)
+		}
+		d, tok, err = s.download(ctx, cred, tok, url, opts, tmp)
+		<-hostGate
+		// spec 0032: a 503 or 429 with a short Retry-After (a lazy upstream fetching the cell) is
+		// asked again within the cell, the host's slot free meanwhile
+		var re *egress.RetryError
+		if !errors.As(err, &re) || !re.Given || re.After > maxRetryAfter || attempt >= fetchRetries {
+			break
+		}
+		if err := tmp.Truncate(0); err != nil {
+			return fail(store.CellFailed, err)
+		}
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			return fail(store.CellFailed, err)
+		}
+		select {
+		case <-ctx.Done():
+			return fail(store.CellFailed, ctx.Err())
+		case <-time.After(re.After):
+		}
+	}
 	var ae *egress.AuthError
 	switch {
 	case errors.Is(err, credential.ErrClient):
@@ -647,7 +758,8 @@ func (s *Service) token(ctx context.Context, tenant string, u store.Upstream) (*
 
 // download fetches a cell's file, with the credential's token when there is one: a 401 forgets
 // that token (unless it is younger than 30 seconds) and tries once more, the file truncated first.
-func (s *Service) download(ctx context.Context, cred *credential.Credential, tok, url string, o egress.DownloadOptions, f *os.File) (egress.Download, error) {
+// It answers the token it used last, for a later attempt.
+func (s *Service) download(ctx context.Context, cred *credential.Credential, tok, url string, o egress.DownloadOptions, f *os.File) (egress.Download, string, error) {
 	for attempt := 0; ; attempt++ {
 		if cred != nil {
 			o.Header = http.Header{"Authorization": {"Bearer " + tok}}
@@ -655,17 +767,17 @@ func (s *Service) download(ctx context.Context, cred *credential.Credential, tok
 		d, err := s.Fetch.Download(ctx, url, o, f)
 		var ae *egress.AuthError
 		if cred == nil || attempt > 0 || !errors.As(err, &ae) || ae.Status != http.StatusUnauthorized {
-			return d, err
+			return d, tok, err
 		}
 		cred.Invalidate(tok)
 		if tok, err = cred.Token(ctx); err != nil {
-			return d, err
+			return d, tok, err
 		}
 		if err := f.Truncate(0); err != nil {
-			return d, err
+			return d, tok, err
 		}
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return d, err
+			return d, tok, err
 		}
 	}
 }

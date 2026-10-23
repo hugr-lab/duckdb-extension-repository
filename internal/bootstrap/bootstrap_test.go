@@ -244,6 +244,14 @@ func TestBootstrapDigest(t *testing.T) {
 	if dc, _, _ := bootstrap.Digest(b); dc == da {
 		t.Fatal("a change kept the digest")
 	}
+	// spec 0032: a mirror without a fetch mode digests as before it existed (an applied section
+	// stays applied after the upgrade)
+	m := section()
+	m.Upstreams = []config.BootstrapUpstream{{Name: "core", Kind: "duckdb-core", Channel: m.Channels[0].Name, Platforms: []string{"linux_amd64"},
+		Extensions: []config.BootstrapUpstreamEntry{{Name: "httpfs"}}}}
+	if _, js, err := bootstrap.Digest(m); err != nil || strings.Contains(js, "fetch") || strings.Contains(js, "eager") {
+		t.Fatalf("a mirror's section: %s %v", js, err)
+	}
 }
 
 // Objects that exist and differ are refused with nothing written; a tenant the bootstrap did not

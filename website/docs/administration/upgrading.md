@@ -88,6 +88,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0030_reserved_names` | 30 | DuckDB's names are the server's data: an older replica would read only the lists compiled into it |
 | `0031_tenant_reserved_names` | 31 | an older replica would let a wide publish grant reach a name reserved in a tenant |
 | `0032_channel_sources` | 32 | an older replica would serve another source's releases of a name |
+| `0033_lazy_mirrors` | 33 | an older replica would run a lazy mirror as an eager one, fetching its whole matrix |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling

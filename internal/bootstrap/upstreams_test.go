@@ -80,8 +80,8 @@ func (en *env) withUpstreams(t *testing.T, src *source, fp string) config.Bootst
 	en.d.Upstreams = &upstream.Service{Store: en.st, Fetch: src, Authz: authz.ServerAdmin{}, Log: slog.New(slog.DiscardHandler)}
 	b := section()
 	b.Upstreams = []config.BootstrapUpstream{
-		{Name: "core", Kind: store.UpstreamCore, Channel: "prod", Platforms: []string{"linux_amd64"},
-			Extensions: []config.BootstrapUpstreamEntry{{Name: "httpfs"}}},
+		{Name: "core", Kind: store.UpstreamCore, Channel: "prod", Platforms: []string{"linux_amd64"}, Fetch: store.FetchLazy,
+			Extensions: []config.BootstrapUpstreamEntry{{Name: "httpfs", Eager: true}}},
 		{Name: "vendor", Kind: store.UpstreamRepo, Prefix: sourcePrefix + "/", Keys: []string{fp}, Channel: "prod",
 			Platforms: []string{"linux_amd64", "linux_arm64"}, Extensions: []config.BootstrapUpstreamEntry{{Name: "acl", Versions: []string{"1.0.0"}}}},
 	}
@@ -121,7 +121,7 @@ func TestBootstrapUpstreams(t *testing.T) {
 				return err
 			})
 			if len(ups) != 2 || ups[1].Name != "vendor" || ups[1].Prefix != sourcePrefix || ups[1].Visibility != store.Private ||
-				!ups[1].NextRunAt.IsZero() {
+				!ups[1].NextRunAt.IsZero() || ups[1].FetchMode != store.FetchEager || ups[0].FetchMode != store.FetchLazy || !ups[0].Entries[0].Eager {
 				t.Fatalf("the upstreams: %+v", ups)
 			}
 			evs := en.events(t, "upstream.add")

@@ -114,6 +114,7 @@ type Logger interface {
 type Spec struct {
 	Name, Kind, Prefix, Channel, Mode, Visibility string
 	Credential                                    string // a configured credential's name (phase 3)
+	FetchMode                                     string // a mirror's: eager (the default) or lazy (spec 0032)
 	Keys, Platforms                               []string
 	Entries                                       []store.UpstreamEntry
 }
@@ -147,7 +148,8 @@ func (s *Service) CheckSource(ctx context.Context, tenant string, sp Spec, chann
 	if sp.Visibility == "" {
 		sp.Visibility = store.Private
 	}
-	u := store.Upstream{Name: sp.Name, Kind: sp.Kind, Mode: sp.Mode, Visibility: sp.Visibility, State: store.UpstreamActive}
+	u := store.Upstream{Name: sp.Name, Kind: sp.Kind, Mode: sp.Mode, Visibility: sp.Visibility, State: store.UpstreamActive,
+		FetchMode: sp.FetchMode}
 	if err := store.ValidName(sp.Name); err != nil {
 		return u, err
 	}
@@ -173,6 +175,9 @@ func (s *Service) CheckSource(ctx context.Context, tenant string, sp Spec, chann
 	}
 	if sp.Visibility != store.Public && sp.Visibility != store.Private {
 		return u, fmt.Errorf("%w: visibility %q", store.ErrInvalid, sp.Visibility)
+	}
+	if err := checkFetchMode(sp.Mode, &u.FetchMode); err != nil {
+		return u, err
 	}
 	for _, k := range sp.Keys {
 		if err := upspec.Fingerprint(k); err != nil {
@@ -202,6 +207,9 @@ func (s *Service) CheckSource(ctx context.Context, tenant string, sp Spec, chann
 		if u.Mode == store.ModePullThrough { // its callers carry no token: nothing would ever pull
 			return u, fmt.Errorf("%w: a passthrough channel takes no pull-through upstream", store.ErrInvalid)
 		}
+		if u.FetchMode == store.FetchLazy { // nor would anyone ask (spec 0032)
+			return u, errPassthroughLazy
+		}
 		if askedPrivate {
 			return u, fmt.Errorf("%w: a passthrough channel's releases are public", store.ErrInvalid)
 		}
@@ -228,6 +236,24 @@ func (s *Service) CheckSource(ctx context.Context, tenant string, sp Spec, chann
 	}
 	return u, nil
 }
+
+// checkFetchMode checks a fetch mode for an upstream of mode, and defaults it (spec 0032): a mirror's
+// is eager or lazy, eager by default; other modes take none.
+func checkFetchMode(mode string, fetch *string) error {
+	switch {
+	case mode != store.ModeMirror && *fetch != "":
+		return fmt.Errorf("%w: only a mirror takes a fetch mode", store.ErrInvalid)
+	case mode != store.ModeMirror:
+		return nil
+	case *fetch == "":
+		*fetch = store.FetchEager
+	case *fetch != store.FetchEager && *fetch != store.FetchLazy:
+		return fmt.Errorf("%w: fetch %q (eager or lazy)", store.ErrInvalid, *fetch)
+	}
+	return nil
+}
+
+var errPassthroughLazy = fmt.Errorf("%w: a passthrough channel takes no lazy mirror: its requests carry no token, so no one could ask", store.ErrInvalid)
 
 // ErrSourceFetch is a source's .well-known that cannot be read for now: no connection, a timeout, a
 // 5xx or 429 (a bootstrap tries again; spec 0024).
@@ -343,9 +369,12 @@ func (s *Service) insert(ctx context.Context, tx *store.Tx, a authz.Actor, t sto
 	if err := tx.InsertUpstream(ctx, u); err != nil {
 		return err
 	}
-	if err := tx.Event(ctx, t.ID, a.String(), "upstream.add", "upstream:"+u.Name, map[string]any{"name": u.Name, "kind": u.Kind,
-		"prefix": u.Prefix, "channel": channel, "mode": u.Mode, "visibility": u.Visibility, "keys": u.Keys,
-		"platforms": u.Platforms, "extensions": names, "credential": u.Credential}); err != nil {
+	f := map[string]any{"name": u.Name, "kind": u.Kind, "prefix": u.Prefix, "channel": channel, "mode": u.Mode, "visibility": u.Visibility,
+		"keys": u.Keys, "platforms": u.Platforms, "extensions": names, "credential": u.Credential}
+	if u.Mode == store.ModeMirror {
+		f["fetch"] = u.FetchMode
+	}
+	if err := tx.Event(ctx, t.ID, a.String(), "upstream.add", "upstream:"+u.Name, f); err != nil {
 		return err
 	}
 	return s.checkCells(ctx, tx, *u)
@@ -390,6 +419,40 @@ func (s *Service) SetCredential(ctx context.Context, a authz.Actor, tenant, name
 func (s *Service) SetUsage(ctx context.Context, a authz.Actor, tenant, name, value string, expected int64) (store.Upstream, error) {
 	return s.change(ctx, a, tenant, name, "usage", map[string]any{"value": value}, func(tx *store.Tx, u *store.Upstream) error {
 		return tx.SetUpstreamUsage(ctx, u, value, expected)
+	})
+}
+
+// SetFetchMode sets a mirror's fetch mode (spec 0032; expected: its version). Turning eager makes it
+// due at once (its whole matrix); turning lazy keeps its releases current: each cell a release
+// fills is recorded as asked for.
+func (s *Service) SetFetchMode(ctx context.Context, a authz.Actor, tenant, name, mode string, expected int64) (store.Upstream, error) {
+	return s.change(ctx, a, tenant, name, "fetch", map[string]any{"value": mode}, func(tx *store.Tx, u *store.Upstream) error {
+		if u.Mode != store.ModeMirror {
+			return fmt.Errorf("%w: only a mirror takes a fetch mode", store.ErrInvalid)
+		}
+		if mode != store.FetchEager && mode != store.FetchLazy {
+			return fmt.Errorf("%w: fetch %q (eager or lazy)", store.ErrInvalid, mode)
+		}
+		if mode == store.FetchLazy {
+			ch, err := tx.ChannelByID(ctx, u.ChannelID)
+			if err != nil {
+				return err
+			}
+			if ch.Kind == store.ChannelPassthrough {
+				return errPassthroughLazy
+			}
+		}
+		was := u.FetchMode
+		if err := tx.SetUpstreamFetchMode(ctx, u, mode, expected); err != nil {
+			return err
+		}
+		switch {
+		case was == mode:
+			return nil
+		case mode == store.FetchEager:
+			return tx.MakeDue(ctx, u.ID, "")
+		}
+		return tx.AskFilled(ctx, u.ID)
 	})
 }
 
@@ -611,15 +674,15 @@ func (s *Service) Set(ctx context.Context, a authz.Actor, tenant, name, visibili
 	})
 }
 
-// PutEntry adds an allowlist entry, or replaces an existing one's versions and allow_reserved; it
-// reports whether the entry is new.
+// PutEntry adds an allowlist entry, or replaces an existing one's versions, allow_reserved and
+// eager; it reports whether the entry is new.
 func (s *Service) PutEntry(ctx context.Context, a authz.Actor, tenant, name string, e store.UpstreamEntry) (bool, error) {
 	if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030
 		return false, err
 	}
 	created := false
 	_, err := s.change(ctx, a, tenant, name, "extension.put", map[string]any{"value": e.Name, "versions": e.Versions,
-		"allow_reserved": e.AllowReserved}, func(tx *store.Tx, u *store.Upstream) error {
+		"allow_reserved": e.AllowReserved, "eager": e.Eager}, func(tx *store.Tx, u *store.Upstream) error {
 		if err := upspec.Entry(u.Kind, u.Mode, &e); err != nil {
 			return err
 		}
@@ -742,10 +805,60 @@ func (s *Service) Cells(ctx context.Context, a authz.Actor, tenant, name, outcom
 		if err != nil {
 			return err
 		}
+		if outcome == NotAsked {
+			out, err = s.notAsked(ctx, tx, u, after, limit)
+			return err
+		}
 		out, err = tx.ListCells(ctx, u.ID, outcome, after, limit)
 		return err
 	})
 	return out, err
+}
+
+// NotAsked is the cells API's outcome for a lazy upstream's cells offered but not fetched yet
+// (spec 0032).
+const NotAsked = notAsked
+
+// notAsked pages a lazy upstream's matrix cells that nobody asked for, of no eager entry, and never
+// fetched, by (DuckDB version, platform, name) after a cursor key; an eager upstream has none.
+func (s *Service) notAsked(ctx context.Context, tx *store.Tx, u store.Upstream, after [3]string, limit int) ([]store.UpstreamCell, error) {
+	if u.FetchMode != store.FetchLazy {
+		return nil, nil
+	}
+	versions, err := s.Store.ChannelVersions(ctx, u.ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	cells, err := tx.Cells(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	asks, err := tx.Asks(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	var keys [][3]string
+	for _, e := range u.Entries {
+		if e.Eager {
+			continue
+		}
+		for _, p := range u.Platforms {
+			for _, v := range versions {
+				k := [3]string{v, p, e.Name}
+				_, asked := asks[k]
+				_, fetched := cells[k]
+				if !asked && !fetched && slices.Compare(k[:], after[:]) > 0 {
+					keys = append(keys, k)
+				}
+			}
+		}
+	}
+	slices.SortFunc(keys, func(a, b [3]string) int { return slices.Compare(a[:], b[:]) })
+	var out []store.UpstreamCell
+	for _, k := range keys[:min(limit, len(keys))] {
+		out = append(out, store.UpstreamCell{UpstreamID: u.ID, DuckDBVersion: k[0], Platform: k[1], Name: k[2], Outcome: notAsked})
+	}
+	return out, nil
 }
 
 // keys returns the keys a run verifies with.

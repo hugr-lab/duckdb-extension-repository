@@ -15,7 +15,7 @@ func TestUpstreamDiff(t *testing.T) {
 		Channel: "prod", Mode: store.ModeMirror, Visibility: store.Private, Credential: "c", Platforms: []string{"linux_amd64"},
 		Extensions: []config.BootstrapUpstreamEntry{{Name: "acl", Versions: []string{"1.0.0"}}}}
 	cur := func() store.Upstream {
-		return store.Upstream{Kind: store.UpstreamRepo, Prefix: "https://up.example/x", ChannelID: "ch1", Mode: store.ModeMirror,
+		return store.Upstream{Kind: store.UpstreamRepo, Prefix: "https://up.example/x", ChannelID: "ch1", Mode: store.ModeMirror, FetchMode: store.FetchEager,
 			Visibility: store.Private, Credential: "c", Keys: []string{"k1", "k2"}, Platforms: []string{"linux_amd64", "osx_arm64"},
 			Entries: []store.UpstreamEntry{{Name: "acl", Versions: []string{"1.0.0"}}, {Name: "more"}}}
 	}
@@ -32,6 +32,8 @@ func TestUpstreamDiff(t *testing.T) {
 		"channel":        {func(*store.Upstream) {}, "ch2", "channel"},
 		"no channel":     {func(*store.Upstream) {}, "", "channel"},
 		"mode":           {func(u *store.Upstream) { u.Mode = store.ModePullThrough }, "ch1", "mode"},
+		"fetch":          {func(u *store.Upstream) { u.FetchMode = store.FetchLazy }, "ch1", "fetch"},
+		"eager":          {func(u *store.Upstream) { u.Entries[0].Eager = true }, "ch1", "allowlist entry acl"},
 		"visibility":     {func(u *store.Upstream) { u.Visibility = store.Public }, "ch1", "visibility"},
 		"credential":     {func(u *store.Upstream) { u.Credential = "" }, "ch1", "credential"},
 		"a key":          {func(u *store.Upstream) { u.Keys = []string{"k2"} }, "ch1", "keys"},

@@ -401,16 +401,17 @@ See [Publishing](../publishing.md).
 | Command | What it does |
 | --- | --- |
 | `upstream add <tenant> <name> -kind <k> -channel <c> -platforms <p,...> [flags]` | adds an upstream; `-kind` is `duckdb-core`, `duckdb-community` or `repository` |
-| `upstream list <tenant>` | `NAME`, `KIND`, `MODE`, `STATE`, `VISIBILITY`, `EXTENSIONS`, `LAST RUN` |
+| `upstream list <tenant>` | `NAME`, `KIND`, `MODE` (`mirror (lazy)` for a lazy mirror), `STATE`, `VISIBILITY`, `EXTENSIONS`, `LAST RUN` |
 | `upstream show <tenant> <name>` | its settings, entries, requested run, last run and, in bundle mode, the last bundle |
 | `upstream remove`, `pause`, `resume`, `public`, `private` `<tenant> <name>` | |
-| `upstream sync <tenant> <name> [-dry-run]` | requests a run; a running `kista serve` takes it |
-| `upstream cells <tenant> <name> [-outcome <outcome>]` | `DUCKDB`, `PLATFORM`, `NAME`, `OUTCOME`, `FETCHED`, `DETAIL` |
+| `upstream sync <tenant> <name> [-dry-run]` | requests a run; a running `kista serve` takes it (a lazy mirror's: its whole matrix; a dry run: what a scheduled run would fetch) |
+| `upstream fetch <tenant> <name> eager\|lazy` | a mirror's fetch mode ([Lazy mirrors](../upstreams.md#lazy-mirrors)) |
+| `upstream cells <tenant> <name> [-outcome <outcome>]` | `DUCKDB`, `PLATFORM`, `NAME`, `OUTCOME`, `FETCHED`, `DETAIL`; a lazy mirror's `-outcome not_asked` lists the cells offered but not fetched |
 | `upstream credential <tenant> <name> <credential>` | sets a private upstream's credential by name; `-` clears it |
 | `upstream credentials` | the credentials in the configuration: `NAME`, `KIND`, `TENANTS`, `PREFIXES`, `PUBLIC`, `FORWARDS USAGE` |
 | `upstream licenses <tenant> <name> [-sync]` | the upstream's last licence relay; `-sync` requests one, which a running `kista serve` takes ([Licensing](../licensing.md)) |
 | `upstream usage <tenant> <name> [forward\|off]` | the upstream's usage switch and its last forwarding run; `forward` or `off` sets it ([Licensing](../licensing.md#forwarding-usage-upstream)) |
-| `upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved]` | adds or replaces an allowlist entry |
+| `upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved] [-eager]` | adds or replaces an allowlist entry; `-eager`: a lazy mirror fetches it unasked |
 | `upstream extension remove <tenant> <name> <extension>` | |
 | `upstream platform add` or `remove` `<tenant> <name> <platform>` | |
 | `upstream key add` or `remove` `<tenant> <name> <fingerprint>` | a `repository` upstream's pinned keys |
@@ -426,7 +427,7 @@ See [Publishing](../publishing.md).
 
 `upstream add` flags: `-extensions <name,...>` or `*`, `-prefix <https://...>` and
 `-keys <sha256:...,...>` (for `repository`), `-public`, `-mode mirror`, `-mode pull-through` or
-`-mode bundle`, `-credential <name>`. See [Upstreams](../upstreams.md).
+`-mode bundle`, `-fetch eager` or `-fetch lazy` (a mirror's), `-credential <name>`. See [Upstreams](../upstreams.md).
 
 ## Attachments, attestation keys and feeds
 

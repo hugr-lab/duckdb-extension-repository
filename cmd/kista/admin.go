@@ -140,16 +140,18 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   publisher key remove <tenant> <name> <key-id>
   upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
                -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
-               [-mode mirror|pull-through|bundle] [-credential <name>]
+               [-mode mirror|pull-through|bundle] [-fetch eager|lazy] [-credential <name>]
+  upstream fetch <tenant> <name> eager|lazy       a mirror's fetch mode (spec 0032): lazy fetches the cells asked for
+                                                  and its eager entries; sync fetches the whole matrix
   upstream credential <tenant> <name> <credential|->   a private upstream's credential (- clears it)
   upstream credentials                            the configured credentials (names, tenants, prefixes, who forwards usage)
   upstream list <tenant>
   upstream show|remove|pause|resume|public|private <tenant> <name>
   upstream sync <tenant> <name> [-dry-run]        a running kista serve takes the run
-  upstream cells <tenant> <name> [-outcome <outcome>]
+  upstream cells <tenant> <name> [-outcome <outcome>]   a lazy upstream's -outcome not_asked: offered, not fetched
   upstream licenses <tenant> <name> [-sync]        the upstream's last licence relay (spec 0012); -sync asks for one now
   upstream usage <tenant> <name> [forward|off]     the upstream's last usage forwarding (spec 0012); forward or off sets it
-  upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved]
+  upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved] [-eager]
   upstream extension remove <tenant> <name> <extension>
   upstream platform|key add|remove <tenant> <name> <platform|fingerprint>
   license keys <tenant> [<name>]                  the licence keys of the tenant's live builds, by name and source
@@ -1519,6 +1521,7 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 	outcome := fs.String("outcome", "", "")
 	mode := fs.String("mode", "", "")
 	cred := fs.String("credential", "", "")
+	fetch := fs.String("fetch", "", "")
 	sync := fs.Bool("sync", false, "")
 	pos, err := flags(fs, args)
 	if err != nil {
@@ -1527,6 +1530,9 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 	show := func(u store.Upstream) {
 		fmt.Fprintf(a.out, "name: %s\nkind: %s\nmode: %s\nstate: %s\nvisibility: %s\nplatforms: %s\n", u.Name, u.Kind, u.Mode, u.State,
 			u.Visibility, strings.Join(u.Platforms, ","))
+		if u.Mode == store.ModeMirror {
+			fmt.Fprintf(a.out, "fetch: %s\n", u.FetchMode)
+		}
 		if u.Prefix != "" {
 			fmt.Fprintf(a.out, "prefix: %s\nkeys: %s\n", u.Prefix, strings.Join(u.Keys, ","))
 		}
@@ -1537,7 +1543,8 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 			fmt.Fprintf(a.out, "last bundle: %s (made %s)\n", u.BundleID, ts(u.BundleCreatedAt))
 		}
 		for _, e := range u.Entries {
-			fmt.Fprintf(a.out, "extension: %s %s%s\n", e.Name, strings.Join(e.Versions, ","), map[bool]string{true: " (allow reserved)"}[e.AllowReserved])
+			fmt.Fprintf(a.out, "extension: %s %s%s%s\n", e.Name, strings.Join(e.Versions, ","), map[bool]string{true: " (allow reserved)"}[e.AllowReserved],
+				map[bool]string{true: " (eager)"}[e.Eager])
 		}
 		if !u.RequestedAt.IsZero() {
 			fmt.Fprintf(a.out, "run: requested %s\n", ts(u.RequestedAt))
@@ -1549,7 +1556,7 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 	switch {
 	case sub == "add" && len(pos) == 2:
 		sp := upstream.Spec{Name: pos[1], Kind: *kind, Channel: *channel, Prefix: *prefix, Keys: commaList(*keys),
-			Platforms: commaList(*platforms), Visibility: store.Private, Mode: *mode, Credential: *cred}
+			Platforms: commaList(*platforms), Visibility: store.Private, Mode: *mode, Credential: *cred, FetchMode: *fetch}
 		if *public {
 			sp.Visibility = store.Public
 		}
@@ -1572,7 +1579,11 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 				if !u.LastRunAt.IsZero() {
 					last = ts(u.LastRunAt)
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", u.Name, u.Kind, u.Mode, u.State, u.Visibility, len(u.Entries), last)
+				m := u.Mode
+				if u.FetchMode == store.FetchLazy {
+					m += " (lazy)"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", u.Name, u.Kind, m, u.State, u.Visibility, len(u.Entries), last)
 			}
 		})
 	case sub == "show" && len(pos) == 2:
@@ -1602,6 +1613,11 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 			return err
 		}
 		a.logf("upstream credential %s %s %s", pos[0], pos[1], pos[2])
+	case sub == "fetch" && len(pos) == 3:
+		if _, err := a.svc.Upstreams.SetFetchMode(ctx, a.actor, pos[0], pos[1], pos[2], 0); err != nil {
+			return err
+		}
+		a.logf("upstream fetch %s %s %s", pos[0], pos[1], pos[2])
 	case sub == "credentials" && len(pos) == 0:
 		fws, err := a.svc.Upstreams.Store.UsageForwarders(ctx)
 		if err != nil {
@@ -1710,18 +1726,20 @@ func (a *adminCmd) upstreamItem(ctx context.Context, what, sub string, args []st
 	fs := flag.NewFlagSet("upstream "+what, flag.ContinueOnError)
 	versions := fs.String("versions", "", "")
 	allowReserved := fs.Bool("allow-reserved", false, "")
+	eager := fs.Bool("eager", false, "")
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) != 3 || (sub != "add" && sub != "remove") {
 		return errUsage
 	}
-	if what != "extension" && (*versions != "" || *allowReserved) {
+	if what != "extension" && (*versions != "" || *allowReserved || *eager) {
 		return errUsage
 	}
 	t, name, item := pos[0], pos[1], pos[2]
 	up := a.svc.Upstreams
 	switch what + " " + sub {
 	case "extension add":
-		_, err = up.PutEntry(ctx, a.actor, t, name, store.UpstreamEntry{Name: item, Versions: commaList(*versions), AllowReserved: *allowReserved})
+		_, err = up.PutEntry(ctx, a.actor, t, name, store.UpstreamEntry{Name: item, Versions: commaList(*versions), AllowReserved: *allowReserved,
+			Eager: *eager})
 	case "extension remove":
 		err = up.RemoveEntry(ctx, a.actor, t, name, item)
 	case "platform add":

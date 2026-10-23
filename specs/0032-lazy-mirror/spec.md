@@ -1,6 +1,6 @@
 # Spec 0032: Lazy mirrors
 
-- **Status**: accepted (2026-10-23)
+- **Status**: accepted (2026-10-23); phase A implemented
 - **Date**: 2026-10-23
 - **Author**: vgsml, Claude
 
@@ -175,6 +175,17 @@ too, or narrow in its platforms: an eager mirror of a lazy channel asks for ever
   allowlisted extension succeeds on the first try (DuckDB's own retry), and the next run refreshes
   it; another kista mirroring that channel with a credential takes the build on its first run; an
   eager entry is fetched before anyone asks.
+
+## Delivery
+
+- **Phase A**: the data model and its migration; the setting and eager entries (API, CLI, the
+  bootstrap's section); lazy runs, sync, switching modes, the cell lease in runs, `not_asked`; kista's
+  own fetcher retrying `503` and `429`; a bundle export's sync of a lazy upstream over its plan's
+  cells.
+- **Phase B**: the first request (asks recorded on a miss, the `503` answer, the pull-through
+  worker taking lazy upstreams, the per-caller share and the first requests' host gate), its metrics
+  and events.
+- **Phase C**: the console, and the end-to-end cases with DuckDB.
 
 ## Alternatives considered
 

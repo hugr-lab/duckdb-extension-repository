@@ -486,7 +486,10 @@ func (t *Tx) RemoveChannelVersion(ctx context.Context, channelID, versionID stri
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("%w: the channel does not serve that version", ErrNotFound)
 	}
-	return nil
+	// spec 0032: the asks for that version go with it
+	_, err = t.exec(ctx, `DELETE FROM upstream_asks WHERE upstream_id IN (SELECT id FROM upstreams WHERE channel_id = ?)
+AND duckdb_version = (SELECT name FROM duckdb_versions WHERE id = ?)`, channelID, versionID)
+	return err
 }
 
 // ChannelKeys reads a channel's keys inside the transaction, oldest first.

@@ -275,30 +275,12 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	if !slices.Contains(versions, m.DuckDBVersion) {
 		return "", nil
 	}
-	// one fetch of a cell at a time across replicas: a lease renewed while it runs, deleted after
-	lease := "kista/upstream/" + u.ID + "/" + m.DuckDBVersion + "/" + m.Platform + "/" + m.Name
-	held, err := s.Store.AcquireLease(ctx, lease, p.Holder, cellLeaseTTL)
+	// one fetch of a cell at a time across replicas
+	lctx, done, held, err := s.holdCell(ctx, p.Holder, u.ID, cell{m.DuckDBVersion, m.Platform, m.Name})
 	if err != nil || !held {
 		return "", err
 	}
-	defer func() { _ = s.Store.DeleteLease(context.WithoutCancel(ctx), lease, p.Holder) }()
-	lctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() {
-		t := time.NewTicker(cellLeaseTTL / 4)
-		defer t.Stop()
-		for {
-			select {
-			case <-lctx.Done():
-				return
-			case <-t.C:
-				if ok, err := s.Store.AcquireLease(lctx, lease, p.Holder, cellLeaseTTL); err != nil || !ok {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
+	defer done()
 	ctx = lctx
 	keys, err := p.upstreamKeys(ctx, u)
 	if err != nil {
@@ -353,6 +335,42 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 		}
 	}
 	return rec.Outcome, nil
+}
+
+// CellLease is the name of a cell's lease (spec 0009 phase 2, 0032).
+func CellLease(upstreamID, duckdbVersion, platform, name string) string {
+	return "kista/upstream/" + upstreamID + "/" + duckdbVersion + "/" + platform + "/" + name
+}
+
+// holdCell takes a cell's lease, so one fetch of a cell runs at a time across replicas (a
+// pull-through or lazy fetch, and a lazy upstream's run), and renews it while the fetch runs: the
+// context it answers ends when the lease is lost. done ends the context and deletes the lease.
+func (s *Service) holdCell(ctx context.Context, holder, upstreamID string, c cell) (context.Context, func(), bool, error) {
+	lease := CellLease(upstreamID, c.version, c.platform, c.name)
+	held, err := s.Store.AcquireLease(ctx, lease, holder, cellLeaseTTL)
+	if err != nil || !held {
+		return ctx, func() {}, false, err
+	}
+	lctx, cancel := context.WithCancel(ctx)
+	go func() {
+		t := time.NewTicker(cellLeaseTTL / 4)
+		defer t.Stop()
+		for {
+			select {
+			case <-lctx.Done():
+				return
+			case <-t.C:
+				if ok, err := s.Store.AcquireLease(lctx, lease, holder, cellLeaseTTL); err != nil || !ok {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return lctx, func() {
+		cancel()
+		_ = s.Store.DeleteLease(context.WithoutCancel(ctx), lease, holder)
+	}, true, nil
 }
 
 // upstreamKeys caches an upstream's verification keys for a few minutes (a repository's

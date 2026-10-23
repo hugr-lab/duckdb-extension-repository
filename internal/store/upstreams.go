@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -17,6 +18,11 @@ const (
 	ModeMirror      = "mirror"
 	ModePullThrough = "pull-through"
 	ModeBundle      = "bundle" // filled only by bundle imports; never contacts its source (spec 0014)
+
+	// a mirror's fetch mode (spec 0032): its whole matrix at every run, or only the cells asked for
+	// and its eager entries
+	FetchEager = "eager"
+	FetchLazy  = "lazy"
 
 	UpstreamActive = "active"
 
@@ -64,6 +70,7 @@ type Upstream struct {
 	CreatedBy                                   string
 	Credential                                  string // a configured credential's name (spec 0009 phase 3); "": none
 	Usage                                       string // UsageForward or UsageOff (spec 0012 phase 1c)
+	FetchMode                                   string // FetchEager or FetchLazy (spec 0032)
 
 	// bundle mode's freshness mark (spec 0014): the last imported manifest
 	BundleID, BundleManifestSHA256 string
@@ -79,6 +86,7 @@ type UpstreamEntry struct {
 	Name          string
 	AllowReserved bool
 	Versions      []string
+	Eager         bool // a lazy upstream's runs fetch its cells unasked (spec 0032)
 }
 
 // UpstreamCell is the last outcome of one cell of an upstream's matrix.
@@ -94,14 +102,14 @@ func TenantUpstreamLock(tenantID string) string { return "kista/tenant-upstreams
 
 const upstreamCols = `id, tenant_id, name, kind, prefix, channel_id, mode, visibility, state, version, requested_at,
 request_dry_run, next_run_at, last_run_at, last_run, created_at, created_by, credential, bundle_id, bundle_created_at,
-bundle_manifest_sha256, usage`
+bundle_manifest_sha256, usage, fetch_mode`
 
 func scanUpstream(r interface{ Scan(...any) error }) (Upstream, error) {
 	var u Upstream
 	var prefix, lastRun, cred, bundleID, bundleSHA sql.NullString
 	err := r.Scan(&u.ID, &u.TenantID, &u.Name, &u.Kind, &prefix, &u.ChannelID, &u.Mode, &u.Visibility, &u.State, &u.Version,
 		scanTime{&u.RequestedAt}, &u.RequestDryRun, scanTime{&u.NextRunAt}, scanTime{&u.LastRunAt}, &lastRun,
-		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred, &bundleID, scanTime{&u.BundleCreatedAt}, &bundleSHA, &u.Usage)
+		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred, &bundleID, scanTime{&u.BundleCreatedAt}, &bundleSHA, &u.Usage, &u.FetchMode)
 	u.Prefix, u.LastRun, u.Credential = prefix.String, lastRun.String, cred.String
 	u.BundleID, u.BundleManifestSHA256 = bundleID.String, bundleSHA.String
 	return u, err
@@ -131,10 +139,13 @@ func (t *Tx) InsertUpstream(ctx context.Context, u *Upstream) error {
 	if u.Usage == "" {
 		u.Usage = UsageForward
 	}
-	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	if u.FetchMode == "" {
+		u.FetchMode = FetchEager
+	}
+	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		u.ID, u.TenantID, u.Name, u.Kind, nullable(u.Prefix), u.ChannelID, u.Mode, u.Visibility, u.State, u.Version,
 		t.s.d.nullTimeArg(u.RequestedAt), u.RequestDryRun, t.s.d.nullTimeArg(u.NextRunAt), nil, nil,
-		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential), nil, nil, nil, u.Usage)
+		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential), nil, nil, nil, u.Usage, u.FetchMode)
 	if err := t.s.mapErr(err, "upstream "+u.Name); err != nil {
 		return err
 	}
@@ -182,14 +193,14 @@ func (t *Tx) upstreamChildren(ctx context.Context, u *Upstream) error {
 	if u.Platforms, err = t.strings(ctx, "SELECT platform FROM upstream_platforms WHERE upstream_id = ? ORDER BY platform", u.ID); err != nil {
 		return err
 	}
-	rows, err := t.query(ctx, "SELECT name, allow_reserved FROM upstream_entries WHERE upstream_id = ? ORDER BY name", u.ID)
+	rows, err := t.query(ctx, "SELECT name, allow_reserved, eager FROM upstream_entries WHERE upstream_id = ? ORDER BY name", u.ID)
 	if err != nil {
 		return err
 	}
 	u.Entries = nil
 	for rows.Next() {
 		var e UpstreamEntry
-		if err := rows.Scan(&e.Name, &e.AllowReserved); err != nil {
+		if err := rows.Scan(&e.Name, &e.AllowReserved, &e.Eager); err != nil {
 			rows.Close()
 			return err
 		}
@@ -270,7 +281,7 @@ func (t *Tx) DeleteUpstream(ctx context.Context, u Upstream, expected int64) err
 	if expected != 0 && expected != u.Version {
 		return ErrConflict
 	}
-	for _, c := range []string{"upstream_cells", "upstream_versions", "upstream_entries", "upstream_platforms", "upstream_keys"} {
+	for _, c := range []string{"upstream_asks", "upstream_cells", "upstream_versions", "upstream_entries", "upstream_platforms", "upstream_keys"} {
 		if _, err := t.exec(ctx, "DELETE FROM "+c+" WHERE upstream_id = ?", u.ID); err != nil {
 			return err
 		}
@@ -318,6 +329,18 @@ func (t *Tx) SetUpstreamUsage(ctx context.Context, u *Upstream, usage string, ex
 		[]any{usage, u.ID, expected}, func() { u.Usage, u.Version = usage, expected+1 })
 }
 
+// SetUpstreamFetchMode sets a mirror's fetch mode (spec 0032; expected: its version).
+func (t *Tx) SetUpstreamFetchMode(ctx context.Context, u *Upstream, mode string, expected int64) error {
+	if mode != FetchEager && mode != FetchLazy {
+		return fmt.Errorf("%w: fetch is %s or %s", ErrInvalid, FetchEager, FetchLazy)
+	}
+	if expected == 0 {
+		expected = u.Version
+	}
+	return t.cas(ctx, "UPDATE upstreams SET fetch_mode = ?, version = version + 1 WHERE id = ? AND version = ?",
+		[]any{mode, u.ID, expected}, func() { u.FetchMode, u.Version = mode, expected+1 })
+}
+
 // BumpUpstream moves an upstream's version: its keys, platforms or entries changed.
 func (t *Tx) BumpUpstream(ctx context.Context, u *Upstream) error {
 	return t.cas(ctx, "UPDATE upstreams SET version = version + 1 WHERE id = ? AND version = ?", []any{u.ID, u.Version},
@@ -353,12 +376,15 @@ func (t *Tx) RemoveUpstreamPlatform(ctx context.Context, upstreamID, platform st
 	if err := t.deleteOne(ctx, "DELETE FROM upstream_platforms WHERE upstream_id = ? AND platform = ?", "platform "+platform, upstreamID, platform); err != nil {
 		return err
 	}
+	if _, err := t.exec(ctx, "DELETE FROM upstream_asks WHERE upstream_id = ? AND platform = ?", upstreamID, platform); err != nil {
+		return err
+	}
 	_, err := t.exec(ctx, "DELETE FROM upstream_cells WHERE upstream_id = ? AND platform = ?", upstreamID, platform)
 	return err
 }
 
-// PutUpstreamEntry adds an allowlist entry or replaces its versions and allow_reserved. It reports
-// nothing about whether it existed; callers read first when they need to.
+// PutUpstreamEntry adds an allowlist entry or replaces its versions, allow_reserved and eager. It
+// reports nothing about whether it existed; callers read first when they need to.
 func (t *Tx) PutUpstreamEntry(ctx context.Context, upstreamID string, e UpstreamEntry) error {
 	if len(e.Versions) > MaxEntryVersions {
 		return fmt.Errorf("%w: an entry lists at most %d versions", ErrInvalid, MaxEntryVersions)
@@ -376,8 +402,8 @@ func (t *Tx) PutUpstreamEntry(ctx context.Context, upstreamID string, e Upstream
 	if n >= MaxUpstreamEntries {
 		return fmt.Errorf("%w: an upstream lists at most %d extensions", ErrInvalid, MaxUpstreamEntries)
 	}
-	if _, err := t.exec(ctx, "INSERT INTO upstream_entries (upstream_id, name, allow_reserved) VALUES (?, ?, ?)",
-		upstreamID, e.Name, e.AllowReserved); err != nil {
+	if _, err := t.exec(ctx, "INSERT INTO upstream_entries (upstream_id, name, allow_reserved, eager) VALUES (?, ?, ?, ?)",
+		upstreamID, e.Name, e.AllowReserved, e.Eager); err != nil {
 		return t.s.mapErr(err, "extension "+e.Name)
 	}
 	for _, v := range e.Versions {
@@ -395,6 +421,9 @@ func (t *Tx) RemoveUpstreamEntry(ctx context.Context, upstreamID, name string) e
 		return err
 	}
 	if err := t.deleteOne(ctx, "DELETE FROM upstream_entries WHERE upstream_id = ? AND name = ?", "extension "+name, upstreamID, name); err != nil {
+		return err
+	}
+	if _, err := t.exec(ctx, "DELETE FROM upstream_asks WHERE upstream_id = ? AND name = ?", upstreamID, name); err != nil {
 		return err
 	}
 	_, err := t.exec(ctx, "DELETE FROM upstream_cells WHERE upstream_id = ? AND name = ?", upstreamID, name)
@@ -496,6 +525,90 @@ ORDER BY CASE WHEN requested_at IS NULL THEN 1 ELSE 0 END, CASE WHEN next_run_at
 		return err
 	})
 	return out, err
+}
+
+// AskRefresh is how old an ask is before a new one renews its time (spec 0032): retries and polls
+// cost a read.
+const AskRefresh = time.Hour
+
+// Ask records that a cell of a lazy upstream was asked for (spec 0032): inserted when absent, its
+// time renewed when older than AskRefresh. It reports whether it wrote.
+func (t *Tx) Ask(ctx context.Context, upstreamID, duckdbVersion, platform, name string) (bool, error) {
+	var at time.Time
+	err := t.queryRow(ctx, "SELECT asked_at FROM upstream_asks WHERE upstream_id = ? AND duckdb_version = ? AND platform = ? AND name = ?",
+		upstreamID, duckdbVersion, platform, name).Scan(scanTime{&at})
+	now := t.Now()
+	switch {
+	case errors.Is(err, sql.ErrNoRows): // inserted unless another request did meanwhile
+		var res sql.Result
+		if t.s.d.Name == "sqlserver" {
+			res, err = t.exec(ctx, `MERGE upstream_asks WITH (HOLDLOCK) AS a
+USING (SELECT ? AS upstream_id, ? AS duckdb_version, ? AS platform, ? AS name) AS n
+ON a.upstream_id = n.upstream_id AND a.duckdb_version = n.duckdb_version AND a.platform = n.platform AND a.name = n.name
+WHEN NOT MATCHED THEN INSERT (upstream_id, duckdb_version, platform, name, asked_at) VALUES (?, ?, ?, ?, ?);`,
+				upstreamID, duckdbVersion, platform, name, upstreamID, duckdbVersion, platform, name, t.s.d.timeArg(now))
+		} else {
+			res, err = t.exec(ctx, `INSERT INTO upstream_asks (upstream_id, duckdb_version, platform, name, asked_at) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (upstream_id, duckdb_version, platform, name) DO NOTHING`, upstreamID, duckdbVersion, platform, name, t.s.d.timeArg(now))
+		}
+		if err != nil {
+			return false, err
+		}
+		n, _ := res.RowsAffected()
+		return n > 0, nil
+	case err != nil:
+		return false, err
+	case now.Sub(at) < AskRefresh:
+		return false, nil
+	}
+	_, err = t.exec(ctx, "UPDATE upstream_asks SET asked_at = ? WHERE upstream_id = ? AND duckdb_version = ? AND platform = ? AND name = ?",
+		t.s.d.timeArg(now), upstreamID, duckdbVersion, platform, name)
+	return err == nil, err
+}
+
+// Asks reads a lazy upstream's asks, by (DuckDB version, platform, name).
+func (t *Tx) Asks(ctx context.Context, upstreamID string) (map[[3]string]time.Time, error) {
+	rows, err := t.query(ctx, "SELECT duckdb_version, platform, name, asked_at FROM upstream_asks WHERE upstream_id = ?", upstreamID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[[3]string]time.Time{}
+	for rows.Next() {
+		var k [3]string
+		var at time.Time
+		if err := rows.Scan(&k[0], &k[1], &k[2], scanTime{&at}); err != nil {
+			return nil, err
+		}
+		out[k] = at
+	}
+	return out, rows.Err()
+}
+
+// DeleteAsk removes an ask (one that left the matrix).
+func (t *Tx) DeleteAsk(ctx context.Context, upstreamID, duckdbVersion, platform, name string) error {
+	_, err := t.exec(ctx, "DELETE FROM upstream_asks WHERE upstream_id = ? AND duckdb_version = ? AND platform = ? AND name = ?",
+		upstreamID, duckdbVersion, platform, name)
+	return err
+}
+
+// AskFilled records an ask for each cell of an upstream that was fetched and found (spec 0032: an
+// upstream turning lazy keeps its releases current), with the cell's time: every recorded cell but
+// a missing one, since a failed fetch's record no longer names the body a release holds. An ask
+// recorded meanwhile is kept.
+func (t *Tx) AskFilled(ctx context.Context, upstreamID string) error {
+	const cells = `SELECT c.upstream_id, c.duckdb_version, c.platform, c.name, c.fetched_at FROM upstream_cells c
+WHERE c.upstream_id = ? AND c.outcome <> ?`
+	if t.s.d.Name == "sqlserver" {
+		_, err := t.exec(ctx, `MERGE upstream_asks WITH (HOLDLOCK) AS a USING (`+cells+`) AS n (upstream_id, duckdb_version, platform, name, asked_at)
+ON a.upstream_id = n.upstream_id AND a.duckdb_version = n.duckdb_version AND a.platform = n.platform AND a.name = n.name
+WHEN NOT MATCHED THEN INSERT (upstream_id, duckdb_version, platform, name, asked_at)
+VALUES (n.upstream_id, n.duckdb_version, n.platform, n.name, n.asked_at);`, upstreamID, CellMissing)
+		return err
+	}
+	_, err := t.exec(ctx, `INSERT INTO upstream_asks (upstream_id, duckdb_version, platform, name, asked_at) `+cells+`
+ON CONFLICT (upstream_id, duckdb_version, platform, name) DO NOTHING`, upstreamID, CellMissing)
+	return err
 }
 
 // MakeDue makes mirrors due now: an upstream's (its matrix grew), or every mirror feeding a channel
