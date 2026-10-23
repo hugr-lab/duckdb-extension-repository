@@ -6,9 +6,9 @@
 
 ## Summary
 
-A mirror can be **lazy**: it lists what it may take as any mirror does, but fetches an extension for
-a platform only once someone has asked for it there, and from then on keeps it current at every
-run, for every DuckDB version of the channel. Entries an administrator marks **eager** are fetched
+A mirror can be **lazy**: it lists what it may take as any mirror does, but fetches a cell (an
+extension for one DuckDB version and platform) only once someone has asked for it, and from then on
+keeps it current at every run. Entries an administrator marks **eager** are fetched
 at once, as today, and **sync** fetches the whole matrix on demand. The first request for a cell not
 fetched yet is answered `503` with `Retry-After` while the fetch runs, which DuckDB 2.0 retries by
 itself, and kista's own fetcher now retries such an answer within its run, so another kista
@@ -49,12 +49,13 @@ mirror.
 
 ### Asks
 
-An **ask** is (upstream, name, platform), recorded with when it was last asked (`upstream_asks`).
+An **ask** is a cell of a lazy upstream's matrix, (upstream, DuckDB version, platform, name),
+recorded with when it was last asked (`upstream_asks`): only what is installed is fetched.
 It is recorded when a caller holding `install` on (channel, name) misses on a DuckDB route of the
 channel, plain or versioned path, for a name and platform in a lazy upstream's matrix, whether or
 not the fetch is admitted at once: inserted when absent, its time refreshed only when older than an
-hour, so retries and polls cost a read. An ask covers every DuckDB version of the channel: once the
-channel serves a new DuckDB version, the next run fetches the extension for it.
+hour, so retries and polls cost a read. A node that moves to a new DuckDB version asks again for
+it, and its first request is served as any first request is.
 
 ### Runs
 
@@ -68,7 +69,7 @@ the administrator's "fetch now". It records no ask, so later runs stay lazy. A `
 -sync` of a lazy upstream syncs the cells its plan exports.
 
 Switching to `eager` makes the upstream due at once (the whole matrix); switching to `lazy` keeps the
-releases there are and records an ask for each (name, platform) a release covers.
+releases there are and records an ask for each cell a release fills.
 
 A run of a lazy upstream and a first-request fetch never fetch one cell at once: the run takes the
 cell's lease (the pull-through worker's, `kista/upstream/<id>/<version>/<platform>/<name>`) and
@@ -139,7 +140,8 @@ comes with its first fetch, as for any mirror), visibility, credentials, usage, 
 
 - `upstreams`: `fetch_mode` (`eager` | `lazy`, default `eager`);
 - `upstream_entries`: `eager` (boolean, default false);
-- `upstream_asks`: (upstream, name, platform) with `asked_at`; removed with its entry or platform;
+- `upstream_asks`: (upstream, DuckDB version, platform, name) with `asked_at`; removed with its
+  entry, platform or the channel's DuckDB version;
 - all three dialects, one migration each; the minimum reader moves (an older replica would run a
   lazy upstream as an eager one, and its pull-through worker would ignore it).
 
@@ -163,8 +165,7 @@ too, or narrow in its platforms: an eager mirror of a lazy channel asks for ever
 ## Testing
 
 - The store suite on all three dialects: the columns and `upstream_asks`.
-- Unit: a lazy run fetching asked cells and eager entries only, every DuckDB version of an ask,
-  refreshing an asked cell to a new version, `not_asked` counted; sync fetching the matrix without
+- Unit: a lazy run fetching asked cells and eager entries only, refreshing an asked cell to a new version, `not_asked` counted; sync fetching the matrix without
   asks; a first request answered `503`, then served; a refusal answered `404`; a caller without the
   grant asking nothing; two replicas answering a miss alike; a versioned miss recording an ask; a
   run skipping a cell a fetch holds; the fetcher retrying a `503` with `Retry-After` within a cell,
@@ -182,8 +183,9 @@ too, or narrow in its platforms: an eager mirror of a lazy channel asks for ever
   10-second header timeout anyway; DuckDB 2.0 retries a `503` by itself.
 - **Changing pull-through instead**: its users expect no runs; a lazy mirror is a mirror's setting,
   as the owner asked.
-- **Asks per cell**: every DuckDB upgrade would wait again for every extension; an ask per (name,
-  platform) fetches all of the channel's versions.
+- **Asks per (name, platform)**, fetching every DuckDB version of the channel: it spares a node's
+  first request after a DuckDB upgrade, which DuckDB's retry absorbs anyway, and stores builds for
+  versions nobody runs (the owner's choice: per cell).
 - **Listing an upstream's versions without bodies**: a DuckDB repository has no listing, and the
   version is in the body's footer.
 
