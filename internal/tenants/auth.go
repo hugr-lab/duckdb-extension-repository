@@ -71,11 +71,6 @@ func distributorGrant(kind, extension, group string, verbs []string) error {
 		if v != store.VerbPublish && v != store.VerbPromote && v != store.VerbAdmin {
 			return authz.ErrDenied
 		}
-		// spec 0031: a distributor's builds are its publisher's source; another principal's
-		// publication would count as the tenant's own
-		if v != store.VerbAdmin && kind != store.PrincipalPublisher {
-			return authz.ErrDenied
-		}
 	}
 	return nil
 }
