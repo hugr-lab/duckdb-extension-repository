@@ -35,7 +35,10 @@ const (
 	CellRejected  = "rejected"
 	CellBlocked   = "blocked"
 	CellShadowed  = "shadowed"
-	CellFailed    = "failed" // the fetch failed (network, size, rate): retried by the next run
+	// CellOtherSource: another source holds the name in the channel (spec 0031), decided before the
+	// download and asked again each run.
+	CellOtherSource = "other_source"
+	CellFailed      = "failed" // the fetch failed (network, size, rate): retried by the next run
 )
 
 // Limits (spec 0009).
@@ -435,16 +438,6 @@ func (t *Tx) ChannelEntryOwner(ctx context.Context, channelID, name, exceptUpstr
 	err := t.queryRow(ctx, `SELECT MIN(u.name) FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
 WHERE u.channel_id = ? AND e.name = ? AND u.id <> ?`, channelID, name, exceptUpstreamID).Scan(&owner)
 	return owner.String, err
-}
-
-// LiveReplacement reports whether a channel holds a live replacement of name (spec 0009): a release
-// that is not yanked, whose origin is not upstream, and whose Build's origin is not upstream.
-func (t *Tx) LiveReplacement(ctx context.Context, channelID, name string) (bool, error) {
-	var n int
-	err := t.queryRow(ctx, `SELECT COUNT(*) FROM releases r JOIN builds b ON b.id = r.build_id
-WHERE r.channel_id = ? AND r.name = ? AND r.state <> ? AND r.origin <> ? AND b.origin <> ?`,
-		channelID, name, ReleaseYanked, OriginUpstream, OriginUpstream).Scan(&n)
-	return n > 0, err
 }
 
 // TenantCells counts the cells of the matrices of a tenant's upstreams other than one: entries ×

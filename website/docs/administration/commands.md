@@ -298,6 +298,7 @@ See [Tenants and channels](tenants-and-channels.md) and
 | --- | --- | --- |
 | `channel create <tenant>/<channel> -kind signed` or `-kind passthrough` | creates a channel; its kind never changes | |
 | `channel versions <tenant>/<channel> [-add <v>]... [-remove <v>]...` | changes the DuckDB versions the channel serves; without flags, lists them | the channel's versions, one per line |
+| `channel source <tenant>/<channel> [<name> [-set <source> \| -clear]]` | a name's source in the channel ([spec 0031](../upstreams.md#a-names-source-in-a-channel)): `tenant`, `upstream:<name>` or `publisher:<name>`; `-clear` removes it | each name, its source, who set it and when, the sources with releases of it |
 | `channel list <tenant>` | `NAME`, `KIND`, `VERSION`, `CREATED` (`VERSION` is the channel's change counter) | |
 | `wellknown <tenant>/<channel>` | the channel's `.well-known/duckdb-extension-repo.json` as served | JSON |
 

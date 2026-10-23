@@ -139,7 +139,15 @@ func TestLicenseKeySources(t *testing.T) {
 	if got := keys(); got != "[]" {
 		t.Fatalf("keys from a body that is not the signed one: %s", got)
 	}
-	// the body the unmarked publisher released, published again by the marked one
+	// the body the unmarked publisher released, published again by the marked one: refused until the
+	// channel's administrator switches the name's source (spec 0031), then the slot's release is its
+	if r := m.upload(t, P+"newext/releases?version=1.0&platform=linux_amd64", issuer, keyed(t, "1.0", block, "newext_duckdb_cpp_init")); r.status != 409 ||
+		!strings.Contains(string(r.body), "publisher:other-ci") {
+		t.Fatalf("publish again under another source: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "PUT", T+"/channels/prod/sources/newext", ta, `{"source":"publisher:issuer-ci"}`); r.status != 200 {
+		t.Fatalf("switch the source: %d %s", r.status, r.body)
+	}
 	if r := m.upload(t, P+"newext/releases?version=1.0&platform=linux_amd64", issuer, keyed(t, "1.0", block, "newext_duckdb_cpp_init")); r.status != 200 {
 		t.Fatalf("publish again: %d %s", r.status, r.body)
 	}

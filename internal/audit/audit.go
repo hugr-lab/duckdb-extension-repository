@@ -205,6 +205,9 @@ var catalogue = map[Kind][]string{
 	"bootstrap.rearm":  {"tenant", "digest"},
 	"bundle.export":    {"plan", "manifest", "manifest_sha256", "bundle_key", "counts"},
 	"shadow.add":       {"name"},
+	"source.set":       {"name", "source", "before", "arrival"},
+	"release.source":   {"release", "name", "before", "source"},
+	"source.clear":     {"name", "before"},
 	"shadow.remove":    {"name"},
 	"auth.failure":     {"reason", "route", "count"},
 	"authz.refused":    {"route", "verb", "status", "count"},
@@ -241,7 +244,7 @@ type KindInfo struct {
 func SubjectForm(k Kind) string {
 	const release = "channel:<channel>/ext:<name>/release:<id>"
 	switch k {
-	case "release.promote", "extension.use":
+	case "release.promote", "extension.use", "source.set", "source.clear":
 		return "channel:<channel>/ext:<name>"
 	case "upstream.release", "install":
 		return release

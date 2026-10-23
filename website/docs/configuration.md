@@ -747,7 +747,7 @@ bootstrap:
   The check opens and probes the signers (an attestation key for its own purpose) and fetches a new
   issuer's discovery document and JWKS. For an upstream, it makes the checks `upstream add` makes:
   - a source's `.well-known` is read, and one of the pinned keys must be in it;
-  - in a channel that exists, a name another upstream lists, or a replacement holds, is refused;
+  - in a channel that exists, a name another upstream lists is refused;
   - so are the limits.
 
   An upstream that exists is the same when its kind, prefix, channel, mode, visibility and

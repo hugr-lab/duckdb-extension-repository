@@ -412,10 +412,11 @@ func tenantReserved(ctx context.Context, tx *store.Tx, tenantID string, entries 
 	return nil
 }
 
-// collisions refuses names another upstream of the channel lists or a live replacement holds in
-// the channel (under the tenant's upstream lock).
+// collisions refuses names another upstream of the channel lists (under the tenant's upstream
+// lock). A name another source holds in the channel is not refused: the entry's cells are
+// other_source until the channel's administrator switches the source (spec 0031).
 func (s *Service) collisions(ctx context.Context, tx *store.Tx, u store.Upstream, names []string) error {
-	var taken, replaced []string
+	var taken []string
 	for _, n := range names {
 		owner, err := tx.ChannelEntryOwner(ctx, u.ChannelID, n, u.ID)
 		if err != nil {
@@ -424,20 +425,9 @@ func (s *Service) collisions(ctx context.Context, tx *store.Tx, u store.Upstream
 		if owner != "" {
 			taken = append(taken, n+" ("+owner+")")
 		}
-		r, err := tx.LiveReplacement(ctx, u.ChannelID, n)
-		if err != nil {
-			return err
-		}
-		if r {
-			replaced = append(replaced, n)
-		}
 	}
 	if len(taken) > 0 {
 		return fmt.Errorf("%w: another upstream of the channel lists %s", ErrCollision, strings.Join(taken, ", "))
-	}
-	if len(replaced) > 0 {
-		return fmt.Errorf("%w: the channel holds releases of %s that are not the upstream's; drop the entries or yank them",
-			ErrCollision, strings.Join(replaced, ", "))
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -30,7 +31,64 @@ var (
 	ErrShadowed = errors.New("release: a replacement holds the name in this channel")
 	// ErrConflict is an upstream build for a slot that holds another body (spec 0009).
 	ErrConflict = errors.New("release: the slot holds another body")
+	// ErrOtherSource is a release of a name another source holds in the channel (spec 0031); the
+	// error is a *SourceError, which names the source.
+	ErrOtherSource = errors.New("release: another source holds the name in this channel")
 )
+
+// SourceError is a release refused because another source holds its name in the channel (spec
+// 0031): the channel's administrator switches the source to let it in. Source is as answers show it
+// (upstream:<name>, publisher:<name>, tenant).
+type SourceError struct{ Name, Source string }
+
+func (e *SourceError) Error() string {
+	return fmt.Sprintf("release: the channel serves %s from %s; its administrator switches the source to let this one in", e.Name, e.Source)
+}
+
+// Is makes a SourceError an ErrOtherSource.
+func (e *SourceError) Is(target error) bool { return target == ErrOtherSource }
+
+// sourceOf is a release's source by who brings it (spec 0031): a publisher's key, or the tenant.
+func sourceOf(a authz.Actor) string {
+	if a.Kind == authz.ActorPublisher {
+		var ids []string
+		for k := range a.Principals {
+			if k.Kind == store.PrincipalPublisher {
+				ids = append(ids, k.Value)
+			}
+		}
+		if len(ids) > 0 {
+			slices.Sort(ids)
+			return store.PublisherSource(ids[0])
+		}
+	}
+	return store.SourceTenant
+}
+
+// checkSource refuses a release of a name another source holds in the channel (spec 0031). A
+// mirrored release (mirror: an upstream's intake, not a promotion) succeeds a removed upstream: it
+// returns the removed one's source, which the caller moves to the upstream. selected says the name
+// has a source the release keeps.
+func checkSource(ctx context.Context, tx *store.Tx, channelID, name, source string, mirror bool) (selected bool, succeeds string, err error) {
+	sel, had, err := tx.ChannelSourceOf(ctx, channelID, name)
+	if err != nil || !had || sel.Source == source {
+		return had, "", err
+	}
+	if mirror && strings.HasPrefix(source, store.SourceUpstreamPrefix) {
+		removed, err := tx.UpstreamRemoved(ctx, sel.Source)
+		if err != nil {
+			return false, "", err
+		}
+		if removed {
+			return false, sel.Source, nil
+		}
+	}
+	label, err := tx.SourceLabel(ctx, sel.Source)
+	if err != nil {
+		return false, "", err
+	}
+	return true, "", &SourceError{Name: name, Source: label}
+}
 
 // SignerOpener opens a key's signer, checked against the stored key (keys.Service.OpenSigner).
 type SignerOpener interface {
@@ -166,7 +224,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	if err != nil {
 		return store.Release{}, false, err
 	}
-	it := item{b: b, visibility: o.visibility(), notCurrent: o.NotCurrent, origin: store.OriginAdmin}
+	it := item{b: b, visibility: o.visibility(), notCurrent: o.NotCurrent, origin: store.OriginAdmin, source: sourceOf(a)}
 	if p := o.Publish; p != nil {
 		if p.Version != b.ExtVersion || p.Platform != b.Platform {
 			return store.Release{}, false, fmt.Errorf("%w: the file's footer says version %q, platform %q; the request says %q, %q",
@@ -195,7 +253,12 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	}
 	// check the slot before storing a body that would be refused
 	var existing *store.Release
+	selected := false // the name has a source the release keeps (spec 0031)
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		var err error
+		if selected, _, err = checkSource(ctx, tx, ch.ID, b.Name, it.source, false); err != nil {
+			return err
+		}
 		cands, err := tx.SlotCandidates(ctx, ch.ID, b.Name, b.ExtVersion, b.Platform)
 		if err != nil {
 			return err
@@ -205,7 +268,9 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	}); err != nil {
 		return store.Release{}, false, err
 	}
-	if existing != nil {
+	// the slot's release of another source, or a name without a source, goes through the insert,
+	// which gives it to the name's source and sets it (spec 0031)
+	if existing != nil && existing.Source == it.source && selected {
 		// a body marked corrupt (spec 0005, 0018) is uploaded again: adding the same file repairs it
 		if rec, err := s.Store.GetBlob(ctx, sc.Tenant.StorageDomain, b.BodyHash); err == nil && !rec.CorruptAt.IsZero() {
 			cctx, cancel := context.WithTimeout(ctx, blob.IntakeDeadline)
@@ -262,6 +327,8 @@ type item struct {
 	visibility         string
 	notCurrent         bool
 	origin, provenance string
+	// source is whose release it is (spec 0031): the channel takes it only from the name's source
+	source string
 	// statement and signature are a publisher's signed request (spec 0023)
 	statement, signature string
 	originSignature      []byte // an upstream release's (spec 0009)
@@ -481,6 +548,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 		}
 		err := s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
 			out, made, existing, need = nil, nil, 0, nil
+			bump := false    // a slot's release taken by the name's source (spec 0031)
 			learned := false // a name reserved by this intake (spec 0030)
 			c, err := tx.ChannelByID(ctx, channelID)
 			if err != nil {
@@ -566,14 +634,17 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 						}
 					}
 				}
-				if upstream {
-					shadowed, err := tx.LiveReplacement(ctx, channelID, b.Name)
-					if err != nil {
+				// spec 0031: only the name's source in the channel lands; the first sets it, and an
+				// upstream succeeds a removed one
+				selected, succeeds, err := checkSource(ctx, tx, channelID, b.Name, it.source, upstream)
+				if err != nil {
+					return err
+				}
+				if succeeds != "" {
+					if err := setSource(ctx, tx, a, c, b.Name, it.source, succeeds); err != nil {
 						return err
 					}
-					if shadowed {
-						return ErrShadowed
-					}
+					selected = true
 				}
 				cands, err := tx.SlotCandidates(ctx, channelID, b.Name, b.ExtVersion, b.Platform)
 				if err != nil {
@@ -588,6 +659,33 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					return err
 				}
 				if ex != nil {
+					if !selected { // spec 0031: the same body arriving again sets a cleared source
+						if err := setSource(ctx, tx, a, c, b.Name, it.source, ""); err != nil {
+							return err
+						}
+						bump = true
+					}
+					if ex.Source != it.source {
+						// spec 0031: the same body another source brought is the name's source's now
+						// (it lands only from the name's source, or a removed upstream's successor)
+						if err := tx.SetReleaseSource(ctx, ex.ID, it.source); err != nil {
+							return err
+						}
+						before, err := tx.SourceLabel(ctx, ex.Source)
+						if err != nil {
+							return err
+						}
+						after, err := tx.SourceLabel(ctx, it.source)
+						if err != nil {
+							return err
+						}
+						if err := tx.Event(ctx, b.TenantID, a.String(), "release.source", "channel:"+c.Name+"/ext:"+b.Name+"/release:"+ex.ID,
+							map[string]any{"release": ex.ID, "name": b.Name, "before": before, "source": after}); err != nil {
+							return err
+						}
+						ex.Source = it.source
+						bump = true
+					}
 					out = append(out, *ex)
 					existing++
 					continue
@@ -595,7 +693,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				if err := servable(capis, b); err != nil {
 					return err
 				}
-				r := store.Release{TenantID: b.TenantID, ChannelID: channelID, BuildID: b.ID, Name: b.Name,
+				r := store.Release{TenantID: b.TenantID, ChannelID: channelID, BuildID: b.ID, Name: b.Name, Source: it.source,
 					ExtVersion: b.ExtVersion, Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive,
 					Visibility: it.visibility, Origin: it.origin, Provenance: it.provenance, OriginSignature: it.originSignature,
 					PublisherStatement: it.statement, PublisherSignature: it.signature}
@@ -612,6 +710,11 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 						if err := tx.InsertSignature(ctx, r.ID, channelID, id, sig); err != nil {
 							return err
 						}
+					}
+				}
+				if !selected {
+					if err := setSource(ctx, tx, a, c, b.Name, it.source, ""); err != nil {
+						return err
 					}
 				}
 				// any body other than DuckDB's own core build, under a core name or a name the tenant's
@@ -655,6 +758,9 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				}
 			}
 			if existing == len(items) {
+				if bump {
+					return tx.BumpReleaseVersion(ctx, channelID)
+				}
 				return nil
 			}
 			if event != nil {
@@ -682,6 +788,26 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 		return out, existing == len(items), nil
 	}
 	return nil, false, errors.New("release: the channel's keys kept changing; try again")
+}
+
+// setSource sets a name's source in a channel on an arrival (spec 0031): the first release of the
+// name, or an upstream succeeding a removed one (before: its source). The event names the sources
+// as answers do.
+func setSource(ctx context.Context, tx *store.Tx, a authz.Actor, c store.Channel, name, source, before string) error {
+	if _, err := tx.SetChannelSource(ctx, c.ID, name, source, a.String()); err != nil {
+		return err
+	}
+	label, err := tx.SourceLabel(ctx, source)
+	if err != nil {
+		return err
+	}
+	if before != "" {
+		if before, err = tx.SourceLabel(ctx, before); err != nil {
+			return err
+		}
+	}
+	return tx.Event(ctx, c.TenantID, a.String(), "source.set", "channel:"+c.Name+"/ext:"+name,
+		map[string]any{"name": name, "source": label, "before": before, "arrival": true})
 }
 
 // servable checks that a channel serves a build: its exact DuckDB version (cpp, c_struct_unstable),

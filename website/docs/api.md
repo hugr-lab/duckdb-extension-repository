@@ -109,6 +109,7 @@ Errors are `application/problem+json`:
 | `method-not-allowed` | `405` |
 | `invalid` | `400`; `411` when `Content-Length` is missing; `408` for an upload slower than the server accepts |
 | `conflict` | `409`: a duplicate, a refused state change, the last-admin rule |
+| `source` | `409`: another source holds the extension's name in the channel; the detail names it ([spec 0031](upstreams.md#a-names-source-in-a-channel)) |
 | `precondition-failed` | `412` |
 | `precondition-required` | `428` |
 | `too-large` | `413` |
@@ -300,6 +301,7 @@ channel. See [Using kista from DuckDB](duckdb.md).
 | --- | --- |
 | `POST tenants/{t}/channels` | tenant admin |
 | `GET, POST tenants/{t}/channels/{c}/duckdb-versions`; `DELETE …/duckdb-versions/{v}` | channel admin |
+| `GET tenants/{t}/channels/{c}/sources`; `GET, PUT, DELETE …/sources/{name}` | channel admin: [a name's source in the channel](upstreams.md#a-names-source-in-a-channel) (`PUT` takes `{"source": "tenant" \| "upstream:<name>" \| "publisher:<name>"}`; each answer is `{"name", "source", "set_by", "set_at", "available": {"<source>": <releases>}}`, `source` `""` when none; a list is `{"sources": [...]}`). A release's management answer carries `source` and `selected` (whether it is the channel's source of the name: only those are served) |
 | `GET tenants/{t}/channels/{c}/keys` | channel admin: keys, serving and active key, re-sign progress; a server administrator also sees each key's `signer_ref` and `protection` tier |
 | `POST tenants/{t}/channels/{c}/keys` | server: a key by signer reference |
 | `GET …/keys/events`, `GET …/keys/{id}` | channel admin |

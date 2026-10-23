@@ -31,6 +31,12 @@ func TestChannelAccess(t *testing.T) {
 		{"POST", C + "/prod/extensions/tresor/releases/" + tresor12 + "/current", "", append([]string{"ext admin"}, channelAdmins...), 200},
 		{"POST", C, `{"name":"dev-zed","kind":"signed"}`, []string{"tenant admin", "server admin"}, 201},
 		{"GET", C + "/prod/duckdb-versions", "", channelAdmins, 200},
+		// spec 0031: a name's source is its channel's administrators', not its extension's
+		{"GET", C + "/prod/sources", "", channelAdmins, 200},
+		{"GET", C + "/prod/sources/tresor", "", channelAdmins, 200},
+		{"PUT", C + "/prod/sources/tresor", `{"source":"tenant"}`, channelAdmins, 200},
+		{"PUT", C + "/prod/sources/tresor", `{"source":"upstream:nope"}`, channelAdmins, 400},
+		{"DELETE", C + "/prod/sources/nothere", "", channelAdmins, 404},
 		{"GET", C + "/staging/duckdb-versions", "", []string{"tenant admin", "server admin"}, 200},
 		{"GET", C + "/prod/keys", "", channelAdmins, 200},
 		{"GET", C + "/prod/keys/events", "", channelAdmins, 200},

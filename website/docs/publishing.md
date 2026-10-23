@@ -171,7 +171,7 @@ same body was already released in that slot with the same choices):
 | `401` | no valid token, or a stale one; for a publisher's signed request, see [Signed requests](#signed-requests) |
 | `404` | the token may not publish this name in this channel (also for a reserved name without a grant naming it) |
 | `408` | the upload was slower than `serve.min_rate` |
-| `409` | the slot holds another body or other choices; the body is blocked; the channel has no active key |
+| `409` | the slot holds another body or other choices; the body is blocked; the channel has no active key; another source holds the name in the channel (problem type `…/source`, which names it: [A name's source in a channel](upstreams.md#a-names-source-in-a-channel)) |
 | `411` | no `Content-Length` (chunked uploads are refused) |
 | `413` | longer than `blob.max_body` plus the 256-byte signature |
 | `415` | a `Content-Type` other than `application/octet-stream` |
@@ -244,6 +244,9 @@ JSON bytes sent (`--data-binary`).
   build public; that is `POST …/releases/{id}/public` by the extension's administrator.
 - The target must serve each build's DuckDB version (`400` names the platform and version).
 - A source channel you may not publish from answers `404`, like a missing release.
+- Only the releases the source channel serves are promoted: its [source](upstreams.md#a-names-source-in-a-channel)
+  of the name's. A promotion keeps their source: in the target, it lands only if the name has no
+  source there yet (it sets it) or the same one; otherwise `409` with problem type `…/source`.
 
 The CLI does the same:
 

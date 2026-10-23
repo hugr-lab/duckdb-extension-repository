@@ -112,7 +112,15 @@ func TestSDKLicense(t *testing.T) {
 	if _, err := k.licenses.Import(ctx, serveAdmin, "acme", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
 		t.Fatalf("a licence for a build published by an unmarked publisher: %v", err)
 	}
-	if st := k.publish(t, "kista_demo", k.publisherKey(t, "ci", true)); st != 200 {
+	// spec 0031: the channel serves kista_demo from other-ci until its administrator switches it
+	ci := k.publisherKey(t, "ci", true)
+	if st := k.publish(t, "kista_demo", ci); st != 409 {
+		t.Fatalf("the marked publication under another source: %d", st)
+	}
+	if _, err := k.rel.SetSource(ctx, serveAdmin, "acme", "prod", "kista_demo", "publisher:ci"); err != nil {
+		t.Fatal(err)
+	}
+	if st := k.publish(t, "kista_demo", ci); st != 200 {
 		t.Fatalf("the marked publication: %d", st)
 	}
 	stored, err := k.licenses.Import(ctx, serveAdmin, "acme", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create)

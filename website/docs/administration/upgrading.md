@@ -85,6 +85,9 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0027_license_keys` | 27 | an older replica would let a tenant administrator change a marked publisher's credentials, and would verify licences against `licenses.keys` |
 | `0028_publisher_keys` | 28 | GitHub trusted publishing and API keys are removed: an older replica would still read their tables |
 | `0029_tenant_holder` | 29 | an older replica would store a licence of another holder than the tenant expects |
+| `0030_reserved_names` | 30 | DuckDB's names are the server's data: an older replica would read only the lists compiled into it |
+| `0031_tenant_reserved_names` | 31 | an older replica would let a wide publish grant reach a name reserved in a tenant |
+| `0032_channel_sources` | 32 | an older replica would serve another source's releases of a name |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -155,7 +158,33 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 29)
+## Upgrading to the next release (schema 32)
+
+### A name's source in a channel (spec 0031)
+
+A channel serves each extension name from one source, which its administrator selects
+([A name's source in a channel](../upstreams.md#a-names-source-in-a-channel)).
+
+- **Migration `0032_channel_sources`** records each release's source and each channel's selections,
+  and raises `min_reader` to 32: stop every older replica first.
+- Each release gets the source it came from: the upstream whose cell holds its body (else one of
+  its channel's upstreams listing the name; a removed upstream's otherwise), the publisher whose
+  key published it, the source of the release a promotion copied, or the tenant.
+- Each channel selects, for each name with a release that is not yanked, the source of the release
+  it served: a replacement before a mirror (the old rule), the newest current one first. A channel
+  that held releases of one name from several non-mirror sources (an administrator's `release add`
+  and a publisher's CI, say) serves only the newest's from now on: check `kista admin channel
+  source <tenant>/<channel>` after the upgrade, and switch where needed.
+- From now on, a publication under a name a mirror holds is refused (`409`) until the channel's
+  administrator switches the source, where before it replaced the mirror.
+
+### Reserved names as data, and a distributor's names in a tenant (spec 0030)
+
+- **Migration `0030_reserved_names`** makes DuckDB's names the server's data (`kista admin
+  reserved`), seeded with the lists kista compiled in until now; a new DuckDB version is added with
+  its core names (`version add -core-extensions`). It raises `min_reader` to 30.
+- **Migration `0031_tenant_reserved_names`** adds names reserved in a tenant and raises `min_reader`
+  to 31.
 
 ### An expected holder per tenant (spec 0028)
 

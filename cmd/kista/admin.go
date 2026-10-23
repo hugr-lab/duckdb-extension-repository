@@ -111,6 +111,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   tenant-reserved list <tenant>
   channel create <tenant>/<channel> -kind signed|passthrough
   channel versions <tenant>/<channel> [-add v]... [-remove v]...
+  channel source <tenant>/<channel> [<name> [-set <source> | -clear]]
+                                                  a name's source in the channel (spec 0031): tenant,
+                                                  upstream:<name> or publisher:<name>; only it is served
   channel list <tenant>
   key check -signer <ref>                         open a key, check it, sign a probe; stores nothing
   key add <tenant>/<channel> -signer <ref> [-active]
@@ -623,11 +626,15 @@ func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error
 	var add, remove multi
 	fs.Var(&add, "add", "")
 	fs.Var(&remove, "remove", "")
+	set := fs.String("set", "", "")
+	clear := fs.Bool("clear", false, "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	switch {
+	case sub == "source" && (len(pos) == 1 || len(pos) == 2) && (*set == "" || !*clear) && (len(pos) == 2 || *set == "" && !*clear):
+		return a.channelSource(ctx, pos, *set, *clear)
 	case sub == "create" && len(pos) == 1:
 		t, c, err := splitPath(pos[0])
 		if err != nil {
@@ -664,6 +671,55 @@ func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error
 	default:
 		return errUsage
 	}
+	return nil
+}
+
+// channelSource lists a channel's sources, shows one name's, or sets or clears it (spec 0031).
+func (a *adminCmd) channelSource(ctx context.Context, pos []string, set string, clear bool) error {
+	t, c, err := splitPath(pos[0])
+	if err != nil {
+		return err
+	}
+	var vs []release.SourceView
+	switch {
+	case len(pos) == 1:
+		if vs, err = a.svc.Releases.Sources(ctx, a.actor, t, c); err != nil {
+			return err
+		}
+	case clear:
+		if err := a.svc.Releases.ClearSource(ctx, a.actor, t, c, pos[1]); err != nil {
+			return err
+		}
+		a.logf("channel source %s/%s %s cleared", t, c, pos[1])
+		return nil
+	case set != "":
+		v, err := a.svc.Releases.SetSource(ctx, a.actor, t, c, pos[1], set)
+		if err != nil {
+			return err
+		}
+		a.logf("channel source %s/%s %s %s", t, c, pos[1], set)
+		vs = []release.SourceView{v}
+	default:
+		v, err := a.svc.Releases.Source(ctx, a.actor, t, c, pos[1])
+		if err != nil {
+			return err
+		}
+		vs = []release.SourceView{v}
+	}
+	a.table("NAME\tSOURCE\tSET BY\tSET AT\tRELEASES BY SOURCE", func(w io.Writer) {
+		for _, v := range vs {
+			src, by, at := v.Source, v.SetBy, ts(v.SetAt)
+			if src == "" {
+				src, by, at = "-", "-", "-"
+			}
+			var avail []string
+			for s, n := range v.Available {
+				avail = append(avail, fmt.Sprintf("%s=%d", s, n))
+			}
+			slices.Sort(avail)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", v.Name, src, by, at, strings.Join(avail, " "))
+		}
+	})
 	return nil
 }
 
