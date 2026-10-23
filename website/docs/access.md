@@ -273,9 +273,10 @@ active tenant a distribution admin may:
   otherwise. The tenant's own publishers stay its administrators';
 - list the tenant's grants and publishers, and add grants of `publish`, `promote` and `admin` on a
   name reserved in the tenant (in a channel or every channel), never on the tenant, a channel or an
-  extension group, nor for a whole issuer; `publish` and `promote` only to a publisher (its builds
-  are its publisher's [source](upstreams.md#a-names-source-in-a-channel), never the tenant's own);
-  remove the grants a distribution admin made, or a marked publisher's.
+  extension group, nor for a whole issuer (a distributor's own publisher's builds are its
+  [source](upstreams.md#a-names-source-in-a-channel); a group's publications, which promotions out
+  of a channel need, are the tenant's, and land only where the name has no other source); remove the
+  grants a distribution admin made, or a marked publisher's.
 - never switch a name's source in a channel: that is the channel's administrators'.
 
 Nothing else: it reads no channel, key or release beyond what those calls answer, and cannot change

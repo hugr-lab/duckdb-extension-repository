@@ -153,9 +153,12 @@ Migration 0032 (`min_reader 32`: an older replica would serve another source's r
 - **Clearing opens the name**: after `DELETE …/sources/{name}`, the next release of the name sets
   its source, whoever brings it (a publisher with publish on it, the next mirror run). An
   administrator who wants a given source sets it rather than clearing.
-- **A distributor's builds are its publisher's** (a change to spec 0030): a distribution admin
-  grants `publish` and `promote` only to publishers, so no build of a distributor's arrives as the
-  tenant's own source.
+- **A distributor's grants**: a distribution admin's grants of `publish` and `promote` to a group
+  (which promoting out of a channel needs: publish on the source channel) let the group's own
+  publications in as the tenant's source, but only where the name has no other source: a channel
+  whose name is the distributor's publisher's refuses them. (As first built, those grants went to
+  publishers only; Enterest's design needs its organisations' administrators to promote, the owner
+  decided on 2026-10-23.)
 - **Signing** is unchanged: only stored, signed releases of the selected source are served.
 
 ## Testing
@@ -190,4 +193,3 @@ Migration 0032 (`min_reader 32`: an older replica would serve another source's r
 - **0008**: publications and promotions refused (`409`) under another source.
 - **0009**: replacements no longer win by kind; `other_source` replaces `shadowed` for that case;
   entries for names another source holds are allowed.
-- **0030**: a distribution admin's `publish` and `promote` grants go to publishers only.
