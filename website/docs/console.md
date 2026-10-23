@@ -146,7 +146,8 @@ them; channel and extension administrators see their channels and extensions; au
 | --- | --- | --- |
 | **Channels** | any administrator | the channels; a new channel (tenant administrators); a channel's DuckDB versions added and removed (its administrators) |
 | Channel: Extensions | channel administrators; an extension administrator sees its own extensions | the channel's extensions from the index, by name prefix, with the current version for a chosen DuckDB version and platform |
-| Channel: All releases | channel administrators | every release, filtered by state and name prefix |
+| Channel: All releases | channel administrators | every release, filtered by state and name prefix, with its source and whether it is served |
+| Channel: Sources | channel administrators | each extension's [source](upstreams.md#a-names-source-in-a-channel) in the channel, who set it and when, the sources with releases of it; switch it (to a source with releases there, the tenant, or any `upstream:<name>` or `publisher:<name>` of the tenant) or clear it |
 | Channel: Keys | channel administrators | trusted, active and serving keys, key events, re-sign progress; activate and retire a trusted key; a server administrator adds a key by signer reference |
 | Extension page | extension administrators | its releases, its **Reports**, and (tenant administrators) who may use it and through which grant |
 | Release page | extension administrators | build, body hash, provenance, origin, state history; yank, deprecate, activate, make current, public or private, purge (typing the name to confirm); its Reports |

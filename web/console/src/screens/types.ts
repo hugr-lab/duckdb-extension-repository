@@ -21,6 +21,9 @@ export interface Release {
   publisher_statement?: string
   publisher_signature?: string
   shadows?: string
+  /** whose release it is, and whether it is the channel's source of the name (spec 0031): only those are served */
+  source: string
+  selected: boolean
   etag: string
 }
 

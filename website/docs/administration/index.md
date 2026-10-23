@@ -68,7 +68,7 @@ its own.
 | Issuers, console clients, grants, extension groups | `issuer`, `grant`, `extension-group` | tenant admin | yes |
 | Publishers and their keys | `publisher` | tenant admin | yes |
 | Upstreams, shadows | `upstream`, `shadow` | tenant admin | yes |
-| A name's source in a channel | `channel source` | channel admin | no |
+| A name's source in a channel | `channel source` | channel admin | yes |
 | Attachments | `attachment` | extension admin, publishers (SBOM and provenance); `readers` and feedable: tenant admin | yes |
 | Attestation keys | `attestation-key` | add: server; activate and retire: tenant admin | no |
 | Feeds | `feed` | tenant admin | yes |

@@ -1,7 +1,7 @@
 # Spec 0031: A name's source in a channel
 
-- **Status**: accepted; part 1 implemented (the store, intake, serving, switching over the API and
-  the CLI); part 2 to come (the console's view and switch, the DuckDB end to end)
+- **Status**: implemented (part 1: the store, intake, serving, switching over the API and the CLI;
+  part 2: the console's Sources tab and the DuckDB end to end)
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 
@@ -167,8 +167,10 @@ Migration 0032 (`min_reader 32`: an older replica would serve another source's r
   keeps its source.
 - Serving: the index and the resolver show only the selected source; a switch is seen at once (the
   snapshot), switching back restores.
-- e2e: a tenant mirrors an extension, a publisher's publication under its name is refused, the
-  administrator switches, DuckDB installs the publisher's build, switches back, installs the mirror's.
+- e2e: a tenant mirrors an extension, another source's build under its name is refused, the
+  administrator switches, DuckDB installs that build, switches back, installs the mirror's (as built,
+  the other source is the tenant's own build; publishers' refusals and switches are covered by the
+  SDK end to end and the API tests); the console's Sources tab shows, clears and switches.
 
 ## Alternatives considered
 

@@ -61,7 +61,7 @@ interface Cell {
 }
 
 const kinds: [string, string][] = [['duckdb-core', 'DuckDB core'], ['duckdb-community', 'DuckDB community'], ['repository', 'Another repository']]
-const outcomes = ['released', 'unchanged', 'yanked', 'conflict', 'missing', 'rejected', 'blocked', 'shadowed', 'failed']
+const outcomes = ['released', 'unchanged', 'yanked', 'conflict', 'missing', 'rejected', 'blocked', 'shadowed', 'other_source', 'failed']
 
 const runWords: Record<Upstream['run'], string> = { idle: '', requested: 'a sync is requested', dry_run_requested: 'a dry run is requested', running: 'running' }
 
