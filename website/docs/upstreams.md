@@ -421,6 +421,12 @@ kista admin -config /etc/kista/kista.yaml upstream extension add acme core httpf
   matrix limits count the whole matrix, lazy or not. Everything else is a mirror's: intake, licence
   keys, the name's source in the channel, reservations, visibility, credentials, usage and events.
 
+**Compared with pull-through.** Both fetch on demand. Pull-through answers the first request `404`
+and is never run, so a cell it took is never refreshed, and `*` may take any name. A lazy mirror
+answers the first request `503` while it fetches, which DuckDB and kista retry; it runs on a
+schedule and keeps every cell asked for current; it takes eager entries and **Fetch now**; and it
+lists its names.
+
 ### The first request
 
 When a caller holding `install` on (channel, name) misses on a DuckDB route of a signed channel, and

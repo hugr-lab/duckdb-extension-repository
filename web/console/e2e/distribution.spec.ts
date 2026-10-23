@@ -50,6 +50,45 @@ test('an upstream: added, an allowlist entry, a dry run requested, removed', asy
   await expect(page.getByRole('link', { name: 'core', exact: true })).toHaveCount(0)
 })
 
+test('a lazy mirror (spec 0032): an eager entry, the cells not asked for, made eager and lazy again', async ({ page }) => {
+  await signIn(page, '/ui/t/acme/', 'tom')
+  await nav(page, 'Upstreams').click()
+  await page.getByRole('button', { name: 'New upstream' }).click()
+  await page.getByLabel('Name', { exact: true }).fill('lazycore')
+  await page.getByLabel('Into channel').selectOption('prod')
+  await page.getByLabel('Fetch', { exact: true }).selectOption('lazy')
+  await page.getByLabel('Extensions').fill('json')
+  await page.getByRole('button', { name: 'Add', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'lazycore' })).toBeVisible()
+  await expect(page.getByText('prod · mirror, lazy')).toBeVisible()
+
+  const allow = page.locator('section', { has: page.getByRole('heading', { name: 'Allowlist' }) })
+  await allow.getByLabel('Name', { exact: true }).fill('parquet')
+  await allow.getByLabel(/eager \(a lazy mirror/).check()
+  await allow.getByRole('button', { name: 'Add', exact: true }).click()
+  await expect(allow.getByRole('cell', { name: 'eagerly' })).toBeVisible()
+  await expect(allow.getByRole('cell', { name: 'when asked for' })).toBeVisible()
+
+  // json's cells nobody asked for: offered, not fetched
+  const cells = page.locator('section', { has: page.getByRole('heading', { name: 'Cells' }) })
+  await cells.getByRole('button', { name: 'not asked yet' }).click()
+  await expect(cells.getByRole('cell', { name: 'json', exact: true }).first()).toBeVisible()
+
+  const actions = page.getByRole('group', { name: 'upstream actions' })
+  await expect(actions.getByRole('button', { name: 'Fetch now' })).toBeVisible()
+  await actions.getByRole('button', { name: 'Make eager' }).click()
+  await confirm(page, 'Make eager')
+  await expect(page.getByText('prod · mirror', { exact: true })).toBeVisible()
+  await expect(actions.getByRole('button', { name: 'Sync now' })).toBeVisible()
+  await actions.getByRole('button', { name: 'Make lazy' }).click()
+  await confirm(page, 'Make lazy')
+  await expect(page.getByText('prod · mirror, lazy')).toBeVisible()
+
+  await actions.getByRole('button', { name: 'Remove…' }).click()
+  await confirm(page, 'Remove')
+  await expect(page.getByRole('heading', { name: 'Upstreams' })).toBeVisible()
+})
+
 test('a body blocked and unblocked; a channel created with a DuckDB version', async ({ page }) => {
   await signIn(page, '/ui/t/acme/', 'tom')
   await nav(page, 'Blocks').click()
