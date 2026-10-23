@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
 // Spec 0006: DuckDB at the pin against kista serve itself (internal/serve on a dual listener: TLS
@@ -93,6 +95,33 @@ type kista struct {
 	// licences and usage reports (spec 0012), with startKistaLicensed
 	licenses *licenses.Service
 	usage    *stats.Counts[store.UsageKey]
+	// puller takes the misses serving offers, once a test sets one (spec 0009 phase 2, 0032)
+	puller *latePuller
+}
+
+// latePuller is serving's puller, set after kista starts (a test makes the upstream service on the
+// started store); before that, misses offer nothing.
+type latePuller struct {
+	p atomic.Pointer[upstream.Puller]
+}
+
+func (l *latePuller) Offer(m release.Miss) {
+	if p := l.p.Load(); p != nil {
+		p.Offer(m)
+	}
+}
+
+func (l *latePuller) Ask(ctx context.Context, plain bool, m release.Miss) (bool, error) {
+	if p := l.p.Load(); p != nil {
+		return p.Ask(ctx, plain, m)
+	}
+	return false, nil
+}
+
+func (l *latePuller) Answered503() {
+	if p := l.p.Load(); p != nil {
+		p.Answered503()
+	}
 }
 
 func (k *kista) httpURL() string  { return "http://" + k.addr + "/acme/prod" }
@@ -153,7 +182,7 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 	must(err)
 	_, err = ten.SetChannelVersions(ctx, serveAdmin, "acme", "prod", []string{b.versionDir}, nil)
 	must(err)
-	k := &kista{t: t, st: st, keys: ks, keyDir: keyDir, b: b, blob: bs,
+	k := &kista{t: t, st: st, keys: ks, keyDir: keyDir, b: b, blob: bs, puller: &latePuller{},
 		rel: &release.Service{Store: st, Blob: bs, Signers: ks, Authz: authz.ServerAdmin{}}}
 	k.addKey("a.pem", true)
 
@@ -183,7 +212,7 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 		served, usage = licenses.Served{Service: k.licenses}, k.usage
 	}
 	k.handler = serve.NewHandler(st, ks, bs, serve.Options{MaxDownloads: 16, MaxDownloadsPerClient: 16, MinRate: 1024,
-		Events: k.events, Downloads: k.counts, Licenses: served, Usage: usage,
+		Events: k.events, Downloads: k.counts, Licenses: served, Usage: usage, Puller: k.puller,
 		WriteIdleTimeout: 30 * time.Second, Log: slog.New(slog.NewJSONHandler(&k.access, nil)), Verifier: verifier,
 		PublicURL: "https://" + k.addr, Auths: auths, Snapshots: snaps, API: apiH})
 	k.handler.SetReady(true)

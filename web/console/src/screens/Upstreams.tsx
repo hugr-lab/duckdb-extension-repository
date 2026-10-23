@@ -16,6 +16,7 @@ interface Entry {
   name: string
   versions: string[]
   allow_reserved?: boolean
+  eager?: boolean // a lazy mirror fetches it unasked (spec 0032)
 }
 
 interface RunResult {
@@ -33,6 +34,7 @@ export interface Upstream {
   prefix?: string
   channel: string
   mode: string
+  fetch?: 'eager' | 'lazy' // a mirror's (spec 0032)
   visibility: string
   state: string
   run: 'idle' | 'requested' | 'dry_run_requested' | 'running'
@@ -57,13 +59,23 @@ interface Cell {
   outcome: string
   detail?: string
   body_hash?: string
-  fetched_at: string
+  fetched_at?: string // none for a lazy mirror's not_asked cell
 }
 
 const kinds: [string, string][] = [['duckdb-core', 'DuckDB core'], ['duckdb-community', 'DuckDB community'], ['repository', 'Another repository']]
 const outcomes = ['released', 'unchanged', 'yanked', 'conflict', 'missing', 'rejected', 'blocked', 'shadowed', 'other_source', 'failed']
 
+/** A cell's outcome in words: a lazy mirror's not_asked reads as such (spec 0032). */
+export function outcomeWords(o: string) {
+  return o === 'not_asked' ? 'not asked yet' : o
+}
+
 const runWords: Record<Upstream['run'], string> = { idle: '', requested: 'a sync is requested', dry_run_requested: 'a dry run is requested', running: 'running' }
+
+/** An upstream's mode in words: a lazy mirror says so (spec 0032). */
+export function modeWords(u: Pick<Upstream, 'mode' | 'fetch'>) {
+  return u.mode === 'mirror' && u.fetch === 'lazy' ? 'mirror, lazy' : u.mode
+}
 
 /** Where an upstream fetches from, in words. */
 function source(u: Pick<Upstream, 'kind' | 'prefix'>) {
@@ -89,6 +101,7 @@ export interface UpstreamForm {
   kind: string
   channel: string
   mode: string
+  fetch: 'eager' | 'lazy'
   visibility: string
   prefix: string
   keys: string
@@ -96,10 +109,12 @@ export interface UpstreamForm {
   credential: string
 }
 
-/** The body of POST …/upstreams: a repository's prefix, pinned keys and credential only. */
-export function upstreamBody(f: UpstreamForm, plats: string[]) {
+/** The body of POST …/upstreams: a repository's prefix, pinned keys and credential only; a mirror's
+ * fetch mode (eager in a passthrough channel, which takes no lazy mirror). */
+export function upstreamBody(f: UpstreamForm, plats: string[], passthrough = false) {
   const body: Record<string, unknown> = { name: f.name, kind: f.kind, channel: f.channel, mode: f.mode, visibility: f.visibility, platforms: plats,
     extensions: entryNames(f.names).map((name) => ({ name })) }
+  if (f.mode === 'mirror') body.fetch = passthrough ? 'eager' : f.fetch
   if (f.kind === 'repository') {
     body.prefix = f.prefix
     body.keys = entryNames(f.keys)
@@ -132,7 +147,7 @@ export function Upstreams() {
             ['Upstream', (u) => <Link className="font-mono font-medium no-underline" to={`${base}/upstreams/${seg(u.name)}`}>{u.name}</Link>],
             ['Source', source],
             ['Feeds', (u) => <Mono>{u.channel}</Mono>],
-            ['Mode', (u) => u.mode],
+            ['Mode', modeWords],
             ['Allowlist', (u) => <span className="text-[13px]">{u.extensions.length} {u.extensions.length === 1 ? 'entry' : 'entries'} · {u.platforms.length} platforms</span>],
             ['Last run', (u) => (
               <span className="text-[13px]">
@@ -191,7 +206,7 @@ function NewUpstream() {
   const { client, api, base } = useTenant()
   const nav = useNavigate()
   const channels = useLoad(() => client.get<{ channels: { name: string; kind: string }[] }>(`${api}/channels`), [api])
-  const [f, setF] = useState<UpstreamForm>({ name: '', kind: 'duckdb-core', channel: '', mode: 'mirror', visibility: 'private', prefix: '', keys: '', names: '', credential: '' })
+  const [f, setF] = useState<UpstreamForm>({ name: '', kind: 'duckdb-core', channel: '', mode: 'mirror', fetch: 'eager', visibility: 'private', prefix: '', keys: '', names: '', credential: '' })
   const [plats, setPlats] = useState<string[]>(['linux_amd64', 'linux_arm64', 'osx_arm64'])
   const { busy, failure, act } = useAction()
   const set = (k: keyof UpstreamForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value })
@@ -199,7 +214,7 @@ function NewUpstream() {
   const passthrough = channels.data?.data.channels.find((c) => c.name === f.channel)?.kind === 'passthrough'
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (await act(() => client.post(`${api}/upstreams`, { body: upstreamBody(f, plats) }))) nav(`${base}/upstreams/${seg(f.name)}`)
+    if (await act(() => client.post(`${api}/upstreams`, { body: upstreamBody(f, plats, passthrough) }))) nav(`${base}/upstreams/${seg(f.name)}`)
   }
   return (
     <Card title="New upstream">
@@ -216,9 +231,14 @@ function NewUpstream() {
               {(channels.data?.data.channels ?? []).map((c) => <option key={c.name} value={c.name}>{c.name} ({c.kind})</option>)}
             </select>
           </Field>
-          <Field label="Mode" hint={f.mode === 'bundle' ? 'filled only by bundle imports, for an air-gapped site' : 'pull-through: fetched when first asked for'}>
+          <Field label="Mode" hint={f.mode === 'bundle' ? 'filled only by bundle imports, for an air-gapped site' : 'pull-through: any allowed name, fetched when first asked for; never run'}>
             <select className="field" value={f.mode} onChange={set('mode')}><option>mirror</option><option>pull-through</option><option>bundle</option></select>
           </Field>
+          {f.mode === 'mirror' && !passthrough && (
+            <Field label="Fetch" hint={f.fetch === 'lazy' ? 'only what clients install, when first asked for, and the entries marked eager' : 'every listed extension, platform and DuckDB version, at every run'}>
+              <select className="field" value={f.fetch} onChange={set('fetch')}><option>eager</option><option>lazy</option></select>
+            </Field>
+          )}
           <Field label="New releases are">
             <select className="field" value={f.visibility} onChange={set('visibility')}><option>private</option><option>public</option></select>
           </Field>
@@ -246,7 +266,7 @@ export function UpstreamPage() {
   return <UpstreamView key={name} name={name} />
 }
 
-type Action = 'sync' | 'dry' | 'pause' | 'resume' | 'public' | 'private' | 'remove'
+type Action = 'sync' | 'dry' | 'pause' | 'resume' | 'public' | 'private' | 'remove' | 'lazy' | 'eager'
 
 function UpstreamView({ name }: { name: string }) {
   const { client, api, base } = useTenant()
@@ -265,12 +285,19 @@ function UpstreamView({ name }: { name: string }) {
       if (await act(() => client.del(path, { ifMatch: etag }))) nav(`${base}/upstreams`)
       return
     }
-    await act(() => (a === 'sync' || a === 'dry' ? client.post(`${path}/sync${a === 'dry' ? '?dry_run=true' : ''}`) : client.post(`${path}/${a}`, { ifMatch: etag })))
+    await act(() => (a === 'sync' || a === 'dry' ? client.post(`${path}/sync${a === 'dry' ? '?dry_run=true' : ''}`)
+      : a === 'lazy' || a === 'eager' ? client.post(`${path}/fetch`, { ifMatch: etag, body: { fetch: a } })
+        : client.post(`${path}/${a}`, { ifMatch: etag })))
     up.reload()
   }
+  const lazy = u.mode === 'mirror' && u.fetch === 'lazy'
   const words: Record<Action, { title: string; confirm: string; explain: string; danger?: boolean }> = {
-    sync: { title: `Sync ${u.name} now?`, confirm: 'Sync', explain: 'A running kista serve takes the run: it fetches what the allowlist names, checks DuckDB’s signature and releases what passes.' },
-    dry: { title: `Dry run ${u.name}?`, confirm: 'Run', explain: 'A dry run checks what a sync would do and releases nothing.' },
+    sync: lazy
+      ? { title: `Fetch ${u.name}'s whole matrix now?`, confirm: 'Fetch now', explain: 'A running kista serve takes the run: it fetches every listed extension for every platform and DuckDB version, once, asked for or not. Later runs stay lazy and keep only the asked cells and eager entries current.' }
+      : { title: `Sync ${u.name} now?`, confirm: 'Sync', explain: 'A running kista serve takes the run: it fetches what the allowlist names, checks DuckDB’s signature and releases what passes.' },
+    dry: { title: `Dry run ${u.name}?`, confirm: 'Run', explain: lazy ? 'A dry run checks what a scheduled run would fetch (the asked cells and eager entries) and releases nothing.' : 'A dry run checks what a sync would do and releases nothing.' },
+    lazy: { title: `Make ${u.name} lazy?`, confirm: 'Make lazy', explain: 'Runs then fetch only the cells clients asked for and the entries marked eager; a first install of any other listed extension is fetched while the client waits. What was fetched stays, and is kept current.' },
+    eager: { title: `Make ${u.name} eager?`, confirm: 'Make eager', explain: 'It runs as soon as it is active, and every run fetches every listed extension for every platform and DuckDB version.' },
     pause: { title: `Pause ${u.name}?`, confirm: 'Pause', explain: 'A paused upstream is never run, and pull-through fetches nothing from it.' },
     resume: { title: `Resume ${u.name}?`, confirm: 'Resume', explain: 'The upstream runs again when asked.' },
     public: { title: `Make ${u.name}'s releases public?`, confirm: 'Make public', danger: true, explain: 'Its new releases are public: anyone may install them.' },
@@ -279,7 +306,7 @@ function UpstreamView({ name }: { name: string }) {
   }
   const facts: [string, React.ReactNode][] = [
     ['Source', source(u)],
-    ['Feeds channel', <><Link to={`${base}/channels/${seg(u.channel)}`} className="font-mono">{u.channel}</Link> · {u.mode}</>],
+    ['Feeds channel', <><Link to={`${base}/channels/${seg(u.channel)}`} className="font-mono">{u.channel}</Link> · {modeWords(u)}</>],
     ['New releases are', u.visibility],
     ['Signature keys', u.kind === 'repository' ? `${u.keys.length} pinned (below)` : `DuckDB ${u.kind === 'duckdb-core' ? 'core' : 'community'}'s own, from the pin`],
     ['Allowlist', `${u.extensions.length} ${u.extensions.length === 1 ? 'entry' : 'entries'} × ${u.platforms.length} platforms, for each DuckDB version the channel serves`],
@@ -292,8 +319,9 @@ function UpstreamView({ name }: { name: string }) {
       <PageTitle eyebrow={<Link to={`${base}/upstreams`} className="no-underline">Upstreams</Link>} title={<span className="font-mono">{u.name}</span>}>
         <span className="flex gap-1 pb-1"><Badge>{u.state}</Badge><Badge>{u.visibility}</Badge>{u.run !== 'idle' && <span className="chip bg-warning-soft text-warning">{runWords[u.run]}</span>}</span>
         <div role="group" aria-label="upstream actions" className="ml-auto flex flex-wrap gap-2">
-          {u.mode !== 'bundle' && <Button tone="brand" disabled={busy || u.state !== 'active'} onClick={() => setPending('sync')}>Sync now</Button>}
+          {u.mode !== 'bundle' && <Button tone="brand" disabled={busy || u.state !== 'active'} onClick={() => setPending('sync')}>{lazy ? 'Fetch now' : 'Sync now'}</Button>}
           {u.mode !== 'bundle' && <Button tone="outline" disabled={busy || u.state !== 'active'} onClick={() => setPending('dry')}>Dry run</Button>}
+          {u.mode === 'mirror' && <FetchModeButton channel={u.channel} lazy={lazy} disabled={busy} onClick={() => setPending(lazy ? 'eager' : 'lazy')} />}
           <Button tone="outline" disabled={busy} onClick={() => setPending(u.state === 'active' ? 'pause' : 'resume')}>{u.state === 'active' ? 'Pause' : 'Resume'}</Button>
           <Button tone="outline" disabled={busy} onClick={() => setPending(u.visibility === 'public' ? 'private' : 'public')}>Make {u.visibility === 'public' ? 'private' : 'public'}</Button>
           <Button tone="danger-outline" disabled={busy} onClick={() => setPending('remove')}>Remove…</Button>
@@ -309,14 +337,23 @@ function UpstreamView({ name }: { name: string }) {
       </Card>
       <LastRun u={u} onRefresh={up.reload} />
       {u.kind === 'repository' && u.mode !== 'bundle' && <Usage u={u} path={path} etag={etag} onChanged={up.reload} />}
-      <Allowlist path={path} onChanged={up.reload} />
+      <Allowlist path={path} mirror={u.mode === 'mirror'} lazy={lazy} onChanged={up.reload} />
       <Items key={u.etag} u={u} path={path} etag={etag} onChanged={up.reload} />
-      <Cells path={path} />
+      <Cells key={String(lazy)} path={path} lazy={lazy} />
       <Confirm open={w !== null} title={w?.title ?? ''} confirm={w?.confirm ?? ''} danger={w?.danger} onConfirm={() => run(pending!)} onClose={() => setPending(null)}>
         <p>{w?.explain}</p>
       </Confirm>
     </>
   )
+}
+
+/** Make lazy or eager (spec 0032); a passthrough channel takes no lazy mirror, so it offers nothing
+ * there. */
+function FetchModeButton({ channel, lazy, disabled, onClick }: { channel: string; lazy: boolean; disabled: boolean; onClick: () => void }) {
+  const { client, api } = useTenant()
+  const ch = useLoad(() => client.get<{ kind: string }>(`${api}/channels/${seg(channel)}`), [api, channel])
+  if (!lazy && ch.data?.data.kind !== 'signed') return null
+  return <Button tone="outline" disabled={disabled} onClick={onClick}>Make {lazy ? 'eager' : 'lazy'}</Button>
 }
 
 function LastRun({ u, onRefresh }: { u: Upstream; onRefresh: () => void }) {
@@ -390,10 +427,10 @@ function Usage({ u, path, etag, onChanged }: { u: Upstream; path: string; etag: 
 }
 
 /** The allowlist, page by page with a prefix; entries added (or their versions replaced) and removed. */
-function Allowlist({ path, onChanged }: { path: string; onChanged: () => void }) {
+function Allowlist({ path, mirror, lazy, onChanged }: { path: string; mirror: boolean; lazy: boolean; onChanged: () => void }) {
   const { client } = useTenant()
   const [prefix, setPrefix] = useState('')
-  const [f, setF] = useState({ name: '', versions: '', allow_reserved: false })
+  const [f, setF] = useState({ name: '', versions: '', allow_reserved: false, eager: false })
   const [removing, setRemoving] = useState('')
   const { busy, failure, act } = useAction()
   const list = usePaged<Entry>(async (cursor, limit) => {
@@ -409,8 +446,8 @@ function Allowlist({ path, onChanged }: { path: string; onChanged: () => void })
   }
   const add = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (await act(() => client.post(`${path}/extensions`, { body: { name: f.name, versions: entryNames(f.versions), allow_reserved: f.allow_reserved } }))) {
-      setF({ name: '', versions: '', allow_reserved: false })
+    if (await act(() => client.post(`${path}/extensions`, { body: { name: f.name, versions: entryNames(f.versions), allow_reserved: f.allow_reserved, eager: mirror && f.eager } }))) {
+      setF({ name: '', versions: '', allow_reserved: false, eager: false })
     }
     changed()
   }
@@ -423,14 +460,16 @@ function Allowlist({ path, onChanged }: { path: string; onChanged: () => void })
             ['Extension', (e) => <Mono>{e.name}</Mono>],
             ['Versions', (e) => (e.versions.length ? <Mono>{e.versions.join(' ')}</Mono> : <span className="text-ink-muted">every version</span>)],
             ['Reserved name', (e) => (e.allow_reserved ? 'allowed' : '')],
+            ...(lazy ? [['Fetched', (e: Entry) => (e.eager ? 'eagerly' : <span className="text-ink-muted">when asked for</span>)] as [string, (e: Entry) => React.ReactNode]] : []),
             ['', (e) => <Button tone="danger-outline" disabled={busy} onClick={() => setRemoving(e.name)}>Remove…</Button>],
           ]} />
         )}
         <Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />
         <form className="flex flex-wrap items-end gap-3 border-t border-line pt-4" onSubmit={add}>
           <Field label="Name" hint="* for every name: pull-through only, never for DuckDB core"><input className="field font-mono" required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
-          <Field label="Versions" hint="empty: every version; an existing entry's are replaced"><input className="field font-mono" value={f.versions} onChange={(e) => setF({ ...f, versions: e.target.value })} /></Field>
+          <Field label="Versions" hint="empty: every version; an existing entry's versions, reserved-name and eager marks are replaced"><input className="field font-mono" value={f.versions} onChange={(e) => setF({ ...f, versions: e.target.value })} /></Field>
           <label className="flex items-center gap-2 pb-2 text-[13px]"><input type="checkbox" checked={f.allow_reserved} onChange={(e) => setF({ ...f, allow_reserved: e.target.checked })} /> allow a reserved name (core or community)</label>
+          {mirror && <label className="flex items-center gap-2 pb-2 text-[13px]"><input type="checkbox" checked={f.eager} onChange={(e) => setF({ ...f, eager: e.target.checked })} /> eager (a lazy mirror fetches it before anyone asks)</label>}
           <Button type="submit" tone="brand" disabled={busy}>Add</Button>
         </form>
         {f.allow_reserved && <Note>A mirrored build then serves under a name DuckDB itself ships or lists: clients installing it get this upstream's build.</Note>}
@@ -510,8 +549,9 @@ function Items({ u, path, etag, onChanged }: { u: Upstream; path: string; etag: 
   )
 }
 
-/** The cells (DuckDB version × platform × name) and their last outcome, page by page. */
-function Cells({ path }: { path: string }) {
+/** The cells (DuckDB version × platform × name) and their last outcome, page by page; a lazy
+ * mirror's offered cells nobody asked for yet too (not_asked). */
+function Cells({ path, lazy }: { path: string; lazy: boolean }) {
   const { client } = useTenant()
   const [outcome, setOutcome] = useState('')
   const list = usePaged<Cell>(async (cursor, limit) => {
@@ -524,15 +564,17 @@ function Cells({ path }: { path: string }) {
   return (
     <Card title="Cells">
       <div className="flex flex-col gap-4">
-        <Chips label="outcome" value={outcome} onChange={setOutcome} options={[['', 'All'], ...outcomes.map((o) => [o, o] as [string, string])]} />
-        {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : list.items.length === 0 ? <Empty>No cells{outcome ? ` ${outcome}` : ''}.</Empty> : (
+        <Chips label="outcome" value={outcome} onChange={setOutcome} options={[['', 'All'], ...outcomes.map((o) => [o, o] as [string, string]),
+          ...(lazy ? [['not_asked', 'not asked yet'] as [string, string]] : [])]} />
+        {outcome === 'not_asked' && <Note>Offered, not fetched: the first install of one is fetched while the client waits, and Fetch now fetches them all.</Note>}
+        {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : list.items.length === 0 ? <Empty>No cells{outcome ? ` ${outcomeWords(outcome)}` : ''}.</Empty> : (
           <Table rows={list.items} rowKey={(c) => `${c.duckdb_version}/${c.platform}/${c.name}`} columns={[
             ['Extension', (c) => <Mono>{c.name}</Mono>],
             ['DuckDB', (c) => <Mono>{c.duckdb_version}</Mono>],
             ['Platform', (c) => <Mono>{c.platform}</Mono>],
-            ['Outcome', (c) => <Badge>{c.outcome}</Badge>],
+            ['Outcome', (c) => <Badge>{outcomeWords(c.outcome)}</Badge>],
             ['Why', (c) => <span className="text-[13px]">{c.detail ?? ''}</span>],
-            ['Fetched', (c) => <span className="text-[13px] text-ink-muted">{when(c.fetched_at)}</span>],
+            ['Fetched', (c) => <span className="text-[13px] text-ink-muted">{c.fetched_at ? when(c.fetched_at) : ''}</span>],
           ]} />
         )}
         <Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />

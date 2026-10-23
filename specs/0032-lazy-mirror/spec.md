@@ -1,6 +1,6 @@
 # Spec 0032: Lazy mirrors
 
-- **Status**: accepted (2026-10-23); phases A and B implemented
+- **Status**: implemented (2026-10-24)
 - **Date**: 2026-10-23
 - **Author**: vgsml, Claude
 
@@ -61,12 +61,13 @@ it, and its first request is served as any first request is.
 
 A run of a lazy upstream fetches, of its matrix, the cells of its asks and of its eager entries,
 conditionally (the ETag kept), as an eager run fetches every cell; cells outside them are neither
-fetched nor recorded. The schedule, outcomes and limits are a mirror's; `last_run` adds the count
-of cells `not_asked`. A dry run covers the same cells.
+fetched nor recorded. The schedule, outcomes and limits are a mirror's; `last_run` adds the counts
+of cells `not_asked` (never fetched) and `busy` (another fetch held them). A dry run covers the same
+cells.
 
 **Sync** (`upstream sync`, `POST /{name}/sync`) on a lazy upstream fetches the whole matrix once:
 the administrator's "fetch now". It records no ask, so later runs stay lazy. A `bundle export
--sync` of a lazy upstream syncs the cells its plan exports.
+-sync` of a lazy upstream fetches the cells its plan exports, besides the asked and eager ones.
 
 Switching to `eager` makes the upstream due at once (the whole matrix); switching to `lazy` keeps the
 releases there are and records an ask for each cell a release fills.
@@ -154,7 +155,7 @@ upstreams.md (the modes, the setting, runs, asks, the first request, a compariso
 pull-through), configuration.md, api.md (`/fetch`, `eager`, `not_asked`), duckdb.md (the first
 `INSTALL` from a lazy channel), observability.md, security.md, the commands.
 The console's upstream form takes the setting, an entry its `eager` mark; a lazy upstream's page
-shows asked and not-asked cells and **Fetch now**. A downstream kista of a lazy channel is best lazy
+shows its cells, the cells not asked for yet, and **Fetch now**. A downstream kista of a lazy channel is best lazy
 too, or narrow in its platforms: an eager mirror of a lazy channel asks for every cell at every run.
 
 ## Security
@@ -174,7 +175,8 @@ too, or narrow in its platforms: an eager mirror of a lazy channel asks for ever
   run skipping a cell a fetch holds; the fetcher retrying a `503` with `Retry-After` within a cell,
   three times at most, its host slot free meanwhile; the per-caller share; switching modes both
   ways; a passthrough channel refusing `lazy`.
-- End to end with DuckDB: a lazy `duckdb-core` upstream in a signed channel; `INSTALL` of an
+- End to end with DuckDB: a lazy mirror of another kista in a signed channel (the tests reach no
+  DuckDB repository); `INSTALL` of an
   allowlisted extension succeeds on the first try (DuckDB's own retry), and the next run refreshes
   it; another kista mirroring that channel with a credential takes the build on its first run; an
   eager entry is fetched before anyone asks.
