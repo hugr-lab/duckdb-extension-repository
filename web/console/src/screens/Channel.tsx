@@ -6,6 +6,7 @@ import { seg } from '../lib/http'
 import { WhoMayUse } from './Access'
 import { Keys } from './Keys'
 import { Reports } from './Reports'
+import { Sources } from './Sources'
 import type { Release } from './types'
 
 // DuckDB's platforms (spec 0006's grammar names more; these are the ones DuckDB builds).
@@ -14,7 +15,7 @@ export const platforms = ['linux_amd64', 'linux_arm64', 'linux_amd64_musl', 'lin
 
 export const releaseStates: ['' | 'active' | 'deprecated' | 'yanked', string][] = [['', 'All'], ['active', 'Active'], ['deprecated', 'Deprecated'], ['yanked', 'Yanked']]
 
-type Tab = 'extensions' | 'releases' | 'keys'
+type Tab = 'extensions' | 'releases' | 'sources' | 'keys'
 
 /** A channel: its extensions (the index, by name, page by page), all its releases, its keys. Its
  * administrators see all of them; an extension's administrators, their extensions. */
@@ -25,7 +26,7 @@ export function Channel() {
   const [picked, setTab] = useState<{ c: string; tab: Tab }>({ c, tab: 'extensions' })
   const detail = useLoad(() => client.get<{ kind: string; duckdb_versions?: { duckdb_version: string }[] }>(`${api}/channels/${seg(c)}`), [api, c])
   const versions = detail.data?.data.duckdb_versions?.map((v) => v.duckdb_version) ?? []
-  const tabs: [Tab, string][] = admin ? [['extensions', 'Extensions'], ['releases', 'All releases'], ['keys', 'Keys']] : [['extensions', 'Extensions']]
+  const tabs: [Tab, string][] = admin ? [['extensions', 'Extensions'], ['releases', 'All releases'], ['sources', 'Sources'], ['keys', 'Keys']] : [['extensions', 'Extensions']]
   // a tab chosen in another channel, or one this caller is not offered here, is not kept
   const tab = picked.c === c && tabs.some(([t]) => t === picked.tab) ? picked.tab : 'extensions'
   return (
@@ -36,7 +37,7 @@ export function Channel() {
       </PageTitle>
       {admin && detail.data && <ChannelVersions key={c} channel={c} versions={versions} onChanged={detail.reload} />}
       {tabs.length > 1 && <Chips label="channel sections" value={tab} options={tabs} onChange={(t) => setTab({ c, tab: t })} />}
-      {tab === 'keys' ? <Keys channel={c} /> : tab === 'releases' ? <Releases channel={c} /> : !admin ? <Mine channel={c} /> :
+      {tab === 'keys' ? <Keys channel={c} /> : tab === 'releases' ? <Releases channel={c} /> : tab === 'sources' ? <Sources channel={c} /> : !admin ? <Mine channel={c} /> :
         detail.error ? <ErrorBox error={detail.error} /> : !detail.data ? <Loading /> : <Extensions channel={c} versions={versions} />}
     </>
   )
@@ -204,6 +205,12 @@ export function ReleaseList({ channel, ext }: { channel: string; ext?: string })
             ['Build', (r) => <Mono>{r.abi} {r.build_duckdb_version ?? r.build_c_api ?? ''}</Mono>],
             ['State', (r) => <Badge>{r.state}</Badge>],
             ['Visibility', (r) => <Badge>{r.visibility}</Badge>],
+            ['Source', (r) => (
+              <span className="flex flex-wrap items-center gap-1">
+                <Mono>{r.source}</Mono>
+                {r.selected === false && <span className="chip bg-surface-soft text-ink-muted" title="not the channel's source of the name: not served">not served</span>}
+              </span>
+            )],
             ['Current-eligible', (r) => (r.seq > 0 ? `#${r.seq}` : '')],
             ['Added', (r) => when(r.created_at)],
           ]}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -227,5 +228,94 @@ func TestUpstreamPrivate(t *testing.T) {
 	src.release("loadable_extension_demo", release.AddOptions{Private: true})
 	if c := run(); c.Outcome != store.CellMissing {
 		t.Fatalf("a token without the grant: %+v", c)
+	}
+}
+
+// Spec 0031: a channel serves a name from one source. A kista mirrors the demo; the tenant's own
+// build of it is refused while the mirror holds the name; switched to the tenant, DuckDB at the pin
+// installs the tenant's build; switched back, the mirror's, and the mirror's next run takes it again.
+func TestUpstreamSources(t *testing.T) {
+	b := needBuild(t)
+	ctx := context.Background()
+	const name = "loadable_extension_demo"
+	src := startKista(t, b)
+	src.release(name, release.AddOptions{})
+	dst := startKista(t, b)
+	_, port, _ := net.SplitHostPort(src.addr)
+	eg, err := egress.New(egress.Config{AllowLoopbackHTTP: true, OwnHost: "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &upstream.Service{Store: dst.st, Releases: dst.rel, Blob: dst.blob, Fetch: eg, Authz: authz.ServerAdmin{},
+		MaxBody: 256 << 20, MaxIngests: 2, TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler)}
+	if _, err := up.Add(ctx, serveAdmin, "acme", upstream.Spec{Name: "src", Kind: store.UpstreamRepo, Prefix: "http://localhost:" + port + "/acme/prod",
+		Channel: "prod", Keys: []string{src.activeKey(t).Fingerprint}, Platforms: []string{b.platform}, Visibility: store.Public,
+		Entries: []store.UpstreamEntry{{Name: name}}}); err != nil {
+		t.Fatal(err)
+	}
+	run := func() string {
+		t.Helper()
+		if _, err := up.Sync(ctx, serveAdmin, "acme", "src", false); err != nil {
+			t.Fatal(err)
+		}
+		(&upstream.Runner{Service: up, Holder: "e2e", Log: slog.New(slog.DiscardHandler)}).Once(ctx)
+		cells, err := up.Cells(ctx, serveAdmin, "acme", "src", "", [3]string{}, 10)
+		if err != nil || len(cells) != 1 {
+			t.Fatalf("the cell: %+v %v", cells, err)
+		}
+		return cells[0].Outcome
+	}
+	if got := run(); got != store.CellReleased {
+		t.Fatalf("the first run: %s", got)
+	}
+	pem := dst.pem(t, dst.activeKey(t))
+	installed := func() any {
+		t.Helper()
+		res := newSession(t, b, nil).exec(
+			createRepo("m", dst.httpURL(), pem),
+			"FORCE INSTALL "+name+" FROM m",
+			"LOAD "+name+" FROM m",
+			"SELECT extension_version FROM duckdb_extensions() WHERE extension_name = '"+name+"'",
+		)
+		mustOK(t, res)
+		return res[len(res)-1].Rows[0][0]
+	}
+	mirrored := installed()
+	// the tenant's own build: refused while the mirror holds the name
+	own := withVersion(t, b.extensions[name], "e2e-own")
+	add := func() error {
+		f, err := os.Open(own)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		_, _, err = dst.rel.Add(ctx, serveAdmin, "acme", "prod", f, release.AddOptions{Name: name})
+		return err
+	}
+	if err := add(); !errors.Is(err, release.ErrOtherSource) {
+		t.Fatalf("the tenant's build under the mirror's name: %v", err)
+	}
+	// switched to the tenant: its build lands and DuckDB installs it
+	if _, err := dst.rel.SetSource(ctx, serveAdmin, "acme", "prod", name, "tenant"); err != nil {
+		t.Fatal(err)
+	}
+	if err := add(); err != nil {
+		t.Fatal(err)
+	}
+	if got := installed(); got != "e2e-own" {
+		t.Fatalf("installed after the switch: %v", got)
+	}
+	if got := run(); got != store.CellOtherSource {
+		t.Fatalf("the mirror's run under the tenant's source: %s", got)
+	}
+	// switched back: the mirror's build again, and its run takes the cell
+	if _, err := dst.rel.SetSource(ctx, serveAdmin, "acme", "prod", name, "upstream:src"); err != nil {
+		t.Fatal(err)
+	}
+	if got := installed(); got != mirrored {
+		t.Fatalf("installed after switching back: %v, want %v", got, mirrored)
+	}
+	if got := run(); got != store.CellUnchanged {
+		t.Fatalf("the mirror's run after switching back: %s", got)
 	}
 }

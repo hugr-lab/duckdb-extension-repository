@@ -73,6 +73,33 @@ test('a body blocked and unblocked; a channel created with a DuckDB version', as
   await expect(page.getByRole('button', { name: 'stop serving v2.0.0' })).toBeVisible()
 })
 
+test("a name's source in a channel: shown, cleared, switched back (spec 0031)", async ({ page }) => {
+  await signIn(page, '/ui/t/acme/', 'tom')
+  await nav(page, 'Channels').click()
+  await page.getByRole('link', { name: 'prod', exact: true }).click()
+  await page.getByRole('button', { name: 'Sources' }).click()
+  const row = page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'hello_acme', exact: true }) })
+  const source = row.getByRole('cell').nth(1)
+  await expect(source).toHaveText('tenant')
+  const actions = page.getByRole('group', { name: 'hello_acme source actions' })
+  await actions.getByRole('button', { name: 'Clear…' }).click()
+  await confirm(page, 'Clear')
+  await expect(row.getByText('none: nothing is served')).toBeVisible()
+  await actions.getByRole('button', { name: 'Switch…' }).click()
+  // a source the tenant does not have is refused, as the API words it
+  await page.getByRole('dialog').getByLabel('Source').fill('upstream:nope')
+  await confirm(page, 'Switch')
+  await expect(page.getByText(/not a source of the tenant/)).toBeVisible()
+  await expect(source).toHaveText('none: nothing is served')
+  await actions.getByRole('button', { name: 'Switch…' }).click()
+  await page.getByRole('dialog').getByLabel('Source').fill('tenant')
+  await confirm(page, 'Switch')
+  await expect(source).toHaveText('tenant')
+  // the release list says whose each release is
+  await page.getByRole('button', { name: 'All releases' }).click()
+  await expect(page.getByRole('row').filter({ hasText: 'hello_acme' }).getByText('tenant', { exact: true }).first()).toBeVisible()
+})
+
 test('a server administrator: a tenant created, suspended and resumed; a version; a key added and activated', async ({ page }) => {
   await signIn(page, '/ui/server/', 'root')
   await page.getByRole('button', { name: 'New tenant' }).click()

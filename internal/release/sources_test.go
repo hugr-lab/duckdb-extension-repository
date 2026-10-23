@@ -228,3 +228,39 @@ func TestSourcesPromotionAndClear(t *testing.T) {
 		}
 	})
 }
+
+// Spec 0031: two sources' first releases of a name at once: one sets the source, the other is
+// refused. Both start together; only PostgreSQL and SQL Server really overlap the transactions
+// (SQLite serialises its writers).
+func TestSourceArrivalRace(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		pub := authz.Actor{Kind: authz.ActorPublisher, ID: "acme/ci", Tenant: "acme", Principals: auth.Principals{auth.PublisherKey("p-ci"): true}}
+		pubs := *en.rel
+		pubs.Authz = allowAll{}
+		a := built(t, cpp("1.0"), "tresor_duckdb_cpp_init")
+		b := built(t, cpp("2.0"), "tresor_duckdb_cpp_init")
+		errs, start := make(chan error, 2), make(chan struct{})
+		go func() { <-start; _, _, err := en.add(t, a, release.AddOptions{Name: "tresor"}); errs <- err }()
+		go func() {
+			<-start
+			_, _, err := pubs.Add(ctx, pub, "acme", "prod", bytes.NewReader(b), publish("tresor", "2.0", "linux_amd64"))
+			errs <- err
+		}()
+		close(start)
+		e1, e2 := <-errs, <-errs
+		ok, refused := 0, 0
+		for _, err := range []error{e1, e2} {
+			switch {
+			case err == nil:
+				ok++
+			case errors.Is(err, release.ErrOtherSource):
+				refused++
+			default:
+				t.Fatal(err)
+			}
+		}
+		if ok != 1 || refused != 1 {
+			t.Fatalf("%v %v", e1, e2)
+		}
+	})
+}
