@@ -55,6 +55,7 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO blocks (tenant_id, body_hash, reason, created_at, created_by) VALUES (?, ?, 'CVE', ?, 'os:1:t')", []any{tid, hash, now}},
 		{"INSERT INTO shadows (tenant_id, name, created_at, created_by) VALUES (?, 'json', ?, 'os:1:t')", []any{tid, now}},
 		{"INSERT INTO tenant_reserved_names (tenant_id, name, holder, added_at, added_by) VALUES (?, 'held', 'enterest', ?, 'os:1:t')", []any{tid, now}},
+		{"INSERT INTO channel_sources (channel_id, name, source, set_by, set_at) VALUES (?, 'json', 'tenant', 'os:1:t', ?)", []any{cid, now}},
 		{"INSERT INTO bundle_imports (id, tenant_id, manifest_id, manifest_created_at, manifest_sha256, exporter, bundle_key, dry_run, " +
 			"state, counts, started_at, actor) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, 'done', '{}', ?, 'os:1:t')",
 			[]any{id("m"), tid, id("n"), now, hash, fp("d"), false, now}},
@@ -138,7 +139,7 @@ func rowsOf(t *testing.T, s *store.Store, tenantID, channelID string) map[string
 			where = "upstream_id IN (SELECT id FROM upstreams WHERE tenant_id = ?)"
 		case "issuer_console_clients":
 			where = "issuer_id IN (SELECT id FROM issuers WHERE tenant_id = ?)"
-		case "release_signatures", "channel_duckdb_versions", "purged_slots":
+		case "release_signatures", "channel_duckdb_versions", "purged_slots", "channel_sources":
 			where, arg = "channel_id = ?", channelID
 		case "key_events":
 			where = "key_id IN (SELECT id FROM channel_keys WHERE tenant_id = ?)"

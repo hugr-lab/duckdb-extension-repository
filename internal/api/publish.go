@@ -37,6 +37,9 @@ func (h *Handler) publishErr(w http.ResponseWriter, err error, bodyRef bool) {
 	case errors.Is(err, release.ErrLicenseKeys):
 		problem(w, http.StatusBadRequest, typeInvalid, "the file's licence key block is malformed (license_keys): "+
 			"a publisher marked as a source of licence keys publishes only builds whose keys kista reads (kista ext inspect)")
+	case errors.Is(err, release.ErrOtherSource):
+		// spec 0031: the caller may publish or promote here, so it learns the name's source
+		problem(w, http.StatusConflict, typeSource, publicRefusal(err))
 	case errors.Is(err, release.ErrBlocked):
 		problem(w, http.StatusConflict, typeConflict, "the body is blocked in this tenant")
 	default:
@@ -249,10 +252,15 @@ func (h *Handler) answerReleases(w http.ResponseWriter, r *http.Request, c calle
 		h.fail(w, err)
 		return
 	}
+	src, err := h.sourcesFor(r.Context(), c.tenant.ID, channelIDOf(all))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
 	out := []releaseJSON{}
 	for _, rel := range rels {
 		if x, ok := byID[rel.ID]; ok {
-			out = append(out, releaseView(x, c, full, provided))
+			out = append(out, releaseView(x, c, full, provided, src))
 		}
 	}
 	status := http.StatusCreated

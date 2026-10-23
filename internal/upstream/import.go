@@ -700,7 +700,7 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 		}
 	}
 	importedAt := s.Store.Now().UTC().Format(time.RFC3339)
-	in := release.Ingest{Name: c.Name, DuckDBVersion: c.DuckDBVersion, Platform: c.Platform, Upstream: u.Name, URL: url,
+	in := release.Ingest{Name: c.Name, DuckDBVersion: c.DuckDBVersion, Platform: c.Platform, Upstream: u.Name, UpstreamID: u.ID, URL: url,
 		Versions: e.Versions, Keys: keys, Visibility: vis, DryRun: dryRun, Bundle: tg.res.Bundle,
 		Provenance: func(key string) string {
 			p := map[string]string{"upstream": u.Name, "kind": u.Kind, "url": url, "etag": c.ETag, "key": key,
@@ -725,6 +725,8 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 		rec.Outcome, rec.Detail = store.CellBlocked, err.Error()
 	case errors.Is(err, release.ErrShadowed):
 		rec.Outcome, rec.Detail = store.CellShadowed, err.Error()
+	case errors.Is(err, release.ErrOtherSource):
+		rec.Outcome, rec.Detail = store.CellOtherSource, err.Error()
 	case errors.Is(err, release.ErrConflict):
 		rec.Outcome, rec.Detail = store.CellConflict, err.Error()
 	case errors.Is(err, store.ErrBusy), errors.Is(err, store.ErrBuildGone), errors.Is(err, store.ErrStreamBusy),

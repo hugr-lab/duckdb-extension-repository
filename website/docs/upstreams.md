@@ -94,8 +94,8 @@ A cell's binary is released only if every step passes:
    often commit hashes, so kista does not order them; the newest accepted build is current.
 
 A refused cell is logged and counted; it never stops the run. A cell that turns `rejected`,
-`conflict`, `blocked` or `shadowed` (from another outcome) is recorded as an `upstream.rejected`
-event.
+`conflict`, `blocked`, `shadowed` or `other_source` (from another outcome) is recorded as an
+`upstream.rejected` event.
 
 ## Adding an upstream
 
@@ -148,8 +148,9 @@ used. Adding an upstream whose file lists none of its pinned keys is `400`. A ro
 upstream is followed by pinning the new fingerprint, never automatically. On the upstream kista,
 `kista admin key list <tenant>/<channel>` shows each key's fingerprint.
 
-Adding an upstream or an entry whose name already has a live replacement in its channel (a release
-of another origin) is `409` until an administrator drops the entry or yanks those releases.
+Adding an upstream or an entry whose name another source holds in its channel is allowed: its cells
+are `other_source` until the channel's administrator switches the name's source to the upstream
+([A name's source in a channel](#a-names-source-in-a-channel)).
 
 ### From the bootstrap
 
@@ -247,7 +248,8 @@ neither released nor unchanged.
 | `missing` | the upstream answered `404` (also a private upstream without the grant) |
 | `rejected` | a check failed: signature, footer, format or entry point |
 | `blocked` | the body is blocked in the tenant |
-| `shadowed` | the tenant serves its own build of this name in the channel |
+| `shadowed` | a name `"*"` took is reserved since |
+| `other_source` | another source holds the name in the channel; decided before the download, asked again at each run |
 | `failed` | the fetch failed (network, size, rate, the upstream's `401`/`403`); retried by the next run |
 
 Cells that leave the matrix are removed by the next run; removing an entry or a platform removes
@@ -257,10 +259,48 @@ its cells at once.
 
 A name an upstream of a tenant lists is **reserved in the tenant**, like DuckDB's core and community
 names: publishing or promoting it needs a grant that names the extension (see
-[Publishing](publishing.md#reserved-names)). A replacement published into the channel later wins: the
-upstream's cells for it become `shadowed`. In the index, an upstream release carries
-`origin: "upstream"` and the upstream's name; a replacement of an upstream-provided name shows
-`shadows: upstream`.
+[Publishing](publishing.md#reserved-names)). Which of them a channel serves is the name's source in
+the channel (below). In the index, an upstream release carries `origin: "upstream"` and the
+upstream's name; another release of a name the tenant's upstreams provide shows `shadows: upstream`.
+
+## A name's source in a channel
+
+A channel serves each extension name from one **source** (spec 0031):
+
+| Source | Its releases |
+| --- | --- |
+| `upstream:<name>` | mirrored by that upstream of the channel (a run, a pull-through fetch, a bundle import) |
+| `publisher:<name>` | published by a request signed with that publisher's key |
+| `tenant` | an administrator's `release add`, or a publication by a tenant principal |
+
+A promotion keeps the source of the release it promotes: a build a distributor published into
+`incoming` and an administrator promoted to `prod` is the distributor's publisher's in `prod` too.
+
+- **The first release of a name sets its source** in the channel (an `source.set` event with
+  `arrival: true`).
+- **Another source's release does not land:** a publication, an `add` or a promotion is refused
+  with `409` (problem type `…/source`, naming the source); a mirror's cell is `other_source`, decided
+  before the download and asked again at each run; pull-through never fetches the name.
+- **Only the selected source's releases are served:** the index, the DuckDB routes, licences and
+  usage. The others stay stored, in their state, listed to administrators with `selected: false`.
+- **A channel administrator switches it** (admin on the channel, or a tenant administrator):
+  `kista admin channel source <tenant>/<channel> <name> -set <source>`, or `PUT
+  /api/v1/tenants/{t}/channels/{c}/sources/{name}` with `{"source": "…"}`. Any source of the tenant:
+  `tenant`, an upstream (of the channel, or of the channel mirrored releases were promoted from), a
+  publisher, whether it has releases there yet or not. The new source's releases are served at once; a mirror fills in at its next
+  run. Switching back serves the first source's releases again. `-clear` (`DELETE`) removes the
+  source: nothing serves the name until its next release lands and sets it again.
+- **The same body brought by the name's source takes the slot's release:** a slot is never
+  replaced, so when the selected source releases a body the slot already holds from another source,
+  that release becomes the selected source's.
+- **A removed upstream's names pass to its successor:** an upstream added again (a new upstream of
+  the channel) takes the names whose source is a removed upstream, with the releases of the same
+  bodies. Nothing else falls back by itself: a yanked or blocked release of the selected source
+  leaves the name unserved until it is active again or the source is switched.
+- **Listing:** `kista admin channel source <tenant>/<channel>` (or `GET …/sources`) shows each name,
+  its source, who set it and when, and the sources that have releases of it in the channel.
+
+Tenant shadows (below) are a passthrough channel's matter and stay as they are.
 
 ## Passthrough channels
 

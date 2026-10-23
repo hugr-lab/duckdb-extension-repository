@@ -375,7 +375,8 @@ func (s *Service) paused(ctx context.Context, id string) (bool, error) {
 }
 
 // refusal outcomes: a cell turning into one is an upstream.rejected event.
-var refusal = map[string]bool{store.CellRejected: true, store.CellConflict: true, store.CellBlocked: true, store.CellShadowed: true}
+var refusal = map[string]bool{store.CellRejected: true, store.CellConflict: true, store.CellBlocked: true, store.CellShadowed: true,
+	store.CellOtherSource: true}
 
 // conditional outcomes: the same answer changes nothing, so the last ETag is sent.
 var conditional = map[string]bool{store.CellReleased: true, store.CellUnchanged: true, store.CellYanked: true, store.CellConflict: true}
@@ -395,8 +396,20 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		}
 		return rec
 	}
+	// spec 0031: a name another source holds in the channel is not fetched
+	sel, takes, err := s.Store.SourceTakes(ctx, sc.Channel.ID, c.name, store.UpstreamSource(u.ID))
+	if err != nil {
+		return fail(store.CellFailed, err)
+	} else if !takes {
+		label, err := s.Store.SourceLabel(ctx, sel.Source)
+		if err != nil {
+			return fail(store.CellFailed, err)
+		}
+		return fail(store.CellOtherSource, &release.SourceError{Name: c.name, Source: label})
+	}
 	etag := ""
-	if !dryRun && conditional[prev.Outcome] {
+	// a name without a source (cleared) fetches the body again, so the same body sets it
+	if !dryRun && conditional[prev.Outcome] && sel.Source != "" {
 		etag = prev.ETag
 	}
 	// kista serve creates the directory at start; kista admin bundle export -sync runs here without it
@@ -482,7 +495,7 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 	if u.Credential != "" && (cred == nil || !cred.AllowPublic) {
 		vis = store.Private // whatever the upstream's visibility says (spec 0009 phase 3)
 	}
-	in := release.Ingest{Name: c.name, DuckDBVersion: c.version, Platform: c.platform, Upstream: u.Name, URL: url, Versions: e.Versions, Keys: keys,
+	in := release.Ingest{Name: c.name, DuckDBVersion: c.version, Platform: c.platform, Upstream: u.Name, UpstreamID: u.ID, URL: url, Versions: e.Versions, Keys: keys,
 		Visibility: vis, DryRun: dryRun, Provenance: func(key string) string {
 			p := map[string]string{"upstream": u.Name, "kind": u.Kind, "url": url, "etag": d.ETag, "key": key,
 				"fetched_at": rec.FetchedAt.Format(time.RFC3339)}
@@ -507,6 +520,8 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		return fail(store.CellBlocked, err)
 	case errors.Is(err, release.ErrShadowed):
 		return fail(store.CellShadowed, err)
+	case errors.Is(err, release.ErrOtherSource):
+		return fail(store.CellOtherSource, err)
 	case errors.Is(err, release.ErrConflict):
 		return fail(store.CellConflict, err)
 	case errors.Is(err, store.ErrBusy), errors.Is(err, store.ErrBuildGone), errors.Is(err, store.ErrStreamBusy),

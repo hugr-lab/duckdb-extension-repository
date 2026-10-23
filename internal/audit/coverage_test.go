@@ -96,9 +96,10 @@ var writes = map[string]map[string][]audit.Kind{
 		"RetireAttestation": {"attestation_key.retire"}, "ListAttestation": nil, "PublicAttestation": nil, "OpenAttestationSigner": nil,
 	},
 	"release.Service": {
-		"Add": {"release.add", "release.publish", "shadow.add"}, "Promote": {"release.promote", "shadow.add"}, "Apply": {"release.yank",
+		"Add": {"release.add", "release.publish", "shadow.add", "source.set", "release.source"}, "Promote": {"release.promote", "shadow.add", "source.set", "release.source"},
+		"SetSource": {"source.set"}, "ClearSource": {"source.clear"}, "Sources": nil, "Source": nil, "Apply": {"release.yank",
 			"release.deprecate", "release.activate", "release.current", "release.public", "release.private"},
-		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release"}, "Resign": {"key.resign"},
+		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release", "source.set", "release.source"}, "Resign": {"key.resign"},
 		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
 	},
 	"upstream.Service": {
@@ -415,16 +416,21 @@ func TestCoverage(t *testing.T) {
 		r, _, err := en.rel.Add(rctx, admin, "acme", "staging", bytes.NewReader(ext(t, nil, "tresor", "1.0")), release.AddOptions{Name: "tresor"})
 		relID = r.ID
 		return err
-	}), "release.add")
+	}), "source.set", "release.add") // spec 0031: the first release of a name sets its source
 	en.expect("release.Service.Add", do(func() error {
 		_, _, err := en.rel.Add(rctx, admin, "acme", "staging", bytes.NewReader(ext(t, nil, "acl", "1.0")),
 			release.AddOptions{Name: "acl", Publish: &release.Publication{Version: "1.0", Platform: "linux_amd64", Provenance: `{"run":"7"}`}})
 		return err
-	}), "release.publish")
+	}), "source.set", "release.publish")
 	en.expect("release.Service.Promote", do(func() error {
 		_, _, err := en.rel.Promote(rctx, admin, "acme", "prod", "tresor", release.PromoteOptions{From: "staging", Version: "1.0"})
 		return err
-	}), "release.promote")
+	}), "source.set", "release.promote")
+	en.expect("release.Service.SetSource", do(func() error {
+		_, err := en.rel.SetSource(rctx, admin, "acme", "prod", "parquet", "tenant")
+		return err
+	}), "source.set")
+	en.expect("release.Service.ClearSource", do(func() error { return en.rel.ClearSource(rctx, admin, "acme", "prod", "parquet") }), "source.clear")
 	for _, c := range []release.Change{release.SetPrivate, release.SetPublic, release.MakeCurrent, release.Deprecate, release.Activate, release.Yank} {
 		kind := map[release.Change]audit.Kind{release.SetPrivate: "release.private", release.SetPublic: "release.public",
 			release.MakeCurrent: "release.current", release.Deprecate: "release.deprecate", release.Activate: "release.activate",
@@ -452,7 +458,7 @@ func TestCoverage(t *testing.T) {
 	en.expect("release.Service.Add", do(func() error {
 		_, _, err := en.rel.Add(rctx, admin, "acme", "prod", bytes.NewReader(ext(t, nil, "json", "9.0")), release.AddOptions{Name: "json"})
 		return err
-	}), "release.add", "shadow.add")
+	}), "source.set", "release.add", "shadow.add")
 	en.expect("upstream.Service.RemoveShadow", do(func() error { return en.up.RemoveShadow(rctx, admin, "acme", "json") }), "shadow.remove")
 	// upstreams
 	en.expect("upstream.Service.Add", do(func() error {

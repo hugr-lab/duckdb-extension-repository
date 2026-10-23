@@ -160,12 +160,14 @@ const (
 	typeMediaType    = "unsupported-media-type"
 	typeTooMany      = "too-many-requests"
 	typeUnavailable  = "unavailable"
+	// typeSource: another source holds the name in the channel (spec 0031)
+	typeSource = "source"
 )
 
 var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "Not Found", typeMethod: "Method Not Allowed",
 	typeInvalid: "Invalid", typeConflict: "Conflict", typePrecondition: "Precondition Failed",
 	typeRequired: "Precondition Required", typeTooLarge: "Content Too Large", typeMediaType: "Unsupported Media Type",
-	typeTooMany: "Too Many Requests", typeUnavailable: "Service Unavailable"}
+	typeTooMany: "Too Many Requests", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
 func problem(w http.ResponseWriter, status int, typ, detail string) {
@@ -605,6 +607,10 @@ func init() {
 		{"tenants/{t}/channels/{c}/duckdb-versions", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelVersions),
 			http.MethodPost: mb(pathAdmin, (*Handler).addChannelVersion)}},
 		{"tenants/{t}/channels/{c}/duckdb-versions/{v}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeChannelVersion)}},
+		// spec 0031: a name's source in a channel ({name}, not {ext}: a channel's administrators)
+		{"tenants/{t}/channels/{c}/sources", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelSources)}},
+		{"tenants/{t}/channels/{c}/sources/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelSource),
+			http.MethodPut: mb(pathAdmin, (*Handler).setChannelSource), http.MethodDelete: m(pathAdmin, (*Handler).clearChannelSource)}},
 		{"tenants/{t}/channels/{c}/keys", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).keyView),
 			http.MethodPost: mb(serverAdmin, (*Handler).addKey)}},
 		{"tenants/{t}/channels/{c}/keys/events", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).keyEvents)}},

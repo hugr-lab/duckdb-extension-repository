@@ -487,17 +487,15 @@ func TestIntakeRejects(t *testing.T) {
 
 func TestShadowsAndBlocks(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
-		// a replacement in the channel refuses the entry
+		// spec 0031: the tenant's release of tresor sets its source; an upstream listing it is added,
+		// and its cell is other_source, decided before the download
 		repl := signed(t, en.key, cpp("1.0", "v2.0.0"), 9, "tresor_duckdb_cpp_init")
 		if _, _, err := en.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(repl), release.AddOptions{Name: "tresor"}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "tresor"})); !errors.Is(err, upstream.ErrCollision) {
-			t.Fatalf("an entry a replacement holds: %v", err)
-		}
 		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "acl_duckdb_cpp_init"))
-		if _, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "acl"})); err != nil {
-			t.Fatal(err)
+		if _, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "tresor"}, store.UpstreamEntry{Name: "acl"})); err != nil {
+			t.Fatalf("an entry another source holds: %v", err)
 		}
 		// a second upstream of the channel cannot list acl
 		sp := en.spec(store.UpstreamEntry{Name: "acl"})
@@ -505,13 +503,31 @@ func TestShadowsAndBlocks(t *testing.T) {
 		if _, err := en.up.Add(ctx, admin, "acme", sp); !errors.Is(err, upstream.ErrCollision) {
 			t.Fatalf("a name on two upstreams of a channel: %v", err)
 		}
-		// a replacement published later wins: the upstream's cell is shadowed
+		if r := en.sync(t, false); r.Counts[store.CellOtherSource] != 1 || r.Counts[store.CellReleased] != 1 {
+			t.Fatalf("the first run: %+v", r)
+		}
+		// the upstream's acl holds the name: the tenant's release of it is refused, naming the source
 		later := signed(t, en.key, cpp("0.9", "v2.0.0"), 8, "acl_duckdb_cpp_init")
+		_, _, err := en.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(later), release.AddOptions{Name: "acl"})
+		if !errors.Is(err, release.ErrOtherSource) || !strings.Contains(err.Error(), "upstream:acme-repo") {
+			t.Fatalf("a release under the upstream's name: %v", err)
+		}
+		// switched to the tenant: its release lands, and the upstream's cell is other_source
+		if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "acl", "tenant"); err != nil {
+			t.Fatal(err)
+		}
 		if _, _, err := en.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(later), release.AddOptions{Name: "acl"}); err != nil {
 			t.Fatal(err)
 		}
-		if r := en.sync(t, false); r.Counts[store.CellShadowed] != 1 {
-			t.Fatalf("shadowed: %+v", r)
+		if r := en.sync(t, false); r.Counts[store.CellOtherSource] != 2 {
+			t.Fatalf("other_source: %+v", r)
+		}
+		// switched back: the upstream's release is served again, and its cell unchanged
+		if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "acl", "upstream:acme-repo"); err != nil {
+			t.Fatal(err)
+		}
+		if r := en.sync(t, false); r.Counts[store.CellOtherSource] != 1 || r.Counts[store.CellUnchanged] != 1 {
+			t.Fatalf("switched back: %+v", r)
 		}
 		// a blocked body is not released
 		if err := en.up.RemoveEntry(ctx, admin, "acme", "acme-repo", "acl"); err != nil {
@@ -1204,6 +1220,41 @@ func TestCheckAddAll(t *testing.T) {
 		bad.Name, bad.Keys = "bad", []string{"sha256:XYZ"}
 		if i, err := en.up.CheckAddAll(ctx, admin, "acme", []upstream.Spec{b, bad}); !errors.Is(err, store.ErrInvalid) || i != 1 {
 			t.Fatalf("a bad field: %d %v", i, err)
+		}
+	})
+}
+
+// Spec 0031: an upstream removed and added again (a new id) succeeds the removed one: its names and
+// the releases of the same bodies are the new upstream's, and the channel serves them on.
+func TestUpstreamSuccession(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "acl_duckdb_cpp_init"))
+		if _, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "acl"})); err != nil {
+			t.Fatal(err)
+		}
+		if r := en.sync(t, false); r.Counts[store.CellReleased] != 1 {
+			t.Fatalf("the first run: %+v", r)
+		}
+		if err := en.up.Remove(ctx, admin, "acme", "acme-repo", 0); err != nil {
+			t.Fatal(err)
+		}
+		u, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "acl"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := en.sync(t, false); r.Counts[store.CellUnchanged] != 1 {
+			t.Fatalf("the run of the new upstream: %+v", r)
+		}
+		ch, err := en.st.GetChannel(ctx, "acme", "prod")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sel, err := en.st.ChannelSources(ctx, ch.ID); err != nil || sel["acl"].Source != store.UpstreamSource(u.ID) {
+			t.Fatalf("the source: %+v %v", sel, err)
+		}
+		rs, err := en.st.ListReleases(ctx, ch.ID, "acl")
+		if err != nil || len(rs) != 1 || rs[0].Source != store.UpstreamSource(u.ID) {
+			t.Fatalf("the release's source: %+v %v", rs, err)
 		}
 	})
 }

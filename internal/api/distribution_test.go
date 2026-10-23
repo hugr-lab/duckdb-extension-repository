@@ -64,6 +64,7 @@ func TestDistributionAdmin(t *testing.T) {
 		"a channel-wide grant":               `{"principal":"publisher:enterest-ci","verbs":["publish"],"channel":"prod"}`,
 		"a tenant-wide grant":                `{"principal":"subject:corp|dana","verbs":["admin"]}`,
 		"another verb":                       `{"principal":"subject:corp|dana","verbs":["install"],"extension":"acme_tool"}`,
+		"publish to a person (spec 0031)":    `{"principal":"subject:corp|dana","verbs":["publish"],"extension":"acme_tool"}`,
 		"an extension group":                 `{"principal":"subject:corp|dana","verbs":["admin"],"extension_group":"platform"}`,
 		"a whole issuer":                     `{"principal":"issuer:corp","verbs":["install"],"extension":"acme_tool"}`,
 		"the tenant's own publisher":         `{"principal":"publisher:own-ci","verbs":["publish"],"extension":"acme_tool"}`,

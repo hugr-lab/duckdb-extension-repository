@@ -1,6 +1,7 @@
 # Spec 0031: A name's source in a channel
 
-- **Status**: accepted
+- **Status**: accepted; part 1 implemented (the store, intake, serving, switching over the API and
+  the CLI); part 2 to come (the console's view and switch, the DuckDB end to end)
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 
@@ -72,16 +73,34 @@ channel_sources   channel_id fk, name, source, set_by, set_at;   pk (channel_id,
   state; they are listed to administrators with `selected: false`, and never served.
 - **Switching.** A channel administrator (admin on the channel; a tenant administrator) sets the
   source: `PUT /api/v1/tenants/{t}/channels/{c}/sources/{name}` with `{"source": "…"}`, any source
-  the tenant has (an upstream of the channel, a publisher of the tenant, `tenant`), whether it has
+  the tenant has (an upstream, a publisher, `tenant`; an upstream of another channel is the source of
+  mirrored releases promoted from it), whether it has
   releases there yet or not. The new source's stored releases are served at once; a mirror fills in
   at its next run, a publisher publishes. `DELETE …/sources/{name}` clears it: the next arrival sets
   it again. `GET …/sources[/{name}]` lists the selections, each with the sources that have releases
   of the name in the channel (what a switch could serve now). CLI: `kista admin channel source
-  <tenant>/<channel> <name> [-set <source> | -clear]`. Events: `source.set`, `source.clear` (the
-  name, the source before and after, whether it was an arrival).
+  <tenant>/<channel> [<name> [-set <source> | -clear]]`. Events: `source.set`, `source.clear` (the
+  name, the source before and after, whether it was an arrival). Answers and events name sources
+  as `tenant`, `upstream:<name>`, `publisher:<name>` (a removed one's as `upstream:(removed)`,
+  `publisher:(removed)`), and `PUT` takes them so.
 - **Yanks and blocks are unchanged**: a yanked release of the selected source is not served; the
   name is then served by nothing until a release of the source is current again or the source is
   switched. Nothing falls back to another source by itself.
+- **The same body takes the slot** (found in implementation): a slot is never replaced, so a release
+  of the name's source whose body the slot already holds from another source takes that release:
+  its source becomes the name's source (a `release.source` event; the release keeps its origin
+  and provenance, which say how its body came). The same body arriving for a name without a source
+  (cleared) sets it, as any arrival. Without it, a switch to a source that brings the same
+  bodies (a publisher republishing what another published, an upstream added again) could never
+  serve those versions.
+- **A removed upstream's names pass to its successor** (found in implementation): an upstream
+  removed and added again (a new id) would otherwise find its names held by a source that no
+  longer exists, and its bodies in slots it cannot take. So an upstream arriving at a name whose
+  source is a removed upstream's takes the name (`source.set`, `arrival: true`, `before` the removed
+  one), with the releases of the same bodies. Only an upstream's intake succeeds one (not a
+  promotion of a mirrored release); a publisher's or the tenant's release under such a name is
+  refused as any other source's.
+- **A promotion takes what the source channel serves**: the releases of its source of the name.
 
 ### What changes in spec 0009
 
@@ -106,15 +125,19 @@ Migration 0032 (`min_reader 32`: an older replica would serve another source's r
   from the earliest other release of the same build in the tenant, the one it was promoted from,
   else `tenant`. From now on a promotion copies the source of the release it promotes.
 - `channel_sources` filled for every (channel, name) with a release that is not yanked: the source
-  of the replacement spec 0009 serves today if there is one (so nothing a tenant serves changes),
-  else the mirror's.
+  of the replacement spec 0009 serves today if there is one, else the mirror's, the newest current
+  release first. A channel that held one name's releases from several non-mirror sources (an
+  administrator's add and a publisher's CI) serves the newest's only from then on; the upgrade notes
+  say so.
+- A mirrored release whose upstream cannot be found (removed before the migration) gets
+  `upstream:` (a removed upstream's), which a later upstream of the channel succeeds.
 
 ### Index and API answers
 
 - The index (spec 0007) shows the selected source's releases only, as today's view: an anonymous or
-  install caller sees no other source. A release row gains `source` for administrators.
+  install caller sees no other source.
 - `GET …/extensions/{ext}/releases` (administrators, publishers) lists every source's releases with
-  `source` and `selected`.
+  `source` and `selected`; administrators see sources there, not in the index (as built).
 
 ## Security
 
@@ -127,6 +150,12 @@ Migration 0032 (`min_reader 32`: an older replica would serve another source's r
   name that is unselected or already its publisher's.
 - **Existence**: an answer that names a channel's source goes to callers who may publish or
   administer there; others get spec 0007's `404`.
+- **Clearing opens the name**: after `DELETE …/sources/{name}`, the next release of the name sets
+  its source, whoever brings it (a publisher with publish on it, the next mirror run). An
+  administrator who wants a given source sets it rather than clearing.
+- **A distributor's builds are its publisher's** (a change to spec 0030): a distribution admin
+  grants `publish` and `promote` only to publishers, so no build of a distributor's arrives as the
+  tenant's own source.
 - **Signing** is unchanged: only stored, signed releases of the selected source are served.
 
 ## Testing
@@ -159,3 +188,4 @@ Migration 0032 (`min_reader 32`: an older replica would serve another source's r
 - **0008**: publications and promotions refused (`409`) under another source.
 - **0009**: replacements no longer win by kind; `other_source` replaces `shadowed` for that case;
   entries for names another source holds are allowed.
+- **0030**: a distribution admin's `publish` and `promote` grants go to publishers only.

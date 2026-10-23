@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -360,16 +361,50 @@ type releaseJSON struct {
 	PublisherStatement string `json:"publisher_statement,omitempty"`
 	PublisherSignature string `json:"publisher_signature,omitempty"`
 	Shadows            string `json:"shadows,omitempty"`
-	ETag               string `json:"etag"`
+	// Source is whose release it is, and Selected whether it is the channel's source of the name
+	// (spec 0031): only the selected source's releases are served.
+	Source   string `json:"source"`
+	Selected bool   `json:"selected"`
+	ETag     string `json:"etag"`
+}
+
+// sourcesOf is what release answers show of sources (spec 0031): their labels and the channel's
+// selection.
+type sourcesOf struct {
+	labels   map[string]string
+	selected map[string]store.ChannelSource
+}
+
+func (h *Handler) sourcesFor(ctx context.Context, tenantID, channelID string) (*sourcesOf, error) {
+	labels, err := h.o.Store.SourceLabels(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	sel, err := h.o.Store.ChannelSources(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	return &sourcesOf{labels: labels, selected: sel}, nil
+}
+
+// channelIDOf is the channel of a list of releases ("" when empty).
+func channelIDOf(rs []store.Candidate) string {
+	if len(rs) == 0 {
+		return ""
+	}
+	return rs[0].ChannelID
 }
 
 // releaseView is a release for its readers: the extension's administrators see who changed it,
 // its publishers (spec 0008) do not.
-func releaseView(x store.Candidate, c caller, admin bool, provided map[string]bool) releaseJSON {
+func releaseView(x store.Candidate, c caller, admin bool, provided map[string]bool, src *sourcesOf) releaseJSON {
 	o := releaseJSON{ID: x.ID, Name: x.Name, Version: x.ExtVersion, Platform: x.Platform, Slot: x.Slot, ABI: x.ABI,
 		DuckDBVersion: x.DuckDBVersion, State: x.State, Visibility: x.Visibility, Seq: x.Seq, BodyHash: x.BodyHash,
 		CreatedAt: timeOf(x.CreatedAt), StateChangedAt: timeOf(x.StateChangedAt), Origin: x.Origin,
 		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(x, provided), ETag: versionTag(x.Version)}
+	if src != nil {
+		o.Source, o.Selected = store.Label(src.labels, x.Source), src.selected[x.Name].Source == x.Source
+	}
 	if admin {
 		o.CreatedBy, o.StateChangedBy = createdBy(x.CreatedBy, c), createdBy(x.StateChangedBy, c)
 		// administrators only, as who made it: another publisher of the channel could otherwise
@@ -436,9 +471,14 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request, c caller,
 		h.fail(w, err)
 		return
 	}
+	src, err := h.sourcesFor(r.Context(), c.tenant.ID, channelIDOf(rs))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
 	out := []releaseJSON{}
 	for _, x := range rs {
-		out = append(out, releaseView(x, c, admin, provided))
+		out = append(out, releaseView(x, c, admin, provided, src))
 	}
 	reply(w, r, http.StatusOK, list("releases", out, next), "", noStore)
 }
@@ -463,9 +503,14 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request, c caller, p
 		h.fail(w, err)
 		return
 	}
+	src, err := h.sourcesFor(r.Context(), c.tenant.ID, channelIDOf(rs))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
 	for _, x := range rs {
 		if x.ID == p["id"] {
-			reply(w, r, http.StatusOK, releaseView(x, c, h.isAdmin(r, c, p), provided), versionTag(x.Version), noStore)
+			reply(w, r, http.StatusOK, releaseView(x, c, h.isAdmin(r, c, p), provided, src), versionTag(x.Version), noStore)
 			return
 		}
 	}

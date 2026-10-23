@@ -681,7 +681,7 @@ func (x *exporter) fromUpstream(ctx context.Context, src *xsource, xu *xupstream
 			return missing(whyPullThrough), nil, nil
 		case !ok:
 			return missing(""), nil, nil
-		case slices.Contains([]string{store.CellRejected, store.CellBlocked, store.CellShadowed, store.CellConflict}, rec.Outcome):
+		case slices.Contains([]string{store.CellRejected, store.CellBlocked, store.CellShadowed, store.CellConflict, store.CellOtherSource}, rec.Outcome):
 			return rejected(cmpOr(rec.Detail, rec.Outcome)), nil, nil
 		case rec.Outcome == store.CellFailed:
 			return missing("the last fetch failed"), nil, nil // the fetch's own error stays on the exporting side

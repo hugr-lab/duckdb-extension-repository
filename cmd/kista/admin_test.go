@@ -147,6 +147,21 @@ func TestAdminCLI(t *testing.T) {
 	}
 	run(1, "release", "add", "acme/prod", file, "-name", "postgres", "-unchecked") // an alias DuckDB never requests
 	run(2, "release", "add", "acme/prod", file)                                    // no -name
+	// spec 0031: the release set tresor's source; set, shown, cleared
+	if got := run(0, "channel", "source", "acme/prod"); !strings.Contains(got, "tresor") || !strings.Contains(got, "tenant=1") {
+		t.Fatalf("channel source: %q", got)
+	}
+	run(1, "channel", "source", "acme/prod", "tresor", "-set", "upstream:nope")
+	run(2, "channel", "source", "acme/prod", "tresor", "-set", "tenant", "-clear")
+	run(2, "channel", "source", "acme/prod", "-clear")
+	if got := run(0, "channel", "source", "acme/prod", "tresor", "-set", "tenant"); !strings.Contains(got, "os:") {
+		t.Fatalf("channel source -set: %q", got)
+	}
+	run(0, "channel", "source", "acme/prod", "tresor", "-clear")
+	if got := run(0, "channel", "source", "acme/prod", "tresor"); !strings.Contains(got, "tresor  -") {
+		t.Fatalf("channel source after -clear: %q", got)
+	}
+	run(0, "channel", "source", "acme/prod", "tresor", "-set", "tenant")
 	if got := run(0, "release", "list", "acme/prod"); !strings.Contains(got, rid) || !strings.Contains(got, "public") {
 		t.Fatalf("release list: %q", got)
 	}

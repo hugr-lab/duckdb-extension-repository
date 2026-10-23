@@ -20,6 +20,7 @@ var ErrSignature = errors.New("release: the signature does not verify with the u
 type Ingest struct {
 	Name, DuckDBVersion, Platform string
 	Upstream, URL                 string   // for the event (spec 0010)
+	UpstreamID                    string   // the release's source (spec 0031)
 	Versions                      []string // accepted extension versions; none: any
 	Keys                          []*rsa.PublicKey
 	Visibility                    string
@@ -87,7 +88,7 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		}
 		return res, err
 	}
-	it := item{b: b, visibility: in.Visibility, origin: store.OriginUpstream, originSignature: f.Signature,
+	it := item{b: b, visibility: in.Visibility, origin: store.OriginUpstream, originSignature: f.Signature, source: store.UpstreamSource(in.UpstreamID),
 		reserveKind: in.ReserveKind, reserveSource: in.ReserveSource, anyKind: in.AnyKind}
 	if in.Provenance != nil {
 		it.provenance = in.Provenance(key)
@@ -95,15 +96,13 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	if in.KeySource != "" && f.LicenseKeys.Err == nil && len(f.LicenseKeys.Keys) > 0 {
 		it.keys, it.keyKind, it.keySources = licenseKeys(f), store.KeySourceUpstream, []string{in.KeySource}
 	}
-	// the slot and the shadow before the body is stored (both are checked again under the lock)
+	// the slot and the name's source before the body is stored (both are checked again under the lock)
 	var existing *store.Release
+	selected := false // the name has a source the release keeps (spec 0031)
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
-		shadowed, err := tx.LiveReplacement(ctx, ch.ID, b.Name)
-		if err != nil {
+		var err error
+		if selected, _, err = checkSource(ctx, tx, ch.ID, b.Name, it.source, true); err != nil {
 			return err
-		}
-		if shadowed {
-			return ErrShadowed
 		}
 		cands, err := tx.SlotCandidates(ctx, ch.ID, b.Name, b.ExtVersion, b.Platform)
 		if err != nil {
@@ -114,7 +113,8 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	}); err != nil {
 		return res, err
 	}
-	if existing != nil {
+	// another source's, or a name without a source, goes through the insert (spec 0031)
+	if existing != nil && existing.Source == it.source && selected {
 		// spec 0021: the body was fetched, so a trusted source records the keys it declares on the
 		// slot's build, which may predate them (an earlier release, or another source's)
 		if len(it.keySources) > 0 && !in.DryRun {

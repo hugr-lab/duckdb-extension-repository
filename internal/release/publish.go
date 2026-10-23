@@ -92,8 +92,16 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 	if err != nil {
 		return nil, false, err
 	}
+	// spec 0031: only what the source channel serves: its source of the name's releases
+	sel, err := s.Store.ChannelSources(ctx, source.Channel.ID)
+	if err != nil {
+		return nil, false, err
+	}
 	var picked []store.Candidate
 	for _, r := range rels {
+		if r.Source != sel[name].Source {
+			continue
+		}
 		if r.ID == o.Release || o.Version != "" && r.ExtVersion == o.Version {
 			picked = append(picked, r)
 		}
@@ -140,8 +148,9 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 			prov, _ = json.Marshal(map[string]string{"actor": a.String(), "from_channel": o.From, "from_release": r.ID,
 				"credential": CredentialOf(r.Release)})
 		}
+		// spec 0031: a promotion keeps the source of the release it promotes
 		it := item{b: b, visibility: vis, notCurrent: o.NotCurrent, origin: store.OriginPromotion, provenance: string(prov),
-			statement: o.Statement, signature: o.Signature}
+			statement: o.Statement, signature: o.Signature, source: r.Source}
 		if t := res(channel); !t.Reserved {
 			it.recheck = s.reservedCheck(a, authz.VerbPromote, t)
 		}

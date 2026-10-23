@@ -110,6 +110,9 @@ are all the kinds in `internal/audit`:
 | | `bundle.export` | `tenant:<name>` | `plan` (its SHA-256), `manifest`, `manifest_sha256`, `bundle_key` (none when unsigned), `counts` (per outcome, `licenses` carried, and `failed_sources`; per feed `feed_bodies`, `feed_statements`, `feed_withdrawals`, `feed_without_content`, `feed_documents`, and `failed_feeds`) |
 | | `bootstrap.apply`, `bootstrap.accept`, `bootstrap.rearm` | `tenant:<name>` | `tenant`, `digest`; apply: `source` (the configuration's file, `env:NAME`, or empty), `version`, `host`, `created` (what was made, by kind; last, so a long list is cut first); accept: `previous`. `serve`'s apply has the actor `system:bootstrap`, and so do the events of the objects it makes |
 | | `shadow.add`, `shadow.remove` | `shadow:<name>` | `name` |
+| | `source.set` | `channel:<channel>/ext:<name>` | `name`, `source`, `before` (`""`: none), `arrival` (`true`: the first release of the name, or an upstream succeeding a removed one; `false`: an administrator's switch); sources as `tenant`, `upstream:<name>`, `publisher:<name>` (spec 0031) |
+| | `source.clear` | `channel:<channel>/ext:<name>` | `name`, `before` |
+| | `release.source` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `before`, `source`: the name's source brought a body the slot held from another source, and took its release |
 | Attachments and feeds | `attachment.add` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `size` |
 | | `attachment.change` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `change`, `statement` |
 | | `attachment.remove` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `size`, `statement` |

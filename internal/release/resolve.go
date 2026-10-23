@@ -40,6 +40,9 @@ type Snapshot struct {
 	// Kids are the licence key ids recorded for each of the channel's builds, by build id (spec
 	// 0021); recording or dropping keys bumps release_version on the channels holding the build.
 	Kids map[string][]string
+	// Selected is the channel's source of each name (spec 0031); Releases holds the selected
+	// sources' releases only. A selection's change bumps release_version.
+	Selected map[string]string
 
 	groups    map[group][]*store.Candidate // by (name, platform), in Releases order
 	platforms map[string][]string          // by name, sorted
@@ -363,6 +366,15 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 	if err != nil {
 		return nil, err
 	}
+	sel, err := s.Store.ChannelSources(ctx, c.ID)
+	if err != nil {
+		return nil, err
+	}
+	selected := make(map[string]string, len(sel))
+	for n, x := range sel {
+		selected[n] = x.Source
+	}
+	rels = SelectedOnly(rels, selected)
 	capis, err := s.Store.ChannelCAPIs(ctx, c.ID)
 	if err != nil {
 		return nil, err
@@ -374,6 +386,7 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 		}
 	}
 	snap := NewSnapshot(c, rels, capis, keys)
+	snap.Selected = selected
 	if snap.Blocked, err = s.Store.BlockedHashes(ctx, c.TenantID); err != nil {
 		return nil, err
 	}
@@ -420,6 +433,18 @@ func Shadows(c store.Candidate, provided map[string]bool) string {
 	return ""
 }
 
+// SelectedOnly keeps the releases of each name's selected source (spec 0031): a name without one
+// is served by nothing.
+func SelectedOnly(rels []store.Candidate, selected map[string]string) []store.Candidate {
+	out := rels[:0:0]
+	for _, r := range rels {
+		if src, ok := selected[r.Name]; ok && src == r.Source {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // PullThroughFor returns the pull-through upstream a miss of the cell may be offered to (spec 0009
 // phase 2), or "": a DuckDB version the channel serves, a platform the upstream fetches, and a name
 // it lists, or for "*" any name no other upstream of the channel lists that is not reserved.
@@ -430,6 +455,9 @@ func (s *Snapshot) PullThroughFor(version, platform, name string) string {
 	for _, p := range s.PullThrough {
 		if !p.Platforms[platform] {
 			continue
+		}
+		if src, ok := s.Selected[name]; ok && src != store.UpstreamSource(p.UpstreamID) {
+			continue // spec 0031: another source holds the name in the channel
 		}
 		if p.Names[name] || p.Any && !s.Listed[name] && !s.TenantReserved[name] && !s.Provided[name] && AnyTakes(p.Kind, name) {
 			return p.UpstreamID

@@ -36,20 +36,19 @@ func TestUpstreams(t *testing.T) {
 		body string
 		want int
 	}{
-		"the same name":       {core, 409},
-		"an alias":            {`{"name":"x","kind":"duckdb-core","channel":"prod","platforms":["linux_amd64"],"extensions":[{"name":"postgres"}]}`, 400},
-		"a name on two":       {`{"name":"x","kind":"duckdb-core","channel":"staging","platforms":["linux_amd64"],"extensions":[{"name":"tresor"}]}`, 409},
-		"a replacement holds": {`{"name":"x","kind":"duckdb-core","channel":"prod","platforms":["linux_amd64"],"extensions":[{"name":"acl"}]}`, 409},
-		"no channel":          {`{"name":"x","kind":"duckdb-core","channel":"nope","platforms":["linux_amd64"]}`, 400},
-		"a kind":              {`{"name":"x","kind":"enterest","channel":"prod","platforms":["linux_amd64"]}`, 400},
-		"an unknown field":    {`{"name":"x","kind":"duckdb-core","channel":"prod","platforms":["linux_amd64"],"bogus":1}`, 400},
+		"the same name":    {core, 409},
+		"an alias":         {`{"name":"x","kind":"duckdb-core","channel":"prod","platforms":["linux_amd64"],"extensions":[{"name":"postgres"}]}`, 400},
+		"a name on two":    {`{"name":"x","kind":"duckdb-core","channel":"staging","platforms":["linux_amd64"],"extensions":[{"name":"tresor"}]}`, 409},
+		"no channel":       {`{"name":"x","kind":"duckdb-core","channel":"nope","platforms":["linux_amd64"]}`, 400},
+		"a kind":           {`{"name":"x","kind":"enterest","channel":"prod","platforms":["linux_amd64"]}`, 400},
+		"an unknown field": {`{"name":"x","kind":"duckdb-core","channel":"prod","platforms":["linux_amd64"],"bogus":1}`, 400},
 	} {
 		if r := m.call(t, "POST", U, ta, tc.body); r.status != tc.want {
 			t.Errorf("%s: %d %s", name, r.status, r.body)
 		}
 	}
 	// the collision names the names
-	if r := m.call(t, "POST", U, ta, `{"name":"x","kind":"duckdb-core","channel":"prod","platforms":["linux_amd64"],"extensions":[{"name":"acl"}]}`); !strings.Contains(string(r.body), "acl") {
+	if r := m.call(t, "POST", U, ta, `{"name":"x","kind":"duckdb-core","channel":"staging","platforms":["linux_amd64"],"extensions":[{"name":"tresor"}]}`); !strings.Contains(string(r.body), "tresor") {
 		t.Errorf("a collision's message: %s", r.body)
 	}
 	// the reservation shows in the index: tresor's own releases in prod shadow the upstream's name

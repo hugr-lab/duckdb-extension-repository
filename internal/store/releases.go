@@ -81,7 +81,11 @@ type Release struct {
 	CreatedBy, StateChangedBy        string
 	Version                          int64
 	Origin                           string // admin | publication | promotion (spec 0008) | upstream (spec 0009)
-	Provenance                       string // JSON, at most 4,000 bytes; "" when none
+	// Source is whose release it is (spec 0031): upstream:<id>, publisher:<id> or tenant; a
+	// promotion keeps the source of the release it promotes. Set at insert; it changes only when the
+	// name's source brings the same body again (it takes the slot's release).
+	Source     string
+	Provenance string // JSON, at most 4,000 bytes; "" when none
 	// PublisherStatement and PublisherSignature are a publisher's signed request as it came (spec
 	// 0023): the statement, and the SSHSIG blob in standard base64. "" when none.
 	PublisherStatement, PublisherSignature string
@@ -123,7 +127,7 @@ func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 
 const releaseCols = `r.id, r.tenant_id, r.channel_id, r.build_id, r.name, r.ext_version, r.platform, r.slot, r.state,
 r.visibility, r.seq, r.created_at, r.created_by, r.state_changed_at, r.state_changed_by, r.version, r.origin, r.provenance,
-r.publisher_statement, r.publisher_signature`
+r.publisher_statement, r.publisher_signature, r.source`
 
 func scanRelease(r interface{ Scan(...any) error }, extra ...any) (Release, error) {
 	var x Release
@@ -131,7 +135,7 @@ func scanRelease(r interface{ Scan(...any) error }, extra ...any) (Release, erro
 	var prov, stmt, sig sql.NullString
 	dst := []any{&x.ID, &x.TenantID, &x.ChannelID, &x.BuildID, &x.Name, &x.ExtVersion, &x.Platform, &x.Slot,
 		&x.State, &x.Visibility, &seq, scanTime{&x.CreatedAt}, &x.CreatedBy, scanTime{&x.StateChangedAt},
-		&x.StateChangedBy, &x.Version, &x.Origin, &prov, &stmt, &sig}
+		&x.StateChangedBy, &x.Version, &x.Origin, &prov, &stmt, &sig, &x.Source}
 	err := r.Scan(append(dst, extra...)...)
 	x.Seq, x.Provenance, x.PublisherStatement, x.PublisherSignature = seq.Int64, prov.String, stmt.String, sig.String
 	return x, err
@@ -326,6 +330,12 @@ func (t *Tx) InsertRelease(ctx context.Context, r *Release, actor string) error 
 	if r.Origin == "" {
 		r.Origin = OriginAdmin
 	}
+	if r.Source == "" {
+		r.Source = SourceTenant
+	}
+	if !ValidSource(r.Source) {
+		return fmt.Errorf("%w: source %q", ErrInvalid, r.Source)
+	}
 	if len(r.Provenance) > 4000 {
 		return fmt.Errorf("%w: provenance is too long", ErrInvalid)
 	}
@@ -334,10 +344,10 @@ func (t *Tx) InsertRelease(ctx context.Context, r *Release, actor string) error 
 	}
 	_, err := t.exec(ctx, `INSERT INTO releases (id, tenant_id, channel_id, build_id, name, ext_version, platform, slot, state,
 visibility, seq, created_at, created_by, state_changed_at, state_changed_by, version, origin, provenance, origin_signature,
-publisher_statement, publisher_signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+publisher_statement, publisher_signature, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.TenantID, r.ChannelID, r.BuildID, r.Name, r.ExtVersion, r.Platform, r.Slot, r.State, r.Visibility, seq,
 		t.s.d.timeArg(now), actor, t.s.d.timeArg(now), actor, r.Version, r.Origin, nullable(r.Provenance), nullBytes(r.OriginSignature),
-		nullable(r.PublisherStatement), nullable(r.PublisherSignature))
+		nullable(r.PublisherStatement), nullable(r.PublisherSignature), r.Source)
 	if t.s.d.foreignKey(err) { // the channel is never deleted: the Build was collected (spec 0016)
 		return fmt.Errorf("%w: %s", ErrBuildGone, r.BuildID)
 	}
