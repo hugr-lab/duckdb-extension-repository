@@ -1,6 +1,6 @@
 # Spec 0031: A name's source in a channel
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 
