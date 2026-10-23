@@ -98,9 +98,9 @@ are all the kinds in `internal/audit`:
 | | `release.purge` | the release | `release`, `name`, `version`, `platform`, `slot`, `body_hash` |
 | | `block.add` | `block:<body hash>` | `body_hash`, `reason` |
 | | `block.remove` | `block:<body hash>` | `body_hash` |
-| Upstreams | `upstream.add` | `upstream:<name>` | `name`, `kind`, `prefix`, `channel`, `mode`, `visibility`, `keys`, `platforms`, `extensions`, `credential` |
+| Upstreams | `upstream.add` | `upstream:<name>` | `name`, `kind`, `prefix`, `channel`, `mode`, `fetch`, `visibility`, `keys`, `platforms`, `extensions`, `credential` |
 | | `upstream.remove` | `upstream:<name>` | `name` |
-| | `upstream.change` | `upstream:<name>` | `name`, `change`, `value`, `versions`, `allow_reserved`, `visibility`, `state` |
+| | `upstream.change` | `upstream:<name>` | `name`, `change`, `value`, `versions`, `allow_reserved`, `eager`, `visibility`, `state` |
 | | `upstream.release` | `channel:<channel>/ext:<name>/release:<id>` | `upstream`, `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `url`, `key`, `bundle` (an import's manifest) |
 | | `upstream.rejected` | `upstream:<name>` | `upstream`, `duckdb_version`, `platform`, `name`, `outcome` |
 | | `upstream.run` | `upstream:<name>` | `upstream`, `dry_run`, `counts`, `error`, `bundle` (an import's manifest) |

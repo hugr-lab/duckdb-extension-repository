@@ -79,3 +79,26 @@ func TestDownload(t *testing.T) {
 		t.Errorf("a private address: %v", err)
 	}
 }
+
+// Spec 0032: a Retry-After is delay-seconds or an HTTP date; a past date is now, a bad or negative
+// value is none.
+func TestRetryAfter(t *testing.T) {
+	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	for v, want := range map[string]struct {
+		d  time.Duration
+		ok bool
+	}{
+		"":                              {0, false},
+		"0":                             {0, true},
+		"5":                             {5 * time.Second, true},
+		"-1":                            {0, false},
+		"soon":                          {0, false},
+		"99999999999999999999":          {0, false},
+		"Fri, 23 Oct 2026 12:00:10 GMT": {10 * time.Second, true},
+		"Fri, 23 Oct 2026 11:00:00 GMT": {0, true},
+	} {
+		if d, ok := retryAfter(v, now); d != want.d || ok != want.ok {
+			t.Errorf("%q: %v %v, want %v %v", v, d, ok, want.d, want.ok)
+		}
+	}
+}

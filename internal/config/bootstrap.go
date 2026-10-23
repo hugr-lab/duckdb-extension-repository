@@ -33,12 +33,15 @@ type Bootstrap struct {
 // BootstrapUpstream is an upstream of one of the section's channels (upstream add, spec 0009): a
 // mirror or pull-through upstream; bundle mode is an operator's, never the bootstrap's.
 type BootstrapUpstream struct {
-	Name       string                   `yaml:"name" json:"name,omitempty"`
-	Kind       string                   `yaml:"kind" json:"kind,omitempty"`
-	Prefix     string                   `yaml:"prefix" json:"prefix,omitempty"`
-	Keys       []string                 `yaml:"keys" json:"keys,omitempty"`
-	Channel    string                   `yaml:"channel" json:"channel,omitempty"`
-	Mode       string                   `yaml:"mode" json:"mode,omitempty"`
+	Name    string   `yaml:"name" json:"name,omitempty"`
+	Kind    string   `yaml:"kind" json:"kind,omitempty"`
+	Prefix  string   `yaml:"prefix" json:"prefix,omitempty"`
+	Keys    []string `yaml:"keys" json:"keys,omitempty"`
+	Channel string   `yaml:"channel" json:"channel,omitempty"`
+	Mode    string   `yaml:"mode" json:"mode,omitempty"`
+	// Fetch is a mirror's: eager or lazy (spec 0032); "" is eager, never defaulted, so a section
+	// applied before it keeps its digest
+	Fetch      string                   `yaml:"fetch" json:"fetch,omitempty"`
 	Platforms  []string                 `yaml:"platforms" json:"platforms,omitempty"`
 	Extensions []BootstrapUpstreamEntry `yaml:"extensions" json:"extensions,omitempty"`
 	Visibility string                   `yaml:"visibility" json:"visibility,omitempty"`
@@ -51,13 +54,14 @@ type BootstrapUpstreamEntry struct {
 	Name          string   `yaml:"name" json:"name,omitempty"`
 	Versions      []string `yaml:"versions" json:"versions,omitempty"`
 	AllowReserved bool     `yaml:"allow_reserved" json:"allow_reserved,omitempty"`
+	Eager         bool     `yaml:"eager" json:"eager,omitempty"` // a lazy mirror fetches it unasked (spec 0032)
 }
 
 // StoreEntries are the allowlist as the store holds it.
 func (u BootstrapUpstream) StoreEntries() []store.UpstreamEntry {
 	out := make([]store.UpstreamEntry, len(u.Extensions))
 	for i, e := range u.Extensions {
-		out[i] = store.UpstreamEntry{Name: e.Name, Versions: e.Versions, AllowReserved: e.AllowReserved}
+		out[i] = store.UpstreamEntry{Name: e.Name, Versions: e.Versions, AllowReserved: e.AllowReserved, Eager: e.Eager}
 	}
 	return out
 }
@@ -428,6 +432,12 @@ func validateBootstrapUpstreams(bad func(string, ...any), c Config, once func(wh
 		if u.Visibility != store.Public && u.Visibility != store.Private {
 			bad("%s.visibility must be %s or %s", where, store.Public, store.Private)
 		}
+		switch {
+		case u.Mode != store.ModeMirror && u.Fetch != "":
+			bad("%s.fetch: only a mirror takes one", where)
+		case u.Mode == store.ModeMirror && u.Fetch != "" && u.Fetch != store.FetchEager && u.Fetch != store.FetchLazy:
+			bad("%s.fetch must be %s or %s", where, store.FetchEager, store.FetchLazy)
+		}
 		switch u.Kind {
 		case store.UpstreamCore, store.UpstreamCommunity:
 			if u.Prefix != "" || len(u.Keys) > 0 {
@@ -494,6 +504,8 @@ func validateBootstrapUpstreams(bad func(string, ...any), c Config, once func(wh
 				bad("%s: a passthrough channel takes mirrors only", where)
 			case u.Visibility != store.Public:
 				bad("%s: a passthrough channel's releases are public", where)
+			case u.Fetch == store.FetchLazy:
+				bad("%s: a passthrough channel takes no lazy mirror", where)
 			}
 		}
 		if u.Credential != "" && u.Kind == store.UpstreamRepo && u.Prefix != "" {

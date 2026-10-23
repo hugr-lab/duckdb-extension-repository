@@ -2,6 +2,7 @@ package upstream_test
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"crypto"
@@ -72,6 +73,10 @@ type fakeRepo struct {
 	// usage, when set, takes POST <prefix>/-/usage (spec 0012 phase 1c); posts are their bodies
 	usage bool
 	posts [][]byte
+	// busy answers a path 503 that many times first, with Retry-After retryAfter (spec 0032)
+	busy       map[string]int
+	retryAfter string
+	busyStatus int // 503 by default
 }
 
 // authorizations returns the Authorization headers of file requests so far.
@@ -85,7 +90,7 @@ func newRepo(t *testing.T) *fakeRepo { return newRepoTLS(t, false) }
 
 func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 	r := &fakeRepo{files: map[string][]byte{}, etags: map[string]string{}, gets: map[string]int{}, conds: map[string]int{},
-		gate: map[string]chan struct{}{}, hit: make(chan string, 16)}
+		gate: map[string]chan struct{}{}, hit: make(chan string, 16), busy: map[string]int{}, retryAfter: "0"}
 	h := http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
 		r.mu.Lock()
 		g := r.gate[q.URL.Path]
@@ -133,6 +138,14 @@ func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 			b, _ := io.ReadAll(q.Body)
 			r.posts = append(r.posts, b)
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.busy[q.URL.Path] > 0 {
+			r.busy[q.URL.Path]--
+			if r.retryAfter != "" {
+				w.Header().Set("Retry-After", r.retryAfter)
+			}
+			w.WriteHeader(cmp.Or(r.busyStatus, http.StatusServiceUnavailable))
 			return
 		}
 		b, ok := r.files[q.URL.Path]

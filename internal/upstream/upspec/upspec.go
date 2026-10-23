@@ -68,6 +68,9 @@ func Fingerprint(fp string) error {
 // Entry validates an allowlist entry for an upstream of kind (spec 0009): a canonical name,
 // reserved names only from their own repository unless allow_reserved, valid versions.
 func Entry(kind, mode string, e *store.UpstreamEntry) error {
+	if e.Eager && mode != store.ModeMirror { // spec 0032: fetched at every run unasked
+		return fmt.Errorf("%w: only a mirror's entry is eager", store.ErrInvalid)
+	}
 	if e.Name == "*" { // any name: pull-through only, never a reserved name, no versions
 		if mode != store.ModePullThrough || len(e.Versions) > 0 || e.AllowReserved {
 			return fmt.Errorf("%w: \"*\" is a pull-through upstream's entry, without versions or allow_reserved", store.ErrInvalid)

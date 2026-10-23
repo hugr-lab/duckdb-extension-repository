@@ -271,6 +271,21 @@ func TestAdminCLI(t *testing.T) {
 		t.Fatalf("upstream list: %q", got)
 	}
 	run(0, "upstream", "cells", "acme", "core")
+	// lazy mirrors (spec 0032)
+	run(0, "upstream", "fetch", "acme", "core", "lazy")
+	run(1, "upstream", "fetch", "acme", "core", "sometimes")
+	run(0, "upstream", "extension", "add", "acme", "core", "json", "-eager")
+	if got := run(0, "upstream", "show", "acme", "core"); !strings.Contains(got, "fetch: lazy") || !strings.Contains(got, "extension: json  (eager)") {
+		t.Fatalf("a lazy upstream: %q", got)
+	}
+	if got := run(0, "upstream", "list", "acme"); !strings.Contains(got, "mirror (lazy)") {
+		t.Fatalf("upstream list: %q", got)
+	}
+	if got := run(0, "upstream", "cells", "acme", "core", "-outcome", "not_asked"); !strings.Contains(got, "parquet") || strings.Contains(got, "json") {
+		t.Fatalf("not_asked: %q", got)
+	}
+	run(1, "upstream", "add", "acme", "lazypt", "-kind", "duckdb-community", "-channel", "staging", "-platforms", "linux_amd64",
+		"-extensions", "h3", "-mode", "pull-through", "-fetch", "lazy")
 	run(0, "shadow", "list", "acme")
 	// events (spec 0010)
 	if got := run(0, "events", "list", "acme", "-subject", "upstream:co"); !strings.Contains(got, "upstream.add") || strings.Contains(got, "block.add") {

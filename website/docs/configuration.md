@@ -712,7 +712,7 @@ bootstrap:
       kind: duckdb-core                  # duckdb-core, duckdb-community or repository
       channel: prod                      # one of the section's channels
       platforms: [linux_amd64, linux_arm64]
-      extensions: [ { name: httpfs } ]   # also versions, allow_reserved
+      extensions: [ { name: httpfs } ]   # also versions, allow_reserved, eager (spec 0032)
       visibility: public                 # default: private (public on a passthrough channel)
     - name: vendor
       kind: repository
@@ -720,6 +720,7 @@ bootstrap:
       keys: ["sha256:<fingerprint>"]     # pinned: one of them signs the source
       credential: vendor-acme            # optional: one of upstreams.credentials
       mode: mirror                       # or pull-through
+      fetch: lazy                        # a mirror's: eager (default) or lazy (spec 0032)
       channel: prod
       platforms: [linux_amd64]
       extensions: [ { name: acl } ]
@@ -750,9 +751,9 @@ bootstrap:
   - in a channel that exists, a name another upstream lists is refused;
   - so are the limits.
 
-  An upstream that exists is the same when its kind, prefix, channel, mode, visibility and
-  credential are, its keys and platforms include the section's, and each of the section's names is
-  on its allowlist with the same versions and `allow_reserved`. More than the section lists is the
+  An upstream that exists is the same when its kind, prefix, channel, mode, fetch mode, visibility
+  and credential are, its keys and platforms include the section's, and each of the section's names
+  is on its allowlist with the same versions, `allow_reserved` and `eager`. More than the section lists is the
   administrator's.
 - **Existing tenants.** The bootstrap never creates anything in a tenant it did not make. Only
   `kista admin bootstrap -adopt` does. Server-wide DuckDB versions and C APIs are not a tenant's.
@@ -796,7 +797,8 @@ bootstrap:
     - the allowlist: at least one name for a mirror, canonical names, reserved names only from
       their own repository unless `allow_reserved`, and `"*"` only on a pull-through upstream;
     - its channel is one of the section's. A passthrough channel takes `duckdb-core` mirrors only,
-      with public releases;
+      with public releases, never lazy;
+    - `fetch` is a mirror's, `eager` (the default) or `lazy`, and `eager` entries are a mirror's;
     - a credential names one of `upstreams.credentials` that is for this tenant, covers the prefix,
       and allows public releases when the upstream makes them;
     - the limits: 100 upstreams, 1,000 names, 100 versions per name, 10 keys, and 20,000 cells per

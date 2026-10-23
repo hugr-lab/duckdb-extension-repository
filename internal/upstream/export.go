@@ -893,16 +893,33 @@ func cmpOr(a, b string) string {
 }
 
 // exportSync runs the tenant's active mirror-mode upstreams of the plan's sources on this process
-// and waits for them; a run another replica holds is waited for, then requested again.
+// and waits for them; a run another replica holds is waited for, then requested again. A lazy
+// upstream's run fetches the cells the plan asks of its source (spec 0032).
 func (s *Service) exportSync(ctx context.Context, a authz.Actor, t store.Tenant, ups []store.Upstream, plan *bundle.Plan, holder string) error {
 	for _, u := range ups {
-		if u.Mode != store.ModeMirror || u.State != store.UpstreamActive ||
-			!slices.ContainsFunc(plan.Sources, func(ps bundle.PlanSource) bool {
-				return ps.Kind == u.Kind && (u.Kind != store.UpstreamRepo || ps.Prefix == u.Prefix)
-			}) {
+		if u.Mode != store.ModeMirror || u.State != store.UpstreamActive {
 			continue
 		}
-		if err := s.runNow(ctx, a, t.Name, u, holder); err != nil {
+		var only map[[3]string]bool
+		found := false
+		for _, ps := range plan.Sources {
+			if ps.Kind != u.Kind || u.Kind == store.UpstreamRepo && ps.Prefix != u.Prefix {
+				continue
+			}
+			found = true
+			if u.FetchMode == store.FetchLazy {
+				if only == nil {
+					only = map[[3]string]bool{}
+				}
+				for _, pc := range ps.Cells {
+					only[[3]string{pc.DuckDBVersion, pc.Platform, pc.Name}] = true
+				}
+			}
+		}
+		if !found {
+			continue
+		}
+		if err := s.runNow(ctx, a, t.Name, u, holder, only); err != nil {
 			return fmt.Errorf("upstream %s: %w", u.Name, err)
 		}
 	}
@@ -912,8 +929,10 @@ func (s *Service) exportSync(ctx context.Context, a authz.Actor, t store.Tenant,
 // syncPoll is how often runNow looks again while another replica runs the upstream.
 var syncPoll = 2 * time.Second
 
-// runNow requests a run of an upstream and runs it here under its lease.
-func (s *Service) runNow(ctx context.Context, a authz.Actor, tenant string, u store.Upstream, holder string) error {
+// runNow requests a run of an upstream and runs it here under its lease; only, for a lazy upstream,
+// is the cells it fetches besides those asked for and its eager entries. A request another replica
+// takes first runs as a sync: the whole matrix.
+func (s *Service) runNow(ctx context.Context, a authz.Actor, tenant string, u store.Upstream, holder string, only map[[3]string]bool) error {
 	if _, err := s.Sync(ctx, a, tenant, u.Name, false); err != nil {
 		return err
 	}
@@ -930,7 +949,7 @@ func (s *Service) runNow(ctx context.Context, a authz.Actor, tenant string, u st
 				}
 				return nil
 			}
-			res, err := s.RunUpstream(ctx, u.ID, renew)
+			res, err := s.runUpstream(ctx, u.ID, renew, only)
 			_ = s.Store.ReleaseLease(context.WithoutCancel(ctx), lease, holder)
 			switch {
 			case errors.Is(err, ErrNotDue): // another replica took the request and finished it, or a pause
@@ -942,6 +961,8 @@ func (s *Service) runNow(ctx context.Context, a authz.Actor, tenant string, u st
 				return err
 			case res.Error != "":
 				return fmt.Errorf("the run stopped: %s", res.Error)
+			case res.Counts[busy] > 0: // a plan's cell another fetch held is not current yet
+				return fmt.Errorf("%d cells were being fetched meanwhile; export again", res.Counts[busy])
 			}
 			return nil
 		}

@@ -91,7 +91,7 @@ func TestBootstrapUpstreamsConfig(t *testing.T) {
 ` + ups
 	}
 	ok := sec(`    - { name: core, kind: duckdb-core, channel: prod, platforms: [linux_amd64, linux_amd64], extensions: [{ name: httpfs }] }
-    - { name: community, kind: duckdb-community, channel: prod, platforms: [linux_amd64], extensions: [{ name: h3 }] }
+    - { name: community, kind: duckdb-community, channel: prod, fetch: lazy, platforms: [linux_amd64], extensions: [{ name: h3, eager: true }] }
     - { name: hosted, kind: repository, prefix: "HTTPS://Repo.Example:443/acme/prod/", keys: [` + fp + `], credential: hosted,
         channel: prod, platforms: [linux_amd64], extensions: [{ name: tresor, versions: [1.0.0, 1.0.0] }] }
     - { name: passthrough, kind: duckdb-core, channel: core, platforms: [linux_amd64], extensions: [{ name: json }] }
@@ -104,7 +104,8 @@ func TestBootstrapUpstreamsConfig(t *testing.T) {
 	}
 	d := cfg.Bootstrap.Defaulted().Upstreams
 	if d[2].Prefix != "https://repo.example/acme/prod" || d[2].Visibility != "private" || d[2].Mode != "mirror" ||
-		len(d[0].Platforms) != 1 || len(d[2].Extensions[0].Versions) != 1 || d[3].Visibility != "public" {
+		len(d[0].Platforms) != 1 || len(d[2].Extensions[0].Versions) != 1 || d[3].Visibility != "public" ||
+		d[0].Fetch != "" || d[1].Fetch != "lazy" || !d[1].StoreEntries()[0].Eager || d[4].Fetch != "" {
 		t.Fatalf("defaulted: %+v", d)
 	}
 	core := "    - { name: core, kind: duckdb-core, channel: prod, platforms: [linux_amd64], extensions: [{ name: httpfs }] }\n"
@@ -135,6 +136,10 @@ func TestBootstrapUpstreamsConfig(t *testing.T) {
 		"an unknown credential":    {sec(repo(", credential: nope")), "none of upstreams.credentials"},
 		"another prefix":           {sec("    - { name: r, kind: repository, prefix: 'https://repo.example/other/x', keys: [" + fp + "], credential: hosted, channel: prod, platforms: [linux_amd64], extensions: [{ name: tresor }] }\n"), "its prefixes"},
 		"public without allow":     {sec(repo(", credential: hosted, visibility: public")), "allow_public"},
+		"a bad fetch":              {sec(repo(", fetch: sometimes")), "fetch must be eager or lazy"},
+		"a lazy pull-through":      {sec(repo(", mode: pull-through, fetch: lazy")), "only a mirror takes one"},
+		"a lazy passthrough":       {sec("    - { name: c, kind: duckdb-core, channel: core, fetch: lazy, platforms: [linux_amd64], extensions: [{ name: httpfs }] }\n"), "no lazy mirror"},
+		"an eager pull-through":    {sec("    - { name: r, kind: repository, prefix: 'https://repo.example/acme/x', keys: [" + fp + "], channel: prod, mode: pull-through, platforms: [linux_amd64], extensions: [{ name: tresor, eager: true }] }\n"), "only a mirror's entry is eager"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Load(write(t, c.file), nil)

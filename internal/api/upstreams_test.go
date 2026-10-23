@@ -358,3 +358,82 @@ func TestUpstreamUsage(t *testing.T) {
 		t.Fatalf("an installer: %d", r.status)
 	}
 }
+
+// Spec 0032: a mirror's fetch mode, an eager entry, and a lazy upstream's not_asked cells.
+func TestUpstreamFetch(t *testing.T) {
+	m := newMgmt(t)
+	acme, _ := m.st.GetTenant(ctx, "acme")
+	ch, _ := m.st.GetChannel(ctx, "acme", "staging")
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+		u := store.Upstream{TenantID: acme.ID, Name: "repo", Kind: store.UpstreamRepo, Prefix: "https://repo.example/acme/", ChannelID: ch.ID,
+			Mode: store.ModeMirror, Visibility: store.Private, State: store.UpstreamActive, CreatedBy: "os:1:t",
+			Platforms: []string{"linux_amd64", "osx_arm64"}, Entries: []store.UpstreamEntry{{Name: "acl"}}}
+		return tx.InsertUpstream(ctx, &u)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const U = "/api/v1/tenants/acme/upstreams/repo"
+	ta := m.toks["tenant admin"]
+	if r := m.call(t, "GET", U, ta, "").json(t); r["fetch"] != "eager" {
+		t.Fatalf("fetch defaults to eager: %v", r)
+	}
+	if r := m.call(t, "POST", U+"/fetch", ta, `{"fetch":"lazy"}`); r.status != 428 {
+		t.Fatalf("without If-Match: %d", r.status)
+	}
+	if r := m.call(t, "POST", U+"/fetch", ta, `{"fetch":"sometimes"}`, "If-Match", "*"); r.status != 400 {
+		t.Fatalf("a bad value: %d", r.status)
+	}
+	if r := m.call(t, "POST", U+"/fetch", ta, `{"fetch":"lazy"}`, "If-Match", "*"); r.status != 200 || r.json(t)["fetch"] != "lazy" {
+		t.Fatalf("lazy: %d %s", r.status, r.body)
+	}
+	evs, _ := m.st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "upstream.change", Limit: 1})
+	if len(evs) != 1 || !strings.Contains(evs[0].Data, `"change":"fetch"`) || !strings.Contains(evs[0].Data, `"value":"lazy"`) {
+		t.Fatalf("upstream.change: %+v", evs)
+	}
+	if r := m.call(t, "POST", U+"/extensions", ta, `{"name":"tresor","versions":[],"eager":true}`); r.status != 201 || r.json(t)["eager"] != true {
+		t.Fatalf("an eager entry: %d %s", r.status, r.body)
+	}
+	var got struct {
+		Extensions []struct {
+			Name  string `json:"name"`
+			Eager bool   `json:"eager"`
+		} `json:"extensions"`
+	}
+	if err := json.Unmarshal(m.call(t, "GET", U, ta, "").body, &got); err != nil || len(got.Extensions) != 2 || got.Extensions[0].Eager ||
+		!got.Extensions[1].Eager {
+		t.Fatalf("entries: %+v %v", got, err)
+	}
+	// not_asked: acl's cells (tresor is eager), on both platforms and every DuckDB version
+	versions, _ := m.st.ChannelVersions(ctx, ch.ID)
+	if len(versions) == 0 {
+		t.Fatal("staging serves no DuckDB version")
+	}
+	var cells struct {
+		Cells []map[string]any `json:"cells"`
+	}
+	if err := json.Unmarshal(m.call(t, "GET", U+"/cells?outcome=not_asked", ta, "").body, &cells); err != nil || len(cells.Cells) != 2*len(versions) {
+		t.Fatalf("not_asked: %+v %v", cells, err)
+	}
+	for _, c := range cells.Cells {
+		if c["name"] != "acl" || c["outcome"] != "not_asked" {
+			t.Fatalf("a not_asked cell: %v", c)
+		}
+	}
+	if r := m.call(t, "POST", U+"/fetch", m.toks["install"], `{"fetch":"eager"}`, "If-Match", "*"); r.status != 404 {
+		t.Fatalf("an installer: %d", r.status)
+	}
+	// added lazy; a pull-through takes no fetch mode and shows none
+	const L = "/api/v1/tenants/acme/upstreams"
+	if r := m.call(t, "POST", L, ta, `{"name":"core","kind":"duckdb-core","channel":"staging","platforms":["linux_amd64"],
+		"extensions":[{"name":"json","eager":true}],"fetch":"lazy"}`); r.status != 201 || r.json(t)["fetch"] != "lazy" {
+		t.Fatalf("a lazy mirror: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", L, ta, `{"name":"pt","kind":"duckdb-community","channel":"staging","platforms":["linux_amd64"],
+		"extensions":[{"name":"h3"}],"mode":"pull-through","fetch":"lazy"}`); r.status != 400 {
+		t.Fatalf("a lazy pull-through: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", L, ta, `{"name":"pt","kind":"duckdb-community","channel":"staging","platforms":["linux_amd64"],
+		"extensions":[{"name":"h3"}],"mode":"pull-through"}`); r.status != 201 || r.json(t)["fetch"] != nil {
+		t.Fatalf("a pull-through: %d %s", r.status, r.body)
+	}
+}

@@ -108,6 +108,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddKey": {"upstream.change"}, "RemoveKey": {"upstream.change"}, "RemoveShadow": {"shadow.remove"},
 		"SetCredential": {"upstream.change"},
 		"SetUsage":      {"upstream.change"},
+		"SetFetchMode":  {"upstream.change"},
 		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
 		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected", "feed.run"},
 		"ResetBundle":   {"bundle.reset"}, "ResetFeedBundle": {"bundle.reset"}, "Imports": nil,
@@ -478,6 +479,10 @@ func TestCoverage(t *testing.T) {
 		{"AddPlatform", func() error { return en.up.AddPlatform(rctx, admin, "acme", "core", "osx_arm64") }},
 		{"RemovePlatform", func() error { return en.up.RemovePlatform(rctx, admin, "acme", "core", "osx_arm64") }},
 		{"Set", func() error { _, err := en.up.Set(rctx, admin, "acme", "core", store.Public, "", 0); return err }},
+		{"SetFetchMode", func() error {
+			_, err := en.up.SetFetchMode(rctx, admin, "acme", "core", store.FetchLazy, 0)
+			return err
+		}},
 	} {
 		en.expect("upstream.Service."+c.name, c.op, "upstream.change")
 	}

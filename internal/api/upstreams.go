@@ -19,6 +19,7 @@ type entryJSON struct {
 	Name          string   `json:"name"`
 	Versions      []string `json:"versions"`
 	AllowReserved bool     `json:"allow_reserved,omitempty"`
+	Eager         bool     `json:"eager,omitempty"` // a lazy upstream's runs fetch it unasked (spec 0032)
 }
 
 type upstreamJSON struct {
@@ -27,6 +28,7 @@ type upstreamJSON struct {
 	Prefix     string          `json:"prefix,omitempty"`
 	Channel    string          `json:"channel"`
 	Mode       string          `json:"mode"`
+	Fetch      string          `json:"fetch,omitempty"` // a mirror's: eager | lazy (spec 0032)
 	Visibility string          `json:"visibility"`
 	State      string          `json:"state"`
 	Run        string          `json:"run"` // idle | requested | dry_run_requested | running
@@ -62,6 +64,9 @@ func (h *Handler) upstreamOf(u store.Upstream, channels map[string]string, c cal
 		Extensions: []entryJSON{}, LastRunAt: timeOf(u.LastRunAt), CreatedAt: timeOf(u.CreatedAt),
 		CreatedBy: createdBy(u.CreatedBy, c), Credential: u.Credential, Usage: u.Usage, BundleID: u.BundleID,
 		BundleCreatedAt: timeOf(u.BundleCreatedAt), BundleManifest: u.BundleManifestSHA256, ETag: versionTag(u.Version)}
+	if u.Mode == store.ModeMirror {
+		o.Fetch = u.FetchMode
+	}
 	switch {
 	case !u.RequestedAt.IsZero() && u.RequestDryRun:
 		o.Run = "dry_run_requested"
@@ -72,7 +77,7 @@ func (h *Handler) upstreamOf(u store.Upstream, channels map[string]string, c cal
 		o.LastRun = json.RawMessage(u.LastRun)
 	}
 	for _, e := range u.Entries {
-		o.Extensions = append(o.Extensions, entryJSON{Name: e.Name, Versions: nonNil(e.Versions), AllowReserved: e.AllowReserved})
+		o.Extensions = append(o.Extensions, entryJSON{Name: e.Name, Versions: nonNil(e.Versions), AllowReserved: e.AllowReserved, Eager: e.Eager})
 	}
 	return o
 }
@@ -160,6 +165,7 @@ func (h *Handler) addUpstream(w http.ResponseWriter, r *http.Request, c caller, 
 		Prefix     string      `json:"prefix"`
 		Channel    string      `json:"channel"`
 		Mode       string      `json:"mode"`
+		Fetch      string      `json:"fetch"`
 		Visibility string      `json:"visibility"`
 		Keys       []string    `json:"keys"`
 		Platforms  []string    `json:"platforms"`
@@ -170,9 +176,9 @@ func (h *Handler) addUpstream(w http.ResponseWriter, r *http.Request, c caller, 
 		return
 	}
 	sp := upstream.Spec{Name: in.Name, Kind: in.Kind, Prefix: in.Prefix, Channel: in.Channel, Mode: in.Mode,
-		Visibility: in.Visibility, Keys: in.Keys, Platforms: in.Platforms, Credential: in.Credential}
+		Visibility: in.Visibility, Keys: in.Keys, Platforms: in.Platforms, Credential: in.Credential, FetchMode: in.Fetch}
 	for _, e := range in.Extensions {
-		sp.Entries = append(sp.Entries, store.UpstreamEntry{Name: e.Name, Versions: e.Versions, AllowReserved: e.AllowReserved})
+		sp.Entries = append(sp.Entries, store.UpstreamEntry{Name: e.Name, Versions: e.Versions, AllowReserved: e.AllowReserved, Eager: e.Eager})
 	}
 	a, _ := c.actor()
 	u, err := h.o.Upstreams.Add(r.Context(), a, p["t"], sp)
@@ -273,7 +279,7 @@ func (h *Handler) putEntry(w http.ResponseWriter, r *http.Request, c caller, p p
 	}
 	a, _ := c.actor()
 	isNew, err := h.o.Upstreams.PutEntry(r.Context(), a, p["t"], p["name"],
-		store.UpstreamEntry{Name: in.Name, Versions: in.Versions, AllowReserved: in.AllowReserved})
+		store.UpstreamEntry{Name: in.Name, Versions: in.Versions, AllowReserved: in.AllowReserved, Eager: in.Eager})
 	if err != nil {
 		h.upstreamErr(w, err)
 		return
@@ -284,7 +290,7 @@ func (h *Handler) putEntry(w http.ResponseWriter, r *http.Request, c caller, p p
 	}
 	vs := slices.Clone(in.Versions)
 	slices.Sort(vs)
-	reply(w, r, status, entryJSON{Name: in.Name, Versions: nonNil(slices.Compact(vs)), AllowReserved: in.AllowReserved}, "", noStore)
+	reply(w, r, status, entryJSON{Name: in.Name, Versions: nonNil(slices.Compact(vs)), AllowReserved: in.AllowReserved, Eager: in.Eager}, "", noStore)
 }
 
 func (h *Handler) removeEntry(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -463,6 +469,32 @@ func (h *Handler) setCredential(w http.ResponseWriter, r *http.Request, c caller
 	a, _ := c.actor()
 	// If-Match: * (0) is the version the transaction reads
 	u, err := h.o.Upstreams.SetCredential(r.Context(), a, p["t"], p["name"], *in.Credential, expected)
+	if err != nil {
+		h.upstreamErr(w, err)
+		return
+	}
+	h.replyUpstream(w, r, c, p, u, http.StatusOK)
+}
+
+// setFetch sets a mirror's fetch mode: POST …/upstreams/{name}/fetch {"fetch": "eager"|"lazy"},
+// If-Match (spec 0032).
+func (h *Handler) setFetch(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	expected, ok := expectedVersion(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Fetch string `json:"fetch"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	if in.Fetch != store.FetchEager && in.Fetch != store.FetchLazy {
+		problem(w, http.StatusBadRequest, typeInvalid, "fetch is eager or lazy")
+		return
+	}
+	a, _ := c.actor()
+	u, err := h.o.Upstreams.SetFetchMode(r.Context(), a, p["t"], p["name"], in.Fetch, expected)
 	if err != nil {
 		h.upstreamErr(w, err)
 		return

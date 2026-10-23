@@ -340,7 +340,8 @@ See [Publishing](publishing.md).
 | --- | --- |
 | `GET, POST tenants/{t}/upstreams`; `GET, DELETE …/upstreams/{name}` | tenant admin |
 | `POST …/upstreams/{name}/public`, `/private`, `/pause`, `/resume`, `/sync`, `/credential` | tenant admin |
-| `GET …/upstreams/{name}/cells[?outcome=]` | tenant admin |
+| `POST …/upstreams/{name}/fetch {"fetch": "eager"\|"lazy"}` (`If-Match`) | tenant admin: a mirror's fetch mode ([Lazy mirrors](upstreams.md#lazy-mirrors)); an upstream answers `fetch`, an entry `eager` |
+| `GET …/upstreams/{name}/cells[?outcome=]` | tenant admin; `outcome=not_asked`: a lazy mirror's cells offered, not fetched |
 | `GET, POST …/upstreams/{name}/extensions`; `DELETE …/extensions/{entry}` | tenant admin |
 | `GET, POST …/upstreams/{name}/platforms`; `DELETE …/platforms/{item}` | tenant admin |
 | `GET, POST …/upstreams/{name}/keys`; `DELETE …/keys/{item}` | tenant admin |

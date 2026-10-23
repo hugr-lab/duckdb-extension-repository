@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -76,6 +77,9 @@ func (c *Client) Download(ctx context.Context, raw string, o DownloadOptions, w 
 		return Download{}, fmt.Errorf("%w: %s", ErrNotFound, u.Hostname())
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return Download{}, &AuthError{Status: resp.StatusCode, Host: u.Hostname()}
+	case http.StatusServiceUnavailable, http.StatusTooManyRequests:
+		after, ok := retryAfter(resp.Header.Get("Retry-After"), time.Now())
+		return Download{}, &RetryError{Status: resp.StatusCode, Host: u.Hostname(), After: after, Given: ok}
 	default:
 		return Download{}, fmt.Errorf("%w %d from %s", ErrStatus, resp.StatusCode, u.Hostname())
 	}
@@ -111,6 +115,40 @@ func (c *Client) Download(ctx context.Context, raw string, o DownloadOptions, w 
 		return Download{}, fmt.Errorf("%w: %s", ErrTooLarge, u.Hostname())
 	}
 	return Download{ETag: resp.Header.Get("ETag"), Size: size}, nil
+}
+
+// RetryError is a 503 or 429 answer to a download (errors.Is ErrStatus), with its Retry-After when
+// it gave one (spec 0032: kista's own fetcher asks again after it).
+type RetryError struct {
+	Status int
+	Host   string
+	After  time.Duration
+	Given  bool // a Retry-After was given (0 is a valid one)
+}
+
+func (e *RetryError) Error() string {
+	return fmt.Sprintf("%v %d from %s", ErrStatus, e.Status, e.Host)
+}
+
+// Unwrap makes a RetryError ErrStatus.
+func (e *RetryError) Unwrap() error { return ErrStatus }
+
+// retryAfter reads a Retry-After header: delay-seconds or an HTTP date.
+func retryAfter(v string, now time.Time) (time.Duration, bool) {
+	if v == "" {
+		return 0, false
+	}
+	if n, err := strconv.ParseInt(v, 10, 32); err == nil {
+		if n < 0 {
+			return 0, false
+		}
+		return time.Duration(n) * time.Second, true
+	}
+	t, err := http.ParseTime(v)
+	if err != nil {
+		return 0, false
+	}
+	return max(t.Sub(now), 0), true
 }
 
 type countReader struct {

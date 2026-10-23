@@ -28,7 +28,7 @@ a request. The design reasoning is in
 
 | Mode | Behaviour |
 | --- | --- |
-| `mirror` (default) | runs on a schedule and on demand, fetching every cell of its matrix |
+| `mirror` (default) | runs on a schedule and on demand, fetching every cell of its matrix; a [lazy](#lazy-mirrors) mirror fetches only the cells asked for and its eager entries |
 | `pull-through` | never runs; a granted caller's miss on a DuckDB route fetches that one binary in the background |
 | `bundle` | never contacts its source: only bundle imports fill it, on an air-gapped site ([Bundle mode](#bundle-mode)) |
 
@@ -126,6 +126,7 @@ kista admin -config /etc/kista/kista.yaml upstream add acme hugr \
 | `-keys` | `keys` | `repository` only, at least one: `sha256:<64 lowercase hex>` |
 | `-public` | `visibility` | releases it makes from now on are public; default `private` |
 | `-mode` | `mode` | `mirror` (default), `pull-through` or `bundle` (fixed) |
+| `-fetch` | `fetch` | a mirror's: `eager` (default) or `lazy` ([Lazy mirrors](#lazy-mirrors)); changed later with `upstream fetch` |
 | `-credential` | `credential` | `repository` only: a configured credential's name (see [Private upstreams](#private-upstreams)) |
 
 Over the API, the same record is `POST /api/v1/tenants/{t}/upstreams` with a JSON body:
@@ -167,15 +168,16 @@ wanted later are added here, as above: the bootstrap is not a reconciler.
 | `GET /`, `GET /{name}` | `upstream list <tenant>`, `upstream show <tenant> <name>` |
 | `DELETE /{name}` (`If-Match`) | `upstream remove <tenant> <name>` |
 | `POST /{name}/public`, `/private`, `/pause`, `/resume` (`If-Match`) | `upstream public\|private\|pause\|resume <tenant> <name>` |
-| `GET, POST /{name}/extensions`; `DELETE /{name}/extensions/{ext}` | `upstream extension add <tenant> <name> <ext> [-versions v1,v2] [-allow-reserved]`, `upstream extension remove …` |
+| `GET, POST /{name}/extensions`; `DELETE /{name}/extensions/{ext}` | `upstream extension add <tenant> <name> <ext> [-versions v1,v2] [-allow-reserved] [-eager]`, `upstream extension remove …` |
 | `GET, POST /{name}/platforms`; `DELETE /{name}/platforms/{platform}` | `upstream platform add\|remove <tenant> <name> <platform>` |
 | `GET, POST /{name}/keys`; `DELETE /{name}/keys/{fingerprint}` | `upstream key add\|remove <tenant> <name> <fingerprint>` |
 | `POST /{name}/sync[?dry_run=true]` | `upstream sync <tenant> <name> [-dry-run]` |
 | `GET /{name}/cells[?outcome=…]` | `upstream cells <tenant> <name> [-outcome <outcome>]` |
 | `POST /{name}/credential {"credential": name or ""}` (`If-Match`) | `upstream credential <tenant> <name> <credential>\|-` |
+| `POST /{name}/fetch {"fetch": "eager" or "lazy"}` (`If-Match`) | `upstream fetch <tenant> <name> eager\|lazy` ([Lazy mirrors](#lazy-mirrors)) |
 | `POST /{name}/usage {"usage": "forward" or "off"}` (`If-Match`); `GET /{name}/usage` | `upstream usage <tenant> <name> [forward\|off]` ([forwarding usage](licensing.md#forwarding-usage-upstream)) |
 
-`POST /{name}/extensions` on an existing name replaces its `versions` and `allow_reserved` (`200`).
+`POST /{name}/extensions` on an existing name replaces its `versions`, `allow_reserved` and `eager` (`200`).
 The upstream's `ETag` moves with every change to it or its lists; a sync does not move it.
 
 **Removing** an upstream keeps the releases it made (they belong to the channel; yank them if you
@@ -193,13 +195,14 @@ change them per release (see [Publishing](publishing.md#changing-a-release)).
 
 - **Scheduled**: an active `mirror` upstream is due `upstreams.interval` (default 6h, within
   15m..168h) after its last run ends, with up to 10% jitter; a mirror never run is due at once.
-  Adding a DuckDB version to the channel, adding a platform, adding or changing an entry, or resuming
-  the upstream makes it due at once. A run interrupted by an error or a lost lease is due again after
+  Adding a DuckDB version to the channel, adding a platform, adding or changing an entry, resuming
+  the upstream or turning it eager makes it due at once. A run interrupted by an error or a lost lease is due again after
   5 minutes.
 - **On demand**: `sync` sets a request; a running `kista serve` takes it within 30 seconds. A request
   that arrives during a run is served by another run right after it. A sync of a paused,
-  pull-through or bundle-mode upstream is `409`.
-- **Dry run** (`?dry_run=true`, `-dry-run`): fetches and checks every cell without releasing,
+  pull-through or bundle-mode upstream is `409`. A lazy mirror's sync fetches its whole matrix.
+- **Dry run** (`?dry_run=true`, `-dry-run`): fetches and checks every cell (a lazy mirror's: the
+  cells a scheduled run would fetch, not its whole matrix) without releasing,
   committing or touching the cells and the schedule. Its counts (`would_release` for a cell it would
   release) and first 20 problems go to `last_run`.
 - Every replica polls every 30 seconds. One run at a time per upstream (a lease,
@@ -207,6 +210,9 @@ change them per release (see [Publishing](publishing.md#changing-a-release)).
   `upstreams.concurrency` upstreams and fetches at most that many cells at once (default 4), and at most 2 at once per upstream host.
 - A run follows the record as it is: pausing or removing the upstream stops it after the cell in
   progress; a removed entry, platform or key applies to the next cell.
+- A cell the upstream answers `503` or `429` with a `Retry-After` of at most 30 seconds is asked
+  again after that delay, at most three times, before it is `failed`; the host's slot is free while
+  it waits. Runs, pull-through and bundle exports' syncs alike.
 
 ```yaml title="kista.yaml"
 upstreams:                   # file-only
@@ -235,7 +241,9 @@ upstreams:                   # file-only
 ```
 
 `error` is set when the run failed before its cells. `problems` holds the first 20 cells that were
-neither released nor unchanged.
+neither released nor unchanged. A lazy mirror's run also counts `not_asked` (cells of its matrix it
+did not fetch and never fetched, as the cells API lists them) and `busy` (cells another fetch held,
+skipped).
 
 **Cell outcomes** (`upstream cells`, `GET …/cells?outcome=`):
 
@@ -251,6 +259,7 @@ neither released nor unchanged.
 | `shadowed` | a name `"*"` took is reserved since |
 | `other_source` | another source holds the name in the channel; decided before the download, asked again at each run |
 | `failed` | the fetch failed (network, size, rate, the upstream's `401`/`403`); retried by the next run |
+| `not_asked` | a lazy mirror's cell nobody asked for, of no eager entry, never fetched: listed only with `?outcome=not_asked`, never stored |
 
 Cells that leave the matrix are removed by the next run; removing an entry or a platform removes
 its cells at once.
@@ -369,6 +378,50 @@ kista admin -config /etc/kista/kista.yaml upstream add acme community-pt \
   -kind duckdb-community -channel prod -platforms linux_amd64 -extensions '*' -mode pull-through
 ```
 
+## Lazy mirrors
+
+A mirror's matrix grows with every name, platform and DuckDB version: fifty of DuckDB's extensions on
+nine platforms and three DuckDB versions are over a thousand bodies, most of which nobody installs. A
+**lazy** mirror (`fetch: lazy`) lists what it may take as any mirror does, but its runs fetch only:
+
+- the cells someone **asked** for: a cell is (DuckDB version, platform, name), so a node asks for
+  the build its own DuckDB version and platform need, and nothing else;
+- every cell of an **eager** entry (`-eager`, `"eager": true`), fetched before anyone asks, as an
+  eager mirror fetches it.
+
+Each run keeps those cells current, conditionally (the ETag kept), as any mirror does. The other
+cells are neither fetched nor recorded: `GET …/cells?outcome=not_asked` lists them, and `last_run`
+counts them `not_asked`. **Sync** fetches the whole matrix once, the administrator's "fetch now",
+without asking for anything, so later runs stay lazy and leave the cells only a sync fetched as they
+are. A dry run, `sync -dry-run` included, covers what a scheduled run would: the asked cells and the
+eager entries. A bundle export's `-sync` fetches the plan's cells besides them; a plan's cell another
+fetch holds at the time fails the export, to be run again.
+
+```bash
+# DuckDB core extensions everyone may install, fetched when asked for; httpfs ahead of time
+kista admin -config /etc/kista/kista.yaml upstream add acme core -kind duckdb-core -channel prod \
+  -platforms linux_amd64,linux_arm64,osx_arm64,windows_amd64 -extensions httpfs,spatial,postgres_scanner -fetch lazy
+kista admin -config /etc/kista/kista.yaml upstream extension add acme core httpfs -eager
+```
+
+- **Switching.** `upstream fetch <tenant> <name> lazy` keeps the releases there are and records an
+  ask for each cell it fetched and found (a run in progress asks for its cells when it ends), so
+  they stay current; `eager` makes the upstream due at once (its whole matrix).
+- **Asks go** with their entry, platform, or the channel's DuckDB version.
+- **One fetch of a cell at a time.** A lazy mirror's run takes each cell's lease
+  (`kista/upstream/<id>/<version>/<platform>/<name>`) and skips, counting it `busy`, a cell another
+  fetch holds.
+- Only a mirror takes a fetch mode, and a passthrough channel takes no lazy mirror (its requests
+  carry no token, so no one could ask); a lazy mirror lists its names (no `*`, as any mirror). The
+  matrix limits count the whole matrix, lazy or not. Everything else is a mirror's: intake, licence
+  keys, the name's source in the channel, reservations, visibility, credentials, usage and events.
+
+Asks are recorded from requests, and the first request for a cell answered while it is fetched, in
+the next phase of [spec
+0032](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0032-lazy-mirror/spec.md);
+until then a lazy mirror fetches its eager entries, the cells it held when it turned lazy, and what a
+sync fetches.
+
 ## Bundle mode
 
 A `bundle` upstream is for an air-gapped site. It is the same record as a mirror's (kind, prefix,
@@ -447,8 +500,8 @@ private on the gateway, so a release `-private` let out stays private at the sit
 
 `-private <prefix>` (repeatable) names a repository source of the plan whose private releases may
 leave: a credentialed or private mirror's, or an own channel's. DuckDB's kinds take no `-private`:
-their private releases stay. `-sync` first runs the tenant's matching mirror-mode upstreams and
-waits for them; a run that fails or an upstream paused meanwhile stops the export, with no bundle. The bundle is written to a temporary file beside `-o` and linked into
+their private releases stay. `-sync` first runs the tenant's matching mirror-mode upstreams (a lazy
+one over the cells the plan asks of its source) and waits for them; a run that fails or an upstream paused meanwhile stops the export, with no bundle. The bundle is written to a temporary file beside `-o` and linked into
 place when complete, never over an existing file, readable by its owner only (`0600`: it is as
 sensitive as the plan; the directory's file system must support hard links), so an interrupted export leaves nothing; it streams the stored files, read once to hash
 and once to write, and needs no other disk. The command prints each source's counts, bytes, the
