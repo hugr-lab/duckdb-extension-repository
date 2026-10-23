@@ -26,6 +26,7 @@ type Ingest struct {
 	Visibility                    string
 	DryRun                        bool   // check only: nothing is committed or released
 	Bundle                        string // the bundle's manifest id, for the event (spec 0014)
+	Trigger                       string // what made the fetch, for the event (spec 0032): run, sync or ask
 	// KeySource is the upstream's id when it is a trusted source of licence keys (a repository
 	// upstream, spec 0021): a new release records the build's keys for it. "": none.
 	KeySource string
@@ -153,6 +154,9 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 				"slot": r.Slot, "body_hash": it.b.BodyHash, "url": in.URL, "key": key}
 			if in.Bundle != "" {
 				data["bundle"] = in.Bundle
+			}
+			if in.Trigger != "" {
+				data["trigger"] = in.Trigger
 			}
 			return tx.Event(ctx, c.TenantID, a.String(), "upstream.release", releaseSubject(c, r), data)
 		})

@@ -532,8 +532,9 @@ ORDER BY CASE WHEN requested_at IS NULL THEN 1 ELSE 0 END, CASE WHEN next_run_at
 const AskRefresh = time.Hour
 
 // Ask records that a cell of a lazy upstream was asked for (spec 0032): inserted when absent, its
-// time renewed when older than AskRefresh. It reports whether it wrote.
-func (t *Tx) Ask(ctx context.Context, upstreamID, duckdbVersion, platform, name string) (bool, error) {
+// time renewed when older than refresh (AskRefresh, or less to reopen a first request's window). It
+// reports whether it wrote.
+func (t *Tx) Ask(ctx context.Context, upstreamID, duckdbVersion, platform, name string, refresh time.Duration) (bool, error) {
 	var at time.Time
 	err := t.queryRow(ctx, "SELECT asked_at FROM upstream_asks WHERE upstream_id = ? AND duckdb_version = ? AND platform = ? AND name = ?",
 		upstreamID, duckdbVersion, platform, name).Scan(scanTime{&at})
@@ -558,12 +559,39 @@ ON CONFLICT (upstream_id, duckdb_version, platform, name) DO NOTHING`, upstreamI
 		return n > 0, nil
 	case err != nil:
 		return false, err
-	case now.Sub(at) < AskRefresh:
+	case now.Sub(at) < refresh:
 		return false, nil
 	}
 	_, err = t.exec(ctx, "UPDATE upstream_asks SET asked_at = ? WHERE upstream_id = ? AND duckdb_version = ? AND platform = ? AND name = ?",
 		t.s.d.timeArg(now), upstreamID, duckdbVersion, platform, name)
 	return err == nil, err
+}
+
+// AskState is what a lazy mirror's first request reads of a cell (spec 0032), outside any write
+// transaction: when it was last asked for (zero: never), whether it has a record, and whether a fetch
+// holds its lease.
+type AskState struct {
+	AskedAt          time.Time
+	Recorded, Leased bool
+}
+
+// ReadAsk reads a cell's AskState; lease is its lease's name.
+func (s *Store) ReadAsk(ctx context.Context, upstreamID, duckdbVersion, platform, name, lease string) (AskState, error) {
+	var st AskState
+	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT asked_at FROM upstream_asks WHERE upstream_id = ? AND duckdb_version = ?
+AND platform = ? AND name = ?`), upstreamID, duckdbVersion, platform, name).Scan(scanTime{&st.AskedAt})
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return st, err
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT COUNT(*) FROM upstream_cells WHERE upstream_id = ? AND duckdb_version = ?
+AND platform = ? AND name = ?`), upstreamID, duckdbVersion, platform, name).Scan(&n); err != nil {
+		return st, err
+	}
+	st.Recorded = n > 0
+	_, until, found, err := s.LeaseState(ctx, lease)
+	st.Leased = found && until.After(s.Now())
+	return st, err
 }
 
 // Asks reads a lazy upstream's asks, by (DuckDB version, platform, name).
@@ -854,17 +882,19 @@ func (t *Tx) TenantChannelIDs(ctx context.Context, tenantID string) ([]string, e
 	return t.strings(ctx, "SELECT id FROM channels WHERE tenant_id = ? ORDER BY id", tenantID)
 }
 
-// PullThrough is what serving needs about a channel's pull-through upstreams (spec 0009 phase 2):
-// which cells a miss may offer, decided without the database (it is part of the channel's snapshot).
+// PullThrough is what serving needs about a channel's pull-through upstreams (spec 0009 phase 2)
+// and lazy mirrors (spec 0032): which cells a miss may offer, decided without the database (it is
+// part of the channel's snapshot).
 type PullThrough struct {
 	UpstreamID, TenantID string
 	Kind                 string // the upstream's (spec 0030: "*" on community takes community names)
 	Platforms, Names     map[string]bool
 	Any                  bool // "*": any name no other upstream of the channel lists, and no reserved name
+	Lazy                 bool // a lazy mirror: a miss is an ask
 }
 
-// ChannelPullThrough reads a channel's active pull-through upstreams, and every name an upstream of
-// the channel lists (an explicit entry wins over "*").
+// ChannelPullThrough reads a channel's active pull-through upstreams and lazy mirrors, and every
+// name an upstream of the channel lists (an explicit entry wins over "*").
 func (s *Store) ChannelPullThrough(ctx context.Context, channelID string) ([]PullThrough, map[string]bool, error) {
 	var out []PullThrough
 	listed := map[string]bool{}
@@ -880,8 +910,8 @@ WHERE u.channel_id = ?`, channelID)
 				listed[n] = true
 			}
 		}
-		rows, err := tx.query(ctx, "SELECT "+upstreamCols+" FROM upstreams WHERE channel_id = ? AND mode = ? AND state = ? ORDER BY name",
-			channelID, ModePullThrough, UpstreamActive)
+		rows, err := tx.query(ctx, "SELECT "+upstreamCols+" FROM upstreams WHERE channel_id = ? AND (mode = ? OR mode = ? AND fetch_mode = ?) AND state = ? ORDER BY name",
+			channelID, ModePullThrough, ModeMirror, FetchLazy, UpstreamActive)
 		if err != nil {
 			return err
 		}
@@ -902,7 +932,8 @@ WHERE u.channel_id = ?`, channelID)
 			if err := tx.upstreamChildren(ctx, &us[i]); err != nil {
 				return err
 			}
-			p := PullThrough{UpstreamID: us[i].ID, TenantID: us[i].TenantID, Kind: us[i].Kind, Platforms: map[string]bool{}, Names: map[string]bool{}}
+			p := PullThrough{UpstreamID: us[i].ID, TenantID: us[i].TenantID, Kind: us[i].Kind, Platforms: map[string]bool{}, Names: map[string]bool{},
+				Lazy: us[i].Mode == ModeMirror}
 			for _, x := range us[i].Platforms {
 				p.Platforms[x] = true
 			}

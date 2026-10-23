@@ -105,6 +105,22 @@ type mgmt struct {
 type fakePuller struct {
 	mu     sync.Mutex
 	offers []release.Miss
+	asks   []release.Miss // spec 0032: a lazy mirror's
+	coming bool           // what Ask answers
+	n503   int
+}
+
+func (f *fakePuller) Ask(_ context.Context, _ bool, m release.Miss) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asks = append(f.asks, m)
+	return f.coming, nil
+}
+
+func (f *fakePuller) Answered503() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.n503++
 }
 
 func (f *fakePuller) Offer(m release.Miss) {

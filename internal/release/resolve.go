@@ -445,14 +445,15 @@ func SelectedOnly(rels []store.Candidate, selected map[string]string) []store.Ca
 	return out
 }
 
-// PullThroughFor returns the pull-through upstream a miss of the cell may be offered to (spec 0009
-// phase 2), or "": a DuckDB version the channel serves, a platform the upstream fetches, and a name
-// it lists, or for "*" any name no other upstream of the channel lists that is not reserved.
-func (s *Snapshot) PullThroughFor(version, platform, name string) string {
+// PullThroughFor returns the pull-through upstream or lazy mirror a miss of the cell may be offered
+// to (spec 0009 phase 2, 0032), or nil: a DuckDB version the channel serves, a platform the upstream
+// fetches, and a name it lists, or for "*" any name no other upstream of the channel lists that is
+// not reserved.
+func (s *Snapshot) PullThroughFor(version, platform, name string) *store.PullThrough {
 	if _, ok := s.CAPIs[version]; !ok {
-		return ""
+		return nil
 	}
-	for _, p := range s.PullThrough {
+	for i, p := range s.PullThrough {
 		if !p.Platforms[platform] {
 			continue
 		}
@@ -460,15 +461,17 @@ func (s *Snapshot) PullThroughFor(version, platform, name string) string {
 			continue // spec 0031: another source holds the name in the channel
 		}
 		if p.Names[name] || p.Any && !s.Listed[name] && !s.TenantReserved[name] && !s.Provided[name] && AnyTakes(p.Kind, name) {
-			return p.UpstreamID
+			return &s.PullThrough[i]
 		}
 	}
-	return ""
+	return nil
 }
 
-// Miss is a cell a pull-through upstream may fetch (spec 0009 phase 2).
+// Miss is a cell a pull-through upstream or a lazy mirror may fetch (spec 0009 phase 2, 0032).
 type Miss struct {
 	TenantID, UpstreamID, DuckDBVersion, Platform, Name string
+	Principal                                           string // the caller (spec 0032: its share of the queue)
+	Lazy                                                bool   // a lazy mirror's cell: an ask
 }
 
 // AnyTakes reports whether an upstream's "*" entry of kind may take name: never an alias, and no

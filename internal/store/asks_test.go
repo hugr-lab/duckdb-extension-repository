@@ -36,7 +36,7 @@ func TestUpstreamAsks(t *testing.T) {
 			var wrote bool
 			err := s.InTx(ctx, "", func(tx *store.Tx) error {
 				var err error
-				wrote, err = tx.Ask(ctx, u.ID, "v2.0.0", "linux_amd64", "tresor")
+				wrote, err = tx.Ask(ctx, u.ID, "v2.0.0", "linux_amd64", "tresor", store.AskRefresh)
 				return err
 			})
 			return wrote, err

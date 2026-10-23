@@ -67,7 +67,7 @@ func TestPullThrough(t *testing.T) {
 			{"v2.0.0", "osx_arm64", "tresor", false},   // a platform it does not fetch
 			{"v9.9.9", "linux_amd64", "tresor", false}, // a version the channel does not serve
 		} {
-			if got := snap.PullThroughFor(c.version, c.platform, c.name) == u.ID; got != c.want {
+			if got := ptID(snap.PullThroughFor(c.version, c.platform, c.name)) == u.ID; got != c.want {
 				t.Errorf("%+v: %v", c, got)
 			}
 		}
@@ -150,7 +150,7 @@ func TestPullThrough(t *testing.T) {
 		if g, _ := en.repo.count(cellPath("v2.0.0", "linux_amd64", "later")); g != 0 {
 			t.Fatal("a paused upstream fetched")
 		}
-		if snap := en.snapshot(t, "prod"); snap.PullThroughFor("v2.0.0", "linux_amd64", "later") != "" {
+		if snap := en.snapshot(t, "prod"); ptID(snap.PullThroughFor("v2.0.0", "linux_amd64", "later")) != "" {
 			t.Fatal("a paused upstream is offered misses")
 		}
 	})
@@ -188,4 +188,12 @@ func TestPullThroughOnce(t *testing.T) {
 			t.Fatalf("releases: %+v", rs)
 		}
 	})
+}
+
+// ptID is the upstream a miss of a cell is offered to, or "".
+func ptID(p *store.PullThrough) string {
+	if p == nil {
+		return ""
+	}
+	return p.UpstreamID
 }
