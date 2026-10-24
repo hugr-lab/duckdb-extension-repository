@@ -451,10 +451,12 @@ func TestAdminCLI(t *testing.T) {
 	}
 	run(1, "grant", "add", "acme", "-principal", "publisher:enterest-ci", "-verb", "publish", "-extension", "geo")
 	withdrawable(t, filepath.Join(dir, "k.db"), "acme", "enterest-ci", "geo", "1.0")
-	run(2, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0") // no -reason
-	run(2, "catalogue", "list", "acme", "-reason", "x")                            // -reason is withdraw's
-	run(1, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "9.9", "-reason", "CVE")
-	run(1, "catalogue", "withdraw", "acme", "tenant", "geo", "1.0", "-reason", "CVE") // not a distributor's
+	run(2, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0")                                   // no -reason
+	run(2, "catalogue", "list", "acme", "-reason", "x")                                                              // -reason is withdraw's
+	run(2, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0", "-reason", "CVE", "-name", "geo") // list's flag
+	run(2, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0", "-reason", "CVE", "-private")
+	run(0, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "9.9", "-reason", "CVE") // not arrived: withdrawn all the same
+	run(1, "catalogue", "withdraw", "acme", "tenant", "geo", "1.0", "-reason", "CVE")                // not a distributor's
 	run(0, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0", "-reason", "CVE-2026-0001")
 	run(0, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0", "-reason", "again") // withdrawn already
 	if got := run(0, "catalogue", "list", "acme", "-name", "geo"); !strings.Contains(got, "WITHDRAWN") || !strings.Contains(got, "publisher:enterest-ci") {

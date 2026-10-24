@@ -450,7 +450,8 @@ admin or a server administrator, with a reason, for a
 [distributor's publisher](publishing.md#distributors-publishers), removed or not.
 
 ```bash
-kista admin -config /etc/kista/kista.yaml   catalogue withdraw acme publisher:enterest-ci geo_tools 1.4.0 -reason "CVE-2026-0001"
+kista admin -config /etc/kista/kista.yaml \
+  catalogue withdraw acme publisher:enterest-ci geo_tools 1.4.0 -reason "CVE-2026-0001"
 ```
 
 ```text
@@ -458,27 +459,40 @@ POST /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/versions/{v}/withdr
 {"reason": "CVE-2026-0001"}
 ```
 
+- **The version, for good.** The version is withdrawn from the source in the tenant, whether the
+  source holds builds of it or not (purged, collected, or not arrived yet: the answer then lists no
+  builds): no build of it arrives again from that source, for any platform or DuckDB version (`409`,
+  problem type `…/withdrawn`), and its builds are never purged nor collected.
 - **Immediate.** In one transaction every build of the version becomes `withdrawn`, and every
   channel of the tenant holding a release of one gets its release version bumped: the next request
   serves it nowhere (DuckDB's `INSTALL` of it fails), and the index, bundles and feeds leave it out.
   A placement racing the withdrawal reads the build under a lock the withdrawal waits for: it either
   sees it withdrawn, or commits its release before the withdrawal bumps its channel.
 - **Final.** A withdrawn build is never placed again (no rule, follow, promotion, nor by hand, even
-  `early`: `409`, problem type `…/withdrawn`); its releases stay listed, `"withdrawn": true`, and
-  are never made active, current or public again (`409`); the same body never arrives again in that
-  source (`409`), nor another body of the version (its slot); it is never purged, nor collected.
-  The next version is placed as usual.
+  `early`: `409`, `…/withdrawn`); its releases stay listed, `"withdrawn": true`, are never made
+  active, current or public again (`409`), and complete nothing (a `manual` rule holds no withdrawn
+  version).
+- **No automatic downgrade** (the owner's decision): after a withdrawal an `auto` rule or a follow
+  does not go back to an older version by itself; the next newer version is placed as usual, or an
+  administrator places an older one by hand. A rule's `newest` is the newest available version in
+  the catalogue, which the pass takes only when it is newer than what the channel had, a withdrawn
+  version included.
 - **The tenant is told**: a `catalogue.withdrawn` event (the source, name, version, reason, the
   builds and how many channels it bumped). The answer to the distributor names the tenant, the
   version and the builds withdrawn, never the tenant's channels; withdrawing again answers
-  `"already": true`. The same body from another of the tenant's sources is the tenant's to
-  [block](publishing.md#blocking-a-body).
-- A tenant's own sources need no withdrawal: blocks and yanks do it. A tenant administrator is
-  refused (`404`).
+  `"already": true`.
+- **Per source.** A withdrawal is the distributor's source's: the same body from another of the
+  tenant's sources (its own publisher, an administrator's add) is the tenant's to serve, or to
+  [block](publishing.md#blocking-a-body) for every source. A tenant's own sources need no
+  withdrawal: blocks and yanks do it. A tenant administrator is refused (`404`).
+- **Naming the source**: `publisher:<name>`; when two of the tenant's distributors' publishers,
+  live or removed, had that name, it is ambiguous (`409`) and `publisher-id:<id>` names one (the
+  distribution admins' catalogue lists such entries by `publisher-id:<id>`, with `publisher_id`).
 - **Reading**: the catalogue lists each entry's `withdrawn` versions, and a build's `state` is
   `withdrawn` with `withdrawn_at` and `withdrawn_reason` (`catalogue list`'s `WITHDRAWN`, `catalogue
   show`'s `WITHDRAWN`); `release list` shows such a release's state with `(withdrawn)`. A withdrawn
-  build counts for nothing in its source's `catalogue.max_entries` and `catalogue.max_bytes`.
+  build, released or not, counts in its source's `catalogue.max_entries` and `catalogue.max_bytes`:
+  its body is kept with it.
 
 ## Passthrough channels
 

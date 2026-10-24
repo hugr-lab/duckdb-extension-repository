@@ -234,6 +234,15 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if !pkgtype.Known(b.PackageType) {
 		return fmt.Errorf("%w: package type %q", ErrInvalid, b.PackageType)
 	}
+	// spec 0033 phase B: no build of a version withdrawn from its source arrives again (a withdrawal
+	// takes the tenant's auth lock, which a publication's build transaction takes: one sees the other)
+	if strings.HasPrefix(b.Source, SourcePublisherPrefix) {
+		if w, err := t.VersionWithdrawn(ctx, b.TenantID, b.PackageType, b.Source, b.Name, b.PackageVersion); err != nil {
+			return err
+		} else if w {
+			return fmt.Errorf("%w: %s %s from this source", ErrWithdrawn, b.Name, b.PackageVersion)
+		}
+	}
 	cur, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND package_type = ? AND source = ? AND name = ? AND body_hash = ?",
 		b.TenantID, b.PackageType, b.Source, b.Name, b.BodyHash))
 	if err == nil && cur.Withdrawn() {

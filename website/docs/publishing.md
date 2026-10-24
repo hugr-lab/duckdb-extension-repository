@@ -370,16 +370,19 @@ kista admin -config /etc/kista/kista.yaml publisher distributor acme enterest-ci
 ```
 
 or `PUT /api/v1/tenants/{t}/publishers/{name}/distributor {"distributor": "enterest"}` (the
-distributor's name, as a [tenant reservation](#reserved-names) names its holder). The mark is set
-while the publisher holds no grants, and no keys unless it carries the licence-key mark already
-(`400`); marking it again changes the name; it is never removed: the publisher is removed instead.
+distributor's name, as a [tenant reservation](#reserved-names) names its holder). Only a fresh
+publisher a distribution admin or a server administrator created is marked: one a tenant
+administrator created is refused (`404`), and one that holds grants, keys (unless it carries the
+licence-key mark already), a hold, builds, releases or rules is refused (`400`). Marking it again
+changes the name; it is never removed: the publisher is removed instead.
 
 - **The catalogue only, without grants.** It publishes with `POST
   …/catalogue/extensions/{ext}/builds` (above) any name kista does not reserve server-wide (DuckDB's
   core and community names) and the tenant does not reserve for another holder than its distributor
   (`404` otherwise, as a missing grant), a name an upstream of the tenant lists included (each is its
   own source in the catalogue). The channel's publication route refuses it (`404`), and it holds no
-  grant (`400`): what it publishes reaches no channel by itself. Channels take its builds by their rules: an `auto` rule naming it, or
+  grant (`400` to a server administrator or a distribution admin, `404` to a tenant administrator, for
+  whom its grants are not theirs): what it publishes reaches no channel by itself. Channels take its builds by their rules: an `auto` rule naming it, or
   a follow (`channel follow <tenant>/<channel> publisher:enterest-ci`), which takes its names the
   tenant does not use from another source, a name reserved for its distributor included.
 - **The distributor's, not the tenant's**: its keys (as a [marked publisher](#sources-of-licence-keys)'s),

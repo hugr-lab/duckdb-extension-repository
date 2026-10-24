@@ -10,3 +10,11 @@ func SetBeforeResign(s *Service, f func([]store.Release)) { s.beforeResign = f }
 
 // CheckUpstreamSlot is an upstream item's slot check.
 var CheckUpstreamSlot = checkUpstreamSlot
+
+// ServedHeld is what a source's releases of a name hold in a channel, by version (newServed's held).
+func ServedHeld(cands []store.Candidate, capis map[string][]store.CAPI) map[string]bool {
+	return newServed(cands, capis).held
+}
+
+// DistributorMayNow is a distributor's name check in a landing transaction.
+var DistributorMayNow = distributorMayNow

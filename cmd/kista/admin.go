@@ -151,9 +151,10 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   catalogue add <tenant> <file|-> -name <name> [-private] [-type t]
                                                   put a build into the catalogue only, placed nowhere
   catalogue purge <tenant> <build-id>             delete a build no release holds; its slot is free again
-  catalogue withdraw <tenant> publisher:<name> <name> <version> -reason <text> [-type t]
+  catalogue withdraw <tenant> publisher:<name>|publisher-id:<id> <name> <version> -reason <text> [-type t]
                                                   withdraw a version of a distributor's publisher (spec 0033):
-                                                  served nowhere in the tenant from then on, for good
+                                                  served nowhere in the tenant from then on, for good, and no
+                                                  build of it arrives again from that source
   publisher add|remove <tenant> <name>          an identity that only publishes and promotes
   publisher list <tenant>
   publisher license-keys <tenant> <name> on|off  mark it a source of licence keys (spec 0021): its publications
@@ -171,7 +172,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   publisher distributor <tenant> <name> <distributor>   mark it a distributor's publisher (spec 0033): it publishes
                                                   into the catalogue only, without grants; its keys, hold,
                                                   purges and withdrawals are the distributor's
-  upstream add<tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
+  upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
                -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
                [-mode mirror|pull-through|bundle] [-fetch eager|lazy] [-credential <name>]
   upstream fetch <tenant> <name> eager|lazy       a mirror's fetch mode (spec 0032): lazy fetches the cells asked for
@@ -2916,8 +2917,8 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 	if err != nil {
 		return err
 	}
-	if *reason != "" && sub != "withdraw" {
-		return errUsage
+	if *reason != "" && sub != "withdraw" || sub == "withdraw" && (*source != "" || *name != "" || *private) {
+		return errUsage // a flag another subcommand takes
 	}
 	switch {
 	case sub == "withdraw" && len(pos) == 4 && *reason != "":

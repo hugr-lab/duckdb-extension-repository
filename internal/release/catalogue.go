@@ -22,6 +22,9 @@ type CatalogueEntry struct {
 	Held         []string          // the versions with a held build (spec 0033 phase A2), newest first
 	Revoked      []string          // the versions with a revoked build (spec 0033 phase A2), newest first
 	Withdrawn    []string          // the versions with a withdrawn build (spec 0033 phase B), newest first
+	// PublisherID is a distributor's publisher's id, for a distribution admin (spec 0033 phase B: a
+	// name two of them had is publisher-id:<id> as a source)
+	PublisherID string
 }
 
 // CatalogueBuild is a build of an entry: what it is, how it came, and where it is released.
@@ -60,9 +63,14 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 	if err != nil {
 		return nil, err
 	}
-	labels := only
+	var labels map[string]string
 	var rules []store.Rule
-	if only == nil {
+	if only != nil {
+		labels = map[string]string{}
+		for src, d := range only {
+			labels[src] = d.Label
+		}
+	} else {
 		if labels, err = s.Store.SourceLabels(ctx, t.ID); err != nil {
 			return nil, err
 		}
@@ -97,7 +105,8 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 		for _, l := range [][]string{vs, hv, rv, wv} {
 			slices.SortFunc(l, newestFirst)
 		}
-		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, Revoked: rv, Withdrawn: wv}
+		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, Revoked: rv, Withdrawn: wv,
+			PublisherID: only[k[0]].PublisherID}
 		byKey[k] = e
 		out = append(out, e)
 	}

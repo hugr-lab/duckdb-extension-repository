@@ -3,10 +3,11 @@
 -- or a server administrator marks as a distributor's (distributor: the distributor's name, as a tenant
 -- reservation names its holder) publishes into the catalogue only, without grants; its hold and its
 -- keys are the distributor's. A removed distributor's publisher is remembered, so its versions can
--- still be withdrawn and read by the distribution admins. A withdrawn entry (withdrawn_at, with the
--- reason) is served nowhere, never placed again, and its body never arrives again in its source. An
--- older replica would serve withdrawn entries and take a distributor's publisher's hold and keys as
--- the tenant's, so it no longer runs here.
+-- still be withdrawn and read by the distribution admins. A withdrawn version (withdrawn_versions,
+-- with the reason) is final in its source: its entries (withdrawn_at, withdrawn_reason) are served
+-- nowhere and never placed again, and no build of the version arrives again in that source. An older
+-- replica would serve withdrawn entries and take a distributor's publisher's hold and keys as the
+-- tenant's, so it no longer runs here.
 ALTER TABLE publishers ADD COLUMN distributor TEXT NULL
 -- +statement
 ALTER TABLE builds ADD COLUMN withdrawn_at TEXT NULL
@@ -24,3 +25,15 @@ CREATE TABLE removed_distributor_publishers (
 )
 -- +statement
 CREATE INDEX ix_removed_distributor_publishers_name ON removed_distributor_publishers (tenant_id, name)
+-- +statement
+CREATE TABLE withdrawn_versions (
+	tenant_id       TEXT NOT NULL REFERENCES tenants (id) ON DELETE NO ACTION,
+	package_type    TEXT NOT NULL,
+	source          TEXT NOT NULL,
+	name            TEXT NOT NULL,
+	package_version TEXT NOT NULL,
+	reason          TEXT NOT NULL,
+	withdrawn_by    TEXT NOT NULL,
+	withdrawn_at    TEXT NOT NULL,
+	PRIMARY KEY (tenant_id, package_type, source, name, package_version)
+)

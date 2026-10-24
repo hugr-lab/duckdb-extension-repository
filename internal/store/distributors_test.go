@@ -67,7 +67,7 @@ func TestMigrationDistributors(t *testing.T) {
 			}
 			return err
 		})
-		if srcs, err := s.DistributorSources(ctx, tid); err != nil || srcs[src] != "publisher:ci" {
+		if srcs, err := s.DistributorSources(ctx, tid); err != nil || srcs[src].Label != "publisher:ci" || srcs[src].PublisherID != id("p") {
 			t.Fatalf("the distributors' sources: %v %v", srcs, err)
 		}
 		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tid, "ci", "os:1:t") })
@@ -79,6 +79,31 @@ func TestMigrationDistributors(t *testing.T) {
 		}
 		if _, err := s.ResolveDistributorSource(ctx, tid, "publisher:nope"); !errors.Is(err, store.ErrNoSource) {
 			t.Fatalf("an unknown one: %v", err)
+		}
+		// another distributor's publisher of the same name: the name is ambiguous, each is named by its id
+		again := store.Publisher{TenantID: tid, Name: "ci", CreatedBy: "os:1:t"}
+		inTx(t, s, func(tx *store.Tx) error {
+			if err := tx.InsertPublisher(ctx, &again); err != nil {
+				return err
+			}
+			_, err := tx.SetPublisherDistributor(ctx, tid, "ci", "enterest")
+			return err
+		})
+		if _, err := s.ResolveDistributorSource(ctx, tid, "publisher:ci"); !errors.Is(err, store.ErrAmbiguousSource) {
+			t.Fatalf("an ambiguous name: %v", err)
+		}
+		for _, pid := range []string{id("p"), again.ID} {
+			if got, err := s.ResolveDistributorSource(ctx, tid, "publisher-id:"+pid); err != nil || got != "publisher:"+pid {
+				t.Fatalf("by its id: %q %v", got, err)
+			}
+		}
+		srcs, err := s.DistributorSources(ctx, tid)
+		if err != nil || len(srcs) != 2 || srcs[src].Label != "publisher-id:"+id("p") || !srcs[src].Removed ||
+			srcs["publisher:"+again.ID].Label != "publisher-id:"+again.ID {
+			t.Fatalf("the labels of two of one name: %+v %v", srcs, err)
+		}
+		if _, err := s.ResolveDistributorSource(ctx, tid, "publisher-id:"+id("x")); !errors.Is(err, store.ErrNoSource) {
+			t.Fatalf("an unknown id: %v", err)
 		}
 	})
 }
@@ -129,7 +154,7 @@ func TestWithdraw(t *testing.T) {
 		withdraw := func(ver, reason string) (w store.Withdrawn, already bool, err error) {
 			err = s.InTx(ctx, "", func(tx *store.Tx) error {
 				var err error
-				w, already, err = tx.Withdraw(ctx, tn.ID, "duckdb_extension", src, "geo", ver, reason)
+				w, already, err = tx.Withdraw(ctx, tn.ID, "duckdb_extension", src, "geo", ver, reason, "os:1:t")
 				return err
 			})
 			return w, already, err
@@ -139,8 +164,17 @@ func TestWithdraw(t *testing.T) {
 				t.Errorf("reason %q: %v", reason, err)
 			}
 		}
-		if _, _, err := withdraw("9.9", "CVE"); !errors.Is(err, store.ErrNotFound) {
-			t.Fatalf("a version the source does not have: %v", err)
+		// a version the source does not have (yet): withdrawn all the same, and none of it arrives
+		if w, already, err := withdraw("9.9", "CVE"); err != nil || already || len(w.Builds) != 0 {
+			t.Fatalf("a version the source does not have: %+v %v %v", w, already, err)
+		}
+		if _, already, err := withdraw("9.9", "again"); err != nil || !already {
+			t.Fatalf("again: %v %v", already, err)
+		}
+		late := cppBuild(tn, "geo", "9.9", "f")
+		late.Source, late.Origin = src, store.OriginPublication
+		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &late) }); !errors.Is(err, store.ErrWithdrawn) {
+			t.Fatalf("a build of a version withdrawn before it arrived: %v", err)
 		}
 		w, already, err := withdraw("1.0", "CVE-2026-0001")
 		if err != nil || already || len(w.Builds) != 2 || len(w.Channels) != 1 || w.Channels[0] != ch.ID ||
@@ -188,18 +222,20 @@ func TestWithdraw(t *testing.T) {
 		if err := s.InTx(ctx, "", func(tx *store.Tx) error { _, err := tx.DeleteEntry(ctx, tn.ID, arm.ID); return err }); !errors.Is(err, store.ErrWithdrawn) {
 			t.Fatalf("purged: %v", err)
 		}
-		// another body of the version is refused (the slot is the source's)
-		slot := cppBuild(tn, "geo", "1.0", "d")
-		slot.Source, slot.Platform = src, "linux_arm64"
-		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &slot) }); !errors.Is(err, store.ErrCatalogueSlot) {
-			t.Fatalf("another body of the version: %v", err)
+		// no build of the version arrives again: another body, another platform
+		for _, platform := range []string{"linux_arm64", "osx_arm64"} {
+			other := cppBuild(tn, "geo", "1.0", "d")
+			other.Source, other.Platform = src, platform
+			if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &other) }); !errors.Is(err, store.ErrWithdrawn) {
+				t.Fatalf("another build of the version (%s): %v", platform, err)
+			}
 		}
-		// never collected, and no backlog
+		// never collected; counted in the source's caps, released or not
 		if dead, err := s.DeadBuilds(ctx, "default", clock.Add(time.Hour), "", 100); err != nil || len(dead) != 0 {
 			t.Fatalf("dead builds: %v %v", dead, err)
 		}
-		if n, _, err := s.SourceUsage(ctx, tn.ID, src); err != nil || n != 0 {
-			t.Fatalf("the backlog: %d %v", n, err)
+		if n, _, err := s.SourceUsage(ctx, tn.ID, src); err != nil || n != 2 {
+			t.Fatalf("the source's usage: %d %v", n, err)
 		}
 		// a purge of held entries leaves a withdrawn one
 		inTx(t, s, func(tx *store.Tx) error {
@@ -246,7 +282,7 @@ func TestWithdrawRace(t *testing.T) {
 				var w store.Withdrawn
 				err := s.InTx(ctx, "", func(tx *store.Tx) error {
 					var err error
-					w, _, err = tx.Withdraw(ctx, tn.ID, "duckdb_extension", src, "geo", ver, "CVE")
+					w, _, err = tx.Withdraw(ctx, tn.ID, "duckdb_extension", src, "geo", ver, "CVE", "os:1:t")
 					return err
 				})
 				if err != nil {
@@ -276,7 +312,7 @@ func TestWithdrawRace(t *testing.T) {
 		second := build("2.0", "b")
 		seen := make(chan bool, 1)
 		inTx(t, s, func(tx *store.Tx) error {
-			w, _, err := tx.Withdraw(ctx, tn.ID, "duckdb_extension", src, "geo", "2.0", "CVE")
+			w, _, err := tx.Withdraw(ctx, tn.ID, "duckdb_extension", src, "geo", "2.0", "CVE", "os:1:t")
 			if err != nil || len(w.Builds) != 1 {
 				return errors.Join(err, errors.New("not withdrawn"))
 			}

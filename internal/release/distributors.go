@@ -57,6 +57,30 @@ func (s *Service) distributorMay(ctx context.Context, tenant, packageType, name,
 	return authz.ErrDenied
 }
 
+// distributorMayNow is distributorMay inside the build's landing transaction (spec 0033 phase B): the
+// tenant still active (not suspended or deleting meanwhile), and the name not reserved server-wide
+// nor in the tenant for another holder since the upload began.
+func distributorMayNow(ctx context.Context, tx *store.Tx, tenantID, packageType, name, dist string) error {
+	if active, err := tx.TenantActive(ctx, tenantID); err != nil {
+		return err
+	} else if !active {
+		return authz.ErrDenied
+	}
+	if k, err := tx.ReservedKind(ctx, packageType, name); err != nil {
+		return err
+	} else if k != "" {
+		return authz.ErrDenied
+	}
+	holder, held, err := tx.TenantReservedHolder(ctx, tenantID, packageType, name)
+	if err != nil {
+		return err
+	}
+	if held && holder != dist {
+		return authz.ErrDenied
+	}
+	return nil
+}
+
 // mayDistribute admits a distribution admin (distribute on the tenant) or a server administrator
 // (spec 0033 phase B: a distributor's withdrawals are theirs, never the tenant's).
 func (s *Service) mayDistribute(ctx context.Context, a authz.Actor, tenant string) (store.Tenant, error) {
@@ -79,12 +103,14 @@ type Withdrawal struct {
 	Already                               bool
 }
 
-// Withdraw withdraws a version of a name from a distributor's publisher's source (removed or not) in
-// a tenant, with a reason (spec 0033 phase B): a distribution admin's or a server administrator's. In
-// one transaction its entries become withdrawn and every channel of the tenant holding a release of
-// them gets its release version bumped; such a release is served nowhere from then on, never made
-// active again, and the body never arrives again in that source. The tenant's administrators are told
-// (catalogue.withdrawn). Withdrawing a version withdrawn already changes nothing.
+// Withdraw withdraws a version of a name from a distributor's publisher's source (removed or not; named
+// publisher:<name>, or publisher-id:<id> when the name is ambiguous) in a tenant, with a reason (spec
+// 0033 phase B): a distribution admin's or a server administrator's. In one transaction the version
+// is withdrawn for good from the source, whether it holds entries of it or not (none arrives again),
+// its entries become withdrawn and every channel of the tenant holding a release of them gets its
+// release version bumped; such a release is served nowhere from then on and never made active again.
+// The tenant's administrators are told (catalogue.withdrawn). Withdrawing a version withdrawn already
+// changes nothing.
 func (s *Service) Withdraw(ctx context.Context, a authz.Actor, tenant, packageType, source, name, version, reason string) (Withdrawal, error) {
 	t, err := s.mayDistribute(ctx, a, tenant)
 	if err != nil {
@@ -99,6 +125,9 @@ func (s *Service) Withdraw(ctx context.Context, a authz.Actor, tenant, packageTy
 	if version == "" {
 		return Withdrawal{}, fmt.Errorf("%w: a version is required", store.ErrInvalid)
 	}
+	if err := ValidName(name); err != nil {
+		return Withdrawal{}, err
+	}
 	src, err := s.Store.ResolveDistributorSource(ctx, t.ID, source)
 	if errors.Is(err, store.ErrNoSource) {
 		return Withdrawal{}, fmt.Errorf("%w: no distributor's publisher %q in the tenant", store.ErrNotFound, source)
@@ -109,9 +138,10 @@ func (s *Service) Withdraw(ctx context.Context, a authz.Actor, tenant, packageTy
 	out := Withdrawal{Tenant: t.Name, Source: source, Name: name, Version: version, Reason: reason, PackageType: packageType}
 	// the tenant's upstream lock: every release into its signed channels takes it, so no placement
 	// commits between the withdrawal's update and its read of the channels (the entry's row lock, which
-	// a placement reads with, makes it so too)
-	err = s.Store.InTenantTx(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
-		w, already, err := tx.Withdraw(ctx, t.ID, packageType, src, name, version, reason)
+	// a placement reads with, makes it so too); then its auth lock, which a publication's build
+	// transaction takes, so no build of the version lands unseen (the order of the purging removals)
+	err = s.Store.InTenantTx(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID), store.PublisherAuthLock(t.ID)}, func(tx *store.Tx) error {
+		w, already, err := tx.Withdraw(ctx, t.ID, packageType, src, name, version, reason, a.String())
 		if err != nil {
 			return err
 		}
@@ -130,9 +160,9 @@ func (s *Service) Withdraw(ctx context.Context, a authz.Actor, tenant, packageTy
 }
 
 // distributorSources are the sources a caller reads and purges in a tenant's catalogue as a
-// distribution admin (spec 0033 phase B): the distributors' publishers, live or removed, by source
-// with their labels; nil for any other caller (its own rules apply).
-func (s *Service) distributorSources(ctx context.Context, a authz.Actor, t store.Tenant) (map[string]string, error) {
+// distribution admin (spec 0033 phase B): the distributors' publishers, live or removed, by source;
+// nil for any other caller (its own rules apply).
+func (s *Service) distributorSources(ctx context.Context, a authz.Actor, t store.Tenant) (map[string]store.DistributorSource, error) {
 	if a.Kind != authz.ActorDistributionAdmin {
 		return nil, nil
 	}

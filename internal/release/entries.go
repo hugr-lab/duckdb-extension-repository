@@ -153,6 +153,13 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		}
 		return store.Build{}, false, err
 	}
+	// spec 0033 phase B: no build of a version withdrawn from the source arrives again (checked again
+	// at the insert, under the lock a withdrawal takes)
+	if w, err := s.Store.VersionWithdrawn(ctx, t.ID, b.PackageType, it.source, b.Name, b.PackageVersion); err != nil {
+		return store.Build{}, false, err
+	} else if w {
+		return store.Build{}, false, fmt.Errorf("%w: %s %s from this source", store.ErrWithdrawn, b.Name, b.PackageVersion)
+	}
 	_, existed, err := s.Store.BuildOf(ctx, t.ID, b.PackageType, it.source, b.Name, b.BodyHash)
 	if err != nil {
 		return store.Build{}, false, err
@@ -165,11 +172,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 			return store.Build{}, false, err
 		}
 	}
-	if dist != "" { // a name reserved during the upload, server-wide or for another holder (spec 0033 phase B)
-		if err := s.distributorMay(ctx, tenant, typ, o.Name, dist); err != nil {
-			return store.Build{}, false, err
-		}
-	} else if o.Publish != nil { // a name reserved during the upload takes a grant naming it (spec 0030)
+	if dist == "" && o.Publish != nil { // a name reserved during the upload takes a grant naming it (spec 0030)
 		kind, err := s.Store.ReservedFor(ctx, tenant, typ, o.Name)
 		if err != nil {
 			return store.Build{}, false, err
@@ -186,6 +189,13 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 	}
 	created := false
 	if err := s.land(ctx, sp, &it, func(tx *store.Tx, bb store.Build, inserted bool) error {
+		// spec 0033 phase B: a distributor's name checked again in the landing transaction (reserved
+		// server-wide or for another holder, or the tenant suspended, during the upload)
+		if dist != "" {
+			if err := distributorMayNow(ctx, tx, t.ID, typ, o.Name, dist); err != nil {
+				return err
+			}
+		}
 		if created = inserted; !inserted {
 			return nil
 		}

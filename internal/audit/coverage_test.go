@@ -497,13 +497,15 @@ func TestCoverage(t *testing.T) {
 	}), "source.set", "release.place")
 	en.expect("release.Service.RemoveFollow", do(func() error { return en.rel.RemoveFollow(rctx, admin, "acme", "prod", "publisher:dist") }),
 		"follow.clear")
-	// spec 0033 phase B: the publisher marked a distributor's, and a version of it withdrawn
+	// spec 0033 phase B: a fresh publisher marked a distributor's, and a version of it withdrawn
+	en.expect("tenants.AuthAdmin.AddPublisher", do(func() error { _, err := en.adm.AddPublisher(rctx, admin, "acme", "enterest-ci"); return err }),
+		"publisher.add")
 	en.expect("tenants.AuthAdmin.SetPublisherDistributor", do(func() error {
-		_, err := en.adm.SetPublisherDistributor(rctx, admin, "acme", "dist", "enterest")
+		_, err := en.adm.SetPublisherDistributor(rctx, admin, "acme", "enterest-ci", "enterest")
 		return err
 	}), "publisher.change")
 	en.expect("release.Service.Withdraw", do(func() error {
-		_, err := en.rel.Withdraw(rctx, admin, "acme", "", "publisher:dist", "followed", "1.0", "CVE-2026-0001")
+		_, err := en.rel.Withdraw(rctx, admin, "acme", "", "publisher:enterest-ci", "geo", "1.0", "CVE-2026-0001")
 		return err
 	}), "catalogue.withdrawn")
 	en.expect("release.Service.SetChannelHold", do(func() error { _, err := en.rel.SetChannelHold(rctx, admin, "acme", "prod", time.Hour); return err }),

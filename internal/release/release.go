@@ -751,6 +751,13 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				if it.b.Source != it.source {
 					return fmt.Errorf("release: a build of %s released as %s's", it.b.Source, it.source)
 				}
+				// spec 0033 phase B: a withdrawn entry reaches no channel, early or not, nor is its
+				// release there answered as made (read with a row lock its withdrawal's update waits for)
+				if withdrawn, err := tx.BuildWithdrawn(ctx, b.ID); err != nil {
+					return err
+				} else if withdrawn {
+					return fmt.Errorf("%w: %s %s %s", store.ErrWithdrawn, b.Name, b.PackageVersion, b.Platform)
+				}
 				cands, err := tx.SlotCandidates(ctx, channelID, it.source, b.Name, b.PackageVersion, b.Platform)
 				if err != nil {
 					return err
@@ -776,13 +783,6 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				}
 				if err := servable(capis, b); err != nil {
 					return err
-				}
-				// spec 0033 phase B: a withdrawn entry reaches no channel, early or not; read with a row
-				// lock its withdrawal's update waits for
-				if withdrawn, err := tx.BuildWithdrawn(ctx, b.ID); err != nil {
-					return err
-				} else if withdrawn {
-					return fmt.Errorf("%w: %s %s %s", store.ErrWithdrawn, b.Name, b.PackageVersion, b.Platform)
 				}
 				if !it.early { // spec 0033 phase A2: a held entry reaches no channel
 					if err := heldNow(ctx, tx, c, it); err != nil {

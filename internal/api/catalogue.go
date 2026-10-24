@@ -25,6 +25,9 @@ type catalogueEntryJSON struct {
 	// Withdrawn are the versions with a withdrawn build (spec 0033 phase B: served nowhere), newest
 	// first; omitted for none
 	Withdrawn []string `json:"withdrawn,omitempty"`
+	// PublisherID is a distributor's publisher's id, to a distribution admin (spec 0033 phase B: a
+	// name two of them had is publisher-id:<id> as a source); omitted otherwise
+	PublisherID string `json:"publisher_id,omitempty"`
 }
 
 func (h *Handler) catalogue(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -38,7 +41,7 @@ func (h *Handler) catalogue(w http.ResponseWriter, r *http.Request, c caller, p 
 	out := []catalogueEntryJSON{}
 	for _, e := range es {
 		out = append(out, catalogueEntryJSON{PackageType: shownType(reqType(r)), Source: e.Source, Name: e.Name, Versions: e.Versions, Rules: e.Rules,
-			Held: e.Held, Revoked: e.Revoked, Withdrawn: e.Withdrawn})
+			Held: e.Held, Revoked: e.Revoked, Withdrawn: e.Withdrawn, PublisherID: e.PublisherID})
 	}
 	reply(w, r, http.StatusOK, map[string]any{"entries": out}, "", noStore)
 }

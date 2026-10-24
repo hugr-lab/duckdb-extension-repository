@@ -98,6 +98,8 @@ func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
 		problem(w, http.StatusServiceUnavailable, typeUnavailable, "busy: try again")
 	case errors.Is(err, store.ErrWithdrawn): // spec 0033 phase B
 		problem(w, http.StatusConflict, typeWithdrawn, publicRefusal(err))
+	case errors.Is(err, store.ErrAmbiguousSource): // spec 0033 phase B: publisher-id:<id> names one
+		problem(w, http.StatusConflict, typeConflict, publicRefusal(err))
 	case errors.Is(err, store.ErrConflict):
 		problem(w, http.StatusPreconditionFailed, typePrecondition, "it changed: read it again")
 	case errors.Is(err, release.ErrPackageType): // spec 0034: across package types

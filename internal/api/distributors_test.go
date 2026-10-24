@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 )
@@ -38,10 +39,20 @@ func TestDistributorRoutes(t *testing.T) {
 	if r := call(200, "GET", T+"/publishers/enterest-ci", ta, ""); r.json(t)["distributor"] != "enterest" {
 		t.Fatalf("the tenant administrator reads the mark: %s", r.body)
 	}
-	// a publisher with grants is not marked; a distributor's publisher takes no grant
+	// the tenant's own publisher is never taken over (404, nothing said), not even by a server
+	// administrator; a distribution admin's that is not fresh any more is refused (400, no counts); a
+	// distributor's publisher takes no grant
 	call(201, "POST", T+"/publishers", ta, `{"name":"own-ci"}`)
+	call(404, "PUT", T+"/publishers/own-ci/distributor", sa, `{"distributor":"enterest"}`)
+	call(404, "PUT", T+"/publishers/own-ci/distributor", da, `{"distributor":"enterest"}`)
 	call(201, "POST", T+"/grants", ta, `{"principal":"publisher:own-ci","verbs":["publish"]}`)
-	call(400, "PUT", T+"/publishers/own-ci/distributor", sa, `{"distributor":"enterest"}`)
+	call(201, "POST", T+"/publishers", da, `{"name":"used-ci"}`)
+	if _, err := m.env.adm.SetPublisherHold(ctx, admin, "acme", "used-ci", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if r := call(400, "PUT", T+"/publishers/used-ci/distributor", da, `{"distributor":"enterest"}`); strings.ContainsAny(r.json(t)["detail"].(string), "0123456789") {
+		t.Fatalf("the refusal tells counts: %s", r.body)
+	}
 	call(404, "POST", T+"/grants", ta, `{"principal":"publisher:enterest-ci","verbs":["publish"]}`) // marked: not the tenant's
 	call(400, "POST", T+"/grants", sa, `{"principal":"publisher:enterest-ci","verbs":["publish"],"extension":"geo_tools"}`)
 	// its keys and its hold are the distributor's
@@ -105,7 +116,11 @@ func TestDistributorRoutes(t *testing.T) {
 	call(404, "POST", W, ta, `{"reason":"CVE-2026-0001"}`)
 	call(400, "POST", W, da, `{"reason":""}`)
 	call(404, "POST", T+"/catalogue/publisher:own-ci/extensions/geo_tools/versions/1.0/withdraw", da, `{"reason":"x"}`)
-	call(404, "POST", T+"/catalogue/publisher:enterest-ci/extensions/geo_tools/versions/9.9/withdraw", da, `{"reason":"x"}`)
+	// a version the source does not have: withdrawn all the same (none of it ever arrives)
+	if r := call(200, "POST", T+"/catalogue/publisher:enterest-ci/extensions/geo_tools/versions/9.9/withdraw", da, `{"reason":"x"}`); r.json(t)["already"] != false ||
+		len(r.json(t)["withdrawn"].([]any)) != 0 {
+		t.Fatalf("a version not arrived: %s", r.body)
+	}
 	r = call(200, "POST", W, da, `{"reason":"CVE-2026-0001"}`)
 	var wd struct {
 		Tenant, Version string
@@ -183,5 +198,22 @@ func TestDistributorRoutes(t *testing.T) {
 	}
 	call(204, "DELETE", T+"/publishers/gone-ci", ta, "")
 	call(200, "GET", T+"/catalogue/publisher:gone-ci/extensions/gone_ext", da, "")
-	call(200, "POST", T+"/catalogue/publisher:gone-ci/extensions/gone_ext/versions/1.0/withdraw", da, `{"reason":"retired"}`)
+	// another distributor's publisher of that name: the name is ambiguous (409), each is named by its id
+	call(201, "POST", T+"/publishers", da, `{"name":"gone-ci"}`)
+	call(200, "PUT", T+"/publishers/gone-ci/distributor", da, `{"distributor":"enterest"}`)
+	if r := call(409, "POST", T+"/catalogue/publisher:gone-ci/extensions/gone_ext/versions/1.0/withdraw", da, `{"reason":"retired"}`); !strings.Contains(string(r.body), "publisher-id:") {
+		t.Fatalf("an ambiguous name: %s", r.body)
+	}
+	var removedID string
+	for _, e := range call(200, "GET", T+"/catalogue?name=gone_ext", da, "").json(t)["entries"].([]any) {
+		x := e.(map[string]any)
+		if x["source"] != "publisher-id:"+x["publisher_id"].(string) {
+			t.Fatalf("an ambiguous name's label: %v", x)
+		}
+		removedID = x["publisher_id"].(string)
+	}
+	call(200, "GET", T+"/catalogue/publisher-id:"+removedID+"/extensions/gone_ext", da, "")
+	if r := call(200, "POST", T+"/catalogue/publisher-id:"+removedID+"/extensions/gone_ext/versions/1.0/withdraw", da, `{"reason":"retired"}`); len(r.json(t)["withdrawn"].([]any)) != 1 {
+		t.Fatalf("withdrawn by its id: %s", r.body)
+	}
 }

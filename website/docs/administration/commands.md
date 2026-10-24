@@ -315,7 +315,7 @@ See [Tenants and channels](tenants-and-channels.md) and
 | `catalogue add <tenant> <file\|-> -name <name> [-private]` | puts a build into the catalogue only, placed nowhere (source `tenant`; the file checks always run) | the build's id |
 | `catalogue list\|show\|add … -type <package type>` | the catalogue of a [package type](../concepts.md#packages-and-package-types) (`duckdb_extension` by default; this server reads DuckDB extensions only) | |
 | `catalogue purge <tenant> <build-id>` | deletes a build that was never released; its slot is free again (never a withdrawn one) | |
-| `catalogue withdraw <tenant> publisher:<name> <name> <version> -reason <text> [-type <package type>]` | [withdraws](../upstreams.md#withdrawals) a version of a distributor's publisher (removed or not): served nowhere in the tenant from then on, for good | how many builds it withdrew; nothing when it was withdrawn already |
+| `catalogue withdraw <tenant> publisher:<name>\|publisher-id:<id> <name> <version> -reason <text> [-type <package type>]` | [withdraws](../upstreams.md#withdrawals) a version of a distributor's publisher (removed or not; `publisher-id:<id>` when two had the name), whether it holds builds of it or not: served nowhere in the tenant from then on, for good | on standard error, `admin catalogue withdraw … (<n> entries) by …`, or `the version was withdrawn already` |
 
 ## Channel keys
 

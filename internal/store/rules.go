@@ -317,13 +317,14 @@ var ErrCatalogueSlot = errors.New("store: the source's slot holds another body; 
 var ErrCatalogueFull = errors.New("store: the source's catalogue is full")
 
 // SourceUsage is how many builds a tenant's source holds placed nowhere (its catalogue's backlog:
-// released builds are the channels'), and their bodies' bytes. A withdrawn entry is no backlog (spec
-// 0033 phase B: its record stays for good, and no one may purge it).
+// released builds are the channels'), and their bodies' bytes. A withdrawn entry counts, released or
+// not (spec 0033 phase B: kept for good, its body with it): a source that publishes and withdraws
+// does not grow a tenant's storage without bound.
 func (s *Store) SourceUsage(ctx context.Context, tenantID, source string) (entries int, bytes int64, err error) {
 	var n sql.NullInt64
 	err = s.db.QueryRowContext(ctx, s.d.rebind(`SELECT COUNT(*), SUM(bl.body_len) FROM builds b JOIN tenants t ON t.id = b.tenant_id
 LEFT JOIN blobs bl ON bl.domain = t.storage_domain AND bl.body_hash = b.body_hash WHERE b.tenant_id = ? AND b.source = ?
-AND b.withdrawn_at IS NULL AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)`), tenantID, source).Scan(&entries, &n)
+AND (b.withdrawn_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id))`), tenantID, source).Scan(&entries, &n)
 	return entries, n.Int64, err
 }
 

@@ -3,6 +3,7 @@ package tenants
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
@@ -238,16 +239,26 @@ func (s *AuthAdmin) SetPublisherDistributor(ctx context.Context, a authz.Actor, 
 		if err != nil {
 			return err
 		}
-		if n, err := tx.PublisherGrants(ctx, cur.ID); err != nil {
-			return err
-		} else if n > 0 {
-			return fmt.Errorf("%w: publisher %s holds grants (%d): a distributor's publisher holds none (it publishes into the catalogue only); "+
-				"remove them first", store.ErrInvalid, name, n)
-		}
-		if n, err := tx.PublisherCredentials(ctx, cur.ID); err != nil {
-			return err
-		} else if n > 0 && !cur.LicenseKeys && cur.Distributor == "" {
-			return fmt.Errorf("%w: publisher %s holds keys (%d); remove them, mark it, then add them again", store.ErrInvalid, name, n)
+		if cur.Distributor == "" { // a fresh publisher only; marked already, it is renamed
+			if !madeByDistributor(cur.CreatedBy) {
+				return authz.ErrDenied // the tenant's own publisher is never the distributor's
+			}
+			grants, err := tx.PublisherGrants(ctx, cur.ID)
+			if err != nil {
+				return err
+			}
+			keys, err := tx.PublisherCredentials(ctx, cur.ID)
+			if err != nil {
+				return err
+			}
+			used, err := tx.PublisherUsed(ctx, cur)
+			if err != nil {
+				return err
+			}
+			if grants > 0 || keys > 0 && !cur.LicenseKeys || used {
+				return fmt.Errorf("%w: publisher %s is not fresh: a distributor's publisher is marked before it holds grants, keys "+
+					"(unless marked for licence keys), a hold, builds, releases or rules; add a new one", store.ErrInvalid, name)
+			}
 		}
 		before, err := tx.SetPublisherDistributor(ctx, t.ID, name, dist)
 		if err != nil {
@@ -265,6 +276,19 @@ func (s *AuthAdmin) SetPublisherDistributor(ctx context.Context, a authz.Actor, 
 		return tx.Event(ctx, t.ID, a.String(), "publisher.change", "publisher:"+p.Name, f)
 	})
 	return p, err
+}
+
+// madeByDistributor reports whether a publisher was created by a distribution admin or a server
+// administrator (its created_by: a distribution admin's, a server administrator's token, the CLI, or
+// the bootstrap), not by a tenant's administrator (spec 0033 phase B: only such a publisher becomes a
+// distributor's).
+func madeByDistributor(createdBy string) bool {
+	for _, k := range []authz.ActorKind{authz.ActorDistributionAdmin, authz.ActorServer, authz.ActorOS} {
+		if strings.HasPrefix(createdBy, string(k)+":") {
+			return true
+		}
+	}
+	return createdBy == authz.Bootstrap.String()
 }
 
 // distributors refuses a change to a distributor's publisher (its hold) unless a distribution admin

@@ -81,11 +81,13 @@ func TestDistributorWithdrawal(t *testing.T) {
 	if err != nil || len(w.Builds) != 1 {
 		t.Fatalf("withdrawn: %+v %v", w, err)
 	}
-	if res := newSession(t, b, nil).exec(createRepo("r", k.httpURL(), pem), "INSTALL "+demo+" FROM r"); res[1].OK {
-		t.Fatal("installed a withdrawn version")
+	install := func() {
+		t.Helper()
+		res := newSession(t, b, nil).exec(createRepo("r", k.httpURL(), pem), "INSTALL "+demo+" FROM r")
+		mustOK(t, res[:1])
+		mustFail(t, res[1], "failed to download") // served nowhere: 404
 	}
+	install()
 	placer.Once(ctx, true) // the sweep places nothing of it again
-	if res := newSession(t, b, nil).exec(createRepo("r", k.httpURL(), pem), "INSTALL "+demo+" FROM r"); res[1].OK {
-		t.Fatal("installed a withdrawn version after a sweep")
-	}
+	install()
 }
