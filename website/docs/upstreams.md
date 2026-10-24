@@ -255,6 +255,7 @@ skipped).
 | `unchanged` | the slot already holds this body |
 | `yanked` | the slot holds this body, yanked; it stays yanked |
 | `conflict` | the upstream's slot holds another body; the version is immutable within its source |
+| `landed` | the build is in the catalogue, placed nowhere: the channel's rule for the name is `manual` and holds no release of its version |
 | `missing` | the upstream answered `404` (also a private upstream without the grant) |
 | `rejected` | a check failed: signature, footer, format or entry point |
 | `blocked` | the body is blocked in the tenant |
@@ -309,9 +310,43 @@ A promotion keeps the source of the release it promotes: a build a distributor p
   administrator yanked stays yanked. Nothing else falls back by itself: a yanked or blocked release of the selected source
   leaves the name unserved until it is active again or the source is switched.
 - **Listing:** `kista admin channel source <tenant>/<channel>` (or `GET …/sources`) shows each name,
-  its source, who set it and when, and the sources that have releases of it in the channel.
+  its source, its rule's mode, the newest version of the source the channel holds and the newest in
+  the catalogue, who set it and when, the sources that have releases of it in the channel, and the
+  placement pass's last outcome.
 
 Tenant shadows (below) are a passthrough channel's matter and stay as they are.
+
+## The catalogue and a channel's rules
+
+Every build that arrives in a tenant, mirrored or published, is kept in the tenant's **catalogue**
+as a build of its source (spec 0033), whether a channel serves it or not. A channel takes from the
+catalogue by its **rule** for each name: the source above, and a **mode**.
+
+| Mode | What the channel takes |
+| --- | --- |
+| `auto` | each new version of the source, per DuckDB version and platform it serves: the newest the cell has not had (a version yanked or purged there is not placed again, nor one older than what the cell had) |
+| `manual` | no new version by itself; the versions it holds are completed: a build of one for another DuckDB version or platform the channel serves, made later, is placed too |
+
+- **Arrival writes the rule.** A mirror's first release of a name in its channel writes an `auto`
+  rule (a mirror's channel takes its names as its runs always did); a publication, a promotion or a
+  placement writes a `manual` one. The migration to this release made every upstream's names in its
+  own channel `auto` and every other rule `manual`.
+- **Choosing**: `kista admin channel source <tenant>/<channel> <name> -set <source> -mode auto`
+  (or `-mode` alone to change the mode), or `PUT …/sources/{name}` with `{"source": "…", "mode":
+  "auto"}`. The tenant's own source (`tenant`) takes `manual` rules only: it is everyone who may
+  publish in the tenant.
+- **The placement pass** runs every minute on one replica per channel, for the rules whose source
+  has builds it has not looked at, and every hour for all of them; adding a DuckDB version to a
+  channel makes it look again. A failure (a slot holding another body, a block) is the rule's
+  last outcome.
+- **A mirror under a `manual` rule** fetches a new version into the catalogue without placing it:
+  the cell's outcome is `landed`, and the build is kept until it is placed or the cell moves on.
+- **Placing by hand**: `kista admin release place <tenant>/<channel> -name <name> -source <source>
+  -version <v>`, or `POST …/channels/{c}/extensions/{ext}/releases/place` with `{"source": "…",
+  "version": "…"}` (see [Publishing](publishing.md#placing-from-the-catalogue)).
+- **Reading the catalogue**: `kista admin catalogue list <tenant>` and `catalogue show <tenant>
+  <source> <name>`, or `GET /api/v1/tenants/{t}/catalogue` and `…/catalogue/{source}/extensions/{ext}`
+  (tenant administrators).
 
 ## Passthrough channels
 

@@ -1,6 +1,7 @@
 package release
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -16,13 +17,20 @@ import (
 
 // SourceView is a name's source in a channel as answers show it: the selected source ("": none),
 // who set it and when, and the sources that have releases of the name in the channel, each with
-// its count.
+// its count. Spec 0033: the rule's mode, the newest version of the source the channel holds
+// (Current, an active or deprecated release) and the newest in the catalogue (Newest), and the
+// placement pass's last outcome.
 type SourceView struct {
 	Name      string
 	Source    string
 	SetBy     string
 	SetAt     time.Time
 	Available map[string]int
+	Mode      string
+	Current   string
+	Newest    string
+	Outcome   string
+	OutcomeAt time.Time
 }
 
 // mayAdminChannel allows a channel's administrators (admin on the channel; tenant administrators).
@@ -52,6 +60,23 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 	if err != nil {
 		return nil, err
 	}
+	catalogue, err := s.Store.SourceVersions(ctx, ch.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	rels, err := s.Store.ListReleases(ctx, ch.ID, "")
+	if err != nil {
+		return nil, err
+	}
+	current := map[string]string{} // the newest version of the selected source the channel holds
+	for _, r := range rels {
+		if r.Source != sel[r.Name].Source || r.State != store.ReleaseActive && r.State != store.ReleaseDeprecated {
+			continue
+		}
+		if v, ok := current[r.Name]; !ok || CompareVersions(r.ExtVersion, v) > 0 {
+			current[r.Name] = r.ExtVersion
+		}
+	}
 	names := map[string]bool{}
 	for n := range sel {
 		names[n] = true
@@ -64,6 +89,12 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 		v := SourceView{Name: n, Available: map[string]int{}}
 		if x, ok := sel[n]; ok {
 			v.Source, v.SetBy, v.SetAt = store.Label(labels, x.Source), x.SetBy, x.SetAt
+			v.Mode, v.Outcome, v.OutcomeAt, v.Current = x.Mode, x.Outcome, x.OutcomeAt, current[n]
+			for _, ver := range catalogue[[2]string{x.Source, n}] {
+				if v.Newest == "" || CompareVersions(ver, v.Newest) > 0 {
+					v.Newest = ver
+				}
+			}
 		}
 		for src, k := range avail[n] {
 			v.Available[store.Label(labels, src)] += k
@@ -90,14 +121,24 @@ func (s *Service) Source(ctx context.Context, a authz.Actor, tenant, channel, na
 
 // SetSource selects the source a channel serves a name from (tenant, upstream:<name> or
 // publisher:<name> of the tenant), whether it has releases there yet
-// or not: its stored releases are served at once, the others' stay stored and unserved.
-func (s *Service) SetSource(ctx context.Context, a authz.Actor, tenant, channel, name, label string) (SourceView, error) {
+// or not: its stored releases are served at once, the others' stay stored and unserved. mode is
+// the rule's (spec 0033: auto or manual; "" keeps it, manual for a new rule); the placement pass
+// places what the rule takes. The tenant's own source takes manual rules only.
+func (s *Service) SetSource(ctx context.Context, a authz.Actor, tenant, channel, name, label, mode string) (SourceView, error) {
 	ch, err := s.mayAdminChannel(ctx, a, tenant, channel)
 	if err != nil {
 		return SourceView{}, err
 	}
 	if err := ValidName(name); err != nil {
 		return SourceView{}, err
+	}
+	if mode != "" {
+		if err := store.ValidRuleMode(mode); err != nil {
+			return SourceView{}, err
+		}
+	}
+	if label == store.SourceTenant && mode == store.RuleAuto {
+		return SourceView{}, fmt.Errorf("%w: the tenant's own source is everyone who may publish in it: its rules are manual", store.ErrInvalid)
 	}
 	src, err := s.Store.ResolveSource(ctx, ch.TenantID, label)
 	if errors.Is(err, store.ErrNoSource) {
@@ -117,19 +158,29 @@ func (s *Service) SetSource(ctx context.Context, a authz.Actor, tenant, channel,
 		} else if strings.HasSuffix(label, "(removed)") {
 			return fmt.Errorf("%w: %q was removed", store.ErrInvalid, label)
 		}
-		before, err := tx.SetChannelSource(ctx, ch.ID, name, src, a.String())
-		if err != nil || before == src {
-			return err
+		if src == store.SourceTenant && mode == "" {
+			mode = store.RuleManual // a rule turned to the tenant is manual
 		}
-		bl, err := tx.SourceLabel(ctx, before)
+		prior, err := tx.SetChannelRule(ctx, ch.ID, name, src, mode, a.String())
 		if err != nil {
 			return err
 		}
-		if before == "" {
+		after := mode
+		if after == "" {
+			after = cmp.Or(prior.Mode, store.RuleManual)
+		}
+		if prior.Source == src && prior.Mode == after {
+			return nil
+		}
+		bl, err := tx.SourceLabel(ctx, prior.Source)
+		if err != nil {
+			return err
+		}
+		if prior.Source == "" {
 			bl = ""
 		}
 		if err := tx.Event(ctx, ch.TenantID, a.String(), "source.set", "channel:"+ch.Name+"/ext:"+name,
-			map[string]any{"name": name, "source": label, "before": bl, "arrival": false}); err != nil {
+			map[string]any{"name": name, "source": label, "before": bl, "arrival": false, "mode": after}); err != nil {
 			return err
 		}
 		return tx.BumpReleaseVersion(ctx, ch.ID)

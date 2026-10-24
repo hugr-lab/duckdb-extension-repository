@@ -261,6 +261,35 @@ kista admin -config /etc/kista/kista.yaml \
 
 `-release <id>` promotes one release; `-private` and `-not-current` narrow the result.
 
+## Placing from the catalogue
+
+Every build that arrives in a tenant stays in its [catalogue](upstreams.md#the-catalogue-and-a-channels-rules),
+as a build of its source, served or not. Placing releases a version of a name from a source of the
+tenant in a channel: every build of the version the channel serves, all or none, signed with the
+channel's key.
+
+```text
+POST /api/v1/tenants/{t}/channels/{c}/extensions/{ext}/releases/place
+{"source": "upstream:core", "version": "1.2.0"}
+optional: "visibility": "private", "current": false
+```
+
+```bash
+kista admin -config /etc/kista/kista.yaml \
+  release place acme/prod -name h3 -source upstream:community -version v4.1.2
+```
+
+- It needs `promote` on the name in the channel, as a promotion (a publisher may, with a signed
+  request). A name the channel has no rule for yet takes a channel administrator: the placement
+  writes the rule, mode `manual`; a placement under a name whose rule names another source is `409`
+  (problem type `…/source`), as is one by a promoter where no rule exists.
+- The version's builds that arrive later for another DuckDB version or platform the channel serves
+  are placed by the placement pass: the channel holds the version, not its builds.
+- **Visibility** is the build's as it arrived (a mirror's, or a publication's), unless you ask for
+  `private`; a private upstream's credential keeps it private as promotion does.
+- The answer is `201` with `{"releases": [...]}`, or `200` when the channel already holds them all
+  with the same choices; `404` when the catalogue has no build of the version the channel serves.
+
 ## Changing a release
 
 An administrator of the extension (or of its channel or tenant) changes a release with

@@ -101,6 +101,8 @@ var writes = map[string]map[string][]audit.Kind{
 			"release.deprecate", "release.activate", "release.current", "release.public", "release.private"},
 		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release", "source.set"}, "Resign": {"key.resign"},
 		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
+		"Place": {"release.place", "shadow.add", "source.set"}, "PlaceRule": {"release.place", "shadow.add"}, "Catalogue": nil,
+		"CatalogueVersions": nil,
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
@@ -427,8 +429,28 @@ func TestCoverage(t *testing.T) {
 		_, _, err := en.rel.Promote(rctx, admin, "acme", "prod", "tresor", release.PromoteOptions{From: "staging", Version: "1.0"})
 		return err
 	}), "source.set", "release.promote")
+	// spec 0033: a version placed by hand from the catalogue, then a newer one by the pass
+	en.expect("release.Service.Place", do(func() error {
+		_, _, err := en.rel.Place(rctx, admin, "acme", "prod", "acl", release.PlaceOptions{Source: "tenant", Version: "1.0"})
+		return err
+	}), "source.set", "release.place")
+	en.expect("release.Service.Add", do(func() error {
+		_, _, err := en.rel.Add(rctx, admin, "acme", "staging", bytes.NewReader(ext(t, nil, "acl", "2.0")), release.AddOptions{Name: "acl"})
+		return err
+	}), "release.add")
+	en.expect("release.Service.PlaceRule", do(func() error {
+		prod, err := st.GetChannel(ctx, "acme", "prod")
+		if err != nil {
+			return err
+		}
+		n, failure, err := en.rel.PlaceRule(rctx, store.DueRule{TenantID: prod.TenantID, ChannelID: prod.ID, Name: "acl", Source: "tenant", Mode: "auto"})
+		if err == nil && (n != 1 || failure != "") {
+			err = fmt.Errorf("placed %d: %s", n, failure)
+		}
+		return err
+	}), "release.place")
 	en.expect("release.Service.SetSource", do(func() error {
-		_, err := en.rel.SetSource(rctx, admin, "acme", "prod", "parquet", "tenant")
+		_, err := en.rel.SetSource(rctx, admin, "acme", "prod", "parquet", "tenant", "")
 		return err
 	}), "source.set")
 	en.expect("release.Service.ClearSource", do(func() error { return en.rel.ClearSource(rctx, admin, "acme", "prod", "parquet") }), "source.clear")

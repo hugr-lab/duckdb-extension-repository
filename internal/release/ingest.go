@@ -41,10 +41,12 @@ type Ingest struct {
 }
 
 // Ingested is an intake's result: the release (new or the slot's), whether it existed, and the
-// key that verified.
+// key that verified. Landed is a build kept in the catalogue and placed nowhere: the channel's rule
+// for the name is manual and holds no release of its version (spec 0033).
 type Ingested struct {
 	Release store.Release
 	Existed bool
+	Landed  bool
 	Key     string
 	Hash    string
 }
@@ -101,10 +103,22 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	// the slot and the name's source before the body is stored (both are checked again under the lock)
 	var existing *store.Release
 	selected := false // the name has a source the release keeps (spec 0031)
+	pinned := false   // a manual rule of this source that holds no release of the version (spec 0033)
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
 		if selected, _, err = checkSource(ctx, tx, ch.ID, b.Name, it.source, true); err != nil {
 			return err
+		}
+		if rule, ok, err := tx.ChannelSourceOf(ctx, ch.ID, b.Name); err != nil {
+			return err
+		} else if ok && rule.Source == it.source && rule.Mode == store.RuleManual {
+			rels, err := tx.SourceReleases(ctx, ch.ID, it.source, b.Name)
+			if err != nil {
+				return err
+			}
+			pinned = !slices.ContainsFunc(rels, func(c store.Candidate) bool {
+				return c.ExtVersion == b.ExtVersion && (c.State == store.ReleaseActive || c.State == store.ReleaseDeprecated)
+			})
 		}
 		cands, err := tx.SlotCandidates(ctx, ch.ID, it.source, b.Name, b.ExtVersion, b.Platform)
 		if err != nil {
@@ -132,6 +146,14 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		}
 		res.Release, res.Existed = *existing, true
 		return res, nil
+	}
+	if pinned {
+		// the channel's administrator chose its versions by hand: the build waits in the catalogue
+		res.Landed = true
+		if in.DryRun {
+			return res, nil
+		}
+		return res, s.land(ctx, sp, &it)
 	}
 	capis, err := s.Store.ChannelCAPIs(ctx, ch.ID)
 	if err != nil {

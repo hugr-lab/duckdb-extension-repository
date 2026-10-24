@@ -301,7 +301,9 @@ channel. See [Using kista from DuckDB](duckdb.md).
 | --- | --- |
 | `POST tenants/{t}/channels` | tenant admin |
 | `GET, POST tenants/{t}/channels/{c}/duckdb-versions`; `DELETE …/duckdb-versions/{v}` | channel admin |
-| `GET tenants/{t}/channels/{c}/sources`; `GET, PUT, DELETE …/sources/{name}` | channel admin: [a name's source in the channel](upstreams.md#a-names-source-in-a-channel) (`PUT` takes `{"source": "tenant" \| "upstream:<name>" \| "publisher:<name>"}`; each answer is `{"name", "source", "set_by", "set_at", "available": {"<source>": <releases>}}`, `source` `""` when none; a list is `{"sources": [...]}`). A release's management answer carries `source` and `selected` (whether it is the channel's source of the name: only those are served) |
+| `GET tenants/{t}/channels/{c}/sources`; `GET, PUT, DELETE …/sources/{name}` | channel admin: [a name's source in the channel](upstreams.md#a-names-source-in-a-channel) and its [rule](upstreams.md#the-catalogue-and-a-channels-rules) (`PUT` takes `{"source": "tenant" \| "upstream:<name>" \| "publisher:<name>", "mode": "auto" \| "manual"}`, `mode` optional; each answer is `{"name", "source", "mode", "current", "newest", "outcome", "outcome_at", "set_by", "set_at", "available": {"<source>": <releases>}}`, `source` `""` when none; a list is `{"sources": [...]}`). A release's management answer carries `source` and `selected` (whether it is the channel's source of the name: only those are served) |
+| `GET tenants/{t}/catalogue[?source=&name=]` | tenant admin: the tenant's [catalogue](upstreams.md#the-catalogue-and-a-channels-rules), `{"entries": [{"source", "name", "versions": [newest first], "rules": {"<channel>": "<mode>"}}]}` |
+| `GET tenants/{t}/catalogue/{source}/extensions/{ext}` | tenant admin: an entry's versions (newest first), each with its builds: `{"versions": [{"version", "builds": [{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility", "origin", "checked", "created_at", "placed": [{"channel", "state"}]}]}]}` |
 | `GET tenants/{t}/channels/{c}/keys` | channel admin: keys, serving and active key, re-sign progress; a server administrator also sees each key's `signer_ref` and `protection` tier |
 | `POST tenants/{t}/channels/{c}/keys` | server: a key by signer reference |
 | `GET …/keys/events`, `GET …/keys/{id}` | channel admin |
@@ -318,6 +320,7 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `GET tenants/{t}/channels/{c}/extensions/{ext}/releases[/{id}]` | extension admin, its publishers |
 | `POST …/extensions/{ext}/releases?version=&platform=[&visibility=&current=]` | `publish` on the extension (raw file body) |
 | `POST …/extensions/{ext}/releases/promote` | `promote` on the extension |
+| `POST …/extensions/{ext}/releases/place` | `promote` on the extension; a name without a rule in the channel, channel admin ([placing from the catalogue](publishing.md#placing-from-the-catalogue)) |
 | `POST …/extensions/{ext}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
 | `DELETE …/extensions/{ext}/releases/{id}` | extension admin: purge a yanked release |
 | `GET, POST tenants/{t}/blocks`; `GET, DELETE tenants/{t}/blocks/{hash}` | tenant admin |

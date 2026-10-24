@@ -111,7 +111,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   tenant-reserved list <tenant>
   channel create <tenant>/<channel> -kind signed|passthrough
   channel versions <tenant>/<channel> [-add v]... [-remove v]...
-  channel source <tenant>/<channel> [<name> [-set <source> | -clear]]
+  channel source <tenant>/<channel> [<name> [-set <source>] [-mode auto|manual] | -clear]
                                                   a name's source in the channel (spec 0031): tenant,
                                                   upstream:<name> or publisher:<name>; only it is served
   channel list <tenant>
@@ -129,6 +129,12 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                   delete a yanked release for good; its slot stays taken (-force while gc.interval is 0)
   release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> | -version <v>)
                   [-private] [-not-current]               release Builds of another channel here
+  release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current]
+                  place a version's builds from the catalogue (spec 0033); later builds of it follow
+  catalogue list <tenant> [-source <source>] [-name <name>]
+                                                  the tenant's catalogue: each source's names and versions,
+                                                  and the channels whose rule takes them (spec 0033)
+  catalogue show <tenant> <source> <name>         an entry's versions, builds and where each is released
   publisher add|remove <tenant> <name>          an identity that only publishes and promotes
   publisher list <tenant>
   publisher license-keys <tenant> <name> on|off  mark it a source of licence keys (spec 0021): its publications
@@ -345,6 +351,8 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.key(ctx, sub, args[min(2, len(args)):])
 	case "release":
 		return a.release(ctx, sub, args[min(2, len(args)):])
+	case "catalogue":
+		return a.catalogue(ctx, sub, args[min(2, len(args)):])
 	case "issuer":
 		return a.issuer(ctx, sub, args[min(2, len(args)):])
 	case "grant":
@@ -629,14 +637,16 @@ func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error
 	fs.Var(&add, "add", "")
 	fs.Var(&remove, "remove", "")
 	set := fs.String("set", "", "")
+	mode := fs.String("mode", "", "")
 	clear := fs.Bool("clear", false, "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
+	changes := *set != "" || *mode != ""
 	switch {
-	case sub == "source" && (len(pos) == 1 || len(pos) == 2) && (*set == "" || !*clear) && (len(pos) == 2 || *set == "" && !*clear):
-		return a.channelSource(ctx, pos, *set, *clear)
+	case sub == "source" && (len(pos) == 1 || len(pos) == 2) && (!changes || !*clear) && (len(pos) == 2 || !changes && !*clear):
+		return a.channelSource(ctx, pos, *set, *mode, *clear)
 	case sub == "create" && len(pos) == 1:
 		t, c, err := splitPath(pos[0])
 		if err != nil {
@@ -676,8 +686,9 @@ func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error
 	return nil
 }
 
-// channelSource lists a channel's sources, shows one name's, or sets or clears it (spec 0031).
-func (a *adminCmd) channelSource(ctx context.Context, pos []string, set string, clear bool) error {
+// channelSource lists a channel's sources, shows one name's, or sets or clears it (spec 0031), and
+// its rule's mode (spec 0033).
+func (a *adminCmd) channelSource(ctx context.Context, pos []string, set, mode string, clear bool) error {
 	t, c, err := splitPath(pos[0])
 	if err != nil {
 		return err
@@ -694,12 +705,21 @@ func (a *adminCmd) channelSource(ctx context.Context, pos []string, set string, 
 		}
 		a.logf("channel source %s/%s %s cleared", t, c, pos[1])
 		return nil
-	case set != "":
-		v, err := a.svc.Releases.SetSource(ctx, a.actor, t, c, pos[1], set)
+	case set != "" || mode != "":
+		if set == "" { // the mode alone: the rule's source stays
+			cur, err := a.svc.Releases.Source(ctx, a.actor, t, c, pos[1])
+			if err != nil {
+				return err
+			}
+			if set = cur.Source; set == "" {
+				return fmt.Errorf("%s has no source in the channel: -set one", pos[1])
+			}
+		}
+		v, err := a.svc.Releases.SetSource(ctx, a.actor, t, c, pos[1], set, mode)
 		if err != nil {
 			return err
 		}
-		a.logf("channel source %s/%s %s %s", t, c, pos[1], set)
+		a.logf("channel source %s/%s %s %s %s", t, c, pos[1], set, v.Mode)
 		vs = []release.SourceView{v}
 	default:
 		v, err := a.svc.Releases.Source(ctx, a.actor, t, c, pos[1])
@@ -708,7 +728,7 @@ func (a *adminCmd) channelSource(ctx context.Context, pos []string, set string, 
 		}
 		vs = []release.SourceView{v}
 	}
-	a.table("NAME\tSOURCE\tSET BY\tSET AT\tRELEASES BY SOURCE", func(w io.Writer) {
+	a.table("NAME\tSOURCE\tMODE\tCURRENT\tNEWEST\tSET BY\tSET AT\tRELEASES BY SOURCE\tLAST OUTCOME", func(w io.Writer) {
 		for _, v := range vs {
 			src, by, at := v.Source, v.SetBy, ts(v.SetAt)
 			if src == "" {
@@ -719,7 +739,8 @@ func (a *adminCmd) channelSource(ctx context.Context, pos []string, set string, 
 				avail = append(avail, fmt.Sprintf("%s=%d", s, n))
 			}
 			slices.Sort(avail)
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", v.Name, src, by, at, strings.Join(avail, " "))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, src, dash(v.Mode), dash(v.Current), dash(v.Newest), by, at,
+				strings.Join(avail, " "), dash(v.Outcome))
 		}
 	})
 	return nil
@@ -834,6 +855,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 	notCurrent := fs.Bool("not-current", false, "")
 	unchecked := fs.Bool("unchecked", false, "")
 	from := fs.String("from", "", "")
+	source := fs.String("source", "", "")
 	relID := fs.String("release", "", "")
 	version := fs.String("version", "", "")
 	force := fs.Bool("force", false, "")
@@ -899,6 +921,19 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 		}
 		for _, r := range rs {
 			a.logf("release promote %s/%s -> %s/%s %s %s %s %s", t, *from, t, c, r.Name, r.ExtVersion, r.Platform, r.Slot)
+			fmt.Fprintln(a.out, r.ID)
+		}
+	case sub == "place" && len(pos) == 1 && *name != "" && *source != "" && *version != "":
+		rs, existed, err := a.svc.Releases.Place(ctx, a.actor, t, c, *name, release.PlaceOptions{Source: *source, Version: *version,
+			Private: *private, NotCurrent: *notCurrent})
+		if err != nil {
+			return err
+		}
+		if existed {
+			fmt.Fprintln(a.errw, "the releases already exist")
+		}
+		for _, r := range rs {
+			a.logf("release place %s %s/%s %s %s %s %s", *source, t, c, r.Name, r.ExtVersion, r.Platform, r.Slot)
 			fmt.Fprintln(a.out, r.ID)
 		}
 	case len(pos) == 2 && slices.Contains([]string{"yank", "deprecate", "activate", "current", "public", "private"}, sub):
@@ -2688,4 +2723,60 @@ func joinOrNone(names []string) string {
 		return "none"
 	}
 	return strings.Join(names, " ")
+}
+
+// dash is s, or "-" when it is empty: a table cell.
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// catalogue lists a tenant's catalogue or shows one entry (spec 0033).
+func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) error {
+	fs := flag.NewFlagSet("catalogue", flag.ContinueOnError)
+	source := fs.String("source", "", "")
+	name := fs.String("name", "", "")
+	pos, err := flags(fs, args)
+	if err != nil {
+		return err
+	}
+	switch {
+	case sub == "list" && len(pos) == 1:
+		es, err := a.svc.Releases.Catalogue(ctx, a.actor, pos[0], *source, *name)
+		if err != nil {
+			return err
+		}
+		a.table("SOURCE\tNAME\tVERSIONS\tRULES", func(w io.Writer) {
+			for _, e := range es {
+				var rules []string
+				for ch, mode := range e.Rules {
+					rules = append(rules, ch+"="+mode)
+				}
+				slices.Sort(rules)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Source, e.Name, strings.Join(e.Versions, " "), dash(strings.Join(rules, " ")))
+			}
+		})
+	case sub == "show" && len(pos) == 3:
+		vs, err := a.svc.Releases.CatalogueVersions(ctx, a.actor, pos[0], pos[1], pos[2])
+		if err != nil {
+			return err
+		}
+		a.table("VERSION\tPLATFORM\tSLOT\tBODY\tVISIBILITY\tORIGIN\tCREATED\tRELEASED IN", func(w io.Writer) {
+			for _, v := range vs {
+				for _, b := range v.Builds {
+					var in []string
+					for _, p := range b.Placed {
+						in = append(in, p.Channel+"("+p.State+")")
+					}
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Version, b.Platform, b.Slot(), b.BodyHash[:12], b.Visibility,
+						b.Origin, ts(b.CreatedAt), dash(strings.Join(in, " ")))
+				}
+			}
+		})
+	default:
+		return errUsage
+	}
+	return nil
 }

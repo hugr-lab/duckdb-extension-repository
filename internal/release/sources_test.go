@@ -61,7 +61,7 @@ func TestSources(t *testing.T) {
 		}
 		// switched to the tenant: its release lands and is the one served; the publisher's stays
 		// stored, unserved
-		v, err := en.rel.SetSource(ctx, admin, "acme", "staging", "tresor", "tenant")
+		v, err := en.rel.SetSource(ctx, admin, "acme", "staging", "tresor", "tenant", "")
 		if err != nil || v.Source != "tenant" || v.Available["publisher:(removed)"] != 1 {
 			t.Fatalf("switch: %+v %v", v, err)
 		}
@@ -102,11 +102,11 @@ func TestSources(t *testing.T) {
 		}
 		// a source the channel may not take
 		for _, bad := range []string{"upstream:nope", "publisher:nope", "everyone"} {
-			if _, err := en.rel.SetSource(ctx, admin, "acme", "staging", "tresor", bad); !errors.Is(err, store.ErrInvalid) {
+			if _, err := en.rel.SetSource(ctx, admin, "acme", "staging", "tresor", bad, ""); !errors.Is(err, store.ErrInvalid) {
 				t.Errorf("%s: %v", bad, err)
 			}
 		}
-		if _, err := en.rel.SetSource(ctx, admin, "acme", "staging", "Bad-Name", "tenant"); !errors.Is(err, store.ErrInvalid) {
+		if _, err := en.rel.SetSource(ctx, admin, "acme", "staging", "Bad-Name", "tenant", ""); !errors.Is(err, store.ErrInvalid) {
 			t.Errorf("a bad name: %v", err)
 		}
 		vs, err := en.rel.Sources(ctx, admin, "acme", "staging")
@@ -197,7 +197,7 @@ func TestSourcesPromotionAndClear(t *testing.T) {
 			t.Fatalf("served after the same body again: %q", got)
 		}
 		// switched to the publisher, which publishes 2.0: 1.0 (the tenant's) is not promoted
-		if _, err := en.rel.SetSource(ctx, admin, "acme", "staging", "tresor", "publisher:ci"); err != nil {
+		if _, err := en.rel.SetSource(ctx, admin, "acme", "staging", "tresor", "publisher:ci", ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, err := pubs.Add(ctx, pa, "acme", "staging", bytes.NewReader(v2), publish("tresor", "2.0", "linux_amd64")); err != nil {
@@ -210,7 +210,7 @@ func TestSourcesPromotionAndClear(t *testing.T) {
 			t.Fatalf("a release the source channel does not serve, promoted: %v", err)
 		}
 		// prod's name is the tenant's: the publisher's 2.0 is refused there, naming the source
-		if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "tenant"); err != nil {
+		if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "tenant", ""); err != nil {
 			t.Fatal(err)
 		}
 		_, _, err = en.rel.Promote(ctx, admin, "acme", "prod", "tresor", release.PromoteOptions{From: "staging", Version: "2.0"})
@@ -306,7 +306,7 @@ func TestSlotsPerSource(t *testing.T) {
 		}
 		switchTo := func(source string) {
 			t.Helper()
-			if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", source); err != nil {
+			if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", source, ""); err != nil {
 				t.Fatal(err)
 			}
 		}

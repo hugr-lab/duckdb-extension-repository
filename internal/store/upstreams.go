@@ -44,7 +44,10 @@ const (
 	// CellOtherSource: another source holds the name in the channel (spec 0031), decided before the
 	// download and asked again each run.
 	CellOtherSource = "other_source"
-	CellFailed      = "failed" // the fetch failed (network, size, rate): retried by the next run
+	// CellLanded: the build is in the catalogue, placed nowhere: the channel's rule for the name is
+	// manual and holds no release of its version (spec 0033).
+	CellLanded = "landed"
+	CellFailed = "failed" // the fetch failed (network, size, rate): retried by the next run
 )
 
 // Limits (spec 0009).

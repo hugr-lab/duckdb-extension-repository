@@ -43,43 +43,85 @@ func UpstreamSource(upstreamID string) string { return SourceUpstreamPrefix + up
 // PublisherSource is a publisher's source.
 func PublisherSource(publisherID string) string { return SourcePublisherPrefix + publisherID }
 
-// ChannelSource is the source a channel serves a name from.
+// Rule modes (spec 0033): auto places each new version of the rule's source the channel serves;
+// manual places none, but completes the versions the channel holds (their builds that arrive later).
+const (
+	RuleAuto   = "auto"
+	RuleManual = "manual"
+)
+
+// ChannelSource is the source a channel serves a name from, and its rule (spec 0033): the mode, and
+// the placement pass's last look (CheckedAt, zero for never) and outcome.
 type ChannelSource struct {
 	ChannelID, Name, Source string
 	SetBy                   string
 	SetAt                   time.Time
+	Mode                    string
+	CheckedAt               time.Time
+	Outcome                 string
+	OutcomeAt               time.Time
+}
+
+const channelSourceCols = "name, source, set_by, set_at, mode, checked_at, outcome, outcome_at"
+
+func scanChannelSource(r interface{ Scan(...any) error }, c *ChannelSource) error {
+	var outcome sql.NullString
+	err := r.Scan(&c.Name, &c.Source, &c.SetBy, scanTime{&c.SetAt}, &c.Mode, scanTime{&c.CheckedAt}, &outcome, scanTime{&c.OutcomeAt})
+	c.Outcome = outcome.String
+	return err
 }
 
 // ChannelSourceOf is a channel's source for a name; ok is false when it has none.
 func (t *Tx) ChannelSourceOf(ctx context.Context, channelID, name string) (ChannelSource, bool, error) {
-	c := ChannelSource{ChannelID: channelID, Name: name}
-	err := t.queryRow(ctx, `SELECT source, set_by, set_at FROM channel_sources WHERE channel_id = ? AND name = ?`, channelID, name).
-		Scan(&c.Source, &c.SetBy, scanTime{&c.SetAt})
+	c := ChannelSource{ChannelID: channelID}
+	err := scanChannelSource(t.queryRow(ctx, `SELECT `+channelSourceCols+` FROM channel_sources WHERE channel_id = ? AND name = ?`,
+		channelID, name), &c)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChannelSource{}, false, nil
 	}
 	return c, err == nil, err
 }
 
-// SetChannelSource sets a channel's source for a name, and returns the source it had ("": none).
-// The caller holds the channel's lock.
+// SetChannelSource sets a channel's source for a name, keeping its mode (a new rule is manual),
+// and returns the source it had ("": none). The caller holds the channel's lock.
 func (t *Tx) SetChannelSource(ctx context.Context, channelID, name, source, actor string) (string, error) {
-	if !ValidSource(source) {
-		return "", ErrInvalid
+	before, err := t.SetChannelRule(ctx, channelID, name, source, "", actor)
+	return before.Source, err
+}
+
+// SetChannelRule sets a channel's rule for a name: its source and mode ("": the rule's mode, manual
+// for a new one), and returns the rule it had (Source "": none). A changed source or mode is looked
+// at again by the placement pass. The caller holds the channel's lock.
+func (t *Tx) SetChannelRule(ctx context.Context, channelID, name, source, mode, actor string) (ChannelSource, error) {
+	if !ValidSource(source) || mode != "" && mode != RuleAuto && mode != RuleManual {
+		return ChannelSource{}, ErrInvalid
 	}
 	before, had, err := t.ChannelSourceOf(ctx, channelID, name)
 	if err != nil {
-		return "", err
+		return ChannelSource{}, err
+	}
+	if mode == "" {
+		mode = RuleManual
+		if had {
+			mode = before.Mode
+		}
 	}
 	now := t.s.d.timeArg(t.Now())
 	if had {
-		_, err = t.exec(ctx, `UPDATE channel_sources SET source = ?, set_by = ?, set_at = ? WHERE channel_id = ? AND name = ?`,
-			source, actor, now, channelID, name)
+		_, err = t.exec(ctx, `UPDATE channel_sources SET source = ?, mode = ?, set_by = ?, set_at = ?, checked_at = NULL, outcome = NULL,
+outcome_at = NULL WHERE channel_id = ? AND name = ?`, source, mode, actor, now, channelID, name)
 	} else {
-		_, err = t.exec(ctx, `INSERT INTO channel_sources (channel_id, name, source, set_by, set_at) VALUES (?, ?, ?, ?, ?)`,
-			channelID, name, source, actor, now)
+		_, err = t.exec(ctx, `INSERT INTO channel_sources (channel_id, name, source, mode, set_by, set_at) VALUES (?, ?, ?, ?, ?, ?)`,
+			channelID, name, source, mode, actor, now)
 	}
-	return before.Source, t.s.mapErr(err, "channel source")
+	return before, t.s.mapErr(err, "channel source")
+}
+
+// RecheckRules makes the placement pass look at every rule of a channel again (a DuckDB version
+// added: the builds for it are placed by the rules).
+func (t *Tx) RecheckRules(ctx context.Context, channelID string) error {
+	_, err := t.exec(ctx, "UPDATE channel_sources SET checked_at = NULL WHERE channel_id = ?", channelID)
+	return err
 }
 
 // ClearChannelSource removes a channel's source for a name, and returns the one it had ("": none).
@@ -128,7 +170,7 @@ func (s *Store) SourceTakes(ctx context.Context, channelID, name, source string)
 
 // ChannelSources are a channel's sources, by name.
 func (s *Store) ChannelSources(ctx context.Context, channelID string) (map[string]ChannelSource, error) {
-	rows, err := s.db.QueryContext(ctx, s.d.rebind(`SELECT name, source, set_by, set_at FROM channel_sources WHERE channel_id = ?`), channelID)
+	rows, err := s.db.QueryContext(ctx, s.d.rebind(`SELECT `+channelSourceCols+` FROM channel_sources WHERE channel_id = ?`), channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +178,7 @@ func (s *Store) ChannelSources(ctx context.Context, channelID string) (map[strin
 	out := map[string]ChannelSource{}
 	for rows.Next() {
 		c := ChannelSource{ChannelID: channelID}
-		if err := rows.Scan(&c.Name, &c.Source, &c.SetBy, scanTime{&c.SetAt}); err != nil {
+		if err := scanChannelSource(rows, &c); err != nil {
 			return nil, err
 		}
 		out[c.Name] = c

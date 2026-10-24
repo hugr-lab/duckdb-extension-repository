@@ -170,6 +170,7 @@ var catalogue = map[Kind][]string{
 	"release.add":       {"release", "name", "version", "platform", "slot", "body_hash", "visibility", "current", "shadows"},
 	"release.publish":   {"release", "name", "version", "platform", "slot", "body_hash", "visibility", "current", "shadows", "provenance"},
 	"release.promote":   {"releases", "name", "from_channel", "version", "shadows", "provenance"},
+	"release.place":     {"releases", "name", "version", "source", "placed"}, // spec 0033: by hand, auto or manual
 	"release.yank":      {"release", "name", "version", "platform"},
 	"release.deprecate": {"release", "name", "version", "platform"},
 	"release.activate":  {"release", "name", "version", "platform"},
@@ -205,7 +206,7 @@ var catalogue = map[Kind][]string{
 	"bootstrap.rearm":  {"tenant", "digest"},
 	"bundle.export":    {"plan", "manifest", "manifest_sha256", "bundle_key", "counts"},
 	"shadow.add":       {"name"},
-	"source.set":       {"name", "source", "before", "arrival"},
+	"source.set":       {"name", "source", "before", "arrival", "mode"},
 	"release.source":   {"release", "name", "before", "source"}, // written before spec 0033 (slots per source); kept for old events
 	"source.clear":     {"name", "before"},
 	"shadow.remove":    {"name"},
@@ -244,7 +245,7 @@ type KindInfo struct {
 func SubjectForm(k Kind) string {
 	const release = "channel:<channel>/ext:<name>/release:<id>"
 	switch k {
-	case "release.promote", "extension.use", "source.set", "source.clear":
+	case "release.promote", "release.place", "extension.use", "source.set", "source.clear":
 		return "channel:<channel>/ext:<name>"
 	case "upstream.release", "install":
 		return release

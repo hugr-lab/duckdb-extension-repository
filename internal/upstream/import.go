@@ -734,6 +734,8 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 		rec.Outcome, rec.Detail = store.CellFailed, err.Error() // never the file's fault
 	case err != nil:
 		rec.Outcome, rec.Detail = store.CellRejected, err.Error()
+	case got.Landed:
+		rec.Outcome = store.CellLanded
 	case got.Existed && got.Release.State == store.ReleaseYanked:
 		rec.Outcome = store.CellYanked
 	case got.Existed:
@@ -743,7 +745,8 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 	default:
 		rec.Outcome = store.CellReleased
 	}
-	if rec.Outcome != store.CellReleased && rec.Outcome != store.CellUnchanged && rec.Outcome != would && rec.Outcome != store.CellYanked {
+	if rec.Outcome != store.CellReleased && rec.Outcome != store.CellUnchanged && rec.Outcome != would && rec.Outcome != store.CellYanked &&
+		rec.Outcome != store.CellLanded {
 		s.Log.Info("upstream: a bundle cell was not released", "tenant", t.Name, "upstream", u.Name, "duckdb_version", c.DuckDBVersion,
 			"platform", c.Platform, "name", c.Name, "outcome", rec.Outcome, "reason", rec.Detail)
 	}
@@ -753,7 +756,8 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 // note counts a cell's outcome in its target's run.
 func (tg *target) note(c bundle.Cell, outcome, detail string) {
 	tg.res.Counts[outcome]++
-	if outcome != store.CellReleased && outcome != store.CellUnchanged && outcome != would && len(tg.res.Problems) < maxProblems {
+	if outcome != store.CellReleased && outcome != store.CellUnchanged && outcome != store.CellLanded && outcome != would &&
+		len(tg.res.Problems) < maxProblems {
 		tg.res.Problems = append(tg.res.Problems, CellNote{c.DuckDBVersion, c.Platform, c.Name, outcome, detail})
 	}
 }

@@ -526,7 +526,7 @@ func TestShadowsAndBlocks(t *testing.T) {
 			t.Fatalf("a release under the upstream's name: %v", err)
 		}
 		// switched to the tenant: its release lands, and the upstream's cell is other_source
-		if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "acl", "tenant"); err != nil {
+		if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "acl", "tenant", ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, err := en.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(later), release.AddOptions{Name: "acl"}); err != nil {
@@ -536,7 +536,7 @@ func TestShadowsAndBlocks(t *testing.T) {
 			t.Fatalf("other_source: %+v", r)
 		}
 		// switched back: the upstream's release is served again, and its cell unchanged
-		if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "acl", "upstream:acme-repo"); err != nil {
+		if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "acl", "upstream:acme-repo", ""); err != nil {
 			t.Fatal(err)
 		}
 		if r := en.sync(t, false); r.Counts[store.CellOtherSource] != 1 || r.Counts[store.CellUnchanged] != 1 {
@@ -1276,6 +1276,49 @@ func TestUpstreamSuccession(t *testing.T) {
 		rs, err := en.st.ListReleases(ctx, ch.ID, "acl")
 		if err != nil || len(rs) != 1 || rs[0].ID != first[0].ID || rs[0].Source != store.UpstreamSource(u.ID) || rs[0].State != store.ReleaseYanked {
 			t.Fatalf("the release's source: %+v %v", rs, err)
+		}
+	})
+}
+
+// Spec 0033: under a manual rule, a mirror's new version lands in the catalogue (the cell's outcome
+// landed), is placed nowhere and kept from the collector, and is placed by hand.
+func TestUpstreamManualLands(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "acl_duckdb_cpp_init"))
+		if _, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "acl"})); err != nil {
+			t.Fatal(err)
+		}
+		if r := en.sync(t, false); r.Counts[store.CellReleased] != 1 {
+			t.Fatalf("the first run: %+v", r)
+		}
+		v, err := en.rel.Source(ctx, admin, "acme", "prod", "acl")
+		if err != nil || v.Mode != store.RuleAuto {
+			t.Fatalf("the rule the mirror's arrival wrote: %+v %v", v, err)
+		}
+		if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "acl", v.Source, store.RuleManual); err != nil {
+			t.Fatal(err)
+		}
+		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("2.0", "v2.0.0"), 2, "acl_duckdb_cpp_init"))
+		if r := en.sync(t, false); r.Counts[store.CellLanded] != 1 {
+			t.Fatalf("the run under a manual rule: %+v", r)
+		}
+		ch, err := en.st.GetChannel(ctx, "acme", "prod")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rs, err := en.st.ListReleases(ctx, ch.ID, "acl"); err != nil || len(rs) != 1 || rs[0].ExtVersion != "1.0" {
+			t.Fatalf("placed under a manual rule: %+v %v", rs, err)
+		}
+		dead, err := en.st.DeadBuilds(ctx, "default", time.Now().Add(time.Hour), "", 100)
+		if err != nil || len(dead) != 0 {
+			t.Fatalf("a landed build collectable: %v %v", dead, err)
+		}
+		rs, _, err := en.rel.Place(ctx, admin, "acme", "prod", "acl", release.PlaceOptions{Source: v.Source, Version: "2.0"})
+		if err != nil || len(rs) != 1 || rs[0].Origin != store.OriginPlacement {
+			t.Fatalf("placed by hand: %+v %v", rs, err)
+		}
+		if r := en.sync(t, false); r.Counts[store.CellUnchanged] != 1 {
+			t.Fatalf("the run after: %+v", r)
 		}
 	})
 }

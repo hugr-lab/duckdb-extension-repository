@@ -117,7 +117,7 @@ func TestSDKLicense(t *testing.T) {
 	if st := k.publish(t, "kista_demo", ci); st != 409 {
 		t.Fatalf("the marked publication under another source: %d", st)
 	}
-	if _, err := k.rel.SetSource(ctx, serveAdmin, "acme", "prod", "kista_demo", "publisher:ci"); err != nil {
+	if _, err := k.rel.SetSource(ctx, serveAdmin, "acme", "prod", "kista_demo", "publisher:ci", ""); err != nil {
 		t.Fatal(err)
 	}
 	// a release of the marked publisher's own (spec 0033: a slot is a source's)

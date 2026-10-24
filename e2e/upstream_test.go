@@ -296,7 +296,7 @@ func TestUpstreamSources(t *testing.T) {
 		t.Fatalf("the tenant's build under the mirror's name: %v", err)
 	}
 	// switched to the tenant: its build lands and DuckDB installs it
-	if _, err := dst.rel.SetSource(ctx, serveAdmin, "acme", "prod", name, "tenant"); err != nil {
+	if _, err := dst.rel.SetSource(ctx, serveAdmin, "acme", "prod", name, "tenant", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := add(); err != nil {
@@ -309,7 +309,7 @@ func TestUpstreamSources(t *testing.T) {
 		t.Fatalf("the mirror's run under the tenant's source: %s", got)
 	}
 	// switched back: the mirror's build again, and its run takes the cell
-	if _, err := dst.rel.SetSource(ctx, serveAdmin, "acme", "prod", name, "upstream:src"); err != nil {
+	if _, err := dst.rel.SetSource(ctx, serveAdmin, "acme", "prod", name, "upstream:src", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := installed(); got != mirrored {
