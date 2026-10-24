@@ -96,10 +96,10 @@ var writes = map[string]map[string][]audit.Kind{
 		"RetireAttestation": {"attestation_key.retire"}, "ListAttestation": nil, "PublicAttestation": nil, "OpenAttestationSigner": nil,
 	},
 	"release.Service": {
-		"Add": {"release.add", "release.publish", "shadow.add", "source.set", "release.source"}, "Promote": {"release.promote", "shadow.add", "source.set", "release.source"},
+		"Add": {"release.add", "release.publish", "shadow.add", "source.set"}, "Promote": {"release.promote", "shadow.add", "source.set"},
 		"SetSource": {"source.set"}, "ClearSource": {"source.clear"}, "Sources": nil, "Source": nil, "Apply": {"release.yank",
 			"release.deprecate", "release.activate", "release.current", "release.public", "release.private"},
-		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release", "source.set", "release.source"}, "Resign": {"key.resign"},
+		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release", "source.set"}, "Resign": {"key.resign"},
 		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
 	},
 	"upstream.Service": {

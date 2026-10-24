@@ -644,7 +644,14 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					if err := setSource(ctx, tx, a, c, b.Name, it.source, succeeds); err != nil {
 						return err
 					}
+					// the removed upstream's releases, yanks and purges are the successor's (spec 0033)
+					if _, err := tx.TakeReleases(ctx, channelID, b.Name, succeeds, it.source); err != nil {
+						return err
+					}
 					selected = true
+				}
+				if it.b.Source != it.source {
+					return fmt.Errorf("release: a build of %s released as %s's", it.b.Source, it.source)
 				}
 				cands, err := tx.SlotCandidates(ctx, channelID, it.source, b.Name, b.ExtVersion, b.Platform)
 				if err != nil {

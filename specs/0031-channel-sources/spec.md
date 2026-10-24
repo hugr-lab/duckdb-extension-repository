@@ -94,7 +94,9 @@ channel_sources   channel_id fk, name, source, set_by, set_at;   pk (channel_id,
   (cleared) sets it, as any arrival. Without it, a switch to a source that brings the same
   bodies (a publisher republishing what another published, an upstream added again) could never
   serve those versions.
-- **A removed upstream's names pass to its successor** (found in implementation): an upstream
+- **A removed upstream's names pass to its successor** (found in implementation; with spec 0033's
+  slots per source, the successor takes every release of the removed upstream under the name in the
+  channel, and its purged slots, so their states and choices stay): an upstream
   removed and added again (a new id) would otherwise find its names held by a source that no
   longer exists, and its bodies in slots it cannot take. So an upstream arriving at a name whose
   source is a removed upstream's takes the name (`source.set`, `arrival: true`, `before` the removed

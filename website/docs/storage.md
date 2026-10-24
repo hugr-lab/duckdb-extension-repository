@@ -424,8 +424,9 @@ deleted a grace after its record).
 ### Purging yanked releases
 
 Yanked releases are kept until an administrator purges one. A purge deletes the release and its
-signatures; its slot (channel, name, version, platform, and the DuckDB version or C API major) stays
-taken for good, so no other body can ever be released there. The Build loses its reference and the collector removes it, then the body,
+signatures; its slot (channel, source, name, version, platform, and the DuckDB version or C API
+major) stays taken for good, so its source can never release another body there (a slot purged
+before schema 34 stays taken for every source). The Build loses its reference and the collector removes it, then the body,
 then the stream, each a grace apart.
 
 ```bash

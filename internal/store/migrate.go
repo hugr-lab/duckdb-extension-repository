@@ -141,9 +141,23 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 }
 
+// errMigratePath is a migration that needs the other path (with or without SQLite's foreign keys)
+// than the one chosen before the lock: another process applied one in between. migrateOne chooses
+// again.
+var errMigratePath = errors.New("store: the next migration needs the other path")
+
 // migrateOne applies the first pending migration in its own transaction; it reports whether one was
 // applied.
 func (s *Store) migrateOne(ctx context.Context, ms []migration) (bool, error) {
+	for try := 0; ; try++ {
+		applied, err := s.migrateOnce(ctx, ms)
+		if !errors.Is(err, errMigratePath) || try == 3 {
+			return applied, err
+		}
+	}
+}
+
+func (s *Store) migrateOnce(ctx context.Context, ms []migration) (bool, error) {
 	if s.d.Name == "sqlite" {
 		if _, err := s.db.ExecContext(ctx, s.bootstrapSQL()); err != nil {
 			return false, fmt.Errorf("store: creating schema_migrations: %w", err)
@@ -183,8 +197,8 @@ func (s *Store) applyNext(ctx context.Context, tx *Tx, ms []migration, checkKeys
 		return false, nil
 	}
 	m := ms[current]
-	if m.foreignKeysOff && s.d.Name == "sqlite" && !checkKeys {
-		return false, fmt.Errorf("store: migration %04d_%s runs with foreign keys off; start again", m.version, m.name)
+	if s.d.Name == "sqlite" && m.foreignKeysOff != checkKeys {
+		return false, errMigratePath
 	}
 	for i, stmt := range m.statements {
 		if _, err := tx.tx.ExecContext(ctx, stmt); err != nil {
@@ -192,16 +206,17 @@ func (s *Store) applyNext(ctx context.Context, tx *Tx, ms []migration, checkKeys
 		}
 	}
 	if checkKeys {
-		rows, err := tx.tx.QueryContext(ctx, "PRAGMA foreign_key_check")
-		if err != nil {
+		// the whole database's: a violation found names its first row
+		var table, parent string
+		var rowid sql.NullInt64
+		var fk int
+		err := tx.tx.QueryRowContext(ctx, "PRAGMA foreign_key_check").Scan(&table, &rowid, &parent, &fk)
+		switch {
+		case err == nil:
+			return false, fmt.Errorf("store: migration %04d_%s: a row of %s (rowid %d) refers to a missing row of %s",
+				m.version, m.name, table, rowid.Int64, parent)
+		case !errors.Is(err, sql.ErrNoRows):
 			return false, err
-		}
-		bad := rows.Next()
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return false, err
-		}
-		if bad {
-			return false, fmt.Errorf("store: migration %04d_%s leaves rows whose foreign keys do not hold", m.version, m.name)
 		}
 	}
 	if _, err := tx.exec(ctx, "INSERT INTO schema_migrations (version, name, min_reader, applied_at) VALUES (?, ?, ?, ?)",
@@ -213,29 +228,35 @@ func (s *Store) applyNext(ctx context.Context, tx *Tx, ms []migration, checkKeys
 
 // migrateForeignKeysOff applies a SQLite migration that rebuilds a table other tables reference: on
 // a connection of its own with foreign keys off (a pragma a transaction cannot change), checking them
-// before it commits, then on again. A connection whose pragma cannot be turned on again is discarded.
+// before it commits. The connection is never given back to the pool, whatever happens, so none
+// serves later queries with foreign keys off.
 func (s *Store) migrateForeignKeysOff(ctx context.Context, ms []migration) (applied bool, err error) {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn }) // discarded, not pooled
+		_ = conn.Close()
+	}()
 	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
 		return false, err
 	}
-	defer func() {
-		if _, onErr := conn.ExecContext(context.WithoutCancel(ctx), "PRAGMA foreign_keys = ON"); onErr != nil {
-			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
-			err = errors.Join(err, onErr)
-		}
-	}()
 	sqlTx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
-	applied, err = s.applyNext(ctx, &Tx{s: s, tx: sqlTx}, ms, true)
-	if err != nil {
-		_ = sqlTx.Rollback()
+	defer func() {
+		// a panic or an error must not leave the transaction open on the connection
+		if p := recover(); p != nil {
+			_ = sqlTx.Rollback()
+			panic(p)
+		}
+		if err != nil {
+			_ = sqlTx.Rollback()
+		}
+	}()
+	if applied, err = s.applyNext(ctx, &Tx{s: s, tx: sqlTx}, ms, true); err != nil {
 		return false, err
 	}
 	return applied, sqlTx.Commit()

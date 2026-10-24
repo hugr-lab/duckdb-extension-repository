@@ -120,7 +120,8 @@ func TestSDKLicense(t *testing.T) {
 	if _, err := k.rel.SetSource(ctx, serveAdmin, "acme", "prod", "kista_demo", "publisher:ci"); err != nil {
 		t.Fatal(err)
 	}
-	if st := k.publish(t, "kista_demo", ci); st != 200 {
+	// a release of the marked publisher's own (spec 0033: a slot is a source's)
+	if st := k.publish(t, "kista_demo", ci); st != 201 {
 		t.Fatalf("the marked publication: %d", st)
 	}
 	stored, err := k.licenses.Import(ctx, serveAdmin, "acme", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create)

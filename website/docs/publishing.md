@@ -61,7 +61,8 @@ the name in the channel, and the channel serves the one whose source it selected
 
 - **A released version is immutable** within its source. The same body in the same slot with the
   same choices is the existing release (`200`); another body, or other choices, is `409`. A fix is a
-  new version.
+  new version. A body another source released in the channel is a release of the publisher's own
+  (`201`).
 - A yanked release keeps its slot.
 - The extension version is matched exactly and case-sensitively: `1.0` and `v1.0` differ, and DuckDB
   asks for the string as typed in `INSTALL x FROM r VERSION '…'`.

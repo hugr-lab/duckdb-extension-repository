@@ -1,7 +1,6 @@
 package store_test
 
 import (
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -141,8 +140,8 @@ func TestChannelSources(t *testing.T) {
 }
 
 // Migration 0034 (spec 0033) gives each build its source, splitting a build whose releases name two
-// sources (spec 0031's same-body rule) into one per source with the same licence keys; slots purged
-// before stay taken for every source.
+// sources (spec 0031's same-body rule) into one per source, each with its source's licence-key
+// records; slots purged before stay taken for every source.
 func TestMigrationBuildSources(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Fresh(t, 1)[0]
@@ -168,6 +167,11 @@ func TestMigrationBuildSources(t *testing.T) {
 				"VALUES (?, ?, 'acl', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', ?, 'admin', ?, 'os:1:t', ?)", id("a"), tid, hash("1"), now, true},
 			{"INSERT INTO builds (id, tenant_id, name, ext_version, platform, abi, duckdb_version, body_hash, origin, created_at, created_by, checked) " +
 				"VALUES (?, ?, 'idle', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', ?, 'admin', ?, 'os:1:t', ?)", id("b"), tid, hash("2"), now, true},
+			// a build whose releases were purged: its source from who made it
+			{"INSERT INTO upstreams (id, tenant_id, name, kind, channel_id, mode, visibility, state, version, request_dry_run, created_at, created_by) " +
+				"VALUES (?, ?, 'repo', 'repository', ?, 'mirror', 'public', 'active', 1, ?, ?, 'os:1:t')", id("u"), tid, id("c"), false, now},
+			{"INSERT INTO builds (id, tenant_id, name, ext_version, platform, abi, duckdb_version, body_hash, origin, created_at, created_by, checked) " +
+				"VALUES (?, ?, 'gone', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', ?, 'upstream', ?, 'system:upstream:acme/repo', ?)", id("e"), tid, hash("4"), now, true},
 			{"INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at) VALUES (?, ?, 'sha256:k', 'pem', 'publisher', ?, ?)",
 				tid, id("a"), id("p"), now},
 			// the tenant released the body in prod, the publisher the same body in staging (it took the
@@ -185,7 +189,7 @@ func TestMigrationBuildSources(t *testing.T) {
 			t.Fatal(err)
 		}
 		var prod, staging store.Release
-		var prodBuild, stagingBuild, idle store.Build
+		var prodBuild, stagingBuild, idle, gone store.Build
 		var keys []string
 		var purged []store.Candidate
 		inTx(t, s, func(tx *store.Tx) error {
@@ -205,6 +209,9 @@ func TestMigrationBuildSources(t *testing.T) {
 			if idle, err = tx.GetBuild(ctx, id("b")); err != nil {
 				return err
 			}
+			if gone, err = tx.GetBuild(ctx, id("e")); err != nil {
+				return err
+			}
 			if purged, err = tx.SlotCandidates(ctx, id("c"), pub, "acl", "0.9", "linux_amd64"); err != nil {
 				return err
 			}
@@ -212,10 +219,11 @@ func TestMigrationBuildSources(t *testing.T) {
 			return err
 		})
 		if prodBuild.ID != id("a") || prodBuild.Source != "tenant" || stagingBuild.ID == id("a") || stagingBuild.Source != pub ||
-			stagingBuild.BodyHash != hash("1") || !stagingBuild.Checked || idle.Source != "tenant" {
-			t.Fatalf("builds: %+v %+v %+v", prodBuild, stagingBuild, idle)
+			stagingBuild.BodyHash != hash("1") || !stagingBuild.Checked || idle.Source != "tenant" || gone.Source != "upstream:"+id("u") {
+			t.Fatalf("builds: %+v %+v %+v %+v", prodBuild, stagingBuild, idle, gone)
 		}
-		if len(keys) != 2 || !slices.Contains(keys, id("a")) || !slices.Contains(keys, stagingBuild.ID) {
+		// the publisher's key goes with the publisher's build
+		if len(keys) != 1 || keys[0] != stagingBuild.ID {
 			t.Fatalf("keys: %v", keys)
 		}
 		if len(purged) != 1 || purged[0].State != store.ReleasePurged || purged[0].Seq != 7 {

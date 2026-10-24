@@ -62,8 +62,8 @@ func TestUpstreamLicenseKeys(t *testing.T) {
 			t.Fatalf("after the pull-through: %s", got)
 		}
 
-		// removing the mirror drops its keys; added again, its run releases the bodies again as the new
-		// upstream's (spec 0033: its own slots) and records their keys
+		// removing the mirror drops its keys; added again, a run that finds the body in its slot (the
+		// removed upstream's releases are the new one's) records them for the new upstream
 		if err := en.up.Remove(ctx, admin, "acme", sp.Name, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -73,7 +73,7 @@ func TestUpstreamLicenseKeys(t *testing.T) {
 		if _, err := en.up.Add(ctx, admin, "acme", sp); err != nil {
 			t.Fatal(err)
 		}
-		if r := en.sync(t, false); r.Counts[store.CellReleased] != 2 {
+		if r := en.sync(t, false); r.Counts[store.CellUnchanged] != 2 {
 			t.Fatalf("the run again: %+v", r)
 		}
 		if got := fmt.Sprint(en.keysOf(t)); got != "[pulled [{upstream pull}] tresor [{upstream acme-repo}]]" {

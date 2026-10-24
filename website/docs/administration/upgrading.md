@@ -89,6 +89,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0031_tenant_reserved_names` | 31 | an older replica would let a wide publish grant reach a name reserved in a tenant |
 | `0032_channel_sources` | 32 | an older replica would serve another source's releases of a name |
 | `0033_lazy_mirrors` | 33 | an older replica would run a lazy mirror as an eager one, fetching its whole matrix |
+| `0034_build_sources` | 34 | an older replica would refuse a second source's release of a version, or read another source's release as the slot's |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -159,7 +160,24 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 32)
+## Upgrading to the next release (schema 34)
+
+### A slot is its source's (spec 0033, phase A1 part 1)
+
+Two sources may release the same version of a name in one channel; the channel serves the one whose
+source it selected ([A name's source in a channel](../upstreams.md#a-names-source-in-a-channel)).
+
+- **Migration `0034_build_sources`** gives each build its source and makes releases' slots and
+  purged slots per source, and raises `min_reader` to 34: stop every older replica first. On SQLite
+  it rebuilds the `builds`, `releases` and `purged_slots` tables, with foreign keys off on its
+  connection and checked before it commits.
+- A build whose releases named two sources (the same body released by one source and then by
+  another) becomes one build per source, each with the licence-key records its source made.
+- A licence key counts as live, and an upstream's licences and usage are relayed and forwarded,
+  only through releases a channel serves: of the source the channel selected for the name.
+- A slot purged before the upgrade stays taken for every source; one purged after it, for its own.
+- Publishing a body another source released in the channel now makes a release of the publisher's
+  own (`201`) where it took the existing one (`200`).
 
 ### A name's source in a channel (spec 0031)
 

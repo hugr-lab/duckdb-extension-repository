@@ -269,3 +269,88 @@ func TestSourceArrivalRace(t *testing.T) {
 		}
 	})
 }
+
+// Spec 0033: a slot is its source's. Two sources release one version under different bodies in one
+// channel; the channel serves the selected one's, and a switch serves the other's. A purge keeps the
+// slot taken for its source only.
+func TestSlotsPerSource(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		ch, err := en.st.GetChannel(ctx, "acme", "prod")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ci := store.Publisher{TenantID: ch.TenantID, Name: "ci"}
+		if err := en.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &ci) }); err != nil {
+			t.Fatal(err)
+		}
+		pub := authz.Actor{Kind: authz.ActorPublisher, ID: "acme/ci", Tenant: "acme", Principals: auth.Principals{auth.PublisherKey(ci.ID): true}}
+		pubs := *en.rel
+		pubs.Authz = allowAll{}
+		mine := built(t, cpp("1.0"), "tresor_duckdb_cpp_init")
+		theirs := built(t, cpp("1.0"), "tresor_duckdb_cpp_init", "tresor_extra")
+		served := func() string {
+			t.Helper()
+			sc, err := en.st.GetServeChannel(ctx, "acme", "prod")
+			if err != nil {
+				t.Fatal(err)
+			}
+			snap, err := (&release.Snapshots{Store: en.st}).Get(ctx, sc.Channel)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out []string
+			for _, r := range snap.Releases {
+				out = append(out, r.ExtVersion+"@"+r.Source+"#"+r.BodyHash[:8])
+			}
+			return strings.Join(out, " ")
+		}
+		switchTo := func(source string) {
+			t.Helper()
+			if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", source); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t1, _, err := en.add(t, mine, release.AddOptions{Name: "tresor"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		switchTo("publisher:ci")
+		p1, existed, err := pubs.Add(ctx, pub, "acme", "prod", bytes.NewReader(theirs), publish("tresor", "1.0", "linux_amd64"))
+		if err != nil || existed || p1.Slot != t1.Slot || p1.BuildID == t1.BuildID {
+			t.Fatalf("the publisher's 1.0 beside the tenant's: %+v %v %v", p1, existed, err)
+		}
+		hashes := map[string]string{}
+		cands, err := en.st.ListReleases(ctx, ch.ID, "tresor")
+		if err != nil || len(cands) != 2 {
+			t.Fatalf("releases: %+v %v", cands, err)
+		}
+		for _, c := range cands {
+			hashes[c.ID] = c.BodyHash[:8]
+		}
+		if hashes[t1.ID] == hashes[p1.ID] {
+			t.Fatal("one body")
+		}
+		if got := served(); got != "1.0@publisher:"+ci.ID+"#"+hashes[p1.ID] {
+			t.Fatalf("served: %q", got)
+		}
+		switchTo("tenant")
+		if got := served(); got != "1.0@tenant#"+hashes[t1.ID] {
+			t.Fatalf("served after the switch: %q", got)
+		}
+		// the publisher's 1.0 yanked and purged: its slot stays taken for it, not for the tenant
+		if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "tresor", p1.ID, release.Yank, 0); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := en.rel.Purge(ctx, admin, "acme", "prod", "tresor", p1.ID, 0); err != nil {
+			t.Fatal(err)
+		}
+		switchTo("publisher:ci")
+		if _, _, err := pubs.Add(ctx, pub, "acme", "prod", bytes.NewReader(theirs), publish("tresor", "1.0", "linux_amd64")); !errors.Is(err, release.ErrSlot) {
+			t.Fatalf("the publisher's purged slot refilled: %v", err)
+		}
+		switchTo("tenant")
+		if r, existed, err := en.add(t, mine, release.AddOptions{Name: "tresor"}); err != nil || !existed || r.ID != t1.ID {
+			t.Fatalf("the tenant's 1.0 again: %+v %v %v", r, existed, err)
+		}
+	})
+}

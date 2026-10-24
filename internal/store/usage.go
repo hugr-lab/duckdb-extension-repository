@@ -196,11 +196,12 @@ const StatusReceived = "received"
 // UpstreamVersions are the (name, version) pairs an upstream brought into its channel since it was
 // added, each with the channels of the tenant that hold a release of such a build (spec 0012: its
 // usage there is forwarded to it; a promotion releases the same build elsewhere; the same version
-// from another source is not its).
+// from another source is not its, nor are its releases where the channel serves the name from
+// another source).
 func (s *Store) UpstreamVersions(ctx context.Context, u Upstream) (map[[2]string]map[string]bool, error) {
 	builds := map[string][2]string{}
-	err := s.eachRow(ctx, "SELECT build_id, name, ext_version, provenance FROM releases WHERE channel_id = ? AND origin = ? AND created_at >= ?",
-		[]any{u.ChannelID, OriginUpstream, s.d.timeArg(u.CreatedAt)}, func(sc func(...any) error) error {
+	err := s.eachRow(ctx, "SELECT build_id, name, ext_version, provenance FROM releases WHERE channel_id = ? AND source = ? AND origin = ? AND created_at >= ?",
+		[]any{u.ChannelID, UpstreamSource(u.ID), OriginUpstream, s.d.timeArg(u.CreatedAt)}, func(sc func(...any) error) error {
 			var id, name, version string
 			var prov sql.NullString
 			if err := sc(&id, &name, &version, &prov); err != nil {
@@ -230,7 +231,8 @@ func (s *Store) UpstreamVersions(ctx context.Context, u Upstream) (map[[2]string
 		for _, id := range chunk {
 			args = append(args, id)
 		}
-		err := s.eachRow(ctx, "SELECT r.build_id, r.channel_id FROM releases r JOIN channels c ON c.id = r.channel_id WHERE c.tenant_id = ? AND r.build_id IN ("+
+		err := s.eachRow(ctx, "SELECT r.build_id, r.channel_id FROM releases r JOIN channels c ON c.id = r.channel_id"+
+			" JOIN channel_sources cs ON cs.channel_id = r.channel_id AND cs.name = r.name AND cs.source = r.source WHERE c.tenant_id = ? AND r.build_id IN ("+
 			strings.TrimSuffix(strings.Repeat("?, ", len(chunk)), ", ")+")", args, func(sc func(...any) error) error {
 			var id, ch string
 			if err := sc(&id, &ch); err != nil {

@@ -433,20 +433,29 @@ catalogue's entries and the placement (rules, home channels, the pass, the route
 
 ### As built (A1 part 1)
 
-- **Migration 0034** gives `builds` a `source` (its first release's) and makes it unique per
-  (tenant, source, name, body); a build whose releases named two sources (spec 0031's same-body
-  rule) is split, each copy with the original's licence-key records, and its releases repointed.
-  `releases`' slot and `purged_slots`' key gain the source; a slot purged before has the source `*`
-  and stays taken for every source.
-- **SQLite** cannot change a unique key in place, and cannot drop a table other tables reference
-  while foreign keys are on, even deferred (tried). A migration marked `-- +foreign_keys_off` runs on
-  a connection of its own with them off (SQLite's documented procedure: a pragma a transaction cannot
-  change), checks `PRAGMA foreign_key_check` before it commits, and turns them on again; a connection
-  that cannot is discarded.
-- **Intake** finds and inserts builds and checks slots within the release's source; spec 0031's
-  same-body rule and its `SetReleaseSource` go. A source bringing a body another source released in
-  the channel makes a release of its own (`201`, not `200`); an upstream added again releases the
-  bodies again as its own (`released`, not `unchanged`), the removed one's staying unserved.
+- **Migration 0034** gives `builds` a `source` (its first release's; a build without releases, by
+  who made it, as migration 0032 read releases' actors) and makes it unique per (tenant, source,
+  name, body); a build whose releases named two sources (spec 0031's same-body rule) is split, each
+  copy taking the licence-key records its source made, and its releases repointed (no other table
+  holds build ids). `releases`' slot and `purged_slots`' key gain the source; a slot purged before
+  has the source `*` and stays taken for every source. The columns keep no default.
+- **SQLite** cannot change a unique key in place, nor drop a table other tables reference while
+  foreign keys are on, even deferred. A migration marked `-- +foreign_keys_off` runs on a connection
+  of its own with them off (SQLite's documented procedure: a pragma a transaction cannot change),
+  checks `PRAGMA foreign_key_check` before it commits (naming the first broken row), and the
+  connection is discarded afterwards, never pooled.
+- **Intake** finds and inserts builds and checks slots within the release's source, and refuses a
+  release whose build is another source's; spec 0031's same-body rule and its `SetReleaseSource` go.
+  A source bringing a body another source released in the channel makes a release of its own
+  (`201`, not `200`). An upstream succeeding a removed one takes the removed one's releases of the
+  name in the channel, and its purged slots, so a yank, a purge or a choice survives it.
+- **Only the selected source counts**: a licence key is live (spec 0021), an upstream relays
+  licences and receives usage (spec 0012), through releases of the source the channel selected for
+  the name; another source's releases stay stored and unserved.
+- **Left to later parts**: the entries' state, `available_at`, visibility and publisher key, the
+  catalogue's own slot uniqueness and `legacy_duplicate` (part 2); a source may still release
+  another body of a version in another channel until then. The data model's "one migration per
+  phase" is one per part in A1.
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into

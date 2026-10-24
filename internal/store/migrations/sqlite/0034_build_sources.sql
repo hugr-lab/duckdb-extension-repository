@@ -7,7 +7,7 @@
 CREATE TABLE builds_new (
 	id               TEXT PRIMARY KEY,
 	tenant_id        TEXT NOT NULL REFERENCES tenants (id) ON DELETE NO ACTION,
-	source           TEXT NOT NULL DEFAULT 'tenant',
+	source           TEXT NOT NULL,
 	name             TEXT NOT NULL,
 	ext_version      TEXT NOT NULL,
 	platform         TEXT NOT NULL,
@@ -28,10 +28,16 @@ CREATE TABLE builds_new (
 )
 -- +statement
 -- a build's source is its first release's (they all agree but where spec 0031's same-body rule
--- gave a slot's release to another source)
+-- gave a slot's release to another source); a build without releases (purged, the collector not past
+-- it yet) gets it from who made it, as migration 0032 read releases' actors
 INSERT INTO builds_new (id, tenant_id, source, name, ext_version, platform, abi, duckdb_version, c_api_major, c_api_minor,
 	c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked, used_at)
-SELECT id, tenant_id, coalesce((SELECT r.source FROM releases r WHERE r.build_id = builds.id ORDER BY r.created_at, r.id LIMIT 1), 'tenant'),
+SELECT id, tenant_id, coalesce((SELECT r.source FROM releases r WHERE r.build_id = builds.id ORDER BY r.created_at, r.id LIMIT 1),
+		CASE origin WHEN 'upstream' THEN 'upstream:' || (SELECT min(u.id) FROM upstreams u JOIN tenants t ON t.id = u.tenant_id
+			WHERE u.tenant_id = builds.tenant_id AND builds.created_by = 'system:upstream:' || t.name || '/' || u.name)
+		WHEN 'publication' THEN 'publisher:' || (SELECT min(p.id) FROM publishers p JOIN tenants t ON t.id = p.tenant_id
+			WHERE p.tenant_id = builds.tenant_id AND (builds.created_by = 'publisher:' || t.name || '/' || p.name
+				OR builds.created_by LIKE 'publisher:' || t.name || '/' || p.name || ',%')) END, 'tenant'),
 	name, ext_version, platform, abi, duckdb_version, c_api_major, c_api_minor, c_api_patch, body_hash, origin, origin_signature,
 	created_at, created_by, checked, used_at
 FROM builds
@@ -39,16 +45,23 @@ FROM builds
 -- a build whose releases name another source too: one build per source, with the same keys
 INSERT INTO builds_new (id, tenant_id, source, name, ext_version, platform, abi, duckdb_version, c_api_major, c_api_minor,
 	c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked, used_at)
-SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))),
+SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' ||
+		substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))),
 	b.tenant_id, x.source, b.name, b.ext_version, b.platform, b.abi, b.duckdb_version, b.c_api_major, b.c_api_minor, b.c_api_patch,
 	b.body_hash, b.origin, b.origin_signature, b.created_at, b.created_by, b.checked, b.used_at
 FROM (SELECT DISTINCT build_id, source FROM releases) x JOIN builds_new b ON b.id = x.build_id
 WHERE x.source <> b.source
 -- +statement
+-- a source's licence-key records go with its build: those another source recorded stay on the first
 INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at)
 SELECT k.tenant_id, n.id, k.kid, k.pem, k.source_kind, k.source_id, k.recorded_at
 FROM build_license_keys k JOIN builds_new o ON o.id = k.build_id
 JOIN builds_new n ON n.tenant_id = o.tenant_id AND n.name = o.name AND n.body_hash = o.body_hash AND n.id <> o.id
+WHERE n.source = k.source_kind || ':' || k.source_id
+-- +statement
+DELETE FROM build_license_keys WHERE EXISTS (SELECT 1 FROM builds_new o JOIN builds_new n ON n.tenant_id = o.tenant_id AND n.name = o.name
+	AND n.body_hash = o.body_hash AND n.id <> o.id
+	WHERE o.id = build_license_keys.build_id AND n.source = build_license_keys.source_kind || ':' || build_license_keys.source_id)
 -- +statement
 DROP TABLE builds
 -- +statement
@@ -109,7 +122,7 @@ CREATE INDEX ix_releases_build ON releases (build_id)
 -- a slot purged before: its source is gone with its release, so it stays taken for every source
 CREATE TABLE purged_slots_new (
 	channel_id  TEXT NOT NULL,
-	source      TEXT NOT NULL DEFAULT '*',
+	source      TEXT NOT NULL,
 	name        TEXT NOT NULL,
 	ext_version TEXT NOT NULL,
 	platform    TEXT NOT NULL,
@@ -122,8 +135,8 @@ CREATE TABLE purged_slots_new (
 	CONSTRAINT pk_purged_slots PRIMARY KEY (channel_id, source, name, ext_version, platform, slot)
 )
 -- +statement
-INSERT INTO purged_slots_new (channel_id, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at)
-SELECT channel_id, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at FROM purged_slots
+INSERT INTO purged_slots_new (channel_id, source, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at)
+SELECT channel_id, '*', name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at FROM purged_slots
 -- +statement
 DROP TABLE purged_slots
 -- +statement

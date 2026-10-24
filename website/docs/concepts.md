@@ -75,7 +75,10 @@ version, platform and name, one release is **current**: the one DuckDB gets on t
 (`INSTALL x FROM r`). Another version is reached with `INSTALL x FROM r VERSION '…'`.
 
 Versions are immutable: a released name, extension version, DuckDB version and platform never
-changes its body in a channel. A fix is a new version. A **block** bans a body hash in every channel
+changes its body in a channel within its source. A fix is a new version. Another source may release
+the same version under another body, and a channel serves the source its administrator selected
+([A name's source in a channel](upstreams.md#a-names-source-in-a-channel)), so switching the source
+can change the body a version installs. A **block** bans a body hash in every channel
 of the tenant at once, for example after a CVE. See [Publishing](publishing.md).
 
 ## Publication and promotion

@@ -9,6 +9,18 @@ ALTER TABLE builds ADD COLUMN source varchar(64) NOT NULL DEFAULT 'tenant'
 UPDATE builds SET source = (SELECT r.source FROM releases r WHERE r.build_id = builds.id ORDER BY r.created_at, r.id LIMIT 1)
 WHERE EXISTS (SELECT 1 FROM releases r WHERE r.build_id = builds.id)
 -- +statement
+-- a build without releases (its releases purged, the collector not past it yet): by who made it, as
+-- migration 0032 read releases' actors, so its source finds it again
+UPDATE builds SET source = coalesce(
+	CASE origin WHEN 'upstream' THEN 'upstream:' || (SELECT min(u.id) FROM upstreams u JOIN tenants t ON t.id = u.tenant_id
+		WHERE u.tenant_id = builds.tenant_id AND builds.created_by = 'system:upstream:' || t.name || '/' || u.name)
+	WHEN 'publication' THEN 'publisher:' || (SELECT min(p.id) FROM publishers p JOIN tenants t ON t.id = p.tenant_id
+		WHERE p.tenant_id = builds.tenant_id AND (builds.created_by = 'publisher:' || t.name || '/' || p.name
+			OR builds.created_by LIKE 'publisher:' || t.name || '/' || p.name || ',%')) END, 'tenant')
+WHERE NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = builds.id)
+-- +statement
+ALTER TABLE builds ALTER COLUMN source DROP DEFAULT
+-- +statement
 ALTER TABLE builds DROP CONSTRAINT builds_tenant_id_name_body_hash_key
 -- +statement
 ALTER TABLE builds ADD CONSTRAINT ux_builds_source UNIQUE (tenant_id, source, name, body_hash)
@@ -21,10 +33,16 @@ SELECT gen_random_uuid()::text, b.tenant_id, b.name, b.ext_version, b.platform, 
 FROM (SELECT DISTINCT build_id, source FROM releases) x JOIN builds b ON b.id = x.build_id
 WHERE x.source <> b.source
 -- +statement
+-- a source's licence-key records go with its build: those another source recorded stay on the first
 INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at)
 SELECT k.tenant_id, n.id, k.kid, k.pem, k.source_kind, k.source_id, k.recorded_at
 FROM build_license_keys k JOIN builds o ON o.id = k.build_id
 JOIN builds n ON n.tenant_id = o.tenant_id AND n.name = o.name AND n.body_hash = o.body_hash AND n.id <> o.id
+WHERE n.source = k.source_kind || ':' || k.source_id
+-- +statement
+DELETE FROM build_license_keys WHERE EXISTS (SELECT 1 FROM builds o JOIN builds n ON n.tenant_id = o.tenant_id AND n.name = o.name
+	AND n.body_hash = o.body_hash AND n.id <> o.id
+	WHERE o.id = build_license_keys.build_id AND n.source = build_license_keys.source_kind || ':' || build_license_keys.source_id)
 -- +statement
 UPDATE releases SET build_id = (SELECT n.id FROM builds o JOIN builds n ON n.tenant_id = o.tenant_id AND n.name = o.name
 		AND n.body_hash = o.body_hash AND n.source = releases.source WHERE o.id = releases.build_id)
@@ -40,3 +58,5 @@ ALTER TABLE purged_slots ADD COLUMN source varchar(64) NOT NULL DEFAULT '*'
 ALTER TABLE purged_slots DROP CONSTRAINT purged_slots_pkey
 -- +statement
 ALTER TABLE purged_slots ADD CONSTRAINT pk_purged_slots PRIMARY KEY (channel_id, source, name, ext_version, platform, slot)
+-- +statement
+ALTER TABLE purged_slots ALTER COLUMN source DROP DEFAULT
