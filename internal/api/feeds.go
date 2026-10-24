@@ -194,7 +194,7 @@ func (h *Handler) feedOf(r *http.Request, f store.Feed, c caller) feedJSON {
 	if len(f.Channels) > 0 {
 		chs, err := h.o.Store.ListChannels(r.Context(), c.tenant.Name)
 		if err == nil {
-			for _, ch := range chs {
+			for _, ch := range store.KnownChannels(chs) { // spec 0034: none of a type this server does not know
 				for _, id := range f.Channels {
 					if ch.ID == id {
 						o.Channels = append(o.Channels, ch.Name)

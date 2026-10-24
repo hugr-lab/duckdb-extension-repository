@@ -321,7 +321,7 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 			if err != nil {
 				return err
 			}
-			g.ChannelID, g.ChannelName = c.ID, c.Name
+			g.ChannelID, g.ChannelName, g.ChannelType = c.ID, c.Name, c.PackageType
 		}
 		if on.PackageGroup != "" {
 			eg, err := tx.GetPackageGroup(ctx, t.ID, on.PackageGroup)

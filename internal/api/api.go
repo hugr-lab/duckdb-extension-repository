@@ -841,6 +841,10 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		problem(w, http.StatusBadRequest, typeInvalid, "type is a package type this server knows ("+strings.Join(pkgtype.Types(), ", ")+")")
 		return caller{}, false
 	}
+	if typeNamed && !takesType(rt.pattern, r.Method) {
+		problem(w, http.StatusBadRequest, typeInvalid, "this route takes no type parameter (a body names its package_type)")
+		return caller{}, false
+	}
 	// a publisher's signed request (spec 0023): malformed, or not naming this request, is 400
 	st, sig, signed, bad := signedHeaders(r)
 	if bad != "" {
@@ -1088,12 +1092,36 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		case err != nil:
 			h.fail(w, err)
 			return caller{}, false
+		case cur != "" && !pkgtype.Known(cur):
+			notFound(w) // a channel (an upstream's home) of a type this server does not know: none (fail closed)
+			return caller{}, false
 		case cur != "" && cur != typ:
 			problem(w, http.StatusBadRequest, typeInvalid, "the type is the channel's ("+cur+"), not "+typ)
 			return caller{}, false
 		}
 	}
 	return c, true
+}
+
+// takesType reports whether a route takes ?type= (spec 0034's vocabulary): the tenant-level routes
+// keyed or filtered by a name (licences and their keys, the server's and a tenant's reserved names,
+// a package's attachments, the catalogue's routes, the grants and the groups filtered by extension,
+// statistics), and a channel's and an upstream's routes, where it must be the channel's. Anywhere
+// else a type would be ignored, so it is refused: a creation, a grant or a member change names its
+// type in its body.
+func takesType(pattern, method string) bool {
+	get := method == http.MethodGet || method == http.MethodHead
+	switch {
+	case strings.Contains(pattern, "/channels/{c}"), strings.HasPrefix(pattern, "tenants/{t}/upstreams/{name}"),
+		pattern == "reserved-names", pattern == "reserved-names/{name}", strings.HasPrefix(pattern, "tenants/{t}/reserved-names"),
+		strings.HasPrefix(pattern, "tenants/{t}/extensions/{ext}/attachments"), strings.HasPrefix(pattern, "tenants/{t}/catalogue"),
+		strings.HasPrefix(pattern, "tenants/{t}/stats/"), strings.HasPrefix(pattern, "tenants/{t}/licenses"),
+		strings.HasPrefix(pattern, "tenants/{t}/license-keys"):
+		return true
+	case pattern == "tenants/{t}/grants", pattern == "tenants/{t}/extension-groups":
+		return get
+	}
+	return false
 }
 
 // queryType reads a request's ?type= (spec 0034): the default when the query names none; named says

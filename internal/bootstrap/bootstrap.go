@@ -673,11 +673,17 @@ func issuerDiff(cur, want store.Issuer) string {
 	return ""
 }
 
-// hasGrant reports whether the tenant holds the grant: its principal, verbs and scope.
+// hasGrant reports whether the tenant holds the grant: its principal, verbs and scope. A grant on a
+// channel without an extension, of the channel's type, is the same as one of every type there (spec
+// 0034: the store holds it so).
 func hasGrant(ta store.TenantAuth, g config.BootstrapGrant) bool {
 	for _, x := range ta.Grants {
 		y := config.BootstrapGrant{Principal: x.Principal(), Verbs: x.Verbs, Channel: x.ChannelName, Extension: x.Package, PackageType: x.TypeShown()}
-		if x.PackageGroupID == "" && y.Key() == g.Key() {
+		want := g
+		if want.Channel != "" && want.Extension == "" && want.Channel == x.ChannelName && want.PackageType == x.ChannelType {
+			want.PackageType = ""
+		}
+		if x.PackageGroupID == "" && y.Key() == want.Key() {
 			return true
 		}
 	}

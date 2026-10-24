@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -64,6 +65,13 @@ func TestMigrationPackageTypes(t *testing.T) {
 			[]any{"INSERT INTO builds (id, tenant_id, source, name, package_version, platform, abi, duckdb_version, slot, body_hash, origin, " +
 				"created_at, created_by, checked) VALUES (?, ?, 'publisher:p', 'acl', '1.2.3', 'linux_amd64', 'cpp', 'v2.0.0', 'v2.0.0', ?, " +
 				"'publication', ?, 'os:1:t', ?)", id("b"), tid, hash("1"), now, true},
+			// rows referencing the build: its release and a licence key it declares (SQLite rebuilds
+			// builds, and neither may go with it)
+			[]any{"INSERT INTO releases (id, tenant_id, channel_id, build_id, source, name, package_version, platform, slot, state, visibility, seq, " +
+				"created_at, created_by, state_changed_at, state_changed_by, version, origin) VALUES (?, ?, ?, ?, 'publisher:p', 'acl', '1.2.3', " +
+				"'linux_amd64', 'v2.0.0', 'active', 'public', 1, ?, 'os:1:t', ?, 'os:1:t', 1, 'publication')", id("r"), tid, cid, id("b"), now, now},
+			[]any{"INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at) " +
+				"VALUES (?, ?, 'kid1', 'pem', 'publisher', ?, ?)", tid, id("b"), id("p"), now},
 		)
 		if err := s.Migrate(ctx); err != nil {
 			t.Fatal(err)
@@ -107,8 +115,15 @@ func TestMigrationPackageTypes(t *testing.T) {
 			if err != nil || b.PackageType != pkgtype.DuckDBExtension || b.Slot() != "v2.0.0" {
 				t.Errorf("the build: %+v %v", b, err)
 			}
+			if kids, err := store.QueryStrings(ctx, tx, "SELECT kid FROM build_license_keys WHERE build_id = ?", id("b")); err != nil ||
+				!slices.Equal(kids, []string{"kid1"}) {
+				t.Errorf("the build's licence keys: %v %v", kids, err)
+			}
 			return nil
 		})
+		if rs, err := s.ListReleases(ctx, cid, "acl"); err != nil || len(rs) != 1 || rs[0].ID != id("r") || rs[0].BuildID != id("b") {
+			t.Fatalf("the build's release: %+v %v", rs, err)
+		}
 
 		// a grant that names a package never holds "*"
 		if err := store.ExecRaw(ctx, s, "INSERT INTO grants (id, tenant_id, issuer_id, kind, value, package_type, package, verbs, created_at, created_by) "+
@@ -141,9 +156,25 @@ func TestMigrationPackageTypes(t *testing.T) {
 			now); err == nil && e.Name != "sqlite" { // SQLite checks foreign keys only where they are on
 			t.Fatal("a source of a name not reserved in its type was stored")
 		}
+		// the longest key a source takes: a name of 64 characters and an administrator's source of 386
+		// (SQL Server's clustered keys stop at 900 bytes; this one is nonclustered)
+		long := strings.Repeat("n", 64)
+		inTx(t, s, func(tx *store.Tx) error {
+			if _, err := tx.ReserveName(ctx, pkgtype.DuckDBExtension, long, store.ReservedCore, "admin:"+strings.Repeat("a", 380)); err != nil {
+				return err
+			}
+			return tx.BumpReservedVersion(ctx)
+		})
+		if rs, err := s.ListReservedNames(ctx, pkgtype.DuckDBExtension, long); err != nil || len(rs) != 1 || len(rs[0].Sources) != 1 ||
+			len(rs[0].Sources[0]) != 386 {
+			t.Fatalf("the longest source: %+v %v", rs, err)
+		}
 		// a type this binary does not know is read as nothing: the rows above stay unseen
 		if ms, err := s.GroupMembers(ctx, id("g")); err != nil || len(ms) != 1 {
 			t.Fatalf("members with an unknown type's: %+v %v", ms, err)
+		}
+		if gr, err := s.GetPackageGroup(ctx, tid, "platform"); err != nil || gr.Members != 1 {
+			t.Fatalf("the member count with an unknown type's: %+v %v", gr, err)
 		}
 		if l, err := s.GetLicense(ctx, tid, pkgtype.DuckDBExtension, "tresor"); err != nil || l.LicenseID != "l1" {
 			t.Fatalf("the licence: %+v %v", l, err)
@@ -303,6 +334,8 @@ func TestPackageTypes(t *testing.T) {
 			"a channel of another type":  {ChannelID: ch.ID, PackageType: testType, Verbs: []string{"install"}},
 			"a group grant with a type":  {PackageGroupID: g.ID, PackageType: testType, Verbs: []string{"install"}},
 			"a named one of another one": {ChannelID: drivers.ID, Package: "snowflake", PackageType: pkgtype.DuckDBExtension, Verbs: []string{"install"}},
+			"audit of one type":          {PackageType: testType, Verbs: []string{"audit"}},
+			"audit of DuckDB's":          {PackageType: pkgtype.DuckDBExtension, Verbs: []string{"admin", "audit"}},
 		} {
 			if err := grant(bad); !errors.Is(err, store.ErrInvalid) {
 				t.Errorf("%s: %v", name, err)
@@ -318,6 +351,16 @@ func TestPackageTypes(t *testing.T) {
 				t.Fatalf("%+v: %v", ok, err)
 			}
 		}
+		// a grant on a channel of the channel's type is "*" on it: stored so, and the same grant
+		if err := grant(store.Grant{Value: "drivers", ChannelID: drivers.ID, Verbs: []string{"install"}}); !errors.Is(err, store.ErrExists) {
+			t.Fatalf("the same grant on the channel of any type: %v", err)
+		}
+		if err := grant(store.Grant{Value: "prod", ChannelID: ch.ID, Verbs: []string{"install"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := grant(store.Grant{Value: "prod", ChannelID: ch.ID, PackageType: pkgtype.DuckDBExtension, Verbs: []string{"install"}}); !errors.Is(err, store.ErrExists) {
+			t.Fatalf("the same grant on the channel of its type: %v", err)
+		}
 		inTx(t, s, func(tx *store.Tx) error {
 			if n, err := tx.TenantAdminGrants(ctx, tn.ID); err != nil || n != 1 { // a typed grant administers no tenant
 				t.Errorf("tenant admin grants %d %v", n, err)
@@ -325,8 +368,46 @@ func TestPackageTypes(t *testing.T) {
 			return nil
 		})
 		a, err := s.GetTenantAuth(ctx, tn.ID)
-		if err != nil || len(a.Grants) != 4 || len(a.Groups[g.ID].Members) != 2 {
+		if err != nil || len(a.Grants) != 5 || len(a.Groups[g.ID].Members) != 2 {
 			t.Fatalf("auth %+v %v", a, err)
+		}
+		for _, gr := range a.Grants {
+			if gr.ChannelID != "" && (gr.PackageType != pkgtype.Any || gr.ChannelType != map[string]string{drivers.ID: testType, ch.ID: pkgtype.DuckDBExtension}[gr.ChannelID]) {
+				t.Fatalf("a channel's grant: %+v", gr)
+			}
+		}
+
+		// landed builds of the other type: a crowded name (two versions) and a mirror's stale cell
+		more := cppBuild(tn, "snowflake", "1.1.0", "5")
+		more.PackageType, more.Source, more.Origin = testType, "publisher:p", store.OriginPublication
+		mirrored := cppBuild(tn, "snowflake", "1.0.0", "6")
+		mirrored.PackageType, mirrored.Source, mirrored.Origin = testType, store.SourceUpstreamPrefix+"gone", store.OriginUpstream
+		inTx(t, s, func(tx *store.Tx) error {
+			if err := tx.FindOrInsertBuild(ctx, &more); err != nil {
+				return err
+			}
+			return tx.FindOrInsertBuild(ctx, &mirrored)
+		})
+		if err := store.ExecRaw(ctx, s, "UPDATE builds SET landed = ? WHERE package_type = ?", true, testType); err != nil {
+			t.Fatal(err)
+		}
+		landedOf := func(f func(context.Context) ([]store.LandedBuild, error)) int {
+			t.Helper()
+			bs, err := f(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := 0
+			for _, b := range bs {
+				if b.PackageType == testType {
+					n++
+				}
+			}
+			return n
+		}
+		crowded := func(ctx context.Context) ([]store.LandedBuild, error) { return s.CrowdedLanded(ctx, 1) }
+		if c, m := landedOf(crowded), landedOf(s.StaleMirrorLanded); c != 2 || m != 1 {
+			t.Fatalf("the other type's landed builds: %d crowded, %d stale", c, m)
 		}
 
 		// a downgrade: the type is not known here any more, and its rows are read as nothing
@@ -335,15 +416,26 @@ func TestPackageTypes(t *testing.T) {
 		if _, err := s.GetServeChannel(ctx, "acme", "drivers"); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("a channel of an unknown type is served: %v", err)
 		}
+		if chs, err := s.ListChannels(ctx, "acme"); err != nil || len(chs) != 2 || len(store.KnownChannels(chs)) != 1 ||
+			store.KnownChannels(chs)[0].Name != "prod" {
+			t.Fatalf("the known channels: %+v %v", chs, err)
+		}
 		a, err = s.GetTenantAuth(ctx, tn.ID)
-		if err != nil || len(a.Grants) != 1 || a.Grants[0].Value != "all" || len(a.Groups[g.ID].Members) != 1 {
+		if err != nil || len(a.Grants) != 2 || a.Grants[0].Value != "all" || a.Grants[1].Value != "prod" || len(a.Groups[g.ID].Members) != 1 {
 			t.Fatalf("auth with an unknown type's rows: %+v %v", a, err)
 		}
 		if ms, err := s.GroupMembers(ctx, g.ID); err != nil || len(ms) != 1 || ms[0].PackageType != pkgtype.DuckDBExtension {
 			t.Fatalf("members: %+v %v", ms, err)
 		}
+		if gr, err := s.GetPackageGroup(ctx, tn.ID, "warehouse"); err != nil || gr.Members != 1 {
+			t.Fatalf("the group's member count: %+v %v", gr, err)
+		}
 		if ls, err := s.ExpiredLicenses(ctx, 1<<40); err != nil || len(ls) != 1 || ls[0].PackageType != pkgtype.DuckDBExtension {
 			t.Fatalf("expired licences of the types known: %+v %v", ls, err)
+		}
+		// nor are its landed builds unlanded here
+		if c, m := landedOf(crowded), landedOf(s.StaleMirrorLanded); c != 0 || m != 0 {
+			t.Fatalf("an unknown type's landed builds: %d crowded, %d stale", c, m)
 		}
 	})
 }

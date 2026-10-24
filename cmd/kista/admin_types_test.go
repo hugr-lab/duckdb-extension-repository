@@ -12,10 +12,12 @@ import (
 )
 
 // Spec 0034: -type where kista admin chooses a package type (a channel, reservations, group
-// members, the catalogue, licences); the default as before; a type kista does not know refused.
+// members, the catalogue, licences, attachments, a placement); the default as before; a type kista
+// does not know refused.
 func TestAdminPackageTypes(t *testing.T) {
 	t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
-	defer pkgtype.RegisterForTest("test_package")()
+	unregister := pkgtype.RegisterForTest("test_package")
+	defer func() { unregister() }()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "kista.yaml")
 	os.WriteFile(cfg, []byte("profile: dev\nstore: { kind: sqlite, sqlite: { path: "+filepath.Join(dir, "k.db")+" } }\n"+
@@ -64,4 +66,19 @@ func TestAdminPackageTypes(t *testing.T) {
 	run(0, "catalogue", "list", "acme", "-type", "test_package")
 	run(1, "catalogue", "list", "acme", "-type", "nope")
 	run(1, "license", "list", "acme", "-type", "nope")
+	// a package's attachments are of its type
+	run(0, "attachment", "list", "acme", "snowflake", "-type", "test_package")
+	run(1, "attachment", "list", "acme", "snowflake", "-type", "nope")
+	// a placement's builds are of the channel's type: another one is refused, and only place takes it
+	if got := run(1, "release", "place", "acme/prod", "-name", "snowflake", "-source", "tenant", "-version", "1.0", "-type", "test_package"); !strings.Contains(got, "package type") {
+		t.Fatalf("a placement across types: %q", got)
+	}
+	run(1, "release", "place", "acme/prod", "-name", "snowflake", "-source", "tenant", "-version", "1.0", "-type", "nope")
+	run(2, "release", "list", "acme/prod", "-type", "test_package")
+	// a downgrade: a channel of a type kista does not know is not listed
+	unregister()
+	unregister = func() {}
+	if got := run(0, "channel", "list", "acme"); strings.Contains(got, "drivers") || !strings.Contains(got, "prod") {
+		t.Fatalf("channel list with an unknown type's channel: %q", got)
+	}
 }

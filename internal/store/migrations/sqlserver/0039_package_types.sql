@@ -65,7 +65,9 @@ ALTER TABLE reserved_name_sources ADD package_type nvarchar(32) COLLATE Latin1_G
 -- +statement
 ALTER TABLE reserved_name_sources DROP CONSTRAINT pk_reserved_name_sources
 -- +statement
-ALTER TABLE reserved_name_sources ADD CONSTRAINT pk_reserved_name_sources PRIMARY KEY (package_type, name, source)
+-- nonclustered: (type, name, source) is over the 900 bytes a clustered key takes (an administrator's
+-- source is up to 386 characters), as feed_kept's issuer key
+ALTER TABLE reserved_name_sources ADD CONSTRAINT pk_reserved_name_sources PRIMARY KEY NONCLUSTERED (package_type, name, source)
 -- +statement
 ALTER TABLE reserved_name_sources ADD CONSTRAINT fk_reserved_name_sources_name FOREIGN KEY (package_type, name)
 REFERENCES reserved_names (package_type, name)

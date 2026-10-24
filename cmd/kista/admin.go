@@ -77,6 +77,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   attachment show <tenant> <extension> <id> [-content]
   attachment readers|administrators|remove <tenant> <extension> <id>
   attachment feedable|unfeedable <tenant> <extension> <id>   offered by the tenant's feed, or withdrawn
+                                                  every attachment command takes [-type t]: the name's package type
   attestation-key add <tenant> <signer-ref> [-active]   a key that signs the feed's statements (spec 0011)
   attestation-key list <tenant>
   attestation-key activate|retire <tenant> <id|fingerprint> [-force]
@@ -137,8 +138,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                   delete a yanked release for good; its slot stays taken (-force while gc.interval is 0)
   release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> | -version <v>)
                   [-private] [-not-current]               release Builds of another channel here
-  release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current]
+  release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current] [-type t]
                   place a version's builds from the catalogue (spec 0033); later builds of it follow
+                  (-type: the builds' package type, the channel's when left out; another is refused)
   catalogue list <tenant> [-source <source>] [-name <name>] [-type t]
                                                   the tenant's catalogue: each source's names and versions,
                                                   and the channels whose rule takes them (spec 0033)
@@ -882,9 +884,15 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 	relID := fs.String("release", "", "")
 	version := fs.String("version", "", "")
 	force := fs.Bool("force", false, "")
+	ptype := fs.String("type", "", "") // spec 0034: a placement's builds' package type ("": the channel's)
 	pos, err := flags(fs, args)
-	if err != nil || len(pos) == 0 {
+	if err != nil || len(pos) == 0 || *ptype != "" && sub != "place" {
 		return errUsage
+	}
+	if *ptype != "" {
+		if _, err := pkgtype.Parse(*ptype); err != nil {
+			return err
+		}
 	}
 	t, c, err := splitPath(pos[0])
 	if err != nil {
@@ -948,7 +956,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 		}
 	case sub == "place" && len(pos) == 1 && *name != "" && *source != "" && *version != "":
 		rs, existed, err := a.svc.Releases.Place(ctx, a.actor, t, c, *name, release.PlaceOptions{Source: *source, Version: *version,
-			Private: *private, NotCurrent: *notCurrent})
+			PackageType: *ptype, Private: *private, NotCurrent: *notCurrent})
 		if err != nil {
 			return err
 		}
@@ -1190,12 +1198,17 @@ func (a *adminCmd) attachment(ctx context.Context, sub string, args []string) er
 	title := fs.String("title", "", "")
 	supersedes := fs.String("supersedes", "", "")
 	content := fs.Bool("content", false, "")
+	ptype := fs.String("type", "", "") // spec 0034: the name's package type
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) < 2 {
 		return errUsage
 	}
+	typ, err := pkgtype.Parse(*ptype)
+	if err != nil {
+		return err
+	}
 	t, ext := pos[0], pos[1]
-	pkg := pkgtype.Of(ext) // a DuckDB extension's documents (spec 0034: another type's are its spec's)
+	pkg := pkgtype.Key{Type: typ, Name: ext}
 	withBlob := func() (func(), error) {
 		svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.NewTextHandler(a.errw, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		if err != nil {

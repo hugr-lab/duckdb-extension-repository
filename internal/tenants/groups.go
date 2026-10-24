@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
+	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -187,14 +189,28 @@ func (s *AuthAdmin) RemovePackageGroup(ctx context.Context, a authz.Actor, tenan
 		if err != nil {
 			return err
 		}
-		for i := 0; i < len(ms); i += MaxMemberChange {
-			var names []string
-			for _, m := range ms[i:min(i+MaxMemberChange, len(ms))] {
-				names = append(names, m.Name)
+		// one type per event, as a member change (spec 0034): the default type's first, then the
+		// others by type (every member leaves, a type this binary does not know included)
+		byType := map[string][]string{}
+		for _, m := range ms {
+			byType[m.PackageType] = append(byType[m.PackageType], m.Name)
+		}
+		types := slices.SortedFunc(maps.Keys(byType), func(x, y string) int {
+			if (x == pkgtype.Default) != (y == pkgtype.Default) {
+				if x == pkgtype.Default {
+					return -1
+				}
+				return 1
 			}
-			if err := tx.Event(ctx, t.ID, a.String(), "extension_group.members", "extension-group:"+g.Name,
-				map[string]any{"added": []string{}, "removed": names}); err != nil {
-				return err
+			return strings.Compare(x, y)
+		})
+		for _, typ := range types {
+			names := byType[typ]
+			for i := 0; i < len(names); i += MaxMemberChange {
+				f := map[string]any{"added": []string{}, "removed": names[i:min(i+MaxMemberChange, len(names))]}
+				if err := tx.Event(ctx, t.ID, a.String(), "extension_group.members", "extension-group:"+g.Name, typedFields(f, typ)); err != nil {
+					return err
+				}
 			}
 		}
 		if err := tx.DeletePackageGroup(ctx, g, expected); err != nil {

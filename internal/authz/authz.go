@@ -304,6 +304,9 @@ func GrantCovers(g store.Grant, verb string, r Resource) bool {
 	if !slices.Contains(g.Verbs, verb) && (explicit || !slices.Contains(g.Verbs, store.VerbAdmin)) {
 		return false
 	}
+	// spec 0034: a channel-scoped grant reaches its channel's type only (the channel's name alone
+	// does not say a resource is of it); a grant whose channel's type was not read, nothing
+	inChannelType := g.ChannelID == "" || g.ChannelType != "" && r.PackageType == g.ChannelType
 	if g.PackageGroupID != "" {
 		switch {
 		case verb == store.VerbAudit:
@@ -315,7 +318,7 @@ func GrantCovers(g store.Grant, verb string, r Resource) bool {
 		}
 		// spec 0034: members are (type, name); a resource without a type is no member's
 		return r.Package != "" && r.PackageType != "" && g.Members[pkgtype.Key{Type: r.PackageType, Name: r.Package}] &&
-			(g.ChannelID == "" || r.Channel != "" && g.ChannelName == r.Channel)
+			(g.ChannelID == "" || r.Channel != "" && g.ChannelName == r.Channel && inChannelType)
 	}
 	if r.Reserved && explicit && g.Package == "" {
 		return false
@@ -328,18 +331,20 @@ func GrantCovers(g store.Grant, verb string, r Resource) bool {
 	case !pkgtype.Known(t) || r.PackageType != t || r.Channel == "" && r.Package == "":
 		return false
 	}
-	if verb == store.VerbAudit && (g.ChannelID != "" || g.Package != "") {
-		return false // the tenant's log: a tenant-wide grant only
+	if verb == store.VerbAudit && (g.ChannelID != "" || g.Package != "" || g.Type() != pkgtype.Any) {
+		return false // the tenant's log: a tenant-wide grant of every type only
 	}
-	if verb == store.VerbFeed && g.ChannelID != "" && !slices.Contains(g.Verbs, store.VerbFeed) {
-		return false // spec 0011: only a tenant-wide admin implies feed; on a channel it is granted explicitly
+	if verb == store.VerbFeed && (g.ChannelID != "" || g.Type() != pkgtype.Any) && !slices.Contains(g.Verbs, store.VerbFeed) {
+		// spec 0011: only a tenant-wide admin implies feed (spec 0034: of every type); on a channel,
+		// or of one type, it is granted explicitly
+		return false
 	}
 	switch {
 	case g.ChannelID == "" && g.Package == "":
 		return true
 	case g.Package == "":
-		return r.Channel != "" && g.ChannelName == r.Channel
+		return r.Channel != "" && g.ChannelName == r.Channel && inChannelType
 	default:
-		return r.Package == g.Package && (g.ChannelID == "" || r.Channel != "" && g.ChannelName == r.Channel)
+		return r.Package == g.Package && (g.ChannelID == "" || r.Channel != "" && g.ChannelName == r.Channel && inChannelType)
 	}
 }

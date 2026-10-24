@@ -291,6 +291,26 @@ func TestBootstrapDigestPackageTypes(t *testing.T) {
 	}
 }
 
+// Spec 0034: a grant on a channel naming the channel's type is stored as one of every type there; the
+// next run reads it as the same grant (nothing to make).
+func TestBootstrapChannelTypeGrant(t *testing.T) {
+	for _, e := range storetest.Engines(t) {
+		t.Run(e.Name, func(t *testing.T) {
+			en := newEnv(t, e)
+			b := section()
+			b.Grants = append(b.Grants, config.BootstrapGrant{Principal: "role:entra|ops", Verbs: []string{"install"}, Channel: "prod",
+				PackageType: pkgtype.DuckDBExtension})
+			if res, err := bootstrap.Run(ctx, en.d, b, serveOpts); err != nil || !res.Applied {
+				t.Fatalf("applied: %+v %v", res, err)
+			}
+			p, err := bootstrap.Check(ctx, en.d, b, bootstrap.Options{})
+			if err != nil || p.Changes() {
+				t.Fatalf("the plan after: %+v %v", p, err)
+			}
+		})
+	}
+}
+
 // Objects that exist and differ are refused with nothing written; a tenant the bootstrap did not
 // make is changed only with -adopt.
 func TestBootstrapRefuses(t *testing.T) {

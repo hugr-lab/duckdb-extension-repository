@@ -238,6 +238,9 @@ type Grant struct {
 	CreatedAt               time.Time
 	CreatedBy               string
 	IssuerName, ChannelName string // filled by reads
+	// ChannelType is a channel-scoped grant's channel's package type (filled by reads; spec 0034: such
+	// a grant covers only its channel's type, whatever its own column holds).
+	ChannelType string
 	// PublisherID is a publisher grant's publisher (spec 0008): its Kind is publisher, its Value the
 	// publisher's id, and it has no issuer.
 	PublisherID, PublisherName string
@@ -374,8 +377,10 @@ created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.ID, g.Te
 
 // checkGrantType sets and checks a grant's package type (spec 0034): the default for its shape when
 // it names none; a registered type with a name ("*" with a name is refused); "*" or a registered
-// type without one, and on a channel "*" or the channel's type. A group grant has no type of its
-// own: its members are typed.
+// type without one, and on a channel "*" or the channel's type, which is stored as "*" (it means the
+// same there: one encoding, so the same grant is found whichever was asked). audit reads the
+// tenant's log, which no type has: only a "*" grant gives it. A group grant has no type of its own:
+// its members are typed.
 func (t *Tx) checkGrantType(ctx context.Context, g *Grant) error {
 	if g.PackageGroupID != "" {
 		if g.PackageType != "" && g.PackageType != pkgtype.Any {
@@ -390,15 +395,20 @@ func (t *Tx) checkGrantType(ctx context.Context, g *Grant) error {
 		return fmt.Errorf("%w: a grant that names an extension names its package type, never \"*\"", ErrInvalid)
 	case g.PackageType != pkgtype.Any && !pkgtype.Known(g.PackageType):
 		return fmt.Errorf("%w: package type %q", ErrInvalid, g.PackageType)
-	case g.PackageType == pkgtype.Any || g.ChannelID == "":
-		return nil
+	case g.PackageType != pkgtype.Any && g.ChannelID != "":
+		var ct string
+		if err := t.queryRow(ctx, "SELECT package_type FROM channels WHERE id = ?", g.ChannelID).Scan(&ct); err != nil {
+			return notFound(err, "channel")
+		}
+		if ct != g.PackageType {
+			return fmt.Errorf("%w: the channel serves %s, not %s", ErrInvalid, ct, g.PackageType)
+		}
+		if g.Package == "" {
+			g.PackageType = pkgtype.Any
+		}
 	}
-	var ct string
-	if err := t.queryRow(ctx, "SELECT package_type FROM channels WHERE id = ?", g.ChannelID).Scan(&ct); err != nil {
-		return notFound(err, "channel")
-	}
-	if ct != g.PackageType {
-		return fmt.Errorf("%w: the channel serves %s, not %s", ErrInvalid, ct, g.PackageType)
+	if g.PackageType != pkgtype.Any && slices.Contains(g.Verbs, VerbAudit) {
+		return fmt.Errorf("%w: audit is granted on the tenant of every package type (\"*\"), never of one", ErrInvalid)
 	}
 	return nil
 }
@@ -533,13 +543,13 @@ func readTenantAuth(ctx context.Context, query queryFn, tenantID string) (Tenant
 		return a, err
 	}
 	if a.Grants, err = readGrants(ctx, query, `SELECT g.id, g.tenant_id, g.issuer_id, g.publisher_id, g.kind, g.value, g.channel_id,
-g.package_type, g.package, '', g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM grants g LEFT JOIN issuers i ON i.id = g.issuer_id
+g.package_type, g.package, '', g.verbs, g.created_at, g.created_by, i.name, p.name, c.name, c.package_type FROM grants g LEFT JOIN issuers i ON i.id = g.issuer_id
 LEFT JOIN publishers p ON p.id = g.publisher_id LEFT JOIN channels c ON c.id = g.channel_id WHERE g.tenant_id = ?
 ORDER BY g.created_at, g.id`, tenantID); err != nil {
 		return a, err
 	}
 	if a.GroupGrants, err = readGrants(ctx, query, `SELECT g.id, g.tenant_id, g.issuer_id, g.publisher_id, g.kind, g.value, g.channel_id,
-'', '', g.group_id, g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM package_group_grants g
+'', '', g.group_id, g.verbs, g.created_at, g.created_by, i.name, p.name, c.name, c.package_type FROM package_group_grants g
 LEFT JOIN issuers i ON i.id = g.issuer_id LEFT JOIN publishers p ON p.id = g.publisher_id LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.tenant_id = ? ORDER BY g.created_at, g.id`, tenantID); err != nil {
 		return a, err
@@ -566,18 +576,20 @@ func readGrants(ctx context.Context, query queryFn, q, tenantID string) ([]Grant
 	var out []Grant
 	for rows.Next() {
 		var g Grant
-		var iss, pub, ch, ext, grp, issName, pubName, chName sql.NullString
+		var iss, pub, ch, ext, grp, issName, pubName, chName, chType sql.NullString
 		var verbs string
 		if err := rows.Scan(&g.ID, &g.TenantID, &iss, &pub, &g.Kind, &g.Value, &ch, &g.PackageType, &ext, &grp, &verbs, scanTime{&g.CreatedAt},
-			&g.CreatedBy, &issName, &pubName, &chName); err != nil {
+			&g.CreatedBy, &issName, &pubName, &chName, &chType); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		g.IssuerID, g.PublisherID, g.IssuerName, g.PublisherName = iss.String, pub.String, issName.String, pubName.String
-		g.ChannelID, g.Package, g.ChannelName, g.Verbs = ch.String, ext.String, chName.String, strings.Fields(verbs)
+		g.ChannelID, g.Package, g.ChannelName, g.ChannelType, g.Verbs = ch.String, ext.String, chName.String, chType.String, strings.Fields(verbs)
 		g.PackageGroupID = grp.String
-		if g.PackageGroupID == "" && g.PackageType != pkgtype.Any && !pkgtype.Known(g.PackageType) {
-			continue // spec 0034: a grant of a type this binary does not know matches nothing
+		// spec 0034: a grant of a type this binary does not know, or on a channel of one, matches nothing
+		unknown := g.PackageGroupID == "" && g.PackageType != pkgtype.Any && !pkgtype.Known(g.PackageType)
+		if unknown || g.ChannelID != "" && !pkgtype.Known(g.ChannelType) {
+			continue
 		}
 		out = append(out, g)
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -264,19 +265,25 @@ func scanLanded(out *[]LandedBuild) func(sc func(...any) error) error {
 	}
 }
 
-// CrowdedLanded lists the landed builds of a publisher's or the tenant's (tenant, source, name,
-// platform, slot) that has more than keep landed versions.
+// knownLanded keeps the builds of the types this binary registers (spec 0034: an older binary does
+// not unland a newer one's builds of a type it does not know).
+func knownLanded(bs []LandedBuild) []LandedBuild {
+	return slices.DeleteFunc(bs, func(b LandedBuild) bool { return !pkgtype.Known(b.PackageType) })
+}
+
+// CrowdedLanded lists the landed builds of a publisher's or the tenant's (tenant, type, source, name,
+// platform, slot) that has more than keep landed versions; of the registered types only.
 func (s *Store) CrowdedLanded(ctx context.Context, keep int) ([]LandedBuild, error) {
 	var out []LandedBuild
 	err := s.eachRow(ctx, "SELECT "+landedCols+` FROM builds b WHERE landed = ? AND source NOT LIKE 'upstream:%' AND EXISTS (
 SELECT 1 FROM builds o WHERE o.landed = ? AND o.tenant_id = b.tenant_id AND o.package_type = b.package_type AND o.source = b.source
 	AND o.name = b.name AND o.platform = b.platform AND o.slot = b.slot GROUP BY o.tenant_id HAVING COUNT(DISTINCT o.package_version) > ?)`,
 		[]any{true, true, keep}, scanLanded(&out))
-	return out, err
+	return knownLanded(out), err
 }
 
 // StaleMirrorLanded lists a mirror's landed builds whose cell holds another body now (the cell moved
-// on), or whose upstream is gone.
+// on), or whose upstream is gone; of the registered types only.
 func (s *Store) StaleMirrorLanded(ctx context.Context) ([]LandedBuild, error) {
 	var out []LandedBuild
 	err := s.eachRow(ctx, "SELECT "+landedCols+" FROM builds b WHERE landed = ? AND source LIKE 'upstream:%'", []any{true}, scanLanded(&out))
@@ -284,7 +291,7 @@ func (s *Store) StaleMirrorLanded(ctx context.Context) ([]LandedBuild, error) {
 		return nil, err
 	}
 	var stale []LandedBuild
-	for _, b := range out {
+	for _, b := range knownLanded(out) {
 		var n int
 		if err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM upstream_cells WHERE upstream_id = ? AND name = ? AND body_hash = ?"),
 			strings.TrimPrefix(b.Source, SourceUpstreamPrefix), b.Name, b.BodyHash).Scan(&n); err != nil {

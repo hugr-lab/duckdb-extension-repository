@@ -67,9 +67,23 @@ type GroupSet struct {
 	Members map[pkgtype.Key]bool
 }
 
-const groupCols = `g.id, g.tenant_id, g.name, g.description, g.version, g.created_at, g.created_by,
-(SELECT COUNT(*) FROM package_group_members m WHERE m.group_id = g.id),
+// groupCols are a group's columns and counts: its members of the registered types (spec 0034: a
+// member of a type this binary does not know is read as nothing, and not counted either).
+func groupCols() string {
+	return `g.id, g.tenant_id, g.name, g.description, g.version, g.created_at, g.created_by,
+(SELECT COUNT(*) FROM package_group_members m WHERE m.group_id = g.id AND m.package_type IN (` + knownTypesSQL() + `)),
 (SELECT COUNT(*) FROM package_group_grants x WHERE x.group_id = g.id)`
+}
+
+// knownTypesSQL lists the registered package types as SQL literals ('a', 'b'): values the binary
+// registers, never a request's.
+func knownTypesSQL() string {
+	ts := pkgtype.Types()
+	for i, t := range ts {
+		ts[i] = "'" + strings.ReplaceAll(t, "'", "''") + "'"
+	}
+	return strings.Join(ts, ", ")
+}
 
 func scanGroup(r interface{ Scan(...any) error }) (PackageGroup, error) {
 	var g PackageGroup
@@ -106,20 +120,20 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, g.Name, g.Description, g.Versio
 
 // GetPackageGroup reads a tenant's group by name, with its counts.
 func (t *Tx) GetPackageGroup(ctx context.Context, tenantID, name string) (PackageGroup, error) {
-	g, err := scanGroup(t.queryRow(ctx, "SELECT "+groupCols+" FROM package_groups g WHERE g.tenant_id = ? AND g.name = ?", tenantID, name))
+	g, err := scanGroup(t.queryRow(ctx, "SELECT "+groupCols()+" FROM package_groups g WHERE g.tenant_id = ? AND g.name = ?", tenantID, name))
 	return g, notFound(err, "extension group "+name)
 }
 
 // GetPackageGroup reads a tenant's group by name, with its counts.
 func (s *Store) GetPackageGroup(ctx context.Context, tenantID, name string) (PackageGroup, error) {
-	g, err := scanGroup(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+groupCols+" FROM package_groups g WHERE g.tenant_id = ? AND g.name = ?"), tenantID, name))
+	g, err := scanGroup(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+groupCols()+" FROM package_groups g WHERE g.tenant_id = ? AND g.name = ?"), tenantID, name))
 	return g, notFound(err, "extension group "+name)
 }
 
 // ListPackageGroups lists a tenant's groups by name; with a package's name, those holding that
 // package (of packageType).
 func (s *Store) ListPackageGroups(ctx context.Context, tenantID, packageType, extension string) ([]PackageGroup, error) {
-	q, args := "SELECT "+groupCols+" FROM package_groups g WHERE g.tenant_id = ?", []any{tenantID}
+	q, args := "SELECT "+groupCols()+" FROM package_groups g WHERE g.tenant_id = ?", []any{tenantID}
 	if extension != "" {
 		q += " AND EXISTS (SELECT 1 FROM package_group_members m WHERE m.group_id = g.id AND m.package_type = ? AND m.package = ?)"
 		args = append(args, packageType, extension)

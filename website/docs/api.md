@@ -81,8 +81,10 @@ its writer (a `sub` or a client claim). Either failure answers `401`.
   `grants?extension=`, `extension-groups?extension=` and `stats/*?extension=`. Both default to
   `duckdb_extension`, the only type there is today, and answers leave `package_type` out when it is
   the default, so an existing client reads what it read. A type the server does not know is `400`
-  on every route; on a channel's routes and an upstream's the type is the channel's, and a `?type=`
-  that differs is `400`.
+  on every route, and so is `?type=` on a route that takes none (a body names the type there); on
+  a channel's routes and an upstream's the type is the channel's, and a `?type=` that differs is
+  `400` (a channel of a type the server does not know is `404`, as a missing one). The routes
+  DuckDB installs from take the type from the channel and ignore `?type=`.
 
 ### ETags and If-Match
 
@@ -467,6 +469,9 @@ last, `404`; a chunk without `Content-Length`, `411`; too many chunks at once, `
 | `GET tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=` | principal: everything with `audit`, otherwise what its `admin`, `publish` or `promote` grants cover |
 | `GET tenants/{t}/stats/releases?channel=&extension=` | the same |
 | `GET tenants/{t}/stats/usage?from=&to=&channel=&extension=&group=` | the same; usage reports, users received from downstream marked `received` when grouped by `status` ([Licensing](licensing.md#usage-reports)) |
+
+Statistics are of one package type, `?type=` (`duckdb_extension` by default): the rows of that
+type's channels. A `?channel=` of another type is `400`.
 
 See [Observability](observability.md).
 

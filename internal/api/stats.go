@@ -231,14 +231,21 @@ func (h *Handler) statsRequestOf(w http.ResponseWriter, r *http.Request, c calle
 		h.fail(w, err)
 		return sr, false
 	}
-	for _, ch := range chs {
+	chType := ""
+	for _, ch := range store.KnownChannels(chs) { // spec 0034: a channel of a type this server does not know is none
 		sr.names[ch.ID] = ch.Name
 		if ch.Name == channel {
-			sr.f.ChannelID = ch.ID
+			sr.f.ChannelID, chType = ch.ID, ch.PackageType
 		}
 	}
 	if channel != "" && sr.f.ChannelID == "" {
 		notFound(w)
+		return sr, false
+	}
+	// spec 0034: statistics are of one type (?type=, the default when not named), as a channel's
+	// routes are of the channel's: a channel of another type is refused, never answered empty
+	if channel != "" && chType != typ {
+		problem(w, http.StatusBadRequest, typeInvalid, "the type is the channel's ("+chType+"), not "+typ)
 		return sr, false
 	}
 	return sr, true

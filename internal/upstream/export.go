@@ -200,6 +200,7 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 	if err != nil {
 		return res, err
 	}
+	channels = store.KnownChannels(channels) // spec 0034: a type this binary does not know is exported by none
 	now := s.Store.Now().UTC()
 	snaps := &release.Snapshots{Store: s.Store}
 	x := &exporter{s: s, t: t, now: now, snaps: snaps, ups: map[string]*xupstream{}, files: map[string]*xfile{}}

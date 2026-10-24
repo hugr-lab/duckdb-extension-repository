@@ -51,18 +51,6 @@ func Parse(s string) (string, error) {
 	return s, nil
 }
 
-// ParseOrAny reads a type where "any type" may be meant (a grant without a name): "*" is itself, the
-// rest as Parse, with dflt for "".
-func ParseOrAny(s, dflt string) (string, error) {
-	switch s {
-	case "":
-		return dflt, nil
-	case Any:
-		return Any, nil
-	}
-	return Parse(s)
-}
-
 // RegisterForTest registers a second type for a test (spec 0034: names of two types must not
 // collide); the returned function unregisters it. Never called outside tests.
 func RegisterForTest(t string) func() {

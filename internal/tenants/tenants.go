@@ -342,7 +342,8 @@ func (s *Service) ListChannels(ctx context.Context, a authz.Actor, tenant string
 	if _, err := s.Store.GetTenant(ctx, tenant); err != nil {
 		return nil, err
 	}
-	return s.Store.ListChannels(ctx, tenant)
+	chs, err := s.Store.ListChannels(ctx, tenant)
+	return store.KnownChannels(chs), err // spec 0034: a type this binary does not know is read as nothing
 }
 
 // ChannelVersions lists the DuckDB versions a channel serves.

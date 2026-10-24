@@ -57,6 +57,13 @@ bootstrap:
 		"a grant twice": {base + `bootstrap: { tenant: { name: acme }, issuer: { name: entra, url: 'https://login.example/x' },
   grants: [ { principal: "role:entra|x", verbs: [admin, install] }, { principal: "role:entra|x", verbs: [install, admin] } ] }
 `, "listed twice"},
+		"audit of one type": {base + `bootstrap: { tenant: { name: acme }, issuer: { name: entra, url: 'https://login.example/x' },
+  grants: [ { principal: "role:entra|x", verbs: [audit], package_type: duckdb_extension } ] }
+`, "audit is granted on the tenant of every package type"},
+		"a channel's grant twice, by its type": {base + `bootstrap: { tenant: { name: acme }, issuer: { name: entra, url: 'https://login.example/x' },
+  channels: [ { name: prod, kind: signed, key: 'file:a.pem' } ],
+  grants: [ { principal: "role:entra|x", verbs: [install], channel: prod }, { principal: "role:entra|x", verbs: [install], channel: prod, package_type: duckdb_extension } ] }
+`, "listed twice"},
 		"a key on two channels":        {base + "bootstrap: { tenant: { name: acme }, channels: [ { name: a, kind: signed, key: 'file:k.pem' }, { name: b, kind: signed, key: 'file:k.pem' } ] }\n", "listed twice"},
 		"an audience under public_url": {base + "serve: { public_url: 'https://kista.example' }\nbootstrap: { tenant: { name: acme, audiences: ['https://kista.example/acme'] } }\n", "under serve.public_url"},
 		"an http issuer":               {base + "bootstrap: { tenant: { name: acme }, issuer: { name: entra, url: 'http://login.example/x' } }\n", "bootstrap.issuer"},

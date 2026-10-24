@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -263,7 +264,14 @@ WHERE u.tenant_id = ? AND u.name = ?`), tenantID, upstream).Scan(&t)
 	return t, notFound(err, "upstream "+upstream)
 }
 
-// ListChannels returns a tenant's channels by name.
+// KnownChannels keeps the channels of the types this binary registers (spec 0034: a channel of
+// another type, written by a newer binary, is read as nothing where it would be exported, counted,
+// fed or listed).
+func KnownChannels(chs []Channel) []Channel {
+	return slices.DeleteFunc(chs, func(c Channel) bool { return !pkgtype.Known(c.PackageType) })
+}
+
+// ListChannels returns a tenant's channels by name, of every type (KnownChannels narrows them).
 func (s *Store) ListChannels(ctx context.Context, tenant string) ([]Channel, error) {
 	rows, err := s.db.QueryContext(ctx, s.d.rebind("SELECT "+channelCols+
 		" FROM channels c JOIN tenants t ON t.id = c.tenant_id WHERE t.name = ? AND t.deleting_at IS NULL ORDER BY c.name"), tenant)

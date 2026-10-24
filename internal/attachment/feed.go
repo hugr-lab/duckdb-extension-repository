@@ -141,7 +141,7 @@ func (s *Service) feedChannels(ctx context.Context, a authz.Actor, tenant string
 		return nil, err
 	}
 	var out []string
-	for _, c := range chs {
+	for _, c := range store.KnownChannels(chs) { // spec 0034: a type this binary does not know feeds nothing
 		ok, err := s.allowed(ctx, a, authz.VerbFeed, authz.Resource{Tenant: tenant, Channel: c.Name})
 		if err != nil {
 			return nil, err

@@ -26,8 +26,8 @@ func TestCoversTypes(t *testing.T) {
 		if channel != "" {
 			ch = "id-" + channel
 		}
-		return store.Grant{IssuerID: "i1", Kind: store.PrincipalSubject, Value: "me", ChannelID: ch, ChannelName: channel, Package: ext,
-			PackageType: typ, Verbs: verbs}
+		return store.Grant{IssuerID: "i1", Kind: store.PrincipalSubject, Value: "me", ChannelID: ch, ChannelName: channel, ChannelType: chType(channel),
+			Package: ext, PackageType: typ, Verbs: verbs}
 	}
 	res := func(typ, channel, ext string) authz.Resource {
 		return authz.Resource{Tenant: "acme", Channel: channel, Package: ext, PackageType: typ}
@@ -58,6 +58,18 @@ func TestCoversTypes(t *testing.T) {
 		{"a channel's grant", g(drv, "drivers", "", "install"), "install", res(drv, "drivers", "snowflake"), true},
 		{"an unknown type's grant", g("nope", "", "", "admin"), "admin", res("nope", "x", ""), false},
 		{"named any type", g(pkgtype.Any, "", "snowflake", "install"), "install", res(ext, "prod", "snowflake"), false},
+		// a channel's grant reaches its channel's type only, whatever its column holds
+		{"any type on its channel", g(pkgtype.Any, "prod", "", "install"), "install", res(ext, "prod", "snowflake"), true},
+		{"any type on its channel, another type asked", g(pkgtype.Any, "prod", "", "install"), "install", res(drv, "prod", "snowflake"), false},
+		{"named on its channel, another type asked", g(drv, "prod", "snowflake", "install"), "install", res(drv, "prod", "snowflake"), false},
+		{"a channel whose type was not read", func() store.Grant { x := g(pkgtype.Any, "prod", "", "install"); x.ChannelType = ""; return x }(),
+			"install", res(ext, "prod", "snowflake"), false},
+		// audit and feed: the tenant's, of every type
+		{"typed audit", g(drv, "", "", "audit"), "audit", authz.Resource{Tenant: "acme"}, false},
+		{"any type audit", g(pkgtype.Any, "", "", "audit"), "audit", authz.Resource{Tenant: "acme"}, true},
+		{"typed admin implies no feed", g(drv, "", "", "admin"), "feed", res(drv, "drivers", ""), false},
+		{"typed feed granted", g(drv, "", "", "feed"), "feed", res(drv, "drivers", ""), true},
+		{"any type admin implies feed", g(pkgtype.Any, "", "", "admin"), "feed", res(drv, "drivers", ""), true},
 	} {
 		if got := authz.Covers(auth.HeldBy(me, store.TenantAuth{Grants: []store.Grant{tc.grant}}), tc.verb, tc.r); got != tc.want {
 			t.Errorf("%s: %v", tc.name, got)
@@ -76,6 +88,18 @@ func TestCoversTypes(t *testing.T) {
 	}
 	if via, verbs := authz.Reaching(g(drv, "", "", "install"), "acme", drv, "snowflake", false); via != "tenant" || len(verbs) != 1 {
 		t.Errorf("a typed grant on its type's package: %s %v", via, verbs)
+	}
+	// a channel's grant of every type reaches only packages of its channel's type
+	if via, verbs := authz.Reaching(g(pkgtype.Any, "prod", "", "install"), "acme", drv, "snowflake", false); len(verbs) != 0 {
+		t.Errorf("a channel's grant reaches another type's package: %s %v", via, verbs)
+	}
+	if via, verbs := authz.Reaching(g(pkgtype.Any, "prod", "", "install"), "acme", ext, "snowflake", false); via != "channel" || len(verbs) != 1 {
+		t.Errorf("a channel's grant on its type's package: %s %v", via, verbs)
+	}
+	cg := gg
+	cg.ChannelID, cg.ChannelName, cg.ChannelType = "id-prod", "prod", ext
+	if via, verbs := authz.Reaching(cg, "acme", drv, "snowflake", false); len(verbs) != 0 {
+		t.Errorf("a channel's group grant reaches another type's member: %s %v", via, verbs)
 	}
 }
 

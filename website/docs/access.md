@@ -148,8 +148,8 @@ per claim. An Entra groups overage is not resolved.
 | `admin` | management of its resource: the tenant, a channel, an extension or an extension group | - |
 | `publish` | upload a build into a channel ([Publishing](publishing.md)) | **no** |
 | `promote` | release in a channel a build from another channel of the tenant | **no** |
-| `audit` | read the tenant's events and statistics; tenant-wide grants only | yes, on a tenant-wide grant |
-| `feed` | take the tenant's feed of signed statements ([Attachments](attachments.md)); on the tenant or a channel | yes, on a tenant-wide grant only; on a channel it is granted explicitly |
+| `audit` | read the tenant's events and statistics; tenant-wide grants of every package type only | yes, on a tenant-wide grant of every type |
+| `feed` | take the tenant's feed of signed statements ([Attachments](attachments.md)); on the tenant or a channel | yes, on a tenant-wide grant of every type only; on a channel, or on a grant of one type, it is granted explicitly |
 
 `publish` and `promote` are never implied by `admin`, so an administrator's install token cannot
 publish native code.
@@ -195,8 +195,8 @@ Rules:
 
 - An `issuer:` grant carries `install` only, and needs the record to have required claims.
 - A publisher grant carries `publish` and `promote` only.
-- `audit` is granted on the tenant only; `feed` on the tenant or a channel, never on an extension or
-  issuer-wide.
+- `audit` is granted on the tenant only, of every package type; `feed` on the tenant or a channel,
+  never on an extension or issuer-wide.
 - For `publish` and `promote`, a **reserved name** (DuckDB's core and community names, names
   reserved in the tenant for a distributor, and names an upstream of the tenant provides) is reached
   only by a grant naming that extension, never by a tenant-, channel- or group-wide grant.
@@ -216,10 +216,15 @@ A grant has a **package type** (`package_type` in the API, `-type` in the CLI; s
 - A grant without a name is of every type, `*`, by default (what every such grant meant before
   types existed), or of one type: then it covers that type's channels and packages only, and
   nothing tenant-level, so creating channels, groups and grants, managing issuers and upstreams,
-  reading the log and listing or importing licences take a `*` grant. A grant on a channel is of
-  the channel's type.
+  reading the log and listing or importing licences take a `*` grant. `audit` is never granted on a
+  grant of one type (`400`): the log has no type. A tenant-wide `admin` of one type implies no
+  `feed`.
+- A grant on a channel covers the channel's type only. Without a name, `package_type` set to the
+  channel's type is the same grant as `*` there: it is stored, and answered, as `*`, so adding the
+  other is a duplicate (`409`).
 - Answers (`GET /grants`, `whoami`) and events show `package_type` only when it is not the default
-  for the grant's shape; `GET /grants?extension=` takes `?type=` for the name's type.
+  for the grant's shape; `GET /grants?extension=` takes `?type=` for the name's type. `POST /grants`
+  takes the type in its body only: `?type=` there is `400`.
 - Today `duckdb_extension` is the only type: grants that name no type mean what they did.
 
 ## Extension groups

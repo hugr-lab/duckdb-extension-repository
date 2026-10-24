@@ -342,7 +342,7 @@ The protection tier is the source's: `file`, `kubesecret` (a Kubernetes Secret, 
 | `release yank`, `deprecate`, `activate`, `current`, `public`, `private` `<tenant>/<channel> <release id>` | changes a release's state, currency or visibility: `deprecate` an active release, `activate` a deprecated one again, `current` makes an active release the one the flat path serves; `yank` is final | |
 | `release purge <tenant>/<channel> <release id> [-force]` | deletes a yanked release for good; its slot stays taken; needs `-force` while `gc.interval` is 0 | |
 | `release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> or -version <v>) [-private] [-not-current]` | releases the builds of another channel of the same tenant here, signed with this channel's key | the new release ids |
-| `release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current]` | releases a version's builds from the catalogue here ([placing from the catalogue](../publishing.md#placing-from-the-catalogue)); its later builds follow | the new release ids |
+| `release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current] [-type <package type>]` | releases a version's builds from the catalogue here ([placing from the catalogue](../publishing.md#placing-from-the-catalogue)); its later builds follow; `-type` names the builds' [package type](../concepts.md#packages-and-package-types) (the channel's when left out; another is refused) | the new release ids |
 
 `-unchecked` skips the publication checks of a build (such as the init symbol that binds the name).
 Details are in [Publishing](../publishing.md).
@@ -453,6 +453,7 @@ See [Publishing](../publishing.md).
 | `attachment readers` or `administrators` `<tenant> <extension> <id>` | who may read it | |
 | `attachment feedable` or `unfeedable` `<tenant> <extension> <id>` | offered by the tenant's feed, or withdrawn; `feedable` fails while the tenant cannot sign (no active attestation key, or no `serve.public_url`) | |
 | `attachment remove <tenant> <extension> <id>` | | |
+| `attachment … -type <package type>` | every attachment command: the extension's [package type](../concepts.md#packages-and-package-types) (`duckdb_extension` by default) | |
 | `attestation-key add <tenant> <signer ref> [-active]` | registers a key that signs the feed's statements; `-active` only for a tenant that never had one | the key id |
 | `attestation-key list <tenant>` | `ID`, `FINGERPRINT`, `STATE`, `TRUSTED SINCE`, `SIGNER` | |
 | `attestation-key activate` or `retire` `<tenant> <id or fingerprint> [-force]` | as channel keys; only a trusted key can be retired | |
