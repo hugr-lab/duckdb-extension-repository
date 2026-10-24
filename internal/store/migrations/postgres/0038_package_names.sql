@@ -72,7 +72,8 @@ BEGIN
 		AND (c.conname LIKE '%extension\_group%' OR c.conname LIKE '%ext\_version%')
 	LOOP
 		EXECUTE format('ALTER TABLE %s RENAME CONSTRAINT %I TO %I', r.tbl, r.conname,
-			replace(replace(r.conname, 'extension_group', 'package_group'), 'ext_version', 'package_version'));
+			replace(replace(replace(r.conname, 'extension_group', 'package_group'), 'ext_version', 'package_version'),
+				'_extension_not_null', '_package_not_null'));
 	END LOOP;
 END
 $$

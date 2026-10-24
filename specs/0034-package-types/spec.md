@@ -157,15 +157,14 @@ ext_version                 -> package_version          (builds, releases, purge
                                                          upstreams' versions, downloads, statistics,
                                                          usage and its forwarding: every table that
                                                          has it)
-constraints and indexes     *_extension_group*  -> *_package_group*; names that spell ext_version
-                                                         (PostgreSQL's system-named unique on
-                                                         releases) follow the column
+constraints and indexes     *_extension_group*  -> *_package_group* where the dialect can
+                                                         rename them (As built, below)
 ```
 
 - **PostgreSQL**: `ALTER TABLE … RENAME [COLUMN] …`, `ALTER INDEX … RENAME`, `ALTER TABLE … RENAME
   CONSTRAINT`.
-- **SQL Server**: `sp_rename` for tables, columns, indexes and constraints; a system-named
-  constraint by the dynamic lookup 0034_build_sources uses.
+- **SQL Server**: `sp_rename` for tables, columns, indexes and named constraints; system-named
+  ones keep their generated names.
 - **SQLite**: `ALTER TABLE … RENAME TO` and `RENAME COLUMN` (indexes, partial ones included, follow
   the column); an index whose name changes is dropped and created.
 - **Go**: the store's types and methods (`Grant.Extension` -> `Package`, `ExtVersion` ->
