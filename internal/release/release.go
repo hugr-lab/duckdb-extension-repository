@@ -243,6 +243,13 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
 		return store.Release{}, false, err
 	}
+	if o.Publish != nil { // spec 0033 phase B: a distributor's publisher publishes into the catalogue only
+		if dist, err := s.distributorOf(ctx, a); err != nil {
+			return store.Release{}, false, err
+		} else if dist != "" {
+			return store.Release{}, false, authz.ErrDenied
+		}
+	}
 	if o.Publish != nil { // spec 0033 phase A2: a publisher with a hold publishes into the catalogue
 		if hold, err := s.Store.SourceHold(ctx, sourceOf(a)); err != nil {
 			return store.Release{}, false, err
@@ -770,6 +777,13 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				if err := servable(capis, b); err != nil {
 					return err
 				}
+				// spec 0033 phase B: a withdrawn entry reaches no channel, early or not; read with a row
+				// lock its withdrawal's update waits for
+				if withdrawn, err := tx.BuildWithdrawn(ctx, b.ID); err != nil {
+					return err
+				} else if withdrawn {
+					return fmt.Errorf("%w: %s %s %s", store.ErrWithdrawn, b.Name, b.PackageVersion, b.Platform)
+				}
 				if !it.early { // spec 0033 phase A2: a held entry reaches no channel
 					if err := heldNow(ctx, tx, c, it); err != nil {
 						return err
@@ -1031,6 +1045,15 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 			return store.ErrConflict
 		}
 		refuse := func() error { return fmt.Errorf("%w: %q is not allowed on a %s release", ErrState, c, r.State) }
+		if c == Activate || c == MakeCurrent || c == SetPublic {
+			// spec 0033 phase B: a withdrawn entry's release is never made active, current or public again
+			// (read with a row lock its withdrawal's update waits for)
+			if withdrawn, err := tx.BuildWithdrawn(ctx, r.BuildID); err != nil {
+				return err
+			} else if withdrawn {
+				return fmt.Errorf("%w: the release's build was withdrawn: it is served nowhere", store.ErrWithdrawn)
+			}
+		}
 		actor := a.String()
 		switch c {
 		case Yank:

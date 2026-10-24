@@ -60,7 +60,7 @@ func TestDueFollows(t *testing.T) {
 		if due() != 1 {
 			t.Fatal("an older look recorded")
 		}
-		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tn.ID, "dist") })
+		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tn.ID, "dist", "os:1:t") })
 		if ok, err := s.Following(ctx, ch.ID, src); err != nil || ok {
 			t.Fatalf("a removed source's follow: %v %v", ok, err)
 		}

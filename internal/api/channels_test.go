@@ -40,7 +40,7 @@ func TestChannelAccess(t *testing.T) {
 		// spec 0033: a rule's mode, the catalogue, placing by hand (promote: not implied by admin)
 		{"PUT", C + "/prod/sources/tresor", `{"source":"tenant","mode":"auto"}`, channelAdmins, 400},
 		{"PUT", C + "/prod/sources/tresor", `{"source":"tenant","mode":"manual"}`, channelAdmins, 200},
-		{"GET", "/api/v1/tenants/acme/catalogue", "", []string{"tenant admin", "server admin"}, 200},
+		{"GET", "/api/v1/tenants/acme/catalogue", "", []string{"tenant admin", "server admin", "server dist admin"}, 200}, // spec 0033 B: its distributors' entries
 		{"GET", C + "/prod/follows", "", channelAdmins, 200},
 		{"PUT", C + "/prod/follows/tenant", "", channelAdmins, 400},
 		{"PUT", C + "/prod/follows/upstream:nope", "", channelAdmins, 400},

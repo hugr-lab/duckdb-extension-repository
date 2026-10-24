@@ -96,6 +96,8 @@ func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
 		errors.Is(err, store.ErrBuildGone): // spec 0016: the storage collector in the way; try again
 		w.Header().Set("Retry-After", "1")
 		problem(w, http.StatusServiceUnavailable, typeUnavailable, "busy: try again")
+	case errors.Is(err, store.ErrWithdrawn): // spec 0033 phase B
+		problem(w, http.StatusConflict, typeWithdrawn, publicRefusal(err))
 	case errors.Is(err, store.ErrConflict):
 		problem(w, http.StatusPreconditionFailed, typePrecondition, "it changed: read it again")
 	case errors.Is(err, release.ErrPackageType): // spec 0034: across package types

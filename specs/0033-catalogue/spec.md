@@ -1,7 +1,7 @@
 # Spec 0033: The catalogue
 
 - **Status**: accepted (2026-10-24); phase A1 implemented (parts 1, 2, 3a and 4; part 3b deferred to
-  the follow-ups); A2 implemented; B and C to come
+  the follow-ups); A2 implemented; B part 1 implemented; B part 2 and C to come
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -328,10 +328,13 @@ A2  upstreams, publishers, channels   + hold_seconds
     builds               + available_at (held until; set at arrival), publisher_key_id,
                            revoked_at (kept by a purge of held entries)
     channel_sources      + due_at (when the hold a rule waits for ends)
-B   publishers           + distributor
-    builds               + a withdrawn marker, withdrawn_reason
-    license_key_owners   tenant_id, name, kid, source, set_by; pk (tenant_id, name, kid)
-    licenses             pk (tenant_id, name, source)
+B   publishers           + distributor (part 1: the distributor's name, NULL for the tenant's own)
+    builds               + withdrawn_at, withdrawn_reason (part 1)
+    removed_distributor_publishers   tenant_id, publisher_id, name, distributor, removed_at,
+                           removed_by; pk (tenant_id, publisher_id) (part 1, as built: a removed
+                           distributor's publisher remembered, below)
+    license_key_owners   tenant_id, name, kid, source, set_by; pk (tenant_id, name, kid) (part 2)
+    licenses             pk (tenant_id, name, source) (part 2)
 ```
 
 GC (spec 0016): a build (entry) is dead when it has no release and retention (above) does not keep
@@ -449,6 +452,10 @@ One spec, four phases, each a PR with its own reviews and its own migration:
 - **C. The console and the end to end**: a Catalogue screen (sources, names, versions, held and
   withdrawn, place, purge), the channel's Sources tab with modes, follows, skips and the hold, the
   new DuckDB end to end, the website's pages.
+
+B comes in two parts, each a PR: part 1, distributors' publishers, distribution admins' holds,
+withdrawals and purges (migration 0041); part 2, licences per (name, source) with key owners, relay
+and usage.
 
 A1 comes in parts, each a PR: part 1, builds and slots per source (migration 0034); part 2, the
 rules' modes and the placement (the pass, `auto` and a `manual` rule's completed versions, manual
@@ -757,6 +764,96 @@ channel, deferred.
   `available_at` for a held entry; a rule's `newest` is the newest version without a held build;
   `publisher list` shows `HOLD`, `upstream show` `hold:`. The console's cells filter lists `held`;
   no screen changes (C).
+
+### As built (B part 1)
+
+- **Migration 0041** (`0041_distributors`, `min_reader` 41: an older replica would serve withdrawn
+  entries and take a distributor's publisher's hold and keys as the tenant's) in the three dialects:
+  `publishers.distributor` (NULL for the tenant's own), `builds.withdrawn_at` and
+  `builds.withdrawn_reason` (no state column, as A2's held: an entry is withdrawn while
+  `withdrawn_at` is set), and `removed_distributor_publishers` (below). Additive only: no SQLite
+  rebuild; the existing rows are the tenant's own publishers and entries not withdrawn, so every
+  channel serves what it served.
+- **The mark** (`PUT …/publishers/{p}/distributor {"distributor": …}`, `kista admin publisher
+  distributor <t> <p> <distributor>`, event `publisher.change` with `distributor` and `before`): a
+  distribution admin's or a server administrator's (`404` to a tenant administrator); the name is
+  1 to 128 bytes of printable text, as a tenant reservation's holder. The most conservative
+  reading: a publisher is marked only while it holds no grants, and no keys unless it carries the
+  licence-key mark already (`400`, as spec 0030's licence-key mark); a distributor's publisher takes
+  no grant afterwards, from anyone (`400`: it reaches no channel by itself, and a `promote` grant
+  would let it place); marking it again renames its distributor; the mark is never removed (the
+  publisher is removed instead). It counts as spec 0021's mark for its keys and grants (a tenant
+  administrator's change is `404`), so a distribution admin manages its keys, and may give it the
+  licence-key mark while it holds keys.
+- **The catalogue only.** The catalogue-only route admits a distributor's publisher's signed request
+  without grants (a route flag, `distributors`); the service publishes any name kista does not
+  reserve server-wide and the tenant does not reserve for another holder than its distributor,
+  checked again after the upload (a name reserved meanwhile), and refuses the rest as a missing
+  grant does (`404`, nothing said). A name an upstream of the tenant lists is allowed (spec 0030's
+  lookup counts it as reserved, but the spec's e2e has a tenant's upstream and a distributor bring
+  one name; each is its own source). Marked for licence keys, its publication records the build's
+  keys without the grant a marked publisher otherwise needs. The channel's route refuses it (the
+  route's grant check, `404`, and the service again). Its hold (`PUT …/publishers/{p}/hold`, the route
+  now admitting distribution admins) is a distribution admin's or a server administrator's only:
+  a tenant administrator is refused (`404`), a distribution admin is refused on any other publisher.
+- **Purges**: `purge_held=true` on a key's removal is a distribution admin's for a distributor's
+  publisher (still refused for a publisher with the licence-key mark alone); `DELETE
+  …/catalogue/builds/{id}` admits a distribution admin for a distributor's publisher's build (removed
+  or not; any other build is `404`), and now takes the tenant's upstream lock, which every release
+  into its signed channels takes, so no placement releases the build between the check and the
+  deletion. A tenant's administrators still purge any build placed nowhere, a distributor's included.
+- **Withdrawal** (`POST …/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw {"reason": …}`,
+  `kista admin catalogue withdraw <t> publisher:<p> <name> <version> -reason <text> [-type t]`): a
+  distribution admin's or a server administrator's (a tenant administrator is `404`), for a
+  distributor's publisher, removed or not; the reason is 1 to 400 bytes of printable text. In one
+  transaction, holding the tenant's upstream lock, the version's entries not withdrawn yet are
+  marked, and every channel of the tenant holding a release of any of them gets its release version
+  bumped; the event `catalogue.withdrawn` (source, name, version, reason, builds, how many channels)
+  is the tenant's. The answer names the tenant, the version and the entries withdrawn (the
+  distributor's own), never a channel; a version withdrawn already answers `"already": true` and
+  records nothing; a version the source has no entry of is `404`.
+- **A removed distributor's publisher is remembered**: removing one writes its id, name and
+  distributor to `removed_distributor_publishers` (reaped with the tenant), so `publisher:<name>`
+  still names its source for a withdrawal, a purge and a distribution admin's reads (a live
+  publisher of that name wins when it is a distributor's; of two removed ones, the one removed
+  last). Not in the Data model as drafted: the spec's "removed or not" needs it.
+- **Serving reads the entry's state**: a channel's snapshot leaves out releases of withdrawn entries
+  (`store.ChannelReleases`), so the DuckDB routes, the index, bundle exports and pull-through's
+  selection never serve them; a channel feed's offer and its `ReleasedIn` leave their bodies out, and
+  a licence key a withdrawn build declares is not live through it. Management listings keep the
+  release with `"withdrawn": true` (`release list` shows `(withdrawn)`), and the catalogue shows the
+  build's `state` `withdrawn` with `withdrawn_at` and `withdrawn_reason`, and each entry's
+  `withdrawn` versions; a rule's `newest` and `current` skip withdrawn versions.
+- **Never again**: every release insert (a placement by a rule, a follow, by hand even `early`, a
+  promotion, a mirror's run) reads the entry with a shared row lock that the withdrawal's update
+  waits for (`store.BuildWithdrawn`), under the channel lock and the tenant's upstream lock, and
+  refuses a withdrawn one (`409`, problem type `…/withdrawn`); the placement pass skips withdrawn
+  entries before it. A release of a withdrawn entry is never made active, current or public again
+  (`409`; the conservative reading of "made active": current and public too; yank, deprecate and
+  private stay allowed). The body never arrives again in that source: `FindOrInsertBuild` refuses a
+  body its source has withdrawn (`409` …/withdrawn on the catalogue's route, not the entry as a
+  revoked one's answer), and another body of the version is its slot's (`409`). A withdrawn entry is
+  never purged (`409`), never collected (the collector's dead-build condition skips it), skipped by a
+  purge of held entries, and outside its source's `catalogue.max_entries` and `catalogue.max_bytes`
+  (it is no backlog, and no one may purge it).
+- **Deviation: the body stays.** The Retention section's "a withdrawn entry keeps its record and drops
+  its body reference" is left to a follow-up: the body is kept with the record (the releases of the
+  entry still reference the build, and readers of a release's body other than serving would need
+  care); the record is what keeps the body from arriving again.
+- **Follows** (A1 part 4's seams): a follow of a distributor's publisher takes a name reserved in the
+  tenant for its distributor (checked again under the channel lock when it writes the rule), and
+  skips one reserved for another holder; the "name it may not publish in the channel" limit uses the
+  distributor rules instead of grants (it has none): the names it may publish into the catalogue,
+  which the server-wide and tenant-reservation limits already check.
+- **A distribution admin's reads**: `GET …/catalogue` and `…/catalogue/{source}/extensions/{ext}`
+  admit distribution admins and answer the distributors' publishers' entries only (distribution
+  admins are server-wide, so every distributor's in the tenant), without rules and without where a
+  build is placed; the catalogue-only route's answer to a distributor's publisher carries no
+  `placed` either.
+- **Errors**: `store.ErrWithdrawn` is `409` with the problem type `withdrawn`; a problem's detail no
+  longer starts with `store: ` (the prefix is trimmed as the services' others are).
+- **Left to part 2**: licences per (name, source), key owners, the relay and usage; the live keys of
+  the catalogue's newest available, not withdrawn, version.
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into

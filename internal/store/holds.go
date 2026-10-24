@@ -223,7 +223,9 @@ type KeptEntry struct {
 // the check and the deletion.
 func (t *Tx) PurgeHeld(ctx context.Context, tenantID, source, keyID string) ([]Build, []KeptEntry, error) {
 	now := t.Now()
-	q, args := "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND source = ? AND available_at > ?", []any{tenantID, source, t.s.d.timeArg(now)}
+	// a withdrawn entry is left as it is (spec 0033 phase B: its record stays, and it reaches no channel)
+	q, args := "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND source = ? AND available_at > ? AND withdrawn_at IS NULL",
+		[]any{tenantID, source, t.s.d.timeArg(now)}
 	if keyID != "" {
 		q, args = q+" AND publisher_key_id = ?", append(args, keyID)
 	}

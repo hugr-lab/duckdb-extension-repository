@@ -99,7 +99,15 @@ type Build struct {
 	// the purge kept it, and it is never placed automatically nor promoted again, only placed early by
 	// a channel administrator. Zero: not revoked.
 	RevokedAt time.Time
+	// WithdrawnAt is when a distribution admin or a server administrator withdrew it, with the reason
+	// (spec 0033 phase B): served nowhere, never placed again, its body never arriving again in its
+	// source. Zero: not withdrawn.
+	WithdrawnAt     time.Time
+	WithdrawnReason string
 }
+
+// Withdrawn reports whether the entry was withdrawn (spec 0033 phase B: WithdrawnAt).
+func (b Build) Withdrawn() bool { return !b.WithdrawnAt.IsZero() }
 
 // Revoked reports whether the entry was revoked (spec 0033 phase A2: RevokedAt).
 func (b Build) Revoked() bool { return !b.RevokedAt.IsZero() }
@@ -159,17 +167,17 @@ func (b Build) Slot() string {
 
 const buildCols = `id, tenant_id, source, name, package_version, platform, abi, duckdb_version, c_api_major, c_api_minor,
 c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked, visibility, provenance, package_type,
-available_at, publisher_key_id, landed, revoked_at`
+available_at, publisher_key_id, landed, revoked_at, withdrawn_at, withdrawn_reason`
 
 func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 	var b Build
 	var dv sql.NullString
 	var ma, mi, pa sql.NullInt64
-	var prov, key sql.NullString
+	var prov, key, why sql.NullString
 	err := r.Scan(&b.ID, &b.TenantID, &b.Source, &b.Name, &b.PackageVersion, &b.Platform, &b.ABI, &dv, &ma, &mi, &pa,
 		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy, &b.Checked, &b.Visibility, &prov, &b.PackageType,
-		scanTime{&b.AvailableAt}, &key, &b.Landed, scanTime{&b.RevokedAt})
-	b.DuckDBVersion, b.Provenance, b.PublisherKeyID = dv.String, prov.String, key.String
+		scanTime{&b.AvailableAt}, &key, &b.Landed, scanTime{&b.RevokedAt}, scanTime{&b.WithdrawnAt}, &why)
+	b.DuckDBVersion, b.Provenance, b.PublisherKeyID, b.WithdrawnReason = dv.String, prov.String, key.String, why.String
 	if ma.Valid {
 		b.CAPI = &CAPI{int(ma.Int64), int(mi.Int64), int(pa.Int64)}
 	}
@@ -228,6 +236,10 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	}
 	cur, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND package_type = ? AND source = ? AND name = ? AND body_hash = ?",
 		b.TenantID, b.PackageType, b.Source, b.Name, b.BodyHash))
+	if err == nil && cur.Withdrawn() {
+		// spec 0033 phase B: a withdrawn entry's body never arrives again in its source
+		return fmt.Errorf("%w: %s %s %s from this source", ErrWithdrawn, cur.Name, cur.PackageVersion, cur.Platform)
+	}
 	if err == nil {
 		// its last use (spec 0016): a Build an intake found is not collected under it; an update that
 		// finds no row (collected since the select) inserts it again below
@@ -277,10 +289,12 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 		}
 	}
 	b.Landed = false
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, legacy_duplicate, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	b.WithdrawnAt, b.WithdrawnReason = time.Time{}, ""
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, legacy_duplicate, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		b.ID, b.TenantID, b.Source, b.Name, b.PackageVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
 		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, b.Visibility, nullable(b.Provenance),
-		b.PackageType, t.s.d.nullTimeArg(b.AvailableAt), nullable(b.PublisherKeyID), false, t.s.d.nullTimeArg(b.RevokedAt), b.Slot(), b.Legacy,
+		b.PackageType, t.s.d.nullTimeArg(b.AvailableAt), nullable(b.PublisherKeyID), false, t.s.d.nullTimeArg(b.RevokedAt), t.s.d.nullTimeArg(time.Time{}),
+		nullable(""), b.Slot(), b.Legacy,
 		t.s.d.timeArg(t.Now()))
 	b.Inserted = err == nil
 	return t.s.mapErr(err, "build "+b.Name)
@@ -645,16 +659,20 @@ type Candidate struct {
 	ABI, DuckDBVersion, BodyHash string
 	CAPI                         *CAPI
 	BuildOrigin                  string // the Build's origin (spec 0009: a mirrored build promoted is no replacement)
+	// Withdrawn says its build was withdrawn (spec 0033 phase B): the release is served nowhere, and
+	// shown as withdrawn.
+	Withdrawn bool
 }
 
-const candidateCols = releaseCols + ", b.abi, b.duckdb_version, b.c_api_major, b.c_api_minor, b.c_api_patch, b.body_hash, b.origin"
+const candidateCols = releaseCols + ", b.abi, b.duckdb_version, b.c_api_major, b.c_api_minor, b.c_api_patch, b.body_hash, b.origin, b.withdrawn_at"
 
 func scanCandidate(r interface{ Scan(...any) error }) (Candidate, error) {
 	var c Candidate
 	var dv sql.NullString
 	var ma, mi, pa sql.NullInt64
-	rel, err := scanRelease(r, &c.ABI, &dv, &ma, &mi, &pa, &c.BodyHash, &c.BuildOrigin)
-	c.Release, c.DuckDBVersion = rel, dv.String
+	var withdrawn time.Time
+	rel, err := scanRelease(r, &c.ABI, &dv, &ma, &mi, &pa, &c.BodyHash, &c.BuildOrigin, scanTime{&withdrawn})
+	c.Release, c.DuckDBVersion, c.Withdrawn = rel, dv.String, !withdrawn.IsZero()
 	if ma.Valid {
 		c.CAPI = &CAPI{int(ma.Int64), int(mi.Int64), int(pa.Int64)}
 	}
@@ -679,10 +697,11 @@ func (s *Store) candidates(ctx context.Context, q string, args ...any) ([]Candid
 }
 
 // ChannelReleases lists every release of a channel (every state and visibility) with its build: the
-// snapshot the DuckDB routes and the index resolve on (spec 0007).
+// snapshot the DuckDB routes and the index resolve on (spec 0007). A release of a withdrawn entry is
+// left out (spec 0033 phase B: served nowhere; the withdrawal bumps the channel).
 func (s *Store) ChannelReleases(ctx context.Context, channelID string) ([]Candidate, error) {
 	return s.candidates(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id"+
-		" WHERE r.channel_id = ? ORDER BY r.created_at, r.id", channelID)
+		" WHERE r.channel_id = ? AND b.withdrawn_at IS NULL ORDER BY r.created_at, r.id", channelID)
 }
 
 // ListReleases lists a channel's releases (optionally of one name), newest first.

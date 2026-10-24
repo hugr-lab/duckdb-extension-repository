@@ -365,21 +365,26 @@ an administrator gives it.
   admin channel follow <tenant>/<channel>`, `GET …/follows[/{source}]`), refreshed at each look (a
   new build of the source, or hourly): a name the tenant uses from another source (another source
   has builds of it, or a channel serves it from another source); a reserved one (DuckDB's names,
-  unless the source is DuckDB's own repository of that kind; a name reserved in the tenant); one two
-  of the channel's follows offer; and, for a publisher, a name it may not publish in the channel (a
-  follow follows a source, not every grant anyone gives it). A rule naming one takes it. A name
+  unless the source is DuckDB's own repository of that kind; a name reserved in the tenant, unless
+  for a followed [distributor's publisher](publishing.md#distributors-publishers)'s distributor); one
+  two of the channel's follows offer; and, for a publisher, a name it may not publish in the channel
+  (a follow follows a source, not every grant anyone gives it; a distributor's publisher holds no
+  grants: the names it may publish into the catalogue are what a follow takes). A rule naming one
+  takes it. A name
   whose rule is cleared is taken again at the follow's next look: a rule naming another source
   keeps it out. `channel unfollow` (`DELETE`) places nothing more; what it placed stays, its rules
   completing the versions they hold. Removing the source removes its follows.
 - **Reading the catalogue**: `kista admin catalogue list <tenant>` and `catalogue show <tenant>
   <source> <name>`, or `GET /api/v1/tenants/{t}/catalogue` and `…/catalogue/{source}/extensions/{ext}`
-  (tenant administrators).
+  (tenant administrators; a distribution admin reads its distributors' publishers' entries only,
+  without rules or channels).
 - **Publishing into the catalogue only**: `POST /api/v1/tenants/{t}/catalogue/extensions/{ext}/builds`
   (see [Publishing](publishing.md#publishing-into-the-catalogue)), or `kista admin catalogue add`.
 - **Purging an entry**: `kista admin catalogue purge <tenant> <build-id>` or `DELETE
-  /api/v1/tenants/{t}/catalogue/builds/{id}` (tenant administrators) deletes a build that was never
-  released (`409` otherwise); since no one could have installed it, its slot is free again, and a
-  mirror's cell that landed it fetches it again.
+  /api/v1/tenants/{t}/catalogue/builds/{id}` (tenant administrators; a distribution admin for a
+  distributor's publisher's build) deletes a build that was never released (`409` otherwise); since
+  no one could have installed it, its slot is free again, and a mirror's cell that landed it fetches
+  it again. A [withdrawn](#withdrawals) build is never purged (`409`, `…/withdrawn`).
 
 ### Holds
 
@@ -394,7 +399,9 @@ at a build, or to revoke a stolen key, before an automatic placement serves it.
   A tenant's administrators set it: `kista admin upstream hold <tenant> <name> <duration>` and
   `kista admin publisher hold <tenant> <name> <duration>` (`24h`, `2d`; `0` for none), or `PUT
   …/upstreams/{name}/hold` and `PUT …/publishers/{name}/hold` with `{"hold": "24h"}`. At most 90
-  days. An upstream removed and added again (its successor) starts with no hold: set it again.
+  days. A [distributor's publisher](publishing.md#distributors-publishers)'s hold is a distribution
+  admin's or a server administrator's only (`404` to a tenant administrator): a tenant that wants
+  more waits with a channel hold. An upstream removed and added again (its successor) starts with no hold: set it again.
 - **A channel's hold**, set by its administrators (`kista admin channel hold <tenant>/<channel>
   <duration>`, `GET|PUT …/channels/{c}/hold`): an automatic placement into the channel (a rule's,
   a follow's, a mirror's run into its own channel) waits until an entry's arrival plus the channel's
@@ -419,7 +426,8 @@ at a build, or to revoke a stolen key, before an automatic placement serves it.
   places a held version: a channel administrator's choice to take it sooner, recorded in its
   `release.place` event (`early`). Anyone else is refused.
 - **Revoking a key** with `kista admin publisher key remove … -purge-held` (`DELETE
-  …/publishers/{name}/keys/{id}?purge_held=true`, a tenant administrator's) purges the entries
+  …/publishers/{name}/keys/{id}?purge_held=true`, a tenant administrator's; a distribution admin's
+  for a distributor's publisher) purges the entries
   published with it that are still held and placed nowhere, each with a `catalogue.purge` event;
   removing the publisher purges all of its held entries. A held entry a channel administrator placed
   early is kept, **revoked**: it stays where it is placed, but no rule, follow or promotion takes it
@@ -434,6 +442,43 @@ at a build, or to revoke a stolen key, before an automatic placement serves it.
   show`, `publisher list`); the catalogue lists each entry's `held` and `revoked` versions and shows
   each build's `state` (`held` or `available`), held, its `available_at`, and revoked, its
   `revoked_at` (`catalogue list`, `catalogue show`'s `HELD UNTIL` and `REVOKED`).
+
+### Withdrawals
+
+A distributor withdraws a version it published into a tenant's catalogue (spec 0033): a distribution
+admin or a server administrator, with a reason, for a
+[distributor's publisher](publishing.md#distributors-publishers), removed or not.
+
+```bash
+kista admin -config /etc/kista/kista.yaml   catalogue withdraw acme publisher:enterest-ci geo_tools 1.4.0 -reason "CVE-2026-0001"
+```
+
+```text
+POST /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw
+{"reason": "CVE-2026-0001"}
+```
+
+- **Immediate.** In one transaction every build of the version becomes `withdrawn`, and every
+  channel of the tenant holding a release of one gets its release version bumped: the next request
+  serves it nowhere (DuckDB's `INSTALL` of it fails), and the index, bundles and feeds leave it out.
+  A placement racing the withdrawal reads the build under a lock the withdrawal waits for: it either
+  sees it withdrawn, or commits its release before the withdrawal bumps its channel.
+- **Final.** A withdrawn build is never placed again (no rule, follow, promotion, nor by hand, even
+  `early`: `409`, problem type `…/withdrawn`); its releases stay listed, `"withdrawn": true`, and
+  are never made active, current or public again (`409`); the same body never arrives again in that
+  source (`409`), nor another body of the version (its slot); it is never purged, nor collected.
+  The next version is placed as usual.
+- **The tenant is told**: a `catalogue.withdrawn` event (the source, name, version, reason, the
+  builds and how many channels it bumped). The answer to the distributor names the tenant, the
+  version and the builds withdrawn, never the tenant's channels; withdrawing again answers
+  `"already": true`. The same body from another of the tenant's sources is the tenant's to
+  [block](publishing.md#blocking-a-body).
+- A tenant's own sources need no withdrawal: blocks and yanks do it. A tenant administrator is
+  refused (`404`).
+- **Reading**: the catalogue lists each entry's `withdrawn` versions, and a build's `state` is
+  `withdrawn` with `withdrawn_at` and `withdrawn_reason` (`catalogue list`'s `WITHDRAWN`, `catalogue
+  show`'s `WITHDRAWN`); `release list` shows such a release's state with `(withdrawn)`. A withdrawn
+  build counts for nothing in its source's `catalogue.max_entries` and `catalogue.max_bytes`.
 
 ## Passthrough channels
 

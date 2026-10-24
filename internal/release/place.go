@@ -129,6 +129,9 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 		if !b.Checked {
 			return nil, false, fmt.Errorf("%w: %s %s %s was added unchecked; publish it to check it", ErrState, b.Name, b.PackageVersion, b.Platform)
 		}
+		if b.Withdrawn() { // spec 0033 phase B: early or not; checked again under the channel lock
+			return nil, false, fmt.Errorf("%w: %s %s %s from %s", store.ErrWithdrawn, b.Name, b.PackageVersion, b.Platform, o.Source)
+		}
 		if b.Held(now) || b.Revoked() { // spec 0033 phase A2: checked again under the channel lock
 			if !o.Early {
 				if b.Revoked() {
@@ -452,7 +455,7 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 		if !b.Checked || servable(capis, b) != nil || purged[b.ID] || sv.had[[3]string{b.PackageVersion, b.Platform, b.Slot()}] {
 			continue
 		}
-		if b.Revoked() { // spec 0033 phase A2: only a channel administrator places it (early)
+		if b.Revoked() || b.Withdrawn() { // spec 0033: revoked, only a channel administrator places it (early); withdrawn, no one
 			continue
 		}
 		// a mirror's runs released what was not held at its arrival; the rest is the pass's, as the run

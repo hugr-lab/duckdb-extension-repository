@@ -21,6 +21,7 @@ type CatalogueEntry struct {
 	Rules        map[string]string // channel → mode
 	Held         []string          // the versions with a held build (spec 0033 phase A2), newest first
 	Revoked      []string          // the versions with a revoked build (spec 0033 phase A2), newest first
+	Withdrawn    []string          // the versions with a withdrawn build (spec 0033 phase B), newest first
 }
 
 // CatalogueBuild is a build of an entry: what it is, how it came, and where it is released.
@@ -43,9 +44,11 @@ func (s *Service) mayAdminTenant(ctx context.Context, a authz.Actor, tenant stri
 }
 
 // Catalogue lists a tenant's catalogue of a package type (spec 0034): every (source, name), or those
-// of one source or name (as answers name them), by source and name.
+// of one source or name (as answers name them), by source and name. A distribution admin reads its
+// distributors' publishers' entries only (removed ones too), without rules: it reads no channel
+// (spec 0033 phase B).
 func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageType, source, name string) ([]CatalogueEntry, error) {
-	t, err := s.mayAdminTenant(ctx, a, tenant)
+	t, err := s.mayReadCatalogue(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -53,13 +56,19 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 	if err != nil {
 		return nil, err
 	}
-	labels, err := s.Store.SourceLabels(ctx, t.ID)
+	only, err := s.distributorSources(ctx, a, t)
 	if err != nil {
 		return nil, err
 	}
-	rules, err := s.Store.TenantRules(ctx, t.ID, packageType)
-	if err != nil {
-		return nil, err
+	labels := only
+	var rules []store.Rule
+	if only == nil {
+		if labels, err = s.Store.SourceLabels(ctx, t.ID); err != nil {
+			return nil, err
+		}
+		if rules, err = s.Store.TenantRules(ctx, t.ID, packageType); err != nil {
+			return nil, err
+		}
 	}
 	held, err := s.Store.HeldVersions(ctx, t.ID, packageType)
 	if err != nil {
@@ -69,18 +78,26 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 	if err != nil {
 		return nil, err
 	}
+	withdrawn, err := s.Store.WithdrawnVersions(ctx, t.ID, packageType)
+	if err != nil {
+		return nil, err
+	}
+	newestFirst := func(x, y string) int { return CompareVersions(y, x) }
 	byKey := map[[2]string]*CatalogueEntry{}
 	var out []*CatalogueEntry
 	for k, vs := range vers {
+		if _, ok := only[k[0]]; only != nil && !ok {
+			continue // a distribution admin's are the distributors' publishers
+		}
 		label := store.Label(labels, k[0])
 		if source != "" && label != source || name != "" && k[1] != name {
 			continue
 		}
-		slices.SortFunc(vs, func(x, y string) int { return CompareVersions(y, x) })
-		hv, rv := held[k], revoked[k]
-		slices.SortFunc(hv, func(x, y string) int { return CompareVersions(y, x) })
-		slices.SortFunc(rv, func(x, y string) int { return CompareVersions(y, x) })
-		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, Revoked: rv}
+		hv, rv, wv := held[k], revoked[k], withdrawn[k]
+		for _, l := range [][]string{vs, hv, rv, wv} {
+			slices.SortFunc(l, newestFirst)
+		}
+		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, Revoked: rv, Withdrawn: wv}
 		byKey[k] = e
 		out = append(out, e)
 	}
@@ -103,13 +120,19 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 }
 
 // CatalogueVersions are an entry's versions (newest first) with their builds and where each is
-// released; an entry the tenant has no build of (of the type) is not found.
+// released; an entry the tenant has no build of (of the type) is not found. A distribution admin
+// reads its distributors' publishers' entries only (removed ones too), without where they are
+// released (spec 0033 phase B: it reads no channel).
 func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, packageType, source, name string) ([]CatalogueVersion, error) {
-	t, err := s.mayAdminTenant(ctx, a, tenant)
+	t, err := s.mayReadCatalogue(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
-	src, err := s.Store.ResolveSource(ctx, t.ID, source)
+	resolve := s.Store.ResolveSource
+	if a.Kind == authz.ActorDistributionAdmin {
+		resolve = s.Store.ResolveDistributorSource
+	}
+	src, err := resolve(ctx, t.ID, source)
 	if errors.Is(err, store.ErrNoSource) {
 		// a removed source's entries are not reached by name
 		return nil, fmt.Errorf("%w: no source %q in the tenant", store.ErrNotFound, source)
@@ -124,9 +147,11 @@ func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, 
 	if len(builds) == 0 {
 		return nil, fmt.Errorf("%w: no build of %s from %s", store.ErrNotFound, name, source)
 	}
-	placed, err := s.Store.BuildPlacements(ctx, t.ID, packageType, src, name)
-	if err != nil {
-		return nil, err
+	var placed map[string][]store.Placed
+	if a.Kind != authz.ActorDistributionAdmin {
+		if placed, err = s.Store.BuildPlacements(ctx, t.ID, packageType, src, name); err != nil {
+			return nil, err
+		}
 	}
 	byVer := map[string]*CatalogueVersion{}
 	var out []*CatalogueVersion

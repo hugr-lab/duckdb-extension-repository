@@ -96,6 +96,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0038_package_names` | 38 | the schema's tables and columns are renamed (no change in behaviour): an older replica would query the old names |
 | `0039_package_types` | 39 | every key that holds a name holds its package type: an older replica's upserts would fail against the new keys, and it must not read rows of a type it does not know |
 | `0040_holds` | 40 | an older replica would place held entries, and take a held publisher's publications on a channel's route |
+| `0041_distributors` | 41 | an older replica would serve withdrawn entries, and take a distributor's publisher's hold and keys as the tenant's |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -166,7 +167,28 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 40)
+## Upgrading to the next release (schema 41)
+
+### Distributors' publishers and withdrawals (spec 0033, phase B part 1)
+
+- **Migration `0041_distributors`** gives publishers a `distributor` (none for every existing one),
+  builds a withdrawn marker (`withdrawn_at`, `withdrawn_reason`; none is withdrawn), and a table
+  remembering removed distributors' publishers; it raises `min_reader` to 41: stop every older
+  replica first.
+- Nothing changes until a distribution admin or a server administrator marks a publisher a
+  [distributor's](../publishing.md#distributors-publishers): such a publisher publishes into the
+  catalogue only, without grants, and its keys and hold are the distributor's, no longer a tenant
+  administrator's (`404`). A publisher with grants is not marked.
+- New routes: `PUT …/publishers/{name}/distributor`, `POST …/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw`
+  ([withdrawals](../upstreams.md#withdrawals)); the publisher hold route, the catalogue's read
+  routes and its purge admit distribution admins (for distributors' publishers). New in answers: a
+  publisher's `distributor`, a catalogue entry's `withdrawn` versions, a catalogue build's
+  `withdrawn` state with `withdrawn_at` and `withdrawn_reason`, a release's `withdrawn`; the problem
+  type `…/withdrawn` (`409`). Events: `catalogue.withdrawn`, and `distributor` on `publisher.change`
+  (the event catalogue's version stays 1). A problem's detail no longer starts with `store: `.
+- `purge_held=true` on a key's removal is a distribution admin's too, for a distributor's
+  publisher; purging a catalogue build now waits for the releases in flight into the tenant's
+  channels (the tenant's upstream lock).
 
 ### Holds (spec 0033, phase A2)
 

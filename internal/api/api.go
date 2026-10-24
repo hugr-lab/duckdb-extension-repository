@@ -165,13 +165,16 @@ const (
 	typeSource = "source"
 	// typeHeld: a held entry, or a publisher with a hold on a channel's route (spec 0033)
 	typeHeld = "held"
+	// typeWithdrawn: a withdrawn entry (spec 0033 phase B): placed nowhere, its release never made
+	// active again, its body never arriving again in its source
+	typeWithdrawn = "withdrawn"
 )
 
 var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "Not Found", typeMethod: "Method Not Allowed",
 	typeInvalid: "Invalid", typeConflict: "Conflict", typePrecondition: "Precondition Failed",
 	typeRequired: "Precondition Required", typeTooLarge: "Content Too Large", typeMediaType: "Unsupported Media Type",
 	typeTooMany: "Too Many Requests", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
-	typeHeld: "Held"}
+	typeHeld: "Held", typeWithdrawn: "Withdrawn"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
 func problem(w http.ResponseWriter, status int, typ, detail string) {
@@ -465,6 +468,9 @@ type rule struct {
 	// publishers marks the routes a publisher's credential may call (spec 0008); on other public
 	// routes it is anonymous, on the rest not a token
 	publishers bool
+	// distributors admits a distributor's publisher on a pathVerbs route without the verbs (spec 0033
+	// phase B: the catalogue-only publication, whose service checks the name)
+	distributors bool
 	// closed: server administrators reach a tenant whose deletion started (spec 0019: its record,
 	// its deletion and its events); to everyone else it is unknown
 	closed bool
@@ -612,14 +618,20 @@ func init() {
 			http.MethodPost: mb(pathAdmin, (*Handler).addChannelVersion)}},
 		{"tenants/{t}/channels/{c}/duckdb-versions/{v}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeChannelVersion)}},
 		// spec 0033: the tenant's catalogue, read by its administrators
-		{"tenants/{t}/catalogue", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).catalogue)}},
+		// (spec 0033 phase B: and distribution admins, their distributors' publishers' entries only)
+		{"tenants/{t}/catalogue", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).catalogue)}},
 		// publishing into the catalogue only: publish on the name tenant-wide (a publisher's signed
-		// request); before the entry's route, which an extension named "extensions" would match
+		// request), or a distributor's publisher without grants (spec 0033 phase B: its service checks
+		// the name); before the entry's route, which an extension named "extensions" would match
 		{"tenants/{t}/catalogue/extensions/{ext}/builds", map[string]rule{
 			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPublish}, manage: true, raw: true, publishers: true,
-				handle: (*Handler).publishToCatalogue}}},
-		{"tenants/{t}/catalogue/{source}/extensions/{ext}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).catalogueEntry)}},
-		{"tenants/{t}/catalogue/builds/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).purgeEntry)}},
+				distributors: true, handle: (*Handler).publishToCatalogue}}},
+		{"tenants/{t}/catalogue/{source}/extensions/{ext}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).catalogueEntry)}},
+		{"tenants/{t}/catalogue/builds/{id}", map[string]rule{http.MethodDelete: m(distributionAdmin, (*Handler).purgeEntry)}},
+		// spec 0033 phase B: withdrawing a version of a distributor's publisher (distribution admins and
+		// server administrators; the service refuses a tenant's administrators)
+		{"tenants/{t}/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw", map[string]rule{
+			http.MethodPost: mb(distributionAdmin, (*Handler).withdraw)}},
 		// spec 0031: a name's source in a channel ({name}, not {ext}: a channel's administrators)
 		{"tenants/{t}/channels/{c}/sources", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelSources)}},
 		// spec 0033: a channel following a whole source (its administrators')
@@ -675,7 +687,10 @@ func init() {
 			http.MethodDelete: m(distributionAdmin, publisherLicenseKeys(false))}},
 		// spec 0033 phase A2: a publisher's hold (the tenant's administrators'; a distributor's
 		// publisher's is a distribution admin's, phase B)
-		{"tenants/{t}/publishers/{name}/hold", map[string]rule{http.MethodPut: mb(pathAdmin, (*Handler).setPublisherHold)}},
+		{"tenants/{t}/publishers/{name}/hold", map[string]rule{http.MethodPut: mb(distributionAdmin, (*Handler).setPublisherHold)}},
+		// spec 0033 phase B: marking a distributor's publisher (distribution admins and server
+		// administrators)
+		{"tenants/{t}/publishers/{name}/distributor", map[string]rule{http.MethodPut: mb(distributionAdmin, (*Handler).setPublisherDistributor)}},
 		// spec 0023: a publisher's public SSH keys
 		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listPublisherKeys),
 			http.MethodPost: mb(distributionAdmin, (*Handler).addPublisherKey)}},
@@ -1058,6 +1073,11 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			if !errors.Is(err, authz.ErrDenied) {
 				h.fail(w, err)
 				return caller{}, false
+			}
+		}
+		if !allowed && ru.distributors && c.pub != nil {
+			for _, m := range c.pub.Publishers {
+				allowed = allowed || m.Publisher.Distributor != ""
 			}
 		}
 		if !allowed {

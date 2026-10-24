@@ -122,6 +122,7 @@ Errors are `application/problem+json`:
 | `conflict` | `409`: a duplicate, a refused state change, the last-admin rule |
 | `source` | `409`: another source holds the extension's name in the channel; the detail names it ([spec 0031](upstreams.md#a-names-source-in-a-channel)) |
 | `held` | `409`: a held entry placed or promoted without `early`, or a publisher with a hold on a channel's publication route ([holds](upstreams.md#holds)) |
+| `withdrawn` | `409`: a [withdrawn](upstreams.md#withdrawals) build placed, its release made active, current or public, its body published again, or the build purged |
 | `precondition-failed` | `412` |
 | `precondition-required` | `428` |
 | `too-large` | `413` |
@@ -316,11 +317,12 @@ channel. See [Using kista from DuckDB](duckdb.md).
 | `GET, POST tenants/{t}/channels/{c}/duckdb-versions`; `DELETE …/duckdb-versions/{v}` | channel admin |
 | `GET tenants/{t}/channels/{c}/sources`; `GET, PUT, DELETE …/sources/{name}` | channel admin: [a name's source in the channel](upstreams.md#a-names-source-in-a-channel) and its [rule](upstreams.md#the-catalogue-and-a-channels-rules) (`PUT` takes `{"source": "tenant" \| "upstream:<name>" \| "publisher:<name>", "mode": "auto" \| "manual"}`, `mode` optional; a follow's rules have mode `follow`; each answer is `{"name", "source", "mode", "current", "newest" (the newest available in the catalogue; a version with a held build is not), "outcome", "outcome_at", "set_by", "set_at", "available": {"<source>": <releases>}}`, `source` `""` when none; a list is `{"sources": [...]}`). A release's management answer carries `source` and `selected` (whether it is the channel's source of the name: only those are served) |
 | `GET tenants/{t}/channels/{c}/follows`; `GET, PUT, DELETE …/follows/{source}` | channel admin: the channel's [follows](upstreams.md#the-catalogue-and-a-channels-rules) (`PUT` takes no body; each answer is `{"source", "set_by", "set_at", "skips": {"<name>": "<reason>"}}`; a list is `{"follows": [...]}`) |
-| `GET tenants/{t}/catalogue[?source=&name=]` | tenant admin: the tenant's [catalogue](upstreams.md#the-catalogue-and-a-channels-rules), `{"entries": [{"source", "name", "versions": [newest first], "rules": {"<channel>": "<mode>"}, "held": [the versions with a held build, omitted for none]}]}` |
-| `GET tenants/{t}/catalogue/{source}/extensions/{ext}` | tenant admin: an entry's versions (newest first), each with its builds: `{"versions": [{"version", "builds": [{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility", "origin", "checked", "created_at", "state": "held" \| "available", "available_at" (held), "placed": [{"channel", "state"}]}]}]}` |
+| `GET tenants/{t}/catalogue[?source=&name=]` | tenant admin: the tenant's [catalogue](upstreams.md#the-catalogue-and-a-channels-rules), `{"entries": [{"source", "name", "versions": [newest first], "rules": {"<channel>": "<mode>"}, "held": [the versions with a held build, omitted for none], "revoked": [...], "withdrawn": [...]}]}`; a distribution admin: its distributors' publishers' entries only (removed ones too), `rules` empty |
+| `GET tenants/{t}/catalogue/{source}/extensions/{ext}` | tenant admin: an entry's versions (newest first), each with its builds: `{"versions": [{"version", "builds": [{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility", "origin", "checked", "created_at", "state": "held" \| "available" \| "withdrawn", "available_at" (held), "revoked_at", "withdrawn_at", "withdrawn_reason", "placed": [{"channel", "state"}]}]}]}`; a distribution admin: a distributor's publisher's entry (`publisher:<name>`, removed or not), without `placed` |
 | `GET, PUT tenants/{t}/channels/{c}/hold` | channel admin: the channel's [hold](upstreams.md#holds), `{"channel", "hold": "2h0m0s"}`; `PUT` takes `{"hold": "2h"}` (`0s` for none, at most 90 days) |
-| `POST tenants/{t}/catalogue/extensions/{ext}/builds?version=&platform=[&visibility=]` | `publish` on the extension tenant-wide: [publishing into the catalogue](publishing.md#publishing-into-the-catalogue) only |
-| `DELETE tenants/{t}/catalogue/builds/{id}` | tenant admin: purge a build no release holds (`409` when one does) |
+| `POST tenants/{t}/catalogue/extensions/{ext}/builds?version=&platform=[&visibility=]` | `publish` on the extension tenant-wide, or a [distributor's publisher](publishing.md#distributors-publishers) without grants: [publishing into the catalogue](publishing.md#publishing-into-the-catalogue) only |
+| `DELETE tenants/{t}/catalogue/builds/{id}` | tenant admin; a distribution admin for a distributor's publisher's build: purge a build no release holds (`409` when one does, or it was withdrawn) |
+| `POST tenants/{t}/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw {"reason": "…"}` | server, a distribution admin: [withdraw](upstreams.md#withdrawals) a version of a distributor's publisher (`publisher:<name>`, removed or not); answers `{"tenant", "source", "name", "version", "reason", "withdrawn": [{"build", "platform", "slot"}], "already"}`, never the channels |
 | `GET tenants/{t}/channels/{c}/keys` | channel admin: keys, serving and active key, re-sign progress; a server administrator also sees each key's `signer_ref` and `protection` tier |
 | `POST tenants/{t}/channels/{c}/keys` | server: a key by signer reference |
 | `GET …/keys/events`, `GET …/keys/{id}` | channel admin |
@@ -343,14 +345,16 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `GET, POST tenants/{t}/blocks`; `GET, DELETE tenants/{t}/blocks/{hash}` | tenant admin |
 | `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin; a distribution admin all but `DELETE` |
 | `GET, POST …/publishers/{name}/github`; `GET, DELETE …/github/{id}` | tenant admin |
-| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a marked publisher; `DELETE …?purge_held=true` (a tenant admin only) purges the builds the key published that are still held, and answers what it purged and kept, revoked ([holds](publishing.md#holds-and-early-placement)) |
-| `PUT …/publishers/{name}/hold {"hold": "24h"}` | tenant admin: the publisher's [hold](publishing.md#holds-and-early-placement); a publisher answers `hold` (omitted for none) |
+| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a marked publisher; `DELETE …?purge_held=true` (a tenant admin; a distribution admin for a distributor's publisher) purges the builds the key published that are still held, and answers what it purged and kept, revoked ([holds](publishing.md#holds-and-early-placement)) |
+| `PUT …/publishers/{name}/hold {"hold": "24h"}` | tenant admin: the publisher's [hold](publishing.md#holds-and-early-placement); a publisher answers `hold` (omitted for none); a distributor's publisher's: server, a distribution admin only |
+| `PUT …/publishers/{name}/distributor {"distributor": "enterest"}` | server, a distribution admin: mark a publisher a [distributor's](publishing.md#distributors-publishers) (it holds no grants); a publisher answers `distributor` (omitted for the tenant's own) |
 | `POST, DELETE …/publishers/{name}/license-keys` | server, a distribution admin: mark a publisher a source of licence keys, or unmark it |
 
 A publisher answers with its `keys` and `license_keys` (true when marked; to a distribution admin,
 an unmarked publisher's `keys` are empty). While it is marked, adding or removing its keys and
 grants is a server administrator's or a distribution admin's (`404` to a tenant administrator). A
-distribution admin marks a publisher only before it holds keys or grants (`400`). A marked publisher's publication of a body whose key block is malformed answers
+distribution admin marks a publisher only before it holds keys or grants (`400`). A distributor's
+publisher is marked so too, and holds no grants (`400`). A marked publisher's publication of a body whose key block is malformed answers
 `400` (`license_keys`).
 
 See [Publishing](publishing.md).

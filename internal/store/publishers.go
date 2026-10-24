@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"regexp"
 	"time"
@@ -18,6 +19,11 @@ type Publisher struct {
 	// Hold is its hold (spec 0033): an entry it publishes is held until its arrival plus the hold,
 	// and it publishes into the catalogue only; 0 for none.
 	Hold time.Duration
+	// Distributor marks it a distributor's publisher (spec 0033 phase B): the distributor's name, as a
+	// tenant reservation names its holder ("": the tenant's own). It publishes into the catalogue only,
+	// without grants; its hold, keys and withdrawals are the distributor's (a distribution admin's or a
+	// server administrator's).
+	Distributor string
 }
 
 // MaxPublishers is the most publishers a tenant may hold.
@@ -50,9 +56,10 @@ func (t *Tx) InsertPublisher(ctx context.Context, p *Publisher) error {
 func (t *Tx) GetPublisher(ctx context.Context, tenantID, name string) (Publisher, error) {
 	var p Publisher
 	var hold int64
-	err := t.queryRow(ctx, "SELECT id, tenant_id, name, created_at, created_by, license_keys, hold_seconds FROM publishers WHERE tenant_id = ? AND name = ?",
-		tenantID, name).Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys, &hold)
-	p.Hold = time.Duration(hold) * time.Second
+	var dist sql.NullString
+	err := t.queryRow(ctx, "SELECT id, tenant_id, name, created_at, created_by, license_keys, hold_seconds, distributor FROM publishers WHERE tenant_id = ? AND name = ?",
+		tenantID, name).Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys, &hold, &dist)
+	p.Hold, p.Distributor = time.Duration(hold)*time.Second, dist.String
 	return p, notFound(err, "publisher "+name)
 }
 
@@ -85,11 +92,19 @@ func (t *Tx) SetPublisherLicenseKeys(ctx context.Context, tenantID, name string,
 	return p, t.BumpAuth(ctx, tenantID)
 }
 
-// DeletePublisher removes a publisher, its credentials and its grants.
-func (t *Tx) DeletePublisher(ctx context.Context, tenantID, name string) error {
+// DeletePublisher removes a publisher, its credentials and its grants. A distributor's publisher is
+// remembered (spec 0033 phase B: its versions can still be withdrawn, and read by the distribution
+// admins); actor is who removed it.
+func (t *Tx) DeletePublisher(ctx context.Context, tenantID, name, actor string) error {
 	p, err := t.GetPublisher(ctx, tenantID, name)
 	if err != nil {
 		return err
+	}
+	if p.Distributor != "" {
+		if _, err := t.exec(ctx, `INSERT INTO removed_distributor_publishers (tenant_id, publisher_id, name, distributor, removed_at, removed_by)
+VALUES (?, ?, ?, ?, ?, ?)`, tenantID, p.ID, p.Name, p.Distributor, t.s.d.timeArg(t.Now()), actor); err != nil {
+			return err
+		}
 	}
 	for _, q := range []string{"DELETE FROM grants WHERE publisher_id = ?",
 		"DELETE FROM package_group_grants WHERE publisher_id = ?", "DELETE FROM publisher_keys WHERE publisher_id = ?",
@@ -109,8 +124,8 @@ func (t *Tx) DeletePublisher(ctx context.Context, tenantID, name string) error {
 
 // publishers reads a tenant's publishers, by name.
 func publishers(ctx context.Context, query queryFn, tenantID string) ([]Publisher, error) {
-	rows, err := query(ctx, `SELECT id, tenant_id, name, created_at, created_by, license_keys, hold_seconds FROM publishers WHERE tenant_id = ?
-ORDER BY name`, tenantID)
+	rows, err := query(ctx, `SELECT id, tenant_id, name, created_at, created_by, license_keys, hold_seconds, distributor FROM publishers
+WHERE tenant_id = ? ORDER BY name`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -119,10 +134,11 @@ ORDER BY name`, tenantID)
 	for rows.Next() {
 		var p Publisher
 		var hold int64
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys, &hold); err != nil {
+		var dist sql.NullString
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys, &hold, &dist); err != nil {
 			return nil, err
 		}
-		p.Hold = time.Duration(hold) * time.Second
+		p.Hold, p.Distributor = time.Duration(hold)*time.Second, dist.String
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -237,11 +253,12 @@ func (s *Store) PublisherKeys(ctx context.Context, tenantID, publisherID string)
 func (s *Store) PublisherKeyByFingerprint(ctx context.Context, tenantID, fp string) (PublisherKey, Publisher, error) {
 	var p Publisher
 	row := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT k.id, k.tenant_id, k.publisher_id, k.type, k.public_key, k.fingerprint,
-k.title, k.expires_at, k.created_at, k.created_by, k.last_used_at, p.name, p.created_at, p.created_by, p.license_keys, p.hold_seconds
-FROM publisher_keys k JOIN publishers p ON p.id = k.publisher_id WHERE k.tenant_id = ? AND k.fingerprint = ?`), tenantID, fp)
+k.title, k.expires_at, k.created_at, k.created_by, k.last_used_at, p.name, p.created_at, p.created_by, p.license_keys, p.hold_seconds,
+p.distributor FROM publisher_keys k JOIN publishers p ON p.id = k.publisher_id WHERE k.tenant_id = ? AND k.fingerprint = ?`), tenantID, fp)
 	var hold int64
-	k, err := scanPublisherKey(row, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys, &hold)
-	p.ID, p.TenantID, p.Hold = k.PublisherID, k.TenantID, time.Duration(hold)*time.Second
+	var dist sql.NullString
+	k, err := scanPublisherKey(row, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys, &hold, &dist)
+	p.ID, p.TenantID, p.Hold, p.Distributor = k.PublisherID, k.TenantID, time.Duration(hold)*time.Second, dist.String
 	return k, p, notFound(err, "key")
 }
 

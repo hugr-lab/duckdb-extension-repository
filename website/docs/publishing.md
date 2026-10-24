@@ -278,7 +278,8 @@ POST /api/v1/tenants/{t}/catalogue/extensions/{ext}/builds?version=&platform=[&v
 The request is a channel's publication's, without `current`: the body is the file, a publisher
 signs it as any request (the signed statement is checked, not recorded on the build: a later
 placement carries the build's provenance only). It takes `publish` on the extension tenant-wide (a
-grant on a channel does not reach it; a reserved name only through a grant naming it). The build's
+grant on a channel does not reach it; a reserved name only through a grant naming it), or a
+[distributor's publisher](#distributors-publishers), which needs no grant. The build's
 DuckDB version must be registered on the server (a C API build's is not checked). The same body
 again answers the build as it is, whatever `visibility` asks. The answer is the build (`201`, or
 `200` when the source has the body already): `{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility",
@@ -347,8 +348,8 @@ build it publishes is held until its arrival plus the hold.
   take a version sooner, recorded in `release.place` (`"early": true`). Anyone else is refused; a
   placement or a promotion of a held entry without it is `409` (`…/held`).
 - **Revoking a key.** Removing a publisher's key with `?purge_held=true` (`publisher key remove …
-  -purge-held`, a tenant administrator's) purges the builds published with it that are still held
-  and placed nowhere: a hold is what lets a stolen key be revoked before its builds reach a channel.
+  -purge-held`, a tenant administrator's; a distribution admin's for a distributor's publisher)
+  purges the builds published with it that are still held and placed nowhere: a hold is what lets a stolen key be revoked before its builds reach a channel.
   Removing the publisher purges all of its held builds. A held build a channel administrator placed
   early is kept, revoked: it stays where it was placed, but no rule, follow or promotion takes it
   again, only another placement with `early`; the answer (`200`), the command and the removal's event
@@ -357,6 +358,41 @@ build it publishes is held until its arrival plus the hold.
   channel's route (`409`) and placed nowhere from the catalogue's; publish a new version. An upload
   in flight when its key or its publisher is removed is refused (`401`). A rotation without
   `purge_held` keeps them (`204`).
+
+### Distributors' publishers
+
+A distributor, such as Enterest, publishes into a tenant's catalogue through a publisher a
+distribution admin or a server administrator marks as the distributor's (spec 0033):
+
+```bash
+kista admin -config /etc/kista/kista.yaml publisher add acme enterest-ci
+kista admin -config /etc/kista/kista.yaml publisher distributor acme enterest-ci enterest
+```
+
+or `PUT /api/v1/tenants/{t}/publishers/{name}/distributor {"distributor": "enterest"}` (the
+distributor's name, as a [tenant reservation](#reserved-names) names its holder). The mark is set
+while the publisher holds no grants, and no keys unless it carries the licence-key mark already
+(`400`); marking it again changes the name; it is never removed: the publisher is removed instead.
+
+- **The catalogue only, without grants.** It publishes with `POST
+  …/catalogue/extensions/{ext}/builds` (above) any name kista does not reserve server-wide (DuckDB's
+  core and community names) and the tenant does not reserve for another holder than its distributor
+  (`404` otherwise, as a missing grant), a name an upstream of the tenant lists included (each is its
+  own source in the catalogue). The channel's publication route refuses it (`404`), and it holds no
+  grant (`400`): what it publishes reaches no channel by itself. Channels take its builds by their rules: an `auto` rule naming it, or
+  a follow (`channel follow <tenant>/<channel> publisher:enterest-ci`), which takes its names the
+  tenant does not use from another source, a name reserved for its distributor included.
+- **The distributor's, not the tenant's**: its keys (as a [marked publisher](#sources-of-licence-keys)'s),
+  its [hold](#holds-and-early-placement) (`publisher hold`, a distribution admin's or a server
+  administrator's: `404` to a tenant administrator; a tenant that wants more sets a channel hold),
+  revoking its key with `purge_held`, purging its builds placed nowhere (`DELETE
+  …/catalogue/builds/{id}`), and [withdrawing](upstreams.md#withdrawals) a version. A tenant's
+  administrators may still remove it, purge its builds placed nowhere, and choose what their
+  channels take.
+- **What a distribution admin reads**: its distributors' publishers' entries in the catalogue
+  (`GET …/catalogue`, `…/catalogue/{source}/extensions/{ext}`), removed publishers' included, without
+  the channels' rules or where a build is placed; the catalogue-only route's answer carries no
+  `placed` for a distributor's publisher either.
 
 ## Changing a release
 

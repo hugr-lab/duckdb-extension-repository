@@ -305,6 +305,12 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 			if err := s.marked(ctx, a, p); err != nil {
 				return err
 			}
+			if p.Distributor != "" {
+				// spec 0033 phase B: a distributor's publisher publishes into the catalogue only and
+				// reaches no channel by itself
+				return fmt.Errorf("%w: publisher %s is a distributor's: it holds no grants (it publishes into the catalogue only)",
+					store.ErrInvalid, p.Name)
+			}
 			g.PublisherID, g.PublisherName = p.ID, p.Name
 		} else {
 			rec, err := tx.GetIssuer(ctx, t.ID, issuer)

@@ -83,7 +83,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"RemoveAudience": {"audience.remove"}, "AddGrant": {"grant.add"}, "RemoveGrant": {"grant.remove"},
 		"AddPublisher": {"publisher.add"}, "RemovePublisher": {"publisher.remove", "catalogue.purge"}, "SetPublisherLicenseKeys": {"publisher.change"},
 		"AddPublisherKey": {"publisher.key.add"}, "RemovePublisherKey": {"publisher.key.remove", "catalogue.purge"},
-		"SetPublisherHold": {"catalogue.hold"},
+		"SetPublisherHold": {"catalogue.hold"}, "SetPublisherDistributor": {"publisher.change"},
 		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil,
 		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListPublisherKeys": nil, "TenantPublisherKeys": nil,
 		"CreatePackageGroup": {"extension_group.add"}, "SetPackageGroupDescription": {"extension_group.change"},
@@ -108,6 +108,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetFollow": {"follow.set"}, "RemoveFollow": {"follow.clear"}, "Follows": nil, "Follow": nil,
 		"PlaceFollow":    {"source.set", "release.place", "shadow.add"},
 		"SetChannelHold": {"catalogue.hold"}, "ChannelHold": nil,
+		"Withdraw": {"catalogue.withdrawn"},
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
@@ -496,6 +497,15 @@ func TestCoverage(t *testing.T) {
 	}), "source.set", "release.place")
 	en.expect("release.Service.RemoveFollow", do(func() error { return en.rel.RemoveFollow(rctx, admin, "acme", "prod", "publisher:dist") }),
 		"follow.clear")
+	// spec 0033 phase B: the publisher marked a distributor's, and a version of it withdrawn
+	en.expect("tenants.AuthAdmin.SetPublisherDistributor", do(func() error {
+		_, err := en.adm.SetPublisherDistributor(rctx, admin, "acme", "dist", "enterest")
+		return err
+	}), "publisher.change")
+	en.expect("release.Service.Withdraw", do(func() error {
+		_, err := en.rel.Withdraw(rctx, admin, "acme", "", "publisher:dist", "followed", "1.0", "CVE-2026-0001")
+		return err
+	}), "catalogue.withdrawn")
 	en.expect("release.Service.SetChannelHold", do(func() error { _, err := en.rel.SetChannelHold(rctx, admin, "acme", "prod", time.Hour); return err }),
 		"catalogue.hold")
 	en.expect("release.Service.SetChannelHold", do(func() error { _, err := en.rel.SetChannelHold(rctx, admin, "acme", "prod", 0); return err }),

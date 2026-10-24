@@ -37,7 +37,7 @@ func (h *Handler) channelErr(w http.ResponseWriter, err error, bodyRef bool) {
 // durations), never with internal error strings.
 func publicRefusal(err error) string {
 	msg := err.Error()
-	for _, p := range []string{"keys: ", "release: ", "upstream: "} {
+	for _, p := range []string{"keys: ", "release: ", "upstream: ", "store: "} {
 		msg = strings.TrimPrefix(msg, p)
 	}
 	if len(msg) > 300 {
@@ -372,7 +372,9 @@ type releaseJSON struct {
 	// (spec 0031): only the selected source's releases are served.
 	Source   string `json:"source"`
 	Selected bool   `json:"selected"`
-	ETag     string `json:"etag"`
+	// Withdrawn: its build was withdrawn (spec 0033 phase B): served nowhere, never made active again
+	Withdrawn bool   `json:"withdrawn,omitempty"`
+	ETag      string `json:"etag"`
 }
 
 // sourcesOf is what release answers show of sources (spec 0031): their labels and the channel's
@@ -423,7 +425,8 @@ func releaseView(packageType string, x store.Candidate, c caller, admin bool, pr
 	o := releaseJSON{ID: x.ID, Name: x.Name, Version: x.PackageVersion, Platform: x.Platform, Slot: x.Slot, ABI: x.ABI,
 		DuckDBVersion: x.DuckDBVersion, State: x.State, Visibility: x.Visibility, Seq: x.Seq, BodyHash: x.BodyHash,
 		CreatedAt: timeOf(x.CreatedAt), StateChangedAt: timeOf(x.StateChangedAt), Origin: x.Origin,
-		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(packageType, x, provided), ETag: versionTag(x.Version)}
+		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(packageType, x, provided), ETag: versionTag(x.Version),
+		Withdrawn: x.Withdrawn}
 	if src != nil {
 		o.Source, o.Selected = store.Label(src.labels, x.Source), src.selected[x.Name].Source == x.Source
 	}
