@@ -26,7 +26,7 @@ func (r rights) Allow(_ context.Context, a authz.Actor, verb authz.Verb, res aut
 	}
 	for _, v := range r[a.String()] {
 		scope, held, _ := strings.Cut(v, "@") // admin@tenant, publish@tresor
-		if held == "tenant" && authz.Verb(scope) == verb || held != "tenant" && held == res.Extension && authz.Verb(scope) == verb {
+		if held == "tenant" && authz.Verb(scope) == verb || held != "tenant" && held == res.Package && authz.Verb(scope) == verb {
 			return nil
 		}
 	}
@@ -81,12 +81,12 @@ func newEnv(t *testing.T) *env {
 			return err
 		}
 		for i, body := range []string{e.body, e.other} {
-			b := store.Build{TenantID: tn.ID, Name: "tresor", ExtVersion: []string{"1.0", "1.1"}[i], Platform: "linux_amd64", ABI: store.ABICPP,
+			b := store.Build{TenantID: tn.ID, Name: "tresor", PackageVersion: []string{"1.0", "1.1"}[i], Platform: "linux_amd64", ABI: store.ABICPP,
 				DuckDBVersion: "v2.0.0", BodyHash: body, Origin: store.OriginAdmin, CreatedBy: "os:1:t"}
 			if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
 				return err
 			}
-			r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: "tresor", ExtVersion: b.ExtVersion, Platform: b.Platform,
+			r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: "tresor", PackageVersion: b.PackageVersion, Platform: b.Platform,
 				Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public, Seq: int64(i + 1),
 				Origin: []string{store.OriginPublication, store.OriginAdmin}[i]}
 			if err := tx.InsertRelease(ctx, &r, []string{publisher.String(), admin.String()}[i]); err != nil {

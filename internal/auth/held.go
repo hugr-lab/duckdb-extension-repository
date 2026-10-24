@@ -42,7 +42,7 @@ func gives(g store.Grant, verb string) bool {
 // the extension in every channel or in this one.
 func Allows(h Held, channelID, extension, verb string) bool {
 	for _, g := range h.Grants {
-		if gives(g, verb) && (g.ChannelID == "" || g.ChannelID == channelID) && (g.Extension == "" || g.Extension == extension) {
+		if gives(g, verb) && (g.ChannelID == "" || g.ChannelID == channelID) && (g.Package == "" || g.Package == extension) {
 			return true
 		}
 	}
@@ -64,10 +64,10 @@ func InstallScope(h Held, channelID string) (all bool, may func(name string) boo
 		if !gives(g, store.VerbInstall) || g.ChannelID != "" && g.ChannelID != channelID {
 			continue
 		}
-		if g.Extension == "" {
+		if g.Package == "" {
 			return true, func(string) bool { return true }
 		}
-		names[g.Extension] = true
+		names[g.Package] = true
 	}
 	for _, g := range h.GroupGrants {
 		if gives(g, store.VerbInstall) && (g.ChannelID == "" || g.ChannelID == channelID) {

@@ -22,13 +22,13 @@ func TestTenantAuthsCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	tn := store.Tenant{Name: "acme"}
-	g := store.ExtensionGroup{Name: "platform", CreatedBy: "os:1:t"}
+	g := store.PackageGroup{Name: "platform", CreatedBy: "os:1:t"}
 	if err := st.InTx(ctx, "", func(tx *store.Tx) error {
 		if err := tx.CreateTenant(ctx, &tn); err != nil {
 			return err
 		}
 		g.TenantID = tn.ID
-		return tx.InsertExtensionGroup(ctx, &g)
+		return tx.InsertPackageGroup(ctx, &g)
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -14,9 +14,9 @@ import (
 
 // DownloadKey is what a download count counts by (spec 0010 phase 2a): no principal, no address.
 type DownloadKey struct {
-	TenantID, ChannelID, Name, ExtVersion, Platform, DuckDBVersion string
-	Day                                                            string // YYYY-MM-DD, UTC
-	Authenticated                                                  bool
+	TenantID, ChannelID, Name, PackageVersion, Platform, DuckDBVersion string
+	Day                                                                string // YYYY-MM-DD, UTC
+	Authenticated                                                      bool
 }
 
 // DayOf is a time's UTC day as statistics store it.
@@ -29,12 +29,12 @@ func DayOf(t time.Time) string { return t.UTC().Format(time.DateOnly) }
 func (s *Store) AddDownloadCounts(ctx context.Context, counts map[DownloadKey]int64) (done []DownloadKey, err error) {
 	return addCounts(ctx, s, "kista/download_counts", counts, func(a, b DownloadKey) int {
 		return cmp.Or(cmp.Compare(a.TenantID, b.TenantID), cmp.Compare(a.ChannelID, b.ChannelID), cmp.Compare(a.Name, b.Name),
-			cmp.Compare(a.ExtVersion, b.ExtVersion), cmp.Compare(a.Platform, b.Platform), cmp.Compare(a.DuckDBVersion, b.DuckDBVersion),
+			cmp.Compare(a.PackageVersion, b.PackageVersion), cmp.Compare(a.Platform, b.Platform), cmp.Compare(a.DuckDBVersion, b.DuckDBVersion),
 			cmp.Compare(a.Day, b.Day), cmp.Compare(boolInt(a.Authenticated), boolInt(b.Authenticated)))
 	}, func(k DownloadKey) string { return k.TenantID }, func(tx *Tx, k DownloadKey, n int64) error {
 		return tx.upsertCount(ctx, "download_counts", "count",
-			[]string{"tenant_id", "channel_id", "name", "ext_version", "platform", "duckdb_version", "day", "authenticated"},
-			[]any{k.TenantID, k.ChannelID, k.Name, k.ExtVersion, k.Platform, k.DuckDBVersion, k.Day, k.Authenticated}, n)
+			[]string{"tenant_id", "channel_id", "name", "package_version", "platform", "duckdb_version", "day", "authenticated"},
+			[]any{k.TenantID, k.ChannelID, k.Name, k.PackageVersion, k.Platform, k.DuckDBVersion, k.Day, k.Authenticated}, n)
 	})
 }
 
@@ -121,7 +121,7 @@ func boolInt(b bool) int {
 
 // InstallerKey is what daily installers are counted by.
 type InstallerKey struct {
-	TenantID, ChannelID, Name, ExtVersion, Platform, Day string
+	TenantID, ChannelID, Name, PackageVersion, Platform, Day string
 }
 
 // StatisticsDayDone reports whether a day's installers are stored.
@@ -166,8 +166,8 @@ func (s *Store) PutDaily(ctx context.Context, day string, d Daily) error {
 			if closed[k.TenantID] {
 				continue
 			}
-			if _, err := tx.exec(ctx, "INSERT INTO download_installers (tenant_id, channel_id, name, ext_version, platform, day, installers) "+
-				"VALUES (?, ?, ?, ?, ?, ?, ?)", k.TenantID, k.ChannelID, k.Name, k.ExtVersion, k.Platform, day, n); err != nil {
+			if _, err := tx.exec(ctx, "INSERT INTO download_installers (tenant_id, channel_id, name, package_version, platform, day, installers) "+
+				"VALUES (?, ?, ?, ?, ?, ?, ?)", k.TenantID, k.ChannelID, k.Name, k.PackageVersion, k.Platform, day, n); err != nil {
 				return err
 			}
 		}
@@ -175,8 +175,8 @@ func (s *Store) PutDaily(ctx context.Context, day string, d Daily) error {
 			if closed[k.TenantID] {
 				continue
 			}
-			if _, err := tx.exec(ctx, "INSERT INTO usage_users (tenant_id, channel_id, name, ext_version, day, users) "+
-				"VALUES (?, ?, ?, ?, ?, ?)", k.TenantID, k.ChannelID, k.Name, k.ExtVersion, day, n); err != nil {
+			if _, err := tx.exec(ctx, "INSERT INTO usage_users (tenant_id, channel_id, name, package_version, day, users) "+
+				"VALUES (?, ?, ?, ?, ?, ?)", k.TenantID, k.ChannelID, k.Name, k.PackageVersion, day, n); err != nil {
 				return err
 			}
 		}
@@ -214,8 +214,8 @@ type StatsFilter struct {
 // empty). Installers are summed over the kept rows (a principal installing on two days or two
 // platforms counts twice).
 type StatsRow struct {
-	ChannelID, Name, ExtVersion, Platform, DuckDBVersion, Day string
-	Count, Authenticated, Installers                          int64
+	ChannelID, Name, PackageVersion, Platform, DuckDBVersion, Day string
+	Count, Authenticated, Installers                              int64
 }
 
 // DownloadRows reads a tenant's counts and installers per (channel, name, version, platform,
@@ -234,11 +234,11 @@ func (s *Store) DownloadRows(ctx context.Context, tenantID string, f StatsFilter
 		}
 		return nil
 	}
-	err := s.eachRow(ctx, "SELECT channel_id, name, ext_version, platform, duckdb_version, day, authenticated, count FROM download_counts WHERE "+where,
+	err := s.eachRow(ctx, "SELECT channel_id, name, package_version, platform, duckdb_version, day, authenticated, count FROM download_counts WHERE "+where,
 		args, func(sc func(...any) error) error {
 			var r StatsRow
 			var auth bool
-			if err := sc(&r.ChannelID, &r.Name, &r.ExtVersion, &r.Platform, &r.DuckDBVersion, &r.Day, &auth, &r.Count); err != nil {
+			if err := sc(&r.ChannelID, &r.Name, &r.PackageVersion, &r.Platform, &r.DuckDBVersion, &r.Day, &auth, &r.Count); err != nil {
 				return err
 			}
 			if auth {
@@ -249,10 +249,10 @@ func (s *Store) DownloadRows(ctx context.Context, tenantID string, f StatsFilter
 	if err != nil {
 		return nil, err
 	}
-	err = s.eachRow(ctx, "SELECT channel_id, name, ext_version, platform, day, installers FROM download_installers WHERE "+where,
+	err = s.eachRow(ctx, "SELECT channel_id, name, package_version, platform, day, installers FROM download_installers WHERE "+where,
 		args, func(sc func(...any) error) error {
 			var r StatsRow
-			if err := sc(&r.ChannelID, &r.Name, &r.ExtVersion, &r.Platform, &r.Day, &r.Installers); err != nil {
+			if err := sc(&r.ChannelID, &r.Name, &r.PackageVersion, &r.Platform, &r.Day, &r.Installers); err != nil {
 				return err
 			}
 			return add(r)
@@ -296,9 +296,9 @@ func (s *Store) eachRow(ctx context.Context, q string, args []any, fn func(scan 
 
 // ReleaseDownloads is a release's downloads in the last 7 and 30 days and its last download day.
 type ReleaseDownloads struct {
-	ChannelID, Name, ExtVersion, Platform string
-	Last7, Last30                         int64
-	LastDay                               string
+	ChannelID, Name, PackageVersion, Platform string
+	Last7, Last30                             int64
+	LastDay                                   string
 }
 
 // ReleaseStats reads per (channel, name, version, platform) with a download kept in statistics its
@@ -312,14 +312,14 @@ func (s *Store) ReleaseStats(ctx context.Context, tenantID, today string, f Stat
 	where, args := statsWhere(tenantID, "0000-00-00", today, f)
 	by := map[[4]string]*ReleaseDownloads{}
 	var order [][4]string
-	err = s.eachRow(ctx, "SELECT channel_id, name, ext_version, platform, MAX(day) FROM download_counts WHERE "+where+
-		" GROUP BY channel_id, name, ext_version, platform", args, func(sc func(...any) error) error {
+	err = s.eachRow(ctx, "SELECT channel_id, name, package_version, platform, MAX(day) FROM download_counts WHERE "+where+
+		" GROUP BY channel_id, name, package_version, platform", args, func(sc func(...any) error) error {
 		var k [4]string
 		var last string
 		if err := sc(&k[0], &k[1], &k[2], &k[3], &last); err != nil {
 			return err
 		}
-		by[k] = &ReleaseDownloads{ChannelID: k[0], Name: k[1], ExtVersion: k[2], Platform: k[3], LastDay: last}
+		by[k] = &ReleaseDownloads{ChannelID: k[0], Name: k[1], PackageVersion: k[2], Platform: k[3], LastDay: last}
 		order = append(order, k)
 		return nil
 	})
@@ -327,8 +327,8 @@ func (s *Store) ReleaseStats(ctx context.Context, tenantID, today string, f Stat
 		return nil, err
 	}
 	where, args = statsWhere(tenantID, from30, today, f)
-	err = s.eachRow(ctx, "SELECT channel_id, name, ext_version, platform, day, SUM(count) FROM download_counts WHERE "+where+
-		" GROUP BY channel_id, name, ext_version, platform, day", args, func(sc func(...any) error) error {
+	err = s.eachRow(ctx, "SELECT channel_id, name, package_version, platform, day, SUM(count) FROM download_counts WHERE "+where+
+		" GROUP BY channel_id, name, package_version, platform, day", args, func(sc func(...any) error) error {
 		var k [4]string
 		var day string
 		var n int64

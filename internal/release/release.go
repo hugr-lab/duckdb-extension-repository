@@ -200,7 +200,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		}
 		o.Unchecked = false
 		verb = authz.VerbPublish
-		res = authz.Resource{Tenant: tenant, Channel: channel, Extension: o.Name, Reserved: kind != ""}
+		res = authz.Resource{Tenant: tenant, Channel: channel, Package: o.Name, Reserved: kind != ""}
 	}
 	if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
 		return store.Release{}, false, err
@@ -232,9 +232,9 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	it := item{b: b, visibility: o.visibility(), notCurrent: o.NotCurrent, origin: store.OriginAdmin, source: sourceOf(a)}
 	it.b.Source = it.source
 	if p := o.Publish; p != nil {
-		if p.Version != b.ExtVersion || p.Platform != b.Platform {
+		if p.Version != b.PackageVersion || p.Platform != b.Platform {
 			return store.Release{}, false, fmt.Errorf("%w: the file's footer says version %q, platform %q; the request says %q, %q",
-				store.ErrInvalid, b.ExtVersion, b.Platform, p.Version, p.Platform)
+				store.ErrInvalid, b.PackageVersion, b.Platform, p.Version, p.Platform)
 		}
 		it.origin, it.provenance, it.statement, it.signature = store.OriginPublication, p.Provenance, p.Statement, p.Signature
 		it.b.Origin = store.OriginPublication
@@ -265,7 +265,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		if selected, _, err = checkSource(ctx, tx, ch.ID, b.Name, it.source, false); err != nil {
 			return err
 		}
-		cands, err := tx.SlotCandidates(ctx, ch.ID, it.source, b.Name, b.ExtVersion, b.Platform)
+		cands, err := tx.SlotCandidates(ctx, ch.ID, it.source, b.Name, b.PackageVersion, b.Platform)
 		if err != nil {
 			return err
 		}
@@ -372,13 +372,13 @@ func (s *Service) reservedCheck(a authz.Actor, verb authz.Verb, res authz.Resour
 func checkUpstreamSlot(cands []store.Candidate, b store.Build) (*store.Release, error) {
 	for _, c := range cands {
 		if (c.ABI == store.ABICStruct) != (b.ABI == store.ABICStruct) {
-			return nil, fmt.Errorf("%w: %s %s on %s has %s releases%s", ErrConflict, b.Name, b.ExtVersion, b.Platform, c.ABI, purgedNote(c))
+			return nil, fmt.Errorf("%w: %s %s on %s has %s releases%s", ErrConflict, b.Name, b.PackageVersion, b.Platform, c.ABI, purgedNote(c))
 		}
 		if c.Slot != b.Slot() {
 			continue
 		}
 		if c.BodyHash != b.BodyHash || c.State == store.ReleasePurged {
-			return nil, fmt.Errorf("%w (%s %s %s %s%s)", ErrConflict, b.Name, b.ExtVersion, b.Platform, c.Slot, purgedNote(c))
+			return nil, fmt.Errorf("%w (%s %s %s %s%s)", ErrConflict, b.Name, b.PackageVersion, b.Platform, c.Slot, purgedNote(c))
 		}
 		r := c.Release
 		return &r, nil
@@ -400,24 +400,24 @@ func checkSlot(cands []store.Candidate, it item) (*store.Release, error) {
 	for _, c := range cands {
 		if (c.ABI == store.ABICStruct) != (b.ABI == store.ABICStruct) {
 			return nil, fmt.Errorf("%w: %s %s on %s already has %s releases%s; c_struct and exact-version builds do not mix",
-				ErrSlot, b.Name, b.ExtVersion, b.Platform, c.ABI, purgedNote(c))
+				ErrSlot, b.Name, b.PackageVersion, b.Platform, c.ABI, purgedNote(c))
 		}
 		if c.Slot != b.Slot() {
 			continue
 		}
 		if c.State == store.ReleasePurged {
-			return nil, fmt.Errorf("%w: %s %s %s %s was purged; a fix is a new version", ErrSlot, b.Name, b.ExtVersion, b.Platform, c.Slot)
+			return nil, fmt.Errorf("%w: %s %s %s %s was purged; a fix is a new version", ErrSlot, b.Name, b.PackageVersion, b.Platform, c.Slot)
 		}
 		if c.BodyHash != b.BodyHash {
-			return nil, fmt.Errorf("%w (%s %s %s %s)", ErrSlot, b.Name, b.ExtVersion, b.Platform, c.Slot)
+			return nil, fmt.Errorf("%w (%s %s %s %s)", ErrSlot, b.Name, b.PackageVersion, b.Platform, c.Slot)
 		}
 		if c.State == store.ReleaseYanked {
 			return nil, fmt.Errorf("%w: %s %s %s %s holds this build and is yanked; a fix is a new version",
-				ErrSlot, b.Name, b.ExtVersion, b.Platform, c.Slot)
+				ErrSlot, b.Name, b.PackageVersion, b.Platform, c.Slot)
 		}
 		if c.Visibility != it.visibility || (c.Seq == 0) != it.notCurrent {
 			return nil, fmt.Errorf("%w: %s %s %s %s holds this build as %s/%s; change it with release public|private or release current",
-				ErrState, b.Name, b.ExtVersion, b.Platform, c.Slot, c.State, c.Visibility)
+				ErrState, b.Name, b.PackageVersion, b.Platform, c.Slot, c.State, c.Visibility)
 		}
 		r := c.Release
 		return &r, nil
@@ -664,7 +664,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				if it.b.Source != it.source {
 					return fmt.Errorf("release: a build of %s released as %s's", it.b.Source, it.source)
 				}
-				cands, err := tx.SlotCandidates(ctx, channelID, it.source, b.Name, b.ExtVersion, b.Platform)
+				cands, err := tx.SlotCandidates(ctx, channelID, it.source, b.Name, b.PackageVersion, b.Platform)
 				if err != nil {
 					return err
 				}
@@ -691,7 +691,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					return err
 				}
 				r := store.Release{TenantID: b.TenantID, ChannelID: channelID, BuildID: b.ID, Name: b.Name, Source: it.source,
-					ExtVersion: b.ExtVersion, Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive,
+					PackageVersion: b.PackageVersion, Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive,
 					Visibility: it.visibility, Origin: it.origin, Provenance: it.provenance, OriginSignature: it.originSignature,
 					PublisherStatement: it.statement, PublisherSignature: it.signature}
 				if !it.notCurrent {
@@ -814,13 +814,13 @@ func servable(capis map[string][]store.CAPI, b store.Build) error {
 	if b.ABI == store.ABICStruct {
 		if b.CAPI == nil || !acceptsAny(capis, *b.CAPI) {
 			return fmt.Errorf("%w: no DuckDB version the channel serves accepts C API %s (%s %s %s)",
-				store.ErrInvalid, b.CAPI, b.Name, b.ExtVersion, b.Platform)
+				store.ErrInvalid, b.CAPI, b.Name, b.PackageVersion, b.Platform)
 		}
 		return nil
 	}
 	if _, ok := capis[b.DuckDBVersion]; !ok {
 		return fmt.Errorf("%w: the channel does not serve DuckDB %s (%s %s %s); add the version to it first",
-			store.ErrInvalid, b.DuckDBVersion, b.Name, b.ExtVersion, b.Platform)
+			store.ErrInvalid, b.DuckDBVersion, b.Name, b.PackageVersion, b.Platform)
 	}
 	return nil
 }
@@ -864,7 +864,7 @@ func (s *Service) List(ctx context.Context, a authz.Actor, tenant, channel, name
 
 // mayRead allows an extension's administrators and, for one name, its publishers.
 func (s *Service) mayRead(ctx context.Context, a authz.Actor, tenant, channel, name string) error {
-	res := authz.Resource{Tenant: tenant, Channel: channel, Extension: name}
+	res := authz.Resource{Tenant: tenant, Channel: channel, Package: name}
 	err := s.Authz.Allow(ctx, a, authz.VerbAdmin, res)
 	if name == "" || !errors.Is(err, authz.ErrDenied) {
 		return err
@@ -898,7 +898,7 @@ const (
 // Apply changes one release of a channel. With a name, the release must be of that extension (an
 // administrator of the extension may change it); a non-zero expected version must be the release's.
 func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, name, id string, c Change, expected int64) (store.Release, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel, Extension: name}); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel, Package: name}); err != nil {
 		return store.Release{}, err
 	}
 	ch, err := s.Store.GetChannel(ctx, tenant, channel)
@@ -965,7 +965,7 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 		kind := map[Change]audit.Kind{Yank: "release.yank", Deprecate: "release.deprecate", Activate: "release.activate",
 			MakeCurrent: "release.current", SetPublic: "release.public", SetPrivate: "release.private"}[c]
 		if err := tx.Event(ctx, ch.TenantID, a.String(), kind, releaseSubject(ch, r),
-			map[string]any{"release": r.ID, "name": r.Name, "version": r.ExtVersion, "platform": r.Platform}); err != nil {
+			map[string]any{"release": r.ID, "name": r.Name, "version": r.PackageVersion, "platform": r.Platform}); err != nil {
 			return err
 		}
 		return tx.BumpReleaseVersion(ctx, ch.ID)
@@ -980,7 +980,7 @@ func releaseSubject(c store.Channel, r store.Release) string {
 // releaseFields are a release's facts in its events (spec 0010); provenance, which a caller
 // controls, is one string.
 func releaseFields(r store.Release, b store.Build, provenance bool) map[string]any {
-	f := map[string]any{"release": r.ID, "name": r.Name, "version": r.ExtVersion, "platform": r.Platform, "slot": r.Slot,
+	f := map[string]any{"release": r.ID, "name": r.Name, "version": r.PackageVersion, "platform": r.Platform, "slot": r.Slot,
 		"body_hash": b.BodyHash, "visibility": r.Visibility, "current": r.Seq != 0}
 	if provenance && r.Provenance != "" {
 		f["provenance"] = r.Provenance
@@ -1066,7 +1066,7 @@ func (s *Service) land(ctx context.Context, sp *blob.Spool, it *item, event func
 // reference, so the storage collector removes the body later. With a name, the release must be of
 // that extension; a non-zero expected version must be the release's. It returns what was purged.
 func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, name, id string, expected int64) (store.Candidate, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel, Extension: name}); err != nil {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel, Package: name}); err != nil {
 		return store.Candidate{}, err
 	}
 	if s.PurgeOff {
@@ -1097,7 +1097,7 @@ func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, nam
 		}
 		out = c
 		if err := tx.Event(ctx, ch.TenantID, a.String(), "release.purge", releaseSubject(ch, c.Release),
-			map[string]any{"release": c.ID, "name": c.Name, "version": c.ExtVersion, "platform": c.Platform, "slot": c.Slot,
+			map[string]any{"release": c.ID, "name": c.Name, "version": c.PackageVersion, "platform": c.Platform, "slot": c.Slot,
 				"body_hash": c.BodyHash}); err != nil {
 			return err
 		}

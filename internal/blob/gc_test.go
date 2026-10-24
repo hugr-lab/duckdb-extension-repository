@@ -38,9 +38,9 @@ func TestCollector(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := e.commit(t, extension(t, 3000, 1))
-	b := store.Build{TenantID: tn.ID, Name: "acl", ExtVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICPP, DuckDBVersion: "v2.0.0",
+	b := store.Build{TenantID: tn.ID, Name: "acl", PackageVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICPP, DuckDBVersion: "v2.0.0",
 		BodyHash: live.BodyHash, Origin: store.OriginAdmin, CreatedBy: "os:1:t"}
-	r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Platform: "linux_amd64",
+	r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", PackageVersion: "1.0", Platform: "linux_amd64",
 		State: store.ReleaseActive, Visibility: store.Public, Seq: 1}
 	if err := e.st.InTx(ctx, "", func(tx *store.Tx) error {
 		if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
@@ -337,7 +337,7 @@ func TestCollectAttachments(t *testing.T) {
 	now := time.Now().UTC()
 	e.st.Now = func() time.Time { return now }
 	tn := store.Tenant{Name: "acme"}
-	held := store.Build{Name: "acl", ExtVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICPP, DuckDBVersion: "v2.0.0",
+	held := store.Build{Name: "acl", PackageVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICPP, DuckDBVersion: "v2.0.0",
 		BodyHash: strings.Repeat("a", 64), Origin: store.OriginAdmin, CreatedBy: "os:1:t"}
 	if err := e.st.InTx(ctx, "", func(tx *store.Tx) error {
 		if err := tx.CreateTenant(ctx, &tn); err != nil {

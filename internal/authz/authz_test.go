@@ -19,11 +19,11 @@ func TestCovers(t *testing.T) {
 		if channel != "" {
 			ch = "id-" + channel
 		}
-		return store.Grant{IssuerID: "i1", Kind: kind, Value: value, ChannelID: ch, ChannelName: channel, Extension: ext, Verbs: verbs}
+		return store.Grant{IssuerID: "i1", Kind: kind, Value: value, ChannelID: ch, ChannelName: channel, Package: ext, Verbs: verbs}
 	}
 	tenant := authz.Resource{Tenant: "acme"}
 	prod := authz.Resource{Tenant: "acme", Channel: "prod"}
-	tresor := authz.Resource{Tenant: "acme", Channel: "prod", Extension: "tresor"}
+	tresor := authz.Resource{Tenant: "acme", Channel: "prod", Package: "tresor"}
 	for _, tc := range []struct {
 		name  string
 		grant store.Grant
@@ -89,7 +89,7 @@ func TestCovers(t *testing.T) {
 	}{
 		{authz.VerbAdmin, tenant}, {authz.VerbAudit, tenant}, {authz.VerbFeed, prod}, {authz.VerbPublish, tresor},
 		{authz.VerbLicense, authz.Server}, {authz.VerbLicense, prod}, {authz.VerbLicense, tresor},
-		{authz.VerbLicense, authz.Resource{Tenant: "acme", ExtensionGroup: "g"}},
+		{authz.VerbLicense, authz.Resource{Tenant: "acme", PackageGroup: "g"}},
 	} {
 		if err := gz.Allow(ctx, lm, c.verb, c.r); !errors.Is(err, authz.ErrDenied) {
 			t.Errorf("a licence manager, %s on %+v: %v", c.verb, c.r, err)
@@ -106,7 +106,7 @@ func TestCovers(t *testing.T) {
 		r    authz.Resource
 	}{
 		{authz.VerbAdmin, tenant}, {authz.VerbAdmin, authz.Server}, {authz.VerbPublish, tresor}, {authz.VerbLicense, tenant},
-		{authz.VerbDistribute, prod}, {authz.VerbDistribute, tresor}, {authz.VerbDistribute, authz.Resource{Tenant: "acme", ExtensionGroup: "g"}},
+		{authz.VerbDistribute, prod}, {authz.VerbDistribute, tresor}, {authz.VerbDistribute, authz.Resource{Tenant: "acme", PackageGroup: "g"}},
 	} {
 		if err := gz.Allow(ctx, da, c.verb, c.r); !errors.Is(err, authz.ErrDenied) {
 			t.Errorf("a distribution admin, %s on %+v: %v", c.verb, c.r, err)
@@ -133,16 +133,16 @@ func TestCoversGroups(t *testing.T) {
 		if kind == store.PrincipalIssuer {
 			value = ""
 		}
-		return store.Grant{IssuerID: "i1", Kind: kind, Value: value, ChannelID: ch, ChannelName: channel, ExtensionGroupID: "g1",
-			ExtensionGroupName: "platform", Members: members, Verbs: verbs}
+		return store.Grant{IssuerID: "i1", Kind: kind, Value: value, ChannelID: ch, ChannelName: channel, PackageGroupID: "g1",
+			PackageGroupName: "platform", Members: members, Verbs: verbs}
 	}
 	tenant := authz.Resource{Tenant: "acme"}
 	prod := authz.Resource{Tenant: "acme", Channel: "prod"}
-	tresor := authz.Resource{Tenant: "acme", Channel: "prod", Extension: "tresor"}
-	tresorStaging := authz.Resource{Tenant: "acme", Channel: "staging", Extension: "tresor"}
-	acl := authz.Resource{Tenant: "acme", Channel: "prod", Extension: "acl"}
-	httpfs := authz.Resource{Tenant: "acme", Channel: "prod", Extension: "httpfs", Reserved: true}
-	group := authz.Resource{Tenant: "acme", ExtensionGroup: "platform"}
+	tresor := authz.Resource{Tenant: "acme", Channel: "prod", Package: "tresor"}
+	tresorStaging := authz.Resource{Tenant: "acme", Channel: "staging", Package: "tresor"}
+	acl := authz.Resource{Tenant: "acme", Channel: "prod", Package: "acl"}
+	httpfs := authz.Resource{Tenant: "acme", Channel: "prod", Package: "httpfs", Reserved: true}
+	group := authz.Resource{Tenant: "acme", PackageGroup: "platform"}
 	for _, tc := range []struct {
 		name  string
 		grant store.Grant
@@ -181,7 +181,7 @@ func TestCoversGroups(t *testing.T) {
 	}{
 		{store.Grant{IssuerID: "i1", Kind: "subject", Value: "me", Verbs: []string{"admin"}}, true},
 		{store.Grant{IssuerID: "i1", Kind: "subject", Value: "me", ChannelID: "id-prod", ChannelName: "prod", Verbs: []string{"admin"}}, false},
-		{store.Grant{IssuerID: "i1", Kind: "subject", Value: "me", Extension: "tresor", Verbs: []string{"admin"}}, false},
+		{store.Grant{IssuerID: "i1", Kind: "subject", Value: "me", Package: "tresor", Verbs: []string{"admin"}}, false},
 	} {
 		if got := authz.Covers(auth.HeldBy(me, store.TenantAuth{Grants: []store.Grant{tc.grant}}), "admin", group); got != tc.want {
 			t.Errorf("%+v on the group: %v", tc.grant, got)

@@ -73,7 +73,7 @@ func (p placing) prod(t *testing.T) string {
 	}
 	var out []string
 	for _, r := range rs {
-		out = append(out, r.ExtVersion+"@"+r.Slot+":"+r.State)
+		out = append(out, r.PackageVersion+"@"+r.Slot+":"+r.State)
 	}
 	slices.Reverse(out)
 	return strings.Join(out, " ")
@@ -155,7 +155,7 @@ func TestPlaceManualCompletes(t *testing.T) {
 		ch, _ := p.st.GetChannel(ctx, "acme", "prod")
 		rs, _ := p.st.ListReleases(ctx, ch.ID, "tresor")
 		for _, r := range rs {
-			if r.ExtVersion == "1.0" {
+			if r.PackageVersion == "1.0" {
 				if _, err := p.rel.Apply(ctx, admin, "acme", "prod", "tresor", r.ID, release.SetPrivate, 0); err != nil {
 					t.Fatal(err)
 				}
@@ -190,8 +190,8 @@ func TestPlaceManualCompletes(t *testing.T) {
 			if r.Slot != "v2.1.0" {
 				continue
 			}
-			if r.ExtVersion == "1.0" && (r.Seq != 0 || r.Visibility != store.Private) || r.ExtVersion == "1.1" && r.Seq == 0 {
-				t.Fatalf("a completion: %s seq %d %s", r.ExtVersion, r.Seq, r.Visibility)
+			if r.PackageVersion == "1.0" && (r.Seq != 0 || r.Visibility != store.Private) || r.PackageVersion == "1.1" && r.Seq == 0 {
+				t.Fatalf("a completion: %s seq %d %s", r.PackageVersion, r.Seq, r.Visibility)
 			}
 		}
 	})

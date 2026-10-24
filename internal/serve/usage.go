@@ -79,7 +79,7 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request, rt route) {
 	counts := map[store.UsageKey]int64{}
 	var keys [][3]string
 	for k, n := range rep.Totals() {
-		counts[store.UsageKey{TenantID: cc.sc.Tenant.ID, ChannelID: cc.sc.Channel.ID, Name: rt.name, ExtVersion: rep.Version,
+		counts[store.UsageKey{TenantID: cc.sc.Tenant.ID, ChannelID: cc.sc.Channel.ID, Name: rt.name, PackageVersion: rep.Version,
 			Event: k[0], Counter: k[1], Status: rep.Status, Day: day, Authenticated: cc.actor != ""}] = n
 		keys = append(keys, [3]string{k[0], k[1], rep.Status})
 	}
@@ -178,7 +178,7 @@ func (h *Handler) daily(w http.ResponseWriter, r *http.Request, rt route) {
 	}
 	rows := make([]store.ReceivedRow, 0, len(order))
 	for _, k := range order {
-		row := store.ReceivedRow{Name: k[0], ExtVersion: k[1], Event: k[2], Counter: k[3]}
+		row := store.ReceivedRow{Name: k[0], PackageVersion: k[1], Event: k[2], Counter: k[3]}
 		if k[2] == "" {
 			row.Users = sums[k]
 		} else {

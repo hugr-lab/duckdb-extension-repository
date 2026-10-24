@@ -118,7 +118,7 @@ func TestAnswerTable(t *testing.T) {
 	en.checkFile(t, status(flatPath, nil).body, true, pub)
 
 	// grant install on the extension
-	g, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Extension: "tresor"})
+	g, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "tresor"})
 	if err != nil {
 		t.Fatal(err)
 	}

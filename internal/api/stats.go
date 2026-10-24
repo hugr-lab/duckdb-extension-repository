@@ -54,7 +54,7 @@ func (s *statsScope) allow(channel, ext string) bool {
 	if v, ok := s.cache[k]; ok {
 		return v
 	}
-	res := authz.Resource{Tenant: s.c.tenant.Name, Channel: channel, Extension: ext, Reserved: s.reservedName(ext)}
+	res := authz.Resource{Tenant: s.c.tenant.Name, Channel: channel, Package: ext, Reserved: s.reservedName(ext)}
 	v := slices.ContainsFunc(statsVerbs, func(verb string) bool { return authz.Covers(s.held, verb, res) })
 	s.cache[k] = v
 	return v
@@ -81,10 +81,10 @@ func (s *statsScope) mayAsk(channel, ext string) bool {
 	plain, groups := s.grants()
 	return slices.ContainsFunc(plain, func(g store.Grant) bool {
 		// a reserved name is reached by publish or promote only through a grant naming it (authz.Covers)
-		if reservedExt && g.Extension == "" && !slices.Contains(g.Verbs, store.VerbAdmin) {
+		if reservedExt && g.Package == "" && !slices.Contains(g.Verbs, store.VerbAdmin) {
 			return false
 		}
-		return inChannel(g) && (ext == "" || g.Extension == "" || g.Extension == ext)
+		return inChannel(g) && (ext == "" || g.Package == "" || g.Package == ext)
 	}) || slices.ContainsFunc(groups, func(g store.Grant) bool {
 		// never through a group (spec 0017)
 		if reservedExt && !slices.Contains(g.Verbs, store.VerbAdmin) {
@@ -107,10 +107,10 @@ func (s *statsScope) names() []string {
 	set := map[string]bool{}
 	plain, groups := s.grants()
 	for _, g := range plain {
-		if g.Extension == "" {
+		if g.Package == "" {
 			return nil
 		}
-		set[g.Extension] = true
+		set[g.Package] = true
 	}
 	for _, g := range groups {
 		for n := range g.Members {
@@ -289,7 +289,7 @@ func (h *Handler) statsDownloads(w http.ResponseWriter, r *http.Request, c calle
 			continue // installers have no DuckDB version
 		}
 		k := statsKey{day: pick("day", row.Day), channel: pick("channel", sr.names[row.ChannelID]), extension: pick("extension", row.Name),
-			version: pick("version", row.ExtVersion), platform: pick("platform", row.Platform), duckdb: pick("duckdb_version", row.DuckDBVersion)}
+			version: pick("version", row.PackageVersion), platform: pick("platform", row.Platform), duckdb: pick("duckdb_version", row.DuckDBVersion)}
 		o := out[k]
 		if o == nil {
 			o = &statsRowJSON{Day: k.day, Channel: k.channel, Extension: k.extension, Version: k.version, Platform: k.platform,
@@ -343,7 +343,7 @@ func (h *Handler) statsReleases(w http.ResponseWriter, r *http.Request, c caller
 		if !sr.keep(row.ChannelID, row.Name) {
 			continue
 		}
-		out = append(out, releaseStatsJSON{Channel: sr.names[row.ChannelID], Name: row.Name, Version: row.ExtVersion,
+		out = append(out, releaseStatsJSON{Channel: sr.names[row.ChannelID], Name: row.Name, Version: row.PackageVersion,
 			Platform: row.Platform, Last7: row.Last7, Last30: row.Last30, LastDay: row.LastDay})
 	}
 	slices.SortFunc(out, func(a, b releaseStatsJSON) int {
@@ -428,7 +428,7 @@ func (h *Handler) statsUsage(w http.ResponseWriter, r *http.Request, c caller, p
 	counts, users := map[usageKey]*usageRowJSON{}, map[usageKey]*usageUsersJSON{}
 	for _, row := range rows {
 		k := usageKey{day: pick("day", row.Day), channel: pick("channel", sr.names[row.ChannelID]), extension: pick("extension", row.Name),
-			version: pick("version", row.ExtVersion)}
+			version: pick("version", row.PackageVersion)}
 		if row.Event == "" { // a day's users: this kista's (any status), or received
 			k.status = pick("status", row.Status)
 			o := users[k]

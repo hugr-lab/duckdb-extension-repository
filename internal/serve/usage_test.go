@@ -48,7 +48,7 @@ func (f *fakeUsage) get(version, event, counter string, authenticated bool) (n i
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for k, c := range f.counts {
-		if k.ExtVersion == version && k.Event == event && k.Counter == counter && k.Authenticated == authenticated {
+		if k.PackageVersion == version && k.Event == event && k.Counter == counter && k.Authenticated == authenticated {
 			n += c
 		}
 	}
@@ -141,7 +141,7 @@ func TestUsageReports(t *testing.T) {
 	}
 
 	// install on tresor: every version; one event a (principal, version, day)
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Extension: "tresor"}); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "tresor"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, v := range []string{"1.1", "1.1", "1.0"} {
@@ -229,7 +229,7 @@ func TestUsageOverHTTP(t *testing.T) {
 	en, idp, adm := authEnv(t, "http")
 	en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "secret", Private: true})
 	en.h.o.Usage = &fakeUsage{counts: map[store.UsageKey]int64{}}
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Extension: "secret"}); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "secret"}); err != nil {
 		t.Fatal(err)
 	}
 	if a := en.post(t, "/acme/prod/-/usage/secret", bearerHdr(idp.token(t, nil)), report("1.0")); a.status != 401 {
@@ -281,7 +281,7 @@ func TestUsageDaily(t *testing.T) {
 		t.Fatalf("a token without install: %d %+v", a.status, rec.calls)
 	}
 	// install on tresor: its live version kept; an unknown version, a name not held, dropped
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Extension: "tresor"}); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "tresor"}); err != nil {
 		t.Fatal(err)
 	}
 	if a := en.post(t, path, bearerHdr(tok), body(yesterday, 1)); a.status != 204 {
@@ -296,7 +296,7 @@ func TestUsageDaily(t *testing.T) {
 		t.Fatalf("usage.receive: %q %v", evs.events, evs.data)
 	}
 	// install on secret too: kept; part 2 is not the first; another sender id is another sender
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Extension: "secret"}); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "secret"}); err != nil {
 		t.Fatal(err)
 	}
 	if a := en.post(t, path, bearerHdr(tok), body(yesterday, 2)); a.status != 204 || rec.calls[2].first || len(rec.calls[2].rows) != 4 ||

@@ -339,7 +339,7 @@ func (d *Daily) count(ctx context.Context, day string) error {
 			if id == "" || f.Name == "" {
 				return nil
 			}
-			add(installers, store.InstallerKey{TenantID: t.ID, ChannelID: id, Name: f.Name, ExtVersion: f.Version, Platform: f.Platform, Day: day}, e.Actor)
+			add(installers, store.InstallerKey{TenantID: t.ID, ChannelID: id, Name: f.Name, PackageVersion: f.Version, Platform: f.Platform, Day: day}, e.Actor)
 			return nil
 		})
 		if err != nil {
@@ -359,7 +359,7 @@ func (d *Daily) count(ctx context.Context, day string) error {
 			if id == "" || !ok || ext == "" {
 				return nil
 			}
-			add(users, store.UsageUserKey{TenantID: t.ID, ChannelID: id, Name: ext, ExtVersion: f.Version, Day: day}, e.Actor)
+			add(users, store.UsageUserKey{TenantID: t.ID, ChannelID: id, Name: ext, PackageVersion: f.Version, Day: day}, e.Actor)
 			return nil
 		})
 		if err != nil {

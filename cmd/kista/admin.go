@@ -900,7 +900,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 		if existed {
 			fmt.Fprintln(a.errw, "the release already exists")
 		} else {
-			a.logf("release add %s/%s %s %s %s %s", t, c, r.Name, r.ExtVersion, r.Platform, r.Slot)
+			a.logf("release add %s/%s %s %s %s %s", t, c, r.Name, r.PackageVersion, r.Platform, r.Slot)
 		}
 		fmt.Fprintln(a.out, r.ID)
 	case sub == "list" && len(pos) == 1:
@@ -914,7 +914,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 				if r.Seq > 0 {
 					seq = strconv.FormatInt(r.Seq, 10)
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Name, r.ExtVersion, r.Platform, r.Slot,
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Name, r.PackageVersion, r.Platform, r.Slot,
 					r.State, r.Visibility, seq, ts(r.CreatedAt))
 			}
 		})
@@ -928,7 +928,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 			fmt.Fprintln(a.errw, "the releases already exist")
 		}
 		for _, r := range rs {
-			a.logf("release promote %s/%s -> %s/%s %s %s %s %s", t, *from, t, c, r.Name, r.ExtVersion, r.Platform, r.Slot)
+			a.logf("release promote %s/%s -> %s/%s %s %s %s %s", t, *from, t, c, r.Name, r.PackageVersion, r.Platform, r.Slot)
 			fmt.Fprintln(a.out, r.ID)
 		}
 	case sub == "place" && len(pos) == 1 && *name != "" && *source != "" && *version != "":
@@ -941,7 +941,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 			fmt.Fprintln(a.errw, "the releases already exist")
 		}
 		for _, r := range rs {
-			a.logf("release place %s %s/%s %s %s %s %s", *source, t, c, r.Name, r.ExtVersion, r.Platform, r.Slot)
+			a.logf("release place %s %s/%s %s %s %s %s", *source, t, c, r.Name, r.PackageVersion, r.Platform, r.Slot)
 			fmt.Fprintln(a.out, r.ID)
 		}
 	case len(pos) == 2 && slices.Contains([]string{"yank", "deprecate", "activate", "current", "public", "private"}, sub):
@@ -949,7 +949,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 		if err != nil {
 			return err
 		}
-		a.logf("release %s %s/%s %s (%s %s, %s)", sub, t, c, r.ID, r.Name, r.ExtVersion, r.State)
+		a.logf("release %s %s/%s %s (%s %s, %s)", sub, t, c, r.ID, r.Name, r.PackageVersion, r.State)
 	case len(pos) == 2 && sub == "purge":
 		if *force { // the operator vouches that every replica runs this version
 			a.svc.Releases.PurgeOff = false
@@ -958,7 +958,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 		if err != nil {
 			return err
 		}
-		a.logf("release purge %s/%s %s (%s %s %s %s)", t, c, r.ID, r.Name, r.ExtVersion, r.Platform, r.Slot)
+		a.logf("release purge %s/%s %s (%s %s %s %s)", t, c, r.ID, r.Name, r.PackageVersion, r.Platform, r.Slot)
 	default:
 		return errUsage
 	}
@@ -1083,7 +1083,7 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 	switch {
 	case sub == "add" && len(pos) == 1 && *principal != "" && len(verbs) > 0:
 		g, err := a.svc.Auth.AddGrant(ctx, a.actor, pos[0], *principal, verbs,
-			tenants.GrantOn{Channel: *channel, Extension: *extension, ExtensionGroup: *group})
+			tenants.GrantOn{Channel: *channel, Package: *extension, PackageGroup: *group})
 		if err != nil {
 			return err
 		}
@@ -1128,19 +1128,19 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 func (a *adminCmd) grantTable(gs []store.Grant, group, extension string, isReserved bool) {
 	a.table("ID\tPRINCIPAL\tVERBS\tCHANNEL\tEXTENSION", func(w io.Writer) {
 		for _, g := range gs {
-			if group != "" && g.ExtensionGroupName != group {
+			if group != "" && g.PackageGroupName != group {
 				continue
 			}
 			if extension != "" && !reaches(g, extension, isReserved) {
 				continue
 			}
-			ch, ext := g.ChannelName, g.Extension
+			ch, ext := g.ChannelName, g.Package
 			if ch == "" {
 				ch = "*"
 			}
 			switch {
-			case g.ExtensionGroupName != "":
-				ext = "extension-group:" + g.ExtensionGroupName
+			case g.PackageGroupName != "":
+				ext = "extension-group:" + g.PackageGroupName
 			case ext == "":
 				ext = "*"
 			}
@@ -1278,12 +1278,12 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 	}
 	switch {
 	case sub == "add" && len(pos) == 2:
-		if _, err := a.svc.Auth.CreateExtensionGroup(ctx, a.actor, pos[0], pos[1], *description); err != nil {
+		if _, err := a.svc.Auth.CreatePackageGroup(ctx, a.actor, pos[0], pos[1], *description); err != nil {
 			return err
 		}
 		a.logf("extension-group add %s %s", pos[0], pos[1])
 	case sub == "list" && len(pos) == 1:
-		gs, _, err := a.svc.Auth.ListExtensionGroups(ctx, a.actor, pos[0], "")
+		gs, _, err := a.svc.Auth.ListPackageGroups(ctx, a.actor, pos[0], "")
 		if err != nil {
 			return err
 		}
@@ -1293,11 +1293,11 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 			}
 		})
 	case sub == "show" && len(pos) == 2:
-		g, _, err := a.svc.Auth.GetExtensionGroup(ctx, a.actor, pos[0], pos[1])
+		g, _, err := a.svc.Auth.GetPackageGroup(ctx, a.actor, pos[0], pos[1])
 		if err != nil {
 			return err
 		}
-		ms, err := a.svc.Auth.ExtensionGroupMembers(ctx, a.actor, pos[0], pos[1])
+		ms, err := a.svc.Auth.PackageGroupMembers(ctx, a.actor, pos[0], pos[1])
 		if err != nil {
 			return err
 		}
@@ -1312,17 +1312,17 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 		fmt.Fprintln(a.out, "\ngrants:")
 		a.grantTable(gs, g.Name, "", false)
 	case sub == "description" && len(pos) == 3:
-		if _, err := a.svc.Auth.SetExtensionGroupDescription(ctx, a.actor, pos[0], pos[1], pos[2], 0); err != nil {
+		if _, err := a.svc.Auth.SetPackageGroupDescription(ctx, a.actor, pos[0], pos[1], pos[2], 0); err != nil {
 			return err
 		}
 		a.logf("extension-group description %s %s", pos[0], pos[1])
 	case sub == "remove" && len(pos) == 2:
-		if err := a.svc.Auth.RemoveExtensionGroup(ctx, a.actor, pos[0], pos[1], 0); err != nil {
+		if err := a.svc.Auth.RemovePackageGroup(ctx, a.actor, pos[0], pos[1], 0); err != nil {
 			return err
 		}
 		a.logf("extension-group remove %s %s", pos[0], pos[1])
 	case sub == "members" && len(pos) == 2 && *add == "" && *remove == "":
-		ms, err := a.svc.Auth.ExtensionGroupMembers(ctx, a.actor, pos[0], pos[1])
+		ms, err := a.svc.Auth.PackageGroupMembers(ctx, a.actor, pos[0], pos[1])
 		if err != nil {
 			return err
 		}
@@ -1355,7 +1355,7 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 		}
 		var added, removed int
 		for _, op := range ops {
-			ad, rm, err := a.svc.Auth.ChangeExtensionGroupMembers(ctx, a.actor, pos[0], pos[1], op[0], op[1])
+			ad, rm, err := a.svc.Auth.ChangePackageGroupMembers(ctx, a.actor, pos[0], pos[1], op[0], op[1])
 			if err != nil {
 				if added+removed > 0 {
 					a.logf("extension-group members %s %s: %d added, %d removed before the error", pos[0], pos[1], added, removed)
@@ -2775,7 +2775,7 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 		if existed {
 			fmt.Fprintln(a.errw, "the catalogue already holds the build")
 		} else {
-			a.logf("catalogue add %s %s %s %s %s", pos[0], b.Name, b.ExtVersion, b.Platform, b.Slot())
+			a.logf("catalogue add %s %s %s %s %s", pos[0], b.Name, b.PackageVersion, b.Platform, b.Slot())
 		}
 		fmt.Fprintln(a.out, b.ID)
 	case sub == "purge" && len(pos) == 2:
@@ -2783,7 +2783,7 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
-		a.logf("catalogue purge %s %s %s %s %s", pos[0], b.Name, b.ExtVersion, b.Platform, b.Slot())
+		a.logf("catalogue purge %s %s %s %s %s", pos[0], b.Name, b.PackageVersion, b.Platform, b.Slot())
 	case sub == "list" && len(pos) == 1:
 		es, err := a.svc.Releases.Catalogue(ctx, a.actor, pos[0], *source, *name)
 		if err != nil {

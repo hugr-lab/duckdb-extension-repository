@@ -108,7 +108,7 @@ func TestReservedNames(t *testing.T) {
 		tn, ch := fixture(t, s)
 		b := cppBuild(tn, "kista_x", "1.0", "a")
 		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
-		r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, ExtVersion: b.ExtVersion,
+		r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, PackageVersion: b.PackageVersion,
 			Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertRelease(ctx, &r, "os:1:t") })
 		if ts, err := s.TenantsWithReleases(ctx, "kista_x"); err != nil || !slices.Equal(ts, []string{"acme"}) {
@@ -176,7 +176,7 @@ func TestTenantReservedNames(t *testing.T) {
 		// the name's live releases in the tenant
 		b := cppBuild(tn, "acme_tool", "1.0", "a")
 		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
-		rel := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, ExtVersion: b.ExtVersion,
+		rel := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, PackageVersion: b.PackageVersion,
 			Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertRelease(ctx, &rel, "os:1:t") })
 		if l, err := s.TenantLiveReleases(ctx, tn.ID, "acme_tool"); err != nil || len(l) != 1 || l[0].Channel != "prod" ||

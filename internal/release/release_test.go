@@ -524,14 +524,14 @@ func TestPurge(t *testing.T) {
 		must(t, func() error {
 			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
 				var err error
-				cands, err = tx.SlotCandidates(ctx, r.ChannelID, r.Source, r.Name, r.ExtVersion, r.Platform)
+				cands, err = tx.SlotCandidates(ctx, r.ChannelID, r.Source, r.Name, r.PackageVersion, r.Platform)
 				return err
 			})
 		})
 		if len(cands) != 1 || cands[0].State != store.ReleasePurged {
 			t.Fatalf("slot candidates: %+v", cands)
 		}
-		b := store.Build{Name: r.Name, ExtVersion: r.ExtVersion, Platform: r.Platform, ABI: cands[0].ABI, BodyHash: cands[0].BodyHash,
+		b := store.Build{Name: r.Name, PackageVersion: r.PackageVersion, Platform: r.Platform, ABI: cands[0].ABI, BodyHash: cands[0].BodyHash,
 			DuckDBVersion: "v2.0.0"}
 		if _, err := release.CheckUpstreamSlot(cands, b); !errors.Is(err, release.ErrConflict) {
 			t.Fatalf("an upstream refilling a purged slot: %v", err)

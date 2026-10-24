@@ -238,15 +238,15 @@ func ParsePrincipal(p string) (kind, issuer, value string, err error) {
 	return auth.ParsePrincipalKey(p)
 }
 
-// GrantOn is what a grant is on: the tenant (all empty), a channel, an extension or an extension
-// group (spec 0017), the last two in every channel or in Channel.
-type GrantOn struct{ Channel, Extension, ExtensionGroup string }
+// GrantOn is what a grant is on: the tenant (all empty), a channel, a package (an extension) or a
+// package group (spec 0017), the last two in every channel or in Channel.
+type GrantOn struct{ Channel, Package, PackageGroup string }
 
 // AddGrant grants verbs to a principal on the tenant, a channel, an extension or an extension group
 // (in every channel or one). An issuer-wide grant cannot carry admin: every account of the issuer
 // would hold it.
 func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, principal string, verbs []string, on GrantOn) (store.Grant, error) {
-	channel, extension := on.Channel, on.Extension
+	channel, extension := on.Channel, on.Package
 	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
 		return store.Grant{}, err
@@ -256,7 +256,7 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 		return store.Grant{}, err
 	}
 	if distributor(a) {
-		if err := distributorGrant(kind, extension, on.ExtensionGroup, verbs); err != nil {
+		if err := distributorGrant(kind, extension, on.PackageGroup, verbs); err != nil {
 			return store.Grant{}, err
 		}
 	}
@@ -269,15 +269,15 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 			return store.Grant{}, err
 		}
 	}
-	if on.ExtensionGroup != "" {
+	if on.PackageGroup != "" {
 		if extension != "" {
 			return store.Grant{}, fmt.Errorf("%w: a grant names an extension or an extension group, not both", store.ErrInvalid)
 		}
-		if err := store.ValidGroupName(on.ExtensionGroup); err != nil {
+		if err := store.ValidGroupName(on.PackageGroup); err != nil {
 			return store.Grant{}, err
 		}
 	}
-	g := store.Grant{TenantID: t.ID, Kind: kind, Value: value, Extension: extension, Verbs: verbs, CreatedBy: a.String()}
+	g := store.Grant{TenantID: t.ID, Kind: kind, Value: value, Package: extension, Verbs: verbs, CreatedBy: a.String()}
 	if kind == store.PrincipalPublisher {
 		g.Value = ""
 	}
@@ -319,12 +319,12 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 			}
 			g.ChannelID, g.ChannelName = c.ID, c.Name
 		}
-		if on.ExtensionGroup != "" {
-			eg, err := tx.GetExtensionGroup(ctx, t.ID, on.ExtensionGroup)
+		if on.PackageGroup != "" {
+			eg, err := tx.GetPackageGroup(ctx, t.ID, on.PackageGroup)
 			if err != nil {
 				return err
 			}
-			g.ExtensionGroupID, g.ExtensionGroupName = eg.ID, eg.Name
+			g.PackageGroupID, g.PackageGroupName = eg.ID, eg.Name
 		}
 		if err := tx.InsertGrant(ctx, &g); err != nil {
 			return err
@@ -335,8 +335,8 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 }
 
 func grantFields(g store.Grant) map[string]any {
-	return map[string]any{"principal": g.Principal(), "verbs": g.Verbs, "channel": g.ChannelName, "extension": g.Extension,
-		"extension_group": g.ExtensionGroupName}
+	return map[string]any{"principal": g.Principal(), "verbs": g.Verbs, "channel": g.ChannelName, "extension": g.Package,
+		"extension_group": g.PackageGroupName}
 }
 
 func dedupe(in []string) []string {
@@ -386,7 +386,7 @@ func (s *AuthAdmin) RemoveGrant(ctx context.Context, a authz.Actor, tenant, id s
 		if g.ID == id {
 			fields, publisher, found = grantFields(g), g.PublisherName, true
 			if distributor(a) {
-				if err := distributorGrant(g.Kind, g.Extension, g.ExtensionGroupName, g.Verbs); err != nil {
+				if err := distributorGrant(g.Kind, g.Package, g.PackageGroupName, g.Verbs); err != nil {
 					return err
 				}
 				// a distribution admin's own grants, or a marked publisher's (checked below): the

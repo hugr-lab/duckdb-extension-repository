@@ -80,7 +80,7 @@ func TestLicenseRoutes(t *testing.T) {
 	same("no grant", get(lic+"tresor", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
 
 	// install on tresor: its licence, never cached, with an ETag
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Extension: "tresor"}); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "tresor"}); err != nil {
 		t.Fatal(err)
 	}
 	a := get(lic+"tresor", bearerHdr(tok))
@@ -123,7 +123,7 @@ func TestLicenseRoutes(t *testing.T) {
 	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", secret.ID, release.Yank, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Extension: "secret"}); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "secret"}); err != nil {
 		t.Fatal(err)
 	}
 	same("a yanked release's licence", get(lic+"secret", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
@@ -169,7 +169,7 @@ func TestLicenseOverHTTP(t *testing.T) {
 	if _, err := svc.Import(ctx, admin, "acme", sign("tresor"), licenses.Create); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Extension: "tresor"}); err != nil {
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "tresor"}); err != nil {
 		t.Fatal(err)
 	}
 	if c := en.do(t, "GET", "/acme/prod/-/licenses/tresor", bearerHdr(idp.token(t, nil))); c.status != 401 {

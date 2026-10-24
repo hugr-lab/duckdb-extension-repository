@@ -11,7 +11,7 @@ import (
 
 func cand(id, name, ext, state, vis string, seq int64, abi, dv string, c *store.CAPI, at int) store.Candidate {
 	var r store.Candidate
-	r.ID, r.Name, r.ExtVersion, r.Platform, r.State, r.Visibility, r.Seq = id, name, ext, "linux_amd64", state, vis, seq
+	r.ID, r.Name, r.PackageVersion, r.Platform, r.State, r.Visibility, r.Seq = id, name, ext, "linux_amd64", state, vis, seq
 	r.ABI, r.DuckDBVersion, r.CAPI = abi, dv, c
 	r.CreatedAt = time.Unix(int64(at), 0)
 	return r

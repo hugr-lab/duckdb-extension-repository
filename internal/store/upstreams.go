@@ -213,7 +213,7 @@ func (t *Tx) upstreamChildren(ctx context.Context, u *Upstream) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	vrows, err := t.query(ctx, "SELECT name, ext_version FROM upstream_versions WHERE upstream_id = ? ORDER BY name, ext_version", u.ID)
+	vrows, err := t.query(ctx, "SELECT name, package_version FROM upstream_versions WHERE upstream_id = ? ORDER BY name, package_version", u.ID)
 	if err != nil {
 		return err
 	}
@@ -413,7 +413,7 @@ func (t *Tx) PutUpstreamEntry(ctx context.Context, upstreamID string, e Upstream
 		return t.s.mapErr(err, "extension "+e.Name)
 	}
 	for _, v := range e.Versions {
-		if _, err := t.exec(ctx, "INSERT INTO upstream_versions (upstream_id, name, ext_version) VALUES (?, ?, ?)",
+		if _, err := t.exec(ctx, "INSERT INTO upstream_versions (upstream_id, name, package_version) VALUES (?, ?, ?)",
 			upstreamID, e.Name, v); err != nil {
 			return t.s.mapErr(err, "version "+v)
 		}

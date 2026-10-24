@@ -72,8 +72,8 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 		if r.Source != sel[r.Name].Source || r.State != store.ReleaseActive && r.State != store.ReleaseDeprecated {
 			continue
 		}
-		if v, ok := current[r.Name]; !ok || CompareVersions(r.ExtVersion, v) > 0 {
-			current[r.Name] = r.ExtVersion
+		if v, ok := current[r.Name]; !ok || CompareVersions(r.PackageVersion, v) > 0 {
+			current[r.Name] = r.PackageVersion
 		}
 	}
 	names := map[string]bool{}

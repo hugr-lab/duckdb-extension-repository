@@ -65,7 +65,7 @@ func TestStorageGC(t *testing.T) {
 			}
 			return tx.FindOrInsertBuild(ctx, &dead)
 		})
-		rel := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: live.ID, Name: live.Name, ExtVersion: live.ExtVersion,
+		rel := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: live.ID, Name: live.Name, PackageVersion: live.PackageVersion,
 			Platform: live.Platform, Slot: live.Slot(), State: store.ReleaseActive, Visibility: store.Public, Seq: 1}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertRelease(ctx, &rel, "os:1:t") })
 		if ids, _ := s.DeadBuilds(ctx, "default", now, "", 10); len(ids) != 0 {
@@ -100,7 +100,7 @@ func TestStorageGC(t *testing.T) {
 			t.Fatal("a released build deleted")
 		}
 		// a release whose Build is gone; finding it again inserts a new one
-		gone := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: dead.ID, Name: dead.Name, ExtVersion: dead.ExtVersion,
+		gone := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: dead.ID, Name: dead.Name, PackageVersion: dead.PackageVersion,
 			Platform: dead.Platform, Slot: dead.Slot(), State: store.ReleaseActive, Visibility: store.Public, Seq: 2}
 		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertRelease(ctx, &gone, "os:1:t") }); !errors.Is(err, store.ErrBuildGone) {
 			t.Fatalf("a release on a collected build: %v", err)

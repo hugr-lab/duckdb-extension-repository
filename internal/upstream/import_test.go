@@ -347,7 +347,7 @@ func TestImport(t *testing.T) {
 				top = r
 			}
 		}
-		if len(rs) != 2 || top.ExtVersion != "1.1" {
+		if len(rs) != 2 || top.PackageVersion != "1.1" {
 			t.Errorf("the newer build is not current: %+v", rs)
 		}
 

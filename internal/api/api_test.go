@@ -270,7 +270,7 @@ func TestIndexViews(t *testing.T) {
 		t.Fatalf("whoami: %v", w)
 	}
 	// install on acl in prod only: acl appears in prod, not in staging
-	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod", Extension: "acl"}); err != nil {
+	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod", Package: "acl"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := names(en.get(t, base+"/extensions", tok).json(t), "extensions", "name"); len(got) != 3 || got[0] != "acl" {
@@ -382,7 +382,7 @@ func TestItemLookup(t *testing.T) {
 	if got := status("acl", "1.0"); got != "missing" {
 		t.Fatalf("private yanked, anonymous: %s", got)
 	}
-	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod", Extension: "acl"}); err != nil {
+	if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod", Package: "acl"}); err != nil {
 		t.Fatal(err)
 	}
 	tok := en.idp.token(t, "alice")
@@ -421,7 +421,7 @@ func TestIndexMatchesServing(t *testing.T) {
 		if vw.sub != "" {
 			token = en.idp.token(t, vw.sub)
 			if vw.sub != "alice" {
-				if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+vw.sub, []string{"install"}, tenants.GrantOn{Channel: vw.channel, Extension: vw.ext}); err != nil {
+				if _, err := en.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+vw.sub, []string{"install"}, tenants.GrantOn{Channel: vw.channel, Package: vw.ext}); err != nil {
 					t.Fatal(err)
 				}
 			}

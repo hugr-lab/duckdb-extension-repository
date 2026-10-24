@@ -308,7 +308,7 @@ func (s *Service) followLimit(ctx context.Context, lk followLook, f store.DueFol
 		}
 	}
 	if lk.consent != nil {
-		err := s.Authz.Allow(ctx, *lk.consent, authz.VerbPublish, authz.Resource{Tenant: lk.tenant.Name, Channel: lk.channel.Name, Extension: name})
+		err := s.Authz.Allow(ctx, *lk.consent, authz.VerbPublish, authz.Resource{Tenant: lk.tenant.Name, Channel: lk.channel.Name, Package: name})
 		switch {
 		case errors.Is(err, authz.ErrDenied):
 			return "the publisher may not publish it in the channel: a rule naming it takes it", nil

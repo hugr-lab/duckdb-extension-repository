@@ -33,7 +33,7 @@ func TestReservedNames(t *testing.T) {
 	}
 	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}}
 	named, err := adm.AddGrant(ctx, serveAdmin, "acme", "publisher:wide-ci", []string{"publish"},
-		tenants.GrantOn{Channel: "prod", Extension: "kista_demo"})
+		tenants.GrantOn{Channel: "prod", Package: "kista_demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestReservedNames(t *testing.T) {
 		t.Fatalf("a core name under a wide grant: %d", st)
 	}
 	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "publisher:wide-ci", []string{"publish"},
-		tenants.GrantOn{Channel: "prod", Extension: "kista_demo"}); err != nil {
+		tenants.GrantOn{Channel: "prod", Package: "kista_demo"}); err != nil {
 		t.Fatal(err)
 	}
 	if st := k.publish(t, "kista_demo", key); st != 200 { // the same body, released above

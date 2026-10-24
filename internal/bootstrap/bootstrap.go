@@ -675,8 +675,8 @@ func issuerDiff(cur, want store.Issuer) string {
 // hasGrant reports whether the tenant holds the grant: its principal, verbs and scope.
 func hasGrant(ta store.TenantAuth, g config.BootstrapGrant) bool {
 	for _, x := range ta.Grants {
-		y := config.BootstrapGrant{Principal: x.Principal(), Verbs: x.Verbs, Channel: x.ChannelName, Extension: x.Extension}
-		if x.ExtensionGroupID == "" && y.Key() == g.Key() {
+		y := config.BootstrapGrant{Principal: x.Principal(), Verbs: x.Verbs, Channel: x.ChannelName, Extension: x.Package}
+		if x.PackageGroupID == "" && y.Key() == g.Key() {
 			return true
 		}
 	}
@@ -821,7 +821,7 @@ func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section stri
 	}
 	for _, g := range b.Grants {
 		if p.action("grant", g.Key()) == Create {
-			on := tenants.GrantOn{Channel: g.Channel, Extension: g.Extension}
+			on := tenants.GrantOn{Channel: g.Channel, Package: g.Extension}
 			if _, err := d.Auth.AddGrant(ctx, a, tb.Name, g.Principal, g.Verbs, on); err != nil {
 				return res, err
 			}

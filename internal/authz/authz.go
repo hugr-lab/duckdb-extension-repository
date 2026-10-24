@@ -71,14 +71,14 @@ const (
 	VerbDistribute Verb = "distribute"
 )
 
-// Resource is what an action is on: the server (no tenant), a tenant, a channel, an extension in a
-// channel (or in every channel), or an extension group (spec 0017: reading it). Reserved marks an
-// extension name DuckDB owns (spec 0008): for publish and promote, only grants that name it reach
+// Resource is what an action is on: the server (no tenant), a tenant, a channel, a package (an
+// extension) in a channel (or in every channel), or a package group (spec 0017's extension group:
+// reading it). Reserved marks an extension name DuckDB owns (spec 0008): for publish and promote, only grants that name it reach
 // it.
 type Resource struct {
-	Tenant, Channel, Extension string
-	ExtensionGroup             string
-	Reserved                   bool
+	Tenant, Channel, Package string
+	PackageGroup             string
+	Reserved                 bool
 }
 
 // Server is the server-wide resource: tenants, DuckDB versions, audiences, signer references, force.
@@ -122,7 +122,7 @@ func (g Grants) Allow(ctx context.Context, a Actor, verb Verb, r Resource) error
 	case ActorOS, ActorServer:
 		return nil
 	case ActorDistributionAdmin:
-		if verb != VerbDistribute || r.Channel != "" || r.Extension != "" || r.ExtensionGroup != "" {
+		if verb != VerbDistribute || r.Channel != "" || r.Package != "" || r.PackageGroup != "" {
 			return ErrDenied
 		}
 		if r.Tenant == "" {
@@ -130,7 +130,7 @@ func (g Grants) Allow(ctx context.Context, a Actor, verb Verb, r Resource) error
 		}
 		return activeTenant(ctx, g.Store, r.Tenant)
 	case ActorLicenseManager:
-		if verb != VerbLicense || r.Tenant == "" || r.Channel != "" || r.Extension != "" || r.ExtensionGroup != "" {
+		if verb != VerbLicense || r.Tenant == "" || r.Channel != "" || r.Package != "" || r.PackageGroup != "" {
 			return ErrDenied
 		}
 		// an active tenant only: the API refuses the others first, and so does this whatever
@@ -234,16 +234,16 @@ var ExtensionVerbs = []string{store.VerbInstall, store.VerbAdmin, store.VerbPubl
 // Reaching is how a grant reaches an extension (tenant, channel, extension or extension_group) and
 // the verbs it gives there, in the grant's own channel scope (spec 0017); no verbs: it does not.
 func Reaching(g store.Grant, tenant, ext string, reserved bool) (via string, verbs []string) {
-	res := Resource{Tenant: tenant, Channel: g.ChannelName, Extension: ext, Reserved: reserved}
+	res := Resource{Tenant: tenant, Channel: g.ChannelName, Package: ext, Reserved: reserved}
 	for _, v := range ExtensionVerbs {
 		if GrantCovers(g, v, res) {
 			verbs = append(verbs, v)
 		}
 	}
 	switch {
-	case g.ExtensionGroupID != "":
+	case g.PackageGroupID != "":
 		via = "extension_group"
-	case g.Extension != "":
+	case g.Package != "":
 		via = "extension"
 	case g.ChannelID != "":
 		via = "channel"
@@ -265,32 +265,32 @@ func GrantCovers(g store.Grant, verb string, r Resource) bool {
 	if !slices.Contains(g.Verbs, verb) && (explicit || !slices.Contains(g.Verbs, store.VerbAdmin)) {
 		return false
 	}
-	if g.ExtensionGroupID != "" {
+	if g.PackageGroupID != "" {
 		switch {
 		case verb == store.VerbAudit:
 			return false // the tenant's log: a tenant-wide grant only
-		case r.ExtensionGroup != "":
-			return verb == store.VerbAdmin && g.ExtensionGroupName == r.ExtensionGroup
+		case r.PackageGroup != "":
+			return verb == store.VerbAdmin && g.PackageGroupName == r.PackageGroup
 		case r.Reserved && explicit:
 			return false
 		}
-		return r.Extension != "" && g.Members[r.Extension] && (g.ChannelID == "" || r.Channel != "" && g.ChannelName == r.Channel)
+		return r.Package != "" && g.Members[r.Package] && (g.ChannelID == "" || r.Channel != "" && g.ChannelName == r.Channel)
 	}
-	if r.Reserved && explicit && g.Extension == "" {
+	if r.Reserved && explicit && g.Package == "" {
 		return false
 	}
-	if verb == store.VerbAudit && (g.ChannelID != "" || g.Extension != "") {
+	if verb == store.VerbAudit && (g.ChannelID != "" || g.Package != "") {
 		return false // the tenant's log: a tenant-wide grant only
 	}
 	if verb == store.VerbFeed && g.ChannelID != "" && !slices.Contains(g.Verbs, store.VerbFeed) {
 		return false // spec 0011: only a tenant-wide admin implies feed; on a channel it is granted explicitly
 	}
 	switch {
-	case g.ChannelID == "" && g.Extension == "":
+	case g.ChannelID == "" && g.Package == "":
 		return true
-	case g.Extension == "":
+	case g.Package == "":
 		return r.Channel != "" && g.ChannelName == r.Channel
 	default:
-		return r.Extension == g.Extension && (g.ChannelID == "" || r.Channel != "" && g.ChannelName == r.Channel)
+		return r.Package == g.Package && (g.ChannelID == "" || r.Channel != "" && g.ChannelName == r.Channel)
 	}
 }

@@ -20,7 +20,7 @@ func inTx(t *testing.T, s *store.Store, fn func(tx *store.Tx) error) {
 }
 
 func cppBuild(tn store.Tenant, name, ver, hash string) store.Build {
-	return store.Build{TenantID: tn.ID, Name: name, ExtVersion: ver, Platform: "linux_amd64", ABI: store.ABICPP,
+	return store.Build{TenantID: tn.ID, Name: name, PackageVersion: ver, Platform: "linux_amd64", ABI: store.ABICPP,
 		DuckDBVersion: "v2.0.0", BodyHash: strings.Repeat(hash, 64), Origin: store.OriginAdmin, CreatedBy: "os:1:t"}
 }
 
@@ -37,7 +37,7 @@ func TestBuildsAndReleases(t *testing.T) {
 		if again.ID != b.ID {
 			t.Fatal("the same body under the same name made a second build")
 		}
-		cb := store.Build{TenantID: tn.ID, Name: "demo", ExtVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICStruct,
+		cb := store.Build{TenantID: tn.ID, Name: "demo", PackageVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICStruct,
 			CAPI: &store.CAPI{Major: 1, Minor: 2, Patch: 0}, BodyHash: strings.Repeat("c", 64), Origin: store.OriginAdmin, CreatedBy: "os:1:t"}
 		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &cb) })
 		if cb.Slot() != "capi:1" || b.Slot() != "v2.0.0" {
@@ -52,7 +52,7 @@ func TestBuildsAndReleases(t *testing.T) {
 		})
 
 		rel := func(bd store.Build, seq int64, vis string) store.Release {
-			return store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: bd.ID, Name: bd.Name, ExtVersion: bd.ExtVersion,
+			return store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: bd.ID, Name: bd.Name, PackageVersion: bd.PackageVersion,
 				Platform: bd.Platform, Slot: bd.Slot(), State: store.ReleaseActive, Visibility: vis, Seq: seq}
 		}
 		r1 := rel(b, 1, store.Public)

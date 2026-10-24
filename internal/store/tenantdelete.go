@@ -268,7 +268,7 @@ var reapSteps = []reapStep{
 	{"statements", ofTenant, false}, {"statement_counters", ofTenant, false},
 	{"attachments", ofTenant, false},
 	{"attestation_keys", ofTenant, false},
-	{"extension_group_grants", ofTenant, false}, {"extension_group_members", ofTenant, false}, {"extension_groups", ofTenant, false},
+	{"package_group_grants", ofTenant, false}, {"package_group_members", ofTenant, false}, {"package_groups", ofTenant, false},
 	{"grants", ofTenant, false}, {"issuer_console_clients", "issuer_id IN (SELECT id FROM issuers WHERE tenant_id = ?)", false},
 	{"issuers", ofTenant, false},
 	{"publisher_keys", ofTenant, false}, {"publishers", ofTenant, false},

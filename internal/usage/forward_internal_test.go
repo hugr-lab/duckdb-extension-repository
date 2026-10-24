@@ -31,14 +31,14 @@ func TestForwardParts(t *testing.T) {
 	for i := range 5 {
 		v := "1." + strconv.Itoa(i)
 		versions[[2]string{"x", v}] = map[string]bool{"ch": true}
-		counts[store.UsageKey{TenantID: tn.ID, ChannelID: "ch", Name: "x", ExtVersion: v, Event: "load", Status: "valid", Day: day}] = 1
+		counts[store.UsageKey{TenantID: tn.ID, ChannelID: "ch", Name: "x", PackageVersion: v, Event: "load", Status: "valid", Day: day}] = 1
 	}
 	// 9.9 counted in another channel only: not where this upstream's build is
-	counts[store.UsageKey{TenantID: tn.ID, ChannelID: "other", Name: "x", ExtVersion: "9.9", Event: "load", Status: "valid", Day: day}] = 1
+	counts[store.UsageKey{TenantID: tn.ID, ChannelID: "other", Name: "x", PackageVersion: "9.9", Event: "load", Status: "valid", Day: day}] = 1
 	versions[[2]string{"x", "9.9"}] = map[string]bool{"ch": true}
 	// 1.4 has more counters than a report holds
 	for c := range MaxReportKeys + 10 {
-		counts[store.UsageKey{TenantID: tn.ID, ChannelID: "ch", Name: "x", ExtVersion: "1.4", Event: "load", Counter: "c" + strconv.Itoa(c),
+		counts[store.UsageKey{TenantID: tn.ID, ChannelID: "ch", Name: "x", PackageVersion: "1.4", Event: "load", Counter: "c" + strconv.Itoa(c),
 			Status: "valid", Day: day}] = 1
 	}
 	// 1.5 has users below 5 only: left out
@@ -47,7 +47,7 @@ func TestForwardParts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := st.PutDaily(ctx, day, store.Daily{Users: map[store.UsageUserKey]int64{
-		{TenantID: tn.ID, ChannelID: "ch", Name: "x", ExtVersion: "1.5", Day: day}: 3}}); err != nil {
+		{TenantID: tn.ID, ChannelID: "ch", Name: "x", PackageVersion: "1.5", Day: day}: 3}}); err != nil {
 		t.Fatal(err)
 	}
 	f := &Forwarder{Store: st, PartReports: 2}

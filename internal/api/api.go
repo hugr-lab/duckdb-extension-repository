@@ -980,9 +980,9 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			return refuse()
 		}
 		// a group's administrators read it (spec 0017); its writes are the tenant administrator's
-		res := authz.Resource{Tenant: name, Channel: p["c"], Extension: p["ext"]}
+		res := authz.Resource{Tenant: name, Channel: p["c"], Package: p["ext"]}
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
-			res.ExtensionGroup = p["g"]
+			res.PackageGroup = p["g"]
 		}
 		if err := h.o.Authz.Allow(ctx, a, authz.VerbAdmin, res); err != nil {
 			if !errors.Is(err, authz.ErrDenied) {
@@ -1000,7 +1000,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		if !ok || h.o.Authz == nil {
 			return refuse()
 		}
-		res := authz.Resource{Tenant: name, Channel: p["c"], Extension: p["ext"]}
+		res := authz.Resource{Tenant: name, Channel: p["c"], Package: p["ext"]}
 		if p["ext"] != "" && h.o.Store != nil {
 			kind, err := h.o.Store.ReservedFor(ctx, name, p["ext"]) // spec 0030: DuckDB's, the tenant's, its upstreams'
 			if err != nil {

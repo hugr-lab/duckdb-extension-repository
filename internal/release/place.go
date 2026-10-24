@@ -37,7 +37,7 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 	if err != nil {
 		return nil, false, err
 	}
-	res := authz.Resource{Tenant: tenant, Channel: channel, Extension: name, Reserved: kind != ""}
+	res := authz.Resource{Tenant: tenant, Channel: channel, Package: name, Reserved: kind != ""}
 	if err := s.Authz.Allow(ctx, a, authz.VerbPromote, res); err != nil {
 		return nil, false, err
 	}
@@ -99,14 +99,14 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 	}
 	var items []item
 	for _, b := range builds {
-		if b.ExtVersion != o.Version || servable(capis, b) != nil || purged[b.ID] {
+		if b.PackageVersion != o.Version || servable(capis, b) != nil || purged[b.ID] {
 			continue
 		}
 		if !admin && !s.mayTake(ctx, a, tenant, name, kind != "", placed[b.ID]) {
 			continue
 		}
 		if !b.Checked {
-			return nil, false, fmt.Errorf("%w: %s %s %s was added unchecked; publish it to check it", ErrState, b.Name, b.ExtVersion, b.Platform)
+			return nil, false, fmt.Errorf("%w: %s %s %s was added unchecked; publish it to check it", ErrState, b.Name, b.PackageVersion, b.Platform)
 		}
 		it := s.placement(tenant, b, src, a, "hand", o.Private)
 		it.notCurrent = o.NotCurrent
@@ -145,7 +145,7 @@ func (s *Service) mayTake(ctx context.Context, a authz.Actor, tenant, name strin
 		if p.State != store.ReleaseActive && p.State != store.ReleaseDeprecated {
 			continue
 		}
-		if s.Authz.Allow(ctx, a, authz.VerbPublish, authz.Resource{Tenant: tenant, Channel: p.Channel, Extension: name, Reserved: reserved}) == nil {
+		if s.Authz.Allow(ctx, a, authz.VerbPublish, authz.Resource{Tenant: tenant, Channel: p.Channel, Package: name, Reserved: reserved}) == nil {
 			return true
 		}
 	}
@@ -184,7 +184,7 @@ func placeEvent(ctx context.Context, name, source, how string) eventFn {
 			ids[i] = r.ID
 		}
 		return tx.Event(ctx, c.TenantID, made[0].CreatedBy, "release.place", "channel:"+c.Name+"/ext:"+name,
-			map[string]any{"releases": ids, "name": name, "version": made[0].ExtVersion, "source": source, "placed": how})
+			map[string]any{"releases": ids, "name": name, "version": made[0].PackageVersion, "source": source, "placed": how})
 	}
 }
 
@@ -207,23 +207,23 @@ func newServed(cands []store.Candidate, capis map[string][]store.CAPI) served {
 		private: map[string]bool{}, capis: capis}
 	for i := range cands {
 		c := &cands[i]
-		s.had[[3]string{c.ExtVersion, c.Platform, c.Slot}] = true
+		s.had[[3]string{c.PackageVersion, c.Platform, c.Slot}] = true
 		for v := range capis {
 			if c.State == store.ReleasePurged && c.ABI != store.ABICStruct && c.Slot == v || Serves(c, v, capis) {
 				k := cell{c.Platform, v}
-				if cur, ok := s.newest[k]; !ok || CompareVersions(c.ExtVersion, cur) > 0 {
-					s.newest[k] = c.ExtVersion
+				if cur, ok := s.newest[k]; !ok || CompareVersions(c.PackageVersion, cur) > 0 {
+					s.newest[k] = c.PackageVersion
 				}
 				if c.State == store.ReleaseActive {
-					if cur, ok := s.live[k]; !ok || CompareVersions(c.ExtVersion, cur) > 0 {
-						s.live[k] = c.ExtVersion
+					if cur, ok := s.live[k]; !ok || CompareVersions(c.PackageVersion, cur) > 0 {
+						s.live[k] = c.PackageVersion
 					}
 				}
 			}
 		}
 		if c.State == store.ReleaseActive {
-			s.held[c.ExtVersion] = true
-			s.private[c.ExtVersion] = s.private[c.ExtVersion] || c.Visibility == store.Private
+			s.held[c.PackageVersion] = true
+			s.private[c.PackageVersion] = s.private[c.PackageVersion] || c.Visibility == store.Private
 		}
 	}
 	return s
@@ -264,10 +264,10 @@ func overlap(a, b []cell) bool {
 // complete adjusts an item that completes a held version (spec 0033): not current where a newer
 // version serves one of its cells, and private where the version is private in the channel.
 func (s served) complete(it *item) {
-	if !newer(it.b.ExtVersion, s.cells(it.b), s.live) {
+	if !newer(it.b.PackageVersion, s.cells(it.b), s.live) {
 		it.notCurrent = true
 	}
-	if s.private[it.b.ExtVersion] {
+	if s.private[it.b.PackageVersion] {
 		it.visibility = store.Private
 	}
 }
@@ -322,20 +322,20 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(con
 	var items []item
 	best := map[[2]string]store.Build{} // (platform, slot) → the newest new version
 	for _, b := range builds {
-		if !b.Checked || servable(capis, b) != nil || purged[b.ID] || sv.had[[3]string{b.ExtVersion, b.Platform, b.Slot()}] {
+		if !b.Checked || servable(capis, b) != nil || purged[b.ID] || sv.had[[3]string{b.PackageVersion, b.Platform, b.Slot()}] {
 			continue
 		}
-		if sv.held[b.ExtVersion] {
+		if sv.held[b.PackageVersion] {
 			it := s.placement(tn.Name, b, r.Source, placer, r.Mode, false)
 			sv.complete(&it)
 			items = append(items, it)
 			continue
 		}
-		if r.Mode != store.RuleAuto || !newer(b.ExtVersion, sv.cells(b), sv.newest) {
+		if r.Mode != store.RuleAuto || !newer(b.PackageVersion, sv.cells(b), sv.newest) {
 			continue
 		}
 		k := [2]string{b.Platform, b.Slot()}
-		if cur, ok := best[k]; !ok || CompareVersions(b.ExtVersion, cur.ExtVersion) > 0 {
+		if cur, ok := best[k]; !ok || CompareVersions(b.PackageVersion, cur.PackageVersion) > 0 {
 			best[k] = b
 		}
 	}
@@ -345,7 +345,7 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(con
 		cells := sv.cells(b)
 		shadowed := false
 		for k2, o := range best {
-			if k2 != k && CompareVersions(o.ExtVersion, b.ExtVersion) > 0 && overlap(cells, sv.cells(o)) {
+			if k2 != k && CompareVersions(o.PackageVersion, b.PackageVersion) > 0 && overlap(cells, sv.cells(o)) {
 				shadowed = true
 				break
 			}
@@ -356,7 +356,7 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(con
 	}
 	// oldest version first, so the newest placed is current
 	slices.SortFunc(items, func(x, y item) int {
-		if c := CompareVersions(x.b.ExtVersion, y.b.ExtVersion); c != 0 {
+		if c := CompareVersions(x.b.PackageVersion, y.b.PackageVersion); c != 0 {
 			return c
 		}
 		return strings.Compare(x.b.Platform+"/"+x.b.Slot(), y.b.Platform+"/"+y.b.Slot())
@@ -371,7 +371,7 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(con
 		_, existed, err := s.insert(ctx, placer, r.ChannelID, []item{it}, placeEvent(ctx, r.Name, label, r.Mode))
 		switch {
 		case err != nil && failure == "":
-			failure = fmt.Sprintf("%s %s %s: %v", it.b.ExtVersion, it.b.Platform, it.b.Slot(), err)
+			failure = fmt.Sprintf("%s %s %s: %v", it.b.PackageVersion, it.b.Platform, it.b.Slot(), err)
 		case err == nil && !existed:
 			placed++
 		}

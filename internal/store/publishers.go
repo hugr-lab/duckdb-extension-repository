@@ -62,7 +62,7 @@ func (t *Tx) PublisherCredentials(ctx context.Context, publisherID string) (int,
 func (t *Tx) PublisherGrants(ctx context.Context, publisherID string) (int, error) {
 	var n int
 	err := t.queryRow(ctx, `SELECT (SELECT COUNT(*) FROM grants WHERE publisher_id = ?) +
-(SELECT COUNT(*) FROM extension_group_grants WHERE publisher_id = ?)`, publisherID, publisherID).Scan(&n)
+(SELECT COUNT(*) FROM package_group_grants WHERE publisher_id = ?)`, publisherID, publisherID).Scan(&n)
 	return n, err
 }
 
@@ -87,7 +87,7 @@ func (t *Tx) DeletePublisher(ctx context.Context, tenantID, name string) error {
 		return err
 	}
 	for _, q := range []string{"DELETE FROM grants WHERE publisher_id = ?",
-		"DELETE FROM extension_group_grants WHERE publisher_id = ?", "DELETE FROM publisher_keys WHERE publisher_id = ?",
+		"DELETE FROM package_group_grants WHERE publisher_id = ?", "DELETE FROM publisher_keys WHERE publisher_id = ?",
 		"DELETE FROM publishers WHERE id = ?"} {
 		if _, err := t.exec(ctx, q, p.ID); err != nil {
 			return err

@@ -361,9 +361,9 @@ type LiveRelease struct {
 
 // TenantLiveReleases lists a tenant's releases under a name that are not yanked or purged.
 func (s *Store) TenantLiveReleases(ctx context.Context, tenantID, name string) ([]LiveRelease, error) {
-	rows, err := s.db.QueryContext(ctx, s.d.rebind(`SELECT c.name, r.ext_version, r.platform, r.state, b.origin
+	rows, err := s.db.QueryContext(ctx, s.d.rebind(`SELECT c.name, r.package_version, r.platform, r.state, b.origin
 FROM releases r JOIN channels c ON c.id = r.channel_id JOIN builds b ON b.id = r.build_id
-WHERE r.tenant_id = ? AND r.name = ? AND r.state NOT IN ('yanked', 'purged') ORDER BY c.name, r.ext_version, r.platform`), tenantID, name)
+WHERE r.tenant_id = ? AND r.name = ? AND r.state NOT IN ('yanked', 'purged') ORDER BY c.name, r.package_version, r.platform`), tenantID, name)
 	if err != nil {
 		return nil, err
 	}

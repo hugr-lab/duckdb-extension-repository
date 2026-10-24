@@ -12,7 +12,7 @@ import (
 func TestCatalogueRoutes(t *testing.T) {
 	m := newMgmt(t)
 	const P = "/api/v1/tenants/acme/catalogue/extensions/"
-	for sub, on := range map[string]tenants.GrantOn{"wide": {Extension: "newext"}, "chan": {Channel: "prod", Extension: "newext"}} {
+	for sub, on := range map[string]tenants.GrantOn{"wide": {Package: "newext"}, "chan": {Channel: "prod", Package: "newext"}} {
 		if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+sub, []string{"publish"}, on); err != nil {
 			t.Fatal(err)
 		}

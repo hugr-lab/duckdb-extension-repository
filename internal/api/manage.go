@@ -787,8 +787,8 @@ type grantJSON struct {
 }
 
 func grantOf(g store.Grant, c caller) grantJSON {
-	return grantJSON{ID: g.ID, Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Extension,
-		ExtensionGroup: g.ExtensionGroupName, CreatedAt: g.CreatedAt.UTC().Format(time.RFC3339), CreatedBy: createdBy(g.CreatedBy, c)}
+	return grantJSON{ID: g.ID, Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Package,
+		ExtensionGroup: g.PackageGroupName, CreatedAt: g.CreatedAt.UTC().Format(time.RFC3339), CreatedBy: createdBy(g.CreatedBy, c)}
 }
 
 // reaching is how a grant reaches an extension and the verbs it gives there (spec 0017).
@@ -838,7 +838,7 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 	}
 	var kept []store.Grant
 	for _, g := range gs {
-		if pr != "" && g.Principal() != pr || group != "" && g.ExtensionGroupName != group {
+		if pr != "" && g.Principal() != pr || group != "" && g.PackageGroupName != group {
 			continue
 		}
 		if ext != "" {
@@ -907,7 +907,7 @@ func (h *Handler) addGrant(w http.ResponseWriter, r *http.Request, c caller, p p
 	}
 	a, _ := c.actor()
 	g, err := h.o.Auth.AddGrant(r.Context(), a, p["t"], in.Principal, in.Verbs,
-		tenants.GrantOn{Channel: in.Channel, Extension: in.Extension, ExtensionGroup: in.ExtensionGroup})
+		tenants.GrantOn{Channel: in.Channel, Package: in.Extension, PackageGroup: in.ExtensionGroup})
 	if err != nil {
 		h.serviceErr(w, err, true)
 		return

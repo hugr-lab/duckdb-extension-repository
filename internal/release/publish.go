@@ -48,7 +48,7 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 		return nil, false, err
 	}
 	res := func(ch string) authz.Resource {
-		return authz.Resource{Tenant: tenant, Channel: ch, Extension: name, Reserved: kind != ""}
+		return authz.Resource{Tenant: tenant, Channel: ch, Package: name, Reserved: kind != ""}
 	}
 	if err := s.Authz.Allow(ctx, a, authz.VerbPromote, res(channel)); err != nil {
 		return nil, false, err
@@ -102,7 +102,7 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 		if r.Source != sel[name].Source {
 			continue
 		}
-		if r.ID == o.Release || o.Version != "" && r.ExtVersion == o.Version {
+		if r.ID == o.Release || o.Version != "" && r.PackageVersion == o.Version {
 			picked = append(picked, r)
 		}
 	}
@@ -129,7 +129,7 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 			return nil, false, err
 		}
 		if !b.Checked {
-			return nil, false, fmt.Errorf("%w: %s %s %s was added unchecked; publish it to check it", ErrState, r.Name, r.ExtVersion, r.Platform)
+			return nil, false, fmt.Errorf("%w: %s %s %s was added unchecked; publish it to check it", ErrState, r.Name, r.PackageVersion, r.Platform)
 		}
 		vis := r.Visibility
 		if cr := CredentialOf(r.Release); o.Private || cr != "" && (s.MayPublish == nil || !s.MayPublish(tenant, cr)) {
@@ -170,7 +170,7 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 				origin = it.b.Origin
 			}
 		}
-		f := map[string]any{"releases": ids, "name": name, "from_channel": o.From, "version": made[0].ExtVersion,
+		f := map[string]any{"releases": ids, "name": name, "from_channel": o.From, "version": made[0].PackageVersion,
 			"shadows": Shadows(store.Candidate{Release: made[0], BuildOrigin: origin}, nil)}
 		if o.Provenance != "" {
 			f["provenance"] = o.Provenance

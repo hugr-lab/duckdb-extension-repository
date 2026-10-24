@@ -66,7 +66,7 @@ func TestFeedRecords(t *testing.T) {
 		// a body released in prod, offered: statements about it, the latest only while feedable
 		b := cppBuild(tn, "tresor", "1.0", "a")
 		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
-		r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, ExtVersion: b.ExtVersion, Platform: b.Platform,
+		r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, PackageVersion: b.PackageVersion, Platform: b.Platform,
 			Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public, Seq: 1, Origin: store.OriginUpstream}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertRelease(ctx, &r, "system:upstream") })
 		doc := store.Attachment{TenantID: tn.ID, BodyHash: b.BodyHash, Kind: store.KindReview, MediaType: "application/vnd.kista.review.v1+json",
@@ -117,7 +117,7 @@ func TestFeedRecords(t *testing.T) {
 		}
 		own := cppBuild(tn, "acl", "1.0", "b")
 		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &own) })
-		ro := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: own.ID, Name: own.Name, ExtVersion: own.ExtVersion, Platform: own.Platform,
+		ro := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: own.ID, Name: own.Name, PackageVersion: own.PackageVersion, Platform: own.Platform,
 			Slot: own.Slot(), State: store.ReleaseActive, Visibility: store.Public, Seq: 2, Origin: store.OriginPublication}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertRelease(ctx, &ro, "publisher:acme/ci") })
 		if bodies, _ := s.OfferedBodies(ctx, f); len(bodies) != 1 {

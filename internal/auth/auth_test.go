@@ -359,7 +359,7 @@ func TestJWKRefusals(t *testing.T) {
 func TestAllows(t *testing.T) {
 	p := Principals{{"i1", "subject", "alice"}: true, {"i1", "issuer", ""}: true}
 	g := func(kind, value, ch, ext string, verbs ...string) store.Grant {
-		return store.Grant{IssuerID: "i1", Kind: kind, Value: value, ChannelID: ch, Extension: ext, Verbs: verbs}
+		return store.Grant{IssuerID: "i1", Kind: kind, Value: value, ChannelID: ch, Package: ext, Verbs: verbs}
 	}
 	for name, tc := range map[string]struct {
 		grants []store.Grant
@@ -388,7 +388,7 @@ func TestAllowsGroups(t *testing.T) {
 	p := Principals{{"i1", "role", "team"}: true}
 	members := map[string]bool{"tresor": true, "acl": true}
 	gg := func(ch string, verbs ...string) store.Grant {
-		return store.Grant{IssuerID: "i1", Kind: "role", Value: "team", ChannelID: ch, ExtensionGroupID: "g1", Members: members, Verbs: verbs}
+		return store.Grant{IssuerID: "i1", Kind: "role", Value: "team", ChannelID: ch, PackageGroupID: "g1", Members: members, Verbs: verbs}
 	}
 	for name, tc := range map[string]struct {
 		grant      store.Grant
@@ -403,7 +403,7 @@ func TestAllowsGroups(t *testing.T) {
 		"in its channel":   {gg("c1", "install"), "tresor", true, false, []string{"acl", "tresor"}},
 		"another channel":  {gg("c2", "install"), "tresor", false, false, nil},
 		"publish only":     {gg("", "publish"), "tresor", false, false, nil},
-		"another role":     {store.Grant{IssuerID: "i1", Kind: "role", Value: "x", ExtensionGroupID: "g1", Members: members, Verbs: []string{"install"}}, "tresor", false, false, nil},
+		"another role":     {store.Grant{IssuerID: "i1", Kind: "role", Value: "x", PackageGroupID: "g1", Members: members, Verbs: []string{"install"}}, "tresor", false, false, nil},
 	} {
 		h := HeldBy(p, store.TenantAuth{GroupGrants: []store.Grant{tc.grant}})
 		if got := Allows(h, "c1", tc.ext, "install"); got != tc.want {

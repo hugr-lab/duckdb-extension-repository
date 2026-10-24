@@ -78,8 +78,8 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	if b.ABI != store.ABICStruct && b.DuckDBVersion != in.DuckDBVersion {
 		return res, fmt.Errorf("%w: the footer's DuckDB version is %q, the path's %q", store.ErrInvalid, b.DuckDBVersion, in.DuckDBVersion)
 	}
-	if len(in.Versions) > 0 && !slices.Contains(in.Versions, b.ExtVersion) {
-		return res, fmt.Errorf("%w: version %s is not on the allowlist", store.ErrInvalid, b.ExtVersion)
+	if len(in.Versions) > 0 && !slices.Contains(in.Versions, b.PackageVersion) {
+		return res, fmt.Errorf("%w: version %s is not on the allowlist", store.ErrInvalid, b.PackageVersion)
 	}
 	if err := CheckFile(f, in.Name); err != nil {
 		return res, err
@@ -134,11 +134,11 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 				return err
 			}
 			sv := newServed(rels, capis)
-			if pinned = !sv.held[b.ExtVersion]; !pinned {
+			if pinned = !sv.held[b.PackageVersion]; !pinned {
 				completes = &sv
 			}
 		}
-		cands, err := tx.SlotCandidates(ctx, ch.ID, it.source, b.Name, b.ExtVersion, b.Platform)
+		cands, err := tx.SlotCandidates(ctx, ch.ID, it.source, b.Name, b.PackageVersion, b.Platform)
 		if err != nil {
 			return err
 		}
@@ -200,7 +200,7 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	rs, existed, err := s.commitAndRelease(ctx, sp, &it, func(ctx context.Context, it item) ([]store.Release, bool, error) {
 		return s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {
 			r := made[0]
-			data := map[string]any{"upstream": in.Upstream, "release": r.ID, "name": r.Name, "version": r.ExtVersion, "platform": r.Platform,
+			data := map[string]any{"upstream": in.Upstream, "release": r.ID, "name": r.Name, "version": r.PackageVersion, "platform": r.Platform,
 				"slot": r.Slot, "body_hash": it.b.BodyHash, "url": in.URL, "key": key}
 			if in.Bundle != "" {
 				data["bundle"] = in.Bundle

@@ -52,7 +52,7 @@ func TestPublication(t *testing.T) {
 	m := newMgmt(t)
 	const P = "/api/v1/tenants/acme/channels/prod/extensions/"
 	grant := func(sub, verb, channel, ext string) {
-		if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+sub, []string{verb}, tenants.GrantOn{Channel: channel, Extension: ext}); err != nil {
+		if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+sub, []string{verb}, tenants.GrantOn{Channel: channel, Package: ext}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -160,7 +160,7 @@ func TestPublication(t *testing.T) {
 func TestPromotionAndBlocks(t *testing.T) {
 	m := newMgmt(t)
 	grant := func(sub, verb, channel, ext string) {
-		if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+sub, []string{verb}, tenants.GrantOn{Channel: channel, Extension: ext}); err != nil {
+		if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|"+sub, []string{verb}, tenants.GrantOn{Channel: channel, Package: ext}); err != nil {
 			t.Fatal(err)
 		}
 	}

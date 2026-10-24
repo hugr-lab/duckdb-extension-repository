@@ -65,7 +65,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		}
 		o.Unchecked = false
 		verb = authz.VerbPublish
-		res = authz.Resource{Tenant: tenant, Extension: o.Name, Reserved: kind != ""}
+		res = authz.Resource{Tenant: tenant, Package: o.Name, Reserved: kind != ""}
 	}
 	if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
 		return store.Build{}, false, err
@@ -92,9 +92,9 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 	it := item{b: b, visibility: o.visibility(), origin: store.OriginAdmin, source: sourceOf(a)}
 	it.b.Source = it.source
 	if p := o.Publish; p != nil {
-		if p.Version != b.ExtVersion || p.Platform != b.Platform {
+		if p.Version != b.PackageVersion || p.Platform != b.Platform {
 			return store.Build{}, false, fmt.Errorf("%w: the file's footer says version %q, platform %q; the request says %q, %q",
-				store.ErrInvalid, b.ExtVersion, b.Platform, p.Version, p.Platform)
+				store.ErrInvalid, b.PackageVersion, b.Platform, p.Version, p.Platform)
 		}
 		it.origin, it.provenance = store.OriginPublication, p.Provenance
 		it.b.Origin = store.OriginPublication
@@ -153,7 +153,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		if created = inserted; !inserted {
 			return nil
 		}
-		f := map[string]any{"build": bb.ID, "name": bb.Name, "version": bb.ExtVersion, "platform": bb.Platform,
+		f := map[string]any{"build": bb.ID, "name": bb.Name, "version": bb.PackageVersion, "platform": bb.Platform,
 			"slot": bb.Slot(), "body_hash": bb.BodyHash, "source": label, "visibility": bb.Visibility}
 		if it.provenance != "" {
 			f["provenance"] = it.provenance
@@ -182,7 +182,7 @@ func (s *Service) PurgeEntry(ctx context.Context, a authz.Actor, tenant, id stri
 			return err
 		}
 		return tx.Event(ctx, t.ID, a.String(), "catalogue.purge", "ext:"+b.Name, map[string]any{"build": b.ID, "name": b.Name,
-			"version": b.ExtVersion, "platform": b.Platform, "slot": b.Slot(), "body_hash": b.BodyHash})
+			"version": b.PackageVersion, "platform": b.Platform, "slot": b.Slot(), "body_hash": b.BodyHash})
 	})
 	return b, err
 }
