@@ -233,8 +233,9 @@ type cell struct{ platform, version string }
 // served is what a source's releases of a name serve in a channel, per cell: the newest version any
 // release has or had (any state), the newest active one, and per version whether it is active
 // (held) and the narrowest visibility of its active releases. A withdrawn entry's release (spec 0033
-// phase B) is neither active nor held, so nothing completes its version, but it counts in the newest:
-// after a withdrawal an auto rule or a follow never goes back down to an older version by itself.
+// phase B) holds its version for no one, so nothing completes it, but it counts in the newest and the
+// live: after a withdrawal an auto rule or a follow never goes back down to an older version by
+// itself, and a completed older version is not made current where it was (the owner's decision).
 type served struct {
 	had          map[[3]string]bool // (version, platform, slot)
 	newest, live map[cell]string
@@ -255,7 +256,7 @@ func newServed(cands []store.Candidate, capis map[string][]store.CAPI) served {
 				if cur, ok := s.newest[k]; !ok || CompareVersions(c.PackageVersion, cur) > 0 {
 					s.newest[k] = c.PackageVersion
 				}
-				if c.State == store.ReleaseActive && !c.Withdrawn {
+				if c.State == store.ReleaseActive { // a withdrawn release too: completion never makes an older version current
 					if cur, ok := s.live[k]; !ok || CompareVersions(c.PackageVersion, cur) > 0 {
 						s.live[k] = c.PackageVersion
 					}

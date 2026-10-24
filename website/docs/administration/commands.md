@@ -404,9 +404,10 @@ A principal is `subject:<issuer>|<value>`, `role:<issuer>|<value>`, `group:<issu
 | Command | What it does | Output |
 | --- | --- | --- |
 | `publisher add <tenant> <name>`, `publisher remove <tenant> <name>` | an identity that only publishes and promotes | |
+| `publisher add <tenant> <name> -distributor <distributor>` | a [distributor's publisher](../publishing.md#distributors-publishers), marked at its creation: it publishes into the catalogue only, without grants; its keys, hold, purges and withdrawals are the distributor's | |
 | `publisher list <tenant>` | `PUBLISHER`, `LICENSE KEYS`, `KEY`, `FINGERPRINT`, `TITLE`, `HOLD`, `DISTRIBUTOR` | |
 | `publisher hold <tenant> <name> <duration>` | its [hold](../publishing.md#holds-and-early-placement) (`24h`, `2d`; `0` for none): what it publishes is held, and it publishes into the catalogue only; a distributor's publisher's is the distributor's | |
-| `publisher distributor <tenant> <name> <distributor>` | marks it a [distributor's publisher](../publishing.md#distributors-publishers): it publishes into the catalogue only, without grants; its keys, hold, purges and withdrawals are the distributor's | |
+| `publisher distributor <tenant> <name> <distributor>` | renames a [distributor's publisher](../publishing.md#distributors-publishers)'s distributor, or marks a fresh publisher a distribution admin created (an operator's or a tenant administrator's is refused) | |
 | `publisher license-keys <tenant> <name> on or off` | marks it a source of licence keys (spec 0021), or unmarks it: a server administrator's act | |
 | `publisher key add <tenant> <name> <file.pub or -> [-expires <days>d or <RFC 3339 time>]` | registers a public SSH key (`ssh-ed25519` or `ecdsa-sha2-nistp256`) the publisher signs its requests with (spec 0023); an expiry within a year, or none | the key id |
 | `publisher key list <tenant> <name>` | `ID`, `FINGERPRINT`, `TYPE`, `TITLE`, `EXPIRES`, `LAST USED`, `CREATED`, `BY` | |

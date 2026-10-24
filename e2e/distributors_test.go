@@ -25,10 +25,7 @@ func TestDistributorWithdrawal(t *testing.T) {
 	k := startKista(t, b)
 	ctx := context.Background()
 	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}}
-	if _, err := adm.AddPublisher(ctx, serveAdmin, "acme", "enterest-ci"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := adm.SetPublisherDistributor(ctx, serveAdmin, "acme", "enterest-ci", "enterest"); err != nil {
+	if _, err := adm.AddDistributorPublisher(ctx, serveAdmin, "acme", "enterest-ci", "enterest"); err != nil {
 		t.Fatal(err)
 	}
 	key := publisherSigner(t)

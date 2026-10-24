@@ -266,7 +266,8 @@ func (t *Tx) Withdraw(ctx context.Context, tenantID, packageType, source, name, 
 	if !validText(reason, MaxWithdrawReason) {
 		return w, false, fmt.Errorf("%w: reason: 1 to %d bytes of printable text", ErrInvalid, MaxWithdrawReason)
 	}
-	if version == "" || len(version) > 64 || name == "" || len(name) > 64 {
+	// the service checks the builds' grammars; the store keeps to printable text without separators
+	if !validText(version, 64) || !validText(name, 64) || strings.ContainsAny(version+name, "/\\ ") {
 		return w, false, fmt.Errorf("%w: a name and a version", ErrInvalid)
 	}
 	if already, err = t.VersionWithdrawn(ctx, tenantID, packageType, source, name, version); err != nil {

@@ -30,6 +30,42 @@ func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, nam
 	return p, err
 }
 
+// AddDistributorPublisher adds a publisher to a tenant marked a distributor's from its creation (spec
+// 0033 phase B): a server administrator's or a distribution admin's. This is how a server
+// administrator makes a distributor's publisher: an existing one is marked only when a distribution
+// admin created it (SetPublisherDistributor).
+func (s *AuthAdmin) AddDistributorPublisher(ctx context.Context, a authz.Actor, tenant, name, dist string) (store.Publisher, error) {
+	t, err := s.distributorAct(ctx, a, tenant)
+	if err != nil {
+		return store.Publisher{}, err
+	}
+	p := store.Publisher{TenantID: t.ID, Name: name, CreatedBy: a.String()}
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.PublisherAuthLock(t.ID)}, func(tx *store.Tx) error {
+		if err := tx.InsertPublisher(ctx, &p); err != nil {
+			return err
+		}
+		if _, err := tx.SetPublisherDistributor(ctx, t.ID, name, dist); err != nil {
+			return err
+		}
+		p.Distributor = dist
+		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name, "distributor": dist})
+	})
+	return p, err
+}
+
+// distributorAct admits a server administrator, or a distribution admin on the tenant (spec 0033
+// phase B: a distributor's publisher's mark), and reads the tenant.
+func (s *AuthAdmin) distributorAct(ctx context.Context, a authz.Actor, tenant string) (store.Tenant, error) {
+	verb, res := authz.VerbAdmin, authz.Server
+	if distributor(a) {
+		verb, res = authz.VerbDistribute, authz.Resource{Tenant: tenant}
+	}
+	if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
+		return store.Tenant{}, err
+	}
+	return s.Store.GetTenant(ctx, tenant)
+}
+
 // ListPublishers lists a tenant's publishers.
 func (s *AuthAdmin) ListPublishers(ctx context.Context, a authz.Actor, tenant string) ([]store.Publisher, error) {
 	t, err := s.tenantOrDistributor(ctx, a, tenant)
@@ -212,24 +248,19 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 	return p, err
 }
 
-// SetPublisherDistributor marks a publisher a distributor's (spec 0033 phase B), a distribution
-// admin's or a server administrator's act: distributor is the distributor's name, as a tenant
-// reservation names its holder. A distributor's publisher publishes into the catalogue only, without
-// grants (any name kista does not reserve server-wide and the tenant does not reserve for another
-// holder), and reaches no channel by itself; its keys, its hold, its withdrawals and the purges of its
-// entries are the distributor's. It is marked while it holds no grants (it may hold none), and no
-// keys unless it is marked already (keys a tenant administrator registered would outlive the mark);
-// marking it again changes the distributor's name. A mark is never removed: the publisher is removed
-// instead (its record kept, so its versions can still be withdrawn).
+// SetPublisherDistributor marks an existing publisher a distributor's (spec 0033 phase B), a
+// distribution admin's or a server administrator's act: distributor is the distributor's name, as a
+// tenant reservation names its holder. A distributor's publisher publishes into the catalogue only,
+// without grants (any name kista does not reserve server-wide and the tenant does not reserve for
+// another holder), and reaches no channel by itself; its keys, its hold, its withdrawals and the
+// purges of its entries are the distributor's. Only a fresh publisher a distribution admin created is
+// marked so: no grants, no keys unless it carries the licence-key mark, no hold, never a source of
+// anything (a publisher created otherwise, a tenant administrator's or an operator's, is refused as
+// not found; a server administrator creates a distributor's publisher marked, AddDistributorPublisher).
+// Marking a distributor's publisher again changes the distributor's name. A mark is never removed: the
+// publisher is removed instead (its record kept, so its versions can still be withdrawn).
 func (s *AuthAdmin) SetPublisherDistributor(ctx context.Context, a authz.Actor, tenant, name, dist string) (store.Publisher, error) {
-	verb, res := authz.VerbAdmin, authz.Server
-	if distributor(a) {
-		verb, res = authz.VerbDistribute, authz.Resource{Tenant: tenant}
-	}
-	if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
-		return store.Publisher{}, err
-	}
-	t, err := s.Store.GetTenant(ctx, tenant)
+	t, err := s.distributorAct(ctx, a, tenant)
 	if err != nil {
 		return store.Publisher{}, err
 	}
@@ -240,8 +271,8 @@ func (s *AuthAdmin) SetPublisherDistributor(ctx context.Context, a authz.Actor, 
 			return err
 		}
 		if cur.Distributor == "" { // a fresh publisher only; marked already, it is renamed
-			if !madeByDistributor(cur.CreatedBy) {
-				return authz.ErrDenied // the tenant's own publisher is never the distributor's
+			if !strings.HasPrefix(cur.CreatedBy, string(authz.ActorDistributionAdmin)+":") {
+				return authz.ErrDenied // the tenant's own publisher, or an operator's, is never made the distributor's
 			}
 			grants, err := tx.PublisherGrants(ctx, cur.ID)
 			if err != nil {
@@ -276,19 +307,6 @@ func (s *AuthAdmin) SetPublisherDistributor(ctx context.Context, a authz.Actor, 
 		return tx.Event(ctx, t.ID, a.String(), "publisher.change", "publisher:"+p.Name, f)
 	})
 	return p, err
-}
-
-// madeByDistributor reports whether a publisher was created by a distribution admin or a server
-// administrator (its created_by: a distribution admin's, a server administrator's token, the CLI, or
-// the bootstrap), not by a tenant's administrator (spec 0033 phase B: only such a publisher becomes a
-// distributor's).
-func madeByDistributor(createdBy string) bool {
-	for _, k := range []authz.ActorKind{authz.ActorDistributionAdmin, authz.ActorServer, authz.ActorOS} {
-		if strings.HasPrefix(createdBy, string(k)+":") {
-			return true
-		}
-	}
-	return createdBy == authz.Bootstrap.String()
 }
 
 // distributors refuses a change to a distributor's publisher (its hold) unless a distribution admin

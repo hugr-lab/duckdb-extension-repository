@@ -156,6 +156,10 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   served nowhere in the tenant from then on, for good, and no
                                                   build of it arrives again from that source
   publisher add|remove <tenant> <name>          an identity that only publishes and promotes
+  publisher add <tenant> <name> -distributor <distributor>   a distributor's publisher (spec 0033), marked at
+                                                  its creation: it publishes into the catalogue only, without
+                                                  grants; its keys, hold, purges and withdrawals are the
+                                                  distributor's
   publisher list <tenant>
   publisher license-keys <tenant> <name> on|off  mark it a source of licence keys (spec 0021): its publications
                    record the builds' keys; its credentials and grants are then a server administrator's
@@ -169,9 +173,8 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   publisher hold <tenant> <name> <duration>       the publisher's hold (spec 0033): its entries are held this
                                                   long and it publishes into the catalogue only (24h, 2d; 0 for none);
                                                   a distributor's publisher's is the distributor's
-  publisher distributor <tenant> <name> <distributor>   mark it a distributor's publisher (spec 0033): it publishes
-                                                  into the catalogue only, without grants; its keys, hold,
-                                                  purges and withdrawals are the distributor's
+  publisher distributor <tenant> <name> <distributor>   rename a distributor's publisher's distributor, or mark
+                                                  a fresh publisher a distribution admin created
   upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
                -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
                [-mode mirror|pull-through|bundle] [-fetch eager|lazy] [-credential <name>]
@@ -1536,11 +1539,18 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 		}
 		return a.publisherKey(ctx, args[0], args[1:])
 	}
-	pos, err := flags(flag.NewFlagSet("publisher", flag.ContinueOnError), args)
-	if err != nil {
+	fs := flag.NewFlagSet("publisher", flag.ContinueOnError)
+	dist := fs.String("distributor", "", "") // spec 0033 phase B: a distributor's publisher, marked at its creation
+	pos, err := flags(fs, args)
+	if err != nil || *dist != "" && sub != "add" {
 		return errUsage
 	}
 	switch {
+	case sub == "add" && len(pos) == 2 && *dist != "":
+		if _, err := a.svc.Auth.AddDistributorPublisher(ctx, a.actor, pos[0], pos[1], *dist); err != nil {
+			return err
+		}
+		a.logf("publisher add %s %s -distributor %s", pos[0], pos[1], *dist)
 	case sub == "add" && len(pos) == 2:
 		if _, err := a.svc.Auth.AddPublisher(ctx, a.actor, pos[0], pos[1]); err != nil {
 			return err

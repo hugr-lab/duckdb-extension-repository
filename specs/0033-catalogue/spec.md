@@ -778,17 +778,24 @@ channel, deferred.
   `withdrawn_versions` and `removed_distributor_publishers` (below). Additive only: no SQLite
   rebuild; the existing rows are the tenant's own publishers and entries not withdrawn, so every
   channel serves what it served.
-- **The mark** (`PUT …/publishers/{p}/distributor {"distributor": …}`, `kista admin publisher
-  distributor <t> <p> <distributor>`, event `publisher.change` with `distributor` and `before`): a
-  distribution admin's or a server administrator's (`404` to a tenant administrator); the name is
-  1 to 128 bytes of printable text, as a tenant reservation's holder. Only a fresh publisher is
-  marked (found in review: otherwise a distribution admin could take over a tenant's own publisher,
-  its keys, its hold and its builds): one a distribution admin or a server administrator created (its
-  `created_by` a distribution admin's, a server token's, the CLI's or the bootstrap's; a tenant
-  administrator's is refused `404`, nothing said), holding no grants, no keys unless it carries the
-  licence-key mark already, no hold, and never a source of anything (no build, live, purged or
-  withdrawn, no release, purged slot, withdrawn version, rule or follow naming it; `400`, the detail
-  without counts), checked under the tenant's auth lock. A distributor's publisher takes no grant
+- **The mark**: a distribution admin's or a server administrator's (`404` to a tenant
+  administrator); the distributor's name is 1 to 128 bytes of printable text, as a tenant
+  reservation's holder. Found in review: marking any existing publisher would let a distribution
+  admin take over a tenant's own publisher (its keys, its hold, its builds), so a server
+  administrator, or a distribution admin, creates a distributor's publisher marked (`POST
+  …/publishers {"name", "distributor"}`, `kista admin publisher add <t> <p> -distributor <d>`,
+  event `publisher.add` with `distributor`), and an existing publisher is marked (`PUT
+  …/publishers/{p}/distributor {"distributor": …}`, `publisher distributor <t> <p> <d>`, event
+  `publisher.change` with `distributor` and `before`) only when a distribution admin created it
+  (its `created_by`; one a tenant administrator or an operator created, a server token or the CLI,
+  even a licence-key publisher with keys a server administrator added, is refused `404`, nothing
+  said) and it is fresh: no grants, no keys unless it carries the licence-key mark already, no hold,
+  and never a source of anything (no build, live, purged or withdrawn, no release, purged slot,
+  withdrawn version, rule or follow naming it; `400`, the detail without counts), checked under the
+  tenant's auth lock. Rules and follows change under a channel's lock, not that one: a rule or a
+  follow naming a distribution admin's publisher written while it is marked is a window left open
+  (it takes nothing the distributor did not publish, and the publisher is the distribution admin's
+  own making). A distributor's publisher takes no grant
   afterwards, from anyone (`400` to a server administrator or a distribution admin, `404` to a tenant
   administrator, for whom it is marked: it reaches no channel by itself, and a `promote` grant would
   let it place); marking it again renames its distributor; the mark is never removed (the publisher
@@ -800,7 +807,10 @@ channel, deferred.
   reserve server-wide and the tenant does not reserve for another holder than its distributor, and
   refuses the rest as a missing grant does (`404`, nothing said). The name is checked again in the
   build's landing transaction (`tx.ReservedKind`, `tx.TenantReservedHolder`), with the tenant still
-  active (a suspension or a reservation during the upload refuses it). A name an upstream of the
+  active (a suspension or a reservation during the upload refuses it); the reservation is read
+  without a lock a reservation waits for, so one committed in between lands the build in the
+  catalogue only: a follow re-checks the reservation under the channel lock before it writes a rule,
+  and a placement by an `auto` rule needs the tenant's own rule, so nothing reaches a channel by it. A name an upstream of the
   tenant lists is allowed (spec 0030's lookup counts it as reserved, but the spec's e2e has a
   tenant's upstream and a distributor bring one name; each is its own source). Marked for licence
   keys, its publication records the build's keys without the grant a marked publisher otherwise
@@ -818,7 +828,8 @@ channel, deferred.
 - **Withdrawal is the version's** (`POST …/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw
   {"reason": …}`, `kista admin catalogue withdraw <t> <source> <name> <version> -reason <text> [-type
   t]`): a distribution admin's or a server administrator's (a tenant administrator is `404`), for a
-  distributor's publisher, removed or not; the reason is 1 to 400 bytes of printable text. Found in
+  distributor's publisher, removed or not; the version is a build's version (spec 0008's grammar,
+  `400` otherwise) and the reason 1 to 400 bytes of printable text. Found in
   review: marking the builds alone let a new build of the version (another platform, DuckDB version
   or C API slot) arrive and be placed, so the version itself is recorded in `withdrawn_versions`,
   whether the source holds builds of it or not (purged, collected, or not arrived yet: the answer
@@ -840,6 +851,9 @@ channel, deferred.
   `publisher-id:<id>` always (found in review: a later publisher of the same name hid an older
   removed one); an ambiguous `publisher:<name>` is `409`, naming the id form, and the distribution
   admins' catalogue lists such an entry as `publisher-id:<id>`, every entry with its `publisher_id`.
+  A server administrator (a server token, the CLI) reads and names them so too (found in review: it
+  could not follow the `409`'s advice), any other source as before; a tenant administrator's view is
+  unchanged.
   Not in the Data model as drafted: the spec's "removed or not" needs it.
 - **Serving reads the entry's state**: a channel's snapshot leaves out releases of withdrawn entries
   (`store.ChannelReleases`), so the DuckDB routes, the index, bundle exports and pull-through's
@@ -854,21 +868,24 @@ channel, deferred.
   refuses a withdrawn one (`409`, problem type `…/withdrawn`), before it would answer a release
   already in the slot as made (found in review: a promotion of a withdrawn release into a channel
   holding it answered success); the placement pass skips withdrawn entries before it, and a withdrawn
-  release is neither active nor holds its version for the pass, so a `manual` rule completes
-  nothing of it. A release of a withdrawn entry is never made active, current or public again
+  release holds its version for no one, so a `manual` rule completes nothing of it. A release of a withdrawn entry is never made active, current or public again
   (`409`; the conservative reading of "made active": current and public too; yank, deprecate and
   private stay allowed). A withdrawn entry is never purged (`409`), never collected (the collector's
   dead-build condition skips it), skipped by a purge of held entries and by the landed trim.
 - **No automatic downgrade** (the owner's decision, 2026-10-24): a withdrawn release still counts as
-  what its cells had, so after a withdrawal an `auto` rule or a follow never places an older version
-  by itself; a newer version, or a placement by hand, is needed. A rule's `newest` (the Sources view)
+  what its cells had and as what they serve, so after a withdrawal an `auto` rule or a follow never
+  places an older version by itself, and a late build completing an older version the channel holds
+  is not made current where the withdrawn version was (found in review); a newer version, or a
+  placement by hand, is needed. A rule's `newest` (the Sources view)
   stays the newest available version in the catalogue, not withdrawn nor held, which the pass takes
   only when it is newer than what the channel had (as for a yanked version); the docs say so.
 - **Per source**: a withdrawal is the distributor's source's; the same body from the tenant's own
   publisher or an administrator's add is the tenant's to serve, or to block for every source.
 - **Caps** (found in review, reverting a first deviation): a withdrawn entry counts in its source's
   `catalogue.max_entries` and `catalogue.max_bytes`, released or not, since its body is kept: a
-  distributor that publishes and withdraws does not grow a tenant's storage without bound.
+  distributor that publishes and withdraws does not grow a tenant's storage without bound. Since a
+  withdrawn entry is never purged, a source full of them stays full: the `429`'s detail says
+  withdrawn builds count and are never purged, and a new publisher is the way out.
 - **Deviation: the body stays.** The Retention section's "a withdrawn entry keeps its record and drops
   its body reference" is left to a follow-up: the body is kept with the record (the releases of the
   entry still reference the build, and readers of a release's body other than serving would need

@@ -122,8 +122,8 @@ func (s *Service) Withdraw(ctx context.Context, a authz.Actor, tenant, packageTy
 	if !pkgtype.Known(packageType) {
 		return Withdrawal{}, fmt.Errorf("%w: package type %q", store.ErrInvalid, packageType)
 	}
-	if version == "" {
-		return Withdrawal{}, fmt.Errorf("%w: a version is required", store.ErrInvalid)
+	if err := ValidExtVersion(version); err != nil { // the builds' grammar (spec 0008)
+		return Withdrawal{}, err
 	}
 	if err := ValidName(name); err != nil {
 		return Withdrawal{}, err

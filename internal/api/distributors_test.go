@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
 // Spec 0033 phase B part 1: a distribution admin (or a server administrator) marks a distributor's
@@ -50,9 +51,44 @@ func TestDistributorRoutes(t *testing.T) {
 	if _, err := m.env.adm.SetPublisherHold(ctx, admin, "acme", "used-ci", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if r := call(400, "PUT", T+"/publishers/used-ci/distributor", da, `{"distributor":"enterest"}`); strings.ContainsAny(r.json(t)["detail"].(string), "0123456789") {
-		t.Fatalf("the refusal tells counts: %s", r.body)
+	// not fresh: a hold, a grant, a key, a build
+	call(201, "POST", T+"/publishers", da, `{"name":"granted-ci"}`)
+	call(201, "POST", T+"/grants", ta, `{"principal":"publisher:granted-ci","verbs":["publish"]}`)
+	call(201, "POST", T+"/publishers", da, `{"name":"keyed-ci"}`)
+	m.addKey(t, ta, "acme", "keyed-ci")
+	call(201, "POST", T+"/publishers", da, `{"name":"built-ci"}`)
+	acme, err := m.st.GetTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+		p, err := tx.GetPublisher(ctx, acme.ID, "built-ci")
+		if err != nil {
+			return err
+		}
+		b := store.Build{TenantID: p.TenantID, Source: store.PublisherSource(p.ID), Name: "geo_tools", PackageVersion: "0.1", Platform: "linux_amd64",
+			ABI: store.ABICPP, DuckDBVersion: "v2.0.0", BodyHash: strings.Repeat("e", 64), Origin: store.OriginPublication, CreatedBy: "os:1:t"}
+		return tx.FindOrInsertBuild(ctx, &b)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"used-ci", "granted-ci", "keyed-ci", "built-ci"} {
+		if r := call(400, "PUT", T+"/publishers/"+name+"/distributor", da, `{"distributor":"enterest"}`); strings.ContainsAny(r.json(t)["detail"].(string), "0123456789") {
+			t.Fatalf("the refusal tells counts: %s", r.body)
+		}
+	}
+	// an operator's publisher is not taken over either: a server administrator creates a distributor's
+	// publisher marked (a distribution admin may too; a tenant administrator may not)
+	call(201, "POST", T+"/publishers", sa, `{"name":"ops-ci"}`)
+	call(404, "PUT", T+"/publishers/ops-ci/distributor", sa, `{"distributor":"enterest"}`)
+	call(404, "PUT", T+"/publishers/ops-ci/distributor", da, `{"distributor":"enterest"}`)
+	call(404, "POST", T+"/publishers", ta, `{"name":"tenant-dist","distributor":"enterest"}`)
+	if r := call(201, "POST", T+"/publishers", sa, `{"name":"server-dist","distributor":"enterest"}`); r.json(t)["distributor"] != "enterest" {
+		t.Fatalf("created marked: %s", r.body)
+	}
+	call(201, "POST", T+"/publishers", da, `{"name":"da-dist","distributor":"enterest"}`)
+	call(400, "POST", T+"/publishers", da, `{"name":"bad-dist","distributor":""}`)
+	call(200, "PUT", T+"/publishers/server-dist/distributor", sa, `{"distributor":"enterest-eu"}`)  // renamed
 	call(404, "POST", T+"/grants", ta, `{"principal":"publisher:enterest-ci","verbs":["publish"]}`) // marked: not the tenant's
 	call(400, "POST", T+"/grants", sa, `{"principal":"publisher:enterest-ci","verbs":["publish"],"extension":"geo_tools"}`)
 	// its keys and its hold are the distributor's
@@ -213,6 +249,17 @@ func TestDistributorRoutes(t *testing.T) {
 		removedID = x["publisher_id"].(string)
 	}
 	call(200, "GET", T+"/catalogue/publisher-id:"+removedID+"/extensions/gone_ext", da, "")
+	// a server administrator names them so too
+	if r := call(200, "GET", T+"/catalogue?name=gone_ext", sa, ""); !strings.Contains(string(r.body), `"source":"publisher-id:`+removedID+`"`) ||
+		!strings.Contains(string(r.body), `"publisher_id":"`+removedID+`"`) {
+		t.Fatalf("the server administrator's catalogue: %s", r.body)
+	}
+	call(409, "POST", T+"/catalogue/publisher:gone-ci/extensions/gone_ext/versions/1.0/withdraw", sa, `{"reason":"retired"}`)
+	call(200, "GET", T+"/catalogue/publisher-id:"+removedID+"/extensions/gone_ext", sa, "")
+	if r := call(200, "GET", T+"/catalogue?name=gone_ext", ta, ""); strings.Contains(string(r.body), "publisher_id") {
+		t.Fatalf("the tenant administrator's catalogue: %s", r.body)
+	}
+	call(400, "POST", T+"/catalogue/publisher-id:"+removedID+"/extensions/gone_ext/versions/1.0~rc/withdraw", da, `{"reason":"x"}`)
 	if r := call(200, "POST", T+"/catalogue/publisher-id:"+removedID+"/extensions/gone_ext/versions/1.0/withdraw", da, `{"reason":"retired"}`); len(r.json(t)["withdrawn"].([]any)) != 1 {
 		t.Fatalf("withdrawn by its id: %s", r.body)
 	}

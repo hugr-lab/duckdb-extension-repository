@@ -492,7 +492,8 @@ POST /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/versions/{v}/withdr
   `withdrawn` with `withdrawn_at` and `withdrawn_reason` (`catalogue list`'s `WITHDRAWN`, `catalogue
   show`'s `WITHDRAWN`); `release list` shows such a release's state with `(withdrawn)`. A withdrawn
   build, released or not, counts in its source's `catalogue.max_entries` and `catalogue.max_bytes`:
-  its body is kept with it.
+  its body is kept with it, and it is never purged, so a source full of withdrawn builds stays full
+  (`429`, which says so); the distributor publishes through a new publisher then.
 
 ## Passthrough channels
 

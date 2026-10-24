@@ -343,11 +343,11 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `POST …/extensions/{ext}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
 | `DELETE …/extensions/{ext}/releases/{id}` | extension admin: purge a yanked release |
 | `GET, POST tenants/{t}/blocks`; `GET, DELETE tenants/{t}/blocks/{hash}` | tenant admin |
-| `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin; a distribution admin all but `DELETE` |
+| `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin; a distribution admin all but `DELETE`; `POST {"name", "distributor"}` creates a [distributor's publisher](publishing.md#distributors-publishers): server, a distribution admin (`404` to a tenant admin) |
 | `GET, POST …/publishers/{name}/github`; `GET, DELETE …/github/{id}` | tenant admin |
 | `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a marked publisher; `DELETE …?purge_held=true` (a tenant admin; a distribution admin for a distributor's publisher) purges the builds the key published that are still held, and answers what it purged and kept, revoked ([holds](publishing.md#holds-and-early-placement)) |
 | `PUT …/publishers/{name}/hold {"hold": "24h"}` | tenant admin: the publisher's [hold](publishing.md#holds-and-early-placement); a publisher answers `hold` (omitted for none); a distributor's publisher's: server, a distribution admin only |
-| `PUT …/publishers/{name}/distributor {"distributor": "enterest"}` | server, a distribution admin: mark a fresh publisher a distribution admin or a server administrator created a [distributor's](publishing.md#distributors-publishers) (`404` for a tenant administrator's publisher, `400` for one that is not fresh); a publisher answers `distributor` (omitted for the tenant's own) |
+| `PUT …/publishers/{name}/distributor {"distributor": "enterest"}` | server, a distribution admin: rename a [distributor's publisher](publishing.md#distributors-publishers)'s distributor, or mark a fresh publisher a distribution admin created (`404` for a tenant administrator's or an operator's publisher, `400` for one that is not fresh); a publisher answers `distributor` (omitted for the tenant's own) |
 | `POST, DELETE …/publishers/{name}/license-keys` | server, a distribution admin: mark a publisher a source of licence keys, or unmark it |
 
 A publisher answers with its `keys` and `license_keys` (true when marked; to a distribution admin,

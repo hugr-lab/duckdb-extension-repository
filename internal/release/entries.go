@@ -55,8 +55,8 @@ func (s *Service) room(ctx context.Context, b store.Build, size int64, admin boo
 		return err
 	}
 	if s.MaxEntries > 0 && n+1 > s.MaxEntries || s.MaxBytes > 0 && bytes+size > s.MaxBytes {
-		return fmt.Errorf("%w (catalogue.max_entries, catalogue.max_bytes): the tenant's administrators place or purge its builds placed nowhere",
-			store.ErrCatalogueFull)
+		return fmt.Errorf("%w (catalogue.max_entries, catalogue.max_bytes): the tenant's administrators place or purge its builds "+
+			"placed nowhere; its withdrawn builds count too and are never purged (a new publisher is the way out)", store.ErrCatalogueFull)
 	}
 	return nil
 }

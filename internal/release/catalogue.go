@@ -39,6 +39,10 @@ type CatalogueVersion struct {
 	Builds  []CatalogueBuild
 }
 
+// serverActor reports whether an actor is a server administrator (a server token, the CLI): it names a
+// tenant's distributors' publishers as a distribution admin does (spec 0033 phase B).
+func serverActor(a authz.Actor) bool { return a.Kind == authz.ActorServer || a.Kind == authz.ActorOS }
+
 func (s *Service) mayAdminTenant(ctx context.Context, a authz.Actor, tenant string) (store.Tenant, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant}); err != nil {
 		return store.Tenant{}, err
@@ -65,6 +69,7 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 	}
 	var labels map[string]string
 	var rules []store.Rule
+	ids := only // the distributors' publishers' ids an answer shows (spec 0033 phase B)
 	if only != nil {
 		labels = map[string]string{}
 		for src, d := range only {
@@ -76,6 +81,14 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 		}
 		if rules, err = s.Store.TenantRules(ctx, t.ID, packageType); err != nil {
 			return nil, err
+		}
+		if serverActor(a) { // a server administrator names the distributors' publishers as a distribution admin does
+			if ids, err = s.Store.DistributorSources(ctx, t.ID); err != nil {
+				return nil, err
+			}
+			for src, d := range ids {
+				labels[src] = d.Label
+			}
 		}
 	}
 	held, err := s.Store.HeldVersions(ctx, t.ID, packageType)
@@ -106,7 +119,7 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 			slices.SortFunc(l, newestFirst)
 		}
 		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, Revoked: rv, Withdrawn: wv,
-			PublisherID: only[k[0]].PublisherID}
+			PublisherID: ids[k[0]].PublisherID}
 		byKey[k] = e
 		out = append(out, e)
 	}
@@ -138,8 +151,17 @@ func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, 
 		return nil, err
 	}
 	resolve := s.Store.ResolveSource
-	if a.Kind == authz.ActorDistributionAdmin {
+	switch {
+	case a.Kind == authz.ActorDistributionAdmin:
 		resolve = s.Store.ResolveDistributorSource
+	case serverActor(a): // a distributor's publisher (removed or not) as a distribution admin names it, else any source
+		resolve = func(ctx context.Context, tenantID, label string) (string, error) {
+			src, err := s.Store.ResolveDistributorSource(ctx, tenantID, label)
+			if errors.Is(err, store.ErrNoSource) {
+				return s.Store.ResolveSource(ctx, tenantID, label)
+			}
+			return src, err
+		}
 	}
 	src, err := resolve(ctx, t.ID, source)
 	if errors.Is(err, store.ErrNoSource) {

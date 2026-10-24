@@ -164,6 +164,11 @@ func TestWithdraw(t *testing.T) {
 				t.Errorf("reason %q: %v", reason, err)
 			}
 		}
+		for _, ver := range []string{"", "a b", "1.0\x00", "../1", strings.Repeat("1", 65)} {
+			if _, _, err := withdraw(ver, "CVE"); !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("version %q: %v", ver, err)
+			}
+		}
 		// a version the source does not have (yet): withdrawn all the same, and none of it arrives
 		if w, already, err := withdraw("9.9", "CVE"); err != nil || already || len(w.Builds) != 0 {
 			t.Fatalf("a version the source does not have: %+v %v %v", w, already, err)

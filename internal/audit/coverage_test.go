@@ -83,7 +83,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"RemoveAudience": {"audience.remove"}, "AddGrant": {"grant.add"}, "RemoveGrant": {"grant.remove"},
 		"AddPublisher": {"publisher.add"}, "RemovePublisher": {"publisher.remove", "catalogue.purge"}, "SetPublisherLicenseKeys": {"publisher.change"},
 		"AddPublisherKey": {"publisher.key.add"}, "RemovePublisherKey": {"publisher.key.remove", "catalogue.purge"},
-		"SetPublisherHold": {"catalogue.hold"}, "SetPublisherDistributor": {"publisher.change"},
+		"SetPublisherHold": {"catalogue.hold"}, "SetPublisherDistributor": {"publisher.change"}, "AddDistributorPublisher": {"publisher.add"},
 		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil,
 		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListPublisherKeys": nil, "TenantPublisherKeys": nil,
 		"CreatePackageGroup": {"extension_group.add"}, "SetPackageGroupDescription": {"extension_group.change"},
@@ -498,10 +498,12 @@ func TestCoverage(t *testing.T) {
 	en.expect("release.Service.RemoveFollow", do(func() error { return en.rel.RemoveFollow(rctx, admin, "acme", "prod", "publisher:dist") }),
 		"follow.clear")
 	// spec 0033 phase B: a fresh publisher marked a distributor's, and a version of it withdrawn
-	en.expect("tenants.AuthAdmin.AddPublisher", do(func() error { _, err := en.adm.AddPublisher(rctx, admin, "acme", "enterest-ci"); return err }),
-		"publisher.add")
-	en.expect("tenants.AuthAdmin.SetPublisherDistributor", do(func() error {
-		_, err := en.adm.SetPublisherDistributor(rctx, admin, "acme", "enterest-ci", "enterest")
+	en.expect("tenants.AuthAdmin.AddDistributorPublisher", do(func() error {
+		_, err := en.adm.AddDistributorPublisher(rctx, admin, "acme", "enterest-ci", "enterest")
+		return err
+	}), "publisher.add")
+	en.expect("tenants.AuthAdmin.SetPublisherDistributor", do(func() error { // renamed
+		_, err := en.adm.SetPublisherDistributor(rctx, admin, "acme", "enterest-ci", "enterest-eu")
 		return err
 	}), "publisher.change")
 	en.expect("release.Service.Withdraw", do(func() error {

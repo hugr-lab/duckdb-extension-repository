@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -88,12 +89,21 @@ func (h *Handler) listPublishers(w http.ResponseWriter, r *http.Request, c calle
 func (h *Handler) addPublisher(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
 		Name string `json:"name"`
+		// Distributor creates a distributor's publisher (spec 0033 phase B): a server administrator's
+		// or a distribution admin's
+		Distributor *string `json:"distributor"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	a, _ := c.actor()
-	pb, err := h.o.Auth.AddPublisher(r.Context(), a, p["t"], in.Name)
+	add := h.o.Auth.AddPublisher
+	if in.Distributor != nil {
+		add = func(ctx context.Context, a authz.Actor, tenant, name string) (store.Publisher, error) {
+			return h.o.Auth.AddDistributorPublisher(ctx, a, tenant, name, *in.Distributor)
+		}
+	}
+	pb, err := add(r.Context(), a, p["t"], in.Name)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return

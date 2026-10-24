@@ -12,7 +12,7 @@ import (
 
 // distributorPlacing is newPlacing with a fresh distributor's publisher, enterest-ci, and a function
 // publishing a name's version for a platform into the catalogue as it.
-func distributorPlacing(t *testing.T, en *env) (placing, func(name, version, platform string) error) {
+func distributorPlacing(t *testing.T, en *env) (placing, func(name, version, platform string, file ...[]byte) error) {
 	t.Helper()
 	en.rel.Authz = publishes{}
 	p := newPlacing(t, en)
@@ -27,11 +27,14 @@ func distributorPlacing(t *testing.T, en *env) (placing, func(name, version, pla
 		})
 	})
 	pub := authzOf(dist)
-	return p, func(name, version, platform string) error {
+	return p, func(name, version, platform string, file ...[]byte) error {
 		m := cpp(version)
 		m.Platform = platform
-		_, _, err := p.rel.AddToCatalogue(ctx, pub, "acme", bytes.NewReader(built(t, m, name+"_duckdb_cpp_init")),
-			publish(name, version, platform))
+		f := built(t, m, name+"_duckdb_cpp_init")
+		if len(file) > 0 {
+			f = file[0]
+		}
+		_, _, err := p.rel.AddToCatalogue(ctx, pub, "acme", bytes.NewReader(f), publish(name, version, platform))
 		return err
 	}
 }
@@ -120,6 +123,47 @@ func TestWithdrawNoDowngrade(t *testing.T) {
 		p.pass(t, true)
 		if got := p.names(t); got != "geo@2.0 geo@3.0" {
 			t.Fatalf("a newer version: %q", got)
+		}
+
+		// nor by completing an older version it holds: tile 1.0 (amd64) is held, 2.0 (amd64 and arm64)
+		// withdrawn; a late arm64 build of 1.0 is completed, but not current where 2.0 was
+		arm := func(version string) []byte {
+			m := cpp(version)
+			m.Platform = "linux_arm64"
+			f := built(t, m, "tile_duckdb_cpp_init")
+			f[18], f[19] = 183, 0 // an arm64 ELF
+			return f
+		}
+		landArm := func(version string) error { return land("tile", version, "linux_arm64", arm(version)) }
+		must(t, func() error { return land("tile", "1.0", "linux_amd64") })
+		p.pass(t, true)
+		must(t, func() error { return land("tile", "2.0", "linux_amd64") })
+		must(t, func() error { return landArm("2.0") })
+		p.pass(t, true)
+		if _, err := p.rel.Withdraw(ctx, admin, "acme", "", "publisher:enterest-ci", "tile", "2.0", "bad"); err != nil {
+			t.Fatal(err)
+		}
+		must(t, func() error { return landArm("1.0") })
+		p.pass(t, true)
+		prod, err := p.st.GetChannel(ctx, "acme", "prod")
+		if err != nil {
+			t.Fatal(err)
+		}
+		rels, err := p.st.ListReleases(ctx, prod.ID, "tile")
+		if err != nil {
+			t.Fatal(err)
+		}
+		completed := false
+		for _, r := range rels {
+			if r.PackageVersion == "1.0" && r.Platform == "linux_arm64" {
+				completed = true
+				if r.Seq != 0 {
+					t.Fatalf("an older version completed as current where a withdrawn one was: %+v", r.Release)
+				}
+			}
+		}
+		if !completed {
+			t.Fatalf("1.0 not completed for arm64: %+v", rels)
 		}
 	})
 }

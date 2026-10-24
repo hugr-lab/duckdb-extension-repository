@@ -362,19 +362,21 @@ build it publishes is held until its arrival plus the hold.
 ### Distributors' publishers
 
 A distributor, such as Enterest, publishes into a tenant's catalogue through a publisher a
-distribution admin or a server administrator marks as the distributor's (spec 0033):
+distribution admin or a server administrator creates as the distributor's (spec 0033):
 
 ```bash
-kista admin -config /etc/kista/kista.yaml publisher add acme enterest-ci
-kista admin -config /etc/kista/kista.yaml publisher distributor acme enterest-ci enterest
+kista admin -config /etc/kista/kista.yaml publisher add acme enterest-ci -distributor enterest
 ```
 
-or `PUT /api/v1/tenants/{t}/publishers/{name}/distributor {"distributor": "enterest"}` (the
-distributor's name, as a [tenant reservation](#reserved-names) names its holder). Only a fresh
-publisher a distribution admin or a server administrator created is marked: one a tenant
-administrator created is refused (`404`), and one that holds grants, keys (unless it carries the
-licence-key mark already), a hold, builds, releases or rules is refused (`400`). Marking it again
-changes the name; it is never removed: the publisher is removed instead.
+or `POST /api/v1/tenants/{t}/publishers {"name": "enterest-ci", "distributor": "enterest"}` (the
+distributor's name, as a [tenant reservation](#reserved-names) names its holder; a tenant
+administrator passing `distributor` is refused, `404`). An existing publisher is marked (`PUT
+…/publishers/{name}/distributor {"distributor": "enterest"}`, `publisher distributor <tenant>
+<name> <distributor>`) only when a distribution admin created it and it is fresh: one a tenant
+administrator or an operator (a server token, the CLI) created is refused (`404`), and one that
+holds grants, keys (unless it carries the licence-key mark already), a hold, builds, releases or
+rules is refused (`400`). Marking a distributor's publisher again changes the name; the mark is
+never removed: the publisher is removed instead.
 
 - **The catalogue only, without grants.** It publishes with `POST
   …/catalogue/extensions/{ext}/builds` (above) any name kista does not reserve server-wide (DuckDB's

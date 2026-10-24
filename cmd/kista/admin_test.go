@@ -442,10 +442,14 @@ func TestAdminCLI(t *testing.T) {
 	}
 	run(0, "publisher", "remove", "acme", "acl-ci")
 	// a distributor's publisher (spec 0033 phase B): marked, listed, holds no grant; a version withdrawn
-	run(0, "publisher", "add", "acme", "enterest-ci")
+	run(0, "publisher", "add", "acme", "plain-ci")
+	run(1, "publisher", "distributor", "acme", "plain-ci", "enterest") // an operator's publisher is not taken over
+	run(2, "publisher", "list", "acme", "-distributor", "enterest")    // -distributor is add's
+	run(1, "publisher", "add", "acme", "enterest-ci", "-distributor", "line\nbreak")
+	run(0, "publisher", "add", "acme", "enterest-ci", "-distributor", "enterest-eu")
 	run(1, "publisher", "distributor", "acme", "enterest-ci", "")
 	run(2, "publisher", "distributor", "acme", "enterest-ci")
-	run(0, "publisher", "distributor", "acme", "enterest-ci", "enterest")
+	run(0, "publisher", "distributor", "acme", "enterest-ci", "enterest") // renamed
 	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, "DISTRIBUTOR") || !strings.Contains(got, "enterest\n") {
 		t.Fatalf("publisher list with a distributor: %q", got)
 	}
