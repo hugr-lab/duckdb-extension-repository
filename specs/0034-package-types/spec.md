@@ -1,6 +1,6 @@
 # Spec 0034: Package types
 
-- **Status**: draft
+- **Status**: accepted (2026-10-24)
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -11,14 +11,18 @@ it. Later (after the release) kista and Enterest are to distribute ADBC drivers 
 published, placed in channels, licensed, reported on, installed by a client of our own. This spec
 makes the model ready for that without building it: a **package** is a named thing of one
 **package type** (today only `duckdb_extension`), and every place that holds a name holds the pair
-(type, name), directly or through a channel. A channel serves one type. Nothing a DuckDB client or
-an existing API caller sees changes. The ADBC type itself is a later spec.
+(type, name), directly or through a channel. A channel serves one type. The schema and the Go code
+say package where the thing is general (tables, columns, the store's API). Nothing a DuckDB client
+or an existing API caller sees changes. The ADBC type itself is a later spec.
 
 ## Problem
 
 - **Names collide across types.** `snowflake`, `bigquery`, `mysql` and `postgres` are DuckDB
   extensions and ADBC drivers. A grant on `snowflake`, a reservation of it, a licence for it, a
   catalogue entry of it: each would be ambiguous once a second type exists.
+- **The code says extension for everything.** Tables (`extension_groups`), columns (`ext_version`,
+  `grants.extension`) and the store's and authz's Go API name the general thing after the one type
+  there is; a second type would read wrong in every query.
 - **Keys harden.** Spec 0033 phase B re-keys licences per (tenant, name, source) and adds key owners
   per (tenant, name, kid). Re-keying them again for a type later costs another migration on tables
   that carry customers' licences; doing it once, before B, costs a column.
@@ -95,7 +99,7 @@ A grant's resource gains a type, beside its channel and name:
 
 - **A grant that names a package** (`extension`) names a concrete type; `*` with a name is refused
   (`400`, and `CHECK (extension IS NULL OR package_type <> '*')`). It covers that (type, name)
-  only. A package group's **members** are (type, name) pairs; a group grant (`extension_group_grants`)
+  only. A package group's **members** are (type, name) pairs; a group grant (`package_group_grants`)
   has no type of its own: it covers its members.
 - **A grant without a name** has `*` (any type, the default) or a type. A typed one covers a
   resource only when the resource has that type and a channel or a name (`r.PackageType == type` and
@@ -121,8 +125,9 @@ A grant's resource gains a type, beside its channel and name:
 
 ### Vocabulary
 
-The word "package" is used where the thing is general: the website's concepts, the console's
-general screens, this and later specs. The API's and the CLI's names (`extension`, `…/extension-
+The word "package" is used where the thing is general: the schema and the Go code (below), the
+website's concepts, the console's general screens, this and later specs. The API's and the CLI's
+names (`extension`, `…/extension-
 groups`, `-extension`, `…/extensions/{name}`) do not change in this spec: while there is one type
 they are right, and renaming now doubles the surface until 1.0 for nothing a caller gains. The API
 and CLI rename, with the old names as aliases, is the ADBC spec's, when a second type makes
@@ -138,25 +143,60 @@ attachments, the catalogue's routes (and `catalogue?name=`), `grants?extension=`
 (`upstreams/{u}/extensions/{entry}`) the type is the channel's: a `?type=` that differs is refused
 (`400`). The CLI takes `-type`.
 
-### Data model
+### The rename (phase 1)
 
-One migration (0038), landing before spec 0033's phase A2, in the three dialects:
+The schema and the Go code move to the package vocabulary, with no change in behaviour, in one
+migration (0038) with a `min_reader` bump (an older binary would query the old names):
+
+```text
+extension_groups            -> package_groups
+extension_group_members     -> package_group_members;  extension -> package
+extension_group_grants      -> package_group_grants
+grants.extension            -> grants.package
+ext_version                 -> package_version          (builds, releases, purged_slots, the
+                                                         upstreams' versions, downloads, statistics,
+                                                         usage and its forwarding: every table that
+                                                         has it)
+constraints and indexes     *_extension_group*  -> *_package_group*; names that spell ext_version
+                                                         (PostgreSQL's system-named unique on
+                                                         releases) follow the column
+```
+
+- **PostgreSQL**: `ALTER TABLE … RENAME [COLUMN] …`, `ALTER INDEX … RENAME`, `ALTER TABLE … RENAME
+  CONSTRAINT`.
+- **SQL Server**: `sp_rename` for tables, columns, indexes and constraints; a system-named
+  constraint by the dynamic lookup 0034_build_sources uses.
+- **SQLite**: `ALTER TABLE … RENAME TO` and `RENAME COLUMN` (indexes, partial ones included, follow
+  the column); an index whose name changes is dropped and created.
+- **Go**: the store's types and methods (`Grant.Extension` -> `Package`, `ExtVersion` ->
+  `PackageVersion`, `ExtensionGroup*` -> `PackageGroup*` and the like), `authz.Resource`'s
+  `Extension` and `ExtensionGroup` -> `Package` and `PackageGroup`, and the general code that uses
+  them (the catalogue, placement, rules, grants, groups, licences, usage, statistics). Code that is
+  about DuckDB extensions keeps its words: the extension file and its checks (`internal/extfile`),
+  DuckDB's sources and aliases, the serving layout, upstreams of DuckDB's kinds.
+- **Not renamed**: the API's JSON fields, routes and query parameters, the CLI's flags and commands,
+  events and their subjects, bundle manifests, config keys (the rename there is the ADBC spec's,
+  with aliases); `name` columns (they already are the package's name).
+
+### Data model (phase 2)
+
+One migration (0039), after the rename, in the three dialects:
 
 ```text
 channels                + package_type not null default 'duckdb_extension'
 builds                  + package_type not null default 'duckdb_extension'
                           ux_builds_source  (tenant_id, package_type, source, name, body_hash)
-                          ux_builds_slot    (tenant_id, package_type, source, name, ext_version,
-                                             platform, slot) where not legacy_duplicate
-                                             and source <> 'tenant'
+                          ux_builds_slot    (tenant_id, package_type, source, name,
+                                             package_version, platform, slot)
+                                             where not legacy_duplicate and source <> 'tenant'
                           ix_builds_source_name    (tenant_id, package_type, source, name,
                                                     created_at)
                           ix_builds_source_created (tenant_id, package_type, source, created_at)
-grants                  + package_type not null ('duckdb_extension' with a name, else '*');
-                          check (extension is null or package_type <> '*')
-extension_group_members + package_type not null default 'duckdb_extension';
-                          pk (group_id, package_type, extension);
-                          ix_extension_group_members_tenant (tenant_id, package_type, extension)
+grants                  + package_type not null ('duckdb_extension' with a package, else '*');
+                          check (package is null or package_type <> '*')
+package_group_members   + package_type not null default 'duckdb_extension';
+                          pk (group_id, package_type, package);
+                          ix_package_group_members_tenant (tenant_id, package_type, package)
 reserved_names          + package_type; pk (package_type, name)
 reserved_name_sources   + package_type; pk (package_type, name, source);
                           fk (package_type, name) -> reserved_names (the old fk on name dropped
@@ -194,6 +234,12 @@ Events that name a package without a channel (`catalogue.*`, `license.*`, `reser
 groups) carry `package_type` when it is not the default. Subjects (`ext:<name>`, `license:<name>`,
 `reserved:<name>`) are unchanged for `duckdb_extension`; another type's subjects are its spec's.
 
+### Delivery
+
+Two phases, each a PR, both before spec 0033's phase A2 (so B's licence keys and key owners are
+born with the type): **phase 1**, the rename (0038, no change in behaviour); **phase 2**, the types
+(0039).
+
 ## Security
 
 - **No widening.** Every existing grant with a name, and every group member, is
@@ -210,7 +256,10 @@ groups) carry `package_type` when it is not the default. Subjects (`ext:<name>`,
 
 ## Testing
 
-- Store suite on the three dialects: migration 0038 on populated databases (grants with and without
+- Phase 1: the store suite on the three dialects, unchanged in what it asserts, runs on the renamed
+  schema; the migration on a populated database keeps every row (groups, members, grants, builds,
+  releases, slots, statistics, usage); the e2e cases unchanged.
+- Phase 2: the store suite on the three dialects: migration 0039 on populated databases (grants with and without
   a name, members, reservations, licences, builds); two entries of one name in two types do not
   collide in the catalogue, the slots, the reservations, the licences (a test-only second type);
   rows of an unregistered type are ignored.
@@ -237,8 +286,9 @@ groups) carry `package_type` when it is not the default. Subjects (`ext:<name>`,
 - **Untyped grants meaning every type.** Keeps rows smaller, but every existing grant on
   `postgres` would reach the `postgres` driver the day it arrives.
 - **Renaming the API and CLI now**, with aliases. A second set of names until 1.0 while one type
-  exists; deferred to the ADBC spec. Tables and Go identifiers keep `extension` (hundreds of files,
-  no gain).
+  exists; deferred to the ADBC spec (the owner agreed, 2026-10-24).
+- **Keeping the old table and Go names.** Cheaper now, but every query and type would name the
+  general thing after one type; the owner chose the rename, as its own step (2026-10-24).
 
 ## Follow-ups
 
