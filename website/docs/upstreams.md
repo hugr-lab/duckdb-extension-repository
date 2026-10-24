@@ -319,8 +319,13 @@ Tenant shadows (below) are a passthrough channel's matter and stay as they are.
 ## The catalogue and a channel's rules
 
 Every build that arrives in a tenant, mirrored or published, is a build of its source in the
-tenant's **catalogue** (spec 0033), and channels may take it from there: a build is kept while a
-release holds it, or while it waits as landed (below); others are collected as before (spec 0016).
+tenant's **catalogue** (spec 0033), and channels may take it from there. A version is immutable
+within its source in the whole tenant: another body of a version the source has is refused, in any
+channel or in the catalogue (`409`; a mirror's cell is `conflict`). A build is kept while a release
+holds it, or while it waits as landed: a manual rule's mirrored version (below) or a build published
+into the catalogue only; a source's three newest landed versions of a name are kept, older ones are
+left to the collector (spec 0016) by the placement pass's hourly sweep. A source holds at most
+`catalogue.max_entries` builds and `catalogue.max_bytes` of bodies ([configuration](configuration.md#catalogue)).
 A channel takes from the catalogue by its **rule** for each name: the source above, and a **mode**
 an administrator gives it.
 
@@ -350,6 +355,11 @@ an administrator gives it.
 - **Reading the catalogue**: `kista admin catalogue list <tenant>` and `catalogue show <tenant>
   <source> <name>`, or `GET /api/v1/tenants/{t}/catalogue` and `…/catalogue/{source}/extensions/{ext}`
   (tenant administrators).
+- **Publishing into the catalogue only**: `POST /api/v1/tenants/{t}/catalogue/extensions/{ext}/builds`
+  (see [Publishing](publishing.md#publishing-into-the-catalogue)), or `kista admin catalogue add`.
+- **Purging an entry**: `kista admin catalogue purge <tenant> <build-id>` or `DELETE
+  /api/v1/tenants/{t}/catalogue/builds/{id}` (tenant administrators) deletes a build no release
+  holds; since no one could have installed it, its slot is free again.
 
 ## Passthrough channels
 

@@ -102,7 +102,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release", "source.set"}, "Resign": {"key.resign"},
 		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
 		"Place": {"release.place", "shadow.add", "source.set"}, "PlaceRule": {"release.place", "shadow.add"}, "Catalogue": nil,
-		"CatalogueVersions": nil,
+		"CatalogueVersions": nil, "AddToCatalogue": {"catalogue.arrival"}, "PurgeEntry": {"catalogue.purge"}, "TrimLanded": nil,
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
@@ -449,6 +449,13 @@ func TestCoverage(t *testing.T) {
 		}
 		return err
 	}), "release.place")
+	var entry string
+	en.expect("release.Service.AddToCatalogue", do(func() error {
+		b, _, err := en.rel.AddToCatalogue(rctx, admin, "acme", bytes.NewReader(ext(t, nil, "acl", "3.0")), release.AddOptions{Name: "acl"})
+		entry = b.ID
+		return err
+	}), "catalogue.arrival")
+	en.expect("release.Service.PurgeEntry", do(func() error { _, err := en.rel.PurgeEntry(rctx, admin, "acme", entry); return err }), "catalogue.purge")
 	en.expect("release.Service.SetSource", do(func() error {
 		_, err := en.rel.SetSource(rctx, admin, "acme", "prod", "parquet", "tenant", "")
 		return err

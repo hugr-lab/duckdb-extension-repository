@@ -205,10 +205,20 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if len(b.OriginSignature) > 0 {
 		sig = b.OriginSignature
 	}
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	// spec 0033: a version is immutable within its source in the whole tenant
+	var other string
+	err = t.queryRow(ctx, `SELECT body_hash FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND ext_version = ? AND platform = ?
+AND slot = ? AND legacy_duplicate = ? AND body_hash <> ?`, b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.Slot(), false, b.BodyHash).Scan(&other)
+	switch {
+	case err == nil:
+		return fmt.Errorf("%w: %s %s %s %s holds another body from this source (%.12s)", ErrCatalogueSlot, b.Name, b.ExtVersion, b.Platform, b.Slot(), other)
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		b.ID, b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
 		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, b.Visibility, nullable(b.Provenance),
-		t.s.d.timeArg(b.CreatedAt))
+		b.Slot(), t.s.d.timeArg(b.CreatedAt))
 	return t.s.mapErr(err, "build "+b.Name)
 }
 

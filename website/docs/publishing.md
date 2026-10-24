@@ -59,10 +59,10 @@ API v1 and a v2 build. A slot is its source's ([A name's source in a
 channel](upstreams.md#a-names-source-in-a-channel)): another source may release the same version of
 the name in the channel, and the channel serves the one whose source it selected.
 
-- **A released version is immutable** within its source. The same body in the same slot with the
-  same choices is the existing release (`200`); another body, or other choices, is `409`. A fix is a
-  new version. A body another source released in the channel is a release of the publisher's own
-  (`201`).
+- **A released version is immutable** within its source, in every channel of the tenant and in its
+  catalogue. The same body in the same slot with the same choices is the existing release (`200`);
+  another body, or other choices, is `409`. A fix is a new version. A body another source released
+  in the channel is a release of the publisher's own (`201`).
 - A yanked release keeps its slot.
 - The extension version is matched exactly and case-sensitively: `1.0` and `v1.0` differ, and DuckDB
   asks for the string as typed in `INSTALL x FROM r VERSION '…'`.
@@ -260,6 +260,23 @@ kista admin -config /etc/kista/kista.yaml \
 ```
 
 `-release <id>` promotes one release; `-private` and `-not-current` narrow the result.
+
+## Publishing into the catalogue
+
+A build can be published into the tenant's [catalogue](upstreams.md#the-catalogue-and-a-channels-rules)
+only, placed in no channel, for the channels' rules or an administrator to take later:
+
+```text
+POST /api/v1/tenants/{t}/catalogue/extensions/{ext}/builds?version=&platform=[&visibility=]
+```
+
+The request is a channel's publication's, without `current`: the body is the file, a publisher
+signs it as any request. It takes `publish` on the extension tenant-wide (a grant on a channel does
+not reach it; a reserved name only through a grant naming it). The build's DuckDB version must be
+registered on the server. The answer is the build (`201`, or `200` when the source has the body
+already): `{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility",
+"origin", "checked", "created_at", "placed"}`. The CLI's form is `kista admin catalogue add <tenant>
+<file|-> -name <name> [-private] [-unchecked]`.
 
 ## Placing from the catalogue
 

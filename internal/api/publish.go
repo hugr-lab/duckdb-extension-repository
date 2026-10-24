@@ -42,6 +42,8 @@ func (h *Handler) publishErr(w http.ResponseWriter, err error, bodyRef bool) {
 		problem(w, http.StatusConflict, typeSource, publicRefusal(err))
 	case errors.Is(err, release.ErrBlocked):
 		problem(w, http.StatusConflict, typeConflict, "the body is blocked in this tenant")
+	case errors.Is(err, store.ErrCatalogueFull):
+		problem(w, http.StatusTooManyRequests, typeTooMany, publicRefusal(err))
 	default:
 		h.channelErr(w, err, bodyRef)
 	}
@@ -111,62 +113,85 @@ func (rr *rateReader) Read(p []byte) (int, error) {
 
 var publishParams = map[string]bool{"version": true, "platform": true, "visibility": true, "current": true}
 
-func (h *Handler) publishRelease(w http.ResponseWriter, r *http.Request, c caller, p params) {
+// upload is a publication's request: what its parameters say, and its body read at the server's
+// least rate, holding an upload slot until done.
+type upload struct {
+	version, platform   string
+	private, notCurrent bool
+	body                io.Reader
+	done                func()
+}
+
+// readUpload checks a publication's parameters and headers and takes an upload slot, or answers.
+// current is whether the route takes "current" (a channel's).
+func (h *Handler) readUpload(w http.ResponseWriter, r *http.Request, c caller, current bool) (upload, bool) {
 	q := r.URL.Query()
 	for k, vs := range q {
-		if !publishParams[k] || len(vs) != 1 {
-			problem(w, http.StatusBadRequest, typeInvalid, "the parameters are version, platform, visibility and current, once each")
-			return
+		if !publishParams[k] || k == "current" && !current || len(vs) != 1 {
+			msg := "the parameters are version, platform, visibility and current, once each"
+			if !current {
+				msg = "the parameters are version, platform and visibility, once each"
+			}
+			problem(w, http.StatusBadRequest, typeInvalid, msg)
+			return upload{}, false
 		}
 	}
-	version, platform := q.Get("version"), q.Get("platform")
-	if version == "" || platform == "" {
+	u := upload{version: q.Get("version"), platform: q.Get("platform"), private: true} // a forgotten visibility never publishes to everyone
+	if u.version == "" || u.platform == "" {
 		problem(w, http.StatusBadRequest, typeInvalid, "version and platform are required: what the file's footer says")
-		return
+		return upload{}, false
 	}
-	private := true // a forgotten visibility never publishes to everyone
 	switch q.Get("visibility") {
 	case "", store.Private:
 	case store.Public:
-		private = false
+		u.private = false
 	default:
 		problem(w, http.StatusBadRequest, typeInvalid, "visibility is public or private")
-		return
+		return upload{}, false
 	}
-	notCurrent := false
 	switch q.Get("current") {
 	case "", "true":
 	case "false":
-		notCurrent = true
+		u.notCurrent = true
 	default:
 		problem(w, http.StatusBadRequest, typeInvalid, "current is true or false")
-		return
+		return upload{}, false
 	}
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/octet-stream" {
 		problem(w, http.StatusUnsupportedMediaType, typeMediaType, "the body is the extension file, application/octet-stream")
-		return
+		return upload{}, false
 	}
 	if r.ContentLength < 0 || len(r.TransferEncoding) > 0 {
 		problem(w, http.StatusLengthRequired, typeInvalid, "Content-Length is required")
-		return
+		return upload{}, false
 	}
 	if r.ContentLength > h.o.MaxBody+extfile.SignatureSize {
 		problem(w, http.StatusRequestEntityTooLarge, typeTooLarge, "the file is larger than this server accepts")
-		return
+		return upload{}, false
 	}
 	a, _ := c.actor()
 	done, ok := h.slot(w, a.String(), c.tenant.ID)
 	if !ok {
-		return
+		return upload{}, false
 	}
-	defer done()
 	now := time.Now()
 	// the whole upload is due by its length at the least rate, plus a minute
-	body := &rateReader{r: io.LimitReader(r.Body, r.ContentLength), rc: http.NewResponseController(w), start: now,
+	u.body = &rateReader{r: io.LimitReader(r.Body, r.ContentLength), rc: http.NewResponseController(w), start: now,
 		rate: float64(h.o.MinRate), end: now.Add(time.Minute + time.Duration(float64(r.ContentLength)/float64(h.o.MinRate)*float64(time.Second)))}
-	rel, existed, err := h.o.Releases.Add(r.Context(), a, p["t"], p["c"], body, release.AddOptions{
-		Name: p["ext"], Private: private, NotCurrent: notCurrent, NoWait: true,
-		Publish: &release.Publication{Version: version, Platform: platform, Provenance: provenance(a, c), KeySources: keySources(c),
+	u.done = done
+	return u, true
+}
+
+func (h *Handler) publishRelease(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	u, ok := h.readUpload(w, r, c, true)
+	if !ok {
+		return
+	}
+	defer u.done()
+	a, _ := c.actor()
+	rel, existed, err := h.o.Releases.Add(r.Context(), a, p["t"], p["c"], u.body, release.AddOptions{
+		Name: p["ext"], Private: u.private, NotCurrent: u.notCurrent, NoWait: true,
+		Publish: &release.Publication{Version: u.version, Platform: u.platform, Provenance: provenance(a, c), KeySources: keySources(c),
 			Statement: c.statement(), Signature: c.signature()},
 	})
 	if err != nil {

@@ -108,6 +108,11 @@ type Service struct {
 	// the tenant to be public; nil allows none.
 	MayPublish func(tenant, credential string) bool
 
+	// MaxEntries and MaxBytes bound what one source holds in a tenant's catalogue (spec 0033:
+	// catalogue.max_entries, catalogue.max_bytes); 0: no bound.
+	MaxEntries int
+	MaxBytes   int64
+
 	// PurgeOff refuses purges (spec 0016 phase 2): replicas may still run a version that does not
 	// know purged slots and would refill them. kista sets it while gc.interval is 0 (the rollout
 	// not declared done).
@@ -301,6 +306,9 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		return store.Release{}, false, err
 	}
 	if err := servable(capis, b); err != nil {
+		return store.Release{}, false, err
+	}
+	if err := s.room(ctx, it.b, sp.File().BodySize); err != nil { // spec 0033: the source's catalogue
 		return store.Release{}, false, err
 	}
 	kind := audit.Kind("release.add")
@@ -998,7 +1006,7 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 				break
 			}
 			if !errors.Is(err, store.ErrExists) || try > 0 {
-				return nil, false, err
+				return nil, false, slotErr(it.origin, err) // spec 0033: the source's slot holds another body
 			}
 		}
 		if s.afterBuild != nil {

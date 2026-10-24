@@ -1,7 +1,7 @@
 # Spec 0033: The catalogue
 
-- **Status**: accepted (2026-10-24); phase A1 in progress (parts 1, builds and slots per source,
-  and 2, rules' modes and placement, implemented); A2, B and C to come
+- **Status**: accepted (2026-10-24); phase A1 in progress (parts 1, builds and slots per source, 2,
+  rules' modes and placement, and 3a, the catalogue's own entries, implemented); A2, B and C to come
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -507,6 +507,31 @@ caps, the catalogue's own slot uniqueness; part 4, follows.
   (holds come in A2) nor whether a build declares licence keys.
 - **Left**: a recheck racing a running look waits for the hourly sweep; purged slots from before
   migration 0034 (`*`) keep older versions of every source out of their cell.
+
+### As built (A1 part 3a)
+
+A1 part 3 comes in two: 3a, the catalogue's own entries (below); 3b, upstreams without a home
+channel.
+
+- **Migration 0036**: builds gain `slot` and `legacy_duplicate`; a unique key (tenant, source, name,
+  version, platform, slot) where not a legacy duplicate (a partial or filtered index in each dialect).
+  Of two bodies a source released in two channels before, the oldest keeps the key. An arrival of
+  another body in a source's slot is refused before the insert (`409` as a slot; a mirror's cell
+  `conflict`).
+- **Publishing into the catalogue only**: `POST …/catalogue/extensions/{ext}/builds` (`publish` on
+  the extension tenant-wide, publishers signed as on a channel's route), `kista admin catalogue add`
+  (an administrator's, source `tenant`); the build's DuckDB version must be registered on the server;
+  the build lands (event `catalogue.arrival`).
+- **Retention**: a landed build is kept until a release takes it, among the `KeepLanded` (3) newest
+  landed versions of its (source, name); the placement pass's hourly sweep leaves older ones to the
+  collector (their grace starts then). A mirror's cells are not consulted (simpler than "its cell's
+  newest", and bounded the same way).
+- **Purging an entry**: `DELETE …/catalogue/builds/{id}`, `kista admin catalogue purge` (tenant
+  administrators): a build no release holds is deleted with its key records (`catalogue.purge`); its
+  slot is free again.
+- **Caps**: `catalogue.max_entries` (20,000) and `catalogue.max_bytes` (100 GiB) per source, checked
+  before a new build is committed (the same body again is no new entry); refused with `429` on the
+  API, a mirror's cell `rejected`.
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into

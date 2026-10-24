@@ -157,13 +157,18 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		res.Release, res.Existed = *existing, true
 		return res, nil
 	}
+	if !in.DryRun {
+		if err := s.room(ctx, it.b, f.BodySize); err != nil { // spec 0033: the source's catalogue
+			return res, err
+		}
+	}
 	if pinned {
 		// the channel's administrator chose its versions by hand: the build waits in the catalogue
 		res.Landed = true
 		if in.DryRun {
 			return res, nil
 		}
-		return res, s.land(ctx, sp, &it)
+		return res, slotErr(store.OriginUpstream, s.land(ctx, sp, &it))
 	}
 	capis, err := s.Store.ChannelCAPIs(ctx, ch.ID)
 	if err != nil {

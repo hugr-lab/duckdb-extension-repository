@@ -411,8 +411,16 @@ func (p *Placer) Run(ctx context.Context) {
 	}
 }
 
-// Once makes one pass: the due rules, or every rule (sweep).
+// Once makes one pass: the due rules, or every rule (sweep); a sweep also lets the collector take
+// landed builds the catalogue keeps no more (KeepLanded).
 func (p *Placer) Once(ctx context.Context, sweep bool) {
+	if sweep {
+		if n, err := p.Service.TrimLanded(ctx); err != nil {
+			p.Log.Error("release: trimming landed builds", "error", err)
+		} else if n > 0 {
+			p.Log.Info("release: landed builds left to the collector", "builds", n)
+		}
+	}
 	rules, err := p.Service.Store.DueRules(ctx, sweep)
 	if err != nil {
 		p.Log.Error("release: listing the rules to place", "error", err)

@@ -72,6 +72,8 @@ type Config struct {
 	Bootstrap Bootstrap `yaml:"bootstrap" kista:"fileonly"`
 	// Reserved configures the server's reserved names (spec 0030): the community sync.
 	Reserved Reserved `yaml:"reserved" kista:"fileonly"`
+	// Catalogue bounds what a source holds in a tenant's catalogue (spec 0033).
+	Catalogue Catalogue `yaml:"catalogue" kista:"fileonly"`
 	// Source is where the configuration was read from: a file's path, env:NAME, or "" (the
 	// defaults). Set by Load; never configured.
 	Source string `yaml:"-"`
@@ -695,6 +697,7 @@ func (c Config) Validate() error {
 	validateStatistics(bad, c)
 	validateTelemetry(bad, c)
 	validateGC(bad, c)
+	validateCatalogue(bad, c)
 	validateReserved(bad, c)
 	validateAttachments(bad, c)
 	validateBundles(bad, c)

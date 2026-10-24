@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -214,4 +215,91 @@ WHERE r.tenant_id = ? AND r.source = ? AND r.name = ? ORDER BY c.name`, []any{te
 		return nil
 	})
 	return out, err
+}
+
+// ErrCatalogueSlot is a build refused because its source has another body of the version in the
+// slot (spec 0033: a version is immutable within its source in the whole tenant).
+var ErrCatalogueSlot = errors.New("store: the source's slot holds another body; a fix is a new version")
+
+// ErrCatalogueFull is a build refused because its source holds as many entries or bytes as it may
+// (spec 0033: catalogue.max_entries, catalogue.max_bytes).
+var ErrCatalogueFull = errors.New("store: the source's catalogue is full")
+
+// SourceUsage is how many builds a tenant's source holds, and their bodies' bytes.
+func (s *Store) SourceUsage(ctx context.Context, tenantID, source string) (entries int, bytes int64, err error) {
+	var n sql.NullInt64
+	err = s.db.QueryRowContext(ctx, s.d.rebind(`SELECT COUNT(*), SUM(bl.body_len) FROM builds b JOIN tenants t ON t.id = b.tenant_id
+LEFT JOIN blobs bl ON bl.domain = t.storage_domain AND bl.body_hash = b.body_hash WHERE b.tenant_id = ? AND b.source = ?`), tenantID, source).
+		Scan(&entries, &n)
+	return entries, n.Int64, err
+}
+
+// LandedBuild is a build landed in the catalogue without a release (TrimLanded's reads).
+type LandedBuild struct{ ID, TenantID, Source, Name, Version string }
+
+// LandedBuilds lists every landed build.
+func (s *Store) LandedBuilds(ctx context.Context) ([]LandedBuild, error) {
+	var out []LandedBuild
+	err := s.eachRow(ctx, "SELECT id, tenant_id, source, name, ext_version FROM builds WHERE landed = ?", []any{true},
+		func(sc func(...any) error) error {
+			var b LandedBuild
+			if err := sc(&b.ID, &b.TenantID, &b.Source, &b.Name, &b.Version); err != nil {
+				return err
+			}
+			out = append(out, b)
+			return nil
+		})
+	return out, err
+}
+
+// Unland lets the collector take builds landed in the catalogue that wait no more (spec 0033: an
+// older version than those a source's name keeps): their grace starts now.
+func (s *Store) Unland(ctx context.Context, ids []string) error {
+	return s.InTx(ctx, "", func(tx *Tx) error {
+		for _, id := range ids {
+			if _, err := tx.exec(ctx, "UPDATE builds SET landed = ?, used_at = ? WHERE id = ?", false, tx.s.d.timeArg(tx.Now()), id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// DeleteEntry deletes a tenant's build that no release holds (spec 0033: an entry purged from the
+// catalogue; its slot is free, since no one could have installed it), with its licence-key records;
+// the collector removes the body. It returns the build.
+func (t *Tx) DeleteEntry(ctx context.Context, tenantID, id string) (Build, error) {
+	b, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE id = ? AND tenant_id = ?", id, tenantID))
+	if err != nil {
+		return Build{}, notFound(err, "build "+id)
+	}
+	var n int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM releases WHERE build_id = ?", id).Scan(&n); err != nil {
+		return Build{}, err
+	}
+	if n > 0 {
+		return Build{}, fmt.Errorf("%w: the build is released; yank and purge its releases first", ErrConflict)
+	}
+	if _, err := t.exec(ctx, "DELETE FROM build_license_keys WHERE build_id = ?", id); err != nil {
+		return Build{}, err
+	}
+	_, err = t.exec(ctx, "DELETE FROM builds WHERE id = ?", id)
+	return b, err
+}
+
+// DuckDBVersionKnown reports whether a DuckDB version is registered on the server.
+func (s *Store) DuckDBVersionKnown(ctx context.Context, name string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM duckdb_versions WHERE name = ?"), name).Scan(&n)
+	return n > 0, err
+}
+
+// BuildOf reads a tenant's build of a name and body from a source; ok is false when there is none.
+func (s *Store) BuildOf(ctx context.Context, tenantID, source, name, bodyHash string) (b Build, ok bool, err error) {
+	b, err = scanBuild(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND body_hash = ?"),
+		tenantID, source, name, bodyHash))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Build{}, false, nil
+	}
+	return b, err == nil, err
 }

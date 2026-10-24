@@ -308,6 +308,8 @@ See [Tenants and channels](tenants-and-channels.md) and
 | --- | --- | --- |
 | `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode) |
 | `catalogue show <tenant> <source> <name>` | an entry's builds | `VERSION`, `PLATFORM`, `SLOT`, `BODY`, `VISIBILITY`, `ORIGIN`, `CREATED`, `RELEASED IN` |
+| `catalogue add <tenant> <file\|-> -name <name> [-private] [-unchecked]` | puts a build into the catalogue only, placed nowhere (source `tenant`) | the build's id |
+| `catalogue purge <tenant> <build-id>` | deletes a build no release holds; its slot is free again | |
 
 ## Channel keys
 
