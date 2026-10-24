@@ -296,8 +296,8 @@ and in each tenant the key's owner is the source there.
 - **Channel**: `…/channels/{c}/sources[/{name}]` gains `mode`, the current and newest available
   versions and the last outcome; `GET|PUT|DELETE …/channels/{c}/follows/{source}` (the skipped
   names on `GET`); `PUT …/channels/{c}/hold`; `…/releases/place`. CLI: `kista admin channel source
-  <t>/<c> <name> -set <source> [-mode auto|manual]`, `kista admin channel follow <t>/<c> <source>
-  [-remove]`, `kista admin channel hold <t>/<c> <duration>`.
+  <t>/<c> <name> -set <source> [-mode auto|manual]`, `kista admin channel follow <t>/<c> <source>`
+  (as built: `channel unfollow` removes it), `kista admin channel hold <t>/<c> <duration>`.
 - **Distribution admins** (spec 0030) gain, for distributors' publishers: marking them, setting
   their hold, withdrawing and purging their versions, reading their entries.
 - **Events**: `catalogue.arrival`, `catalogue.hold`, `catalogue.withdrawn`, `catalogue.purge`,
@@ -340,7 +340,9 @@ The migrations keep what every channel serves, and what arrives next goes where 
 
 - every upstream's channel becomes its home channel; that channel gets an `auto` rule for each name
   of its allowlist (an existing selection naming the upstream becomes `auto`), and a follow when the
-  allowlist has `*` (pull-through, so it works from A1 on);
+  allowlist has `*` (pull-through, so it works from A1 on) (as built: no rule gets a mode and nothing
+  is followed by the migrations; a pull-through upstream keeps serving its home channel by its own
+  fetches);
 - every other existing selection (a publisher, `tenant`, an upstream selected in a channel that is
   not its home, by promotion) becomes `manual`: a CI publishing into `dev` does not start reaching
   `prod`, and `nightly`'s mirror does not start flowing into `prod`;
@@ -562,8 +564,24 @@ channel, deferred.
 - **Limits**, each a skip listed with its reason: the channel's rule naming another source; a name
   another follow of the channel offers (`contested`); a core or community name unless the source is
   DuckDB's own repository of that kind; a name reserved in the tenant (any holder: a distributor's
-  exception comes with its publishers, B); another source of the tenant with builds of the name, or
-  a rule of any of its channels naming another source.
+  exception comes with its publishers, B); another live source of the tenant with builds of the
+  name, or a rule of any of its channels naming another source ("the tenant uses it from another
+  source"); and, for a publisher, **a name it may not publish in the channel** (found in review: a
+  follow is consent to a source, not to every grant anyone gives it anywhere in the tenant; a
+  distributor's publisher, which has no grants, comes in B). The tenant's names and rules are read
+  once per look. A name taken earlier keeps its rule if it becomes contested or used elsewhere
+  later.
+- **A rule an arrival wrote** (no mode) for the followed source, a publication into the channel or a
+  promotion, becomes the follow's (mode `follow`, a `source.set` with `arrival: false`); a rule an
+  administrator set keeps its mode. A rule cleared by an administrator is taken again by the
+  follow's next look: to keep the name out, a rule naming another source does.
+- **A source removed** (an upstream, a publisher) removes its follows and their skips; the rules they
+  wrote stay, acting as manual. An administrator switching a follow's rule to another source without
+  a mode makes it manual. At intake, a follow's rule of a channel no longer following its source is
+  manual too (a mirror lands its new versions).
+- **Bookkeeping**: the lease is renewed before each follow and every 50 names; a failure on one name
+  is that name's (the rule's outcome) and the look goes on; each look replaces the skips, so a skip
+  whose cause went away is taken at the next look of the source (a new build, or the hourly sweep).
 - **Left to later parts**: lazy and pull-through fetches through a follow (an ask comes from the
   upstream's home channel only; with A1 part 3b); a distributor's tenant reservations (B).
 

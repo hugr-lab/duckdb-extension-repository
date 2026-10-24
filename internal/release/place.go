@@ -480,6 +480,9 @@ func (p *Placer) channel(ctx context.Context, channelID string, follows []store.
 		return nil
 	}
 	for _, f := range follows {
+		if renew(ctx) != nil {
+			return // the lease was lost: another replica goes on
+		}
 		start := p.Service.Store.Now()
 		placed, skips, failure, err := p.Service.PlaceFollow(ctx, f, renew)
 		if errors.Is(err, errLeaseLost) {

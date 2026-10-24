@@ -19,3 +19,6 @@ CREATE TABLE follow_skips (
 	reason     TEXT NOT NULL,
 	PRIMARY KEY (channel_id, source, name)
 )
+-- +statement
+-- the placement pass asks, per follow, for its source's builds made since its last look
+CREATE INDEX ix_builds_source_created ON builds (tenant_id, source, created_at)

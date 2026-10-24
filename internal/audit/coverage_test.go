@@ -478,7 +478,9 @@ func TestCoverage(t *testing.T) {
 		if err := st.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) }); err != nil {
 			return err
 		}
-		_, _, _, err = en.rel.PlaceFollow(rctx, store.DueFollow{TenantID: prod.TenantID, ChannelID: prod.ID, Source: dist}, nil)
+		follower := *en.rel // the publisher's grants as they would allow the name
+		follower.Authz = allowEverything{}
+		_, _, _, err = follower.PlaceFollow(rctx, store.DueFollow{TenantID: prod.TenantID, ChannelID: prod.ID, Source: dist}, nil)
 		return err
 	}), "source.set", "release.place")
 	en.expect("release.Service.RemoveFollow", do(func() error { return en.rel.RemoveFollow(rctx, admin, "acme", "prod", "publisher:dist") }),
@@ -800,4 +802,11 @@ func (repoFetch) PortAllowed(uint16) bool { return true }
 
 func (repoFetch) PostJSON(context.Context, string, http.Header, []byte, int64) ([]byte, error) {
 	return nil, egress.ErrNotFound
+}
+
+// allowEverything allows every call: a publisher's, as its grants would.
+type allowEverything struct{}
+
+func (allowEverything) Allow(context.Context, authz.Actor, authz.Verb, authz.Resource) error {
+	return nil
 }

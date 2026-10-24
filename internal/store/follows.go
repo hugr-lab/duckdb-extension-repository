@@ -44,6 +44,24 @@ func (t *Tx) RemoveFollow(ctx context.Context, channelID, source string) error {
 	return err
 }
 
+// dropFollows removes every follow of a source, with its skipped names: the source is gone. The
+// rules they wrote stay (mode follow, acting as manual).
+func (t *Tx) dropFollows(ctx context.Context, source string) error {
+	for _, q := range []string{"DELETE FROM follow_skips WHERE source = ?", "DELETE FROM channel_follows WHERE source = ?"} {
+		if _, err := t.exec(ctx, q, source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// FollowingTx reports, in a transaction, whether a channel follows a source.
+func (t *Tx) FollowingTx(ctx context.Context, channelID, source string) (bool, error) {
+	var n int
+	err := t.queryRow(ctx, "SELECT COUNT(*) FROM channel_follows WHERE channel_id = ? AND source = ?", channelID, source).Scan(&n)
+	return n > 0, err
+}
+
 // Follows lists a channel's follows.
 func (s *Store) Follows(ctx context.Context, channelID string) ([]Follow, error) {
 	var out []Follow
@@ -149,28 +167,6 @@ func (s *Store) SourceNames(ctx context.Context, tenantID, source string) ([]str
 			return nil
 		})
 	return out, err
-}
-
-// NameUsedElsewhere reports why a tenant uses a name from another source than source, "" when it
-// does not: another of its sources has builds of it, or a rule of one of its channels names another
-// source (spec 0033: a follow does not take such a name).
-func (s *Store) NameUsedElsewhere(ctx context.Context, tenantID, name, source string) (string, error) {
-	var n int
-	if err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT COUNT(*) FROM builds WHERE tenant_id = ? AND name = ? AND source <> ?`),
-		tenantID, name, source).Scan(&n); err != nil || n > 0 {
-		if n > 0 {
-			return "another source of the tenant has builds of it", nil
-		}
-		return "", err
-	}
-	if err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT COUNT(*) FROM channel_sources cs JOIN channels c ON c.id = cs.channel_id
-WHERE c.tenant_id = ? AND cs.name = ? AND cs.source <> ?`), tenantID, name, source).Scan(&n); err != nil || n > 0 {
-		if n > 0 {
-			return "a channel of the tenant serves it from another source", nil
-		}
-		return "", err
-	}
-	return "", nil
 }
 
 // UpstreamKindOf is an upstream source's kind ("" for any other source, or a removed upstream's).
