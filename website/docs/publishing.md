@@ -275,10 +275,11 @@ signs it as any request (the signed statement is checked, not recorded on the bu
 placement carries the build's provenance only). It takes `publish` on the extension tenant-wide (a
 grant on a channel does not reach it; a reserved name only through a grant naming it). The build's
 DuckDB version must be registered on the server (a C API build's is not checked). The same body
-again answers the build as it is, whatever `visibility` asks. The answer is the build (`201`, or `200` when the source has the body
-already): `{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility",
-"origin", "checked", "created_at", "placed"}`. The CLI's form is `kista admin catalogue add <tenant>
-<file|-> -name <name> [-private]` (a tenant administrator's, source `tenant`).
+again answers the build as it is, whatever `visibility` asks. The answer is the build (`201`, or
+`200` when the source has the body already): `{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility",
+"origin", "checked", "created_at", "placed"}`. The CLI's form is
+`kista admin catalogue add <tenant> <file|-> -name <name> [-private]` (a tenant administrator's,
+source `tenant`).
 
 ## Placing from the catalogue
 
