@@ -52,13 +52,16 @@ the answer is `400`.
 
 ## Versions, platforms and slots
 
-A release fills a **slot**: (channel, name, extension version, platform, and the DuckDB version for
-`cpp` and `c_struct_unstable` builds, or `capi:<major>` for `c_struct` builds). One extension version
-therefore ships one file per platform and DuckDB version, and may ship both a C API v1 and a v2
-build.
+A release fills a **slot**: (channel, source, name, extension version, platform, and the DuckDB
+version for `cpp` and `c_struct_unstable` builds, or `capi:<major>` for `c_struct` builds). One
+extension version therefore ships one file per platform and DuckDB version, and may ship both a C
+API v1 and a v2 build. A slot is its source's ([A name's source in a
+channel](upstreams.md#a-names-source-in-a-channel)): another source may release the same version of
+the name in the channel, and the channel serves the one whose source it selected.
 
-- **A released version is immutable.** The same body in the same slot with the same choices is the
-  existing release (`200`); another body, or other choices, is `409`. A fix is a new version.
+- **A released version is immutable** within its source. The same body in the same slot with the
+  same choices is the existing release (`200`); another body, or other choices, is `409`. A fix is a
+  new version.
 - A yanked release keeps its slot.
 - The extension version is matched exactly and case-sensitively: `1.0` and `v1.0` differ, and DuckDB
   asks for the string as typed in `INSTALL x FROM r VERSION '…'`.

@@ -1237,8 +1237,9 @@ func TestCheckAddAll(t *testing.T) {
 	})
 }
 
-// Spec 0031: an upstream removed and added again (a new id) succeeds the removed one: its names and
-// the releases of the same bodies are the new upstream's, and the channel serves them on.
+// Spec 0031: an upstream removed and added again (a new id) succeeds the removed one: its names are
+// the new upstream's, and the channel serves its releases of the same bodies (spec 0033: in its own
+// slots; the removed upstream's stay, unserved).
 func TestUpstreamSuccession(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
 		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "acl_duckdb_cpp_init"))
@@ -1255,7 +1256,7 @@ func TestUpstreamSuccession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if r := en.sync(t, false); r.Counts[store.CellUnchanged] != 1 {
+		if r := en.sync(t, false); r.Counts[store.CellReleased] != 1 {
 			t.Fatalf("the run of the new upstream: %+v", r)
 		}
 		ch, err := en.st.GetChannel(ctx, "acme", "prod")
@@ -1266,7 +1267,7 @@ func TestUpstreamSuccession(t *testing.T) {
 			t.Fatalf("the source: %+v %v", sel, err)
 		}
 		rs, err := en.st.ListReleases(ctx, ch.ID, "acl")
-		if err != nil || len(rs) != 1 || rs[0].Source != store.UpstreamSource(u.ID) {
+		if err != nil || len(rs) != 2 || rs[0].Source != store.UpstreamSource(u.ID) || rs[1].Source == rs[0].Source {
 			t.Fatalf("the release's source: %+v %v", rs, err)
 		}
 	})

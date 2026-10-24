@@ -91,6 +91,7 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	}
 	it := item{b: b, visibility: in.Visibility, origin: store.OriginUpstream, originSignature: f.Signature, source: store.UpstreamSource(in.UpstreamID),
 		reserveKind: in.ReserveKind, reserveSource: in.ReserveSource, anyKind: in.AnyKind}
+	it.b.Source = it.source
 	if in.Provenance != nil {
 		it.provenance = in.Provenance(key)
 	}
@@ -105,7 +106,7 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		if selected, _, err = checkSource(ctx, tx, ch.ID, b.Name, it.source, true); err != nil {
 			return err
 		}
-		cands, err := tx.SlotCandidates(ctx, ch.ID, b.Name, b.ExtVersion, b.Platform)
+		cands, err := tx.SlotCandidates(ctx, ch.ID, it.source, b.Name, b.ExtVersion, b.Platform)
 		if err != nil {
 			return err
 		}
@@ -114,10 +115,10 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	}); err != nil {
 		return res, err
 	}
-	// another source's, or a name without a source, goes through the insert (spec 0031)
-	if existing != nil && existing.Source == it.source && selected {
+	// a name without a source goes through the insert, which sets it (spec 0031)
+	if existing != nil && selected {
 		// spec 0021: the body was fetched, so a trusted source records the keys it declares on the
-		// slot's build, which may predate them (an earlier release, or another source's)
+		// slot's build, which may predate them (an earlier release)
 		if len(it.keySources) > 0 && !in.DryRun {
 			bb := it.b
 			if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {

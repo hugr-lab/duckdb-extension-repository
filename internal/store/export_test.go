@@ -15,3 +15,8 @@ func MigrateTo(ctx context.Context, s *Store, level int) error {
 		}
 	}
 }
+
+// QueryStrings reads one string column in a transaction; for migration tests.
+func QueryStrings(ctx context.Context, t *Tx, q string, args ...any) ([]string, error) {
+	return t.strings(ctx, q, args...)
+}

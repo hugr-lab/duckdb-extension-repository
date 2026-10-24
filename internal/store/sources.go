@@ -107,16 +107,6 @@ func (t *Tx) UpstreamRemoved(ctx context.Context, source string) (bool, error) {
 	return n == 0, err
 }
 
-// SetReleaseSource gives a slot's release to the name's source in the channel, which brought the
-// same body (spec 0031).
-func (t *Tx) SetReleaseSource(ctx context.Context, releaseID, source string) error {
-	if !ValidSource(source) {
-		return ErrInvalid
-	}
-	_, err := t.exec(ctx, `UPDATE releases SET source = ?, version = version + 1 WHERE id = ?`, source, releaseID)
-	return err
-}
-
 // SourceTakes reports whether a channel takes a name from a source (spec 0031): it has no source
 // for the name, the source is it, or the name's source is a removed upstream's and the source is
 // an upstream (its successor).

@@ -524,7 +524,7 @@ func TestPurge(t *testing.T) {
 		must(t, func() error {
 			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
 				var err error
-				cands, err = tx.SlotCandidates(ctx, r.ChannelID, r.Name, r.ExtVersion, r.Platform)
+				cands, err = tx.SlotCandidates(ctx, r.ChannelID, r.Source, r.Name, r.ExtVersion, r.Platform)
 				return err
 			})
 		})

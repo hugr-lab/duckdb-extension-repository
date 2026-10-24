@@ -59,16 +59,17 @@ func ParseCAPI(s string) (CAPI, error) {
 	return CAPI{a, b, c}, nil
 }
 
-// Build is a body as a named extension in a tenant.
+// Build is a body as a named extension in a tenant, from a source (spec 0033: upstream:<id>,
+// publisher:<id> or tenant, as a release's).
 type Build struct {
-	ID, TenantID, Name, ExtVersion, Platform, ABI string
-	DuckDBVersion                                 string // cpp, c_struct_unstable
-	CAPI                                          *CAPI  // c_struct
-	BodyHash, Origin                              string
-	OriginSignature                               []byte
-	Checked                                       bool // passed spec 0008's file checks; set once, never cleared
-	CreatedAt                                     time.Time
-	CreatedBy                                     string
+	ID, TenantID, Source, Name, ExtVersion, Platform, ABI string
+	DuckDBVersion                                         string // cpp, c_struct_unstable
+	CAPI                                                  *CAPI  // c_struct
+	BodyHash, Origin                                      string
+	OriginSignature                                       []byte
+	Checked                                               bool // passed spec 0008's file checks; set once, never cleared
+	CreatedAt                                             time.Time
+	CreatedBy                                             string
 }
 
 // Release is a Build in a channel.
@@ -81,9 +82,9 @@ type Release struct {
 	CreatedBy, StateChangedBy        string
 	Version                          int64
 	Origin                           string // admin | publication | promotion (spec 0008) | upstream (spec 0009)
-	// Source is whose release it is (spec 0031): upstream:<id>, publisher:<id> or tenant; a
-	// promotion keeps the source of the release it promotes. Set at insert; it changes only when the
-	// name's source brings the same body again (it takes the slot's release).
+	// Source is whose release it is (spec 0031): upstream:<id>, publisher:<id> or tenant, its
+	// build's (spec 0033); a promotion keeps the source of the release it promotes. Set at insert,
+	// never changed: a slot is a source's.
 	Source     string
 	Provenance string // JSON, at most 4,000 bytes; "" when none
 	// PublisherStatement and PublisherSignature are a publisher's signed request as it came (spec
@@ -109,14 +110,14 @@ func (b Build) Slot() string {
 	return b.DuckDBVersion
 }
 
-const buildCols = `id, tenant_id, name, ext_version, platform, abi, duckdb_version, c_api_major, c_api_minor,
+const buildCols = `id, tenant_id, source, name, ext_version, platform, abi, duckdb_version, c_api_major, c_api_minor,
 c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked`
 
 func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 	var b Build
 	var dv sql.NullString
 	var ma, mi, pa sql.NullInt64
-	err := r.Scan(&b.ID, &b.TenantID, &b.Name, &b.ExtVersion, &b.Platform, &b.ABI, &dv, &ma, &mi, &pa,
+	err := r.Scan(&b.ID, &b.TenantID, &b.Source, &b.Name, &b.ExtVersion, &b.Platform, &b.ABI, &dv, &ma, &mi, &pa,
 		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy, &b.Checked)
 	b.DuckDBVersion = dv.String
 	if ma.Valid {
@@ -150,15 +151,21 @@ func nullable(s string) any {
 
 // --- builds ---
 
-// FindOrInsertBuild inserts b, or, if the tenant already has a build of that name and body, loads
-// it into b (the footer fields then must agree, which they do for one body). A checked b marks an
-// existing unchecked build checked.
+// FindOrInsertBuild inserts b, or, if the tenant already has a build of that source, name and body,
+// loads it into b (the footer fields then must agree, which they do for one body). A checked b marks
+// an existing unchecked build checked.
 func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if err := t.WritableTenant(ctx, b.TenantID, false); err != nil {
 		return err // spec 0019: no Build for a tenant whose deletion started
 	}
-	cur, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND name = ? AND body_hash = ?",
-		b.TenantID, b.Name, b.BodyHash))
+	if b.Source == "" {
+		b.Source = SourceTenant
+	}
+	if !ValidSource(b.Source) {
+		return fmt.Errorf("%w: source %q", ErrInvalid, b.Source)
+	}
+	cur, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND body_hash = ?",
+		b.TenantID, b.Source, b.Name, b.BodyHash))
 	if err == nil {
 		// its last use (spec 0016): a Build an intake found is not collected under it; an update that
 		// finds no row (collected since the select) inserts it again below
@@ -186,8 +193,8 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if len(b.OriginSignature) > 0 {
 		sig = b.OriginSignature
 	}
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		b.ID, b.TenantID, b.Name, b.ExtVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		b.ID, b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
 		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, t.s.d.timeArg(b.CreatedAt))
 	return t.s.mapErr(err, "build "+b.Name)
 }
@@ -200,11 +207,12 @@ func (t *Tx) GetBuild(ctx context.Context, id string) (Build, error) {
 
 // --- releases ---
 
-// SlotCandidates reads a channel's releases of one (name, extension version, platform), in every
-// slot and state, with what their builds say, and its purged slots (state ReleasePurged).
-func (t *Tx) SlotCandidates(ctx context.Context, channelID, name, extVersion, platform string) ([]Candidate, error) {
+// SlotCandidates reads a source's releases in a channel of one (name, extension version, platform),
+// in every slot and state, with what their builds say, and its purged slots (state ReleasePurged:
+// the source's, and those purged before slots had a source, spec 0033).
+func (t *Tx) SlotCandidates(ctx context.Context, channelID, source, name, extVersion, platform string) ([]Candidate, error) {
 	rows, err := t.query(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id"+
-		" WHERE r.channel_id = ? AND r.name = ? AND r.ext_version = ? AND r.platform = ?", channelID, name, extVersion, platform)
+		" WHERE r.channel_id = ? AND r.source = ? AND r.name = ? AND r.ext_version = ? AND r.platform = ?", channelID, source, name, extVersion, platform)
 	if err != nil {
 		return nil, err
 	}
@@ -222,13 +230,13 @@ func (t *Tx) SlotCandidates(ctx context.Context, channelID, name, extVersion, pl
 	}
 	rows.Close()
 	purged, err := t.query(ctx, "SELECT release_id, slot, abi, body_hash, seq FROM purged_slots"+
-		" WHERE channel_id = ? AND name = ? AND ext_version = ? AND platform = ?", channelID, name, extVersion, platform)
+		" WHERE channel_id = ? AND source IN (?, '*') AND name = ? AND ext_version = ? AND platform = ?", channelID, source, name, extVersion, platform)
 	if err != nil {
 		return nil, err
 	}
 	defer purged.Close()
 	for purged.Next() {
-		c := Candidate{Release: Release{ChannelID: channelID, Name: name, ExtVersion: extVersion, Platform: platform, State: ReleasePurged}}
+		c := Candidate{Release: Release{ChannelID: channelID, Source: source, Name: name, ExtVersion: extVersion, Platform: platform, State: ReleasePurged}}
 		var seq sql.NullInt64
 		if err := purged.Scan(&c.ID, &c.Slot, &c.ABI, &c.BodyHash, &seq); err != nil {
 			return nil, err
@@ -249,8 +257,8 @@ func (t *Tx) PurgeRelease(ctx context.Context, c Candidate) error {
 	if c.Seq > 0 {
 		seq = c.Seq
 	}
-	if _, err := t.exec(ctx, "INSERT INTO purged_slots (channel_id, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at) "+
-		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", c.ChannelID, c.Name, c.ExtVersion, c.Platform, c.Slot, c.ABI, c.BodyHash, seq, c.ID,
+	if _, err := t.exec(ctx, "INSERT INTO purged_slots (channel_id, source, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at) "+
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", c.ChannelID, c.Source, c.Name, c.ExtVersion, c.Platform, c.Slot, c.ABI, c.BodyHash, seq, c.ID,
 		t.s.d.timeArg(t.Now())); err != nil {
 		return t.s.mapErr(err, "purged slot")
 	}

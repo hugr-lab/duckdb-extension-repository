@@ -74,11 +74,12 @@ func TestSources(t *testing.T) {
 		if got := served("staging"); strings.Join(got, " ") != "2.0@tenant" {
 			t.Fatalf("served: %v", got)
 		}
-		// the same body as the publisher's, brought by the tenant: the slot's release is the tenant's
-		if r, existed, err := en.addTo(t, "staging", v1, release.AddOptions{Name: "tresor"}); err != nil || !existed || r.Source != "tenant" {
+		// the same body as the publisher's, brought by the tenant: a release of the tenant's own, in the
+		// tenant's slot (spec 0033: a slot is a source's)
+		if r, existed, err := en.addTo(t, "staging", v1, release.AddOptions{Name: "tresor"}); err != nil || existed || r.Source != "tenant" {
 			t.Fatalf("the same body again: %+v %v %v", r, existed, err)
 		}
-		if got := served("staging"); strings.Join(got, " ") != "1.0@tenant 2.0@tenant" {
+		if got := served("staging"); strings.Join(got, " ") != "2.0@tenant 1.0@tenant" {
 			t.Fatalf("served: %v", got)
 		}
 		// cleared: nothing serves the name until the next release sets it again
@@ -95,8 +96,8 @@ func TestSources(t *testing.T) {
 		if _, _, err := pubs.Add(ctx, pub, "acme", "staging", bytes.NewReader(v3), publish("tresor", "3.0", "linux_amd64")); err != nil {
 			t.Fatal(err)
 		}
-		// 1.0 is the tenant's now: only the publisher's 3.0 is served
-		if got := served("staging"); strings.Join(got, " ") != "3.0@publisher:p-ci" {
+		// the publisher's releases are served again, its 1.0 among them
+		if got := served("staging"); strings.Join(got, " ") != "1.0@publisher:p-ci 3.0@publisher:p-ci" {
 			t.Fatalf("served after the arrival: %v", got)
 		}
 		// a source the channel may not take
@@ -109,7 +110,7 @@ func TestSources(t *testing.T) {
 			t.Errorf("a bad name: %v", err)
 		}
 		vs, err := en.rel.Sources(ctx, admin, "acme", "staging")
-		if err != nil || len(vs) != 1 || vs[0].Name != "tresor" || vs[0].Source != "publisher:(removed)" || vs[0].Available["publisher:(removed)"] != 1 ||
+		if err != nil || len(vs) != 1 || vs[0].Name != "tresor" || vs[0].Source != "publisher:(removed)" || vs[0].Available["publisher:(removed)"] != 2 ||
 			vs[0].Available["tenant"] != 2 {
 			t.Fatalf("sources: %+v %v", vs, err)
 		}
@@ -217,18 +218,18 @@ func TestSourcesPromotionAndClear(t *testing.T) {
 		if !errors.As(err, &se) || se.Source != "tenant" {
 			t.Fatalf("a promotion under another source: %v", err)
 		}
-		// the publisher brings the tenant's 1.0 body: the slot's release is its, and recorded
-		if r, existed, err := pubs.Add(ctx, pa, "acme", "staging", bytes.NewReader(v1), publish("tresor", "1.0", "linux_amd64")); err != nil || !existed ||
+		// the publisher brings the tenant's 1.0 body: a release of its own in its own slot (spec 0033),
+		// the tenant's left as it was
+		if r, existed, err := pubs.Add(ctx, pa, "acme", "staging", bytes.NewReader(v1), publish("tresor", "1.0", "linux_amd64")); err != nil || existed ||
 			r.Source != "publisher:"+pub.ID {
 			t.Fatalf("the publisher's same body: %+v %v %v", r, existed, err)
 		}
-		if got := served("staging"); got != "1.0@publisher:"+pub.ID+" 2.0@publisher:"+pub.ID {
+		if got := served("staging"); got != "2.0@publisher:"+pub.ID+" 1.0@publisher:"+pub.ID {
 			t.Fatalf("served: %q", got)
 		}
-		evs, err := en.st.ListEvents(ctx, ch.TenantID, store.EventFilter{Kind: "release.source"})
-		if err != nil || len(evs) != 1 || !strings.Contains(string(evs[0].Data), `"source":"publisher:ci"`) ||
-			!strings.Contains(string(evs[0].Data), `"before":"tenant"`) {
-			t.Fatalf("the event: %+v %v", evs, err)
+		vs, err := en.rel.Sources(ctx, admin, "acme", "staging")
+		if err != nil || len(vs) != 1 || vs[0].Available["tenant"] != 1 || vs[0].Available["publisher:ci"] != 2 {
+			t.Fatalf("sources: %+v %v", vs, err)
 		}
 	})
 }
