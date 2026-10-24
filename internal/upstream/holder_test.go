@@ -12,6 +12,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
@@ -37,40 +38,40 @@ func TestLicenseImportHolder(t *testing.T) {
 				}
 			}
 			// no holder: any holder's licence, as before
-			if _, err := svc.Import(ctx, admin, "acme", lic.signFor("org-2", "geo", "pro", now-60, now+day), licenses.Create); err != nil {
+			if _, err := svc.Import(ctx, admin, "acme", "", lic.signFor("org-2", "geo", "pro", now-60, now+day), licenses.Create); err != nil {
 				t.Fatalf("no expected holder: %v", err)
 			}
 			if _, err := en.ten.SetTenantHolder(ctx, admin, "acme", "org-1", 0); err == nil {
 				t.Fatal("the holder set over another holder's licence")
 			}
-			if err := svc.Remove(ctx, admin, "acme", "geo", 0); err != nil {
+			if err := svc.Remove(ctx, admin, "acme", "", "geo", 0); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := en.ten.SetTenantHolder(ctx, admin, "acme", "org-1", 0); err != nil {
 				t.Fatal(err)
 			}
-			_, err := svc.Import(ctx, admin, "acme", lic.signFor("org-2", "tresor", "pro", now-60, now+day), licenses.Create)
+			_, err := svc.Import(ctx, admin, "acme", "", lic.signFor("org-2", "tresor", "pro", now-60, now+day), licenses.Create)
 			var le *license.Error
 			if !errors.Is(err, licenses.ErrRefused) || !errors.As(err, &le) || le.Rule != licenses.RuleHolder ||
 				!strings.Contains(err.Error(), `"org-1"`) || !strings.Contains(err.Error(), `"org-2"`) {
 				t.Fatalf("another holder's licence: %v", err)
 			}
-			if _, err := en.st.GetLicense(ctx, en.tenantID(t), "tresor"); !errors.Is(err, store.ErrNotFound) {
+			if _, err := en.st.GetLicense(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("a refused import was stored: %v", err)
 			}
 			if n, _ := store.CountRaw(ctx, en.st, "events", "kind = ?", "license.import"); n != 1 {
 				t.Fatalf("license.import events: %d", n)
 			}
-			v, err := svc.Import(ctx, admin, "acme", lic.signFor("org-1", "tresor", "pro", now-60, now+day), licenses.Create)
+			v, err := svc.Import(ctx, admin, "acme", "", lic.signFor("org-1", "tresor", "pro", now-60, now+day), licenses.Create)
 			if err != nil || v.HolderID != "org-1" {
 				t.Fatalf("the holder's licence: %+v %v", v, err)
 			}
 			// a replacement of another holder is refused too, and the stored one stays
-			if _, err := svc.Import(ctx, admin, "acme", lic.signFor("org-2", "tresor", "max", now, now+2*day), v.Version); !errors.As(err, &le) ||
+			if _, err := svc.Import(ctx, admin, "acme", "", lic.signFor("org-2", "tresor", "max", now, now+2*day), v.Version); !errors.As(err, &le) ||
 				le.Rule != licenses.RuleHolder {
 				t.Fatalf("a replacement of another holder: %v", err)
 			}
-			if l, err := en.st.GetLicense(ctx, en.tenantID(t), "tresor"); err != nil || l.HolderID != "org-1" || l.Version != v.Version {
+			if l, err := en.st.GetLicense(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); err != nil || l.HolderID != "org-1" || l.Version != v.Version {
 				t.Fatalf("after a refused replacement: %+v %v", l, err)
 			}
 		})
@@ -122,10 +123,10 @@ func TestLicenseRelayHolder(t *testing.T) {
 				!strings.Contains(res.Refused[0].Reason, `"org-2"`) {
 				t.Fatalf("a relay with another holder's licence: %+v", res)
 			}
-			if _, err := en.st.GetLicense(ctx, en.tenantID(t), "geo"); !errors.Is(err, store.ErrNotFound) {
+			if _, err := en.st.GetLicense(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "geo"); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("another holder's licence was relayed: %v", err)
 			}
-			if l, err := en.st.GetLicense(ctx, en.tenantID(t), "tresor"); err != nil || l.HolderID != "org-1" {
+			if l, err := en.st.GetLicense(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); err != nil || l.HolderID != "org-1" {
 				t.Fatalf("the holder's licence: %+v %v", l, err)
 			}
 			evs, err := en.st.ListEvents(ctx, en.tenantID(t), store.EventFilter{Kind: "license.sync", Limit: 10})
@@ -137,7 +138,7 @@ func TestLicenseRelayHolder(t *testing.T) {
 			if res := run(); res.Counts["refused"] != 1 || res.Refused[0].Rule != licenses.RuleHolder || res.Counts["removed"] != 0 {
 				t.Fatalf("another holder's replacement: %+v", res)
 			}
-			if l, err := en.st.GetLicense(ctx, en.tenantID(t), "tresor"); err != nil || l.Plan != "pro" {
+			if l, err := en.st.GetLicense(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); err != nil || l.Plan != "pro" {
 				t.Fatalf("after another holder's replacement: %+v %v", l, err)
 			}
 			// with the holder cleared, the relay takes any holder's, as before

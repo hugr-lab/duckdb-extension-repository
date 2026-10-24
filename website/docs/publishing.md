@@ -111,6 +111,11 @@ DuckDB's alias names (`http`, `https`, `s3`, `postgres`, `sqlite`, ...) and Wind
 refused by the name grammar: DuckDB rewrites an alias before it builds the URL, so nothing could ever
 install them.
 
+Reservations are per [package type](concepts.md#packages-and-package-types) (spec 0034): DuckDB's
+names, its aliases, and every reservation made so far are `duckdb_extension`'s, and a name reserved
+for one type neither reserves nor frees the same name of another. The reserved-name commands and
+routes take `-type` / `?type=` (`duckdb_extension` by default).
+
 ## Who may publish
 
 | Action | Needs |
@@ -281,6 +286,12 @@ again answers the build as it is, whatever `visibility` asks. The answer is the 
 `kista admin catalogue add <tenant> <file|-> -name <name> [-private]` (a tenant administrator's,
 source `tenant`).
 
+The catalogue is per [package type](concepts.md#packages-and-package-types): a publication into it
+names its type in the query (`?type=`, `duckdb_extension` by default), which a publisher's signed
+statement covers like the rest of the request; the catalogue's routes and `kista admin catalogue`
+take `?type=` / `-type`. A build's identity and slot are within its type, and this server reads
+DuckDB extensions only: another type is refused (`409`).
+
 ## Placing from the catalogue
 
 Every build that arrives in a tenant is a build of its source in the tenant's
@@ -313,6 +324,9 @@ kista admin -config /etc/kista/kista.yaml \
   it private as promotion does. A mirror's build keeps origin `upstream` and its original signature.
 - The answer is `201` with `{"releases": [...]}`, or `200` when the channel already holds them all
   with the same choices; `404` when the catalogue has no build of the version the channel serves.
+- A placement takes builds of the channel's [package type](concepts.md#packages-and-package-types)
+  only; a body naming another `package_type` is `409`, and so is a promotion between channels of
+  two types.
 
 ## Changing a release
 

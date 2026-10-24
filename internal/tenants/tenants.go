@@ -11,6 +11,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -152,7 +153,7 @@ func reserveCore(ctx context.Context, tx *store.Tx, actor, version string, c Cor
 	slices.Sort(names)
 	var added []string
 	for _, n := range slices.Compact(names) {
-		changed, err := tx.ReserveName(ctx, n, store.ReservedCore, src)
+		changed, err := tx.ReserveName(ctx, pkgtype.DuckDBExtension, n, store.ReservedCore, src) // DuckDB's core names
 		if err != nil {
 			return nil, err
 		}
@@ -301,15 +302,21 @@ func (s *Service) ListVersions(ctx context.Context) ([]store.DuckDBVersion, erro
 }
 
 // CreateChannel creates a channel; its kind never changes afterwards.
-func (s *Service) CreateChannel(ctx context.Context, a authz.Actor, tenant, name, kind string) (store.Channel, error) {
+func (s *Service) CreateChannel(ctx context.Context, a authz.Actor, tenant, name, kind, packageType string) (store.Channel, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant}); err != nil {
 		return store.Channel{}, err
 	}
 	if kind != store.ChannelSigned && kind != store.ChannelPassthrough {
 		return store.Channel{}, fmt.Errorf("%w: channel kind %q (signed or passthrough)", store.ErrInvalid, kind)
 	}
-	c := store.Channel{Name: name, Kind: kind}
-	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+	// spec 0034: a channel serves one package type, set here and never changed (default
+	// duckdb_extension; a passthrough channel's is that)
+	packageType, err := pkgtype.Parse(packageType)
+	if err != nil {
+		return store.Channel{}, fmt.Errorf("%w: %v", store.ErrInvalid, err)
+	}
+	c := store.Channel{Name: name, Kind: kind, PackageType: packageType}
+	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		t, err := tx.GetTenant(ctx, tenant)
 		if err != nil {
 			return err
@@ -318,7 +325,11 @@ func (s *Service) CreateChannel(ctx context.Context, a authz.Actor, tenant, name
 		if err := tx.CreateChannel(ctx, &c); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "channel.create", "channel:"+c.Name, map[string]any{"name": c.Name, "kind": c.Kind})
+		f := map[string]any{"name": c.Name, "kind": c.Kind}
+		if c.PackageType != pkgtype.Default {
+			f["package_type"] = c.PackageType
+		}
+		return tx.Event(ctx, t.ID, a.String(), "channel.create", "channel:"+c.Name, f)
 	})
 	return c, err
 }

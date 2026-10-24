@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
@@ -47,9 +48,22 @@ func TestPackageGroups(t *testing.T) {
 		// members: added and removed by name, skipping what is already so
 		change := func(add, remove []string) (added, removed []string) {
 			t.Helper()
+			keys := func(ns []string) []pkgtype.Key {
+				var out []pkgtype.Key
+				for _, n := range ns {
+					out = append(out, pkgtype.Of(n))
+				}
+				return out
+			}
 			inTx(t, s, func(tx *store.Tx) error {
-				var err error
-				added, removed, err = tx.ChangeGroupMembers(ctx, g, add, remove, "os:1:t")
+				ka, kr, err := tx.ChangeGroupMembers(ctx, g, keys(add), keys(remove), "os:1:t")
+				added, removed = nil, nil
+				for _, k := range ka {
+					added = append(added, k.Name)
+				}
+				for _, k := range kr {
+					removed = append(removed, k.Name)
+				}
 				return err
 			})
 			return added, removed
@@ -98,7 +112,7 @@ func TestPackageGroups(t *testing.T) {
 			t.Fatalf("auth %+v %v", ta, err)
 		}
 		for _, x := range ta.GroupGrants {
-			if x.PackageGroupName != "platform" || !x.Members["acl"] || x.Members["tresor"] || x.Package != "" {
+			if x.PackageGroupName != "platform" || !x.Members[pkgtype.Of("acl")] || x.Members[pkgtype.Of("tresor")] || x.Package != "" {
 				t.Fatalf("group grant %+v", x)
 			}
 		}
@@ -116,17 +130,17 @@ func TestPackageGroups(t *testing.T) {
 		// every write moved the version
 		before := ta.Version
 		change([]string{"duckdb_acl"}, nil)
-		if ta, _ = s.GetTenantAuth(ctx, tn.ID); ta.Version <= before || !ta.GroupGrants[0].Members["duckdb_acl"] {
+		if ta, _ = s.GetTenantAuth(ctx, tn.ID); ta.Version <= before || !ta.GroupGrants[0].Members[pkgtype.Of("duckdb_acl")] {
 			t.Fatalf("after a member change: %d %+v", ta.Version, ta.GroupGrants[0].Members)
 		}
 		gr, err := s.GetPackageGroup(ctx, tn.ID, "platform")
 		if err != nil || gr.Members != 3 || gr.Grants != 3 || gr.Version != 1 {
 			t.Fatalf("group %+v %v", gr, err)
 		}
-		if gs, err := s.ListPackageGroups(ctx, tn.ID, "acl"); err != nil || len(gs) != 1 {
+		if gs, err := s.ListPackageGroups(ctx, tn.ID, pkgtype.DuckDBExtension, "acl"); err != nil || len(gs) != 1 {
 			t.Fatalf("groups holding acl %v %v", gs, err)
 		}
-		if gs, err := s.ListPackageGroups(ctx, tn.ID, "tresor"); err != nil || len(gs) != 0 {
+		if gs, err := s.ListPackageGroups(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor"); err != nil || len(gs) != 0 {
 			t.Fatalf("groups holding tresor %v %v", gs, err)
 		}
 
@@ -171,10 +185,10 @@ func TestPackageGroupLimits(t *testing.T) {
 		tn, _ := fixture(t, s)
 		g := store.PackageGroup{TenantID: tn.ID, Name: "big", CreatedBy: "os:1:t"}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertPackageGroup(ctx, &g) })
-		names := func(from, n int) []string {
-			var out []string
+		names := func(from, n int) []pkgtype.Key {
+			var out []pkgtype.Key
 			for i := from; i < from+n; i++ {
-				out = append(out, fmt.Sprintf("x%04d", i))
+				out = append(out, pkgtype.Of(fmt.Sprintf("x%04d", i)))
 			}
 			return out
 		}
@@ -221,7 +235,7 @@ func TestTenantAuthConsistentRead(t *testing.T) {
 		go func() {
 			for i := range 30 {
 				err := s.InTx(ctx, "kista/tenant-auth/"+tn.ID, func(tx *store.Tx) error {
-					_, _, err := tx.ChangeGroupMembers(ctx, g, []string{fmt.Sprintf("x%02d", i)}, nil, "os:1:t")
+					_, _, err := tx.ChangeGroupMembers(ctx, g, []pkgtype.Key{pkgtype.Of(fmt.Sprintf("x%02d", i))}, nil, "os:1:t")
 					return err
 				})
 				if err != nil {
@@ -307,9 +321,9 @@ func TestPackageGroupWrites(t *testing.T) {
 		}
 
 		// two writers, each adding one name to a group one short of its limit, under the auth lock
-		var names []string
+		var names []pkgtype.Key
 		for i := range store.MaxGroupMembers - 1 {
-			names = append(names, fmt.Sprintf("x%04d", i))
+			names = append(names, pkgtype.Of(fmt.Sprintf("x%04d", i)))
 		}
 		inTx(t, s, func(tx *store.Tx) error {
 			_, _, err := tx.ChangeGroupMembers(ctx, g, names, nil, "os:1:t")
@@ -319,7 +333,7 @@ func TestPackageGroupWrites(t *testing.T) {
 		for _, n := range []string{"last_a", "last_b"} {
 			go func() {
 				errs <- s.InTx(ctx, "kista/tenant-auth/"+tn.ID, func(tx *store.Tx) error {
-					_, _, err := tx.ChangeGroupMembers(ctx, g, []string{n}, nil, "os:1:t")
+					_, _, err := tx.ChangeGroupMembers(ctx, g, []pkgtype.Key{pkgtype.Of(n)}, nil, "os:1:t")
 					return err
 				})
 			}()

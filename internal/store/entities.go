@@ -9,6 +9,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 )
 
 // Tenant states.
@@ -81,10 +83,13 @@ type DuckDBVersion struct {
 // Channel is one DuckDB repository inside a tenant.
 type Channel struct {
 	ID, TenantID, Name, Kind string
-	CreatedAt                time.Time
-	Version                  int64
-	ServingKeyID             string // the key whose signatures are served; empty before the first release
-	ReleaseVersion           int64  // bumped by every release change and serving-key move (spec 0006)
+	// PackageType is the type of every package the channel serves (spec 0034): set at creation,
+	// never changed; a passthrough channel is duckdb_extension.
+	PackageType    string
+	CreatedAt      time.Time
+	Version        int64
+	ServingKeyID   string // the key whose signatures are served; empty before the first release
+	ReleaseVersion int64  // bumped by every release change and serving-key move (spec 0006)
 }
 
 // Key is a channel signing key. Only its public key and signer reference are stored.
@@ -212,12 +217,12 @@ func (s *Store) ListDuckDBVersions(ctx context.Context) ([]DuckDBVersion, error)
 	return out, rows.Err()
 }
 
-const channelCols = "c.id, c.tenant_id, c.name, c.kind, c.created_at, c.version, c.serving_key_id, c.release_version"
+const channelCols = "c.id, c.tenant_id, c.name, c.kind, c.created_at, c.version, c.serving_key_id, c.release_version, c.package_type"
 
 func scanChannel(r interface{ Scan(...any) error }) (Channel, error) {
 	var c Channel
 	var serving sql.NullString
-	err := r.Scan(&c.ID, &c.TenantID, &c.Name, &c.Kind, scanTime{&c.CreatedAt}, &c.Version, &serving, &c.ReleaseVersion)
+	err := r.Scan(&c.ID, &c.TenantID, &c.Name, &c.Kind, scanTime{&c.CreatedAt}, &c.Version, &serving, &c.ReleaseVersion, &c.PackageType)
 	c.ServingKeyID = serving.String
 	return c, err
 }
@@ -239,6 +244,23 @@ func (s *Store) closedOr(ctx context.Context, tenant string, err error) error {
 		return t.closed()
 	}
 	return err
+}
+
+// ChannelType reads the package type of a tenant's channel, by the tenant's id and the channel's
+// name (spec 0034: what an authorization on the channel compares).
+func (s *Store) ChannelType(ctx context.Context, tenantID, channel string) (string, error) {
+	var t string
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT package_type FROM channels WHERE tenant_id = ? AND name = ?"), tenantID, channel).Scan(&t)
+	return t, notFound(err, "channel "+channel)
+}
+
+// UpstreamChannelType reads the package type of a tenant's upstream, by the tenant's id and the
+// upstream's name: its home channel's (spec 0034).
+func (s *Store) UpstreamChannelType(ctx context.Context, tenantID, upstream string) (string, error) {
+	var t string
+	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT c.package_type FROM upstreams u JOIN channels c ON c.id = u.channel_id
+WHERE u.tenant_id = ? AND u.name = ?`), tenantID, upstream).Scan(&t)
+	return t, notFound(err, "upstream "+upstream)
 }
 
 // ListChannels returns a tenant's channels by name.
@@ -448,9 +470,18 @@ func (t *Tx) CreateChannel(ctx context.Context, c *Channel) error {
 	if err := ValidName(c.Name); err != nil {
 		return err
 	}
+	if c.PackageType == "" {
+		c.PackageType = pkgtype.Default
+	}
+	if !pkgtype.Known(c.PackageType) {
+		return fmt.Errorf("%w: package type %q", ErrInvalid, c.PackageType)
+	}
+	if c.Kind == ChannelPassthrough && c.PackageType != pkgtype.DuckDBExtension {
+		return fmt.Errorf("%w: a passthrough channel serves DuckDB extensions only", ErrInvalid)
+	}
 	c.ID, c.CreatedAt, c.Version = NewID(), t.Now(), 1
-	_, err := t.exec(ctx, "INSERT INTO channels (id, tenant_id, name, kind, created_at, version) VALUES (?, ?, ?, ?, ?, ?)",
-		c.ID, c.TenantID, c.Name, c.Kind, t.s.d.timeArg(c.CreatedAt), c.Version)
+	_, err := t.exec(ctx, "INSERT INTO channels (id, tenant_id, name, kind, created_at, version, package_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		c.ID, c.TenantID, c.Name, c.Kind, t.s.d.timeArg(c.CreatedAt), c.Version, c.PackageType)
 	return t.s.mapErr(err, "channel "+c.Name)
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 )
 
@@ -63,13 +64,15 @@ func ParseCAPI(s string) (CAPI, error) {
 // publisher:<id> or tenant, as a release's).
 type Build struct {
 	ID, TenantID, Source, Name, PackageVersion, Platform, ABI string
-	DuckDBVersion                                             string // cpp, c_struct_unstable
-	CAPI                                                      *CAPI  // c_struct
-	BodyHash, Origin                                          string
-	OriginSignature                                           []byte
-	Checked                                                   bool // passed spec 0008's file checks; set once, never cleared
-	CreatedAt                                                 time.Time
-	CreatedBy                                                 string
+	// PackageType is the build's type (spec 0034): its identity and its slot are within the type.
+	PackageType      string
+	DuckDBVersion    string // cpp, c_struct_unstable
+	CAPI             *CAPI  // c_struct
+	BodyHash, Origin string
+	OriginSignature  []byte
+	Checked          bool // passed spec 0008's file checks; set once, never cleared
+	CreatedAt        time.Time
+	CreatedBy        string
 	// Visibility and Provenance are as its arrival made its release (spec 0033): the widest a
 	// placement serves it with, and the facts a placement's release carries (a credential).
 	Visibility, Provenance string
@@ -121,7 +124,7 @@ func (b Build) Slot() string {
 }
 
 const buildCols = `id, tenant_id, source, name, package_version, platform, abi, duckdb_version, c_api_major, c_api_minor,
-c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked, visibility, provenance`
+c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked, visibility, provenance, package_type`
 
 func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 	var b Build
@@ -129,7 +132,7 @@ func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 	var ma, mi, pa sql.NullInt64
 	var prov sql.NullString
 	err := r.Scan(&b.ID, &b.TenantID, &b.Source, &b.Name, &b.PackageVersion, &b.Platform, &b.ABI, &dv, &ma, &mi, &pa,
-		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy, &b.Checked, &b.Visibility, &prov)
+		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy, &b.Checked, &b.Visibility, &prov, &b.PackageType)
 	b.DuckDBVersion, b.Provenance = dv.String, prov.String
 	if ma.Valid {
 		b.CAPI = &CAPI{int(ma.Int64), int(mi.Int64), int(pa.Int64)}
@@ -181,8 +184,14 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if !ValidSource(b.Source) {
 		return fmt.Errorf("%w: source %q", ErrInvalid, b.Source)
 	}
-	cur, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND body_hash = ?",
-		b.TenantID, b.Source, b.Name, b.BodyHash))
+	if b.PackageType == "" {
+		b.PackageType = pkgtype.Default
+	}
+	if !pkgtype.Known(b.PackageType) {
+		return fmt.Errorf("%w: package type %q", ErrInvalid, b.PackageType)
+	}
+	cur, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND package_type = ? AND source = ? AND name = ? AND body_hash = ?",
+		b.TenantID, b.PackageType, b.Source, b.Name, b.BodyHash))
 	if err == nil {
 		// its last use (spec 0016): a Build an intake found is not collected under it; an update that
 		// finds no row (collected since the select) inserts it again below
@@ -215,10 +224,10 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 			return err
 		}
 	}
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, legacy_duplicate, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, legacy_duplicate, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		b.ID, b.TenantID, b.Source, b.Name, b.PackageVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
 		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, b.Visibility, nullable(b.Provenance),
-		b.Slot(), b.Legacy, t.s.d.timeArg(b.CreatedAt))
+		b.PackageType, b.Slot(), b.Legacy, t.s.d.timeArg(b.CreatedAt))
 	b.Inserted = err == nil
 	return t.s.mapErr(err, "build "+b.Name)
 }
@@ -559,11 +568,14 @@ func (s *Store) GetServeChannel(ctx context.Context, tenant, channel string) (Se
 	var serving sql.NullString
 	t, c := &sc.Tenant, &sc.Channel
 	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT t.id, t.name, t.state, t.storage_domain, t.auth_version, c.id, c.tenant_id,
-c.name, c.kind, c.version, c.serving_key_id, c.release_version, (SELECT version FROM reserved_version WHERE id = 1)
+c.name, c.kind, c.version, c.serving_key_id, c.release_version, c.package_type, (SELECT version FROM reserved_version WHERE id = 1)
 FROM channels c JOIN tenants t ON t.id = c.tenant_id
 WHERE t.name = ? AND c.name = ? AND t.deleting_at IS NULL`), tenant, channel).Scan(&t.ID, &t.Name, &t.State, &t.StorageDomain, &t.AuthVersion, &c.ID, &c.TenantID,
-		&c.Name, &c.Kind, &c.Version, &serving, &c.ReleaseVersion, &sc.ReservedVersion)
+		&c.Name, &c.Kind, &c.Version, &serving, &c.ReleaseVersion, &c.PackageType, &sc.ReservedVersion)
 	c.ServingKeyID = serving.String
+	if err == nil && !pkgtype.Known(c.PackageType) {
+		err = sql.ErrNoRows // spec 0034: a channel of a type this binary does not know serves nothing
+	}
 	if err == nil {
 		// spec 0030: the process's view of the reserved names follows the server's list, so what is
 		// decided on this channel (shadows, pull-through) sees a name reserved since
@@ -928,12 +940,13 @@ func (s *Store) ListBlocks(ctx context.Context, tenantID string) ([]Block, error
 	return out, rows.Err()
 }
 
-// ProvidedNames lists the names a tenant's upstreams provide (spec 0009).
-func (s *Store) ProvidedNames(ctx context.Context, tenantID string) (map[string]bool, error) {
+// ProvidedNames lists the names of a type a tenant's upstreams provide (spec 0009): an upstream's
+// names are of its home channel's type (spec 0034).
+func (s *Store) ProvidedNames(ctx context.Context, tenantID, packageType string) (map[string]bool, error) {
 	out := map[string]bool{}
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		names, err := tx.strings(ctx, `SELECT DISTINCT e.name FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
-WHERE u.tenant_id = ?`, tenantID)
+JOIN channels c ON c.id = u.channel_id WHERE u.tenant_id = ? AND c.package_type = ?`, tenantID, packageType)
 		for _, n := range names {
 			if n != "*" { // "*" reserves no name
 				out[n] = true

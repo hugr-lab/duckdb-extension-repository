@@ -13,6 +13,7 @@ import (
 	"strconv"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -77,8 +78,13 @@ const (
 // it.
 type Resource struct {
 	Tenant, Channel, Package string
-	PackageGroup             string
-	Reserved                 bool
+	// PackageType is the type of the channel's or the package's packages (spec 0034): the channel's
+	// (Grants.Allow reads it when a channel is named and it is not set), or the route's ?type= for a
+	// package without a channel (the default type when not set); never a body's. Unused without a
+	// channel or a package.
+	PackageType  string
+	PackageGroup string
+	Reserved     bool
 }
 
 // Server is the server-wide resource: tenants, DuckDB versions, audiences, signer references, force.
@@ -167,10 +173,42 @@ func (g Grants) Allow(ctx context.Context, a Actor, verb Verb, r Resource) error
 	if err != nil {
 		return err
 	}
+	r, err = g.typed(ctx, t.ID, r)
+	if err != nil {
+		return err
+	}
 	if Covers(auth.HeldBy(a.Principals, ta), string(verb), r) {
 		return nil
 	}
 	return ErrDenied
+}
+
+// typed fills a resource's package type (spec 0034): a channel's is the channel's, read from the
+// store (a channel that is not there has none, which only a grant of every type covers; one of a
+// type this binary does not know is nobody's: ErrDenied); a package's without a channel the default
+// when the caller did not name one, and a type that is not known is nobody's.
+func (g Grants) typed(ctx context.Context, tenantID string, r Resource) (Resource, error) {
+	switch {
+	case r.Channel != "":
+		t, err := g.Store.ChannelType(ctx, tenantID, r.Channel)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			t = ""
+		case err != nil:
+			return r, err
+		case !pkgtype.Known(t):
+			return r, ErrDenied
+		}
+		if r.PackageType != "" && r.PackageType != t {
+			t = "" // a caller's type that is not the channel's: covered by nothing typed
+		}
+		r.PackageType = t
+	case r.Package != "" && r.PackageType == "":
+		r.PackageType = pkgtype.Default
+	case r.Package != "" && !pkgtype.Known(r.PackageType):
+		return r, ErrDenied
+	}
+	return r, nil
 }
 
 // activeTenant allows an active tenant only (a server role's calls on a tenant).
@@ -231,10 +269,11 @@ func (g Grants) Held(ctx context.Context, a Actor, tenant string) (auth.Held, er
 // ExtensionVerbs are the verbs a grant can give on an extension (audit is the tenant's log).
 var ExtensionVerbs = []string{store.VerbInstall, store.VerbAdmin, store.VerbPublish, store.VerbPromote}
 
-// Reaching is how a grant reaches an extension (tenant, channel, extension or extension_group) and
-// the verbs it gives there, in the grant's own channel scope (spec 0017); no verbs: it does not.
-func Reaching(g store.Grant, tenant, ext string, reserved bool) (via string, verbs []string) {
-	res := Resource{Tenant: tenant, Channel: g.ChannelName, Package: ext, Reserved: reserved}
+// Reaching is how a grant reaches a package (tenant, channel, extension or extension_group) and the
+// verbs it gives there, in the grant's own channel scope (spec 0017); no verbs: it does not. The
+// package is of packageType; a channel-scoped grant's channel is of the type it serves.
+func Reaching(g store.Grant, tenant, packageType, ext string, reserved bool) (via string, verbs []string) {
+	res := Resource{Tenant: tenant, Channel: g.ChannelName, Package: ext, PackageType: packageType, Reserved: reserved}
 	for _, v := range ExtensionVerbs {
 		if GrantCovers(g, v, res) {
 			verbs = append(verbs, v)
@@ -274,9 +313,19 @@ func GrantCovers(g store.Grant, verb string, r Resource) bool {
 		case r.Reserved && explicit:
 			return false
 		}
-		return r.Package != "" && g.Members[r.Package] && (g.ChannelID == "" || r.Channel != "" && g.ChannelName == r.Channel)
+		// spec 0034: members are (type, name); a resource without a type is no member's
+		return r.Package != "" && r.PackageType != "" && g.Members[pkgtype.Key{Type: r.PackageType, Name: r.Package}] &&
+			(g.ChannelID == "" || r.Channel != "" && g.ChannelName == r.Channel)
 	}
 	if r.Reserved && explicit && g.Package == "" {
+		return false
+	}
+	// spec 0034: a grant of a type reaches that type's channels and packages only, nothing
+	// tenant-level; a grant that names a package, that (type, name) only; one of a type this binary
+	// does not know, nothing
+	switch t := g.Type(); {
+	case t == pkgtype.Any && g.Package == "":
+	case !pkgtype.Known(t) || r.PackageType != t || r.Channel == "" && r.Package == "":
 		return false
 	}
 	if verb == store.VerbAudit && (g.ChannelID != "" || g.Package != "") {

@@ -256,7 +256,7 @@ func newEnvWith(t *testing.T, e storetest.Engine, maxBody int64, ec egress.Confi
 		return err
 	})
 	for name, kind := range map[string]string{"prod": store.ChannelSigned, "other": store.ChannelSigned, "mirror": store.ChannelPassthrough} {
-		must(t, func() error { _, err := en.ten.CreateChannel(ctx, admin, "acme", name, kind); return err })
+		must(t, func() error { _, err := en.ten.CreateChannel(ctx, admin, "acme", name, kind, ""); return err })
 	}
 	for _, ch := range []string{"prod", "other"} {
 		must(t, func() error {

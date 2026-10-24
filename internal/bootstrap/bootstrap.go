@@ -26,6 +26,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -675,7 +676,7 @@ func issuerDiff(cur, want store.Issuer) string {
 // hasGrant reports whether the tenant holds the grant: its principal, verbs and scope.
 func hasGrant(ta store.TenantAuth, g config.BootstrapGrant) bool {
 	for _, x := range ta.Grants {
-		y := config.BootstrapGrant{Principal: x.Principal(), Verbs: x.Verbs, Channel: x.ChannelName, Extension: x.Package}
+		y := config.BootstrapGrant{Principal: x.Principal(), Verbs: x.Verbs, Channel: x.ChannelName, Extension: x.Package, PackageType: x.TypeShown()}
 		if x.PackageGroupID == "" && y.Key() == g.Key() {
 			return true
 		}
@@ -760,7 +761,7 @@ func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section stri
 	}
 	for _, cb := range b.Channels {
 		if p.action("channel", cb.Name) == Create {
-			if _, err := d.Tenants.CreateChannel(ctx, a, tb.Name, cb.Name, cb.Kind); err != nil {
+			if _, err := d.Tenants.CreateChannel(ctx, a, tb.Name, cb.Name, cb.Kind, ""); err != nil { // the default type
 				return res, err
 			}
 			made("channel", cb.Name)
@@ -821,7 +822,7 @@ func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section stri
 	}
 	for _, g := range b.Grants {
 		if p.action("grant", g.Key()) == Create {
-			on := tenants.GrantOn{Channel: g.Channel, Package: g.Extension}
+			on := tenants.GrantOn{Channel: g.Channel, Package: g.Extension, PackageType: g.PackageType}
 			if _, err := d.Auth.AddGrant(ctx, a, tb.Name, g.Principal, g.Verbs, on); err != nil {
 				return res, err
 			}
@@ -1099,10 +1100,10 @@ func upstreamDiff(cur store.Upstream, want config.BootstrapUpstream, channelID s
 }
 
 // missingCore lists the names of a version's core extensions the server does not hold as core.
-func missingCore(names []string, kinds map[string]string) []string {
+func missingCore(names []string, kinds map[pkgtype.Key]string) []string {
 	var out []string
 	for _, n := range names {
-		if kinds[n] != store.ReservedCore && !slices.Contains(out, n) {
+		if kinds[pkgtype.Of(n)] != store.ReservedCore && !slices.Contains(out, n) { // a DuckDB version's core names are DuckDB's
 			out = append(out, n)
 		}
 	}

@@ -54,7 +54,7 @@ func TestSDKLicenseRelay(t *testing.T) {
 	tok := vectors.Sign(signKey, vectors.Header(signKey), fmt.Sprintf(`{"v":1,"iss":"https://issuer.example","jti":"lic-relay",`+
 		`"sub":"acme","holder":"Acme Test","ext":"kista_demo","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}`,
 		now-60, now+30*86400))
-	if _, err := src.licenses.Import(ctx, serveAdmin, "acme", tok, licenses.Create); err != nil {
+	if _, err := src.licenses.Import(ctx, serveAdmin, "acme", "", tok, licenses.Create); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +100,7 @@ func TestSDKLicenseRelay(t *testing.T) {
 	if err != nil || res.Counts["stored"] != 1 {
 		t.Fatalf("the relay: %+v %v", res, err)
 	}
-	if ks, err := dst.licenses.LicenseKeys(ctx, serveAdmin, "acme", "kista_demo"); err != nil || len(ks) != 1 ||
+	if ks, err := dst.licenses.LicenseKeys(ctx, serveAdmin, "acme", "", "kista_demo"); err != nil || len(ks) != 1 ||
 		ks[0].Keys[0].Kid != vectors.Kid(&signKey.PublicKey) || ks[0].Keys[0].Sources[0] != (store.KeySource{Kind: "upstream", Name: "src"}) {
 		t.Fatalf("the downstream's keys: %+v %v", ks, err)
 	}

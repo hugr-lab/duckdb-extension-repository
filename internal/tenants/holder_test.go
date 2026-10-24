@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -93,7 +94,7 @@ func TestTenantHolder(t *testing.T) {
 			}
 			// the holder of every licence stored is taken
 			if err := st.InTenantTx(ctx, tn.ID, []string{store.LicenseLock(tn.ID)}, func(tx *store.Tx) error {
-				l, err := tx.GetLicense(ctx, tn.ID, "tresor")
+				l, err := tx.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor")
 				if err != nil {
 					return err
 				}

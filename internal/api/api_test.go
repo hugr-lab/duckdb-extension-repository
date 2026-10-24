@@ -143,7 +143,7 @@ func newEnv(t *testing.T) *env {
 		must(nil, err)
 	}
 	for _, ch := range []string{"prod", "staging"} {
-		must(ten.CreateChannel(ctx, admin, "acme", ch, store.ChannelSigned))
+		must(ten.CreateChannel(ctx, admin, "acme", ch, store.ChannelSigned, ""))
 		must(ten.SetChannelVersions(ctx, admin, "acme", ch, []string{"v2.0.0", "v1.9.0"}, nil))
 		if err := signer.GenerateKeyFile(filepath.Join(dir, ch+".pem")); err != nil {
 			t.Fatal(err)

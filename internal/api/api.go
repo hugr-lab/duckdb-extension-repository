@@ -25,6 +25,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -834,6 +835,12 @@ func (c caller) logName() string {
 func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru rule, p params) (caller, bool) {
 	ctx := r.Context()
 	failed := func(reason string) { note(w, func(sw *statusWriter) { sw.authFailure = reason }) }
+	// spec 0034: a type this server does not know is refused at every route, before anything else
+	typ, typeNamed, typeOK := queryType(r)
+	if !typeOK {
+		problem(w, http.StatusBadRequest, typeInvalid, "type is a package type this server knows ("+strings.Join(pkgtype.Types(), ", ")+")")
+		return caller{}, false
+	}
 	// a publisher's signed request (spec 0023): malformed, or not naming this request, is 400
 	st, sig, signed, bad := signedHeaders(r)
 	if bad != "" {
@@ -981,6 +988,9 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		}
 		// a group's administrators read it (spec 0017); its writes are the tenant administrator's
 		res := authz.Resource{Tenant: name, Channel: p["c"], Package: p["ext"]}
+		if p["c"] == "" {
+			res.PackageType = typ // spec 0034: a channel's is the channel's (the authorizer reads it)
+		}
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			res.PackageGroup = p["g"]
 		}
@@ -1001,8 +1011,22 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			return refuse()
 		}
 		res := authz.Resource{Tenant: name, Channel: p["c"], Package: p["ext"]}
+		if p["c"] == "" {
+			res.PackageType = typ // spec 0034: a channel's is the channel's (the authorizer reads it)
+		}
 		if p["ext"] != "" && h.o.Store != nil {
-			kind, err := h.o.Store.ReservedFor(ctx, name, p["ext"]) // spec 0030: DuckDB's, the tenant's, its upstreams'
+			ptype := typ // a channel's name is of the channel's type
+			if p["c"] != "" {
+				ct, err := h.o.Store.ChannelType(ctx, c.tenant.ID, p["c"])
+				if err != nil && !errors.Is(err, store.ErrNotFound) {
+					h.fail(w, err)
+					return caller{}, false
+				}
+				if err == nil {
+					ptype = ct
+				}
+			}
+			kind, err := h.o.Store.ReservedFor(ctx, name, ptype, p["ext"]) // spec 0030: DuckDB's, the tenant's, its upstreams'
 			if err != nil {
 				h.fail(w, err)
 				return caller{}, false
@@ -1048,7 +1072,61 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			return caller{}, false
 		}
 	}
+	// spec 0034: on a channel's routes and an upstream's the type is the channel's; a ?type= that
+	// differs is refused (once the caller may see the route)
+	if typeNamed && onTenant && h.o.Store != nil {
+		var cur string
+		var err error
+		switch {
+		case p["c"] != "":
+			cur, err = h.o.Store.ChannelType(ctx, c.tenant.ID, p["c"])
+		case p["name"] != "" && strings.HasPrefix(rt.pattern, "tenants/{t}/upstreams/{name}"):
+			cur, err = h.o.Store.UpstreamChannelType(ctx, c.tenant.ID, p["name"])
+		}
+		switch {
+		case errors.Is(err, store.ErrNotFound): // the route answers it
+		case err != nil:
+			h.fail(w, err)
+			return caller{}, false
+		case cur != "" && cur != typ:
+			problem(w, http.StatusBadRequest, typeInvalid, "the type is the channel's ("+cur+"), not "+typ)
+			return caller{}, false
+		}
+	}
 	return c, true
+}
+
+// queryType reads a request's ?type= (spec 0034): the default when the query names none; named says
+// it named one; ok is false for a type this server does not know, or one named twice.
+func queryType(r *http.Request) (t string, named, ok bool) {
+	vs, named := r.URL.Query()["type"]
+	if !named {
+		return pkgtype.Default, false, true
+	}
+	if len(vs) != 1 {
+		return "", true, false
+	}
+	t, err := pkgtype.Parse(vs[0])
+	return t, true, err == nil
+}
+
+// reqType is a request's package type: its ?type= (decide refused one it does not know), else the
+// default.
+func reqType(r *http.Request) string {
+	t, _, ok := queryType(r)
+	if !ok {
+		return pkgtype.Default
+	}
+	return t
+}
+
+// shownType is a package type as an answer shows it (spec 0034): omitted ("") when it is the
+// default, so what an existing caller reads does not change.
+func shownType(t string) string {
+	if t == pkgtype.Default {
+		return ""
+	}
+	return t
 }
 
 func (h *Handler) fail(w http.ResponseWriter, err error) {

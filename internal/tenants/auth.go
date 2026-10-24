@@ -239,8 +239,10 @@ func ParsePrincipal(p string) (kind, issuer, value string, err error) {
 }
 
 // GrantOn is what a grant is on: the tenant (all empty), a channel, a package (an extension) or a
-// package group (spec 0017), the last two in every channel or in Channel.
-type GrantOn struct{ Channel, Package, PackageGroup string }
+// package group (spec 0017), the last two in every channel or in Channel. PackageType is the
+// grant's package type (spec 0034): "" is the default for the grant's shape (a name: the default
+// type; none: "*", every type).
+type GrantOn struct{ Channel, Package, PackageGroup, PackageType string }
 
 // AddGrant grants verbs to a principal on the tenant, a channel, an extension or an extension group
 // (in every channel or one). An issuer-wide grant cannot carry admin: every account of the issuer
@@ -277,15 +279,17 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 			return store.Grant{}, err
 		}
 	}
-	g := store.Grant{TenantID: t.ID, Kind: kind, Value: value, Package: extension, Verbs: verbs, CreatedBy: a.String()}
+	g := store.Grant{TenantID: t.ID, Kind: kind, Value: value, Package: extension, PackageType: on.PackageType, Verbs: verbs,
+		CreatedBy: a.String()}
 	if kind == store.PrincipalPublisher {
 		g.Value = ""
 	}
 	g.Verbs = dedupe(g.Verbs)
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		if distributor(a) {
-			// spec 0030: a distribution admin grants on the names reserved in the tenant only
-			held, err := tx.TenantReserves(ctx, t.ID, extension)
+			// spec 0030: a distribution admin grants on the names reserved in the tenant only (of the
+			// grant's type, spec 0034)
+			held, err := tx.TenantReserves(ctx, t.ID, g.Type(), extension)
 			if err != nil {
 				return err
 			}
@@ -335,8 +339,12 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 }
 
 func grantFields(g store.Grant) map[string]any {
-	return map[string]any{"principal": g.Principal(), "verbs": g.Verbs, "channel": g.ChannelName, "extension": g.Package,
+	f := map[string]any{"principal": g.Principal(), "verbs": g.Verbs, "channel": g.ChannelName, "extension": g.Package,
 		"extension_group": g.PackageGroupName}
+	if t := g.TypeShown(); t != "" { // spec 0034: when it is not the default for the grant's shape
+		f["package_type"] = t
+	}
+	return f
 }
 
 func dedupe(in []string) []string {

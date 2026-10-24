@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -401,7 +402,10 @@ func TestCollectAttachments(t *testing.T) {
 		t.Fatalf("superseded just now: %+v %v", r, err)
 	}
 	now = now.AddDate(1, 0, 1)
-	if err := e.st.InTx(ctx, "", func(tx *store.Tx) error { _, err := tx.TouchBuild(ctx, tn.ID, "acl", held.BodyHash); return err }); err != nil {
+	if err := e.st.InTx(ctx, "", func(tx *store.Tx) error {
+		_, err := tx.TouchBuild(ctx, tn.ID, pkgtype.DuckDBExtension, "acl", held.BodyHash)
+		return err
+	}); err != nil {
 		t.Fatal(err) // the body is still in use
 	}
 	if r, err := c.Pass(ctx, "default", false); err != nil || r.Attachments != 1 || exists(kept.ID) || !exists(newer.ID) {

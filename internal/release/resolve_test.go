@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -173,7 +174,7 @@ func TestAnyTakes(t *testing.T) {
 		{store.UpstreamCore, "json", false},
 		{store.UpstreamCommunity, "http", false}, // an alias
 	} {
-		if got := release.AnyTakes(c.kind, c.name); got != c.want {
+		if got := release.AnyTakes(pkgtype.DuckDBExtension, c.kind, c.name); got != c.want {
 			t.Errorf("%+v: %v", c, got)
 		}
 	}

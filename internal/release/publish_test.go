@@ -11,6 +11,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -99,7 +100,7 @@ func TestPublishChecks(t *testing.T) {
 func (en *env) staging(t *testing.T) {
 	t.Helper()
 	must(t, func() error {
-		_, err := en.ten.CreateChannel(ctx, admin, "acme", "staging", store.ChannelSigned)
+		_, err := en.ten.CreateChannel(ctx, admin, "acme", "staging", store.ChannelSigned, "")
 		return err
 	})
 	must(t, func() error {
@@ -370,7 +371,7 @@ func TestPublishRecheckReserved(t *testing.T) {
 		err := pub("kista_late", func() {
 			must(t, func() error {
 				return en.st.InTx(ctx, "", func(tx *store.Tx) error {
-					if _, err := tx.ReserveName(ctx, "kista_late", store.ReservedCommunity, "admin:os:1:t"); err != nil {
+					if _, err := tx.ReserveName(ctx, pkgtype.DuckDBExtension, "kista_late", store.ReservedCommunity, "admin:os:1:t"); err != nil {
 						return err
 					}
 					return tx.BumpReservedVersion(ctx)
@@ -384,14 +385,14 @@ func TestPublishRecheckReserved(t *testing.T) {
 			t.Fatalf("released: %+v", rs)
 		}
 		// a name reserved in the tenant (spec 0030 part 2): before the call, and while the body is read
-		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "kista_held", "enterest"); err != nil {
+		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "", "kista_held", "enterest"); err != nil {
 			t.Fatal(err)
 		}
 		if err := pub("kista_held", func() {}); !errors.Is(err, authz.ErrDenied) {
 			t.Fatalf("a tenant-reserved name: %v", err)
 		}
 		err = pub("kista_held_late", func() {
-			if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "kista_held_late", "enterest"); err != nil {
+			if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "", "kista_held_late", "enterest"); err != nil {
 				t.Error(err)
 			}
 		})

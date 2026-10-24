@@ -36,8 +36,11 @@ func TestMigration20KeepsUpstreamChildren(t *testing.T) {
 			tn.ID, tn.Name, s.d.timeArg(s.Now())); err != nil {
 			return err
 		}
-		ch.TenantID = tn.ID
-		return tx.CreateChannel(ctx, &ch)
+		// the channel as the schema of the time has it (no package_type: migration 0039)
+		ch.TenantID, ch.ID = tn.ID, NewID()
+		_, err := tx.exec(ctx, "INSERT INTO channels (id, tenant_id, name, kind, created_at, version) VALUES (?, ?, ?, ?, ?, 1)",
+			ch.ID, ch.TenantID, ch.Name, ch.Kind, s.d.timeArg(s.Now()))
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}

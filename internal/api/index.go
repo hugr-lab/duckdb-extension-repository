@@ -14,21 +14,22 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// view is the caller's view of a channel: public releases, plus those of the extensions it may
-// install there (spec 0007).
-func (c caller) view(channelID string) release.Visible {
+// view is the caller's view of a channel of packageType: public releases, plus those of the
+// extensions it may install there (spec 0007).
+func (c caller) view(channelID, packageType string) release.Visible {
 	if c.admin {
 		return release.Everything // a server administrator sees everything
 	}
 	if c.principals == nil {
 		return release.PublicOnly
 	}
-	all, may := auth.InstallScope(c.held(), channelID)
+	all, may := auth.InstallScope(c.held(), channelID, packageType)
 	if all {
 		return release.Everything
 	}
@@ -43,10 +44,13 @@ type grantOut struct {
 	Channel        string   `json:"channel,omitempty"`
 	Extension      string   `json:"extension,omitempty"`
 	ExtensionGroup string   `json:"extension_group,omitempty"`
+	// PackageType is omitted when it is the default for the grant's shape (spec 0034)
+	PackageType string `json:"package_type,omitempty"`
 }
 
 func grantOutOf(g store.Grant) grantOut {
-	return grantOut{Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Package, ExtensionGroup: g.PackageGroupName}
+	return grantOut{Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Package, ExtensionGroup: g.PackageGroupName,
+		PackageType: g.TypeShown()}
 }
 
 func (h *Handler) whoami(w http.ResponseWriter, r *http.Request, c caller, _ params) {
@@ -102,12 +106,16 @@ func (h *Handler) channels(w http.ResponseWriter, r *http.Request, c caller, _ p
 		return
 	}
 	type out struct {
-		Name string `json:"name"`
-		Kind string `json:"kind"`
+		Name        string `json:"name"`
+		Kind        string `json:"kind"`
+		PackageType string `json:"package_type,omitempty"` // spec 0034: omitted when it is the default
 	}
 	list := []out{}
 	for _, ch := range chs {
-		list = append(list, out{ch.Name, ch.Kind})
+		if !pkgtype.Known(ch.PackageType) {
+			continue // spec 0034: a channel of a type this server does not know serves nothing
+		}
+		list = append(list, out{ch.Name, ch.Kind, shownType(ch.PackageType)})
 	}
 	answer(w, r, map[string]any{"channels": list}, c.anonymous())
 }
@@ -165,8 +173,11 @@ func (h *Handler) channelInfo(w http.ResponseWriter, r *http.Request, c caller, 
 			ks = append(ks, keyOut{k.Fingerprint, k.State})
 		}
 	}
-	answer(w, r, map[string]any{"name": snap.Channel.Name, "kind": snap.Channel.Kind, "duckdb_versions": versions,
-		"keys": ks}, c.anonymous())
+	out := map[string]any{"name": snap.Channel.Name, "kind": snap.Channel.Kind, "duckdb_versions": versions, "keys": ks}
+	if t := shownType(snap.Channel.PackageType); t != "" { // spec 0034: omitted when it is the default
+		out["package_type"] = t
+	}
+	answer(w, r, out, c.anonymous())
 }
 
 // --- extensions ---
@@ -204,7 +215,7 @@ func (h *Handler) extensions(w http.ResponseWriter, r *http.Request, c caller, p
 	if !ok {
 		return
 	}
-	vis := c.view(snap.Channel.ID)
+	vis := c.view(snap.Channel.ID, snap.Channel.PackageType)
 	type agg struct{ public, private bool }
 	names := map[string]*agg{}
 	for i := range snap.Releases {
@@ -317,11 +328,11 @@ type resolver struct {
 // indexResolver is a resolver for one extension's rows: with the tenant's blocks, and provenance
 // for the extension's administrators and publishers (spec 0008).
 func (h *Handler) indexResolver(w http.ResponseWriter, r *http.Request, c caller, snap *release.Snapshot, name string) (*resolver, bool) {
-	rs := newResolver(snap, c.view(snap.Channel.ID))
+	rs := newResolver(snap, c.view(snap.Channel.ID, snap.Channel.PackageType))
 	rs.blocked = snap.Blocked
 	// spec 0030: DuckDB's names, the tenant's, its upstreams' (the snapshot holds the last two)
-	res := authz.Resource{Tenant: c.tenant.Name, Channel: snap.Channel.Name, Package: name,
-		Reserved: reserved.Kind(name) != "" || snap.TenantReserved[name] || snap.Provided[name]}
+	res := authz.Resource{Tenant: c.tenant.Name, Channel: snap.Channel.Name, Package: name, PackageType: snap.Channel.PackageType,
+		Reserved: reserved.Kind(snap.Channel.PackageType, name) != "" || snap.TenantReserved[name] || snap.Provided[name]}
 	held := c.held()
 	rs.c, rs.admin = c, c.admin || c.principals != nil && authz.Covers(held, store.VerbAdmin, res)
 	rs.provenance = rs.admin
@@ -370,7 +381,7 @@ func (rs *resolver) row(rel *store.Candidate) releaseOut {
 		ABI: rel.ABI, DuckDBVersion: rel.DuckDBVersion, State: rel.State, Visibility: rel.Visibility, BodyHash: rel.BodyHash,
 		ServingKey: rs.snap.ServingKey, CreatedAt: rel.CreatedAt.UTC().Format(time.RFC3339),
 		Serves: []servesOut{}, CurrentFor: []string{}}
-	o.Origin, o.Shadows = rel.Origin, release.Shadows(*rel, rs.snap.Provided)
+	o.Origin, o.Shadows = rel.Origin, release.Shadows(rs.snap.Channel.PackageType, *rel, rs.snap.Provided)
 	if rel.Origin == store.OriginUpstream {
 		var p struct {
 			Upstream string `json:"upstream"`
@@ -456,7 +467,7 @@ func (h *Handler) extension(w http.ResponseWriter, r *http.Request, c caller, p 
 	for i := range rows {
 		ptrs[i] = &rows[i]
 	}
-	if err := h.withAttachments(r, c, name, ptrs...); err != nil {
+	if err := h.withAttachments(r, c, snap.Channel.PackageType, name, ptrs...); err != nil {
 		h.fail(w, err)
 		return
 	}
@@ -502,14 +513,14 @@ func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, p param
 		cur := rs.flatOf(version, platform, name)
 		out["current"] = cur != nil && cur.ID == best.ID
 		row := rs.row(best)
-		if err := h.withAttachments(r, c, name, append(ptrs, &row)...); err != nil {
+		if err := h.withAttachments(r, c, snap.Channel.PackageType, name, append(ptrs, &row)...); err != nil {
 			h.fail(w, err)
 			return
 		}
 		out["release"] = row
 		out["yanked"] = nonNil(yanked)
 	case len(yanked) > 0:
-		if err := h.withAttachments(r, c, name, ptrs...); err != nil {
+		if err := h.withAttachments(r, c, snap.Channel.PackageType, name, ptrs...); err != nil {
 			h.fail(w, err)
 			return
 		}

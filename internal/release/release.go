@@ -15,6 +15,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -34,7 +35,29 @@ var (
 	// ErrOtherSource is a release of a name another source holds in the channel (spec 0031); the
 	// error is a *SourceError, which names the source.
 	ErrOtherSource = errors.New("release: another source holds the name in this channel")
+	// ErrPackageType is a build released, placed, promoted or followed into a channel of another
+	// package type (spec 0034), or an intake of a type this server has none for.
+	ErrPackageType = errors.New("release: the channel serves another package type")
 )
+
+// channelType is a channel's package type for the lookups that come before authorization (spec
+// 0034): the default for a channel that is not there, which the authorization or the read after it
+// refuses.
+func (s *Service) channelType(ctx context.Context, tenant, channel string) (string, error) {
+	c, err := s.Store.GetChannel(ctx, tenant, channel)
+	if errors.Is(err, store.ErrNotFound) {
+		return pkgtype.Default, nil
+	}
+	return c.PackageType, err
+}
+
+// sameType refuses a build of one type into a channel of another (spec 0034: 409).
+func sameType(c store.Channel, b store.Build) error {
+	if b.PackageType != c.PackageType || !pkgtype.Known(c.PackageType) {
+		return fmt.Errorf("%w: the channel %s serves %s, the build is %s", ErrPackageType, c.Name, c.PackageType, b.PackageType)
+	}
+	return nil
+}
 
 // SourceError is a release refused because another source holds its name in the channel (spec
 // 0031): the channel's administrator switches the source to let it in. Source is as answers show it
@@ -157,9 +180,12 @@ func lockKey(channelID string) string { return "kista/channel/" + channelID }
 
 // AddOptions are the choices of an add or a publication.
 type AddOptions struct {
-	Name       string
-	Private    bool
-	NotCurrent bool
+	Name string
+	// PackageType is the type a publication into the catalogue names (spec 0034: ?type=, "": the
+	// default); a channel's add takes the channel's.
+	PackageType string
+	Private     bool
+	NotCurrent  bool
 	// Unchecked skips spec 0008's file checks (prefix, format, entry point): the CLI's operator
 	// vouches for the body. Never set over the API.
 	Unchecked bool
@@ -194,7 +220,11 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	res := authz.Resource{Tenant: tenant, Channel: channel}
 	verb := authz.VerbAdmin
 	if o.Publish != nil {
-		kind, err := s.Store.ReservedFor(ctx, tenant, o.Name) // spec 0030: DuckDB's, the tenant's, its upstreams'
+		typ, err := s.channelType(ctx, tenant, channel)
+		if err != nil {
+			return store.Release{}, false, err
+		}
+		kind, err := s.Store.ReservedFor(ctx, tenant, typ, o.Name) // spec 0030: DuckDB's, the tenant's, its upstreams'
 		if err != nil {
 			return store.Release{}, false, err
 		}
@@ -212,6 +242,9 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	ch := sc.Channel
 	if ch.Kind != store.ChannelSigned {
 		return store.Release{}, false, fmt.Errorf("%w: a %s channel is fed by upstreams (spec 0009)", ErrState, ch.Kind)
+	}
+	if ch.PackageType != pkgtype.DuckDBExtension { // the intake reads DuckDB extensions (spec 0008)
+		return store.Release{}, false, fmt.Errorf("%w: the channel serves %s; this server takes DuckDB extensions only", ErrPackageType, ch.PackageType)
 	}
 	if _, err := activeKey(ctx, s.Store, ch.ID); err != nil {
 		return store.Release{}, false, err
@@ -322,7 +355,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		return s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {
 			r := made[0]
 			f := releaseFields(r, it.b, kind == "release.publish")
-			f["shadows"] = Shadows(store.Candidate{Release: r, BuildOrigin: it.b.Origin}, nil)
+			f["shadows"] = Shadows(c.PackageType, store.Candidate{Release: r, BuildOrigin: it.b.Origin}, nil)
 			return tx.Event(ctx, c.TenantID, a.String(), kind, releaseSubject(c, r), f)
 		})
 	})
@@ -565,6 +598,11 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 			if err != nil {
 				return err
 			}
+			for _, it := range items { // spec 0034: a channel takes builds of its type only
+				if err := sameType(c, it.b); err != nil {
+					return err
+				}
+			}
 			keys, err := tx.ChannelKeys(ctx, channelID)
 			if err != nil {
 				return err
@@ -604,14 +642,14 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					return err
 				}
 				if it.reserveKind != "" {
-					changed, err := tx.ReserveName(ctx, b.Name, it.reserveKind, it.reserveSource)
+					changed, err := tx.ReserveName(ctx, b.PackageType, b.Name, it.reserveKind, it.reserveSource)
 					if err != nil {
 						return err
 					}
 					learned = learned || changed
 				}
 				if it.anyKind != "" {
-					taken, err := anyTakesNow(ctx, tx, b.TenantID, b.Name, it.anyKind)
+					taken, err := anyTakesNow(ctx, tx, b.TenantID, b.PackageType, b.Name, it.anyKind)
 					if err != nil {
 						return err
 					}
@@ -623,19 +661,19 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				if it.recheck != nil {
 					// a name an upstream of the tenant provides, or one the server or the tenant reserved
 					// since the caller was authorized (spec 0030), takes a grant that names it
-					provided, err := tx.UpstreamProvides(ctx, b.TenantID, b.Name)
+					provided, err := tx.UpstreamProvides(ctx, b.TenantID, b.PackageType, b.Name)
 					if err != nil {
 						return err
 					}
 					if !provided {
-						k, err := tx.ReservedKind(ctx, b.Name)
+						k, err := tx.ReservedKind(ctx, b.PackageType, b.Name)
 						if err != nil {
 							return err
 						}
 						provided = k != ""
 					}
 					if !provided {
-						if provided, err = tx.TenantReserves(ctx, b.TenantID, b.Name); err != nil {
+						if provided, err = tx.TenantReserves(ctx, b.TenantID, b.PackageType, b.Name); err != nil {
 							return err
 						}
 					}
@@ -715,10 +753,11 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					}
 				}
 				// any body other than DuckDB's own core build, under a core name or a name the tenant's
-				// passthrough channels serve, released in a signed channel, shadows DuckDB's build in
-				// those channels until an administrator removes the shadow (spec 0009)
-				if c.Kind == store.ChannelSigned && !s.DuckDBCore(b) {
-					k, err := tx.ReservedKind(ctx, b.Name) // the server's list as it is now (spec 0030)
+				// passthrough channels serve, released in a signed channel of DuckDB extensions, shadows
+				// DuckDB's build in those channels until an administrator removes the shadow (spec 0009,
+				// spec 0034)
+				if c.Kind == store.ChannelSigned && c.PackageType == pkgtype.DuckDBExtension && !s.DuckDBCore(b) {
+					k, err := tx.ReservedKind(ctx, b.PackageType, b.Name) // the server's list as it is now (spec 0030)
 					if err != nil {
 						return err
 					}
@@ -869,7 +908,11 @@ func (s *Service) mayRead(ctx context.Context, a authz.Actor, tenant, channel, n
 	if name == "" || !errors.Is(err, authz.ErrDenied) {
 		return err
 	}
-	kind, err := s.Store.ReservedFor(ctx, tenant, name) // spec 0030
+	typ, err := s.channelType(ctx, tenant, channel)
+	if err != nil {
+		return err
+	}
+	kind, err := s.Store.ReservedFor(ctx, tenant, typ, name) // spec 0030
 	if err != nil {
 		return err
 	}
@@ -1108,14 +1151,14 @@ func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, nam
 
 // anyTakesNow is AnyTakes inside a release's transaction, under its locks: the server's list as it is
 // now, and no name the tenant reserves or an upstream of the tenant lists (spec 0030).
-func anyTakesNow(ctx context.Context, tx *store.Tx, tenantID, name, kind string) (bool, error) {
-	k, err := tx.ReservedKind(ctx, name)
+func anyTakesNow(ctx context.Context, tx *store.Tx, tenantID, packageType, name, kind string) (bool, error) {
+	k, err := tx.ReservedKind(ctx, packageType, name)
 	if err != nil || k == store.ReservedCore || k == store.ReservedCommunity && kind != store.UpstreamCommunity {
 		return false, err
 	}
-	if held, err := tx.TenantReserves(ctx, tenantID, name); err != nil || held {
+	if held, err := tx.TenantReserves(ctx, tenantID, packageType, name); err != nil || held {
 		return false, err
 	}
-	listed, err := tx.UpstreamProvides(ctx, tenantID, name)
+	listed, err := tx.UpstreamProvides(ctx, tenantID, packageType, name)
 	return !listed, err
 }

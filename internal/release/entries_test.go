@@ -9,6 +9,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -102,7 +103,7 @@ func TestCatalogueOnly(t *testing.T) {
 		}
 		// a released build is not purged
 		p.publish(t, cpp("2.0"))
-		bs, _ := p.st.SourceBuilds(ctx, ch.TenantID, "publisher:"+p.ci.ID, "tresor")
+		bs, _ := p.st.SourceBuilds(ctx, ch.TenantID, pkgtype.DuckDBExtension, "publisher:"+p.ci.ID, "tresor")
 		for _, x := range bs {
 			if x.PackageVersion == "2.0" {
 				if _, err := p.rel.PurgeEntry(ctx, admin, "acme", x.ID); !errors.Is(err, store.ErrConflict) {
@@ -134,7 +135,7 @@ func TestCatalogueOnly(t *testing.T) {
 		if err != nil || len(dead) != 1 {
 			t.Fatalf("collectable after the trim: %v %v", dead, err)
 		}
-		bs, _ = p.st.SourceBuilds(ctx, ch.TenantID, "publisher:"+p.ci.ID, "tresor")
+		bs, _ = p.st.SourceBuilds(ctx, ch.TenantID, pkgtype.DuckDBExtension, "publisher:"+p.ci.ID, "tresor")
 		for _, x := range bs {
 			if x.ID == dead[0] && x.PackageVersion != "1.0" {
 				t.Fatalf("trimmed %s, not the oldest", x.PackageVersion)

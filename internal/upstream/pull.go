@@ -14,6 +14,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -346,7 +347,7 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	}
 	e, ok := entry(u, m.Name)
 	if !ok {
-		if _, any := entry(u, "*"); any && release.AnyTakes(u.Kind, m.Name) {
+		if _, any := entry(u, "*"); any && release.AnyTakes(pkgtype.DuckDBExtension, u.Kind, m.Name) { // an upstream's names are DuckDB's
 			// "*" takes no name another upstream of the channel lists (it may have been added since
 			// the snapshot)
 			var owner string

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
@@ -123,7 +124,7 @@ UNION ALL SELECT name FROM sqlite_master WHERE name LIKE '%extension%' OR name L
 			t.Fatalf("grants: %+v", a.Grants)
 		}
 		if len(a.GroupGrants) != 1 || a.GroupGrants[0].PackageGroupID != id("g") || a.GroupGrants[0].PackageGroupName != "platform" ||
-			a.GroupGrants[0].Package != "" || a.GroupGrants[0].ChannelID != cid || !a.GroupGrants[0].Members["acl"] || !a.GroupGrants[0].Members["tresor"] {
+			a.GroupGrants[0].Package != "" || a.GroupGrants[0].ChannelID != cid || !a.GroupGrants[0].Members[pkgtype.Of("acl")] || !a.GroupGrants[0].Members[pkgtype.Of("tresor")] {
 			t.Fatalf("group grants: %+v", a.GroupGrants)
 		}
 		g, err := s.GetPackageGroup(ctx, tid, "platform")
@@ -134,7 +135,7 @@ UNION ALL SELECT name FROM sqlite_master WHERE name LIKE '%extension%' OR name L
 		if err != nil || len(ms) != 2 || ms[0].Name != "acl" || ms[1].Name != "tresor" {
 			t.Fatalf("members: %+v %v", ms, err)
 		}
-		if gs, err := s.ListPackageGroups(ctx, tid, "tresor"); err != nil || len(gs) != 1 || gs[0].Name != "platform" {
+		if gs, err := s.ListPackageGroups(ctx, tid, pkgtype.DuckDBExtension, "tresor"); err != nil || len(gs) != 1 || gs[0].Name != "platform" {
 			t.Fatalf("groups holding tresor: %+v %v", gs, err)
 		}
 

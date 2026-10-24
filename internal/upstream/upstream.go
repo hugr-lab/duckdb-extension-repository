@@ -23,6 +23,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -283,6 +284,12 @@ func (s *Service) prepareAdd(ctx context.Context, a authz.Actor, t store.Tenant,
 	if err != nil {
 		return store.Upstream{}, false, err
 	}
+	// spec 0034: an upstream's names are of its home channel's type, and every source kista fetches
+	// from (DuckDB's repositories, a remote channel) serves DuckDB extensions today
+	if sc.Channel.PackageType != pkgtype.DuckDBExtension {
+		return store.Upstream{}, false, fmt.Errorf("%w: the channel serves %s; an upstream fetches DuckDB extensions", store.ErrInvalid,
+			sc.Channel.PackageType)
+	}
 	u, err := s.CheckSource(ctx, t.Name, sp, sc.Channel.Kind)
 	u.TenantID, u.CreatedBy, u.ChannelID = t.ID, a.String(), sc.Channel.ID
 	return u, sc.Channel.Kind == store.ChannelPassthrough, err
@@ -352,7 +359,7 @@ func (s *Service) insert(ctx context.Context, tx *store.Tx, a authz.Actor, t sto
 				return err
 			}
 			for _, b := range builds {
-				if reserved.Kind(b.Name) == reserved.Core && !s.Releases.DuckDBCore(b) {
+				if reserved.Kind(pkgtype.DuckDBExtension, b.Name) == reserved.Core && !s.Releases.DuckDBCore(b) {
 					added, err := tx.AddShadow(ctx, t.ID, b.Name, a.String())
 					if err != nil {
 						return err
@@ -464,7 +471,7 @@ func tenantReserved(ctx context.Context, tx *store.Tx, tenantID string, entries 
 		if e.Name == "*" || e.AllowReserved {
 			continue
 		}
-		held, err := tx.TenantReserves(ctx, tenantID, e.Name)
+		held, err := tx.TenantReserves(ctx, tenantID, pkgtype.DuckDBExtension, e.Name) // an upstream's names are DuckDB's
 		if err != nil {
 			return err
 		}
@@ -623,8 +630,11 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string
 			if err := tx.DeleteLicense(ctx, l, 0); err != nil {
 				return err
 			}
-			if err := tx.Event(ctx, t.ID, a.String(), "license.remove", "license:"+l.Name,
-				map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "upstream removed"}); err != nil {
+			f := map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "upstream removed"}
+			if l.PackageType != pkgtype.Default { // spec 0034: when it is not the default
+				f["package_type"] = l.PackageType
+			}
+			if err := tx.Event(ctx, t.ID, a.String(), "license.remove", "license:"+l.Name, f); err != nil {
 				return err
 			}
 		}

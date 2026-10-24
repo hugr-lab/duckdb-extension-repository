@@ -70,11 +70,12 @@ func scanAttachment(scan func(...any) error) (Attachment, error) {
 	return a, err
 }
 
-// TouchBuild reports whether the tenant holds a Build of name with the body, and refreshes its
-// used_at in the transaction (spec 0016's intake rule: the collector cannot remove it meanwhile).
-func (t *Tx) TouchBuild(ctx context.Context, tenantID, name, bodyHash string) (bool, error) {
-	res, err := t.exec(ctx, "UPDATE builds SET used_at = ? WHERE tenant_id = ? AND name = ? AND body_hash = ?",
-		t.s.d.timeArg(t.Now()), tenantID, name, bodyHash)
+// TouchBuild reports whether the tenant holds a Build of a package (type, name) with the body, and
+// refreshes its used_at in the transaction (spec 0016's intake rule: the collector cannot remove it
+// meanwhile).
+func (t *Tx) TouchBuild(ctx context.Context, tenantID, packageType, name, bodyHash string) (bool, error) {
+	res, err := t.exec(ctx, "UPDATE builds SET used_at = ? WHERE tenant_id = ? AND package_type = ? AND name = ? AND body_hash = ?",
+		t.s.d.timeArg(t.Now()), tenantID, packageType, name, bodyHash)
 	if err != nil {
 		return false, err
 	}
@@ -82,11 +83,12 @@ func (t *Tx) TouchBuild(ctx context.Context, tenantID, name, bodyHash string) (b
 	return n > 0, err
 }
 
-// PublishedBy reports whether an actor's publication released the body under name in the tenant.
-func (t *Tx) PublishedBy(ctx context.Context, tenantID, name, bodyHash, actor string) (bool, error) {
+// PublishedBy reports whether an actor's publication released the body under a package (type,
+// name) in the tenant.
+func (t *Tx) PublishedBy(ctx context.Context, tenantID, packageType, name, bodyHash, actor string) (bool, error) {
 	var n int
-	err := t.queryRow(ctx, `SELECT COUNT(*) FROM releases r JOIN builds b ON b.id = r.build_id WHERE b.tenant_id = ? AND b.name = ?
-AND b.body_hash = ? AND r.origin = ? AND r.created_by = ?`, tenantID, name, bodyHash, OriginPublication, actor).Scan(&n)
+	err := t.queryRow(ctx, `SELECT COUNT(*) FROM releases r JOIN builds b ON b.id = r.build_id WHERE b.tenant_id = ? AND b.package_type = ?
+AND b.name = ? AND b.body_hash = ? AND r.origin = ? AND r.created_by = ?`, tenantID, packageType, name, bodyHash, OriginPublication, actor).Scan(&n)
 	return n > 0, err
 }
 
@@ -181,12 +183,12 @@ func (t *Tx) GetAttachment(ctx context.Context, tenantID, id string) (Attachment
 	return a, notFound(err, "attachment")
 }
 
-// ExtensionAttachments lists the documents (not removed) of the bodies the tenant holds under name,
-// by body hash, kind and creation.
-func (s *Store) ExtensionAttachments(ctx context.Context, tenantID, name string) ([]Attachment, error) {
+// ExtensionAttachments lists the documents (not removed) of the bodies the tenant holds under a
+// package (type, name), by body hash, kind and creation.
+func (s *Store) ExtensionAttachments(ctx context.Context, tenantID, packageType, name string) ([]Attachment, error) {
 	return s.listAttachments(ctx, `SELECT `+prefixed("a.", attachmentCols)+` FROM attachments a WHERE a.tenant_id = ? AND a.removed_at IS NULL
-AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = a.tenant_id AND b.name = ? AND b.body_hash = a.body_hash)
-ORDER BY a.body_hash, a.kind, a.created_at, a.id`, tenantID, name)
+AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = a.tenant_id AND b.package_type = ? AND b.name = ? AND b.body_hash = a.body_hash)
+ORDER BY a.body_hash, a.kind, a.created_at, a.id`, tenantID, packageType, name)
 }
 
 // BodyAttachments lists the documents (not removed) of one body in the tenant.

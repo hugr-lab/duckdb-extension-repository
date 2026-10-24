@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -377,7 +378,7 @@ func TestAllows(t *testing.T) {
 		"another issuer":       {[]store.Grant{{IssuerID: "i2", Kind: "subject", Value: "alice", Verbs: []string{"install"}}}, false},
 		"none":                 {nil, false},
 	} {
-		if got := Allows(HeldBy(p, store.TenantAuth{Grants: tc.grants}), "c1", "tresor", "install"); got != tc.want {
+		if got := Allows(HeldBy(p, store.TenantAuth{Grants: tc.grants}), "c1", pkgtype.DuckDBExtension, "tresor", "install"); got != tc.want {
 			t.Errorf("%s: %v", name, got)
 		}
 	}
@@ -386,7 +387,7 @@ func TestAllows(t *testing.T) {
 // Grants on extension groups (spec 0017): install of their members, in every channel or one.
 func TestAllowsGroups(t *testing.T) {
 	p := Principals{{"i1", "role", "team"}: true}
-	members := map[string]bool{"tresor": true, "acl": true}
+	members := map[pkgtype.Key]bool{pkgtype.Of("tresor"): true, pkgtype.Of("acl"): true}
 	gg := func(ch string, verbs ...string) store.Grant {
 		return store.Grant{IssuerID: "i1", Kind: "role", Value: "team", ChannelID: ch, PackageGroupID: "g1", Members: members, Verbs: verbs}
 	}
@@ -406,10 +407,10 @@ func TestAllowsGroups(t *testing.T) {
 		"another role":     {store.Grant{IssuerID: "i1", Kind: "role", Value: "x", PackageGroupID: "g1", Members: members, Verbs: []string{"install"}}, "tresor", false, false, nil},
 	} {
 		h := HeldBy(p, store.TenantAuth{GroupGrants: []store.Grant{tc.grant}})
-		if got := Allows(h, "c1", tc.ext, "install"); got != tc.want {
+		if got := Allows(h, "c1", pkgtype.DuckDBExtension, tc.ext, "install"); got != tc.want {
 			t.Errorf("%s: allows %v", name, got)
 		}
-		all, may := InstallScope(h, "c1")
+		all, may := InstallScope(h, "c1", pkgtype.DuckDBExtension)
 		var got []string
 		for _, n := range []string{"acl", "httpfs", "tresor"} {
 			if may(n) {
@@ -422,7 +423,7 @@ func TestAllowsGroups(t *testing.T) {
 	}
 	// a group grant read as a plain grant would cover the tenant: Held keeps them apart
 	h := HeldBy(p, store.TenantAuth{GroupGrants: []store.Grant{gg("", "install")}})
-	if all, _ := InstallScope(h, "c1"); all || len(h.Grants) != 0 {
+	if all, _ := InstallScope(h, "c1", pkgtype.DuckDBExtension); all || len(h.Grants) != 0 {
 		t.Error("a group grant is tenant-wide")
 	}
 }

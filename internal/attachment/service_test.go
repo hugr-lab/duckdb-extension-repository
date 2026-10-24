@@ -12,6 +12,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob/fs"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -115,20 +116,20 @@ func (e *env) in(body, kind, mt, doc string) attachment.AttachInput {
 func TestAttachRules(t *testing.T) {
 	e := newEnv(t)
 	// an administrator attaches any kind, as the tenant; an extension administrator too
-	a, err := e.svc.Attach(ctx, admin, "acme", "tresor", e.in(e.body, store.KindSBOM, attachment.CycloneDX, sbom))
+	a, err := e.svc.Attach(ctx, admin, "acme", pkgtype.Of("tresor"), e.in(e.body, store.KindSBOM, attachment.CycloneDX, sbom))
 	if err != nil || a.Origin != store.AttachedByTenant || a.Visibility != store.VisibleAdministrators || a.Summary == "" {
 		t.Fatalf("admin: %+v %v", a, err)
 	}
-	if _, err := e.svc.Attach(ctx, extAdmin, "acme", "tresor", e.in(e.body, store.KindNotes, attachment.Markdown, "# ok")); err != nil {
+	if _, err := e.svc.Attach(ctx, extAdmin, "acme", pkgtype.Of("tresor"), e.in(e.body, store.KindNotes, attachment.Markdown, "# ok")); err != nil {
 		t.Fatalf("extension admin: %v", err)
 	}
 	// a publisher: an SBOM or provenance, for a body it published, as itself
-	p, err := e.svc.Attach(ctx, publisher, "acme", "tresor", e.in(e.body, store.KindSBOM, attachment.CycloneDX, sbom))
+	p, err := e.svc.Attach(ctx, publisher, "acme", pkgtype.Of("tresor"), e.in(e.body, store.KindSBOM, attachment.CycloneDX, sbom))
 	if err != nil || p.Origin != store.AttachedByPublisher || p.AttachedBy != publisher.String() {
 		t.Fatalf("publisher: %+v %v", p, err)
 	}
 	// it supersedes its own
-	if p2, err := e.svc.Attach(ctx, publisher, "acme", "tresor", attachment.AttachInput{BodyHash: e.body, Kind: store.KindSBOM,
+	if p2, err := e.svc.Attach(ctx, publisher, "acme", pkgtype.Of("tresor"), attachment.AttachInput{BodyHash: e.body, Kind: store.KindSBOM,
 		MediaType: attachment.CycloneDX, Title: "x", Content: []byte(sbom), Supersedes: p.ID}); err != nil || p2.Supersedes != p.ID {
 		t.Fatalf("a publisher superseding its own: %+v %v", p2, err)
 	}
@@ -155,59 +156,59 @@ func TestAttachRules(t *testing.T) {
 			ext = "acl" // tresor's body is not acl's
 			c.err = store.ErrNotFound
 		}
-		if _, err := e.svc.Attach(ctx, c.a, "acme", ext, c.in); !errors.Is(err, c.err) {
+		if _, err := e.svc.Attach(ctx, c.a, "acme", pkgtype.Of(ext), c.in); !errors.Is(err, c.err) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 
 	// reading: administrators and auditors; content checked against its hash
 	for _, who := range []authz.Actor{admin, extAdmin, auditor} {
-		if all, err := e.svc.List(ctx, who, "acme", "tresor"); err != nil || len(all) != 4 {
+		if all, err := e.svc.List(ctx, who, "acme", pkgtype.Of("tresor")); err != nil || len(all) != 4 {
 			t.Errorf("%s lists: %d %v", who, len(all), err)
 		}
 	}
-	if _, err := e.svc.List(ctx, publisher, "acme", "tresor"); !errors.Is(err, authz.ErrDenied) {
+	if _, err := e.svc.List(ctx, publisher, "acme", pkgtype.Of("tresor")); !errors.Is(err, authz.ErrDenied) {
 		t.Errorf("a publisher lists: %v", err)
 	}
 	var b []byte
-	if err := e.svc.Content(ctx, auditor, "acme", "tresor", a.ID, func(_ store.Attachment, c []byte) error { b = c; return nil }); err != nil || string(b) != sbom {
+	if err := e.svc.Content(ctx, auditor, "acme", pkgtype.Of("tresor"), a.ID, func(_ store.Attachment, c []byte) error { b = c; return nil }); err != nil || string(b) != sbom {
 		t.Fatalf("content: %q %v", b, err)
 	}
 	if err := e.blobs.Put(ctx, blob.AttachmentKey(a.ID), strings.NewReader(strings.Replace(sbom, "1.5", "1.6", 1)), int64(len(sbom))); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.svc.Content(ctx, admin, "acme", "tresor", a.ID, func(store.Attachment, []byte) error { return nil }); !errors.Is(err, blob.ErrCorrupt) {
+	if err := e.svc.Content(ctx, admin, "acme", pkgtype.Of("tresor"), a.ID, func(store.Attachment, []byte) error { return nil }); !errors.Is(err, blob.ErrCorrupt) {
 		t.Fatalf("a changed object: %v", err)
 	}
 
 	// visibility is a tenant administrator's, with the version
 	readers := store.VisibleReaders
-	if _, err := e.svc.SetFlags(ctx, extAdmin, "acme", "tresor", a.ID, &readers, nil, 0); !errors.Is(err, authz.ErrDenied) {
+	if _, err := e.svc.SetFlags(ctx, extAdmin, "acme", pkgtype.Of("tresor"), a.ID, &readers, nil, 0); !errors.Is(err, authz.ErrDenied) {
 		t.Fatalf("an extension admin's visibility: %v", err)
 	}
-	if _, err := e.svc.SetFlags(ctx, admin, "acme", "tresor", a.ID, &readers, nil, 9); !errors.Is(err, store.ErrConflict) {
+	if _, err := e.svc.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), a.ID, &readers, nil, 9); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("a stale version: %v", err)
 	}
-	x, err := e.svc.SetFlags(ctx, admin, "acme", "tresor", a.ID, &readers, nil, 1)
+	x, err := e.svc.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), a.ID, &readers, nil, 1)
 	if err != nil || x.Visibility != store.VisibleReaders || x.Version != 2 {
 		t.Fatalf("readers: %+v %v", x, err)
 	}
 	// a change to what it is already: still a stale If-Match is refused
-	if _, err := e.svc.SetFlags(ctx, admin, "acme", "tresor", a.ID, &readers, nil, 1); !errors.Is(err, store.ErrConflict) {
+	if _, err := e.svc.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), a.ID, &readers, nil, 1); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("a stale no-op: %v", err)
 	}
 
 	// readers see a chain's head only: a newer administrators-only version hides the older one
-	all, _ := e.st.ExtensionAttachments(ctx, x.TenantID, "tresor")
+	all, _ := e.st.ExtensionAttachments(ctx, x.TenantID, pkgtype.DuckDBExtension, "tresor")
 	if got := attachment.Readable(all, map[string]bool{e.body: true}); len(got) != 1 || got[0].ID != a.ID {
 		t.Fatalf("readable: %v", got)
 	}
-	newer, err := e.svc.Attach(ctx, admin, "acme", "tresor", attachment.AttachInput{BodyHash: e.body, Kind: store.KindSBOM,
+	newer, err := e.svc.Attach(ctx, admin, "acme", pkgtype.Of("tresor"), attachment.AttachInput{BodyHash: e.body, Kind: store.KindSBOM,
 		MediaType: attachment.CycloneDX, Title: "SBOM 2", Content: []byte(sbom), Supersedes: a.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, _ = e.st.ExtensionAttachments(ctx, x.TenantID, "tresor")
+	all, _ = e.st.ExtensionAttachments(ctx, x.TenantID, pkgtype.DuckDBExtension, "tresor")
 	if got := attachment.Readable(all, map[string]bool{e.body: true}); len(got) != 0 {
 		t.Fatalf("an older version shown in a newer one's place: %v", got)
 	}
@@ -216,16 +217,16 @@ func TestAttachRules(t *testing.T) {
 	}
 
 	// removal: administrators; the object goes too
-	if err := e.svc.Remove(ctx, auditor, "acme", "tresor", newer.ID); !errors.Is(err, authz.ErrDenied) {
+	if err := e.svc.Remove(ctx, auditor, "acme", pkgtype.Of("tresor"), newer.ID); !errors.Is(err, authz.ErrDenied) {
 		t.Fatalf("an auditor removes: %v", err)
 	}
-	if err := e.svc.Remove(ctx, extAdmin, "acme", "tresor", newer.ID); err != nil {
+	if err := e.svc.Remove(ctx, extAdmin, "acme", pkgtype.Of("tresor"), newer.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.blobs.Stat(ctx, blob.AttachmentKey(newer.ID)); !errors.Is(err, blob.ErrNotFound) {
 		t.Fatalf("the object stayed: %v", err)
 	}
-	if _, err := e.svc.Get(ctx, admin, "acme", "tresor", newer.ID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := e.svc.Get(ctx, admin, "acme", pkgtype.Of("tresor"), newer.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("a removed document: %v", err)
 	}
 	ev, _ := e.st.ListEvents(ctx, x.TenantID, store.EventFilter{Kind: "attachment.add", Limit: 10})

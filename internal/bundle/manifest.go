@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -70,10 +71,13 @@ type Plan struct {
 
 // PlanSource is one source: a kind, and for a repository its normalised prefix and pinned keys.
 type PlanSource struct {
-	Kind   string     `json:"kind"`
-	Prefix string     `json:"prefix,omitempty"`
-	Keys   []string   `json:"keys,omitempty"`
-	Cells  []PlanCell `json:"cells"`
+	Kind string `json:"kind"`
+	// PackageType is the source's package type (spec 0034): omitted (and required omitted) for
+	// duckdb_extension, so every importer and exporter reads an extension plan as before.
+	PackageType string     `json:"package_type,omitempty"`
+	Prefix      string     `json:"prefix,omitempty"`
+	Keys        []string   `json:"keys,omitempty"`
+	Cells       []PlanCell `json:"cells"`
 }
 
 // PlanCell is a cell the site wants, with the extension versions it accepts (none: any) and, when
@@ -116,10 +120,13 @@ type PlanRef struct {
 
 // Source is one source's cells, and for a repository its .well-known file.
 type Source struct {
-	Kind      string   `json:"kind"`
-	Prefix    string   `json:"prefix,omitempty"`
-	WellKnown *FileRef `json:"well_known,omitempty"`
-	Cells     []Cell   `json:"cells"`
+	Kind string `json:"kind"`
+	// PackageType is the source's package type (spec 0034): omitted (and required omitted) for
+	// duckdb_extension; a type the importer does not know is refused.
+	PackageType string   `json:"package_type,omitempty"`
+	Prefix      string   `json:"prefix,omitempty"`
+	WellKnown   *FileRef `json:"well_known,omitempty"`
+	Cells       []Cell   `json:"cells"`
 	// Licenses are the exporting tenant's licences of names whose files the source carries, by
 	// name (spec 0021): a repository source's, when the plan asks.
 	Licenses []License `json:"licenses,omitempty"`
@@ -273,6 +280,21 @@ func validKind(k string) bool {
 // sourceKey orders and identifies sources: kind, then prefix.
 func sourceKey(kind, prefix string) string { return kind + "\x00" + prefix }
 
+// checkSourceType checks a source's package type (spec 0034): omitted for duckdb_extension (one
+// encoding, so an older importer reads the same bundle), else a type this binary knows. Every source
+// kind is DuckDB's today, so another known type has no source here either.
+func checkSourceType(t string) error {
+	switch {
+	case t == "":
+		return nil
+	case t == pkgtype.DuckDBExtension:
+		return fmt.Errorf("%w: package_type %s is omitted", ErrInvalid, t)
+	case !pkgtype.Known(t):
+		return fmt.Errorf("%w: package type %q is not known here", ErrInvalid, t)
+	}
+	return fmt.Errorf("%w: a source of package type %s: every source kind here serves DuckDB extensions", ErrInvalid, t)
+}
+
 func checkSource(kind, prefix string, keys []string) error {
 	if !validKind(kind) {
 		return fmt.Errorf("%w: source kind %q", ErrInvalid, kind)
@@ -331,6 +353,9 @@ func (p *Plan) Validate() error {
 	seen, cells := map[string]bool{}, 0
 	for i, s := range p.Sources {
 		if err := checkSource(s.Kind, s.Prefix, s.Keys); err != nil {
+			return err
+		}
+		if err := checkSourceType(s.PackageType); err != nil {
 			return err
 		}
 		if s.Kind == store.UpstreamRepo && len(s.Keys) == 0 {
@@ -403,6 +428,9 @@ func (m *Manifest) Validate(now time.Time) error {
 	wk := map[string]bool{}
 	for i, s := range m.Sources {
 		if err := checkSource(s.Kind, s.Prefix, nil); err != nil {
+			return err
+		}
+		if err := checkSourceType(s.PackageType); err != nil {
 			return err
 		}
 		k := sourceKey(s.Kind, s.Prefix)

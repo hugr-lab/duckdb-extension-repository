@@ -248,6 +248,12 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 		if !relays(cur) || cur.State != u.State || cur.Prefix != u.Prefix || cur.Credential != u.Credential {
 			return ErrChanged
 		}
+		// spec 0034: a relay takes its upstream's type, its home channel's
+		home, err := tx.ChannelByID(ctx, cur.ChannelID)
+		if err != nil {
+			return err
+		}
+		typ := home.PackageType
 		counts, refused = map[string]int{}, nil
 		keep := map[string]bool{}
 		for _, it := range ok {
@@ -262,7 +268,7 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 				continue
 			}
 			// spec 0021: only the keys this upstream brought, on live builds of the name
-			keys, err := tx.LiveLicenseKeys(ctx, t.ID, name, store.KeySourceUpstream, u.ID)
+			keys, err := tx.LiveLicenseKeys(ctx, t.ID, typ, name, store.KeySourceUpstream, u.ID)
 			if err != nil {
 				return err
 			}
@@ -288,9 +294,9 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 				continue
 			}
 			keep[name] = true
-			l := record(it.tok, t.ID, it.token, actor)
+			l := record(it.tok, t.ID, typ, it.token, actor)
 			l.Source, l.UpstreamID = store.LicenseUpstream, u.ID
-			old, err := tx.GetLicense(ctx, t.ID, name)
+			old, err := tx.GetLicense(ctx, t.ID, typ, name)
 			switch {
 			case errors.Is(err, store.ErrNotFound):
 				old.Version = 0
@@ -328,7 +334,7 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 			}
 			counts["removed"]++
 			if err := tx.Event(ctx, t.ID, actor, "license.remove", "license:"+l.Name,
-				map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "revoked"}); err != nil {
+				typed(map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "revoked"}, l.PackageType)); err != nil {
 				return err
 			}
 		}
@@ -367,7 +373,7 @@ func (s *Service) deadKey(ctx context.Context, tx *store.Tx, l store.License) bo
 	if s.Refuse[l.Key] {
 		return true
 	}
-	keys, err := tx.LiveLicenseKeys(ctx, l.TenantID, l.Name, "", "")
+	keys, err := tx.LiveLicenseKeys(ctx, l.TenantID, l.PackageType, l.Name, "", "")
 	if err != nil {
 		return false // as alive: the stored licence stays
 	}
@@ -394,7 +400,7 @@ func (s *Service) ExpireOnce(ctx context.Context) error {
 				return err
 			}
 			return tx.Event(ctx, l.TenantID, actor, "license.remove", "license:"+l.Name,
-				map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "expired"})
+				typed(map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "expired"}, l.PackageType))
 		})
 		if err != nil && !errors.Is(err, store.ErrConflict) && !errors.Is(err, store.ErrNotFound) {
 			if ctx.Err() != nil {

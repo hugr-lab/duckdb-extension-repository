@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 )
 
 // Principal kinds (spec 0006).
@@ -227,17 +229,55 @@ func (t *Tx) RemoveAudience(ctx context.Context, tenantID, aud string) error {
 type Grant struct {
 	ID, TenantID, IssuerID, Kind, Value string
 	ChannelID, Package                  string // empty: every channel / every extension
-	Verbs                               []string
-	CreatedAt                           time.Time
-	CreatedBy                           string
-	IssuerName, ChannelName             string // filled by reads
+	// PackageType is the type of the packages the grant covers (spec 0034): a grant that names a
+	// package names its type; one without a name is pkgtype.Any (every type) or one type, which
+	// covers only that type's channels and packages, nothing tenant-level. A group grant has none of
+	// its own (its members are typed). "" reads as the default for the grant's shape (Type).
+	PackageType             string
+	Verbs                   []string
+	CreatedAt               time.Time
+	CreatedBy               string
+	IssuerName, ChannelName string // filled by reads
 	// PublisherID is a publisher grant's publisher (spec 0008): its Kind is publisher, its Value the
 	// publisher's id, and it has no issuer.
 	PublisherID, PublisherName string
 	// PackageGroupID is a grant on a package group (spec 0017), stored apart from the others: it
-	// has no Package, and Members (filled by GetTenantAuth) are its group's names.
+	// has no Package, and Members (filled by GetTenantAuth) are its group's packages.
 	PackageGroupID, PackageGroupName string
-	Members                          map[string]bool
+	Members                          map[pkgtype.Key]bool
+}
+
+// Type is the grant's package type, with "" read as the default for its shape: a grant that names a
+// package is of the default type, one without a name of any type (spec 0034, as existing rows were
+// set). A group grant has no type of its own: "".
+func (g Grant) Type() string {
+	switch {
+	case g.PackageGroupID != "":
+		return ""
+	case g.PackageType != "":
+		return g.PackageType
+	case g.Package != "":
+		return pkgtype.Default
+	}
+	return pkgtype.Any
+}
+
+// OfType reports whether a plain grant reaches packages of a type (spec 0034): one that names a
+// package, or a typed one without a name, of that type; one without a name of any type ("*"). A type
+// this binary does not know is reached by nothing.
+func (g Grant) OfType(packageType string) bool {
+	t := g.Type()
+	return t == packageType && pkgtype.Known(t) || t == pkgtype.Any && g.Package == ""
+}
+
+// TypeShown is the grant's package type as answers and events show it: "" when it is the default
+// for the grant's shape (spec 0034: what an existing reader reads does not change), else the type.
+func (g Grant) TypeShown() string {
+	t := g.Type()
+	if g.PackageGroupID != "" || g.Package != "" && t == pkgtype.Default || g.Package == "" && t == pkgtype.Any {
+		return ""
+	}
+	return t
 }
 
 // Principal renders the grant's principal: kind:<issuer>|value, issuer:<issuer>, or
@@ -297,6 +337,9 @@ func (t *Tx) InsertGrant(ctx context.Context, g *Grant) error {
 	if g.Package != "" && g.PackageGroupID != "" {
 		return fmt.Errorf("%w: a grant names an extension or an extension group, not both", ErrInvalid)
 	}
+	if err := t.checkGrantType(ctx, g); err != nil {
+		return err
+	}
 	var total int
 	if err := t.queryRow(ctx, `SELECT (SELECT COUNT(*) FROM grants WHERE tenant_id = ?)
 + (SELECT COUNT(*) FROM package_group_grants WHERE tenant_id = ?)`, g.TenantID, g.TenantID).Scan(&total); err != nil {
@@ -311,22 +354,53 @@ func (t *Tx) InsertGrant(ctx context.Context, g *Grant) error {
 	}
 	var n int
 	if err := t.queryRow(ctx, `SELECT COUNT(*) FROM grants WHERE tenant_id = ? AND COALESCE(issuer_id, '') = ?
-AND COALESCE(publisher_id, '') = ? AND kind = ? AND value = ? AND COALESCE(channel_id, '') = ? AND COALESCE(package, '') = ?
-AND verbs = ?`, g.TenantID, g.IssuerID, g.PublisherID, g.Kind, g.Value,
-		g.ChannelID, g.Package, strings.Join(g.Verbs, " ")).Scan(&n); err != nil {
+AND COALESCE(publisher_id, '') = ? AND kind = ? AND value = ? AND COALESCE(channel_id, '') = ? AND package_type = ?
+AND COALESCE(package, '') = ? AND verbs = ?`, g.TenantID, g.IssuerID, g.PublisherID, g.Kind, g.Value,
+		g.ChannelID, g.PackageType, g.Package, strings.Join(g.Verbs, " ")).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {
 		return fmt.Errorf("%w: the same grant", ErrExists)
 	}
 	g.ID, g.CreatedAt = NewID(), t.Now()
-	_, err := t.exec(ctx, `INSERT INTO grants (id, tenant_id, issuer_id, publisher_id, kind, value, channel_id, package, verbs,
-created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, nullable(g.IssuerID), nullable(g.PublisherID),
-		g.Kind, g.Value, nullable(g.ChannelID), nullable(g.Package), strings.Join(g.Verbs, " "), t.s.d.timeArg(g.CreatedAt), g.CreatedBy)
+	_, err := t.exec(ctx, `INSERT INTO grants (id, tenant_id, issuer_id, publisher_id, kind, value, channel_id, package_type, package, verbs,
+created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, nullable(g.IssuerID), nullable(g.PublisherID),
+		g.Kind, g.Value, nullable(g.ChannelID), g.PackageType, nullable(g.Package), strings.Join(g.Verbs, " "), t.s.d.timeArg(g.CreatedAt), g.CreatedBy)
 	if err := t.s.mapErr(err, "grant"); err != nil {
 		return err
 	}
 	return t.BumpAuth(ctx, g.TenantID)
+}
+
+// checkGrantType sets and checks a grant's package type (spec 0034): the default for its shape when
+// it names none; a registered type with a name ("*" with a name is refused); "*" or a registered
+// type without one, and on a channel "*" or the channel's type. A group grant has no type of its
+// own: its members are typed.
+func (t *Tx) checkGrantType(ctx context.Context, g *Grant) error {
+	if g.PackageGroupID != "" {
+		if g.PackageType != "" && g.PackageType != pkgtype.Any {
+			return fmt.Errorf("%w: a grant on an extension group has no package type of its own: its members are typed", ErrInvalid)
+		}
+		g.PackageType = ""
+		return nil
+	}
+	g.PackageType = g.Type()
+	switch {
+	case g.PackageType == pkgtype.Any && g.Package != "":
+		return fmt.Errorf("%w: a grant that names an extension names its package type, never \"*\"", ErrInvalid)
+	case g.PackageType != pkgtype.Any && !pkgtype.Known(g.PackageType):
+		return fmt.Errorf("%w: package type %q", ErrInvalid, g.PackageType)
+	case g.PackageType == pkgtype.Any || g.ChannelID == "":
+		return nil
+	}
+	var ct string
+	if err := t.queryRow(ctx, "SELECT package_type FROM channels WHERE id = ?", g.ChannelID).Scan(&ct); err != nil {
+		return notFound(err, "channel")
+	}
+	if ct != g.PackageType {
+		return fmt.Errorf("%w: the channel serves %s, not %s", ErrInvalid, ct, g.PackageType)
+	}
+	return nil
 }
 
 // insertGroupGrant adds a grant on an extension group (spec 0017), validated by InsertGrant.
@@ -459,13 +533,13 @@ func readTenantAuth(ctx context.Context, query queryFn, tenantID string) (Tenant
 		return a, err
 	}
 	if a.Grants, err = readGrants(ctx, query, `SELECT g.id, g.tenant_id, g.issuer_id, g.publisher_id, g.kind, g.value, g.channel_id,
-g.package, '', g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM grants g LEFT JOIN issuers i ON i.id = g.issuer_id
+g.package_type, g.package, '', g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM grants g LEFT JOIN issuers i ON i.id = g.issuer_id
 LEFT JOIN publishers p ON p.id = g.publisher_id LEFT JOIN channels c ON c.id = g.channel_id WHERE g.tenant_id = ?
 ORDER BY g.created_at, g.id`, tenantID); err != nil {
 		return a, err
 	}
 	if a.GroupGrants, err = readGrants(ctx, query, `SELECT g.id, g.tenant_id, g.issuer_id, g.publisher_id, g.kind, g.value, g.channel_id,
-'', g.group_id, g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM package_group_grants g
+'', '', g.group_id, g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM package_group_grants g
 LEFT JOIN issuers i ON i.id = g.issuer_id LEFT JOIN publishers p ON p.id = g.publisher_id LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.tenant_id = ? ORDER BY g.created_at, g.id`, tenantID); err != nil {
 		return a, err
@@ -477,7 +551,7 @@ WHERE g.tenant_id = ? ORDER BY g.created_at, g.id`, tenantID); err != nil {
 		if gs := a.Groups[a.GroupGrants[i].PackageGroupID]; gs != nil {
 			a.GroupGrants[i].PackageGroupName, a.GroupGrants[i].Members = gs.Name, gs.Members
 		} else {
-			a.GroupGrants[i].Members = map[string]bool{} // a group read apart: covers nothing
+			a.GroupGrants[i].Members = map[pkgtype.Key]bool{} // a group read apart: covers nothing
 		}
 	}
 	a.Publishers, err = publishers(ctx, query, tenantID)
@@ -494,7 +568,7 @@ func readGrants(ctx context.Context, query queryFn, q, tenantID string) ([]Grant
 		var g Grant
 		var iss, pub, ch, ext, grp, issName, pubName, chName sql.NullString
 		var verbs string
-		if err := rows.Scan(&g.ID, &g.TenantID, &iss, &pub, &g.Kind, &g.Value, &ch, &ext, &grp, &verbs, scanTime{&g.CreatedAt},
+		if err := rows.Scan(&g.ID, &g.TenantID, &iss, &pub, &g.Kind, &g.Value, &ch, &g.PackageType, &ext, &grp, &verbs, scanTime{&g.CreatedAt},
 			&g.CreatedBy, &issName, &pubName, &chName); err != nil {
 			rows.Close()
 			return nil, err
@@ -502,6 +576,9 @@ func readGrants(ctx context.Context, query queryFn, q, tenantID string) ([]Grant
 		g.IssuerID, g.PublisherID, g.IssuerName, g.PublisherName = iss.String, pub.String, issName.String, pubName.String
 		g.ChannelID, g.Package, g.ChannelName, g.Verbs = ch.String, ext.String, chName.String, strings.Fields(verbs)
 		g.PackageGroupID = grp.String
+		if g.PackageGroupID == "" && g.PackageType != pkgtype.Any && !pkgtype.Known(g.PackageType) {
+			continue // spec 0034: a grant of a type this binary does not know matches nothing
+		}
 		out = append(out, g)
 	}
 	return out, closeRows(rows)
@@ -517,7 +594,7 @@ func closeRows(rows *sql.Rows) error {
 // issuer-wide ones, spec 0007): the lock-out check counts them inside the removing transaction.
 func (t *Tx) TenantAdminGrants(ctx context.Context, tenantID string) (int, error) {
 	rows, err := t.query(ctx, `SELECT verbs FROM grants WHERE tenant_id = ? AND channel_id IS NULL AND package IS NULL
-AND kind <> ?`, tenantID, PrincipalIssuer)
+AND package_type = ? AND kind <> ?`, tenantID, pkgtype.Any, PrincipalIssuer)
 	if err != nil {
 		return 0, err
 	}

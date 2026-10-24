@@ -71,7 +71,7 @@ func newEnv(t *testing.T, e storetest.Engine) *env {
 		t.Fatal(err)
 	}
 	for name, kind := range map[string]string{"prod": store.ChannelSigned, "mirror": store.ChannelPassthrough, "staging": store.ChannelSigned} {
-		if _, err := en.ten.CreateChannel(ctx, admin, "acme", name, kind); err != nil {
+		if _, err := en.ten.CreateChannel(ctx, admin, "acme", name, kind, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -377,7 +377,7 @@ func TestRetiredKeysCount(t *testing.T) {
 		if _, err := en.ten.CreateTenant(ctx, admin, "other", "", "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := en.ten.CreateChannel(ctx, admin, "other", "staging", store.ChannelSigned); err != nil {
+		if _, err := en.ten.CreateChannel(ctx, admin, "other", "staging", store.ChannelSigned, ""); err != nil {
 			t.Fatal(err)
 		}
 		list, _ := en.svc.List(ctx, admin, "acme", "staging")

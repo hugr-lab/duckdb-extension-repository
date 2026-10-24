@@ -21,6 +21,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -397,7 +398,7 @@ func (s *Service) exportable(ctx context.Context, t store.Tenant, plan *bundle.P
 		res.LicenseNote = "licensing is off here: none carried"
 		return nil, nil
 	}
-	held, err := s.Licenses.Exportable(ctx, t.ID, plan.LicenseHolder)
+	held, err := s.Licenses.Exportable(ctx, t.ID, pkgtype.DuckDBExtension, plan.LicenseHolder) // a bundle's sources are DuckDB's
 	if errors.Is(err, licenses.ErrOff) {
 		res.LicenseNote = "licensing is off here: none carried"
 		return nil, nil

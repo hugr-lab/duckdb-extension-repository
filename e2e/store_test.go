@@ -36,7 +36,7 @@ func TestStoreWellKnownAndRotation(t *testing.T) {
 	if _, err := ten.CreateTenant(ctx, admin, "acme", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ten.CreateChannel(ctx, admin, "acme", "prod", store.ChannelSigned); err != nil {
+	if _, err := ten.CreateChannel(ctx, admin, "acme", "prod", store.ChannelSigned, ""); err != nil {
 		t.Fatal(err)
 	}
 	addKey := func(name string, active bool) (store.Key, *key) {

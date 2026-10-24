@@ -74,6 +74,15 @@ its writer (a `sub` or a client claim). Either failure answers `401`.
 - **Creating** is a `POST` to a collection: `201` with `Location` (when the resource has a `GET`),
   `409` for a duplicate. **Deleting** answers `204`; deleting a tenant answers `202`, since its
   rows are removed in the background.
+- **Package types** (spec 0034; see [Concepts](concepts.md#packages-and-package-types)): a body
+  names one as `package_type` (a channel, a grant, a group's member change, a placement), and the
+  routes keyed or filtered by a name take `?type=`: the licences and licence keys, the server's and
+  a tenant's reserved names, attachments, the catalogue (and `catalogue?name=`),
+  `grants?extension=`, `extension-groups?extension=` and `stats/*?extension=`. Both default to
+  `duckdb_extension`, the only type there is today, and answers leave `package_type` out when it is
+  the default, so an existing client reads what it read. A type the server does not know is `400`
+  on every route; on a channel's routes and an upstream's the type is the channel's, and a `?type=`
+  that differs is `400`.
 
 ### ETags and If-Match
 
@@ -269,7 +278,8 @@ names](publishing.md#reserved-names); `kista duckdb core-extensions <tag>` print
   `core_extensions_added`, `404` for an unknown version.
 - `GET reserved-names` lists `names`, each with `name`, `kind` (`core` or `community`), `added_at`
   and `sources` (`builtin`, `version:<v>@<commit>`, `upstream:<tenant>/<upstream>`, `bundle:<id>`,
-  `admin:<actor>`, `community-sync@<commit>`); `?name=` reads one.
+  `admin:<actor>`, `community-sync@<commit>`); `?name=` reads one. Names are reserved per package
+  type: these routes take `?type=` (`duckdb_extension`, DuckDB's names, by default).
 - `POST reserved-names` with `names`, `kind` and `force` reserves names as an administrator's. A
   name that becomes reserved (or goes from community to core) with releases that are not yanked or
   purged in some tenant answers `409`, naming the tenants, unless
@@ -379,7 +389,9 @@ extension declares (spec 0021); without one it is refused (`400`, `kid_untrusted
 an [expected holder](#the-expected-holder), an import of another holder's licence answers `400`
 with `holder_mismatch` in its detail, naming the expected and the given holder.
 `GET …/license-keys` answers `{"names": [{"name", "keys": [{"kid", "sources": [{"kind":
-"publisher"|"upstream", "name"}], "builds": n}]}]}`. See [Licensing](licensing.md).
+"publisher"|"upstream", "name"}], "builds": n}]}]}`. A licence is a package's (spec 0034): these
+routes take `?type=` (`duckdb_extension` by default), an import stores the licence under that type,
+and a channel serves only its own type's licences. See [Licensing](licensing.md).
 
 ### Identity, grants and groups
 

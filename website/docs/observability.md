@@ -161,6 +161,12 @@ Notes on some kinds:
   day) on a replica, with the same caps.
 - `audit.dropped` counts events the asynchronous writer or the retention pass had to drop
   (`system:audit`, `system:retention`).
+- **`package_type`** (spec 0034): the events that name a package without a channel, and a channel's
+  creation, carry the package type when it is not the default (`duckdb_extension`; for a grant
+  without a name, `*`): `channel.create`, `grant.add`, `grant.remove`, `extension_group.members`,
+  `reserved.add`, `reserved.remove`, `reserved.tenant.add`, `reserved.tenant.remove`,
+  `catalogue.arrival`, `catalogue.purge`, `license.import`, `license.change` and `license.remove`.
+  Subjects are unchanged.
 - The background actors are `system:upstream:<tenant>/<name>`, `system:feed:<tenant>/<name>`,
   `system:resign`, `system:retention`, `system:serve`, `system:sinks`, `system:audit` and
   `system:gc` (every garbage collection pass, scheduled or `kista admin blob gc`),

@@ -100,7 +100,7 @@ func newEnv(t *testing.T, o Options, scheme string) *env {
 		return err
 	})
 	for name, kind := range map[string]string{"prod": store.ChannelSigned, "mirror": store.ChannelPassthrough, "empty": store.ChannelSigned} {
-		mustDo(t, func() error { _, err := ten.CreateChannel(ctx, admin, "acme", name, kind); return err })
+		mustDo(t, func() error { _, err := ten.CreateChannel(ctx, admin, "acme", name, kind, ""); return err })
 	}
 	mustDo(t, func() error {
 		_, err := ten.SetChannelVersions(ctx, admin, "acme", "prod", []string{"v2.0.0"}, nil)

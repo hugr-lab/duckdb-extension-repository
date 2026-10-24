@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -23,8 +24,11 @@ var placer = authz.Actor{Kind: authz.ActorSystem, ID: "placement"}
 // answers name it: tenant, upstream:<name>, publisher:<name>).
 type PlaceOptions struct {
 	Source, Version string
-	Private         bool // narrow the visibility (a placement never widens it)
-	NotCurrent      bool
+	// PackageType is the build's type a caller names ("": the channel's); another type than the
+	// channel's is refused (spec 0034: ErrPackageType).
+	PackageType string
+	Private     bool // narrow the visibility (a placement never widens it)
+	NotCurrent  bool
 }
 
 // Place releases a source's builds of a version of name, those the channel serves, into a signed
@@ -33,7 +37,11 @@ type PlaceOptions struct {
 // (manual) first; anyone else only builds of the rule's source that are active or deprecated in a
 // channel where it may publish the name (what a promotion takes), and learns nothing else (404).
 func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, name string, o PlaceOptions) ([]store.Release, bool, error) {
-	kind, err := s.Store.ReservedFor(ctx, tenant, name) // spec 0030: DuckDB's, the tenant's, its upstreams'
+	typ, err := s.channelType(ctx, tenant, channel)
+	if err != nil {
+		return nil, false, err
+	}
+	kind, err := s.Store.ReservedFor(ctx, tenant, typ, name) // spec 0030: DuckDB's, the tenant's, its upstreams'
 	if err != nil {
 		return nil, false, err
 	}
@@ -59,6 +67,9 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 	if ch.Kind != store.ChannelSigned {
 		return nil, false, fmt.Errorf("%w: placement is into a signed channel", ErrState)
 	}
+	if o.PackageType != "" && o.PackageType != ch.PackageType { // spec 0034: a channel takes its type's builds only
+		return nil, false, fmt.Errorf("%w: the channel %s serves %s, not %s", ErrPackageType, ch.Name, ch.PackageType, o.PackageType)
+	}
 	if _, err := activeKey(ctx, s.Store, ch.ID); err != nil {
 		return nil, false, err
 	}
@@ -79,17 +90,17 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 	if _, ok := rules[name]; !ok && !admin {
 		return nil, false, missing
 	}
-	builds, err := s.Store.SourceBuilds(ctx, ch.TenantID, src, name)
+	builds, err := s.Store.SourceBuilds(ctx, ch.TenantID, ch.PackageType, src, name)
 	if err != nil {
 		return nil, false, err
 	}
-	purged, err := s.Store.PurgedBuilds(ctx, ch.TenantID, src, name)
+	purged, err := s.Store.PurgedBuilds(ctx, ch.TenantID, ch.PackageType, src, name)
 	if err != nil {
 		return nil, false, err
 	}
 	var placed map[string][]store.Placed
 	if !admin { // what a promotion takes: a release the caller may publish from
-		if placed, err = s.Store.BuildPlacements(ctx, ch.TenantID, src, name); err != nil {
+		if placed, err = s.Store.BuildPlacements(ctx, ch.TenantID, ch.PackageType, src, name); err != nil {
 			return nil, false, err
 		}
 	}
@@ -290,7 +301,17 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(con
 			r.Mode = store.RuleAuto
 		}
 	}
-	builds, err := s.Store.SourceBuilds(ctx, r.TenantID, r.Source, r.Name)
+	if r.PackageType == "" { // a rule read without its channel's type: the channel's
+		ch, err := s.channelByID(ctx, r.ChannelID)
+		if err != nil {
+			return 0, "", err
+		}
+		r.PackageType = ch.PackageType
+	}
+	if !pkgtype.Known(r.PackageType) { // spec 0034: a rule of a channel of a type this binary does not know places nothing
+		return 0, "", nil
+	}
+	builds, err := s.Store.SourceBuilds(ctx, r.TenantID, r.PackageType, r.Source, r.Name)
 	if err != nil || len(builds) == 0 {
 		return 0, "", err
 	}
@@ -302,7 +323,7 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(con
 	if err != nil {
 		return 0, "", err
 	}
-	purged, err := s.Store.PurgedBuilds(ctx, r.TenantID, r.Source, r.Name)
+	purged, err := s.Store.PurgedBuilds(ctx, r.TenantID, r.PackageType, r.Source, r.Name)
 	if err != nil {
 		return 0, "", err
 	}

@@ -94,6 +94,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0036_catalogue_slots` | 36 | an older replica would take a second body of a version from a source in another channel |
 | `0037_follows` | 37 | an older replica would treat a follow's rules as manual ones |
 | `0038_package_names` | 38 | the schema's tables and columns are renamed (no change in behaviour): an older replica would query the old names |
+| `0039_package_types` | 39 | every key that holds a name holds its package type: an older replica's upserts would fail against the new keys, and it must not read rows of a type it does not know |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -164,7 +165,22 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 38)
+## Upgrading to the next release (schema 39)
+
+### Package types (spec 0034, phase 2)
+
+- **Migration `0039_package_types`** gives every key that holds a name its
+  [package type](../concepts.md#packages-and-package-types): channels, builds (their identity and
+  slot), grants, extension groups' members, the server's and the tenants' reserved names, and
+  licences get a `package_type` column, and their keys and indexes take it. Every existing row is
+  `duckdb_extension`, the one type there is; a grant without an extension is `*` (every type), so it
+  keeps meaning what it says. It raises `min_reader` to 39: stop every older replica first. On
+  SQLite the tables whose keys change are rebuilt, with foreign keys off and checked before the
+  commit.
+- Nothing a DuckDB client or an existing API caller reads changes: `package_type` and `?type=`
+  default to `duckdb_extension` and are left out of answers for it. A request that names a type the
+  server does not know is `400`; the event catalogue (`GET /api/v1/event-kinds`) lists
+  `package_type` among the fields of the events that may carry it.
 
 ### Package names in the schema (spec 0034, phase 1)
 

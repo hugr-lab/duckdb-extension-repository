@@ -14,6 +14,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -66,25 +67,27 @@ func (s *Service) tenant(ctx context.Context, a authz.Actor, verb authz.Verb, na
 
 // View is a licence as the API shows it: its claims and its state, never the token.
 type View struct {
-	Name       string            `json:"name"`
-	ID         string            `json:"id"`
-	Issuer     string            `json:"issuer"`
-	HolderID   string            `json:"holder_id"`
-	Holder     string            `json:"holder,omitempty"`
-	Plan       string            `json:"plan"`
-	Versions   *license.Versions `json:"versions,omitempty"`
-	Limits     []license.Limit   `json:"limits,omitempty"`
-	IssuedAt   string            `json:"issued_at"`
-	ExpiresAt  string            `json:"expires_at"`
-	GraceUntil string            `json:"grace_until"`
-	Key        string            `json:"key"`
-	Source     string            `json:"source"`
-	Upstream   string            `json:"upstream,omitempty"`
-	Visibility string            `json:"visibility"`
-	Status     license.Status    `json:"status"`
-	Version    int64             `json:"-"`
-	Claims     *license.Claims   `json:"-"`
-	Created    bool              `json:"-"` // an import stored it where none was
+	// PackageType is the licence's package type when it is not the default (spec 0034).
+	PackageType string            `json:"package_type,omitempty"`
+	Name        string            `json:"name"`
+	ID          string            `json:"id"`
+	Issuer      string            `json:"issuer"`
+	HolderID    string            `json:"holder_id"`
+	Holder      string            `json:"holder,omitempty"`
+	Plan        string            `json:"plan"`
+	Versions    *license.Versions `json:"versions,omitempty"`
+	Limits      []license.Limit   `json:"limits,omitempty"`
+	IssuedAt    string            `json:"issued_at"`
+	ExpiresAt   string            `json:"expires_at"`
+	GraceUntil  string            `json:"grace_until"`
+	Key         string            `json:"key"`
+	Source      string            `json:"source"`
+	Upstream    string            `json:"upstream,omitempty"`
+	Visibility  string            `json:"visibility"`
+	Status      license.Status    `json:"status"`
+	Version     int64             `json:"-"`
+	Claims      *license.Claims   `json:"-"`
+	Created     bool              `json:"-"` // an import stored it where none was
 }
 
 func seconds(n int64) string { return time.Unix(n, 0).UTC().Format(time.RFC3339) }
@@ -94,6 +97,9 @@ func (s *Service) view(ctx context.Context, l store.License) View {
 	v := View{Name: l.Name, ID: l.LicenseID, Issuer: l.Issuer, HolderID: l.HolderID, Holder: l.Holder, Plan: l.Plan,
 		IssuedAt: seconds(l.IssuedAt), ExpiresAt: seconds(l.ExpiresAt), GraceUntil: seconds(l.GraceUntil), Key: l.Key,
 		Source: l.Source, Visibility: l.Visibility, Version: l.Version}
+	if l.PackageType != pkgtype.Default {
+		v.PackageType = l.PackageType
+	}
 	if t, err := license.Parse(l.Token); err == nil {
 		v.Versions, v.Limits, v.Claims = t.Versions, t.Limits, &t.Claims
 		v.Status = t.StatusAt(s.Store.Now())
@@ -118,13 +124,26 @@ func (s *Service) upstreamName(ctx context.Context, id string) (string, error) {
 	return name, err
 }
 
-// List lists a tenant's licences.
-func (s *Service) List(ctx context.Context, a authz.Actor, tenant string) ([]View, error) {
+// parseType reads the package type a caller names (spec 0034): "" is the default, an unknown type
+// invalid.
+func parseType(t string) (string, error) {
+	t, err := pkgtype.Parse(t)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", store.ErrInvalid, err)
+	}
+	return t, nil
+}
+
+// List lists a tenant's licences of a package type ("": the default).
+func (s *Service) List(ctx context.Context, a authz.Actor, tenant, packageType string) ([]View, error) {
 	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return nil, err
 	}
-	ls, err := s.Store.ListLicenses(ctx, t.ID)
+	if packageType, err = parseType(packageType); err != nil {
+		return nil, err
+	}
+	ls, err := s.Store.ListLicenses(ctx, t.ID, packageType)
 	if err != nil {
 		return nil, err
 	}
@@ -135,13 +154,16 @@ func (s *Service) List(ctx context.Context, a authz.Actor, tenant string) ([]Vie
 	return out, nil
 }
 
-// Get reads a tenant's licence for an extension.
-func (s *Service) Get(ctx context.Context, a authz.Actor, tenant, name string) (View, error) {
+// Get reads a tenant's licence for a package (type, "": the default; name).
+func (s *Service) Get(ctx context.Context, a authz.Actor, tenant, packageType, name string) (View, error) {
 	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return View{}, err
 	}
-	l, err := s.Store.GetLicense(ctx, t.ID, name)
+	if packageType, err = parseType(packageType); err != nil {
+		return View{}, err
+	}
+	l, err := s.Store.GetLicense(ctx, t.ID, packageType, name)
 	if err != nil {
 		return View{}, err
 	}
@@ -149,12 +171,15 @@ func (s *Service) Get(ctx context.Context, a authz.Actor, tenant, name string) (
 }
 
 // Token is the stored licence's token, as received (the CLI's license token).
-func (s *Service) Token(ctx context.Context, a authz.Actor, tenant, name string) (string, error) {
+func (s *Service) Token(ctx context.Context, a authz.Actor, tenant, packageType, name string) (string, error) {
 	t, err := s.tenant(ctx, a, authz.VerbAdmin, tenant)
 	if err != nil {
 		return "", err
 	}
-	l, err := s.Store.GetLicense(ctx, t.ID, name)
+	if packageType, err = parseType(packageType); err != nil {
+		return "", err
+	}
+	l, err := s.Store.GetLicense(ctx, t.ID, packageType, name)
 	return l.Token, err
 }
 
@@ -217,29 +242,33 @@ func holderRefused(err error) error {
 	return fmt.Errorf("%w: %w", ErrRefused, &license.Error{Rule: RuleHolder, Msg: hm.Error()})
 }
 
-func record(t *license.Token, tenantID, token, actor string) store.License {
-	return store.License{TenantID: tenantID, Name: t.Extension, LicenseID: t.ID, Issuer: t.Issuer, HolderID: t.HolderID,
+func record(t *license.Token, tenantID, packageType, token, actor string) store.License {
+	return store.License{TenantID: tenantID, PackageType: packageType, Name: t.Extension, LicenseID: t.ID, Issuer: t.Issuer, HolderID: t.HolderID,
 		Holder: t.Holder, Plan: t.Plan, Token: token, Key: t.Key, IssuedAt: t.IssuedAt, ExpiresAt: t.ExpiresAt,
 		GraceUntil: t.GraceUntil(), Visibility: store.Private, Actor: actor}
 }
 
-// Import stores a licence an administrator posts, under the name it names. expected is the stored
-// licence's version to replace (If-Match), 0 for whichever is stored (If-Match: *), or Create for
-// none: a stored licence is never replaced without an If-Match.
-func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, token string, expected int64) (View, error) {
+// Import stores a licence an administrator posts, under the name it names, of the package type the
+// import names ("": the default; spec 0034). expected is the stored licence's version to replace
+// (If-Match), 0 for whichever is stored (If-Match: *), or Create for none: a stored licence is
+// never replaced without an If-Match.
+func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType, token string, expected int64) (View, error) {
 	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
+		return View{}, err
+	}
+	if packageType, err = parseType(packageType); err != nil {
 		return View{}, err
 	}
 	tok, err := s.parse(token)
 	if err != nil {
 		return View{}, err
 	}
-	l := record(tok, t.ID, token, a.String())
+	l := record(tok, t.ID, packageType, token, a.String())
 	l.Source = store.LicenseImport
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		// the keys of the name's live builds, from any trusted source, anywhere in the tenant
-		keys, err := tx.LiveLicenseKeys(ctx, t.ID, l.Name, "", "")
+		// the keys of the package's live builds, from any trusted source, anywhere in the tenant
+		keys, err := tx.LiveLicenseKeys(ctx, t.ID, l.PackageType, l.Name, "", "")
 		if err != nil {
 			return err
 		}
@@ -252,7 +281,7 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, token strin
 		if err := tx.CheckLicenseHolder(ctx, t.ID, l.HolderID); err != nil {
 			return holderRefused(err)
 		}
-		old, err := tx.GetLicense(ctx, t.ID, l.Name)
+		old, err := tx.GetLicense(ctx, t.ID, l.PackageType, l.Name)
 		replaced := ""
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -272,9 +301,9 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, token strin
 		if err := tx.PutLicense(ctx, &l, old.Version); err != nil {
 			return holderRefused(err)
 		}
-		return tx.Event(ctx, t.ID, a.String(), "license.import", "license:"+l.Name, map[string]any{"name": l.Name,
+		return tx.Event(ctx, t.ID, a.String(), "license.import", "license:"+l.Name, typed(map[string]any{"name": l.Name,
 			"license": l.LicenseID, "issuer": l.Issuer, "holder": l.HolderID, "plan": l.Plan, "expires_at": seconds(l.ExpiresAt),
-			"replaced": replaced})
+			"replaced": replaced}, l.PackageType))
 	})
 	if err != nil {
 		return View{}, err
@@ -284,14 +313,26 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, token strin
 	return v, nil
 }
 
-// Remove removes a tenant's licence (expected: its version; 0 any).
-func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string, expected int64) error {
+// typed adds an event's package_type when it is not the default (spec 0034).
+func typed(f map[string]any, packageType string) map[string]any {
+	if packageType != pkgtype.Default {
+		f["package_type"] = packageType
+	}
+	return f
+}
+
+// Remove removes a tenant's licence of a package (type, "": the default; name) (expected: its
+// version; 0 any).
+func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, packageType, name string, expected int64) error {
 	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return err
 	}
+	if packageType, err = parseType(packageType); err != nil {
+		return err
+	}
 	return s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		l, err := tx.GetLicense(ctx, t.ID, name)
+		l, err := tx.GetLicense(ctx, t.ID, packageType, name)
 		if err != nil {
 			return err
 		}
@@ -299,14 +340,14 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string
 			return err
 		}
 		return tx.Event(ctx, t.ID, a.String(), "license.remove", "license:"+name,
-			map[string]any{"name": name, "license": l.LicenseID, "reason": "admin"})
+			typed(map[string]any{"name": name, "license": l.LicenseID, "reason": "admin"}, packageType))
 	})
 }
 
 // SetVisibility makes a licence private or public (expected: its version; 0 any). Making one public
 // is an administrator's (spec 0029): a public licence's token is served to anyone served a public
 // release of the name, so a licence manager only makes one private.
-func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, name, visibility string, expected int64) (View, error) {
+func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, packageType, name, visibility string, expected int64) (View, error) {
 	verb := authz.VerbLicense
 	if visibility != store.Private {
 		verb = authz.VerbAdmin
@@ -315,9 +356,12 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, name
 	if err != nil {
 		return View{}, err
 	}
+	if packageType, err = parseType(packageType); err != nil {
+		return View{}, err
+	}
 	var l store.License
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		if l, err = tx.GetLicense(ctx, t.ID, name); err != nil {
+		if l, err = tx.GetLicense(ctx, t.ID, packageType, name); err != nil {
 			return err
 		}
 		if expected == 0 {
@@ -330,7 +374,7 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, name
 			return err
 		}
 		return tx.Event(ctx, t.ID, a.String(), "license.change", "license:"+name,
-			map[string]any{"name": name, "license": l.LicenseID, "visibility": visibility})
+			typed(map[string]any{"name": name, "license": l.LicenseID, "visibility": visibility}, packageType))
 	})
 	if err != nil {
 		return View{}, err
@@ -344,12 +388,13 @@ type Served struct{ *Service }
 // Enabled reports whether licensing is on (licenses.enabled).
 func (s Served) Enabled() bool { return s.Service.Enabled }
 
-// List is every licence of a tenant whose grace lasts and whose key the server does not refuse.
-func (s Served) List(ctx context.Context, tenantID string) ([]store.License, error) {
+// List is every licence of a tenant of a package type (a channel's: spec 0034, a licence is served
+// only by a channel of its type) whose grace lasts and whose key the server does not refuse.
+func (s Served) List(ctx context.Context, tenantID, packageType string) ([]store.License, error) {
 	if !s.Service.Enabled {
 		return nil, nil
 	}
-	ls, err := s.Store.ListLicenses(ctx, tenantID)
+	ls, err := s.Store.ListLicenses(ctx, tenantID, packageType)
 	if err != nil {
 		return nil, err
 	}
@@ -363,14 +408,14 @@ func (s Served) List(ctx context.Context, tenantID string) ([]store.License, err
 	return out, nil
 }
 
-// Serve is what a DuckDB route serves for a name in a tenant: the stored licence while its grace
-// lasts and its key is not refused (ok false: none, past its grace, or refused). The route serves
-// it only in a channel where a live build declares its key.
-func (s *Service) Serve(ctx context.Context, tenantID, name string) (store.License, bool, error) {
+// Serve is what a DuckDB route serves for a package (the channel's type, a name) in a tenant: the
+// stored licence while its grace lasts and its key is not refused (ok false: none, past its grace,
+// or refused). The route serves it only in a channel where a live build declares its key.
+func (s *Service) Serve(ctx context.Context, tenantID, packageType, name string) (store.License, bool, error) {
 	if !s.Enabled {
 		return store.License{}, false, nil
 	}
-	l, err := s.Store.GetLicense(ctx, tenantID, name)
+	l, err := s.Store.GetLicense(ctx, tenantID, packageType, name)
 	if errors.Is(err, store.ErrNotFound) {
 		return l, false, nil
 	}
@@ -394,14 +439,18 @@ type KeyView struct {
 	Builds  int               `json:"builds"`
 }
 
-// LicenseKeys lists the keys a tenant's licences are verified with: those of its live builds, by
-// name (one name, or all: name ""), without the keys the server refuses.
-func (s *Service) LicenseKeys(ctx context.Context, a authz.Actor, tenant, name string) ([]NameKeys, error) {
+// LicenseKeys lists the keys a tenant's licences of a package type ("": the default) are verified
+// with: those of its live builds of the type, by name (one name, or all: name ""), without the keys
+// the server refuses.
+func (s *Service) LicenseKeys(ctx context.Context, a authz.Actor, tenant, packageType, name string) ([]NameKeys, error) {
 	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return nil, err
 	}
-	ks, err := s.Store.TenantLicenseKeys(ctx, t.ID, name)
+	if packageType, err = parseType(packageType); err != nil {
+		return nil, err
+	}
+	ks, err := s.Store.TenantLicenseKeys(ctx, t.ID, packageType, name)
 	if err != nil {
 		return nil, err
 	}

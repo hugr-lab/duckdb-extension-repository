@@ -206,8 +206,11 @@ func (s *Store) PruneStatistics(ctx context.Context, before string) (int, error)
 type StatsFilter struct {
 	From, To  string
 	ChannelID string
-	Name      string
-	Names     []string // at most these extensions (a caller's scope); nil: any
+	// PackageType keeps the rows of channels of a type (spec 0034: the extension dimension is (type,
+	// name), and a tenant's totals are per type); "": every type.
+	PackageType string
+	Name        string
+	Names       []string // at most these extensions (a caller's scope); nil: any
 }
 
 // StatsRow is a download count with its installers, at the dimensions a query keeps (the others
@@ -265,6 +268,10 @@ func statsWhere(tenantID, from, to string, f StatsFilter) (string, []any) {
 	if f.ChannelID != "" {
 		where += " AND channel_id = ?"
 		args = append(args, f.ChannelID)
+	}
+	if f.PackageType != "" {
+		where += " AND channel_id IN (SELECT id FROM channels WHERE tenant_id = ? AND package_type = ?)"
+		args = append(args, tenantID, f.PackageType)
 	}
 	if f.Name != "" {
 		where += " AND name = ?"

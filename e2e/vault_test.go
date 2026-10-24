@@ -52,7 +52,7 @@ func TestVaultSignedChannel(t *testing.T) {
 			if _, err := ten.CreateTenant(ctx, admin, "acme", "", "", ""); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ten.CreateChannel(ctx, admin, "acme", "prod", store.ChannelSigned); err != nil {
+			if _, err := ten.CreateChannel(ctx, admin, "acme", "prod", store.ChannelSigned, ""); err != nil {
 				t.Fatal(err)
 			}
 			k, err := ks.Add(ctx, admin, "acme", "prod", "bao:"+tr.Key+":v1", true)

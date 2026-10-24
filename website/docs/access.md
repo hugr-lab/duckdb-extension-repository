@@ -206,6 +206,22 @@ Rules:
 - Grants, issuers, audiences and groups are cached per tenant behind a version: a change applies at
   the next request on every replica.
 
+### Package types
+
+A grant has a **package type** (`package_type` in the API, `-type` in the CLI; see
+[Concepts](concepts.md#packages-and-package-types)):
+
+- A grant that names an extension names its type: `duckdb_extension` by default; `*` with a name is
+  refused (`400`).
+- A grant without a name is of every type, `*`, by default (what every such grant meant before
+  types existed), or of one type: then it covers that type's channels and packages only, and
+  nothing tenant-level, so creating channels, groups and grants, managing issuers and upstreams,
+  reading the log and listing or importing licences take a `*` grant. A grant on a channel is of
+  the channel's type.
+- Answers (`GET /grants`, `whoami`) and events show `package_type` only when it is not the default
+  for the grant's shape; `GET /grants?extension=` takes `?type=` for the name's type.
+- Today `duckdb_extension` is the only type: grants that name no type mean what they did.
+
 ## Extension groups
 
 An **extension group** is a named, explicit set of extension names in a tenant: `hugr-platform` =
@@ -231,6 +247,9 @@ kista admin -config /etc/kista/kista.yaml grant add acme \
 API: `GET, POST /api/v1/tenants/{t}/extension-groups`, `GET, DELETE …/{g}`,
 `POST …/{g}/description`, `GET, POST …/{g}/members {"add": [...], "remove": [...]}` (1-100 names a
 request; names already present or absent are skipped). See [commands](administration/commands.md).
+A member is a (package type, name) pair: a change names its names' type as `"package_type"`
+(`duckdb_extension` by default; CLI `-type`), the members list shows a member's `package_type`
+when it is not the default, and `GET /extension-groups?extension=` takes `?type=`.
 
 ## Server administrators and tenant administrators
 

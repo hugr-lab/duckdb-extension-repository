@@ -28,6 +28,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -134,18 +135,18 @@ func TestFeedBetweenServers(t *testing.T) {
 	body := tresorBody(t, func(p string) map[string]any { return m.call(t, "GET", p, "", "").json(t) })
 
 	// the source: a review offered to readers, an SBOM kept to itself
-	rv, err := m.att.Attach(ctx, admin, "acme", "tresor", attachment.AttachInput{BodyHash: body, Kind: store.KindReview,
+	rv, err := m.att.Attach(ctx, admin, "acme", pkgtype.Of("tresor"), attachment.AttachInput{BodyHash: body, Kind: store.KindReview,
 		MediaType: attachment.Review, Title: "Enterest review", Content: []byte(review)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sb, err := m.att.Attach(ctx, admin, "acme", "tresor", attachment.AttachInput{BodyHash: body, Kind: store.KindSBOM,
+	sb, err := m.att.Attach(ctx, admin, "acme", pkgtype.Of("tresor"), attachment.AttachInput{BodyHash: body, Kind: store.KindSBOM,
 		MediaType: attachment.CycloneDX, Title: "SBOM", Content: []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	readers, yes, no := store.VisibleReaders, true, false
-	if _, err := m.att.SetFlags(ctx, admin, "acme", "tresor", rv.ID, &readers, &yes, 0); err != nil {
+	if _, err := m.att.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), rv.ID, &readers, &yes, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,7 +203,7 @@ func TestFeedBetweenServers(t *testing.T) {
 		t.Fatalf("second run: %+v", res)
 	}
 	// withdrawn at the source, then offered again, then to administrators only
-	if _, err := m.att.SetFlags(ctx, admin, "acme", "tresor", rv.ID, nil, &no, 0); err != nil {
+	if _, err := m.att.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), rv.ID, nil, &no, 0); err != nil {
 		t.Fatal(err)
 	}
 	if res := sub.run(t, "enterest"); res.Counts["withdrawn"] != 1 {
@@ -211,7 +212,7 @@ func TestFeedBetweenServers(t *testing.T) {
 	if d := sub.docs(t, body); d[0].WithdrawnAt.IsZero() || len(attachment.Readable(d, map[string]bool{body: true})) != 0 {
 		t.Fatalf("not withdrawn: %+v", d)
 	}
-	if _, err := m.att.SetFlags(ctx, admin, "acme", "tresor", rv.ID, nil, &yes, 0); err != nil {
+	if _, err := m.att.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), rv.ID, nil, &yes, 0); err != nil {
 		t.Fatal(err)
 	}
 	if res := sub.run(t, "enterest"); res.Counts["updated"] != 1 {
@@ -221,7 +222,7 @@ func TestFeedBetweenServers(t *testing.T) {
 		t.Fatalf("not offered again: %+v", d)
 	}
 	admins := store.VisibleAdministrators
-	if _, err := m.att.SetFlags(ctx, admin, "acme", "tresor", rv.ID, &admins, nil, 0); err != nil {
+	if _, err := m.att.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), rv.ID, &admins, nil, 0); err != nil {
 		t.Fatal(err)
 	}
 	if res := sub.run(t, "enterest"); res.Counts["updated"] != 1 {
@@ -232,7 +233,7 @@ func TestFeedBetweenServers(t *testing.T) {
 		t.Fatalf("still readers-visible: %+v", d)
 	}
 	// the subscriber's administrators cannot show readers what the source offers to administrators only
-	if _, err := sub.feeds.Attachments.SetFlags(ctx, admin, "acme", "tresor", d[0].ID, &readers, nil, 0); !errors.Is(err, store.ErrInvalid) {
+	if _, err := sub.feeds.Attachments.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), d[0].ID, &readers, nil, 0); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("shown to readers against its audience: %v", err)
 	}
 	// a second feed of the same source stores nothing twice; one pinning another key verifies nothing
@@ -456,7 +457,7 @@ func TestFeedRoutes(t *testing.T) {
 	}
 	// a document offered over the API
 	body := tresorBody(t, func(p string) map[string]any { return m.call(t, "GET", p, "", "").json(t) })
-	d, err := m.att.Attach(ctx, admin, "acme", "tresor", attachment.AttachInput{BodyHash: body, Kind: store.KindReview,
+	d, err := m.att.Attach(ctx, admin, "acme", pkgtype.Of("tresor"), attachment.AttachInput{BodyHash: body, Kind: store.KindReview,
 		MediaType: attachment.Review, Title: "R", Content: []byte(review)})
 	if err != nil {
 		t.Fatal(err)

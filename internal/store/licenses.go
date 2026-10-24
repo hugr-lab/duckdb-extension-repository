@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 )
 
 // Licence sources and visibilities (spec 0012).
@@ -17,10 +19,10 @@ const (
 	LicenseUpstream = "upstream" // relayed from an upstream
 )
 
-// License is a tenant's licence for an extension name (spec 0012): its verified claims, and the
-// token as received.
+// License is a tenant's licence for a package (spec 0012; spec 0034: per type and name): its
+// verified claims, and the token as received.
 type License struct {
-	TenantID, Name                  string
+	TenantID, PackageType, Name     string
 	LicenseID, Issuer               string
 	HolderID, Holder, Plan          string
 	Token, Key                      string
@@ -42,33 +44,36 @@ func LicenseSyncLock(upstreamID string) string { return "kista/license-sync/" + 
 // LicenseRelayLease is the lease an upstream's relay run holds (spec 0012).
 func LicenseRelayLease(upstreamID string) string { return "kista/licenses/upstream/" + upstreamID }
 
-const licenseCols = `tenant_id, name, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, expires_at,
+const licenseCols = `tenant_id, package_type, name, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, expires_at,
 grace_until, source, upstream_id, visibility, actor, updated_at, version`
 
 func scanLicense(r interface{ Scan(...any) error }) (License, error) {
 	var l License
 	var up sql.NullString
-	err := r.Scan(&l.TenantID, &l.Name, &l.LicenseID, &l.Issuer, &l.HolderID, &l.Holder, &l.Plan, &l.Token, &l.Key, &l.IssuedAt,
+	err := r.Scan(&l.TenantID, &l.PackageType, &l.Name, &l.LicenseID, &l.Issuer, &l.HolderID, &l.Holder, &l.Plan, &l.Token, &l.Key, &l.IssuedAt,
 		&l.ExpiresAt, &l.GraceUntil, &l.Source, &up, &l.Visibility, &l.Actor, scanTime{&l.UpdatedAt}, &l.Version)
 	l.UpstreamID = up.String
 	return l, err
 }
 
-// GetLicense reads a tenant's licence for a name.
-func (t *Tx) GetLicense(ctx context.Context, tenantID, name string) (License, error) {
-	l, err := scanLicense(t.queryRow(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND name = ?", tenantID, name))
+// GetLicense reads a tenant's licence for a package (type, name).
+func (t *Tx) GetLicense(ctx context.Context, tenantID, packageType, name string) (License, error) {
+	l, err := scanLicense(t.queryRow(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ?",
+		tenantID, packageType, name))
 	return l, notFound(err, "licence "+name)
 }
 
-// GetLicense reads a tenant's licence for a name, outside a transaction (the DuckDB routes).
-func (s *Store) GetLicense(ctx context.Context, tenantID, name string) (License, error) {
-	l, err := scanLicense(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND name = ?"), tenantID, name))
+// GetLicense reads a tenant's licence for a package (type, name), outside a transaction (the DuckDB
+// routes: a channel serves its type's licences only).
+func (s *Store) GetLicense(ctx context.Context, tenantID, packageType, name string) (License, error) {
+	l, err := scanLicense(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+licenseCols+
+		" FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ?"), tenantID, packageType, name))
 	return l, notFound(err, "licence "+name)
 }
 
-// ListLicenses lists a tenant's licences by name.
-func (s *Store) ListLicenses(ctx context.Context, tenantID string) ([]License, error) {
-	rows, err := s.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? ORDER BY name", tenantID)
+// ListLicenses lists a tenant's licences of a type by name.
+func (s *Store) ListLicenses(ctx context.Context, tenantID, packageType string) ([]License, error) {
+	rows, err := s.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND package_type = ? ORDER BY name", tenantID, packageType)
 	if err != nil {
 		return nil, err
 	}
@@ -167,11 +172,17 @@ func (t *Tx) PutLicense(ctx context.Context, l *License, expected int64) error {
 	if err := t.CheckLicenseHolder(ctx, l.TenantID, l.HolderID); err != nil {
 		return err
 	}
+	if l.PackageType == "" {
+		l.PackageType = pkgtype.Default
+	}
+	if !pkgtype.Known(l.PackageType) {
+		return fmt.Errorf("%w: package type %q", ErrInvalid, l.PackageType)
+	}
 	l.UpdatedAt = t.Now()
 	if expected == 0 {
 		l.Version = 1
-		_, err := t.exec(ctx, "INSERT INTO licenses ("+licenseCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			l.TenantID, l.Name, l.LicenseID, l.Issuer, l.HolderID, l.Holder, l.Plan, l.Token, l.Key, l.IssuedAt, l.ExpiresAt, l.GraceUntil,
+		_, err := t.exec(ctx, "INSERT INTO licenses ("+licenseCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			l.TenantID, l.PackageType, l.Name, l.LicenseID, l.Issuer, l.HolderID, l.Holder, l.Plan, l.Token, l.Key, l.IssuedAt, l.ExpiresAt, l.GraceUntil,
 			l.Source, nullable(l.UpstreamID), l.Visibility, l.Actor, t.s.d.timeArg(l.UpdatedAt), l.Version)
 		if err := t.s.mapErr(err, "licence "+l.Name); errors.Is(err, ErrExists) {
 			return ErrConflict
@@ -182,17 +193,18 @@ func (t *Tx) PutLicense(ctx context.Context, l *License, expected int64) error {
 	}
 	return t.cas(ctx, `UPDATE licenses SET license_id = ?, issuer = ?, holder_id = ?, holder = ?, plan_name = ?, token = ?, key_fp = ?,
 issued_at = ?, expires_at = ?, grace_until = ?, source = ?, upstream_id = ?, visibility = ?, actor = ?, updated_at = ?, version = version + 1
-WHERE tenant_id = ? AND name = ? AND version = ?`,
+WHERE tenant_id = ? AND package_type = ? AND name = ? AND version = ?`,
 		[]any{l.LicenseID, l.Issuer, l.HolderID, l.Holder, l.Plan, l.Token, l.Key, l.IssuedAt, l.ExpiresAt, l.GraceUntil, l.Source,
-			nullable(l.UpstreamID), l.Visibility, l.Actor, t.s.d.timeArg(l.UpdatedAt), l.TenantID, l.Name, expected},
+			nullable(l.UpstreamID), l.Visibility, l.Actor, t.s.d.timeArg(l.UpdatedAt), l.TenantID, l.PackageType, l.Name, expected},
 		func() { l.Version = expected + 1 })
 }
 
 // SetLicenseVisibility changes a licence's visibility (compare-and-set on its version).
 func (t *Tx) SetLicenseVisibility(ctx context.Context, l *License, visibility, actor string, expected int64) error {
 	now := t.Now()
-	return t.cas(ctx, "UPDATE licenses SET visibility = ?, actor = ?, updated_at = ?, version = version + 1 WHERE tenant_id = ? AND name = ? AND version = ?",
-		[]any{visibility, actor, t.s.d.timeArg(now), l.TenantID, l.Name, expected},
+	return t.cas(ctx, `UPDATE licenses SET visibility = ?, actor = ?, updated_at = ?, version = version + 1
+WHERE tenant_id = ? AND package_type = ? AND name = ? AND version = ?`,
+		[]any{visibility, actor, t.s.d.timeArg(now), l.TenantID, l.PackageType, l.Name, expected},
 		func() { l.Visibility, l.Actor, l.UpdatedAt, l.Version = visibility, actor, now, expected+1 })
 }
 
@@ -201,7 +213,8 @@ func (t *Tx) DeleteLicense(ctx context.Context, l License, expected int64) error
 	if expected == 0 {
 		expected = l.Version
 	}
-	return t.cas(ctx, "DELETE FROM licenses WHERE tenant_id = ? AND name = ? AND version = ?", []any{l.TenantID, l.Name, expected}, func() {})
+	return t.cas(ctx, "DELETE FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ? AND version = ?",
+		[]any{l.TenantID, l.PackageType, l.Name, expected}, func() {})
 }
 
 // UpstreamLicenses lists the licences an upstream relayed.
@@ -222,9 +235,10 @@ func (t *Tx) UpstreamLicenses(ctx context.Context, upstreamID string) ([]License
 	return out, rows.Err()
 }
 
-// ExpiredLicenses lists, across tenants, the licences whose grace ended before now (seconds).
+// ExpiredLicenses lists, across tenants, the licences whose grace ended before now (seconds), of the
+// types this binary knows.
 func (s *Store) ExpiredLicenses(ctx context.Context, now int64) ([]License, error) {
-	rows, err := s.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE grace_until <= ? ORDER BY tenant_id, name", now)
+	rows, err := s.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE grace_until <= ? ORDER BY tenant_id, package_type, name", now)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +249,9 @@ func (s *Store) ExpiredLicenses(ctx context.Context, now int64) ([]License, erro
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, l)
+		if pkgtype.Known(l.PackageType) {
+			out = append(out, l)
+		}
 	}
 	return out, rows.Err()
 }

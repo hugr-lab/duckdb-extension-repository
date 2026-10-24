@@ -1,6 +1,6 @@
 # Spec 0034: Package types
 
-- **Status**: accepted (2026-10-24); phase 1 implemented
+- **Status**: accepted (2026-10-24); phases 1 and 2 implemented
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -273,6 +273,79 @@ born with the type): **phase 1**, the rename (0038, no change in behaviour); **p
   upstream's versions, downloads, installers, usage counts, users and received usage), and checks
   that no table, column, index or constraint keeps an old name (SQLite's in-table constraint names
   aside). The migration tests of earlier levels keep the old names they were written for.
+
+### As built (phase 2)
+
+- **Migration 0039** (`0039_package_types`, `min_reader` 39) in the three dialects, as the data
+  model above: `package_type` is `varchar(32)` (SQL Server `nvarchar(32) COLLATE
+  Latin1_General_100_BIN2`, SQLite `TEXT`) with the default `duckdb_extension` everywhere but on
+  grants, whose value the shape decides (no default; `ck_grants_package_type`). The new keys are
+  named: `pk_reserved_names`, `pk_reserved_name_sources`, `fk_reserved_name_sources_name`,
+  `pk_tenant_reserved_names`, `pk_licenses` (SQL Server's system-named primary keys found by their
+  table, as in 0034; PostgreSQL's `<table>_pkey` and `reserved_name_sources_name_fkey` dropped by
+  name). SQLite rebuilds builds, grants, the group members, both reserved-name tables, the tenants'
+  reservations and licences under `-- +foreign_keys_off`; the rebuilt tables' constraints take the
+  package spelling (`pk_package_group_members`).
+- **Go**: `internal/pkgtype` (`DuckDBExtension`, `Any`, `Default`, `Key` and `Of`, `Known`, `Types`,
+  `Parse`, `ParseOrAny`, and `RegisterForTest`, the tests' second type). The store's `Channel`,
+  `Build`, `License`, `ReservedName`, `TenantReservedName`, `GroupMember` and `Grant` carry
+  `PackageType`; every lookup by name takes the type; group member sets are `map[pkgtype.Key]bool`;
+  the process's view of the reserved names (`internal/reserved`) is keyed by (type, name), with
+  `Kind` and `Canonical` taking the type (aliases are `duckdb_extension`'s only). `Grant.Type()`
+  reads `""` as the default for the shape; `OfType` and `TypeShown` serve authorization and answers;
+  `TenantAdminGrants` (the lock-out count) counts `*` grants only. `StatsFilter.PackageType` keeps
+  the rows of the type's channels.
+- **Unknown types fail closed** when read: a grant of one is skipped by `GetTenantAuth`, a member by
+  the group reads, a channel of one is not found by `GetServeChannel` (it serves nothing) and is
+  left out of the channel list, its rules and follows are not due (nothing is placed), an expired
+  licence of one is left to its binary; `authz.Grants.Allow` refuses a resource of an unknown type,
+  and `GrantCovers` and `OfType` match no grant of one.
+- **Authorization**: `authz.Resource.PackageType`. `Grants.Allow` reads a named channel's type (one
+  query, `store.ChannelType`) and gives a package without a channel the default type when the
+  caller names none; a caller's type that is not the channel's is covered by no typed grant.
+  `Covers` itself defaults nothing: its callers (the index, statistics, `Reaching`) set the type.
+  The API's path decision passes `?type=` for a route without a channel.
+- **Rules**: a release insert (every arrival: publication, promotion, placement, rule, follow,
+  mirror) refuses a build of another type than its channel's (`release.ErrPackageType`, `409`); a
+  promotion between channels of two types and a placement naming another `package_type` are `409`
+  before any work; a rule or a follow on an upstream source of another type is `409`
+  (`store.SourceType`: an upstream's names are its home channel's type). The intakes read DuckDB
+  extensions only: a publication or an add into a channel or the catalogue of another type is `409`
+  (another type's intake is its spec's), and an upstream is refused on a channel of another type
+  (every remote serves `duckdb_extension` today). Shadows are recorded, read and shown in
+  `duckdb_extension` channels only.
+- **API**: `decide` refuses an unknown `?type=` (or one named twice) on every route first (`400`),
+  and, once the caller may call the route, a `?type=` that differs from a channel's or an
+  upstream's home channel's (`400`). `package_type` is taken by the bodies of a channel's creation,
+  a grant, a group's member change (one type for the change) and a placement; answers show it, when
+  not the default, on channels (list, detail, creation), grants and `whoami`, reserved names (the
+  server's and a tenant's), licences, catalogue entries and builds, and group members. A member
+  list's page key is the name, then the type for another type. The publication and attachment
+  routes take `type` among their query parameters; a `Location` keeps a non-default `?type=`.
+- **CLI**: `-type` on `channel create`, `grant add|list`, `extension-group members`, `reserved
+  add|list|remove`, `tenant-reserved add|remove|list`, `catalogue list|show|add` and the `license`
+  commands; tables show a non-default type as `signed/<type>` (channels) or `<type>:<name>`
+  (grants, members).
+- **Bootstrap**: `BootstrapGrant.PackageType` (`package_type`), validated at load, never defaulted;
+  `Key` adds ` of <type>` only when it is not the shape's default.
+- **Bundles**: `Source.PackageType` and `PlanSource.PackageType`, omitted for `duckdb_extension`;
+  validation refuses an explicit `duckdb_extension`, an unknown type, and any other known type
+  (every source kind is DuckDB's).
+- **Events**: `package_type` when not the default on `channel.create`, `grant.add|remove`,
+  `extension_group.members`, `reserved.add|remove`, `reserved.tenant.add|remove`,
+  `catalogue.arrival|purge` and `license.import|change|remove`. The event catalogue lists the field
+  for those kinds, so `GET /event-kinds` answers more fields than before (the one answer that grows
+  on a server of one type); the catalogue's version stays 1, as for earlier additive fields.
+- **Console**: unchanged; it shows no type while the server knows one.
+- **Tests**: `TestMigrationPackageTypes` (a populated level-38 database on the three dialects: every
+  row's type, the check on named grants, the same name of another type in the new keys);
+  `TestPackageTypes` (a second registered type: no collision in the catalogue, the slots, the
+  reservations, the licences or the groups; the grants' type rules; a downgrade reads the other
+  type's rows as nothing); `TestCoversTypes`, `TestAllowTypes`, `TestInstallScopeTypes`;
+  `TestPackageTypeRoutes` (defaults and unchanged answers, unknown types `400`, a channel's type,
+  typed grants, a promotion, a placement and a publication across types `409`);
+  `TestAdminPackageTypes`; `TestBootstrapDigestPackageTypes` (origin/main's digest of a section);
+  `TestSourcePackageTypes` (a v0.1.4-shaped strict decoder reads an extension manifest and plan).
 
 ## Security
 

@@ -19,6 +19,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reservedsync"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -84,7 +85,7 @@ func TestCommunitySync(t *testing.T) {
 			if err != nil || !slices.Equal(added, []string{"kista_comm_a", "kista_comm_b"}) {
 				t.Fatalf("first pass: %v %v", added, err)
 			}
-			l, _ := st.ListReservedNames(ctx, "kista_comm_a")
+			l, _ := st.ListReservedNames(ctx, pkgtype.DuckDBExtension, "kista_comm_a")
 			if len(l) != 1 || l[0].Kind != store.ReservedCommunity || !slices.Equal(l[0].Sources, []string{"community-sync@" + commit}) {
 				t.Fatalf("reserved: %+v", l)
 			}
@@ -98,7 +99,7 @@ func TestCommunitySync(t *testing.T) {
 			if added, err := s.Once(ctx); err != nil || len(added) != 0 {
 				t.Fatalf("second pass: %v %v", added, err)
 			}
-			if l, _ := st.ListReservedNames(ctx, "h3"); len(l) != 1 || slices.Contains(l[0].Sources, "community-sync@"+commit) {
+			if l, _ := st.ListReservedNames(ctx, pkgtype.DuckDBExtension, "h3"); len(l) != 1 || slices.Contains(l[0].Sources, "community-sync@"+commit) {
 				t.Fatalf("h3: %+v", l)
 			}
 			// another replica within the interval: no fetch
@@ -134,7 +135,7 @@ func TestCommunitySync(t *testing.T) {
 			if added, err := s.Once(ctx); err != nil || !slices.Equal(added, []string{"kista_comm_d"}) {
 				t.Fatalf("a tenant's name: %v %v", added, err)
 			}
-			if l, _ := st.ListReservedNames(ctx, "kista_theirs"); len(l) != 0 {
+			if l, _ := st.ListReservedNames(ctx, pkgtype.DuckDBExtension, "kista_theirs"); len(l) != 0 {
 				t.Fatalf("a tenant's name was reserved: %+v", l)
 			}
 			many := make([]string, reservedsync.MaxNew+1)

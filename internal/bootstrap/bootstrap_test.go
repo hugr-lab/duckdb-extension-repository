@@ -23,6 +23,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bootstrap"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
@@ -254,6 +255,42 @@ func TestBootstrapDigest(t *testing.T) {
 	}
 }
 
+// Spec 0034: a grant's package_type is optional, never filled in by Defaulted and left out of its
+// key when it is the default for the grant's shape: a section applied before keeps its digest (the
+// one v0.1.4 computed for it) and its plan's grants.
+func TestBootstrapDigestPackageTypes(t *testing.T) {
+	b := section()
+	b.Grants = append(b.Grants, config.BootstrapGrant{Principal: "role:entra|ops", Verbs: []string{"install"}, Channel: "prod"},
+		config.BootstrapGrant{Principal: "role:entra|dev", Verbs: []string{"publish", "promote"}, Extension: "tresor"})
+	const before = "2a62a40c48d65d821ea3e1a652de415c4474a9d7fb05f229b6b7a54c07020d68" // origin/main's Digest of this section
+	d, js, err := bootstrap.Digest(b)
+	if err != nil || d != before || strings.Contains(js, "package_type") {
+		t.Fatalf("the digest moved: %s %v\n%s", d, err, js)
+	}
+	keys := []string{"role:entra|kista-admin admin", "role:entra|ops install on prod", "role:entra|dev promote,publish on */tresor"}
+	for i, g := range b.Grants {
+		if g.Key() != keys[i] {
+			t.Fatalf("key %q, was %q", g.Key(), keys[i])
+		}
+		// the default for the shape, named, is the same grant
+		g.PackageType = pkgtype.Any
+		if g.Extension != "" {
+			g.PackageType = pkgtype.DuckDBExtension
+		}
+		if g.Key() != keys[i] {
+			t.Fatalf("the default named: %q", g.Key())
+		}
+	}
+	typed := config.BootstrapGrant{Principal: "role:entra|ops", Verbs: []string{"install"}, PackageType: pkgtype.DuckDBExtension}
+	if typed.Key() != "role:entra|ops install of duckdb_extension" {
+		t.Fatalf("a typed grant's key: %q", typed.Key())
+	}
+	b.Grants = append(b.Grants, typed)
+	if d2, _, _ := bootstrap.Digest(b); d2 == d {
+		t.Fatal("a typed grant kept the digest")
+	}
+}
+
 // Objects that exist and differ are refused with nothing written; a tenant the bootstrap did not
 // make is changed only with -adopt.
 func TestBootstrapRefuses(t *testing.T) {
@@ -287,7 +324,7 @@ func TestBootstrapRefuses(t *testing.T) {
 				{"a key another channel holds", func(t *testing.T, en *env, b *config.Bootstrap) {
 					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "other", "", "", ""); return err })
 					must(t, func() error {
-						_, err := en.d.Tenants.CreateChannel(ctx, cli, "other", "prod", store.ChannelSigned)
+						_, err := en.d.Tenants.CreateChannel(ctx, cli, "other", "prod", store.ChannelSigned, "")
 						return err
 					})
 					must(t, func() error { _, err := en.d.Keys.Add(ctx, cli, "other", "prod", "file:a.pem", true); return err })
@@ -295,7 +332,7 @@ func TestBootstrapRefuses(t *testing.T) {
 				{"a channel with another key", func(t *testing.T, en *env, b *config.Bootstrap) {
 					must(t, func() error { _, err := en.d.Tenants.CreateTenant(ctx, cli, "acme", "Acme", "", ""); return err })
 					must(t, func() error {
-						_, err := en.d.Tenants.CreateChannel(ctx, cli, "acme", "prod", store.ChannelSigned)
+						_, err := en.d.Tenants.CreateChannel(ctx, cli, "acme", "prod", store.ChannelSigned, "")
 						return err
 					})
 					must(t, func() error { _, err := en.d.Keys.Add(ctx, cli, "acme", "prod", "file:other.pem", true); return err })
@@ -503,7 +540,7 @@ func TestBootstrapDetails(t *testing.T) {
 			if err != nil || !res.Applied || !strings.Contains(fmt.Sprint(res.Plan.Items), "core extensions kista_boot_core") {
 				t.Fatalf("core extensions added: %+v %v", res, err)
 			}
-			if l, _ := en.st.ListReservedNames(ctx, "kista_boot_core"); len(l) != 1 || l[0].Kind != store.ReservedCore ||
+			if l, _ := en.st.ListReservedNames(ctx, pkgtype.DuckDBExtension, "kista_boot_core"); len(l) != 1 || l[0].Kind != store.ReservedCore ||
 				!slices.Equal(l[0].Sources, []string{"version:v1.4.2@abcdef0"}) {
 				t.Fatalf("reserved: %+v", l)
 			}

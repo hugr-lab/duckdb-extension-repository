@@ -43,7 +43,11 @@ func (s *Service) Promote(ctx context.Context, a authz.Actor, tenant, channel, n
 }
 
 func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, name string, o PromoteOptions) ([]store.Release, bool, error) {
-	kind, err := s.Store.ReservedFor(ctx, tenant, name) // spec 0030: DuckDB's, the tenant's, its upstreams'
+	typ, err := s.channelType(ctx, tenant, channel)
+	if err != nil {
+		return nil, false, err
+	}
+	kind, err := s.Store.ReservedFor(ctx, tenant, typ, name) // spec 0030: DuckDB's, the tenant's, its upstreams'
 	if err != nil {
 		return nil, false, err
 	}
@@ -84,6 +88,10 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 	}
 	if target.Channel.Kind != store.ChannelSigned {
 		return nil, false, fmt.Errorf("%w: promotion is into a signed channel", ErrState)
+	}
+	if source.Channel.PackageType != target.Channel.PackageType { // spec 0034: into a channel of the build's type only
+		return nil, false, fmt.Errorf("%w: %s serves %s, %s serves %s", ErrPackageType, o.From, source.Channel.PackageType,
+			channel, target.Channel.PackageType)
 	}
 	if _, err := activeKey(ctx, s.Store, target.Channel.ID); err != nil {
 		return nil, false, err
@@ -171,7 +179,7 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 			}
 		}
 		f := map[string]any{"releases": ids, "name": name, "from_channel": o.From, "version": made[0].PackageVersion,
-			"shadows": Shadows(store.Candidate{Release: made[0], BuildOrigin: origin}, nil)}
+			"shadows": Shadows(c.PackageType, store.Candidate{Release: made[0], BuildOrigin: origin}, nil)}
 		if o.Provenance != "" {
 			f["provenance"] = o.Provenance
 		}

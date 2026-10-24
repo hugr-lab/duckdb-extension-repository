@@ -105,12 +105,13 @@ func (t *Tx) bumpBuildChannels(ctx context.Context, q string, args ...any) error
 	return nil
 }
 
-// LiveLicenseKeys are the keys of the tenant's live builds of name: those any trusted source
-// brought (kind ""), or those one source brought.
-func (t *Tx) LiveLicenseKeys(ctx context.Context, tenantID, name, kind, sourceID string) ([]LicenseKey, error) {
+// LiveLicenseKeys are the keys of the tenant's live builds of a package (type, name; spec 0034: a
+// live key is (type, name, kid)): those any trusted source brought (kind ""), or those one source
+// brought.
+func (t *Tx) LiveLicenseKeys(ctx context.Context, tenantID, packageType, name, kind, sourceID string) ([]LicenseKey, error) {
 	q := `SELECT DISTINCT k.kid, k.pem FROM build_license_keys k JOIN builds b ON b.id = k.build_id
-WHERE b.tenant_id = ? AND b.name = ? AND ` + liveBuild
-	args := []any{tenantID, name}
+WHERE b.tenant_id = ? AND b.package_type = ? AND b.name = ? AND ` + liveBuild
+	args := []any{tenantID, packageType, name}
 	if kind != "" {
 		q += " AND k.source_kind = ? AND k.source_id = ?"
 		args = append(args, kind, sourceID)
@@ -167,15 +168,15 @@ type KeySource struct {
 
 const keySourceName = "COALESCE(p.name, u.name, k.source_id)"
 
-// TenantLicenseKeys lists the keys of a tenant's live builds (of one name, or of all: name ""), by
-// name and kid.
-func (s *Store) TenantLicenseKeys(ctx context.Context, tenantID, name string) ([]NameKey, error) {
+// TenantLicenseKeys lists the keys of a tenant's live builds of a type (of one name, or of all: name
+// ""), by name and kid.
+func (s *Store) TenantLicenseKeys(ctx context.Context, tenantID, packageType, name string) ([]NameKey, error) {
 	q := `SELECT b.name, k.kid, k.build_id, k.source_kind, ` + keySourceName + `
 FROM build_license_keys k JOIN builds b ON b.id = k.build_id
 LEFT JOIN publishers p ON k.source_kind = 'publisher' AND p.id = k.source_id
 LEFT JOIN upstreams u ON k.source_kind = 'upstream' AND u.id = k.source_id
-WHERE b.tenant_id = ? AND ` + liveBuild
-	args := []any{tenantID}
+WHERE b.tenant_id = ? AND b.package_type = ? AND ` + liveBuild
+	args := []any{tenantID, packageType}
 	if name != "" {
 		q += " AND b.name = ?"
 		args = append(args, name)
