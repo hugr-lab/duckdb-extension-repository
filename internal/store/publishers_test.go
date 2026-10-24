@@ -64,7 +64,7 @@ func TestPublishers(t *testing.T) {
 			t.Fatalf("the publisher grant read back: %+v", pg)
 		}
 		// removing the publisher removes its keys and grants
-		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tn.ID, "acl-ci") })
+		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tn.ID, "acl-ci", "os:1:t") })
 		ta, err = s.GetTenantAuth(ctx, tn.ID)
 		if err != nil || len(ta.Publishers) != 1 {
 			t.Fatalf("after removal: %+v %v", ta, err)

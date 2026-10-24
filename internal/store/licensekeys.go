@@ -22,8 +22,9 @@ OR k.source_kind = 'upstream' AND EXISTS (SELECT 1 FROM upstreams su WHERE su.id
 
 // liveBuild is the condition that build b is live in its tenant (spec 0021): an active or
 // deprecated release in a signed channel that serves its source for the name (spec 0031; another
-// source's releases stay stored, unserved), and its body not blocked; and k's source exists.
-const liveBuild = sourceExists + ` AND EXISTS (SELECT 1 FROM releases r JOIN channels c ON c.id = r.channel_id
+// source's releases stay stored, unserved), its body not blocked, and it not withdrawn (spec 0033
+// phase B: served nowhere); and k's source exists.
+const liveBuild = sourceExists + ` AND b.withdrawn_at IS NULL AND EXISTS (SELECT 1 FROM releases r JOIN channels c ON c.id = r.channel_id
 JOIN channel_sources cs ON cs.channel_id = r.channel_id AND cs.name = r.name AND cs.source = r.source
 WHERE r.build_id = b.id AND r.state IN ('active', 'deprecated') AND c.kind = 'signed')
 AND NOT EXISTS (SELECT 1 FROM blocks x WHERE x.tenant_id = b.tenant_id AND x.body_hash = b.body_hash)`

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -20,12 +21,41 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
 // TestAdminCLI drives kista admin end to end on SQLite.
 
 // publisherKeyLine is a publisher's public key (spec 0023's vectors).
 const publisherKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIvmAKxjbOkVN7MhsYLLHONcPMZXvhAR+JPGbBHEmWgz ci ed25519"
+
+// withdrawable lands a build of a name's version from a tenant's publisher in its catalogue, straight
+// in the store (a publication needs a server and a signed request).
+func withdrawable(t *testing.T, db, tenant, publisher, name, version string) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.OpenSQLite(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	tn, err := st.GetTenant(ctx, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InTx(ctx, "", func(tx *store.Tx) error {
+		p, err := tx.GetPublisher(ctx, tn.ID, publisher)
+		if err != nil {
+			return err
+		}
+		b := store.Build{TenantID: tn.ID, Source: store.PublisherSource(p.ID), Name: name, PackageVersion: version, Platform: "linux_amd64",
+			ABI: store.ABICPP, DuckDBVersion: "v2.0.0", BodyHash: strings.Repeat("d", 64), Origin: store.OriginPublication, Checked: true,
+			CreatedBy: "os:1:t"}
+		return tx.FindOrInsertBuild(ctx, &b)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestAdminCLI(t *testing.T) {
 	t.Cleanup(reserved.SetForTest(reserved.Seed(), 0)) // the process's view follows this test's store
@@ -411,6 +441,34 @@ func TestAdminCLI(t *testing.T) {
 		t.Fatalf("a removed key: %q", got)
 	}
 	run(0, "publisher", "remove", "acme", "acl-ci")
+	// a distributor's publisher (spec 0033 phase B): marked, listed, holds no grant; a version withdrawn
+	run(0, "publisher", "add", "acme", "plain-ci")
+	run(1, "publisher", "distributor", "acme", "plain-ci", "enterest") // an operator's publisher is not taken over
+	run(2, "publisher", "list", "acme", "-distributor", "enterest")    // -distributor is add's
+	run(1, "publisher", "add", "acme", "enterest-ci", "-distributor", "line\nbreak")
+	run(0, "publisher", "add", "acme", "enterest-ci", "-distributor", "enterest-eu")
+	run(1, "publisher", "distributor", "acme", "enterest-ci", "")
+	run(2, "publisher", "distributor", "acme", "enterest-ci")
+	run(0, "publisher", "distributor", "acme", "enterest-ci", "enterest") // renamed
+	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, "DISTRIBUTOR") || !strings.Contains(got, "enterest\n") {
+		t.Fatalf("publisher list with a distributor: %q", got)
+	}
+	run(1, "grant", "add", "acme", "-principal", "publisher:enterest-ci", "-verb", "publish", "-extension", "geo")
+	withdrawable(t, filepath.Join(dir, "k.db"), "acme", "enterest-ci", "geo", "1.0")
+	run(2, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0")                                   // no -reason
+	run(2, "catalogue", "list", "acme", "-reason", "x")                                                              // -reason is withdraw's
+	run(2, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0", "-reason", "CVE", "-name", "geo") // list's flag
+	run(2, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0", "-reason", "CVE", "-private")
+	run(0, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "9.9", "-reason", "CVE") // not arrived: withdrawn all the same
+	run(1, "catalogue", "withdraw", "acme", "tenant", "geo", "1.0", "-reason", "CVE")                // not a distributor's
+	run(0, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0", "-reason", "CVE-2026-0001")
+	run(0, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0", "-reason", "again") // withdrawn already
+	if got := run(0, "catalogue", "list", "acme", "-name", "geo"); !strings.Contains(got, "WITHDRAWN") || !strings.Contains(got, "publisher:enterest-ci") {
+		t.Fatalf("catalogue list with a withdrawn version: %q", got)
+	}
+	if got := run(0, "catalogue", "show", "acme", "publisher:enterest-ci", "geo"); !strings.Contains(got, "CVE-2026-0001") {
+		t.Fatalf("catalogue show with a withdrawn version: %q", got)
+	}
 	if got := run(0, "grant", "list", "acme"); strings.Contains(got, "publisher:acl-ci") {
 		t.Fatalf("a removed publisher's grant: %q", got)
 	}

@@ -150,7 +150,7 @@ func TestPackageGroups(t *testing.T) {
 			t.Fatalf("a removed grant: %v", err)
 		}
 		// removing the publisher, then the issuer, removes their grants on groups too
-		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tn.ID, "ci") })
+		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tn.ID, "ci", "os:1:t") })
 		inTx(t, s, func(tx *store.Tx) error {
 			if granted, err := tx.GroupGranted(ctx, g); err != nil || !granted {
 				return fmt.Errorf("granted %v %w", granted, err)

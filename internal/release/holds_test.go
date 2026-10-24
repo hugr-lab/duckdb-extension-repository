@@ -198,7 +198,7 @@ func (p placing) revoke(t *testing.T, keyID string) []store.KeptEntry {
 			if _, kept, err = tx.PurgeHeld(ctx, p.ci.TenantID, store.PublisherSource(p.ci.ID), keyID); err != nil || keyID != "" {
 				return err
 			}
-			return tx.DeletePublisher(ctx, p.ci.TenantID, "ci")
+			return tx.DeletePublisher(ctx, p.ci.TenantID, "ci", "os:1:t")
 		})
 	})
 	return kept

@@ -451,7 +451,7 @@ func TestSourceGone(t *testing.T) {
 		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.PublicationLive(ctx, store.SourceTenant, "x") }); err != nil {
 			t.Fatalf("the tenant's own source: %v", err)
 		}
-		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tn.ID, "ci") })
+		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tn.ID, "ci", "os:1:t") })
 		if err := live(""); !errors.Is(err, store.ErrSourceGone) {
 			t.Fatalf("a removed publisher: %v", err)
 		}

@@ -56,7 +56,8 @@ func TestDistributionAdmin(t *testing.T) {
 	call(200, "POST", T+"/publishers/enterest-ci/license-keys", da, "")
 	k := newSigner(t)
 	kid := call(201, "POST", T+"/publishers/enterest-ci/keys", da, `{"public_key":"`+k.authKey+`"}`).json(t)["id"].(string)
-	// spec 0033 phase A2: purging a key's held entries is a tenant administrator's until phase B
+	// spec 0033 phase B: purging a key's held entries is a distribution admin's for a distributor's
+	// publisher only, not for one with the licence-key mark alone
 	call(404, "DELETE", T+"/publishers/enterest-ci/keys/"+kid+"?purge_held=true", da, "")
 	if r := call(200, "GET", T+"/publishers/enterest-ci/keys", da, ""); !strings.Contains(string(r.body), kid) {
 		t.Fatalf("the key after a refused purge: %s", r.body)

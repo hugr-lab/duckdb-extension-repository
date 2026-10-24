@@ -301,6 +301,10 @@ active tenant a distribution admin may:
   [source](upstreams.md#a-names-source-in-a-channel); a group's publications, which promotions out
   of a channel need, are the tenant's, and land only where the name has no other source); remove the
   grants a distribution admin made, or a marked publisher's.
+- create a distributor's publisher, or mark a fresh one it created (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)),
+  and for a distributor's publisher: manage its keys (with `purge_held`), set its hold, purge its
+  builds placed nowhere, [withdraw](upstreams.md#withdrawals) its versions, and read its entries in
+  the catalogue (without channels);
 - never switch a name's source in a channel: that is the channel's administrators'.
 
 Nothing else: it reads no channel, key or release beyond what those calls answer, and cannot change

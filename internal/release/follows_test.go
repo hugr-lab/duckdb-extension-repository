@@ -143,7 +143,7 @@ func TestFollow(t *testing.T) {
 			t.Fatal(err)
 		}
 		must(t, func() error {
-			return p.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.DeletePublisher(ctx, other.TenantID, "other") })
+			return p.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.DeletePublisher(ctx, other.TenantID, "other", "os:1:t") })
 		})
 		if fs, err := p.rel.Follows(ctx, admin, "acme", "staging"); err != nil || len(fs) != 0 {
 			t.Fatalf("a removed source's follow: %+v %v", fs, err)

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -33,6 +34,9 @@ type publisherJSON struct {
 	LicenseKeys bool `json:"license_keys"`
 	// Hold: its hold (spec 0033), omitted for none
 	Hold string `json:"hold,omitempty"`
+	// Distributor: a distributor's publisher's distributor (spec 0033 phase B), omitted for the
+	// tenant's own
+	Distributor string `json:"distributor,omitempty"`
 }
 
 func publisherKeyOf(k store.PublisherKey, c caller) publisherKeyJSON {
@@ -42,7 +46,7 @@ func publisherKeyOf(k store.PublisherKey, c caller) publisherKeyJSON {
 
 func publisherOf(p store.Publisher, keys []store.PublisherKey, c caller) publisherJSON {
 	o := publisherJSON{Name: p.Name, CreatedAt: timeOf(p.CreatedAt), CreatedBy: createdBy(p.CreatedBy, c), Keys: []publisherKeyJSON{},
-		LicenseKeys: p.LicenseKeys, Hold: holdOf(p.Hold)}
+		LicenseKeys: p.LicenseKeys, Hold: holdOf(p.Hold), Distributor: p.Distributor}
 	for _, k := range keys {
 		o.Keys = append(o.Keys, publisherKeyOf(k, c))
 	}
@@ -85,12 +89,21 @@ func (h *Handler) listPublishers(w http.ResponseWriter, r *http.Request, c calle
 func (h *Handler) addPublisher(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
 		Name string `json:"name"`
+		// Distributor creates a distributor's publisher (spec 0033 phase B): a server administrator's
+		// or a distribution admin's
+		Distributor *string `json:"distributor"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	a, _ := c.actor()
-	pb, err := h.o.Auth.AddPublisher(r.Context(), a, p["t"], in.Name)
+	add := h.o.Auth.AddPublisher
+	if in.Distributor != nil {
+		add = func(ctx context.Context, a authz.Actor, tenant, name string) (store.Publisher, error) {
+			return h.o.Auth.AddDistributorPublisher(ctx, a, tenant, name, *in.Distributor)
+		}
+	}
+	pb, err := add(r.Context(), a, p["t"], in.Name)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -140,6 +153,30 @@ func publisherLicenseKeys(on bool) handler {
 		}
 		reply(w, r, http.StatusOK, publisherOf(pb, keys, c), "", noStore)
 	}
+}
+
+// setPublisherDistributor marks a publisher a distributor's (spec 0033 phase B): PUT
+// …/publishers/{name}/distributor {"distributor": "<name>"}, a distribution admin's or a server
+// administrator's; the answer is the publisher.
+func (h *Handler) setPublisherDistributor(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	var in struct {
+		Distributor string `json:"distributor"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	a, _ := c.actor()
+	pb, err := h.o.Auth.SetPublisherDistributor(r.Context(), a, p["t"], p["name"], in.Distributor)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	keys, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], pb.Name)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	reply(w, r, http.StatusOK, publisherOf(pb, keys, c), "", noStore)
 }
 
 func (h *Handler) removePublisher(w http.ResponseWriter, r *http.Request, c caller, p params) {

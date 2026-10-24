@@ -317,12 +317,14 @@ var ErrCatalogueSlot = errors.New("store: the source's slot holds another body; 
 var ErrCatalogueFull = errors.New("store: the source's catalogue is full")
 
 // SourceUsage is how many builds a tenant's source holds placed nowhere (its catalogue's backlog:
-// released builds are the channels'), and their bodies' bytes.
+// released builds are the channels'), and their bodies' bytes. A withdrawn entry counts, released or
+// not (spec 0033 phase B: kept for good, its body with it): a source that publishes and withdraws
+// does not grow a tenant's storage without bound.
 func (s *Store) SourceUsage(ctx context.Context, tenantID, source string) (entries int, bytes int64, err error) {
 	var n sql.NullInt64
 	err = s.db.QueryRowContext(ctx, s.d.rebind(`SELECT COUNT(*), SUM(bl.body_len) FROM builds b JOIN tenants t ON t.id = b.tenant_id
 LEFT JOIN blobs bl ON bl.domain = t.storage_domain AND bl.body_hash = b.body_hash WHERE b.tenant_id = ? AND b.source = ?
-AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)`), tenantID, source).Scan(&entries, &n)
+AND (b.withdrawn_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id))`), tenantID, source).Scan(&entries, &n)
 	return entries, n.Int64, err
 }
 
@@ -354,11 +356,12 @@ func knownLanded(bs []LandedBuild) []LandedBuild {
 }
 
 // CrowdedLanded lists the landed builds of a publisher's or the tenant's (tenant, type, source, name,
-// platform, slot) that has more than keep landed versions; of the registered types only.
+// platform, slot) that has more than keep landed versions; of the registered types only. A withdrawn
+// build is neither (spec 0033 phase B: never collected, it takes no landed version's place).
 func (s *Store) CrowdedLanded(ctx context.Context, keep int) ([]LandedBuild, error) {
 	var out []LandedBuild
-	err := s.eachRow(ctx, "SELECT "+landedCols+` FROM builds b WHERE landed = ? AND source NOT LIKE 'upstream:%' AND EXISTS (
-SELECT 1 FROM builds o WHERE o.landed = ? AND o.tenant_id = b.tenant_id AND o.package_type = b.package_type AND o.source = b.source
+	err := s.eachRow(ctx, "SELECT "+landedCols+` FROM builds b WHERE landed = ? AND source NOT LIKE 'upstream:%' AND withdrawn_at IS NULL AND EXISTS (
+SELECT 1 FROM builds o WHERE o.landed = ? AND o.withdrawn_at IS NULL AND o.tenant_id = b.tenant_id AND o.package_type = b.package_type AND o.source = b.source
 	AND o.name = b.name AND o.platform = b.platform AND o.slot = b.slot GROUP BY o.tenant_id HAVING COUNT(DISTINCT o.package_version) > ?)`,
 		[]any{true, true, keep}, scanLanded(&out))
 	return knownLanded(out), err
@@ -437,6 +440,9 @@ func (t *Tx) DeleteEntry(ctx context.Context, tenantID, id string) (Build, error
 	b, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE id = ? AND tenant_id = ?", id, tenantID))
 	if err != nil {
 		return Build{}, notFound(err, "build "+id)
+	}
+	if b.Withdrawn() { // spec 0033 phase B: its record keeps its body from arriving again
+		return Build{}, fmt.Errorf("%w: a withdrawn entry stays in the catalogue", ErrWithdrawn)
 	}
 	if err := t.entryPlaced(ctx, b); err != nil {
 		return Build{}, err

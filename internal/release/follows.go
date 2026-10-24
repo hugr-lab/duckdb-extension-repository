@@ -140,14 +140,20 @@ type followLook struct {
 	rules   []store.Rule
 	offered map[string]bool
 	consent *authz.Actor // a followed publisher, whose grants a name must reach (spec 0033)
+	// distributor is a followed distributor's publisher's distributor (spec 0033 phase B): it has no
+	// grants, so a name it may publish into the catalogue (not reserved server-wide, nor in the tenant
+	// for another holder) is consented to instead
+	distributor string
 }
 
 // PlaceFollow takes, for a follow, every name of its source the channel has no rule for (spec 0033):
 // it writes the name's rule (mode follow) and places as an auto rule would; a rule an arrival wrote
 // for the same source becomes the follow's. It skips a name the tenant uses from another source, one
 // reserved (server-wide, unless the source is DuckDB's own repository of that kind; or in the
-// tenant), one another follow of the channel offers too, and, for a publisher, one it may not publish
-// in the channel (a follow is consent to a source, not to every grant anyone gives it). It returns how
+// tenant, unless for a followed distributor's publisher's distributor), one another follow of the
+// channel offers too, and, for a publisher, one it may not publish in the channel (a follow is consent
+// to a source, not to every grant anyone gives it; a distributor's publisher has no grants, and the
+// names it may publish into the catalogue are its consent, spec 0033 phase B). It returns how
 // many builds it placed, the names it skipped with the reason, and the first failure's text; a
 // failure on one name does not stop the others.
 func (s *Service) PlaceFollow(ctx context.Context, f store.DueFollow, renew func(context.Context) error) (int, map[string]string, string, error) {
@@ -286,7 +292,10 @@ func (s *Service) followLook(ctx context.Context, f store.DueFollow) (followLook
 			}
 		}
 	}
-	if id, ok := strings.CutPrefix(f.Source, store.SourcePublisherPrefix); ok {
+	if lk.distributor, err = s.Store.SourceDistributor(ctx, f.Source); err != nil {
+		return lk, false, err
+	}
+	if id, ok := strings.CutPrefix(f.Source, store.SourcePublisherPrefix); ok && lk.distributor == "" {
 		a := authz.Actor{Kind: authz.ActorPublisher, ID: lk.tenant.Name + "/" + strings.TrimPrefix(lk.label, store.SourcePublisherPrefix),
 			Tenant: lk.tenant.Name, Principals: auth.Principals{auth.PublisherKey(id): true}}
 		lk.consent = &a
@@ -304,7 +313,14 @@ func (s *Service) followLimit(ctx context.Context, lk followLook, f store.DueFol
 	case reserved == store.ReservedCore && lk.kind != store.UpstreamCore, reserved == store.ReservedCommunity && lk.kind != store.UpstreamCommunity:
 		return "a name DuckDB's " + reserved + " repository has: a rule naming it takes it", nil
 	case reserved == "tenant":
-		return "a name reserved in the tenant: a rule naming it takes it", nil
+		// spec 0033 phase B: a distributor's publisher takes a name reserved for its distributor
+		holder, ok, err := s.Store.TenantReservedHolder(ctx, f.TenantID, lk.channel.PackageType, name)
+		if err != nil {
+			return "", err
+		}
+		if lk.distributor == "" || !ok || holder != lk.distributor {
+			return "a name reserved in the tenant: a rule naming it takes it", nil
+		}
 	}
 	for _, src := range lk.byName[name] {
 		if src != f.Source {
@@ -341,7 +357,9 @@ func (s *Service) takeName(ctx context.Context, lk followLook, f store.DueFollow
 		if err != nil || had && (cur.Source != f.Source || cur.Mode != store.RuleNone) {
 			return err
 		}
-		if held, err := tx.TenantReserves(ctx, f.TenantID, lk.channel.PackageType, name); err != nil || held {
+		// reserved in the tenant meanwhile, unless for the followed distributor's publisher's distributor
+		holder, held, err := tx.TenantReservedHolder(ctx, f.TenantID, lk.channel.PackageType, name)
+		if err != nil || held && (lk.distributor == "" || holder != lk.distributor) {
 			return err
 		}
 		if _, err := tx.SetChannelRule(ctx, f.ChannelID, name, f.Source, store.RuleFollow, placer.String()); err != nil {

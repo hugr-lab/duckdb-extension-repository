@@ -13,7 +13,7 @@ jobs:
     # The store suite on PostgreSQL 17 and SQL Server 2022 (service containers), Vault, OpenBao, an
     # S3-compatible server and Azurite, under -race.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       GOWORK: off
     services:
@@ -78,7 +78,9 @@ jobs:
           KISTA_TEST_MOTO: http://127.0.0.1:55000
           KISTA_TEST_GCS: http://127.0.0.1:54443
           KISTA_TEST_REQUIRE_MOTO: "1"
-        run: go test -race ./...
+        # the api, store, release and upstream packages run every case on three engines under -race:
+        # past go test's 10 minutes per package on a hosted runner
+        run: go test -race -timeout 25m ./...
 
   console:
     # The administration console (spec 0015): types, unit tests, every shipped package's licence, the

@@ -22,6 +22,12 @@ type catalogueEntryJSON struct {
 	// Revoked are the versions with a revoked build (spec 0033 phase A2: kept by a purge, placed
 	// automatically nowhere), newest first; omitted for none
 	Revoked []string `json:"revoked,omitempty"`
+	// Withdrawn are the versions with a withdrawn build (spec 0033 phase B: served nowhere), newest
+	// first; omitted for none
+	Withdrawn []string `json:"withdrawn,omitempty"`
+	// PublisherID is a distributor's publisher's id, to a distribution admin (spec 0033 phase B: a
+	// name two of them had is publisher-id:<id> as a source); omitted otherwise
+	PublisherID string `json:"publisher_id,omitempty"`
 }
 
 func (h *Handler) catalogue(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -35,7 +41,7 @@ func (h *Handler) catalogue(w http.ResponseWriter, r *http.Request, c caller, p 
 	out := []catalogueEntryJSON{}
 	for _, e := range es {
 		out = append(out, catalogueEntryJSON{PackageType: shownType(reqType(r)), Source: e.Source, Name: e.Name, Versions: e.Versions, Rules: e.Rules,
-			Held: e.Held, Revoked: e.Revoked})
+			Held: e.Held, Revoked: e.Revoked, Withdrawn: e.Withdrawn, PublisherID: e.PublisherID})
 	}
 	reply(w, r, http.StatusOK, map[string]any{"entries": out}, "", noStore)
 }
@@ -53,13 +59,20 @@ type catalogueBuildJSON struct {
 	Origin        string `json:"origin"`
 	Checked       bool   `json:"checked"`
 	CreatedAt     string `json:"created_at"`
-	// State is held or available (spec 0033 phase A2); AvailableAt, a held build's end of hold
+	// State is held, available or withdrawn (spec 0033 phases A2 and B); AvailableAt, a held build's
+	// end of hold
 	State       string `json:"state"`
 	AvailableAt string `json:"available_at,omitempty"`
 	// RevokedAt: when a purge kept it, revoked (spec 0033 phase A2: its publisher key revoked with
 	// purge_held, or its publisher removed, while it was held and placed early); omitted for none
-	RevokedAt string         `json:"revoked_at,omitempty"`
-	Placed    []store.Placed `json:"placed"`
+	RevokedAt string `json:"revoked_at,omitempty"`
+	// WithdrawnAt and WithdrawnReason: when and why it was withdrawn (spec 0033 phase B); omitted for
+	// none
+	WithdrawnAt     string `json:"withdrawn_at,omitempty"`
+	WithdrawnReason string `json:"withdrawn_reason,omitempty"`
+	// Placed is where it is released; omitted for a distribution admin, who reads no channel (spec
+	// 0033 phase B)
+	Placed *[]store.Placed `json:"placed,omitempty"`
 }
 
 func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -77,7 +90,11 @@ func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c calle
 	for _, v := range vs {
 		vj := versionJSON{Version: v.Version, Builds: []catalogueBuildJSON{}}
 		for _, b := range v.Builds {
-			vj.Builds = append(vj.Builds, catalogueBuildOf(b.Build, b.Placed, h.o.Store.Now()))
+			bj := catalogueBuildOf(b.Build, b.Placed, h.o.Store.Now())
+			if c.distribution && !c.admin {
+				bj.Placed = nil
+			}
+			vj.Builds = append(vj.Builds, bj)
 		}
 		out = append(out, vj)
 	}
@@ -148,7 +165,50 @@ func (h *Handler) publishToCatalogue(w http.ResponseWriter, r *http.Request, c c
 	if existed {
 		code = http.StatusOK
 	}
-	reply(w, r, code, catalogueBuildOf(b, nil, h.o.Store.Now()), "", noStore)
+	bj := catalogueBuildOf(b, nil, h.o.Store.Now())
+	if dist, err := h.o.Store.SourceDistributor(r.Context(), b.Source); err != nil || dist != "" {
+		bj.Placed = nil // a distributor's publisher reaches no channel, and learns nothing of them (spec 0033 phase B)
+	}
+	reply(w, r, code, bj, "", noStore)
+}
+
+// withdraw withdraws a version of a name from a distributor's publisher's source in the tenant (spec
+// 0033 phase B): POST …/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw {"reason": …}, a
+// distribution admin's or a server administrator's. The answer names the tenant, the version and the
+// entries withdrawn, never the tenant's channels.
+func (h *Handler) withdraw(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	a, _ := c.actor()
+	wd, err := h.o.Releases.Withdraw(r.Context(), a, p["t"], reqType(r), p["source"], p["ext"], p["v"], in.Reason)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	type entryJSON struct {
+		Build    string `json:"build"`
+		Platform string `json:"platform"`
+		Slot     string `json:"slot"`
+	}
+	out := struct {
+		PackageType string      `json:"package_type,omitempty"`
+		Tenant      string      `json:"tenant"`
+		Source      string      `json:"source"`
+		Name        string      `json:"name"`
+		Version     string      `json:"version"`
+		Reason      string      `json:"reason"`
+		Withdrawn   []entryJSON `json:"withdrawn"` // the entries this withdrawal withdrew
+		Already     bool        `json:"already"`   // the version was withdrawn already
+	}{PackageType: shownType(wd.PackageType), Tenant: wd.Tenant, Source: wd.Source, Name: wd.Name, Version: wd.Version, Reason: wd.Reason,
+		Withdrawn: []entryJSON{}, Already: wd.Already}
+	for _, b := range wd.Builds {
+		out.Withdrawn = append(out.Withdrawn, entryJSON{Build: b.ID, Platform: b.Platform, Slot: b.Slot()})
+	}
+	reply(w, r, http.StatusOK, out, "", noStore)
 }
 
 func (h *Handler) purgeEntry(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -162,7 +222,7 @@ func (h *Handler) purgeEntry(w http.ResponseWriter, r *http.Request, c caller, p
 
 func catalogueBuildOf(b store.Build, placed []store.Placed, now time.Time) catalogueBuildJSON {
 	bj := catalogueBuildJSON{PackageType: shownType(b.PackageType), ID: b.ID, Platform: b.Platform, Slot: b.Slot(), ABI: b.ABI, DuckDBVersion: b.DuckDBVersion,
-		BodyHash: b.BodyHash, Visibility: b.Visibility, Origin: b.Origin, Checked: b.Checked, CreatedAt: timeOf(b.CreatedAt), Placed: placed,
+		BodyHash: b.BodyHash, Visibility: b.Visibility, Origin: b.Origin, Checked: b.Checked, CreatedAt: timeOf(b.CreatedAt), Placed: &placed,
 		State: "available"}
 	if b.Held(now) {
 		bj.State, bj.AvailableAt = "held", timeOf(b.AvailableAt)
@@ -170,11 +230,14 @@ func catalogueBuildOf(b store.Build, placed []store.Placed, now time.Time) catal
 	if b.Revoked() {
 		bj.RevokedAt = timeOf(b.RevokedAt)
 	}
+	if b.Withdrawn() {
+		bj.State, bj.WithdrawnAt, bj.WithdrawnReason = "withdrawn", timeOf(b.WithdrawnAt), b.WithdrawnReason
+	}
 	if b.CAPI != nil {
 		bj.CAPI = b.CAPI.String()
 	}
-	if bj.Placed == nil {
-		bj.Placed = []store.Placed{}
+	if placed == nil {
+		placed = []store.Placed{}
 	}
 	return bj
 }

@@ -310,11 +310,12 @@ See [Tenants and channels](tenants-and-channels.md) and
 
 | Command | What it does | Output |
 | --- | --- | --- |
-| `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode), `HELD` (the versions held), `REVOKED` (the versions a purge kept, revoked) |
-| `catalogue show <tenant> <source> <name>` | an entry's builds | `VERSION`, `PLATFORM`, `SLOT`, `BODY`, `VISIBILITY`, `ORIGIN`, `CREATED`, `RELEASED IN`, `HELD UNTIL`, `REVOKED` |
+| `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode), `HELD` (the versions held), `REVOKED` (the versions a purge kept, revoked), `WITHDRAWN` (the versions withdrawn) |
+| `catalogue show <tenant> <source> <name>` | an entry's builds | `VERSION`, `PLATFORM`, `SLOT`, `BODY`, `VISIBILITY`, `ORIGIN`, `CREATED`, `RELEASED IN`, `HELD UNTIL`, `REVOKED`, `WITHDRAWN` (when, and the reason) |
 | `catalogue add <tenant> <file\|-> -name <name> [-private]` | puts a build into the catalogue only, placed nowhere (source `tenant`; the file checks always run) | the build's id |
 | `catalogue list\|show\|add … -type <package type>` | the catalogue of a [package type](../concepts.md#packages-and-package-types) (`duckdb_extension` by default; this server reads DuckDB extensions only) | |
-| `catalogue purge <tenant> <build-id>` | deletes a build that was never released; its slot is free again | |
+| `catalogue purge <tenant> <build-id>` | deletes a build that was never released; its slot is free again (never a withdrawn one) | |
+| `catalogue withdraw <tenant> publisher:<name>\|publisher-id:<id> <name> <version> -reason <text> [-type <package type>]` | [withdraws](../upstreams.md#withdrawals) a version of a distributor's publisher (removed or not; `publisher-id:<id>` when two had the name), whether it holds builds of it or not: served nowhere in the tenant from then on, for good | on standard error, `admin catalogue withdraw … (<n> entries) by …`, or `the version was withdrawn already` |
 
 ## Channel keys
 
@@ -339,7 +340,7 @@ The protection tier is the source's: `file`, `kubesecret` (a Kubernetes Secret, 
 | Command | What it does | Output |
 | --- | --- | --- |
 | `release add <tenant>/<channel> <file or -> -name <name> [-private] [-not-current] [-unchecked]` | stores and signs a build (`-` reads stdin); adding the same build again returns the existing release | the release id; `the release already exists` on stderr when it did |
-| `release list <tenant>/<channel> [-name <name>]` | `ID`, `NAME`, `VERSION`, `PLATFORM`, `SLOT`, `STATE`, `VISIBILITY`, `SEQ`, `CREATED` | |
+| `release list <tenant>/<channel> [-name <name>]` | `ID`, `NAME`, `VERSION`, `PLATFORM`, `SLOT`, `STATE` (`(withdrawn)` after it when its build was [withdrawn](../upstreams.md#withdrawals)), `VISIBILITY`, `SEQ`, `CREATED` | |
 | `release yank`, `deprecate`, `activate`, `current`, `public`, `private` `<tenant>/<channel> <release id>` | changes a release's state, currency or visibility: `deprecate` an active release, `activate` a deprecated one again, `current` makes an active release the one the flat path serves; `yank` is final | |
 | `release purge <tenant>/<channel> <release id> [-force]` | deletes a yanked release for good; its slot stays taken; needs `-force` while `gc.interval` is 0 | |
 | `release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> or -version <v>) [-private] [-not-current]` | releases the builds of another channel of the same tenant here, signed with this channel's key | the new release ids |
@@ -403,8 +404,10 @@ A principal is `subject:<issuer>|<value>`, `role:<issuer>|<value>`, `group:<issu
 | Command | What it does | Output |
 | --- | --- | --- |
 | `publisher add <tenant> <name>`, `publisher remove <tenant> <name>` | an identity that only publishes and promotes | |
-| `publisher list <tenant>` | `PUBLISHER`, `LICENSE KEYS`, `KEY`, `FINGERPRINT`, `TITLE`, `HOLD` | |
-| `publisher hold <tenant> <name> <duration>` | its [hold](../publishing.md#holds-and-early-placement) (`24h`, `2d`; `0` for none): what it publishes is held, and it publishes into the catalogue only | |
+| `publisher add <tenant> <name> -distributor <distributor>` | a [distributor's publisher](../publishing.md#distributors-publishers), marked at its creation: it publishes into the catalogue only, without grants; its keys, hold, purges and withdrawals are the distributor's | |
+| `publisher list <tenant>` | `PUBLISHER`, `LICENSE KEYS`, `KEY`, `FINGERPRINT`, `TITLE`, `HOLD`, `DISTRIBUTOR` | |
+| `publisher hold <tenant> <name> <duration>` | its [hold](../publishing.md#holds-and-early-placement) (`24h`, `2d`; `0` for none): what it publishes is held, and it publishes into the catalogue only; a distributor's publisher's is the distributor's | |
+| `publisher distributor <tenant> <name> <distributor>` | renames a [distributor's publisher](../publishing.md#distributors-publishers)'s distributor, or marks a fresh publisher a distribution admin created (an operator's or a tenant administrator's is refused) | |
 | `publisher license-keys <tenant> <name> on or off` | marks it a source of licence keys (spec 0021), or unmarks it: a server administrator's act | |
 | `publisher key add <tenant> <name> <file.pub or -> [-expires <days>d or <RFC 3339 time>]` | registers a public SSH key (`ssh-ed25519` or `ecdsa-sha2-nistp256`) the publisher signs its requests with (spec 0023); an expiry within a year, or none | the key id |
 | `publisher key list <tenant> <name>` | `ID`, `FINGERPRINT`, `TYPE`, `TITLE`, `EXPIRES`, `LAST USED`, `CREATED`, `BY` | |

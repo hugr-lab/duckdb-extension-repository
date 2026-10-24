@@ -44,6 +44,22 @@ func (s *Service) publisherKeys(ctx context.Context, a authz.Actor, res authz.Re
 	return nil
 }
 
+// distributorKeys is publisherKeys for a distributor's publisher's publication into the catalogue
+// (spec 0033 phase B): it publishes the name without a grant (distributorMay checked it), so each
+// marked publisher that matched the caller records the build's keys.
+func (s *Service) distributorKeys(_ context.Context, _ authz.Actor, _ authz.Resource, sources []string, f *extfile.File, it *item) error {
+	if len(sources) == 0 {
+		return nil
+	}
+	if f.LicenseKeys.Err != nil {
+		return ErrLicenseKeys
+	}
+	if len(f.LicenseKeys.Keys) > 0 {
+		it.keys, it.keyKind, it.keySources = licenseKeys(f), store.KeySourcePublisher, sources
+	}
+	return nil
+}
+
 // recordKeys records an item's licence keys on its build for each of its sources.
 func recordKeys(ctx context.Context, tx *store.Tx, b store.Build, it item) error {
 	for _, src := range it.keySources {

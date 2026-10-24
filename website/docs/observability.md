@@ -83,8 +83,8 @@ are all the kinds in `internal/audit`:
 | | `extension_group.remove` | `extension-group:<name>` | `name`, `description`, `members` |
 | | `extension_group.change` | `extension-group:<name>` | `description` |
 | | `extension_group.members` | `extension-group:<name>` | `added`, `removed` |
-| | `publisher.add`, `publisher.remove` | `publisher:<name>` | `name`; removed, `purged` and `kept` (the held entries it purged, how many, and those it kept, revoked, each with its `channels`, spec 0033) |
-| | `publisher.change` | `publisher:<name>` | `name`, `license_keys` (marked or unmarked as a source of licence keys, spec 0021) |
+| | `publisher.add`, `publisher.remove` | `publisher:<name>` | `name`; added, `distributor` (a distributor's publisher, spec 0033); removed, `purged` and `kept` (the held entries it purged, how many, and those it kept, revoked, each with its `channels`, spec 0033) |
+| | `publisher.change` | `publisher:<name>` | `name`, `license_keys` (marked or unmarked as a source of licence keys, spec 0021), or `distributor` and `before` (marked a distributor's publisher, spec 0033) |
 | | `publisher.key.add` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `expires_at` (a public SSH key, spec 0023) |
 | | `publisher.key.remove` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `purge_held`; with it, `purged` and `kept` (as `publisher.remove`) |
 | Licences | `license.import` | `license:<name>` | `name`, `license`, `issuer`, `holder`, `plan`, `expires_at`, `replaced` |
@@ -97,6 +97,7 @@ are all the kinds in `internal/audit`:
 | | `catalogue.arrival` | `ext:<name>` | `build`, `name`, `version`, `platform`, `slot`, `body_hash`, `source`, `visibility`, `available_at` (held until then), `provenance`: a build published into the catalogue only (spec 0033) |
 | | `catalogue.purge` | `ext:<name>` | `build`, `name`, `version`, `platform`, `slot`, `body_hash`, `reason` and `key` (a held entry purged with its key, `publisher.key.remove`, or its publisher, `publisher.remove`): an entry purged from the catalogue |
 | | `catalogue.hold` | `upstream:<name>`, `publisher:<name>` or `channel:<channel>` | `source` or `channel`, `hold`, `before`, `held` (the held entries a raise held longer): a hold set (spec 0033) |
+| | `catalogue.withdrawn` | `ext:<name>` | `source`, `name`, `version`, `reason`, `builds`, `channels` (how many of the tenant's channels it bumped), `package_type`: a distributor's version withdrawn, served nowhere (spec 0033) |
 | | `follow.set`, `follow.clear` | `channel:<channel>` | `source`: a channel follows a whole source, or no longer does (spec 0033) |
 | | `release.place` | `channel:<channel>/ext:<name>` | `releases`, `name`, `version`, `source`, `placed` (`hand`, or the rule's mode `auto` or `manual`, or `home`, a mirror's held version in its own channel: the placement pass, actor `system:placement`), `early` (a held version placed early by hand) (spec 0033) |
 | | `release.yank`, `release.deprecate`, `release.activate`, `release.current`, `release.public`, `release.private` | the release | `release`, `name`, `version`, `platform` |

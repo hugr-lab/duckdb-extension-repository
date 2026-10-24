@@ -167,7 +167,7 @@ func (s *Store) ReleasedIn(ctx context.Context, tenantID string, channelIDs, bod
 	for start := 0; start < len(bodies); start += 500 {
 		page := bodies[start:min(start+500, len(bodies))]
 		q := `SELECT DISTINCT b.body_hash FROM releases r JOIN builds b ON b.id = r.build_id WHERE r.tenant_id = ? AND r.state IN (?, ?)
-AND r.channel_id IN (` + marks(len(channelIDs)) + `) AND b.body_hash IN (` + marks(len(page)) + `)`
+AND b.withdrawn_at IS NULL AND r.channel_id IN (` + marks(len(channelIDs)) + `) AND b.body_hash IN (` + marks(len(page)) + `)`
 		args := []any{tenantID, ReleaseActive, ReleaseDeprecated}
 		for _, c := range channelIDs {
 			args = append(args, c)
@@ -484,7 +484,7 @@ func (s *Store) OfferedBodies(ctx context.Context, f Feed) ([]string, error) {
 	args := []any{f.TenantID}
 	if f.Offer == OfferChannels {
 		q = `SELECT DISTINCT b.body_hash FROM releases r JOIN builds b ON b.id = r.build_id JOIN feed_channels c ON c.channel_id = r.channel_id
-WHERE r.tenant_id = ? AND c.feed_id = ? AND r.state IN (?, ?) ORDER BY b.body_hash`
+WHERE r.tenant_id = ? AND c.feed_id = ? AND r.state IN (?, ?) AND b.withdrawn_at IS NULL ORDER BY b.body_hash`
 		args = append(args, f.ID, ReleaseActive, ReleaseDeprecated)
 	} else {
 		q = `SELECT DISTINCT b.body_hash FROM releases r JOIN builds b ON b.id = r.build_id WHERE r.tenant_id = ? AND r.origin = ?

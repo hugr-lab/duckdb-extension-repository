@@ -151,7 +151,15 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   catalogue add <tenant> <file|-> -name <name> [-private] [-type t]
                                                   put a build into the catalogue only, placed nowhere
   catalogue purge <tenant> <build-id>             delete a build no release holds; its slot is free again
+  catalogue withdraw <tenant> publisher:<name>|publisher-id:<id> <name> <version> -reason <text> [-type t]
+                                                  withdraw a version of a distributor's publisher (spec 0033):
+                                                  served nowhere in the tenant from then on, for good, and no
+                                                  build of it arrives again from that source
   publisher add|remove <tenant> <name>          an identity that only publishes and promotes
+  publisher add <tenant> <name> -distributor <distributor>   a distributor's publisher (spec 0033), marked at
+                                                  its creation: it publishes into the catalogue only, without
+                                                  grants; its keys, hold, purges and withdrawals are the
+                                                  distributor's
   publisher list <tenant>
   publisher license-keys <tenant> <name> on|off  mark it a source of licence keys (spec 0021): its publications
                    record the builds' keys; its credentials and grants are then a server administrator's
@@ -163,7 +171,10 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   -purge-held: purge the entries it published that are
                                                   still held (a revoked key; spec 0033)
   publisher hold <tenant> <name> <duration>       the publisher's hold (spec 0033): its entries are held this
-                                                  long and it publishes into the catalogue only (24h, 2d; 0 for none)
+                                                  long and it publishes into the catalogue only (24h, 2d; 0 for none);
+                                                  a distributor's publisher's is the distributor's
+  publisher distributor <tenant> <name> <distributor>   rename a distributor's publisher's distributor, or mark
+                                                  a fresh publisher a distribution admin created
   upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
                -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
                [-mode mirror|pull-through|bundle] [-fetch eager|lazy] [-credential <name>]
@@ -995,8 +1006,12 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 				if r.Seq > 0 {
 					seq = strconv.FormatInt(r.Seq, 10)
 				}
+				state := r.State
+				if r.Withdrawn { // spec 0033 phase B: served nowhere
+					state += " (withdrawn)"
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Name, r.PackageVersion, r.Platform, r.Slot,
-					r.State, r.Visibility, seq, ts(r.CreatedAt))
+					state, r.Visibility, seq, ts(r.CreatedAt))
 			}
 		})
 	case sub == "promote" && len(pos) == 1 && *name != "" && *from != "":
@@ -1524,11 +1539,18 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 		}
 		return a.publisherKey(ctx, args[0], args[1:])
 	}
-	pos, err := flags(flag.NewFlagSet("publisher", flag.ContinueOnError), args)
-	if err != nil {
+	fs := flag.NewFlagSet("publisher", flag.ContinueOnError)
+	dist := fs.String("distributor", "", "") // spec 0033 phase B: a distributor's publisher, marked at its creation
+	pos, err := flags(fs, args)
+	if err != nil || *dist != "" && sub != "add" {
 		return errUsage
 	}
 	switch {
+	case sub == "add" && len(pos) == 2 && *dist != "":
+		if _, err := a.svc.Auth.AddDistributorPublisher(ctx, a.actor, pos[0], pos[1], *dist); err != nil {
+			return err
+		}
+		a.logf("publisher add %s %s -distributor %s", pos[0], pos[1], *dist)
 	case sub == "add" && len(pos) == 2:
 		if _, err := a.svc.Auth.AddPublisher(ctx, a.actor, pos[0], pos[1]); err != nil {
 			return err
@@ -1553,6 +1575,11 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 			return err
 		}
 		a.logf("publisher license-keys %s %s %s", pos[0], pos[1], pos[2])
+	case sub == "distributor" && len(pos) == 3: // spec 0033 phase B: a distributor's publisher
+		if _, err := a.svc.Auth.SetPublisherDistributor(ctx, a.actor, pos[0], pos[1], pos[2]); err != nil {
+			return err
+		}
+		a.logf("publisher distributor %s %s %s", pos[0], pos[1], pos[2])
 	case sub == "list" && len(pos) == 1:
 		ps, err := a.svc.Auth.ListPublishers(ctx, a.actor, pos[0])
 		if err != nil {
@@ -1562,17 +1589,17 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
-		a.table("PUBLISHER\tLICENSE KEYS\tKEY\tFINGERPRINT\tTITLE\tHOLD", func(w io.Writer) {
+		a.table("PUBLISHER\tLICENSE KEYS\tKEY\tFINGERPRINT\tTITLE\tHOLD\tDISTRIBUTOR", func(w io.Writer) {
 			for _, p := range ps {
 				mark := "-"
 				if p.LicenseKeys {
 					mark = "yes"
 				}
 				if len(keys[p.ID]) == 0 {
-					fmt.Fprintf(w, "%s\t%s\t-\t\t\t%s\n", p.Name, mark, holdText(p.Hold))
+					fmt.Fprintf(w, "%s\t%s\t-\t\t\t%s\t%s\n", p.Name, mark, holdText(p.Hold), dash(p.Distributor))
 				}
 				for _, k := range keys[p.ID] {
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, mark, k.ID, k.Fingerprint, k.Title, holdText(p.Hold))
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, mark, k.ID, k.Fingerprint, k.Title, holdText(p.Hold), dash(p.Distributor))
 				}
 			}
 		})
@@ -2890,7 +2917,8 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 	source := fs.String("source", "", "")
 	name := fs.String("name", "", "")
 	private := fs.Bool("private", false, "")
-	ptype := fs.String("type", "", "") // spec 0034: the catalogue's package type
+	ptype := fs.String("type", "", "")    // spec 0034: the catalogue's package type
+	reason := fs.String("reason", "", "") // spec 0033 phase B: a withdrawal's
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
@@ -2899,7 +2927,20 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 	if err != nil {
 		return err
 	}
+	if *reason != "" && sub != "withdraw" || sub == "withdraw" && (*source != "" || *name != "" || *private) {
+		return errUsage // a flag another subcommand takes
+	}
 	switch {
+	case sub == "withdraw" && len(pos) == 4 && *reason != "":
+		w, err := a.svc.Releases.Withdraw(ctx, a.actor, pos[0], typ, pos[1], pos[2], pos[3], *reason)
+		if err != nil {
+			return err
+		}
+		if w.Already {
+			fmt.Fprintln(a.errw, "the version was withdrawn already")
+			return nil
+		}
+		a.logf("catalogue withdraw %s %s %s %s (%d entries)", pos[0], pos[1], pos[2], pos[3], len(w.Builds))
 	case sub == "add" && len(pos) == 2 && *name != "":
 		in := a.in
 		if pos[1] != "-" {
@@ -2937,15 +2978,15 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
-		a.table("SOURCE\tNAME\tVERSIONS\tRULES\tHELD\tREVOKED", func(w io.Writer) {
+		a.table("SOURCE\tNAME\tVERSIONS\tRULES\tHELD\tREVOKED\tWITHDRAWN", func(w io.Writer) {
 			for _, e := range es {
 				var rules []string
 				for ch, mode := range e.Rules {
 					rules = append(rules, ch+"="+mode)
 				}
 				slices.Sort(rules)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Source, e.Name, strings.Join(e.Versions, " "), dash(strings.Join(rules, " ")),
-					dash(strings.Join(e.Held, " ")), dash(strings.Join(e.Revoked, " ")))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Source, e.Name, strings.Join(e.Versions, " "), dash(strings.Join(rules, " ")),
+					dash(strings.Join(e.Held, " ")), dash(strings.Join(e.Revoked, " ")), dash(strings.Join(e.Withdrawn, " ")))
 			}
 		})
 	case sub == "show" && len(pos) == 3:
@@ -2954,22 +2995,25 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 			return err
 		}
 		now := a.svc.Store.Now()
-		a.table("VERSION\tPLATFORM\tSLOT\tBODY\tVISIBILITY\tORIGIN\tCREATED\tRELEASED IN\tHELD UNTIL\tREVOKED", func(w io.Writer) {
+		a.table("VERSION\tPLATFORM\tSLOT\tBODY\tVISIBILITY\tORIGIN\tCREATED\tRELEASED IN\tHELD UNTIL\tREVOKED\tWITHDRAWN", func(w io.Writer) {
 			for _, v := range vs {
 				for _, b := range v.Builds {
 					var in []string
 					for _, p := range b.Placed {
 						in = append(in, p.Channel+"("+p.State+")")
 					}
-					held, revoked := "-", "-"
+					held, revoked, withdrawn := "-", "-", "-"
 					if b.Held(now) {
 						held = ts(b.AvailableAt)
 					}
 					if b.Revoked() {
 						revoked = ts(b.RevokedAt)
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Version, b.Platform, b.Slot(), b.BodyHash[:12], b.Visibility,
-						b.Origin, ts(b.CreatedAt), dash(strings.Join(in, " ")), held, revoked)
+					if b.Withdrawn() {
+						withdrawn = ts(b.WithdrawnAt) + " " + b.WithdrawnReason
+					}
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Version, b.Platform, b.Slot(), b.BodyHash[:12], b.Visibility,
+						b.Origin, ts(b.CreatedAt), dash(strings.Join(in, " ")), held, revoked, withdrawn)
 				}
 			}
 		})

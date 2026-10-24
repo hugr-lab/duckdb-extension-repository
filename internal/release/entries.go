@@ -55,8 +55,8 @@ func (s *Service) room(ctx context.Context, b store.Build, size int64, admin boo
 		return err
 	}
 	if s.MaxEntries > 0 && n+1 > s.MaxEntries || s.MaxBytes > 0 && bytes+size > s.MaxBytes {
-		return fmt.Errorf("%w (catalogue.max_entries, catalogue.max_bytes): the tenant's administrators place or purge its builds placed nowhere",
-			store.ErrCatalogueFull)
+		return fmt.Errorf("%w (catalogue.max_entries, catalogue.max_bytes): the tenant's administrators place or purge its builds "+
+			"placed nowhere; its withdrawn builds count too and are never purged (a new publisher is the way out)", store.ErrCatalogueFull)
 	}
 	return nil
 }
@@ -75,6 +75,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 	}
 	res := authz.Resource{Tenant: tenant}
 	verb := authz.VerbAdmin
+	dist := "" // spec 0033 phase B: a distributor's publisher's, which publishes without grants
 	if o.Publish != nil {
 		kind, err := s.Store.ReservedFor(ctx, tenant, typ, o.Name)
 		if err != nil {
@@ -83,8 +84,15 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		o.Unchecked = false
 		verb = authz.VerbPublish
 		res = authz.Resource{Tenant: tenant, Package: o.Name, PackageType: typ, Reserved: kind != ""}
+		if dist, err = s.distributorOf(ctx, a); err != nil {
+			return store.Build{}, false, err
+		}
 	}
-	if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
+	if dist != "" {
+		if err := s.distributorMay(ctx, tenant, typ, o.Name, dist); err != nil {
+			return store.Build{}, false, err
+		}
+	} else if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
 		return store.Build{}, false, err
 	}
 	if typ != pkgtype.DuckDBExtension { // the intake reads DuckDB extensions (spec 0008); another type's is its spec's
@@ -118,7 +126,11 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		}
 		it.origin, it.provenance = store.OriginPublication, p.Provenance
 		it.b.Origin, it.b.PublisherKeyID = store.OriginPublication, p.KeyID
-		if err := s.publisherKeys(ctx, a, res, p.KeySources, f, &it); err != nil {
+		trust := s.publisherKeys
+		if dist != "" { // a distributor's publisher marked for licence keys may publish the name without a grant
+			trust = s.distributorKeys
+		}
+		if err := trust(ctx, a, res, p.KeySources, f, &it); err != nil {
 			return store.Build{}, false, err
 		}
 	}
@@ -141,6 +153,13 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		}
 		return store.Build{}, false, err
 	}
+	// spec 0033 phase B: no build of a version withdrawn from the source arrives again (checked again
+	// at the insert, under the lock a withdrawal takes)
+	if w, err := s.Store.VersionWithdrawn(ctx, t.ID, b.PackageType, it.source, b.Name, b.PackageVersion); err != nil {
+		return store.Build{}, false, err
+	} else if w {
+		return store.Build{}, false, fmt.Errorf("%w: %s %s from this source", store.ErrWithdrawn, b.Name, b.PackageVersion)
+	}
 	_, existed, err := s.Store.BuildOf(ctx, t.ID, b.PackageType, it.source, b.Name, b.BodyHash)
 	if err != nil {
 		return store.Build{}, false, err
@@ -153,7 +172,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 			return store.Build{}, false, err
 		}
 	}
-	if o.Publish != nil { // a name reserved during the upload takes a grant naming it (spec 0030)
+	if dist == "" && o.Publish != nil { // a name reserved during the upload takes a grant naming it (spec 0030)
 		kind, err := s.Store.ReservedFor(ctx, tenant, typ, o.Name)
 		if err != nil {
 			return store.Build{}, false, err
@@ -170,6 +189,13 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 	}
 	created := false
 	if err := s.land(ctx, sp, &it, func(tx *store.Tx, bb store.Build, inserted bool) error {
+		// spec 0033 phase B: a distributor's name checked again in the landing transaction (reserved
+		// server-wide or for another holder, or the tenant suspended, during the upload)
+		if dist != "" {
+			if err := distributorMayNow(ctx, tx, t.ID, typ, o.Name, dist); err != nil {
+				return err
+			}
+		}
 		if created = inserted; !inserted {
 			return nil
 		}
@@ -190,17 +216,31 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 }
 
 // PurgeEntry deletes a tenant's build that no release holds (spec 0033): its slot is free again, and
-// the collector removes its body. A tenant administrator's.
+// the collector removes its body. A tenant administrator's; a distribution admin's for a
+// distributor's publisher's entry (spec 0033 phase B: removed or not). A withdrawn entry is never
+// purged.
 func (s *Service) PurgeEntry(ctx context.Context, a authz.Actor, tenant, id string) (store.Build, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant}); err != nil {
+	t, err := s.mayReadCatalogue(ctx, a, tenant)
+	if err != nil {
 		return store.Build{}, err
 	}
-	t, err := s.Store.GetTenant(ctx, tenant)
+	only, err := s.distributorSources(ctx, a, t)
 	if err != nil {
 		return store.Build{}, err
 	}
 	var b store.Build
-	err = s.Store.InTenantTx(ctx, t.ID, nil, func(tx *store.Tx) error {
+	// the tenant's upstream lock, which every release into its signed channels takes: no placement
+	// releases the entry between the check and the deletion
+	err = s.Store.InTenantTx(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
+		if only != nil {
+			cur, err := tx.GetBuild(ctx, id)
+			if err != nil {
+				return err
+			}
+			if _, ok := only[cur.Source]; !ok || cur.TenantID != t.ID {
+				return fmt.Errorf("%w: build %s", store.ErrNotFound, id) // a distribution admin's are its distributors' entries
+			}
+		}
 		var err error
 		if b, err = tx.DeleteEntry(ctx, t.ID, id); err != nil {
 			return err
