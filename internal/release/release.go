@@ -641,7 +641,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					return err
 				}
 				if succeeds != "" {
-					if err := setSource(ctx, tx, a, c, b.Name, it.source, succeeds, ""); err != nil {
+					if err := setSource(ctx, tx, a, c, b.Name, it.source, succeeds); err != nil {
 						return err
 					}
 					// the removed upstream's releases, yanks and purges are the successor's (spec 0033)
@@ -667,7 +667,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				}
 				if ex != nil {
 					if !selected { // spec 0031: the same body arriving again sets a cleared source
-						if err := setSource(ctx, tx, a, c, b.Name, it.source, "", arrivalMode(it)); err != nil {
+						if err := setSource(ctx, tx, a, c, b.Name, it.source, ""); err != nil {
 							return err
 						}
 						bump = true
@@ -699,7 +699,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					}
 				}
 				if !selected {
-					if err := setSource(ctx, tx, a, c, b.Name, it.source, "", arrivalMode(it)); err != nil {
+					if err := setSource(ctx, tx, a, c, b.Name, it.source, ""); err != nil {
 						return err
 					}
 				}
@@ -776,21 +776,12 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 	return nil, false, errors.New("release: the channel's keys kept changing; try again")
 }
 
-// arrivalMode is the mode of the rule a first arrival writes (spec 0033): an upstream's release in
-// its own channel takes its names automatically, as its runs do; any other arrival is a choice made
-// once (manual).
-func arrivalMode(it item) string {
-	if it.origin == store.OriginUpstream {
-		return store.RuleAuto
-	}
-	return store.RuleManual
-}
-
 // setSource sets a name's source in a channel on an arrival (spec 0031): the first release of the
-// name (mode: its rule's), or an upstream succeeding a removed one (before: its source; mode "": the
-// rule's kept). The event names the sources as answers do.
-func setSource(ctx context.Context, tx *store.Tx, a authz.Actor, c store.Channel, name, source, before, mode string) error {
-	if _, err := tx.SetChannelRule(ctx, c.ID, name, source, mode, a.String()); err != nil {
+// name (a rule without a mode, spec 0033: the channel serves what lands), or an upstream succeeding
+// a removed one (before: its source; the rule's mode kept). The event names the sources as answers
+// do.
+func setSource(ctx context.Context, tx *store.Tx, a authz.Actor, c store.Channel, name, source, before string) error {
+	if _, err := tx.SetChannelRule(ctx, c.ID, name, source, store.RuleNone, a.String()); err != nil {
 		return err
 	}
 	label, err := tx.SourceLabel(ctx, source)
@@ -1033,6 +1024,9 @@ func (s *Service) land(ctx context.Context, sp *blob.Spool, it *item) error {
 	bb.Visibility, bb.Provenance = it.visibility, it.provenance
 	return s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
+			return err
+		}
+		if err := tx.SetLanded(ctx, bb.ID); err != nil {
 			return err
 		}
 		it.b = bb

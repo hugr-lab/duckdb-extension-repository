@@ -102,23 +102,33 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	}
 	// the slot and the name's source before the body is stored (both are checked again under the lock)
 	var existing *store.Release
-	selected := false // the name has a source the release keeps (spec 0031)
-	pinned := false   // a manual rule of this source that holds no release of the version (spec 0033)
+	selected := false     // the name has a source the release keeps (spec 0031)
+	pinned := false       // a manual rule of this source that holds no release of the version (spec 0033)
+	var completes *served // a manual rule's held version: completed as the placement pass would
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
-		if selected, _, err = checkSource(ctx, tx, ch.ID, b.Name, it.source, true); err != nil {
+		var succeeds string
+		if selected, succeeds, err = checkSource(ctx, tx, ch.ID, b.Name, it.source, true); err != nil {
 			return err
 		}
-		if rule, ok, err := tx.ChannelSourceOf(ctx, ch.ID, b.Name); err != nil {
+		rule, ok, err := tx.ChannelSourceOf(ctx, ch.ID, b.Name)
+		if err != nil {
 			return err
-		} else if ok && rule.Source == it.source && rule.Mode == store.RuleManual {
-			rels, err := tx.SourceReleases(ctx, ch.ID, it.source, b.Name)
+		}
+		// a successor answers to the rule the removed upstream had (its releases become the successor's)
+		if ok && ch.Kind == store.ChannelSigned && rule.Mode == store.RuleManual && (rule.Source == it.source || rule.Source == succeeds && succeeds != "") {
+			rels, err := tx.SourceReleases(ctx, ch.ID, rule.Source, b.Name)
 			if err != nil {
 				return err
 			}
-			pinned = !slices.ContainsFunc(rels, func(c store.Candidate) bool {
-				return c.ExtVersion == b.ExtVersion && (c.State == store.ReleaseActive || c.State == store.ReleaseDeprecated)
-			})
+			capis, err := tx.ChannelCAPIs(ctx, ch.ID)
+			if err != nil {
+				return err
+			}
+			sv := newServed(rels, capis)
+			if pinned = !sv.held[b.ExtVersion]; !pinned {
+				completes = &sv
+			}
 		}
 		cands, err := tx.SlotCandidates(ctx, ch.ID, it.source, b.Name, b.ExtVersion, b.Platform)
 		if err != nil {
@@ -169,6 +179,9 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	}
 	if in.DryRun {
 		return res, nil
+	}
+	if completes != nil {
+		completes.complete(&it)
 	}
 	rs, existed, err := s.commitAndRelease(ctx, sp, &it, func(ctx context.Context, it item) ([]store.Release, bool, error) {
 		return s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {

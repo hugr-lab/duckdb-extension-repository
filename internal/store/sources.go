@@ -43,9 +43,12 @@ func UpstreamSource(upstreamID string) string { return SourceUpstreamPrefix + up
 // PublisherSource is a publisher's source.
 func PublisherSource(publisherID string) string { return SourcePublisherPrefix + publisherID }
 
-// Rule modes (spec 0033): auto places each new version of the rule's source the channel serves;
-// manual places none, but completes the versions the channel holds (their builds that arrive later).
+// Rule modes (spec 0033), an administrator's: auto places each new version of the rule's source the
+// channel serves; manual places none, but completes the versions the channel holds (their builds
+// that arrive later). A rule an arrival wrote has none (RuleNone): the channel serves what lands in
+// it, and the placement pass leaves it alone.
 const (
+	RuleNone   = ""
 	RuleAuto   = "auto"
 	RuleManual = "manual"
 )
@@ -82,29 +85,30 @@ func (t *Tx) ChannelSourceOf(ctx context.Context, channelID, name string) (Chann
 	return c, err == nil, err
 }
 
-// SetChannelSource sets a channel's source for a name, keeping its mode (a new rule is manual),
-// and returns the source it had ("": none). The caller holds the channel's lock.
+// SetChannelSource sets a channel's source for a name, keeping its mode (a new rule has none), and
+// returns the source it had ("": none). The caller holds the channel's lock.
 func (t *Tx) SetChannelSource(ctx context.Context, channelID, name, source, actor string) (string, error) {
 	before, err := t.SetChannelRule(ctx, channelID, name, source, "", actor)
 	return before.Source, err
 }
 
-// SetChannelRule sets a channel's rule for a name: its source and mode ("": the rule's mode, manual
+// SetChannelRule sets a channel's rule for a name: its source and mode ("": the rule's mode, none
 // for a new one), and returns the rule it had (Source "": none). A changed source or mode is looked
-// at again by the placement pass. The caller holds the channel's lock.
+// at again by the placement pass; an unchanged rule is left as it is. The caller holds the channel's
+// lock.
 func (t *Tx) SetChannelRule(ctx context.Context, channelID, name, source, mode, actor string) (ChannelSource, error) {
-	if !ValidSource(source) || mode != "" && mode != RuleAuto && mode != RuleManual {
+	if !ValidSource(source) || mode != RuleNone && mode != RuleAuto && mode != RuleManual {
 		return ChannelSource{}, ErrInvalid
 	}
 	before, had, err := t.ChannelSourceOf(ctx, channelID, name)
 	if err != nil {
 		return ChannelSource{}, err
 	}
-	if mode == "" {
-		mode = RuleManual
-		if had {
-			mode = before.Mode
-		}
+	if mode == RuleNone && had {
+		mode = before.Mode
+	}
+	if had && before.Source == source && before.Mode == mode {
+		return before, nil
 	}
 	now := t.s.d.timeArg(t.Now())
 	if had {

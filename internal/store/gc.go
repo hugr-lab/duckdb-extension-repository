@@ -165,13 +165,9 @@ func (s *Store) MarkStream(ctx context.Context, domain, stream string) (bool, er
 
 // buildDead is the condition of a Build no release references and not used since the cutoff (?).
 // Migration 0013 set used_at of the Builds before it, every Build since is inserted with it, and
-// FillUsedAt sets it on the few an older replica inserted after. A mirror's cell that landed its
-// build in the catalogue without placing it (spec 0033: a manual rule) keeps it.
-const buildDead = "b.used_at < ? AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id) AND " + landedCell
-
-// landedCell is the condition that a mirror's cell of build b's tenant holds b's body as landed.
-const landedCell = `NOT EXISTS (SELECT 1 FROM upstream_cells c JOIN upstreams u ON u.id = c.upstream_id
-WHERE u.tenant_id = b.tenant_id AND c.outcome = 'landed' AND c.name = b.name AND c.body_hash = b.body_hash)`
+// FillUsedAt sets it on the few an older replica inserted after. A build landed in the catalogue
+// without a release (spec 0033: a manual rule's new version) is kept until a release takes it.
+const buildDead = "b.used_at < ? AND b.landed = ? AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)"
 
 // FillUsedAt sets used_at of the domain's Builds that have none (inserted by a replica older than
 // migration 0013 that was still running) to their created_at, so the collector can age them.
@@ -195,7 +191,7 @@ func (s *Store) FillUsedAt(ctx context.Context, domain string) (int, error) {
 func (s *Store) DeadBuilds(ctx context.Context, domain string, cutoff time.Time, after string, limit int) ([]string, error) {
 	q := "SELECT b.id FROM builds b JOIN tenants t ON t.id = b.tenant_id WHERE t.storage_domain = ? AND b.id > ? AND " + buildDead + " ORDER BY b.id"
 	var out []string
-	err := s.eachRow(ctx, q+s.limit(limit), []any{domain, after, s.d.timeArg(cutoff)}, func(sc func(...any) error) error {
+	err := s.eachRow(ctx, q+s.limit(limit), []any{domain, after, s.d.timeArg(cutoff), false}, func(sc func(...any) error) error {
 		var id string
 		if err := sc(&id); err != nil {
 			return err
@@ -221,9 +217,8 @@ func (s *Store) DeleteBuild(ctx context.Context, id string, cutoff time.Time) (b
 	deleted := false
 	err := s.tx(ctx, nil, func(t *Tx) error {
 		deleted = false
-		res, err := t.exec(ctx, "DELETE FROM builds WHERE id = ? AND used_at < ? AND "+
-			"NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = builds.id) AND NOT EXISTS (SELECT 1 FROM builds b WHERE b.id = builds.id AND NOT "+
-			landedCell+")", id, t.s.d.timeArg(cutoff))
+		res, err := t.exec(ctx, "DELETE FROM builds WHERE id = ? AND used_at < ? AND landed = ? AND "+
+			"NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = builds.id)", id, t.s.d.timeArg(cutoff), false)
 		if err != nil {
 			return err
 		}

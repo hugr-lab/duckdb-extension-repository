@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -14,10 +15,6 @@ import (
 )
 
 // Spec 0033: placing builds of the catalogue into a channel, by hand and by the channel's rules.
-
-// ErrNoRule is a placement by hand under a name the channel has no rule for, by a caller who may
-// not write one (a channel administrator sets the name's source first).
-var ErrNoRule = errors.New("release: the channel has no rule for the name; its administrator sets the name's source first")
 
 // placer is the placement pass's actor.
 var placer = authz.Actor{Kind: authz.ActorSystem, ID: "placement"}
@@ -31,8 +28,10 @@ type PlaceOptions struct {
 }
 
 // Place releases a source's builds of a version of name, those the channel serves, into a signed
-// channel, all or none (spec 0033). The caller needs promote on (channel, name); a name the channel
-// has no rule for takes a channel administrator, and the placement writes its rule (manual).
+// channel, all or none (spec 0033). The caller needs promote on (channel, name). A channel
+// administrator may place any checked build of the catalogue, and a name without a rule gets one
+// (manual) first; anyone else only builds of the rule's source that are active or deprecated in a
+// channel where it may publish the name (what a promotion takes), and learns nothing else (404).
 func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, name string, o PlaceOptions) ([]store.Release, bool, error) {
 	kind, err := s.Store.ReservedFor(ctx, tenant, name) // spec 0030: DuckDB's, the tenant's, its upstreams'
 	if err != nil {
@@ -45,6 +44,13 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 	if o.Source == "" || o.Version == "" {
 		return nil, false, fmt.Errorf("%w: source and version are required", store.ErrInvalid)
 	}
+	admin := true
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel}); errors.Is(err, authz.ErrDenied) {
+		admin = false
+	} else if err != nil {
+		return nil, false, err
+	}
+	missing := fmt.Errorf("%w: release", store.ErrNotFound) // what a non-administrator learns
 	sc, err := s.Store.GetServeChannel(ctx, tenant, channel)
 	if err != nil {
 		return nil, false, err
@@ -57,29 +63,35 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 		return nil, false, err
 	}
 	src, err := s.Store.ResolveSource(ctx, ch.TenantID, o.Source)
-	if errors.Is(err, store.ErrNoSource) {
+	switch {
+	case errors.Is(err, store.ErrNoSource) && !admin:
+		return nil, false, missing
+	case errors.Is(err, store.ErrNoSource):
 		return nil, false, fmt.Errorf("%w: %q is not a source of the tenant (tenant, upstream:<an upstream>, publisher:<a publisher>)",
 			store.ErrInvalid, o.Source)
-	}
-	if err != nil {
+	case err != nil:
 		return nil, false, err
 	}
 	rules, err := s.Store.ChannelSources(ctx, ch.ID)
 	if err != nil {
 		return nil, false, err
 	}
-	if _, ok := rules[name]; !ok {
-		// the first arrival writes the name's rule: a channel administrator's choice (spec 0033)
-		if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel}); err != nil {
-			if errors.Is(err, authz.ErrDenied) {
-				return nil, false, ErrNoRule
-			}
-			return nil, false, err
-		}
+	if _, ok := rules[name]; !ok && !admin {
+		return nil, false, missing
 	}
 	builds, err := s.Store.SourceBuilds(ctx, ch.TenantID, src, name)
 	if err != nil {
 		return nil, false, err
+	}
+	purged, err := s.Store.PurgedBuilds(ctx, ch.TenantID, src, name)
+	if err != nil {
+		return nil, false, err
+	}
+	var placed map[string][]store.Placed
+	if !admin { // what a promotion takes: a release the caller may publish from
+		if placed, err = s.Store.BuildPlacements(ctx, ch.TenantID, src, name); err != nil {
+			return nil, false, err
+		}
 	}
 	capis, err := s.Store.ChannelCAPIs(ctx, ch.ID)
 	if err != nil {
@@ -87,7 +99,10 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 	}
 	var items []item
 	for _, b := range builds {
-		if b.ExtVersion != o.Version || servable(capis, b) != nil {
+		if b.ExtVersion != o.Version || servable(capis, b) != nil || purged[b.ID] {
+			continue
+		}
+		if !admin && !s.mayTake(ctx, a, tenant, name, kind != "", placed[b.ID]) {
 			continue
 		}
 		if !b.Checked {
@@ -101,14 +116,45 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 		items = append(items, it)
 	}
 	if len(items) == 0 {
+		if !admin {
+			return nil, false, missing
+		}
 		return nil, false, fmt.Errorf("%w: no build of %s %s from %s that the channel serves", store.ErrNotFound, name, o.Version, o.Source)
+	}
+	if _, ok := rules[name]; !ok { // an administrator's placement chooses the source: a manual rule
+		if err := s.Store.InTx(ctx, lockKey(ch.ID), func(tx *store.Tx) error {
+			if _, had, err := tx.ChannelSourceOf(ctx, ch.ID, name); err != nil || had {
+				return err
+			}
+			if _, err := tx.SetChannelRule(ctx, ch.ID, name, src, store.RuleManual, a.String()); err != nil {
+				return err
+			}
+			return tx.Event(ctx, ch.TenantID, a.String(), "source.set", "channel:"+ch.Name+"/ext:"+name,
+				map[string]any{"name": name, "source": o.Source, "before": "", "arrival": false, "mode": store.RuleManual})
+		}); err != nil {
+			return nil, false, err
+		}
 	}
 	return s.insert(ctx, a, ch.ID, items, placeEvent(ctx, name, o.Source, "hand"))
 }
 
+// mayTake reports whether a caller may take a build by hand without administering the channel: it
+// is active or deprecated in a channel where the caller may publish the name.
+func (s *Service) mayTake(ctx context.Context, a authz.Actor, tenant, name string, reserved bool, placed []store.Placed) bool {
+	for _, p := range placed {
+		if p.State != store.ReleaseActive && p.State != store.ReleaseDeprecated {
+			continue
+		}
+		if s.Authz.Allow(ctx, a, authz.VerbPublish, authz.Resource{Tenant: tenant, Channel: p.Channel, Extension: name, Reserved: reserved}) == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // placement is the item that places a catalogue build of a tenant (by name): as its arrival made its
-// release (its visibility, narrowed as a private upstream's credential allows now; its provenance),
-// with who placed it and how.
+// release (its origin and original signature for a mirrored build, its visibility narrowed as a
+// private upstream's credential allows now, its provenance), with who placed it and how.
 func (s *Service) placement(tenant string, b store.Build, source string, a authz.Actor, how string, private bool) item {
 	vis := b.Visibility
 	cr := CredentialOf(store.Release{Origin: store.OriginPlacement, Provenance: b.Provenance})
@@ -124,7 +170,11 @@ func (s *Service) placement(tenant string, b store.Build, source string, a authz
 	if err != nil || len(prov) > 4000 {
 		prov, _ = json.Marshal(map[string]string{"placed_by": a.String(), "placed": how, "credential": cr})
 	}
-	return item{b: b, visibility: vis, origin: store.OriginPlacement, provenance: string(prov), source: source}
+	it := item{b: b, visibility: vis, origin: store.OriginPlacement, provenance: string(prov), source: source}
+	if b.Origin == store.OriginUpstream { // a mirror's build stays its mirror's (licences, usage, bundles)
+		it.origin, it.originSignature = store.OriginUpstream, b.OriginSignature
+	}
+	return it
 }
 
 func placeEvent(ctx context.Context, name, source, how string) eventFn {
@@ -138,13 +188,98 @@ func placeEvent(ctx context.Context, name, source, how string) eventFn {
 	}
 }
 
-// PlaceRule places what a channel's rule takes (spec 0033): for an auto rule, per cell (platform,
-// and DuckDB version or C API major) the newest build of its source the channel serves when it is
-// newer than every release of the source there; for both modes, a build of a version the channel
-// holds (an active or deprecated release of the source) in a cell it lacks. Never a build whose
-// version a cell has or had (a yanked or purged one stays out). Each build is placed on its own; it
-// returns how many were placed and the first failure's text ("" for none).
-func (s *Service) PlaceRule(ctx context.Context, r store.DueRule) (int, string, error) {
+// cell is a platform and a DuckDB version of a channel.
+type cell struct{ platform, version string }
+
+// served is what a source's releases of a name serve in a channel, per cell: the newest version any
+// release has or had (any state), the newest active one, and per version whether it is active
+// (held) and the narrowest visibility of its active releases.
+type served struct {
+	had          map[[3]string]bool // (version, platform, slot)
+	newest, live map[cell]string
+	held         map[string]bool
+	private      map[string]bool
+	capis        map[string][]store.CAPI
+}
+
+func newServed(cands []store.Candidate, capis map[string][]store.CAPI) served {
+	s := served{had: map[[3]string]bool{}, newest: map[cell]string{}, live: map[cell]string{}, held: map[string]bool{},
+		private: map[string]bool{}, capis: capis}
+	for i := range cands {
+		c := &cands[i]
+		s.had[[3]string{c.ExtVersion, c.Platform, c.Slot}] = true
+		for v := range capis {
+			if c.State == store.ReleasePurged && c.ABI != store.ABICStruct && c.Slot == v || Serves(c, v, capis) {
+				k := cell{c.Platform, v}
+				if cur, ok := s.newest[k]; !ok || CompareVersions(c.ExtVersion, cur) > 0 {
+					s.newest[k] = c.ExtVersion
+				}
+				if c.State == store.ReleaseActive {
+					if cur, ok := s.live[k]; !ok || CompareVersions(c.ExtVersion, cur) > 0 {
+						s.live[k] = c.ExtVersion
+					}
+				}
+			}
+		}
+		if c.State == store.ReleaseActive {
+			s.held[c.ExtVersion] = true
+			s.private[c.ExtVersion] = s.private[c.ExtVersion] || c.Visibility == store.Private
+		}
+	}
+	return s
+}
+
+// cells are the channel's cells a build serves.
+func (s served) cells(b store.Build) []cell {
+	c := &store.Candidate{Release: store.Release{Platform: b.Platform}, ABI: b.ABI, DuckDBVersion: b.DuckDBVersion, CAPI: b.CAPI}
+	var out []cell
+	for v := range s.capis {
+		if Serves(c, v, s.capis) {
+			out = append(out, cell{b.Platform, v})
+		}
+	}
+	return out
+}
+
+// newer reports whether version is newer than what every cell has or had (live: what it serves).
+func newer(version string, cells []cell, by map[cell]string) bool {
+	for _, k := range cells {
+		if v, ok := by[k]; ok && CompareVersions(version, v) <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// overlap reports whether two builds serve a cell in common.
+func overlap(a, b []cell) bool {
+	for _, x := range a {
+		if slices.Contains(b, x) {
+			return true
+		}
+	}
+	return false
+}
+
+// complete adjusts an item that completes a held version (spec 0033): not current where a newer
+// version serves one of its cells, and private where the version is private in the channel.
+func (s served) complete(it *item) {
+	if !newer(it.b.ExtVersion, s.cells(it.b), s.live) {
+		it.notCurrent = true
+	}
+	if s.private[it.b.ExtVersion] {
+		it.visibility = store.Private
+	}
+}
+
+// PlaceRule places what a channel's rule takes (spec 0033): for an auto rule, per cell the newest
+// build of its source the channel serves when it is newer than every version the cells it serves
+// have or had; for both modes, a build of a version the channel holds (an active release of the
+// source) in a slot it lacks, not current where a newer version serves and private where the version
+// is. Never a build whose slot has or had the version (a yanked or purged one stays out), nor one
+// purged for good. Each build is placed on its own, renewing the caller's lease first; it returns how
+// many were placed and the first failure's text ("" for none).
+func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, error) {
 	builds, err := s.Store.SourceBuilds(ctx, r.TenantID, r.Source, r.Name)
 	if err != nil || len(builds) == 0 {
 		return 0, "", err
@@ -157,6 +292,10 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule) (int, string, 
 	if err != nil {
 		return 0, "", err
 	}
+	purged, err := s.Store.PurgedBuilds(ctx, r.TenantID, r.Source, r.Name)
+	if err != nil {
+		return 0, "", err
+	}
 	var cands []store.Candidate
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
@@ -165,62 +304,64 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule) (int, string, 
 	}); err != nil {
 		return 0, "", err
 	}
-	type cell struct{ platform, slot string }
-	had := map[[3]string]bool{} // (version, platform, slot) a release has or had
-	newest := map[cell]string{} // the newest version a cell has or had
-	held := map[string]bool{}   // versions the channel holds
-	for _, c := range cands {
-		k := cell{c.Platform, c.Slot}
-		had[[3]string{c.ExtVersion, c.Platform, c.Slot}] = true
-		if v, ok := newest[k]; !ok || CompareVersions(c.ExtVersion, v) > 0 {
-			newest[k] = c.ExtVersion
-		}
-		if c.State == store.ReleaseActive || c.State == store.ReleaseDeprecated {
-			held[c.ExtVersion] = true
-		}
+	label, err := s.Store.SourceLabel(ctx, r.Source)
+	if err != nil {
+		return 0, "", err
 	}
-	pick := map[[3]string]store.Build{}
-	best := map[cell]store.Build{}
+	sv := newServed(cands, capis)
+	var items []item
+	best := map[[2]string]store.Build{} // (platform, slot) → the newest new version
 	for _, b := range builds {
-		k := cell{b.Platform, b.Slot()}
-		if !b.Checked || servable(capis, b) != nil || had[[3]string{b.ExtVersion, k.platform, k.slot}] {
+		if !b.Checked || servable(capis, b) != nil || purged[b.ID] || sv.had[[3]string{b.ExtVersion, b.Platform, b.Slot()}] {
 			continue
 		}
-		if held[b.ExtVersion] {
-			pick[[3]string{b.ExtVersion, k.platform, k.slot}] = b
+		if sv.held[b.ExtVersion] {
+			it := s.placement(tn.Name, b, r.Source, placer, r.Mode, false)
+			sv.complete(&it)
+			items = append(items, it)
 			continue
 		}
-		if r.Mode != store.RuleAuto {
+		if r.Mode != store.RuleAuto || !newer(b.ExtVersion, sv.cells(b), sv.newest) {
 			continue
 		}
-		if v, ok := newest[k]; ok && CompareVersions(b.ExtVersion, v) <= 0 {
-			continue
-		}
+		k := [2]string{b.Platform, b.Slot()}
 		if cur, ok := best[k]; !ok || CompareVersions(b.ExtVersion, cur.ExtVersion) > 0 {
 			best[k] = b
 		}
 	}
+	// a new version is placed only where no newer one placed with it serves the same cell (a C API
+	// build serves the DuckDB versions an exact-version build of another slot does)
 	for k, b := range best {
-		pick[[3]string{b.ExtVersion, k.platform, k.slot}] = b
-	}
-	keys := make([][3]string, 0, len(pick))
-	for k := range pick {
-		keys = append(keys, k)
+		cells := sv.cells(b)
+		shadowed := false
+		for k2, o := range best {
+			if k2 != k && CompareVersions(o.ExtVersion, b.ExtVersion) > 0 && overlap(cells, sv.cells(o)) {
+				shadowed = true
+				break
+			}
+		}
+		if !shadowed {
+			items = append(items, s.placement(tn.Name, b, r.Source, placer, r.Mode, false))
+		}
 	}
 	// oldest version first, so the newest placed is current
-	slices.SortFunc(keys, func(x, y [3]string) int {
-		if c := CompareVersions(x[0], y[0]); c != 0 {
+	slices.SortFunc(items, func(x, y item) int {
+		if c := CompareVersions(x.b.ExtVersion, y.b.ExtVersion); c != 0 {
 			return c
 		}
-		return slices.Compare(x[1:], y[1:])
+		return strings.Compare(x.b.Platform+"/"+x.b.Slot(), y.b.Platform+"/"+y.b.Slot())
 	})
 	placed, failure := 0, ""
-	for _, k := range keys {
-		it := s.placement(tn.Name, pick[k], r.Source, placer, r.Mode, false)
-		_, existed, err := s.insert(ctx, placer, r.ChannelID, []item{it}, placeEvent(ctx, r.Name, r.Source, r.Mode))
+	for _, it := range items {
+		if renew != nil {
+			if err := renew(ctx); err != nil {
+				return placed, failure, err
+			}
+		}
+		_, existed, err := s.insert(ctx, placer, r.ChannelID, []item{it}, placeEvent(ctx, r.Name, label, r.Mode))
 		switch {
 		case err != nil && failure == "":
-			failure = fmt.Sprintf("%s %s %s: %v", k[0], k[1], k[2], err)
+			failure = fmt.Sprintf("%s %s %s: %v", it.b.ExtVersion, it.b.Platform, it.b.Slot(), err)
 		case err == nil && !existed:
 			placed++
 		}
@@ -238,6 +379,8 @@ type Placer struct {
 	SweepEvery time.Duration
 	Log        *slog.Logger
 }
+
+var errLeaseLost = errors.New("release: the placement lease was lost")
 
 // placeSkew is how far back the pass's look starts: a build whose transaction began before a look
 // and committed after it is still found by the next.
@@ -304,15 +447,26 @@ func (p *Placer) channel(ctx context.Context, rules []store.DueRule) {
 			return // the lease was lost: another replica goes on
 		}
 		start := p.Service.Store.Now()
-		placed, failure, err := p.Service.PlaceRule(ctx, r)
+		renew := func(ctx context.Context) error {
+			if ok, err := p.Service.Store.AcquireLease(ctx, lease, p.Holder, 2*time.Minute); err != nil || !ok {
+				return errLeaseLost
+			}
+			return nil
+		}
+		placed, failure, err := p.Service.PlaceRule(ctx, r, renew)
+		if errors.Is(err, errLeaseLost) {
+			return // another replica goes on
+		}
 		if err != nil {
 			p.Log.Error("release: placing a rule's builds", "channel", r.ChannelID, "name", r.Name, "error", err)
-			continue
+			if failure == "" {
+				failure = err.Error()
+			}
 		}
 		if placed > 0 {
 			p.Log.Info("release: placed a rule's builds", "channel", r.ChannelID, "name", r.Name, "placed", placed)
 		}
-		if err := p.Service.Store.SetRuleChecked(ctx, r.ChannelID, r.Name, r.Source, start.Add(-placeSkew), failure); err != nil {
+		if err := p.Service.Store.SetRuleChecked(ctx, r, start, start.Add(-placeSkew), failure); err != nil {
 			p.Log.Error("release: recording a rule's look", "channel", r.ChannelID, "name", r.Name, "error", err)
 		}
 	}

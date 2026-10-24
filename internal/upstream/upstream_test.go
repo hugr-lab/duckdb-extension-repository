@@ -1292,7 +1292,7 @@ func TestUpstreamManualLands(t *testing.T) {
 			t.Fatalf("the first run: %+v", r)
 		}
 		v, err := en.rel.Source(ctx, admin, "acme", "prod", "acl")
-		if err != nil || v.Mode != store.RuleAuto {
+		if err != nil || v.Mode != store.RuleNone {
 			t.Fatalf("the rule the mirror's arrival wrote: %+v %v", v, err)
 		}
 		if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "acl", v.Source, store.RuleManual); err != nil {
@@ -1314,7 +1314,9 @@ func TestUpstreamManualLands(t *testing.T) {
 			t.Fatalf("a landed build collectable: %v %v", dead, err)
 		}
 		rs, _, err := en.rel.Place(ctx, admin, "acme", "prod", "acl", release.PlaceOptions{Source: v.Source, Version: "2.0"})
-		if err != nil || len(rs) != 1 || rs[0].Origin != store.OriginPlacement {
+		// a mirror's build placed stays its mirror's: origin upstream, its original signature
+		if err != nil || len(rs) != 1 || rs[0].Origin != store.OriginUpstream || len(rs[0].OriginSignature) != 256 ||
+			!strings.Contains(rs[0].Provenance, `"placed":"hand"`) {
 			t.Fatalf("placed by hand: %+v %v", rs, err)
 		}
 		if r := en.sync(t, false); r.Counts[store.CellUnchanged] != 1 {

@@ -1,7 +1,6 @@
 package release
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -136,9 +135,12 @@ func (s *Service) SetSource(ctx context.Context, a authz.Actor, tenant, channel,
 		if err := store.ValidRuleMode(mode); err != nil {
 			return SourceView{}, err
 		}
+		if ch.Kind != store.ChannelSigned {
+			return SourceView{}, fmt.Errorf("%w: a %s channel's rules take no mode: its mirrors fill it", store.ErrInvalid, ch.Kind)
+		}
 	}
 	if label == store.SourceTenant && mode == store.RuleAuto {
-		return SourceView{}, fmt.Errorf("%w: the tenant's own source is everyone who may publish in it: its rules are manual", store.ErrInvalid)
+		return SourceView{}, fmt.Errorf("%w: the tenant's own source is everyone who may publish in it: its rules are not automatic", store.ErrInvalid)
 	}
 	src, err := s.Store.ResolveSource(ctx, ch.TenantID, label)
 	if errors.Is(err, store.ErrNoSource) {
@@ -158,16 +160,20 @@ func (s *Service) SetSource(ctx context.Context, a authz.Actor, tenant, channel,
 		} else if strings.HasSuffix(label, "(removed)") {
 			return fmt.Errorf("%w: %q was removed", store.ErrInvalid, label)
 		}
-		if src == store.SourceTenant && mode == "" {
-			mode = store.RuleManual // a rule turned to the tenant is manual
+		if src == store.SourceTenant && mode == store.RuleNone {
+			if cur, _, err := tx.ChannelSourceOf(ctx, ch.ID, name); err != nil {
+				return err
+			} else if cur.Mode == store.RuleAuto {
+				mode = store.RuleManual // a rule turned to the tenant is never automatic
+			}
 		}
 		prior, err := tx.SetChannelRule(ctx, ch.ID, name, src, mode, a.String())
 		if err != nil {
 			return err
 		}
 		after := mode
-		if after == "" {
-			after = cmp.Or(prior.Mode, store.RuleManual)
+		if after == store.RuleNone {
+			after = prior.Mode
 		}
 		if prior.Source == src && prior.Mode == after {
 			return nil

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -100,10 +99,6 @@ func (h *Handler) placeRelease(w http.ResponseWriter, r *http.Request, c caller,
 	o.NotCurrent = in.Current != nil && !*in.Current
 	a, _ := c.actor()
 	rels, existed, err := h.o.Releases.Place(r.Context(), a, p["t"], p["c"], p["ext"], o)
-	if errors.Is(err, release.ErrNoRule) {
-		problem(w, http.StatusConflict, typeSource, publicRefusal(err))
-		return
-	}
 	if err != nil {
 		h.publishErr(w, err, false)
 		return

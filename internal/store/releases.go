@@ -372,7 +372,12 @@ publisher_statement, publisher_signature, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?
 	if t.s.d.foreignKey(err) { // the channel is never deleted: the Build was collected (spec 0016)
 		return fmt.Errorf("%w: %s", ErrBuildGone, r.BuildID)
 	}
-	return t.s.mapErr(err, "release")
+	if err != nil {
+		return t.s.mapErr(err, "release")
+	}
+	// a landed build is the release's now (spec 0033): the release keeps it from the collector
+	_, err = t.exec(ctx, "UPDATE builds SET landed = ? WHERE id = ? AND landed = ?", false, r.BuildID, true)
+	return err
 }
 
 // SetReleaseState changes a release's state (compare-and-set).
@@ -391,8 +396,14 @@ func (t *Tx) SetReleaseSeq(ctx context.Context, r *Release, seq int64, actor str
 		func() { r.Seq, r.StateChangedAt, r.StateChangedBy = seq, now, actor; r.Version++ })
 }
 
-// SetReleaseVisibility changes a release's visibility (compare-and-set).
+// SetReleaseVisibility changes a release's visibility (compare-and-set). Making it private makes its
+// build private too (spec 0033): no placement serves it publicly again.
 func (t *Tx) SetReleaseVisibility(ctx context.Context, r *Release, visibility, actor string) error {
+	if visibility == Private {
+		if err := t.NarrowBuild(ctx, r.BuildID); err != nil {
+			return err
+		}
+	}
 	now := t.Now()
 	return t.cas(ctx, "UPDATE releases SET visibility = ?, state_changed_at = ?, state_changed_by = ?, version = version + 1 WHERE id = ? AND version = ?",
 		[]any{visibility, t.s.d.timeArg(now), actor, r.ID, r.Version},

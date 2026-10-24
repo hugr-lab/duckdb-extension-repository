@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -14,13 +15,14 @@ type DueRule struct {
 	TenantID, ChannelID, Name, Source, Mode string
 }
 
-// DueRules lists the rules of signed channels of active tenants that the placement pass should
-// look at: every one (sweep), or those whose source has a build of the name made since the pass
-// last looked (or never looked).
+// DueRules lists the rules with a mode, of signed channels of active tenants, that the placement
+// pass should look at: every one (sweep), or those whose source has a build of the name made since
+// the pass last looked (or never looked). A rule of the tenant's own source is never the pass's: it
+// is everyone who may publish in the tenant.
 func (s *Store) DueRules(ctx context.Context, sweep bool) ([]DueRule, error) {
 	q := `SELECT c.tenant_id, cs.channel_id, cs.name, cs.source, cs.mode FROM channel_sources cs
 JOIN channels c ON c.id = cs.channel_id JOIN tenants t ON t.id = c.tenant_id
-WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL`
+WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL AND cs.mode IN ('auto', 'manual') AND cs.source <> 'tenant'`
 	if !sweep {
 		q += ` AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = c.tenant_id AND b.source = cs.source AND b.name = cs.name
 	AND (cs.checked_at IS NULL OR b.created_at > cs.checked_at))`
@@ -96,24 +98,59 @@ func (t *Tx) SourceReleases(ctx context.Context, channelID, source, name string)
 	return out, purged.Err()
 }
 
-// SetRuleChecked records the placement pass's look at a rule: when (builds made after it are looked
-// at next time) and its outcome ("" for none). A rule whose source changed since is left alone.
-func (s *Store) SetRuleChecked(ctx context.Context, channelID, name, source string, at time.Time, outcome string) error {
+// SetRuleChecked records the placement pass's look at a rule, begun at start: when (builds made
+// after it are looked at next time) and its outcome ("" for none). A rule changed since the look
+// began (its source, its mode) is left alone, to be looked at again.
+func (s *Store) SetRuleChecked(ctx context.Context, r DueRule, start, at time.Time, outcome string) error {
 	if len(outcome) > 400 {
-		outcome = outcome[:400]
+		outcome = strings.ToValidUTF8(outcome[:400], "")
 	}
 	return s.InTx(ctx, "", func(tx *Tx) error {
 		var o, oat any
 		if outcome != "" {
 			o, oat = outcome, tx.s.d.timeArg(tx.Now())
 		}
-		_, err := tx.exec(ctx, "UPDATE channel_sources SET checked_at = ?, outcome = ?, outcome_at = ? WHERE channel_id = ? AND name = ? AND source = ?",
-			tx.s.d.timeArg(at), o, oat, channelID, name, source)
+		_, err := tx.exec(ctx, `UPDATE channel_sources SET checked_at = ?, outcome = ?, outcome_at = ?
+WHERE channel_id = ? AND name = ? AND source = ? AND mode = ? AND set_at <= ?`,
+			tx.s.d.timeArg(at), o, oat, r.ChannelID, r.Name, r.Source, r.Mode, tx.s.d.timeArg(start))
 		return err
 	})
 }
 
-// ValidRuleMode says whether m is a rule mode.
+// PurgedBuilds are a tenant's builds of a name from a source that are released nowhere and whose
+// body a purge took out of some channel (spec 0016: for good): never placed again.
+func (s *Store) PurgedBuilds(ctx context.Context, tenantID, source, name string) (map[string]bool, error) {
+	out := map[string]bool{}
+	err := s.eachRow(ctx, `SELECT b.id FROM builds b WHERE b.tenant_id = ? AND b.source = ? AND b.name = ?
+AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)
+AND EXISTS (SELECT 1 FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = b.tenant_id AND p.name = b.name
+	AND p.ext_version = b.ext_version AND p.body_hash = b.body_hash AND p.source IN (b.source, '*'))`, []any{tenantID, source, name},
+		func(sc func(...any) error) error {
+			var id string
+			if err := sc(&id); err != nil {
+				return err
+			}
+			out[id] = true
+			return nil
+		})
+	return out, err
+}
+
+// SetLanded marks a build landed in the catalogue without a release (spec 0033), kept from the
+// collector until a release takes it; one with a release is left as it is.
+func (t *Tx) SetLanded(ctx context.Context, buildID string) error {
+	_, err := t.exec(ctx, "UPDATE builds SET landed = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = builds.id)", true, buildID)
+	return err
+}
+
+// NarrowBuild makes a build private (spec 0033): a release of it an administrator made private, so
+// no placement serves it publicly again.
+func (t *Tx) NarrowBuild(ctx context.Context, buildID string) error {
+	_, err := t.exec(ctx, "UPDATE builds SET visibility = ? WHERE id = ?", Private, buildID)
+	return err
+}
+
+// ValidRuleMode says whether m is a mode an administrator sets.
 func ValidRuleMode(m string) error {
 	if m != RuleAuto && m != RuleManual {
 		return fmt.Errorf("%w: a rule's mode is auto or manual", ErrInvalid)

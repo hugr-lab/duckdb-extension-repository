@@ -443,7 +443,7 @@ func TestCoverage(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		n, failure, err := en.rel.PlaceRule(rctx, store.DueRule{TenantID: prod.TenantID, ChannelID: prod.ID, Name: "acl", Source: "tenant", Mode: "auto"})
+		n, failure, err := en.rel.PlaceRule(rctx, store.DueRule{TenantID: prod.TenantID, ChannelID: prod.ID, Name: "acl", Source: "tenant", Mode: "auto"}, nil)
 		if err == nil && (n != 1 || failure != "") {
 			err = fmt.Errorf("placed %d: %s", n, failure)
 		}

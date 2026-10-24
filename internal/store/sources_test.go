@@ -232,8 +232,8 @@ func TestMigrationBuildSources(t *testing.T) {
 	})
 }
 
-// Migration 0035 (spec 0033) gives rules their modes, an upstream's names in its own channel auto and
-// every other rule manual, and builds the visibility and provenance their first release came with.
+// Migration 0035 (spec 0033) gives rules a mode, none (an administrator sets one), and builds the
+// visibility and provenance their first release came with.
 func TestMigrationRuleModes(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Fresh(t, 1)[0]
@@ -270,11 +270,11 @@ func TestMigrationRuleModes(t *testing.T) {
 			t.Fatal(err)
 		}
 		prod, err := s.ChannelSources(ctx, id("c"))
-		if err != nil || prod["acl"].Mode != store.RuleAuto || prod["tresor"].Mode != store.RuleManual {
+		if err != nil || prod["acl"].Mode != store.RuleNone || prod["tresor"].Mode != store.RuleNone {
 			t.Fatalf("prod's rules: %+v %v", prod, err)
 		}
 		staging, err := s.ChannelSources(ctx, id("d"))
-		if err != nil || staging["acl"].Mode != store.RuleManual {
+		if err != nil || staging["acl"].Mode != store.RuleNone {
 			t.Fatalf("staging's rules: %+v %v", staging, err)
 		}
 		bs, err := s.SourceBuilds(ctx, tid, up, "acl")
