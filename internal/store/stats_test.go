@@ -18,19 +18,19 @@ func TestStatistics(t *testing.T) {
 		tn, ch := fixture(t, s)
 		now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 		s.Now = func() time.Time { return now }
-		k := store.DownloadKey{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Platform: "linux_amd64",
+		k := store.DownloadKey{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", PackageVersion: "1.0", Platform: "linux_amd64",
 			DuckDBVersion: "v2.0.0", Day: "2026-10-09", Authenticated: true}
 		anon := k
 		anon.Authenticated = false
 		old := k
-		old.Day, old.ExtVersion = "2026-09-01", "0.9"
+		old.Day, old.PackageVersion = "2026-09-01", "0.9"
 		for range 2 { // added, then added to
 			if _, err := s.AddDownloadCounts(ctx, map[store.DownloadKey]int64{k: 3, anon: 1, old: 5}); err != nil {
 				t.Fatal(err)
 			}
 		}
 		if err := s.PutDaily(ctx, "2026-10-09", store.Daily{Installers: map[store.InstallerKey]int64{
-			{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Platform: "linux_amd64"}: 2}}); err != nil {
+			{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", PackageVersion: "1.0", Platform: "linux_amd64"}: 2}}); err != nil {
 			t.Fatal(err)
 		}
 		if done, err := s.StatisticsDayDone(ctx, "2026-10-09"); err != nil || !done {
@@ -55,7 +55,7 @@ func TestStatistics(t *testing.T) {
 		}
 		rs, err := s.ReleaseStats(ctx, tn.ID, "2026-10-09", store.StatsFilter{Name: "acl"})
 		if err != nil || len(rs) != 2 || rs[1].Last7 != 8 || rs[1].Last30 != 8 || rs[1].LastDay != "2026-10-09" ||
-			rs[0].ExtVersion != "0.9" || rs[0].Last30 != 0 || rs[0].LastDay != "2026-09-01" {
+			rs[0].PackageVersion != "0.9" || rs[0].Last30 != 0 || rs[0].LastDay != "2026-09-01" {
 			t.Fatalf("release stats (0.9's last download is older than 30 days): %+v %v", rs, err)
 		}
 		// keep: a caller's scope; the limit counts kept rows only
@@ -93,7 +93,7 @@ func TestDownloadCountsConcurrent(t *testing.T) {
 		tn, ch := fixture(t, s)
 		counts := map[store.DownloadKey]int64{}
 		for i := range 50 {
-			counts[store.DownloadKey{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1." + strconv.Itoa(i),
+			counts[store.DownloadKey{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", PackageVersion: "1." + strconv.Itoa(i),
 				Platform: "linux_amd64", DuckDBVersion: "v2.0.0", Day: "2026-10-09"}] = 1
 		}
 		var wg sync.WaitGroup
@@ -178,7 +178,7 @@ func TestUsageStatistics(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Open(t)
 		tn, ch := fixture(t, s)
-		k := store.UsageKey{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Event: "attach", Status: "valid",
+		k := store.UsageKey{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", PackageVersion: "1.0", Event: "attach", Status: "valid",
 			Day: "2026-10-09", Authenticated: true}
 		ctr := k
 		ctr.Counter = "sources"
@@ -196,7 +196,7 @@ func TestUsageStatistics(t *testing.T) {
 		}
 		wg.Wait()
 		users := func(n int64) store.Daily {
-			return store.Daily{Users: map[store.UsageUserKey]int64{{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Day: "2026-10-09"}: n}}
+			return store.Daily{Users: map[store.UsageUserKey]int64{{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", PackageVersion: "1.0", Day: "2026-10-09"}: n}}
 		}
 		for _, n := range []int64{4, 2} { // a pass interrupted, then done: replaced
 			if err := s.PutDaily(ctx, "2026-10-09", users(n)); err != nil {
@@ -264,8 +264,8 @@ func TestUsageReceived(t *testing.T) {
 		s := e.Open(t)
 		tn, ch := fixture(t, s)
 		const day = "2026-10-09"
-		a := []store.ReceivedRow{{Name: "acl", ExtVersion: "1.0", Users: 6}, {Name: "acl", ExtVersion: "1.0", Event: "load", Value: 3}}
-		b := []store.ReceivedRow{{Name: "tresor", ExtVersion: "2.0", Event: "load", Value: 5}}
+		a := []store.ReceivedRow{{Name: "acl", PackageVersion: "1.0", Users: 6}, {Name: "acl", PackageVersion: "1.0", Event: "load", Value: 3}}
+		b := []store.ReceivedRow{{Name: "tresor", PackageVersion: "2.0", Event: "load", Value: 5}}
 		put := func(sender string, first bool, rows ...[]store.ReceivedRow) {
 			t.Helper()
 			if err := s.PutReceived(ctx, tn.ID, ch.ID, sender, day, first, slices.Concat(rows...)); err != nil {
@@ -295,7 +295,7 @@ func TestUsageReceived(t *testing.T) {
 			t.Fatalf("two senders: %v", got)
 		}
 		// part 2 of s1 carries tresor again: replaced; acl from part 1 stays
-		put("s1", false, []store.ReceivedRow{{Name: "tresor", ExtVersion: "2.0", Event: "load", Value: 7}})
+		put("s1", false, []store.ReceivedRow{{Name: "tresor", PackageVersion: "2.0", Event: "load", Value: 7}})
 		if got := read(); got["tresor load"] != 7 || got["acl load"] != 6 {
 			t.Fatalf("a later part: %v", got)
 		}

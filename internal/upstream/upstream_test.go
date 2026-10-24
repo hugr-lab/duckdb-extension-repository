@@ -417,7 +417,7 @@ func TestMirror(t *testing.T) {
 			t.Fatalf("a new version: %+v", r)
 		}
 		rs := en.releases(t, "tresor")
-		if len(rs) != 2 || rs[0].ExtVersion != "1.1" || rs[0].Seq <= rel.Seq {
+		if len(rs) != 2 || rs[0].PackageVersion != "1.1" || rs[0].Seq <= rel.Seq {
 			t.Fatalf("the new version: %+v", rs)
 		}
 		// events (spec 0010): each release made, each run summarised, a cell turning into a refusal
@@ -821,8 +821,8 @@ func TestCStructOrder(t *testing.T) {
 				cur = x
 			}
 		}
-		if cur.ExtVersion != "1.1" {
-			t.Fatalf("the current release is %s", cur.ExtVersion)
+		if cur.PackageVersion != "1.1" {
+			t.Fatalf("the current release is %s", cur.PackageVersion)
 		}
 		// a removed platform's and entry's cells go with the next run
 		if err := en.up.RemoveEntry(ctx, admin, "acme", "acme-repo", "capx"); err != nil {
@@ -1306,7 +1306,7 @@ func TestUpstreamManualLands(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rs, err := en.st.ListReleases(ctx, ch.ID, "acl"); err != nil || len(rs) != 1 || rs[0].ExtVersion != "1.0" {
+		if rs, err := en.st.ListReleases(ctx, ch.ID, "acl"); err != nil || len(rs) != 1 || rs[0].PackageVersion != "1.0" {
 			t.Fatalf("placed under a manual rule: %+v %v", rs, err)
 		}
 		dead, err := en.st.DeadBuilds(ctx, "default", time.Now().Add(time.Hour), "", 100)

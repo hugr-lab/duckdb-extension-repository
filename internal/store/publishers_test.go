@@ -33,7 +33,7 @@ func TestPublishers(t *testing.T) {
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertPublisherKey(ctx, &k) })
 		// a publisher grant: no issuer, publish and promote only
 		g := store.Grant{TenantID: tn.ID, Kind: store.PrincipalPublisher, PublisherID: p.ID, ChannelID: ch.ID,
-			Extension: "acl", Verbs: []string{"publish"}, CreatedBy: "os:1:t"}
+			Package: "acl", Verbs: []string{"publish"}, CreatedBy: "os:1:t"}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertGrant(ctx, &g) })
 		for name, bad := range map[string]store.Grant{
 			"install":        {TenantID: tn.ID, Kind: store.PrincipalPublisher, PublisherID: p.ID, Verbs: []string{"install"}},

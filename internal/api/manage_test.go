@@ -209,7 +209,7 @@ func newMgmt(t *testing.T) *mgmt {
 	for _, g := range []struct{ sub, channel, ext, verb string }{
 		{"ivan", "", "", "install"}, {"eve", "prod", "tresor", "admin"}, {"carl", "prod", "", "admin"}, {"tom", "", "", "admin"},
 	} {
-		if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|"+g.sub, []string{g.verb}, tenants.GrantOn{Channel: g.channel, Extension: g.ext}); err != nil {
+		if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|"+g.sub, []string{g.verb}, tenants.GrantOn{Channel: g.channel, Package: g.ext}); err != nil {
 			t.Fatal(err)
 		}
 	}

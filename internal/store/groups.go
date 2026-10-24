@@ -10,13 +10,13 @@ import (
 	"unicode/utf8"
 )
 
-// Extension groups (spec 0017): named, explicit sets of extension names in a tenant that grants may
-// name. Grants on them live apart from grants, so code that does not know groups never reads one
+// Package groups (spec 0017's extension groups; spec 0034 names them): named, explicit sets of
+// package names in a tenant that grants may name. Grants on them live apart from grants, so code that does not know groups never reads one
 // as a tenant- or channel-wide grant.
 
-// Limits on extension groups.
+// Limits on package groups.
 const (
-	MaxExtensionGroups  = 100
+	MaxPackageGroups    = 100
 	MaxGroupMembers     = 1000  // per group
 	MaxTenantMembers    = 10000 // per tenant, every group
 	MaxGroupDescription = 256   // bytes
@@ -42,8 +42,8 @@ func ValidGroupDescription(d string) error {
 	return nil
 }
 
-// ExtensionGroup is a tenant's extension group. Members and Grants are counts, filled by reads.
-type ExtensionGroup struct {
+// PackageGroup is a tenant's package group (an extension group in the API). Members and Grants are counts, filled by reads.
+type PackageGroup struct {
 	ID, TenantID, Name, Description string
 	Version                         int64
 	Members, Grants                 int
@@ -65,17 +65,17 @@ type GroupSet struct {
 }
 
 const groupCols = `g.id, g.tenant_id, g.name, g.description, g.version, g.created_at, g.created_by,
-(SELECT COUNT(*) FROM extension_group_members m WHERE m.group_id = g.id),
-(SELECT COUNT(*) FROM extension_group_grants x WHERE x.group_id = g.id)`
+(SELECT COUNT(*) FROM package_group_members m WHERE m.group_id = g.id),
+(SELECT COUNT(*) FROM package_group_grants x WHERE x.group_id = g.id)`
 
-func scanGroup(r interface{ Scan(...any) error }) (ExtensionGroup, error) {
-	var g ExtensionGroup
+func scanGroup(r interface{ Scan(...any) error }) (PackageGroup, error) {
+	var g PackageGroup
 	err := r.Scan(&g.ID, &g.TenantID, &g.Name, &g.Description, &g.Version, scanTime{&g.CreatedAt}, &g.CreatedBy, &g.Members, &g.Grants)
 	return g, err
 }
 
-// InsertExtensionGroup adds a group (at most MaxExtensionGroups per tenant).
-func (t *Tx) InsertExtensionGroup(ctx context.Context, g *ExtensionGroup) error {
+// InsertPackageGroup adds a group (at most MaxPackageGroups per tenant).
+func (t *Tx) InsertPackageGroup(ctx context.Context, g *PackageGroup) error {
 	if err := ValidGroupName(g.Name); err != nil {
 		return err
 	}
@@ -86,14 +86,14 @@ func (t *Tx) InsertExtensionGroup(ctx context.Context, g *ExtensionGroup) error 
 		return fmt.Errorf("%w: a value is too long", ErrInvalid)
 	}
 	var n int
-	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM extension_groups WHERE tenant_id = ?", g.TenantID).Scan(&n); err != nil {
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM package_groups WHERE tenant_id = ?", g.TenantID).Scan(&n); err != nil {
 		return err
 	}
-	if n >= MaxExtensionGroups {
-		return fmt.Errorf("%w: a tenant holds at most %d extension groups", ErrInvalid, MaxExtensionGroups)
+	if n >= MaxPackageGroups {
+		return fmt.Errorf("%w: a tenant holds at most %d extension groups", ErrInvalid, MaxPackageGroups)
 	}
 	g.ID, g.CreatedAt, g.Version, g.Members, g.Grants = NewID(), t.Now(), 1, 0, 0
-	_, err := t.exec(ctx, `INSERT INTO extension_groups (id, tenant_id, name, description, version, created_at, created_by)
+	_, err := t.exec(ctx, `INSERT INTO package_groups (id, tenant_id, name, description, version, created_at, created_by)
 VALUES (?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, g.Name, g.Description, g.Version, t.s.d.timeArg(g.CreatedAt), g.CreatedBy)
 	if err := t.s.mapErr(err, "extension group "+g.Name); err != nil {
 		return err
@@ -101,23 +101,23 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, g.Name, g.Description, g.Versio
 	return t.BumpAuth(ctx, g.TenantID)
 }
 
-// GetExtensionGroup reads a tenant's group by name, with its counts.
-func (t *Tx) GetExtensionGroup(ctx context.Context, tenantID, name string) (ExtensionGroup, error) {
-	g, err := scanGroup(t.queryRow(ctx, "SELECT "+groupCols+" FROM extension_groups g WHERE g.tenant_id = ? AND g.name = ?", tenantID, name))
+// GetPackageGroup reads a tenant's group by name, with its counts.
+func (t *Tx) GetPackageGroup(ctx context.Context, tenantID, name string) (PackageGroup, error) {
+	g, err := scanGroup(t.queryRow(ctx, "SELECT "+groupCols+" FROM package_groups g WHERE g.tenant_id = ? AND g.name = ?", tenantID, name))
 	return g, notFound(err, "extension group "+name)
 }
 
-// GetExtensionGroup reads a tenant's group by name, with its counts.
-func (s *Store) GetExtensionGroup(ctx context.Context, tenantID, name string) (ExtensionGroup, error) {
-	g, err := scanGroup(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+groupCols+" FROM extension_groups g WHERE g.tenant_id = ? AND g.name = ?"), tenantID, name))
+// GetPackageGroup reads a tenant's group by name, with its counts.
+func (s *Store) GetPackageGroup(ctx context.Context, tenantID, name string) (PackageGroup, error) {
+	g, err := scanGroup(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+groupCols+" FROM package_groups g WHERE g.tenant_id = ? AND g.name = ?"), tenantID, name))
 	return g, notFound(err, "extension group "+name)
 }
 
-// ListExtensionGroups lists a tenant's groups by name; with extension, those holding that name.
-func (s *Store) ListExtensionGroups(ctx context.Context, tenantID, extension string) ([]ExtensionGroup, error) {
-	q, args := "SELECT "+groupCols+" FROM extension_groups g WHERE g.tenant_id = ?", []any{tenantID}
+// ListPackageGroups lists a tenant's groups by name; with extension, those holding that name.
+func (s *Store) ListPackageGroups(ctx context.Context, tenantID, extension string) ([]PackageGroup, error) {
+	q, args := "SELECT "+groupCols+" FROM package_groups g WHERE g.tenant_id = ?", []any{tenantID}
 	if extension != "" {
-		q += " AND EXISTS (SELECT 1 FROM extension_group_members m WHERE m.group_id = g.id AND m.extension = ?)"
+		q += " AND EXISTS (SELECT 1 FROM package_group_members m WHERE m.group_id = g.id AND m.package = ?)"
 		args = append(args, extension)
 	}
 	rows, err := s.db.QueryContext(ctx, s.d.rebind(q+" ORDER BY g.name"), args...)
@@ -125,7 +125,7 @@ func (s *Store) ListExtensionGroups(ctx context.Context, tenantID, extension str
 		return nil, err
 	}
 	defer rows.Close()
-	var out []ExtensionGroup
+	var out []PackageGroup
 	for rows.Next() {
 		g, err := scanGroup(rows)
 		if err != nil {
@@ -138,7 +138,7 @@ func (s *Store) ListExtensionGroups(ctx context.Context, tenantID, extension str
 
 // SetGroupDescription changes a group's description (compare-and-set on its version; expected 0
 // takes the group's). Descriptions are not authorization: auth_version stays.
-func (t *Tx) SetGroupDescription(ctx context.Context, g *ExtensionGroup, description string, expected int64) error {
+func (t *Tx) SetGroupDescription(ctx context.Context, g *PackageGroup, description string, expected int64) error {
 	if err := ValidGroupDescription(description); err != nil {
 		return err
 	}
@@ -148,20 +148,20 @@ func (t *Tx) SetGroupDescription(ctx context.Context, g *ExtensionGroup, descrip
 	if description == g.Description && expected == g.Version {
 		return nil // no change: the version, and clients' ETags, stay
 	}
-	return t.cas(ctx, "UPDATE extension_groups SET description = ?, version = version + 1 WHERE id = ? AND version = ?",
+	return t.cas(ctx, "UPDATE package_groups SET description = ?, version = version + 1 WHERE id = ? AND version = ?",
 		[]any{description, g.ID, expected}, func() { g.Description, g.Version = description, expected+1 })
 }
 
-// DeleteExtensionGroup removes a group and its members (compare-and-set on its version; expected 0
+// DeletePackageGroup removes a group and its members (compare-and-set on its version; expected 0
 // takes the group's). The caller refuses a group that a grant names first: the foreign key would.
-func (t *Tx) DeleteExtensionGroup(ctx context.Context, g ExtensionGroup, expected int64) error {
+func (t *Tx) DeletePackageGroup(ctx context.Context, g PackageGroup, expected int64) error {
 	if expected == 0 {
 		expected = g.Version
 	}
-	if _, err := t.exec(ctx, "DELETE FROM extension_group_members WHERE group_id = ?", g.ID); err != nil {
+	if _, err := t.exec(ctx, "DELETE FROM package_group_members WHERE group_id = ?", g.ID); err != nil {
 		return err
 	}
-	if err := t.cas(ctx, "DELETE FROM extension_groups WHERE id = ? AND version = ?", []any{g.ID, expected}, func() {}); err != nil {
+	if err := t.cas(ctx, "DELETE FROM package_groups WHERE id = ? AND version = ?", []any{g.ID, expected}, func() {}); err != nil {
 		return err
 	}
 	return t.BumpAuth(ctx, g.TenantID)
@@ -178,7 +178,7 @@ func (s *Store) GroupMembers(ctx context.Context, groupID string) ([]GroupMember
 }
 
 func groupMembers(ctx context.Context, query queryFn, groupID string) ([]GroupMember, error) {
-	rows, err := query(ctx, "SELECT extension, added_at, added_by FROM extension_group_members WHERE group_id = ? ORDER BY extension", groupID)
+	rows, err := query(ctx, "SELECT package, added_at, added_by FROM package_group_members WHERE group_id = ? ORDER BY package", groupID)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +197,7 @@ func groupMembers(ctx context.Context, query queryFn, groupID string) ([]GroupMe
 // ChangeGroupMembers adds and removes member names (already valid extension names), skipping names
 // already present or not members, and answers what changed. The limits are counted here: the
 // caller holds the tenant's auth lock.
-func (t *Tx) ChangeGroupMembers(ctx context.Context, g ExtensionGroup, add, remove []string, actor string) (added, removed []string, err error) {
+func (t *Tx) ChangeGroupMembers(ctx context.Context, g PackageGroup, add, remove []string, actor string) (added, removed []string, err error) {
 	if len(actor) > 400 {
 		return nil, nil, fmt.Errorf("%w: a value is too long", ErrInvalid)
 	}
@@ -213,7 +213,7 @@ func (t *Tx) ChangeGroupMembers(ctx context.Context, g ExtensionGroup, add, remo
 		if !have[n] {
 			continue
 		}
-		if _, err := t.exec(ctx, "DELETE FROM extension_group_members WHERE group_id = ? AND extension = ?", g.ID, n); err != nil {
+		if _, err := t.exec(ctx, "DELETE FROM package_group_members WHERE group_id = ? AND package = ?", g.ID, n); err != nil {
 			return nil, nil, err
 		}
 		removed = append(removed, n)
@@ -231,7 +231,7 @@ func (t *Tx) ChangeGroupMembers(ctx context.Context, g ExtensionGroup, add, remo
 			return nil, nil, fmt.Errorf("%w: an extension group holds at most %d names", ErrInvalid, MaxGroupMembers)
 		}
 		var total int
-		if err := t.queryRow(ctx, "SELECT COUNT(*) FROM extension_group_members WHERE tenant_id = ?", g.TenantID).Scan(&total); err != nil {
+		if err := t.queryRow(ctx, "SELECT COUNT(*) FROM package_group_members WHERE tenant_id = ?", g.TenantID).Scan(&total); err != nil {
 			return nil, nil, err
 		}
 		if total+len(added) > MaxTenantMembers {
@@ -239,7 +239,7 @@ func (t *Tx) ChangeGroupMembers(ctx context.Context, g ExtensionGroup, add, remo
 		}
 		now := t.s.d.timeArg(t.Now())
 		for _, n := range added {
-			if _, err := t.exec(ctx, "INSERT INTO extension_group_members (group_id, tenant_id, extension, added_at, added_by) VALUES (?, ?, ?, ?, ?)",
+			if _, err := t.exec(ctx, "INSERT INTO package_group_members (group_id, tenant_id, package, added_at, added_by) VALUES (?, ?, ?, ?, ?)",
 				g.ID, g.TenantID, n, now, actor); err != nil {
 				return nil, nil, err
 			}
@@ -255,7 +255,7 @@ func (t *Tx) ChangeGroupMembers(ctx context.Context, g ExtensionGroup, add, remo
 
 // readGroups reads a tenant's groups and member sets, by group id.
 func readGroups(ctx context.Context, query queryFn, tenantID string) (map[string]*GroupSet, error) {
-	rows, err := query(ctx, "SELECT id, name FROM extension_groups WHERE tenant_id = ?", tenantID)
+	rows, err := query(ctx, "SELECT id, name FROM package_groups WHERE tenant_id = ?", tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +271,7 @@ func readGroups(ctx context.Context, query queryFn, tenantID string) (map[string
 	if err := closeRows(rows); err != nil {
 		return nil, err
 	}
-	rows, err = query(ctx, "SELECT group_id, extension FROM extension_group_members WHERE tenant_id = ?", tenantID)
+	rows, err = query(ctx, "SELECT group_id, package FROM package_group_members WHERE tenant_id = ?", tenantID)
 	if err != nil {
 		return nil, err
 	}

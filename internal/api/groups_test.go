@@ -15,18 +15,18 @@ func TestExtensionGroupRoutes(t *testing.T) {
 	m := newMgmt(t)
 	const T = "/api/v1/tenants/acme"
 	cli := m.env.adm
-	if _, err := cli.CreateExtensionGroup(ctx, admin, "acme", "platform", "hugr"); err != nil {
+	if _, err := cli.CreatePackageGroup(ctx, admin, "acme", "platform", "hugr"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cli.CreateExtensionGroup(ctx, admin, "acme", "other", ""); err != nil {
+	if _, err := cli.CreatePackageGroup(ctx, admin, "acme", "other", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := cli.ChangeExtensionGroupMembers(ctx, admin, "acme", "platform", []string{"acl"}, nil); err != nil {
+	if _, _, err := cli.ChangePackageGroupMembers(ctx, admin, "acme", "platform", []string{"acl"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, g := range []struct{ sub, channel, verb string }{{"gina", "", "admin"}, {"ina", "prod", "install"}} {
 		if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|"+g.sub, []string{g.verb},
-			tenants.GrantOn{Channel: g.channel, ExtensionGroup: "platform"}); err != nil {
+			tenants.GrantOn{Channel: g.channel, PackageGroup: "platform"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -260,19 +260,19 @@ func TestGrantPrincipals(t *testing.T) {
 	m := newMgmt(t)
 	const T = "/api/v1/tenants/acme"
 	cli := m.env.adm
-	if _, err := cli.CreateExtensionGroup(ctx, admin, "acme", "platform", ""); err != nil {
+	if _, err := cli.CreatePackageGroup(ctx, admin, "acme", "platform", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|eve", []string{"install"}, tenants.GrantOn{ExtensionGroup: "platform"}); err != nil {
+	if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|eve", []string{"install"}, tenants.GrantOn{PackageGroup: "platform"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cli.AddGrant(ctx, admin, "acme", "role:corp|team", []string{"admin"}, tenants.GrantOn{ExtensionGroup: "platform"}); err != nil {
+	if _, err := cli.AddGrant(ctx, admin, "acme", "role:corp|team", []string{"admin"}, tenants.GrantOn{PackageGroup: "platform"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cli.AddPublisher(ctx, admin, "acme", "ci"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cli.AddGrant(ctx, admin, "acme", "publisher:ci", []string{"publish"}, tenants.GrantOn{Extension: "acl"}); err != nil {
+	if _, err := cli.AddGrant(ctx, admin, "acme", "publisher:ci", []string{"publish"}, tenants.GrantOn{Package: "acl"}); err != nil {
 		t.Fatal(err)
 	}
 	tom := m.toks["tenant admin"]

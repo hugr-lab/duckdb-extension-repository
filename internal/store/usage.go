@@ -15,14 +15,14 @@ import (
 // UsageKey is what a usage count counts by (spec 0012 phase 1b): no principal, no address. Counter
 // is "" for the event's own count; Status is the licence status the report gave.
 type UsageKey struct {
-	TenantID, ChannelID, Name, ExtVersion, Event, Counter, Status string
-	Day                                                           string // YYYY-MM-DD, UTC
-	Authenticated                                                 bool
+	TenantID, ChannelID, Name, PackageVersion, Event, Counter, Status string
+	Day                                                               string // YYYY-MM-DD, UTC
+	Authenticated                                                     bool
 }
 
 // UsageUserKey is what a day's users of usage reports are counted by.
 type UsageUserKey struct {
-	TenantID, ChannelID, Name, ExtVersion, Day string
+	TenantID, ChannelID, Name, PackageVersion, Day string
 }
 
 // AddUsageCounts adds usage counts to the stored ones, as AddDownloadCounts does, under the lock
@@ -30,20 +30,20 @@ type UsageUserKey struct {
 func (s *Store) AddUsageCounts(ctx context.Context, counts map[UsageKey]int64) (done []UsageKey, err error) {
 	return addCounts(ctx, s, "kista/usage_counts", counts, func(a, b UsageKey) int {
 		return cmp.Or(cmp.Compare(a.TenantID, b.TenantID), cmp.Compare(a.ChannelID, b.ChannelID), cmp.Compare(a.Name, b.Name),
-			cmp.Compare(a.ExtVersion, b.ExtVersion), cmp.Compare(a.Event, b.Event), cmp.Compare(a.Counter, b.Counter),
+			cmp.Compare(a.PackageVersion, b.PackageVersion), cmp.Compare(a.Event, b.Event), cmp.Compare(a.Counter, b.Counter),
 			cmp.Compare(a.Status, b.Status), cmp.Compare(a.Day, b.Day), cmp.Compare(boolInt(a.Authenticated), boolInt(b.Authenticated)))
 	}, func(k UsageKey) string { return k.TenantID }, func(tx *Tx, k UsageKey, n int64) error {
 		return tx.upsertCount(ctx, "usage_counts", "value",
-			[]string{"tenant_id", "channel_id", "name", "ext_version", "event", "counter", "status", "day", "authenticated"},
-			[]any{k.TenantID, k.ChannelID, k.Name, k.ExtVersion, k.Event, k.Counter, k.Status, k.Day, k.Authenticated}, n)
+			[]string{"tenant_id", "channel_id", "name", "package_version", "event", "counter", "status", "day", "authenticated"},
+			[]any{k.TenantID, k.ChannelID, k.Name, k.PackageVersion, k.Event, k.Counter, k.Status, k.Day, k.Authenticated}, n)
 	})
 }
 
 // UsageRow is a usage count, or a day's users (Event ""), at the dimensions a query keeps; received
 // aggregates (spec 0012 phase 1c) come summed over their senders, with Status StatusReceived.
 type UsageRow struct {
-	ChannelID, Name, ExtVersion, Event, Counter, Status, Day string
-	Value, Authenticated, Users                              int64
+	ChannelID, Name, PackageVersion, Event, Counter, Status, Day string
+	Value, Authenticated, Users                                  int64
 }
 
 // UsageRows reads a tenant's usage counts and users within a filter, keeping the rows keep takes (a
@@ -61,11 +61,11 @@ func (s *Store) UsageRows(ctx context.Context, tenantID string, f StatsFilter, l
 		}
 		return nil
 	}
-	err := s.eachRow(ctx, "SELECT channel_id, name, ext_version, event, counter, status, day, authenticated, value FROM usage_counts WHERE "+where,
+	err := s.eachRow(ctx, "SELECT channel_id, name, package_version, event, counter, status, day, authenticated, value FROM usage_counts WHERE "+where,
 		args, func(sc func(...any) error) error {
 			var r UsageRow
 			var auth bool
-			if err := sc(&r.ChannelID, &r.Name, &r.ExtVersion, &r.Event, &r.Counter, &r.Status, &r.Day, &auth, &r.Value); err != nil {
+			if err := sc(&r.ChannelID, &r.Name, &r.PackageVersion, &r.Event, &r.Counter, &r.Status, &r.Day, &auth, &r.Value); err != nil {
 				return err
 			}
 			if auth {
@@ -76,10 +76,10 @@ func (s *Store) UsageRows(ctx context.Context, tenantID string, f StatsFilter, l
 	if err != nil {
 		return nil, err
 	}
-	err = s.eachRow(ctx, "SELECT channel_id, name, ext_version, day, users FROM usage_users WHERE "+where,
+	err = s.eachRow(ctx, "SELECT channel_id, name, package_version, day, users FROM usage_users WHERE "+where,
 		args, func(sc func(...any) error) error {
 			var r UsageRow
-			if err := sc(&r.ChannelID, &r.Name, &r.ExtVersion, &r.Day, &r.Users); err != nil {
+			if err := sc(&r.ChannelID, &r.Name, &r.PackageVersion, &r.Day, &r.Users); err != nil {
 				return err
 			}
 			return add(r)
@@ -94,8 +94,8 @@ func (s *Store) UsageRows(ctx context.Context, tenantID string, f StatsFilter, l
 // ReceivedRow is one count of a downstream kista's daily aggregate (spec 0012 phase 1c): an event's
 // count (Counter "") or a counter's value, or, with Event "", the version's users.
 type ReceivedRow struct {
-	Name, ExtVersion, Event, Counter string
-	Users, Value                     int64
+	Name, PackageVersion, Event, Counter string
+	Users, Value                         int64
 }
 
 // PutReceived stores part of a sender's day in a channel, in one transaction: the first part
@@ -116,13 +116,13 @@ func (s *Store) PutReceived(ctx context.Context, tenantID, channelID, sender, da
 		} else {
 			done := map[[2]string]bool{}
 			for _, r := range rows {
-				p := [2]string{r.Name, r.ExtVersion}
+				p := [2]string{r.Name, r.PackageVersion}
 				if done[p] {
 					continue
 				}
 				done[p] = true
-				if _, err := tx.exec(ctx, "DELETE FROM usage_received WHERE "+key+" AND name = ? AND ext_version = ?",
-					append(args, r.Name, r.ExtVersion)...); err != nil {
+				if _, err := tx.exec(ctx, "DELETE FROM usage_received WHERE "+key+" AND name = ? AND package_version = ?",
+					append(args, r.Name, r.PackageVersion)...); err != nil {
 					return err
 				}
 			}
@@ -132,9 +132,9 @@ func (s *Store) PutReceived(ctx context.Context, tenantID, channelID, sender, da
 			rows = rows[len(chunk):]
 			args := make([]any, 0, 10*len(chunk))
 			for _, r := range chunk {
-				args = append(args, tenantID, channelID, sender, day, r.Name, r.ExtVersion, r.Event, r.Counter, r.Users, r.Value)
+				args = append(args, tenantID, channelID, sender, day, r.Name, r.PackageVersion, r.Event, r.Counter, r.Users, r.Value)
 			}
-			if _, err := tx.exec(ctx, "INSERT INTO usage_received (tenant_id, channel_id, sender, day, name, ext_version, event, counter, "+
+			if _, err := tx.exec(ctx, "INSERT INTO usage_received (tenant_id, channel_id, sender, day, name, package_version, event, counter, "+
 				"users, value) VALUES "+strings.TrimSuffix(strings.Repeat("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?), ", len(chunk)), ", "), args...); err != nil {
 				return err
 			}
@@ -150,7 +150,7 @@ func (s *Store) receivedRows(ctx context.Context, where string, args []any, add 
 	type key struct{ channel, name, version, event, counter, day string }
 	sums := map[key][2]int64{}
 	var order []key
-	err := s.eachRow(ctx, "SELECT channel_id, name, ext_version, event, counter, day, users, value FROM usage_received WHERE "+where,
+	err := s.eachRow(ctx, "SELECT channel_id, name, package_version, event, counter, day, users, value FROM usage_received WHERE "+where,
 		args, func(sc func(...any) error) error {
 			var k key
 			var users, value int64
@@ -168,7 +168,7 @@ func (s *Store) receivedRows(ctx context.Context, where string, args []any, add 
 		return err
 	}
 	for _, k := range order {
-		r := UsageRow{ChannelID: k.channel, Name: k.name, ExtVersion: k.version, Event: k.event, Counter: k.counter, Day: k.day,
+		r := UsageRow{ChannelID: k.channel, Name: k.name, PackageVersion: k.version, Event: k.event, Counter: k.counter, Day: k.day,
 			Status: StatusReceived}
 		if k.event == "" {
 			r.Users = sums[k][0]
@@ -200,7 +200,7 @@ const StatusReceived = "received"
 // another source).
 func (s *Store) UpstreamVersions(ctx context.Context, u Upstream) (map[[2]string]map[string]bool, error) {
 	builds := map[string][2]string{}
-	err := s.eachRow(ctx, "SELECT build_id, name, ext_version, provenance FROM releases WHERE channel_id = ? AND source = ? AND origin = ? AND created_at >= ?",
+	err := s.eachRow(ctx, "SELECT build_id, name, package_version, provenance FROM releases WHERE channel_id = ? AND source = ? AND origin = ? AND created_at >= ?",
 		[]any{u.ChannelID, UpstreamSource(u.ID), OriginUpstream, s.d.timeArg(u.CreatedAt)}, func(sc func(...any) error) error {
 			var id, name, version string
 			var prov sql.NullString

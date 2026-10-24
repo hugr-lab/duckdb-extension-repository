@@ -154,7 +154,7 @@ func (s *Snapshot) live(name, extVersion, kid string, vis Visible) bool {
 	for _, p := range s.platforms[name] {
 		for _, c := range s.groups[group{name, p}] {
 			if (c.State != store.ReleaseActive && c.State != store.ReleaseDeprecated) || s.Blocked[c.BodyHash] || !vis(c) ||
-				extVersion != "" && c.ExtVersion != extVersion || kid != "" && !slices.Contains(s.Kids[c.BuildID], kid) {
+				extVersion != "" && c.PackageVersion != extVersion || kid != "" && !slices.Contains(s.Kids[c.BuildID], kid) {
 				continue
 			}
 			for v := range s.CAPIs {
@@ -199,7 +199,7 @@ func (s *Snapshot) Versioned(version, platform, name, extVersion string, vis Vis
 	}
 	var best *store.Candidate
 	for _, c := range s.groups[group{name, platform}] {
-		if c.ExtVersion != extVersion || !slices.Contains(states, c.State) || !vis(c) || !Serves(c, version, s.CAPIs) {
+		if c.PackageVersion != extVersion || !slices.Contains(states, c.State) || !vis(c) || !Serves(c, version, s.CAPIs) {
 			continue
 		}
 		if best == nil || better(c, best) {

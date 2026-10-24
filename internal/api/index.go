@@ -46,7 +46,7 @@ type grantOut struct {
 }
 
 func grantOutOf(g store.Grant) grantOut {
-	return grantOut{Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Extension, ExtensionGroup: g.ExtensionGroupName}
+	return grantOut{Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Package, ExtensionGroup: g.PackageGroupName}
 }
 
 func (h *Handler) whoami(w http.ResponseWriter, r *http.Request, c caller, _ params) {
@@ -253,7 +253,7 @@ func (h *Handler) extensions(w http.ResponseWriter, r *http.Request, c caller, p
 		rw := row{Name: n, Visibility: vis2}
 		if version != "" {
 			if cur := snap.Flat(version, platform, n, vis); cur != nil {
-				rw.Current = cur.ExtVersion
+				rw.Current = cur.PackageVersion
 			}
 		}
 		rows = append(rows, rw)
@@ -272,27 +272,27 @@ type servesOut struct {
 }
 
 type releaseOut struct {
-	id            string
-	created       time.Time
-	Name          string      `json:"name"`
-	ExtVersion    string      `json:"version"`
-	Platform      string      `json:"platform"`
-	ABI           string      `json:"abi"`
-	DuckDBVersion string      `json:"build_duckdb_version,omitempty"`
-	CAPI          string      `json:"build_c_api,omitempty"`
-	State         string      `json:"state"`
-	Visibility    string      `json:"visibility"`
-	BodyHash      string      `json:"body_hash"`
-	ServingKey    string      `json:"serving_key,omitempty"`
-	CreatedAt     string      `json:"created_at"`
-	Serves        []servesOut `json:"serves"`
-	CurrentFor    []string    `json:"current_for"`
-	WouldServe    []string    `json:"would_serve,omitempty"` // yanked rows: the DuckDB versions it would serve
-	Origin        string      `json:"origin"`
-	Upstream      string      `json:"upstream,omitempty"`   // an upstream release's upstream (spec 0009)
-	Shadows       string      `json:"shadows,omitempty"`    // a reserved name's owner (spec 0008)
-	Blocked       bool        `json:"blocked,omitempty"`    // a yanked row whose body is blocked
-	Provenance    any         `json:"provenance,omitempty"` // for the extension's administrators and publishers
+	id             string
+	created        time.Time
+	Name           string      `json:"name"`
+	PackageVersion string      `json:"version"`
+	Platform       string      `json:"platform"`
+	ABI            string      `json:"abi"`
+	DuckDBVersion  string      `json:"build_duckdb_version,omitempty"`
+	CAPI           string      `json:"build_c_api,omitempty"`
+	State          string      `json:"state"`
+	Visibility     string      `json:"visibility"`
+	BodyHash       string      `json:"body_hash"`
+	ServingKey     string      `json:"serving_key,omitempty"`
+	CreatedAt      string      `json:"created_at"`
+	Serves         []servesOut `json:"serves"`
+	CurrentFor     []string    `json:"current_for"`
+	WouldServe     []string    `json:"would_serve,omitempty"` // yanked rows: the DuckDB versions it would serve
+	Origin         string      `json:"origin"`
+	Upstream       string      `json:"upstream,omitempty"`   // an upstream release's upstream (spec 0009)
+	Shadows        string      `json:"shadows,omitempty"`    // a reserved name's owner (spec 0008)
+	Blocked        bool        `json:"blocked,omitempty"`    // a yanked row whose body is blocked
+	Provenance     any         `json:"provenance,omitempty"` // for the extension's administrators and publishers
 	// spec 0011: per kind, the readers-visible documents of the body: their count and latest summary
 	Attachments map[string]*kindSummary `json:"attachments,omitempty"`
 	latestAt    map[string]time.Time
@@ -320,7 +320,7 @@ func (h *Handler) indexResolver(w http.ResponseWriter, r *http.Request, c caller
 	rs := newResolver(snap, c.view(snap.Channel.ID))
 	rs.blocked = snap.Blocked
 	// spec 0030: DuckDB's names, the tenant's, its upstreams' (the snapshot holds the last two)
-	res := authz.Resource{Tenant: c.tenant.Name, Channel: snap.Channel.Name, Extension: name,
+	res := authz.Resource{Tenant: c.tenant.Name, Channel: snap.Channel.Name, Package: name,
 		Reserved: reserved.Kind(name) != "" || snap.TenantReserved[name] || snap.Provided[name]}
 	held := c.held()
 	rs.c, rs.admin = c, c.admin || c.principals != nil && authz.Covers(held, store.VerbAdmin, res)
@@ -366,7 +366,7 @@ func (rs *resolver) versionedOf(v, platform, name, extVersion string, withYanked
 // whose flat path does; a yanked release is served nowhere and lists instead the versions whose
 // versioned path it would serve, so a node that installed it learns it was yanked.
 func (rs *resolver) row(rel *store.Candidate) releaseOut {
-	o := releaseOut{id: rel.ID, created: rel.CreatedAt, Name: rel.Name, ExtVersion: rel.ExtVersion, Platform: rel.Platform,
+	o := releaseOut{id: rel.ID, created: rel.CreatedAt, Name: rel.Name, PackageVersion: rel.PackageVersion, Platform: rel.Platform,
 		ABI: rel.ABI, DuckDBVersion: rel.DuckDBVersion, State: rel.State, Visibility: rel.Visibility, BodyHash: rel.BodyHash,
 		ServingKey: rs.snap.ServingKey, CreatedAt: rel.CreatedAt.UTC().Format(time.RFC3339),
 		Serves: []servesOut{}, CurrentFor: []string{}}
@@ -388,15 +388,15 @@ func (rs *resolver) row(rel *store.Candidate) releaseOut {
 	}
 	for _, v := range rs.versions {
 		if rel.State == store.ReleaseYanked {
-			if best := rs.versionedOf(v, rel.Platform, rel.Name, rel.ExtVersion, true); best != nil && best.ID == rel.ID {
+			if best := rs.versionedOf(v, rel.Platform, rel.Name, rel.PackageVersion, true); best != nil && best.ID == rel.ID {
 				o.WouldServe = append(o.WouldServe, v)
 			}
 			continue
 		}
-		if best := rs.versionedOf(v, rel.Platform, rel.Name, rel.ExtVersion, false); best == nil || best.ID != rel.ID {
+		if best := rs.versionedOf(v, rel.Platform, rel.Name, rel.PackageVersion, false); best == nil || best.ID != rel.ID {
 			continue
 		}
-		s := servesOut{DuckDBVersion: v, Path: rel.Name + "/" + rel.ExtVersion + "/" + v + "/" + rel.Platform + "/" + gzName(rel.Name)}
+		s := servesOut{DuckDBVersion: v, Path: rel.Name + "/" + rel.PackageVersion + "/" + v + "/" + rel.Platform + "/" + gzName(rel.Name)}
 		if cur := rs.flatOf(v, rel.Platform, rel.Name); cur != nil && cur.ID == rel.ID {
 			s.FlatPath = v + "/" + rel.Platform + "/" + gzName(rel.Name)
 			o.CurrentFor = append(o.CurrentFor, v)
@@ -486,7 +486,7 @@ func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, p param
 	out := map[string]any{"name": name, "version": extVersion, "duckdb_version": version, "platform": platform}
 	var yanked []releaseOut
 	for _, rel := range snap.Group(name, platform) {
-		if rel.ExtVersion == extVersion && rel.State == store.ReleaseYanked && rs.vis(rel) {
+		if rel.PackageVersion == extVersion && rel.State == store.ReleaseYanked && rs.vis(rel) {
 			if o := rs.row(rel); o.reaches(version) {
 				yanked = append(yanked, o)
 			}

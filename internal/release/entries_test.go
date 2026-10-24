@@ -46,7 +46,7 @@ func TestCatalogueSlot(t *testing.T) {
 		rs, _ := p.st.ListReleases(ctx, ch.ID, "tresor")
 		var r2 store.Candidate
 		for _, r := range rs {
-			if r.ExtVersion == "2.0" {
+			if r.PackageVersion == "2.0" {
 				r2 = r
 			}
 		}
@@ -104,7 +104,7 @@ func TestCatalogueOnly(t *testing.T) {
 		p.publish(t, cpp("2.0"))
 		bs, _ := p.st.SourceBuilds(ctx, ch.TenantID, "publisher:"+p.ci.ID, "tresor")
 		for _, x := range bs {
-			if x.ExtVersion == "2.0" {
+			if x.PackageVersion == "2.0" {
 				if _, err := p.rel.PurgeEntry(ctx, admin, "acme", x.ID); !errors.Is(err, store.ErrConflict) {
 					t.Fatalf("a released build purged: %v", err)
 				}
@@ -136,8 +136,8 @@ func TestCatalogueOnly(t *testing.T) {
 		}
 		bs, _ = p.st.SourceBuilds(ctx, ch.TenantID, "publisher:"+p.ci.ID, "tresor")
 		for _, x := range bs {
-			if x.ID == dead[0] && x.ExtVersion != "1.0" {
-				t.Fatalf("trimmed %s, not the oldest", x.ExtVersion)
+			if x.ID == dead[0] && x.PackageVersion != "1.0" {
+				t.Fatalf("trimmed %s, not the oldest", x.PackageVersion)
 			}
 		}
 		if gone, err := p.st.DeleteBuild(ctx, dead[0], time.Now().Add(48*time.Hour)); err != nil || !gone {

@@ -119,12 +119,12 @@ func TestCommunitySync(t *testing.T) {
 				if err := tx.CreateChannel(ctx, &ch); err != nil {
 					return err
 				}
-				b := store.Build{TenantID: tn.ID, Name: "kista_theirs", ExtVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICPP,
+				b := store.Build{TenantID: tn.ID, Name: "kista_theirs", PackageVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICPP,
 					DuckDBVersion: "v2.0.0", BodyHash: strings.Repeat("a", 64), Origin: store.OriginAdmin, CreatedBy: "os:1:t"}
 				if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
 					return err
 				}
-				r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, ExtVersion: b.ExtVersion,
+				r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, PackageVersion: b.PackageVersion,
 					Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public}
 				return tx.InsertRelease(ctx, &r, "os:1:t")
 			}); err != nil {

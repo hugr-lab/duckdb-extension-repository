@@ -84,10 +84,10 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddPublisherKey": {"publisher.key.add"}, "RemovePublisherKey": {"publisher.key.remove"},
 		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil,
 		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListPublisherKeys": nil, "TenantPublisherKeys": nil,
-		"CreateExtensionGroup": {"extension_group.add"}, "SetExtensionGroupDescription": {"extension_group.change"},
-		"ChangeExtensionGroupMembers": {"extension_group.members"},
-		"RemoveExtensionGroup":        {"extension_group.members", "extension_group.remove"},
-		"ListExtensionGroups":         nil, "GetExtensionGroup": nil, "ExtensionGroupMembers": nil,
+		"CreatePackageGroup": {"extension_group.add"}, "SetPackageGroupDescription": {"extension_group.change"},
+		"ChangePackageGroupMembers": {"extension_group.members"},
+		"RemovePackageGroup":        {"extension_group.members", "extension_group.remove"},
+		"ListPackageGroups":         nil, "GetPackageGroup": nil, "PackageGroupMembers": nil,
 	},
 	"keys.Service": {
 		"Add": {"key.add"}, "Activate": {"key.activate"}, "Retire": {"key.retire"},
@@ -376,25 +376,25 @@ func TestCoverage(t *testing.T) {
 	}), "grant.add")
 	en.expect("tenants.AuthAdmin.RemoveGrant", do(func() error { return en.adm.RemoveGrant(rctx, admin, "acme", grant) }), "grant.remove")
 	// extension groups (spec 0017)
-	en.expect("tenants.AuthAdmin.CreateExtensionGroup", do(func() error {
-		_, err := en.adm.CreateExtensionGroup(rctx, admin, "acme", "platform", "hugr")
+	en.expect("tenants.AuthAdmin.CreatePackageGroup", do(func() error {
+		_, err := en.adm.CreatePackageGroup(rctx, admin, "acme", "platform", "hugr")
 		return err
 	}), "extension_group.add")
-	en.expect("tenants.AuthAdmin.SetExtensionGroupDescription", do(func() error {
-		_, err := en.adm.SetExtensionGroupDescription(rctx, admin, "acme", "platform", "the hugr platform", 0)
+	en.expect("tenants.AuthAdmin.SetPackageGroupDescription", do(func() error {
+		_, err := en.adm.SetPackageGroupDescription(rctx, admin, "acme", "platform", "the hugr platform", 0)
 		return err
 	}), "extension_group.change")
-	en.expect("tenants.AuthAdmin.ChangeExtensionGroupMembers", do(func() error {
-		_, _, err := en.adm.ChangeExtensionGroupMembers(rctx, admin, "acme", "platform", []string{"tresor", "acl"}, nil)
+	en.expect("tenants.AuthAdmin.ChangePackageGroupMembers", do(func() error {
+		_, _, err := en.adm.ChangePackageGroupMembers(rctx, admin, "acme", "platform", []string{"tresor", "acl"}, nil)
 		return err
 	}), "extension_group.members")
 	en.expect("tenants.AuthAdmin.AddGrant", do(func() error {
-		g, err := en.adm.AddGrant(rctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{ExtensionGroup: "platform"})
+		g, err := en.adm.AddGrant(rctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{PackageGroup: "platform"})
 		grant = g.ID
 		return err
 	}), "grant.add")
 	en.expect("tenants.AuthAdmin.RemoveGrant", do(func() error { return en.adm.RemoveGrant(rctx, admin, "acme", grant) }), "grant.remove")
-	en.expect("tenants.AuthAdmin.RemoveExtensionGroup", do(func() error { return en.adm.RemoveExtensionGroup(rctx, admin, "acme", "platform", 0) }),
+	en.expect("tenants.AuthAdmin.RemovePackageGroup", do(func() error { return en.adm.RemovePackageGroup(rctx, admin, "acme", "platform", 0) }),
 		"extension_group.members", "extension_group.remove")
 	en.expect("tenants.AuthAdmin.AddPublisher", do(func() error { _, err := en.adm.AddPublisher(rctx, admin, "acme", "ci"); return err }), "publisher.add")
 	en.expect("tenants.Service.ReserveInTenant", do(func() error {
@@ -471,7 +471,7 @@ func TestCoverage(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		b := store.Build{TenantID: prod.TenantID, Source: dist, Name: "followed", ExtVersion: "1.0", Platform: "linux_amd64", ABI: "cpp",
+		b := store.Build{TenantID: prod.TenantID, Source: dist, Name: "followed", PackageVersion: "1.0", Platform: "linux_amd64", ABI: "cpp",
 			DuckDBVersion: "v2.0.0", Origin: store.OriginPublication, Checked: true, CreatedBy: "test"}
 		h, _, _ := extfile.HashBody(bytes.NewReader(ext(t, nil, "followed", "1.0")), 1<<30)
 		b.BodyHash = h.String()

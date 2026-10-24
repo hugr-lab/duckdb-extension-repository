@@ -36,7 +36,7 @@ func TestSources(t *testing.T) {
 			}
 			var out []string
 			for _, r := range snap.Releases {
-				out = append(out, r.ExtVersion+"@"+r.Source)
+				out = append(out, r.PackageVersion+"@"+r.Source)
 			}
 			return out
 		}
@@ -160,7 +160,7 @@ func TestSourcesPromotionAndClear(t *testing.T) {
 			}
 			var out []string
 			for _, r := range snap.Releases {
-				out = append(out, r.ExtVersion+"@"+r.Source)
+				out = append(out, r.PackageVersion+"@"+r.Source)
 			}
 			return strings.Join(out, " ")
 		}
@@ -300,7 +300,7 @@ func TestSlotsPerSource(t *testing.T) {
 			}
 			var out []string
 			for _, r := range snap.Releases {
-				out = append(out, r.ExtVersion+"@"+r.Source+"#"+r.BodyHash[:8])
+				out = append(out, r.PackageVersion+"@"+r.Source+"#"+r.BodyHash[:8])
 			}
 			return strings.Join(out, " ")
 		}

@@ -93,6 +93,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0035_rule_modes` | 35 | an older replica's mirror runs would place a manual rule's new versions, and its collector remove landed builds |
 | `0036_catalogue_slots` | 36 | an older replica would take a second body of a version from a source in another channel |
 | `0037_follows` | 37 | an older replica would treat a follow's rules as manual ones |
+| `0038_package_names` | 38 | the schema's tables and columns are renamed (no change in behaviour): an older replica would query the old names |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -163,7 +164,19 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 37)
+## Upgrading to the next release (schema 38)
+
+### Package names in the schema (spec 0034, phase 1)
+
+- **Migration `0038_package_names`** renames the schema to say package where the thing is general:
+  `extension_groups`, `extension_group_members` and `extension_group_grants` become
+  `package_groups`, `package_group_members` and `package_group_grants`; the name column of a
+  group member and of a grant, `extension`, becomes `package`; `ext_version` becomes
+  `package_version` in every table that has it. It raises `min_reader` to 38: stop every older
+  replica first.
+- Nothing else changes: every row keeps what it held, and the API, the CLI, events, bundles and
+  configuration keep their names. Only a query that reads kista's database directly (a report, a
+  dashboard) needs the new names.
 
 ### A channel follows a whole source (spec 0033, phase A1 part 4)
 

@@ -61,12 +61,12 @@ func ValidDuckDBVersion(v string) error { return store.ValidDuckDBVersion(v) }
 // BuildFrom makes a Build from a parsed file and a declared name, checking every grammar.
 func BuildFrom(f *extfile.File, tenantID, name, actor string) (store.Build, error) {
 	m := f.Metadata
-	b := store.Build{TenantID: tenantID, Name: name, ExtVersion: m.ExtensionVersion, Platform: m.Platform,
+	b := store.Build{TenantID: tenantID, Name: name, PackageVersion: m.ExtensionVersion, Platform: m.Platform,
 		BodyHash: f.Hash.String(), Origin: store.OriginAdmin, CreatedBy: actor}
 	if err := ValidName(name); err != nil {
 		return b, err
 	}
-	if err := ValidExtVersion(b.ExtVersion); err != nil {
+	if err := ValidExtVersion(b.PackageVersion); err != nil {
 		return b, err
 	}
 	if err := ValidPlatform(b.Platform); err != nil {

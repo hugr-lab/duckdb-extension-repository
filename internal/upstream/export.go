@@ -616,7 +616,7 @@ func (x *exporter) cells(ctx context.Context, src *xsource) error {
 // view is the releases a cell may take: the plan's versions, and private ones only with -private.
 func view(pc bundle.PlanCell, private bool) (all, allowed release.Visible) {
 	all = func(c *store.Candidate) bool {
-		return len(pc.Versions) == 0 || slices.Contains(pc.Versions, c.ExtVersion)
+		return len(pc.Versions) == 0 || slices.Contains(pc.Versions, c.PackageVersion)
 	}
 	return all, func(c *store.Candidate) bool { return all(c) && (private || c.Visibility == store.Public) }
 }

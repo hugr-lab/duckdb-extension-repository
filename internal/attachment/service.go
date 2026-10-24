@@ -58,7 +58,7 @@ func (s *Service) allowed(ctx context.Context, a authz.Actor, verb authz.Verb, r
 // administrator of the extension whose grant has no channel (an attachment is shown in every
 // channel, so a right on one must not change what another shows).
 func (s *Service) administers(ctx context.Context, a authz.Actor, tenant, ext string) (bool, error) {
-	return s.allowed(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Extension: ext})
+	return s.allowed(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Package: ext})
 }
 
 // reads reports whether an actor reads every document of ext: its administrators, and the
@@ -90,7 +90,7 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant, ext string,
 		if err != nil {
 			return store.Attachment{}, err
 		}
-		ok, err := s.allowed(ctx, a, authz.VerbPublish, authz.Resource{Tenant: tenant, Extension: ext, Reserved: kind != ""})
+		ok, err := s.allowed(ctx, a, authz.VerbPublish, authz.Resource{Tenant: tenant, Package: ext, Reserved: kind != ""})
 		if err != nil {
 			return store.Attachment{}, err
 		}

@@ -308,7 +308,7 @@ func (h *Handler) isAdmin(r *http.Request, c caller, p params) bool {
 	if !ok {
 		return false
 	}
-	return h.o.Authz.Allow(r.Context(), a, authz.VerbAdmin, authz.Resource{Tenant: p["t"], Channel: p["c"], Extension: p["ext"]}) == nil
+	return h.o.Authz.Allow(r.Context(), a, authz.VerbAdmin, authz.Resource{Tenant: p["t"], Channel: p["c"], Package: p["ext"]}) == nil
 }
 
 // --- blocks ---

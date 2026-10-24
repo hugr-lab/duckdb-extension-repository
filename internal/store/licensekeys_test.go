@@ -37,7 +37,7 @@ func TestLicenseKeys(t *testing.T) {
 			t.Helper()
 			b := cppBuild(tn, "tresor", ver, hash)
 			inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
-			r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, ExtVersion: b.ExtVersion,
+			r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, PackageVersion: b.PackageVersion,
 				Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public}
 			inTx(t, s, func(tx *store.Tx) error {
 				if err := tx.InsertRelease(ctx, &r, "os:1:t"); err != nil {

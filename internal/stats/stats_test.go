@@ -69,7 +69,7 @@ func TestCounterAndDaily(t *testing.T) {
 	now := time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC)
 	st.Now = func() time.Time { return now }
 	c := stats.Downloads(st, slog.New(slog.DiscardHandler))
-	k := store.DownloadKey{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", ExtVersion: "1.0", Platform: "linux_amd64",
+	k := store.DownloadKey{TenantID: tn.ID, ChannelID: ch.ID, Name: "acl", PackageVersion: "1.0", Platform: "linux_amd64",
 		DuckDBVersion: "v2.0.0", Day: "2026-10-08"}
 	for range 3 {
 		c.Add(k)
@@ -126,7 +126,7 @@ func TestCounterAndDaily(t *testing.T) {
 	urows, err := st.UsageRows(ctx, tn.ID, store.StatsFilter{From: "2026-10-08", To: "2026-10-08"}, 100, nil)
 	users := map[string]int64{}
 	for _, r := range urows {
-		users[r.ExtVersion] += r.Users
+		users[r.PackageVersion] += r.Users
 	}
 	if err != nil || users["1.0"] != 2 || users["1.1"] != 1 || len(urows) != 2 {
 		t.Fatalf("usage users: %+v %v", urows, err)

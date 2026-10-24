@@ -118,10 +118,10 @@ func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, 
 	byVer := map[string]*CatalogueVersion{}
 	var out []*CatalogueVersion
 	for _, b := range builds {
-		v := byVer[b.ExtVersion]
+		v := byVer[b.PackageVersion]
 		if v == nil {
-			v = &CatalogueVersion{Version: b.ExtVersion}
-			byVer[b.ExtVersion] = v
+			v = &CatalogueVersion{Version: b.PackageVersion}
+			byVer[b.PackageVersion] = v
 			out = append(out, v)
 		}
 		v.Builds = append(v.Builds, CatalogueBuild{Build: b, Placed: placed[b.ID]})

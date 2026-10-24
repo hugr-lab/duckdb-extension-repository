@@ -128,7 +128,7 @@ func TestAttachments(t *testing.T) {
 		}
 
 		// the publisher check: a publication's release by that actor
-		r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, ExtVersion: b.ExtVersion, Platform: b.Platform,
+		r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, PackageVersion: b.PackageVersion, Platform: b.Platform,
 			Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public, Seq: 1, Origin: store.OriginPublication}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertRelease(ctx, &r, "publisher:acme/ci") })
 		inTx(t, s, func(tx *store.Tx) error {

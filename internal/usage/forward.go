@@ -187,7 +187,7 @@ func (f *Forwarder) day(ctx context.Context, tenantID, day string, versions map[
 	users := map[key]int64{}
 	events := map[key]map[string]*DailyEvent{}
 	for _, r := range rows {
-		k := key{r.Name, r.ExtVersion}
+		k := key{r.Name, r.PackageVersion}
 		if !versions[k][r.ChannelID] {
 			continue // a channel without the upstream's build of it: another source's version
 		}

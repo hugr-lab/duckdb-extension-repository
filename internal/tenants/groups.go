@@ -41,7 +41,7 @@ func (s *AuthAdmin) readGroup(ctx context.Context, a authz.Actor, tenant, name s
 		return store.Tenant{}, false, err
 	}
 	if !tenantAdmin {
-		if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, ExtensionGroup: name}); err != nil {
+		if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, PackageGroup: name}); err != nil {
 			return store.Tenant{}, false, err
 		}
 	}
@@ -54,15 +54,15 @@ type holder interface {
 	Held(ctx context.Context, a authz.Actor, tenant string) (auth.Held, error)
 }
 
-// CreateExtensionGroup adds an extension group.
-func (s *AuthAdmin) CreateExtensionGroup(ctx context.Context, a authz.Actor, tenant, name, description string) (store.ExtensionGroup, error) {
+// CreatePackageGroup adds an extension group.
+func (s *AuthAdmin) CreatePackageGroup(ctx context.Context, a authz.Actor, tenant, name, description string) (store.PackageGroup, error) {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
-		return store.ExtensionGroup{}, err
+		return store.PackageGroup{}, err
 	}
-	g := store.ExtensionGroup{TenantID: t.ID, Name: name, Description: description, CreatedBy: a.String()}
+	g := store.PackageGroup{TenantID: t.ID, Name: name, Description: description, CreatedBy: a.String()}
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
-		if err := tx.InsertExtensionGroup(ctx, &g); err != nil {
+		if err := tx.InsertPackageGroup(ctx, &g); err != nil {
 			return err
 		}
 		return tx.Event(ctx, t.ID, a.String(), "extension_group.add", "extension-group:"+g.Name,
@@ -71,10 +71,10 @@ func (s *AuthAdmin) CreateExtensionGroup(ctx context.Context, a authz.Actor, ten
 	return g, err
 }
 
-// ListExtensionGroups lists the groups the caller may read, by name: every group for a tenant
+// ListPackageGroups lists the groups the caller may read, by name: every group for a tenant
 // administrator, those it holds admin on otherwise. extension (a tenant administrator's) keeps the
 // groups holding that name. tenantAdmin says whether the caller administers the tenant.
-func (s *AuthAdmin) ListExtensionGroups(ctx context.Context, a authz.Actor, tenant, extension string) (gs []store.ExtensionGroup, tenantAdmin bool, err error) {
+func (s *AuthAdmin) ListPackageGroups(ctx context.Context, a authz.Actor, tenant, extension string) (gs []store.PackageGroup, tenantAdmin bool, err error) {
 	if tenantAdmin, err = s.allowed(ctx, a, authz.Resource{Tenant: tenant}); err != nil {
 		return nil, false, err
 	}
@@ -93,7 +93,7 @@ func (s *AuthAdmin) ListExtensionGroups(ctx context.Context, a authz.Actor, tena
 		}
 		return nil, false, err
 	}
-	all, err := s.Store.ListExtensionGroups(ctx, t.ID, extension)
+	all, err := s.Store.ListPackageGroups(ctx, t.ID, extension)
 	if err != nil || tenantAdmin {
 		return all, tenantAdmin, err
 	}
@@ -106,7 +106,7 @@ func (s *AuthAdmin) ListExtensionGroups(ctx context.Context, a authz.Actor, tena
 		return nil, false, err
 	}
 	for _, g := range all {
-		if authz.Covers(held, store.VerbAdmin, authz.Resource{Tenant: tenant, ExtensionGroup: g.Name}) {
+		if authz.Covers(held, store.VerbAdmin, authz.Resource{Tenant: tenant, PackageGroup: g.Name}) {
 			gs = append(gs, g)
 		}
 	}
@@ -116,38 +116,38 @@ func (s *AuthAdmin) ListExtensionGroups(ctx context.Context, a authz.Actor, tena
 	return gs, false, nil
 }
 
-// GetExtensionGroup reads a group (tenantAdmin as in ListExtensionGroups).
-func (s *AuthAdmin) GetExtensionGroup(ctx context.Context, a authz.Actor, tenant, name string) (g store.ExtensionGroup, tenantAdmin bool, err error) {
+// GetPackageGroup reads a group (tenantAdmin as in ListPackageGroups).
+func (s *AuthAdmin) GetPackageGroup(ctx context.Context, a authz.Actor, tenant, name string) (g store.PackageGroup, tenantAdmin bool, err error) {
 	t, tenantAdmin, err := s.readGroup(ctx, a, tenant, name)
 	if err != nil {
 		return g, false, err
 	}
-	g, err = s.Store.GetExtensionGroup(ctx, t.ID, name)
+	g, err = s.Store.GetPackageGroup(ctx, t.ID, name)
 	return g, tenantAdmin, err
 }
 
-// ExtensionGroupMembers lists a group's members by name.
-func (s *AuthAdmin) ExtensionGroupMembers(ctx context.Context, a authz.Actor, tenant, name string) ([]store.GroupMember, error) {
+// PackageGroupMembers lists a group's members by name.
+func (s *AuthAdmin) PackageGroupMembers(ctx context.Context, a authz.Actor, tenant, name string) ([]store.GroupMember, error) {
 	t, _, err := s.readGroup(ctx, a, tenant, name)
 	if err != nil {
 		return nil, err
 	}
-	g, err := s.Store.GetExtensionGroup(ctx, t.ID, name)
+	g, err := s.Store.GetPackageGroup(ctx, t.ID, name)
 	if err != nil {
 		return nil, err
 	}
 	return s.Store.GroupMembers(ctx, g.ID)
 }
 
-// SetExtensionGroupDescription changes a group's description (expected: its version, 0 for any).
-func (s *AuthAdmin) SetExtensionGroupDescription(ctx context.Context, a authz.Actor, tenant, name, description string, expected int64) (store.ExtensionGroup, error) {
+// SetPackageGroupDescription changes a group's description (expected: its version, 0 for any).
+func (s *AuthAdmin) SetPackageGroupDescription(ctx context.Context, a authz.Actor, tenant, name, description string, expected int64) (store.PackageGroup, error) {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
-		return store.ExtensionGroup{}, err
+		return store.PackageGroup{}, err
 	}
-	var g store.ExtensionGroup
+	var g store.PackageGroup
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
-		if g, err = tx.GetExtensionGroup(ctx, t.ID, name); err != nil {
+		if g, err = tx.GetPackageGroup(ctx, t.ID, name); err != nil {
 			return err
 		}
 		old, version := g.Description, g.Version
@@ -160,16 +160,16 @@ func (s *AuthAdmin) SetExtensionGroupDescription(ctx context.Context, a authz.Ac
 	return g, err
 }
 
-// RemoveExtensionGroup removes a group and its members (expected: its version, 0 for any). A group
+// RemovePackageGroup removes a group and its members (expected: its version, 0 for any). A group
 // that a grant names is refused: removing it would take rights silently. The members leave first,
 // in events of at most MaxMemberChange names, so the log keeps them.
-func (s *AuthAdmin) RemoveExtensionGroup(ctx context.Context, a authz.Actor, tenant, name string, expected int64) error {
+func (s *AuthAdmin) RemovePackageGroup(ctx context.Context, a authz.Actor, tenant, name string, expected int64) error {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return err
 	}
 	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
-		g, err := tx.GetExtensionGroup(ctx, t.ID, name)
+		g, err := tx.GetPackageGroup(ctx, t.ID, name)
 		if err != nil {
 			return err
 		}
@@ -192,7 +192,7 @@ func (s *AuthAdmin) RemoveExtensionGroup(ctx context.Context, a authz.Actor, ten
 				return err
 			}
 		}
-		if err := tx.DeleteExtensionGroup(ctx, g, expected); err != nil {
+		if err := tx.DeletePackageGroup(ctx, g, expected); err != nil {
 			return err
 		}
 		return tx.Event(ctx, t.ID, a.String(), "extension_group.remove", "extension-group:"+g.Name,
@@ -200,10 +200,10 @@ func (s *AuthAdmin) RemoveExtensionGroup(ctx context.Context, a authz.Actor, ten
 	})
 }
 
-// ChangeExtensionGroupMembers adds and removes names (together 1 to MaxMemberChange), skipping
+// ChangePackageGroupMembers adds and removes names (together 1 to MaxMemberChange), skipping
 // names already present or not members, and answers what changed. Only a tenant administrator
 // changes members: a group's administrator would widen their own rights.
-func (s *AuthAdmin) ChangeExtensionGroupMembers(ctx context.Context, a authz.Actor, tenant, name string, add, remove []string) (added, removed []string, err error) {
+func (s *AuthAdmin) ChangePackageGroupMembers(ctx context.Context, a authz.Actor, tenant, name string, add, remove []string) (added, removed []string, err error) {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return nil, nil, err
@@ -224,14 +224,14 @@ func (s *AuthAdmin) ChangeExtensionGroupMembers(ctx context.Context, a authz.Act
 		return nil, nil, err
 	}
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
-		g, err := tx.GetExtensionGroup(ctx, t.ID, name)
+		g, err := tx.GetPackageGroup(ctx, t.ID, name)
 		if err != nil {
 			return err
 		}
 		// spec 0021: the members widen or narrow a marked publisher's grants on the group, which
 		// are the server administrator's
 		for _, gr := range ta.GroupGrants {
-			if gr.ExtensionGroupID != g.ID || gr.PublisherName == "" {
+			if gr.PackageGroupID != g.ID || gr.PublisherName == "" {
 				continue
 			}
 			p, err := tx.GetPublisher(ctx, t.ID, gr.PublisherName)

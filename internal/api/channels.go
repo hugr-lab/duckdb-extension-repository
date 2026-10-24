@@ -398,7 +398,7 @@ func channelIDOf(rs []store.Candidate) string {
 // releaseView is a release for its readers: the extension's administrators see who changed it,
 // its publishers (spec 0008) do not.
 func releaseView(x store.Candidate, c caller, admin bool, provided map[string]bool, src *sourcesOf) releaseJSON {
-	o := releaseJSON{ID: x.ID, Name: x.Name, Version: x.ExtVersion, Platform: x.Platform, Slot: x.Slot, ABI: x.ABI,
+	o := releaseJSON{ID: x.ID, Name: x.Name, Version: x.PackageVersion, Platform: x.Platform, Slot: x.Slot, ABI: x.ABI,
 		DuckDBVersion: x.DuckDBVersion, State: x.State, Visibility: x.Visibility, Seq: x.Seq, BodyHash: x.BodyHash,
 		CreatedAt: timeOf(x.CreatedAt), StateChangedAt: timeOf(x.StateChangedAt), Origin: x.Origin,
 		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(x, provided), ETag: versionTag(x.Version)}

@@ -20,7 +20,7 @@ type groupJSON struct {
 	ETag        string `json:"etag"`
 }
 
-func groupOf(g store.ExtensionGroup, tenantAdmin bool, c caller) groupJSON {
+func groupOf(g store.PackageGroup, tenantAdmin bool, c caller) groupJSON {
 	o := groupJSON{Name: g.Name, Description: g.Description, Members: g.Members, CreatedAt: g.CreatedAt.UTC().Format(time.RFC3339),
 		CreatedBy: createdBy(g.CreatedBy, c), ETag: versionTag(g.Version)}
 	if tenantAdmin {
@@ -39,18 +39,18 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request, c caller, p
 		return
 	}
 	a, _ := c.actor()
-	gs, tenantAdmin, err := h.o.Auth.ListExtensionGroups(r.Context(), a, p["t"], r.URL.Query().Get("extension"))
+	gs, tenantAdmin, err := h.o.Auth.ListPackageGroups(r.Context(), a, p["t"], r.URL.Query().Get("extension"))
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
-	var kept []store.ExtensionGroup
+	var kept []store.PackageGroup
 	for _, g := range gs {
 		if strings.HasPrefix(g.Name, prefix) {
 			kept = append(kept, g)
 		}
 	}
-	kept, next := paged(kept, func(g store.ExtensionGroup) string { return g.Name }, limit, after)
+	kept, next := paged(kept, func(g store.PackageGroup) string { return g.Name }, limit, after)
 	out := []groupJSON{}
 	for _, g := range kept {
 		out = append(out, groupOf(g, tenantAdmin, c))
@@ -67,7 +67,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request, c caller, 
 		return
 	}
 	a, _ := c.actor()
-	g, err := h.o.Auth.CreateExtensionGroup(r.Context(), a, p["t"], in.Name, in.Description)
+	g, err := h.o.Auth.CreatePackageGroup(r.Context(), a, p["t"], in.Name, in.Description)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -77,7 +77,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request, c caller, 
 
 func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	g, tenantAdmin, err := h.o.Auth.GetExtensionGroup(r.Context(), a, p["t"], p["g"])
+	g, tenantAdmin, err := h.o.Auth.GetPackageGroup(r.Context(), a, p["t"], p["g"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -97,7 +97,7 @@ func (h *Handler) setGroupDescription(w http.ResponseWriter, r *http.Request, c 
 		return
 	}
 	a, _ := c.actor()
-	g, err := h.o.Auth.SetExtensionGroupDescription(r.Context(), a, p["t"], p["g"], in.Description, expected)
+	g, err := h.o.Auth.SetPackageGroupDescription(r.Context(), a, p["t"], p["g"], in.Description, expected)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -111,7 +111,7 @@ func (h *Handler) removeGroup(w http.ResponseWriter, r *http.Request, c caller, 
 		return
 	}
 	a, _ := c.actor()
-	if err := h.o.Auth.RemoveExtensionGroup(r.Context(), a, p["t"], p["g"], expected); err != nil {
+	if err := h.o.Auth.RemovePackageGroup(r.Context(), a, p["t"], p["g"], expected); err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
@@ -134,7 +134,7 @@ func (h *Handler) groupMembers(w http.ResponseWriter, r *http.Request, c caller,
 		return
 	}
 	a, _ := c.actor()
-	ms, err := h.o.Auth.ExtensionGroupMembers(r.Context(), a, p["t"], p["g"])
+	ms, err := h.o.Auth.PackageGroupMembers(r.Context(), a, p["t"], p["g"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -162,7 +162,7 @@ func (h *Handler) changeGroupMembers(w http.ResponseWriter, r *http.Request, c c
 		return
 	}
 	a, _ := c.actor()
-	added, removed, err := h.o.Auth.ChangeExtensionGroupMembers(r.Context(), a, p["t"], p["g"], in.Add, in.Remove)
+	added, removed, err := h.o.Auth.ChangePackageGroupMembers(r.Context(), a, p["t"], p["g"], in.Add, in.Remove)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return

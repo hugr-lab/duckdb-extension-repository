@@ -81,7 +81,7 @@ func (t *Tx) SourceReleases(ctx context.Context, channelID, source, name string)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	purged, err := t.query(ctx, "SELECT release_id, ext_version, platform, slot, abi, body_hash, seq FROM purged_slots"+
+	purged, err := t.query(ctx, "SELECT release_id, package_version, platform, slot, abi, body_hash, seq FROM purged_slots"+
 		" WHERE channel_id = ? AND source IN (?, '*') AND name = ?", channelID, source, name)
 	if err != nil {
 		return nil, err
@@ -90,7 +90,7 @@ func (t *Tx) SourceReleases(ctx context.Context, channelID, source, name string)
 	for purged.Next() {
 		c := Candidate{Release: Release{ChannelID: channelID, Source: source, Name: name, State: ReleasePurged}}
 		var seq sql.NullInt64
-		if err := purged.Scan(&c.ID, &c.ExtVersion, &c.Platform, &c.Slot, &c.ABI, &c.BodyHash, &seq); err != nil {
+		if err := purged.Scan(&c.ID, &c.PackageVersion, &c.Platform, &c.Slot, &c.ABI, &c.BodyHash, &seq); err != nil {
 			return nil, err
 		}
 		c.Seq = seq.Int64
@@ -125,7 +125,7 @@ func (s *Store) PurgedBuilds(ctx context.Context, tenantID, source, name string)
 	err := s.eachRow(ctx, `SELECT b.id FROM builds b WHERE b.tenant_id = ? AND b.source = ? AND b.name = ?
 AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)
 AND EXISTS (SELECT 1 FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = b.tenant_id AND p.name = b.name
-	AND p.ext_version = b.ext_version AND p.body_hash = b.body_hash AND p.source IN (b.source, '*'))`, []any{tenantID, source, name},
+	AND p.package_version = b.package_version AND p.body_hash = b.body_hash AND p.source IN (b.source, '*'))`, []any{tenantID, source, name},
 		func(sc func(...any) error) error {
 			var id string
 			if err := sc(&id); err != nil {
@@ -162,7 +162,7 @@ func ValidRuleMode(m string) error {
 // SourceVersions are a tenant's catalogue: the versions of each (source, name) it has builds of.
 func (s *Store) SourceVersions(ctx context.Context, tenantID string) (map[[2]string][]string, error) {
 	out := map[[2]string][]string{}
-	err := s.eachRow(ctx, "SELECT source, name, ext_version FROM builds WHERE tenant_id = ? GROUP BY source, name, ext_version",
+	err := s.eachRow(ctx, "SELECT source, name, package_version FROM builds WHERE tenant_id = ? GROUP BY source, name, package_version",
 		[]any{tenantID}, func(sc func(...any) error) error {
 			var src, name, v string
 			if err := sc(&src, &name, &v); err != nil {
@@ -238,7 +238,7 @@ AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)`), tenantID, s
 // LandedBuild is a build landed in the catalogue without a release (TrimLanded's reads).
 type LandedBuild struct{ ID, TenantID, Source, Name, Version, Platform, Slot, BodyHash string }
 
-const landedCols = "id, tenant_id, source, name, ext_version, platform, slot, body_hash"
+const landedCols = "id, tenant_id, source, name, package_version, platform, slot, body_hash"
 
 func scanLanded(out *[]LandedBuild) func(sc func(...any) error) error {
 	return func(sc func(...any) error) error {
@@ -257,7 +257,7 @@ func (s *Store) CrowdedLanded(ctx context.Context, keep int) ([]LandedBuild, err
 	var out []LandedBuild
 	err := s.eachRow(ctx, "SELECT "+landedCols+` FROM builds b WHERE landed = ? AND source NOT LIKE 'upstream:%' AND EXISTS (
 SELECT 1 FROM builds o WHERE o.landed = ? AND o.tenant_id = b.tenant_id AND o.source = b.source AND o.name = b.name AND o.platform = b.platform
-	AND o.slot = b.slot GROUP BY o.tenant_id HAVING COUNT(DISTINCT o.ext_version) > ?)`, []any{true, true, keep}, scanLanded(&out))
+	AND o.slot = b.slot GROUP BY o.tenant_id HAVING COUNT(DISTINCT o.package_version) > ?)`, []any{true, true, keep}, scanLanded(&out))
 	return out, err
 }
 
@@ -314,8 +314,8 @@ func (t *Tx) DeleteEntry(ctx context.Context, tenantID, id string) (Build, error
 	}
 	// a build once released (its release purged since) was installable: it stays, its slot taken
 	if err := t.queryRow(ctx, `SELECT COUNT(*) FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = ?
-AND p.source = ? AND p.name = ? AND p.ext_version = ? AND p.platform = ? AND p.slot = ? AND p.body_hash = ?`,
-		tenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n); err != nil {
+AND p.source = ? AND p.name = ? AND p.package_version = ? AND p.platform = ? AND p.slot = ? AND p.body_hash = ?`,
+		tenantID, b.Source, b.Name, b.PackageVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n); err != nil {
 		return Build{}, err
 	}
 	if n > 0 {
@@ -365,18 +365,18 @@ func (t *Tx) SlotTaken(ctx context.Context, b Build) error {
 		return nil // everyone who may publish in the tenant: the rule stays per channel
 	}
 	var n int
-	err := t.queryRow(ctx, `SELECT COUNT(*) FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND ext_version = ? AND platform = ?
-AND slot = ? AND body_hash <> ?`, b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n)
+	err := t.queryRow(ctx, `SELECT COUNT(*) FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND package_version = ? AND platform = ?
+AND slot = ? AND body_hash <> ?`, b.TenantID, b.Source, b.Name, b.PackageVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n)
 	if err == nil && n == 0 {
 		err = t.queryRow(ctx, `SELECT COUNT(*) FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = ?
-AND p.source = ? AND p.name = ? AND p.ext_version = ? AND p.platform = ? AND p.slot = ? AND p.body_hash <> ?`,
-			b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n)
+AND p.source = ? AND p.name = ? AND p.package_version = ? AND p.platform = ? AND p.slot = ? AND p.body_hash <> ?`,
+			b.TenantID, b.Source, b.Name, b.PackageVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n)
 	}
 	if err != nil {
 		return err
 	}
 	if n > 0 {
-		return fmt.Errorf("%w: %s %s %s %s", ErrCatalogueSlot, b.Name, b.ExtVersion, b.Platform, b.Slot())
+		return fmt.Errorf("%w: %s %s %s %s", ErrCatalogueSlot, b.Name, b.PackageVersion, b.Platform, b.Slot())
 	}
 	return nil
 }

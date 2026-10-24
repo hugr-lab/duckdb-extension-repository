@@ -198,7 +198,7 @@ func TestStatistics(t *testing.T) {
 	}
 	today := store.DayOf(m.st.Now())
 	key := func(ch, name string, authd bool) store.DownloadKey {
-		return store.DownloadKey{TenantID: acme.ID, ChannelID: ids[ch], Name: name, ExtVersion: "1.0", Platform: "linux_amd64",
+		return store.DownloadKey{TenantID: acme.ID, ChannelID: ids[ch], Name: name, PackageVersion: "1.0", Platform: "linux_amd64",
 			DuckDBVersion: "v2.0.0", Day: today, Authenticated: authd}
 	}
 	if _, err := m.st.AddDownloadCounts(ctx, map[store.DownloadKey]int64{key("prod", "tresor", true): 3, key("prod", "tresor", false): 2,
@@ -206,7 +206,7 @@ func TestStatistics(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := m.st.PutDaily(ctx, today, store.Daily{Installers: map[store.InstallerKey]int64{{TenantID: acme.ID, ChannelID: ids["prod"], Name: "tresor",
-		ExtVersion: "1.0", Platform: "linux_amd64"}: 2}}); err != nil {
+		PackageVersion: "1.0", Platform: "linux_amd64"}: 2}}); err != nil {
 		t.Fatal(err)
 	}
 	total := func(who, q string) (int, int64) {
@@ -264,15 +264,15 @@ func TestStatistics(t *testing.T) {
 	// a grant on an extension group (spec 0017) reads its members' statistics, in its channel, never
 	// "any extension"; an install grant on one reads none
 	cli := m.env.adm
-	if _, err := cli.CreateExtensionGroup(ctx, admin, "acme", "platform", ""); err != nil {
+	if _, err := cli.CreatePackageGroup(ctx, admin, "acme", "platform", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := cli.ChangeExtensionGroupMembers(ctx, admin, "acme", "platform", []string{"acl"}, nil); err != nil {
+	if _, _, err := cli.ChangePackageGroupMembers(ctx, admin, "acme", "platform", []string{"acl"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, g := range []struct{ sub, verb string }{{"gina", "admin"}, {"ina", "install"}} {
 		if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|"+g.sub, []string{g.verb},
-			tenants.GrantOn{Channel: "staging", ExtensionGroup: "platform"}); err != nil {
+			tenants.GrantOn{Channel: "staging", PackageGroup: "platform"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -290,7 +290,7 @@ func TestStatistics(t *testing.T) {
 		t.Errorf("group install: %d", status)
 	}
 	// more than 1000 names in scope: the store reads every name and the scope filters
-	if _, err := cli.CreateExtensionGroup(ctx, admin, "acme", "bulk", ""); err != nil {
+	if _, err := cli.CreatePackageGroup(ctx, admin, "acme", "bulk", ""); err != nil {
 		t.Fatal(err)
 	}
 	for b := range 10 {
@@ -298,11 +298,11 @@ func TestStatistics(t *testing.T) {
 		for i := range tenants.MaxMemberChange {
 			batch = append(batch, fmt.Sprintf("n%04d", b*tenants.MaxMemberChange+i))
 		}
-		if _, _, err := cli.ChangeExtensionGroupMembers(ctx, admin, "acme", "bulk", batch, nil); err != nil {
+		if _, _, err := cli.ChangePackageGroupMembers(ctx, admin, "acme", "bulk", batch, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|gina", []string{"admin"}, tenants.GrantOn{ExtensionGroup: "bulk"}); err != nil {
+	if _, err := cli.AddGrant(ctx, admin, "acme", "subject:corp|gina", []string{"admin"}, tenants.GrantOn{PackageGroup: "bulk"}); err != nil {
 		t.Fatal(err)
 	}
 	if status, n := total("group admin", ""); status != 200 || n != 7 {
@@ -333,7 +333,7 @@ func TestUsageStatistics(t *testing.T) {
 	}
 	today := store.DayOf(m.st.Now())
 	key := func(ch, name, version, event, counter, status string, authd bool) store.UsageKey {
-		return store.UsageKey{TenantID: acme.ID, ChannelID: ids[ch], Name: name, ExtVersion: version, Event: event, Counter: counter,
+		return store.UsageKey{TenantID: acme.ID, ChannelID: ids[ch], Name: name, PackageVersion: version, Event: event, Counter: counter,
 			Status: status, Day: today, Authenticated: authd}
 	}
 	if _, err := m.st.AddUsageCounts(ctx, map[store.UsageKey]int64{
@@ -343,14 +343,14 @@ func TestUsageStatistics(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := m.st.PutDaily(ctx, today, store.Daily{Users: map[store.UsageUserKey]int64{
-		{TenantID: acme.ID, ChannelID: ids["prod"], Name: "tresor", ExtVersion: "1.0", Day: today}: 2,
-		{TenantID: acme.ID, ChannelID: ids["prod"], Name: "tresor", ExtVersion: "1.1", Day: today}: 1,
-		{TenantID: acme.ID, ChannelID: ids["staging"], Name: "acl", ExtVersion: "1.0", Day: today}: 5}}); err != nil {
+		{TenantID: acme.ID, ChannelID: ids["prod"], Name: "tresor", PackageVersion: "1.0", Day: today}: 2,
+		{TenantID: acme.ID, ChannelID: ids["prod"], Name: "tresor", PackageVersion: "1.1", Day: today}: 1,
+		{TenantID: acme.ID, ChannelID: ids["staging"], Name: "acl", PackageVersion: "1.0", Day: today}: 5}}); err != nil {
 		t.Fatal(err)
 	}
 	// a downstream kista's aggregate (phase 1c), shown apart when grouped by status
 	if err := m.st.PutReceived(ctx, acme.ID, ids["prod"], "downstream", today, true, []store.ReceivedRow{
-		{Name: "tresor", ExtVersion: "1.0", Users: 6}, {Name: "tresor", ExtVersion: "1.0", Event: "attach", Value: 10}}); err != nil {
+		{Name: "tresor", PackageVersion: "1.0", Users: 6}, {Name: "tresor", PackageVersion: "1.0", Event: "attach", Value: 10}}); err != nil {
 		t.Fatal(err)
 	}
 	get := func(who, q string) (int, map[string]any) {

@@ -1,6 +1,6 @@
 # Spec 0034: Package types
 
-- **Status**: accepted (2026-10-24)
+- **Status**: accepted (2026-10-24); phase 1 implemented
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -239,6 +239,41 @@ groups) carry `package_type` when it is not the default. Subjects (`ext:<name>`,
 Two phases, each a PR, both before spec 0033's phase A2 (so B's licence keys and key owners are
 born with the type): **phase 1**, the rename (0038, no change in behaviour); **phase 2**, the types
 (0039).
+
+### As built (phase 1)
+
+- **Migration 0038** (`0038_package_names`, `min_reader` 38) in the three dialects renames the three
+  group tables, `extension` to `package` in `package_group_members` and `grants`, and `ext_version`
+  to `package_version` in the nine tables that have it: `builds`, `releases`, `purged_slots`,
+  `upstream_versions`, `download_counts`, `download_installers`, `usage_counts`, `usage_users`,
+  `usage_received` (the slot keys `ux_builds_slot`, `ux_releases_slot` and `pk_purged_slots`
+  follow the column; the system-named releases unique that spelled `ext_version` was already
+  replaced by `ux_releases_slot` in 0034). The named constraints and indexes of the group tables
+  follow.
+- **PostgreSQL**: besides the named ones, a `DO` block renames every constraint whose name still
+  spells the old words: the system-named primary keys of the groups and group grants and the
+  groups' foreign key to tenants (with their indexes), and PostgreSQL 18's not-null constraints.
+- **SQL Server**: `sp_rename` throughout; renaming a column that is a key of the filtered
+  `ux_builds_slot` works (its filter names other columns). The system-named primary keys and
+  foreign key of the group tables (`PK__extensio__…`, `FK__extension__…`) keep their generated
+  names, which do not spell `extension_group`.
+- **SQLite**: constraint names inside a table's definition (`uq_extension_groups_name`,
+  `pk_extension_group_members`, …) keep their old spelling: SQLite cannot rename them without
+  rebuilding the tables, and nothing addresses them. The five group indexes are dropped and created.
+- **Go**: the store (`PackageGroup`, `InsertPackageGroup`/`GetPackageGroup`/`ListPackageGroups`/
+  `DeletePackageGroup`, `MaxPackageGroups`, `Grant.Package`/`PackageGroupID`/`PackageGroupName`,
+  `PackageVersion` on builds, releases, statistics and usage rows and keys), `authz.Resource`'s
+  `Package` and `PackageGroup`, `tenants.GrantOn` and the tenants service's group methods
+  (`CreatePackageGroup` and the like), and their callers. Kept: the API's and the configuration's
+  wire structs (their fields mirror their JSON and YAML names, `extension`, `extension_group`), event
+  kinds and payload keys, the CLI's commands, and `release.ValidExtVersion`, the grammar of a
+  version as a segment of DuckDB's paths (a type's version rules are the ADBC spec's).
+- **Tests**: `TestMigrationPackageNames` migrates a populated database at level 37 on the three
+  dialects and reads every row back through the store (grants with and without a name, a
+  publisher's, a group with members and a grant on it, a build, its release, a purged slot, an
+  upstream's versions, downloads, installers, usage counts, users and received usage), and checks
+  that no table, column, index or constraint keeps an old name (SQLite's in-table constraint names
+  aside). The migration tests of earlier levels keep the old names they were written for.
 
 ## Security
 

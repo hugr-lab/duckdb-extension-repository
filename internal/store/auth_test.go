@@ -62,7 +62,7 @@ func TestAuthRecords(t *testing.T) {
 			t.Fatalf("an audience in two tenants: %v", err)
 		}
 		g := store.Grant{TenantID: tn.ID, IssuerID: is.ID, Kind: store.PrincipalSubject, Value: "alice", ChannelID: ch.ID,
-			Extension: "tresor", Verbs: []string{"install"}, CreatedBy: "os:1:t"}
+			Package: "tresor", Verbs: []string{"install"}, CreatedBy: "os:1:t"}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertGrant(ctx, &g) })
 		for name, bad := range map[string]store.Grant{
 			"another tenant's issuer":  {TenantID: tn.ID, IssuerID: ois.ID, Kind: "subject", Value: "x", Verbs: []string{"install"}},

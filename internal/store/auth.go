@@ -156,7 +156,7 @@ func (t *Tx) DeleteIssuer(ctx context.Context, tenantID, name string) error {
 	if err := t.queryRow(ctx, "SELECT id FROM issuers WHERE tenant_id = ? AND name = ?", tenantID, name).Scan(&id); err != nil {
 		return notFound(err, "issuer "+name)
 	}
-	for _, q := range []string{"DELETE FROM grants WHERE issuer_id = ?", "DELETE FROM extension_group_grants WHERE issuer_id = ?"} {
+	for _, q := range []string{"DELETE FROM grants WHERE issuer_id = ?", "DELETE FROM package_group_grants WHERE issuer_id = ?"} {
 		if _, err := t.exec(ctx, q, id); err != nil {
 			return err
 		}
@@ -226,7 +226,7 @@ func (t *Tx) RemoveAudience(ctx context.Context, tenantID, aud string) error {
 // Grant is principal × resource × verbs in a tenant.
 type Grant struct {
 	ID, TenantID, IssuerID, Kind, Value string
-	ChannelID, Extension                string // empty: every channel / every extension
+	ChannelID, Package                  string // empty: every channel / every extension
 	Verbs                               []string
 	CreatedAt                           time.Time
 	CreatedBy                           string
@@ -234,10 +234,10 @@ type Grant struct {
 	// PublisherID is a publisher grant's publisher (spec 0008): its Kind is publisher, its Value the
 	// publisher's id, and it has no issuer.
 	PublisherID, PublisherName string
-	// ExtensionGroupID is a grant on an extension group (spec 0017), stored apart from the others: it
-	// has no Extension, and Members (filled by GetTenantAuth) are its group's names.
-	ExtensionGroupID, ExtensionGroupName string
-	Members                              map[string]bool
+	// PackageGroupID is a grant on a package group (spec 0017), stored apart from the others: it
+	// has no Package, and Members (filled by GetTenantAuth) are its group's names.
+	PackageGroupID, PackageGroupName string
+	Members                          map[string]bool
 }
 
 // Principal renders the grant's principal: kind:<issuer>|value, issuer:<issuer>, or
@@ -283,46 +283,46 @@ func (t *Tx) InsertGrant(ctx context.Context, g *Grant) error {
 		}
 		// feed answers for the channels a grant covers: the tenant or a channel, never an extension
 		// or issuer-wide (spec 0011)
-		if v == VerbFeed && (g.Extension != "" || g.ExtensionGroupID != "" || g.Kind == PrincipalIssuer) {
+		if v == VerbFeed && (g.Package != "" || g.PackageGroupID != "" || g.Kind == PrincipalIssuer) {
 			return fmt.Errorf("%w: feed is granted on the tenant or a channel, never on an extension or issuer-wide", ErrInvalid)
 		}
 		// audit reads the tenant's log: a tenant-wide grant, never an issuer-wide one (spec 0010)
-		if v == VerbAudit && (g.ChannelID != "" || g.Extension != "" || g.ExtensionGroupID != "" || g.Kind == PrincipalIssuer) {
+		if v == VerbAudit && (g.ChannelID != "" || g.Package != "" || g.PackageGroupID != "" || g.Kind == PrincipalIssuer) {
 			return fmt.Errorf("%w: audit is granted on the tenant, never issuer-wide", ErrInvalid)
 		}
 	}
 	if len(g.CreatedBy) > 400 {
 		return fmt.Errorf("%w: a value is too long", ErrInvalid)
 	}
-	if g.Extension != "" && g.ExtensionGroupID != "" {
+	if g.Package != "" && g.PackageGroupID != "" {
 		return fmt.Errorf("%w: a grant names an extension or an extension group, not both", ErrInvalid)
 	}
 	var total int
 	if err := t.queryRow(ctx, `SELECT (SELECT COUNT(*) FROM grants WHERE tenant_id = ?)
-+ (SELECT COUNT(*) FROM extension_group_grants WHERE tenant_id = ?)`, g.TenantID, g.TenantID).Scan(&total); err != nil {
++ (SELECT COUNT(*) FROM package_group_grants WHERE tenant_id = ?)`, g.TenantID, g.TenantID).Scan(&total); err != nil {
 		return err
 	}
 	if total >= MaxGrants {
 		return fmt.Errorf("%w: a tenant holds at most %d grants", ErrInvalid, MaxGrants)
 	}
 	slices.Sort(g.Verbs)
-	if g.ExtensionGroupID != "" {
+	if g.PackageGroupID != "" {
 		return t.insertGroupGrant(ctx, g)
 	}
 	var n int
 	if err := t.queryRow(ctx, `SELECT COUNT(*) FROM grants WHERE tenant_id = ? AND COALESCE(issuer_id, '') = ?
-AND COALESCE(publisher_id, '') = ? AND kind = ? AND value = ? AND COALESCE(channel_id, '') = ? AND COALESCE(extension, '') = ?
+AND COALESCE(publisher_id, '') = ? AND kind = ? AND value = ? AND COALESCE(channel_id, '') = ? AND COALESCE(package, '') = ?
 AND verbs = ?`, g.TenantID, g.IssuerID, g.PublisherID, g.Kind, g.Value,
-		g.ChannelID, g.Extension, strings.Join(g.Verbs, " ")).Scan(&n); err != nil {
+		g.ChannelID, g.Package, strings.Join(g.Verbs, " ")).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {
 		return fmt.Errorf("%w: the same grant", ErrExists)
 	}
 	g.ID, g.CreatedAt = NewID(), t.Now()
-	_, err := t.exec(ctx, `INSERT INTO grants (id, tenant_id, issuer_id, publisher_id, kind, value, channel_id, extension, verbs,
+	_, err := t.exec(ctx, `INSERT INTO grants (id, tenant_id, issuer_id, publisher_id, kind, value, channel_id, package, verbs,
 created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, nullable(g.IssuerID), nullable(g.PublisherID),
-		g.Kind, g.Value, nullable(g.ChannelID), nullable(g.Extension), strings.Join(g.Verbs, " "), t.s.d.timeArg(g.CreatedAt), g.CreatedBy)
+		g.Kind, g.Value, nullable(g.ChannelID), nullable(g.Package), strings.Join(g.Verbs, " "), t.s.d.timeArg(g.CreatedAt), g.CreatedBy)
 	if err := t.s.mapErr(err, "grant"); err != nil {
 		return err
 	}
@@ -332,9 +332,9 @@ created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.ID, g.Tenan
 // insertGroupGrant adds a grant on an extension group (spec 0017), validated by InsertGrant.
 func (t *Tx) insertGroupGrant(ctx context.Context, g *Grant) error {
 	var n int
-	if err := t.queryRow(ctx, `SELECT COUNT(*) FROM extension_group_grants WHERE tenant_id = ? AND group_id = ?
+	if err := t.queryRow(ctx, `SELECT COUNT(*) FROM package_group_grants WHERE tenant_id = ? AND group_id = ?
 AND COALESCE(issuer_id, '') = ? AND COALESCE(publisher_id, '') = ? AND kind = ? AND value = ? AND COALESCE(channel_id, '') = ?
-AND verbs = ?`, g.TenantID, g.ExtensionGroupID, g.IssuerID, g.PublisherID, g.Kind, g.Value, g.ChannelID,
+AND verbs = ?`, g.TenantID, g.PackageGroupID, g.IssuerID, g.PublisherID, g.Kind, g.Value, g.ChannelID,
 		strings.Join(g.Verbs, " ")).Scan(&n); err != nil {
 		return err
 	}
@@ -342,8 +342,8 @@ AND verbs = ?`, g.TenantID, g.ExtensionGroupID, g.IssuerID, g.PublisherID, g.Kin
 		return fmt.Errorf("%w: the same grant", ErrExists)
 	}
 	g.ID, g.CreatedAt = NewID(), t.Now()
-	_, err := t.exec(ctx, `INSERT INTO extension_group_grants (id, tenant_id, group_id, issuer_id, publisher_id, kind, value, channel_id,
-verbs, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, g.ExtensionGroupID, nullable(g.IssuerID),
+	_, err := t.exec(ctx, `INSERT INTO package_group_grants (id, tenant_id, group_id, issuer_id, publisher_id, kind, value, channel_id,
+verbs, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, g.PackageGroupID, nullable(g.IssuerID),
 		nullable(g.PublisherID), g.Kind, g.Value, nullable(g.ChannelID), strings.Join(g.Verbs, " "), t.s.d.timeArg(g.CreatedAt), g.CreatedBy)
 	if err := t.s.mapErr(err, "grant"); err != nil {
 		return err
@@ -353,7 +353,7 @@ verbs, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, g.ID, 
 
 // DeleteGrant removes a grant: from grants, else from the grants on extension groups.
 func (t *Tx) DeleteGrant(ctx context.Context, tenantID, id string) error {
-	for _, table := range []string{"grants", "extension_group_grants"} {
+	for _, table := range []string{"grants", "package_group_grants"} {
 		res, err := t.exec(ctx, "DELETE FROM "+table+" WHERE tenant_id = ? AND id = ?", tenantID, id)
 		if err != nil {
 			return err
@@ -366,9 +366,9 @@ func (t *Tx) DeleteGrant(ctx context.Context, tenantID, id string) error {
 }
 
 // GroupGranted reports whether a grant names an extension group.
-func (t *Tx) GroupGranted(ctx context.Context, g ExtensionGroup) (bool, error) {
+func (t *Tx) GroupGranted(ctx context.Context, g PackageGroup) (bool, error) {
 	var n int
-	err := t.queryRow(ctx, "SELECT COUNT(*) FROM extension_group_grants WHERE tenant_id = ? AND group_id = ?", g.TenantID, g.ID).Scan(&n)
+	err := t.queryRow(ctx, "SELECT COUNT(*) FROM package_group_grants WHERE tenant_id = ? AND group_id = ?", g.TenantID, g.ID).Scan(&n)
 	return n > 0, err
 }
 
@@ -459,13 +459,13 @@ func readTenantAuth(ctx context.Context, query queryFn, tenantID string) (Tenant
 		return a, err
 	}
 	if a.Grants, err = readGrants(ctx, query, `SELECT g.id, g.tenant_id, g.issuer_id, g.publisher_id, g.kind, g.value, g.channel_id,
-g.extension, '', g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM grants g LEFT JOIN issuers i ON i.id = g.issuer_id
+g.package, '', g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM grants g LEFT JOIN issuers i ON i.id = g.issuer_id
 LEFT JOIN publishers p ON p.id = g.publisher_id LEFT JOIN channels c ON c.id = g.channel_id WHERE g.tenant_id = ?
 ORDER BY g.created_at, g.id`, tenantID); err != nil {
 		return a, err
 	}
 	if a.GroupGrants, err = readGrants(ctx, query, `SELECT g.id, g.tenant_id, g.issuer_id, g.publisher_id, g.kind, g.value, g.channel_id,
-'', g.group_id, g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM extension_group_grants g
+'', g.group_id, g.verbs, g.created_at, g.created_by, i.name, p.name, c.name FROM package_group_grants g
 LEFT JOIN issuers i ON i.id = g.issuer_id LEFT JOIN publishers p ON p.id = g.publisher_id LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.tenant_id = ? ORDER BY g.created_at, g.id`, tenantID); err != nil {
 		return a, err
@@ -474,8 +474,8 @@ WHERE g.tenant_id = ? ORDER BY g.created_at, g.id`, tenantID); err != nil {
 		return a, err
 	}
 	for i := range a.GroupGrants {
-		if gs := a.Groups[a.GroupGrants[i].ExtensionGroupID]; gs != nil {
-			a.GroupGrants[i].ExtensionGroupName, a.GroupGrants[i].Members = gs.Name, gs.Members
+		if gs := a.Groups[a.GroupGrants[i].PackageGroupID]; gs != nil {
+			a.GroupGrants[i].PackageGroupName, a.GroupGrants[i].Members = gs.Name, gs.Members
 		} else {
 			a.GroupGrants[i].Members = map[string]bool{} // a group read apart: covers nothing
 		}
@@ -500,8 +500,8 @@ func readGrants(ctx context.Context, query queryFn, q, tenantID string) ([]Grant
 			return nil, err
 		}
 		g.IssuerID, g.PublisherID, g.IssuerName, g.PublisherName = iss.String, pub.String, issName.String, pubName.String
-		g.ChannelID, g.Extension, g.ChannelName, g.Verbs = ch.String, ext.String, chName.String, strings.Fields(verbs)
-		g.ExtensionGroupID = grp.String
+		g.ChannelID, g.Package, g.ChannelName, g.Verbs = ch.String, ext.String, chName.String, strings.Fields(verbs)
+		g.PackageGroupID = grp.String
 		out = append(out, g)
 	}
 	return out, closeRows(rows)
@@ -516,7 +516,7 @@ func closeRows(rows *sql.Rows) error {
 // TenantAdminGrants counts a tenant's tenant-wide grants that carry admin and are evaluated (not
 // issuer-wide ones, spec 0007): the lock-out check counts them inside the removing transaction.
 func (t *Tx) TenantAdminGrants(ctx context.Context, tenantID string) (int, error) {
-	rows, err := t.query(ctx, `SELECT verbs FROM grants WHERE tenant_id = ? AND channel_id IS NULL AND extension IS NULL
+	rows, err := t.query(ctx, `SELECT verbs FROM grants WHERE tenant_id = ? AND channel_id IS NULL AND package IS NULL
 AND kind <> ?`, tenantID, PrincipalIssuer)
 	if err != nil {
 		return 0, err

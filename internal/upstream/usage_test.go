@@ -41,7 +41,7 @@ func TestUsageForwarding(t *testing.T) {
 			today := en.st.Now().UTC().Truncate(24 * time.Hour)
 			day := func(i int) string { return store.DayOf(today.AddDate(0, 0, -i)) }
 			key := func(d, name, event, counter, status string, auth bool) store.UsageKey {
-				return store.UsageKey{TenantID: tid, ChannelID: u.ChannelID, Name: name, ExtVersion: "1.0", Event: event, Counter: counter,
+				return store.UsageKey{TenantID: tid, ChannelID: u.ChannelID, Name: name, PackageVersion: "1.0", Event: event, Counter: counter,
 					Status: status, Day: d, Authenticated: auth}
 			}
 			if _, err := en.st.AddUsageCounts(ctx, map[store.UsageKey]int64{
@@ -49,18 +49,18 @@ func TestUsageForwarding(t *testing.T) {
 				key(day(2), "tresor", "attach", "sources", "valid", true): 9, key(day(2), "other", "load", "", "valid", true): 100,
 				key(day(3), "tresor", "load", "", "valid", true): 1,
 				// the same version counted in a channel without the upstream's build: not its usage
-				{TenantID: tid, ChannelID: "elsewhere", Name: "tresor", ExtVersion: "1.0", Event: "load", Status: "valid", Day: day(2)}: 1000}); err != nil {
+				{TenantID: tid, ChannelID: "elsewhere", Name: "tresor", PackageVersion: "1.0", Event: "load", Status: "valid", Day: day(2)}: 1000}); err != nil {
 				t.Fatal(err)
 			}
 			for d, n := range map[string]int64{day(2): 4, day(3): 2} {
 				if err := en.st.PutDaily(ctx, d, store.Daily{Users: map[store.UsageUserKey]int64{
-					{TenantID: tid, ChannelID: u.ChannelID, Name: "tresor", ExtVersion: "1.0", Day: d}: n}}); err != nil {
+					{TenantID: tid, ChannelID: u.ChannelID, Name: "tresor", PackageVersion: "1.0", Day: d}: n}}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			// a downstream kista's aggregate is forwarded too: users 4 + 3
 			if err := en.st.PutReceived(ctx, tid, u.ChannelID, "downstream", day(2), true, []store.ReceivedRow{
-				{Name: "tresor", ExtVersion: "1.0", Users: 3}, {Name: "tresor", ExtVersion: "1.0", Event: "load", Value: 10}}); err != nil {
+				{Name: "tresor", PackageVersion: "1.0", Users: 3}, {Name: "tresor", PackageVersion: "1.0", Event: "load", Value: 10}}); err != nil {
 				t.Fatal(err)
 			}
 			fw := &usage.Forwarder{Store: en.st, Post: en.up.Fetch.(usage.Poster), Credentials: en.up.Credentials, Holder: "test",

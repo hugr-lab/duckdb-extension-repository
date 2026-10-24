@@ -41,16 +41,16 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO duckdb_versions (id, name, kind, created_at) VALUES (?, ?, 'release', ?)", []any{id("v"), "v2.0." + n, now}},
 		{"INSERT INTO channel_duckdb_versions (channel_id, duckdb_version_id) VALUES (?, ?)", []any{cid, id("v")}},
 		{"INSERT INTO key_events (id, key_id, to_state, actor, forced, at) VALUES (?, ?, 'active', 'os:1:t', ?, ?)", []any{id("e"), key.ID, false, now}},
-		{"INSERT INTO builds (id, tenant_id, source, name, ext_version, platform, abi, duckdb_version, slot, body_hash, origin, created_at, created_by, checked) " +
+		{"INSERT INTO builds (id, tenant_id, source, name, package_version, platform, abi, duckdb_version, slot, body_hash, origin, created_at, created_by, checked) " +
 			"VALUES (?, ?, 'tenant', 'acl', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', 'v2.0.0', ?, 'admin', ?, 'os:1:t', ?)", []any{id("b"), tid, hash, now, true}},
-		{"INSERT INTO releases (id, tenant_id, channel_id, build_id, name, ext_version, platform, slot, state, visibility, seq, created_at, " +
+		{"INSERT INTO releases (id, tenant_id, channel_id, build_id, name, package_version, platform, slot, state, visibility, seq, created_at, " +
 			"created_by, state_changed_at, state_changed_by, version, origin) VALUES (?, ?, ?, ?, 'acl', '1.0', 'linux_amd64', 'v2.0.0', 'active', " +
 			"'public', 1, ?, 'os:1:t', ?, 'os:1:t', 1, 'admin')", []any{id("r"), tid, cid, id("b"), now, now}},
 		{"INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at) VALUES (?, ?, ?, 'pem', 'upstream', ?, ?)",
 			[]any{tid, id("b"), "sha256:" + hash, id("u"), now}},
 		{"INSERT INTO release_signatures (release_id, channel_id, key_id, signature, created_at) VALUES (?, ?, ?, ?, ?)", []any{id("r"), cid, key.ID, sig, now}},
 		{"UPDATE channels SET serving_key_id = ? WHERE id = ?", []any{key.ID, cid}},
-		{"INSERT INTO purged_slots (channel_id, source, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at) " +
+		{"INSERT INTO purged_slots (channel_id, source, name, package_version, platform, slot, abi, body_hash, seq, release_id, purged_at) " +
 			"VALUES (?, 'tenant', 'old', '0.1', 'linux_amd64', 'v2.0.0', 'cpp', ?, 1, ?, ?)", []any{cid, hash, id("q"), now}},
 		{"INSERT INTO blocks (tenant_id, body_hash, reason, created_at, created_by) VALUES (?, ?, 'CVE', ?, 'os:1:t')", []any{tid, hash, now}},
 		{"INSERT INTO shadows (tenant_id, name, created_at, created_by) VALUES (?, 'json', ?, 'os:1:t')", []any{tid, now}},
@@ -66,7 +66,7 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO upstream_keys (upstream_id, fingerprint) VALUES (?, ?)", []any{id("u"), fp("c")}},
 		{"INSERT INTO upstream_platforms (upstream_id, platform) VALUES (?, 'linux_amd64')", []any{id("u")}},
 		{"INSERT INTO upstream_entries (upstream_id, name, allow_reserved) VALUES (?, 'json', ?)", []any{id("u"), false}},
-		{"INSERT INTO upstream_versions (upstream_id, name, ext_version) VALUES (?, 'json', '1.0')", []any{id("u")}},
+		{"INSERT INTO upstream_versions (upstream_id, name, package_version) VALUES (?, 'json', '1.0')", []any{id("u")}},
 		{"INSERT INTO upstream_cells (upstream_id, duckdb_version, platform, name, outcome, fetched_at) VALUES (?, 'v2.0.0', 'linux_amd64', 'json', 'missing', ?)",
 			[]any{id("u"), now}},
 		{"INSERT INTO upstream_asks (upstream_id, duckdb_version, platform, name, asked_at) VALUES (?, 'v2.0.0', 'linux_amd64', 'json', ?)",
@@ -76,7 +76,7 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 			"'pro', 't', ?, 1, 2, 3, 'upstream', ?, 'private', 'system:licenses', ?, 1)", []any{tid, fp("l"), id("u"), now}},
 		{"INSERT INTO license_syncs (upstream_id, tenant_id, last_run_at, last_result) VALUES (?, ?, ?, '{}')", []any{id("u"), tid, now}},
 		{"INSERT INTO usage_forwards (upstream_id, tenant_id, last_run_at, last_result) VALUES (?, ?, ?, '{}')", []any{id("u"), tid, now}},
-		{"INSERT INTO usage_received (tenant_id, channel_id, sender, day, name, ext_version, event, counter, users, value) " +
+		{"INSERT INTO usage_received (tenant_id, channel_id, sender, day, name, package_version, event, counter, users, value) " +
 			"VALUES (?, ?, 'x', '2026-10-11', 'acl', '1.0', 'load', '', 0, 4)", []any{tid, cid}},
 		{"INSERT INTO publishers (id, tenant_id, name, created_at, created_by) VALUES (?, ?, 'ci', ?, 'os:1:t')", []any{id("p"), tid, now}},
 		{"INSERT INTO publisher_keys (id, tenant_id, publisher_id, type, public_key, fingerprint, title, created_at, created_by) " +
@@ -88,10 +88,10 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO grants (id, tenant_id, issuer_id, kind, value, verbs, created_at, created_by) VALUES (?, ?, ?, 'role', 'admin', 'admin', ?, 'os:1:t')",
 			[]any{id("a"), tid, id("i"), now}},
 		{"INSERT INTO tenant_audiences (audience, tenant_id, created_at, created_by) VALUES (?, ?, ?, 'os:1:t')", []any{"api://" + name, tid, now}},
-		{"INSERT INTO extension_groups (id, tenant_id, name, description, version, created_at, created_by) VALUES (?, ?, 'g', '', 1, ?, 'os:1:t')",
+		{"INSERT INTO package_groups (id, tenant_id, name, description, version, created_at, created_by) VALUES (?, ?, 'g', '', 1, ?, 'os:1:t')",
 			[]any{id("x"), tid, now}},
-		{"INSERT INTO extension_group_members (group_id, tenant_id, extension, added_at, added_by) VALUES (?, ?, 'acl', ?, 'os:1:t')", []any{id("x"), tid, now}},
-		{"INSERT INTO extension_group_grants (id, tenant_id, group_id, issuer_id, kind, value, verbs, created_at, created_by) " +
+		{"INSERT INTO package_group_members (group_id, tenant_id, package, added_at, added_by) VALUES (?, ?, 'acl', ?, 'os:1:t')", []any{id("x"), tid, now}},
+		{"INSERT INTO package_group_grants (id, tenant_id, group_id, issuer_id, kind, value, verbs, created_at, created_by) " +
 			"VALUES (?, ?, ?, ?, 'role', 'dev', 'install', ?, 'os:1:t')", []any{id("y"), tid, id("x"), id("i"), now}},
 		{"INSERT INTO attachments (id, tenant_id, body_hash, kind, media_type, title, size, content_hash, summary, origin, attached_by, visibility, " +
 			"feedable, version, created_at, issuer, issuer_id, issued_at) VALUES (?, ?, ?, 'notes', 'text/markdown', 'n', 1, ?, '{}', 'tenant', " +
@@ -113,13 +113,13 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 			[]any{id("u"), hash, now}},
 		{"INSERT INTO feed_kept (tenant_id, issuer, issuer_id, body_hash, seq, statement, signature, kept_at) VALUES (?, 'https://src.example/api/v1/tenants/x', ?, ?, 3, '{}', 'x', ?)",
 			[]any{tid, id("k"), hash, now}},
-		{"INSERT INTO download_counts (tenant_id, channel_id, name, ext_version, platform, duckdb_version, day, authenticated, count) " +
+		{"INSERT INTO download_counts (tenant_id, channel_id, name, package_version, platform, duckdb_version, day, authenticated, count) " +
 			"VALUES (?, ?, 'acl', '1.0', 'linux_amd64', 'v2.0.0', '2026-10-11', ?, 3)", []any{tid, cid, false}},
-		{"INSERT INTO download_installers (tenant_id, channel_id, name, ext_version, platform, day, installers) " +
+		{"INSERT INTO download_installers (tenant_id, channel_id, name, package_version, platform, day, installers) " +
 			"VALUES (?, ?, 'acl', '1.0', 'linux_amd64', '2026-10-11', 2)", []any{tid, cid}},
-		{"INSERT INTO usage_counts (tenant_id, channel_id, name, ext_version, event, counter, status, day, authenticated, value) " +
+		{"INSERT INTO usage_counts (tenant_id, channel_id, name, package_version, event, counter, status, day, authenticated, value) " +
 			"VALUES (?, ?, 'acl', '1.0', 'load', '', 'valid', '2026-10-11', ?, 3)", []any{tid, cid, true}},
-		{"INSERT INTO usage_users (tenant_id, channel_id, name, ext_version, day, users) VALUES (?, ?, 'acl', '1.0', '2026-10-11', 2)", []any{tid, cid}},
+		{"INSERT INTO usage_users (tenant_id, channel_id, name, package_version, day, users) VALUES (?, ?, 'acl', '1.0', '2026-10-11', 2)", []any{tid, cid}},
 	} {
 		if err := store.ExecRaw(ctx, s, q.sql, q.args...); err != nil {
 			t.Fatalf("%s: %v", q.sql, err)
@@ -217,17 +217,17 @@ func TestReapTenant(t *testing.T) {
 		if feeds, err := s.DueFeeds(ctx, s.Now(), true); err != nil || len(feeds) != 1 || strings.HasPrefix(feeds[0], "1") {
 			t.Fatalf("due feeds: %v %v", feeds, err)
 		}
-		dk := store.DownloadKey{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", ExtVersion: "9.9", Platform: "linux_amd64",
+		dk := store.DownloadKey{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", PackageVersion: "9.9", Platform: "linux_amd64",
 			DuckDBVersion: "v2.0.0", Day: "2026-10-12"}
 		if done, err := s.AddDownloadCounts(ctx, map[store.DownloadKey]int64{dk: 1}); err != nil || len(done) != 1 {
 			t.Fatalf("counts: %v %v", done, err)
 		}
-		if n, _ := store.CountRaw(ctx, s, "download_counts", "tenant_id = ? AND ext_version = '9.9'", gone.ID); n != 0 {
+		if n, _ := store.CountRaw(ctx, s, "download_counts", "tenant_id = ? AND package_version = '9.9'", gone.ID); n != 0 {
 			t.Error("a download count written for a deleting tenant")
 		}
-		ik := store.InstallerKey{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", ExtVersion: "9.9", Platform: "linux_amd64", Day: "2026-10-12"}
+		ik := store.InstallerKey{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", PackageVersion: "9.9", Platform: "linux_amd64", Day: "2026-10-12"}
 		if err := s.PutDaily(ctx, "2026-10-12", store.Daily{Installers: map[store.InstallerKey]int64{ik: 1},
-			Users: map[store.UsageUserKey]int64{{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", ExtVersion: "9.9", Day: "2026-10-12"}: 1}}); err != nil {
+			Users: map[store.UsageUserKey]int64{{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", PackageVersion: "9.9", Day: "2026-10-12"}: 1}}); err != nil {
 			t.Fatal(err)
 		}
 		if n, _ := store.CountRaw(ctx, s, "download_installers", "tenant_id = ? AND day = '2026-10-12'", gone.ID); n != 0 {
@@ -236,15 +236,15 @@ func TestReapTenant(t *testing.T) {
 		if n, _ := store.CountRaw(ctx, s, "usage_users", "tenant_id = ? AND day = '2026-10-12'", gone.ID); n != 0 {
 			t.Error("usage users written for a deleting tenant")
 		}
-		uk := store.UsageKey{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", ExtVersion: "9.9", Event: "load", Status: "valid", Day: "2026-10-12"}
+		uk := store.UsageKey{TenantID: gone.ID, ChannelID: goneCh.ID, Name: "acl", PackageVersion: "9.9", Event: "load", Status: "valid", Day: "2026-10-12"}
 		if done, err := s.AddUsageCounts(ctx, map[store.UsageKey]int64{uk: 1}); err != nil || len(done) != 1 {
 			t.Fatalf("usage counts: %v %v", done, err)
 		}
-		if n, _ := store.CountRaw(ctx, s, "usage_counts", "tenant_id = ? AND ext_version = '9.9'", gone.ID); n != 0 {
+		if n, _ := store.CountRaw(ctx, s, "usage_counts", "tenant_id = ? AND package_version = '9.9'", gone.ID); n != 0 {
 			t.Error("a usage count written for a deleting tenant")
 		}
 		err = s.InTx(ctx, "", func(tx *store.Tx) error {
-			b := store.Build{TenantID: gone.ID, Name: "acl", ExtVersion: "2.0", Platform: "linux_amd64", ABI: "cpp", DuckDBVersion: "v2.0.0",
+			b := store.Build{TenantID: gone.ID, Name: "acl", PackageVersion: "2.0", Platform: "linux_amd64", ABI: "cpp", DuckDBVersion: "v2.0.0",
 				BodyHash: strings.Repeat("9", 64), Origin: "admin", CreatedBy: "os:1:t"}
 			return tx.FindOrInsertBuild(ctx, &b)
 		})
@@ -339,7 +339,7 @@ func TestReapTenant(t *testing.T) {
 		}
 
 		// a row that appears under the tombstone is found by the late sweep
-		if err := store.ExecRaw(ctx, s, "INSERT INTO download_counts (tenant_id, channel_id, name, ext_version, platform, duckdb_version, day, "+
+		if err := store.ExecRaw(ctx, s, "INSERT INTO download_counts (tenant_id, channel_id, name, package_version, platform, duckdb_version, day, "+
 			"authenticated, count) VALUES (?, ?, 'acl', '1.0', 'linux_amd64', 'v2.0.0', '2026-10-12', ?, 1)", gone.ID, goneCh.ID, false); err != nil {
 			t.Fatal(err)
 		}
@@ -395,7 +395,7 @@ func TestReapBatch(t *testing.T) {
 		s := e.Open(t)
 		tn, ch := fixture(t, s)
 		for i := range store.ReapBatch + 5 {
-			if err := store.ExecRaw(ctx, s, "INSERT INTO download_counts (tenant_id, channel_id, name, ext_version, platform, duckdb_version, day, "+
+			if err := store.ExecRaw(ctx, s, "INSERT INTO download_counts (tenant_id, channel_id, name, package_version, platform, duckdb_version, day, "+
 				"authenticated, count) VALUES (?, ?, 'acl', ?, 'linux_amd64', 'v2.0.0', '2026-10-11', ?, 1)", tn.ID, ch.ID, "1."+strconv.Itoa(i), false); err != nil {
 				t.Fatal(err)
 			}

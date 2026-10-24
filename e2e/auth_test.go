@@ -304,7 +304,7 @@ func TestPublishPromoteInstall(t *testing.T) {
 		{"publisher:ci", "publish", "staging", ""},          // channel-wide: not demo_capi, a core name
 		{"publisher:ci", "publish", "staging", "demo_capi"}, // named
 	} {
-		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", g.principal, []string{g.verb}, tenants.GrantOn{Channel: g.channel, Extension: g.ext}); err != nil {
+		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", g.principal, []string{g.verb}, tenants.GrantOn{Channel: g.channel, Package: g.ext}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -314,7 +314,7 @@ func TestPublishPromoteInstall(t *testing.T) {
 		{"rm", "publish", "staging", "loadable_extension_demo"},
 		{"tom", "admin", "", ""},
 	} {
-		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|"+g.sub, []string{g.verb}, tenants.GrantOn{Channel: g.channel, Extension: g.ext}); err != nil {
+		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|"+g.sub, []string{g.verb}, tenants.GrantOn{Channel: g.channel, Package: g.ext}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -415,12 +415,12 @@ func TestServeGroupGrant(t *testing.T) {
 	if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adm.CreateExtensionGroup(ctx, serveAdmin, "acme", "demos", ""); err != nil {
+	if _, err := adm.CreatePackageGroup(ctx, serveAdmin, "acme", "demos", ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, g := range []struct{ sub, channel string }{{"carol", "prod"}, {"dave", "staging"}} {
 		if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|"+g.sub, []string{"install"},
-			tenants.GrantOn{Channel: g.channel, ExtensionGroup: "demos"}); err != nil {
+			tenants.GrantOn{Channel: g.channel, PackageGroup: "demos"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -453,14 +453,14 @@ func TestServeGroupGrant(t *testing.T) {
 		}
 	}
 	refused("not yet a member", "carol")
-	if _, _, err := adm.ChangeExtensionGroupMembers(ctx, serveAdmin, "acme", "demos", []string{"loadable_extension_demo"}, nil); err != nil {
+	if _, _, err := adm.ChangePackageGroupMembers(ctx, serveAdmin, "acme", "demos", []string{"loadable_extension_demo"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if r := install("carol"); !r.OK {
 		t.Fatalf("a member at the next request: %s", r.Error)
 	}
 	refused("the group in another channel", "dave")
-	if _, _, err := adm.ChangeExtensionGroupMembers(ctx, serveAdmin, "acme", "demos", nil, []string{"loadable_extension_demo"}); err != nil {
+	if _, _, err := adm.ChangePackageGroupMembers(ctx, serveAdmin, "acme", "demos", nil, []string{"loadable_extension_demo"}); err != nil {
 		t.Fatal(err)
 	}
 	refused("a name that left the group", "carol")

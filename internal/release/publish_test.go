@@ -207,7 +207,7 @@ func TestPromote(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, r := range rs3 {
-			if r.ExtVersion == "3.0" && r.Platform == "linux_arm64" {
+			if r.PackageVersion == "3.0" && r.Platform == "linux_arm64" {
 				t.Fatal("all or none: the arm64 release was inserted")
 			}
 		}
@@ -313,7 +313,7 @@ func TestBlockRace(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, r := range rs {
-					if r.ExtVersion == ver && r.State != store.ReleaseYanked {
+					if r.PackageVersion == ver && r.State != store.ReleaseYanked {
 						t.Fatalf("%s %s is %s after a block", ch, ver, r.State)
 					}
 				}

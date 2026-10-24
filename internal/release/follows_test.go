@@ -33,7 +33,7 @@ func (p placing) names(t *testing.T) string {
 	}
 	var out []string
 	for i := len(rs) - 1; i >= 0; i-- {
-		out = append(out, rs[i].Name+"@"+rs[i].ExtVersion)
+		out = append(out, rs[i].Name+"@"+rs[i].PackageVersion)
 	}
 	return strings.Join(out, " ")
 }
@@ -44,7 +44,7 @@ type publishes map[string]bool
 
 func (g publishes) Allow(ctx context.Context, a authz.Actor, v authz.Verb, r authz.Resource) error {
 	if a.Kind == authz.ActorPublisher {
-		if v == authz.VerbPublish && g[r.Extension] {
+		if v == authz.VerbPublish && g[r.Package] {
 			return nil
 		}
 		return authz.ErrDenied
