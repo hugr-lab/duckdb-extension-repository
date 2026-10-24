@@ -40,3 +40,4 @@ and it is superseded by a new spec when a decision changes.
 | [0031](0031-channel-sources/spec.md) | A name's source in a channel: the selected source wins, set by the first arrival, switched by an administrator | implemented |
 | [0032](0032-lazy-mirror/spec.md) | Lazy mirrors: cells fetched on first request, kept current, eager entries and fetch now | implemented |
 | [0033](0033-catalogue/spec.md) | The catalogue: a tenant's builds of sources, taken by channels by rules | phase A1 implemented |
+| [0034](0034-package-types/spec.md) | Package types: (type, name) in every key, one type per channel, the package vocabulary | draft |
