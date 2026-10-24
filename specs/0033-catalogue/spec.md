@@ -1,6 +1,6 @@
 # Spec 0033: The catalogue
 
-- **Status**: draft
+- **Status**: accepted (2026-10-24); phases A1, A2, B and C to come
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
