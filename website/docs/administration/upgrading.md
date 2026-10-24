@@ -168,10 +168,13 @@ so the operator declares it:
 
 - **Migration `0036_catalogue_slots`** gives builds their slot and makes a source's version unique
   in the tenant, and raises `min_reader` to 36: stop every older replica first.
-- Two bodies of one version a source released in two channels before are both kept, the newer one
-  marked a legacy duplicate outside the unique key; a new arrival of another body is refused.
-- `catalogue.max_entries` (20,000) and `catalogue.max_bytes` (100 GiB) bound each source: check that
-  no source of yours holds more before upgrading (`kista admin catalogue list`), or raise them.
+- Two bodies of one version a source released in two channels before are both kept, the released
+  one (else the oldest) holding the unique key and the others legacy duplicates; a new arrival of
+  another body is refused. The tenant's own source keeps the rule per channel.
+- `catalogue.max_entries` (20,000) and `catalogue.max_bytes` (100 GiB) bound each source's builds
+  placed nowhere; released builds do not count.
+- Builds landed by A1 part 2 (a mirror under a manual rule) are kept while their cell holds them;
+  the first hourly sweep leaves the others to the collector.
 
 ### A channel's rules take from the catalogue (spec 0033, phase A1 part 2)
 

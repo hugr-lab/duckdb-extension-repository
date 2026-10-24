@@ -66,7 +66,7 @@ its own.
 | Promote releases between channels | `release promote` | the `promote` verb | no |
 | Place a version from the catalogue | `release place` | the `promote` verb (channel admin for a name without a rule) | no |
 | Read the catalogue | `catalogue list`, `catalogue show` | tenant admin | no |
-| Add to or purge from the catalogue | `catalogue add`, `catalogue purge` | `publish` tenant-wide (add); tenant admin (purge) | no |
+| Add to or purge from the catalogue | `catalogue add`, `catalogue purge` | tenant admin (over the API, a publication into the catalogue takes `publish` tenant-wide) | no |
 | Blocks | `block` | tenant admin | yes |
 | Issuers, console clients, grants, extension groups | `issuer`, `grant`, `extension-group` | tenant admin | yes |
 | Publishers and their keys | `publisher` | tenant admin | yes |

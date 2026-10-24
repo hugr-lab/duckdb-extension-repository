@@ -383,9 +383,11 @@ mark cleared. `kista admin release list` names the releases of a body.
 
 ## Garbage collection
 
-kista deletes what nothing serves and nothing can serve again: Builds without a release, body
-records no Build uses, streams no record references, `fs` leftovers in `tmp/`, incomplete S3
-uploads, and attachment objects without a record. A body served by a release is never collected.
+kista deletes what nothing serves and nothing can serve again: Builds without a release (but those
+that wait in a tenant's [catalogue](upstreams.md#the-catalogue-and-a-channels-rules) as landed, until
+the catalogue lets them go or an administrator purges them), body records no Build uses, streams no
+record references, `fs` leftovers in `tmp/`, incomplete S3 uploads, and attachment objects without
+a record. A body served by a release is never collected.
 
 ```yaml title="kista.yaml"
 gc:                     # file-only

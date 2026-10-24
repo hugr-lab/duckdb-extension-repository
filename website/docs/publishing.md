@@ -60,7 +60,7 @@ channel](upstreams.md#a-names-source-in-a-channel)): another source may release 
 the name in the channel, and the channel serves the one whose source it selected.
 
 - **A released version is immutable** within its source, in every channel of the tenant and in its
-  catalogue. The same body in the same slot with the same choices is the existing release (`200`);
+  catalogue (the tenant's own source, per channel). The same body in the same slot with the same choices is the existing release (`200`);
   another body, or other choices, is `409`. A fix is a new version. A body another source released
   in the channel is a release of the publisher's own (`201`).
 - A yanked release keeps its slot.
@@ -271,12 +271,14 @@ POST /api/v1/tenants/{t}/catalogue/extensions/{ext}/builds?version=&platform=[&v
 ```
 
 The request is a channel's publication's, without `current`: the body is the file, a publisher
-signs it as any request. It takes `publish` on the extension tenant-wide (a grant on a channel does
-not reach it; a reserved name only through a grant naming it). The build's DuckDB version must be
-registered on the server. The answer is the build (`201`, or `200` when the source has the body
+signs it as any request (the signed statement is checked, not recorded on the build: a later
+placement carries the build's provenance only). It takes `publish` on the extension tenant-wide (a
+grant on a channel does not reach it; a reserved name only through a grant naming it). The build's
+DuckDB version must be registered on the server (a C API build's is not checked). The same body
+again answers the build as it is, whatever `visibility` asks. The answer is the build (`201`, or `200` when the source has the body
 already): `{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility",
 "origin", "checked", "created_at", "placed"}`. The CLI's form is `kista admin catalogue add <tenant>
-<file|-> -name <name> [-private] [-unchecked]`.
+<file|-> -name <name> [-private]` (a tenant administrator's, source `tenant`).
 
 ## Placing from the catalogue
 

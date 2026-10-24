@@ -194,24 +194,13 @@ func TestPromote(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		// spec 0033: another body of 3.0 is refused in prod, as anywhere in the tenant from this source
+		// the tenant's own source keeps a version's rule per channel (spec 0033): another body in prod
 		conflict := built(t, cpp("3.0"), "tresor_duckdb_cpp_init", "helper")
-		if _, _, err := en.addTo(t, "prod", conflict, publish("tresor", "3.0", "linux_amd64")); !errors.Is(err, release.ErrSlot) {
-			t.Fatalf("another body of 3.0 in prod: %v", err)
-		}
-		// all or none: amd64's slot in prod purged, the version's promotion inserts nothing
-		r3, _, err := en.addTo(t, "prod", v3, publish("tresor", "3.0", "linux_amd64"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "tresor", r3.ID, release.Yank, 0); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := en.rel.Purge(ctx, admin, "acme", "prod", "tresor", r3.ID, 0); err != nil {
+		if _, _, err := en.addTo(t, "prod", conflict, publish("tresor", "3.0", "linux_amd64")); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, err := en.rel.Promote(ctx, admin, "acme", "prod", "tresor", release.PromoteOptions{From: "staging", Version: "3.0"}); !errors.Is(err, release.ErrSlot) {
-			t.Fatalf("a version with a purged slot: %v", err)
+			t.Fatalf("a version with a conflicting slot: %v", err)
 		}
 		rs3, err := en.rel.List(ctx, admin, "acme", "prod", "tresor")
 		if err != nil {

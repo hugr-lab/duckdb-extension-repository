@@ -73,6 +73,11 @@ type Build struct {
 	// Visibility and Provenance are as its arrival made its release (spec 0033): the widest a
 	// placement serves it with, and the facts a placement's release carries (a credential).
 	Visibility, Provenance string
+	// Legacy inserts it as a legacy duplicate, outside its source's slot (spec 0033): only a successor's
+	// copy of a removed upstream's build, whose slot the successor holds with another body. Never read.
+	Legacy bool
+	// Inserted is set by FindOrInsertBuild when it inserted the build (not found it).
+	Inserted bool
 }
 
 // Release is a Build in a channel.
@@ -205,20 +210,16 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if len(b.OriginSignature) > 0 {
 		sig = b.OriginSignature
 	}
-	// spec 0033: a version is immutable within its source in the whole tenant
-	var other string
-	err = t.queryRow(ctx, `SELECT body_hash FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND ext_version = ? AND platform = ?
-AND slot = ? AND legacy_duplicate = ? AND body_hash <> ?`, b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.Slot(), false, b.BodyHash).Scan(&other)
-	switch {
-	case err == nil:
-		return fmt.Errorf("%w: %s %s %s %s holds another body from this source (%.12s)", ErrCatalogueSlot, b.Name, b.ExtVersion, b.Platform, b.Slot(), other)
-	case !errors.Is(err, sql.ErrNoRows):
-		return err
+	if !b.Legacy {
+		if err := t.SlotTaken(ctx, *b); err != nil {
+			return err
+		}
 	}
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, legacy_duplicate, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		b.ID, b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
 		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, b.Visibility, nullable(b.Provenance),
-		b.Slot(), t.s.d.timeArg(b.CreatedAt))
+		b.Slot(), b.Legacy, t.s.d.timeArg(b.CreatedAt))
+	b.Inserted = err == nil
 	return t.s.mapErr(err, "build "+b.Name)
 }
 

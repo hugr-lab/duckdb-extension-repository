@@ -346,7 +346,7 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		MinDemoted: cfg.Rotation.MinDemoted,
 	}
 	cat := cfg.CatalogueSettings()
-	rel := &release.Service{Store: s, Signers: ks, Authz: az, MaxEntries: cat.MaxEntries, MaxBytes: cat.MaxBytes}
+	rel := &release.Service{Store: s, Signers: ks, Authz: az, MaxEntries: cat.MaxEntries, MaxBytes: int64(cat.MaxBytes)}
 	maxBody, maxIngests := cfg.BlobLimits()
 	ul := cfg.UpstreamLimits()
 	creds, err := Credentials(cfg)

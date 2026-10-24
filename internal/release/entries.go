@@ -29,10 +29,12 @@ func slotErr(origin string, err error) error {
 	return fmt.Errorf("%w: %v", ErrSlot, err)
 }
 
-// room refuses a new build of a source that holds as many entries or bytes as it may
-// (catalogue.max_entries, catalogue.max_bytes); a body the source has already is no new entry.
-func (s *Service) room(ctx context.Context, b store.Build, size int64) error {
-	if s.MaxEntries <= 0 && s.MaxBytes <= 0 {
+// room refuses a new build of a source whose catalogue backlog (builds placed nowhere) holds as
+// many entries or bytes as it may (catalogue.max_entries, catalogue.max_bytes); a body the source
+// has already is no new entry, and an administrator's add is not bounded. The count is read outside
+// any lock: concurrent intakes may pass it together (bounded by the upload slots).
+func (s *Service) room(ctx context.Context, b store.Build, size int64, admin bool) error {
+	if admin || s.MaxEntries <= 0 && s.MaxBytes <= 0 {
 		return nil
 	}
 	if _, ok, err := s.Store.BuildOf(ctx, b.TenantID, b.Source, b.Name, b.BodyHash); err != nil || ok {
@@ -43,8 +45,8 @@ func (s *Service) room(ctx context.Context, b store.Build, size int64) error {
 		return err
 	}
 	if s.MaxEntries > 0 && n+1 > s.MaxEntries || s.MaxBytes > 0 && bytes+size > s.MaxBytes {
-		return fmt.Errorf("%w: %d builds, %d bytes (catalogue.max_entries %d, catalogue.max_bytes %d); purge older entries",
-			store.ErrCatalogueFull, n, bytes, s.MaxEntries, s.MaxBytes)
+		return fmt.Errorf("%w (catalogue.max_entries, catalogue.max_bytes): the tenant's administrators place or purge its builds placed nowhere",
+			store.ErrCatalogueFull)
 	}
 	return nil
 }
@@ -68,6 +70,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 	if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
 		return store.Build{}, false, err
 	}
+	o.Unchecked = false // a build nothing could place would only hold its slot
 	t, err := s.Store.GetTenant(ctx, tenant)
 	if err != nil {
 		return store.Build{}, false, err
@@ -122,29 +125,44 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 	if err != nil {
 		return store.Build{}, false, err
 	}
-	if err := s.room(ctx, it.b, f.BodySize); err != nil {
-		return store.Build{}, false, err
-	}
-	if err := s.land(ctx, sp, &it); err != nil {
-		return store.Build{}, false, slotErr(it.origin, err)
-	}
 	if !existed {
-		label, err := s.Store.SourceLabel(ctx, it.source)
+		if err := s.Store.SlotTaken(ctx, it.b); err != nil { // before the body is stored
+			return store.Build{}, false, slotErr(it.origin, err)
+		}
+		if err := s.room(ctx, it.b, f.BodySize, o.Publish == nil); err != nil {
+			return store.Build{}, false, err
+		}
+	}
+	if o.Publish != nil { // a name reserved during the upload takes a grant naming it (spec 0030)
+		kind, err := s.Store.ReservedFor(ctx, tenant, o.Name)
 		if err != nil {
 			return store.Build{}, false, err
 		}
-		if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
-			f := map[string]any{"build": it.b.ID, "name": it.b.Name, "version": it.b.ExtVersion, "platform": it.b.Platform,
-				"slot": it.b.Slot(), "body_hash": it.b.BodyHash, "source": label, "visibility": it.b.Visibility}
-			if it.provenance != "" {
-				f["provenance"] = it.provenance
+		if kind != "" && !res.Reserved {
+			if err := s.reservedCheck(a, verb, res)(ctx); err != nil {
+				return store.Build{}, false, err
 			}
-			return tx.Event(ctx, t.ID, a.String(), "catalogue.arrival", "ext:"+it.b.Name, f)
-		}); err != nil {
-			return store.Build{}, false, err
 		}
 	}
-	return it.b, existed, nil
+	label, err := s.Store.SourceLabel(ctx, it.source)
+	if err != nil {
+		return store.Build{}, false, err
+	}
+	created := false
+	if err := s.land(ctx, sp, &it, func(tx *store.Tx, bb store.Build, inserted bool) error {
+		if created = inserted; !inserted {
+			return nil
+		}
+		f := map[string]any{"build": bb.ID, "name": bb.Name, "version": bb.ExtVersion, "platform": bb.Platform,
+			"slot": bb.Slot(), "body_hash": bb.BodyHash, "source": label, "visibility": bb.Visibility}
+		if it.provenance != "" {
+			f["provenance"] = it.provenance
+		}
+		return tx.Event(ctx, t.ID, a.String(), "catalogue.arrival", "ext:"+bb.Name, f)
+	}); err != nil {
+		return store.Build{}, false, slotErr(it.origin, err)
+	}
+	return it.b, !created, nil
 }
 
 // PurgeEntry deletes a tenant's build that no release holds (spec 0033): its slot is free again, and
@@ -169,16 +187,18 @@ func (s *Service) PurgeEntry(ctx context.Context, a authz.Actor, tenant, id stri
 	return b, err
 }
 
-// TrimLanded lets the collector take landed builds older than the KeepLanded newest versions of
-// their (tenant, source, name). It returns how many.
+// TrimLanded lets the collector take landed builds the catalogue keeps no more: of a publisher or the
+// tenant, those older than the KeepLanded newest landed versions of their (source, name, platform,
+// slot); of a mirror, those its cell no longer holds (the cell moved on to another body, or the
+// upstream is gone). It returns how many.
 func (s *Service) TrimLanded(ctx context.Context) (int, error) {
-	bs, err := s.Store.LandedBuilds(ctx)
+	crowded, err := s.Store.CrowdedLanded(ctx, KeepLanded)
 	if err != nil {
 		return 0, err
 	}
-	by := map[[3]string][]store.LandedBuild{}
-	for _, b := range bs {
-		k := [3]string{b.TenantID, b.Source, b.Name}
+	by := map[[5]string][]store.LandedBuild{}
+	for _, b := range crowded {
+		k := [5]string{b.TenantID, b.Source, b.Name, b.Platform, b.Slot}
 		by[k] = append(by[k], b)
 	}
 	var drop []string
@@ -189,16 +209,20 @@ func (s *Service) TrimLanded(ctx context.Context) (int, error) {
 				versions = append(versions, b.Version)
 			}
 		}
-		if len(versions) <= KeepLanded {
-			continue
-		}
 		slices.SortFunc(versions, func(x, y string) int { return CompareVersions(y, x) })
-		keep := versions[:KeepLanded]
+		keep := versions[:min(KeepLanded, len(versions))]
 		for _, b := range group {
 			if !slices.Contains(keep, b.Version) {
 				drop = append(drop, b.ID)
 			}
 		}
+	}
+	stale, err := s.Store.StaleMirrorLanded(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, b := range stale {
+		drop = append(drop, b.ID)
 	}
 	return len(drop), s.Store.Unland(ctx, drop)
 }

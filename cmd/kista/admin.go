@@ -135,7 +135,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   the tenant's catalogue: each source's names and versions,
                                                   and the channels whose rule takes them (spec 0033)
   catalogue show <tenant> <source> <name>         an entry's versions, builds and where each is released
-  catalogue add <tenant> <file|-> -name <name> [-private] [-unchecked]
+  catalogue add <tenant> <file|-> -name <name> [-private]
                                                   put a build into the catalogue only, placed nowhere
   catalogue purge <tenant> <build-id>             delete a build no release holds; its slot is free again
   publisher add|remove <tenant> <name>          an identity that only publishes and promotes
@@ -2742,7 +2742,6 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 	source := fs.String("source", "", "")
 	name := fs.String("name", "", "")
 	private := fs.Bool("private", false, "")
-	unchecked := fs.Bool("unchecked", false, "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
@@ -2764,7 +2763,7 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 		}
 		defer func() { _ = svc.Close() }()
 		a.svc.WithBlob(svc)
-		b, existed, err := a.svc.Releases.AddToCatalogue(ctx, a.actor, pos[0], in, release.AddOptions{Name: *name, Private: *private, Unchecked: *unchecked})
+		b, existed, err := a.svc.Releases.AddToCatalogue(ctx, a.actor, pos[0], in, release.AddOptions{Name: *name, Private: *private})
 		if err != nil {
 			return err
 		}

@@ -461,9 +461,8 @@ caps, the catalogue's own slot uniqueness; part 4, follows.
 - **Only the selected source counts**: a licence key is live (spec 0021), an upstream relays
   licences and receives usage (spec 0012), through releases of the source the channel selected for
   the name; another source's releases stay stored and unserved.
-- **Left to later parts**: the entries' state, `available_at`, visibility and publisher key, the
-  catalogue's own slot uniqueness and `legacy_duplicate` (part 2); a source may still release
-  another body of a version in another channel until then. The data model's "one migration per
+- **Left to later parts**: the entries' state, `available_at` and publisher key (A2); the
+  catalogue's own slot uniqueness and `legacy_duplicate` (part 3a, done). The data model's "one migration per
   phase" is one per part in A1.
 
 ### As built (A1 part 2)
@@ -513,25 +512,38 @@ caps, the catalogue's own slot uniqueness; part 4, follows.
 A1 part 3 comes in two: 3a, the catalogue's own entries (below); 3b, upstreams without a home
 channel.
 
-- **Migration 0036**: builds gain `slot` and `legacy_duplicate`; a unique key (tenant, source, name,
-  version, platform, slot) where not a legacy duplicate (a partial or filtered index in each dialect).
-  Of two bodies a source released in two channels before, the oldest keeps the key. An arrival of
-  another body in a source's slot is refused before the insert (`409` as a slot; a mirror's cell
-  `conflict`).
+- **A version is immutable within its source in the whole tenant** (migration 0036: builds gain
+  `slot` and `legacy_duplicate`; a unique key (tenant, source, name, version, platform, slot) where
+  not a legacy duplicate and the source is not `tenant`, a partial or filtered index in each
+  dialect). Before a body is stored, and again at the insert, another body of the source's slot is
+  refused: among its builds, legacy duplicates included, and its purged slots in the tenant's
+  channels (a version once released stays the source's after its build is collected; a slot purged
+  before migration 0034, `*`, stays its channel's matter). `409` as a slot; a mirror's cell
+  `conflict`. **The tenant's own source keeps the rule per channel** (found in review: it is
+  everyone who may publish in the tenant, so tenant-wide it would let one principal squat another's
+  versions). Of two bodies a source released in two channels before, the released one (else the
+  oldest) keeps the key. A successor upstream copying a removed one's build whose slot it holds with
+  another body inserts the copy as a legacy duplicate.
 - **Publishing into the catalogue only**: `POST …/catalogue/extensions/{ext}/builds` (`publish` on
-  the extension tenant-wide, publishers signed as on a channel's route), `kista admin catalogue add`
-  (an administrator's, source `tenant`); the build's DuckDB version must be registered on the server;
-  the build lands (event `catalogue.arrival`).
-- **Retention**: a landed build is kept until a release takes it, among the `KeepLanded` (3) newest
-  landed versions of its (source, name); the placement pass's hourly sweep leaves older ones to the
-  collector (their grace starts then). A mirror's cells are not consulted (simpler than "its cell's
-  newest", and bounded the same way).
+  the extension tenant-wide, publishers signed as on a channel's route: the statement is checked,
+  not recorded on the build), and `kista admin catalogue add` (a tenant administrator's, source
+  `tenant`; the file checks always run, an unchecked build could never be placed). The build's
+  DuckDB version must be registered on the server (not checked for a C API build). A name reserved
+  during the upload is checked again before the build lands. The build lands, its event
+  `catalogue.arrival` in the same transaction; the same body again answers the build as it is.
+- **Retention**: a landed build is kept until a release takes it, a publisher's or `tenant`'s among
+  the `KeepLanded` (3) newest landed versions of its (source, name, platform, slot), a mirror's while
+  one of its upstream's cells holds its body; the placement pass's hourly sweep leaves the others to
+  the collector (their grace starts then).
 - **Purging an entry**: `DELETE …/catalogue/builds/{id}`, `kista admin catalogue purge` (tenant
-  administrators): a build no release holds is deleted with its key records (`catalogue.purge`); its
-  slot is free again.
-- **Caps**: `catalogue.max_entries` (20,000) and `catalogue.max_bytes` (100 GiB) per source, checked
-  before a new build is committed (the same body again is no new entry); refused with `429` on the
-  API, a mirror's cell `rejected`.
+  administrators): a build never released (no release, no purged slot of its body) is deleted with
+  its key records (`catalogue.purge`); its slot is free again, and a mirror's cell that landed it
+  loses its ETag, so the next run fetches it again.
+- **Caps**: `catalogue.max_entries` (20,000) and `catalogue.max_bytes` (100 GiB, a size) bound a
+  source's builds placed nowhere (its catalogue backlog: released builds are the channels'),
+  checked before a new build is committed, dry runs included, outside any lock (concurrent intakes
+  may pass together, bounded by the upload slots); an administrator's add is not bounded. `429` on
+  the API, a mirror's cell `rejected`.
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into

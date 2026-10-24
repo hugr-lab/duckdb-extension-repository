@@ -308,7 +308,10 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	if err := servable(capis, b); err != nil {
 		return store.Release{}, false, err
 	}
-	if err := s.room(ctx, it.b, sp.File().BodySize); err != nil { // spec 0033: the source's catalogue
+	if err := s.Store.SlotTaken(ctx, it.b); err != nil { // spec 0033: before the body is stored
+		return store.Release{}, false, slotErr(it.origin, err)
+	}
+	if err := s.room(ctx, it.b, sp.File().BodySize, o.Publish == nil); err != nil { // spec 0033: the source's catalogue
 		return store.Release{}, false, err
 	}
 	kind := audit.Kind("release.add")
@@ -1016,30 +1019,46 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 		if errors.Is(err, store.ErrBuildGone) && attempt == 0 {
 			continue
 		}
-		return rs, existed, err
+		return rs, existed, slotErr(it.origin, err)
 	}
 }
 
 // land commits a spooled body and finds or inserts its Build, with the keys a trusted intake
-// carried, placing it nowhere (spec 0033: a catalogue entry), under the intake deadline.
-func (s *Service) land(ctx context.Context, sp *blob.Spool, it *item) error {
+// carried, placing it nowhere (spec 0033: a catalogue entry), under the intake deadline. event, when
+// set, writes the arrival's event in the same transaction (inserted: the build is new). Two intakes
+// of one body race on the insert: the loser finds the winner's build.
+func (s *Service) land(ctx context.Context, sp *blob.Spool, it *item, event func(tx *store.Tx, b store.Build, inserted bool) error) error {
 	ctx, cancel := context.WithTimeout(ctx, blob.IntakeDeadline)
 	defer cancel()
 	if _, err := sp.Commit(ctx); err != nil {
 		return err
 	}
-	bb := it.b
-	bb.Visibility, bb.Provenance = it.visibility, it.provenance
-	return s.Store.InTx(ctx, "", func(tx *store.Tx) error {
-		if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
-			return err
+	for try := 0; ; try++ {
+		bb := it.b
+		bb.Visibility, bb.Provenance = it.visibility, it.provenance
+		err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+			if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
+				return err
+			}
+			if err := tx.SetLanded(ctx, bb.ID); err != nil {
+				return err
+			}
+			if err := recordKeys(ctx, tx, bb, *it); err != nil {
+				return err
+			}
+			if event != nil {
+				return event(tx, bb, bb.Inserted)
+			}
+			return nil
+		})
+		if errors.Is(err, store.ErrExists) && try == 0 {
+			continue
 		}
-		if err := tx.SetLanded(ctx, bb.ID); err != nil {
-			return err
+		if err == nil {
+			it.b = bb
 		}
-		it.b = bb
-		return recordKeys(ctx, tx, bb, *it)
-	})
+		return err
+	}
 }
 
 // Purge deletes a yanked release of a channel for good (spec 0016 phase 2): its signatures go, its

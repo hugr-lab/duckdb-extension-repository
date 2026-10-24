@@ -574,8 +574,8 @@ File-only. See [The catalogue](upstreams.md#the-catalogue-and-a-channels-rules).
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `catalogue.max_entries` | integer | `20000` | Builds per source; `100..10000000`. A new build beyond it is refused (`429` for a publication; a mirror's cell is `rejected`) until older entries are purged. |
-| `catalogue.max_bytes` | integer | `107374182400` (100 GiB) | The builds' bodies per source, in bytes; 1 GiB..1 PiB. |
+| `catalogue.max_entries` | integer | `20000` | Builds placed nowhere per source; `100..10000000`. A new build beyond it is refused (`429` for a publication; a mirror's cell is `rejected`) until some are placed or purged; an administrator's add is not bounded. |
+| `catalogue.max_bytes` | size | `100GiB` | Their bodies per source; 1 GiB..1 PiB. |
 
 ## ui
 

@@ -1322,5 +1322,44 @@ func TestUpstreamManualLands(t *testing.T) {
 		if r := en.sync(t, false); r.Counts[store.CellUnchanged] != 1 {
 			t.Fatalf("the run after: %+v", r)
 		}
+		// a landed build its cell no longer holds (the cell moved on) is left to the collector
+		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("3.0", "v2.0.0"), 3, "acl_duckdb_cpp_init"))
+		en.sync(t, false)
+		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("4.0", "v2.0.0"), 4, "acl_duckdb_cpp_init"))
+		if r := en.sync(t, false); r.Counts[store.CellLanded] != 1 {
+			t.Fatalf("4.0: %+v", r)
+		}
+		if n, err := en.rel.TrimLanded(ctx); err != nil || n != 1 {
+			t.Fatalf("trimmed: %d %v", n, err)
+		}
+	})
+}
+
+// Spec 0033: an upstream added again that brings another body of a version the removed one released
+// in the channel takes the removed one's release, and its cell is a conflict (the version is
+// immutable within its source), not a failure every run.
+func TestUpstreamSuccessionOtherBody(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "acl_duckdb_cpp_init"))
+		if _, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "acl"})); err != nil {
+			t.Fatal(err)
+		}
+		if r := en.sync(t, false); r.Counts[store.CellReleased] != 1 {
+			t.Fatalf("the first run: %+v", r)
+		}
+		if err := en.up.Remove(ctx, admin, "acme", "acme-repo", 0); err != nil {
+			t.Fatal(err)
+		}
+		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("1.0", "v2.0.0"), 9, "acl_duckdb_cpp_init", "other"))
+		if _, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "acl"})); err != nil {
+			t.Fatal(err)
+		}
+		if r := en.sync(t, false); r.Counts[store.CellConflict] != 1 {
+			t.Fatalf("the new upstream's run: %+v", r)
+		}
+		// the next run asks conditionally, as for any conflict: nothing is rejected or released
+		if r := en.sync(t, false); r.Counts[store.CellRejected] != 0 || r.Counts[store.CellReleased] != 0 {
+			t.Fatalf("the run again: %+v", r)
+		}
 	})
 }

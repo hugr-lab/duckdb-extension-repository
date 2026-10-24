@@ -3,14 +3,14 @@ package config
 // Catalogue bounds what one source holds in a tenant's catalogue (spec 0033): an intake beyond
 // either is refused until older entries are purged.
 type Catalogue struct {
-	MaxEntries int   `yaml:"max_entries"` // builds per source; default 20000
-	MaxBytes   int64 `yaml:"max_bytes"`   // the builds' bodies per source, bytes; default 100 GiB
+	MaxEntries int      `yaml:"max_entries"` // builds placed nowhere per source; default 20000
+	MaxBytes   ByteSize `yaml:"max_bytes"`   // their bodies per source; default 100 GiB
 }
 
 // Catalogue defaults.
 const (
 	DefaultCatalogueEntries = 20000
-	DefaultCatalogueBytes   = 100 << 30
+	DefaultCatalogueBytes   = ByteSize(100 << 30)
 )
 
 // CatalogueSettings returns catalogue: with its defaults.
