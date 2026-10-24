@@ -64,6 +64,8 @@ its own.
 | Releases: add a build | `release add` | publication route ([Publishing](../publishing.md)) | no |
 | Releases: yank, deprecate, current, visibility, purge | `release` | extension admin | yes |
 | Promote releases between channels | `release promote` | the `promote` verb | no |
+| Place a version from the catalogue | `release place` | the `promote` verb (channel admin for a name without a rule) | no |
+| Read the catalogue | `catalogue list`, `catalogue show` | tenant admin | no |
 | Blocks | `block` | tenant admin | yes |
 | Issuers, console clients, grants, extension groups | `issuer`, `grant`, `extension-group` | tenant admin | yes |
 | Publishers and their keys | `publisher` | tenant admin | yes |

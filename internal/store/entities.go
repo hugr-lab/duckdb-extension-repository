@@ -474,7 +474,10 @@ func (t *Tx) BumpChannel(ctx context.Context, c *Channel) error {
 // AddChannelVersion makes a channel serve a DuckDB version.
 func (t *Tx) AddChannelVersion(ctx context.Context, channelID, versionID string) error {
 	_, err := t.exec(ctx, "INSERT INTO channel_duckdb_versions (channel_id, duckdb_version_id) VALUES (?, ?)", channelID, versionID)
-	return t.s.mapErr(err, "channel version")
+	if err != nil {
+		return t.s.mapErr(err, "channel version")
+	}
+	return t.RecheckRules(ctx, channelID) // spec 0033: the builds for the version are placed by the rules
 }
 
 // RemoveChannelVersion stops a channel serving a DuckDB version; ErrNotFound if it did not.

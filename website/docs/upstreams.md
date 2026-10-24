@@ -74,7 +74,7 @@ A cell's binary is released only if every step passes:
    `blob.max_body` + 1 MiB, at no less than `upstreams.min_rate` after 30 seconds, within
    `upstreams.fetch_timeout`. The answer is spooled to a temporary file first, so a slow upstream
    never holds a storage ingest slot. `If-None-Match` is sent with the cell's last ETag when its last
-   outcome was `released`, `unchanged`, `yanked` or `conflict`.
+   outcome was `released`, `unchanged`, `yanked`, `conflict` or `landed`.
 2. **Decompress** a gzip answer, under `blob.max_body` + 256 bytes.
 3. **Signature**: the last 256 bytes must verify over the body with the upstream's keys. The key that
    verified is recorded.
@@ -243,7 +243,7 @@ upstreams:                   # file-only
 ```
 
 `error` is set when the run failed before its cells. `problems` holds the first 20 cells that were
-neither released nor unchanged. A lazy mirror's run also counts `not_asked` (cells of its matrix it
+neither released, unchanged nor landed. A lazy mirror's run also counts `not_asked` (cells of its matrix it
 did not fetch and never fetched, as the cells API lists them) and `busy` (cells another fetch held,
 skipped).
 
@@ -255,6 +255,7 @@ skipped).
 | `unchanged` | the slot already holds this body |
 | `yanked` | the slot holds this body, yanked; it stays yanked |
 | `conflict` | the upstream's slot holds another body; the version is immutable within its source |
+| `landed` | the build is in the catalogue, placed nowhere: the channel's rule for the name is `manual` and holds no release of its version |
 | `missing` | the upstream answered `404` (also a private upstream without the grant) |
 | `rejected` | a check failed: signature, footer, format or entry point |
 | `blocked` | the body is blocked in the tenant |
@@ -309,9 +310,46 @@ A promotion keeps the source of the release it promotes: a build a distributor p
   administrator yanked stays yanked. Nothing else falls back by itself: a yanked or blocked release of the selected source
   leaves the name unserved until it is active again or the source is switched.
 - **Listing:** `kista admin channel source <tenant>/<channel>` (or `GET …/sources`) shows each name,
-  its source, who set it and when, and the sources that have releases of it in the channel.
+  its source, its rule's mode, the newest version of the source the channel holds and the newest in
+  the catalogue, who set it and when, the sources that have releases of it in the channel, and the
+  placement pass's last outcome.
 
 Tenant shadows (below) are a passthrough channel's matter and stay as they are.
+
+## The catalogue and a channel's rules
+
+Every build that arrives in a tenant, mirrored or published, is a build of its source in the
+tenant's **catalogue** (spec 0033), and channels may take it from there: a build is kept while a
+release holds it, or while it waits as landed (below); others are collected as before (spec 0016).
+A channel takes from the catalogue by its **rule** for each name: the source above, and a **mode**
+an administrator gives it.
+
+| Mode | What the channel takes |
+| --- | --- |
+| `auto` | each new version of the source, per DuckDB version and platform it serves: the newest the cell has not had (a version yanked or purged there is not placed again, nor one older than what the cell had) |
+| `manual` | no new version by itself; the versions it holds are completed: a build of one for another DuckDB version or platform the channel serves, made later, is placed too |
+| none | a rule an arrival wrote (a mirror's first release in its channel, a publication, a promotion): the channel serves what lands in it, as before; the placement pass leaves it alone |
+
+- **Choosing**: `kista admin channel source <tenant>/<channel> <name> -set <source> -mode auto`
+  (or `-mode` alone to change the mode), or `PUT …/sources/{name}` with `{"source": "…", "mode":
+  "auto"}`. The tenant's own source (`tenant`) is never `auto`, and the placement pass never places
+  from it: it is everyone who may publish in the tenant. A passthrough channel's rules take no mode.
+- **Visibility**: a placement serves a build as it arrived (a mirror's, a publication's), never
+  wider; making a release private makes its build private for every later placement, and a version
+  private in a channel stays private in the slots a `manual` rule completes.
+- **The placement pass** runs every minute on one replica per channel, for the rules whose source
+  has builds it has not looked at, and every hour for all of them; adding a DuckDB version to a
+  channel makes it look again. A failure (a slot holding another body, a block) is the rule's
+  last outcome.
+- **A mirror under a `manual` rule** fetches a new version into the catalogue without placing it:
+  the cell's outcome is `landed`, and the build is kept until a release takes it. A lazy or
+  pull-through fetch under such a rule lands too, and the request misses.
+- **Placing by hand**: `kista admin release place <tenant>/<channel> -name <name> -source <source>
+  -version <v>`, or `POST …/channels/{c}/extensions/{ext}/releases/place` with `{"source": "…",
+  "version": "…"}` (see [Publishing](publishing.md#placing-from-the-catalogue)).
+- **Reading the catalogue**: `kista admin catalogue list <tenant>` and `catalogue show <tenant>
+  <source> <name>`, or `GET /api/v1/tenants/{t}/catalogue` and `…/catalogue/{source}/extensions/{ext}`
+  (tenant administrators).
 
 ## Passthrough channels
 

@@ -367,7 +367,7 @@ func TestExportOutcomes(t *testing.T) {
 				t.Fatal(err)
 			}
 			// the tenant's own build of "replaced", its source switched to the tenant (spec 0031)
-			if _, err := g.rel.SetSource(ctx, admin, "acme", "prod", "replaced", "tenant"); err != nil {
+			if _, err := g.rel.SetSource(ctx, admin, "acme", "prod", "replaced", "tenant", ""); err != nil {
 				t.Fatal(err)
 			}
 			repl := signed(t, nil, cpp("9.0", "v2.0.0"), 60, "replaced_duckdb_cpp_init")

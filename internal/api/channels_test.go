@@ -37,6 +37,12 @@ func TestChannelAccess(t *testing.T) {
 		{"PUT", C + "/prod/sources/tresor", `{"source":"tenant"}`, channelAdmins, 200},
 		{"PUT", C + "/prod/sources/tresor", `{"source":"upstream:nope"}`, channelAdmins, 400},
 		{"DELETE", C + "/prod/sources/nothere", "", channelAdmins, 404},
+		// spec 0033: a rule's mode, the catalogue, placing by hand (promote: not implied by admin)
+		{"PUT", C + "/prod/sources/tresor", `{"source":"tenant","mode":"auto"}`, channelAdmins, 400},
+		{"PUT", C + "/prod/sources/tresor", `{"source":"tenant","mode":"manual"}`, channelAdmins, 200},
+		{"GET", "/api/v1/tenants/acme/catalogue", "", []string{"tenant admin", "server admin"}, 200},
+		{"GET", "/api/v1/tenants/acme/catalogue/tenant/extensions/tresor", "", []string{"tenant admin", "server admin"}, 200},
+		{"POST", C + "/staging/extensions/tresor/releases/place", `{"source":"tenant","version":"1.2"}`, []string{"server admin"}, 409}, // the fixture is unchecked
 		{"GET", C + "/staging/duckdb-versions", "", []string{"tenant admin", "server admin"}, 200},
 		{"GET", C + "/prod/keys", "", channelAdmins, 200},
 		{"GET", C + "/prod/keys/events", "", channelAdmins, 200},

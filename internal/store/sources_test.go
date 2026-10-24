@@ -231,3 +231,55 @@ func TestMigrationBuildSources(t *testing.T) {
 		}
 	})
 }
+
+// Migration 0035 (spec 0033) gives rules a mode, none (an administrator sets one), and builds the
+// visibility and provenance their first release came with.
+func TestMigrationRuleModes(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Fresh(t, 1)[0]
+		if err := store.MigrateTo(ctx, s, 34); err != nil {
+			t.Fatal(err)
+		}
+		now := store.TimeArg(s, time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC))
+		id := func(k string) string { return k + "0000000-0000-0000-0000-000000000000" }
+		const tid = "t0000000-0000-0000-0000-000000000000"
+		up, pub := "upstream:"+id("u"), "publisher:"+id("p")
+		rule := func(ch, name, source string) []any {
+			return []any{"INSERT INTO channel_sources (channel_id, name, source, set_by, set_at) VALUES (?, ?, ?, 'os:1:t', ?)", id(ch), name, source, now}
+		}
+		for _, q := range [][]any{
+			{"INSERT INTO tenants (id, name, display_name, state, created_at, version) VALUES (?, 'acme', '', 'active', ?, 1)", tid, now},
+			{"INSERT INTO channels (id, tenant_id, name, kind, created_at, version, release_version) VALUES (?, ?, 'prod', 'signed', ?, 1, 1)", id("c"), tid, now},
+			{"INSERT INTO channels (id, tenant_id, name, kind, created_at, version, release_version) VALUES (?, ?, 'staging', 'signed', ?, 1, 1)", id("d"), tid, now},
+			{"INSERT INTO upstreams (id, tenant_id, name, kind, channel_id, mode, visibility, state, version, request_dry_run, created_at, created_by) " +
+				"VALUES (?, ?, 'repo', 'repository', ?, 'mirror', 'private', 'active', 1, ?, ?, 'os:1:t')", id("u"), tid, id("c"), false, now},
+			rule("c", "acl", up), rule("c", "tresor", pub), rule("d", "acl", up),
+			{"INSERT INTO builds (id, tenant_id, source, name, ext_version, platform, abi, duckdb_version, body_hash, origin, created_at, created_by, checked) " +
+				"VALUES (?, ?, ?, 'acl', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', ?, 'upstream', ?, 'system:upstream:acme/repo', ?)", id("a"), tid, up,
+				strings.Repeat("1", 64), now, true},
+			{"INSERT INTO releases (id, tenant_id, channel_id, build_id, source, name, ext_version, platform, slot, state, visibility, seq, created_at, " +
+				"created_by, state_changed_at, state_changed_by, version, origin, provenance) VALUES (?, ?, ?, ?, ?, 'acl', '1.0', 'linux_amd64', 'v2.0.0', " +
+				"'active', 'private', 1, ?, 'system:upstream:acme/repo', ?, 'system:upstream:acme/repo', 1, 'upstream', ?)",
+				id("1"), tid, id("c"), id("a"), up, now, now, `{"credential":"partner"}`},
+		} {
+			if err := store.ExecRaw(ctx, s, q[0].(string), q[1:]...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		prod, err := s.ChannelSources(ctx, id("c"))
+		if err != nil || prod["acl"].Mode != store.RuleNone || prod["tresor"].Mode != store.RuleNone {
+			t.Fatalf("prod's rules: %+v %v", prod, err)
+		}
+		staging, err := s.ChannelSources(ctx, id("d"))
+		if err != nil || staging["acl"].Mode != store.RuleNone {
+			t.Fatalf("staging's rules: %+v %v", staging, err)
+		}
+		bs, err := s.SourceBuilds(ctx, tid, up, "acl")
+		if err != nil || len(bs) != 1 || bs[0].Visibility != store.Private || bs[0].Provenance != `{"credential":"partner"}` {
+			t.Fatalf("the build: %+v %v", bs, err)
+		}
+	})
+}

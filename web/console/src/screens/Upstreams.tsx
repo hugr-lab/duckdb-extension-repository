@@ -63,7 +63,7 @@ interface Cell {
 }
 
 const kinds: [string, string][] = [['duckdb-core', 'DuckDB core'], ['duckdb-community', 'DuckDB community'], ['repository', 'Another repository']]
-const outcomes = ['released', 'unchanged', 'yanked', 'conflict', 'missing', 'rejected', 'blocked', 'shadowed', 'other_source', 'failed']
+const outcomes = ['released', 'unchanged', 'yanked', 'conflict', 'missing', 'rejected', 'blocked', 'shadowed', 'other_source', 'landed', 'failed']
 
 /** A cell's outcome in words: a lazy mirror's not_asked reads as such (spec 0032). */
 export function outcomeWords(o: string) {

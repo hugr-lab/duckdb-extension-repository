@@ -312,6 +312,10 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if !svc.Licenses.Enabled {
 		log.Info("serve: licensing off (licenses.enabled: false)")
 	}
+	// the placement pass (spec 0033): what the channels' rules take from the catalogue
+	placer := &release.Placer{Service: svc.Releases, Holder: host + "/" + store.NewID(), Log: log}
+	wg.Add(1)
+	go func() { defer wg.Done(); placer.Run(bg) }()
 	// deleting tenants (spec 0019): their rows in batches, then their tombstones
 	reaper := &tenantsvc.Reaper{Store: st, Holder: host + "/" + store.NewID(), Log: log}
 	wg.Add(4)

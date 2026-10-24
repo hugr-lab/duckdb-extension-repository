@@ -162,6 +162,20 @@ func TestAdminCLI(t *testing.T) {
 		t.Fatalf("channel source after -clear: %q", got)
 	}
 	run(0, "channel", "source", "acme/prod", "tresor", "-set", "tenant")
+	// spec 0033: a rule's mode (the tenant's never auto), the catalogue, placing by hand
+	run(1, "channel", "source", "acme/prod", "tresor", "-mode", "auto")
+	if got := run(0, "channel", "source", "acme/prod", "tresor", "-mode", "manual"); !strings.Contains(got, "manual") {
+		t.Fatalf("channel source -mode: %q", got)
+	}
+	run(1, "channel", "source", "acme/prod", "nothere", "-mode", "manual") // no source to keep
+	if got := run(0, "catalogue", "list", "acme"); !strings.Contains(got, "tresor") || !strings.Contains(got, "prod=manual") {
+		t.Fatalf("catalogue list: %q", got)
+	}
+	if got := run(0, "catalogue", "show", "acme", "tenant", "tresor"); !strings.Contains(got, "prod(active)") {
+		t.Fatalf("catalogue show: %q", got)
+	}
+	run(1, "release", "place", "acme/prod", "-name", "tresor", "-source", "tenant", "-version", "1.0") // added unchecked
+	run(2, "release", "place", "acme/prod", "-name", "tresor", "-source", "tenant")
 	if got := run(0, "release", "list", "acme/prod"); !strings.Contains(got, rid) || !strings.Contains(got, "public") {
 		t.Fatalf("release list: %q", got)
 	}

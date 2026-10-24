@@ -41,10 +41,12 @@ type Ingest struct {
 }
 
 // Ingested is an intake's result: the release (new or the slot's), whether it existed, and the
-// key that verified.
+// key that verified. Landed is a build kept in the catalogue and placed nowhere: the channel's rule
+// for the name is manual and holds no release of its version (spec 0033).
 type Ingested struct {
 	Release store.Release
 	Existed bool
+	Landed  bool
 	Key     string
 	Hash    string
 }
@@ -100,11 +102,33 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	}
 	// the slot and the name's source before the body is stored (both are checked again under the lock)
 	var existing *store.Release
-	selected := false // the name has a source the release keeps (spec 0031)
+	selected := false     // the name has a source the release keeps (spec 0031)
+	pinned := false       // a manual rule of this source that holds no release of the version (spec 0033)
+	var completes *served // a manual rule's held version: completed as the placement pass would
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
-		if selected, _, err = checkSource(ctx, tx, ch.ID, b.Name, it.source, true); err != nil {
+		var succeeds string
+		if selected, succeeds, err = checkSource(ctx, tx, ch.ID, b.Name, it.source, true); err != nil {
 			return err
+		}
+		rule, ok, err := tx.ChannelSourceOf(ctx, ch.ID, b.Name)
+		if err != nil {
+			return err
+		}
+		// a successor answers to the rule the removed upstream had (its releases become the successor's)
+		if ok && ch.Kind == store.ChannelSigned && rule.Mode == store.RuleManual && (rule.Source == it.source || rule.Source == succeeds && succeeds != "") {
+			rels, err := tx.SourceReleases(ctx, ch.ID, rule.Source, b.Name)
+			if err != nil {
+				return err
+			}
+			capis, err := tx.ChannelCAPIs(ctx, ch.ID)
+			if err != nil {
+				return err
+			}
+			sv := newServed(rels, capis)
+			if pinned = !sv.held[b.ExtVersion]; !pinned {
+				completes = &sv
+			}
 		}
 		cands, err := tx.SlotCandidates(ctx, ch.ID, it.source, b.Name, b.ExtVersion, b.Platform)
 		if err != nil {
@@ -133,6 +157,14 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		res.Release, res.Existed = *existing, true
 		return res, nil
 	}
+	if pinned {
+		// the channel's administrator chose its versions by hand: the build waits in the catalogue
+		res.Landed = true
+		if in.DryRun {
+			return res, nil
+		}
+		return res, s.land(ctx, sp, &it)
+	}
 	capis, err := s.Store.ChannelCAPIs(ctx, ch.ID)
 	if err != nil {
 		return res, err
@@ -147,6 +179,9 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	}
 	if in.DryRun {
 		return res, nil
+	}
+	if completes != nil {
+		completes.complete(&it)
 	}
 	rs, existed, err := s.commitAndRelease(ctx, sp, &it, func(ctx context.Context, it item) ([]store.Release, bool, error) {
 		return s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {

@@ -298,9 +298,16 @@ See [Tenants and channels](tenants-and-channels.md) and
 | --- | --- | --- |
 | `channel create <tenant>/<channel> -kind signed` or `-kind passthrough` | creates a channel; its kind never changes | |
 | `channel versions <tenant>/<channel> [-add <v>]... [-remove <v>]...` | changes the DuckDB versions the channel serves; without flags, lists them | the channel's versions, one per line |
-| `channel source <tenant>/<channel> [<name> [-set <source> \| -clear]]` | a name's source in the channel ([spec 0031](../upstreams.md#a-names-source-in-a-channel)): `tenant`, `upstream:<name>` or `publisher:<name>`; `-clear` removes it | each name, its source, who set it and when, the sources with releases of it |
+| `channel source <tenant>/<channel> [<name> [-set <source>] [-mode auto\|manual] \| -clear]` | a name's source in the channel ([spec 0031](../upstreams.md#a-names-source-in-a-channel)): `tenant`, `upstream:<name>` or `publisher:<name>`, and its rule's mode ([spec 0033](../upstreams.md#the-catalogue-and-a-channels-rules)); `-mode` alone changes the mode; `-clear` removes it | each name, its source, mode, the version held and the newest in the catalogue, who set it and when, the sources with releases of it, the last outcome |
 | `channel list <tenant>` | `NAME`, `KIND`, `VERSION`, `CREATED` (`VERSION` is the channel's change counter) | |
 | `wellknown <tenant>/<channel>` | the channel's `.well-known/duckdb-extension-repo.json` as served | JSON |
+
+## The catalogue
+
+| Command | What it does | Output |
+| --- | --- | --- |
+| `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode) |
+| `catalogue show <tenant> <source> <name>` | an entry's builds | `VERSION`, `PLATFORM`, `SLOT`, `BODY`, `VISIBILITY`, `ORIGIN`, `CREATED`, `RELEASED IN` |
 
 ## Channel keys
 
@@ -329,6 +336,7 @@ The protection tier is the source's: `file`, `kubesecret` (a Kubernetes Secret, 
 | `release yank`, `deprecate`, `activate`, `current`, `public`, `private` `<tenant>/<channel> <release id>` | changes a release's state, currency or visibility: `deprecate` an active release, `activate` a deprecated one again, `current` makes an active release the one the flat path serves; `yank` is final | |
 | `release purge <tenant>/<channel> <release id> [-force]` | deletes a yanked release for good; its slot stays taken; needs `-force` while `gc.interval` is 0 | |
 | `release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> or -version <v>) [-private] [-not-current]` | releases the builds of another channel of the same tenant here, signed with this channel's key | the new release ids |
+| `release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current]` | releases a version's builds from the catalogue here ([placing from the catalogue](../publishing.md#placing-from-the-catalogue)); its later builds follow | the new release ids |
 
 `-unchecked` skips the publication checks of a build (such as the init symbol that binds the name).
 Details are in [Publishing](../publishing.md).

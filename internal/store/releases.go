@@ -70,6 +70,9 @@ type Build struct {
 	Checked                                               bool // passed spec 0008's file checks; set once, never cleared
 	CreatedAt                                             time.Time
 	CreatedBy                                             string
+	// Visibility and Provenance are as its arrival made its release (spec 0033): the widest a
+	// placement serves it with, and the facts a placement's release carries (a credential).
+	Visibility, Provenance string
 }
 
 // Release is a Build in a channel.
@@ -100,6 +103,8 @@ const (
 	OriginAdmin       = "admin"
 	OriginPublication = "publication"
 	OriginPromotion   = "promotion"
+	// OriginPlacement is a release placed from the catalogue (spec 0033): by a rule, or by hand.
+	OriginPlacement = "placement"
 )
 
 // Slot is a build's slot in a channel: the exact DuckDB version, or capi:<major>.
@@ -111,15 +116,16 @@ func (b Build) Slot() string {
 }
 
 const buildCols = `id, tenant_id, source, name, ext_version, platform, abi, duckdb_version, c_api_major, c_api_minor,
-c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked`
+c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked, visibility, provenance`
 
 func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 	var b Build
 	var dv sql.NullString
 	var ma, mi, pa sql.NullInt64
+	var prov sql.NullString
 	err := r.Scan(&b.ID, &b.TenantID, &b.Source, &b.Name, &b.ExtVersion, &b.Platform, &b.ABI, &dv, &ma, &mi, &pa,
-		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy, &b.Checked)
-	b.DuckDBVersion = dv.String
+		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy, &b.Checked, &b.Visibility, &prov)
+	b.DuckDBVersion, b.Provenance = dv.String, prov.String
 	if ma.Valid {
 		b.CAPI = &CAPI{int(ma.Int64), int(mi.Int64), int(pa.Int64)}
 	}
@@ -161,6 +167,12 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if b.Source == "" {
 		b.Source = SourceTenant
 	}
+	if b.Visibility == "" {
+		b.Visibility = Private
+	}
+	if len(b.Provenance) > 4000 {
+		return fmt.Errorf("%w: provenance is too long", ErrInvalid)
+	}
 	if !ValidSource(b.Source) {
 		return fmt.Errorf("%w: source %q", ErrInvalid, b.Source)
 	}
@@ -193,9 +205,10 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if len(b.OriginSignature) > 0 {
 		sig = b.OriginSignature
 	}
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		b.ID, b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
-		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, t.s.d.timeArg(b.CreatedAt))
+		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, b.Visibility, nullable(b.Provenance),
+		t.s.d.timeArg(b.CreatedAt))
 	return t.s.mapErr(err, "build "+b.Name)
 }
 
@@ -359,7 +372,12 @@ publisher_statement, publisher_signature, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?
 	if t.s.d.foreignKey(err) { // the channel is never deleted: the Build was collected (spec 0016)
 		return fmt.Errorf("%w: %s", ErrBuildGone, r.BuildID)
 	}
-	return t.s.mapErr(err, "release")
+	if err != nil {
+		return t.s.mapErr(err, "release")
+	}
+	// a landed build is the release's now (spec 0033): the release keeps it from the collector
+	_, err = t.exec(ctx, "UPDATE builds SET landed = ? WHERE id = ? AND landed = ?", false, r.BuildID, true)
+	return err
 }
 
 // SetReleaseState changes a release's state (compare-and-set).
@@ -378,8 +396,14 @@ func (t *Tx) SetReleaseSeq(ctx context.Context, r *Release, seq int64, actor str
 		func() { r.Seq, r.StateChangedAt, r.StateChangedBy = seq, now, actor; r.Version++ })
 }
 
-// SetReleaseVisibility changes a release's visibility (compare-and-set).
+// SetReleaseVisibility changes a release's visibility (compare-and-set). Making it private makes its
+// build private too (spec 0033): no placement serves it publicly again.
 func (t *Tx) SetReleaseVisibility(ctx context.Context, r *Release, visibility, actor string) error {
+	if visibility == Private {
+		if err := t.NarrowBuild(ctx, r.BuildID); err != nil {
+			return err
+		}
+	}
 	now := t.Now()
 	return t.cas(ctx, "UPDATE releases SET visibility = ?, state_changed_at = ?, state_changed_by = ?, version = version + 1 WHERE id = ? AND version = ?",
 		[]any{visibility, t.s.d.timeArg(now), actor, r.ID, r.Version},

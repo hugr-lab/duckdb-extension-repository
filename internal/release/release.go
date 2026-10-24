@@ -120,7 +120,7 @@ type Service struct {
 // CredentialOf is the private upstream credential a release came through (its provenance's
 // "credential", carried by promotion), "" for none.
 func CredentialOf(r store.Release) string {
-	if r.Origin != store.OriginUpstream && r.Origin != store.OriginPromotion || r.Provenance == "" {
+	if r.Origin != store.OriginUpstream && r.Origin != store.OriginPromotion && r.Origin != store.OriginPlacement || r.Provenance == "" {
 		return ""
 	}
 	var p struct {
@@ -777,10 +777,11 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 }
 
 // setSource sets a name's source in a channel on an arrival (spec 0031): the first release of the
-// name, or an upstream succeeding a removed one (before: its source). The event names the sources
-// as answers do.
+// name (a rule without a mode, spec 0033: the channel serves what lands), or an upstream succeeding
+// a removed one (before: its source; the rule's mode kept). The event names the sources as answers
+// do.
 func setSource(ctx context.Context, tx *store.Tx, a authz.Actor, c store.Channel, name, source, before string) error {
-	if _, err := tx.SetChannelSource(ctx, c.ID, name, source, a.String()); err != nil {
+	if _, err := tx.SetChannelRule(ctx, c.ID, name, source, store.RuleNone, a.String()); err != nil {
 		return err
 	}
 	label, err := tx.SourceLabel(ctx, source)
@@ -990,6 +991,7 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 		// two intakes of one body race on the build's insert; the loser finds the winner's build
 		for try := 0; ; try++ {
 			bb := it.b
+			bb.Visibility, bb.Provenance = it.visibility, it.provenance // spec 0033: as its arrival made its release
 			err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &bb) })
 			if err == nil {
 				it.b = bb
@@ -1008,6 +1010,28 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 		}
 		return rs, existed, err
 	}
+}
+
+// land commits a spooled body and finds or inserts its Build, with the keys a trusted intake
+// carried, placing it nowhere (spec 0033: a catalogue entry), under the intake deadline.
+func (s *Service) land(ctx context.Context, sp *blob.Spool, it *item) error {
+	ctx, cancel := context.WithTimeout(ctx, blob.IntakeDeadline)
+	defer cancel()
+	if _, err := sp.Commit(ctx); err != nil {
+		return err
+	}
+	bb := it.b
+	bb.Visibility, bb.Provenance = it.visibility, it.provenance
+	return s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
+			return err
+		}
+		if err := tx.SetLanded(ctx, bb.ID); err != nil {
+			return err
+		}
+		it.b = bb
+		return recordKeys(ctx, tx, bb, *it)
+	})
 }
 
 // Purge deletes a yanked release of a channel for good (spec 0016 phase 2): its signatures go, its

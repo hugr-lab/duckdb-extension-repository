@@ -90,6 +90,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0032_channel_sources` | 32 | an older replica would serve another source's releases of a name |
 | `0033_lazy_mirrors` | 33 | an older replica would run a lazy mirror as an eager one, fetching its whole matrix |
 | `0034_build_sources` | 34 | an older replica would refuse a second source's release of a version, or read another source's release as the slot's |
+| `0035_rule_modes` | 35 | an older replica's mirror runs would place a manual rule's new versions, and its collector remove landed builds |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -160,7 +161,20 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 34)
+## Upgrading to the next release (schema 35)
+
+### A channel's rules take from the catalogue (spec 0033, phase A1 part 2)
+
+Every build stays in the tenant's catalogue, and a channel takes from it by its rule for each name,
+`auto` or `manual` ([The catalogue and a channel's rules](../upstreams.md#the-catalogue-and-a-channels-rules)).
+
+- **Migration `0035_rule_modes`** gives rules an optional mode and builds the visibility and
+  provenance of their first release and a `landed` flag, and raises `min_reader` to 35: stop every
+  older replica first.
+- Every existing rule has no mode: channels serve what lands in them, as before, and nothing changes
+  until an administrator gives a rule a mode (`channel source … -mode auto|manual`).
+- A mirror whose name's rule is set `manual` fetches new versions into the catalogue only (cell
+  outcome `landed`); place them with `release place`.
 
 ### A slot is its source's (spec 0033, phase A1 part 1)
 

@@ -14,12 +14,23 @@ type sourceJSON struct {
 	SetBy     string         `json:"set_by,omitempty"`
 	SetAt     string         `json:"set_at,omitempty"`
 	Available map[string]int `json:"available"` // the sources with releases of the name here, each with its count
+	// spec 0033: the rule's mode, the newest version the channel holds and the newest in the
+	// catalogue (of the source), the placement pass's last outcome
+	Mode      string `json:"mode,omitempty"`
+	Current   string `json:"current,omitempty"`
+	Newest    string `json:"newest,omitempty"`
+	Outcome   string `json:"outcome,omitempty"`
+	OutcomeAt string `json:"outcome_at,omitempty"`
 }
 
 func sourceOf(v release.SourceView, c caller) sourceJSON {
 	o := sourceJSON{Name: v.Name, Source: v.Source, Available: v.Available}
 	if v.Source != "" {
 		o.SetBy, o.SetAt = createdBy(v.SetBy, c), timeOf(v.SetAt)
+		o.Mode, o.Current, o.Newest, o.Outcome = v.Mode, v.Current, v.Newest, v.Outcome
+		if v.Outcome != "" {
+			o.OutcomeAt = timeOf(v.OutcomeAt)
+		}
 	}
 	return o
 }
@@ -51,12 +62,13 @@ func (h *Handler) channelSource(w http.ResponseWriter, r *http.Request, c caller
 func (h *Handler) setChannelSource(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
 		Source string `json:"source"`
+		Mode   string `json:"mode"` // spec 0033: auto or manual; absent keeps the rule's (manual for a new one)
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	a, _ := c.actor()
-	v, err := h.o.Releases.SetSource(r.Context(), a, p["t"], p["c"], p["name"], in.Source)
+	v, err := h.o.Releases.SetSource(r.Context(), a, p["t"], p["c"], p["name"], in.Source, in.Mode)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return

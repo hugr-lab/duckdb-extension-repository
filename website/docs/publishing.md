@@ -261,6 +261,39 @@ kista admin -config /etc/kista/kista.yaml \
 
 `-release <id>` promotes one release; `-private` and `-not-current` narrow the result.
 
+## Placing from the catalogue
+
+Every build that arrives in a tenant is a build of its source in the tenant's
+[catalogue](upstreams.md#the-catalogue-and-a-channels-rules). Placing releases a version of a name from a source of the
+tenant in a channel: every build of the version the channel serves, all or none, signed with the
+channel's key.
+
+```text
+POST /api/v1/tenants/{t}/channels/{c}/extensions/{ext}/releases/place
+{"source": "upstream:core", "version": "1.2.0"}
+optional: "visibility": "private", "current": false
+```
+
+```bash
+kista admin -config /etc/kista/kista.yaml \
+  release place acme/prod -name h3 -source upstream:community -version v4.1.2
+```
+
+- It needs `promote` on the name in the channel (a publisher may, with a signed request). A channel
+  administrator places any checked build of the catalogue, and where the name has no rule yet the
+  placement writes one, mode `manual`. Anyone else places only what a promotion would take: builds
+  of the rule's source that are active or deprecated in a channel where it may publish the name;
+  for anything else (no rule, no such source or build) it gets `404`. A placement under a name whose
+  rule names another source is `409` (problem type `…/source`). A build whose body a purge took is
+  never placed again.
+- The version's builds that arrive later for another DuckDB version or platform the channel serves
+  are placed by the placement pass: the channel holds the version, not its builds.
+- **Visibility** is the build's as it arrived (a mirror's, or a publication's; private once any of
+  its releases was made private), unless you ask for `private`; a private upstream's credential keeps
+  it private as promotion does. A mirror's build keeps origin `upstream` and its original signature.
+- The answer is `201` with `{"releases": [...]}`, or `200` when the channel already holds them all
+  with the same choices; `404` when the catalogue has no build of the version the channel serves.
+
 ## Changing a release
 
 An administrator of the extension (or of its channel or tenant) changes a release with
@@ -512,7 +545,8 @@ Publications by any other publisher, by a principal, and `release add` record no
 
 ## Provenance in the index
 
-Every release has an `origin`: `admin` (the CLI), `publication`, `promotion` or `upstream`. Its
+Every release has an `origin`: `admin` (the CLI), `publication`, `promotion`, `placement` (from the
+catalogue, spec 0033) or `upstream` (a mirror's, also when placed from the catalogue). Its
 `provenance` (the actor, a publisher's key, the source channel and release for a promotion) is shown to the extension's administrators and to holders of `publish` or `promote`
 covering it. Who made the release is shown to administrators only, not to publishers.
 

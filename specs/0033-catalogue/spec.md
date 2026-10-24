@@ -1,7 +1,7 @@
 # Spec 0033: The catalogue
 
-- **Status**: accepted (2026-10-24); phase A1 in progress (part 1, builds and slots per source,
-  implemented); A2, B and C to come
+- **Status**: accepted (2026-10-24); phase A1 in progress (parts 1, builds and slots per source,
+  and 2, rules' modes and placement, implemented); A2, B and C to come
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -70,15 +70,17 @@ its releases) gaining its source, state and visibility.
 ### What an administrator does
 
 - **Mirror DuckDB's `h3` into `prod`**: add a community upstream with the entry `h3`, `prod` its
-  home channel (spec 0009's routes and CLI as today, `channel` naming it): the entry writes
-  `prod`'s `auto` rule for `h3`.
+  home channel (spec 0009's routes and CLI as today, `channel` naming it): its runs keep `prod`
+  current, and the first release writes `prod`'s rule for `h3`, without a mode (as built in A1 part
+  2: the channel serves what lands in it); another channel takes the mirror by a rule with a mode.
 - **Take a distributor's builds**: `kista admin channel follow acme/prod publisher:enterest` takes
   every name of it the tenant does not use from another source, each new version once its hold has
   passed; or rule names one by one (`kista admin channel source acme/prod geo_tools -set
   publisher:enterest -mode auto`).
 - **Choose versions by hand**: a `manual` rule; `GET …/channels/{c}/sources` shows per name the
   source, the mode, the current placed version, the newest available one and the last outcome;
-  `…/releases/place` places a version.
+  `…/releases/place` places a version, and its builds for DuckDB versions or platforms that arrive
+  later follow it.
 - **Roll back**: yank the bad release (spec 0006: the previous one is current again); with an
   `auto` rule the yanked version is not placed again, and the next version is. To stay on a version,
   switch the rule to `manual`.
@@ -176,9 +178,14 @@ its releases) gaining its source, state and visibility.
 ### Rules, follows and placement
 
 - **A rule** (channel, name) → source and mode, written by a channel administrator (spec 0031's
-  `PUT …/sources/{name}` with `{"source": …, "mode": "auto"|"manual"}`), by a home channel's entry,
-  or by a placement's first arrival (below). `auto` places each new available version of the name
-  from the source that the channel serves; `manual` places nothing by itself. `DELETE` clears it.
+  `PUT …/sources/{name}` with `{"source": …, "mode": "auto"|"manual"}`), or by a first arrival
+  (below), which gives it no mode (as built: the channel serves what lands in it, a mirror's runs and
+  publications into it, and the placement pass leaves the rule alone until an administrator gives it
+  a mode). `auto` places each new available version of the name
+  from the source that the channel serves; `manual` places no new version by itself, but a version
+  the channel holds is completed: a build of it that arrives later for another DuckDB version or
+  platform the channel serves is placed too, after any hold (the owner's choice, 2026-10-24: an
+  administrator chooses a version, not its builds). `DELETE` clears it.
   The administrator who writes an `auto` rule consents for the placements it makes, a reserved
   name included. `tenant` takes `manual` rules only: it is everyone in the tenant who may publish,
   so taking it automatically would let a grant on `dev` reach `prod`.
@@ -225,10 +232,9 @@ its releases) gaining its source, state and visibility.
 - **Promotion** (spec 0008) is a placement whose entries are what another channel serves: today's
   route and grants (`promote` on the target, `publish` on the source channel), now also refusing a
   held entry without `early`.
-- **First arrival.** A placement under a name with no rule (a publication, a promotion, a manual
-  placement) writes the rule, mode `manual`, when the caller administers the channel or publishes
-  into it (as spec 0031's arrival); a `promote` holder who is neither gets `409`, and a channel
-  administrator writes the rule first. A placement under a name whose rule names another source is
+- **First arrival.** A placement under a name with no rule (a publication, a promotion) writes the
+  rule without a mode (as spec 0031's arrival); a manual placement where no rule is takes a channel
+  administrator, and writes a `manual` rule (as built: anyone else learns nothing, `404`). A placement under a name whose rule names another source is
   `409` (spec 0031's `…/source`).
 - **Visibility** only narrows: a placement is public only when the entry is public and the placer
   allows it.
@@ -429,7 +435,10 @@ One spec, four phases, each a PR with its own reviews and its own migration:
   new DuckDB end to end, the website's pages.
 
 A1 comes in parts, each a PR: part 1, builds and slots per source (migration 0034); part 2, the
-catalogue's entries and the placement (rules, home channels, the pass, the routes); part 3, follows.
+rules' modes and the placement (the pass, `auto` and a `manual` rule's completed versions, manual
+placement, the catalogue's read routes, a mirror under a `manual` rule landing its builds without
+placing them); part 3, upstreams without a home channel, the catalogue-only route, retention and
+caps, the catalogue's own slot uniqueness; part 4, follows.
 
 ### As built (A1 part 1)
 
@@ -456,6 +465,48 @@ catalogue's entries and the placement (rules, home channels, the pass, the route
   catalogue's own slot uniqueness and `legacy_duplicate` (part 2); a source may still release
   another body of a version in another channel until then. The data model's "one migration per
   phase" is one per part in A1.
+
+### As built (A1 part 2)
+
+- **Modes are an administrator's.** A rule a first arrival writes (a mirror's release in its
+  channel, a publication, a promotion) has no mode: the channel serves what lands in it, as before
+  this spec, and the placement pass leaves it alone; so the upgrade changes nothing that arrives.
+  `PUT …/sources/{name}` with `mode`, or `channel source … -mode`, sets `auto` or `manual`; a placement
+  by hand where no rule is writes `manual`. `tenant` is never `auto`, and the pass never places from
+  it (a manual rule of it would let a grant on `dev` complete `prod`'s versions); a passthrough
+  channel's rules take no mode. Migration 0035 adds `mode` (`''`), `checked_at`, the last `outcome`;
+  builds gain `visibility` and `provenance` (as their first release that is not a promotion came)
+  and `landed`.
+- **The placement pass** (`release.Placer`, every minute, a lease per channel renewed before each
+  build): rules with a mode, of signed channels of active tenants, whose source has builds made since
+  its last look (taken 5 minutes back, for transactions that commit late), and all of them every hour;
+  a DuckDB version added to a channel clears its rules' looks. Cells are (platform, DuckDB version),
+  so a C API build counts for every DuckDB version it serves. An `auto` rule places, per slot, the
+  newest checked build that is newer than every version its cells have or had and than any other
+  build placed with it; both modes complete an active version's slots, not current where a newer
+  version serves a cell and private where the version is private in the channel. A build whose body
+  a purge took (released nowhere, a purged slot) is never placed. A mirror's build placed keeps
+  origin `upstream` and its original signature (licences, usage and bundles go on), with `placed` in
+  its provenance; any other is origin `placement`. Event `release.place`; the last failure is the
+  rule's outcome; the look's bookkeeping is skipped when the rule changed since it began.
+- **Placing by hand** (`POST …/releases/place`, `release place`, `promote` on the name): a channel
+  administrator places any checked build of the catalogue; anyone else only builds of the rule's
+  source active or deprecated where it may publish the name (what a promotion takes), and gets `404`
+  for anything else (no rule, no such source, no such build).
+- **Visibility**: making a release private makes its build private, so no placement serves it
+  publicly again.
+- **A mirror under a manual rule** (its own, or a removed one's a successor answers to) lands a
+  version the channel does not hold: the body committed, the build recorded with its keys and
+  marked `landed` (kept from the collector until a release takes it), no release; the cell's outcome
+  is `landed`. A version it holds is completed as the pass would. Lazy and pull-through fetches go
+  through the same intake: under a manual rule they land, and the request misses (the Design's "asks
+  nothing" is left to part 4). The land path skips the release's reservation and `*` checks, which a
+  placement makes.
+- **Events** are `source.set` (with `mode`) and `release.place`, not `rule.set` and
+  `placement.failed`; a failure is the rule's outcome. The read routes do not show entries' state
+  (holds come in A2) nor whether a build declares licence keys.
+- **Left**: a recheck racing a running look waits for the hourly sweep; purged slots from before
+  migration 0034 (`*`) keep older versions of every source out of their cell.
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into
