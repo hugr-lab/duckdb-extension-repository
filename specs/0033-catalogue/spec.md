@@ -1,7 +1,7 @@
 # Spec 0033: The catalogue
 
 - **Status**: accepted (2026-10-24); phase A1 implemented (parts 1, 2, 3a and 4; part 3b deferred to
-  the follow-ups); A2, B and C to come
+  the follow-ups); A2 implemented; B and C to come
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -584,6 +584,77 @@ channel, deferred.
   whose cause went away is taken at the next look of the source (a new build, or the hourly sweep).
 - **Left to later parts**: lazy and pull-through fetches through a follow (an ask comes from the
   upstream's home channel only; with A1 part 3b); a distributor's tenant reservations (B).
+
+### As built (A2)
+
+- **Migration 0040** (`0040_holds`, `min_reader` 40: an older replica would place held entries and
+  take a held publisher's publications on a channel's route) in the three dialects: `hold_seconds`
+  (`0` by default) on upstreams, publishers and channels; builds gain `available_at` and
+  `publisher_key_id` (the data model's A1 row, left to A2 by A1 part 1), and rules `due_at` (below).
+  Additive columns only: no SQLite rebuild, SQL Server's text column BIN2.
+- **An entry's state is not a column**: an entry is `held` while its `available_at` is later than
+  now (`NULL`: available on arrival, every existing build), so a hold ends without a write; `withdrawn`
+  comes with its reason in B. The hold is read when the build is inserted (in its transaction, from
+  its source's row); a build found again keeps its own, and a successor's copy of a released build
+  takes none.
+- **A hold** is a duration of whole seconds, `0` to 90 days: `PUT …/upstreams/{u}/hold`,
+  `…/publishers/{p}/hold` and `…/channels/{c}/hold` take `{"hold": "24h"}` (the upstream's route takes
+  an optional `If-Match`, as its other changes require one), and answers show `hold` as a Go duration
+  (omitted on an upstream and a publisher without one; `GET …/channels/{c}/hold` reads a channel's).
+  CLI: `upstream hold`, `publisher hold`, `channel hold` (`24h`, `2d`, `0`). Event `catalogue.hold`
+  (`source` or `channel`, `hold`, `before`, and `held`, how many held entries a raise held longer).
+  Raising a source's hold sets each entry held now to its arrival plus the new hold, if later.
+- **Who**: a tenant's administrators set an upstream's and a publisher's hold, a channel's
+  administrators the channel's. A distributor's publisher's hold, and the distributor mark, are B: the
+  publisher's route is a tenant administrator's, and a distribution admin is refused there.
+- **An eager mirror only** (the most conservative reading of "a publisher or an eager mirror"): a
+  lazy mirror, a pull-through upstream, a bundle-mode upstream and an upstream of a passthrough
+  channel are refused a hold (`400`), and a mirror with a hold is not made lazy (`400`: set it to `0`
+  first). A channel's hold is refused on a passthrough channel.
+- **A mirror's own channel.** As built in A1 part 2, a mirror's runs release into its channel under a
+  rule without a mode; such a release is an automatic placement, so it waits for the source's hold and
+  the channel's: the run lands the entry (cell outcome `held`, kept with its ETag) and writes the
+  name's rule as its release would (the first arrival; a successor taking a removed upstream's rule
+  and releases). The placement pass places it there when the hold ends: `store.DueRules` takes a
+  mirror's rule without a mode in its home channel while the mirror has builds of the name landed
+  there, and places its landed builds as an `auto` rule would (`placed: "home"`, reserving DuckDB's
+  names as the run would). A bundle import into a channel with a hold does the same.
+- **The channel's hold** applies to automatic placements: rules, follows, a mirror's runs into its
+  own channel. Publications on the channel's route, an administrator's `release add`, placing by hand
+  and promotion do not wait for it. A channel with a hold offers no cell to a lazy mirror or a
+  pull-through upstream (its snapshot holds none; setting the hold renews it).
+- **Due work**: a rule's look records `due_at`, when the first hold it waited for ends (a source's or
+  the channel's); `DueRules` takes a rule whose `due_at` has passed. Setting a channel's hold makes its
+  rules due (a shorter hold ends sooner); a hold raised since a look wakes the pass early, which
+  looks again. A placement refused under the lock because a hold was raised meanwhile is looked at
+  again a minute later. The hourly sweep is unchanged. Placing only versions newer than what the
+  channel had keeps an older version whose hold ends later from overtaking a newer one.
+- **`early`** on manual placement only (`"early": true`, `release place -early`): a channel
+  administrator (admin on the channel, with `promote` on the name as any placement) places held
+  entries; anyone else asking for it is refused as unauthorized (`404`, nothing said). Without it a
+  held entry is `409` with the problem type `…/held`. `release.place` carries `early: true` when a
+  held entry was placed so. A promotion takes no `early` (the conservative reading): it always
+  refuses a held entry, placed early in its source channel or not, and a channel administrator places
+  the version early in the target instead. The insert checks the entry's `available_at` again under
+  the channel lock (a hold raised meanwhile counts); the withdrawal's row lock is B's.
+- **The channel route** refuses a publisher with a hold after authorization and before the upload
+  is read (`409`, `…/held`, the detail naming the catalogue's route); a publication whose build
+  turns out held under the lock (the hold set meanwhile) is refused the same way. A publisher
+  without a hold publishing a body it published into the catalogue while it had one finds that
+  entry held (`409`: lowering a hold does not release entries already held).
+- **Purging held entries**: `DELETE …/keys/{k}?purge_held=true` (`true` or `false`, `400`
+  otherwise; `publisher key remove -purge-held`) purges, in the key's removal transaction, the
+  entries published with the key (`publisher_key_id`, recorded from the signed request) that are held
+  now and were never released; removing the publisher does so for all its held entries. An entry
+  placed early stays (a channel administrator chose it). Each purge is a `catalogue.purge` event with
+  `reason` (`publisher.key.remove` or `publisher.remove`) and the key; `publisher.key.remove` gains
+  `purge_held`.
+- **Reads**: the catalogue's entries list their `held` versions; its builds show `state` (`held` or
+  `available`) and a held one's `available_at`, also in the catalogue-only route's answer
+  (`catalogue list`'s `HELD`, `catalogue show`'s `HELD UNTIL`); `catalogue.arrival` carries
+  `available_at` for a held entry; a rule's `newest` is the newest version without a held build;
+  `publisher list` shows `HOLD`, `upstream show` `hold:`. The console's cells filter lists `held`;
+  no screen changes (C).
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into

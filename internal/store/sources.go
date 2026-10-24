@@ -363,7 +363,7 @@ AND NOT EXISTS (SELECT 1 FROM releases o WHERE o.channel_id = r.channel_id AND o
 		if err != nil {
 			return 0, err
 		}
-		b.ID, b.Source = "", to
+		b.ID, b.Source, b.NoHold = "", to, true // a released build: the successor's hold is for what arrives
 		if err := t.FindOrInsertBuild(ctx, &b); errors.Is(err, ErrCatalogueSlot) {
 			// the successor holds the version with another body: the copy is a legacy duplicate
 			b.ID, b.Legacy = "", true

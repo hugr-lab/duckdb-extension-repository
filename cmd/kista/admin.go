@@ -123,6 +123,8 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   channel follow <tenant>/<channel> [<source>]  follow a whole source (spec 0033): its names the channel has
                                                   no rule for are taken automatically; without one, the follows
   channel unfollow <tenant>/<channel> <source>   stop following it; what it placed stays
+  channel hold <tenant>/<channel> [<duration>]   the channel's hold (spec 0033): an automatic placement waits
+                                                  until an entry's arrival plus it (24h, 2d; 0 for none)
   channel list <tenant>
   key check -signer <ref>                         open a key, check it, sign a probe; stores nothing
   key add <tenant>/<channel> -signer <ref> [-active]
@@ -138,9 +140,10 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                   delete a yanked release for good; its slot stays taken (-force while gc.interval is 0)
   release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> | -version <v>)
                   [-private] [-not-current]               release Builds of another channel here
-  release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current] [-type t]
+  release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current] [-type t] [-early]
                   place a version's builds from the catalogue (spec 0033); later builds of it follow
-                  (-type: the builds' package type, the channel's when left out; another is refused)
+                  (-type: the builds' package type, the channel's when left out; another is refused;
+                  -early: a held version, a channel administrator's choice, audited)
   catalogue list <tenant> [-source <source>] [-name <name>] [-type t]
                                                   the tenant's catalogue: each source's names and versions,
                                                   and the channels whose rule takes them (spec 0033)
@@ -156,12 +159,18 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                    register a public SSH key (ssh-ed25519 or ecdsa-sha2-nistp256): the publisher signs its
                    requests with it (spec 0023)
   publisher key list <tenant> <name>
-  publisher key remove <tenant> <name> <key-id>
+  publisher key remove <tenant> <name> <key-id> [-purge-held]
+                                                  -purge-held: purge the entries it published that are
+                                                  still held (a revoked key; spec 0033)
+  publisher hold <tenant> <name> <duration>       the publisher's hold (spec 0033): its entries are held this
+                                                  long and it publishes into the catalogue only (24h, 2d; 0 for none)
   upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
                -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
                [-mode mirror|pull-through|bundle] [-fetch eager|lazy] [-credential <name>]
   upstream fetch <tenant> <name> eager|lazy       a mirror's fetch mode (spec 0032): lazy fetches the cells asked for
                                                   and its eager entries; sync fetches the whole matrix
+  upstream hold <tenant> <name> <duration>        an eager mirror's hold (spec 0033): its entries are held this long
+                                                  before a channel takes them (24h, 2d; 0 for none)
   upstream credential <tenant> <name> <credential|->   a private upstream's credential (- clears it)
   upstream credentials                            the configured credentials (names, tenants, prefixes, who forwards usage)
   upstream list <tenant>
@@ -664,6 +673,27 @@ func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error
 		return a.channelSource(ctx, pos, *set, *mode, *clear)
 	case (sub == "follow" || sub == "unfollow") && (len(pos) == 2 || len(pos) == 1 && sub == "follow"):
 		return a.channelFollow(ctx, sub, pos)
+	case sub == "hold" && (len(pos) == 1 || len(pos) == 2):
+		t, c, err := splitPath(pos[0])
+		if err != nil {
+			return err
+		}
+		if len(pos) == 1 {
+			d, err := a.svc.Releases.ChannelHold(ctx, a.actor, t, c)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(a.out, d)
+			return nil
+		}
+		d, err := parseHold(pos[1])
+		if err != nil {
+			return err
+		}
+		if _, err := a.svc.Releases.SetChannelHold(ctx, a.actor, t, c, d); err != nil {
+			return err
+		}
+		a.logf("channel hold %s/%s %s", t, c, d)
 	case sub == "create" && len(pos) == 1:
 		t, c, err := splitPath(pos[0])
 		if err != nil {
@@ -701,6 +731,33 @@ func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error
 		return errUsage
 	}
 	return nil
+}
+
+// parseHold reads a hold: a duration (36h, 90m) or whole days (2d); 0 for none (spec 0033).
+func parseHold(s string) (time.Duration, error) {
+	if n, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.Atoi(n)
+		if err != nil || days < 0 || days > 3650 { // beyond any hold; and no overflow
+			return 0, fmt.Errorf("%w: a hold is a duration such as 24h or 2d, 0 for none", errUsage)
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	if s == "0" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("%w: a hold is a duration such as 24h or 2d, 0 for none", errUsage)
+	}
+	return d, nil
+}
+
+// holdText shows a hold in a table or a show: "-" for none.
+func holdText(d time.Duration) string {
+	if d <= 0 {
+		return "-"
+	}
+	return d.String()
 }
 
 // typedKind is a channel's kind, with its package type when it is not the default (spec 0034).
@@ -884,9 +941,10 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 	relID := fs.String("release", "", "")
 	version := fs.String("version", "", "")
 	force := fs.Bool("force", false, "")
-	ptype := fs.String("type", "", "") // spec 0034: a placement's builds' package type ("": the channel's)
+	ptype := fs.String("type", "", "")   // spec 0034: a placement's builds' package type ("": the channel's)
+	early := fs.Bool("early", false, "") // spec 0033: place a held version
 	pos, err := flags(fs, args)
-	if err != nil || len(pos) == 0 || *ptype != "" && sub != "place" {
+	if err != nil || len(pos) == 0 || (*ptype != "" || *early) && sub != "place" {
 		return errUsage
 	}
 	if *ptype != "" {
@@ -956,7 +1014,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 		}
 	case sub == "place" && len(pos) == 1 && *name != "" && *source != "" && *version != "":
 		rs, existed, err := a.svc.Releases.Place(ctx, a.actor, t, c, *name, release.PlaceOptions{Source: *source, Version: *version,
-			PackageType: *ptype, Private: *private, NotCurrent: *notCurrent})
+			PackageType: *ptype, Private: *private, NotCurrent: *notCurrent, Early: *early})
 		if err != nil {
 			return err
 		}
@@ -1481,6 +1539,15 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 			return err
 		}
 		a.logf("publisher remove %s %s", pos[0], pos[1])
+	case sub == "hold" && len(pos) == 3:
+		d, err := parseHold(pos[2])
+		if err != nil {
+			return err
+		}
+		if _, err := a.svc.Auth.SetPublisherHold(ctx, a.actor, pos[0], pos[1], d); err != nil {
+			return err
+		}
+		a.logf("publisher hold %s %s %s", pos[0], pos[1], d)
 	case sub == "license-keys" && len(pos) == 3 && (pos[2] == "on" || pos[2] == "off"):
 		if _, err := a.svc.Auth.SetPublisherLicenseKeys(ctx, a.actor, pos[0], pos[1], pos[2] == "on"); err != nil {
 			return err
@@ -1495,17 +1562,17 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
-		a.table("PUBLISHER\tLICENSE KEYS\tKEY\tFINGERPRINT\tTITLE", func(w io.Writer) {
+		a.table("PUBLISHER\tLICENSE KEYS\tKEY\tFINGERPRINT\tTITLE\tHOLD", func(w io.Writer) {
 			for _, p := range ps {
 				mark := "-"
 				if p.LicenseKeys {
 					mark = "yes"
 				}
 				if len(keys[p.ID]) == 0 {
-					fmt.Fprintf(w, "%s\t%s\t-\t\t\n", p.Name, mark)
+					fmt.Fprintf(w, "%s\t%s\t-\t\t\t%s\n", p.Name, mark, holdText(p.Hold))
 				}
 				for _, k := range keys[p.ID] {
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.Name, mark, k.ID, k.Fingerprint, k.Title)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, mark, k.ID, k.Fingerprint, k.Title, holdText(p.Hold))
 				}
 			}
 		})
@@ -1518,8 +1585,9 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 func (a *adminCmd) publisherKey(ctx context.Context, sub string, args []string) error {
 	fs := flag.NewFlagSet("publisher key", flag.ContinueOnError)
 	expires := fs.String("expires", "", "")
+	purgeHeld := fs.Bool("purge-held", false, "") // spec 0033: a revoked key's held entries
 	pos, err := flags(fs, args)
-	if err != nil {
+	if err != nil || *purgeHeld && sub != "remove" {
 		return errUsage
 	}
 	switch {
@@ -1575,10 +1643,10 @@ func (a *adminCmd) publisherKey(ctx context.Context, sub string, args []string) 
 			}
 		})
 	case sub == "remove" && len(pos) == 3:
-		if err := a.svc.Auth.RemovePublisherKey(ctx, a.actor, pos[0], pos[1], pos[2]); err != nil {
+		if err := a.svc.Auth.RemovePublisherKey(ctx, a.actor, pos[0], pos[1], pos[2], *purgeHeld); err != nil {
 			return err
 		}
-		a.logf("publisher key remove %s %s %s", pos[0], pos[1], pos[2])
+		a.logf("publisher key remove %s %s %s%s", pos[0], pos[1], pos[2], map[bool]string{true: " (held entries purged)"}[*purgeHeld])
 	default:
 		return errUsage
 	}
@@ -1625,6 +1693,9 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 			u.Visibility, strings.Join(u.Platforms, ","))
 		if u.Mode == store.ModeMirror {
 			fmt.Fprintf(a.out, "fetch: %s\n", u.FetchMode)
+		}
+		if u.Hold > 0 {
+			fmt.Fprintf(a.out, "hold: %s\n", u.Hold)
 		}
 		if u.Prefix != "" {
 			fmt.Fprintf(a.out, "prefix: %s\nkeys: %s\n", u.Prefix, strings.Join(u.Keys, ","))
@@ -1711,6 +1782,15 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 			return err
 		}
 		a.logf("upstream fetch %s %s %s", pos[0], pos[1], pos[2])
+	case sub == "hold" && len(pos) == 3:
+		d, err := parseHold(pos[2])
+		if err != nil {
+			return err
+		}
+		if _, err := a.svc.Upstreams.SetHold(ctx, a.actor, pos[0], pos[1], d, 0); err != nil {
+			return err
+		}
+		a.logf("upstream hold %s %s %s", pos[0], pos[1], d)
 	case sub == "credentials" && len(pos) == 0:
 		fws, err := a.svc.Upstreams.Store.UsageForwarders(ctx)
 		if err != nil {
@@ -2846,14 +2926,15 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
-		a.table("SOURCE\tNAME\tVERSIONS\tRULES", func(w io.Writer) {
+		a.table("SOURCE\tNAME\tVERSIONS\tRULES\tHELD", func(w io.Writer) {
 			for _, e := range es {
 				var rules []string
 				for ch, mode := range e.Rules {
 					rules = append(rules, ch+"="+mode)
 				}
 				slices.Sort(rules)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Source, e.Name, strings.Join(e.Versions, " "), dash(strings.Join(rules, " ")))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.Source, e.Name, strings.Join(e.Versions, " "), dash(strings.Join(rules, " ")),
+					dash(strings.Join(e.Held, " ")))
 			}
 		})
 	case sub == "show" && len(pos) == 3:
@@ -2861,15 +2942,20 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
-		a.table("VERSION\tPLATFORM\tSLOT\tBODY\tVISIBILITY\tORIGIN\tCREATED\tRELEASED IN", func(w io.Writer) {
+		now := a.svc.Store.Now()
+		a.table("VERSION\tPLATFORM\tSLOT\tBODY\tVISIBILITY\tORIGIN\tCREATED\tRELEASED IN\tHELD UNTIL", func(w io.Writer) {
 			for _, v := range vs {
 				for _, b := range v.Builds {
 					var in []string
 					for _, p := range b.Placed {
 						in = append(in, p.Channel+"("+p.State+")")
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Version, b.Platform, b.Slot(), b.BodyHash[:12], b.Visibility,
-						b.Origin, ts(b.CreatedAt), dash(strings.Join(in, " ")))
+					held := "-"
+					if b.Held(now) {
+						held = ts(b.AvailableAt)
+					}
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Version, b.Platform, b.Slot(), b.BodyHash[:12], b.Visibility,
+						b.Origin, ts(b.CreatedAt), dash(strings.Join(in, " ")), held)
 				}
 			}
 		})

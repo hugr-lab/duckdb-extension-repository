@@ -29,6 +29,7 @@ type upstreamJSON struct {
 	Channel    string          `json:"channel"`
 	Mode       string          `json:"mode"`
 	Fetch      string          `json:"fetch,omitempty"` // a mirror's: eager | lazy (spec 0032)
+	Hold       string          `json:"hold,omitempty"`  // an eager mirror's hold (spec 0033), omitted for none
 	Visibility string          `json:"visibility"`
 	State      string          `json:"state"`
 	Run        string          `json:"run"` // idle | requested | dry_run_requested | running
@@ -63,7 +64,7 @@ func (h *Handler) upstreamOf(u store.Upstream, channels map[string]string, c cal
 		Visibility: u.Visibility, State: u.State, Run: "idle", Keys: nonNil(u.Keys), Platforms: nonNil(u.Platforms),
 		Extensions: []entryJSON{}, LastRunAt: timeOf(u.LastRunAt), CreatedAt: timeOf(u.CreatedAt),
 		CreatedBy: createdBy(u.CreatedBy, c), Credential: u.Credential, Usage: u.Usage, BundleID: u.BundleID,
-		BundleCreatedAt: timeOf(u.BundleCreatedAt), BundleManifest: u.BundleManifestSHA256, ETag: versionTag(u.Version)}
+		BundleCreatedAt: timeOf(u.BundleCreatedAt), BundleManifest: u.BundleManifestSHA256, ETag: versionTag(u.Version), Hold: holdOf(u.Hold)}
 	if u.Mode == store.ModeMirror {
 		o.Fetch = u.FetchMode
 	}

@@ -91,6 +91,9 @@ type Channel struct {
 	Version        int64
 	ServingKeyID   string // the key whose signatures are served; empty before the first release
 	ReleaseVersion int64  // bumped by every release change and serving-key move (spec 0006)
+	// Hold is the channel's hold (spec 0033): an automatic placement into it waits until an entry's
+	// arrival plus the hold, if that is later than the entry's own; 0 for none.
+	Hold time.Duration
 }
 
 // Key is a channel signing key. Only its public key and signer reference are stored.
@@ -218,13 +221,14 @@ func (s *Store) ListDuckDBVersions(ctx context.Context) ([]DuckDBVersion, error)
 	return out, rows.Err()
 }
 
-const channelCols = "c.id, c.tenant_id, c.name, c.kind, c.created_at, c.version, c.serving_key_id, c.release_version, c.package_type"
+const channelCols = "c.id, c.tenant_id, c.name, c.kind, c.created_at, c.version, c.serving_key_id, c.release_version, c.package_type, c.hold_seconds"
 
 func scanChannel(r interface{ Scan(...any) error }) (Channel, error) {
 	var c Channel
 	var serving sql.NullString
-	err := r.Scan(&c.ID, &c.TenantID, &c.Name, &c.Kind, scanTime{&c.CreatedAt}, &c.Version, &serving, &c.ReleaseVersion, &c.PackageType)
-	c.ServingKeyID = serving.String
+	var hold int64
+	err := r.Scan(&c.ID, &c.TenantID, &c.Name, &c.Kind, scanTime{&c.CreatedAt}, &c.Version, &serving, &c.ReleaseVersion, &c.PackageType, &hold)
+	c.ServingKeyID, c.Hold = serving.String, time.Duration(hold)*time.Second
 	return c, err
 }
 

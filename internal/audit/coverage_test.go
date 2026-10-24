@@ -81,8 +81,9 @@ var writes = map[string]map[string][]audit.Kind{
 	"tenants.AuthAdmin": {
 		"AddIssuer": {"issuer.add"}, "RemoveIssuer": {"issuer.remove"}, "AddAudience": {"audience.add"},
 		"RemoveAudience": {"audience.remove"}, "AddGrant": {"grant.add"}, "RemoveGrant": {"grant.remove"},
-		"AddPublisher": {"publisher.add"}, "RemovePublisher": {"publisher.remove"}, "SetPublisherLicenseKeys": {"publisher.change"},
-		"AddPublisherKey": {"publisher.key.add"}, "RemovePublisherKey": {"publisher.key.remove"},
+		"AddPublisher": {"publisher.add"}, "RemovePublisher": {"publisher.remove", "catalogue.purge"}, "SetPublisherLicenseKeys": {"publisher.change"},
+		"AddPublisherKey": {"publisher.key.add"}, "RemovePublisherKey": {"publisher.key.remove", "catalogue.purge"},
+		"SetPublisherHold": {"catalogue.hold"},
 		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil,
 		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListPublisherKeys": nil, "TenantPublisherKeys": nil,
 		"CreatePackageGroup": {"extension_group.add"}, "SetPackageGroupDescription": {"extension_group.change"},
@@ -105,7 +106,8 @@ var writes = map[string]map[string][]audit.Kind{
 		"Place": {"release.place", "shadow.add", "source.set"}, "PlaceRule": {"release.place", "shadow.add"}, "Catalogue": nil,
 		"CatalogueVersions": nil, "AddToCatalogue": {"catalogue.arrival"}, "PurgeEntry": {"catalogue.purge"}, "TrimLanded": nil,
 		"SetFollow": {"follow.set"}, "RemoveFollow": {"follow.clear"}, "Follows": nil, "Follow": nil,
-		"PlaceFollow": {"source.set", "release.place", "shadow.add"},
+		"PlaceFollow":    {"source.set", "release.place", "shadow.add"},
+		"SetChannelHold": {"catalogue.hold"}, "ChannelHold": nil,
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
@@ -114,6 +116,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetCredential": {"upstream.change"},
 		"SetUsage":      {"upstream.change"},
 		"SetFetchMode":  {"upstream.change"},
+		"SetHold":       {"catalogue.hold"},
 		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
 		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected", "feed.run"},
 		"ResetBundle":   {"bundle.reset"}, "ResetFeedBundle": {"bundle.reset"}, "Imports": nil,
@@ -413,7 +416,11 @@ func TestCoverage(t *testing.T) {
 		pubKey = k.ID
 		return err
 	}), "publisher.key.add")
-	en.expect("tenants.AuthAdmin.RemovePublisherKey", do(func() error { return en.adm.RemovePublisherKey(rctx, admin, "acme", "ci", pubKey) }), "publisher.key.remove")
+	en.expect("tenants.AuthAdmin.RemovePublisherKey", do(func() error { return en.adm.RemovePublisherKey(rctx, admin, "acme", "ci", pubKey, true) }), "publisher.key.remove")
+	en.expect("tenants.AuthAdmin.SetPublisherHold", do(func() error {
+		_, err := en.adm.SetPublisherHold(rctx, admin, "acme", "ci", 24*time.Hour)
+		return err
+	}), "catalogue.hold")
 	en.expect("tenants.AuthAdmin.SetPublisherLicenseKeys", do(func() error {
 		_, err := en.adm.SetPublisherLicenseKeys(rctx, admin, "acme", "ci", true)
 		return err
@@ -489,6 +496,10 @@ func TestCoverage(t *testing.T) {
 	}), "source.set", "release.place")
 	en.expect("release.Service.RemoveFollow", do(func() error { return en.rel.RemoveFollow(rctx, admin, "acme", "prod", "publisher:dist") }),
 		"follow.clear")
+	en.expect("release.Service.SetChannelHold", do(func() error { _, err := en.rel.SetChannelHold(rctx, admin, "acme", "prod", time.Hour); return err }),
+		"catalogue.hold")
+	en.expect("release.Service.SetChannelHold", do(func() error { _, err := en.rel.SetChannelHold(rctx, admin, "acme", "prod", 0); return err }),
+		"catalogue.hold")
 	en.expect("release.Service.SetSource", do(func() error {
 		_, err := en.rel.SetSource(rctx, admin, "acme", "prod", "parquet", "tenant", "")
 		return err
@@ -556,6 +567,10 @@ func TestCoverage(t *testing.T) {
 	other := "sha256:" + strings.Repeat("ab", 32)
 	en.expect("upstream.Service.AddKey", do(func() error { return en.up.AddKey(rctx, admin, "acme", "repo", other) }), "upstream.change")
 	en.expect("upstream.Service.RemoveKey", do(func() error { return en.up.RemoveKey(rctx, admin, "acme", "repo", other) }), "upstream.change")
+	en.expect("upstream.Service.SetHold", do(func() error {
+		_, err := en.up.SetHold(rctx, admin, "acme", "repo", time.Hour, 0)
+		return err
+	}), "catalogue.hold")
 	creds, err := credential.New([]config.Credential{{Name: "repo-token", Tenants: []string{"acme"}, Prefixes: []string{"https://repo.example"},
 		Kind: "token_file", TokenFile: "/nonexistent"}}, credential.Deps{})
 	if err != nil {

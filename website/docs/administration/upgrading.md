@@ -95,6 +95,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0037_follows` | 37 | an older replica would treat a follow's rules as manual ones |
 | `0038_package_names` | 38 | the schema's tables and columns are renamed (no change in behaviour): an older replica would query the old names |
 | `0039_package_types` | 39 | every key that holds a name holds its package type: an older replica's upserts would fail against the new keys, and it must not read rows of a type it does not know |
+| `0040_holds` | 40 | an older replica would place held entries, and take a held publisher's publications on a channel's route |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -165,7 +166,23 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 39)
+## Upgrading to the next release (schema 40)
+
+### Holds (spec 0033, phase A2)
+
+- **Migration `0040_holds`** gives upstreams, publishers and channels a hold (`hold_seconds`, `0`
+  for none) and builds when a held one becomes available and the publisher key that published it,
+  and raises `min_reader` to 40: stop every older replica first.
+- Nothing is held until an administrator sets a hold ([Holds](../upstreams.md#holds)): every
+  existing build is available, and every channel, publisher and upstream has none.
+- A publisher with a hold is refused on a channel's publication route (`409`, problem type
+  `…/held`) and publishes into the catalogue; a CI that publishes into a channel keeps working until
+  its publisher is given a hold.
+- New in answers: an upstream's and a publisher's `hold`, a catalogue entry's `held` versions, and a
+  catalogue build's `state` and `available_at`; a mirror's cell may be `held`. `DELETE
+  …/publishers/{name}/keys/{id}` takes `?purge_held=true`. Events: `catalogue.hold`, and new fields
+  on `catalogue.arrival`, `catalogue.purge`, `release.place` and `publisher.key.remove` (the event
+  catalogue's version stays 1).
 
 ### Package types (spec 0034, phase 2)
 

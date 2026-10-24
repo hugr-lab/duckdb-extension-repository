@@ -206,6 +206,10 @@ followed into a channel of their own type only (another is `409`), and on a chan
 `?type=` other than the channel's is `400`. The channel lists show a channel's type only when it is
 not the default. See [Concepts](../concepts.md#packages-and-package-types).
 
+A signed channel may have a **hold** (`ka channel hold acme/prod 1d`, its administrators'; `0` for
+none): an automatic placement into it waits until an entry's arrival plus the hold, and it asks no
+lazy mirror. See [Holds](../upstreams.md#holds).
+
 ### Channel kinds
 
 | | `signed` | `passthrough` |

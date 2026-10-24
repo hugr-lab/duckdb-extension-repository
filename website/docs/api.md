@@ -121,6 +121,7 @@ Errors are `application/problem+json`:
 | `invalid` | `400`; `411` when `Content-Length` is missing; `408` for an upload slower than the server accepts |
 | `conflict` | `409`: a duplicate, a refused state change, the last-admin rule |
 | `source` | `409`: another source holds the extension's name in the channel; the detail names it ([spec 0031](upstreams.md#a-names-source-in-a-channel)) |
+| `held` | `409`: a held entry placed or promoted without `early`, or a publisher with a hold on a channel's publication route ([holds](upstreams.md#holds)) |
 | `precondition-failed` | `412` |
 | `precondition-required` | `428` |
 | `too-large` | `413` |
@@ -313,10 +314,11 @@ channel. See [Using kista from DuckDB](duckdb.md).
 | --- | --- |
 | `POST tenants/{t}/channels` | tenant admin |
 | `GET, POST tenants/{t}/channels/{c}/duckdb-versions`; `DELETE …/duckdb-versions/{v}` | channel admin |
-| `GET tenants/{t}/channels/{c}/sources`; `GET, PUT, DELETE …/sources/{name}` | channel admin: [a name's source in the channel](upstreams.md#a-names-source-in-a-channel) and its [rule](upstreams.md#the-catalogue-and-a-channels-rules) (`PUT` takes `{"source": "tenant" \| "upstream:<name>" \| "publisher:<name>", "mode": "auto" \| "manual"}`, `mode` optional; a follow's rules have mode `follow`; each answer is `{"name", "source", "mode", "current", "newest", "outcome", "outcome_at", "set_by", "set_at", "available": {"<source>": <releases>}}`, `source` `""` when none; a list is `{"sources": [...]}`). A release's management answer carries `source` and `selected` (whether it is the channel's source of the name: only those are served) |
+| `GET tenants/{t}/channels/{c}/sources`; `GET, PUT, DELETE …/sources/{name}` | channel admin: [a name's source in the channel](upstreams.md#a-names-source-in-a-channel) and its [rule](upstreams.md#the-catalogue-and-a-channels-rules) (`PUT` takes `{"source": "tenant" \| "upstream:<name>" \| "publisher:<name>", "mode": "auto" \| "manual"}`, `mode` optional; a follow's rules have mode `follow`; each answer is `{"name", "source", "mode", "current", "newest" (the newest available in the catalogue; a version with a held build is not), "outcome", "outcome_at", "set_by", "set_at", "available": {"<source>": <releases>}}`, `source` `""` when none; a list is `{"sources": [...]}`). A release's management answer carries `source` and `selected` (whether it is the channel's source of the name: only those are served) |
 | `GET tenants/{t}/channels/{c}/follows`; `GET, PUT, DELETE …/follows/{source}` | channel admin: the channel's [follows](upstreams.md#the-catalogue-and-a-channels-rules) (`PUT` takes no body; each answer is `{"source", "set_by", "set_at", "skips": {"<name>": "<reason>"}}`; a list is `{"follows": [...]}`) |
-| `GET tenants/{t}/catalogue[?source=&name=]` | tenant admin: the tenant's [catalogue](upstreams.md#the-catalogue-and-a-channels-rules), `{"entries": [{"source", "name", "versions": [newest first], "rules": {"<channel>": "<mode>"}}]}` |
-| `GET tenants/{t}/catalogue/{source}/extensions/{ext}` | tenant admin: an entry's versions (newest first), each with its builds: `{"versions": [{"version", "builds": [{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility", "origin", "checked", "created_at", "placed": [{"channel", "state"}]}]}]}` |
+| `GET tenants/{t}/catalogue[?source=&name=]` | tenant admin: the tenant's [catalogue](upstreams.md#the-catalogue-and-a-channels-rules), `{"entries": [{"source", "name", "versions": [newest first], "rules": {"<channel>": "<mode>"}, "held": [the versions with a held build, omitted for none]}]}` |
+| `GET tenants/{t}/catalogue/{source}/extensions/{ext}` | tenant admin: an entry's versions (newest first), each with its builds: `{"versions": [{"version", "builds": [{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility", "origin", "checked", "created_at", "state": "held" \| "available", "available_at" (held), "placed": [{"channel", "state"}]}]}]}` |
+| `GET, PUT tenants/{t}/channels/{c}/hold` | channel admin: the channel's [hold](upstreams.md#holds), `{"channel", "hold": "2h0m0s"}`; `PUT` takes `{"hold": "2h"}` (`0s` for none, at most 90 days) |
 | `POST tenants/{t}/catalogue/extensions/{ext}/builds?version=&platform=[&visibility=]` | `publish` on the extension tenant-wide: [publishing into the catalogue](publishing.md#publishing-into-the-catalogue) only |
 | `DELETE tenants/{t}/catalogue/builds/{id}` | tenant admin: purge a build no release holds (`409` when one does) |
 | `GET tenants/{t}/channels/{c}/keys` | channel admin: keys, serving and active key, re-sign progress; a server administrator also sees each key's `signer_ref` and `protection` tier |
@@ -335,13 +337,14 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `GET tenants/{t}/channels/{c}/extensions/{ext}/releases[/{id}]` | extension admin, its publishers |
 | `POST …/extensions/{ext}/releases?version=&platform=[&visibility=&current=]` | `publish` on the extension (raw file body) |
 | `POST …/extensions/{ext}/releases/promote` | `promote` on the extension |
-| `POST …/extensions/{ext}/releases/place` | `promote` on the extension; a name without a rule in the channel, channel admin ([placing from the catalogue](publishing.md#placing-from-the-catalogue)) |
+| `POST …/extensions/{ext}/releases/place` | `promote` on the extension; a name without a rule in the channel, or `"early": true` (a held version), channel admin ([placing from the catalogue](publishing.md#placing-from-the-catalogue)) |
 | `POST …/extensions/{ext}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
 | `DELETE …/extensions/{ext}/releases/{id}` | extension admin: purge a yanked release |
 | `GET, POST tenants/{t}/blocks`; `GET, DELETE tenants/{t}/blocks/{hash}` | tenant admin |
 | `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin; a distribution admin all but `DELETE` |
 | `GET, POST …/publishers/{name}/github`; `GET, DELETE …/github/{id}` | tenant admin |
-| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a marked publisher |
+| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a marked publisher; `DELETE …?purge_held=true` purges the builds the key published that are still held ([holds](publishing.md#holds-and-early-placement)) |
+| `PUT …/publishers/{name}/hold {"hold": "24h"}` | tenant admin: the publisher's [hold](publishing.md#holds-and-early-placement); a publisher answers `hold` (omitted for none) |
 | `POST, DELETE …/publishers/{name}/license-keys` | server, a distribution admin: mark a publisher a source of licence keys, or unmark it |
 
 A publisher answers with its `keys` and `license_keys` (true when marked; to a distribution admin,
@@ -359,6 +362,7 @@ See [Publishing](publishing.md).
 | `GET, POST tenants/{t}/upstreams`; `GET, DELETE …/upstreams/{name}` | tenant admin |
 | `POST …/upstreams/{name}/public`, `/private`, `/pause`, `/resume`, `/sync`, `/credential` | tenant admin |
 | `POST …/upstreams/{name}/fetch {"fetch": "eager"\|"lazy"}` (`If-Match`) | tenant admin: a mirror's fetch mode ([Lazy mirrors](upstreams.md#lazy-mirrors)); an upstream answers `fetch`, an entry `eager` |
+| `PUT …/upstreams/{name}/hold {"hold": "24h"}` (`If-Match` optional) | tenant admin: an eager mirror's [hold](upstreams.md#holds); an upstream answers `hold` (omitted for none) |
 | `GET …/upstreams/{name}/cells[?outcome=]` | tenant admin; `outcome=not_asked`: a lazy mirror's cells offered, not fetched |
 | `GET, POST …/upstreams/{name}/extensions`; `DELETE …/extensions/{entry}` | tenant admin |
 | `GET, POST …/upstreams/{name}/platforms`; `DELETE …/platforms/{item}` | tenant admin |

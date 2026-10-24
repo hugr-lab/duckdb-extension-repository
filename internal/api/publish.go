@@ -40,6 +40,9 @@ func (h *Handler) publishErr(w http.ResponseWriter, err error, bodyRef bool) {
 	case errors.Is(err, release.ErrOtherSource):
 		// spec 0031: the caller may publish or promote here, so it learns the name's source
 		problem(w, http.StatusConflict, typeSource, publicRefusal(err))
+	case errors.Is(err, release.ErrHeld):
+		// spec 0033 phase A2: a held entry, or a publisher with a hold on a channel's route
+		problem(w, http.StatusConflict, typeHeld, publicRefusal(err))
 	case errors.Is(err, release.ErrBlocked):
 		problem(w, http.StatusConflict, typeConflict, "the body is blocked in this tenant")
 	case errors.Is(err, store.ErrCatalogueFull):
@@ -192,13 +195,21 @@ func (h *Handler) publishRelease(w http.ResponseWriter, r *http.Request, c calle
 	rel, existed, err := h.o.Releases.Add(r.Context(), a, p["t"], p["c"], u.body, release.AddOptions{
 		Name: p["ext"], Private: u.private, NotCurrent: u.notCurrent, NoWait: true,
 		Publish: &release.Publication{Version: u.version, Platform: u.platform, Provenance: provenance(a, c), KeySources: keySources(c),
-			Statement: c.statement(), Signature: c.signature()},
+			Statement: c.statement(), Signature: c.signature(), KeyID: keyID(c)},
 	})
 	if err != nil {
 		h.publishErr(w, err, false)
 		return
 	}
 	h.answerReleases(w, r, c, p, []store.Release{rel}, existed, true)
+}
+
+// keyID is the id of the publisher's key that signed the request, "" for another caller.
+func keyID(c caller) string {
+	if c.pub == nil || len(c.pub.Publishers) == 0 {
+		return ""
+	}
+	return c.pub.Publishers[0].KeyID
 }
 
 // keySources are the ids of the caller's matched publishers marked as sources of licence keys

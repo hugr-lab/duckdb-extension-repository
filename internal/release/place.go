@@ -12,6 +12,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -29,13 +30,17 @@ type PlaceOptions struct {
 	PackageType string
 	Private     bool // narrow the visibility (a placement never widens it)
 	NotCurrent  bool
+	// Early places a held entry (spec 0033 phase A2): a channel administrator's choice to take a
+	// version sooner, audited (release.place's early); anyone else is refused.
+	Early bool
 }
 
 // Place releases a source's builds of a version of name, those the channel serves, into a signed
 // channel, all or none (spec 0033). The caller needs promote on (channel, name). A channel
 // administrator may place any checked build of the catalogue, and a name without a rule gets one
 // (manual) first; anyone else only builds of the rule's source that are active or deprecated in a
-// channel where it may publish the name (what a promotion takes), and learns nothing else (404).
+// channel where it may publish the name (what a promotion takes), and learns nothing else (404). A
+// held entry is placed only early, by a channel administrator (spec 0033 phase A2).
 func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, name string, o PlaceOptions) ([]store.Release, bool, error) {
 	typ, err := s.channelType(ctx, tenant, channel)
 	if err != nil {
@@ -57,6 +62,9 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 		admin = false
 	} else if err != nil {
 		return nil, false, err
+	}
+	if o.Early && !admin {
+		return nil, false, fmt.Errorf("%w: early is a channel administrator's", authz.ErrDenied)
 	}
 	missing := fmt.Errorf("%w: release", store.ErrNotFound) // what a non-administrator learns
 	sc, err := s.Store.GetServeChannel(ctx, tenant, channel)
@@ -109,6 +117,7 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 		return nil, false, err
 	}
 	var items []item
+	now, early := s.Store.Now(), false
 	for _, b := range builds {
 		if b.PackageVersion != o.Version || servable(capis, b) != nil || purged[b.ID] {
 			continue
@@ -119,8 +128,15 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 		if !b.Checked {
 			return nil, false, fmt.Errorf("%w: %s %s %s was added unchecked; publish it to check it", ErrState, b.Name, b.PackageVersion, b.Platform)
 		}
+		if b.Held(now) { // spec 0033 phase A2: checked again under the channel lock
+			if !o.Early {
+				return nil, false, fmt.Errorf("%w: %s %s %s is held until %s; a channel administrator places it early (early)", ErrHeld,
+					b.Name, b.PackageVersion, b.Platform, b.AvailableAt.UTC().Format(time.RFC3339))
+			}
+			early = true
+		}
 		it := s.placement(tenant, b, src, a, "hand", o.Private)
-		it.notCurrent = o.NotCurrent
+		it.notCurrent, it.early = o.NotCurrent, o.Early
 		if !res.Reserved {
 			it.recheck = s.reservedCheck(a, authz.VerbPromote, res)
 		}
@@ -146,7 +162,7 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 			return nil, false, err
 		}
 	}
-	return s.insert(ctx, a, ch.ID, items, placeEvent(ctx, name, o.Source, "hand"))
+	return s.insert(ctx, a, ch.ID, items, placeEvent(ctx, name, o.Source, "hand", early))
 }
 
 // mayTake reports whether a caller may take a build by hand without administering the channel: it
@@ -188,14 +204,18 @@ func (s *Service) placement(tenant string, b store.Build, source string, a authz
 	return it
 }
 
-func placeEvent(ctx context.Context, name, source, how string) eventFn {
+// placeEvent writes release.place; early says a held entry was placed early (spec 0033 phase A2).
+func placeEvent(ctx context.Context, name, source, how string, early bool) eventFn {
 	return func(tx *store.Tx, c store.Channel, made []store.Release) error {
 		ids := make([]string, len(made))
 		for i, r := range made {
 			ids[i] = r.ID
 		}
-		return tx.Event(ctx, c.TenantID, made[0].CreatedBy, "release.place", "channel:"+c.Name+"/ext:"+name,
-			map[string]any{"releases": ids, "name": name, "version": made[0].PackageVersion, "source": source, "placed": how})
+		f := map[string]any{"releases": ids, "name": name, "version": made[0].PackageVersion, "source": source, "placed": how}
+		if early {
+			f["early"] = true
+		}
+		return tx.Event(ctx, c.TenantID, made[0].CreatedBy, "release.place", "channel:"+c.Name+"/ext:"+name, f)
 	}
 }
 
@@ -288,44 +308,58 @@ func (s served) complete(it *item) {
 // have or had; for both modes, a build of a version the channel holds (an active release of the
 // source) in a slot it lacks, not current where a newer version serves and private where the version
 // is. Never a build whose slot has or had the version (a yanked or purged one stays out), nor one
-// purged for good. Each build is placed on its own, renewing the caller's lease first; it returns how
-// many were placed and the first failure's text ("" for none).
+// purged for good, nor one held (spec 0033 phase A2: its source's hold, or the channel's). Each
+// build is placed on its own, renewing the caller's lease first; it returns how many were placed and
+// the first failure's text ("" for none).
 func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, error) {
+	n, failure, _, err := s.placeRule(ctx, r, renew)
+	return n, failure, err
+}
+
+// placeRule is PlaceRule, with when the first hold it waits for ends (zero for none): the pass looks
+// at the rule again then. A mirror's rule without a mode in its home channel (store.DueRules) places,
+// as an auto rule, the entries its runs landed held, once they are available.
+func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, time.Time, error) {
+	how, home := r.Mode, r.Mode == store.RuleNone
+	if home {
+		r.Mode, how = store.RuleAuto, "home"
+	}
 	if r.Mode == store.RuleFollow { // a follow's rule: auto while the channel follows the source
 		following, err := s.Store.Following(ctx, r.ChannelID, r.Source)
 		if err != nil {
-			return 0, "", err
+			return 0, "", time.Time{}, err
 		}
 		r.Mode = store.RuleManual
 		if following {
 			r.Mode = store.RuleAuto
 		}
+		how = r.Mode
+	}
+	ch, err := s.channelByID(ctx, r.ChannelID)
+	if err != nil {
+		return 0, "", time.Time{}, err
 	}
 	if r.PackageType == "" { // a rule read without its channel's type: the channel's
-		ch, err := s.channelByID(ctx, r.ChannelID)
-		if err != nil {
-			return 0, "", err
-		}
 		r.PackageType = ch.PackageType
 	}
 	if !pkgtype.Known(r.PackageType) { // spec 0034: a rule of a channel of a type this binary does not know places nothing
-		return 0, "", nil
+		return 0, "", time.Time{}, nil
 	}
 	builds, err := s.Store.SourceBuilds(ctx, r.TenantID, r.PackageType, r.Source, r.Name)
 	if err != nil || len(builds) == 0 {
-		return 0, "", err
+		return 0, "", time.Time{}, err
 	}
 	tn, err := s.Store.GetTenantAnyByID(ctx, r.TenantID)
 	if err != nil {
-		return 0, "", err
+		return 0, "", time.Time{}, err
 	}
 	capis, err := s.Store.ChannelCAPIs(ctx, r.ChannelID)
 	if err != nil {
-		return 0, "", err
+		return 0, "", time.Time{}, err
 	}
 	purged, err := s.Store.PurgedBuilds(ctx, r.TenantID, r.PackageType, r.Source, r.Name)
 	if err != nil {
-		return 0, "", err
+		return 0, "", time.Time{}, err
 	}
 	var cands []store.Candidate
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
@@ -333,21 +367,52 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(con
 		cands, err = tx.SourceReleases(ctx, r.ChannelID, r.Source, r.Name)
 		return err
 	}); err != nil {
-		return 0, "", err
+		return 0, "", time.Time{}, err
 	}
 	label, err := s.Store.SourceLabel(ctx, r.Source)
 	if err != nil {
-		return 0, "", err
+		return 0, "", time.Time{}, err
+	}
+	// a mirror's held version placed in its own channel brings its name as the run would have (spec
+	// 0030: DuckDB's repositories reserve their names)
+	var reserveKind, reserveSource string
+	if home {
+		kind, err := s.Store.UpstreamKindOf(ctx, r.Source)
+		if err != nil {
+			return 0, "", time.Time{}, err
+		}
+		switch kind {
+		case store.UpstreamCore:
+			reserveKind = reserved.Core
+		case store.UpstreamCommunity:
+			reserveKind = reserved.Community
+		}
+		reserveSource = "upstream:" + tn.Name + "/" + strings.TrimPrefix(label, store.SourceUpstreamPrefix)
 	}
 	sv := newServed(cands, capis)
 	var items []item
+	var due time.Time                   // when the first hold this look waits for ends
+	now := s.Store.Now()                // what is held is held at the look's start
 	best := map[[2]string]store.Build{} // (platform, slot) → the newest new version
 	for _, b := range builds {
 		if !b.Checked || servable(capis, b) != nil || purged[b.ID] || sv.had[[3]string{b.PackageVersion, b.Platform, b.Slot()}] {
 			continue
 		}
+		if home && !b.Landed { // the mirror's runs released what was not held
+			continue
+		}
+		// spec 0033 phase A2: an entry held, or within the channel's hold, waits, and the pass looks
+		// again when the first hold ends; then only a version newer than what the channel had, so an
+		// older version whose hold ends later does not overtake a newer one
+		if at := b.AvailableIn(ch.Hold); at.After(now) {
+			if due.IsZero() || at.Before(due) {
+				due = at
+			}
+			continue
+		}
 		if sv.held[b.PackageVersion] {
-			it := s.placement(tn.Name, b, r.Source, placer, r.Mode, false)
+			it := s.placement(tn.Name, b, r.Source, placer, how, false)
+			it.auto, it.reserveKind, it.reserveSource = true, reserveKind, reserveSource
 			sv.complete(&it)
 			items = append(items, it)
 			continue
@@ -372,7 +437,9 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(con
 			}
 		}
 		if !shadowed {
-			items = append(items, s.placement(tn.Name, b, r.Source, placer, r.Mode, false))
+			it := s.placement(tn.Name, b, r.Source, placer, how, false)
+			it.auto, it.reserveKind, it.reserveSource = true, reserveKind, reserveSource
+			items = append(items, it)
 		}
 	}
 	// oldest version first, so the newest placed is current
@@ -386,18 +453,22 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(con
 	for _, it := range items {
 		if renew != nil {
 			if err := renew(ctx); err != nil {
-				return placed, failure, err
+				return placed, failure, due, err
 			}
 		}
-		_, existed, err := s.insert(ctx, placer, r.ChannelID, []item{it}, placeEvent(ctx, r.Name, label, r.Mode))
+		_, existed, err := s.insert(ctx, placer, r.ChannelID, []item{it}, placeEvent(ctx, r.Name, label, how, false))
 		switch {
+		case errors.Is(err, ErrHeld): // a hold raised since the read: looked at again shortly
+			if soon := s.Store.Now().Add(time.Minute); due.IsZero() || soon.Before(due) {
+				due = soon
+			}
 		case err != nil && failure == "":
 			failure = fmt.Sprintf("%s %s %s: %v", it.b.PackageVersion, it.b.Platform, it.b.Slot(), err)
 		case err == nil && !existed:
 			placed++
 		}
 	}
-	return placed, failure, nil
+	return placed, failure, due, nil
 }
 
 // Placer runs the placement pass (spec 0033): every Interval, the rules whose source has builds
@@ -525,7 +596,7 @@ func (p *Placer) channel(ctx context.Context, channelID string, follows []store.
 			return // the lease was lost: another replica goes on
 		}
 		start := p.Service.Store.Now()
-		placed, failure, err := p.Service.PlaceRule(ctx, r, renew)
+		placed, failure, due, err := p.Service.placeRule(ctx, r, renew)
 		if errors.Is(err, errLeaseLost) {
 			return // another replica goes on
 		}
@@ -538,7 +609,7 @@ func (p *Placer) channel(ctx context.Context, channelID string, follows []store.
 		if placed > 0 {
 			p.Log.Info("release: placed a rule's builds", "channel", r.ChannelID, "name", r.Name, "placed", placed)
 		}
-		if err := p.Service.Store.SetRuleChecked(ctx, r, start, start.Add(-placeSkew), failure); err != nil {
+		if err := p.Service.Store.SetRuleChecked(ctx, r, start, start.Add(-placeSkew), failure, due); err != nil {
 			p.Log.Error("release: recording a rule's look", "channel", r.ChannelID, "name", r.Name, "error", err)
 		}
 	}

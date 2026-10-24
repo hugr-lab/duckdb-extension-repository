@@ -23,21 +23,41 @@ type DueRule struct {
 
 // DueRules lists the rules with a mode, of signed channels of active tenants, that the placement
 // pass should look at: every one (sweep), or those whose source has a build of the name made since
-// the pass last looked (or never looked). A rule of the tenant's own source is never the pass's: it
-// is everyone who may publish in the tenant.
+// the pass last looked (or never looked), or whose hold the pass waits for has ended (spec 0033
+// phase A2). A rule of the tenant's own source is never the pass's: it is everyone who may publish
+// in the tenant. A mirror's rule without a mode in its home channel is the pass's while the mirror
+// has entries of the name landed there, held when they arrived (Home).
 func (s *Store) DueRules(ctx context.Context, sweep bool) ([]DueRule, error) {
 	q := `SELECT c.tenant_id, cs.channel_id, cs.name, cs.source, cs.mode, c.package_type FROM channel_sources cs
 JOIN channels c ON c.id = cs.channel_id JOIN tenants t ON t.id = c.tenant_id
-WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL AND cs.mode IN ('auto', 'manual', 'follow') AND cs.source <> 'tenant'`
+WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL AND cs.source <> 'tenant' AND (cs.mode IN ('auto', 'manual', 'follow')
+	OR cs.mode = '' AND cs.source LIKE 'upstream:%' AND EXISTS (SELECT 1 FROM builds l WHERE l.tenant_id = c.tenant_id
+	AND l.package_type = c.package_type AND l.source = cs.source AND l.name = cs.name AND l.landed = ?))`
+	args := []any{true}
 	if !sweep {
-		q += ` AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = c.tenant_id AND b.package_type = c.package_type AND b.source = cs.source
-	AND b.name = cs.name AND (cs.checked_at IS NULL OR b.created_at > cs.checked_at))`
+		q += ` AND (cs.due_at <= ? OR EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = c.tenant_id AND b.package_type = c.package_type
+	AND b.source = cs.source AND b.name = cs.name AND (cs.checked_at IS NULL OR b.created_at > cs.checked_at)))`
+		args = append(args, s.d.timeArg(s.Now()))
+	}
+	homes := map[string]string{} // upstream source → its home channel
+	if err := s.eachRow(ctx, "SELECT id, channel_id FROM upstreams", nil, func(sc func(...any) error) error {
+		var id, ch string
+		if err := sc(&id, &ch); err != nil {
+			return err
+		}
+		homes[UpstreamSource(id)] = ch
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	var out []DueRule
-	err := s.eachRow(ctx, q+" ORDER BY c.tenant_id, cs.channel_id, cs.name", nil, func(sc func(...any) error) error {
+	err := s.eachRow(ctx, q+" ORDER BY c.tenant_id, cs.channel_id, cs.name", args, func(sc func(...any) error) error {
 		var r DueRule
 		if err := sc(&r.TenantID, &r.ChannelID, &r.Name, &r.Source, &r.Mode, &r.PackageType); err != nil {
 			return err
+		}
+		if r.Mode == RuleNone && homes[r.Source] != r.ChannelID {
+			return nil // a rule an arrival wrote elsewhere: the channel serves what lands in it
 		}
 		if pkgtype.Known(r.PackageType) { // spec 0034: a channel of a type this binary does not know places nothing
 			out = append(out, r)
@@ -108,9 +128,10 @@ func (t *Tx) SourceReleases(ctx context.Context, channelID, source, name string)
 }
 
 // SetRuleChecked records the placement pass's look at a rule, begun at start: when (builds made
-// after it are looked at next time) and its outcome ("" for none). A rule changed since the look
-// began (its source, its mode) is left alone, to be looked at again.
-func (s *Store) SetRuleChecked(ctx context.Context, r DueRule, start, at time.Time, outcome string) error {
+// after it are looked at next time), its outcome ("" for none), and when the first hold it waits for
+// ends (spec 0033 phase A2: due, zero for none). A rule changed since the look began (its source,
+// its mode) is left alone, to be looked at again.
+func (s *Store) SetRuleChecked(ctx context.Context, r DueRule, start, at time.Time, outcome string, due time.Time) error {
 	if len(outcome) > 400 {
 		outcome = strings.ToValidUTF8(outcome[:400], "")
 	}
@@ -119,9 +140,9 @@ func (s *Store) SetRuleChecked(ctx context.Context, r DueRule, start, at time.Ti
 		if outcome != "" {
 			o, oat = outcome, tx.s.d.timeArg(tx.Now())
 		}
-		_, err := tx.exec(ctx, `UPDATE channel_sources SET checked_at = ?, outcome = ?, outcome_at = ?
+		_, err := tx.exec(ctx, `UPDATE channel_sources SET checked_at = ?, outcome = ?, outcome_at = ?, due_at = ?
 WHERE channel_id = ? AND name = ? AND source = ? AND mode = ? AND set_at <= ?`,
-			tx.s.d.timeArg(at), o, oat, r.ChannelID, r.Name, r.Source, r.Mode, tx.s.d.timeArg(start))
+			tx.s.d.timeArg(at), o, oat, tx.s.d.nullTimeArg(due), r.ChannelID, r.Name, r.Source, r.Mode, tx.s.d.timeArg(start))
 		return err
 	})
 }
@@ -175,6 +196,23 @@ func (s *Store) SourceVersions(ctx context.Context, tenantID, packageType string
 	out := map[[2]string][]string{}
 	err := s.eachRow(ctx, `SELECT source, name, package_version FROM builds WHERE tenant_id = ? AND package_type = ?
 GROUP BY source, name, package_version`, []any{tenantID, packageType}, func(sc func(...any) error) error {
+		var src, name, v string
+		if err := sc(&src, &name, &v); err != nil {
+			return err
+		}
+		k := [2]string{src, name}
+		out[k] = append(out[k], v)
+		return nil
+	})
+	return out, err
+}
+
+// HeldVersions are a tenant's catalogue of a type's held versions (spec 0033 phase A2): those of each
+// (source, name) with a build held now.
+func (s *Store) HeldVersions(ctx context.Context, tenantID, packageType string) (map[[2]string][]string, error) {
+	out := map[[2]string][]string{}
+	err := s.eachRow(ctx, `SELECT source, name, package_version FROM builds WHERE tenant_id = ? AND package_type = ? AND available_at > ?
+GROUP BY source, name, package_version`, []any{tenantID, packageType, s.d.timeArg(s.Now())}, func(sc func(...any) error) error {
 		var src, name, v string
 		if err := sc(&src, &name, &v); err != nil {
 			return err

@@ -31,6 +31,8 @@ type publisherJSON struct {
 	Keys      []publisherKeyJSON `json:"keys"`
 	// LicenseKeys: a trusted source of licence keys (spec 0021)
 	LicenseKeys bool `json:"license_keys"`
+	// Hold: its hold (spec 0033), omitted for none
+	Hold string `json:"hold,omitempty"`
 }
 
 func publisherKeyOf(k store.PublisherKey, c caller) publisherKeyJSON {
@@ -40,7 +42,7 @@ func publisherKeyOf(k store.PublisherKey, c caller) publisherKeyJSON {
 
 func publisherOf(p store.Publisher, keys []store.PublisherKey, c caller) publisherJSON {
 	o := publisherJSON{Name: p.Name, CreatedAt: timeOf(p.CreatedAt), CreatedBy: createdBy(p.CreatedBy, c), Keys: []publisherKeyJSON{},
-		LicenseKeys: p.LicenseKeys}
+		LicenseKeys: p.LicenseKeys, Hold: holdOf(p.Hold)}
 	for _, k := range keys {
 		o.Keys = append(o.Keys, publisherKeyOf(k, c))
 	}
@@ -226,10 +228,15 @@ func (h *Handler) addPublisherKey(w http.ResponseWriter, r *http.Request, c call
 	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/publishers/"+esc(p["name"])+"/keys/"+esc(k.ID), publisherKeyOf(k, c), "-")
 }
 
-// removePublisherKey removes a publisher's key; it stops working at once.
+// removePublisherKey removes a publisher's key; it stops working at once. ?purge_held=true purges
+// the entries published with it that are still held (spec 0033 phase A2).
 func (h *Handler) removePublisherKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	purge, ok := purgeHeldParam(w, r)
+	if !ok {
+		return
+	}
 	a, _ := c.actor()
-	if err := h.o.Auth.RemovePublisherKey(r.Context(), a, p["t"], p["name"], p["id"]); err != nil {
+	if err := h.o.Auth.RemovePublisherKey(r.Context(), a, p["t"], p["name"], p["id"], purge); err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}

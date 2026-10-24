@@ -20,6 +20,7 @@ type Publication struct {
 type MatchedPublisher struct {
 	Publisher  store.Publisher
 	Credential string // key:<fingerprint>
+	KeyID      string // the key's id (spec 0033 phase A2: recorded on the builds it publishes)
 }
 
 // PublisherKey is a publisher's principal.

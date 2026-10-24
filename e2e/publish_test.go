@@ -90,6 +90,14 @@ func (k *kista) markPublisher(t *testing.T, name string, on bool) {
 // publisher's key (spec 0023), private, and returns the answer's status.
 func (k *kista) publish(t *testing.T, name string, key ssh.Signer) int {
 	t.Helper()
+	return k.publishTo(t, "channels/prod/extensions/"+name+"/releases", name, key, nil)
+}
+
+// publishTo posts a built extension to a publication route under acme (route: the path after
+// /api/v1/tenants/acme/), signed with a publisher's key, with its version and platform and the
+// extra parameters, and returns the answer's status.
+func (k *kista) publishTo(t *testing.T, route, name string, key ssh.Signer, extra url.Values) int {
+	t.Helper()
 	data, err := os.ReadFile(k.b.extensions[name])
 	if err != nil {
 		t.Fatal(err)
@@ -99,8 +107,10 @@ func (k *kista) publish(t *testing.T, name string, key ssh.Signer) int {
 		t.Fatal(err)
 	}
 	q := url.Values{"version": {ef.Metadata.ExtensionVersion}, "platform": {ef.Metadata.Platform}}
-	req, err := http.NewRequest("POST", "https://"+k.addr+"/api/v1/tenants/acme/channels/prod/extensions/"+name+"/releases?"+q.Encode(),
-		bytes.NewReader(data))
+	for p, vs := range extra {
+		q[p] = vs
+	}
+	req, err := http.NewRequest("POST", "https://"+k.addr+"/api/v1/tenants/acme/"+route+"?"+q.Encode(), bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +127,7 @@ func (k *kista) publish(t *testing.T, name string, key ssh.Signer) int {
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		t.Logf("publish %s: %d %s", name, resp.StatusCode, b)
+		t.Logf("publish %s to %s: %d %s", name, route, resp.StatusCode, b)
 	}
 	return resp.StatusCode
 }
