@@ -147,8 +147,9 @@ func (d *dualListener) loop() {
 	for {
 		c, err := d.Listener.Accept()
 		if err != nil {
-			d.err = err
-			d.once.Do(func() { close(d.done) })
+			// err is set under once, before done closes: Accept reads it after done, and a Close that
+			// came first leaves it nil (net.ErrClosed)
+			d.once.Do(func() { d.err = err; close(d.done) })
 			return
 		}
 		go d.sniff(c)
