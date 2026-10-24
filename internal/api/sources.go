@@ -84,3 +84,63 @@ func (h *Handler) clearChannelSource(w http.ResponseWriter, r *http.Request, c c
 	}
 	noContent(w)
 }
+
+// Spec 0033: a channel following a whole source.
+
+type followJSON struct {
+	Source string            `json:"source"`
+	SetBy  string            `json:"set_by"`
+	SetAt  string            `json:"set_at"`
+	Skips  map[string]string `json:"skips"` // the names the follow skips, each with the reason
+}
+
+func followOf(v release.FollowView, c caller) followJSON {
+	o := followJSON{Source: v.Source, SetBy: createdBy(v.SetBy, c), SetAt: timeOf(v.SetAt), Skips: v.Skips}
+	if o.Skips == nil {
+		o.Skips = map[string]string{}
+	}
+	return o
+}
+
+func (h *Handler) channelFollows(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	vs, err := h.o.Releases.Follows(r.Context(), a, p["t"], p["c"])
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	out := []followJSON{}
+	for _, v := range vs {
+		out = append(out, followOf(v, c))
+	}
+	reply(w, r, http.StatusOK, map[string]any{"follows": out}, "", noStore)
+}
+
+func (h *Handler) channelFollow(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	v, err := h.o.Releases.Follow(r.Context(), a, p["t"], p["c"], p["source"])
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	reply(w, r, http.StatusOK, followOf(v, c), "", noStore)
+}
+
+func (h *Handler) setChannelFollow(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	v, err := h.o.Releases.SetFollow(r.Context(), a, p["t"], p["c"], p["source"])
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	reply(w, r, http.StatusOK, followOf(v, c), "", noStore)
+}
+
+func (h *Handler) removeChannelFollow(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	if err := h.o.Releases.RemoveFollow(r.Context(), a, p["t"], p["c"], p["source"]); err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	noContent(w)
+}

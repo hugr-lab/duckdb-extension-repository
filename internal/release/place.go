@@ -280,6 +280,16 @@ func (s served) complete(it *item) {
 // purged for good. Each build is placed on its own, renewing the caller's lease first; it returns how
 // many were placed and the first failure's text ("" for none).
 func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, error) {
+	if r.Mode == store.RuleFollow { // a follow's rule: auto while the channel follows the source
+		following, err := s.Store.Following(ctx, r.ChannelID, r.Source)
+		if err != nil {
+			return 0, "", err
+		}
+		r.Mode = store.RuleManual
+		if following {
+			r.Mode = store.RuleAuto
+		}
+	}
 	builds, err := s.Store.SourceBuilds(ctx, r.TenantID, r.Source, r.Name)
 	if err != nil || len(builds) == 0 {
 		return 0, "", err
@@ -411,8 +421,8 @@ func (p *Placer) Run(ctx context.Context) {
 	}
 }
 
-// Once makes one pass: the due rules, or every rule (sweep); a sweep also lets the collector take
-// landed builds the catalogue keeps no more (KeepLanded).
+// Once makes one pass: the due follows and rules, or every one (sweep); a sweep also lets the
+// collector take landed builds the catalogue keeps no more (KeepLanded).
 func (p *Placer) Once(ctx context.Context, sweep bool) {
 	if sweep {
 		if n, err := p.Service.TrimLanded(ctx); err != nil {
@@ -421,46 +431,76 @@ func (p *Placer) Once(ctx context.Context, sweep bool) {
 			p.Log.Info("release: landed builds left to the collector", "builds", n)
 		}
 	}
+	follows, err := p.Service.Store.DueFollows(ctx, sweep)
+	if err != nil {
+		p.Log.Error("release: listing the follows to place", "error", err)
+		return
+	}
 	rules, err := p.Service.Store.DueRules(ctx, sweep)
 	if err != nil {
 		p.Log.Error("release: listing the rules to place", "error", err)
 		return
 	}
-	for i := 0; i < len(rules); {
-		ch := rules[i].ChannelID
-		j := i
-		for j < len(rules) && rules[j].ChannelID == ch {
-			j++
+	byFollow, byRule := map[string][]store.DueFollow{}, map[string][]store.DueRule{}
+	var channels []string
+	for _, f := range follows {
+		if byFollow[f.ChannelID] == nil && byRule[f.ChannelID] == nil {
+			channels = append(channels, f.ChannelID)
 		}
-		p.channel(ctx, rules[i:j])
-		i = j
+		byFollow[f.ChannelID] = append(byFollow[f.ChannelID], f)
+	}
+	for _, r := range rules {
+		if byFollow[r.ChannelID] == nil && byRule[r.ChannelID] == nil {
+			channels = append(channels, r.ChannelID)
+		}
+		byRule[r.ChannelID] = append(byRule[r.ChannelID], r)
+	}
+	for _, ch := range channels {
+		p.channel(ctx, ch, byFollow[ch], byRule[ch])
 		if ctx.Err() != nil {
 			return
 		}
 	}
 }
 
-func (p *Placer) channel(ctx context.Context, rules []store.DueRule) {
-	lease := "placement/" + rules[0].ChannelID
+func (p *Placer) channel(ctx context.Context, channelID string, follows []store.DueFollow, rules []store.DueRule) {
+	lease := "placement/" + channelID
 	held, err := p.Service.Store.AcquireLease(ctx, lease, p.Holder, 2*time.Minute)
 	if err != nil || !held {
 		if err != nil {
-			p.Log.Error("release: taking the placement lease", "channel", rules[0].ChannelID, "error", err)
+			p.Log.Error("release: taking the placement lease", "channel", channelID, "error", err)
 		}
 		return
 	}
 	defer func() { _ = p.Service.Store.ReleaseLease(context.WithoutCancel(ctx), lease, p.Holder) }()
+	renew := func(ctx context.Context) error {
+		if ok, err := p.Service.Store.AcquireLease(ctx, lease, p.Holder, 2*time.Minute); err != nil || !ok {
+			return errLeaseLost
+		}
+		return nil
+	}
+	for _, f := range follows {
+		start := p.Service.Store.Now()
+		placed, skips, failure, err := p.Service.PlaceFollow(ctx, f, renew)
+		if errors.Is(err, errLeaseLost) {
+			return
+		}
+		if err != nil {
+			p.Log.Error("release: placing a follow's names", "channel", channelID, "source", f.Source, "error", err)
+			continue
+		}
+		if placed > 0 || failure != "" {
+			p.Log.Info("release: placed a follow's names", "channel", channelID, "source", f.Source, "placed", placed, "failure", failure)
+		}
+		if err := p.Service.Store.FollowLook(ctx, f, start, start.Add(-placeSkew), skips); err != nil {
+			p.Log.Error("release: recording a follow's look", "channel", channelID, "source", f.Source, "error", err)
+		}
+	}
 	for _, r := range rules {
 		if ok, err := p.Service.Store.AcquireLease(ctx, lease, p.Holder, 2*time.Minute); err != nil || !ok {
 			return // the lease was lost: another replica goes on
 		}
 		start := p.Service.Store.Now()
-		renew := func(ctx context.Context) error {
-			if ok, err := p.Service.Store.AcquireLease(ctx, lease, p.Holder, 2*time.Minute); err != nil || !ok {
-				return errLeaseLost
-			}
-			return nil
-		}
 		placed, failure, err := p.Service.PlaceRule(ctx, r, renew)
 		if errors.Is(err, errLeaseLost) {
 			return // another replica goes on

@@ -92,6 +92,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0034_build_sources` | 34 | an older replica would refuse a second source's release of a version, or read another source's release as the slot's |
 | `0035_rule_modes` | 35 | an older replica's mirror runs would place a manual rule's new versions, and its collector remove landed builds |
 | `0036_catalogue_slots` | 36 | an older replica would take a second body of a version from a source in another channel |
+| `0037_follows` | 37 | an older replica would treat a follow's rules as manual ones |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -162,7 +163,13 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 36)
+## Upgrading to the next release (schema 37)
+
+### A channel follows a whole source (spec 0033, phase A1 part 4)
+
+- **Migration `0037_follows`** adds the channels' follows and the names they skip, and raises
+  `min_reader` to 37: stop every older replica first. Nothing is followed until an administrator
+  says so.
 
 ### A version is immutable within its source in the whole tenant (spec 0033, phase A1 part 3)
 

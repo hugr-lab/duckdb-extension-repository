@@ -96,6 +96,7 @@ are all the kinds in `internal/audit`:
 | | `release.promote` | `channel:<channel>/ext:<name>` | `releases`, `name`, `from_channel`, `version`, `shadows`, `provenance` |
 | | `catalogue.arrival` | `ext:<name>` | `build`, `name`, `version`, `platform`, `slot`, `body_hash`, `source`, `visibility`, `provenance`: a build published into the catalogue only (spec 0033) |
 | | `catalogue.purge` | `ext:<name>` | `build`, `name`, `version`, `platform`, `slot`, `body_hash`: an entry purged from the catalogue |
+| | `follow.set`, `follow.clear` | `channel:<channel>` | `source`: a channel follows a whole source, or no longer does (spec 0033) |
 | | `release.place` | `channel:<channel>/ext:<name>` | `releases`, `name`, `version`, `source`, `placed` (`hand`, or the rule's mode `auto` or `manual`: the placement pass, actor `system:placement`) (spec 0033) |
 | | `release.yank`, `release.deprecate`, `release.activate`, `release.current`, `release.public`, `release.private` | the release | `release`, `name`, `version`, `platform` |
 | | `release.purge` | the release | `release`, `name`, `version`, `platform`, `slot`, `body_hash` |

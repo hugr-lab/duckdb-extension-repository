@@ -1,7 +1,7 @@
 # Spec 0033: The catalogue
 
-- **Status**: accepted (2026-10-24); phase A1 in progress (parts 1, builds and slots per source, 2,
-  rules' modes and placement, and 3a, the catalogue's own entries, implemented); A2, B and C to come
+- **Status**: accepted (2026-10-24); phase A1 implemented (parts 1, 2, 3a and 4; part 3b deferred to
+  the follow-ups); A2, B and C to come
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -438,7 +438,10 @@ A1 comes in parts, each a PR: part 1, builds and slots per source (migration 003
 rules' modes and the placement (the pass, `auto` and a `manual` rule's completed versions, manual
 placement, the catalogue's read routes, a mirror under a `manual` rule landing its builds without
 placing them); part 3, upstreams without a home channel, the catalogue-only route, retention and
-caps, the catalogue's own slot uniqueness; part 4, follows.
+caps, the catalogue's own slot uniqueness; part 4, follows. Part 3 came in two, 3a (the catalogue's
+own entries) and 3b (upstreams without a home channel); 3b is deferred to the follow-ups (the
+owner's choice, 2026-10-24): a mirror already feeds other channels through their rules, and
+Enterest does not need it.
 
 ### As built (A1 part 1)
 
@@ -510,7 +513,7 @@ caps, the catalogue's own slot uniqueness; part 4, follows.
 ### As built (A1 part 3a)
 
 A1 part 3 comes in two: 3a, the catalogue's own entries (below); 3b, upstreams without a home
-channel.
+channel, deferred.
 
 - **A version is immutable within its source in the whole tenant** (migration 0036: builds gain
   `slot` and `legacy_duplicate`; a unique key (tenant, source, name, version, platform, slot) where
@@ -544,6 +547,25 @@ channel.
   checked before a new build is committed, dry runs included, outside any lock (concurrent intakes
   may pass together, bounded by the upload slots); an administrator's add is not bounded. `429` on
   the API, a mirror's cell `rejected`.
+
+### As built (A1 part 4)
+
+- **Migration 0037**: `channel_follows` (channel, source, who, when, `checked_at`) and
+  `follow_skips` (channel, source, name, reason); a rule's mode may be `follow`.
+- **A follow** (`PUT|DELETE …/channels/{c}/follows/{source}`, `kista admin channel follow|unfollow`;
+  a channel administrator; an upstream or a publisher, never `tenant`, never into a passthrough
+  channel; events `follow.set`, `follow.clear`). The placement pass looks at the follows whose source
+  has builds made since its last look (all of them hourly), with the channel's rules under the same
+  lease: for each name of the source with no rule in the channel it writes the rule (mode `follow`,
+  actor `system:placement`, a `source.set` event with `arrival: true`) and places as an `auto` rule;
+  a `follow` rule acts as `auto` while the channel follows the source and as `manual` after.
+- **Limits**, each a skip listed with its reason: the channel's rule naming another source; a name
+  another follow of the channel offers (`contested`); a core or community name unless the source is
+  DuckDB's own repository of that kind; a name reserved in the tenant (any holder: a distributor's
+  exception comes with its publishers, B); another source of the tenant with builds of the name, or
+  a rule of any of its channels naming another source.
+- **Left to later parts**: lazy and pull-through fetches through a follow (an ask comes from the
+  upstream's home channel only; with A1 part 3b); a distributor's tenant reservations (B).
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into
@@ -605,6 +627,8 @@ DuckDB's repositories it wants. Its spec 0003's decisions change accordingly.
 
 ## Follow-ups
 
+- Upstreams without a home channel (A1 part 3b): a mirror that only fills the catalogue, its
+  matrix's DuckDB versions its own, its lazy asks from any channel whose rule or follow names it.
 - Merging two upstreams of one repository.
 - Version constraints in a rule (`auto` within `1.x`).
 - Notifying a channel's administrators of a new version under a `manual` rule.

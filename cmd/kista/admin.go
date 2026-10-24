@@ -114,6 +114,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   channel source <tenant>/<channel> [<name> [-set <source>] [-mode auto|manual] | -clear]
                                                   a name's source in the channel (spec 0031): tenant,
                                                   upstream:<name> or publisher:<name>; only it is served
+  channel follow <tenant>/<channel> [<source>]  follow a whole source (spec 0033): its names the channel has
+                                                  no rule for are taken automatically; without one, the follows
+  channel unfollow <tenant>/<channel> <source>   stop following it; what it placed stays
   channel list <tenant>
   key check -signer <ref>                         open a key, check it, sign a probe; stores nothing
   key add <tenant>/<channel> -signer <ref> [-active]
@@ -650,6 +653,8 @@ func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error
 	switch {
 	case sub == "source" && (len(pos) == 1 || len(pos) == 2) && (!changes || !*clear) && (len(pos) == 2 || !changes && !*clear):
 		return a.channelSource(ctx, pos, *set, *mode, *clear)
+	case (sub == "follow" || sub == "unfollow") && (len(pos) == 2 || len(pos) == 1 && sub == "follow"):
+		return a.channelFollow(ctx, sub, pos)
 	case sub == "create" && len(pos) == 1:
 		t, c, err := splitPath(pos[0])
 		if err != nil {
@@ -2814,5 +2819,44 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 	default:
 		return errUsage
 	}
+	return nil
+}
+
+// channelFollow lists a channel's follows, follows a source, or stops following it (spec 0033).
+func (a *adminCmd) channelFollow(ctx context.Context, sub string, pos []string) error {
+	t, c, err := splitPath(pos[0])
+	if err != nil {
+		return err
+	}
+	var vs []release.FollowView
+	switch {
+	case sub == "unfollow":
+		if err := a.svc.Releases.RemoveFollow(ctx, a.actor, t, c, pos[1]); err != nil {
+			return err
+		}
+		a.logf("channel unfollow %s/%s %s", t, c, pos[1])
+		return nil
+	case len(pos) == 2:
+		v, err := a.svc.Releases.SetFollow(ctx, a.actor, t, c, pos[1])
+		if err != nil {
+			return err
+		}
+		a.logf("channel follow %s/%s %s", t, c, pos[1])
+		vs = []release.FollowView{v}
+	default:
+		if vs, err = a.svc.Releases.Follows(ctx, a.actor, t, c); err != nil {
+			return err
+		}
+	}
+	a.table("SOURCE\tSET BY\tSET AT\tSKIPPED", func(w io.Writer) {
+		for _, v := range vs {
+			var skips []string
+			for n, r := range v.Skips {
+				skips = append(skips, n+" ("+r+")")
+			}
+			slices.Sort(skips)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", v.Source, v.SetBy, ts(v.SetAt), dash(strings.Join(skips, "; ")))
+		}
+	})
 	return nil
 }

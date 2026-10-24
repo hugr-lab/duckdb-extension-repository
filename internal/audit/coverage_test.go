@@ -103,6 +103,8 @@ var writes = map[string]map[string][]audit.Kind{
 		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
 		"Place": {"release.place", "shadow.add", "source.set"}, "PlaceRule": {"release.place", "shadow.add"}, "Catalogue": nil,
 		"CatalogueVersions": nil, "AddToCatalogue": {"catalogue.arrival"}, "PurgeEntry": {"catalogue.purge"}, "TrimLanded": nil,
+		"SetFollow": {"follow.set"}, "RemoveFollow": {"follow.clear"}, "Follows": nil, "Follow": nil,
+		"PlaceFollow": {"source.set", "release.place", "shadow.add"},
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
@@ -456,6 +458,31 @@ func TestCoverage(t *testing.T) {
 		return err
 	}), "catalogue.arrival")
 	en.expect("release.Service.PurgeEntry", do(func() error { _, err := en.rel.PurgeEntry(rctx, admin, "acme", entry); return err }), "catalogue.purge")
+	// spec 0033: a channel follows a publisher; the pass takes its name; the follow is removed
+	en.expect("tenants.AuthAdmin.AddPublisher", do(func() error { _, err := en.adm.AddPublisher(rctx, admin, "acme", "dist"); return err }), "publisher.add")
+	en.expect("release.Service.SetFollow", do(func() error { _, err := en.rel.SetFollow(rctx, admin, "acme", "prod", "publisher:dist"); return err }),
+		"follow.set")
+	en.expect("release.Service.PlaceFollow", do(func() error {
+		prod, err := st.GetChannel(ctx, "acme", "prod")
+		if err != nil {
+			return err
+		}
+		dist, err := st.ResolveSource(ctx, prod.TenantID, "publisher:dist")
+		if err != nil {
+			return err
+		}
+		b := store.Build{TenantID: prod.TenantID, Source: dist, Name: "followed", ExtVersion: "1.0", Platform: "linux_amd64", ABI: "cpp",
+			DuckDBVersion: "v2.0.0", Origin: store.OriginPublication, Checked: true, CreatedBy: "test"}
+		h, _, _ := extfile.HashBody(bytes.NewReader(ext(t, nil, "followed", "1.0")), 1<<30)
+		b.BodyHash = h.String()
+		if err := st.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) }); err != nil {
+			return err
+		}
+		_, _, _, err = en.rel.PlaceFollow(rctx, store.DueFollow{TenantID: prod.TenantID, ChannelID: prod.ID, Source: dist}, nil)
+		return err
+	}), "source.set", "release.place")
+	en.expect("release.Service.RemoveFollow", do(func() error { return en.rel.RemoveFollow(rctx, admin, "acme", "prod", "publisher:dist") }),
+		"follow.clear")
 	en.expect("release.Service.SetSource", do(func() error {
 		_, err := en.rel.SetSource(rctx, admin, "acme", "prod", "parquet", "tenant", "")
 		return err
