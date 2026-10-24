@@ -84,7 +84,11 @@ at start; the next release refuses it.
 
 ## Licences in a tenant
 
-A tenant holds one licence per extension name. It comes from one of three places.
+A tenant holds one licence per extension name: per package (its type and name, spec 0034), all of
+type `duckdb_extension` today. A channel serves only its own type's licences, a key is live per
+(type, name, kid), and the licence routes and commands take `?type=` / `-type` (`duckdb_extension`
+by default; an import stores the licence under that type, a relay under its upstream's). A licence
+comes from one of three places.
 
 **An administrator's import**, for a licence received by other means:
 

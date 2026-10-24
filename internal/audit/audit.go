@@ -121,17 +121,17 @@ var catalogue = map[Kind][]string{
 	"version.add":    {"version", "kind", "c_apis"},
 	"version.c_apis": {"version", "c_api"},
 	// reserved names (spec 0030): a version's core extensions, an administrator's
-	"reserved.add":    {"version", "kind", "source", "names", "forced", "tenants", "skipped"}, // source before names: a cut keeps it
-	"reserved.sync":   {"error"},                                                              // a failed community sync pass (spec 0030 part 3)
-	"reserved.remove": {"name", "sources"},
+	"reserved.add":    {"version", "kind", "source", "package_type", "names", "forced", "tenants", "skipped"}, // source and type before names: a cut keeps them
+	"reserved.sync":   {"error"},                                                                              // a failed community sync pass (spec 0030 part 3)
+	"reserved.remove": {"name", "sources", "package_type"},
 	// a name reserved in a tenant for a holder (spec 0030 part 2)
-	"reserved.tenant.add":    {"name", "holder", "previous"},
-	"reserved.tenant.remove": {"name", "holder"},
+	"reserved.tenant.add":    {"name", "holder", "previous", "package_type"},
+	"reserved.tenant.remove": {"name", "holder", "package_type"},
 	"server.start":           {"version", "schema", "digests", "changed"},
 	// a key source weaker than a vault or a KMS, at every start (spec 0026)
 	"signer.source.weak": {"source", "kind", "protection"},
 	// channels and keys
-	"channel.create":   {"name", "kind"},
+	"channel.create":   {"name", "kind", "package_type"},
 	"channel.versions": {"added", "removed"},
 	"key.add":          {"key", "fingerprint", "scheme", "state", "protection"},
 	"key.activate":     {"key", "fingerprint", "from", "forced"},
@@ -152,15 +152,15 @@ var catalogue = map[Kind][]string{
 	"issuer.console.remove":   {"issuer", "client_id", "audience"},
 	"audience.add":            {"audience"},
 	"audience.remove":         {"audience"},
-	"grant.add":               {"principal", "verbs", "channel", "extension", "extension_group"},
-	"grant.remove":            {"principal", "verbs", "channel", "extension", "extension_group"},
+	"grant.add":               {"principal", "verbs", "channel", "extension", "extension_group", "package_type"},
+	"grant.remove":            {"principal", "verbs", "channel", "extension", "extension_group", "package_type"},
 	"attachment.add":          {"body_hash", "kind", "origin", "size"},
 	"attachment.remove":       {"body_hash", "kind", "origin", "size", "statement"},
 	"attachment.change":       {"body_hash", "kind", "origin", "change", "statement"},
 	"extension_group.add":     {"name", "description"},
 	"extension_group.remove":  {"name", "description", "members"},
 	"extension_group.change":  {"description"},
-	"extension_group.members": {"added", "removed"},
+	"extension_group.members": {"added", "removed", "package_type"},
 	"publisher.add":           {"name"},
 	"publisher.remove":        {"name"},
 	"publisher.change":        {"name", "license_keys"},
@@ -171,8 +171,8 @@ var catalogue = map[Kind][]string{
 	"release.publish":   {"release", "name", "version", "platform", "slot", "body_hash", "visibility", "current", "shadows", "provenance"},
 	"release.promote":   {"releases", "name", "from_channel", "version", "shadows", "provenance"},
 	"release.place":     {"releases", "name", "version", "source", "placed"}, // spec 0033: by hand, auto or manual
-	"catalogue.arrival": {"build", "name", "version", "platform", "slot", "body_hash", "source", "visibility", "provenance"},
-	"catalogue.purge":   {"build", "name", "version", "platform", "slot", "body_hash"},
+	"catalogue.arrival": {"build", "name", "version", "platform", "slot", "body_hash", "source", "visibility", "package_type", "provenance"},
+	"catalogue.purge":   {"build", "name", "version", "platform", "slot", "body_hash", "package_type"},
 	"follow.set":        {"source"},
 	"follow.clear":      {"source"},
 	"release.yank":      {"release", "name", "version", "platform"},
@@ -191,9 +191,9 @@ var catalogue = map[Kind][]string{
 	"upstream.rejected": {"upstream", "duckdb_version", "platform", "name", "outcome"},
 	"upstream.run":      {"upstream", "dry_run", "counts", "error", "bundle"},
 	// licences (spec 0012): refused last, since a truncated event keeps its first fields
-	"license.import": {"name", "license", "issuer", "holder", "plan", "expires_at", "replaced"},
-	"license.change": {"name", "license", "visibility"},
-	"license.remove": {"name", "license", "reason"},
+	"license.import": {"name", "license", "issuer", "holder", "plan", "expires_at", "replaced", "package_type"},
+	"license.change": {"name", "license", "visibility", "package_type"},
+	"license.remove": {"name", "license", "reason", "package_type"},
 	"license.sync":   {"upstream", "counts", "error", "refused"},
 	// bundles (spec 0014): targets last, since a truncated event keeps its first fields; a bundle's
 	// licences (spec 0021) before them

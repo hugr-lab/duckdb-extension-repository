@@ -40,6 +40,16 @@ func (s *Service) mayAdminChannel(ctx context.Context, a authz.Actor, tenant, ch
 	return s.Store.GetChannel(ctx, tenant, channel)
 }
 
+// sourceOfType refuses a rule or a follow of a channel on a source of another package type (spec
+// 0034: an upstream's names are of its home channel's type; 409).
+func (s *Service) sourceOfType(ctx context.Context, ch store.Channel, src, label string) error {
+	t, err := s.Store.SourceType(ctx, src)
+	if err != nil || t == "" || t == ch.PackageType {
+		return err
+	}
+	return fmt.Errorf("%w: %s brings %s, the channel %s serves %s", ErrPackageType, label, t, ch.Name, ch.PackageType)
+}
+
 // Sources lists a channel's names with their sources: every name with a selected source or a
 // release, by name.
 func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel string) ([]SourceView, error) {
@@ -59,7 +69,7 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 	if err != nil {
 		return nil, err
 	}
-	catalogue, err := s.Store.SourceVersions(ctx, ch.TenantID)
+	catalogue, err := s.Store.SourceVersions(ctx, ch.TenantID, ch.PackageType)
 	if err != nil {
 		return nil, err
 	}
@@ -148,6 +158,9 @@ func (s *Service) SetSource(ctx context.Context, a authz.Actor, tenant, channel,
 			store.ErrInvalid, label)
 	}
 	if err != nil {
+		return SourceView{}, err
+	}
+	if err := s.sourceOfType(ctx, ch, src, label); err != nil {
 		return SourceView{}, err
 	}
 	err = s.Store.InTx(ctx, lockKey(ch.ID), func(tx *store.Tx) error {

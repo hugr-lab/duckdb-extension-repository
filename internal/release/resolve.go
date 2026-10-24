@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -390,10 +391,12 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 	if snap.Blocked, err = s.Store.BlockedHashes(ctx, c.TenantID); err != nil {
 		return nil, err
 	}
-	if snap.TenantReserved, err = s.Store.TenantReservedSet(ctx, c.TenantID); err != nil {
+	// spec 0034: the names of the channel's type, so that one type's reservations never reserve or
+	// block a name of another
+	if snap.TenantReserved, err = s.Store.TenantReservedSet(ctx, c.TenantID, c.PackageType); err != nil {
 		return nil, err
 	}
-	if snap.Provided, err = s.Store.ProvidedNames(ctx, c.TenantID); err != nil {
+	if snap.Provided, err = s.Store.ProvidedNames(ctx, c.TenantID, c.PackageType); err != nil {
 		return nil, err
 	}
 	if c.Kind == store.ChannelSigned {
@@ -404,7 +407,7 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 			return nil, err
 		}
 	}
-	if c.Kind == store.ChannelPassthrough {
+	if c.Kind == store.ChannelPassthrough && c.PackageType == pkgtype.DuckDBExtension { // shadows are DuckDB's (spec 0034)
 		shadows, err := s.Store.ListShadows(ctx, c.TenantID)
 		if err != nil {
 			return nil, err
@@ -417,14 +420,15 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 	return snap, nil
 }
 
-// Shadows is what a release shadows (spec 0008, 0009): a reserved name's owner, or "upstream" for a
-// replacement of a name the tenant's upstreams provide; nothing for an upstream's build (mirrored or
-// promoted).
-func Shadows(c store.Candidate, provided map[string]bool) string {
-	if !c.Replacement() {
+// Shadows is what a release in a channel of packageType shadows (spec 0008, 0009): a reserved name's
+// owner, or "upstream" for a replacement of a name the tenant's upstreams provide; nothing for an
+// upstream's build (mirrored or promoted), nor in a channel of another type than DuckDB extensions
+// (spec 0034: shadows are DuckDB's).
+func Shadows(packageType string, c store.Candidate, provided map[string]bool) string {
+	if !c.Replacement() || packageType != pkgtype.DuckDBExtension {
 		return ""
 	}
-	if k := reserved.Kind(c.Name); k != "" {
+	if k := reserved.Kind(packageType, c.Name); k != "" {
 		return k
 	}
 	if provided[c.Name] && c.Replacement() {
@@ -460,7 +464,7 @@ func (s *Snapshot) PullThroughFor(version, platform, name string) *store.PullThr
 		if src, ok := s.Selected[name]; ok && src != store.UpstreamSource(p.UpstreamID) {
 			continue // spec 0031: another source holds the name in the channel
 		}
-		if p.Names[name] || p.Any && !s.Listed[name] && !s.TenantReserved[name] && !s.Provided[name] && AnyTakes(p.Kind, name) {
+		if p.Names[name] || p.Any && !s.Listed[name] && !s.TenantReserved[name] && !s.Provided[name] && AnyTakes(s.Channel.PackageType, p.Kind, name) {
 			return &s.PullThrough[i]
 		}
 	}
@@ -474,14 +478,14 @@ type Miss struct {
 	Lazy                                                bool   // a lazy mirror's cell: an ask
 }
 
-// AnyTakes reports whether an upstream's "*" entry of kind may take name: never an alias, and no
-// reserved name, except that "*" on DuckDB's community repository takes community names, which its
-// own fetches reserve (spec 0030).
-func AnyTakes(kind, name string) bool {
-	if reserved.Canonical(name) != "" {
+// AnyTakes reports whether an upstream's "*" entry of kind may take a name of packageType (its home
+// channel's): never an alias, and no reserved name, except that "*" on DuckDB's community repository
+// takes community names, which its own fetches reserve (spec 0030).
+func AnyTakes(packageType, kind, name string) bool {
+	if reserved.Canonical(packageType, name) != "" {
 		return false
 	}
-	switch reserved.Kind(name) {
+	switch reserved.Kind(packageType, name) {
 	case "":
 		return true
 	case reserved.Community:

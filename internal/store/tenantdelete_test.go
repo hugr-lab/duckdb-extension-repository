@@ -85,7 +85,7 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 			"created_at, created_by) VALUES (?, ?, 'corp', 'https://idp.example', '[]', '{}', '', '', '', 3600, ?, 'os:1:t')", []any{id("i"), tid, now}},
 		{"INSERT INTO issuer_console_clients (issuer_id, client_id, scopes, audience_parameter, audience, created_at, created_by) " +
 			"VALUES (?, 'kista', '[]', '', 'api://x', ?, 'os:1:t')", []any{id("i"), now}},
-		{"INSERT INTO grants (id, tenant_id, issuer_id, kind, value, verbs, created_at, created_by) VALUES (?, ?, ?, 'role', 'admin', 'admin', ?, 'os:1:t')",
+		{"INSERT INTO grants (id, tenant_id, issuer_id, kind, value, package_type, verbs, created_at, created_by) VALUES (?, ?, ?, 'role', 'admin', '*', 'admin', ?, 'os:1:t')",
 			[]any{id("a"), tid, id("i"), now}},
 		{"INSERT INTO tenant_audiences (audience, tenant_id, created_at, created_by) VALUES (?, ?, ?, 'os:1:t')", []any{"api://" + name, tid, now}},
 		{"INSERT INTO package_groups (id, tenant_id, name, description, version, created_at, created_by) VALUES (?, ?, 'g', '', 1, ?, 'os:1:t')",

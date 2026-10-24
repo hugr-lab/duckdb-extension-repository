@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -39,7 +40,7 @@ func TestTenantAuthsCache(t *testing.T) {
 		t.Fatalf("first read %+v %v", first, err)
 	}
 	if err := st.InTx(ctx, "", func(tx *store.Tx) error {
-		_, _, err := tx.ChangeGroupMembers(ctx, g, []string{"acl"}, nil, "os:1:t")
+		_, _, err := tx.ChangeGroupMembers(ctx, g, []pkgtype.Key{pkgtype.Of("acl")}, nil, "os:1:t")
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -49,7 +50,7 @@ func TestTenantAuthsCache(t *testing.T) {
 	}
 	cur, _ := st.GetTenant(ctx, "acme")
 	ta, err := c.Get(ctx, cur)
-	if err != nil || ta.Version != cur.AuthVersion || !ta.Groups[g.ID].Members["acl"] {
+	if err != nil || ta.Version != cur.AuthVersion || !ta.Groups[g.ID].Members[pkgtype.Of("acl")] {
 		t.Fatalf("a newer row %+v %v", ta, err)
 	}
 	if ta, _ := c.Get(ctx, old); ta.Version != cur.AuthVersion {

@@ -41,7 +41,7 @@ func (h *Handler) licenses(w http.ResponseWriter, r *http.Request, rt route) {
 			h.missing(w) // the list is for a downstream kista's credential
 			return
 		}
-		ls, err := h.o.Licenses.List(ctx, sc.Tenant.ID)
+		ls, err := h.o.Licenses.List(ctx, sc.Tenant.ID, sc.Channel.PackageType)
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -71,7 +71,7 @@ func (h *Handler) licenses(w http.ResponseWriter, r *http.Request, rt route) {
 	found := false
 	if could {
 		var err error
-		if l, found, err = h.o.Licenses.Serve(ctx, sc.Tenant.ID, rt.name); err != nil {
+		if l, found, err = h.o.Licenses.Serve(ctx, sc.Tenant.ID, sc.Channel.PackageType, rt.name); err != nil {
 			h.fail(w, err)
 			return
 		}

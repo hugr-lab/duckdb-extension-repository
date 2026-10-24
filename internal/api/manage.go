@@ -98,6 +98,8 @@ func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
 		problem(w, http.StatusServiceUnavailable, typeUnavailable, "busy: try again")
 	case errors.Is(err, store.ErrConflict):
 		problem(w, http.StatusPreconditionFailed, typePrecondition, "it changed: read it again")
+	case errors.Is(err, release.ErrPackageType): // spec 0034: across package types
+		problem(w, http.StatusConflict, typeConflict, publicRefusal(err))
 	case errors.Is(err, tenants.ErrGroupGranted):
 		problem(w, http.StatusConflict, typeConflict, "a grant names the extension group: revoke its grants first")
 	case errors.Is(err, tenants.ErrLastAdmin):
@@ -779,8 +781,10 @@ type grantJSON struct {
 	Channel        string   `json:"channel,omitempty"`
 	Extension      string   `json:"extension,omitempty"`
 	ExtensionGroup string   `json:"extension_group,omitempty"`
-	CreatedAt      string   `json:"created_at"`
-	CreatedBy      string   `json:"created_by"`
+	// PackageType is omitted when it is the default for the grant's shape (spec 0034)
+	PackageType string `json:"package_type,omitempty"`
+	CreatedAt   string `json:"created_at"`
+	CreatedBy   string `json:"created_by"`
 	// with ?extension= (spec 0017): how the grant reaches the name, and the verbs that apply to it
 	Via              string   `json:"via,omitempty"`
 	VerbsOnExtension []string `json:"verbs_on_extension,omitempty"`
@@ -788,12 +792,13 @@ type grantJSON struct {
 
 func grantOf(g store.Grant, c caller) grantJSON {
 	return grantJSON{ID: g.ID, Principal: g.Principal(), Verbs: g.Verbs, Channel: g.ChannelName, Extension: g.Package,
-		ExtensionGroup: g.PackageGroupName, CreatedAt: g.CreatedAt.UTC().Format(time.RFC3339), CreatedBy: createdBy(g.CreatedBy, c)}
+		ExtensionGroup: g.PackageGroupName, PackageType: g.TypeShown(), CreatedAt: g.CreatedAt.UTC().Format(time.RFC3339),
+		CreatedBy: createdBy(g.CreatedBy, c)}
 }
 
-// reaching is how a grant reaches an extension and the verbs it gives there (spec 0017).
-func reaching(g store.Grant, tenant, ext string, isReserved bool) (string, []string) {
-	return authz.Reaching(g, tenant, ext, isReserved)
+// reaching is how a grant reaches a package (type, name) and the verbs it gives there (spec 0017).
+func reaching(g store.Grant, tenant, packageType, ext string, isReserved bool) (string, []string) {
+	return authz.Reaching(g, tenant, packageType, ext, isReserved)
 }
 
 // grantKey orders grants as the store lists them: (created_at, id).
@@ -827,9 +832,9 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 		problem(w, http.StatusBadRequest, typeInvalid, "extension_group or extension is not a valid name")
 		return
 	}
-	isReserved := false
+	isReserved, typ := false, reqType(r)
 	if ext != "" {
-		kind, err := h.o.Store.ReservedFor(r.Context(), c.tenant.Name, ext) // spec 0030: DuckDB's, the tenant's, its upstreams'
+		kind, err := h.o.Store.ReservedFor(r.Context(), c.tenant.Name, typ, ext) // spec 0030: DuckDB's, the tenant's, its upstreams'
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -842,7 +847,7 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 			continue
 		}
 		if ext != "" {
-			if _, verbs := reaching(g, c.tenant.Name, ext, isReserved); len(verbs) == 0 {
+			if _, verbs := reaching(g, c.tenant.Name, typ, ext, isReserved); len(verbs) == 0 {
 				continue
 			}
 		}
@@ -853,7 +858,7 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 	for _, g := range kept {
 		o := grantOf(g, c)
 		if ext != "" {
-			o.Via, o.VerbsOnExtension = reaching(g, c.tenant.Name, ext, isReserved)
+			o.Via, o.VerbsOnExtension = reaching(g, c.tenant.Name, typ, ext, isReserved)
 		}
 		out = append(out, o)
 	}
@@ -901,13 +906,16 @@ func (h *Handler) addGrant(w http.ResponseWriter, r *http.Request, c caller, p p
 		Channel        string   `json:"channel"`
 		Extension      string   `json:"extension"`
 		ExtensionGroup string   `json:"extension_group"`
+		// PackageType is the grant's type (spec 0034): "" the default for its shape (a name: the
+		// default type; none: "*")
+		PackageType string `json:"package_type"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	a, _ := c.actor()
 	g, err := h.o.Auth.AddGrant(r.Context(), a, p["t"], in.Principal, in.Verbs,
-		tenants.GrantOn{Channel: in.Channel, Package: in.Extension, PackageGroup: in.ExtensionGroup})
+		tenants.GrantOn{Channel: in.Channel, Package: in.Extension, PackageGroup: in.ExtensionGroup, PackageType: in.PackageType})
 	if err != nil {
 		h.serviceErr(w, err, true)
 		return
@@ -941,22 +949,24 @@ func (h *Handler) removeGrant(w http.ResponseWriter, r *http.Request, c caller, 
 // --- reserved names (spec 0030) ---
 
 type reservedOut struct {
-	Name    string   `json:"name"`
-	Kind    string   `json:"kind"`
-	AddedAt string   `json:"added_at"`
-	Sources []string `json:"sources"`
+	PackageType string   `json:"package_type,omitempty"` // spec 0034: omitted when it is the default
+	Name        string   `json:"name"`
+	Kind        string   `json:"kind"`
+	AddedAt     string   `json:"added_at"`
+	Sources     []string `json:"sources"`
 }
 
 func (h *Handler) listReserved(w http.ResponseWriter, r *http.Request, c caller, _ params) {
 	a, _ := c.actor()
-	ns, err := h.o.Tenants.ListReserved(r.Context(), a, r.URL.Query().Get("name"))
+	ns, err := h.o.Tenants.ListReserved(r.Context(), a, reqType(r), r.URL.Query().Get("name"))
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
 	out := []reservedOut{}
 	for _, n := range ns {
-		out = append(out, reservedOut{Name: n.Name, Kind: n.Kind, AddedAt: n.AddedAt.UTC().Format(time.RFC3339), Sources: n.Sources})
+		out = append(out, reservedOut{PackageType: shownType(n.PackageType), Name: n.Name, Kind: n.Kind,
+			AddedAt: n.AddedAt.UTC().Format(time.RFC3339), Sources: n.Sources})
 	}
 	reply(w, r, http.StatusOK, map[string]any{"names": out}, "", noStore)
 }
@@ -971,7 +981,7 @@ func (h *Handler) addReserved(w http.ResponseWriter, r *http.Request, c caller, 
 		return
 	}
 	a, _ := c.actor()
-	res, err := h.o.Tenants.Reserve(r.Context(), a, in.Names, in.Kind, in.Force)
+	res, err := h.o.Tenants.Reserve(r.Context(), a, reqType(r), in.Names, in.Kind, in.Force)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -984,7 +994,7 @@ func (h *Handler) addReserved(w http.ResponseWriter, r *http.Request, c caller, 
 
 func (h *Handler) removeReserved(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	if err := h.o.Tenants.Unreserve(r.Context(), a, p["name"]); err != nil {
+	if err := h.o.Tenants.Unreserve(r.Context(), a, reqType(r), p["name"]); err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
@@ -994,10 +1004,11 @@ func (h *Handler) removeReserved(w http.ResponseWriter, r *http.Request, c calle
 // --- names reserved in a tenant (spec 0030) ---
 
 type tenantReservedOut struct {
-	Name    string `json:"name"`
-	Holder  string `json:"holder"`
-	AddedAt string `json:"added_at"`
-	AddedBy string `json:"added_by"`
+	PackageType string `json:"package_type,omitempty"` // spec 0034: omitted when it is the default
+	Name        string `json:"name"`
+	Holder      string `json:"holder"`
+	AddedAt     string `json:"added_at"`
+	AddedBy     string `json:"added_by"`
 }
 
 type liveReleaseOut struct {
@@ -1009,12 +1020,13 @@ type liveReleaseOut struct {
 }
 
 func tenantReservedOf(r store.TenantReservedName, c caller) tenantReservedOut {
-	return tenantReservedOut{Name: r.Name, Holder: r.Holder, AddedAt: rfc3339(r.AddedAt), AddedBy: createdBy(r.AddedBy, c)}
+	return tenantReservedOut{PackageType: shownType(r.PackageType), Name: r.Name, Holder: r.Holder, AddedAt: rfc3339(r.AddedAt),
+		AddedBy: createdBy(r.AddedBy, c)}
 }
 
 func (h *Handler) listTenantReserved(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	rs, err := h.o.Tenants.ListInTenant(r.Context(), a, p["t"], "")
+	rs, err := h.o.Tenants.ListInTenant(r.Context(), a, p["t"], reqType(r), "")
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -1028,7 +1040,7 @@ func (h *Handler) listTenantReserved(w http.ResponseWriter, r *http.Request, c c
 
 func (h *Handler) getTenantReserved(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	rs, err := h.o.Tenants.ListInTenant(r.Context(), a, p["t"], p["name"])
+	rs, err := h.o.Tenants.ListInTenant(r.Context(), a, p["t"], reqType(r), p["name"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -1048,7 +1060,7 @@ func (h *Handler) reserveInTenant(w http.ResponseWriter, r *http.Request, c call
 		return
 	}
 	a, _ := c.actor()
-	res, err := h.o.Tenants.ReserveInTenant(r.Context(), a, p["t"], p["name"], in.Holder)
+	res, err := h.o.Tenants.ReserveInTenant(r.Context(), a, p["t"], reqType(r), p["name"], in.Holder)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -1059,6 +1071,9 @@ func (h *Handler) reserveInTenant(w http.ResponseWriter, r *http.Request, c call
 	}
 	out := map[string]any{"name": res.Name, "holder": res.Holder, "added_at": rfc3339(res.AddedAt), "added_by": createdBy(res.AddedBy, c),
 		"changed": res.Changed, "releases": rels}
+	if t := shownType(res.PackageType); t != "" {
+		out["package_type"] = t
+	}
 	if res.Previous != "" && res.Previous != res.Holder {
 		out["previous_holder"] = res.Previous
 	}
@@ -1067,7 +1082,7 @@ func (h *Handler) reserveInTenant(w http.ResponseWriter, r *http.Request, c call
 
 func (h *Handler) releaseInTenant(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	if err := h.o.Tenants.ReleaseInTenant(r.Context(), a, p["t"], p["name"]); err != nil {
+	if err := h.o.Tenants.ReleaseInTenant(r.Context(), a, p["t"], reqType(r), p["name"]); err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}

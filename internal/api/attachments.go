@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -109,7 +110,7 @@ func (h *Handler) readableAttachments(w http.ResponseWriter, r *http.Request, c 
 	for _, o := range rs.rowsOf(p["name"], "") {
 		bodies[o.BodyHash] = true
 	}
-	all, err := h.o.Store.ExtensionAttachments(r.Context(), c.tenant.ID, p["name"])
+	all, err := h.o.Store.ExtensionAttachments(r.Context(), c.tenant.ID, snap.Channel.PackageType, p["name"])
 	if err != nil {
 		h.fail(w, err)
 		return nil, false
@@ -178,6 +179,20 @@ func download(w http.ResponseWriter, a store.Attachment, b []byte) {
 
 // --- management ---
 
+// extOf is a route's package: {ext} of the route's type (spec 0034: ?type=, the default when none).
+func extOf(r *http.Request, p params) pkgtype.Key {
+	return pkgtype.Key{Type: reqType(r), Name: p["ext"]}
+}
+
+// typeQuery is "?type=<t>" for a request of a type that is not the default, else "": a Location
+// keeps the request's type.
+func typeQuery(r *http.Request) string {
+	if t := reqType(r); t != pkgtype.Default {
+		return "?type=" + url.QueryEscape(t)
+	}
+	return ""
+}
+
 func (h *Handler) attachmentErr(w http.ResponseWriter, err error) {
 	if errors.Is(err, attachment.ErrDocument) {
 		problem(w, http.StatusBadRequest, typeInvalid, publicMessage(err))
@@ -188,7 +203,7 @@ func (h *Handler) attachmentErr(w http.ResponseWriter, err error) {
 
 func (h *Handler) listAttachments(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	all, err := h.o.Attachments.List(r.Context(), a, p["t"], p["ext"])
+	all, err := h.o.Attachments.List(r.Context(), a, p["t"], extOf(r, p))
 	if err != nil {
 		h.attachmentErr(w, err)
 		return
@@ -213,12 +228,12 @@ func (h *Handler) listAttachments(w http.ResponseWriter, r *http.Request, c call
 
 func (h *Handler) getAttachment(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	x, err := h.o.Attachments.Get(r.Context(), a, p["t"], p["ext"], p["id"])
+	x, err := h.o.Attachments.Get(r.Context(), a, p["t"], extOf(r, p), p["id"])
 	if err != nil {
 		h.attachmentErr(w, err)
 		return
 	}
-	all, err := h.o.Store.ExtensionAttachments(r.Context(), c.tenant.ID, p["ext"])
+	all, err := h.o.Store.ExtensionAttachments(r.Context(), c.tenant.ID, reqType(r), p["ext"])
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -229,7 +244,7 @@ func (h *Handler) getAttachment(w http.ResponseWriter, r *http.Request, c caller
 
 func (h *Handler) attachmentContent(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	err := h.o.Attachments.Content(r.Context(), a, p["t"], p["ext"], p["id"], func(x store.Attachment, b []byte) error {
+	err := h.o.Attachments.Content(r.Context(), a, p["t"], extOf(r, p), p["id"], func(x store.Attachment, b []byte) error {
 		download(w, x, b)
 		return nil
 	})
@@ -238,13 +253,13 @@ func (h *Handler) attachmentContent(w http.ResponseWriter, r *http.Request, c ca
 	}
 }
 
-var attachParams = map[string]bool{"body_hash": true, "kind": true, "supersedes": true}
+var attachParams = map[string]bool{"body_hash": true, "kind": true, "supersedes": true, "type": true}
 
 func (h *Handler) addAttachment(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	q := r.URL.Query()
 	for k, vs := range q {
 		if !attachParams[k] || len(vs) != 1 {
-			problem(w, http.StatusBadRequest, typeInvalid, "the parameters are body_hash, kind and supersedes, once each")
+			problem(w, http.StatusBadRequest, typeInvalid, "the parameters are body_hash, kind, supersedes and type, once each")
 			return
 		}
 	}
@@ -282,7 +297,7 @@ func (h *Handler) addAttachment(w http.ResponseWriter, r *http.Request, c caller
 		problem(w, http.StatusBadRequest, typeInvalid, "the body ended before its Content-Length")
 		return
 	}
-	x, err := h.o.Attachments.Attach(r.Context(), a, p["t"], p["ext"], attachment.AttachInput{BodyHash: q.Get("body_hash"),
+	x, err := h.o.Attachments.Attach(r.Context(), a, p["t"], extOf(r, p), attachment.AttachInput{BodyHash: q.Get("body_hash"),
 		Kind: q.Get("kind"), MediaType: r.Header.Get("Content-Type"), Title: title, Supersedes: q.Get("supersedes"),
 		Content: b})
 	if err != nil {
@@ -293,7 +308,7 @@ func (h *Handler) addAttachment(w http.ResponseWriter, r *http.Request, c caller
 		h.attachmentErr(w, err)
 		return
 	}
-	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/extensions/"+esc(p["ext"])+"/attachments/"+esc(x.ID), h.attachmentOf(x, true, true, c),
+	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/extensions/"+esc(p["ext"])+"/attachments/"+esc(x.ID)+typeQuery(r), h.attachmentOf(x, true, true, c),
 		versionTag(x.Version))
 }
 
@@ -316,12 +331,12 @@ func (h *Handler) changeAttachment(w http.ResponseWriter, r *http.Request, c cal
 		return
 	}
 	a, _ := c.actor()
-	x, err := h.o.Attachments.SetFlags(r.Context(), a, p["t"], p["ext"], p["id"], vis, feed, expected)
+	x, err := h.o.Attachments.SetFlags(r.Context(), a, p["t"], extOf(r, p), p["id"], vis, feed, expected)
 	if err != nil {
 		h.attachmentErr(w, err)
 		return
 	}
-	all, err := h.o.Store.ExtensionAttachments(r.Context(), c.tenant.ID, p["ext"])
+	all, err := h.o.Store.ExtensionAttachments(r.Context(), c.tenant.ID, reqType(r), p["ext"])
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -332,7 +347,7 @@ func (h *Handler) changeAttachment(w http.ResponseWriter, r *http.Request, c cal
 
 func (h *Handler) removeAttachment(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	if err := h.o.Attachments.Remove(r.Context(), a, p["t"], p["ext"], p["id"]); err != nil {
+	if err := h.o.Attachments.Remove(r.Context(), a, p["t"], extOf(r, p), p["id"]); err != nil {
 		h.attachmentErr(w, err)
 		return
 	}
@@ -377,11 +392,11 @@ type kindSummary struct {
 }
 
 // withAttachments fills rows' attachments: the readers-visible heads of each row's body.
-func (h *Handler) withAttachments(r *http.Request, c caller, name string, rows ...*releaseOut) error {
+func (h *Handler) withAttachments(r *http.Request, c caller, packageType, name string, rows ...*releaseOut) error {
 	if h.o.Attachments == nil || len(rows) == 0 {
 		return nil
 	}
-	all, err := h.o.Store.ExtensionAttachments(r.Context(), c.tenant.ID, name)
+	all, err := h.o.Store.ExtensionAttachments(r.Context(), c.tenant.ID, packageType, name)
 	if err != nil || len(all) == 0 {
 		return err
 	}

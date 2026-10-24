@@ -29,13 +29,14 @@ func holderRefusal(ctx context.Context, tx *store.Tx, tenantID string, tok *lice
 	return nil, err
 }
 
-// Exportable lists the licences of a tenant a bundle may carry (spec 0021), by name: those in
-// force, whose key the server does not refuse, and of holder when one is named. Off, none.
-func (s *Service) Exportable(ctx context.Context, tenantID, holder string) ([]store.License, error) {
+// Exportable lists the licences of a package type of a tenant a bundle may carry (spec 0021; spec
+// 0034: a bundle's sources are of one type each), by name: those in force, whose key the server
+// does not refuse, and of holder when one is named. Off, none.
+func (s *Service) Exportable(ctx context.Context, tenantID, packageType, holder string) ([]store.License, error) {
 	if !s.Enabled {
 		return nil, ErrOff
 	}
-	ls, err := s.Store.ListLicenses(ctx, tenantID)
+	ls, err := s.Store.ListLicenses(ctx, tenantID, packageType)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +140,11 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 					Reason: "no bundle-mode upstream of the source supplies a release of " + name + " here"})
 				continue
 			}
-			keys, err := tx.LiveLicenseKeys(ctx, t.ID, name, store.KeySourceUpstream, u.ID)
+			home, err := tx.ChannelByID(ctx, u.ChannelID) // spec 0034: the upstream's type, its home channel's
+			if err != nil {
+				return err
+			}
+			keys, err := tx.LiveLicenseKeys(ctx, t.ID, home.PackageType, name, store.KeySourceUpstream, u.ID)
 			if err != nil {
 				return err
 			}
@@ -159,9 +164,9 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 				refused = append(refused, *r)
 				continue
 			}
-			l := record(it.tok, t.ID, it.Token, actor)
+			l := record(it.tok, t.ID, home.PackageType, it.Token, actor)
 			l.Source, l.UpstreamID = store.LicenseUpstream, u.ID
-			old, err := tx.GetLicense(ctx, t.ID, name)
+			old, err := tx.GetLicense(ctx, t.ID, home.PackageType, name)
 			switch {
 			case errors.Is(err, store.ErrNotFound):
 				old.Version = 0

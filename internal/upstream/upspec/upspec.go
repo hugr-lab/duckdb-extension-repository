@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -80,13 +81,14 @@ func Entry(kind, mode string, e *store.UpstreamEntry) error {
 		}
 		return nil
 	}
-	if c := reserved.Canonical(e.Name); c != "" {
+	// an upstream's names are of its home channel's type, a DuckDB extension's (spec 0034: every upstream is one's)
+	if c := reserved.Canonical(pkgtype.DuckDBExtension, e.Name); c != "" {
 		return fmt.Errorf("%w: %q is an alias; DuckDB installs it as %q", store.ErrInvalid, e.Name, c)
 	}
 	if err := release.ValidName(e.Name); err != nil {
 		return err
 	}
-	switch k := reserved.Kind(e.Name); {
+	switch k := reserved.Kind(pkgtype.DuckDBExtension, e.Name); {
 	case k == reserved.Core && kind != store.UpstreamCore && !e.AllowReserved,
 		k == reserved.Community && kind != store.UpstreamCommunity && !e.AllowReserved:
 		return fmt.Errorf("%w: %q is a DuckDB %s name; a %s upstream provides it only with allow_reserved", store.ErrInvalid, e.Name, k, kind)

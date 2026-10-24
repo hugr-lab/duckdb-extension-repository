@@ -320,7 +320,7 @@ func (d *Daily) count(ctx context.Context, day string) error {
 			return err
 		}
 		ids := map[string]string{}
-		for _, c := range chans {
+		for _, c := range store.KnownChannels(chans) { // spec 0034: a type this binary does not know counts nothing
 			ids[c.Name] = c.ID
 		}
 		installers := map[store.InstallerKey]map[string]bool{}

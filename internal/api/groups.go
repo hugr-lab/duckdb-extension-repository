@@ -39,7 +39,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request, c caller, p
 		return
 	}
 	a, _ := c.actor()
-	gs, tenantAdmin, err := h.o.Auth.ListPackageGroups(r.Context(), a, p["t"], r.URL.Query().Get("extension"))
+	gs, tenantAdmin, err := h.o.Auth.ListPackageGroups(r.Context(), a, p["t"], reqType(r), r.URL.Query().Get("extension"))
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -119,9 +119,10 @@ func (h *Handler) removeGroup(w http.ResponseWriter, r *http.Request, c caller, 
 }
 
 type memberJSON struct {
-	Name    string `json:"name"`
-	AddedAt string `json:"added_at"`
-	AddedBy string `json:"added_by"`
+	PackageType string `json:"package_type,omitempty"` // spec 0034: omitted when it is the default
+	Name        string `json:"name"`
+	AddedAt     string `json:"added_at"`
+	AddedBy     string `json:"added_by"`
 }
 
 func (h *Handler) groupMembers(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -145,10 +146,17 @@ func (h *Handler) groupMembers(w http.ResponseWriter, r *http.Request, c caller,
 			kept = append(kept, m)
 		}
 	}
-	kept, next := paged(kept, func(m store.GroupMember) string { return m.Name }, limit, after)
+	// by name, a name's members of other types than the default after its default one (spec 0034)
+	kept, next := paged(kept, func(m store.GroupMember) string {
+		if t := shownType(m.PackageType); t != "" {
+			return m.Name + "\x00" + t
+		}
+		return m.Name
+	}, limit, after)
 	out := []memberJSON{}
 	for _, m := range kept {
-		out = append(out, memberJSON{Name: m.Name, AddedAt: m.AddedAt.UTC().Format(time.RFC3339), AddedBy: createdBy(m.AddedBy, c)})
+		out = append(out, memberJSON{PackageType: shownType(m.PackageType), Name: m.Name, AddedAt: m.AddedAt.UTC().Format(time.RFC3339),
+			AddedBy: createdBy(m.AddedBy, c)})
 	}
 	reply(w, r, http.StatusOK, list("members", out, next), "", noStore)
 }
@@ -157,12 +165,14 @@ func (h *Handler) changeGroupMembers(w http.ResponseWriter, r *http.Request, c c
 	var in struct {
 		Add    []string `json:"add"`
 		Remove []string `json:"remove"`
+		// PackageType is the type of the names (spec 0034: members are (type, name)); "": the default
+		PackageType string `json:"package_type"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	a, _ := c.actor()
-	added, removed, err := h.o.Auth.ChangePackageGroupMembers(r.Context(), a, p["t"], p["g"], in.Add, in.Remove)
+	added, removed, err := h.o.Auth.ChangePackageGroupMembers(r.Context(), a, p["t"], p["g"], in.PackageType, in.Add, in.Remove)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return

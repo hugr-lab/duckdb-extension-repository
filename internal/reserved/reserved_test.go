@@ -1,6 +1,10 @@
 package reserved
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
+)
 
 func TestKind(t *testing.T) {
 	for name, want := range map[string]string{
@@ -8,14 +12,14 @@ func TestKind(t *testing.T) {
 		"h3": Community, "midi": Community, "duckdb_midi": Community,
 		"tresor": "", "acl": "", "loadable_extension_demo": "",
 	} {
-		if got := Kind(name); got != want {
+		if got := Kind(pkgtype.DuckDBExtension, name); got != want {
 			t.Errorf("%s: %q, want %q", name, got, want)
 		}
 	}
 }
 
 func TestAliases(t *testing.T) {
-	if Canonical("postgres") != "postgres_scanner" || Canonical("s3") != "httpfs" || Canonical("httpfs") != "" {
+	if Canonical(pkgtype.DuckDBExtension, "postgres") != "postgres_scanner" || Canonical(pkgtype.DuckDBExtension, "s3") != "httpfs" || Canonical(pkgtype.DuckDBExtension, "httpfs") != "" {
 		t.Fatal("aliases")
 	}
 }

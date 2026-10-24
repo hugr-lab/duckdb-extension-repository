@@ -55,7 +55,7 @@ func TestLicenseRoutes(t *testing.T) {
 	en.add(t, ext(t, 2000, 3, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "nolic"})
 	tresorTok, secretTok := sign("tresor"), sign("secret")
 	for _, tok := range []string{tresorTok, secretTok} {
-		if _, err := svc.Import(ctx, admin, "acme", tok, licenses.Create); err != nil {
+		if _, err := svc.Import(ctx, admin, "acme", "", tok, licenses.Create); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -110,7 +110,7 @@ func TestLicenseRoutes(t *testing.T) {
 
 	// a public licence: to whoever is served a public release of the name, and only then
 	for _, name := range []string{"tresor", "secret"} {
-		if _, err := svc.SetVisibility(ctx, admin, "acme", name, store.Public, 0); err != nil {
+		if _, err := svc.SetVisibility(ctx, admin, "acme", "", name, store.Public, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -132,7 +132,7 @@ func TestLicenseRoutes(t *testing.T) {
 	if c := get("/acme/mirror/-/licenses/tresor", nil); c.status != 404 {
 		t.Fatalf("passthrough: %d", c.status)
 	}
-	v, err := svc.Get(ctx, admin, "acme", "tresor")
+	v, err := svc.Get(ctx, admin, "acme", "", "tresor")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestLicenseRoutes(t *testing.T) {
 	}
 	en.add(t, ext(t, 2000, 4, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor"})
 	same("no live build declares the key", get(lic+"tresor", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
-	if _, err := svc.Get(ctx, admin, "acme", "tresor"); err != nil {
+	if _, err := svc.Get(ctx, admin, "acme", "", "tresor"); err != nil {
 		t.Fatalf("the licence is no longer stored: %v", err)
 	}
 
@@ -166,7 +166,7 @@ func TestLicenseRoutes(t *testing.T) {
 func TestLicenseOverHTTP(t *testing.T) {
 	en, idp, adm, svc, sign := licenseEnv(t, "http")
 	en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
-	if _, err := svc.Import(ctx, admin, "acme", sign("tresor"), licenses.Create); err != nil {
+	if _, err := svc.Import(ctx, admin, "acme", "", sign("tresor"), licenses.Create); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "tresor"}); err != nil {
@@ -175,7 +175,7 @@ func TestLicenseOverHTTP(t *testing.T) {
 	if c := en.do(t, "GET", "/acme/prod/-/licenses/tresor", bearerHdr(idp.token(t, nil))); c.status != 401 {
 		t.Fatalf("a private licence over http with a token: %d", c.status)
 	}
-	if _, err := svc.SetVisibility(ctx, admin, "acme", "tresor", store.Public, 0); err != nil {
+	if _, err := svc.SetVisibility(ctx, admin, "acme", "", "tresor", store.Public, 0); err != nil {
 		t.Fatal(err)
 	}
 	if c := en.do(t, "GET", "/acme/prod/-/licenses/tresor", nil); c.status != 200 {

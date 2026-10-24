@@ -161,6 +161,13 @@ Notes on some kinds:
   day) on a replica, with the same caps.
 - `audit.dropped` counts events the asynchronous writer or the retention pass had to drop
   (`system:audit`, `system:retention`).
+- **`package_type`** (spec 0034): the events that name a package without a channel, and a channel's
+  creation, carry the package type when it is not the default (`duckdb_extension`; for a grant
+  without a name, `*`): `channel.create`, `grant.add`, `grant.remove`, `extension_group.members`,
+  `reserved.add`, `reserved.remove`, `reserved.tenant.add`, `reserved.tenant.remove`,
+  `catalogue.arrival`, `catalogue.purge`, `license.import`, `license.change` and `license.remove`.
+  Subjects are unchanged. A group's removal lists its members in one `extension_group.members`
+  event per type.
 - The background actors are `system:upstream:<tenant>/<name>`, `system:feed:<tenant>/<name>`,
   `system:resign`, `system:retention`, `system:serve`, `system:sinks`, `system:audit` and
   `system:gc` (every garbage collection pass, scheduled or `kista admin blob gc`),
@@ -311,6 +318,9 @@ GET /api/v1/tenants/{t}/stats/releases?channel=&extension=
 - `group` defaults to `day`; `version` brings `extension` with it. `installers` is absent when
   grouping by `duckdb_version`.
 - A query over more than 100,000 stored rows is refused (`400`): narrow it.
+- The statistics are of one [package type](concepts.md#packages-and-package-types), `?type=`
+  (`duckdb_extension` by default): the rows of that type's channels; a `?channel=` of another type
+  is refused (`400`).
 - A principal with `audit` on the tenant reads everything; one with `admin`, `publish` or `promote`
   on extensions reads those names in the channels its grants cover; anything else answers `404`.
   Server administrators read everything. The routes need a fresh token, like management.

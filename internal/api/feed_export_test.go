@@ -16,6 +16,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -151,7 +152,7 @@ func TestFeedExport(t *testing.T) {
 			doc = d
 		}
 	}
-	if err := sub.feeds.Attachments.Remove(ctx, admin, "acme", "tresor", doc.ID); err != nil {
+	if err := sub.feeds.Attachments.Remove(ctx, admin, "acme", pkgtype.Of("tresor"), doc.ID); err != nil {
 		t.Fatal(err)
 	}
 	wire = append(wire, stmt(7, "kept-doc", func(s *attachment.Statement) { s.Audience = "administrators" }))

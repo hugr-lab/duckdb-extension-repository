@@ -30,6 +30,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -66,8 +67,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   issuer console <tenant> <name> (-client-id <id> [-scopes a,b] [-audience a] [-audience-parameter p] | -remove)
                   the administration console's public client at the issuer (spec 0015)
   grant add <tenant> -principal kind:issuer|value -verb install|admin|publish|promote|audit|feed... [-channel c]
-            [-extension x | -extension-group g]
-  grant list <tenant> [-extension-group g] [-extension x]
+            [-extension x | -extension-group g] [-type t]   a package type (spec 0034): a name's defaults to
+                                                  duckdb_extension, a grant without one to * (every type)
+  grant list <tenant> [-extension-group g] [-extension x [-type t]]
   grant remove <tenant> <grant-id>
   attachment add <tenant> <extension> <file|-> -body-hash <h> -kind <k> -media-type <t> -title <t> [-supersedes <id>]
                   a document about a body (spec 0011): sbom, vulnerabilities, review, provenance, notes
@@ -75,6 +77,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   attachment show <tenant> <extension> <id> [-content]
   attachment readers|administrators|remove <tenant> <extension> <id>
   attachment feedable|unfeedable <tenant> <extension> <id>   offered by the tenant's feed, or withdrawn
+                                                  every attachment command takes [-type t]: the name's package type
   attestation-key add <tenant> <signer-ref> [-active]   a key that signs the feed's statements (spec 0011)
   attestation-key list <tenant>
   attestation-key activate|retire <tenant> <id|fingerprint> [-force]
@@ -92,7 +95,8 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   extension-group show <tenant> <group>          the group, its members, its grants
   extension-group description <tenant> <group> <text>
   extension-group remove <tenant> <group>        refused while a grant names it
-  extension-group members <tenant> <group> [-add a,b,…] [-remove c,…]   lists them without -add/-remove
+  extension-group members <tenant> <group> [-add a,b,…] [-remove c,…] [-type t]   lists them without -add/-remove;
+                                                  members are (type, name): -type names the names' type
   version add <name> -kind release|dev [-c-api v1.5.6]... -core-extensions <file|-> [-force]
                                                            one maximum C API per major; the version's
                                                            core extensions (kista duckdb core-extensions);
@@ -101,15 +105,17 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   version core-extensions <name> -core-extensions <file|-> [-force]
                                                            reserve more of the version's core extensions
   version list
-  reserved add <name>... -kind core|community [-force]   reserve extension names server-wide (spec 0030);
+  reserved add <name>... -kind core|community [-force] [-type t]   reserve extension names server-wide (spec 0030);
                                                            -force when tenants have releases under them
-  reserved list [-name <name>]                             the reserved names and their sources
-  reserved remove <name>                                   a name administrators alone reserved
-  tenant-reserved add <tenant> <name> -holder <text>       reserve a name in a tenant for a holder (spec 0030);
+  reserved list [-name <name>] [-type t]                   the reserved names and their sources
+  reserved remove <name> [-type t]                         a name administrators alone reserved
+  tenant-reserved add <tenant> <name> -holder <text> [-type t]   reserve a name in a tenant for a holder (spec 0030);
                                                            prints the name's live releases there
-  tenant-reserved remove <tenant> <name>
-  tenant-reserved list <tenant>
-  channel create <tenant>/<channel> -kind signed|passthrough
+  tenant-reserved remove <tenant> <name> [-type t]
+  tenant-reserved list <tenant> [-type t]
+  channel create <tenant>/<channel> -kind signed|passthrough [-type t]
+                                                  -type: the package type it serves, never changed (spec 0034;
+                                                  default duckdb_extension, a passthrough channel's)
   channel versions <tenant>/<channel> [-add v]... [-remove v]...
   channel source <tenant>/<channel> [<name> [-set <source>] [-mode auto|manual] | -clear]
                                                   a name's source in the channel (spec 0031): tenant,
@@ -132,13 +138,14 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                   delete a yanked release for good; its slot stays taken (-force while gc.interval is 0)
   release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> | -version <v>)
                   [-private] [-not-current]               release Builds of another channel here
-  release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current]
+  release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current] [-type t]
                   place a version's builds from the catalogue (spec 0033); later builds of it follow
-  catalogue list <tenant> [-source <source>] [-name <name>]
+                  (-type: the builds' package type, the channel's when left out; another is refused)
+  catalogue list <tenant> [-source <source>] [-name <name>] [-type t]
                                                   the tenant's catalogue: each source's names and versions,
                                                   and the channels whose rule takes them (spec 0033)
-  catalogue show <tenant> <source> <name>         an entry's versions, builds and where each is released
-  catalogue add <tenant> <file|-> -name <name> [-private]
+  catalogue show <tenant> <source> <name> [-type t]   an entry's versions, builds and where each is released
+  catalogue add <tenant> <file|-> -name <name> [-private] [-type t]
                                                   put a build into the catalogue only, placed nowhere
   catalogue purge <tenant> <build-id>             delete a build no release holds; its slot is free again
   publisher add|remove <tenant> <name>          an identity that only publishes and promotes
@@ -166,12 +173,13 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved] [-eager]
   upstream extension remove <tenant> <name> <extension>
   upstream platform|key add|remove <tenant> <name> <platform|fingerprint>
-  license keys <tenant> [<name>]                  the licence keys of the tenant's live builds, by name and source
-  license list <tenant>
-  license show|token <tenant> <name>              a licence's claims and state, or its token as received
-  license import <tenant> <file|-> [-replace]     store a licence (a compact JWS) under the extension it names;
-                                                  -replace replaces the licence stored for that extension
-  license remove|public|private <tenant> <name>
+  license keys <tenant> [<name>] [-type t]        the licence keys of the tenant's live builds, by name and source
+  license list <tenant> [-type t]
+  license show|token <tenant> <name> [-type t]    a licence's claims and state, or its token as received
+  license import <tenant> <file|-> [-replace] [-type t]   store a licence (a compact JWS) under the extension it
+                                                  names; -replace replaces the licence stored for that extension;
+                                                  -type: its package type (spec 0034), duckdb_extension by default
+  license remove|public|private <tenant> <name> [-type t]
   license verify <file|-> -key <pem>              check a licence offline against a public key
   events list [-server] [-kind <k>] [-subject <prefix>] [-actor <a>] [-since <RFC 3339>] [-limit <n>]
               [-follow] [-format table|jsonl] [<tenant>]          the event buffer (spec 0010), newest first
@@ -639,6 +647,7 @@ func (a *adminCmd) version(ctx context.Context, sub string, args []string) error
 func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error {
 	fs := flag.NewFlagSet("channel", flag.ContinueOnError)
 	kind := fs.String("kind", "", "")
+	ptype := fs.String("type", "", "") // spec 0034: the package type a new channel serves
 	var add, remove multi
 	fs.Var(&add, "add", "")
 	fs.Var(&remove, "remove", "")
@@ -660,11 +669,11 @@ func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error
 		if err != nil {
 			return err
 		}
-		ch, err := a.svc.Tenants.CreateChannel(ctx, a.actor, t, c, *kind)
+		ch, err := a.svc.Tenants.CreateChannel(ctx, a.actor, t, c, *kind, *ptype)
 		if err != nil {
 			return err
 		}
-		a.logf("channel create %s/%s (%s)", t, ch.Name, ch.Kind)
+		a.logf("channel create %s/%s (%s)", t, ch.Name, typedKind(ch))
 	case sub == "versions" && len(pos) == 1:
 		t, c, err := splitPath(pos[0])
 		if err != nil {
@@ -685,13 +694,21 @@ func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error
 		}
 		a.table("NAME\tKIND\tVERSION\tCREATED", func(w io.Writer) {
 			for _, c := range cs {
-				fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", c.Name, c.Kind, c.Version, ts(c.CreatedAt))
+				fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", c.Name, typedKind(c), c.Version, ts(c.CreatedAt))
 			}
 		})
 	default:
 		return errUsage
 	}
 	return nil
+}
+
+// typedKind is a channel's kind, with its package type when it is not the default (spec 0034).
+func typedKind(c store.Channel) string {
+	if c.PackageType != pkgtype.Default {
+		return c.Kind + "/" + c.PackageType
+	}
+	return c.Kind
 }
 
 // channelSource lists a channel's sources, shows one name's, or sets or clears it (spec 0031), and
@@ -867,9 +884,15 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 	relID := fs.String("release", "", "")
 	version := fs.String("version", "", "")
 	force := fs.Bool("force", false, "")
+	ptype := fs.String("type", "", "") // spec 0034: a placement's builds' package type ("": the channel's)
 	pos, err := flags(fs, args)
-	if err != nil || len(pos) == 0 {
+	if err != nil || len(pos) == 0 || *ptype != "" && sub != "place" {
 		return errUsage
+	}
+	if *ptype != "" {
+		if _, err := pkgtype.Parse(*ptype); err != nil {
+			return err
+		}
 	}
 	t, c, err := splitPath(pos[0])
 	if err != nil {
@@ -933,7 +956,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 		}
 	case sub == "place" && len(pos) == 1 && *name != "" && *source != "" && *version != "":
 		rs, existed, err := a.svc.Releases.Place(ctx, a.actor, t, c, *name, release.PlaceOptions{Source: *source, Version: *version,
-			Private: *private, NotCurrent: *notCurrent})
+			PackageType: *ptype, Private: *private, NotCurrent: *notCurrent})
 		if err != nil {
 			return err
 		}
@@ -1076,6 +1099,8 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 	channel := fs.String("channel", "", "")
 	extension := fs.String("extension", "", "")
 	group := fs.String("extension-group", "", "")
+	// spec 0034: a grant's package type ("": the default for its shape; "*" any type, without a name)
+	ptype := fs.String("type", "", "")
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) == 0 {
 		return errUsage
@@ -1083,7 +1108,7 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 	switch {
 	case sub == "add" && len(pos) == 1 && *principal != "" && len(verbs) > 0:
 		g, err := a.svc.Auth.AddGrant(ctx, a.actor, pos[0], *principal, verbs,
-			tenants.GrantOn{Channel: *channel, Package: *extension, PackageGroup: *group})
+			tenants.GrantOn{Channel: *channel, Package: *extension, PackageGroup: *group, PackageType: *ptype})
 		if err != nil {
 			return err
 		}
@@ -1100,19 +1125,23 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 				return err
 			}
 		}
+		typ, err := pkgtype.Parse(*ptype)
+		if err != nil {
+			return err
+		}
 		gs, err := a.svc.Auth.ListGrants(ctx, a.actor, pos[0])
 		if err != nil {
 			return err
 		}
 		isReserved := false
 		if *extension != "" {
-			kind, err := a.svc.Store.ReservedFor(ctx, pos[0], *extension) // spec 0030: DuckDB's, the tenant's, its upstreams'
+			kind, err := a.svc.Store.ReservedFor(ctx, pos[0], typ, *extension) // spec 0030: DuckDB's, the tenant's, its upstreams'
 			if err != nil {
 				return err
 			}
 			isReserved = kind != ""
 		}
-		a.grantTable(gs, *group, *extension, isReserved)
+		a.grantTable(gs, *group, typ, *extension, isReserved)
 	case sub == "remove" && len(pos) == 2:
 		if err := a.svc.Auth.RemoveGrant(ctx, a.actor, pos[0], pos[1]); err != nil {
 			return err
@@ -1124,14 +1153,16 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 	return nil
 }
 
-// grantTable prints grants; with group, those on it; with extension, those reaching it (spec 0017).
-func (a *adminCmd) grantTable(gs []store.Grant, group, extension string, isReserved bool) {
+// grantTable prints grants; with group, those on it; with extension, those reaching it (of
+// packageType: spec 0034) (spec 0017). A grant's package type shows before its extension when it is
+// not the default for its shape (type:name, type:*).
+func (a *adminCmd) grantTable(gs []store.Grant, group, packageType, extension string, isReserved bool) {
 	a.table("ID\tPRINCIPAL\tVERBS\tCHANNEL\tEXTENSION", func(w io.Writer) {
 		for _, g := range gs {
 			if group != "" && g.PackageGroupName != group {
 				continue
 			}
-			if extension != "" && !reaches(g, extension, isReserved) {
+			if extension != "" && !reaches(g, packageType, extension, isReserved) {
 				continue
 			}
 			ch, ext := g.ChannelName, g.Package
@@ -1144,14 +1175,17 @@ func (a *adminCmd) grantTable(gs []store.Grant, group, extension string, isReser
 			case ext == "":
 				ext = "*"
 			}
+			if t := g.TypeShown(); t != "" {
+				ext = t + ":" + ext
+			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", g.ID, g.Principal(), strings.Join(g.Verbs, ","), ch, ext)
 		}
 	})
 }
 
-// reaches reports whether a grant gives some verb on an extension, in its own channel scope.
-func reaches(g store.Grant, extension string, isReserved bool) bool {
-	_, verbs := authz.Reaching(g, "", extension, isReserved)
+// reaches reports whether a grant gives some verb on a package, in its own channel scope.
+func reaches(g store.Grant, packageType, extension string, isReserved bool) bool {
+	_, verbs := authz.Reaching(g, "", packageType, extension, isReserved)
 	return len(verbs) > 0
 }
 
@@ -1164,11 +1198,17 @@ func (a *adminCmd) attachment(ctx context.Context, sub string, args []string) er
 	title := fs.String("title", "", "")
 	supersedes := fs.String("supersedes", "", "")
 	content := fs.Bool("content", false, "")
+	ptype := fs.String("type", "", "") // spec 0034: the name's package type
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) < 2 {
 		return errUsage
 	}
+	typ, err := pkgtype.Parse(*ptype)
+	if err != nil {
+		return err
+	}
 	t, ext := pos[0], pos[1]
+	pkg := pkgtype.Key{Type: typ, Name: ext}
 	withBlob := func() (func(), error) {
 		svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.NewTextHandler(a.errw, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		if err != nil {
@@ -1193,7 +1233,7 @@ func (a *adminCmd) attachment(ctx context.Context, sub string, args []string) er
 			return err
 		}
 		defer done()
-		x, err := a.svc.Attachments.Attach(ctx, a.actor, t, ext, attachment.AttachInput{BodyHash: *bodyHash, Kind: *kind,
+		x, err := a.svc.Attachments.Attach(ctx, a.actor, t, pkg, attachment.AttachInput{BodyHash: *bodyHash, Kind: *kind,
 			MediaType: *mediaType, Title: *title, Supersedes: *supersedes, Content: b})
 		if err != nil {
 			return err
@@ -1201,7 +1241,7 @@ func (a *adminCmd) attachment(ctx context.Context, sub string, args []string) er
 		a.logf("attachment add %s %s %s %s", t, ext, x.Kind, x.ID)
 		fmt.Fprintln(a.out, x.ID)
 	case sub == "list" && len(pos) == 2:
-		all, err := a.svc.Attachments.List(ctx, a.actor, t, ext)
+		all, err := a.svc.Attachments.List(ctx, a.actor, t, pkg)
 		if err != nil {
 			return err
 		}
@@ -1225,12 +1265,12 @@ func (a *adminCmd) attachment(ctx context.Context, sub string, args []string) er
 				return err
 			}
 			defer done()
-			return a.svc.Attachments.Content(ctx, a.actor, t, ext, pos[2], func(_ store.Attachment, b []byte) error {
+			return a.svc.Attachments.Content(ctx, a.actor, t, pkg, pos[2], func(_ store.Attachment, b []byte) error {
 				_, err := a.out.Write(b)
 				return err
 			})
 		}
-		x, err := a.svc.Attachments.Get(ctx, a.actor, t, ext, pos[2])
+		x, err := a.svc.Attachments.Get(ctx, a.actor, t, pkg, pos[2])
 		if err != nil {
 			return err
 		}
@@ -1238,13 +1278,13 @@ func (a *adminCmd) attachment(ctx context.Context, sub string, args []string) er
 			x.ID, x.Kind, x.Title, x.BodyHash, x.MediaType, x.Size, x.ContentHash, x.Origin, x.AttachedBy, x.Visibility, x.Summary)
 	case (sub == "readers" || sub == "administrators") && len(pos) == 3:
 		v := sub
-		if _, err := a.svc.Attachments.SetFlags(ctx, a.actor, t, ext, pos[2], &v, nil, 0); err != nil {
+		if _, err := a.svc.Attachments.SetFlags(ctx, a.actor, t, pkg, pos[2], &v, nil, 0); err != nil {
 			return err
 		}
 		a.logf("attachment %s %s %s %s", sub, t, ext, pos[2])
 	case (sub == "feedable" || sub == "unfeedable") && len(pos) == 3:
 		f := sub == "feedable"
-		if _, err := a.svc.Attachments.SetFlags(ctx, a.actor, t, ext, pos[2], nil, &f, 0); err != nil {
+		if _, err := a.svc.Attachments.SetFlags(ctx, a.actor, t, pkg, pos[2], nil, &f, 0); err != nil {
 			return err
 		}
 		a.logf("attachment %s %s %s %s", sub, t, ext, pos[2])
@@ -1254,7 +1294,7 @@ func (a *adminCmd) attachment(ctx context.Context, sub string, args []string) er
 			return err
 		}
 		defer done()
-		if err := a.svc.Attachments.Remove(ctx, a.actor, t, ext, pos[2]); err != nil {
+		if err := a.svc.Attachments.Remove(ctx, a.actor, t, pkg, pos[2]); err != nil {
 			return err
 		}
 		a.logf("attachment remove %s %s %s", t, ext, pos[2])
@@ -1269,6 +1309,7 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 	description := fs.String("description", "", "")
 	add := fs.String("add", "", "")
 	remove := fs.String("remove", "", "")
+	ptype := fs.String("type", "", "") // spec 0034: the members' package type
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) == 0 {
 		return errUsage
@@ -1283,7 +1324,7 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 		}
 		a.logf("extension-group add %s %s", pos[0], pos[1])
 	case sub == "list" && len(pos) == 1:
-		gs, _, err := a.svc.Auth.ListPackageGroups(ctx, a.actor, pos[0], "")
+		gs, _, err := a.svc.Auth.ListPackageGroups(ctx, a.actor, pos[0], "", "")
 		if err != nil {
 			return err
 		}
@@ -1307,10 +1348,10 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 		}
 		fmt.Fprintf(a.out, "%s: %s\ncreated %s by %s\n\nmembers (%d):\n", g.Name, g.Description, ts(g.CreatedAt), g.CreatedBy, len(ms))
 		for _, m := range ms {
-			fmt.Fprintf(a.out, "  %s\n", m.Name)
+			fmt.Fprintf(a.out, "  %s\n", memberName(m))
 		}
 		fmt.Fprintln(a.out, "\ngrants:")
-		a.grantTable(gs, g.Name, "", false)
+		a.grantTable(gs, g.Name, "", "", false)
 	case sub == "description" && len(pos) == 3:
 		if _, err := a.svc.Auth.SetPackageGroupDescription(ctx, a.actor, pos[0], pos[1], pos[2], 0); err != nil {
 			return err
@@ -1328,7 +1369,7 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 		}
 		a.table("NAME\tADDED\tBY", func(w io.Writer) {
 			for _, m := range ms {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", m.Name, ts(m.AddedAt), m.AddedBy)
+				fmt.Fprintf(w, "%s\t%s\t%s\n", memberName(m), ts(m.AddedAt), m.AddedBy)
 			}
 		})
 	case sub == "members" && len(pos) == 2:
@@ -1355,7 +1396,7 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 		}
 		var added, removed int
 		for _, op := range ops {
-			ad, rm, err := a.svc.Auth.ChangePackageGroupMembers(ctx, a.actor, pos[0], pos[1], op[0], op[1])
+			ad, rm, err := a.svc.Auth.ChangePackageGroupMembers(ctx, a.actor, pos[0], pos[1], *ptype, op[0], op[1])
 			if err != nil {
 				if added+removed > 0 {
 					a.logf("extension-group members %s %s: %d added, %d removed before the error", pos[0], pos[1], added, removed)
@@ -1369,6 +1410,15 @@ func (a *adminCmd) extensionGroup(ctx context.Context, sub string, args []string
 		return errUsage
 	}
 	return nil
+}
+
+// memberName is a group member's name, with its package type when it is not the default (spec
+// 0034: type:name).
+func memberName(m store.GroupMember) string {
+	if m.PackageType != pkgtype.Default {
+		return m.PackageType + ":" + m.Name
+	}
+	return m.Name
 }
 
 func (a *adminCmd) block(ctx context.Context, sub string, args []string) error {
@@ -2644,13 +2694,14 @@ func (a *adminCmd) reserved(ctx context.Context, sub string, args []string) erro
 	kind := fs.String("kind", "", "")
 	force := fs.Bool("force", false, "")
 	name := fs.String("name", "", "")
+	ptype := fs.String("type", "", "") // spec 0034: the names' package type
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	switch {
 	case sub == "add" && len(pos) > 0 && *name == "":
-		res, err := a.svc.Tenants.Reserve(ctx, a.actor, pos, *kind, *force)
+		res, err := a.svc.Tenants.Reserve(ctx, a.actor, *ptype, pos, *kind, *force)
 		for n, ts := range res.Tenants {
 			fmt.Fprintf(a.errw, "kista admin: %s has releases in %s\n", n, strings.Join(ts, ", "))
 		}
@@ -2659,7 +2710,7 @@ func (a *adminCmd) reserved(ctx context.Context, sub string, args []string) erro
 		}
 		a.logf("reserved add %s (newly reserved: %s)", *kind, joinOrNone(res.Added))
 	case sub == "list" && len(pos) == 0:
-		ns, err := a.svc.Tenants.ListReserved(ctx, a.actor, *name)
+		ns, err := a.svc.Tenants.ListReserved(ctx, a.actor, *ptype, *name)
 		if err != nil {
 			return err
 		}
@@ -2669,7 +2720,7 @@ func (a *adminCmd) reserved(ctx context.Context, sub string, args []string) erro
 			}
 		})
 	case sub == "remove" && len(pos) == 1:
-		if err := a.svc.Tenants.Unreserve(ctx, a.actor, pos[0]); err != nil {
+		if err := a.svc.Tenants.Unreserve(ctx, a.actor, *ptype, pos[0]); err != nil {
 			return err
 		}
 		a.logf("reserved remove %s", pos[0])
@@ -2682,13 +2733,14 @@ func (a *adminCmd) reserved(ctx context.Context, sub string, args []string) erro
 func (a *adminCmd) tenantReserved(ctx context.Context, sub string, args []string) error {
 	fs := flag.NewFlagSet("tenant-reserved", flag.ContinueOnError)
 	holder := fs.String("holder", "", "")
+	ptype := fs.String("type", "", "") // spec 0034: the name's package type
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	switch {
 	case sub == "add" && len(pos) == 2:
-		res, err := a.svc.Tenants.ReserveInTenant(ctx, a.actor, pos[0], pos[1], *holder)
+		res, err := a.svc.Tenants.ReserveInTenant(ctx, a.actor, pos[0], *ptype, pos[1], *holder)
 		if err != nil {
 			return err
 		}
@@ -2706,12 +2758,12 @@ func (a *adminCmd) tenantReserved(ctx context.Context, sub string, args []string
 			a.logf("tenant-reserved add %s %s: holder %s", pos[0], pos[1], res.Holder)
 		}
 	case sub == "remove" && len(pos) == 2:
-		if err := a.svc.Tenants.ReleaseInTenant(ctx, a.actor, pos[0], pos[1]); err != nil {
+		if err := a.svc.Tenants.ReleaseInTenant(ctx, a.actor, pos[0], *ptype, pos[1]); err != nil {
 			return err
 		}
 		a.logf("tenant-reserved remove %s %s", pos[0], pos[1])
 	case sub == "list" && len(pos) == 1:
-		rs, err := a.svc.Tenants.ListInTenant(ctx, a.actor, pos[0], "")
+		rs, err := a.svc.Tenants.ListInTenant(ctx, a.actor, pos[0], *ptype, "")
 		if err != nil {
 			return err
 		}
@@ -2747,7 +2799,12 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 	source := fs.String("source", "", "")
 	name := fs.String("name", "", "")
 	private := fs.Bool("private", false, "")
+	ptype := fs.String("type", "", "") // spec 0034: the catalogue's package type
 	pos, err := flags(fs, args)
+	if err != nil {
+		return err
+	}
+	typ, err := pkgtype.Parse(*ptype)
 	if err != nil {
 		return err
 	}
@@ -2768,7 +2825,7 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 		}
 		defer func() { _ = svc.Close() }()
 		a.svc.WithBlob(svc)
-		b, existed, err := a.svc.Releases.AddToCatalogue(ctx, a.actor, pos[0], in, release.AddOptions{Name: *name, Private: *private})
+		b, existed, err := a.svc.Releases.AddToCatalogue(ctx, a.actor, pos[0], in, release.AddOptions{Name: *name, PackageType: typ, Private: *private})
 		if err != nil {
 			return err
 		}
@@ -2785,7 +2842,7 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 		}
 		a.logf("catalogue purge %s %s %s %s %s", pos[0], b.Name, b.PackageVersion, b.Platform, b.Slot())
 	case sub == "list" && len(pos) == 1:
-		es, err := a.svc.Releases.Catalogue(ctx, a.actor, pos[0], *source, *name)
+		es, err := a.svc.Releases.Catalogue(ctx, a.actor, pos[0], typ, *source, *name)
 		if err != nil {
 			return err
 		}
@@ -2800,7 +2857,7 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 			}
 		})
 	case sub == "show" && len(pos) == 3:
-		vs, err := a.svc.Releases.CatalogueVersions(ctx, a.actor, pos[0], pos[1], pos[2])
+		vs, err := a.svc.Releases.CatalogueVersions(ctx, a.actor, pos[0], typ, pos[1], pos[2])
 		if err != nil {
 			return err
 		}

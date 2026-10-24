@@ -178,7 +178,7 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 	must(err)
 	_, _, err = ten.AddVersion(ctx, serveAdmin, b.versionDir, kind, []string{"v1.5.6", "v2.0.0"}, tenants.CoreExtensions{Names: core})
 	must(err)
-	_, err = ten.CreateChannel(ctx, serveAdmin, "acme", "prod", store.ChannelSigned)
+	_, err = ten.CreateChannel(ctx, serveAdmin, "acme", "prod", store.ChannelSigned, "")
 	must(err)
 	_, err = ten.SetChannelVersions(ctx, serveAdmin, "acme", "prod", []string{b.versionDir}, nil)
 	must(err)

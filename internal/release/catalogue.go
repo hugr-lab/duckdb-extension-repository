@@ -40,14 +40,14 @@ func (s *Service) mayAdminTenant(ctx context.Context, a authz.Actor, tenant stri
 	return s.Store.GetTenant(ctx, tenant)
 }
 
-// Catalogue lists a tenant's catalogue: every (source, name), or those of one source or name (as
-// answers name them), by source and name.
-func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, source, name string) ([]CatalogueEntry, error) {
+// Catalogue lists a tenant's catalogue of a package type (spec 0034): every (source, name), or those
+// of one source or name (as answers name them), by source and name.
+func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageType, source, name string) ([]CatalogueEntry, error) {
 	t, err := s.mayAdminTenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
-	vers, err := s.Store.SourceVersions(ctx, t.ID)
+	vers, err := s.Store.SourceVersions(ctx, t.ID, packageType)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, source, 
 	if err != nil {
 		return nil, err
 	}
-	rules, err := s.Store.TenantRules(ctx, t.ID)
+	rules, err := s.Store.TenantRules(ctx, t.ID, packageType)
 	if err != nil {
 		return nil, err
 	}
@@ -90,8 +90,8 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, source, 
 }
 
 // CatalogueVersions are an entry's versions (newest first) with their builds and where each is
-// released; an entry the tenant has no build of is not found.
-func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, source, name string) ([]CatalogueVersion, error) {
+// released; an entry the tenant has no build of (of the type) is not found.
+func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, packageType, source, name string) ([]CatalogueVersion, error) {
 	t, err := s.mayAdminTenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
@@ -104,14 +104,14 @@ func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, 
 	if err != nil {
 		return nil, err
 	}
-	builds, err := s.Store.SourceBuilds(ctx, t.ID, src, name)
+	builds, err := s.Store.SourceBuilds(ctx, t.ID, packageType, src, name)
 	if err != nil {
 		return nil, err
 	}
 	if len(builds) == 0 {
 		return nil, fmt.Errorf("%w: no build of %s from %s", store.ErrNotFound, name, source)
 	}
-	placed, err := s.Store.BuildPlacements(ctx, t.ID, src, name)
+	placed, err := s.Store.BuildPlacements(ctx, t.ID, packageType, src, name)
 	if err != nil {
 		return nil, err
 	}

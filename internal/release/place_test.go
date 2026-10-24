@@ -12,6 +12,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -285,12 +286,12 @@ func TestPlaceByHand(t *testing.T) {
 			t.Fatalf("an auto rule on the tenant: %v", err)
 		}
 		// the catalogue: the entry, its versions, its builds and where they are released
-		es, err := p.rel.Catalogue(ctx, admin, "acme", "", "tresor")
+		es, err := p.rel.Catalogue(ctx, admin, "acme", pkgtype.DuckDBExtension, "", "tresor")
 		if err != nil || len(es) != 1 || es[0].Source != "publisher:ci" || strings.Join(es[0].Versions, " ") != "1.0" ||
 			es[0].Rules["prod"] != "manual" || es[0].Rules["staging"] != "" {
 			t.Fatalf("the catalogue: %+v %v", es, err)
 		}
-		vs, err := p.rel.CatalogueVersions(ctx, admin, "acme", "publisher:ci", "tresor")
+		vs, err := p.rel.CatalogueVersions(ctx, admin, "acme", pkgtype.DuckDBExtension, "publisher:ci", "tresor")
 		if err != nil || len(vs) != 1 || len(vs[0].Builds) != 1 || len(vs[0].Builds[0].Placed) != 2 {
 			t.Fatalf("the entry: %+v %v", vs, err)
 		}

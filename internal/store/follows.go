@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 )
 
 // Spec 0033: a channel following a whole source.
@@ -99,27 +101,31 @@ func (s *Store) FollowSkips(ctx context.Context, channelID, source string) (map[
 	return out, err
 }
 
-// DueFollow is a follow the placement pass looks at, with its tenant.
+// DueFollow is a follow the placement pass looks at, with its tenant and its channel's package type
+// (spec 0034: a follow takes its source's names of that type only).
 type DueFollow struct {
 	TenantID, ChannelID, Source string
+	PackageType                 string
 }
 
 // DueFollows lists the follows of signed channels of active tenants the placement pass should look
 // at: every one (sweep), or those whose source has a build made since the pass last looked.
 func (s *Store) DueFollows(ctx context.Context, sweep bool) ([]DueFollow, error) {
-	q := `SELECT c.tenant_id, f.channel_id, f.source FROM channel_follows f JOIN channels c ON c.id = f.channel_id
+	q := `SELECT c.tenant_id, f.channel_id, f.source, c.package_type FROM channel_follows f JOIN channels c ON c.id = f.channel_id
 JOIN tenants t ON t.id = c.tenant_id WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL`
 	if !sweep {
-		q += ` AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = c.tenant_id AND b.source = f.source
+		q += ` AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = c.tenant_id AND b.package_type = c.package_type AND b.source = f.source
 	AND (f.checked_at IS NULL OR b.created_at > f.checked_at))`
 	}
 	var out []DueFollow
 	err := s.eachRow(ctx, q+" ORDER BY c.tenant_id, f.channel_id, f.source", nil, func(sc func(...any) error) error {
 		var f DueFollow
-		if err := sc(&f.TenantID, &f.ChannelID, &f.Source); err != nil {
+		if err := sc(&f.TenantID, &f.ChannelID, &f.Source, &f.PackageType); err != nil {
 			return err
 		}
-		out = append(out, f)
+		if pkgtype.Known(f.PackageType) { // spec 0034: a channel of a type this binary does not know places nothing
+			out = append(out, f)
+		}
 		return nil
 	})
 	return out, err
@@ -154,10 +160,11 @@ func (s *Store) FollowLook(ctx context.Context, f DueFollow, start, at time.Time
 	})
 }
 
-// SourceNames lists the names a tenant's source has builds of.
-func (s *Store) SourceNames(ctx context.Context, tenantID, source string) ([]string, error) {
+// SourceNames lists the names of a type a tenant's source has builds of.
+func (s *Store) SourceNames(ctx context.Context, tenantID, packageType, source string) ([]string, error) {
 	var out []string
-	err := s.eachRow(ctx, "SELECT DISTINCT name FROM builds WHERE tenant_id = ? AND source = ? ORDER BY name", []any{tenantID, source},
+	err := s.eachRow(ctx, "SELECT DISTINCT name FROM builds WHERE tenant_id = ? AND package_type = ? AND source = ? ORDER BY name",
+		[]any{tenantID, packageType, source},
 		func(sc func(...any) error) error {
 			var n string
 			if err := sc(&n); err != nil {
@@ -183,17 +190,17 @@ func (s *Store) UpstreamKindOf(ctx context.Context, source string) (string, erro
 	return kind, err
 }
 
-// NameReservedFor is how a name is reserved, for a follow's limits: by the server (core or
-// community), or in the tenant ("tenant"); "" when it is not.
-func (s *Store) NameReservedFor(ctx context.Context, tenantID, name string) (string, error) {
+// NameReservedFor is how a name of a type is reserved, for a follow's limits: by the server (core
+// or community), or in the tenant ("tenant"); "" when it is not.
+func (s *Store) NameReservedFor(ctx context.Context, tenantID, packageType, name string) (string, error) {
 	var out string
 	err := s.InTx(ctx, "", func(tx *Tx) error {
-		k, err := tx.ReservedKind(ctx, name)
+		k, err := tx.ReservedKind(ctx, packageType, name)
 		if err != nil || k != "" {
 			out = k
 			return err
 		}
-		held, err := tx.TenantReserves(ctx, tenantID, name)
+		held, err := tx.TenantReserves(ctx, tenantID, packageType, name)
 		if held {
 			out = "tenant"
 		}

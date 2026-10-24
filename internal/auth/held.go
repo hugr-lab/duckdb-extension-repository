@@ -3,6 +3,7 @@ package auth
 import (
 	"slices"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -37,31 +38,33 @@ func gives(g store.Grant, verb string) bool {
 	return slices.Contains(g.Verbs, verb) || slices.Contains(g.Verbs, store.VerbAdmin) && g.Kind != store.PrincipalIssuer
 }
 
-// Allows reports whether a caller holds verb (or admin) on (channel, extension): a grant on the
-// tenant, on the channel, on the extension in every channel or in this one, or on a group holding
-// the extension in every channel or in this one.
-func Allows(h Held, channelID, extension, verb string) bool {
+// Allows reports whether a caller holds verb (or admin) on (channel, package) of a channel of
+// packageType: a grant on the tenant (of every type or this one), on the channel, on the package in
+// every channel or in this one, or on a group holding the package in every channel or in this one.
+func Allows(h Held, channelID, packageType, extension, verb string) bool {
 	for _, g := range h.Grants {
-		if gives(g, verb) && (g.ChannelID == "" || g.ChannelID == channelID) && (g.Package == "" || g.Package == extension) {
+		if gives(g, verb) && (g.ChannelID == "" || g.ChannelID == channelID) && g.OfType(packageType) &&
+			(g.Package == "" || g.Package == extension) {
 			return true
 		}
 	}
 	for _, g := range h.GroupGrants {
-		if gives(g, verb) && (g.ChannelID == "" || g.ChannelID == channelID) && g.Members[extension] {
+		if gives(g, verb) && (g.ChannelID == "" || g.ChannelID == channelID) && g.Members[pkgtype.Key{Type: packageType, Name: extension}] {
 			return true
 		}
 	}
 	return false
 }
 
-// InstallScope returns what a caller may install in a channel: every extension (a grant on the
-// tenant or the channel), or the names may reports (grants on extensions or on groups, in every
-// channel or in this one), looked up in the groups' member sets without copying them.
-func InstallScope(h Held, channelID string) (all bool, may func(name string) bool) {
+// InstallScope returns what a caller may install in a channel of packageType: every package (a
+// grant on the tenant or the channel, of every type or the channel's: spec 0034), or the names may
+// reports (grants on packages of the type or on groups, in every channel or in this one), looked up
+// in the groups' member sets without copying them.
+func InstallScope(h Held, channelID, packageType string) (all bool, may func(name string) bool) {
 	names := map[string]bool{}
-	var groups []map[string]bool
+	var groups []map[pkgtype.Key]bool
 	for _, g := range h.Grants {
-		if !gives(g, store.VerbInstall) || g.ChannelID != "" && g.ChannelID != channelID {
+		if !gives(g, store.VerbInstall) || g.ChannelID != "" && g.ChannelID != channelID || !g.OfType(packageType) {
 			continue
 		}
 		if g.Package == "" {
@@ -75,6 +78,7 @@ func InstallScope(h Held, channelID string) (all bool, may func(name string) boo
 		}
 	}
 	return false, func(name string) bool {
-		return names[name] || slices.ContainsFunc(groups, func(m map[string]bool) bool { return m[name] })
+		k := pkgtype.Key{Type: packageType, Name: name}
+		return names[name] || slices.ContainsFunc(groups, func(m map[pkgtype.Key]bool) bool { return m[k] })
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -82,6 +83,9 @@ func (s *Service) SetFollow(ctx context.Context, a authz.Actor, tenant, channel,
 		return FollowView{}, fmt.Errorf("%w: %q is not a source of the tenant (upstream:<an upstream>, publisher:<a publisher>)", store.ErrInvalid, label)
 	}
 	if err != nil {
+		return FollowView{}, err
+	}
+	if err := s.sourceOfType(ctx, ch, src, label); err != nil {
 		return FollowView{}, err
 	}
 	if err := s.Store.InTx(ctx, lockKey(ch.ID), func(tx *store.Tx) error {
@@ -205,7 +209,8 @@ func (s *Service) PlaceFollow(ctx context.Context, f store.DueFollow, renew func
 		if !wrote {
 			continue
 		}
-		rule := store.DueRule{TenantID: f.TenantID, ChannelID: f.ChannelID, Name: name, Source: f.Source, Mode: store.RuleFollow}
+		rule := store.DueRule{TenantID: f.TenantID, ChannelID: f.ChannelID, Name: name, Source: f.Source, Mode: store.RuleFollow,
+			PackageType: lk.channel.PackageType}
 		n, why, err := s.PlaceRule(ctx, rule, renew)
 		if errors.Is(err, errLeaseLost) {
 			return placed, skips, failure, err
@@ -246,10 +251,14 @@ func (s *Service) followLook(ctx context.Context, f store.DueFollow) (followLook
 	if lk.channel, err = s.channelByID(ctx, f.ChannelID); err != nil {
 		return lk, false, err
 	}
+	if !pkgtype.Known(lk.channel.PackageType) {
+		return lk, false, nil // spec 0034: a channel of a type this binary does not know places nothing
+	}
 	if lk.kind, err = s.Store.UpstreamKindOf(ctx, f.Source); err != nil {
 		return lk, false, err
 	}
-	vers, err := s.Store.SourceVersions(ctx, f.TenantID)
+	// spec 0034: a follow takes only its source's names of the channel's type
+	vers, err := s.Store.SourceVersions(ctx, f.TenantID, lk.channel.PackageType)
 	if err != nil {
 		return lk, false, err
 	}
@@ -259,7 +268,7 @@ func (s *Service) followLook(ctx context.Context, f store.DueFollow) (followLook
 			lk.byName[k[1]] = append(lk.byName[k[1]], k[0])
 		}
 	}
-	if lk.rules, err = s.Store.TenantRules(ctx, f.TenantID); err != nil {
+	if lk.rules, err = s.Store.TenantRules(ctx, f.TenantID, lk.channel.PackageType); err != nil {
 		return lk, false, err
 	}
 	follows, err := s.Store.Follows(ctx, f.ChannelID)
@@ -287,7 +296,7 @@ func (s *Service) followLook(ctx context.Context, f store.DueFollow) (followLook
 
 // followLimit says why a follow does not take a name ("" when it does).
 func (s *Service) followLimit(ctx context.Context, lk followLook, f store.DueFollow, name string) (string, error) {
-	reserved, err := s.Store.NameReservedFor(ctx, f.TenantID, name)
+	reserved, err := s.Store.NameReservedFor(ctx, f.TenantID, lk.channel.PackageType, name)
 	if err != nil {
 		return "", err
 	}
@@ -332,7 +341,7 @@ func (s *Service) takeName(ctx context.Context, lk followLook, f store.DueFollow
 		if err != nil || had && (cur.Source != f.Source || cur.Mode != store.RuleNone) {
 			return err
 		}
-		if held, err := tx.TenantReserves(ctx, f.TenantID, name); err != nil || held {
+		if held, err := tx.TenantReserves(ctx, f.TenantID, lk.channel.PackageType, name); err != nil || held {
 			return err
 		}
 		if _, err := tx.SetChannelRule(ctx, f.ChannelID, name, f.Source, store.RuleFollow, placer.String()); err != nil {

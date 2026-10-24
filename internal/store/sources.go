@@ -286,6 +286,22 @@ func (s *Store) SourceLabel(ctx context.Context, source string) (label string, e
 // ErrNoSource: the source named is not one of the tenant's (an upstream, a publisher, the tenant).
 var ErrNoSource = errors.New("store: no such source for the channel")
 
+// SourceType is the package type a source's names are of (spec 0034): an upstream's home channel's;
+// "" for a source of any type (the tenant, a publisher) or an upstream removed.
+func (s *Store) SourceType(ctx context.Context, source string) (string, error) {
+	id, ok := strings.CutPrefix(source, SourceUpstreamPrefix)
+	if !ok {
+		return "", nil
+	}
+	var t string
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT c.package_type FROM upstreams u JOIN channels c ON c.id = u.channel_id WHERE u.id = ?"),
+		id).Scan(&t)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return t, err
+}
+
 // ResolveSource reads a source as a caller names it (tenant, upstream:<name>, publisher:<name>)
 // into the stored form: an upstream or a publisher of the tenant (an upstream of another channel
 // is the source of the mirrored releases promoted from it).

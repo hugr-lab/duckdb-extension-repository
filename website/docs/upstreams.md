@@ -675,6 +675,11 @@ licences in bundles, or a later one, on both sides:
 an older one refuses them, as plans and manifests are decoded strictly. A bundle without licences
 is the same document as before.
 
+A plan's and a manifest's sources have a [package type](concepts.md#packages-and-package-types)
+(`package_type`, spec 0034), left out for `duckdb_extension`, the type of every source today: an
+extension bundle or plan is the document it was, and an older kista reads it. A source that names
+`duckdb_extension`, or a type the importer does not know, is refused.
+
 ### Importing a bundle
 
 ```bash

@@ -8,10 +8,20 @@ import (
 	"slices"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
 // Spec 0033: a tenant's catalogue entries arriving without a channel, their room, and their purge.
+
+// typedEvent adds an event's package_type when it is not the default (spec 0034: events that name a
+// package without a channel carry it then; an extension's events read as before).
+func typedEvent(f map[string]any, packageType string) map[string]any {
+	if packageType != "" && packageType != pkgtype.Default {
+		f["package_type"] = packageType
+	}
+	return f
+}
 
 // KeepLanded is how many versions of a name from a source the catalogue keeps landed (placed
 // nowhere); older ones are collected after the grace (spec 0016).
@@ -37,7 +47,7 @@ func (s *Service) room(ctx context.Context, b store.Build, size int64, admin boo
 	if admin || s.MaxEntries <= 0 && s.MaxBytes <= 0 {
 		return nil
 	}
-	if _, ok, err := s.Store.BuildOf(ctx, b.TenantID, b.Source, b.Name, b.BodyHash); err != nil || ok {
+	if _, ok, err := s.Store.BuildOf(ctx, b.TenantID, b.PackageType, b.Source, b.Name, b.BodyHash); err != nil || ok {
 		return err
 	}
 	n, bytes, err := s.Store.SourceUsage(ctx, b.TenantID, b.Source)
@@ -56,19 +66,29 @@ func (s *Service) room(ctx context.Context, b store.Build, size int64, admin boo
 // grant naming it) or, without o.Publish, an administrator's add. The build's DuckDB version must be
 // registered on the server. It returns the build and whether the source had it already.
 func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant string, r io.Reader, o AddOptions) (store.Build, bool, error) {
+	typ := o.PackageType
+	if typ == "" {
+		typ = pkgtype.Default
+	}
+	if !pkgtype.Known(typ) {
+		return store.Build{}, false, fmt.Errorf("%w: package type %q", store.ErrInvalid, typ)
+	}
 	res := authz.Resource{Tenant: tenant}
 	verb := authz.VerbAdmin
 	if o.Publish != nil {
-		kind, err := s.Store.ReservedFor(ctx, tenant, o.Name)
+		kind, err := s.Store.ReservedFor(ctx, tenant, typ, o.Name)
 		if err != nil {
 			return store.Build{}, false, err
 		}
 		o.Unchecked = false
 		verb = authz.VerbPublish
-		res = authz.Resource{Tenant: tenant, Package: o.Name, Reserved: kind != ""}
+		res = authz.Resource{Tenant: tenant, Package: o.Name, PackageType: typ, Reserved: kind != ""}
 	}
 	if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
 		return store.Build{}, false, err
+	}
+	if typ != pkgtype.DuckDBExtension { // the intake reads DuckDB extensions (spec 0008); another type's is its spec's
+		return store.Build{}, false, fmt.Errorf("%w: this server takes DuckDB extensions only, not %s", ErrPackageType, typ)
 	}
 	o.Unchecked = false // a build nothing could place would only hold its slot
 	t, err := s.Store.GetTenant(ctx, tenant)
@@ -121,7 +141,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		}
 		return store.Build{}, false, err
 	}
-	_, existed, err := s.Store.BuildOf(ctx, t.ID, it.source, b.Name, b.BodyHash)
+	_, existed, err := s.Store.BuildOf(ctx, t.ID, b.PackageType, it.source, b.Name, b.BodyHash)
 	if err != nil {
 		return store.Build{}, false, err
 	}
@@ -134,7 +154,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		}
 	}
 	if o.Publish != nil { // a name reserved during the upload takes a grant naming it (spec 0030)
-		kind, err := s.Store.ReservedFor(ctx, tenant, o.Name)
+		kind, err := s.Store.ReservedFor(ctx, tenant, typ, o.Name)
 		if err != nil {
 			return store.Build{}, false, err
 		}
@@ -158,6 +178,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		if it.provenance != "" {
 			f["provenance"] = it.provenance
 		}
+		typedEvent(f, bb.PackageType)
 		return tx.Event(ctx, t.ID, a.String(), "catalogue.arrival", "ext:"+bb.Name, f)
 	}); err != nil {
 		return store.Build{}, false, slotErr(it.origin, err)
@@ -181,8 +202,8 @@ func (s *Service) PurgeEntry(ctx context.Context, a authz.Actor, tenant, id stri
 		if b, err = tx.DeleteEntry(ctx, t.ID, id); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "catalogue.purge", "ext:"+b.Name, map[string]any{"build": b.ID, "name": b.Name,
-			"version": b.PackageVersion, "platform": b.Platform, "slot": b.Slot(), "body_hash": b.BodyHash})
+		return tx.Event(ctx, t.ID, a.String(), "catalogue.purge", "ext:"+b.Name, typedEvent(map[string]any{"build": b.ID, "name": b.Name,
+			"version": b.PackageVersion, "platform": b.Platform, "slot": b.Slot(), "body_hash": b.BodyHash}, b.PackageType))
 	})
 	return b, err
 }
@@ -196,9 +217,9 @@ func (s *Service) TrimLanded(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	by := map[[5]string][]store.LandedBuild{}
+	by := map[[6]string][]store.LandedBuild{}
 	for _, b := range crowded {
-		k := [5]string{b.TenantID, b.Source, b.Name, b.Platform, b.Slot}
+		k := [6]string{b.TenantID, b.PackageType, b.Source, b.Name, b.Platform, b.Slot}
 		by[k] = append(by[k], b)
 	}
 	var drop []string

@@ -50,7 +50,7 @@ func newGateway(t *testing.T, e storetest.Engine) *gateway {
 	}
 	must(t, func() error { _, err := en.ten.CreateTenant(ctx, admin, "site", "", "", ""); return err })
 	must(t, func() error {
-		_, err := en.ten.CreateChannel(ctx, admin, "site", "prod", store.ChannelSigned)
+		_, err := en.ten.CreateChannel(ctx, admin, "site", "prod", store.ChannelSigned, "")
 		return err
 	})
 	must(t, func() error {

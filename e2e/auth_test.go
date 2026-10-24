@@ -280,7 +280,7 @@ func TestPublishPromoteInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	// a staging channel with its own key
-	if _, err := k.ten.CreateChannel(ctx, serveAdmin, "acme", "staging", store.ChannelSigned); err != nil {
+	if _, err := k.ten.CreateChannel(ctx, serveAdmin, "acme", "staging", store.ChannelSigned, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := k.ten.SetChannelVersions(ctx, serveAdmin, "acme", "staging", []string{b.versionDir}, nil); err != nil {
@@ -409,7 +409,7 @@ func TestServeGroupGrant(t *testing.T) {
 	ctx := context.Background()
 	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: "https://" + k.addr}
 	ten := &tenants.Service{Store: k.st, Authz: authz.ServerAdmin{}, HasDomain: func(d string) bool { return d == "default" }}
-	if _, err := ten.CreateChannel(ctx, serveAdmin, "acme", "staging", store.ChannelSigned); err != nil {
+	if _, err := ten.CreateChannel(ctx, serveAdmin, "acme", "staging", store.ChannelSigned, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
@@ -453,14 +453,14 @@ func TestServeGroupGrant(t *testing.T) {
 		}
 	}
 	refused("not yet a member", "carol")
-	if _, _, err := adm.ChangePackageGroupMembers(ctx, serveAdmin, "acme", "demos", []string{"loadable_extension_demo"}, nil); err != nil {
+	if _, _, err := adm.ChangePackageGroupMembers(ctx, serveAdmin, "acme", "demos", "", []string{"loadable_extension_demo"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if r := install("carol"); !r.OK {
 		t.Fatalf("a member at the next request: %s", r.Error)
 	}
 	refused("the group in another channel", "dave")
-	if _, _, err := adm.ChangePackageGroupMembers(ctx, serveAdmin, "acme", "demos", nil, []string{"loadable_extension_demo"}); err != nil {
+	if _, _, err := adm.ChangePackageGroupMembers(ctx, serveAdmin, "acme", "demos", "", nil, []string{"loadable_extension_demo"}); err != nil {
 		t.Fatal(err)
 	}
 	refused("a name that left the group", "carol")

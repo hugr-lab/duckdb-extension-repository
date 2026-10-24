@@ -39,7 +39,7 @@ func TestNetworkIntake(t *testing.T) {
 		return err
 	})
 	must(t, func() error {
-		_, err := en.ten.CreateChannel(ctx, admin, "acme", "dw", store.ChannelSigned)
+		_, err := en.ten.CreateChannel(ctx, admin, "acme", "dw", store.ChannelSigned, "")
 		return err
 	})
 	must(t, func() error {

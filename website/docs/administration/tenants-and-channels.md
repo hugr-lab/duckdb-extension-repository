@@ -199,6 +199,13 @@ A tenant administrator may create channels and change their DuckDB versions over
 (`POST /api/v1/tenants/{t}/channels`) or in the console. Keys are registered by a server
 administrator only (see below).
 
+A channel serves one **package type**, set when it is created and never changed:
+`duckdb_extension` by default, the only type there is today (`-type` in the CLI, `"package_type"`
+in the API; a passthrough channel's is always `duckdb_extension`). Builds are placed, promoted and
+followed into a channel of their own type only (another is `409`), and on a channel's routes a
+`?type=` other than the channel's is `400`. The channel lists show a channel's type only when it is
+not the default. See [Concepts](../concepts.md#packages-and-package-types).
+
 ### Channel kinds
 
 | | `signed` | `passthrough` |

@@ -54,7 +54,7 @@ func (h *Handler) licenseErr(w http.ResponseWriter, err error) {
 // licenseKeys answers the licence keys of the tenant's live builds, by name (spec 0021).
 func (h *Handler) licenseKeys(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	ks, err := h.o.Licenses.LicenseKeys(r.Context(), a, p["t"], p["name"])
+	ks, err := h.o.Licenses.LicenseKeys(r.Context(), a, p["t"], reqType(r), p["name"])
 	if err != nil {
 		h.licenseErr(w, err)
 		return
@@ -64,7 +64,7 @@ func (h *Handler) licenseKeys(w http.ResponseWriter, r *http.Request, c caller, 
 
 func (h *Handler) listLicenses(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	vs, err := h.o.Licenses.List(r.Context(), a, p["t"])
+	vs, err := h.o.Licenses.List(r.Context(), a, p["t"], reqType(r))
 	if err != nil {
 		h.licenseErr(w, err)
 		return
@@ -78,7 +78,7 @@ func (h *Handler) listLicenses(w http.ResponseWriter, r *http.Request, c caller,
 
 func (h *Handler) getLicense(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	v, err := h.o.Licenses.Get(r.Context(), a, p["t"], p["name"])
+	v, err := h.o.Licenses.Get(r.Context(), a, p["t"], reqType(r), p["name"])
 	if err != nil {
 		h.licenseErr(w, err)
 		return
@@ -107,13 +107,13 @@ func (h *Handler) importLicense(w http.ResponseWriter, r *http.Request, c caller
 		return
 	}
 	a, _ := c.actor()
-	v, err := h.o.Licenses.Import(r.Context(), a, p["t"], strings.TrimSpace(string(b)), expected)
+	v, err := h.o.Licenses.Import(r.Context(), a, p["t"], reqType(r), strings.TrimSpace(string(b)), expected)
 	if err != nil {
 		h.licenseErr(w, err)
 		return
 	}
 	if v.Created {
-		created(w, r, "/api/v1/tenants/"+p["t"]+"/licenses/"+v.Name, licenseOf(v), versionTag(v.Version))
+		created(w, r, "/api/v1/tenants/"+p["t"]+"/licenses/"+v.Name+typeQuery(r), licenseOf(v), versionTag(v.Version))
 		return
 	}
 	reply(w, r, http.StatusOK, licenseOf(v), versionTag(v.Version), noStore)
@@ -125,7 +125,7 @@ func (h *Handler) removeLicense(w http.ResponseWriter, r *http.Request, c caller
 		return
 	}
 	a, _ := c.actor()
-	if err := h.o.Licenses.Remove(r.Context(), a, p["t"], p["name"], expected); err != nil {
+	if err := h.o.Licenses.Remove(r.Context(), a, p["t"], reqType(r), p["name"], expected); err != nil {
 		h.licenseErr(w, err)
 		return
 	}
@@ -140,7 +140,7 @@ func licenseVisibility(visibility string) handler {
 			return
 		}
 		a, _ := c.actor()
-		v, err := h.o.Licenses.SetVisibility(r.Context(), a, p["t"], p["name"], visibility, expected)
+		v, err := h.o.Licenses.SetVisibility(r.Context(), a, p["t"], reqType(r), p["name"], visibility, expected)
 		if err != nil {
 			h.licenseErr(w, err)
 			return

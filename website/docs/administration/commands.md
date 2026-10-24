@@ -263,7 +263,8 @@ kista admin -config kista.yaml version add v2.0.0 -kind release -c-api v1.5.6 -c
 ## Reserved names
 
 The server's reserved extension names, and the names reserved in a tenant (spec 0030; [Reserved
-names](../publishing.md#reserved-names)). Server administrators only.
+names](../publishing.md#reserved-names)). Server administrators only. Every command takes
+`-type <package type>` (spec 0034): names are reserved per type, `duckdb_extension` by default.
 
 | Command | What it does |
 | --- | --- |
@@ -296,7 +297,7 @@ See [Tenants and channels](tenants-and-channels.md) and
 
 | Command | What it does | Output |
 | --- | --- | --- |
-| `channel create <tenant>/<channel> -kind signed` or `-kind passthrough` | creates a channel; its kind never changes | |
+| `channel create <tenant>/<channel> -kind signed` or `-kind passthrough` `[-type <package type>]` | creates a channel; its kind and its [package type](../concepts.md#packages-and-package-types) (`duckdb_extension` by default; a passthrough channel's) never change; `channel list` shows a type that is not the default after the kind (`signed/<type>`) | |
 | `channel versions <tenant>/<channel> [-add <v>]... [-remove <v>]...` | changes the DuckDB versions the channel serves; without flags, lists them | the channel's versions, one per line |
 | `channel source <tenant>/<channel> [<name> [-set <source>] [-mode auto\|manual] \| -clear]` | a name's source in the channel ([spec 0031](../upstreams.md#a-names-source-in-a-channel)): `tenant`, `upstream:<name>` or `publisher:<name>`, and its rule's mode ([spec 0033](../upstreams.md#the-catalogue-and-a-channels-rules)); `-mode` alone changes the mode; `-clear` removes it | each name, its source, mode, the version held and the newest in the catalogue, who set it and when, the sources with releases of it, the last outcome |
 | `channel follow <tenant>/<channel> [<source>]` | follows a whole source ([spec 0033](../upstreams.md#the-catalogue-and-a-channels-rules)): its names the channel has no rule for are taken automatically; without a source, lists the follows | `SOURCE`, `SET BY`, `SET AT`, `SKIPPED` (each name with its reason) |
@@ -311,6 +312,7 @@ See [Tenants and channels](tenants-and-channels.md) and
 | `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode) |
 | `catalogue show <tenant> <source> <name>` | an entry's builds | `VERSION`, `PLATFORM`, `SLOT`, `BODY`, `VISIBILITY`, `ORIGIN`, `CREATED`, `RELEASED IN` |
 | `catalogue add <tenant> <file\|-> -name <name> [-private]` | puts a build into the catalogue only, placed nowhere (source `tenant`; the file checks always run) | the build's id |
+| `catalogue list\|show\|add … -type <package type>` | the catalogue of a [package type](../concepts.md#packages-and-package-types) (`duckdb_extension` by default; this server reads DuckDB extensions only) | |
 | `catalogue purge <tenant> <build-id>` | deletes a build that was never released; its slot is free again | |
 
 ## Channel keys
@@ -340,7 +342,7 @@ The protection tier is the source's: `file`, `kubesecret` (a Kubernetes Secret, 
 | `release yank`, `deprecate`, `activate`, `current`, `public`, `private` `<tenant>/<channel> <release id>` | changes a release's state, currency or visibility: `deprecate` an active release, `activate` a deprecated one again, `current` makes an active release the one the flat path serves; `yank` is final | |
 | `release purge <tenant>/<channel> <release id> [-force]` | deletes a yanked release for good; its slot stays taken; needs `-force` while `gc.interval` is 0 | |
 | `release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> or -version <v>) [-private] [-not-current]` | releases the builds of another channel of the same tenant here, signed with this channel's key | the new release ids |
-| `release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current]` | releases a version's builds from the catalogue here ([placing from the catalogue](../publishing.md#placing-from-the-catalogue)); its later builds follow | the new release ids |
+| `release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current] [-type <package type>]` | releases a version's builds from the catalogue here ([placing from the catalogue](../publishing.md#placing-from-the-catalogue)); its later builds follow; `-type` names the builds' [package type](../concepts.md#packages-and-package-types) (the channel's when left out; another is refused) | the new release ids |
 
 `-unchecked` skips the publication checks of a build (such as the init symbol that binds the name).
 Details are in [Publishing](../publishing.md).
@@ -362,8 +364,8 @@ Details are in [Publishing](../publishing.md).
 | `issuer remove <tenant> <name>` | removes the record and its grants | |
 | `issuer console <tenant> <name> -client-id <id> [-scopes a,b] [-audience <a>] [-audience-parameter <p>]` | sets the administration console's public client at that issuer; scopes default to the console's defaults and must include `openid` | |
 | `issuer console <tenant> <name> -remove` | removes it | |
-| `grant add <tenant> -principal <principal> -verb <verb> [-verb ...] [-channel <c>] [-extension <x> or -extension-group <g>]` | adds a grant | the grant id |
-| `grant list <tenant> [-extension-group <g>] [-extension <x>]` | `ID`, `PRINCIPAL`, `VERBS`, `CHANNEL`, `EXTENSION`; with `-extension`, the grants that reach that extension | |
+| `grant add <tenant> -principal <principal> -verb <verb> [-verb ...] [-channel <c>] [-extension <x> or -extension-group <g>] [-type <t>]` | adds a grant; `-type` is its [package type](../access.md#package-types) (with an extension, `duckdb_extension` by default; without one, `*`, every type) | the grant id |
+| `grant list <tenant> [-extension-group <g>] [-extension <x> [-type <t>]]` | `ID`, `PRINCIPAL`, `VERBS`, `CHANNEL`, `EXTENSION`; with `-extension`, the grants that reach that extension (of `-type`); a grant's type shows before its extension when it is not the default (`<type>:<name>`, `<type>:*`) | |
 | `grant remove <tenant> <grant id>` | removes a grant | |
 
 `issuer add` flags:
@@ -392,8 +394,8 @@ A principal is `subject:<issuer>|<value>`, `role:<issuer>|<value>`, `group:<issu
 | `extension-group show <tenant> <group>` | the group, its members and the grants on it |
 | `extension-group description <tenant> <group> <text>` | replaces the description |
 | `extension-group remove <tenant> <group>` | refused while a grant names it |
-| `extension-group members <tenant> <group>` | `NAME`, `ADDED`, `BY` |
-| `extension-group members <tenant> <group> [-add a,b] [-remove c]` | changes members; removals run first |
+| `extension-group members <tenant> <group>` | `NAME`, `ADDED`, `BY`; a member of another type than `duckdb_extension` as `<type>:<name>` |
+| `extension-group members <tenant> <group> [-add a,b] [-remove c] [-type <t>]` | changes members, names of `-type` (`duckdb_extension` by default); removals run first |
 
 ## Publishers
 
@@ -451,6 +453,7 @@ See [Publishing](../publishing.md).
 | `attachment readers` or `administrators` `<tenant> <extension> <id>` | who may read it | |
 | `attachment feedable` or `unfeedable` `<tenant> <extension> <id>` | offered by the tenant's feed, or withdrawn; `feedable` fails while the tenant cannot sign (no active attestation key, or no `serve.public_url`) | |
 | `attachment remove <tenant> <extension> <id>` | | |
+| `attachment … -type <package type>` | every attachment command: the extension's [package type](../concepts.md#packages-and-package-types) (`duckdb_extension` by default) | |
 | `attestation-key add <tenant> <signer ref> [-active]` | registers a key that signs the feed's statements; `-active` only for a tenant that never had one | the key id |
 | `attestation-key list <tenant>` | `ID`, `FINGERPRINT`, `STATE`, `TRUSTED SINCE`, `SIGNER` | |
 | `attestation-key activate` or `retire` `<tenant> <id or fingerprint> [-force]` | as channel keys; only a trusted key can be retired | |
@@ -471,7 +474,7 @@ See [Attachments](../attachments.md).
 | `license list <tenant>` | `NAME`, `PLAN`, `HOLDER`, `STATUS`, `EXPIRES`, `SOURCE`, `VISIBILITY` |
 | `license show <tenant> <name>` | a licence's claims, limits and state |
 | `license token <tenant> <name>` | the licence as received |
-| `license import <tenant> <file or -> [-replace]` | stores a licence under the extension it names; `-replace` replaces the one stored; a refusal names its rule (`kid_untrusted`, `holder_mismatch`, …) |
+| `license import <tenant> <file or -> [-replace]` | stores a licence under the extension it names; `-replace` replaces the one stored; a refusal names its rule (`kid_untrusted`, `holder_mismatch`, …); the commands on a tenant's licences take `-type <package type>` (`duckdb_extension` by default: a licence is per type and name) |
 | `license remove`, `public`, `private` `<tenant> <name>` | |
 | `license verify <file or -> -key <pem>` | checks a licence offline against the key given, and prints its claims and status |
 

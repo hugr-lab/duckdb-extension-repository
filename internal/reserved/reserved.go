@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 )
 
 // Kinds of reserved names.
@@ -28,15 +30,25 @@ var (
 	extraList string
 )
 
-// set is a view of the names at a version of the server's list (0: the seed).
+// set is a view of the names at a version of the server's list (0: the seed), by (type, name):
+// spec 0034's server-wide reservations are per package type.
 type set struct {
-	kinds   map[string]string
+	kinds   map[pkgtype.Key]string
 	version int64
 }
 
 var current atomic.Pointer[set]
 
-func init() { current.Store(&set{kinds: Seed()}) }
+func init() { current.Store(&set{kinds: Keyed(Seed())}) }
+
+// Keyed is DuckDB's names (Seed's form) as keys of the duckdb_extension type, whose names they are.
+func Keyed(names map[string]string) map[pkgtype.Key]string {
+	out := make(map[pkgtype.Key]string, len(names))
+	for n, k := range names {
+		out[pkgtype.Of(n)] = k
+	}
+	return out
+}
 
 // Seed is the lists kista compiled in: what migration 0030 loads into a server's list, and the view
 // a process starts from.
@@ -54,16 +66,18 @@ func Seed() map[string]string {
 	return m
 }
 
-// Kind returns core or community for a reserved name, and "" for any other, as the process's view
-// holds it.
-func Kind(name string) string { return current.Load().kinds[name] }
+// Kind returns core or community for a reserved name of a type, and "" for any other, as the
+// process's view holds it.
+func Kind(packageType, name string) string {
+	return current.Load().kinds[pkgtype.Key{Type: packageType, Name: name}]
+}
 
 // Version is the version of the server's list the view holds (0: the seed).
 func Version() int64 { return current.Load().version }
 
 // Source is where the server's list is read (the store).
 type Source interface {
-	ReservedNames(ctx context.Context) (map[string]string, int64, error)
+	ReservedNames(ctx context.Context) (map[pkgtype.Key]string, int64, error)
 	ReservedVersion(ctx context.Context) (int64, error)
 }
 
@@ -100,10 +114,11 @@ func Sync(ctx context.Context, src Source) error {
 	return Ensure(ctx, src, v)
 }
 
-// SetForTest replaces the view (tests); the returned function restores it.
+// SetForTest replaces the view with DuckDB's names given (tests); the returned function restores
+// it.
 func SetForTest(kinds map[string]string, version int64) func() {
 	prev := current.Load()
-	current.Store(&set{kinds: kinds, version: version})
+	current.Store(&set{kinds: Keyed(kinds), version: version})
 	return func() { current.Store(prev) }
 }
 
@@ -123,5 +138,11 @@ func loadAliases() map[string]string {
 }
 
 // Canonical returns the name DuckDB installs an alias as (postgres: postgres_scanner), and "" for a
-// name that is not an alias (spec 0009).
-func Canonical(name string) string { return aliases[name] }
+// name that is not an alias (spec 0009). Aliases are DuckDB's: a package of another type has none
+// (spec 0034).
+func Canonical(packageType, name string) string {
+	if packageType != pkgtype.DuckDBExtension {
+		return ""
+	}
+	return aliases[name]
+}

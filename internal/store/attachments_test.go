@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
@@ -29,7 +30,7 @@ func TestAttachments(t *testing.T) {
 		// the body is held under its name only; a touch refreshes used_at
 		inTx(t, s, func(tx *store.Tx) error {
 			for name, want := range map[string]bool{"tresor": true, "other": false} {
-				if held, err := tx.TouchBuild(ctx, tn.ID, name, b.BodyHash); err != nil || held != want {
+				if held, err := tx.TouchBuild(ctx, tn.ID, pkgtype.DuckDBExtension, name, b.BodyHash); err != nil || held != want {
 					t.Errorf("%s: %v %v", name, held, err)
 				}
 			}
@@ -67,11 +68,11 @@ func TestAttachments(t *testing.T) {
 		if a := doc(store.KindNotes, store.AttachedByPublisher, ""); insert(&a) != nil {
 			t.Fatal("another origin has its own limit")
 		}
-		all, err := s.ExtensionAttachments(ctx, tn.ID, "tresor")
+		all, err := s.ExtensionAttachments(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor")
 		if err != nil || len(all) != store.MaxAttachmentHeads+2 {
 			t.Fatalf("listed %d %v", len(all), err)
 		}
-		if other, _ := s.ExtensionAttachments(ctx, tn.ID, "other"); len(other) != 0 {
+		if other, _ := s.ExtensionAttachments(ctx, tn.ID, pkgtype.DuckDBExtension, "other"); len(other) != 0 {
 			t.Fatal("another name lists them")
 		}
 
@@ -133,7 +134,7 @@ func TestAttachments(t *testing.T) {
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertRelease(ctx, &r, "publisher:acme/ci") })
 		inTx(t, s, func(tx *store.Tx) error {
 			for actor, want := range map[string]bool{"publisher:acme/ci": true, "publisher:acme/other": false} {
-				if ok, err := tx.PublishedBy(ctx, tn.ID, "tresor", b.BodyHash, actor); err != nil || ok != want {
+				if ok, err := tx.PublishedBy(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor", b.BodyHash, actor); err != nil || ok != want {
 					t.Errorf("%s: %v %v", actor, ok, err)
 				}
 			}

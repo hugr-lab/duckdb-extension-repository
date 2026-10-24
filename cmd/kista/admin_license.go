@@ -22,6 +22,7 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 	fs := flag.NewFlagSet("license", flag.ContinueOnError)
 	replace := fs.Bool("replace", false, "")
 	keyFile := fs.String("key", "", "")
+	ptype := fs.String("type", "", "") // spec 0034: the licence's package type ("": the default)
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
@@ -60,7 +61,7 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 		if len(pos) == 2 {
 			name = pos[1]
 		}
-		nks, err := ls.LicenseKeys(ctx, a.actor, pos[0], name)
+		nks, err := ls.LicenseKeys(ctx, a.actor, pos[0], *ptype, name)
 		if err != nil {
 			return err
 		}
@@ -76,7 +77,7 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 			}
 		})
 	case sub == "list" && len(pos) == 1:
-		vs, err := ls.List(ctx, a.actor, pos[0])
+		vs, err := ls.List(ctx, a.actor, pos[0], *ptype)
 		if err != nil {
 			return err
 		}
@@ -90,13 +91,13 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 			}
 		})
 	case sub == "show" && len(pos) == 2:
-		v, err := ls.Get(ctx, a.actor, pos[0], pos[1])
+		v, err := ls.Get(ctx, a.actor, pos[0], *ptype, pos[1])
 		if err != nil {
 			return err
 		}
 		show(v)
 	case sub == "token" && len(pos) == 2:
-		tok, err := ls.Token(ctx, a.actor, pos[0], pos[1])
+		tok, err := ls.Token(ctx, a.actor, pos[0], *ptype, pos[1])
 		if err != nil {
 			return err
 		}
@@ -110,7 +111,7 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 		if *replace {
 			expected = 0
 		}
-		v, err := ls.Import(ctx, a.actor, pos[0], tok, expected)
+		v, err := ls.Import(ctx, a.actor, pos[0], *ptype, tok, expected)
 		if err != nil {
 			// the rule, as the API names it (spec 0028: holder_mismatch)
 			var le *license.Error
@@ -121,12 +122,12 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 		}
 		a.logf("license import %s %s (%s, plan %s, until %s)", pos[0], v.Name, v.ID, v.Plan, v.ExpiresAt)
 	case sub == "remove" && len(pos) == 2:
-		if err := ls.Remove(ctx, a.actor, pos[0], pos[1], 0); err != nil {
+		if err := ls.Remove(ctx, a.actor, pos[0], *ptype, pos[1], 0); err != nil {
 			return err
 		}
 		a.logf("license remove %s %s", pos[0], pos[1])
 	case (sub == "public" || sub == "private") && len(pos) == 2:
-		if _, err := ls.SetVisibility(ctx, a.actor, pos[0], pos[1], map[string]string{"public": store.Public, "private": store.Private}[sub], 0); err != nil {
+		if _, err := ls.SetVisibility(ctx, a.actor, pos[0], *ptype, pos[1], map[string]string{"public": store.Public, "private": store.Private}[sub], 0); err != nil {
 			return err
 		}
 		a.logf("license %s %s %s", sub, pos[0], pos[1])

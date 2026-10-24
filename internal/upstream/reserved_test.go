@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -24,15 +25,15 @@ func TestIntakeReservesNames(t *testing.T) {
 		if r := en.syncCore(t); r.Counts[store.CellReleased] != 1 {
 			t.Fatalf("the run: %+v", r)
 		}
-		list, err := en.st.ListReservedNames(ctx, "kista_newcore")
+		list, err := en.st.ListReservedNames(ctx, pkgtype.DuckDBExtension, "kista_newcore")
 		if err != nil || len(list) != 1 || list[0].Kind != store.ReservedCore || !slices.Equal(list[0].Sources, []string{"upstream:acme/core"}) {
 			t.Fatalf("learned: %+v %v", list, err)
 		}
 		if v, _ := en.st.ReservedVersion(ctx); v != before+1 {
 			t.Fatalf("version %d after %d", v, before)
 		}
-		if err := reserved.Sync(ctx, en.st); err != nil || reserved.Kind("kista_newcore") != reserved.Core {
-			t.Fatalf("the view: %q %v", reserved.Kind("kista_newcore"), err)
+		if err := reserved.Sync(ctx, en.st); err != nil || reserved.Kind(pkgtype.DuckDBExtension, "kista_newcore") != reserved.Core {
+			t.Fatalf("the view: %q %v", reserved.Kind(pkgtype.DuckDBExtension, "kista_newcore"), err)
 		}
 	})
 }
@@ -52,7 +53,7 @@ func TestPullThroughFollowsReservations(t *testing.T) {
 		}
 		must(t, func() error {
 			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
-				if _, err := tx.ReserveName(ctx, "kista_later", store.ReservedCommunity, "admin:os:1:t"); err != nil {
+				if _, err := tx.ReserveName(ctx, pkgtype.DuckDBExtension, "kista_later", store.ReservedCommunity, "admin:os:1:t"); err != nil {
 					return err
 				}
 				return tx.BumpReservedVersion(ctx)
@@ -79,7 +80,7 @@ func TestTenantReservedUpstreams(t *testing.T) {
 		if ptID(en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_held")) != u.ID {
 			t.Fatal("a free name is not taken by *")
 		}
-		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "kista_held", "enterest"); err != nil {
+		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "", "kista_held", "enterest"); err != nil {
 			t.Fatal(err)
 		}
 		if ptID(en.snapshot(t, "prod").PullThroughFor("v2.0.0", "linux_amd64", "kista_held")) != "" {
@@ -89,7 +90,7 @@ func TestTenantReservedUpstreams(t *testing.T) {
 		en.repo.put("v2.0.0", "linux_amd64", "kista_queued", signed(t, en.key, cpp("1.0", "v2.0.0"), 9, "kista_queued_duckdb_cpp_init"))
 		p := en.puller()
 		p.Offer(release.Miss{TenantID: u.TenantID, UpstreamID: u.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "kista_queued"})
-		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "kista_queued", "enterest"); err != nil {
+		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "", "kista_queued", "enterest"); err != nil {
 			t.Fatal(err)
 		}
 		p.Drain(ctx)

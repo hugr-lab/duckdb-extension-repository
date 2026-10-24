@@ -33,7 +33,7 @@ func TestLicenseManager(t *testing.T) {
 
 	// tenant other gets a live build of tresor too; each tenant a bundle-mode upstream (the relay's
 	// routes answer its administrators, not 404)
-	if _, err := m.env.ten.CreateChannel(ctx, admin, "other", "prod", store.ChannelSigned); err != nil {
+	if _, err := m.env.ten.CreateChannel(ctx, admin, "other", "prod", store.ChannelSigned, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.env.ten.SetChannelVersions(ctx, admin, "other", "prod", []string{"v2.0.0"}, nil); err != nil {

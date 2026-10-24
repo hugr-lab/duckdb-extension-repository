@@ -21,6 +21,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -199,6 +200,7 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 	if err != nil {
 		return res, err
 	}
+	channels = store.KnownChannels(channels) // spec 0034: a type this binary does not know is exported by none
 	now := s.Store.Now().UTC()
 	snaps := &release.Snapshots{Store: s.Store}
 	x := &exporter{s: s, t: t, now: now, snaps: snaps, ups: map[string]*xupstream{}, files: map[string]*xfile{}}
@@ -397,7 +399,7 @@ func (s *Service) exportable(ctx context.Context, t store.Tenant, plan *bundle.P
 		res.LicenseNote = "licensing is off here: none carried"
 		return nil, nil
 	}
-	held, err := s.Licenses.Exportable(ctx, t.ID, plan.LicenseHolder)
+	held, err := s.Licenses.Exportable(ctx, t.ID, pkgtype.DuckDBExtension, plan.LicenseHolder) // a bundle's sources are DuckDB's
 	if errors.Is(err, licenses.ErrOff) {
 		res.LicenseNote = "licensing is off here: none carried"
 		return nil, nil

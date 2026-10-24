@@ -90,8 +90,9 @@ type UsageCounter interface {
 // none), and all of them.
 type Licenses interface {
 	Enabled() bool // licensing is on (licenses.enabled)
-	Serve(ctx context.Context, tenantID, name string) (store.License, bool, error)
-	List(ctx context.Context, tenantID string) ([]store.License, error)
+	// Serve and List read a channel's type's licences (spec 0034: a licence is served only by a channel of its type).
+	Serve(ctx context.Context, tenantID, packageType, name string) (store.License, bool, error)
+	List(ctx context.Context, tenantID, packageType string) ([]store.License, error)
 }
 
 // Metrics records downloads and request durations.
@@ -652,7 +653,9 @@ func (h *Handler) identify(r *http.Request, sc store.ServeChannel, label string)
 		r = r.WithContext(audit.WithActorName(r.Context(), n))
 	}
 	held := auth.HeldBy(id.Principals, ta)
-	return func(name string) bool { return auth.Allows(held, sc.Channel.ID, name, store.VerbInstall) }, actor, r
+	return func(name string) bool {
+		return auth.Allows(held, sc.Channel.ID, sc.Channel.PackageType, name, store.VerbInstall)
+	}, actor, r
 }
 
 func (h *Handler) tenantAuth(ctx context.Context, t store.Tenant) (store.TenantAuth, error) {

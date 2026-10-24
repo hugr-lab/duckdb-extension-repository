@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -10,28 +11,30 @@ import (
 // Spec 0033: a tenant's catalogue, and placing its builds into a channel by hand.
 
 type catalogueEntryJSON struct {
-	Source   string            `json:"source"`
-	Name     string            `json:"name"`
-	Versions []string          `json:"versions"` // newest first
-	Rules    map[string]string `json:"rules"`    // the channels whose rule takes the source, with its mode
+	PackageType string            `json:"package_type,omitempty"` // spec 0034: omitted when it is the default
+	Source      string            `json:"source"`
+	Name        string            `json:"name"`
+	Versions    []string          `json:"versions"` // newest first
+	Rules       map[string]string `json:"rules"`    // the channels whose rule takes the source, with its mode
 }
 
 func (h *Handler) catalogue(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
 	q := r.URL.Query()
-	es, err := h.o.Releases.Catalogue(r.Context(), a, p["t"], q.Get("source"), q.Get("name"))
+	es, err := h.o.Releases.Catalogue(r.Context(), a, p["t"], reqType(r), q.Get("source"), q.Get("name"))
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
 	out := []catalogueEntryJSON{}
 	for _, e := range es {
-		out = append(out, catalogueEntryJSON{Source: e.Source, Name: e.Name, Versions: e.Versions, Rules: e.Rules})
+		out = append(out, catalogueEntryJSON{PackageType: shownType(reqType(r)), Source: e.Source, Name: e.Name, Versions: e.Versions, Rules: e.Rules})
 	}
 	reply(w, r, http.StatusOK, map[string]any{"entries": out}, "", noStore)
 }
 
 type catalogueBuildJSON struct {
+	PackageType   string         `json:"package_type,omitempty"` // spec 0034: omitted when it is the default
 	ID            string         `json:"id"`
 	Platform      string         `json:"platform"`
 	Slot          string         `json:"slot"`
@@ -48,7 +51,7 @@ type catalogueBuildJSON struct {
 
 func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	vs, err := h.o.Releases.CatalogueVersions(r.Context(), a, p["t"], p["source"], p["ext"])
+	vs, err := h.o.Releases.CatalogueVersions(r.Context(), a, p["t"], reqType(r), p["source"], p["ext"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -65,7 +68,11 @@ func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c calle
 		}
 		out = append(out, vj)
 	}
-	reply(w, r, http.StatusOK, map[string]any{"source": p["source"], "name": p["ext"], "versions": out}, "", noStore)
+	ans := map[string]any{"source": p["source"], "name": p["ext"], "versions": out}
+	if t := shownType(reqType(r)); t != "" {
+		ans["package_type"] = t
+	}
+	reply(w, r, http.StatusOK, ans, "", noStore)
 }
 
 func (h *Handler) placeRelease(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -74,11 +81,18 @@ func (h *Handler) placeRelease(w http.ResponseWriter, r *http.Request, c caller,
 		Version    string `json:"version"`
 		Visibility string `json:"visibility"`
 		Current    *bool  `json:"current"`
+		// PackageType is the build's type ("": the channel's); another type than the channel's is
+		// refused (spec 0034: 409)
+		PackageType string `json:"package_type"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
-	o := release.PlaceOptions{Source: in.Source, Version: in.Version}
+	if in.PackageType != "" && !pkgtype.Known(in.PackageType) {
+		problem(w, http.StatusBadRequest, typeInvalid, "package_type is a package type this server knows")
+		return
+	}
+	o := release.PlaceOptions{Source: in.Source, Version: in.Version, PackageType: in.PackageType}
 	switch in.Visibility {
 	case "":
 	case store.Private:
@@ -107,7 +121,7 @@ func (h *Handler) publishToCatalogue(w http.ResponseWriter, r *http.Request, c c
 	defer u.done()
 	a, _ := c.actor()
 	b, existed, err := h.o.Releases.AddToCatalogue(r.Context(), a, p["t"], u.body, release.AddOptions{
-		Name: p["ext"], Private: u.private, NoWait: true,
+		Name: p["ext"], PackageType: reqType(r), Private: u.private, NoWait: true,
 		Publish: &release.Publication{Version: u.version, Platform: u.platform, Provenance: provenance(a, c), KeySources: keySources(c),
 			Statement: c.statement(), Signature: c.signature()},
 	})
@@ -132,7 +146,7 @@ func (h *Handler) purgeEntry(w http.ResponseWriter, r *http.Request, c caller, p
 }
 
 func catalogueBuildOf(b store.Build, placed []store.Placed) catalogueBuildJSON {
-	bj := catalogueBuildJSON{ID: b.ID, Platform: b.Platform, Slot: b.Slot(), ABI: b.ABI, DuckDBVersion: b.DuckDBVersion,
+	bj := catalogueBuildJSON{PackageType: shownType(b.PackageType), ID: b.ID, Platform: b.Platform, Slot: b.Slot(), ABI: b.ABI, DuckDBVersion: b.DuckDBVersion,
 		BodyHash: b.BodyHash, Visibility: b.Visibility, Origin: b.Origin, Checked: b.Checked, CreatedAt: timeOf(b.CreatedAt), Placed: placed}
 	if b.CAPI != nil {
 		bj.CAPI = b.CAPI.String()

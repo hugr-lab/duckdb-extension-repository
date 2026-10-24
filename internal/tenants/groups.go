@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
+	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -73,8 +76,12 @@ func (s *AuthAdmin) CreatePackageGroup(ctx context.Context, a authz.Actor, tenan
 
 // ListPackageGroups lists the groups the caller may read, by name: every group for a tenant
 // administrator, those it holds admin on otherwise. extension (a tenant administrator's) keeps the
-// groups holding that name. tenantAdmin says whether the caller administers the tenant.
-func (s *AuthAdmin) ListPackageGroups(ctx context.Context, a authz.Actor, tenant, extension string) (gs []store.PackageGroup, tenantAdmin bool, err error) {
+// groups holding that package, of packageType ("": the default). tenantAdmin says whether the
+// caller administers the tenant.
+func (s *AuthAdmin) ListPackageGroups(ctx context.Context, a authz.Actor, tenant, packageType, extension string) (gs []store.PackageGroup, tenantAdmin bool, err error) {
+	if packageType == "" {
+		packageType = pkgtype.Default
+	}
 	if tenantAdmin, err = s.allowed(ctx, a, authz.Resource{Tenant: tenant}); err != nil {
 		return nil, false, err
 	}
@@ -93,7 +100,7 @@ func (s *AuthAdmin) ListPackageGroups(ctx context.Context, a authz.Actor, tenant
 		}
 		return nil, false, err
 	}
-	all, err := s.Store.ListPackageGroups(ctx, t.ID, extension)
+	all, err := s.Store.ListPackageGroups(ctx, t.ID, packageType, extension)
 	if err != nil || tenantAdmin {
 		return all, tenantAdmin, err
 	}
@@ -182,14 +189,28 @@ func (s *AuthAdmin) RemovePackageGroup(ctx context.Context, a authz.Actor, tenan
 		if err != nil {
 			return err
 		}
-		for i := 0; i < len(ms); i += MaxMemberChange {
-			var names []string
-			for _, m := range ms[i:min(i+MaxMemberChange, len(ms))] {
-				names = append(names, m.Name)
+		// one type per event, as a member change (spec 0034): the default type's first, then the
+		// others by type (every member leaves, a type this binary does not know included)
+		byType := map[string][]string{}
+		for _, m := range ms {
+			byType[m.PackageType] = append(byType[m.PackageType], m.Name)
+		}
+		types := slices.SortedFunc(maps.Keys(byType), func(x, y string) int {
+			if (x == pkgtype.Default) != (y == pkgtype.Default) {
+				if x == pkgtype.Default {
+					return -1
+				}
+				return 1
 			}
-			if err := tx.Event(ctx, t.ID, a.String(), "extension_group.members", "extension-group:"+g.Name,
-				map[string]any{"added": []string{}, "removed": names}); err != nil {
-				return err
+			return strings.Compare(x, y)
+		})
+		for _, typ := range types {
+			names := byType[typ]
+			for i := 0; i < len(names); i += MaxMemberChange {
+				f := map[string]any{"added": []string{}, "removed": names[i:min(i+MaxMemberChange, len(names))]}
+				if err := tx.Event(ctx, t.ID, a.String(), "extension_group.members", "extension-group:"+g.Name, typedFields(f, typ)); err != nil {
+					return err
+				}
 			}
 		}
 		if err := tx.DeletePackageGroup(ctx, g, expected); err != nil {
@@ -200,13 +221,17 @@ func (s *AuthAdmin) RemovePackageGroup(ctx context.Context, a authz.Actor, tenan
 	})
 }
 
-// ChangePackageGroupMembers adds and removes names (together 1 to MaxMemberChange), skipping
-// names already present or not members, and answers what changed. Only a tenant administrator
-// changes members: a group's administrator would widen their own rights.
-func (s *AuthAdmin) ChangePackageGroupMembers(ctx context.Context, a authz.Actor, tenant, name string, add, remove []string) (added, removed []string, err error) {
+// ChangePackageGroupMembers adds and removes names of one package type ("": the default; spec 0034:
+// members are (type, name)), together 1 to MaxMemberChange, skipping names already present or not
+// members, and answers what changed. Only a tenant administrator changes members: a group's
+// administrator would widen their own rights.
+func (s *AuthAdmin) ChangePackageGroupMembers(ctx context.Context, a authz.Actor, tenant, name, packageType string, add, remove []string) (added, removed []string, err error) {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return nil, nil, err
+	}
+	if packageType, err = pkgtype.Parse(packageType); err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", store.ErrInvalid, err)
 	}
 	if n := len(add) + len(remove); n == 0 || n > MaxMemberChange {
 		return nil, nil, fmt.Errorf("%w: a member change names 1 to %d extensions", store.ErrInvalid, MaxMemberChange)
@@ -242,14 +267,33 @@ func (s *AuthAdmin) ChangePackageGroupMembers(ctx context.Context, a authz.Actor
 				return err
 			}
 		}
-		if added, removed, err = tx.ChangeGroupMembers(ctx, g, add, remove, a.String()); err != nil {
+		keys := func(ns []string) []pkgtype.Key {
+			out := make([]pkgtype.Key, len(ns))
+			for i, n := range ns {
+				out[i] = pkgtype.Key{Type: packageType, Name: n}
+			}
+			return out
+		}
+		names := func(ks []pkgtype.Key) []string {
+			var out []string
+			for _, k := range ks {
+				out = append(out, k.Name)
+			}
+			return out
+		}
+		ka, kr, err := tx.ChangeGroupMembers(ctx, g, keys(add), keys(remove), a.String())
+		if err != nil {
 			return err
 		}
+		added, removed = names(ka), names(kr)
 		if len(added)+len(removed) == 0 {
 			return nil
 		}
-		return tx.Event(ctx, t.ID, a.String(), "extension_group.members", "extension-group:"+g.Name,
-			map[string]any{"added": nonNilNames(added), "removed": nonNilNames(removed)})
+		f := map[string]any{"added": nonNilNames(added), "removed": nonNilNames(removed)}
+		if packageType != pkgtype.Default { // spec 0034: when it is not the default
+			f["package_type"] = packageType
+		}
+		return tx.Event(ctx, t.ID, a.String(), "extension_group.members", "extension-group:"+g.Name, f)
 	})
 	return added, removed, err
 }

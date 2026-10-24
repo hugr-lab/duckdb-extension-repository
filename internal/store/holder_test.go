@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
@@ -75,7 +76,7 @@ func TestTenantHolder(t *testing.T) {
 		if !errors.Is(err, store.ErrHolderMismatch) || !errors.As(err, &hm) || hm.Expected != "org-1" || hm.Given != "org-2" {
 			t.Fatalf("another holder's licence: %v", err)
 		}
-		if _, err := s.GetLicense(ctx, tn.ID, "tresor"); !errors.Is(err, store.ErrNotFound) {
+		if _, err := s.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("a refused licence was stored: %v", err)
 		}
 		// the comparison is exact: no case folding, no trimming
@@ -140,7 +141,7 @@ func TestTenantHolder(t *testing.T) {
 			t.Fatalf("set, read back: %+v", got)
 		}
 		// a replacement is a store too
-		l, err := s.GetLicense(ctx, tn.ID, "httpfs")
+		l, err := s.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "httpfs")
 		if err != nil {
 			t.Fatal(err)
 		}

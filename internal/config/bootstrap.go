@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream/upspec"
@@ -124,6 +125,10 @@ type BootstrapGrant struct {
 	Channel        string   `yaml:"channel" json:"channel,omitempty"`
 	Extension      string   `yaml:"extension" json:"extension,omitempty"`
 	ExtensionGroup string   `yaml:"extension_group" json:"extension_group,omitempty"`
+	// PackageType is the grant's package type (spec 0034): "" is the default for its shape (an
+	// extension: duckdb_extension; none: "*", every type). Never filled in by Defaulted, and left out
+	// of Key when it is that default, so a section applied before it keeps its digest and its plan.
+	PackageType string `yaml:"package_type" json:"package_type,omitempty"`
 }
 
 // ScopeList is the console's scopes (commas or spaces), or DefaultConsoleScopes, as issuer console
@@ -149,7 +154,19 @@ func (g BootstrapGrant) Key() string {
 	case g.Extension != "":
 		k += " on */" + g.Extension
 	}
+	if t := g.shownType(); t != "" {
+		k += " of " + t
+	}
 	return k
+}
+
+// shownType is the grant's package type when it is not the default for its shape ("" when it is).
+func (g BootstrapGrant) shownType() string {
+	switch {
+	case g.PackageType == "", g.Extension != "" && g.PackageType == pkgtype.Default, g.Extension == "" && g.PackageType == pkgtype.Any:
+		return ""
+	}
+	return g.PackageType
 }
 
 // Defaulted is the section with its defaults filled in: the tenant's domain and the console's
@@ -372,10 +389,24 @@ func validateBootstrap(bad func(string, ...any), c Config) {
 		if g.ExtensionGroup != "" {
 			bad("%s: the bootstrap makes no extension groups; grant on one through the API", where)
 		}
+		// the bootstrap's channels are duckdb_extension's: a grant on one of that type is "*" there
+		// (spec 0034: the store holds it so)
+		same := g
+		if same.Channel != "" && same.Extension == "" && same.PackageType == pkgtype.DuckDBExtension {
+			same.PackageType = ""
+		}
+		switch t := g.PackageType; {
+		case t == pkgtype.Any && g.Extension != "":
+			bad("%s.package_type: a grant on an extension names its type, never \"*\"", where)
+		case t != "" && t != pkgtype.Any && !pkgtype.Known(t):
+			bad("%s.package_type: %q is not a package type this server knows (%s)", where, t, strings.Join(pkgtype.Types(), ", "))
+		case same.PackageType != "" && same.PackageType != pkgtype.Any && slices.Contains(g.Verbs, store.VerbAudit):
+			bad("%s: audit is granted on the tenant of every package type, never of one (no package_type)", where)
+		}
 		if g.Channel != "" && !channels[g.Channel] {
 			bad("%s.channel %q is none of bootstrap.channels", where, g.Channel)
 		}
-		once("grant", g.Key())
+		once("grant", same.Key())
 	}
 	validateBootstrapUpstreams(bad, c, once)
 }

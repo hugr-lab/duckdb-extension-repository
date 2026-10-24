@@ -11,6 +11,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -57,14 +58,14 @@ func (s *Service) allowed(ctx context.Context, a authz.Actor, verb authz.Verb, r
 // administers reports whether an actor administers ext's documents: a tenant administrator, or an
 // administrator of the extension whose grant has no channel (an attachment is shown in every
 // channel, so a right on one must not change what another shows).
-func (s *Service) administers(ctx context.Context, a authz.Actor, tenant, ext string) (bool, error) {
-	return s.allowed(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Package: ext})
+func (s *Service) administers(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key) (bool, error) {
+	return s.allowed(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Package: pkg.Name, PackageType: pkg.Type})
 }
 
 // reads reports whether an actor reads every document of ext: its administrators, and the
 // tenant's auditors.
-func (s *Service) reads(ctx context.Context, a authz.Actor, tenant, ext string) (bool, error) {
-	if ok, err := s.administers(ctx, a, tenant, ext); ok || err != nil {
+func (s *Service) reads(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key) (bool, error) {
+	if ok, err := s.administers(ctx, a, tenant, pkg); ok || err != nil {
 		return ok, err
 	}
 	return s.allowed(ctx, a, authz.VerbAudit, authz.Resource{Tenant: tenant})
@@ -79,18 +80,18 @@ type AttachInput struct {
 // Attach stores a document about a body of ext. Administrators (tenant-wide, or of the extension
 // without a channel) attach any kind as the tenant; a holder of publish on the extension without a
 // channel attaches an SBOM or provenance, as itself, for a body it published.
-func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant, ext string, in AttachInput) (store.Attachment, error) {
+func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key, in AttachInput) (store.Attachment, error) {
 	origin := store.AttachedByTenant
-	admin, err := s.administers(ctx, a, tenant, ext)
+	admin, err := s.administers(ctx, a, tenant, pkg)
 	if err != nil {
 		return store.Attachment{}, err
 	}
 	if !admin {
-		kind, err := s.Store.ReservedFor(ctx, tenant, ext) // spec 0030: DuckDB's, the tenant's, its upstreams'
+		kind, err := s.Store.ReservedFor(ctx, tenant, pkg.Type, pkg.Name) // spec 0030: DuckDB's, the tenant's, its upstreams'
 		if err != nil {
 			return store.Attachment{}, err
 		}
-		ok, err := s.allowed(ctx, a, authz.VerbPublish, authz.Resource{Tenant: tenant, Package: ext, Reserved: kind != ""})
+		ok, err := s.allowed(ctx, a, authz.VerbPublish, authz.Resource{Tenant: tenant, Package: pkg.Name, PackageType: pkg.Type, Reserved: kind != ""})
 		if err != nil {
 			return store.Attachment{}, err
 		}
@@ -102,7 +103,7 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant, ext string,
 			return store.Attachment{}, fmt.Errorf("%w: a publisher attaches an SBOM or provenance", store.ErrInvalid)
 		}
 	}
-	if err := release.ValidName(ext); err != nil {
+	if err := release.ValidName(pkg.Name); err != nil {
 		return store.Attachment{}, err
 	}
 	if !hexHash(in.BodyHash) {
@@ -129,7 +130,7 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant, ext string,
 	if in.Supersedes != "" {
 		// one of ext's documents, of the same origin, and a publisher's own: one answer for every
 		// other case, so the check tells nothing of documents elsewhere
-		prev, err := s.ofExtension(ctx, t, ext, in.Supersedes)
+		prev, err := s.ofExtension(ctx, t, pkg, in.Supersedes)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return store.Attachment{}, err
 		}
@@ -145,15 +146,15 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant, ext string,
 		return store.Attachment{}, err
 	}
 	err = s.Store.InTenantTx(ctx, t.ID, []string{lock(t)}, func(tx *store.Tx) error {
-		held, err := tx.TouchBuild(ctx, t.ID, ext, in.BodyHash)
+		held, err := tx.TouchBuild(ctx, t.ID, pkg.Type, pkg.Name, in.BodyHash)
 		if err != nil {
 			return err
 		}
 		if !held {
-			return fmt.Errorf("%w: body %s of %s", store.ErrNotFound, in.BodyHash, ext)
+			return fmt.Errorf("%w: body %s of %s", store.ErrNotFound, in.BodyHash, pkg.Name)
 		}
 		if origin == store.AttachedByPublisher {
-			ok, err := tx.PublishedBy(ctx, t.ID, ext, in.BodyHash, a.String())
+			ok, err := tx.PublishedBy(ctx, t.ID, pkg.Type, pkg.Name, in.BodyHash, a.String())
 			if err != nil {
 				return err
 			}
@@ -164,7 +165,7 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant, ext string,
 		if err := tx.InsertAttachment(ctx, &rec); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "attachment.add", subject(ext, rec.ID),
+		return tx.Event(ctx, t.ID, a.String(), "attachment.add", subject(pkg.Name, rec.ID),
 			map[string]any{"body_hash": rec.BodyHash, "kind": rec.Kind, "origin": rec.Origin, "size": rec.Size})
 	})
 	if err != nil {
@@ -196,16 +197,16 @@ func hexHash(s string) bool {
 
 // List answers every document of ext's bodies (management): its administrators and the tenant's
 // auditors.
-func (s *Service) List(ctx context.Context, a authz.Actor, tenant, ext string) ([]store.Attachment, error) {
-	t, err := s.reader(ctx, a, tenant, ext)
+func (s *Service) List(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key) ([]store.Attachment, error) {
+	t, err := s.reader(ctx, a, tenant, pkg)
 	if err != nil {
 		return nil, err
 	}
-	return s.Store.ExtensionAttachments(ctx, t.ID, ext)
+	return s.Store.ExtensionAttachments(ctx, t.ID, pkg.Type, pkg.Name)
 }
 
-func (s *Service) reader(ctx context.Context, a authz.Actor, tenant, ext string) (store.Tenant, error) {
-	ok, err := s.reads(ctx, a, tenant, ext)
+func (s *Service) reader(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key) (store.Tenant, error) {
+	ok, err := s.reads(ctx, a, tenant, pkg)
 	if err != nil {
 		return store.Tenant{}, err
 	}
@@ -216,18 +217,18 @@ func (s *Service) reader(ctx context.Context, a authz.Actor, tenant, ext string)
 }
 
 // Get answers one document of ext's bodies (management).
-func (s *Service) Get(ctx context.Context, a authz.Actor, tenant, ext, id string) (store.Attachment, error) {
-	t, err := s.reader(ctx, a, tenant, ext)
+func (s *Service) Get(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key, id string) (store.Attachment, error) {
+	t, err := s.reader(ctx, a, tenant, pkg)
 	if err != nil {
 		return store.Attachment{}, err
 	}
-	return s.ofExtension(ctx, t, ext, id)
+	return s.ofExtension(ctx, t, pkg, id)
 }
 
 // ofExtension reads a document and checks it is one of ext's bodies' (a body under two names is two
 // Builds: its documents are each name's).
-func (s *Service) ofExtension(ctx context.Context, t store.Tenant, ext, id string) (store.Attachment, error) {
-	all, err := s.Store.ExtensionAttachments(ctx, t.ID, ext)
+func (s *Service) ofExtension(ctx context.Context, t store.Tenant, pkg pkgtype.Key, id string) (store.Attachment, error) {
+	all, err := s.Store.ExtensionAttachments(ctx, t.ID, pkg.Type, pkg.Name)
 	if err != nil {
 		return store.Attachment{}, err
 	}
@@ -241,12 +242,12 @@ func (s *Service) ofExtension(ctx context.Context, t store.Tenant, ext, id strin
 
 // Content hands a document and its content, checked against its record, to use (the content is
 // held in memory until use returns).
-func (s *Service) Content(ctx context.Context, a authz.Actor, tenant, ext, id string, use func(store.Attachment, []byte) error) error {
-	t, err := s.reader(ctx, a, tenant, ext)
+func (s *Service) Content(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key, id string, use func(store.Attachment, []byte) error) error {
+	t, err := s.reader(ctx, a, tenant, pkg)
 	if err != nil {
 		return err
 	}
-	rec, err := s.ofExtension(ctx, t, ext, id)
+	rec, err := s.ofExtension(ctx, t, pkg, id)
 	if err != nil {
 		return err
 	}
@@ -261,7 +262,7 @@ func (s *Service) ReadContent(ctx context.Context, t store.Tenant, rec store.Att
 
 // SetFlags changes a document's visibility and, for the feed (1b), whether it is offered: a tenant
 // administrator's (expected: its version, 0 for any).
-func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant, ext, id string, visibility *string, feedable *bool, expected int64) (store.Attachment, error) {
+func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key, id string, visibility *string, feedable *bool, expected int64) (store.Attachment, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant}); err != nil {
 		return store.Attachment{}, err
 	}
@@ -269,7 +270,7 @@ func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant, ext, id s
 	if err != nil {
 		return store.Attachment{}, err
 	}
-	rec, err := s.ofExtension(ctx, t, ext, id)
+	rec, err := s.ofExtension(ctx, t, pkg, id)
 	if err != nil {
 		return store.Attachment{}, err
 	}
@@ -329,7 +330,7 @@ func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant, ext, id s
 		if seq != 0 {
 			data["statement"] = seq
 		}
-		return tx.Event(ctx, t.ID, a.String(), "attachment.change", subject(ext, cur.ID), data)
+		return tx.Event(ctx, t.ID, a.String(), "attachment.change", subject(pkg.Name, cur.ID), data)
 	})
 	if err != nil {
 		return store.Attachment{}, err
@@ -339,8 +340,8 @@ func (s *Service) SetFlags(ctx context.Context, a authz.Actor, tenant, ext, id s
 
 // Remove removes a document: a tenant administrator's, or an administrator of the extension without
 // a channel.
-func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, ext, id string) error {
-	ok, err := s.administers(ctx, a, tenant, ext)
+func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key, id string) error {
+	ok, err := s.administers(ctx, a, tenant, pkg)
 	if err != nil {
 		return err
 	}
@@ -351,11 +352,11 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, ext, id str
 	if err != nil {
 		return err
 	}
-	rec, err := s.ofExtension(ctx, t, ext, id)
+	rec, err := s.ofExtension(ctx, t, pkg, id)
 	if err != nil {
 		return err
 	}
-	return s.remove(ctx, a, t, subject(ext, rec.ID), rec)
+	return s.remove(ctx, a, t, subject(pkg.Name, rec.ID), rec)
 }
 
 func (s *Service) remove(ctx context.Context, a authz.Actor, t store.Tenant, subj string, rec store.Attachment) error {

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 )
 
 // Upstream kinds, modes, states and cell outcomes (spec 0009).
@@ -447,21 +449,22 @@ func (t *Tx) deleteOne(ctx context.Context, q, what string, args ...any) error {
 	return nil
 }
 
-// UpstreamProvides reports whether an upstream of the tenant lists name (spec 0009: the name is
-// reserved in the tenant).
-func (t *Tx) UpstreamProvides(ctx context.Context, tenantID, name string) (bool, error) {
+// UpstreamProvides reports whether an upstream of the tenant lists a package (type, name) (spec
+// 0009: the name is reserved in the tenant; spec 0034: an upstream's names are of its home
+// channel's type).
+func (t *Tx) UpstreamProvides(ctx context.Context, tenantID, packageType, name string) (bool, error) {
 	var n int
 	err := t.queryRow(ctx, `SELECT COUNT(*) FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
-WHERE u.tenant_id = ? AND e.name = ?`, tenantID, name).Scan(&n)
+JOIN channels c ON c.id = u.channel_id WHERE u.tenant_id = ? AND c.package_type = ? AND e.name = ?`, tenantID, packageType, name).Scan(&n)
 	return n > 0, err
 }
 
 // UpstreamProvides is Tx.UpstreamProvides outside a transaction.
-func (s *Store) UpstreamProvides(ctx context.Context, tenantID, name string) (bool, error) {
+func (s *Store) UpstreamProvides(ctx context.Context, tenantID, packageType, name string) (bool, error) {
 	var ok bool
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		var err error
-		ok, err = tx.UpstreamProvides(ctx, tenantID, name)
+		ok, err = tx.UpstreamProvides(ctx, tenantID, packageType, name)
 		return err
 	})
 	return ok, err
@@ -713,7 +716,8 @@ func (s *Store) ListShadows(ctx context.Context, tenantID string) ([]Shadow, err
 // hash and original signature only), for the shadow backfill (spec 0009).
 func (t *Tx) LiveSignedBuilds(ctx context.Context, tenantID string) ([]Build, error) {
 	rows, err := t.query(ctx, `SELECT DISTINCT b.name, b.body_hash, b.origin_signature FROM releases r JOIN builds b ON b.id = r.build_id
-JOIN channels c ON c.id = r.channel_id WHERE r.tenant_id = ? AND c.kind = ? AND r.state <> ?`, tenantID, ChannelSigned, ReleaseYanked)
+JOIN channels c ON c.id = r.channel_id WHERE r.tenant_id = ? AND c.kind = ? AND c.package_type = ? AND r.state <> ?`,
+		tenantID, ChannelSigned, pkgtype.DuckDBExtension, ReleaseYanked) // shadows are DuckDB's (spec 0034)
 	if err != nil {
 		return nil, err
 	}

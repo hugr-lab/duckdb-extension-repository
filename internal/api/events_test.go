@@ -267,7 +267,7 @@ func TestStatistics(t *testing.T) {
 	if _, err := cli.CreatePackageGroup(ctx, admin, "acme", "platform", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := cli.ChangePackageGroupMembers(ctx, admin, "acme", "platform", []string{"acl"}, nil); err != nil {
+	if _, _, err := cli.ChangePackageGroupMembers(ctx, admin, "acme", "platform", "", []string{"acl"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, g := range []struct{ sub, verb string }{{"gina", "admin"}, {"ina", "install"}} {
@@ -298,7 +298,7 @@ func TestStatistics(t *testing.T) {
 		for i := range tenants.MaxMemberChange {
 			batch = append(batch, fmt.Sprintf("n%04d", b*tenants.MaxMemberChange+i))
 		}
-		if _, _, err := cli.ChangePackageGroupMembers(ctx, admin, "acme", "bulk", batch, nil); err != nil {
+		if _, _, err := cli.ChangePackageGroupMembers(ctx, admin, "acme", "bulk", "", batch, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

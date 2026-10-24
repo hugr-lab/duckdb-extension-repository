@@ -10,6 +10,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -38,12 +39,14 @@ type statsScope struct {
 	cache         map[[2]string]bool
 	// the tenant's reserved names and its upstreams' (spec 0030), beside DuckDB's
 	tenantReserved, provided map[string]bool
+	// typ is the package type asked about (spec 0034: the extension dimension is (type, name))
+	typ string
 }
 
 // reservedName reports whether a name is reserved for the tenant (spec 0030): DuckDB's, the
 // tenant's, or an upstream's.
 func (s *statsScope) reservedName(ext string) bool {
-	return reserved.Kind(ext) != "" || s.tenantReserved[ext] || s.provided[ext]
+	return reserved.Kind(s.typ, ext) != "" || s.tenantReserved[ext] || s.provided[ext]
 }
 
 func (s *statsScope) allow(channel, ext string) bool {
@@ -54,7 +57,7 @@ func (s *statsScope) allow(channel, ext string) bool {
 	if v, ok := s.cache[k]; ok {
 		return v
 	}
-	res := authz.Resource{Tenant: s.c.tenant.Name, Channel: channel, Package: ext, Reserved: s.reservedName(ext)}
+	res := authz.Resource{Tenant: s.c.tenant.Name, Channel: channel, Package: ext, PackageType: s.typ, Reserved: s.reservedName(ext)}
 	v := slices.ContainsFunc(statsVerbs, func(verb string) bool { return authz.Covers(s.held, verb, res) })
 	s.cache[k] = v
 	return v
@@ -90,8 +93,18 @@ func (s *statsScope) mayAsk(channel, ext string) bool {
 		if reservedExt && !slices.Contains(g.Verbs, store.VerbAdmin) {
 			return false
 		}
-		return inChannel(g) && (ext == "" && len(g.Members) > 0 || g.Members[ext])
+		return inChannel(g) && (ext == "" && s.hasMembers(g) || g.Members[pkgtype.Key{Type: s.typ, Name: ext}])
 	})
+}
+
+// hasMembers reports whether a group grant's group holds a package of the scope's type.
+func (s *statsScope) hasMembers(g store.Grant) bool {
+	for k := range g.Members {
+		if k.Type == s.typ {
+			return true
+		}
+	}
+	return false
 }
 
 // maxStatsNames is the most names a scope gives the store to read (a name IN (…) list stays under
@@ -114,7 +127,9 @@ func (s *statsScope) names() []string {
 	}
 	for _, g := range groups {
 		for n := range g.Members {
-			set[n] = true
+			if n.Type == s.typ {
+				set[n.Name] = true
+			}
 		}
 	}
 	if len(set) > maxStatsNames {
@@ -128,16 +143,16 @@ func (s *statsScope) names() []string {
 	return out
 }
 
-// statsScopeOf gives a caller's statistics scope (tenantPrincipal admits server administrators and
-// the tenant's principals); false when it may read none.
-func statsScopeOf(c caller) (*statsScope, bool) {
+// statsScopeOf gives a caller's statistics scope of a package type (tenantPrincipal admits server
+// administrators and the tenant's principals); false when it may read none.
+func statsScopeOf(c caller, packageType string) (*statsScope, bool) {
 	held := c.held()
 	if c.admin || authz.Covers(held, store.VerbAudit, authz.Resource{Tenant: c.tenant.Name}) {
-		return &statsScope{all: true}, true
+		return &statsScope{all: true, typ: packageType}, true
 	}
-	s := &statsScope{c: c, held: held, cache: map[[2]string]bool{}}
+	s := &statsScope{c: c, held: held, cache: map[[2]string]bool{}, typ: packageType}
 	for _, g := range held.Grants {
-		if statsGrant(g) {
+		if statsGrant(g) && g.OfType(packageType) { // spec 0034: a grant of another type gives none of these
 			s.plain = append(s.plain, g)
 		}
 	}
@@ -163,11 +178,12 @@ func (h *Handler) statsRequestOf(w http.ResponseWriter, r *http.Request, c calle
 		h.fail(w, err)
 		return statsRequest{}, false
 	}
-	scope, ok := statsScopeOf(c)
+	typ := reqType(r)
+	scope, ok := statsScopeOf(c, typ)
 	if ok && !scope.all {
 		var err error
-		if scope.tenantReserved, err = h.o.Store.TenantReservedSet(r.Context(), c.tenant.ID); err == nil {
-			scope.provided, err = h.o.Store.ProvidedNames(r.Context(), c.tenant.ID)
+		if scope.tenantReserved, err = h.o.Store.TenantReservedSet(r.Context(), c.tenant.ID, typ); err == nil {
+			scope.provided, err = h.o.Store.ProvidedNames(r.Context(), c.tenant.ID, typ)
 		}
 		if err != nil {
 			h.fail(w, err)
@@ -184,7 +200,7 @@ func (h *Handler) statsRequestOf(w http.ResponseWriter, r *http.Request, c calle
 		h.refused(w, r, c)
 		return statsRequest{}, false
 	}
-	sr := statsRequest{scope: scope, f: store.StatsFilter{Name: ext, Names: scope.names()}, names: map[string]string{}}
+	sr := statsRequest{scope: scope, f: store.StatsFilter{PackageType: typ, Name: ext, Names: scope.names()}, names: map[string]string{}}
 	if ranged {
 		to := store.DayOf(h.o.Store.Now())
 		if v := q.Get("to"); v != "" {
@@ -215,14 +231,21 @@ func (h *Handler) statsRequestOf(w http.ResponseWriter, r *http.Request, c calle
 		h.fail(w, err)
 		return sr, false
 	}
-	for _, ch := range chs {
+	chType := ""
+	for _, ch := range store.KnownChannels(chs) { // spec 0034: a channel of a type this server does not know is none
 		sr.names[ch.ID] = ch.Name
 		if ch.Name == channel {
-			sr.f.ChannelID = ch.ID
+			sr.f.ChannelID, chType = ch.ID, ch.PackageType
 		}
 	}
 	if channel != "" && sr.f.ChannelID == "" {
 		notFound(w)
+		return sr, false
+	}
+	// spec 0034: statistics are of one type (?type=, the default when not named), as a channel's
+	// routes are of the channel's: a channel of another type is refused, never answered empty
+	if channel != "" && chType != typ {
+		problem(w, http.StatusBadRequest, typeInvalid, "the type is the channel's ("+chType+"), not "+typ)
 		return sr, false
 	}
 	return sr, true

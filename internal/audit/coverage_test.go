@@ -34,6 +34,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -303,16 +304,19 @@ func TestCoverage(t *testing.T) {
 	}), "version.add")
 	en.expect("tenants.Service.AddVersionCAPI", do(func() error { _, err := en.ten.AddVersionCAPI(rctx, admin, "v2.0.0", "v2.0.0"); return err }), "version.c_apis")
 	en.expect("tenants.Service.Reserve", do(func() error {
-		_, err := en.ten.Reserve(rctx, admin, []string{"kista_audit_admin"}, store.ReservedCommunity, false)
+		_, err := en.ten.Reserve(rctx, admin, "", []string{"kista_audit_admin"}, store.ReservedCommunity, false)
 		return err
 	}), "reserved.add")
-	en.expect("tenants.Service.Unreserve", do(func() error { return en.ten.Unreserve(rctx, admin, "kista_audit_admin") }), "reserved.remove")
+	en.expect("tenants.Service.Unreserve", do(func() error { return en.ten.Unreserve(rctx, admin, "", "kista_audit_admin") }), "reserved.remove")
 	en.expect("tenants.Service.AddVersionCore", do(func() error {
 		_, err := en.ten.AddVersionCore(rctx, admin, "v2.0.0", tenants.CoreExtensions{Names: []string{"kista_audit_core"}})
 		return err
 	}), "reserved.add")
 	for _, ch := range []string{"prod", "staging"} {
-		en.expect("tenants.Service.CreateChannel", do(func() error { _, err := en.ten.CreateChannel(rctx, admin, "acme", ch, store.ChannelSigned); return err }),
+		en.expect("tenants.Service.CreateChannel", do(func() error {
+			_, err := en.ten.CreateChannel(rctx, admin, "acme", ch, store.ChannelSigned, "")
+			return err
+		}),
 			"channel.create")
 		en.expect("tenants.Service.SetChannelVersions", do(func() error {
 			_, err := en.ten.SetChannelVersions(rctx, admin, "acme", ch, []string{"v2.0.0"}, nil)
@@ -385,7 +389,7 @@ func TestCoverage(t *testing.T) {
 		return err
 	}), "extension_group.change")
 	en.expect("tenants.AuthAdmin.ChangePackageGroupMembers", do(func() error {
-		_, _, err := en.adm.ChangePackageGroupMembers(rctx, admin, "acme", "platform", []string{"tresor", "acl"}, nil)
+		_, _, err := en.adm.ChangePackageGroupMembers(rctx, admin, "acme", "platform", "", []string{"tresor", "acl"}, nil)
 		return err
 	}), "extension_group.members")
 	en.expect("tenants.AuthAdmin.AddGrant", do(func() error {
@@ -398,10 +402,10 @@ func TestCoverage(t *testing.T) {
 		"extension_group.members", "extension_group.remove")
 	en.expect("tenants.AuthAdmin.AddPublisher", do(func() error { _, err := en.adm.AddPublisher(rctx, admin, "acme", "ci"); return err }), "publisher.add")
 	en.expect("tenants.Service.ReserveInTenant", do(func() error {
-		_, err := en.ten.ReserveInTenant(rctx, admin, "acme", "kista_held", "enterest")
+		_, err := en.ten.ReserveInTenant(rctx, admin, "acme", "", "kista_held", "enterest")
 		return err
 	}), "reserved.tenant.add")
-	en.expect("tenants.Service.ReleaseInTenant", do(func() error { return en.ten.ReleaseInTenant(rctx, admin, "acme", "kista_held") }),
+	en.expect("tenants.Service.ReleaseInTenant", do(func() error { return en.ten.ReleaseInTenant(rctx, admin, "acme", "", "kista_held") }),
 		"reserved.tenant.remove")
 	var pubKey string
 	en.expect("tenants.AuthAdmin.AddPublisherKey", do(func() error {
@@ -579,13 +583,13 @@ func TestCoverage(t *testing.T) {
 	licTok := vectors.Sign(licKey, vectors.Header(licKey), fmt.Sprintf(
 		`{"v":1,"iss":"https://issuer.example","jti":"l1","sub":"acme","ext":"tresor","plan":"pro","iat":%d,"exp":%d}`,
 		base.Unix()-60, base.Unix()+30*86400))
-	en.expect("licenses.Service.Import", do(func() error { _, err := lic.Import(rctx, admin, "acme", licTok, licenses.Create); return err }),
+	en.expect("licenses.Service.Import", do(func() error { _, err := lic.Import(rctx, admin, "acme", "", licTok, licenses.Create); return err }),
 		"license.import")
 	en.expect("licenses.Service.SetVisibility", do(func() error {
-		_, err := lic.SetVisibility(rctx, admin, "acme", "tresor", store.Public, 0)
+		_, err := lic.SetVisibility(rctx, admin, "acme", "", "tresor", store.Public, 0)
 		return err
 	}), "license.change")
-	en.expect("licenses.Service.Remove", do(func() error { return lic.Remove(rctx, admin, "acme", "tresor", 0) }), "license.remove")
+	en.expect("licenses.Service.Remove", do(func() error { return lic.Remove(rctx, admin, "acme", "", "tresor", 0) }), "license.remove")
 	en.expect("upstream.Service.Add", do(func() error {
 		_, err := en.up.Add(rctx, admin, "acme", upstream.Spec{Name: "offline", Kind: store.UpstreamCore, Mode: store.ModeBundle,
 			Channel: "staging", Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "inet"}}})
@@ -598,14 +602,14 @@ func TestCoverage(t *testing.T) {
 	aclBody := ext(t, nil, "acl", "1.0")
 	ah, _, _ := extfile.HashBody(bytes.NewReader(aclBody[:len(aclBody)-extfile.SignatureSize]), 1<<30)
 	notes := func() (store.Attachment, error) {
-		return att.Attach(rctx, admin, "acme", "acl", attachment.AttachInput{BodyHash: ah.String(), Kind: store.KindNotes,
+		return att.Attach(rctx, admin, "acme", pkgtype.Of("acl"), attachment.AttachInput{BodyHash: ah.String(), Kind: store.KindNotes,
 			MediaType: attachment.Markdown, Title: "Notes", Content: []byte("# checked")})
 	}
 	var doc store.Attachment
 	en.expect("attachment.Service.Attach", do(func() (err error) { doc, err = notes(); return err }), "attachment.add")
 	readers := store.VisibleReaders
 	en.expect("attachment.Service.SetFlags", do(func() error {
-		_, err := att.SetFlags(rctx, admin, "acme", "acl", doc.ID, &readers, nil, doc.Version)
+		_, err := att.SetFlags(rctx, admin, "acme", pkgtype.Of("acl"), doc.ID, &readers, nil, doc.Version)
 		return err
 	}), "attachment.change")
 	// attestation keys and the feed (spec 0011 phase 1b): a document offered, then withdrawn by its removal
@@ -636,10 +640,10 @@ func TestCoverage(t *testing.T) {
 	att.Keys, att.PublicURL = en.ks, "https://kista.example"
 	feedable := true
 	en.expect("attachment.Service.SetFlags", do(func() error {
-		_, err := att.SetFlags(rctx, admin, "acme", "acl", doc.ID, nil, &feedable, 0)
+		_, err := att.SetFlags(rctx, admin, "acme", pkgtype.Of("acl"), doc.ID, nil, &feedable, 0)
 		return err
 	}), "attachment.change")
-	en.expect("attachment.Service.Remove", do(func() error { return att.Remove(rctx, admin, "acme", "acl", doc.ID) }), "attachment.remove")
+	en.expect("attachment.Service.Remove", do(func() error { return att.Remove(rctx, admin, "acme", pkgtype.Of("acl"), doc.ID) }), "attachment.remove")
 	if ev := en.newest(1)[0]; !strings.Contains(ev.Data, `"statement":2`) {
 		t.Errorf("a removal of an offered document issues its withdrawal: %s", ev.Data)
 	}

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
@@ -277,7 +278,7 @@ func TestMigrationRuleModes(t *testing.T) {
 		if err != nil || staging["acl"].Mode != store.RuleNone {
 			t.Fatalf("staging's rules: %+v %v", staging, err)
 		}
-		bs, err := s.SourceBuilds(ctx, tid, up, "acl")
+		bs, err := s.SourceBuilds(ctx, tid, pkgtype.DuckDBExtension, up, "acl")
 		if err != nil || len(bs) != 1 || bs[0].Visibility != store.Private || bs[0].Provenance != `{"credential":"partner"}` {
 			t.Fatalf("the build: %+v %v", bs, err)
 		}

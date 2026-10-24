@@ -5,15 +5,20 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 )
 
 // Spec 0033: the placement pass's reads and bookkeeping.
 
-// DueRule is a channel's rule the placement pass looks at.
+// DueRule is a channel's rule the placement pass looks at; its name is of the channel's package
+// type (spec 0034).
 type DueRule struct {
 	TenantID, ChannelID, Name, Source, Mode string
+	PackageType                             string
 }
 
 // DueRules lists the rules with a mode, of signed channels of active tenants, that the placement
@@ -21,30 +26,33 @@ type DueRule struct {
 // the pass last looked (or never looked). A rule of the tenant's own source is never the pass's: it
 // is everyone who may publish in the tenant.
 func (s *Store) DueRules(ctx context.Context, sweep bool) ([]DueRule, error) {
-	q := `SELECT c.tenant_id, cs.channel_id, cs.name, cs.source, cs.mode FROM channel_sources cs
+	q := `SELECT c.tenant_id, cs.channel_id, cs.name, cs.source, cs.mode, c.package_type FROM channel_sources cs
 JOIN channels c ON c.id = cs.channel_id JOIN tenants t ON t.id = c.tenant_id
 WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL AND cs.mode IN ('auto', 'manual', 'follow') AND cs.source <> 'tenant'`
 	if !sweep {
-		q += ` AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = c.tenant_id AND b.source = cs.source AND b.name = cs.name
-	AND (cs.checked_at IS NULL OR b.created_at > cs.checked_at))`
+		q += ` AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = c.tenant_id AND b.package_type = c.package_type AND b.source = cs.source
+	AND b.name = cs.name AND (cs.checked_at IS NULL OR b.created_at > cs.checked_at))`
 	}
 	var out []DueRule
 	err := s.eachRow(ctx, q+" ORDER BY c.tenant_id, cs.channel_id, cs.name", nil, func(sc func(...any) error) error {
 		var r DueRule
-		if err := sc(&r.TenantID, &r.ChannelID, &r.Name, &r.Source, &r.Mode); err != nil {
+		if err := sc(&r.TenantID, &r.ChannelID, &r.Name, &r.Source, &r.Mode, &r.PackageType); err != nil {
 			return err
 		}
-		out = append(out, r)
+		if pkgtype.Known(r.PackageType) { // spec 0034: a channel of a type this binary does not know places nothing
+			out = append(out, r)
+		}
 		return nil
 	})
 	return out, err
 }
 
-// SourceBuilds lists a tenant's builds of a name from a source: its catalogue entries.
-func (s *Store) SourceBuilds(ctx context.Context, tenantID, source, name string) ([]Build, error) {
+// SourceBuilds lists a tenant's builds of a package (type, name) from a source: its catalogue
+// entries.
+func (s *Store) SourceBuilds(ctx context.Context, tenantID, packageType, source, name string) ([]Build, error) {
 	var out []Build
-	err := s.eachRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND source = ? AND name = ? ORDER BY created_at, id",
-		[]any{tenantID, source, name}, func(sc func(...any) error) error {
+	err := s.eachRow(ctx, "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND package_type = ? AND source = ? AND name = ? ORDER BY created_at, id",
+		[]any{tenantID, packageType, source, name}, func(sc func(...any) error) error {
 			b, err := scanBuild(rowScanner(sc))
 			if err == nil {
 				out = append(out, b)
@@ -118,14 +126,16 @@ WHERE channel_id = ? AND name = ? AND source = ? AND mode = ? AND set_at <= ?`,
 	})
 }
 
-// PurgedBuilds are a tenant's builds of a name from a source that are released nowhere and whose
-// body a purge took out of some channel (spec 0016: for good): never placed again.
-func (s *Store) PurgedBuilds(ctx context.Context, tenantID, source, name string) (map[string]bool, error) {
+// PurgedBuilds are a tenant's builds of a package (type, name) from a source that are released
+// nowhere and whose body a purge took out of some channel of the type (spec 0016: for good): never
+// placed again.
+func (s *Store) PurgedBuilds(ctx context.Context, tenantID, packageType, source, name string) (map[string]bool, error) {
 	out := map[string]bool{}
-	err := s.eachRow(ctx, `SELECT b.id FROM builds b WHERE b.tenant_id = ? AND b.source = ? AND b.name = ?
+	err := s.eachRow(ctx, `SELECT b.id FROM builds b WHERE b.tenant_id = ? AND b.package_type = ? AND b.source = ? AND b.name = ?
 AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)
-AND EXISTS (SELECT 1 FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = b.tenant_id AND p.name = b.name
-	AND p.package_version = b.package_version AND p.body_hash = b.body_hash AND p.source IN (b.source, '*'))`, []any{tenantID, source, name},
+AND EXISTS (SELECT 1 FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = b.tenant_id
+	AND c.package_type = b.package_type AND p.name = b.name AND p.package_version = b.package_version AND p.body_hash = b.body_hash
+	AND p.source IN (b.source, '*'))`, []any{tenantID, packageType, source, name},
 		func(sc func(...any) error) error {
 			var id string
 			if err := sc(&id); err != nil {
@@ -159,19 +169,20 @@ func ValidRuleMode(m string) error {
 	return nil
 }
 
-// SourceVersions are a tenant's catalogue: the versions of each (source, name) it has builds of.
-func (s *Store) SourceVersions(ctx context.Context, tenantID string) (map[[2]string][]string, error) {
+// SourceVersions are a tenant's catalogue of a type: the versions of each (source, name) it has
+// builds of.
+func (s *Store) SourceVersions(ctx context.Context, tenantID, packageType string) (map[[2]string][]string, error) {
 	out := map[[2]string][]string{}
-	err := s.eachRow(ctx, "SELECT source, name, package_version FROM builds WHERE tenant_id = ? GROUP BY source, name, package_version",
-		[]any{tenantID}, func(sc func(...any) error) error {
-			var src, name, v string
-			if err := sc(&src, &name, &v); err != nil {
-				return err
-			}
-			k := [2]string{src, name}
-			out[k] = append(out[k], v)
-			return nil
-		})
+	err := s.eachRow(ctx, `SELECT source, name, package_version FROM builds WHERE tenant_id = ? AND package_type = ?
+GROUP BY source, name, package_version`, []any{tenantID, packageType}, func(sc func(...any) error) error {
+		var src, name, v string
+		if err := sc(&src, &name, &v); err != nil {
+			return err
+		}
+		k := [2]string{src, name}
+		out[k] = append(out[k], v)
+		return nil
+	})
 	return out, err
 }
 
@@ -180,11 +191,12 @@ type Rule struct {
 	Channel, Name, Source, Mode string
 }
 
-// TenantRules lists every rule of a tenant's channels.
-func (s *Store) TenantRules(ctx context.Context, tenantID string) ([]Rule, error) {
+// TenantRules lists every rule of a tenant's channels of a type (a rule's name is of its channel's
+// type).
+func (s *Store) TenantRules(ctx context.Context, tenantID, packageType string) ([]Rule, error) {
 	var out []Rule
 	err := s.eachRow(ctx, `SELECT c.name, cs.name, cs.source, cs.mode FROM channel_sources cs JOIN channels c ON c.id = cs.channel_id
-WHERE c.tenant_id = ? ORDER BY c.name, cs.name`, []any{tenantID}, func(sc func(...any) error) error {
+WHERE c.tenant_id = ? AND c.package_type = ? ORDER BY c.name, cs.name`, []any{tenantID, packageType}, func(sc func(...any) error) error {
 		var r Rule
 		if err := sc(&r.Channel, &r.Name, &r.Source, &r.Mode); err != nil {
 			return err
@@ -201,19 +213,21 @@ type Placed struct {
 	State   string `json:"state"`
 }
 
-// BuildPlacements lists where a tenant's builds of a name from a source are released, by build id.
-func (s *Store) BuildPlacements(ctx context.Context, tenantID, source, name string) (map[string][]Placed, error) {
+// BuildPlacements lists where a tenant's builds of a package (type, name) from a source are
+// released, by build id.
+func (s *Store) BuildPlacements(ctx context.Context, tenantID, packageType, source, name string) (map[string][]Placed, error) {
 	out := map[string][]Placed{}
 	err := s.eachRow(ctx, `SELECT r.build_id, c.name, r.state FROM releases r JOIN channels c ON c.id = r.channel_id
-WHERE r.tenant_id = ? AND r.source = ? AND r.name = ? ORDER BY c.name`, []any{tenantID, source, name}, func(sc func(...any) error) error {
-		var id string
-		var p Placed
-		if err := sc(&id, &p.Channel, &p.State); err != nil {
-			return err
-		}
-		out[id] = append(out[id], p)
-		return nil
-	})
+WHERE r.tenant_id = ? AND c.package_type = ? AND r.source = ? AND r.name = ? ORDER BY c.name`, []any{tenantID, packageType, source, name},
+		func(sc func(...any) error) error {
+			var id string
+			var p Placed
+			if err := sc(&id, &p.Channel, &p.State); err != nil {
+				return err
+			}
+			out[id] = append(out[id], p)
+			return nil
+		})
 	return out, err
 }
 
@@ -236,14 +250,14 @@ AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)`), tenantID, s
 }
 
 // LandedBuild is a build landed in the catalogue without a release (TrimLanded's reads).
-type LandedBuild struct{ ID, TenantID, Source, Name, Version, Platform, Slot, BodyHash string }
+type LandedBuild struct{ ID, TenantID, PackageType, Source, Name, Version, Platform, Slot, BodyHash string }
 
-const landedCols = "id, tenant_id, source, name, package_version, platform, slot, body_hash"
+const landedCols = "id, tenant_id, package_type, source, name, package_version, platform, slot, body_hash"
 
 func scanLanded(out *[]LandedBuild) func(sc func(...any) error) error {
 	return func(sc func(...any) error) error {
 		var b LandedBuild
-		if err := sc(&b.ID, &b.TenantID, &b.Source, &b.Name, &b.Version, &b.Platform, &b.Slot, &b.BodyHash); err != nil {
+		if err := sc(&b.ID, &b.TenantID, &b.PackageType, &b.Source, &b.Name, &b.Version, &b.Platform, &b.Slot, &b.BodyHash); err != nil {
 			return err
 		}
 		*out = append(*out, b)
@@ -251,18 +265,25 @@ func scanLanded(out *[]LandedBuild) func(sc func(...any) error) error {
 	}
 }
 
-// CrowdedLanded lists the landed builds of a publisher's or the tenant's (tenant, source, name,
-// platform, slot) that has more than keep landed versions.
+// knownLanded keeps the builds of the types this binary registers (spec 0034: an older binary does
+// not unland a newer one's builds of a type it does not know).
+func knownLanded(bs []LandedBuild) []LandedBuild {
+	return slices.DeleteFunc(bs, func(b LandedBuild) bool { return !pkgtype.Known(b.PackageType) })
+}
+
+// CrowdedLanded lists the landed builds of a publisher's or the tenant's (tenant, type, source, name,
+// platform, slot) that has more than keep landed versions; of the registered types only.
 func (s *Store) CrowdedLanded(ctx context.Context, keep int) ([]LandedBuild, error) {
 	var out []LandedBuild
 	err := s.eachRow(ctx, "SELECT "+landedCols+` FROM builds b WHERE landed = ? AND source NOT LIKE 'upstream:%' AND EXISTS (
-SELECT 1 FROM builds o WHERE o.landed = ? AND o.tenant_id = b.tenant_id AND o.source = b.source AND o.name = b.name AND o.platform = b.platform
-	AND o.slot = b.slot GROUP BY o.tenant_id HAVING COUNT(DISTINCT o.package_version) > ?)`, []any{true, true, keep}, scanLanded(&out))
-	return out, err
+SELECT 1 FROM builds o WHERE o.landed = ? AND o.tenant_id = b.tenant_id AND o.package_type = b.package_type AND o.source = b.source
+	AND o.name = b.name AND o.platform = b.platform AND o.slot = b.slot GROUP BY o.tenant_id HAVING COUNT(DISTINCT o.package_version) > ?)`,
+		[]any{true, true, keep}, scanLanded(&out))
+	return knownLanded(out), err
 }
 
 // StaleMirrorLanded lists a mirror's landed builds whose cell holds another body now (the cell moved
-// on), or whose upstream is gone.
+// on), or whose upstream is gone; of the registered types only.
 func (s *Store) StaleMirrorLanded(ctx context.Context) ([]LandedBuild, error) {
 	var out []LandedBuild
 	err := s.eachRow(ctx, "SELECT "+landedCols+" FROM builds b WHERE landed = ? AND source LIKE 'upstream:%'", []any{true}, scanLanded(&out))
@@ -270,7 +291,7 @@ func (s *Store) StaleMirrorLanded(ctx context.Context) ([]LandedBuild, error) {
 		return nil, err
 	}
 	var stale []LandedBuild
-	for _, b := range out {
+	for _, b := range knownLanded(out) {
 		var n int
 		if err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM upstream_cells WHERE upstream_id = ? AND name = ? AND body_hash = ?"),
 			strings.TrimPrefix(b.Source, SourceUpstreamPrefix), b.Name, b.BodyHash).Scan(&n); err != nil {
@@ -314,8 +335,8 @@ func (t *Tx) DeleteEntry(ctx context.Context, tenantID, id string) (Build, error
 	}
 	// a build once released (its release purged since) was installable: it stays, its slot taken
 	if err := t.queryRow(ctx, `SELECT COUNT(*) FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = ?
-AND p.source = ? AND p.name = ? AND p.package_version = ? AND p.platform = ? AND p.slot = ? AND p.body_hash = ?`,
-		tenantID, b.Source, b.Name, b.PackageVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n); err != nil {
+AND c.package_type = ? AND p.source = ? AND p.name = ? AND p.package_version = ? AND p.platform = ? AND p.slot = ? AND p.body_hash = ?`,
+		tenantID, b.PackageType, b.Source, b.Name, b.PackageVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n); err != nil {
 		return Build{}, err
 	}
 	if n > 0 {
@@ -346,10 +367,12 @@ func (s *Store) DuckDBVersionKnown(ctx context.Context, name string) (bool, erro
 	return n > 0, err
 }
 
-// BuildOf reads a tenant's build of a name and body from a source; ok is false when there is none.
-func (s *Store) BuildOf(ctx context.Context, tenantID, source, name, bodyHash string) (b Build, ok bool, err error) {
-	b, err = scanBuild(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND body_hash = ?"),
-		tenantID, source, name, bodyHash))
+// BuildOf reads a tenant's build of a package (type, name) and body from a source; ok is false when
+// there is none.
+func (s *Store) BuildOf(ctx context.Context, tenantID, packageType, source, name, bodyHash string) (b Build, ok bool, err error) {
+	b, err = scanBuild(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+buildCols+
+		" FROM builds WHERE tenant_id = ? AND package_type = ? AND source = ? AND name = ? AND body_hash = ?"),
+		tenantID, packageType, source, name, bodyHash))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Build{}, false, nil
 	}
@@ -364,13 +387,17 @@ func (t *Tx) SlotTaken(ctx context.Context, b Build) error {
 	if b.Source == SourceTenant || b.Source == "" {
 		return nil // everyone who may publish in the tenant: the rule stays per channel
 	}
+	typ := b.PackageType
+	if typ == "" {
+		typ = pkgtype.Default
+	}
 	var n int
-	err := t.queryRow(ctx, `SELECT COUNT(*) FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND package_version = ? AND platform = ?
-AND slot = ? AND body_hash <> ?`, b.TenantID, b.Source, b.Name, b.PackageVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n)
+	err := t.queryRow(ctx, `SELECT COUNT(*) FROM builds WHERE tenant_id = ? AND package_type = ? AND source = ? AND name = ? AND package_version = ?
+AND platform = ? AND slot = ? AND body_hash <> ?`, b.TenantID, typ, b.Source, b.Name, b.PackageVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n)
 	if err == nil && n == 0 {
 		err = t.queryRow(ctx, `SELECT COUNT(*) FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = ?
-AND p.source = ? AND p.name = ? AND p.package_version = ? AND p.platform = ? AND p.slot = ? AND p.body_hash <> ?`,
-			b.TenantID, b.Source, b.Name, b.PackageVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n)
+AND c.package_type = ? AND p.source = ? AND p.name = ? AND p.package_version = ? AND p.platform = ? AND p.slot = ? AND p.body_hash <> ?`,
+			b.TenantID, typ, b.Source, b.Name, b.PackageVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n)
 	}
 	if err != nil {
 		return err

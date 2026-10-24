@@ -49,6 +49,18 @@ has a list of the DuckDB versions it serves, and one of two kinds:
 A channel's prefix is permanent: DuckDB records it with each install. See
 [Tenants and channels](administration/tenants-and-channels.md).
 
+## Packages and package types
+
+What kista distributes is a **package**: a name of one **package type**, with versions and builds.
+Today the only type is `duckdb_extension`, so every package is a DuckDB extension and the word
+extension is used throughout. A later release adds other types (ADBC drivers). Every place that
+holds a name holds the pair (type, name): a grant on a name, a group's member, a reservation, a
+licence, a catalogue entry. A channel serves one type, chosen when it is created
+(`duckdb_extension` by default) and never changed; a build is placed or promoted only into a
+channel of its type. The API names a type as `package_type` in bodies and `?type=` on the routes
+keyed by a name, both defaulting to `duckdb_extension` and left out of answers for it, so nothing
+changes for a client that does not name one. See [Access](access.md#package-types).
+
 ## Keys
 
 Every signed channel has a **key set**: one active key, which signs new releases, plus trusted
@@ -149,8 +161,10 @@ A verified token yields **principals**, each namespaced by the issuer record's n
 | `client:<issuer>\|<id>` | the issuer's client claim |
 
 A **grant** is principal, resource and verbs. The resource is the tenant, a channel, an extension
-name (in every channel or in one) or an extension group (in every channel or in one). The verbs
-are:
+name (in every channel or in one) or an extension group (in every channel or in one). A grant has
+a package type too: one on a name is of that name's type (`duckdb_extension` by default); one
+without a name is of every type (`*`, the default) or of one type, covering only that type's
+channels and packages. The verbs are:
 
 | Verb | Allows |
 | --- | --- |
@@ -165,7 +179,8 @@ See [Access](access.md).
 
 ## Extension groups
 
-An **extension group** is a named set of extension names in a tenant, such as all the extensions
+An **extension group** is a named set of extension names in a tenant (each of a package type,
+`duckdb_extension` by default), such as all the extensions
 one team owns. A grant on the group covers every member, in every channel or in one, and a name
 added to the group is covered at once. Only a tenant administrator changes the members. Extension
 groups are not the `group:` principals above, which are groups of people from the identity

@@ -7,10 +7,23 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
+
+// chType is a test channel's package type, as reads fill a channel-scoped grant's (spec 0034):
+// DuckDB's, but the other type's "drivers".
+func chType(channel string) string {
+	switch channel {
+	case "":
+		return ""
+	case "drivers":
+		return otherType
+	}
+	return pkgtype.DuckDBExtension
+}
 
 func TestCovers(t *testing.T) {
 	me := auth.Principals{{IssuerID: "i1", Kind: store.PrincipalSubject, Value: "me"}: true, {IssuerID: "i1", Kind: store.PrincipalIssuer}: true}
@@ -19,11 +32,12 @@ func TestCovers(t *testing.T) {
 		if channel != "" {
 			ch = "id-" + channel
 		}
-		return store.Grant{IssuerID: "i1", Kind: kind, Value: value, ChannelID: ch, ChannelName: channel, Package: ext, Verbs: verbs}
+		return store.Grant{IssuerID: "i1", Kind: kind, Value: value, ChannelID: ch, ChannelName: channel, ChannelType: chType(channel), Package: ext,
+			Verbs: verbs}
 	}
 	tenant := authz.Resource{Tenant: "acme"}
-	prod := authz.Resource{Tenant: "acme", Channel: "prod"}
-	tresor := authz.Resource{Tenant: "acme", Channel: "prod", Package: "tresor"}
+	prod := authz.Resource{Tenant: "acme", Channel: "prod", PackageType: pkgtype.DuckDBExtension}
+	tresor := authz.Resource{Tenant: "acme", Channel: "prod", PackageType: pkgtype.DuckDBExtension, Package: "tresor"}
 	for _, tc := range []struct {
 		name  string
 		grant store.Grant
@@ -123,7 +137,7 @@ func TestCovers(t *testing.T) {
 // group with admin.
 func TestCoversGroups(t *testing.T) {
 	me := auth.Principals{{IssuerID: "i1", Kind: store.PrincipalSubject, Value: "me"}: true, {IssuerID: "i1", Kind: store.PrincipalIssuer}: true}
-	members := map[string]bool{"tresor": true, "httpfs": true}
+	members := map[pkgtype.Key]bool{pkgtype.Of("tresor"): true, pkgtype.Of("httpfs"): true}
 	g := func(kind, channel string, verbs ...string) store.Grant {
 		ch := ""
 		if channel != "" {
@@ -133,15 +147,15 @@ func TestCoversGroups(t *testing.T) {
 		if kind == store.PrincipalIssuer {
 			value = ""
 		}
-		return store.Grant{IssuerID: "i1", Kind: kind, Value: value, ChannelID: ch, ChannelName: channel, PackageGroupID: "g1",
+		return store.Grant{IssuerID: "i1", Kind: kind, Value: value, ChannelID: ch, ChannelName: channel, ChannelType: chType(channel), PackageGroupID: "g1",
 			PackageGroupName: "platform", Members: members, Verbs: verbs}
 	}
 	tenant := authz.Resource{Tenant: "acme"}
-	prod := authz.Resource{Tenant: "acme", Channel: "prod"}
-	tresor := authz.Resource{Tenant: "acme", Channel: "prod", Package: "tresor"}
-	tresorStaging := authz.Resource{Tenant: "acme", Channel: "staging", Package: "tresor"}
-	acl := authz.Resource{Tenant: "acme", Channel: "prod", Package: "acl"}
-	httpfs := authz.Resource{Tenant: "acme", Channel: "prod", Package: "httpfs", Reserved: true}
+	prod := authz.Resource{Tenant: "acme", Channel: "prod", PackageType: pkgtype.DuckDBExtension}
+	tresor := authz.Resource{Tenant: "acme", Channel: "prod", PackageType: pkgtype.DuckDBExtension, Package: "tresor"}
+	tresorStaging := authz.Resource{Tenant: "acme", Channel: "staging", PackageType: pkgtype.DuckDBExtension, Package: "tresor"}
+	acl := authz.Resource{Tenant: "acme", Channel: "prod", PackageType: pkgtype.DuckDBExtension, Package: "acl"}
+	httpfs := authz.Resource{Tenant: "acme", Channel: "prod", PackageType: pkgtype.DuckDBExtension, Package: "httpfs", Reserved: true}
 	group := authz.Resource{Tenant: "acme", PackageGroup: "platform"}
 	for _, tc := range []struct {
 		name  string
@@ -180,7 +194,8 @@ func TestCoversGroups(t *testing.T) {
 		want  bool
 	}{
 		{store.Grant{IssuerID: "i1", Kind: "subject", Value: "me", Verbs: []string{"admin"}}, true},
-		{store.Grant{IssuerID: "i1", Kind: "subject", Value: "me", ChannelID: "id-prod", ChannelName: "prod", Verbs: []string{"admin"}}, false},
+		{store.Grant{IssuerID: "i1", Kind: "subject", Value: "me", ChannelID: "id-prod", ChannelName: "prod", ChannelType: pkgtype.DuckDBExtension,
+			Verbs: []string{"admin"}}, false},
 		{store.Grant{IssuerID: "i1", Kind: "subject", Value: "me", Package: "tresor", Verbs: []string{"admin"}}, false},
 	} {
 		if got := authz.Covers(auth.HeldBy(me, store.TenantAuth{Grants: []store.Grant{tc.grant}}), "admin", group); got != tc.want {
@@ -189,13 +204,13 @@ func TestCoversGroups(t *testing.T) {
 	}
 	// an empty group is readable by its administrator, and covers no name
 	empty := g("subject", "", "admin")
-	empty.Members = map[string]bool{}
+	empty.Members = map[pkgtype.Key]bool{}
 	if h := auth.HeldBy(me, store.TenantAuth{GroupGrants: []store.Grant{empty}}); !authz.Covers(h, "admin", group) || authz.Covers(h, "admin", tresor) {
 		t.Error("an empty group")
 	}
 	// a removed member is no longer covered
 	h := auth.HeldBy(me, store.TenantAuth{GroupGrants: []store.Grant{g("subject", "", "admin")}})
-	delete(members, "tresor")
+	delete(members, pkgtype.Of("tresor"))
 	if authz.Covers(h, "admin", tresor) {
 		t.Error("a removed member is covered")
 	}

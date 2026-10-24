@@ -716,7 +716,7 @@ bootstrap:
     max_lifetime: 12h                    # also jwks_uri, algorithms, groups_claim
     console: { client_id: <id>, audience: api://kista-acme }   # optional, as issuer console; also scopes, audience_parameter
   grants:                                # principals of that issuer, as grant add
-    - { principal: "role:entra|kista-admin", verbs: [admin] }  # optional channel and extension
+    - { principal: "role:entra|kista-admin", verbs: [admin] }  # optional channel, extension, package_type
   upstreams:                             # optional, as upstream add (spec 0024)
     - name: core
       kind: duckdb-core                  # duckdb-core, duckdb-community or repository
@@ -789,6 +789,10 @@ bootstrap:
 
   `-rearm` forgets the record. The tenant then exists, so the next apply needs `-adopt`, and it
   makes again whatever is absent, a grant revoked since included.
+- **A grant's `package_type`** (spec 0034) is optional: left out, a grant on an extension is of
+  `duckdb_extension` and one without an extension of every type (`*`), as before. It is never filled
+  in by the defaults and is left out of a grant's identity when it is that default, so a section
+  applied before keeps its digest.
 - **Validation at load:**
   - a tenant is required;
   - names, kinds, verbs, versions, C APIs and signer references are checked;

@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 )
 
 // Package groups (spec 0017's extension groups; spec 0034 names them): named, explicit sets of
@@ -51,22 +54,36 @@ type PackageGroup struct {
 	CreatedBy                       string
 }
 
-// GroupMember is an extension name in a group.
+// GroupMember is a package in a group: its type and name (spec 0034).
 type GroupMember struct {
-	Name    string
-	AddedAt time.Time
-	AddedBy string
+	PackageType, Name string
+	AddedAt           time.Time
+	AddedBy           string
 }
 
-// GroupSet is a group as authorization reads it: its name and member names.
+// GroupSet is a group as authorization reads it: its name and members, by (type, name).
 type GroupSet struct {
 	Name    string
-	Members map[string]bool
+	Members map[pkgtype.Key]bool
 }
 
-const groupCols = `g.id, g.tenant_id, g.name, g.description, g.version, g.created_at, g.created_by,
-(SELECT COUNT(*) FROM package_group_members m WHERE m.group_id = g.id),
+// groupCols are a group's columns and counts: its members of the registered types (spec 0034: a
+// member of a type this binary does not know is read as nothing, and not counted either).
+func groupCols() string {
+	return `g.id, g.tenant_id, g.name, g.description, g.version, g.created_at, g.created_by,
+(SELECT COUNT(*) FROM package_group_members m WHERE m.group_id = g.id AND m.package_type IN (` + knownTypesSQL() + `)),
 (SELECT COUNT(*) FROM package_group_grants x WHERE x.group_id = g.id)`
+}
+
+// knownTypesSQL lists the registered package types as SQL literals ('a', 'b'): values the binary
+// registers, never a request's.
+func knownTypesSQL() string {
+	ts := pkgtype.Types()
+	for i, t := range ts {
+		ts[i] = "'" + strings.ReplaceAll(t, "'", "''") + "'"
+	}
+	return strings.Join(ts, ", ")
+}
 
 func scanGroup(r interface{ Scan(...any) error }) (PackageGroup, error) {
 	var g PackageGroup
@@ -103,22 +120,23 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, g.ID, g.TenantID, g.Name, g.Description, g.Versio
 
 // GetPackageGroup reads a tenant's group by name, with its counts.
 func (t *Tx) GetPackageGroup(ctx context.Context, tenantID, name string) (PackageGroup, error) {
-	g, err := scanGroup(t.queryRow(ctx, "SELECT "+groupCols+" FROM package_groups g WHERE g.tenant_id = ? AND g.name = ?", tenantID, name))
+	g, err := scanGroup(t.queryRow(ctx, "SELECT "+groupCols()+" FROM package_groups g WHERE g.tenant_id = ? AND g.name = ?", tenantID, name))
 	return g, notFound(err, "extension group "+name)
 }
 
 // GetPackageGroup reads a tenant's group by name, with its counts.
 func (s *Store) GetPackageGroup(ctx context.Context, tenantID, name string) (PackageGroup, error) {
-	g, err := scanGroup(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+groupCols+" FROM package_groups g WHERE g.tenant_id = ? AND g.name = ?"), tenantID, name))
+	g, err := scanGroup(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+groupCols()+" FROM package_groups g WHERE g.tenant_id = ? AND g.name = ?"), tenantID, name))
 	return g, notFound(err, "extension group "+name)
 }
 
-// ListPackageGroups lists a tenant's groups by name; with extension, those holding that name.
-func (s *Store) ListPackageGroups(ctx context.Context, tenantID, extension string) ([]PackageGroup, error) {
-	q, args := "SELECT "+groupCols+" FROM package_groups g WHERE g.tenant_id = ?", []any{tenantID}
+// ListPackageGroups lists a tenant's groups by name; with a package's name, those holding that
+// package (of packageType).
+func (s *Store) ListPackageGroups(ctx context.Context, tenantID, packageType, extension string) ([]PackageGroup, error) {
+	q, args := "SELECT "+groupCols()+" FROM package_groups g WHERE g.tenant_id = ?", []any{tenantID}
 	if extension != "" {
-		q += " AND EXISTS (SELECT 1 FROM package_group_members m WHERE m.group_id = g.id AND m.package = ?)"
-		args = append(args, extension)
+		q += " AND EXISTS (SELECT 1 FROM package_group_members m WHERE m.group_id = g.id AND m.package_type = ? AND m.package = ?)"
+		args = append(args, packageType, extension)
 	}
 	rows, err := s.db.QueryContext(ctx, s.d.rebind(q+" ORDER BY g.name"), args...)
 	if err != nil {
@@ -167,18 +185,20 @@ func (t *Tx) DeletePackageGroup(ctx context.Context, g PackageGroup, expected in
 	return t.BumpAuth(ctx, g.TenantID)
 }
 
-// GroupMembers lists a group's members by name.
+// GroupMembers lists a group's members by name (and type), every type's.
 func (t *Tx) GroupMembers(ctx context.Context, groupID string) ([]GroupMember, error) {
 	return groupMembers(ctx, t.query, groupID)
 }
 
-// GroupMembers lists a group's members by name.
+// GroupMembers lists a group's members by name (and type); those of a type this binary does not
+// know are left out.
 func (s *Store) GroupMembers(ctx context.Context, groupID string) ([]GroupMember, error) {
-	return groupMembers(ctx, s.query, groupID)
+	ms, err := groupMembers(ctx, s.query, groupID)
+	return slices.DeleteFunc(ms, func(m GroupMember) bool { return !pkgtype.Known(m.PackageType) }), err
 }
 
 func groupMembers(ctx context.Context, query queryFn, groupID string) ([]GroupMember, error) {
-	rows, err := query(ctx, "SELECT package, added_at, added_by FROM package_group_members WHERE group_id = ? ORDER BY package", groupID)
+	rows, err := query(ctx, "SELECT package_type, package, added_at, added_by FROM package_group_members WHERE group_id = ? ORDER BY package, package_type", groupID)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +206,7 @@ func groupMembers(ctx context.Context, query queryFn, groupID string) ([]GroupMe
 	var out []GroupMember
 	for rows.Next() {
 		var m GroupMember
-		if err := rows.Scan(&m.Name, scanTime{&m.AddedAt}, &m.AddedBy); err != nil {
+		if err := rows.Scan(&m.PackageType, &m.Name, scanTime{&m.AddedAt}, &m.AddedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -194,10 +214,10 @@ func groupMembers(ctx context.Context, query queryFn, groupID string) ([]GroupMe
 	return out, rows.Err()
 }
 
-// ChangeGroupMembers adds and removes member names (already valid extension names), skipping names
-// already present or not members, and answers what changed. The limits are counted here: the
+// ChangeGroupMembers adds and removes members (already valid names of registered types), skipping
+// those already present or not members, and answers what changed. The limits are counted here: the
 // caller holds the tenant's auth lock.
-func (t *Tx) ChangeGroupMembers(ctx context.Context, g PackageGroup, add, remove []string, actor string) (added, removed []string, err error) {
+func (t *Tx) ChangeGroupMembers(ctx context.Context, g PackageGroup, add, remove []pkgtype.Key, actor string) (added, removed []pkgtype.Key, err error) {
 	if len(actor) > 400 {
 		return nil, nil, fmt.Errorf("%w: a value is too long", ErrInvalid)
 	}
@@ -205,15 +225,15 @@ func (t *Tx) ChangeGroupMembers(ctx context.Context, g PackageGroup, add, remove
 	if err != nil {
 		return nil, nil, err
 	}
-	have := map[string]bool{}
+	have := map[pkgtype.Key]bool{}
 	for _, m := range ms {
-		have[m.Name] = true
+		have[pkgtype.Key{Type: m.PackageType, Name: m.Name}] = true
 	}
 	for _, n := range remove {
 		if !have[n] {
 			continue
 		}
-		if _, err := t.exec(ctx, "DELETE FROM package_group_members WHERE group_id = ? AND package = ?", g.ID, n); err != nil {
+		if _, err := t.exec(ctx, "DELETE FROM package_group_members WHERE group_id = ? AND package_type = ? AND package = ?", g.ID, n.Type, n.Name); err != nil {
 			return nil, nil, err
 		}
 		removed = append(removed, n)
@@ -222,6 +242,9 @@ func (t *Tx) ChangeGroupMembers(ctx context.Context, g PackageGroup, add, remove
 	for _, n := range add {
 		if have[n] {
 			continue
+		}
+		if !pkgtype.Known(n.Type) {
+			return nil, nil, fmt.Errorf("%w: package type %q", ErrInvalid, n.Type)
 		}
 		have[n] = true
 		added = append(added, n)
@@ -239,8 +262,8 @@ func (t *Tx) ChangeGroupMembers(ctx context.Context, g PackageGroup, add, remove
 		}
 		now := t.s.d.timeArg(t.Now())
 		for _, n := range added {
-			if _, err := t.exec(ctx, "INSERT INTO package_group_members (group_id, tenant_id, package, added_at, added_by) VALUES (?, ?, ?, ?, ?)",
-				g.ID, g.TenantID, n, now, actor); err != nil {
+			if _, err := t.exec(ctx, "INSERT INTO package_group_members (group_id, tenant_id, package_type, package, added_at, added_by) VALUES (?, ?, ?, ?, ?, ?)",
+				g.ID, g.TenantID, n.Type, n.Name, now, actor); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -266,23 +289,24 @@ func readGroups(ctx context.Context, query queryFn, tenantID string) (map[string
 			rows.Close()
 			return nil, err
 		}
-		out[id] = &GroupSet{Name: name, Members: map[string]bool{}}
+		out[id] = &GroupSet{Name: name, Members: map[pkgtype.Key]bool{}}
 	}
 	if err := closeRows(rows); err != nil {
 		return nil, err
 	}
-	rows, err = query(ctx, "SELECT group_id, package FROM package_group_members WHERE tenant_id = ?", tenantID)
+	rows, err = query(ctx, "SELECT group_id, package_type, package FROM package_group_members WHERE tenant_id = ?", tenantID)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
-		var id, ext string
-		if err := rows.Scan(&id, &ext); err != nil {
+		var id, typ, ext string
+		if err := rows.Scan(&id, &typ, &ext); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if g := out[id]; g != nil {
-			g.Members[ext] = true
+		// spec 0034: a member of a type this binary does not know is covered by no group grant
+		if g := out[id]; g != nil && pkgtype.Known(typ) {
+			g.Members[pkgtype.Key{Type: typ, Name: ext}] = true
 		}
 	}
 	return out, closeRows(rows)

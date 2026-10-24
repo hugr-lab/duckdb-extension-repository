@@ -18,6 +18,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
@@ -116,14 +117,14 @@ func TestBundleLicenses(t *testing.T) {
 			g.up.Licenses = svc
 			now := g.st.Now().Unix()
 			for _, n := range []string{"tresor", "extra"} {
-				if _, err := svc.Import(ctx, admin, "acme", lic.sign(n, "pro", now-60, now+30*86400), licenses.Create); err != nil {
+				if _, err := svc.Import(ctx, admin, "acme", "", lic.sign(n, "pro", now-60, now+30*86400), licenses.Create); err != nil {
 					t.Fatal(err)
 				}
 			}
 			// the site: two bundle-mode upstreams of the source, in prod and in staging
 			g.air(t, "tresor", "plain")
 			must(t, func() error {
-				_, err := g.ten.CreateChannel(ctx, admin, "site", "staging", store.ChannelSigned)
+				_, err := g.ten.CreateChannel(ctx, admin, "site", "staging", store.ChannelSigned, "")
 				return err
 			})
 			must(t, func() error {
@@ -150,7 +151,7 @@ func TestBundleLicenses(t *testing.T) {
 			}
 			stored := func() store.License {
 				t.Helper()
-				l, err := g.st.GetLicense(ctx, site.ID, "tresor")
+				l, err := g.st.GetLicense(ctx, site.ID, pkgtype.DuckDBExtension, "tresor")
 				if err != nil {
 					t.Fatalf("the site's licence: %v", err)
 				}
@@ -197,7 +198,7 @@ func TestBundleLicenses(t *testing.T) {
 			if l := importSite(data, true).Licenses; l.Counts["refused"] != 1 || l.Refused[0].Rule != "not_supplied" {
 				t.Fatalf("a dry run before the first import: %+v", l)
 			}
-			if _, err := g.st.GetLicense(ctx, site.ID, "tresor"); !errors.Is(err, store.ErrNotFound) {
+			if _, err := g.st.GetLicense(ctx, site.ID, pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("a dry run stored a licence: %v", err)
 			}
 			// private releases leave only with -private, and their names' licences with them
@@ -237,7 +238,7 @@ func TestBundleLicenses(t *testing.T) {
 
 			// a later licence: a dry run counts it and stores nothing; the import replaces
 			later := lic.sign("tresor", "max", now, now+60*86400)
-			if _, err := svc.Import(ctx, admin, "acme", later, 0); err != nil {
+			if _, err := svc.Import(ctx, admin, "acme", "", later, 0); err != nil {
 				t.Fatal(err)
 			}
 			_, data = g.export(t, plan(""), upstream.ExportOptions{Private: private, Licenses: true})
@@ -279,10 +280,10 @@ func TestBundleLicenses(t *testing.T) {
 
 			// an administrator's import at the site is never replaced by a bundle's
 			own := lic.sign("tresor", "site", now, now+90*86400)
-			if _, err := svc.Import(ctx, admin, "site", own, 0); err != nil {
+			if _, err := svc.Import(ctx, admin, "site", "", own, 0); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.Import(ctx, admin, "acme", lic.sign("tresor", "max", now, now+120*86400), 0); err != nil {
+			if _, err := svc.Import(ctx, admin, "acme", "", lic.sign("tresor", "max", now, now+120*86400), 0); err != nil {
 				t.Fatal(err)
 			}
 			_, data = g.export(t, plan(""), upstream.ExportOptions{Private: private, Licenses: true})
@@ -301,7 +302,7 @@ func TestBundleLicenses(t *testing.T) {
 			}
 
 			// the site's own checks, as a carrier cannot pass them by the exporter
-			if err := svc.Remove(ctx, admin, "site", "tresor", 0); err != nil {
+			if err := svc.Remove(ctx, admin, "site", "", "tresor", 0); err != nil {
 				t.Fatal(err)
 			}
 			tok := lic.sign("tresor", "pro", now, now+86400)
@@ -348,7 +349,7 @@ func TestBundleLicenses(t *testing.T) {
 					t.Fatalf("bundle.import: %+v %v", ev, err)
 				}
 			}
-			if _, err := g.st.GetLicense(ctx, site.ID, "tresor"); !errors.Is(err, store.ErrNotFound) {
+			if _, err := g.st.GetLicense(ctx, site.ID, pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("another holder's licence from a bundle: %v", err)
 			}
 			if r := apply("", licenses.BundleLicense{Name: "tresor", Token: tok, Upstreams: []store.Upstream{air}}); r.Counts["refused"] != 1 ||
@@ -363,7 +364,7 @@ func TestBundleLicenses(t *testing.T) {
 			if l := importSite(data, false).Licenses; l == nil || l.Counts["stored"] != 1 || l.Counts["refused"] != 0 || stored().HolderID != "acme" {
 				t.Fatalf("the tenant's holder's licence: %+v", l)
 			}
-			if err := svc.Remove(ctx, admin, "site", "tresor", 0); err != nil {
+			if err := svc.Remove(ctx, admin, "site", "", "tresor", 0); err != nil {
 				t.Fatal(err)
 			}
 			// a bundle with one of another holder: refused, the other stored
@@ -373,7 +374,7 @@ func TestBundleLicenses(t *testing.T) {
 				mixed.Counts["stored"] != 1 || stored().Token != tok {
 				t.Fatalf("a mixed bundle: %+v", mixed)
 			}
-			if err := svc.Remove(ctx, admin, "site", "tresor", 0); err != nil {
+			if err := svc.Remove(ctx, admin, "site", "", "tresor", 0); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := g.ten.SetTenantHolder(ctx, admin, "site", "", 0); err != nil {

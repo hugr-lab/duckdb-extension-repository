@@ -25,7 +25,7 @@ func TestDeleteAndReap(t *testing.T) {
 			if _, err := svc.CreateTenant(ctx, admin, "gone", "", "", ""); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.CreateChannel(ctx, admin, "gone", "prod", store.ChannelSigned); err != nil {
+			if _, err := svc.CreateChannel(ctx, admin, "gone", "prod", store.ChannelSigned, ""); err != nil {
 				t.Fatal(err)
 			}
 			var refusal *tenants.Refusal

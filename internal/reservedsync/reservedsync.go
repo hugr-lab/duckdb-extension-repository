@@ -16,6 +16,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/duckdbsrc"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -106,10 +107,10 @@ func (s *Sync) Once(ctx context.Context) ([]string, error) {
 	var fresh []string
 	held := map[string][]string{}
 	for _, n := range names {
-		if kinds[n] != "" {
+		if kinds[pkgtype.Of(n)] != "" { // DuckDB's community names are duckdb_extension's (spec 0034)
 			continue
 		}
-		ts, err := s.Store.TenantsWithReleases(ctx, n)
+		ts, err := s.Store.TenantsWithReleases(ctx, pkgtype.DuckDBExtension, n)
 		if err != nil {
 			return nil, err
 		}
@@ -135,13 +136,13 @@ func (s *Sync) Once(ctx context.Context) ([]string, error) {
 		added = nil
 		for _, n := range fresh {
 			// reserved since it was read (another writer): left as it is, without this source
-			if k, err := tx.ReservedKind(ctx, n); err != nil || k != "" {
+			if k, err := tx.ReservedKind(ctx, pkgtype.DuckDBExtension, n); err != nil || k != "" {
 				if err != nil {
 					return err
 				}
 				continue
 			}
-			changed, err := tx.ReserveName(ctx, n, store.ReservedCommunity, src)
+			changed, err := tx.ReserveName(ctx, pkgtype.DuckDBExtension, n, store.ReservedCommunity, src)
 			if err != nil {
 				return err
 			}

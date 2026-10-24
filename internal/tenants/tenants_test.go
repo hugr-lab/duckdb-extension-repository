@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -38,13 +39,13 @@ func TestTenantsService(t *testing.T) {
 			if tn, err := svc.CreateTenant(ctx, admin, "acme-eu", "", "default", ""); err != nil || tn.StorageDomain != "default" {
 				t.Fatalf("explicit domain: %+v %v", tn, err)
 			}
-			if _, err := svc.CreateChannel(ctx, admin, "acme", "prod", "mirror"); !errors.Is(err, store.ErrInvalid) {
+			if _, err := svc.CreateChannel(ctx, admin, "acme", "prod", "mirror", ""); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("bad kind: %v", err)
 			}
-			if _, err := svc.CreateChannel(ctx, admin, "nope", "prod", store.ChannelSigned); !errors.Is(err, store.ErrNotFound) {
+			if _, err := svc.CreateChannel(ctx, admin, "nope", "prod", store.ChannelSigned, ""); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("missing tenant: %v", err)
 			}
-			if _, err := svc.CreateChannel(ctx, admin, "acme", "prod", store.ChannelSigned); err != nil {
+			if _, err := svc.CreateChannel(ctx, admin, "acme", "prod", store.ChannelSigned, ""); err != nil {
 				t.Fatal(err)
 			}
 			if _, _, err := svc.AddVersion(ctx, admin, "v2.0.0", "nightly", nil, tenants.CoreExtensions{Names: []string{"json"}}); !errors.Is(err, store.ErrInvalid) {
@@ -73,7 +74,7 @@ func TestTenantsService(t *testing.T) {
 			if _, err := svc.AddVersionCore(ctx, admin, "v9.9.9", tenants.CoreExtensions{Names: []string{"json"}}); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("an unknown version: %v", err)
 			}
-			if l, _ := svc.Store.ListReservedNames(ctx, "kista_t1"); len(l) != 1 || !slices.Equal(l[0].Sources, []string{"version:v2.0.0", "version:v2.0.0@d54cbbe"}) {
+			if l, _ := svc.Store.ListReservedNames(ctx, pkgtype.DuckDBExtension, "kista_t1"); len(l) != 1 || !slices.Equal(l[0].Sources, []string{"version:v2.0.0", "version:v2.0.0@d54cbbe"}) {
 				t.Fatalf("sources: %+v", l)
 			}
 			v, err := svc.AddVersionCAPI(ctx, admin, "v2.0.0", "v2.0.0")

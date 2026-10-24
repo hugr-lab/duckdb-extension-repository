@@ -111,7 +111,7 @@ func (rr *rateReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-var publishParams = map[string]bool{"version": true, "platform": true, "visibility": true, "current": true}
+var publishParams = map[string]bool{"version": true, "platform": true, "visibility": true, "current": true, "type": true}
 
 // upload is a publication's request: what its parameters say, and its body read at the server's
 // least rate, holding an upload slot until done.
@@ -128,9 +128,9 @@ func (h *Handler) readUpload(w http.ResponseWriter, r *http.Request, c caller, c
 	q := r.URL.Query()
 	for k, vs := range q {
 		if !publishParams[k] || k == "current" && !current || len(vs) != 1 {
-			msg := "the parameters are version, platform, visibility and current, once each"
+			msg := "the parameters are version, platform, visibility, current and type, once each"
 			if !current {
-				msg = "the parameters are version, platform and visibility, once each"
+				msg = "the parameters are version, platform, visibility and type, once each"
 			}
 			problem(w, http.StatusBadRequest, typeInvalid, msg)
 			return upload{}, false
@@ -272,7 +272,7 @@ func (h *Handler) answerReleases(w http.ResponseWriter, r *http.Request, c calle
 	for _, x := range all {
 		byID[x.ID] = x
 	}
-	provided, err := h.o.Store.ProvidedNames(r.Context(), c.tenant.ID)
+	typ, provided, err := h.channelProvided(r.Context(), c, p)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -285,7 +285,7 @@ func (h *Handler) answerReleases(w http.ResponseWriter, r *http.Request, c calle
 	out := []releaseJSON{}
 	for _, rel := range rels {
 		if x, ok := byID[rel.ID]; ok {
-			out = append(out, releaseView(x, c, full, provided, src))
+			out = append(out, releaseView(typ, x, c, full, provided, src))
 		}
 	}
 	status := http.StatusCreated

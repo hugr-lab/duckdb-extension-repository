@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
@@ -71,7 +72,7 @@ func TestLicenseKeys(t *testing.T) {
 			t.Helper()
 			var ks []store.LicenseKey
 			inTx(t, s, func(tx *store.Tx) (err error) {
-				ks, err = tx.LiveLicenseKeys(ctx, tn.ID, "tresor", kind, src)
+				ks, err = tx.LiveLicenseKeys(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor", kind, src)
 				return err
 			})
 			var out []string
@@ -115,12 +116,12 @@ func TestLicenseKeys(t *testing.T) {
 			_, err := tx.SetChannelSource(ctx, prod.ID, "tresor", store.SourceTenant, "os:1:t")
 			return err
 		})
-		ks, err := s.TenantLicenseKeys(ctx, tn.ID, "")
+		ks, err := s.TenantLicenseKeys(ctx, tn.ID, pkgtype.DuckDBExtension, "")
 		if err != nil || len(ks) != 2 || ks[0].Kid != k1.Kid || ks[0].Builds != 1 ||
 			fmt.Sprint(ks[0].Sources) != "[{publisher p1} {upstream u1}]" || fmt.Sprint(ks[1].Sources) != "[{publisher p1}]" {
 			t.Fatalf("tenant keys: %+v %v", ks, err)
 		}
-		if ks, err := s.TenantLicenseKeys(ctx, tn.ID, "other"); err != nil || len(ks) != 0 {
+		if ks, err := s.TenantLicenseKeys(ctx, tn.ID, pkgtype.DuckDBExtension, "other"); err != nil || len(ks) != 0 {
 			t.Fatalf("another name's keys: %+v %v", ks, err)
 		}
 		kids, err := s.BuildKids(ctx, prod.ID)

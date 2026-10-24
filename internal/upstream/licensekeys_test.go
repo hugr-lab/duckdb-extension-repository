@@ -12,6 +12,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
@@ -20,7 +21,7 @@ import (
 // keysOf lists the tenant's live licence keys as name/kid/source lines.
 func (en *env) keysOf(t *testing.T) []string {
 	t.Helper()
-	ks, err := en.st.TenantLicenseKeys(ctx, en.tenantID(t), "")
+	ks, err := en.st.TenantLicenseKeys(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,10 +123,10 @@ func TestRelayLicenseKeys(t *testing.T) {
 			if err != nil || res.Counts["removed"] != 0 || res.Counts["refused"] != 2 || res.Refused[0].Rule != license.RuleKeyUntrusted {
 				t.Fatalf("the relay with the key refused: %+v %v", res, err)
 			}
-			if _, err := en.st.GetLicense(ctx, en.tenantID(t), "tresor"); err != nil {
+			if _, err := en.st.GetLicense(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); err != nil {
 				t.Fatalf("the relayed licence was removed: %v", err)
 			}
-			if _, err := svc.Import(ctx, admin, "acme", lic.sign("plain", "max", now, now+86400), licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
+			if _, err := svc.Import(ctx, admin, "acme", "", lic.sign("plain", "max", now, now+86400), licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
 				t.Fatalf("an import with a refused key: %v", err)
 			}
 		})

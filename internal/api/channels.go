@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -75,18 +76,24 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request, c caller
 	var in struct {
 		Name string `json:"name"`
 		Kind string `json:"kind"`
+		// PackageType is the type the channel serves (spec 0034): "" the default; never changed
+		PackageType string `json:"package_type"`
 	}
 	if !body(w, r, &in) {
 		return
 	}
 	a, _ := c.actor()
-	ch, err := h.o.Tenants.CreateChannel(r.Context(), a, p["t"], in.Name, in.Kind)
+	ch, err := h.o.Tenants.CreateChannel(r.Context(), a, p["t"], in.Name, in.Kind, in.PackageType)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
+	out := map[string]any{"name": ch.Name, "kind": ch.Kind}
+	if t := shownType(ch.PackageType); t != "" {
+		out["package_type"] = t
+	}
 	// a channel's GET is the index's channel detail: no version ETag, no If-Match on channels
-	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/channels/"+esc(ch.Name), map[string]any{"name": ch.Name, "kind": ch.Kind}, "-")
+	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/channels/"+esc(ch.Name), out, "-")
 }
 
 func (h *Handler) channelVersions(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -387,6 +394,20 @@ func (h *Handler) sourcesFor(ctx context.Context, tenantID, channelID string) (*
 	return &sourcesOf{labels: labels, selected: sel}, nil
 }
 
+// channelProvided is the path's channel's package type and the names of that type the tenant's
+// upstreams provide (spec 0034: an upstream's names are of its home channel's type).
+func (h *Handler) channelProvided(ctx context.Context, c caller, p params) (string, map[string]bool, error) {
+	typ, err := h.o.Store.ChannelType(ctx, c.tenant.ID, p["c"])
+	if errors.Is(err, store.ErrNotFound) {
+		typ, err = pkgtype.Default, nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	provided, err := h.o.Store.ProvidedNames(ctx, c.tenant.ID, typ)
+	return typ, provided, err
+}
+
 // channelIDOf is the channel of a list of releases ("" when empty).
 func channelIDOf(rs []store.Candidate) string {
 	if len(rs) == 0 {
@@ -397,11 +418,12 @@ func channelIDOf(rs []store.Candidate) string {
 
 // releaseView is a release for its readers: the extension's administrators see who changed it,
 // its publishers (spec 0008) do not.
-func releaseView(x store.Candidate, c caller, admin bool, provided map[string]bool, src *sourcesOf) releaseJSON {
+// The channel is of packageType (spec 0034: what a release shadows is DuckDB's).
+func releaseView(packageType string, x store.Candidate, c caller, admin bool, provided map[string]bool, src *sourcesOf) releaseJSON {
 	o := releaseJSON{ID: x.ID, Name: x.Name, Version: x.PackageVersion, Platform: x.Platform, Slot: x.Slot, ABI: x.ABI,
 		DuckDBVersion: x.DuckDBVersion, State: x.State, Visibility: x.Visibility, Seq: x.Seq, BodyHash: x.BodyHash,
 		CreatedAt: timeOf(x.CreatedAt), StateChangedAt: timeOf(x.StateChangedAt), Origin: x.Origin,
-		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(x, provided), ETag: versionTag(x.Version)}
+		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(packageType, x, provided), ETag: versionTag(x.Version)}
 	if src != nil {
 		o.Source, o.Selected = store.Label(src.labels, x.Source), src.selected[x.Name].Source == x.Source
 	}
@@ -466,7 +488,7 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request, c caller,
 	}
 	rs, next := paged(rs, releaseKey, limit, after) // oldest first: a cursor survives new releases
 	admin := h.isAdmin(r, c, p)
-	provided, err := h.o.Store.ProvidedNames(r.Context(), c.tenant.ID)
+	typ, provided, err := h.channelProvided(r.Context(), c, p)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -478,7 +500,7 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request, c caller,
 	}
 	out := []releaseJSON{}
 	for _, x := range rs {
-		out = append(out, releaseView(x, c, admin, provided, src))
+		out = append(out, releaseView(typ, x, c, admin, provided, src))
 	}
 	reply(w, r, http.StatusOK, list("releases", out, next), "", noStore)
 }
@@ -498,7 +520,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request, c caller, p
 		h.serviceErr(w, err, false)
 		return
 	}
-	provided, err := h.o.Store.ProvidedNames(r.Context(), c.tenant.ID)
+	typ, provided, err := h.channelProvided(r.Context(), c, p)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -510,7 +532,7 @@ func (h *Handler) getRelease(w http.ResponseWriter, r *http.Request, c caller, p
 	}
 	for _, x := range rs {
 		if x.ID == p["id"] {
-			reply(w, r, http.StatusOK, releaseView(x, c, h.isAdmin(r, c, p), provided, src), versionTag(x.Version), noStore)
+			reply(w, r, http.StatusOK, releaseView(typ, x, c, h.isAdmin(r, c, p), provided, src), versionTag(x.Version), noStore)
 			return
 		}
 	}

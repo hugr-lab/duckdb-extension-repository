@@ -47,7 +47,7 @@ func TestSDKLicenseBundle(t *testing.T) {
 	tok := vectors.Sign(signKey, vectors.Header(signKey), fmt.Sprintf(`{"v":1,"iss":"https://issuer.example","jti":"lic-bundle",`+
 		`"sub":"acme","holder":"Acme Test","ext":"kista_demo","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}`,
 		now-60, now+30*86400))
-	if _, err := src.licenses.Import(ctx, serveAdmin, "acme", tok, licenses.Create); err != nil {
+	if _, err := src.licenses.Import(ctx, serveAdmin, "acme", "", tok, licenses.Create); err != nil {
 		t.Fatal(err)
 	}
 	srcUp := &upstream.Service{Store: src.st, Releases: src.rel, Blob: src.blob, Authz: authz.ServerAdmin{}, Licenses: src.licenses,
