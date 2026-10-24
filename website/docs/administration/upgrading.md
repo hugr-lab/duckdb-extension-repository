@@ -91,6 +91,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0033_lazy_mirrors` | 33 | an older replica would run a lazy mirror as an eager one, fetching its whole matrix |
 | `0034_build_sources` | 34 | an older replica would refuse a second source's release of a version, or read another source's release as the slot's |
 | `0035_rule_modes` | 35 | an older replica's mirror runs would place a manual rule's new versions, and its collector remove landed builds |
+| `0036_catalogue_slots` | 36 | an older replica would take a second body of a version from a source in another channel |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -161,7 +162,19 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 35)
+## Upgrading to the next release (schema 36)
+
+### A version is immutable within its source in the whole tenant (spec 0033, phase A1 part 3)
+
+- **Migration `0036_catalogue_slots`** gives builds their slot and makes a source's version unique
+  in the tenant, and raises `min_reader` to 36: stop every older replica first.
+- Two bodies of one version a source released in two channels before are both kept, the released
+  one (else the oldest) holding the unique key and the others legacy duplicates; a new arrival of
+  another body is refused. The tenant's own source keeps the rule per channel.
+- `catalogue.max_entries` (20,000) and `catalogue.max_bytes` (100 GiB) bound each source's builds
+  placed nowhere; released builds do not count.
+- Builds landed by A1 part 2 (a mirror under a manual rule) are kept while their cell holds them;
+  the first hourly sweep leaves the others to the collector.
 
 ### A channel's rules take from the catalogue (spec 0033, phase A1 part 2)
 

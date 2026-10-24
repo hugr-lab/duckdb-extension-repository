@@ -567,6 +567,16 @@ Storage garbage collection. File-only. See [Storage](storage.md).
 While `gc.interval` is `0`, `kista admin blob gc -apply` and `kista admin release purge` need
 `-force`, because kista cannot tell that every replica runs a binary that knows about collection.
 
+## catalogue
+
+What one source (an upstream, a publisher, the tenant) holds in a tenant's catalogue (spec 0033).
+File-only. See [The catalogue](upstreams.md#the-catalogue-and-a-channels-rules).
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `catalogue.max_entries` | integer | `20000` | Builds placed nowhere per source; `100..10000000`. A new build beyond it is refused (`429` for a publication; a mirror's cell is `rejected`) until some are placed or purged; an administrator's add is not bounded. |
+| `catalogue.max_bytes` | size | `100GiB` | Their bodies per source; 1 GiB..1 PiB. |
+
 ## ui
 
 The administration console. File-only. See [Console](console.md).

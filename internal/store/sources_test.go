@@ -283,3 +283,55 @@ func TestMigrationRuleModes(t *testing.T) {
 		}
 	})
 }
+
+// Migration 0036 (spec 0033) gives builds their slot, and of two bodies of one version a source
+// released before (in two channels) keeps the oldest in the unique key, the other a legacy duplicate.
+func TestMigrationCatalogueSlots(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Fresh(t, 1)[0]
+		if err := store.MigrateTo(ctx, s, 35); err != nil {
+			t.Fatal(err)
+		}
+		now := store.TimeArg(s, time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC))
+		later := store.TimeArg(s, time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC))
+		id := func(k string) string { return k + "0000000-0000-0000-0000-000000000000" }
+		const tid = "t0000000-0000-0000-0000-000000000000"
+		build := func(b, ver, abi string, dv, capi any, h string, at any) []any {
+			return []any{"INSERT INTO builds (id, tenant_id, source, name, ext_version, platform, abi, duckdb_version, c_api_major, c_api_minor, c_api_patch, " +
+				"body_hash, origin, created_at, created_by, checked) VALUES (?, ?, 'upstream:u', 'acl', ?, 'linux_amd64', ?, ?, ?, ?, ?, ?, 'upstream', ?, 'os:1:t', ?)",
+				id(b), tid, ver, abi, dv, capi, capi, capi, strings.Repeat(h, 64), at, true}
+		}
+		for _, q := range [][]any{
+			{"INSERT INTO tenants (id, name, display_name, state, created_at, version) VALUES (?, 'acme', '', 'active', ?, 1)", tid, now},
+			build("a", "1.0", "cpp", "v2.0.0", nil, "1", now),
+			build("b", "1.0", "cpp", "v2.0.0", nil, "2", later), // the same version, another body: released in another channel
+			build("c", "2.0", "c_struct", nil, 1, "3", now),
+			build("d", "3.0", "cpp", "v2.0.0", nil, "4", now), // the older body of 3.0, released nowhere
+			build("e", "3.0", "cpp", "v2.0.0", nil, "5", later),
+			{"INSERT INTO channels (id, tenant_id, name, kind, created_at, version, release_version) VALUES (?, ?, 'prod', 'signed', ?, 1, 1)", id("x"), tid, now},
+			{"INSERT INTO releases (id, tenant_id, channel_id, build_id, source, name, ext_version, platform, slot, state, visibility, seq, created_at, " +
+				"created_by, state_changed_at, state_changed_by, version, origin) VALUES (?, ?, ?, ?, 'upstream:u', 'acl', '3.0', 'linux_amd64', 'v2.0.0', " +
+				"'active', 'public', 1, ?, 'os:1:t', ?, 'os:1:t', 1, 'upstream')", id("r"), tid, id("x"), id("e"), later, later},
+		} {
+			if err := store.ExecRaw(ctx, s, q[0].(string), q[1:]...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var slots, legacy []string
+		inTx(t, s, func(tx *store.Tx) error {
+			var err error
+			if slots, err = store.QueryStrings(ctx, tx, "SELECT slot FROM builds ORDER BY id"); err != nil {
+				return err
+			}
+			legacy, err = store.QueryStrings(ctx, tx, "SELECT id FROM builds WHERE legacy_duplicate = ? ORDER BY id", true)
+			return err
+		})
+		// the released body of 3.0 holds the key, the older one released nowhere is the duplicate
+		if strings.Join(slots, " ") != "v2.0.0 v2.0.0 capi:1 v2.0.0 v2.0.0" || len(legacy) != 2 || legacy[0] != id("b") || legacy[1] != id("d") {
+			t.Fatalf("slots %v, legacy %v", slots, legacy)
+		}
+	})
+}

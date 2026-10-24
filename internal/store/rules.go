@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -214,4 +215,173 @@ WHERE r.tenant_id = ? AND r.source = ? AND r.name = ? ORDER BY c.name`, []any{te
 		return nil
 	})
 	return out, err
+}
+
+// ErrCatalogueSlot is a build refused because its source has another body of the version in the
+// slot (spec 0033: a version is immutable within its source in the whole tenant).
+var ErrCatalogueSlot = errors.New("store: the source's slot holds another body; a fix is a new version")
+
+// ErrCatalogueFull is a build refused because its source holds as many entries or bytes as it may
+// (spec 0033: catalogue.max_entries, catalogue.max_bytes).
+var ErrCatalogueFull = errors.New("store: the source's catalogue is full")
+
+// SourceUsage is how many builds a tenant's source holds placed nowhere (its catalogue's backlog:
+// released builds are the channels'), and their bodies' bytes.
+func (s *Store) SourceUsage(ctx context.Context, tenantID, source string) (entries int, bytes int64, err error) {
+	var n sql.NullInt64
+	err = s.db.QueryRowContext(ctx, s.d.rebind(`SELECT COUNT(*), SUM(bl.body_len) FROM builds b JOIN tenants t ON t.id = b.tenant_id
+LEFT JOIN blobs bl ON bl.domain = t.storage_domain AND bl.body_hash = b.body_hash WHERE b.tenant_id = ? AND b.source = ?
+AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)`), tenantID, source).Scan(&entries, &n)
+	return entries, n.Int64, err
+}
+
+// LandedBuild is a build landed in the catalogue without a release (TrimLanded's reads).
+type LandedBuild struct{ ID, TenantID, Source, Name, Version, Platform, Slot, BodyHash string }
+
+const landedCols = "id, tenant_id, source, name, ext_version, platform, slot, body_hash"
+
+func scanLanded(out *[]LandedBuild) func(sc func(...any) error) error {
+	return func(sc func(...any) error) error {
+		var b LandedBuild
+		if err := sc(&b.ID, &b.TenantID, &b.Source, &b.Name, &b.Version, &b.Platform, &b.Slot, &b.BodyHash); err != nil {
+			return err
+		}
+		*out = append(*out, b)
+		return nil
+	}
+}
+
+// CrowdedLanded lists the landed builds of a publisher's or the tenant's (tenant, source, name,
+// platform, slot) that has more than keep landed versions.
+func (s *Store) CrowdedLanded(ctx context.Context, keep int) ([]LandedBuild, error) {
+	var out []LandedBuild
+	err := s.eachRow(ctx, "SELECT "+landedCols+` FROM builds b WHERE landed = ? AND source NOT LIKE 'upstream:%' AND EXISTS (
+SELECT 1 FROM builds o WHERE o.landed = ? AND o.tenant_id = b.tenant_id AND o.source = b.source AND o.name = b.name AND o.platform = b.platform
+	AND o.slot = b.slot GROUP BY o.tenant_id HAVING COUNT(DISTINCT o.ext_version) > ?)`, []any{true, true, keep}, scanLanded(&out))
+	return out, err
+}
+
+// StaleMirrorLanded lists a mirror's landed builds whose cell holds another body now (the cell moved
+// on), or whose upstream is gone.
+func (s *Store) StaleMirrorLanded(ctx context.Context) ([]LandedBuild, error) {
+	var out []LandedBuild
+	err := s.eachRow(ctx, "SELECT "+landedCols+" FROM builds b WHERE landed = ? AND source LIKE 'upstream:%'", []any{true}, scanLanded(&out))
+	if err != nil {
+		return nil, err
+	}
+	var stale []LandedBuild
+	for _, b := range out {
+		var n int
+		if err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM upstream_cells WHERE upstream_id = ? AND name = ? AND body_hash = ?"),
+			strings.TrimPrefix(b.Source, SourceUpstreamPrefix), b.Name, b.BodyHash).Scan(&n); err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			stale = append(stale, b)
+		}
+	}
+	return stale, nil
+}
+
+// Unland lets the collector take builds landed in the catalogue that wait no more (spec 0033: an
+// older version than those a source's name keeps): their grace starts now.
+func (s *Store) Unland(ctx context.Context, ids []string) error {
+	return s.InTx(ctx, "", func(tx *Tx) error {
+		for _, id := range ids {
+			if _, err := tx.exec(ctx, `UPDATE builds SET landed = ?, used_at = ? WHERE id = ? AND landed = ?
+AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = builds.id)`, false, tx.s.d.timeArg(tx.Now()), id, true); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// DeleteEntry deletes a tenant's build that no release holds (spec 0033: an entry purged from the
+// catalogue; its slot is free, since no one could have installed it), with its licence-key records;
+// the collector removes the body. It returns the build.
+func (t *Tx) DeleteEntry(ctx context.Context, tenantID, id string) (Build, error) {
+	b, err := scanBuild(t.queryRow(ctx, "SELECT "+buildCols+" FROM builds WHERE id = ? AND tenant_id = ?", id, tenantID))
+	if err != nil {
+		return Build{}, notFound(err, "build "+id)
+	}
+	var n int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM releases WHERE build_id = ?", id).Scan(&n); err != nil {
+		return Build{}, err
+	}
+	if n > 0 {
+		return Build{}, fmt.Errorf("%w: the build is released; yank and purge its releases first", ErrConflict)
+	}
+	// a build once released (its release purged since) was installable: it stays, its slot taken
+	if err := t.queryRow(ctx, `SELECT COUNT(*) FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = ?
+AND p.source = ? AND p.name = ? AND p.ext_version = ? AND p.platform = ? AND p.slot = ? AND p.body_hash = ?`,
+		tenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n); err != nil {
+		return Build{}, err
+	}
+	if n > 0 {
+		return Build{}, fmt.Errorf("%w: the build was released (its release purged since): it stays in the catalogue", ErrConflict)
+	}
+	if _, err := t.exec(ctx, "DELETE FROM build_license_keys WHERE build_id = ?", id); err != nil {
+		return Build{}, err
+	}
+	if _, err := t.exec(ctx, "DELETE FROM builds WHERE id = ?", id); err != nil {
+		if t.s.d.foreignKey(err) { // a placement released it meanwhile
+			return Build{}, fmt.Errorf("%w: the build was just released", ErrConflict)
+		}
+		return Build{}, err
+	}
+	// a mirror's cell that landed it fetches it again at its next run
+	if id, ok := strings.CutPrefix(b.Source, SourceUpstreamPrefix); ok {
+		if _, err := t.exec(ctx, "UPDATE upstream_cells SET etag = NULL WHERE upstream_id = ? AND name = ? AND body_hash = ?", id, b.Name, b.BodyHash); err != nil {
+			return Build{}, err
+		}
+	}
+	return b, nil
+}
+
+// DuckDBVersionKnown reports whether a DuckDB version is registered on the server.
+func (s *Store) DuckDBVersionKnown(ctx context.Context, name string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM duckdb_versions WHERE name = ?"), name).Scan(&n)
+	return n > 0, err
+}
+
+// BuildOf reads a tenant's build of a name and body from a source; ok is false when there is none.
+func (s *Store) BuildOf(ctx context.Context, tenantID, source, name, bodyHash string) (b Build, ok bool, err error) {
+	b, err = scanBuild(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND body_hash = ?"),
+		tenantID, source, name, bodyHash))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Build{}, false, nil
+	}
+	return b, err == nil, err
+}
+
+// SlotTaken refuses a build of a source other than the tenant's own when the source's slot holds
+// another body, among its builds (legacy duplicates included) or its purged slots in the tenant's
+// channels (spec 0033: a version is immutable within its source, even once its build is gone). A
+// slot purged before slots had a source ('*') stays a matter of its own channel.
+func (t *Tx) SlotTaken(ctx context.Context, b Build) error {
+	if b.Source == SourceTenant || b.Source == "" {
+		return nil // everyone who may publish in the tenant: the rule stays per channel
+	}
+	var n int
+	err := t.queryRow(ctx, `SELECT COUNT(*) FROM builds WHERE tenant_id = ? AND source = ? AND name = ? AND ext_version = ? AND platform = ?
+AND slot = ? AND body_hash <> ?`, b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n)
+	if err == nil && n == 0 {
+		err = t.queryRow(ctx, `SELECT COUNT(*) FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = ?
+AND p.source = ? AND p.name = ? AND p.ext_version = ? AND p.platform = ? AND p.slot = ? AND p.body_hash <> ?`,
+			b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.Slot(), b.BodyHash).Scan(&n)
+	}
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return fmt.Errorf("%w: %s %s %s %s", ErrCatalogueSlot, b.Name, b.ExtVersion, b.Platform, b.Slot())
+	}
+	return nil
+}
+
+// SlotTaken is the read before a body is stored (the insert checks again).
+func (s *Store) SlotTaken(ctx context.Context, b Build) error {
+	return s.InTx(ctx, "", func(tx *Tx) error { return tx.SlotTaken(ctx, b) })
 }

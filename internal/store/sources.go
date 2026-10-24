@@ -346,7 +346,14 @@ AND NOT EXISTS (SELECT 1 FROM releases o WHERE o.channel_id = r.channel_id AND o
 			return 0, err
 		}
 		b.ID, b.Source = "", to
-		if err := t.FindOrInsertBuild(ctx, &b); err != nil {
+		if err := t.FindOrInsertBuild(ctx, &b); errors.Is(err, ErrCatalogueSlot) {
+			// the successor holds the version with another body: the copy is a legacy duplicate
+			b.ID, b.Legacy = "", true
+			err = t.FindOrInsertBuild(ctx, &b)
+			if err != nil {
+				return 0, err
+			}
+		} else if err != nil {
 			return 0, err
 		}
 		if _, err := t.exec(ctx, "UPDATE releases SET source = ?, build_id = ?, version = version + 1 WHERE id = ?", to, b.ID, m.id); err != nil {

@@ -319,8 +319,16 @@ Tenant shadows (below) are a passthrough channel's matter and stay as they are.
 ## The catalogue and a channel's rules
 
 Every build that arrives in a tenant, mirrored or published, is a build of its source in the
-tenant's **catalogue** (spec 0033), and channels may take it from there: a build is kept while a
-release holds it, or while it waits as landed (below); others are collected as before (spec 0016).
+tenant's **catalogue** (spec 0033), and channels may take it from there. A version is immutable
+within its source in the whole tenant: another body of a version an upstream or a publisher has, or
+had once released, is refused in any channel or in the catalogue (`409`; a mirror's cell is
+`conflict`). The tenant's own source (`tenant`, everyone who may publish in it) keeps the rule per
+channel. A build is kept while a release holds it, or while it waits as landed: a mirror's version
+under a manual rule (below) while its cell holds it, or a build published into the catalogue only,
+the three newest landed versions of each (source, name, platform, slot); the placement pass's
+hourly sweep leaves the others to the collector (spec 0016). A source's builds placed nowhere are
+bounded by `catalogue.max_entries` and `catalogue.max_bytes` ([configuration](configuration.md#catalogue));
+an administrator's add is not.
 A channel takes from the catalogue by its **rule** for each name: the source above, and a **mode**
 an administrator gives it.
 
@@ -350,6 +358,12 @@ an administrator gives it.
 - **Reading the catalogue**: `kista admin catalogue list <tenant>` and `catalogue show <tenant>
   <source> <name>`, or `GET /api/v1/tenants/{t}/catalogue` and `…/catalogue/{source}/extensions/{ext}`
   (tenant administrators).
+- **Publishing into the catalogue only**: `POST /api/v1/tenants/{t}/catalogue/extensions/{ext}/builds`
+  (see [Publishing](publishing.md#publishing-into-the-catalogue)), or `kista admin catalogue add`.
+- **Purging an entry**: `kista admin catalogue purge <tenant> <build-id>` or `DELETE
+  /api/v1/tenants/{t}/catalogue/builds/{id}` (tenant administrators) deletes a build that was never
+  released (`409` otherwise); since no one could have installed it, its slot is free again, and a
+  mirror's cell that landed it fetches it again.
 
 ## Passthrough channels
 

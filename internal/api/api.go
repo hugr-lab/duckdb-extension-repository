@@ -609,7 +609,13 @@ func init() {
 		{"tenants/{t}/channels/{c}/duckdb-versions/{v}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeChannelVersion)}},
 		// spec 0033: the tenant's catalogue, read by its administrators
 		{"tenants/{t}/catalogue", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).catalogue)}},
+		// publishing into the catalogue only: publish on the name tenant-wide (a publisher's signed
+		// request); before the entry's route, which an extension named "extensions" would match
+		{"tenants/{t}/catalogue/extensions/{ext}/builds", map[string]rule{
+			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPublish}, manage: true, raw: true, publishers: true,
+				handle: (*Handler).publishToCatalogue}}},
 		{"tenants/{t}/catalogue/{source}/extensions/{ext}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).catalogueEntry)}},
+		{"tenants/{t}/catalogue/builds/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).purgeEntry)}},
 		// spec 0031: a name's source in a channel ({name}, not {ext}: a channel's administrators)
 		{"tenants/{t}/channels/{c}/sources", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelSources)}},
 		{"tenants/{t}/channels/{c}/sources/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelSource),

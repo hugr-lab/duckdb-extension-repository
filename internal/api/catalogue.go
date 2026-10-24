@@ -61,16 +61,7 @@ func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c calle
 	for _, v := range vs {
 		vj := versionJSON{Version: v.Version, Builds: []catalogueBuildJSON{}}
 		for _, b := range v.Builds {
-			bj := catalogueBuildJSON{ID: b.ID, Platform: b.Platform, Slot: b.Slot(), ABI: b.ABI, DuckDBVersion: b.DuckDBVersion,
-				BodyHash: b.BodyHash, Visibility: b.Visibility, Origin: b.Origin, Checked: b.Checked, CreatedAt: timeOf(b.CreatedAt),
-				Placed: b.Placed}
-			if b.CAPI != nil {
-				bj.CAPI = b.CAPI.String()
-			}
-			if bj.Placed == nil {
-				bj.Placed = []store.Placed{}
-			}
-			vj.Builds = append(vj.Builds, bj)
+			vj.Builds = append(vj.Builds, catalogueBuildOf(b.Build, b.Placed))
 		}
 		out = append(out, vj)
 	}
@@ -104,4 +95,50 @@ func (h *Handler) placeRelease(w http.ResponseWriter, r *http.Request, c caller,
 		return
 	}
 	h.answerReleases(w, r, c, p, rels, existed, false)
+}
+
+// publishToCatalogue publishes into the tenant's catalogue only (spec 0033): publish on the name
+// tenant-wide, the same request as a channel's publication without "current".
+func (h *Handler) publishToCatalogue(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	u, ok := h.readUpload(w, r, c, false)
+	if !ok {
+		return
+	}
+	defer u.done()
+	a, _ := c.actor()
+	b, existed, err := h.o.Releases.AddToCatalogue(r.Context(), a, p["t"], u.body, release.AddOptions{
+		Name: p["ext"], Private: u.private, NoWait: true,
+		Publish: &release.Publication{Version: u.version, Platform: u.platform, Provenance: provenance(a, c), KeySources: keySources(c),
+			Statement: c.statement(), Signature: c.signature()},
+	})
+	if err != nil {
+		h.publishErr(w, err, false)
+		return
+	}
+	code := http.StatusCreated
+	if existed {
+		code = http.StatusOK
+	}
+	reply(w, r, code, catalogueBuildOf(b, nil), "", noStore)
+}
+
+func (h *Handler) purgeEntry(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	if _, err := h.o.Releases.PurgeEntry(r.Context(), a, p["t"], p["id"]); err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	noContent(w)
+}
+
+func catalogueBuildOf(b store.Build, placed []store.Placed) catalogueBuildJSON {
+	bj := catalogueBuildJSON{ID: b.ID, Platform: b.Platform, Slot: b.Slot(), ABI: b.ABI, DuckDBVersion: b.DuckDBVersion,
+		BodyHash: b.BodyHash, Visibility: b.Visibility, Origin: b.Origin, Checked: b.Checked, CreatedAt: timeOf(b.CreatedAt), Placed: placed}
+	if b.CAPI != nil {
+		bj.CAPI = b.CAPI.String()
+	}
+	if bj.Placed == nil {
+		bj.Placed = []store.Placed{}
+	}
+	return bj
 }

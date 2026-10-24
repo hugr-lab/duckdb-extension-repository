@@ -135,6 +135,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   the tenant's catalogue: each source's names and versions,
                                                   and the channels whose rule takes them (spec 0033)
   catalogue show <tenant> <source> <name>         an entry's versions, builds and where each is released
+  catalogue add <tenant> <file|-> -name <name> [-private]
+                                                  put a build into the catalogue only, placed nowhere
+  catalogue purge <tenant> <build-id>             delete a build no release holds; its slot is free again
   publisher add|remove <tenant> <name>          an identity that only publishes and promotes
   publisher list <tenant>
   publisher license-keys <tenant> <name> on|off  mark it a source of licence keys (spec 0021): its publications
@@ -2733,16 +2736,49 @@ func dash(s string) string {
 	return s
 }
 
-// catalogue lists a tenant's catalogue or shows one entry (spec 0033).
+// catalogue lists a tenant's catalogue, shows one entry, adds a build or purges one (spec 0033).
 func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) error {
 	fs := flag.NewFlagSet("catalogue", flag.ContinueOnError)
 	source := fs.String("source", "", "")
 	name := fs.String("name", "", "")
+	private := fs.Bool("private", false, "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	switch {
+	case sub == "add" && len(pos) == 2 && *name != "":
+		in := a.in
+		if pos[1] != "-" {
+			f, err := os.Open(pos[1])
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			in = f
+		}
+		svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.NewTextHandler(a.errw, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = svc.Close() }()
+		a.svc.WithBlob(svc)
+		b, existed, err := a.svc.Releases.AddToCatalogue(ctx, a.actor, pos[0], in, release.AddOptions{Name: *name, Private: *private})
+		if err != nil {
+			return err
+		}
+		if existed {
+			fmt.Fprintln(a.errw, "the catalogue already holds the build")
+		} else {
+			a.logf("catalogue add %s %s %s %s %s", pos[0], b.Name, b.ExtVersion, b.Platform, b.Slot())
+		}
+		fmt.Fprintln(a.out, b.ID)
+	case sub == "purge" && len(pos) == 2:
+		b, err := a.svc.Releases.PurgeEntry(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		a.logf("catalogue purge %s %s %s %s %s", pos[0], b.Name, b.ExtVersion, b.Platform, b.Slot())
 	case sub == "list" && len(pos) == 1:
 		es, err := a.svc.Releases.Catalogue(ctx, a.actor, pos[0], *source, *name)
 		if err != nil {

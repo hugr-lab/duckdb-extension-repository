@@ -194,6 +194,7 @@ func TestPromote(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		// the tenant's own source keeps a version's rule per channel (spec 0033): another body in prod
 		conflict := built(t, cpp("3.0"), "tresor_duckdb_cpp_init", "helper")
 		if _, _, err := en.addTo(t, "prod", conflict, publish("tresor", "3.0", "linux_amd64")); err != nil {
 			t.Fatal(err)

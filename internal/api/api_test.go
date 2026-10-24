@@ -178,7 +178,7 @@ func newEnv(t *testing.T) *env {
 	add("demo-v1", "prod", "demo", capi("0.1", "v1.2.0"), 4, false)
 	add("demo-v2", "prod", "demo", capi("0.1", "v2.0.0"), 5, false)
 	add("acl", "prod", "acl", cpp("1.0"), 6, true)
-	add("acl-staging", "staging", "acl", cpp("1.0"), 7, true)
+	add("acl-staging", "staging", "acl", cpp("1.0"), 6, true)       // spec 0033: a version is one body within its source
 	add("tresor-1.2", "prod", "tresor", cpp("1.2"), 8, false, true) // published, not current
 	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", en.ids["tresor-0.9"], release.Yank, 0); err != nil {
 		t.Fatal(err)

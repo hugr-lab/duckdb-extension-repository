@@ -175,6 +175,9 @@ func TestAdminCLI(t *testing.T) {
 		t.Fatalf("catalogue show: %q", got)
 	}
 	run(1, "release", "place", "acme/prod", "-name", "tresor", "-source", "tenant", "-version", "1.0") // added unchecked
+	run(1, "catalogue", "add", "acme", file, "-name", "tresor")                                        // not a binary: the checks refuse it
+	run(2, "catalogue", "add", "acme", file)                                                           // no -name
+	run(1, "catalogue", "purge", "acme", "nothere")
 	run(2, "release", "place", "acme/prod", "-name", "tresor", "-source", "tenant")
 	if got := run(0, "release", "list", "acme/prod"); !strings.Contains(got, rid) || !strings.Contains(got, "public") {
 		t.Fatalf("release list: %q", got)

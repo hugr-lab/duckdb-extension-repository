@@ -73,6 +73,11 @@ type Build struct {
 	// Visibility and Provenance are as its arrival made its release (spec 0033): the widest a
 	// placement serves it with, and the facts a placement's release carries (a credential).
 	Visibility, Provenance string
+	// Legacy inserts it as a legacy duplicate, outside its source's slot (spec 0033): only a successor's
+	// copy of a removed upstream's build, whose slot the successor holds with another body. Never read.
+	Legacy bool
+	// Inserted is set by FindOrInsertBuild when it inserted the build (not found it).
+	Inserted bool
 }
 
 // Release is a Build in a channel.
@@ -205,10 +210,16 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	if len(b.OriginSignature) > 0 {
 		sig = b.OriginSignature
 	}
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	if !b.Legacy {
+		if err := t.SlotTaken(ctx, *b); err != nil {
+			return err
+		}
+	}
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, legacy_duplicate, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		b.ID, b.TenantID, b.Source, b.Name, b.ExtVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
 		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, b.Visibility, nullable(b.Provenance),
-		t.s.d.timeArg(b.CreatedAt))
+		b.Slot(), b.Legacy, t.s.d.timeArg(b.CreatedAt))
+	b.Inserted = err == nil
 	return t.s.mapErr(err, "build "+b.Name)
 }
 

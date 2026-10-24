@@ -171,6 +171,8 @@ var catalogue = map[Kind][]string{
 	"release.publish":   {"release", "name", "version", "platform", "slot", "body_hash", "visibility", "current", "shadows", "provenance"},
 	"release.promote":   {"releases", "name", "from_channel", "version", "shadows", "provenance"},
 	"release.place":     {"releases", "name", "version", "source", "placed"}, // spec 0033: by hand, auto or manual
+	"catalogue.arrival": {"build", "name", "version", "platform", "slot", "body_hash", "source", "visibility", "provenance"},
+	"catalogue.purge":   {"build", "name", "version", "platform", "slot", "body_hash"},
 	"release.yank":      {"release", "name", "version", "platform"},
 	"release.deprecate": {"release", "name", "version", "platform"},
 	"release.activate":  {"release", "name", "version", "platform"},
@@ -281,7 +283,7 @@ func SubjectForm(k Kind) string {
 		"channel": "channel:<channel>", "key": "channel:<channel>/key:<id>", "issuer": "issuer:<name>", "grant": "grant:<id>",
 		"publisher": "publisher:<name>", "release": release, "usage": "channel:<channel>", "block": "block:<body hash>", "upstream": "upstream:<name>",
 		"shadow": "shadow:<name>", "extension_group": "extension-group:<name>", "attachment": "ext:<name>/attachment:<id>",
-		"attestation_key": "attestation-key:<id>", "feed": "feed:<name>", "license": "license:<name>"}[prefix]
+		"attestation_key": "attestation-key:<id>", "feed": "feed:<name>", "license": "license:<name>", "catalogue": "ext:<name>"}[prefix]
 }
 
 // Known reports whether a kind is in the catalogue.
