@@ -138,3 +138,96 @@ func TestChannelSources(t *testing.T) {
 		})
 	})
 }
+
+// Migration 0034 (spec 0033) gives each build its source, splitting a build whose releases name two
+// sources (spec 0031's same-body rule) into one per source, each with its source's licence-key
+// records; slots purged before stay taken for every source.
+func TestMigrationBuildSources(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Fresh(t, 1)[0]
+		if err := store.MigrateTo(ctx, s, 33); err != nil {
+			t.Fatal(err)
+		}
+		now := store.TimeArg(s, time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC))
+		later := store.TimeArg(s, time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC))
+		id := func(k string) string { return k + "0000000-0000-0000-0000-000000000000" }
+		hash := func(c string) string { return strings.Repeat(c, 64) }
+		const tid = "t0000000-0000-0000-0000-000000000000"
+		pub := "publisher:" + id("p")
+		rel := func(r, ch, b, source string, seq int, at any) []any {
+			return []any{"INSERT INTO releases (id, tenant_id, channel_id, build_id, name, ext_version, platform, slot, state, visibility, seq, created_at, " +
+				"created_by, state_changed_at, state_changed_by, version, origin, source) VALUES (?, ?, ?, ?, 'acl', '1.0', 'linux_amd64', 'v2.0.0', 'active', " +
+				"'public', ?, ?, 'os:1:t', ?, 'os:1:t', 1, 'admin', ?)", id(r), tid, id(ch), id(b), seq, at, at, source}
+		}
+		for _, q := range [][]any{
+			{"INSERT INTO tenants (id, name, display_name, state, created_at, version) VALUES (?, 'acme', '', 'active', ?, 1)", tid, now},
+			{"INSERT INTO channels (id, tenant_id, name, kind, created_at, version, release_version) VALUES (?, ?, 'prod', 'signed', ?, 1, 1)", id("c"), tid, now},
+			{"INSERT INTO channels (id, tenant_id, name, kind, created_at, version, release_version) VALUES (?, ?, 'staging', 'signed', ?, 1, 1)", id("d"), tid, now},
+			{"INSERT INTO builds (id, tenant_id, name, ext_version, platform, abi, duckdb_version, body_hash, origin, created_at, created_by, checked) " +
+				"VALUES (?, ?, 'acl', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', ?, 'admin', ?, 'os:1:t', ?)", id("a"), tid, hash("1"), now, true},
+			{"INSERT INTO builds (id, tenant_id, name, ext_version, platform, abi, duckdb_version, body_hash, origin, created_at, created_by, checked) " +
+				"VALUES (?, ?, 'idle', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', ?, 'admin', ?, 'os:1:t', ?)", id("b"), tid, hash("2"), now, true},
+			// a build whose releases were purged: its source from who made it
+			{"INSERT INTO upstreams (id, tenant_id, name, kind, channel_id, mode, visibility, state, version, request_dry_run, created_at, created_by) " +
+				"VALUES (?, ?, 'repo', 'repository', ?, 'mirror', 'public', 'active', 1, ?, ?, 'os:1:t')", id("u"), tid, id("c"), false, now},
+			{"INSERT INTO builds (id, tenant_id, name, ext_version, platform, abi, duckdb_version, body_hash, origin, created_at, created_by, checked) " +
+				"VALUES (?, ?, 'gone', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', ?, 'upstream', ?, 'system:upstream:acme/repo', ?)", id("e"), tid, hash("4"), now, true},
+			{"INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at) VALUES (?, ?, 'sha256:k', 'pem', 'publisher', ?, ?)",
+				tid, id("a"), id("p"), now},
+			// the tenant released the body in prod, the publisher the same body in staging (it took the
+			// tenant's build: one build per (tenant, name, body) then)
+			rel("1", "c", "a", "tenant", 1, now),
+			rel("2", "d", "a", pub, 1, later),
+			{"INSERT INTO purged_slots (channel_id, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at) " +
+				"VALUES (?, 'acl', '0.9', 'linux_amd64', 'v2.0.0', 'cpp', ?, 7, ?, ?)", id("c"), hash("3"), id("9"), now},
+		} {
+			if err := store.ExecRaw(ctx, s, q[0].(string), q[1:]...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var prod, staging store.Release
+		var prodBuild, stagingBuild, idle, gone store.Build
+		var keys []string
+		var purged []store.Candidate
+		inTx(t, s, func(tx *store.Tx) error {
+			var err error
+			if prod, err = tx.GetRelease(ctx, id("c"), id("1")); err != nil {
+				return err
+			}
+			if staging, err = tx.GetRelease(ctx, id("d"), id("2")); err != nil {
+				return err
+			}
+			if prodBuild, err = tx.GetBuild(ctx, prod.BuildID); err != nil {
+				return err
+			}
+			if stagingBuild, err = tx.GetBuild(ctx, staging.BuildID); err != nil {
+				return err
+			}
+			if idle, err = tx.GetBuild(ctx, id("b")); err != nil {
+				return err
+			}
+			if gone, err = tx.GetBuild(ctx, id("e")); err != nil {
+				return err
+			}
+			if purged, err = tx.SlotCandidates(ctx, id("c"), pub, "acl", "0.9", "linux_amd64"); err != nil {
+				return err
+			}
+			keys, err = store.QueryStrings(ctx, tx, "SELECT build_id FROM build_license_keys ORDER BY build_id")
+			return err
+		})
+		if prodBuild.ID != id("a") || prodBuild.Source != "tenant" || stagingBuild.ID == id("a") || stagingBuild.Source != pub ||
+			stagingBuild.BodyHash != hash("1") || !stagingBuild.Checked || idle.Source != "tenant" || gone.Source != "upstream:"+id("u") {
+			t.Fatalf("builds: %+v %+v %+v %+v", prodBuild, stagingBuild, idle, gone)
+		}
+		// the publisher's key goes with the publisher's build
+		if len(keys) != 1 || keys[0] != stagingBuild.ID {
+			t.Fatalf("keys: %v", keys)
+		}
+		if len(purged) != 1 || purged[0].State != store.ReleasePurged || purged[0].Seq != 7 {
+			t.Fatalf("the purged slot, for another source: %+v", purged)
+		}
+	})
+}

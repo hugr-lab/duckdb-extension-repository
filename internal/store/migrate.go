@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"embed"
 	"errors"
 	"fmt"
@@ -24,12 +25,16 @@ type migration struct {
 	name       string
 	minReader  int
 	statements []string
+	// foreignKeysOff runs it, on SQLite, with foreign keys off on its connection and checks them before
+	// it commits: SQLite's way to rebuild a table other tables reference ("-- +foreign_keys_off").
+	foreignKeysOff bool
 }
 
 var (
 	migrationName = regexp.MustCompile(`^(\d{4})_([a-z0-9_]+)\.sql$`)
 	minReaderLine = regexp.MustCompile(`(?m)^-- \+min_reader (\d+)\s*$`)
 	statementLine = regexp.MustCompile(`(?m)^-- \+statement\s*$`)
+	fkOffLine     = regexp.MustCompile(`(?m)^-- \+foreign_keys_off\s*$`)
 	crlf          = strings.NewReplacer("\r\n", "\n")
 )
 
@@ -68,14 +73,15 @@ func parseMigrations(fsys fs.FS, dir string) ([]migration, error) {
 		if r := minReaderLine.FindStringSubmatch(body); r != nil {
 			minReader, _ = strconv.Atoi(r[1])
 		}
+		fkOff := fkOffLine.MatchString(body)
 		var stmts []string
 		for _, s := range statementLine.Split(body, -1) {
-			s = strings.TrimSpace(minReaderLine.ReplaceAllString(s, ""))
+			s = strings.TrimSpace(fkOffLine.ReplaceAllString(minReaderLine.ReplaceAllString(s, ""), ""))
 			if s != "" {
 				stmts = append(stmts, s)
 			}
 		}
-		out = append(out, migration{version: v, name: m[2], minReader: minReader, statements: stmts})
+		out = append(out, migration{version: v, name: m[2], minReader: minReader, statements: stmts, foreignKeysOff: fkOff})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
 	for i, m := range out {
@@ -135,38 +141,125 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 }
 
+// errMigratePath is a migration that needs the other path (with or without SQLite's foreign keys)
+// than the one chosen before the lock: another process applied one in between. migrateOne chooses
+// again.
+var errMigratePath = errors.New("store: the next migration needs the other path")
+
 // migrateOne applies the first pending migration in its own transaction; it reports whether one was
 // applied.
 func (s *Store) migrateOne(ctx context.Context, ms []migration) (bool, error) {
+	for try := 0; ; try++ {
+		applied, err := s.migrateOnce(ctx, ms)
+		if !errors.Is(err, errMigratePath) || try == 3 {
+			return applied, err
+		}
+	}
+}
+
+func (s *Store) migrateOnce(ctx context.Context, ms []migration) (bool, error) {
+	if s.d.Name == "sqlite" {
+		if _, err := s.db.ExecContext(ctx, s.bootstrapSQL()); err != nil {
+			return false, fmt.Errorf("store: creating schema_migrations: %w", err)
+		}
+		current, _, err := s.schemaState(ctx, s.db)
+		if err != nil {
+			return false, err
+		}
+		if current < len(ms) && ms[current].foreignKeysOff {
+			return s.migrateForeignKeysOff(ctx, ms)
+		}
+	}
 	applied := false
 	err := s.tx(ctx, []string{"kista/migrate"}, func(tx *Tx) error {
-		if _, err := tx.tx.ExecContext(ctx, s.bootstrapSQL()); err != nil {
-			return fmt.Errorf("store: creating schema_migrations: %w", err)
-		}
-		current, minReader, err := s.schemaState(ctx, tx.tx)
-		if err != nil {
-			return err
-		}
-		if minReader > len(ms) {
-			return ErrSchemaTooNew
-		}
-		if current >= len(ms) {
-			return nil
-		}
-		m := ms[current]
-		for i, stmt := range m.statements {
-			if _, err := tx.tx.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("store: migration %04d_%s, statement %d: %w", m.version, m.name, i+1, err)
-			}
-		}
-		if _, err := tx.exec(ctx, "INSERT INTO schema_migrations (version, name, min_reader, applied_at) VALUES (?, ?, ?, ?)",
-			m.version, m.name, m.minReader, s.d.timeArg(s.Now())); err != nil {
-			return err
-		}
-		applied = true
-		return nil
+		var err error
+		applied, err = s.applyNext(ctx, tx, ms, false)
+		return err
 	})
 	return applied, err
+}
+
+// applyNext applies the first pending migration in tx, which holds the migration lock: it creates
+// the bookkeeping table if needed and re-reads what is applied. checkKeys checks SQLite's foreign
+// keys before the migration is recorded (it ran with them off).
+func (s *Store) applyNext(ctx context.Context, tx *Tx, ms []migration, checkKeys bool) (bool, error) {
+	if _, err := tx.tx.ExecContext(ctx, s.bootstrapSQL()); err != nil {
+		return false, fmt.Errorf("store: creating schema_migrations: %w", err)
+	}
+	current, minReader, err := s.schemaState(ctx, tx.tx)
+	if err != nil {
+		return false, err
+	}
+	if minReader > len(ms) {
+		return false, ErrSchemaTooNew
+	}
+	if current >= len(ms) {
+		return false, nil
+	}
+	m := ms[current]
+	if s.d.Name == "sqlite" && m.foreignKeysOff != checkKeys {
+		return false, errMigratePath
+	}
+	for i, stmt := range m.statements {
+		if _, err := tx.tx.ExecContext(ctx, stmt); err != nil {
+			return false, fmt.Errorf("store: migration %04d_%s, statement %d: %w", m.version, m.name, i+1, err)
+		}
+	}
+	if checkKeys {
+		// the whole database's: a violation found names its first row
+		var table, parent string
+		var rowid sql.NullInt64
+		var fk int
+		err := tx.tx.QueryRowContext(ctx, "PRAGMA foreign_key_check").Scan(&table, &rowid, &parent, &fk)
+		switch {
+		case err == nil:
+			return false, fmt.Errorf("store: migration %04d_%s: a row of %s (rowid %d) refers to a missing row of %s",
+				m.version, m.name, table, rowid.Int64, parent)
+		case !errors.Is(err, sql.ErrNoRows):
+			return false, err
+		}
+	}
+	if _, err := tx.exec(ctx, "INSERT INTO schema_migrations (version, name, min_reader, applied_at) VALUES (?, ?, ?, ?)",
+		m.version, m.name, m.minReader, s.d.timeArg(s.Now())); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// migrateForeignKeysOff applies a SQLite migration that rebuilds a table other tables reference: on
+// a connection of its own with foreign keys off (a pragma a transaction cannot change), checking them
+// before it commits. The connection is never given back to the pool, whatever happens, so none
+// serves later queries with foreign keys off.
+func (s *Store) migrateForeignKeysOff(ctx context.Context, ms []migration) (applied bool, err error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn }) // discarded, not pooled
+		_ = conn.Close()
+	}()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return false, err
+	}
+	sqlTx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		// a panic or an error must not leave the transaction open on the connection
+		if p := recover(); p != nil {
+			_ = sqlTx.Rollback()
+			panic(p)
+		}
+		if err != nil {
+			_ = sqlTx.Rollback()
+		}
+	}()
+	if applied, err = s.applyNext(ctx, &Tx{s: s, tx: sqlTx}, ms, true); err != nil {
+		return false, err
+	}
+	return applied, sqlTx.Commit()
 }
 
 func (s *Store) schemaState(ctx context.Context, q interface {

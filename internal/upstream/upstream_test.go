@@ -1238,7 +1238,8 @@ func TestCheckAddAll(t *testing.T) {
 }
 
 // Spec 0031: an upstream removed and added again (a new id) succeeds the removed one: its names and
-// the releases of the same bodies are the new upstream's, and the channel serves them on.
+// its releases of them in the channel are the new upstream's (spec 0033: moved to the new source's
+// slots), so a version the administrator yanked stays yanked.
 func TestUpstreamSuccession(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
 		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "acl_duckdb_cpp_init"))
@@ -1248,6 +1249,17 @@ func TestUpstreamSuccession(t *testing.T) {
 		if r := en.sync(t, false); r.Counts[store.CellReleased] != 1 {
 			t.Fatalf("the first run: %+v", r)
 		}
+		ch, err := en.st.GetChannel(ctx, "acme", "prod")
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := en.st.ListReleases(ctx, ch.ID, "acl")
+		if err != nil || len(first) != 1 {
+			t.Fatalf("the first release: %+v %v", first, err)
+		}
+		if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "acl", first[0].ID, release.Yank, 0); err != nil {
+			t.Fatal(err)
+		}
 		if err := en.up.Remove(ctx, admin, "acme", "acme-repo", 0); err != nil {
 			t.Fatal(err)
 		}
@@ -1255,18 +1267,14 @@ func TestUpstreamSuccession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if r := en.sync(t, false); r.Counts[store.CellUnchanged] != 1 {
+		if r := en.sync(t, false); r.Counts[store.CellYanked] != 1 {
 			t.Fatalf("the run of the new upstream: %+v", r)
-		}
-		ch, err := en.st.GetChannel(ctx, "acme", "prod")
-		if err != nil {
-			t.Fatal(err)
 		}
 		if sel, err := en.st.ChannelSources(ctx, ch.ID); err != nil || sel["acl"].Source != store.UpstreamSource(u.ID) {
 			t.Fatalf("the source: %+v %v", sel, err)
 		}
 		rs, err := en.st.ListReleases(ctx, ch.ID, "acl")
-		if err != nil || len(rs) != 1 || rs[0].Source != store.UpstreamSource(u.ID) {
+		if err != nil || len(rs) != 1 || rs[0].ID != first[0].ID || rs[0].Source != store.UpstreamSource(u.ID) || rs[0].State != store.ReleaseYanked {
 			t.Fatalf("the release's source: %+v %v", rs, err)
 		}
 	})

@@ -62,8 +62,8 @@ func TestUpstreamLicenseKeys(t *testing.T) {
 			t.Fatalf("after the pull-through: %s", got)
 		}
 
-		// removing the mirror drops its keys; added again, a run that finds the body in its slot
-		// records them for the new upstream
+		// removing the mirror drops its keys; added again, a run that finds the body in its slot (the
+		// removed upstream's releases are the new one's) records them for the new upstream
 		if err := en.up.Remove(ctx, admin, "acme", sp.Name, 0); err != nil {
 			t.Fatal(err)
 		}

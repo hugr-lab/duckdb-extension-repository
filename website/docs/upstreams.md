@@ -84,9 +84,9 @@ A cell's binary is released only if every step passes:
 5. **File**: the format matches the platform and the binary exports the name's entry point, as for a
    publication. A signed binary of one extension is never served under another name.
 6. Under the channel lock: a **blocked** body, a name the tenant **shadows** with its own build, and
-   the slot. A slot that holds the same body (in any state) is `unchanged` or `yanked`: an
+   the upstream's slot. A slot that holds the same body (in any state) is `unchanged` or `yanked`: an
    administrator's yank, visibility or current choice survives every run. A slot holding another
-   body is a `conflict`: versions are immutable, so the version stays as it is in this channel.
+   body is a `conflict`: versions are immutable within a source, so the version stays as it is.
 7. The body is committed and released with origin `upstream`. The upstream's original signature is
    kept with it (a passthrough channel serves that one; a signed channel serves its own), and the
    provenance records the upstream, kind, URL, ETag, verifying key, fetch time and credential.
@@ -254,7 +254,7 @@ skipped).
 | `released` | a new release was made |
 | `unchanged` | the slot already holds this body |
 | `yanked` | the slot holds this body, yanked; it stays yanked |
-| `conflict` | the slot holds another body; the version is immutable in this channel |
+| `conflict` | the upstream's slot holds another body; the version is immutable within its source |
 | `missing` | the upstream answered `404` (also a private upstream without the grant) |
 | `rejected` | a check failed: signature, footer, format or entry point |
 | `blocked` | the body is blocked in the tenant |
@@ -301,12 +301,12 @@ A promotion keeps the source of the release it promotes: a build a distributor p
   publisher, whether it has releases there yet or not. The new source's releases are served at once; a mirror fills in at its next
   run. Switching back serves the first source's releases again. `-clear` (`DELETE`) removes the
   source: nothing serves the name until its next release lands and sets it again.
-- **The same body brought by the name's source takes the slot's release:** a slot is never
-  replaced, so when the selected source releases a body the slot already holds from another source,
-  that release becomes the selected source's.
+- **A slot is its source's:** two sources may release the same version of a name in one channel,
+  even the same body; each release is its source's, and a switch serves the selected one's.
 - **A removed upstream's names pass to its successor:** an upstream added again (a new upstream of
-  the channel) takes the names whose source is a removed upstream, with the releases of the same
-  bodies. Nothing else falls back by itself: a yanked or blocked release of the selected source
+  the channel) takes the names whose source is a removed upstream, with the removed one's releases
+  of them in the channel: their states, visibility and current choices stay, so a version an
+  administrator yanked stays yanked. Nothing else falls back by itself: a yanked or blocked release of the selected source
   leaves the name unserved until it is active again or the source is switched.
 - **Listing:** `kista admin channel source <tenant>/<channel>` (or `GET …/sources`) shows each name,
   its source, who set it and when, and the sources that have releases of it in the channel.

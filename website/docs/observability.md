@@ -112,7 +112,7 @@ are all the kinds in `internal/audit`:
 | | `shadow.add`, `shadow.remove` | `shadow:<name>` | `name` |
 | | `source.set` | `channel:<channel>/ext:<name>` | `name`, `source`, `before` (`""`: none), `arrival` (`true`: the first release of the name, or an upstream succeeding a removed one; `false`: an administrator's switch); sources as `tenant`, `upstream:<name>`, `publisher:<name>` (spec 0031) |
 | | `source.clear` | `channel:<channel>/ext:<name>` | `name`, `before` |
-| | `release.source` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `before`, `source`: the name's source brought a body the slot held from another source, and took its release |
+| | `release.source` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `before`, `source`: written before slots had a source (spec 0033): the name's source brought a body the slot held from another source, and took its release |
 | Attachments and feeds | `attachment.add` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `size` |
 | | `attachment.change` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `change`, `statement` |
 | | `attachment.remove` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `size`, `statement` |

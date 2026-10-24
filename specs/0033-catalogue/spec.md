@@ -1,6 +1,7 @@
 # Spec 0033: The catalogue
 
-- **Status**: accepted (2026-10-24); phases A1, A2, B and C to come
+- **Status**: accepted (2026-10-24); phase A1 in progress (part 1, builds and slots per source,
+  implemented); A2, B and C to come
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -426,6 +427,35 @@ One spec, four phases, each a PR with its own reviews and its own migration:
 - **C. The console and the end to end**: a Catalogue screen (sources, names, versions, held and
   withdrawn, place, purge), the channel's Sources tab with modes, follows, skips and the hold, the
   new DuckDB end to end, the website's pages.
+
+A1 comes in parts, each a PR: part 1, builds and slots per source (migration 0034); part 2, the
+catalogue's entries and the placement (rules, home channels, the pass, the routes); part 3, follows.
+
+### As built (A1 part 1)
+
+- **Migration 0034** gives `builds` a `source` (its first release's; a build without releases, by
+  who made it, as migration 0032 read releases' actors) and makes it unique per (tenant, source,
+  name, body); a build whose releases named two sources (spec 0031's same-body rule) is split, each
+  copy taking the licence-key records its source made, and its releases repointed (no other table
+  holds build ids). `releases`' slot and `purged_slots`' key gain the source; a slot purged before
+  has the source `*` and stays taken for every source. The columns keep no default.
+- **SQLite** cannot change a unique key in place, nor drop a table other tables reference while
+  foreign keys are on, even deferred. A migration marked `-- +foreign_keys_off` runs on a connection
+  of its own with them off (SQLite's documented procedure: a pragma a transaction cannot change),
+  checks `PRAGMA foreign_key_check` before it commits (naming the first broken row), and the
+  connection is discarded afterwards, never pooled.
+- **Intake** finds and inserts builds and checks slots within the release's source, and refuses a
+  release whose build is another source's; spec 0031's same-body rule and its `SetReleaseSource` go.
+  A source bringing a body another source released in the channel makes a release of its own
+  (`201`, not `200`). An upstream succeeding a removed one takes the removed one's releases of the
+  name in the channel, and its purged slots, so a yank, a purge or a choice survives it.
+- **Only the selected source counts**: a licence key is live (spec 0021), an upstream relays
+  licences and receives usage (spec 0012), through releases of the source the channel selected for
+  the name; another source's releases stay stored and unserved.
+- **Left to later parts**: the entries' state, `available_at`, visibility and publisher key, the
+  catalogue's own slot uniqueness and `legacy_duplicate` (part 2); a source may still release
+  another body of a version in another channel until then. The data model's "one migration per
+  phase" is one per part in A1.
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into

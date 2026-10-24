@@ -206,7 +206,7 @@ var catalogue = map[Kind][]string{
 	"bundle.export":    {"plan", "manifest", "manifest_sha256", "bundle_key", "counts"},
 	"shadow.add":       {"name"},
 	"source.set":       {"name", "source", "before", "arrival"},
-	"release.source":   {"release", "name", "before", "source"},
+	"release.source":   {"release", "name", "before", "source"}, // written before spec 0033 (slots per source); kept for old events
 	"source.clear":     {"name", "before"},
 	"shadow.remove":    {"name"},
 	"auth.failure":     {"reason", "route", "count"},

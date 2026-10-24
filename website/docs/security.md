@@ -24,9 +24,12 @@ channel's `.well-known/duckdb-extension-repo.json`, and checks the signature on 
   adds no signature of its own; its guarantee is the allowlist, and it serves only files that verify
   with DuckDB's core keys. A passthrough channel is public to anyone who can reach it: DuckDB's
   built-in HTTP client sends no token.
-- **Released versions are immutable.** A released (channel, name, version, DuckDB version,
-  platform) never changes its body. It can be yanked or purged, never replaced; a purged slot stays
-  taken. A key rotation changes only the signature.
+- **Released versions are immutable within their source.** A released (channel, source, name,
+  version, DuckDB version, platform) never changes its body. It can be yanked or purged, never
+  replaced; a purged slot stays taken. A key rotation changes only the signature. Two sources may
+  release one version under different bodies in one channel: only the selected source's is served,
+  and a switch of the source, an administrator's act, is the one way the body behind a version
+  changes.
 - **Separate keys per channel.** A key belongs to one channel; one fingerprint exists once per
   server. A `staging` channel that signs whatever a publisher uploads must not share keys with
   `prod`.

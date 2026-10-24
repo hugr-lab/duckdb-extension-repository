@@ -225,6 +225,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		return store.Release{}, false, err
 	}
 	it := item{b: b, visibility: o.visibility(), notCurrent: o.NotCurrent, origin: store.OriginAdmin, source: sourceOf(a)}
+	it.b.Source = it.source
 	if p := o.Publish; p != nil {
 		if p.Version != b.ExtVersion || p.Platform != b.Platform {
 			return store.Release{}, false, fmt.Errorf("%w: the file's footer says version %q, platform %q; the request says %q, %q",
@@ -259,7 +260,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		if selected, _, err = checkSource(ctx, tx, ch.ID, b.Name, it.source, false); err != nil {
 			return err
 		}
-		cands, err := tx.SlotCandidates(ctx, ch.ID, b.Name, b.ExtVersion, b.Platform)
+		cands, err := tx.SlotCandidates(ctx, ch.ID, it.source, b.Name, b.ExtVersion, b.Platform)
 		if err != nil {
 			return err
 		}
@@ -268,9 +269,8 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 	}); err != nil {
 		return store.Release{}, false, err
 	}
-	// the slot's release of another source, or a name without a source, goes through the insert,
-	// which gives it to the name's source and sets it (spec 0031)
-	if existing != nil && existing.Source == it.source && selected {
+	// a name without a source goes through the insert, which sets it (spec 0031)
+	if existing != nil && selected {
 		// a body marked corrupt (spec 0005, 0018) is uploaded again: adding the same file repairs it
 		if rec, err := s.Store.GetBlob(ctx, sc.Tenant.StorageDomain, b.BodyHash); err == nil && !rec.CorruptAt.IsZero() {
 			cctx, cancel := context.WithTimeout(ctx, blob.IntakeDeadline)
@@ -548,7 +548,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 		}
 		err := s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
 			out, made, existing, need = nil, nil, 0, nil
-			bump := false    // a slot's release taken by the name's source (spec 0031)
+			bump := false    // a cleared source set again by its release (spec 0031)
 			learned := false // a name reserved by this intake (spec 0030)
 			c, err := tx.ChannelByID(ctx, channelID)
 			if err != nil {
@@ -644,9 +644,16 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					if err := setSource(ctx, tx, a, c, b.Name, it.source, succeeds); err != nil {
 						return err
 					}
+					// the removed upstream's releases, yanks and purges are the successor's (spec 0033)
+					if _, err := tx.TakeReleases(ctx, channelID, b.Name, succeeds, it.source); err != nil {
+						return err
+					}
 					selected = true
 				}
-				cands, err := tx.SlotCandidates(ctx, channelID, b.Name, b.ExtVersion, b.Platform)
+				if it.b.Source != it.source {
+					return fmt.Errorf("release: a build of %s released as %s's", it.b.Source, it.source)
+				}
+				cands, err := tx.SlotCandidates(ctx, channelID, it.source, b.Name, b.ExtVersion, b.Platform)
 				if err != nil {
 					return err
 				}
@@ -663,27 +670,6 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 						if err := setSource(ctx, tx, a, c, b.Name, it.source, ""); err != nil {
 							return err
 						}
-						bump = true
-					}
-					if ex.Source != it.source {
-						// spec 0031: the same body another source brought is the name's source's now
-						// (it lands only from the name's source, or a removed upstream's successor)
-						if err := tx.SetReleaseSource(ctx, ex.ID, it.source); err != nil {
-							return err
-						}
-						before, err := tx.SourceLabel(ctx, ex.Source)
-						if err != nil {
-							return err
-						}
-						after, err := tx.SourceLabel(ctx, it.source)
-						if err != nil {
-							return err
-						}
-						if err := tx.Event(ctx, b.TenantID, a.String(), "release.source", "channel:"+c.Name+"/ext:"+b.Name+"/release:"+ex.ID,
-							map[string]any{"release": ex.ID, "name": b.Name, "before": before, "source": after}); err != nil {
-							return err
-						}
-						ex.Source = it.source
 						bump = true
 					}
 					out = append(out, *ex)

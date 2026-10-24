@@ -246,7 +246,8 @@ func (s *Store) ExpiredLicenses(ctx context.Context, now int64) ([]License, erro
 // build; an older upstream of the same name brought nothing for this one).
 func (t *Tx) SuppliedBy(ctx context.Context, u Upstream, name string) (bool, error) {
 	rows, err := t.query(ctx, `SELECT r.build_id, r.provenance FROM releases r
-WHERE r.channel_id = ? AND r.name = ? AND r.origin = ? AND r.created_at >= ?`, u.ChannelID, name, OriginUpstream, t.s.d.timeArg(u.CreatedAt))
+WHERE r.channel_id = ? AND r.source = ? AND r.name = ? AND r.origin = ? AND r.created_at >= ?`, u.ChannelID, UpstreamSource(u.ID), name,
+		OriginUpstream, t.s.d.timeArg(u.CreatedAt))
 	if err != nil {
 		return false, err
 	}
@@ -271,7 +272,9 @@ WHERE r.channel_id = ? AND r.name = ? AND r.origin = ? AND r.created_at >= ?`, u
 	}
 	for _, b := range builds {
 		var n int
+		// served where it is released: its channel serves the name from its source (spec 0031)
 		if err := t.queryRow(ctx, `SELECT COUNT(*) FROM releases r JOIN channels c ON c.id = r.channel_id
+JOIN channel_sources cs ON cs.channel_id = r.channel_id AND cs.name = r.name AND cs.source = r.source
 WHERE c.tenant_id = ? AND r.build_id = ? AND r.state IN (?, ?)`, u.TenantID, b, ReleaseActive, ReleaseDeprecated).Scan(&n); err != nil {
 			return false, err
 		}

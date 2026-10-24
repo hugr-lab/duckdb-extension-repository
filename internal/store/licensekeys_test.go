@@ -39,7 +39,13 @@ func TestLicenseKeys(t *testing.T) {
 			inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
 			r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, ExtVersion: b.ExtVersion,
 				Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public}
-			inTx(t, s, func(tx *store.Tx) error { return tx.InsertRelease(ctx, &r, "os:1:t") })
+			inTx(t, s, func(tx *store.Tx) error {
+				if err := tx.InsertRelease(ctx, &r, "os:1:t"); err != nil {
+					return err
+				}
+				_, err := tx.SetChannelSource(ctx, ch.ID, b.Name, store.SourceTenant, "os:1:t") // the channel serves it (spec 0031)
+				return err
+			})
 			return b, r
 		}
 		b1, r1 := release(prod, "1.0", "a")
@@ -97,6 +103,18 @@ func TestLicenseKeys(t *testing.T) {
 		if got := live(store.KeySourceUpstream, u1); got != "1:pem-1" {
 			t.Fatalf("u1's live keys (b2 is in a passthrough channel only): %q", got)
 		}
+		// a channel that serves the name from another source does not make the build live
+		inTx(t, s, func(tx *store.Tx) error {
+			_, err := tx.SetChannelSource(ctx, prod.ID, "tresor", "publisher:"+p1.ID, "os:1:t")
+			return err
+		})
+		if got := live("", ""); got != "" {
+			t.Fatalf("live keys of a source the channel does not serve: %q", got)
+		}
+		inTx(t, s, func(tx *store.Tx) error {
+			_, err := tx.SetChannelSource(ctx, prod.ID, "tresor", store.SourceTenant, "os:1:t")
+			return err
+		})
 		ks, err := s.TenantLicenseKeys(ctx, tn.ID, "")
 		if err != nil || len(ks) != 2 || ks[0].Kid != k1.Kid || ks[0].Builds != 1 ||
 			fmt.Sprint(ks[0].Sources) != "[{publisher p1} {upstream u1}]" || fmt.Sprint(ks[1].Sources) != "[{publisher p1}]" {

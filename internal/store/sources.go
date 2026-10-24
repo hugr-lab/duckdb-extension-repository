@@ -107,16 +107,6 @@ func (t *Tx) UpstreamRemoved(ctx context.Context, source string) (bool, error) {
 	return n == 0, err
 }
 
-// SetReleaseSource gives a slot's release to the name's source in the channel, which brought the
-// same body (spec 0031).
-func (t *Tx) SetReleaseSource(ctx context.Context, releaseID, source string) error {
-	if !ValidSource(source) {
-		return ErrInvalid
-	}
-	_, err := t.exec(ctx, `UPDATE releases SET source = ?, version = version + 1 WHERE id = ?`, source, releaseID)
-	return err
-}
-
 // SourceTakes reports whether a channel takes a name from a source (spec 0031): it has no source
 // for the name, the source is it, or the name's source is a removed upstream's and the source is
 // an upstream (its successor).
@@ -274,4 +264,52 @@ func (s *Store) ResolveSource(ctx context.Context, tenantID, label string) (stri
 		return "", err
 	}
 	return prefix + id, nil
+}
+
+// TakeReleases gives a removed upstream's releases of a name in a channel to the upstream that
+// succeeds it there (spec 0031): each moves, with its state, visibility and sequence number, to the
+// successor's build of its body (found, or made as a copy of the removed one's), and the removed
+// upstream's purged slots of the name become the successor's, so an administrator's yank, purge or
+// choice survives an upstream removed and added again (spec 0033: slots are per source). A slot the
+// successor holds already is left as it is. Call it under the channel lock. It returns how many
+// releases moved.
+func (t *Tx) TakeReleases(ctx context.Context, channelID, name, from, to string) (int, error) {
+	type moving struct{ id, buildID string }
+	var ms []moving
+	rows, err := t.query(ctx, `SELECT r.id, r.build_id FROM releases r WHERE r.channel_id = ? AND r.name = ? AND r.source = ?
+AND NOT EXISTS (SELECT 1 FROM releases o WHERE o.channel_id = r.channel_id AND o.source = ? AND o.name = r.name
+	AND o.ext_version = r.ext_version AND o.platform = r.platform AND o.slot = r.slot)`, channelID, name, from, to)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var m moving
+		if err := rows.Scan(&m.id, &m.buildID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ms = append(ms, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, m := range ms {
+		b, err := t.GetBuild(ctx, m.buildID)
+		if err != nil {
+			return 0, err
+		}
+		b.ID, b.Source = "", to
+		if err := t.FindOrInsertBuild(ctx, &b); err != nil {
+			return 0, err
+		}
+		if _, err := t.exec(ctx, "UPDATE releases SET source = ?, build_id = ?, version = version + 1 WHERE id = ?", to, b.ID, m.id); err != nil {
+			return 0, err
+		}
+	}
+	_, err = t.exec(ctx, `UPDATE purged_slots SET source = ? WHERE channel_id = ? AND name = ? AND source = ?
+AND NOT EXISTS (SELECT 1 FROM purged_slots o WHERE o.channel_id = purged_slots.channel_id AND o.source = ? AND o.name = purged_slots.name
+	AND o.ext_version = purged_slots.ext_version AND o.platform = purged_slots.platform AND o.slot = purged_slots.slot)`,
+		to, channelID, name, from, to)
+	return len(ms), err
 }

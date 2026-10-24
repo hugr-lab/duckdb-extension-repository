@@ -86,14 +86,17 @@ channel_sources   channel_id fk, name, source, set_by, set_at;   pk (channel_id,
 - **Yanks and blocks are unchanged**: a yanked release of the selected source is not served; the
   name is then served by nothing until a release of the source is current again or the source is
   switched. Nothing falls back to another source by itself.
-- **The same body takes the slot** (found in implementation): a slot is never replaced, so a release
+- **The same body takes the slot** (found in implementation; gone with spec 0033, where a slot is
+  its source's and each source releases the body in its own): a slot is never replaced, so a release
   of the name's source whose body the slot already holds from another source takes that release:
   its source becomes the name's source (a `release.source` event; the release keeps its origin
   and provenance, which say how its body came). The same body arriving for a name without a source
   (cleared) sets it, as any arrival. Without it, a switch to a source that brings the same
   bodies (a publisher republishing what another published, an upstream added again) could never
   serve those versions.
-- **A removed upstream's names pass to its successor** (found in implementation): an upstream
+- **A removed upstream's names pass to its successor** (found in implementation; with spec 0033's
+  slots per source, the successor takes every release of the removed upstream under the name in the
+  channel, and its purged slots, so their states and choices stay): an upstream
   removed and added again (a new id) would otherwise find its names held by a source that no
   longer exists, and its bodies in slots it cannot take. So an upstream arriving at a name whose
   source is a removed upstream's takes the name (`source.set`, `arrival: true`, `before` the removed

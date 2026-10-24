@@ -41,8 +41,8 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO duckdb_versions (id, name, kind, created_at) VALUES (?, ?, 'release', ?)", []any{id("v"), "v2.0." + n, now}},
 		{"INSERT INTO channel_duckdb_versions (channel_id, duckdb_version_id) VALUES (?, ?)", []any{cid, id("v")}},
 		{"INSERT INTO key_events (id, key_id, to_state, actor, forced, at) VALUES (?, ?, 'active', 'os:1:t', ?, ?)", []any{id("e"), key.ID, false, now}},
-		{"INSERT INTO builds (id, tenant_id, name, ext_version, platform, abi, duckdb_version, body_hash, origin, created_at, created_by, checked) " +
-			"VALUES (?, ?, 'acl', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', ?, 'admin', ?, 'os:1:t', ?)", []any{id("b"), tid, hash, now, true}},
+		{"INSERT INTO builds (id, tenant_id, source, name, ext_version, platform, abi, duckdb_version, body_hash, origin, created_at, created_by, checked) " +
+			"VALUES (?, ?, 'tenant', 'acl', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', ?, 'admin', ?, 'os:1:t', ?)", []any{id("b"), tid, hash, now, true}},
 		{"INSERT INTO releases (id, tenant_id, channel_id, build_id, name, ext_version, platform, slot, state, visibility, seq, created_at, " +
 			"created_by, state_changed_at, state_changed_by, version, origin) VALUES (?, ?, ?, ?, 'acl', '1.0', 'linux_amd64', 'v2.0.0', 'active', " +
 			"'public', 1, ?, 'os:1:t', ?, 'os:1:t', 1, 'admin')", []any{id("r"), tid, cid, id("b"), now, now}},
@@ -50,8 +50,8 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 			[]any{tid, id("b"), "sha256:" + hash, id("u"), now}},
 		{"INSERT INTO release_signatures (release_id, channel_id, key_id, signature, created_at) VALUES (?, ?, ?, ?, ?)", []any{id("r"), cid, key.ID, sig, now}},
 		{"UPDATE channels SET serving_key_id = ? WHERE id = ?", []any{key.ID, cid}},
-		{"INSERT INTO purged_slots (channel_id, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at) " +
-			"VALUES (?, 'old', '0.1', 'linux_amd64', 'v2.0.0', 'cpp', ?, 1, ?, ?)", []any{cid, hash, id("q"), now}},
+		{"INSERT INTO purged_slots (channel_id, source, name, ext_version, platform, slot, abi, body_hash, seq, release_id, purged_at) " +
+			"VALUES (?, 'tenant', 'old', '0.1', 'linux_amd64', 'v2.0.0', 'cpp', ?, 1, ?, ?)", []any{cid, hash, id("q"), now}},
 		{"INSERT INTO blocks (tenant_id, body_hash, reason, created_at, created_by) VALUES (?, ?, 'CVE', ?, 'os:1:t')", []any{tid, hash, now}},
 		{"INSERT INTO shadows (tenant_id, name, created_at, created_by) VALUES (?, 'json', ?, 'os:1:t')", []any{tid, now}},
 		{"INSERT INTO tenant_reserved_names (tenant_id, name, holder, added_at, added_by) VALUES (?, 'held', 'enterest', ?, 'os:1:t')", []any{tid, now}},
