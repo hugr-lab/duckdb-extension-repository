@@ -188,7 +188,7 @@ func (p placing) revoke(t *testing.T, keyID string) []store.KeptEntry {
 	t.Helper()
 	var kept []store.KeptEntry
 	must(t, func() error {
-		return p.st.InTxLocks(ctx, []string{store.PublisherAuthLock(p.ci.TenantID), store.TenantUpstreamLock(p.ci.TenantID)}, func(tx *store.Tx) error {
+		return p.st.InTxLocks(ctx, []string{store.TenantUpstreamLock(p.ci.TenantID), store.PublisherAuthLock(p.ci.TenantID)}, func(tx *store.Tx) error {
 			var err error
 			if keyID != "" {
 				if _, err := tx.DeletePublisherKey(ctx, p.ci.ID, keyID); err != nil {
@@ -301,6 +301,57 @@ func TestRevokedEntry(t *testing.T) {
 		}
 		if got := p.prod(t); got != "1.0@v2.0.0:active" {
 			t.Fatalf("prod: %q", got)
+		}
+	})
+}
+
+// Spec 0033 phase A2: on a channel's route a publication's release is written after its build, its
+// signatures made between them: a key revoked, or a publisher removed, in between releases nothing
+// (insert checks both under its locks), and a publication finding its release already made is
+// refused once its key is gone.
+func TestReleaseAfterRevocation(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		p := newPlacing(t, en)
+		staging := func() int {
+			ch, err := p.st.GetChannel(ctx, "acme", "staging")
+			if err != nil {
+				t.Fatal(err)
+			}
+			rs, err := p.st.ListReleases(ctx, ch.ID, "tresor")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return len(rs)
+		}
+		publishWith := func(key string, v string) error {
+			o := publish("tresor", v, "linux_amd64")
+			o.Publish.KeyID = key
+			_, _, err := p.pubs.Add(ctx, p.pub, "acme", "staging", bytes.NewReader(built(t, cpp(v), "tresor_duckdb_cpp_init")), o)
+			return err
+		}
+		// the release already made, then its key revoked: the same publication is refused
+		k1 := p.key(t, 1)
+		if err := publishWith(k1, "1.0"); err != nil {
+			t.Fatal(err)
+		}
+		p.revoke(t, k1)
+		if err := publishWith(k1, "1.0"); !errors.Is(err, store.ErrSourceGone) {
+			t.Fatalf("a revoked key's publication finding its release: %v", err)
+		}
+		// the key revoked between the build and the release
+		k2 := p.key(t, 2)
+		release.SetAfterBuild(p.pubs, func(store.Build) { p.revoke(t, k2) })
+		if err := publishWith(k2, "1.1"); !errors.Is(err, store.ErrSourceGone) {
+			t.Fatalf("the key revoked before the release: %v", err)
+		}
+		// the publisher removed between the build and the release
+		k3 := p.key(t, 3)
+		release.SetAfterBuild(p.pubs, func(store.Build) { p.revoke(t, "") })
+		if err := publishWith(k3, "1.2"); !errors.Is(err, store.ErrSourceGone) {
+			t.Fatalf("the publisher removed before the release: %v", err)
+		}
+		if n := staging(); n != 1 {
+			t.Fatalf("staging's releases: %d", n)
 		}
 	})
 }

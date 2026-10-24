@@ -132,6 +132,15 @@ func (t *Tx) RecheckRules(ctx context.Context, channelID string) error {
 	return err
 }
 
+// RecheckRule makes the placement pass look at a channel's rule for a name again, as RecheckRules
+// does every rule of the channel (spec 0033 phase A2: a mirror's entry found again and left to the
+// pass in its home channel, which a look begun before does not record itself over).
+func (t *Tx) RecheckRule(ctx context.Context, channelID, name string) error {
+	_, err := t.exec(ctx, "UPDATE channel_sources SET checked_at = NULL, due_at = ? WHERE channel_id = ? AND name = ?",
+		t.s.d.timeArg(t.Now()), channelID, name)
+	return err
+}
+
 // ClearChannelSource removes a channel's source for a name, and returns the one it had ("": none).
 func (t *Tx) ClearChannelSource(ctx context.Context, channelID, name string) (string, error) {
 	before, had, err := t.ChannelSourceOf(ctx, channelID, name)

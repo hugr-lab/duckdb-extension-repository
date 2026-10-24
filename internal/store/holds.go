@@ -57,29 +57,26 @@ func (t *Tx) SourceHold(ctx context.Context, source string) (time.Duration, erro
 	return time.Duration(hold) * time.Second, err
 }
 
-// PublicationLive checks, in a publication's build transaction, that its publisher and the key that
-// signed it (keyID, "" for none) still exist: the caller holds the tenant's auth lock
-// (PublisherAuthLock), which removing a key or a publisher takes too, so an upload in flight when
-// its key is revoked, or its publisher removed, is refused (ErrSourceGone) instead of landing after
-// the removal's purge (spec 0033 phase A2).
+// PublicationLive checks that a publication's publisher and the key that signed it (keyID, "" for
+// none) still exist, reading their rows with a shared lock held until commit, which removing the key
+// or the publisher waits for (spec 0033 phase A2): the publication's build transaction (which also
+// holds the tenant's auth lock, PublisherAuthLock) and its release's insert both check, so an upload
+// in flight when its key is revoked, or its publisher removed, is refused (ErrSourceGone) instead of
+// landing, or being released, after the removal.
 func (t *Tx) PublicationLive(ctx context.Context, source, keyID string) error {
 	id, ok := strings.CutPrefix(source, SourcePublisherPrefix)
 	if !ok {
 		return nil
 	}
-	var n int
-	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM publishers WHERE id = ?", id).Scan(&n); err != nil {
-		return err
+	var got string
+	err := t.queryRow(ctx, t.lockedRowQuery("SELECT id FROM publishers", "id = ?", false), id).Scan(&got)
+	if err == nil && keyID != "" {
+		err = t.queryRow(ctx, t.lockedRowQuery("SELECT id FROM publisher_keys", "id = ? AND publisher_id = ?", false), keyID, id).Scan(&got)
 	}
-	if n == 1 && keyID != "" {
-		if err := t.queryRow(ctx, "SELECT COUNT(*) FROM publisher_keys WHERE id = ? AND publisher_id = ?", keyID, id).Scan(&n); err != nil {
-			return err
-		}
-	}
-	if n != 1 {
+	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: %s", ErrSourceGone, source)
 	}
-	return nil
+	return err
 }
 
 // PublisherAuthLock is the lock that orders a tenant's publishers, keys and grants (their changes,

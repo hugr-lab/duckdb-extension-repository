@@ -48,8 +48,7 @@ func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, 
 		return HeldPurge{}, err
 	}
 	var hp HeldPurge
-	// the tenant's upstream lock orders the purge against every release into its signed channels
-	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.PublisherAuthLock(t.ID), store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, purgeLocks(t.ID), func(tx *store.Tx) error {
 		p, err := tx.GetPublisher(ctx, t.ID, name)
 		if err != nil {
 			return err
@@ -63,6 +62,15 @@ func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, 
 		return tx.Event(ctx, t.ID, a.String(), "publisher.remove", "publisher:"+name, hp.event(map[string]any{"name": name}))
 	})
 	return hp, err
+}
+
+// purgeLocks are the locks of a removal that purges held entries (spec 0033 phase A2): the tenant's
+// upstream lock, which every release into its signed channels takes (store.PurgeHeld), then its auth
+// lock. Upstream first: a release's insert holds the upstream lock and may wait, on another
+// connection, for the auth lock (its grant re-checked, GetTenantAuth's locked read), so a removal
+// holding the auth lock must never wait for the upstream lock.
+func purgeLocks(tenantID string) []string {
+	return []string{store.TenantUpstreamLock(tenantID), store.PublisherAuthLock(tenantID)}
 }
 
 // HeldPurge is what revoking a key with purge_held, or removing a publisher, did to the entries it
@@ -312,8 +320,8 @@ func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenan
 		return HeldPurge{}, err
 	}
 	locks := []string{store.PublisherAuthLock(t.ID)}
-	if purge { // the tenant's upstream lock orders the purge against every release into its signed channels
-		locks = append(locks, store.TenantUpstreamLock(t.ID))
+	if purge {
+		locks = purgeLocks(t.ID)
 	}
 	var hp HeldPurge
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, locks, func(tx *store.Tx) error {

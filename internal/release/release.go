@@ -288,6 +288,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		}
 		it.origin, it.provenance, it.statement, it.signature = store.OriginPublication, p.Provenance, p.Statement, p.Signature
 		it.b.Origin, it.b.PublisherKeyID = store.OriginPublication, p.KeyID
+		it.publication, it.keyID = true, p.KeyID
 		if !res.Reserved {
 			it.recheck = s.reservedCheck(a, authz.VerbPublish, res)
 		}
@@ -337,9 +338,16 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		}
 		// publishing the same body with the checks marks its Build checked, and a marked publisher's
 		// publication records its keys (spec 0021)
+		// a publication finding its release still needs its publisher and key (spec 0033 phase A2; a
+		// publication is always checked)
 		if it.b.Checked || len(it.keySources) > 0 {
 			bb := it.b
-			if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+			if err := s.Store.InTx(ctx, buildLock(bb), func(tx *store.Tx) error {
+				if it.publication {
+					if err := tx.PublicationLive(ctx, it.source, it.keyID); err != nil {
+						return err
+					}
+				}
 				if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
 					return err
 				}
@@ -407,6 +415,11 @@ type item struct {
 	// anyKind is the upstream's kind when its "*" took the name: insert refuses the name under the
 	// locks if it is reserved since (as AnyTakes, and the tenant's names and upstreams). "": none.
 	anyKind string
+	// publication is a publisher's publication on a channel's route, signed with keyID ("": none):
+	// insert checks under its locks that the publisher and the key still exist (spec 0033 phase A2:
+	// a key revoked, or a publisher removed, while the request was in flight releases nothing).
+	publication bool
+	keyID       string
 	// auto is an automatic placement (spec 0033: a rule's, a follow's, a mirror's run): it waits for
 	// the channel's hold too. early places a held entry (a channel administrator's, audited); insert
 	// refuses a held entry under the channel lock otherwise.
@@ -702,6 +715,14 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 						if err := it.recheck(ctx); err != nil {
 							return err
 						}
+					}
+				}
+				// spec 0033 phase A2: a publication's publisher and key, read with shared row locks a removal
+				// waits for; after the recheck, which may read the tenant's auth on another connection
+				// (GetTenantAuth's locked read), so no removal waits on a row this transaction holds then
+				if it.publication {
+					if err := tx.PublicationLive(ctx, it.source, it.keyID); err != nil {
+						return err
 					}
 				}
 				// spec 0031: only the name's source in the channel lands; the first sets it, and an

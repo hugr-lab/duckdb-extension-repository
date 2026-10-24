@@ -278,8 +278,13 @@ func (s *Service) landHeld(ctx context.Context, a authz.Actor, sp *blob.Spool, i
 			return err
 		}
 		selected, succeeds, err := checkSource(ctx, tx, c.ID, it.b.Name, it.source, true)
-		if err != nil || selected {
+		if err != nil {
 			return err
+		}
+		if selected {
+			// the pass looks at the rule at once: an entry found again keeps its arrival, which the
+			// pass's look for new builds would not count
+			return tx.RecheckRule(ctx, c.ID, it.b.Name)
 		}
 		if err := setSource(ctx, tx, a, c, it.b.Name, it.source, succeeds); err != nil {
 			return err

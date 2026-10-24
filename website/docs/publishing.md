@@ -352,9 +352,11 @@ build it publishes is held until its arrival plus the hold.
   Removing the publisher purges all of its held builds. A held build a channel administrator placed
   early is kept, revoked: it stays where it was placed, but no rule, follow or promotion takes it
   again, only another placement with `early`; the answer (`200`), the command and the removal's event
-  list what was purged and what was kept, with how many channels hold it. An upload in flight when
-  its key or its publisher is removed is refused (`401`). A rotation without `purge_held` keeps
-  them (`204`).
+  list what was purged and what was kept, with how many channels hold it. A revoked build stays
+  revoked for its bytes: publishing the same file again, even signed with a new key, is refused on a
+  channel's route (`409`) and placed nowhere from the catalogue's; publish a new version. An upload
+  in flight when its key or its publisher is removed is refused (`401`). A rotation without
+  `purge_held` keeps them (`204`).
 
 ## Changing a release
 

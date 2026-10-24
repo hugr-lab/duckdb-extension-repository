@@ -286,3 +286,85 @@ func TestUpstreamHoldHomeChecks(t *testing.T) {
 		}
 	})
 }
+
+// Spec 0033 phase A2: a held version left to the pass is an eager mirror's: once the mirror is made
+// lazy it is not placed in the home channel (its askers' to fetch, or placed by hand); and while its
+// upstream is paused, the trim keeps it (landed) after its hold, to be placed once it is resumed.
+func TestUpstreamHoldHomeLazyPaused(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		clock := time.Now().UTC().Add(-12 * time.Hour).Truncate(time.Second)
+		en.st.Now = func() time.Time { return clock }
+		pass := func(sweep bool) {
+			(&release.Placer{Service: en.rel, Holder: "test", Log: slog.New(slog.DiscardHandler)}).Once(ctx, sweep)
+		}
+		versions := func() string {
+			var vs []string
+			for _, r := range en.releases(t, "acl") {
+				vs = append(vs, r.PackageVersion)
+			}
+			return strings.Join(vs, " ")
+		}
+		put := func(v string, n int) {
+			en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp(v, "v2.0.0"), n, "acl_duckdb_cpp_init"))
+			if r := en.sync(t, false); r.Counts[store.CellHeld] != 1 {
+				t.Fatalf("%s held: %+v", v, r)
+			}
+		}
+		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "acl_duckdb_cpp_init"))
+		u, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "acl"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		en.sync(t, false)
+		if _, err := en.up.SetHold(ctx, admin, "acme", "acme-repo", time.Hour, 0); err != nil {
+			t.Fatal(err)
+		}
+		// paused with 2.0's hold ended and its cell moved on to 3.0, still held: the sweep keeps 2.0
+		// landed
+		put("2.0", 2)
+		clock = clock.Add(50 * time.Minute)
+		put("3.0", 3)
+		if _, err := en.up.Set(ctx, admin, "acme", "acme-repo", "", store.UpstreamPaused, 0); err != nil {
+			t.Fatal(err)
+		}
+		clock = clock.Add(20 * time.Minute)
+		pass(true)
+		bs, err := en.st.SourceBuilds(ctx, u.TenantID, "duckdb_extension", store.UpstreamSource(u.ID), "acl")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range bs {
+			if b.PackageVersion == "2.0" && !b.Landed {
+				t.Fatalf("a held version of a paused upstream trimmed: %+v", b)
+			}
+		}
+		if got := versions(); got != "1.0" {
+			t.Fatalf("placed while paused: %q", got)
+		}
+		if _, err := en.up.Set(ctx, admin, "acme", "acme-repo", "", store.UpstreamActive, 0); err != nil {
+			t.Fatal(err)
+		}
+		pass(true)
+		if got := versions(); got != "2.0 1.0" {
+			t.Fatalf("after the upstream is resumed: %q", got)
+		}
+		clock = clock.Add(time.Hour)
+		pass(true)
+		if got := versions(); got != "3.0 2.0 1.0" {
+			t.Fatalf("after 3.0's hold: %q", got)
+		}
+		// made lazy with 4.0 held: not placed by the pass
+		put("4.0", 4)
+		if _, err := en.up.SetHold(ctx, admin, "acme", "acme-repo", 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := en.up.SetFetchMode(ctx, admin, "acme", "acme-repo", store.FetchLazy, 0); err != nil {
+			t.Fatal(err)
+		}
+		clock = clock.Add(2 * time.Hour)
+		pass(true)
+		if got := versions(); got != "3.0 2.0 1.0" {
+			t.Fatalf("a lazy mirror's held version placed by the pass: %q", got)
+		}
+	})
+}

@@ -140,8 +140,9 @@ func (t *Tx) SourceReleases(ctx context.Context, channelID, source, name string)
 // SetRuleChecked records the placement pass's look at a rule, begun at start: when (builds made
 // after it are looked at next time), its outcome ("" for none), and when the first hold it waits for
 // ends (spec 0033 phase A2: due, zero for none). A rule changed since the look began (its source,
-// its mode), or made to be looked at again since (RecheckRules after start), is left alone, to be
-// looked at again.
+// its mode), or made to be looked at again since (RecheckRules at or after start: times are of
+// microseconds in every dialect, and a recheck in the look's own microsecond counts as after), is
+// left alone, to be looked at again.
 func (s *Store) SetRuleChecked(ctx context.Context, r DueRule, start, at time.Time, outcome string, due time.Time) error {
 	if len(outcome) > 400 {
 		outcome = strings.ToValidUTF8(outcome[:400], "")
@@ -152,7 +153,7 @@ func (s *Store) SetRuleChecked(ctx context.Context, r DueRule, start, at time.Ti
 			o, oat = outcome, tx.s.d.timeArg(tx.Now())
 		}
 		_, err := tx.exec(ctx, `UPDATE channel_sources SET checked_at = ?, outcome = ?, outcome_at = ?, due_at = ?
-WHERE channel_id = ? AND name = ? AND source = ? AND mode = ? AND set_at <= ? AND (checked_at IS NOT NULL OR due_at IS NULL OR due_at <= ?)`,
+WHERE channel_id = ? AND name = ? AND source = ? AND mode = ? AND set_at <= ? AND (checked_at IS NOT NULL OR due_at IS NULL OR due_at < ?)`,
 			tx.s.d.timeArg(at), o, oat, tx.s.d.nullTimeArg(due), r.ChannelID, r.Name, r.Source, r.Mode, tx.s.d.timeArg(start), tx.s.d.timeArg(start))
 		return err
 	})
@@ -366,34 +367,42 @@ SELECT 1 FROM builds o WHERE o.landed = ? AND o.tenant_id = b.tenant_id AND o.pa
 // StaleMirrorLanded lists a mirror's landed builds whose cell holds another body now (the cell moved
 // on), or whose upstream is gone; of the registered types only. A build still held (its source's
 // hold, or its home channel's) is kept for the placement pass to place when the hold ends (spec 0033
-// phase A2), whatever its cell holds now.
+// phase A2), whatever its cell holds now, and one held at its arrival while its upstream is paused,
+// to be placed once it is resumed.
 func (s *Store) StaleMirrorLanded(ctx context.Context) ([]LandedBuild, error) {
 	var out []LandedBuild
 	err := s.eachRow(ctx, "SELECT "+landedCols+" FROM builds b WHERE landed = ? AND source LIKE 'upstream:%'", []any{true}, scanLanded(&out))
 	if err != nil {
 		return nil, err
 	}
-	holds := map[string]*time.Duration{} // upstream id → its home channel's hold (nil: the upstream is gone)
+	type home struct {
+		hold   time.Duration
+		paused bool
+	}
+	homes := map[string]*home{} // upstream id → its home channel's hold and its state (nil: the upstream is gone)
 	now := s.Now()
 	var stale []LandedBuild
 	for _, b := range knownLanded(out) {
 		id := strings.TrimPrefix(b.Source, SourceUpstreamPrefix)
-		hold, ok := holds[id]
+		h, ok := homes[id]
 		if !ok {
 			var sec int64
-			err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT c.hold_seconds FROM upstreams u JOIN channels c ON c.id = u.channel_id WHERE u.id = ?"),
-				id).Scan(&sec)
+			var state string
+			err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT c.hold_seconds, u.state FROM upstreams u JOIN channels c ON c.id = u.channel_id WHERE u.id = ?"),
+				id).Scan(&sec, &state)
 			switch {
 			case err == nil:
-				d := time.Duration(sec) * time.Second
-				hold = &d
+				h = &home{hold: time.Duration(sec) * time.Second, paused: state != UpstreamActive}
 			case !errors.Is(err, sql.ErrNoRows):
 				return nil, err
 			}
-			holds[id] = hold
+			homes[id] = h
 		}
-		if hold != nil && (Build{CreatedAt: b.CreatedAt, AvailableAt: b.AvailableAt}).AvailableIn(*hold).After(now) {
+		if h != nil && (Build{CreatedAt: b.CreatedAt, AvailableAt: b.AvailableAt}).AvailableIn(h.hold).After(now) {
 			continue // held: the pass places it in the mirror's home channel when the hold ends
+		}
+		if h != nil && h.paused && !b.AvailableAt.IsZero() {
+			continue // held at its arrival, its upstream paused: the pass places it once it is resumed
 		}
 		var n int
 		if err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM upstream_cells WHERE upstream_id = ? AND name = ? AND body_hash = ?"),

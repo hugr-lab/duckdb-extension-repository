@@ -407,7 +407,9 @@ at a build, or to revoke a stolen key, before an automatic placement serves it.
   catalogue (cell `held`) and writes the name's rule in its channel as a release would; the pass
   places it there when the hold ends, whether or not another channel took it meanwhile and whatever
   the cell holds by then (each version after its own hold, older first), as the run would take it
-  then: not while the upstream is paused, nor once the name or the version has left its allowlist.
+  then: not while the upstream is paused (once it is resumed), nor once the name or the version has
+  left its allowlist, nor once the mirror is made lazy (its askers fetch then, or an administrator
+  places it by hand).
   Placing by hand and promoting refuse a held entry (`409`, problem type `…/held`), except a channel
   administrator's placement with `early` (below).
 - **A publisher with a hold** publishes into the catalogue only: the channel's route refuses it
@@ -423,9 +425,11 @@ at a build, or to revoke a stolen key, before an automatic placement serves it.
   early is kept, **revoked**: it stays where it is placed, but no rule, follow or promotion takes it
   again, and a placement by hand only with `early`. The answer (`200`, `{"purged": […], "kept":
   […]}`, each kept entry with how many of the tenant's channels hold it), the command's output and
-  the removal's event (`purged`, `kept`) say what was purged and what was kept. An upload in flight
-  when its key or its publisher is removed is refused (`401`). A routine rotation, without
-  `purge_held`, keeps everything (`204`).
+  the removal's event (`purged`, `kept`) say what was purged and what was kept. A revoked entry is
+  its bytes' for good: publishing the same file again, even with a new key, finds it revoked (`409`
+  on a channel's route); a new version is needed, or a channel administrator places it early. An
+  upload in flight when its key or its publisher is removed is refused (`401`), on a channel's route
+  up to its release. A routine rotation, without `purge_held`, keeps everything (`204`).
 - **Reading**: an upstream's and a publisher's answers carry `hold` (omitted for none; `upstream
   show`, `publisher list`); the catalogue lists each entry's `held` and `revoked` versions and shows
   each build's `state` (`held` or `available`), held, its `available_at`, and revoked, its

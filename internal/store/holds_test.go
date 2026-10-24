@@ -65,10 +65,13 @@ func TestMigrationHolds(t *testing.T) {
 			}
 			return nil
 		})
-		// the auto rule is due (never looked at); the mirror's rule without a mode is not the pass's:
-		// its build was available on arrival (available_at NULL), never left to the pass
-		if rs, err := s.DueRules(ctx, true); err != nil || len(rs) != 1 || rs[0].Name != "acl" {
-			t.Fatalf("the rules the pass looks at: %+v %v", rs, err)
+		// the auto rule is due in a normal pass (never looked at, no due_at); the mirror's rule without a
+		// mode is not the pass's, not even in a sweep: its build was available on arrival (available_at
+		// NULL), never left to the pass
+		for _, sweep := range []bool{false, true} {
+			if rs, err := s.DueRules(ctx, sweep); err != nil || len(rs) != 1 || rs[0].Name != "acl" {
+				t.Fatalf("the rules the pass looks at (sweep %v): %+v %v", sweep, rs, err)
+			}
 		}
 		inTx(t, s, func(tx *store.Tx) error { _, err := tx.SetPublisherHold(ctx, tid, "ci", time.Hour); return err })
 		b := store.Build{TenantID: tid, Source: "publisher:" + id("p"), Name: "acl", PackageVersion: "1.1", Platform: "linux_amd64",
@@ -307,12 +310,24 @@ func TestDueRulesHolds(t *testing.T) {
 		if cs, err := s.ChannelSources(ctx, ch.ID); err != nil || cs["geo"].Outcome != "boom" {
 			t.Fatalf("a failed look's outcome: %+v %v", cs["geo"], err)
 		}
-		// a look begun after the recheck records itself
+		// a look begun in the recheck's microsecond does not record itself; one begun after it does
+		if err := s.SetRuleChecked(ctx, rs[0], clock, clock, "", time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		if rs := due(); len(rs) != 1 {
+			t.Fatalf("a look begun at the recheck: %+v", rs)
+		}
+		clock = clock.Add(time.Microsecond)
 		if err := s.SetRuleChecked(ctx, rs[0], clock, clock, "", time.Time{}); err != nil {
 			t.Fatal(err)
 		}
 		if rs := due(); len(rs) != 0 {
 			t.Fatalf("due after a look begun after the recheck: %+v", rs)
+		}
+		// one rule made to be looked at again (a mirror's entry found again, left to the pass)
+		inTx(t, s, func(tx *store.Tx) error { return tx.RecheckRule(ctx, ch.ID, "geo") })
+		if rs := due(); len(rs) != 1 || rs[0].ChannelID != ch.ID {
+			t.Fatalf("a rule rechecked: %+v", rs)
 		}
 	})
 }

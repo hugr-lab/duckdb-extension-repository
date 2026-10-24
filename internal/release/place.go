@@ -339,7 +339,7 @@ func (h homeCheck) takes(b store.Build) bool {
 }
 
 // homeOf reads a mirror's home rule's checks; ok is false when the run would take nothing now (the
-// upstream gone, paused, or homed elsewhere, or the name out of its allowlist).
+// upstream gone, paused, homed elsewhere, lazy or pull-through, or the name out of its allowlist).
 func (s *Service) homeOf(ctx context.Context, r store.DueRule, tenant string) (homeCheck, bool, error) {
 	var u store.Upstream
 	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
@@ -350,7 +350,9 @@ func (s *Service) homeOf(ctx context.Context, r store.DueRule, tenant string) (h
 	if errors.Is(err, store.ErrNotFound) {
 		return homeCheck{}, false, nil
 	}
-	if err != nil || u.State != store.UpstreamActive || u.ChannelID != r.ChannelID {
+	// an eager mirror's (or a bundle's): a lazy one's entries are its askers' (or placed by hand)
+	if err != nil || u.State != store.UpstreamActive || u.ChannelID != r.ChannelID || u.FetchMode == store.FetchLazy ||
+		u.Mode == store.ModePullThrough {
 		return homeCheck{}, false, err
 	}
 	h := homeCheck{platforms: u.Platforms, reserveSource: "upstream:" + tenant + "/" + u.Name}

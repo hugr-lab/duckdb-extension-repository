@@ -380,8 +380,10 @@ console's Sources tab shows modes: both are in the upgrade notes.
   A tenant publisher without a hold that holds `publish` on a channel reaches that channel at once,
   as today.
 - **Intake against revocation**: a publication's build is written under the lock that removing its
-  key or its publisher takes, and only while both exist, so an upload in flight when they are
-  removed lands nothing (it fails as a revoked key's request does); a removed upstream brings
+  key or its publisher takes, and only while both exist, and its release on a channel's route checks
+  them again under row locks the removal waits for, so an upload in flight when they are removed
+  lands nothing and is released nowhere (it fails as a revoked key's request does); a removed
+  upstream brings
   nothing either. A source's hold is read with a lock its raise waits for, so a build arriving while
   a hold is raised is held the raised time.
 - **Withdrawal is immediate and final**: the withdrawal's transaction bumps every channel holding a
@@ -650,9 +652,15 @@ channel, deferred.
   sweep looks again after a resume), nothing of a name or a version out of its allowlist or a
   platform it no longer takes; a name `*` took is re-checked under the insert's locks (`anyKind`:
   a name reserved since, in the tenant or as core, or listed by another upstream, is refused, the
-  rule's outcome), and DuckDB's names are reserved as the run reserves them. The trim
+  rule's outcome), and DuckDB's names are reserved as the run reserves them. Only an eager mirror's
+  (or a bundle-mode upstream's) entries are placed so: once a mirror is made lazy, the entries it
+  left held are its askers' to fetch, or a channel administrator's to place by hand. The trim
   (`StaleMirrorLanded`) keeps a mirror's landed build while it is held (its own hold or its home
-  channel's), whatever its cell holds by then. A bundle import into a channel with a hold does the
+  channel's), whatever its cell holds by then, and while its upstream is paused if it was held at
+  its arrival, so the sweep after the resume places it (it trims it then, as the pass's placement
+  in the same sweep keeps it). When a run finds an entry it already has and leaves it to the pass,
+  the home rule is made due at once (`RecheckRule`: `checked_at` cleared, `due_at` now), since the
+  entry's old arrival would not wake the pass. A bundle import into a channel with a hold does the
   same.
 - **The channel's hold** applies to automatic placements: rules, follows, a mirror's runs into its
   own channel. Publications on the channel's route, an administrator's `release add`, placing by hand
@@ -669,8 +677,9 @@ channel, deferred.
   channel had keeps an older version whose hold ends later from overtaking a newer one. Making a
   channel's rules due (`RecheckRules`: a DuckDB version added, the hold changed) sets `due_at` to now
   besides clearing `checked_at`, and a look begun before it does not record itself over it (its
-  update requires `checked_at` set or `due_at` not after the look's start); a rule changed by an
-  administrator clears `due_at`. A look that fails with an error (not a placement's refusal) records
+  update requires `checked_at` set or `due_at` before the look's start: times are of microseconds in
+  the three dialects, and a recheck in the look's own microsecond counts as after it, so the rule is
+  looked at once more); a rule changed by an administrator clears `due_at`. A look that fails with an error (not a placement's refusal) records
   only its outcome (`SetRuleOutcome`): `checked_at` and `due_at` stay, so the next pass looks again.
   `DueRules` reads the home channel of the upstreams of the rules without a mode it lists, not every
   upstream.
@@ -717,7 +726,30 @@ channel, deferred.
   removed, is refused (`store.ErrSourceGone`, answered `401` as a revoked key's request) and never
   lands after the removal's purge. The chosen lock over a row lock on `publisher_keys`: one order
   of locks with the removals, no deadlock between a removal's tenant-row update and an intake's
-  shared tenant-row lock on SQL Server.
+  shared tenant-row lock on SQL Server. On a channel's route the release is written later, in
+  `insert`'s transaction (the signatures made between, outside any transaction), so `insert` checks
+  again for a publication item, reading the publisher's and the key's rows with shared row locks
+  (`PublicationLive` reads them so everywhere) that a removal's `DELETE` waits for: a key revoked
+  (with `purge_held` or not) or a publisher removed in between releases nothing (`401`), and a
+  publication that finds its release already made is refused as well once its key is gone. Not the
+  auth advisory lock there: `insert`'s grant re-check may read the tenant's auth on a second
+  connection under that lock (`GetTenantAuth`'s locked read), and would wait on its own
+  transaction; for the same reason the check comes after the re-check.
+- **Lock order of the purging removals**: a removal that purges (key removal with `purge_held`,
+  publisher removal) takes the tenant's upstream lock first, then its auth lock (`purgeLocks`). An
+  insert holds the upstream lock and may wait, on another connection, for the auth lock (the grant
+  re-check's locked read, taken only when the tenant's auth changes during its read); with the
+  upstream lock first, a removal never holds the auth lock while waiting for the upstream lock, so
+  the purge adds no cycle. What remains is spec 0030's: an insert holding a shared lock on its
+  tenant's row while that locked read waits for an auth change that waits to update the tenant's
+  row; the lock timeout breaks it and the change is retried (rare: the auth must change during the
+  read).
+- **A revoked entry is its body's for good** in its source: a body arriving again is the same
+  catalogue entry (source, name, body), revoked, so publishing the same bytes again, even with a
+  new, legitimate key, is refused on a channel's route (`409 …/held`) and answered with the revoked
+  entry on the catalogue's route, never placed automatically. A new version is needed; a channel
+  administrator may still place the revoked one early (the conservative choice: a revoked key's
+  bytes are not trusted again by being sent again).
 - **Reads**: the catalogue's entries list their `held` and `revoked` versions; its builds show
   `state` (`held` or `available`), a held one's `available_at` and a revoked one's `revoked_at`, also
   in the catalogue-only route's answer (`catalogue list`'s `HELD` and `REVOKED`, `catalogue show`'s
