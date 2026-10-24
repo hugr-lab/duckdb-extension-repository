@@ -162,17 +162,19 @@ var catalogue = map[Kind][]string{
 	"extension_group.change":  {"description"},
 	"extension_group.members": {"added", "removed", "package_type"},
 	"publisher.add":           {"name"},
-	"publisher.remove":        {"name"},
+	"publisher.remove":        {"name", "purged", "kept"}, // spec 0033 phase A2: the held entries purged (how many) and kept, revoked
 	"publisher.change":        {"name", "license_keys"},
 	"publisher.key.add":       {"publisher", "key", "fingerprint", "type", "title", "expires_at"},
-	"publisher.key.remove":    {"publisher", "key", "fingerprint", "type", "title"},
+	"publisher.key.remove":    {"publisher", "key", "fingerprint", "type", "title", "purge_held", "purged", "kept"},
 	// releases
 	"release.add":       {"release", "name", "version", "platform", "slot", "body_hash", "visibility", "current", "shadows"},
 	"release.publish":   {"release", "name", "version", "platform", "slot", "body_hash", "visibility", "current", "shadows", "provenance"},
 	"release.promote":   {"releases", "name", "from_channel", "version", "shadows", "provenance"},
-	"release.place":     {"releases", "name", "version", "source", "placed"}, // spec 0033: by hand, auto or manual
-	"catalogue.arrival": {"build", "name", "version", "platform", "slot", "body_hash", "source", "visibility", "package_type", "provenance"},
-	"catalogue.purge":   {"build", "name", "version", "platform", "slot", "body_hash", "package_type"},
+	"release.place":     {"releases", "name", "version", "source", "placed", "early"}, // spec 0033: by hand, auto or manual; early (A2)
+	"catalogue.arrival": {"build", "name", "version", "platform", "slot", "body_hash", "source", "visibility", "package_type", "available_at", "provenance"},
+	"catalogue.purge":   {"build", "name", "version", "platform", "slot", "body_hash", "package_type", "reason", "key"},
+	// spec 0033 phase A2: a source's hold (with how many held entries a raise held longer), or a channel's
+	"catalogue.hold":    {"source", "channel", "hold", "before", "held"},
 	"follow.set":        {"source"},
 	"follow.clear":      {"source"},
 	"release.yank":      {"release", "name", "version", "platform"},
@@ -276,6 +278,8 @@ func SubjectForm(k Kind) string {
 		return "reserved:<name>"
 	case "license.sync", "usage.forward":
 		return "upstream:<name>"
+	case "catalogue.hold":
+		return "upstream:<name>, publisher:<name> or channel:<channel>"
 	}
 	if strings.HasPrefix(string(k), "publisher.key.") {
 		return "publisher:<name>/key:<id>"

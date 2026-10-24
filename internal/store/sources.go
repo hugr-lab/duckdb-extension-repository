@@ -115,7 +115,7 @@ func (t *Tx) SetChannelRule(ctx context.Context, channelID, name, source, mode, 
 	now := t.s.d.timeArg(t.Now())
 	if had {
 		_, err = t.exec(ctx, `UPDATE channel_sources SET source = ?, mode = ?, set_by = ?, set_at = ?, checked_at = NULL, outcome = NULL,
-outcome_at = NULL WHERE channel_id = ? AND name = ?`, source, mode, actor, now, channelID, name)
+outcome_at = NULL, due_at = NULL WHERE channel_id = ? AND name = ?`, source, mode, actor, now, channelID, name)
 	} else {
 		_, err = t.exec(ctx, `INSERT INTO channel_sources (channel_id, name, source, mode, set_by, set_at) VALUES (?, ?, ?, ?, ?, ?)`,
 			channelID, name, source, mode, actor, now)
@@ -124,9 +124,20 @@ outcome_at = NULL WHERE channel_id = ? AND name = ?`, source, mode, actor, now, 
 }
 
 // RecheckRules makes the placement pass look at every rule of a channel again (a DuckDB version
-// added: the builds for it are placed by the rules).
+// added: the builds for it are placed by the rules; a channel's hold changed, spec 0033 phase A2).
+// The rule is due now (due_at), which also tells a look begun before it not to record itself
+// (SetRuleChecked): the next look sees the change.
 func (t *Tx) RecheckRules(ctx context.Context, channelID string) error {
-	_, err := t.exec(ctx, "UPDATE channel_sources SET checked_at = NULL WHERE channel_id = ?", channelID)
+	_, err := t.exec(ctx, "UPDATE channel_sources SET checked_at = NULL, due_at = ? WHERE channel_id = ?", t.s.d.timeArg(t.Now()), channelID)
+	return err
+}
+
+// RecheckRule makes the placement pass look at a channel's rule for a name again, as RecheckRules
+// does every rule of the channel (spec 0033 phase A2: a mirror's entry found again and left to the
+// pass in its home channel, which a look begun before does not record itself over).
+func (t *Tx) RecheckRule(ctx context.Context, channelID, name string) error {
+	_, err := t.exec(ctx, "UPDATE channel_sources SET checked_at = NULL, due_at = ? WHERE channel_id = ? AND name = ?",
+		t.s.d.timeArg(t.Now()), channelID, name)
 	return err
 }
 
@@ -363,7 +374,9 @@ AND NOT EXISTS (SELECT 1 FROM releases o WHERE o.channel_id = r.channel_id AND o
 		if err != nil {
 			return 0, err
 		}
-		b.ID, b.Source = "", to
+		// a copy keeps the original's arrival, hold and revoked marker: the successor's hold is for
+		// what arrives
+		b.ID, b.Source, b.Copied = "", to, true
 		if err := t.FindOrInsertBuild(ctx, &b); errors.Is(err, ErrCatalogueSlot) {
 			// the successor holds the version with another body: the copy is a legacy duplicate
 			b.ID, b.Legacy = "", true

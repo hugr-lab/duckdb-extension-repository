@@ -302,6 +302,7 @@ See [Tenants and channels](tenants-and-channels.md) and
 | `channel source <tenant>/<channel> [<name> [-set <source>] [-mode auto\|manual] \| -clear]` | a name's source in the channel ([spec 0031](../upstreams.md#a-names-source-in-a-channel)): `tenant`, `upstream:<name>` or `publisher:<name>`, and its rule's mode ([spec 0033](../upstreams.md#the-catalogue-and-a-channels-rules)); `-mode` alone changes the mode; `-clear` removes it | each name, its source, mode, the version held and the newest in the catalogue, who set it and when, the sources with releases of it, the last outcome |
 | `channel follow <tenant>/<channel> [<source>]` | follows a whole source ([spec 0033](../upstreams.md#the-catalogue-and-a-channels-rules)): its names the channel has no rule for are taken automatically; without a source, lists the follows | `SOURCE`, `SET BY`, `SET AT`, `SKIPPED` (each name with its reason) |
 | `channel unfollow <tenant>/<channel> <source>` | stops following it; what it placed stays, its rules keep the versions they hold | |
+| `channel hold <tenant>/<channel> [<duration>]` | the channel's [hold](../upstreams.md#holds): an automatic placement waits until an entry's arrival plus it (`24h`, `2d`; `0` for none); without a duration, shows it | the hold |
 | `channel list <tenant>` | `NAME`, `KIND`, `VERSION`, `CREATED` (`VERSION` is the channel's change counter) | |
 | `wellknown <tenant>/<channel>` | the channel's `.well-known/duckdb-extension-repo.json` as served | JSON |
 
@@ -309,8 +310,8 @@ See [Tenants and channels](tenants-and-channels.md) and
 
 | Command | What it does | Output |
 | --- | --- | --- |
-| `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode) |
-| `catalogue show <tenant> <source> <name>` | an entry's builds | `VERSION`, `PLATFORM`, `SLOT`, `BODY`, `VISIBILITY`, `ORIGIN`, `CREATED`, `RELEASED IN` |
+| `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode), `HELD` (the versions held), `REVOKED` (the versions a purge kept, revoked) |
+| `catalogue show <tenant> <source> <name>` | an entry's builds | `VERSION`, `PLATFORM`, `SLOT`, `BODY`, `VISIBILITY`, `ORIGIN`, `CREATED`, `RELEASED IN`, `HELD UNTIL`, `REVOKED` |
 | `catalogue add <tenant> <file\|-> -name <name> [-private]` | puts a build into the catalogue only, placed nowhere (source `tenant`; the file checks always run) | the build's id |
 | `catalogue list\|show\|add … -type <package type>` | the catalogue of a [package type](../concepts.md#packages-and-package-types) (`duckdb_extension` by default; this server reads DuckDB extensions only) | |
 | `catalogue purge <tenant> <build-id>` | deletes a build that was never released; its slot is free again | |
@@ -342,7 +343,7 @@ The protection tier is the source's: `file`, `kubesecret` (a Kubernetes Secret, 
 | `release yank`, `deprecate`, `activate`, `current`, `public`, `private` `<tenant>/<channel> <release id>` | changes a release's state, currency or visibility: `deprecate` an active release, `activate` a deprecated one again, `current` makes an active release the one the flat path serves; `yank` is final | |
 | `release purge <tenant>/<channel> <release id> [-force]` | deletes a yanked release for good; its slot stays taken; needs `-force` while `gc.interval` is 0 | |
 | `release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> or -version <v>) [-private] [-not-current]` | releases the builds of another channel of the same tenant here, signed with this channel's key | the new release ids |
-| `release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current] [-type <package type>]` | releases a version's builds from the catalogue here ([placing from the catalogue](../publishing.md#placing-from-the-catalogue)); its later builds follow; `-type` names the builds' [package type](../concepts.md#packages-and-package-types) (the channel's when left out; another is refused) | the new release ids |
+| `release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current] [-type <package type>] [-early]` | releases a version's builds from the catalogue here ([placing from the catalogue](../publishing.md#placing-from-the-catalogue)); its later builds follow; `-type` names the builds' [package type](../concepts.md#packages-and-package-types) (the channel's when left out; another is refused); `-early` places a held version ([holds](../publishing.md#holds-and-early-placement)) | the new release ids |
 
 `-unchecked` skips the publication checks of a build (such as the init symbol that binds the name).
 Details are in [Publishing](../publishing.md).
@@ -402,11 +403,12 @@ A principal is `subject:<issuer>|<value>`, `role:<issuer>|<value>`, `group:<issu
 | Command | What it does | Output |
 | --- | --- | --- |
 | `publisher add <tenant> <name>`, `publisher remove <tenant> <name>` | an identity that only publishes and promotes | |
-| `publisher list <tenant>` | `PUBLISHER`, `LICENSE KEYS`, `KEY`, `FINGERPRINT`, `TITLE` | |
+| `publisher list <tenant>` | `PUBLISHER`, `LICENSE KEYS`, `KEY`, `FINGERPRINT`, `TITLE`, `HOLD` | |
+| `publisher hold <tenant> <name> <duration>` | its [hold](../publishing.md#holds-and-early-placement) (`24h`, `2d`; `0` for none): what it publishes is held, and it publishes into the catalogue only | |
 | `publisher license-keys <tenant> <name> on or off` | marks it a source of licence keys (spec 0021), or unmarks it: a server administrator's act | |
 | `publisher key add <tenant> <name> <file.pub or -> [-expires <days>d or <RFC 3339 time>]` | registers a public SSH key (`ssh-ed25519` or `ecdsa-sha2-nistp256`) the publisher signs its requests with (spec 0023); an expiry within a year, or none | the key id |
 | `publisher key list <tenant> <name>` | `ID`, `FINGERPRINT`, `TYPE`, `TITLE`, `EXPIRES`, `LAST USED`, `CREATED`, `BY` | |
-| `publisher key remove <tenant> <name> <key id>` | removes it: it stops at once | |
+| `publisher key remove <tenant> <name> <key id> [-purge-held]` | removes it: it stops at once; `-purge-held` purges the builds it published that are still held, and prints how many and those it kept, revoked (placed early) | |
 
 See [Publishing](../publishing.md).
 
@@ -420,6 +422,7 @@ See [Publishing](../publishing.md).
 | `upstream remove`, `pause`, `resume`, `public`, `private` `<tenant> <name>` | |
 | `upstream sync <tenant> <name> [-dry-run]` | requests a run; a running `kista serve` takes it (a lazy mirror's: its whole matrix; a dry run: what a scheduled run would fetch) |
 | `upstream fetch <tenant> <name> eager\|lazy` | a mirror's fetch mode ([Lazy mirrors](../upstreams.md#lazy-mirrors)) |
+| `upstream hold <tenant> <name> <duration>` | an eager mirror's [hold](../upstreams.md#holds) (`24h`, `2d`; `0` for none); `upstream show` prints it |
 | `upstream cells <tenant> <name> [-outcome <outcome>]` | `DUCKDB`, `PLATFORM`, `NAME`, `OUTCOME`, `FETCHED`, `DETAIL`; a lazy mirror's `-outcome not_asked` lists the cells offered but not fetched |
 | `upstream credential <tenant> <name> <credential>` | sets a private upstream's credential by name; `-` clears it |
 | `upstream credentials` | the credentials in the configuration: `NAME`, `KIND`, `TENANTS`, `PREFIXES`, `PUBLIC`, `FORWARDS USAGE` |

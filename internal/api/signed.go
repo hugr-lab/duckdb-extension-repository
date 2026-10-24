@@ -116,7 +116,7 @@ func (h *Handler) identifySigned(ctx context.Context, t store.Tenant, sr auth.Si
 	id := auth.Identity{Principals: auth.Principals{auth.PublisherKey(p.ID): true}, IssuedAt: sr.Statement.SignedAt}
 	c.principals, c.ta, c.id, c.verified = id.Principals, ta, id, true
 	c.pub = &auth.Publication{Identity: id, Provider: "key",
-		Publishers: []auth.MatchedPublisher{{Publisher: p, Credential: "key:" + sr.Fingerprint}}}
+		Publishers: []auth.MatchedPublisher{{Publisher: p, Credential: "key:" + sr.Fingerprint, KeyID: k.ID}}}
 	c.signed = &sr
 	return c, nil
 }

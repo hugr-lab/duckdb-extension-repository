@@ -211,9 +211,12 @@ func TestPackageTypes(t *testing.T) {
 		}
 
 		// the catalogue: one source's build of one name and body in each type, and their slots
+		pub := store.Publisher{TenantID: tn.ID, Name: "p"}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &pub) })
+		psrc := store.PublisherSource(pub.ID)
 		build := func(typ, body string) store.Build {
 			b := cppBuild(tn, "snowflake", "1.0.0", body)
-			b.PackageType, b.Source, b.Origin = typ, "publisher:p", store.OriginPublication
+			b.PackageType, b.Source, b.Origin = typ, psrc, store.OriginPublication
 			inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
 			return b
 		}
@@ -223,23 +226,25 @@ func TestPackageTypes(t *testing.T) {
 		}
 		// another body in the other type's slot is that type's own matter
 		taken := cppBuild(tn, "snowflake", "1.0.0", "2")
-		taken.PackageType, taken.Source = testType, "publisher:p"
+		taken.PackageType, taken.Source = testType, psrc
 		if err := s.SlotTaken(ctx, taken); !errors.Is(err, store.ErrCatalogueSlot) {
 			t.Fatalf("the slot within a type: %v", err)
 		}
 		other := cppBuild(tn, "snowflake", "1.0.0", "3")
-		other.PackageType, other.Source, other.Origin = "", "publisher:q", store.OriginPublication
+		q := store.Publisher{TenantID: tn.ID, Name: "q"}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &q) })
+		other.PackageType, other.Source, other.Origin = "", store.PublisherSource(q.ID), store.OriginPublication
 		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &other) })
 		for typ, want := range map[string]string{pkgtype.DuckDBExtension: x.ID, testType: y.ID} {
-			bs, err := s.SourceBuilds(ctx, tn.ID, typ, "publisher:p", "snowflake")
+			bs, err := s.SourceBuilds(ctx, tn.ID, typ, psrc, "snowflake")
 			if err != nil || len(bs) != 1 || bs[0].ID != want {
 				t.Fatalf("%s's builds: %+v %v", typ, bs, err)
 			}
 			vs, err := s.SourceVersions(ctx, tn.ID, typ)
-			if err != nil || len(vs[[2]string{"publisher:p", "snowflake"}]) != 1 {
+			if err != nil || len(vs[[2]string{psrc, "snowflake"}]) != 1 {
 				t.Fatalf("%s's catalogue: %v %v", typ, vs, err)
 			}
-			if b, ok, err := s.BuildOf(ctx, tn.ID, typ, "publisher:p", "snowflake", strings.Repeat("1", 64)); err != nil || !ok || b.ID != want {
+			if b, ok, err := s.BuildOf(ctx, tn.ID, typ, psrc, "snowflake", strings.Repeat("1", 64)); err != nil || !ok || b.ID != want {
 				t.Fatalf("%s's build of the body: %+v %v %v", typ, b, ok, err)
 			}
 		}
@@ -379,14 +384,20 @@ func TestPackageTypes(t *testing.T) {
 
 		// landed builds of the other type: a crowded name (two versions) and a mirror's stale cell
 		more := cppBuild(tn, "snowflake", "1.1.0", "5")
-		more.PackageType, more.Source, more.Origin = testType, "publisher:p", store.OriginPublication
+		more.PackageType, more.Source, more.Origin = testType, psrc, store.OriginPublication
 		mirrored := cppBuild(tn, "snowflake", "1.0.0", "6")
-		mirrored.PackageType, mirrored.Source, mirrored.Origin = testType, store.SourceUpstreamPrefix+"gone", store.OriginUpstream
+		gone := store.Upstream{TenantID: tn.ID, Name: "gone", Kind: store.UpstreamRepo, Prefix: "https://r.example", ChannelID: ch.ID,
+			Mode: store.ModeMirror, Visibility: store.Public, State: store.UpstreamActive, CreatedBy: "os:1:t", FetchMode: store.FetchEager}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertUpstream(ctx, &gone) })
+		mirrored.PackageType, mirrored.Source, mirrored.Origin = testType, store.UpstreamSource(gone.ID), store.OriginUpstream
 		inTx(t, s, func(tx *store.Tx) error {
 			if err := tx.FindOrInsertBuild(ctx, &more); err != nil {
 				return err
 			}
-			return tx.FindOrInsertBuild(ctx, &mirrored)
+			if err := tx.FindOrInsertBuild(ctx, &mirrored); err != nil {
+				return err
+			}
+			return tx.DeleteUpstream(ctx, gone, 0) // its builds stay, of a removed upstream
 		})
 		if err := store.ExecRaw(ctx, s, "UPDATE builds SET landed = ? WHERE package_type = ?", true, testType); err != nil {
 			t.Fatal(err)

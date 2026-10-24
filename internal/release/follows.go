@@ -211,7 +211,7 @@ func (s *Service) PlaceFollow(ctx context.Context, f store.DueFollow, renew func
 		}
 		rule := store.DueRule{TenantID: f.TenantID, ChannelID: f.ChannelID, Name: name, Source: f.Source, Mode: store.RuleFollow,
 			PackageType: lk.channel.PackageType}
-		n, why, err := s.PlaceRule(ctx, rule, renew)
+		n, why, due, err := s.placeRule(ctx, rule, renew)
 		if errors.Is(err, errLeaseLost) {
 			return placed, skips, failure, err
 		}
@@ -223,7 +223,7 @@ func (s *Service) PlaceFollow(ctx context.Context, f store.DueFollow, renew func
 		if why != "" {
 			fail(name, errors.New(why))
 		}
-		if err := s.Store.SetRuleChecked(ctx, rule, start, start.Add(-placeSkew), why); err != nil {
+		if err := s.Store.SetRuleChecked(ctx, rule, start, start.Add(-placeSkew), why, due); err != nil {
 			fail(name, err)
 		}
 	}

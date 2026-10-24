@@ -81,6 +81,40 @@ type Build struct {
 	Legacy bool
 	// Inserted is set by FindOrInsertBuild when it inserted the build (not found it).
 	Inserted bool
+	// AvailableAt is when a held entry becomes available (spec 0033): its arrival plus its source's
+	// hold, which FindOrInsertBuild reads when it inserts the build (raised with the hold while it
+	// is held); zero for an entry available on arrival.
+	AvailableAt time.Time
+	// Copied inserts the build as a copy of another source's build (spec 0031: a successor's copy of
+	// a removed upstream's released build): with the original's CreatedAt (its arrival, which a
+	// channel's hold counts from), AvailableAt and RevokedAt, not its new source's hold. Never read.
+	Copied bool
+	// PublisherKeyID is the publisher's key a publication was signed with (spec 0023): revoking it
+	// purges the entries it published that are still held. "": none.
+	PublisherKeyID string
+	// Landed is a build kept in the catalogue placed nowhere (spec 0033), as read.
+	Landed bool
+	// RevokedAt is when the publisher key that published a held entry was revoked with purge_held, or
+	// its publisher removed, while a channel administrator had placed it early (spec 0033 phase A2):
+	// the purge kept it, and it is never placed automatically nor promoted again, only placed early by
+	// a channel administrator. Zero: not revoked.
+	RevokedAt time.Time
+}
+
+// Revoked reports whether the entry was revoked (spec 0033 phase A2: RevokedAt).
+func (b Build) Revoked() bool { return !b.RevokedAt.IsZero() }
+
+// Held reports whether the entry is held at now (spec 0033).
+func (b Build) Held(now time.Time) bool { return b.AvailableAt.After(now) }
+
+// AvailableIn is when an automatic placement into a channel with a hold may take the entry: its
+// own availability, or its arrival plus the channel's hold if that is later (spec 0033).
+func (b Build) AvailableIn(channelHold time.Duration) time.Time {
+	at := b.AvailableAt
+	if channelHold > 0 && b.CreatedAt.Add(channelHold).After(at) {
+		at = b.CreatedAt.Add(channelHold)
+	}
+	return at
 }
 
 // Release is a Build in a channel.
@@ -124,16 +158,18 @@ func (b Build) Slot() string {
 }
 
 const buildCols = `id, tenant_id, source, name, package_version, platform, abi, duckdb_version, c_api_major, c_api_minor,
-c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked, visibility, provenance, package_type`
+c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked, visibility, provenance, package_type,
+available_at, publisher_key_id, landed, revoked_at`
 
 func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 	var b Build
 	var dv sql.NullString
 	var ma, mi, pa sql.NullInt64
-	var prov sql.NullString
+	var prov, key sql.NullString
 	err := r.Scan(&b.ID, &b.TenantID, &b.Source, &b.Name, &b.PackageVersion, &b.Platform, &b.ABI, &dv, &ma, &mi, &pa,
-		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy, &b.Checked, &b.Visibility, &prov, &b.PackageType)
-	b.DuckDBVersion, b.Provenance = dv.String, prov.String
+		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy, &b.Checked, &b.Visibility, &prov, &b.PackageType,
+		scanTime{&b.AvailableAt}, &key, &b.Landed, scanTime{&b.RevokedAt})
+	b.DuckDBVersion, b.Provenance, b.PublisherKeyID = dv.String, prov.String, key.String
 	if ma.Valid {
 		b.CAPI = &CAPI{int(ma.Int64), int(mi.Int64), int(pa.Int64)}
 	}
@@ -210,7 +246,10 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	b.ID, b.CreatedAt = NewID(), t.Now()
+	b.ID = NewID()
+	if !b.Copied || b.CreatedAt.IsZero() {
+		b.CreatedAt = t.Now()
+	}
 	var ma, mi, pa any
 	if b.CAPI != nil {
 		ma, mi, pa = b.CAPI.Major, b.CAPI.Minor, b.CAPI.Patch
@@ -224,10 +263,25 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 			return err
 		}
 	}
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, legacy_duplicate, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	// spec 0033: an entry of a source with a hold is held from its arrival; the source is read with a
+	// lock (fail closed: a removed upstream or publisher brings nothing, and a hold raised meanwhile
+	// counts), and a copy keeps the original's arrival, hold and revoked marker
+	hold, err := t.SourceHold(ctx, b.Source)
+	if err != nil {
+		return err
+	}
+	if !b.Copied {
+		b.AvailableAt, b.RevokedAt = time.Time{}, time.Time{}
+		if hold > 0 {
+			b.AvailableAt = b.CreatedAt.Add(hold)
+		}
+	}
+	b.Landed = false
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, legacy_duplicate, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		b.ID, b.TenantID, b.Source, b.Name, b.PackageVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
 		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, b.Visibility, nullable(b.Provenance),
-		b.PackageType, b.Slot(), b.Legacy, t.s.d.timeArg(b.CreatedAt))
+		b.PackageType, t.s.d.nullTimeArg(b.AvailableAt), nullable(b.PublisherKeyID), false, t.s.d.nullTimeArg(b.RevokedAt), b.Slot(), b.Legacy,
+		t.s.d.timeArg(t.Now()))
 	b.Inserted = err == nil
 	return t.s.mapErr(err, "build "+b.Name)
 }
@@ -566,13 +620,14 @@ type ServeChannel struct {
 func (s *Store) GetServeChannel(ctx context.Context, tenant, channel string) (ServeChannel, error) {
 	var sc ServeChannel
 	var serving sql.NullString
+	var hold int64
 	t, c := &sc.Tenant, &sc.Channel
 	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT t.id, t.name, t.state, t.storage_domain, t.auth_version, c.id, c.tenant_id,
-c.name, c.kind, c.version, c.serving_key_id, c.release_version, c.package_type, (SELECT version FROM reserved_version WHERE id = 1)
+c.name, c.kind, c.version, c.serving_key_id, c.release_version, c.package_type, c.hold_seconds, (SELECT version FROM reserved_version WHERE id = 1)
 FROM channels c JOIN tenants t ON t.id = c.tenant_id
 WHERE t.name = ? AND c.name = ? AND t.deleting_at IS NULL`), tenant, channel).Scan(&t.ID, &t.Name, &t.State, &t.StorageDomain, &t.AuthVersion, &c.ID, &c.TenantID,
-		&c.Name, &c.Kind, &c.Version, &serving, &c.ReleaseVersion, &c.PackageType, &sc.ReservedVersion)
-	c.ServingKeyID = serving.String
+		&c.Name, &c.Kind, &c.Version, &serving, &c.ReleaseVersion, &c.PackageType, &hold, &sc.ReservedVersion)
+	c.ServingKeyID, c.Hold = serving.String, time.Duration(hold)*time.Second
 	if err == nil && !pkgtype.Known(c.PackageType) {
 		err = sql.ErrNoRows // spec 0034: a channel of a type this binary does not know serves nothing
 	}

@@ -117,7 +117,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 				store.ErrInvalid, b.PackageVersion, b.Platform, p.Version, p.Platform)
 		}
 		it.origin, it.provenance = store.OriginPublication, p.Provenance
-		it.b.Origin = store.OriginPublication
+		it.b.Origin, it.b.PublisherKeyID = store.OriginPublication, p.KeyID
 		if err := s.publisherKeys(ctx, a, res, p.KeySources, f, &it); err != nil {
 			return store.Build{}, false, err
 		}
@@ -177,6 +177,9 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 			"slot": bb.Slot(), "body_hash": bb.BodyHash, "source": label, "visibility": bb.Visibility}
 		if it.provenance != "" {
 			f["provenance"] = it.provenance
+		}
+		if !bb.AvailableAt.IsZero() { // spec 0033 phase A2: held until then
+			f["available_at"] = bb.AvailableAt
 		}
 		typedEvent(f, bb.PackageType)
 		return tx.Event(ctx, t.ID, a.String(), "catalogue.arrival", "ext:"+bb.Name, f)

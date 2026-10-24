@@ -178,12 +178,23 @@ func TestAdminCLI(t *testing.T) {
 	run(1, "catalogue", "add", "acme", file, "-name", "tresor")                                        // not a binary: the checks refuse it
 	run(2, "catalogue", "add", "acme", file)                                                           // no -name
 	run(1, "catalogue", "purge", "acme", "nothere")
+	// -early (spec 0033 phase A2) changes nothing for a build added unchecked
+	run(1, "release", "place", "acme/prod", "-name", "tresor", "-source", "tenant", "-version", "1.0", "-early")
+
 	run(1, "channel", "follow", "acme/prod", "tenant") // the tenant's own source is not followed
 	if got := run(0, "channel", "follow", "acme/prod"); !strings.Contains(got, "SOURCE") {
 		t.Fatalf("channel follow: %q", got)
 	}
 	run(1, "channel", "unfollow", "acme/prod", "upstream:nope")
 	run(2, "channel", "unfollow", "acme/prod")
+	// a channel's hold (spec 0033 phase A2)
+	run(0, "channel", "hold", "acme/prod", "90m")
+	if got := run(0, "channel", "hold", "acme/prod"); strings.TrimSpace(got) != "1h30m0s" {
+		t.Fatalf("channel hold: %q", got)
+	}
+	run(2, "channel", "hold", "acme/prod", "x")
+	run(0, "channel", "hold", "acme/prod", "0")
+	run(2, "release", "list", "acme/prod", "-early") // -early is place's
 	run(2, "release", "place", "acme/prod", "-name", "tresor", "-source", "tenant")
 	if got := run(0, "release", "list", "acme/prod"); !strings.Contains(got, rid) || !strings.Contains(got, "public") {
 		t.Fatalf("release list: %q", got)
@@ -294,8 +305,18 @@ func TestAdminCLI(t *testing.T) {
 		t.Fatalf("upstream list: %q", got)
 	}
 	run(0, "upstream", "cells", "acme", "core")
+	// an eager mirror's hold (spec 0033 phase A2): a mirror with one is not made lazy
+	run(0, "upstream", "hold", "acme", "core", "2d")
+	if got := run(0, "upstream", "show", "acme", "core"); !strings.Contains(got, "hold: 48h0m0s") {
+		t.Fatalf("upstream show with a hold: %q", got)
+	}
+	run(2, "upstream", "hold", "acme", "core", "soon")
+	run(1, "upstream", "hold", "acme", "core", "100d") // more than a hold may be
+	run(1, "upstream", "fetch", "acme", "core", "lazy")
+	run(0, "upstream", "hold", "acme", "core", "0")
 	// lazy mirrors (spec 0032)
 	run(0, "upstream", "fetch", "acme", "core", "lazy")
+	run(1, "upstream", "hold", "acme", "core", "1h") // a lazy mirror takes none
 	run(1, "upstream", "fetch", "acme", "core", "sometimes")
 	run(0, "upstream", "extension", "add", "acme", "core", "json", "-eager")
 	if got := run(0, "upstream", "show", "acme", "core"); !strings.Contains(got, "fetch: lazy") || !strings.Contains(got, "extension: json  (eager)") {
@@ -377,7 +398,14 @@ func TestAdminCLI(t *testing.T) {
 	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, keyID) {
 		t.Fatalf("publisher list: %q", got)
 	}
-	run(0, "publisher", "key", "remove", "acme", "acl-ci", keyID)
+	// a publisher's hold (spec 0033 phase A2); revoking a key purges its held entries
+	run(0, "publisher", "hold", "acme", "acl-ci", "36h")
+	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, "36h0m0s") {
+		t.Fatalf("publisher list with a hold: %q", got)
+	}
+	run(2, "publisher", "hold", "acme", "acl-ci")
+	run(2, "publisher", "key", "list", "acme", "acl-ci", "-purge-held")
+	run(0, "publisher", "key", "remove", "acme", "acl-ci", keyID, "-purge-held")
 	run(1, "publisher", "key", "remove", "acme", "acl-ci", keyID)
 	if got := run(0, "publisher", "key", "list", "acme", "acl-ci"); strings.Contains(got, keyID) {
 		t.Fatalf("a removed key: %q", got)

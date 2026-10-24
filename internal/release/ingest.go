@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
@@ -42,11 +43,14 @@ type Ingest struct {
 
 // Ingested is an intake's result: the release (new or the slot's), whether it existed, and the
 // key that verified. Landed is a build kept in the catalogue and placed nowhere: the channel's rule
-// for the name is manual and holds no release of its version (spec 0033).
+// for the name is manual and holds no release of its version (spec 0033). Held is a build kept in
+// the catalogue while it is held (spec 0033 phase A2: the upstream's hold, or the channel's): the
+// placement pass places it when the hold ends.
 type Ingested struct {
 	Release store.Release
 	Existed bool
 	Landed  bool
+	Held    bool
 	Key     string
 	Hash    string
 }
@@ -179,6 +183,17 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		}
 		return res, slotErr(store.OriginUpstream, s.land(ctx, sp, &it, nil))
 	}
+	// spec 0033 phase A2: a mirror's run is an automatic placement into its channel; an entry held
+	// (the upstream's hold, or the channel's) waits in the catalogue, and the pass places it then
+	if ch.Kind == store.ChannelSigned {
+		held, err := s.heldArrival(ctx, it.b, ch.Hold)
+		if err != nil {
+			return res, err
+		}
+		if held {
+			return s.landHeld(ctx, a, sp, &it, ch, res, in.DryRun)
+		}
+	}
 	capis, err := s.Store.ChannelCAPIs(ctx, ch.ID)
 	if err != nil {
 		return res, err
@@ -197,6 +212,7 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 	if completes != nil {
 		completes.complete(&it)
 	}
+	it.auto = true
 	rs, existed, err := s.commitAndRelease(ctx, sp, &it, func(ctx context.Context, it item) ([]store.Release, bool, error) {
 		return s.insert(ctx, a, ch.ID, []item{it}, func(tx *store.Tx, c store.Channel, made []store.Release) error {
 			r := made[0]
@@ -211,9 +227,75 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 			return tx.Event(ctx, c.TenantID, a.String(), "upstream.release", releaseSubject(c, r), data)
 		})
 	})
+	if errors.Is(err, ErrHeld) && ch.Kind == store.ChannelSigned { // a hold set meanwhile: the entry waits
+		return s.landHeld(ctx, a, sp, &it, ch, res, false)
+	}
 	if err != nil {
 		return res, err
 	}
 	res.Release, res.Existed = rs[0], existed
 	return res, nil
+}
+
+// heldArrival says whether an arriving entry is held in a channel now (spec 0033 phase A2): one the
+// catalogue has as it is, a new one by its source's hold; the channel's hold after its arrival too.
+func (s *Service) heldArrival(ctx context.Context, b store.Build, channelHold time.Duration) (bool, error) {
+	now := s.Store.Now()
+	cur, ok, err := s.Store.BuildOf(ctx, b.TenantID, b.PackageType, b.Source, b.Name, b.BodyHash)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		hold, err := s.Store.SourceHold(ctx, b.Source)
+		if err != nil {
+			return false, err
+		}
+		cur = store.Build{CreatedAt: now}
+		if hold > 0 {
+			cur.AvailableAt = now.Add(hold)
+		}
+	}
+	return cur.AvailableIn(channelHold).After(now), nil
+}
+
+// landHeld keeps a held mirror entry in the catalogue (spec 0033 phase A2), marked held at its
+// arrival (store.HeldAtArrival: the placement pass places it in the home channel, and only such an
+// entry), and writes its rule in the channel as its release would (spec 0031): the first arrival of
+// the name sets the upstream as its source, without a mode, and an upstream succeeding a removed one
+// takes the removed one's rule and releases; the placement pass places the entry there when its
+// hold ends.
+func (s *Service) landHeld(ctx context.Context, a authz.Actor, sp *blob.Spool, it *item, ch store.Channel, res Ingested, dryRun bool) (Ingested, error) {
+	res.Held = true
+	if dryRun {
+		return res, nil
+	}
+	if err := s.land(ctx, sp, it, func(tx *store.Tx, b store.Build, _ bool) error { return tx.HeldAtArrival(ctx, b.ID) }); err != nil {
+		return res, slotErr(store.OriginUpstream, err)
+	}
+	return res, s.Store.InTxLocks(ctx, []string{store.TenantUpstreamLock(ch.TenantID), lockKey(ch.ID)}, func(tx *store.Tx) error {
+		c, err := tx.ChannelByID(ctx, ch.ID)
+		if err != nil {
+			return err
+		}
+		selected, succeeds, err := checkSource(ctx, tx, c.ID, it.b.Name, it.source, true)
+		if err != nil {
+			return err
+		}
+		if selected {
+			// the pass looks at the rule at once: an entry found again keeps its arrival, which the
+			// pass's look for new builds would not count
+			return tx.RecheckRule(ctx, c.ID, it.b.Name)
+		}
+		if err := setSource(ctx, tx, a, c, it.b.Name, it.source, succeeds); err != nil {
+			return err
+		}
+		if succeeds == "" {
+			return nil
+		}
+		// the removed upstream's releases, yanks and purges are the successor's (spec 0033)
+		if _, err := tx.TakeReleases(ctx, c.ID, it.b.Name, succeeds, it.source); err != nil {
+			return err
+		}
+		return tx.BumpReleaseVersion(ctx, c.ID)
+	})
 }

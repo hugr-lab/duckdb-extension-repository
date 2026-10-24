@@ -17,8 +17,8 @@ import (
 // SourceView is a name's source in a channel as answers show it: the selected source ("": none),
 // who set it and when, and the sources that have releases of the name in the channel, each with
 // its count. Spec 0033: the rule's mode, the newest version of the source the channel holds
-// (Current, an active or deprecated release) and the newest in the catalogue (Newest), and the
-// placement pass's last outcome.
+// (Current, an active or deprecated release) and the newest available in the catalogue (Newest: a
+// version with a held build is not, phase A2), and the placement pass's last outcome.
 type SourceView struct {
 	Name      string
 	Source    string
@@ -73,6 +73,10 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 	if err != nil {
 		return nil, err
 	}
+	held, err := s.Store.HeldVersions(ctx, ch.TenantID, ch.PackageType)
+	if err != nil {
+		return nil, err
+	}
 	rels, err := s.Store.ListReleases(ctx, ch.ID, "")
 	if err != nil {
 		return nil, err
@@ -100,6 +104,9 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 			v.Source, v.SetBy, v.SetAt = store.Label(labels, x.Source), x.SetBy, x.SetAt
 			v.Mode, v.Outcome, v.OutcomeAt, v.Current = x.Mode, x.Outcome, x.OutcomeAt, current[n]
 			for _, ver := range catalogue[[2]string{x.Source, n}] {
+				if slices.Contains(held[[2]string{x.Source, n}], ver) {
+					continue
+				}
 				if v.Newest == "" || CompareVersions(ver, v.Newest) > 0 {
 					v.Newest = ver
 				}

@@ -46,6 +46,9 @@ const (
 	// CellOtherSource: another source holds the name in the channel (spec 0031), decided before the
 	// download and asked again each run.
 	CellOtherSource = "other_source"
+	// CellHeld: the build is in the catalogue, held (spec 0033 phase A2: its upstream's hold, or its
+	// channel's); the placement pass places it when the hold ends.
+	CellHeld = "held"
 	// CellLanded: the build is in the catalogue, placed nowhere: the channel's rule for the name is
 	// manual and holds no release of its version (spec 0033).
 	CellLanded = "landed"
@@ -76,6 +79,9 @@ type Upstream struct {
 	Credential                                  string // a configured credential's name (spec 0009 phase 3); "": none
 	Usage                                       string // UsageForward or UsageOff (spec 0012 phase 1c)
 	FetchMode                                   string // FetchEager or FetchLazy (spec 0032)
+	// Hold is an eager mirror's hold (spec 0033): an entry its runs bring is held until its arrival
+	// plus the hold; 0 for none. A lazy or pull-through upstream has none.
+	Hold time.Duration
 
 	// bundle mode's freshness mark (spec 0014): the last imported manifest
 	BundleID, BundleManifestSHA256 string
@@ -107,14 +113,16 @@ func TenantUpstreamLock(tenantID string) string { return "kista/tenant-upstreams
 
 const upstreamCols = `id, tenant_id, name, kind, prefix, channel_id, mode, visibility, state, version, requested_at,
 request_dry_run, next_run_at, last_run_at, last_run, created_at, created_by, credential, bundle_id, bundle_created_at,
-bundle_manifest_sha256, usage, fetch_mode`
+bundle_manifest_sha256, usage, fetch_mode, hold_seconds`
 
 func scanUpstream(r interface{ Scan(...any) error }) (Upstream, error) {
 	var u Upstream
 	var prefix, lastRun, cred, bundleID, bundleSHA sql.NullString
+	var hold int64
 	err := r.Scan(&u.ID, &u.TenantID, &u.Name, &u.Kind, &prefix, &u.ChannelID, &u.Mode, &u.Visibility, &u.State, &u.Version,
 		scanTime{&u.RequestedAt}, &u.RequestDryRun, scanTime{&u.NextRunAt}, scanTime{&u.LastRunAt}, &lastRun,
-		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred, &bundleID, scanTime{&u.BundleCreatedAt}, &bundleSHA, &u.Usage, &u.FetchMode)
+		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred, &bundleID, scanTime{&u.BundleCreatedAt}, &bundleSHA, &u.Usage, &u.FetchMode, &hold)
+	u.Hold = time.Duration(hold) * time.Second
 	u.Prefix, u.LastRun, u.Credential = prefix.String, lastRun.String, cred.String
 	u.BundleID, u.BundleManifestSHA256 = bundleID.String, bundleSHA.String
 	return u, err
@@ -147,10 +155,10 @@ func (t *Tx) InsertUpstream(ctx context.Context, u *Upstream) error {
 	if u.FetchMode == "" {
 		u.FetchMode = FetchEager
 	}
-	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		u.ID, u.TenantID, u.Name, u.Kind, nullable(u.Prefix), u.ChannelID, u.Mode, u.Visibility, u.State, u.Version,
 		t.s.d.nullTimeArg(u.RequestedAt), u.RequestDryRun, t.s.d.nullTimeArg(u.NextRunAt), nil, nil,
-		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential), nil, nil, nil, u.Usage, u.FetchMode)
+		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential), nil, nil, nil, u.Usage, u.FetchMode, int64(u.Hold/time.Second))
 	if err := t.s.mapErr(err, "upstream "+u.Name); err != nil {
 		return err
 	}
@@ -904,7 +912,8 @@ type PullThrough struct {
 }
 
 // ChannelPullThrough reads a channel's active pull-through upstreams and lazy mirrors, and every
-// name an upstream of the channel lists (an explicit entry wins over "*").
+// name an upstream of the channel lists (an explicit entry wins over "*"). A channel with a hold asks
+// none (spec 0033: what they fetch would wait for the hold).
 func (s *Store) ChannelPullThrough(ctx context.Context, channelID string) ([]PullThrough, map[string]bool, error) {
 	var out []PullThrough
 	listed := map[string]bool{}
@@ -919,6 +928,10 @@ WHERE u.channel_id = ?`, channelID)
 			if n != "*" {
 				listed[n] = true
 			}
+		}
+		var hold int64
+		if err := tx.queryRow(ctx, "SELECT hold_seconds FROM channels WHERE id = ?", channelID).Scan(&hold); err != nil || hold > 0 {
+			return err
 		}
 		rows, err := tx.query(ctx, "SELECT "+upstreamCols+" FROM upstreams WHERE channel_id = ? AND (mode = ? OR mode = ? AND fetch_mode = ?) AND state = ? ORDER BY name",
 			channelID, ModePullThrough, ModeMirror, FetchLazy, UpstreamActive)

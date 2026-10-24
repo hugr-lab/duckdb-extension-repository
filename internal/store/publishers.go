@@ -15,6 +15,9 @@ type Publisher struct {
 	CreatedBy          string
 	// LicenseKeys marks it a trusted source of licence keys (spec 0021), a server administrator's act.
 	LicenseKeys bool
+	// Hold is its hold (spec 0033): an entry it publishes is held until its arrival plus the hold,
+	// and it publishes into the catalogue only; 0 for none.
+	Hold time.Duration
 }
 
 // MaxPublishers is the most publishers a tenant may hold.
@@ -46,8 +49,10 @@ func (t *Tx) InsertPublisher(ctx context.Context, p *Publisher) error {
 // GetPublisher reads a tenant's publisher by name.
 func (t *Tx) GetPublisher(ctx context.Context, tenantID, name string) (Publisher, error) {
 	var p Publisher
-	err := t.queryRow(ctx, "SELECT id, tenant_id, name, created_at, created_by, license_keys FROM publishers WHERE tenant_id = ? AND name = ?",
-		tenantID, name).Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys)
+	var hold int64
+	err := t.queryRow(ctx, "SELECT id, tenant_id, name, created_at, created_by, license_keys, hold_seconds FROM publishers WHERE tenant_id = ? AND name = ?",
+		tenantID, name).Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys, &hold)
+	p.Hold = time.Duration(hold) * time.Second
 	return p, notFound(err, "publisher "+name)
 }
 
@@ -104,7 +109,7 @@ func (t *Tx) DeletePublisher(ctx context.Context, tenantID, name string) error {
 
 // publishers reads a tenant's publishers, by name.
 func publishers(ctx context.Context, query queryFn, tenantID string) ([]Publisher, error) {
-	rows, err := query(ctx, `SELECT id, tenant_id, name, created_at, created_by, license_keys FROM publishers WHERE tenant_id = ?
+	rows, err := query(ctx, `SELECT id, tenant_id, name, created_at, created_by, license_keys, hold_seconds FROM publishers WHERE tenant_id = ?
 ORDER BY name`, tenantID)
 	if err != nil {
 		return nil, err
@@ -113,9 +118,11 @@ ORDER BY name`, tenantID)
 	var out []Publisher
 	for rows.Next() {
 		var p Publisher
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys); err != nil {
+		var hold int64
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys, &hold); err != nil {
 			return nil, err
 		}
+		p.Hold = time.Duration(hold) * time.Second
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -230,10 +237,11 @@ func (s *Store) PublisherKeys(ctx context.Context, tenantID, publisherID string)
 func (s *Store) PublisherKeyByFingerprint(ctx context.Context, tenantID, fp string) (PublisherKey, Publisher, error) {
 	var p Publisher
 	row := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT k.id, k.tenant_id, k.publisher_id, k.type, k.public_key, k.fingerprint,
-k.title, k.expires_at, k.created_at, k.created_by, k.last_used_at, p.name, p.created_at, p.created_by, p.license_keys
+k.title, k.expires_at, k.created_at, k.created_by, k.last_used_at, p.name, p.created_at, p.created_by, p.license_keys, p.hold_seconds
 FROM publisher_keys k JOIN publishers p ON p.id = k.publisher_id WHERE k.tenant_id = ? AND k.fingerprint = ?`), tenantID, fp)
-	k, err := scanPublisherKey(row, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys)
-	p.ID, p.TenantID = k.PublisherID, k.TenantID
+	var hold int64
+	k, err := scanPublisherKey(row, &p.Name, scanTime{&p.CreatedAt}, &p.CreatedBy, &p.LicenseKeys, &hold)
+	p.ID, p.TenantID, p.Hold = k.PublisherID, k.TenantID, time.Duration(hold)*time.Second
 	return k, p, notFound(err, "key")
 }
 

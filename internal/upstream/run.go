@@ -302,7 +302,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 		mu.Lock()
 		defer mu.Unlock()
 		res.Counts[outcome]++
-		if outcome != store.CellReleased && outcome != store.CellUnchanged && outcome != store.CellLanded && outcome != would &&
+		if outcome != store.CellReleased && outcome != store.CellUnchanged && outcome != store.CellLanded && outcome != store.CellHeld && outcome != would &&
 			len(res.Problems) < maxProblems {
 			res.Problems = append(res.Problems, CellNote{c.version, c.platform, c.name, outcome, detail})
 		}
@@ -470,7 +470,7 @@ var refusal = map[string]bool{store.CellRejected: true, store.CellConflict: true
 
 // conditional outcomes: the same answer changes nothing, so the last ETag is sent.
 var conditional = map[string]bool{store.CellReleased: true, store.CellUnchanged: true, store.CellYanked: true, store.CellConflict: true,
-	store.CellLanded: true}
+	store.CellLanded: true, store.CellHeld: true}
 
 // What made a cell's fetch, for its upstream.release event (spec 0032): a scheduled run, an
 // administrator's sync (a bundle export's too), or a caller's miss (pull-through, a lazy ask).
@@ -653,10 +653,13 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		return fail(store.CellConflict, err)
 	case errors.Is(err, store.ErrBusy), errors.Is(err, store.ErrBuildGone), errors.Is(err, store.ErrStreamBusy),
 		errors.Is(err, store.ErrClaimLost), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, store.ErrSourceGone),
 		errors.Is(err, store.ErrDeleting): // spec 0019: never the file's fault; recording the cell stops the run
 		return fail(store.CellFailed, err) // tried again by the next run: never the file's fault
 	case err != nil:
 		return fail(store.CellRejected, err)
+	case got.Held:
+		rec.Outcome = store.CellHeld
 	case got.Landed:
 		rec.Outcome = store.CellLanded
 	case got.Existed && got.Release.State == store.ReleaseYanked:

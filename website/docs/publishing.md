@@ -282,7 +282,8 @@ grant on a channel does not reach it; a reserved name only through a grant namin
 DuckDB version must be registered on the server (a C API build's is not checked). The same body
 again answers the build as it is, whatever `visibility` asks. The answer is the build (`201`, or
 `200` when the source has the body already): `{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility",
-"origin", "checked", "created_at", "placed"}`. The CLI's form is
+"origin", "checked", "created_at", "state", "available_at", "placed"}` (`state` is `held` until `available_at` when the
+publisher has a [hold](#holds-and-early-placement), else `available`). The CLI's form is
 `kista admin catalogue add <tenant> <file|-> -name <name> [-private]` (a tenant administrator's,
 source `tenant`).
 
@@ -327,6 +328,35 @@ kista admin -config /etc/kista/kista.yaml \
 - A placement takes builds of the channel's [package type](concepts.md#packages-and-package-types)
   only; a body naming another `package_type` is `409`, and so is a promotion between channels of
   two types.
+- A held version is placed only with `"early": true` (below).
+
+### Holds and early placement
+
+A publisher may have a [hold](upstreams.md#holds) (`kista admin publisher hold <tenant> <name>
+<duration>`, or `PUT …/publishers/{name}/hold {"hold": "24h"}`, a tenant administrator's): every
+build it publishes is held until its arrival plus the hold.
+
+- **It publishes into the catalogue only.** The channel's publication route refuses it with `409`
+  and the problem type `…/held`, whose detail names the catalogue's route; a refusal stores nothing.
+  It publishes with `POST …/catalogue/extensions/{ext}/builds` (above), which needs `publish` on the
+  extension tenant-wide, and channels take its builds by their rules (`auto`, or a follow) once the
+  hold has passed. A publisher without a hold that holds `publish` on a channel reaches it at once,
+  as before.
+- **Placing early.** A held version is placed by hand only with `"early": true` (`release place
+  … -early`), by a channel administrator holding `promote` on the name: the tenant's own choice to
+  take a version sooner, recorded in `release.place` (`"early": true`). Anyone else is refused; a
+  placement or a promotion of a held entry without it is `409` (`…/held`).
+- **Revoking a key.** Removing a publisher's key with `?purge_held=true` (`publisher key remove …
+  -purge-held`, a tenant administrator's) purges the builds published with it that are still held
+  and placed nowhere: a hold is what lets a stolen key be revoked before its builds reach a channel.
+  Removing the publisher purges all of its held builds. A held build a channel administrator placed
+  early is kept, revoked: it stays where it was placed, but no rule, follow or promotion takes it
+  again, only another placement with `early`; the answer (`200`), the command and the removal's event
+  list what was purged and what was kept, with how many channels hold it. A revoked build stays
+  revoked for its bytes: publishing the same file again, even signed with a new key, is refused on a
+  channel's route (`409`) and placed nowhere from the catalogue's; publish a new version. An upload
+  in flight when its key or its publisher is removed is refused (`401`). A rotation without
+  `purge_held` keeps them (`204`).
 
 ## Changing a release
 
@@ -405,7 +435,8 @@ Over the API (tenant administrators):
 | `GET /publishers`, `POST /publishers {"name": …}` | list, add; a publisher's answer lists its keys |
 | `GET /publishers/{name}`, `DELETE /publishers/{name}` | read, remove |
 | `GET /publishers/{name}/keys`, `POST /publishers/{name}/keys {"public_key": …, "expires_at": …}` | list, register a key |
-| `GET /publishers/{name}/keys/{id}`, `DELETE /publishers/{name}/keys/{id}` | read, remove one |
+| `GET /publishers/{name}/keys/{id}`, `DELETE /publishers/{name}/keys/{id}[?purge_held=true]` | read, remove one; `purge_held` purges what it published that is still held, and answers what it purged and kept (revoked) |
+| `PUT /publishers/{name}/hold {"hold": "24h"}` | its [hold](#holds-and-early-placement) (`0s` for none); answers the publisher, with `hold` |
 
 Removing a publisher removes its keys and grants; caches drop it at the next request.
 

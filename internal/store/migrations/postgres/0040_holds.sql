@@ -1,0 +1,22 @@
+-- +min_reader 40
+-- spec 0033 phase A2: holds. A publisher, an eager mirror and a channel may have a hold (seconds, 0
+-- for none): an entry arriving from a source with a hold is held until its arrival plus the hold
+-- (available_at; NULL: available on arrival), and an automatic placement into a channel waits for
+-- the channel's hold too; the key a publication was signed with, so revoking it purges the entries it
+-- published that are still held, and marks those it keeps (placed early) revoked: placed automatically
+-- nowhere, nor promoted (revoked_at); when the placement pass looks at a rule again for a hold ending
+-- (due_at). An older replica would place held and revoked entries, and take a held publisher's
+-- publications on a channel's route, so it no longer runs here.
+ALTER TABLE upstreams ADD COLUMN hold_seconds integer NOT NULL DEFAULT 0
+-- +statement
+ALTER TABLE publishers ADD COLUMN hold_seconds integer NOT NULL DEFAULT 0
+-- +statement
+ALTER TABLE channels ADD COLUMN hold_seconds integer NOT NULL DEFAULT 0
+-- +statement
+ALTER TABLE builds ADD COLUMN available_at timestamptz
+-- +statement
+ALTER TABLE builds ADD COLUMN publisher_key_id varchar(36)
+-- +statement
+ALTER TABLE builds ADD COLUMN revoked_at timestamptz
+-- +statement
+ALTER TABLE channel_sources ADD COLUMN due_at timestamptz

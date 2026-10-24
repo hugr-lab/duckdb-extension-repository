@@ -55,8 +55,12 @@ func TestDistributionAdmin(t *testing.T) {
 	call(201, "POST", T+"/publishers", da, `{"name":"enterest-ci"}`)
 	call(200, "POST", T+"/publishers/enterest-ci/license-keys", da, "")
 	k := newSigner(t)
-	call(201, "POST", T+"/publishers/enterest-ci/keys", da, `{"public_key":"`+k.authKey+`"}`)
-	call(200, "GET", T+"/publishers/enterest-ci/keys", da, "")
+	kid := call(201, "POST", T+"/publishers/enterest-ci/keys", da, `{"public_key":"`+k.authKey+`"}`).json(t)["id"].(string)
+	// spec 0033 phase A2: purging a key's held entries is a tenant administrator's until phase B
+	call(404, "DELETE", T+"/publishers/enterest-ci/keys/"+kid+"?purge_held=true", da, "")
+	if r := call(200, "GET", T+"/publishers/enterest-ci/keys", da, ""); !strings.Contains(string(r.body), kid) {
+		t.Fatalf("the key after a refused purge: %s", r.body)
+	}
 	r = call(201, "POST", T+"/grants", da, `{"principal":"publisher:enterest-ci","verbs":["publish","promote"],"extension":"acme_tool"}`)
 	grant := r.json(t)["id"].(string)
 	call(201, "POST", T+"/grants", da, `{"principal":"subject:corp|dana","verbs":["admin"],"channel":"prod","extension":"acme_tool"}`)

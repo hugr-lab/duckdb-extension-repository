@@ -448,6 +448,9 @@ func (s *Service) SetFetchMode(ctx context.Context, a authz.Actor, tenant, name,
 			if ch.Kind == store.ChannelPassthrough {
 				return errPassthroughLazy
 			}
+			if u.Hold > 0 { // spec 0033: a lazy mirror fetches because someone is installing now
+				return fmt.Errorf("%w: the mirror has a hold; a lazy mirror takes none (set its hold to 0 first)", store.ErrInvalid)
+			}
 		}
 		was := u.FetchMode
 		if err := tx.SetUpstreamFetchMode(ctx, u, mode, expected); err != nil {
@@ -461,6 +464,53 @@ func (s *Service) SetFetchMode(ctx context.Context, a authz.Actor, tenant, name,
 		}
 		return tx.AskFilled(ctx, u.ID)
 	})
+}
+
+// SetHold sets an eager mirror's hold (spec 0033 phase A2; expected: its version, 0 for any): an
+// entry its runs bring is held until its arrival plus the hold, and reaches no channel before. Raising
+// it applies to the entries held now; lowering it, to those arriving from then on. A lazy or
+// pull-through upstream takes none (it fetches because someone is installing now), nor one feeding
+// a passthrough channel. A tenant administrator's.
+func (s *Service) SetHold(ctx context.Context, a authz.Actor, tenant, name string, d time.Duration, expected int64) (store.Upstream, error) {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return store.Upstream{}, err
+	}
+	if err := store.ValidHold(d); err != nil {
+		return store.Upstream{}, err
+	}
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
+		u, err := tx.GetUpstream(ctx, t.ID, name)
+		if err != nil {
+			return err
+		}
+		if u.Mode != store.ModeMirror || u.FetchMode != store.FetchEager {
+			return fmt.Errorf("%w: a hold is an eager mirror's; a lazy or pull-through upstream, or a bundle's, takes none", store.ErrInvalid)
+		}
+		ch, err := tx.ChannelByID(ctx, u.ChannelID)
+		if err != nil {
+			return err
+		}
+		if ch.Kind == store.ChannelPassthrough {
+			return fmt.Errorf("%w: a passthrough channel's upstream takes no hold", store.ErrInvalid)
+		}
+		before := u.Hold
+		if err := tx.SetUpstreamHold(ctx, &u, d, expected); err != nil {
+			return err
+		}
+		held := 0
+		if d > before {
+			if held, err = tx.RaiseHeld(ctx, t.ID, store.UpstreamSource(u.ID), d); err != nil {
+				return err
+			}
+		}
+		return tx.Event(ctx, t.ID, a.String(), "catalogue.hold", "upstream:"+u.Name,
+			map[string]any{"source": "upstream:" + u.Name, "hold": d.String(), "before": before.String(), "held": held})
+	})
+	if err != nil {
+		return store.Upstream{}, err
+	}
+	return s.Get(ctx, a, tenant, name)
 }
 
 // tenantReserved refuses an entry for a name reserved in the tenant (spec 0030) without

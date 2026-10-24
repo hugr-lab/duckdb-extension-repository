@@ -163,12 +163,15 @@ const (
 	typeUnavailable  = "unavailable"
 	// typeSource: another source holds the name in the channel (spec 0031)
 	typeSource = "source"
+	// typeHeld: a held entry, or a publisher with a hold on a channel's route (spec 0033)
+	typeHeld = "held"
 )
 
 var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "Not Found", typeMethod: "Method Not Allowed",
 	typeInvalid: "Invalid", typeConflict: "Conflict", typePrecondition: "Precondition Failed",
 	typeRequired: "Precondition Required", typeTooLarge: "Content Too Large", typeMediaType: "Unsupported Media Type",
-	typeTooMany: "Too Many Requests", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name"}
+	typeTooMany: "Too Many Requests", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
+	typeHeld: "Held"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
 func problem(w http.ResponseWriter, status int, typ, detail string) {
@@ -625,6 +628,9 @@ func init() {
 			http.MethodPut: m(pathAdmin, (*Handler).setChannelFollow), http.MethodDelete: m(pathAdmin, (*Handler).removeChannelFollow)}},
 		{"tenants/{t}/channels/{c}/sources/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelSource),
 			http.MethodPut: mb(pathAdmin, (*Handler).setChannelSource), http.MethodDelete: m(pathAdmin, (*Handler).clearChannelSource)}},
+		// spec 0033 phase A2: a channel's hold (its administrators')
+		{"tenants/{t}/channels/{c}/hold", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelHold),
+			http.MethodPut: mb(pathAdmin, (*Handler).setChannelHold)}},
 		{"tenants/{t}/channels/{c}/keys", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).keyView),
 			http.MethodPost: mb(serverAdmin, (*Handler).addKey)}},
 		{"tenants/{t}/channels/{c}/keys/events", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).keyEvents)}},
@@ -667,6 +673,9 @@ func init() {
 		// distribution admins)
 		{"tenants/{t}/publishers/{name}/license-keys", map[string]rule{http.MethodPost: m(distributionAdmin, publisherLicenseKeys(true)),
 			http.MethodDelete: m(distributionAdmin, publisherLicenseKeys(false))}},
+		// spec 0033 phase A2: a publisher's hold (the tenant's administrators'; a distributor's
+		// publisher's is a distribution admin's, phase B)
+		{"tenants/{t}/publishers/{name}/hold", map[string]rule{http.MethodPut: mb(pathAdmin, (*Handler).setPublisherHold)}},
 		// spec 0023: a publisher's public SSH keys
 		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listPublisherKeys),
 			http.MethodPost: mb(distributionAdmin, (*Handler).addPublisherKey)}},
@@ -691,6 +700,8 @@ func init() {
 		{"tenants/{t}/upstreams/{name}/sync", map[string]rule{http.MethodPost: m(pathAdmin, (*Handler).syncUpstream)}},
 		{"tenants/{t}/upstreams/{name}/credential", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).setCredential)}},
 		{"tenants/{t}/upstreams/{name}/fetch", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).setFetch)}},
+		// spec 0033 phase A2: an eager mirror's hold
+		{"tenants/{t}/upstreams/{name}/hold", map[string]rule{http.MethodPut: mb(pathAdmin, (*Handler).setUpstreamHold)}},
 		{"tenants/{t}/upstreams/{name}/usage", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).usageForward),
 			http.MethodPost: mb(pathAdmin, (*Handler).setUsage)}},
 		{"credentials", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listCredentials)}},

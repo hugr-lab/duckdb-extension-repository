@@ -256,6 +256,7 @@ skipped).
 | `yanked` | the slot holds this body, yanked; it stays yanked |
 | `conflict` | the upstream's slot holds another body; the version is immutable within its source |
 | `landed` | the build is in the catalogue, placed nowhere: the channel's rule for the name is `manual` and holds no release of its version |
+| `held` | the build is in the catalogue, held (the upstream's [hold](#holds), or the channel's); the placement pass places it in the channel when the hold ends. The cell keeps this outcome until its next fetch |
 | `missing` | the upstream answered `404` (also a private upstream without the grant) |
 | `rejected` | a check failed: signature, footer, format or entry point |
 | `blocked` | the body is blocked in the tenant |
@@ -337,7 +338,7 @@ an administrator gives it.
 | `auto` | each new version of the source, per DuckDB version and platform it serves: the newest the cell has not had (a version yanked or purged there is not placed again, nor one older than what the cell had) |
 | `manual` | no new version by itself; the versions it holds are completed: a build of one for another DuckDB version or platform the channel serves, made later, is placed too |
 | `follow` | a rule a follow wrote (below): as `auto` while the channel follows the source, as `manual` once it no longer does |
-| none | a rule an arrival wrote (a mirror's first release in its channel, a publication, a promotion): the channel serves what lands in it, as before; the placement pass leaves it alone |
+| none | a rule an arrival wrote (a mirror's first release in its channel, a publication, a promotion): the channel serves what lands in it, as before; the placement pass leaves it alone, but for a mirror's version held in its own channel (below), which it places there when the hold ends |
 
 - **Choosing**: `kista admin channel source <tenant>/<channel> <name> -set <source> -mode auto`
   (or `-mode` alone to change the mode), or `PUT …/sources/{name}` with `{"source": "…", "mode":
@@ -379,6 +380,60 @@ an administrator gives it.
   /api/v1/tenants/{t}/catalogue/builds/{id}` (tenant administrators) deletes a build that was never
   released (`409` otherwise); since no one could have installed it, its slot is free again, and a
   mirror's cell that landed it fetches it again.
+
+### Holds
+
+A **hold** keeps a source's new versions out of every channel for a while (spec 0033): time to look
+at a build, or to revoke a stolen key, before an automatic placement serves it.
+
+- **A source's hold**, on a publisher or an eager mirror, `0` (none) by default: an entry arriving
+  from it is **held** until its arrival plus the hold. A lazy mirror and a pull-through upstream take
+  none (they fetch because someone is installing now), and neither does a bundle-mode upstream nor
+  a passthrough channel's upstream (`400`); a mirror with a hold is not made lazy. Raising a hold
+  holds the entries held now longer; lowering it shortens only the hold of what arrives from then on.
+  A tenant's administrators set it: `kista admin upstream hold <tenant> <name> <duration>` and
+  `kista admin publisher hold <tenant> <name> <duration>` (`24h`, `2d`; `0` for none), or `PUT
+  …/upstreams/{name}/hold` and `PUT …/publishers/{name}/hold` with `{"hold": "24h"}`. At most 90
+  days. An upstream removed and added again (its successor) starts with no hold: set it again.
+- **A channel's hold**, set by its administrators (`kista admin channel hold <tenant>/<channel>
+  <duration>`, `GET|PUT …/channels/{c}/hold`): an automatic placement into the channel (a rule's,
+  a follow's, a mirror's run into its own channel) waits until an entry's arrival plus the channel's
+  hold, if that is later than the entry's own. Changing it applies at once, to the entries waiting
+  too: lowering it lets them in sooner (the channel's own choice). A channel with a hold asks no lazy
+  mirror or pull-through upstream (what they fetch would wait). A passthrough channel takes none.
+- **What waits**: the placement pass places nothing held, and looks at a rule again when the first
+  hold it waits for ends; then only a version newer than what the channel had, so an older version
+  whose hold ends later does not overtake a newer one. A mirror's run lands a held version in the
+  catalogue (cell `held`) and writes the name's rule in its channel as a release would; the pass
+  places it there when the hold ends, whether or not another channel took it meanwhile and whatever
+  the cell holds by then (each version after its own hold, older first), as the run would take it
+  then: not while the upstream is paused (once it is resumed), nor once the name or the version has
+  left its allowlist, nor once the mirror is made lazy (its askers fetch then, or an administrator
+  places it by hand).
+  Placing by hand and promoting refuse a held entry (`409`, problem type `…/held`), except a channel
+  administrator's placement with `early` (below).
+- **A publisher with a hold** publishes into the catalogue only: the channel's route refuses it
+  (`409`, `…/held`), and channels take its builds by their rules once the hold has passed (see
+  [Publishing](publishing.md#holds-and-early-placement)).
+- **Placing early**: `kista admin release place … -early`, or `"early": true` in `…/releases/place`,
+  places a held version: a channel administrator's choice to take it sooner, recorded in its
+  `release.place` event (`early`). Anyone else is refused.
+- **Revoking a key** with `kista admin publisher key remove … -purge-held` (`DELETE
+  …/publishers/{name}/keys/{id}?purge_held=true`, a tenant administrator's) purges the entries
+  published with it that are still held and placed nowhere, each with a `catalogue.purge` event;
+  removing the publisher purges all of its held entries. A held entry a channel administrator placed
+  early is kept, **revoked**: it stays where it is placed, but no rule, follow or promotion takes it
+  again, and a placement by hand only with `early`. The answer (`200`, `{"purged": […], "kept":
+  […]}`, each kept entry with how many of the tenant's channels hold it), the command's output and
+  the removal's event (`purged`, `kept`) say what was purged and what was kept. A revoked entry is
+  its bytes' for good: publishing the same file again, even with a new key, finds it revoked (`409`
+  on a channel's route); a new version is needed, or a channel administrator places it early. An
+  upload in flight when its key or its publisher is removed is refused (`401`), on a channel's route
+  up to its release. A routine rotation, without `purge_held`, keeps everything (`204`).
+- **Reading**: an upstream's and a publisher's answers carry `hold` (omitted for none; `upstream
+  show`, `publisher list`); the catalogue lists each entry's `held` and `revoked` versions and shows
+  each build's `state` (`held` or `available`), held, its `available_at`, and revoked, its
+  `revoked_at` (`catalogue list`, `catalogue show`'s `HELD UNTIL` and `REVOKED`).
 
 ## Passthrough channels
 
@@ -483,6 +538,8 @@ kista admin -config /etc/kista/kista.yaml upstream extension add acme core httpf
 - **One fetch of a cell at a time.** A lazy mirror's run takes each cell's lease
   (`kista/upstream/<id>/<version>/<platform>/<name>`) and skips, counting it `busy`, a cell another
   fetch holds.
+- A channel with a [hold](#holds) asks nothing of its lazy mirrors: what they fetch would wait.
+  A lazy mirror takes no hold, and a mirror with one is not made lazy.
 - Only a mirror takes a fetch mode, and a passthrough channel takes no lazy mirror (its requests
   carry no token, so no one could ask); a lazy mirror lists its names (no `*`, as any mirror). The
   matrix limits count the whole matrix, lazy or not. Everything else is a mirror's: intake, licence
