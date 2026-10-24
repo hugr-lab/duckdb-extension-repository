@@ -46,11 +46,13 @@ func PublisherSource(publisherID string) string { return SourcePublisherPrefix +
 // Rule modes (spec 0033), an administrator's: auto places each new version of the rule's source the
 // channel serves; manual places none, but completes the versions the channel holds (their builds
 // that arrive later). A rule an arrival wrote has none (RuleNone): the channel serves what lands in
-// it, and the placement pass leaves it alone.
+// it, and the placement pass leaves it alone. A follow writes RuleFollow: auto while the channel
+// follows the source, manual once it no longer does.
 const (
 	RuleNone   = ""
 	RuleAuto   = "auto"
 	RuleManual = "manual"
+	RuleFollow = "follow"
 )
 
 // ChannelSource is the source a channel serves a name from, and its rule (spec 0033): the mode, and
@@ -97,7 +99,7 @@ func (t *Tx) SetChannelSource(ctx context.Context, channelID, name, source, acto
 // at again by the placement pass; an unchanged rule is left as it is. The caller holds the channel's
 // lock.
 func (t *Tx) SetChannelRule(ctx context.Context, channelID, name, source, mode, actor string) (ChannelSource, error) {
-	if !ValidSource(source) || mode != RuleNone && mode != RuleAuto && mode != RuleManual {
+	if !ValidSource(source) || mode != RuleNone && mode != RuleAuto && mode != RuleManual && mode != RuleFollow {
 		return ChannelSource{}, ErrInvalid
 	}
 	before, had, err := t.ChannelSourceOf(ctx, channelID, name)

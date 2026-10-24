@@ -1,7 +1,7 @@
 # Spec 0033: The catalogue
 
-- **Status**: accepted (2026-10-24); phase A1 in progress (parts 1, builds and slots per source, 2,
-  rules' modes and placement, and 3a, the catalogue's own entries, implemented); A2, B and C to come
+- **Status**: accepted (2026-10-24); phase A1 implemented (parts 1, 2, 3a and 4; part 3b deferred to
+  the follow-ups); A2, B and C to come
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -296,8 +296,8 @@ and in each tenant the key's owner is the source there.
 - **Channel**: `…/channels/{c}/sources[/{name}]` gains `mode`, the current and newest available
   versions and the last outcome; `GET|PUT|DELETE …/channels/{c}/follows/{source}` (the skipped
   names on `GET`); `PUT …/channels/{c}/hold`; `…/releases/place`. CLI: `kista admin channel source
-  <t>/<c> <name> -set <source> [-mode auto|manual]`, `kista admin channel follow <t>/<c> <source>
-  [-remove]`, `kista admin channel hold <t>/<c> <duration>`.
+  <t>/<c> <name> -set <source> [-mode auto|manual]`, `kista admin channel follow <t>/<c> <source>`
+  (as built: `channel unfollow` removes it), `kista admin channel hold <t>/<c> <duration>`.
 - **Distribution admins** (spec 0030) gain, for distributors' publishers: marking them, setting
   their hold, withdrawing and purging their versions, reading their entries.
 - **Events**: `catalogue.arrival`, `catalogue.hold`, `catalogue.withdrawn`, `catalogue.purge`,
@@ -340,7 +340,9 @@ The migrations keep what every channel serves, and what arrives next goes where 
 
 - every upstream's channel becomes its home channel; that channel gets an `auto` rule for each name
   of its allowlist (an existing selection naming the upstream becomes `auto`), and a follow when the
-  allowlist has `*` (pull-through, so it works from A1 on);
+  allowlist has `*` (pull-through, so it works from A1 on) (as built: no rule gets a mode and nothing
+  is followed by the migrations; a pull-through upstream keeps serving its home channel by its own
+  fetches);
 - every other existing selection (a publisher, `tenant`, an upstream selected in a channel that is
   not its home, by promotion) becomes `manual`: a CI publishing into `dev` does not start reaching
   `prod`, and `nightly`'s mirror does not start flowing into `prod`;
@@ -438,7 +440,10 @@ A1 comes in parts, each a PR: part 1, builds and slots per source (migration 003
 rules' modes and the placement (the pass, `auto` and a `manual` rule's completed versions, manual
 placement, the catalogue's read routes, a mirror under a `manual` rule landing its builds without
 placing them); part 3, upstreams without a home channel, the catalogue-only route, retention and
-caps, the catalogue's own slot uniqueness; part 4, follows.
+caps, the catalogue's own slot uniqueness; part 4, follows. Part 3 came in two, 3a (the catalogue's
+own entries) and 3b (upstreams without a home channel); 3b is deferred to the follow-ups (the
+owner's choice, 2026-10-24): a mirror already feeds other channels through their rules, and
+Enterest does not need it.
 
 ### As built (A1 part 1)
 
@@ -510,7 +515,7 @@ caps, the catalogue's own slot uniqueness; part 4, follows.
 ### As built (A1 part 3a)
 
 A1 part 3 comes in two: 3a, the catalogue's own entries (below); 3b, upstreams without a home
-channel.
+channel, deferred.
 
 - **A version is immutable within its source in the whole tenant** (migration 0036: builds gain
   `slot` and `legacy_duplicate`; a unique key (tenant, source, name, version, platform, slot) where
@@ -544,6 +549,41 @@ channel.
   checked before a new build is committed, dry runs included, outside any lock (concurrent intakes
   may pass together, bounded by the upload slots); an administrator's add is not bounded. `429` on
   the API, a mirror's cell `rejected`.
+
+### As built (A1 part 4)
+
+- **Migration 0037**: `channel_follows` (channel, source, who, when, `checked_at`) and
+  `follow_skips` (channel, source, name, reason); a rule's mode may be `follow`.
+- **A follow** (`PUT|DELETE …/channels/{c}/follows/{source}`, `kista admin channel follow|unfollow`;
+  a channel administrator; an upstream or a publisher, never `tenant`, never into a passthrough
+  channel; events `follow.set`, `follow.clear`). The placement pass looks at the follows whose source
+  has builds made since its last look (all of them hourly), with the channel's rules under the same
+  lease: for each name of the source with no rule in the channel it writes the rule (mode `follow`,
+  actor `system:placement`, a `source.set` event with `arrival: true`) and places as an `auto` rule;
+  a `follow` rule acts as `auto` while the channel follows the source and as `manual` after.
+- **Limits**, each a skip listed with its reason: the channel's rule naming another source; a name
+  another follow of the channel offers (`contested`); a core or community name unless the source is
+  DuckDB's own repository of that kind; a name reserved in the tenant (any holder: a distributor's
+  exception comes with its publishers, B); another live source of the tenant with builds of the
+  name, or a rule of any of its channels naming another source ("the tenant uses it from another
+  source"); and, for a publisher, **a name it may not publish in the channel** (found in review: a
+  follow is consent to a source, not to every grant anyone gives it anywhere in the tenant; a
+  distributor's publisher, which has no grants, comes in B). The tenant's names and rules are read
+  once per look. A name taken earlier keeps its rule if it becomes contested or used elsewhere
+  later.
+- **A rule an arrival wrote** (no mode) for the followed source, a publication into the channel or a
+  promotion, becomes the follow's (mode `follow`, a `source.set` with `arrival: false`); a rule an
+  administrator set keeps its mode. A rule cleared by an administrator is taken again by the
+  follow's next look: to keep the name out, a rule naming another source does.
+- **A source removed** (an upstream, a publisher) removes its follows and their skips; the rules they
+  wrote stay, acting as manual. An administrator switching a follow's rule to another source without
+  a mode makes it manual. At intake, a follow's rule of a channel no longer following its source is
+  manual too (a mirror lands its new versions).
+- **Bookkeeping**: the lease is renewed before each follow and every 50 names; a failure on one name
+  is that name's (the rule's outcome) and the look goes on; each look replaces the skips, so a skip
+  whose cause went away is taken at the next look of the source (a new build, or the hourly sweep).
+- **Left to later parts**: lazy and pull-through fetches through a follow (an ask comes from the
+  upstream's home channel only; with A1 part 3b); a distributor's tenant reservations (B).
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into
@@ -605,6 +645,8 @@ DuckDB's repositories it wants. Its spec 0003's decisions change accordingly.
 
 ## Follow-ups
 
+- Upstreams without a home channel (A1 part 3b): a mirror that only fills the catalogue, its
+  matrix's DuckDB versions its own, its lazy asks from any channel whose rule or follow names it.
 - Merging two upstreams of one repository.
 - Version constraints in a rule (`auto` within `1.x`).
 - Notifying a channel's administrators of a new version under a `manual` rule.

@@ -299,6 +299,8 @@ See [Tenants and channels](tenants-and-channels.md) and
 | `channel create <tenant>/<channel> -kind signed` or `-kind passthrough` | creates a channel; its kind never changes | |
 | `channel versions <tenant>/<channel> [-add <v>]... [-remove <v>]...` | changes the DuckDB versions the channel serves; without flags, lists them | the channel's versions, one per line |
 | `channel source <tenant>/<channel> [<name> [-set <source>] [-mode auto\|manual] \| -clear]` | a name's source in the channel ([spec 0031](../upstreams.md#a-names-source-in-a-channel)): `tenant`, `upstream:<name>` or `publisher:<name>`, and its rule's mode ([spec 0033](../upstreams.md#the-catalogue-and-a-channels-rules)); `-mode` alone changes the mode; `-clear` removes it | each name, its source, mode, the version held and the newest in the catalogue, who set it and when, the sources with releases of it, the last outcome |
+| `channel follow <tenant>/<channel> [<source>]` | follows a whole source ([spec 0033](../upstreams.md#the-catalogue-and-a-channels-rules)): its names the channel has no rule for are taken automatically; without a source, lists the follows | `SOURCE`, `SET BY`, `SET AT`, `SKIPPED` (each name with its reason) |
+| `channel unfollow <tenant>/<channel> <source>` | stops following it; what it placed stays, its rules keep the versions they hold | |
 | `channel list <tenant>` | `NAME`, `KIND`, `VERSION`, `CREATED` (`VERSION` is the channel's change counter) | |
 | `wellknown <tenant>/<channel>` | the channel's `.well-known/duckdb-extension-repo.json` as served | JSON |
 

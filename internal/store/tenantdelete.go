@@ -278,7 +278,7 @@ var reapSteps = []reapStep{
 	{"bundle_upload_chunks", "upload_id IN (SELECT id FROM bundle_uploads WHERE tenant_id = ?)", false}, {"bundle_uploads", ofTenant, false},
 	{"bundle_imports", ofTenant, false}, {"shadows", ofTenant, false}, {"blocks", ofTenant, false},
 	{"tenant_reserved_names", ofTenant, false},
-	{"channel_sources", ofChannels, false},
+	{"channel_sources", ofChannels, false}, {"channel_follows", ofChannels, false}, {"follow_skips", ofChannels, false},
 	// by indexed columns: release_signatures by key, releases by channel
 	{"release_signatures", "key_id IN (SELECT id FROM channel_keys WHERE tenant_id = ?)", false}, {"releases", ofChannels, false},
 	{"purged_slots", "", true}, {"build_license_keys", ofTenant, false}, {"builds", ofTenant, false},

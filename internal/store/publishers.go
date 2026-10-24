@@ -96,6 +96,9 @@ func (t *Tx) DeletePublisher(ctx context.Context, tenantID, name string) error {
 	if err := t.DeleteLicenseKeysOf(ctx, KeySourcePublisher, p.ID); err != nil {
 		return err
 	}
+	if err := t.dropFollows(ctx, PublisherSource(p.ID)); err != nil { // spec 0033: nothing follows a gone source
+		return err
+	}
 	return t.BumpAuth(ctx, tenantID)
 }
 

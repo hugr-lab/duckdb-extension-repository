@@ -618,6 +618,10 @@ func init() {
 		{"tenants/{t}/catalogue/builds/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).purgeEntry)}},
 		// spec 0031: a name's source in a channel ({name}, not {ext}: a channel's administrators)
 		{"tenants/{t}/channels/{c}/sources", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelSources)}},
+		// spec 0033: a channel following a whole source (its administrators')
+		{"tenants/{t}/channels/{c}/follows", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelFollows)}},
+		{"tenants/{t}/channels/{c}/follows/{source}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelFollow),
+			http.MethodPut: m(pathAdmin, (*Handler).setChannelFollow), http.MethodDelete: m(pathAdmin, (*Handler).removeChannelFollow)}},
 		{"tenants/{t}/channels/{c}/sources/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelSource),
 			http.MethodPut: mb(pathAdmin, (*Handler).setChannelSource), http.MethodDelete: m(pathAdmin, (*Handler).clearChannelSource)}},
 		{"tenants/{t}/channels/{c}/keys", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).keyView),

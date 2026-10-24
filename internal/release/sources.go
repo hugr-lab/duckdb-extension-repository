@@ -160,11 +160,16 @@ func (s *Service) SetSource(ctx context.Context, a authz.Actor, tenant, channel,
 		} else if strings.HasSuffix(label, "(removed)") {
 			return fmt.Errorf("%w: %q was removed", store.ErrInvalid, label)
 		}
-		if src == store.SourceTenant && mode == store.RuleNone {
-			if cur, _, err := tx.ChannelSourceOf(ctx, ch.ID, name); err != nil {
+		if mode == store.RuleNone {
+			cur, _, err := tx.ChannelSourceOf(ctx, ch.ID, name)
+			if err != nil {
 				return err
-			} else if cur.Mode == store.RuleAuto {
+			}
+			switch {
+			case src == store.SourceTenant && cur.Mode == store.RuleAuto:
 				mode = store.RuleManual // a rule turned to the tenant is never automatic
+			case cur.Mode == store.RuleFollow && cur.Source != src:
+				mode = store.RuleManual // a follow's rule moved to another source is the administrator's now
 			}
 		}
 		prior, err := tx.SetChannelRule(ctx, ch.ID, name, src, mode, a.String())

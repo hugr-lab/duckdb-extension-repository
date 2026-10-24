@@ -336,6 +336,7 @@ an administrator gives it.
 | --- | --- |
 | `auto` | each new version of the source, per DuckDB version and platform it serves: the newest the cell has not had (a version yanked or purged there is not placed again, nor one older than what the cell had) |
 | `manual` | no new version by itself; the versions it holds are completed: a build of one for another DuckDB version or platform the channel serves, made later, is placed too |
+| `follow` | a rule a follow wrote (below): as `auto` while the channel follows the source, as `manual` once it no longer does |
 | none | a rule an arrival wrote (a mirror's first release in its channel, a publication, a promotion): the channel serves what lands in it, as before; the placement pass leaves it alone |
 
 - **Choosing**: `kista admin channel source <tenant>/<channel> <name> -set <source> -mode auto`
@@ -355,6 +356,20 @@ an administrator gives it.
 - **Placing by hand**: `kista admin release place <tenant>/<channel> -name <name> -source <source>
   -version <v>`, or `POST …/channels/{c}/extensions/{ext}/releases/place` with `{"source": "…",
   "version": "…"}` (see [Publishing](publishing.md#placing-from-the-catalogue)).
+- **Following a whole source**: `kista admin channel follow <tenant>/<channel> <source>`, or `PUT
+  …/channels/{c}/follows/{source}` (a channel administrator; an upstream or a publisher, never
+  `tenant`; not a passthrough channel). Every name of the source the channel has no rule for is
+  taken as an `auto` rule would, its rule written with mode `follow` (a rule an arrival wrote for
+  the source, with no mode, becomes the follow's). Skipped, each listed with the reason (`kista
+  admin channel follow <tenant>/<channel>`, `GET …/follows[/{source}]`), refreshed at each look (a
+  new build of the source, or hourly): a name the tenant uses from another source (another source
+  has builds of it, or a channel serves it from another source); a reserved one (DuckDB's names,
+  unless the source is DuckDB's own repository of that kind; a name reserved in the tenant); one two
+  of the channel's follows offer; and, for a publisher, a name it may not publish in the channel (a
+  follow follows a source, not every grant anyone gives it). A rule naming one takes it. A name
+  whose rule is cleared is taken again at the follow's next look: a rule naming another source
+  keeps it out. `channel unfollow` (`DELETE`) places nothing more; what it placed stays, its rules
+  completing the versions they hold. Removing the source removes its follows.
 - **Reading the catalogue**: `kista admin catalogue list <tenant>` and `catalogue show <tenant>
   <source> <name>`, or `GET /api/v1/tenants/{t}/catalogue` and `…/catalogue/{source}/extensions/{ext}`
   (tenant administrators).

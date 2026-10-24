@@ -39,4 +39,4 @@ and it is superseded by a new spec when a decision changes.
 | [0030](0030-reserved-names/spec.md) | Reserved names as data, a distributor's names in a tenant, the distribution admins | implemented |
 | [0031](0031-channel-sources/spec.md) | A name's source in a channel: the selected source wins, set by the first arrival, switched by an administrator | implemented |
 | [0032](0032-lazy-mirror/spec.md) | Lazy mirrors: cells fetched on first request, kept current, eager entries and fetch now | implemented |
-| [0033](0033-catalogue/spec.md) | The catalogue: a tenant's builds of sources, taken by channels by rules | accepted |
+| [0033](0033-catalogue/spec.md) | The catalogue: a tenant's builds of sources, taken by channels by rules | phase A1 implemented |

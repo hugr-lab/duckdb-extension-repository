@@ -296,3 +296,8 @@ func TestPlaceByHand(t *testing.T) {
 		}
 	})
 }
+
+// authzOf is a publisher's actor, as its signed request makes it.
+func authzOf(p store.Publisher) authz.Actor {
+	return authz.Actor{Kind: authz.ActorPublisher, ID: "acme/" + p.Name, Tenant: "acme", Principals: auth.Principals{auth.PublisherKey(p.ID): true}}
+}

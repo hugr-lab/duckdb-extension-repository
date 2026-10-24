@@ -178,6 +178,12 @@ func TestAdminCLI(t *testing.T) {
 	run(1, "catalogue", "add", "acme", file, "-name", "tresor")                                        // not a binary: the checks refuse it
 	run(2, "catalogue", "add", "acme", file)                                                           // no -name
 	run(1, "catalogue", "purge", "acme", "nothere")
+	run(1, "channel", "follow", "acme/prod", "tenant") // the tenant's own source is not followed
+	if got := run(0, "channel", "follow", "acme/prod"); !strings.Contains(got, "SOURCE") {
+		t.Fatalf("channel follow: %q", got)
+	}
+	run(1, "channel", "unfollow", "acme/prod", "upstream:nope")
+	run(2, "channel", "unfollow", "acme/prod")
 	run(2, "release", "place", "acme/prod", "-name", "tresor", "-source", "tenant")
 	if got := run(0, "release", "list", "acme/prod"); !strings.Contains(got, rid) || !strings.Contains(got, "public") {
 		t.Fatalf("release list: %q", got)

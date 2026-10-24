@@ -115,8 +115,16 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		if err != nil {
 			return err
 		}
+		manual := ok && rule.Mode == store.RuleManual
+		if ok && rule.Mode == store.RuleFollow { // a follow's rule: manual once the channel no longer follows
+			following, err := tx.FollowingTx(ctx, ch.ID, rule.Source)
+			if err != nil {
+				return err
+			}
+			manual = !following
+		}
 		// a successor answers to the rule the removed upstream had (its releases become the successor's)
-		if ok && ch.Kind == store.ChannelSigned && rule.Mode == store.RuleManual && (rule.Source == it.source || rule.Source == succeeds && succeeds != "") {
+		if manual && ch.Kind == store.ChannelSigned && (rule.Source == it.source || rule.Source == succeeds && succeeds != "") {
 			rels, err := tx.SourceReleases(ctx, ch.ID, rule.Source, b.Name)
 			if err != nil {
 				return err

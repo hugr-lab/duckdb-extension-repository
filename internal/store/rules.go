@@ -23,7 +23,7 @@ type DueRule struct {
 func (s *Store) DueRules(ctx context.Context, sweep bool) ([]DueRule, error) {
 	q := `SELECT c.tenant_id, cs.channel_id, cs.name, cs.source, cs.mode FROM channel_sources cs
 JOIN channels c ON c.id = cs.channel_id JOIN tenants t ON t.id = c.tenant_id
-WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL AND cs.mode IN ('auto', 'manual') AND cs.source <> 'tenant'`
+WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL AND cs.mode IN ('auto', 'manual', 'follow') AND cs.source <> 'tenant'`
 	if !sweep {
 		q += ` AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = c.tenant_id AND b.source = cs.source AND b.name = cs.name
 	AND (cs.checked_at IS NULL OR b.created_at > cs.checked_at))`
