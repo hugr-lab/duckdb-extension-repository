@@ -151,7 +151,7 @@ func TestBundleLicenses(t *testing.T) {
 			}
 			stored := func() store.License {
 				t.Helper()
-				l, err := g.st.GetLicense(ctx, site.ID, pkgtype.DuckDBExtension, "tresor")
+				l, err := nameLicense(ctx, g.st, site.ID, pkgtype.DuckDBExtension, "tresor")
 				if err != nil {
 					t.Fatalf("the site's licence: %v", err)
 				}
@@ -198,7 +198,7 @@ func TestBundleLicenses(t *testing.T) {
 			if l := importSite(data, true).Licenses; l.Counts["refused"] != 1 || l.Refused[0].Rule != "not_supplied" {
 				t.Fatalf("a dry run before the first import: %+v", l)
 			}
-			if _, err := g.st.GetLicense(ctx, site.ID, pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
+			if _, err := nameLicense(ctx, g.st, site.ID, pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("a dry run stored a licence: %v", err)
 			}
 			// private releases leave only with -private, and their names' licences with them
@@ -302,7 +302,7 @@ func TestBundleLicenses(t *testing.T) {
 			}
 
 			// the site's own checks, as a carrier cannot pass them by the exporter
-			if err := svc.Remove(ctx, admin, "site", "", "tresor", 0); err != nil {
+			if err := svc.Remove(ctx, admin, "site", "", "tresor", "", 0); err != nil {
 				t.Fatal(err)
 			}
 			tok := lic.sign("tresor", "pro", now, now+86400)
@@ -349,7 +349,7 @@ func TestBundleLicenses(t *testing.T) {
 					t.Fatalf("bundle.import: %+v %v", ev, err)
 				}
 			}
-			if _, err := g.st.GetLicense(ctx, site.ID, pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
+			if _, err := nameLicense(ctx, g.st, site.ID, pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("another holder's licence from a bundle: %v", err)
 			}
 			if r := apply("", licenses.BundleLicense{Name: "tresor", Token: tok, Upstreams: []store.Upstream{air}}); r.Counts["refused"] != 1 ||
@@ -364,7 +364,7 @@ func TestBundleLicenses(t *testing.T) {
 			if l := importSite(data, false).Licenses; l == nil || l.Counts["stored"] != 1 || l.Counts["refused"] != 0 || stored().HolderID != "acme" {
 				t.Fatalf("the tenant's holder's licence: %+v", l)
 			}
-			if err := svc.Remove(ctx, admin, "site", "", "tresor", 0); err != nil {
+			if err := svc.Remove(ctx, admin, "site", "", "tresor", "", 0); err != nil {
 				t.Fatal(err)
 			}
 			// a bundle with one of another holder: refused, the other stored
@@ -374,16 +374,17 @@ func TestBundleLicenses(t *testing.T) {
 				mixed.Counts["stored"] != 1 || stored().Token != tok {
 				t.Fatalf("a mixed bundle: %+v", mixed)
 			}
-			if err := svc.Remove(ctx, admin, "site", "", "tresor", 0); err != nil {
+			if err := svc.Remove(ctx, admin, "site", "", "tresor", "", 0); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := g.ten.SetTenantHolder(ctx, admin, "site", "", 0); err != nil {
 				t.Fatal(err)
 			}
-			// one target per licence, in the import's order: one gone is passed over
+			// one target per licence, in the import's order: one gone is passed over, and air2, which supplies the
+			// name but does not own its key (spec 0033 phase B: air recorded it first)
 			gone := store.Upstream{ID: "0192f0c4-1b2a-7c3d-8e4f-0123456789ab", Name: "gone"}
 			if r := apply("acme", licenses.BundleLicense{Name: "tresor", Token: tok, Upstreams: []store.Upstream{gone, air2, air}}); r.Counts["stored"] != 1 ||
-				stored().UpstreamID != air2.ID {
+				stored().UpstreamID != air.ID {
 				t.Fatalf("the first target: %+v %s", r, stored().UpstreamID)
 			}
 			// licensing off at the site

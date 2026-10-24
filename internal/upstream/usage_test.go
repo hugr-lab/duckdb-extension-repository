@@ -130,6 +130,16 @@ func TestUsageForwarding(t *testing.T) {
 			if err != nil || len(evs) != 2 || evs[0].Actor != "system:usage" || evs[0].Subject != "upstream:"+u.Name {
 				t.Fatalf("usage.forward events: %+v %v", evs, err)
 			}
+			// spec 0033 phase B: a name's usage goes to the source its channel serves it from
+			if vs, err := en.st.UpstreamVersions(ctx, u); err != nil || len(vs) != 1 || !vs[[2]string{"tresor", "1.0"}][u.ChannelID] {
+				t.Fatalf("the upstream's versions: %v %v", vs, err)
+			}
+			if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", store.SourceTenant, ""); err != nil {
+				t.Fatal(err)
+			}
+			if vs, err := en.st.UpstreamVersions(ctx, u); err != nil || len(vs) != 0 {
+				t.Fatalf("a channel serving the name from another source: %v %v", vs, err)
+			}
 
 			// off: never due
 			if _, err := en.up.SetUsage(ctx, admin, "acme", u.Name, store.UsageOff, 0); err != nil {

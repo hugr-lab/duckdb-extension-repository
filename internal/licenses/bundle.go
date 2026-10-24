@@ -106,15 +106,22 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 	if len(ok) == 0 {
 		return res
 	}
+	lb, err := s.labels(ctx, t.ID)
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
 	// the transaction may run again: its counts reach res only once it holds
 	var counts map[string]int
 	var refused []Refusal
-	err := s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
+	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
 		counts, refused = map[string]int{}, nil
 		for _, it := range ok {
 			name := it.Name
-			// the first upstream, as it is now, that supplies the name
+			// the first upstream, as it is now, that supplies the name and owns its key for it (spec
+			// 0033 phase B), else the first that supplies it (refused below for the key)
 			var u *store.Upstream
+			var typ string
 			for _, cand := range it.Upstreams {
 				cur, err := tx.GetUpstreamByID(ctx, cand.ID)
 				if errors.Is(err, store.ErrNotFound) {
@@ -126,12 +133,26 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 				if cur.Mode != store.ModeBundle || cur.State != store.UpstreamActive {
 					continue
 				}
-				supplied, err := tx.SuppliedBy(ctx, cur, name)
+				home, err := tx.ChannelByID(ctx, cur.ChannelID) // spec 0034: the upstream's type, its home channel's
 				if err != nil {
 					return err
 				}
-				if supplied {
-					u = &cur
+				supplied, err := tx.SuppliedBy(ctx, cur, home.PackageType, name)
+				if err != nil {
+					return err
+				}
+				if !supplied {
+					continue
+				}
+				if u == nil {
+					u, typ = &cur, home.PackageType
+				}
+				o, err := tx.KeyOwnerOf(ctx, t.ID, home.PackageType, name, it.tok.Key)
+				if err != nil {
+					return err
+				}
+				if o.Source == store.UpstreamSource(cur.ID) {
+					u, typ = &cur, home.PackageType
 					break
 				}
 			}
@@ -140,22 +161,15 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 					Reason: "no bundle-mode upstream of the source supplies a release of " + name + " here"})
 				continue
 			}
-			home, err := tx.ChannelByID(ctx, u.ChannelID) // spec 0034: the upstream's type, its home channel's
-			if err != nil {
-				return err
-			}
-			keys, err := tx.LiveLicenseKeys(ctx, t.ID, home.PackageType, name, store.KeySourceUpstream, u.ID)
-			if err != nil {
-				return err
-			}
-			if err := s.verify(it.tok, keys, " from upstream "+u.Name); err != nil {
-				rule := license.RuleKeyUntrusted
-				var le *license.Error
-				if errors.As(err, &le) {
-					rule = le.Rule
+			// spec 0033 phase B: the upstream must own the key for the name; its keys verify it (spec
+			// 0021). A dry run claims no owner: it stores nothing
+			src := store.UpstreamSource(u.ID)
+			if _, err := s.owned(ctx, tx, t.ID, typ, it.tok, src, lb.of, !dryRun); err != nil {
+				if r := refusal(err, it.tok); r != nil {
+					refused = append(refused, *r)
+					continue
 				}
-				refused = append(refused, Refusal{Name: name, ID: it.tok.ID, Rule: rule, Reason: err.Error()})
-				continue
+				return err
 			}
 			// spec 0028: the tenant's expected holder, besides the plan's (checked by both, a dry run too)
 			if r, err := holderRefusal(ctx, tx, t.ID, it.tok); err != nil {
@@ -164,9 +178,9 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 				refused = append(refused, *r)
 				continue
 			}
-			l := record(it.tok, t.ID, home.PackageType, it.Token, actor)
-			l.Source, l.UpstreamID = store.LicenseUpstream, u.ID
-			old, err := tx.GetLicense(ctx, t.ID, home.PackageType, name)
+			l := record(it.tok, t.ID, typ, it.Token, actor)
+			l.Owner, l.Source, l.UpstreamID = src, store.LicenseUpstream, u.ID
+			old, err := tx.GetLicense(ctx, t.ID, typ, name, src)
 			switch {
 			case errors.Is(err, store.ErrNotFound):
 				old.Version = 0

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { declared, expiry, peek, sourcesLine, syncLine } from './Licenses'
+import { declared, expiry, licenseKey, peek, sourcesLine, syncLine } from './Licenses'
 import { usageLines } from './Stats'
 
 // Spec 0012 phase 1d: the Licences screen and the Usage tab.
@@ -31,6 +31,8 @@ describe('licences', () => {
     expect(declared(names, 'tresor', 'sha256:aa')).toBe(true)
     expect(declared(names, 'tresor', 'sha256:bb')).toBe(false)
     expect(declared(names, 'acl', 'sha256:aa')).toBe(false)
+    // spec 0033 phase B: a licence per (name, source)
+    expect(licenseKey({ name: 'tresor', owner: 'upstream:enterest' })).not.toBe(licenseKey({ name: 'tresor', owner: 'publisher:ci' }))
   })
   it('reads a relay run in a line', () => {
     expect(syncLine({ counts: { received: 3, stored: 1, unchanged: 2, refused: 0 } })).toBe('received 3 · stored 1 · unchanged 2')

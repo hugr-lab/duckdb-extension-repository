@@ -43,6 +43,20 @@ func LicenseKey(ctx context.Context, st *store.Store, tenantID, name, kind, sour
 	if kid == "" {
 		return "", fmt.Errorf("storetest: not an RSA-2048 key with e = 65537")
 	}
+	// spec 0033 phase B: a source declares a key through its own builds, and a channel serves its
+	// licence where it selects the source; the name's builds an administrator added (source
+	// tenant) become the source's, with their releases and the rules naming tenant, as if it
+	// published them
+	src := kind + ":" + sourceID
+	for _, q := range []string{
+		"UPDATE builds SET source = ? WHERE tenant_id = ? AND name = ? AND source = 'tenant'",
+		"UPDATE releases SET source = ? WHERE tenant_id = ? AND name = ? AND source = 'tenant'",
+		"UPDATE channel_sources SET source = ? WHERE channel_id IN (SELECT id FROM channels WHERE tenant_id = ?) AND name = ? AND source = 'tenant'",
+	} {
+		if err := store.ExecRaw(ctx, st, q, src, tenantID, name); err != nil {
+			return "", err
+		}
+	}
 	if err := store.ExecRaw(ctx, st, `INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at)
 SELECT tenant_id, id, ?, ?, ?, ?, created_at FROM builds WHERE tenant_id = ? AND name = ?`, kid, pem, kind, sourceID, tenantID, name); err != nil {
 		return "", err

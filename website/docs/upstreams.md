@@ -181,8 +181,8 @@ wanted later are added here, as above: the bootstrap is not a reconciler.
 The upstream's `ETag` moves with every change to it or its lists; a sync does not move it.
 
 **Removing** an upstream keeps the releases it made (they belong to the channel; yank them if you
-want them gone) and removes its cells and the licences it relayed (each a `license.remove`, reason
-`upstream removed`; see [Licensing](licensing.md)) and the licence keys it brought; the names it
+want them gone) and removes its cells and the licences it relayed that are still its own (each a `license.remove`, reason
+`upstream removed`; see [Licensing](licensing.md)) and the licence keys it brought, and its ownership of them (the next recorder owns each); the names it
 provided stop being reserved.
 
 **Pausing** an upstream stops runs after the cell in progress, and holds the current release:

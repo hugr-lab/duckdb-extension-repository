@@ -279,7 +279,7 @@ var reapSteps = []reapStep{
 	{"issuers", ofTenant, false},
 	{"publisher_keys", ofTenant, false}, {"publishers", ofTenant, false}, {"removed_distributor_publishers", ofTenant, false},
 	{"withdrawn_versions", ofTenant, false},
-	{"license_syncs", ofTenant, false}, {"licenses", ofTenant, false}, {"usage_forwards", ofTenant, false},
+	{"license_syncs", ofTenant, false}, {"licenses", ofTenant, false}, {"license_key_owners", ofTenant, false}, {"usage_forwards", ofTenant, false},
 	{"upstream_asks", ofUpstreams, false}, {"upstream_cells", ofUpstreams, false}, {"upstream_versions", ofUpstreams, false}, {"upstream_entries", ofUpstreams, false},
 	{"upstream_platforms", ofUpstreams, false}, {"upstream_keys", ofUpstreams, false}, {"upstreams", ofTenant, false},
 	{"bundle_upload_chunks", "upload_id IN (SELECT id FROM bundle_uploads WHERE tenant_id = ?)", false}, {"bundle_uploads", ofTenant, false},

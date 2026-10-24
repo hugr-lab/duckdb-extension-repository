@@ -4,10 +4,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 )
 
 // Licences (spec 0012 phase 1a): a tenant's licences, imported by its administrators or relayed
@@ -46,6 +48,10 @@ func (h *Handler) licenseErr(w http.ResponseWriter, err error) {
 		problem(w, http.StatusConflict, typeConflict, "the upstream relays no licences: it needs a credential, and not bundle mode")
 	case errors.Is(err, licenses.ErrPaused):
 		problem(w, http.StatusConflict, typeConflict, "the upstream is paused: resume it to relay its licences")
+	case errors.Is(err, licenses.ErrSources):
+		problem(w, http.StatusConflict, typeConflict, strings.TrimPrefix(err.Error(), "licenses: ")+"; name one with ?source=")
+	case errors.Is(err, licenses.ErrOwnerHolds):
+		problem(w, http.StatusConflict, typeConflict, "the source holds a licence for this extension already: remove it first, then give it the key")
 	default:
 		h.serviceErr(w, err, false)
 	}
@@ -64,7 +70,7 @@ func (h *Handler) licenseKeys(w http.ResponseWriter, r *http.Request, c caller, 
 
 func (h *Handler) listLicenses(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	vs, err := h.o.Licenses.List(r.Context(), a, p["t"], reqType(r))
+	vs, err := h.o.Licenses.List(r.Context(), a, p["t"], reqType(r), r.URL.Query().Get("source"))
 	if err != nil {
 		h.licenseErr(w, err)
 		return
@@ -78,7 +84,7 @@ func (h *Handler) listLicenses(w http.ResponseWriter, r *http.Request, c caller,
 
 func (h *Handler) getLicense(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	v, err := h.o.Licenses.Get(r.Context(), a, p["t"], reqType(r), p["name"])
+	v, err := h.o.Licenses.Get(r.Context(), a, p["t"], reqType(r), p["name"], r.URL.Query().Get("source"))
 	if err != nil {
 		h.licenseErr(w, err)
 		return
@@ -113,7 +119,7 @@ func (h *Handler) importLicense(w http.ResponseWriter, r *http.Request, c caller
 		return
 	}
 	if v.Created {
-		created(w, r, "/api/v1/tenants/"+p["t"]+"/licenses/"+v.Name+typeQuery(r), licenseOf(v), versionTag(v.Version))
+		created(w, r, "/api/v1/tenants/"+p["t"]+"/licenses/"+v.Name+sourceQuery(r, v.Owner), licenseOf(v), versionTag(v.Version))
 		return
 	}
 	reply(w, r, http.StatusOK, licenseOf(v), versionTag(v.Version), noStore)
@@ -125,7 +131,7 @@ func (h *Handler) removeLicense(w http.ResponseWriter, r *http.Request, c caller
 		return
 	}
 	a, _ := c.actor()
-	if err := h.o.Licenses.Remove(r.Context(), a, p["t"], reqType(r), p["name"], expected); err != nil {
+	if err := h.o.Licenses.Remove(r.Context(), a, p["t"], reqType(r), p["name"], r.URL.Query().Get("source"), expected); err != nil {
 		h.licenseErr(w, err)
 		return
 	}
@@ -140,13 +146,41 @@ func licenseVisibility(visibility string) handler {
 			return
 		}
 		a, _ := c.actor()
-		v, err := h.o.Licenses.SetVisibility(r.Context(), a, p["t"], reqType(r), p["name"], visibility, expected)
+		v, err := h.o.Licenses.SetVisibility(r.Context(), a, p["t"], reqType(r), p["name"], r.URL.Query().Get("source"), visibility, expected)
 		if err != nil {
 			h.licenseErr(w, err)
 			return
 		}
 		reply(w, r, http.StatusOK, licenseOf(v), versionTag(v.Version), noStore)
 	}
+}
+
+// sourceQuery is a licence's location's query: its source (spec 0033 phase B), and its type when it
+// is not the default (spec 0034).
+func sourceQuery(r *http.Request, source string) string {
+	q := url.Values{"source": {source}}
+	if t := reqType(r); t != pkgtype.Default {
+		q.Set("type", t)
+	}
+	return "?" + q.Encode()
+}
+
+// setKeyOwner gives a licence key of a name to a source (spec 0033 phase B), a tenant
+// administrator's act: {"source": "upstream:<name>"|"publisher:<name>"}.
+func (h *Handler) setKeyOwner(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	var in struct {
+		Source string `json:"source"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	a, _ := c.actor()
+	v, err := h.o.Licenses.SetKeyOwner(r.Context(), a, p["t"], reqType(r), p["name"], p["kid"], in.Source)
+	if err != nil {
+		h.licenseErr(w, err)
+		return
+	}
+	reply(w, r, http.StatusOK, v, "", noStore)
 }
 
 // syncLicenses asks for an upstream's licence relay now (202), and answers its last run.

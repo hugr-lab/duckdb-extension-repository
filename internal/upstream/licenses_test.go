@@ -2,6 +2,7 @@ package upstream_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,28 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
+
+// nameLicense is a tenant's one licence of a package, whatever its source (spec 0033 phase B: a
+// licence per (name, source)); ErrNotFound for none.
+func nameLicense(ctx context.Context, s *store.Store, tenantID, packageType, name string) (store.License, error) {
+	ls, err := s.ListLicenses(ctx, tenantID, packageType)
+	if err != nil {
+		return store.License{}, err
+	}
+	var out []store.License
+	for _, l := range ls {
+		if l.Name == name {
+			out = append(out, l)
+		}
+	}
+	switch len(out) {
+	case 0:
+		return store.License{}, store.ErrNotFound
+	case 1:
+		return out[0], nil
+	}
+	return store.License{}, fmt.Errorf("%d licences of %s", len(out), name)
+}
 
 // licensor signs licences with the vectors' test-only key, as an issuer would; block is the key
 // block its builds carry (spec 0021).
@@ -112,7 +135,7 @@ func TestLicenseRelay(t *testing.T) {
 				return res
 			}
 			stored := func() (store.License, bool) {
-				l, err := en.st.GetLicense(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor")
+				l, err := nameLicense(ctx, en.st, en.tenantID(t), pkgtype.DuckDBExtension, "tresor")
 				if errors.Is(err, store.ErrNotFound) {
 					return l, false
 				}
@@ -152,7 +175,7 @@ func TestLicenseRelay(t *testing.T) {
 			}
 
 			// a changed plan replaces it, keeping its visibility
-			if _, err := svc.SetVisibility(ctx, admin, "acme", "", "tresor", store.Public, 0); err != nil {
+			if _, err := svc.SetVisibility(ctx, admin, "acme", "", "tresor", "", store.Public, 0); err != nil {
 				t.Fatal(err)
 			}
 			en.answer(t, lic.sign("tresor", "enterprise", now-30, now+30*day))
@@ -301,7 +324,7 @@ func TestLicenseImport(t *testing.T) {
 			}
 			// spec 0021: a name with no live build declaring a key takes no licence
 			if _, err := svc.Import(ctx, admin, "acme", "", ok, licenses.Create); !errors.Is(err, license.ErrUntrustedKey) ||
-				!strings.Contains(err.Error(), "no live build of tresor declares a licence key") {
+				!strings.Contains(err.Error(), "is declared by no available build of tresor") {
 				t.Fatalf("no keys: %v", err)
 			}
 			if _, _, err := en.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(signedWith(t, nil, cpp("1.0", "v2.0.0"), lic.block,
@@ -333,20 +356,20 @@ func TestLicenseImport(t *testing.T) {
 				t.Fatalf("a replacement: %+v %v", v, err)
 			}
 			// past its grace: served no more, and removed by the expiry pass
-			l, _ := en.st.GetLicense(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor")
+			l, _ := nameLicense(ctx, en.st, en.tenantID(t), pkgtype.DuckDBExtension, "tresor")
 			if err := en.st.InTxLocks(ctx, nil, func(tx *store.Tx) error {
 				l.GraceUntil = now - 1
 				return tx.PutLicense(ctx, &l, l.Version)
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, served, _ := svc.Serve(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); served {
+			if _, served, _ := svc.Serve(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor", l.Owner); served {
 				t.Fatal("served past its grace")
 			}
 			if err := svc.ExpireOnce(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := en.st.GetLicense(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
+			if _, err := nameLicense(ctx, en.st, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("after the expiry pass: %v", err)
 			}
 		})

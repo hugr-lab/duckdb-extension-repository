@@ -133,7 +133,8 @@ var writes = map[string]map[string][]audit.Kind{
 		"Feed": nil, "FeedDocument": nil,
 	},
 	"licenses.Service": {
-		"Import": {"license.import"}, "Remove": {"license.remove"}, "SetVisibility": {"license.change"},
+		"Import": {"license.import", "license.key_owner"}, "Remove": {"license.remove"}, "SetVisibility": {"license.change"},
+		"SetKeyOwner": {"license.key_owner"}, // spec 0033 phase B; an import claiming its key's owner writes one too
 		"RunUpstream": {"license.sync", "license.remove"}, "ExpireOnce": {"license.remove"},
 		"Sync": nil, "List": nil, "Get": nil, "Token": nil, "LastSync": nil, "LicenseKeys": nil, "Serve": nil, "WithAuthz": nil,
 		"Exportable": nil, "ApplyBundle": nil, // a bundle's licences are recorded by the import's bundle.import
@@ -612,13 +613,19 @@ func TestCoverage(t *testing.T) {
 	licTok := vectors.Sign(licKey, vectors.Header(licKey), fmt.Sprintf(
 		`{"v":1,"iss":"https://issuer.example","jti":"l1","sub":"acme","ext":"tresor","plan":"pro","iat":%d,"exp":%d}`,
 		base.Unix()-60, base.Unix()+30*86400))
+	// spec 0033 phase B: the key's owner recorded by an administrator's act (its first recorder, computed
+	// until then), then the import of its source
+	en.expect("licenses.Service.SetKeyOwner", do(func() error {
+		_, err := lic.SetKeyOwner(rctx, admin, "acme", "", "tresor", extfile.Fingerprint(&licKey.PublicKey), "publisher:p")
+		return err
+	}), "license.key_owner")
 	en.expect("licenses.Service.Import", do(func() error { _, err := lic.Import(rctx, admin, "acme", "", licTok, licenses.Create); return err }),
 		"license.import")
 	en.expect("licenses.Service.SetVisibility", do(func() error {
-		_, err := lic.SetVisibility(rctx, admin, "acme", "", "tresor", store.Public, 0)
+		_, err := lic.SetVisibility(rctx, admin, "acme", "", "tresor", "", store.Public, 0)
 		return err
 	}), "license.change")
-	en.expect("licenses.Service.Remove", do(func() error { return lic.Remove(rctx, admin, "acme", "", "tresor", 0) }), "license.remove")
+	en.expect("licenses.Service.Remove", do(func() error { return lic.Remove(rctx, admin, "acme", "", "tresor", "", 0) }), "license.remove")
 	en.expect("upstream.Service.Add", do(func() error {
 		_, err := en.up.Add(rctx, admin, "acme", upstream.Spec{Name: "offline", Kind: store.UpstreamCore, Mode: store.ModeBundle,
 			Channel: "staging", Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "inet"}}})

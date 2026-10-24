@@ -13,6 +13,8 @@ import type { Upstream } from './Upstreams'
 
 export interface License {
   name: string
+  /** The licence's source (spec 0033 phase B): the source that owns its key for the name. */
+  owner: string
   id: string
   issuer: string
   holder_id: string
@@ -35,7 +37,12 @@ export interface License {
  * builds declare it (spec 0021). */
 export interface NameKeys {
   name: string
-  keys: { kid: string; sources: { kind: 'publisher' | 'upstream'; name: string }[]; builds: number }[]
+  keys: { kid: string; sources: { kind: 'publisher' | 'upstream'; name: string }[]; builds: number; owner?: string }[]
+}
+
+/** A licence's key in the list: a name has a licence per source (spec 0033 phase B). */
+export function licenseKey(l: Pick<License, 'name' | 'owner'>) {
+  return `${l.name} ${l.owner}`
 }
 
 /** The sources of a key in a line: publisher acl-ci · upstream enterest. */
@@ -101,7 +108,7 @@ export function Licenses() {
   if (list.error) return <ErrorBox error={list.error} />
   const ls = list.data!.data.licenses
   const nks = keys.data?.data.names
-  const selected = ls.find((l) => l.name === open)
+  const selected = ls.find((l) => licenseKey(l) === open)
   return (
     <>
       <PageTitle title="Licences">
@@ -111,11 +118,11 @@ export function Licenses() {
         {ls.length === 0 ? <Empty>No licences.</Empty> : (
           <Table
             rows={ls}
-            rowKey={(l) => l.name}
+            rowKey={licenseKey}
             columns={[
               ['Extension', (l) => (
-                <button type="button" className="font-mono font-medium text-brand-strong underline-offset-2 hover:underline" aria-expanded={open === l.name}
-                  onClick={() => setOpen(open === l.name ? '' : l.name)}>{l.name}</button>
+                <button type="button" className="font-mono font-medium text-brand-strong underline-offset-2 hover:underline" aria-expanded={open === licenseKey(l)}
+                  onClick={() => setOpen(open === licenseKey(l) ? '' : licenseKey(l))}>{l.name}</button>
               )],
               ['Plan', (l) => l.plan],
               ['Holder', (l) => l.holder || <Mono>{l.holder_id}</Mono>],
@@ -128,12 +135,13 @@ export function Licenses() {
                 <span className="flex flex-wrap items-center gap-2"><Badge>{l.status}</Badge>
                   {nks && !declared(nks, l.name, l.key) && <span className="text-[13px] text-warning">not served: no live build in any channel declares its key</span>}</span>
               )],
+              ['Of', (l) => <Mono>{l.owner}</Mono>],
             ]}
           />
         )}
       </Card>
-      {selected && <LicenseView key={selected.name} l={selected} onChanged={() => { list.reload() }} onRemoved={() => { setOpen(''); list.reload() }} />}
-      <Import licenses={ls} onImported={(name) => { setOpen(name); list.reload() }} onStale={list.reload} />
+      {selected && <LicenseView key={licenseKey(selected)} l={selected} onChanged={() => { list.reload() }} onRemoved={() => { setOpen(''); list.reload() }} />}
+      <Import licenses={ls} onImported={(key) => { setOpen(key); list.reload() }} onStale={list.reload} />
       <Keys names={nks} loading={keys.loading} error={keys.error} reload={keys.reload} />
       <Relays />
     </>
@@ -145,7 +153,7 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
   const { client, api, base } = useTenant()
   const [pending, setPending] = useState<'public' | 'private' | 'remove' | null>(null)
   const { busy, failure, act } = useAction('The licence', onChanged)
-  const path = `${api}/licenses/${seg(l.name)}`
+  const path = `${api}/licenses/${seg(l.name)}?source=${encodeURIComponent(l.owner)}`
   const run = async () => {
     const p = pending!
     setPending(null)
@@ -166,6 +174,7 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
     ['Expires', when(l.expires_at)],
     ['Grace until', when(l.grace_until)],
     ['Signed by', <Mono>{l.key}</Mono>],
+    ['Of', <><Mono>{l.owner}</Mono>: the source that owns the key for {l.name}; a channel serves it where it serves {l.name} from that source</>],
     ['Source', l.source === 'upstream' ? <>relayed from upstream <Link className="font-mono" to={`${base}/upstreams/${seg(l.upstream ?? '')}`}>{l.upstream}</Link></> : 'imported'],
   ]
   return (
@@ -206,7 +215,7 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
 /** Import a licence file; a stored licence for the same extension is replaced after a confirmation.
  * A refusal reads the list again: a licence a relay stored meanwhile, or a changed ETag, is then
  * what the next try replaces. */
-function Import({ licenses, onImported, onStale }: { licenses: License[]; onImported: (name: string) => void; onStale: () => void }) {
+function Import({ licenses, onImported, onStale }: { licenses: License[]; onImported: (key: string) => void; onStale: () => void }) {
   const { client, api } = useTenant()
   const file = useRef<HTMLInputElement>(null)
   const [token, setToken] = useState('')
@@ -214,7 +223,10 @@ function Import({ licenses, onImported, onStale }: { licenses: License[]; onImpo
   const [replacing, setReplacing] = useState(false)
   const { busy, failure, act } = useAction()
   const p = token ? peek(token) : null
-  const stored = p ? licenses.find((l) => l.name === p.ext) : undefined
+  // the licence it replaces: of the source that owns its key, which the server decides (spec 0033
+  // phase B); a name with one licence offers that one
+  const named = p ? licenses.filter((l) => l.name === p.ext) : []
+  const stored = named.length === 1 ? named[0] : undefined
   const pick = async (f?: File) => {
     setToken('')
     setBad(false)
@@ -229,11 +241,14 @@ function Import({ licenses, onImported, onStale }: { licenses: License[]; onImpo
   }
   const send = async () => {
     setReplacing(false)
-    const ok = await act(() => client.post(`${api}/licenses`, { raw: { body: new Blob([token]), type: 'application/jwt' }, ifMatch: stored?.etag }))
+    const ok = await act(async () => {
+      const r = await client.post<License>(`${api}/licenses`, { raw: { body: new Blob([token]), type: 'application/jwt' }, ifMatch: stored?.etag })
+      onImported(licenseKey(r.data))
+      return r
+    })
     if (ok) {
       setToken('')
       if (file.current) file.current.value = ''
-      onImported(p!.ext)
     } else onStale()
   }
   return (

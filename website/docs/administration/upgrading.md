@@ -97,6 +97,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0039_package_types` | 39 | every key that holds a name holds its package type: an older replica's upserts would fail against the new keys, and it must not read rows of a type it does not know |
 | `0040_holds` | 40 | an older replica would place held entries, and take a held publisher's publications on a channel's route |
 | `0041_distributors` | 41 | an older replica would serve withdrawn entries, and take a distributor's publisher's hold and keys as the tenant's |
+| `0042_license_owners` | 42 | licences are per (name, source): an older replica would serve a licence through any source's build, and store and read licences by name |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -167,7 +168,37 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 41)
+## Upgrading to the next release (schema 42)
+
+### Licences per source, and a key's owner (spec 0033, phase B part 2)
+
+- **Migration `0042_license_owners`** adds `license_key_owners` (each key's owner for a name in a
+  tenant) and gives licences their source (`owner_source`, part of their primary key; SQLite
+  rebuilds the table), and raises `min_reader` to 42: stop every older replica first.
+- **What it records.** Each key's owner is the source that recorded it first, among the records
+  that counted: a source's own build, available or placed, not revoked, and not a distributor's
+  publisher's for a name a `repository` upstream of the tenant lists. A record made while its build
+  was held is counted later, by the first look at the key after the hold. Each stored licence gets
+  its key's owner; a licence whose key no such record has gets the source `unknown`: it is kept,
+  listed and removable (`?source=unknown`, `-source unknown`), and served nowhere until imported
+  again (it then gets the key's owner) or its grace ends.
+- **What changes.** A channel serves the licence of the source it serves the extension from, so a
+  channel that serves a name from a source that does not own the key gets no licence for it. A
+  tenant with two upstreams of one repository (one per channel) has one owner per key: the channel
+  whose rule names the other upstream no longer gets the licence; switch its rule to the owner, or
+  give the key to the other upstream (`kista admin license owner`), whose licence then moves. The
+  relay stores a licence only when its upstream owns the key (`key_owner` otherwise; the owner's
+  relay replaces a licence the migration gave it at its next run). Usage goes to the source a
+  channel serves the extension from. An import is accepted as soon as the key's owner has the
+  extension available in the catalogue, before any placement.
+- **API and CLI.** A licence answers `owner` (its source); `source` stays how it arrived. The routes
+  of one licence take `?source=` and answer `409` without it where the extension has licences of
+  several sources; an import's `Location` names the source. `GET …/license-keys` answers each key's
+  `owner`, and lists the keys of a source's newest available version too. New: `PUT
+  …/license-keys/{name}/{kid}/owner` and `kista admin license owner`; `-source` on `license list|show|
+  token|remove|public|private`; `license list` gains `OWNER`, `license keys` `OWNER`. Events:
+  `license.key_owner`, `license.key_conflict`; `license.import`, `license.change` and
+  `license.remove` gain `source`. The relay's refusals gain `key_owner`.
 
 ### Distributors' publishers and withdrawals (spec 0033, phase B part 1)
 

@@ -86,12 +86,14 @@ type UsageCounter interface {
 	Drop()
 }
 
-// Licenses reads the licences a tenant holds while their grace lasts: one by name (ok false for
-// none), and all of them.
+// Licenses reads the licences a tenant holds while their grace lasts: one by name and source (ok
+// false for none), and all of them.
 type Licenses interface {
 	Enabled() bool // licensing is on (licenses.enabled)
-	// Serve and List read a channel's type's licences (spec 0034: a licence is served only by a channel of its type).
-	Serve(ctx context.Context, tenantID, packageType, name string) (store.License, bool, error)
+	// Serve and List read a channel's type's licences (spec 0034: a licence is served only by a
+	// channel of its type); Serve the licence of a source (spec 0033 phase B: the channel's for the
+	// name).
+	Serve(ctx context.Context, tenantID, packageType, name, source string) (store.License, bool, error)
 	List(ctx context.Context, tenantID, packageType string) ([]store.License, error)
 }
 

@@ -110,7 +110,7 @@ func TestLicenseRoutes(t *testing.T) {
 
 	// a public licence: to whoever is served a public release of the name, and only then
 	for _, name := range []string{"tresor", "secret"} {
-		if _, err := svc.SetVisibility(ctx, admin, "acme", "", name, store.Public, 0); err != nil {
+		if _, err := svc.SetVisibility(ctx, admin, "acme", "", name, "", store.Public, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -132,7 +132,7 @@ func TestLicenseRoutes(t *testing.T) {
 	if c := get("/acme/mirror/-/licenses/tresor", nil); c.status != 404 {
 		t.Fatalf("passthrough: %d", c.status)
 	}
-	v, err := svc.Get(ctx, admin, "acme", "", "tresor")
+	v, err := svc.Get(ctx, admin, "acme", "", "tresor", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,14 +143,31 @@ func TestLicenseRoutes(t *testing.T) {
 	same("licensing off", get(lic+"tresor", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
 	svc.Enabled = true
 
-	// spec 0021: served only where a live build declares its key: tresor 1.0 is yanked, and 1.1
-	// declares none
+	// spec 0021: served only where a live build declares its key: tresor 1.0 is yanked
 	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "", tresor.ID, release.Yank, 0); err != nil {
 		t.Fatal(err)
 	}
-	en.add(t, ext(t, 2000, 4, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor"})
 	same("no live build declares the key", get(lic+"tresor", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
-	if _, err := svc.Get(ctx, admin, "acme", "", "tresor"); err != nil {
+	// spec 0033 phase B: a channel serves the licence of the source it serves the name from: the
+	// tenant's own 1.1, even with the key recorded on it, gets none of the publisher's licence
+	if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", store.SourceTenant, ""); err != nil {
+		t.Fatal(err)
+	}
+	en.add(t, ext(t, 2000, 4, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor"})
+	if err := store.ExecRaw(ctx, en.st, `INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at)
+SELECT b.tenant_id, b.id, k.kid, k.pem, k.source_kind, k.source_id, k.recorded_at FROM builds b JOIN build_license_keys k ON k.tenant_id = b.tenant_id
+WHERE b.name = 'tresor' AND b.source = 'tenant' AND k.build_id = ?`, tresor.BuildID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ExecRaw(ctx, en.st, "UPDATE channels SET release_version = release_version + 1"); err != nil {
+		t.Fatal(err)
+	}
+	same("another source's channel", get(lic+"tresor", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
+	var list struct{ Licenses []string }
+	if err := json.Unmarshal(get("/acme/prod/-/licenses", bearerHdr(tok)).body, &list); err != nil || len(list.Licenses) != 0 {
+		t.Fatalf("the list in another source's channel: %v %v", list, err)
+	}
+	if _, err := svc.Get(ctx, admin, "acme", "", "tresor", ""); err != nil {
 		t.Fatalf("the licence is no longer stored: %v", err)
 	}
 
@@ -175,7 +192,7 @@ func TestLicenseOverHTTP(t *testing.T) {
 	if c := en.do(t, "GET", "/acme/prod/-/licenses/tresor", bearerHdr(idp.token(t, nil))); c.status != 401 {
 		t.Fatalf("a private licence over http with a token: %d", c.status)
 	}
-	if _, err := svc.SetVisibility(ctx, admin, "acme", "", "tresor", store.Public, 0); err != nil {
+	if _, err := svc.SetVisibility(ctx, admin, "acme", "", "tresor", "", store.Public, 0); err != nil {
 		t.Fatal(err)
 	}
 	if c := en.do(t, "GET", "/acme/prod/-/licenses/tresor", nil); c.status != 200 {

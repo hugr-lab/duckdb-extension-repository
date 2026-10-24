@@ -193,13 +193,19 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved] [-eager]
   upstream extension remove <tenant> <name> <extension>
   upstream platform|key add|remove <tenant> <name> <platform|fingerprint>
-  license keys <tenant> [<name>] [-type t]        the licence keys of the tenant's live builds, by name and source
-  license list <tenant> [-type t]
-  license show|token <tenant> <name> [-type t]    a licence's claims and state, or its token as received
+  license keys <tenant> [<name>] [-type t]        the live licence keys of the tenant's builds, by name, with the
+                                                  sources that brought them and each key's owner (spec 0033)
+  license owner <tenant> <name> <kid> <source> [-type t]   give a key of a name to a source that declares it
+                                                  (upstream:<name>, publisher:<name>); its licences move with it
+  license list <tenant> [-source s] [-type t]
+  license show|token <tenant> <name> [-source s] [-type t]   a licence's claims and state, or its token as
+                                                  received; -source: the licence's source, where the
+                                                  extension has licences of several (spec 0033)
   license import <tenant> <file|-> [-replace] [-type t]   store a licence (a compact JWS) under the extension it
-                                                  names; -replace replaces the licence stored for that extension;
+                                                  names, for the source that owns its key; -replace replaces
+                                                  the licence stored for that extension and source;
                                                   -type: its package type (spec 0034), duckdb_extension by default
-  license remove|public|private <tenant> <name> [-type t]
+  license remove|public|private <tenant> <name> [-source s] [-type t]
   license verify <file|-> -key <pem>              check a licence offline against a public key
   events list [-server] [-kind <k>] [-subject <prefix>] [-actor <a>] [-since <RFC 3339>] [-limit <n>]
               [-follow] [-format table|jsonl] [<tenant>]          the event buffer (spec 0010), newest first

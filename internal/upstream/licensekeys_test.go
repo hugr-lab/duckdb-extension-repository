@@ -123,7 +123,7 @@ func TestRelayLicenseKeys(t *testing.T) {
 			if err != nil || res.Counts["removed"] != 0 || res.Counts["refused"] != 2 || res.Refused[0].Rule != license.RuleKeyUntrusted {
 				t.Fatalf("the relay with the key refused: %+v %v", res, err)
 			}
-			if _, err := en.st.GetLicense(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); err != nil {
+			if _, err := nameLicense(ctx, en.st, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); err != nil {
 				t.Fatalf("the relayed licence was removed: %v", err)
 			}
 			if _, err := svc.Import(ctx, admin, "acme", "", lic.sign("plain", "max", now, now+86400), licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {

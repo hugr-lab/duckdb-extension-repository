@@ -69,6 +69,10 @@ func (t *Tx) RecordLicenseKeys(ctx context.Context, tenantID, buildID, kind, sou
 VALUES (?, ?, ?, ?, ?, ?, ?)`, tenantID, buildID, k.Kid, k.PEM, kind, sourceID, t.s.d.timeArg(t.Now())); err != nil {
 			return false, err
 		}
+		// spec 0033 phase B: the key's owner for the name, claimed by its first recorder
+		if err := t.noteKeyOwner(ctx, tenantID, buildID, keySource(kind, sourceID), k.Kid); err != nil {
+			return false, err
+		}
 		added = true
 	}
 	if !added {
@@ -77,11 +81,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, tenantID, buildID, k.Kid, k.PEM, kind, sourceID, 
 	return true, t.bumpBuildChannels(ctx, "SELECT DISTINCT channel_id FROM releases WHERE build_id = ? ORDER BY channel_id", buildID)
 }
 
-// DeleteLicenseKeysOf drops the keys a source brought, from every build, and bumps the release
-// version of each channel holding one of those builds.
+// DeleteLicenseKeysOf drops the keys a source brought, from every build, and the keys it owns (spec
+// 0033 phase B: the next recorder owns them), and bumps the release version of each channel holding
+// one of those builds.
 func (t *Tx) DeleteLicenseKeysOf(ctx context.Context, kind, sourceID string) error {
 	if err := t.bumpBuildChannels(ctx, `SELECT DISTINCT r.channel_id FROM releases r
 WHERE r.build_id IN (SELECT build_id FROM build_license_keys WHERE source_kind = ? AND source_id = ?) ORDER BY r.channel_id`, kind, sourceID); err != nil {
+		return err
+	}
+	if _, err := t.exec(ctx, "DELETE FROM license_key_owners WHERE source = ?", keySource(kind, sourceID)); err != nil {
 		return err
 	}
 	_, err := t.exec(ctx, "DELETE FROM build_license_keys WHERE source_kind = ? AND source_id = ?", kind, sourceID)
@@ -106,33 +114,6 @@ func (t *Tx) bumpBuildChannels(ctx context.Context, q string, args ...any) error
 	return nil
 }
 
-// LiveLicenseKeys are the keys of the tenant's live builds of a package (type, name; spec 0034: a
-// live key is (type, name, kid)): those any trusted source brought (kind ""), or those one source
-// brought.
-func (t *Tx) LiveLicenseKeys(ctx context.Context, tenantID, packageType, name, kind, sourceID string) ([]LicenseKey, error) {
-	q := `SELECT DISTINCT k.kid, k.pem FROM build_license_keys k JOIN builds b ON b.id = k.build_id
-WHERE b.tenant_id = ? AND b.package_type = ? AND b.name = ? AND ` + liveBuild
-	args := []any{tenantID, packageType, name}
-	if kind != "" {
-		q += " AND k.source_kind = ? AND k.source_id = ?"
-		args = append(args, kind, sourceID)
-	}
-	rows, err := t.query(ctx, q+" ORDER BY k.kid", args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []LicenseKey
-	for rows.Next() {
-		var k LicenseKey
-		if err := rows.Scan(&k.Kid, &k.PEM); err != nil {
-			return nil, err
-		}
-		out = append(out, k)
-	}
-	return out, rows.Err()
-}
-
 // BuildKids are the kids recorded for each of a channel's builds (by build id), from any source:
 // what a served snapshot carries.
 func (s *Store) BuildKids(ctx context.Context, channelID string) (map[string][]string, error) {
@@ -149,64 +130,6 @@ WHERE k.build_id IN (SELECT build_id FROM releases WHERE channel_id = ?) AND `+s
 			return nil, err
 		}
 		out[b] = append(out[b], kid)
-	}
-	return out, rows.Err()
-}
-
-// NameKey is a licence key of a tenant's live builds of one name, with the sources that brought it
-// and the number of live builds declaring it.
-type NameKey struct {
-	Name, Kid string
-	Sources   []KeySource
-	Builds    int
-}
-
-// KeySource is a trusted source by kind and name.
-type KeySource struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
-}
-
-const keySourceName = "COALESCE(p.name, u.name, k.source_id)"
-
-// TenantLicenseKeys lists the keys of a tenant's live builds of a type (of one name, or of all: name
-// ""), by name and kid.
-func (s *Store) TenantLicenseKeys(ctx context.Context, tenantID, packageType, name string) ([]NameKey, error) {
-	q := `SELECT b.name, k.kid, k.build_id, k.source_kind, ` + keySourceName + `
-FROM build_license_keys k JOIN builds b ON b.id = k.build_id
-LEFT JOIN publishers p ON k.source_kind = 'publisher' AND p.id = k.source_id
-LEFT JOIN upstreams u ON k.source_kind = 'upstream' AND u.id = k.source_id
-WHERE b.tenant_id = ? AND b.package_type = ? AND ` + liveBuild
-	args := []any{tenantID, packageType}
-	if name != "" {
-		q += " AND b.name = ?"
-		args = append(args, name)
-	}
-	rows, err := s.query(ctx, q+" ORDER BY b.name, k.kid, k.source_kind, "+keySourceName+", k.build_id", args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []NameKey
-	var builds []string
-	for rows.Next() {
-		var n, kid, build string
-		var src KeySource
-		if err := rows.Scan(&n, &kid, &build, &src.Kind, &src.Name); err != nil {
-			return nil, err
-		}
-		if len(out) == 0 || out[len(out)-1].Name != n || out[len(out)-1].Kid != kid {
-			out = append(out, NameKey{Name: n, Kid: kid})
-			builds = builds[:0]
-		}
-		last := &out[len(out)-1]
-		if !slices.Contains(last.Sources, src) {
-			last.Sources = append(last.Sources, src)
-		}
-		if !slices.Contains(builds, build) {
-			builds = append(builds, build)
-			last.Builds++
-		}
 	}
 	return out, rows.Err()
 }

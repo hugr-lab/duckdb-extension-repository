@@ -47,7 +47,8 @@ func TestLicenseRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := m.call(t, "GET", "/api/v1/tenants/acme/license-keys/tresor", tom, "")
-	if ks := fmt.Sprint(r.json(t)["names"]); r.status != 200 || !strings.Contains(ks, kid) || !strings.Contains(ks, "builds:3") {
+	if ks := fmt.Sprint(r.json(t)["names"]); r.status != 200 || !strings.Contains(ks, kid) || !strings.Contains(ks, "builds:3") ||
+		!strings.Contains(ks, "owner:publisher:nobody") {
 		t.Fatalf("license keys: %d %s", r.status, r.body)
 	}
 	if r := m.call(t, "GET", "/api/v1/tenants/acme/license-keys", m.toks["install"], ""); r.status != 404 {
@@ -56,8 +57,8 @@ func TestLicenseRoutes(t *testing.T) {
 
 	// an import, then one over it without If-Match, then with it
 	r = m.call(t, "POST", T, tom, pro)
-	if r.status != 201 || r.header.Get("Location") != T+"/tresor" || r.json(t)["plan"] != "pro" || r.json(t)["status"] != "valid" ||
-		r.json(t)["source"] != "import" {
+	if r.status != 201 || r.header.Get("Location") != T+"/tresor?source=publisher%3Anobody" || r.json(t)["plan"] != "pro" ||
+		r.json(t)["status"] != "valid" || r.json(t)["source"] != "import" || r.json(t)["owner"] != "publisher:nobody" {
 		t.Fatalf("an import: %d %s", r.status, r.body)
 	}
 	etag := r.header.Get("ETag")
@@ -73,13 +74,35 @@ func TestLicenseRoutes(t *testing.T) {
 		t.Fatalf("a broken licence: %d %s", r.status, r.body)
 	}
 
-	// reading: the claims and the state, never the token
+	// reading: the claims and the state, never the token; by its source (spec 0033 phase B), its
+	// label or its id form, or without one while it is the name's only licence
 	r = m.call(t, "GET", T+"/tresor", tom, "")
 	if r.status != 200 || r.header.Get("ETag") != etag || r.json(t)["limits"] == nil {
 		t.Fatalf("get: %d %s", r.status, r.body)
 	}
+	if r := m.call(t, "GET", T+"/tresor?source=publisher:nobody", tom, ""); r.status != 200 || r.header.Get("ETag") != etag {
+		t.Fatalf("get by source: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", T+"/tresor?source=upstream:nobody", tom, ""); r.status != 404 {
+		t.Fatalf("get of another source: %d %s", r.status, r.body)
+	}
 	if got := names(m.call(t, "GET", T, tom, "").json(t), "licenses", "name"); !slices.Equal(got, []string{"tresor"}) {
 		t.Fatalf("list: %v", got)
+	}
+	if got := names(m.call(t, "GET", T+"?source=publisher:other", tom, "").json(t), "licenses", "name"); len(got) != 0 {
+		t.Fatalf("list of another source: %v", got)
+	}
+	// a key's owner is a tenant administrator's to give, to a source that declares the key
+	owner := "/api/v1/tenants/acme/license-keys/tresor/" + kid + "/owner"
+	if r := m.call(t, "PUT", owner, tom, `{"source":"publisher:nobody"}`); r.status != 200 || r.json(t)["owner"] != "publisher:nobody" ||
+		r.json(t)["before"] != "publisher:nobody" {
+		t.Fatalf("the owner as it is: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "PUT", owner, tom, `{"source":"tenant"}`); r.status != 400 {
+		t.Fatalf("the tenant as an owner: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "PUT", owner, m.toks["server licence mgr"], `{"source":"publisher:nobody"}`); r.status != 404 {
+		t.Fatalf("a licence manager gives a key: %d %s", r.status, r.body)
 	}
 	for _, who := range []string{"install", "ext admin", "channel adm", "no grants"} {
 		if r := m.call(t, "GET", T, m.toks[who], ""); r.status != 404 {

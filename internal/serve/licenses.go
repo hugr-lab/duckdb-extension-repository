@@ -22,9 +22,14 @@ func (h *Handler) licenses(w http.ResponseWriter, r *http.Request, rt route) {
 	}
 	ctx := r.Context()
 	sc, installs, actor, snap, missing := cc.sc, cc.installs, cc.actor, cc.snap, cc.missing
-	// may reports whether the caller may have a licence for a name in this channel: a live build
-	// the caller sees declares its key (spec 0021)
+	// may reports whether the caller may have a licence for a name in this channel: it is of the
+	// source the channel serves the name from (spec 0033 phase B: another source's build carrying a
+	// copy of its key gets none), and a live build the caller sees declares its key (spec 0021); the
+	// snapshot holds the selected sources' releases only
 	may := func(l store.License) bool {
+		if src, ok := snap.Selected[l.Name]; !ok || src != l.Owner {
+			return false
+		}
 		if installs(l.Name) && snap.LiveKey(l.Name, l.Key, release.Everything) {
 			return true
 		}
@@ -71,7 +76,7 @@ func (h *Handler) licenses(w http.ResponseWriter, r *http.Request, rt route) {
 	found := false
 	if could {
 		var err error
-		if l, found, err = h.o.Licenses.Serve(ctx, sc.Tenant.ID, sc.Channel.PackageType, rt.name); err != nil {
+		if l, found, err = h.o.Licenses.Serve(ctx, sc.Tenant.ID, sc.Channel.PackageType, rt.name, snap.Selected[rt.name]); err != nil {
 			h.fail(w, err)
 			return
 		}
