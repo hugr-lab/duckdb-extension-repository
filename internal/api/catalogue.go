@@ -19,6 +19,9 @@ type catalogueEntryJSON struct {
 	Rules       map[string]string `json:"rules"`    // the channels whose rule takes the source, with its mode
 	// Held are the versions with a held build (spec 0033 phase A2), newest first; omitted for none
 	Held []string `json:"held,omitempty"`
+	// Revoked are the versions with a revoked build (spec 0033 phase A2: kept by a purge, placed
+	// automatically nowhere), newest first; omitted for none
+	Revoked []string `json:"revoked,omitempty"`
 }
 
 func (h *Handler) catalogue(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -32,7 +35,7 @@ func (h *Handler) catalogue(w http.ResponseWriter, r *http.Request, c caller, p 
 	out := []catalogueEntryJSON{}
 	for _, e := range es {
 		out = append(out, catalogueEntryJSON{PackageType: shownType(reqType(r)), Source: e.Source, Name: e.Name, Versions: e.Versions, Rules: e.Rules,
-			Held: e.Held})
+			Held: e.Held, Revoked: e.Revoked})
 	}
 	reply(w, r, http.StatusOK, map[string]any{"entries": out}, "", noStore)
 }
@@ -51,9 +54,12 @@ type catalogueBuildJSON struct {
 	Checked       bool   `json:"checked"`
 	CreatedAt     string `json:"created_at"`
 	// State is held or available (spec 0033 phase A2); AvailableAt, a held build's end of hold
-	State       string         `json:"state"`
-	AvailableAt string         `json:"available_at,omitempty"`
-	Placed      []store.Placed `json:"placed"`
+	State       string `json:"state"`
+	AvailableAt string `json:"available_at,omitempty"`
+	// RevokedAt: when a purge kept it, revoked (spec 0033 phase A2: its publisher key revoked with
+	// purge_held, or its publisher removed, while it was held and placed early); omitted for none
+	RevokedAt string         `json:"revoked_at,omitempty"`
+	Placed    []store.Placed `json:"placed"`
 }
 
 func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -160,6 +166,9 @@ func catalogueBuildOf(b store.Build, placed []store.Placed, now time.Time) catal
 		State: "available"}
 	if b.Held(now) {
 		bj.State, bj.AvailableAt = "held", timeOf(b.AvailableAt)
+	}
+	if b.Revoked() {
+		bj.RevokedAt = timeOf(b.RevokedAt)
 	}
 	if b.CAPI != nil {
 		bj.CAPI = b.CAPI.String()

@@ -171,18 +171,21 @@ so the operator declares it:
 ### Holds (spec 0033, phase A2)
 
 - **Migration `0040_holds`** gives upstreams, publishers and channels a hold (`hold_seconds`, `0`
-  for none) and builds when a held one becomes available and the publisher key that published it,
-  and raises `min_reader` to 40: stop every older replica first.
+  for none) and builds when a held one becomes available, the publisher key that published it and
+  when a purge kept it revoked, and raises `min_reader` to 40: stop every older replica first.
 - Nothing is held until an administrator sets a hold ([Holds](../upstreams.md#holds)): every
   existing build is available, and every channel, publisher and upstream has none.
 - A publisher with a hold is refused on a channel's publication route (`409`, problem type
   `…/held`) and publishes into the catalogue; a CI that publishes into a channel keeps working until
   its publisher is given a hold.
-- New in answers: an upstream's and a publisher's `hold`, a catalogue entry's `held` versions, and a
-  catalogue build's `state` and `available_at`; a mirror's cell may be `held`. `DELETE
-  …/publishers/{name}/keys/{id}` takes `?purge_held=true`. Events: `catalogue.hold`, and new fields
-  on `catalogue.arrival`, `catalogue.purge`, `release.place` and `publisher.key.remove` (the event
+- New in answers: an upstream's and a publisher's `hold`, a catalogue entry's `held` and `revoked`
+  versions, and a catalogue build's `state`, `available_at` and `revoked_at`; a mirror's cell may
+  be `held`. `DELETE …/publishers/{name}/keys/{id}` takes `?purge_held=true` (answered `200` with
+  what it purged and kept). Events: `catalogue.hold`, and new fields on `catalogue.arrival`,
+  `catalogue.purge`, `release.place`, `publisher.key.remove` and `publisher.remove` (the event
   catalogue's version stays 1).
+- A publication whose publisher or signing key is removed while its upload is in flight is refused
+  (`401`), and a mirror's arrival from an upstream removed meanwhile fails its cell.
 
 ### Package types (spec 0034, phase 2)
 

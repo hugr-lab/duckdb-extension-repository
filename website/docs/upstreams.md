@@ -388,23 +388,28 @@ at a build, or to revoke a stolen key, before an automatic placement serves it.
 
 - **A source's hold**, on a publisher or an eager mirror, `0` (none) by default: an entry arriving
   from it is **held** until its arrival plus the hold. A lazy mirror and a pull-through upstream take
-  none (they fetch because someone is installing now), and neither does a passthrough channel's
-  upstream; a mirror with a hold is not made lazy. Raising a hold holds the entries held now longer;
-  lowering it shortens only the hold of what arrives from then on. A tenant's administrators set it:
-  `kista admin upstream hold <tenant> <name> <duration>` and `kista admin publisher hold <tenant>
-  <name> <duration>` (`24h`, `2d`; `0` for none), or `PUT …/upstreams/{name}/hold` and `PUT
-  …/publishers/{name}/hold` with `{"hold": "24h"}`. At most 90 days.
+  none (they fetch because someone is installing now), and neither does a bundle-mode upstream nor
+  a passthrough channel's upstream (`400`); a mirror with a hold is not made lazy. Raising a hold
+  holds the entries held now longer; lowering it shortens only the hold of what arrives from then on.
+  A tenant's administrators set it: `kista admin upstream hold <tenant> <name> <duration>` and
+  `kista admin publisher hold <tenant> <name> <duration>` (`24h`, `2d`; `0` for none), or `PUT
+  …/upstreams/{name}/hold` and `PUT …/publishers/{name}/hold` with `{"hold": "24h"}`. At most 90
+  days. An upstream removed and added again (its successor) starts with no hold: set it again.
 - **A channel's hold**, set by its administrators (`kista admin channel hold <tenant>/<channel>
   <duration>`, `GET|PUT …/channels/{c}/hold`): an automatic placement into the channel (a rule's,
   a follow's, a mirror's run into its own channel) waits until an entry's arrival plus the channel's
-  hold, if that is later than the entry's own. A channel with a hold asks no lazy mirror or
-  pull-through upstream (what they fetch would wait). A passthrough channel takes none.
+  hold, if that is later than the entry's own. Changing it applies at once, to the entries waiting
+  too: lowering it lets them in sooner (the channel's own choice). A channel with a hold asks no lazy
+  mirror or pull-through upstream (what they fetch would wait). A passthrough channel takes none.
 - **What waits**: the placement pass places nothing held, and looks at a rule again when the first
   hold it waits for ends; then only a version newer than what the channel had, so an older version
   whose hold ends later does not overtake a newer one. A mirror's run lands a held version in the
   catalogue (cell `held`) and writes the name's rule in its channel as a release would; the pass
-  places it there when the hold ends. Placing by hand and promoting refuse a held entry (`409`,
-  problem type `…/held`), except a channel administrator's placement with `early` (below).
+  places it there when the hold ends, whether or not another channel took it meanwhile and whatever
+  the cell holds by then (each version after its own hold, older first), as the run would take it
+  then: not while the upstream is paused, nor once the name or the version has left its allowlist.
+  Placing by hand and promoting refuse a held entry (`409`, problem type `…/held`), except a channel
+  administrator's placement with `early` (below).
 - **A publisher with a hold** publishes into the catalogue only: the channel's route refuses it
   (`409`, `…/held`), and channels take its builds by their rules once the hold has passed (see
   [Publishing](publishing.md#holds-and-early-placement)).
@@ -412,13 +417,19 @@ at a build, or to revoke a stolen key, before an automatic placement serves it.
   places a held version: a channel administrator's choice to take it sooner, recorded in its
   `release.place` event (`early`). Anyone else is refused.
 - **Revoking a key** with `kista admin publisher key remove … -purge-held` (`DELETE
-  …/publishers/{name}/keys/{id}?purge_held=true`) purges the entries published with it that are
-  still held and placed nowhere, each with a `catalogue.purge` event; removing the publisher purges
-  all of its held entries. A routine rotation, without it, keeps them.
+  …/publishers/{name}/keys/{id}?purge_held=true`, a tenant administrator's) purges the entries
+  published with it that are still held and placed nowhere, each with a `catalogue.purge` event;
+  removing the publisher purges all of its held entries. A held entry a channel administrator placed
+  early is kept, **revoked**: it stays where it is placed, but no rule, follow or promotion takes it
+  again, and a placement by hand only with `early`. The answer (`200`, `{"purged": […], "kept":
+  […]}`, each kept entry with how many of the tenant's channels hold it), the command's output and
+  the removal's event (`purged`, `kept`) say what was purged and what was kept. An upload in flight
+  when its key or its publisher is removed is refused (`401`). A routine rotation, without
+  `purge_held`, keeps everything (`204`).
 - **Reading**: an upstream's and a publisher's answers carry `hold` (omitted for none; `upstream
-  show`, `publisher list`); the catalogue lists each entry's `held` versions and shows each build's
-  `state` (`held` or `available`) and, held, its `available_at` (`catalogue list`, `catalogue show`'s
-  `HELD UNTIL`).
+  show`, `publisher list`); the catalogue lists each entry's `held` and `revoked` versions and shows
+  each build's `state` (`held` or `available`), held, its `available_at`, and revoked, its
+  `revoked_at` (`catalogue list`, `catalogue show`'s `HELD UNTIL` and `REVOKED`).
 
 ## Passthrough channels
 

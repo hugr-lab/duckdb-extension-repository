@@ -258,16 +258,18 @@ func (s *Service) heldArrival(ctx context.Context, b store.Build, channelHold ti
 	return cur.AvailableIn(channelHold).After(now), nil
 }
 
-// landHeld keeps a held mirror entry in the catalogue (spec 0033 phase A2) and writes its rule in
-// the channel as its release would (spec 0031): the first arrival of the name sets the upstream as
-// its source, without a mode, and an upstream succeeding a removed one takes the removed one's rule
-// and releases; the placement pass places the entry there when its hold ends.
+// landHeld keeps a held mirror entry in the catalogue (spec 0033 phase A2), marked held at its
+// arrival (store.HeldAtArrival: the placement pass places it in the home channel, and only such an
+// entry), and writes its rule in the channel as its release would (spec 0031): the first arrival of
+// the name sets the upstream as its source, without a mode, and an upstream succeeding a removed one
+// takes the removed one's rule and releases; the placement pass places the entry there when its
+// hold ends.
 func (s *Service) landHeld(ctx context.Context, a authz.Actor, sp *blob.Spool, it *item, ch store.Channel, res Ingested, dryRun bool) (Ingested, error) {
 	res.Held = true
 	if dryRun {
 		return res, nil
 	}
-	if err := s.land(ctx, sp, it, nil); err != nil {
+	if err := s.land(ctx, sp, it, func(tx *store.Tx, b store.Build, _ bool) error { return tx.HeldAtArrival(ctx, b.ID) }); err != nil {
 		return res, slotErr(store.OriginUpstream, err)
 	}
 	return res, s.Store.InTxLocks(ctx, []string{store.TenantUpstreamLock(ch.TenantID), lockKey(ch.ID)}, func(tx *store.Tx) error {

@@ -24,26 +24,67 @@ func ValidHold(d time.Duration) error {
 
 func seconds(d time.Duration) int64 { return int64(d / time.Second) }
 
+// ErrSourceGone is an arrival from a source that is gone: a removed upstream or publisher, or the
+// publisher key that signed a publication, removed while it was in flight (spec 0033 phase A2: fail
+// closed, a revoked key's upload reaches nothing).
+var ErrSourceGone = errors.New("store: the source is gone (its upstream, publisher or key was removed)")
+
 // SourceHold is a source's hold: a publisher's, or an eager mirror's (a lazy or pull-through
-// upstream fetches because someone is installing now, and takes none); 0 for the tenant's own source
-// and a removed source.
+// upstream fetches because someone is installing now, and takes none); 0 for the tenant's own source.
+// It reads the source's row with a shared lock held until commit, so a hold raised (RaiseHeld, after
+// the row's update) is never missed by a build inserted in the same transaction; a removed upstream or
+// publisher is ErrSourceGone (fail closed).
 func (t *Tx) SourceHold(ctx context.Context, source string) (time.Duration, error) {
 	var hold int64
 	var err error
 	switch {
 	case strings.HasPrefix(source, SourcePublisherPrefix):
-		err = t.queryRow(ctx, "SELECT hold_seconds FROM publishers WHERE id = ?", strings.TrimPrefix(source, SourcePublisherPrefix)).Scan(&hold)
+		err = t.queryRow(ctx, t.lockedRowQuery("SELECT hold_seconds FROM publishers", "id = ?", false),
+			strings.TrimPrefix(source, SourcePublisherPrefix)).Scan(&hold)
 	case strings.HasPrefix(source, SourceUpstreamPrefix):
-		err = t.queryRow(ctx, "SELECT hold_seconds FROM upstreams WHERE id = ? AND mode = ? AND fetch_mode = ?",
-			strings.TrimPrefix(source, SourceUpstreamPrefix), ModeMirror, FetchEager).Scan(&hold)
+		var mode, fetch string
+		err = t.queryRow(ctx, t.lockedRowQuery("SELECT hold_seconds, mode, fetch_mode FROM upstreams", "id = ?", false),
+			strings.TrimPrefix(source, SourceUpstreamPrefix)).Scan(&hold, &mode, &fetch)
+		if mode != ModeMirror || fetch != FetchEager {
+			hold = 0
+		}
 	default:
 		return 0, nil
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
+		return 0, fmt.Errorf("%w: %s", ErrSourceGone, source)
 	}
 	return time.Duration(hold) * time.Second, err
 }
+
+// PublicationLive checks, in a publication's build transaction, that its publisher and the key that
+// signed it (keyID, "" for none) still exist: the caller holds the tenant's auth lock
+// (PublisherAuthLock), which removing a key or a publisher takes too, so an upload in flight when
+// its key is revoked, or its publisher removed, is refused (ErrSourceGone) instead of landing after
+// the removal's purge (spec 0033 phase A2).
+func (t *Tx) PublicationLive(ctx context.Context, source, keyID string) error {
+	id, ok := strings.CutPrefix(source, SourcePublisherPrefix)
+	if !ok {
+		return nil
+	}
+	var n int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM publishers WHERE id = ?", id).Scan(&n); err != nil {
+		return err
+	}
+	if n == 1 && keyID != "" {
+		if err := t.queryRow(ctx, "SELECT COUNT(*) FROM publisher_keys WHERE id = ? AND publisher_id = ?", keyID, id).Scan(&n); err != nil {
+			return err
+		}
+	}
+	if n != 1 {
+		return fmt.Errorf("%w: %s", ErrSourceGone, source)
+	}
+	return nil
+}
+
+// PublisherAuthLock is the lock that orders a tenant's publishers, keys and grants (their changes,
+// spec 0017), which a publication's build transaction takes too (PublicationLive).
+func PublisherAuthLock(tenantID string) string { return "kista/tenant-auth/" + tenantID }
 
 // SourceHold reads a source's hold outside a transaction.
 func (s *Store) SourceHold(ctx context.Context, source string) (time.Duration, error) {
@@ -146,40 +187,92 @@ func (t *Tx) RaiseHeld(ctx context.Context, tenantID, source string, d time.Dura
 	return n, nil
 }
 
-// BuildAvailability reads a build's arrival and when it becomes available (zero: on arrival), for
-// the check a release insert makes under the channel lock; ErrBuildGone when the collector removed
-// it since the intake found it (spec 0016: the intake starts again).
-func (t *Tx) BuildAvailability(ctx context.Context, id string) (created, available time.Time, err error) {
-	err = t.queryRow(ctx, "SELECT created_at, available_at FROM builds WHERE id = ?", id).Scan(scanTime{&created}, scanTime{&available})
+// BuildAvailability reads a build's arrival, when it becomes available (zero: on arrival) and when it
+// was revoked (zero: not), for the check a release insert makes under the channel lock; ErrBuildGone
+// when the collector removed it since the intake found it (spec 0016: the intake starts again).
+func (t *Tx) BuildAvailability(ctx context.Context, id string) (created, available, revoked time.Time, err error) {
+	err = t.queryRow(ctx, "SELECT created_at, available_at, revoked_at FROM builds WHERE id = ?", id).
+		Scan(scanTime{&created}, scanTime{&available}, scanTime{&revoked})
 	if errors.Is(err, sql.ErrNoRows) {
-		return created, available, fmt.Errorf("%w: %s", ErrBuildGone, id)
+		return created, available, revoked, fmt.Errorf("%w: %s", ErrBuildGone, id)
 	}
-	return created, available, err
+	return created, available, revoked, err
+}
+
+// HeldAtArrival marks a mirror's entry that its run left to the placement pass, held at its arrival
+// (spec 0033 phase A2): an entry held by its home channel's hold only (its source's hold set
+// available_at already) gets available_at = its arrival, so it is not held by itself (another
+// channel takes it as soon as its own hold allows) but the pass knows to place it in the mirror's
+// home channel, as it does an entry its source held (store.DueRules, release's home rule).
+func (t *Tx) HeldAtArrival(ctx context.Context, buildID string) error {
+	_, err := t.exec(ctx, "UPDATE builds SET available_at = created_at WHERE id = ? AND available_at IS NULL", buildID)
+	return err
+}
+
+// KeptEntry is a held entry a purge kept (PurgeHeld): released, or released once, so it is marked
+// revoked instead; Channels is how many of the tenant's channels hold a release of it.
+type KeptEntry struct {
+	Build
+	Channels int
 }
 
 // PurgeHeld deletes a tenant's entries of a publisher that are held now and were never released
 // (spec 0033: revoking a key, or removing the publisher, before its builds reach a channel), those
 // published with one of its keys when keyID is set, with their licence-key records. An entry placed
-// early (a channel administrator's choice) stays. It returns the entries it deleted.
-func (t *Tx) PurgeHeld(ctx context.Context, tenantID, source, keyID string) ([]Build, error) {
-	q, args := "SELECT id FROM builds WHERE tenant_id = ? AND source = ? AND available_at > ?", []any{tenantID, source, t.s.d.timeArg(t.Now())}
+// early (a channel administrator's choice), or released once, stays, marked revoked: no rule, follow
+// or promotion takes it again, only a channel administrator's early placement. It returns the entries
+// it deleted and those it kept. The caller holds the tenant's upstream lock (TenantUpstreamLock),
+// which every release into the tenant's signed channels takes: no placement releases an entry between
+// the check and the deletion.
+func (t *Tx) PurgeHeld(ctx context.Context, tenantID, source, keyID string) ([]Build, []KeptEntry, error) {
+	now := t.Now()
+	q, args := "SELECT "+buildCols+" FROM builds WHERE tenant_id = ? AND source = ? AND available_at > ?", []any{tenantID, source, t.s.d.timeArg(now)}
 	if keyID != "" {
 		q, args = q+" AND publisher_key_id = ?", append(args, keyID)
 	}
-	ids, err := t.strings(ctx, q+" ORDER BY created_at, id", args...)
+	rows, err := t.query(ctx, q+" ORDER BY created_at, id", args...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var out []Build
-	for _, id := range ids {
-		b, err := t.DeleteEntry(ctx, tenantID, id)
+	var held []Build
+	for rows.Next() {
+		b, err := scanBuild(rows)
+		if err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		held = append(held, b)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	var purged []Build
+	var kept []KeptEntry
+	for _, b := range held {
+		err := t.entryPlaced(ctx, b)
 		if errors.Is(err, ErrConflict) {
-			continue // released (placed early), or released once
+			k := KeptEntry{Build: b}
+			if err := t.queryRow(ctx, "SELECT COUNT(DISTINCT channel_id) FROM releases WHERE build_id = ?", b.ID).Scan(&k.Channels); err != nil {
+				return nil, nil, err
+			}
+			if !b.Revoked() {
+				if _, err := t.exec(ctx, "UPDATE builds SET revoked_at = ? WHERE id = ?", t.s.d.timeArg(now), b.ID); err != nil {
+					return nil, nil, err
+				}
+				k.RevokedAt = now
+			}
+			kept = append(kept, k)
+			continue
 		}
 		if err != nil {
-			return out, err
+			return nil, nil, err
 		}
-		out = append(out, b)
+		d, err := t.DeleteEntry(ctx, tenantID, b.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		purged = append(purged, d)
 	}
-	return out, nil
+	return purged, kept, nil
 }

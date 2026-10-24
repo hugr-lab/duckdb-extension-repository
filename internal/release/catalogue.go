@@ -20,6 +20,7 @@ type CatalogueEntry struct {
 	Versions     []string
 	Rules        map[string]string // channel → mode
 	Held         []string          // the versions with a held build (spec 0033 phase A2), newest first
+	Revoked      []string          // the versions with a revoked build (spec 0033 phase A2), newest first
 }
 
 // CatalogueBuild is a build of an entry: what it is, how it came, and where it is released.
@@ -64,6 +65,10 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 	if err != nil {
 		return nil, err
 	}
+	revoked, err := s.Store.RevokedVersions(ctx, t.ID, packageType)
+	if err != nil {
+		return nil, err
+	}
 	byKey := map[[2]string]*CatalogueEntry{}
 	var out []*CatalogueEntry
 	for k, vs := range vers {
@@ -72,9 +77,10 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 			continue
 		}
 		slices.SortFunc(vs, func(x, y string) int { return CompareVersions(y, x) })
-		hv := held[k]
+		hv, rv := held[k], revoked[k]
 		slices.SortFunc(hv, func(x, y string) int { return CompareVersions(y, x) })
-		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv}
+		slices.SortFunc(rv, func(x, y string) int { return CompareVersions(y, x) })
+		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, Revoked: rv}
 		byKey[k] = e
 		out = append(out, e)
 	}

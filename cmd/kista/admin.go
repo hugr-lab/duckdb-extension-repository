@@ -1535,7 +1535,7 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 		}
 		a.logf("publisher add %s %s", pos[0], pos[1])
 	case sub == "remove" && len(pos) == 2:
-		if err := a.svc.Auth.RemovePublisher(ctx, a.actor, pos[0], pos[1]); err != nil {
+		if _, err := a.svc.Auth.RemovePublisher(ctx, a.actor, pos[0], pos[1]); err != nil {
 			return err
 		}
 		a.logf("publisher remove %s %s", pos[0], pos[1])
@@ -1643,10 +1643,21 @@ func (a *adminCmd) publisherKey(ctx context.Context, sub string, args []string) 
 			}
 		})
 	case sub == "remove" && len(pos) == 3:
-		if err := a.svc.Auth.RemovePublisherKey(ctx, a.actor, pos[0], pos[1], pos[2], *purgeHeld); err != nil {
+		hp, err := a.svc.Auth.RemovePublisherKey(ctx, a.actor, pos[0], pos[1], pos[2], *purgeHeld)
+		if err != nil {
 			return err
 		}
 		a.logf("publisher key remove %s %s %s%s", pos[0], pos[1], pos[2], map[bool]string{true: " (held entries purged)"}[*purgeHeld])
+		if *purgeHeld { // spec 0033: what the purge did; the entries placed early are kept, revoked
+			fmt.Fprintf(a.out, "purged %d held entries\n", len(hp.Purged))
+			if len(hp.Kept) > 0 {
+				a.table("KEPT (REVOKED)\tNAME\tVERSION\tPLATFORM\tSLOT\tCHANNELS", func(w io.Writer) {
+					for _, k := range hp.Kept {
+						fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n", k.ID, k.Name, k.PackageVersion, k.Platform, k.Slot(), k.Channels)
+					}
+				})
+			}
+		}
 	default:
 		return errUsage
 	}
@@ -2926,15 +2937,15 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
-		a.table("SOURCE\tNAME\tVERSIONS\tRULES\tHELD", func(w io.Writer) {
+		a.table("SOURCE\tNAME\tVERSIONS\tRULES\tHELD\tREVOKED", func(w io.Writer) {
 			for _, e := range es {
 				var rules []string
 				for ch, mode := range e.Rules {
 					rules = append(rules, ch+"="+mode)
 				}
 				slices.Sort(rules)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.Source, e.Name, strings.Join(e.Versions, " "), dash(strings.Join(rules, " ")),
-					dash(strings.Join(e.Held, " ")))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Source, e.Name, strings.Join(e.Versions, " "), dash(strings.Join(rules, " ")),
+					dash(strings.Join(e.Held, " ")), dash(strings.Join(e.Revoked, " ")))
 			}
 		})
 	case sub == "show" && len(pos) == 3:
@@ -2943,19 +2954,22 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 			return err
 		}
 		now := a.svc.Store.Now()
-		a.table("VERSION\tPLATFORM\tSLOT\tBODY\tVISIBILITY\tORIGIN\tCREATED\tRELEASED IN\tHELD UNTIL", func(w io.Writer) {
+		a.table("VERSION\tPLATFORM\tSLOT\tBODY\tVISIBILITY\tORIGIN\tCREATED\tRELEASED IN\tHELD UNTIL\tREVOKED", func(w io.Writer) {
 			for _, v := range vs {
 				for _, b := range v.Builds {
 					var in []string
 					for _, p := range b.Placed {
 						in = append(in, p.Channel+"("+p.State+")")
 					}
-					held := "-"
+					held, revoked := "-", "-"
 					if b.Held(now) {
 						held = ts(b.AvailableAt)
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Version, b.Platform, b.Slot(), b.BodyHash[:12], b.Visibility,
-						b.Origin, ts(b.CreatedAt), dash(strings.Join(in, " ")), held)
+					if b.Revoked() {
+						revoked = ts(b.RevokedAt)
+					}
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Version, b.Platform, b.Slot(), b.BodyHash[:12], b.Visibility,
+						b.Origin, ts(b.CreatedAt), dash(strings.Join(in, " ")), held, revoked)
 				}
 			}
 		})

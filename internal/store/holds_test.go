@@ -11,8 +11,9 @@ import (
 )
 
 // Migration 0040 (spec 0033 phase A2) adds holds: on a populated database at level 39, every
-// upstream, publisher and channel has none, every build is available, and a rule has no hold to
-// wait for; the publisher's hold set afterwards holds what it publishes next.
+// upstream, publisher and channel has none, every build is available (none left to the pass for its
+// mirror's home channel), and a rule has no hold to wait for; the publisher's hold set afterwards
+// holds what it publishes next.
 func TestMigrationHolds(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Fresh(t, 1)[0]
@@ -34,6 +35,12 @@ func TestMigrationHolds(t *testing.T) {
 				id("b"), tid, "publisher:" + id("p"), strings.Repeat("1", 64), now, true},
 			{"INSERT INTO channel_sources (channel_id, name, source, mode, set_by, set_at) VALUES (?, 'acl', ?, 'auto', 'os:1:t', ?)",
 				cid, "publisher:" + id("p"), now},
+			// a mirror's build landed in its home channel's catalogue, under the rule its first arrival wrote
+			{"INSERT INTO builds (id, tenant_id, source, name, package_version, platform, abi, duckdb_version, slot, body_hash, origin, " +
+				"created_at, created_by, checked, landed) VALUES (?, ?, ?, 'json', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', 'v2.0.0', ?, 'upstream', ?, " +
+				"'os:1:t', ?, ?)", id("m"), tid, "upstream:" + id("u"), strings.Repeat("3", 64), now, true, true},
+			{"INSERT INTO channel_sources (channel_id, name, source, mode, set_by, set_at) VALUES (?, 'json', ?, '', 'os:1:t', ?)",
+				cid, "upstream:" + id("u"), now},
 		} {
 			if err := store.ExecRaw(ctx, s, q[0].(string), q[1:]...); err != nil {
 				t.Fatalf("%s: %v", q[0], err)
@@ -58,8 +65,10 @@ func TestMigrationHolds(t *testing.T) {
 			}
 			return nil
 		})
-		if rs, err := s.DueRules(ctx, false); err != nil || len(rs) != 1 {
-			t.Fatalf("the rule is due (never looked at): %+v %v", rs, err)
+		// the auto rule is due (never looked at); the mirror's rule without a mode is not the pass's:
+		// its build was available on arrival (available_at NULL), never left to the pass
+		if rs, err := s.DueRules(ctx, true); err != nil || len(rs) != 1 || rs[0].Name != "acl" {
+			t.Fatalf("the rules the pass looks at: %+v %v", rs, err)
 		}
 		inTx(t, s, func(tx *store.Tx) error { _, err := tx.SetPublisherHold(ctx, tid, "ci", time.Hour); return err })
 		b := store.Build{TenantID: tid, Source: "publisher:" + id("p"), Name: "acl", PackageVersion: "1.1", Platform: "linux_amd64",
@@ -160,12 +169,15 @@ func TestHolds(t *testing.T) {
 		if b := build(pub, "geo", "1.2", "f"); !b.AvailableAt.Equal(clock.Add(10 * time.Minute)) {
 			t.Fatalf("after lowering: %+v", b)
 		}
-		// a build taking no hold (a successor's copy of a released build)
+		// a copy (a successor's of a released build) keeps the original's arrival, availability and
+		// revoked marker, not its new source's hold
 		nh := cppBuild(tn, "geo", "1.3", "g")
-		nh.Source, nh.NoHold = pub, true
+		nh.Source, nh.Copied, nh.CreatedAt = pub, true, clock.Add(-time.Hour)
+		nh.AvailableAt, nh.RevokedAt = clock.Add(-30*time.Minute), clock.Add(-time.Minute)
 		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &nh) })
-		if nh.Held(clock) {
-			t.Fatal("a build without a hold held")
+		if b := read(nh.ID); b.Held(clock) || !b.CreatedAt.Equal(clock.Add(-time.Hour)) || !b.AvailableAt.Equal(clock.Add(-30*time.Minute)) ||
+			!b.RevokedAt.Equal(clock.Add(-time.Minute)) || !b.Revoked() {
+			t.Fatalf("a copy: %+v", b)
 		}
 		// a channel's hold: an automatic placement waits for the later of the two
 		inTx(t, s, func(tx *store.Tx) error {
@@ -203,7 +215,9 @@ func TestHolds(t *testing.T) {
 
 // Spec 0033 phase A2: the placement pass looks at a rule again when the hold it waits for ends;
 // a mirror's rule without a mode in its home channel is the pass's while the mirror has entries of
-// the name landed (held when they came), and no other rule without a mode is.
+// the name held at their arrival (landed or not: another channel may have released one), and no
+// other rule without a mode is; a look begun before a recheck does not record itself over it, and
+// a look that failed leaves the rule due.
 func TestDueRulesHolds(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Open(t)
@@ -234,12 +248,26 @@ func TestDueRulesHolds(t *testing.T) {
 		b.Source = src
 		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
 		if rs := due(); len(rs) != 0 {
-			t.Fatalf("rules without a mode, nothing landed: %+v", rs)
+			t.Fatalf("rules without a mode, nothing held at its arrival: %+v", rs)
 		}
 		inTx(t, s, func(tx *store.Tx) error { return tx.SetLanded(ctx, b.ID) })
+		if rs := due(); len(rs) != 0 {
+			t.Fatalf("rules without a mode, an entry landed but not held at its arrival: %+v", rs)
+		}
+		inTx(t, s, func(tx *store.Tx) error { return tx.HeldAtArrival(ctx, b.ID) })
+		// another channel releases it (no longer landed): the home rule stays the pass's
+		inTx(t, s, func(tx *store.Tx) error {
+			r := store.Release{TenantID: tn.ID, ChannelID: other.ID, BuildID: b.ID, Name: "geo", Source: src, PackageVersion: "1.0",
+				Platform: "linux_amd64", Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public, Origin: store.OriginPlacement}
+			return tx.InsertRelease(ctx, &r, "os:1:t")
+		})
 		rs := due()
 		if len(rs) != 1 || rs[0].ChannelID != ch.ID || rs[0].Mode != store.RuleNone {
-			t.Fatalf("the home rule with a landed entry: %+v", rs)
+			t.Fatalf("the home rule with an entry held at its arrival: %+v", rs)
+		}
+		if got, err := s.SourceBuilds(ctx, tn.ID, "duckdb_extension", src, "geo"); err != nil || len(got) != 1 || got[0].Landed ||
+			!got[0].AvailableAt.Equal(got[0].CreatedAt) || got[0].Held(clock) {
+			t.Fatalf("marked held at its arrival: %+v %v", got, err)
 		}
 		// looked at, waiting for a hold an hour away: not due until then
 		clock = clock.Add(time.Minute)
@@ -258,6 +286,33 @@ func TestDueRulesHolds(t *testing.T) {
 		}
 		if rs := due(); len(rs) != 0 {
 			t.Fatalf("due after the look that waits for nothing: %+v", rs)
+		}
+		// a look begun before the channel's rules were made to be looked at again records nothing
+		start := clock
+		clock = clock.Add(time.Second)
+		inTx(t, s, func(tx *store.Tx) error { return tx.RecheckRules(ctx, ch.ID) })
+		if err := s.SetRuleChecked(ctx, rs[0], start, start, "", time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		if rs := due(); len(rs) != 1 {
+			t.Fatalf("a recheck after a look began, overwritten by it: %+v", rs)
+		}
+		// a look that failed records its outcome and leaves the rule due
+		if err := s.SetRuleOutcome(ctx, rs[0], clock, "boom"); err != nil {
+			t.Fatal(err)
+		}
+		if rs := due(); len(rs) != 1 {
+			t.Fatalf("a failed look: %+v", rs)
+		}
+		if cs, err := s.ChannelSources(ctx, ch.ID); err != nil || cs["geo"].Outcome != "boom" {
+			t.Fatalf("a failed look's outcome: %+v %v", cs["geo"], err)
+		}
+		// a look begun after the recheck records itself
+		if err := s.SetRuleChecked(ctx, rs[0], clock, clock, "", time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		if rs := due(); len(rs) != 0 {
+			t.Fatalf("due after a look begun after the recheck: %+v", rs)
 		}
 	})
 }
@@ -293,30 +348,194 @@ func TestPurgeHeld(t *testing.T) {
 				Platform: "linux_amd64", Slot: released.Slot(), State: store.ReleaseActive, Visibility: store.Public, Origin: store.OriginPlacement}
 			return tx.InsertRelease(ctx, &r, "os:1:t")
 		})
-		purge := func(key string) []string {
+		purge := func(key string) ([]string, []store.KeptEntry) {
 			var ids []string
+			var kept []store.KeptEntry
 			inTx(t, s, func(tx *store.Tx) error {
-				bs, err := tx.PurgeHeld(ctx, tn.ID, src, key)
+				bs, ks, err := tx.PurgeHeld(ctx, tn.ID, src, key)
 				for _, b := range bs {
 					ids = append(ids, b.ID)
 				}
+				kept = ks
 				return err
 			})
-			return ids
+			return ids, kept
 		}
-		if ids := purge(k1); len(ids) != 1 || ids[0] != heldK1.ID {
-			t.Fatalf("the revoked key's held entries: %v", ids)
+		// the released one is kept, revoked, with the channels holding it
+		ids, kept := purge(k1)
+		if len(ids) != 1 || ids[0] != heldK1.ID || len(kept) != 1 || kept[0].ID != released.ID || kept[0].Channels != 1 ||
+			!kept[0].RevokedAt.Equal(clock) {
+			t.Fatalf("the revoked key's held entries: %v %+v", ids, kept)
 		}
-		if ids := purge(""); len(ids) != 1 || ids[0] != heldK2.ID {
-			t.Fatalf("the publisher's held entries: %v", ids)
+		clock = clock.Add(time.Minute)
+		if ids, kept := purge(""); len(ids) != 1 || ids[0] != heldK2.ID || len(kept) != 1 || !kept[0].RevokedAt.Equal(clock.Add(-time.Minute)) {
+			t.Fatalf("the publisher's held entries: %v %+v", ids, kept)
 		}
-		for _, b := range []store.Build{available, released} {
+		read := func(id string) (b store.Build) {
 			inTx(t, s, func(tx *store.Tx) error {
-				if _, err := tx.GetBuild(ctx, b.ID); err != nil {
-					t.Errorf("%s %s: %v", b.PackageVersion, b.ID, err)
+				var err error
+				b, err = tx.GetBuild(ctx, id)
+				if err != nil {
+					t.Errorf("%s: %v", id, err)
 				}
 				return nil
 			})
+			return b
 		}
+		if b := read(available.ID); b.Revoked() {
+			t.Fatalf("an available entry revoked: %+v", b)
+		}
+		if b := read(released.ID); !b.Revoked() {
+			t.Fatalf("the kept entry: %+v", b)
+		}
+		if rv, err := s.RevokedVersions(ctx, tn.ID, "duckdb_extension"); err != nil || len(rv[[2]string{src, "geo"}]) != 1 {
+			t.Fatalf("revoked versions: %v %v", rv, err)
+		}
+		// a release insert under the channel lock refuses the revoked entry
+		inTx(t, s, func(tx *store.Tx) error {
+			_, _, revoked, err := tx.BuildAvailability(ctx, released.ID)
+			if err == nil && revoked.IsZero() {
+				t.Error("the revoked marker not read")
+			}
+			return err
+		})
+	})
+}
+
+// Spec 0033 phase A2: an arrival from a removed source fails closed (a removed upstream or
+// publisher brings nothing), and a publication signed with a key removed meanwhile is refused.
+func TestSourceGone(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		tn, _ := fixture(t, s)
+		p := store.Publisher{TenantID: tn.ID, Name: "ci"}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &p) })
+		src := store.PublisherSource(p.ID)
+		gone := func(source string) {
+			t.Helper()
+			b := cppBuild(tn, "geo", "1.0", "a")
+			b.Source = source
+			if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) }); !errors.Is(err, store.ErrSourceGone) {
+				t.Fatalf("a build of %s: %v", source, err)
+			}
+			if _, err := s.SourceHold(ctx, source); !errors.Is(err, store.ErrSourceGone) {
+				t.Fatalf("the hold of %s: %v", source, err)
+			}
+		}
+		gone(store.PublisherSource("00000000-0000-0000-0000-000000000000"))
+		gone(store.UpstreamSource("00000000-0000-0000-0000-000000000000"))
+		live := func(keyID string) error {
+			return s.InTx(ctx, store.PublisherAuthLock(tn.ID), func(tx *store.Tx) error { return tx.PublicationLive(ctx, src, keyID) })
+		}
+		if err := live(""); err != nil {
+			t.Fatalf("a live publisher: %v", err)
+		}
+		if err := live("k1000000-0000-0000-0000-000000000000"); !errors.Is(err, store.ErrSourceGone) {
+			t.Fatalf("a removed key: %v", err)
+		}
+		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.PublicationLive(ctx, store.SourceTenant, "x") }); err != nil {
+			t.Fatalf("the tenant's own source: %v", err)
+		}
+		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tn.ID, "ci") })
+		if err := live(""); !errors.Is(err, store.ErrSourceGone) {
+			t.Fatalf("a removed publisher: %v", err)
+		}
+		gone(src)
+	})
+}
+
+// Spec 0033 phase A2: a successor's copy of a removed upstream's released build keeps the original's
+// arrival, hold and revoked marker.
+func TestSuccessorCopyHold(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		clock := time.Now().UTC().Truncate(time.Second)
+		s.Now = func() time.Time { return clock }
+		tn, ch := fixture(t, s)
+		mirror := func(name string) store.Upstream {
+			u := store.Upstream{TenantID: tn.ID, Name: name, Kind: store.UpstreamRepo, Prefix: "https://r.example", ChannelID: ch.ID,
+				Mode: store.ModeMirror, Visibility: store.Public, State: store.UpstreamActive, CreatedBy: "os:1:t", FetchMode: store.FetchEager}
+			inTx(t, s, func(tx *store.Tx) error { return tx.InsertUpstream(ctx, &u) })
+			return u
+		}
+		a := mirror("a")
+		inTx(t, s, func(tx *store.Tx) error { return tx.SetUpstreamHold(ctx, &a, time.Hour, 0) })
+		b := cppBuild(tn, "geo", "1.0", "a")
+		b.Source = store.UpstreamSource(a.ID)
+		inTx(t, s, func(tx *store.Tx) error {
+			if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
+				return err
+			}
+			r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: "geo", Source: b.Source, PackageVersion: "1.0",
+				Platform: "linux_amd64", Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public, Origin: store.OriginUpstream}
+			return tx.InsertRelease(ctx, &r, "os:1:t")
+		})
+		if err := store.ExecRaw(ctx, s, "UPDATE builds SET revoked_at = created_at WHERE id = ?", b.ID); err != nil {
+			t.Fatal(err)
+		}
+		inTx(t, s, func(tx *store.Tx) error { return tx.DeleteUpstream(ctx, a, 0) })
+		clock = clock.Add(10 * time.Minute)
+		succ := mirror("b")
+		inTx(t, s, func(tx *store.Tx) error {
+			n, err := tx.TakeReleases(ctx, ch.ID, "geo", b.Source, store.UpstreamSource(succ.ID))
+			if err == nil && n != 1 {
+				t.Errorf("moved %d", n)
+			}
+			return err
+		})
+		bs, err := s.SourceBuilds(ctx, tn.ID, "duckdb_extension", store.UpstreamSource(succ.ID), "geo")
+		if err != nil || len(bs) != 1 || !bs[0].CreatedAt.Equal(b.CreatedAt) || !bs[0].AvailableAt.Equal(b.CreatedAt.Add(time.Hour)) ||
+			!bs[0].RevokedAt.Equal(b.CreatedAt) {
+			t.Fatalf("the successor's copy: %+v %v (the original %+v)", bs, err, b)
+		}
+	})
+}
+
+// Spec 0033 phase A2: a build inserted while a hold is being raised is held the raised time: the
+// insert reads its source's hold with a lock the raise's update waits for, so the raise then finds
+// the build (on PostgreSQL the raise's read would miss the build otherwise).
+func TestHoldReadLocked(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		clock := time.Now().UTC().Truncate(time.Second)
+		s.Now = func() time.Time { return clock }
+		tn, ch := fixture(t, s)
+		u := store.Upstream{TenantID: tn.ID, Name: "a", Kind: store.UpstreamRepo, Prefix: "https://r.example", ChannelID: ch.ID,
+			Mode: store.ModeMirror, Visibility: store.Public, State: store.UpstreamActive, CreatedBy: "os:1:t", FetchMode: store.FetchEager}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertUpstream(ctx, &u) })
+		inTx(t, s, func(tx *store.Tx) error { return tx.SetUpstreamHold(ctx, &u, time.Hour, 0) })
+		b := cppBuild(tn, "geo", "1.0", "a")
+		b.Source = store.UpstreamSource(u.ID)
+		raised := make(chan error, 1)
+		inTx(t, s, func(tx *store.Tx) error {
+			if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
+				return err
+			}
+			go func() {
+				raised <- s.InTx(ctx, store.TenantUpstreamLock(tn.ID), func(tx *store.Tx) error {
+					cur, err := tx.GetUpstreamByID(ctx, u.ID)
+					if err != nil {
+						return err
+					}
+					if err := tx.SetUpstreamHold(ctx, &cur, 3*time.Hour, 0); err != nil {
+						return err
+					}
+					_, err = tx.RaiseHeld(ctx, tn.ID, b.Source, 3*time.Hour)
+					return err
+				})
+			}()
+			time.Sleep(300 * time.Millisecond) // the raise reaches its update meanwhile
+			return nil
+		})
+		if err := <-raised; err != nil {
+			t.Fatal(err)
+		}
+		inTx(t, s, func(tx *store.Tx) error {
+			got, err := tx.GetBuild(ctx, b.ID)
+			if err == nil && !got.AvailableAt.Equal(b.CreatedAt.Add(3*time.Hour)) {
+				t.Errorf("a build inserted during the raise: %+v", got)
+			}
+			return err
+		})
 	})
 }

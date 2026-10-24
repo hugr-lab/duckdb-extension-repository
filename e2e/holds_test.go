@@ -31,7 +31,7 @@ func TestHeldPublisher(t *testing.T) {
 	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "publisher:held-ci", []string{"publish"}, tenants.GrantOn{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adm.SetPublisherHold(ctx, serveAdmin, "acme", "held-ci", 2*time.Second); err != nil {
+	if _, err := adm.SetPublisherHold(ctx, serveAdmin, "acme", "held-ci", 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	const demo = "loadable_extension_demo"
@@ -47,16 +47,19 @@ func TestHeldPublisher(t *testing.T) {
 	}
 	placer := &release.Placer{Service: k.rel, Holder: "e2e", Log: slog.New(slog.DiscardHandler)}
 	pem := k.pem(t, k.activeKey(t))
-	placer.Once(ctx, false)
-	if res := newSession(t, b, nil).exec(createRepo("r", k.httpURL(), pem), "INSTALL "+demo+" FROM r"); res[1].OK {
-		t.Fatal("installed a held build")
-	}
 	placed := func(name string) bool {
 		rs, err := k.rel.List(ctx, serveAdmin, "acme", "prod", name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return len(rs) > 0
+	}
+	placer.Once(ctx, false)
+	if placed(demo) {
+		t.Fatal("the pass placed a held build before its hold ended")
+	}
+	if res := newSession(t, b, nil).exec(createRepo("r", k.httpURL(), pem), "INSTALL "+demo+" FROM r"); res[1].OK {
+		t.Fatal("installed a held build")
 	}
 	for deadline := time.Now().Add(15 * time.Second); !placed(demo); {
 		if time.Now().After(deadline) {

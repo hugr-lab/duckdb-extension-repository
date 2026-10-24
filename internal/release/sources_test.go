@@ -19,7 +19,7 @@ import (
 func TestSources(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
 		en.staging(t)
-		pub := authz.Actor{Kind: authz.ActorPublisher, ID: "acme/ci", Tenant: "acme", Principals: auth.Principals{auth.PublisherKey("p-ci"): true}}
+		pub, ci := ciPublisher(t, en)
 		pubs := *en.rel // a publisher's calls, allowed as its grants would
 		pubs.Authz = allowAll{}
 		v1 := built(t, cpp("1.0"), "tresor_duckdb_cpp_init")
@@ -42,7 +42,7 @@ func TestSources(t *testing.T) {
 		}
 		// a publisher's publication sets the name's source in staging
 		r1, _, err := pubs.Add(ctx, pub, "acme", "staging", bytes.NewReader(v1), publish("tresor", "1.0", "linux_amd64"))
-		if err != nil || r1.Source != "publisher:p-ci" {
+		if err != nil || r1.Source != ci {
 			t.Fatalf("publish: %+v %v", r1, err)
 		}
 		// the tenant's release of the name is refused, naming the source
@@ -53,16 +53,16 @@ func TestSources(t *testing.T) {
 		}
 		// a promotion keeps the source, and sets it in the target
 		rs, _, err := en.rel.Promote(ctx, admin, "acme", "prod", "tresor", release.PromoteOptions{From: "staging", Version: "1.0"})
-		if err != nil || len(rs) != 1 || rs[0].Source != "publisher:p-ci" {
+		if err != nil || len(rs) != 1 || rs[0].Source != ci {
 			t.Fatalf("promote: %+v %v", rs, err)
 		}
-		if sel, _ := en.st.ChannelSources(ctx, channel(t, en).ID); sel["tresor"].Source != "publisher:p-ci" {
+		if sel, _ := en.st.ChannelSources(ctx, channel(t, en).ID); sel["tresor"].Source != ci {
 			t.Fatalf("prod's source: %+v", sel)
 		}
 		// switched to the tenant: its release lands and is the one served; the publisher's stays
 		// stored, unserved
 		v, err := en.rel.SetSource(ctx, admin, "acme", "staging", "tresor", "tenant", "")
-		if err != nil || v.Source != "tenant" || v.Available["publisher:(removed)"] != 1 {
+		if err != nil || v.Source != "tenant" || v.Available["publisher:ci"] != 1 {
 			t.Fatalf("switch: %+v %v", v, err)
 		}
 		if got := served("staging"); len(got) != 0 {
@@ -97,7 +97,7 @@ func TestSources(t *testing.T) {
 			t.Fatal(err)
 		}
 		// the publisher's releases are served again, its 1.0 among them
-		if got := served("staging"); strings.Join(got, " ") != "1.0@publisher:p-ci 3.0@publisher:p-ci" {
+		if got := served("staging"); strings.Join(got, " ") != "1.0@"+ci+" 3.0@"+ci {
 			t.Fatalf("served after the arrival: %v", got)
 		}
 		// a source the channel may not take
@@ -110,7 +110,7 @@ func TestSources(t *testing.T) {
 			t.Errorf("a bad name: %v", err)
 		}
 		vs, err := en.rel.Sources(ctx, admin, "acme", "staging")
-		if err != nil || len(vs) != 1 || vs[0].Name != "tresor" || vs[0].Source != "publisher:(removed)" || vs[0].Available["publisher:(removed)"] != 2 ||
+		if err != nil || len(vs) != 1 || vs[0].Name != "tresor" || vs[0].Source != "publisher:ci" || vs[0].Available["publisher:ci"] != 2 ||
 			vs[0].Available["tenant"] != 2 {
 			t.Fatalf("sources: %+v %v", vs, err)
 		}
@@ -239,7 +239,7 @@ func TestSourcesPromotionAndClear(t *testing.T) {
 // (SQLite serialises its writers).
 func TestSourceArrivalRace(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
-		pub := authz.Actor{Kind: authz.ActorPublisher, ID: "acme/ci", Tenant: "acme", Principals: auth.Principals{auth.PublisherKey("p-ci"): true}}
+		pub, _ := ciPublisher(t, en)
 		pubs := *en.rel
 		pubs.Authz = allowAll{}
 		a := built(t, cpp("1.0"), "tresor_duckdb_cpp_init")
@@ -353,4 +353,20 @@ func TestSlotsPerSource(t *testing.T) {
 			t.Fatalf("the tenant's 1.0 again: %+v %v %v", r, existed, err)
 		}
 	})
+}
+
+// ciPublisher adds the tenant's publisher ci (an arrival from a publisher that does not exist is
+// refused, spec 0033 phase A2) and returns its actor and its source.
+func ciPublisher(t *testing.T, en *env) (authz.Actor, string) {
+	t.Helper()
+	tn, err := en.st.GetTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci := store.Publisher{TenantID: tn.ID, Name: "ci"}
+	must(t, func() error {
+		return en.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &ci) })
+	})
+	return authz.Actor{Kind: authz.ActorPublisher, ID: "acme/ci", Tenant: "acme", Principals: auth.Principals{auth.PublisherKey(ci.ID): true}},
+		store.PublisherSource(ci.ID)
 }

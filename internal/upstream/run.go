@@ -653,6 +653,7 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		return fail(store.CellConflict, err)
 	case errors.Is(err, store.ErrBusy), errors.Is(err, store.ErrBuildGone), errors.Is(err, store.ErrStreamBusy),
 		errors.Is(err, store.ErrClaimLost), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, store.ErrSourceGone),
 		errors.Is(err, store.ErrDeleting): // spec 0019: never the file's fault; recording the cell stops the run
 		return fail(store.CellFailed, err) // tried again by the next run: never the file's fault
 	case err != nil:

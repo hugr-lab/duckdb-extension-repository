@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -127,12 +128,28 @@ func TestHoldRoutes(t *testing.T) {
 	if r := m.call(t, "DELETE", T+"/publishers/ci/keys/"+key+"?purge_held=maybe", ta, ""); r.status != 400 {
 		t.Fatalf("purge_held=maybe: %d %s", r.status, r.body)
 	}
-	if r := m.call(t, "DELETE", T+"/publishers/ci/keys/"+key+"?purge_held=true", ta, ""); r.status != 204 {
+	// the answer lists what it purged, and the entry placed early it kept, revoked, with its channels
+	r = m.call(t, "DELETE", T+"/publishers/ci/keys/"+key+"?purge_held=true", ta, "")
+	var purge struct {
+		Purged []struct{ Build, Version string } `json:"purged"`
+		Kept   []struct {
+			Build, Version string
+			Channels       int
+		} `json:"kept"`
+	}
+	if r.status != 200 || json.Unmarshal(r.body, &purge) != nil || len(purge.Purged) != 1 || purge.Purged[0].Version != "1.1" ||
+		len(purge.Kept) != 1 || purge.Kept[0].Build != id || purge.Kept[0].Channels != 1 {
 		t.Fatalf("revoked: %d %s", r.status, r.body)
 	}
 	if r := m.call(t, "GET", T+"/catalogue/publisher:ci/extensions/newext", ta, ""); strings.Contains(string(r.body), `"1.1"`) ||
-		!strings.Contains(string(r.body), id) {
+		!strings.Contains(string(r.body), id) || !strings.Contains(string(r.body), `"revoked_at"`) {
 		t.Fatalf("after the purge: %s", r.body)
+	}
+	if r := m.call(t, "GET", T+"/catalogue?name=newext", ta, ""); !strings.Contains(string(r.body), `"revoked":["1.0"]`) {
+		t.Fatalf("the catalogue after the purge: %s", r.body)
+	}
+	if r := m.call(t, "GET", T+"/events?kind=publisher.key.remove", ta, ""); !strings.Contains(string(r.body), id) {
+		t.Fatalf("the key's removal event, with the entry kept: %s", r.body)
 	}
 	if r := m.call(t, "GET", T+"/events?kind=catalogue.purge", ta, ""); !strings.Contains(string(r.body), "publisher.key.remove") {
 		t.Fatalf("the purge's event: %s", r.body)

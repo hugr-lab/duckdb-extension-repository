@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -150,6 +153,154 @@ func TestPlaceEarly(t *testing.T) {
 		// early on an entry that is not held places it as without
 		if _, _, err := p.rel.Place(ctx, admin, "acme", "empty", "tresor", early); err == nil || errors.Is(err, release.ErrHeld) {
 			t.Fatalf("a channel without the DuckDB version: %v", err)
+		}
+	})
+}
+
+// hookReader runs once before its first read: a change made while an upload is in flight.
+type hookReader struct {
+	r    io.Reader
+	once func()
+}
+
+func (h *hookReader) Read(b []byte) (int, error) {
+	if f := h.once; f != nil {
+		h.once = nil
+		f()
+	}
+	return h.r.Read(b)
+}
+
+// key adds a key to ci and returns its id.
+func (p placing) key(t *testing.T, n int) string {
+	t.Helper()
+	k := store.PublisherKey{TenantID: p.ci.TenantID, PublisherID: p.ci.ID, Type: "ssh-ed25519", PublicKey: fmt.Sprintf("ssh-ed25519 AAAA%d", n),
+		Fingerprint: "SHA256:" + strings.Repeat(strconv.Itoa(n%10), 43)}
+	must(t, func() error {
+		return p.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertPublisherKey(ctx, &k) })
+	})
+	return k.ID
+}
+
+// revoke does what revoking ci's key with purge_held does in the store, under the locks the
+// tenant's administration takes (keyID "": removing ci), and returns the entries the purge kept.
+func (p placing) revoke(t *testing.T, keyID string) []store.KeptEntry {
+	t.Helper()
+	var kept []store.KeptEntry
+	must(t, func() error {
+		return p.st.InTxLocks(ctx, []string{store.PublisherAuthLock(p.ci.TenantID), store.TenantUpstreamLock(p.ci.TenantID)}, func(tx *store.Tx) error {
+			var err error
+			if keyID != "" {
+				if _, err := tx.DeletePublisherKey(ctx, p.ci.ID, keyID); err != nil {
+					return err
+				}
+			}
+			if _, kept, err = tx.PurgeHeld(ctx, p.ci.TenantID, store.PublisherSource(p.ci.ID), keyID); err != nil || keyID != "" {
+				return err
+			}
+			return tx.DeletePublisher(ctx, p.ci.TenantID, "ci")
+		})
+	})
+	return kept
+}
+
+// Spec 0033 phase A2: an upload in flight when its key is revoked with purge_held, or its publisher
+// removed, lands nothing and reaches no channel (the build's transaction checks both under the
+// lock the removal takes); a channel's route too.
+func TestHeldIntakeRevoked(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		clock := pastClock()
+		en.st.Now = func() time.Time { return clock }
+		p := newPlacing(t, en)
+		if _, err := p.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:ci", "auto"); err != nil {
+			t.Fatal(err)
+		}
+		entries := func() int {
+			bs, err := p.st.SourceBuilds(ctx, p.ci.TenantID, "duckdb_extension", store.PublisherSource(p.ci.ID), "tresor")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return len(bs)
+		}
+		// without a hold, on the channel's route: the key revoked while the upload is in flight
+		k1 := p.key(t, 1)
+		o := publish("tresor", "1.0", "linux_amd64")
+		o.Publish.KeyID = k1
+		hr := &hookReader{r: bytes.NewReader(built(t, cpp("1.0"), "tresor_duckdb_cpp_init")), once: func() { p.revoke(t, k1) }}
+		if _, _, err := p.pubs.Add(ctx, p.pub, "acme", "staging", hr, o); !errors.Is(err, store.ErrSourceGone) {
+			t.Fatalf("a channel's route, the key revoked in flight: %v", err)
+		}
+		// with a hold, into the catalogue: the key revoked with purge_held in flight
+		p.hold(t, 24*time.Hour)
+		k2 := p.key(t, 2)
+		o.Publish.KeyID = k2
+		hr = &hookReader{r: bytes.NewReader(built(t, cpp("1.0"), "tresor_duckdb_cpp_init")), once: func() { p.revoke(t, k2) }}
+		if _, _, err := p.pubs.AddToCatalogue(ctx, p.pub, "acme", hr, o); !errors.Is(err, store.ErrSourceGone) {
+			t.Fatalf("the catalogue, the key revoked in flight: %v", err)
+		}
+		if n := entries(); n != 0 {
+			t.Fatalf("entries after a revoked key's upload: %d", n)
+		}
+		// the publisher removed in flight
+		o.Publish.KeyID = p.key(t, 3)
+		hr = &hookReader{r: bytes.NewReader(built(t, cpp("1.0"), "tresor_duckdb_cpp_init")), once: func() { p.revoke(t, "") }}
+		if _, _, err := p.pubs.AddToCatalogue(ctx, p.pub, "acme", hr, o); !errors.Is(err, store.ErrSourceGone) {
+			t.Fatalf("the catalogue, the publisher removed in flight: %v", err)
+		}
+		clock = clock.Add(25 * time.Hour)
+		p.pass(t, true)
+		if n, got := entries(), p.prod(t); n != 0 || got != "" {
+			t.Fatalf("after the hold: %d entries, prod %q", n, got)
+		}
+	})
+}
+
+// Spec 0033 phase A2: an entry placed early survives its key's revocation with purge_held, revoked:
+// no rule takes it when its hold ends, nor does a promotion or a placement without early; a channel
+// administrator still places it early. The catalogue shows it.
+func TestRevokedEntry(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		clock := pastClock()
+		en.st.Now = func() time.Time { return clock }
+		p := newPlacing(t, en)
+		p.hold(t, time.Hour)
+		k := p.key(t, 1)
+		o := publish("tresor", "1.0", "linux_amd64")
+		o.Publish.KeyID = k
+		if _, _, err := p.pubs.AddToCatalogue(ctx, p.pub, "acme", bytes.NewReader(built(t, cpp("1.0"), "tresor_duckdb_cpp_init")), o); err != nil {
+			t.Fatal(err)
+		}
+		early := release.PlaceOptions{Source: "publisher:ci", Version: "1.0", Early: true}
+		if _, _, err := p.rel.Place(ctx, admin, "acme", "staging", "tresor", early); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:ci", "auto"); err != nil {
+			t.Fatal(err)
+		}
+		kept := p.revoke(t, k)
+		if len(kept) != 1 || kept[0].PackageVersion != "1.0" || kept[0].Channels != 1 || !kept[0].Revoked() {
+			t.Fatalf("kept: %+v", kept)
+		}
+		clock = clock.Add(2 * time.Hour)
+		p.pass(t, true)
+		if got := p.prod(t); got != "" {
+			t.Fatalf("a revoked entry placed by an auto rule after its hold: %q", got)
+		}
+		if _, _, err := p.rel.Promote(ctx, admin, "acme", "prod", "tresor", release.PromoteOptions{From: "staging", Version: "1.0"}); !errors.Is(err, release.ErrHeld) {
+			t.Fatalf("a revoked entry promoted: %v", err)
+		}
+		if _, _, err := p.rel.Place(ctx, admin, "acme", "prod", "tresor", release.PlaceOptions{Source: "publisher:ci", Version: "1.0"}); !errors.Is(err, release.ErrHeld) {
+			t.Fatalf("a revoked entry placed without early: %v", err)
+		}
+		es, err := p.rel.Catalogue(ctx, admin, "acme", "duckdb_extension", "publisher:ci", "tresor")
+		if err != nil || len(es) != 1 || strings.Join(es[0].Revoked, " ") != "1.0" {
+			t.Fatalf("the catalogue: %+v %v", es, err)
+		}
+		if _, _, err := p.rel.Place(ctx, admin, "acme", "prod", "tresor", early); err != nil {
+			t.Fatalf("a revoked entry placed early: %v", err)
+		}
+		if got := p.prod(t); got != "1.0@v2.0.0:active" {
+			t.Fatalf("prod: %q", got)
 		}
 	})
 }

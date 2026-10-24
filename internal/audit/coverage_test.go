@@ -416,7 +416,7 @@ func TestCoverage(t *testing.T) {
 		pubKey = k.ID
 		return err
 	}), "publisher.key.add")
-	en.expect("tenants.AuthAdmin.RemovePublisherKey", do(func() error { return en.adm.RemovePublisherKey(rctx, admin, "acme", "ci", pubKey, true) }), "publisher.key.remove")
+	en.expect("tenants.AuthAdmin.RemovePublisherKey", do(func() error { _, err := en.adm.RemovePublisherKey(rctx, admin, "acme", "ci", pubKey, true); return err }), "publisher.key.remove")
 	en.expect("tenants.AuthAdmin.SetPublisherHold", do(func() error {
 		_, err := en.adm.SetPublisherHold(rctx, admin, "acme", "ci", 24*time.Hour)
 		return err
@@ -425,7 +425,7 @@ func TestCoverage(t *testing.T) {
 		_, err := en.adm.SetPublisherLicenseKeys(rctx, admin, "acme", "ci", true)
 		return err
 	}), "publisher.change")
-	en.expect("tenants.AuthAdmin.RemovePublisher", do(func() error { return en.adm.RemovePublisher(rctx, admin, "acme", "ci") }), "publisher.remove")
+	en.expect("tenants.AuthAdmin.RemovePublisher", do(func() error { _, err := en.adm.RemovePublisher(rctx, admin, "acme", "ci"); return err }), "publisher.remove")
 	// releases
 	var relID string
 	en.expect("release.Service.Add", do(func() error {

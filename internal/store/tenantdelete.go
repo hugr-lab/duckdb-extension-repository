@@ -41,6 +41,12 @@ func (t *Tx) WritableTenant(ctx context.Context, id string, forUpdate bool) erro
 // lockedTenantQuery reads the tenants row matching where with a lock held until commit: shared, or
 // an update lock. SQLite needs none: every transaction is BEGIN IMMEDIATE, writers are serialised.
 func (t *Tx) lockedTenantQuery(selectFrom, where string, forUpdate bool) string {
+	return t.lockedRowQuery(selectFrom, where, forUpdate)
+}
+
+// lockedRowQuery reads the rows of one table matching where with a lock held until commit: shared,
+// or an update lock (lockedTenantQuery's, for any table).
+func (t *Tx) lockedRowQuery(selectFrom, where string, forUpdate bool) string {
 	switch t.s.d.Name {
 	case "postgres":
 		if forUpdate {

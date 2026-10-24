@@ -1,6 +1,7 @@
 package release
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -128,8 +129,12 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 		if !b.Checked {
 			return nil, false, fmt.Errorf("%w: %s %s %s was added unchecked; publish it to check it", ErrState, b.Name, b.PackageVersion, b.Platform)
 		}
-		if b.Held(now) { // spec 0033 phase A2: checked again under the channel lock
+		if b.Held(now) || b.Revoked() { // spec 0033 phase A2: checked again under the channel lock
 			if !o.Early {
+				if b.Revoked() {
+					return nil, false, fmt.Errorf("%w: %s %s %s was revoked (its publisher key or publisher was removed while it was held); "+
+						"a channel administrator places it early (early)", ErrHeld, b.Name, b.PackageVersion, b.Platform)
+				}
 				return nil, false, fmt.Errorf("%w: %s %s %s is held until %s; a channel administrator places it early (early)", ErrHeld,
 					b.Name, b.PackageVersion, b.Platform, b.AvailableAt.UTC().Format(time.RFC3339))
 			}
@@ -308,17 +313,73 @@ func (s served) complete(it *item) {
 // have or had; for both modes, a build of a version the channel holds (an active release of the
 // source) in a slot it lacks, not current where a newer version serves and private where the version
 // is. Never a build whose slot has or had the version (a yanked or purged one stays out), nor one
-// purged for good, nor one held (spec 0033 phase A2: its source's hold, or the channel's). Each
-// build is placed on its own, renewing the caller's lease first; it returns how many were placed and
-// the first failure's text ("" for none).
+// purged for good, nor one held (spec 0033 phase A2: its source's hold, or the channel's), nor one
+// revoked. Each build is placed on its own, renewing the caller's lease first; it returns how many
+// were placed and the first failure's text ("" for none).
 func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, error) {
 	n, failure, _, err := s.placeRule(ctx, r, renew)
 	return n, failure, err
 }
 
+// homeCheck is what a mirror's run checks of a build it releases into its home channel, made again
+// by the placement pass for the builds the run left to it (spec 0033 phase A2): the upstream active
+// and the channel still its home, the name in its allowlist (explicitly, or by "*": anyKind, checked
+// again under the insert's locks), the build's platform and version too; and the name reserved as
+// the run reserves it (spec 0030: DuckDB's repositories bring their names).
+type homeCheck struct {
+	entry                      store.UpstreamEntry
+	platforms                  []string
+	anyKind                    string
+	reserveKind, reserveSource string
+}
+
+// takes reports whether the run would take the build now.
+func (h homeCheck) takes(b store.Build) bool {
+	return slices.Contains(h.platforms, b.Platform) && (len(h.entry.Versions) == 0 || slices.Contains(h.entry.Versions, b.PackageVersion))
+}
+
+// homeOf reads a mirror's home rule's checks; ok is false when the run would take nothing now (the
+// upstream gone, paused, or homed elsewhere, or the name out of its allowlist).
+func (s *Service) homeOf(ctx context.Context, r store.DueRule, tenant string) (homeCheck, bool, error) {
+	var u store.Upstream
+	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		var err error
+		u, err = tx.GetUpstreamByID(ctx, strings.TrimPrefix(r.Source, store.SourceUpstreamPrefix))
+		return err
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		return homeCheck{}, false, nil
+	}
+	if err != nil || u.State != store.UpstreamActive || u.ChannelID != r.ChannelID {
+		return homeCheck{}, false, err
+	}
+	h := homeCheck{platforms: u.Platforms, reserveSource: "upstream:" + tenant + "/" + u.Name}
+	found := false
+	for _, e := range u.Entries {
+		if e.Name == r.Name {
+			h.entry, found = e, true
+			break
+		}
+	}
+	if !found {
+		if !slices.ContainsFunc(u.Entries, func(e store.UpstreamEntry) bool { return e.Name == "*" }) {
+			return homeCheck{}, false, nil
+		}
+		h.anyKind = u.Kind // "*" took it: checked again under the insert's locks, as the run's
+	}
+	switch u.Kind {
+	case store.UpstreamCore:
+		h.reserveKind = reserved.Core
+	case store.UpstreamCommunity:
+		h.reserveKind = reserved.Community
+	}
+	return h, true, nil
+}
+
 // placeRule is PlaceRule, with when the first hold it waits for ends (zero for none): the pass looks
 // at the rule again then. A mirror's rule without a mode in its home channel (store.DueRules) places,
-// as an auto rule, the entries its runs landed held, once they are available.
+// as an auto rule, the entries its runs left to the pass, held at their arrival (available_at set),
+// once they are available, with the run's checks (homeOf).
 func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, time.Time, error) {
 	how, home := r.Mode, r.Mode == store.RuleNone
 	if home {
@@ -353,6 +414,13 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 	if err != nil {
 		return 0, "", time.Time{}, err
 	}
+	var hc homeCheck
+	if home {
+		var ok bool
+		if hc, ok, err = s.homeOf(ctx, r, tn.Name); err != nil || !ok {
+			return 0, "", time.Time{}, err
+		}
+	}
 	capis, err := s.Store.ChannelCAPIs(ctx, r.ChannelID)
 	if err != nil {
 		return 0, "", time.Time{}, err
@@ -373,22 +441,6 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 	if err != nil {
 		return 0, "", time.Time{}, err
 	}
-	// a mirror's held version placed in its own channel brings its name as the run would have (spec
-	// 0030: DuckDB's repositories reserve their names)
-	var reserveKind, reserveSource string
-	if home {
-		kind, err := s.Store.UpstreamKindOf(ctx, r.Source)
-		if err != nil {
-			return 0, "", time.Time{}, err
-		}
-		switch kind {
-		case store.UpstreamCore:
-			reserveKind = reserved.Core
-		case store.UpstreamCommunity:
-			reserveKind = reserved.Community
-		}
-		reserveSource = "upstream:" + tn.Name + "/" + strings.TrimPrefix(label, store.SourceUpstreamPrefix)
-	}
 	sv := newServed(cands, capis)
 	var items []item
 	var due time.Time                   // when the first hold this look waits for ends
@@ -398,7 +450,12 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 		if !b.Checked || servable(capis, b) != nil || purged[b.ID] || sv.had[[3]string{b.PackageVersion, b.Platform, b.Slot()}] {
 			continue
 		}
-		if home && !b.Landed { // the mirror's runs released what was not held
+		if b.Revoked() { // spec 0033 phase A2: only a channel administrator places it (early)
+			continue
+		}
+		// a mirror's runs released what was not held at its arrival; the rest is the pass's, as the run
+		// would take it now
+		if home && (b.AvailableAt.IsZero() || !hc.takes(b)) {
 			continue
 		}
 		// spec 0033 phase A2: an entry held, or within the channel's hold, waits, and the pass looks
@@ -412,7 +469,7 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 		}
 		if sv.held[b.PackageVersion] {
 			it := s.placement(tn.Name, b, r.Source, placer, how, false)
-			it.auto, it.reserveKind, it.reserveSource = true, reserveKind, reserveSource
+			it.auto, it.reserveKind, it.reserveSource, it.anyKind = true, hc.reserveKind, hc.reserveSource, hc.anyKind
 			sv.complete(&it)
 			items = append(items, it)
 			continue
@@ -438,7 +495,7 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 		}
 		if !shadowed {
 			it := s.placement(tn.Name, b, r.Source, placer, how, false)
-			it.auto, it.reserveKind, it.reserveSource = true, reserveKind, reserveSource
+			it.auto, it.reserveKind, it.reserveSource, it.anyKind = true, hc.reserveKind, hc.reserveSource, hc.anyKind
 			items = append(items, it)
 		}
 	}
@@ -600,14 +657,17 @@ func (p *Placer) channel(ctx context.Context, channelID string, follows []store.
 		if errors.Is(err, errLeaseLost) {
 			return // another replica goes on
 		}
-		if err != nil {
-			p.Log.Error("release: placing a rule's builds", "channel", r.ChannelID, "name", r.Name, "error", err)
-			if failure == "" {
-				failure = err.Error()
-			}
-		}
 		if placed > 0 {
 			p.Log.Info("release: placed a rule's builds", "channel", r.ChannelID, "name", r.Name, "placed", placed)
+		}
+		if err != nil {
+			// the look did not finish: its outcome is the error, and when it looked and what it waits
+			// for stay as they were, so the next pass looks again
+			p.Log.Error("release: placing a rule's builds", "channel", r.ChannelID, "name", r.Name, "error", err)
+			if err := p.Service.Store.SetRuleOutcome(ctx, r, start, cmp.Or(failure, err.Error())); err != nil {
+				p.Log.Error("release: recording a rule's look", "channel", r.ChannelID, "name", r.Name, "error", err)
+			}
+			continue
 		}
 		if err := p.Service.Store.SetRuleChecked(ctx, r, start, start.Add(-placeSkew), failure, due); err != nil {
 			p.Log.Error("release: recording a rule's look", "channel", r.ChannelID, "name", r.Name, "error", err)

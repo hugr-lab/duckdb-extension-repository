@@ -852,12 +852,18 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 	return nil, false, errors.New("release: the channel's keys kept changing; try again")
 }
 
-// heldNow refuses an item's entry when it is held now, read under the channel lock (a hold raised
-// meanwhile counts); an automatic placement waits for the channel's hold too.
+// heldNow refuses an item's entry when it is held now, or revoked (spec 0033 phase A2: its key was
+// revoked with purge_held, or its publisher removed, while it was placed early), read under the
+// channel lock (a hold raised meanwhile counts); an automatic placement waits for the channel's hold
+// too.
 func heldNow(ctx context.Context, tx *store.Tx, c store.Channel, it item) error {
-	created, available, err := tx.BuildAvailability(ctx, it.b.ID)
+	created, available, revoked, err := tx.BuildAvailability(ctx, it.b.ID)
 	if err != nil {
 		return err
+	}
+	if !revoked.IsZero() {
+		return fmt.Errorf("%w: %s %s %s was revoked (its publisher key or publisher was removed while it was held); "+
+			"only a channel administrator places it (early)", ErrHeld, it.b.Name, it.b.PackageVersion, it.b.Platform)
 	}
 	var hold time.Duration
 	if it.auto {
@@ -1089,7 +1095,12 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 		for try := 0; ; try++ {
 			bb := it.b
 			bb.Visibility, bb.Provenance = it.visibility, it.provenance // spec 0033: as its arrival made its release
-			err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &bb) })
+			err := s.Store.InTx(ctx, buildLock(bb), func(tx *store.Tx) error {
+				if err := tx.PublicationLive(ctx, bb.Source, bb.PublisherKeyID); err != nil {
+					return err
+				}
+				return tx.FindOrInsertBuild(ctx, &bb)
+			})
 			if err == nil {
 				it.b = bb
 				break
@@ -1109,6 +1120,17 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 	}
 }
 
+// buildLock is the lock a build's transaction takes: a publisher's publication takes the tenant's
+// auth lock, which removing its key or the publisher takes too, so an upload in flight when they are
+// removed is refused (store.PublicationLive) instead of landing after the removal's purge of held
+// entries (spec 0033 phase A2); other arrivals take none.
+func buildLock(b store.Build) string {
+	if strings.HasPrefix(b.Source, store.SourcePublisherPrefix) {
+		return store.PublisherAuthLock(b.TenantID)
+	}
+	return ""
+}
+
 // land commits a spooled body and finds or inserts its Build, with the keys a trusted intake
 // carried, placing it nowhere (spec 0033: a catalogue entry), under the intake deadline. event, when
 // set, writes the arrival's event in the same transaction (inserted: the build is new). Two intakes
@@ -1122,7 +1144,10 @@ func (s *Service) land(ctx context.Context, sp *blob.Spool, it *item, event func
 	for try := 0; ; try++ {
 		bb := it.b
 		bb.Visibility, bb.Provenance = it.visibility, it.provenance
-		err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		err := s.Store.InTx(ctx, buildLock(bb), func(tx *store.Tx) error {
+			if err := tx.PublicationLive(ctx, bb.Source, bb.PublisherKeyID); err != nil {
+				return err
+			}
 			if err := tx.FindOrInsertBuild(ctx, &bb); err != nil {
 				return err
 			}

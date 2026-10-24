@@ -83,10 +83,10 @@ are all the kinds in `internal/audit`:
 | | `extension_group.remove` | `extension-group:<name>` | `name`, `description`, `members` |
 | | `extension_group.change` | `extension-group:<name>` | `description` |
 | | `extension_group.members` | `extension-group:<name>` | `added`, `removed` |
-| | `publisher.add`, `publisher.remove` | `publisher:<name>` | `name` |
+| | `publisher.add`, `publisher.remove` | `publisher:<name>` | `name`; removed, `purged` and `kept` (the held entries it purged, how many, and those it kept, revoked, each with its `channels`, spec 0033) |
 | | `publisher.change` | `publisher:<name>` | `name`, `license_keys` (marked or unmarked as a source of licence keys, spec 0021) |
 | | `publisher.key.add` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `expires_at` (a public SSH key, spec 0023) |
-| | `publisher.key.remove` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `purge_held` |
+| | `publisher.key.remove` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `purge_held`; with it, `purged` and `kept` (as `publisher.remove`) |
 | Licences | `license.import` | `license:<name>` | `name`, `license`, `issuer`, `holder`, `plan`, `expires_at`, `replaced` |
 | | `license.change` | `license:<name>` | `name`, `license`, `visibility` |
 | | `license.remove` | `license:<name>` | `name`, `license`, `reason` (`admin`, `revoked`, `expired`, `upstream removed`) |

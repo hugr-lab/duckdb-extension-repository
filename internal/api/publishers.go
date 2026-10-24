@@ -144,7 +144,7 @@ func publisherLicenseKeys(on bool) handler {
 
 func (h *Handler) removePublisher(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	if err := h.o.Auth.RemovePublisher(r.Context(), a, p["t"], p["name"]); err != nil {
+	if _, err := h.o.Auth.RemovePublisher(r.Context(), a, p["t"], p["name"]); err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
@@ -228,17 +228,43 @@ func (h *Handler) addPublisherKey(w http.ResponseWriter, r *http.Request, c call
 	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/publishers/"+esc(p["name"])+"/keys/"+esc(k.ID), publisherKeyOf(k, c), "-")
 }
 
-// removePublisherKey removes a publisher's key; it stops working at once. ?purge_held=true purges
-// the entries published with it that are still held (spec 0033 phase A2).
+// removePublisherKey removes a publisher's key; it stops working at once (204). ?purge_held=true
+// purges the entries published with it that are still held, and answers what it purged and the
+// entries it kept, revoked: placed early, with how many of the tenant's channels hold them (spec 0033
+// phase A2); a tenant administrator's.
 func (h *Handler) removePublisherKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	purge, ok := purgeHeldParam(w, r)
 	if !ok {
 		return
 	}
 	a, _ := c.actor()
-	if err := h.o.Auth.RemovePublisherKey(r.Context(), a, p["t"], p["name"], p["id"], purge); err != nil {
+	hp, err := h.o.Auth.RemovePublisherKey(r.Context(), a, p["t"], p["name"], p["id"], purge)
+	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
-	noContent(w)
+	if !purge {
+		noContent(w)
+		return
+	}
+	type entryJSON struct {
+		Build    string `json:"build"`
+		Name     string `json:"name"`
+		Version  string `json:"version"`
+		Platform string `json:"platform"`
+		Slot     string `json:"slot"`
+		Channels *int   `json:"channels,omitempty"` // a kept entry's: the tenant's channels holding a release of it
+	}
+	out := struct {
+		Purged []entryJSON `json:"purged"`
+		Kept   []entryJSON `json:"kept"`
+	}{Purged: []entryJSON{}, Kept: []entryJSON{}}
+	for _, b := range hp.Purged {
+		out.Purged = append(out.Purged, entryJSON{Build: b.ID, Name: b.Name, Version: b.PackageVersion, Platform: b.Platform, Slot: b.Slot()})
+	}
+	for _, k := range hp.Kept {
+		n := k.Channels
+		out.Kept = append(out.Kept, entryJSON{Build: k.ID, Name: k.Name, Version: k.PackageVersion, Platform: k.Platform, Slot: k.Slot(), Channels: &n})
+	}
+	reply(w, r, http.StatusOK, out, "", noStore)
 }

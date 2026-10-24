@@ -40,6 +40,10 @@ func (h *Handler) publishErr(w http.ResponseWriter, err error, bodyRef bool) {
 	case errors.Is(err, release.ErrOtherSource):
 		// spec 0031: the caller may publish or promote here, so it learns the name's source
 		problem(w, http.StatusConflict, typeSource, publicRefusal(err))
+	case errors.Is(err, store.ErrSourceGone):
+		// spec 0033 phase A2: the publisher, or the key that signed the request, was removed while the
+		// upload was in flight; it fails as a revoked key's request does
+		unauthorized(w)
 	case errors.Is(err, release.ErrHeld):
 		// spec 0033 phase A2: a held entry, or a publisher with a hold on a channel's route
 		problem(w, http.StatusConflict, typeHeld, publicRefusal(err))

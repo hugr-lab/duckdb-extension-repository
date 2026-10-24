@@ -310,8 +310,8 @@ See [Tenants and channels](tenants-and-channels.md) and
 
 | Command | What it does | Output |
 | --- | --- | --- |
-| `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode), `HELD` (the versions held) |
-| `catalogue show <tenant> <source> <name>` | an entry's builds | `VERSION`, `PLATFORM`, `SLOT`, `BODY`, `VISIBILITY`, `ORIGIN`, `CREATED`, `RELEASED IN`, `HELD UNTIL` |
+| `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode), `HELD` (the versions held), `REVOKED` (the versions a purge kept, revoked) |
+| `catalogue show <tenant> <source> <name>` | an entry's builds | `VERSION`, `PLATFORM`, `SLOT`, `BODY`, `VISIBILITY`, `ORIGIN`, `CREATED`, `RELEASED IN`, `HELD UNTIL`, `REVOKED` |
 | `catalogue add <tenant> <file\|-> -name <name> [-private]` | puts a build into the catalogue only, placed nowhere (source `tenant`; the file checks always run) | the build's id |
 | `catalogue list\|show\|add … -type <package type>` | the catalogue of a [package type](../concepts.md#packages-and-package-types) (`duckdb_extension` by default; this server reads DuckDB extensions only) | |
 | `catalogue purge <tenant> <build-id>` | deletes a build that was never released; its slot is free again | |
@@ -408,7 +408,7 @@ A principal is `subject:<issuer>|<value>`, `role:<issuer>|<value>`, `group:<issu
 | `publisher license-keys <tenant> <name> on or off` | marks it a source of licence keys (spec 0021), or unmarks it: a server administrator's act | |
 | `publisher key add <tenant> <name> <file.pub or -> [-expires <days>d or <RFC 3339 time>]` | registers a public SSH key (`ssh-ed25519` or `ecdsa-sha2-nistp256`) the publisher signs its requests with (spec 0023); an expiry within a year, or none | the key id |
 | `publisher key list <tenant> <name>` | `ID`, `FINGERPRINT`, `TYPE`, `TITLE`, `EXPIRES`, `LAST USED`, `CREATED`, `BY` | |
-| `publisher key remove <tenant> <name> <key id> [-purge-held]` | removes it: it stops at once; `-purge-held` purges the builds it published that are still held | |
+| `publisher key remove <tenant> <name> <key id> [-purge-held]` | removes it: it stops at once; `-purge-held` purges the builds it published that are still held, and prints how many and those it kept, revoked (placed early) | |
 
 See [Publishing](../publishing.md).
 

@@ -347,9 +347,14 @@ build it publishes is held until its arrival plus the hold.
   take a version sooner, recorded in `release.place` (`"early": true`). Anyone else is refused; a
   placement or a promotion of a held entry without it is `409` (`…/held`).
 - **Revoking a key.** Removing a publisher's key with `?purge_held=true` (`publisher key remove …
-  -purge-held`) purges the builds published with it that are still held and placed nowhere: a hold
-  is what lets a stolen key be revoked before its builds reach a channel. Removing the publisher
-  purges all of its held builds. A rotation without `purge_held` keeps them.
+  -purge-held`, a tenant administrator's) purges the builds published with it that are still held
+  and placed nowhere: a hold is what lets a stolen key be revoked before its builds reach a channel.
+  Removing the publisher purges all of its held builds. A held build a channel administrator placed
+  early is kept, revoked: it stays where it was placed, but no rule, follow or promotion takes it
+  again, only another placement with `early`; the answer (`200`), the command and the removal's event
+  list what was purged and what was kept, with how many channels hold it. An upload in flight when
+  its key or its publisher is removed is refused (`401`). A rotation without `purge_held` keeps
+  them (`204`).
 
 ## Changing a release
 
@@ -428,7 +433,7 @@ Over the API (tenant administrators):
 | `GET /publishers`, `POST /publishers {"name": …}` | list, add; a publisher's answer lists its keys |
 | `GET /publishers/{name}`, `DELETE /publishers/{name}` | read, remove |
 | `GET /publishers/{name}/keys`, `POST /publishers/{name}/keys {"public_key": …, "expires_at": …}` | list, register a key |
-| `GET /publishers/{name}/keys/{id}`, `DELETE /publishers/{name}/keys/{id}[?purge_held=true]` | read, remove one; `purge_held` purges what it published that is still held |
+| `GET /publishers/{name}/keys/{id}`, `DELETE /publishers/{name}/keys/{id}[?purge_held=true]` | read, remove one; `purge_held` purges what it published that is still held, and answers what it purged and kept (revoked) |
 | `PUT /publishers/{name}/hold {"hold": "24h"}` | its [hold](#holds-and-early-placement) (`0s` for none); answers the publisher, with `hold` |
 
 Removing a publisher removes its keys and grants; caches drop it at the next request.

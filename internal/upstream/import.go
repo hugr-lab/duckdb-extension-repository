@@ -730,7 +730,8 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 	case errors.Is(err, release.ErrConflict):
 		rec.Outcome, rec.Detail = store.CellConflict, err.Error()
 	case errors.Is(err, store.ErrBusy), errors.Is(err, store.ErrBuildGone), errors.Is(err, store.ErrStreamBusy),
-		errors.Is(err, store.ErrClaimLost), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		errors.Is(err, store.ErrClaimLost), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, store.ErrSourceGone):
 		rec.Outcome, rec.Detail = store.CellFailed, err.Error() // never the file's fault
 	case err != nil:
 		rec.Outcome, rec.Detail = store.CellRejected, err.Error()

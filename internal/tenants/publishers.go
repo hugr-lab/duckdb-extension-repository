@@ -40,34 +40,65 @@ func (s *AuthAdmin) ListPublishers(ctx context.Context, a authz.Actor, tenant st
 }
 
 // RemovePublisher removes a publisher, its keys and its grants, and purges the entries it published
-// that are still held (spec 0033 phase A2).
-func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, name string) error {
+// that are still held (spec 0033 phase A2); those placed early are kept, revoked. It returns what
+// the purge did.
+func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, name string) (HeldPurge, error) {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
-		return err
+		return HeldPurge{}, err
 	}
-	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
+	var hp HeldPurge
+	// the tenant's upstream lock orders the purge against every release into its signed channels
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.PublisherAuthLock(t.ID), store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
 		p, err := tx.GetPublisher(ctx, t.ID, name)
 		if err != nil {
 			return err
 		}
-		if err := purgeHeld(ctx, tx, a, t.ID, p, "", "publisher.remove"); err != nil {
+		if hp, err = purgeHeld(ctx, tx, a, t.ID, p, "", "publisher.remove"); err != nil {
 			return err
 		}
 		if err := tx.DeletePublisher(ctx, t.ID, name); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "publisher.remove", "publisher:"+name, map[string]any{"name": name})
+		return tx.Event(ctx, t.ID, a.String(), "publisher.remove", "publisher:"+name, hp.event(map[string]any{"name": name}))
 	})
+	return hp, err
+}
+
+// HeldPurge is what revoking a key with purge_held, or removing a publisher, did to the entries it
+// published that were held (spec 0033 phase A2): those purged, and those kept (placed early, or
+// released once), now revoked.
+type HeldPurge struct {
+	Purged []store.Build
+	Kept   []store.KeptEntry
+}
+
+// event adds the purge to its removal's event: how many entries it purged, and the entries it kept
+// with how many of the tenant's channels hold them.
+func (hp HeldPurge) event(f map[string]any) map[string]any {
+	f["purged"] = len(hp.Purged)
+	if len(hp.Kept) > 0 {
+		kept := make([]map[string]any, len(hp.Kept))
+		for i, k := range hp.Kept {
+			kept[i] = map[string]any{"build": k.ID, "name": k.Name, "version": k.PackageVersion, "platform": k.Platform, "slot": k.Slot(),
+				"channels": k.Channels}
+			if k.PackageType != pkgtype.Default { // spec 0034: an extension's events read as before
+				kept[i]["package_type"] = k.PackageType
+			}
+		}
+		f["kept"] = kept
+	}
+	return f
 }
 
 // purgeHeld purges a publisher's entries that are still held (of one of its keys when keyID is set),
 // each with a catalogue.purge event naming why (spec 0033 phase A2: a hold is what lets a stolen key
-// be revoked before its builds reach a channel).
-func purgeHeld(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID string, p store.Publisher, keyID, reason string) error {
-	bs, err := tx.PurgeHeld(ctx, tenantID, store.PublisherSource(p.ID), keyID)
+// be revoked before its builds reach a channel), and marks those it keeps revoked. The caller holds
+// the tenant's upstream lock (store.PurgeHeld).
+func purgeHeld(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID string, p store.Publisher, keyID, reason string) (HeldPurge, error) {
+	bs, kept, err := tx.PurgeHeld(ctx, tenantID, store.PublisherSource(p.ID), keyID)
 	if err != nil {
-		return err
+		return HeldPurge{}, err
 	}
 	for _, b := range bs {
 		f := map[string]any{"build": b.ID, "name": b.Name, "version": b.PackageVersion, "platform": b.Platform, "slot": b.Slot(),
@@ -79,10 +110,10 @@ func purgeHeld(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID string
 			f["package_type"] = b.PackageType
 		}
 		if err := tx.Event(ctx, tenantID, a.String(), "catalogue.purge", "ext:"+b.Name, f); err != nil {
-			return err
+			return HeldPurge{}, err
 		}
 	}
-	return nil
+	return HeldPurge{Purged: bs, Kept: kept}, nil
 }
 
 // SetPublisherHold sets a publisher's hold (spec 0033 phase A2), a tenant administrator's: an entry
@@ -268,14 +299,24 @@ func (s *AuthAdmin) TenantPublisherKeys(ctx context.Context, a authz.Actor, tena
 }
 
 // RemovePublisherKey removes a key: it stops working at once. With purge, the entries published
-// with it that are still held are purged (spec 0033 phase A2: purge_held; a revoked key's builds
-// reach no channel); a routine rotation, without it, keeps them.
-func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenant, publisher, id string, purge bool) error {
+// with it that are still held are purged, and those placed early kept, revoked (spec 0033 phase A2:
+// purge_held; a revoked key's builds reach no channel by themselves); a routine rotation, without
+// it, keeps them. purge is a tenant administrator's: a distribution admin asking for it is refused
+// (spec 0033 phase B designs a distributor's purges). It returns what the purge did.
+func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenant, publisher, id string, purge bool) (HeldPurge, error) {
+	if purge && distributor(a) {
+		return HeldPurge{}, authz.ErrDenied
+	}
 	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
-		return err
+		return HeldPurge{}, err
 	}
-	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
+	locks := []string{store.PublisherAuthLock(t.ID)}
+	if purge { // the tenant's upstream lock orders the purge against every release into its signed channels
+		locks = append(locks, store.TenantUpstreamLock(t.ID))
+	}
+	var hp HeldPurge
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, locks, func(tx *store.Tx) error {
 		p, err := tx.GetPublisher(ctx, t.ID, publisher)
 		if err != nil {
 			return err
@@ -287,16 +328,16 @@ func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenan
 		if err != nil {
 			return err
 		}
-		if err := tx.Event(ctx, t.ID, a.String(), "publisher.key.remove", "publisher:"+p.Name+"/key:"+id,
-			map[string]any{"publisher": p.Name, "key": id, "fingerprint": k.Fingerprint, "type": k.Type, "title": k.Title,
-				"purge_held": purge}); err != nil {
-			return err
+		f := map[string]any{"publisher": p.Name, "key": id, "fingerprint": k.Fingerprint, "type": k.Type, "title": k.Title, "purge_held": purge}
+		if purge {
+			if hp, err = purgeHeld(ctx, tx, a, t.ID, p, id, "publisher.key.remove"); err != nil {
+				return err
+			}
+			f = hp.event(f)
 		}
-		if !purge {
-			return nil
-		}
-		return purgeHeld(ctx, tx, a, t.ID, p, id, "publisher.key.remove")
+		return tx.Event(ctx, t.ID, a.String(), "publisher.key.remove", "publisher:"+p.Name+"/key:"+id, f)
 	})
+	return hp, err
 }
 
 func (s *AuthAdmin) publisher(ctx context.Context, a authz.Actor, tenant, name string) (store.Publisher, error) {
