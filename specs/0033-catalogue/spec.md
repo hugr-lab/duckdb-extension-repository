@@ -257,8 +257,9 @@ signed with a key. It is bound to:
   0021's records; held entries do not count). Another source declaring the same key for the name
   gets no licence through it, and an event (`license.key_conflict`) tells the tenant's
   administrators. Ownership changes only when the owner goes (spec 0021 drops a removed source's
-  keys; the next recorder owns it) or by a tenant administrator's act (`PUT …/license-keys/{name}/
-  {kid}/owner {"source": …}`). A licence's source is its key's owner for its name.
+  keys; the next recorder owns it; as built: the next source to record it afresh) or by a tenant
+  administrator's act (`PUT …/license-keys/{name}/{kid}/owner {"source": …}`). A licence's source is
+  its key's owner for its name.
 
 What changes:
 
@@ -922,22 +923,35 @@ channel, deferred.
   already says how a licence arrived, spec 0012's `import` or `upstream`, so the Data model's
   `source` is named apart) and its primary key becomes (tenant, type, name, source): PostgreSQL and
   SQL Server drop `pk_licenses` by the name migration 0039 gave it, SQLite rebuilds the table under
-  `-- +foreign_keys_off`; BIN2 for the new text columns on SQL Server.
+  `-- +foreign_keys_off`; BIN2 for the new text columns on SQL Server. An index on
+  `build_license_keys (tenant_id, kid)` makes the first recorder's read and the conflict's count
+  selective (`ix_build_license_keys_kid`).
 - **A key's owner** is the first source whose **own** entry of the name (the build's source is the
   recording source: a record on another source's build counts for nothing) recorded the key while
   the entry counted: from its recording, or from the end of its hold (or its first release, if it
   was placed early before), never for a revoked entry (a revoked key's bytes are not trusted again,
-  A2), nor once it was withdrawn before it counted; a removed source's records count for nothing,
-  and ties go to the smaller source string, so every replica computes the same owner. The owner is
-  **recorded** (claimed) by the first act that needs it, so it stays whatever happens to the records
-  afterwards (a purge, the collector, a withdrawal): the record of a key on an entry that counts
-  (`RecordLicenseKeys`, in the intake's transaction), a licence stored for it (import, relay,
-  bundle; a bundle's dry run claims nothing), or an administrator's act. Until then it is computed
-  when read (a held entry's record starts counting when the hold ends, without a write). A claim is
-  an insert-if-absent (`ON CONFLICT DO NOTHING`, SQL Server's `MERGE … WITH (HOLDLOCK)`), so two
-  intakes racing keep the one that committed first; each claim is a `license.key_owner` event
-  (`first: true`, actor `system:licenses`). A source recording a key another source owns is a
-  `license.key_conflict` event (source, owner), once per source and name.
+  A2) nor for a body blocked now (the tenant's distrust of the bytes, as a revocation; a lifted
+  block, whose row is gone, counts again), nor once it was withdrawn before it counted; a removed
+  source's records count for nothing, and ties go to the smaller source string, so every replica
+  computes the same owner. **A hold is not a copier's chance**: while another source's record made
+  no later than the first recorder's start is on an entry still held (counting later, not
+  withdrawn), the key has **no owner** (computed "", nothing claimed, so a copier recording inside
+  an upstream's hold gets no licence through the key); once the hold resolves the rule above
+  decides. The conservative reading of the review's finding, recorded: by that rule a copier whose
+  available record came before the held entry's hold ended is still the first to have counted when
+  the hold ends, so the window only keeps the key ownerless during the hold (the tenant's
+  administrators see no owner and can give the key, `license owner`); an earlier recorder winning
+  over a held one by its recording time would contradict the migration's case of a held entry placed
+  early after another source's record. The owner is **recorded** (claimed) by the first act that
+  needs it, so it stays whatever happens to the records afterwards (a purge, the collector, a
+  withdrawal): the record of a key on an entry that counts (`RecordLicenseKeys`, in the intake's
+  transaction), a licence stored for it (import, relay, bundle; a bundle's dry run claims nothing),
+  or an administrator's act. Until then it is computed when read (a held entry's record starts
+  counting when the hold ends, without a write). A claim is an insert-if-absent (`ON CONFLICT DO
+  NOTHING`, SQL Server's `MERGE … WITH (HOLDLOCK)`), so two intakes racing keep the one that
+  committed first; each claim is a `license.key_owner` event (`first: true`, actor
+  `system:licenses`). A source recording a key another source owns is a `license.key_conflict` event
+  (source, owner), once per source and name.
 - **Distributors and upstreams** (B part 1's question): a distributor's publisher's record does not
   count toward a key's ownership for a name a `repository` upstream of the tenant lists (by name, or
   `*`), live: the tenant's own upstream keeps the name's keys (the spec's Alternatives: a
@@ -945,38 +959,56 @@ channel, deferred.
   administrator gives a key to the distributor's publisher by the act below when that is what they
   want. A key already recorded as the distributor's stays its own when an upstream listing the name
   is added later (first recorder). For any other name the distributor's publisher is a recorder as
-  any marked publisher. DuckDB's core and community upstreams record no keys (spec 0021), so they are
-  not counted.
-- **Ownership changes** only when the owner goes (removing a publisher or an upstream drops its
-  keys, spec 0021, and now its recorded ownership: the next recorder owns the key, computed, then
-  claimed) or by a tenant administrator's act (`PUT …/license-keys/{name}/{kid}/owner {"source":
+  any marked publisher. DuckDB's core and community upstreams record no keys (spec 0021), so they
+  are not counted.
+- **Ownership changes** only when the owner goes or by a tenant administrator's act. Removing a
+  publisher or an upstream drops its keys (spec 0021) and leaves the keys it owned, recorded or as
+  the first recorder computed, **without an owner**: the owner row stays with source `''` (a removed
+  owner's), and only records made after its `set_at` count toward the next owner, so a key never
+  passes by itself to a source that recorded it while another owned it, or whose records did not
+  count then (a distributor's publisher's for a name the removed upstream listed: `listed` is read
+  live). The conservative choice over the spec's "the next recorder owns it": the key waits for a
+  source recording it afresh (a build arriving after the removal; a claim replaces the removed
+  owner's row), or for the act below. `DeleteLicenseKeysOf` runs before the source's row and entries
+  go (the first recorder reads them). The act (`PUT …/license-keys/{name}/{kid}/owner {"source":
   …}`, `kista admin license owner <t> <name> <kid> <source>`; tenant administrators and server
-  administrators, not licence managers: the spec names a tenant administrator's act). The source is a
-  live upstream or publisher of the tenant (`upstream:<name>`, `publisher:<name>`, or the id forms
+  administrators, not licence managers: the spec names a tenant administrator's act). The source is
+  a live upstream or publisher of the tenant (`upstream:<name>`, `publisher:<name>`, or the id forms
   below) that recorded the key on its own build of the name (`400` otherwise, the conservative
   reading: a source that never declared the key would serve nothing with it). The act moves the
-  licences of the name signed with the key from the owner before to the new one, and is refused
-  (`409`) while the new owner holds a licence of the name already (nothing removed silently, as
-  spec 0028's holder change); giving a key to its recorded owner changes nothing and writes no
-  event. Event `license.key_owner` with `before` and the `moved` licence ids. Unmarking a publisher
-  keeps its keys and its ownership (spec 0021's unmarking keeps the keys).
+  licences of the name signed with the key from the owner before to the new one (where it holds
+  none, a licence of source `unknown` signed with the key moves instead), and is refused (`409`)
+  while the new owner holds a licence of the name already (nothing removed silently, as spec 0028's
+  holder change); giving a key to its recorded owner changes nothing and writes no event. A relayed
+  licence (source `upstream`) moved to an upstream gets that upstream as its relayer (its
+  `upstream_id`), so its relay governs it; an imported one moved to an upstream stays `import`
+  (conservative: no relay ever deletes an administrator's import). Event `license.key_owner` with
+  `before` and the `moved` licence ids. Unmarking a publisher keeps its keys and its ownership (spec
+  0021's unmarking keeps the keys).
 - **Live keys** of a source (spec 0021's rule per source): those it recorded on its own live builds
   (an active or deprecated release in a signed channel that serves the build's source for the name,
   not blocked, not withdrawn), or on its newest available version of the name in the catalogue (not
   held, withdrawn nor revoked, not blocked; spec 0006's version order, moved to the store as
   `store.CompareVersions`), so a licence is taken before any placement. `GET …/license-keys` lists
-  those of every source, each key with its `owner` (omitted while no source's available entry
-  declares it).
+  those of every source, each key with its `owner` (omitted while it has none), the recorded owners
+  read in one query.
 - **Licences per (name, source).** A licence's source is its key's owner for its name: an import
   stores it for the owner (claimed), verified against the owner's live keys, and replaces the one of
-  that (name, source) only with `If-Match`, as before; the relay applies a licence only when its
-  upstream owns the key (`key_owner` refusal otherwise: neither another source's copy of its key nor
-  its copy of another's), verified against the keys it brought, and replaces by (name, that
-  upstream) with spec 0012's and 0021's rules; a bundle's licence goes to the first bundle-mode
-  upstream of its source that supplies the name and owns the key (else the first that supplies it,
-  refused for the key). `not_supplied` now reads the catalogue: a build of the name the upstream
-  brought since it was added (a successor's copies are not its own), not withdrawn, revoked nor
-  blocked, available or live. The expected holder (spec 0028) is checked on every path as before.
+  that (name, source) only with `If-Match`, as before; where the owner holds none, a licence of
+  source `unknown` signed with the same key is the one it replaces (`If-Match` on that one: an
+  existing client sending none gets `409` and reads the list, rather than two licences of the name
+  and `409` on every sourceless route after); the relay applies a licence only when its upstream
+  owns the key (`key_owner` refusal otherwise: neither another source's copy of its key nor its copy
+  of another's), verified against the keys it brought, and replaces by (name, that upstream) with
+  spec 0012's and 0021's rules (where the upstream holds none for the name, a licence of source
+  `unknown` it relayed itself with the same key is replaced, keeping its visibility; one it relays
+  again unchanged that another upstream relayed before becomes its own, `upstream_id`, an import
+  staying an import; a bundle's apply does the same); a bundle's licence goes to the first
+  bundle-mode upstream of its source that supplies the name and owns the key (else the first that
+  supplies it, refused for the key). `not_supplied` now reads the catalogue: a build of the name the
+  upstream brought since it was added (a successor's copies are not its own), not withdrawn, revoked
+  nor blocked, available or live. The expected holder (spec 0028) is checked on every path as
+  before.
 - **Served by the channel's source**: `-/licenses/<name>` reads the licence of the source the
   channel's snapshot selects for the name, and the list keeps only those; another source's licence,
   even when the channel's builds declare its key (a copy), is not served there. A bundle's export
@@ -992,45 +1024,59 @@ channel, deferred.
   CLI: `-source` on `license list|show|token|remove|public|private`, `OWNER` in `license list` and
   `license keys`, `license owner`. The import takes no source: its key decides. Events
   `license.import`, `license.change`, `license.remove` gain `source`.
-- **Licences of a removed source**: an upstream's removal and its relay's revocation take only the
-  licences it relayed that are still its own (or `unknown`); one an administrator moved with its key
-  is the other source's. A removed publisher's licences stay (served nowhere: its keys are gone), as
-  the conservative choice over deleting a licence, until removed or past their grace; importing it
-  again stores it for the key's next owner.
-- **Usage** is forwarded by a name's selected source: an upstream receives the counts of the
-  (name, version) pairs of channels whose rule for the name names it and that hold a release of the
-  version from it, of a build it brought since it was added (instead of the provenance query).
+- **Licences of a removed source**: an upstream's relay governs the relayed licences of its source
+  (source `upstream`, owner the upstream, whichever upstream relayed them: one migration 0042 gave
+  it, one an administrator moved to it) and those of source `unknown` it relayed itself; its
+  revocation and its removal (`license.remove` naming the `source` too) take only those. One an
+  administrator moved with its key is the other source's, and an import is an administrator's. A
+  removed publisher's licences stay (served nowhere: its keys are gone), as the conservative choice
+  over deleting a licence, until removed or past their grace; importing it again stores it for the
+  key's owner once it has one.
+- **Usage** is forwarded by a name's selected source: an upstream receives the counts of the (name,
+  version) pairs of channels whose rule for the name names it and that hold a release of the version
+  from it, of a build it brought since it was added (instead of the provenance query).
 - **Existing data** (the rule implemented, the spec's: "a key's owner for a name is the source that
   recorded it first; licences get their key's owner"): the migration claims, per (tenant, type,
-  name, kid), the first recorder among the records that counted then, read in SQL: the source's own
-  build, its source existing, not revoked, not withdrawn by the time of the record, available when
-  recorded (no hold, or a hold ended by then) or released, and not a distributor's publisher's for a
-  name a repository upstream lists; a record made while its entry was held is left to the first
-  claim after (the migration has no clock to compare a hold's end with in three dialects). Each
-  licence gets its key's owner for its name; one whose key no counting record has gets `unknown`
-  (kept, listed, removable, served nowhere until imported again). A licence relayed by an upstream
-  whose key another source recorded first is that source's (the spec's rule; giving it to the
-  upstream that relayed it would make a licence's source depend on how it arrived, which the
-  Alternatives rule out): the upstream's next relay is refused for the key, and the licence stays the
-  owner's.
+  name, kid), the first recorder as kista computes it, read in SQL by the database's clock
+  (PostgreSQL `now()`, SQL Server `SYSUTCDATETIME()`, SQLite `strftime` in the store's layout): the
+  source's own build, its source existing, not revoked, its body not blocked, and not a
+  distributor's publisher's for a name a repository upstream lists; a record counts from its
+  recording, the end of its hold or its first release if sooner (ordered by that, then by source),
+  and not when withdrawn before it; none is claimed for a key another source's earlier record is
+  still held for (the first claim after the hold decides). Each licence gets its key's owner for its
+  name; one whose key has none gets `unknown` (kept, listed, removable, served nowhere until
+  imported again). A licence relayed by an upstream whose key another source recorded first is that
+  source's (the spec's rule; giving it to the upstream that relayed it would make a licence's source
+  depend on how it arrived, which the Alternatives rule out): the upstream's next relay is refused
+  for the key, and the licence stays the owner's.
 - **The console** (C's) only addresses a licence by its source (`?source=`), keys its rows by name
-  and source, and shows the source (**Of**); the import replaces the name's licence only when it has
-  one.
+  and source, and shows the source (**Of**); the import reads the licence's key (the JWS header's
+  `kid`) and replaces the licence of the source that owns it (the keys' `owner`), or one of source
+  `unknown` signed with it; a licence is flagged not served unless its key is a live key of its own
+  source.
 - **Tests**: the store suite on three dialects (the migration on a populated level-41 database:
   first recorders, own builds only, a distributor's for a listed name, held and revoked records,
   relayed and imported licences, `unknown`; key owners: the claim and its event, a copied key's
   conflict told once, a held entry counted after its hold, the act and the licences moved, the
-  owner's removal; live keys of the newest available version); the licence service on one engine
+  owner's removal; live keys of the newest available version; the migration's held cases, a hold
+  ended before another source's record and a held entry placed early after it, agreeing with kista,
+  and a blocked body; a copier inside another source's hold getting no owner until the hold
+  resolves; the owner's removal leaving the key without one until a fresh record, a distributor's
+  earlier record on a listed name included); the licence service on one engine
   (`TestLicenseSources`: a mirror's relayed licence, a marked publisher's copy getting nothing and
   taking nothing, its own key's licence beside it, `?source=`, the act refused over a licence and
-  then moving one, the relay refused `key_owner` and not revoking what moved); the relay and bundle
+  then moving one, the relay refused `key_owner` and not revoking what moved; a licence relayed by
+  another upstream given back to its owner, kept unchanged and revoked by the owner's relay; a
+  licence of source `unknown` replaced by an import and moved by the act); the relay and bundle
   tests (the key's owner taking the bundle's licence); serving (another source's channel serves
-  nothing, its builds carrying the key or not); the API, the CLI and the events registry; usage
-  forwarding by the selected source; the e2e (`TestLicenseFromDistributor`: a distributor's
-  publisher's `kista_demo` in the catalogue, its licence imported before placement, `404` until
-  prod's auto rule places it, then served and valid in DuckDB at the pin; a tenant upstream bringing
-  `kista_demo` with the same key into nightly: the key stays the distributor's, nightly serves no
-  licence and DuckDB reads `missing` there, prod keeps its own).
+  nothing, its builds carrying the key or not); the API (the `409`s of several sources and of a
+  source holding a licence, `400` for a source that never declared the key, `?source=unknown` and
+  the id form), the CLI and the events registry; usage forwarding by the selected source; the e2e
+  (`TestLicenseFromDistributor`: a distributor's publisher's `kista_demo` in the catalogue, its
+  licence imported before placement, `404` until prod's auto rule places it, then served and valid
+  in DuckDB at the pin; a tenant upstream bringing `kista_demo` with the same key into nightly: the
+  key stays the distributor's, nightly serves no licence and DuckDB reads `missing` there, prod
+  keeps its own).
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into

@@ -81,18 +81,51 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, tenantID, buildID, k.Kid, k.PEM, kind, sourceID, 
 	return true, t.bumpBuildChannels(ctx, "SELECT DISTINCT channel_id FROM releases WHERE build_id = ? ORDER BY channel_id", buildID)
 }
 
-// DeleteLicenseKeysOf drops the keys a source brought, from every build, and the keys it owns (spec
-// 0033 phase B: the next recorder owns them), and bumps the release version of each channel holding
-// one of those builds.
+// DeleteLicenseKeysOf drops the keys a source brought, from every build, and bumps the release
+// version of each channel holding one of those builds. The keys it owns (recorded, or as the first
+// recorder computed) are left without an owner (spec 0033 phase B): only a record made after this
+// one makes a source their owner, or a tenant administrator's act. Its caller calls it before it
+// removes the source's row and entries, which the first recorder reads.
 func (t *Tx) DeleteLicenseKeysOf(ctx context.Context, kind, sourceID string) error {
+	src := keySource(kind, sourceID)
+	rows, err := t.query(ctx, `SELECT DISTINCT b.tenant_id, b.package_type, b.name, k.kid FROM build_license_keys k JOIN builds b ON b.id = k.build_id
+WHERE k.source_kind = ? AND k.source_id = ? AND b.source = ?`, kind, sourceID, src)
+	if err != nil {
+		return err
+	}
+	var keys [][4]string
+	for rows.Next() {
+		var k [4]string
+		if err := rows.Scan(&k[0], &k[1], &k[2], &k[3]); err != nil {
+			rows.Close()
+			return err
+		}
+		keys = append(keys, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		o, err := t.KeyOwnerOf(ctx, k[0], k[1], k[2], k[3])
+		if err != nil {
+			return err
+		}
+		if !o.Recorded && o.Source == src {
+			if _, err := t.putOwner(ctx, k[0], k[1], k[2], k[3], ownerRemoved, ActorLicenses, true); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := t.exec(ctx, "UPDATE license_key_owners SET source = ?, set_by = ?, set_at = ? WHERE source = ?",
+		ownerRemoved, ActorLicenses, t.s.d.timeArg(t.Now()), src); err != nil {
+		return err
+	}
 	if err := t.bumpBuildChannels(ctx, `SELECT DISTINCT r.channel_id FROM releases r
 WHERE r.build_id IN (SELECT build_id FROM build_license_keys WHERE source_kind = ? AND source_id = ?) ORDER BY r.channel_id`, kind, sourceID); err != nil {
 		return err
 	}
-	if _, err := t.exec(ctx, "DELETE FROM license_key_owners WHERE source = ?", keySource(kind, sourceID)); err != nil {
-		return err
-	}
-	_, err := t.exec(ctx, "DELETE FROM build_license_keys WHERE source_kind = ? AND source_id = ?", kind, sourceID)
+	_, err = t.exec(ctx, "DELETE FROM build_license_keys WHERE source_kind = ? AND source_id = ?", kind, sourceID)
 	return err
 }
 

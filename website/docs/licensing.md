@@ -76,15 +76,22 @@ issuer's key. In a tenant, each key of an extension has one **owner**, and a lic
 is that source's:
 
 - **The first recorder owns it**: the first source whose own build of the extension recorded the
-  key while the build counted (available, or placed; a held entry counts once its hold has ended, a
-  revoked one never). Ownership is recorded then (a `license.key_owner` event) and stays: another
-  source recording the same key later changes nothing (a `license.key_conflict` event, once per
-  source and extension), so a build carrying a copied key gets no licence and takes none away.
+  key while the build counted (available, or placed; a held entry counts once its hold has ended or
+  it is placed early, a revoked entry or a blocked body never, a withdrawn entry only if it counted
+  before). Ownership is recorded then (a `license.key_owner` event) and stays: another source
+  recording the same key later changes nothing (a `license.key_conflict` event, once per source and
+  extension), so a build carrying a copied key gets no licence and takes none away. While a
+  source's record of the key is on an entry still held, the key has no owner: a source recording it
+  meanwhile gets no licence through it. Once that hold resolves (it ends, or the entry is placed or
+  withdrawn), the first record to have counted owns the key.
 - **A distributor's publisher** does not become the owner of a key of an extension that a
   `repository` upstream of the tenant lists (by name, or `*`): the tenant's own upstream keeps the
   extension's keys, and an administrator gives one to the distributor when that is what they want.
-- **It changes only** when the owner goes (removing the publisher or the upstream drops its keys and
-  its ownership: the next recorder owns the key) or by a tenant administrator's act:
+- **It changes only** when the owner goes or by a tenant administrator's act. Removing the publisher
+  or the upstream drops its keys and its ownership, and the key then has **no owner** until a source
+  records it afresh (a build arriving after the removal) or an administrator gives it: a source that
+  recorded it while the other owned it, or whose records did not count then, does not take it by
+  itself. The act:
 
   ```bash
   kista admin license owner acme geo_tools sha256:… publisher:enterest-ci
@@ -92,12 +99,14 @@ is that source's:
 
   or `PUT /api/v1/tenants/{t}/license-keys/{name}/{kid}/owner` with `{"source": "publisher:enterest-ci"}`.
   The source must have recorded the key for the extension. The licences signed with the key move to
-  it (a `license.key_owner` event naming them), refused (`409`) while the source holds a licence of
-  that extension already: remove it first.
+  it (a `license.key_owner` event naming them): the owner's before, or, where it has none, one of
+  source `unknown` signed with the key; refused (`409`) while the source holds a licence of that
+  extension already: remove it first. A relayed licence moved to an upstream is that upstream's to
+  revoke from then on; an imported one stays imported.
 
 `kista admin license keys <tenant> [<name>]` and `GET /api/v1/tenants/{t}/license-keys[/{name}]`
 list each name's live keys, the sources that brought each, how many builds declare it, and its
-owner (`owner`, when any source's available build declares it).
+owner (`owner`, when it has one).
 
 ## On and off
 
@@ -141,8 +150,10 @@ kista admin license import acme tresor.lic -replace    # replaces the one stored
 Over the API the token is the body of `POST /api/v1/tenants/{t}/licenses`; replacing a stored
 licence needs `If-Match` with its ETag. The licence is stored for the source that owns its key for
 the extension, and must verify and be in force (valid, or in its grace) when it is imported, against
-that source's live keys. A key no source's available build declares takes no licence
-(`kid_untrusted`). The answer's `Location` names the source (`…/licenses/<name>?source=…`).
+that source's live keys. A key no source owns takes no licence (`kid_untrusted`). Where the source
+holds no licence for the extension, the import replaces one of source `unknown` signed with the
+same key (with `If-Match`, as any replacement). The answer's `Location` names the source
+(`…/licenses/<name>?source=…`).
 
 Besides the tenant's administrators, a **licence manager** (`auth.server_license_admins`, a
 server-wide role for a job such as a licence reconciler) may call the licence routes of every
@@ -168,12 +179,17 @@ that is not paused ([private upstreams](upstreams.md#private-upstreams)) is aske
 - a licence refused for its key stays stored if this upstream relayed it before: it is not served
   while no live build declares its key, and it ends with its grace.
 
-A licence the upstream stops listing is removed (revoked). A `404` from the upstream means it
-serves no licences and changes nothing, and so does a failure (the credential refused with `401`
-or `403`, a network error, an answer over 1,000 licences or 8 MiB). Removing the upstream removes its licences; clearing its
+An upstream's relay governs the relayed licences of its source, whichever upstream relayed them
+(one the upgrade to spec 0033 gave it, one an administrator moved to it), and those of source
+`unknown` it relayed itself: one it relays again unchanged becomes its own, one of source `unknown`
+signed with the same key is replaced by its licence, and one it stops listing is removed
+(revoked). A `404` from the upstream means it serves no licences and changes nothing, and so does a
+failure (the credential refused with `401` or `403`, a network error, an answer over 1,000
+licences or 8 MiB). Removing the upstream removes the licences its relay governs; clearing its
 credential stops the relay, and its licences stay until their grace ends. A licence an
-administrator moved to another source with its key is that source's: neither the relay nor the
-upstream's removal takes it. A licence past its grace is removed, whatever its source.
+administrator moved to another source with its key is that source's, and an import an
+administrator's: neither the relay nor the upstream's removal takes it. A licence past its grace
+is removed, whatever its source.
 
 **A bundle**, for an air-gapped site. The site's plan asks for licences
 (`kista admin bundle plan -licenses`, optionally with the holder it expects), the exporting kista
@@ -452,7 +468,7 @@ not stop a holder copying its own licence elsewhere.
 ## Events
 
 `tenant.holder` (the expected holder set or cleared), `license.import`, `license.change` (visibility), `license.remove` (with the reason: `admin`,
-`revoked`, `expired`, `upstream removed`; these three name the licence's `source`), `license.key_owner`
+`revoked`, `expired`, `upstream removed`; each names the licence's `source`), `license.key_owner`
 (a key's owner recorded, by its first recorder with `first: true` or by an administrator with the
 licences that `moved`), `license.key_conflict` (another source recording a key it does not own),
 `license.sync` (each relay run), `extension.use` (a

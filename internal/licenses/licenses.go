@@ -359,7 +359,8 @@ func (s *Service) owned(ctx context.Context, tx *store.Tx, tenantID, packageType
 		src := o.Source
 		if src == "" {
 			return "", fmt.Errorf("%w: %w", ErrRefused, &license.Error{Rule: license.RuleKeyUntrusted,
-				Msg: "key " + tok.Key + " is declared by no available build of " + tok.Extension})
+				Msg: "key " + tok.Key + " of " + tok.Extension + " has no owner here (no available build of it declares the key, " +
+					"another source's held one recorded it first, or its owner was removed)"})
 		}
 		if want != "" && src != want {
 			return "", fmt.Errorf("%w: %w", ErrRefused, &license.Error{Rule: RuleKeyOwner,
@@ -436,6 +437,16 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 			return holderRefused(err)
 		}
 		old, err := tx.GetLicense(ctx, t.ID, l.PackageType, l.Name, l.Owner)
+		// spec 0033 phase B: where the owner holds none, a licence of unknown source (migration 0042
+		// found no owner for its key) signed with the same key is the one this import replaces
+		unknown := false
+		if errors.Is(err, store.ErrNotFound) {
+			if u, uerr := tx.GetLicense(ctx, t.ID, l.PackageType, l.Name, store.LicenseUnknown); uerr == nil && u.Key == l.Key {
+				old, err, unknown = u, nil, true
+			} else if uerr != nil && !errors.Is(uerr, store.ErrNotFound) {
+				return uerr
+			}
+		}
 		replaced := ""
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -451,6 +462,12 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 			return store.ErrConflict
 		default:
 			l.Visibility, replaced = old.Visibility, old.LicenseID
+		}
+		if unknown {
+			if err := tx.DeleteLicense(ctx, old, 0); err != nil {
+				return err
+			}
+			old.Version = 0
 		}
 		if err := tx.PutLicense(ctx, &l, old.Version); err != nil {
 			return holderRefused(err)
@@ -687,14 +704,15 @@ func (s *Service) SetKeyOwner(ctx context.Context, a authz.Actor, tenant, packag
 			out.Before = lb.of(src)
 			return nil // as it is: nothing changes, no event
 		}
-		// the licences signed with the key move, and never onto a licence of the source
+		// the licences signed with the key move (the owner's before, or one of unknown source), and
+		// never onto a licence of the source
 		ls, err := tx.NameLicenses(ctx, t.ID, packageType, name)
 		if err != nil {
 			return err
 		}
 		moving, holds := false, false
 		for _, l := range ls {
-			moving = moving || cur.Source != "" && cur.Source != src && l.Owner == cur.Source && l.Key == kid
+			moving = moving || l.Key == kid && l.Owner != src && (l.Owner == cur.Source || l.Owner == store.LicenseUnknown)
 			holds = holds || l.Owner == src
 		}
 		if moving && holds {
@@ -711,15 +729,13 @@ func (s *Service) SetKeyOwner(ctx context.Context, a authz.Actor, tenant, packag
 		if before.Source != "" {
 			out.Before = lb.of(before.Source)
 			fields["before"] = out.Before
-			if before.Source != src {
-				moved, err := tx.MoveLicenses(ctx, t.ID, packageType, name, kid, before.Source, src)
-				if err != nil {
-					return err
-				}
-				for _, l := range moved {
-					out.Moved = append(out.Moved, l.LicenseID)
-				}
-			}
+		}
+		moved, err := tx.MoveLicenses(ctx, t.ID, packageType, name, kid, before.Source, src)
+		if err != nil {
+			return err
+		}
+		for _, l := range moved {
+			out.Moved = append(out.Moved, l.LicenseID)
 		}
 		fields["moved"] = out.Moved
 		return tx.Event(ctx, t.ID, a.String(), "license.key_owner", "license:"+name, typed(fields, packageType))

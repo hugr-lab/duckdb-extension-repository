@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -169,5 +170,72 @@ func TestLicenseSources(t *testing.T) {
 	en.answer(t)
 	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["removed"] != 0 || served(ps) != relayed {
 		t.Fatalf("an answer without it: %+v %v", res, err)
+	}
+
+	// a relayed licence another upstream relayed before (migration 0042 gave it its key's owner) is
+	// its owner's: moved back to the mirror, the mirror's relay keeps it unchanged and governs it,
+	// and its revocation takes it
+	relayedBy := func(id string) {
+		t.Helper()
+		if err := store.ExecRaw(ctx, en.st, "UPDATE licenses SET upstream_id = ? WHERE tenant_id = ? AND name = 'tresor'", id, tid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upstreamOf := func() string {
+		t.Helper()
+		v, err := svc.Get(ctx, admin, "acme", "", "tresor", ul)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v.Upstream
+	}
+	relayedBy(store.NewID())
+	if ko, err := svc.SetKeyOwner(ctx, admin, "acme", "", "tresor", kid, ul); err != nil || len(ko.Moved) != 1 || upstreamOf() != "acme-repo" {
+		t.Fatalf("the key given back: %+v %v", ko, err)
+	}
+	relayedBy(store.NewID())
+	en.answer(t, relayed)
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["unchanged"] != 1 || upstreamOf() != "acme-repo" {
+		t.Fatalf("relayed again unchanged: %+v %v", res, err)
+	}
+	relayedBy(store.NewID())
+	en.answer(t)
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["removed"] != 1 || served(us) != "" {
+		t.Fatalf("revoked by its owner's relay: %+v %v", res, err)
+	}
+
+	// a licence of unknown source signed with the key (migration 0042 found no owner for it): an
+	// import replaces it with If-Match, and the key given to another source moves it
+	unknown := func() {
+		t.Helper()
+		must(t, func() error {
+			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+				l := store.License{TenantID: tid, PackageType: ext, Name: "tresor", Owner: store.LicenseUnknown, LicenseID: "lic-unknown",
+					Issuer: "i", HolderID: "acme", Plan: "old", Token: "t", Key: kid, IssuedAt: now, ExpiresAt: now + day,
+					GraceUntil: now + 2*day, Source: store.LicenseImport, Visibility: store.Public, Actor: "os:1:t"}
+				return tx.PutLicense(ctx, &l, 0)
+			})
+		})
+	}
+	unknown()
+	if _, err := svc.Import(ctx, admin, "acme", "", relayed, licenses.Create); !errors.Is(err, licenses.ErrExists) {
+		t.Fatalf("an import over an unknown licence without If-Match: %v", err)
+	}
+	if v, err := svc.Import(ctx, admin, "acme", "", relayed, 0); err != nil || v.Owner != ul || v.Visibility != store.Public {
+		t.Fatalf("an import replacing an unknown licence: %+v %v", v, err)
+	}
+	if vs, err := svc.List(ctx, admin, "acme", "", ""); err != nil || len(vs) != 1 || vs[0].Owner != ul {
+		t.Fatalf("after the import: %+v %v", vs, err)
+	}
+	if err := svc.Remove(ctx, admin, "acme", "", "tresor", ul, 0); err != nil {
+		t.Fatal(err)
+	}
+	unknown()
+	if ko, err := svc.SetKeyOwner(ctx, admin, "acme", "", "tresor", kid, "publisher:copycat"); err != nil ||
+		!slices.Equal(ko.Moved, []string{"lic-unknown"}) {
+		t.Fatalf("an unknown licence moved with its key: %+v %v", ko, err)
+	}
+	if v, err := svc.Get(ctx, admin, "acme", "", "tresor", ""); err != nil || v.Owner != "publisher:copycat" {
+		t.Fatalf("after the move: %+v %v", v, err)
 	}
 }

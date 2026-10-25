@@ -398,9 +398,11 @@ key for the extension (`upstream:<name>`, `publisher:<name>`, a removed one's `u
 `publisher-id:<id>`, or `unknown`), and `source` how it arrived (`import` or `upstream`). The routes
 of one licence (`GET`, `DELETE`, `…/public`, `…/private`) take `?source=` (the owner as answered, or
 its id form): without it they act on the extension's only licence, and answer `409` naming the
-sources where it has several. An import stores the licence for its key's owner; a new one answers
-`201` with `Location` (`…/licenses/<name>?source=<owner>`); over a stored one of that source
-without `If-Match`, `409`. `GET …/upstreams/{name}/licenses`
+sources where it has several. A removed source is `upstream-id:<id>` or `publisher-id:<id>` in the
+licence routes, even where the catalogue routes still show it by name (a removed distributor's
+publisher). An import stores the licence for its key's owner; a new one answers
+`201` with `Location` (`…/licenses/<name>?source=<owner>`); over a stored one of that source (or,
+where it holds none, one of source `unknown` signed with the same key) without `If-Match`, `409`. `GET …/upstreams/{name}/licenses`
 answers the last relay run, `{"last_run_at", "result": {"counts", "refused", "error"}}`, and the sync
 request (`202`) answers the same; `409` for an upstream that relays nothing or is paused, and while
 licensing is off (an import too). An import or a relayed licence verifies against a live key of its
@@ -410,11 +412,12 @@ another source owns is refused with `key_owner`. In a tenant with
 an [expected holder](#the-expected-holder), an import of another holder's licence answers `400`
 with `holder_mismatch` in its detail, naming the expected and the given holder.
 `GET …/license-keys` answers `{"names": [{"name", "keys": [{"kid", "sources": [{"kind":
-"publisher"|"upstream", "name"}], "builds": n, "owner"}]}]}` (`owner` omitted while no source's
-available build declares the key). `PUT …/owner` answers `{"name", "kid", "owner", "before",
-"moved": [licence ids]}`: the source must have recorded the key for the extension (`400`
-otherwise), and the licences signed with it move from the owner before, `409` while the source holds
-a licence of that extension already. A licence is a package's (spec 0034): these
+"publisher"|"upstream", "name"}], "builds": n, "owner"}]}]}` (`owner` omitted while the key has
+none: no source's available build declares it, another source's record is held still, or its owner
+was removed and no source recorded it since). `PUT …/owner` answers `{"name", "kid", "owner",
+"before", "moved": [licence ids]}`: the source must have recorded the key for the extension (`400`
+otherwise), and the licences signed with it move from the owner before (or, where it has none, one
+of source `unknown`), `409` while the source holds a licence of that extension already. A licence is a package's (spec 0034): these
 routes take `?type=` (`duckdb_extension` by default), an import stores the licence under that type,
 and a channel serves only its own type's licences. See [Licensing](licensing.md).
 

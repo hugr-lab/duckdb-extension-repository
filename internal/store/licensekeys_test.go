@@ -179,7 +179,8 @@ func TestLicenseKeys(t *testing.T) {
 		}
 		inTx(t, s, func(tx *store.Tx) error {
 			o, err := tx.KeyOwnerOf(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor", k2.Kid)
-			if err == nil && (o.Source != us || o.Recorded) { // the next recorder: u1, on its own build
+			// none: u1 recorded it while p1 owned it, which never passes it by itself (spec 0033 phase B)
+			if err == nil && (o.Source != "" || o.Recorded) {
 				t.Errorf("k2's owner after p1's removal: %+v", o)
 			}
 			return err

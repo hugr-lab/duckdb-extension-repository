@@ -37,17 +37,20 @@ func nameLicense(ctx context.Context, s *store.Store, tenantID, packageType, nam
 }
 
 // Migration 0042 (spec 0033 phase B part 2), on a populated database at level 41: each key's owner
-// for a name is its first recorder among the records that counted (a source's own available or
-// released entry, not revoked; a distributor's publisher's not for a name a repository upstream
-// lists; a record on a held entry left to a claim), and each licence gets its key's owner (a relayed
-// one, an imported one), or unknown.
+// for a name is its first recorder among the records that counted, as kista computes it (a source's
+// own entry from its recording, the end of its hold or its first release; not revoked, not blocked;
+// a distributor's publisher's not for a name a repository upstream lists; none while another
+// source's earlier record is on an entry still held), and each licence gets its key's owner (a
+// relayed one, an imported one), or unknown.
 func TestMigrationLicenseOwners(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Fresh(t, 1)[0]
 		if err := store.MigrateTo(ctx, s, 41); err != nil {
 			t.Fatal(err)
 		}
-		at := func(h int) any { return store.TimeArg(s, time.Date(2026, 10, 24, h, 0, 0, 0, time.UTC)) }
+		// the migration reads the database's clock: these hours are past, the year 2100 is to come
+		at := func(h int) any { return store.TimeArg(s, time.Date(2026, 1, 10, h, 0, 0, 0, time.UTC)) }
+		future := store.TimeArg(s, time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC))
 		id := func(k string) string { return k + "0000000-0000-0000-0000-000000000000" }
 		kid := func(k string) string { return "sha256:" + strings.Repeat(k, 64) }
 		const tid = "t0000000-0000-0000-0000-000000000000"
@@ -95,11 +98,31 @@ func TestMigrationLicenseOwners(t *testing.T) {
 		// listed: a distributor's record does not count for a name the tenant's repository upstream lists
 		build("4", dist, "listed", "1.0", nil, nil)
 		record("4", "publisher", did, "3", 2)
-		// held: recorded while held and never released, then a revoked entry: neither counts
-		build("5", pub, "held", "1.0", at(20), nil)
+		// held: recorded while held, the hold still on: no owner, the mirror's later record neither;
+		// then a revoked entry and a blocked body: neither counts
+		build("5", pub, "held", "1.0", future, nil)
 		record("5", "publisher", pid, "4", 3)
+		build("7", up, "held", "1.0", nil, nil)
+		record("7", "upstream", uid, "4", 4)
 		build("6", pub, "revoked", "1.0", nil, at(3))
 		record("6", "publisher", pid, "5", 2)
+		build("8", pub, "blocked", "1.0", nil, nil)
+		record("8", "publisher", pid, "8", 2)
+		exec([]any{"INSERT INTO blocks (tenant_id, body_hash, reason, created_at, created_by) VALUES (?, ?, 'CVE', ?, 'os:1:t')",
+			tid, strings.Repeat("8", 64), at(3)})
+		// late: held until 5, recorded at 3, never placed: it counts from 5, before the mirror's at 6
+		build("9", pub, "late", "1.0", at(5), nil)
+		record("9", "publisher", pid, "6", 3)
+		build("a", up, "late", "1.0", nil, nil)
+		record("a", "upstream", uid, "6", 6)
+		// early: held until 20, recorded at 1, placed early at 8: it counts from 8, after the mirror's at 4
+		build("b", pub, "early", "1.0", at(20), nil)
+		record("b", "publisher", pid, "7", 1)
+		exec([]any{"INSERT INTO releases (id, tenant_id, channel_id, build_id, source, name, package_version, platform, slot, state, visibility, " +
+			"seq, created_at, created_by, state_changed_at, state_changed_by, version, origin) VALUES (?, ?, ?, ?, ?, 'early', '1.0', " +
+			"'linux_amd64', 'v2.0.0', 'active', 'public', 1, ?, 'os:1:t', ?, 'os:1:t', 1, 'publication')", id("r"), tid, cid, id("b"), pub, at(8), at(8)})
+		build("e", up, "early", "1.0", nil, nil)
+		record("e", "upstream", uid, "7", 4)
 		// licences: geo relayed by the mirror (its key's owner), acl imported (no record: unknown)
 		exec(
 			[]any{"INSERT INTO licenses (tenant_id, name, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, expires_at, " +
@@ -115,7 +138,7 @@ func TestMigrationLicenseOwners(t *testing.T) {
 		if err := s.Migrate(ctx); err != nil {
 			t.Fatal(err)
 		}
-		s.Now = func() time.Time { return time.Date(2026, 10, 24, 10, 0, 0, 0, time.UTC) }
+		s.Now = func() time.Time { return time.Date(2026, 1, 10, 22, 0, 0, 0, time.UTC) }
 		owner := func(name, k string) (string, bool) {
 			t.Helper()
 			var o store.KeyOwner
@@ -132,8 +155,11 @@ func TestMigrationLicenseOwners(t *testing.T) {
 			{"geo", "1", up, true},     // the mirror recorded first
 			{"geo", "2", pub, true},    // on its own builds only
 			{"listed", "3", "", false}, // a distributor's, for a name the mirror lists
-			{"held", "4", "", false},   // held then
+			{"held", "4", "", false},   // held still, recorded before the mirror's
 			{"revoked", "5", "", false},
+			{"blocked", "8", "", false},
+			{"late", "6", pub, true}, // its hold ended before the mirror recorded
+			{"early", "7", up, true}, // placed after the mirror recorded
 		} {
 			if got, rec := owner(c.name, c.k); got != c.want || rec != c.recorded {
 				t.Errorf("%s/%s: owner %q (recorded %v), want %q (%v)", c.name, c.k, got, rec, c.want, c.recorded)
@@ -151,9 +177,10 @@ func TestMigrationLicenseOwners(t *testing.T) {
 		if got["geo"] != up || got["geo2"] != store.LicenseUnknown || got["listed"] != store.LicenseUnknown {
 			t.Fatalf("the licences' sources: %v", got)
 		}
-		// a held entry counts once its hold ended: claimed by the first look after
-		s.Now = func() time.Time { return time.Date(2026, 10, 24, 21, 0, 0, 0, time.UTC) }
-		if got, rec := owner("held", "4"); got != pub || rec {
+		// once the hold ended, the first record to count is the mirror's: computed, claimed by the
+		// first act after
+		s.Now = func() time.Time { return time.Date(2100, 1, 2, 0, 0, 0, 0, time.UTC) }
+		if got, rec := owner("held", "4"); got != up || rec {
 			t.Fatalf("after the hold: %q %v", got, rec)
 		}
 	})
@@ -162,9 +189,10 @@ func TestMigrationLicenseOwners(t *testing.T) {
 // Spec 0033 phase B: a key's owner for a name is its first recorder, claimed when it records (a
 // license.key_owner event), kept whatever another source records later (a copied key: a
 // license.key_conflict event, once per source and name), not a distributor's publisher's for a name
-// a repository upstream of the tenant lists, nor a held entry's until its hold ends; an
-// administrator gives it to a source that declares it, the licences signed with it moving along; the
-// owner's removal leaves it to the next recorder.
+// a repository upstream of the tenant lists, nor a held entry's until its hold ends, nor a blocked
+// body's; while another source's earlier record is held, a copier gets none; an administrator gives
+// it to a source that declares it, the licences signed with it moving along; the owner's removal
+// leaves it without one until a source records it afresh.
 func TestKeyOwners(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Open(t)
@@ -285,10 +313,34 @@ func TestKeyOwners(t *testing.T) {
 		if o := owner("held", "4"); o.Source != "" {
 			t.Fatalf("a held entry's: %+v", o)
 		}
+		// a copier recording inside another source's hold gets nothing meanwhile; the hold resolved (the
+		// held entry withdrawn), its record counts
+		held := build(u, "copied", time.Hour)
+		record(held, "5")
+		record(build(q, "copied", 0), "5")
+		if o := owner("copied", "5"); o.Source != "" || o.Recorded {
+			t.Fatalf("a copier inside a hold: %+v", o)
+		}
+		if err := store.ExecRaw(ctx, s, "UPDATE builds SET withdrawn_at = ? WHERE id = ?", store.TimeArg(s, clock), held.ID); err != nil {
+			t.Fatal(err)
+		}
+		if o := owner("copied", "5"); o.Source != q || o.Recorded {
+			t.Fatalf("the hold withdrawn: %+v", o)
+		}
 		clock = clock.Add(2 * time.Hour)
 		record(build(q, "held", 0), "4") // later than the end of p's hold: p's
 		if o := owner("held", "4"); o.Source != p || !o.Recorded {
 			t.Fatalf("after the hold: %+v", o)
+		}
+		// a blocked body's record counts for nothing
+		blocked := build(p, "blocked", 0)
+		if err := store.ExecRaw(ctx, s, "INSERT INTO blocks (tenant_id, body_hash, reason, created_at, created_by) VALUES (?, ?, 'CVE', ?, 'os:1:t')",
+			tn.ID, blocked.BodyHash, store.TimeArg(s, clock)); err != nil {
+			t.Fatal(err)
+		}
+		record(blocked, "6")
+		if o := owner("blocked", "6"); o.Source != "" {
+			t.Fatalf("a blocked body's: %+v", o)
 		}
 
 		// an administrator's act: to a source that declares the key; the licences signed with it move
@@ -319,22 +371,34 @@ func TestKeyOwners(t *testing.T) {
 			t.Fatalf("the licence moved: %+v %v", l, err)
 		}
 
-		// the owner's removal: its keys and its ownership go, the next recorder owns the key
+		// the owner's removal: its keys and its ownership go; the key has no owner until a source
+		// records it afresh, p's records made while q owned it counting for nothing
 		kind, qid, _ := strings.Cut(q, ":")
 		inTx(t, s, func(tx *store.Tx) error { return tx.DeleteLicenseKeysOf(ctx, kind, qid) })
-		if o := owner("geo", "1"); o.Source != p || o.Recorded {
+		clock = clock.Add(time.Second)
+		if o := owner("geo", "1"); o.Source != "" || o.Recorded {
 			t.Fatalf("after the owner's removal: %+v", o)
 		}
 		inTx(t, s, func(tx *store.Tx) error {
 			o, claimed, err := tx.ClaimKeyOwner(ctx, tn.ID, pkgtype.DuckDBExtension, "geo", key("1").Kid)
-			if err == nil && (!claimed || o.Source != p) {
-				t.Errorf("the claim: %+v %v", o, claimed)
-			}
-			if o, claimed, err = tx.ClaimKeyOwner(ctx, tn.ID, pkgtype.DuckDBExtension, "geo", key("1").Kid); err == nil && (claimed || o.Source != p) {
-				t.Errorf("claimed again: %+v %v", o, claimed)
+			if err == nil && (claimed || o.Source != "") {
+				t.Errorf("a claim after the removal: %+v %v", o, claimed)
 			}
 			return err
 		})
+		record(build(p, "geo", 0), "1")
+		if o := owner("geo", "1"); o.Source != p || !o.Recorded {
+			t.Fatalf("recorded afresh: %+v", o)
+		}
+		// nor does a distributor's record, which did not count while an upstream listed the name,
+		// take the key when the upstream goes
+		if err := store.ExecRaw(ctx, s, "DELETE FROM upstream_entries WHERE upstream_id = ?", uid); err != nil {
+			t.Fatal(err)
+		}
+		inTx(t, s, func(tx *store.Tx) error { return tx.DeleteLicenseKeysOf(ctx, store.KeySourceUpstream, uid) })
+		if o := owner("listed", "2"); o.Source != "" {
+			t.Fatalf("the distributor's after the upstream's removal: %+v", o)
+		}
 		if es := events("license.key_owner"); !slices.ContainsFunc(es, func(e string) bool { return strings.Contains(e, `"kid":"`+key("4").Kid) }) {
 			t.Fatalf("a claim after a hold is an event too: %v", es)
 		}

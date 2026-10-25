@@ -106,15 +106,15 @@ VALUES (?, ?, ?, ?, ?, ?)`, tenantID, p.ID, p.Name, p.Distributor, t.s.d.timeArg
 			return err
 		}
 	}
+	if err := t.DeleteLicenseKeysOf(ctx, KeySourcePublisher, p.ID); err != nil {
+		return err
+	}
 	for _, q := range []string{"DELETE FROM grants WHERE publisher_id = ?",
 		"DELETE FROM package_group_grants WHERE publisher_id = ?", "DELETE FROM publisher_keys WHERE publisher_id = ?",
 		"DELETE FROM publishers WHERE id = ?"} {
 		if _, err := t.exec(ctx, q, p.ID); err != nil {
 			return err
 		}
-	}
-	if err := t.DeleteLicenseKeysOf(ctx, KeySourcePublisher, p.ID); err != nil {
-		return err
 	}
 	if err := t.dropFollows(ctx, PublisherSource(p.ID)); err != nil { // spec 0033: nothing follows a gone source
 		return err

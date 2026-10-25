@@ -324,7 +324,7 @@ func TestLicenseImport(t *testing.T) {
 			}
 			// spec 0021: a name with no live build declaring a key takes no licence
 			if _, err := svc.Import(ctx, admin, "acme", "", ok, licenses.Create); !errors.Is(err, license.ErrUntrustedKey) ||
-				!strings.Contains(err.Error(), "is declared by no available build of tresor") {
+				!strings.Contains(err.Error(), "of tresor has no owner here") {
 				t.Fatalf("no keys: %v", err)
 			}
 			if _, _, err := en.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(signedWith(t, nil, cpp("1.0", "v2.0.0"), lic.block,

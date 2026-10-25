@@ -50,9 +50,21 @@ export function sourcesLine(sources: NameKeys['keys'][number]['sources']) {
   return sources.map((s) => `${s.kind} ${s.name}`).join(' · ')
 }
 
-/** Whether a live build of name declares kid: a licence signed with another key is not served. */
-export function declared(keys: NameKeys[], name: string, kid: string) {
-  return keys.some((n) => n.name === name && n.keys.some((k) => k.kid === kid))
+/** Whether a licence's key is a live key of its source, the key's owner (spec 0033 phase B): a
+ * licence signed with another key, of another source than the key's owner, of a removed source or
+ * of none (unknown) is served nowhere. */
+export function declared(keys: NameKeys[], l: Pick<License, 'name' | 'key' | 'owner'>) {
+  return keys.some((n) => n.name === l.name && n.keys.some((k) => k.kid === l.key && k.owner === l.owner))
+}
+
+/** The stored licence an import of a licence file replaces (spec 0033 phase B): the one of the
+ * source that owns its key for the name, or where that source holds none, one of unknown source
+ * signed with the same key. undefined: the import stores a new one. */
+export function replaced(licenses: License[], keys: NameKeys[] | undefined, ext: string, kid?: string): License | undefined {
+  const owner = kid ? keys?.find((n) => n.name === ext)?.keys.find((k) => k.kid === kid)?.owner : undefined
+  if (!owner) return undefined
+  const named = licenses.filter((l) => l.name === ext)
+  return named.find((l) => l.owner === owner) ?? named.find((l) => l.owner === 'unknown' && l.key === kid)
 }
 
 interface SyncResult {
@@ -76,17 +88,26 @@ export function expiry(l: Pick<License, 'status' | 'expires_at' | 'grace_until'>
   return n <= 30 ? `expires in ${Math.max(0, n)} ${n === 1 ? 'day' : 'days'}` : ''
 }
 
-/** A licence file's claims, read without verifying (the server verifies): only to name what an
- * import stores. null when it is no licence. */
-export function peek(token: string): { ext: string; plan?: string; holder?: string; exp?: number } | null {
+/** A licence file's claims and its header's kid, read without verifying (the server verifies):
+ * only to name what an import stores and replaces. null when it is no licence. */
+export function peek(token: string): { ext: string; kid?: string; plan?: string; holder?: string; exp?: number } | null {
   const parts = token.trim().split('.')
   if (parts.length !== 3) return null
+  const json = (part: string) => {
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/')
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0))))
+  }
   try {
-    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
-    const json = new TextDecoder().decode(Uint8Array.from(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0)))
-    const p = JSON.parse(json)
+    const p = json(parts[1])
     if (typeof p?.ext !== 'string' || p.ext === '') return null
-    return { ext: p.ext, plan: typeof p.plan === 'string' ? p.plan : undefined, holder: typeof p.holder === 'string' ? p.holder : undefined,
+    let kid: string | undefined
+    try {
+      const h = json(parts[0])
+      kid = typeof h?.kid === 'string' ? h.kid : undefined
+    } catch {
+      kid = undefined
+    }
+    return { ext: p.ext, kid, plan: typeof p.plan === 'string' ? p.plan : undefined, holder: typeof p.holder === 'string' ? p.holder : undefined,
       exp: typeof p.exp === 'number' ? p.exp : undefined }
   } catch {
     return null
@@ -133,7 +154,7 @@ export function Licenses() {
               )],
               ['Status', (l) => (
                 <span className="flex flex-wrap items-center gap-2"><Badge>{l.status}</Badge>
-                  {nks && !declared(nks, l.name, l.key) && <span className="text-[13px] text-warning">not served: no live build in any channel declares its key</span>}</span>
+                  {nks && !declared(nks, l) && <span className="text-[13px] text-warning">not served: its key is no live key of its source</span>}</span>
               )],
               ['Of', (l) => <Mono>{l.owner}</Mono>],
             ]}
@@ -141,7 +162,7 @@ export function Licenses() {
         )}
       </Card>
       {selected && <LicenseView key={licenseKey(selected)} l={selected} onChanged={() => { list.reload() }} onRemoved={() => { setOpen(''); list.reload() }} />}
-      <Import licenses={ls} onImported={(key) => { setOpen(key); list.reload() }} onStale={list.reload} />
+      <Import licenses={ls} keys={nks} onImported={(key) => { setOpen(key); list.reload(); keys.reload() }} onStale={() => { list.reload(); keys.reload() }} />
       <Keys names={nks} loading={keys.loading} error={keys.error} reload={keys.reload} />
       <Relays />
     </>
@@ -212,10 +233,12 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
   )
 }
 
-/** Import a licence file; a stored licence for the same extension is replaced after a confirmation.
- * A refusal reads the list again: a licence a relay stored meanwhile, or a changed ETag, is then
- * what the next try replaces. */
-function Import({ licenses, onImported, onStale }: { licenses: License[]; onImported: (key: string) => void; onStale: () => void }) {
+/** Import a licence file; the stored licence it replaces (of the source that owns its key) is
+ * replaced after a confirmation. A refusal reads the list and the keys again: a licence a relay
+ * stored meanwhile, a changed ETag or a key's new owner is then what the next try replaces. */
+function Import({ licenses, keys, onImported, onStale }: {
+  licenses: License[]; keys?: NameKeys[]; onImported: (key: string) => void; onStale: () => void
+}) {
   const { client, api } = useTenant()
   const file = useRef<HTMLInputElement>(null)
   const [token, setToken] = useState('')
@@ -223,10 +246,8 @@ function Import({ licenses, onImported, onStale }: { licenses: License[]; onImpo
   const [replacing, setReplacing] = useState(false)
   const { busy, failure, act } = useAction()
   const p = token ? peek(token) : null
-  // the licence it replaces: of the source that owns its key, which the server decides (spec 0033
-  // phase B); a name with one licence offers that one
-  const named = p ? licenses.filter((l) => l.name === p.ext) : []
-  const stored = named.length === 1 ? named[0] : undefined
+  // the licence it replaces: of the source that owns its key for the name (spec 0033 phase B)
+  const stored = p ? replaced(licenses, keys, p.ext, p.kid) : undefined
   const pick = async (f?: File) => {
     setToken('')
     setBad(false)
@@ -259,7 +280,7 @@ function Import({ licenses, onImported, onStale }: { licenses: License[]; onImpo
         {bad && <ErrorBox error="This file is no licence." />}
         {p && !bad && (
           <p className="m-0">For <Mono>{p.ext}</Mono>{p.plan ? `, plan ${p.plan}` : ''}{p.holder ? `, held by ${p.holder}` : ''}{p.exp ? `, until ${when(new Date(p.exp * 1000).toISOString())}` : ''}.
-            {stored && <span className="text-warning"> It replaces the licence stored for {p.ext} ({stored.source === 'upstream' ? `relayed from ${stored.upstream}` : 'imported'}).</span>}</p>
+            {stored && <span className="text-warning"> It replaces the licence stored for {p.ext} of {stored.owner} ({stored.source === 'upstream' ? `relayed from ${stored.upstream}` : 'imported'}).</span>}</p>
         )}
         {failure != null && <ErrorBox error={failure} />}
         <div><Button tone="brand" disabled={busy || !p || bad} onClick={() => (stored ? setReplacing(true) : send())}>{stored ? 'Replace…' : 'Import'}</Button></div>

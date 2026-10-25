@@ -181,12 +181,19 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 			l := record(it.tok, t.ID, typ, it.Token, actor)
 			l.Owner, l.Source, l.UpstreamID = src, store.LicenseUpstream, u.ID
 			old, err := tx.GetLicense(ctx, t.ID, typ, name, src)
+			adopted := false
 			switch {
 			case errors.Is(err, store.ErrNotFound):
 				old.Version = 0
+				if adopted, err = adoptUnknown(ctx, tx, &l, !dryRun); err != nil {
+					return err
+				}
 			case err != nil:
 				return err
 			case old.Token == it.Token:
+				if err := rebind(ctx, tx, &old, u.ID, !dryRun); err != nil {
+					return err
+				}
 				counts["unchanged"]++
 				continue
 			case old.Source == store.LicenseImport:
@@ -205,7 +212,7 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 					return err
 				}
 			}
-			if old.Version == 0 {
+			if old.Version == 0 && !adopted {
 				counts["stored"]++
 			} else {
 				counts["replaced"]++

@@ -241,6 +241,16 @@ WHERE tenant_id = ? AND package_type = ? AND name = ? AND owner_source = ? AND v
 		func() { l.Visibility, l.Actor, l.UpdatedAt, l.Version = visibility, actor, now, expected+1 })
 }
 
+// RebindLicense makes a relayed licence its relaying upstream's (compare-and-set on its version): the
+// same token, relayed now by the upstream that owns its key, where another relayed it before.
+func (t *Tx) RebindLicense(ctx context.Context, l *License, upstreamID string) error {
+	now := t.Now()
+	return t.cas(ctx, `UPDATE licenses SET upstream_id = ?, updated_at = ?, version = version + 1
+WHERE tenant_id = ? AND package_type = ? AND name = ? AND owner_source = ? AND version = ?`,
+		[]any{upstreamID, t.s.d.timeArg(now), l.TenantID, l.PackageType, l.Name, l.Owner, l.Version},
+		func() { l.UpstreamID, l.UpdatedAt, l.Version = upstreamID, now, l.Version+1 })
+}
+
 // DeleteLicense removes a licence (compare-and-set on its version; 0 skips the check).
 func (t *Tx) DeleteLicense(ctx context.Context, l License, expected int64) error {
 	if expected == 0 {
@@ -250,13 +260,15 @@ func (t *Tx) DeleteLicense(ctx context.Context, l License, expected int64) error
 		[]any{l.TenantID, l.PackageType, l.Name, l.Owner, expected}, func() {})
 }
 
-// UpstreamLicenses lists the licences an upstream relayed that are still its own (spec 0033 phase
-// B): of its source, or of none (unknown, since migration 0042); one an administrator moved with its
-// key to another source is that source's, and neither the relay's revocation nor the upstream's
-// removal takes it.
-func (t *Tx) UpstreamLicenses(ctx context.Context, upstreamID string) ([]License, error) {
-	rows, err := t.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE upstream_id = ? AND owner_source IN (?, ?) ORDER BY name, owner_source",
-		upstreamID, UpstreamSource(upstreamID), LicenseUnknown)
+// UpstreamLicenses lists the licences an upstream of a tenant governs (spec 0033 phase B): those
+// relayed (source upstream) of its source, whichever upstream relayed them (one migration 0042 gave
+// it, an administrator moved to it), and those it relayed of none (unknown, since migration 0042).
+// One an administrator moved with its key to another source is that source's, and neither the
+// relay's revocation nor the upstream's removal takes it; nor do they take an import.
+func (t *Tx) UpstreamLicenses(ctx context.Context, tenantID, upstreamID string) ([]License, error) {
+	rows, err := t.query(ctx, "SELECT "+licenseCols+` FROM licenses WHERE tenant_id = ? AND source = ?
+AND (owner_source = ? OR owner_source = ? AND upstream_id = ?) ORDER BY name, owner_source`,
+		tenantID, LicenseUpstream, UpstreamSource(upstreamID), LicenseUnknown, upstreamID)
 	if err != nil {
 		return nil, err
 	}

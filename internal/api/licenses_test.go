@@ -104,6 +104,61 @@ func TestLicenseRoutes(t *testing.T) {
 	if r := m.call(t, "PUT", owner, m.toks["server licence mgr"], `{"source":"publisher:nobody"}`); r.status != 404 {
 		t.Fatalf("a licence manager gives a key: %d %s", r.status, r.body)
 	}
+	// a live source that never declared the key: 400
+	var other store.Publisher
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+		other = store.Publisher{TenantID: m.tenantID(t), Name: "other", CreatedBy: "os:1:t"}
+		return tx.InsertPublisher(ctx, &other)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r := m.call(t, "PUT", owner, tom, `{"source":"publisher:other"}`); r.status != 400 {
+		t.Fatalf("to a source that never declared the key: %d %s", r.status, r.body)
+	}
+	// licences of two sources: without ?source= 409 naming them; by its source, the id form, unknown
+	put := func(src string) {
+		t.Helper()
+		if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+			l := store.License{TenantID: m.tenantID(t), Name: "tresor", Owner: src, LicenseID: "lic-" + src, Issuer: "i", HolderID: "acme",
+				Plan: "old", Token: "t", Key: kid, IssuedAt: 1, ExpiresAt: 2, GraceUntil: 4102444800, Source: store.LicenseImport,
+				Visibility: store.Private, Actor: "os:1:t"}
+			return tx.PutLicense(ctx, &l, 0)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(store.LicenseUnknown)
+	if r := m.call(t, "GET", T+"/tresor", tom, ""); r.status != 409 || r.json(t)["type"] != "urn:kista:problem:conflict" ||
+		!strings.Contains(fmt.Sprint(r.json(t)["detail"]), "several sources: publisher:nobody, unknown; name one with ?source=") {
+		t.Fatalf("a name of two sources: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", T+"/tresor?source=unknown", tom, ""); r.status != 200 || r.json(t)["owner"] != "unknown" {
+		t.Fatalf("the unknown one: %d %s", r.status, r.body)
+	}
+	var nobody string
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+		p, err := tx.GetPublisher(ctx, m.tenantID(t), "nobody")
+		nobody = p.ID
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r := m.call(t, "GET", T+"/tresor?source=publisher-id:"+nobody, tom, ""); r.status != 200 || r.json(t)["owner"] != "publisher:nobody" {
+		t.Fatalf("by the id form: %d %s", r.status, r.body)
+	}
+	r = m.call(t, "GET", T+"/tresor?source=unknown", tom, "")
+	if r := m.call(t, "DELETE", T+"/tresor?source=unknown", tom, "", "If-Match", r.header.Get("ETag")); r.status != 204 {
+		t.Fatalf("removing the unknown one: %d %s", r.status, r.body)
+	}
+	// the key given to a source that holds a licence of the name: 409
+	put(store.PublisherSource(other.ID))
+	if r := m.call(t, "PUT", owner, tom, `{"source":"publisher:other"}`); r.status != 409 || r.json(t)["type"] != "urn:kista:problem:conflict" ||
+		!strings.Contains(fmt.Sprint(r.json(t)["detail"]), "holds a licence for this extension already") {
+		t.Fatalf("over the source's licence: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "DELETE", T+"/tresor?source=publisher:other", tom, "", "If-Match", versionTag(1)); r.status != 204 {
+		t.Fatalf("removing the other one: %d %s", r.status, r.body)
+	}
 	for _, who := range []string{"install", "ext admin", "channel adm", "no grants"} {
 		if r := m.call(t, "GET", T, m.toks[who], ""); r.status != 404 {
 			t.Errorf("%s lists licences: %d", who, r.status)

@@ -298,12 +298,19 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 			l := record(it.tok, t.ID, typ, it.token, actor)
 			l.Owner, l.Source, l.UpstreamID = src, store.LicenseUpstream, u.ID
 			old, err := tx.GetLicense(ctx, t.ID, typ, name, src)
+			adopted := false
 			switch {
 			case errors.Is(err, store.ErrNotFound):
 				old.Version = 0
+				if adopted, err = adoptUnknown(ctx, tx, &l, true); err != nil {
+					return err
+				}
 			case err != nil:
 				return err
 			case old.Token == it.token:
+				if err := rebind(ctx, tx, &old, u.ID, true); err != nil {
+					return err
+				}
 				counts["unchanged"]++
 				continue
 			case replaces(old, l, s.Store.Now().Unix(), s.deadKey(ctx, tx, old)):
@@ -316,13 +323,13 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 			if err := tx.PutLicense(ctx, &l, old.Version); err != nil {
 				return err
 			}
-			if old.Version == 0 {
+			if old.Version == 0 && !adopted {
 				counts["stored"]++
 			} else {
 				counts["replaced"]++
 			}
 		}
-		stored, err := tx.UpstreamLicenses(ctx, u.ID)
+		stored, err := tx.UpstreamLicenses(ctx, t.ID, u.ID)
 		if err != nil {
 			return err
 		}
@@ -351,6 +358,40 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 		res.refuse(r.Name, r.ID, r.Rule, r.Reason)
 	}
 	return nil
+}
+
+// rebind makes a stored licence that the relaying upstream relays again unchanged, relayed by
+// another upstream before (migration 0042 gave it its key's owner), the relaying upstream's (spec
+// 0033 phase B), when write is set (a bundle's dry run writes nothing). An import stays an
+// administrator's: no relay takes it over.
+func rebind(ctx context.Context, tx *store.Tx, old *store.License, upstreamID string, write bool) error {
+	if !write || old.Source != store.LicenseUpstream || old.UpstreamID == upstreamID {
+		return nil
+	}
+	return tx.RebindLicense(ctx, old, upstreamID)
+}
+
+// adoptUnknown removes, for a licence l its upstream relays where the upstream holds none for the
+// name, a licence of unknown source (migration 0042 found no owner for its key) that the same
+// upstream relayed signed with the same key: l takes its place and its visibility (spec 0033 phase
+// B: otherwise the name would keep a licence of two sources). It reports whether there was one;
+// with write unset (a dry run) it removes nothing.
+func adoptUnknown(ctx context.Context, tx *store.Tx, l *store.License, write bool) (bool, error) {
+	old, err := tx.GetLicense(ctx, l.TenantID, l.PackageType, l.Name, store.LicenseUnknown)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if old.Source != store.LicenseUpstream || old.UpstreamID != l.UpstreamID || old.Key != l.Key {
+		return false, nil
+	}
+	l.Visibility = old.Visibility
+	if !write {
+		return true, nil
+	}
+	return true, tx.DeleteLicense(ctx, old, 0)
 }
 
 // refusal is a licence's refusal by its rule (a key the tenant does not take for the source: no
