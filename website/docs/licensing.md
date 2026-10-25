@@ -60,12 +60,54 @@ key whose source is gone counts for nothing.
 - **Removing a source** (the publisher, or the upstream) drops the keys it brought. Unmarking a
   publisher keeps them.
 
-A licence counts only against the keys of **live** builds of its extension: a release that is
-`active` or `deprecated`, in a signed channel, whose body is not blocked. Yanking or blocking every
-build that declares a key takes that key out.
+A source's key is **live** when a live build of the extension declares it (a release that is
+`active` or `deprecated`, in a signed channel that serves the extension from that source, whose
+body is not blocked), or when the source's **newest available version** of the extension in the
+[catalogue](upstreams.md#the-catalogue-and-a-channels-rules) declares it (not held, withdrawn or revoked, its body not blocked): a
+licence is accepted as soon as the extension is available in the catalogue, before any channel takes
+it. Yanking or blocking every build that declares a key, once newer versions declare another, takes
+that key out (a rotation).
+
+### A key's owner
+
+The same key may reach a tenant through several sources: a distributor's publisher and an upstream
+mirroring another kista both bring an extension built with it, or a build carries a copy of another
+issuer's key. In a tenant, each key of an extension has one **owner**, and a licence signed with it
+is that source's:
+
+- **The first recorder owns it**: the first source whose own build of the extension recorded the key
+  while the build counted (available, or placed; a held entry counts once its hold has ended or it
+  is placed early, a revoked entry or a blocked body never, a withdrawn entry only if it counted
+  before). Ownership is recorded then (a `license.key_owner` event) and stays: another source
+  recording the same key later changes nothing (a `license.key_conflict` event, once per source and
+  extension), so a build carrying a copied key gets no licence of its own and takes none away (an
+  upstream of the same product may relay the very licence the owner holds: see the relay below).
+  While a source's record of the key is on an entry still held, the key has no owner: a source
+  recording it meanwhile gets no licence through it. Once that hold resolves (it ends, or the entry
+  is placed or withdrawn), the first record to have counted owns the key.
+- **A distributor's publisher** does not become the owner of a key of an extension that a
+  `repository` upstream of the tenant lists (by name, or `*`): the tenant's own upstream keeps the
+  extension's keys, and an administrator gives one to the distributor when that is what they want.
+- **It changes only** when the owner goes or by a tenant administrator's act. Removing the publisher
+  or the upstream drops its keys and its ownership, and the key then has **no owner** until a source
+  records it afresh (a build arriving after the removal) or an administrator gives it: a source that
+  recorded it while the other owned it, or whose records did not count then, does not take it by
+  itself. The act:
+
+  ```bash
+  kista admin license owner acme geo_tools sha256:… publisher:enterest-ci
+  ```
+
+  or `PUT /api/v1/tenants/{t}/license-keys/{name}/{kid}/owner` with `{"source": "publisher:enterest-ci"}`.
+  The source must have recorded the key for the extension. The licences signed with the key move to
+  it (a `license.key_owner` event naming them): the owner's before, or, where it has none, one of
+  source `unknown` signed with the key; refused (`409`) while the source holds a licence of that
+  extension already: remove it first. A relayed licence moved to an upstream is that upstream's to
+  revoke from then on; an imported one stays imported.
 
 `kista admin license keys <tenant> [<name>]` and `GET /api/v1/tenants/{t}/license-keys[/{name}]`
-list each name's keys, the sources that brought each, and how many live builds declare it.
+list each name's live keys, the sources that brought each, how many builds declare it, and its
+owner (`owner`, when it has one).
 
 ## On and off
 
@@ -84,23 +126,35 @@ at start; the next release refuses it.
 
 ## Licences in a tenant
 
-A tenant holds one licence per extension name: per package (its type and name, spec 0034), all of
-type `duckdb_extension` today. A channel serves only its own type's licences, a key is live per
-(type, name, kid), and the licence routes and commands take `?type=` / `-type` (`duckdb_extension`
-by default; an import stores the licence under that type, a relay under its upstream's). A licence
-comes from one of three places.
+A tenant holds one licence per extension name **and source**: the source that owns the key the
+licence is signed with ([A key's owner](#a-keys-owner)), so DuckDB's `h3`, a distributor's `h3` and
+an upstream's `h3` can each have a licence of their own. A licence is per package too (its type and
+name, spec 0034), all of type `duckdb_extension` today: a channel serves only its own type's
+licences, a key is live per (type, name, kid), and the licence routes and commands take `?type=` /
+`-type` (`duckdb_extension` by default; an import stores the licence under that type, a relay under
+its upstream's).
+
+A licence's source shows as `owner` in the API (`upstream:<name>`, `publisher:<name>`, a removed
+source's `upstream-id:<id>` or `publisher-id:<id>`, or `unknown`); `source` stays how it arrived
+(`import` or `upstream`). The routes for one licence (`GET`, `DELETE`, `…/public`, `…/private`)
+and `license show|token|remove|public|private` take `?source=` / `-source`, which a name with
+licences of several sources needs (`409` without it); `GET …/licenses?source=` and `license list
+-source` list one source's. A licence comes from one of three places.
 
 **An administrator's import**, for a licence received by other means:
 
 ```bash
 kista admin license import acme tresor.lic             # a new licence
-kista admin license import acme tresor.lic -replace    # replaces the one stored for that extension
+kista admin license import acme tresor.lic -replace    # replaces the one stored for that extension and source
 ```
 
 Over the API the token is the body of `POST /api/v1/tenants/{t}/licenses`; replacing a stored
-licence needs `If-Match` with its ETag. The licence must verify and be in force (valid, or in its
-grace) when it is imported, against a key of a live build of its extension, from any source,
-anywhere in the tenant. A name with no such key takes no licence (`kid_untrusted`).
+licence needs `If-Match` with its ETag. The licence is stored for the source that owns its key for
+the extension, and must verify and be in force (valid, or in its grace) when it is imported, against
+that source's live keys. A key no source owns takes no licence (`kid_untrusted`). Where the source
+holds no licence for the extension, the import replaces one of source `unknown` signed with the
+same key (with `If-Match`, as any replacement). The answer's `Location` names the source
+(`…/licenses/<name>?source=…`).
 
 Besides the tenant's administrators, a **licence manager** (`auth.server_license_admins`, a
 server-wide role for a job such as a licence reconciler) may call the licence routes of every
@@ -112,33 +166,46 @@ that is not paused ([private upstreams](upstreams.md#private-upstreams)) is aske
 `licenses.refresh` (6 hours by default), at `<upstream prefix>/-/licenses`. For each licence:
 
 - it must be in force;
-- the upstream must supply that extension: it brought a build of it into its channel since it was
-  added, and a live release of that build is in this tenant (a promotion releases the same build).
-  An upstream does not hand out licences for names it does not supply (`not_supplied`);
-- it must verify against a key **this upstream** brought, on a live build of the extension
-  (`kid_untrusted`);
+- the upstream must supply that extension: a build of it that the upstream brought since it was
+  added, available in the catalogue or live in a channel (not withdrawn, not blocked). An upstream
+  does not hand out licences for names it does not supply (`not_supplied`);
+- the upstream must own the licence's key for the extension, or the licence must be byte for byte
+  the one the key's owner holds for it (relayed or imported): a licence is the organisation's
+  purchase of the product, so a second upstream of the same repository (another channel of it, in
+  another of the tenant's channels) stores the very same licence as its own, and each channel serves
+  it. Any other licence signed with a key another source owns is refused (`key_owner`): a source
+  carrying a copy of the key gets no licence of its own. The licence must verify against a key
+  **this upstream** brought, live (`kid_untrusted`);
 - it must name the tenant's [expected holder](#an-expected-holder), when one is set (`holder_mismatch`);
-- it replaces the stored licence when it is newer from the same upstream, or lasts longer. From
-  another source, it replaces it only when both are signed with the same key, or the stored one's
-  grace has ended, or no live build declares its key any more (or the server refuses that key). So
-  an upstream added in another channel cannot displace a working licence with one signed by a key
-  of its own;
-- a licence refused for its key stays stored if this upstream relayed it before: it is not served
-  while no live build declares its key, and it ends with its grace.
+- it is stored as this upstream's licence of the extension, and replaces the one stored for it when
+  it is newer from the same upstream, or lasts longer. One imported for the same source is replaced
+  only when both are signed with the same key, or the stored one's grace has ended, or its key is
+  no longer live (or the server refuses it);
+- a licence refused stays stored if this upstream relayed it before, and is tried again at the
+  next run (a renewal reaching this upstream before the key's owner holds it, a key no live build
+  declares now): it ends with its grace meanwhile, and it is not served while no live build
+  declares its key.
 
-A licence the upstream stops listing is removed (revoked). A `404` from the upstream means it
-serves no licences and changes nothing, and so does a failure (the credential refused with `401`
-or `403`, a network error, an answer over 1,000 licences or 8 MiB). Removing the upstream removes its licences; clearing its
-credential stops the relay, and its licences stay until their grace ends. A licence past its grace
+An upstream's relay governs its own licences only: the relayed licences of its source (one an
+administrator moved to it included) and those of source `unknown` it relayed itself (one signed
+with the same key is replaced by its licence); one it stops listing is removed (revoked), and
+another upstream's copy of the same licence stays that upstream's. A `404` from the upstream means it serves no licences and changes nothing, and so does a
+failure (the credential refused with `401` or `403`, a network error, an answer over 1,000
+licences or 8 MiB). Removing the upstream removes the licences its relay governs; clearing its
+credential stops the relay, and its licences stay until their grace ends. A licence an
+administrator moved to another source with its key is that source's, and an import an
+administrator's: neither the relay nor the upstream's removal takes it. A licence past its grace
 is removed, whatever its source.
 
 **A bundle**, for an air-gapped site. The site's plan asks for licences
 (`kista admin bundle plan -licenses`, optionally with the holder it expects), the exporting kista
 carries the licences it holds for the names whose files the bundle carries
-(`bundle export -licenses`), and the import takes each into the first bundle-mode upstream of its
-source that supplies the name. It is checked as a relayed licence is, against the keys that
-upstream's builds declare; it never replaces an administrator's import, and a bundle never revokes
-one ([Exporting a bundle](upstreams.md#exporting-a-bundle),
+(`bundle export -licenses`: for each name, the licence of the source the files come from, the
+exporting tenant's mirror or the source its own channel serves the name from), and the import takes
+each into the first bundle-mode upstream of its source that supplies the name and owns its key (else
+the first that supplies it, refused for the key). It is checked as a relayed licence is, against the
+keys that upstream's builds declare; it never replaces an administrator's import, and a bundle never
+revokes one ([Exporting a bundle](upstreams.md#exporting-a-bundle),
 [Importing a bundle](upstreams.md#importing-a-bundle),
 [Air-gapped sites](deployment/air-gapped.md#licences)).
 
@@ -147,7 +214,7 @@ stored, replaced, unchanged, removed, refused with reasons) and with `-sync` ask
 the API has `GET` and `POST …/upstreams/{name}/licenses[/sync]`.
 
 **In the console**, tenant administrators have **Licences**: the tenant's licences with plan,
-holder, source, visibility, expiry and status (one expiring within 30 days, or in its grace, is
+holder, how each arrived, its source (**Of**), visibility, expiry and status (one expiring within 30 days, or in its grace, is
 flagged); a licence's claims, limits and the fingerprint of the key that signed it; importing a file
 (a licence already stored for the extension is replaced after a confirmation), making one public or
 private, and removing one; the **licence keys** of the tenant's live builds, with their sources; and
@@ -208,9 +275,10 @@ licences on to its regional or air-gapped kistas.
 
 Who gets a licence:
 
-- a licence is served in a channel only while a live (active or deprecated) release there declares
-  the key that signed it. A licence that no live build in the channel declares stays stored, and
-  is not served there;
+- a channel serves the licence of the **source it serves the extension from** (its rule for the
+  name), and only while a live (active or deprecated) release there declares the key that signed
+  it. Another source's licence, and a licence that no live build in the channel declares, stay
+  stored and are not served there: a build carrying a copy of another source's key gets nothing;
 - a **private** licence (the default) goes to a token holding `install` on the extension in that
   channel;
 - a **public** licence (`kista admin license public <tenant> <name>`) also goes to whoever is served a
@@ -318,10 +386,11 @@ POST <upstream prefix>/-/usage     Authorization: Bearer <the credential's token
               "events": [{"name": "attach", "count": 380, "counters": {"sources": 912}}]}]}
 ```
 
-- **What is sent**: the versions the upstream brought into its channel since it was added, each with
-  its counts summed over the channels that hold that build (a promotion releases the same build
-  elsewhere; the same version from another source is not counted), all callers and licence
-  statuses, local and received from downstream.
+- **What is sent**: the versions of the upstream's builds (brought since it was added), each with
+  its counts summed over the channels that serve the extension from this upstream and hold a release
+  of that version from it (the same version from another source, or in a channel that serves the
+  extension from another source, is not counted), all callers and licence statuses, local and
+  received from downstream.
 - **What is not**: no principal, address, channel name or licence id; `sender` is the upstream
   record's random id. `users` is left out below 5, so a small organisation's single user is not
   singled out, and a version with nothing else to say is left out. A version's report holds at most
@@ -405,7 +474,10 @@ not stop a holder copying its own licence elsewhere.
 ## Events
 
 `tenant.holder` (the expected holder set or cleared), `license.import`, `license.change` (visibility), `license.remove` (with the reason: `admin`,
-`revoked`, `expired`, `upstream removed`), `license.sync` (each relay run), `extension.use` (a
+`revoked`, `expired`, `upstream removed`; each names the licence's `source`), `license.key_owner`
+(a key's owner recorded, by its first recorder with `first: true` or by an administrator with the
+licences that `moved`), `license.key_conflict` (another source recording a key it does not own),
+`license.sync` (each relay run), `extension.use` (a
 usage report by a principal holding `install`), `usage.forward` (each forwarding run), `usage.receive` (each aggregate taken from downstream) and
 `upstream.change` with `change: usage`. The licences a bundle carried are in its
 `bundle.import` event and import record. See

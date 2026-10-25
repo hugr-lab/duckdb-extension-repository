@@ -107,7 +107,7 @@ func TestMigrationPackageTypes(t *testing.T) {
 		if rs, err := s.ListTenantReservedNames(ctx, tid, pkgtype.DuckDBExtension, ""); err != nil || len(rs) != 1 || rs[0].Name != "held" {
 			t.Fatalf("the tenant's reservations: %+v %v", rs, err)
 		}
-		if l, err := s.GetLicense(ctx, tid, pkgtype.DuckDBExtension, "tresor"); err != nil || l.LicenseID != "l1" || l.PackageType != pkgtype.DuckDBExtension {
+		if l, err := nameLicense(ctx, s, tid, pkgtype.DuckDBExtension, "tresor"); err != nil || l.LicenseID != "l1" || l.PackageType != pkgtype.DuckDBExtension {
 			t.Fatalf("the licence: %+v %v", l, err)
 		}
 		inTx(t, s, func(tx *store.Tx) error {
@@ -140,8 +140,8 @@ func TestMigrationPackageTypes(t *testing.T) {
 			[]any{"INSERT INTO reserved_name_sources (package_type, name, source, added_at) VALUES ('other_type', 'kista_x', 'admin:os:1:t', ?)", now},
 			[]any{"INSERT INTO tenant_reserved_names (tenant_id, package_type, name, holder, added_at, added_by) VALUES (?, 'other_type', 'held', 'x', ?, 'os:1:t')", tid, now},
 			[]any{"INSERT INTO licenses (tenant_id, package_type, name, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, " +
-				"expires_at, grace_until, source, visibility, actor, updated_at, version) VALUES (?, 'other_type', 'tresor', 'l2', " +
-				"'https://issuer.example', 'acme', 'Acme', 'pro', 't.x', 'kid', 1, 4102444800, 4103049600, 'import', 'private', 'os:1:t', ?, 1)", tid, now},
+				"expires_at, grace_until, source, visibility, actor, updated_at, version, owner_source) VALUES (?, 'other_type', 'tresor', 'l2', " +
+				"'https://issuer.example', 'acme', 'Acme', 'pro', 't.x', 'kid', 1, 4102444800, 4103049600, 'import', 'private', 'os:1:t', ?, 1, 'unknown')", tid, now},
 			[]any{"INSERT INTO package_group_members (group_id, tenant_id, package_type, package, added_at, added_by) VALUES (?, ?, 'other_type', 'acl', ?, 'os:1:t')",
 				id("g"), tid, now},
 		)
@@ -176,7 +176,7 @@ func TestMigrationPackageTypes(t *testing.T) {
 		if gr, err := s.GetPackageGroup(ctx, tid, "platform"); err != nil || gr.Members != 1 {
 			t.Fatalf("the member count with an unknown type's: %+v %v", gr, err)
 		}
-		if l, err := s.GetLicense(ctx, tid, pkgtype.DuckDBExtension, "tresor"); err != nil || l.LicenseID != "l1" {
+		if l, err := nameLicense(ctx, s, tid, pkgtype.DuckDBExtension, "tresor"); err != nil || l.LicenseID != "l1" {
 			t.Fatalf("the licence: %+v %v", l, err)
 		}
 	})
@@ -299,7 +299,7 @@ func TestPackageTypes(t *testing.T) {
 			}
 		}
 		for _, typ := range []string{pkgtype.DuckDBExtension, testType} {
-			if l, err := s.GetLicense(ctx, tn.ID, typ, "snowflake"); err != nil || l.LicenseID != "lic-"+typ {
+			if l, err := nameLicense(ctx, s, tn.ID, typ, "snowflake"); err != nil || l.LicenseID != "lic-"+typ {
 				t.Fatalf("%s's licence: %+v %v", typ, l, err)
 			}
 			if ls, err := s.ListLicenses(ctx, tn.ID, typ); err != nil || len(ls) != 1 || ls[0].PackageType != typ {

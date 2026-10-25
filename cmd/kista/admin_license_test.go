@@ -107,19 +107,31 @@ func TestAdminLicense(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := run(0, "", "license", "keys", "acme", "tresor"); !strings.Contains(got, vectors.Kid(&k.PublicKey)) ||
-		!strings.Contains(got, "publisher:ci") {
+		!strings.Contains(got, "publisher:ci") || !strings.Contains(got, "OWNER") {
 		t.Fatalf("keys: %q", got)
 	}
+	// spec 0033 phase B: a key's owner, given by the CLI (a tenant administrator's act) to a source
+	// that declares it
+	run(0, "", "license", "owner", "acme", "tresor", vectors.Kid(&k.PublicKey), "publisher:ci")
+	run(1, "", "license", "owner", "acme", "tresor", vectors.Kid(&k.PublicKey), "publisher:nope")
+	run(2, "", "license", "owner", "acme", "tresor")
 	run(0, "", "license", "import", "acme", lic)
 	run(1, "", "license", "import", "acme", "-", "-replace") // nothing on stdin
 	run(1, sign("max"), "license", "import", "acme", "-")    // a licence is stored: -replace replaces it
 	run(0, sign("max"), "license", "import", "acme", "-", "-replace")
-	if got := run(0, "", "license", "list", "acme"); !strings.Contains(got, "tresor") || !strings.Contains(got, "max") {
+	if got := run(0, "", "license", "list", "acme"); !strings.Contains(got, "tresor") || !strings.Contains(got, "max") ||
+		!strings.Contains(got, "publisher:ci") {
 		t.Fatalf("list: %q", got)
 	}
-	if got := run(0, "", "license", "show", "acme", "tresor"); !strings.Contains(got, "status: valid") || !strings.Contains(got, "limit: sources = 5") {
+	if got := run(0, "", "license", "list", "acme", "-source", "upstream:x"); strings.Contains(got, "tresor") {
+		t.Fatalf("list of another source: %q", got)
+	}
+	if got := run(0, "", "license", "show", "acme", "tresor"); !strings.Contains(got, "status: valid") || !strings.Contains(got, "limit: sources = 5") ||
+		!strings.Contains(got, "owner: publisher:ci") {
 		t.Fatalf("show: %q", got)
 	}
+	run(0, "", "license", "show", "acme", "tresor", "-source", "publisher:ci")
+	run(1, "", "license", "show", "acme", "tresor", "-source", "publisher:other")
 	if got := run(0, "", "license", "token", "acme", "tresor"); strings.TrimSpace(got) != sign("max") {
 		t.Fatalf("token: %q", got)
 	}

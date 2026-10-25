@@ -87,10 +87,12 @@ are all the kinds in `internal/audit`:
 | | `publisher.change` | `publisher:<name>` | `name`, `license_keys` (marked or unmarked as a source of licence keys, spec 0021), or `distributor` and `before` (marked a distributor's publisher, spec 0033) |
 | | `publisher.key.add` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `expires_at` (a public SSH key, spec 0023) |
 | | `publisher.key.remove` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `purge_held`; with it, `purged` and `kept` (as `publisher.remove`) |
-| Licences | `license.import` | `license:<name>` | `name`, `license`, `issuer`, `holder`, `plan`, `expires_at`, `replaced` |
-| | `license.change` | `license:<name>` | `name`, `license`, `visibility` |
-| | `license.remove` | `license:<name>` | `name`, `license`, `reason` (`admin`, `revoked`, `expired`, `upstream removed`) |
-| | `license.sync` | `upstream:<name>` | `upstream`, `counts`, `error`, `refused` (the system's relay run) |
+| Licences | `license.import` | `license:<name>` | `name`, `license`, `issuer`, `holder`, `plan`, `expires_at`, `replaced`, `source` (the licence's source, spec 0033) |
+| | `license.change` | `license:<name>` | `name`, `license`, `visibility`, `source` |
+| | `license.remove` | `license:<name>` | `name`, `license`, `reason` (`admin`, `revoked`, `expired`, `upstream removed`), `source` |
+| | `license.sync` | `upstream:<name>` | `upstream`, `counts`, `error`, `refused` (the system's relay run; a refusal's rule may be `key_owner`) |
+| | `license.key_owner` | `license:<name>` | `name`, `kid`, `source` (the key's owner for the name, spec 0033): its first recorder's (`first: true`, actor `system:licenses`), or a tenant administrator's act with `before` and the licences that `moved` |
+| | `license.key_conflict` | `license:<name>` | `name`, `kid`, `source`, `owner`: a source recorded a key another source owns for the name (once per source and name; it gets no licence of its own through it, only an upstream relaying the very licence the owner holds) |
 | Releases | `release.add` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `visibility`, `current`, `shadows` |
 | | `release.publish` | the release | as `release.add`, and `provenance` |
 | | `release.promote` | `channel:<channel>/ext:<name>` | `releases`, `name`, `from_channel`, `version`, `shadows`, `provenance` |
@@ -167,7 +169,8 @@ Notes on some kinds:
   creation, carry the package type when it is not the default (`duckdb_extension`; for a grant
   without a name, `*`): `channel.create`, `grant.add`, `grant.remove`, `extension_group.members`,
   `reserved.add`, `reserved.remove`, `reserved.tenant.add`, `reserved.tenant.remove`,
-  `catalogue.arrival`, `catalogue.purge`, `license.import`, `license.change` and `license.remove`.
+  `catalogue.arrival`, `catalogue.purge`, `license.import`, `license.change`, `license.remove`,
+  `license.key_owner` and `license.key_conflict`.
   Subjects are unchanged. A group's removal lists its members in one `extension_group.members`
   event per type.
 - The background actors are `system:upstream:<tenant>/<name>`, `system:feed:<tenant>/<name>`,

@@ -10,7 +10,9 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
 
-// Spec 0021: the licence keys recorded per build and source, which builds are live, and removal.
+// Spec 0021: the licence keys recorded per build and source, which builds are live, and removal;
+// spec 0033 phase B: a source's live keys are those it recorded on its own live builds, or on its
+// newest available version in the catalogue.
 func TestLicenseKeys(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Open(t)
@@ -32,25 +34,27 @@ func TestLicenseKeys(t *testing.T) {
 			u1, tn.ID, prod.ID, false, store.TimeArg(s, s.Now())); err != nil {
 			t.Fatal(err)
 		}
+		ps, us := store.PublisherSource(p1.ID), store.UpstreamSource(u1)
 		k1 := store.LicenseKey{Kid: "sha256:" + strings.Repeat("1", 64), PEM: "pem-1"}
 		k2 := store.LicenseKey{Kid: "sha256:" + strings.Repeat("2", 64), PEM: "pem-2"}
-		release := func(ch store.Channel, ver, hash string) (store.Build, store.Release) {
+		release := func(ch store.Channel, src, ver, hash string) (store.Build, store.Release) {
 			t.Helper()
 			b := cppBuild(tn, "tresor", ver, hash)
+			b.Source = src
 			inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
-			r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, PackageVersion: b.PackageVersion,
+			r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, Source: src, PackageVersion: b.PackageVersion,
 				Platform: b.Platform, Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public}
 			inTx(t, s, func(tx *store.Tx) error {
 				if err := tx.InsertRelease(ctx, &r, "os:1:t"); err != nil {
 					return err
 				}
-				_, err := tx.SetChannelSource(ctx, ch.ID, b.Name, store.SourceTenant, "os:1:t") // the channel serves it (spec 0031)
+				_, err := tx.SetChannelSource(ctx, ch.ID, b.Name, src, "os:1:t") // the channel serves it (spec 0031)
 				return err
 			})
 			return b, r
 		}
-		b1, r1 := release(prod, "1.0", "a")
-		b2, _ := release(mirror, "1.1", "b") // a passthrough channel: never live for licences
+		b1, r1 := release(prod, ps, "1.0", "a")
+		b2, _ := release(mirror, us, "1.1", "b") // a passthrough channel: never live for licences
 		version := func() int64 {
 			t.Helper()
 			c, err := s.GetChannel(ctx, "acme", "prod")
@@ -68,11 +72,11 @@ func TestLicenseKeys(t *testing.T) {
 			})
 			return added
 		}
-		live := func(kind, src string) string {
+		live := func(src string) string {
 			t.Helper()
 			var ks []store.LicenseKey
 			inTx(t, s, func(tx *store.Tx) (err error) {
-				ks, err = tx.LiveLicenseKeys(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor", kind, src)
+				ks, err = tx.LiveLicenseKeys(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor", src)
 				return err
 			})
 			var out []string
@@ -97,28 +101,38 @@ func TestLicenseKeys(t *testing.T) {
 			t.Fatal("no keys recorded something")
 		}
 
-		// live: an active release in a signed channel
-		if got := live("", ""); got != "1:pem-1,2:pem-2" {
-			t.Fatalf("live keys: %q", got)
+		// live: an active release in a signed channel, of the source's own build; u1's k1 is on
+		// p1's build, and its own build is in a passthrough channel only, but is its newest
+		// available version in the catalogue
+		if got := live(ps); got != "1:pem-1,2:pem-2" {
+			t.Fatalf("p1's live keys: %q", got)
 		}
-		if got := live(store.KeySourceUpstream, u1); got != "1:pem-1" {
-			t.Fatalf("u1's live keys (b2 is in a passthrough channel only): %q", got)
+		if got := live(us); got != "2:pem-2" {
+			t.Fatalf("u1's live keys: %q", got)
 		}
-		// a channel that serves the name from another source does not make the build live
+		if got := live(store.SourceTenant) + live(store.LicenseUnknown); got != "" {
+			t.Fatalf("the tenant's or unknown's keys: %q", got)
+		}
+		// a channel that serves the name from another source does not make the build live; the
+		// source's newest available version still counts
 		inTx(t, s, func(tx *store.Tx) error {
-			_, err := tx.SetChannelSource(ctx, prod.ID, "tresor", "publisher:"+p1.ID, "os:1:t")
+			_, err := tx.SetChannelSource(ctx, prod.ID, "tresor", us, "os:1:t")
 			return err
 		})
-		if got := live("", ""); got != "" {
-			t.Fatalf("live keys of a source the channel does not serve: %q", got)
+		b3 := cppBuild(tn, "tresor", "2.0", "c") // p1's newer version, without keys
+		b3.Source = ps
+		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b3) })
+		if got := live(ps); got != "" {
+			t.Fatalf("live keys of a source the channel does not serve, its newest version declaring none: %q", got)
 		}
 		inTx(t, s, func(tx *store.Tx) error {
-			_, err := tx.SetChannelSource(ctx, prod.ID, "tresor", store.SourceTenant, "os:1:t")
+			_, err := tx.SetChannelSource(ctx, prod.ID, "tresor", ps, "os:1:t")
 			return err
 		})
 		ks, err := s.TenantLicenseKeys(ctx, tn.ID, pkgtype.DuckDBExtension, "")
-		if err != nil || len(ks) != 2 || ks[0].Kid != k1.Kid || ks[0].Builds != 1 ||
-			fmt.Sprint(ks[0].Sources) != "[{publisher p1} {upstream u1}]" || fmt.Sprint(ks[1].Sources) != "[{publisher p1}]" {
+		if err != nil || len(ks) != 2 || ks[0].Kid != k1.Kid || ks[0].Builds != 1 || ks[0].Owner != ps || !ks[0].OwnerRecorded ||
+			fmt.Sprint(ks[0].Sources) != "[{publisher p1} {upstream u1}]" || fmt.Sprint(ks[1].Sources) != "[{publisher p1} {upstream u1}]" ||
+			ks[1].Builds != 2 || ks[1].Owner != ps {
 			t.Fatalf("tenant keys: %+v %v", ks, err)
 		}
 		if ks, err := s.TenantLicenseKeys(ctx, tn.ID, pkgtype.DuckDBExtension, "other"); err != nil || len(ks) != 0 {
@@ -131,17 +145,17 @@ func TestLicenseKeys(t *testing.T) {
 
 		// a yanked release, then a blocked body, is not live
 		inTx(t, s, func(tx *store.Tx) error { return tx.SetReleaseState(ctx, &r1, store.ReleaseYanked, "os:1:t") })
-		if got := live("", ""); got != "" {
+		if got := live(ps); got != "" {
 			t.Fatalf("a yanked release's keys: %q", got)
 		}
 		inTx(t, s, func(tx *store.Tx) error { return tx.SetReleaseState(ctx, &r1, store.ReleaseDeprecated, "os:1:t") })
-		if got := live("", ""); got == "" {
+		if got := live(ps); got == "" {
 			t.Fatal("a deprecated release is live")
 		}
 		inTx(t, s, func(tx *store.Tx) error {
 			return tx.InsertBlock(ctx, &store.Block{TenantID: tn.ID, BodyHash: b1.BodyHash, Reason: "CVE", CreatedBy: "os:1:t"})
 		})
-		if got := live("", ""); got != "" {
+		if got := live(ps); got != "" {
 			t.Fatalf("a blocked body's keys: %q", got)
 		}
 
@@ -157,11 +171,19 @@ func TestLicenseKeys(t *testing.T) {
 			t.Fatalf("an orphan key counts: %v", kids)
 		}
 
-		// removing a source drops what it brought, and bumps the channels
+		// removing a source drops what it brought and the keys it owns, and bumps the channels
 		v = version()
 		inTx(t, s, func(tx *store.Tx) error { return tx.DeleteLicenseKeysOf(ctx, store.KeySourcePublisher, p1.ID) })
 		if kids, _ := s.BuildKids(ctx, prod.ID); fmt.Sprint(kids[b1.ID]) != "["+k1.Kid+"]" || version() != v+1 {
 			t.Fatalf("after removing p1: %v", kids)
 		}
+		inTx(t, s, func(tx *store.Tx) error {
+			o, err := tx.KeyOwnerOf(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor", k2.Kid)
+			// none: u1 recorded it while p1 owned it, which never passes it by itself (spec 0033 phase B)
+			if err == nil && (o.Source != "" || o.Recorded) {
+				t.Errorf("k2's owner after p1's removal: %+v", o)
+			}
+			return err
+		})
 	})
 }

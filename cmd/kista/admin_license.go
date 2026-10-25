@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,15 +23,16 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 	fs := flag.NewFlagSet("license", flag.ContinueOnError)
 	replace := fs.Bool("replace", false, "")
 	keyFile := fs.String("key", "", "")
-	ptype := fs.String("type", "", "") // spec 0034: the licence's package type ("": the default)
+	ptype := fs.String("type", "", "")    // spec 0034: the licence's package type ("": the default)
+	source := fs.String("source", "", "") // spec 0033 phase B: the licence's source ("": the name's only one)
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	ls := a.svc.Licenses
 	show := func(v licenses.View) {
-		fmt.Fprintf(a.out, "name: %s\nid: %s\nissuer: %s\nholder: %s %s\nplan: %s\nstatus: %s\n", v.Name, v.ID, v.Issuer, v.HolderID,
-			v.Holder, v.Plan, v.Status)
+		fmt.Fprintf(a.out, "name: %s\nowner: %s\nid: %s\nissuer: %s\nholder: %s %s\nplan: %s\nstatus: %s\n", v.Name, v.Owner, v.ID, v.Issuer,
+			v.HolderID, v.Holder, v.Plan, v.Status)
 		fmt.Fprintf(a.out, "issued: %s\nexpires: %s\ngrace until: %s\nkey: %s\nsource: %s\n", v.IssuedAt, v.ExpiresAt, v.GraceUntil, v.Key,
 			v.Source)
 		if v.Upstream != "" {
@@ -65,39 +67,46 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 		if err != nil {
 			return err
 		}
-		a.table("NAME\tKEY\tBUILDS\tSOURCES", func(w io.Writer) {
+		a.table("NAME\tKEY\tBUILDS\tSOURCES\tOWNER", func(w io.Writer) {
 			for _, nk := range nks {
 				for _, k := range nk.Keys {
 					srcs := make([]string, 0, len(k.Sources))
 					for _, s := range k.Sources {
 						srcs = append(srcs, s.Kind+":"+s.Name)
 					}
-					fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", nk.Name, k.Kid, k.Builds, strings.Join(srcs, ","))
+					fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", nk.Name, k.Kid, k.Builds, strings.Join(srcs, ","), cmp.Or(k.Owner, "-"))
 				}
 			}
 		})
-	case sub == "list" && len(pos) == 1:
-		vs, err := ls.List(ctx, a.actor, pos[0], *ptype)
+	case sub == "owner" && len(pos) == 4:
+		v, err := ls.SetKeyOwner(ctx, a.actor, pos[0], *ptype, pos[1], pos[2], pos[3])
 		if err != nil {
 			return err
 		}
-		a.table("NAME\tPLAN\tHOLDER\tSTATUS\tEXPIRES\tSOURCE\tVISIBILITY", func(w io.Writer) {
+		a.logf("license owner %s %s %s: %s (before: %s; licences moved: %d)", pos[0], pos[1], pos[2], v.Owner, cmp.Or(v.Before, "none"),
+			len(v.Moved))
+	case sub == "list" && len(pos) == 1:
+		vs, err := ls.List(ctx, a.actor, pos[0], *ptype, *source)
+		if err != nil {
+			return err
+		}
+		a.table("NAME\tOWNER\tPLAN\tHOLDER\tSTATUS\tEXPIRES\tSOURCE\tVISIBILITY", func(w io.Writer) {
 			for _, v := range vs {
 				src := v.Source
 				if v.Upstream != "" {
 					src += ":" + v.Upstream
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Plan, v.HolderID, v.Status, v.ExpiresAt, src, v.Visibility)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Owner, v.Plan, v.HolderID, v.Status, v.ExpiresAt, src, v.Visibility)
 			}
 		})
 	case sub == "show" && len(pos) == 2:
-		v, err := ls.Get(ctx, a.actor, pos[0], *ptype, pos[1])
+		v, err := ls.Get(ctx, a.actor, pos[0], *ptype, pos[1], *source)
 		if err != nil {
 			return err
 		}
 		show(v)
 	case sub == "token" && len(pos) == 2:
-		tok, err := ls.Token(ctx, a.actor, pos[0], *ptype, pos[1])
+		tok, err := ls.Token(ctx, a.actor, pos[0], *ptype, pos[1], *source)
 		if err != nil {
 			return err
 		}
@@ -120,14 +129,15 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 			}
 			return err
 		}
-		a.logf("license import %s %s (%s, plan %s, until %s)", pos[0], v.Name, v.ID, v.Plan, v.ExpiresAt)
+		a.logf("license import %s %s from %s (%s, plan %s, until %s)", pos[0], v.Name, v.Owner, v.ID, v.Plan, v.ExpiresAt)
 	case sub == "remove" && len(pos) == 2:
-		if err := ls.Remove(ctx, a.actor, pos[0], *ptype, pos[1], 0); err != nil {
+		if err := ls.Remove(ctx, a.actor, pos[0], *ptype, pos[1], *source, 0); err != nil {
 			return err
 		}
 		a.logf("license remove %s %s", pos[0], pos[1])
 	case (sub == "public" || sub == "private") && len(pos) == 2:
-		if _, err := ls.SetVisibility(ctx, a.actor, pos[0], *ptype, pos[1], map[string]string{"public": store.Public, "private": store.Private}[sub], 0); err != nil {
+		vis := map[string]string{"public": store.Public, "private": store.Private}[sub]
+		if _, err := ls.SetVisibility(ctx, a.actor, pos[0], *ptype, pos[1], *source, vis, 0); err != nil {
 			return err
 		}
 		a.logf("license %s %s %s", sub, pos[0], pos[1])

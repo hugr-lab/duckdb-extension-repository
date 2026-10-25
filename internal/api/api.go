@@ -724,6 +724,8 @@ func init() {
 		// public), their relay per upstream (tenant administrators only); spec 0021: the keys
 		{"tenants/{t}/license-keys", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).licenseKeys))}},
 		{"tenants/{t}/license-keys/{name}", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).licenseKeys))}},
+		// spec 0033 phase B: a key's owner for a name, given by a tenant administrator
+		{"tenants/{t}/license-keys/{name}/{kid}/owner", map[string]rule{http.MethodPut: mb(pathAdmin, licenseRoute((*Handler).setKeyOwner))}},
 		{"tenants/{t}/licenses", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).listLicenses)),
 			http.MethodPost: {access: licenseAdmin, manage: true, raw: true, handle: licenseRoute((*Handler).importLicense)}}},
 		{"tenants/{t}/licenses/{name}", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).getLicense)),

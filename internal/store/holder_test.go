@@ -12,7 +12,7 @@ import (
 
 // testLicense is a licence row of a holder, as a verified import would store it.
 func testLicense(tenantID, name, holder string) store.License {
-	return store.License{TenantID: tenantID, Name: name, LicenseID: "lic-" + name, Issuer: "https://issuer.example", HolderID: holder,
+	return store.License{TenantID: tenantID, Name: name, Owner: store.LicenseUnknown, LicenseID: "lic-" + name, Issuer: "https://issuer.example", HolderID: holder,
 		Holder: "Holder", Plan: "pro", Token: "t." + name, Key: "kid", IssuedAt: 1, ExpiresAt: 4102444800, GraceUntil: 4103049600,
 		Source: store.LicenseImport, Visibility: store.Private, Actor: "os:1:test"}
 }
@@ -76,7 +76,7 @@ func TestTenantHolder(t *testing.T) {
 		if !errors.Is(err, store.ErrHolderMismatch) || !errors.As(err, &hm) || hm.Expected != "org-1" || hm.Given != "org-2" {
 			t.Fatalf("another holder's licence: %v", err)
 		}
-		if _, err := s.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
+		if _, err := nameLicense(ctx, s, tn.ID, pkgtype.DuckDBExtension, "tresor"); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("a refused licence was stored: %v", err)
 		}
 		// the comparison is exact: no case folding, no trimming
@@ -141,7 +141,7 @@ func TestTenantHolder(t *testing.T) {
 			t.Fatalf("set, read back: %+v", got)
 		}
 		// a replacement is a store too
-		l, err := s.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "httpfs")
+		l, err := nameLicense(ctx, s, tn.ID, pkgtype.DuckDBExtension, "httpfs")
 		if err != nil {
 			t.Fatal(err)
 		}

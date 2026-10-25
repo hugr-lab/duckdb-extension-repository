@@ -26,7 +26,7 @@ func (tenantOnly) Allow(_ context.Context, _ authz.Actor, _ authz.Verb, r authz.
 }
 
 func storeLicense(ctx context.Context, st *store.Store, tenantID, name, holder string) error {
-	l := store.License{TenantID: tenantID, Name: name, LicenseID: "lic-" + name, Issuer: "https://issuer.example", HolderID: holder,
+	l := store.License{TenantID: tenantID, Name: name, Owner: store.LicenseUnknown, LicenseID: "lic-" + name, Issuer: "https://issuer.example", HolderID: holder,
 		Holder: "Holder", Plan: "pro", Token: "t." + name, Key: "kid", IssuedAt: 1, ExpiresAt: 4102444800, GraceUntil: 4103049600,
 		Source: store.LicenseImport, Visibility: store.Private, Actor: "os:1:test"}
 	return st.InTenantTx(ctx, tenantID, []string{store.LicenseLock(tenantID)}, func(tx *store.Tx) error { return tx.PutLicense(ctx, &l, 0) })
@@ -94,7 +94,7 @@ func TestTenantHolder(t *testing.T) {
 			}
 			// the holder of every licence stored is taken
 			if err := st.InTenantTx(ctx, tn.ID, []string{store.LicenseLock(tn.ID)}, func(tx *store.Tx) error {
-				l, err := tx.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor")
+				l, err := tx.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor", store.LicenseUnknown)
 				if err != nil {
 					return err
 				}
@@ -127,7 +127,7 @@ func TestTenantHolder(t *testing.T) {
 			go func() {
 				first := true
 				wrote <- st.InTenantTx(ctx, tn.ID, []string{store.LicenseLock(tn.ID)}, func(tx *store.Tx) error {
-					l := store.License{TenantID: tn.ID, Name: "late", LicenseID: "lic-late", Issuer: "https://issuer.example", HolderID: "org-3",
+					l := store.License{TenantID: tn.ID, Name: "late", Owner: store.LicenseUnknown, LicenseID: "lic-late", Issuer: "https://issuer.example", HolderID: "org-3",
 						Holder: "Holder", Plan: "pro", Token: "t.late", Key: "kid", IssuedAt: 1, ExpiresAt: 4102444800, GraceUntil: 4103049600,
 						Source: store.LicenseImport, Visibility: store.Private, Actor: "os:1:test"}
 					if err := tx.PutLicense(ctx, &l, 0); err != nil {

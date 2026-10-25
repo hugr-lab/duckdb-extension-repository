@@ -1,0 +1,293 @@
+package upstream_test
+
+import (
+	"errors"
+	"log/slog"
+	"os"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
+)
+
+// Spec 0033 phase B part 2: licences per (name, source), on one engine (the store suite covers the
+// three). A mirror relays tresor's licence; a marked publisher's build of tresor in another channel,
+// carrying a copy of the mirror's key, gets no licence through it and takes none away; a key of the
+// publisher's own gives it a licence of its own beside the mirror's; each is served by the
+// channel that selects its source; a tenant administrator gives the mirror's key to the publisher,
+// the licence moving along, and the mirror relays only that very licence from then on, as its own. A
+// second upstream of the repository in another channel relays the licence its key's owner holds.
+func TestLicenseSources(t *testing.T) {
+	en, tokenFile := privateEnv(t, storetest.Engines(t)[0])
+	en.repo.token = "T-sub"
+	if err := os.WriteFile(tokenFile, []byte("T-sub\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lic := newLicensor(t)
+	en.repo.put("v2.0.0", "linux_amd64", "tresor", signedWith(t, en.key, cpp("1.0", "v2.0.0"), lic.block, "tresor_duckdb_cpp_init"))
+	sp := en.spec(store.UpstreamEntry{Name: "tresor"})
+	sp.Credential = "sub"
+	u, err := en.up.Add(ctx, admin, "acme", sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := en.sync(t, false); r.Counts[store.CellReleased] != 1 {
+		t.Fatalf("a run: %+v", r)
+	}
+	svc := &licenses.Service{Store: en.st, Authz: authz.ServerAdmin{}, Enabled: true, Fetch: en.up.Fetch,
+		Credentials: en.up.Credentials, Interval: time.Hour, Log: slog.New(slog.DiscardHandler)}
+	tid, ext := en.tenantID(t), pkgtype.DuckDBExtension
+	now := en.st.Now().Unix()
+	day := int64(24 * 3600)
+	relayed := lic.sign("tresor", "pro", now-60, now+30*day)
+	en.answer(t, relayed)
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["stored"] != 1 {
+		t.Fatalf("the relay: %+v %v", res, err)
+	}
+	us, ul := store.UpstreamSource(u.ID), "upstream:acme-repo"
+
+	// a marked publisher's build of tresor in channel other, with a copy of the mirror's key
+	p := store.Publisher{TenantID: tid, Name: "copycat", CreatedBy: "os:1:t"}
+	ps := ""
+	other, err := en.st.GetChannel(ctx, "acme", "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(b store.Build, l *licensor) {
+		t.Helper()
+		pemKey, err := extfile.MarshalPublicKeyPEM(&l.key.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		must(t, func() error {
+			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+				_, err := tx.RecordLicenseKeys(ctx, tid, b.ID, store.KeySourcePublisher, p.ID,
+					[]store.LicenseKey{{Kid: extfile.Fingerprint(&l.key.PublicKey), PEM: pemKey}})
+				return err
+			})
+		})
+	}
+	var b store.Build
+	must(t, func() error {
+		return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+			if err := tx.InsertPublisher(ctx, &p); err != nil {
+				return err
+			}
+			if _, err := tx.SetPublisherLicenseKeys(ctx, tid, "copycat", true); err != nil {
+				return err
+			}
+			ps = store.PublisherSource(p.ID)
+			b = store.Build{TenantID: tid, Source: ps, Name: "tresor", PackageVersion: "1.0", Platform: "linux_amd64", ABI: store.ABICPP,
+				DuckDBVersion: "v2.0.0", BodyHash: strings.Repeat("c", 64), Origin: store.OriginPublication, CreatedBy: "os:1:t", Checked: true}
+			if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
+				return err
+			}
+			r := store.Release{TenantID: tid, ChannelID: other.ID, BuildID: b.ID, Name: "tresor", Source: ps, PackageVersion: "1.0",
+				Platform: "linux_amd64", Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public, Origin: store.OriginPublication}
+			if err := tx.InsertRelease(ctx, &r, "os:1:t"); err != nil {
+				return err
+			}
+			_, err := tx.SetChannelSource(ctx, other.ID, "tresor", ps, "os:1:t")
+			return err
+		})
+	})
+	record(b, lic)
+	if evs, err := en.st.ListEvents(ctx, tid, store.EventFilter{Kind: "license.key_conflict"}); err != nil || len(evs) != 1 ||
+		!strings.Contains(evs[0].Data, `"source":"publisher:copycat"`) || !strings.Contains(evs[0].Data, `"owner":"`+ul+`"`) {
+		t.Fatalf("the conflict: %+v %v", evs, err)
+	}
+	// nothing for the copy: an import of a licence signed with the key is the mirror's, which holds one
+	if _, err := svc.Import(ctx, admin, "acme", "", lic.sign("tresor", "max", now, now+day), licenses.Create); !errors.Is(err, licenses.ErrExists) {
+		t.Fatalf("an import with the copied key: %v", err)
+	}
+	served := func(src string) string {
+		t.Helper()
+		l, ok, err := svc.Serve(ctx, tid, ext, "tresor", src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			return ""
+		}
+		return l.Token
+	}
+	if served(ps) != "" || served(us) != relayed {
+		t.Fatalf("served: the copy's %q, the mirror's %q", served(ps), served(us))
+	}
+
+	// a key of its own: a licence of its own, beside the mirror's
+	own := &licensor{key: otherKey(t)}
+	record(b, own)
+	v, err := svc.Import(ctx, admin, "acme", "", own.sign("tresor", "ent", now, now+day), licenses.Create)
+	if err != nil || v.Owner != "publisher:copycat" || !v.Created {
+		t.Fatalf("its own licence: %+v %v", v, err)
+	}
+	if _, err := svc.Get(ctx, admin, "acme", "", "tresor", ""); !errors.Is(err, licenses.ErrSources) {
+		t.Fatalf("a name of two sources without one: %v", err)
+	}
+	for src, plan := range map[string]string{"publisher:copycat": "ent", ul: "pro", "upstream-id:" + u.ID: "pro"} {
+		if v, err := svc.Get(ctx, admin, "acme", "", "tresor", src); err != nil || v.Plan != plan {
+			t.Fatalf("%s: %+v %v", src, v, err)
+		}
+	}
+	if vs, err := svc.List(ctx, admin, "acme", "", ul); err != nil || len(vs) != 1 || vs[0].Owner != ul {
+		t.Fatalf("the mirror's licences: %+v %v", vs, err)
+	}
+	if served(ps) == "" || served(us) != relayed {
+		t.Fatal("each source's licence, served by its channel")
+	}
+
+	// the key given to the publisher: refused while it holds a licence of the name, then the mirror's
+	// licence moves; the mirror's relay of it is refused, and what moved stays
+	kid := extfile.Fingerprint(&lic.key.PublicKey)
+	if _, err := svc.SetKeyOwner(ctx, admin, "acme", "", "tresor", kid, "publisher:copycat"); !errors.Is(err, licenses.ErrOwnerHolds) {
+		t.Fatalf("over its own licence: %v", err)
+	}
+	if err := svc.Remove(ctx, admin, "acme", "", "tresor", "publisher:copycat", 0); err != nil {
+		t.Fatal(err)
+	}
+	ko, err := svc.SetKeyOwner(ctx, admin, "acme", "", "tresor", kid, "publisher:copycat")
+	if err != nil || ko.Owner != "publisher:copycat" || ko.Before != ul || len(ko.Moved) != 1 {
+		t.Fatalf("the key given: %+v %v", ko, err)
+	}
+	if served(ps) != relayed || served(us) != "" {
+		t.Fatal("the moved licence, served by the publisher's channel")
+	}
+	// the mirror relays another licence signed with the key: refused key_owner; then the very licence
+	// the publisher holds now: the same licence, stored as the mirror's own beside it
+	en.answer(t, lic.sign("tresor", "max", now, now+day))
+	res, err := svc.RunUpstream(ctx, u.ID)
+	if err != nil || len(res.Refused) != 1 || res.Refused[0].Rule != licenses.RuleKeyOwner || res.Counts["removed"] != 0 || served(us) != "" {
+		t.Fatalf("the mirror's relay of another licence of a key it no longer owns: %+v %v", res, err)
+	}
+	en.answer(t, relayed)
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["stored"] != 1 || served(us) != relayed || served(ps) != relayed {
+		t.Fatalf("the mirror's relay of the publisher's licence: %+v %v", res, err)
+	}
+	// the mirror's revocation takes its own row only: the publisher's is the publisher's
+	en.answer(t)
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["removed"] != 1 || served(us) != "" || served(ps) != relayed {
+		t.Fatalf("an answer without it: %+v %v", res, err)
+	}
+
+	// a relayed licence another upstream relayed before (migration 0042 gave it its key's owner) is
+	// its owner's: moved back to the mirror, the mirror's relay keeps it unchanged and governs it,
+	// and its revocation takes it
+	relayedBy := func(id string) {
+		t.Helper()
+		if err := store.ExecRaw(ctx, en.st, "UPDATE licenses SET upstream_id = ? WHERE tenant_id = ? AND name = 'tresor'", id, tid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upstreamOf := func() string {
+		t.Helper()
+		v, err := svc.Get(ctx, admin, "acme", "", "tresor", ul)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v.Upstream
+	}
+	relayedBy(store.NewID())
+	if ko, err := svc.SetKeyOwner(ctx, admin, "acme", "", "tresor", kid, ul); err != nil || len(ko.Moved) != 1 || upstreamOf() != "acme-repo" {
+		t.Fatalf("the key given back: %+v %v", ko, err)
+	}
+	relayedBy(store.NewID())
+	en.answer(t, relayed)
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["unchanged"] != 1 || upstreamOf() != "acme-repo" {
+		t.Fatalf("relayed again unchanged: %+v %v", res, err)
+	}
+	relayedBy(store.NewID())
+	en.answer(t)
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["removed"] != 1 || served(us) != "" {
+		t.Fatalf("revoked by its owner's relay: %+v %v", res, err)
+	}
+
+	// a licence of unknown source signed with the key (migration 0042 found no owner for it): an
+	// import replaces it with If-Match, and the key given to another source moves it
+	unknown := func() {
+		t.Helper()
+		must(t, func() error {
+			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+				l := store.License{TenantID: tid, PackageType: ext, Name: "tresor", Owner: store.LicenseUnknown, LicenseID: "lic-unknown",
+					Issuer: "i", HolderID: "acme", Plan: "old", Token: "t", Key: kid, IssuedAt: now, ExpiresAt: now + day,
+					GraceUntil: now + 2*day, Source: store.LicenseImport, Visibility: store.Public, Actor: "os:1:t"}
+				return tx.PutLicense(ctx, &l, 0)
+			})
+		})
+	}
+	unknown()
+	if _, err := svc.Import(ctx, admin, "acme", "", relayed, licenses.Create); !errors.Is(err, licenses.ErrExists) {
+		t.Fatalf("an import over an unknown licence without If-Match: %v", err)
+	}
+	if v, err := svc.Import(ctx, admin, "acme", "", relayed, 0); err != nil || v.Owner != ul || v.Visibility != store.Public {
+		t.Fatalf("an import replacing an unknown licence: %+v %v", v, err)
+	}
+	if vs, err := svc.List(ctx, admin, "acme", "", ""); err != nil || len(vs) != 1 || vs[0].Owner != ul {
+		t.Fatalf("after the import: %+v %v", vs, err)
+	}
+	if err := svc.Remove(ctx, admin, "acme", "", "tresor", ul, 0); err != nil {
+		t.Fatal(err)
+	}
+	unknown()
+	if ko, err := svc.SetKeyOwner(ctx, admin, "acme", "", "tresor", kid, "publisher:copycat"); err != nil ||
+		!slices.Equal(ko.Moved, []string{"lic-unknown"}) {
+		t.Fatalf("an unknown licence moved with its key: %+v %v", ko, err)
+	}
+	if v, err := svc.Get(ctx, admin, "acme", "", "tresor", ""); err != nil || v.Owner != "publisher:copycat" {
+		t.Fatalf("after the move: %+v %v", v, err)
+	}
+
+	// the same licence through every upstream of it: a second upstream of the repository, mirroring
+	// it into channel other, relays the very licence the key's owner (the first upstream) holds, and
+	// stores it as its own, both channels serving it; another licence signed with the key through it
+	// is refused key_owner, its row kept; each relay's revocation takes its own row only
+	if err := svc.Remove(ctx, admin, "acme", "", "tresor", "publisher:copycat", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetKeyOwner(ctx, admin, "acme", "", "tresor", kid, ul); err != nil {
+		t.Fatal(err)
+	}
+	en.answer(t, relayed)
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["stored"] != 1 {
+		t.Fatalf("the owner's relay: %+v %v", res, err)
+	}
+	sp2 := en.spec(store.UpstreamEntry{Name: "tresor"})
+	sp2.Name, sp2.Channel, sp2.Credential = "acme-nightly", "other", "sub"
+	u2, err := en.up.Add(ctx, admin, "acme", sp2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	us2 := store.UpstreamSource(u2.ID)
+	must(t, func() error {
+		return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+			_, err := tx.SetChannelSource(ctx, other.ID, "tresor", us2, "os:1:t")
+			return err
+		})
+	})
+	if _, err := en.up.Sync(ctx, admin, "acme", "acme-nightly", false); err != nil {
+		t.Fatal(err)
+	}
+	en.run.Once(ctx)
+	if res, err := svc.RunUpstream(ctx, u2.ID); err != nil || res.Counts["stored"] != 1 || served(us2) != relayed || served(us) != relayed {
+		t.Fatalf("the same licence through the second upstream: %+v %v", res, err)
+	}
+	en.answer(t, lic.sign("tresor", "max", now, now+day))
+	if res, err := svc.RunUpstream(ctx, u2.ID); err != nil || len(res.Refused) != 1 || res.Refused[0].Rule != licenses.RuleKeyOwner ||
+		res.Counts["removed"] != 0 || served(us2) != relayed {
+		t.Fatalf("another licence through the second upstream: %+v %v", res, err)
+	}
+	en.answer(t)
+	if res, err := svc.RunUpstream(ctx, u2.ID); err != nil || res.Counts["removed"] != 1 || served(us2) != "" || served(us) != relayed {
+		t.Fatalf("the second upstream's revocation: %+v %v", res, err)
+	}
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["removed"] != 1 || served(us) != "" {
+		t.Fatalf("the owner's revocation: %+v %v", res, err)
+	}
+}

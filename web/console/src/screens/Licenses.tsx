@@ -13,6 +13,8 @@ import type { Upstream } from './Upstreams'
 
 export interface License {
   name: string
+  /** The licence's source (spec 0033 phase B): the source that owns its key for the name. */
+  owner: string
   id: string
   issuer: string
   holder_id: string
@@ -35,7 +37,18 @@ export interface License {
  * builds declare it (spec 0021). */
 export interface NameKeys {
   name: string
-  keys: { kid: string; sources: { kind: 'publisher' | 'upstream'; name: string }[]; builds: number }[]
+  keys: { kid: string; sources: { kind: 'publisher' | 'upstream'; name: string }[]; builds: number; owner?: string }[]
+}
+
+/** A licence's key in the list: a name has a licence per source (spec 0033 phase B). */
+export function licenseKey(l: Pick<License, 'name' | 'owner'>) {
+  return `${l.name} ${l.owner}`
+}
+
+/** A licence's route, by its source (spec 0033 phase B): the licence, or one of its actions
+ * (public, private), the source in the query after the path. */
+export function licensePath(api: string, l: Pick<License, 'name' | 'owner'>, action?: 'public' | 'private') {
+  return `${api}/licenses/${seg(l.name)}${action ? `/${action}` : ''}?source=${encodeURIComponent(l.owner)}`
 }
 
 /** The sources of a key in a line: publisher acl-ci · upstream enterest. */
@@ -43,9 +56,22 @@ export function sourcesLine(sources: NameKeys['keys'][number]['sources']) {
   return sources.map((s) => `${s.kind} ${s.name}`).join(' · ')
 }
 
-/** Whether a live build of name declares kid: a licence signed with another key is not served. */
-export function declared(keys: NameKeys[], name: string, kid: string) {
-  return keys.some((n) => n.name === name && n.keys.some((k) => k.kid === kid))
+/** Whether a licence's key is a live key of its source (spec 0033 phase B): the source brought a
+ * live build declaring it. The key's owner's licence, or the very same licence another upstream of
+ * the product relayed, is served where its source is; one signed with another key, of a removed
+ * source or of none (unknown) is served nowhere. */
+export function declared(keys: NameKeys[], l: Pick<License, 'name' | 'key' | 'owner'>) {
+  return keys.some((n) => n.name === l.name && n.keys.some((k) => k.kid === l.key && k.sources.some((s) => `${s.kind}:${s.name}` === l.owner)))
+}
+
+/** The stored licence an import of a licence file replaces (spec 0033 phase B): the one of the
+ * source that owns its key for the name, or where that source holds none, one of unknown source
+ * signed with the same key. undefined: the import stores a new one. */
+export function replaced(licenses: License[], keys: NameKeys[] | undefined, ext: string, kid?: string): License | undefined {
+  const owner = kid ? keys?.find((n) => n.name === ext)?.keys.find((k) => k.kid === kid)?.owner : undefined
+  if (!owner) return undefined
+  const named = licenses.filter((l) => l.name === ext)
+  return named.find((l) => l.owner === owner) ?? named.find((l) => l.owner === 'unknown' && l.key === kid)
 }
 
 interface SyncResult {
@@ -69,17 +95,26 @@ export function expiry(l: Pick<License, 'status' | 'expires_at' | 'grace_until'>
   return n <= 30 ? `expires in ${Math.max(0, n)} ${n === 1 ? 'day' : 'days'}` : ''
 }
 
-/** A licence file's claims, read without verifying (the server verifies): only to name what an
- * import stores. null when it is no licence. */
-export function peek(token: string): { ext: string; plan?: string; holder?: string; exp?: number } | null {
+/** A licence file's claims and its header's kid, read without verifying (the server verifies):
+ * only to name what an import stores and replaces. null when it is no licence. */
+export function peek(token: string): { ext: string; kid?: string; plan?: string; holder?: string; exp?: number } | null {
   const parts = token.trim().split('.')
   if (parts.length !== 3) return null
+  const json = (part: string) => {
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/')
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0))))
+  }
   try {
-    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
-    const json = new TextDecoder().decode(Uint8Array.from(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0)))
-    const p = JSON.parse(json)
+    const p = json(parts[1])
     if (typeof p?.ext !== 'string' || p.ext === '') return null
-    return { ext: p.ext, plan: typeof p.plan === 'string' ? p.plan : undefined, holder: typeof p.holder === 'string' ? p.holder : undefined,
+    let kid: string | undefined
+    try {
+      const h = json(parts[0])
+      kid = typeof h?.kid === 'string' ? h.kid : undefined
+    } catch {
+      kid = undefined
+    }
+    return { ext: p.ext, kid, plan: typeof p.plan === 'string' ? p.plan : undefined, holder: typeof p.holder === 'string' ? p.holder : undefined,
       exp: typeof p.exp === 'number' ? p.exp : undefined }
   } catch {
     return null
@@ -101,7 +136,7 @@ export function Licenses() {
   if (list.error) return <ErrorBox error={list.error} />
   const ls = list.data!.data.licenses
   const nks = keys.data?.data.names
-  const selected = ls.find((l) => l.name === open)
+  const selected = ls.find((l) => licenseKey(l) === open)
   return (
     <>
       <PageTitle title="Licences">
@@ -111,11 +146,11 @@ export function Licenses() {
         {ls.length === 0 ? <Empty>No licences.</Empty> : (
           <Table
             rows={ls}
-            rowKey={(l) => l.name}
+            rowKey={licenseKey}
             columns={[
               ['Extension', (l) => (
-                <button type="button" className="font-mono font-medium text-brand-strong underline-offset-2 hover:underline" aria-expanded={open === l.name}
-                  onClick={() => setOpen(open === l.name ? '' : l.name)}>{l.name}</button>
+                <button type="button" className="font-mono font-medium text-brand-strong underline-offset-2 hover:underline" aria-expanded={open === licenseKey(l)}
+                  onClick={() => setOpen(open === licenseKey(l) ? '' : licenseKey(l))}>{l.name}</button>
               )],
               ['Plan', (l) => l.plan],
               ['Holder', (l) => l.holder || <Mono>{l.holder_id}</Mono>],
@@ -126,14 +161,15 @@ export function Licenses() {
               )],
               ['Status', (l) => (
                 <span className="flex flex-wrap items-center gap-2"><Badge>{l.status}</Badge>
-                  {nks && !declared(nks, l.name, l.key) && <span className="text-[13px] text-warning">not served: no live build in any channel declares its key</span>}</span>
+                  {nks && !declared(nks, l) && <span className="text-[13px] text-warning">not served: its key is no live key of its source</span>}</span>
               )],
+              ['Of', (l) => <Mono>{l.owner}</Mono>],
             ]}
           />
         )}
       </Card>
-      {selected && <LicenseView key={selected.name} l={selected} onChanged={() => { list.reload() }} onRemoved={() => { setOpen(''); list.reload() }} />}
-      <Import licenses={ls} onImported={(name) => { setOpen(name); list.reload() }} onStale={list.reload} />
+      {selected && <LicenseView key={licenseKey(selected)} l={selected} onChanged={() => { list.reload() }} onRemoved={() => { setOpen(''); list.reload() }} />}
+      <Import licenses={ls} keys={nks} onImported={(key) => { setOpen(key); list.reload(); keys.reload() }} onStale={() => { list.reload(); keys.reload() }} />
       <Keys names={nks} loading={keys.loading} error={keys.error} reload={keys.reload} />
       <Relays />
     </>
@@ -145,15 +181,14 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
   const { client, api, base } = useTenant()
   const [pending, setPending] = useState<'public' | 'private' | 'remove' | null>(null)
   const { busy, failure, act } = useAction('The licence', onChanged)
-  const path = `${api}/licenses/${seg(l.name)}`
   const run = async () => {
     const p = pending!
     setPending(null)
     if (p === 'remove') {
-      if (await act(() => client.del(path, { ifMatch: l.etag }))) onRemoved()
+      if (await act(() => client.del(licensePath(api, l), { ifMatch: l.etag }))) onRemoved()
       return
     }
-    if (await act(() => client.post(`${path}/${p}`, { ifMatch: l.etag }))) onChanged()
+    if (await act(() => client.post(licensePath(api, l, p), { ifMatch: l.etag }))) onChanged()
   }
   const versions = l.versions ? [l.versions.min && `from ${l.versions.min}`, l.versions.below && `below ${l.versions.below}`].filter(Boolean).join(', ') : ''
   const facts: [string, React.ReactNode][] = [
@@ -166,6 +201,7 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
     ['Expires', when(l.expires_at)],
     ['Grace until', when(l.grace_until)],
     ['Signed by', <Mono>{l.key}</Mono>],
+    ['Of', <><Mono>{l.owner}</Mono>: the source that owns the key for {l.name}; a channel serves it where it serves {l.name} from that source</>],
     ['Source', l.source === 'upstream' ? <>relayed from upstream <Link className="font-mono" to={`${base}/upstreams/${seg(l.upstream ?? '')}`}>{l.upstream}</Link></> : 'imported'],
   ]
   return (
@@ -203,10 +239,12 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
   )
 }
 
-/** Import a licence file; a stored licence for the same extension is replaced after a confirmation.
- * A refusal reads the list again: a licence a relay stored meanwhile, or a changed ETag, is then
- * what the next try replaces. */
-function Import({ licenses, onImported, onStale }: { licenses: License[]; onImported: (name: string) => void; onStale: () => void }) {
+/** Import a licence file; the stored licence it replaces (of the source that owns its key) is
+ * replaced after a confirmation. A refusal reads the list and the keys again: a licence a relay
+ * stored meanwhile, a changed ETag or a key's new owner is then what the next try replaces. */
+function Import({ licenses, keys, onImported, onStale }: {
+  licenses: License[]; keys?: NameKeys[]; onImported: (key: string) => void; onStale: () => void
+}) {
   const { client, api } = useTenant()
   const file = useRef<HTMLInputElement>(null)
   const [token, setToken] = useState('')
@@ -214,7 +252,8 @@ function Import({ licenses, onImported, onStale }: { licenses: License[]; onImpo
   const [replacing, setReplacing] = useState(false)
   const { busy, failure, act } = useAction()
   const p = token ? peek(token) : null
-  const stored = p ? licenses.find((l) => l.name === p.ext) : undefined
+  // the licence it replaces: of the source that owns its key for the name (spec 0033 phase B)
+  const stored = p ? replaced(licenses, keys, p.ext, p.kid) : undefined
   const pick = async (f?: File) => {
     setToken('')
     setBad(false)
@@ -229,11 +268,14 @@ function Import({ licenses, onImported, onStale }: { licenses: License[]; onImpo
   }
   const send = async () => {
     setReplacing(false)
-    const ok = await act(() => client.post(`${api}/licenses`, { raw: { body: new Blob([token]), type: 'application/jwt' }, ifMatch: stored?.etag }))
+    const ok = await act(async () => {
+      const r = await client.post<License>(`${api}/licenses`, { raw: { body: new Blob([token]), type: 'application/jwt' }, ifMatch: stored?.etag })
+      onImported(licenseKey(r.data))
+      return r
+    })
     if (ok) {
       setToken('')
       if (file.current) file.current.value = ''
-      onImported(p!.ext)
     } else onStale()
   }
   return (
@@ -244,7 +286,7 @@ function Import({ licenses, onImported, onStale }: { licenses: License[]; onImpo
         {bad && <ErrorBox error="This file is no licence." />}
         {p && !bad && (
           <p className="m-0">For <Mono>{p.ext}</Mono>{p.plan ? `, plan ${p.plan}` : ''}{p.holder ? `, held by ${p.holder}` : ''}{p.exp ? `, until ${when(new Date(p.exp * 1000).toISOString())}` : ''}.
-            {stored && <span className="text-warning"> It replaces the licence stored for {p.ext} ({stored.source === 'upstream' ? `relayed from ${stored.upstream}` : 'imported'}).</span>}</p>
+            {stored && <span className="text-warning"> It replaces the licence stored for {p.ext} of {stored.owner} ({stored.source === 'upstream' ? `relayed from ${stored.upstream}` : 'imported'}).</span>}</p>
         )}
         {failure != null && <ErrorBox error={failure} />}
         <div><Button tone="brand" disabled={busy || !p || bad} onClick={() => (stored ? setReplacing(true) : send())}>{stored ? 'Replace…' : 'Import'}</Button></div>

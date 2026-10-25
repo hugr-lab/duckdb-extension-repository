@@ -294,13 +294,13 @@ func (t *Tx) DeleteUpstream(ctx context.Context, u Upstream, expected int64) err
 	if expected != 0 && expected != u.Version {
 		return ErrConflict
 	}
+	if err := t.DeleteLicenseKeysOf(ctx, KeySourceUpstream, u.ID); err != nil {
+		return err // spec 0021: the keys it brought go with it
+	}
 	for _, c := range []string{"upstream_asks", "upstream_cells", "upstream_versions", "upstream_entries", "upstream_platforms", "upstream_keys"} {
 		if _, err := t.exec(ctx, "DELETE FROM "+c+" WHERE upstream_id = ?", u.ID); err != nil {
 			return err
 		}
-	}
-	if err := t.DeleteLicenseKeysOf(ctx, KeySourceUpstream, u.ID); err != nil {
-		return err // spec 0021: the keys it brought go with it
 	}
 	if err := t.dropFollows(ctx, UpstreamSource(u.ID)); err != nil { // spec 0033: nothing follows a gone source
 		return err

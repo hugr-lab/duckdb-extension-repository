@@ -476,12 +476,13 @@ See [Attachments](../attachments.md).
 
 | Command | What it does |
 | --- | --- |
-| `license keys <tenant> [<name>]` | `NAME`, `KEY`, `BUILDS`, `SOURCES`: the licence keys of the tenant's live builds |
-| `license list <tenant>` | `NAME`, `PLAN`, `HOLDER`, `STATUS`, `EXPIRES`, `SOURCE`, `VISIBILITY` |
-| `license show <tenant> <name>` | a licence's claims, limits and state |
-| `license token <tenant> <name>` | the licence as received |
-| `license import <tenant> <file or -> [-replace]` | stores a licence under the extension it names; `-replace` replaces the one stored; a refusal names its rule (`kid_untrusted`, `holder_mismatch`, …); the commands on a tenant's licences take `-type <package type>` (`duckdb_extension` by default: a licence is per type and name) |
-| `license remove`, `public`, `private` `<tenant> <name>` | |
+| `license keys <tenant> [<name>]` | `NAME`, `KEY`, `BUILDS`, `SOURCES`, `OWNER`: the tenant's live licence keys, and each key's owner for the name (`-` while none) |
+| `license owner <tenant> <name> <kid> <source>` | gives a key of a name to a source that declares it (`upstream:<name>`, `publisher:<name>`): the licences signed with it move along (spec 0033); a tenant administrator's act |
+| `license list <tenant> [-source <s>]` | `NAME`, `OWNER`, `PLAN`, `HOLDER`, `STATUS`, `EXPIRES`, `SOURCE`, `VISIBILITY`: `OWNER` is the licence's source (the source that owns its key), `SOURCE` how it arrived; `-source` lists one source's |
+| `license show <tenant> <name> [-source <s>]` | a licence's claims, limits and state |
+| `license token <tenant> <name> [-source <s>]` | the licence as received |
+| `license import <tenant> <file or -> [-replace]` | stores a licence under the extension it names, for the source that owns its key; `-replace` replaces the one stored for that source; a refusal names its rule (`kid_untrusted`, `holder_mismatch`, …); the commands on a tenant's licences take `-type <package type>` (`duckdb_extension` by default: a licence is per type and name) |
+| `license remove`, `public`, `private` `<tenant> <name> [-source <s>]` | `-source` names the licence where the extension has licences of several sources (spec 0033) |
 | `license verify <file or -> -key <pem>` | checks a licence offline against the key given, and prints its claims and status |
 
 See [Licensing](../licensing.md).

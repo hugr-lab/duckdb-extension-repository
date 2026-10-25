@@ -4,10 +4,8 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 )
@@ -193,63 +191,30 @@ func saturate(a, b int64) int64 {
 // StatusReceived is the status of received counts in UsageRows.
 const StatusReceived = "received"
 
-// UpstreamVersions are the (name, version) pairs an upstream brought into its channel since it was
-// added, each with the channels of the tenant that hold a release of such a build (spec 0012: its
-// usage there is forwarded to it; a promotion releases the same build elsewhere; the same version
-// from another source is not its, nor are its releases where the channel serves the name from
-// another source).
+// UpstreamVersions are the (name, version) pairs whose usage goes to an upstream, each with the
+// channels of the tenant it is counted in (spec 0012; spec 0033 phase B: a name's selected source in
+// the channel): a channel that serves the name from the upstream and holds a release of the version
+// of a build the upstream brought since it was added (a successor's copies of a removed upstream's
+// builds are not its own; the same version from another source is not its).
 func (s *Store) UpstreamVersions(ctx context.Context, u Upstream) (map[[2]string]map[string]bool, error) {
-	builds := map[string][2]string{}
-	err := s.eachRow(ctx, "SELECT build_id, name, package_version, provenance FROM releases WHERE channel_id = ? AND source = ? AND origin = ? AND created_at >= ?",
-		[]any{u.ChannelID, UpstreamSource(u.ID), OriginUpstream, s.d.timeArg(u.CreatedAt)}, func(sc func(...any) error) error {
-			var id, name, version string
-			var prov sql.NullString
-			if err := sc(&id, &name, &version, &prov); err != nil {
-				return err
-			}
-			var p struct {
-				Upstream string `json:"upstream"`
-			}
-			if json.Unmarshal([]byte(prov.String), &p) == nil && p.Upstream == u.Name {
-				builds[id] = [2]string{name, version}
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
-	}
 	out := map[[2]string]map[string]bool{}
-	ids := make([]string, 0, len(builds))
-	for id := range builds {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	for len(ids) > 0 {
-		chunk := ids[:min(len(ids), 500)]
-		ids = ids[len(chunk):]
-		args := []any{u.TenantID}
-		for _, id := range chunk {
-			args = append(args, id)
-		}
-		err := s.eachRow(ctx, "SELECT r.build_id, r.channel_id FROM releases r JOIN channels c ON c.id = r.channel_id"+
-			" JOIN channel_sources cs ON cs.channel_id = r.channel_id AND cs.name = r.name AND cs.source = r.source WHERE c.tenant_id = ? AND r.build_id IN ("+
-			strings.TrimSuffix(strings.Repeat("?, ", len(chunk)), ", ")+")", args, func(sc func(...any) error) error {
-			var id, ch string
-			if err := sc(&id, &ch); err != nil {
+	err := s.eachRow(ctx, `SELECT DISTINCT r.name, r.package_version, r.channel_id FROM releases r JOIN channels c ON c.id = r.channel_id
+JOIN channel_sources cs ON cs.channel_id = r.channel_id AND cs.name = r.name AND cs.source = r.source
+JOIN builds b ON b.id = r.build_id
+WHERE c.tenant_id = ? AND r.source = ? AND b.source = r.source AND b.created_at >= ?`,
+		[]any{u.TenantID, UpstreamSource(u.ID), s.d.timeArg(u.CreatedAt)}, func(sc func(...any) error) error {
+			var name, version, ch string
+			if err := sc(&name, &version, &ch); err != nil {
 				return err
 			}
-			p := builds[id]
-			if out[p] == nil {
-				out[p] = map[string]bool{}
+			k := [2]string{name, version}
+			if out[k] == nil {
+				out[k] = map[string]bool{}
 			}
-			out[p][ch] = true
+			out[k][ch] = true
 			return nil
 		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
+	return out, err
 }
 
 const dueUsageForwards = `SELECT u.id FROM upstreams u JOIN tenants t ON t.id = u.tenant_id

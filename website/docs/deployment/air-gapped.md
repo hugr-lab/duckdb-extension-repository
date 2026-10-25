@@ -236,13 +236,13 @@ site without a route to the issuer receives it in the bundle, beside the extensi
   `-license-holder <sub>` it names the holder it expects: the gateway carries no other holder's
   licence, and the import takes none.
 - **The gateway agrees**: `ka bundle export gw … -licenses`. Without the flag it carries none, and
-  says so. It carries, for each repository source, the licences its tenant holds for the names
+  says so. It carries, for each repository source, the licences its tenant holds of that source (spec 0033) for the names
   whose files the bundle carries or the site already holds, in force, at most 1,000 per source; a
   private release's name only with `-private`. It prints each licence's name, holder and expiry.
   Its tenant holds them as any tenant does: imported by an administrator, or relayed from a
   credentialed upstream such as the issuer's.
 - **The import** takes each licence after the files, into the first bundle-mode upstream of its
-  source that supplies the name, verified with the keys that upstream's builds declare. A licence
+  source that supplies the name and owns its key (spec 0033), verified with the keys that upstream's builds declare. A licence
   an administrator imported at the site is never replaced by a bundle's, and a bundle removes no
   licence: one ends at its expiry plus grace. The import prints the licences stored, replaced,
   unchanged and refused, with each refusal's reason
