@@ -98,7 +98,13 @@ func (k *kista) publish(t *testing.T, name string, key ssh.Signer) int {
 // extra parameters, and returns the answer's status.
 func (k *kista) publishTo(t *testing.T, route, name string, key ssh.Signer, extra url.Values) int {
 	t.Helper()
-	data, err := os.ReadFile(k.b.extensions[name])
+	return k.publishFile(t, route, k.b.extensions[name], key, extra)
+}
+
+// publishFile is publishTo with an extension file (withVersion's copy of a built one).
+func (k *kista) publishFile(t *testing.T, route, path string, key ssh.Signer, extra url.Values) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +133,7 @@ func (k *kista) publishTo(t *testing.T, route, name string, key ssh.Signer, extr
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		t.Logf("publish %s to %s: %d %s", name, route, resp.StatusCode, b)
+		t.Logf("publish %s to %s: %d %s", filepath.Base(path), route, resp.StatusCode, b)
 	}
 	return resp.StatusCode
 }

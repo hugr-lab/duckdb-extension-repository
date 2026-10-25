@@ -1,7 +1,7 @@
 # Spec 0033: The catalogue
 
-- **Status**: accepted (2026-10-24); phase A1 implemented (parts 1, 2, 3a and 4; part 3b deferred to
-  the follow-ups); A2 implemented; B implemented; C to come
+- **Status**: implemented (2026-10-25: A1 parts 1, 2, 3a, 4; A2; B; C; part 3b deferred to the
+  follow-ups)
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -94,7 +94,10 @@ its releases) gaining its source, state and visibility.
   writes that channel's `auto` rule for the name, unless the channel already has a rule for it, so
   today's scripts keep working. Its matrix's DuckDB versions are its home channel's (today's
   matrix) or, without one, every version the tenant's channels serve; channels filter by their own
-  versions at placement. An upstream without a home channel only fills the catalogue.
+  versions at placement. An upstream without a home channel only fills the catalogue. (As built: the
+  first release writes the home channel's rule without a mode, see As built (A1 part 2); every
+  upstream has its home channel, the one it was made with, and the `home` route and command, an
+  upstream without one and its matrix without one are A1 part 3b's, deferred to the follow-ups.)
 - **Visibility.** An entry's visibility is what its arrival gives it today: a mirror's public, or
   private when its credential or bundle source says so (specs 0009, 0014); a publication's as the
   request asks (`visibility`, private by default, spec 0008). It is the widest a placement may serve
@@ -148,8 +151,11 @@ its releases) gaining its source, state and visibility.
     pinned the name), as a miss under no rule does;
   - the pass places the fetched entry wherever else rules take it.
 
-  The cell outcomes `other_source` and `shadowed` leave the cells (no channel there) and become
-  placement outcomes.
+  (As built: asks come from the upstream's home channel only, `upstream_asks` gains no channel and
+  a fetch places into the home channel; a miss under a `manual` rule lands the entry and misses, see
+  As built (A1 part 2 and part 4). The asks of other channels, and a `manual` rule asking nothing,
+  are in the follow-ups.) The cell outcomes `other_source` and `shadowed` leave the cells (no
+  channel there) and become placement outcomes (as built: they stay, see As built (C)).
 - **Withdrawal**, for a distributor's publisher (removed or not): a distribution admin or a server
   administrator withdraws a version of a name from that source in a tenant, with a reason. In one
   transaction its entries become `withdrawn` and every channel of the tenant holding a release of
@@ -288,12 +294,13 @@ and in each tenant the key's owner is the source there.
 
 - **Catalogue**: the read and publish routes above; `DELETE …/catalogue/builds/{id}` (purge);
   `PUT …/upstreams/{u}/hold`, `…/publishers/{p}/hold`, `PUT …/upstreams/{u}/home
-  {"channel": …}`; `PUT …/license-keys/{name}/{kid}/owner`; for a distributor's publisher,
+  {"channel": …}` (as built: not made, with A1 part 3b in the follow-ups); `PUT
+  …/license-keys/{name}/{kid}/owner`; for a distributor's publisher,
   `PUT …/publishers/{p}/distributor {"distributor": …}` and `POST …/catalogue/{source}/extensions/
   {ext}/versions/{v}/withdraw {"reason": …}` (distribution admins and server administrators).
   Spec 0009's and 0023's routes are otherwise unchanged. CLI: `kista admin catalogue list|show|
-  purge|withdraw …`, `kista admin upstream hold|home …`, `kista admin publisher hold|distributor
-  …`.
+  purge|withdraw …`, `kista admin upstream hold|home …` (as built: `hold` only), `kista admin
+  publisher hold|distributor …`.
 - **Channel**: `…/channels/{c}/sources[/{name}]` gains `mode`, the current and newest available
   versions and the last outcome; `GET|PUT|DELETE …/channels/{c}/follows/{source}` (the skipped
   names on `GET`); `PUT …/channels/{c}/hold`; `…/releases/place`. CLI: `kista admin channel source
@@ -302,8 +309,10 @@ and in each tenant the key's owner is the source there.
 - **Distribution admins** (spec 0030) gain, for distributors' publishers: marking them, setting
   their hold, withdrawing and purging their versions, reading their entries.
 - **Events**: `catalogue.arrival`, `catalogue.hold`, `catalogue.withdrawn`, `catalogue.purge`,
-  `rule.set`, `rule.clear`, `follow.set`, `follow.clear`, `release.place` (with `early`),
-  `placement.failed`, `license.key_conflict`, `license.key_owner`.
+  `source.set` (with `mode`), `source.clear`, `follow.set`, `follow.clear`, `release.place` (with
+  `early`), `license.key_conflict`, `license.key_owner`; a placement's failure is its rule's last
+  outcome, not an event (as built, see As built (A1 part 2): spec 0031's `source.set` and
+  `source.clear` kept, no `rule.set`, `rule.clear` nor `placement.failed`).
 - **Existence**: answers about the catalogue follow spec 0007's rules; install and anonymous callers
   get `404` as for any management route.
 
@@ -324,7 +333,7 @@ A1  builds               + source (as releases.source), visibility, legacy_dupli
     channel_sources      + mode (auto, manual, follow), last_outcome
     channel_follows      channel_id, source, set_by, set_at; pk (channel_id, source)
     follow_skips         channel_id, source, name, reason; pk (channel_id, source, name)
-    upstream_asks        + channel_id
+    upstream_asks        + channel_id (as built: not added; asks stay the home channel's)
 A2  upstreams, publishers, channels   + hold_seconds
     builds               + available_at (held until; set at arrival), publisher_key_id,
                            revoked_at (kept by a purge of held entries)
@@ -355,7 +364,9 @@ The migrations keep what every channel serves, and what arrives next goes where 
   fetches);
 - every other existing selection (a publisher, `tenant`, an upstream selected in a channel that is
   not its home, by promotion) becomes `manual`: a CI publishing into `dev` does not start reaching
-  `prod`, and `nightly`'s mirror does not start flowing into `prod`;
+  `prod`, and `nightly`'s mirror does not start flowing into `prod` (as built: it keeps no mode,
+  and the placement pass leaves such a rule alone, so nothing new reaches `prod` by it either, see
+  As built (A1 part 2));
 - every build gets the source its releases name; a build whose releases name two sources (spec
   0031's same-body rule) is split into one per source, and every reference to it (releases,
   licence-key records, cells) repointed; all are `available`;
@@ -372,7 +383,8 @@ The migrations keep what every channel serves, and what arrives next goes where 
   licence the owner holds as its own, so both channels serve it.
 
 The cells API loses `other_source` and `shadowed` (now placement outcomes, on rules), and the
-console's Sources tab shows modes: both are in the upgrade notes.
+console's Sources tab shows modes: both are in the upgrade notes. (As built: the cells keep them,
+see As built (C); the upgrade notes say so.)
 
 ## Security
 
@@ -425,14 +437,15 @@ console's Sources tab shows modes: both are in the upgrade notes.
   withdrawal; licences per (name, source), key owners (a copied key changes nothing; the owner's
   removal; an administrator's act); each migration's backfill from a spec 0031 database (home
   channels, `auto` and `manual`, pull-through follows, splits, duplicate and purged slots, `unknown`
-  licences).
+  licences; as built, the migrations give no modes and no follows, so their tests check that none
+  is given, see Existing data).
 - The placement pass: idempotent, leased, queued, newest-only ordering (a held older version does
   not overtake), yanked and purged versions not re-placed, failures recorded, suspended tenants
   skipped; a placement racing a withdrawal; a revoked key purging held entries.
 - Intake: every path lands an entry; the channel route places in the same request and refuses a
   held publisher; the catalogue-only route places nothing; an upstream with a home channel serves
   new entries; lazy and pull-through through a rule or a follow fetch and place within one
-  request's retry window.
+  request's retry window (as built: through the home channel only, see the Mirrors item above).
 - Licences: imported before any placement; one served per channel by its source.
 - The existing DuckDB end-to-end suite passes unchanged after each phase.
 - New e2e with the pinned DuckDB: a tenant's `repository` upstream (another kista) and a
@@ -441,7 +454,8 @@ console's Sources tab shows modes: both are in the upgrade notes.
   geo_tools FROM …`, the right body each); a follow of the distributor takes its other names and
   lists `geo_tools` as skipped; a withdrawal stops `nightly`'s install at once; a held entry placed
   `early`; a licensed extension's licence imported before placement, served once placed, and
-  verified by the SDK.
+  verified by the SDK (as built: `TestCatalogueSources` and `TestLicenseFromDistributor`, see As
+  built (C) and (B part 2)).
 
 ## Delivery
 
@@ -1101,6 +1115,94 @@ kista, its pipeline a distributor's publisher in every tenant, publishing each a
 every tenant's catalogue with a day's hold and withdrawing there itself; each tenant mirrors
 DuckDB's repositories it wants. Its spec 0003's decisions change accordingly.
 
+### As built (C)
+
+- **No migration and no new route.** The console uses the routes A1 to B built. Three small server
+  changes, found in review: placing by hand resolves `publisher-id:<id>` of a live distributor's
+  publisher for a server administrator (the form its catalogue answers one in when another
+  distributor's publisher, live or removed, had its name; a removed one, and the form from anyone
+  else, place nothing, as before); a rule's `newest` skips revoked versions too, which the pass never
+  places (`Newest` and the pass's candidates agree: not held, withdrawn nor revoked); `kista admin
+  catalogue show` gains an `ID` column, the build's, which `catalogue purge` takes.
+- **The Catalogue section** (`…/catalogue`, tenant administrators: the catalogue's reads are
+  theirs; a server administrator's opened tenant too): every (source, name) with its versions
+  newest first, each marked held, revoked or withdrawn, and the channels whose rules take it with
+  the mode. The API answers the catalogue whole, so the name prefix and the source are filtered in
+  the page, as the Sources tab already did. An entry's page (`…/catalogue/<source>/<name>`) reads
+  the entry (`?source=&name=`) and its versions with their builds: state (held until when,
+  withdrawn with its reason and when, revoked), visibility, where each is placed; a version's state
+  is read from its builds (the versions read), so nothing is offered for a withdrawn version before
+  the entry is read, and a failed read of the entry or the channels is shown. A removed source's
+  entries (`upstream:(removed)`, `publisher:(removed)`, not read by name) are listed without a page,
+  rows keyed by their position, since two removed sources of one name answer one label. Its
+  actions:
+  - **Place…** a version into a signed channel of the default package type (the console shows that
+    type's catalogue only; other types through the API and the CLI), offered where the caller holds
+    `promote` on the name: found in the e2e, `admin` does not imply `promote` (spec 0008), so the
+    console's permissions gained `mayPromote`, which hides the action from a tenant administrator
+    without it (a grant on a group counts, its members unknown to the console: the API decides).
+    The dialog takes private, not current, and early for a version with a held or revoked build,
+    enabled for a channel administrator only. Not offered for a withdrawn version.
+  - **Purge…** a build placed nowhere and not withdrawn (a tenant administrator's; the API also
+    refuses one released once and purged since, and the page shows its answer).
+  - **Withdraw…** with a reason (at most 400 bytes of UTF-8, counted as the server does), shown to a
+    server administrator only, for an entry the catalogue
+    answers with a `publisher_id` (a distributor's publisher: the server actor reads it so,
+    phase B); a tenant administrator is never offered it, and distribution admins have no console.
+- **The Sources tab** keeps its table (the source stays the second column) and gains the mode (in a
+  signed channel; a rule without one reads "as it lands"), the version the channel holds and the
+  newest available one when it is newer (spec 0006's order, the store's `CompareVersions` in the
+  console: a held version placed early may be newer than the newest available), and the last outcome
+  with its time. **Switch…** became **Change…**: the source and the mode (keep, `auto`, `manual`;
+  `auto` disabled for `tenant`, and reset when the source becomes `tenant`), one `PUT`; the "keep"
+  choice says what the server leaves (none for a new rule; `manual` for an `auto` rule moved to the
+  tenant and for a follow's rule moved to another source), and the dialog never starts from a
+  removed source's label. **Place…** places a version of the row's source by hand (the newest suggested), where the
+  caller holds `promote`; early is always offered there (the tab does not read holds), the API
+  answering `409 …/held` without it. Above the table, the channel's **hold** (`GET|PUT …/hold`;
+  days typed as the CLI takes them, `2d`, are sent as hours, and the Go duration answered is shown
+  shortened, `48h`); below it, **Follows**: each followed source, since when and by whom, the names
+  it skips with the reason (as of the pass's last look), **Unfollow…**, and a field to follow a
+  source (the sources the channel's rules and releases name, offered). A passthrough channel shows
+  neither, nor the mode. Every source in a path keeps its colon (`sourceSeg`), and a version its `+`
+  (`versionSeg`): the API refuses an escaped path. A rule's **Change…** without a mode keeps the
+  rule's, and a new rule has none (the API's and the service's comments said manual; corrected).
+- **Smaller**: a withdrawn release is badged in a channel's release lists; the Publishers list shows
+  each publisher's hold and a distributor's publisher's distributor, and an upstream's page its home
+  channel and a mirror's hold (read only: set with the CLI or the API).
+- **Deviation: the cells keep `other_source` and `shadowed`.** The Existing data section's "the cells
+  API loses `other_source` and `shadowed`" did not happen: as built in A1, a mirror still releases
+  into its home channel, where its runs decide them, so the upstream page's cells filter keeps them;
+  the upgrade notes say so.
+- **The DuckDB end to end** (`e2e/catalogue_test.go`, `TestCatalogueSources`, about 10 seconds):
+  another kista's `loadable_extension_demo` stands for `geo_tools` (the pin builds no `geo_tools`,
+  and kista's file checks need the name's entry point), mirrored by a `repository` upstream with
+  `prod` its home channel; a distributor's publisher with a hold of one second (the server's unit)
+  publishes a copy of it with another version in its footer (`withVersion`) and `kista_demo` into
+  the catalogue. `nightly`'s `auto` rule places the distributor's build only once the hold has
+  passed, and DuckDB at the pin installs the upstream's body from `prod` and the distributor's from
+  `nightly` (`extension_version`, the upstream's the built file's own footer version); `prod`'s follow of the distributor places `kista_demo` and lists
+  `geo_tools` as skipped ("the channel serves it from another source"); the withdrawal makes
+  `nightly`'s next install fail while `prod` still installs the upstream's; a version held for an hour is refused without `early` and installed
+  from `nightly` once placed early. The licence part is B part 2's `TestLicenseFromDistributor`,
+  unchanged. `publishTo` gained `publishFile` for a file of the test's own.
+- **The console's end to end** (`web/console/e2e/catalogue.spec.ts`): `run.sh` adds a channel
+  `nightly` following a distributor's publisher with a day's hold, which publishes `geo_tools` 0.9
+  and 1.0 and a `hello_acme` of its own into the catalogue (signed requests, a `publish` function
+  shared with the existing publication), and the tenant's `maps` 1.0 and 1.1 (`catalogue add`); kista
+  is started again after the publications, since the placement pass looks at every follow at its
+  start (the skip) and then every minute (`serve.drain_timeout: 1ms` there, so the restart does not
+  wait the default 5 seconds). A server administrator withdraws 0.9 with its reason,
+  places the held 1.0 early into `nightly`, and purges `maps` 1.1; a tenant administrator without
+  `promote` is offered neither placing nor withdrawing (checked once the entry and the channels are
+  read), changes `nightly`'s rule for `geo_tools` from
+  the follow's to `manual`, sees the follow skip `hello_acme` ("the tenant uses it from another
+  source"), unfollows and follows again, and sets the channel's hold to `2d` and back to none. The
+  0031-era test of the Sources tab uses **Change…**. The fixture takes a name without a licence key.
+  The API test of distributors places the live one of two distributors' publishers of one name by
+  `publisher-id:<id>` (a server administrator), refused for the removed one and to a tenant
+  administrator; the revoked entry's test checks the rule's `newest` skips it.
+
 ## Alternatives considered
 
 - **One catalogue per kista, with the server's sources shared by every tenant** (an earlier draft of
@@ -1138,8 +1240,9 @@ DuckDB's repositories it wants. Its spec 0003's decisions change accordingly.
 - **0008**: publications land in the catalogue; the channel route places in the same request and
   refuses a held publisher; a catalogue-only route; promotions respect holds; slots per source.
 - **0009**: an upstream feeds the catalogue and may have a home channel; two upstreams may list one
-  name; `other_source` and `shadowed` become placement outcomes; passthrough channels take core
-  names from eager `duckdb-core` upstreams only.
+  name (as built: of two channels; within one channel a name stays on one upstream's allowlist);
+  `other_source` and `shadowed` become placement outcomes (as built: they stay cell outcomes);
+  passthrough channels take core names from eager `duckdb-core` upstreams only.
 - **0012, 0021**: licences per (tenant, name, source); key owners per (name, key); live keys from
   the catalogue's newest available version; usage forwarded by the selected source.
 - **0014**: a bundle imports into its upstream's source in the catalogue.
@@ -1152,12 +1255,18 @@ DuckDB's repositories it wants. Its spec 0003's decisions change accordingly.
 - **0031**: selections gain a mode; follows; contests happen at placement; the same-body rule goes
   (slots are per source).
 - **0032**: asks come from channels whose rule or follow names the upstream; the fetch places into
-  the asking channel, or an available entry is placed without a fetch.
+  the asking channel, or an available entry is placed without a fetch (as built: not yet, in the
+  follow-ups; asks stay the home channel's).
 
 ## Follow-ups
 
 - Upstreams without a home channel (A1 part 3b): a mirror that only fills the catalogue, its
-  matrix's DuckDB versions its own, its lazy asks from any channel whose rule or follow names it.
+  matrix's DuckDB versions its own, its lazy asks from any channel whose rule or follow names it
+  (`upstream_asks` gaining the asking channel, the fetch placing into it, an available entry placed
+  without a fetch); `PUT …/upstreams/{u}/home` and `kista admin upstream home`.
+- A miss under a `manual` rule asking nothing (as built it lands the entry and misses).
+- A withdrawn entry dropping its body reference (B part 1 keeps the body with the record).
+- The catalogue's reads saying whether an entry declares licence keys.
 - Merging two upstreams of one repository.
 - Version constraints in a rule (`auto` within `1.x`).
 - Notifying a channel's administrators of a new version under a `manual` rule.

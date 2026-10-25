@@ -45,6 +45,12 @@ export class Perms {
   extensionAdmin(ext: string) {
     return this.tenantAdmin || this.grants.some((g) => this.admin(g) && g.extension === ext && !g.channel)
   }
+  /** Whether the caller may place a version of an extension in a channel (spec 0033): promote on it,
+   * which admin does not imply (spec 0008). A grant on a group may cover it (its members are not
+   * known here), and a reserved name needs a grant naming it: the API decides. */
+  mayPromote(c: string, ext: string) {
+    return this.server || this.grants.some((g) => g.verbs.includes('promote') && (!g.channel || g.channel === c) && (!g.extension || g.extension === ext))
+  }
   /** Whether the caller administers anything in a channel. */
   anyIn(c: string) {
     return this.channelAdmin(c) || this.extensionsIn(c).length > 0

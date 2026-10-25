@@ -1,10 +1,11 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { Ban, BarChart3, Boxes, CloudDownload, Fingerprint, KeyRound, List, Package, Send, ShieldCheck } from 'lucide-react'
+import { Ban, BarChart3, Boxes, CloudDownload, Fingerprint, KeyRound, Library, List, Package, Send, ShieldCheck } from 'lucide-react'
 import { useTenant } from '../lib/context'
 import { useSections, type NavItem } from '../lib/frame'
 import { Empty } from '../components/ui'
 import { Access } from './Access'
 import { Blocks } from './Blocks'
+import { Catalogue, CatalogueEntryPage } from './Catalogue'
 import { Channel, Extension } from './Channel'
 import { Channels } from './Channels'
 import { Events } from './Events'
@@ -24,7 +25,10 @@ export function TenantArea({ label }: { label?: React.ReactNode }) {
   const tabs: NavItem[] = []
   if (admin) tabs.push({ to: `${base}/channels`, label: 'Channels', icon: Package })
   // spec 0015 phases 2a, 2b: a group's administrators read their groups; the rest is a tenant administrator's
-  if (perms.tenantAdmin) tabs.push({ to: `${base}/upstreams`, label: 'Upstreams', icon: CloudDownload })
+  if (perms.tenantAdmin) {
+    tabs.push({ to: `${base}/catalogue`, label: 'Catalogue', icon: Library }) // spec 0033: the tenant's administrators read it
+    tabs.push({ to: `${base}/upstreams`, label: 'Upstreams', icon: CloudDownload })
+  }
   if (perms.tenantAdmin || perms.groups.length > 0) tabs.push({ to: `${base}/groups`, label: 'Groups', icon: Boxes })
   if (perms.tenantAdmin) {
     tabs.push({ to: `${base}/access`, label: 'Access', icon: ShieldCheck })
@@ -44,6 +48,8 @@ export function TenantArea({ label }: { label?: React.ReactNode }) {
       <Route path="channels/:c" element={<Channel />} />
       <Route path="channels/:c/extensions/:ext" element={<Extension />} />
       <Route path="channels/:c/releases/:ext/:id" element={<Release />} />
+      <Route path="catalogue" element={<Catalogue />} />
+      <Route path="catalogue/:source/:name" element={<CatalogueEntryPage />} />
       <Route path="upstreams" element={<Upstreams />} />
       <Route path="upstreams/:name" element={<UpstreamPage />} />
       <Route path="blocks" element={<Blocks />} />

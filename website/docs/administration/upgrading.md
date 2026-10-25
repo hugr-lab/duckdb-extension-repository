@@ -170,6 +170,19 @@ so the operator declares it:
 
 ## Upgrading to the next release (schema 42)
 
+### The console's catalogue and a channel's rules (spec 0033, phase C)
+
+- No migration. The console gains a **Catalogue** section for tenant administrators, and a channel's
+  **Sources** tab shows each rule's mode, the current and newest versions and the last outcome, with
+  the channel's hold and follows beside it. Its **Switch…** is now **Change…**, which sets the mode
+  too ([Administration console](../console.md#screens)).
+- A mirror's cells keep the outcomes `other_source` and `shadowed`: a mirror still releases into
+  its home channel, where they are decided.
+- Small changes: a rule's `newest` skips revoked versions, as the placement pass does;
+  `kista admin catalogue show` ends with an `ID` column (the build's, for `catalogue purge`); placing
+  by hand takes `publisher-id:<id>` from a server administrator, as its catalogue names a
+  distributor's publisher whose name another one had.
+
 ### Licences per source, and a key's owner (spec 0033, phase B part 2)
 
 - **Migration `0042_license_owners`** adds `license_key_owners` (each key's owner for a name in a

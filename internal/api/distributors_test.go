@@ -263,4 +263,20 @@ func TestDistributorRoutes(t *testing.T) {
 	if r := call(200, "POST", T+"/catalogue/publisher-id:"+removedID+"/extensions/gone_ext/versions/1.0/withdraw", da, `{"reason":"retired"}`); len(r.json(t)["withdrawn"].([]any)) != 1 {
 		t.Fatalf("withdrawn by its id: %s", r.body)
 	}
+	// spec 0033 phase C: the live one, named by its id as the server administrator's catalogue names
+	// it, is placed by that name; the removed one, and the form to a tenant administrator, are not
+	if r := m.upload(t, T+"/catalogue/extensions/gone_ext/builds?version=2.0&platform=linux_amd64", m.addKey(t, da, "acme", "gone-ci"),
+		built(t, "2.0", "gone_ext_duckdb_cpp_init")); r.status != 201 {
+		t.Fatalf("gone_ext 2.0: %d %s", r.status, r.body)
+	}
+	liveID := ""
+	for _, e := range call(200, "GET", T+"/catalogue?name=gone_ext", sa, "").json(t)["entries"].([]any) {
+		if id := e.(map[string]any)["publisher_id"].(string); id != removedID {
+			liveID = id
+		}
+	}
+	const place = T + "/channels/prod/extensions/gone_ext/releases/place"
+	call(400, "POST", place, sa, `{"source":"publisher-id:`+removedID+`","version":"1.0"}`)
+	call(404, "POST", place, ta, `{"source":"publisher-id:`+liveID+`","version":"2.0"}`)
+	call(201, "POST", place, sa, `{"source":"publisher-id:`+liveID+`","version":"2.0"}`)
 }

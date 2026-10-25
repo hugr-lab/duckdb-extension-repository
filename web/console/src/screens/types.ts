@@ -24,6 +24,8 @@ export interface Release {
   /** whose release it is, and whether it is the channel's source of the name (spec 0031): only those are served */
   source: string
   selected: boolean
+  /** its catalogue entry was withdrawn by its distributor (spec 0033 phase B): served nowhere */
+  withdrawn?: boolean
   etag: string
 }
 

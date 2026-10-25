@@ -3001,7 +3001,8 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 			return err
 		}
 		now := a.svc.Store.Now()
-		a.table("VERSION\tPLATFORM\tSLOT\tBODY\tVISIBILITY\tORIGIN\tCREATED\tRELEASED IN\tHELD UNTIL\tREVOKED\tWITHDRAWN", func(w io.Writer) {
+		// the build's id last: what catalogue purge takes
+		a.table("VERSION\tPLATFORM\tSLOT\tBODY\tVISIBILITY\tORIGIN\tCREATED\tRELEASED IN\tHELD UNTIL\tREVOKED\tWITHDRAWN\tID", func(w io.Writer) {
 			for _, v := range vs {
 				for _, b := range v.Builds {
 					var in []string
@@ -3018,8 +3019,8 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 					if b.Withdrawn() {
 						withdrawn = ts(b.WithdrawnAt) + " " + b.WithdrawnReason
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Version, b.Platform, b.Slot(), b.BodyHash[:12], b.Visibility,
-						b.Origin, ts(b.CreatedAt), dash(strings.Join(in, " ")), held, revoked, withdrawn)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Version, b.Platform, b.Slot(), b.BodyHash[:12], b.Visibility,
+						b.Origin, ts(b.CreatedAt), dash(strings.Join(in, " ")), held, revoked, withdrawn, b.ID)
 				}
 			}
 		})

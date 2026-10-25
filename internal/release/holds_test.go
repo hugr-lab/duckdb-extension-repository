@@ -286,6 +286,10 @@ func TestRevokedEntry(t *testing.T) {
 		if got := p.prod(t); got != "" {
 			t.Fatalf("a revoked entry placed by an auto rule after its hold: %q", got)
 		}
+		// nor is it the rule's newest available version (spec 0033 phase C: what the pass would place)
+		if v, err := p.rel.Source(ctx, admin, "acme", "prod", "tresor"); err != nil || v.Newest != "" {
+			t.Fatalf("a revoked entry as the newest: %+v %v", v, err)
+		}
 		if _, _, err := p.rel.Promote(ctx, admin, "acme", "prod", "tresor", release.PromoteOptions{From: "staging", Version: "1.0"}); !errors.Is(err, release.ErrHeld) {
 			t.Fatalf("a revoked entry promoted: %v", err)
 		}

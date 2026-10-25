@@ -171,3 +171,7 @@ export const seg = (s: string) => {
 /** A key fingerprint as a path segment: sha256:… with its colon as is (the API refuses escaped
  * paths; a fingerprint has no other character to escape). */
 export const fingerprintSeg = (s: string) => encodeURIComponent(s).replace(/%3A/gi, ':')
+
+/** A catalogue source as a path segment (spec 0033): upstream:…, publisher:…, publisher-id:… with
+ * its colon as is, as a fingerprint's. */
+export const sourceSeg = fingerprintSeg
