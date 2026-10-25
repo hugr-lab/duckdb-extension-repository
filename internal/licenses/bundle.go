@@ -161,10 +161,11 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 					Reason: "no bundle-mode upstream of the source supplies a release of " + name + " here"})
 				continue
 			}
-			// spec 0033 phase B: the upstream must own the key for the name; its keys verify it (spec
-			// 0021). A dry run claims no owner: it stores nothing
+			// spec 0033 phase B: the upstream must own the key for the name, or the licence must be the
+			// one the owner holds (relayable); its keys verify it (spec 0021). A dry run claims no
+			// owner: it stores nothing
 			src := store.UpstreamSource(u.ID)
-			if _, err := s.owned(ctx, tx, t.ID, typ, it.tok, src, lb.of, !dryRun); err != nil {
+			if err := s.relayable(ctx, tx, t.ID, typ, it.tok, it.Token, src, lb.of, !dryRun); err != nil {
 				if r := refusal(err, it.tok); r != nil {
 					refused = append(refused, *r)
 					continue

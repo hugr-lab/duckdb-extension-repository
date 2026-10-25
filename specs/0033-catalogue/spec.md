@@ -367,7 +367,9 @@ The migrations keep what every channel serves, and what arrives next goes where 
 - (B) a key's owner for a name is the source that recorded it first; licences get their key's
   owner; a licence whose key no record has (rotated out or refused, so not served today either)
   gets the source `unknown`, is kept for its administrators and is not served until re-imported;
-- tenants with two upstreams of the same repository (one per channel) keep two sources.
+- tenants with two upstreams of the same repository (one per channel) keep two sources; as built
+  (B part 2), the key has one owner among them, and the other upstream's relay stores the very
+  licence the owner holds as its own, so both channels serve it.
 
 The cells API loses `other_source` and `shadowed` (now placement outcomes, on rules), and the
 console's Sources tab shows modes: both are in the upgrade notes.
@@ -969,22 +971,25 @@ channel, deferred.
   count then (a distributor's publisher's for a name the removed upstream listed: `listed` is read
   live). The conservative choice over the spec's "the next recorder owns it": the key waits for a
   source recording it afresh (a build arriving after the removal; a claim replaces the removed
-  owner's row), or for the act below. `DeleteLicenseKeysOf` runs before the source's row and entries
-  go (the first recorder reads them). The act (`PUT …/license-keys/{name}/{kid}/owner {"source":
-  …}`, `kista admin license owner <t> <name> <kid> <source>`; tenant administrators and server
-  administrators, not licence managers: the spec names a tenant administrator's act). The source is
-  a live upstream or publisher of the tenant (`upstream:<name>`, `publisher:<name>`, or the id forms
-  below) that recorded the key on its own build of the name (`400` otherwise, the conservative
-  reading: a source that never declared the key would serve nothing with it). The act moves the
-  licences of the name signed with the key from the owner before to the new one (where it holds
-  none, a licence of source `unknown` signed with the key moves instead), and is refused (`409`)
-  while the new owner holds a licence of the name already (nothing removed silently, as spec 0028's
-  holder change); giving a key to its recorded owner changes nothing and writes no event. A relayed
-  licence (source `upstream`) moved to an upstream gets that upstream as its relayer (its
-  `upstream_id`), so its relay governs it; an imported one moved to an upstream stays `import`
-  (conservative: no relay ever deletes an administrator's import). Event `license.key_owner` with
-  `before` and the `moved` licence ids. Unmarking a publisher keeps its keys and its ownership (spec
-  0021's unmarking keeps the keys).
+  owner's row: compare-and-set on its `set_at`, so a claim computed before another removal refreshed
+  it records nothing), or for the act below. The removal writes the removed owner's row only where
+  there is none (insert-if-absent) or over the removed owner's row it read (the same
+  compare-and-set), never over an administrator's act racing it. `DeleteLicenseKeysOf` runs before
+  the source's row and entries go (the first recorder reads them). The act (`PUT
+  …/license-keys/{name}/{kid}/owner {"source": …}`, `kista admin license owner <t> <name> <kid>
+  <source>`; tenant administrators and server administrators, not licence managers: the spec names a
+  tenant administrator's act). The source is a live upstream or publisher of the tenant
+  (`upstream:<name>`, `publisher:<name>`, or the id forms below) that recorded the key on its own
+  build of the name (`400` otherwise, the conservative reading: a source that never declared the key
+  would serve nothing with it). The act moves the licences of the name signed with the key from the
+  owner before to the new one (where it holds none, a licence of source `unknown` signed with the
+  key moves instead), and is refused (`409`) while the new owner holds a licence of the name already
+  (nothing removed silently, as spec 0028's holder change); giving a key to its recorded owner
+  changes nothing and writes no event. A relayed licence (source `upstream`) moved to an upstream
+  gets that upstream as its relayer (its `upstream_id`), so its relay governs it; an imported one
+  moved to an upstream stays `import` (conservative: no relay ever deletes an administrator's
+  import). Event `license.key_owner` with `before` and the `moved` licence ids. Unmarking a
+  publisher keeps its keys and its ownership (spec 0021's unmarking keeps the keys).
 - **Live keys** of a source (spec 0021's rule per source): those it recorded on its own live builds
   (an active or deprecated release in a signed channel that serves the build's source for the name,
   not blocked, not withdrawn), or on its newest available version of the name in the catalogue (not
@@ -997,18 +1002,27 @@ channel, deferred.
   that (name, source) only with `If-Match`, as before; where the owner holds none, a licence of
   source `unknown` signed with the same key is the one it replaces (`If-Match` on that one: an
   existing client sending none gets `409` and reads the list, rather than two licences of the name
-  and `409` on every sourceless route after); the relay applies a licence only when its upstream
-  owns the key (`key_owner` refusal otherwise: neither another source's copy of its key nor its copy
-  of another's), verified against the keys it brought, and replaces by (name, that upstream) with
-  spec 0012's and 0021's rules (where the upstream holds none for the name, a licence of source
-  `unknown` it relayed itself with the same key is replaced, keeping its visibility; one it relays
-  again unchanged that another upstream relayed before becomes its own, `upstream_id`, an import
-  staying an import; a bundle's apply does the same); a bundle's licence goes to the first
-  bundle-mode upstream of its source that supplies the name and owns the key (else the first that
-  supplies it, refused for the key). `not_supplied` now reads the catalogue: a build of the name the
-  upstream brought since it was added (a successor's copies are not its own), not withdrawn, revoked
-  nor blocked, available or live. The expected holder (spec 0028) is checked on every path as
-  before.
+  and `409` on every sourceless route after); the relay applies a licence when its upstream owns the
+  key, or **when it is byte for byte the licence the key's owner holds for the name** (relayed or
+  imported; the owner's decision: a licence is the organisation's purchase of the product, and every
+  channel serving a genuine build of it serves it, as for a tenant mirroring two channels of one
+  remote into two of its own; the key's owner only stops a source carrying a copied key from getting
+  a licence of its own), stored as (name, that upstream); any other licence signed with a key
+  another source owns is refused `key_owner`; verified against the keys it brought, and replaces by
+  (name, that upstream) with spec 0012's and 0021's rules (where the upstream holds none for the
+  name, a licence of source `unknown` it relayed itself with the same key is replaced, keeping its
+  visibility; one it relays again unchanged that another upstream relayed before becomes its own,
+  `upstream_id`, an import staying an import; a bundle's apply does the same); a bundle's licence
+  goes to the first bundle-mode upstream of its source that supplies the name and owns the key (else
+  the first that supplies it, refused for the key unless it is the owner's very licence). A refusal
+  is never a revocation: a row stored from the upstream stays and the licence is tried again at the
+  next run (a renewal reaching the upstream before the owner's relay has it). Imports go to the
+  key's owner only; an administrator giving the key to an upstream that holds such a copy is refused
+  `409` as over any licence of it (remove the copy first). The `license.key_conflict` event stays as
+  it is (recorded when a key is recorded, before any licence is relayed: not trivially suppressible
+  for such an upstream). `not_supplied` now reads the catalogue: a build of the name the upstream
+  brought since it was added (a successor's copies are not its own), not withdrawn, revoked nor
+  blocked, available or live. The expected holder (spec 0028) is checked on every path as before.
 - **Served by the channel's source**: `-/licenses/<name>` reads the licence of the source the
   channel's snapshot selects for the name, and the list keeps only those; another source's licence,
   even when the channel's builds declare its key (a copy), is not served there. A bundle's export
@@ -1024,14 +1038,15 @@ channel, deferred.
   CLI: `-source` on `license list|show|token|remove|public|private`, `OWNER` in `license list` and
   `license keys`, `license owner`. The import takes no source: its key decides. Events
   `license.import`, `license.change`, `license.remove` gain `source`.
-- **Licences of a removed source**: an upstream's relay governs the relayed licences of its source
-  (source `upstream`, owner the upstream, whichever upstream relayed them: one migration 0042 gave
-  it, one an administrator moved to it) and those of source `unknown` it relayed itself; its
-  revocation and its removal (`license.remove` naming the `source` too) take only those. One an
-  administrator moved with its key is the other source's, and an import is an administrator's. A
-  removed publisher's licences stay (served nowhere: its keys are gone), as the conservative choice
-  over deleting a licence, until removed or past their grace; importing it again stores it for the
-  key's owner once it has one.
+- **Licences of a removed source**: an upstream's relay governs its own rows only: the relayed
+  licences of its source (source `upstream`, owner the upstream, whichever upstream relayed them:
+  one an administrator moved to it) and those of source `unknown` it relayed itself (another
+  upstream's copy of the same licence is that upstream's); its revocation and its removal
+  (`license.remove` naming the `source` too) take only those. One an administrator moved with its
+  key is the other source's, and an import is an administrator's. A removed publisher's licences
+  stay (served nowhere: its keys are gone), as the conservative choice over deleting a licence,
+  until removed or past their grace; importing it again stores it for the key's owner once it has
+  one.
 - **Usage** is forwarded by a name's selected source: an upstream receives the counts of the (name,
   version) pairs of channels whose rule for the name names it and that hold a release of the version
   from it, of a build it brought since it was added (instead of the provenance query).
@@ -1047,8 +1062,9 @@ channel, deferred.
   name; one whose key has none gets `unknown` (kept, listed, removable, served nowhere until
   imported again). A licence relayed by an upstream whose key another source recorded first is that
   source's (the spec's rule; giving it to the upstream that relayed it would make a licence's source
-  depend on how it arrived, which the Alternatives rule out): the upstream's next relay is refused
-  for the key, and the licence stays the owner's.
+  depend on how it arrived, which the Alternatives rule out): the licence stays the owner's, and the
+  upstream's next relay stores the very same licence as its own beside it (another one signed with
+  the key is refused).
 - **The console** (C's) only addresses a licence by its source (`?source=`), keys its rows by name
   and source, and shows the source (**Of**); the import reads the licence's key (the JWS header's
   `kid`) and replaces the licence of the source that owns it (the keys' `owner`), or one of source
@@ -1065,18 +1081,20 @@ channel, deferred.
   earlier record on a listed name included); the licence service on one engine
   (`TestLicenseSources`: a mirror's relayed licence, a marked publisher's copy getting nothing and
   taking nothing, its own key's licence beside it, `?source=`, the act refused over a licence and
-  then moving one, the relay refused `key_owner` and not revoking what moved; a licence relayed by
-  another upstream given back to its owner, kept unchanged and revoked by the owner's relay; a
-  licence of source `unknown` replaced by an import and moved by the act); the relay and bundle
-  tests (the key's owner taking the bundle's licence); serving (another source's channel serves
-  nothing, its builds carrying the key or not); the API (the `409`s of several sources and of a
-  source holding a licence, `400` for a source that never declared the key, `?source=unknown` and
-  the id form), the CLI and the events registry; usage forwarding by the selected source; the e2e
-  (`TestLicenseFromDistributor`: a distributor's publisher's `kista_demo` in the catalogue, its
-  licence imported before placement, `404` until prod's auto rule places it, then served and valid
-  in DuckDB at the pin; a tenant upstream bringing `kista_demo` with the same key into nightly: the
-  key stays the distributor's, nightly serves no licence and DuckDB reads `missing` there, prod
-  keeps its own).
+  then moving one, the relay refused `key_owner` for another licence of a key it does not own, then
+  storing the owner's very licence as its own and revoking only that; a second upstream of the
+  repository in another channel relaying the owner's licence, both channels serving it, a refusal
+  keeping its row, each relay revoking its own row only; a licence relayed by another upstream given
+  back to its owner, kept unchanged and revoked by the owner's relay; a licence of source `unknown`
+  replaced by an import and moved by the act); the relay and bundle tests (the key's owner taking
+  the bundle's licence); serving (another source's channel serves nothing, its builds carrying the
+  key or not); the API (the `409`s of several sources and of a source holding a licence, `400` for a
+  source that never declared the key, `?source=unknown` and the id form), the CLI and the events
+  registry; usage forwarding by the selected source; the e2e (`TestLicenseFromDistributor`: a
+  distributor's publisher's `kista_demo` in the catalogue, its licence imported before placement,
+  `404` until prod's auto rule places it, then served and valid in DuckDB at the pin; a tenant
+  upstream bringing `kista_demo` with the same key into nightly: the key stays the distributor's,
+  nightly serves no licence and DuckDB reads `missing` there, prod keeps its own).
 
 Enterest moves onto it after B (its tenants' administrators use kista's API and CLI until C): one
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into

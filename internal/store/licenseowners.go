@@ -120,6 +120,19 @@ VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tenant_id, package_type, name, kid) `+
 	return res.RowsAffected()
 }
 
+// overRemoved sets the removed owner's row a key's owner was read with (o.since) to source, by
+// ActorLicenses, if it is still that row (compare-and-set on its set_at: another removal since, or
+// an administrator's act, wins); it reports the rows set.
+func (t *Tx) overRemoved(ctx context.Context, o KeyOwner, source string) (int64, error) {
+	res, err := t.exec(ctx, `UPDATE license_key_owners SET source = ?, set_by = ?, set_at = ? WHERE tenant_id = ? AND package_type = ?
+AND name = ? AND kid = ? AND source = ? AND set_at = ?`, source, ActorLicenses, t.s.d.timeArg(t.Now()), o.TenantID, o.PackageType, o.Name, o.Kid,
+		ownerRemoved, t.s.d.timeArg(o.since))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // upstreamListed reports whether a repository upstream of the tenant lists a name of a type, by name
 // or "*": a distributor's publisher's records do not make it the name's key owner then (spec 0033
 // phase B: the tenant's own upstream keeps the name's keys unless an administrator gives them).
@@ -225,13 +238,8 @@ func (t *Tx) ClaimKeyOwner(ctx context.Context, tenantID, packageType, name, kid
 	var n int64
 	if o.since.IsZero() {
 		n, err = t.putOwner(ctx, tenantID, packageType, name, kid, o.Source, ActorLicenses, false)
-	} else { // over the removed owner's row
-		var res sql.Result
-		res, err = t.exec(ctx, `UPDATE license_key_owners SET source = ?, set_by = ?, set_at = ? WHERE tenant_id = ? AND package_type = ?
-AND name = ? AND kid = ? AND source = ?`, o.Source, ActorLicenses, t.s.d.timeArg(t.Now()), tenantID, packageType, name, kid, ownerRemoved)
-		if err == nil {
-			n, err = res.RowsAffected()
-		}
+	} else {
+		n, err = t.overRemoved(ctx, o, o.Source)
 	}
 	if err != nil {
 		return o, false, err

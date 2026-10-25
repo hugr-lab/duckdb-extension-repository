@@ -391,13 +391,23 @@ func TestKeyOwners(t *testing.T) {
 			t.Fatalf("recorded afresh: %+v", o)
 		}
 		// nor does a distributor's record, which did not count while an upstream listed the name,
-		// take the key when the upstream goes
+		// take the key when the upstream goes: one the upstream owns recorded (2), and one it is the
+		// first recorder of, computed once its hold ended (7); removed as DeleteUpstream does, its
+		// keys first while it still lists the name, then its entries
+		record(build(u, "listed", time.Hour), "7")
+		record(build(d, "listed", 0), "7")
+		clock = clock.Add(2 * time.Hour)
+		if o := owner("listed", "7"); o.Source != u || o.Recorded {
+			t.Fatalf("the upstream's after its hold: %+v", o)
+		}
+		inTx(t, s, func(tx *store.Tx) error { return tx.DeleteLicenseKeysOf(ctx, store.KeySourceUpstream, uid) })
 		if err := store.ExecRaw(ctx, s, "DELETE FROM upstream_entries WHERE upstream_id = ?", uid); err != nil {
 			t.Fatal(err)
 		}
-		inTx(t, s, func(tx *store.Tx) error { return tx.DeleteLicenseKeysOf(ctx, store.KeySourceUpstream, uid) })
-		if o := owner("listed", "2"); o.Source != "" {
-			t.Fatalf("the distributor's after the upstream's removal: %+v", o)
+		for _, k := range []string{"2", "7"} {
+			if o := owner("listed", k); o.Source != "" {
+				t.Fatalf("the distributor's %s after the upstream's removal: %+v", k, o)
+			}
 		}
 		if es := events("license.key_owner"); !slices.ContainsFunc(es, func(e string) bool { return strings.Contains(e, `"kid":"`+key("4").Kid) }) {
 			t.Fatalf("a claim after a hold is an event too: %v", es)

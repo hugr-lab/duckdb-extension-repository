@@ -22,7 +22,8 @@ import (
 // carrying a copy of the mirror's key, gets no licence through it and takes none away; a key of the
 // publisher's own gives it a licence of its own beside the mirror's; each is served by the
 // channel that selects its source; a tenant administrator gives the mirror's key to the publisher,
-// the licence moving along, and the mirror's relay of it is refused from then on.
+// the licence moving along, and the mirror relays only that very licence from then on, as its own. A
+// second upstream of the repository in another channel relays the licence its key's owner holds.
 func TestLicenseSources(t *testing.T) {
 	en, tokenFile := privateEnv(t, storetest.Engines(t)[0])
 	en.repo.token = "T-sub"
@@ -159,16 +160,20 @@ func TestLicenseSources(t *testing.T) {
 	if served(ps) != relayed || served(us) != "" {
 		t.Fatal("the moved licence, served by the publisher's channel")
 	}
+	// the mirror relays another licence signed with the key: refused key_owner; then the very licence
+	// the publisher holds now: the same licence, stored as the mirror's own beside it
+	en.answer(t, lic.sign("tresor", "max", now, now+day))
 	res, err := svc.RunUpstream(ctx, u.ID)
-	if err != nil || len(res.Refused) != 1 || res.Refused[0].Rule != licenses.RuleKeyOwner || res.Counts["removed"] != 0 {
-		t.Fatalf("the mirror's relay of a key it no longer owns: %+v %v", res, err)
+	if err != nil || len(res.Refused) != 1 || res.Refused[0].Rule != licenses.RuleKeyOwner || res.Counts["removed"] != 0 || served(us) != "" {
+		t.Fatalf("the mirror's relay of another licence of a key it no longer owns: %+v %v", res, err)
 	}
-	if served(ps) != relayed {
-		t.Fatal("the moved licence after the relay")
+	en.answer(t, relayed)
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["stored"] != 1 || served(us) != relayed || served(ps) != relayed {
+		t.Fatalf("the mirror's relay of the publisher's licence: %+v %v", res, err)
 	}
-	// nor does the mirror's revocation take it: it is the publisher's now
+	// the mirror's revocation takes its own row only: the publisher's is the publisher's
 	en.answer(t)
-	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["removed"] != 0 || served(ps) != relayed {
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["removed"] != 1 || served(us) != "" || served(ps) != relayed {
 		t.Fatalf("an answer without it: %+v %v", res, err)
 	}
 
@@ -237,5 +242,52 @@ func TestLicenseSources(t *testing.T) {
 	}
 	if v, err := svc.Get(ctx, admin, "acme", "", "tresor", ""); err != nil || v.Owner != "publisher:copycat" {
 		t.Fatalf("after the move: %+v %v", v, err)
+	}
+
+	// the same licence through every upstream of it: a second upstream of the repository, mirroring
+	// it into channel other, relays the very licence the key's owner (the first upstream) holds, and
+	// stores it as its own, both channels serving it; another licence signed with the key through it
+	// is refused key_owner, its row kept; each relay's revocation takes its own row only
+	if err := svc.Remove(ctx, admin, "acme", "", "tresor", "publisher:copycat", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetKeyOwner(ctx, admin, "acme", "", "tresor", kid, ul); err != nil {
+		t.Fatal(err)
+	}
+	en.answer(t, relayed)
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["stored"] != 1 {
+		t.Fatalf("the owner's relay: %+v %v", res, err)
+	}
+	sp2 := en.spec(store.UpstreamEntry{Name: "tresor"})
+	sp2.Name, sp2.Channel, sp2.Credential = "acme-nightly", "other", "sub"
+	u2, err := en.up.Add(ctx, admin, "acme", sp2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	us2 := store.UpstreamSource(u2.ID)
+	must(t, func() error {
+		return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+			_, err := tx.SetChannelSource(ctx, other.ID, "tresor", us2, "os:1:t")
+			return err
+		})
+	})
+	if _, err := en.up.Sync(ctx, admin, "acme", "acme-nightly", false); err != nil {
+		t.Fatal(err)
+	}
+	en.run.Once(ctx)
+	if res, err := svc.RunUpstream(ctx, u2.ID); err != nil || res.Counts["stored"] != 1 || served(us2) != relayed || served(us) != relayed {
+		t.Fatalf("the same licence through the second upstream: %+v %v", res, err)
+	}
+	en.answer(t, lic.sign("tresor", "max", now, now+day))
+	if res, err := svc.RunUpstream(ctx, u2.ID); err != nil || len(res.Refused) != 1 || res.Refused[0].Rule != licenses.RuleKeyOwner ||
+		res.Counts["removed"] != 0 || served(us2) != relayed {
+		t.Fatalf("another licence through the second upstream: %+v %v", res, err)
+	}
+	en.answer(t)
+	if res, err := svc.RunUpstream(ctx, u2.ID); err != nil || res.Counts["removed"] != 1 || served(us2) != "" || served(us) != relayed {
+		t.Fatalf("the second upstream's revocation: %+v %v", res, err)
+	}
+	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["removed"] != 1 || served(us) != "" {
+		t.Fatalf("the owner's revocation: %+v %v", res, err)
 	}
 }

@@ -175,31 +175,18 @@ so the operator declares it:
 - **Migration `0042_license_owners`** adds `license_key_owners` (each key's owner for a name in a
   tenant) and gives licences their source (`owner_source`, part of their primary key; SQLite
   rebuilds the table), and raises `min_reader` to 42: stop every older replica first.
-- **What it records.** Each key's owner is the source whose record of it started counting first, by
-  the database's clock, as kista computes it: a source's own build, from its recording (or the end
-  of its hold, or its first placement if sooner), not revoked, its body not blocked, not withdrawn
-  before it counted, and not a distributor's publisher's for a name a `repository` upstream of the
-  tenant lists. A key another source recorded first on a build still held has no owner yet: the
-  first look at the key after the hold records it. Each stored licence gets its key's owner; a
-  licence whose key has none gets the source `unknown`: it is kept, listed and removable
-  (`?source=unknown`, `-source unknown`), and served nowhere until imported again (it then gets the
-  key's owner, replacing it with `If-Match`), relayed again by the upstream that relayed it and owns
-  the key, or its grace ends.
-- **What changes.** A channel serves the licence of the source it serves the extension from, so a
-  channel that serves a name from a source that does not own the key gets no licence for it. A
-  tenant with two upstreams of one repository (one per channel) has one owner per key: the channel
-  whose rule names the other upstream no longer gets the licence; switch its rule to the owner, or
-  give the key to the other upstream (`kista admin license owner`), whose licence then moves. The
-  relay stores a licence only when its upstream owns the key (`key_owner` otherwise; the owner's
-  relay governs the relayed licences the migration gave it, whichever upstream relayed them). Usage
-  goes to the source a channel serves the extension from. An import is accepted as soon as the key's
-  owner has the extension available in the catalogue, before any placement.
-- **Downstream kistas.** A channel's `-/licenses` lists only the licences of the source it serves
-  each extension from. A channel whose rule names a source that does not own the key stops listing
-  the licence after the upgrade, and a kista relaying from that channel deletes it at its next run
-  (revoked). Before upgrading a kista that others relay from, check its channels' rules and the
-  keys' owners (`kista admin license keys`), and set the rules or the owners so that each channel
-  others relay from keeps serving its licences.
+- **What it records.** Each key's owner, as kista computes it (see
+  [A key's owner](../licensing.md#a-keys-owner)), by the database's clock; a key another source
+  recorded first on a build still held gets none yet. Each stored licence gets its key's owner, or
+  the source `unknown` where the key has none: kept, listed and removable (`?source=unknown`,
+  `-source unknown`), served nowhere until imported again or relayed again by its upstream, or
+  until its grace ends.
+- **What changes.** A channel serves the licence of the source it serves the extension from. The
+  relay stores a licence when its upstream owns the key, or when it is the very licence the key's
+  owner holds (another upstream of the product, in another channel, stores it as its own at its next
+  run); otherwise it refuses it with `key_owner`. Usage goes to the source a channel serves the
+  extension from. An import is accepted as soon as the key's owner has the extension available in
+  the catalogue, before any placement.
 - **API and CLI.** A licence answers `owner` (its source); `source` stays how it arrived. The routes
   of one licence take `?source=` and answer `409` without it where the extension has licences of
   several sources; an import's `Location` names the source. `GET …/license-keys` answers each key's

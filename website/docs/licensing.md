@@ -75,15 +75,16 @@ mirroring another kista both bring an extension built with it, or a build carrie
 issuer's key. In a tenant, each key of an extension has one **owner**, and a licence signed with it
 is that source's:
 
-- **The first recorder owns it**: the first source whose own build of the extension recorded the
-  key while the build counted (available, or placed; a held entry counts once its hold has ended or
-  it is placed early, a revoked entry or a blocked body never, a withdrawn entry only if it counted
+- **The first recorder owns it**: the first source whose own build of the extension recorded the key
+  while the build counted (available, or placed; a held entry counts once its hold has ended or it
+  is placed early, a revoked entry or a blocked body never, a withdrawn entry only if it counted
   before). Ownership is recorded then (a `license.key_owner` event) and stays: another source
   recording the same key later changes nothing (a `license.key_conflict` event, once per source and
-  extension), so a build carrying a copied key gets no licence and takes none away. While a
-  source's record of the key is on an entry still held, the key has no owner: a source recording it
-  meanwhile gets no licence through it. Once that hold resolves (it ends, or the entry is placed or
-  withdrawn), the first record to have counted owns the key.
+  extension), so a build carrying a copied key gets no licence of its own and takes none away (an
+  upstream of the same product may relay the very licence the owner holds: see the relay below).
+  While a source's record of the key is on an entry still held, the key has no owner: a source
+  recording it meanwhile gets no licence through it. Once that hold resolves (it ends, or the entry
+  is placed or withdrawn), the first record to have counted owns the key.
 - **A distributor's publisher** does not become the owner of a key of an extension that a
   `repository` upstream of the tenant lists (by name, or `*`): the tenant's own upstream keeps the
   extension's keys, and an administrator gives one to the distributor when that is what they want.
@@ -168,22 +169,27 @@ that is not paused ([private upstreams](upstreams.md#private-upstreams)) is aske
 - the upstream must supply that extension: a build of it that the upstream brought since it was
   added, available in the catalogue or live in a channel (not withdrawn, not blocked). An upstream
   does not hand out licences for names it does not supply (`not_supplied`);
-- the upstream must own the licence's key for the extension (`key_owner` otherwise: another
-  source's), and the licence must verify against a key **this upstream** brought, live
-  (`kid_untrusted`);
+- the upstream must own the licence's key for the extension, or the licence must be byte for byte
+  the one the key's owner holds for it (relayed or imported): a licence is the organisation's
+  purchase of the product, so a second upstream of the same repository (another channel of it, in
+  another of the tenant's channels) stores the very same licence as its own, and each channel serves
+  it. Any other licence signed with a key another source owns is refused (`key_owner`): a source
+  carrying a copy of the key gets no licence of its own. The licence must verify against a key
+  **this upstream** brought, live (`kid_untrusted`);
 - it must name the tenant's [expected holder](#an-expected-holder), when one is set (`holder_mismatch`);
 - it is stored as this upstream's licence of the extension, and replaces the one stored for it when
   it is newer from the same upstream, or lasts longer. One imported for the same source is replaced
   only when both are signed with the same key, or the stored one's grace has ended, or its key is
   no longer live (or the server refuses it);
-- a licence refused for its key stays stored if this upstream relayed it before: it is not served
-  while no live build declares its key, and it ends with its grace.
+- a licence refused stays stored if this upstream relayed it before, and is tried again at the
+  next run (a renewal reaching this upstream before the key's owner holds it, a key no live build
+  declares now): it ends with its grace meanwhile, and it is not served while no live build
+  declares its key.
 
-An upstream's relay governs the relayed licences of its source, whichever upstream relayed them
-(one the upgrade to spec 0033 gave it, one an administrator moved to it), and those of source
-`unknown` it relayed itself: one it relays again unchanged becomes its own, one of source `unknown`
-signed with the same key is replaced by its licence, and one it stops listing is removed
-(revoked). A `404` from the upstream means it serves no licences and changes nothing, and so does a
+An upstream's relay governs its own licences only: the relayed licences of its source (one an
+administrator moved to it included) and those of source `unknown` it relayed itself (one signed
+with the same key is replaced by its licence); one it stops listing is removed (revoked), and
+another upstream's copy of the same licence stays that upstream's. A `404` from the upstream means it serves no licences and changes nothing, and so does a
 failure (the credential refused with `401` or `403`, a network error, an answer over 1,000
 licences or 8 MiB). Removing the upstream removes the licences its relay governs; clearing its
 credential stops the relay, and its licences stay until their grace ends. A licence an

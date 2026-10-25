@@ -111,10 +111,17 @@ WHERE k.source_kind = ? AND k.source_id = ? AND b.source = ?`, kind, sourceID, s
 		if err != nil {
 			return err
 		}
-		if !o.Recorded && o.Source == src {
-			if _, err := t.putOwner(ctx, k[0], k[1], k[2], k[3], ownerRemoved, ActorLicenses, true); err != nil {
-				return err
-			}
+		if o.Recorded || o.Source != src {
+			continue
+		}
+		// never over another row than the one read: an administrator's act racing the removal wins
+		if o.since.IsZero() {
+			_, err = t.putOwner(ctx, k[0], k[1], k[2], k[3], ownerRemoved, ActorLicenses, false)
+		} else {
+			_, err = t.overRemoved(ctx, o, ownerRemoved)
+		}
+		if err != nil {
+			return err
 		}
 	}
 	if _, err := t.exec(ctx, "UPDATE license_key_owners SET source = ?, set_by = ?, set_at = ? WHERE source = ?",

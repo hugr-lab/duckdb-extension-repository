@@ -272,14 +272,15 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 					Reason: "the upstream supplies no build of " + name + " here"})
 				continue
 			}
-			// spec 0033 phase B: the key's owner for the name must be this upstream (another source's
-			// copy of its key gets no licence, nor does this upstream's copy of another's), and the
-			// licence verifies against the keys it brought (spec 0021). A key refusal keeps a licence
-			// stored from this upstream: no live build declares its key now (an upgrade before the
-			// builds are fetched again, a rotation under way), so it is not served, and it ends with
-			// its grace unless a build brings the key back
+			// spec 0033 phase B: the key's owner for the name must be this upstream, or the licence
+			// must be the very one the owner holds (relayable: another source's copy of the key gets
+			// no licence of its own), and the licence verifies against the keys it brought (spec
+			// 0021). A refusal keeps a licence stored from this upstream (not a revocation): no live
+			// build declares its key now (an upgrade before the builds are fetched again, a rotation
+			// under way), or a renewal reached it before the owner's relay, so it is tried again at
+			// the next run, and ends with its grace meanwhile unless served again
 			keep[name] = true
-			if _, err := s.owned(ctx, tx, t.ID, typ, it.tok, src, lb.of, true); err != nil {
+			if err := s.relayable(ctx, tx, t.ID, typ, it.tok, it.token, src, lb.of, true); err != nil {
 				if r := refusal(err, it.tok); r != nil {
 					refused = append(refused, *r)
 					continue
@@ -358,6 +359,39 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 		res.refuse(r.Name, r.ID, r.Rule, r.Reason)
 	}
 	return nil
+}
+
+// relayable checks a licence an upstream relays (spec 0033 phase B): the upstream owns its key for
+// the name (owned, claiming the owner when claim is set), or the licence is byte for byte the one the
+// key's owner holds for the name (relayed or imported) and the upstream's own live keys verify it:
+// a licence is the organisation's purchase of the product, and every channel serving a genuine
+// build of it serves it, while a source carrying a copy of the key gets no licence of its own (the
+// refusal stays key_owner).
+func (s *Service) relayable(ctx context.Context, tx *store.Tx, tenantID, packageType string, tok *license.Token, token, src string,
+	label func(string) string, claim bool) error {
+	_, err := s.owned(ctx, tx, tenantID, packageType, tok, src, label, claim)
+	var le *license.Error
+	if err == nil || !errors.As(err, &le) || le.Rule != RuleKeyOwner {
+		return err
+	}
+	o, oerr := tx.KeyOwnerOf(ctx, tenantID, packageType, tok.Extension, tok.Key)
+	if oerr != nil {
+		return oerr
+	}
+	held, gerr := tx.GetLicense(ctx, tenantID, packageType, tok.Extension, o.Source)
+	switch {
+	case errors.Is(gerr, store.ErrNotFound):
+		return err
+	case gerr != nil:
+		return gerr
+	case held.Token != token:
+		return err
+	}
+	keys, kerr := tx.LiveLicenseKeys(ctx, tenantID, packageType, tok.Extension, src)
+	if kerr != nil {
+		return kerr
+	}
+	return s.verify(tok, keys, " from "+label(src))
 }
 
 // rebind makes a stored licence that the relaying upstream relays again unchanged, relayed by

@@ -50,11 +50,12 @@ export function sourcesLine(sources: NameKeys['keys'][number]['sources']) {
   return sources.map((s) => `${s.kind} ${s.name}`).join(' · ')
 }
 
-/** Whether a licence's key is a live key of its source, the key's owner (spec 0033 phase B): a
- * licence signed with another key, of another source than the key's owner, of a removed source or
- * of none (unknown) is served nowhere. */
+/** Whether a licence's key is a live key of its source (spec 0033 phase B): the source brought a
+ * live build declaring it. The key's owner's licence, or the very same licence another upstream of
+ * the product relayed, is served where its source is; one signed with another key, of a removed
+ * source or of none (unknown) is served nowhere. */
 export function declared(keys: NameKeys[], l: Pick<License, 'name' | 'key' | 'owner'>) {
-  return keys.some((n) => n.name === l.name && n.keys.some((k) => k.kid === l.key && k.owner === l.owner))
+  return keys.some((n) => n.name === l.name && n.keys.some((k) => k.kid === l.key && k.sources.some((s) => `${s.kind}:${s.name}` === l.owner)))
 }
 
 /** The stored licence an import of a licence file replaces (spec 0033 phase B): the one of the

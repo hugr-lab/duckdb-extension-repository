@@ -33,8 +33,11 @@ describe('licences', () => {
     expect(declared(names, { name: 'tresor', key: 'sha256:aa', owner: 'upstream:enterest' })).toBe(true)
     expect(declared(names, { name: 'tresor', key: 'sha256:bb', owner: 'upstream:enterest' })).toBe(false)
     expect(declared(names, { name: 'acl', key: 'sha256:aa', owner: 'upstream:enterest' })).toBe(false)
-    // spec 0033 phase B: another source's copy of the key, a removed source's, unknown: not served
-    expect(declared(names, { name: 'tresor', key: 'sha256:aa', owner: 'publisher:tresor-ci' })).toBe(false)
+    // spec 0033 phase B: a source that brought the key (the owner, or another upstream relaying the
+    // owner's very licence) is served; a source without it, a removed source's, unknown: not served
+    expect(declared(names, { name: 'tresor', key: 'sha256:aa', owner: 'publisher:tresor-ci' })).toBe(true)
+    expect(declared(names, { name: 'tresor', key: 'sha256:aa', owner: 'upstream:nightly' })).toBe(false)
+    expect(declared(names, { name: 'tresor', key: 'sha256:aa', owner: 'publisher-id:0190' })).toBe(false)
     expect(declared(names, { name: 'tresor', key: 'sha256:aa', owner: 'unknown' })).toBe(false)
     // spec 0033 phase B: a licence per (name, source)
     expect(licenseKey({ name: 'tresor', owner: 'upstream:enterest' })).not.toBe(licenseKey({ name: 'tresor', owner: 'publisher:ci' }))

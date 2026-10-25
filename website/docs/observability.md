@@ -92,7 +92,7 @@ are all the kinds in `internal/audit`:
 | | `license.remove` | `license:<name>` | `name`, `license`, `reason` (`admin`, `revoked`, `expired`, `upstream removed`), `source` |
 | | `license.sync` | `upstream:<name>` | `upstream`, `counts`, `error`, `refused` (the system's relay run; a refusal's rule may be `key_owner`) |
 | | `license.key_owner` | `license:<name>` | `name`, `kid`, `source` (the key's owner for the name, spec 0033): its first recorder's (`first: true`, actor `system:licenses`), or a tenant administrator's act with `before` and the licences that `moved` |
-| | `license.key_conflict` | `license:<name>` | `name`, `kid`, `source`, `owner`: a source recorded a key another source owns for the name (once per source and name; it gets no licence through it) |
+| | `license.key_conflict` | `license:<name>` | `name`, `kid`, `source`, `owner`: a source recorded a key another source owns for the name (once per source and name; it gets no licence of its own through it, only an upstream relaying the very licence the owner holds) |
 | Releases | `release.add` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `visibility`, `current`, `shadows` |
 | | `release.publish` | the release | as `release.add`, and `provenance` |
 | | `release.promote` | `channel:<channel>/ext:<name>` | `releases`, `name`, `from_channel`, `version`, `shadows`, `provenance` |

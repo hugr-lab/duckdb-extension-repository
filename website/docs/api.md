@@ -407,8 +407,10 @@ answers the last relay run, `{"last_run_at", "result": {"counts", "refused", "er
 request (`202`) answers the same; `409` for an upstream that relays nothing or is paused, and while
 licensing is off (an import too). An import or a relayed licence verifies against a live key of its
 key's owner (spec 0021, 0033: a live build declaring it, or the owner's newest available version in
-the catalogue); without one it is refused (`400`, `kid_untrusted`), and a relayed licence whose key
-another source owns is refused with `key_owner`. In a tenant with
+the catalogue; a relayed one against the relaying upstream's); without one it is refused (`400`,
+`kid_untrusted`), and a relayed licence whose key another source owns is refused with `key_owner`
+unless it is byte for byte the licence that source holds (then stored as the relaying upstream's
+too). In a tenant with
 an [expected holder](#the-expected-holder), an import of another holder's licence answers `400`
 with `holder_mismatch` in its detail, naming the expected and the given holder.
 `GET …/license-keys` answers `{"names": [{"name", "keys": [{"kid", "sources": [{"kind":
