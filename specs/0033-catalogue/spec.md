@@ -1,7 +1,7 @@
 # Spec 0033: The catalogue
 
-- **Status**: accepted (2026-10-24); phase A1 implemented (parts 1, 2, 3a and 4; part 3b deferred to
-  the follow-ups); A2 implemented; B implemented; C to come
+- **Status**: implemented (2026-10-25: A1 parts 1, 2, 3a, 4; A2; B; C; part 3b deferred to the
+  follow-ups)
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 
@@ -1100,6 +1100,73 @@ Enterest moves onto it after B (its tenants' administrators use kista's API and 
 kista, its pipeline a distributor's publisher in every tenant, publishing each approved version into
 every tenant's catalogue with a day's hold and withdrawing there itself; each tenant mirrors
 DuckDB's repositories it wants. Its spec 0003's decisions change accordingly.
+
+### As built (C)
+
+- **No server change.** The console uses the routes A1 to B built, and no migration comes with C.
+- **The Catalogue section** (`…/catalogue`, tenant administrators: the catalogue's reads are
+  theirs; a server administrator's opened tenant too): every (source, name) with its versions
+  newest first, each marked held, revoked or withdrawn, and the channels whose rules take it with
+  the mode. The API answers the catalogue whole, so the name prefix and the source are filtered in
+  the page, as the Sources tab already did. An entry's page (`…/catalogue/<source>/<name>`) reads
+  the entry (`?source=&name=`) and its versions with their builds: state (held until when,
+  withdrawn with its reason and when, revoked), visibility, where each is placed. Its actions:
+  - **Place…** a version into a signed channel of the default package type (the console shows that
+    type's catalogue only; other types through the API and the CLI), offered where the caller holds
+    `promote` on the name: found in the e2e, `admin` does not imply `promote` (spec 0008), so the
+    console's permissions gained `mayPromote`, which hides the action from a tenant administrator
+    without it (a grant on a group counts, its members unknown to the console: the API decides).
+    The dialog takes private, not current, and early for a version with a held or revoked build,
+    enabled for a channel administrator only. Not offered for a withdrawn version.
+  - **Purge…** a build placed nowhere and not withdrawn (a tenant administrator's; the API also
+    refuses one released once and purged since, and the page shows its answer).
+  - **Withdraw…** with a reason, shown to a server administrator only, for an entry the catalogue
+    answers with a `publisher_id` (a distributor's publisher: the server actor reads it so,
+    phase B); a tenant administrator is never offered it, and distribution admins have no console.
+- **The Sources tab** keeps its table (the source stays the second column) and gains the mode (in a
+  signed channel; a rule without one reads "as it lands"), the version the channel holds and the
+  newest available one when it differs, and the last outcome with its time. **Switch…** became
+  **Change…**: the source and the mode (keep, `auto`, `manual`; `auto` disabled for `tenant`), one
+  `PUT`. **Place…** places a version of the row's source by hand (the newest suggested), where the
+  caller holds `promote`; early is always offered there (the tab does not read holds), the API
+  answering `409 …/held` without it. Above the table, the channel's **hold** (`GET|PUT …/hold`;
+  days typed as the CLI takes them, `2d`, are sent as hours, and the Go duration answered is shown
+  shortened, `48h`); below it, **Follows**: each followed source, since when and by whom, the names
+  it skips with the reason (as of the pass's last look), **Unfollow…**, and a field to follow a
+  source (the sources the channel's rules and releases name, offered). A passthrough channel shows
+  neither, nor the mode. Every source in a path keeps its colon (`sourceSeg`), and a version its `+`
+  (`versionSeg`): the API refuses an escaped path. A rule's **Change…** without a mode keeps the
+  rule's, and a new rule has none (the API's and the service's comments said manual; corrected).
+- **Smaller**: a withdrawn release is badged in a channel's release lists; the Publishers list shows
+  each publisher's hold and a distributor's publisher's distributor (read only: set with the CLI or
+  the API).
+- **Deviation: the cells keep `other_source` and `shadowed`.** The Existing data section's "the cells
+  API loses `other_source` and `shadowed`" did not happen: as built in A1, a mirror still releases
+  into its home channel, where its runs decide them, so the upstream page's cells filter keeps them;
+  the upgrade notes say so.
+- **The DuckDB end to end** (`e2e/catalogue_test.go`, `TestCatalogueSources`, about 10 seconds):
+  another kista's `loadable_extension_demo` stands for `geo_tools` (the pin builds no `geo_tools`,
+  and kista's file checks need the name's entry point), mirrored by a `repository` upstream with
+  `prod` its home channel; a distributor's publisher with a hold of one second (the server's unit)
+  publishes a copy of it with another version in its footer (`withVersion`) and `kista_demo` into
+  the catalogue. `nightly`'s `auto` rule places the distributor's build only once the hold has
+  passed, and DuckDB at the pin installs the upstream's body from `prod` and the distributor's from
+  `nightly` (`extension_version`); `prod`'s follow of the distributor places `kista_demo` and lists
+  `geo_tools` as skipped ("the channel serves it from another source"); the withdrawal makes
+  `nightly`'s next install fail; a version held for an hour is refused without `early` and installed
+  from `nightly` once placed early. The licence part is B part 2's `TestLicenseFromDistributor`,
+  unchanged. `publishTo` gained `publishFile` for a file of the test's own.
+- **The console's end to end** (`web/console/e2e/catalogue.spec.ts`): `run.sh` adds a channel
+  `nightly` following a distributor's publisher with a day's hold, which publishes `geo_tools` 0.9
+  and 1.0 and a `hello_acme` of its own into the catalogue (signed requests, a `publish` function
+  shared with the existing publication), and the tenant's `maps` 1.0 and 1.1 (`catalogue add`); kista
+  is started again after the publications, since the placement pass looks at every follow at its
+  start (the skip) and then every minute. A server administrator withdraws 0.9 with its reason,
+  places the held 1.0 early into `nightly`, and purges `maps` 1.1; a tenant administrator without
+  `promote` is offered neither placing nor withdrawing, changes `nightly`'s rule for `geo_tools` from
+  the follow's to `manual`, sees the follow skip `hello_acme` ("the tenant uses it from another
+  source"), unfollows and follows again, and sets the channel's hold to `2d` and back to none. The
+  0031-era test of the Sources tab uses **Change…**. The fixture takes a name without a licence key.
 
 ## Alternatives considered
 

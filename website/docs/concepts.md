@@ -22,7 +22,8 @@ flowchart TB
   releases -- "a Build in a channel,<br/>signed by the channel" --> builds
   builds -- "body hash" --> blobs[(Bodies in the<br/>storage domain)]
   builds -- "body hash" --> attachments[Attachments]
-  upstreams -- "feed one channel" --> channels
+  upstreams -- "bring builds into<br/>the catalogue" --> builds
+  publishers -- "publish builds" --> builds
 ```
 
 ## Tenants
@@ -108,9 +109,19 @@ name in the target channel and `publish` on the name in the source channel.
 DuckDB's core and community names are reserved: publishing under one of them (a replacement
 `httpfs`, for example) needs a grant that names it. See [Publishing](publishing.md).
 
+## The catalogue
+
+Every build that arrives in a tenant, published or mirrored, lands in the tenant's **catalogue** as
+a build of its **source** (an upstream, a publisher, or the tenant itself), so two sources may bring
+the same name side by side. A channel serves each name from one source, and takes that source's
+versions from the catalogue by a **rule**: automatically, each new version (`auto`), or the versions
+an administrator places (`manual`); a channel may also **follow** a whole source. A source, or a
+channel, may set a **hold**, so new versions reach no channel automatically before it has passed,
+and a distributor may **withdraw** a version it published. See [The catalogue](catalogue.md).
+
 ## Upstreams
 
-An **upstream** is a source a tenant takes builds from, feeding one channel: `duckdb-core`
+An **upstream** is a source a tenant takes builds from, into its catalogue and its home channel: `duckdb-core`
 (`extensions.duckdb.org`), `duckdb-community` (`community-extensions.duckdb.org`), or `repository`
 (any DuckDB repository, such as another kista, with its keys pinned by fingerprint). It has an
 allowlist of names and platforms, and a mode:

@@ -320,7 +320,8 @@ Tenant shadows (below) are a passthrough channel's matter and stay as they are.
 ## The catalogue and a channel's rules
 
 Every build that arrives in a tenant, mirrored or published, is a build of its source in the
-tenant's **catalogue** (spec 0033), and channels may take it from there. A version is immutable
+tenant's **catalogue** (spec 0033), and channels may take it from there ([The catalogue](catalogue.md)
+walks through the common tasks and the console's screens). A version is immutable
 within its source in the whole tenant: another body of a version an upstream or a publisher has, or
 had once released, is refused in any channel or in the catalogue (`409`; a mirror's cell is
 `conflict`). The tenant's own source (`tenant`, everyone who may publish in it) keeps the rule per

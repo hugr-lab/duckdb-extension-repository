@@ -18,6 +18,7 @@ const sidebars: SidebarsConfig = {
     'storage',
     'publishing',
     'upstreams',
+    'catalogue',
     'access',
     'attachments',
     'licensing',
