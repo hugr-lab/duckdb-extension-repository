@@ -58,7 +58,11 @@ test("a channel's rules: a mode changed, a follow and what it skips, the hold", 
   // a tenant administrator holds no promote here: it reads the catalogue, places and withdraws nothing
   await signIn(page, '/ui/t/acme/', 'tom')
   await nav(page, 'Catalogue').click()
+  const channels = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/v1/tenants/acme/channels' && r.request().method() === 'GET')
   await page.getByRole('row').filter({ hasText: 'publisher:enterest-ci' }).getByRole('link', { name: 'geo_tools', exact: true }).click()
+  // the entry and the channels read, what the actions are offered by
+  await expect(page.getByText('Taken by')).toBeVisible()
+  await channels
   await expect(version(page, '1.0')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Place…' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Withdraw…' })).toHaveCount(0)

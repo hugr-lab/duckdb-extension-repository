@@ -201,7 +201,9 @@ func TestAdminCLI(t *testing.T) {
 	if got := run(0, "catalogue", "list", "acme"); !strings.Contains(got, "tresor") || !strings.Contains(got, "prod=manual") {
 		t.Fatalf("catalogue list: %q", got)
 	}
-	if got := run(0, "catalogue", "show", "acme", "tenant", "tresor"); !strings.Contains(got, "prod(active)") {
+	if got := run(0, "catalogue", "show", "acme", "tenant", "tresor"); !strings.Contains(got, "prod(active)") ||
+		!strings.HasSuffix(strings.SplitN(got, "\n", 2)[0], "WITHDRAWN  ID") { // the build's id, for catalogue purge
+
 		t.Fatalf("catalogue show: %q", got)
 	}
 	run(1, "release", "place", "acme/prod", "-name", "tresor", "-source", "tenant", "-version", "1.0") // added unchecked

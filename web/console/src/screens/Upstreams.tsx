@@ -8,6 +8,7 @@ import { entryNames } from '../lib/names'
 import { platforms } from './Channel'
 import { BundleUploads } from './BundleUploads'
 import { Feeds } from './Feeds'
+import { holdWords } from './Sources'
 
 // Upstreams (spec 0009; console phase 2b): where a channel's mirrored extensions come from, what is
 // allowed in, and what each run did.
@@ -49,6 +50,8 @@ export interface Upstream {
   usage: 'forward' | 'off'
   bundle_id?: string
   bundle_created_at?: string
+  /** an eager mirror's hold (spec 0033): its new versions wait this long for any channel; omitted for none */
+  hold?: string
   etag: string
 }
 
@@ -306,8 +309,9 @@ function UpstreamView({ name }: { name: string }) {
   }
   const facts: [string, React.ReactNode][] = [
     ['Source', source(u)],
-    ['Feeds channel', <><Link to={`${base}/channels/${seg(u.channel)}`} className="font-mono">{u.channel}</Link> · {modeWords(u)}</>],
+    ['Home channel', <><Link to={`${base}/channels/${seg(u.channel)}`} className="font-mono">{u.channel}</Link> · {modeWords(u)}</>],
     ['New releases are', u.visibility],
+    ...(u.mode === 'mirror' ? [['Hold', `${holdWords(u.hold)} (set with the CLI or the API)`] as [string, React.ReactNode]] : []),
     ['Signature keys', u.kind === 'repository' ? `${u.keys.length} pinned (below)` : `DuckDB ${u.kind === 'duckdb-core' ? 'core' : 'community'}'s own, from the pin`],
     ['Allowlist', `${u.extensions.length} ${u.extensions.length === 1 ? 'entry' : 'entries'} × ${u.platforms.length} platforms, for each DuckDB version the channel serves`],
     ...(u.mode === 'bundle' ? [['Last bundle', u.bundle_id ? <><Mono>{u.bundle_id}</Mono>, made {when(u.bundle_created_at!)}</> : 'none imported yet'] as [string, React.ReactNode]] : []),

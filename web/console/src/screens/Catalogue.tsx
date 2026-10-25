@@ -58,6 +58,54 @@ export function versionState(e: Pick<CatalogueEntry, 'held' | 'revoked' | 'withd
   return 'available'
 }
 
+/** A version's state from its builds, as the entry's lists would give it: withdrawn, revoked, held
+ * (a build of it held), available. */
+export function buildsState(builds: Pick<CatalogueBuild, 'state' | 'revoked_at'>[]): VersionState {
+  if (builds.some((b) => b.state === 'withdrawn')) return 'withdrawn'
+  if (builds.some((b) => b.revoked_at)) return 'revoked'
+  if (builds.some((b) => b.state === 'held')) return 'held'
+  return 'available'
+}
+
+/** Whether a source is a removed one, as answers name it ("upstream:(removed)"): its entries are not
+ * read by name. */
+export const removedSource = (s: string) => s.endsWith('(removed)')
+
+/** Orders versions as the server does (store.CompareVersions): digit runs as numbers ("1.9" before
+ * "1.10"), the rest bytewise, a shorter rest first. */
+export function compareVersions(a: string, b: string): number {
+  const digit = (c: string) => c >= '0' && c <= '9'
+  const numbers = (x: string, y: string) => {
+    x = x.replace(/^0+(?=.)/, '')
+    y = y.replace(/^0+(?=.)/, '')
+    if (x.length !== y.length) return x.length < y.length ? -1 : 1
+    return x < y ? -1 : x > y ? 1 : 0
+  }
+  let i = 0
+  let j = 0
+  while (i < a.length && j < b.length) {
+    if (digit(a[i]) && digit(b[j])) {
+      let ei = i
+      let ej = j
+      while (ei < a.length && digit(a[ei])) ei++
+      while (ej < b.length && digit(b[ej])) ej++
+      const c = numbers(a.slice(i, ei), b.slice(j, ej))
+      if (c !== 0) return c
+      i = ei
+      j = ej
+      continue
+    }
+    if (a[i] !== b[j]) return a[i] < b[j] ? -1 : 1
+    i++
+    j++
+  }
+  if (a.length - i !== b.length - j) return a.length - i < b.length - j ? -1 : 1
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+/** A reason's length as the server counts it: bytes of UTF-8. */
+export const utf8Bytes = (s: string) => new TextEncoder().encode(s).length
+
 /** Whether a build is offered for a purge: released nowhere and not withdrawn. The API also refuses
  * one released once and purged since. */
 export function purgeable(b: Pick<CatalogueBuild, 'state' | 'placed'>) {
@@ -135,7 +183,8 @@ export function Catalogue() {
   const [prefix, setPrefix] = useState('')
   const [source, setSource] = useState('')
   const list = useLoad(() => client.get<{ entries: CatalogueEntry[] }>(`${api}/catalogue`), [api])
-  const all = list.data?.data.entries ?? []
+  // keyed by position too: two removed sources of one name answer the same label
+  const all = (list.data?.data.entries ?? []).map((e, i) => ({ ...e, key: `${e.source} ${e.name} ${i}` }))
   const sources = [...new Set(all.map((e) => e.source))].sort()
   const rows = all.filter((e) => e.name.startsWith(prefix) && (!source || e.source === source))
   return (
@@ -156,14 +205,19 @@ export function Catalogue() {
       ) : (
         <Table
           rows={rows}
-          rowKey={(e) => `${e.source} ${e.name}`}
+          rowKey={(e) => e.key}
           columns={[
-            ['Extension', (e) => <Link className="font-mono font-medium no-underline" to={`${base}/catalogue/${seg(e.source)}/${seg(e.name)}`}>{e.name}</Link>],
+            ['Extension', (e) => (removedSource(e.source)
+              ? <span className="font-mono" title="a removed source's entries are not read by name; its releases stay where they are">{e.name}</span>
+              : <Link className="font-mono font-medium no-underline" to={`${base}/catalogue/${seg(e.source)}/${seg(e.name)}`}>{e.name}</Link>)],
             ['Source', (e) => <Mono>{e.source}</Mono>],
             ['Versions', (e) => <Versions e={e} />],
             ['Taken by', (e) => <Rules rules={e.rules} />],
           ]}
         />
+      )}
+      {rows.some((e) => removedSource(e.source)) && (
+        <Note>A removed source's entries are listed without a page: they are not read by name, and their releases stay where they are.</Note>
       )}
     </>
   )
@@ -204,11 +258,13 @@ export function CatalogueEntryPage() {
         {e && <span className="flex items-center gap-2 pb-1 text-ink-muted">Taken by <Rules rules={e.rules} /></span>}
       </PageTitle>
       {failure != null && <ErrorBox error={failure} />}
+      {entry.error != null && <ErrorBox error={entry.error} />}
+      {channels.error != null && <ErrorBox error={channels.error} />}
       {versions.error instanceof ApiError && versions.error.status === 404 ? <Empty>No build of it from this source in the catalogue.</Empty>
         : versions.error ? <ErrorBox error={versions.error} /> : !versions.data ? <Loading /> : versions.data.data.versions.length === 0 ? <Empty>No builds.</Empty> : (
         versions.data.data.versions.map((v) => {
-          const st = e ? versionState(e, v.version) : 'available'
-          const held = v.builds.some((b) => b.state === 'held' || b.revoked_at)
+          const st = buildsState(v.builds)
+          const held = st === 'held' || st === 'revoked'
           return (
             <Card key={v.version} title={<span className="flex items-center gap-2"><span className="font-mono">{v.version}</span> <Badge>{st}</Badge></span>}
               actions={(
@@ -246,7 +302,8 @@ export function CatalogueEntryPage() {
           setPlacing(null)
           act(() => client.post(`${api}/channels/${seg(p.channel)}/extensions/${seg(name)}/releases/place`, { body: placeBody(source, p) })).then(done)
         }} />
-      <Confirm open={withdrawing !== ''} title={`Withdraw ${name} ${withdrawing}?`} confirm="Withdraw" danger disabled={busy || reason.trim() === ''}
+      <Confirm open={withdrawing !== ''} title={`Withdraw ${name} ${withdrawing}?`} confirm="Withdraw" danger
+        disabled={busy || reason.trim() === '' || utf8Bytes(reason.trim()) > 400}
         onConfirm={() => {
           const v = withdrawing
           setWithdrawing('')
@@ -255,7 +312,9 @@ export function CatalogueEntryPage() {
         onClose={() => setWithdrawing('')}>
         <p>From now on the version is served in none of the tenant's channels, and no build of it arrives from <Mono>{source}</Mono> again.
           The tenant's administrators are told, with the reason. It cannot be undone.</p>
-        <Field label="Reason"><input className="field" maxLength={400} value={reason} onChange={(ev) => setReason(ev.target.value)} data-autofocus /></Field>
+        <Field label="Reason" hint={utf8Bytes(reason.trim()) > 400 ? 'At most 400 bytes of UTF-8.' : undefined}>
+          <input className="field" value={reason} onChange={(ev) => setReason(ev.target.value)} data-autofocus />
+        </Field>
       </Confirm>
       <Confirm open={purging !== null} title="Purge this build?" confirm="Purge" danger
         onConfirm={() => {

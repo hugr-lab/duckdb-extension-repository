@@ -178,6 +178,10 @@ so the operator declares it:
   too ([Administration console](../console.md#screens)).
 - A mirror's cells keep the outcomes `other_source` and `shadowed`: a mirror still releases into
   its home channel, where they are decided.
+- Small changes: a rule's `newest` skips revoked versions, as the placement pass does;
+  `kista admin catalogue show` ends with an `ID` column (the build's, for `catalogue purge`); placing
+  by hand takes `publisher-id:<id>` from a server administrator, as its catalogue names a
+  distributor's publisher whose name another one had.
 
 ### Licences per source, and a key's owner (spec 0033, phase B part 2)
 

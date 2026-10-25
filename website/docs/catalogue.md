@@ -21,8 +21,8 @@ This page walks through what a tenant's administrators do with it. The reference
 
 | Part | What it is |
 | --- | --- |
-| **Source** | where a build came from: `upstream:<name>` (a mirror of DuckDB's core or community repository, another repository, a bundle's), `publisher:<name>` (the tenant's CI, or a [distributor's publisher](publishing.md#distributors-publishers)), or `tenant` (its administrators' adds and its principals' publications). A removed distributor's publisher is still addressed as `publisher-id:<id>`. |
-| **Entry** | a build of a source: name, version, platform, DuckDB version or C API, verified once, at arrival, against its source's signature. A version is immutable within its source in the whole tenant. |
+| **Source** | where a build came from: `upstream:<name>` (a mirror of DuckDB's core or community repository, another repository, a bundle's), `publisher:<name>` (the tenant's CI, or a [distributor's publisher](publishing.md#distributors-publishers)), or `tenant` (its administrators' adds and its principals' publications). To a distribution admin and a server administrator, a distributor's publisher is `publisher-id:<id>` where another distributor's publisher, live or removed, had its name (and that form always names it for them). |
+| **Entry** | a build of a source: name, version, platform, DuckDB version or C API, verified once, at arrival, against its source's signature. A version is immutable within its source in the whole tenant (the tenant's own source: within each channel). |
 | **Rule** | a channel's choice for a name: the source it serves it from, and a mode (below). |
 | **Follow** | a channel taking a whole source automatically: every name of it the channel has no rule for. |
 | **Hold** | a time a source's new versions (a publisher's, an eager mirror's), or a channel's automatic placements, wait before any channel takes them automatically. |
@@ -46,8 +46,9 @@ automatically again) or **withdrawn** (by its distributor, with a reason: served
 
 ## Common tasks
 
-The commands below are `kista admin -config <file> …`; each has its API route and a place in the
-[console](console.md).
+The commands below are `kista admin -config <file> …`; each has its API route, and all but a
+source's hold (`upstream hold`, `publisher hold`) and `catalogue add` have a place in the
+[console](console.md) too (the console shows those holds, and sets a channel's).
 
 ### Mirror a DuckDB extension into a channel
 
@@ -59,6 +60,10 @@ own:
 ```bash
 kista admin channel source acme/nightly h3 -set upstream:community -mode auto
 ```
+
+Two limits remain: a mirror's matrix follows its home channel's DuckDB versions (another channel
+gets the builds of the versions both serve), and a lazy or pull-through upstream fetches on a miss in
+its home channel only. An upstream without a home channel is a follow-up.
 
 ### Take a distributor's builds
 

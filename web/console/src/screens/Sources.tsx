@@ -3,7 +3,7 @@ import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, No
 import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { seg, sourceSeg } from '../lib/http'
-import { PlaceDialog, modeWords, placeBody } from './Catalogue'
+import { PlaceDialog, compareVersions, modeWords, placeBody, removedSource } from './Catalogue'
 
 // A channel's rules (specs 0031, 0033): the channel serves each extension name from one source (an
 // upstream, a publisher, the tenant), and takes that source's versions from the tenant's catalogue
@@ -37,6 +37,27 @@ export function sourceChoices(r: SourceRow): string[] {
   const all = new Set([...Object.keys(r.available), 'tenant'])
   if (r.source) all.add(r.source)
   return [...all].filter((s) => !s.endsWith('(removed)')).sort()
+}
+
+/** Whether the catalogue has a version of the rule's source newer than the channel holds (by the
+ * server's version order: the one an auto rule would place next). */
+export function newer(r: Pick<SourceRow, 'current' | 'newest'>) {
+  return !!r.newest && (!r.current || compareVersions(r.newest, r.current) > 0)
+}
+
+/** The source a Change… starts from: the rule's, unless a removed one's (not a source to name). */
+export function changeTo(r: SourceRow) {
+  return r.source && !removedSource(r.source) ? r.source : (sourceChoices(r).find((s) => s !== 'tenant') ?? 'tenant')
+}
+
+/** What a change without a mode leaves the rule with, as the server decides it (SetSource): a new rule
+ * has none, a follow's rule moved to another source and an auto rule moved to the tenant become
+ * manual, any other keeps its mode. */
+export function keptMode(r: Pick<SourceRow, 'source' | 'mode'>, to: string) {
+  if (!r.source) return 'none (as it lands)'
+  if (to === 'tenant' && r.mode === 'auto') return 'manual (the tenant is never automatic)'
+  if (r.mode === 'follow' && to !== r.source) return "manual (a follow's rule moved to another source)"
+  return `keep it (${modeWords(r.mode)})`
 }
 
 /** A hold as the API answers it (a Go duration) in words: "24h0m0s" is 24h, "0s" none. */
@@ -104,7 +125,7 @@ export function Sources({ channel, kind }: { channel: string; kind?: string }) {
             ['Versions', (r) => (
               <span className="flex flex-wrap items-center gap-1">
                 {r.current ? <Mono>{r.current}</Mono> : r.source && <span className="text-ink-muted">none placed</span>}
-                {r.newest && r.newest !== r.current && <span className="chip bg-warning-soft text-warning" title="the newest available in the catalogue">newest&nbsp;<Mono>{r.newest}</Mono></span>}
+                {newer(r) && <span className="chip bg-warning-soft text-warning" title="the newest available in the catalogue">newest&nbsp;<Mono>{r.newest}</Mono></span>}
               </span>
             )],
             ['Last outcome', (r) => (r.outcome ? <span className="text-[13px]">{r.outcome} <span className="text-ink-muted">{when(r.outcome_at)}</span></span> : '')],
@@ -125,7 +146,7 @@ export function Sources({ channel, kind }: { channel: string; kind?: string }) {
             ) : '')],
             ['', (r) => (
               <span role="group" aria-label={`${r.name} source actions`} className="flex gap-1.5">
-                <Button disabled={busy} onClick={() => { setChanging(r); setMode(''); setTo(r.source || (sourceChoices(r).find((s) => s !== 'tenant') ?? 'tenant')) }}>Change…</Button>
+                <Button disabled={busy} onClick={() => { setChanging(r); setMode(''); setTo(changeTo(r)) }}>Change…</Button>
                 {signed && r.source && perms.mayPromote(channel, r.name) && <Button disabled={busy} onClick={() => setPlacing(r)}>Place…</Button>}
                 {r.source && <Button disabled={busy} onClick={() => setClearing(r.name)}>Clear…</Button>}
               </span>
@@ -140,7 +161,7 @@ export function Sources({ channel, kind }: { channel: string; kind?: string }) {
         <p>Only the chosen source's releases of <Mono>{changing?.name}</Mono> are served in <Mono>{channel}</Mono>. A source of the
           tenant without releases here yet is named as <Mono>upstream:&lt;name&gt;</Mono> or <Mono>publisher:&lt;name&gt;</Mono>.</p>
         <Field label="Source">
-          <input className="field font-mono" list="source-choices" value={to} onChange={(e) => setTo(e.target.value.trim())} data-autofocus
+          <input className="field font-mono" list="source-choices" value={to} onChange={(e) => { const t = e.target.value.trim(); setTo(t); if (t === 'tenant' && mode === 'auto') setMode('') }} data-autofocus
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); doChange() } }} />
         </Field>
         <datalist id="source-choices">
@@ -149,7 +170,7 @@ export function Sources({ channel, kind }: { channel: string; kind?: string }) {
         {signed && (
           <Field label="Mode" hint="the tenant's own source is never automatic: it is everyone who may publish in the tenant">
             <select className="field" value={mode} onChange={(e) => setMode(e.target.value)}>
-              <option value="">{!changing?.source ? 'none (as it lands)' : `keep it (${modeWords(changing.mode)})`}</option>
+              <option value="">{changing ? keptMode(changing, to) : ''}</option>
               <option value="auto" disabled={to === 'tenant'}>auto</option>
               <option value="manual">manual</option>
             </select>

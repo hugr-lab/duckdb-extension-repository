@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Perms } from '../lib/context'
 import { sourceSeg } from '../lib/http'
-import { modeWords, placeBody, purgeable, versionSeg, versionState } from './Catalogue'
-import { holdInput, holdWords } from './Sources'
+import { buildsState, compareVersions, modeWords, placeBody, purgeable, utf8Bytes, versionSeg, versionState } from './Catalogue'
+import { changeTo, holdInput, holdWords, keptMode, newer } from './Sources'
 
 // Spec 0033 phase C: the Catalogue screen and the channel's Sources tab.
 
@@ -49,5 +49,38 @@ describe('catalogue', () => {
     expect(holdInput(' 2d ')).toBe('48h')
     expect(holdInput('90m')).toBe('90m')
     expect(holdInput('0')).toBe('0')
+  })
+  it("reads a version's state from its builds", () => {
+    expect(buildsState([{ state: 'available' }, { state: 'held' }])).toBe('held')
+    expect(buildsState([{ state: 'held', revoked_at: '2026-10-25T00:00:00Z' }])).toBe('revoked')
+    expect(buildsState([{ state: 'withdrawn', revoked_at: '2026-10-25T00:00:00Z' }])).toBe('withdrawn')
+    expect(buildsState([{ state: 'available' }])).toBe('available')
+  })
+  it('orders versions as the server does', () => {
+    expect(compareVersions('1.9.0', '1.10.0')).toBe(-1)
+    expect(compareVersions('v1.010', 'v1.10')).toBe(-1) // equal numbers: bytewise
+    expect(compareVersions('1.0', '1.0-rc1')).toBe(-1)
+    expect(compareVersions('e2e-dist-2', 'e2e-dist')).toBe(1)
+    expect(compareVersions('2.0', '2.0')).toBe(0)
+  })
+  it('flags a newer version only when the catalogue has one past what the channel holds', () => {
+    expect(newer({ current: '1.0', newest: '1.1' })).toBe(true)
+    expect(newer({ newest: '1.1' })).toBe(true)
+    expect(newer({ current: '1.2', newest: '1.1' })).toBe(false) // a held version placed early
+    expect(newer({ current: '1.1', newest: '1.1' })).toBe(false)
+    expect(newer({ current: '1.1' })).toBe(false)
+  })
+  it("says what a change without a mode leaves, as the server does, and never starts from a removed source", () => {
+    expect(keptMode({ source: '', mode: '' }, 'tenant')).toBe('none (as it lands)')
+    expect(keptMode({ source: 'publisher:ci', mode: 'auto' }, 'tenant')).toMatch(/^manual/)
+    expect(keptMode({ source: 'publisher:ci', mode: 'follow' }, 'upstream:org')).toMatch(/^manual/)
+    expect(keptMode({ source: 'publisher:ci', mode: 'follow' }, 'publisher:ci')).toBe('keep it (follow)')
+    expect(keptMode({ source: 'upstream:org', mode: '' }, 'tenant')).toBe('keep it (as it lands)')
+    expect(changeTo({ name: 'x', source: 'upstream:(removed)', available: { 'publisher:ci': 1 } })).toBe('publisher:ci')
+    expect(changeTo({ name: 'x', source: 'upstream:org', available: {} })).toBe('upstream:org')
+  })
+  it('counts a reason in bytes', () => {
+    expect(utf8Bytes('CVE')).toBe(3)
+    expect(utf8Bytes('Ü')).toBe(2)
   })
 })

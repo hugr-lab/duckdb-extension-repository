@@ -1,17 +1,20 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -128,8 +131,17 @@ func TestCatalogueSources(t *testing.T) {
 		mustOK(t, res)
 		return res[len(res)-1].Rows[0][0]
 	}
-	if got := installed("prod"); got == "e2e-dist" {
-		t.Fatal("prod serves the distributor's geo_tools")
+	data, err := os.ReadFile(b.extensions[geo])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ef, err := extfile.Open(bytes.NewReader(data), int64(len(data)), 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstreams := ef.Metadata.ExtensionVersion // the upstream's body: the built file's own footer
+	if got := installed("prod"); got != upstreams {
+		t.Fatalf("prod serves %v, not the upstream's %s", got, upstreams)
 	}
 	if got := installed("nightly"); got != "e2e-dist" {
 		t.Fatalf("nightly serves %v, not the distributor's", got)
@@ -149,6 +161,9 @@ func TestCatalogueSources(t *testing.T) {
 		"INSTALL "+geo+" FROM r")
 	mustOK(t, res[:1])
 	mustFail(t, res[1], "failed to download")
+	if got := installed("prod"); got != upstreams { // the upstream's version of the name is not withdrawn
+		t.Fatalf("prod serves %v after the withdrawal", got)
+	}
 
 	// held for an hour: placed early by a channel administrator
 	if _, err := adm.SetPublisherHold(ctx, serveAdmin, "acme", "enterest-ci", time.Hour); err != nil {

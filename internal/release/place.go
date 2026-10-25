@@ -36,6 +36,25 @@ type PlaceOptions struct {
 	Early bool
 }
 
+// placeSource resolves the source a placement by hand names: as the tenant's answers name it, and,
+// for a server administrator, publisher-id:<id> of a live distributor's publisher, the form its
+// catalogue answers one in when another publisher had the name (spec 0033 phase C). A removed one
+// is no source to place from, as by its name.
+func (s *Service) placeSource(ctx context.Context, a authz.Actor, tenantID, label string) (string, error) {
+	id, ok := strings.CutPrefix(label, store.SourcePublisherIDPrefix)
+	if !ok || !serverActor(a) {
+		return s.Store.ResolveSource(ctx, tenantID, label)
+	}
+	srcs, err := s.Store.DistributorSources(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	if d, ok := srcs[store.PublisherSource(id)]; ok && id != "" && !d.Removed {
+		return d.Source, nil
+	}
+	return "", store.ErrNoSource
+}
+
 // Place releases a source's builds of a version of name, those the channel serves, into a signed
 // channel, all or none (spec 0033). The caller needs promote on (channel, name). A channel
 // administrator may place any checked build of the catalogue, and a name without a rule gets one
@@ -82,7 +101,7 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 	if _, err := activeKey(ctx, s.Store, ch.ID); err != nil {
 		return nil, false, err
 	}
-	src, err := s.Store.ResolveSource(ctx, ch.TenantID, o.Source)
+	src, err := s.placeSource(ctx, a, ch.TenantID, o.Source)
 	switch {
 	case errors.Is(err, store.ErrNoSource) && !admin:
 		return nil, false, missing

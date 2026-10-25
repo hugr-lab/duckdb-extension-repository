@@ -18,8 +18,8 @@ import (
 // who set it and when, and the sources that have releases of the name in the channel, each with
 // its count. Spec 0033: the rule's mode, the newest version of the source the channel holds
 // (Current, an active or deprecated release) and the newest available in the catalogue (Newest: a
-// version with a held build is not, phase A2, nor one withdrawn, phase B), and the placement pass's
-// last outcome.
+// version with a held build is not, phase A2, nor one withdrawn, phase B, nor one revoked, which the
+// pass never places either, phase C), and the placement pass's last outcome.
 type SourceView struct {
 	Name      string
 	Source    string
@@ -82,6 +82,10 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 	if err != nil {
 		return nil, err
 	}
+	revoked, err := s.Store.RevokedVersions(ctx, ch.TenantID, ch.PackageType)
+	if err != nil {
+		return nil, err
+	}
 	rels, err := s.Store.ListReleases(ctx, ch.ID, "")
 	if err != nil {
 		return nil, err
@@ -109,7 +113,8 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 			v.Source, v.SetBy, v.SetAt = store.Label(labels, x.Source), x.SetBy, x.SetAt
 			v.Mode, v.Outcome, v.OutcomeAt, v.Current = x.Mode, x.Outcome, x.OutcomeAt, current[n]
 			for _, ver := range catalogue[[2]string{x.Source, n}] {
-				if slices.Contains(held[[2]string{x.Source, n}], ver) || slices.Contains(withdrawn[[2]string{x.Source, n}], ver) {
+				k := [2]string{x.Source, n}
+				if slices.Contains(held[k], ver) || slices.Contains(withdrawn[k], ver) || slices.Contains(revoked[k], ver) {
 					continue
 				}
 				if v.Newest == "" || CompareVersions(ver, v.Newest) > 0 {

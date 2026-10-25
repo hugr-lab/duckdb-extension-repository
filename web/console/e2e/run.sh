@@ -109,6 +109,7 @@ serve:
   # every page of the suite comes from one address: a browser's bursts, not a client to throttle
   api_rate: 100
   api_burst: 200
+  drain_timeout: 1ms  # stopped and started again below: no load balancer to drain
   listeners: [ { addr: 127.0.0.1:$kista_port, scheme: https, tls: { cert_file: $work/cert.pem, key_file: $work/key.pem } } ]
 egress: { allow_loopback_http: true, allow: [ { cidr: 127.0.0.1/32, ports: [$kc_port, $repo_port] } ] }
 auth:
