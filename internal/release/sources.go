@@ -143,7 +143,7 @@ func (s *Service) Source(ctx context.Context, a authz.Actor, tenant, channel, na
 // SetSource selects the source a channel serves a name from (tenant, upstream:<name> or
 // publisher:<name> of the tenant), whether it has releases there yet
 // or not: its stored releases are served at once, the others' stay stored and unserved. mode is
-// the rule's (spec 0033: auto or manual; "" keeps it, manual for a new rule); the placement pass
+// the rule's (spec 0033: auto or manual; "" keeps it, none for a new rule); the placement pass
 // places what the rule takes. The tenant's own source takes manual rules only.
 func (s *Service) SetSource(ctx context.Context, a authz.Actor, tenant, channel, name, label, mode string) (SourceView, error) {
 	ch, err := s.mayAdminChannel(ctx, a, tenant, channel)

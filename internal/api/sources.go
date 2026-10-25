@@ -62,7 +62,7 @@ func (h *Handler) channelSource(w http.ResponseWriter, r *http.Request, c caller
 func (h *Handler) setChannelSource(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
 		Source string `json:"source"`
-		Mode   string `json:"mode"` // spec 0033: auto or manual; absent keeps the rule's (manual for a new one)
+		Mode   string `json:"mode"` // spec 0033: auto or manual; absent keeps the rule's (none for a new one)
 	}
 	if !body(w, r, &in) {
 		return

@@ -4,6 +4,7 @@ import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, No
 import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
 import { GrantForm, GrantsList, useGrants } from './Access'
+import { holdWords } from './Sources'
 
 // Publishers (spec 0008, 0023; console phase 2a): identities that only publish and promote, from CI
 // of any forge, signing their requests with an SSH key registered here. They never sign in here.
@@ -27,6 +28,10 @@ interface Publisher {
   keys: PublisherKey[]
   /** a source of licence keys (spec 0021): marked by a server administrator */
   license_keys?: boolean
+  /** its hold (spec 0033): what it publishes waits this long for any channel; omitted for none */
+  hold?: string
+  /** a distributor's publisher's distributor (spec 0033 phase B): marked by a server administrator */
+  distributor?: string
 }
 
 export function Publishers() {
@@ -73,9 +78,11 @@ export function Publishers() {
               <span className="flex items-center gap-2">
                 <Link className="font-mono font-medium no-underline" to={`${base}/publishers/${seg(p.name)}`}>{p.name}</Link>
                 {p.license_keys && <Badge>licence keys</Badge>}
+                {p.distributor && <Badge>{`distributor ${p.distributor}`}</Badge>}
               </span>
             )],
             ['Keys', (p) => (p.keys.length ? p.keys.map((k) => k.title || k.fingerprint).join(', ') : <span className="text-ink-muted">none</span>)],
+            ['Hold', (p) => holdWords(p.hold)],
             ['Added', (p) => when(p.created_at)],
           ]}
         />
@@ -153,8 +160,13 @@ function PublisherView({ name }: { name: string }) {
           against. A server administrator marked it, and only a server administrator changes its keys and grants: a change made here is refused.
           Removing it drops the keys it brought.</Note>
       )}
+      {p.distributor && (
+        <Note>A distributor's publisher, {p.distributor}'s: it publishes into the tenant's <Link to={`${base}/catalogue`}>catalogue</Link> only,
+          without grants, and reaches no channel by itself: channels take its builds by their rules. Its keys and its hold
+          ({holdWords(p.hold)}) are the distributor's: a change a tenant administrator makes here is refused.</Note>
+      )}
       <Keys publisher={p} onChanged={pub.reload} />
-      <PublisherGrants publisher={p.name} />
+      {!p.distributor && <PublisherGrants publisher={p.name} />}
       <Confirm open={removing} title={`Remove the publisher ${p.name}?`} confirm="Remove" danger onConfirm={remove} onClose={() => setRemoving(false)}>
         <p>Its keys and grants go with it: CI signing with them can no longer publish.</p>
       </Confirm>

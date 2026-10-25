@@ -56,6 +56,14 @@ const badgeTone: Record<string, string> = {
   invalid: 'bg-danger-soft text-danger',
   private: 'border border-line text-ink',
   mixed: 'border border-line text-ink',
+  // the catalogue's entries and a channel's rules (spec 0033)
+  available: 'bg-success-soft text-success',
+  held: 'bg-warning-soft text-warning',
+  withdrawn: 'bg-danger-soft text-danger',
+  revoked: 'bg-danger-soft text-danger',
+  auto: 'bg-success-soft text-success',
+  follow: 'bg-success-soft text-success',
+  manual: 'border border-line text-ink',
 }
 
 export function Badge({ children }: { children: string }) {

@@ -81,9 +81,17 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/s.
 # spec 0021: vault's build declares the licence vectors' test-only key; a licence for vault, 20 days
 # long, to import
 openssl pkey -in "$root/internal/license/testdata/test-only-2048.pem" -pubout -out "$work/lic.pub.pem" 2>/dev/null
-(cd "$root" && GOWORK=off go build -o "$work/kista" ./cmd/kista && GOWORK=off go run ./web/console/e2e/fixture "$work/tresor.duckdb_extension" 1.0 a \
-	&& GOWORK=off go run ./web/console/e2e/fixture "$work/hello.duckdb_extension" 1.0 b \
-	&& GOWORK=off go run ./web/console/e2e/fixture "$work/vault.duckdb_extension" 1.0 c vault "$work/lic.pub.pem")
+(cd "$root" && GOWORK=off go build -o "$work/kista" ./cmd/kista && GOWORK=off go build -o "$work/fixture" ./web/console/e2e/fixture)
+"$work/fixture" "$work/tresor.duckdb_extension" 1.0 a
+"$work/fixture" "$work/hello.duckdb_extension" 1.0 b
+"$work/fixture" "$work/vault.duckdb_extension" 1.0 c vault "$work/lic.pub.pem"
+# spec 0033 phase C: the catalogue's builds (below)
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/n.pem" 2>/dev/null  # nightly's
+"$work/fixture" "$work/geo09.duckdb_extension" 0.9 d geo_tools
+"$work/fixture" "$work/geo10.duckdb_extension" 1.0 e geo_tools
+"$work/fixture" "$work/hello2.duckdb_extension" 2.0 f hello_acme
+"$work/fixture" "$work/maps10.duckdb_extension" 1.0 g maps
+"$work/fixture" "$work/maps11.duckdb_extension" 1.1 h maps
 lic_key="$(openssl pkey -in "$root/internal/license/testdata/test-only-2048.pem" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')"
 now=$(date +%s)
 printf '{"v":1,"iss":"https://issuer.example","jti":"lic-e2e","sub":"acme","holder":"Acme Test","ext":"vault","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}' \
@@ -149,20 +157,50 @@ k release add acme/prod "$work/hello.duckdb_extension" -name hello_acme -uncheck
 k tenant create scratch -display-name Scratch   # deleted from the console (spec 0019)
 k channel create scratch/prod -kind signed
 k key add scratch/prod -signer file:s.pem -active
-"$work/kista" serve -config "$work/kista.yaml" >"$work/kista.log" 2>&1 &
-pids+=($!)
-for i in $(seq 1 60); do curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null && break; sleep 1; done
-curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null || { cat "$work/kista.log"; exit 1; }
-pub_path="/api/v1/tenants/acme/channels/prod/extensions/vault/releases?version=1.0&platform=linux_amd64"
-pub_hash="$( { sha256sum 2>/dev/null || shasum -a 256; } < "$work/vault.duckdb_extension" | cut -d' ' -f1)"
-printf 'kista-request v1\nmethod POST\npath %s\nsha256 %s\nsigned-at %s\n' "$pub_path" "$pub_hash" \
-	"$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$work/statement"
-ssh-keygen -Y sign -q -f "$work/vault-ci" -n kista-request@v1 <"$work/statement" >"$work/statement.sig"
-curl -skf --resolve "kista.test:$kista_port:127.0.0.1" -H "Content-Type: application/octet-stream" \
-	-H "Kista-Statement: $(base64 <"$work/statement" | tr -d '\r\n')" \
-	-H "Kista-Signature: $(grep -v -- ----- "$work/statement.sig" | tr -d '\r\n')" \
-	--data-binary "@$work/vault.duckdb_extension" "$kista$pub_path" >/dev/null \
-	|| { echo "e2e: the marked publication failed"; tail -20 "$work/kista.log"; exit 1; }
+# spec 0033 phase C: a distributor's publisher with a day's hold publishes geo_tools 0.9 and 1.0 and
+# its own hello_acme into the catalogue (below); nightly follows it, which takes geo_tools and skips
+# hello_acme (the tenant has it from its own source); maps 1.0 and 1.1 are the tenant's, placed
+# nowhere
+k channel create acme/nightly -kind signed
+k channel versions acme/nightly -add v2.0.0
+k key add acme/nightly -signer file:n.pem -active
+k publisher add acme enterest-ci -distributor enterest
+ssh-keygen -q -t ed25519 -N '' -C enterest-ci -f "$work/enterest-ci"
+k publisher key add acme enterest-ci "$work/enterest-ci.pub" -expires 1d
+k publisher hold acme enterest-ci 24h
+k channel follow acme/nightly publisher:enterest-ci
+k catalogue add acme "$work/maps10.duckdb_extension" -name maps
+k catalogue add acme "$work/maps11.duckdb_extension" -name maps
+serve() {
+	"$work/kista" serve -config "$work/kista.yaml" >>"$work/kista.log" 2>&1 &
+	serve_pid=$!
+	pids+=("$serve_pid")
+	for i in $(seq 1 60); do curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null && break; sleep 1; done
+	curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null || { cat "$work/kista.log"; exit 1; }
+}
+# publish <publisher> <path> <file>: a publication signed with the publisher's key (spec 0023)
+publish() {
+	local hash
+	hash="$( { sha256sum 2>/dev/null || shasum -a 256; } < "$3" | cut -d' ' -f1)"
+	printf 'kista-request v1\nmethod POST\npath %s\nsha256 %s\nsigned-at %s\n' "$2" "$hash" \
+		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$work/statement"
+	ssh-keygen -Y sign -q -f "$work/$1" -n kista-request@v1 <"$work/statement" >"$work/statement.sig"
+	curl -skf --resolve "kista.test:$kista_port:127.0.0.1" -H "Content-Type: application/octet-stream" \
+		-H "Kista-Statement: $(base64 <"$work/statement" | tr -d '\r\n')" \
+		-H "Kista-Signature: $(grep -v -- ----- "$work/statement.sig" | tr -d '\r\n')" \
+		--data-binary "@$3" "$kista$2" >/dev/null \
+		|| { echo "e2e: the publication $2 failed"; tail -20 "$work/kista.log"; exit 1; }
+}
+serve
+publish vault-ci "/api/v1/tenants/acme/channels/prod/extensions/vault/releases?version=1.0&platform=linux_amd64" "$work/vault.duckdb_extension"
+cat_path="/api/v1/tenants/acme/catalogue/extensions"
+publish enterest-ci "$cat_path/geo_tools/builds?version=0.9&platform=linux_amd64" "$work/geo09.duckdb_extension"
+publish enterest-ci "$cat_path/geo_tools/builds?version=1.0&platform=linux_amd64" "$work/geo10.duckdb_extension"
+publish enterest-ci "$cat_path/hello_acme/builds?version=2.0&platform=linux_amd64" "$work/hello2.duckdb_extension"
+# started again: the placement pass looks at every follow at its start (the skips), then every minute
+kill "$serve_pid"
+wait "$serve_pid" 2>/dev/null || true
+serve
 
 python3 -m http.server --bind 127.0.0.1 --directory "$work/org" "$repo_port" >"$work/repo.log" 2>&1 &
 pids+=($!)

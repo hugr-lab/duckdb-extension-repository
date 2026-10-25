@@ -37,7 +37,7 @@ export function Channel() {
       </PageTitle>
       {admin && detail.data && <ChannelVersions key={c} channel={c} versions={versions} onChanged={detail.reload} />}
       {tabs.length > 1 && <Chips label="channel sections" value={tab} options={tabs} onChange={(t) => setTab({ c, tab: t })} />}
-      {tab === 'keys' ? <Keys channel={c} /> : tab === 'releases' ? <Releases channel={c} /> : tab === 'sources' ? <Sources channel={c} /> : !admin ? <Mine channel={c} /> :
+      {tab === 'keys' ? <Keys channel={c} /> : tab === 'releases' ? <Releases channel={c} /> : tab === 'sources' ? <Sources channel={c} kind={detail.data?.data.kind} /> : !admin ? <Mine channel={c} /> :
         detail.error ? <ErrorBox error={detail.error} /> : !detail.data ? <Loading /> : <Extensions channel={c} versions={versions} />}
     </>
   )
@@ -203,7 +203,7 @@ export function ReleaseList({ channel, ext }: { channel: string; ext?: string })
             )],
             ['Platform', (r) => <Mono>{r.platform}</Mono>],
             ['Build', (r) => <Mono>{r.abi} {r.build_duckdb_version ?? r.build_c_api ?? ''}</Mono>],
-            ['State', (r) => <Badge>{r.state}</Badge>],
+            ['State', (r) => <span className="flex flex-wrap gap-1"><Badge>{r.state}</Badge>{r.withdrawn && <Badge>withdrawn</Badge>}</span>],
             ['Visibility', (r) => <Badge>{r.visibility}</Badge>],
             ['Source', (r) => (
               <span className="flex flex-wrap items-center gap-1">

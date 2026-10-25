@@ -112,7 +112,7 @@ test('a body blocked and unblocked; a channel created with a DuckDB version', as
   await expect(page.getByRole('button', { name: 'stop serving v2.0.0' })).toBeVisible()
 })
 
-test("a name's source in a channel: shown, cleared, switched back (spec 0031)", async ({ page }) => {
+test("a name's source in a channel: shown, cleared, switched back (specs 0031, 0033)", async ({ page }) => {
   await signIn(page, '/ui/t/acme/', 'tom')
   await nav(page, 'Channels').click()
   await page.getByRole('link', { name: 'prod', exact: true }).click()
@@ -124,15 +124,15 @@ test("a name's source in a channel: shown, cleared, switched back (spec 0031)", 
   await actions.getByRole('button', { name: 'Clear…' }).click()
   await confirm(page, 'Clear')
   await expect(row.getByText('none: nothing is served')).toBeVisible()
-  await actions.getByRole('button', { name: 'Switch…' }).click()
+  await actions.getByRole('button', { name: 'Change…' }).click()
   // a source the tenant does not have is refused, as the API words it
   await page.getByRole('dialog').getByLabel('Source').fill('upstream:nope')
-  await confirm(page, 'Switch')
+  await confirm(page, 'Save')
   await expect(page.getByText(/not a source of the tenant/)).toBeVisible()
   await expect(source).toHaveText('none: nothing is served')
-  await actions.getByRole('button', { name: 'Switch…' }).click()
+  await actions.getByRole('button', { name: 'Change…' }).click()
   await page.getByRole('dialog').getByLabel('Source').fill('tenant')
-  await confirm(page, 'Switch')
+  await confirm(page, 'Save')
   await expect(source).toHaveText('tenant')
   // the release list says whose each release is
   await page.getByRole('button', { name: 'All releases' }).click()
