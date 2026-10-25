@@ -138,7 +138,7 @@ jobs:
   go-macos:
     # macOS runners cannot run containers: SQLite and the fs blob store only.
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       GOWORK: off
     steps:
@@ -149,7 +149,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
-      - run: go test -race ./...
+      # the store package alone runs near go test's 10 minutes per package under -race on a hosted macOS runner
+      - run: go test -race -timeout 25m ./...
 
   network:
     # spec 0009: real core and community files of a released DuckDB through the intake, and DuckDB's
