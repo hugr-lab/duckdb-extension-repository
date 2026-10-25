@@ -45,6 +45,12 @@ export function licenseKey(l: Pick<License, 'name' | 'owner'>) {
   return `${l.name} ${l.owner}`
 }
 
+/** A licence's route, by its source (spec 0033 phase B): the licence, or one of its actions
+ * (public, private), the source in the query after the path. */
+export function licensePath(api: string, l: Pick<License, 'name' | 'owner'>, action?: 'public' | 'private') {
+  return `${api}/licenses/${seg(l.name)}${action ? `/${action}` : ''}?source=${encodeURIComponent(l.owner)}`
+}
+
 /** The sources of a key in a line: publisher acl-ci · upstream enterest. */
 export function sourcesLine(sources: NameKeys['keys'][number]['sources']) {
   return sources.map((s) => `${s.kind} ${s.name}`).join(' · ')
@@ -175,15 +181,14 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
   const { client, api, base } = useTenant()
   const [pending, setPending] = useState<'public' | 'private' | 'remove' | null>(null)
   const { busy, failure, act } = useAction('The licence', onChanged)
-  const path = `${api}/licenses/${seg(l.name)}?source=${encodeURIComponent(l.owner)}`
   const run = async () => {
     const p = pending!
     setPending(null)
     if (p === 'remove') {
-      if (await act(() => client.del(path, { ifMatch: l.etag }))) onRemoved()
+      if (await act(() => client.del(licensePath(api, l), { ifMatch: l.etag }))) onRemoved()
       return
     }
-    if (await act(() => client.post(`${path}/${p}`, { ifMatch: l.etag }))) onChanged()
+    if (await act(() => client.post(licensePath(api, l, p), { ifMatch: l.etag }))) onChanged()
   }
   const versions = l.versions ? [l.versions.min && `from ${l.versions.min}`, l.versions.below && `below ${l.versions.below}`].filter(Boolean).join(', ') : ''
   const facts: [string, React.ReactNode][] = [

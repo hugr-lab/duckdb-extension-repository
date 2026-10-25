@@ -70,7 +70,8 @@ test('a refused token is renewed once; refused again, the host is told', async (
   await page.click('#expire')
   await acme.getByRole('link', { name: 'Events' }).click()
   await expect(acme.getByRole('heading', { name: 'Events' })).toBeVisible()
-  await expect(acme.getByRole('cell', { name: 'release.add' }).first()).toBeVisible()
+  // the events list read with the renewed token (any kind: earlier specs' events fill its first page)
+  await expect(acme.getByRole('cell', { name: /^[a-z_]+(\.[a-z_]+)+$/ }).first()).toBeVisible()
   expect(asked).toContain(`${kista}/acme renew`)
   expect(await page.evaluate(() => window.unauthorized)).toBe(0)
 

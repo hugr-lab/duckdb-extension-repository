@@ -40,7 +40,7 @@ test('a licence: imported from a file, its claims read, made public, removed', a
 
   // the same file again replaces it, after a confirmation
   await page.getByLabel('licence file').setInputFiles(process.env.E2E_LICENSE ?? '')
-  await expect(page.getByText('It replaces the licence stored for vault (imported).')).toBeVisible()
+  await expect(page.getByText('It replaces the licence stored for vault of publisher:vault-ci (imported).')).toBeVisible()
   await page.getByRole('button', { name: 'Replace…' }).click()
   await confirm(page, 'Replace')
   await expect(page.getByLabel('licence file')).toHaveValue('')

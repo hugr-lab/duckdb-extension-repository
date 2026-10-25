@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { declared, expiry, licenseKey, peek, replaced, sourcesLine, syncLine } from './Licenses'
+import { declared, expiry, licenseKey, licensePath, peek, replaced, sourcesLine, syncLine } from './Licenses'
 import type { License } from './Licenses'
 import { usageLines } from './Stats'
 
@@ -41,6 +41,10 @@ describe('licences', () => {
     expect(declared(names, { name: 'tresor', key: 'sha256:aa', owner: 'unknown' })).toBe(false)
     // spec 0033 phase B: a licence per (name, source)
     expect(licenseKey({ name: 'tresor', owner: 'upstream:enterest' })).not.toBe(licenseKey({ name: 'tresor', owner: 'publisher:ci' }))
+    // the source in the query, after an action's path
+    expect(licensePath('/api/v1/tenants/acme', { name: 'tresor', owner: 'publisher:ci' })).toBe('/api/v1/tenants/acme/licenses/tresor?source=publisher%3Aci')
+    expect(licensePath('/api/v1/tenants/acme', { name: 'tresor', owner: 'publisher:ci' }, 'public'))
+      .toBe('/api/v1/tenants/acme/licenses/tresor/public?source=publisher%3Aci')
   })
   it('replaces the licence of the source that owns the key (spec 0033 phase B)', () => {
     const names = [{ name: 'tresor', keys: [
