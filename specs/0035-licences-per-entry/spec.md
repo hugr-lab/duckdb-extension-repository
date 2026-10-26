@@ -1,6 +1,6 @@
 # Spec 0035: Licences per catalogue entry
 
-- **Status**: draft
+- **Status**: accepted (2026-10-26)
 - **Date**: 2026-10-26
 - **Author**: vgsml, Claude
 
