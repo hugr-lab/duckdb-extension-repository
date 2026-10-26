@@ -1091,13 +1091,10 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 			if c == SetPrivate && ch.Kind == store.ChannelPassthrough {
 				return fmt.Errorf("%w: a passthrough channel's releases are public", ErrState)
 			}
-			if r.Visibility == string(c) {
-				// the visibility it has: nothing changes, nothing is told (spec 0035 phase 2: a replay
-				// warns nothing); a private one's build is made private as the change would
+			if c == SetPublic && r.Visibility == store.Public {
+				// public already: nothing changes, nothing is told (spec 0035 phase 2: a replay warns
+				// nothing); making a private one private again still narrows its build, told
 				out = r
-				if c == SetPrivate {
-					return tx.NarrowBuild(ctx, r.BuildID)
-				}
 				return nil
 			}
 			tx.SetWarningAct("release.public") // spec 0035 phase 2

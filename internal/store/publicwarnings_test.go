@@ -148,6 +148,19 @@ func TestLicensePublicWarnings(t *testing.T) {
 		if cur, err := s.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "geo", src); err != nil || cur.Version != l.Version+2 {
 			t.Fatalf("the act stands: %+v %v", cur, err)
 		}
+		// and a panic in it too: recovered, logged, the act committed and answered without an error
+		logged.Reset()
+		s.Log = slog.New(slog.NewTextHandler(&logged, nil))
+		store.SetLicenseWarningFault(func() error { panic("the check broke") })
+		check("a broken check", "", "", 0, replace)
+		store.SetLicenseWarningFault(nil)
+		s.Log = nil
+		if !strings.Contains(logged.String(), "a licence warning's check failed") || !strings.Contains(logged.String(), "the check broke") {
+			t.Fatalf("the panic logged: %q", logged.String())
+		}
+		if cur, err := s.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "geo", src); err != nil || cur.Version != l.Version+3 {
+			t.Fatalf("the act stands: %+v %v", cur, err)
+		}
 
 		// served publicly excludes a withdrawn build's release and a blocked body's: with every public
 		// release one or the other, the licence stored warns nothing

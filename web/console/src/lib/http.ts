@@ -102,6 +102,17 @@ export class Client {
       // a token never leaves its scope: a request outside it is a bug
       throw new Error(`kista console: ${path} is outside this scope (${this.o.prefix})`)
     }
+    try {
+      return await this.answer<T>(method, path, opts)
+    } catch (e) {
+      // a failed change (refused, or never reaching kista) has no warnings: the ones before it are not
+      // shown beside its error
+      if (method !== 'GET') this.o.onWarnings?.([])
+      throw e
+    }
+  }
+
+  private async answer<T>(method: string, path: string, opts: RequestOptions & { blob?: boolean }): Promise<Answer<T>> {
     let res = await this.send(method, path, opts, false)
     if (res.status === 401 && !opts.anonymous) {
       res = await this.send(method, path, opts, true)
@@ -127,8 +138,6 @@ export class Client {
       }
     }
     if (!res.ok) {
-      // a failed change has no warnings: the ones before it are not shown beside its error
-      if (method !== 'GET') this.o.onWarnings?.([])
       const detail = (data as { detail?: string; title?: string } | undefined) ?? {}
       const after = Number(res.headers.get('Retry-After') ?? '')
       throw new ApiError(res.status, detail.detail || detail.title || `${res.status}`, Number.isFinite(after) && after > 0 ? after : undefined)

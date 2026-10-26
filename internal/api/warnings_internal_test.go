@@ -13,13 +13,11 @@ import (
 // caller who does not see them and an act without warnings as they are.
 func TestWithWarnings(t *testing.T) {
 	w := store.LicenseWarning{Name: "tresor", Source: "publisher:ci", Channel: "prod", Message: "m"}
+	asked := 0 // the caller's rights are read only when there is a warning to answer
 	with := func(show bool, ws []store.LicenseWarning) context.Context {
 		ctx := store.WithLicenseWarnings(context.Background())
 		store.AddLicenseWarnings(ctx, ws)
-		if show {
-			ctx = context.WithValue(ctx, answerWarnings{}, true)
-		}
-		return ctx
+		return context.WithValue(ctx, answerWarnings{}, func() bool { asked++; return show })
 	}
 	for _, c := range []struct {
 		name string
@@ -38,8 +36,12 @@ func TestWithWarnings(t *testing.T) {
 		{"none", true, nil, `{"a":1}`, `{"a":1}`},
 	} {
 		r := httptest.NewRequest("POST", "/", nil).WithContext(with(c.show, c.ws))
+		before := asked
 		if got := string(withWarnings(r, []byte(c.in))); got != c.want {
 			t.Errorf("%s: %s", c.name, got)
+		}
+		if c.ws == nil && asked != before {
+			t.Errorf("%s: the caller's rights read without a warning", c.name)
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
@@ -170,32 +171,61 @@ func SetLicenseWarningFault(f func() error) {
 	warningFault.Store(&f)
 }
 
-// writeLicenseWarnings checks what a committed transaction noted and writes its warnings' events,
-// in one attempt of a transaction of its own (spec 0035 phase 2: best effort; a failure is logged
-// and dropped, the act stands). The act's collector learns the warnings once they are written.
+// warningTimeout bounds the warnings' check after an act's commit.
+const warningTimeout = 2 * time.Second
+
+// writeLicenseWarnings checks what a committed transaction noted and writes its warnings' events
+// (spec 0035 phase 2: best effort). The check is a read outside any transaction; only when it finds
+// a warning the act has not written yet does one attempt of a short transaction write the events,
+// so a transaction noting nothing to warn about takes no second write lock (SQLite). A key written
+// by another transaction of the act between the read and the write may rarely be written twice. A
+// failure, a timeout (warningTimeout) or a panic is logged and dropped: the act stands. The act's
+// collector learns the warnings once they are written.
 func (s *Store) writeLicenseWarnings(ctx context.Context, w *txWarnings) {
-	ctx = context.WithoutCancel(ctx) // the act committed: its warning is written even if its caller left
+	log := cmp.Or(s.Log, slog.Default())
+	defer func() {
+		if p := recover(); p != nil {
+			log.Error("store: a licence warning's check failed (advisory: the change stands)", "kind", string(LicenseWarningKind), "panic", p)
+		}
+	}()
+	// the act committed: its warning is written even if its caller left, within a bound
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), warningTimeout)
+	defer cancel()
 	c, _ := ctx.Value(licenseWarningsKey{}).(*licenseWarnings)
+	keys, ws, err := s.licenseWarnings(ctx, w, c)
+	if err != nil {
+		log.Warn("store: a licence warning was not written (advisory: the change stands)", "kind", string(LicenseWarningKind), "error", err)
+		return
+	}
+	if c != nil {
+		c.add(keys, ws)
+	}
+}
+
+func (s *Store) licenseWarnings(ctx context.Context, w *txWarnings, c *licenseWarnings) ([]warningKey, []LicenseWarning, error) {
+	if f := warningFault.Load(); f != nil {
+		if err := (*f)(); err != nil {
+			return nil, nil, err
+		}
+	}
+	found, err := publicLicensedOf(ctx, s.query, w)
+	if err != nil {
+		return nil, nil, err
+	}
+	found = slices.DeleteFunc(found, func(x LicenseWarning) bool {
+		return c != nil && c.seen(warningKey{x.TenantID, x.Source, x.Name, x.Channel})
+	})
+	if len(found) == 0 {
+		return nil, nil, nil
+	}
+	act := cmp.Or(w.act, w.hookAct)
+	actor := cmp.Or(w.hookActor, "system:kista")
 	var ws []LicenseWarning
 	var keys []warningKey
-	err := s.once(ctx, nil, func(tx *Tx) error {
+	err = s.once(ctx, nil, func(tx *Tx) error {
 		ws, keys = nil, nil
-		if f := warningFault.Load(); f != nil {
-			if err := (*f)(); err != nil {
-				return err
-			}
-		}
-		found, err := tx.publicLicensed(ctx, w)
-		if err != nil {
-			return err
-		}
-		act := cmp.Or(w.act, w.hookAct)
-		actor := cmp.Or(w.hookActor, "system:kista")
 		for _, x := range found {
 			k := warningKey{x.TenantID, x.Source, x.Name, x.Channel}
-			if c != nil && c.seen(k) {
-				continue
-			}
 			label, err := tx.SourceLabel(ctx, x.Source)
 			if err != nil {
 				return err
@@ -218,23 +248,16 @@ func (s *Store) writeLicenseWarnings(ctx context.Context, w *txWarnings) {
 		}
 		return nil
 	})
-	if err != nil {
-		log := cmp.Or(s.Log, slog.Default())
-		log.Warn("store: a licence warning was not written (advisory: the change stands)", "kind", string(LicenseWarningKind), "error", err)
-		return
-	}
-	if c != nil {
-		c.add(keys, ws)
-	}
+	return keys, ws, err
 }
 
 // publicLicensed reads which of the noted releases, rules and entries are entries holding a
 // licence served publicly, each (tenant, source as stored, name, channel) once, in the order found.
-func (t *Tx) publicLicensed(ctx context.Context, w *txWarnings) ([]LicenseWarning, error) {
+func publicLicensedOf(ctx context.Context, query queryFn, w *txWarnings) ([]LicenseWarning, error) {
 	var out []LicenseWarning
 	seen := map[warningKey]bool{}
 	read := func(cond string, args ...any) error {
-		rows, err := t.query(ctx, publicLicensed+"("+cond+")", args...)
+		rows, err := query(ctx, publicLicensed+"("+cond+")", args...)
 		if err != nil {
 			return err
 		}

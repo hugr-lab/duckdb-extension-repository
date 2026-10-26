@@ -587,12 +587,16 @@ phase 1 merged, and revised after three review passes.
   `SetChannelRule` a rule whose source is new or changed, `PutLicense` a licence stored (an insert
   or a replacement, whatever its visibility: an import, a relay, a bundle) and
   `SetLicenseVisibility` one made public. **Right after the act's transaction commits**, and only
-  when it noted something, a short transaction of its own (one attempt) reads which of them are
-  entries holding a licence with an active or deprecated public release in a signed channel whose
-  rule selects them, their build not withdrawn and their body not blocked, and writes the events.
-  It is **best effort**: a failure (a lock timeout, the database gone) is logged at warn
-  (`Store.Log`: the server's log, `kista admin`'s stderr) and dropped; it never refuses, retries
-  storms or rolls back the act. The noted releases are read by id, the rules by (channel, name,
+  when it noted something, a read outside any transaction finds which of them are entries holding
+  a licence with an active or deprecated public release in a signed channel whose rule selects
+  them, their build not withdrawn and their body not blocked. Only when it finds one the act has
+  not written yet does one attempt of a short transaction write the events, so a transaction with
+  nothing to warn about takes no second write lock (SQLite); another transaction of the act writing
+  the same key between the read and the write may rarely make a duplicate. It is **best effort**,
+  bounded to 2 seconds (`context.WithoutCancel`, then a timeout): a failure (a lock timeout, the
+  database gone, the bound) is logged at warn, and a panic recovered and logged at error
+  (`Store.Log`: the server's log, `kista admin`'s stderr); either is dropped, and never refuses,
+  retries or rolls back the act, nor turns it into a failed answer. The noted releases are read by id, the rules by (channel, name,
   source), the entries by tenant and type through the tenant's channels (`c.tenant_id`), each kind
   batched into one query (a few hundred notes per query). On SQLite the entries' query reads
   `channels(tenant_id)` then the channel's releases, the rules' the releases' slot index (`channel_id,
@@ -613,21 +617,24 @@ phase 1 merged, and revised after three review passes.
   actor is the first hook's (the act's actor), else `system:kista`. The subject is
   `channel:<channel>/ext:<name>`; `source` is the entry as answers name it; `package_type` is left
   out for the default type, as in the other events.
-- **A replay warns nothing.** `release.Service.Apply` making a release public (or private) that is
-  so already changes nothing: no version, no event, no warning (a private one's build is narrowed
-  as the change would). A relay's unchanged licence writes nothing either.
+- **A replay warns nothing.** `release.Service.Apply` making a release public that is public already
+  changes nothing: no version, no event, no warning. Making a private one private again keeps its
+  old path (version, `release.private`, its build narrowed): only public needs the no-op. A relay's
+  unchanged licence writes nothing either.
 - **Who is answered.** Every management write collects, but its answer carries `warnings` only for
   a caller who administers the path (a server administrator, or a principal with `admin` on the
   path's tenant, channel or extension) and is no publisher (signed request), licence manager or
   distribution admin; the CLI is a server administrator. A promote-only principal, a publisher's
-  signed promotion and a licence manager's import write only the events. `reply` adds the member
+  signed promotion and a licence manager's import write only the events. The caller's rights are
+  read only when the act has a warning to answer, not on every write. `reply` adds the member
   last in an object answer, after its ETag is taken, so status and ETag are unchanged; an answer
   with a top-level `warnings` member of its own keeps it; error answers carry none. Each warning is
   `{"name", "source", "channel", "message"}`.
 - **The CLI** prints each warning after the command, `kista admin: warning: <tenant>: <message>` on
   stderr, also when the command then fails; the exit status is the command's.
 - **The console.** The API client hands each change's `warnings` to `onWarnings` (`[]` for none,
-  and for a failed change before its error is thrown); the standalone console and the
+  and for a failed change before its error is thrown, refused or never reaching kista); the
+  standalone console and the
   micro-frontend show the last change's in a `status` region that is always there (empty without
   warnings), "Done, with a warning. Nothing was refused.", until dismissed (the focus then goes to
   the page's `main h1`) or the next change. The console end to end publishes vault-ci's vault
@@ -636,8 +643,10 @@ phase 1 merged, and revised after three review passes.
 - **Tests.**
   - Store suite, three dialects (`TestLicensePublicWarnings`): each hook and its negatives, a
     replay, once per act across transactions, the act named by the service and by the hook's
-    default, a withdrawn build's and a blocked body's release not counted, and a failed check
-    logged while the act stands (`SetLicenseWarningFault`, for tests).
+    default, a withdrawn build's and a blocked body's release not counted, and a failed and a
+    panicking check logged while the act stands (`SetLicenseWarningFault`, for tests). In
+    `internal/upstream`, a release made public again through `Apply` warns nothing and keeps its
+    version; one made private again is still told.
   - `internal/upstream`, three dialects (`TestLicensePublicWarning`): one warning and one event per
     act for a release made public, a placement and a promotion of two platforms, a source switch, a
     licence made public and replaced, an auto rule's and a follow's placements of two platforms by

@@ -162,6 +162,22 @@ func testLicensePublicWarning(t *testing.T, e storetest.Engine) {
 		_, err := en.rel.Apply(c, admin, "acme", "other", "tresor", placed[0].ID, release.SetPublic, 0)
 		return err
 	})
+	// made public again (a replay): nothing changes, nothing warns; the private one made private
+	// again is still a change, told (its build narrowed), and warns nothing
+	act("a release made public again", "", ds, nil, func(c context.Context) error {
+		r, err := en.rel.Apply(c, admin, "acme", "other", "tresor", placed[0].ID, release.SetPublic, 0)
+		if err == nil && r.Version != 2 {
+			err = fmt.Errorf("a replay changed the release: %+v", r)
+		}
+		return err
+	})
+	act("a release made private again", "", ds, nil, func(c context.Context) error {
+		r, err := en.rel.Apply(c, admin, "acme", "other", "tresor", placed[1].ID, release.SetPrivate, 0)
+		if err == nil && r.Version != 2 {
+			err = fmt.Errorf("made private again, untold: %+v", r)
+		}
+		return err
+	})
 	// a public placement of two platforms: one warning
 	act("a placement", "release.place", ds, []string{"third"}, func(c context.Context) error {
 		_, _, err := en.rel.Place(c, admin, "acme", "third", "tresor", release.PlaceOptions{Source: ds, Version: "1.0"})

@@ -54,6 +54,13 @@ describe('the client', () => {
     await expect(c.post('/tenants/acme/licenses/tresor/public?source=publisher:enterest-ci')).rejects.toMatchObject({ status: 409 })
     expect(onWarnings).toHaveBeenCalledTimes(3)
     expect(onWarnings).toHaveBeenLastCalledWith([])
+    // and so does one that never reached kista
+    onWarnings.mockClear()
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    await expect(c.post('/tenants/acme/licenses/tresor/public?source=publisher:enterest-ci')).rejects.toThrow('Failed to fetch')
+    expect(onWarnings).toHaveBeenCalledExactlyOnceWith([])
+    await expect(c.get('/tenants/acme/licenses/tresor')).rejects.toThrow('Failed to fetch')
+    expect(onWarnings).toHaveBeenCalledTimes(1)
   })
 })
 
