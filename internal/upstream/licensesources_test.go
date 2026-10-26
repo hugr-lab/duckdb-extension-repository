@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +132,8 @@ func TestLicenseSources(t *testing.T) {
 	ds, cs := store.PublisherSource(dist.ID), store.PublisherSource(copycat.ID)
 	build(dist, "tresor", &other, 0)
 	build(copycat, "tresor", nil, 0)
+	// served is what a channel serving tresor from an entry serves: the entry's licence (Serve), while
+	// a live build of the entry declares its key (the route's own check, against its snapshot)
 	served := func(src string) string {
 		t.Helper()
 		l, ok, err := svc.Serve(ctx, tid, ext, "tresor", src)
@@ -138,6 +141,19 @@ func TestLicenseSources(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !ok {
+			return ""
+		}
+		live := false
+		must(t, func() error {
+			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+				keys, err := tx.LiveLicenseKeys(ctx, tid, ext, "tresor", src)
+				for _, k := range keys {
+					live = live || k.Kid == l.Key
+				}
+				return err
+			})
+		})
+		if !live {
 			return ""
 		}
 		return l.Token
@@ -174,10 +190,10 @@ func TestLicenseSources(t *testing.T) {
 		t.Fatal("the distributor's entry serves its licence")
 	}
 	// but not a tenant's entry, whatever its keys: 403, nothing stored
-	if _, err := lsvc.Import(ctx, lm, "acme", "", "publisher:copycat", bought, licenses.Create); !errors.Is(err, licenses.ErrEntryDenied) {
+	if _, err := lsvc.Import(ctx, lm, "acme", "", "publisher:copycat", bought, licenses.Create); !errors.Is(err, authz.ErrDenied) {
 		t.Fatalf("a licence manager's import into a tenant publisher's entry: %v", err)
 	}
-	if _, err := lsvc.Import(ctx, lm, "acme", "", ul, bought, licenses.Create); !errors.Is(err, licenses.ErrEntryDenied) {
+	if _, err := lsvc.Import(ctx, lm, "acme", "", ul, bought, licenses.Create); !errors.Is(err, authz.ErrDenied) {
 		t.Fatalf("a licence manager's import into an upstream's entry: %v", err)
 	}
 	// a copied key gets nothing, and takes nothing from the genuine entry; the keys listing shows
@@ -335,6 +351,11 @@ func TestLicenseSources(t *testing.T) {
 	if v, err := svc.Get(ctx, admin, "acme", "", "tresor", ul); err != nil || v.Source != store.LicenseUpstream || v.Upstream != "acme-repo" {
 		t.Fatalf("the row is the relay's: %+v %v", v, err)
 	}
+	if evs, err := en.st.ListEvents(ctx, tid, store.EventFilter{Kind: "license.change", Limit: 1}); err != nil || len(evs) != 1 ||
+		!strings.Contains(evs[0].Data, `"replaced":"lic-`) || !strings.Contains(evs[0].Data, `"upstream":"acme-repo"`) ||
+		!strings.Contains(evs[0].Data, `"source":"upstream:acme-repo"`) {
+		t.Fatalf("the import replaced by the relay, told: %+v %v", evs, err)
+	}
 	en.answer(t)
 	if res, err := svc.RunUpstream(ctx, u.ID); err != nil || res.Counts["removed"] != 1 || served(us) != "" {
 		t.Fatalf("governed by the relay: %+v %v", res, err)
@@ -352,13 +373,29 @@ func TestLicenseSources(t *testing.T) {
 	if _, err := svc.Get(ctx, admin, "acme", "", "tresor", "upstream-id:"+u2.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("a removed upstream's relayed licence: %v", err)
 	}
+	// an import in the removed upstream's entry (put there as one the migration converted would be):
+	// its successor gets nothing from it, and neither entry serves it
+	must(t, func() error {
+		return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+			l := store.License{TenantID: tid, PackageType: ext, Name: "tresor", Entry: us2, LicenseID: "lic-old", Issuer: "i", HolderID: "acme",
+				Plan: "old", Token: renewed, Key: kid, IssuedAt: now, ExpiresAt: now + 60*day, GraceUntil: now + 61*day,
+				Source: store.LicenseImport, Visibility: store.Private, Actor: "os:1:t"}
+			return tx.PutLicense(ctx, &l, 0)
+		})
+	})
 	u3, err := en.up.Add(ctx, admin, "acme", sp2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res, err := svc.RunUpstream(ctx, u3.ID); err != nil || res.Counts["stored"] != 0 || len(res.Refused) != 1 ||
-		res.Refused[0].Rule != "not_supplied" || served(store.UpstreamSource(u3.ID)) != "" {
+		res.Refused[0].Rule != "not_supplied" || served(store.UpstreamSource(u3.ID)) != "" || served(us2) != "" {
 		t.Fatalf("the successor's relay: %+v %v", res, err)
+	}
+	if n, err := store.CountRaw(ctx, en.st, "licenses", "entry_source = ?", store.UpstreamSource(u3.ID)); err != nil || n != 0 {
+		t.Fatalf("the successor's entry: %d %v", n, err)
+	}
+	if err := svc.Remove(ctx, admin, "acme", "", "tresor", "upstream-id:"+u2.ID, 0); err != nil {
+		t.Fatal(err)
 	}
 	// the mirror's: an import in its entry stays, under the id form, live for no key, removable by it
 	if _, err := svc.Import(ctx, admin, "acme", "", ul, imported, licenses.Create); err != nil {
@@ -371,8 +408,13 @@ func TestLicenseSources(t *testing.T) {
 	if vs, err := svc.List(ctx, admin, "acme", "", gone); err != nil || len(vs) != 1 || vs[0].Entry != gone {
 		t.Fatalf("a removed upstream's import: %+v %v", vs, err)
 	}
-	if got := keys("tresor", ""); strings.Contains(got, "upstream:") {
+	if got := keys("tresor", ""); strings.Contains(got, "upstream:") || served(us) != "" {
 		t.Fatalf("a removed upstream's keys: %q", got)
+	}
+	// served nowhere, so no bundle carries it either
+	if ls, err := svc.Exportable(ctx, tid, ext, ""); err != nil || slices.ContainsFunc(ls, func(l store.License) bool { return l.Entry == us }) ||
+		!slices.ContainsFunc(ls, func(l store.License) bool { return l.Entry == ds }) {
+		t.Fatalf("what a bundle may carry: %+v %v", ls, err)
 	}
 	if _, err := svc.Import(ctx, admin, "acme", "", gone, imported, 0); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("an import into a removed source's entry: %v", err)
@@ -388,7 +430,7 @@ func TestLicenseSources(t *testing.T) {
 		return en.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tid, "copycat", "os:1:t") })
 	})
 	gone = "publisher-id:" + copycat.ID
-	if vs, err := svc.List(ctx, admin, "acme", "", gone); err != nil || len(vs) != 1 {
+	if vs, err := svc.List(ctx, admin, "acme", "", gone); err != nil || len(vs) != 1 || served(cs) != "" {
 		t.Fatalf("a removed publisher's import: %+v %v", vs, err)
 	}
 	if got := keys("tresor", ""); got != "publisher:enterest-ci=1enterest" {
@@ -403,5 +445,21 @@ func TestLicenseSources(t *testing.T) {
 	// nothing passed to another entry: the distributor's licence is as it was
 	if vs, err := svc.List(ctx, admin, "acme", "", ""); err != nil || len(vs) != 2 || served(ds) != bought {
 		t.Fatalf("the licences left: %+v %v", vs, err)
+	}
+	// the distributor's publisher removed: a licence manager removes its licence by the id form,
+	// and names nothing else (a refused caller, whatever the source is)
+	must(t, func() error {
+		return en.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tid, "enterest-ci", "os:1:t") })
+	})
+	for _, bad := range []string{"publisher:enterest-ci", "publisher:nope", "upstream:pt", "upstream-id:" + u.ID, "publisher-id:" + copycat.ID} {
+		if err := lsvc.Remove(ctx, lm, "acme", "", "tresor", bad, 0); !errors.Is(err, authz.ErrDenied) {
+			t.Fatalf("a licence manager's removal from %s: %v", bad, err)
+		}
+	}
+	if _, err := lsvc.SetVisibility(ctx, lm, "acme", "", "tresor", "publisher-id:"+dist.ID, store.Private, 0); !errors.Is(err, authz.ErrDenied) {
+		t.Fatalf("a licence manager's change in a removed publisher's entry: %v", err)
+	}
+	if err := lsvc.Remove(ctx, lm, "acme", "", "tresor", "publisher-id:"+dist.ID, 0); err != nil {
+		t.Fatalf("a licence manager's removal from a removed distributor's publisher's entry: %v", err)
 	}
 }

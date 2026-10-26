@@ -272,9 +272,10 @@ licence reconciler: a principal of a server issuer listed in `auth.server_licens
 tenant that is active (not suspended, not being deleted) a licence manager may list and read every
 licence and the licence keys the live releases declare, and import, replace, remove and make private
 the licences of **distributors' publishers'** entries only (spec 0035;
-[A licence's entry](licensing.md#a-licences-entry)): a write naming any other entry answers `403`
-(`forbidden`), so its server-wide token cannot copy a tenant upstream's licence or pin an import into
-an upstream's entry:
+[A licence's entry](licensing.md#a-licences-entry)): it names an entry as a distribution admin
+names a distributor's publisher, and any other `?source=` answers as a missing path does (`404`,
+recorded as `authz.refused`), so its server-wide token learns nothing of the tenant's other sources,
+and cannot copy a tenant upstream's licence or pin an import into an upstream's entry:
 
 - `GET /api/v1/tenants/{t}/licenses`, `GET …/licenses/{name}`;
 - `POST /api/v1/tenants/{t}/licenses?source=`, `DELETE …/licenses/{name}?source=`,

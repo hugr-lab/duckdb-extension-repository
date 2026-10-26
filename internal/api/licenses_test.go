@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
@@ -83,6 +84,38 @@ func TestLicenseRoutes(t *testing.T) {
 	}
 	if r := m.call(t, "GET", "/api/v1/tenants/acme/license-keys", m.toks["install"], ""); r.status != 404 {
 		t.Fatalf("license keys to an installer: %d", r.status)
+	}
+	// a second entry declaring the same kid on a build of its own: the key lists both, each with its
+	// builds
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+		twin := store.Publisher{TenantID: m.tenantID(t), Name: "twin", CreatedBy: "os:1:t"}
+		if err := tx.InsertPublisher(ctx, &twin); err != nil {
+			return err
+		}
+		if _, err := tx.SetPublisherLicenseKeys(ctx, twin.TenantID, "twin", true); err != nil {
+			return err
+		}
+		b := store.Build{TenantID: twin.TenantID, Source: store.PublisherSource(twin.ID), Name: "tresor", PackageVersion: "9.0", Platform: "linux_amd64",
+			ABI: store.ABICPP, DuckDBVersion: "v2.0.0", BodyHash: strings.Repeat("9", 64), Origin: store.OriginPublication, CreatedBy: "os:1:t", Checked: true}
+		if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
+			return err
+		}
+		pemKey, err := extfile.MarshalPublicKeyPEM(&m.licKey.PublicKey)
+		if err != nil {
+			return err
+		}
+		_, err = tx.RecordLicenseKeys(ctx, twin.TenantID, b.ID, store.KeySourcePublisher, twin.ID, []store.LicenseKey{{Kid: kid, PEM: pemKey}})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r = m.call(t, "GET", "/api/v1/tenants/acme/license-keys/tresor", tom, "")
+	if ks := fmt.Sprint(r.json(t)["names"]); r.status != 200 || strings.Count(ks, kid) != 1 || !strings.Contains(ks, "name:nobody") ||
+		!strings.Contains(ks, "builds:1 kind:publisher name:twin") || !strings.Contains(ks, "builds:3 kind:publisher name:nobody") {
+		t.Fatalf("one kid, two entries: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", "/api/v1/tenants/acme/license-keys?source=publisher:twin&source=publisher:nobody", tom, ""); r.status != 400 {
+		t.Fatalf("?source= given twice: %d %s", r.status, r.body)
 	}
 	// the owner route is gone
 	if r := m.call(t, "PUT", "/api/v1/tenants/acme/license-keys/tresor/"+kid+"/owner", tom, `{"source":"publisher:nobody"}`); r.status != 404 {

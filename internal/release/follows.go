@@ -292,7 +292,7 @@ func (s *Service) followLook(ctx context.Context, f store.DueFollow) (followLook
 			}
 		}
 	}
-	if lk.distributor, err = s.Store.SourceDistributor(ctx, f.Source); err != nil {
+	if lk.distributor, err = s.Store.SourceDistributor(ctx, f.TenantID, f.Source); err != nil {
 		return lk, false, err
 	}
 	if id, ok := strings.CutPrefix(f.Source, store.SourcePublisherPrefix); ok && lk.distributor == "" {

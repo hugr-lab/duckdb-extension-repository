@@ -32,7 +32,8 @@ func holderRefusal(ctx context.Context, tx *store.Tx, tenantID string, tok *lice
 
 // Exportable lists the licences of a package type of a tenant a bundle may carry (spec 0021; spec
 // 0034: a bundle's sources are of one type each), by name: those in force, whose key the server
-// does not refuse, and of holder when one is named. Off, none.
+// does not refuse, of holder when one is named, and whose key is live for its entry (spec 0035).
+// Off, none.
 func (s *Service) Exportable(ctx context.Context, tenantID, packageType, holder string) ([]store.License, error) {
 	if !s.Enabled {
 		return nil, ErrOff
@@ -48,7 +49,20 @@ func (s *Service) Exportable(ctx context.Context, tenantID, packageType, holder 
 		if err != nil || s.Refuse[l.Key] || holder != "" && l.HolderID != holder {
 			continue
 		}
-		if st := t.StatusAt(now); st == license.Valid || st == license.Grace {
+		if st := t.StatusAt(now); st != license.Valid && st != license.Grace {
+			continue
+		}
+		// spec 0035: only a licence its entry serves travels: its key live for the entry (a removed
+		// source's licence, or one whose key no build of the entry declares now, is served nowhere)
+		live := false
+		if err := s.Store.InTxLocks(ctx, nil, func(tx *store.Tx) error {
+			keys, err := tx.LiveLicenseKeys(ctx, tenantID, packageType, l.Name, l.Entry)
+			live = slices.ContainsFunc(keys, func(k store.LicenseKey) bool { return k.Kid == l.Key })
+			return err
+		}); err != nil {
+			return nil, err
+		}
+		if live {
 			out = append(out, l)
 		}
 	}
@@ -115,9 +129,10 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 	}
 	// the transaction may run again: its counts reach res only once it holds
 	var counts map[string]int
+	var per map[string]map[string]int // by target
 	var refused []Refusal
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		counts, refused = map[string]int{}, nil
+		counts, per, refused = map[string]int{}, map[string]map[string]int{}, nil
 		for _, it := range ok {
 			name := it.Name
 			// spec 0035: every upstream of the licence's sources, as it is now, that supplies the name
@@ -157,10 +172,16 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 			}
 			for i, u := range targets {
 				typ, src := types[i], store.UpstreamSource(u.ID)
+				// the counts are per target: in all, and the target's own
+				if per[u.Name] == nil {
+					per[u.Name] = map[string]int{}
+				}
+				count := func(k string) { counts[k]++; per[u.Name][k]++ }
+				refuse := func(r Refusal) { refused = append(refused, r); per[u.Name]["refused"]++ }
 				// the live keys of the upstream's own entry verify it (spec 0021; spec 0035)
 				if err := s.verifyIn(ctx, tx, t.ID, typ, src, it.tok, lb.of(src)); err != nil {
 					if r := refusal(err, it.tok); r != nil {
-						refused = append(refused, *r)
+						refuse(*r)
 						continue
 					}
 					return err
@@ -169,7 +190,7 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 				if r, err := holderRefusal(ctx, tx, t.ID, it.tok); err != nil {
 					return err
 				} else if r != nil {
-					refused = append(refused, *r)
+					refuse(*r)
 					continue
 				}
 				l := record(it.tok, t.ID, typ, it.Token, actor)
@@ -181,16 +202,16 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 				case err != nil:
 					return err
 				case old.Token == it.Token:
-					counts["unchanged"]++
+					count("unchanged")
 					continue
 				case old.Source == store.LicenseImport:
-					refused = append(refused, Refusal{Name: name, ID: it.tok.ID, Rule: "superseded",
+					refuse(Refusal{Name: name, ID: it.tok.ID, Rule: "superseded",
 						Reason: "the licence an administrator imported for " + name + " from " + lb.of(src) + " stays: a bundle's never replaces it"})
 					continue
 				case replaces(old, l, s.Store.Now().Unix(), s.deadKey(ctx, tx, old)):
 					l.Visibility = old.Visibility
 				default:
-					refused = append(refused, Refusal{Name: name, ID: it.tok.ID, Rule: "superseded",
+					refuse(Refusal{Name: name, ID: it.tok.ID, Rule: "superseded",
 						Reason: "the licence stored for " + name + " from " + lb.of(src) + " (" + old.Source + ") stays: it is newer or lasts longer"})
 					continue
 				}
@@ -200,9 +221,9 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 					}
 				}
 				if old.Version == 0 {
-					counts["stored"]++
+					count("stored")
 				} else {
-					counts["replaced"]++
+					count("replaced")
 				}
 			}
 		}
@@ -217,6 +238,9 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 	}
 	for _, r := range refused {
 		res.refuse(r.Name, r.ID, r.Rule, r.Reason)
+	}
+	if len(per) > 0 {
+		res.Targets = per
 	}
 	return res
 }

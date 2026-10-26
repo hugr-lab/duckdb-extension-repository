@@ -237,7 +237,7 @@ func ValidLicenseEntry(s string) bool {
 // LicenseEntrySource reads a source as a tenant's licence entry (spec 0035): live reports that the
 // tenant has the upstream or publisher, and upstreamKind is a live upstream's kind ("" for a
 // publisher).
-func (s *Store) LicenseEntrySource(ctx context.Context, tenantID, source string) (live bool, upstreamKind string, err error) {
+func (t *Tx) LicenseEntrySource(ctx context.Context, tenantID, source string) (live bool, upstreamKind string, err error) {
 	kind, id, ok := splitKeySource(source)
 	if !ok {
 		return false, "", nil
@@ -246,11 +246,20 @@ func (s *Store) LicenseEntrySource(ctx context.Context, tenantID, source string)
 	if kind == KeySourcePublisher {
 		q = "SELECT '' FROM publishers WHERE id = ? AND tenant_id = ?"
 	}
-	err = s.db.QueryRowContext(ctx, s.d.rebind(q), id, tenantID).Scan(&upstreamKind)
+	err = t.queryRow(ctx, q, id, tenantID).Scan(&upstreamKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, "", nil
 	}
 	return err == nil, upstreamKind, err
+}
+
+// LicenseEntrySource reads a source as a tenant's licence entry outside a transaction.
+func (s *Store) LicenseEntrySource(ctx context.Context, tenantID, source string) (live bool, upstreamKind string, err error) {
+	err = s.InTx(ctx, "", func(tx *Tx) error {
+		live, upstreamKind, err = tx.LicenseEntrySource(ctx, tenantID, source)
+		return err
+	})
+	return live, upstreamKind, err
 }
 
 // SourceLabels name a tenant's sources as answers show them (spec 0031): upstream:<name>,

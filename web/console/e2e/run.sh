@@ -99,6 +99,10 @@ now=$(date +%s)
 printf '{"v":1,"iss":"https://issuer.example","jti":"lic-e2e","sub":"acme","holder":"Acme Test","ext":"vault","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}' \
 	"$now" "$((now + 20 * 86400))" >"$work/claims.json"
 (cd "$root" && GOWORK=off go run ./internal/license/vectorgen sign -claims "$work/claims.json") >"$work/vault.kista-license"
+# spec 0035: a licence for tresor, whose builds declare no key: no entry lists its key
+printf '{"v":1,"iss":"https://issuer.example","jti":"lic-nokey","sub":"acme","ext":"tresor","plan":"pro","iat":%d,"exp":%d}' \
+	"$now" "$((now + 20 * 86400))" >"$work/claims-nokey.json"
+(cd "$root" && GOWORK=off go run ./internal/license/vectorgen sign -claims "$work/claims-nokey.json") >"$work/tresor.kista-license"
 mkdir -p "$work/org/acme/.well-known"
 printf '{"signature_keys":["%s"]}' "$lic_key" >"$work/org/acme/.well-known/duckdb-extension-repo.json"
 repo_key="sha256:$(printf '%s' "$lic_key" | base64 -d | openssl dgst -sha256 | awk '{print $NF}')"
@@ -224,4 +228,4 @@ for i in $(seq 1 30); do curl -sf "$host/" >/dev/null && break; sleep 1; done
 curl -sf "$host/" >/dev/null || { cat "$work/host.log"; exit 1; }
 
 echo "e2e: Playwright"
-E2E_LICENSE="$work/vault.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }
+E2E_LICENSE="$work/vault.kista-license" E2E_LICENSE_NOKEY="$work/tresor.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }

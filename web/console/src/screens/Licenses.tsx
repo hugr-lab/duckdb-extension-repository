@@ -1,9 +1,10 @@
-import { useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Table, when } from '../components/ui'
 import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
+import type { Client } from '../lib/http'
 import type { Upstream } from './Upstreams'
 
 // Licences (spec 0012 phase 1d): the tenant's licences, imported by its administrators or relayed
@@ -204,7 +205,8 @@ export function Licenses() {
         )}
       </Card>
       {selected && <LicenseView key={licenseKey(selected)} l={selected} onChanged={() => { list.reload() }} onRemoved={() => { setOpen(''); list.reload() }} />}
-      <Import licenses={ls} keys={nks} onImported={(key) => { setOpen(key); list.reload(); keys.reload() }} onStale={() => { list.reload(); keys.reload() }} />
+      <Import client={client} api={api} licenses={ls} keys={nks} keysLoading={keys.loading} keysError={keys.error}
+        onImported={(key) => { setOpen(key); list.reload(); keys.reload() }} onStale={() => { list.reload(); keys.reload() }} />
       <Keys names={nks} loading={keys.loading} error={keys.error} reload={keys.reload} />
       <Relays />
     </>
@@ -262,7 +264,7 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
         {l.visibility === 'public' && <Note>Public: anyone who is served a public release of {l.name} here gets this licence, and can copy it.</Note>}
         {failure != null && <ErrorBox error={failure} />}
       </div>
-      <Confirm open={pending !== null} title={pending === 'remove' ? `Remove the licence for ${l.name}?` : `Make the licence for ${l.name} ${pending}?`}
+      <Confirm open={pending !== null} title={pending === 'remove' ? `Remove the licence for ${l.name} in ${l.entry}?` : `Make the licence for ${l.name} in ${l.entry} ${pending}?`}
         confirm={pending === 'remove' ? 'Remove' : `Make ${pending}`} danger={pending !== 'private'} onConfirm={run} onClose={() => setPending(null)}>
         <p>{pending === 'remove'
           ? <>Extensions stop getting it at their next load. {l.source === 'upstream' ? 'A relayed licence comes back at the upstream’s next relay while it still supplies it.' : ''}</>
@@ -274,39 +276,60 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
   )
 }
 
+/** The entry an import goes into (spec 0035), from what is listed (the entries whose live keys
+ * include the licence's key), what the administrator chose ('' none yet, 'other', or a listed
+ * entry) and what they typed: the chosen listed entry; by default the only one listed, never one
+ * among several; a choice no longer listed is dropped; the typed one when they chose another or none
+ * is listed. A typed entry is named by its source's name (upstream:<name>, publisher:<name>), as the
+ * licences list shows live entries: otherwise the licence it replaces would not be found and no
+ * If-Match sent. bad says why a typed entry is not one ('' none). */
+export function importEntry(listed: KeySource[], choice: string, typed: string): { entry: string; bad: string } {
+  const names = listed.map(entryOf)
+  if (listed.length > 0 && choice !== 'other') {
+    return { entry: names.includes(choice) ? choice : preselect(listed), bad: '' }
+  }
+  const entry = typed.trim()
+  if (entry !== '' && !/^(upstream|publisher):[^:\s]+$/.test(entry)) {
+    return { entry: '', bad: 'Name the entry by its source: upstream:<name> or publisher:<name>.' }
+  }
+  return { entry, bad: '' }
+}
+
 /** Import a licence file into a catalogue entry (spec 0035): the entries whose live keys include
  * the file's key are listed, the only one preselected (never one among several); another may be
  * named, and kista refuses it unless its keys verify the licence. The licence stored in that entry is
  * replaced after a confirmation. A refusal reads the list and the keys again. */
-function Import({ licenses, keys, onImported, onStale }: {
-  licenses: License[]; keys?: NameKeys[]; onImported: (key: string) => void; onStale: () => void
+export function Import({ client, api, licenses, keys, keysLoading, keysError, onImported, onStale }: {
+  client: Client; api: string; licenses: License[]; keys?: NameKeys[]; keysLoading: boolean; keysError?: unknown
+  onImported: (key: string) => void; onStale: () => void
 }) {
-  const { client, api } = useTenant()
   const file = useRef<HTMLInputElement>(null)
+  const legend = useId()
   const [token, setToken] = useState('')
   const [bad, setBad] = useState(false)
-  const [choice, setChoice] = useState('') // a listed entry, or 'other'
+  const [choice, setChoice] = useState('') // '' none yet, a listed entry, or 'other'
   const [other, setOther] = useState('')
   const [replacing, setReplacing] = useState(false)
   const { busy, failure, act } = useAction()
   const p = token ? peek(token) : null
   const listed = p ? entriesFor(keys, p.ext, p.kid) : []
-  const entry = choice === 'other' || listed.length === 0 ? other.trim() : choice
+  const { entry, bad: badEntry } = importEntry(listed, choice, other)
   const stored = p ? replaced(licenses, p.ext, entry) : undefined
-  const pick = async (f?: File) => {
+  const clear = () => {
     setToken('')
     setBad(false)
     setChoice('')
     setOther('')
+  }
+  const pick = async (f?: File) => {
+    clear()
     if (!f) return
     if (f.size > 16384) {
       setBad(true)
       return
     }
     const t = (await f.text()).trim()
-    const q = peek(t)
-    setBad(q === null)
-    setChoice(q ? preselect(entriesFor(keys, q.ext, q.kid)) : '')
+    setBad(peek(t) === null)
     setToken(t)
   }
   const send = async () => {
@@ -317,16 +340,44 @@ function Import({ licenses, keys, onImported, onStale }: {
       return r
     })
     if (ok) {
-      setToken('')
-      setChoice('')
-      setOther('')
+      clear()
       if (file.current) file.current.value = ''
     } else onStale()
   }
-  const otherInput = (
-    <input className="field font-mono" aria-label="other entry" placeholder="upstream:<name> or publisher:<name>" value={other}
+  const otherInput = (labelled: boolean) => (
+    <input className="field font-mono" aria-label={labelled ? 'other entry' : undefined} placeholder="upstream:<name> or publisher:<name>" value={other}
       onChange={(e) => { setOther(e.target.value); if (listed.length > 0) setChoice('other') }} />
   )
+  const entries = () => {
+    if (keysLoading && !keys) return <Loading />
+    if (keysError != null && !keys) return <ErrorBox error={keysError} />
+    if (listed.length === 0) {
+      return (
+        <div className="flex flex-col gap-1.5">
+          <Note>No entry's live builds declare this licence's key: kista refuses it unless the entry you name declares it.</Note>
+          <Field label="Into the entry">{otherInput(false)}</Field>
+        </div>
+      )
+    }
+    return (
+      <div role="radiogroup" aria-labelledby={legend} className="flex flex-col gap-1.5">
+        <span id={legend} className="text-[13px] font-semibold text-ink">Into the entry{listed.length > 1 ? ': several declare its key, choose one' : ''}</span>
+        {listed.map((s) => (
+          <label key={entryOf(s)} className="flex items-center gap-2 text-[13px]">
+            <input type="radio" name="entry" value={entryOf(s)} checked={choice !== 'other' && entry === entryOf(s)} onChange={() => setChoice(entryOf(s))} />
+            <Mono>{entryOf(s)}</Mono><span className="text-ink-muted">{entryKind(s)}</span>
+          </label>
+        ))}
+        <div className="flex items-center gap-2 text-[13px]">
+          <label className="flex items-center gap-2">
+            <input type="radio" name="entry" value="other" checked={choice === 'other'} onChange={() => setChoice('other')} />
+            <span>another entry</span>
+          </label>
+          {otherInput(true)}
+        </div>
+      </div>
+    )
+  }
   return (
     <Card title="Import a licence">
       <div className="flex flex-col gap-3">
@@ -336,29 +387,8 @@ function Import({ licenses, keys, onImported, onStale }: {
         {p && !bad && (
           <>
             <p className="m-0">For <Mono>{p.ext}</Mono>{p.plan ? `, plan ${p.plan}` : ''}{p.holder ? `, held by ${p.holder}` : ''}{p.exp ? `, until ${when(new Date(p.exp * 1000).toISOString())}` : ''}.</p>
-            {listed.length > 0 ? (
-              <div role="radiogroup" aria-label="entry" className="flex flex-col gap-1.5">
-                <span className="text-[13px] font-semibold text-ink">Into the entry{listed.length > 1 ? ': several declare its key, choose one' : ''}</span>
-                {listed.map((s) => (
-                  <label key={entryOf(s)} className="flex items-center gap-2 text-[13px]">
-                    <input type="radio" name="entry" value={entryOf(s)} checked={choice === entryOf(s)} onChange={() => setChoice(entryOf(s))} />
-                    <Mono>{entryOf(s)}</Mono><span className="text-ink-muted">{entryKind(s)}</span>
-                  </label>
-                ))}
-                <div className="flex items-center gap-2 text-[13px]">
-                  <label className="flex items-center gap-2">
-                    <input type="radio" name="entry" value="other" checked={choice === 'other'} onChange={() => setChoice('other')} />
-                    <span>another entry</span>
-                  </label>
-                  {otherInput}
-                </div>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-1.5">
-                <Note>No entry's live builds declare this licence's key: kista refuses it unless the entry you name declares it.</Note>
-                <Field label="Into the entry">{otherInput}</Field>
-              </div>
-            )}
+            {entries()}
+            {badEntry && <p className="m-0 text-[13px] text-warning">{badEntry}</p>}
             {stored && <p className="m-0 text-warning">It replaces the licence stored for {p.ext} in {stored.entry} ({stored.source === 'upstream' ? `relayed from ${stored.upstream}` : 'imported'}).</p>}
           </>
         )}

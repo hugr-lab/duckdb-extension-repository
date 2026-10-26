@@ -161,9 +161,6 @@ const (
 	typeMediaType    = "unsupported-media-type"
 	typeTooMany      = "too-many-requests"
 	typeUnavailable  = "unavailable"
-	// typeForbidden: a licence manager writing an entry that is not a distributor's publisher's
-	// (spec 0035); everywhere else a caller not allowed is answered as a missing path
-	typeForbidden = "forbidden"
 	// typeSource: another source holds the name in the channel (spec 0031)
 	typeSource = "source"
 	// typeHeld: a held entry, or a publisher with a hold on a channel's route (spec 0033)
@@ -177,7 +174,7 @@ var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "
 	typeInvalid: "Invalid", typeConflict: "Conflict", typePrecondition: "Precondition Failed",
 	typeRequired: "Precondition Required", typeTooLarge: "Content Too Large", typeMediaType: "Unsupported Media Type",
 	typeTooMany: "Too Many Requests", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
-	typeHeld: "Held", typeWithdrawn: "Withdrawn", typeForbidden: "Forbidden"}
+	typeHeld: "Held", typeWithdrawn: "Withdrawn"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
 func problem(w http.ResponseWriter, status int, typ, detail string) {
@@ -727,7 +724,6 @@ func init() {
 		// public), their relay per upstream (tenant administrators only); spec 0021: the keys
 		{"tenants/{t}/license-keys", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).licenseKeys))}},
 		{"tenants/{t}/license-keys/{name}", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).licenseKeys))}},
-		// spec 0033 phase B: a key's owner for a name, given by a tenant administrator
 		{"tenants/{t}/licenses", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).listLicenses)),
 			http.MethodPost: {access: licenseAdmin, manage: true, raw: true, handle: licenseRoute((*Handler).importLicense)}}},
 		{"tenants/{t}/licenses/{name}", map[string]rule{http.MethodGet: m(licenseAdmin, licenseRoute((*Handler).getLicense)),

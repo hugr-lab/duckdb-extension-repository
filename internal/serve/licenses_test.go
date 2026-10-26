@@ -230,9 +230,15 @@ func TestLicenseEntrySwitch(t *testing.T) {
 	}
 	h := bearerHdr(idp.token(t, nil))
 	get := func() answer { return en.do(t, "GET", "/acme/prod/-/licenses/tresor", h) }
-	if a := get(); a.status != 404 {
-		t.Fatalf("the copy's entry, unlicensed: %d", a.status)
+	// an entry without a licence answers exactly as a missing path does for the caller
+	missing := func(name string) {
+		t.Helper()
+		a, b := get(), en.do(t, "GET", "/acme/prod/tresor/9.9/v2.0.0/linux_amd64/tresor.duckdb_extension.gz", h)
+		if a.status != 404 || a.status != b.status || !bytes.Equal(a.body, b.body) || !sameHeaders(a.header, b.header) {
+			t.Fatalf("%s: %d %q %v, want %d %q %v", name, a.status, a.body, a.header, b.status, b.body, b.header)
+		}
 	}
+	missing("the copy's entry, unlicensed")
 	if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:ci", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +248,5 @@ func TestLicenseEntrySwitch(t *testing.T) {
 	if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:copy", ""); err != nil {
 		t.Fatal(err)
 	}
-	if a := get(); a.status != 404 {
-		t.Fatalf("switched back: %d", a.status)
-	}
+	missing("switched back")
 }

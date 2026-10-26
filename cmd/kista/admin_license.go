@@ -132,18 +132,18 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 			}
 			return err
 		}
-		a.logf("license import %s %s from %s (%s, plan %s, until %s)", pos[0], v.Name, v.Entry, v.ID, v.Plan, v.ExpiresAt)
+		a.logf("license import %s %s into %s (%s, plan %s, until %s)", pos[0], v.Name, v.Entry, v.ID, v.Plan, v.ExpiresAt)
 	case sub == "remove" && len(pos) == 2:
 		if err := ls.Remove(ctx, a.actor, pos[0], *ptype, pos[1], *source, 0); err != nil {
 			return err
 		}
-		a.logf("license remove %s %s from %s", pos[0], pos[1], *source)
+		a.logf("license remove %s %s in %s", pos[0], pos[1], *source)
 	case (sub == "public" || sub == "private") && len(pos) == 2:
 		vis := map[string]string{"public": store.Public, "private": store.Private}[sub]
 		if _, err := ls.SetVisibility(ctx, a.actor, pos[0], *ptype, pos[1], *source, vis, 0); err != nil {
 			return err
 		}
-		a.logf("license %s %s %s from %s", sub, pos[0], pos[1], *source)
+		a.logf("license %s %s %s in %s", sub, pos[0], pos[1], *source)
 	case sub == "verify" && len(pos) == 1:
 		tok, err := read(pos[0])
 		if err != nil {

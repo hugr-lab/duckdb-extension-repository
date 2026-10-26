@@ -123,7 +123,6 @@ Errors are `application/problem+json`:
 | `source` | `409`: another source holds the extension's name in the channel; the detail names it ([spec 0031](upstreams.md#a-names-source-in-a-channel)) |
 | `held` | `409`: a held entry placed or promoted without `early`, or a publisher with a hold on a channel's publication route ([holds](upstreams.md#holds)) |
 | `withdrawn` | `409`: a [withdrawn](upstreams.md#withdrawals) build placed, its release made active, current or public, its body published again, or the build purged |
-| `forbidden` | `403`: a licence manager writing an entry that is not a distributor's publisher's ([spec 0035](licensing.md#licences-in-a-tenant)); everywhere else a caller not allowed gets `404` |
 | `precondition-failed` | `412` |
 | `precondition-required` | `428` |
 | `too-large` | `413` |
@@ -395,12 +394,18 @@ A licence is answered as its claims and state (`name`, `entry`, `id`, `issuer`, 
 `upstream`, `visibility`, `status`, `etag`), never with the token. A tenant holds a licence per
 catalogue entry (spec 0035): `entry` is the licence's entry, by its source (`upstream:<name>`,
 `publisher:<name>`, or a removed one's `upstream-id:<id>` or `publisher-id:<id>`), and `source` how
-it arrived (`import` or `upstream`). Every write (the import, `DELETE`, `…/public`, `…/private`)
+it arrived (`import` or `upstream`): the query's `?source=` names the entry, the answer's `source`
+is how the licence arrived. Every write (the import, `DELETE`, `…/public`, `…/private`)
 **requires** `?source=` naming the entry (`upstream:<name>`, `publisher:<name>`, `upstream-id:<id>`,
-`publisher-id:<id>`): `400` without it, and `400` naming why for an unknown, removed or malformed
-source, `tenant`, or a DuckDB core or community upstream; `DELETE` also takes the id form of a
-removed source whose entry still holds a licence. A licence manager writes only the entries of
-distributors' publishers: any other entry answers `403` (`forbidden`). A read (`GET
+`publisher-id:<id>`), given once: `400` without it or given twice, and `400` naming why for
+`tenant`, a malformed form, a source that is no upstream or publisher of the tenant, a removed
+source, or a DuckDB core or community upstream; `DELETE` also takes the id form of a removed source
+whose entry still holds a licence (`400` when it holds none, `404` for a live entry without one).
+The checks run in that order: the caller, licensing (`409` while it is off, on an import), the
+entry, then the licence itself. A licence manager names only the entries of distributors'
+publishers (`publisher:<name>` of a live one, `publisher-id:<id>`, and a removed one's id form on
+`DELETE`): any other `?source=`, whatever it is, answers as a missing path does (`404`, the refusal
+recorded as `authz.refused`), before anything about it is checked. A read (`GET
 …/licenses/{name}`) takes `?source=` optionally: without it, the extension's only licence, and
 `409` naming the entries where it has several. A removed source is `upstream-id:<id>` or
 `publisher-id:<id>` in the licence routes, even where the catalogue routes still show it by name (a
@@ -419,8 +424,10 @@ with `holder_mismatch` in its detail, naming the expected and the given holder.
 "publisher"|"upstream", "name", "distributor", "builds": n}]}]}]}`: exactly what an import's key
 check would accept now, per entry (`sources`: the entries the key is live for, `distributor` for a
 distributor's publisher, `builds` the entry's builds declaring the key); keys the server refuses are
-left out. With `?source=`, one entry's keys: `200` with an empty list when it has none, `400` for an
-unknown, removed or malformed source. A licence is a package's (spec 0034): these
+left out. With `?source=`, one entry's keys: `200` with an empty list when it has none, `400` as for
+a write (an unknown, removed or malformed source, `tenant`, a DuckDB core or community upstream);
+from a licence manager, a source that is not a distributor's publisher answers `404`. A licence is a
+package's (spec 0034): these
 routes take `?type=` (`duckdb_extension` by default), an import stores the licence under that type,
 and a channel serves only its own type's licences. See [Licensing](licensing.md).
 

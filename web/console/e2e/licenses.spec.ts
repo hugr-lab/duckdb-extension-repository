@@ -87,12 +87,23 @@ test('a licence: imported from a file into an entry, its claims read, made publi
   const dist = page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'publisher:vault-dist', exact: true }) })
   await expect(dist.getByText('valid', { exact: true })).toBeVisible()
   await expect(page.getByRole('row', { name: /^vault pro/ })).toHaveCount(2)
-  // opened on import: removed again
+  // opened on import: removed again, vault-ci's staying
   await expect(page.getByRole('heading', { name: 'vault' })).toBeVisible()
   await page.getByRole('button', { name: 'Remove…' }).click()
+  await expect(page.getByRole('dialog')).toContainText('in publisher:vault-dist')
   await confirm(page, 'Remove')
   await expect(page.getByRole('row', { name: /^vault pro/ })).toHaveCount(1)
+  await expect(row.getByRole('cell', { name: 'publisher:vault-ci', exact: true })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'publisher:vault-dist', exact: true })).toHaveCount(0)
   await row.getByRole('button', { name: 'vault' }).click()
+
+  // no entry lists the key of a licence for tresor: named by hand, sent, and kista's refusal shown
+  await page.getByLabel('licence file').setInputFiles(process.env.E2E_LICENSE_NOKEY ?? '')
+  await expect(page.getByText("No entry's live builds declare this licence's key")).toBeVisible()
+  await page.getByLabel('Into the entry').fill('publisher:vault-ci')
+  await page.getByRole('button', { name: 'Import', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('kid_untrusted')
+  await page.getByLabel('licence file').setInputFiles([])
 
   await page.getByRole('button', { name: 'Make public' }).click()
   await confirm(page, 'Make public')

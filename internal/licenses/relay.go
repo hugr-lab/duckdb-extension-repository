@@ -39,7 +39,10 @@ const (
 type Result struct {
 	Counts  map[string]int `json:"counts"` // received, stored, replaced, unchanged, removed, refused
 	Refused []Refusal      `json:"refused,omitempty"`
-	Error   string         `json:"error,omitempty"`
+	// Targets are a bundle's counts per target upstream (spec 0035: a licence goes into each), by
+	// the upstream's name; a relay's are its upstream's (Counts)
+	Targets map[string]map[string]int `json:"targets,omitempty"`
+	Error   string                    `json:"error,omitempty"`
 }
 
 // Refusal is a licence the relay did not store, and why.
@@ -314,6 +317,14 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 			}
 			if err := tx.PutLicense(ctx, &l, old.Version); err != nil {
 				return err
+			}
+			// spec 0035: an administrator's import the relay replaces is the relay's from then on: the
+			// change is told per licence, as the import was
+			if old.Version != 0 && old.Source == store.LicenseImport {
+				if err := tx.Event(ctx, t.ID, actor, "license.change", "license:"+name, typed(map[string]any{"name": name,
+					"license": l.LicenseID, "replaced": old.LicenseID, "upstream": u.Name, "source": lb.of(src)}, typ)); err != nil {
+					return err
+				}
 			}
 			if old.Version == 0 {
 				counts["stored"]++

@@ -35,9 +35,6 @@ var (
 	// ErrSources is a licence read without its entry where the name has licences in several
 	// entries (spec 0033 phase B; spec 0035).
 	ErrSources = errors.New("licenses: the extension has licences in several entries")
-	// ErrEntryDenied is a licence manager's write to an entry that is not a distributor's
-	// publisher's (spec 0035).
-	ErrEntryDenied = errors.New("licenses: a licence manager writes only the entries of distributors' publishers")
 )
 
 // Create is Import's expected version for a licence that must not exist yet.
@@ -352,11 +349,12 @@ func (s *Service) verifyIn(ctx context.Context, tx *store.Tx, tenantID, packageT
 	return s.verify(tok, keys, " from "+label)
 }
 
-// entry reads the catalogue entry a licence write names by its source (spec 0035): a live
-// upstream or publisher of the tenant whose builds can declare licence keys (upstream:<name>,
+// entry reads the catalogue entry a caller names by its source (spec 0035): for an administrator, a
+// live upstream or publisher of the tenant whose builds can declare licence keys (upstream:<name>,
 // publisher:<name>, upstream-id:<id>, publisher-id:<id>). With removed set (a removal), the id
 // form of a removed source names its entry too, live false. Anything else is invalid, naming why.
-func (s *Service) entry(ctx context.Context, tenantID, label string, removed bool) (src string, live bool, err error) {
+// A licence manager names only distributors' publishers' entries (distributorEntry).
+func (s *Service) entry(ctx context.Context, a authz.Actor, tenantID, label string, removed bool) (src string, live bool, err error) {
 	invalid := func(why string) (string, bool, error) {
 		return "", false, fmt.Errorf("%w: ?source= %s", store.ErrInvalid, why)
 	}
@@ -365,7 +363,13 @@ func (s *Service) entry(ctx context.Context, tenantID, label string, removed boo
 	case "":
 		return invalid("names the licence's entry: upstream:<name>, publisher:<name>, upstream-id:<id> or publisher-id:<id>")
 	case store.SourceTenant:
+		if a.Kind == authz.ActorLicenseManager {
+			return "", false, authz.ErrDenied
+		}
 		return invalid("tenant: the tenant's own builds declare no licence keys, so its entries carry no licence")
+	}
+	if a.Kind == authz.ActorLicenseManager {
+		return s.distributorEntry(ctx, tenantID, label, removed)
 	}
 	for _, kind := range []string{store.KeySourceUpstream, store.KeySourcePublisher} {
 		if id, ok := strings.CutPrefix(label, kind+"-id:"); ok {
@@ -401,19 +405,55 @@ func (s *Service) entry(ctx context.Context, tenantID, label string, removed boo
 	return src, true, nil
 }
 
-// mayWrite refuses a licence manager's write to an entry that is not a distributor's publisher's
-// (spec 0035: its server-wide token must not copy a tenant upstream's licence, or pin an import into
-// an upstream's entry where the relay's revocation never removes it). Administrators write any.
-func mayWrite(ctx context.Context, tx *store.Tx, a authz.Actor, entry string) error {
-	if a.Kind != authz.ActorLicenseManager {
+// distributorEntry reads the entry a licence manager names (spec 0035): one of the tenant's
+// distributors' publishers, as distribution admins name them: a live one by publisher:<name> or
+// publisher-id:<id>, a removed one by publisher-id:<id> on a removal only. Any other source,
+// whatever it is, answers as a refused caller (authz.ErrDenied: a missing path, audited), before
+// anything about it is told: its server-wide token learns nothing of the tenant's other sources.
+func (s *Service) distributorEntry(ctx context.Context, tenantID, label string, removed bool) (string, bool, error) {
+	srcs, err := s.Store.DistributorSources(ctx, tenantID)
+	if err != nil {
+		return "", false, err
+	}
+	if id, ok := strings.CutPrefix(label, store.SourcePublisherIDPrefix); ok {
+		if d, ok := srcs[store.PublisherSource(id)]; ok && id != "" && (!d.Removed || removed) {
+			return d.Source, !d.Removed, nil
+		}
+		return "", false, authz.ErrDenied
+	}
+	if name, ok := strings.CutPrefix(label, store.SourcePublisherPrefix); ok {
+		for _, d := range srcs {
+			if !d.Removed && d.Name == name {
+				return d.Source, true, nil
+			}
+		}
+	}
+	return "", false, authz.ErrDenied
+}
+
+// recheck reads a write's entry again in its transaction, under the licence lock (spec 0035): a
+// source removed since the entry was read takes no import and no visibility change (live), and a
+// licence manager's entry must still be a distributor's publisher's in the tenant (a refused caller
+// otherwise). label names the entry in the refusal.
+func recheck(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID, entry, label string, live bool) error {
+	if a.Kind == authz.ActorLicenseManager {
+		d, err := tx.SourceDistributor(ctx, tenantID, entry)
+		if err != nil {
+			return err
+		}
+		if d == "" {
+			return authz.ErrDenied
+		}
+	}
+	if !live {
 		return nil
 	}
-	d, err := tx.SourceDistributor(ctx, entry)
+	ok, _, err := tx.LicenseEntrySource(ctx, tenantID, entry)
 	if err != nil {
 		return err
 	}
-	if d == "" {
-		return ErrEntryDenied
+	if !ok {
+		return fmt.Errorf("%w: ?source= %q was removed", store.ErrInvalid, label)
 	}
 	return nil
 }
@@ -451,7 +491,7 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 	if !s.Enabled {
 		return View{}, ErrOff
 	}
-	src, _, err := s.entry(ctx, t.ID, source, false)
+	src, _, err := s.entry(ctx, a, t.ID, source, false)
 	if err != nil {
 		return View{}, err
 	}
@@ -466,7 +506,7 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 	l := record(tok, t.ID, packageType, token, a.String())
 	l.Entry, l.Source = src, store.LicenseImport
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		if err := mayWrite(ctx, tx, a, src); err != nil {
+		if err := recheck(ctx, tx, a, t.ID, src, source, true); err != nil {
 			return err
 		}
 		// the entry's live keys: those its source recorded on its own live builds anywhere in the
@@ -531,7 +571,7 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, packageType
 	if packageType, err = parseType(packageType); err != nil {
 		return err
 	}
-	src, live, err := s.entry(ctx, t.ID, source, true)
+	src, live, err := s.entry(ctx, a, t.ID, source, true)
 	if err != nil {
 		return err
 	}
@@ -540,7 +580,7 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, packageType
 		return err
 	}
 	return s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		if err := mayWrite(ctx, tx, a, src); err != nil {
+		if err := recheck(ctx, tx, a, t.ID, src, source, false); err != nil {
 			return err
 		}
 		l, err := tx.GetLicense(ctx, t.ID, packageType, name, src)
@@ -574,7 +614,7 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, pack
 	if packageType, err = parseType(packageType); err != nil {
 		return View{}, err
 	}
-	src, _, err := s.entry(ctx, t.ID, source, false)
+	src, _, err := s.entry(ctx, a, t.ID, source, false)
 	if err != nil {
 		return View{}, err
 	}
@@ -584,7 +624,7 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, pack
 	}
 	var l store.License
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		if err := mayWrite(ctx, tx, a, src); err != nil {
+		if err := recheck(ctx, tx, a, t.ID, src, source, true); err != nil {
 			return err
 		}
 		if l, err = tx.GetLicense(ctx, t.ID, packageType, name, src); err != nil {
@@ -680,7 +720,7 @@ func (s *Service) LicenseKeys(ctx context.Context, a authz.Actor, tenant, packag
 	}
 	src := ""
 	if source != "" {
-		if src, _, err = s.entry(ctx, t.ID, source, false); err != nil {
+		if src, _, err = s.entry(ctx, a, t.ID, source, false); err != nil {
 			return nil, err
 		}
 	}

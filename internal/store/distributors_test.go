@@ -53,7 +53,7 @@ func TestMigrationDistributors(t *testing.T) {
 		if rs, err := s.ChannelReleases(ctx, cid); err != nil || len(rs) != 1 || rs[0].Withdrawn {
 			t.Fatalf("the channel serves what it served: %+v %v", rs, err)
 		}
-		if d, err := s.SourceDistributor(ctx, src); err != nil || d != "" {
+		if d, err := s.SourceDistributor(ctx, tid, src); err != nil || d != "" {
 			t.Fatalf("the source's distributor: %q %v", d, err)
 		}
 		// marked afterwards, then removed: remembered
@@ -71,8 +71,11 @@ func TestMigrationDistributors(t *testing.T) {
 			t.Fatalf("the distributors' sources: %v %v", srcs, err)
 		}
 		inTx(t, s, func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tid, "ci", "os:1:t") })
-		if d, err := s.SourceDistributor(ctx, src); err != nil || d != "enterest" {
+		if d, err := s.SourceDistributor(ctx, tid, src); err != nil || d != "enterest" {
 			t.Fatalf("a removed distributor's publisher: %q %v", d, err)
+		}
+		if d, err := s.SourceDistributor(ctx, id("x"), src); err != nil || d != "" {
+			t.Fatalf("another tenant's: %q %v", d, err)
 		}
 		if got, err := s.ResolveDistributorSource(ctx, tid, "publisher:ci"); err != nil || got != src {
 			t.Fatalf("resolved after its removal: %q %v", got, err)

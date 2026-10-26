@@ -181,15 +181,20 @@ so the operator declares it:
   import, so the order is safe.
 - **Migration `0043_license_entries`** raises `min_reader` to 43: stop every older replica first. In
   the three databases it:
-  - re-keys each relayed licence into its relaying upstream's entry (`upstream:<id>`): the row already
-    there stays, and of several rows moving into one empty entry the one that expires last (then by
-    licence id) stays; visibility is kept, and bundle-imported licences, the rows of paused or
-    credential-less upstreams and refused-but-kept rows keep their place, with no window where they
-    are missing;
-  - deletes the remaining licences of source `unknown`; other imports keep their source as their
-    entry;
+  - keeps a relayed licence that is in its relaying upstream's entry (`upstream:<id>`) as it is;
+  - turns a relayed licence that is in **another** entry (migration 0042 gave it its key's owner, or an
+    administrator's `license owner` moved it there), or whose relaying upstream is gone, into an
+    **import** in that same entry (`source` `import`, no upstream), its visibility kept: the channels
+    serving it keep serving it, and it shows as imported from then on (its relay no longer governs
+    it; remove it when the relay's own copy is back, or leave it to its grace). The relaying
+    upstream's own entry gets its copy at its next relay run, requested below: until then that
+    entry's channels serve no licence for the name;
+  - moves a relayed licence of source `unknown` into its relaying upstream's entry, when that upstream
+    exists and its entry holds no licence of the name (a source holds at most one licence of a name,
+    so no two rows meet there); otherwise, and for every import of source `unknown`, it is deleted;
+    other imports keep their source as their entry;
   - requests a relay run for every relaying upstream (a `repository` upstream with a credential, not
-    in bundle mode);
+    in bundle mode; a paused one's runs once it is resumed);
   - renames `licenses.owner_source` to `entry_source`, still in the primary key;
   - drops `license_key_owners` and the index `ix_build_license_keys_kid`.
 - **What changes.** A licence belongs to a catalogue entry, and every write names it: an import,
@@ -199,8 +204,8 @@ so the operator declares it:
   no `license owner`, no `PUT …/license-keys/{name}/{kid}/owner`, no `key_owner` refusal, no
   `license.key_owner` or `license.key_conflict` events. A licence answers `entry` instead of `owner`;
   `GET …/license-keys` answers per key the entries it is live for, each with its `builds` (no
-  `owner`, no top-level `builds`), and takes `?source=`. A licence manager writes only the entries of
-  distributors' publishers (`403` otherwise). A bundle's licence goes into every supplying, verifying
+  `owner`, no top-level `builds`), and takes `?source=`. A licence manager names only the entries of
+  distributors' publishers (any other `?source=` answers `404`, recorded as `authz.refused`). A bundle's licence goes into every supplying, verifying
   bundle-mode upstream, counted per target. See [Licensing](../licensing.md#a-licences-entry).
 
 ### The console's catalogue and a channel's rules (spec 0033, phase C)

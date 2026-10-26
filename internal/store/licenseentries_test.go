@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -34,10 +35,12 @@ func nameLicense(ctx context.Context, s *store.Store, tenantID, packageType, nam
 	return store.License{}, fmt.Errorf("%d licences of %s", len(out), name)
 }
 
-// Migration 0043 (spec 0035 phase 1), on a populated database at level 42: relayed licences move
-// into their relaying upstream's entry (the row there staying, of several movers the one that
-// expires last, a chain of moves meeting nothing, visibility kept), imports of no entry go and the
-// others stay, every relaying upstream is asked for a run, and the owners' table and its index go.
+// Migration 0043 (spec 0035 phase 1), on a populated database at level 42: a relayed licence in its
+// relayer's entry stays relayed; one in another entry (0042's owner, an administrator's act) or of
+// a removed relayer stays in that entry as an import, visibility kept; one of no entry ('unknown')
+// moves into its live relayer's entry unless a row is there; the remaining 'unknown' licences go;
+// every relaying upstream (a paused one too) is asked for a run; the owners' table and its index
+// go, and a level-42 binary is refused.
 func TestMigrationLicenseEntries(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Fresh(t, 1)[0]
@@ -56,47 +59,49 @@ func TestMigrationLicenseEntries(t *testing.T) {
 				}
 			}
 		}
-		upstream := func(k, mode string, credential any) []any {
+		upstream := func(k, mode, state string, credential any) []any {
 			return []any{"INSERT INTO upstreams (id, tenant_id, name, kind, channel_id, mode, visibility, state, version, request_dry_run, created_at, " +
-				"created_by, credential) VALUES (?, ?, ?, 'repository', ?, ?, 'public', 'active', 1, ?, ?, 'os:1:t', ?)", id(k), tid, "u-" + k, cid, mode,
-				false, at, credential}
+				"created_by, credential) VALUES (?, ?, ?, 'repository', ?, ?, 'public', ?, 1, ?, ?, 'os:1:t', ?)", id(k), tid, "u-" + k, cid, mode,
+				state, false, at, credential}
 		}
 		exec(
 			[]any{"INSERT INTO tenants (id, name, display_name, state, created_at, version) VALUES (?, 'acme', '', 'active', ?, 1)", tid, at},
 			[]any{"INSERT INTO channels (id, tenant_id, name, kind, created_at, version, release_version) VALUES (?, ?, 'prod', 'signed', ?, 1, 1)", cid, tid, at},
-			upstream("a", "mirror", "enterest"), upstream("b", "mirror", "enterest"), upstream("d", "bundle", nil), upstream("e", "mirror", nil),
+			upstream("a", "mirror", "active", "enterest"), upstream("b", "mirror", "active", "enterest"), upstream("d", "bundle", "active", nil),
+			upstream("e", "mirror", "active", nil), upstream("f", "mirror", "paused", "enterest"),
 			[]any{"INSERT INTO license_syncs (upstream_id, tenant_id, last_run_at, last_result) VALUES (?, ?, ?, '{}')", id("a"), tid, at},
 		)
-		ua, ub := "upstream:"+id("a"), "upstream:"+id("b")
+		ua, ue := "upstream:"+id("a"), "upstream:"+id("e")
 		const pub = "publisher:p"
-		// (name, licence id, entry, how it arrived, its relaying upstream, expires, visibility)
-		lic := func(name, lid, entry, source string, upstreamID any, expires int, visibility string) []any {
+		// (name, licence id, entry, how it arrived, its relaying upstream, visibility)
+		lic := func(name, lid, entry, source string, upstreamID any, visibility string) []any {
 			return []any{"INSERT INTO licenses (tenant_id, name, owner_source, license_id, issuer, holder_id, holder, plan_name, token, key_fp, " +
 				"issued_at, expires_at, grace_until, source, upstream_id, visibility, actor, updated_at, version) VALUES (?, ?, ?, ?, 'i', 'acme', '', " +
-				"'pro', ?, 'kid', 1, ?, 4102444800, ?, ?, ?, 'os:1:t', ?, 1)", tid, name, entry, lid, "t." + lid, expires, source, upstreamID, visibility, at}
+				"'pro', ?, 'kid', 1, 10, 4102444800, ?, ?, ?, 'os:1:t', ?, 1)", tid, name, entry, lid, "t." + lid, source, upstreamID, visibility, at}
 		}
 		exec(
-			// geo: a's own row stays; b's copy under another entry moves to b's, public; a's copy under the
-			// publisher's goes, a's entry holding one
-			lic("geo", "l1", ua, "upstream", id("a"), 10, "private"),
-			lic("geo", "l2", "publisher:q", "upstream", id("b"), 10, "public"),
-			lic("geo", "l3", pub, "upstream", id("a"), 30, "private"),
-			// tools: two of b's movers into b's empty entry: the one that expires last stays
-			lic("tools", "l4", pub, "upstream", id("b"), 10, "private"),
-			lic("tools", "l5", "unknown", "upstream", id("b"), 20, "public"),
-			// keep: an import into a's entry stays, a's relayed one of no entry goes
-			lic("keep", "l6", ua, "import", nil, 10, "private"),
-			lic("keep", "l7", "unknown", "upstream", id("a"), 50, "private"),
-			// chain: a's row under b's entry moves to a's, b's under the publisher's to b's
-			lic("chain", "l8", ub, "upstream", id("a"), 10, "private"),
-			lic("chain", "l9", pub, "upstream", id("b"), 10, "private"),
-			// a bundle's licence moves to its bundle-mode upstream's entry
-			lic("bun", "la", pub, "upstream", id("d"), 10, "public"),
+			// A: an administrator gave the key to the publisher, the licence a relayed moving along; a
+			// relayed its own copy since: both stay, the publisher's as an import
+			lic("geo", "l1", ua, "upstream", id("a"), "private"),
+			lic("geo", "l2", pub, "upstream", id("a"), "public"),
+			// B: 0042's owner a non-relaying upstream e, the licence b relayed: it stays in e's entry
+			lic("tools", "l3", ue, "upstream", id("b"), "public"),
+			// C: its relayer removed: it stays in the publisher's entry
+			lic("gone", "l4", "publisher:q", "upstream", id("z"), "private"),
+			// a relayed one without a relayer (none is written so): stays, as an import
+			lic("nul", "l5", pub, "upstream", nil, "private"),
+			// of no entry: into its live relayer's entry, kept public
+			lic("moves", "l6", "unknown", "upstream", id("b"), "public"),
+			// of no entry, its relayer's entry holding an import: goes, the import stays
+			lic("keep", "l7", ua, "import", nil, "private"),
+			lic("keep", "l8", "unknown", "upstream", id("a"), "private"),
+			// of no entry, its relayer removed: goes
+			lic("lost", "l9", "unknown", "upstream", id("z"), "private"),
+			// a bundle's licence of no entry: into its bundle-mode upstream's entry
+			lic("bun", "la", "unknown", "upstream", id("d"), "public"),
 			// imports: of no entry they go, of one they stay
-			lic("imp", "lb", "unknown", "import", nil, 10, "private"),
-			lic("imp2", "lc", pub, "import", nil, 10, "public"),
-			// no relaying upstream: a relayed row without one (none is written so) goes
-			lic("lost", "ld", pub, "upstream", nil, 10, "private"),
+			lic("imp", "lb", "unknown", "import", nil, "private"),
+			lic("imp2", "lc", pub, "import", nil, "public"),
 		)
 		if err := s.Migrate(ctx); err != nil {
 			t.Fatal(err)
@@ -107,21 +112,18 @@ func TestMigrationLicenseEntries(t *testing.T) {
 		}
 		var got []string
 		for _, l := range ls {
-			got = append(got, fmt.Sprintf("%s/%s@%s:%s", l.Name, l.LicenseID, strings.TrimSuffix(l.Entry, "0000000-0000-0000-0000-000000000000"), l.Visibility))
+			got = append(got, fmt.Sprintf("%s/%s@%s:%s:%s:%s", l.Name, l.LicenseID, strings.TrimSuffix(l.Entry, "0000000-0000-0000-0000-000000000000"),
+				l.Source, strings.TrimSuffix(l.UpstreamID, "0000000-0000-0000-0000-000000000000"), l.Visibility))
 		}
-		want := "bun/la@upstream:d:public chain/l8@upstream:a:private chain/l9@upstream:b:private geo/l1@upstream:a:private " +
-			"geo/l2@upstream:b:public imp2/lc@publisher:p:public keep/l6@upstream:a:private tools/l5@upstream:b:public"
+		want := "bun/la@upstream:d:upstream:d:public geo/l2@publisher:p:import::public geo/l1@upstream:a:upstream:a:private " +
+			"gone/l4@publisher:q:import::private imp2/lc@publisher:p:import::public keep/l7@upstream:a:import::private " +
+			"moves/l6@upstream:b:upstream:b:public nul/l5@publisher:p:import::private tools/l3@upstream:e:import::public"
 		if strings.Join(got, " ") != want {
 			t.Fatalf("the licences:\n%s\nwant\n%s", strings.Join(got, " "), want)
 		}
-		for _, l := range ls {
-			if l.Source == store.LicenseUpstream && l.Entry != store.UpstreamSource(l.UpstreamID) {
-				t.Errorf("a relayed licence outside its upstream's entry: %+v", l)
-			}
-		}
-		// every relaying upstream is asked for a run: a's row requested, b's inserted; the bundle-mode
-		// and credential-less upstreams relay nothing
-		if n, err := store.CountRaw(ctx, s, "license_syncs", "requested_at IS NOT NULL AND upstream_id IN (?, ?)", id("a"), id("b")); err != nil || n != 2 {
+		// every relaying upstream is asked for a run: a's row requested, b's and the paused f's inserted;
+		// the bundle-mode and credential-less upstreams relay nothing
+		if n, err := store.CountRaw(ctx, s, "license_syncs", "requested_at IS NOT NULL AND upstream_id IN (?, ?, ?)", id("a"), id("b"), id("f")); err != nil || n != 3 {
 			t.Fatalf("relay runs requested: %d %v", n, err)
 		}
 		if n, err := store.CountRaw(ctx, s, "license_syncs", "upstream_id IN (?, ?)", id("d"), id("e")); err != nil || n != 0 {
@@ -137,6 +139,10 @@ func TestMigrationLicenseEntries(t *testing.T) {
 			"sqlserver": {"sys.indexes", "name = ?"}}[e.Name]
 		if n, err := store.CountRaw(ctx, s, idx[0], idx[1], "ix_build_license_keys_kid"); err != nil || n != 0 {
 			t.Fatalf("the kid index: %d %v", n, err)
+		}
+		// a binary of level 42 refuses the database
+		if err := store.MigrateTo(ctx, s, 42); !errors.Is(err, store.ErrSchemaTooNew) {
+			t.Fatalf("a level-42 binary: %v", err)
 		}
 	})
 }

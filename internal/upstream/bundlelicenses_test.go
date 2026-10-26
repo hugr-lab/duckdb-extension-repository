@@ -241,7 +241,8 @@ func TestBundleLicenses(t *testing.T) {
 			// every target that supplies the name takes it into its own entry: air and air2, counted
 			// per target (spec 0035)
 			ir := importSite(data, false)
-			if l := ir.Licenses; l == nil || l.Counts["received"] != 1 || l.Counts["stored"] != 2 || l.Counts["refused"] != 0 {
+			if l := ir.Licenses; l == nil || l.Counts["received"] != 1 || l.Counts["stored"] != 2 || l.Counts["refused"] != 0 ||
+				l.Targets["air"]["stored"] != 1 || l.Targets["air2"]["stored"] != 1 {
 				t.Fatalf("the import's licences: %+v", ir.Licenses)
 			}
 			if l := stored(); l.Source != store.LicenseUpstream || l.UpstreamID != air.ID {
@@ -314,12 +315,13 @@ func TestBundleLicenses(t *testing.T) {
 			if _, err := svc.Import(ctx, admin, "site", "", "upstream:air", own, 0); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.Import(ctx, admin, "acme", "", "upstream:acme-repo", lic.sign("tresor", "max", now, now+120*86400), 0); err != nil {
+			newer := lic.sign("tresor", "max", now, now+120*86400)
+			if _, err := svc.Import(ctx, admin, "acme", "", "upstream:acme-repo", newer, 0); err != nil {
 				t.Fatal(err)
 			}
 			_, data = g.export(t, plan(""), upstream.ExportOptions{Private: private, Licenses: true})
 			if l := importSite(data, false).Licenses; l.Counts["refused"] != 1 || l.Refused[0].Rule != "superseded" || l.Counts["replaced"] != 1 ||
-				stored().Token != own || in(air2).Token == later {
+				stored().Token != own || in(air2).Token != newer {
 				t.Fatalf("over an administrator's import: %+v", l)
 			}
 

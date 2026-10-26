@@ -166,7 +166,7 @@ func (h *Handler) publishToCatalogue(w http.ResponseWriter, r *http.Request, c c
 		code = http.StatusOK
 	}
 	bj := catalogueBuildOf(b, nil, h.o.Store.Now())
-	if dist, err := h.o.Store.SourceDistributor(r.Context(), b.Source); err != nil || dist != "" {
+	if dist, err := h.o.Store.SourceDistributor(r.Context(), b.TenantID, b.Source); err != nil || dist != "" {
 		bj.Placed = nil // a distributor's publisher reaches no channel, and learns nothing of them (spec 0033 phase B)
 	}
 	reply(w, r, code, bj, "", noStore)

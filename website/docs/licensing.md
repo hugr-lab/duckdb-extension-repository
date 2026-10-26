@@ -107,9 +107,14 @@ with a licence Enterest imports, and `upstream:org` with none, or with its own l
 would accept at that moment: per name and key, the entries it is live for, each with the number of
 its builds declaring it (and, for a distributor's publisher, the distributor). A key listed for
 several entries is declared by several sources. Keys the server refuses are left out. With
-`?source=`, one entry's keys: an empty list when it has none, `400` for an unknown, removed or
-malformed source. Being listed means the key check passes; being in force, the holder and
-`If-Match` are checked separately.
+`?source=`, one entry's keys: an empty list when it has none, `400` as for a write (an unknown,
+removed or malformed source, `tenant`, a DuckDB core or community upstream). Being listed means the
+key check passes; being in force, the holder and `If-Match` are checked separately.
+
+The query's `?source=` names a licence's entry; the licence's own `source` field says how it
+arrived (`import` or `upstream`). A write checks, in order: the caller, licensing being on, the
+entry (`400` as above), then the licence (in force, its key live for the entry, the holder,
+`If-Match`).
 
 ## On and off
 
@@ -159,10 +164,12 @@ entry (`…/licenses/<name>?source=…`).
 Besides the tenant's administrators, a **licence manager** (`auth.server_license_admins`, a
 server-wide role for a job such as a licence reconciler) may call the licence routes of every
 tenant, and nothing else. It reads every entry and every key, but writes (imports, removes, makes
-private) only the entries of **distributors' publishers** ([Publishing](publishing.md#distributors-publishers));
-any other entry answers `403` (`forbidden`), so its server-wide token cannot copy a tenant
-upstream's licence, or pin an import into an upstream's entry where the relay's revocation never
-removes it. It cannot make a licence public, call the upstreams' relay or any other route. See
+private) only the entries of **distributors' publishers** ([Publishing](publishing.md#distributors-publishers)),
+named as a distribution admin names them (`publisher:<name>`, `publisher-id:<id>`; a removed one's
+id form for a removal). Any other `?source=`, whatever it is, answers as a missing path does (`404`,
+recorded as `authz.refused`), before anything about it is checked: its server-wide token learns
+nothing of the tenant's other sources, cannot copy a tenant upstream's licence, and cannot pin an
+import into an upstream's entry where the relay's revocation never removes it. It cannot make a licence public, call the upstreams' relay or any other route. See
 [Access](access.md#server-administrators-and-tenant-administrators).
 
 **The relay from an upstream.** A `repository` upstream with a credential
@@ -173,16 +180,18 @@ the upstream's **own entry** (`upstream:<name>`) when:
 - it is in force;
 - the upstream supplies that extension: a build of it that the upstream brought since it was
   added, available in the catalogue or live in a channel (not withdrawn, not blocked). An upstream
-  does not hand out licences for names it does not supply (`not_supplied`). An upstream whose builds
-  of the name are all still held supplies nothing yet: its relay is refused `not_supplied` and the
-  licence is stored at a later run, once the hold ends;
+  does not hand out licences for names it does not supply (`not_supplied`), and a licence it stored
+  before for a name it no longer supplies is removed (revoked). An upstream whose builds of the name
+  are all still held supplies nothing yet: its relay is refused `not_supplied` and the licence is
+  stored at a later run, once the hold ends;
 - it verifies against the keys live for the upstream's entry (`kid_untrusted`);
 - it names the tenant's [expected holder](#an-expected-holder), when one is set (`holder_mismatch`).
 
 It replaces the licence stored in the entry when it is newer from the same upstream, or lasts
 longer. An import in the entry is replaced only by a relayed licence signed with the same key that
 lasts longer, or once the import's grace has ended or its key is no longer live (or the server
-refuses it); the row is then the relay's, and the relay governs it. A licence refused stays stored
+refuses it); the row is then the relay's, and the relay governs it (a `license.change` event names
+the import it replaced and the upstream). A licence refused for its key or its holder stays stored
 if this upstream relayed it before, and is tried again at the next run (a key no live build
 declares now, a rotation under way): it ends with its grace meanwhile, and it is not served while
 no live build of the entry declares its key.
@@ -205,7 +214,8 @@ exporting tenant's mirror or the source its own channel serves the name from), a
 each licence once, even when several of the bundle's sources carry it. It goes into **each**
 bundle-mode upstream of a carrying source that supplies the name and whose live keys verify it,
 checked as a relayed licence is; it never replaces an administrator's import, and a bundle never
-revokes one. The import's counts (stored, replaced, unchanged, refused) are per target
+revokes one. The import's counts (stored, replaced, unchanged, refused) are per target, and its
+result lists each target's own counts (`targets`, by upstream)
 ([Exporting a bundle](upstreams.md#exporting-a-bundle),
 [Importing a bundle](upstreams.md#importing-a-bundle),
 [Air-gapped sites](deployment/air-gapped.md#licences)).
@@ -247,7 +257,7 @@ is checked and before anything is written:
 
 | Path | The refusal |
 | --- | --- |
-| an import (`kista admin license import`, `POST …/licenses`) | `400`, `holder_mismatch`, naming the expected and the given holder |
+| an import (`kista admin license import -source`, `POST …/licenses?source=`) | `400`, `holder_mismatch`, naming the expected and the given holder |
 | the relay from an upstream | refused with the reason `holder_mismatch`, counted in the run and its `license.sync` event; the others are stored |
 | a bundle's import | refused with the reason `holder_mismatch`, counted in the import's record and its `bundle.import` event |
 
@@ -291,7 +301,7 @@ Who gets a licence:
   running client already holds;
 - a **private** licence (the default) goes to a token holding `install` on the extension in that
   channel;
-- a **public** licence (`kista admin license public <tenant> <name>`) also goes to whoever is served a
+- a **public** licence (`kista admin license public <tenant> <name> -source <entry>`) also goes to whoever is served a
   public release of the extension there: for a kista that serves its own users without tokens, on
   an internal network. Anyone who reaches the channel can then copy it;
 - everyone else gets exactly the answer of a missing extension path: `401` without a valid token,

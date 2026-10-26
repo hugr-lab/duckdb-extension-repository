@@ -69,7 +69,8 @@ func TestLicenseManager(t *testing.T) {
 		}
 		T := "/api/v1/tenants/" + tn
 		// spec 0035: nobody is a distributor's publisher, plain the tenant's own: a licence manager
-		// writes the first's entries only (403 for the other's, whatever its keys), and reads both
+		// names the first's entries only; any other source, whatever it is, answers as a missing path
+		// does, before anything about it is told (404, audited); it reads every licence
 		if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
 			if _, err := tx.SetPublisherDistributor(ctx, tenant.ID, "nobody", "enterest"); err != nil {
 				return err
@@ -79,9 +80,20 @@ func TestLicenseManager(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if r := m.call(t, "POST", T+"/licenses?source=publisher:plain", lm, m.licenceFor(tn, "pro")); r.status != 403 ||
-			r.json(t)["type"] != "urn:kista:problem:forbidden" {
-			t.Fatalf("%s: an import into a tenant publisher's entry: %d %s", tn, r.status, r.body)
+		missing := m.call(t, "GET", T+"/licenses/nope", lm, "") // a missing path: 404, constant bytes
+		for _, src := range []string{"publisher:plain", "publisher:nope", "upstream:air", "tenant", "x"} {
+			if r := m.call(t, "POST", T+"/licenses?source="+src, lm, m.licenceFor(tn, "pro")); r.status != 404 || string(r.body) != string(missing.body) {
+				t.Fatalf("%s: a licence manager's import into %s: %d %s", tn, src, r.status, r.body)
+			}
+			if r := m.call(t, "GET", T+"/license-keys?source="+src, lm, ""); r.status != 404 || string(r.body) != string(missing.body) {
+				t.Fatalf("%s: a licence manager's keys of %s: %d %s", tn, src, r.status, r.body)
+			}
+		}
+		if r := m.call(t, "GET", T+"/license-keys?source=publisher:nobody", lm, ""); r.status != 200 {
+			t.Fatalf("%s: a licence manager's keys of a distributor's publisher: %d %s", tn, r.status, r.body)
+		}
+		if r := m.call(t, "POST", T+"/licenses?source=publisher:nobody&source=publisher:nobody", lm, m.licenceFor(tn, "pro")); r.status != 400 {
+			t.Fatalf("%s: ?source= given twice: %d %s", tn, r.status, r.body)
 		}
 		if r := m.call(t, "POST", T+"/licenses?source=publisher:plain", admins[tn], m.licenceFor(tn, "pro")); r.status != 400 ||
 			!strings.Contains(string(r.body), "kid_untrusted") {
@@ -143,10 +155,39 @@ func TestLicenseManager(t *testing.T) {
 		if r := m.call(t, "GET", T+"/licenses/tresor?source=publisher:plain", lm, ""); r.status != 200 {
 			t.Fatalf("%s: a tenant publisher's licence read: %d %s", tn, r.status, r.body)
 		}
-		for _, c := range []struct{ method, path string }{{"POST", "/private"}, {"DELETE", ""}} {
-			if r := m.call(t, c.method, T+"/licenses/tresor"+c.path+"?source=publisher:plain", lm, "", "If-Match", "*"); r.status != 403 {
-				t.Fatalf("%s: %s of a tenant publisher's licence: %d %s", tn, c.method, r.status, r.body)
+		for _, src := range []string{"publisher:plain", "upstream:air"} {
+			for _, c := range []struct{ method, path string }{{"POST", "/private"}, {"DELETE", ""}} {
+				if r := m.call(t, c.method, T+"/licenses/tresor"+c.path+"?source="+src, lm, "", "If-Match", "*"); r.status != 404 {
+					t.Fatalf("%s: %s in %s's entry: %d %s", tn, c.method, src, r.status, r.body)
+				}
 			}
+		}
+		// a removed distributor's publisher's licence: removed by its id form
+		var goneID string
+		if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+			p := store.Publisher{TenantID: tenant.ID, Name: "gone-ci", CreatedBy: "os:1:t"}
+			if err := tx.InsertPublisher(ctx, &p); err != nil {
+				return err
+			}
+			goneID = p.ID
+			if _, err := tx.SetPublisherDistributor(ctx, tenant.ID, "gone-ci", "enterest"); err != nil {
+				return err
+			}
+			l := store.License{TenantID: tenant.ID, Name: "tresor", Entry: store.PublisherSource(p.ID), LicenseID: "lic-gone", Issuer: "i",
+				HolderID: tn, Plan: "old", Token: "t", Key: kid, IssuedAt: 1, ExpiresAt: 2, GraceUntil: 4102444800, Source: store.LicenseImport,
+				Visibility: store.Private, Actor: "os:1:t"}
+			if err := tx.PutLicense(ctx, &l, 0); err != nil {
+				return err
+			}
+			return tx.DeletePublisher(ctx, tenant.ID, "gone-ci", "os:1:t")
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if r := m.call(t, "DELETE", T+"/licenses/tresor?source=publisher:gone-ci", lm, "", "If-Match", "*"); r.status != 404 {
+			t.Fatalf("%s: a removed distributor's publisher by its name: %d %s", tn, r.status, r.body)
+		}
+		if r := m.call(t, "DELETE", T+"/licenses/tresor?source=publisher-id:"+goneID, lm, "", "If-Match", "*"); r.status != 204 {
+			t.Fatalf("%s: a removed distributor's publisher's licence: %d %s", tn, r.status, r.body)
 		}
 		if r := m.call(t, "DELETE", T+"/licenses/tresor?source=publisher:nobody", lm, "", "If-Match", etag); r.status != 204 {
 			t.Fatalf("%s: delete: %d %s", tn, r.status, r.body)
@@ -215,6 +256,11 @@ func TestLicenseManager(t *testing.T) {
 	acme, _ := m.st.GetTenant(ctx, "acme")
 	if evs, _ := m.st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "authz.refused", Actor: lmActor, Limit: 100}); len(evs) == 0 { // one a second per actor
 		t.Errorf("its refusals recorded under its actor: %d", len(evs))
+	}
+	// spec 0035: a refused entry is audited as any refusal, on the licence route
+	if evs, _ := m.st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "authz.refused", Actor: lmActor, Limit: 100}); !slices.ContainsFunc(evs,
+		func(e store.Event) bool { return strings.Contains(e.Data, "tenants/{t}/licenses") }) {
+		t.Errorf("its refusals on the licence routes: %+v", evs)
 	}
 
 	// a tenant's readers see the kind, not who (as for a server administrator); the server

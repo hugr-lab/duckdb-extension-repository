@@ -197,7 +197,7 @@ var catalogue = map[Kind][]string{
 	"upstream.run":        {"upstream", "dry_run", "counts", "error", "bundle"},
 	// licences (spec 0012): refused last, since a truncated event keeps its first fields
 	"license.import": {"name", "license", "issuer", "holder", "plan", "expires_at", "replaced", "package_type", "source"},
-	"license.change": {"name", "license", "visibility", "package_type", "source"},
+	"license.change": {"name", "license", "visibility", "replaced", "upstream", "package_type", "source"},
 	"license.remove": {"name", "license", "reason", "package_type", "source"},
 	"license.sync":   {"upstream", "counts", "error", "refused"},
 	// bundles (spec 0014): targets last, since a truncated event keeps its first fields; a bundle's
