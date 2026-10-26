@@ -1,6 +1,6 @@
 # Spec 0035: Licences per catalogue entry
 
-- **Status**: phase 1 implemented (2026-10-26); phase 2 accepted
+- **Status**: implemented (phase 1 2026-10-26, phase 2 2026-10-26)
 - **Date**: 2026-10-26
 - **Author**: vgsml, Claude
 
@@ -300,13 +300,17 @@ Declaring keys alone does not trigger it.
   releases;
 - a `channel_sources` switch that selects such an entry.
 
-**What kista does.** The warnings are collected in the transaction. Before commit, kista writes
-**one** `license.public_warning` event per (act, source, name, channel), with fields `name`,
-`source`, `package_type`, `channel` and `act`, however many platforms or releases the act touched.
-Routes return the collected warnings as one generic `warnings` array: `[{"name", "source",
-"channel", "message"}]`, omitted when empty. The CLI prints them on stderr and exits 0. The console
-shows them in the act's result. Acts that answer nobody (a publication, an automatic placement)
-write only the event. Nothing is refused.
+**What kista does.** The hooks note what the act's transaction touched. The warnings are written
+right after the act's commit, best effort: a failure is logged, and never refuses or rolls back the
+act. kista writes **one** `license.public_warning` event per (act, source, name, channel), with
+fields `name`, `source`, `package_type`, `channel` and `act`, however many platforms or releases the
+act touched (under concurrency, a rare duplicate event is accepted). Routes return the collected
+warnings as one generic `warnings` array: `[{"name", "source", "channel", "message"}]`, omitted when
+empty, to a caller who administers the path. The CLI prints them on stderr and exits 0. The console
+shows them in the act's result. Acts that answer nobody (a publication, an automatic placement) or
+another caller (a publisher, a promote-only principal, a licence manager) write only the event.
+Served publicly excludes a withdrawn build's release and a blocked body's. A warning is given at the
+act that changes it; a no-op replay answers none. Nothing is refused.
 
 ### Enterest
 
@@ -353,7 +357,12 @@ entry. How and when it tries again is Enterest's decision.
 - **Existence** is unchanged. The licence routes are for administrators and licence managers (a
   licence manager's refused entry is a missing path, `404`, recorded as `authz.refused`), and the
   DuckDB route answers as a missing path for a caller who may not have the licence.
-- **The warning** changes no decision.
+- **The warning** changes no decision, and is written after the act commits: its failure cannot
+  refuse or undo the act.
+  - Its answer goes only to a caller who administers the path (a server administrator; a tenant,
+    channel or extension administrator) and the CLI. A publisher, a promote-only principal, a
+    licence manager and a distribution admin are not told which channels serve an entry publicly.
+  - The event names the channels for the tenant's auditors, whoever caused it.
 
 ## Testing
 
@@ -567,6 +576,95 @@ own branch), in commits of their own after three review passes.
 - **Earlier specs.** 0033 and 0034 carry the notes listed above; 0014 and 0029 are left as they
   were, this spec recording their change, as earlier specs' changes were recorded.
 
+### As built (phase 2)
+
+Delivered on the branch `0035-licences-p2` (the Delivery's `0035-licences-per-entry-warning`), after
+phase 1 merged, and revised after three review passes.
+
+- **Hooks, then a check after the commit.** The hooks only note what they touched:
+  `InsertRelease` a release written public, `SetReleaseVisibility` a private release made public
+  (not one public already), `TakeReleases` the (channel, name, successor) it moved releases to,
+  `SetChannelRule` a rule whose source is new or changed, `PutLicense` a licence stored (an insert
+  or a replacement, whatever its visibility: an import, a relay, a bundle) and
+  `SetLicenseVisibility` one made public. **Right after the act's transaction commits**, and only
+  when it noted something, a read outside any transaction finds which of them are entries holding
+  a licence with an active or deprecated public release in a signed channel whose rule selects
+  them, their build not withdrawn and their body not blocked. Only when it finds one the act has
+  not written yet does one attempt of a short transaction write the events, so a transaction with
+  nothing to warn about takes no second write lock (SQLite); another transaction of the act writing
+  the same key between the read and the write may rarely make a duplicate. It is **best effort**,
+  bounded to 2 seconds (`context.WithoutCancel`, then a timeout): a failure (a lock timeout, the
+  database gone, the bound) is logged at warn, and a panic recovered and logged at error
+  (`Store.Log`: the server's log, `kista admin`'s stderr); either is dropped, and never refuses,
+  retries or rolls back the act, nor turns it into a failed answer. The noted releases are read by id, the rules by (channel, name,
+  source), the entries by tenant and type through the tenant's channels (`c.tenant_id`), each kind
+  batched into one query (a few hundred notes per query). On SQLite the entries' query reads
+  `channels(tenant_id)` then the channel's releases, the rules' the releases' slot index (`channel_id,
+  source, name`); PostgreSQL (empty tables) takes `channels(tenant_id, name)`, `channel_sources`' key
+  and the slot index.
+- **The act.** One collector per act (`store.WithLicenseWarnings` in the context): each management
+  write of the API, each `kista admin` command, an upstream's run, a bundle's import, and the
+  placement pass's look at a rule or a follow (each placing builds in transactions of their own;
+  set in `placeRule`, which the pass calls). Across the act's transactions a (tenant, source, name,
+  channel) whose event was written is not written again; two transactions of one act checking at
+  the same moment may each write one, a rare duplicate accepted for an advisory event. Without a
+  collector, once per transaction. The `act` field is the kind the service names
+  (`Tx.SetWarningAct`: `release.add` or `release.publish`, `release.place` for a placement by hand or
+  by a rule or a follow, `release.promote`, `upstream.release` for a mirror's arrival and a
+  successor's, `release.public`, `source.set`, `license.import`, `license.change`, `license.sync`,
+  `bundle.import`), else the first hook's default (`release.add`, `release.public`,
+  `upstream.release`, `source.set`, `license.import` or `license.sync`, `license.change`). The
+  actor is the first hook's (the act's actor), else `system:kista`. The subject is
+  `channel:<channel>/ext:<name>`; `source` is the entry as answers name it; `package_type` is left
+  out for the default type, as in the other events.
+- **A replay warns nothing.** `release.Service.Apply` making a release public that is public already
+  changes nothing: no version, no event, no warning. Making a private one private again keeps its
+  old path (version, `release.private`, its build narrowed): only public needs the no-op. A relay's
+  unchanged licence writes nothing either.
+- **Who is answered.** Every management write collects, but its answer carries `warnings` only for
+  a caller who administers the path (a server administrator, or a principal with `admin` on the
+  path's tenant, channel or extension) and is no publisher (signed request), licence manager or
+  distribution admin; the CLI is a server administrator. A promote-only principal, a publisher's
+  signed promotion and a licence manager's import write only the events. The caller's rights are
+  read only when the act has a warning to answer, not on every write. `reply` adds the member
+  last in an object answer, after its ETag is taken, so status and ETag are unchanged; an answer
+  with a top-level `warnings` member of its own keeps it; error answers carry none. Each warning is
+  `{"name", "source", "channel", "message"}`.
+- **The CLI** prints each warning after the command, `kista admin: warning: <tenant>: <message>` on
+  stderr, also when the command then fails; the exit status is the command's.
+- **The console.** The API client hands each change's `warnings` to `onWarnings` (`[]` for none,
+  and for a failed change before its error is thrown, refused or never reaching kista); the
+  standalone console and the
+  micro-frontend show the last change's in a `status` region that is always there (empty without
+  warnings), "Done, with a warning. Nothing was refused.", until dismissed (the focus then goes to
+  the page's `main h1`) or the next change. The console end to end publishes vault-ci's vault
+  publicly, so the import into its entry shows the warning, and the import into vault-dist's
+  (catalogue only) does not.
+- **Tests.**
+  - Store suite, three dialects (`TestLicensePublicWarnings`): each hook and its negatives, a
+    replay, once per act across transactions, the act named by the service and by the hook's
+    default, a withdrawn build's and a blocked body's release not counted, and a failed and a
+    panicking check logged while the act stands (`SetLicenseWarningFault`, for tests). In
+    `internal/upstream`, a release made public again through `Apply` warns nothing and keeps its
+    version; one made private again is still told.
+  - `internal/upstream`, three dialects (`TestLicensePublicWarning`): one warning and one event per
+    act for a release made public, a placement and a promotion of two platforms, a source switch, a
+    licence made public and replaced, an auto rule's and a follow's placements of two platforms by
+    the placement pass, a relay and a successor's run; none for a private placement, a mirror's run
+    bringing a public release of an unlicensed entry, a licence into an entry not served or made
+    private. `TestBundleLicensePublicWarning`: a bundle import into a two-platform target, once for
+    the licence stored with the releases and once for a later version of both platforms.
+    `TestBundleLicenses`: the bundle's licence into a public entry warns by `bundle.import`, the
+    private target not at all.
+  - API: `TestLicenseWarningAnswers` (a licence manager's import, a promote-only principal's and a
+    publisher's signed promotion answer none, an administrator's placement and `…/public` answer
+    theirs, each writing its events), `TestWithWarnings` (the member added last, an answer's own
+    kept, nothing for a caller who does not see them), `TestLicenseRoutes`.
+  - The events registry and `TestCoverage`; the CLI (`TestAdminLicense`: stderr with the tenant,
+    exit 0); console unit tests (`warnings.test.tsx`: the client, the region, the focus) and
+    `licenses.spec.ts`; `TestLicenseFromDistributor` at the pin (prod's release made public over the
+    API: the warning answered, one event, the licence still served).
+- **Not hooked**, as the spec says: a broad grant, a block lifted.
 ## Alternatives considered
 
 - **Keep key owners and patch the `*` case** (`*` not counting as listing a name). It fixes the

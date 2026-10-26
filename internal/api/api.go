@@ -4,6 +4,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -230,6 +232,7 @@ func reply(w http.ResponseWriter, r *http.Request, status int, v any, etag, cach
 	case "-":
 		etag = ""
 	}
+	b = withWarnings(r, b)
 	hd := w.Header()
 	hd.Set("Content-Type", "application/json")
 	hd.Set("X-Content-Type-Options", "nosniff")
@@ -251,6 +254,64 @@ func reply(w http.ResponseWriter, r *http.Request, status int, v any, etag, cach
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(b)
 	}
+}
+
+// warningJSON is a licence warning in an act's answer (spec 0035 phase 2).
+type warningJSON struct {
+	Name    string `json:"name"`
+	Source  string `json:"source"`
+	Channel string `json:"channel"`
+	Message string `json:"message"`
+}
+
+type answerWarnings struct{}
+
+// seesWarnings reports whether a write's answer carries its licence warnings: the caller
+// administers the path (a server administrator; a tenant, channel or extension administrator),
+// and is no publisher, licence manager or distribution admin.
+func (h *Handler) seesWarnings(r *http.Request, c caller, p params) bool {
+	switch {
+	case c.admin:
+		return true
+	case c.pub != nil, c.licenseManager, c.distribution, c.principals == nil:
+		return false
+	}
+	return h.isAdmin(r, c, p)
+}
+
+// withWarnings adds the request's licence warnings to an answer object as its "warnings" member
+// (spec 0035 phase 2: one generic array, omitted when empty), after its ETag was taken, for a caller
+// who sees them. An answer that has a top-level "warnings" member of its own keeps it as it is.
+func withWarnings(r *http.Request, b []byte) []byte {
+	ws := store.LicenseWarnings(r.Context())
+	if len(ws) == 0 || len(b) < 2 || b[0] != '{' {
+		return b
+	}
+	if sees, _ := r.Context().Value(answerWarnings{}).(func() bool); sees == nil || !sees() {
+		return b
+	}
+	if bytes.Contains(b, []byte(`"warnings"`)) {
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(b, &top); err != nil {
+			return b
+		}
+		if _, ok := top["warnings"]; ok {
+			return b
+		}
+	}
+	out := make([]warningJSON, len(ws))
+	for i, x := range ws {
+		out[i] = warningJSON{Name: x.Name, Source: x.Source, Channel: x.Channel, Message: x.Message}
+	}
+	j, err := json.Marshal(out)
+	if err != nil {
+		return b
+	}
+	sep := ","
+	if len(b) == 2 { // {}
+		sep = ""
+	}
+	return slices.Concat(b[:len(b)-1], []byte(sep+`"warnings":`), j, []byte("}"))
 }
 
 // --- rate limiting ---
@@ -813,6 +874,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ru.body && !ru.raw && (r.ContentLength != 0 || len(r.TransferEncoding) > 0) {
 		problem(sw, http.StatusBadRequest, typeInvalid, "this request has no body")
 		return
+	}
+	if ru.manage && method != http.MethodGet {
+		// spec 0035 phase 2: a write is one act, its licence warnings written once; they are answered
+		// (reply) only to a caller who administers the path, and to nobody else (a publisher, a
+		// promoter, a licence manager, a distribution admin), whose act writes only the events
+		asked := r // the caller's rights are read only when there is a warning to answer
+		ctx := context.WithValue(store.WithLicenseWarnings(r.Context()), answerWarnings{}, func() bool { return h.seesWarnings(asked, c, p) })
+		r = r.WithContext(ctx)
 	}
 	ru.handle(h, sw, r, c, p)
 	if ru.manage && method != http.MethodGet {

@@ -120,6 +120,9 @@ outcome_at = NULL, due_at = NULL WHERE channel_id = ? AND name = ?`, source, mod
 		_, err = t.exec(ctx, `INSERT INTO channel_sources (channel_id, name, source, mode, set_by, set_at) VALUES (?, ?, ?, ?, ?, ?)`,
 			channelID, name, source, mode, actor, now)
 	}
+	if err == nil && (!had || before.Source != source) { // spec 0035 phase 2: a rule selecting an entry
+		t.warnRule(channelID, name, source, "source.set", actor)
+	}
 	return before, t.s.mapErr(err, "channel source")
 }
 
@@ -425,6 +428,9 @@ AND NOT EXISTS (SELECT 1 FROM releases o WHERE o.channel_id = r.channel_id AND o
 		if _, err := t.exec(ctx, "UPDATE releases SET source = ?, build_id = ?, version = version + 1 WHERE id = ?", to, b.ID, m.id); err != nil {
 			return 0, err
 		}
+	}
+	if len(ms) > 0 { // spec 0035 phase 2: the successor's entry may hold a licence
+		t.warnRule(channelID, name, to, "upstream.release", "")
 	}
 	_, err = t.exec(ctx, `UPDATE purged_slots SET source = ? WHERE channel_id = ? AND name = ? AND source = ?
 AND NOT EXISTS (SELECT 1 FROM purged_slots o WHERE o.channel_id = purged_slots.channel_id AND o.source = ? AND o.name = purged_slots.name

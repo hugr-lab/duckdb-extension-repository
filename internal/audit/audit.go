@@ -200,6 +200,8 @@ var catalogue = map[Kind][]string{
 	"license.change": {"name", "license", "visibility", "replaced", "upstream", "package_type", "source"},
 	"license.remove": {"name", "license", "reason", "package_type", "source"},
 	"license.sync":   {"upstream", "counts", "error", "refused"},
+	// spec 0035 phase 2: an entry holding a licence served publicly in a channel, once per act (advisory)
+	"license.public_warning": {"name", "source", "package_type", "channel", "act"},
 	// bundles (spec 0014): targets last, since a truncated event keeps its first fields; a bundle's
 	// licences (spec 0021) before them
 	"bundle.import":          {"import", "manifest", "created_at", "exporter", "bundle_key", "input_sha256", "dry_run", "state", "licenses", "targets"},
@@ -254,7 +256,7 @@ type KindInfo struct {
 func SubjectForm(k Kind) string {
 	const release = "channel:<channel>/ext:<name>/release:<id>"
 	switch k {
-	case "release.promote", "release.place", "extension.use", "source.set", "source.clear":
+	case "release.promote", "release.place", "extension.use", "source.set", "source.clear", "license.public_warning":
 		return "channel:<channel>/ext:<name>"
 	case "upstream.release", "install":
 		return release

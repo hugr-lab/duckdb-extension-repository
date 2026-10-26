@@ -224,6 +224,7 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 			if in.Trigger != "" {
 				data["trigger"] = in.Trigger
 			}
+			tx.SetWarningAct("upstream.release") // spec 0035 phase 2
 			return tx.Event(ctx, c.TenantID, a.String(), "upstream.release", releaseSubject(c, r), data)
 		})
 	})
@@ -277,6 +278,7 @@ func (s *Service) landHeld(ctx context.Context, a authz.Actor, sp *blob.Spool, i
 		if err != nil {
 			return err
 		}
+		tx.SetWarningAct("upstream.release") // spec 0035 phase 2: a successor's rule and the releases it takes
 		selected, succeeds, err := checkSource(ctx, tx, c.ID, it.b.Name, it.source, true)
 		if err != nil {
 			return err

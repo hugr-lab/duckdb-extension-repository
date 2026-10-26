@@ -247,6 +247,7 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 	var counts map[string]int
 	var refused []Refusal
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
+		tx.SetWarningAct("license.sync") // spec 0035 phase 2: a licence stored into an entry served publicly
 		// removing the upstream takes the licence lock too: one removed meanwhile is gone here;
 		// one paused or pointed elsewhere meanwhile does not take this answer
 		cur, err := tx.GetUpstreamByID(ctx, u.ID)

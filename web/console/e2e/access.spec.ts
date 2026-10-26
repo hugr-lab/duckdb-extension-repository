@@ -25,7 +25,8 @@ test('a group, a grant on it, and who may use an extension through it', async ({
   // a member added by name
   await page.getByLabel('Add extensions by name').fill('hello_acme')
   await page.getByRole('button', { name: /^Add/ }).click()
-  await expect(page.getByRole('status')).toHaveText('Added hello_acme.')
+  // the page's own status (the warnings' region is always there too, spec 0035 phase 2)
+  await expect(page.getByRole('status').filter({ hasText: 'Added' })).toHaveText('Added hello_acme.')
   await expect(page.getByRole('cell', { name: 'hello_acme', exact: true })).toBeVisible()
 
   // a grant on the group, to a role

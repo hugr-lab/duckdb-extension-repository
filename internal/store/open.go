@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -402,6 +403,9 @@ type Store struct {
 	EventSinks func(tenantID string) int
 	// Login is the login new connections use; nil for SQLite. Set by the opener.
 	Login Login
+	// Log takes what the store reports without failing a call (spec 0035 phase 2: a licence warning
+	// not written); nil: slog's default.
+	Log *slog.Logger
 }
 
 func newStore(db *sql.DB, d *Dialect) *Store {

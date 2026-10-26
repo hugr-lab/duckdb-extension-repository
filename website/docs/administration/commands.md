@@ -57,6 +57,14 @@ running `kista serve` takes it. Without a server, nothing runs.
 | `1` | refused or failed; the reason is on stderr after `kista admin:` |
 | `2` | usage error (unknown command, missing argument or flag); the usage text is printed to stderr |
 
+A command may also print **warnings** on stderr, one per line after `kista admin: warning:
+<tenant>:`, without changing its exit status: advisory notes about what it did, which went through.
+Today they are licence warnings (spec 0035 phase 2): an entry holding a licence served publicly, from
+`license import`, `license public`, `release add`, `release public`, `release place`,
+`release promote`, `channel source`, `bundle import` or `bundle export -sync` (the upstream runs it
+makes) ([Licensing](../licensing.md#public-serving-of-licensed-entries)). A warning not written
+(best effort) is logged on stderr instead.
+
 `kista admin help`, or `kista admin` with no command or without `-config`, prints the usage text and
 exits `2`.
 
@@ -481,7 +489,7 @@ See [Attachments](../attachments.md).
 | `license show <tenant> <name> [-source <s>]` | a licence's claims, limits and state (`entry:` its entry); `-source` where the extension has licences in several entries |
 | `license token <tenant> <name> [-source <s>]` | the licence as received |
 | `license import <tenant> <file or -> -source <s> [-replace]` | stores a licence under the extension it names, in the entry `-source` names (`upstream:<name>`, `publisher:<name>`, `upstream-id:<id>`, `publisher-id:<id>`), verified against that entry's live keys; `-replace` replaces the one stored there; a refusal names its rule (`kid_untrusted`, `holder_mismatch`, …); the commands on a tenant's licences take `-type <package type>` (`duckdb_extension` by default: a licence is per type and name) |
-| `license remove`, `public`, `private` `<tenant> <name> -source <s>` | `-source` names the licence's entry (`remove` also takes a removed source's id form); the writes refuse to run without it, before any call (spec 0035) |
+| `license remove`, `public`, `private` `<tenant> <name> -source <s>` | `-source` names the licence's entry (`remove` also takes a removed source's id form); the writes refuse to run without it, before any call (spec 0035); an import or `public` into an entry served publicly warns on stderr ([warnings](#conventions)) |
 | `license verify <file or -> -key <pem>` | checks a licence offline against the key given, and prints its claims and status |
 
 See [Licensing](../licensing.md).

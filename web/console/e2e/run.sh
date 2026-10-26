@@ -205,7 +205,8 @@ publish() {
 		|| { echo "e2e: the publication $2 failed"; tail -20 "$work/kista.log"; exit 1; }
 }
 serve
-publish vault-ci "/api/v1/tenants/acme/channels/prod/extensions/vault/releases?version=1.0&platform=linux_amd64" "$work/vault.duckdb_extension"
+# spec 0035 phase 2: vault-ci's vault public in prod, so a licence into its entry warns
+publish vault-ci "/api/v1/tenants/acme/channels/prod/extensions/vault/releases?version=1.0&platform=linux_amd64&visibility=public" "$work/vault.duckdb_extension"
 cat_path="/api/v1/tenants/acme/catalogue/extensions"
 publish enterest-ci "$cat_path/geo_tools/builds?version=0.9&platform=linux_amd64" "$work/geo09.duckdb_extension"
 publish enterest-ci "$cat_path/geo_tools/builds?version=1.0&platform=linux_amd64" "$work/geo10.duckdb_extension"

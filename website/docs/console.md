@@ -177,6 +177,12 @@ The server scope adds:
 | **DuckDB versions** | list and add DuckDB versions with their maximum C API per major; add a C API |
 | **Server events** | the server's own events |
 
+**Warnings.** A change whose answer carries [warnings](api.md#warnings) (today, an entry holding a
+licence served publicly: [Licensing](licensing.md#public-serving-of-licensed-entries)) went
+through; the console shows the last change's warnings above the page, saying nothing was refused,
+until **Dismiss** (the focus then goes to the page's heading) or the next change; a failed change
+clears them. Only an administrator of what the change touched is shown them.
+
 **Uploading a bundle.** In the server scope, a tenant's Upstreams page has **Upload a bundle**: a
 file picker, an optional SHA-256 pasted from the export's output (the hex, or its `sha256 …` line),
 the upstreams to import into and a dry run. The file is sent in chunks, three at once, with a

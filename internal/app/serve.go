@@ -46,6 +46,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 	defer st.Close()
+	st.Log = log
 	svc, err := NewServices(cfg, st, authz.ServerAdmin{})
 	if err != nil {
 		return err

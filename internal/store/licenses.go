@@ -217,23 +217,42 @@ func (t *Tx) PutLicense(ctx context.Context, l *License, expected int64) error {
 		} else if err != nil {
 			return err
 		}
+		t.warnLicense(l)
 		return nil
 	}
-	return t.cas(ctx, `UPDATE licenses SET license_id = ?, issuer = ?, holder_id = ?, holder = ?, plan_name = ?, token = ?, key_fp = ?,
+	err := t.cas(ctx, `UPDATE licenses SET license_id = ?, issuer = ?, holder_id = ?, holder = ?, plan_name = ?, token = ?, key_fp = ?,
 issued_at = ?, expires_at = ?, grace_until = ?, source = ?, upstream_id = ?, visibility = ?, actor = ?, updated_at = ?, version = version + 1
 WHERE tenant_id = ? AND package_type = ? AND name = ? AND entry_source = ? AND version = ?`,
 		[]any{l.LicenseID, l.Issuer, l.HolderID, l.Holder, l.Plan, l.Token, l.Key, l.IssuedAt, l.ExpiresAt, l.GraceUntil, l.Source,
 			nullable(l.UpstreamID), l.Visibility, l.Actor, t.s.d.timeArg(l.UpdatedAt), l.TenantID, l.PackageType, l.Name, l.Entry, expected},
 		func() { l.Version = expected + 1 })
+	if err == nil {
+		t.warnLicense(l)
+	}
+	return err
+}
+
+// warnLicense notes a licence stored (spec 0035 phase 2): its entry warns when it is served
+// publicly.
+func (t *Tx) warnLicense(l *License) {
+	act := "license.import"
+	if l.Source == LicenseUpstream {
+		act = "license.sync"
+	}
+	t.warnEntry(l, act)
 }
 
 // SetLicenseVisibility changes a licence's visibility (compare-and-set on its version).
 func (t *Tx) SetLicenseVisibility(ctx context.Context, l *License, visibility, actor string, expected int64) error {
 	now := t.Now()
-	return t.cas(ctx, `UPDATE licenses SET visibility = ?, actor = ?, updated_at = ?, version = version + 1
+	err := t.cas(ctx, `UPDATE licenses SET visibility = ?, actor = ?, updated_at = ?, version = version + 1
 WHERE tenant_id = ? AND package_type = ? AND name = ? AND entry_source = ? AND version = ?`,
 		[]any{visibility, actor, t.s.d.timeArg(now), l.TenantID, l.PackageType, l.Name, l.Entry, expected},
 		func() { l.Visibility, l.Actor, l.UpdatedAt, l.Version = visibility, actor, now, expected+1 })
+	if err == nil && visibility == Public { // spec 0035 phase 2: a public licence in an entry served publicly warns
+		t.warnEntry(l, "license.change")
+	}
+	return err
 }
 
 // DeleteLicense removes a licence (compare-and-set on its version; 0 skips the check).

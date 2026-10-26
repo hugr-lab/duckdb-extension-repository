@@ -32,6 +32,7 @@ const maxAttempts = 8
 type Tx struct {
 	s  *Store
 	tx *sql.Tx
+	w  txWarnings // spec 0035 phase 2: what the writes touched, for the licence warnings
 }
 
 func (t *Tx) exec(ctx context.Context, q string, args ...any) (sql.Result, error) {
@@ -125,10 +126,18 @@ func (s *Store) once(ctx context.Context, lockKeys []string, fn func(*Tx) error)
 			return err
 		}
 	}
-	if err = fn(&Tx{s: s, tx: sqlTx}); err != nil {
+	tx := &Tx{s: s, tx: sqlTx}
+	if err = fn(tx); err != nil {
 		return err
 	}
-	return sqlTx.Commit()
+	if err = sqlTx.Commit(); err != nil {
+		return err
+	}
+	// spec 0035 phase 2: the act's licence warnings, best effort, once it stands
+	if tx.w.noted() {
+		s.writeLicenseWarnings(ctx, &tx.w)
+	}
+	return nil
 }
 
 // mapErr turns engine constraint errors into store errors.

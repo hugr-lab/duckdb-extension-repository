@@ -312,6 +312,44 @@ Over plain `http` a token is ignored, as on the extension routes, so only public
 served there, and the list route always answers `401`. A passthrough channel has no licences, and
 while licensing is off every licence route answers as a missing path.
 
+### Public serving of licensed entries
+
+An organisation may mirror an extension with its licence into its own kista and serve it inside the
+organisation as it likes. It must not serve it **publicly** with its licence unless the distributor
+allows it; the distributor's public terms say so. kista only **warns** about it: nothing is refused,
+and the warning is advisory and not complete.
+
+Visibility belongs to a release; there is no public channel. A release is public when an
+administrator makes it public, or when it is placed, promoted or published from an entry whose
+visibility is public, unless `private` is asked. A licence's own visibility is separate (above).
+
+An entry is **served publicly** when it has an active or deprecated public release in a signed
+channel whose rule selects it, its build not withdrawn and its body not blocked. kista warns when an
+entry that holds a licence (any visibility) is served publicly, at the act that changes it:
+
+- a release of the entry written public, made public, taken by an upstream's successor (spec 0031),
+  or selected by a switch of the channel's rule;
+- a licence stored in such an entry (an import, a relay, a bundle), or made public there.
+
+Declaring the licence's key alone does not warn, nor does an act that changes nothing (a release
+made public again, a relay's licence unchanged). Each act warns **once** per entry, name and
+channel, however many platforms or releases it touched: a `license.public_warning`
+[event](observability.md) (with the act that caused it). The warning is written right after the act
+commits, **best effort**: a failure to write it is logged, and never refuses or undoes the act; two
+transactions of one act checking at the same moment may rarely write it twice.
+
+Who is told besides the events: an administrator of what the act changed (a server administrator; a
+tenant, channel or extension administrator) gets a `warnings` array in the
+[API's answer](api.md#warnings) and a notice in the console, and `kista admin` prints it on stderr
+(`kista admin: warning: <tenant>: …`, the exit status unchanged). Everyone else's act (a publisher's
+publication or promotion, a principal holding only `publish` or `promote`, a licence manager's
+import, a distribution admin) and the acts that answer nobody (a mirror's run, the placement pass, a
+relay run, an uploaded bundle's import) write only the event.
+
+The warning is not complete: a change that passes none of these acts, such as a broad grant or a
+block lifted, warns nothing. Enforcing the rule (for example a distributor's publisher marked "not
+public") is a follow-up.
+
 ## Usage reports
 
 An extension reports its use, through the SDK, to the repository it was installed from, with the
@@ -488,7 +526,8 @@ The SDK for C API extensions, and the SDK on Windows, are follow-ups.
 
 Licensing protects honest users from accidents, not against deliberate acts. A patched binary, an
 extension loaded with `allow_unsigned_extensions`, a rolled-back clock or a licence copied to
-another organisation defeat it; the licence names its holder wherever it goes. An
+another organisation defeat it; the licence names its holder wherever it goes. Serving a licensed
+extension publicly is only [warned about](#public-serving-of-licensed-entries), never refused. An
 [expected holder](#an-expected-holder) keeps a licence out of the wrong tenant of one kista; it does
 not stop a holder copying its own licence elsewhere.
 
@@ -496,7 +535,8 @@ not stop a holder copying its own licence elsewhere.
 
 `tenant.holder` (the expected holder set or cleared), `license.import`, `license.change` (visibility), `license.remove` (with the reason: `admin`,
 `revoked`, `expired`, `upstream removed`; each names the licence's entry as `source`),
-`license.sync` (each relay run), `extension.use` (a
+`license.sync` (each relay run), `license.public_warning` (an entry holding a licence served
+publicly, advisory: [above](#public-serving-of-licensed-entries)), `extension.use` (a
 usage report by a principal holding `install`), `usage.forward` (each forwarding run), `usage.receive` (each aggregate taken from downstream) and
 `upstream.change` with `change: usage`. The licences a bundle carried are in its
 `bundle.import` event and import record. See

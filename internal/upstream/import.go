@@ -114,6 +114,7 @@ func (tg *target) active() bool { return tg.status == TargetImported && !tg.stop
 // error is a refusal before anything was taken in (the bundle, the tenant, the targets);
 // afterwards problems are in the result and the record. Importing is a server administrator's act.
 func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in io.Reader, o ImportOptions) (ImportResult, error) {
+	ctx = store.WithLicenseWarnings(ctx) // spec 0035 phase 2: the import's licence warnings, once per source, name and channel
 	var out ImportResult
 	var t store.Tenant
 	var err error
