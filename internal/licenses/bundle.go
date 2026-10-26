@@ -3,6 +3,7 @@ package licenses
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -31,7 +32,8 @@ func holderRefusal(ctx context.Context, tx *store.Tx, tenantID string, tok *lice
 
 // Exportable lists the licences of a package type of a tenant a bundle may carry (spec 0021; spec
 // 0034: a bundle's sources are of one type each), by name: those in force, whose key the server
-// does not refuse, and of holder when one is named. Off, none.
+// does not refuse, of holder when one is named, and whose key is live for its entry (spec 0035).
+// Off, none.
 func (s *Service) Exportable(ctx context.Context, tenantID, packageType, holder string) ([]store.License, error) {
 	if !s.Enabled {
 		return nil, ErrOff
@@ -47,25 +49,39 @@ func (s *Service) Exportable(ctx context.Context, tenantID, packageType, holder 
 		if err != nil || s.Refuse[l.Key] || holder != "" && l.HolderID != holder {
 			continue
 		}
-		if st := t.StatusAt(now); st == license.Valid || st == license.Grace {
+		if st := t.StatusAt(now); st != license.Valid && st != license.Grace {
+			continue
+		}
+		// spec 0035: only a licence its entry serves travels: its key live for the entry (a removed
+		// source's licence, or one whose key no build of the entry declares now, is served nowhere)
+		live := false
+		if err := s.Store.InTxLocks(ctx, nil, func(tx *store.Tx) error {
+			keys, err := tx.LiveLicenseKeys(ctx, tenantID, packageType, l.Name, l.Entry)
+			live = slices.ContainsFunc(keys, func(k store.LicenseKey) bool { return k.Kid == l.Key })
+			return err
+		}); err != nil {
+			return nil, err
+		}
+		if live {
 			out = append(out, l)
 		}
 	}
 	return out, nil
 }
 
-// BundleLicense is a licence a bundle carries for a source, with the bundle-mode upstreams of that
-// source the import fills, in the import's order.
+// BundleLicense is a licence a bundle carries, read once however many of its sources carry it, with
+// the bundle-mode upstreams of those sources the import fills, in the import's order.
 type BundleLicense struct {
 	Name, Token string
 	Upstreams   []store.Upstream
 }
 
-// ApplyBundle stores the licences a bundle carries (spec 0021), in one transaction. Each goes to
-// the first of its upstreams that supplies its name, is verified with that upstream's keys and, when
-// holder is named, must be of that holder; spec 0012's relay rules apply, except that a bundle's
-// licence never replaces an administrator's import. Nothing is removed: a bundle may be partial. A
-// dry run stores nothing and counts. The result's Error is a failure that stored nothing.
+// ApplyBundle stores the licences a bundle carries (spec 0021), in one transaction. Each goes into
+// the entry of every one of its upstreams that supplies its name (spec 0035), verified there with
+// that entry's live keys and, when holder is named, of that holder; spec 0012's relay rules apply
+// per entry, except that a bundle's licence never replaces an administrator's import. The counts
+// (stored, replaced, unchanged, refused) are per target. Nothing is removed: a bundle may be
+// partial. A dry run stores nothing and counts. The result's Error is a failure that stored nothing.
 func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder string, ls []BundleLicense, dryRun bool) Result {
 	res := Result{Counts: map[string]int{"received": len(ls)}}
 	type item struct {
@@ -113,16 +129,20 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 	}
 	// the transaction may run again: its counts reach res only once it holds
 	var counts map[string]int
+	var per map[string]map[string]int // by target
 	var refused []Refusal
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		counts, refused = map[string]int{}, nil
+		counts, per, refused = map[string]int{}, map[string]map[string]int{}, nil
 		for _, it := range ok {
 			name := it.Name
-			// the first upstream, as it is now, that supplies the name and owns its key for it (spec
-			// 0033 phase B), else the first that supplies it (refused below for the key)
-			var u *store.Upstream
-			var typ string
+			// spec 0035: every upstream of the licence's sources, as it is now, that supplies the name
+			// takes it into its own entry, each checked as a relayed licence is
+			var targets []store.Upstream
+			var types []string
 			for _, cand := range it.Upstreams {
+				if slices.ContainsFunc(targets, func(u store.Upstream) bool { return u.ID == cand.ID }) {
+					continue
+				}
 				cur, err := tx.GetUpstreamByID(ctx, cand.ID)
 				if errors.Is(err, store.ErrNotFound) {
 					continue
@@ -141,82 +161,70 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 				if err != nil {
 					return err
 				}
-				if !supplied {
-					continue
-				}
-				if u == nil {
-					u, typ = &cur, home.PackageType
-				}
-				o, err := tx.KeyOwnerOf(ctx, t.ID, home.PackageType, name, it.tok.Key)
-				if err != nil {
-					return err
-				}
-				if o.Source == store.UpstreamSource(cur.ID) {
-					u, typ = &cur, home.PackageType
-					break
+				if supplied {
+					targets, types = append(targets, cur), append(types, home.PackageType)
 				}
 			}
-			if u == nil {
+			if len(targets) == 0 {
 				refused = append(refused, Refusal{Name: name, ID: it.tok.ID, Rule: "not_supplied",
 					Reason: "no bundle-mode upstream of the source supplies a release of " + name + " here"})
 				continue
 			}
-			// spec 0033 phase B: the upstream must own the key for the name, or the licence must be the
-			// one the owner holds (relayable); its keys verify it (spec 0021). A dry run claims no
-			// owner: it stores nothing
-			src := store.UpstreamSource(u.ID)
-			if err := s.relayable(ctx, tx, t.ID, typ, it.tok, it.Token, src, lb.of, !dryRun); err != nil {
-				if r := refusal(err, it.tok); r != nil {
-					refused = append(refused, *r)
+			for i, u := range targets {
+				typ, src := types[i], store.UpstreamSource(u.ID)
+				// the counts are per target: in all, and the target's own
+				if per[u.Name] == nil {
+					per[u.Name] = map[string]int{}
+				}
+				count := func(k string) { counts[k]++; per[u.Name][k]++ }
+				refuse := func(r Refusal) { refused = append(refused, r); per[u.Name]["refused"]++ }
+				// the live keys of the upstream's own entry verify it (spec 0021; spec 0035)
+				if err := s.verifyIn(ctx, tx, t.ID, typ, src, it.tok, lb.of(src)); err != nil {
+					if r := refusal(err, it.tok); r != nil {
+						refuse(*r)
+						continue
+					}
+					return err
+				}
+				// spec 0028: the tenant's expected holder, besides the plan's (checked by both, a dry run too)
+				if r, err := holderRefusal(ctx, tx, t.ID, it.tok); err != nil {
+					return err
+				} else if r != nil {
+					refuse(*r)
 					continue
 				}
-				return err
-			}
-			// spec 0028: the tenant's expected holder, besides the plan's (checked by both, a dry run too)
-			if r, err := holderRefusal(ctx, tx, t.ID, it.tok); err != nil {
-				return err
-			} else if r != nil {
-				refused = append(refused, *r)
-				continue
-			}
-			l := record(it.tok, t.ID, typ, it.Token, actor)
-			l.Owner, l.Source, l.UpstreamID = src, store.LicenseUpstream, u.ID
-			old, err := tx.GetLicense(ctx, t.ID, typ, name, src)
-			adopted := false
-			switch {
-			case errors.Is(err, store.ErrNotFound):
-				old.Version = 0
-				if adopted, err = adoptUnknown(ctx, tx, &l, !dryRun); err != nil {
+				l := record(it.tok, t.ID, typ, it.Token, actor)
+				l.Entry, l.Source, l.UpstreamID = src, store.LicenseUpstream, u.ID
+				old, err := tx.GetLicense(ctx, t.ID, typ, name, src)
+				switch {
+				case errors.Is(err, store.ErrNotFound):
+					old.Version = 0
+				case err != nil:
 					return err
+				case old.Token == it.Token:
+					count("unchanged")
+					continue
+				case old.Source == store.LicenseImport:
+					refuse(Refusal{Name: name, ID: it.tok.ID, Rule: "superseded",
+						Reason: "the licence an administrator imported for " + name + " from " + lb.of(src) + " stays: a bundle's never replaces it"})
+					continue
+				case replaces(old, l, s.Store.Now().Unix(), s.deadKey(ctx, tx, old)):
+					l.Visibility = old.Visibility
+				default:
+					refuse(Refusal{Name: name, ID: it.tok.ID, Rule: "superseded",
+						Reason: "the licence stored for " + name + " from " + lb.of(src) + " (" + old.Source + ") stays: it is newer or lasts longer"})
+					continue
 				}
-			case err != nil:
-				return err
-			case old.Token == it.Token:
-				if err := rebind(ctx, tx, &old, u.ID, !dryRun); err != nil {
-					return err
+				if !dryRun {
+					if err := tx.PutLicense(ctx, &l, old.Version); err != nil {
+						return err
+					}
 				}
-				counts["unchanged"]++
-				continue
-			case old.Source == store.LicenseImport:
-				refused = append(refused, Refusal{Name: name, ID: it.tok.ID, Rule: "superseded",
-					Reason: "the licence an administrator imported for " + name + " stays: a bundle's never replaces it"})
-				continue
-			case replaces(old, l, s.Store.Now().Unix(), s.deadKey(ctx, tx, old)):
-				l.Visibility = old.Visibility
-			default:
-				refused = append(refused, Refusal{Name: name, ID: it.tok.ID, Rule: "superseded",
-					Reason: "the licence stored for " + name + " (" + old.Source + ") stays: it is newer or lasts longer"})
-				continue
-			}
-			if !dryRun {
-				if err := tx.PutLicense(ctx, &l, old.Version); err != nil {
-					return err
+				if old.Version == 0 {
+					count("stored")
+				} else {
+					count("replaced")
 				}
-			}
-			if old.Version == 0 && !adopted {
-				counts["stored"]++
-			} else {
-				counts["replaced"]++
 			}
 		}
 		return nil
@@ -230,6 +238,9 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 	}
 	for _, r := range refused {
 		res.refuse(r.Name, r.ID, r.Rule, r.Reason)
+	}
+	if len(per) > 0 {
+		res.Targets = per
 	}
 	return res
 }

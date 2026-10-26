@@ -73,6 +73,12 @@ func TestMigrationPackageTypes(t *testing.T) {
 			[]any{"INSERT INTO build_license_keys (tenant_id, build_id, kid, pem, source_kind, source_id, recorded_at) " +
 				"VALUES (?, ?, 'kid1', 'pem', 'publisher', ?, ?)", tid, id("b"), id("p"), now},
 		)
+		// migration 0042 finds no source for the licence's key, and 0043 drops a licence of none
+		// (spec 0035): it is given its entry in between
+		if err := store.MigrateTo(ctx, s, 42); err != nil {
+			t.Fatal(err)
+		}
+		exec([]any{"UPDATE licenses SET owner_source = 'publisher:p'"})
 		if err := s.Migrate(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -140,8 +146,8 @@ func TestMigrationPackageTypes(t *testing.T) {
 			[]any{"INSERT INTO reserved_name_sources (package_type, name, source, added_at) VALUES ('other_type', 'kista_x', 'admin:os:1:t', ?)", now},
 			[]any{"INSERT INTO tenant_reserved_names (tenant_id, package_type, name, holder, added_at, added_by) VALUES (?, 'other_type', 'held', 'x', ?, 'os:1:t')", tid, now},
 			[]any{"INSERT INTO licenses (tenant_id, package_type, name, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, " +
-				"expires_at, grace_until, source, visibility, actor, updated_at, version, owner_source) VALUES (?, 'other_type', 'tresor', 'l2', " +
-				"'https://issuer.example', 'acme', 'Acme', 'pro', 't.x', 'kid', 1, 4102444800, 4103049600, 'import', 'private', 'os:1:t', ?, 1, 'unknown')", tid, now},
+				"expires_at, grace_until, source, visibility, actor, updated_at, version, entry_source) VALUES (?, 'other_type', 'tresor', 'l2', " +
+				"'https://issuer.example', 'acme', 'Acme', 'pro', 't.x', 'kid', 1, 4102444800, 4103049600, 'import', 'private', 'os:1:t', ?, 1, 'publisher:p')", tid, now},
 			[]any{"INSERT INTO package_group_members (group_id, tenant_id, package_type, package, added_at, added_by) VALUES (?, ?, 'other_type', 'acl', ?, 'os:1:t')",
 				id("g"), tid, now},
 		)

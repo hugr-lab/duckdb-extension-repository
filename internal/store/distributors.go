@@ -83,17 +83,19 @@ func (t *Tx) PublisherUsed(ctx context.Context, p Publisher) (bool, error) {
 	return false, nil
 }
 
-// SourceDistributor is the distributor of a source (spec 0033 phase B): a distributor's publisher's,
-// live or removed (its record kept); "" for any other source.
-func (t *Tx) SourceDistributor(ctx context.Context, source string) (string, error) {
+// SourceDistributor is the distributor of a source of a tenant (spec 0033 phase B): a distributor's
+// publisher's, live or removed (its record kept); "" for any other source, and for another
+// tenant's publisher.
+func (t *Tx) SourceDistributor(ctx context.Context, tenantID, source string) (string, error) {
 	id, ok := strings.CutPrefix(source, SourcePublisherPrefix)
 	if !ok {
 		return "", nil
 	}
 	var d sql.NullString
-	err := t.queryRow(ctx, "SELECT distributor FROM publishers WHERE id = ?", id).Scan(&d)
+	err := t.queryRow(ctx, "SELECT distributor FROM publishers WHERE id = ? AND tenant_id = ?", id, tenantID).Scan(&d)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = t.queryRow(ctx, "SELECT distributor FROM removed_distributor_publishers WHERE publisher_id = ?", id).Scan(&d)
+		err = t.queryRow(ctx, "SELECT distributor FROM removed_distributor_publishers WHERE publisher_id = ? AND tenant_id = ?", id,
+			tenantID).Scan(&d)
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", nil
 		}
@@ -102,11 +104,11 @@ func (t *Tx) SourceDistributor(ctx context.Context, source string) (string, erro
 }
 
 // SourceDistributor reads a source's distributor outside a transaction.
-func (s *Store) SourceDistributor(ctx context.Context, source string) (string, error) {
+func (s *Store) SourceDistributor(ctx context.Context, tenantID, source string) (string, error) {
 	var d string
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		var err error
-		d, err = tx.SourceDistributor(ctx, source)
+		d, err = tx.SourceDistributor(ctx, tenantID, source)
 		return err
 	})
 	return d, err

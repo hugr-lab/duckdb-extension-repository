@@ -98,6 +98,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0040_holds` | 40 | an older replica would place held entries, and take a held publisher's publications on a channel's route |
 | `0041_distributors` | 41 | an older replica would serve withdrawn entries, and take a distributor's publisher's hold and keys as the tenant's |
 | `0042_license_owners` | 42 | licences are per (name, source): an older replica would serve a licence through any source's build, and store and read licences by name |
+| `0043_license_entries` | 43 | licences are per catalogue entry and key owners go: an older replica reads and writes `license_key_owners` and relies on the relay's exceptions |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -168,7 +169,49 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 42)
+## Upgrading to the next release (schema 43)
+
+### Licences per catalogue entry (spec 0035, phase 1)
+
+- **Before upgrading.** Licences of source `unknown` (imports whose key had no owner after migration
+  0042, served nowhere already) are deleted by the migration: export them first, with the older
+  binary, `kista admin license token <tenant> <name> -source unknown`, and import them again after
+  the upgrade into the entry they belong to. A licence manager's client (Enterest's reconciler) must
+  send `?source=` on every licence write before kista is upgraded: the older kista ignores it on an
+  import, so the order is safe.
+- **Migration `0043_license_entries`** raises `min_reader` to 43: stop every older replica first. In
+  the three databases it:
+  - keeps a relayed licence that is in its relaying upstream's entry (`upstream:<id>`) as it is;
+  - deletes a relayed licence that is in **another relaying upstream's** own entry (a `repository`
+    upstream with a credential, not in bundle mode, a paused one included): that upstream's relay,
+    requested below, stores its own copy there and governs it, where an import would never be
+    revoked by it;
+  - turns a relayed licence that is in any other entry (a publisher's, a bundle-mode or
+    credential-less upstream's: migration 0042 gave it its key's owner, or an administrator's
+    `license owner` moved it there), or whose relaying upstream is gone, into an **import** in that
+    same entry (`source` `import`, no upstream), its visibility kept: the channels
+    serving it keep serving it, and it shows as imported from then on (its relay no longer governs
+    it; remove it when the relay's own copy is back, or leave it to its grace). The relaying
+    upstream's own entry gets its copy at its next relay run, requested below: until then that
+    entry's channels serve no licence for the name;
+  - moves a relayed licence of source `unknown` into its relaying upstream's entry, when that upstream
+    exists and its entry holds no licence of the name (a source holds at most one licence of a name,
+    so no two rows meet there); otherwise, and for every import of source `unknown`, it is deleted;
+    other imports keep their source as their entry;
+  - requests a relay run for every relaying upstream (a `repository` upstream with a credential, not
+    in bundle mode; a paused one's runs once it is resumed);
+  - renames `licenses.owner_source` to `entry_source`, still in the primary key;
+  - drops `license_key_owners` and the index `ix_build_license_keys_kid`.
+- **What changes.** A licence belongs to a catalogue entry, and every write names it: an import,
+  `DELETE`, `…/public` and `…/private` require `?source=` (`-source`), `400` without it. An import
+  verifies against that entry's live keys only; a relay stores into its own upstream's entry; a
+  channel serves the licence of the entry it serves the name from. Key owners go: no first recorder,
+  no `license owner`, no `PUT …/license-keys/{name}/{kid}/owner`, no `key_owner` refusal, no
+  `license.key_owner` or `license.key_conflict` events. A licence answers `entry` instead of `owner`;
+  `GET …/license-keys` answers per key the entries it is live for, each with its `builds` (no
+  `owner`, no top-level `builds`), and takes `?source=`. A licence manager names only the entries of
+  distributors' publishers (any other `?source=` answers `404`, recorded as `authz.refused`). A bundle's licence goes into every supplying, verifying
+  bundle-mode upstream, counted per target. See [Licensing](../licensing.md#a-licences-entry).
 
 ### The console's catalogue and a channel's rules (spec 0033, phase C)
 
@@ -185,11 +228,14 @@ so the operator declares it:
 
 ### Licences per source, and a key's owner (spec 0033, phase B part 2)
 
+Key owners are removed by spec 0035 ([Licences per catalogue entry](#licences-per-catalogue-entry-spec-0035-phase-1),
+above): an upgrade from a release before 0042 runs both migrations, and only 0043's result counts.
+As 0042 recorded it:
+
 - **Migration `0042_license_owners`** adds `license_key_owners` (each key's owner for a name in a
   tenant) and gives licences their source (`owner_source`, part of their primary key; SQLite
   rebuilds the table), and raises `min_reader` to 42: stop every older replica first.
-- **What it records.** Each key's owner, as kista computes it (see
-  [A key's owner](../licensing.md#a-keys-owner)), by the database's clock; a key another source
+- **What it records.** Each key's owner, as kista computed it then, by the database's clock; a key another source
   recorded first on a build still held gets none yet. Each stored licence gets its key's owner, or
   the source `unknown` where the key has none: kept, listed and removable (`?source=unknown`,
   `-source unknown`), served nowhere until imported again or relayed again by its upstream, or

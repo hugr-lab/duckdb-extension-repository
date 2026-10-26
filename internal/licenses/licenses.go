@@ -1,9 +1,10 @@
 // Package licenses keeps a tenant's licences (spec 0012 phase 1a): an administrator's import, the
 // relay from credentialed upstreams, removal and visibility, and what the DuckDB routes serve.
 // kista issues nothing: every licence it stores verifies against a key that a live build of its
-// extension declares, recorded from a trusted source (spec 0021). A licence is of a source (spec
-// 0033 phase B): the source that owns its key for its name, and a channel serves the licence of the
-// source it selects for the name.
+// extension declares, recorded from a trusted source (spec 0021). A licence belongs to a catalogue
+// entry (spec 0035): a source's builds of the name in the tenant, named by every write; it verifies
+// against that entry's own keys, and a channel serves the licence of the entry it serves the name
+// from.
 package licenses
 
 import (
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,17 +32,10 @@ var (
 	ErrUpstream = errors.New("licenses: not an upstream that relays licences (a repository upstream with a credential, not in bundle mode)")
 	ErrPaused   = errors.New("licenses: the upstream is paused: resume it to relay its licences")
 	ErrChanged  = errors.New("licenses: the upstream changed during the relay (paused, removed, or another prefix or credential); the next run reads it again")
-	// ErrSources is a licence named without its source where the name has licences of several
-	// sources (spec 0033 phase B).
-	ErrSources = errors.New("licenses: the extension has licences of several sources")
-	// ErrOwnerHolds is a key given to a source that holds a licence for the name already: the
-	// licences signed with the key would take its place.
-	ErrOwnerHolds = errors.New("licenses: the source holds a licence for this extension already: remove it first")
+	// ErrSources is a licence read without its entry where the name has licences in several
+	// entries (spec 0033 phase B; spec 0035).
+	ErrSources = errors.New("licenses: the extension has licences in several entries")
 )
-
-// RuleKeyOwner refuses a licence from a source whose key for the name another source owns (spec
-// 0033 phase B: a copied key gets no licence).
-const RuleKeyOwner = "key_owner"
 
 // Create is Import's expected version for a licence that must not exist yet.
 const Create = -1
@@ -70,7 +65,7 @@ func (s *Service) WithAuthz(az authz.Authorizer) *Service {
 
 // tenant authorizes verb on the tenant and reads it: license for the licences themselves (spec
 // 0029: a licence manager's, and a tenant administrator's, whom admin implies it), admin for the
-// rest (the upstreams' relay, the stored token, a key's owner).
+// rest (the upstreams' relay, the stored token).
 func (s *Service) tenant(ctx context.Context, a authz.Actor, verb authz.Verb, name string) (store.Tenant, error) {
 	if err := s.Authz.Allow(ctx, a, verb, authz.Resource{Tenant: name}); err != nil {
 		return store.Tenant{}, err
@@ -83,10 +78,9 @@ type View struct {
 	// PackageType is the licence's package type when it is not the default (spec 0034).
 	PackageType string `json:"package_type,omitempty"`
 	Name        string `json:"name"`
-	// Owner is the licence's source (spec 0033 phase B), the source that owns its key for the name:
-	// upstream:<name>, publisher:<name>, a removed one's upstream-id:<id> or publisher-id:<id>, or
-	// unknown.
-	Owner      string            `json:"owner"`
+	// Entry is the licence's catalogue entry (spec 0035), by its source: upstream:<name>,
+	// publisher:<name>, or a removed one's upstream-id:<id> or publisher-id:<id>.
+	Entry      string            `json:"entry"`
 	ID         string            `json:"id"`
 	Issuer     string            `json:"issuer"`
 	HolderID   string            `json:"holder_id"`
@@ -109,9 +103,9 @@ type View struct {
 
 func seconds(n int64) string { return time.Unix(n, 0).UTC().Format(time.RFC3339) }
 
-// labels names sources as the licence routes do (spec 0033 phase B): a live upstream's or publisher's
-// as spec 0031 does (upstream:<name>, publisher:<name>), a removed one's by its id (upstream-id:<id>,
-// publisher-id:<id>), and unknown.
+// labels names entries by their sources as the licence routes do (spec 0033 phase B; spec 0035): a
+// live upstream's or publisher's as spec 0031 does (upstream:<name>, publisher:<name>), a removed
+// one's by its id (upstream-id:<id>, publisher-id:<id>).
 type labels map[string]string
 
 func (s *Service) labels(ctx context.Context, tenantID string) (labels, error) {
@@ -126,7 +120,7 @@ func (lb labels) of(src string) string {
 	return idLabel(src)
 }
 
-// idLabel is a source by its id: upstream-id:<id>, publisher-id:<id>; unknown as it is.
+// idLabel is a source by its id: upstream-id:<id>, publisher-id:<id>.
 func idLabel(src string) string {
 	if kind, id, ok := strings.Cut(src, ":"); ok && (kind == store.KeySourceUpstream || kind == store.KeySourcePublisher) {
 		return kind + "-id:" + id
@@ -139,7 +133,7 @@ func (lb labels) names(src, given string) bool { return given == lb.of(src) || g
 
 // view reads a stored licence's claims back from its token (verified when it was stored).
 func (s *Service) view(ctx context.Context, lb labels, l store.License) View {
-	v := View{Name: l.Name, Owner: lb.of(l.Owner), ID: l.LicenseID, Issuer: l.Issuer, HolderID: l.HolderID, Holder: l.Holder, Plan: l.Plan,
+	v := View{Name: l.Name, Entry: lb.of(l.Entry), ID: l.LicenseID, Issuer: l.Issuer, HolderID: l.HolderID, Holder: l.Holder, Plan: l.Plan,
 		IssuedAt: seconds(l.IssuedAt), ExpiresAt: seconds(l.ExpiresAt), GraceUntil: seconds(l.GraceUntil), Key: l.Key,
 		Source: l.Source, Visibility: l.Visibility, Version: l.Version}
 	if l.PackageType != pkgtype.Default {
@@ -179,8 +173,8 @@ func parseType(t string) (string, error) {
 	return t, nil
 }
 
-// List lists a tenant's licences of a package type ("": the default), of one source (its label or
-// its id form; "": every source).
+// List lists a tenant's licences of a package type ("": the default), of one entry (its source's
+// label or id form; "": every entry).
 func (s *Service) List(ctx context.Context, a authz.Actor, tenant, packageType, source string) ([]View, error) {
 	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
@@ -199,19 +193,19 @@ func (s *Service) List(ctx context.Context, a authz.Actor, tenant, packageType, 
 	}
 	out := make([]View, 0, len(ls))
 	for _, l := range ls {
-		if source == "" || lb.names(l.Owner, source) {
+		if source == "" || lb.names(l.Entry, source) {
 			out = append(out, s.view(ctx, lb, l))
 		}
 	}
 	return out, nil
 }
 
-// pick is the licence of a name a caller asks for: of the source it names, or without one the only
+// pick is the licence of a name a caller reads: of the entry it names, or without one the only
 // licence of the name (ErrSources when there are several).
 func pick(ls []store.License, lb labels, name, source string) (store.License, error) {
 	var found []store.License
 	for _, l := range ls {
-		if source == "" || lb.names(l.Owner, source) {
+		if source == "" || lb.names(l.Entry, source) {
 			found = append(found, l)
 		}
 	}
@@ -223,8 +217,9 @@ func pick(ls []store.License, lb labels, name, source string) (store.License, er
 	case len(found) > 1:
 		srcs := make([]string, 0, len(found))
 		for _, l := range found {
-			srcs = append(srcs, lb.of(l.Owner))
+			srcs = append(srcs, lb.of(l.Entry))
 		}
+		slices.Sort(srcs)
 		return store.License{}, fmt.Errorf("%w: %s", ErrSources, strings.Join(srcs, ", "))
 	}
 	return found[0], nil
@@ -239,8 +234,8 @@ func (s *Service) licenseOf(ctx context.Context, tx *store.Tx, lb labels, tenant
 	return pick(ls, lb, name, source)
 }
 
-// Get reads a tenant's licence for a package (type, "": the default; name) of a source (its label or
-// its id form; "": the name's only licence).
+// Get reads a tenant's licence for a package (type, "": the default; name) in an entry (its source's
+// label or id form; "": the name's only licence).
 func (s *Service) Get(ctx context.Context, a authz.Actor, tenant, packageType, name, source string) (View, error) {
 	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
@@ -311,8 +306,8 @@ func (s *Service) refused(t *license.Token) error {
 		Msg: "key " + t.Key + " is refused by the server (licenses.refuse_keys)"})
 }
 
-// verify checks a token's signature against keys: the live keys of its name from its source (spec
-// 0021, 0033). A key the server refuses counts nowhere.
+// verify checks a token's signature against keys: the live keys of its name in its entry (spec
+// 0021, 0035). A key the server refuses counts nowhere.
 func (s *Service) verify(t *license.Token, keys []store.LicenseKey, whose string) error {
 	if err := s.refused(t); err != nil {
 		return err
@@ -341,49 +336,127 @@ func (s *Service) verify(t *license.Token, keys []store.LicenseKey, whose string
 	return nil
 }
 
-// owned verifies a token against the live keys of its key's owner for its name (spec 0033 phase B),
-// claiming the owner when claim is set and it is still the first recorder computed (a dry run
-// claims nothing), and returns the owner. The key must be owned (a key no source's available entry
-// declares refuses with kid_untrusted), by want when one is given (a refusal by RuleKeyOwner
-// otherwise). label names a source in a refusal.
-func (s *Service) owned(ctx context.Context, tx *store.Tx, tenantID, packageType string, tok *license.Token, want string,
-	label func(string) string, claim bool) (string, error) {
+// verifyIn verifies a token against the live keys of its name in an entry (spec 0035: only that
+// entry's own builds count). label names the entry in a refusal.
+func (s *Service) verifyIn(ctx context.Context, tx *store.Tx, tenantID, packageType, entry string, tok *license.Token, label string) error {
 	if err := s.refused(tok); err != nil {
-		return "", err
+		return err
 	}
-	for range 2 { // a claim racing another one's may find another owner: verified again with its keys
-		o, err := tx.KeyOwnerOf(ctx, tenantID, packageType, tok.Extension, tok.Key)
-		if err != nil {
-			return "", err
+	keys, err := tx.LiveLicenseKeys(ctx, tenantID, packageType, tok.Extension, entry)
+	if err != nil {
+		return err
+	}
+	return s.verify(tok, keys, " from "+label)
+}
+
+// entry reads the catalogue entry a caller names by its source (spec 0035): for an administrator, a
+// live upstream or publisher of the tenant whose builds can declare licence keys (upstream:<name>,
+// publisher:<name>, upstream-id:<id>, publisher-id:<id>). With removed set (a removal), the id
+// form of a removed source names its entry too, live false. Anything else is invalid, naming why.
+// A licence manager names only distributors' publishers' entries (distributorEntry).
+func (s *Service) entry(ctx context.Context, a authz.Actor, tenantID, label string, removed bool) (src string, live bool, err error) {
+	invalid := func(why string) (string, bool, error) {
+		return "", false, fmt.Errorf("%w: ?source= %s", store.ErrInvalid, why)
+	}
+	idForm := false
+	switch label {
+	case "":
+		return invalid("names the licence's entry: upstream:<name>, publisher:<name>, upstream-id:<id> or publisher-id:<id>")
+	case store.SourceTenant:
+		if a.Kind == authz.ActorLicenseManager {
+			return "", false, authz.ErrDenied
 		}
-		src := o.Source
-		if src == "" {
-			return "", fmt.Errorf("%w: %w", ErrRefused, &license.Error{Rule: license.RuleKeyUntrusted,
-				Msg: "key " + tok.Key + " of " + tok.Extension + " has no owner here (no available build of it declares the key, " +
-					"another source's held one recorded it first, or its owner was removed)"})
-		}
-		if want != "" && src != want {
-			return "", fmt.Errorf("%w: %w", ErrRefused, &license.Error{Rule: RuleKeyOwner,
-				Msg: "key " + tok.Key + " of " + tok.Extension + " is " + label(src) + "'s here: a licence signed with it is that source's"})
-		}
-		keys, err := tx.LiveLicenseKeys(ctx, tenantID, packageType, tok.Extension, src)
-		if err != nil {
-			return "", err
-		}
-		if err := s.verify(tok, keys, " from "+label(src)); err != nil {
-			return "", err
-		}
-		if o.Recorded || !claim {
-			return src, nil
-		}
-		if o, _, err = tx.ClaimKeyOwner(ctx, tenantID, packageType, tok.Extension, tok.Key); err != nil {
-			return "", err
-		}
-		if o.Source == src {
-			return src, nil
+		return invalid("tenant: the tenant's own builds declare no licence keys, so its entries carry no licence")
+	}
+	if a.Kind == authz.ActorLicenseManager {
+		return s.distributorEntry(ctx, tenantID, label, removed)
+	}
+	for _, kind := range []string{store.KeySourceUpstream, store.KeySourcePublisher} {
+		if id, ok := strings.CutPrefix(label, kind+"-id:"); ok {
+			if src, idForm = kind+":"+id, true; !store.ValidLicenseEntry(src) {
+				return invalid(fmt.Sprintf("%q is malformed", label))
+			}
 		}
 	}
-	return "", store.ErrConflict
+	if !idForm {
+		if !strings.HasPrefix(label, store.SourceUpstreamPrefix) && !strings.HasPrefix(label, store.SourcePublisherPrefix) {
+			return invalid(fmt.Sprintf("%q is malformed: upstream:<name>, publisher:<name>, upstream-id:<id> or publisher-id:<id>", label))
+		}
+		if src, err = s.Store.ResolveSource(ctx, tenantID, label); errors.Is(err, store.ErrNoSource) {
+			return invalid(fmt.Sprintf("%q is no upstream or publisher of the tenant", label))
+		} else if err != nil {
+			return "", false, err
+		}
+	}
+	live, kind, err := s.Store.LicenseEntrySource(ctx, tenantID, src)
+	switch {
+	case err != nil:
+		return "", false, err
+	case !live && removed && idForm:
+		return src, false, nil
+	case !live && idForm:
+		return invalid(fmt.Sprintf("%q is removed, or no upstream or publisher of the tenant", label))
+	case !live:
+		return invalid(fmt.Sprintf("%q is no upstream or publisher of the tenant", label))
+	case kind != "" && kind != store.UpstreamRepo:
+		return invalid(fmt.Sprintf("%q is a DuckDB %s upstream: it declares no licence keys, so its entries carry no licence", label,
+			strings.TrimPrefix(kind, "duckdb-")))
+	}
+	return src, true, nil
+}
+
+// distributorEntry reads the entry a licence manager names (spec 0035): one of the tenant's
+// distributors' publishers, as distribution admins name them: a live one by publisher:<name> or
+// publisher-id:<id>, a removed one by publisher-id:<id> on a removal only. Any other source,
+// whatever it is, answers as a refused caller (authz.ErrDenied: a missing path, audited), before
+// anything about it is checked: its server-wide token reads every licence, but writes only into
+// distributors' publishers' entries.
+func (s *Service) distributorEntry(ctx context.Context, tenantID, label string, removed bool) (string, bool, error) {
+	srcs, err := s.Store.DistributorSources(ctx, tenantID)
+	if err != nil {
+		return "", false, err
+	}
+	if id, ok := strings.CutPrefix(label, store.SourcePublisherIDPrefix); ok {
+		if d, ok := srcs[store.PublisherSource(id)]; ok && id != "" && (!d.Removed || removed) {
+			return d.Source, !d.Removed, nil
+		}
+		return "", false, authz.ErrDenied
+	}
+	if name, ok := strings.CutPrefix(label, store.SourcePublisherPrefix); ok {
+		for _, d := range srcs {
+			if !d.Removed && d.Name == name {
+				return d.Source, true, nil
+			}
+		}
+	}
+	return "", false, authz.ErrDenied
+}
+
+// recheck reads a write's entry again in its transaction, under the licence lock (spec 0035): a
+// source removed since the entry was read takes no import and no visibility change (live), and a
+// licence manager's entry must still be a distributor's publisher's in the tenant (a refused caller
+// otherwise). label names the entry in the refusal.
+func recheck(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID, entry, label string, live bool) error {
+	if a.Kind == authz.ActorLicenseManager {
+		d, err := tx.SourceDistributor(ctx, tenantID, entry)
+		if err != nil {
+			return err
+		}
+		if d == "" {
+			return authz.ErrDenied
+		}
+	}
+	if !live {
+		return nil
+	}
+	ok, _, err := tx.LicenseEntrySource(ctx, tenantID, entry)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: ?source= %q was removed", store.ErrInvalid, label)
+	}
+	return nil
 }
 
 // holderRefused turns the store's refusal of a licence of another holder than its tenant expects
@@ -402,16 +475,25 @@ func record(t *license.Token, tenantID, packageType, token, actor string) store.
 		GraceUntil: t.GraceUntil(), Visibility: store.Private, Actor: actor}
 }
 
-// Import stores a licence an administrator posts, under the name it names, of the package type the
-// import names ("": the default; spec 0034), for the source that owns its key for the name (spec
-// 0033 phase B). expected is the stored licence's version to replace (If-Match), 0 for whichever is
-// stored (If-Match: *), or Create for none: a stored licence is never replaced without an If-Match.
-func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType, token string, expected int64) (View, error) {
+// Import stores a licence an administrator or a licence manager posts, under the name it names, of
+// the package type the import names ("": the default; spec 0034), in the catalogue entry the
+// import names by its source (spec 0035; a licence manager: a distributor's publisher's only). It
+// verifies against that entry's live keys. expected is the stored licence's version to replace
+// (If-Match), 0 for whichever is stored (If-Match: *), or Create for none: a stored licence is never
+// replaced without an If-Match.
+func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType, source, token string, expected int64) (View, error) {
 	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return View{}, err
 	}
 	if packageType, err = parseType(packageType); err != nil {
+		return View{}, err
+	}
+	if !s.Enabled {
+		return View{}, ErrOff
+	}
+	src, _, err := s.entry(ctx, a, t.ID, source, false)
+	if err != nil {
 		return View{}, err
 	}
 	tok, err := s.parse(token)
@@ -423,11 +505,14 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 		return View{}, err
 	}
 	l := record(tok, t.ID, packageType, token, a.String())
-	l.Source = store.LicenseImport
+	l.Entry, l.Source = src, store.LicenseImport
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		// the source that owns the key for the name, and its live keys: those of its live builds
-		// anywhere in the tenant, or of its newest available version in the catalogue
-		if l.Owner, err = s.owned(ctx, tx, t.ID, l.PackageType, tok, "", lb.of, true); err != nil {
+		if err := recheck(ctx, tx, a, t.ID, src, source, true); err != nil {
+			return err
+		}
+		// the entry's live keys: those its source recorded on its own live builds anywhere in the
+		// tenant, or on its newest available version in the catalogue
+		if err := s.verifyIn(ctx, tx, t.ID, l.PackageType, src, tok, lb.of(src)); err != nil {
 			return err
 		}
 		// spec 0028: the tenant's expected holder, as it is in this transaction. PutLicense checks it
@@ -436,17 +521,7 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 		if err := tx.CheckLicenseHolder(ctx, t.ID, l.HolderID); err != nil {
 			return holderRefused(err)
 		}
-		old, err := tx.GetLicense(ctx, t.ID, l.PackageType, l.Name, l.Owner)
-		// spec 0033 phase B: where the owner holds none, a licence of unknown source (migration 0042
-		// found no owner for its key) signed with the same key is the one this import replaces
-		unknown := false
-		if errors.Is(err, store.ErrNotFound) {
-			if u, uerr := tx.GetLicense(ctx, t.ID, l.PackageType, l.Name, store.LicenseUnknown); uerr == nil && u.Key == l.Key {
-				old, err, unknown = u, nil, true
-			} else if uerr != nil && !errors.Is(uerr, store.ErrNotFound) {
-				return uerr
-			}
-		}
+		old, err := tx.GetLicense(ctx, t.ID, l.PackageType, l.Name, src)
 		replaced := ""
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -463,18 +538,12 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 		default:
 			l.Visibility, replaced = old.Visibility, old.LicenseID
 		}
-		if unknown {
-			if err := tx.DeleteLicense(ctx, old, 0); err != nil {
-				return err
-			}
-			old.Version = 0
-		}
 		if err := tx.PutLicense(ctx, &l, old.Version); err != nil {
 			return holderRefused(err)
 		}
 		return tx.Event(ctx, t.ID, a.String(), "license.import", "license:"+l.Name, typed(map[string]any{"name": l.Name,
 			"license": l.LicenseID, "issuer": l.Issuer, "holder": l.HolderID, "plan": l.Plan, "expires_at": seconds(l.ExpiresAt),
-			"replaced": replaced, "source": lb.of(l.Owner)}, l.PackageType))
+			"replaced": replaced, "source": lb.of(src)}, l.PackageType))
 	})
 	if err != nil {
 		return View{}, err
@@ -492,8 +561,9 @@ func typed(f map[string]any, packageType string) map[string]any {
 	return f
 }
 
-// Remove removes a tenant's licence of a package (type, "": the default; name) of a source (its label
-// or its id form; "": the name's only licence) (expected: its version; 0 any).
+// Remove removes a tenant's licence of a package (type, "": the default; name) in the entry the
+// caller names by its source (spec 0035: required; a removed source's by its id form)
+// (expected: its version; 0 any).
 func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, packageType, name, source string, expected int64) error {
 	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
@@ -502,12 +572,22 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, packageType
 	if packageType, err = parseType(packageType); err != nil {
 		return err
 	}
+	src, live, err := s.entry(ctx, a, t.ID, source, true)
+	if err != nil {
+		return err
+	}
 	lb, err := s.labels(ctx, t.ID)
 	if err != nil {
 		return err
 	}
 	return s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		l, err := s.licenseOf(ctx, tx, lb, t.ID, packageType, name, source)
+		if err := recheck(ctx, tx, a, t.ID, src, source, false); err != nil {
+			return err
+		}
+		l, err := tx.GetLicense(ctx, t.ID, packageType, name, src)
+		if errors.Is(err, store.ErrNotFound) && !live {
+			return fmt.Errorf("%w: ?source= %q is removed, and its entry holds no licence of %s", store.ErrInvalid, source, name)
+		}
 		if err != nil {
 			return err
 		}
@@ -515,13 +595,14 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, packageType
 			return err
 		}
 		return tx.Event(ctx, t.ID, a.String(), "license.remove", "license:"+name,
-			typed(map[string]any{"name": name, "license": l.LicenseID, "reason": "admin", "source": lb.of(l.Owner)}, packageType))
+			typed(map[string]any{"name": name, "license": l.LicenseID, "reason": "admin", "source": lb.of(src)}, packageType))
 	})
 }
 
-// SetVisibility makes a licence private or public (expected: its version; 0 any). Making one public
-// is an administrator's (spec 0029): a public licence's token is served to anyone served a public
-// release of the name, so a licence manager only makes one private.
+// SetVisibility makes a licence private or public, in the entry the caller names by its source
+// (spec 0035: required) (expected: its version; 0 any). Making one public is an administrator's
+// (spec 0029): a public licence's token is served to anyone served a public release of the name, so
+// a licence manager only makes one private, of a distributor's publisher's entry.
 func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, packageType, name, source, visibility string, expected int64) (View, error) {
 	verb := authz.VerbLicense
 	if visibility != store.Private {
@@ -534,13 +615,20 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, pack
 	if packageType, err = parseType(packageType); err != nil {
 		return View{}, err
 	}
+	src, _, err := s.entry(ctx, a, t.ID, source, false)
+	if err != nil {
+		return View{}, err
+	}
 	lb, err := s.labels(ctx, t.ID)
 	if err != nil {
 		return View{}, err
 	}
 	var l store.License
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		if l, err = s.licenseOf(ctx, tx, lb, t.ID, packageType, name, source); err != nil {
+		if err := recheck(ctx, tx, a, t.ID, src, source, true); err != nil {
+			return err
+		}
+		if l, err = tx.GetLicense(ctx, t.ID, packageType, name, src); err != nil {
 			return err
 		}
 		if expected == 0 {
@@ -553,7 +641,7 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, pack
 			return err
 		}
 		return tx.Event(ctx, t.ID, a.String(), "license.change", "license:"+name,
-			typed(map[string]any{"name": name, "license": l.LicenseID, "visibility": visibility, "source": lb.of(l.Owner)}, packageType))
+			typed(map[string]any{"name": name, "license": l.LicenseID, "visibility": visibility, "source": lb.of(src)}, packageType))
 	})
 	if err != nil {
 		return View{}, err
@@ -568,8 +656,8 @@ type Served struct{ *Service }
 func (s Served) Enabled() bool { return s.Service.Enabled }
 
 // List is every licence of a tenant of a package type (a channel's: spec 0034, a licence is served
-// only by a channel of its type), of every source, whose grace lasts and whose key the server does
-// not refuse; the route keeps those of the sources its channel selects.
+// only by a channel of its type), of every entry, whose grace lasts and whose key the server does
+// not refuse; the route keeps those of the entries its channel serves the names from.
 func (s Served) List(ctx context.Context, tenantID, packageType string) ([]store.License, error) {
 	if !s.Service.Enabled {
 		return nil, nil
@@ -588,10 +676,10 @@ func (s Served) List(ctx context.Context, tenantID, packageType string) ([]store
 	return out, nil
 }
 
-// Serve is what a DuckDB route serves for a package (the channel's type, a name) in a tenant from a
-// source (the channel's for the name, spec 0033 phase B): the stored licence of that source while
-// its grace lasts and its key is not refused (ok false: none, past its grace, or refused). The route
-// serves it only in a channel where a live build declares its key.
+// Serve is what a DuckDB route serves for a package (the channel's type, a name) in a tenant from an
+// entry (the source the channel serves the name from, spec 0035): the stored licence of that entry
+// while its grace lasts and its key is not refused (ok false: none, past its grace, or refused). The
+// route serves it only in a channel where a live build of the entry declares its key.
 func (s *Service) Serve(ctx context.Context, tenantID, packageType, name, source string) (store.License, bool, error) {
 	if !s.Enabled || source == "" {
 		return store.License{}, false, nil
@@ -612,20 +700,18 @@ type NameKeys struct {
 	Keys []KeyView `json:"keys"`
 }
 
-// KeyView is a licence key, the trusted sources that brought it, the number of builds declaring it
-// that count (live, or the newest available version of its source), and its owner for the name
-// (spec 0033 phase B; omitted when none: no source's available entry declares it).
+// KeyView is a licence key and the entries for which it is live (spec 0035): what an import into
+// each would accept for the key, each with the number of its builds declaring the key.
 type KeyView struct {
 	Kid     string            `json:"kid"`
 	Sources []store.KeySource `json:"sources"`
-	Builds  int               `json:"builds"`
-	Owner   string            `json:"owner,omitempty"`
 }
 
 // LicenseKeys lists the keys a tenant's licences of a package type ("": the default) are verified
-// with: those of its live builds of the type, and of its sources' newest available versions, by
-// name (one name, or all: name ""), without the keys the server refuses, each with its owner.
-func (s *Service) LicenseKeys(ctx context.Context, a authz.Actor, tenant, packageType, name string) ([]NameKeys, error) {
+// with, by name (one name, or all: name ""), without the keys the server refuses: exactly what an
+// import's key check would accept now, per entry (spec 0035; of one entry, named by its source, or
+// of all: source "").
+func (s *Service) LicenseKeys(ctx context.Context, a authz.Actor, tenant, packageType, name, source string) ([]NameKeys, error) {
 	t, err := s.tenant(ctx, a, authz.VerbLicense, tenant)
 	if err != nil {
 		return nil, err
@@ -633,11 +719,13 @@ func (s *Service) LicenseKeys(ctx context.Context, a authz.Actor, tenant, packag
 	if packageType, err = parseType(packageType); err != nil {
 		return nil, err
 	}
-	ks, err := s.Store.TenantLicenseKeys(ctx, t.ID, packageType, name)
-	if err != nil {
-		return nil, err
+	src := ""
+	if source != "" {
+		if src, _, err = s.entry(ctx, a, t.ID, source, false); err != nil {
+			return nil, err
+		}
 	}
-	lb, err := s.labels(ctx, t.ID)
+	ks, err := s.Store.TenantLicenseKeys(ctx, t.ID, packageType, name, src)
 	if err != nil {
 		return nil, err
 	}
@@ -650,113 +738,7 @@ func (s *Service) LicenseKeys(ctx context.Context, a authz.Actor, tenant, packag
 			out = append(out, NameKeys{Name: k.Name})
 		}
 		last := &out[len(out)-1]
-		kv := KeyView{Kid: k.Kid, Sources: k.Sources, Builds: k.Builds}
-		if k.Owner != "" {
-			kv.Owner = lb.of(k.Owner)
-		}
-		last.Keys = append(last.Keys, kv)
+		last.Keys = append(last.Keys, KeyView{Kid: k.Kid, Sources: k.Sources})
 	}
 	return out, nil
-}
-
-// KeyOwnerView is a key's owner for a name after a tenant administrator gave it (spec 0033 phase
-// B): the source, the one before, and the licences signed with the key that moved to it.
-type KeyOwnerView struct {
-	PackageType string   `json:"package_type,omitempty"`
-	Name        string   `json:"name"`
-	Kid         string   `json:"kid"`
-	Owner       string   `json:"owner"`
-	Before      string   `json:"before,omitempty"`
-	Moved       []string `json:"moved"` // the licences' ids
-}
-
-// SetKeyOwner gives a licence key of a name to a source of the tenant that declares it (its label,
-// or its id form), a tenant administrator's act (spec 0033 phase B: ownership changes only by the
-// owner's removal or this): the licences of the name signed with the key move from the owner before
-// to it, refused (ErrOwnerHolds) when the source holds a licence of the name already.
-func (s *Service) SetKeyOwner(ctx context.Context, a authz.Actor, tenant, packageType, name, kid, source string) (KeyOwnerView, error) {
-	t, err := s.tenant(ctx, a, authz.VerbAdmin, tenant)
-	if err != nil {
-		return KeyOwnerView{}, err
-	}
-	if packageType, err = parseType(packageType); err != nil {
-		return KeyOwnerView{}, err
-	}
-	src, err := s.resolve(ctx, t.ID, source)
-	if err != nil {
-		return KeyOwnerView{}, err
-	}
-	lb, err := s.labels(ctx, t.ID)
-	if err != nil {
-		return KeyOwnerView{}, err
-	}
-	out := KeyOwnerView{PackageType: packageType, Name: name, Kid: kid, Owner: lb.of(src), Moved: []string{}}
-	if packageType == pkgtype.Default {
-		out.PackageType = ""
-	}
-	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		out.Before, out.Moved = "", []string{}
-		cur, err := tx.KeyOwnerOf(ctx, t.ID, packageType, name, kid)
-		if err != nil {
-			return err
-		}
-		if cur.Recorded && cur.Source == src {
-			out.Before = lb.of(src)
-			return nil // as it is: nothing changes, no event
-		}
-		// the licences signed with the key move (the owner's before, or one of unknown source), and
-		// never onto a licence of the source
-		ls, err := tx.NameLicenses(ctx, t.ID, packageType, name)
-		if err != nil {
-			return err
-		}
-		moving, holds := false, false
-		for _, l := range ls {
-			moving = moving || l.Key == kid && l.Owner != src && (l.Owner == cur.Source || l.Owner == store.LicenseUnknown)
-			holds = holds || l.Owner == src
-		}
-		if moving && holds {
-			return ErrOwnerHolds
-		}
-		before, err := tx.SetKeyOwner(ctx, t.ID, packageType, name, kid, src, a.String())
-		if errors.Is(err, store.ErrNotDeclared) {
-			return fmt.Errorf("%w: %s declares no key %s for %s", store.ErrInvalid, source, kid, name)
-		}
-		if err != nil {
-			return err
-		}
-		fields := map[string]any{"name": name, "kid": kid, "source": lb.of(src)}
-		if before.Source != "" {
-			out.Before = lb.of(before.Source)
-			fields["before"] = out.Before
-		}
-		moved, err := tx.MoveLicenses(ctx, t.ID, packageType, name, kid, before.Source, src)
-		if err != nil {
-			return err
-		}
-		for _, l := range moved {
-			out.Moved = append(out.Moved, l.LicenseID)
-		}
-		fields["moved"] = out.Moved
-		return tx.Event(ctx, t.ID, a.String(), "license.key_owner", "license:"+name, typed(fields, packageType))
-	})
-	if err != nil {
-		return KeyOwnerView{}, err
-	}
-	return out, nil
-}
-
-// resolve reads a source a caller names for a key's owner: a live upstream or publisher of the tenant
-// (upstream:<name>, publisher:<name>, or its id form).
-func (s *Service) resolve(ctx context.Context, tenantID, label string) (string, error) {
-	for _, kind := range []string{store.KeySourceUpstream, store.KeySourcePublisher} {
-		if id, ok := strings.CutPrefix(label, kind+"-id:"); ok && id != "" {
-			return kind + ":" + id, nil
-		}
-	}
-	src, err := s.Store.ResolveSource(ctx, tenantID, label)
-	if errors.Is(err, store.ErrNoSource) || err == nil && src == store.SourceTenant {
-		return "", fmt.Errorf("%w: %q is no upstream or publisher of the tenant", store.ErrInvalid, label)
-	}
-	return src, err
 }

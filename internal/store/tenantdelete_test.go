@@ -76,10 +76,8 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO upstream_asks (upstream_id, duckdb_version, platform, name, asked_at) VALUES (?, 'v2.0.0', 'linux_amd64', 'json', ?)",
 			[]any{id("u"), now}},
 		{"INSERT INTO licenses (tenant_id, name, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, expires_at, " +
-			"grace_until, source, upstream_id, visibility, actor, updated_at, version, owner_source) VALUES (?, 'json', 'l1', 'https://i.example', 'acme', '', " +
+			"grace_until, source, upstream_id, visibility, actor, updated_at, version, entry_source) VALUES (?, 'json', 'l1', 'https://i.example', 'acme', '', " +
 			"'pro', 't', ?, 1, 2, 3, 'upstream', ?, 'private', 'system:licenses', ?, 1, ?)", []any{tid, fp("l"), id("u"), now, "upstream:" + id("u")}},
-		{"INSERT INTO license_key_owners (tenant_id, package_type, name, kid, source, set_by, set_at) VALUES (?, 'duckdb_extension', 'json', ?, ?, " +
-			"'system:licenses', ?)", []any{tid, fp("l"), "upstream:" + id("u"), now}},
 		{"INSERT INTO license_syncs (upstream_id, tenant_id, last_run_at, last_result) VALUES (?, ?, ?, '{}')", []any{id("u"), tid, now}},
 		{"INSERT INTO usage_forwards (upstream_id, tenant_id, last_run_at, last_result) VALUES (?, ?, ?, '{}')", []any{id("u"), tid, now}},
 		{"INSERT INTO usage_received (tenant_id, channel_id, sender, day, name, package_version, event, counter, users, value) " +

@@ -381,45 +381,53 @@ See [Upstreams](upstreams.md).
 
 | Route | Who |
 | --- | --- |
-| `GET tenants/{t}/licenses[?source=]`; `GET, DELETE …/licenses/{name}[?source=]` | a tenant admin or a licence manager |
-| `POST tenants/{t}/licenses` (the licence as the body; `If-Match` to replace one) | a tenant admin or a licence manager |
-| `POST …/licenses/{name}/private` (`If-Match`) | a tenant admin or a licence manager |
-| `POST …/licenses/{name}/public` (`If-Match`) | tenant admin |
+| `GET tenants/{t}/licenses[?source=]`; `GET …/licenses/{name}[?source=]` | a tenant admin or a licence manager |
+| `POST tenants/{t}/licenses?source=` (the licence as the body; `If-Match` to replace one) | a tenant admin; a licence manager into a distributor's publisher's entry |
+| `DELETE …/licenses/{name}?source=`; `POST …/licenses/{name}/private?source=` (`If-Match`) | a tenant admin; a licence manager in a distributor's publisher's entry |
+| `POST …/licenses/{name}/public?source=` (`If-Match`) | tenant admin |
 | `GET …/upstreams/{name}/licenses`; `POST …/upstreams/{name}/licenses/sync` | tenant admin |
 | `GET …/upstreams/{name}/usage`; `POST …/upstreams/{name}/usage {"usage": "forward"\|"off"}` (`If-Match`) | tenant admin: the usage switch and the last forwarding run |
-| `GET tenants/{t}/license-keys`, `GET …/license-keys/{name}` | a tenant admin or a licence manager: the tenant's live licence keys, with their owners |
-| `PUT …/license-keys/{name}/{kid}/owner {"source": "upstream:<name>"\|"publisher:<name>"}` | tenant admin: give a key to a source that declares it (spec 0033) |
+| `GET tenants/{t}/license-keys[?source=]`, `GET …/license-keys/{name}[?source=]` | a tenant admin or a licence manager: the tenant's live licence keys, each with the entries it is live for |
 
-A licence is answered as its claims and state (`name`, `owner`, `id`, `issuer`, `holder_id`,
+A licence is answered as its claims and state (`name`, `entry`, `id`, `issuer`, `holder_id`,
 `holder`, `plan`, `versions`, `limits`, `issued_at`, `expires_at`, `grace_until`, `key`, `source`,
 `upstream`, `visibility`, `status`, `etag`), never with the token. A tenant holds a licence per
-extension and source (spec 0033 phase B): `owner` is the licence's source, the source that owns its
-key for the extension (`upstream:<name>`, `publisher:<name>`, a removed one's `upstream-id:<id>` or
-`publisher-id:<id>`, or `unknown`), and `source` how it arrived (`import` or `upstream`). The routes
-of one licence (`GET`, `DELETE`, `…/public`, `…/private`) take `?source=` (the owner as answered, or
-its id form): without it they act on the extension's only licence, and answer `409` naming the
-sources where it has several. A removed source is `upstream-id:<id>` or `publisher-id:<id>` in the
-licence routes, even where the catalogue routes still show it by name (a removed distributor's
-publisher). An import stores the licence for its key's owner; a new one answers
-`201` with `Location` (`…/licenses/<name>?source=<owner>`); over a stored one of that source (or,
-where it holds none, one of source `unknown` signed with the same key) without `If-Match`, `409`. `GET …/upstreams/{name}/licenses`
+catalogue entry (spec 0035): `entry` is the licence's entry, by its source (`upstream:<name>`,
+`publisher:<name>`, or a removed one's `upstream-id:<id>` or `publisher-id:<id>`), and `source` how
+it arrived (`import` or `upstream`): the query's `?source=` names the entry, the answer's `source`
+is how the licence arrived. Every write (the import, `DELETE`, `…/public`, `…/private`)
+**requires** `?source=` naming the entry (`upstream:<name>`, `publisher:<name>`, `upstream-id:<id>`,
+`publisher-id:<id>`), given once: `400` without it or given twice, and `400` naming why for
+`tenant`, a malformed form, a source that is no upstream or publisher of the tenant, a removed
+source, or a DuckDB core or community upstream; `DELETE` also takes the id form of a removed source
+whose entry still holds a licence (`400` when it holds none, `404` for a live entry without one).
+The checks run in that order: the caller, licensing (`409` while it is off, on an import), the
+entry, then the licence itself. A licence manager names only the entries of distributors'
+publishers (`publisher:<name>` of a live one, `publisher-id:<id>`, and a removed one's id form on
+`DELETE`): any other `?source=`, whatever it is, answers as a missing path does (`404`, the refusal
+recorded as `authz.refused`), before anything about it is checked. A read (`GET
+…/licenses/{name}`) takes `?source=` optionally: without it, the extension's only licence, and
+`409` naming the entries where it has several. A removed source is `upstream-id:<id>` or
+`publisher-id:<id>` in the licence routes, even where the catalogue routes still show it by name (a
+removed distributor's publisher). An import stores the licence in the entry it names; a new one
+answers `201` with `Location` (`…/licenses/<name>?source=<entry>`); over the licence stored in that
+entry without `If-Match`, `409`. `GET …/upstreams/{name}/licenses`
 answers the last relay run, `{"last_run_at", "result": {"counts", "refused", "error"}}`, and the sync
 request (`202`) answers the same; `409` for an upstream that relays nothing or is paused, and while
-licensing is off (an import too). An import or a relayed licence verifies against a live key of its
-key's owner (spec 0021, 0033: a live build declaring it, or the owner's newest available version in
-the catalogue; a relayed one against the relaying upstream's); without one it is refused (`400`,
-`kid_untrusted`), and a relayed licence whose key another source owns is refused with `key_owner`
-unless it is byte for byte the licence that source holds (then stored as the relaying upstream's
-too). In a tenant with
+licensing is off (an import too). An import verifies against the live keys of the entry it names,
+and a relayed licence against those of its upstream's own entry (spec 0021, 0035: that source's own
+live builds declaring the key, or its newest available version in the catalogue); without one it is
+refused (`400`, `kid_untrusted`, naming the entry). In a tenant with
 an [expected holder](#the-expected-holder), an import of another holder's licence answers `400`
 with `holder_mismatch` in its detail, naming the expected and the given holder.
 `GET …/license-keys` answers `{"names": [{"name", "keys": [{"kid", "sources": [{"kind":
-"publisher"|"upstream", "name"}], "builds": n, "owner"}]}]}` (`owner` omitted while the key has
-none: no source's available build declares it, another source's record is held still, or its owner
-was removed and no source recorded it since). `PUT …/owner` answers `{"name", "kid", "owner",
-"before", "moved": [licence ids]}`: the source must have recorded the key for the extension (`400`
-otherwise), and the licences signed with it move from the owner before (or, where it has none, one
-of source `unknown`), `409` while the source holds a licence of that extension already. A licence is a package's (spec 0034): these
+"publisher"|"upstream", "name", "distributor", "builds": n}]}]}]}`: exactly what an import's key
+check would accept now, per entry (`sources`: the entries the key is live for, `distributor` for a
+distributor's publisher, `builds` the entry's builds declaring the key); keys the server refuses are
+left out. With `?source=`, one entry's keys: `200` with an empty list when it has none, `400` as for
+a write (an unknown, removed or malformed source, `tenant`, a DuckDB core or community upstream);
+from a licence manager, a source that is not a distributor's publisher answers `404`. A licence is a
+package's (spec 0034): these
 routes take `?type=` (`duckdb_extension` by default), an import stores the licence under that type,
 and a channel serves only its own type's licences. See [Licensing](licensing.md).
 

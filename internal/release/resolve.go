@@ -37,8 +37,9 @@ type Snapshot struct {
 	// name an upstream of the channel lists; upstream changes bump the tenant's channels.
 	PullThrough []store.PullThrough
 	Listed      map[string]bool
-	// Kids are the licence key ids recorded for each of the channel's builds, by build id (spec
-	// 0021); recording or dropping keys bumps release_version on the channels holding the build.
+	// Kids are the licence key ids recorded for each of the channel's builds by its own source, by
+	// build id (spec 0021; spec 0035); recording or dropping keys bumps release_version on the
+	// channels holding the build.
 	Kids map[string][]string
 	// Selected is the channel's source of each name (spec 0031); Releases holds the selected
 	// sources' releases only. A selection's change bumps release_version.

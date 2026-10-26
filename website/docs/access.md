@@ -269,11 +269,18 @@ Administrators of a channel, an extension or an extension group administer that 
 
 **Licence managers** (spec 0029) are a server-wide role for a job that writes licences, such as a
 licence reconciler: a principal of a server issuer listed in `auth.server_license_admins`. On every
-tenant that is active (not suspended, not being deleted) a licence manager may list, read, import,
-replace and remove licences, make one private, and read the licence keys the live releases declare:
+tenant that is active (not suspended, not being deleted) a licence manager may list and read every
+licence and the licence keys the live releases declare, and import, replace, remove and make private
+the licences of **distributors' publishers'** entries only (spec 0035;
+[A licence's entry](licensing.md#a-licences-entry)): it names an entry as a distribution admin
+names a distributor's publisher, and any other `?source=` answers as a missing path does (`404`,
+recorded as `authz.refused`). It still reads every licence and every key's entries, but its
+server-wide token writes only into distributors' publishers' entries: it cannot copy a tenant
+upstream's licence into another entry or pin an import into an upstream's entry:
 
-- `GET, POST /api/v1/tenants/{t}/licenses`, `GET, DELETE …/licenses/{name}`,
-  `POST …/licenses/{name}/private`;
+- `GET /api/v1/tenants/{t}/licenses`, `GET …/licenses/{name}`;
+- `POST /api/v1/tenants/{t}/licenses?source=`, `DELETE …/licenses/{name}?source=`,
+  `POST …/licenses/{name}/private?source=`, for a distributor's publisher's entry;
 - `GET /api/v1/tenants/{t}/license-keys`, `GET …/license-keys/{name}`.
 
 Nothing else. It cannot make a licence public (`…/public`, the tenant administrators'), since a

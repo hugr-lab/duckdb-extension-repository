@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,20 +17,21 @@ import (
 )
 
 // license manages a tenant's licences (spec 0012): kista stores what verifies against a key its
-// extension's live builds declare (spec 0021), and issues nothing.
+// extension's live builds declare (spec 0021), in the catalogue entry each write names (spec 0035),
+// and issues nothing.
 func (a *adminCmd) license(ctx context.Context, sub string, args []string) error {
 	fs := flag.NewFlagSet("license", flag.ContinueOnError)
 	replace := fs.Bool("replace", false, "")
 	keyFile := fs.String("key", "", "")
 	ptype := fs.String("type", "", "")    // spec 0034: the licence's package type ("": the default)
-	source := fs.String("source", "", "") // spec 0033 phase B: the licence's source ("": the name's only one)
+	source := fs.String("source", "", "") // spec 0035: the licence's entry, by its source ("": on a read, the name's only one)
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
 	}
 	ls := a.svc.Licenses
 	show := func(v licenses.View) {
-		fmt.Fprintf(a.out, "name: %s\nowner: %s\nid: %s\nissuer: %s\nholder: %s %s\nplan: %s\nstatus: %s\n", v.Name, v.Owner, v.ID, v.Issuer,
+		fmt.Fprintf(a.out, "name: %s\nentry: %s\nid: %s\nissuer: %s\nholder: %s %s\nplan: %s\nstatus: %s\n", v.Name, v.Entry, v.ID, v.Issuer,
 			v.HolderID, v.Holder, v.Plan, v.Status)
 		fmt.Fprintf(a.out, "issued: %s\nexpires: %s\ngrace until: %s\nkey: %s\nsource: %s\n", v.IssuedAt, v.ExpiresAt, v.GraceUntil, v.Key,
 			v.Source)
@@ -57,46 +57,49 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 		}
 		return strings.TrimSpace(string(b)), err
 	}
+	// spec 0035: every write names its entry, refused before any call without one
+	if (sub == "import" || sub == "remove" || sub == "public" || sub == "private") && *source == "" {
+		return fmt.Errorf("%w: license %s needs -source <entry> (upstream:<name>, publisher:<name>, upstream-id:<id> or publisher-id:<id>)",
+			errUsage, sub)
+	}
 	switch {
 	case sub == "keys" && (len(pos) == 1 || len(pos) == 2):
 		name := ""
 		if len(pos) == 2 {
 			name = pos[1]
 		}
-		nks, err := ls.LicenseKeys(ctx, a.actor, pos[0], *ptype, name)
+		nks, err := ls.LicenseKeys(ctx, a.actor, pos[0], *ptype, name, *source)
 		if err != nil {
 			return err
 		}
-		a.table("NAME\tKEY\tBUILDS\tSOURCES\tOWNER", func(w io.Writer) {
+		// each entry the key is live for, with its builds declaring it (spec 0035)
+		a.table("NAME\tKEY\tSOURCES", func(w io.Writer) {
 			for _, nk := range nks {
 				for _, k := range nk.Keys {
 					srcs := make([]string, 0, len(k.Sources))
 					for _, s := range k.Sources {
-						srcs = append(srcs, s.Kind+":"+s.Name)
+						d := ""
+						if s.Distributor != "" {
+							d = ", distributor " + s.Distributor
+						}
+						srcs = append(srcs, fmt.Sprintf("%s:%s (builds %d%s)", s.Kind, s.Name, s.Builds, d))
 					}
-					fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", nk.Name, k.Kid, k.Builds, strings.Join(srcs, ","), cmp.Or(k.Owner, "-"))
+					fmt.Fprintf(w, "%s\t%s\t%s\n", nk.Name, k.Kid, strings.Join(srcs, ", "))
 				}
 			}
 		})
-	case sub == "owner" && len(pos) == 4:
-		v, err := ls.SetKeyOwner(ctx, a.actor, pos[0], *ptype, pos[1], pos[2], pos[3])
-		if err != nil {
-			return err
-		}
-		a.logf("license owner %s %s %s: %s (before: %s; licences moved: %d)", pos[0], pos[1], pos[2], v.Owner, cmp.Or(v.Before, "none"),
-			len(v.Moved))
 	case sub == "list" && len(pos) == 1:
 		vs, err := ls.List(ctx, a.actor, pos[0], *ptype, *source)
 		if err != nil {
 			return err
 		}
-		a.table("NAME\tOWNER\tPLAN\tHOLDER\tSTATUS\tEXPIRES\tSOURCE\tVISIBILITY", func(w io.Writer) {
+		a.table("NAME\tENTRY\tPLAN\tHOLDER\tSTATUS\tEXPIRES\tSOURCE\tVISIBILITY", func(w io.Writer) {
 			for _, v := range vs {
 				src := v.Source
 				if v.Upstream != "" {
 					src += ":" + v.Upstream
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Owner, v.Plan, v.HolderID, v.Status, v.ExpiresAt, src, v.Visibility)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Entry, v.Plan, v.HolderID, v.Status, v.ExpiresAt, src, v.Visibility)
 			}
 		})
 	case sub == "show" && len(pos) == 2:
@@ -120,7 +123,7 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 		if *replace {
 			expected = 0
 		}
-		v, err := ls.Import(ctx, a.actor, pos[0], *ptype, tok, expected)
+		v, err := ls.Import(ctx, a.actor, pos[0], *ptype, *source, tok, expected)
 		if err != nil {
 			// the rule, as the API names it (spec 0028: holder_mismatch)
 			var le *license.Error
@@ -129,18 +132,18 @@ func (a *adminCmd) license(ctx context.Context, sub string, args []string) error
 			}
 			return err
 		}
-		a.logf("license import %s %s from %s (%s, plan %s, until %s)", pos[0], v.Name, v.Owner, v.ID, v.Plan, v.ExpiresAt)
+		a.logf("license import %s %s into %s (%s, plan %s, until %s)", pos[0], v.Name, v.Entry, v.ID, v.Plan, v.ExpiresAt)
 	case sub == "remove" && len(pos) == 2:
 		if err := ls.Remove(ctx, a.actor, pos[0], *ptype, pos[1], *source, 0); err != nil {
 			return err
 		}
-		a.logf("license remove %s %s", pos[0], pos[1])
+		a.logf("license remove %s %s in %s", pos[0], pos[1], *source)
 	case (sub == "public" || sub == "private") && len(pos) == 2:
 		vis := map[string]string{"public": store.Public, "private": store.Private}[sub]
 		if _, err := ls.SetVisibility(ctx, a.actor, pos[0], *ptype, pos[1], *source, vis, 0); err != nil {
 			return err
 		}
-		a.logf("license %s %s %s", sub, pos[0], pos[1])
+		a.logf("license %s %s %s in %s", sub, pos[0], pos[1], *source)
 	case sub == "verify" && len(pos) == 1:
 		tok, err := read(pos[0])
 		if err != nil {

@@ -85,6 +85,8 @@ openssl pkey -in "$root/internal/license/testdata/test-only-2048.pem" -pubout -o
 "$work/fixture" "$work/tresor.duckdb_extension" 1.0 a
 "$work/fixture" "$work/hello.duckdb_extension" 1.0 b
 "$work/fixture" "$work/vault.duckdb_extension" 1.0 c vault "$work/lic.pub.pem"
+# spec 0035: vault 1.1 with the same key, a distributor's publisher's in the catalogue: another entry
+"$work/fixture" "$work/vault11.duckdb_extension" 1.1 i vault "$work/lic.pub.pem"
 # spec 0033 phase C: the catalogue's builds (below)
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/n.pem" 2>/dev/null  # nightly's
 "$work/fixture" "$work/geo09.duckdb_extension" 0.9 d geo_tools
@@ -97,6 +99,10 @@ now=$(date +%s)
 printf '{"v":1,"iss":"https://issuer.example","jti":"lic-e2e","sub":"acme","holder":"Acme Test","ext":"vault","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}' \
 	"$now" "$((now + 20 * 86400))" >"$work/claims.json"
 (cd "$root" && GOWORK=off go run ./internal/license/vectorgen sign -claims "$work/claims.json") >"$work/vault.kista-license"
+# spec 0035: a licence for tresor, whose builds declare no key: no entry lists its key
+printf '{"v":1,"iss":"https://issuer.example","jti":"lic-nokey","sub":"acme","ext":"tresor","plan":"pro","iat":%d,"exp":%d}' \
+	"$now" "$((now + 20 * 86400))" >"$work/claims-nokey.json"
+(cd "$root" && GOWORK=off go run ./internal/license/vectorgen sign -claims "$work/claims-nokey.json") >"$work/tresor.kista-license"
 mkdir -p "$work/org/acme/.well-known"
 printf '{"signature_keys":["%s"]}' "$lic_key" >"$work/org/acme/.well-known/duckdb-extension-repo.json"
 repo_key="sha256:$(printf '%s' "$lic_key" | base64 -d | openssl dgst -sha256 | awk '{print $NF}')"
@@ -169,6 +175,12 @@ k publisher add acme enterest-ci -distributor enterest
 ssh-keygen -q -t ed25519 -N '' -C enterest-ci -f "$work/enterest-ci"
 k publisher key add acme enterest-ci "$work/enterest-ci.pub" -expires 1d
 k publisher hold acme enterest-ci 24h
+# spec 0035: a second distributor's publisher, without a hold, whose vault 1.1 (below) declares
+# vault's key too
+k publisher add acme vault-dist -distributor enterest
+k publisher license-keys acme vault-dist on
+ssh-keygen -q -t ed25519 -N '' -C vault-dist -f "$work/vault-dist"
+k publisher key add acme vault-dist "$work/vault-dist.pub" -expires 1d
 k channel follow acme/nightly publisher:enterest-ci
 k catalogue add acme "$work/maps10.duckdb_extension" -name maps
 k catalogue add acme "$work/maps11.duckdb_extension" -name maps
@@ -198,6 +210,7 @@ cat_path="/api/v1/tenants/acme/catalogue/extensions"
 publish enterest-ci "$cat_path/geo_tools/builds?version=0.9&platform=linux_amd64" "$work/geo09.duckdb_extension"
 publish enterest-ci "$cat_path/geo_tools/builds?version=1.0&platform=linux_amd64" "$work/geo10.duckdb_extension"
 publish enterest-ci "$cat_path/hello_acme/builds?version=2.0&platform=linux_amd64" "$work/hello2.duckdb_extension"
+publish vault-dist "$cat_path/vault/builds?version=1.1&platform=linux_amd64" "$work/vault11.duckdb_extension"
 # started again: the placement pass looks at every follow at its start (the skips), then every minute
 kill "$serve_pid"
 wait "$serve_pid" 2>/dev/null || true
@@ -215,4 +228,4 @@ for i in $(seq 1 30); do curl -sf "$host/" >/dev/null && break; sleep 1; done
 curl -sf "$host/" >/dev/null || { cat "$work/host.log"; exit 1; }
 
 echo "e2e: Playwright"
-E2E_LICENSE="$work/vault.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }
+E2E_LICENSE="$work/vault.kista-license" E2E_LICENSE_NOKEY="$work/tresor.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }

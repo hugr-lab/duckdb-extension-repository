@@ -193,8 +193,9 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   administrator: it runs as the service's OS user with the service's configuration.
 - **Licence managers** (`auth.server_license_admins`, from the configuration file only) manage
   every tenant's licences and nothing else, so a job that writes licences needs no server
-  administrator's token. A leaked licence manager's token can import, replace, remove licences and
-  make them private. It can never make one public (which would serve its token to anyone served a
+  administrator's token. It reads every licence, and writes only the entries of distributors'
+  publishers (spec 0035): any other entry answers as a missing path does. A leaked licence manager's
+  token can import, replace, remove licences of those entries and make them private. It can never make one public (which would serve its token to anyone served a
   public release), publish, block, or add upstreams or keys. A licence still has to verify against
   a key a live release declares.
 - **Distribution admins** (`auth.server_distribution_admins`, from the configuration file only)

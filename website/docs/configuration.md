@@ -433,7 +433,7 @@ role. See [Access](access.md).
 | `auth.server_audiences` | list | `[serve.public_url]` | Audiences a server token must carry. Required (or `public_url`) with server issuers. Values under `public_url/` are refused: those are tenants' audiences. |
 | `auth.server_egress_allow` | list | none | Like `egress.allow` (`cidr`, `ports`), reached only by the server issuers' fetcher. |
 | `auth.server_admins` | list | none | Principals of server issuers who are server administrators. |
-| `auth.server_license_admins` | list | none | Principals of server issuers who are licence managers: they manage every tenant's licences and nothing else (spec 0029). |
+| `auth.server_license_admins` | list | none | Principals of server issuers who are licence managers: they read every tenant's licences and write those of distributors' publishers' entries, and nothing else (specs 0029, 0035). |
 | `auth.server_distribution_admins` | list | none | Principals of server issuers who are distribution admins: on every tenant they reserve names, mark publishers and manage the marked ones, and grant `publish`, `promote` and `admin` on extensions; nothing else (spec 0030). Not also a licence manager. |
 | `auth.admin_token_max_age` | duration | `1h` | How recently a management token must have been issued; `1m..24h`. |
 

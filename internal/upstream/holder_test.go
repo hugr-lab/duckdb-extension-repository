@@ -38,19 +38,19 @@ func TestLicenseImportHolder(t *testing.T) {
 				}
 			}
 			// no holder: any holder's licence, as before
-			if _, err := svc.Import(ctx, admin, "acme", "", lic.signFor("org-2", "geo", "pro", now-60, now+day), licenses.Create); err != nil {
+			if _, err := svc.Import(ctx, admin, "acme", "", "publisher:p", lic.signFor("org-2", "geo", "pro", now-60, now+day), licenses.Create); err != nil {
 				t.Fatalf("no expected holder: %v", err)
 			}
 			if _, err := en.ten.SetTenantHolder(ctx, admin, "acme", "org-1", 0); err == nil {
 				t.Fatal("the holder set over another holder's licence")
 			}
-			if err := svc.Remove(ctx, admin, "acme", "", "geo", "", 0); err != nil {
+			if err := svc.Remove(ctx, admin, "acme", "", "geo", "publisher:p", 0); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := en.ten.SetTenantHolder(ctx, admin, "acme", "org-1", 0); err != nil {
 				t.Fatal(err)
 			}
-			_, err := svc.Import(ctx, admin, "acme", "", lic.signFor("org-2", "tresor", "pro", now-60, now+day), licenses.Create)
+			_, err := svc.Import(ctx, admin, "acme", "", "publisher:p", lic.signFor("org-2", "tresor", "pro", now-60, now+day), licenses.Create)
 			var le *license.Error
 			if !errors.Is(err, licenses.ErrRefused) || !errors.As(err, &le) || le.Rule != licenses.RuleHolder ||
 				!strings.Contains(err.Error(), `"org-1"`) || !strings.Contains(err.Error(), `"org-2"`) {
@@ -62,12 +62,12 @@ func TestLicenseImportHolder(t *testing.T) {
 			if n, _ := store.CountRaw(ctx, en.st, "events", "kind = ?", "license.import"); n != 1 {
 				t.Fatalf("license.import events: %d", n)
 			}
-			v, err := svc.Import(ctx, admin, "acme", "", lic.signFor("org-1", "tresor", "pro", now-60, now+day), licenses.Create)
+			v, err := svc.Import(ctx, admin, "acme", "", "publisher:p", lic.signFor("org-1", "tresor", "pro", now-60, now+day), licenses.Create)
 			if err != nil || v.HolderID != "org-1" {
 				t.Fatalf("the holder's licence: %+v %v", v, err)
 			}
 			// a replacement of another holder is refused too, and the stored one stays
-			if _, err := svc.Import(ctx, admin, "acme", "", lic.signFor("org-2", "tresor", "max", now, now+2*day), v.Version); !errors.As(err, &le) ||
+			if _, err := svc.Import(ctx, admin, "acme", "", "publisher:p", lic.signFor("org-2", "tresor", "max", now, now+2*day), v.Version); !errors.As(err, &le) ||
 				le.Rule != licenses.RuleHolder {
 				t.Fatalf("a replacement of another holder: %v", err)
 			}

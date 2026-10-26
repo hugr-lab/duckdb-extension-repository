@@ -55,7 +55,7 @@ or an existing API caller sees changes. The ADBC type itself is a later spec.
   aliases (`reserved.Canonical`), are `duckdb_extension`'s. A tenant's reservations (spec 0030) per
   (tenant, type, name).
 - **Licences**: per (tenant, type, name); spec 0033 phase B makes it (tenant, type, name, source),
-  and key owners (tenant, type, name, kid).
+  and key owners (tenant, type, name, kid) (key owners removed by spec 0035).
 - **Grants and package-group members**: below.
 
 **Of a channel's type, through the channel** (no column; the channel is in their key):

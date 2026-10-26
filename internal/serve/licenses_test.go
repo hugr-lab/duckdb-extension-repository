@@ -55,7 +55,7 @@ func TestLicenseRoutes(t *testing.T) {
 	en.add(t, ext(t, 2000, 3, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "nolic"})
 	tresorTok, secretTok := sign("tresor"), sign("secret")
 	for _, tok := range []string{tresorTok, secretTok} {
-		if _, err := svc.Import(ctx, admin, "acme", "", tok, licenses.Create); err != nil {
+		if _, err := svc.Import(ctx, admin, "acme", "", "publisher:ci", tok, licenses.Create); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -110,7 +110,7 @@ func TestLicenseRoutes(t *testing.T) {
 
 	// a public licence: to whoever is served a public release of the name, and only then
 	for _, name := range []string{"tresor", "secret"} {
-		if _, err := svc.SetVisibility(ctx, admin, "acme", "", name, "", store.Public, 0); err != nil {
+		if _, err := svc.SetVisibility(ctx, admin, "acme", "", name, "publisher:ci", store.Public, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -148,8 +148,8 @@ func TestLicenseRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	same("no live build declares the key", get(lic+"tresor", bearerHdr(tok)), get(binMiss, bearerHdr(tok)))
-	// spec 0033 phase B: a channel serves the licence of the source it serves the name from: the
-	// tenant's own 1.1, even with the key recorded on it, gets none of the publisher's licence
+	// spec 0035: a channel serves the licence of the entry it serves the name from: the tenant's own
+	// 1.1, even with the publisher's record of the key on it, gets none of the publisher's licence
 	if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", store.SourceTenant, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ WHERE b.name = 'tresor' AND b.source = 'tenant' AND k.build_id = ?`, tresor.Buil
 func TestLicenseOverHTTP(t *testing.T) {
 	en, idp, adm, svc, sign := licenseEnv(t, "http")
 	en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
-	if _, err := svc.Import(ctx, admin, "acme", "", sign("tresor"), licenses.Create); err != nil {
+	if _, err := svc.Import(ctx, admin, "acme", "", "publisher:ci", sign("tresor"), licenses.Create); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "tresor"}); err != nil {
@@ -192,10 +192,61 @@ func TestLicenseOverHTTP(t *testing.T) {
 	if c := en.do(t, "GET", "/acme/prod/-/licenses/tresor", bearerHdr(idp.token(t, nil))); c.status != 401 {
 		t.Fatalf("a private licence over http with a token: %d", c.status)
 	}
-	if _, err := svc.SetVisibility(ctx, admin, "acme", "", "tresor", "", store.Public, 0); err != nil {
+	if _, err := svc.SetVisibility(ctx, admin, "acme", "", "tresor", "publisher:ci", store.Public, 0); err != nil {
 		t.Fatal(err)
 	}
 	if c := en.do(t, "GET", "/acme/prod/-/licenses/tresor", nil); c.status != 200 {
 		t.Fatalf("a public licence over http: %d", c.status)
 	}
+}
+
+// Spec 0035: one name from two entries that declare the same key: the channel serves the licence of
+// the entry it serves the name from, and a switch of its rule switches the answer, both ways.
+func TestLicenseEntrySwitch(t *testing.T) {
+	en, idp, adm, svc, sign := licenseEnv(t, "https")
+	en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
+	tok := sign("tresor") // the key recorded on ci's 1.0
+	if _, err := svc.Import(ctx, admin, "acme", "", "publisher:ci", tok, licenses.Create); err != nil {
+		t.Fatal(err)
+	}
+	// a copy's 1.1, declaring the same key, and prod's rule naming the copy
+	if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", store.SourceTenant, ""); err != nil {
+		t.Fatal(err)
+	}
+	en.add(t, ext(t, 2000, 2, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor"})
+	tn, err := en.st.GetTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := vectors.LoadKey("../license/testdata", vectors.TrustedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.LicenseKey(ctx, en.st, tn.ID, "tresor", store.KeySourcePublisher, "copy", &k.PublicKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "tresor"}); err != nil {
+		t.Fatal(err)
+	}
+	h := bearerHdr(idp.token(t, nil))
+	get := func() answer { return en.do(t, "GET", "/acme/prod/-/licenses/tresor", h) }
+	// an entry without a licence answers exactly as a missing path does for the caller
+	missing := func(name string) {
+		t.Helper()
+		a, b := get(), en.do(t, "GET", "/acme/prod/tresor/9.9/v2.0.0/linux_amd64/tresor.duckdb_extension.gz", h)
+		if a.status != 404 || a.status != b.status || !bytes.Equal(a.body, b.body) || !sameHeaders(a.header, b.header) {
+			t.Fatalf("%s: %d %q %v, want %d %q %v", name, a.status, a.body, a.header, b.status, b.body, b.header)
+		}
+	}
+	missing("the copy's entry, unlicensed")
+	if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:ci", ""); err != nil {
+		t.Fatal(err)
+	}
+	if a := get(); a.status != 200 || string(a.body) != tok {
+		t.Fatalf("switched to the licensed entry: %d %q", a.status, a.body)
+	}
+	if _, err := en.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:copy", ""); err != nil {
+		t.Fatal(err)
+	}
+	missing("switched back")
 }

@@ -1,6 +1,6 @@
 # Spec 0035: Licences per catalogue entry
 
-- **Status**: accepted (2026-10-26)
+- **Status**: phase 1 implemented (2026-10-26); phase 2 accepted
 - **Date**: 2026-10-26
 - **Author**: vgsml, Claude
 
@@ -124,7 +124,8 @@ It is stored in the entry as an import, and replaces the entry's licence only wi
 - **Licence managers** (spec 0029, `auth.server_license_admins`): only the entries of
   **distributors' publishers** (publishers with the `distributor` mark, spec 0033 phase B), for
   every write: import, `DELETE`, `…/private`. Any other entry answers `403`. They keep reading
-  every entry and every key.
+  every entry and every key. (As built: they name only those entries, and any other source answers
+  as a missing path does, `404`, audited: see As built (phase 1).)
 - **Distribution admins**: still no licence routes.
 
 ### Relay and bundles
@@ -146,7 +147,8 @@ It is stored in the entry as an import, and replaces the entry's licence only wi
   one remote (Enterest's `prod` and `nightly` mirrored into a tenant's `prod` and `nightly`) each
   store their own copy. An upstream's relay governs only the relayed licences of its own entry: one
   it stops listing is removed, and an import is never removed by it. A refusal keeps a row the
-  relay stored before, as today. Revocation is per entry: a relay's removal never touches another
+  relay stored before, as today, except `not_supplied`: a name the upstream no longer supplies is
+  one it stops handing out, and its row is removed (as before 0035). Revocation is per entry: a relay's removal never touches another
   entry's copy. The `key_owner` refusal goes.
 - **Bundles**, in parity with the relay. A licence a bundle carries is read once, even when two
   sources carry it. It goes into **each** bundle-mode upstream of a carrying source that supplies
@@ -334,7 +336,10 @@ entry. How and when it tries again is Enterest's decision.
     which never preselects among them.
 - **A licence manager** writes only distributors' publishers' entries. Otherwise its server-wide
   token could copy a tenant upstream's licence into its own entry, or, using `If-Match`, pin an
-  import into an upstream's entry where the relay's revocation never removes it.
+  import into an upstream's entry where the relay's revocation never removes it. As built, it names
+  them as distribution admins do, and any other source answers a write as a missing path does,
+  before anything about it is checked. It still reads every licence and every key's entries; it
+  writes, copies and pins only into distributors' publishers' entries.
 - **A distributor taking a tenant's licence.** A distributor's publisher reaches only its own entry,
   and its keys do not touch the upstream's licence. A pull-through `*` upstream and a distributor
   coexist, each entry with its own licence.
@@ -345,8 +350,9 @@ entry. How and when it tries again is Enterest's decision.
     (`400` otherwise).
   - A held (not placed early), revoked, withdrawn or blocked build makes no key live.
   - Serving needs the channel's selected entry and a live own-source build declaring the key.
-- **Existence** is unchanged. The licence routes are for administrators and licence managers, and
-  the DuckDB route answers as a missing path for a caller who may not have the licence.
+- **Existence** is unchanged. The licence routes are for administrators and licence managers (a
+  licence manager's refused entry is a missing path, `404`, recorded as `authz.refused`), and the
+  DuckDB route answers as a missing path for a caller who may not have the licence.
 - **The warning** changes no decision.
 
 ## Testing
@@ -388,7 +394,7 @@ entry. How and when it tries again is Enterest's decision.
   - a removed publisher's import is kept and served nowhere, and deletable by its id form;
   - a successor gets nothing from the old entry.
 - Bundles go into each supplying, verifying upstream, with counts per target.
-- A licence manager is refused (`403`) on a non-distributor entry.
+- A licence manager is refused (`403`; as built `404`, a missing path) on a non-distributor entry.
 - The tests that use `store.LicenseUnknown` change: `internal/tenants/holder_test.go`,
   `internal/store/holder_test.go` and `internal/api/licenses_test.go`.
 
@@ -464,6 +470,102 @@ Two PRs. Each runs `make test` (on all three databases), `make lint`, `make cons
 - **Phase 2, `0035-licences-per-entry-warning`: the warning.** It touches the hooks, the collection
   and the event, the routes' `warnings`, the CLI and console display, the tests above, and its
   docs.
+
+### As built (phase 1)
+
+Delivered on the branch `0035-licences-p1` (the Delivery's `0035-licences-per-entry` is the spec's
+own branch), in commits of their own after three review passes.
+
+- **Store.** `licenseowners.go` and its test are gone; `LiveLicenseKeys`, `SuppliedBy` and
+  `TenantLicenseKeys` live in `licensekeys.go`. `ValidLicenseOwner` is `ValidLicenseEntry` (it no
+  longer accepts `unknown`), next to the source labels in `sources.go`, with `LicenseEntrySource`,
+  which reads whether a source is a live upstream or publisher of the tenant (and an upstream's
+  kind) for the writes' `?source=`. `TenantLicenseKeys` takes the entry (`""`: every entry) and
+  answers each key with its entries, each with its own `builds`; `BuildKids` and the listing keep a
+  record only when it is the build's own source's (filtered in Go: the dialects share no
+  concatenation).
+- **Migration 0043** (after review). A relayed row in its relayer's entry stays relayed. A relayed
+  row in another **relaying** upstream's own entry (a `repository` upstream with a credential, not in
+  bundle mode, paused or not) is deleted: that upstream's relay is requested and stores its own copy
+  there, which it governs, where an import would never be revoked by it (until that run, the entry's
+  channels serve no licence for the name). A relayed row in any other entry (a publisher's, a
+  bundle-mode or credential-less upstream's: migration 0042's owner, or an administrator's act, put
+  it there), or whose relayer is gone or not recorded, stays in that entry and becomes an
+  **import** (`source` `import`, no `upstream_id`), its visibility kept: the channels
+  serving it keep serving it, and the relayer's own entry is filled by its next run (requested). A
+  relayed row of source `unknown` (served nowhere) moves into its live relayer's entry unless a row
+  is there, else it goes with the other `unknown` licences. There are no ties to break: a source
+  holds one licence of a name, so at most one `unknown` row moves into a given entry, and the only
+  collision is with a row already there, which stays. A relaying upstream is a `repository`
+  upstream with a credential, not in bundle mode (a paused one included: its run waits until it is
+  resumed); its existing `license_syncs` row gets `requested_at` too. Its test runs on a populated
+  level-42 database on the three dialects (the conversions in place, scenarios of 0042's owner, an
+  administrator's act and a removed relayer, rows in a relaying upstream's entry deleted and in a
+  bundle-mode upstream's converted, the moves and deletions, the paused upstream's
+  request, and a level-42 binary refusing the database), and `TestMigrationPackageTypes` (level 38)
+  gives its `unknown` licence an entry before 0043.
+- **Naming an entry.** The writes resolve `?source=` in the service: `""`, `tenant`, a malformed
+  form, a name that is no upstream or publisher of the tenant, a removed source's id form (except
+  on `DELETE`), and a DuckDB core or community upstream are `400` (`invalid`, the detail starting
+  `?source=`); `?source=` given twice is `400`, as a repeated `?type=` is. `DELETE` with a removed
+  source's id form whose entry holds no licence is `400`; a live entry without one is `404`. The
+  order is the caller, licensing (`409` while off, on an import), the entry, the licence. The import
+  and `…/public|private` read the entry again in their transaction, under the licence lock
+  (`Tx.LicenseEntrySource`): a source removed meanwhile is `400`. `GET …/license-keys?source=`
+  resolves as the writes do, so `tenant` and a DuckDB upstream are `400` there too.
+- **Licence managers: a missing path, not `403`** (after review). A licence manager names entries
+  as distribution admins name distributors' publishers (`DistributorSources`: a live one by
+  `publisher:<name>` or `publisher-id:<id>`, a removed one by its id form on `DELETE` only). Any
+  other `?source=`, on a write or on `license-keys`, answers `authz.ErrDenied`, which the API
+  answers as a missing path (`404`) and records as `authz.refused`, as every refused caller is,
+  before anything about the source is checked: unknown and non-distributor sources answer alike.
+  The write's transaction checks again that the entry is a distributor's publisher's of the tenant
+  (`SourceDistributor`, now scoped by `tenant_id`). No `forbidden` problem type is added. Reads stay
+  open to it, as the spec says.
+- **Bundles carry only licences whose key is live for their entry.** `Exportable` keeps a licence
+  only while its key is live for its entry, so a removed source's licence does not travel in a
+  bundle.
+- **Events.** A relay replacing an administrator's import writes `license.change` (`replaced`, the
+  import's id; `upstream`, the relaying upstream; `source`, the entry), as the import was told per
+  licence. A bundle's import lists each target's counts in its result (`targets`, by upstream name),
+  carried in `bundle.import` and the import's record; it writes no per-licence event, as the relay
+  writes none for what it stores.
+- **Keys listing.** Each entry in `sources` answers `kind`, `name`, `distributor` (a distributor's
+  publisher only) and `builds`; the key's top-level `builds` and `owner` are gone. The CLI prints
+  `NAME KEY SOURCES`, each source as `kind:name (builds N[, distributor D])`.
+- **The relay into a held upstream entry** is refused `not_supplied`, not `kid_untrusted`: a held
+  build supplies nothing (`SuppliedBy`, unchanged), and it makes no key live either. It is stored at
+  the run after the hold ends, as the spec says. A refusal for `not_supplied` does not keep a row
+  this relay stored before (as before 0035).
+- **Bundles.** `received` counts each licence once; stored, replaced, unchanged and refused count
+  per target, the holder's refusal included (checked per target, as the relay checks it), and
+  `targets` gives each target's own. An upstream named twice among a licence's targets is taken
+  once.
+- **Reads.** A read of a name with licences in several entries answers `409` naming them sorted
+  (`several entries: …`). The events keep the field name `source` for the licence's entry, as B part
+  2 named it.
+- **Console.** The import dialog lists the entries as radio buttons (a radiogroup labelled by its
+  visible heading), each with its kind (`upstream`, `publisher`, or `<distributor>'s publisher (a
+  distributor)`), and offers "another entry" with a text field; with none listed, a field labelled
+  "Into the entry". The entry is computed at render (`importEntry`): the chosen one while it is
+  listed (a choice no longer listed is none: the administrator chooses again); with no choice yet,
+  the only one listed, never one among several. A typed entry must be the name
+  form (`upstream:<name>`, `publisher:<name>`), as the list shows live entries, so the licence it
+  replaces is found and `If-Match` sent (an id form is refused in the dialog with a hint; an import
+  never targets a removed source). While the keys load or fail, the dialog says so instead of "none
+  listed". The confirmations name the entry. `Import` takes its client as props and has component
+  tests (what `?source=` and `If-Match` it sends). The console end to end gains a second
+  distributor's publisher, `vault-dist`, publishing vault 1.1 with the same key into the catalogue
+  (two entries of one name), and a licence for tresor whose key no entry lists; it covers the
+  choice, the `?source=` sent, the columns, a licence in each of the two entries and which one
+  stays after a removal, and `400 kid_untrusted` shown for an entry declaring no key, listed or
+  not.
+- **Serving** is tested in `internal/serve` (`TestLicenseEntrySwitch`) within one channel whose rule
+  is switched between two entries declaring the same key (the unlicensed entry answering exactly as
+  a missing path), and in `TestLicenseFromDistributor` across channels (including switching
+  `nightly` back, `404`).
+- **Earlier specs.** 0033 and 0034 carry the notes listed above; 0014 and 0029 are left as they
+  were, this spec recording their change, as earlier specs' changes were recorded.
 
 ## Alternatives considered
 

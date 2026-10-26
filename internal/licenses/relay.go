@@ -39,7 +39,10 @@ const (
 type Result struct {
 	Counts  map[string]int `json:"counts"` // received, stored, replaced, unchanged, removed, refused
 	Refused []Refusal      `json:"refused,omitempty"`
-	Error   string         `json:"error,omitempty"`
+	// Targets are a bundle's counts per target upstream (spec 0035: a licence goes into each), by
+	// the upstream's name; a relay's are its upstream's (Counts)
+	Targets map[string]map[string]int `json:"targets,omitempty"`
+	Error   string                    `json:"error,omitempty"`
 }
 
 // Refusal is a licence the relay did not store, and why.
@@ -208,8 +211,8 @@ func (s *Service) fetch(ctx context.Context, tenant string, u store.Upstream) ([
 }
 
 // apply stores an upstream's answer by spec 0012's rules, in one transaction: each licence checked
-// and bound to a name the upstream supplies; the stored ones from this upstream that the answer
-// leaves out removed.
+// and bound to a name the upstream supplies, into the upstream's own entry (spec 0035); the relayed
+// ones of its entry that the answer leaves out removed.
 func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, tokens []string, res *Result) error {
 	actor := authz.Actor{Kind: authz.ActorSystem, ID: "licenses"}.String()
 	res.Counts["received"] = len(tokens)
@@ -272,15 +275,13 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 					Reason: "the upstream supplies no build of " + name + " here"})
 				continue
 			}
-			// spec 0033 phase B: the key's owner for the name must be this upstream, or the licence
-			// must be the very one the owner holds (relayable: another source's copy of the key gets
-			// no licence of its own), and the licence verifies against the keys it brought (spec
-			// 0021). A refusal keeps a licence stored from this upstream (not a revocation): no live
-			// build declares its key now (an upgrade before the builds are fetched again, a rotation
-			// under way), or a renewal reached it before the owner's relay, so it is tried again at
-			// the next run, and ends with its grace meanwhile unless served again
+			// spec 0035: the licence verifies against the live keys of the upstream's own entry (spec
+			// 0021: the keys it brought). A refusal keeps a licence stored from this upstream (not a
+			// revocation): no live build of its entry declares its key now (its builds still held,
+			// an upgrade before the builds are fetched again, a rotation under way), so it is tried
+			// again at the next run, and ends with its grace meanwhile unless served again
 			keep[name] = true
-			if err := s.relayable(ctx, tx, t.ID, typ, it.tok, it.token, src, lb.of, true); err != nil {
+			if err := s.verifyIn(ctx, tx, t.ID, typ, src, it.tok, lb.of(src)); err != nil {
 				if r := refusal(err, it.tok); r != nil {
 					refused = append(refused, *r)
 					continue
@@ -297,21 +298,14 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 			}
 			keep[name] = true
 			l := record(it.tok, t.ID, typ, it.token, actor)
-			l.Owner, l.Source, l.UpstreamID = src, store.LicenseUpstream, u.ID
+			l.Entry, l.Source, l.UpstreamID = src, store.LicenseUpstream, u.ID
 			old, err := tx.GetLicense(ctx, t.ID, typ, name, src)
-			adopted := false
 			switch {
 			case errors.Is(err, store.ErrNotFound):
 				old.Version = 0
-				if adopted, err = adoptUnknown(ctx, tx, &l, true); err != nil {
-					return err
-				}
 			case err != nil:
 				return err
 			case old.Token == it.token:
-				if err := rebind(ctx, tx, &old, u.ID, true); err != nil {
-					return err
-				}
 				counts["unchanged"]++
 				continue
 			case replaces(old, l, s.Store.Now().Unix(), s.deadKey(ctx, tx, old)):
@@ -324,7 +318,15 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 			if err := tx.PutLicense(ctx, &l, old.Version); err != nil {
 				return err
 			}
-			if old.Version == 0 && !adopted {
+			// spec 0035: an administrator's import the relay replaces is the relay's from then on: the
+			// change is told per licence, as the import was
+			if old.Version != 0 && old.Source == store.LicenseImport {
+				if err := tx.Event(ctx, t.ID, actor, "license.change", "license:"+name, typed(map[string]any{"name": name,
+					"license": l.LicenseID, "replaced": old.LicenseID, "upstream": u.Name, "source": lb.of(src)}, typ)); err != nil {
+					return err
+				}
+			}
+			if old.Version == 0 {
 				counts["stored"]++
 			} else {
 				counts["replaced"]++
@@ -343,7 +345,7 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 			}
 			counts["removed"]++
 			if err := tx.Event(ctx, t.ID, actor, "license.remove", "license:"+l.Name,
-				typed(map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "revoked", "source": lb.of(l.Owner)}, l.PackageType)); err != nil {
+				typed(map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "revoked", "source": lb.of(l.Entry)}, l.PackageType)); err != nil {
 				return err
 			}
 		}
@@ -361,75 +363,8 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 	return nil
 }
 
-// relayable checks a licence an upstream relays (spec 0033 phase B): the upstream owns its key for
-// the name (owned, claiming the owner when claim is set), or the licence is byte for byte the one the
-// key's owner holds for the name (relayed or imported) and the upstream's own live keys verify it:
-// a licence is the organisation's purchase of the product, and every channel serving a genuine
-// build of it serves it, while a source carrying a copy of the key gets no licence of its own (the
-// refusal stays key_owner).
-func (s *Service) relayable(ctx context.Context, tx *store.Tx, tenantID, packageType string, tok *license.Token, token, src string,
-	label func(string) string, claim bool) error {
-	_, err := s.owned(ctx, tx, tenantID, packageType, tok, src, label, claim)
-	var le *license.Error
-	if err == nil || !errors.As(err, &le) || le.Rule != RuleKeyOwner {
-		return err
-	}
-	o, oerr := tx.KeyOwnerOf(ctx, tenantID, packageType, tok.Extension, tok.Key)
-	if oerr != nil {
-		return oerr
-	}
-	held, gerr := tx.GetLicense(ctx, tenantID, packageType, tok.Extension, o.Source)
-	switch {
-	case errors.Is(gerr, store.ErrNotFound):
-		return err
-	case gerr != nil:
-		return gerr
-	case held.Token != token:
-		return err
-	}
-	keys, kerr := tx.LiveLicenseKeys(ctx, tenantID, packageType, tok.Extension, src)
-	if kerr != nil {
-		return kerr
-	}
-	return s.verify(tok, keys, " from "+label(src))
-}
-
-// rebind makes a stored licence that the relaying upstream relays again unchanged, relayed by
-// another upstream before (migration 0042 gave it its key's owner), the relaying upstream's (spec
-// 0033 phase B), when write is set (a bundle's dry run writes nothing). An import stays an
-// administrator's: no relay takes it over.
-func rebind(ctx context.Context, tx *store.Tx, old *store.License, upstreamID string, write bool) error {
-	if !write || old.Source != store.LicenseUpstream || old.UpstreamID == upstreamID {
-		return nil
-	}
-	return tx.RebindLicense(ctx, old, upstreamID)
-}
-
-// adoptUnknown removes, for a licence l its upstream relays where the upstream holds none for the
-// name, a licence of unknown source (migration 0042 found no owner for its key) that the same
-// upstream relayed signed with the same key: l takes its place and its visibility (spec 0033 phase
-// B: otherwise the name would keep a licence of two sources). It reports whether there was one;
-// with write unset (a dry run) it removes nothing.
-func adoptUnknown(ctx context.Context, tx *store.Tx, l *store.License, write bool) (bool, error) {
-	old, err := tx.GetLicense(ctx, l.TenantID, l.PackageType, l.Name, store.LicenseUnknown)
-	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if old.Source != store.LicenseUpstream || old.UpstreamID != l.UpstreamID || old.Key != l.Key {
-		return false, nil
-	}
-	l.Visibility = old.Visibility
-	if !write {
-		return true, nil
-	}
-	return true, tx.DeleteLicense(ctx, old, 0)
-}
-
-// refusal is a licence's refusal by its rule (a key the tenant does not take for the source: no
-// live build declares it, another source owns it, the server refuses it); nil for another error.
+// refusal is a licence's refusal by its rule (a key the entry does not take: no live build of it
+// declares the key, the server refuses it); nil for another error.
 func refusal(err error, tok *license.Token) *Refusal {
 	if !errors.Is(err, ErrRefused) {
 		return nil
@@ -442,10 +377,10 @@ func refusal(err error, tok *license.Token) *Refusal {
 	return &Refusal{Name: tok.Extension, ID: tok.ID, Rule: rule, Reason: err.Error()}
 }
 
-// replaces reports whether a relayed licence l replaces the stored one (spec 0012's rules, with spec
-// 0021's condition): once the stored one's grace has ended or its key counts nowhere (dead);
-// otherwise when l is a later licence from the same upstream or lasts longer, and, from another
-// source, is signed with the same key.
+// replaces reports whether a relayed licence l replaces the one stored in its entry (spec 0012's
+// rules, with spec 0021's condition): once the stored one's grace has ended or its key counts
+// nowhere (dead); otherwise when l is a later licence from the same upstream or lasts longer, and,
+// over an import, is signed with the same key.
 func replaces(old, l store.License, now int64, dead bool) bool {
 	if old.GraceUntil <= now || dead {
 		return true
@@ -458,13 +393,13 @@ func replaces(old, l store.License, now int64, dead bool) bool {
 }
 
 // deadKey reports whether a stored licence's key counts nowhere: refused by the server, or not a live
-// key of its name from its source (spec 0033 phase B). Such a licence is served nowhere, so it holds
-// the name for nobody.
+// key of its name in its entry (spec 0035). Such a licence is served nowhere, so it holds the entry
+// for nobody.
 func (s *Service) deadKey(ctx context.Context, tx *store.Tx, l store.License) bool {
 	if s.Refuse[l.Key] {
 		return true
 	}
-	keys, err := tx.LiveLicenseKeys(ctx, l.TenantID, l.PackageType, l.Name, l.Owner)
+	keys, err := tx.LiveLicenseKeys(ctx, l.TenantID, l.PackageType, l.Name, l.Entry)
 	if err != nil {
 		return false // as alive: the stored licence stays
 	}
@@ -486,9 +421,9 @@ func (s *Service) ExpireOnce(ctx context.Context) error {
 	}
 	actor := authz.Actor{Kind: authz.ActorSystem, ID: "licenses"}.String()
 	for _, l := range ls {
-		source := idLabel(l.Owner)
+		source := idLabel(l.Entry)
 		if lb, err := s.labels(ctx, l.TenantID); err == nil {
-			source = lb.of(l.Owner)
+			source = lb.of(l.Entry)
 		}
 		err := s.Store.InTenantTx(ctx, l.TenantID, []string{store.LicenseLock(l.TenantID)}, func(tx *store.Tx) error {
 			if err := tx.DeleteLicense(ctx, l, 0); err != nil {

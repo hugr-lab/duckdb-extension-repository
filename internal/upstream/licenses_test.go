@@ -25,8 +25,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
 
-// nameLicense is a tenant's one licence of a package, whatever its source (spec 0033 phase B: a
-// licence per (name, source)); ErrNotFound for none.
+// nameLicense is a tenant's one licence of a package, whatever its entry (spec 0035: a licence per
+// catalogue entry); ErrNotFound for none.
 func nameLicense(ctx context.Context, s *store.Store, tenantID, packageType, name string) (store.License, error) {
 	ls, err := s.ListLicenses(ctx, tenantID, packageType)
 	if err != nil {
@@ -175,7 +175,7 @@ func TestLicenseRelay(t *testing.T) {
 			}
 
 			// a changed plan replaces it, keeping its visibility
-			if _, err := svc.SetVisibility(ctx, admin, "acme", "", "tresor", "", store.Public, 0); err != nil {
+			if _, err := svc.SetVisibility(ctx, admin, "acme", "", "tresor", "upstream:acme-repo", store.Public, 0); err != nil {
 				t.Fatal(err)
 			}
 			en.answer(t, lic.sign("tresor", "enterprise", now-30, now+30*day))
@@ -209,12 +209,13 @@ func TestLicenseRelay(t *testing.T) {
 				t.Fatal("a revoked licence is still stored")
 			}
 
-			// an import, and the relay against it: the later expiry wins, an earlier one is refused
+			// an import into the upstream's entry, and the relay against it: the later expiry wins, an
+			// earlier one is refused
 			imported := lic.sign("tresor", "pro", now-10, now+60*day)
-			if _, err := svc.Import(ctx, admin, "acme", "", imported, licenses.Create); err != nil {
+			if _, err := svc.Import(ctx, admin, "acme", "", "upstream:acme-repo", imported, licenses.Create); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.Import(ctx, admin, "acme", "", imported, licenses.Create); !errors.Is(err, licenses.ErrExists) {
+			if _, err := svc.Import(ctx, admin, "acme", "", "upstream:acme-repo", imported, licenses.Create); !errors.Is(err, licenses.ErrExists) {
 				t.Fatalf("an import over a stored licence without If-Match: %v", err)
 			}
 			en.answer(t, lic.sign("tresor", "pro", now, now+30*day))
@@ -319,12 +320,23 @@ func TestLicenseImport(t *testing.T) {
 			day := int64(24 * 3600)
 			ok := lic.sign("tresor", "pro", now-60, now+day)
 			off := &licenses.Service{Store: en.st, Authz: authz.ServerAdmin{}}
-			if _, err := off.Import(ctx, admin, "acme", "", ok, licenses.Create); !errors.Is(err, licenses.ErrOff) {
+			if _, err := off.Import(ctx, admin, "acme", "", "publisher:p", ok, licenses.Create); !errors.Is(err, licenses.ErrOff) {
 				t.Fatalf("licensing off: %v", err)
 			}
-			// spec 0021: a name with no live build declaring a key takes no licence
-			if _, err := svc.Import(ctx, admin, "acme", "", ok, licenses.Create); !errors.Is(err, license.ErrUntrustedKey) ||
-				!strings.Contains(err.Error(), "of tresor has no owner here") {
+			// spec 0021: a name with no live build declaring a key takes no licence (spec 0035: in the
+			// entry the import names, a marked publisher's here)
+			must(t, func() error {
+				return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+					p := store.Publisher{TenantID: en.tenantID(t), Name: "p", CreatedBy: "os:1:t"}
+					if err := tx.InsertPublisher(ctx, &p); err != nil {
+						return err
+					}
+					_, err := tx.SetPublisherLicenseKeys(ctx, p.TenantID, "p", true)
+					return err
+				})
+			})
+			if _, err := svc.Import(ctx, admin, "acme", "", "publisher:p", ok, licenses.Create); !errors.Is(err, license.ErrUntrustedKey) ||
+				!strings.Contains(err.Error(), "no live build of tresor from publisher:p declares a licence key") {
 				t.Fatalf("no keys: %v", err)
 			}
 			if _, _, err := en.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(signedWith(t, nil, cpp("1.0", "v2.0.0"), lic.block,
@@ -332,27 +344,27 @@ func TestLicenseImport(t *testing.T) {
 				t.Fatal(err)
 			}
 			// an administrator's add is no trusted source: still no key
-			if _, err := svc.Import(ctx, admin, "acme", "", ok, licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
+			if _, err := svc.Import(ctx, admin, "acme", "", "publisher:p", ok, licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
 				t.Fatalf("an administrator's add recorded keys: %v", err)
 			}
 			if _, err := storetest.LicenseKey(ctx, en.st, en.tenantID(t), "tresor", store.KeySourcePublisher, "p", &lic.key.PublicKey); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.Import(ctx, admin, "acme", "", lic.sign("tresor", "pro", now-40*day, now-30*day), licenses.Create); !errors.Is(err, licenses.ErrNotLive) {
+			if _, err := svc.Import(ctx, admin, "acme", "", "publisher:p", lic.sign("tresor", "pro", now-40*day, now-30*day), licenses.Create); !errors.Is(err, licenses.ErrNotLive) {
 				t.Fatalf("an expired licence: %v", err)
 			}
 			swapped := ok[:strings.LastIndex(ok, ".")] + lic.sign("tresor", "pro", now, now+day)[strings.LastIndex(ok, "."):]
-			if _, err := svc.Import(ctx, admin, "acme", "", swapped, licenses.Create); !errors.Is(err, licenses.ErrRefused) || !errors.Is(err, license.ErrSignature) {
+			if _, err := svc.Import(ctx, admin, "acme", "", "publisher:p", swapped, licenses.Create); !errors.Is(err, licenses.ErrRefused) || !errors.Is(err, license.ErrSignature) {
 				t.Fatalf("a broken signature: %v", err)
 			}
-			v, err := svc.Import(ctx, admin, "acme", "", ok, licenses.Create)
+			v, err := svc.Import(ctx, admin, "acme", "", "publisher:p", ok, licenses.Create)
 			if err != nil || v.Name != "tresor" || v.Status != license.Valid || v.Source != store.LicenseImport {
 				t.Fatalf("an import: %+v %v", v, err)
 			}
-			if _, err := svc.Import(ctx, admin, "acme", "", lic.sign("tresor", "max", now, now+day), v.Version+1); !errors.Is(err, store.ErrConflict) {
+			if _, err := svc.Import(ctx, admin, "acme", "", "publisher:p", lic.sign("tresor", "max", now, now+day), v.Version+1); !errors.Is(err, store.ErrConflict) {
 				t.Fatalf("a stale If-Match: %v", err)
 			}
-			if v, err = svc.Import(ctx, admin, "acme", "", lic.sign("tresor", "max", now, now+day), v.Version); err != nil || v.Plan != "max" {
+			if v, err = svc.Import(ctx, admin, "acme", "", "publisher:p", lic.sign("tresor", "max", now, now+day), v.Version); err != nil || v.Plan != "max" {
 				t.Fatalf("a replacement: %+v %v", v, err)
 			}
 			// past its grace: served no more, and removed by the expiry pass
@@ -363,7 +375,7 @@ func TestLicenseImport(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, served, _ := svc.Serve(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor", l.Owner); served {
+			if _, served, _ := svc.Serve(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "tresor", l.Entry); served {
 				t.Fatal("served past its grace")
 			}
 			if err := svc.ExpireOnce(ctx); err != nil {

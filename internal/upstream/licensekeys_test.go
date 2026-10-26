@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,13 +22,17 @@ import (
 // keysOf lists the tenant's live licence keys as name/kid/source lines.
 func (en *env) keysOf(t *testing.T) []string {
 	t.Helper()
-	ks, err := en.st.TenantLicenseKeys(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "")
+	ks, err := en.st.TenantLicenseKeys(ctx, en.tenantID(t), pkgtype.DuckDBExtension, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out []string
 	for _, k := range ks {
-		out = append(out, fmt.Sprintf("%s %v", k.Name, k.Sources))
+		var srcs []string
+		for _, s := range k.Sources {
+			srcs = append(srcs, "{"+s.Kind+" "+s.Name+"}")
+		}
+		out = append(out, fmt.Sprintf("%s [%s]", k.Name, strings.Join(srcs, " ")))
 	}
 	return out
 }
@@ -126,7 +131,7 @@ func TestRelayLicenseKeys(t *testing.T) {
 			if _, err := nameLicense(ctx, en.st, en.tenantID(t), pkgtype.DuckDBExtension, "tresor"); err != nil {
 				t.Fatalf("the relayed licence was removed: %v", err)
 			}
-			if _, err := svc.Import(ctx, admin, "acme", "", lic.sign("plain", "max", now, now+86400), licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
+			if _, err := svc.Import(ctx, admin, "acme", "", "publisher:plain-ci", lic.sign("plain", "max", now, now+86400), licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
 				t.Fatalf("an import with a refused key: %v", err)
 			}
 		})

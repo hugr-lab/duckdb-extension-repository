@@ -671,8 +671,8 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string
 		if expected != 0 && expected != u.Version {
 			return store.ErrConflict
 		}
-		// the licences its relay governs go with it (spec 0012; spec 0033 phase B: the relayed licences
-		// of its source, and those of unknown source it relayed), each recorded
+		// the licences its relay governs go with it (spec 0012; spec 0035: the relayed licences of its
+		// entry; an import there stays, under the entry's id form), each recorded
 		ls, err := tx.UpstreamLicenses(ctx, t.ID, u.ID)
 		if err != nil {
 			return err
@@ -681,11 +681,8 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, name string
 			if err := tx.DeleteLicense(ctx, l, 0); err != nil {
 				return err
 			}
-			source := l.Owner // spec 0033 phase B: the licence's source, as the licence routes name it
-			if source == store.UpstreamSource(u.ID) {
-				source = "upstream:" + u.Name
-			}
-			f := map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "upstream removed", "source": source}
+			// the licence's entry, as the licence routes name it
+			f := map[string]any{"name": l.Name, "license": l.LicenseID, "reason": "upstream removed", "source": "upstream:" + u.Name}
 			if l.PackageType != pkgtype.Default { // spec 0034: when it is not the default
 				f["package_type"] = l.PackageType
 			}

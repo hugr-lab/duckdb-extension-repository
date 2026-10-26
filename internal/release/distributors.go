@@ -23,7 +23,11 @@ func (s *Service) distributorOf(ctx context.Context, a authz.Actor) (string, err
 	if !strings.HasPrefix(src, store.SourcePublisherPrefix) {
 		return "", nil
 	}
-	return s.Store.SourceDistributor(ctx, src)
+	t, err := s.Store.GetTenant(ctx, a.Tenant)
+	if err != nil {
+		return "", err
+	}
+	return s.Store.SourceDistributor(ctx, t.ID, src)
 }
 
 // distributorMay says whether a distributor's publisher may publish a name into a tenant's catalogue

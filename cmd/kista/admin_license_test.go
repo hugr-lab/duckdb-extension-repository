@@ -89,7 +89,12 @@ func TestAdminLicense(t *testing.T) {
 	run(0, "", "publisher", "license-keys", "acme", "ci", "off")
 	run(1, "", "publisher", "license-keys", "acme", "ci", "on") // not while it holds a key
 	run(0, "", "publisher", "key", "remove", "acme", "ci", keyID)
-	run(1, "", "license", "import", "acme", lic) // no live build of tresor declares a key
+	// spec 0035: a write names its entry, refused before any call without one
+	for _, sub := range [][]string{{"import", "acme", lic}, {"remove", "acme", "tresor"}, {"public", "acme", "tresor"}, {"private", "acme", "tresor"}} {
+		run(2, "", append([]string{"license"}, sub...)...)
+	}
+	run(1, "", "license", "import", "acme", lic, "-source", "publisher:ci") // no live build of tresor declares a key
+	run(1, "", "license", "import", "acme", lic, "-source", "tenant")       // the tenant's entries carry no licence
 	if got := run(0, "", "license", "keys", "acme"); strings.Contains(got, "tresor") {
 		t.Fatalf("keys before any were recorded: %q", got)
 	}
@@ -106,28 +111,29 @@ func TestAdminLicense(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// spec 0035: each key with the entries it is live for, and their builds declaring it
 	if got := run(0, "", "license", "keys", "acme", "tresor"); !strings.Contains(got, vectors.Kid(&k.PublicKey)) ||
-		!strings.Contains(got, "publisher:ci") || !strings.Contains(got, "OWNER") {
+		!strings.Contains(got, "publisher:ci (builds 1)") || !strings.Contains(got, "SOURCES") || strings.Contains(got, "OWNER") {
 		t.Fatalf("keys: %q", got)
 	}
-	// spec 0033 phase B: a key's owner, given by the CLI (a tenant administrator's act) to a source
-	// that declares it
-	run(0, "", "license", "owner", "acme", "tresor", vectors.Kid(&k.PublicKey), "publisher:ci")
-	run(1, "", "license", "owner", "acme", "tresor", vectors.Kid(&k.PublicKey), "publisher:nope")
-	run(2, "", "license", "owner", "acme", "tresor")
-	run(0, "", "license", "import", "acme", lic)
-	run(1, "", "license", "import", "acme", "-", "-replace") // nothing on stdin
-	run(1, sign("max"), "license", "import", "acme", "-")    // a licence is stored: -replace replaces it
-	run(0, sign("max"), "license", "import", "acme", "-", "-replace")
+	if got := run(0, "", "license", "keys", "acme", "-source", "publisher:ci"); !strings.Contains(got, vectors.Kid(&k.PublicKey)) {
+		t.Fatalf("one entry's keys: %q", got)
+	}
+	run(1, "", "license", "keys", "acme", "-source", "publisher:nope")
+	run(2, "", "license", "owner", "acme", "tresor", vectors.Kid(&k.PublicKey), "publisher:ci") // gone
+	run(0, "", "license", "import", "acme", lic, "-source", "publisher:ci")
+	run(1, "", "license", "import", "acme", "-", "-replace", "-source", "publisher:ci") // nothing on stdin
+	run(1, sign("max"), "license", "import", "acme", "-", "-source", "publisher:ci")    // a licence is stored: -replace replaces it
+	run(0, sign("max"), "license", "import", "acme", "-", "-replace", "-source", "publisher:ci")
 	if got := run(0, "", "license", "list", "acme"); !strings.Contains(got, "tresor") || !strings.Contains(got, "max") ||
-		!strings.Contains(got, "publisher:ci") {
+		!strings.Contains(got, "publisher:ci") || !strings.Contains(got, "ENTRY") {
 		t.Fatalf("list: %q", got)
 	}
 	if got := run(0, "", "license", "list", "acme", "-source", "upstream:x"); strings.Contains(got, "tresor") {
 		t.Fatalf("list of another source: %q", got)
 	}
 	if got := run(0, "", "license", "show", "acme", "tresor"); !strings.Contains(got, "status: valid") || !strings.Contains(got, "limit: sources = 5") ||
-		!strings.Contains(got, "owner: publisher:ci") {
+		!strings.Contains(got, "entry: publisher:ci") {
 		t.Fatalf("show: %q", got)
 	}
 	run(0, "", "license", "show", "acme", "tresor", "-source", "publisher:ci")
@@ -135,7 +141,7 @@ func TestAdminLicense(t *testing.T) {
 	if got := run(0, "", "license", "token", "acme", "tresor"); strings.TrimSpace(got) != sign("max") {
 		t.Fatalf("token: %q", got)
 	}
-	run(0, "", "license", "public", "acme", "tresor")
+	run(0, "", "license", "public", "acme", "tresor", "-source", "publisher:ci")
 
 	// spec 0028: the expected holder, set and cleared by the CLI, and enforced on its import
 	stderrOf := func(want int, in string, args ...string) string {
@@ -168,7 +174,7 @@ func TestAdminLicense(t *testing.T) {
 	}
 	other := vectors.Sign(k, vectors.Header(k), fmt.Sprintf(
 		`{"v":1,"iss":"https://issuer.example","jti":"lic-other","sub":"org-2","ext":"tresor","plan":"other","iat":%d,"exp":%d}`, now-60, now+86400))
-	if got := stderrOf(1, other, "license", "import", "acme", "-", "-replace"); !strings.Contains(got, "holder_mismatch") {
+	if got := stderrOf(1, other, "license", "import", "acme", "-", "-replace", "-source", "publisher:ci"); !strings.Contains(got, "holder_mismatch") {
 		t.Fatalf("another holder's import: %q", got)
 	}
 	run(0, "", "tenant", "holder", "acme", "-clear")
@@ -186,6 +192,6 @@ func TestAdminLicense(t *testing.T) {
 	}
 	run(1, "", "license", "verify", filepath.Join(dir, "nope"), "-key", keyFile)
 	run(1, "", "license", "verify", lic) // no -key
-	run(0, "", "license", "remove", "acme", "tresor")
+	run(0, "", "license", "remove", "acme", "tresor", "-source", "publisher:ci")
 	run(1, "", "license", "show", "acme", "tresor")
 }

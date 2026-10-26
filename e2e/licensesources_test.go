@@ -31,11 +31,13 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
-// Spec 0033 phase B part 2: kista_demo from a distributor's publisher, marked for licence keys,
-// published into the catalogue only; its licence is imported for that source before any placement
-// and served once prod's auto rule places the build, and the pinned DuckDB is licensed. The
-// tenant's upstream (another kista) then brings kista_demo into nightly with a copy of the same key:
-// the key stays the distributor's, nightly serves no licence for it, and prod keeps its own.
+// Spec 0033 phase B part 2, spec 0035: kista_demo from a distributor's publisher, marked for
+// licence keys, published into the catalogue only; its licence is imported into that entry
+// (?source=) before any placement and served once prod's auto rule places the build, and the
+// pinned DuckDB is licensed. The tenant's upstream (another kista) then brings kista_demo into
+// nightly with the same key: two entries, one licensed, so nightly serves no licence (missing) and
+// prod keeps its own. Switching nightly's rule to the distributor's entry serves its licence there
+// (valid); switching back answers 404 again.
 func TestLicenseFromDistributor(t *testing.T) {
 	b := needBuild(t)
 	if ext, ok := b.extensions["kista_demo"]; !ok || ext == "" {
@@ -68,8 +70,8 @@ func TestLicenseFromDistributor(t *testing.T) {
 	tok := vectors.Sign(signKey, vectors.Header(signKey), fmt.Sprintf(`{"v":1,"iss":"https://issuer.example","jti":"lic-dist",`+
 		`"sub":"acme","holder":"Acme Test","ext":"kista_demo","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}`,
 		now-60, now+30*86400))
-	v, err := k.licenses.Import(ctx, serveAdmin, "acme", "", tok, licenses.Create)
-	if err != nil || v.Owner != "publisher:enterest-ci" {
+	v, err := k.licenses.Import(ctx, serveAdmin, "acme", "", "publisher:enterest-ci", tok, licenses.Create)
+	if err != nil || v.Entry != "publisher:enterest-ci" {
 		t.Fatalf("the licence, before any placement: %+v %v", v, err)
 	}
 	token := idp.token(t, "alice", "api://kista-acme")
@@ -180,11 +182,11 @@ func TestLicenseFromDistributor(t *testing.T) {
 		cells[0].Outcome != store.CellReleased {
 		t.Fatalf("the mirror run: %+v %v", cells, err)
 	}
-	ks, err := k.licenses.LicenseKeys(ctx, serveAdmin, "acme", "", "kista_demo")
-	if err != nil || len(ks) != 1 || len(ks[0].Keys) != 1 || len(ks[0].Keys[0].Sources) != 2 || ks[0].Keys[0].Owner != "publisher:enterest-ci" {
-		t.Fatalf("the key, declared by both, the distributor's: %+v %v", ks, err)
+	ks, err := k.licenses.LicenseKeys(ctx, serveAdmin, "acme", "", "kista_demo", "")
+	if err != nil || len(ks) != 1 || len(ks[0].Keys) != 1 || len(ks[0].Keys[0].Sources) != 2 {
+		t.Fatalf("the key, live for both entries: %+v %v", ks, err)
 	}
-	// nightly serves no licence for the copy; prod keeps its own
+	// nightly serves no licence from the upstream's entry; prod keeps its own
 	if st := licenseGet("nightly"); st != http.StatusNotFound {
 		t.Fatalf("nightly's licence: %d", st)
 	}
@@ -193,6 +195,24 @@ func TestLicenseFromDistributor(t *testing.T) {
 	}
 	if st := licenseGet("prod"); st != http.StatusOK {
 		t.Fatalf("prod's licence after the copy: %d", st)
+	}
+	// nightly's rule switched to the distributor's entry: its auto rule places the build, and the
+	// licence is served there; switched back, kista's answer is 404 again
+	if _, err := k.rel.SetSource(ctx, serveAdmin, "acme", "nightly", "kista_demo", "publisher:enterest-ci", store.RuleAuto); err != nil {
+		t.Fatal(err)
+	}
+	(&release.Placer{Service: k.rel, Holder: "e2e", Log: slog.New(slog.DiscardHandler)}).Once(ctx, false)
+	if st := licenseGet("nightly"); st != http.StatusOK {
+		t.Fatalf("nightly's licence from the distributor's entry: %d", st)
+	}
+	if got := licensed("nightly"); got[0] != "valid" || got[1] != "pro" {
+		t.Fatalf("installed from nightly, the distributor's entry: %v", got)
+	}
+	if _, err := k.rel.SetSource(ctx, serveAdmin, "acme", "nightly", "kista_demo", "upstream:org", ""); err != nil {
+		t.Fatal(err)
+	}
+	if st := licenseGet("nightly"); st != http.StatusNotFound {
+		t.Fatalf("nightly's licence switched back: %d", st)
 	}
 }
 
