@@ -476,13 +476,12 @@ See [Attachments](../attachments.md).
 
 | Command | What it does |
 | --- | --- |
-| `license keys <tenant> [<name>]` | `NAME`, `KEY`, `BUILDS`, `SOURCES`, `OWNER`: the tenant's live licence keys, and each key's owner for the name (`-` while none) |
-| `license owner <tenant> <name> <kid> <source>` | gives a key of a name to a source that declares it (`upstream:<name>`, `publisher:<name>`): the licences signed with it move along (spec 0033); a tenant administrator's act |
-| `license list <tenant> [-source <s>]` | `NAME`, `OWNER`, `PLAN`, `HOLDER`, `STATUS`, `EXPIRES`, `SOURCE`, `VISIBILITY`: `OWNER` is the licence's source (the source that owns its key), `SOURCE` how it arrived; `-source` lists one source's |
-| `license show <tenant> <name> [-source <s>]` | a licence's claims, limits and state |
+| `license keys <tenant> [<name>] [-source <s>]` | `NAME`, `KEY`, `SOURCES`: the tenant's live licence keys, each with the entries it is live for, each entry with its builds declaring it (`publisher:enterest-ci (builds 2, distributor enterest)`): what an import into each accepts (spec 0035); `-source` lists one entry's |
+| `license list <tenant> [-source <s>]` | `NAME`, `ENTRY`, `PLAN`, `HOLDER`, `STATUS`, `EXPIRES`, `SOURCE`, `VISIBILITY`: `ENTRY` is the licence's catalogue entry, by its source, `SOURCE` how it arrived; `-source` lists one entry's |
+| `license show <tenant> <name> [-source <s>]` | a licence's claims, limits and state (`entry:` its entry); `-source` where the extension has licences in several entries |
 | `license token <tenant> <name> [-source <s>]` | the licence as received |
-| `license import <tenant> <file or -> [-replace]` | stores a licence under the extension it names, for the source that owns its key; `-replace` replaces the one stored for that source; a refusal names its rule (`kid_untrusted`, `holder_mismatch`, …); the commands on a tenant's licences take `-type <package type>` (`duckdb_extension` by default: a licence is per type and name) |
-| `license remove`, `public`, `private` `<tenant> <name> [-source <s>]` | `-source` names the licence where the extension has licences of several sources (spec 0033) |
+| `license import <tenant> <file or -> -source <s> [-replace]` | stores a licence under the extension it names, in the entry `-source` names (`upstream:<name>`, `publisher:<name>`, `upstream-id:<id>`, `publisher-id:<id>`), verified against that entry's live keys; `-replace` replaces the one stored there; a refusal names its rule (`kid_untrusted`, `holder_mismatch`, …); the commands on a tenant's licences take `-type <package type>` (`duckdb_extension` by default: a licence is per type and name) |
+| `license remove`, `public`, `private` `<tenant> <name> -source <s>` | `-source` names the licence's entry (`remove` also takes a removed source's id form); the writes refuse to run without it, before any call (spec 0035) |
 | `license verify <file or -> -key <pem>` | checks a licence offline against the key given, and prints its claims and status |
 
 See [Licensing](../licensing.md).

@@ -394,12 +394,13 @@ never removed: the publisher is removed instead.
   …/catalogue/builds/{id}`), and [withdrawing](upstreams.md#withdrawals) a version. A tenant's
   administrators may still remove it, purge its builds placed nowhere, and choose what their
   channels take.
-- **Its licences** (spec 0033 phase B): marked for licence keys, its publications record their keys,
-  and it owns a key for a name when it records it first, so the tenant imports its licences for it as
-  soon as a build is in the catalogue, and a channel serves them where its rule names the publisher.
-  For a name a `repository` upstream of the tenant lists, the upstream keeps the name's keys: the
-  tenant's administrators give a key to the distributor's publisher with `license owner` when they
-  want its licences ([A key's owner](licensing.md#a-keys-owner)).
+- **Its licences** (spec 0035): marked for licence keys, its publications record their keys, and
+  its builds of a name are a catalogue entry of their own. Its licence is imported into that entry,
+  named (`?source=publisher:<name>`, `-source`), as soon as a build is in the catalogue, by a tenant
+  administrator, a server administrator or a licence manager (Enterest's reconciler), and a channel
+  serves it where its rule names the publisher. Another source of the same name, a pull-through `*`
+  upstream included, is another entry with its own licence or none: nothing to give or move
+  ([A licence's entry](licensing.md#a-licences-entry)).
 - **What a distribution admin reads**: its distributors' publishers' entries in the catalogue
   (`GET …/catalogue`, `…/catalogue/{source}/extensions/{ext}`), removed publishers' included, without
   the channels' rules or where a build is placed; the catalogue-only route's answer carries no

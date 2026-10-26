@@ -211,10 +211,10 @@ statements about the bodies the tenant holds with its **attestation keys**. See
 
 A **licence** lets a paid extension run for an organisation until an expiry, at a plan with limits
 the extension's developer defines. It is signed by the issuer that sells the extension; kista issues
-none. A tenant holds one per extension name and source (the source that owns the key the licence is
-signed with), imported by an administrator or relayed from the upstream it mirrors the extension
-from, and a channel serves the licence of the source it serves the extension from to the callers
-who may install it. See [Licensing](licensing.md).
+none. A tenant holds one per **catalogue entry** (a source's builds of the extension), verified
+against the keys that entry's own builds declare: imported by an administrator into the entry it
+names, or relayed by an upstream into its own entry. A channel serves the licence of the entry it
+serves the extension from to the callers who may install it. See [Licensing](licensing.md).
 ## Events
 
 kista records what happens as **events**: installs, publications, promotions, key, grant and

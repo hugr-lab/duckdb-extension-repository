@@ -187,9 +187,10 @@ wanted later are added here, as above: the bootstrap is not a reconciler.
 The upstream's `ETag` moves with every change to it or its lists; a sync does not move it.
 
 **Removing** an upstream keeps the releases it made (they belong to the channel; yank them if you
-want them gone) and removes its cells, the relayed licences of its source and those of source `unknown` it relayed (each a `license.remove`, reason
-`upstream removed`; see [Licensing](licensing.md)) and the licence keys it brought, and its ownership of them (each without an owner until a source records it afresh or an administrator gives it); the names it
-provided stop being reserved.
+want them gone) and removes its cells, the relayed licences of its entry (each a `license.remove`, reason
+`upstream removed`; an import there stays, under the entry's id form; see [Licensing](licensing.md#a-licences-entry))
+and the licence keys it brought; the names it provided stop being reserved. An upstream added again
+is another entry: its relay supplies nothing until it has fetched builds itself.
 
 **Pausing** an upstream stops runs after the cell in progress, and holds the current release:
 narrowing an entry's `versions` holds a version too.
@@ -911,17 +912,19 @@ bundle-mode feeds whose URL is a feed of the bundle, or the `-feed` ones (with o
 The command prints a line per target, feeds as `feed:<name>`, and each feed's refusals.
 
 **Licences** (spec 0021). After the files, when the bundle was read whole, the import takes each
-licence the bundle carries, once (one carried by two sources is taken once, by any of their targets).
-A source the import takes no target of (`-upstream`, `-feed`) is passed over. For each licence:
+licence the bundle carries, reading it once (one carried by two sources is one licence, for the
+targets of both). A source the import takes no target of (`-upstream`, `-feed`) is passed over. For
+each licence:
 
-- **The target**: of the bundle-mode upstreams the licence's source fills in this import (those
-  that took the bundle: not `busy`, `stale` or failed), the first by name that supplies the name,
-  as a relaying upstream must ([Licensing](licensing.md#licences-in-a-tenant)). None: refused, `not_supplied`
-  or `no_target`.
+- **The targets** (spec 0035): every bundle-mode upstream the licence's sources fill in this import
+  (those that took the bundle: not `busy`, `stale` or failed) that supplies the name, as a relaying
+  upstream must ([Licensing](licensing.md#licences-in-a-tenant)); the licence goes into each one's
+  own entry. None: refused, `not_supplied` or `no_target`.
 - **The checks**: the licence is in force (`not_in_force`), of the name it is carried for
   (`ext_mismatch`), of the holder the plan named and of the holder this tenant expects, when either
-  is set (`holder_mismatch`; [An expected holder](licensing.md#an-expected-holder)), and signed with a key that
-  the target's live builds declare, as the bundle brought them (`kid_untrusted`) ([The keys a licence verifies against](licensing.md#the-keys-a-licence-verifies-against)).
+  is set (`holder_mismatch`; [An expected holder](licensing.md#an-expected-holder)), and signed with a key live
+  for the target's entry, as the bundle brought its builds (`kid_untrusted`) ([The keys a licence verifies against](licensing.md#the-keys-a-licence-verifies-against)).
+  Each target is checked on its own: one may take the licence while another refuses it.
   Licensing off at the site refuses each (`off`).
 - **Replacing**: the relay's rules ([Licensing](licensing.md#licences-in-a-tenant)), except that a
   bundle's licence never replaces one an administrator imported here (`superseded`). It is stored
@@ -932,8 +935,8 @@ A source the import takes no target of (`-upstream`, `-feed`) is passed over. Fo
 - **A dry run** stores nothing and counts what it would: it verifies against the keys recorded
   before it, so a first import's licences need the real import.
 
-The command prints the licences' counts (`stored`, `replaced`, `unchanged`, `refused`) and each
-refusal with its rule and reason, and exits `1` when the licences could not be stored at all. The
+The command prints the licences' counts (`stored`, `replaced`, `unchanged`, `refused`, per target:
+a licence two targets take counts twice) and each refusal with its rule and reason, and exits `1` when the licences could not be stored at all. The
 import record's counts and the `bundle.import` event carry
 them under `licenses`, and the console shows them with the import.
 
