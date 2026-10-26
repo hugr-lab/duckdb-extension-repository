@@ -66,6 +66,13 @@ test('a licence: imported from a file into an entry, its claims read, made publi
   await expect(page.getByRole('columnheader', { name: 'Entry' })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: 'Of' })).toHaveCount(0)
   await expect(row.getByText('no live build of its entry declares its key')).toHaveCount(0)
+  // spec 0035 phase 2: vault-ci's vault is public in prod: the import went through, with a warning,
+  // shown until dismissed
+  const warnings = page.getByRole('status', { name: 'Warnings' })
+  await expect(warnings).toContainText('Nothing was refused')
+  await expect(warnings).toContainText('publisher:vault-ci holds a licence for vault and has a public release in channel prod')
+  await warnings.getByRole('button', { name: 'Dismiss' }).click()
+  await expect(warnings).toHaveCount(0)
 
   // opened on import: its claims and limits
   await expect(page.getByRole('cell', { name: 'max_attached_sources' })).toBeVisible()
@@ -86,6 +93,7 @@ test('a licence: imported from a file into an entry, its claims read, made publi
   await page.getByRole('button', { name: 'Import', exact: true }).click()
   const dist = page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'publisher:vault-dist', exact: true }) })
   await expect(dist.getByText('valid', { exact: true })).toBeVisible()
+  await expect(warnings).toHaveCount(0) // vault-dist's vault is in the catalogue only: no warning
   await expect(page.getByRole('row', { name: /^vault pro/ })).toHaveCount(2)
   // opened on import: removed again, vault-ci's staying
   await expect(page.getByRole('heading', { name: 'vault' })).toBeVisible()
@@ -109,6 +117,7 @@ test('a licence: imported from a file into an entry, its claims read, made publi
   await confirm(page, 'Make public')
   await expect(row.getByText('public', { exact: true })).toBeVisible()
   await expect(page.getByText(/and can copy it/)).toBeVisible()
+  await expect(warnings).toContainText('publisher:vault-ci holds a licence for vault')
 
   await page.getByRole('button', { name: 'Remove…' }).click()
   await confirm(page, 'Remove')

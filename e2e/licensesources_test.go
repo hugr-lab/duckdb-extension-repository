@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +39,8 @@ import (
 // pinned DuckDB is licensed. The tenant's upstream (another kista) then brings kista_demo into
 // nightly with the same key: two entries, one licensed, so nightly serves no licence (missing) and
 // prod keeps its own. Switching nightly's rule to the distributor's entry serves its licence there
-// (valid); switching back answers 404 again.
+// (valid); switching back answers 404 again. Spec 0035 phase 2: prod's release made public answers
+// the warning and writes its event.
 func TestLicenseFromDistributor(t *testing.T) {
 	b := needBuild(t)
 	if ext, ok := b.extensions["kista_demo"]; !ok || ext == "" {
@@ -213,6 +216,56 @@ func TestLicenseFromDistributor(t *testing.T) {
 	}
 	if st := licenseGet("nightly"); st != http.StatusNotFound {
 		t.Fatalf("nightly's licence switched back: %d", st)
+	}
+
+	// spec 0035 phase 2: prod's release (private, as the catalogue publication was) made public over
+	// the API by a tenant administrator: done, with a warning in the answer and one event, advisory
+	tn, err := k.st.GetTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnings := func() []store.Event {
+		t.Helper()
+		evs, err := k.st.ListEvents(ctx, tn.ID, store.EventFilter{Kind: string(store.LicenseWarningKind), Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return evs
+	}
+	if evs := warnings(); len(evs) != 0 {
+		t.Fatalf("warned before anything was public: %+v", evs)
+	}
+	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|tom", []string{"admin"}, tenants.GrantOn{}); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := k.rel.List(ctx, serveAdmin, "acme", "prod", "kista_demo")
+	if err != nil || len(rs) != 1 || rs[0].Visibility != store.Private {
+		t.Fatalf("prod's release: %+v %v", rs, err)
+	}
+	req, _ := http.NewRequest("POST", "https://"+k.addr+"/api/v1/tenants/acme/channels/prod/extensions/kista_demo/releases/"+rs[0].ID+"/public", nil)
+	req.Header.Set("Authorization", "Bearer "+idp.token(t, "tom", "api://kista-acme"))
+	req.Header.Set("If-Match", fmt.Sprintf(`"v%d"`, rs[0].Version))
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ans struct {
+		Visibility string `json:"visibility"`
+		Warnings   []struct{ Name, Source, Channel, Message string }
+	}
+	err = json.NewDecoder(resp.Body).Decode(&ans)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || ans.Visibility != store.Public || len(ans.Warnings) != 1 ||
+		ans.Warnings[0].Name != "kista_demo" || ans.Warnings[0].Source != "publisher:enterest-ci" || ans.Warnings[0].Channel != "prod" ||
+		!strings.Contains(ans.Warnings[0].Message, "advisory") {
+		t.Fatalf("made public: %d %+v %v", resp.StatusCode, ans, err)
+	}
+	if evs := warnings(); len(evs) != 1 || !strings.Contains(evs[0].Data, `"act":"release.public"`) || evs[0].Subject != "channel:prod/ext:kista_demo" {
+		t.Fatalf("the warning's event: %+v", evs)
+	}
+	// still served, as before: the warning changes nothing
+	if st := licenseGet("prod"); st != http.StatusOK {
+		t.Fatalf("prod's licence after the warning: %d", st)
 	}
 }
 

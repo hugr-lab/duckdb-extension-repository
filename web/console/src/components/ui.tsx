@@ -1,5 +1,6 @@
 import { cloneElement, type ReactElement, type ReactNode, useEffect, useId, useRef } from 'react'
 import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, Search } from 'lucide-react'
+import type { Warning } from '../lib/http'
 
 // The console's parts, in the Hugr Lab design system as tresor-server's console draws it: pill
 // buttons, chips, tables in a bordered box, no shadows.
@@ -279,6 +280,26 @@ export function Checks({ value, options, onChange, label }: { value: string[]; o
           </label>
         )
       })}
+    </div>
+  )
+}
+
+/** The warnings of the last change (spec 0035 phase 2: licence warnings), above the content until
+ * dismissed or the next change: advisory, the change went through. */
+export function Warnings({ warnings, onDismiss }: { warnings: Warning[]; onDismiss: () => void }) {
+  if (warnings.length === 0) return null
+  return (
+    <div role="status" aria-label="Warnings" className="flex items-start gap-3 rounded-md bg-warning-soft px-3.5 py-2.5 text-warning">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+      <div className="flex flex-1 flex-col gap-1">
+        <span className="font-semibold">Done, with a warning. Nothing was refused.</span>
+        <ul className="m-0 list-none p-0">
+          {warnings.map((w) => (
+            <li key={`${w.source}|${w.name}|${w.channel}`}>{w.message}</li>
+          ))}
+        </ul>
+      </div>
+      <Button tone="outline" onClick={onDismiss}>Dismiss</Button>
     </div>
   )
 }

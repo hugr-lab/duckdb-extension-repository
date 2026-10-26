@@ -19,6 +19,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
@@ -274,8 +275,35 @@ func TestBundleLicenses(t *testing.T) {
 			if l := importSite(data, true).Licenses; l.Counts["replaced"] != 2 || stored().Token == later {
 				t.Fatalf("a dry run: %+v", l)
 			}
+			// spec 0035 phase 2: air's tresor made public at the site warns (its entry holds a licence);
+			// then the import storing the later licence into air's entry warns once, by the bundle's
+			// import, and air2's entry (its release in staging private) not at all
+			warnings := func() []store.Event {
+				t.Helper()
+				evs, err := g.st.ListEvents(ctx, site.ID, store.EventFilter{Kind: string(store.LicenseWarningKind), Limit: 100})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return evs
+			}
+			rs, err := g.rel.List(ctx, admin, "site", "prod", "tresor")
+			if err != nil || len(rs) != 1 {
+				t.Fatalf("the site's tresor: %+v %v", rs, err)
+			}
+			g.rel.MayPublish = func(string, string) bool { return true }
+			if _, err := g.rel.Apply(ctx, admin, "site", "prod", "tresor", rs[0].ID, release.SetPublic, 0); err != nil {
+				t.Fatal(err)
+			}
+			g.rel.MayPublish = nil
+			if evs := warnings(); len(evs) != 1 || !strings.Contains(evs[0].Data, `"act":"release.public"`) {
+				t.Fatalf("made public: %+v", evs)
+			}
 			if l := importSite(data, false).Licenses; l.Counts["replaced"] != 2 || stored().Token != later || in(air2).Token != later {
 				t.Fatalf("the later licence: %+v", l)
+			}
+			if evs := warnings(); len(evs) != 2 || !strings.Contains(evs[0].Data, `"act":"bundle.import"`) ||
+				!strings.Contains(evs[0].Data, `"source":"upstream:air"`) || !strings.Contains(evs[0].Data, `"channel":"prod"`) {
+				t.Fatalf("the bundle's licence into a public entry: %+v", evs)
 			}
 
 			// the site's own checks, through a bundle the exporter's key signed: a licence signed with a

@@ -472,6 +472,9 @@ publisher_statement, publisher_signature, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?
 	if err != nil {
 		return t.s.mapErr(err, "release")
 	}
+	if r.Visibility == Public { // spec 0035 phase 2: a public release of an entry holding a licence warns
+		t.warnRelease(r.ID, "release.add", actor)
+	}
 	// a landed build is the release's now (spec 0033): the release keeps it from the collector
 	_, err = t.exec(ctx, "UPDATE builds SET landed = ? WHERE id = ? AND landed = ?", false, r.BuildID, true)
 	return err
@@ -494,7 +497,8 @@ func (t *Tx) SetReleaseSeq(ctx context.Context, r *Release, seq int64, actor str
 }
 
 // SetReleaseVisibility changes a release's visibility (compare-and-set). Making it private makes its
-// build private too (spec 0033): no placement serves it publicly again.
+// build private too (spec 0033): no placement serves it publicly again. Making it public warns when
+// its entry holds a licence (spec 0035 phase 2).
 func (t *Tx) SetReleaseVisibility(ctx context.Context, r *Release, visibility, actor string) error {
 	if visibility == Private {
 		if err := t.NarrowBuild(ctx, r.BuildID); err != nil {
@@ -502,9 +506,13 @@ func (t *Tx) SetReleaseVisibility(ctx context.Context, r *Release, visibility, a
 		}
 	}
 	now := t.Now()
-	return t.cas(ctx, "UPDATE releases SET visibility = ?, state_changed_at = ?, state_changed_by = ?, version = version + 1 WHERE id = ? AND version = ?",
+	err := t.cas(ctx, "UPDATE releases SET visibility = ?, state_changed_at = ?, state_changed_by = ?, version = version + 1 WHERE id = ? AND version = ?",
 		[]any{visibility, t.s.d.timeArg(now), actor, r.ID, r.Version},
 		func() { r.Visibility, r.StateChangedAt, r.StateChangedBy = visibility, now, actor; r.Version++ })
+	if err == nil && visibility == Public {
+		t.warnRelease(r.ID, "release.public", actor)
+	}
+	return err
 }
 
 // BumpReleaseVersion increments a channel's release_version: caches of resolutions see the change.

@@ -1,10 +1,10 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { LogIn } from 'lucide-react'
-import { Button, ErrorBox, Loading } from '../components/ui'
+import { Button, ErrorBox, Loading, Warnings } from '../components/ui'
 import { type ConsoleIssuer, NeedSignIn, Session, rememberedIssuer } from '../lib/auth'
 import { EpochContext } from '../lib/context'
-import { ApiError, Client } from '../lib/http'
+import { ApiError, Client, type Warning } from '../lib/http'
 import { type Scope, apiPrefix, scopePath } from '../lib/scope'
 import { EntryCard, Shell } from './Shell'
 
@@ -28,6 +28,7 @@ export function ScopeRoot({ scope, children }: { scope: Exclude<Scope, { kind: '
   const [conf, setConf] = useState<{ server: ServerConsole; issuers: ConsoleIssuer[]; version: string } | null>(null)
   const [failure, setFailure] = useState<unknown>(null)
   const [session, setSession] = useState<Session | null>(null)
+  const [warnings, setWarnings] = useState<Warning[]>([]) // the last act's (spec 0035 phase 2)
   const [, rerender] = useState(0)
   const completing = useRef(false) // a callback's code is redeemed once (StrictMode runs effects twice)
 
@@ -69,7 +70,9 @@ export function ScopeRoot({ scope, children }: { scope: Exclude<Scope, { kind: '
   useEffect(() => session?.onChange(() => rerender((n) => n + 1)), [session])
 
   const client = useMemo(
-    () => session && new Client({ base: API, prefix: apiPrefix(scope), getToken: (renew) => session.getToken(renew), onUnauthorized: () => session.expire() }),
+    () =>
+      session &&
+      new Client({ base: API, prefix: apiPrefix(scope), getToken: (renew) => session.getToken(renew), onUnauthorized: () => session.expire(), onWarnings: setWarnings }),
     [session],
   )
 
@@ -106,6 +109,7 @@ export function ScopeRoot({ scope, children }: { scope: Exclude<Scope, { kind: '
       role={scope.kind === 'server' ? 'Server administrator' : undefined} service={{ host: location.host, version: conf.version }}
       onSignOut={() => session.signOut().catch(setFailure)}>
       {failure != null && <ErrorBox error={failure} />}
+      <Warnings warnings={warnings} onDismiss={() => setWarnings([])} />
       {session.expired && (
         <div role="alert" className="flex items-center gap-3 rounded-md bg-warning-soft px-3.5 py-2.5 text-warning">
           <span>Your session has ended. Sign in again to go on; what you were editing is kept.</span>

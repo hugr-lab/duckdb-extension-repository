@@ -294,7 +294,13 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	a := &adminCmd{in: stdin, cfg: cfg, svc: svc, actor: authz.OSActor(), out: stdout, errw: stderr}
-	if err := a.dispatch(ctx, rest); err != nil {
+	// spec 0035 phase 2: the command is one act; its licence warnings go to stderr, and change no exit code
+	ctx = store.WithLicenseWarnings(ctx)
+	err = a.dispatch(ctx, rest)
+	for _, w := range store.LicenseWarnings(ctx) {
+		fmt.Fprintln(stderr, "kista admin: warning:", w.Message)
+	}
+	if err != nil {
 		if errors.Is(err, errUsage) {
 			fmt.Fprint(stderr, adminUsage)
 			return 2

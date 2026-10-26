@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -230,6 +231,7 @@ func reply(w http.ResponseWriter, r *http.Request, status int, v any, etag, cach
 	case "-":
 		etag = ""
 	}
+	b = withWarnings(r, b)
 	hd := w.Header()
 	hd.Set("Content-Type", "application/json")
 	hd.Set("X-Content-Type-Options", "nosniff")
@@ -251,6 +253,36 @@ func reply(w http.ResponseWriter, r *http.Request, status int, v any, etag, cach
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(b)
 	}
+}
+
+// warningJSON is a licence warning in an act's answer (spec 0035 phase 2).
+type warningJSON struct {
+	Name    string `json:"name"`
+	Source  string `json:"source"`
+	Channel string `json:"channel"`
+	Message string `json:"message"`
+}
+
+// withWarnings adds the request's licence warnings to an answer object as its "warnings" member
+// (spec 0035 phase 2: one generic array, omitted when empty), after its ETag was taken.
+func withWarnings(r *http.Request, b []byte) []byte {
+	ws := store.LicenseWarnings(r.Context())
+	if len(ws) == 0 || len(b) < 2 || b[0] != '{' {
+		return b
+	}
+	out := make([]warningJSON, len(ws))
+	for i, x := range ws {
+		out[i] = warningJSON{Name: x.Name, Source: x.Source, Channel: x.Channel, Message: x.Message}
+	}
+	j, err := json.Marshal(out)
+	if err != nil {
+		return b
+	}
+	sep := ","
+	if len(b) == 2 { // {}
+		sep = ""
+	}
+	return slices.Concat(b[:len(b)-1], []byte(sep+`"warnings":`), j, []byte("}"))
 }
 
 // --- rate limiting ---
@@ -813,6 +845,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ru.body && !ru.raw && (r.ContentLength != 0 || len(r.TransferEncoding) > 0) {
 		problem(sw, http.StatusBadRequest, typeInvalid, "this request has no body")
 		return
+	}
+	if ru.manage && method != http.MethodGet && (!ru.raw || !ru.publishers) {
+		// spec 0035 phase 2: an administrator's act answers its licence warnings (reply); a
+		// publication answers nobody's, and writes only the events
+		r = r.WithContext(store.WithLicenseWarnings(r.Context()))
 	}
 	ru.handle(h, sw, r, c, p)
 	if ru.manage && method != http.MethodGet {

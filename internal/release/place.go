@@ -342,6 +342,7 @@ func (s served) complete(it *item) {
 // revoked. Each build is placed on its own, renewing the caller's lease first; it returns how many
 // were placed and the first failure's text ("" for none).
 func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, error) {
+	ctx = store.WithLicenseWarnings(ctx) // spec 0035 phase 2: the look's licence warnings, once per source, name and channel
 	n, failure, _, err := s.placeRule(ctx, r, renew)
 	return n, failure, err
 }

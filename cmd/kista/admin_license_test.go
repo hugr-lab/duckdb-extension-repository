@@ -121,7 +121,23 @@ func TestAdminLicense(t *testing.T) {
 	}
 	run(1, "", "license", "keys", "acme", "-source", "publisher:nope")
 	run(2, "", "license", "owner", "acme", "tresor", vectors.Kid(&k.PublicKey), "publisher:ci") // gone
-	run(0, "", "license", "import", "acme", lic, "-source", "publisher:ci")
+	stderrOf := func(want int, in string, args ...string) string {
+		t.Helper()
+		var out, errw bytes.Buffer
+		old := stdin
+		stdin = strings.NewReader(in)
+		defer func() { stdin = old }()
+		if code := admin(append([]string{"-config", cfg}, args...), nil, &out, &errw); code != want {
+			t.Fatalf("%v: exit %d, want %d\n%s", args, code, want, errw.String())
+		}
+		return errw.String()
+	}
+	// spec 0035 phase 2: tresor of publisher:ci is released public in prod: the import succeeds and
+	// warns on stderr, advisory
+	if got := stderrOf(0, "", "license", "import", "acme", lic, "-source", "publisher:ci"); !strings.Contains(got,
+		"kista admin: warning: publisher:ci holds a licence for tresor and has a public release in channel prod") {
+		t.Fatalf("the import's warning: %q", got)
+	}
 	run(1, "", "license", "import", "acme", "-", "-replace", "-source", "publisher:ci") // nothing on stdin
 	run(1, sign("max"), "license", "import", "acme", "-", "-source", "publisher:ci")    // a licence is stored: -replace replaces it
 	run(0, sign("max"), "license", "import", "acme", "-", "-replace", "-source", "publisher:ci")
@@ -141,20 +157,14 @@ func TestAdminLicense(t *testing.T) {
 	if got := run(0, "", "license", "token", "acme", "tresor"); strings.TrimSpace(got) != sign("max") {
 		t.Fatalf("token: %q", got)
 	}
-	run(0, "", "license", "public", "acme", "tresor", "-source", "publisher:ci")
+	if got := stderrOf(0, "", "license", "public", "acme", "tresor", "-source", "publisher:ci"); strings.Count(got, "kista admin: warning:") != 1 {
+		t.Fatalf("made public, its warning: %q", got)
+	}
+	if got := stderrOf(0, "", "license", "show", "acme", "tresor"); strings.Contains(got, "kista admin: warning:") {
+		t.Fatalf("a read warns: %q", got)
+	}
 
 	// spec 0028: the expected holder, set and cleared by the CLI, and enforced on its import
-	stderrOf := func(want int, in string, args ...string) string {
-		t.Helper()
-		var out, errw bytes.Buffer
-		old := stdin
-		stdin = strings.NewReader(in)
-		defer func() { stdin = old }()
-		if code := admin(append([]string{"-config", cfg}, args...), nil, &out, &errw); code != want {
-			t.Fatalf("%v: exit %d, want %d\n%s", args, code, want, errw.String())
-		}
-		return errw.String()
-	}
 	if got := stderrOf(1, "", "tenant", "holder", "acme", "org-1"); !strings.Contains(got, `tresor (lic-max, holder "acme")`) {
 		t.Fatalf("the holder over another holder's licence: %q", got)
 	}

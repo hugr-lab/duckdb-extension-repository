@@ -132,6 +132,7 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 	var per map[string]map[string]int // by target
 	var refused []Refusal
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
+		tx.SetWarningAct("bundle.import") // spec 0035 phase 2: a licence stored into an entry served publicly
 		counts, per, refused = map[string]int{}, map[string]map[string]int{}, nil
 		for _, it := range ok {
 			name := it.Name

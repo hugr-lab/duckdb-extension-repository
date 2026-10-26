@@ -98,15 +98,18 @@ var writes = map[string]map[string][]audit.Kind{
 		"RetireAttestation": {"attestation_key.retire"}, "ListAttestation": nil, "PublicAttestation": nil, "OpenAttestationSigner": nil,
 	},
 	"release.Service": {
-		"Add": {"release.add", "release.publish", "shadow.add", "source.set"}, "Promote": {"release.promote", "shadow.add", "source.set"},
-		"SetSource": {"source.set"}, "ClearSource": {"source.clear"}, "Sources": nil, "Source": nil, "Apply": {"release.yank",
-			"release.deprecate", "release.activate", "release.current", "release.public", "release.private"},
-		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release", "source.set"}, "Resign": {"key.resign"},
+		// spec 0035 phase 2: a public release, or a rule, of an entry holding a licence warns
+		"Add":       {"release.add", "release.publish", "shadow.add", "source.set", "license.public_warning"},
+		"Promote":   {"release.promote", "shadow.add", "source.set", "license.public_warning"},
+		"SetSource": {"source.set", "license.public_warning"}, "ClearSource": {"source.clear"}, "Sources": nil, "Source": nil, "Apply": {"release.yank",
+			"release.deprecate", "release.activate", "release.current", "release.public", "release.private", "license.public_warning"},
+		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release", "source.set", "license.public_warning"}, "Resign": {"key.resign"},
 		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
-		"Place": {"release.place", "shadow.add", "source.set"}, "PlaceRule": {"release.place", "shadow.add"}, "Catalogue": nil,
+		"Place":     {"release.place", "shadow.add", "source.set", "license.public_warning"},
+		"PlaceRule": {"release.place", "shadow.add", "license.public_warning"}, "Catalogue": nil,
 		"CatalogueVersions": nil, "AddToCatalogue": {"catalogue.arrival"}, "PurgeEntry": {"catalogue.purge"}, "TrimLanded": nil,
 		"SetFollow": {"follow.set"}, "RemoveFollow": {"follow.clear"}, "Follows": nil, "Follow": nil,
-		"PlaceFollow":    {"source.set", "release.place", "shadow.add"},
+		"PlaceFollow":    {"source.set", "release.place", "shadow.add", "license.public_warning"},
 		"SetChannelHold": {"catalogue.hold"}, "ChannelHold": nil,
 		"Withdraw": {"catalogue.withdrawn"},
 	},
@@ -118,8 +121,8 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetUsage":      {"upstream.change"},
 		"SetFetchMode":  {"upstream.change"},
 		"SetHold":       {"catalogue.hold"},
-		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected"},
-		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected", "feed.run"},
+		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected", "license.public_warning"},
+		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected", "feed.run", "license.public_warning"},
 		"ResetBundle":   {"bundle.reset"}, "ResetFeedBundle": {"bundle.reset"}, "Imports": nil,
 		"CreateUpload": {"bundle.upload"}, "CompleteUpload": {"bundle.upload_complete"}, "AbortUpload": {"bundle.upload_abort"},
 		"PutUploadChunk": nil, "GetUpload": nil, "ListUploads": nil, "UploadExpiresAt": nil, "WakeUploads": nil, "GetImport": nil, "Export": {"bundle.export"},
@@ -133,8 +136,8 @@ var writes = map[string]map[string][]audit.Kind{
 		"Feed": nil, "FeedDocument": nil,
 	},
 	"licenses.Service": {
-		"Import": {"license.import"}, "Remove": {"license.remove"}, "SetVisibility": {"license.change"},
-		"RunUpstream": {"license.sync", "license.remove", "license.change"}, "ExpireOnce": {"license.remove"},
+		"Import": {"license.import", "license.public_warning"}, "Remove": {"license.remove"}, "SetVisibility": {"license.change", "license.public_warning"},
+		"RunUpstream": {"license.sync", "license.remove", "license.change", "license.public_warning"}, "ExpireOnce": {"license.remove"},
 		"Sync": nil, "List": nil, "Get": nil, "Token": nil, "LastSync": nil, "LicenseKeys": nil, "Serve": nil, "WithAuthz": nil,
 		"Exportable": nil, "ApplyBundle": nil, // a bundle's licences are recorded by the import's bundle.import
 	},
@@ -612,15 +615,16 @@ func TestCoverage(t *testing.T) {
 	licTok := vectors.Sign(licKey, vectors.Header(licKey), fmt.Sprintf(
 		`{"v":1,"iss":"https://issuer.example","jti":"l1","sub":"acme","ext":"tresor","plan":"pro","iat":%d,"exp":%d}`,
 		base.Unix()-60, base.Unix()+30*86400))
-	// spec 0035: each write names the licence's entry
+	// spec 0035: each write names the licence's entry; p's tresor has a public release in prod, so
+	// the import and making the licence public each warn (phase 2), once
 	en.expect("licenses.Service.Import", do(func() error {
 		_, err := lic.Import(rctx, admin, "acme", "", "publisher:p", licTok, licenses.Create)
 		return err
-	}), "license.import")
+	}), "license.import", "license.public_warning")
 	en.expect("licenses.Service.SetVisibility", do(func() error {
 		_, err := lic.SetVisibility(rctx, admin, "acme", "", "tresor", "publisher:p", store.Public, 0)
 		return err
-	}), "license.change")
+	}), "license.change", "license.public_warning")
 	en.expect("licenses.Service.Remove", do(func() error { return lic.Remove(rctx, admin, "acme", "", "tresor", "publisher:p", 0) }),
 		"license.remove")
 	en.expect("upstream.Service.Add", do(func() error {

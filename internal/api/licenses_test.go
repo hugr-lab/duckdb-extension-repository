@@ -236,6 +236,15 @@ func TestLicenseRoutes(t *testing.T) {
 	if r.status != 200 || r.json(t)["visibility"] != "public" {
 		t.Fatalf("public: %d %s", r.status, r.body)
 	}
+	// spec 0035 phase 2: tresor of publisher:nobody has a public release in prod: the answer warns,
+	// advisory, in one generic array; a read does not
+	if ws := fmt.Sprint(r.json(t)["warnings"]); !strings.Contains(ws, "name:tresor") || !strings.Contains(ws, "source:publisher:nobody") ||
+		!strings.Contains(ws, "channel:prod") || !strings.Contains(ws, "advisory") || r.header.Get("ETag") != `"v3"` {
+		t.Fatalf("the public licence's warning: %s %s", r.header.Get("ETag"), r.body)
+	}
+	if g := m.call(t, "GET", T+"/tresor?source=publisher:nobody", tom, ""); g.status != 200 || strings.Contains(string(g.body), "warnings") {
+		t.Fatalf("a read warns: %d %s", g.status, g.body)
+	}
 	if r := m.call(t, "DELETE", T+"/tresor?source=publisher:nobody", tom, "", "If-Match", etag); r.status != 412 {
 		t.Fatalf("a stale delete: %d", r.status)
 	}

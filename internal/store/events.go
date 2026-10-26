@@ -30,6 +30,7 @@ func (t *Tx) Event(ctx context.Context, tenantID, actor string, kind audit.Kind,
 	if err != nil {
 		return err
 	}
+	t.w.lastKind, t.w.lastActor = string(kind), actor // the act of the transaction's licence warnings
 	return t.insertEvent(ctx, e)
 }
 

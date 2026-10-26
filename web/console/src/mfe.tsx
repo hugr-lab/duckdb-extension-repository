@@ -5,10 +5,10 @@ import { StrictMode, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Route, Routes, useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 import css from './styles.css?inline'
-import { Button, Empty, ErrorBox, Loading } from './components/ui'
+import { Button, Empty, ErrorBox, Loading, Warnings } from './components/ui'
 import { EpochContext } from './lib/context'
 import { FrameProvider } from './lib/frame'
-import { ApiError, Client } from './lib/http'
+import { ApiError, Client, type Warning } from './lib/http'
 import { validTenant } from './lib/scope'
 import { claims, renewAt } from './lib/token'
 import { Server } from './screens/Server'
@@ -146,6 +146,7 @@ function Embedded({ o, live, element }: { o: KistaOptions; live: Live; element: 
   const [conf, setConf] = useState<Conf | null>(null)
   const [failure, setFailure] = useState<unknown>(null)
   const [ended, setEnded] = useState(false)
+  const [warnings, setWarnings] = useState<Warning[]>([]) // the last act's (spec 0035 phase 2)
   const [epoch, setEpoch] = useState(0)
   const alive = useRef(true)
   useEffect(() => {
@@ -205,6 +206,7 @@ function Embedded({ o, live, element }: { o: KistaOptions; live: Live; element: 
         return t
       },
       unauthorizedEvery: 0, // the banner shows every time; the host is told at most once per 30 s, below
+      onWarnings: (ws) => alive.current && setWarnings(ws),
       onUnauthorized: () => {
         if (!alive.current) return
         setEnded(true)
@@ -227,6 +229,7 @@ function Embedded({ o, live, element }: { o: KistaOptions; live: Live; element: 
           <Button tone="outline" onClick={() => { setEnded(false); setEpoch((n) => n + 1) }}>Try again</Button>
         </div>
       )}
+      <Warnings warnings={warnings} onDismiss={() => setWarnings([])} />
       <EpochContext.Provider value={epoch}>
         <Sync o={o} live={live} fallback={tenant !== undefined ? '/channels' : '/tenants'} />
         <Routes>

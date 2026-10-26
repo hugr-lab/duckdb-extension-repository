@@ -115,6 +115,7 @@ func (s *Service) RunUpstream(ctx context.Context, id string, renew func(context
 // runUpstream is RunUpstream; only, when set, is the cells a lazy upstream's run fetches besides
 // those asked for and its eager entries (a bundle export's plan, spec 0032).
 func (s *Service) runUpstream(ctx context.Context, id string, renew func(context.Context) error, only map[[3]string]bool) (Result, error) {
+	ctx = store.WithLicenseWarnings(ctx) // spec 0035 phase 2: the run's licence warnings, once per source, name and channel
 	res := Result{Started: time.Now().UTC(), Counts: map[string]int{}}
 	var u store.Upstream
 	runnable, requested := false, false
