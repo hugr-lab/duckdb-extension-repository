@@ -57,11 +57,13 @@ running `kista serve` takes it. Without a server, nothing runs.
 | `1` | refused or failed; the reason is on stderr after `kista admin:` |
 | `2` | usage error (unknown command, missing argument or flag); the usage text is printed to stderr |
 
-A command may also print **warnings** on stderr, one per line after `kista admin: warning:`, without
-changing its exit status: advisory notes about what it did, which went through. Today they are
-licence warnings (spec 0035 phase 2): an entry holding a licence served publicly, from
+A command may also print **warnings** on stderr, one per line after `kista admin: warning:
+<tenant>:`, without changing its exit status: advisory notes about what it did, which went through.
+Today they are licence warnings (spec 0035 phase 2): an entry holding a licence served publicly, from
 `license import`, `license public`, `release add`, `release public`, `release place`,
-`release promote` or `channel source` ([Licensing](../licensing.md#public-serving-of-licensed-entries)).
+`release promote`, `channel source`, `bundle import` or `bundle export -sync` (the upstream runs it
+makes) ([Licensing](../licensing.md#public-serving-of-licensed-entries)). A warning not written
+(best effort) is logged on stderr instead.
 
 `kista admin help`, or `kista admin` with no command or without `-config`, prints the usage text and
 exits `2`.

@@ -109,7 +109,8 @@ A `412` means "it changed: read it again".
 
 An administrator's change may answer, besides its usual body, a `warnings` array: advisory notes
 about what it did, which went through. Today they are licence warnings (spec 0035 phase 2): an entry
-that holds a licence served publicly ([Licensing](licensing.md#public-serving-of-licensed-entries)).
+that holds a licence served publicly ([Licensing](licensing.md#public-serving-of-licensed-entries)),
+written as events right after the change commits, best effort.
 
 ```json
 {"name": "tresor", "visibility": "public", "…": "…",
@@ -119,8 +120,11 @@ that holds a licence served publicly ([Licensing](licensing.md#public-serving-of
 
 Each warning names the extension, the entry (`source`, as answers name a source), the channel and
 a message; one per entry, name and channel, however many platforms or releases the change touched.
-The member is left out when there is none, it is never in a read's answer nor in a publication's
-(a publisher's: the event is written only), and the answer's status and ETag are as without it.
+The member is left out when there is none, and the answer's status and ETag are as without it. It
+is answered only to a caller who administers the route's path (a server administrator; a tenant,
+channel or extension administrator): a publisher's signed request, a principal without `admin`
+there (one holding `publish` or `promote`), a licence manager and a distribution admin get none,
+and their change writes only the event. A read's answer and an error answer never carry it.
 
 ### Errors
 
@@ -446,9 +450,10 @@ a write (an unknown, removed or malformed source, `tenant`, a DuckDB core or com
 from a licence manager, a source that is not a distributor's publisher answers `404`. A licence is a
 package's (spec 0034): these
 routes take `?type=` (`duckdb_extension` by default), an import stores the licence under that type,
-and a channel serves only its own type's licences. An import, a `…/public` and a relay run may
-answer licence [warnings](#warnings), as may a release made public, a placement, a promotion and a
-source's switch. See [Licensing](licensing.md).
+and a channel serves only its own type's licences. An import and a `…/public` may answer licence
+[warnings](#warnings) to a tenant administrator, as may a release made public, a placement, a
+promotion and a source's switch to an administrator of the path; a relay run (the sync request is
+`202`) and an uploaded bundle's import write only the events. See [Licensing](licensing.md).
 
 ### Identity, grants and groups
 

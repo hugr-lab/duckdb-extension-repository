@@ -324,23 +324,31 @@ administrator makes it public, or when it is placed, promoted or published from 
 visibility is public, unless `private` is asked. A licence's own visibility is separate (above).
 
 An entry is **served publicly** when it has an active or deprecated public release in a signed
-channel whose rule selects it. kista warns when an entry that holds a licence (any visibility) is
-served publicly, at the act that makes it so or finds it so:
+channel whose rule selects it, its build not withdrawn and its body not blocked. kista warns when an
+entry that holds a licence (any visibility) is served publicly, at the act that changes it:
 
 - a release of the entry written public, made public, taken by an upstream's successor (spec 0031),
   or selected by a switch of the channel's rule;
 - a licence stored in such an entry (an import, a relay, a bundle), or made public there.
 
-Declaring the licence's key alone does not warn. Each act warns **once** per entry, name and channel,
-however many platforms or releases it touched: a `license.public_warning`
-[event](observability.md) (with the act that caused it), and, for an administrator's act, a
-`warnings` array in the [API's answer](api.md#warnings), lines on the CLI's stderr (`kista admin:
-warning: …`, the exit status unchanged) and a notice in the console. Acts that answer nobody (a
-publication, a mirror's run, the placement pass, a relay run) write only the event.
+Declaring the licence's key alone does not warn, nor does an act that changes nothing (a release
+made public again, a relay's licence unchanged). Each act warns **once** per entry, name and
+channel, however many platforms or releases it touched: a `license.public_warning`
+[event](observability.md) (with the act that caused it). The warning is written right after the act
+commits, **best effort**: a failure to write it is logged, and never refuses or undoes the act; two
+transactions of one act checking at the same moment may rarely write it twice.
 
-The warning is not complete: a change that passes none of these acts, such as a broad grant, a
-block lifted or a deprecated release activated again, warns nothing. Enforcing the rule (for
-example a distributor's publisher marked "not public") is a follow-up.
+Who is told besides the events: an administrator of what the act changed (a server administrator; a
+tenant, channel or extension administrator) gets a `warnings` array in the
+[API's answer](api.md#warnings) and a notice in the console, and `kista admin` prints it on stderr
+(`kista admin: warning: <tenant>: …`, the exit status unchanged). Everyone else's act (a publisher's
+publication or promotion, a principal holding only `publish` or `promote`, a licence manager's
+import, a distribution admin) and the acts that answer nobody (a mirror's run, the placement pass, a
+relay run, an uploaded bundle's import) write only the event.
+
+The warning is not complete: a change that passes none of these acts, such as a broad grant or a
+block lifted, warns nothing. Enforcing the rule (for example a distributor's publisher marked "not
+public") is a follow-up.
 
 ## Usage reports
 

@@ -180,7 +180,8 @@ The server scope adds:
 **Warnings.** A change whose answer carries [warnings](api.md#warnings) (today, an entry holding a
 licence served publicly: [Licensing](licensing.md#public-serving-of-licensed-entries)) went
 through; the console shows the last change's warnings above the page, saying nothing was refused,
-until **Dismiss** or the next change.
+until **Dismiss** (the focus then goes to the page's heading) or the next change; a failed change
+clears them. Only an administrator of what the change touched is shown them.
 
 **Uploading a bundle.** In the server scope, a tenant's Upstreams page has **Upload a bundle**: a
 file picker, an optional SHA-256 pasted from the export's output (the hex, or its `sha256 …` line),
