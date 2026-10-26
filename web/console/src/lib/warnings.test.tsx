@@ -49,16 +49,26 @@ describe('the client', () => {
     answer({ name: 'tresor', warnings: [warning] })
     await c.get('/tenants/acme/licenses/tresor')
     expect(onWarnings).toHaveBeenCalledTimes(2)
+    // a failed change clears them before its error is thrown
+    answer({ detail: 'no' }, 409)
+    await expect(c.post('/tenants/acme/licenses/tresor/public?source=publisher:enterest-ci')).rejects.toMatchObject({ status: 409 })
+    expect(onWarnings).toHaveBeenCalledTimes(3)
+    expect(onWarnings).toHaveBeenLastCalledWith([])
   })
 })
 
 describe('Warnings', () => {
   function Shown({ initial }: { initial: Warning[] }) {
     const [ws, setWs] = useState(initial)
-    return <Warnings warnings={ws} onDismiss={() => setWs([])} />
+    return (
+      <main>
+        <h1>Licences</h1>
+        <Warnings warnings={ws} onDismiss={() => setWs([])} />
+      </main>
+    )
   }
 
-  it('shows each warning, says nothing was refused, and is dismissed', () => {
+  it('shows each warning, says nothing was refused, and is dismissed, the focus on the heading', () => {
     render(<Shown initial={[warning, { ...warning, channel: 'nightly', message: 'in nightly too' }]} />)
     const box = screen.getByRole('status', { name: 'Warnings' })
     expect(box.textContent).toContain('Nothing was refused')
@@ -66,11 +76,13 @@ describe('Warnings', () => {
     expect(box.textContent).toContain('in nightly too')
     expect(screen.queryByRole('alert')).toBeNull() // advisory, not a failure
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
-    expect(screen.queryByRole('status', { name: 'Warnings' })).toBeNull()
+    expect(screen.getByRole('status', { name: 'Warnings' }).textContent).toBe('') // the region stays, empty
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Licences' }))
   })
 
-  it('shows nothing without warnings', () => {
+  it('keeps an empty status region without warnings', () => {
     render(<Warnings warnings={[]} onDismiss={() => {}} />)
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByRole('status', { name: 'Warnings' }).textContent).toBe('')
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
   })
 })

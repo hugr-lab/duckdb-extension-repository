@@ -135,7 +135,7 @@ func TestAdminLicense(t *testing.T) {
 	// spec 0035 phase 2: tresor of publisher:ci is released public in prod: the import succeeds and
 	// warns on stderr, advisory
 	if got := stderrOf(0, "", "license", "import", "acme", lic, "-source", "publisher:ci"); !strings.Contains(got,
-		"kista admin: warning: publisher:ci holds a licence for tresor and has a public release in channel prod") {
+		"kista admin: warning: acme: publisher:ci holds a licence for tresor and has a public release in channel prod") {
 		t.Fatalf("the import's warning: %q", got)
 	}
 	run(1, "", "license", "import", "acme", "-", "-replace", "-source", "publisher:ci") // nothing on stdin

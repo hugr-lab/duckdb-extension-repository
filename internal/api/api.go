@@ -4,6 +4,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -263,12 +264,40 @@ type warningJSON struct {
 	Message string `json:"message"`
 }
 
+type answerWarnings struct{}
+
+// seesWarnings reports whether a write's answer carries its licence warnings: the caller
+// administers the path (a server administrator; a tenant, channel or extension administrator),
+// and is no publisher, licence manager or distribution admin.
+func (h *Handler) seesWarnings(r *http.Request, c caller, p params) bool {
+	switch {
+	case c.admin:
+		return true
+	case c.pub != nil, c.licenseManager, c.distribution, c.principals == nil:
+		return false
+	}
+	return h.isAdmin(r, c, p)
+}
+
 // withWarnings adds the request's licence warnings to an answer object as its "warnings" member
-// (spec 0035 phase 2: one generic array, omitted when empty), after its ETag was taken.
+// (spec 0035 phase 2: one generic array, omitted when empty), after its ETag was taken, for a caller
+// who sees them. An answer that has a top-level "warnings" member of its own keeps it as it is.
 func withWarnings(r *http.Request, b []byte) []byte {
+	if show, _ := r.Context().Value(answerWarnings{}).(bool); !show {
+		return b
+	}
 	ws := store.LicenseWarnings(r.Context())
 	if len(ws) == 0 || len(b) < 2 || b[0] != '{' {
 		return b
+	}
+	if bytes.Contains(b, []byte(`"warnings"`)) {
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(b, &top); err != nil {
+			return b
+		}
+		if _, ok := top["warnings"]; ok {
+			return b
+		}
 	}
 	out := make([]warningJSON, len(ws))
 	for i, x := range ws {
@@ -846,10 +875,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		problem(sw, http.StatusBadRequest, typeInvalid, "this request has no body")
 		return
 	}
-	if ru.manage && method != http.MethodGet && (!ru.raw || !ru.publishers) {
-		// spec 0035 phase 2: an administrator's act answers its licence warnings (reply); a
-		// publication answers nobody's, and writes only the events
-		r = r.WithContext(store.WithLicenseWarnings(r.Context()))
+	if ru.manage && method != http.MethodGet {
+		// spec 0035 phase 2: a write is one act, its licence warnings written once; they are answered
+		// (reply) only to a caller who administers the path, and to nobody else (a publisher, a
+		// promoter, a licence manager, a distribution admin), whose act writes only the events
+		ctx := store.WithLicenseWarnings(r.Context())
+		if h.seesWarnings(r, c, p) {
+			ctx = context.WithValue(ctx, answerWarnings{}, true)
+		}
+		r = r.WithContext(ctx)
 	}
 	ru.handle(h, sw, r, c, p)
 	if ru.manage && method != http.MethodGet {

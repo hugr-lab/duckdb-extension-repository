@@ -180,6 +180,7 @@ func (s *Service) Place(ctx context.Context, a authz.Actor, tenant, channel, nam
 			if _, had, err := tx.ChannelSourceOf(ctx, ch.ID, name); err != nil || had {
 				return err
 			}
+			tx.SetWarningAct("source.set") // spec 0035 phase 2
 			if _, err := tx.SetChannelRule(ctx, ch.ID, name, src, store.RuleManual, a.String()); err != nil {
 				return err
 			}
@@ -242,6 +243,7 @@ func placeEvent(ctx context.Context, name, source, how string, early bool) event
 		if early {
 			f["early"] = true
 		}
+		tx.SetWarningAct("release.place") // spec 0035 phase 2
 		return tx.Event(ctx, c.TenantID, made[0].CreatedBy, "release.place", "channel:"+c.Name+"/ext:"+name, f)
 	}
 }
@@ -342,7 +344,6 @@ func (s served) complete(it *item) {
 // revoked. Each build is placed on its own, renewing the caller's lease first; it returns how many
 // were placed and the first failure's text ("" for none).
 func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, error) {
-	ctx = store.WithLicenseWarnings(ctx) // spec 0035 phase 2: the look's licence warnings, once per source, name and channel
 	n, failure, _, err := s.placeRule(ctx, r, renew)
 	return n, failure, err
 }
@@ -409,6 +410,9 @@ func (s *Service) homeOf(ctx context.Context, r store.DueRule, tenant string) (h
 // as an auto rule, the entries its runs left to the pass, held at their arrival (available_at set),
 // once they are available, with the run's checks (homeOf).
 func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, time.Time, error) {
+	// spec 0035 phase 2: the look's licence warnings, once per source, name and channel (a follow's
+	// look's, when it places through its rules)
+	ctx = store.WithLicenseWarnings(ctx)
 	how, home := r.Mode, r.Mode == store.RuleNone
 	if home {
 		r.Mode, how = store.RuleAuto, "home"

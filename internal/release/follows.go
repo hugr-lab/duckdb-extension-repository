@@ -363,6 +363,7 @@ func (s *Service) takeName(ctx context.Context, lk followLook, f store.DueFollow
 		if err != nil || held && (lk.distributor == "" || holder != lk.distributor) {
 			return err
 		}
+		tx.SetWarningAct("source.set") // spec 0035 phase 2
 		if _, err := tx.SetChannelRule(ctx, f.ChannelID, name, f.Source, store.RuleFollow, placer.String()); err != nil {
 			return err
 		}

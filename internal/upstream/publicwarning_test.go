@@ -23,8 +23,8 @@ import (
 
 // Spec 0035 phase 2: an entry that holds a licence served publicly warns, advisory, once per act,
 // source, name and channel, whatever the platforms: a release made public, a placement, a
-// promotion, a source switch, a licence imported or made public into an entry with public
-// releases, a relay, a successor taking releases. A private release of a licensed entry warns
+// promotion, a source switch, an auto rule's and a follow's placements, a licence imported or made
+// public into an entry with public releases, a relay, a successor taking releases. A private release of a licensed entry warns
 // nothing, nor a public release of an unlicensed one, nor a licence into an entry without public
 // releases. (A bundle's licence: TestBundleLicenses.)
 func TestLicensePublicWarning(t *testing.T) {
@@ -47,7 +47,7 @@ func testLicensePublicWarning(t *testing.T, e storetest.Engine) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, ch := range []string{"third", "fourth"} {
+	for _, ch := range []string{"third", "fourth", "auto", "follows"} {
 		must(t, func() error {
 			_, err := en.ten.CreateChannel(ctx, admin, "acme", ch, store.ChannelSigned, "")
 			return err
@@ -199,7 +199,37 @@ func testLicensePublicWarning(t *testing.T, e storetest.Engine) {
 		return err
 	})
 
-	// a mirror's public release of tresor in prod, of an entry without a licence: nothing
+	// automatic placements of two platforms, each build in a transaction of its own: an auto rule's
+	// and a follow's, each warned once by its look (the rules themselves select an entry with no
+	// release there yet: nothing)
+	placer := &release.Placer{Service: en.rel, Holder: "test", Log: slog.New(slog.DiscardHandler)}
+	act("an auto rule", "", ds, nil, func(c context.Context) error {
+		_, err := en.rel.SetSource(c, admin, "acme", "auto", "tresor", ds, store.RuleAuto)
+		return err
+	})
+	background = true // the placement pass's, in its own context
+	act("the rule's placement", "release.place", ds, []string{"auto"}, func(context.Context) error {
+		placer.Once(ctx, false)
+		return nil
+	})
+	background = false
+	act("a follow", "", ds, nil, func(c context.Context) error {
+		_, err := en.rel.SetFollow(c, admin, "acme", "follows", ds)
+		return err
+	})
+	background = true
+	act("the follow's placement", "release.place", ds, []string{"follows"}, func(context.Context) error {
+		placer.Once(ctx, false)
+		return nil
+	})
+	for _, ch := range []string{"auto", "follows"} {
+		if rs, err := en.rel.List(ctx, admin, "acme", ch, "tresor"); err != nil || len(rs) != 2 {
+			t.Fatalf("placed into %s: %+v %v", ch, rs, err)
+		}
+	}
+
+	// a mirror's run bringing a public release of tresor into prod, of an entry without a licence:
+	// nothing
 	en.rel.MayPublish = func(_, c string) bool { return c == "open" }
 	en.repo.put("v2.0.0", "linux_amd64", "tresor", signedWith(t, en.key, cpp("1.0", "v2.0.0"), lic.block, "tresor_duckdb_cpp_init"))
 	sp := en.spec(store.UpstreamEntry{Name: "tresor"})
@@ -208,13 +238,16 @@ func testLicensePublicWarning(t *testing.T, e storetest.Engine) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := en.sync(t, false); r.Counts[store.CellReleased] != 1 {
-		t.Fatalf("a run: %+v", r)
-	}
+	act("a public release of an unlicensed entry", "", "upstream:acme-repo", nil, func(context.Context) error {
+		if r := en.sync(t, false); r.Counts[store.CellReleased] != 1 {
+			return fmt.Errorf("a run: %+v", r)
+		}
+		return nil
+	})
+	background = false
 	if rs := en.releases(t, "tresor"); len(rs) != 1 || rs[0].Visibility != store.Public {
 		t.Fatalf("the mirror's release: %+v", rs)
 	}
-	act("a public release of an unlicensed entry", "", "upstream:acme-repo", nil, func(context.Context) error { return nil })
 	// its relay stores a licence there: a warning
 	en.answer(t, lic.sign("tresor", "pro", now-60, now+30*day))
 	act("the relay", "license.sync", "upstream:acme-repo", []string{"prod"}, func(c context.Context) error {
@@ -235,15 +268,16 @@ func testLicensePublicWarning(t *testing.T, e storetest.Engine) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	must(t, func() error {
-		return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+	// a licence put into the successor's entry (as one a migration converted would be): it serves
+	// nothing yet, so nothing
+	act("a licence into the successor's entry, before it serves", "", "upstream:acme-repo", nil, func(c context.Context) error {
+		return en.st.InTx(c, "", func(tx *store.Tx) error {
 			l := store.License{TenantID: tid, PackageType: pkgtype.DuckDBExtension, Name: "tresor", Entry: store.UpstreamSource(u2.ID),
 				LicenseID: "lic-successor", Issuer: "i", HolderID: "acme", Plan: "pro", Token: bought, Key: kid, IssuedAt: now,
 				ExpiresAt: now + 30*day, GraceUntil: now + 31*day, Source: store.LicenseImport, Visibility: store.Private, Actor: "os:1:t"}
 			return tx.PutLicense(ctx, &l, 0)
 		})
 	})
-	act("a licence into the successor's entry, before it serves", "", "upstream:acme-repo", nil, func(context.Context) error { return nil })
 	en.repo.put("v2.0.0", "linux_amd64", "tresor", signedWith(t, en.key, cpp("1.1", "v2.0.0"), lic.block, "tresor_duckdb_cpp_init"))
 	background = true // the runner's, in its own context
 	act("the successor's run", "upstream.release", "upstream:acme-repo", []string{"prod"}, func(context.Context) error {

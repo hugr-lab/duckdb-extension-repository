@@ -202,6 +202,7 @@ func (s *Service) SetSource(ctx context.Context, a authz.Actor, tenant, channel,
 				mode = store.RuleManual // a follow's rule moved to another source is the administrator's now
 			}
 		}
+		tx.SetWarningAct("source.set") // spec 0035 phase 2
 		prior, err := tx.SetChannelRule(ctx, ch.ID, name, src, mode, a.String())
 		if err != nil {
 			return err

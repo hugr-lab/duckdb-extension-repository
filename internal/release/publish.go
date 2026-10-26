@@ -183,6 +183,7 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 		if o.Provenance != "" {
 			f["provenance"] = o.Provenance
 		}
+		tx.SetWarningAct("release.promote") // spec 0035 phase 2
 		return tx.Event(ctx, c.TenantID, a.String(), "release.promote", "channel:"+c.Name+"/ext:"+name, f)
 	})
 }

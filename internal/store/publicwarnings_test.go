@@ -1,8 +1,10 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -14,8 +16,9 @@ import (
 // Spec 0035 phase 2, the store's part: each hook (a release written public or made public, the
 // releases a successor takes, a rule selecting an entry, a licence stored or made public) warns
 // only for an entry that holds a licence and has an active or deprecated public release in a
-// signed channel whose rule selects it; once per source, name and channel in an act, across its
-// transactions; nothing for a transaction that rolls back, which leaves the warning to the next.
+// signed channel whose rule selects it, its build not withdrawn and its body not blocked; once per
+// source, name and channel in an act, across its transactions; written after the act commits, and
+// a failure to write it is logged while the act stands.
 func TestLicensePublicWarnings(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Open(t)
@@ -50,7 +53,7 @@ func TestLicensePublicWarnings(t *testing.T) {
 			t.Helper()
 			c := store.WithLicenseWarnings(ctx)
 			for _, fn := range fns {
-				if err := s.InTx(c, "", fn); err != nil && !errors.Is(err, errRollback) {
+				if err := s.InTx(c, "", fn); err != nil {
 					t.Fatalf("%s: %v", what, err)
 				}
 			}
@@ -65,7 +68,8 @@ func TestLicensePublicWarnings(t *testing.T) {
 				t.Fatalf("%s: %d warnings, %d events, want %d: %+v %+v", what, len(ws), len(fresh), want, ws, fresh)
 			}
 			for _, w := range ws {
-				if w.Name != "geo" || !strings.HasPrefix(w.Source, "upstream:") || w.Channel != "prod" || w.TenantID != tn.ID {
+				if w.Name != "geo" || !strings.HasPrefix(w.Source, "upstream:") || w.Channel != "prod" || w.TenantID != tn.ID ||
+					w.TenantName != "acme" {
 					t.Errorf("%s: %+v", what, w)
 				}
 			}
@@ -91,28 +95,17 @@ func TestLicensePublicWarnings(t *testing.T) {
 			}
 			return rule(src)(tx)
 		})
-		// two public releases in two transactions of one act: one warning; a third transaction that
-		// rolls back first leaves the warning to the one after it
+		// two public releases in two transactions of one act: one warning, the hook's act and actor
 		pubs := []store.Release{release(build("osx_arm64", "b"), store.Public), release(build("windows_amd64", "c"), store.Public)}
-		undone := build("linux_arm64", "d")
 		check("public releases", "release.add", "os:1:t", 1,
-			func(tx *store.Tx) error {
-				r := release(undone, store.Public)
-				if err := tx.InsertRelease(ctx, &r, "os:1:t"); err != nil {
-					return err
-				}
-				return errRollback
-			},
 			func(tx *store.Tx) error { return tx.InsertRelease(ctx, &pubs[0], "os:1:t") },
 			func(tx *store.Tx) error { return tx.InsertRelease(ctx, &pubs[1], "os:1:t") })
-		// the private one made public: the transaction's event names the act and the actor
-		check("made public", "release.public", "os:1:event", 1, func(tx *store.Tx) error {
-			if err := tx.SetReleaseVisibility(ctx, &priv, store.Public, "os:1:t"); err != nil {
-				return err
-			}
-			return tx.Event(ctx, tn.ID, "os:1:event", "release.public", "channel:prod/ext:geo/release:"+priv.ID,
-				map[string]any{"release": priv.ID, "name": "geo"})
+		// the private one made public, by the act the service names; public again (a replay), nothing
+		check("made public", "release.public", "os:1:t", 1, func(tx *store.Tx) error {
+			tx.SetWarningAct("release.public")
+			return tx.SetReleaseVisibility(ctx, &priv, store.Public, "os:1:t")
 		})
+		check("public again", "", "", 0, func(tx *store.Tx) error { return tx.SetReleaseVisibility(ctx, &priv, store.Public, "os:1:t") })
 		// made private again, nothing; the rule switched away nothing, back a warning
 		check("made private", "", "", 0, func(tx *store.Tx) error { return tx.SetReleaseVisibility(ctx, &priv, store.Private, "os:1:t") })
 		check("a switch away", "", "", 0, rule(store.SourceTenant))
@@ -134,8 +127,44 @@ func TestLicensePublicWarnings(t *testing.T) {
 			tx.SetWarningAct("bundle.import")
 			return tx.PutLicense(ctx, license(src, store.Private), l.Version)
 		})
+		replace := func(tx *store.Tx) error {
+			cur, err := tx.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "geo", src)
+			if err == nil {
+				err = tx.PutLicense(ctx, license(src, store.Private), cur.Version)
+			}
+			return err
+		}
+
+		// a failure to check is logged, and the act stands
+		var logged bytes.Buffer
+		s.Log = slog.New(slog.NewTextHandler(&logged, nil))
+		store.SetLicenseWarningFault(func() error { return errors.New("the check failed") })
+		check("a failed check", "", "", 0, replace)
+		store.SetLicenseWarningFault(nil)
+		s.Log = nil
+		if !strings.Contains(logged.String(), "a licence warning was not written") || !strings.Contains(logged.String(), "the check failed") {
+			t.Fatalf("the failure logged: %q", logged.String())
+		}
+		if cur, err := s.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "geo", src); err != nil || cur.Version != l.Version+2 {
+			t.Fatalf("the act stands: %+v %v", cur, err)
+		}
+
+		// served publicly excludes a withdrawn build's release and a blocked body's: with every public
+		// release one or the other, the licence stored warns nothing
+		if err := store.ExecRaw(ctx, s, "UPDATE builds SET withdrawn_at = created_at WHERE id = ?", pubs[0].BuildID); err != nil {
+			t.Fatal(err)
+		}
+		inTx(t, s, func(tx *store.Tx) error {
+			return tx.InsertBlock(ctx, &store.Block{TenantID: tn.ID, BodyHash: strings.Repeat("c", 64), Reason: "test", CreatedBy: "os:1:t"})
+		})
+		check("withdrawn and blocked", "", "", 0, replace)
 
 		// a successor: its entry holds a licence and its rule selects it; the releases it takes warn
+		// (the public one not withdrawn nor blocked: the private one, made public again)
+		check("made public again", "release.public", "os:1:t", 1, func(tx *store.Tx) error {
+			tx.SetWarningAct("release.public")
+			return tx.SetReleaseVisibility(ctx, &priv, store.Public, "os:1:t")
+		})
 		inTx(t, s, func(tx *store.Tx) error { return tx.DeleteUpstream(ctx, a, 0) })
 		succ := store.UpstreamSource(mirror("b").ID)
 		check("the successor's licence and rule", "", "", 0,
@@ -147,27 +176,8 @@ func TestLicensePublicWarnings(t *testing.T) {
 			}
 			return err
 		})
-		// yanked releases are not served: the licence made public warns nothing
-		for i := range pubs {
-			inTx(t, s, func(tx *store.Tx) error {
-				r, err := tx.GetRelease(ctx, ch.ID, pubs[i].ID)
-				if err == nil {
-					err = tx.SetReleaseState(ctx, &r, store.ReleaseYanked, "os:1:t")
-				}
-				return err
-			})
-		}
-		check("nothing public", "", "", 0, func(tx *store.Tx) error {
-			l, err := tx.GetLicense(ctx, tn.ID, pkgtype.DuckDBExtension, "geo", succ)
-			if err == nil {
-				err = tx.SetLicenseVisibility(ctx, &l, store.Public, "os:1:admin", l.Version)
-			}
-			return err
-		})
 		if ws := store.LicenseWarnings(context.Background()); ws != nil {
 			t.Fatalf("a context that collects nothing: %+v", ws)
 		}
 	})
 }
-
-var errRollback = errors.New("rolled back")

@@ -130,16 +130,13 @@ func (s *Store) once(ctx context.Context, lockKeys []string, fn func(*Tx) error)
 	if err = fn(tx); err != nil {
 		return err
 	}
-	// spec 0035 phase 2: the act's licence warnings, written with it
-	ws, err := tx.licenseWarnings(ctx)
-	if err != nil {
-		return err
-	}
 	if err = sqlTx.Commit(); err != nil {
-		ws.release()
 		return err
 	}
-	ws.keep()
+	// spec 0035 phase 2: the act's licence warnings, best effort, once it stands
+	if tx.w.noted() {
+		s.writeLicenseWarnings(ctx, &tx.w)
+	}
 	return nil
 }
 

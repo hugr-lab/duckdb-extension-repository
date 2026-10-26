@@ -388,6 +388,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 			r := made[0]
 			f := releaseFields(r, it.b, kind == "release.publish")
 			f["shadows"] = Shadows(c.PackageType, store.Candidate{Release: r, BuildOrigin: it.b.Origin}, nil)
+			tx.SetWarningAct(kind) // spec 0035 phase 2
 			return tx.Event(ctx, c.TenantID, a.String(), kind, releaseSubject(c, r), f)
 		})
 	})
@@ -1090,6 +1091,16 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 			if c == SetPrivate && ch.Kind == store.ChannelPassthrough {
 				return fmt.Errorf("%w: a passthrough channel's releases are public", ErrState)
 			}
+			if r.Visibility == string(c) {
+				// the visibility it has: nothing changes, nothing is told (spec 0035 phase 2: a replay
+				// warns nothing); a private one's build is made private as the change would
+				out = r
+				if c == SetPrivate {
+					return tx.NarrowBuild(ctx, r.BuildID)
+				}
+				return nil
+			}
+			tx.SetWarningAct("release.public") // spec 0035 phase 2
 			err = tx.SetReleaseVisibility(ctx, &r, string(c), actor)
 		default:
 			return fmt.Errorf("%w: unknown change %q", store.ErrInvalid, c)

@@ -538,6 +538,7 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 		default:
 			l.Visibility, replaced = old.Visibility, old.LicenseID
 		}
+		tx.SetWarningAct("license.import") // spec 0035 phase 2
 		if err := tx.PutLicense(ctx, &l, old.Version); err != nil {
 			return holderRefused(err)
 		}
@@ -637,6 +638,7 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, pack
 		if l.Visibility == visibility && expected == l.Version {
 			return nil
 		}
+		tx.SetWarningAct("license.change") // spec 0035 phase 2
 		if err := tx.SetLicenseVisibility(ctx, &l, visibility, a.String(), expected); err != nil {
 			return err
 		}

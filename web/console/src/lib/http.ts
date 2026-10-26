@@ -48,8 +48,8 @@ export interface ClientOptions {
   onUnauthorized?: () => void
   /** The throttle, in ms (default 30 seconds); 0: every time (a caller that throttles itself). */
   unauthorizedEvery?: number
-  /** Called with the warnings of each change's answer (spec 0035 phase 2), none ([]) included: the
-   * last change's replace the ones before. */
+  /** Called with the warnings of each change's answer (spec 0035 phase 2), none ([]) included, and
+   * with none for a failed change: the last change's replace the ones before. */
   onWarnings?: (ws: Warning[]) => void
   now?: () => number
 }
@@ -127,6 +127,8 @@ export class Client {
       }
     }
     if (!res.ok) {
+      // a failed change has no warnings: the ones before it are not shown beside its error
+      if (method !== 'GET') this.o.onWarnings?.([])
       const detail = (data as { detail?: string; title?: string } | undefined) ?? {}
       const after = Number(res.headers.get('Retry-After') ?? '')
       throw new ApiError(res.status, detail.detail || detail.title || `${res.status}`, Number.isFinite(after) && after > 0 ? after : undefined)

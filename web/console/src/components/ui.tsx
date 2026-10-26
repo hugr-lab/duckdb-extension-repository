@@ -285,21 +285,36 @@ export function Checks({ value, options, onChange, label }: { value: string[]; o
 }
 
 /** The warnings of the last change (spec 0035 phase 2: licence warnings), above the content until
- * dismissed or the next change: advisory, the change went through. */
+ * dismissed or the next change: advisory, the change went through. The status region is always
+ * there, so a screen reader announces what appears in it; dismissed, the focus goes to the page's
+ * heading. */
 export function Warnings({ warnings, onDismiss }: { warnings: Warning[]; onDismiss: () => void }) {
-  if (warnings.length === 0) return null
+  const region = useRef<HTMLDivElement>(null)
+  const dismiss = () => {
+    const root = region.current?.getRootNode() as Document | ShadowRoot | undefined
+    const heading = root?.querySelector<HTMLElement>('main h1') ?? root?.querySelector<HTMLElement>('h1')
+    onDismiss()
+    if (heading) {
+      if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1')
+      heading.focus()
+    }
+  }
   return (
-    <div role="status" aria-label="Warnings" className="flex items-start gap-3 rounded-md bg-warning-soft px-3.5 py-2.5 text-warning">
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-      <div className="flex flex-1 flex-col gap-1">
-        <span className="font-semibold">Done, with a warning. Nothing was refused.</span>
-        <ul className="m-0 list-none p-0">
-          {warnings.map((w) => (
-            <li key={`${w.source}|${w.name}|${w.channel}`}>{w.message}</li>
-          ))}
-        </ul>
-      </div>
-      <Button tone="outline" onClick={onDismiss}>Dismiss</Button>
+    <div ref={region} role="status" aria-label="Warnings">
+      {warnings.length > 0 && (
+        <div className="flex items-start gap-3 rounded-md bg-warning-soft px-3.5 py-2.5 text-warning">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <div className="flex flex-1 flex-col gap-1">
+            <span className="font-semibold">Done, with a warning. Nothing was refused.</span>
+            <ul className="m-0 list-none p-0">
+              {warnings.map((w) => (
+                <li key={`${w.source}|${w.name}|${w.channel}`}>{w.message}</li>
+              ))}
+            </ul>
+          </div>
+          <Button tone="outline" onClick={dismiss}>Dismiss</Button>
+        </div>
+      )}
     </div>
   )
 }

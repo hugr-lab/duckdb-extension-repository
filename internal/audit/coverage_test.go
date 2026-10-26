@@ -139,7 +139,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"Import": {"license.import", "license.public_warning"}, "Remove": {"license.remove"}, "SetVisibility": {"license.change", "license.public_warning"},
 		"RunUpstream": {"license.sync", "license.remove", "license.change", "license.public_warning"}, "ExpireOnce": {"license.remove"},
 		"Sync": nil, "List": nil, "Get": nil, "Token": nil, "LastSync": nil, "LicenseKeys": nil, "Serve": nil, "WithAuthz": nil,
-		"Exportable": nil, "ApplyBundle": nil, // a bundle's licences are recorded by the import's bundle.import
+		"Exportable": nil, "ApplyBundle": nil, // a bundle's licences are recorded by the import's bundle.import (its license.public_warning, after its commit, by the import)
 	},
 	"attachment.Feeds": {
 		"Add": {"feed.add"}, "Change": {"feed.change"}, "Remove": {"feed.remove"}, "RunFeed": {"feed.run"},

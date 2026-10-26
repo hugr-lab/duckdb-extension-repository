@@ -288,6 +288,7 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer s.Close()
+	s.Log = slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	svc, err := app.NewServices(cfg, s, authz.ServerAdmin{})
 	if err != nil {
 		fmt.Fprintln(stderr, "kista admin:", err)
@@ -298,7 +299,7 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 	ctx = store.WithLicenseWarnings(ctx)
 	err = a.dispatch(ctx, rest)
 	for _, w := range store.LicenseWarnings(ctx) {
-		fmt.Fprintln(stderr, "kista admin: warning:", w.Message)
+		fmt.Fprintf(stderr, "kista admin: warning: %s: %s\n", w.TenantName, w.Message)
 	}
 	if err != nil {
 		if errors.Is(err, errUsage) {

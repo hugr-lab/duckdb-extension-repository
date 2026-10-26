@@ -497,19 +497,19 @@ func (t *Tx) SetReleaseSeq(ctx context.Context, r *Release, seq int64, actor str
 }
 
 // SetReleaseVisibility changes a release's visibility (compare-and-set). Making it private makes its
-// build private too (spec 0033): no placement serves it publicly again. Making it public warns when
-// its entry holds a licence (spec 0035 phase 2).
+// build private too (spec 0033): no placement serves it publicly again. Making a private one public
+// warns when its entry holds a licence (spec 0035 phase 2).
 func (t *Tx) SetReleaseVisibility(ctx context.Context, r *Release, visibility, actor string) error {
 	if visibility == Private {
 		if err := t.NarrowBuild(ctx, r.BuildID); err != nil {
 			return err
 		}
 	}
-	now := t.Now()
+	now, changed := t.Now(), r.Visibility != visibility
 	err := t.cas(ctx, "UPDATE releases SET visibility = ?, state_changed_at = ?, state_changed_by = ?, version = version + 1 WHERE id = ? AND version = ?",
 		[]any{visibility, t.s.d.timeArg(now), actor, r.ID, r.Version},
 		func() { r.Visibility, r.StateChangedAt, r.StateChangedBy = visibility, now, actor; r.Version++ })
-	if err == nil && visibility == Public {
+	if err == nil && changed && visibility == Public {
 		t.warnRelease(r.ID, "release.public", actor)
 	}
 	return err
