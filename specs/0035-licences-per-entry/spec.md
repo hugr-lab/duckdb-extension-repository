@@ -337,8 +337,9 @@ entry. How and when it tries again is Enterest's decision.
 - **A licence manager** writes only distributors' publishers' entries. Otherwise its server-wide
   token could copy a tenant upstream's licence into its own entry, or, using `If-Match`, pin an
   import into an upstream's entry where the relay's revocation never removes it. As built, it names
-  them as distribution admins do, and any other source answers as a missing path does, before
-  anything about it is checked, so its token learns nothing of the tenant's other sources.
+  them as distribution admins do, and any other source answers a write as a missing path does,
+  before anything about it is checked. It still reads every licence and every key's entries; it
+  writes, copies and pins only into distributors' publishers' entries.
 - **A distributor taking a tenant's licence.** A distributor's publisher reaches only its own entry,
   and its keys do not touch the upstream's licence. A pull-through `*` upstream and a distributor
   coexist, each entry with its own licence.
@@ -483,10 +484,14 @@ own branch), in commits of their own after three review passes.
   answers each key with its entries, each with its own `builds`; `BuildKids` and the listing keep a
   record only when it is the build's own source's (filtered in Go: the dialects share no
   concatenation).
-- **Migration 0043** (after review: nothing served is moved or deleted). A relayed row in its
-  relayer's entry stays relayed. A relayed row in **another** entry (migration 0042's owner, or an
-  administrator's act, put it there), or whose relayer is gone or not recorded, stays in that entry
-  and becomes an **import** (`source` `import`, no `upstream_id`), its visibility kept: the channels
+- **Migration 0043** (after review). A relayed row in its relayer's entry stays relayed. A relayed
+  row in another **relaying** upstream's own entry (a `repository` upstream with a credential, not in
+  bundle mode, paused or not) is deleted: that upstream's relay is requested and stores its own copy
+  there, which it governs, where an import would never be revoked by it (until that run, the entry's
+  channels serve no licence for the name). A relayed row in any other entry (a publisher's, a
+  bundle-mode or credential-less upstream's: migration 0042's owner, or an administrator's act, put
+  it there), or whose relayer is gone or not recorded, stays in that entry and becomes an
+  **import** (`source` `import`, no `upstream_id`), its visibility kept: the channels
   serving it keep serving it, and the relayer's own entry is filled by its next run (requested). A
   relayed row of source `unknown` (served nowhere) moves into its live relayer's entry unless a row
   is there, else it goes with the other `unknown` licences. There are no ties to break: a source
@@ -495,7 +500,8 @@ own branch), in commits of their own after three review passes.
   upstream with a credential, not in bundle mode (a paused one included: its run waits until it is
   resumed); its existing `license_syncs` row gets `requested_at` too. Its test runs on a populated
   level-42 database on the three dialects (the conversions in place, scenarios of 0042's owner, an
-  administrator's act and a removed relayer, the moves and deletions, the paused upstream's
+  administrator's act and a removed relayer, rows in a relaying upstream's entry deleted and in a
+  bundle-mode upstream's converted, the moves and deletions, the paused upstream's
   request, and a level-42 binary refusing the database), and `TestMigrationPackageTypes` (level 38)
   gives its `unknown` licence an entry before 0043.
 - **Naming an entry.** The writes resolve `?source=` in the service: `""`, `tenant`, a malformed
@@ -516,8 +522,9 @@ own branch), in commits of their own after three review passes.
   The write's transaction checks again that the entry is a distributor's publisher's of the tenant
   (`SourceDistributor`, now scoped by `tenant_id`). No `forbidden` problem type is added. Reads stay
   open to it, as the spec says.
-- **Bundles carry only served licences.** `Exportable` keeps a licence only while its key is live for
-  its entry, so a removed source's licence, served nowhere, does not travel in a bundle.
+- **Bundles carry only licences whose key is live for their entry.** `Exportable` keeps a licence
+  only while its key is live for its entry, so a removed source's licence does not travel in a
+  bundle.
 - **Events.** A relay replacing an administrator's import writes `license.change` (`replaced`, the
   import's id; `upstream`, the relaying upstream; `source`, the entry), as the import was told per
   licence. A bundle's import lists each target's counts in its result (`targets`, by upstream name),
@@ -541,7 +548,8 @@ own branch), in commits of their own after three review passes.
   visible heading), each with its kind (`upstream`, `publisher`, or `<distributor>'s publisher (a
   distributor)`), and offers "another entry" with a text field; with none listed, a field labelled
   "Into the entry". The entry is computed at render (`importEntry`): the chosen one while it is
-  listed, by default the only one listed, never one among several. A typed entry must be the name
+  listed (a choice no longer listed is none: the administrator chooses again); with no choice yet,
+  the only one listed, never one among several. A typed entry must be the name
   form (`upstream:<name>`, `publisher:<name>`), as the list shows live entries, so the licence it
   replaces is found and `If-Match` sent (an id form is refused in the dialog with a hint; an import
   never targets a removed source). While the keys load or fail, the dialog says so instead of "none

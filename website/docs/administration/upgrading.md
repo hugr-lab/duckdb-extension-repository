@@ -182,9 +182,14 @@ so the operator declares it:
 - **Migration `0043_license_entries`** raises `min_reader` to 43: stop every older replica first. In
   the three databases it:
   - keeps a relayed licence that is in its relaying upstream's entry (`upstream:<id>`) as it is;
-  - turns a relayed licence that is in **another** entry (migration 0042 gave it its key's owner, or an
-    administrator's `license owner` moved it there), or whose relaying upstream is gone, into an
-    **import** in that same entry (`source` `import`, no upstream), its visibility kept: the channels
+  - deletes a relayed licence that is in **another relaying upstream's** own entry (a `repository`
+    upstream with a credential, not in bundle mode, a paused one included): that upstream's relay,
+    requested below, stores its own copy there and governs it, where an import would never be
+    revoked by it;
+  - turns a relayed licence that is in any other entry (a publisher's, a bundle-mode or
+    credential-less upstream's: migration 0042 gave it its key's owner, or an administrator's
+    `license owner` moved it there), or whose relaying upstream is gone, into an **import** in that
+    same entry (`source` `import`, no upstream), its visibility kept: the channels
     serving it keep serving it, and it shows as imported from then on (its relay no longer governs
     it; remove it when the relay's own copy is back, or leave it to its grace). The relaying
     upstream's own entry gets its copy at its next relay run, requested below: until then that

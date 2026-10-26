@@ -1,13 +1,21 @@
 -- +min_reader 43
 -- spec 0035 phase 1: a licence belongs to a catalogue entry (tenant, type, name, source), named by
 -- every write; key owners go. A relayed licence in its relaying upstream's entry stays relayed. One
--- in another entry (migration 0042's owner, or an administrator's act, gave it there), or whose
--- relayer is gone, stays where it is served, as an import (its relay no longer governs it; the
--- relayer's own entry is filled again by its next run). One of no entry ('unknown') moves into its
--- live relayer's entry, unless a row is there already; the remaining 'unknown' licences go. Every
--- relaying upstream is asked for a run. The column becomes entry_source, and the owners' table and
--- the index only the first recorder read go. An older replica reads and writes the owners and relies
--- on the relay's exceptions, so it no longer runs here.
+-- in another relaying upstream's own entry goes: that upstream's relay, requested below, fills its
+-- entry again and governs what it stores, where an import there would never be revoked. One in any
+-- other entry (a publisher's, a bundle-mode or credential-less upstream's: migration 0042's owner,
+-- or an administrator's act, put it there), or whose relayer is gone, stays where it is served, as
+-- an import (its relay no longer governs it; the relayer's own entry is filled again by its next
+-- run). One of no entry ('unknown') moves into its live relayer's entry, unless a row is there
+-- already; the remaining 'unknown' licences go. Every relaying upstream is asked for a run. The
+-- column becomes entry_source, and the owners' table and the index only the first recorder read go.
+-- An older replica reads and writes the owners and relies on the relay's exceptions, so it no longer
+-- runs here.
+DELETE FROM licenses WHERE source = 'upstream' AND owner_source <> 'unknown'
+AND (upstream_id IS NULL OR owner_source <> 'upstream:' || upstream_id)
+AND EXISTS (SELECT 1 FROM upstreams y WHERE y.tenant_id = licenses.tenant_id AND licenses.owner_source = 'upstream:' || y.id
+	AND y.kind = 'repository' AND y.mode <> 'bundle' AND y.credential IS NOT NULL)
+-- +statement
 UPDATE licenses SET source = 'import', upstream_id = NULL
 WHERE source = 'upstream' AND owner_source <> 'unknown' AND (upstream_id IS NULL OR owner_source <> 'upstream:' || upstream_id)
 -- +statement

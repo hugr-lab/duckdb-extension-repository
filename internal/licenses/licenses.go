@@ -409,7 +409,8 @@ func (s *Service) entry(ctx context.Context, a authz.Actor, tenantID, label stri
 // distributors' publishers, as distribution admins name them: a live one by publisher:<name> or
 // publisher-id:<id>, a removed one by publisher-id:<id> on a removal only. Any other source,
 // whatever it is, answers as a refused caller (authz.ErrDenied: a missing path, audited), before
-// anything about it is told: its server-wide token learns nothing of the tenant's other sources.
+// anything about it is checked: its server-wide token reads every licence, but writes only into
+// distributors' publishers' entries.
 func (s *Service) distributorEntry(ctx context.Context, tenantID, label string, removed bool) (string, bool, error) {
 	srcs, err := s.Store.DistributorSources(ctx, tenantID)
 	if err != nil {

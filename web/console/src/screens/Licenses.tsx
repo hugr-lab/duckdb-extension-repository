@@ -278,15 +278,15 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
 
 /** The entry an import goes into (spec 0035), from what is listed (the entries whose live keys
  * include the licence's key), what the administrator chose ('' none yet, 'other', or a listed
- * entry) and what they typed: the chosen listed entry; by default the only one listed, never one
- * among several; a choice no longer listed is dropped; the typed one when they chose another or none
- * is listed. A typed entry is named by its source's name (upstream:<name>, publisher:<name>), as the
+ * entry) and what they typed: the chosen listed entry; with no choice yet, the only one listed,
+ * never one among several; a choice no longer listed is no entry (the administrator chooses again,
+ * nothing taken in its place); the typed one when they chose another or none is listed. A typed entry is named by its source's name (upstream:<name>, publisher:<name>), as the
  * licences list shows live entries: otherwise the licence it replaces would not be found and no
  * If-Match sent. bad says why a typed entry is not one ('' none). */
 export function importEntry(listed: KeySource[], choice: string, typed: string): { entry: string; bad: string } {
   const names = listed.map(entryOf)
   if (listed.length > 0 && choice !== 'other') {
-    return { entry: names.includes(choice) ? choice : preselect(listed), bad: '' }
+    return { entry: choice === '' ? preselect(listed) : names.includes(choice) ? choice : '', bad: '' }
   }
   const entry = typed.trim()
   if (entry !== '' && !/^(upstream|publisher):[^:\s]+$/.test(entry)) {

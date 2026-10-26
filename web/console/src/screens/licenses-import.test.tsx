@@ -21,9 +21,9 @@ describe('importEntry', () => {
     expect(importEntry(listed('publisher:ci', 'upstream:org'), '', '')).toEqual({ entry: '', bad: '' })
     expect(importEntry(listed('publisher:ci', 'upstream:org'), 'upstream:org', '')).toEqual({ entry: 'upstream:org', bad: '' })
   })
-  it('drops a choice no longer listed', () => {
+  it('drops a choice no longer listed, taking nothing in its place', () => {
     expect(importEntry(listed('publisher:ci', 'upstream:org'), 'upstream:gone', '')).toEqual({ entry: '', bad: '' })
-    expect(importEntry(listed('publisher:ci'), 'upstream:gone', '')).toEqual({ entry: 'publisher:ci', bad: '' })
+    expect(importEntry(listed('publisher:ci'), 'upstream:gone', '')).toEqual({ entry: '', bad: '' })
   })
   it('takes the typed entry, by its source name', () => {
     expect(importEntry(listed('publisher:ci'), 'other', ' upstream:org ')).toEqual({ entry: 'upstream:org', bad: '' })

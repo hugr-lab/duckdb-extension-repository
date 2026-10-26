@@ -36,8 +36,9 @@ func nameLicense(ctx context.Context, s *store.Store, tenantID, packageType, nam
 }
 
 // Migration 0043 (spec 0035 phase 1), on a populated database at level 42: a relayed licence in its
-// relayer's entry stays relayed; one in another entry (0042's owner, an administrator's act) or of
-// a removed relayer stays in that entry as an import, visibility kept; one of no entry ('unknown')
+// relayer's entry stays relayed; one in another relaying upstream's entry goes (that upstream's
+// relay fills it again); one in any other entry (0042's owner, an administrator's act) or of a
+// removed relayer stays in that entry as an import, visibility kept; one of no entry ('unknown')
 // moves into its live relayer's entry unless a row is there; the remaining 'unknown' licences go;
 // every relaying upstream (a paused one too) is asked for a run; the owners' table and its index
 // go, and a level-42 binary is refused.
@@ -71,7 +72,7 @@ func TestMigrationLicenseEntries(t *testing.T) {
 			upstream("e", "mirror", "active", nil), upstream("f", "mirror", "paused", "enterest"),
 			[]any{"INSERT INTO license_syncs (upstream_id, tenant_id, last_run_at, last_result) VALUES (?, ?, ?, '{}')", id("a"), tid, at},
 		)
-		ua, ue := "upstream:"+id("a"), "upstream:"+id("e")
+		ua, ub, ud, ue, uf := "upstream:"+id("a"), "upstream:"+id("b"), "upstream:"+id("d"), "upstream:"+id("e"), "upstream:"+id("f")
 		const pub = "publisher:p"
 		// (name, licence id, entry, how it arrived, its relaying upstream, visibility)
 		lic := func(name, lid, entry, source string, upstreamID any, visibility string) []any {
@@ -86,6 +87,13 @@ func TestMigrationLicenseEntries(t *testing.T) {
 			lic("geo", "l2", pub, "upstream", id("a"), "public"),
 			// B: 0042's owner a non-relaying upstream e, the licence b relayed: it stays in e's entry
 			lic("tools", "l3", ue, "upstream", id("b"), "public"),
+			// in another relaying upstream's own entry (a paused one's too), whatever its relayer: goes,
+			// that upstream's relay governs its entry
+			lic("dup", "ld", ub, "upstream", id("a"), "public"),
+			lic("dup2", "le", ub, "upstream", id("z"), "private"),
+			lic("dup3", "lg", uf, "upstream", id("a"), "private"),
+			// in a bundle-mode upstream's entry (it relays nothing): stays, as an import
+			lic("bunent", "lf", ud, "upstream", id("a"), "private"),
 			// C: its relayer removed: it stays in the publisher's entry
 			lic("gone", "l4", "publisher:q", "upstream", id("z"), "private"),
 			// a relayed one without a relayer (none is written so): stays, as an import
@@ -115,7 +123,7 @@ func TestMigrationLicenseEntries(t *testing.T) {
 			got = append(got, fmt.Sprintf("%s/%s@%s:%s:%s:%s", l.Name, l.LicenseID, strings.TrimSuffix(l.Entry, "0000000-0000-0000-0000-000000000000"),
 				l.Source, strings.TrimSuffix(l.UpstreamID, "0000000-0000-0000-0000-000000000000"), l.Visibility))
 		}
-		want := "bun/la@upstream:d:upstream:d:public geo/l2@publisher:p:import::public geo/l1@upstream:a:upstream:a:private " +
+		want := "bun/la@upstream:d:upstream:d:public bunent/lf@upstream:d:import::private geo/l2@publisher:p:import::public geo/l1@upstream:a:upstream:a:private " +
 			"gone/l4@publisher:q:import::private imp2/lc@publisher:p:import::public keep/l7@upstream:a:import::private " +
 			"moves/l6@upstream:b:upstream:b:public nul/l5@publisher:p:import::private tools/l3@upstream:e:import::public"
 		if strings.Join(got, " ") != want {

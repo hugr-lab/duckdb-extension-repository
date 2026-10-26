@@ -167,9 +167,10 @@ tenant, and nothing else. It reads every entry and every key, but writes (import
 private) only the entries of **distributors' publishers** ([Publishing](publishing.md#distributors-publishers)),
 named as a distribution admin names them (`publisher:<name>`, `publisher-id:<id>`; a removed one's
 id form for a removal). Any other `?source=`, whatever it is, answers as a missing path does (`404`,
-recorded as `authz.refused`), before anything about it is checked: its server-wide token learns
-nothing of the tenant's other sources, cannot copy a tenant upstream's licence, and cannot pin an
-import into an upstream's entry where the relay's revocation never removes it. It cannot make a licence public, call the upstreams' relay or any other route. See
+recorded as `authz.refused`), before anything about it is checked. It reads every licence and every
+key's entries, but its server-wide token writes only into distributors' publishers' entries: it
+cannot copy a tenant upstream's licence into another entry, and cannot pin an import into an
+upstream's entry where the relay's revocation never removes it. It cannot make a licence public, call the upstreams' relay or any other route. See
 [Access](access.md#server-administrators-and-tenant-administrators).
 
 **The relay from an upstream.** A `repository` upstream with a credential
