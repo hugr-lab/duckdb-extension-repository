@@ -1,6 +1,6 @@
 # Spec 0035: Licences per catalogue entry
 
-- **Status**: phase 1 implemented (2026-10-26); phase 2 accepted
+- **Status**: implemented (phase 1 2026-10-26, phase 2 2026-10-26)
 - **Date**: 2026-10-26
 - **Author**: vgsml, Claude
 
@@ -566,6 +566,63 @@ own branch), in commits of their own after three review passes.
   `nightly` back, `404`).
 - **Earlier specs.** 0033 and 0034 carry the notes listed above; 0014 and 0029 are left as they
   were, this spec recording their change, as earlier specs' changes were recorded.
+
+### As built (phase 2)
+
+Delivered on the branch `0035-licences-p2` (the Delivery's `0035-licences-per-entry-warning`), after
+phase 1 merged.
+
+- **In the store, at commit.** The hooks only note what they touched: `InsertRelease` a release
+  written public, `SetReleaseVisibility` one made public, `TakeReleases` each release it moves,
+  `SetChannelRule` a rule whose source is new or changed, `PutLicense` a licence stored (an
+  insert or a replacement, whatever its visibility: an import, a relay, a bundle) and
+  `SetLicenseVisibility` one made public. Just before the transaction commits (`Store.once`), one
+  query per kind of note reads which of them are entries holding a licence with an active or
+  deprecated public release in a signed channel whose rule selects them, as the transaction leaves
+  them: a release written before its rule warns once the rule selects it, in the same transaction.
+  The warning events are inserted then, in the act's transaction. A licence made private, a release
+  made private, a relay's unchanged licence (nothing written) and a rule's mode changed alone warn
+  nothing.
+- **The act.** One collector per act (`store.WithLicenseWarnings` in the context): each management
+  write of the API (not the publication routes, `raw` and open to publishers, whose acts answer
+  nobody), each `kista admin` command, an upstream's run, a bundle's import, and the placement pass's
+  look at a rule or a follow (each places builds in transactions of their own). Across the act's
+  transactions each (tenant, source, name, channel) is written once; a transaction that does not
+  commit gives its claims back to the next. Without a collector, once per transaction. The `act`
+  field is the kind the service names (`SetWarningAct`: `license.sync` for the relay's transaction,
+  `bundle.import` for a bundle's licences), else the kind of the last event the transaction wrote
+  (`release.public`, `release.place`, `release.promote`, `source.set`, `upstream.release`,
+  `license.import`, `license.change`, …), else the first hook's (`release.add`, `release.public`,
+  `upstream.release`, `source.set`, `license.import` or `license.sync`, `license.change`). The actor
+  is that event's, else the hook's, else `system:kista`. The subject is
+  `channel:<channel>/ext:<name>`; `source` is the entry as answers name it; `package_type` is left out
+  for the default type, as in the other events.
+- **The answer.** `reply` adds the request's warnings as the last member of any object answer,
+  after its ETag is taken, so status and ETag are unchanged; a read never carries one. Each warning
+  is `{"name", "source", "channel", "message"}`, the message naming the entry, the name and the
+  channel and saying it is advisory and nothing was refused.
+- **The CLI** prints each warning after the command, `kista admin: warning: <message>` on stderr,
+  also when the command then fails; the exit status is the command's.
+- **The console.** The API client hands each change's `warnings` (`[]` for none) to `onWarnings`;
+  the standalone console and the micro-frontend show the last change's above the content
+  (`Warnings`, a `status` region, "Done, with a warning. Nothing was refused."), until dismissed or
+  the next change. The console end to end publishes vault-ci's vault publicly, so the import into
+  its entry and making the licence public show the warning, and the import into vault-dist's
+  (catalogue only) does not.
+- **Tests.** The store suite (`TestLicensePublicWarnings`, three dialects): each hook, the negatives,
+  once per act across transactions, a rollback's claim given back, the act and actor rules, yanked
+  releases. `internal/upstream` (`TestLicensePublicWarning`, three dialects): one warning and one
+  event per act for a release made public, a placement and a promotion of two platforms, a source
+  switch, a licence made public and replaced, a relay, a successor's run; none for a private
+  placement, a public release of an unlicensed entry, a licence into an entry not served or made
+  private. `TestBundleLicenses`: a bundle's licence into a public entry warns once, by
+  `bundle.import`, the private target's not at all. The events registry and `TestCoverage` (an import
+  and a licence made public into an entry with a public release each write the warning). The API
+  (`warnings` in the answer, the ETag unchanged, none in a read), the CLI (stderr, exit 0), console
+  unit tests (`warnings.test.tsx`) and `TestLicenseFromDistributor` at the pin (prod's release made
+  public over the API: the warning answered, one event, the licence still served).
+- **Not hooked**, as the spec says: grants, blocks lifted, a release activated again
+  (`SetReleaseState`), a rule cleared.
 
 ## Alternatives considered
 

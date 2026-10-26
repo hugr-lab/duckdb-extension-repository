@@ -105,6 +105,23 @@ versioned resources work this way.
 
 A `412` means "it changed: read it again".
 
+### Warnings
+
+An administrator's change may answer, besides its usual body, a `warnings` array: advisory notes
+about what it did, which went through. Today they are licence warnings (spec 0035 phase 2): an entry
+that holds a licence served publicly ([Licensing](licensing.md#public-serving-of-licensed-entries)).
+
+```json
+{"name": "tresor", "visibility": "public", "…": "…",
+ "warnings": [{"name": "tresor", "source": "publisher:enterest-ci", "channel": "prod",
+               "message": "publisher:enterest-ci holds a licence for tresor and has a public release in channel prod: …"}]}
+```
+
+Each warning names the extension, the entry (`source`, as answers name a source), the channel and
+a message; one per entry, name and channel, however many platforms or releases the change touched.
+The member is left out when there is none, it is never in a read's answer nor in a publication's
+(a publisher's: the event is written only), and the answer's status and ETag are as without it.
+
 ### Errors
 
 Errors are `application/problem+json`:
@@ -429,7 +446,9 @@ a write (an unknown, removed or malformed source, `tenant`, a DuckDB core or com
 from a licence manager, a source that is not a distributor's publisher answers `404`. A licence is a
 package's (spec 0034): these
 routes take `?type=` (`duckdb_extension` by default), an import stores the licence under that type,
-and a channel serves only its own type's licences. See [Licensing](licensing.md).
+and a channel serves only its own type's licences. An import, a `…/public` and a relay run may
+answer licence [warnings](#warnings), as may a release made public, a placement, a promotion and a
+source's switch. See [Licensing](licensing.md).
 
 ### Identity, grants and groups
 

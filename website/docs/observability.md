@@ -91,6 +91,7 @@ are all the kinds in `internal/audit`:
 | | `license.change` | `license:<name>` | `name`, `license`, `visibility`, `source` |
 | | `license.remove` | `license:<name>` | `name`, `license`, `reason` (`admin`, `revoked`, `expired`, `upstream removed`), `source` |
 | | `license.sync` | `upstream:<name>` | `upstream`, `counts`, `error`, `refused` (the system's relay run into its upstream's own entry) |
+| | `license.public_warning` | `channel:<channel>/ext:<name>` | `name`, `source` (the entry), `channel`, `act` (the kind of the act's event: `release.public`, `release.place`, `release.promote`, `source.set`, `upstream.release`, `license.import`, `license.change`, `license.sync`, `bundle.import`, …): an entry holding a licence served publicly, advisory and not complete, once per act, entry, name and channel; written in the act's transaction, by the act's actor ([Licensing](licensing.md#public-serving-of-licensed-entries), spec 0035 phase 2) |
 | Releases | `release.add` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `visibility`, `current`, `shadows` |
 | | `release.publish` | the release | as `release.add`, and `provenance` |
 | | `release.promote` | `channel:<channel>/ext:<name>` | `releases`, `name`, `from_channel`, `version`, `shadows`, `provenance` |
@@ -167,7 +168,8 @@ Notes on some kinds:
   creation, carry the package type when it is not the default (`duckdb_extension`; for a grant
   without a name, `*`): `channel.create`, `grant.add`, `grant.remove`, `extension_group.members`,
   `reserved.add`, `reserved.remove`, `reserved.tenant.add`, `reserved.tenant.remove`,
-  `catalogue.arrival`, `catalogue.purge`, `license.import`, `license.change` and `license.remove`.
+  `catalogue.arrival`, `catalogue.purge`, `license.import`, `license.change`, `license.remove` and
+  `license.public_warning`.
   Subjects are unchanged. A group's removal lists its members in one `extension_group.members`
   event per type.
 - The background actors are `system:upstream:<tenant>/<name>`, `system:feed:<tenant>/<name>`,
