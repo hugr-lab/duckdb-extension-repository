@@ -81,11 +81,8 @@ and no other source's records matter. A copied key is simply another entry, with
 
 - `POST …/licenses?source=<source>` names the entry. The source is `upstream:<name>` or
   `publisher:<name>`, or the id forms `upstream-id:<id>` and `publisher-id:<id>`, as the licence
-  routes take them today. **Without `?source=`**, the entry is the only one whose live keys for the
-  licence's name include its key id. With none, the answer is `400 kid_untrusted`. With several, it
-  is `409` naming them: "name one with `?source=`". The default only acts when the answer is
-  unambiguous, so the SDK's tests, air-gapped sites and a name with one source keep working without
-  a flag.
+  routes take them today. **`?source=` is required**: without it the import answers `400` ("name
+  the entry with `?source=`"); kista never infers the entry from the licence's key.
 - **Checks**, unchanged except for the keys they read:
   - the licence is in force;
   - it verifies against the entry's live keys (`kid_untrusted`, naming the source);
@@ -167,15 +164,16 @@ yet, so there is no compatibility path for any of them.
   no `owner`. `?source=` keeps one entry's keys. This is how a licence manager tells whether a
   licence can land: its key id is listed for the entry.
 - **CLI.**
-  - `license import <t> <file> [-source <s>] [-replace]`;
+  - `license import <t> <file> -source <s> [-replace]` (`-source` required);
   - `license keys <t> [<name>] [-source <s>]`, with the columns `NAME KEY BUILDS SOURCES`;
   - `license list` with the columns `NAME SOURCE PLAN HOLDER STATUS EXPIRES VIA VISIBILITY`;
   - `license owner` goes.
 - **Console, Licences.**
   - The table's **Of** column becomes **Source**, and the arrival column becomes **Via**.
   - The import dialog reads the licence's key id from the JWS header and offers the entries that
-    list it (one is chosen for you; with none, it says no available build of the extension declares
-    the key yet). It replaces that entry's licence after a confirmation.
+    list it for the administrator to choose (preselected when there is one; with none, it says no
+    available build of the extension declares the key yet), and sends it as `?source=`. It replaces
+    that entry's licence after a confirmation.
   - A licence is flagged "not served" unless its key is a live key of its own entry.
   - The keys table shows each key's entries.
 
@@ -185,17 +183,16 @@ Migration `0043_license_entries` in the three dialects, `min_reader` 43, because
 reads and writes `license_key_owners` and the relay's exceptions. It does the following:
 
 - drops `license_key_owners`;
-- deletes the licences of source `unknown` (served nowhere already);
-- points each relayed licence (`source = 'upstream'`) whose entry is not `upstream:<upstream_id>`
-  to that entry. Where that entry already holds a licence of the name, the moved one is dropped and
-  the upstream's own copy stays. Of several licences moving into one entry, the latest issued is
-  kept;
+- deletes the licences of source `unknown` (served nowhere already) and **every relayed licence**
+  (`source = 'upstream'`): each upstream's next relay run stores its licences into its own entry
+  again. No licence is moved;
+- keeps the imports: their `owner_source` becomes their entry as it is;
 - renames `licenses.owner_source` to `entry_source`, still part of the primary key (tenant, type,
   name, entry_source). PostgreSQL uses `RENAME COLUMN`, SQL Server `sp_rename`, SQLite `RENAME
-  COLUMN`. The store's `License.Owner` becomes `Entry`.
+  COLUMN`. The store's `License.Owner` becomes `Entry`;
+- drops `ix_build_license_keys_kid`, which only the first recorder and the conflict count read.
 
-`ix_build_license_keys_kid` stays, because the import's default reads records by key id. Tenant
-deletion and the store test harness drop the table from their lists.
+Tenant deletion and the store test harness drop the table from their lists.
 
 ### Public builds of licensed extensions (phase 2)
 
@@ -265,8 +262,8 @@ A customer's own kista relays from Enterest through its upstreams, each into its
   (import); the entry's own upstream (relay, bundle). A licence manager may import into any entry of
   any tenant, as it may import any licence today. Each write is bounded by the entry's live keys,
   the refused keys and the expected holder.
-- **Fail closed**: the import's default never guesses. With several candidate entries it answers
-  `409`; a held, revoked, withdrawn or blocked build makes no key live; serving needs the channel's
+- **Fail closed**: an import names its entry, and kista never infers one from a key; a held,
+  revoked, withdrawn or blocked build makes no key live; serving needs the channel's
   selected entry and a live build declaring the key.
 - **Existence**: unchanged. The licence routes are for administrators and licence managers, and the
   DuckDB route answers as a missing path for a caller who may not have the licence.
@@ -276,14 +273,14 @@ A customer's own kista relays from Enterest through its upstreams, each into its
 ## Testing
 
 - **Store suite, three dialects:**
-  - the migration on a populated level-42 database: the owners table gone; relayed licences moved
-    to their upstream's entry, with a collision dropped; `unknown` deleted; imports kept;
+  - the migration on a populated level-42 database: the owners table and its index gone; relayed
+    and `unknown` licences deleted; imports kept in their entry;
   - live keys per entry (own builds only, held, revoked, withdrawn, blocked, removed source);
-  - the default entry's lookup by key id;
   - tenant deletion without the table.
 - **The licence service** (`TestLicenseSources`, rewritten):
   - an import with `?source=` into a distributor's entry;
-  - an import without a source: one entry, none (`kid_untrusted`) and two (`409` naming them);
+  - an import without a source (`400`), and into an entry that does not declare the key
+    (`kid_untrusted`);
   - an import into an entry whose build is still held (`kid_untrusted`, then accepted once the hold
     ends);
   - a copied key under another source getting nothing, with the genuine entry unaffected;
@@ -298,7 +295,7 @@ A customer's own kista relays from Enterest through its upstreams, each into its
 - **Serving**: one name served from two entries in two channels, each with its own licence. Switching
   a channel's source switches the licence served, and an entry without a licence answers `404`.
 - **The API and the CLI**:
-  - `?source=` on import and its `409` and `400`;
+  - `?source=` required on import (`400` without it), `-source` on `license import`;
   - the owner route gone;
   - `license-keys?source=`;
   - `source` and `via` in the answers;
@@ -316,7 +313,7 @@ A customer's own kista relays from Enterest through its upstreams, each into its
     `prod`'s release public, which answers the warning and writes the event.
   - `TestSDKLicenseRelay` extended: two upstreams of the remote, in two channels, each relay the
     licence into its entry, and DuckDB is licensed from both.
-  - `TestSDKLicense` and `TestSDKLicenseBundle` pass with the import's default.
+  - `TestSDKLicense` imports with `-source`; `TestSDKLicenseBundle` passes unchanged.
 
 ## Delivery
 
@@ -347,8 +344,11 @@ Two PRs:
   tombstones, the act and the relay's exception, and each later case needs another rule.
 - **One licence per name, served by every entry whose keys verify it**: simpler still, but a copied
   key in another source's build would be served the licence. The entry keeps the choice explicit.
-- **`?source=` always required**: this breaks a name's only-entry case for every existing caller
-  for no safety gain, because the default acts only when the answer is unambiguous.
+- **A default entry for an import without `?source=`** (the only entry whose live keys hold the
+  licence's key): convenient for a name of one source, but an inference the owner rejected (the
+  entry is always the caller's choice), and one more rule to explain.
+- **Moving relayed licences into their upstreams' entries in the migration**: kista is unreleased,
+  and the next relay run stores them again.
 - **Counting a held entry's keys** so a licence lands before the hold passes: the hold is the
   window for revoking a stolen publisher key, so the reconciler waits it out instead.
 - **Enforcing the public rule now**: the owner deferred it. The warning records the rule without
@@ -386,8 +386,8 @@ Two PRs:
     extensions";
   - `api.md`;
   - `administration/commands.md`;
-  - `administration/upgrading.md`: migration 0043 and its `min_reader`; the B part 2 section points
-    here;
+  - `administration/upgrading.md`: migration 0043, its `min_reader`, and that relayed licences
+    return at each upstream's next relay run; the B part 2 section points here;
   - `observability.md`: the events;
   - `publishing.md`: the distributor's licences;
   - `upstreams.md`: a removed upstream's keys;
