@@ -81,12 +81,12 @@ func TestTenantHolderRoutes(t *testing.T) {
 	if _, err := storetest.LicenseKey(ctx, m.st, m.tenantID(t), "tresor", store.KeySourcePublisher, "nobody", &m.licKey.PublicKey); err != nil {
 		t.Fatal(err)
 	}
-	r = m.call(t, "POST", T+"/licenses", ta, m.licenceOf("org-2", "tresor", "pro"))
+	r = m.call(t, "POST", T+"/licenses?source=publisher:nobody", ta, m.licenceOf("org-2", "tresor", "pro"))
 	if r.status != 400 || r.json(t)["type"] != "urn:kista:problem:invalid" || !strings.Contains(string(r.body), "holder_mismatch") ||
 		!strings.Contains(string(r.body), `\"acme\"`) || !strings.Contains(string(r.body), `\"org-2\"`) {
 		t.Fatalf("another holder's licence: %d %s", r.status, r.body)
 	}
-	if r := m.call(t, "POST", T+"/licenses", ta, m.licenceOf("acme", "tresor", "pro")); r.status != 201 {
+	if r := m.call(t, "POST", T+"/licenses?source=publisher:nobody", ta, m.licenceOf("acme", "tresor", "pro")); r.status != 201 {
 		t.Fatalf("the holder's licence: %d %s", r.status, r.body)
 	}
 
@@ -98,7 +98,7 @@ func TestTenantHolderRoutes(t *testing.T) {
 	if r.status != 200 || r.json(t)["holder_id"] != nil {
 		t.Fatalf("clear: %d %s", r.status, r.body)
 	}
-	if r := m.call(t, "POST", T+"/licenses", ta, m.licenceOf("org-2", "tresor", "max"), "If-Match", "*"); r.status != 200 {
+	if r := m.call(t, "POST", T+"/licenses?source=publisher:nobody", ta, m.licenceOf("org-2", "tresor", "max"), "If-Match", "*"); r.status != 200 {
 		t.Fatalf("no holder, another holder's replacement: %d %s", r.status, r.body)
 	}
 	r = m.call(t, "PUT", T+"/holder", sa, body, "If-Match", "*")

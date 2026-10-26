@@ -110,8 +110,8 @@ func TestLicenseKeys(t *testing.T) {
 		if got := live(us); got != "2:pem-2" {
 			t.Fatalf("u1's live keys: %q", got)
 		}
-		if got := live(store.SourceTenant) + live(store.LicenseUnknown); got != "" {
-			t.Fatalf("the tenant's or unknown's keys: %q", got)
+		if got := live(store.SourceTenant); got != "" {
+			t.Fatalf("the tenant's keys: %q", got)
 		}
 		// a channel that serves the name from another source does not make the build live; the
 		// source's newest available version still counts
@@ -129,14 +129,35 @@ func TestLicenseKeys(t *testing.T) {
 			_, err := tx.SetChannelSource(ctx, prod.ID, "tresor", ps, "os:1:t")
 			return err
 		})
-		ks, err := s.TenantLicenseKeys(ctx, tn.ID, pkgtype.DuckDBExtension, "")
-		if err != nil || len(ks) != 2 || ks[0].Kid != k1.Kid || ks[0].Builds != 1 || ks[0].Owner != ps || !ks[0].OwnerRecorded ||
-			fmt.Sprint(ks[0].Sources) != "[{publisher p1} {upstream u1}]" || fmt.Sprint(ks[1].Sources) != "[{publisher p1} {upstream u1}]" ||
-			ks[1].Builds != 2 || ks[1].Owner != ps {
-			t.Fatalf("tenant keys: %+v %v", ks, err)
+		// spec 0035: the listing is LiveLicenseKeys of every entry, each with its builds; u1's record of
+		// k1 on p1's build counts for neither
+		keys := func(name, source string) string {
+			t.Helper()
+			ks, err := s.TenantLicenseKeys(ctx, tn.ID, pkgtype.DuckDBExtension, name, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out []string
+			for _, k := range ks {
+				var srcs []string
+				for _, src := range k.Sources {
+					srcs = append(srcs, fmt.Sprintf("%s:%s=%d", src.Kind, src.Name, src.Builds))
+					if src.Source != store.KeySourcePublisher+":"+p1.ID && src.Source != us {
+						t.Errorf("an entry's source: %+v", src)
+					}
+				}
+				out = append(out, k.Name+"/"+k.Kid[7:8]+" "+strings.Join(srcs, ","))
+			}
+			return strings.Join(out, "; ")
 		}
-		if ks, err := s.TenantLicenseKeys(ctx, tn.ID, pkgtype.DuckDBExtension, "other"); err != nil || len(ks) != 0 {
-			t.Fatalf("another name's keys: %+v %v", ks, err)
+		if got := keys("", ""); got != "tresor/1 publisher:p1=1; tresor/2 publisher:p1=1,upstream:u1=1" {
+			t.Fatalf("tenant keys: %q", got)
+		}
+		if got := keys("", us); got != "tresor/2 upstream:u1=1" {
+			t.Fatalf("u1's keys: %q", got)
+		}
+		if got := keys("other", ""); got != "" {
+			t.Fatalf("another name's keys: %q", got)
 		}
 		kids, err := s.BuildKids(ctx, prod.ID)
 		if err != nil || len(kids) != 1 || fmt.Sprint(kids[b1.ID]) != "["+k1.Kid+" "+k2.Kid+"]" {
@@ -171,19 +192,15 @@ func TestLicenseKeys(t *testing.T) {
 			t.Fatalf("an orphan key counts: %v", kids)
 		}
 
-		// removing a source drops what it brought and the keys it owns, and bumps the channels
+		// removing a source drops what it brought, and bumps the channels; u1's record of k1 on p1's
+		// build is not the build's own source's, so the channel carries none (spec 0035)
 		v = version()
 		inTx(t, s, func(tx *store.Tx) error { return tx.DeleteLicenseKeysOf(ctx, store.KeySourcePublisher, p1.ID) })
-		if kids, _ := s.BuildKids(ctx, prod.ID); fmt.Sprint(kids[b1.ID]) != "["+k1.Kid+"]" || version() != v+1 {
+		if kids, _ := s.BuildKids(ctx, prod.ID); len(kids[b1.ID]) != 0 || version() != v+1 {
 			t.Fatalf("after removing p1: %v", kids)
 		}
-		inTx(t, s, func(tx *store.Tx) error {
-			o, err := tx.KeyOwnerOf(ctx, tn.ID, pkgtype.DuckDBExtension, "tresor", k2.Kid)
-			// none: u1 recorded it while p1 owned it, which never passes it by itself (spec 0033 phase B)
-			if err == nil && (o.Source != "" || o.Recorded) {
-				t.Errorf("k2's owner after p1's removal: %+v", o)
-			}
-			return err
-		})
+		if n, err := store.CountRaw(ctx, s, "build_license_keys", "build_id = ? AND source_id = ?", b1.ID, u1); err != nil || n != 1 {
+			t.Fatalf("u1's record stays: %d %v", n, err)
+		}
 	})
 }

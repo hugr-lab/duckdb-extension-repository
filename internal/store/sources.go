@@ -227,6 +227,32 @@ func (s *Store) ChannelReleaseSources(ctx context.Context, channelID string) (ma
 	return out, rows.Err()
 }
 
+// ValidLicenseEntry says whether s is a licence's entry (spec 0035): an upstream's or a publisher's
+// source (upstream:<id>, publisher:<id>), the only ones whose builds record licence keys.
+func ValidLicenseEntry(s string) bool {
+	_, id, ok := splitKeySource(s)
+	return ok && id != "" && sourceID.MatchString(id)
+}
+
+// LicenseEntrySource reads a source as a tenant's licence entry (spec 0035): live reports that the
+// tenant has the upstream or publisher, and upstreamKind is a live upstream's kind ("" for a
+// publisher).
+func (s *Store) LicenseEntrySource(ctx context.Context, tenantID, source string) (live bool, upstreamKind string, err error) {
+	kind, id, ok := splitKeySource(source)
+	if !ok {
+		return false, "", nil
+	}
+	q := "SELECT kind FROM upstreams WHERE id = ? AND tenant_id = ?"
+	if kind == KeySourcePublisher {
+		q = "SELECT '' FROM publishers WHERE id = ? AND tenant_id = ?"
+	}
+	err = s.db.QueryRowContext(ctx, s.d.rebind(q), id, tenantID).Scan(&upstreamKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, "", nil
+	}
+	return err == nil, upstreamKind, err
+}
+
 // SourceLabels name a tenant's sources as answers show them (spec 0031): upstream:<name>,
 // publisher:<name>, tenant; a source missing from the map is a removed upstream's or publisher's.
 func (s *Store) SourceLabels(ctx context.Context, tenantID string) (map[string]string, error) {

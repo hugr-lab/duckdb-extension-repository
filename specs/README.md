@@ -41,4 +41,4 @@ and it is superseded by a new spec when a decision changes.
 | [0032](0032-lazy-mirror/spec.md) | Lazy mirrors: cells fetched on first request, kept current, eager entries and fetch now | implemented |
 | [0033](0033-catalogue/spec.md) | The catalogue: a tenant's builds of sources, taken by channels by rules | implemented (A1 part 3b deferred to the follow-ups) |
 | [0034](0034-package-types/spec.md) | Package types: (type, name) in every key, one type per channel, the package vocabulary in the schema and the code | implemented |
-| [0035](0035-licences-per-entry/spec.md) | Licences per catalogue entry: key owners removed, a warning for public licensed builds | accepted |
+| [0035](0035-licences-per-entry/spec.md) | Licences per catalogue entry: key owners removed, a warning for public licensed builds | phase 1 implemented (phase 2 accepted) |

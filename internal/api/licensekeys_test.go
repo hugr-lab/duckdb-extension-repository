@@ -155,7 +155,7 @@ func TestLicenseKeySources(t *testing.T) {
 	if got := keys(); !strings.Contains(got, "newext") || !strings.Contains(got, kid) || !strings.Contains(got, "issuer-ci") {
 		t.Fatalf("keys after the marked publication: %s", got)
 	}
-	if r := m.call(t, "POST", T+"/licenses", ta, m.licence("newext", "pro")); r.status != 201 {
+	if r := m.call(t, "POST", T+"/licenses?source=publisher:issuer-ci", ta, m.licence("newext", "pro")); r.status != 201 {
 		t.Fatalf("an import against the recorded key: %d %s", r.status, r.body)
 	}
 

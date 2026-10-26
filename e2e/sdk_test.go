@@ -109,7 +109,7 @@ func TestSDKLicense(t *testing.T) {
 	if st := k.publish(t, "kista_demo", k.publisherKey(t, "other-ci", false)); st != 201 {
 		t.Fatalf("an unmarked publication: %d", st)
 	}
-	if _, err := k.licenses.Import(ctx, serveAdmin, "acme", "", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
+	if _, err := k.licenses.Import(ctx, serveAdmin, "acme", "", "publisher:other-ci", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create); !errors.Is(err, license.ErrUntrustedKey) {
 		t.Fatalf("a licence for a build published by an unmarked publisher: %v", err)
 	}
 	// spec 0031: the channel serves kista_demo from other-ci until its administrator switches it
@@ -124,7 +124,7 @@ func TestSDKLicense(t *testing.T) {
 	if st := k.publish(t, "kista_demo", ci); st != 201 {
 		t.Fatalf("the marked publication: %d", st)
 	}
-	stored, err := k.licenses.Import(ctx, serveAdmin, "acme", "", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create)
+	stored, err := k.licenses.Import(ctx, serveAdmin, "acme", "", "publisher:ci", sign("lic-pro", "pro", now-60, now+30*86400, ""), licenses.Create)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestSDKLicense(t *testing.T) {
 
 	// an upgrade: a new licence with another plan, seen without reinstalling at a new process's
 	// LOAD (from the repository: the file still holds the old one)
-	ent, err := k.licenses.Import(ctx, serveAdmin, "acme", "", sign("lic-ent", "enterprise", now-30, now+60*86400, ""), stored.Version)
+	ent, err := k.licenses.Import(ctx, serveAdmin, "acme", "", "publisher:ci", sign("lic-ent", "enterprise", now-30, now+60*86400, ""), stored.Version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestSDKLicense(t *testing.T) {
 		t.Fatalf("the new licence fetched: %v", got)
 	}
 	// and in a running process with myext_license_refresh(): without the secret first, the file
-	if _, err := k.licenses.Import(ctx, serveAdmin, "acme", "", sign("lic-biz", "business", now-20, now+90*86400, ""),
+	if _, err := k.licenses.Import(ctx, serveAdmin, "acme", "", "publisher:ci", sign("lic-biz", "business", now-20, now+90*86400, ""),
 		ent.Version); err != nil {
 		t.Fatal(err)
 	}

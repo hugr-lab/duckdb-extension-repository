@@ -18,17 +18,12 @@ const (
 	LicenseUpstream = "upstream" // relayed from an upstream
 )
 
-// LicenseUnknown is the source of a licence whose key no record counted for when migration 0042 gave
-// licences their sources (spec 0033 phase B): kept for its administrators, served nowhere.
-const LicenseUnknown = "unknown"
-
-// License is a tenant's licence for a package (spec 0012; spec 0034: per type and name) of a source
-// (spec 0033 phase B: Owner, the source that owns its key for the name, upstream:<id> or
-// publisher:<id>, or LicenseUnknown): its verified claims, and the token as received. Source is how
-// it arrived.
+// License is a tenant's licence for a package (spec 0012; spec 0034: per type and name) in a
+// catalogue entry (spec 0035: Entry, the entry's source, upstream:<id> or publisher:<id>): its
+// verified claims, and the token as received. Source is how it arrived.
 type License struct {
 	TenantID, PackageType, Name     string
-	Owner                           string
+	Entry                           string
 	LicenseID, Issuer               string
 	HolderID, Holder, Plan          string
 	Token, Key                      string
@@ -50,36 +45,36 @@ func LicenseSyncLock(upstreamID string) string { return "kista/license-sync/" + 
 // LicenseRelayLease is the lease an upstream's relay run holds (spec 0012).
 func LicenseRelayLease(upstreamID string) string { return "kista/licenses/upstream/" + upstreamID }
 
-const licenseCols = `tenant_id, package_type, name, owner_source, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, expires_at,
+const licenseCols = `tenant_id, package_type, name, entry_source, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, expires_at,
 grace_until, source, upstream_id, visibility, actor, updated_at, version`
 
 func scanLicense(r interface{ Scan(...any) error }) (License, error) {
 	var l License
 	var up sql.NullString
-	err := r.Scan(&l.TenantID, &l.PackageType, &l.Name, &l.Owner, &l.LicenseID, &l.Issuer, &l.HolderID, &l.Holder, &l.Plan, &l.Token, &l.Key, &l.IssuedAt,
+	err := r.Scan(&l.TenantID, &l.PackageType, &l.Name, &l.Entry, &l.LicenseID, &l.Issuer, &l.HolderID, &l.Holder, &l.Plan, &l.Token, &l.Key, &l.IssuedAt,
 		&l.ExpiresAt, &l.GraceUntil, &l.Source, &up, &l.Visibility, &l.Actor, scanTime{&l.UpdatedAt}, &l.Version)
 	l.UpstreamID = up.String
 	return l, err
 }
 
-// GetLicense reads a tenant's licence for a package (type, name) of a source (spec 0033 phase B).
-func (t *Tx) GetLicense(ctx context.Context, tenantID, packageType, name, owner string) (License, error) {
-	l, err := scanLicense(t.queryRow(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ? AND owner_source = ?",
-		tenantID, packageType, name, owner))
+// GetLicense reads a tenant's licence for a package (type, name) in an entry (spec 0035).
+func (t *Tx) GetLicense(ctx context.Context, tenantID, packageType, name, entry string) (License, error) {
+	l, err := scanLicense(t.queryRow(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ? AND entry_source = ?",
+		tenantID, packageType, name, entry))
 	return l, notFound(err, "licence "+name)
 }
 
-// GetLicense reads a tenant's licence for a package (type, name) of a source, outside a transaction
-// (the DuckDB routes: a channel serves its type's licences, of the source it selects for the name).
-func (s *Store) GetLicense(ctx context.Context, tenantID, packageType, name, owner string) (License, error) {
+// GetLicense reads a tenant's licence for a package (type, name) in an entry, outside a transaction
+// (the DuckDB routes: a channel serves its type's licences, of the entry it serves the name from).
+func (s *Store) GetLicense(ctx context.Context, tenantID, packageType, name, entry string) (License, error) {
 	l, err := scanLicense(s.db.QueryRowContext(ctx, s.d.rebind("SELECT "+licenseCols+
-		" FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ? AND owner_source = ?"), tenantID, packageType, name, owner))
+		" FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ? AND entry_source = ?"), tenantID, packageType, name, entry))
 	return l, notFound(err, "licence "+name)
 }
 
-// NameLicenses lists a tenant's licences of a package (type, name), one per source, by source.
+// NameLicenses lists a tenant's licences of a package (type, name), one per entry, by entry.
 func (t *Tx) NameLicenses(ctx context.Context, tenantID, packageType, name string) ([]License, error) {
-	return t.licenses(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ? ORDER BY owner_source",
+	return t.licenses(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ? ORDER BY entry_source",
 		tenantID, packageType, name)
 }
 
@@ -100,9 +95,9 @@ func (t *Tx) licenses(ctx context.Context, q string, args ...any) ([]License, er
 	return out, rows.Err()
 }
 
-// ListLicenses lists a tenant's licences of a type by name and source.
+// ListLicenses lists a tenant's licences of a type by name and entry.
 func (s *Store) ListLicenses(ctx context.Context, tenantID, packageType string) ([]License, error) {
-	rows, err := s.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND package_type = ? ORDER BY name, owner_source",
+	rows, err := s.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND package_type = ? ORDER BY name, entry_source",
 		tenantID, packageType)
 	if err != nil {
 		return nil, err
@@ -163,7 +158,7 @@ func (t *Tx) CheckLicenseHolder(ctx context.Context, tenantID, holderID string) 
 // compares here, byte for byte, as CheckLicenseHolder does: SQL Server's comparison ignores
 // trailing spaces.
 func (t *Tx) OtherHolderLicenses(ctx context.Context, tenantID, holderID string) ([]License, error) {
-	rows, err := t.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? ORDER BY name, owner_source", tenantID)
+	rows, err := t.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? ORDER BY name, entry_source", tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -194,9 +189,9 @@ func (t *Tx) SetTenantHolder(ctx context.Context, tn *Tenant, holder string) err
 		[]any{nullable(holder), tn.ID, tn.Version}, func() { tn.HolderID = holder; tn.Version++ })
 }
 
-// PutLicense stores a licence for its name and source (Owner, spec 0033 phase B): a new row, or a
-// replacement of the row at version expected (ErrConflict otherwise; 0 when there is none). The
-// caller holds the tenant's licence lock and has verified the licence. A licence of another holder than its tenant expects is
+// PutLicense stores a licence in its entry (spec 0035): a new row, or a replacement of the row at
+// version expected (ErrConflict otherwise; 0 when there is none). The caller holds the tenant's
+// licence lock and has verified the licence. A licence of another holder than its tenant expects is
 // refused here, whatever the path (spec 0028: a *HolderMismatch, nothing written).
 func (t *Tx) PutLicense(ctx context.Context, l *License, expected int64) error {
 	if err := t.CheckLicenseHolder(ctx, l.TenantID, l.HolderID); err != nil {
@@ -208,14 +203,14 @@ func (t *Tx) PutLicense(ctx context.Context, l *License, expected int64) error {
 	if !pkgtype.Known(l.PackageType) {
 		return fmt.Errorf("%w: package type %q", ErrInvalid, l.PackageType)
 	}
-	if !ValidLicenseOwner(l.Owner) {
-		return fmt.Errorf("%w: a licence's source %q", ErrInvalid, l.Owner)
+	if !ValidLicenseEntry(l.Entry) {
+		return fmt.Errorf("%w: a licence's entry %q", ErrInvalid, l.Entry)
 	}
 	l.UpdatedAt = t.Now()
 	if expected == 0 {
 		l.Version = 1
 		_, err := t.exec(ctx, "INSERT INTO licenses ("+licenseCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			l.TenantID, l.PackageType, l.Name, l.Owner, l.LicenseID, l.Issuer, l.HolderID, l.Holder, l.Plan, l.Token, l.Key, l.IssuedAt, l.ExpiresAt, l.GraceUntil,
+			l.TenantID, l.PackageType, l.Name, l.Entry, l.LicenseID, l.Issuer, l.HolderID, l.Holder, l.Plan, l.Token, l.Key, l.IssuedAt, l.ExpiresAt, l.GraceUntil,
 			l.Source, nullable(l.UpstreamID), l.Visibility, l.Actor, t.s.d.timeArg(l.UpdatedAt), l.Version)
 		if err := t.s.mapErr(err, "licence "+l.Name); errors.Is(err, ErrExists) {
 			return ErrConflict
@@ -226,9 +221,9 @@ func (t *Tx) PutLicense(ctx context.Context, l *License, expected int64) error {
 	}
 	return t.cas(ctx, `UPDATE licenses SET license_id = ?, issuer = ?, holder_id = ?, holder = ?, plan_name = ?, token = ?, key_fp = ?,
 issued_at = ?, expires_at = ?, grace_until = ?, source = ?, upstream_id = ?, visibility = ?, actor = ?, updated_at = ?, version = version + 1
-WHERE tenant_id = ? AND package_type = ? AND name = ? AND owner_source = ? AND version = ?`,
+WHERE tenant_id = ? AND package_type = ? AND name = ? AND entry_source = ? AND version = ?`,
 		[]any{l.LicenseID, l.Issuer, l.HolderID, l.Holder, l.Plan, l.Token, l.Key, l.IssuedAt, l.ExpiresAt, l.GraceUntil, l.Source,
-			nullable(l.UpstreamID), l.Visibility, l.Actor, t.s.d.timeArg(l.UpdatedAt), l.TenantID, l.PackageType, l.Name, l.Owner, expected},
+			nullable(l.UpstreamID), l.Visibility, l.Actor, t.s.d.timeArg(l.UpdatedAt), l.TenantID, l.PackageType, l.Name, l.Entry, expected},
 		func() { l.Version = expected + 1 })
 }
 
@@ -236,19 +231,9 @@ WHERE tenant_id = ? AND package_type = ? AND name = ? AND owner_source = ? AND v
 func (t *Tx) SetLicenseVisibility(ctx context.Context, l *License, visibility, actor string, expected int64) error {
 	now := t.Now()
 	return t.cas(ctx, `UPDATE licenses SET visibility = ?, actor = ?, updated_at = ?, version = version + 1
-WHERE tenant_id = ? AND package_type = ? AND name = ? AND owner_source = ? AND version = ?`,
-		[]any{visibility, actor, t.s.d.timeArg(now), l.TenantID, l.PackageType, l.Name, l.Owner, expected},
+WHERE tenant_id = ? AND package_type = ? AND name = ? AND entry_source = ? AND version = ?`,
+		[]any{visibility, actor, t.s.d.timeArg(now), l.TenantID, l.PackageType, l.Name, l.Entry, expected},
 		func() { l.Visibility, l.Actor, l.UpdatedAt, l.Version = visibility, actor, now, expected+1 })
-}
-
-// RebindLicense makes a relayed licence its relaying upstream's (compare-and-set on its version): the
-// same token, relayed now by the upstream that owns its key, where another relayed it before.
-func (t *Tx) RebindLicense(ctx context.Context, l *License, upstreamID string) error {
-	now := t.Now()
-	return t.cas(ctx, `UPDATE licenses SET upstream_id = ?, updated_at = ?, version = version + 1
-WHERE tenant_id = ? AND package_type = ? AND name = ? AND owner_source = ? AND version = ?`,
-		[]any{upstreamID, t.s.d.timeArg(now), l.TenantID, l.PackageType, l.Name, l.Owner, l.Version},
-		func() { l.UpstreamID, l.UpdatedAt, l.Version = upstreamID, now, l.Version+1 })
 }
 
 // DeleteLicense removes a licence (compare-and-set on its version; 0 skips the check).
@@ -256,19 +241,16 @@ func (t *Tx) DeleteLicense(ctx context.Context, l License, expected int64) error
 	if expected == 0 {
 		expected = l.Version
 	}
-	return t.cas(ctx, "DELETE FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ? AND owner_source = ? AND version = ?",
-		[]any{l.TenantID, l.PackageType, l.Name, l.Owner, expected}, func() {})
+	return t.cas(ctx, "DELETE FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ? AND entry_source = ? AND version = ?",
+		[]any{l.TenantID, l.PackageType, l.Name, l.Entry, expected}, func() {})
 }
 
-// UpstreamLicenses lists the licences an upstream of a tenant governs (spec 0033 phase B): those
-// relayed (source upstream) of its source, whichever upstream relayed them (one migration 0042 gave
-// it, an administrator moved to it), and those it relayed of none (unknown, since migration 0042).
-// One an administrator moved with its key to another source is that source's, and neither the
-// relay's revocation nor the upstream's removal takes it; nor do they take an import.
+// UpstreamLicenses lists the licences an upstream of a tenant governs (spec 0035): those relayed
+// (source upstream) in its own entry. Neither the relay's revocation nor the upstream's removal
+// takes an import, nor another entry's copy.
 func (t *Tx) UpstreamLicenses(ctx context.Context, tenantID, upstreamID string) ([]License, error) {
-	rows, err := t.query(ctx, "SELECT "+licenseCols+` FROM licenses WHERE tenant_id = ? AND source = ?
-AND (owner_source = ? OR owner_source = ? AND upstream_id = ?) ORDER BY name, owner_source`,
-		tenantID, LicenseUpstream, UpstreamSource(upstreamID), LicenseUnknown, upstreamID)
+	rows, err := t.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE tenant_id = ? AND source = ? AND entry_source = ? ORDER BY name",
+		tenantID, LicenseUpstream, UpstreamSource(upstreamID))
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +269,7 @@ AND (owner_source = ? OR owner_source = ? AND upstream_id = ?) ORDER BY name, ow
 // ExpiredLicenses lists, across tenants, the licences whose grace ended before now (seconds), of the
 // types this binary knows.
 func (s *Store) ExpiredLicenses(ctx context.Context, now int64) ([]License, error) {
-	rows, err := s.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE grace_until <= ? ORDER BY tenant_id, package_type, name, owner_source", now)
+	rows, err := s.query(ctx, "SELECT "+licenseCols+" FROM licenses WHERE grace_until <= ? ORDER BY tenant_id, package_type, name, entry_source", now)
 	if err != nil {
 		return nil, err
 	}

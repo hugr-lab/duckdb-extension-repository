@@ -122,10 +122,10 @@ type xsource struct {
 	filters map[[3]string][]string // the plan cells' versions
 }
 
-// owners are the sources whose licences of a name the source carries (spec 0033 phase B: a
-// licence is of the source that owns its key): its mirrors', in their order, or the source its own
-// channel serves the name from.
-func (src *xsource) owners(name string) []string {
+// entries are the entries whose licences of a name the source carries (spec 0035: a licence is
+// of its catalogue entry): its mirrors', in their order, or the one its own channel serves the name
+// from.
+func (src *xsource) entries(name string) []string {
 	if src.ch != nil {
 		if s, ok := src.ch.snap.Selected[name]; ok {
 			return []string{s}
@@ -287,7 +287,7 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 			bs.Cells = append(bs.Cells, c)
 		}
 		if held != nil && bs.Kind == store.UpstreamRepo {
-			bs.Licenses, src.out.Licenses, src.out.LicensesLeftOut = carry(bs.Cells, held, src.owners)
+			bs.Licenses, src.out.Licenses, src.out.LicensesLeftOut = carry(bs.Cells, held, src.entries)
 			carried += len(bs.Licenses)
 		}
 		m.Sources = append(m.Sources, bs)
@@ -430,16 +430,16 @@ func (s *Service) exportable(ctx context.Context, t store.Tenant, plan *bundle.P
 
 // carry picks a source's licences: those of names whose files it carries or the site holds, by
 // name, at most bundle.MaxLicenses; left are the ones over.
-func carry(cells []bundle.Cell, held []store.License, owners func(name string) []string) (out []bundle.License, shown []ExportLicense, left int) {
+func carry(cells []bundle.Cell, held []store.License, entries func(name string) []string) (out []bundle.License, shown []ExportLicense, left int) {
 	names := map[string]bool{}
 	for _, c := range cells {
 		if c.Outcome == bundle.Fetched || c.Outcome == bundle.Unchanged {
 			names[c.Name] = true
 		}
 	}
-	// spec 0033 phase B: a name's licence of the source the files come from, the first of them
-	// that holds one (a name once)
-	rank := func(l store.License) int { return slices.Index(owners(l.Name), l.Owner) }
+	// spec 0035: a name's licence of the entry the files come from, the first of them that holds one
+	// (a name once)
+	rank := func(l store.License) int { return slices.Index(entries(l.Name), l.Entry) }
 	ls := slices.Clone(held)
 	slices.SortFunc(ls, func(a, b store.License) int {
 		return cmp.Or(strings.Compare(a.Name, b.Name), cmp.Compare(rank(a), rank(b)))

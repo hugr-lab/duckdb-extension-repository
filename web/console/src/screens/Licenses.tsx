@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Badge, Button, Card, Confirm, Empty, ErrorBox, Loading, Mono, Note, PageTitle, Table, when } from '../components/ui'
+import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Table, when } from '../components/ui'
 import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
@@ -9,12 +9,14 @@ import type { Upstream } from './Upstreams'
 // Licences (spec 0012 phase 1d): the tenant's licences, imported by its administrators or relayed
 // from its credentialed upstreams. kista issues none: it stores what verifies against a key the
 // extension's live builds declare (spec 0021: their key blocks, recorded from a marked publisher or
-// a repository upstream) and serves it to the extensions' SDK.
+// a repository upstream) and serves it to the extensions' SDK. A licence belongs to a catalogue
+// entry (spec 0035): a source's builds of the name, which every write names.
 
 export interface License {
   name: string
-  /** The licence's source (spec 0033 phase B): the source that owns its key for the name. */
-  owner: string
+  /** The licence's catalogue entry, by its source (spec 0035): upstream:<name>, publisher:<name>, or
+   * a removed source's id form. */
+  entry: string
   id: string
   issuer: string
   holder_id: string
@@ -33,45 +35,78 @@ export interface License {
   etag: string
 }
 
-/** A licence key of a name's live builds, the trusted sources that brought it, and how many live
- * builds declare it (spec 0021). */
+/** An entry a key is live for (spec 0035): its source, by kind and name (a distributor's publisher's
+ * with its distributor), and how many of its builds declare the key. */
+export interface KeySource {
+  kind: 'publisher' | 'upstream'
+  name: string
+  distributor?: string
+  builds: number
+}
+
+/** The licence keys of a name's live builds, each with the entries it is live for: what an import
+ * into each accepts (spec 0021, 0035). */
 export interface NameKeys {
   name: string
-  keys: { kid: string; sources: { kind: 'publisher' | 'upstream'; name: string }[]; builds: number; owner?: string }[]
+  keys: { kid: string; sources: KeySource[] }[]
 }
 
-/** A licence's key in the list: a name has a licence per source (spec 0033 phase B). */
-export function licenseKey(l: Pick<License, 'name' | 'owner'>) {
-  return `${l.name} ${l.owner}`
+/** A licence's key in the list: a name has a licence per entry (spec 0035). */
+export function licenseKey(l: Pick<License, 'name' | 'entry'>) {
+  return `${l.name} ${l.entry}`
 }
 
-/** A licence's route, by its source (spec 0033 phase B): the licence, or one of its actions
- * (public, private), the source in the query after the path. */
-export function licensePath(api: string, l: Pick<License, 'name' | 'owner'>, action?: 'public' | 'private') {
-  return `${api}/licenses/${seg(l.name)}${action ? `/${action}` : ''}?source=${encodeURIComponent(l.owner)}`
+/** A licence's route, by its entry (spec 0035): the licence, or one of its actions (public,
+ * private), the entry in the query after the path. */
+export function licensePath(api: string, l: Pick<License, 'name' | 'entry'>, action?: 'public' | 'private') {
+  return `${api}/licenses/${seg(l.name)}${action ? `/${action}` : ''}?source=${encodeURIComponent(l.entry)}`
 }
 
-/** The sources of a key in a line: publisher acl-ci · upstream enterest. */
-export function sourcesLine(sources: NameKeys['keys'][number]['sources']) {
-  return sources.map((s) => `${s.kind} ${s.name}`).join(' · ')
+/** An import's route: into the entry it names (spec 0035, required). */
+export function importPath(api: string, entry: string) {
+  return `${api}/licenses?source=${encodeURIComponent(entry)}`
 }
 
-/** Whether a licence's key is a live key of its source (spec 0033 phase B): the source brought a
- * live build declaring it. The key's owner's licence, or the very same licence another upstream of
- * the product relayed, is served where its source is; one signed with another key, of a removed
- * source or of none (unknown) is served nowhere. */
-export function declared(keys: NameKeys[], l: Pick<License, 'name' | 'key' | 'owner'>) {
-  return keys.some((n) => n.name === l.name && n.keys.some((k) => k.kid === l.key && k.sources.some((s) => `${s.kind}:${s.name}` === l.owner)))
+/** An entry as the licence routes name it: upstream:<name>, publisher:<name>. */
+export function entryOf(s: Pick<KeySource, 'kind' | 'name'>) {
+  return `${s.kind}:${s.name}`
 }
 
-/** The stored licence an import of a licence file replaces (spec 0033 phase B): the one of the
- * source that owns its key for the name, or where that source holds none, one of unknown source
- * signed with the same key. undefined: the import stores a new one. */
-export function replaced(licenses: License[], keys: NameKeys[] | undefined, ext: string, kid?: string): License | undefined {
-  const owner = kid ? keys?.find((n) => n.name === ext)?.keys.find((k) => k.kid === kid)?.owner : undefined
-  if (!owner) return undefined
-  const named = licenses.filter((l) => l.name === ext)
-  return named.find((l) => l.owner === owner) ?? named.find((l) => l.owner === 'unknown' && l.key === kid)
+/** What an entry's source is, in words: an upstream, a publisher, or a distributor's publisher. */
+export function entryKind(s: KeySource) {
+  if (s.kind === 'upstream') return 'upstream'
+  return s.distributor ? `${s.distributor}'s publisher (a distributor)` : 'publisher'
+}
+
+/** The entries of a key in a line: publisher acl-ci (2 builds) · upstream enterest (1 build). */
+export function sourcesLine(sources: KeySource[]) {
+  return sources.map((s) => `${s.kind} ${s.name} (${s.builds} ${s.builds === 1 ? 'build' : 'builds'}${s.distributor ? `, distributor ${s.distributor}` : ''})`).join(' · ')
+}
+
+/** Whether a licence's key is a live key of its entry (spec 0035): a live build of the entry, or
+ * its newest available version, declares it. A licence signed with another key, or of a removed
+ * source, is served nowhere. */
+export function declared(keys: NameKeys[], l: Pick<License, 'name' | 'key' | 'entry'>) {
+  return keys.some((n) => n.name === l.name && n.keys.some((k) => k.kid === l.key && k.sources.some((s) => entryOf(s) === l.entry)))
+}
+
+/** The entries a licence of a name signed with kid would be accepted into: those its key is live
+ * for (spec 0035). */
+export function entriesFor(keys: NameKeys[] | undefined, ext: string, kid?: string): KeySource[] {
+  if (!kid) return []
+  return keys?.find((n) => n.name === ext)?.keys.find((k) => k.kid === kid)?.sources ?? []
+}
+
+/** The entry an import preselects: the only one listing the key, never one among several (spec
+ * 0035: a copied key is another entry, and the choice is the administrator's). */
+export function preselect(entries: KeySource[]) {
+  return entries.length === 1 ? entryOf(entries[0]) : ''
+}
+
+/** The stored licence an import into an entry replaces (spec 0035): the name's licence in that
+ * entry. undefined: the import stores a new one. */
+export function replaced(licenses: License[], ext: string, entry: string): License | undefined {
+  return entry ? licenses.find((l) => l.name === ext && l.entry === entry) : undefined
 }
 
 interface SyncResult {
@@ -161,9 +196,9 @@ export function Licenses() {
               )],
               ['Status', (l) => (
                 <span className="flex flex-wrap items-center gap-2"><Badge>{l.status}</Badge>
-                  {nks && !declared(nks, l) && <span className="text-[13px] text-warning">not served: its key is no live key of its source</span>}</span>
+                  {nks && !declared(nks, l) && <span className="text-[13px] text-warning">no live build of its entry declares its key</span>}</span>
               )],
-              ['Of', (l) => <Mono>{l.owner}</Mono>],
+              ['Entry', (l) => <Mono>{l.entry}</Mono>],
             ]}
           />
         )}
@@ -201,7 +236,7 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
     ['Expires', when(l.expires_at)],
     ['Grace until', when(l.grace_until)],
     ['Signed by', <Mono>{l.key}</Mono>],
-    ['Of', <><Mono>{l.owner}</Mono>: the source that owns the key for {l.name}; a channel serves it where it serves {l.name} from that source</>],
+    ['Entry', <><Mono>{l.entry}</Mono>: the catalogue entry it belongs to; a channel serves it where it serves {l.name} from this entry</>],
     ['Source', l.source === 'upstream' ? <>relayed from upstream <Link className="font-mono" to={`${base}/upstreams/${seg(l.upstream ?? '')}`}>{l.upstream}</Link></> : 'imported'],
   ]
   return (
@@ -239,9 +274,10 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
   )
 }
 
-/** Import a licence file; the stored licence it replaces (of the source that owns its key) is
- * replaced after a confirmation. A refusal reads the list and the keys again: a licence a relay
- * stored meanwhile, a changed ETag or a key's new owner is then what the next try replaces. */
+/** Import a licence file into a catalogue entry (spec 0035): the entries whose live keys include
+ * the file's key are listed, the only one preselected (never one among several); another may be
+ * named, and kista refuses it unless its keys verify the licence. The licence stored in that entry is
+ * replaced after a confirmation. A refusal reads the list and the keys again. */
 function Import({ licenses, keys, onImported, onStale }: {
   licenses: License[]; keys?: NameKeys[]; onImported: (key: string) => void; onStale: () => void
 }) {
@@ -249,68 +285,106 @@ function Import({ licenses, keys, onImported, onStale }: {
   const file = useRef<HTMLInputElement>(null)
   const [token, setToken] = useState('')
   const [bad, setBad] = useState(false)
+  const [choice, setChoice] = useState('') // a listed entry, or 'other'
+  const [other, setOther] = useState('')
   const [replacing, setReplacing] = useState(false)
   const { busy, failure, act } = useAction()
   const p = token ? peek(token) : null
-  // the licence it replaces: of the source that owns its key for the name (spec 0033 phase B)
-  const stored = p ? replaced(licenses, keys, p.ext, p.kid) : undefined
+  const listed = p ? entriesFor(keys, p.ext, p.kid) : []
+  const entry = choice === 'other' || listed.length === 0 ? other.trim() : choice
+  const stored = p ? replaced(licenses, p.ext, entry) : undefined
   const pick = async (f?: File) => {
     setToken('')
     setBad(false)
+    setChoice('')
+    setOther('')
     if (!f) return
     if (f.size > 16384) {
       setBad(true)
       return
     }
     const t = (await f.text()).trim()
-    setBad(peek(t) === null)
+    const q = peek(t)
+    setBad(q === null)
+    setChoice(q ? preselect(entriesFor(keys, q.ext, q.kid)) : '')
     setToken(t)
   }
   const send = async () => {
     setReplacing(false)
     const ok = await act(async () => {
-      const r = await client.post<License>(`${api}/licenses`, { raw: { body: new Blob([token]), type: 'application/jwt' }, ifMatch: stored?.etag })
+      const r = await client.post<License>(importPath(api, entry), { raw: { body: new Blob([token]), type: 'application/jwt' }, ifMatch: stored?.etag })
       onImported(licenseKey(r.data))
       return r
     })
     if (ok) {
       setToken('')
+      setChoice('')
+      setOther('')
       if (file.current) file.current.value = ''
     } else onStale()
   }
+  const otherInput = (
+    <input className="field font-mono" aria-label="other entry" placeholder="upstream:<name> or publisher:<name>" value={other}
+      onChange={(e) => { setOther(e.target.value); if (listed.length > 0) setChoice('other') }} />
+  )
   return (
     <Card title="Import a licence">
       <div className="flex flex-col gap-3">
-        <Note>For an air-gapped site, or a licence received by other means. It must be in force and verify against a key that a live build of its extension declares (Licence keys, below).</Note>
+        <Note>For an air-gapped site, or a licence received by other means. It goes into one catalogue entry, a source's builds of its extension: it must be in force and verify against a key that a live build of that entry declares (Licence keys, below).</Note>
         <input ref={file} aria-label="licence file" type="file" onChange={(e) => pick(e.target.files?.[0])} />
         {bad && <ErrorBox error="This file is no licence." />}
         {p && !bad && (
-          <p className="m-0">For <Mono>{p.ext}</Mono>{p.plan ? `, plan ${p.plan}` : ''}{p.holder ? `, held by ${p.holder}` : ''}{p.exp ? `, until ${when(new Date(p.exp * 1000).toISOString())}` : ''}.
-            {stored && <span className="text-warning"> It replaces the licence stored for {p.ext} of {stored.owner} ({stored.source === 'upstream' ? `relayed from ${stored.upstream}` : 'imported'}).</span>}</p>
+          <>
+            <p className="m-0">For <Mono>{p.ext}</Mono>{p.plan ? `, plan ${p.plan}` : ''}{p.holder ? `, held by ${p.holder}` : ''}{p.exp ? `, until ${when(new Date(p.exp * 1000).toISOString())}` : ''}.</p>
+            {listed.length > 0 ? (
+              <div role="radiogroup" aria-label="entry" className="flex flex-col gap-1.5">
+                <span className="text-[13px] font-semibold text-ink">Into the entry{listed.length > 1 ? ': several declare its key, choose one' : ''}</span>
+                {listed.map((s) => (
+                  <label key={entryOf(s)} className="flex items-center gap-2 text-[13px]">
+                    <input type="radio" name="entry" value={entryOf(s)} checked={choice === entryOf(s)} onChange={() => setChoice(entryOf(s))} />
+                    <Mono>{entryOf(s)}</Mono><span className="text-ink-muted">{entryKind(s)}</span>
+                  </label>
+                ))}
+                <div className="flex items-center gap-2 text-[13px]">
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="entry" value="other" checked={choice === 'other'} onChange={() => setChoice('other')} />
+                    <span>another entry</span>
+                  </label>
+                  {otherInput}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                <Note>No entry's live builds declare this licence's key: kista refuses it unless the entry you name declares it.</Note>
+                <Field label="Into the entry">{otherInput}</Field>
+              </div>
+            )}
+            {stored && <p className="m-0 text-warning">It replaces the licence stored for {p.ext} in {stored.entry} ({stored.source === 'upstream' ? `relayed from ${stored.upstream}` : 'imported'}).</p>}
+          </>
         )}
         {failure != null && <ErrorBox error={failure} />}
-        <div><Button tone="brand" disabled={busy || !p || bad} onClick={() => (stored ? setReplacing(true) : send())}>{stored ? 'Replace…' : 'Import'}</Button></div>
+        <div><Button tone="brand" disabled={busy || !p || bad || !entry} onClick={() => (stored ? setReplacing(true) : send())}>{stored ? 'Replace…' : 'Import'}</Button></div>
       </div>
-      <Confirm open={replacing} title={`Replace the licence for ${p?.ext ?? ''}?`} confirm="Replace" danger onConfirm={send} onClose={() => setReplacing(false)}>
+      <Confirm open={replacing} title={`Replace the licence for ${p?.ext ?? ''} in ${entry}?`} confirm="Replace" danger onConfirm={send} onClose={() => setReplacing(false)}>
         <p>The stored licence goes; extensions get this one at their next load. Its visibility stays.</p>
       </Confirm>
     </Card>
   )
 }
 
-/** The licence keys of the tenant's live builds, by name, with their sources (spec 0021). */
+/** The licence keys of the tenant's live builds, by name, with the entries each is live for (spec
+ * 0021, 0035). */
 function Keys({ names, loading, error, reload }: { names?: NameKeys[]; loading: boolean; error?: unknown; reload: () => void }) {
   const rows = (names ?? []).flatMap((n) => n.keys.map((k) => ({ name: n.name, ...k })))
   return (
     <Card title="Licence keys" actions={<Button onClick={reload}>Refresh</Button>}>
       <div className="flex flex-col gap-3">
-        <Note>The keys licences verify against: those declared in the key blocks of live builds, recorded when a trusted source brought the build (a publisher a server administrator marked, or a repository upstream). A build published another way declares nothing here.</Note>
+        <Note>The keys licences verify against: those declared in the key blocks of live builds, recorded when a trusted source brought the build (a publisher a server administrator marked, or a repository upstream). Each is listed with the entries it is live for: an import into one of them accepts it. A key live for several entries is declared by several sources. A build published another way declares nothing here.</Note>
         {loading && !names ? <Loading /> : error ? <ErrorBox error={error} /> : rows.length === 0 ? <Empty>No live build declares a licence key.</Empty> : (
           <Table rows={rows} rowKey={(r) => `${r.name}|${r.kid}`} columns={[
             ['Extension', (r) => <Mono>{r.name}</Mono>],
             ['Key', (r) => <Mono>{r.kid}</Mono>],
-            ['Builds', (r) => r.builds],
-            ['Sources', (r) => <span className="text-[13px]">{sourcesLine(r.sources)}</span>],
+            ['Entries', (r) => <span className="text-[13px]">{sourcesLine(r.sources)}</span>],
           ]} />
         )}
       </div>

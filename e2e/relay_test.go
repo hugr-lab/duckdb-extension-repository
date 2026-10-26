@@ -22,6 +22,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
@@ -30,6 +31,8 @@ import (
 // Spec 0021: kista_demo, published to one kista by a marked publisher with a licence imported
 // there, is mirrored by a second kista, which records its key from the repository upstream and
 // relays the licence; the pinned DuckDB installs it from the second kista and is licensed there.
+// Spec 0035: a second upstream of the same remote mirrors it into another channel and relays the
+// licence into its own entry; DuckDB is licensed from both channels.
 func TestSDKLicenseRelay(t *testing.T) {
 	b := needBuild(t)
 	if ext, ok := b.extensions["kista_demo"]; !ok || ext == "" {
@@ -54,7 +57,7 @@ func TestSDKLicenseRelay(t *testing.T) {
 	tok := vectors.Sign(signKey, vectors.Header(signKey), fmt.Sprintf(`{"v":1,"iss":"https://issuer.example","jti":"lic-relay",`+
 		`"sub":"acme","holder":"Acme Test","ext":"kista_demo","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}`,
 		now-60, now+30*86400))
-	if _, err := src.licenses.Import(ctx, serveAdmin, "acme", "", tok, licenses.Create); err != nil {
+	if _, err := src.licenses.Import(ctx, serveAdmin, "acme", "", "publisher:issuer-ci", tok, licenses.Create); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,27 +103,68 @@ func TestSDKLicenseRelay(t *testing.T) {
 	if err != nil || res.Counts["stored"] != 1 {
 		t.Fatalf("the relay: %+v %v", res, err)
 	}
-	if ks, err := dst.licenses.LicenseKeys(ctx, serveAdmin, "acme", "", "kista_demo"); err != nil || len(ks) != 1 ||
-		ks[0].Keys[0].Kid != vectors.Kid(&signKey.PublicKey) || ks[0].Keys[0].Sources[0] != (store.KeySource{Kind: "upstream", Name: "src"}) {
+	if ks, err := dst.licenses.LicenseKeys(ctx, serveAdmin, "acme", "", "kista_demo", ""); err != nil || len(ks) != 1 ||
+		ks[0].Keys[0].Kid != vectors.Kid(&signKey.PublicKey) || len(ks[0].Keys[0].Sources) != 1 ||
+		ks[0].Keys[0].Sources[0].Kind != "upstream" || ks[0].Keys[0].Sources[0].Name != "src" {
 		t.Fatalf("the downstream's keys: %+v %v", ks, err)
 	}
 
-	// installed from the downstream: the relayed licence is served and valid
+	// spec 0035: a second upstream of the remote, mirroring into nightly, relays into its own entry
+	if _, err := dst.ten.CreateChannel(ctx, serveAdmin, "acme", "nightly", store.ChannelSigned, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dst.ten.SetChannelVersions(ctx, serveAdmin, "acme", "nightly", []string{b.versionDir}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := signer.GenerateKeyFile(filepath.Join(dst.keyDir, "n.pem")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dst.keys.Add(ctx, serveAdmin, "acme", "nightly", "file:n.pem", true); err != nil {
+		t.Fatal(err)
+	}
+	adm := &tenants.AuthAdmin{Store: dst.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: "https://" + dst.addr}
+	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "nightly"}); err != nil {
+		t.Fatal(err)
+	}
+	u2, err := up.Add(ctx, serveAdmin, "acme", upstream.Spec{Name: "src-nightly", Kind: store.UpstreamRepo, Prefix: "https://localhost:" + port + "/acme/prod",
+		Channel: "nightly", Credential: "src", Keys: []string{src.activeKey(t).Fingerprint}, Platforms: []string{b.platform},
+		Entries: []store.UpstreamEntry{{Name: "kista_demo"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := up.Sync(ctx, serveAdmin, "acme", "src-nightly", false); err != nil {
+		t.Fatal(err)
+	}
+	(&upstream.Runner{Service: up, Holder: "e2e", Log: slog.New(slog.DiscardHandler)}).Once(ctx)
+	if res, err := dst.licenses.RunUpstream(ctx, u2.ID); err != nil || res.Counts["stored"] != 1 {
+		t.Fatalf("the second upstream's relay: %+v %v", res, err)
+	}
+	if ks, err := dst.licenses.LicenseKeys(ctx, serveAdmin, "acme", "", "kista_demo", ""); err != nil || len(ks) != 1 || len(ks[0].Keys[0].Sources) != 2 {
+		t.Fatalf("the downstream's keys, two entries: %+v %v", ks, err)
+	}
+	if vs, err := dst.licenses.List(ctx, serveAdmin, "acme", "", ""); err != nil || len(vs) != 2 {
+		t.Fatalf("the downstream's licences, one per entry: %+v %v", vs, err)
+	}
+
+	// installed from the downstream, from either channel: the relayed licence is served and valid
 	pemKey := dst.pem(t, dst.activeKey(t))
-	r := newSession(t, b, map[string]string{"extension_directory": t.TempDir()}).exec(
-		createRepo("boot", dst.httpURL(), pemKey),
-		"INSTALL httpfs FROM boot",
-		"LOAD httpfs FROM boot",
-		"SET ca_cert_file = "+sqlString(testCA(t).caFile),
-		createRepo("m", dst.httpsURL(), pemKey),
-		"CREATE SECRET s (TYPE http, BEARER_TOKEN "+sqlString(idp.token(t, "alice", "api://kista-dst"))+", SCOPE "+sqlString(dst.httpsURL()+"/")+")",
-		"INSTALL kista_demo FROM m",
-		"LOAD kista_demo FROM m",
-		"SELECT status, plan, source FROM kista_demo_license()",
-	)
-	mustOK(t, r)
-	if got := r[len(r)-1].Rows; len(got) != 1 || got[0][0] != "valid" || got[0][1] != "pro" || got[0][2] != "repository" {
-		t.Fatalf("the licence from the downstream: %v", got)
+	for _, channel := range []string{"prod", "nightly"} {
+		url := "https://" + dst.addr + "/acme/" + channel
+		r := newSession(t, b, map[string]string{"extension_directory": t.TempDir()}).exec(
+			createRepo("boot", dst.httpURL(), pemKey),
+			"INSTALL httpfs FROM boot",
+			"LOAD httpfs FROM boot",
+			"SET ca_cert_file = "+sqlString(testCA(t).caFile),
+			createRepo("m", url, dst.pem(t, activeKeyOf(t, dst, channel))),
+			"CREATE SECRET s (TYPE http, BEARER_TOKEN "+sqlString(idp.token(t, "alice", "api://kista-dst"))+", SCOPE "+sqlString(url+"/")+")",
+			"INSTALL kista_demo FROM m",
+			"LOAD kista_demo FROM m",
+			"SELECT status, plan, source FROM kista_demo_license()",
+		)
+		mustOK(t, r)
+		if got := r[len(r)-1].Rows; len(got) != 1 || got[0][0] != "valid" || got[0][1] != "pro" || got[0][2] != "repository" {
+			t.Fatalf("the licence from the downstream's %s: %v", channel, got)
+		}
 	}
 }
 

@@ -12,7 +12,7 @@ import (
 
 // testLicense is a licence row of a holder, as a verified import would store it.
 func testLicense(tenantID, name, holder string) store.License {
-	return store.License{TenantID: tenantID, Name: name, Owner: store.LicenseUnknown, LicenseID: "lic-" + name, Issuer: "https://issuer.example", HolderID: holder,
+	return store.License{TenantID: tenantID, Name: name, Entry: store.PublisherSource("ci"), LicenseID: "lic-" + name, Issuer: "https://issuer.example", HolderID: holder,
 		Holder: "Holder", Plan: "pro", Token: "t." + name, Key: "kid", IssuedAt: 1, ExpiresAt: 4102444800, GraceUntil: 4103049600,
 		Source: store.LicenseImport, Visibility: store.Private, Actor: "os:1:test"}
 }

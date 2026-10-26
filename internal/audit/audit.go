@@ -200,10 +200,6 @@ var catalogue = map[Kind][]string{
 	"license.change": {"name", "license", "visibility", "package_type", "source"},
 	"license.remove": {"name", "license", "reason", "package_type", "source"},
 	"license.sync":   {"upstream", "counts", "error", "refused"},
-	// a licence key's owner for a name (spec 0033 phase B): its first recorder's, or an
-	// administrator's act moving the licences signed with it; another source declaring it
-	"license.key_owner":    {"name", "kid", "source", "before", "first", "package_type", "moved"},
-	"license.key_conflict": {"name", "kid", "source", "owner", "package_type"},
 	// bundles (spec 0014): targets last, since a truncated event keeps its first fields; a bundle's
 	// licences (spec 0021) before them
 	"bundle.import":          {"import", "manifest", "created_at", "exporter", "bundle_key", "input_sha256", "dry_run", "state", "licenses", "targets"},

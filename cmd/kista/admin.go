@@ -193,19 +193,21 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved] [-eager]
   upstream extension remove <tenant> <name> <extension>
   upstream platform|key add|remove <tenant> <name> <platform|fingerprint>
-  license keys <tenant> [<name>] [-type t]        the live licence keys of the tenant's builds, by name, with the
-                                                  sources that brought them and each key's owner (spec 0033)
-  license owner <tenant> <name> <kid> <source> [-type t]   give a key of a name to a source that declares it
-                                                  (upstream:<name>, publisher:<name>); its licences move with it
+  license keys <tenant> [<name>] [-source s] [-type t]   the live licence keys of the tenant's builds, by name, each
+                                                  with the entries it is live for and their builds declaring
+                                                  it: what an import into each accepts (spec 0035)
   license list <tenant> [-source s] [-type t]
   license show|token <tenant> <name> [-source s] [-type t]   a licence's claims and state, or its token as
-                                                  received; -source: the licence's source, where the
-                                                  extension has licences of several (spec 0033)
-  license import <tenant> <file|-> [-replace] [-type t]   store a licence (a compact JWS) under the extension it
-                                                  names, for the source that owns its key; -replace replaces
-                                                  the licence stored for that extension and source;
-                                                  -type: its package type (spec 0034), duckdb_extension by default
-  license remove|public|private <tenant> <name> [-source s] [-type t]
+                                                  received; -source: the licence's entry, where the extension
+                                                  has licences in several (spec 0035)
+  license import <tenant> <file|-> -source s [-replace] [-type t]   store a licence (a compact JWS) under the
+                                                  extension it names, in the catalogue entry -source names
+                                                  (upstream:<name>, publisher:<name>, upstream-id:<id>,
+                                                  publisher-id:<id>), verified against that entry's live keys;
+                                                  -replace replaces the licence stored there; -type: its
+                                                  package type (spec 0034), duckdb_extension by default
+  license remove|public|private <tenant> <name> -source s [-type t]   -source: the licence's entry (a removed
+                                                  source's id form for remove)
   license verify <file|-> -key <pem>              check a licence offline against a public key
   events list [-server] [-kind <k>] [-subject <prefix>] [-actor <a>] [-since <RFC 3339>] [-limit <n>]
               [-follow] [-format table|jsonl] [<tenant>]          the event buffer (spec 0010), newest first

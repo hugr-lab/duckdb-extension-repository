@@ -16,8 +16,8 @@ has passed) or by hand (a version the administrator places), and a whole source 
 A source may set a **hold**: its new versions reach no channel automatically before it has passed.
 A **distributor** (Enterest) publishes into a tenant's catalogue through its publisher there,
 reaches no channel by itself, and can withdraw a version, which is then served nowhere in the
-tenant. A licence is bound to the extension's name, its source (the source that owns the key the
-licence is signed with) and the organisation it is issued to. Everything else stays as it is: a
+tenant. A licence is bound to the extension's name, its catalogue entry and the organisation it is
+issued to (spec 0035). Everything else stays as it is: a
 tenant is still the unit (an install has its `default` tenant), with its channels, upstreams,
 publishers and grants; the catalogue entry is the one new thing.
 
@@ -252,6 +252,11 @@ its releases) gaining its source, state and visibility.
 
 ### Licences
 
+**Superseded by spec 0035** where it concerns key owners: a licence belongs to a catalogue entry,
+every licence write names it (`?source=`), it verifies against that entry's own live keys, the relay
+stores into its own upstream's entry, and key owners, their route and events are gone. The text
+below is kept as history.
+
 A licence (spec 0012) names its holder (`sub`, an organisation) and the extension (`ext`), and is
 signed with a key. It is bound to:
 
@@ -295,7 +300,7 @@ and in each tenant the key's owner is the source there.
 - **Catalogue**: the read and publish routes above; `DELETE …/catalogue/builds/{id}` (purge);
   `PUT …/upstreams/{u}/hold`, `…/publishers/{p}/hold`, `PUT …/upstreams/{u}/home
   {"channel": …}` (as built: not made, with A1 part 3b in the follow-ups); `PUT
-  …/license-keys/{name}/{kid}/owner`; for a distributor's publisher,
+  …/license-keys/{name}/{kid}/owner` (removed by spec 0035); for a distributor's publisher,
   `PUT …/publishers/{p}/distributor {"distributor": …}` and `POST …/catalogue/{source}/extensions/
   {ext}/versions/{v}/withdraw {"reason": …}` (distribution admins and server administrators).
   Spec 0009's and 0023's routes are otherwise unchanged. CLI: `kista admin catalogue list|show|
@@ -310,9 +315,9 @@ and in each tenant the key's owner is the source there.
   their hold, withdrawing and purging their versions, reading their entries.
 - **Events**: `catalogue.arrival`, `catalogue.hold`, `catalogue.withdrawn`, `catalogue.purge`,
   `source.set` (with `mode`), `source.clear`, `follow.set`, `follow.clear`, `release.place` (with
-  `early`), `license.key_conflict`, `license.key_owner`; a placement's failure is its rule's last
-  outcome, not an event (as built, see As built (A1 part 2): spec 0031's `source.set` and
-  `source.clear` kept, no `rule.set`, `rule.clear` nor `placement.failed`).
+  `early`), `license.key_conflict`, `license.key_owner` (both removed by spec 0035); a placement's
+  failure is its rule's last outcome, not an event (as built, see As built (A1 part 2): spec 0031's
+  `source.set` and `source.clear` kept, no `rule.set`, `rule.clear` nor `placement.failed`).
 - **Existence**: answers about the catalogue follow spec 0007's rules; install and anonymous callers
   get `404` as for any management route.
 
@@ -346,8 +351,10 @@ B   publishers           + distributor (part 1: the distributor's name, NULL for
     removed_distributor_publishers   tenant_id, publisher_id, name, distributor, removed_at,
                            removed_by; pk (tenant_id, publisher_id) (part 1, as built: a removed
                            distributor's publisher remembered, below)
-    license_key_owners   tenant_id, name, kid, source, set_by; pk (tenant_id, name, kid) (part 2)
-    licenses             pk (tenant_id, name, source) (part 2)
+    license_key_owners   tenant_id, name, kid, source, set_by; pk (tenant_id, name, kid) (part 2;
+                           dropped by spec 0035's migration 0043)
+    licenses             pk (tenant_id, name, source) (part 2; spec 0035: the source is the
+                           licence's entry, entry_source)
 ```
 
 GC (spec 0016): a build (entry) is dead when it has no release and retention (above) does not keep
@@ -375,12 +382,10 @@ The migrations keep what every channel serves, and what arrives next goes where 
   the unique slot), and listed in the upgrade notes; a new arrival conflicting with any is refused;
   a slot purged before the migration has no release to read its source from, and stays taken for
   every source;
-- (B) a key's owner for a name is the source that recorded it first; licences get their key's
-  owner; a licence whose key no record has (rotated out or refused, so not served today either)
-  gets the source `unknown`, is kept for its administrators and is not served until re-imported;
-- tenants with two upstreams of the same repository (one per channel) keep two sources; as built
-  (B part 2), the key has one owner among them, and the other upstream's relay stores the very
-  licence the owner holds as its own, so both channels serve it.
+- (B) key owners, and licences of source `unknown`: removed by spec 0035, whose migration 0043
+  moves relayed licences into their relaying upstream's entry and deletes the `unknown` imports;
+- tenants with two upstreams of the same repository (one per channel) keep two sources; each
+  stores its own copy of the licence through its relay (spec 0035).
 
 The cells API loses `other_source` and `shadowed` (now placement outcomes, on rules), and the
 console's Sources tab shows modes: both are in the upgrade notes. (As built: the cells keep them,
@@ -423,9 +428,9 @@ see As built (C); the upgrade notes say so.)
   with the channel's key and re-checks blocks, withdrawals, holds, slots and the source under the
   channel lock.
 - **Licences**: the expected holder on every path; keys from trusted sources only (spec 0021); a
-  key's owner for a name is the first source to record it and changes only by the owner's removal
-  or an administrator's act, so another source's build carrying a copied key gets no licence and
-  takes none away.
+  licence belongs to a catalogue entry and verifies against that entry's own keys (spec 0035), so
+  another source's build carrying a copied key is another entry, with no licence until one is put
+  there, and takes nothing from the genuine entry.
 - **Existence.** Install and anonymous callers learn nothing new: the catalogue is not served, and
   the DuckDB routes and the index are unchanged.
 
@@ -434,8 +439,8 @@ see As built (C); the upgrade notes say so.)
 - The store suite on three dialects: entries per source (two sources, one name, one body, one
   version); slots per source; rules, modes, follows, their limits and skips (contested,
   tenant-reserved for another holder); holds (raised, lowered, the channel's, a distributor's);
-  withdrawal; licences per (name, source), key owners (a copied key changes nothing; the owner's
-  removal; an administrator's act); each migration's backfill from a spec 0031 database (home
+  withdrawal; licences per (name, source) (spec 0035: per entry; key owners removed); each
+  migration's backfill from a spec 0031 database (home
   channels, `auto` and `manual`, pull-through follows, splits, duplicate and purged slots, `unknown`
   licences; as built, the migrations give no modes and no follows, so their tests check that none
   is given, see Existing data).
@@ -468,7 +473,8 @@ One spec, four phases, each a PR with its own reviews and its own migration:
 - **A2. Holds**: source and channel holds, `early`, the channel route refusing held publishers,
   revoked keys purging held entries.
 - **B. Distributors and licences**: distributors' publishers, distribution admins' holds,
-  withdrawals and purges, licences per (name, source) with key owners, relay and usage.
+  withdrawals and purges, licences per (name, source) with key owners, relay and usage (the licence
+  part superseded by spec 0035: licences per catalogue entry).
 - **C. The console and the end to end**: a Catalogue screen (sources, names, versions, held and
   withdrawn, place, purge), the channel's Sources tab with modes, follows, skips and the hold, the
   new DuckDB end to end, the website's pages.
@@ -931,6 +937,12 @@ channel, deferred.
 
 ### As built (B part 2)
 
+**Superseded by spec 0035** where it concerns licences: the key owners (the first recorder, the
+tombstones, distributors and upstreams, ownership changes and the owner route), the relay's and
+bundles' exceptions (including the bundle target "the first bundle-mode upstream … that owns the
+key"), the licences of source `unknown`, the `owner` field and migration 0042's owners. Kept below
+as history.
+
 - **Migration 0042** (`0042_license_owners`, `min_reader` 42: an older replica would serve a licence
   through any source's build and store and read licences by name) in the three dialects:
   `license_key_owners` (tenant, package type, name, kid → source, `set_by`, `set_at`; pk (tenant,
@@ -1243,8 +1255,8 @@ DuckDB's repositories it wants. Its spec 0003's decisions change accordingly.
   name (as built: of two channels; within one channel a name stays on one upstream's allowlist);
   `other_source` and `shadowed` become placement outcomes (as built: they stay cell outcomes);
   passthrough channels take core names from eager `duckdb-core` upstreams only.
-- **0012, 0021**: licences per (tenant, name, source); key owners per (name, key); live keys from
-  the catalogue's newest available version; usage forwarded by the selected source.
+- **0012, 0021**: licences per catalogue entry; live keys per entry, from the catalogue's newest
+  available version; key owners removed by spec 0035; usage forwarded by the selected source.
 - **0014**: a bundle imports into its upstream's source in the catalogue.
 - **0015**: the console's catalogue, rules, follows and holds (phase C).
 - **0016**: catalogue retention and caps, purging unplaced entries.
