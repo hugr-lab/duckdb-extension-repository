@@ -1,6 +1,6 @@
 # Spec 0036: Entry icons and distributor statistics
 
-- **Status**: accepted (phase 1 implemented; phase 2 implemented on its branch)
+- **Status**: implemented (phases 1 and 2)
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -658,11 +658,10 @@ fixes followed in the same branch.
 
 ### As built (phase 2)
 
-Delivered on the branch `0036-entry-meta-2`, on phase 1's branch (merged in with its review and
-post-PR fixes), with migration 0045. After review, the owner's decisions (weekly snapshots, no
-rename of a used publisher's distributor, the residual risks documented, `withheld` and
-`installer_days` as Enterest's spec 0010 reads them, Mondays in the answer) are in the sections
-above.
+Delivered on the branch `0036-entry-meta-2`, on phase 1 (merged to main, #144), with migration
+0045. After review, the owner's decisions (weekly snapshots, no rename of a used publisher's
+distributor, the residual risks documented, `withheld` and `installer_days` as Enterest's spec
+0010 reads them, Mondays in the answer) are in the sections above.
 
 - **Migration 0045** (`0045_download_sources`) is as the spec says. PostgreSQL's and SQL Server's
   new primary keys are named (`pk_download_counts`, `pk_download_installers`); SQLite's rebuild
