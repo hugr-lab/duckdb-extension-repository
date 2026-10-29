@@ -17,5 +17,11 @@ export default defineConfig({
     // npm run dev against a local kista (KISTA_URL, default https://localhost:8443)
     proxy: { '/api': { target: process.env.KISTA_URL ?? 'https://localhost:8443', secure: false } },
   },
-  test: { environment: 'jsdom', include: ['src/**/*.test.{ts,tsx}'] },
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.test.{ts,tsx}'],
+    // Node 25 and later have a localStorage of their own, which hides jsdom's (and is undefined
+    // without --localstorage-file): the tests use jsdom's, as a browser would
+    poolOptions: { forks: { execArgv: ['--no-experimental-webstorage'] } },
+  },
 })
