@@ -151,7 +151,11 @@ func (s *Service) metaTarget(ctx context.Context, a authz.Actor, tenant, typ, la
 			return x, authz.ErrDenied // another source: refused (the same 404), and audited
 		}
 	case a.Kind == authz.ActorDistributionAdmin:
-		if x.t, err = s.mayDistribute(ctx, a, tenant); err != nil {
+		mayIn := s.mayDistribute
+		if !write {
+			mayIn = s.distributorsTenant // read in a suspended tenant too, as the catalogue (spec 0037)
+		}
+		if x.t, err = mayIn(ctx, a, tenant); err != nil {
 			return x, err
 		}
 		x.src, err = s.Store.ResolveDistributorSource(ctx, x.t.ID, label)

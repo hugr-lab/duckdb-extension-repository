@@ -454,7 +454,9 @@ at a build, or to revoke a stolen key, before an automatic placement serves it.
 
 A distributor withdraws a version it published into a tenant's catalogue (spec 0033): a distribution
 admin or a server administrator, with a reason, for a
-[distributor's publisher](publishing.md#distributors-publishers), removed or not.
+[distributor's publisher](publishing.md#distributors-publishers), removed or not. A suspended
+tenant is reached too (spec 0037): a distribution admin reads its distributors' entries and
+withdraws there, so a tenant resumed later serves nothing withdrawn meanwhile.
 
 ```bash
 kista admin -config /etc/kista/kista.yaml \

@@ -312,7 +312,7 @@ licence manager's.
 
 **Distribution admins** (spec 0030) are a server-wide role for a distributor's provisioning, such as
 Enterest's: a principal of a server issuer listed in `auth.server_distribution_admins`. On every
-active tenant a distribution admin may:
+active tenant (and, where said, a suspended one) a distribution admin may:
 
 - read the server's reserved names (`GET /api/v1/reserved-names`: each name and its kind only,
   without `sources`, which name other tenants' upstreams and administrators: spec 0037), the names a

@@ -263,9 +263,10 @@ func TestDistributorHoldRaiseRemoved(t *testing.T) {
 }
 
 // Spec 0037: in a suspended tenant a distribution admin still reads its distributors' catalogue
-// entries and withdraws a version, so a withdrawal never waits for the tenant's resumption; its other
-// calls there, a purge and the metadata's included, find nothing, and so does every call of the
-// tenant's administrators. Resumed, the withdrawn version stays withdrawn.
+// entries (with their metadata) and withdraws a version, so a withdrawal never waits for the
+// tenant's resumption; its other calls there, a purge and the metadata's own routes included, find
+// nothing, and so does every call of the tenant's administrators and of a distributor's publisher.
+// Resumed, the withdrawn version is served nowhere.
 func TestDistributionAdminSuspendedTenant(t *testing.T) {
 	m := newMgmt(t)
 	da, ta, sa := m.toks["server dist admin"], m.toks["tenant admin"], m.toks["server admin"]
@@ -288,15 +289,23 @@ func TestDistributionAdminSuspendedTenant(t *testing.T) {
 	}
 	const E = T + "/catalogue/publisher:enterest-ci/extensions/geo_tools"
 	build := call(200, "GET", E, da, "").json(t)["versions"].([]any)[0].(map[string]any)["builds"].([]any)[0].(map[string]any)["id"].(string)
+	call(200, "PUT", E+"/meta", da, `{"summary":"Geometry tools"}`)
+	// 1.1 placed into prod (early: the tenant's minimum hold) and served
+	call(201, "POST", T+"/channels/prod/extensions/geo_tools/releases/place", sa, `{"source":"publisher:enterest-ci","version":"1.1","early":true}`)
+	const geoPath = "/acme/prod/geo_tools/1.1/v2.0.0/linux_amd64/geo_tools.duckdb_extension.gz"
+	if r := m.call(t, "GET", geoPath, m.toks["install"], ""); r.status != 200 {
+		t.Fatalf("served before the suspension: %d", r.status)
+	}
 	if _, err := m.ten.SetTenantState(ctx, admin, "acme", store.TenantSuspended, 0); err != nil {
 		t.Fatal(err)
 	}
 
-	// reached: the catalogue, an entry (without its metadata) and a withdrawal
-	if r := call(200, "GET", T+"/catalogue?name=geo_tools", da, ""); !strings.Contains(string(r.body), `"publisher:enterest-ci"`) {
+	// reached: the catalogue and an entry, with their metadata, and a withdrawal
+	if r := call(200, "GET", T+"/catalogue?name=geo_tools", da, ""); !strings.Contains(string(r.body), `"publisher:enterest-ci"`) ||
+		!strings.Contains(string(r.body), `"summary":"Geometry tools"`) {
 		t.Fatalf("the catalogue: %s", r.body)
 	}
-	if r := call(200, "GET", E, da, "").json(t); r["summary"] != nil || len(r["versions"].([]any)) != 2 {
+	if r := call(200, "GET", E, da, "").json(t); r["summary"] != "Geometry tools" || r["distributor"] != "enterest" || len(r["versions"].([]any)) != 2 {
 		t.Fatalf("the entry: %v", r)
 	}
 	if r := call(200, "POST", E+"/versions/1.1/withdraw", da, `{"reason":"CVE-2026-0002"}`).json(t); r["already"] != false ||
@@ -310,7 +319,11 @@ func TestDistributionAdminSuspendedTenant(t *testing.T) {
 	call(404, "PUT", E+"/meta", da, `{"summary":"Geometry tools"}`)
 	call(404, "GET", T+"/publishers/enterest-ci", da, "")
 	call(404, "GET", T+"/catalogue", ta, "")
+	call(404, "GET", E, ta, "")
 	call(404, "POST", E+"/versions/1.0/withdraw", ta, `{"reason":"x"}`)
+	// nor a distributor's publisher's signed reads
+	call(404, "GET", T+"/catalogue", key, "")
+	call(404, "GET", E, key, "")
 	// the service alone admits a suspended tenant for these two calls only
 	dist := authz.Actor{Kind: authz.ActorDistributionAdmin, ID: "dist"}
 	if _, err := m.apiRel.PurgeEntry(ctx, dist, "acme", build); !errors.Is(err, authz.ErrDenied) {
@@ -326,5 +339,13 @@ func TestDistributionAdminSuspendedTenant(t *testing.T) {
 	}
 	if r := call(200, "GET", T+"/events?kind=catalogue.withdrawn", sa, ""); strings.Count(string(r.body), `"kind":"catalogue.withdrawn"`) != 1 {
 		t.Fatalf("the withdrawal's event: %s", r.body)
+	}
+	// and served nowhere: its release shows it
+	if r := m.call(t, "GET", geoPath, m.toks["install"], ""); r.status != 404 {
+		t.Fatalf("served after the resumption: %d", r.status)
+	}
+	rels := call(200, "GET", T+"/channels/prod/extensions/geo_tools/releases", ta, "").json(t)["releases"].([]any)
+	if len(rels) != 1 || rels[0].(map[string]any)["withdrawn"] != true {
+		t.Fatalf("the release: %v", rels)
 	}
 }
