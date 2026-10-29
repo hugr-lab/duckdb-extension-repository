@@ -244,6 +244,9 @@ func (c *Collector) builds(ctx context.Context, domain string, cutoff time.Time,
 		if _, err := c.Service.st.FillUsedAt(ctx, domain); err != nil {
 			return err
 		}
+		if _, err := c.Service.st.FillBodyLen(ctx, domain); err != nil { // spec 0038
+			return err
+		}
 	}
 	after := ""
 	for {

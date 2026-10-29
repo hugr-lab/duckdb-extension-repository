@@ -149,6 +149,12 @@ kista admin catalogue purge acme <build id>
 A build that was never released is deleted, and its slot is free again (no one could have installed
 it). A withdrawn build is never purged.
 
+**Room.** Each source's builds placed nowhere are bounded by `catalogue.max_entries` and
+`catalogue.max_bytes` (`429`, `catalogue-full`). Beside it, the tenant's
+[limit on its own bytes](administration/tenants-and-channels.md#limits) (spec 0038) counts every
+build it keeps, placed or not, each body once, distributors' builds left out (`429`,
+`tenant-limit`); purging a build placed nowhere, or a yanked release, frees its room at once.
+
 ### Withdraw a distributor's version
 
 A distribution admin or a server administrator, never a tenant administrator:
@@ -194,7 +200,9 @@ after its table.
   colour-profile or animation chunks ([the rules](publishing.md#an-entrys-icon-and-summary)). It is
   kept as sent in the tenant's storage domain and counts toward its source's
   `catalogue.max_bytes`: a publisher's or a distribution admin's write beyond it is refused (`429`,
-  `catalogue-full`); a tenant's or a server administrator's is not bounded.
+  `catalogue-full`); a tenant's or a server administrator's is not bounded. An icon of the tenant's
+  own source counts toward its [bytes limit](administration/tenants-and-channels.md#limits) too
+  (spec 0038), for every writer (`429`, `tenant-limit`).
 - Every write that changes something is a `catalogue.meta` event in the tenant, naming the writer
   and, for a signed write, the key.
 

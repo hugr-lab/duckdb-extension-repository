@@ -445,6 +445,28 @@ func Check(ctx context.Context, d Deps, b config.Bootstrap, o Options) (Plan, er
 	if p.TenantExists {
 		tenantID = t.ID
 	}
+	// spec 0038: the tenant's own limits, those named: set with the tenant, or changed
+	if tb.Limits != nil {
+		named, err := tb.Limits.Named()
+		switch {
+		case err != nil:
+			item("limits", tb.Name, Refused, "%s", strings.TrimPrefix(err.Error(), store.ErrInvalid.Error()+": "))
+		case !p.TenantExists:
+			item("limits", tb.Name, Create, "%s", limitsDetail(named))
+		default:
+			changed := map[string]int64{}
+			for n, v := range named {
+				if t.Limits.Get(n) != v {
+					changed[n] = v
+				}
+			}
+			if len(changed) == 0 {
+				item("limits", tb.Name, Same, "")
+			} else {
+				item("limits", tb.Name, Add, "%s", limitsDetail(changed))
+			}
+		}
+	}
 	for _, aud := range tb.Audiences {
 		owner, err := d.Store.AudienceTenant(ctx, aud)
 		switch {
@@ -693,6 +715,7 @@ func hasGrant(ta store.TenantAuth, g config.BootstrapGrant) bool {
 // apply checks, then records the bootstrap pending, makes what the plan creates and records it
 // applied. A refusal writes nothing.
 func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section string, o Options) (Result, error) {
+	ctx = store.WithoutLimits(ctx) // spec 0038: what the bootstrap makes meets only the ceilings
 	p, err := Check(ctx, d, b, o)
 	res := Result{Plan: p}
 	if err != nil {
@@ -756,6 +779,16 @@ func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section stri
 			return res, err
 		}
 		made("tenant", tb.Name)
+	}
+	if act := p.action("limits", tb.Name); act == Create || act == Add {
+		named, err := tb.Limits.Named()
+		if err != nil {
+			return res, err
+		}
+		if _, _, err := d.Tenants.SetTenantLimits(ctx, a, tb.Name, named, ""); err != nil {
+			return res, err
+		}
+		made("limits", tb.Name+" "+limitsDetail(named))
 	}
 	for _, aud := range tb.Audiences {
 		if p.action("audience", aud) == Create {
@@ -1114,4 +1147,15 @@ func missingCore(names []string, kinds map[pkgtype.Key]string) []string {
 		}
 	}
 	return out
+}
+
+// limitsDetail names limits and their values, in the limits' order: "bytes 1073741824, channels unlimited".
+func limitsDetail(l map[string]int64) string {
+	var parts []string
+	for _, n := range store.LimitNames {
+		if v, ok := l[n]; ok {
+			parts = append(parts, fmt.Sprintf("%s %v", n, tenants.LimitValue(v)))
+		}
+	}
+	return strings.Join(parts, ", ")
 }

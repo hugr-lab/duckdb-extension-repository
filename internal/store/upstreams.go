@@ -145,6 +145,9 @@ func (t *Tx) InsertUpstream(ctx context.Context, u *Upstream) error {
 	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM upstreams WHERE tenant_id = ?", u.TenantID).Scan(&n); err != nil {
 		return err
 	}
+	if err := t.underLimit(ctx, u.TenantID, LimitUpstreams, n); err != nil { // spec 0038: the limit first
+		return err
+	}
 	if n >= MaxUpstreams {
 		return fmt.Errorf("%w: a tenant holds at most %d upstreams", ErrInvalid, MaxUpstreams)
 	}

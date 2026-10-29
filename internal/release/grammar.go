@@ -63,7 +63,7 @@ func ValidDuckDBVersion(v string) error { return store.ValidDuckDBVersion(v) }
 func BuildFrom(f *extfile.File, tenantID, name, actor string) (store.Build, error) {
 	m := f.Metadata
 	b := store.Build{TenantID: tenantID, PackageType: pkgtype.DuckDBExtension, Name: name, PackageVersion: m.ExtensionVersion,
-		Platform: m.Platform, BodyHash: f.Hash.String(), Origin: store.OriginAdmin, CreatedBy: actor}
+		Platform: m.Platform, BodyHash: f.Hash.String(), BodyLen: f.BodySize, Origin: store.OriginAdmin, CreatedBy: actor}
 	if err := ValidName(name); err != nil {
 		return b, err
 	}

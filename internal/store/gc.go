@@ -248,6 +248,25 @@ func (s *Store) FillUsedAt(ctx context.Context, domain string) (int, error) {
 	return n, err
 }
 
+// FillBodyLen sets body_len of the domain's Builds that have none (inserted by a replica older than
+// migration 0047 that was still running) from their blobs (spec 0038: a tenant's bytes count such a
+// row as 0 until then); a row whose blob is gone keeps none.
+func (s *Store) FillBodyLen(ctx context.Context, domain string) (int, error) {
+	n := 0
+	err := s.tx(ctx, nil, func(t *Tx) error {
+		res, err := t.exec(ctx, "UPDATE builds SET body_len = (SELECT bl.body_len FROM blobs bl WHERE bl.domain = ? AND bl.body_hash = builds.body_hash) "+
+			"WHERE body_len IS NULL AND tenant_id IN (SELECT id FROM tenants WHERE storage_domain = ?) "+
+			"AND EXISTS (SELECT 1 FROM blobs bl WHERE bl.domain = ? AND bl.body_hash = builds.body_hash)", domain, domain, domain)
+		if err != nil {
+			return err
+		}
+		m, err := res.RowsAffected()
+		n = int(m)
+		return err
+	})
+	return n, err
+}
+
 // DeadBuilds lists up to limit Builds of a domain's tenants, after the id after, that no release
 // references and that were not used since cutoff.
 func (s *Store) DeadBuilds(ctx context.Context, domain string, cutoff time.Time, after string, limit int) ([]string, error) {

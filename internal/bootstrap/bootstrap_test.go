@@ -621,3 +621,52 @@ func TestBootstrapLease(t *testing.T) {
 		t.Fatalf("the CLI: %v", err)
 	}
 }
+
+// Spec 0038: the section's tenant limits are planned with the tenant and applied as the bootstrap
+// (tenant.limits as system:bootstrap); what the bootstrap makes meets only the ceilings, so its
+// channel is made though its channels limit is 0; a changed limit is planned as a change, one left
+// out is left as it is.
+func TestBootstrapLimits(t *testing.T) {
+	for _, e := range storetest.Engines(t) {
+		t.Run(e.Name, func(t *testing.T) {
+			en := newEnv(t, e)
+			b := section()
+			b.Tenant.Limits = &config.Limits{Bytes: "10GiB", Channels: "0"}
+			p, err := bootstrap.Check(ctx, en.d, b, serveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if i := slices.IndexFunc(p.Items, func(i bootstrap.Item) bool { return i.Kind == "limits" }); i < 0 ||
+				p.Items[i].Action != bootstrap.Create || p.Items[i].Detail != "bytes 10737418240, channels 0" {
+				t.Fatalf("the plan: %+v", p.Items)
+			}
+			if res, err := bootstrap.Run(ctx, en.d, b, serveOpts); err != nil || !res.Applied {
+				t.Fatalf("apply: %+v %v", res, err)
+			}
+			tn, err := en.st.GetTenant(ctx, "acme")
+			if err != nil || tn.Limits != (store.Limits{Bytes: 10 << 30, Channels: 0, Upstreams: store.LimitDefault, Publishers: store.LimitDefault}) {
+				t.Fatalf("the limits: %+v %v", tn.Limits, err)
+			}
+			if _, err := en.st.GetChannel(ctx, "acme", "prod"); err != nil {
+				t.Fatalf("the bootstrap's channel past its limit: %v", err)
+			}
+			if evs := en.events(t, "tenant.limits"); len(evs) != 1 || evs[0].Actor != "system:bootstrap" {
+				t.Fatalf("tenant.limits: %+v", evs)
+			}
+			b.Tenant.Limits = &config.Limits{Channels: "5"}
+			p, err = bootstrap.Check(ctx, en.d, b, serveOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if i := slices.IndexFunc(p.Items, func(i bootstrap.Item) bool { return i.Kind == "limits" }); i < 0 ||
+				p.Items[i].Action != bootstrap.Add || p.Items[i].Detail != "channels 5" {
+				t.Fatalf("a changed limit: %+v", p.Items)
+			}
+			b.Tenant.Limits = &config.Limits{Bytes: "10GiB"}
+			p, _ = bootstrap.Check(ctx, en.d, b, serveOpts)
+			if i := slices.IndexFunc(p.Items, func(i bootstrap.Item) bool { return i.Kind == "limits" }); i < 0 || p.Items[i].Action != bootstrap.Same {
+				t.Fatalf("the same limits: %+v", p.Items)
+			}
+		})
+	}
+}

@@ -1,6 +1,6 @@
 # Spec 0038: Tenant limits
 
-- **Status**: accepted
+- **Status**: accepted; PR 1 (the limits) implemented
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -77,9 +77,11 @@ Four limits, each on one tenant:
   more raises the limit first, and that change is audited. Only two intakes are exempt: a **bundle
   import** (a server administrator's only, for air-gapped sites, spec 0014) and the **bootstrap**
   (`authz.Bootstrap`, spec 0024). They are counted but never refused, and meet only the ceilings
-  (`400 invalid`). `room` and the inserts take the actor to decide this; `room`'s `admin` flag
-  (`o.Publish == nil`, true for a tenant administrator's add too) keeps meaning only the per-source
-  cap's exemption.
+  (`400 invalid`). Both mark their calls' context (`store.WithoutLimits`: the bundle import's
+  intake, and the bootstrap's apply, whether `kista serve` applies it as `system:bootstrap` or
+  `kista admin bootstrap` as the OS user), and every check reads the mark; no actor is compared.
+  `room`'s `admin` flag (`o.Publish == nil`, true for a tenant administrator's add too) keeps
+  meaning only the per-source cap's exemption.
 
 ### The bytes a tenant uses
 
@@ -137,6 +139,11 @@ the checks nor a run's read below.
   locks). Under it, it reads the tenant's limit through `lockedTenantQuery` (a shared lock on the
   tenant's row) and the figure, and refuses when the new build's body is not counted yet and
   `used + body_len > limit`. A body the tenant already counts adds nothing and always passes.
+  - **A limit set after the caller read the tenant.** The caller adds the lock when the tenant has a
+    bytes limit as it reads it (`store.BytesLocks`, read before the transaction). A limit set
+    between that read and the insert finds the transaction without the lock: the insert then takes
+    it in the transaction, after the row locks it holds. A deadlock this may make is the engine's to
+    detect, and the transaction is retried, as any other; it can happen only in that window.
   - **The lock is always the last of the transaction's lock keys.** Keys are taken in the order
     given, and these transactions take different ones first (`TenantUpstreamLock` and the
     channel's lock for a signed channel's release, the channel's lock alone for a passthrough
@@ -199,7 +206,7 @@ only growth of that kind is refused until it is back under the limit.
   `500` on the API; a run's cell `failed`, never `rejected`, since it is not the file's fault).
 - **A metric** counts refusals by limit: `kista_tenant_limit_refusals_total{limit}`. Operators see
   tenants pressing on their plans, and a hosted service can offer a larger plan. It has no tenant
-  label (cardinality); the tenant is in the log line.
+  label (cardinality): a tenant's own figures are its limits' `used`.
 - **Events.** A refusal writes no event of its own: the refused request is not an action. Each
   change of limits writes one (below).
 
@@ -231,7 +238,8 @@ of a network failure: asking again within the hour would be refused again.
 ### The API
 
 - `GET /api/v1/tenants/{t}/limits`: the tenant's administrators and server administrators
-  (`pathAdmin`), suspended tenants included; a distribution admin is refused like any caller
+  (`pathAdmin`), a suspended tenant's too for server administrators (to its administrators a
+  suspended tenant is unknown, as on every route); a distribution admin is refused like any caller
   without admin (`404`). It answers each limit with what is set, what applies and what the tenant
   uses, and an `ETag` over the stored values:
 

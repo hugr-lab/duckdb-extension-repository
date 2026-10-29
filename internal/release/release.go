@@ -350,7 +350,11 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		// publication is always checked)
 		if it.b.Checked || len(it.keySources) > 0 {
 			bb := it.b
-			if err := s.Store.InTx(ctx, buildLock(bb), func(tx *store.Tx) error {
+			keys, err := s.buildLocks(ctx, bb)
+			if err != nil {
+				return store.Release{}, false, err
+			}
+			if err := s.Store.InTxLocks(ctx, keys, func(tx *store.Tx) error {
 				if it.publication {
 					if err := tx.PublicationLive(ctx, it.source, it.keyID); err != nil {
 						return err
@@ -1140,10 +1144,14 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 			return nil, false, err
 		}
 		// two intakes of one body race on the build's insert; the loser finds the winner's build
+		keys, err := s.buildLocks(ctx, it.b)
+		if err != nil {
+			return nil, false, err
+		}
 		for try := 0; ; try++ {
 			bb := it.b
 			bb.Visibility, bb.Provenance = it.visibility, it.provenance // spec 0033: as its arrival made its release
-			err := s.Store.InTx(ctx, buildLock(bb), func(tx *store.Tx) error {
+			err := s.Store.InTxLocks(ctx, keys, func(tx *store.Tx) error {
 				if err := tx.PublicationLive(ctx, bb.Source, bb.PublisherKeyID); err != nil {
 					return err
 				}
@@ -1168,15 +1176,18 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 	}
 }
 
-// buildLock is the lock a build's transaction takes: a publisher's publication takes the tenant's
+// buildLocks are the locks a build's transaction takes: a publisher's publication takes the tenant's
 // auth lock, which removing its key or the publisher takes too, so an upload in flight when they are
 // removed is refused (store.PublicationLive) instead of landing after the removal's purge of held
-// entries (spec 0033 phase A2); other arrivals take none.
-func buildLock(b store.Build) string {
+// entries (spec 0033 phase A2); and last, while the tenant has a bytes limit, its bytes lock (spec
+// 0038), which orders its intakes of new bodies.
+func (s *Service) buildLocks(ctx context.Context, b store.Build) ([]string, error) {
+	var keys []string
 	if strings.HasPrefix(b.Source, store.SourcePublisherPrefix) {
-		return store.PublisherAuthLock(b.TenantID)
+		keys = append(keys, store.PublisherAuthLock(b.TenantID))
 	}
-	return ""
+	bytes, err := s.Store.BytesLocks(ctx, b.TenantID)
+	return append(keys, bytes...), err
 }
 
 // land commits a spooled body and finds or inserts its Build, with the keys a trusted intake
@@ -1189,10 +1200,14 @@ func (s *Service) land(ctx context.Context, sp *blob.Spool, it *item, event func
 	if _, err := sp.Commit(ctx); err != nil {
 		return err
 	}
+	keys, err := s.buildLocks(ctx, it.b)
+	if err != nil {
+		return err
+	}
 	for try := 0; ; try++ {
 		bb := it.b
 		bb.Visibility, bb.Provenance = it.visibility, it.provenance
-		err := s.Store.InTx(ctx, buildLock(bb), func(tx *store.Tx) error {
+		err := s.Store.InTxLocks(ctx, keys, func(tx *store.Tx) error {
 			if err := tx.PublicationLive(ctx, bb.Source, bb.PublisherKeyID); err != nil {
 				return err
 			}
