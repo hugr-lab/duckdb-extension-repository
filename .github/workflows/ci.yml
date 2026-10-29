@@ -31,9 +31,14 @@ jobs:
   go-linux:
     # Every package under -race with the store suite on SQLite; Vault, OpenBao, an S3-compatible
     # server, Azurite, moto and fake-gcs-server. PostgreSQL is here for the Vault database secrets
-    # engine (spec 0027); the store suite's PostgreSQL and SQL Server runs are the jobs below.
+    # engine (spec 0027); the store suite's PostgreSQL and SQL Server runs are the jobs below. The
+    # packages are split in four, each on its own runner: the largest ones share no CPUs.
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        packages: [api, store-release, upstream, rest]
     env:
       GOWORK: off
     services:
@@ -64,7 +69,7 @@ jobs:
           done
       - name: S3-compatible server (SeaweedFS), Azurite, moto (AWS KMS) and fake-gcs-server
         run: make test-s3 test-azurite test-moto test-gcs
-      - name: test (SQLite, race)
+      - name: test (SQLite, race, ${{ matrix.packages }})
         env:
           KISTA_TEST_ENGINES: sqlite
           KISTA_TEST_POSTGRES: postgres://postgres@127.0.0.1:56432/postgres?sslmode=disable
@@ -81,7 +86,16 @@ jobs:
           KISTA_TEST_MOTO: http://127.0.0.1:55000
           KISTA_TEST_GCS: http://127.0.0.1:54443
           KISTA_TEST_REQUIRE_MOTO: "1"
-        run: go test -race -timeout 25m ./...
+          PACKAGES: ${{ matrix.packages }}
+        run: |
+          case "$PACKAGES" in
+            api) pkgs=./internal/api/ ;;
+            store-release) pkgs="./internal/store/... ./internal/release/..." ;;
+            upstream) pkgs=./internal/upstream/... ;;
+            rest) pkgs=$(go list ./... | grep -v -e '/internal/api$' -e '/internal/store' -e '/internal/release' -e '/internal/upstream') ;;
+          esac
+          test -n "$pkgs"
+          go test -race -timeout 25m $pkgs
 
   go-postgres:
     # The packages that use the store suite, on PostgreSQL 17 only, under -race.
