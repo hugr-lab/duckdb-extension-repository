@@ -116,6 +116,7 @@ var catalogue = map[Kind][]string{
 	"tenant.holder":  {"old", "new"}, // the holder its licences must name (spec 0028)
 	"tenant.suspend": {},
 	"tenant.resume":  {},
+	"tenant.read":    {"state"}, // a distribution admin's read of the tenant (spec 0037)
 	"tenant.delete":  {"channels", "suspended_at", "keys"},
 	"tenant.purge":   {"rows", "passes", "late", "error"},
 	"version.add":    {"version", "kind", "c_apis"},

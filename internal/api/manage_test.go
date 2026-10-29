@@ -297,7 +297,7 @@ func TestManagementAccess(t *testing.T) {
 		hdr                []string
 	}{
 		{"GET", "/api/v1/tenants", "", ok(200, "server admin"), nil},
-		{"GET", T, "", ok(200, tenantAdmins...), nil},
+		{"GET", T, "", ok(200, distributors...), nil}, // spec 0037: a distribution admin reads its state
 		{"GET", T + "/audiences", "", ok(200, tenantAdmins...), nil},
 		{"GET", T + "/issuers", "", ok(200, tenantAdmins...), nil},
 		{"GET", T + "/issuers/corp", "", ok(200, tenantAdmins...), nil},

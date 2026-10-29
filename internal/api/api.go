@@ -542,7 +542,11 @@ type rule struct {
 	// closed: server administrators reach a tenant whose deletion started (spec 0019: its record,
 	// its deletion and its events); to everyone else it is unknown
 	closed bool
-	handle handler
+	// suspended: a distribution admin reaches a suspended tenant (spec 0037: its state, so a
+	// distributor tells "suspended, wait" from "gone"); to everyone else but server administrators it
+	// is unknown
+	suspended bool
+	handle    handler
 }
 
 type params map[string]string
@@ -605,7 +609,9 @@ func init() {
 			http.MethodDelete: m(distributionAdmin, (*Handler).releaseInTenant)}},
 		{"tenants", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listTenants),
 			http.MethodPost: mb(serverAdmin, (*Handler).createTenant)}},
-		{"tenants/{t}", map[string]rule{http.MethodGet: {access: pathAdmin, manage: true, closed: true, handle: (*Handler).getTenant},
+		// spec 0037: a distribution admin reads a tenant's state and expected holder
+		{"tenants/{t}", map[string]rule{http.MethodGet: {access: distributionAdmin, manage: true, closed: true, suspended: true,
+			handle: (*Handler).getTenant},
 			http.MethodDelete: {access: serverAdmin, manage: true, closed: true, handle: (*Handler).deleteTenant}}},
 		{"tenants/{t}/suspend", map[string]rule{http.MethodPost: m(serverAdmin, (*Handler).suspend)}},
 		// spec 0028: the holder the tenant's licences must name
@@ -988,8 +994,9 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			h.fail(w, err)
 			return caller{}, false
 		}
-		// unknown and suspended tenants: 404 for everyone but server administrators
-		if err != nil || t.State != store.TenantActive && !c.admin {
+		// unknown and suspended tenants: 404 for everyone but server administrators (and, on a route
+		// that says so, a distribution admin for a suspended one: spec 0037)
+		if err != nil || t.State != store.TenantActive && !c.admin && !(ru.suspended && c.distribution) {
 			notFound(w)
 			return caller{}, false
 		}

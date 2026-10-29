@@ -103,6 +103,67 @@ func TestPublisherIDs(t *testing.T) {
 	}
 }
 
+// Spec 0037 PR 1: a distribution admin reads a tenant's name, state and expected holder (no ETag,
+// nothing else), an active or a suspended one, never one whose deletion started; each read is a
+// tenant.read event. A tenant administrator's answer, and that of a token that is a server
+// administrator as well, are unchanged.
+func TestDistributionAdminTenantRead(t *testing.T) {
+	m := newMgmt(t)
+	da, ta, sa := m.toks["server dist admin"], m.toks["tenant admin"], m.toks["server admin"]
+	both := m.keys.sign(t, opsURL, map[string]any{"sub": "both", "aud": serverAud, "tid": "t1", "roles": []any{"kista.admin", "kista.distribution"}})
+	const T = "/api/v1/tenants/acme"
+	call := func(want int, method, path, tok, body string, hdr ...string) resp {
+		t.Helper()
+		r := m.call(t, method, path, tok, body, hdr...)
+		if r.status != want {
+			t.Fatalf("%s %s: %d, want %d: %s", method, path, r.status, want, r.body)
+		}
+		return r
+	}
+	read := func(path string) map[string]any {
+		t.Helper()
+		r := call(200, "GET", path, da, "")
+		if r.header.Get("ETag") != "" {
+			t.Fatalf("an ETag: %v", r.header)
+		}
+		return r.json(t)
+	}
+	if got := read(T); len(got) != 2 || got["name"] != "acme" || got["state"] != "active" {
+		t.Fatalf("without a holder: %v", got)
+	}
+	call(200, "PUT", T+"/holder", sa, `{"holder_id":"org-acme"}`, "If-Match", "*")
+	if got := read(T); len(got) != 3 || got["holder_id"] != "org-acme" {
+		t.Fatalf("with a holder: %v", got)
+	}
+	// the tenant administrator's answer, and a server administrator's who is a distribution admin too
+	for _, tok := range []string{ta, both} {
+		if r := call(200, "GET", T, tok, ""); r.header.Get("ETag") == "" || r.json(t)["etag"] == nil || r.json(t)["created_at"] == nil {
+			t.Fatalf("the full answer: %v %s", r.header, r.body)
+		}
+	}
+	// suspended: read too, and told; a deleting tenant is unknown
+	if _, err := m.ten.SetTenantState(ctx, admin, "acme", "suspended", 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(T); got["state"] != "suspended" {
+		t.Fatalf("suspended: %v", got)
+	}
+	call(404, "GET", T+"/publishers", da, "") // the exception is this route's only
+	if r := call(200, "GET", T+"/events?kind=tenant.read", sa, ""); strings.Count(string(r.body), `"kind":"tenant.read"`) != 3 ||
+		!strings.Contains(string(r.body), `"state":"suspended"`) || !strings.Contains(string(r.body), `"subject":"tenant:acme"`) {
+		t.Fatalf("the reads' events: %s", r.body)
+	}
+	acme, err := m.st.GetTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.ten.Delete(ctx, admin, "acme", acme.Version, 0); err != nil {
+		t.Fatal(err)
+	}
+	call(404, "GET", T, da, "")
+	call(404, "GET", "/api/v1/tenants/nope", da, "")
+}
+
 // Spec 0037 PR 1: a distribution admin acts on distributors' publishers only. On a tenant's own
 // publisher, with the licence-key mark or without, its mark and unmark, hold, distributor mark, key
 // routes and grant paths answer the same 404 as a missing publisher (the regression test for the

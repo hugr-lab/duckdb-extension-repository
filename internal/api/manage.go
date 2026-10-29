@@ -474,6 +474,21 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request, c caller,
 
 func (h *Handler) getTenant(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
+	if c.distribution && !c.admin {
+		// spec 0037: a distribution admin's view, its name, state and expected holder (omitted when
+		// none is set), without an ETag
+		t, err := h.o.Tenants.TenantState(r.Context(), a, p["t"])
+		if err != nil {
+			h.serviceErr(w, err, false)
+			return
+		}
+		out := map[string]string{"name": t.Name, "state": t.State}
+		if t.HolderID != "" {
+			out["holder_id"] = t.HolderID
+		}
+		reply(w, r, http.StatusOK, out, "-", noStore)
+		return
+	}
 	if c.admin { // spec 0019: any phase, with the deletion's record
 		t, d, err := h.o.Tenants.Show(r.Context(), a, p["t"])
 		if err != nil {
