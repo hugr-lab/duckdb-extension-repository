@@ -544,9 +544,10 @@ last, `404`; a chunk without `Content-Length`, `411`; too many chunks at once, `
 | `GET event-kinds` | public: the event catalogue |
 | `GET tenants/{t}/events[?since=&until=&kind=&actor=&subject=&outcome=&order=&cursor=&limit=]`, `GET …/events/{id}` | auditor; a deleting or deleted tenant: server |
 | `GET events[...]`, `GET events/{id}` | server: the server's own events |
-| `GET tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=` | principal: everything with `audit`, otherwise what its `admin`, `publish` or `promote` grants cover |
+| `GET tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=` | principal: everything with `audit`, otherwise what its `admin`, `publish` or `promote` grants cover; `group` takes `source` too, a label (`unknown` for counts before spec 0036) |
 | `GET tenants/{t}/stats/releases?channel=&extension=` | the same |
 | `GET tenants/{t}/stats/usage?from=&to=&channel=&extension=&group=` | the same; usage reports, users received from downstream marked `received` when grouped by `status` ([Licensing](licensing.md#usage-reports)) |
+| `GET distributor-stats/downloads?distributor=&from=&to=` | server, a distribution admin: a [distributor's statistics](observability.md#a-distributors-statistics) (spec 0036), `{"distributor", "from", "to", "min_tenants", "rows": [{"week", "extension", "downloads", "public", "installer_days", "withheld"}]}` over every tenant, one row per complete week and extension; `400` for a missing `distributor`, a day that is not one, `from` after `to` or after the last complete week, more than 53 weeks |
 
 Statistics are of one package type, `?type=` (`duckdb_extension` by default): the rows of that
 type's channels. A `?channel=` of another type is `400`.

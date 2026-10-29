@@ -99,6 +99,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0041_distributors` | 41 | an older replica would serve withdrawn entries, and take a distributor's publisher's hold and keys as the tenant's |
 | `0042_license_owners` | 42 | licences are per (name, source): an older replica would serve a licence through any source's build, and store and read licences by name |
 | `0043_license_entries` | 43 | licences are per catalogue entry and key owners go: an older replica reads and writes `license_key_owners` and relies on the relay's exceptions |
+| `0045_download_sources` | 45 | download counts and installers are kept per source: an older replica would add counts by the old key, which the new primary key no longer matches |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -169,7 +170,20 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 44)
+## Upgrading to the next release (schema 45)
+
+### A distributor's download statistics (spec 0036, phase 2)
+
+- **Migration `0045_download_sources`** adds `source` to the keys of `download_counts` and
+  `download_installers`, with an index `(source, day)`: in place on PostgreSQL and SQL Server, by
+  rebuilding both tables on SQLite. Rows already there get the source `''`: they count for no
+  distributor, and the tenant's statistics answer them as `unknown`. It raises `min_reader` to 45:
+  stop every older replica first.
+- **What changes.** A download counts under its release's source, and `install` events carry
+  `source`; `GET …/stats/downloads` groups by `source`; `GET /api/v1/distributor-stats/downloads`
+  answers a [distributor's statistics](../observability.md#a-distributors-statistics) to distribution
+  admins and server administrators. New settings: `statistics.distributor_min_tenants` (default 3,
+  at least 2) and `statistics.public_tenants` (none by default).
 
 ### An entry's icon and summary (spec 0036, phase 1)
 

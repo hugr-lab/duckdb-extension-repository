@@ -220,7 +220,12 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   keys, or change a tenant, a channel or a key set; it reads a tenant's state and expected holder,
   each read an event. A reservation's answer names the releases under the name in the tenant. A
   server has one distributor: a second one's publishers on the same server would be the first's
-  distribution admin's and licence manager's to reach.
+  distribution admin's and licence manager's to reach. It reads a distributor's download statistics
+  across tenants (spec 0036), for the distributor's entries only: every row is a sum per week and
+  extension, naming no tenant or channel, the grouping fixed so two answers cannot be subtracted, and
+  a tenant's downloads (and its installer-days) appear only in a row with at least
+  `statistics.distributor_min_tenants` such tenants. Only tenants the operator lists in
+  `statistics.public_tenants` are answered whatever their size; an empty list exempts no one.
 - **Publishers** sign each request with their developer's SSH key (spec 0023). kista stores only
   public keys, so a copy of its database cannot publish. A signature binds the method, the path and
   query, the body's SHA-256 and a time within five minutes, so a captured request cannot be sent

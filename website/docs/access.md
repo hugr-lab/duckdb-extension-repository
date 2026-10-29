@@ -343,6 +343,11 @@ active tenant a distribution admin may:
   answers the same `404` as a missing publisher;
 - never switch a name's source in a channel: that is the channel's administrators'.
 
+Across tenants, a distribution admin reads a distributor's download statistics (`GET
+/api/v1/distributor-stats/downloads`, spec 0036): per extension per week, summed over every tenant,
+naming no tenant or channel, the non-public tenants' part answered only above a minimum
+([A distributor's statistics](observability.md#a-distributors-statistics)).
+
 Nothing else: it reads no channel, key or release beyond what those calls answer, and cannot change
 a tenant, a channel or a key set; the rest answers `404`. Its acts are recorded as
 `distribution-admin:<issuer>|<who>`, shown to a tenant's readers as `distribution-admin`. A
