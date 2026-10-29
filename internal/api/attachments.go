@@ -283,7 +283,7 @@ func (h *Handler) addAttachment(w http.ResponseWriter, r *http.Request, c caller
 	}
 	a, _ := c.actor()
 	// a document is held in memory and parsed: attaching takes an upload slot, as publishing does
-	done, ok := h.slot(w, a.String(), p["t"])
+	done, ok := h.slot(w, a.String(), c.tenant.ID) // the tenant's slots, shared with its publications
 	if !ok {
 		return
 	}

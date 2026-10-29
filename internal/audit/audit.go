@@ -116,6 +116,7 @@ var catalogue = map[Kind][]string{
 	"tenant.holder":  {"old", "new"}, // the holder its licences must name (spec 0028)
 	"tenant.suspend": {},
 	"tenant.resume":  {},
+	"tenant.read":    {"state"}, // a distribution admin's read of the tenant (spec 0037)
 	"tenant.delete":  {"channels", "suspended_at", "keys"},
 	"tenant.purge":   {"rows", "passes", "late", "error"},
 	"version.add":    {"version", "kind", "c_apis"},
@@ -161,8 +162,8 @@ var catalogue = map[Kind][]string{
 	"extension_group.remove":  {"name", "description", "members"},
 	"extension_group.change":  {"description"},
 	"extension_group.members": {"added", "removed", "package_type"},
-	"publisher.add":           {"name", "distributor"},                           // spec 0033 phase B: a distributor's publisher made marked
-	"publisher.remove":        {"name", "purged", "kept"},                        // spec 0033 phase A2: the held entries purged (how many) and kept, revoked
+	"publisher.add":           {"name", "id", "distributor"},                     // spec 0033 phase B: a distributor's publisher made marked; spec 0037: its id
+	"publisher.remove":        {"name", "id", "purged", "kept"},                  // spec 0033 phase A2: the held entries purged (how many) and kept, revoked
 	"publisher.change":        {"name", "license_keys", "distributor", "before"}, // spec 0033 phase B: a distributor's mark
 	"publisher.key.add":       {"publisher", "key", "fingerprint", "type", "title", "expires_at"},
 	"publisher.key.remove":    {"publisher", "key", "fingerprint", "type", "title", "purge_held", "purged", "kept"},
@@ -200,6 +201,8 @@ var catalogue = map[Kind][]string{
 	"license.change": {"name", "license", "visibility", "replaced", "upstream", "package_type", "source"},
 	"license.remove": {"name", "license", "reason", "package_type", "source"},
 	"license.sync":   {"upstream", "counts", "error", "refused"},
+	// spec 0037: an import refused by the rule older
+	"license.refused": {"name", "license", "issuer", "rule", "source", "count"},
 	// spec 0035 phase 2: an entry holding a licence served publicly in a channel, once per act (advisory)
 	"license.public_warning": {"name", "source", "package_type", "channel", "act"},
 	// bundles (spec 0014): targets last, since a truncated event keeps its first fields; a bundle's
@@ -222,7 +225,7 @@ var catalogue = map[Kind][]string{
 	"source.clear":     {"name", "before"},
 	"shadow.remove":    {"name"},
 	"auth.failure":     {"reason", "route", "count"},
-	"authz.refused":    {"route", "verb", "status", "count"},
+	"authz.refused":    {"route", "verb", "status", "count", "name", "source", "entry", "operation", "name_unverified"}, // spec 0037: a licence write refused, what it was
 	"install":          {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
 	"extension.use":    {"version", "platform", "duckdb_version", "license", "status", "events"},
 	"usage.forward":    {"upstream", "sent", "skipped", "failed"},

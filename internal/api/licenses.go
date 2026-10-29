@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
@@ -50,9 +51,40 @@ func (h *Handler) licenseErr(w http.ResponseWriter, err error) {
 		problem(w, http.StatusConflict, typeConflict, "the upstream is paused: resume it to relay its licences")
 	case errors.Is(err, licenses.ErrSources):
 		problem(w, http.StatusConflict, typeConflict, strings.TrimPrefix(err.Error(), "licenses: ")+"; name one with ?source=")
+	case errors.Is(err, licenses.ErrDistributorsEntry):
+		// spec 0037: a refusal, recorded with what it refused (the entry as named and resolved, the
+		// name marked when it was read from an unverified token); its 404 says why
+		var de *licenses.DistributorsEntry
+		f := map[string]any{}
+		detail := "a distributor's entry: its licence manager or a server administrator writes it"
+		if errors.As(err, &de) {
+			f = map[string]any{"name": de.Name, "source": de.Source, "entry": de.Entry, "operation": de.Op}
+			if de.NameUnverified {
+				f["name_unverified"] = true
+			}
+		}
+		note(w, func(sw *statusWriter) { sw.refused, sw.refusal = true, f })
+		writeProblem(w, http.StatusNotFound, typeDistributorsEntry, detail, true)
 	default:
 		h.serviceErr(w, err, false)
 	}
+}
+
+// olderRefused records an import refused by the rule older (spec 0037) as a license.refused event:
+// the licence (verified before the rule was checked), its issuer and the entry named. Nothing for any
+// other error.
+func (h *Handler) olderRefused(r *http.Request, c caller, source, token string, err error) {
+	var le *license.Error
+	if h.o.Events == nil || !errors.Is(err, licenses.ErrRefused) || !errors.As(err, &le) || le.Rule != licenses.RuleOlder {
+		return
+	}
+	f := map[string]any{"rule": le.Rule, "source": source}
+	name := ""
+	if t, perr := license.Parse(token); perr == nil {
+		name = t.Extension
+		f["name"], f["license"], f["issuer"] = t.Extension, t.ID, t.Issuer
+	}
+	h.o.Events.Refusal(r.Context(), c.tenant.ID, c.eventActor(), "license.refused", audit.Refused, "license:"+name, f)
 }
 
 // querySource reads a licence route's ?source= (spec 0035: the licence's entry): "" when the query
@@ -143,8 +175,10 @@ func (h *Handler) importLicense(w http.ResponseWriter, r *http.Request, c caller
 		return
 	}
 	a, _ := c.actor()
-	v, err := h.o.Licenses.Import(r.Context(), a, p["t"], reqType(r), source, strings.TrimSpace(string(b)), expected)
+	token := strings.TrimSpace(string(b))
+	v, err := h.o.Licenses.Import(r.Context(), a, p["t"], reqType(r), source, token, expected)
 	if err != nil {
+		h.olderRefused(r, c, source, token, err)
 		h.licenseErr(w, err)
 		return
 	}

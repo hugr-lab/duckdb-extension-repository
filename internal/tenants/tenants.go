@@ -79,6 +79,39 @@ func (s *Service) GetTenant(ctx context.Context, a authz.Actor, name string) (st
 	return s.Store.GetTenant(ctx, name)
 }
 
+// TenantState is a tenant as a distribution admin reads it (spec 0037), so a distributor can check
+// that the tenant is its customer's before it writes there: active or suspended (the role is
+// server-wide), never one whose deletion started (not found). Each read is a tenant.read event in the
+// tenant, a suspended one's too.
+func (s *Service) TenantState(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
+	if a.Kind != authz.ActorDistributionAdmin {
+		return store.Tenant{}, authz.ErrDenied
+	}
+	// distribute on the server, not on the tenant: the tenant's resource is an active tenant only
+	// (authz's activeTenant), and a suspended one is read too
+	if err := s.Authz.Allow(ctx, a, authz.VerbDistribute, authz.Server); err != nil {
+		return store.Tenant{}, err
+	}
+	// a closed tenant is not found (and still a deleting one, for the callers that tell)
+	gone := func(err error) (store.Tenant, error) {
+		return store.Tenant{}, fmt.Errorf("%w: tenant %s: %w", store.ErrNotFound, name, err)
+	}
+	t, err := s.Store.GetTenant(ctx, name)
+	switch {
+	case errors.Is(err, store.ErrDeleting) || errors.Is(err, store.ErrDeleted):
+		return gone(err)
+	case err != nil:
+		return store.Tenant{}, err
+	}
+	err = s.Store.InTenantTx(ctx, t.ID, nil, func(tx *store.Tx) error {
+		return tx.Event(ctx, t.ID, a.String(), "tenant.read", "tenant:"+t.Name, map[string]any{"state": t.State})
+	})
+	if errors.Is(err, store.ErrDeleting) { // its deletion started meanwhile
+		return gone(err)
+	}
+	return t, err
+}
+
 // SetTenantState suspends or resumes a tenant (server-wide action). A non-zero expected version must
 // be the tenant's (store.ErrConflict otherwise).
 func (s *Service) SetTenantState(ctx context.Context, a authz.Actor, name, state string, expected int64) (store.Tenant, error) {

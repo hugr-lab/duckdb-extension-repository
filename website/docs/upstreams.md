@@ -984,7 +984,8 @@ curl -sSf "$T/bundle-imports/<import_id>" -H "Authorization: Bearer $TOKEN"
 - **A chunk** is exactly its bytes (`Content-Length` its size), with its `Content-Digest`. It is
   spooled, checked and stored once: the same chunk sent again is a no-op, another one for the same
   number is `409`. A replica takes at most 4 chunks of one upload at once, sharing the replica's
-  `blob.max_ingests` (`429` past that, with `Retry-After`: send it again). `GET` on the upload lists
+  `blob.max_ingests` (`429` past that, with `Retry-After: 1`: send it again; the problem type says
+  which, `chunks-busy` for the upload's own chunks, `ingest-busy` for the replica's ingest slots). `GET` on the upload lists
   the chunks received, so a broken upload resumes with the ones missing. A long upload outlives a
   token: refresh it as the upload goes.
 - **Complete** queues the import (`202`) once every chunk is there; a second call changes nothing.

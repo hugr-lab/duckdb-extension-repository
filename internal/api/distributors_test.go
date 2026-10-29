@@ -30,11 +30,14 @@ func TestDistributorRoutes(t *testing.T) {
 		return r
 	}
 
-	// the mark: a distribution admin's or a server administrator's, never a tenant administrator's
+	// the mark of a fresh publisher a distribution admin created: a server administrator's, never a
+	// tenant administrator's, nor a distribution admin's (spec 0037: an unmarked publisher is the
+	// tenant's own, as a missing one to it)
 	call(201, "POST", T+"/publishers", da, `{"name":"enterest-ci"}`)
 	call(404, "PUT", T+"/publishers/enterest-ci/distributor", ta, `{"distributor":"enterest"}`)
-	call(400, "PUT", T+"/publishers/enterest-ci/distributor", da, `{"distributor":""}`)
-	if r := call(200, "PUT", T+"/publishers/enterest-ci/distributor", da, `{"distributor":"enterest"}`); r.json(t)["distributor"] != "enterest" {
+	call(404, "PUT", T+"/publishers/enterest-ci/distributor", da, `{"distributor":"enterest"}`)
+	call(400, "PUT", T+"/publishers/enterest-ci/distributor", sa, `{"distributor":""}`)
+	if r := call(200, "PUT", T+"/publishers/enterest-ci/distributor", sa, `{"distributor":"enterest"}`); r.json(t)["distributor"] != "enterest" {
 		t.Fatalf("marked: %s", r.body)
 	}
 	if r := call(200, "GET", T+"/publishers/enterest-ci", ta, ""); r.json(t)["distributor"] != "enterest" {
@@ -73,7 +76,8 @@ func TestDistributorRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"used-ci", "granted-ci", "keyed-ci", "built-ci"} {
-		if r := call(400, "PUT", T+"/publishers/"+name+"/distributor", da, `{"distributor":"enterest"}`); strings.ContainsAny(r.json(t)["detail"].(string), "0123456789") {
+		call(404, "PUT", T+"/publishers/"+name+"/distributor", da, `{"distributor":"enterest"}`)
+		if r := call(400, "PUT", T+"/publishers/"+name+"/distributor", sa, `{"distributor":"enterest"}`); strings.ContainsAny(r.json(t)["detail"].(string), "0123456789") {
 			t.Fatalf("the refusal tells counts: %s", r.body)
 		}
 	}
@@ -226,8 +230,7 @@ func TestDistributorRoutes(t *testing.T) {
 	call(404, "POST", T+"/publishers/own-ci/keys", da, `{"public_key":"`+newSigner(t).authKey+`"}`)
 
 	// removed by the tenant: its versions are still the distributor's to withdraw and read
-	call(201, "POST", T+"/publishers", da, `{"name":"gone-ci"}`)
-	call(200, "PUT", T+"/publishers/gone-ci/distributor", da, `{"distributor":"enterest"}`)
+	call(201, "POST", T+"/publishers", da, `{"name":"gone-ci","distributor":"enterest"}`)
 	gone := m.addKey(t, da, "acme", "gone-ci")
 	if r := m.upload(t, T+"/catalogue/extensions/gone_ext/builds"+q, gone, built(t, "1.0", "gone_ext_duckdb_cpp_init")); r.status != 201 {
 		t.Fatalf("gone_ext: %d %s", r.status, r.body)
@@ -235,8 +238,7 @@ func TestDistributorRoutes(t *testing.T) {
 	call(204, "DELETE", T+"/publishers/gone-ci", ta, "")
 	call(200, "GET", T+"/catalogue/publisher:gone-ci/extensions/gone_ext", da, "")
 	// another distributor's publisher of that name: the name is ambiguous (409), each is named by its id
-	call(201, "POST", T+"/publishers", da, `{"name":"gone-ci"}`)
-	call(200, "PUT", T+"/publishers/gone-ci/distributor", da, `{"distributor":"enterest"}`)
+	call(201, "POST", T+"/publishers", da, `{"name":"gone-ci","distributor":"enterest"}`)
 	if r := call(409, "POST", T+"/catalogue/publisher:gone-ci/extensions/gone_ext/versions/1.0/withdraw", da, `{"reason":"retired"}`); !strings.Contains(string(r.body), "publisher-id:") {
 		t.Fatalf("an ambiguous name: %s", r.body)
 	}

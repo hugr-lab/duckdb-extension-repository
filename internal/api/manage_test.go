@@ -90,6 +90,7 @@ type mgmt struct {
 	toks   map[string]string // caller -> token
 	other  string            // a grant id in tenant other
 	keySvc *keys.Service     // the API's key service
+	apiRel *release.Service  // the API's release service
 	ups    *upstream.Service
 	pulls  *fakePuller
 	events *writer.Writer // refusals (spec 0010 phase 1b)
@@ -189,7 +190,7 @@ func newMgmt(t *testing.T) *mgmt {
 		Server: server, PublicURL: publicURL, Auths: auths, API: apiH, MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,
 		WriteIdleTimeout: 10 * time.Second, Puller: pulls})
 	h.SetReady(true)
-	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}, keySvc: &keySvc, ups: ups, pulls: pulls, events: events,
+	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}, keySvc: &keySvc, apiRel: &relSvc, ups: ups, pulls: pulls, events: events,
 		att: att, lic: lic, licKey: licKey}
 
 	// the CLI sets up: tenant other, grants in acme
@@ -297,7 +298,7 @@ func TestManagementAccess(t *testing.T) {
 		hdr                []string
 	}{
 		{"GET", "/api/v1/tenants", "", ok(200, "server admin"), nil},
-		{"GET", T, "", ok(200, tenantAdmins...), nil},
+		{"GET", T, "", ok(200, distributors...), nil}, // spec 0037: a distribution admin reads its state
 		{"GET", T + "/audiences", "", ok(200, tenantAdmins...), nil},
 		{"GET", T + "/issuers", "", ok(200, tenantAdmins...), nil},
 		{"GET", T + "/issuers/corp", "", ok(200, tenantAdmins...), nil},
@@ -693,7 +694,8 @@ func TestManagementDetails(t *testing.T) {
 		done <- m.call(t, "POST", T+"/issuers", ta, `{"name":"slow","url":"https://slow.example"}`).status
 	}()
 	<-s.in
-	if r := m.call(t, "POST", T+"/issuers", ta, `{"name":"slow2","url":"https://slow.example"}`); r.status != 429 {
+	if r := m.call(t, "POST", T+"/issuers", ta, `{"name":"slow2","url":"https://slow.example"}`); r.status != 429 ||
+		r.header.Get("Retry-After") != "5" || r.json(t)["type"] != "urn:kista:problem:issuer-busy" {
 		t.Errorf("a second issuer add while one runs: %d", r.status)
 	}
 	close(s.gate)

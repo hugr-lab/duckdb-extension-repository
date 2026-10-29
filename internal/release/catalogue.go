@@ -53,17 +53,31 @@ func (s *Service) mayAdminTenant(ctx context.Context, a authz.Actor, tenant stri
 // Catalogue lists a tenant's catalogue of a package type (spec 0034): every (source, name), or those
 // of one source or name (as answers name them), by source and name. A distribution admin reads its
 // distributors' publishers' entries only (removed ones too), without rules: it reads no channel
-// (spec 0033 phase B).
+// (spec 0033 phase B). A distributor's publisher reads its own entries only, in the distribution
+// admin's view (spec 0037: a signed request; source, when named, is its own).
 func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageType, source, name string) ([]CatalogueEntry, error) {
-	t, err := s.mayReadCatalogue(ctx, a, tenant)
-	if err != nil {
-		return nil, err
+	var t store.Tenant
+	var only map[string]store.DistributorSource
+	if a.Kind == authz.ActorPublisher {
+		var d store.DistributorSource
+		var err error
+		if t, d, err = s.publisherSource(ctx, a, tenant); err != nil {
+			return nil, err
+		}
+		if source != "" && !ownSource(d, source) {
+			return nil, authz.ErrDenied // another source: refused (the same 404), and audited
+		}
+		source, only = "", map[string]store.DistributorSource{d.Source: d}
+	} else {
+		var err error
+		if t, err = s.mayReadCatalogue(ctx, a, tenant); err != nil {
+			return nil, err
+		}
+		if only, err = s.distributorSources(ctx, a, t); err != nil {
+			return nil, err
+		}
 	}
 	vers, err := s.Store.SourceVersions(ctx, t.ID, packageType)
-	if err != nil {
-		return nil, err
-	}
-	only, err := s.distributorSources(ctx, a, t)
 	if err != nil {
 		return nil, err
 	}
@@ -144,13 +158,24 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 // CatalogueVersions are an entry's versions (newest first) with their builds and where each is
 // released; an entry the tenant has no build of (of the type) is not found. A distribution admin
 // reads its distributors' publishers' entries only (removed ones too), without where they are
-// released (spec 0033 phase B: it reads no channel).
+// released (spec 0033 phase B: it reads no channel); a distributor's publisher its own entries only,
+// so too (spec 0037: a signed request; source is its own).
 func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, packageType, source, name string) ([]CatalogueVersion, error) {
-	t, err := s.mayReadCatalogue(ctx, a, tenant)
-	if err != nil {
+	var t store.Tenant
+	var err error
+	resolve := s.Store.ResolveSource
+	if a.Kind == authz.ActorPublisher {
+		var d store.DistributorSource
+		if t, d, err = s.publisherSource(ctx, a, tenant); err != nil {
+			return nil, err
+		}
+		if !ownSource(d, source) {
+			return nil, authz.ErrDenied // another source: refused (the same 404), and audited
+		}
+		resolve = func(context.Context, string, string) (string, error) { return d.Source, nil }
+	} else if t, err = s.mayReadCatalogue(ctx, a, tenant); err != nil {
 		return nil, err
 	}
-	resolve := s.Store.ResolveSource
 	switch {
 	case a.Kind == authz.ActorDistributionAdmin:
 		resolve = s.Store.ResolveDistributorSource
@@ -179,7 +204,7 @@ func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, 
 		return nil, fmt.Errorf("%w: no build of %s from %s", store.ErrNotFound, name, source)
 	}
 	var placed map[string][]store.Placed
-	if a.Kind != authz.ActorDistributionAdmin {
+	if a.Kind != authz.ActorDistributionAdmin && a.Kind != authz.ActorPublisher {
 		if placed, err = s.Store.BuildPlacements(ctx, t.ID, packageType, src, name); err != nil {
 			return nil, err
 		}

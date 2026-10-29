@@ -47,7 +47,10 @@ type Writer struct {
 	once    sync.Once
 }
 
-type limitKey struct{ tenant, who, kind string }
+// limitKey is what a refusal is coalesced by: its tenant, who (or a client prefix, or nobody) and
+// kind, and the operation a refusal names (spec 0037: each kind of write refused on a distributor's
+// licence entry is told apart).
+type limitKey struct{ tenant, who, kind, op string }
 
 // limit is a key's last emission and what it suppressed since, with the facts of the last
 // suppressed refusal to emit their count later.
@@ -139,7 +142,8 @@ func (w *Writer) Refusal(ctx context.Context, tenantID, actor string, kind audit
 	case w.minute[tenantID] > refusalBurst:
 		who = "client:" + audit.ReduceClient(req.Client, audit.ClientTruncated)
 	}
-	k := limitKey{tenantID, who, string(kind)}
+	op, _ := fields["operation"].(string)
+	k := limitKey{tenantID, who, string(kind), op}
 	l := w.limits[k]
 	if l == nil {
 		if len(w.limits) >= limiterKeys {

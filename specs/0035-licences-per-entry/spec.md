@@ -1,6 +1,7 @@
 # Spec 0035: Licences per catalogue entry
 
 - **Status**: implemented (phase 1 2026-10-26, phase 2 2026-10-26)
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 1): "Who writes which entry": tenant administrators write every entry but distributors' publishers', which licence managers and server administrators write; the rule `older` applies to an import, the relay and bundles.
 - **Date**: 2026-10-26
 - **Author**: vgsml, Claude
 

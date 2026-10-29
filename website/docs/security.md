@@ -197,15 +197,30 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   publishers (spec 0035): any other entry answers as a missing path does. A leaked licence manager's
   token can import, replace, remove licences of those entries and make them private. It can never make one public (which would serve its token to anyone served a
   public release), publish, block, or add upstreams or keys. A licence still has to verify against
-  a key a live release declares.
+  a key a live release declares. A distributor's entry is its licence manager's and the server
+  administrators' to write (spec 0037): a tenant administrator, or a stolen tenant administrator's
+  token, can no longer remove, replace or make public a distributor's licence in its entry. They can
+  still import a copy of it into another entry where its key is live and make that public: the
+  distributor's terms and the public-serving warning cover it, kista does not prevent it. A licence
+  older (by `iat`) than one the tenant holds from the same issuer for the same holder (in a
+  distributor's entry whatever its key, elsewhere verified by the same key, so a licence a tenant
+  administrator signs with a key of their own never blocks the issuer's) is refused on every path.
+  The rule stops replays (a remote restored from a backup, a bundle imported
+  again) but not a writer who may remove the newer licence first; short licence lifetimes remain the
+  real control.
 - **Distribution admins** (`auth.server_distribution_admins`, from the configuration file only)
   provision a distributor's part of every tenant. A leaked distribution admin's token can reserve
-  names in a tenant (narrowing its wide grants; a server administrator releases them), create and
-  mark fresh publishers, give its marked publishers keys, and grant `publish`, `promote` and `admin`
-  on the names reserved in the tenant: so it can publish under those names there, as the distributor
-  does. It cannot take a tenant's publisher with grants, grant on a name the tenant does not
-  reserve, remove a grant the tenant made, read channels or keys, or change a tenant, a channel or a
-  key set. A reservation's answer names the releases under the name in the tenant.
+  names in a tenant (narrowing its wide grants; a server administrator releases them), create
+  publishers and distributors' publishers, give a distributor's publisher keys, and grant
+  `publish`, `promote` and `admin` on the names reserved in the tenant: so it can publish under
+  those names there, as the distributor does. It reaches distributors' publishers only (spec 0037):
+  never the tenant's own publishers, with the licence-key mark or without, so not a tenant's CI
+  publisher that holds its grants (their keys, marks, holds and grants answer it `404`). It cannot
+  grant on a name the tenant does not reserve, remove a grant the tenant made, read channels or
+  keys, or change a tenant, a channel or a key set; it reads a tenant's state and expected holder,
+  each read an event. A reservation's answer names the releases under the name in the tenant. A
+  server has one distributor: a second one's publishers on the same server would be the first's
+  distribution admin's and licence manager's to reach.
 - **Publishers** sign each request with their developer's SSH key (spec 0023). kista stores only
   public keys, so a copy of its database cannot publish. A signature binds the method, the path and
   query, the body's SHA-256 and a time within five minutes, so a captured request cannot be sent

@@ -25,7 +25,7 @@ func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, nam
 		if err := tx.InsertPublisher(ctx, &p); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name})
+		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name, "id": p.ID})
 	})
 	return p, err
 }
@@ -48,7 +48,7 @@ func (s *AuthAdmin) AddDistributorPublisher(ctx context.Context, a authz.Actor, 
 			return err
 		}
 		p.Distributor = dist
-		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name, "distributor": dist})
+		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name, "id": p.ID, "distributor": dist})
 	})
 	return p, err
 }
@@ -96,7 +96,7 @@ func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, 
 		if err := tx.DeletePublisher(ctx, t.ID, name, a.String()); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "publisher.remove", "publisher:"+name, hp.event(map[string]any{"name": name}))
+		return tx.Event(ctx, t.ID, a.String(), "publisher.remove", "publisher:"+name, hp.event(map[string]any{"name": name, "id": p.ID}))
 	})
 	return hp, err
 }
@@ -199,8 +199,9 @@ func (s *AuthAdmin) SetPublisherHold(ctx context.Context, a authz.Actor, tenant,
 }
 
 // SetPublisherLicenseKeys marks a publisher a trusted source of licence keys, or unmarks it (spec
-// 0021): a server administrator's act, or a distribution admin's (spec 0030). While marked, its keys
-// and grants are theirs to change; unmarking keeps the keys it brought.
+// 0021): a server administrator's act, or a distribution admin's on a distributor's publisher only
+// (spec 0037: the tenant's own publishers, marked or not, are not its). While marked, its keys and
+// grants are theirs to change; unmarking keeps the keys it brought.
 func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, tenant, name string, on bool) (store.Publisher, error) {
 	verb, res := authz.VerbAdmin, authz.Server
 	if distributor(a) {
@@ -215,23 +216,16 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 	}
 	var p store.Publisher
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
+		cur, err := tx.GetPublisher(ctx, t.ID, name)
+		if err != nil {
+			return err
+		}
+		if distributor(a) && cur.Distributor == "" {
+			return authz.ErrDenied // spec 0037: either way, as a missing publisher
+		}
 		if on {
 			// keys a tenant administrator registered before the mark would outlive it: the server
 			// administrator adds them once it is marked
-			cur, err := tx.GetPublisher(ctx, t.ID, name)
-			if err != nil {
-				return err
-			}
-			if distributor(a) && !cur.LicenseKeys {
-				// spec 0030: a distribution admin marks a publisher of its own making, before it holds
-				// keys or grants; a tenant's publisher with grants would become the distributor's
-				if n, err := tx.PublisherGrants(ctx, cur.ID); err != nil {
-					return err
-				} else if n > 0 {
-					return fmt.Errorf("%w: publisher %s holds grants (%d): a distribution admin marks a publisher before it has any",
-						store.ErrInvalid, name, n)
-				}
-			}
 			if n, err := tx.PublisherCredentials(ctx, cur.ID); err != nil {
 				return err
 			} else if n > 0 && !cur.LicenseKeys && cur.Distributor == "" { // a distributor's keys are its distributor's already
@@ -248,13 +242,14 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 	return p, err
 }
 
-// SetPublisherDistributor marks an existing publisher a distributor's (spec 0033 phase B), a
-// distribution admin's or a server administrator's act: distributor is the distributor's name, as a
+// SetPublisherDistributor marks an existing publisher a distributor's (spec 0033 phase B), a server
+// administrator's act (a distribution admin only renames a distributor's publisher's distributor:
+// spec 0037, the tenant's own publishers are not its): distributor is the distributor's name, as a
 // tenant reservation names its holder. A distributor's publisher publishes into the catalogue only,
 // without grants (any name kista does not reserve server-wide and the tenant does not reserve for
 // another holder), and reaches no channel by itself; its keys, its hold, its withdrawals and the
 // purges of its entries are the distributor's. Only a fresh publisher a distribution admin created is
-// marked so: no grants, no keys unless it carries the licence-key mark, no hold, never a source of
+// marked so, by a server administrator: no grants, no keys unless it carries the licence-key mark, no hold, never a source of
 // anything (a publisher created otherwise, a tenant administrator's or an operator's, is refused as
 // not found; a server administrator creates a distributor's publisher marked, AddDistributorPublisher).
 // Marking a distributor's publisher again changes the distributor's name. A mark is never removed: the
@@ -271,6 +266,9 @@ func (s *AuthAdmin) SetPublisherDistributor(ctx context.Context, a authz.Actor, 
 			return err
 		}
 		if cur.Distributor == "" { // a fresh publisher only; marked already, it is renamed
+			if distributor(a) {
+				return authz.ErrDenied // spec 0037: the tenant's own publisher, as a missing one
+			}
 			if !strings.HasPrefix(cur.CreatedBy, string(authz.ActorDistributionAdmin)+":") {
 				return authz.ErrDenied // the tenant's own publisher, or an operator's, is never made the distributor's
 			}
@@ -325,20 +323,19 @@ func (s *AuthAdmin) distributors(ctx context.Context, a authz.Actor, p store.Pub
 	return s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server)
 }
 
-// marked refuses a change to a marked publisher's keys or grants unless a server
-// administrator or a distribution admin makes it (spec 0021, 0030): a tenant administrator cannot
-// point it at builds of their own. A distribution admin changes marked publishers only: the
-// tenant's own publishers are its administrators'. A distributor's publisher (spec 0033 phase B) is
-// marked so too.
+// marked refuses a change to a marked publisher's keys or grants unless a server administrator
+// makes it, or a distribution admin for a distributor's publisher (spec 0021, 0030): a tenant
+// administrator cannot point it at builds of their own. A distribution admin changes distributors'
+// publishers only (spec 0037): the tenant's own publishers, with the licence-key mark or without, are
+// not its, and it is refused as for a missing publisher.
 func (s *AuthAdmin) marked(ctx context.Context, a authz.Actor, p store.Publisher) error {
-	isMarked := p.LicenseKeys || p.Distributor != ""
 	if distributor(a) {
-		if !isMarked {
+		if p.Distributor == "" {
 			return authz.ErrDenied
 		}
 		return nil // the call admitted it on the tenant
 	}
-	if !isMarked {
+	if !p.LicenseKeys && p.Distributor == "" {
 		return nil
 	}
 	return s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server)
@@ -393,8 +390,8 @@ func (s *AuthAdmin) ListPublisherKeys(ctx context.Context, a authz.Actor, tenant
 	if err != nil {
 		return nil, err
 	}
-	if distributor(a) && !p.LicenseKeys && p.Distributor == "" {
-		return nil, authz.ErrDenied // a distribution admin's are the marked publishers
+	if distributor(a) && p.Distributor == "" {
+		return nil, authz.ErrDenied // a distribution admin's are the distributors' publishers (spec 0037)
 	}
 	return s.Store.PublisherKeys(ctx, p.TenantID, p.ID)
 }
@@ -409,19 +406,19 @@ func (s *AuthAdmin) TenantPublisherKeys(ctx context.Context, a authz.Actor, tena
 	if err != nil {
 		return nil, err
 	}
-	marked := map[string]bool{}
-	if distributor(a) { // a distribution admin's are the marked publishers
+	dist := map[string]bool{}
+	if distributor(a) { // a distribution admin's are the distributors' publishers (spec 0037)
 		ta, err := s.Store.GetTenantAuth(ctx, t.ID)
 		if err != nil {
 			return nil, err
 		}
 		for _, p := range ta.Publishers {
-			marked[p.ID] = p.LicenseKeys || p.Distributor != ""
+			dist[p.ID] = p.Distributor != ""
 		}
 	}
 	out := map[string][]store.PublisherKey{}
 	for _, k := range ks {
-		if distributor(a) && !marked[k.PublisherID] {
+		if distributor(a) && !dist[k.PublisherID] {
 			continue
 		}
 		out[k.PublisherID] = append(out[k.PublisherID], k)
@@ -432,8 +429,8 @@ func (s *AuthAdmin) TenantPublisherKeys(ctx context.Context, a authz.Actor, tena
 // RemovePublisherKey removes a key: it stops working at once. With purge, the entries published
 // with it that are still held are purged, and those placed early kept, revoked (spec 0033 phase A2:
 // purge_held; a revoked key's builds reach no channel by themselves); a routine rotation, without
-// it, keeps them. A distribution admin purges with a distributor's publisher's keys only (spec 0033
-// phase B: a licence-key mark alone gives it the keys, not the purges). It returns what the purge did.
+// it, keeps them. A distribution admin removes a distributor's publisher's keys only (spec 0037). It
+// returns what the purge did.
 func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenant, publisher, id string, purge bool) (HeldPurge, error) {
 	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
@@ -451,9 +448,6 @@ func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenan
 		}
 		if err := s.marked(ctx, a, p); err != nil {
 			return err
-		}
-		if purge && distributor(a) && p.Distributor == "" {
-			return authz.ErrDenied
 		}
 		k, err := tx.DeletePublisherKey(ctx, p.ID, id)
 		if err != nil {

@@ -173,6 +173,38 @@ func (s *Service) distributorSources(ctx context.Context, a authz.Actor, t store
 	return s.Store.DistributorSources(ctx, t.ID)
 }
 
+// publisherSource is the source of the publisher a signed catalogue read comes from (spec 0037): a
+// distributor's publisher, live, of the tenant the request is to; any other publisher is refused (a
+// tenant's own publisher reads nothing here, a removed one has no keys left to sign with).
+func (s *Service) publisherSource(ctx context.Context, a authz.Actor, tenant string) (store.Tenant, store.DistributorSource, error) {
+	if a.Kind != authz.ActorPublisher || a.Tenant != tenant {
+		return store.Tenant{}, store.DistributorSource{}, authz.ErrDenied
+	}
+	t, err := s.Store.GetTenant(ctx, tenant)
+	if err != nil {
+		return store.Tenant{}, store.DistributorSource{}, err
+	}
+	if t.State != store.TenantActive {
+		return store.Tenant{}, store.DistributorSource{}, authz.ErrDenied
+	}
+	srcs, err := s.Store.DistributorSources(ctx, t.ID)
+	if err != nil {
+		return store.Tenant{}, store.DistributorSource{}, err
+	}
+	d, ok := srcs[sourceOf(a)]
+	if !ok || d.Removed {
+		return store.Tenant{}, store.DistributorSource{}, authz.ErrDenied
+	}
+	return t, d, nil
+}
+
+// ownSource reports whether a signed catalogue read names the signer's own source (spec 0037):
+// publisher:<its name> or publisher-id:<its id>, either of which always means the signer, even
+// where a removed distributor's publisher had its name.
+func ownSource(d store.DistributorSource, label string) bool {
+	return label == store.SourcePublisherPrefix+d.Name || label == store.SourcePublisherIDPrefix+d.PublisherID
+}
+
 // mayReadCatalogue admits a tenant's administrators, and a distribution admin to its distributors'
 // entries only (spec 0033 phase B).
 func (s *Service) mayReadCatalogue(ctx context.Context, a authz.Actor, tenant string) (store.Tenant, error) {

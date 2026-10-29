@@ -76,7 +76,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddVersion": {"version.add"}, "AddVersionCAPI": {"version.c_apis"}, "AddVersionCore": {"reserved.add"}, "CreateChannel": {"channel.create"},
 		"SetChannelVersions": {"channel.versions"}, "Reserve": {"reserved.add"}, "Unreserve": {"reserved.remove"}, "ListReserved": nil,
 		"ReserveInTenant": {"reserved.tenant.add"}, "ReleaseInTenant": {"reserved.tenant.remove"}, "ListInTenant": nil,
-		"ListTenants": nil, "GetTenant": nil, "ListVersions": nil, "ListChannels": nil, "ChannelVersions": nil,
+		"ListTenants": nil, "GetTenant": nil, "ListVersions": nil, "ListChannels": nil, "ChannelVersions": nil, "TenantState": {"tenant.read"},
 	},
 	"tenants.AuthAdmin": {
 		"AddIssuer": {"issuer.add"}, "RemoveIssuer": {"issuer.remove"}, "AddAudience": {"audience.add"},
@@ -342,6 +342,13 @@ func TestCoverage(t *testing.T) {
 		en.expect("tenants.Service.SetTenantHolder", do(func() error { _, err := en.ten.SetTenantHolder(rctx, admin, "acme", h, 0); return err }),
 			"tenant.holder")
 	}
+	// spec 0037: a distribution admin's read of the tenant
+	dten := *en.ten
+	dten.Authz = authz.Grants{Store: en.st}
+	en.expect("tenants.Service.TenantState", do(func() error {
+		_, err := dten.TenantState(rctx, authz.Actor{Kind: authz.ActorDistributionAdmin, ID: "ops|enterest"}, "acme")
+		return err
+	}), "tenant.read")
 	// keys
 	var keyIDs []string
 	for _, f := range []string{"a.pem", "b.pem", "s.pem"} {

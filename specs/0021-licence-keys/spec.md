@@ -1,6 +1,7 @@
 # Spec 0021: Licence keys in the build, and licences in bundles
 
 - **Status**: implemented (phase 1, the key in the build; phase 2, licences in bundles). A marked publisher's credentials are its keys since spec [0023](../0023-publisher-keys/spec.md)
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 1): a distribution admin marks, unmarks and manages the keys of a distributor's publisher only; a publisher with the licence-key mark alone is a server administrator's.
 - **Date**: 2026-10-18
 - **Author**: vgsml, Claude
 

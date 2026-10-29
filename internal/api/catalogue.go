@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
@@ -25,8 +26,9 @@ type catalogueEntryJSON struct {
 	// Withdrawn are the versions with a withdrawn build (spec 0033 phase B: served nowhere), newest
 	// first; omitted for none
 	Withdrawn []string `json:"withdrawn,omitempty"`
-	// PublisherID is a distributor's publisher's id, to a distribution admin (spec 0033 phase B: a
-	// name two of them had is publisher-id:<id> as a source); omitted otherwise
+	// PublisherID is a distributor's publisher's id, to a distribution admin, a server administrator
+	// and the publisher itself (spec 0033 phase B: a name two of them had is publisher-id:<id> as a
+	// source; spec 0037: its signed read); omitted otherwise
 	PublisherID string `json:"publisher_id,omitempty"`
 }
 
@@ -73,6 +75,11 @@ type catalogueBuildJSON struct {
 	// Placed is where it is released; omitted for a distribution admin, who reads no channel (spec
 	// 0033 phase B)
 	Placed *[]store.Placed `json:"placed,omitempty"`
+	// PublisherID and Distributor name the publisher that published, in a catalogue-only
+	// publication's answer (spec 0037); Distributor is omitted for the tenant's own publisher, both
+	// for a tenant principal's publication
+	PublisherID string `json:"publisher_id,omitempty"`
+	Distributor string `json:"distributor,omitempty"`
 }
 
 func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -91,7 +98,7 @@ func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c calle
 		vj := versionJSON{Version: v.Version, Builds: []catalogueBuildJSON{}}
 		for _, b := range v.Builds {
 			bj := catalogueBuildOf(b.Build, b.Placed, h.o.Store.Now())
-			if c.distribution && !c.admin {
+			if c.distribution && !c.admin || c.pub != nil { // spec 0037: a distributor's publisher reads no channel either
 				bj.Placed = nil
 			}
 			vj.Builds = append(vj.Builds, bj)
@@ -166,8 +173,12 @@ func (h *Handler) publishToCatalogue(w http.ResponseWriter, r *http.Request, c c
 		code = http.StatusOK
 	}
 	bj := catalogueBuildOf(b, nil, h.o.Store.Now())
-	if dist, err := h.o.Store.SourceDistributor(r.Context(), b.TenantID, b.Source); err != nil || dist != "" {
+	dist, err := h.o.Store.SourceDistributor(r.Context(), b.TenantID, b.Source)
+	if err != nil || dist != "" {
 		bj.Placed = nil // a distributor's publisher reaches no channel, and learns nothing of them (spec 0033 phase B)
+	}
+	if id, ok := strings.CutPrefix(b.Source, store.SourcePublisherPrefix); ok && err == nil {
+		bj.PublisherID, bj.Distributor = id, dist // spec 0037: the publisher that published
 	}
 	reply(w, r, code, bj, "", noStore)
 }

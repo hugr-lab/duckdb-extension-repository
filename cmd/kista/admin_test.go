@@ -427,9 +427,22 @@ func TestAdminCLI(t *testing.T) {
 	if !strings.Contains(got, keyID) || !strings.Contains(got, "ssh-ed25519") || !strings.Contains(got, "ci ed25519") {
 		t.Fatalf("key list: %q", got)
 	}
-	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, keyID) {
+	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, keyID) || !strings.Contains(got, "\tID\t") && !strings.Contains(got, " ID ") {
 		t.Fatalf("publisher list: %q", got)
 	}
+	// spec 0037: a publisher with its id, in the list too
+	show := run(0, "publisher", "show", "acme", "acl-ci")
+	id := ""
+	for _, l := range strings.Split(show, "\n") {
+		if v, ok := strings.CutPrefix(l, "id:"); ok {
+			id = strings.TrimSpace(v)
+		}
+	}
+	if id == "" || !strings.Contains(show, "keys:") || !strings.Contains(run(0, "publisher", "list", "acme"), id) {
+		t.Fatalf("publisher show: %q", show)
+	}
+	run(1, "publisher", "show", "acme", "nobody")
+	run(2, "publisher", "show", "acme")
 	// a publisher's hold (spec 0033 phase A2); revoking a key purges its held entries
 	run(0, "publisher", "hold", "acme", "acl-ci", "36h")
 	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, "36h0m0s") {

@@ -22,6 +22,8 @@ interface PublisherKey {
 }
 
 interface Publisher {
+  /** its id (spec 0037): opaque; a distributor recognises its own publisher by it */
+  id: string
   name: string
   created_at: string
   created_by: string
@@ -152,6 +154,7 @@ function PublisherView({ name }: { name: string }) {
     <>
       <PageTitle eyebrow={<Link to={`${base}/publishers`} className="no-underline">Publishers</Link>} title={<span className="font-mono">{p.name}</span>}>
         <span className="pb-1 text-ink-muted">publishes from CI, never signs in here</span>
+        <span className="pb-1 text-[13px] text-ink-muted">id <Mono>{p.id}</Mono></span>
         <span className="ml-auto"><Button tone="danger-outline" onClick={() => setRemoving(true)}>Remove…</Button></span>
       </PageTitle>
       {failure != null && <ErrorBox error={failure} />}

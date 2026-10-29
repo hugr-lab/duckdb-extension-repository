@@ -222,10 +222,21 @@ func TestLicenseRelay(t *testing.T) {
 			if res := run(); res.Counts["refused"] != 1 || res.Refused[0].Rule != "superseded" {
 				t.Fatalf("a shorter relayed licence: %+v", res)
 			}
-			en.answer(t, lic.sign("tresor", "pro", now, now+90*day))
+			longer := lic.sign("tresor", "pro", now, now+90*day)
+			en.answer(t, longer)
 			if res := run(); res.Counts["replaced"] != 1 {
 				t.Fatalf("a longer relayed licence: %+v", res)
 			}
+			// spec 0037: an older one (a remote restored from a backup, a stale token), though it lasts
+			// longer, is refused by the rule older; the stored licence stays
+			en.answer(t, lic.sign("tresor", "pro", now-20, now+120*day))
+			if res := run(); res.Counts["refused"] != 1 || res.Refused[0].Rule != licenses.RuleOlder || res.Counts["replaced"] != 0 {
+				t.Fatalf("an older relayed licence: %+v", res)
+			}
+			if l, _ := stored(); l.ExpiresAt != now+90*day {
+				t.Fatalf("after an older relayed licence: %+v", l)
+			}
+			en.answer(t, longer)
 
 			// a requested run is due again; a paused upstream is not
 			if err := svc.Sync(ctx, admin, "acme", u.Name); err != nil {

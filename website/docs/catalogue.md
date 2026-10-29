@@ -82,6 +82,13 @@ or a channel serves it from another source), a reserved name, or a name two of t
 offer: each is listed as skipped, with the reason, after the placement pass's next look at the source
 (a new build of it, or hourly). A rule naming the source takes such a name.
 
+What the distributor reads of the tenant's catalogue is its own: a distribution admin reads its
+distributors' publishers' entries, and the publisher itself reads its own entries with a signed
+request (spec 0037: `GET …/catalogue`, `…/catalogue/publisher:<its name>/extensions/<name>`), so
+the distributor's publishing worker checks its versions, holds and withdrawals with its key alone.
+Neither reads the tenant's rules, follows or where a build is placed
+([Distributors' publishers](publishing.md#distributors-publishers)).
+
 ### Choose versions by hand
 
 Give the name a `manual` rule and place the version you want:

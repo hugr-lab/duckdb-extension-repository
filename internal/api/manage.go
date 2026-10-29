@@ -474,6 +474,21 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request, c caller,
 
 func (h *Handler) getTenant(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
+	if c.distribution && !c.admin {
+		// spec 0037: a distribution admin's view, its name, state and expected holder (omitted when
+		// none is set), without an ETag
+		t, err := h.o.Tenants.TenantState(r.Context(), a, p["t"])
+		if err != nil {
+			h.serviceErr(w, err, false)
+			return
+		}
+		out := map[string]string{"name": t.Name, "state": t.State}
+		if t.HolderID != "" {
+			out["holder_id"] = t.HolderID
+		}
+		reply(w, r, http.StatusOK, out, "-", noStore)
+		return
+	}
 	if c.admin { // spec 0019: any phase, with the deletion's record
 		t, d, err := h.o.Tenants.Show(r.Context(), a, p["t"])
 		if err != nil {
@@ -732,7 +747,7 @@ func (h *Handler) addIssuer(w http.ResponseWriter, r *http.Request, c caller, p 
 	h.mu.Unlock()
 	if busy {
 		w.Header().Set("Retry-After", "5")
-		problem(w, http.StatusTooManyRequests, typeTooMany, "an issuer is being added to this tenant")
+		problem(w, http.StatusTooManyRequests, typeIssuerBusy, "an issuer is being added to this tenant")
 		return
 	}
 	defer func() {
@@ -953,11 +968,13 @@ func (h *Handler) removeGrant(w http.ResponseWriter, r *http.Request, c caller, 
 // --- reserved names (spec 0030) ---
 
 type reservedOut struct {
-	PackageType string   `json:"package_type,omitempty"` // spec 0034: omitted when it is the default
-	Name        string   `json:"name"`
-	Kind        string   `json:"kind"`
-	AddedAt     string   `json:"added_at"`
-	Sources     []string `json:"sources"`
+	PackageType string `json:"package_type,omitempty"` // spec 0034: omitted when it is the default
+	Name        string `json:"name"`
+	Kind        string `json:"kind"`
+	AddedAt     string `json:"added_at,omitempty"`
+	// Sources are left out for a distribution admin (spec 0037): they name other tenants' upstreams
+	// and administrators; so is AddedAt, which says nothing it needs
+	Sources *[]string `json:"sources,omitempty"`
 }
 
 func (h *Handler) listReserved(w http.ResponseWriter, r *http.Request, c caller, _ params) {
@@ -969,8 +986,11 @@ func (h *Handler) listReserved(w http.ResponseWriter, r *http.Request, c caller,
 	}
 	out := []reservedOut{}
 	for _, n := range ns {
-		out = append(out, reservedOut{PackageType: shownType(n.PackageType), Name: n.Name, Kind: n.Kind,
-			AddedAt: n.AddedAt.UTC().Format(time.RFC3339), Sources: n.Sources})
+		o := reservedOut{PackageType: shownType(n.PackageType), Name: n.Name, Kind: n.Kind}
+		if !c.distribution || c.admin {
+			o.AddedAt, o.Sources = n.AddedAt.UTC().Format(time.RFC3339), &n.Sources
+		}
+		out = append(out, o)
 	}
 	reply(w, r, http.StatusOK, map[string]any{"names": out}, "", noStore)
 }

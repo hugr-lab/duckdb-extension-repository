@@ -64,8 +64,10 @@ type UploadOptions struct {
 
 // Upload errors.
 var (
-	// ErrUploadBusy is a chunk past the upload's parallel chunks, or no ingest slot free: retry.
+	// ErrUploadBusy is a chunk past the upload's parallel chunks: retry.
 	ErrUploadBusy = errors.New("upstream: too many chunks at once; send it again")
+	// ErrIngestBusy is a chunk that found no ingest slot free: retry.
+	ErrIngestBusy = errors.New("upstream: every ingest slot is taken; send it again")
 	// ErrUploadChunk is a chunk the upload does not have (its number, its size).
 	ErrUploadChunk = errors.New("upstream: no such chunk")
 )
@@ -221,7 +223,7 @@ func (s *Service) PutUploadChunk(ctx context.Context, a authz.Actor, tenant, id 
 	}()
 	key, err := s.Blob.PutChunk(ctx, t.StorageDomain, r, length, digest)
 	if errors.Is(err, blob.ErrBusy) {
-		return ErrUploadBusy
+		return ErrIngestBusy
 	}
 	if err != nil {
 		return err

@@ -34,7 +34,7 @@ param serverAdmins array
 @description('auth.server_license_admins: the licence managers, who manage every tenant\'s licences and nothing else (spec 0029); empty, none.')
 param serverLicenseAdmins array = []
 
-@description('auth.server_distribution_admins: the distribution admins, who reserve names in tenants and manage the publishers they mark (spec 0030); empty, none.')
+@description('auth.server_distribution_admins: the distribution admins, who reserve names in tenants and manage their distributors\' publishers, never a tenant\'s own (spec 0030, 0037); empty, none.')
 param serverDistributionAdmins array = []
 
 @description('ui.server_clients: the console\'s client ID at each server issuer, as { issuer, client_id }; empty: the server console signs in nowhere.')

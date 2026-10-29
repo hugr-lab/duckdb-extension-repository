@@ -434,7 +434,7 @@ role. See [Access](access.md).
 | `auth.server_egress_allow` | list | none | Like `egress.allow` (`cidr`, `ports`), reached only by the server issuers' fetcher. |
 | `auth.server_admins` | list | none | Principals of server issuers who are server administrators. |
 | `auth.server_license_admins` | list | none | Principals of server issuers who are licence managers: they read every tenant's licences and write those of distributors' publishers' entries, and nothing else (specs 0029, 0035). |
-| `auth.server_distribution_admins` | list | none | Principals of server issuers who are distribution admins: on every tenant they reserve names, mark publishers and manage the marked ones, and grant `publish`, `promote` and `admin` on extensions; nothing else (spec 0030). Not also a licence manager. |
+| `auth.server_distribution_admins` | list | none | Principals of server issuers who are distribution admins: on every tenant they reserve names, create and manage distributors' publishers (never the tenant's own: spec 0037), read the tenant's state and expected holder, and grant `publish`, `promote` and `admin` on extensions; nothing else (spec 0030). Not also a licence manager. |
 | `auth.admin_token_max_age` | duration | `1h` | How recently a management token must have been issued; `1m..24h`. |
 
 Each server issuer:
@@ -574,7 +574,7 @@ File-only. See [The catalogue](upstreams.md#the-catalogue-and-a-channels-rules).
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `catalogue.max_entries` | integer | `20000` | Builds placed nowhere per source; `100..10000000`. A new build beyond it is refused (`429` for a publication; a mirror's cell is `rejected`) until some are placed or purged; an administrator's add is not bounded. |
+| `catalogue.max_entries` | integer | `20000` | Builds placed nowhere per source; `100..10000000`. A new build beyond it is refused (`429` `catalogue-full` for a publication, without `Retry-After`; a mirror's cell is `rejected`) until some are placed or purged; an administrator's add is not bounded. |
 | `catalogue.max_bytes` | size | `100GiB` | Their bodies per source; 1 GiB..1 PiB. |
 
 ## ui

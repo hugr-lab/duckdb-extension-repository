@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Client } from '../lib/http'
 import { Import, importEntry } from './Licenses'
-import type { License, NameKeys } from './Licenses'
+import type { KeySource, License, NameKeys } from './Licenses'
 
 // Spec 0035: the import dialog's entry: listed by the licence's key, the only one preselected, never
 // one among several, another one typed; what ?source= and If-Match it sends.
@@ -15,22 +15,24 @@ const keys = (...names: string[]): NameKeys[] => [{ name: 'tresor', keys: [{ kid
 }) }] }]
 
 describe('importEntry', () => {
+  // a tenant administrator's console (spec 0037: no entry listed here is a distributor's)
+  const tenantEntry = (listed: KeySource[], choice: string, typed: string) => importEntry(listed, choice, typed, false)
   const listed = (...names: string[]) => keys(...names)[0].keys[0].sources
   it('preselects only the one entry listed, never one among several', () => {
-    expect(importEntry(listed('publisher:ci'), '', '')).toEqual({ entry: 'publisher:ci', bad: '' })
-    expect(importEntry(listed('publisher:ci', 'upstream:org'), '', '')).toEqual({ entry: '', bad: '' })
-    expect(importEntry(listed('publisher:ci', 'upstream:org'), 'upstream:org', '')).toEqual({ entry: 'upstream:org', bad: '' })
+    expect(tenantEntry(listed('publisher:ci'), '', '')).toEqual({ entry: 'publisher:ci', bad: '' })
+    expect(tenantEntry(listed('publisher:ci', 'upstream:org'), '', '')).toEqual({ entry: '', bad: '' })
+    expect(tenantEntry(listed('publisher:ci', 'upstream:org'), 'upstream:org', '')).toEqual({ entry: 'upstream:org', bad: '' })
   })
   it('drops a choice no longer listed, taking nothing in its place', () => {
-    expect(importEntry(listed('publisher:ci', 'upstream:org'), 'upstream:gone', '')).toEqual({ entry: '', bad: '' })
-    expect(importEntry(listed('publisher:ci'), 'upstream:gone', '')).toEqual({ entry: '', bad: '' })
+    expect(tenantEntry(listed('publisher:ci', 'upstream:org'), 'upstream:gone', '')).toEqual({ entry: '', bad: '' })
+    expect(tenantEntry(listed('publisher:ci'), 'upstream:gone', '')).toEqual({ entry: '', bad: '' })
   })
   it('takes the typed entry, by its source name', () => {
-    expect(importEntry(listed('publisher:ci'), 'other', ' upstream:org ')).toEqual({ entry: 'upstream:org', bad: '' })
-    expect(importEntry([], '', 'publisher:x')).toEqual({ entry: 'publisher:x', bad: '' })
-    expect(importEntry([], '', 'publisher-id:0190').entry).toBe('')
-    expect(importEntry([], '', 'publisher-id:0190').bad).toContain('upstream:<name> or publisher:<name>')
-    expect(importEntry([], '', '')).toEqual({ entry: '', bad: '' })
+    expect(tenantEntry(listed('publisher:ci'), 'other', ' upstream:org ')).toEqual({ entry: 'upstream:org', bad: '' })
+    expect(tenantEntry([], '', 'publisher:x')).toEqual({ entry: 'publisher:x', bad: '' })
+    expect(tenantEntry([], '', 'publisher-id:0190').entry).toBe('')
+    expect(tenantEntry([], '', 'publisher-id:0190').bad).toContain('upstream:<name> or publisher:<name>')
+    expect(tenantEntry([], '', '')).toEqual({ entry: '', bad: '' })
   })
 })
 

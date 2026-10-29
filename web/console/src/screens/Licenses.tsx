@@ -11,7 +11,9 @@ import type { Upstream } from './Upstreams'
 // from its credentialed upstreams. kista issues none: it stores what verifies against a key the
 // extension's live builds declare (spec 0021: their key blocks, recorded from a marked publisher or
 // a repository upstream) and serves it to the extensions' SDK. A licence belongs to a catalogue
-// entry (spec 0035): a source's builds of the name, which every write names.
+// entry (spec 0035): a source's builds of the name, which every write names. A distributor's
+// publisher's entry is its licence manager's and the server administrators' to write (spec 0037): to
+// anyone else it is read-only.
 
 export interface License {
   name: string
@@ -34,6 +36,8 @@ export interface License {
   visibility: 'public' | 'private'
   status: string
   etag: string
+  /** Its entry's distributor, when the entry is a distributor's publisher's (spec 0037). */
+  distributor?: string
 }
 
 /** An entry a key is live for (spec 0035): its source, by kind and name (a distributor's publisher's
@@ -71,6 +75,12 @@ export function importPath(api: string, entry: string) {
 /** An entry as the licence routes name it: upstream:<name>, publisher:<name>. */
 export function entryOf(s: Pick<KeySource, 'kind' | 'name'>) {
   return `${s.kind}:${s.name}`
+}
+
+/** Whether a caller only reads a licence, or an entry, of a distributor's publisher (spec 0037): its
+ * licence manager or a server administrator writes it, never a tenant administrator. */
+export function readOnly(x: { distributor?: string }, server: boolean) {
+  return !server && !!x.distributor
 }
 
 /** What an entry's source is, in words: an upstream, a publisher, or a distributor's publisher. */
@@ -164,7 +174,7 @@ export function syncLine(r?: SyncResult | null) {
 }
 
 export function Licenses() {
-  const { client, api } = useTenant()
+  const { client, api, perms } = useTenant()
   const [open, setOpen] = useState('')
   const list = useLoad(() => client.get<{ licenses: License[] }>(`${api}/licenses`), [api])
   const keys = useLoad(() => client.get<{ names: NameKeys[] }>(`${api}/license-keys`), [api])
@@ -204,8 +214,9 @@ export function Licenses() {
           />
         )}
       </Card>
-      {selected && <LicenseView key={licenseKey(selected)} l={selected} onChanged={() => { list.reload() }} onRemoved={() => { setOpen(''); list.reload() }} />}
-      <Import client={client} api={api} licenses={ls} keys={nks} keysLoading={keys.loading} keysError={keys.error}
+      {selected && <LicenseView key={licenseKey(selected)} l={selected} server={perms.server} onChanged={() => { list.reload() }}
+        onRemoved={() => { setOpen(''); list.reload() }} />}
+      <Import client={client} api={api} server={perms.server} licenses={ls} keys={nks} keysLoading={keys.loading} keysError={keys.error}
         onImported={(key) => { setOpen(key); list.reload(); keys.reload() }} onStale={() => { list.reload(); keys.reload() }} />
       <Keys names={nks} loading={keys.loading} error={keys.error} reload={keys.reload} />
       <Relays />
@@ -213,8 +224,9 @@ export function Licenses() {
   )
 }
 
-/** A licence's claims and limits, and what an administrator changes. */
-function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () => void; onRemoved: () => void }) {
+/** A licence's claims and limits, and what an administrator changes: nothing, for a distributor's
+ * licence to a caller who is not a server administrator (spec 0037). */
+export function LicenseView({ l, server, onChanged, onRemoved }: { l: License; server: boolean; onChanged: () => void; onRemoved: () => void }) {
   const { client, api, base } = useTenant()
   const [pending, setPending] = useState<'public' | 'private' | 'remove' | null>(null)
   const { busy, failure, act } = useAction('The licence', onChanged)
@@ -239,15 +251,16 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
     ['Grace until', when(l.grace_until)],
     ['Signed by', <Mono>{l.key}</Mono>],
     ['Entry', <><Mono>{l.entry}</Mono>: the catalogue entry it belongs to; a channel serves it where it serves {l.name} from this entry</>],
+    ...(l.distributor ? [['Distributor', <>{l.distributor}: its publisher's entry</>] as [string, React.ReactNode]] : []),
     ['Source', l.source === 'upstream' ? <>relayed from upstream <Link className="font-mono" to={`${base}/upstreams/${seg(l.upstream ?? '')}`}>{l.upstream}</Link></> : 'imported'],
   ]
   return (
-    <Card title={<span className="font-mono">{l.name}</span>} actions={
+    <Card title={<span className="font-mono">{l.name}</span>} actions={readOnly(l, server) ? undefined : (
       <>
         <Button tone="outline" disabled={busy} onClick={() => setPending(l.visibility === 'public' ? 'private' : 'public')}>Make {l.visibility === 'public' ? 'private' : 'public'}</Button>
         <Button tone="danger-outline" disabled={busy} onClick={() => setPending('remove')}>Remove…</Button>
       </>
-    }>
+    )}>
       <div className="flex flex-col gap-4">
         <dl className="m-0 grid grid-cols-[10rem_1fr] gap-x-4 gap-y-2">
           {facts.map(([k, v]) => (
@@ -262,6 +275,7 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
         ) : <Empty>No limits: the extension's defaults apply.</Empty>}
         <Note>The extension enforces the plan and limits, not kista. A build accepts a licence only when its own key block holds the key that signed it. kista serves the licence in a channel only while a live build there declares that key.</Note>
         {l.visibility === 'public' && <Note>Public: anyone who is served a public release of {l.name} here gets this licence, and can copy it.</Note>}
+        {readOnly(l, server) && <Note>A distributor's licence: {l.distributor}'s licence manager writes it, or a server administrator. This tenant reads it, and decides what its channels serve.</Note>}
         {failure != null && <ErrorBox error={failure} />}
       </div>
       <Confirm open={pending !== null} title={pending === 'remove' ? `Remove the licence for ${l.name} in ${l.entry}?` : `Make the licence for ${l.name} in ${l.entry} ${pending}?`}
@@ -282,11 +296,14 @@ function LicenseView({ l, onChanged, onRemoved }: { l: License; onChanged: () =>
  * never one among several; a choice no longer listed is no entry (the administrator chooses again,
  * nothing taken in its place); the typed one when they chose another or none is listed. A typed entry is named by its source's name (upstream:<name>, publisher:<name>), as the
  * licences list shows live entries: otherwise the licence it replaces would not be found and no
- * If-Match sent. bad says why a typed entry is not one ('' none). */
-export function importEntry(listed: KeySource[], choice: string, typed: string): { entry: string; bad: string } {
-  const names = listed.map(entryOf)
-  if (listed.length > 0 && choice !== 'other') {
-    return { entry: choice === '' ? preselect(listed) : names.includes(choice) ? choice : '', bad: '' }
+ * If-Match sent. bad says why a typed entry is not one ('' none). A distributor's publisher's entry
+ * is listed but never chosen nor preselected for a caller who is not a server administrator (spec
+ * 0037: server false). */
+export function importEntry(listed: KeySource[], choice: string, typed: string, server: boolean): { entry: string; bad: string } {
+  const names = listed.filter((s) => !readOnly(s, server)).map(entryOf)
+  if (names.length > 0 && choice !== 'other') {
+    const only = preselect(listed)
+    return { entry: choice === '' ? (names.includes(only) ? only : '') : names.includes(choice) ? choice : '', bad: '' }
   }
   const entry = typed.trim()
   if (entry !== '' && !/^(upstream|publisher):[^:\s]+$/.test(entry)) {
@@ -298,9 +315,11 @@ export function importEntry(listed: KeySource[], choice: string, typed: string):
 /** Import a licence file into a catalogue entry (spec 0035): the entries whose live keys include
  * the file's key are listed, the only one preselected (never one among several); another may be
  * named, and kista refuses it unless its keys verify the licence. The licence stored in that entry is
- * replaced after a confirmation. A refusal reads the list and the keys again. */
-export function Import({ client, api, licenses, keys, keysLoading, keysError, onImported, onStale }: {
-  client: Client; api: string; licenses: License[]; keys?: NameKeys[]; keysLoading: boolean; keysError?: unknown
+ * replaced after a confirmation. A refusal reads the list and the keys again. A distributor's
+ * publisher's entry is listed but not chosen by a caller who is not a server administrator (spec
+ * 0037: its licence manager writes it). */
+export function Import({ client, api, server = false, licenses, keys, keysLoading, keysError, onImported, onStale }: {
+  client: Client; api: string; server?: boolean; licenses: License[]; keys?: NameKeys[]; keysLoading: boolean; keysError?: unknown
   onImported: (key: string) => void; onStale: () => void
 }) {
   const file = useRef<HTMLInputElement>(null)
@@ -313,7 +332,7 @@ export function Import({ client, api, licenses, keys, keysLoading, keysError, on
   const { busy, failure, act } = useAction()
   const p = token ? peek(token) : null
   const listed = p ? entriesFor(keys, p.ext, p.kid) : []
-  const { entry, bad: badEntry } = importEntry(listed, choice, other)
+  const { entry, bad: badEntry } = importEntry(listed, choice, other, server)
   const stored = p ? replaced(licenses, p.ext, entry) : undefined
   const clear = () => {
     setToken('')
@@ -364,8 +383,10 @@ export function Import({ client, api, licenses, keys, keysLoading, keysError, on
         <span id={legend} className="text-[13px] font-semibold text-ink">Into the entry{listed.length > 1 ? ': several declare its key, choose one' : ''}</span>
         {listed.map((s) => (
           <label key={entryOf(s)} className="flex items-center gap-2 text-[13px]">
-            <input type="radio" name="entry" value={entryOf(s)} checked={choice !== 'other' && entry === entryOf(s)} onChange={() => setChoice(entryOf(s))} />
+            <input type="radio" name="entry" value={entryOf(s)} disabled={readOnly(s, server)} checked={choice !== 'other' && entry === entryOf(s)}
+              onChange={() => setChoice(entryOf(s))} />
             <Mono>{entryOf(s)}</Mono><span className="text-ink-muted">{entryKind(s)}</span>
+            {readOnly(s, server) && <span className="text-ink-muted">· a distributor's: its licence manager writes it</span>}
           </label>
         ))}
         <div className="flex items-center gap-2 text-[13px]">

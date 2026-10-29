@@ -199,12 +199,24 @@ func (s *Service) ApplyBundle(ctx context.Context, t store.Tenant, actor, holder
 				old, err := tx.GetLicense(ctx, t.ID, typ, name, src)
 				switch {
 				case errors.Is(err, store.ErrNotFound):
-					old.Version = 0
+					old = store.License{}
 				case err != nil:
 					return err
 				case old.Token == it.Token:
 					count("unchanged")
 					continue
+				}
+				// spec 0037: never older than a licence the tenant holds (a bundle imported again);
+				// before the refusal of a licence over an import, which an older one would also meet
+				if err := s.older(ctx, tx, lb, l); err != nil {
+					if r := refusal(err, it.tok); r != nil {
+						refuse(*r)
+						continue
+					}
+					return err
+				}
+				switch {
+				case old.Version == 0:
 				case old.Source == store.LicenseImport:
 					refuse(Refusal{Name: name, ID: it.tok.ID, Rule: "superseded",
 						Reason: "the licence an administrator imported for " + name + " from " + lb.of(src) + " stays: a bundle's never replaces it"})

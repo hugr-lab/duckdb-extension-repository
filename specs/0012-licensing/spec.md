@@ -1,6 +1,7 @@
 # Spec 0012: Licensing and usage reports
 
 - **Status**: implemented; phases 1a (part 1 the format, the reference verifier and the vectors; part 2 licences in kista, the relay, the routes, the API and the CLI), 1b (usage reports), 1c (forwarding), 1d (the console) and 2 (the C++ SDK: part 1 the verifier, part 2 the DuckDB side) implemented
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 1): the relay's replacement rules gain the rule `older`: a licence older (by `iat`) than one the tenant holds from the same issuer for the same holder (in a distributor's entry whatever its key, elsewhere verified by the same key) is refused whatever its expiry (an import and bundles too), so a licence that lasts longer no longer replaces a later one.
 - **Date**: 2026-10-17
 - **Author**: vgsml, Claude
 

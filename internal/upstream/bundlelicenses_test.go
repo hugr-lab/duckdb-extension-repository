@@ -352,6 +352,14 @@ func TestBundleLicenses(t *testing.T) {
 				stored().Token != own || in(air2).Token != newer {
 				t.Fatalf("over an administrator's import: %+v", l)
 			}
+			// spec 0037: an older licence (a bundle imported again), though it lasts longer, is refused
+			// by each target with the rule older, before the refusal over an administrator's import; the
+			// stored ones stay
+			if r := svc.ApplyBundle(ctx, site, "test", "", []licenses.BundleLicense{{Name: "tresor", Token: lic.sign("tresor", "max", now-5, now+365*86400),
+				Upstreams: []store.Upstream{air, air2}}}, false); r.Error != "" || r.Counts["refused"] != 2 || r.Refused[0].Rule != licenses.RuleOlder ||
+				r.Refused[1].Rule != licenses.RuleOlder || r.Targets["air"]["refused"] != 1 || stored().Token != own || in(air2).Token != newer {
+				t.Fatalf("an older licence: %+v", r)
+			}
 
 			// the holder the plan names: the exporter carries only that holder's
 			res, data = g.export(t, plan("someone-else"), upstream.ExportOptions{Private: private, Licenses: true})

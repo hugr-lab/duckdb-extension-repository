@@ -161,8 +161,14 @@ const (
 	typeRequired     = "precondition-required"
 	typeTooLarge     = "too-large"
 	typeMediaType    = "unsupported-media-type"
-	typeTooMany      = "too-many-requests"
 	typeUnavailable  = "unavailable"
+	// the 429s (spec 0037: one type per cause, so a client acts on the type)
+	typeRateLimited   = "rate-limited"   // the per-client rate limiter
+	typeUploadSlots   = "upload-slots"   // the upload slots per actor, tenant or server
+	typeIngestBusy    = "ingest-busy"    // every ingest slot taken
+	typeChunksBusy    = "chunks-busy"    // too many chunks of one bundle upload in flight
+	typeCatalogueFull = "catalogue-full" // a source's catalogue full: no Retry-After, it clears as its builds go
+	typeIssuerBusy    = "issuer-busy"    // an issuer being added to the tenant
 	// typeSource: another source holds the name in the channel (spec 0031)
 	typeSource = "source"
 	// typeHeld: a held entry, or a publisher with a hold on a channel's route (spec 0033)
@@ -170,13 +176,18 @@ const (
 	// typeWithdrawn: a withdrawn entry (spec 0033 phase B): placed nowhere, its release never made
 	// active again, its body never arriving again in its source
 	typeWithdrawn = "withdrawn"
+	// typeDistributorsEntry: a write on a distributor's publisher's licence entry by a tenant
+	// administrator (spec 0037), the one 404 with a type and a detail of its own: the caller reads
+	// the licence and sees whose entry it is, so they reveal nothing
+	typeDistributorsEntry = "distributors-entry"
 )
 
 var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "Not Found", typeMethod: "Method Not Allowed",
 	typeInvalid: "Invalid", typeConflict: "Conflict", typePrecondition: "Precondition Failed",
 	typeRequired: "Precondition Required", typeTooLarge: "Content Too Large", typeMediaType: "Unsupported Media Type",
-	typeTooMany: "Too Many Requests", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
-	typeHeld: "Held", typeWithdrawn: "Withdrawn"}
+	typeRateLimited: "Rate Limited", typeUploadSlots: "Upload Slots Taken", typeIngestBusy: "Ingest Busy", typeChunksBusy: "Chunks Busy",
+	typeCatalogueFull: "Catalogue Full", typeIssuerBusy: "Issuer Busy", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
+	typeHeld: "Held", typeWithdrawn: "Withdrawn", typeDistributorsEntry: "A Distributor's Entry"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
 func problem(w http.ResponseWriter, status int, typ, detail string) {
@@ -423,7 +434,10 @@ func (c caller) actor() (authz.Actor, bool) {
 	case c.admin:
 		return authz.Actor{Kind: authz.ActorServer, ID: c.id.Issuer.Name + "|" + c.id.Who()}, true
 	case c.licenseManager:
-		// spec 0029: the services allow it license on a tenant, and nothing else
+		// spec 0029: the services allow it license on a tenant, and nothing else. A server token is
+		// never both a licence manager's and a distribution admin's (auth.Server.Verify refuses one
+		// whose principals hold both, 401); were it so, it would act as the licence manager, and the
+		// distribution admins' routes would answer it 404 (spec 0037)
 		return authz.Actor{Kind: authz.ActorLicenseManager, ID: c.id.Issuer.Name + "|" + c.id.Who()}, true
 	case c.distribution:
 		// spec 0030: the services allow it a distributor's calls, and nothing else
@@ -530,12 +544,18 @@ type rule struct {
 	// routes it is anonymous, on the rest not a token
 	publishers bool
 	// distributors admits a distributor's publisher on a pathVerbs route without the verbs (spec 0033
-	// phase B: the catalogue-only publication, whose service checks the name)
+	// phase B: the catalogue-only publication, whose service checks the name), and on a
+	// distributionAdmin route with publishers (spec 0037: its own catalogue entries, which its service
+	// narrows it to)
 	distributors bool
 	// closed: server administrators reach a tenant whose deletion started (spec 0019: its record,
 	// its deletion and its events); to everyone else it is unknown
 	closed bool
-	handle handler
+	// suspended: a distribution admin reaches a suspended tenant (spec 0037: its state, so a
+	// distributor tells "suspended, wait" from "gone"); to everyone else but server administrators it
+	// is unknown
+	suspended bool
+	handle    handler
 }
 
 type params map[string]string
@@ -598,7 +618,9 @@ func init() {
 			http.MethodDelete: m(distributionAdmin, (*Handler).releaseInTenant)}},
 		{"tenants", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listTenants),
 			http.MethodPost: mb(serverAdmin, (*Handler).createTenant)}},
-		{"tenants/{t}", map[string]rule{http.MethodGet: {access: pathAdmin, manage: true, closed: true, handle: (*Handler).getTenant},
+		// spec 0037: a distribution admin reads a tenant's state and expected holder
+		{"tenants/{t}", map[string]rule{http.MethodGet: {access: distributionAdmin, manage: true, closed: true, suspended: true,
+			handle: (*Handler).getTenant},
 			http.MethodDelete: {access: serverAdmin, manage: true, closed: true, handle: (*Handler).deleteTenant}}},
 		{"tenants/{t}/suspend", map[string]rule{http.MethodPost: m(serverAdmin, (*Handler).suspend)}},
 		// spec 0028: the holder the tenant's licences must name
@@ -680,14 +702,17 @@ func init() {
 		{"tenants/{t}/channels/{c}/duckdb-versions/{v}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeChannelVersion)}},
 		// spec 0033: the tenant's catalogue, read by its administrators
 		// (spec 0033 phase B: and distribution admins, their distributors' publishers' entries only)
-		{"tenants/{t}/catalogue", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).catalogue)}},
+		// (spec 0037: and a distributor's publisher, signing the request, its own entries)
+		{"tenants/{t}/catalogue", map[string]rule{http.MethodGet: {access: distributionAdmin, manage: true, publishers: true, distributors: true,
+			handle: (*Handler).catalogue}}},
 		// publishing into the catalogue only: publish on the name tenant-wide (a publisher's signed
 		// request), or a distributor's publisher without grants (spec 0033 phase B: its service checks
 		// the name); before the entry's route, which an extension named "extensions" would match
 		{"tenants/{t}/catalogue/extensions/{ext}/builds", map[string]rule{
 			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPublish}, manage: true, raw: true, publishers: true,
 				distributors: true, handle: (*Handler).publishToCatalogue}}},
-		{"tenants/{t}/catalogue/{source}/extensions/{ext}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).catalogueEntry)}},
+		{"tenants/{t}/catalogue/{source}/extensions/{ext}", map[string]rule{http.MethodGet: {access: distributionAdmin, manage: true,
+			publishers: true, distributors: true, handle: (*Handler).catalogueEntry}}},
 		{"tenants/{t}/catalogue/builds/{id}", map[string]rule{http.MethodDelete: m(distributionAdmin, (*Handler).purgeEntry)}},
 		// spec 0033 phase B: withdrawing a version of a distributor's publisher (distribution admins and
 		// server administrators; the service refuses a tenant's administrators)
@@ -823,7 +848,7 @@ func (rt route) allowHeader() string {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.limiter.allow(client(r)) {
 		w.Header().Set("Retry-After", h.limiter.retryAfter())
-		problem(w, http.StatusTooManyRequests, typeTooMany, "")
+		problem(w, http.StatusTooManyRequests, typeRateLimited, "")
 		return
 	}
 	rest, ok := strings.CutPrefix(r.URL.EscapedPath(), "/api/v1/")
@@ -981,8 +1006,9 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			h.fail(w, err)
 			return caller{}, false
 		}
-		// unknown and suspended tenants: 404 for everyone but server administrators
-		if err != nil || t.State != store.TenantActive && !c.admin {
+		// unknown and suspended tenants: 404 for everyone but server administrators (and, on a route
+		// that says so, a distribution admin for a suspended one: spec 0037)
+		if err != nil || t.State != store.TenantActive && !c.admin && (!ru.suspended || !c.distribution) {
 			notFound(w)
 			return caller{}, false
 		}
@@ -1070,6 +1096,14 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		}
 		fallthrough
 	case distributionAdmin:
+		if ru.access == distributionAdmin && ru.distributors && c.pub != nil {
+			// spec 0037: a distributor's publisher's signed request, which its service narrows to its
+			// own entries; the tenant's own publisher's is refused
+			if !slices.ContainsFunc(c.pub.Publishers, func(m auth.MatchedPublisher) bool { return m.Publisher.Distributor != "" }) {
+				return refuse()
+			}
+			break
+		}
 		if ru.access == distributionAdmin && c.distribution && !c.admin {
 			break // the services allow it distribute on the tenant, and narrow each call
 		}
@@ -1270,9 +1304,11 @@ type statusWriter struct {
 	tenant store.Tenant // the path's tenant, once known
 	actor  caller
 	// authFailure is why a sent token was not accepted (a 401); refused, that a known caller was
-	// refused (a 404 that stands for forbidden).
+	// refused (a 404 that stands for forbidden), with what the refused act was when its service says
+	// (refusal: spec 0037, a write on a distributor's licence entry).
 	authFailure string
 	refused     bool
+	refusal     map[string]any
 }
 
 // note marks a statusWriter (w is one when the request came through ServeHTTP).
@@ -1322,8 +1358,11 @@ func (h *Handler) record(r *http.Request, rt route, p params, method string, sw 
 		h.o.Events.Refusal(r.Context(), sw.tenant.ID, "anonymous", "auth.failure", audit.Refused, subject,
 			map[string]any{"reason": sw.authFailure, "route": route})
 	case sw.refused:
-		h.o.Events.Refusal(r.Context(), sw.tenant.ID, actor, "authz.refused", audit.Refused, subject,
-			map[string]any{"route": route, "status": sw.status})
+		f := map[string]any{"route": route, "status": sw.status}
+		for k, v := range sw.refusal {
+			f[k] = v
+		}
+		h.o.Events.Refusal(r.Context(), sw.tenant.ID, actor, "authz.refused", audit.Refused, subject, f)
 	case sw.status >= 500:
 		h.o.Events.Refusal(r.Context(), sw.tenant.ID, actor, "request.failed", audit.Failed, subject,
 			map[string]any{"route": route, "status": sw.status})

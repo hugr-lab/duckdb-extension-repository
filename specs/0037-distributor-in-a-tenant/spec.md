@@ -1,6 +1,6 @@
 # Spec 0037: The distributor in a tenant
 
-- **Status**: accepted
+- **Status**: accepted (PR 1 implemented)
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -14,7 +14,8 @@ reviews.
    - Only licence managers and server administrators write licences in a distributor's
      publisher's entry. Tenant administrators can only read them.
    - Separately, kista refuses a licence older (by `iat`) than a licence it already holds for the
-     same name, issuer and holder in the tenant.
+     same name, issuer and holder in the tenant: one in a distributor's entry whatever its key, one
+     in any other entry when verified by the same key.
 2. **A narrower distribution admin.**
    - The role reaches only distributors' publishers and their catalogue entries. It no longer
      reserves names in tenants, creates ordinary publishers, writes grants, or touches the tenant's
@@ -107,8 +108,16 @@ refused.
     distributor's.
   - The console and the CLI show it as the reason.
   - The `authz.refused` event gains `name`, `source` and the operation (`import`, `remove`,
-    `public`, `private`).
+    `public`, `private`), the entry resolved (`entry`, its id form), and `name_unverified` when the
+    name was read from an import's token before it was verified. The audit writer coalesces these
+    refusals per operation, so each is told.
   - The check runs when the service resolves the entry, and again inside the write's transaction.
+- **A copy made public is not prevented.** A tenant administrator reads the distributor's licence,
+  so they can import a copy into another entry where its key is live and make it public there. That
+  is covered by the distributor's terms and spec 0035 phase 2's warning, not refused (the owner's
+  decision: an organisation serving a licence publicly need not be prevented now). A refusal keyed on
+  the licence's issuer and id would be bypassed anyway: a replacement with `If-Match`, the relay and
+  bundles keep a public row public, and a renewal changes the id.
 - **Answers.** A licence's answer gains `distributor` when its entry is a distributor's
   publisher's. The keys listing already includes it.
 - **Console.** For a caller who is not a server administrator, the Licences screen shows a
@@ -125,19 +134,32 @@ refused.
 - **The rule.**
   - kista refuses to store a licence when the tenant holds another licence of the same package type
     and name, with the same `iss` and the same holder id, and a later `iat`. The stored licence can
-    be in any entry of the tenant.
+    be in any entry of the tenant. It counts when it is in a distributor's publisher's entry (live
+    or removed), whatever its key, and in any other entry only when it was verified by the same key
+    as the incoming licence.
+  - The same key outside a distributor's entry, because `iss` and the holder are the licence's own
+    claims: a tenant administrator could add an upstream whose build declares a key of their own,
+    sign a licence with the issuer's `iss` and holder and a later `iat`, and so freeze every write of
+    the issuer's licences in the tenant. A stored licence's key (`key_fp`) is the fingerprint of the
+    key material that verified it (the key set is built from the declared keys' material, never from
+    a declared kid), so comparing keys compares key material.
+  - Any key in a distributor's entry, because only its licence manager and server administrators
+    write there, so no forged key can freeze anything; and after the issuer rotates its key, its new
+    licence there still supersedes a stale licence of the previous key imported elsewhere.
   - An equal `iat` is accepted. The console relies on this when it replaces a licence with the same
     file.
   - Licences from other issuers are not compared.
-  - A stored licence does not count once its grace has ended, or while its key is dead (not live in
-    its entry, or refused by the server). These are the cases in which `replaces` already lets
-    anything replace it. So a licence signed with a key that was later compromised cannot block
-    newer licences with a high `iat`.
+  - A stored licence does not count once its grace has ended, or while the server refuses its key
+    (`licenses.refuse_keys`). So a licence signed with a key that was later compromised cannot block
+    newer licences with a high `iat`. A key no longer live in its entry still counts: a tenant
+    administrator can make it so (removing the distributor's publisher, blocking its bodies), then
+    import an older licence elsewhere.
 - **Where it applies.**
   - **Import**, including a replacement with `If-Match`. The answer is `400` `invalid`, "the
     licence is refused (older): …", like every other licence refusal. It is checked after the key
     and holder checks and before the stored licence is compared. So an older licence sent without
-    `If-Match` gets `older`, not `409` "a licence is stored".
+    `If-Match` gets `older`, not `409` "a licence is stored". The refusal is a `license.refused`
+    event.
   - **The relay.** The licence is refused with the rule `older` in the run's result, and the stored
     licence stays. The check comes after the "unchanged" test and before `replaces`.
   - **Bundles.** The licence is refused with the rule `older`, per target. As for the relay, the
@@ -146,7 +168,8 @@ refused.
 - **Where it is checked.**
   - One store helper reads the tenant's licences of the type and name. Go compares `iss` and the
     holder byte for byte, because SQL Server compares strings ignoring trailing spaces.
-  - The service drops the stored licences that do not count, since only it knows the refused keys.
+  - The service drops the stored licences that do not count: past their grace, of a refused key, or
+    of another key outside a distributor's entry (it reads the entry's distributor).
   - All three paths call it inside the write's transaction, under the tenant's licence lock. Every
     licence write takes that lock, so nothing can be stored between the check and the write.
     `PutLicense` does not repeat the check, because it does not know the refused keys.
@@ -187,7 +210,14 @@ refused.
   relay refuses a licence as `older`, it keeps its own stored licence, which may be older than
   another entry's. kista adds no serving-time comparison for this. Short lifetimes bound it.
 
-No migration is needed: the stored row already has `issuer`, `holder_id` and `issued_at`.
+  **Other package types (latent).** A licence token carries no package type: the same token stored
+  under another type is another licence to the rule, which compares within a type. Only one type
+  exists today.
+
+  **Copies.** A copy of a distributor's licence in another entry, made public there by a tenant
+  administrator, is not prevented (Design, "A copy made public is not prevented").
+
+No migration is needed: the stored row already has `issuer`, `holder_id`, `key_fp` and `issued_at`.
 
 ### 2. A narrower distribution admin
 
@@ -409,8 +439,11 @@ The ids are opaque and grant nothing.
 
 - **Licences (1).**
   - **What is closed.** A tenant administrator, or a stolen tenant administrator's token, can no
-    longer remove, replace or make public a distributor's licence. Making it public would serve the
-    distributor's paid licence to anonymous clients.
+    longer remove, replace or make public a distributor's licence in its entry. Making it public would
+    serve the distributor's paid licence to anonymous clients.
+  - **What stays open.** They read the licence, so they can import a copy into another entry where
+    its key is live and make that public. The distributor's terms and spec 0035 phase 2's warning
+    cover it; kista does not prevent it.
   - **What tenant administrators lose.** They can no longer write those entries. This is intended:
     the licence is the distributor's contract with the organisation.
   - **What they keep.** The tenant still decides what its channels serve, by switching a rule
@@ -466,11 +499,12 @@ The ids are opaque and grant nothing.
 
 - **Store suite, three dialects.**
   - The `older` helper:
-    - a later `iat` in another entry of the tenant counts;
-    - an equal `iat` does not;
-    - another issuer does not;
-    - a holder that differs only by a trailing space does not count;
-    - a stored licence past its grace does not count.
+    - a later `iat` in another entry of the tenant is listed, whatever its key;
+    - an equal `iat` is not;
+    - another issuer is not;
+    - a holder that differs only by a trailing space is not;
+    - (a stored licence past its grace, and another key outside a distributor's entry, are dropped
+      by the service: its tests below.)
   - Migration 0046:
     - the table is gone;
     - the column's default is one day;
@@ -486,7 +520,10 @@ The ids are opaque and grant nothing.
     - import, and replacement with `If-Match`: `400 older`, before `409`;
     - the same file again is accepted;
     - an old licence into an empty upstream entry, with the distributor's key live, is refused;
-    - a stored licence whose key is refused does not block;
+    - a stored licence past its grace does not block;
+    - another key does not count outside a distributor's entry, and counts in it (a K1 licence after
+      a rotation to K2 is refused because of the K2 licence in the distributor's entry);
+    - a removed distributor's publisher's licence still counts;
     - the relay refuses with `older` and keeps the stored licence;
     - bundles refuse with `older` per target, before the bundle's "superseded" refusal.
   - The writers on a distributor's entry, live and removed (id form):
@@ -611,6 +648,59 @@ Two pull requests, in this order with spec 0036. Each runs `make test` on the th
 **The developer kit.** `kista_publish.py` in extension-ci-tools retries every `429` up to its limit.
 It should stop on `catalogue-full`, both from a publication and from spec 0036's metadata `PUT`. It
 may keep retrying the other types.
+
+### As built (PR 1)
+
+Delivered on the branch `0037-distributor-in-tenant-1`, with no migration.
+
+- **Licences.** The distributor's-entry check (`refuseDistributorsEntry` in `internal/licenses`)
+  runs when the entry is resolved and again in the write's transaction, as part of `recheck`; it
+  admits a licence manager (its entries are distributors' only) and a server administrator
+  (`Allow(admin, server)`). On an import it runs before the token is parsed, so the refusal's event
+  names the licence read from the token, marked `name_unverified` (`""` when the token names none).
+  The API maps `*DistributorsEntry` to the typed `404` and records its fields on `authz.refused`
+  through the status writer; the audit writer's coalescing key includes a refusal's `operation`.
+  `older` is one service helper over `store.LaterLicenses` (issuer and holder compared in Go),
+  called by the import, the relay and bundles; after review it compares the key outside a
+  distributor's entry and counts any key in one (Design above), and exempts a stored licence only for
+  its grace or a refused key (the first cut also exempted a key not live in its entry, the relay's
+  `deadKey`). Its refusal names the entry holding the later licence; the API writes
+  `license.refused` for it. A refusal from `recheck` on an import, before the token is verified,
+  marks the name unverified too. A refusal of making a copy public, added by the first review, was
+  removed after the second (bypassable; Design, "A copy made public is not prevented").
+- **Signed catalogue reads.** Another source than the signer's answers `authz.ErrDenied` (the same
+  `404` bytes), so it is audited as a refusal.
+- **Both roles.** A server token whose principals are a licence manager's and a distribution admin's
+  is refused (`401`, `auth.Server.Verify`, since spec 0030); the API would otherwise act as the licence
+  manager. The access page says so.
+- **The narrowing.** `marked()`, `SetPublisherLicenseKeys` (both directions), `ListPublisherKeys`,
+  `TenantPublisherKeys` and `SetPublisherDistributor` refuse a distribution admin on a publisher
+  without `Distributor`. So a distribution admin no longer marks a fresh publisher it created; a
+  server administrator still does until PR 2 removes the path.
+- **Reserved names.** A distribution admin's answer leaves out `added_at` as well as `sources`
+  ("each name and its kind only").
+- **CLI.** There was no `publisher show`: it is added, printing the publisher with its `id`.
+- **Console.** The import dialog never preselects a distributor's entry for a caller who is not a
+  server administrator, and "never one among several" still counts every entry listed.
+- **429s.** The `ingest-busy` details name the ingest slots ("every ingest slot is taken; try
+  again" for a publication, "…; send it again" for a chunk); the other details are unchanged. An
+  attachment takes the tenant's upload slots by its id, shared with publications (it used the
+  tenant's name before).
+- **Tests.** The "old licence into another entry where the distributor's key is live" case uses a
+  tenant publisher's entry rather than an upstream's: the rule is tenant-wide, whatever the entry's
+  kind. A refused key's exemption is not tested on its own (outside a distributor's entry a stored
+  licence of a refused key could only block an incoming licence of the same key, which is refused
+  first; in one, it would take a second key declared there). A
+  removed entry's import, `…/public` and `…/private` answer `400` (removed) to every caller, as in
+  spec 0035; its `DELETE` is the one write refused as `distributors-entry`. `TestDistributionAdmin` and `TestDistributorRoutes` are adjusted to PR 1 (distributors'
+  publishers created marked); their rewrite as the role's full matrix is PR 2's. The e2e server
+  answers the licence routes when licensing is on. The console e2e fixture gains `plain-ci`, a
+  tenant publisher whose builds declare no licence key.
+- **Earlier specs.** 0007, 0008, 0012, 0021, 0023, 0029, 0033 and 0035 carry a "Changed by 0037
+  (PR 1)" line; 0030, 0031, 0034 and the reservation parts of 0033 and 0036 change with PR 2.
+- **Website.** The deploy variables' descriptions say distributors' publishers now (their
+  reservations wording stays for PR 2); `upgrading.md` and `upstreams.md`'s `allow_reserved` change
+  with PR 2.
 
 ## Alternatives considered
 

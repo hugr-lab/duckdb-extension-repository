@@ -184,9 +184,18 @@ same body was already released in that slot with the same choices):
 | `411` | no `Content-Length` (chunked uploads are refused) |
 | `413` | longer than `blob.max_body` plus the 256-byte signature |
 | `415` | a `Content-Type` other than `application/octet-stream` |
-| `429` | too many uploads at once; retry after `Retry-After` |
+| `429` | busy or full, by its problem type (below) |
 
 A client that sends `Expect: 100-continue` gets its `401` or `404` before sending the file.
+
+**A `429` says why in its problem type** (spec 0037), so a CI script acts on the type:
+
+| Type | Why | `Retry-After` | A script |
+| --- | --- | --- | --- |
+| `…/upload-slots` | too many uploads at once, of the caller, the tenant or the server | `5` | retries |
+| `…/ingest-busy` | every ingest slot is taken | `5` | retries |
+| `…/rate-limited` | the per-client rate limit | the limiter's | retries |
+| `…/catalogue-full` | the source's catalogue holds as many entries or bytes as it may (`catalogue.max_entries`, `max_bytes`) | none | stops: it clears only when the source's builds are placed, purged or trimmed |
 
 **Limits.** The upload must arrive at no less than `serve.min_rate` (default 16 KiB/s) and within
 `Content-Length / min_rate` plus a minute. At most `publish.max_per_principal` uploads run at once
@@ -283,8 +292,10 @@ grant on a channel does not reach it; a reserved name only through a grant namin
 DuckDB version must be registered on the server (a C API build's is not checked). The same body
 again answers the build as it is, whatever `visibility` asks. The answer is the build (`201`, or
 `200` when the source has the body already): `{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility",
-"origin", "checked", "created_at", "state", "available_at", "placed"}` (`state` is `held` until `available_at` when the
-publisher has a [hold](#holds-and-early-placement), else `available`). The CLI's form is
+"origin", "checked", "created_at", "state", "available_at", "placed", "publisher_id", "distributor"}` (`state` is `held` until `available_at` when the
+publisher has a [hold](#holds-and-early-placement), else `available`; `publisher_id` and, for a
+distributor's publisher, `distributor` name the publisher that published, spec 0037, and are left
+out for a tenant principal's publication). The CLI's form is
 `kista admin catalogue add <tenant> <file|-> -name <name> [-private]` (a tenant administrator's,
 source `tenant`).
 
@@ -372,11 +383,18 @@ or `POST /api/v1/tenants/{t}/publishers {"name": "enterest-ci", "distributor": "
 distributor's name, as a [tenant reservation](#reserved-names) names its holder; a tenant
 administrator passing `distributor` is refused, `404`). An existing publisher is marked (`PUT
 …/publishers/{name}/distributor {"distributor": "enterest"}`, `publisher distributor <tenant>
-<name> <distributor>`) only when a distribution admin created it and it is fresh: one a tenant
-administrator or an operator (a server token, the CLI) created is refused (`404`), and one that
-holds grants, keys (unless it carries the licence-key mark already), a hold, builds, releases or
-rules is refused (`400`). Marking a distributor's publisher again changes the name; the mark is
-never removed: the publisher is removed instead.
+<name> <distributor>`) by a server administrator only when a distribution admin created it and it is
+fresh: one a tenant administrator or an operator (a server token, the CLI) created is refused
+(`404`), and one that holds grants, keys (unless it carries the licence-key mark already), a hold,
+builds, releases or rules is refused (`400`). A distribution admin marks no existing publisher
+(spec 0037: an unmarked publisher is the tenant's own, and answers it `404`); it creates its
+distributor's publishers marked. Marking a distributor's publisher again changes the name (a
+distribution admin's or a server administrator's); the mark is never removed: the publisher is
+removed instead.
+
+Every publisher answer carries the publisher's `id` (spec 0037): a distributor recognises its own
+publisher by it after a publisher of the same name was removed and created again. The ids are
+opaque and grant nothing.
 
 - **The catalogue only, without grants.** It publishes with `POST
   …/catalogue/extensions/{ext}/builds` (above) any name kista does not reserve server-wide (DuckDB's
@@ -396,15 +414,24 @@ never removed: the publisher is removed instead.
   channels take.
 - **Its licences** (spec 0035): marked for licence keys, its publications record their keys, and
   its builds of a name are a catalogue entry of their own. Its licence is imported into that entry,
-  named (`?source=publisher:<name>`, `-source`), as soon as a build is in the catalogue, by a tenant
-  administrator, a server administrator or a licence manager (Enterest's reconciler), and a channel
-  serves it where its rule names the publisher. Another source of the same name, a pull-through `*`
+  named (`?source=publisher:<name>`, `-source`), as soon as a build is in the catalogue, by a server
+  administrator or a licence manager (Enterest's reconciler), and a channel serves it where its rule
+  names the publisher. A tenant administrator reads it and writes it no more (spec 0037:
+  [who writes a distributor's entry](access.md#server-administrators-and-tenant-administrators)). Another source of the same name, a pull-through `*`
   upstream included, is another entry with its own licence or none: nothing to give or move
   ([A licence's entry](licensing.md#a-licences-entry)).
 - **What a distribution admin reads**: its distributors' publishers' entries in the catalogue
   (`GET …/catalogue`, `…/catalogue/{source}/extensions/{ext}`), removed publishers' included, without
   the channels' rules or where a build is placed; the catalogue-only route's answer carries no
   `placed` for a distributor's publisher either.
+- **What the publisher reads** (spec 0037): its own entries, with a signed request (the statement
+  naming an empty body, as a signed `whoami` does), so a publishing worker checks its versions,
+  holds and withdrawals with its key alone. `GET …/catalogue` and
+  `GET …/catalogue/{source}/extensions/{ext}` answer its source only, as a distribution admin reads
+  it: no rules, no placements, `publisher_id` on each entry; `?type=` is taken. `?source=` (on the
+  list, where it may be left out) or `{source}` is `publisher:<its name>` or `publisher-id:<its
+  id>`, both of which always mean the signer, even where a removed publisher had its name; any
+  other source answers `404`. A tenant's own publisher's signed read answers `404`.
 
 ## Changing a release
 
@@ -459,7 +486,9 @@ without touching its grants.
 
 What a publisher may do, whatever its grants say: publish, promote, read the releases its grants
 cover, add attachments to what it publishes (see [Attachments](attachments.md)), and
-`GET …/whoami`. Nothing else: no install, no management. A grant to a publisher may carry only
+`GET …/whoami`, whose `publishers` give each publisher's `id` and, for a distributor's publisher, its
+`distributor` (spec 0037); a distributor's publisher also reads its own catalogue entries
+([above](#distributors-publishers)). Nothing else: no install, no management. A grant to a publisher may carry only
 `publish` and `promote`.
 
 ```bash
@@ -480,7 +509,7 @@ Over the API (tenant administrators):
 
 | Route (under `/api/v1/tenants/{t}`) | |
 | --- | --- |
-| `GET /publishers`, `POST /publishers {"name": …}` | list, add; a publisher's answer lists its keys |
+| `GET /publishers`, `POST /publishers {"name": …}` | list, add; a publisher's answer has its `id` (spec 0037) and lists its keys |
 | `GET /publishers/{name}`, `DELETE /publishers/{name}` | read, remove |
 | `GET /publishers/{name}/keys`, `POST /publishers/{name}/keys {"public_key": …, "expires_at": …}` | list, register a key |
 | `GET /publishers/{name}/keys/{id}`, `DELETE /publishers/{name}/keys/{id}[?purge_held=true]` | read, remove one; `purge_held` purges what it published that is still held, and answers what it purged and kept (revoked) |
@@ -609,7 +638,7 @@ publish:
 publishes from GitHub Actions with the fork's `kista_publish.py`, which does the above for every
 build of a distribution: it reads each build's version and platform from its footer, skips wasm
 builds (refused, above), signs each request, and retries a `429`, a `408`, a `5xx` or a broken
-connection, signing again. Its `--check` signs a `whoami` first. It needs only Python 3 and OpenSSH,
+connection, signing again (it should stop on a `429` typed `catalogue-full`, [above](#publishing-over-the-api)). Its `--check` signs a `whoami` first. It needs only Python 3 and OpenSSH,
 so it also runs in another CI: see the fork's
 [KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md).
 
@@ -638,15 +667,17 @@ kista admin -config /etc/kista/kista.yaml publisher key add acme tresor-ci treso
 ```
 
 Over the API: `POST` (mark) and `DELETE` (unmark) `/api/v1/tenants/{t}/publishers/{name}/license-keys`,
-server administrators only. Each records a `publisher.change` event.
+server administrators only (and distribution admins, for a distributor's publisher). Each records a
+`publisher.change` event.
 
 - **Its publications record keys.** Each publication by the marked publisher records the keys the
   body declares, including a publication of a body that is already released (from an unmarked path,
   say). The publisher must hold `publish` on the name itself.
 - **A malformed key block is refused**: `400`, with `license_keys` in the detail. `kista ext
   inspect <file>` shows what kista reads.
-- **Its keys and grants are the server administrator's** (or a distribution admin's, spec 0030,
-  which marks only a publisher without keys or grants). A publisher holding a key is not marked
+- **Its keys and grants are the server administrator's** (a distribution admin's for a
+  distributor's publisher only, spec 0037: the tenant's own publishers, marked or not, answer it
+  `404`). A publisher holding a key is not marked
   (`400`): keys a tenant administrator registered would outlive the mark. While it is marked,
   adding or removing its keys and grants, and changing the members of an extension group its grants
   name, is refused to a tenant administrator (`404`). A tenant administrator can still remove the

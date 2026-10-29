@@ -2,6 +2,7 @@
 
 - **Status**: implemented (2026-10-25: A1 parts 1, 2, 3a, 4; A2; B; C; part 3b deferred to the
   follow-ups)
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 1): a distributor's publisher reads its own catalogue entries with a signed request; a full catalogue's `429` is typed `catalogue-full`; a distribution admin marks no existing publisher (PR 1: a server administrator still marks a fresh one); publisher answers carry the publisher's id.
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 

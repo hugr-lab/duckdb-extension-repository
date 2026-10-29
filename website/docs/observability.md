@@ -59,6 +59,7 @@ are all the kinds in `internal/audit`:
 | Tenants and server | `tenant.create` | `tenant:<name>` | `name`, `display_name`, `storage_domain`, `holder_id` (when set) |
 | | `tenant.holder` | `tenant:<name>` | `old`, `new` (the expected holder; empty: none) |
 | | `tenant.suspend`, `tenant.resume` | `tenant:<name>` | none |
+| | `tenant.read` | `tenant:<name>` | `state`: a distribution admin read the tenant's state and expected holder (spec 0037), written for a suspended tenant too |
 | | `tenant.delete` | `tenant:<name>` | `channels` (a count), `suspended_at`, `keys` (the fingerprints) |
 | | `tenant.purge` | `tenant:<name>` | `rows`, `passes`, `late`, `error` |
 | | `version.add` | `version:<name>` | `version`, `kind`, `c_apis` |
@@ -83,11 +84,12 @@ are all the kinds in `internal/audit`:
 | | `extension_group.remove` | `extension-group:<name>` | `name`, `description`, `members` |
 | | `extension_group.change` | `extension-group:<name>` | `description` |
 | | `extension_group.members` | `extension-group:<name>` | `added`, `removed` |
-| | `publisher.add`, `publisher.remove` | `publisher:<name>` | `name`; added, `distributor` (a distributor's publisher, spec 0033); removed, `purged` and `kept` (the held entries it purged, how many, and those it kept, revoked, each with its `channels`, spec 0033) |
+| | `publisher.add`, `publisher.remove` | `publisher:<name>` | `name`, `id` (the publisher's, spec 0037); added, `distributor` (a distributor's publisher, spec 0033); removed, `purged` and `kept` (the held entries it purged, how many, and those it kept, revoked, each with its `channels`, spec 0033) |
 | | `publisher.change` | `publisher:<name>` | `name`, `license_keys` (marked or unmarked as a source of licence keys, spec 0021), or `distributor` and `before` (marked a distributor's publisher, spec 0033) |
 | | `publisher.key.add` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `expires_at` (a public SSH key, spec 0023) |
 | | `publisher.key.remove` | `publisher:<name>/key:<id>` | `publisher`, `key`, `fingerprint`, `type`, `title`, `purge_held`; with it, `purged` and `kept` (as `publisher.remove`) |
-| Licences | `license.import` | `license:<name>` | `name`, `license`, `issuer`, `holder`, `plan`, `expires_at`, `replaced`, `source` (the licence's catalogue entry, by its source, spec 0035) |
+| Licences | `license.refused` | `license:<name>` | `name`, `license`, `issuer`, `rule` (`older`), `source` (the entry named), `count`: an import refused as older than a licence the tenant holds (spec 0037), rate-limited as a refusal |
+| | `license.import` | `license:<name>` | `name`, `license`, `issuer`, `holder`, `plan`, `expires_at`, `replaced`, `source` (the licence's catalogue entry, by its source, spec 0035) |
 | | `license.change` | `license:<name>` | `name`, `license`, `visibility`, `source` |
 | | `license.remove` | `license:<name>` | `name`, `license`, `reason` (`admin`, `revoked`, `expired`, `upstream removed`), `source` |
 | | `license.sync` | `upstream:<name>` | `upstream`, `counts`, `error`, `refused` (the system's relay run into its upstream's own entry) |
@@ -130,7 +132,7 @@ are all the kinds in `internal/audit`:
 | | `feed.remove` | `feed:<name>` | `name`, `documents`, `export` |
 | | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `bundle` and `dry_run` (an import's), `error` (a class: `unauthorized`, `refused`, `unreachable`, `credential`, `token`, `keys`, `limits`, `failed`) |
 | Access | `auth.failure` | `route:<route>` | `reason`, `route`, `count` |
-| | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count` |
+| | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count`; for a tenant administrator's write on a distributor's licence entry (spec 0037), `name` (with `name_unverified` when read from an import's token before it was verified), `source` (the entry as named), `entry` (resolved, `upstream-id:<id>` or `publisher-id:<id>`) and `operation` (`import`, `remove`, `public`, `private`; refusals are coalesced per operation) |
 | | `install` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `duckdb_version`, `body_hash`, `user_agent` |
 | | `extension.use` | `channel:<channel>/ext:<name>` | `version`, `platform`, `duckdb_version`, `license`, `status`, `events` |
 | | `usage.forward` | `upstream:<name>` | `upstream`, `sent`, `skipped`, `failed` |
@@ -155,8 +157,9 @@ Notes on some kinds:
   `malformed`, `invalid`, `publisher_route`, `stale_token` or `unnamed_writer`, or for a publisher's
   signed request `signed_stale` (`signed-at` more than five minutes away), `signed_key` (not a key of
   the tenant, or expired) or `signed_signature`.
-  `authz.refused` is a known caller refused. These two and `request.failed` are rate-limited per
-  tenant, actor and kind to one a second, each carrying `count`, the requests it stands for.
+  `authz.refused` is a known caller refused. These two, `request.failed` and `license.refused`
+  are rate-limited per tenant, actor and kind to one a second (an `authz.refused` that names its
+  `operation`, spec 0037, per operation too), each carrying `count`, the requests it stands for.
 - `install` is an authenticated download by a principal holding `install` on it: the first per
   (principal, release, client network, day) on a replica, at most 1,000 a day per principal.
 - `extension.use` is a usage report by a principal holding `install` on the extension

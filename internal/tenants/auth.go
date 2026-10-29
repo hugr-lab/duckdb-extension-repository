@@ -44,9 +44,9 @@ func (s *AuthAdmin) tenant(ctx context.Context, a authz.Actor, name string) (sto
 }
 
 // distributor reports whether an actor is a distribution admin (spec 0030): on a tenant it may
-// create publishers, mark fresh ones and manage the marked ones' keys and grants, and grant publish,
-// promote and admin on the names reserved in the tenant; each of those calls narrows it, and nothing
-// else admits it.
+// create publishers, manage the distributors' publishers (spec 0037: their marks, holds and keys,
+// never the tenant's own publishers'), and grant publish, promote and admin on the names reserved in
+// the tenant; each of those calls narrows it, and nothing else admits it.
 func distributor(a authz.Actor) bool { return a.Kind == authz.ActorDistributionAdmin }
 
 // tenantOrDistributor is tenant for a call a distribution admin may make too.
@@ -403,8 +403,9 @@ func (s *AuthAdmin) RemoveGrant(ctx context.Context, a authz.Actor, tenant, id s
 				if err := distributorGrant(g.Kind, g.Package, g.PackageGroupName, g.Verbs); err != nil {
 					return err
 				}
-				// a distribution admin's own grants, or a marked publisher's (checked below): the
-				// tenant's other grants are its administrators'
+				// a distribution admin's own grants (a publisher's only if it is a distributor's,
+				// checked below, spec 0037: which holds none): the tenant's other grants are its
+				// administrators'
 				if !strings.HasPrefix(g.CreatedBy, string(authz.ActorDistributionAdmin)+":") && g.PublisherName == "" {
 					return authz.ErrDenied
 				}

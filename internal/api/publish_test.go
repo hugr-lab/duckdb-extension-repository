@@ -282,7 +282,7 @@ func TestUploadConcurrency(t *testing.T) {
 	<-started2
 	// two uploads hold pat's slots: a third answers 429
 	if r := m.upload(t, P+"a3/releases?version=1.0&platform=linux_amd64", tok, built(t, "1.0", "a3_duckdb_cpp_init")); r.status != http.StatusTooManyRequests ||
-		r.header.Get("Retry-After") == "" {
+		r.header.Get("Retry-After") != "5" || r.json(t)["type"] != "urn:kista:problem:upload-slots" {
 		t.Errorf("a third upload: %d", r.status)
 	}
 	_ = pw.Close()
