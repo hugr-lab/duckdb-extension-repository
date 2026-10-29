@@ -3,6 +3,18 @@ import { ApiError, Client, seg } from './http'
 
 type Call = { url: string; init: RequestInit }
 
+// blobText reads a blob as text: on Node 26, Response.blob() makes jsdom's Blob in this
+// environment, which has no text(); jsdom's FileReader reads it
+function blobText(b: Blob): Promise<string> {
+  if (typeof b.text === 'function') return b.text()
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result as string)
+    r.onerror = () => reject(r.error)
+    r.readAsText(b)
+  })
+}
+
 function stub(statuses: number[]) {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -51,7 +63,7 @@ describe('Client', () => {
     expect(Object.keys(h).filter((k) => k.toLowerCase() === 'authorization' || k.toLowerCase() === 'content-type')).toEqual(['Authorization', 'Content-Type'])
     expect(calls[0].init.body).toBe(doc)
     const b = await c.blob('/tenants/acme/extensions/x/attachments/1/content')
-    expect(await b.text()).toBe('{"ok":true}')
+    expect(await blobText(b)).toBe('{"ok":true}')
   })
 
   it('never sends a token outside its scope', async () => {
