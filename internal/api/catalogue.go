@@ -97,7 +97,7 @@ func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c calle
 		vj := versionJSON{Version: v.Version, Builds: []catalogueBuildJSON{}}
 		for _, b := range v.Builds {
 			bj := catalogueBuildOf(b.Build, b.Placed, h.o.Store.Now())
-			if c.distribution && !c.admin {
+			if c.distribution && !c.admin || c.pub != nil { // spec 0037: a distributor's publisher reads no channel either
 				bj.Placed = nil
 			}
 			vj.Builds = append(vj.Builds, bj)

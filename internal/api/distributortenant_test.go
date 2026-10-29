@@ -164,6 +164,90 @@ func TestDistributionAdminTenantRead(t *testing.T) {
 	call(404, "GET", "/api/v1/tenants/nope", da, "")
 }
 
+// Spec 0037 PR 1: a distributor's publisher reads its own catalogue entries with a signed request, in
+// the distribution admin's view (no rules, no placements, its id on each entry): source, when named,
+// is publisher:<its name> or publisher-id:<its id>, which always mean the signer; any other source is
+// not found, and the tenant's own publisher's signed request is refused.
+func TestSignedCatalogueReads(t *testing.T) {
+	m := newMgmt(t)
+	da, ta, sa := m.toks["server dist admin"], m.toks["tenant admin"], m.toks["server admin"]
+	const T = "/api/v1/tenants/acme"
+	call := func(want int, method, path, tok, body string) resp {
+		t.Helper()
+		r := m.call(t, method, path, tok, body)
+		if r.status != want {
+			t.Fatalf("%s %s: %d, want %d: %s", method, path, r.status, want, r.body)
+		}
+		return r
+	}
+	q := "?version=1.0&platform=linux_amd64"
+	publish := func(handle, name, version string) {
+		t.Helper()
+		if r := m.upload(t, T+"/catalogue/extensions/"+name+"/builds?version="+version+"&platform=linux_amd64", handle,
+			built(t, version, name+"_duckdb_cpp_init")); r.status != 201 {
+			t.Fatalf("%s %s: %d %s", name, version, r.status, r.body)
+		}
+	}
+	old := call(201, "POST", T+"/publishers", da, `{"name":"enterest-ci","distributor":"enterest"}`).json(t)["id"].(string)
+	key := m.addKey(t, da, "acme", "enterest-ci")
+	publish(key, "geo_tools", "1.0")
+	call(201, "POST", T+"/publishers", ta, `{"name":"own-ci"}`)
+	own := m.addKey(t, ta, "acme", "own-ci")
+	call(201, "POST", T+"/grants", ta, `{"principal":"publisher:own-ci","verbs":["publish"]}`)
+	if r := m.upload(t, T+"/catalogue/extensions/own_ext/builds"+q, own, built(t, "1.0", "own_ext_duckdb_cpp_init")); r.status != 201 {
+		t.Fatalf("own_ext: %d %s", r.status, r.body)
+	}
+	call(201, "POST", T+"/channels/prod/extensions/geo_tools/releases/place", sa, `{"source":"publisher:enterest-ci","version":"1.0"}`)
+
+	// the list: its own entries only, without rules
+	for _, query := range []string{"", "?source=publisher:enterest-ci", "?source=publisher-id:" + old, "?type=duckdb_extension&name=geo_tools"} {
+		r := call(200, "GET", T+"/catalogue"+query, key, "")
+		es := r.json(t)["entries"].([]any)
+		if len(es) != 1 {
+			t.Fatalf("%q: %s", query, r.body)
+		}
+		e := es[0].(map[string]any)
+		if e["source"] != "publisher:enterest-ci" || e["publisher_id"] != old || len(e["rules"].(map[string]any)) != 0 || strings.Contains(string(r.body), "prod") {
+			t.Fatalf("%q: %s", query, r.body)
+		}
+	}
+	for _, query := range []string{"?source=publisher:own-ci", "?source=tenant", "?source=publisher-id:" + old + "x"} {
+		call(404, "GET", T+"/catalogue"+query, key, "")
+	}
+	// an entry: without placements
+	for _, src := range []string{"publisher:enterest-ci", "publisher-id:" + old} {
+		if r := call(200, "GET", T+"/catalogue/"+src+"/extensions/geo_tools", key, ""); strings.Contains(string(r.body), `"placed"`) ||
+			!strings.Contains(string(r.body), `"version":"1.0"`) {
+			t.Fatalf("%s: %s", src, r.body)
+		}
+	}
+	call(404, "GET", T+"/catalogue/publisher:own-ci/extensions/own_ext", key, "")
+	call(404, "GET", T+"/catalogue/tenant/extensions/tresor", key, "")
+	// the tenant's own publisher reads nothing here
+	call(404, "GET", T+"/catalogue", own, "")
+	call(404, "GET", T+"/catalogue/publisher:own-ci/extensions/own_ext", own, "")
+
+	// removed and created again under its name: publisher:<name> is the signer, the new one; the
+	// removed one's key is gone with it
+	call(204, "DELETE", T+"/publishers/enterest-ci", ta, "")
+	if r := m.call(t, "GET", T+"/catalogue", key, ""); r.status != 401 {
+		t.Fatalf("a removed publisher's key: %d %s", r.status, r.body)
+	}
+	cur := call(201, "POST", T+"/publishers", da, `{"name":"enterest-ci","distributor":"enterest"}`).json(t)["id"].(string)
+	key2 := m.addKey(t, da, "acme", "enterest-ci")
+	publish(key2, "geo_tools", "2.0")
+	r := call(200, "GET", T+"/catalogue?source=publisher:enterest-ci", key2, "")
+	if es := r.json(t)["entries"].([]any); len(es) != 1 || es[0].(map[string]any)["publisher_id"] != cur ||
+		es[0].(map[string]any)["source"] != "publisher-id:"+cur {
+		t.Fatalf("the new one's list: %s", r.body)
+	}
+	if r := call(200, "GET", T+"/catalogue/publisher:enterest-ci/extensions/geo_tools", key2, ""); !strings.Contains(string(r.body), `"version":"2.0"`) ||
+		strings.Contains(string(r.body), `"version":"1.0"`) {
+		t.Fatalf("the new one's entry: %s", r.body)
+	}
+	call(404, "GET", T+"/catalogue/publisher-id:"+old+"/extensions/geo_tools", key2, "")
+}
+
 // Spec 0037 PR 1: a distribution admin acts on distributors' publishers only. On a tenant's own
 // publisher, with the licence-key mark or without, its mark and unmark, hold, distributor mark, key
 // routes and grant paths answer the same 404 as a missing publisher (the regression test for the

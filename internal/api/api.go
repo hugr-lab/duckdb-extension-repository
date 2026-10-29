@@ -537,7 +537,9 @@ type rule struct {
 	// routes it is anonymous, on the rest not a token
 	publishers bool
 	// distributors admits a distributor's publisher on a pathVerbs route without the verbs (spec 0033
-	// phase B: the catalogue-only publication, whose service checks the name)
+	// phase B: the catalogue-only publication, whose service checks the name), and on a
+	// distributionAdmin route with publishers (spec 0037: its own catalogue entries, which its service
+	// narrows it to)
 	distributors bool
 	// closed: server administrators reach a tenant whose deletion started (spec 0019: its record,
 	// its deletion and its events); to everyone else it is unknown
@@ -693,14 +695,17 @@ func init() {
 		{"tenants/{t}/channels/{c}/duckdb-versions/{v}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removeChannelVersion)}},
 		// spec 0033: the tenant's catalogue, read by its administrators
 		// (spec 0033 phase B: and distribution admins, their distributors' publishers' entries only)
-		{"tenants/{t}/catalogue", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).catalogue)}},
+		// (spec 0037: and a distributor's publisher, signing the request, its own entries)
+		{"tenants/{t}/catalogue", map[string]rule{http.MethodGet: {access: distributionAdmin, manage: true, publishers: true, distributors: true,
+			handle: (*Handler).catalogue}}},
 		// publishing into the catalogue only: publish on the name tenant-wide (a publisher's signed
 		// request), or a distributor's publisher without grants (spec 0033 phase B: its service checks
 		// the name); before the entry's route, which an extension named "extensions" would match
 		{"tenants/{t}/catalogue/extensions/{ext}/builds", map[string]rule{
 			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPublish}, manage: true, raw: true, publishers: true,
 				distributors: true, handle: (*Handler).publishToCatalogue}}},
-		{"tenants/{t}/catalogue/{source}/extensions/{ext}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).catalogueEntry)}},
+		{"tenants/{t}/catalogue/{source}/extensions/{ext}", map[string]rule{http.MethodGet: {access: distributionAdmin, manage: true,
+			publishers: true, distributors: true, handle: (*Handler).catalogueEntry}}},
 		{"tenants/{t}/catalogue/builds/{id}", map[string]rule{http.MethodDelete: m(distributionAdmin, (*Handler).purgeEntry)}},
 		// spec 0033 phase B: withdrawing a version of a distributor's publisher (distribution admins and
 		// server administrators; the service refuses a tenant's administrators)
@@ -1084,6 +1089,14 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		}
 		fallthrough
 	case distributionAdmin:
+		if ru.access == distributionAdmin && ru.distributors && c.pub != nil {
+			// spec 0037: a distributor's publisher's signed request, which its service narrows to its
+			// own entries; the tenant's own publisher's is refused
+			if !slices.ContainsFunc(c.pub.Publishers, func(m auth.MatchedPublisher) bool { return m.Publisher.Distributor != "" }) {
+				return refuse()
+			}
+			break
+		}
 		if ru.access == distributionAdmin && c.distribution && !c.admin {
 			break // the services allow it distribute on the tenant, and narrow each call
 		}
