@@ -56,8 +56,9 @@ func (t *Tx) TenantActive(ctx context.Context, id string) (bool, error) {
 }
 
 // PublisherUsed reports whether a publisher has left any trace as a source (spec 0033 phase B: only a
-// fresh publisher is marked a distributor's): a build in the catalogue (live or withdrawn), a release,
-// a purged slot, a withdrawn version, a channel's rule or follow naming it, or a hold.
+// fresh publisher is marked a distributor's, spec 0036 phase 2: and only an unused one renamed): a
+// build in the catalogue (live or withdrawn), a release, a purged slot, a withdrawn version, a
+// channel's rule or follow naming it, a hold, or a download count or installers.
 func (t *Tx) PublisherUsed(ctx context.Context, p Publisher) (bool, error) {
 	if p.Hold > 0 {
 		return true, nil
@@ -71,6 +72,9 @@ func (t *Tx) PublisherUsed(ctx context.Context, p Publisher) (bool, error) {
 		"SELECT COUNT(*) FROM withdrawn_versions WHERE source = ? AND tenant_id = ?",
 		"SELECT COUNT(*) FROM channel_sources WHERE source = ? AND " + ofTenant,
 		"SELECT COUNT(*) FROM channel_follows WHERE source = ? AND " + ofTenant,
+		// spec 0036 phase 2: its downloads count for its distributor
+		"SELECT COUNT(*) FROM download_counts WHERE source = ? AND tenant_id = ?",
+		"SELECT COUNT(*) FROM download_installers WHERE source = ? AND tenant_id = ?",
 	} {
 		var n int
 		if err := t.queryRow(ctx, q, src, p.TenantID).Scan(&n); err != nil {

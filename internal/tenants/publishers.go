@@ -288,6 +288,17 @@ func (s *AuthAdmin) SetPublisherDistributor(ctx context.Context, a authz.Actor, 
 				return fmt.Errorf("%w: publisher %s is not fresh: a distributor's publisher is marked before it holds grants, keys "+
 					"(unless marked for licence keys), a hold, builds, releases or rules; add a new one", store.ErrInvalid, name)
 			}
+		} else if cur.Distributor != dist {
+			// spec 0036 phase 2: a used publisher's history (its entries, its downloads) is its
+			// distributor's; renaming would move it to another
+			used, err := tx.PublisherUsed(ctx, cur)
+			if err != nil {
+				return err
+			}
+			if used {
+				return &Refusal{Reason: "publisher " + name + " has been used (builds, releases, rules, a hold or downloads): its " +
+					"distributor is not renamed, which would move its history to another; add a new publisher"}
+			}
 		}
 		before, err := tx.SetPublisherDistributor(ctx, t.ID, name, dist)
 		if err != nil {

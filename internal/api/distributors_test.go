@@ -92,7 +92,32 @@ func TestDistributorRoutes(t *testing.T) {
 	}
 	call(201, "POST", T+"/publishers", da, `{"name":"da-dist","distributor":"enterest"}`)
 	call(400, "POST", T+"/publishers", da, `{"name":"bad-dist","distributor":""}`)
-	call(200, "PUT", T+"/publishers/server-dist/distributor", sa, `{"distributor":"enterest-eu"}`)  // renamed
+	call(200, "PUT", T+"/publishers/server-dist/distributor", sa, `{"distributor":"enterest-eu"}`) // renamed
+	// spec 0036 phase 2: a used one is never renamed (its history would move to another distributor):
+	// a download counted under it is enough
+	var daDist store.Publisher
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+		var err error
+		daDist, err = tx.GetPublisher(ctx, acme.ID, "da-dist")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	chs, err := m.st.ListChannels(ctx, "acme")
+	if err != nil || len(chs) == 0 {
+		t.Fatal(err)
+	}
+	if _, err := m.st.AddDownloadCounts(ctx, map[store.DownloadKey]int64{{TenantID: acme.ID, ChannelID: chs[0].ID,
+		Source: store.PublisherSource(daDist.ID), Name: "geo_tools", PackageVersion: "0.1", Platform: "linux_amd64", DuckDBVersion: "v2.0.0",
+		Day: "2026-10-20"}: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range []string{sa, da} {
+		if r := call(409, "PUT", T+"/publishers/da-dist/distributor", tok, `{"distributor":"enterest-eu"}`); !strings.Contains(string(r.body), "not renamed") {
+			t.Fatalf("a used publisher renamed: %s", r.body)
+		}
+	}
+	call(200, "PUT", T+"/publishers/da-dist/distributor", da, `{"distributor":"enterest"}`)         // its own name again: nothing changes
 	call(404, "POST", T+"/grants", ta, `{"principal":"publisher:enterest-ci","verbs":["publish"]}`) // marked: not the tenant's
 	call(400, "POST", T+"/grants", sa, `{"principal":"publisher:enterest-ci","verbs":["publish"],"extension":"geo_tools"}`)
 	// its keys and its hold are the distributor's
