@@ -314,7 +314,7 @@ tenants.limit_publishers  int     NULL
   extensions costs nothing when another tenant has them) and would reveal what other tenants hold.
 - **Limits set by a distribution admin.** Enterest's provisioning already acts as a server
   administrator; a distribution admin acts for a distributor in many customers' tenants and should
-  not change their plans. Open question 1.
+  not change their plans (decision 3).
 - **Every fixed bound as a limit.** Issuers, grants, groups, feeds and the rest are cheap and
   small; making them per tenant adds API and tests for no plan that needs them.
 - **`403` or `507` for a refusal.** kista's capacity refusals are `429` with a type of their own
