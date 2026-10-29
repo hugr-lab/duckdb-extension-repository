@@ -150,7 +150,7 @@ Errors are `application/problem+json`:
 | `too-large` | `413`: a management body over 64 KiB (384 KiB for an entry's metadata), the detail saying which |
 | `unsupported-media-type` | `415` |
 | `distributors-entry` | `404`: a tenant administrator's write on a distributor's publisher's licence entry ([who writes it](access.md#server-administrators-and-tenant-administrators), spec 0037), the one `404` with a type and a detail of its own |
-| `rate-limited` | `429`: the per-client [rate limit](#rate-limits); `Retry-After` the limiter's |
+| `rate-limited` | `429`: the per-client [rate limit](#rate-limits), or a caller's entry metadata writes (per replica); `Retry-After` the limiter's |
 | `upload-slots` | `429`: the upload slots per caller, tenant or server, for publications and attachments; `Retry-After: 5` |
 | `ingest-busy` | `429`: every ingest slot taken, for a publication (`Retry-After: 5`) or a bundle's chunk (`Retry-After: 1`) |
 | `chunks-busy` | `429`: too many chunks of one bundle upload in flight; `Retry-After: 1` |
@@ -185,7 +185,9 @@ anything else: `serve.api_rate` requests a second, burst `serve.api_burst` (defa
 both or neither). Over the limit the answer is `429` (`rate-limited`) with `Retry-After`. Adding
 an issuer (which fetches its discovery document) runs one at a time per tenant: a second one
 meanwhile answers `429` (`issuer-busy`). Uploads (publications and attachments) take a slot per
-caller, per tenant and per server; without one the answer is `429` (`upload-slots`). See
+caller, per tenant and per server; without one the answer is `429` (`upload-slots`). An entry's
+metadata writes (spec 0036) are limited per caller and tenant, on each replica, to one a second in
+bursts of ten, counted once a write passed its checks (`429`, `rate-limited`). See
 [Configuration](configuration.md).
 
 ### CORS
