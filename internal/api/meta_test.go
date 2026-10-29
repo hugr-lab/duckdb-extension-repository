@@ -214,11 +214,11 @@ func TestEntryMetaRoutes(t *testing.T) {
 	}
 
 	// a row whose object is missing: the icon is not found (and logged), never served
-	tn, err := m.env.st.GetTenant(ctx, "acme")
+	tn, err := m.st.GetTenant(ctx, "acme")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.env.st.InTx(ctx, "", func(tx *store.Tx) error {
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
 		return tx.PutEntryMeta(ctx, store.EntryMeta{TenantID: tn.ID, PackageType: "duckdb_extension", Source: "publisher:" + ownID,
 			Name: "own_ext", IconSHA256: strings.Repeat("e", 64), IconWidth: 64, IconHeight: 64, IconBytes: 10, SetBy: "os:1:t",
 			SetAt: time.Now()})

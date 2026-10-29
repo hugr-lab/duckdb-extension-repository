@@ -1,6 +1,7 @@
 # Spec 0030: Reserved names as data, and a distributor's names in a tenant
 
 - **Status**: implemented (parts 1, 2 and 3)
+- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): distribution admins write a distributor's entries' icon and summary.
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 

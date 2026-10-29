@@ -1,6 +1,7 @@
 # Spec 0015: Administration console
 
 - **Status**: implemented (accepted 2026-10-10; phases 1a, 1b, 2a and 2b)
+- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): the catalogue and an entry's page show the entry's icon and summary, with an Edit… dialog on the tenant's own sources; an icon is shown from a `blob:` URL, so the CSP's `img-src` takes `blob:`.
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 
@@ -115,8 +116,8 @@ test platform only):
   the redirect and the popup sign-in; both are registered at the IdP as the client's redirect
   URIs.
 - **CSP, computed per scope** when `index.html` is served:
-  - the policy: `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
-    font-src 'self'; connect-src 'self' <the scope's IdP origins> <ui.connect_src>;
+  - the policy: `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:
+    blob:; font-src 'self'; connect-src 'self' <the scope's IdP origins> <ui.connect_src>;
     object-src 'none'; base-uri 'self'; form-action 'self' <the scope's IdP origins>;
     frame-ancestors <ui.frame_ancestors or 'none'>`;
   - the scope's IdP origins: none for the landing; the server console clients' issuers for the

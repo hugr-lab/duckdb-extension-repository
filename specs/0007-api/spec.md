@@ -2,6 +2,7 @@
 
 - **Status**: implemented (phases 1-3)
 - **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 1): the `429`s each have a problem type of their own (`rate-limited`, `upload-slots`, `ingest-busy`, `chunks-busy`, `catalogue-full`, `issuer-busy`) and `too-many-requests` leaves the set; a tenant administrator's write on a distributor's publisher's licence entry is a `404` with the type `distributors-entry` and a detail; a distribution admin reads `GET /api/v1/tenants/{t}` (name, state, expected holder) of an active or suspended tenant.
+- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): `PUT`, `GET …/catalogue/{source}/extensions/{ext}/meta` and `GET …/icon` with an access rule of their own (any verified caller of the tenant, the service deciding); the catalogue's reads answer `summary`, `icon` and `distributor`; the problem type `stale`; `body()` takes a limit (384 KiB for the metadata, 64 KiB elsewhere).
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 

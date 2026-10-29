@@ -1,6 +1,7 @@
 # Spec 0016: Storage garbage collection
 
 - **Status**: implemented (2026-10-10; phase 1 and phase 2)
+- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): icons follow the streams' protocol in tables of their own (`icon_claims`, `icon_tombstones`, the lock `kista/blob/<domain>/icon/<sha256>`); the collector marks and deletes unreferenced icons by the same code paths; `storage.gc` counts `icons`.
 - **Date**: 2026-10-10
 - **Author**: vgsml, Claude
 

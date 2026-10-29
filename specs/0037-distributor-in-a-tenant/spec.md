@@ -1,6 +1,7 @@
 # Spec 0037: The distributor in a tenant
 
 - **Status**: accepted (PR 1 implemented)
+- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): the metadata routes use the `catalogue-full` type PR 1 added, and an access rule of their own admitting any publisher of the tenant by a signed request, beside PR 1's signed branch, which admits only distributors' publishers.
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 

@@ -1,6 +1,6 @@
 # Spec 0036: Entry icons and distributor statistics
 
-- **Status**: accepted
+- **Status**: accepted (phase 1 implemented)
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -518,6 +518,48 @@ phase 2 (migration 0045, `min_reader 45`), then spec 0037 PR 2 (migration 0046).
 - **Phase 2: distributor statistics.** Migration 0045, the source in the download key and the
   installers pass, the aggregate query, the route, the two configuration keys, the tenant route's
   `source` dimension, the website. About 800 lines with tests.
+
+### As built (phase 1)
+
+Delivered on the branch `0036-entry-meta-1`, on spec 0037's PR 1, with migration 0044.
+
+- **Spec addition.** The summary also refuses the invisible fillers U+115F, U+1160, U+3164, U+FFA0
+  and U+2800 (The summary, above), as Enterest's spec 0010 does.
+- **Migration 0044.** The hash columns are `varchar(64)` (`nvarchar(64)` BIN2 on SQL Server), as
+  every hash column of the schema, not `char(64)`. SQL Server's `summary` is `nvarchar(320)`:
+  `nvarchar` counts UTF-16 units, and 160 code points beyond the Basic Multilingual Plane take 320.
+- **The icon checks** (`internal/icon`). Each chunk's CRC is checked too (a corrupt file is refused
+  in step 1). The zlib end check runs after the header's dimensions are checked, not inside step 1,
+  and inflates at most 4 MiB, so a bomb is never inflated past the bound; the messages are the same.
+  A refusal names the rule, and for a refused chunk names it and says how to strip it.
+- **The summary** is stored as checked: trimmed and in NFC. `CheckSummary` is in
+  `internal/release`.
+- **Spec 0016's protocol** is one implementation over object kinds (`store.Objects`: streams and
+  icons, each with its tables, column, lock and referencing query); the streams' `Store` methods
+  stay as wrappers, and the collector's listing and tombstone steps take the kind. `Tx.CommitIcon`
+  checks and removes a write's claim in the row's transaction. The collector's `Marked` counts both
+  kinds; `Result.Icons`, `storage.gc`'s `icons` and `blob gc`'s `ICONS` count the icons deleted.
+- **The write.** A new icon's quota check counts the growth only (the source's usage, less the
+  entry's current icon, plus the new one), read outside any lock as `room()`'s. A token's write moves
+  `signed_at` to the server's clock on every write, a no-op included (no event, `set_by` and `set_at`
+  kept); answers give `signed_at` to the microsecond. An icon both new and kept (`data` with
+  `sha256`) is `400`. A key revoked or a publisher removed in flight is `401`, as a publication's.
+- **The answers** carry `source`, `name`, `distributor` and `package_type` beside the spec's fields;
+  `set_by` is shown as other answers show an actor (a server's or a distribution admin's actor by
+  its kind to a caller who is not a server administrator). The catalogue entry's read answers the
+  metadata when the caller may read it (a distributor's publisher on a name reserved since for
+  another holder reads the versions without it). `Allow` now lists `PUT`.
+- **CLI.** `catalogue show` prints `summary:` and `icon:` after its table, so the table's header
+  stays its first line; `catalogue meta` also prints who set it.
+- **Console.** Edit… is offered to tenant-wide administrators (a server administrator's console
+  included) on the tenant's own, live sources: never a distributor's entry nor a removed source's.
+  kista's own console CSP gains `blob:` in `img-src` (the spec named Enterest's). The e2e fixture
+  writes the icons (`fixture -icon`), and `run.sh`'s signed-request helper takes the method.
+- **Tests.** The DuckDB e2e case (`e2e/distributors_test.go`) is phase 2's, where its statistics
+  are: phase 1's icon route and headers are covered by the API test and the console e2e. A revoked
+  key in flight is tested at the service; the API test covers the route's other answers.
+- **Not here.** `kista_publish.py --summary --icon` is in `hugr-lab/extension-ci-tools`
+  (Follow-ups).
 
 ## Alternatives considered
 

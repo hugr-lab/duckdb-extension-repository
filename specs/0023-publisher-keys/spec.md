@@ -2,6 +2,7 @@
 
 - **Status**: implemented (phase 1: kista; phase 2: the fork, tagged `sdk-v0.2.0`, and the template)
 - **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 1): a distribution admin manages a distributor's publisher's keys only; a distributor's publisher also signs its reads of its own catalogue entries.
+- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): one more route open to any publisher's signed requests, its own source only (`PUT`, `GET …/meta`, `GET …/icon`); the replay list gains a metadata write older than the entry's last, or of its second with another body, refused `409 stale`, the same one again changing nothing.
 - **Date**: 2026-10-19
 - **Author**: vgsml, Claude
 
