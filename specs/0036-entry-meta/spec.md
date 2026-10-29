@@ -305,8 +305,9 @@ icon_claims, icon_tombstones   as spec 0016's blob_claims and blob_tombstones, k
 
 ```text
 GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
-    → {"distributor", "from", "to", "min_tenants",
-       "rows": [{"week", "extension", "downloads", "public", "installer_days", "withheld"}]}
+    → {"distributor", "from", "to",
+       "rows": [{"week", "extension", "downloads", "public", "installer_days", "withheld",
+                 "min_tenants"}]}
 ```
 
 - **The distributor is a query parameter.** Its name may need escaping, and the API answers `404`
@@ -322,10 +323,13 @@ GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
   download count or installers.
 - **Grouping is fixed**: one row per (week, extension).
 - **Weeks** are complete ISO weeks in UTC, Monday to Sunday, named by their Monday (`2026-10-19`).
-  Only weeks that ended at least two days ago are answered, so the counts are flushed and the
-  daily installers pass is done. `from` and `to` are days, widened to whole weeks. A `to` beyond the
-  last complete week is clamped to it. The default is the 12 weeks up to it. At most 53 weeks. The
-  answer's `from` and `to` are the first and the last week's Mondays.
+  Only weeks computed are answered (below): a week is computed two days after it ends, so the
+  counts are flushed and the daily installers pass is done. `from` and `to` are any days, widened to
+  whole weeks. `to` is clamped to the newest week computed (a week not computed yet is never
+  answered empty, which a reader would take as coverage), `from` to the oldest kept. The default is
+  the 12 weeks up to the newest. At most 53 weeks. The answer's `from`, `to` and `week` are Mondays.
+  Before any week is computed the route answers `400`.
+- **`min_tenants`**, on each row: the minimum the week was computed with.
 - **Rate**: the API's per-client rate applies, as for every route.
 
 #### Weekly snapshots
@@ -339,8 +343,12 @@ The owner's decision after review: an answer reads stored snapshots only.
   one transaction under the week's lock.
 - A week is computed once and never again. A later re-mark, a tenant's deletion, a late flush, the
   retention's prune or a changed setting leaves an answered week as it was.
-- The first pass computes every complete week the statistics' retention still holds whole, at most
-  106 weeks back (a one-time backfill). Snapshots older than 106 weeks are deleted.
+- The first pass, with no week stored, computes every complete week the statistics' retention still
+  holds whole, at most 106 weeks back (a one-time backfill). Later passes compute only the weeks
+  after the newest one stored, never older ones, even when the retention is made longer later.
+  Snapshots older than 106 weeks are deleted. A failed step is logged; the retention's prune of the
+  counts still runs.
+- A tenant deleted later keeps its share in the weeks already computed, for up to 106 weeks.
 
 #### The figures
 
@@ -486,6 +494,8 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
   - A `withheld` row is a yes/no signal: between one tenant and the minimum downloaded the
     extension that week (where one organisation alone chose it, this tells so), not which or how
     many times.
+  - A deleted tenant's share stays in the weeks already computed, for up to 106 weeks: sums naming
+    no one, but a row may be a single public tenant's figure.
 - **Retention.** Counts follow `statistics.retention` (spec 0010). Nothing new is kept about a
   principal.
 
@@ -686,11 +696,18 @@ distributor, the residual risks documented, `withheld` and `installer_days` as E
   counts, re-taking its lease after each week; a week's rows and its mark are one transaction, and a
   week marked already is left (`PutDistributorWeek`). The mark is per week, for every distributor
   and type at once: a distributor marked after a week was computed has no rows for it, and could
-  have none (only fresh publishers are marked, and a used one is never renamed).
+  have none (only fresh publishers are marked, and a used one is never renamed). The distributors
+  and public tenants are read once a pass, only when a week is computed.
+- **The upgrade's week** holds mixed figures: its downloads counted before migration 0045 have the
+  source `''` and count for no distributor, so its snapshot (and the backfilled weeks before it,
+  which are empty) shows only what was counted after the upgrade.
 - **The route.** `distributor` must be given once, at most 128 bytes. A `from` after `to`, or after
-  the last complete week, is `400` (rather than an empty answer), as are a day that is not one and
-  more than 53 weeks. `min_tenants` is the configured minimum (`api.Options.DistributorMinTenants`,
-  below 2 taken as 3); each week was computed with the minimum of its time.
+  the newest week computed, is `400` (rather than an empty answer), as are a day that is not one,
+  a range wholly before the oldest week kept and more than 53 weeks. The answerable span is read in
+  one query (`Store.DistributorWeeksSpan`: the oldest and newest weeks marked done; weeks are
+  computed in order and pruned oldest first, so none between them is missing). `min_tenants` is
+  answered per row, joined from the week's mark; the top-level `min_tenants` of the first draft is
+  gone.
 - **The rename refusal** is `409` (`tenants.Refusal`), its reason without counts.
 - **The tenant route's `source`** names a removed distributor's publisher `publisher-id:<id>`, as
   the catalogue does, and another removed publisher `publisher:(removed)`. Counts kept per source
@@ -702,8 +719,9 @@ distributor, the residual risks documented, `withheld` and `installer_days` as E
   (pure) and through the API; the store suite covers the query (removed publishers, a tenant with
   two of the distributor's publishers, a tenant's own build and another distributor's left out, a
   deleting tenant left out and a suspended one counted, weeks across a year's end, the type filter,
-  chunks of 1 and 3) and the snapshot tables; `stats` covers the snapshots' life (computed once,
-  backfill, re-mark, deletion, late flush, prune). The DuckDB e2e case calls the route over https
+  chunks of 1 and 3), the snapshot tables and their span, and two passes storing one week at once
+  (one stores, the other leaves it); `stats` covers the snapshots' life (computed once, the
+  backfill once, re-mark, deletion, late flush, prune). The DuckDB e2e case calls the route over https
   with a server issuer the harness takes (`startKistaOpts`), installs with tokens for exact
   installer-days, and moves the store's clock through the harness's guarded `testClock`.
 

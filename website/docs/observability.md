@@ -349,8 +349,8 @@ downloads per extension per week, summed over every tenant (spec 0036):
 
 ```text
 GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
-    → {distributor, from, to, min_tenants,
-       rows: [{week, extension, downloads, public, installer_days, withheld}]}
+    → {distributor, from, to,
+       rows: [{week, extension, downloads, public, installer_days, withheld, min_tenants}]}
 ```
 
 - **Who**: distribution admins and server administrators, with a fresh token. The distributor is a
@@ -362,20 +362,23 @@ GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
   never changes, whatever happens later (a late count, a tenant deleted, the counts pruned by
   `statistics.retention`, a setting changed). The route reads only these snapshots. On its first
   pass after the upgrade it computes every complete week the retention still holds whole, at most
-  106; snapshots older than 106 weeks are deleted.
+  106 (once: later passes compute only the weeks after the newest one stored); snapshots older than
+  106 weeks are deleted. A tenant deleted later keeps its share in the weeks already computed (up to 106 weeks).
 - **What counts**: the downloads of the distributor's entries only, in every tenant: its publishers'
   (live, and removed ones remembered), as marked when the week is computed. A tenant's own build of
   the same name, or an upstream's, never counts. A suspended tenant counts; a tenant being deleted
   does not. A used publisher's distributor is never renamed (`409`).
-- **Weeks** are complete ISO weeks in UTC, Monday to Sunday, named by their Monday. `from` and `to`
-  are days, widened to whole weeks; a `to` beyond the last complete week is clamped to it. The
-  default is the 12 weeks up to it; at most 53 weeks. The answer's `from` and `to` are the first and
-  the last week's Mondays.
+- **Weeks** are complete ISO weeks in UTC, Monday to Sunday, named by their Monday. Only weeks
+  computed are answered. `from` and `to` are any days, widened to whole weeks; `to` is clamped to
+  the newest week computed, `from` to the oldest kept. The default is the 12 weeks up to the newest;
+  at most 53 weeks. The answer's `from`, `to` and each row's `week` are Mondays. Before the first
+  week is computed the route answers `400`.
 - **Grouping is fixed**: one row per (week, extension). No row names a tenant, a channel or a
   per-tenant figure.
 - **`downloads`** counts as above; **`public`** is the part from public tenants; **`installer_days`**
   is the daily distinct installers summed over the days and the tenants (a principal installing on
-  two days, or in two tenants, counts twice), omitted when left out.
+  two days, or in two tenants, counts twice), omitted when left out; **`min_tenants`** is the
+  minimum the week was computed with.
 
 **Public tenants and the minimum.** Tenants listed by name in `statistics.public_tenants` (such as
 a tenant serving free extensions to anyone) always count, with a token or without, and are outside

@@ -231,7 +231,9 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   exempts no one. The minimum guards against accidental disclosure, not against the server's
   operator nor against a distributor controlling several tenants (or one organisation's several
   tenants), which can make up the minimum alone; and a `withheld` row still tells that at least one
-  tenant, fewer than the minimum, downloaded the extension that week.
+  tenant, fewer than the minimum, downloaded the extension that week. A deleted tenant's share
+  stays in the weeks already computed, for up to 106 weeks (sums naming no one, but a row may be a
+  single public tenant's figure).
 - **Publishers** sign each request with their developer's SSH key (spec 0023). kista stores only
   public keys, so a copy of its database cannot publish. A signature binds the method, the path and
   query, the body's SHA-256 and a time within five minutes, so a captured request cannot be sent
