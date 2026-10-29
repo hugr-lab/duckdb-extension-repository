@@ -159,7 +159,8 @@ Notes on some kinds:
   the tenant, or expired) or `signed_signature`.
   `authz.refused` is a known caller refused. These two, `request.failed` and `license.refused`
   are rate-limited per tenant, actor and kind to one a second (an `authz.refused` that names its
-  `operation`, spec 0037, per operation too), each carrying `count`, the requests it stands for.
+  `operation` or its `reason`, spec 0037, per operation or reason too), each carrying `count`, the
+  requests it stands for.
 - `install` is an authenticated download by a principal holding `install` on it: the first per
   (principal, release, client network, day) on a replica, at most 1,000 a day per principal.
 - `extension.use` is a usage report by a principal holding `install` on the extension

@@ -476,8 +476,9 @@ The ids are opaque and grant nothing.
   - **Keys are unique in the tenant.** Adding a key that one of the tenant's publishers already
     holds answers `409`. That tells a distribution admin that some publisher of the tenant holds
     that public key, and a key a distributor registers first cannot then be registered on the
-    tenant's own publisher. The `409` is a refusal for a distribution admin (`authz.refused`,
-    `reason` `key-taken`). Public keys are not secrets, so kista does not hide it.
+    tenant's own publisher. When one of the tenant's own publishers holds the key, the `409` is a
+    refusal for a distribution admin (`authz.refused`, `reason` `key-taken`); a key a distributor's
+    publisher holds already is a plain `409`. Public keys are not secrets, so kista does not hide it.
   - **The defences.**
     - The minimum hold (a day by default). The distribution admin cannot lower it.
     - Enterest's alerts on `publisher.key.add`, and on `catalogue.hold`, when the actor is a
@@ -726,7 +727,8 @@ Delivered on the branch `0037-distributor-in-tenant-2`, on spec 0036 phase 2, wi
 - **Tenant reservations removed.** The table, the routes, `kista admin tenant-reserved` (now an
   unknown command), the events, the console card and the store's and services' reservation calls
   are gone, as Design lists. `ReservedFor` answers core or community, then upstream.
-  `NameReservedFor` became `Store.ServerReservedKind`, a plain read of the server's list.
+  `NameReservedFor` became `Store.ServerReservedKind`, a plain read of the server's list that shares
+  its query with `Tx.ReservedKind`.
   `Store.ReservedAgainst` (spec 0036's list of a distributor's publisher's names) became
   `Store.ReservedAmong`, the names reserved server-wide among a list. The statistics scope and the
   index's `reserved` read DuckDB's names and the upstreams' only. `allow_reserved` on an upstream
@@ -741,19 +743,24 @@ Delivered on the branch `0037-distributor-in-tenant-2`, on spec 0036 phase 2, wi
     administrator for any name. The read and the insert are under one lock, so no test hooks a
     publisher in between.
   - Refusals with a `reason`: the API records `publisher-taken` and, for a distribution admin, a
-    key's `409` (`key-taken`) as `authz.refused` events; the audit writer coalesces them per
-    `reason` as it does per `operation`.
+    key's `409` when one of the tenant's own publishers holds it (`key-taken`: `AddPublisherKey`
+    reads the key's holder under the auth lock, `Tx.PublisherKeyHolder`) as `authz.refused` events.
+    The audit writer coalesces `authz.refused` per `reason` as it does per `operation`; other kinds'
+    `reason` (`auth.failure`'s) does not split their limit.
   - `InsertPublisher` inserts a distributor's publisher marked (`Publisher.Distributor`) and counts
     the two kinds apart: `MaxPublishers` (200) for the tenant's own, `MaxDistributorPublishers` (10)
     for distributors'.
   - A follow of a distributor's publisher skips a name an upstream of the tenant lists, in
-    `followLimit` and again under the channel lock in `takeName`.
+    `followLimit` and again in `takeName`, which then takes the tenant's upstream lock before the
+    channel lock (spec 0009's order). Every change to an upstream's entries takes that lock, so no
+    entry lands between the check and the rule.
   - `ListPublishers` keeps distributors' publishers only for a distribution admin. The API's read of
     one publisher goes through that list, so the tenant's own answers `404`.
   - The grant routes are `pathAdmin` again; `distributorGrant` and the `created_by` checks went.
 - **Marking an existing publisher goes.** `PUT …/distributor` on a publisher without the mark
   answers `404` to every caller: an audited refusal (`authz.ErrDenied`) for a distribution admin, not
-  found for anyone else. The call only renames a distributor's publisher's distributor.
+  found for anyone else. The call only renames a distributor's publisher's distributor, and so does
+  the store's `Tx.SetPublisherDistributor`: it answers not found for a publisher without the mark.
   `PublisherUsed` stays, for spec 0036 phase 2's `409` on renaming a used publisher's distributor:
   only its use for the freshness check went. `Tx.PublisherGrants` went with that check.
 - **The minimum hold.**
