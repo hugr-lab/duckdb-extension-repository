@@ -1,6 +1,8 @@
 package store_test
 
 import (
+	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -61,6 +63,34 @@ func TestMigrationDownloadSources(t *testing.T) {
 		}
 		if len(rows) != 5 || got[""] != 8+2+1 || got["publisher:p"] != 4+3 {
 			t.Fatalf("two sources of one release stored apart: %+v", rows)
+		}
+	})
+}
+
+// A release's statistics add its sources up, in release order: the primary key holds the source
+// first, so the store orders them itself.
+func TestReleaseStatsBySource(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		tn, ch := fixture(t, s)
+		k := func(src, name, version string) store.DownloadKey {
+			return store.DownloadKey{TenantID: tn.ID, ChannelID: ch.ID, Source: src, Name: name, PackageVersion: version, Platform: "linux_amd64",
+				DuckDBVersion: "v2.0.0", Day: "2026-10-20"}
+		}
+		if _, err := s.AddDownloadCounts(ctx, map[store.DownloadKey]int64{k("upstream:z", "acl", "1.0"): 2, k("publisher:a", "acl", "1.0"): 3,
+			k("upstream:z", "acl", "0.9"): 1, k("publisher:a", "h3", "1.0"): 4, k("", "h3", "0.1"): 6}); err != nil {
+			t.Fatal(err)
+		}
+		rs, err := s.ReleaseStats(ctx, tn.ID, "2026-10-21", store.StatsFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, r := range rs {
+			got = append(got, fmt.Sprintf("%s %s %d", r.Name, r.PackageVersion, r.Last7))
+		}
+		if want := []string{"acl 0.9 1", "acl 1.0 5", "h3 0.1 6", "h3 1.0 4"}; !slices.Equal(got, want) {
+			t.Fatalf("release stats: %v, want %v", got, want)
 		}
 	})
 }

@@ -2,27 +2,38 @@ package stats
 
 import (
 	"cmp"
+	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
 // Spec 0036 phase 2: a distributor's downloads per extension per week, summed over the tenants. A
 // public tenant's figures always count; every other tenant's count only in a row with at least the
-// minimum of such tenants, downloads and installer-days each on their own.
+// minimum of such tenants, downloads and installer-days each on their own. Each week is computed
+// once, when it is complete, and stored: answers read only those snapshots.
 
 const (
 	// MaxDistributorWeeks is the most weeks one answer covers.
 	MaxDistributorWeeks = 53
 	// DefaultDistributorWeeks is how many weeks an answer covers when from is not given.
 	DefaultDistributorWeeks = 12
+	// KeepDistributorWeeks is how many weeks of snapshots are kept, up to the last complete one.
+	KeepDistributorWeeks = 106
 )
 
-// ErrWeeks is a range of weeks refused; its message says why.
-var ErrWeeks = errors.New("stats: weeks")
+const week = 7 * 24 * time.Hour
+
+// errLeaseLost ends a pass that no longer holds its lease.
+var errLeaseLost = errors.New("stats: the daily lease was lost")
+
+// WeeksError is a range of weeks refused; Reason says why.
+type WeeksError struct{ Reason string }
+
+func (e *WeeksError) Error() string { return "stats: weeks: " + e.Reason }
 
 // monday is the Monday of t's ISO week, at midnight UTC.
 func monday(t time.Time) time.Time {
@@ -39,14 +50,14 @@ func LastCompleteWeek(now time.Time) time.Time {
 
 // DistributorWeeks are the Mondays of the weeks from..to (days, "" for the defaults) asks: widened
 // to whole weeks, to clamped to the last complete week (the default), from by default the 12 weeks
-// up to to; at most 53 weeks. A refusal wraps ErrWeeks.
+// up to to; at most 53 weeks. A refusal is a *WeeksError.
 func DistributorWeeks(now time.Time, from, to string) ([]string, error) {
 	last := LastCompleteWeek(now)
 	end := last
 	if to != "" {
 		t, err := time.Parse(time.DateOnly, to)
 		if err != nil {
-			return nil, fmt.Errorf("%w: to is a day, YYYY-MM-DD", ErrWeeks)
+			return nil, &WeeksError{"to is a day, YYYY-MM-DD"}
 		}
 		if end = monday(t); end.After(last) {
 			end = last
@@ -56,19 +67,19 @@ func DistributorWeeks(now time.Time, from, to string) ([]string, error) {
 	if from != "" {
 		f, err := time.Parse(time.DateOnly, from)
 		if err != nil {
-			return nil, fmt.Errorf("%w: from is a day, YYYY-MM-DD", ErrWeeks)
+			return nil, &WeeksError{"from is a day, YYYY-MM-DD"}
 		}
 		if to != "" && from > to {
-			return nil, fmt.Errorf("%w: from is after to", ErrWeeks)
+			return nil, &WeeksError{"from is after to"}
 		}
 		start = monday(f)
 	}
 	if start.After(end) {
-		return nil, fmt.Errorf("%w: the last complete week starts %s (a week is answered two days after it ends)", ErrWeeks, store.DayOf(last))
+		return nil, &WeeksError{"the last complete week starts " + store.DayOf(last) + " (a week is answered two days after it ends)"}
 	}
-	n := int(end.Sub(start).Hours()/24)/7 + 1
+	n := int(end.Sub(start)/week) + 1
 	if n > MaxDistributorWeeks {
-		return nil, fmt.Errorf("%w: at most %d weeks", ErrWeeks, MaxDistributorWeeks)
+		return nil, &WeeksError{"at most 53 weeks"}
 	}
 	out := make([]string, n)
 	for i := range n {
@@ -77,27 +88,16 @@ func DistributorWeeks(now time.Time, from, to string) ([]string, error) {
 	return out, nil
 }
 
-// DistributorRow is one week of one extension: its downloads (public: the public tenants' part),
-// and its installer-days, omitted when nothing of them may be answered. Withheld says a non-public
-// part, of the downloads or of the installer-days, was left out.
-type DistributorRow struct {
-	Week          string `json:"week"`
-	Extension     string `json:"extension"`
-	Downloads     int64  `json:"downloads"`
-	Public        int64  `json:"public"`
-	InstallerDays *int64 `json:"installer_days,omitempty"`
-	Withheld      bool   `json:"withheld"`
-}
-
-// Distributor adds tenants' parts up per (week, extension): a public tenant's always count; the
-// other tenants' downloads count only when at least minTenants of them have downloads in the row,
-// and their installer-days only when at least minTenants of them have installers there. Rows are
-// sorted by week, then extension.
-func Distributor(parts []store.DistributorPart, public map[string]bool, minTenants int) []DistributorRow {
+// Distributor adds tenants' parts up per (week, extension), sorted by week, then extension: a
+// public tenant's always count. The other tenants' downloads count only when at least minTenants of
+// them have downloads in the row; with fewer, they are left out and the row is withheld (its
+// downloads are the public part, its installer-days left out). Their installer-days count only when
+// at least minTenants of them have installers in the row; with fewer, the row's installer-days are
+// left out, never answered in part. The rows' distributor and type are the caller's.
+func Distributor(parts []store.DistributorPart, public map[string]bool, minTenants int) []store.DistributorWeek {
 	type acc struct {
 		pubD, pubI, npD, npI int64
-		nD, nI               int  // non-public tenants with downloads, with installers
-		pubInstallers        bool // a public tenant has installers in the row
+		nD, nI               int // non-public tenants with downloads, with installers
 	}
 	by := map[[2]string]*acc{}
 	for _, p := range parts {
@@ -109,7 +109,6 @@ func Distributor(parts []store.DistributorPart, public map[string]bool, minTenan
 		}
 		if public[p.TenantID] {
 			a.pubD, a.pubI = sum(a.pubD, p.Downloads), sum(a.pubI, p.Installers)
-			a.pubInstallers = a.pubInstallers || p.Installers > 0
 			continue
 		}
 		a.npD, a.npI = sum(a.npD, p.Downloads), sum(a.npI, p.Installers)
@@ -120,32 +119,104 @@ func Distributor(parts []store.DistributorPart, public map[string]bool, minTenan
 			a.nI++
 		}
 	}
-	out := make([]DistributorRow, 0, len(by))
+	out := make([]store.DistributorWeek, 0, len(by))
 	for k, a := range by {
-		r := DistributorRow{Week: k[0], Extension: k[1], Downloads: a.pubD, Public: a.pubD}
-		switch {
-		case a.nD >= minTenants:
-			r.Downloads = sum(r.Downloads, a.npD)
-		case a.nD > 0:
-			r.Withheld = true
+		r := store.DistributorWeek{Week: k[0], Extension: k[1], Downloads: a.pubD, Public: a.pubD}
+		if a.nD > 0 && a.nD < minTenants {
+			r.Withheld = true // downloads are the public part; installer-days left out
+			out = append(out, r)
+			continue
 		}
-		inst := a.pubI
+		r.Downloads = sum(r.Downloads, a.npD)
 		switch {
 		case a.nI >= minTenants:
-			inst = sum(inst, a.npI)
+			inst := sum(a.pubI, a.npI)
 			r.InstallerDays = &inst
-		case a.nI > 0:
-			r.Withheld = true
-			if a.pubInstallers {
-				r.InstallerDays = &inst
-			}
-		default:
+		case a.nI == 0:
+			inst := a.pubI
 			r.InstallerDays = &inst
 		}
 		out = append(out, r)
 	}
-	slices.SortFunc(out, func(a, b DistributorRow) int {
+	slices.SortFunc(out, func(a, b store.DistributorWeek) int {
 		return cmp.Or(cmp.Compare(a.Week, b.Week), cmp.Compare(a.Extension, b.Extension))
 	})
 	return out
+}
+
+// distributorWeeks computes the snapshots of the complete weeks without one, oldest first: those
+// within KeepDistributorWeeks of the last complete week whose days are all within the statistics'
+// retention (on the first pass, every such week), each once; then deletes the snapshots older than
+// KeepDistributorWeeks. held says whether the pass still holds its lease.
+func (d *Daily) distributorWeeks(ctx context.Context, now time.Time, held func() bool) error {
+	last := LastCompleteWeek(now)
+	first := last.AddDate(0, 0, -7*(KeepDistributorWeeks-1))
+	if d.Retention > 0 { // the first Monday on or after the retention's first day: its week is held whole
+		c := now.UTC().Add(-d.Retention)
+		cday := time.Date(c.Year(), c.Month(), c.Day(), 0, 0, 0, 0, time.UTC)
+		m := monday(cday)
+		if m.Before(cday) {
+			m = m.AddDate(0, 0, 7)
+		}
+		if m.After(first) {
+			first = m
+		}
+	}
+	var dists []string
+	public := map[string]bool{}
+	for w := first; !w.After(last) && ctx.Err() == nil; w = w.AddDate(0, 0, 7) {
+		day := store.DayOf(w)
+		done, err := d.Store.DistributorWeekDone(ctx, day)
+		if err != nil || done {
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if dists == nil { // read once a pass, and only when a week is to be computed
+			if dists, err = d.Store.Distributors(ctx); err != nil {
+				return err
+			}
+			ids, err := d.Store.TenantIDsByName(ctx, d.PublicTenants)
+			if err != nil {
+				return err
+			}
+			for _, id := range ids {
+				public[id] = true
+			}
+		}
+		var rows []store.DistributorWeek
+		for _, dist := range dists {
+			for _, typ := range pkgtype.Types() {
+				parts, err := d.Store.DistributorParts(ctx, dist, typ, []string{day})
+				if err != nil {
+					return err
+				}
+				for _, r := range Distributor(parts, public, d.minTenants()) {
+					r.Distributor, r.PackageType = dist, typ
+					rows = append(rows, r)
+				}
+			}
+		}
+		if _, err := d.Store.PutDistributorWeek(ctx, day, d.minTenants(), rows); err != nil {
+			return err
+		}
+		if !held() {
+			return errLeaseLost
+		}
+	}
+	if n, err := d.Store.PruneDistributorWeeks(ctx, store.DayOf(last.AddDate(0, 0, -7*(KeepDistributorWeeks-1)))); err != nil {
+		return err
+	} else if n > 0 {
+		d.Log.Info("stats: pruned distributor snapshots", "rows", n)
+	}
+	return nil
+}
+
+// minTenants is the minimum the snapshots apply: MinTenants, below 2 the default, 3.
+func (d *Daily) minTenants() int {
+	if d.MinTenants < 2 {
+		return 3
+	}
+	return d.MinTenants
 }

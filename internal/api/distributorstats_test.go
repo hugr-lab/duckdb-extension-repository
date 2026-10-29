@@ -2,20 +2,32 @@ package api_test
 
 import (
 	"encoding/json"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
+type distributorRow struct {
+	Week          string `json:"week"`
+	Extension     string `json:"extension"`
+	Downloads     int64  `json:"downloads"`
+	Public        int64  `json:"public"`
+	InstallerDays *int64 `json:"installer_days"`
+	Withheld      bool   `json:"withheld"`
+}
+
 // Spec 0036 phase 2: a distributor's downloads per extension per week over every tenant, for
-// distribution admins and server administrators; public tenants always counted, the others only
-// with the minimum of them in a row, installer-days on their own; and the tenant route's source.
+// distribution admins and server administrators, read from the daily pass's snapshots: public
+// tenants always counted, the others only with the minimum of them in a row, installer-days on
+// their own and never in part; and the tenant route's source.
 func TestDistributorStatistics(t *testing.T) {
-	m := newMgmt(t, func(o *api.Options) { o.PublicTenants = []string{"free", "ghost"} })
+	m := newMgmt(t, func(o *api.Options) { o.DistributorMinTenants = 1 }) // below 2: answered as 3
 	week := stats.LastCompleteWeek(m.st.Now())
 	day := store.DayOf(week.AddDate(0, 0, 2))
 	src := map[string]string{}
@@ -65,41 +77,45 @@ func TestDistributorStatistics(t *testing.T) {
 		t.Fatal(err)
 	}
 	const D = "/api/v1/distributor-stats/downloads"
-	r := m.call(t, "GET", D+"?distributor=enterest", m.toks["server dist admin"], "")
-	if r.status != 200 || r.header.Get("Cache-Control") != "no-store" {
-		t.Fatalf("a distribution admin: %d %s", r.status, r.body)
+	answer := func() []distributorRow {
+		t.Helper()
+		r := m.call(t, "GET", D+"?distributor=enterest", m.toks["server dist admin"], "")
+		var got struct {
+			Distributor string           `json:"distributor"`
+			MinTenants  int              `json:"min_tenants"`
+			Rows        []distributorRow `json:"rows"`
+		}
+		if r.status != 200 || r.header.Get("Cache-Control") != "no-store" || json.Unmarshal(r.body, &got) != nil || got.Distributor != "enterest" ||
+			got.MinTenants != 3 {
+			t.Fatalf("a distribution admin: %d %s", r.status, r.body)
+		}
+		for _, leak := range []string{ids["acme"][0], ids["acme"][1], "acme", "other", "t3", "free"} {
+			if strings.Contains(string(r.body), leak) {
+				t.Fatalf("an answer names a tenant or a channel (%s): %s", leak, r.body)
+			}
+		}
+		return got.Rows
 	}
-	var got struct {
-		Distributor string                 `json:"distributor"`
-		MinTenants  int                    `json:"min_tenants"`
-		Rows        []stats.DistributorRow `json:"rows"`
+	if rows := answer(); len(rows) != 0 {
+		t.Fatalf("before the daily pass, no snapshot: %+v", rows)
 	}
-	if err := json.Unmarshal(r.body, &got); err != nil {
-		t.Fatal(err)
-	}
-	ten := int64(10)
-	zero := int64(0)
+	(&stats.Daily{Store: m.st, Holder: "test", EventRetention: 30 * 24 * time.Hour, Log: slog.New(slog.DiscardHandler),
+		PublicTenants: []string{"free", "ghost"}, MinTenants: 3}).Once(ctx)
 	w := store.DayOf(week)
-	want := []stats.DistributorRow{
-		// geo: three non-public tenants downloaded (counted), two had installers (left out); the public
-		// tenant's installer-days answered
-		{Week: w, Extension: "geo", Downloads: 118, Public: 100, InstallerDays: &ten, Withheld: true},
-		// h3: one non-public tenant: left out
-		{Week: w, Extension: "h3", Downloads: 7, Public: 7, InstallerDays: &zero, Withheld: true},
+	want := []distributorRow{
+		// geo: three non-public tenants downloaded (counted); two had installers, so the installer-days
+		// are left out whole, the public tenant's too
+		{Week: w, Extension: "geo", Downloads: 118, Public: 100},
+		// h3: one non-public tenant: withheld, the public part only
+		{Week: w, Extension: "h3", Downloads: 7, Public: 7, Withheld: true},
 	}
-	if got.Distributor != "enterest" || got.MinTenants != 3 || len(got.Rows) != 2 || !reflect.DeepEqual(got.Rows[0], want[0]) ||
-		!reflect.DeepEqual(got.Rows[1], want[1]) {
-		t.Fatalf("the answer: %s", r.body)
+	if rows := answer(); !reflect.DeepEqual(rows, want) {
+		t.Fatalf("the answer: %+v", rows)
 	}
 	var span map[string]any
-	_ = json.Unmarshal(r.body, &span)
-	if span["from"] != store.DayOf(week.AddDate(0, 0, -77)) || span["to"] != store.DayOf(week.AddDate(0, 0, 6)) {
-		t.Fatalf("the default: the 12 weeks to the last complete one: %v %v", span["from"], span["to"])
-	}
-	for _, leak := range []string{ids["acme"][0], ids["acme"][1], "acme", "other", "t3", "free"} {
-		if strings.Contains(string(r.body), leak) {
-			t.Fatalf("an answer names a tenant or a channel (%s): %s", leak, r.body)
-		}
+	_ = json.Unmarshal(m.call(t, "GET", D+"?distributor=enterest", m.toks["server dist admin"], "").body, &span)
+	if span["from"] != store.DayOf(week.AddDate(0, 0, -77)) || span["to"] != w {
+		t.Fatalf("the default, the 12 weeks to the last complete one, by their Mondays: %v %v", span["from"], span["to"])
 	}
 	for who, want := range map[string]int{"server admin": 200, "server dist admin": 200, "tenant admin": 404, "server user": 404,
 		"server licence mgr": 404, "anonymous": 401, "stale server": 401} {
@@ -110,29 +126,39 @@ func TestDistributorStatistics(t *testing.T) {
 	for q, want := range map[string]int{
 		"":                                    400, // no distributor
 		"?distributor=enterest&distributor=x": 400,
-		"?distributor=enterest&type=nope":     400,
-		"?distributor=enterest&from=2026-10-09&to=2026-10-01": 400,
-		"?distributor=enterest&from=2020-01-01":               400, // beyond 53 weeks
-		"?distributor=nobody":                                 200,
+		"?distributor=" + strings.Repeat("d", store.MaxHolder+1): 400,
+		"?distributor=enterest&type=nope":                        400,
+		"?distributor=enterest&from=2026-10-09&to=2026-10-01":    400,
+		"?distributor=enterest&from=2020-01-01":                  400, // beyond 53 weeks
+		"?distributor=enterest&from=2999-01-01":                  400, // after the last complete week
+		"?distributor=nobody":                                    200,
 	} {
 		if s := m.call(t, "GET", D+q, m.toks["server dist admin"], ""); s.status != want {
 			t.Errorf("%q: %d, want %d: %s", q, s.status, want, s.body)
 		}
 	}
-	// one week, by its days: the same rows
+	// one week, by its days: the same rows, from and to its Monday
 	if r := m.call(t, "GET", D+"?distributor=enterest&from="+day+"&to="+day, m.toks["server dist admin"], "").json(t); r["from"] != w ||
-		len(r["rows"].([]any)) != 2 {
+		r["to"] != w || len(r["rows"].([]any)) != 2 {
 		t.Fatalf("one week: %v", r)
 	}
 
-	// the tenant's own statistics by source: labels, unknown for counts before the source was
-	r = m.call(t, "GET", "/api/v1/tenants/acme/stats/downloads?group=source", m.toks["tenant admin"], "")
+	// the tenant's own statistics by source: labels, publisher-id:<id> for a removed distributor's
+	// publisher (as the catalogue names it), unknown for counts before the source was
+	if _, err := m.env.adm.RemovePublisher(ctx, admin, "acme", "enterest-ci"); err != nil {
+		t.Fatal(err)
+	}
+	r := m.call(t, "GET", "/api/v1/tenants/acme/stats/downloads?group=source", m.toks["tenant admin"], "")
 	by := map[string]float64{}
 	for _, row := range r.json(t)["rows"].([]any) {
 		x := row.(map[string]any)
 		by[x["source"].(string)] = x["count"].(float64)
 	}
-	if r.status != 200 || len(by) != 3 || by["publisher:enterest-ci"] != 5 || by["tenant"] != 1000 || by["unknown"] != 2000 {
+	removed := store.SourcePublisherIDPrefix + strings.TrimPrefix(src["acme"], store.SourcePublisherPrefix)
+	if r.status != 200 || len(by) != 3 || by[removed] != 5 || by["tenant"] != 1000 || by["unknown"] != 2000 {
 		t.Fatalf("by source: %s", r.body)
+	}
+	if rows := answer(); !reflect.DeepEqual(rows, want) {
+		t.Fatalf("a removed publisher's downloads keep counting: %+v", rows)
 	}
 }

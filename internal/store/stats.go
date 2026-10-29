@@ -127,27 +127,34 @@ type InstallerKey struct {
 	TenantID, ChannelID, Source, Name, PackageVersion, Platform, Day string
 }
 
+// ReleaseSourcesChunk is the most ids one ReleaseSources query names (with the tenant's id, under
+// SQL Server's 2,100 parameters); a test makes it small.
+const ReleaseSourcesChunk = 500
+
+var releaseSourcesChunk = ReleaseSourcesChunk
+
 // ReleaseSources are the sources of a tenant's releases by id (spec 0036 phase 2: an install
-// event written before events carried the source); a release gone is left out.
+// event written before events carried the source); a release gone is left out. One query reads at
+// most ReleaseSourcesChunk ids.
 func (s *Store) ReleaseSources(ctx context.Context, tenantID string, ids []string) (map[string]string, error) {
 	out := map[string]string{}
 	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
 	for len(ids) > 0 {
-		chunk := ids[:min(len(ids), 500)]
+		chunk := ids[:min(len(ids), releaseSourcesChunk)]
 		ids = ids[len(chunk):]
 		args := []any{tenantID}
 		for _, id := range chunk {
 			args = append(args, id)
 		}
-		if err := s.eachRow(ctx, "SELECT id, source FROM releases WHERE tenant_id = ? AND id IN ("+
-			strings.TrimSuffix(strings.Repeat("?, ", len(chunk)), ", ")+")", args, func(sc func(...any) error) error {
-			var id, src string
-			if err := sc(&id, &src); err != nil {
-				return err
-			}
-			out[id] = src
-			return nil
-		}); err != nil {
+		if err := s.eachRow(ctx, "SELECT id, source FROM releases WHERE tenant_id = ? AND id IN ("+marks(len(chunk))+")", args,
+			func(sc func(...any) error) error {
+				var id, src string
+				if err := sc(&id, &src); err != nil {
+					return err
+				}
+				out[id] = src
+				return nil
+			}); err != nil {
 			return nil, err
 		}
 	}
@@ -251,9 +258,9 @@ type StatsRow struct {
 	Count, Authenticated, Installers                                      int64
 }
 
-// DownloadRows reads a tenant's counts and installers per (channel, name, version, platform,
-// DuckDB version, day) within a filter, keeping the rows keep takes (a caller's scope); more than
-// limit rows kept is ErrInvalid (the caller narrows the range).
+// DownloadRows reads a tenant's counts and installers per (channel, source, name, version, platform,
+// DuckDB version, day, authenticated) within a filter, keeping the rows keep takes (a caller's
+// scope); more than limit rows kept is ErrInvalid (the caller narrows the range).
 func (s *Store) DownloadRows(ctx context.Context, tenantID string, f StatsFilter, limit int, keep func(channelID, name string) bool) ([]StatsRow, error) {
 	where, args := statsWhere(tenantID, f.From, f.To, f)
 	var out []StatsRow

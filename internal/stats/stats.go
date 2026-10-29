@@ -9,7 +9,10 @@ import (
 	"container/list"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -217,7 +220,8 @@ func (s *Installs) First(principal, releaseID, client, day string) bool {
 // Daily counts finished days' distinct installers from the install events (on one replica at a
 // time: a lease) and deletes statistics past their retention. A day is counted an hour after it
 // ends (the replicas' writers have flushed its events), and only while all its events are still in
-// the buffer (EventRetention); a day never counted stays without installers.
+// the buffer (EventRetention); a day never counted stays without installers. It then stores the
+// distributors' snapshots of the weeks complete since (spec 0036 phase 2).
 type Daily struct {
 	Store          *store.Store
 	Holder         string
@@ -228,6 +232,11 @@ type Daily struct {
 	// Days is how many finished days a pass looks back for one not counted yet (default 7: a pass
 	// late after an outage still counts, while the buffer has the days).
 	Days int
+	// PublicTenants and MinTenants are statistics.public_tenants and
+	// statistics.distributor_min_tenants (below 2: 3), which a week's distributor snapshots apply
+	// when the week is complete (spec 0036 phase 2).
+	PublicTenants []string
+	MinTenants    int
 }
 
 // grace is how long after a day's end its installers are counted.
@@ -293,6 +302,20 @@ func (d *Daily) Once(ctx context.Context) {
 			return
 		}
 	}
+	// spec 0036 phase 2: the complete weeks' distributor snapshots, before the counts they read are
+	// pruned
+	keep := func() bool {
+		held, err := d.Store.AcquireLease(ctx, lease, d.Holder, 30*time.Minute)
+		return err == nil && held
+	}
+	if ctx.Err() == nil {
+		if err := d.distributorWeeks(ctx, now, keep); errors.Is(err, errLeaseLost) {
+			return
+		} else if err != nil {
+			d.Log.Error("stats: computing distributors' weeks", "error", err)
+			return
+		}
+	}
 	if d.Retention > 0 && ctx.Err() == nil {
 		n, err := d.Store.PruneStatistics(ctx, store.DayOf(now.Add(-d.Retention)))
 		if err != nil {
@@ -325,13 +348,9 @@ func (d *Daily) count(ctx context.Context, day string) error {
 		}
 		// spec 0036 phase 2: an install counts under its release's source, the event's (from then
 		// on), else the release's by id; "" when the release is gone
-		type install struct {
-			k              store.InstallerKey
-			release, actor string
-		}
 		installers := map[store.InstallerKey]map[string]bool{}
-		var older []install  // events without a source
-		var unknown []string // their releases
+		// events without a source, by release: the release's installers by key (without the source)
+		older := map[string]map[store.InstallerKey]map[string]bool{}
 		err = d.Store.InstallEvents(ctx, t.ID, day, func(e store.Event) error {
 			var f struct {
 				Release  string  `json:"release"`
@@ -355,23 +374,27 @@ func (d *Daily) count(ctx context.Context, day string) error {
 				add(installers, k, e.Actor)
 				return nil
 			}
-			older = append(older, install{k: k, release: f.Release, actor: e.Actor})
-			if f.Release != "" {
-				unknown = append(unknown, f.Release)
+			if older[f.Release] == nil {
+				older[f.Release] = map[store.InstallerKey]map[string]bool{}
 			}
+			add(older[f.Release], k, e.Actor)
 			return nil
 		})
 		if err != nil {
 			return err
 		}
 		if len(older) > 0 {
-			srcs, err := d.Store.ReleaseSources(ctx, t.ID, unknown)
+			srcs, err := d.Store.ReleaseSources(ctx, t.ID, slices.Collect(maps.Keys(older)))
 			if err != nil {
 				return err
 			}
-			for _, in := range older {
-				in.k.Source = srcs[in.release]
-				add(installers, in.k, in.actor)
+			for rel, keys := range older {
+				for k, who := range keys {
+					k.Source = srcs[rel] // "" for a release gone
+					for actor := range who {
+						add(installers, k, actor)
+					}
+				}
 			}
 		}
 		users := map[store.UsageUserKey]map[string]bool{}

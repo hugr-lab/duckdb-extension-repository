@@ -122,6 +122,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	maxBody, maxIngests := cfg.BlobLimits()
 	perActor, perTenant := cfg.PublishLimits()
 	mgmt := svc.WithAuthz(grants)
+	ss := cfg.StatisticsSettings()
 	apiHandler := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
 		PublicURL: cfg.Serve.PublicURL, Rate: cfg.Serve.APIRate, Burst: cfg.Serve.APIBurst, Log: log, KistaVersion: Version,
 		Server: server, Authz: grants, Tenants: mgmt.Tenants, Auth: mgmt.Auth, Keys: mgmt.Keys,
@@ -129,9 +130,8 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events,
 		MinSuspended: apiMinSuspended(cfg.Tenants.MinSuspended),
-		Console:      ConsoleInfo(cfg), DistributorMinTenants: cfg.StatisticsSettings().DistributorMinTenants,
-		PublicTenants: cfg.StatisticsSettings().PublicTenants})
-	logPublicTenants(ctx, st, cfg.StatisticsSettings().PublicTenants, log)
+		Console:      ConsoleInfo(cfg), DistributorMinTenants: ss.DistributorMinTenants})
+	logPublicTenants(ctx, st, ss.PublicTenants, log)
 	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background
 	puller := &upstream.Puller{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log,
 		NegativeTTL: cfg.UpstreamLimits().NegativeTTL}
@@ -141,7 +141,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	reports := stats.Usage(st, log)
 	var usageCounter serve.UsageCounter
 	var received serve.Received
-	if cfg.StatisticsSettings().UsageAccepted() {
+	if ss.UsageAccepted() {
 		usageCounter, received = reports, st
 	}
 	// OpenTelemetry metrics (spec 0010 phase 2b): where they go is the OTEL_* environment's
@@ -287,7 +287,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	collector := Collector(cfg, st, bs, instance, log)
 	wg.Add(1)
 	go func() { defer wg.Done(); collector.Run(bg, cfg.GCSettings().Interval) }()
-	daily := &stats.Daily{Store: st, Holder: instance, Retention: cfg.StatisticsSettings().Retention, EventRetention: ev.Retention, Log: log}
+	daily := newDaily(ss, st, instance, ev.Retention, log)
 	wg.Add(1)
 	go func() { defer wg.Done(); daily.Run(bg) }()
 	// spec 0030 part 3: duckdb/community-extensions' new names, reserved as community (off by default)
@@ -459,8 +459,16 @@ func apiMinSuspended(d time.Duration) time.Duration {
 	return d
 }
 
-// logPublicTenants says at start which of statistics.public_tenants match no tenant (spec 0036
-// phase 2): such a name exempts nothing until a tenant of that name exists.
+// newDaily is the daily statistics pass with the statistics settings: retention, and the public
+// tenants and minimum the distributors' weekly snapshots apply (spec 0036 phase 2).
+func newDaily(ss config.Statistics, st *store.Store, holder string, eventRetention time.Duration, log *slog.Logger) *stats.Daily {
+	return &stats.Daily{Store: st, Holder: holder, Retention: ss.Retention, EventRetention: eventRetention, Log: log,
+		PublicTenants: ss.PublicTenants, MinTenants: ss.DistributorMinTenants}
+}
+
+// logPublicTenants says at start which of statistics.public_tenants match no active or suspended
+// tenant (spec 0036 phase 2): such a name, unknown or of a tenant being deleted, exempts nothing
+// until a tenant of that name exists.
 func logPublicTenants(ctx context.Context, st *store.Store, names []string, log *slog.Logger) {
 	if len(names) == 0 {
 		return
@@ -472,7 +480,8 @@ func logPublicTenants(ctx context.Context, st *store.Store, names []string, log 
 	}
 	for _, n := range names {
 		if ids[n] == "" {
-			log.Warn("serve: statistics.public_tenants names no tenant; it exempts nothing until a tenant of that name exists", "tenant", n)
+			log.Warn("serve: statistics.public_tenants names no tenant (none, or one being deleted); it exempts nothing until a tenant of "+
+				"that name exists", "tenant", n)
 		}
 	}
 }

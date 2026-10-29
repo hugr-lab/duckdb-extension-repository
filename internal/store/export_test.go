@@ -28,3 +28,11 @@ func SetDistributorChunk(n int) (restore func()) {
 	distributorChunk = n
 	return func() { distributorChunk = old }
 }
+
+// SetReleaseSourcesChunk sets how many ids one ReleaseSources query names, until the returned func
+// restores it.
+func SetReleaseSourcesChunk(n int) (restore func()) {
+	old := releaseSourcesChunk
+	releaseSourcesChunk = n
+	return func() { releaseSourcesChunk = old }
+}

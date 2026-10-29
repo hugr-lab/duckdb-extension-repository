@@ -313,6 +313,16 @@ func (h *Handler) statsDownloads(w http.ResponseWriter, r *http.Request, c calle
 			h.fail(w, err)
 			return
 		}
+		ds, err := h.o.Store.DistributorSources(r.Context(), c.tenant.ID)
+		if err != nil {
+			h.fail(w, err)
+			return
+		}
+		for src, d := range ds {
+			if d.Removed { // as the catalogue names it: one row per removed distributor's publisher
+				labels[src] = store.SourcePublisherIDPrefix + d.PublisherID
+			}
+		}
 	}
 	label := func(src string) string {
 		if src == "" {

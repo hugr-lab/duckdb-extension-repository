@@ -1,18 +1,16 @@
 package store
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 )
 
-// Spec 0036 phase 2: a distributor's downloads, summed over the tenants.
+// Spec 0036 phase 2: a distributor's downloads, summed over the tenants into weekly snapshots.
 
 // DistributorPart is one tenant's part of a week's figures for one extension of a distributor: its
 // downloads and its installer-days. The tenant is never answered; the caller counts tenants by it.
@@ -22,14 +20,16 @@ type DistributorPart struct {
 	Downloads, Installers int64
 }
 
-// distributorChunk is the most sources one query names (under SQL Server's parameter limit, with
-// the weeks' bounds beside them); a test makes it small.
-var distributorChunk = 500
+// DistributorChunk is the most sources one distributor query names: with a week's bound per week
+// (at most 53) and three more, under SQL Server's 2,100 parameters. A test makes it small.
+const DistributorChunk = 500
+
+var distributorChunk = DistributorChunk
 
 // DistributorParts reads a distributor's downloads and installers per (week, extension, tenant) in
-// weeks given by their Mondays (ascending and consecutive), of channels of a package type. The
-// distributor's sources are every publisher marked with its name, live or removed (the mark read
-// now); a tenant whose deletion started counts nothing.
+// weeks given by their Mondays (ascending and consecutive), of channels of a package type, in no
+// order. The distributor's sources are every publisher marked with its name, live or removed (the
+// mark read now); a tenant whose deletion started counts nothing.
 func (s *Store) DistributorParts(ctx context.Context, distributor, packageType string, weeks []string) ([]DistributorPart, error) {
 	if len(weeks) == 0 {
 		return nil, nil
@@ -42,24 +42,22 @@ func (s *Store) DistributorParts(ctx context.Context, distributor, packageType s
 		}
 		sundays[i] = DayOf(m.AddDate(0, 0, 6))
 	}
-	type src struct{ tenant, source string }
-	var srcs []src
-	for _, q := range []string{"SELECT tenant_id, id FROM publishers WHERE distributor = ?",
-		"SELECT tenant_id, publisher_id FROM removed_distributor_publishers WHERE distributor = ?"} {
+	var srcs []string
+	for _, q := range []string{"SELECT id FROM publishers WHERE distributor = ?",
+		"SELECT publisher_id FROM removed_distributor_publishers WHERE distributor = ?"} {
 		if err := s.eachRow(ctx, q, []any{distributor}, func(sc func(...any) error) error {
-			var x src
-			if err := sc(&x.tenant, &x.source); err != nil {
+			var id string
+			if err := sc(&id); err != nil {
 				return err
 			}
-			x.source = PublisherSource(x.source)
-			srcs = append(srcs, x)
+			srcs = append(srcs, PublisherSource(id))
 			return nil
 		}); err != nil {
 			return nil, err
 		}
 	}
-	slices.SortFunc(srcs, func(a, b src) int { return cmp.Or(cmp.Compare(a.tenant, b.tenant), cmp.Compare(a.source, b.source)) })
-	srcs = slices.Compact(srcs)
+	slices.Sort(srcs)
+	srcs = slices.Compact(srcs) // a publisher id is the server's: its source is in one tenant only
 	// a day maps to its week by a CASE of plain YYYY-MM-DD comparisons, the same in every dialect;
 	// the derived table lets every dialect group by it
 	week := "CASE"
@@ -70,16 +68,14 @@ func (s *Store) DistributorParts(ctx context.Context, distributor, packageType s
 	}
 	week += " END"
 	by := map[[3]string]*DistributorPart{}
-	var order [][3]string
 	for len(srcs) > 0 {
 		chunk := srcs[:min(len(srcs), distributorChunk)]
 		srcs = srcs[len(chunk):]
-		in := strings.TrimSuffix(strings.Repeat("?, ", len(chunk)), ", ")
-		where := "source IN (" + in + ") AND day >= ? AND day <= ? AND channel_id IN (SELECT id FROM channels WHERE package_type = ?) " +
+		where := "source IN (" + marks(len(chunk)) + ") AND day >= ? AND day <= ? AND channel_id IN (SELECT id FROM channels WHERE package_type = ?) " +
 			"AND tenant_id IN (SELECT id FROM tenants WHERE deleting_at IS NULL)"
 		args := slices.Clone(weekArgs)
-		for _, x := range chunk {
-			args = append(args, x.source)
+		for _, src := range chunk {
+			args = append(args, src)
 		}
 		args = append(args, weeks[0], sundays[len(sundays)-1], packageType)
 		for _, q := range []struct {
@@ -102,7 +98,6 @@ func (s *Store) DistributorParts(ctx context.Context, distributor, packageType s
 				if p == nil {
 					p = &DistributorPart{Week: weeks[i], Name: name, TenantID: tenant}
 					by[k] = p
-					order = append(order, k)
 				}
 				if q.installers {
 					p.Installers = min(p.Installers+n, MaxCount)
@@ -116,11 +111,32 @@ func (s *Store) DistributorParts(ctx context.Context, distributor, packageType s
 			}
 		}
 	}
-	out := make([]DistributorPart, 0, len(order))
-	for _, k := range order {
-		out = append(out, *by[k])
+	out := make([]DistributorPart, 0, len(by))
+	for _, p := range by {
+		out = append(out, *p)
 	}
 	return out, nil
+}
+
+// Distributors are the distinct distributors' names of the server's marked publishers, live and
+// removed, sorted.
+func (s *Store) Distributors(ctx context.Context) ([]string, error) {
+	var out []string
+	for _, q := range []string{"SELECT DISTINCT distributor FROM publishers WHERE distributor IS NOT NULL",
+		"SELECT DISTINCT distributor FROM removed_distributor_publishers"} {
+		if err := s.eachRow(ctx, q, nil, func(sc func(...any) error) error {
+			var d string
+			if err := sc(&d); err != nil {
+				return err
+			}
+			out = append(out, d)
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
 }
 
 // TenantIDsByName are the ids of the tenants of names, by name: a name without a tenant, or of a
@@ -139,4 +155,93 @@ func (s *Store) TenantIDsByName(ctx context.Context, names []string) (map[string
 		out[n] = id
 	}
 	return out, nil
+}
+
+// DistributorWeek is a distributor's snapshot of one complete week of one extension of a package
+// type: its downloads (Public: the public tenants' part) and installer-days (nil: left out), and
+// whether the downloads' non-public part was left out (Withheld).
+type DistributorWeek struct {
+	Distributor, PackageType, Week, Extension string
+	Downloads, Public                         int64
+	InstallerDays                             *int64
+	Withheld                                  bool
+}
+
+// DistributorWeekDone reports whether a week's snapshots are stored (the week by its Monday).
+func (s *Store) DistributorWeekDone(ctx context.Context, week string) (bool, error) {
+	var w string
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT week FROM distributor_weeks_done WHERE week = ?"), week).Scan(&w)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// PutDistributorWeek stores a week's snapshots, of every distributor and type, and marks the week
+// done, in one transaction under the week's lock; a week done already is left as it is (false): a
+// snapshot is never computed again.
+func (s *Store) PutDistributorWeek(ctx context.Context, week string, minTenants int, rows []DistributorWeek) (bool, error) {
+	stored := false
+	err := s.InTx(ctx, "kista/statistics/week/"+week, func(tx *Tx) error {
+		var n int
+		if err := tx.queryRow(ctx, "SELECT COUNT(*) FROM distributor_weeks_done WHERE week = ?", week).Scan(&n); err != nil || n > 0 {
+			return err
+		}
+		for _, r := range rows {
+			if r.Week != week {
+				return fmt.Errorf("%w: a row of week %s with week %s", ErrInvalid, r.Week, week)
+			}
+			var inst any
+			if r.InstallerDays != nil {
+				inst = *r.InstallerDays
+			}
+			if _, err := tx.exec(ctx, "INSERT INTO distributor_weeks (distributor, package_type, week, name, downloads, public_downloads, "+
+				"installer_days, withheld) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", r.Distributor, r.PackageType, week, r.Extension, r.Downloads, r.Public,
+				inst, r.Withheld); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.exec(ctx, "INSERT INTO distributor_weeks_done (week, min_tenants, done_at) VALUES (?, ?, ?)", week, minTenants,
+			tx.s.d.timeArg(tx.Now())); err != nil {
+			return err
+		}
+		stored = true
+		return nil
+	})
+	return stored, err
+}
+
+// DistributorWeeks reads a distributor's snapshots of a package type in weeks from..to (Mondays),
+// by week and extension.
+func (s *Store) DistributorWeeks(ctx context.Context, distributor, packageType, from, to string) ([]DistributorWeek, error) {
+	var out []DistributorWeek
+	err := s.eachRow(ctx, "SELECT week, name, downloads, public_downloads, installer_days, withheld FROM distributor_weeks "+
+		"WHERE distributor = ? AND package_type = ? AND week >= ? AND week <= ? ORDER BY week, name",
+		[]any{distributor, packageType, from, to}, func(sc func(...any) error) error {
+			r := DistributorWeek{Distributor: distributor, PackageType: packageType}
+			var inst sql.NullInt64
+			if err := sc(&r.Week, &r.Extension, &r.Downloads, &r.Public, &inst, &r.Withheld); err != nil {
+				return err
+			}
+			if inst.Valid {
+				r.InstallerDays = &inst.Int64
+			}
+			out = append(out, r)
+			return nil
+		})
+	return out, err
+}
+
+// PruneDistributorWeeks deletes the snapshots, and the marks, of weeks before a Monday.
+func (s *Store) PruneDistributorWeeks(ctx context.Context, before string) (int, error) {
+	total := 0
+	for _, t := range []string{"distributor_weeks", "distributor_weeks_done"} {
+		res, err := s.db.ExecContext(ctx, s.d.rebind("DELETE FROM "+t+" WHERE week < ?"), before)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+	}
+	return total, nil
 }

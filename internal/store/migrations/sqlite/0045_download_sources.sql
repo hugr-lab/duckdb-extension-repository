@@ -1,10 +1,11 @@
 -- +min_reader 45
 -- spec 0036 phase 2: a download count and a day's installers record whose entry they were, the
 -- release's source (upstream:<id>, publisher:<id>, tenant), in their keys, so a distributor's
--- downloads can be summed over tenants. Rows before it get the source '' and count for no
--- distributor. An older replica would add counts by the old key, which the new one no longer
--- matches, so it no longer runs here. SQLite rebuilds both tables; no other table references them,
--- so foreign keys stay on, and the indexes are made after the old tables are gone.
+-- downloads can be summed over tenants, into weekly snapshots of its own (distributor_weeks). Rows
+-- before it get the source '' and count for no distributor. An older replica would add counts by
+-- the old key, which the new one no longer matches, so it no longer runs here.
+-- SQLite rebuilds both tables; no other table references them, so foreign keys stay on, and the
+-- indexes are made after the old tables are gone.
 CREATE TABLE download_counts_new (
 	tenant_id       TEXT NOT NULL,
 	channel_id      TEXT NOT NULL,
@@ -52,3 +53,24 @@ ALTER TABLE download_installers_new RENAME TO download_installers
 CREATE INDEX ix_download_installers_day ON download_installers (tenant_id, day)
 -- +statement
 CREATE INDEX ix_download_installers_source ON download_installers (source, day)
+-- +statement
+-- a distributor's weekly figures, computed once when the week is complete and never again: a
+-- snapshot per (distributor, package type, week, name), and the weeks done (the server's,
+-- of no tenant)
+CREATE TABLE distributor_weeks (
+	distributor      TEXT NOT NULL,
+	package_type     TEXT NOT NULL,
+	week             TEXT NOT NULL,
+	name             TEXT NOT NULL,
+	downloads        INTEGER NOT NULL,
+	public_downloads INTEGER NOT NULL,
+	installer_days   INTEGER NULL,
+	withheld         INTEGER NOT NULL,
+	PRIMARY KEY (distributor, package_type, week, name)
+)
+-- +statement
+CREATE TABLE distributor_weeks_done (
+	week        TEXT PRIMARY KEY,
+	min_tenants INTEGER NOT NULL,
+	done_at     TEXT NOT NULL
+)

@@ -78,10 +78,9 @@ type Options struct {
 	// Console is the administration console's sign-in configuration (spec 0015); nil: its routes
 	// answer 404 (ui.enabled false).
 	Console *Console
-	// DistributorMinTenants and PublicTenants are statistics.distributor_min_tenants (below 2: the
-	// default, 3) and statistics.public_tenants (spec 0036 phase 2: distributor statistics).
+	// DistributorMinTenants is statistics.distributor_min_tenants (below 2: the default, 3), which a
+	// distributor's statistics answer as min_tenants (spec 0036 phase 2: the daily pass applies it).
 	DistributorMinTenants int
-	PublicTenants         []string
 }
 
 // Handler serves /api/v1.

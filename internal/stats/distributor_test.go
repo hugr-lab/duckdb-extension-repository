@@ -60,14 +60,16 @@ func TestDistributorWeeks(t *testing.T) {
 		"from not a day":      {"2027-1-4", ""},
 		"to not a day":        {"", "tomorrow"},
 	} {
-		if _, err := stats.DistributorWeeks(now, c[0], c[1]); !errors.Is(err, stats.ErrWeeks) {
+		var we *stats.WeeksError
+		if _, err := stats.DistributorWeeks(now, c[0], c[1]); !errors.As(err, &we) || we.Reason == "" {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 }
 
-// The figures: public tenants always counted (and never toward the minimum), every other tenant's
-// downloads only with the minimum of such tenants in the row, and installer-days on their own.
+// The figures: public tenants always counted (and never toward the minimum); every other tenant's
+// downloads only with the minimum of such tenants in the row (else withheld: the public part, no
+// installer-days); installer-days only with the minimum of tenants with installers, never in part.
 func TestDistributorMinimum(t *testing.T) {
 	part := func(week, name, tenant string, d, i int64) store.DistributorPart {
 		return store.DistributorPart{Week: week, Name: name, TenantID: tenant, Downloads: d, Installers: i}
@@ -78,20 +80,21 @@ func TestDistributorMinimum(t *testing.T) {
 		part(w1, "geo", "a", 5, 1), part(w1, "geo", "b", 6, 0), part(w1, "geo", "c", 7, 2), part(w1, "geo", "pub", 100, 10),
 		// w1 h3: one non-public tenant only
 		part(w1, "h3", "a", 4, 1),
-		// w2 geo: public only (many tenants' worth would not matter)
+		// w2 geo: public only
 		part(w2, "geo", "pub", 50, 0), part(w2, "geo", "pub2", 1, 3),
 		// w2 h3: three with installers, one public with downloads only
 		part(w2, "h3", "a", 1, 1), part(w2, "h3", "b", 1, 1), part(w2, "h3", "c", 1, 1), part(w2, "h3", "pub", 9, 0),
 	}
 	public := map[string]bool{"pub": true, "pub2": true}
 	n := func(v int64) *int64 { return &v }
-	want := []stats.DistributorRow{
-		{Week: w1, Extension: "geo", Downloads: 118, Public: 100, InstallerDays: n(10), Withheld: true},
+	want := []store.DistributorWeek{
+		// downloads answered; installer-days left out whole (two tenants had installers)
+		{Week: w1, Extension: "geo", Downloads: 118, Public: 100},
 		{Week: w1, Extension: "h3", Downloads: 0, Public: 0, Withheld: true},
 		{Week: w2, Extension: "geo", Downloads: 51, Public: 51, InstallerDays: n(3)},
 		{Week: w2, Extension: "h3", Downloads: 12, Public: 9, InstallerDays: n(3)},
 	}
-	same := func(a, b stats.DistributorRow) bool {
+	same := func(a, b store.DistributorWeek) bool {
 		return a.Week == b.Week && a.Extension == b.Extension && a.Downloads == b.Downloads && a.Public == b.Public &&
 			a.Withheld == b.Withheld && (a.InstallerDays == nil) == (b.InstallerDays == nil) &&
 			(a.InstallerDays == nil || *a.InstallerDays == *b.InstallerDays)
@@ -101,12 +104,14 @@ func TestDistributorMinimum(t *testing.T) {
 	}
 	// at 2, w1 geo's installers count too, and w1 h3 stays withheld
 	got := stats.Distributor(parts, public, 2)
-	if got[0].Withheld || *got[0].InstallerDays != 13 || got[0].Downloads != 118 || !got[1].Withheld {
+	if got[0].Withheld || got[0].InstallerDays == nil || *got[0].InstallerDays != 13 || got[0].Downloads != 118 || !got[1].Withheld ||
+		got[1].InstallerDays != nil {
 		t.Fatalf("minimum 2: %+v", got)
 	}
 	// no public tenants: every tenant is under the minimum (four in w1 geo, fewer than 5)
 	got = stats.Distributor(parts, nil, 5)
-	if got[0].Downloads != 0 || !got[0].Withheld || got[0].InstallerDays != nil || got[3].Downloads != 0 || got[3].InstallerDays != nil {
+	if got[0].Downloads != 0 || !got[0].Withheld || got[0].InstallerDays != nil || got[3].Downloads != 0 || !got[3].Withheld ||
+		got[3].InstallerDays != nil {
 		t.Fatalf("without public tenants, a minimum of 5: %+v", got)
 	}
 }

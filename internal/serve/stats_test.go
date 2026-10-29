@@ -65,8 +65,18 @@ func TestDownloadsAndInstalls(t *testing.T) {
 	en, idp, adm := authEnv(t, "https")
 	evs, cnt := &fakeEvents{}, &fakeCounter{counts: map[store.DownloadKey]int64{}}
 	en.h.o.Events, en.h.o.Downloads = evs, cnt
-	en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
+	pub := en.add(t, ext(t, 2000, 1, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "tresor"})
 	priv := en.add(t, ext(t, 2000, 2, cpp("1.1")), release.AddOptions{Unchecked: true, Name: "tresor", Private: true})
+	// spec 0036 phase 2: the releases are a publisher's (their source as a publication sets it)
+	const pubSource = "publisher:p1"
+	for _, q := range [][]any{{"UPDATE releases SET source = ? WHERE id IN (?, ?)", pubSource, pub.ID, priv.ID},
+		{"UPDATE builds SET source = ? WHERE id IN (?, ?)", pubSource, pub.BuildID, priv.BuildID},
+		{"UPDATE channel_sources SET source = ? WHERE name = 'tresor'", pubSource},
+		{"UPDATE channels SET release_version = release_version + 1"}} {
+		if err := store.ExecRaw(ctx, en.st, q[0].(string), q[1:]...); err != nil {
+			t.Fatal(err)
+		}
+	}
 	const (
 		pubPath  = "/acme/prod/tresor/1.0/v2.0.0/linux_amd64/tresor.duckdb_extension.gz"
 		privPath = "/acme/prod/tresor/1.1/v2.0.0/linux_amd64/tresor.duckdb_extension"
@@ -143,13 +153,13 @@ func TestDownloadsAndInstalls(t *testing.T) {
 	}
 	d := evs.data[1]
 	if d["release"] != priv.ID || d["version"] != "1.1" || d["duckdb_version"] != "v2.0.0" || d["user_agent"] == nil ||
-		d["source"] != priv.Source || priv.Source != store.SourceTenant {
+		d["source"] != pubSource {
 		t.Fatalf("the install's data: %v", d)
 	}
 	// spec 0036 phase 2: a download counts under its release's source
 	cnt.mu.Lock()
-	for k := range cnt.counts {
-		if k.Source != store.SourceTenant {
+	for k, n := range cnt.counts {
+		if k.Source != pubSource || n == 0 {
 			t.Errorf("a download's source: %+v", k)
 		}
 	}
