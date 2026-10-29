@@ -15,10 +15,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -27,7 +27,6 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/serve"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/stats"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -109,17 +108,31 @@ func TestDistributorWithdrawal(t *testing.T) {
 
 // Spec 0036 phase 2: a distributor's publisher in four tenants publishes kista_demo into each
 // catalogue and sets its metadata (the icon route serves the bytes with kista's headers); prod
-// places it in each, DuckDB at the pin installs it from each, and from acme's own build of the name
-// in another channel. With the store's clock past the week, the counts flushed and the daily pass
-// run, the distributor's statistics answer one row, without the tenant's own build: t4 is public,
-// and the three others reach the minimum (3); raised to 4, the row is withheld and its downloads
-// are t4's.
+// places it in each, and DuckDB at the pin installs it from each with a token of the tenant's (an
+// installer each), and from acme's own build of the name in another channel. With the store's clock
+// past the week, the counts flushed and the daily pass run, the distributor's statistics answer one
+// row, without the tenant's own build: t4 is public, and the three others reach the minimum (3), so
+// four downloads and four installer-days. A pass with the minimum at 4 leaves the snapshot as it
+// is; computed again at 4 (the snapshot deleted), the row is withheld: t4's downloads only, no
+// installer-days.
 func TestDistributorStatistics(t *testing.T) {
 	b := needBuild(t)
-	k := startKista(t, b)
+	idpKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idp := &e2eIDP{key: idpKey}
+	ops := auth.ServerIssuerID("ops")
+	k := startKistaOpts(t, b, kistaOpts{verifier: &auth.Verifier{Fetch: idp}, api: func(o *api.Options) {
+		o.Server = &auth.Server{Issuers: []store.Issuer{{ID: ops, Name: "ops", URL: e2eIssuer, Algorithms: auth.Algorithms,
+			RolesClaim: []string{"roles"}, MaxTokenLifetime: 24 * time.Hour}}, Audiences: []string{"api://kista"},
+			DistributionAdmins: auth.Principals{{IssuerID: ops, Kind: store.PrincipalRole, Value: "kista.distribution"}: true},
+			Verifier:           &auth.Verifier{Fetch: idp}}
+	}})
 	ctx := context.Background()
 	const demo = "kista_demo"
-	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}}
+	adm := &tenants.AuthAdmin{Store: k.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: "https://" + k.addr}
+	k.release("httpfs", release.AddOptions{}) // acme's, for DuckDB's https client
 	data, err := os.ReadFile(k.b.extensions[demo])
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +180,8 @@ func TestDistributorStatistics(t *testing.T) {
 		return resp, body
 	}
 	icon := testIcon(t)
-	var stmts [][2]string
+	bootPEM := channel("acme", "prod")
+	var installs [][]string
 	for i, tn := range []string{"acme", "t2", "t3", "t4"} {
 		if tn != "acme" {
 			if _, err := k.ten.CreateTenant(ctx, serveAdmin, tn, "", "", ""); err != nil {
@@ -175,6 +189,17 @@ func TestDistributorStatistics(t *testing.T) {
 			}
 		}
 		pem := channel(tn, "prod")
+		// alice installs from the tenant's prod with a token of the tenant's
+		aud := "api://kista-" + tn
+		if _, err := adm.AddIssuer(ctx, serveAdmin, tn, store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
+			t.Fatal(err)
+		}
+		if err := adm.AddAudience(ctx, serveAdmin, tn, aud); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := adm.AddGrant(ctx, serveAdmin, tn, "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod"}); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := adm.AddDistributorPublisher(ctx, serveAdmin, tn, "enterest-ci", "enterest"); err != nil {
 			t.Fatal(err)
 		}
@@ -214,66 +239,81 @@ func TestDistributorStatistics(t *testing.T) {
 			t.Fatalf("%s: placed: %v", tn, err)
 		}
 		r := fmt.Sprintf("r%d", i)
-		stmts = append(stmts, [2]string{createRepo(r, "http://"+k.addr+"/"+tn+"/prod", pem), "INSTALL " + demo + " FROM " + r})
+		installs = append(installs, []string{
+			createRepo("boot", k.httpURL(), bootPEM),
+			"INSTALL httpfs FROM boot",
+			"LOAD httpfs FROM boot",
+			"SET ca_cert_file = " + sqlString(testCA(t).caFile),
+			createRepo(r, "https://"+k.addr+"/"+tn+"/prod", pem),
+			"CREATE SECRET s (TYPE http, BEARER_TOKEN " + sqlString(idp.token(t, "alice", aud)) + ", SCOPE " +
+				sqlString("https://"+k.addr+"/"+tn+"/prod/") + ")",
+			"INSTALL " + demo + " FROM " + r,
+		})
 	}
 	// acme's own build of the name, in a channel of its own
 	pem := channel("acme", "own")
 	if _, _, err := k.rel.Add(ctx, serveAdmin, "acme", "own", bytes.NewReader(data), release.AddOptions{Name: demo}); err != nil {
 		t.Fatal(err)
 	}
-	stmts = append(stmts, [2]string{createRepo("own", "http://"+k.addr+"/acme/own", pem), "INSTALL " + demo + " FROM own"})
-	for _, s := range stmts { // a database each: an installed extension is not downloaded again
-		mustOK(t, newSession(t, b, nil).exec(s[0], s[1]))
+	installs = append(installs, []string{createRepo("own", "http://"+k.addr+"/acme/own", pem), "INSTALL " + demo + " FROM own"})
+	for _, s := range installs { // a database each: an installed extension is not downloaded again
+		mustOK(t, newSession(t, b, nil).exec(s...))
 	}
 
-	// past the week: the counts flushed, the daily pass run
+	// past the week: the counts flushed, the install events written, the daily pass run
 	k.counts.Flush(ctx)
+	k.events.Close(ctx)
 	today := time.Now().UTC()
 	monday := stats.LastCompleteWeek(today.AddDate(0, 0, 9)) // today's week, complete in 9 days
-	k.st.Now = func() time.Time { return monday.AddDate(0, 0, 9).Add(time.Hour) }
-	(&stats.Daily{Store: k.st, Holder: "e2e", EventRetention: 30 * 24 * time.Hour, Days: 10, Log: slog.New(slog.DiscardHandler)}).Once(ctx)
+	k.clock.set(monday.AddDate(0, 0, 9).Add(time.Hour))
+	daily := func(minTenants int) {
+		(&stats.Daily{Store: k.st, Holder: "e2e", EventRetention: 30 * 24 * time.Hour, Days: 10, Log: slog.New(slog.DiscardHandler),
+			PublicTenants: []string{"t4"}, MinTenants: minTenants}).Once(ctx)
+	}
+	daily(3)
 	if done, err := k.st.StatisticsDayDone(ctx, store.DayOf(today)); err != nil || !done {
 		t.Fatalf("the daily pass: %v %v", done, err)
 	}
 
-	idpKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	idp := &e2eIDP{key: idpKey}
+	// the route, over https, with a distribution admin's token
 	tok := idp.sign(t, map[string]any{"iss": e2eIssuer, "sub": "storefront", "aud": "api://kista", "roles": []any{"kista.distribution"}})
-	statistics := func(minTenants int) []stats.DistributorRow {
+	type row struct {
+		Week          string `json:"week"`
+		Extension     string `json:"extension"`
+		Downloads     int64  `json:"downloads"`
+		Public        int64  `json:"public"`
+		InstallerDays *int64 `json:"installer_days"`
+		Withheld      bool   `json:"withheld"`
+	}
+	statistics := func() []row {
 		t.Helper()
-		auths := &auth.TenantAuths{Store: k.st}
-		grants := authz.Grants{Store: k.st, Auths: auths}
-		ops := auth.ServerIssuerID("ops")
-		h := api.New(api.Options{Store: k.st, Snapshots: &release.Snapshots{Store: k.st}, Auths: auths, Verifier: &auth.Verifier{Fetch: idp},
-			PublicURL: "https://" + k.addr, Log: slog.New(slog.DiscardHandler), Authz: grants, Keys: k.keys, Releases: k.rel,
-			Tenants: &tenants.Service{Store: k.st, Authz: grants}, Auth: &tenants.AuthAdmin{Store: k.st, Authz: grants},
-			Server: &auth.Server{Issuers: []store.Issuer{{ID: ops, Name: "ops", URL: e2eIssuer, Algorithms: auth.Algorithms,
-				RolesClaim: []string{"roles"}, MaxTokenLifetime: 24 * time.Hour}}, Audiences: []string{"api://kista"},
-				DistributionAdmins: auth.Principals{{IssuerID: ops, Kind: store.PrincipalRole, Value: "kista.distribution"}: true},
-				Verifier:           &auth.Verifier{Fetch: idp}},
-			PublicTenants: []string{"t4"}, DistributorMinTenants: minTenants})
-		req := httptest.NewRequest("GET", "/api/v1/distributor-stats/downloads?distributor=enterest", nil)
+		req, _ := http.NewRequest("GET", "https://"+k.addr+"/api/v1/distributor-stats/downloads?distributor=enterest", nil)
 		req.Header.Set("Authorization", "Bearer "+tok)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, serve.WithHTTPS(req))
+		resp, body := do(req)
 		var out struct {
-			Rows []stats.DistributorRow `json:"rows"`
+			Rows []row `json:"rows"`
 		}
-		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
-			t.Fatalf("the distributor's statistics: %d %s", rec.Code, rec.Body)
+		if resp.StatusCode != 200 || json.Unmarshal(body, &out) != nil {
+			t.Fatalf("the distributor's statistics: %d %s", resp.StatusCode, body)
 		}
 		return out.Rows
 	}
-	rows := statistics(3)
-	if len(rows) != 1 || rows[0].Week != store.DayOf(monday) || rows[0].Extension != demo || rows[0].Downloads != 4 || rows[0].Public != 1 ||
-		rows[0].Withheld || rows[0].InstallerDays == nil {
+	four := int64(4)
+	want := []row{{Week: store.DayOf(monday), Extension: demo, Downloads: 4, Public: 1, InstallerDays: &four}}
+	if rows := statistics(); !reflect.DeepEqual(rows, want) {
 		t.Fatalf("the minimum 3: %+v", rows)
 	}
-	rows = statistics(4)
-	if len(rows) != 1 || rows[0].Downloads != 1 || rows[0].Public != 1 || !rows[0].Withheld {
+	daily(4) // a week is computed once
+	if rows := statistics(); !reflect.DeepEqual(rows, want) {
+		t.Fatalf("a snapshot computed again: %+v", rows)
+	}
+	for _, q := range []string{"DELETE FROM distributor_weeks", "DELETE FROM distributor_weeks_done"} {
+		if err := store.ExecRaw(ctx, k.st, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	daily(4)
+	if rows := statistics(); !reflect.DeepEqual(rows, []row{{Week: store.DayOf(monday), Extension: demo, Downloads: 1, Public: 1, Withheld: true}}) {
 		t.Fatalf("the minimum 4: %+v", rows)
 	}
 }
