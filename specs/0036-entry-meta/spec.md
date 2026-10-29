@@ -69,6 +69,10 @@ tenant: `entry_meta` joins the reaper's tables (`store.ReapTables`, which
 - Every character must be printable (`unicode.IsPrint`) or a space.
 - Refused: categories Cf, Zl and Zp. This covers the bidirectional controls, LRM, RLM and ALM, the
   zero-width characters, U+2028 and U+2029, and tag characters.
+- Refused too: the invisible fillers U+115F, U+1160, U+3164 and U+FFA0 (the Hangul fillers) and
+  U+2800 (the blank Braille pattern). They are printable letters or symbols, so the rules above
+  pass them, yet they show nothing. Enterest's summary rules (its spec 0010) refuse them too: the
+  two must agree, so a summary Enterest accepts is one kista accepts.
 - At most 4 combining marks after any base character.
 - It is never markup. The console renders it as text, and the CLI prints it as is.
 
@@ -399,7 +403,8 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
   image, even opened directly.
 - **Bounded input.** The body is at most 384 KiB and the icon 256 KiB. Size is checked from the
   header before decoding, and decodes are limited to 4 at a time: at most 2 MiB each. The summary
-  is at most 160 characters, with no format or line-separator characters and few combining marks.
+  is at most 160 characters, with no format or line-separator characters, no invisible fillers and
+  few combining marks.
 - **Who writes.** A publisher writes only its own entries, and only by a signed request. Tenant
   administrators write only the tenant's own sources. A distributor's entries belong to its
   publisher, the distribution admins and the server administrators. A tenant cannot restyle a
@@ -466,6 +471,8 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
   100000x100000 (refused before decoding), an `IDAT` whose image does not match the header,
   `IDAT` chunks split by another chunk, and `IDAT(image) IDAT(<html>) IEND` (zlib data past the
   stream's end) refused.
+- **Summary checks**: NFC, 160 code points, each refused category, each invisible filler (U+115F,
+  U+1160, U+3164, U+FFA0, U+2800), and the fifth combining mark after a base character refused.
 - **Icon collection**: an unreferenced icon marked, then deleted after the grace; a claimed one
   kept; a write waiting for a `deleting` tombstone; a delete of unknown outcome finished by the
   resolver; a write racing the collector ending with its object present; a corrupted object refused
