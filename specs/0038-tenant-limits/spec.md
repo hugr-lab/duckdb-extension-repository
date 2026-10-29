@@ -8,8 +8,9 @@
 
 A server administrator sets limits per tenant on what the tenant's own administrators, publishers
 and upstreams can make it grow by: the bytes of its catalogue, and the number of its channels,
-upstreams and publishers. Each limit has a server-wide default in the configuration, which a
-tenant's own value replaces; a value can be "unlimited". A tenant's administrators read their
+upstreams and publishers. A tenant's own value replaces a server-wide default from the
+configuration, which is only a backstop; a value can be "unlimited". Every intake and create is
+checked, exactly, except a bundle import and the bootstrap. A tenant's administrators read their
 limits and what they use. Growth past a limit is refused with a `429` of its own type naming the
 limit; nothing that exists is removed when a limit is lowered.
 
@@ -51,267 +52,359 @@ So:
 
 Four limits, each on one tenant:
 
-| Limit | Counts | Ceiling (code) | Default (config) |
-| --- | --- | --- | --- |
-| `bytes` | the tenant's **own** catalogue bytes (below) | none | unlimited |
-| `channels` | the tenant's channels | 1,000 (new `store.MaxChannels`) | the ceiling |
-| `upstreams` | the tenant's upstreams | 100 (`store.MaxUpstreams`, unchanged) | the ceiling |
-| `publishers` | the tenant's own publishers (not distributors') | 200 (`store.MaxPublishers`, unchanged) | the ceiling |
+| Limit | Counts | Ceiling (code) |
+| --- | --- | --- |
+| `bytes` | the tenant's **own** catalogue bytes (below) | none |
+| `channels` | the tenant's channels | 1,000 (new `store.MaxChannels`) |
+| `upstreams` | the tenant's upstreams | 100 (`store.MaxUpstreams`, unchanged) |
+| `publishers` | the tenant's own publishers (not distributors') | 200 (`store.MaxPublishers`, unchanged) |
 
 - The ceilings stay constants in the code. They bound queries and caches; they are not policy. A
   limit's value is at most its ceiling, and "unlimited" for a count means the ceiling.
-- The other fixed bounds in the table above stay as they are. They are small and cheap, and a plan
-  has no reason to differ in them. A later limit is added by the same pattern.
+- The other fixed bounds in the Problem's table stay as they are. They are small and cheap, and a
+  plan has no reason to differ in them. A later limit is added by the same pattern.
 - **Distributors are outside the limits.** The builds and icons of distributors' publishers'
-  sources are never counted and never refused by a tenant limit. Distributors' publishers are
-  counted apart, under their own cap of 10 (spec 0037). A customer's full quota must never stop the
-  distributor from delivering what the customer bought or chose. A distributor's sources stay
-  bounded per source by `catalogue.max_entries` and `catalogue.max_bytes` (spec 0033).
-- **A server administrator is outside the limits.** What a server administrator does directly is
-  counted but never refused by a limit: a bundle import, an add to the catalogue, a sync of an
-  upstream they start, a create of a channel, upstream or publisher. The server's operator decides
-  those. The ceilings still apply to them (`400 invalid`, below).
+  sources, live or removed, are never counted and never refused by a tenant limit. Distributors'
+  publishers are counted apart, under their own cap of 10 (spec 0037). A customer's full quota must
+  never stop the distributor from delivering what the customer bought or chose. A distributor's
+  sources stay bounded per source by `catalogue.max_entries` and `catalogue.max_bytes` (spec 0033).
+- **Who is checked.** Every actor is checked, server administrators included: a tenant
+  administrator, a publisher, a server administrator's call, an upstream's run and a lazy fetch
+  (both act as the system actor `upstream:<tenant>/<upstream>`). A server administrator who needs
+  more raises the limit first, and that change is audited. Only two intakes are exempt: a **bundle
+  import** (a server administrator's only, for air-gapped sites, spec 0014) and the **bootstrap**
+  (`authz.Bootstrap`, spec 0024). They are counted but never refused, and meet only the ceilings
+  (`400 invalid`). `room` and the inserts take the actor to decide this; `room`'s `admin` flag
+  (`o.Publish == nil`, true for a tenant administrator's add too) keeps meaning only the per-source
+  cap's exemption.
 
 ### The bytes a tenant uses
 
 A tenant's own bytes are the sum of:
 
-- `blobs.body_len` of each build of the tenant whose source is not a distributor's publisher: every
-  build row, placed or not, from any origin (publication, an administrator's add,
-  an upstream, a bundle). A body in two of the tenant's sources counts twice; a body shared with
-  another tenant counts in each.
-- `entry_meta.icon_bytes` of each entry of those sources (spec 0036).
+- `body_len` of each **distinct body** among the tenant's own builds that the collector keeps
+  (spec 0016): a build that is landed, or withdrawn, or has a release. A build the collector will
+  delete (no release, not landed, not withdrawn: a purged release's, or an intake's that never
+  landed) is not counted; its room returns at once, and its blob goes at the next collection. A
+  build is the tenant's own unless its source is a distributor's publisher, live or removed: `NOT
+  EXISTS` against `publishers` (`distributor IS NOT NULL`) and against
+  `removed_distributor_publishers`, matched on the source's publisher id.
+- `icon_bytes` of each entry of the tenant's own sources (spec 0036), while the entry still has a
+  build. On SQL Server the column is summed as `SUM(CAST(icon_bytes AS bigint))`: an `int` sum
+  overflows at 2 GiB. The same latent overflow in `SourceUsage` (`internal/store/rules.go`) is
+  fixed with it.
 
-It is a logical figure, not the storage the server spends: blobs are shared within a storage domain
-(spec 0005). It is predictable for the customer, and it is what a plan can promise. Attachments are
-not counted: they are bounded by count and size already (`MaxTenantAttachments`).
+**Distinct bodies.** A body in two of the tenant's sources counts once: a successor's copies of
+releases (`TakeReleases`, spec 0033), the same file published by two publishers, and a mirror of
+what the tenant also publishes add no bytes. This matches the storage, which keeps one blob per
+body in a domain (spec 0005), and an idempotent re-publish is never growth. A body shared with
+another tenant counts in each tenant: the figure is the tenant's, not the server's, and says nothing
+about what other tenants hold. Attachments are not counted: they are bounded by count and size
+already (`MaxTenantAttachments`).
 
-A tenant frees bytes by removing builds: purging a yanked release (spec 0016), and removing builds
+A tenant frees bytes by removing builds: purging a yanked release (spec 0016) and removing builds
 placed nowhere from the catalogue (spec 0033). Withdrawn builds, which are never purged, belong to
 distributors' sources only (spec 0033 phase B), so they never count here.
 
-The figure is read live: one `SUM` over the tenant's builds (through the index that leads with
-`tenant_id`), joined to `blobs` on the tenant's storage domain, with the distributors' sources (at
-most 10, read first) left out by their source names, plus one `SUM` over `entry_meta`. It is the
-per-source `SourceUsage` query (spec 0033), widened to the tenant. No counter is kept (see
-Alternatives).
+**Reading it.** Migration 0047 stores `body_len` on `builds` (filled from `blobs` for existing rows;
+every insert sets it, a copy copies it), with an index on `(tenant_id, body_hash)` that carries
+`body_len` (`INCLUDE` on PostgreSQL and SQL Server, a third key column on SQLite). The figure is one
+`SUM` over the distinct bodies through that index, with the release, landed and distributor
+conditions, plus one `SUM` over `entry_meta`. When a tenant's `bytes` is unlimited nothing is read:
+neither the checks nor a run's read below.
 
 ### Where each limit is enforced
 
-- **`bytes`, at admission, before the body is stored.** `release.Service.room` already runs at every
-  intake: a publication, an administrator's add, an upstream's run, an upstream's fetch for a lazy
-  mirror, a bundle import. It gains the tenant check after the per-source check. A body the source
-  already has is no new bytes, as today. The check refuses when `used + size > limit` for an actor
-  that is not a server administrator, on a source that is not a distributor's.
+- **`bytes`, exactly, in the transaction that inserts a build.** When the tenant's limit is not
+  unlimited, the transaction that inserts a new build of an own source (a publication, an
+  administrator's add, an upstream's ingest, a lazy fetch, a succession's copy) also holds the lock
+  `TenantBytesLock(tenant)` among its other lock keys. Under it, it reads the figure and refuses
+  when the new build's body is not counted yet and `used + body_len > limit`. A body the tenant
+  already counts adds nothing and always passes. Two intakes of one tenant never both take the last
+  room, on one replica or many: there is no overshoot. (An older replica still running during the
+  rollout of migration 0047 does not check; the rollout is the only window.)
+- **Fast paths before the body moves.** They refuse early and cheaply; the transaction still
+  decides.
+  - `room` (spec 0033), after the spool, with the body's hash and size: refused when the body is new
+    to the tenant and `used + size > limit`. This saves storing a body that would be refused.
+  - **A publication's body is not pre-checked before it is read.** The upload carries no digest
+    before its body (`Content-Length` only), so a pre-check could not tell an idempotent re-publish
+    of a body the tenant has (which must pass) from new bytes. A full tenant costs one upload per
+    refused publication, which the upload slots and the per-actor rate already bound.
+  - **An upstream cell** (`cell` in a run, and the lazy puller's fetch): before the download, a
+    cell that would need a new body is refused when `used >= limit`, or when its source's
+    catalogue is full. A cell that has a body already is still fetched conditionally (its ETag): a
+    `304` costs nothing. A `200` whose body is new to the tenant is refused after the spool by
+    `room`. A run reads `used` once when it starts and adds each body it admits, so it does not
+    read the figure per cell.
   - **An icon write** (spec 0036) checks its growth (the new icon's bytes less the stored icon's)
-    the same way, beside the per-source check. Unlike that per-source check, this one covers
-    tenant administrators too.
-  - **A publication is refused before its body is read** when the tenant is already at or over
-    the limit (`used >= limit`), as spec 0036's pre-checks are: a client repeating a large upload
-    against a full tenant costs one query, not an upload. The check after the spool, with the
-    size, still decides.
-  - **The check is read outside any lock**, as the per-source check is. Intakes in flight at once
-    can pass it together. The overshoot is bounded by the tenant's intakes in flight: its upload
-    slots (`publish.max_per_tenant`, 8 by default), its lazy fetches (4) and the upstream runs the
-    server's workers take for it at once, each body at most `blob.max_body`. A limit is a bound
-    against abuse, not an exact meter; the figure the tenant reads is exact.
-- **Counts, in the insert's transaction.** `CreateChannel`, `InsertUpstream` and `InsertPublisher`
-  (own publishers) already count in their transaction (channels will). Each reads the tenant's
-  limit in the same transaction and compares. The transaction holds a lock that orders the
-  tenant's inserts of that kind: `TenantUpstreamLock` for upstreams (held today), and a new
-  `TenantLimitLock(tenant, kind)` for channels and publishers. Two inserts at once never both pass
-  the last place. The limit is read from the tenant's row with a shared lock
-  (`lockedTenantQuery`, as `WritableTenant` reads it); a change of the limits updates that row, so
-  a change and an insert are ordered too.
-- **Which comes first.** The limit is checked before the ceiling. A limit equal to its ceiling
-  (the default) refuses with `tenant-limit`; only a server administrator, outside the limits, meets
-  a ceiling's `400`.
+    before its upload, beside the per-source check, and again in its transaction. Unlike that
+    per-source check, this one covers tenant administrators too.
+- **Counts, exactly, in the insert's transaction.** Each insert reads the tenant's limit and count
+  in its transaction, under a lock that orders the tenant's inserts of that kind, so two inserts
+  never both take the last place:
+  - upstreams: `TenantUpstreamLock`, held today;
+  - publishers: the tenant's auth lock under `InTenantTxForUpdate`, which `AddPublisher` holds
+    today (no new lock);
+  - channels: `CreateChannel` moves from `InTx` to `InTenantTx` (`internal/tenants/tenants.go`)
+    with a new `TenantLimitLock(tenant, "channels")`.
+
+  The limit is read from the tenant's row with a shared lock (`lockedTenantQuery`); a change of the
+  limits updates that row, so a change and an insert are ordered too.
+- **Which comes first.** The limit is checked before the ceiling. Every checked actor meets the
+  limit, so only the bootstrap and a bundle import meet a ceiling's `400`.
 
 A lowered limit removes nothing. A tenant over a limit can still read, serve, promote and remove;
 only growth of that kind is refused until it is back under the limit.
 
 ### Refusals
 
-One new problem type among the `429`s (spec 0037: one type per cause):
-
-- `tenant-limit`, status `429`, no `Retry-After`: it clears as the tenant frees room or its limit is
-  raised. The problem carries `"limit": "bytes" | "channels" | "upstreams" | "publishers"`. The
-  detail names the limit and says who can change it ("a server administrator"). It carries no
-  figures. A publisher with a signed request learns only which limit refused it; the tenant's
+- **`tenant-limit`**, a new problem type among the `429`s (spec 0037: one type per cause), status
+  `429`, no `Retry-After`, like `catalogue-full`: it clears as the tenant frees room or its limit
+  is raised. The problem carries `"limit": "bytes" | "channels" | "upstreams" | "publishers"`. The
+  detail names the limit and says a server administrator can raise it; when the limit equals its
+  ceiling, it says instead that the tenant holds the most kista allows. It carries no figures: a
+  publisher with a signed request learns only which limit refused it, and the tenant's
   administrators read the figures (below).
-- The ceilings keep their `400 invalid` refusal ("a tenant holds at most …") for a server
-  administrator, the one caller who can reach them. Every other caller meets the limit first, so a
-  client sees one type for "the plan is full".
-- **Upstream runs and fetches.** A run that meets `tenant-limit` records the cell as `failed`
-  (retried by the next run: never the file's fault, so no `upstream.rejected` event) with the
-  detail naming the limit, records it among the run's problems, and **stops**: the limit does not
-  clear within a run, and going on would download every remaining body only to refuse it. The cells
-  not reached keep their state. A lazy mirror's fetch (spec 0032) that is refused is recorded as a
-  failed fetch and answers the client as a failed fetch does today.
-- **`catalogue-full` in an upstream run, changed the same way.** Today a run records a cell refused
-  by the per-source cap (spec 0033) as `rejected`: the file's fault, an `upstream.rejected` event,
-  and no ETag on the next run, so every run downloads the whole body again only to refuse it. The
-  source is the upstream, so its catalogue does not empty within a run either. It becomes what
-  `tenant-limit` is: the cell `failed` with the detail naming the cap, the run's problem, and the
-  run stopped. A bundle import keeps its handling (it is a server administrator's, run once).
+- **Never retried by kista's clients.** kista's CLI, the console, and the developer kit's
+  `kista_publish.py` (plan item K5) treat `tenant-limit` as final, as they treat `catalogue-full`.
+- **An error reading the figure or the limit** fails closed: the intake is refused as an error (a
+  `500` on the API; a run's cell `failed`, never `rejected`, since it is not the file's fault).
+- **A metric** counts refusals by limit: `kista_tenant_limit_refusals_total{limit}`. Operators see
+  tenants pressing on their plans, and a hosted service can offer a larger plan. It has no tenant
+  label (cardinality); the tenant is in the log line.
 - **Events.** A refusal writes no event of its own: the refused request is not an action. Each
   change of limits writes one (below).
+
+### Upstream runs at a limit
+
+A run that meets `tenant-limit` or `catalogue-full`:
+
+1. records the refusing cell as `failed` (retried by the next run: never the file's fault, so no
+   `upstream.rejected` event), with the detail naming the limit or the cap, and adds it to the
+   run's problems;
+2. **stops new downloads only.** From then on a cell that would need a new body is recorded
+   `failed` with the same detail without being downloaded (no request, or a `200`'s body not
+   read). Everything that brings no body goes on: conditional fetches answered `304`, yanks and
+   removals the upstream reports, signatures, metadata;
+3. ends with a cause wrapped in `errFailed`, so the request is recorded as failed and is not
+   re-queued as interrupted (`internal/upstream/run.go`); the next run comes at its usual time.
+
+**`catalogue-full` changes the same way.** Today a run records a cell refused by the per-source cap
+(spec 0033) as `rejected`: the file's fault, an `upstream.rejected` event, and no ETag on the next
+run, so every run downloads the whole body again only to refuse it. The source is the upstream, so
+its catalogue does not empty within a run either. A bundle import keeps its handling (it is a
+server administrator's, run once, and exempt from the tenant limit).
+
+**The lazy puller** (spec 0032) checks before the download as above. A cell refused by
+`tenant-limit` or `catalogue-full` is recorded as a failed fetch and answers the client as a
+failed fetch does today, but is remembered for `NegativeTTL` (an hour by default), not the minute
+of a network failure: asking again within the hour would be refused again.
 
 ### The API
 
 - `GET /api/v1/tenants/{t}/limits`: the tenant's administrators and server administrators
-  (`pathAdmin`), suspended tenants included. It answers each limit with its value, where it comes
-  from and what the tenant uses:
+  (`pathAdmin`), suspended tenants included; a distribution admin is refused like any caller
+  without admin (`404`). It answers each limit with what is set, what applies and what the tenant
+  uses, and an `ETag` over the stored values:
 
   ```json
   {"limits": {
-    "bytes":      {"limit": 53687091200, "from": "tenant", "used": 1234567},
-    "channels":   {"limit": 1000, "from": "server", "used": 3},
-    "upstreams":  {"limit": 0,    "from": "tenant", "used": 0},
-    "publishers": {"limit": null, "from": "server", "used": 12}
+    "bytes":      {"set": 53687091200, "limit": 53687091200, "used": 1234567},
+    "channels":   {"set": "default",   "limit": 1000,        "used": 3},
+    "upstreams":  {"set": 0,           "limit": 0,           "used": 0},
+    "publishers": {"set": "unlimited", "limit": 200,         "used": 12}
   }}
   ```
 
-  `limit: null` is unlimited (only `bytes` can be: a count's unlimited is its ceiling, shown as
-  the number). `from` is `tenant` when the tenant has its own value, `server` for the default.
+  - `set` is the tenant's stored value: a number, `"unlimited"`, or `"default"` (none stored, the
+    server's default applies). It is what a `PUT` takes, so a client compares it with what it
+    would put.
+  - `limit` is the value in force: a number, or `null` for unlimited `bytes` (a count's unlimited
+    is its ceiling, shown as the number).
+  - `used` counts what the limit counts: the tenant's own bytes, its channels, its upstreams, its
+    own publishers (not distributors'). It is read even when `bytes` is unlimited: the `GET` is the
+    one place that pays for it then.
 - `PUT /api/v1/tenants/{t}/limits`: server administrators only (`serverAdmin`, a fresh token, a
-  named writer, as `…/holder`), suspended tenants included. The body names the limits it sets; a
-  limit it leaves out is not changed:
+  named writer, as `…/holder`), suspended tenants included. `If-Match` is optional; when sent, it
+  must match the `GET`'s `ETag` (`412` otherwise). The body names the limits it sets; a limit left
+  out is not changed, and only the named columns are written:
 
   ```json
   {"bytes": "50GiB", "channels": 20, "upstreams": "default", "publishers": "unlimited"}
   ```
 
   - a number (for `bytes`, also a size such as `"50GiB"`, the configuration's `ByteSize` syntax):
-    the tenant's own value, `0` included (no growth of that kind at all);
+    the tenant's own value; `0` means none, no growth of that kind at all;
   - `"unlimited"`: no limit for `bytes`, the ceiling for a count;
   - `"default"`: the tenant's own value is cleared, the server's default applies;
   - a count above its ceiling, a negative number or an unknown limit name is `400 invalid`.
 
-  The answer is the `GET`'s. The change writes the event `tenant.limits` in the tenant's audit,
-  with each changed limit's `from`/`to`, the values as the body gave them.
+  The answer is the `GET`'s. The tenant's `version` is not bumped: limits change no snapshot. A
+  `PUT` that changes nothing writes nothing and no event. A change writes the event
+  `tenant.limits` in the tenant's audit with, for each changed limit, the stored value before and
+  after, normalised (a number, `"unlimited"` or `"default"`; a size as its bytes), and the value in
+  force after it.
+- `POST /api/v1/tenants` takes an optional `limits` object, the `PUT`'s body, applied in the
+  creating transaction and recorded as `tenant.limits` beside `tenant.create`. A tenant Enterest
+  creates never runs on the server's defaults.
 - A distribution admin neither reads nor sets limits. Enterest sets them from its provisioning
   worker, which is a server administrator for its task (Enterest spec 0008).
-- `used` counts what the limit counts: the tenant's own bytes, its channels, its upstreams, its own
-  publishers (not distributors').
 
 ### The configuration
 
 ```yaml
-limits:            # the defaults per tenant (spec 0038); a tenant's own value replaces each
-  bytes: 0         # its own catalogue bytes; 0: unlimited (the default)
-  channels: 0      # 0: the ceiling, 1000
-  upstreams: 0     # 0: the ceiling, 100
-  publishers: 0    # 0: the ceiling, 200
+limits:                # the defaults per tenant (spec 0038), a backstop; a tenant's own value replaces each
+  bytes: unlimited     # its own catalogue bytes: a size (50GiB), 0 (none) or unlimited
+  channels: unlimited  # a number up to 1000, 0 (none) or unlimited (the ceiling)
+  upstreams: unlimited # up to 100
+  publishers: unlimited # up to 200
 ```
 
-- `0` in the configuration means "unlimited" (the ceiling for a count), as `0` means "the
-  default" everywhere in kista's configuration. A tenant's own `0` means none: the `PUT` body is
-  explicit. A server whose new tenants should start with none of something sets it per tenant at
-  creation; Enterest's provisioning does.
-- A count above its ceiling refuses to start. `bytes` takes `ByteSize`.
-- Environment variables follow the configuration's usual mapping (`KISTA_LIMITS_BYTES`, …).
+- A key left out means `unlimited`. `0` means none, as in the API: one meaning in both places. It
+  differs from kista's other settings, where `0` means "the default", and the website warns about
+  it.
+- A count above its ceiling refuses to start.
+- **The defaults are a backstop, not a plan.** A change of the configuration changes every tenant
+  without a value of its own, across the whole fleet as replicas restart, with no audit event. A
+  hosted service puts explicit values on each tenant instead.
 
 ### The data model
 
-Migration 0047, additive, in the three dialects, with no `min_reader` bump:
+Migration 0047, in the three dialects, `min_reader` 47:
 
 ```
-tenants.limit_bytes       bigint  NULL   -- NULL: the server's default; -1: unlimited; >= 0: the limit
-tenants.limit_channels    int     NULL   -- NULL: the default; -1: the ceiling; 0..ceiling
+tenants.limit_bytes       bigint  NULL       -- NULL: the server's default; -1: unlimited; >= 0: the limit
+tenants.limit_channels    int     NULL       -- NULL: the default; -1: the ceiling; 0..ceiling
 tenants.limit_upstreams   int     NULL
 tenants.limit_publishers  int     NULL
+builds.body_len           bigint  NOT NULL   -- default 0; filled from blobs (0 where the blob is gone)
+ix_builds_tenant_body     ON builds (tenant_id, body_hash), carrying body_len
 ```
 
 - Columns on `tenants`, not a table: they go with the tenant when it is deleted (spec 0019), and the
   insert transactions already hold a shared lock on that row.
-- An older replica during an upgrade ignores the columns and does not enforce the limits. kista is
-  not released; the window is a rolling upgrade's.
-- The store suite's `Reset` needs no change (the columns are the tenants').
+- `min_reader` 47: an older binary would insert builds without `body_len` and would not check
+  limits, so it does not start on the new schema. One still running during the rollout does both
+  until it is replaced; kista is not released, and the rollout is the only window.
 
-### The CLI and the console
+### Bootstrap, the CLI and the console
 
-- `kista tenant limits <tenant>`: prints the limits and their use, as the `GET`.
-  `kista tenant limits <tenant> -bytes 50GiB -channels 20 -upstreams default -publishers unlimited`
-  sets them, as the `PUT`, through the store with the server administrator's audit actor, as
-  `kista tenant holder` does.
-- The console's tenant overview shows each limit, its use and where it comes from, read only, for
-  the tenant's administrators and server administrators. A server administrator's editor belongs
-  to plan item K4's server screens; until then the CLI and the API set limits.
+- **Bootstrap** (spec 0024): the tenant section takes `limits` (the configuration's syntax). The
+  plan shows it as a change like the tenant's other fields; applying it writes `tenant.limits` as
+  the bootstrap actor. The bootstrap itself is exempt from the limits.
+- **CLI:** `kista admin tenant limits <tenant>` prints the limits as the `GET`.
+  `kista admin tenant limits <tenant> -bytes 50GiB -channels 20 -upstreams default -publishers
+  unlimited` sets them as the `PUT`, through the store with the server administrator's audit actor,
+  as `kista admin tenant holder` does. A flag left out changes nothing: the command tells an
+  omitted flag from an empty one with `flag.Visit`, and an empty value is refused.
+- **Console:** the tenant overview shows each limit, what is set, what applies and what is used,
+  read only, for the tenant's administrators and server administrators. A server administrator's
+  editor belongs to plan item K4's server screens; until then the CLI and the API set limits. The
+  console shows a `tenant-limit` refusal with its limit and does not retry it.
 
 ### Interaction
 
-- **Enterest (E7).** Launch: Enterest sets nothing, every tenant has the server's defaults, which
-  keep today's behaviour. After the free period, a plan maps to the four values and the provisioning
-  worker puts them, idempotently, on each plan change and on each provisioning. An operator's
-  audited change of a customer's quota (G1) is a task that does the same. A distributor's
-  publications are never refused by a customer's limit, so a customer at its quota still gets what
-  it bought. The builds Enterest makes for an organisation's own developers are published by its
-  distributor's publishers too, so they are bounded by Enterest's own quotas, not by this limit.
-  Between creating a tenant and putting its limits, a tenant has the server's defaults: a hosted
-  server sets its defaults to its smallest plan once the free period ends.
+- **Enterest (E7).** The provisioning worker always puts explicit values: at creation (in the
+  `POST`), on each plan change, and on each provisioning sweep, `"unlimited"` included during the
+  free period. It never relies on the server's defaults. An operator's audited change of a
+  customer's quota (G1) is a task that does the same. A distributor's publications are never
+  refused by a customer's limit, so a customer at its quota still gets what it bought. The builds
+  Enterest makes for an organisation's own developers are published by its distributor's
+  publishers too, so they are bounded by Enterest's own quotas, not by this limit.
 - **Tenant deletion (spec 0019).** Nothing new: the columns go with the row.
 - **Follows (spec 0033), promotion, re-signing.** They place builds already in the catalogue: no
-  new build, no new bytes.
+  new build, no new bytes. A succession's copy is a new build of a body the tenant already counts.
 - **Catalogue cap (spec 0033).** Both apply; a refusal names its own type (`catalogue-full` for
   the source, `tenant-limit` for the tenant). The per-source cap still exempts an administrator's
-  add; the tenant limit does not exempt a tenant administrator.
+  add; the tenant limit does not.
 - **The download path** is never refused by a limit: a limit stops growth, not serving.
 
 ## Security
 
-- **Who can change a limit.** Only a server administrator, with a fresh token. A tenant
-  administrator cannot raise their own limits. Each change is audited in the tenant's log with the
-  actor.
+- **Who can change a limit.** Only a server administrator, with a fresh token, or the bootstrap
+  from the server's configuration. A tenant administrator cannot raise their own limits. Each
+  change is audited in the tenant's log with the actor. A change of the configuration's defaults is
+  not, which is why a hosted service sets every tenant explicitly.
 - **What a tenant learns.** Its administrators read its own limits and its own use, nothing about
-  other tenants. Shared blobs are counted in full in each tenant, so the figure says nothing about
-  what another tenant stores. A publisher learns only the name of the limit that refused it.
-- **Fail closed.** A failure to read the use or the limit refuses the intake (an error, as a
-  failed per-source check does today), never admits it.
+  other tenants. Bodies shared with other tenants count in full in each tenant, so the figure says
+  nothing about what another tenant stores. A publisher learns only the name of the limit that
+  refused it.
+- **Fail closed.** A failure to read the use or the limit refuses the intake; it never admits it.
 - **Bypasses considered.**
   - *Many sources:* the limit is per tenant, not per source.
-  - *Placed builds:* every build row counts, placed or not.
+  - *Placed builds:* every kept build counts, placed or not.
   - *A distributor's publisher as a way around:* only distribution admins and server
     administrators create those (spec 0037), and a tenant administrator cannot publish through one.
-  - *A tenant administrator's add:* checked; only a server administrator's add is exempt.
-  - *Many requests at once:* the overshoot is bounded (above); counts are exact.
+    A removed distributor's publisher's builds stay excluded, and nothing publishes through it.
+  - *A tenant administrator's add:* checked, though the per-source cap exempts it.
+  - *A server administrator's call:* checked; raising the limit is the audited way past it.
+  - *Many requests at once, many replicas:* bytes and counts are checked under a lock in the
+    inserting transaction: no overshoot.
   - *Removing and adding back:* removals free room, which is the intent.
-- **Denial of service by the check itself.** One `SUM` per intake, over the tenant's builds through
-  the tenant index; an intake already reads the per-source figure the same way. A tenant with a
-  very large catalogue pays the cost on its own intakes.
+  - *Builds waiting for the collector:* not counted, but no longer served or placed, so they hold
+    no bytes a tenant can use.
+- **Denial of service by the check itself.** Only a tenant with a `bytes` limit pays for it: one
+  index-only `SUM` per new build, under a lock that orders that tenant's new builds, so a tenant's
+  intakes wait on one another for that short read. A run reads the figure once. A tenant with a
+  very large catalogue pays the cost on its own intakes only.
 
 ## Testing
 
-- **Store suite (three dialects):** the tenant's use against a hand count (placed, unplaced,
-  withdrawn, icons, a distributor's source left out, a body in two sources, a body shared with
-  another tenant); the limit columns' round trip (`NULL`, `-1`, `0`, a value); two concurrent
-  inserts of a channel and of a publisher at the last place, one refused; a limit lowered between
-  two inserts.
-- **Release:** a publication, an administrator's add, an upstream ingest and a bundle import at
-  `bytes` (the import passes, the others are refused with `tenant-limit`); a body the source has
-  already passes; a distributor's publisher's publication passes past the limit; an icon's growth
-  refused, an icon replaced by a smaller one passes.
-- **API:** `GET` for a tenant administrator and a server administrator, `404` for others; `PUT` by
-  a server administrator only, the event, `default`/`unlimited`/`0`/sizes, `400`s; each count's
-  refusal as `429 tenant-limit` with its `limit`; a publisher's refusal carries no figures; a
-  suspended tenant's limits read and set.
+- **Store suite (three dialects):**
+  - the tenant's use against a hand count: placed, landed, unlanded and waiting for the collector,
+    a distinct body in two sources, a succession's copy, a body shared with another tenant, icons,
+    an icon of an entry with no build left, a distributor's source and its icons left out, a
+    **removed** distributor's publisher's withdrawn build left out;
+  - icons summed past 2 GiB on SQL Server (`SourceUsage` too);
+  - `body_len` filled by the migration and set by every insert and copy;
+  - the limit columns' round trip (`NULL`, `-1`, `0`, a value);
+  - two concurrent inserts of a channel and of a publisher at the last place, one refused; two
+    concurrent intakes of new bodies at the last room, one refused;
+  - a lowering `PUT` racing an insert: never a count past the new limit once both commit, unless
+    the insert committed first.
+- **Release:**
+  - a publication, a tenant administrator's add (refused by `bytes` while the per-source cap
+    exempts it), a server administrator's add, an upstream ingest: all refused at `bytes`; a bundle
+    import and the bootstrap pass;
+  - an idempotent re-publish of a body the tenant has, at a full tenant, passes;
+  - a distributor's publisher's publication passes past the limit;
+  - a purge, then a retry: passes once the release is purged, before the collector runs;
+  - an icon's growth refused, a smaller icon passes, a distributor's icon not counted.
+- **API:** `GET` for a tenant administrator and a server administrator, `404` for a distribution
+  admin and others; `PUT` by a server administrator only; a partial `PUT` leaves the other limits;
+  a no-op `PUT` writes no event; `If-Match` honoured; the event's before, after and value in force;
+  `set` round-trips through `PUT`; `default`, `unlimited`, `0`, sizes, the `400`s; `POST /tenants`
+  with `limits`; each count's refusal as `429 tenant-limit` with its `limit`, and the ceiling's
+  wording; a publisher's refusal carries no figures; a distributor's publisher's create is not
+  counted against `publishers`; a suspended tenant's limits read and set; the metric.
 - **Upstream:** a run past `bytes` records the cell `failed` with `tenant-limit`, no
-  `upstream.rejected` event, and stops (later cells untouched); the same for `catalogue-full`; a
-  lazy fetch past the limit answers as a failed fetch.
-- **Config:** defaults, ceilings, `0`, a count above its ceiling refused at start.
-- **CLI:** `kista tenant limits` read and set.
+  `upstream.rejected` event, downloads nothing more, still applies a yank and a `304`, and ends
+  failed without an interrupted retry; the same for `catalogue-full`; a lazy fetch past the limit
+  is refused before the download and remembered for `NegativeTTL`; a usage-read error records
+  `failed`.
+- **Config:** a key left out, `unlimited`, `0`, `50GiB`, a count above its ceiling refused at start.
+- **Bootstrap:** limits in the plan and applied, the event as the bootstrap actor.
+- **CLI:** `kista admin tenant limits` read and set; an omitted flag unchanged, an empty one refused.
 - **Console:** the overview shows the limits (unit test and the console e2e's tenant page).
 
 ## Alternatives considered
 
-- **A counter kept per tenant.** Exact under concurrency, no `SUM` per intake. But builds are added
-  in one place and removed in several (the purge, the trim of landed builds, the catalogue's purge,
-  tenant deletion), icons change in others, and every one of them would have to keep the counter
-  right forever. The live `SUM` is already what the per-source cap pays.
+- **A counter kept per tenant.** No `SUM` per new build. But builds are added in several places and
+  removed in several (the purge, the trim of landed builds, the collector, tenant deletion), icons
+  change in others, and every one would have to keep the counter right forever. With `body_len` on
+  the build, the `SUM` reads one index, and only for tenants with a `bytes` limit.
+- **A check outside any lock**, as the per-source cap's. A small free plan could then overshoot by
+  many intakes times `blob.max_body` (gibibytes); the lock costs only tenants with a limit.
+- **Counting every build row.** Simpler, but a succession's copies and a re-publish into a second
+  source would count bytes the storage does not hold, and a copy could be refused.
 - **A periodic recount.** No drift and a cheap check, but the lag lets a tenant overshoot by
   whatever it lands in the period.
 - **Physical bytes.** Shared blobs make them unpredictable for a customer (a mirror of the core
   extensions costs nothing when another tenant has them) and would reveal what other tenants hold.
+- **Exempting server administrators.** `room`'s `admin` flag covers a tenant administrator's add
+  too, and a second notion of "administrator" would be needed; raising the limit, audited, is the
+  way past it.
 - **Limits set by a distribution admin.** Enterest's provisioning already acts as a server
   administrator; a distribution admin acts for a distributor in many customers' tenants and should
   not change their plans (decision 3).
@@ -322,21 +415,28 @@ tenants.limit_publishers  int     NULL
 
 ## Changes to earlier specs
 
-- 0033: the catalogue's admission (`room`) also checks the tenant's limit.
+- 0033: the catalogue's admission (`room`) and a build's insert also check the tenant's limit;
+  `SourceUsage` sums icons as `bigint` on SQL Server.
 - 0036: an icon write also checks the tenant's limit, for tenant administrators too.
 - 0037: `tenant-limit` joins the `429` types.
-- 0009, 0032: an upstream run stops at a `tenant-limit` or `catalogue-full` refusal, recording the
-  cell `failed` (no longer `rejected` for `catalogue-full`); a refused lazy fetch is a failed fetch.
+- 0009, 0032: a run stops new downloads at a `tenant-limit` or `catalogue-full` refusal, records the
+  cell `failed` (no longer `rejected` for `catalogue-full`) and ends failed; a lazy fetch is checked
+  before its download, and a refused one is remembered for `NegativeTTL`.
+- 0024: the bootstrap's tenant takes `limits`.
 
 ## Website
 
-- `configuration.md`: the `limits` section.
-- `administration/tenants-and-channels.md`: limits, the `GET`/`PUT`, what counts as bytes, the
-  overshoot bound, what a lowered limit does.
-- `administration/commands.md`: `kista tenant limits`.
-- `api.md`: the routes and the `tenant-limit` problem type.
-- `upstreams.md`: a run stopped by `tenant-limit`.
-- `administration/upgrading.md`: migration 0047.
+- `configuration.md`: the `limits` section, and the warning that `0` there means none.
+- `administration/tenants-and-channels.md`: limits, the `GET`/`PUT`, what counts as bytes, what a
+  lowered limit does, the defaults as a backstop.
+- `administration/commands.md`: `kista admin tenant limits`.
+- `api.md`: the routes, `POST /tenants`' `limits`, and the `tenant-limit` problem type.
+- `catalogue.md`: the tenant limit beside the per-source cap.
+- `publishing.md`: `tenant-limit` refusals, never retried.
+- `upstreams.md`: a run at a limit.
+- `console.md`: the limits on the tenant overview.
+- `observability.md`: the refusals metric.
+- `administration/upgrading.md`: migration 0047, its `min_reader` and the `body_len` fill.
 
 ## Follow-ups
 
@@ -354,8 +454,9 @@ The owner's decisions of 2026-10-29, which the text above follows:
 1. **A distributor's builds and a customer's quota:** never counted, never refused. A customer at
    its quota still gets what it bought or chose.
 2. **Which bytes count:** every build of the tenant's own sources, upstream mirrors included, and
-   their icons.
-3. **Who sets limits:** server administrators only (Enterest's provisioning worker is one).
+   their icons (each body once, see "Distinct bodies").
+3. **Who sets limits:** server administrators only (Enterest's provisioning worker is one), and the
+   bootstrap from the server's configuration.
 4. **The set of limits:** bytes, channels, upstreams, own publishers.
-5. **An upstream run at a limit** stops at its first `tenant-limit` refusal (and, below, at a
-   `catalogue-full` one).
+5. **An upstream run at a limit** stops its new downloads at its first `tenant-limit` refusal, and
+   at a `catalogue-full` one.
