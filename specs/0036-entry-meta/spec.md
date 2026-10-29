@@ -1,6 +1,6 @@
 # Spec 0036: Entry icons and distributor statistics
 
-- **Status**: accepted
+- **Status**: accepted (phase 1 implemented)
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -69,6 +69,10 @@ tenant: `entry_meta` joins the reaper's tables (`store.ReapTables`, which
 - Every character must be printable (`unicode.IsPrint`) or a space.
 - Refused: categories Cf, Zl and Zp. This covers the bidirectional controls, LRM, RLM and ALM, the
   zero-width characters, U+2028 and U+2029, and tag characters.
+- Refused too: the invisible fillers U+115F, U+1160, U+3164 and U+FFA0 (the Hangul fillers) and
+  U+2800 (the blank Braille pattern). They are printable letters or symbols, so the rules above
+  pass them, yet they show nothing. Enterest's summary rules (its spec 0010) refuse them too: the
+  two must agree, so a summary Enterest accepts is one kista accepts.
 - At most 4 combining marks after any base character.
 - It is never markup. The console renders it as text, and the CLI prints it as is.
 
@@ -91,7 +95,8 @@ tenant: `entry_meta` joins the reaper's tables (`store.ReapTables`, which
   2. The header (`png.DecodeConfig`): square, 64 to 512 pixels a side. This happens before
      decoding, so a decompression bomb never allocates pixels.
   3. A full decode with Go's `image/png`, and `img.Bounds()` must equal the header's size.
-     Decodes run under a semaphore (4 per replica). The worst case is a 16-bit 512x512 image, 2 MiB.
+     Decodes run under a semaphore (4 per replica). The worst case is a 16-bit 512x512 image, 2 MiB,
+     and about 4 MiB at a decode's peak when it is interlaced (its passes and the image).
 - **Size**: at most 256 KiB. A 256x256 PNG fits.
 - The declared `content_type` must be `image/png`.
 - For a refused file, the website tells publishers how to strip chunks (`oxipng --strip all`,
@@ -159,8 +164,10 @@ GET /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/icon[?type=]
     distributor's publisher may not publish (reserved). Always the same answer.
   - `409`, type `stale`, for a signed request whose `signed-at` is older than the entry's stored
     `signed_at`, or equal to it with another body hash than `signed_body`. Every accepted signed
-    write advances both, no-ops included. A write by a token sets `signed_at` to the server's now
-    (and clears `signed_body`), so no signed request made before it can undo it. A captured request
+    write advances both, no-ops included. A write by a token that changes something sets
+    `signed_at` to the later of the server's now and the stored `signed_at` (and clears
+    `signed_body`), so no signed request made before it can undo it and the mark never goes back; a
+    token's write that changes nothing writes nothing. A captured request
     therefore never undoes a newer write within spec 0023's five minutes, and the same request
     again changes nothing. A client answered `stale` reads again; if the stored `signed_at` is ahead
     of its clock, it waits until its clock passes it.
@@ -207,8 +214,9 @@ the catalogue (held, available or withdrawn). The `GET`s take the same checks. C
 key, as `PublicationLive` does (`internal/store/holds.go`). A write in flight when the key is
 revoked writes nothing.
 
-**Rate.** One tenant's metadata writes are bounded by the API's per-client rate and by its byte
-caps.
+**Rate.** One tenant's metadata writes are bounded by the API's per-client rate, by a rate per
+caller and tenant on each replica (one a second, bursts of ten, spent once a write passed its
+checks), and by its byte caps.
 
 #### Serving the icon
 
@@ -398,15 +406,20 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
   `same-origin`. The console builds its `Blob` with a fixed type. So the bytes are only ever an
   image, even opened directly.
 - **Bounded input.** The body is at most 384 KiB and the icon 256 KiB. Size is checked from the
-  header before decoding, and decodes are limited to 4 at a time: at most 2 MiB each. The summary
-  is at most 160 characters, with no format or line-separator characters and few combining marks.
+  header before decoding, and decodes are limited to 4 at a time: about 4 MiB each at a decode's
+  peak (an interlaced 16-bit 512x512 image). The summary
+  is at most 160 characters, with no format or line-separator characters, no invisible fillers and
+  few combining marks.
 - **Who writes.** A publisher writes only its own entries, and only by a signed request. Tenant
   administrators write only the tenant's own sources. A distributor's entries belong to its
   publisher, the distribution admins and the server administrators. A tenant cannot restyle a
   distributor's product, and a distributor cannot restyle a tenant's entries.
 - **Replay.** Within spec 0023's five minutes, a captured request can be sent again. The same
   request again changes nothing. An older one, or another body with the same `signed-at`, is
-  `409 stale`, and a token's write moves the mark to the server's now.
+  `409 stale`, and a token's write that changes something moves the mark to the later of the
+  server's now and the mark. A request signed ahead of the server's clock (within the five
+  minutes) and never delivered can still land within its window, over a token's write made before
+  its `signed-at`.
 - **A stolen distribution admin's token**, or a publisher key it adds, can rewrite the icon and the
   summary of every distributor's entry in every tenant at once. Metadata has no hold, so this
   reaches every console immediately, and a summary can carry a phishing URL (as text, never a
@@ -466,6 +479,8 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
   100000x100000 (refused before decoding), an `IDAT` whose image does not match the header,
   `IDAT` chunks split by another chunk, and `IDAT(image) IDAT(<html>) IEND` (zlib data past the
   stream's end) refused.
+- **Summary checks**: NFC, 160 code points, each refused category, each invisible filler (U+115F,
+  U+1160, U+3164, U+FFA0, U+2800), and the fifth combining mark after a base character refused.
 - **Icon collection**: an unreferenced icon marked, then deleted after the grace; a claimed one
   kept; a write waiting for a `deleting` tombstone; a delete of unknown outcome finished by the
   resolver; a write racing the collector ending with its object present; a corrupted object refused
@@ -511,6 +526,92 @@ phase 2 (migration 0045, `min_reader 45`), then spec 0037 PR 2 (migration 0046).
 - **Phase 2: distributor statistics.** Migration 0045, the source in the download key and the
   installers pass, the aggregate query, the route, the two configuration keys, the tenant route's
   `source` dimension, the website. About 800 lines with tests.
+
+### As built (phase 1)
+
+Delivered on the branch `0036-entry-meta-1`, on spec 0037's PR 1, with migration 0044; the review's
+fixes followed in the same branch.
+
+- **Spec addition.** The summary also refuses the invisible fillers U+115F, U+1160, U+3164, U+FFA0
+  and U+2800 (The summary, above), as Enterest's spec 0010 does.
+- **Migration 0044.** The hash columns are `varchar(64)` (`nvarchar(64)` BIN2 on SQL Server), as
+  every hash column of the schema, not `char(64)`. SQL Server's `summary` is `nvarchar(320)`:
+  `nvarchar` counts UTF-16 units, and 160 code points beyond the Basic Multilingual Plane take 320.
+- **The icon checks** (`internal/icon`). Each chunk's CRC is checked too (a corrupt file is refused
+  in step 1). The zlib end check runs after the header's dimensions are checked, not inside step 1,
+  and inflates at most 4 MiB, so a bomb is never inflated past the bound. There is no separate
+  "IDAT chunks consecutive" check: every allowed chunk but `IDAT` and `IEND` must come before the
+  first `IDAT`, so whatever comes between two `IDAT`s is refused by that rule ("the chunk … comes
+  after the image data"). The decoded image's size check is defence only (Go's decoder sizes the
+  image by the header, checked before). A refusal names the rule; a refused chunk is named with how
+  to strip it, an unknown one is not (its type is the sender's bytes). A decode holds about 4 MiB at
+  its peak (an interlaced 16-bit 512x512 image), not 2 MiB.
+- **The summary** is stored as checked: trimmed and in NFC. `CheckSummary` is in
+  `internal/release`. The console renders it in `<bdi>`.
+- **Spec 0016's protocol** is one implementation over object kinds (`store.Objects`: streams and
+  icons, each with its tables, column, lock and referencing query); callers use `Store.Streams()`
+  and `Store.Icons()`, and the collector's listing and tombstone steps take the kind. A tombstone's
+  hash is `Tombstone.Hash`; `ErrStreamBusy` and `ErrClaimLost` keep their names for both kinds.
+  `Tx.CommitIcon` checks and removes a write's claim in the row's transaction. The collector's
+  `Marked` counts both kinds; `Result.Icons`, `storage.gc`'s `icons` and `blob gc`'s `ICONS` count
+  the icons deleted. An icon's write waits on the collector at most 10 seconds (`iconClaimWait`),
+  then answers busy (`503`, `Retry-After`); the wait is a package setting, changed in tests only.
+- **The write.**
+  - The API authorizes the caller (the service's own checks, `MayWriteEntryMeta`) before it reads
+    the body. It rates a caller's metadata writes per tenant, on each replica, at one a second in
+    bursts of ten (`429` `rate-limited`), beside the per-client rate; a write spends it through
+    `MetaWrite.Admit`, once its body is the signed one and it passed its checks before any upload,
+    so a captured request replayed (`stale`) or a refused write spends none.
+  - Before anything is uploaded the write is checked against the entry (stale, a kept icon
+    changed), a publisher's key against the store, and the byte cap. An icon the entry has already,
+    sent as bytes, skips the cap and is not uploaded again while its object is there and matches;
+    a missing or changed object is uploaded again (the write repairs it, so a row never stands
+    without its object). Such a kept icon is the server's, not the client's: if the entry's icon
+    changed before the transaction, the write uploads the bytes it was sent rather than answering
+    `409 conflict`. The cap counts the growth only: a write whose icon grows the source's
+    bytes past `catalogue.max_bytes` is refused, a smaller icon or the same one passes even over the
+    cap. The cap is read outside any lock, as `room()`'s.
+  - The row's transaction, under the tenant's auth lock, checks again: the tenant active (but for a
+    server administrator), a publisher and its key (`PublicationLive`), a distributor's publisher's
+    name (`distributorMayNow`), a tenant administrator never on a distributor's entry; then stale
+    and a kept icon changed. A distribution admin is not held to `distributorMayNow`: it writes the
+    metadata of a name reserved since for another holder, as it withdraws its versions. A tenant
+    administrator's grants and a distribution admin's `distribute` are not checked again in the
+    transaction (a grant revoked meanwhile lets one write in flight through, as for every other
+    write of theirs); the cap is not either, a race bounded by the writes in flight.
+  - A token's write that changes something moves `signed_at` to the later of the server's clock and
+    the stored mark, to the microsecond, and clears `signed_body`; a token's write that changes
+    nothing writes nothing. A signed write always advances the mark, no-ops included. A request
+    signed ahead of the clock and never delivered can still land within its window (Security).
+  - A kept icon's `sha256` must be 64 lowercase hex digits, and an icon both new and kept is `400`.
+    A key revoked or a publisher removed in flight is `401`, as a publication's.
+  - A stale write, and one that fails after its icon was uploaded (the object left to the
+    collector), are `catalogue.meta` events with the outcome `refused` or `failed` and a `reason`
+    (the asynchronous writer adds `count`); a write that is both is recorded once, as failed. A
+    conflict, an invalid write and a full catalogue are logged.
+- **Reads.** "Catalogue readers" are spec 0033's: the tenant-wide administrators, the distribution
+  admins (a distributor's entries) and a distributor's publisher (its own, signed), so the reads
+  take the same checks as the writes, a tenant's administrators also reading a distributor's
+  entries. A distributor's publisher reads no metadata of a name reserved since for another holder:
+  neither the entry's read nor the catalogue's list answers it (the list reads the reservations of
+  its names in one query, `Store.ReservedAgainst`).
+- **The answers** carry `source`, `name`, `distributor` and `package_type` beside the spec's fields;
+  `set_by` is shown as other answers show an actor (a server's or a distribution admin's actor by
+  its kind to a caller who is not a server administrator). `Allow` now lists `PUT`.
+- **CLI.** `catalogue show` prints `summary:` and `icon:` after its table, so the table's header
+  stays its first line; `catalogue meta` also prints who set it; `-icon ""` is a usage error.
+- **Console.** Edit… is offered to tenant-wide administrators (a server administrator's console
+  included) on the tenant's own, live sources: never a distributor's entry nor a removed source's.
+  kista's own console CSP gains `blob:` in `img-src` (the spec named Enterest's). The e2e fixture
+  writes the icons (`fixture -icon`), and `run.sh`'s signed-request helper takes the method.
+- **Tests.** The DuckDB e2e case (`e2e/distributors_test.go`) is phase 2's, where its statistics
+  are: phase 1's icon route and headers are covered by the API test and the console e2e. A test
+  hook between a write's checks (and upload) and its transaction drives the re-checks (a name
+  reserved, a key revoked, the tenant suspended meanwhile) and a lost claim's retry; a counting store
+  shows a refused read reaches no object and a refused or unchanged write uploads none (at the
+  service, where the order is decided).
+- **Not here.** `kista_publish.py --summary --icon` is in `hugr-lab/extension-ci-tools`
+  (Follow-ups).
 
 ## Alternatives considered
 

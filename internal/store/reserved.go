@@ -343,6 +343,39 @@ func (t *Tx) TenantReserves(ctx context.Context, tenantID, packageType, name str
 	return n > 0, err
 }
 
+// ReservedAgainst says which of names a distributor's holder may not publish in a tenant (spec
+// 0036: a distributor's publisher's catalogue list): reserved server-wide, or in the tenant for
+// another holder. One query per 200 names.
+func (s *Store) ReservedAgainst(ctx context.Context, tenantID, packageType, holder string, names []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for start := 0; start < len(names); start += 200 {
+		batch := names[start:min(start+200, len(names))]
+		ph := strings.TrimSuffix(strings.Repeat("?, ", len(batch)), ", ")
+		args := []any{packageType}
+		for _, n := range batch {
+			args = append(args, n)
+		}
+		args = append(args, tenantID, packageType, holder)
+		for _, n := range batch {
+			args = append(args, n)
+		}
+		err := s.eachRow(ctx, "SELECT name FROM reserved_names WHERE package_type = ? AND name IN ("+ph+") UNION "+
+			"SELECT name FROM tenant_reserved_names WHERE tenant_id = ? AND package_type = ? AND holder <> ? AND name IN ("+ph+")", args,
+			func(sc func(...any) error) error {
+				var n string
+				if err := sc(&n); err != nil {
+					return err
+				}
+				out[n] = true
+				return nil
+			})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // ListTenantReservedNames lists a tenant's reserved names of a type, by name (one name, or all when
 // name is "").
 func (s *Store) ListTenantReservedNames(ctx context.Context, tenantID, packageType, name string) ([]TenantReservedName, error) {

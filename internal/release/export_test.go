@@ -18,3 +18,7 @@ func ServedHeld(cands []store.Candidate, capis map[string][]store.CAPI) map[stri
 
 // DistributorMayNow is a distributor's name check in a landing transaction.
 var DistributorMayNow = distributorMayNow
+
+// SetBeforeMetaCommit sets a hook run between a metadata write's checks (and its upload) and its
+// transaction (spec 0036).
+func SetBeforeMetaCommit(s *Service, f func()) { s.beforeMetaCommit = f }

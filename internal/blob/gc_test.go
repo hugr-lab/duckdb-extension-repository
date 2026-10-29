@@ -142,7 +142,7 @@ func TestCommitWaitsForADelete(t *testing.T) {
 	if err := e.fsStore.Delete(ctx, blob.StreamKey(rec.StreamHash)); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.st.EndDelete(ctx, "default", rec.StreamHash, stamp); err != nil {
+	if err := e.st.Streams().EndDelete(ctx, "default", rec.StreamHash, stamp); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -169,7 +169,7 @@ func deleting(t *testing.T, e *env, rec store.Blob) time.Time {
 		t.Fatalf("delete the row: %v %v", ok, err)
 	}
 	now = now.Add(48 * time.Hour)
-	stamp, err := e.st.BeginDelete(ctx, "default", rec.StreamHash, now.Add(-24*time.Hour), now.Add(-30*time.Minute))
+	stamp, err := e.st.Streams().BeginDelete(ctx, "default", rec.StreamHash, now.Add(-24*time.Hour), now.Add(-30*time.Minute))
 	if err != nil || stamp.IsZero() {
 		t.Fatalf("begin the delete: %v %v", stamp, err)
 	}
@@ -227,7 +227,7 @@ func TestRefusedDelete(t *testing.T) {
 	if ev := (*events)[len(*events)-1]; !errors.Is(ev.Err, refused) || ev.Streams != 0 {
 		t.Fatalf("the failed pass's event: %+v", ev)
 	}
-	ts, err := e.st.DueTombstones(ctx, "default", now, now, "", 10)
+	ts, err := e.st.Streams().DueTombstones(ctx, "default", now, now, "", 10)
 	if err != nil || len(ts) != 1 || ts[0].State != "marked" {
 		t.Fatalf("the tombstone after a refused delete: %+v %v", ts, err)
 	}

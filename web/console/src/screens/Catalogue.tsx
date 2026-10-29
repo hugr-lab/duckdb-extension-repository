@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, SearchBox, Table, when } from '../components/ui'
 import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { ApiError, seg, sourceSeg } from '../lib/http'
+import { bytesOf } from '../lib/upload'
 
 // The catalogue (spec 0033): every build that arrives in a tenant, mirrored or published, lands
 // there as a build of its source (an upstream, a publisher, the tenant), names side by side; a
@@ -20,7 +21,59 @@ export interface CatalogueEntry {
   withdrawn?: string[]
   /** a distributor's publisher's id: answered to a server administrator (spec 0033 phase B) */
   publisher_id?: string
+  /** a distributor's publisher's entry's distributor (spec 0036): its metadata is the distributor's */
+  distributor?: string
+  /** the entry's metadata (spec 0036): a line of plain text, and an icon by its hash */
+  summary?: string
+  icon?: EntryIconRef
 }
+
+/** An entry's icon as the API answers it (spec 0036). */
+export interface EntryIconRef {
+  sha256: string
+  width: number
+  height: number
+}
+
+/** The one type an icon is shown as: a fixed allow-list, never the response's header (spec 0036). */
+const iconTypes = ['image/png'] as const
+
+/** An icon's bytes as an image the page shows, of a type from the allow-list whatever the bytes
+ * came with: shown from a blob: URL, the console's API calls carrying a Bearer token <img src>
+ * cannot send. */
+export function iconBlob(b: Blob): Blob {
+  return new Blob([b], { type: iconTypes[0] })
+}
+
+/** Bytes as standard base64. */
+export function base64Of(bytes: Uint8Array): string {
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return btoa(bin)
+}
+
+/** What an Edit sends for the icon: a new file's bytes, the stored one kept, or none. */
+export type IconChoice = { file: Uint8Array } | { keep: string } | null
+
+/** The body of a metadata write (PUT …/meta): the whole metadata, so the icon not changed is sent
+ * back by its hash and a summary-only edit uploads nothing. */
+export function metaBody(summary: string, icon: IconChoice) {
+  const s = summary.trim()
+  let i: unknown = null
+  if (icon && 'file' in icon) i = { content_type: iconTypes[0], data: base64Of(icon.file) }
+  else if (icon) i = { sha256: icon.keep }
+  return { summary: s === '' ? null : s, icon: i }
+}
+
+/** Whether the console offers to edit an entry's metadata: the tenant's administrators, on the
+ * tenant's own sources only (a distributor's entry's metadata is the distributor's; the API decides
+ * anyway). */
+export function mayEditMeta(e: Pick<CatalogueEntry, 'distributor' | 'source'> | undefined, tenantAdmin: boolean) {
+  return !!e && tenantAdmin && !e.distributor && !removedSource(e.source)
+}
+
+/** An entry's summary as the server counts it: code points. */
+export const codePoints = (s: string) => [...s.trim().normalize('NFC')].length
 
 export interface CatalogueBuild {
   id: string
@@ -176,6 +229,97 @@ function Rules({ rules }: { rules: Record<string, string> }) {
   )
 }
 
+/** An entry's path in the API: …/catalogue/{source}/extensions/{name}. */
+export const entryPath = (api: string, source: string, name: string) => `${api}/catalogue/${sourceSeg(source)}/extensions/${seg(name)}`
+
+/** An entry's icon at a size: fetched with the console's client (the token), shown from a blob: URL
+ * of the allow-listed type; a box of the size while there is none. No cache, no batching. */
+export function EntryIcon({ path, icon, size }: { path: string; icon?: EntryIconRef; size: number }) {
+  const { client } = useTenant()
+  const [url, setUrl] = useState('')
+  const sha = icon?.sha256 ?? ''
+  useEffect(() => {
+    setUrl('')
+    if (!sha) return
+    let gone = false
+    let made = ''
+    client.blob(`${path}/icon`).then((b) => {
+      if (gone) return
+      made = URL.createObjectURL(iconBlob(b))
+      setUrl(made)
+    }).catch(() => {}) // an icon that cannot be read is not shown
+    return () => {
+      gone = true
+      if (made) URL.revokeObjectURL(made)
+    }
+  }, [client, path, sha])
+  const box = { width: size, height: size }
+  if (!url) return <span aria-hidden className="inline-block shrink-0 rounded bg-surface-soft" style={box} />
+  return <img src={url} alt="" width={size} height={size} className="shrink-0 rounded" style={box} />
+}
+
+/** An entry's summary: plain text, never markup or a link, its direction isolated. */
+export function EntrySummary({ summary }: { summary?: string }) {
+  if (!summary) return null
+  // isolated: a right-to-left summary does not reorder the text around it
+  return <bdi className="text-[13px] text-ink-muted">{summary}</bdi>
+}
+
+/** Editing an entry's metadata (spec 0036): the summary, a PNG file for the icon, or clearing it.
+ * The icon not changed is sent back by its hash, so a summary-only edit uploads nothing. */
+export function MetaDialog(props: {
+  open: boolean
+  name: string
+  summary?: string
+  icon?: EntryIconRef
+  onSave: (body: ReturnType<typeof metaBody>) => void
+  onClose: () => void
+}) {
+  const [summary, setSummary] = useState('')
+  const [file, setFile] = useState<File | null>(null)
+  const [clear, setClear] = useState(false)
+  const [failure, setFailure] = useState('')
+  const [opened, setOpened] = useState(false)
+  if (props.open !== opened) {
+    // each opening starts from the entry's metadata
+    setOpened(props.open)
+    if (props.open) {
+      setSummary(props.summary ?? '')
+      setFile(null)
+      setClear(false)
+      setFailure('')
+    }
+  }
+  const long = codePoints(summary) > 160
+  const save = async () => {
+    let icon: IconChoice = null
+    if (file) {
+      if (file.size > 256 << 10) {
+        setFailure('The icon is at most 256 KiB.')
+        return
+      }
+      icon = { file: new Uint8Array(await bytesOf(file)) }
+    } else if (!clear && props.icon) icon = { keep: props.icon.sha256 }
+    props.onSave(metaBody(summary, icon))
+  }
+  return (
+    <Confirm open={props.open} title={`Edit ${props.name}`} confirm="Save" disabled={long} onConfirm={() => void save()} onClose={props.onClose}>
+      <Field label="Summary" hint={long ? 'At most 160 characters.' : 'One line of plain text; empty for none.'}>
+        <input className="field" value={summary} onChange={(e) => setSummary(e.target.value)} data-autofocus />
+      </Field>
+      <Field label="Icon" hint="A square PNG, 64 to 512 pixels a side, at most 256 KiB, without text or colour-profile chunks.">
+        <input className="field" type="file" accept="image/png" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setFailure('') }} />
+      </Field>
+      {props.icon && (
+        <label className="flex items-center gap-2 text-[13px]">
+          <input type="checkbox" checked={clear && !file} disabled={!!file} onChange={(e) => setClear(e.target.checked)} /> remove the icon
+        </label>
+      )}
+      {failure && <p className="text-[13px] text-danger">{failure}</p>}
+    </Confirm>
+  )
+}
+
 /** The tenant's catalogue: every (source, name), filtered by a name prefix and a source. The API
  * answers it whole, so the filters are applied here. */
 export function Catalogue() {
@@ -207,9 +351,17 @@ export function Catalogue() {
           rows={rows}
           rowKey={(e) => e.key}
           columns={[
-            ['Extension', (e) => (removedSource(e.source)
-              ? <span className="font-mono" title="a removed source's entries are not read by name; its releases stay where they are">{e.name}</span>
-              : <Link className="font-mono font-medium no-underline" to={`${base}/catalogue/${seg(e.source)}/${seg(e.name)}`}>{e.name}</Link>)],
+            ['Extension', (e) => (
+              <span className="flex items-start gap-2">
+                {removedSource(e.source) ? <EntryIcon path="" size={24} /> : <EntryIcon path={entryPath(api, e.source, e.name)} icon={e.icon} size={24} />}
+                <span className="flex flex-col">
+                  {removedSource(e.source)
+                    ? <span className="font-mono" title="a removed source's entries are not read by name; its releases stay where they are">{e.name}</span>
+                    : <Link className="font-mono font-medium no-underline" to={`${base}/catalogue/${seg(e.source)}/${seg(e.name)}`}>{e.name}</Link>}
+                  <EntrySummary summary={e.summary} />
+                </span>
+              </span>
+            )],
             ['Source', (e) => <Mono>{e.source}</Mono>],
             ['Versions', (e) => <Versions e={e} />],
             ['Taken by', (e) => <Rules rules={e.rules} />],
@@ -235,7 +387,7 @@ export function CatalogueEntryPage() {
   const { source = '', name = '' } = useParams()
   const { client, api, base, perms } = useTenant()
   const entry = useLoad(() => client.get<{ entries: CatalogueEntry[] }>(`${api}/catalogue?${new URLSearchParams({ source, name })}`), [api, source, name])
-  const path = `${api}/catalogue/${sourceSeg(source)}/extensions/${seg(name)}`
+  const path = entryPath(api, source, name)
   const versions = useLoad(() => client.get<{ versions: CatalogueVersion[] }>(path), [path])
   // the signed channels of the catalogue's type (the default) where the caller may place the name
   const channels = useLoad(() => client.get<{ channels: ChannelRow[] }>(`${api}/channels`), [api])
@@ -249,14 +401,17 @@ export function CatalogueEntryPage() {
   const [withdrawing, setWithdrawing] = useState('')
   const [reason, setReason] = useState('')
   const [purging, setPurging] = useState<{ b: CatalogueBuild; version: string } | null>(null)
+  const [editing, setEditing] = useState(false)
   const e = entry.data?.data.entries.find((x) => x.source === source && x.name === name)
   const done = (ok: boolean) => ok && reload()
   return (
     <>
       <PageTitle eyebrow={<><Link to={`${base}/catalogue`} className="no-underline">Catalogue</Link> / <span className="font-mono">{source}</span></>}
-        title={<span className="font-mono">{name}</span>}>
+        title={<span className="flex items-center gap-3"><EntryIcon path={path} icon={e?.icon} size={64} /><span className="font-mono">{name}</span></span>}>
         {e && <span className="flex items-center gap-2 pb-1 text-ink-muted">Taken by <Rules rules={e.rules} /></span>}
+        {mayEditMeta(e, perms.tenantAdmin) && <span className="pb-1"><Button disabled={busy} onClick={() => setEditing(true)}>Edit…</Button></span>}
       </PageTitle>
+      {e?.summary && <p className="m-0"><EntrySummary summary={e.summary} /></p>}
       {failure != null && <ErrorBox error={failure} />}
       {entry.error != null && <ErrorBox error={entry.error} />}
       {channels.error != null && <ErrorBox error={channels.error} />}
@@ -316,6 +471,11 @@ export function CatalogueEntryPage() {
           <input className="field" value={reason} onChange={(ev) => setReason(ev.target.value)} data-autofocus />
         </Field>
       </Confirm>
+      <MetaDialog open={editing} name={name} summary={e?.summary} icon={e?.icon} onClose={() => setEditing(false)}
+        onSave={(body) => {
+          setEditing(false)
+          act(() => client.put(`${path}/meta`, { body })).then(done)
+        }} />
       <Confirm open={purging !== null} title="Purge this build?" confirm="Purge" danger
         onConfirm={() => {
           const { b } = purging!

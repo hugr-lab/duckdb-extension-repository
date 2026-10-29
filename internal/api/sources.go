@@ -64,7 +64,7 @@ func (h *Handler) setChannelSource(w http.ResponseWriter, r *http.Request, c cal
 		Source string `json:"source"`
 		Mode   string `json:"mode"` // spec 0033: auto or manual; absent keeps the rule's (none for a new one)
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()

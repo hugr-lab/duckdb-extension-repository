@@ -333,8 +333,10 @@ active tenant a distribution admin may:
 - create a distributor's publisher, marked from its creation (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)),
   and for a distributor's publisher only: rename its distributor, set and clear its licence-key
   mark, manage its keys (with `purge_held`), set its hold, purge its builds placed nowhere,
-  [withdraw](upstreams.md#withdrawals) its versions, and read its entries in the catalogue (without
-  channels);
+  [withdraw](upstreams.md#withdrawals) its versions, read its entries in the catalogue (without
+  channels), and write their [icon and summary](catalogue.md#give-an-entry-an-icon-and-a-summary)
+  (spec 0036: the tenant's administrators read a distributor's entry's metadata, and never write
+  it);
 - never act on the tenant's own publishers (spec 0037), with the licence-key mark or without: their
   mark, hold, keys and grants are the tenant administrators' and the server administrators' (a
   publisher with the licence-key mark alone, a server administrator's, spec 0021). Such a call

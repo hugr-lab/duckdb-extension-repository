@@ -173,7 +173,7 @@ func (h *Handler) addUpstream(w http.ResponseWriter, r *http.Request, c caller, 
 		Extensions []entryJSON `json:"extensions"`
 		Credential string      `json:"credential"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	sp := upstream.Spec{Name: in.Name, Kind: in.Kind, Prefix: in.Prefix, Channel: in.Channel, Mode: in.Mode,
@@ -275,7 +275,7 @@ func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request, c caller, 
 // (200).
 func (h *Handler) putEntry(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in entryJSON
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -326,7 +326,7 @@ func addUpstreamItem(key string) handler {
 			Platform    string `json:"platform"`
 			Fingerprint string `json:"fingerprint"`
 		}
-		if !body(w, r, &in) {
+		if !body(w, r, &in, maxBody) {
 			return
 		}
 		a, _ := c.actor()
@@ -460,7 +460,7 @@ func (h *Handler) setCredential(w http.ResponseWriter, r *http.Request, c caller
 	var in struct {
 		Credential *string `json:"credential"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	if in.Credential == nil {
@@ -487,7 +487,7 @@ func (h *Handler) setFetch(w http.ResponseWriter, r *http.Request, c caller, p p
 	var in struct {
 		Fetch string `json:"fetch"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	if in.Fetch != store.FetchEager && in.Fetch != store.FetchLazy {
@@ -513,7 +513,7 @@ func (h *Handler) setUsage(w http.ResponseWriter, r *http.Request, c caller, p p
 	var in struct {
 		Usage string `json:"usage"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	if in.Usage != store.UsageForward && in.Usage != store.UsageOff {

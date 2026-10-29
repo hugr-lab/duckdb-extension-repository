@@ -94,6 +94,9 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/n.
 "$work/fixture" "$work/hello2.duckdb_extension" 2.0 f hello_acme
 "$work/fixture" "$work/maps10.duckdb_extension" 1.0 g maps
 "$work/fixture" "$work/maps11.duckdb_extension" 1.1 h maps
+# spec 0036: geo_tools' icon (its distributor's publisher's), and one tom gives maps in the console
+"$work/fixture" -icon "$work/geo.png" 64
+"$work/fixture" -icon "$work/maps.png" 96
 lic_key="$(openssl pkey -in "$root/internal/license/testdata/test-only-2048.pem" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')"
 now=$(date +%s)
 printf '{"v":1,"iss":"https://issuer.example","jti":"lic-e2e","sub":"acme","holder":"Acme Test","ext":"vault","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}' \
@@ -192,19 +195,22 @@ serve() {
 	for i in $(seq 1 60); do curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null && break; sleep 1; done
 	curl -skf --resolve "kista.test:$kista_port:127.0.0.1" "$kista/api/v1/console" >/dev/null || { cat "$work/kista.log"; exit 1; }
 }
-# publish <publisher> <path> <file>: a publication signed with the publisher's key (spec 0023)
-publish() {
+# signed <method> <content type> <publisher> <path> <file>: a request signed with the publisher's key
+# (spec 0023)
+signed() {
 	local hash
-	hash="$( { sha256sum 2>/dev/null || shasum -a 256; } < "$3" | cut -d' ' -f1)"
-	printf 'kista-request v1\nmethod POST\npath %s\nsha256 %s\nsigned-at %s\n' "$2" "$hash" \
+	hash="$( { sha256sum 2>/dev/null || shasum -a 256; } < "$5" | cut -d' ' -f1)"
+	printf 'kista-request v1\nmethod %s\npath %s\nsha256 %s\nsigned-at %s\n' "$1" "$4" "$hash" \
 		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$work/statement"
-	ssh-keygen -Y sign -q -f "$work/$1" -n kista-request@v1 <"$work/statement" >"$work/statement.sig"
-	curl -skf --resolve "kista.test:$kista_port:127.0.0.1" -H "Content-Type: application/octet-stream" \
+	ssh-keygen -Y sign -q -f "$work/$3" -n kista-request@v1 <"$work/statement" >"$work/statement.sig"
+	curl -skf --resolve "kista.test:$kista_port:127.0.0.1" -X "$1" -H "Content-Type: $2" \
 		-H "Kista-Statement: $(base64 <"$work/statement" | tr -d '\r\n')" \
 		-H "Kista-Signature: $(grep -v -- ----- "$work/statement.sig" | tr -d '\r\n')" \
-		--data-binary "@$3" "$kista$2" >/dev/null \
-		|| { echo "e2e: the publication $2 failed"; tail -20 "$work/kista.log"; exit 1; }
+		--data-binary "@$5" "$kista$4" >/dev/null \
+		|| { echo "e2e: the signed $1 $4 failed"; tail -20 "$work/kista.log"; exit 1; }
 }
+# publish <publisher> <path> <file>: a publication
+publish() { signed POST application/octet-stream "$@"; }
 serve
 # spec 0035 phase 2: vault-ci's vault public in prod, so a licence into its entry warns
 publish vault-ci "/api/v1/tenants/acme/channels/prod/extensions/vault/releases?version=1.0&platform=linux_amd64&visibility=public" "$work/vault.duckdb_extension"
@@ -213,6 +219,10 @@ publish enterest-ci "$cat_path/geo_tools/builds?version=0.9&platform=linux_amd64
 publish enterest-ci "$cat_path/geo_tools/builds?version=1.0&platform=linux_amd64" "$work/geo10.duckdb_extension"
 publish enterest-ci "$cat_path/hello_acme/builds?version=2.0&platform=linux_amd64" "$work/hello2.duckdb_extension"
 publish vault-dist "$cat_path/vault/builds?version=1.1&platform=linux_amd64" "$work/vault11.duckdb_extension"
+# spec 0036: the distributor's publisher sets geo_tools' icon and summary, signing the request
+printf '{"summary":"Geometry tools for maps","icon":{"content_type":"image/png","data":"%s"}}' \
+	"$(base64 <"$work/geo.png" | tr -d '\r\n')" >"$work/geo-meta.json"
+signed PUT application/json enterest-ci "/api/v1/tenants/acme/catalogue/publisher:enterest-ci/extensions/geo_tools/meta" "$work/geo-meta.json"
 # started again: the placement pass looks at every follow at its start (the skips), then every minute
 kill "$serve_pid"
 wait "$serve_pid" 2>/dev/null || true
@@ -233,4 +243,4 @@ for i in $(seq 1 30); do curl -sf "$host/" >/dev/null && break; sleep 1; done
 curl -sf "$host/" >/dev/null || { cat "$work/host.log"; exit 1; }
 
 echo "e2e: Playwright"
-E2E_LICENSE="$work/vault.kista-license" E2E_LICENSE_NOKEY="$work/tresor.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }
+E2E_ICON="$work/maps.png" E2E_LICENSE="$work/vault.kista-license" E2E_LICENSE_NOKEY="$work/tresor.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }

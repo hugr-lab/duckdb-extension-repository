@@ -249,7 +249,7 @@ func (h *Handler) promoteRelease(w http.ResponseWriter, r *http.Request, c calle
 		Visibility string `json:"visibility"`
 		Current    *bool  `json:"current"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	o := release.PromoteOptions{From: in.From, Release: in.Release, Version: in.Version}
@@ -364,7 +364,7 @@ func (h *Handler) addBlock(w http.ResponseWriter, r *http.Request, c caller, p p
 		BodyHash string `json:"body_hash"`
 		Reason   string `json:"reason"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()

@@ -27,6 +27,7 @@ This page walks through what a tenant's administrators do with it. The reference
 | **Follow** | a channel taking a whole source automatically: every name of it the channel has no rule for. |
 | **Hold** | a time a source's new versions (a publisher's, an eager mirror's), or a channel's automatic placements, wait before any channel takes them automatically. |
 | **Withdrawal** | a distributor taking back a version it published: served nowhere in the tenant from then on. |
+| **Metadata** | an entry's icon (a small square PNG) and summary (one line of plain text), the same for every version: [below](#give-an-entry-an-icon-and-a-summary). |
 
 A rule's mode says what the channel takes:
 
@@ -155,11 +156,50 @@ Every channel of the tenant stops serving it at once, and no build of the versio
 source again. The tenant's administrators are told by a `catalogue.withdrawn` event. An `auto` rule
 does not fall back to an older version by itself: a newer version, or a placement by hand, is needed.
 
+### Give an entry an icon and a summary
+
+An entry (a source's name, of a package type) may carry an **icon** and a **summary**, shown in the
+catalogue and on the entry's page. They belong to the entry, not to a version: a new version keeps
+them, and they outlive the entry's builds (purged or collected), so a re-publication finds them again.
+Only the tenant's deletion removes them.
+
+Who sets them depends on the entry's source:
+
+| Source | Who writes the metadata |
+| --- | --- |
+| the tenant's own (an upstream, the tenant's own publisher, `tenant`) | a tenant-wide administrator, or a server administrator |
+| a [distributor's publisher](publishing.md#distributors-publishers), live or removed | its distribution admin or a server administrator; never the tenant's administrators, who read it |
+| any publisher's own entries | the publisher itself, by a [signed request](publishing.md#an-entrys-icon-and-summary) |
+
+```bash
+kista admin catalogue meta acme tenant maps                    # the metadata, and who set it
+kista admin catalogue meta acme tenant maps -summary "Vector tiles for the maps team" -icon maps.png
+kista admin catalogue meta acme tenant maps -clear-icon        # the summary stays
+```
+
+A field not named keeps its value. `catalogue show` prints the summary and the icon's hash and size
+after its table.
+
+- **The summary** is plain text on one line: at most 160 characters (after Unicode NFC), printable,
+  no control, format or line-separator character (bidirectional controls, zero-width characters,
+  tag characters), none of the invisible fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, at most
+  4 combining marks after a character. It is never markup and never a link: the console renders it as
+  text.
+- **The icon** is a square PNG, 64 to 512 pixels a side, at most 256 KiB, without text, Exif,
+  colour-profile or animation chunks ([the rules](publishing.md#an-entrys-icon-and-summary)). It is
+  kept as sent in the tenant's storage domain and counts toward its source's
+  `catalogue.max_bytes`: a publisher's or a distribution admin's write beyond it is refused (`429`,
+  `catalogue-full`); a tenant's or a server administrator's is not bounded.
+- Every write that changes something is a `catalogue.meta` event in the tenant, naming the writer
+  and, for a signed write, the key.
+
 ## In the console
 
-- **Catalogue** (tenant administrators) lists every source and name with its versions, each marked
-  held, revoked or withdrawn, and the channels whose rules take it, filtered by a name prefix and a
-  source. An entry's page shows each version's builds: platform, DuckDB version or C API, state (held
+- **Catalogue** (tenant administrators) lists every source and name with its icon and summary, its
+  versions, each marked held, revoked or withdrawn, and the channels whose rules take it, filtered by
+  a name prefix and a source. An entry's page shows its icon and summary, with **Edit…** (the
+  summary, a PNG file, or removing the icon) on the tenant's own sources, never on a distributor's
+  entry, and each version's builds: platform, DuckDB version or C API, state (held
   until when, withdrawn and why, revoked), visibility and the channels it is placed in. **Place…**
   places a version into a signed channel where the caller holds `promote` on the name (privately, not
   current, or early for a held version, a channel administrator's); **Purge…** deletes a build placed

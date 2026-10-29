@@ -186,11 +186,12 @@ func Run(t *testing.T, h Harness) {
 	})
 
 	t.Run("refused keys and prefixes", func(t *testing.T) {
+		const uuidLike = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a"
 		s := h.New(t)
 		bad := []string{"", "streams/", "streams/ABC", "streams/" + strings.Repeat("A", 64),
 			"streams/../" + strings.Repeat("a", 64), "/streams/" + strings.Repeat("a", 64),
 			"tmp/x", "attachments/x", "attachments/" + strings.Repeat("a", 64), "other/" + strings.Repeat("a", 64), "streams/" + strings.Repeat("a", 64) + "/x",
-			"Kista-domain.json", "kista-domain.json/"}
+			"icons/x", "icons/" + strings.Repeat("A", 64), "icons/" + uuidLike, "Kista-domain.json", "kista-domain.json/"}
 		for _, k := range bad {
 			if err := s.Put(ctx, k, strings.NewReader("x"), 1); !errors.Is(err, blob.ErrKey) {
 				t.Errorf("put %q: %v", k, err)
@@ -293,10 +294,13 @@ func Run(t *testing.T, h Harness) {
 		}
 	})
 
-	for _, prefix := range []string{"attachments/", "uploads/"} { // specs 0011 and 0014
+	for _, prefix := range []string{"attachments/", "uploads/", "icons/"} { // specs 0011, 0014 and 0036
 		t.Run("list "+prefix, func(t *testing.T) {
 			s := h.New(t)
 			key := prefix + uuid.NewString()
+			if prefix == "icons/" {
+				key = prefix + strings.Repeat("e", 64)
+			}
 			if err := s.Put(ctx, key, strings.NewReader("doc"), 3); err != nil {
 				t.Fatal(err)
 			}

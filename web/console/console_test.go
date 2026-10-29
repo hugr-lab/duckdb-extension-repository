@@ -116,6 +116,10 @@ func TestServing(t *testing.T) {
 		!strings.Contains(landing, "script-src 'self';") {
 		t.Errorf("policies: %s | %s", server, landing)
 	}
+	// spec 0036: an entry's icon is shown from a blob: URL, never loaded from the API by <img src>
+	if !strings.Contains(acme, "img-src 'self' data: blob:;") {
+		t.Errorf("acme's policy's images: %s", acme)
+	}
 }
 
 // A binary built without the console serves a placeholder that says so.

@@ -111,7 +111,8 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetFollow": {"follow.set"}, "RemoveFollow": {"follow.clear"}, "Follows": nil, "Follow": nil,
 		"PlaceFollow":    {"source.set", "release.place", "shadow.add", "license.public_warning"},
 		"SetChannelHold": {"catalogue.hold"}, "ChannelHold": nil,
-		"Withdraw": {"catalogue.withdrawn"},
+		"Withdraw":     {"catalogue.withdrawn"},
+		"SetEntryMeta": {"catalogue.meta"}, "EntryMeta": nil, "EntryIcon": nil, "MayWriteEntryMeta": nil, // spec 0036
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
@@ -479,6 +480,11 @@ func TestCoverage(t *testing.T) {
 		entry = b.ID
 		return err
 	}), "catalogue.arrival")
+	en.expect("release.Service.SetEntryMeta", do(func() error { // spec 0036
+		summary := "Access control lists"
+		_, err := en.rel.SetEntryMeta(rctx, admin, "acme", "", "tenant", "acl", release.MetaWrite{Summary: &summary})
+		return err
+	}), "catalogue.meta")
 	en.expect("release.Service.PurgeEntry", do(func() error { _, err := en.rel.PurgeEntry(rctx, admin, "acme", entry); return err }), "catalogue.purge")
 	// spec 0033: a channel follows a publisher; the pass takes its name; the follow is removed
 	en.expect("tenants.AuthAdmin.AddPublisher", do(func() error { _, err := en.adm.AddPublisher(rctx, admin, "acme", "dist"); return err }), "publisher.add")

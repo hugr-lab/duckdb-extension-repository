@@ -1,6 +1,7 @@
 # Spec 0005: Blob storage for extension bodies
 
 - **Status**: phases 1, 2, 3a and 3b implemented
+- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): a new object kind, `icons/<sha256>`, an entry's icon in its tenant's storage domain, content-addressed, read checked against its row.
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 

@@ -79,7 +79,7 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request, c caller
 		// PackageType is the type the channel serves (spec 0034): "" the default; never changed
 		PackageType string `json:"package_type"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -126,7 +126,7 @@ func (h *Handler) addChannelVersion(w http.ResponseWriter, r *http.Request, c ca
 	var in struct {
 		DuckDBVersion string `json:"duckdb_version"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	h.setChannelVersion(w, r, c, p, in.DuckDBVersion, true)
@@ -276,7 +276,7 @@ func (h *Handler) addKey(w http.ResponseWriter, r *http.Request, c caller, p par
 		SignerRef string `json:"signer_ref"`
 		Active    bool   `json:"active"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()

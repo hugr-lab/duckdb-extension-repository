@@ -14,11 +14,12 @@ import (
 // their row after; the collector marks streams no row references and deletes them a grace later.
 // Every change to a stream's claims and tombstone holds the stream's lock.
 
-// ErrStreamBusy is a commit meeting a stream the collector is deleting: it waits and tries again.
+// ErrStreamBusy is a write meeting an object the collector is deleting, a stream or an icon (spec
+// 0036): it waits and tries again. (Named for streams, the first kind.)
 var ErrStreamBusy = errors.New("store: the stream is being deleted; try again")
 
-// ErrClaimLost is a commit whose claim expired or was removed before its row was written: it claims
-// and uploads again.
+// ErrClaimLost is a write whose claim expired or was removed before its row was written, a stream's
+// or an icon's: it claims and uploads again.
 var ErrClaimLost = errors.New("store: the stream's claim was lost")
 
 // ErrBuildGone is a release insert whose Build was collected meanwhile: the intake starts again
@@ -28,34 +29,95 @@ var ErrBuildGone = errors.New("store: the release's build is gone")
 // StreamLock is the store lock of a stream in a domain.
 func StreamLock(domain, stream string) string { return "kista/blob/" + domain + "/" + stream }
 
-// ClaimStream claims a stream for a commit until its deadline (commit step 1): it removes the
-// stream's tombstone, or answers ErrStreamBusy while the collector is deleting it.
-func (s *Store) ClaimStream(ctx context.Context, domain, stream, claimID string, until time.Time) error {
-	return s.InTx(ctx, StreamLock(domain, stream), func(tx *Tx) error {
+// objects are what spec 0016's protocol claims, marks and deletes in a storage domain, by their
+// hash: streams, and entries' icons (spec 0036), each kind in tables of its own.
+type objects struct {
+	claims, tombstones, col string
+	lock                    func(domain, hash string) string
+	// count counts the rows that reference an object (the domain and the hash its arguments); refs
+	// selects the hashes the rows reference among a list (the domain, then the list: %s)
+	count, refs string
+}
+
+var (
+	streamObjects = objects{claims: "blob_claims", tombstones: "blob_tombstones", col: "stream_hash", lock: StreamLock,
+		count: "SELECT COUNT(*) FROM blobs WHERE domain = ? AND stream_hash = ?",
+		refs:  "SELECT stream_hash FROM blobs WHERE domain = ? AND stream_hash IN (%s)"}
+	// an icon is referenced by the entries' metadata of the domain's tenants
+	iconObjects = objects{claims: "icon_claims", tombstones: "icon_tombstones", col: "sha256", lock: IconLock,
+		count: "SELECT COUNT(*) FROM entry_meta m JOIN tenants t ON t.id = m.tenant_id WHERE t.storage_domain = ? AND m.icon_sha256 = ?",
+		refs: "SELECT m.icon_sha256 FROM entry_meta m JOIN tenants t ON t.id = m.tenant_id " +
+			"WHERE t.storage_domain = ? AND m.icon_sha256 IN (%s)"}
+)
+
+// IconLock is the store lock of an icon in a domain (spec 0036).
+func IconLock(domain, sha256 string) string { return "kista/blob/" + domain + "/icon/" + sha256 }
+
+// Objects are one kind of a storage domain's objects under spec 0016's protocol: claimed before
+// they are uploaded, marked when nothing references them, deleted a grace later.
+type Objects struct {
+	s *Store
+	k objects
+}
+
+// Streams are the bodies' streams (spec 0016).
+func (s *Store) Streams() Objects { return Objects{s, streamObjects} }
+
+// Icons are the entries' icons (spec 0036), icons/<sha256>.
+func (s *Store) Icons() Objects { return Objects{s, iconObjects} }
+
+// Claim claims an object for a write until its deadline (step 1): it removes the object's
+// tombstone, or answers ErrStreamBusy while the collector is deleting it.
+func (o Objects) Claim(ctx context.Context, domain, hash, claimID string, until time.Time) error {
+	k := o.k
+	return o.s.InTx(ctx, k.lock(domain, hash), func(tx *Tx) error {
 		var state string
-		err := tx.queryRow(ctx, "SELECT state FROM blob_tombstones WHERE domain = ? AND stream_hash = ?", domain, stream).Scan(&state)
+		err := tx.queryRow(ctx, "SELECT state FROM "+k.tombstones+" WHERE domain = ? AND "+k.col+" = ?", domain, hash).Scan(&state)
 		switch {
 		case err == nil && state == "deleting":
 			return ErrStreamBusy
 		case err == nil:
-			if _, err := tx.exec(ctx, "DELETE FROM blob_tombstones WHERE domain = ? AND stream_hash = ?", domain, stream); err != nil {
+			if _, err := tx.exec(ctx, "DELETE FROM "+k.tombstones+" WHERE domain = ? AND "+k.col+" = ?", domain, hash); err != nil {
 				return err
 			}
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
-		_, err = tx.exec(ctx, "INSERT INTO blob_claims (domain, stream_hash, claim_id, expires_at) VALUES (?, ?, ?, ?)",
-			domain, stream, claimID, tx.s.d.timeArg(until))
+		_, err = tx.exec(ctx, "INSERT INTO "+k.claims+" (domain, "+k.col+", claim_id, expires_at) VALUES (?, ?, ?, ?)",
+			domain, hash, claimID, tx.s.d.timeArg(until))
 		return err
 	})
 }
 
-// ReleaseClaim removes a commit's claim (a commit giving up), under the stream's lock.
-func (s *Store) ReleaseClaim(ctx context.Context, domain, stream, claimID string) error {
-	return s.InTx(ctx, StreamLock(domain, stream), func(tx *Tx) error {
-		_, err := tx.exec(ctx, "DELETE FROM blob_claims WHERE domain = ? AND stream_hash = ? AND claim_id = ?", domain, stream, claimID)
+// ReleaseClaim removes a write's claim (a write giving up), under the object's lock.
+func (o Objects) ReleaseClaim(ctx context.Context, domain, hash, claimID string) error {
+	k := o.k
+	return o.s.InTx(ctx, k.lock(domain, hash), func(tx *Tx) error {
+		_, err := tx.exec(ctx, "DELETE FROM "+k.claims+" WHERE domain = ? AND "+k.col+" = ? AND claim_id = ?", domain, hash, claimID)
 		return err
 	})
+}
+
+// CommitIcon ends an icon's write (spec 0036, step 4) in the transaction that writes the row
+// referencing it, which holds the icon's lock: it checks the write's claim is still live
+// (ErrClaimLost otherwise), and removes the claim and any tombstone of the icon.
+func (t *Tx) CommitIcon(ctx context.Context, domain, sha256, claimID string) error {
+	k := iconObjects
+	var n int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM "+k.claims+" WHERE domain = ? AND "+k.col+" = ? AND claim_id = ? AND expires_at > ?",
+		domain, sha256, claimID, t.s.d.timeArg(t.Now())).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrClaimLost
+	}
+	if _, err := t.exec(ctx, "DELETE FROM "+k.claims+" WHERE domain = ? AND "+k.col+" = ? AND claim_id = ?", domain, sha256, claimID); err != nil {
+		return err
+	}
+	// defensive, as CommitBlob's: the claim removed the tombstone, and a live claim keeps the listing
+	// from marking it again, so none should be here
+	_, err := t.exec(ctx, "DELETE FROM "+k.tombstones+" WHERE domain = ? AND "+k.col+" = ?", domain, sha256)
+	return err
 }
 
 // CommitBlob writes a committed stream's row (commit step 3), holding the stream's lock and, when
@@ -106,7 +168,7 @@ func (s *Store) CommitBlob(ctx context.Context, b *Blob, claimID string) error {
 				return err
 			}
 			if old != "" && old != b.StreamHash { // replaced: readers may hold it from now on
-				_, err := tx.markStream(ctx, b.Domain, old, true)
+				_, err := tx.mark(ctx, streamObjects, b.Domain, old, true)
 				return err
 			}
 			return nil
@@ -118,46 +180,45 @@ func (s *Store) CommitBlob(ctx context.Context, b *Blob, claimID string) error {
 	return fmt.Errorf("%w: the body's stream kept changing", ErrBusy)
 }
 
-// referenced reports whether a row references a stream or a live claim holds it.
-func (t *Tx) referenced(ctx context.Context, domain, stream string) (bool, error) {
+// referenced reports whether a row references an object or a live claim holds it.
+func (t *Tx) referenced(ctx context.Context, k objects, domain, hash string) (bool, error) {
 	var n int
-	err := t.queryRow(ctx, "SELECT (SELECT COUNT(*) FROM blobs WHERE domain = ? AND stream_hash = ?) + "+
-		"(SELECT COUNT(*) FROM blob_claims WHERE domain = ? AND stream_hash = ? AND expires_at > ?)",
-		domain, stream, domain, stream, t.s.d.timeArg(t.Now())).Scan(&n)
+	err := t.queryRow(ctx, "SELECT ("+k.count+") + (SELECT COUNT(*) FROM "+k.claims+" WHERE domain = ? AND "+k.col+" = ? AND expires_at > ?)",
+		domain, hash, domain, hash, t.s.d.timeArg(t.Now())).Scan(&n)
 	return n > 0, err
 }
 
-// markStream writes a stream's tombstone (the stream's lock held): only where none is, or with
-// since reset when reset (a commit's replace). A stream a row references or a live claim holds is
-// not marked. It reports whether it wrote a new tombstone.
-func (t *Tx) markStream(ctx context.Context, domain, stream string, reset bool) (bool, error) {
-	if ref, err := t.referenced(ctx, domain, stream); err != nil || ref {
+// mark writes an object's tombstone (the object's lock held): only where none is, or with since
+// reset when reset (a commit's replace). An object a row references or a live claim holds is not
+// marked. It reports whether it wrote a new tombstone.
+func (t *Tx) mark(ctx context.Context, k objects, domain, hash string, reset bool) (bool, error) {
+	if ref, err := t.referenced(ctx, k, domain, hash); err != nil || ref {
 		return false, err
 	}
 	var state string
-	err := t.queryRow(ctx, "SELECT state FROM blob_tombstones WHERE domain = ? AND stream_hash = ?", domain, stream).Scan(&state)
+	err := t.queryRow(ctx, "SELECT state FROM "+k.tombstones+" WHERE domain = ? AND "+k.col+" = ?", domain, hash).Scan(&state)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		_, err = t.exec(ctx, "INSERT INTO blob_tombstones (domain, stream_hash, since, state) VALUES (?, ?, ?, 'marked')",
-			domain, stream, t.s.d.timeArg(t.Now()))
+		_, err = t.exec(ctx, "INSERT INTO "+k.tombstones+" (domain, "+k.col+", since, state) VALUES (?, ?, ?, 'marked')",
+			domain, hash, t.s.d.timeArg(t.Now()))
 		return err == nil, err
 	case err != nil:
 		return false, err
 	case reset && state == "marked":
-		_, err = t.exec(ctx, "UPDATE blob_tombstones SET since = ? WHERE domain = ? AND stream_hash = ?",
-			t.s.d.timeArg(t.Now()), domain, stream)
+		_, err = t.exec(ctx, "UPDATE "+k.tombstones+" SET since = ? WHERE domain = ? AND "+k.col+" = ?",
+			t.s.d.timeArg(t.Now()), domain, hash)
 		return false, err
 	}
 	return false, nil
 }
 
-// MarkStream marks a stream found in a domain's listing (where unmarked, unreferenced, unclaimed).
-// It reports whether it marked it.
-func (s *Store) MarkStream(ctx context.Context, domain, stream string) (bool, error) {
+// Mark marks an object found in a domain's listing (where unmarked, unreferenced, unclaimed). It
+// reports whether it marked it.
+func (o Objects) Mark(ctx context.Context, domain, hash string) (bool, error) {
 	marked := false
-	err := s.InTx(ctx, StreamLock(domain, stream), func(tx *Tx) error {
+	err := o.s.InTx(ctx, o.k.lock(domain, hash), func(tx *Tx) error {
 		var err error
-		marked, err = tx.markStream(ctx, domain, stream, false)
+		marked, err = tx.mark(ctx, o.k, domain, hash, false)
 		return err
 	})
 	return marked, err
@@ -276,18 +337,19 @@ func (s *Store) DeleteBody(ctx context.Context, domain string, d DeadBody, cutof
 			return err
 		}
 		deleted = true
-		_, err = tx.markStream(ctx, domain, d.StreamHash, false)
+		_, err = tx.mark(ctx, streamObjects, domain, d.StreamHash, false)
 		return err
 	})
 	return deleted, err
 }
 
-// UnreferencedStreams returns the streams among hashes that no row of the domain references and no
-// tombstone names: what the listing marks (MarkStream skips the ones a live claim holds).
-func (s *Store) UnreferencedStreams(ctx context.Context, domain string, hashes []string) ([]string, error) {
+// Unreferenced returns the objects among hashes that no row of the domain references and no
+// tombstone names: what the listing marks (Mark skips the ones a live claim holds).
+func (o Objects) Unreferenced(ctx context.Context, domain string, hashes []string) ([]string, error) {
 	if len(hashes) == 0 {
 		return nil, nil
 	}
+	k := o.k
 	known := map[string]bool{}
 	for start := 0; start < len(hashes); start += 200 {
 		batch := hashes[start:min(start+200, len(hashes))]
@@ -297,10 +359,10 @@ func (s *Store) UnreferencedStreams(ctx context.Context, domain string, hashes [
 			args = append(args, h)
 		}
 		for _, q := range []string{
-			"SELECT stream_hash FROM blobs WHERE domain = ? AND stream_hash IN (" + ph + ")",
-			"SELECT stream_hash FROM blob_tombstones WHERE domain = ? AND stream_hash IN (" + ph + ")",
+			fmt.Sprintf(k.refs, ph),
+			"SELECT " + k.col + " FROM " + k.tombstones + " WHERE domain = ? AND " + k.col + " IN (" + ph + ")",
 		} {
-			if err := s.eachRow(ctx, q, args, func(sc func(...any) error) error {
+			if err := o.s.eachRow(ctx, q, args, func(sc func(...any) error) error {
 				var h string
 				if err := sc(&h); err != nil {
 					return err
@@ -321,23 +383,24 @@ func (s *Store) UnreferencedStreams(ctx context.Context, domain string, hashes [
 	return out, nil
 }
 
-// Tombstone is a stream the collector marked.
+// Tombstone is an object the collector marked.
 type Tombstone struct {
-	StreamHash string
+	Hash       string // the object's: a stream's hash, or an icon's (spec 0036)
 	Since      time.Time
 	State      string
 	DeletingAt time.Time
 }
 
-// DueTombstones lists up to limit tombstones of a domain, after the stream after, to act on: marked
+// DueTombstones lists up to limit tombstones of a domain, after the hash after, to act on: marked
 // before cutoff, or deleting since before stale.
-func (s *Store) DueTombstones(ctx context.Context, domain string, cutoff, stale time.Time, after string, limit int) ([]Tombstone, error) {
-	q := "SELECT stream_hash, since, state, deleting_at FROM blob_tombstones WHERE domain = ? AND stream_hash > ? AND " +
-		"(state = 'marked' AND since < ? OR state = 'deleting' AND deleting_at < ?) ORDER BY stream_hash" + s.limit(limit)
+func (o Objects) DueTombstones(ctx context.Context, domain string, cutoff, stale time.Time, after string, limit int) ([]Tombstone, error) {
+	k := o.k
+	q := "SELECT " + k.col + ", since, state, deleting_at FROM " + k.tombstones + " WHERE domain = ? AND " + k.col + " > ? AND " +
+		"(state = 'marked' AND since < ? OR state = 'deleting' AND deleting_at < ?) ORDER BY " + k.col + o.s.limit(limit)
 	var out []Tombstone
-	err := s.eachRow(ctx, q, []any{domain, after, s.d.timeArg(cutoff), s.d.timeArg(stale)}, func(sc func(...any) error) error {
+	err := o.s.eachRow(ctx, q, []any{domain, after, o.s.d.timeArg(cutoff), o.s.d.timeArg(stale)}, func(sc func(...any) error) error {
 		var t Tombstone
-		if err := sc(&t.StreamHash, scanTime{&t.Since}, &t.State, scanTime{&t.DeletingAt}); err != nil {
+		if err := sc(&t.Hash, scanTime{&t.Since}, &t.State, scanTime{&t.DeletingAt}); err != nil {
 			return err
 		}
 		out = append(out, t)
@@ -346,23 +409,24 @@ func (s *Store) DueTombstones(ctx context.Context, domain string, cutoff, stale 
 	return out, err
 }
 
-// BeginDelete moves a due tombstone to deleting (the checks repeated under its stream's lock: still
-// due, no row, no live claim). A tombstone whose stream has a row or a live claim is removed. It
-// returns the delete's stamp (its deleting_at), zero when the object may not be deleted now.
-func (s *Store) BeginDelete(ctx context.Context, domain, stream string, cutoff, stale time.Time) (time.Time, error) {
+// BeginDelete moves a due tombstone to deleting (the checks repeated under the object's lock:
+// still due, no row, no live claim). A tombstone whose object has a row or a live claim is removed.
+// It returns the delete's stamp (its deleting_at), zero when the object may not be deleted now.
+func (o Objects) BeginDelete(ctx context.Context, domain, hash string, cutoff, stale time.Time) (time.Time, error) {
+	k := o.k
 	var stamp time.Time
-	err := s.InTx(ctx, StreamLock(domain, stream), func(tx *Tx) error {
+	err := o.s.InTx(ctx, k.lock(domain, hash), func(tx *Tx) error {
 		stamp = time.Time{}
-		if ref, err := tx.referenced(ctx, domain, stream); err != nil || ref {
+		if ref, err := tx.referenced(ctx, k, domain, hash); err != nil || ref {
 			if err == nil {
-				_, err = tx.exec(ctx, "DELETE FROM blob_tombstones WHERE domain = ? AND stream_hash = ?", domain, stream)
+				_, err = tx.exec(ctx, "DELETE FROM "+k.tombstones+" WHERE domain = ? AND "+k.col+" = ?", domain, hash)
 			}
 			return err
 		}
 		now := tx.Now().Truncate(time.Microsecond) // the stamp is compared as stored
-		res, err := tx.exec(ctx, "UPDATE blob_tombstones SET state = 'deleting', deleting_at = ? WHERE domain = ? AND stream_hash = ? AND "+
+		res, err := tx.exec(ctx, "UPDATE "+k.tombstones+" SET state = 'deleting', deleting_at = ? WHERE domain = ? AND "+k.col+" = ? AND "+
 			"(state = 'marked' AND since < ? OR state = 'deleting' AND deleting_at < ?)",
-			tx.s.d.timeArg(now), domain, stream, tx.s.d.timeArg(cutoff), tx.s.d.timeArg(stale))
+			tx.s.d.timeArg(now), domain, hash, tx.s.d.timeArg(cutoff), tx.s.d.timeArg(stale))
 		if err != nil {
 			return err
 		}
@@ -377,37 +441,41 @@ func (s *Store) BeginDelete(ctx context.Context, domain, stream string, cutoff, 
 
 // StillDeleting reports whether a delete begun at stamp is still this collector's: no other
 // collector took the tombstone again since, nor finished it.
-func (s *Store) StillDeleting(ctx context.Context, domain, stream string, stamp time.Time) (bool, error) {
+func (o Objects) StillDeleting(ctx context.Context, domain, hash string, stamp time.Time) (bool, error) {
+	k := o.k
 	var n int
-	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM blob_tombstones WHERE domain = ? AND stream_hash = ? AND state = 'deleting' AND deleting_at = ?"),
-		domain, stream, s.d.timeArg(stamp)).Scan(&n)
+	err := o.s.db.QueryRowContext(ctx, o.s.d.rebind("SELECT COUNT(*) FROM "+k.tombstones+" WHERE domain = ? AND "+k.col+
+		" = ? AND state = 'deleting' AND deleting_at = ?"), domain, hash, o.s.d.timeArg(stamp)).Scan(&n)
 	return n == 1, err
 }
 
 // EndDelete removes the tombstone of a delete begun at stamp once its object is deleted.
-func (s *Store) EndDelete(ctx context.Context, domain, stream string, stamp time.Time) error {
-	return s.InTx(ctx, StreamLock(domain, stream), func(tx *Tx) error {
-		_, err := tx.exec(ctx, "DELETE FROM blob_tombstones WHERE domain = ? AND stream_hash = ? AND state = 'deleting' AND deleting_at = ?",
-			domain, stream, tx.s.d.timeArg(stamp))
+func (o Objects) EndDelete(ctx context.Context, domain, hash string, stamp time.Time) error {
+	k := o.k
+	return o.s.InTx(ctx, k.lock(domain, hash), func(tx *Tx) error {
+		_, err := tx.exec(ctx, "DELETE FROM "+k.tombstones+" WHERE domain = ? AND "+k.col+" = ? AND state = 'deleting' AND deleting_at = ?",
+			domain, hash, tx.s.d.timeArg(stamp))
 		return err
 	})
 }
 
 // AbortDelete returns the tombstone of a delete begun at stamp that the store refused to marked (its
-// since kept): commits of the stream go on, and a later pass tries again.
-func (s *Store) AbortDelete(ctx context.Context, domain, stream string, stamp time.Time) error {
-	return s.InTx(ctx, StreamLock(domain, stream), func(tx *Tx) error {
-		_, err := tx.exec(ctx, "UPDATE blob_tombstones SET state = 'marked', deleting_at = NULL WHERE domain = ? AND stream_hash = ? AND "+
-			"state = 'deleting' AND deleting_at = ?", domain, stream, tx.s.d.timeArg(stamp))
+// since kept): writes of the object go on, and a later pass tries again.
+func (o Objects) AbortDelete(ctx context.Context, domain, hash string, stamp time.Time) error {
+	k := o.k
+	return o.s.InTx(ctx, k.lock(domain, hash), func(tx *Tx) error {
+		_, err := tx.exec(ctx, "UPDATE "+k.tombstones+" SET state = 'marked', deleting_at = NULL WHERE domain = ? AND "+k.col+" = ? AND "+
+			"state = 'deleting' AND deleting_at = ?", domain, hash, tx.s.d.timeArg(stamp))
 		return err
 	})
 }
 
-// RemoveExpiredClaims removes a domain's claims expired before now (a commit that never finished).
-// It takes no stream lock: an expired claim holds nothing already (every check of a claim is of a
+// RemoveExpiredClaims removes a domain's claims expired before now (a write that never finished).
+// It takes no object lock: an expired claim holds nothing already (every check of a claim is of a
 // live one), so removing it changes no decision.
-func (s *Store) RemoveExpiredClaims(ctx context.Context, domain string) (int, error) {
-	res, err := s.db.ExecContext(ctx, s.d.rebind("DELETE FROM blob_claims WHERE domain = ? AND expires_at < ?"), domain, s.d.timeArg(s.Now()))
+func (o Objects) RemoveExpiredClaims(ctx context.Context, domain string) (int, error) {
+	res, err := o.s.db.ExecContext(ctx, o.s.d.rebind("DELETE FROM "+o.k.claims+" WHERE domain = ? AND expires_at < ?"), domain,
+		o.s.d.timeArg(o.s.Now()))
 	if err != nil {
 		return 0, err
 	}

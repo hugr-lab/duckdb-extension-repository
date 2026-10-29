@@ -278,7 +278,7 @@ var reapSteps = []reapStep{
 	{"grants", ofTenant, false}, {"issuer_console_clients", "issuer_id IN (SELECT id FROM issuers WHERE tenant_id = ?)", false},
 	{"issuers", ofTenant, false},
 	{"publisher_keys", ofTenant, false}, {"publishers", ofTenant, false}, {"removed_distributor_publishers", ofTenant, false},
-	{"withdrawn_versions", ofTenant, false},
+	{"withdrawn_versions", ofTenant, false}, {"entry_meta", ofTenant, false}, // spec 0036: its icons go with the collector
 	{"license_syncs", ofTenant, false}, {"licenses", ofTenant, false}, {"usage_forwards", ofTenant, false},
 	{"upstream_asks", ofUpstreams, false}, {"upstream_cells", ofUpstreams, false}, {"upstream_versions", ofUpstreams, false}, {"upstream_entries", ofUpstreams, false},
 	{"upstream_platforms", ofUpstreams, false}, {"upstream_keys", ofUpstreams, false}, {"upstreams", ofTenant, false},
@@ -300,7 +300,7 @@ var reapSteps = []reapStep{
 var KeptTables = []string{"tenants", "tenant_deletions", "tenant_audiences", "key_fingerprints", "events"}
 
 // GlobalTables are the server's, of no tenant.
-var GlobalTables = []string{"blobs", "blob_claims", "blob_tombstones", "storage_domains", "duckdb_versions", "duckdb_version_c_apis",
+var GlobalTables = []string{"blobs", "blob_claims", "blob_tombstones", "icon_claims", "icon_tombstones", "storage_domains", "duckdb_versions", "duckdb_version_c_apis",
 	"deployment", "leases", "event_sinks", "statistics_days", "schema_migrations",
 	"bootstrap",                                                   // spec 0020: the bootstrap names its tenant, and outlives it
 	"reserved_names", "reserved_name_sources", "reserved_version"} // spec 0030

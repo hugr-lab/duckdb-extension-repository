@@ -293,6 +293,23 @@ are checked against their hash on every read. Storage domains are pinned to thei
 with the deployment; kista refuses to start on a store that is readable anonymously. A bucket
 writer can deny service, not substitute a body. See [Storage](storage.md).
 
+## Entries' icons and summaries
+
+A catalogue entry's icon (spec 0036) is never active content: only a PNG passes, with a strict chunk
+allow-list, nothing after `IEND`, its image data ending with its last `IDAT`, its size read from the
+header before anything is decoded (at most 512 pixels a side, decodes 4 at a time, about 4 MiB each at
+a decode's peak), and a full decode
+whose size must be the header's. It is served with kista's own type, `nosniff`, `default-src 'none';
+sandbox`, `inline` and `same-origin`, after the caller is authorized and the entry found, checked
+against its hash; the console shows it from a `blob:` URL of a fixed type. The summary is plain text
+on one line, without control, format, separator or invisible filler characters, and the console
+never makes it markup or a link. A publisher writes only its own entries; a tenant's administrators
+only the tenant's own sources; a distributor's entries are its publisher's, its distribution admins'
+and the server administrators'. A captured signed write never undoes a newer one (`409 stale`).
+A stolen distribution admin's token, or a publisher key it adds, could restyle every distributor's
+entry at once: every write is a `catalogue.meta` event naming the actor kind and the signing key,
+to alert on.
+
 ## Attachments and signed statements
 
 [Attachments](attachments.md) are documents about a body (SBOM, vulnerability scan, review,

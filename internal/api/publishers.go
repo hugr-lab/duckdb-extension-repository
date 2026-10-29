@@ -96,7 +96,7 @@ func (h *Handler) addPublisher(w http.ResponseWriter, r *http.Request, c caller,
 		// or a distribution admin's
 		Distributor *string `json:"distributor"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -162,7 +162,7 @@ func (h *Handler) setPublisherDistributor(w http.ResponseWriter, r *http.Request
 	var in struct {
 		Distributor string `json:"distributor"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -249,7 +249,7 @@ func (h *Handler) addPublisherKey(w http.ResponseWriter, r *http.Request, c call
 		PublicKey string `json:"public_key"` // an OpenSSH line
 		ExpiresAt string `json:"expires_at"` // RFC 3339, within a year; "": never
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	var exp time.Time

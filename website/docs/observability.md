@@ -101,6 +101,7 @@ are all the kinds in `internal/audit`:
 | | `catalogue.purge` | `ext:<name>` | `build`, `name`, `version`, `platform`, `slot`, `body_hash`, `reason` and `key` (a held entry purged with its key, `publisher.key.remove`, or its publisher, `publisher.remove`): an entry purged from the catalogue |
 | | `catalogue.hold` | `upstream:<name>`, `publisher:<name>` or `channel:<channel>` | `source` or `channel`, `hold`, `before`, `held` (the held entries a raise held longer): a hold set (spec 0033) |
 | | `catalogue.withdrawn` | `ext:<name>` | `source`, `name`, `version`, `reason`, `builds`, `channels` (how many of the tenant's channels it bumped), `package_type`: a distributor's version withdrawn, served nowhere (spec 0033) |
+| | `catalogue.meta` | `ext:<name>` | `source`, `name`, `summary` (the new text, `""` when cleared), `icon` and `icon_before` (the icons' hashes, `""` for none), `key` (a signed write's key fingerprint), `package_type`: an entry's [icon and summary](catalogue.md#give-an-entry-an-icon-and-a-summary) written; the same metadata again writes none (spec 0036). A write refused as `stale`, or failed after its icon was uploaded, is the same kind with the outcome `refused` or `failed`, a `reason` and a `count` (the refusals coalesced). A distribution admin's write shows under the generic `distribution-admin` actor in sinks unless unmasked; alert on one by a distribution admin or a newly added key |
 | | `follow.set`, `follow.clear` | `channel:<channel>` | `source`: a channel follows a whole source, or no longer does (spec 0033) |
 | | `release.place` | `channel:<channel>/ext:<name>` | `releases`, `name`, `version`, `source`, `placed` (`hand`, or the rule's mode `auto` or `manual`, or `home`, a mirror's held version in its own channel: the placement pass, actor `system:placement`), `early` (a held version placed early by hand) (spec 0033) |
 | | `release.yank`, `release.deprecate`, `release.activate`, `release.current`, `release.public`, `release.private` | the release | `release`, `name`, `version`, `platform` |
@@ -138,7 +139,7 @@ are all the kinds in `internal/audit`:
 | | `usage.forward` | `upstream:<name>` | `upstream`, `sent`, `skipped`, `failed` |
 | | `usage.receive` | `channel:<channel>` | `day`, `part`, `parts`, `sender`, `reports`, `dropped` |
 | | `request.failed` | `route:<route>` | `route`, `status`, `count` |
-| Storage | `storage.gc` | `domain:<domain>` | `domain`, `builds`, `bodies`, `marked`, `streams`, `tmp`, `attachments`, `uploads`, `chunks` (bundle uploads' chunks), `bytes`, `claims`, `resolved`, `dry_run`, `error` |
+| Storage | `storage.gc` | `domain:<domain>` | `domain`, `builds`, `bodies`, `marked` (streams and icons), `streams`, `icons` (entries' icons deleted, spec 0036), `tmp`, `attachments`, `uploads`, `chunks` (bundle uploads' chunks), `bytes`, `claims`, `resolved`, `dry_run`, `error` |
 | | `storage.verify` | `domain:<domain>` | `domain`, `full`, `mark`, `unmark`, `checked`, `ok`, `skipped`, `marked_ok`, `missing`, `short`, `long`, `corrupt`, `record`, `unreadable`, `marked`, `unmarked`, `bytes`, `error` |
 | The log itself | `audit.dropped` | `server` | `counts`, `sink` |
 | | `audit.sink` | `sink:<name>` | `sink`, `state`, `class`, `status` |

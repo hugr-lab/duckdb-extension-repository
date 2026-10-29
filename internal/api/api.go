@@ -82,9 +82,11 @@ type Options struct {
 
 // Handler serves /api/v1.
 type Handler struct {
-	o        Options
-	limiter  *limiter
-	failures *auth.FailureLog
+	o       Options
+	limiter *limiter
+	// metaLimiter: an actor's entry metadata writes (spec 0036)
+	metaLimiter *limiter
+	failures    *auth.FailureLog
 
 	mu      sync.Mutex
 	egress  map[string]bool // tenant id -> an issuer add (discovery, JWKS) is running
@@ -126,7 +128,8 @@ func New(o Options) *Handler {
 	if o.MaxBody == 0 {
 		o.MaxBody = 1 << 30
 	}
-	return &Handler{o: o, limiter: newLimiter(o.Rate, o.Burst), failures: &auth.FailureLog{Log: o.Log}, egress: map[string]bool{},
+	return &Handler{o: o, limiter: newLimiter(o.Rate, o.Burst), metaLimiter: newLimiter(metaWritesPerActor, metaWritesBurst),
+		failures: &auth.FailureLog{Log: o.Log}, egress: map[string]bool{},
 		uploads: map[string]int{}}
 }
 
@@ -180,6 +183,9 @@ const (
 	// administrator (spec 0037), the one 404 with a type and a detail of its own: the caller reads
 	// the licence and sees whose entry it is, so they reveal nothing
 	typeDistributorsEntry = "distributors-entry"
+	// typeStale: a signed metadata write older than the entry's last one, or of its second with another
+	// body (spec 0036): the client reads again
+	typeStale = "stale"
 )
 
 var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "Not Found", typeMethod: "Method Not Allowed",
@@ -187,7 +193,7 @@ var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "
 	typeRequired: "Precondition Required", typeTooLarge: "Content Too Large", typeMediaType: "Unsupported Media Type",
 	typeRateLimited: "Rate Limited", typeUploadSlots: "Upload Slots Taken", typeIngestBusy: "Ingest Busy", typeChunksBusy: "Chunks Busy",
 	typeCatalogueFull: "Catalogue Full", typeIssuerBusy: "Issuer Busy", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
-	typeHeld: "Held", typeWithdrawn: "Withdrawn", typeDistributorsEntry: "A Distributor's Entry"}
+	typeHeld: "Held", typeWithdrawn: "Withdrawn", typeDistributorsEntry: "A Distributor's Entry", typeStale: "Stale"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
 func problem(w http.ResponseWriter, status int, typ, detail string) {
@@ -524,6 +530,10 @@ const (
 	tenantPrincipal                 // a token's principal of the path's tenant (its handler decides what it reads), or a server administrator
 	licenseAdmin                    // pathAdmin, or a licence manager (spec 0029): the tenant's licences only
 	distributionAdmin               // pathAdmin, or a distribution admin (spec 0030): its service narrows each call
+	// tenantCaller: any verified caller of the path's tenant (spec 0036: an entry's metadata), a
+	// signed request from any of its publishers included on a route that admits publishers; its
+	// service decides, every refusal the same 404
+	tenantCaller
 )
 
 type handler func(h *Handler, w http.ResponseWriter, r *http.Request, c caller, p params)
@@ -714,6 +724,14 @@ func init() {
 		{"tenants/{t}/catalogue/{source}/extensions/{ext}", map[string]rule{http.MethodGet: {access: distributionAdmin, manage: true,
 			publishers: true, distributors: true, handle: (*Handler).catalogueEntry}}},
 		{"tenants/{t}/catalogue/builds/{id}", map[string]rule{http.MethodDelete: m(distributionAdmin, (*Handler).purgeEntry)}},
+		// spec 0036: an entry's metadata and its icon, an access rule of their own: any verified caller
+		// of the tenant, any of its publishers' signed requests included; the service decides by the
+		// entry's source
+		{"tenants/{t}/catalogue/{source}/extensions/{ext}/meta", map[string]rule{
+			http.MethodGet: {access: tenantCaller, manage: true, publishers: true, handle: (*Handler).entryMeta},
+			http.MethodPut: {access: tenantCaller, manage: true, body: true, publishers: true, handle: (*Handler).setEntryMeta}}},
+		{"tenants/{t}/catalogue/{source}/extensions/{ext}/icon", map[string]rule{
+			http.MethodGet: {access: tenantCaller, manage: true, publishers: true, handle: (*Handler).entryIcon}}},
 		// spec 0033 phase B: withdrawing a version of a distributor's publisher (distribution admins and
 		// server administrators; the service refuses a tenant's administrators)
 		{"tenants/{t}/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw", map[string]rule{
@@ -836,7 +854,7 @@ func init() {
 // allowHeader lists a route's methods, HEAD with GET.
 func (rt route) allowHeader() string {
 	var ms []string
-	for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodDelete} {
+	for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodDelete} {
 		if _, ok := rt.methods[m]; ok || m == http.MethodHead && rt.methods[http.MethodGet].handle != nil {
 			ms = append(ms, m)
 		}
@@ -1136,6 +1154,10 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		}
 	case tenantPrincipal:
 		if !c.admin && (c.principals == nil || c.pub != nil) {
+			return refuse()
+		}
+	case tenantCaller:
+		if !c.verified {
 			return refuse()
 		}
 	case pathVerbs:

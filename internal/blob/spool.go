@@ -220,11 +220,11 @@ func (sp *Spool) Commit(ctx context.Context) (store.Blob, error) {
 	}
 	for attempt := 0; ; attempt++ {
 		claim := store.NewID()
-		if err := s.claim(ctx, rec.Domain, rec.StreamHash, claim); err != nil {
+		if err := s.claim(ctx, s.st.Streams(), rec.Domain, rec.StreamHash, claim, 0); err != nil {
 			return store.Blob{}, err
 		}
 		if err := sp.domain.Store.Put(ctx, StreamKey(rec.StreamHash), zf, pre.StreamLen); err != nil {
-			_ = s.st.ReleaseClaim(context.WithoutCancel(ctx), rec.Domain, rec.StreamHash, claim)
+			_ = s.st.Streams().ReleaseClaim(context.WithoutCancel(ctx), rec.Domain, rec.StreamHash, claim)
 			return store.Blob{}, err
 		}
 		// two first commits of one body (other compressors) race on the insert: the loser retries
@@ -238,7 +238,7 @@ func (sp *Spool) Commit(ctx context.Context) (store.Blob, error) {
 			continue // claim again, upload again
 		}
 		if err != nil {
-			_ = s.st.ReleaseClaim(context.WithoutCancel(ctx), rec.Domain, rec.StreamHash, claim)
+			_ = s.st.Streams().ReleaseClaim(context.WithoutCancel(ctx), rec.Domain, rec.StreamHash, claim)
 			return store.Blob{}, err
 		}
 		s.forget(r.Domain, r.BodyHash)
@@ -252,21 +252,30 @@ const IntakeDeadline = time.Hour
 // busyPoll is how often a commit waiting on a stream's delete tries again.
 var busyPoll = 2 * time.Second
 
-// claim claims a stream until the intake's deadline (its context's, at most IntakeDeadline), waiting
-// while the collector deletes it.
-func (s *Service) claim(ctx context.Context, domain, stream, id string) error {
+// claim claims an object (a stream, an icon) until the intake's deadline (its context's, at most
+// IntakeDeadline), waiting while the collector deletes it: as long as its context allows, or at
+// most wait when wait is not zero (ErrStreamBusy then).
+func (s *Service) claim(ctx context.Context, objs store.Objects, domain, hash, id string, wait time.Duration) error {
 	until := s.st.Now().Add(IntakeDeadline)
 	if d, ok := ctx.Deadline(); ok && d.Before(until) {
 		until = d
 	}
+	var giveUp <-chan time.Time
+	if wait > 0 {
+		t := time.NewTimer(wait)
+		defer t.Stop()
+		giveUp = t.C
+	}
 	for {
-		err := s.st.ClaimStream(ctx, domain, stream, id, until)
+		err := objs.Claim(ctx, domain, hash, id, until)
 		if !errors.Is(err, store.ErrStreamBusy) {
 			return err
 		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("%w: %w", err, ctx.Err())
+		case <-giveUp:
+			return err
 		case <-time.After(busyPoll):
 		}
 	}

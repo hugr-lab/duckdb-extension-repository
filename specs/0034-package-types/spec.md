@@ -1,6 +1,7 @@
 # Spec 0034: Package types
 
 - **Status**: implemented (2026-10-24)
+- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): an entry's metadata is per package type, like the entry.
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude
 

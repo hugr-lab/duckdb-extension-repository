@@ -101,3 +101,43 @@ test("a channel's rules: a mode changed, a follow and what it skips, the hold", 
   await hold.getByRole('button', { name: 'Set hold' }).click()
   await expect(hold.getByText('none', { exact: true })).toBeVisible()
 })
+
+test("an entry's icon and summary: the distributor's shown, the tenant's own edited", async ({ page }) => {
+  // e2e/run.sh: enterest-ci set geo_tools' icon and summary with a signed request (spec 0036)
+  await signIn(page, '/ui/t/acme/', 'tom')
+  await nav(page, 'Catalogue').click()
+  const geo = page.getByRole('row').filter({ has: page.getByRole('link', { name: 'geo_tools', exact: true }) })
+  await expect(geo.getByText('Geometry tools for maps')).toBeVisible()
+  await expect(geo.locator('img')).toHaveAttribute('src', /^blob:/)
+  await geo.getByRole('link', { name: 'geo_tools' }).click()
+  const geoTitle = page.getByRole('heading', { name: 'geo_tools', exact: true })
+  await expect(geoTitle).toBeVisible()
+  await expect(page.getByText('Geometry tools for maps')).toBeVisible()
+  await expect(geoTitle.locator('img')).toHaveAttribute('width', '64')
+  await expect(geoTitle.locator('img')).toHaveAttribute('src', /^blob:/)
+  // a distributor's entry: no Edit for the tenant's administrators
+  await expect(page.getByRole('button', { name: 'Edit…' })).toHaveCount(0)
+
+  // the tenant's own maps: a summary and an icon
+  await nav(page, 'Catalogue').click()
+  await page.getByLabel('source').selectOption('tenant')
+  await page.getByRole('link', { name: 'maps', exact: true }).click()
+  const mapsIcon = page.getByRole('heading', { name: 'maps', exact: true }).locator('img')
+  await page.getByRole('button', { name: 'Edit…' }).click()
+  await page.getByRole('dialog').getByLabel('Summary').fill('Maps <b>for</b> the tenant')
+  await page.getByRole('dialog').getByLabel('Icon').setInputFiles(process.env.E2E_ICON ?? '')
+  await confirm(page, 'Save')
+  await expect(page.getByText('Maps <b>for</b> the tenant')).toBeVisible() // text, never markup
+  await expect(mapsIcon).toHaveAttribute('src', /^blob:/)
+  // the summary alone: the icon stays, sent back by its hash (nothing uploaded)
+  await page.getByRole('button', { name: 'Edit…' }).click()
+  await page.getByRole('dialog').getByLabel('Summary').fill('Maps for the tenant')
+  const put = page.waitForRequest((r) => r.method() === 'PUT' && new URL(r.url()).pathname.endsWith('/extensions/maps/meta'))
+  await confirm(page, 'Save')
+  const sent = (await put).postDataJSON() as { summary: string; icon: { sha256?: string; data?: string } }
+  expect(sent.summary).toBe('Maps for the tenant')
+  expect(sent.icon.sha256).toMatch(/^[0-9a-f]{64}$/)
+  expect(sent.icon.data).toBeUndefined()
+  await expect(page.getByText('Maps for the tenant', { exact: true })).toBeVisible()
+  await expect(mapsIcon).toHaveAttribute('src', /^blob:/)
+})
