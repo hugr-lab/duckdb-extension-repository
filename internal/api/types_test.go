@@ -21,7 +21,7 @@ func TestPackageTypeRoutes(t *testing.T) {
 
 	// the default: answers as before, and naming it changes nothing
 	for _, path := range []string{"/api/v1/tenants/acme/grants", "/api/v1/tenants/acme/catalogue", "/api/v1/tenants/acme/licenses",
-		"/api/v1/tenants/acme/reserved-names", "/api/v1/tenants/acme/extension-groups", "/api/v1/tenants/acme/stats/downloads"} {
+		"/api/v1/tenants/acme/extension-groups", "/api/v1/tenants/acme/stats/downloads"} {
 		plain := m.call(t, "GET", path, adm, "")
 		if plain.status != 200 || bytes.Contains(plain.body, []byte("package_type")) {
 			t.Fatalf("%s: %d %s", path, plain.status, plain.body)

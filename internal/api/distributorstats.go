@@ -26,7 +26,7 @@ type distributorRowJSON struct {
 func (h *Handler) distributorStats(w http.ResponseWriter, r *http.Request, c caller, _ params) {
 	q := r.URL.Query()
 	distributor := q.Get("distributor")
-	if distributor == "" || len(distributor) > store.MaxHolder || len(q["distributor"]) != 1 {
+	if distributor == "" || len(distributor) > store.MaxDistributor || len(q["distributor"]) != 1 {
 		problem(w, http.StatusBadRequest, typeInvalid, "distributor names one distributor, as its publishers are marked (at most 128 bytes)")
 		return
 	}

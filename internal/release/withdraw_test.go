@@ -11,7 +11,8 @@ import (
 )
 
 // distributorPlacing is newPlacing with a fresh distributor's publisher, enterest-ci, and a function
-// publishing a name's version for a platform into the catalogue as it.
+// publishing a name's version for a platform into the catalogue as it. The tenant's minimum hold for
+// distributors' publishers is 0 (spec 0037), so its entries are placed at once.
 func distributorPlacing(t *testing.T, en *env) (placing, func(name, version, platform string, file ...[]byte) error) {
 	t.Helper()
 	en.rel.Authz = publishes{}
@@ -22,7 +23,10 @@ func distributorPlacing(t *testing.T, en *env) (placing, func(name, version, pla
 			if err := tx.InsertPublisher(ctx, &dist); err != nil {
 				return err
 			}
-			_, err := tx.SetPublisherDistributor(ctx, dist.TenantID, dist.Name, "enterest")
+			if _, err := tx.SetPublisherDistributor(ctx, dist.TenantID, dist.Name, "enterest"); err != nil {
+				return err
+			}
+			_, err := tx.SetDistributorHold(ctx, dist.TenantID, 0)
 			return err
 		})
 	})
@@ -192,27 +196,19 @@ func TestWithdrawnPromotion(t *testing.T) {
 }
 
 // Spec 0033 phase B (review): a distributor's publication checks its name again in the landing
-// transaction: reserved server-wide or for another holder meanwhile, or the tenant suspended.
+// transaction: reserved server-wide meanwhile, or the tenant suspended (spec 0037: tenant
+// reservations are gone).
 func TestDistributorMayNow(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
 		p, _ := distributorPlacing(t, en)
 		tid := p.ci.TenantID
 		check := func(name string) error {
 			return p.st.InTx(ctx, "", func(tx *store.Tx) error {
-				return release.DistributorMayNow(ctx, tx, tid, "duckdb_extension", name, "enterest")
+				return release.DistributorMayNow(ctx, tx, tid, "duckdb_extension", name)
 			})
 		}
-		must(t, func() error {
-			return p.st.InTx(ctx, "", func(tx *store.Tx) error {
-				for name, holder := range map[string]string{"mine": "enterest", "theirs": "someone-else"} {
-					if _, _, err := tx.ReserveTenantName(ctx, &store.TenantReservedName{TenantID: tid, Name: name, Holder: holder, AddedBy: "os:1:t"}); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
-		})
-		for name, denied := range map[string]bool{"geo": false, "mine": false, "theirs": true, "json": true} {
+		reserveServerWide(t, p.st, "kista_theirs")
+		for name, denied := range map[string]bool{"geo": false, "kista_theirs": true, "json": true} {
 			if err := check(name); denied && !errors.Is(err, authz.ErrDenied) || !denied && err != nil {
 				t.Errorf("%s: %v", name, err)
 			}

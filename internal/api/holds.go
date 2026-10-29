@@ -91,6 +91,33 @@ func (h *Handler) setPublisherHold(w http.ResponseWriter, r *http.Request, c cal
 	reply(w, r, http.StatusOK, publisherOf(pb, keys, c), "", noStore)
 }
 
+// distributorHold reads the tenant's minimum hold for distributors' publishers (spec 0037): GET
+// …/distributor-hold.
+func (h *Handler) distributorHold(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	d, err := h.o.Auth.DistributorHold(r.Context(), a, p["t"])
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	reply(w, r, http.StatusOK, map[string]any{"hold": d.String()}, "", noStore)
+}
+
+// setDistributorHold sets the tenant's minimum hold for distributors' publishers (spec 0037): PUT
+// …/distributor-hold {"hold": "24h"}; the answer is the hold.
+func (h *Handler) setDistributorHold(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	d, ok := readHold(w, r)
+	if !ok {
+		return
+	}
+	a, _ := c.actor()
+	if _, err := h.o.Auth.SetDistributorHold(r.Context(), a, p["t"], d); err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	reply(w, r, http.StatusOK, map[string]any{"hold": d.String()}, "", noStore)
+}
+
 // channelHold reads a channel's hold: GET …/channels/{c}/hold.
 func (h *Handler) channelHold(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()

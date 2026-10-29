@@ -65,12 +65,12 @@ const (
 	// VerbLicense manages a tenant's licences (spec 0029): admin on the tenant implies it, licence
 	// managers hold it on every tenant and nothing else. No grant gives it (store.Verbs lacks it).
 	VerbLicense Verb = "license"
-	// VerbDistribute is a distributor's set of calls on a tenant (spec 0030): its reserved names,
-	// distributors' publishers (spec 0037: never the tenant's own), and grants on extensions; on the
-	// server, reading the reserved names (each name and its kind) and a tenant's state, which is not
-	// the tenant's own resource since a suspended tenant is read too. Distribution admins hold it on
-	// every active tenant and the server, and nothing else; server administrators hold everything.
-	// No grant gives it.
+	// VerbDistribute is a distributor's set of calls on a tenant (spec 0030): distributors'
+	// publishers and their catalogue entries (spec 0037: never the tenant's own publishers, nor
+	// grants); on the server, reading the reserved names (each name and its kind) and a tenant's
+	// state, which is not the tenant's own resource since a suspended tenant is read too.
+	// Distribution admins hold it on every active tenant and the server, and nothing else; server
+	// administrators hold everything. No grant gives it.
 	VerbDistribute Verb = "distribute"
 )
 

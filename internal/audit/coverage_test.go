@@ -75,7 +75,6 @@ var writes = map[string]map[string][]audit.Kind{
 		"CreateTenant": {"tenant.create"}, "SetTenantState": {"tenant.suspend", "tenant.resume"}, "SetTenantHolder": {"tenant.holder"}, "Delete": {"tenant.delete"}, "Show": nil,
 		"AddVersion": {"version.add"}, "AddVersionCAPI": {"version.c_apis"}, "AddVersionCore": {"reserved.add"}, "CreateChannel": {"channel.create"},
 		"SetChannelVersions": {"channel.versions"}, "Reserve": {"reserved.add"}, "Unreserve": {"reserved.remove"}, "ListReserved": nil,
-		"ReserveInTenant": {"reserved.tenant.add"}, "ReleaseInTenant": {"reserved.tenant.remove"}, "ListInTenant": nil,
 		"ListTenants": nil, "GetTenant": nil, "ListVersions": nil, "ListChannels": nil, "ChannelVersions": nil, "TenantState": {"tenant.read"},
 	},
 	"tenants.AuthAdmin": {
@@ -84,6 +83,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddPublisher": {"publisher.add"}, "RemovePublisher": {"publisher.remove", "catalogue.purge"}, "SetPublisherLicenseKeys": {"publisher.change"},
 		"AddPublisherKey": {"publisher.key.add"}, "RemovePublisherKey": {"publisher.key.remove", "catalogue.purge"},
 		"SetPublisherHold": {"catalogue.hold"}, "SetPublisherDistributor": {"publisher.change"}, "AddDistributorPublisher": {"publisher.add"},
+		"SetDistributorHold": {"catalogue.hold"}, "DistributorHold": nil,
 		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil,
 		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListPublisherKeys": nil, "TenantPublisherKeys": nil,
 		"CreatePackageGroup": {"extension_group.add"}, "SetPackageGroupDescription": {"extension_group.change"},
@@ -416,12 +416,6 @@ func TestCoverage(t *testing.T) {
 	en.expect("tenants.AuthAdmin.RemovePackageGroup", do(func() error { return en.adm.RemovePackageGroup(rctx, admin, "acme", "platform", 0) }),
 		"extension_group.members", "extension_group.remove")
 	en.expect("tenants.AuthAdmin.AddPublisher", do(func() error { _, err := en.adm.AddPublisher(rctx, admin, "acme", "ci"); return err }), "publisher.add")
-	en.expect("tenants.Service.ReserveInTenant", do(func() error {
-		_, err := en.ten.ReserveInTenant(rctx, admin, "acme", "", "kista_held", "enterest")
-		return err
-	}), "reserved.tenant.add")
-	en.expect("tenants.Service.ReleaseInTenant", do(func() error { return en.ten.ReleaseInTenant(rctx, admin, "acme", "", "kista_held") }),
-		"reserved.tenant.remove")
 	var pubKey string
 	en.expect("tenants.AuthAdmin.AddPublisherKey", do(func() error {
 		k, err := en.adm.AddPublisherKey(rctx, admin, "acme", "ci", publisherKeyLine, time.Now().Add(24*time.Hour))
@@ -431,6 +425,10 @@ func TestCoverage(t *testing.T) {
 	en.expect("tenants.AuthAdmin.RemovePublisherKey", do(func() error { _, err := en.adm.RemovePublisherKey(rctx, admin, "acme", "ci", pubKey, true); return err }), "publisher.key.remove")
 	en.expect("tenants.AuthAdmin.SetPublisherHold", do(func() error {
 		_, err := en.adm.SetPublisherHold(rctx, admin, "acme", "ci", 24*time.Hour)
+		return err
+	}), "catalogue.hold")
+	en.expect("tenants.AuthAdmin.SetDistributorHold", do(func() error { // spec 0037
+		_, err := en.adm.SetDistributorHold(rctx, admin, "acme", 48*time.Hour)
 		return err
 	}), "catalogue.hold")
 	en.expect("tenants.AuthAdmin.SetPublisherLicenseKeys", do(func() error {

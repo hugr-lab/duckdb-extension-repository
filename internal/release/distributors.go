@@ -31,40 +31,27 @@ func (s *Service) distributorOf(ctx context.Context, a authz.Actor) (string, err
 }
 
 // distributorMay says whether a distributor's publisher may publish a name into a tenant's catalogue
-// (spec 0033 phase B): any name kista does not reserve server-wide and that the tenant does not
-// reserve for another holder than its distributor (spec 0030). It needs no grant: what it publishes
-// reaches no channel by itself. A refusal is authz.ErrDenied (nothing said, as for a missing grant).
-func (s *Service) distributorMay(ctx context.Context, tenant, packageType, name, dist string) error {
+// (spec 0033 phase B): any name kista does not reserve server-wide (spec 0037: tenant reservations
+// are gone). It needs no grant: what it publishes reaches no channel by itself. A refusal is
+// authz.ErrDenied (nothing said, as for a missing grant).
+func (s *Service) distributorMay(ctx context.Context, packageType, name string) error {
 	if err := ValidName(name); err != nil {
 		return err
 	}
-	t, err := s.Store.GetTenant(ctx, tenant)
+	kind, err := s.Store.NameReservedFor(ctx, packageType, name)
 	if err != nil {
 		return err
 	}
-	kind, err := s.Store.NameReservedFor(ctx, t.ID, packageType, name)
-	if err != nil {
-		return err
+	if kind != "" {
+		return authz.ErrDenied
 	}
-	switch kind {
-	case "":
-		return nil
-	case "tenant":
-		holder, ok, err := s.Store.TenantReservedHolder(ctx, t.ID, packageType, name)
-		if err != nil {
-			return err
-		}
-		if !ok || holder == dist {
-			return nil
-		}
-	}
-	return authz.ErrDenied
+	return nil
 }
 
 // distributorMayNow is distributorMay inside the build's landing transaction (spec 0033 phase B): the
 // tenant still active (not suspended or deleting meanwhile), and the name not reserved server-wide
-// nor in the tenant for another holder since the upload began.
-func distributorMayNow(ctx context.Context, tx *store.Tx, tenantID, packageType, name, dist string) error {
+// since the upload began.
+func distributorMayNow(ctx context.Context, tx *store.Tx, tenantID, packageType, name string) error {
 	if active, err := tx.TenantActive(ctx, tenantID); err != nil {
 		return err
 	} else if !active {
@@ -73,13 +60,6 @@ func distributorMayNow(ctx context.Context, tx *store.Tx, tenantID, packageType,
 	if k, err := tx.ReservedKind(ctx, packageType, name); err != nil {
 		return err
 	} else if k != "" {
-		return authz.ErrDenied
-	}
-	holder, held, err := tx.TenantReservedHolder(ctx, tenantID, packageType, name)
-	if err != nil {
-		return err
-	}
-	if held && holder != dist {
 		return authz.ErrDenied
 	}
 	return nil

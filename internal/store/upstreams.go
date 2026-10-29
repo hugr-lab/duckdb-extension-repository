@@ -458,7 +458,7 @@ func (t *Tx) deleteOne(ctx context.Context, q, what string, args ...any) error {
 }
 
 // UpstreamProvides reports whether an upstream of the tenant lists a package (type, name) (spec
-// 0009: the name is reserved in the tenant; spec 0034: an upstream's names are of its home
+// 0009: the name is reserved for the tenant; spec 0034: an upstream's names are of its home
 // channel's type).
 func (t *Tx) UpstreamProvides(ctx context.Context, tenantID, packageType, name string) (bool, error) {
 	var n int

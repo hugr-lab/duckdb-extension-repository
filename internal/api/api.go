@@ -192,6 +192,9 @@ const (
 	// typeStale: a signed metadata write older than the entry's last one, or of its second with another
 	// body (spec 0036): the client reads again
 	typeStale = "stale"
+	// typePublisherTaken: a distribution admin's new publisher whose name a tenant's own publisher
+	// holds (spec 0037): the name is taken, and nothing else is said about that publisher
+	typePublisherTaken = "publisher-taken"
 )
 
 var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "Not Found", typeMethod: "Method Not Allowed",
@@ -199,7 +202,8 @@ var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "
 	typeRequired: "Precondition Required", typeTooLarge: "Content Too Large", typeMediaType: "Unsupported Media Type",
 	typeRateLimited: "Rate Limited", typeUploadSlots: "Upload Slots Taken", typeIngestBusy: "Ingest Busy", typeChunksBusy: "Chunks Busy",
 	typeCatalogueFull: "Catalogue Full", typeIssuerBusy: "Issuer Busy", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
-	typeHeld: "Held", typeWithdrawn: "Withdrawn", typeDistributorsEntry: "A Distributor's Entry", typeStale: "Stale"}
+	typeHeld: "Held", typeWithdrawn: "Withdrawn", typeDistributorsEntry: "A Distributor's Entry", typeStale: "Stale",
+	typePublisherTaken: "Publisher Name Taken"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
 func problem(w http.ResponseWriter, status int, typ, detail string) {
@@ -626,12 +630,6 @@ func init() {
 		{"reserved-names", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listReserved),
 			http.MethodPost: mb(serverAdmin, (*Handler).addReserved)}},
 		{"reserved-names/{name}", map[string]rule{http.MethodDelete: m(serverAdmin, (*Handler).removeReserved)}},
-		// spec 0030: names reserved in a tenant (server administrators and distribution admins write;
-		// the tenant's administrators read)
-		{"tenants/{t}/reserved-names", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listTenantReserved)}},
-		{"tenants/{t}/reserved-names/{name}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).getTenantReserved),
-			http.MethodPut:    mb(distributionAdmin, (*Handler).reserveInTenant),
-			http.MethodDelete: m(distributionAdmin, (*Handler).releaseInTenant)}},
 		{"tenants", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listTenants),
 			http.MethodPost: mb(serverAdmin, (*Handler).createTenant)}},
 		// spec 0037: a distribution admin reads a tenant's state and expected holder
@@ -697,11 +695,11 @@ func init() {
 			http.MethodDelete: m(pathAdmin, (*Handler).removeIssuer)}},
 		{"tenants/{t}/issuers/{name}/console", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).setConsoleClient),
 			http.MethodDelete: m(pathAdmin, (*Handler).removeConsoleClient)}},
-		{"tenants/{t}/grants", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listGrants),
-			http.MethodPost: mb(distributionAdmin, (*Handler).addGrant)}},
+		{"tenants/{t}/grants", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listGrants),
+			http.MethodPost: mb(pathAdmin, (*Handler).addGrant)}},
 		{"tenants/{t}/grants/principals", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).grantPrincipals)}}, // before grants/{id}
-		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).getGrant),
-			http.MethodDelete: m(distributionAdmin, (*Handler).removeGrant)}},
+		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGrant),
+			http.MethodDelete: m(pathAdmin, (*Handler).removeGrant)}},
 		// spec 0017: extension groups; the services decide who besides a tenant administrator reads
 		{"tenants/{t}/extension-groups", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).listGroups),
 			http.MethodPost: mb(pathAdmin, (*Handler).createGroup)}},
@@ -795,14 +793,17 @@ func init() {
 		{"tenants/{t}/publishers/{name}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).getPublisher),
 			http.MethodDelete: m(pathAdmin, (*Handler).removePublisher)}},
 		// spec 0021: marking a publisher a source of licence keys (server administrators; spec 0030:
-		// distribution admins)
+		// distribution admins, spec 0037: a distributor's publisher's only)
 		{"tenants/{t}/publishers/{name}/license-keys", map[string]rule{http.MethodPost: m(distributionAdmin, publisherLicenseKeys(true)),
 			http.MethodDelete: m(distributionAdmin, publisherLicenseKeys(false))}},
 		// spec 0033 phase A2: a publisher's hold (the tenant's administrators'; a distributor's
 		// publisher's is a distribution admin's, phase B)
 		{"tenants/{t}/publishers/{name}/hold", map[string]rule{http.MethodPut: mb(distributionAdmin, (*Handler).setPublisherHold)}},
-		// spec 0033 phase B: marking a distributor's publisher (distribution admins and server
-		// administrators)
+		// spec 0037: the tenant's minimum hold for distributors' publishers (its administrators')
+		{"tenants/{t}/distributor-hold", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).distributorHold),
+			http.MethodPut: mb(pathAdmin, (*Handler).setDistributorHold)}},
+		// spec 0033 phase B: renaming a distributor's publisher's distributor (distribution admins and
+		// server administrators; spec 0037: an existing publisher is never marked one)
 		{"tenants/{t}/publishers/{name}/distributor", map[string]rule{http.MethodPut: mb(distributionAdmin, (*Handler).setPublisherDistributor)}},
 		// spec 0023: a publisher's public SSH keys
 		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listPublisherKeys),
@@ -1190,7 +1191,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 					ptype = ct
 				}
 			}
-			kind, err := h.o.Store.ReservedFor(ctx, name, ptype, p["ext"]) // spec 0030: DuckDB's, the tenant's, its upstreams'
+			kind, err := h.o.Store.ReservedFor(ctx, name, ptype, p["ext"]) // spec 0030: DuckDB's, its upstreams'
 			if err != nil {
 				h.fail(w, err)
 				return caller{}, false
@@ -1269,7 +1270,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 }
 
 // takesType reports whether a route takes ?type= (spec 0034's vocabulary): the tenant-level routes
-// keyed or filtered by a name (licences and their keys, the server's and a tenant's reserved names,
+// keyed or filtered by a name (licences and their keys, the server's reserved names,
 // a package's attachments, the catalogue's routes, the grants and the groups filtered by extension,
 // statistics), and a channel's and an upstream's routes, where it must be the channel's. Anywhere
 // else a type would be ignored, so it is refused: a creation, a grant or a member change names its
@@ -1278,7 +1279,7 @@ func takesType(pattern, method string) bool {
 	get := method == http.MethodGet || method == http.MethodHead
 	switch {
 	case strings.Contains(pattern, "/channels/{c}"), strings.HasPrefix(pattern, "tenants/{t}/upstreams/{name}"),
-		pattern == "reserved-names", pattern == "reserved-names/{name}", strings.HasPrefix(pattern, "tenants/{t}/reserved-names"),
+		pattern == "reserved-names", pattern == "reserved-names/{name}",
 		strings.HasPrefix(pattern, "tenants/{t}/extensions/{ext}/attachments"), strings.HasPrefix(pattern, "tenants/{t}/catalogue"),
 		strings.HasPrefix(pattern, "tenants/{t}/stats/"), strings.HasPrefix(pattern, "tenants/{t}/licenses"),
 		strings.HasPrefix(pattern, "tenants/{t}/license-keys"), pattern == "distributor-stats/downloads":

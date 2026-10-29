@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"slices"
 	"time"
@@ -40,6 +39,10 @@ type publisherJSON struct {
 	// Distributor: a distributor's publisher's distributor (spec 0033 phase B), omitted for the
 	// tenant's own
 	Distributor string `json:"distributor,omitempty"`
+	// EffectiveHold: a distributor's publisher's hold as its entries are held, the larger of its own
+	// and the tenant's minimum for distributors' publishers (spec 0037), omitted for none and for
+	// the tenant's own publishers (their hold is their own)
+	EffectiveHold string `json:"effective_hold,omitempty"`
 }
 
 func publisherKeyOf(k store.PublisherKey, c caller) publisherKeyJSON {
@@ -50,6 +53,9 @@ func publisherKeyOf(k store.PublisherKey, c caller) publisherKeyJSON {
 func publisherOf(p store.Publisher, keys []store.PublisherKey, c caller) publisherJSON {
 	o := publisherJSON{ID: p.ID, Name: p.Name, CreatedAt: timeOf(p.CreatedAt), CreatedBy: createdBy(p.CreatedBy, c), Keys: []publisherKeyJSON{},
 		LicenseKeys: p.LicenseKeys, Hold: holdOf(p.Hold), Distributor: p.Distributor}
+	if p.Distributor != "" {
+		o.EffectiveHold = holdOf(max(p.Hold, c.tenant.DistributorHold))
+	}
 	for _, k := range keys {
 		o.Keys = append(o.Keys, publisherKeyOf(k, c))
 	}
@@ -123,9 +129,6 @@ func (h *Handler) getPublisher(w http.ResponseWriter, r *http.Request, c caller,
 		if x.Name == p["name"] {
 			a, _ := c.actor()
 			keys, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], x.Name)
-			if errors.Is(err, authz.ErrDenied) && c.distribution {
-				keys, err = nil, nil // the tenant's own publisher's keys are not a distribution admin's to read (spec 0037)
-			}
 			if err != nil {
 				h.serviceErr(w, err, false)
 				return

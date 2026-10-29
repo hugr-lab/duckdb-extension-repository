@@ -126,7 +126,10 @@ func TestWithdraw(t *testing.T) {
 		p := store.Publisher{TenantID: tn.ID, Name: "enterest-ci"}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &p) })
 		inTx(t, s, func(tx *store.Tx) error {
-			_, err := tx.SetPublisherDistributor(ctx, tn.ID, "enterest-ci", "enterest")
+			if _, err := tx.SetPublisherDistributor(ctx, tn.ID, "enterest-ci", "enterest"); err != nil {
+				return err
+			}
+			_, err := tx.SetDistributorHold(ctx, tn.ID, 0) // spec 0037: its entries not held by the tenant's minimum
 			return err
 		})
 		src := store.PublisherSource(p.ID)

@@ -125,10 +125,7 @@ var catalogue = map[Kind][]string{
 	"reserved.add":    {"version", "kind", "source", "package_type", "names", "forced", "tenants", "skipped"}, // source and type before names: a cut keeps them
 	"reserved.sync":   {"error"},                                                                              // a failed community sync pass (spec 0030 part 3)
 	"reserved.remove": {"name", "sources", "package_type"},
-	// a name reserved in a tenant for a holder (spec 0030 part 2)
-	"reserved.tenant.add":    {"name", "holder", "previous", "package_type"},
-	"reserved.tenant.remove": {"name", "holder", "package_type"},
-	"server.start":           {"version", "schema", "digests", "changed"},
+	"server.start":    {"version", "schema", "digests", "changed"},
 	// a key source weaker than a vault or a KMS, at every start (spec 0026)
 	"signer.source.weak": {"source", "kind", "protection"},
 	// channels and keys
@@ -286,12 +283,12 @@ func SubjectForm(k Kind) string {
 		return "version:<name>, reserved:<name> or sync:community"
 	case "reserved.sync":
 		return "sync:community"
-	case "reserved.remove", "reserved.tenant.add", "reserved.tenant.remove":
+	case "reserved.remove":
 		return "reserved:<name>"
 	case "license.sync", "usage.forward":
 		return "upstream:<name>"
 	case "catalogue.hold":
-		return "upstream:<name>, publisher:<name> or channel:<channel>"
+		return "upstream:<name>, publisher:<name>, channel:<channel> or tenant:<name>"
 	}
 	if strings.HasPrefix(string(k), "publisher.key.") {
 		return "publisher:<name>/key:<id>"

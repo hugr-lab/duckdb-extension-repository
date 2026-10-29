@@ -89,6 +89,27 @@ func must(t *testing.T, f func() error) {
 	}
 }
 
+// reserveServerWide reserves a DuckDB extension name server-wide (community, an administrator's)
+// until the test ends: the server's list outlives a test on a shared database (storetest.Reset
+// keeps it).
+func reserveServerWide(t *testing.T, st *store.Store, name string) {
+	t.Helper()
+	must(t, func() error {
+		return st.InTx(ctx, "", func(tx *store.Tx) error {
+			if _, err := tx.ReserveName(ctx, "duckdb_extension", name, store.ReservedCommunity, "admin:os:1:t"); err != nil {
+				return err
+			}
+			return tx.BumpReservedVersion(ctx)
+		})
+	})
+	t.Cleanup(func() {
+		_ = st.InTx(ctx, "", func(tx *store.Tx) error {
+			_, err := tx.RemoveReservedName(ctx, "duckdb_extension", name) // gone already: nothing to do
+			return err
+		})
+	})
+}
+
 func (en *env) addKey(t *testing.T, channel, file string, active bool) store.Key {
 	t.Helper()
 	if err := signer.GenerateKeyFile(filepath.Join(en.dir, file)); err != nil {

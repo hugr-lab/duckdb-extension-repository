@@ -19,10 +19,10 @@ type Publisher struct {
 	// Hold is its hold (spec 0033): an entry it publishes is held until its arrival plus the hold,
 	// and it publishes into the catalogue only; 0 for none.
 	Hold time.Duration
-	// Distributor marks it a distributor's publisher (spec 0033 phase B): the distributor's name, as a
-	// tenant reservation names its holder ("": the tenant's own). It publishes into the catalogue only,
-	// without grants; its hold, keys and withdrawals are the distributor's (a distribution admin's or a
-	// server administrator's).
+	// Distributor marks it a distributor's publisher (spec 0033 phase B): the distributor's name ("":
+	// the tenant's own). It publishes into the catalogue only, without grants; its hold (above the
+	// tenant's minimum, spec 0037), keys and withdrawals are the distributor's (a distribution admin's
+	// or a server administrator's).
 	Distributor string
 }
 
@@ -67,14 +67,6 @@ func (t *Tx) GetPublisher(ctx context.Context, tenantID, name string) (Publisher
 func (t *Tx) PublisherCredentials(ctx context.Context, publisherID string) (int, error) {
 	var n int
 	err := t.queryRow(ctx, "SELECT COUNT(*) FROM publisher_keys WHERE publisher_id = ?", publisherID).Scan(&n)
-	return n, err
-}
-
-// PublisherGrants counts a publisher's grants, those on extension groups included.
-func (t *Tx) PublisherGrants(ctx context.Context, publisherID string) (int, error) {
-	var n int
-	err := t.queryRow(ctx, `SELECT (SELECT COUNT(*) FROM grants WHERE publisher_id = ?) +
-(SELECT COUNT(*) FROM package_group_grants WHERE publisher_id = ?)`, publisherID, publisherID).Scan(&n)
 	return n, err
 }
 

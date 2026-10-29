@@ -21,18 +21,21 @@ var ErrWithdrawn = errors.New("store: the entry was withdrawn")
 // MaxWithdrawReason bounds a withdrawal's reason.
 const MaxWithdrawReason = 400
 
-// validText says whether s is 1 to max bytes of printable text (a holder, a reason).
+// MaxDistributor bounds a distributor's name.
+const MaxDistributor = 128
+
+// validText says whether s is 1 to max bytes of printable text (a distributor, a reason).
 func validText(s string, max int) bool {
 	return s != "" && len(s) <= max && utf8.ValidString(s) && strings.IndexFunc(s, func(c rune) bool { return !unicode.IsPrint(c) }) < 0
 }
 
-// SetPublisherDistributor marks a tenant's publisher a distributor's (spec 0033 phase B): distributor
-// is the distributor's name, as a tenant reservation names its holder (1 to 128 bytes of printable
-// text). It returns the publisher as it was. A mark is never removed: a distributor's publisher is
-// removed instead.
+// SetPublisherDistributor marks a tenant's publisher a distributor's (spec 0033 phase B), or renames
+// its distributor: distributor is the distributor's name (1 to 128 bytes of printable text). It
+// returns the publisher as it was. A mark is never removed: a distributor's publisher is removed
+// instead.
 func (t *Tx) SetPublisherDistributor(ctx context.Context, tenantID, name, distributor string) (Publisher, error) {
-	if !validText(distributor, MaxHolder) {
-		return Publisher{}, fmt.Errorf("%w: distributor: 1 to %d bytes of printable text", ErrInvalid, MaxHolder)
+	if !validText(distributor, MaxDistributor) {
+		return Publisher{}, fmt.Errorf("%w: distributor: 1 to %d bytes of printable text", ErrInvalid, MaxDistributor)
 	}
 	p, err := t.GetPublisher(ctx, tenantID, name)
 	if err != nil || p.Distributor == distributor {
@@ -55,10 +58,10 @@ func (t *Tx) TenantActive(ctx context.Context, id string) (bool, error) {
 	return state == TenantActive && at.IsZero(), nil
 }
 
-// PublisherUsed reports whether a publisher has left any trace as a source (spec 0033 phase B: only a
-// fresh publisher is marked a distributor's, spec 0036 phase 2: and only an unused one renamed): a
-// build in the catalogue (live or withdrawn), a release, a purged slot, a withdrawn version, a
-// channel's rule or follow naming it, a hold, or a download count or installers.
+// PublisherUsed reports whether a publisher has left any trace as a source (spec 0036 phase 2: only an
+// unused distributor's publisher has its distributor renamed): a build in the catalogue (live or
+// withdrawn), a release, a purged slot, a withdrawn version, a channel's rule or follow naming it, a
+// hold, or a download count or installers.
 func (t *Tx) PublisherUsed(ctx context.Context, p Publisher) (bool, error) {
 	if p.Hold > 0 {
 		return true, nil
@@ -206,26 +209,6 @@ func (s *Store) ResolveDistributorSource(ctx context.Context, tenantID, label st
 		return "", ErrNoSource
 	}
 	return found, nil
-}
-
-// TenantReservedHolder is who holds a name of a type reserved in a tenant (spec 0030), inside the
-// transaction; ok is false when it is not reserved there.
-func (t *Tx) TenantReservedHolder(ctx context.Context, tenantID, packageType, name string) (holder string, ok bool, err error) {
-	err = t.queryRow(ctx, "SELECT holder FROM tenant_reserved_names WHERE tenant_id = ? AND package_type = ? AND name = ?",
-		tenantID, packageType, name).Scan(&holder)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	return holder, err == nil, err
-}
-
-// TenantReservedHolder reads who holds a reserved name outside a transaction.
-func (s *Store) TenantReservedHolder(ctx context.Context, tenantID, packageType, name string) (holder string, ok bool, err error) {
-	err = s.InTx(ctx, "", func(tx *Tx) error {
-		holder, ok, err = tx.TenantReservedHolder(ctx, tenantID, packageType, name)
-		return err
-	})
-	return holder, ok, err
 }
 
 // Withdrawn is a withdrawal's result: the entries it withdrew (those withdrawn already are left as

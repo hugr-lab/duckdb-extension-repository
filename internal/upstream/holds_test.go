@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -259,7 +260,7 @@ func TestUpstreamHoldHomeChecks(t *testing.T) {
 		if got := versions(); got != "2.0 1.0" {
 			t.Fatalf("placed a version out of the allowlist: %q", got)
 		}
-		// the name taken by "*" (as a pull-through's or lazy mirror's), then reserved in the tenant: the
+		// the name taken by "*" (as a pull-through's or lazy mirror's), then reserved server-wide: the
 		// pass makes the run's check under the insert's locks, and refuses it
 		if _, err := en.up.PutEntry(ctx, admin, "acme", "acme-repo", store.UpstreamEntry{Name: "acl"}); err != nil {
 			t.Fatal(err)
@@ -273,13 +274,17 @@ func TestUpstreamHoldHomeChecks(t *testing.T) {
 				return tx.RemoveUpstreamEntry(ctx, u.ID, "acl")
 			})
 		})
-		if _, err := en.ten.ReserveInTenant(ctx, admin, "acme", "", "acl", "someone"); err != nil {
+		if _, err := en.ten.Reserve(ctx, admin, "", []string{"acl"}, store.ReservedCommunity, true); err != nil {
 			t.Fatal(err)
 		}
+		// the server's list outlives a test on a shared database (storetest.Reset keeps it), and the
+		// process's view follows this test's store
+		t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
+		t.Cleanup(func() { _ = en.ten.Unreserve(ctx, admin, "", "acl") })
 		clock = clock.Add(61 * time.Minute)
 		pass(true)
 		if got := versions(); got != "2.0 1.0" {
-			t.Fatalf("placed a name \"*\" took, reserved in the tenant since: %q", got)
+			t.Fatalf("placed a name \"*\" took, reserved server-wide since: %q", got)
 		}
 		if v, err := en.rel.Source(ctx, admin, "acme", "prod", "acl"); err != nil || !strings.Contains(v.Outcome, "4.0") {
 			t.Fatalf("the refusal, the rule's outcome: %+v %v", v, err)

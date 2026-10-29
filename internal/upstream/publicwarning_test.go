@@ -77,6 +77,9 @@ func testLicensePublicWarning(t *testing.T, e storetest.Engine) {
 			if _, err := tx.SetPublisherDistributor(ctx, tid, dist.Name, "enterest"); err != nil {
 				return err
 			}
+			if _, err := tx.SetDistributorHold(ctx, tid, 0); err != nil { // spec 0037: its builds live at once
+				return err
+			}
 			_, err := tx.SetPublisherLicenseKeys(ctx, tid, dist.Name, true)
 			return err
 		})

@@ -141,16 +141,15 @@ type followLook struct {
 	offered map[string]bool
 	consent *authz.Actor // a followed publisher, whose grants a name must reach (spec 0033)
 	// distributor is a followed distributor's publisher's distributor (spec 0033 phase B): it has no
-	// grants, so a name it may publish into the catalogue (not reserved server-wide, nor in the tenant
-	// for another holder) is consented to instead
+	// grants, so a name it may publish into the catalogue (not reserved server-wide) is consented to
+	// instead
 	distributor string
 }
 
 // PlaceFollow takes, for a follow, every name of its source the channel has no rule for (spec 0033):
 // it writes the name's rule (mode follow) and places as an auto rule would; a rule an arrival wrote
 // for the same source becomes the follow's. It skips a name the tenant uses from another source, one
-// reserved (server-wide, unless the source is DuckDB's own repository of that kind; or in the
-// tenant, unless for a followed distributor's publisher's distributor), one another follow of the
+// reserved server-wide (unless the source is DuckDB's own repository of that kind), one another follow of the
 // channel offers too, and, for a publisher, one it may not publish in the channel (a follow is consent
 // to a source, not to every grant anyone gives it; a distributor's publisher has no grants, and the
 // names it may publish into the catalogue are its consent, spec 0033 phase B). It returns how
@@ -306,22 +305,12 @@ func (s *Service) followLook(ctx context.Context, f store.DueFollow) (followLook
 
 // followLimit says why a follow does not take a name ("" when it does).
 func (s *Service) followLimit(ctx context.Context, lk followLook, f store.DueFollow, name string) (string, error) {
-	reserved, err := s.Store.NameReservedFor(ctx, f.TenantID, lk.channel.PackageType, name)
+	reserved, err := s.Store.NameReservedFor(ctx, lk.channel.PackageType, name)
 	if err != nil {
 		return "", err
 	}
-	switch {
-	case reserved == store.ReservedCore && lk.kind != store.UpstreamCore, reserved == store.ReservedCommunity && lk.kind != store.UpstreamCommunity:
+	if reserved == store.ReservedCore && lk.kind != store.UpstreamCore || reserved == store.ReservedCommunity && lk.kind != store.UpstreamCommunity {
 		return "a name DuckDB's " + reserved + " repository has: a rule naming it takes it", nil
-	case reserved == "tenant":
-		// spec 0033 phase B: a distributor's publisher takes a name reserved for its distributor
-		holder, ok, err := s.Store.TenantReservedHolder(ctx, f.TenantID, lk.channel.PackageType, name)
-		if err != nil {
-			return "", err
-		}
-		if lk.distributor == "" || !ok || holder != lk.distributor {
-			return "a name reserved in the tenant: a rule naming it takes it", nil
-		}
 	}
 	for _, src := range lk.byName[name] {
 		if src != f.Source {
@@ -347,7 +336,7 @@ func (s *Service) followLimit(ctx context.Context, lk followLook, f store.DueFol
 
 // takeName writes a name's follow rule under the channel lock, checking again that the channel
 // still follows the source and the name is still free (no rule, or one an arrival wrote for the
-// same source, which becomes the follow's) and not reserved in the tenant meanwhile.
+// same source, which becomes the follow's).
 func (s *Service) takeName(ctx context.Context, lk followLook, f store.DueFollow, name string) (bool, error) {
 	wrote := false
 	err := s.Store.InTx(ctx, lockKey(f.ChannelID), func(tx *store.Tx) error {
@@ -356,11 +345,6 @@ func (s *Service) takeName(ctx context.Context, lk followLook, f store.DueFollow
 		}
 		cur, had, err := tx.ChannelSourceOf(ctx, f.ChannelID, name)
 		if err != nil || had && (cur.Source != f.Source || cur.Mode != store.RuleNone) {
-			return err
-		}
-		// reserved in the tenant meanwhile, unless for the followed distributor's publisher's distributor
-		holder, held, err := tx.TenantReservedHolder(ctx, f.TenantID, lk.channel.PackageType, name)
-		if err != nil || held && (lk.distributor == "" || holder != lk.distributor) {
 			return err
 		}
 		tx.SetWarningAct("source.set") // spec 0035 phase 2

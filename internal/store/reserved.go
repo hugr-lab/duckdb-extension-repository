@@ -7,8 +7,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
@@ -272,81 +270,10 @@ AND NOT EXISTS (SELECT 1 FROM reserved_name_sources s WHERE s.package_type = ? A
 	return sources, t.BumpReservedVersion(ctx)
 }
 
-// --- names reserved in a tenant (spec 0030 part 2) ---
-
-// TenantReservedName is a name of a type (spec 0034) reserved in a tenant, for a holder (who holds
-// it: free text).
-type TenantReservedName struct {
-	TenantID, PackageType, Name, Holder, AddedBy string
-	AddedAt                                      time.Time
-}
-
-// MaxHolder bounds a holder's text.
-const MaxHolder = 128
-
-// ReserveTenantName reserves a name in a tenant, or changes its holder; it returns the holder before
-// ("" for a new name) and whether anything changed.
-func (t *Tx) ReserveTenantName(ctx context.Context, r *TenantReservedName) (string, bool, error) {
-	if r.Holder == "" || len(r.Holder) > MaxHolder || !utf8.ValidString(r.Holder) || strings.IndexFunc(r.Holder, func(c rune) bool { return !unicode.IsPrint(c) }) >= 0 {
-		return "", false, fmt.Errorf("%w: holder: 1 to %d bytes of printable text", ErrInvalid, MaxHolder)
-	}
-	if r.PackageType == "" {
-		r.PackageType = pkgtype.Default
-	}
-	if !pkgtype.Known(r.PackageType) {
-		return "", false, fmt.Errorf("%w: package type %q", ErrInvalid, r.PackageType)
-	}
-	var cur string
-	err := t.queryRow(ctx, "SELECT holder FROM tenant_reserved_names WHERE tenant_id = ? AND package_type = ? AND name = ?",
-		r.TenantID, r.PackageType, r.Name).Scan(&cur)
-	switch {
-	case err == sql.ErrNoRows:
-		r.AddedAt = t.Now()
-		_, err = t.exec(ctx, "INSERT INTO tenant_reserved_names (tenant_id, package_type, name, holder, added_at, added_by) VALUES (?, ?, ?, ?, ?, ?)",
-			r.TenantID, r.PackageType, r.Name, r.Holder, t.s.d.timeArg(r.AddedAt), r.AddedBy)
-		if err != nil {
-			return "", false, t.s.mapErr(err, "the tenant's reserved name "+r.Name)
-		}
-		return "", true, nil
-	case err != nil:
-		return "", false, err
-	case cur == r.Holder:
-		return cur, false, nil
-	}
-	_, err = t.exec(ctx, "UPDATE tenant_reserved_names SET holder = ? WHERE tenant_id = ? AND package_type = ? AND name = ?",
-		r.Holder, r.TenantID, r.PackageType, r.Name)
-	return cur, true, err
-}
-
-// ReleaseTenantName removes a name's reservation (of a type) in a tenant and returns it
-// (ErrNotFound when none).
-func (t *Tx) ReleaseTenantName(ctx context.Context, tenantID, packageType, name string) (TenantReservedName, error) {
-	r := TenantReservedName{TenantID: tenantID, PackageType: packageType, Name: name}
-	err := t.queryRow(ctx, "SELECT holder, added_by, added_at FROM tenant_reserved_names WHERE tenant_id = ? AND package_type = ? AND name = ?",
-		tenantID, packageType, name).Scan(&r.Holder, &r.AddedBy, scanTime{&r.AddedAt})
-	if err == sql.ErrNoRows {
-		return r, fmt.Errorf("%w: %s is not reserved in the tenant", ErrNotFound, name)
-	}
-	if err != nil {
-		return r, err
-	}
-	_, err = t.exec(ctx, "DELETE FROM tenant_reserved_names WHERE tenant_id = ? AND package_type = ? AND name = ?", tenantID, packageType, name)
-	return r, err
-}
-
-// TenantReserves reports whether a name of a type is reserved in the tenant, inside the
-// transaction: the check a release insert makes again under its locks.
-func (t *Tx) TenantReserves(ctx context.Context, tenantID, packageType, name string) (bool, error) {
-	var n int
-	err := t.queryRow(ctx, "SELECT COUNT(*) FROM tenant_reserved_names WHERE tenant_id = ? AND package_type = ? AND name = ?",
-		tenantID, packageType, name).Scan(&n)
-	return n > 0, err
-}
-
-// ReservedAgainst says which of names a distributor's holder may not publish in a tenant (spec
-// 0036: a distributor's publisher's catalogue list): reserved server-wide, or in the tenant for
-// another holder. One query per 200 names.
-func (s *Store) ReservedAgainst(ctx context.Context, tenantID, packageType, holder string, names []string) (map[string]bool, error) {
+// ReservedAmong says which of names of a type kista reserves server-wide (spec 0036: a
+// distributor's publisher's catalogue list; spec 0037: tenant reservations are gone). One query per
+// 200 names.
+func (s *Store) ReservedAmong(ctx context.Context, packageType string, names []string) (map[string]bool, error) {
 	out := map[string]bool{}
 	for start := 0; start < len(names); start += 200 {
 		batch := names[start:min(start+200, len(names))]
@@ -355,12 +282,7 @@ func (s *Store) ReservedAgainst(ctx context.Context, tenantID, packageType, hold
 		for _, n := range batch {
 			args = append(args, n)
 		}
-		args = append(args, tenantID, packageType, holder)
-		for _, n := range batch {
-			args = append(args, n)
-		}
-		err := s.eachRow(ctx, "SELECT name FROM reserved_names WHERE package_type = ? AND name IN ("+ph+") UNION "+
-			"SELECT name FROM tenant_reserved_names WHERE tenant_id = ? AND package_type = ? AND holder <> ? AND name IN ("+ph+")", args,
+		err := s.eachRow(ctx, "SELECT name FROM reserved_names WHERE package_type = ? AND name IN ("+ph+")", args,
 			func(sc func(...any) error) error {
 				var n string
 				if err := sc(&n); err != nil {
@@ -376,81 +298,14 @@ func (s *Store) ReservedAgainst(ctx context.Context, tenantID, packageType, hold
 	return out, nil
 }
 
-// ListTenantReservedNames lists a tenant's reserved names of a type, by name (one name, or all when
-// name is "").
-func (s *Store) ListTenantReservedNames(ctx context.Context, tenantID, packageType, name string) ([]TenantReservedName, error) {
-	q, args := "SELECT name, holder, added_by, added_at FROM tenant_reserved_names WHERE tenant_id = ? AND package_type = ?", []any{tenantID, packageType}
-	if name != "" {
-		q, args = q+" AND name = ?", append(args, name)
-	}
-	rows, err := s.db.QueryContext(ctx, s.d.rebind(q+" ORDER BY name"), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []TenantReservedName
-	for rows.Next() {
-		r := TenantReservedName{TenantID: tenantID, PackageType: packageType}
-		if err := rows.Scan(&r.Name, &r.Holder, &r.AddedBy, scanTime{&r.AddedAt}); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-// TenantReservedSet is the names of a type reserved in a tenant.
-func (s *Store) TenantReservedSet(ctx context.Context, tenantID, packageType string) (map[string]bool, error) {
-	rs, err := s.ListTenantReservedNames(ctx, tenantID, packageType, "")
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]bool, len(rs))
-	for _, r := range rs {
-		out[r.Name] = true
-	}
-	return out, nil
-}
-
-// LiveRelease is a release under a name, as a reservation's answer names it.
-type LiveRelease struct {
-	Channel, Version, Platform, State, Origin string
-}
-
-// TenantLiveReleases lists a tenant's releases of a package (type, name) that are not yanked or
-// purged.
-func (s *Store) TenantLiveReleases(ctx context.Context, tenantID, packageType, name string) ([]LiveRelease, error) {
-	rows, err := s.db.QueryContext(ctx, s.d.rebind(`SELECT c.name, r.package_version, r.platform, r.state, b.origin
-FROM releases r JOIN channels c ON c.id = r.channel_id JOIN builds b ON b.id = r.build_id
-WHERE r.tenant_id = ? AND c.package_type = ? AND r.name = ? AND r.state NOT IN ('yanked', 'purged') ORDER BY c.name, r.package_version, r.platform`),
-		tenantID, packageType, name)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []LiveRelease
-	for rows.Next() {
-		var r LiveRelease
-		if err := rows.Scan(&r.Channel, &r.Version, &r.Platform, &r.State, &r.Origin); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-// Reservation kinds a lookup answers beyond DuckDB's (spec 0030): a name reserved in the tenant, and
-// one an upstream of the tenant provides (spec 0009).
-const (
-	ReservedTenant   = "tenant"
-	ReservedUpstream = "upstream"
-)
+// ReservedUpstream is the reservation kind a lookup answers beyond DuckDB's (spec 0030): a name an
+// upstream of the tenant provides (spec 0009).
+const ReservedUpstream = "upstream"
 
 // ReservedFor is the one lookup of a package's reservation for a tenant (by name), in precedence:
-// core or community (the server's list, the process's view synced first), tenant, upstream (of an
-// upstream whose home channel is of the type); "" for a name free in the tenant. Every one is per
-// (type, name) (spec 0034). For publish and promote, a reserved name is reached only by grants
-// naming it.
+// core or community (the server's list, the process's view synced first), upstream (of an upstream
+// whose home channel is of the type); "" for a name free in the tenant. Every one is per (type, name)
+// (spec 0034). For publish and promote, a reserved name is reached only by grants naming it.
 func (s *Store) ReservedFor(ctx context.Context, tenant, packageType, name string) (string, error) {
 	if err := reserved.Sync(ctx, s); err != nil {
 		return "", err
@@ -458,25 +313,15 @@ func (s *Store) ReservedFor(ctx context.Context, tenant, packageType, name strin
 	if k := reserved.Kind(packageType, name); k != "" {
 		return k, nil
 	}
-	var tenantN, upstreamN int
-	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT
-(SELECT COUNT(*) FROM tenant_reserved_names r JOIN tenants t ON t.id = r.tenant_id WHERE t.name = ? AND r.package_type = ? AND r.name = ?),
-(SELECT COUNT(*) FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id JOIN tenants t ON t.id = u.tenant_id
-	JOIN channels c ON c.id = u.channel_id WHERE t.name = ? AND c.package_type = ? AND e.name = ?)`),
-		tenant, packageType, name, tenant, packageType, name).Scan(&tenantN, &upstreamN)
+	var upstreamN int
+	err := s.db.QueryRowContext(ctx, s.d.rebind(`SELECT COUNT(*) FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
+JOIN tenants t ON t.id = u.tenant_id JOIN channels c ON c.id = u.channel_id WHERE t.name = ? AND c.package_type = ? AND e.name = ?`),
+		tenant, packageType, name).Scan(&upstreamN)
 	switch {
 	case err != nil:
 		return "", err
-	case tenantN > 0:
-		return ReservedTenant, nil
 	case upstreamN > 0:
 		return ReservedUpstream, nil
 	}
 	return "", nil
-}
-
-// BumpTenantChannels bumps every channel of a tenant, in id order: their snapshots follow a change
-// of what the tenant reserves.
-func (t *Tx) BumpTenantChannels(ctx context.Context, tenantID string) error {
-	return t.bumpBuildChannels(ctx, "SELECT id FROM channels WHERE tenant_id = ? ORDER BY id", tenantID)
 }

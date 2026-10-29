@@ -37,16 +37,16 @@ type statsScope struct {
 	held          auth.Held
 	plain, groups []store.Grant // the grants giving statistics
 	cache         map[[2]string]bool
-	// the tenant's reserved names and its upstreams' (spec 0030), beside DuckDB's
-	tenantReserved, provided map[string]bool
+	// the names the tenant's upstreams provide (spec 0030), beside DuckDB's
+	provided map[string]bool
 	// typ is the package type asked about (spec 0034: the extension dimension is (type, name))
 	typ string
 }
 
-// reservedName reports whether a name is reserved for the tenant (spec 0030): DuckDB's, the
-// tenant's, or an upstream's.
+// reservedName reports whether a name is reserved for the tenant (spec 0030): DuckDB's, or an
+// upstream's.
 func (s *statsScope) reservedName(ext string) bool {
-	return reserved.Kind(s.typ, ext) != "" || s.tenantReserved[ext] || s.provided[ext]
+	return reserved.Kind(s.typ, ext) != "" || s.provided[ext]
 }
 
 func (s *statsScope) allow(channel, ext string) bool {
@@ -182,10 +182,7 @@ func (h *Handler) statsRequestOf(w http.ResponseWriter, r *http.Request, c calle
 	scope, ok := statsScopeOf(c, typ)
 	if ok && !scope.all {
 		var err error
-		if scope.tenantReserved, err = h.o.Store.TenantReservedSet(r.Context(), c.tenant.ID, typ); err == nil {
-			scope.provided, err = h.o.Store.ProvidedNames(r.Context(), c.tenant.ID, typ)
-		}
-		if err != nil {
+		if scope.provided, err = h.o.Store.ProvidedNames(r.Context(), c.tenant.ID, typ); err != nil {
 			h.fail(w, err)
 			return statsRequest{}, false
 		}

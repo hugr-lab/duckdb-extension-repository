@@ -31,16 +31,26 @@ var ErrSourceGone = errors.New("store: the source is gone (its upstream, publish
 
 // SourceHold is a source's hold: a publisher's, or an eager mirror's (a lazy or pull-through
 // upstream fetches because someone is installing now, and takes none); 0 for the tenant's own source.
-// It reads the source's row with a shared lock held until commit, so a hold raised (RaiseHeld, after
-// the row's update) is never missed by a build inserted in the same transaction; a removed upstream or
-// publisher is ErrSourceGone (fail closed).
+// A distributor's publisher's is the larger of its own and the tenant's minimum for distributors'
+// publishers (spec 0037). It reads the source's row (and then the tenant's) with a shared lock held
+// until commit, so a hold raised (RaiseHeld, after the row's update) is never missed by a build
+// inserted in the same transaction; a removed upstream or publisher is ErrSourceGone (fail closed).
 func (t *Tx) SourceHold(ctx context.Context, source string) (time.Duration, error) {
 	var hold int64
 	var err error
 	switch {
 	case strings.HasPrefix(source, SourcePublisherPrefix):
-		err = t.queryRow(ctx, t.lockedRowQuery("SELECT hold_seconds FROM publishers", "id = ?", false),
-			strings.TrimPrefix(source, SourcePublisherPrefix)).Scan(&hold)
+		var tenantID string
+		var dist sql.NullString
+		err = t.queryRow(ctx, t.lockedRowQuery("SELECT hold_seconds, tenant_id, distributor FROM publishers", "id = ?", false),
+			strings.TrimPrefix(source, SourcePublisherPrefix)).Scan(&hold, &tenantID, &dist)
+		if err == nil && dist.Valid {
+			// spec 0037: a distributor's publisher's entries are held at least for the tenant's
+			// minimum, read with a shared lock on the tenant's row, which raising it updates
+			var floor int64
+			err = t.queryRow(ctx, t.lockedTenantQuery("SELECT distributor_hold_seconds FROM tenants", "id = ?", false), tenantID).Scan(&floor)
+			hold = max(hold, floor)
+		}
 	case strings.HasPrefix(source, SourceUpstreamPrefix):
 		var mode, fetch string
 		err = t.queryRow(ctx, t.lockedRowQuery("SELECT hold_seconds, mode, fetch_mode FROM upstreams", "id = ?", false),
@@ -119,6 +129,44 @@ func (t *Tx) SetPublisherHold(ctx context.Context, tenantID, name string, d time
 		return p, err
 	}
 	return p, t.BumpAuth(ctx, tenantID) // the tenant's cached publishers carry it
+}
+
+// DefaultDistributorHold is a tenant's minimum hold for distributors' publishers until its
+// administrators set one (spec 0037: the column's default).
+const DefaultDistributorHold = 24 * time.Hour
+
+// SetDistributorHold sets a tenant's minimum hold for distributors' publishers (spec 0037) and returns
+// the one it had. The caller holds the tenant's row with an update lock (InTenantTxForUpdate): an
+// arrival reads it with a shared lock (SourceHold), so the two are ordered.
+func (t *Tx) SetDistributorHold(ctx context.Context, tenantID string, d time.Duration) (time.Duration, error) {
+	if err := ValidHold(d); err != nil {
+		return 0, err
+	}
+	var before int64
+	if err := t.queryRow(ctx, "SELECT distributor_hold_seconds FROM tenants WHERE id = ?", tenantID).Scan(&before); err != nil {
+		return 0, notFound(err, "tenant")
+	}
+	if before != seconds(d) {
+		if _, err := t.exec(ctx, "UPDATE tenants SET distributor_hold_seconds = ? WHERE id = ?", seconds(d), tenantID); err != nil {
+			return 0, err
+		}
+	}
+	return time.Duration(before) * time.Second, nil
+}
+
+// DistributorPublisherSources are the sources of a tenant's distributors' publishers, live and
+// removed (spec 0037: the tenant's minimum hold applies to each), by id.
+func (t *Tx) DistributorPublisherSources(ctx context.Context, tenantID string) ([]string, error) {
+	ids, err := t.strings(ctx, `SELECT id FROM publishers WHERE tenant_id = ? AND distributor IS NOT NULL
+UNION SELECT publisher_id FROM removed_distributor_publishers WHERE tenant_id = ? ORDER BY 1`, tenantID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = PublisherSource(id)
+	}
+	return out, nil
 }
 
 // SetChannelHold sets a channel's hold and returns the one it had. The placement pass looks at the

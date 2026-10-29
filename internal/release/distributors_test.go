@@ -4,30 +4,26 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
 // Spec 0033 phase B part 1: a distributor's publisher publishes into the catalogue without grants,
-// any name not reserved server-wide nor in the tenant for another holder, and never on a channel's
-// route; a follow of it takes its names (a name reserved for its distributor included, one reserved
-// for another holder skipped) though it holds no grant; a withdrawn version is served nowhere,
-// placed by no rule, follow or hand, and the next version is placed as usual.
+// any name not reserved server-wide (spec 0037: tenant reservations are gone), and never on a
+// channel's route; a follow of it takes its names (one reserved server-wide since skipped) though it
+// holds no grant; a withdrawn version is served nowhere, placed by no rule, follow or hand, and the
+// next version is placed as usual. Spec 0037: its entries are held for the tenant's minimum hold,
+// whatever its own.
 func TestDistributorFollowAndWithdraw(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
+		t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
 		en.rel.Authz = publishes{} // no publisher holds a grant
 		p := newPlacing(t, en)
 		dist := store.Publisher{TenantID: p.ci.TenantID, Name: "enterest-ci"}
-		reserve := func(name, holder string) {
-			must(t, func() error {
-				return p.st.InTx(ctx, "", func(tx *store.Tx) error {
-					_, _, err := tx.ReserveTenantName(ctx, &store.TenantReservedName{TenantID: dist.TenantID, Name: name, Holder: holder, AddedBy: "os:1:t"})
-					return err
-				})
-			})
-		}
 		must(t, func() error {
 			return p.st.InTx(ctx, "", func(tx *store.Tx) error {
 				if err := tx.InsertPublisher(ctx, &dist); err != nil {
@@ -37,21 +33,28 @@ func TestDistributorFollowAndWithdraw(t *testing.T) {
 				return err
 			})
 		})
-		reserve("mine", "enterest")
-		reserve("theirs", "someone-else")
-		reserve("later", "enterest")
+		reserveServerWide(t, p.st, "kista_theirs")
 		pub := authzOf(dist)
 		land := func(name, version string) error {
 			_, _, err := p.rel.AddToCatalogue(ctx, pub, "acme", bytes.NewReader(built(t, cpp(version), name+"_duckdb_cpp_init")),
 				publish(name, version, "linux_amd64"))
 			return err
 		}
-		for _, n := range []string{"geo", "mine", "later"} {
+		// held for the tenant's minimum (a day by default), its own hold being none
+		slow, _, err := p.rel.AddToCatalogue(ctx, pub, "acme", bytes.NewReader(built(t, cpp("1.0"), "slow_duckdb_cpp_init")),
+			publish("slow", "1.0", "linux_amd64"))
+		if err != nil || !slow.AvailableAt.Equal(slow.CreatedAt.Add(24*time.Hour)) {
+			t.Fatalf("held for the tenant's minimum: %+v %v", slow, err)
+		}
+		must(t, func() error {
+			return p.st.InTx(ctx, "", func(tx *store.Tx) error { _, err := tx.SetDistributorHold(ctx, dist.TenantID, 0); return err })
+		})
+		for _, n := range []string{"geo", "mine", "kista_later"} {
 			if err := land(n, "1.0"); err != nil {
 				t.Fatalf("%s: %v", n, err)
 			}
 		}
-		for _, n := range []string{"theirs", "json"} { // reserved for another holder; DuckDB's core name
+		for _, n := range []string{"kista_theirs", "json"} { // reserved server-wide; DuckDB's core name
 			if err := land(n, "1.0"); !errors.Is(err, authz.ErrDenied) {
 				t.Fatalf("%s: %v", n, err)
 			}
@@ -61,8 +64,8 @@ func TestDistributorFollowAndWithdraw(t *testing.T) {
 			publish("geo", "0.9", "linux_amd64")); !errors.Is(err, authz.ErrDenied) {
 			t.Fatalf("a distributor's publisher on a channel's route: %v", err)
 		}
-		// the name reserved for the distributor changes holder before the follow looks
-		reserve("later", "someone-else")
+		// a name reserved server-wide before the follow looks
+		reserveServerWide(t, p.st, "kista_later")
 		if _, err := p.rel.SetFollow(ctx, admin, "acme", "prod", "publisher:enterest-ci"); err != nil {
 			t.Fatal(err)
 		}
@@ -71,7 +74,7 @@ func TestDistributorFollowAndWithdraw(t *testing.T) {
 			t.Fatalf("the follow placed: %q", got)
 		}
 		v, err := p.rel.Follow(ctx, admin, "acme", "prod", "publisher:enterest-ci")
-		if err != nil || len(v.Skips) != 1 || v.Skips["later"] != "a name reserved in the tenant: a rule naming it takes it" {
+		if err != nil || v.Skips["kista_later"] != "a name DuckDB's community repository has: a rule naming it takes it" {
 			t.Fatalf("the follow's skips: %+v %v", v, err)
 		}
 		// withdrawn: a distribution admin's or a server administrator's only

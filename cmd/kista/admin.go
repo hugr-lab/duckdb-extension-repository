@@ -54,6 +54,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   tenant show <name>                              its record; a deleting one's progress and keys to retire
   tenant suspend|resume <name>
   tenant holder <name> <id>|-clear                set or clear the holder its licences must name (the licences' sub)
+  tenant distributor-hold <name> [<duration>]     the minimum hold for distributors' publishers (spec 0037): their
+                                                  entries are held at least this long (24h, 2d; 0 for none;
+                                                  one day by default); without a duration, printed
   tenant delete <name> -confirm <name>            a tenant suspended for tenants.min_suspended (spec 0019)
   tenant reap <name> [-force]                     remove a deleting tenant's rows here, after the settle period;
                                                   -force: now, when no kista serve or other command runs
@@ -110,10 +113,6 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                            -force when tenants have releases under them
   reserved list [-name <name>] [-type t]                   the reserved names and their sources
   reserved remove <name> [-type t]                         a name administrators alone reserved
-  tenant-reserved add <tenant> <name> -holder <text> [-type t]   reserve a name in a tenant for a holder (spec 0030);
-                                                           prints the name's live releases there
-  tenant-reserved remove <tenant> <name> [-type t]
-  tenant-reserved list <tenant> [-type t]
   channel create <tenant>/<channel> -kind signed|passthrough [-type t]
                                                   -type: the package type it serves, never changed (spec 0034;
                                                   default duckdb_extension, a passthrough channel's)
@@ -177,9 +176,10 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   still held (a revoked key; spec 0033)
   publisher hold <tenant> <name> <duration>       the publisher's hold (spec 0033): its entries are held this
                                                   long and it publishes into the catalogue only (24h, 2d; 0 for none);
-                                                  a distributor's publisher's is the distributor's
-  publisher distributor <tenant> <name> <distributor>   rename a distributor's publisher's distributor, or mark
-                                                  a fresh publisher a distribution admin created
+                                                  a distributor's publisher's is the distributor's, and holds
+                                                  only above the tenant's distributor-hold
+  publisher distributor <tenant> <name> <distributor>   rename a distributor's publisher's distributor (an
+                                                  unused one's; an existing publisher is never marked one)
   upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
                -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
                [-mode mirror|pull-through|bundle] [-fetch eager|lazy] [-credential <name>]
@@ -397,8 +397,6 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 		return a.version(ctx, sub, args[min(2, len(args)):])
 	case "reserved":
 		return a.reserved(ctx, sub, args[min(2, len(args)):])
-	case "tenant-reserved":
-		return a.tenantReserved(ctx, sub, args[min(2, len(args)):])
 	case "channel":
 		return a.channel(ctx, sub, args[min(2, len(args)):])
 	case "key":
@@ -519,6 +517,23 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 		} else {
 			a.logf("tenant holder %s %q", t.Name, id)
 		}
+	case sub == "distributor-hold" && (len(pos) == 1 || len(pos) == 2):
+		if len(pos) == 1 {
+			d, err := a.svc.Auth.DistributorHold(ctx, a.actor, pos[0])
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(a.out, d)
+			return nil
+		}
+		d, err := parseHold(pos[1])
+		if err != nil {
+			return err
+		}
+		if _, err := a.svc.Auth.SetDistributorHold(ctx, a.actor, pos[0], d); err != nil {
+			return err
+		}
+		a.logf("tenant distributor-hold %s %s", pos[0], d)
 	case sub == "list" && len(pos) == 0:
 		var phases []string
 		if *states != "" {
@@ -1228,7 +1243,7 @@ func (a *adminCmd) grant(ctx context.Context, sub string, args []string) error {
 		}
 		isReserved := false
 		if *extension != "" {
-			kind, err := a.svc.Store.ReservedFor(ctx, pos[0], typ, *extension) // spec 0030: DuckDB's, the tenant's, its upstreams'
+			kind, err := a.svc.Store.ReservedFor(ctx, pos[0], typ, *extension) // spec 0030: DuckDB's, its upstreams'
 			if err != nil {
 				return err
 			}
@@ -2887,54 +2902,6 @@ func (a *adminCmd) reserved(ctx context.Context, sub string, args []string) erro
 			return err
 		}
 		a.logf("reserved remove %s", pos[0])
-	default:
-		return errUsage
-	}
-	return nil
-}
-
-func (a *adminCmd) tenantReserved(ctx context.Context, sub string, args []string) error {
-	fs := flag.NewFlagSet("tenant-reserved", flag.ContinueOnError)
-	holder := fs.String("holder", "", "")
-	ptype := fs.String("type", "", "") // spec 0034: the name's package type
-	pos, err := flags(fs, args)
-	if err != nil {
-		return err
-	}
-	switch {
-	case sub == "add" && len(pos) == 2:
-		res, err := a.svc.Tenants.ReserveInTenant(ctx, a.actor, pos[0], *ptype, pos[1], *holder)
-		if err != nil {
-			return err
-		}
-		a.table("CHANNEL\tVERSION\tPLATFORM\tSTATE\tORIGIN", func(w io.Writer) {
-			for _, r := range res.Releases {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Channel, r.Version, r.Platform, r.State, r.Origin)
-			}
-		})
-		switch {
-		case !res.Changed:
-			a.logf("tenant-reserved add %s %s: already held by %s", pos[0], pos[1], res.Holder)
-		case res.Previous != "":
-			a.logf("tenant-reserved add %s %s: holder %s (was %s)", pos[0], pos[1], res.Holder, res.Previous)
-		default:
-			a.logf("tenant-reserved add %s %s: holder %s", pos[0], pos[1], res.Holder)
-		}
-	case sub == "remove" && len(pos) == 2:
-		if err := a.svc.Tenants.ReleaseInTenant(ctx, a.actor, pos[0], *ptype, pos[1]); err != nil {
-			return err
-		}
-		a.logf("tenant-reserved remove %s %s", pos[0], pos[1])
-	case sub == "list" && len(pos) == 1:
-		rs, err := a.svc.Tenants.ListInTenant(ctx, a.actor, pos[0], *ptype, "")
-		if err != nil {
-			return err
-		}
-		a.table("NAME\tHOLDER\tADDED\tBY", func(w io.Writer) {
-			for _, r := range rs {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, r.Holder, r.AddedAt.UTC().Format(time.RFC3339), r.AddedBy)
-			}
-		})
 	default:
 		return errUsage
 	}

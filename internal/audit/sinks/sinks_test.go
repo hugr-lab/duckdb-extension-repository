@@ -456,7 +456,7 @@ func TestRefusedBatchesAndMasking(t *testing.T) {
 	}
 	if err := st.InTx(ctx, "", func(tx *store.Tx) error {
 		return tx.Event(audit.WithRequest(ctx, audit.Request{Client: "198.51.100.9", ActorName: "Enterest"}), acme.ID,
-			"distribution-admin:ops|enterest", "reserved.tenant.add", "reserved:acme_tool", map[string]any{"name": "acme_tool"})
+			"distribution-admin:ops|enterest", "publisher.key.add", "publisher:enterest-ci/key:k1", map[string]any{"publisher": "enterest-ci"})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestRefusedBatchesAndMasking(t *testing.T) {
 		if r.Subject == "license:tresor" && (r.Actor != "license-manager" || r.ActorName != "" || r.Client != "") {
 			t.Fatalf("a licence manager's identity reached a tenant's sink: %+v", r)
 		}
-		if r.Subject == "reserved:acme_tool" && (r.Actor != "distribution-admin" || r.ActorName != "" || r.Client != "") {
+		if r.Subject == "publisher:enterest-ci/key:k1" && (r.Actor != "distribution-admin" || r.ActorName != "" || r.Client != "") {
 			t.Fatalf("a distribution admin's identity reached a tenant's sink: %+v", r)
 		}
 	}

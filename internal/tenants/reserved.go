@@ -10,7 +10,6 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -197,110 +196,4 @@ func adminSource(a authz.Actor) string {
 		}
 	}
 	return string(b[:min(len(b), 386)])
-}
-
-// --- names reserved in a tenant (spec 0030 part 2) ---
-
-// TenantReservation is what reserving a name in a tenant did: whether it changed (a new name, or
-// another holder), the holder it had before, and the name's releases in the tenant that are not
-// yanked or purged (who was there before the holder).
-type TenantReservation struct {
-	store.TenantReservedName
-	Changed  bool
-	Previous string
-	Releases []store.LiveRelease
-}
-
-// distribution checks a distributor's call on a tenant: server administrators and distribution
-// admins (never a tenant's own grants: no grant gives distribute).
-func (s *Service) distribution(ctx context.Context, a authz.Actor, tenant string) (store.Tenant, error) {
-	if err := s.Authz.Allow(ctx, a, authz.VerbDistribute, authz.Resource{Tenant: tenant}); err != nil {
-		return store.Tenant{}, err
-	}
-	return s.Store.GetTenant(ctx, tenant)
-}
-
-// ReserveInTenant reserves a name in a tenant for a holder, or changes its holder. In the tenant the
-// name is then reached for publish and promote only by grants naming it; its releases stay. It takes
-// the tenant's upstream lock, as an upstream change does, and bumps the tenant's channels.
-func (s *Service) ReserveInTenant(ctx context.Context, a authz.Actor, tenant, packageType, name, holder string) (TenantReservation, error) {
-	t, err := s.distribution(ctx, a, tenant)
-	if err != nil {
-		return TenantReservation{}, err
-	}
-	if packageType, err = parseType(packageType); err != nil {
-		return TenantReservation{}, err
-	}
-	if err := release.ValidName(name); err != nil {
-		return TenantReservation{}, err
-	}
-	r := TenantReservation{TenantReservedName: store.TenantReservedName{TenantID: t.ID, PackageType: packageType, Name: name, Holder: holder,
-		AddedBy: a.String()}}
-	err = s.Store.InTenantTx(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
-		var err error
-		if r.Previous, r.Changed, err = tx.ReserveTenantName(ctx, &r.TenantReservedName); err != nil || !r.Changed {
-			return err
-		}
-		if err := tx.BumpTenantChannels(ctx, t.ID); err != nil {
-			return err
-		}
-		f := typedFields(map[string]any{"name": name, "holder": holder}, packageType)
-		if r.Previous != "" {
-			f["previous"] = r.Previous
-		}
-		return tx.Event(ctx, t.ID, a.String(), "reserved.tenant.add", "reserved:"+name, f)
-	})
-	if err != nil {
-		return TenantReservation{}, err
-	}
-	if r.Releases, err = s.Store.TenantLiveReleases(ctx, t.ID, packageType, name); err != nil {
-		return TenantReservation{}, err
-	}
-	if cur, err := s.Store.ListTenantReservedNames(ctx, t.ID, packageType, name); err == nil && len(cur) == 1 {
-		r.TenantReservedName = cur[0]
-	}
-	return r, nil
-}
-
-// ReleaseInTenant removes a name's reservation (of a package type, "": the default) in a tenant; no
-// release changes.
-func (s *Service) ReleaseInTenant(ctx context.Context, a authz.Actor, tenant, packageType, name string) error {
-	t, err := s.distribution(ctx, a, tenant)
-	if err != nil {
-		return err
-	}
-	if packageType, err = parseType(packageType); err != nil {
-		return err
-	}
-	return s.Store.InTenantTx(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
-		r, err := tx.ReleaseTenantName(ctx, t.ID, packageType, name)
-		if err != nil {
-			return err
-		}
-		if err := tx.BumpTenantChannels(ctx, t.ID); err != nil {
-			return err
-		}
-		return tx.Event(ctx, t.ID, a.String(), "reserved.tenant.remove", "reserved:"+name,
-			typedFields(map[string]any{"name": name, "holder": r.Holder}, packageType))
-	})
-}
-
-// ListInTenant lists a tenant's reserved names of a package type ("": the default; one name, or all
-// when name is ""): its administrators read them too.
-func (s *Service) ListInTenant(ctx context.Context, a authz.Actor, tenant, packageType, name string) ([]store.TenantReservedName, error) {
-	err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant})
-	if errors.Is(err, authz.ErrDenied) {
-		err = s.Authz.Allow(ctx, a, authz.VerbDistribute, authz.Resource{Tenant: tenant})
-	}
-	if err != nil {
-		return nil, err
-	}
-	if packageType, err = parseType(packageType); err != nil {
-		return nil, err
-	}
-	t, err := s.Store.GetTenant(ctx, tenant)
-	if err != nil {
-		return nil, err
-	}
-	return s.Store.ListTenantReservedNames(ctx, t.ID, packageType, name)
 }

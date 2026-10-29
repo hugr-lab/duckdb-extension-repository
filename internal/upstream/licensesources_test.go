@@ -87,6 +87,9 @@ func TestLicenseSources(t *testing.T) {
 					if _, err := tx.SetPublisherDistributor(ctx, tid, name, distributor); err != nil {
 						return err
 					}
+					if _, err := tx.SetDistributorHold(ctx, tid, 0); err != nil { // spec 0037: its builds live at once
+						return err
+					}
 				}
 				_, err := tx.SetPublisherLicenseKeys(ctx, tid, name, true)
 				return err
