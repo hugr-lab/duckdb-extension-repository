@@ -86,9 +86,11 @@ type Options struct {
 
 // Handler serves /api/v1.
 type Handler struct {
-	o        Options
-	limiter  *limiter
-	failures *auth.FailureLog
+	o       Options
+	limiter *limiter
+	// metaLimiter: an actor's entry metadata writes (spec 0036)
+	metaLimiter *limiter
+	failures    *auth.FailureLog
 
 	mu      sync.Mutex
 	egress  map[string]bool // tenant id -> an issuer add (discovery, JWKS) is running
@@ -133,7 +135,8 @@ func New(o Options) *Handler {
 	if o.DistributorMinTenants < 2 { // fail closed: never fewer than 2
 		o.DistributorMinTenants = 3
 	}
-	return &Handler{o: o, limiter: newLimiter(o.Rate, o.Burst), failures: &auth.FailureLog{Log: o.Log}, egress: map[string]bool{},
+	return &Handler{o: o, limiter: newLimiter(o.Rate, o.Burst), metaLimiter: newLimiter(metaWritesPerActor, metaWritesBurst),
+		failures: &auth.FailureLog{Log: o.Log}, egress: map[string]bool{},
 		uploads: map[string]int{}}
 }
 
@@ -1164,7 +1167,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			return refuse()
 		}
 	case tenantCaller:
-		if !c.verified || name == "" {
+		if !c.verified {
 			return refuse()
 		}
 	case pathVerbs:

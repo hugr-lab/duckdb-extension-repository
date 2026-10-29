@@ -2980,7 +2980,7 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 	metaFlags := set["summary"] || set["icon"] || *clearSummary || *clearIcon
 	if *reason != "" && sub != "withdraw" || sub == "withdraw" && (*source != "" || *name != "" || *private) ||
 		metaFlags && sub != "meta" || sub == "meta" && (*source != "" || *name != "" || *private || *reason != "") ||
-		set["summary"] && *clearSummary || set["icon"] && *clearIcon {
+		set["summary"] && *clearSummary || set["icon"] && (*clearIcon || *iconFile == "") {
 		return errUsage // a flag another subcommand takes, or two that contradict
 	}
 	switch {

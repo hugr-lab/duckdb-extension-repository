@@ -129,10 +129,15 @@ test("an entry's icon and summary: the distributor's shown, the tenant's own edi
   await confirm(page, 'Save')
   await expect(page.getByText('Maps <b>for</b> the tenant')).toBeVisible() // text, never markup
   await expect(mapsIcon).toHaveAttribute('src', /^blob:/)
-  // the summary alone: the icon stays
+  // the summary alone: the icon stays, sent back by its hash (nothing uploaded)
   await page.getByRole('button', { name: 'Edit…' }).click()
   await page.getByRole('dialog').getByLabel('Summary').fill('Maps for the tenant')
+  const put = page.waitForRequest((r) => r.method() === 'PUT' && new URL(r.url()).pathname.endsWith('/extensions/maps/meta'))
   await confirm(page, 'Save')
+  const sent = (await put).postDataJSON() as { summary: string; icon: { sha256?: string; data?: string } }
+  expect(sent.summary).toBe('Maps for the tenant')
+  expect(sent.icon.sha256).toMatch(/^[0-9a-f]{64}$/)
+  expect(sent.icon.data).toBeUndefined()
   await expect(page.getByText('Maps for the tenant', { exact: true })).toBeVisible()
   await expect(mapsIcon).toHaveAttribute('src', /^blob:/)
 })

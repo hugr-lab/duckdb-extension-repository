@@ -302,7 +302,8 @@ writer can deny service, not substitute a body. See [Storage](storage.md).
 
 A catalogue entry's icon (spec 0036) is never active content: only a PNG passes, with a strict chunk
 allow-list, nothing after `IEND`, its image data ending with its last `IDAT`, its size read from the
-header before anything is decoded (at most 512 pixels a side, decodes 4 at a time), and a full decode
+header before anything is decoded (at most 512 pixels a side, decodes 4 at a time, about 4 MiB each at
+a decode's peak), and a full decode
 whose size must be the header's. It is served with kista's own type, `nosniff`, `default-src 'none';
 sandbox`, `inline` and `same-origin`, after the caller is authorized and the entry found, checked
 against its hash; the console shows it from a `blob:` URL of a fixed type. The summary is plain text

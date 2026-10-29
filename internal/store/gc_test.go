@@ -28,7 +28,7 @@ func TestStorageGC(t *testing.T) {
 
 		// a commit: claim, then the row; the claim and a tombstone go
 		b := blob("a", "1")
-		if err := s.ClaimStream(ctx, "default", b.StreamHash, "c1", at(hour)); err != nil {
+		if err := s.Streams().Claim(ctx, "default", b.StreamHash, "c1", at(hour)); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.CommitBlob(ctx, &b, "c1"); err != nil {
@@ -39,21 +39,21 @@ func TestStorageGC(t *testing.T) {
 		}
 		// a lost claim: the commit claims again
 		b2 := blob("b", "2")
-		if err := s.ClaimStream(ctx, "default", b2.StreamHash, "c2", at(time.Minute)); err != nil {
+		if err := s.Streams().Claim(ctx, "default", b2.StreamHash, "c2", at(time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 		now = at(2 * time.Minute)
 		if err := s.CommitBlob(ctx, &b2, "c2"); !errors.Is(err, store.ErrClaimLost) {
 			t.Fatalf("an expired claim: %v", err)
 		}
-		if n, err := s.RemoveExpiredClaims(ctx, "default"); err != nil || n != 1 {
+		if n, err := s.Streams().RemoveExpiredClaims(ctx, "default"); err != nil || n != 1 {
 			t.Fatalf("expired claims: %d %v", n, err)
 		}
 		// a replace: the old stream is marked
 		r := blob("a", "3")
-		noErr(t, s.ClaimStream(ctx, "default", r.StreamHash, "c3", at(hour)))
+		noErr(t, s.Streams().Claim(ctx, "default", r.StreamHash, "c3", at(hour)))
 		noErr(t, s.CommitBlob(ctx, &r, "c3"))
-		if ts, _ := s.DueTombstones(ctx, "default", at(hour), at(0), "", 10); len(ts) != 1 || ts[0].StreamHash != strings.Repeat("1", 64) {
+		if ts, _ := s.Streams().DueTombstones(ctx, "default", at(hour), at(0), "", 10); len(ts) != 1 || ts[0].Hash != strings.Repeat("1", 64) {
 			t.Fatalf("the replaced stream marked: %+v", ts)
 		}
 		// Builds: one with a release is live; one unused for the grace is dead; a used one is not
@@ -113,7 +113,7 @@ func TestStorageGC(t *testing.T) {
 		// bodies: a, referenced by a build, stays; b's row (none) and c's (a build) stay; an
 		// unreferenced old row goes and its stream is marked
 		d := blob("d", "4")
-		noErr(t, s.ClaimStream(ctx, "default", d.StreamHash, "c4", at(hour)))
+		noErr(t, s.Streams().Claim(ctx, "default", d.StreamHash, "c4", at(hour)))
 		noErr(t, s.CommitBlob(ctx, &d, "c4"))
 		if ds, _ := s.DeadBodies(ctx, "default", at(-24*hour), "", 10); len(ds) != 0 {
 			t.Fatalf("bodies within the grace: %+v", ds)
@@ -125,11 +125,11 @@ func TestStorageGC(t *testing.T) {
 			t.Fatalf("dead bodies (a has a build): %+v %v", ds, err)
 		}
 		// a commit claiming its stream keeps the row
-		noErr(t, s.ClaimStream(ctx, "default", d.StreamHash, "c4b", at(hour)))
+		noErr(t, s.Streams().Claim(ctx, "default", d.StreamHash, "c4b", at(hour)))
 		if ok, err := s.DeleteBody(ctx, "default", ds[0], cutoff); err != nil || ok {
 			t.Fatalf("a claimed body deleted: %v %v", ok, err)
 		}
-		noErr(t, s.ReleaseClaim(ctx, "default", d.StreamHash, "c4b"))
+		noErr(t, s.Streams().ReleaseClaim(ctx, "default", d.StreamHash, "c4b"))
 		// a body a Build references is not deleted (the check repeated in the statement)
 		aBody := store.DeadBody{BodyHash: strings.Repeat("a", 64), StreamHash: strings.Repeat("3", 64)}
 		if ok, err := s.DeleteBody(ctx, "default", aBody, cutoff); err != nil || ok {
@@ -139,83 +139,83 @@ func TestStorageGC(t *testing.T) {
 			t.Fatalf("delete a body: %v %v", ok, err)
 		}
 		// tombstones: the listing marks unknown streams only; due ones are deleted
-		un, err := s.UnreferencedStreams(ctx, "default", []string{strings.Repeat("3", 64), strings.Repeat("4", 64), strings.Repeat("5", 64)})
+		un, err := s.Streams().Unreferenced(ctx, "default", []string{strings.Repeat("3", 64), strings.Repeat("4", 64), strings.Repeat("5", 64)})
 		if err != nil || len(un) != 1 || un[0] != strings.Repeat("5", 64) {
 			t.Fatalf("unreferenced (3 has a row, 4 a tombstone): %v %v", un, err)
 		}
-		if marked, err := s.MarkStream(ctx, "default", un[0]); err != nil || !marked {
+		if marked, err := s.Streams().Mark(ctx, "default", un[0]); err != nil || !marked {
 			t.Fatalf("mark: %v %v", marked, err)
 		}
-		if marked, err := s.MarkStream(ctx, "default", strings.Repeat("3", 64)); err != nil || marked {
+		if marked, err := s.Streams().Mark(ctx, "default", strings.Repeat("3", 64)); err != nil || marked {
 			t.Fatalf("a referenced stream marked: %v %v", marked, err)
 		}
 		now = at(25 * hour)
 		cutoff, stale := at(-24*hour), at(-10*time.Minute)
-		ts, err := s.DueTombstones(ctx, "default", cutoff, stale, "", 10)
+		ts, err := s.Streams().DueTombstones(ctx, "default", cutoff, stale, "", 10)
 		if err != nil || len(ts) != 3 { // 1 (replaced), 4 (its body deleted), 5 (listed)
 			t.Fatalf("due tombstones: %+v %v", ts, err)
 		}
 		// a commit meanwhile claims 4: its tombstone goes, and the collector cannot begin
-		noErr(t, s.ClaimStream(ctx, "default", strings.Repeat("4", 64), "c5", at(hour)))
-		if stamp, err := s.BeginDelete(ctx, "default", strings.Repeat("4", 64), cutoff, stale); err != nil || !stamp.IsZero() {
+		noErr(t, s.Streams().Claim(ctx, "default", strings.Repeat("4", 64), "c5", at(hour)))
+		if stamp, err := s.Streams().BeginDelete(ctx, "default", strings.Repeat("4", 64), cutoff, stale); err != nil || !stamp.IsZero() {
 			t.Fatalf("a claimed stream: %v %v", stamp, err)
 		}
-		stamp, err := s.BeginDelete(ctx, "default", strings.Repeat("5", 64), cutoff, stale)
+		stamp, err := s.Streams().BeginDelete(ctx, "default", strings.Repeat("5", 64), cutoff, stale)
 		if err != nil || stamp.IsZero() {
 			t.Fatalf("begin: %v %v", stamp, err)
 		}
 		// while deleting, a commit of 5 waits
-		if err := s.ClaimStream(ctx, "default", strings.Repeat("5", 64), "c6", at(hour)); !errors.Is(err, store.ErrStreamBusy) {
+		if err := s.Streams().Claim(ctx, "default", strings.Repeat("5", 64), "c6", at(hour)); !errors.Is(err, store.ErrStreamBusy) {
 			t.Fatalf("a commit during the delete: %v", err)
 		}
 		// a deleting tombstone is not taken again before it is stale
-		if again, _ := s.BeginDelete(ctx, "default", strings.Repeat("5", 64), cutoff, stale); !again.IsZero() {
+		if again, _ := s.Streams().BeginDelete(ctx, "default", strings.Repeat("5", 64), cutoff, stale); !again.IsZero() {
 			t.Fatal("a fresh deleting tombstone taken again")
 		}
 		// once stale, another collector takes it again: the first one's stamp is no longer its own
 		five := strings.Repeat("5", 64)
-		if mine, err := s.StillDeleting(ctx, "default", five, stamp); err != nil || !mine {
+		if mine, err := s.Streams().StillDeleting(ctx, "default", five, stamp); err != nil || !mine {
 			t.Fatalf("still deleting: %v %v", mine, err)
 		}
 		now = at(31 * time.Minute)
-		second, err := s.BeginDelete(ctx, "default", five, now.Add(-24*hour), now.Add(-30*time.Minute))
+		second, err := s.Streams().BeginDelete(ctx, "default", five, now.Add(-24*hour), now.Add(-30*time.Minute))
 		if err != nil || second.IsZero() || second.Equal(stamp) {
 			t.Fatalf("a stale delete taken again: %v %v", second, err)
 		}
-		if mine, _ := s.StillDeleting(ctx, "default", five, stamp); mine {
+		if mine, _ := s.Streams().StillDeleting(ctx, "default", five, stamp); mine {
 			t.Fatal("an overtaken delete still its collector's")
 		}
-		noErr(t, s.EndDelete(ctx, "default", five, stamp)) // the first collector's: no effect
-		if err := s.ClaimStream(ctx, "default", five, "c6", at(hour)); !errors.Is(err, store.ErrStreamBusy) {
+		noErr(t, s.Streams().EndDelete(ctx, "default", five, stamp)) // the first collector's: no effect
+		if err := s.Streams().Claim(ctx, "default", five, "c6", at(hour)); !errors.Is(err, store.ErrStreamBusy) {
 			t.Fatalf("an overtaken collector ended the delete: %v", err)
 		}
 		// a refused delete goes back to marked: commits go on
-		noErr(t, s.AbortDelete(ctx, "default", five, second))
-		if ts, _ := s.DueTombstones(ctx, "default", now.Add(-24*hour), now.Add(-30*time.Minute), "", 10); !hasStream(ts, five, "marked") {
+		noErr(t, s.Streams().AbortDelete(ctx, "default", five, second))
+		if ts, _ := s.Streams().DueTombstones(ctx, "default", now.Add(-24*hour), now.Add(-30*time.Minute), "", 10); !hasStream(ts, five, "marked") {
 			t.Fatalf("an aborted delete: %+v", ts)
 		}
-		second, err = s.BeginDelete(ctx, "default", five, now.Add(-24*hour), now.Add(-30*time.Minute))
+		second, err = s.Streams().BeginDelete(ctx, "default", five, now.Add(-24*hour), now.Add(-30*time.Minute))
 		if err != nil || second.IsZero() {
 			t.Fatalf("begin again: %v %v", second, err)
 		}
-		noErr(t, s.EndDelete(ctx, "default", five, second))
-		if err := s.ClaimStream(ctx, "default", strings.Repeat("5", 64), "c6", at(hour)); err != nil {
+		noErr(t, s.Streams().EndDelete(ctx, "default", five, second))
+		if err := s.Streams().Claim(ctx, "default", strings.Repeat("5", 64), "c6", at(hour)); err != nil {
 			t.Fatalf("a commit after the delete: %v", err)
 		}
 		// a marked stream listed again keeps its since: two passes a grace apart delete it
-		if marked, err := s.MarkStream(ctx, "default", strings.Repeat("6", 64)); err != nil || !marked {
+		if marked, err := s.Streams().Mark(ctx, "default", strings.Repeat("6", 64)); err != nil || !marked {
 			t.Fatalf("mark 6: %v %v", marked, err)
 		}
 		first := now
 		now = at(23 * hour)
-		if marked, err := s.MarkStream(ctx, "default", strings.Repeat("6", 64)); err != nil || marked {
+		if marked, err := s.Streams().Mark(ctx, "default", strings.Repeat("6", 64)); err != nil || marked {
 			t.Fatalf("6 marked again: %v %v", marked, err)
 		}
 		now = first.Add(25 * hour)
-		ts, _ = s.DueTombstones(ctx, "default", now.Add(-24*hour), now.Add(-10*time.Minute), "", 10)
+		ts, _ = s.Streams().DueTombstones(ctx, "default", now.Add(-24*hour), now.Add(-10*time.Minute), "", 10)
 		found := false
 		for _, x := range ts {
-			found = found || x.StreamHash == strings.Repeat("6", 64)
+			found = found || x.Hash == strings.Repeat("6", 64)
 		}
 		if !found {
 			t.Fatal("a listing reset an existing tombstone")
@@ -232,7 +232,7 @@ func noErr(t *testing.T, err error) {
 
 func hasStream(ts []store.Tombstone, stream, state string) bool {
 	for _, t := range ts {
-		if t.StreamHash == stream && t.State == state {
+		if t.Hash == stream && t.State == state {
 			return true
 		}
 	}

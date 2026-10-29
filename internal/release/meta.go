@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -12,6 +13,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/icon"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -37,6 +39,9 @@ var (
 	ErrIconChanged = errors.New("release: the icon changed; read the metadata again")
 )
 
+// sha256Hex is a stored icon's hash, as a write keeping it names it.
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 // fillers are printable characters that show nothing: Enterest's summary rules refuse them too.
 var fillers = map[rune]bool{0x115F: true, 0x1160: true, 0x3164: true, 0xFFA0: true, 0x2800: true}
 
@@ -55,6 +60,7 @@ func CheckSummary(s string) (string, error) {
 	marks := 0
 	for _, r := range s {
 		switch {
+		// IsPrint already excludes Cf, Zl and Zp (and every space but U+0020); they are named for the reader
 		case unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) || !unicode.IsPrint(r) && r != ' ':
 			return "", fmt.Errorf("%w: the summary is plain text on one line: it has a control, format or separator character (U+%04X)",
 				store.ErrInvalid, r)
@@ -118,6 +124,7 @@ func (s *Service) metaTarget(ctx context.Context, a authz.Actor, tenant, typ, la
 	}
 	x := metaTarget{typ: typ, name: name}
 	var err error
+	var labels map[string]string // the tenant's sources as answers name them, read once
 	switch {
 	case a.Kind == authz.ActorPublisher:
 		if a.Tenant != tenant {
@@ -134,8 +141,7 @@ func (s *Service) metaTarget(ctx context.Context, a authz.Actor, tenant, typ, la
 		if !ok {
 			return x, authz.ErrDenied
 		}
-		labels, err := s.Store.SourceLabels(ctx, x.t.ID)
-		if err != nil {
+		if labels, err = s.Store.SourceLabels(ctx, x.t.ID); err != nil {
 			return x, err
 		}
 		if own, live := labels[x.src]; !live || label != own && label != store.SourcePublisherIDPrefix+id {
@@ -193,9 +199,10 @@ func (s *Service) metaTarget(ctx context.Context, a authz.Actor, tenant, typ, la
 		}
 		x.label = srcs[x.src].Label
 	} else {
-		labels, err := s.Store.SourceLabels(ctx, x.t.ID)
-		if err != nil {
-			return x, err
+		if labels == nil {
+			if labels, err = s.Store.SourceLabels(ctx, x.t.ID); err != nil {
+				return x, err
+			}
 		}
 		x.label = store.Label(labels, x.src)
 	}
@@ -238,14 +245,37 @@ func (s *Service) EntryIcon(ctx context.Context, a authz.Actor, tenant, packageT
 	return s.Blob.ReadIcon(ctx, x.t.StorageDomain, m.IconSHA256, m.IconBytes)
 }
 
+// MayWriteEntryMeta reports whether a caller may write an entry's metadata (the checks
+// SetEntryMeta makes first): the API asks before it reads the body.
+func (s *Service) MayWriteEntryMeta(ctx context.Context, a authz.Actor, tenant, packageType, source, name string) error {
+	_, err := s.metaTarget(ctx, a, tenant, packageType, source, name, true)
+	return err
+}
+
+// checkWrite checks a write against the entry's current metadata: a signed request older than the
+// entry's mark, or of its second with another body (ErrStale), and an icon kept by a hash that is no
+// longer the stored one (ErrIconChanged).
+func checkWrite(cur store.EntryMeta, had bool, w MetaWrite, keep string) error {
+	at := w.SignedAt.UTC().Truncate(time.Microsecond)
+	if had && !w.SignedAt.IsZero() && (at.Before(cur.SignedAt) || at.Equal(cur.SignedAt) && w.BodySHA256 != cur.SignedBody) {
+		return ErrStale
+	}
+	if keep != "" && cur.IconSHA256 != keep {
+		return ErrIconChanged
+	}
+	return nil
+}
+
 // SetEntryMeta writes an entry's metadata, replacing what it had (spec 0036). A new icon is checked
-// (internal/icon), counted toward the source's byte cap (catalogue.max_bytes; a tenant's or a
-// server administrator's write is not bounded), claimed and uploaded to the tenant's storage
-// domain, and committed with the row. The row's transaction takes the tenant's auth lock: it checks
-// a publisher and its key still exist, refuses a stale signed request (ErrStale) and an icon kept by
-// a hash that changed (ErrIconChanged). Writing the same metadata again changes nothing and makes no
-// event; a signed write always advances the entry's signed-at, a token's moves it to the server's
-// clock.
+// (internal/icon). Before anything is uploaded the write is checked against the entry's current
+// metadata (stale, a kept icon changed), a publisher and its key against the store, and a new icon
+// against the source's byte cap (catalogue.max_bytes, its growth only; a tenant's or a server
+// administrator's write is not bounded); an icon the entry has already is not uploaded again. A new
+// one is claimed (waiting at most IconClaimWait on the collector) and uploaded to the tenant's
+// storage domain, and committed with the row. The row's transaction takes the tenant's auth lock and
+// checks it all again. Writing the same metadata again changes nothing and makes no event; a signed
+// write always advances the entry's mark, a token's that changes something moves it to the later of
+// the server's clock and the mark, and a token's no-op writes nothing.
 func (s *Service) SetEntryMeta(ctx context.Context, a authz.Actor, tenant, packageType, source, name string, w MetaWrite) (EntryMetaView, error) {
 	x, err := s.metaTarget(ctx, a, tenant, packageType, source, name, true)
 	if err != nil {
@@ -262,9 +292,12 @@ func (s *Service) SetEntryMeta(ctx context.Context, a authz.Actor, tenant, packa
 	keep := ""
 	switch {
 	case w.Icon == nil:
-	case w.Icon.Keep != "":
+	case w.Icon.Keep != "" || w.Icon.Data == nil && w.Icon.ContentType == "":
 		if w.Icon.Data != nil || w.Icon.ContentType != "" {
 			return EntryMetaView{}, fmt.Errorf("%w: an icon is new (content_type and data) or kept (sha256), not both", store.ErrInvalid)
+		}
+		if !sha256Hex.MatchString(w.Icon.Keep) {
+			return EntryMetaView{}, fmt.Errorf("%w: a kept icon's sha256 is the stored icon's hash (64 lowercase hex digits)", store.ErrInvalid)
 		}
 		keep = w.Icon.Keep
 	default:
@@ -278,17 +311,29 @@ func (s *Service) SetEntryMeta(ctx context.Context, a authz.Actor, tenant, packa
 		}
 		data = w.Icon.Data
 	}
-	if data != nil && (a.Kind == authz.ActorPublisher || a.Kind == authz.ActorDistributionAdmin) && s.MaxBytes > 0 {
-		// read outside any lock, as room's: writes at once may pass it together
-		cur, _, err := s.Store.EntryMeta(ctx, x.t.ID, x.typ, x.src, name)
-		if err != nil {
+	// the checks the row's transaction makes again, made before anything is uploaded
+	cur, had, err := s.Store.EntryMeta(ctx, x.t.ID, x.typ, x.src, name)
+	if err != nil {
+		return EntryMetaView{}, err
+	}
+	if data != nil && blob.ContentHash(data) == cur.IconSHA256 {
+		keep, data = cur.IconSHA256, nil // the icon the entry has: nothing to upload
+	}
+	if err := checkWrite(cur, had, w, keep); err != nil {
+		return EntryMetaView{}, err
+	}
+	if a.Kind == authz.ActorPublisher {
+		if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error { return tx.PublicationLive(ctx, x.src, w.KeyID) }); err != nil {
 			return EntryMetaView{}, err
 		}
+	}
+	if data != nil && (a.Kind == authz.ActorPublisher || a.Kind == authz.ActorDistributionAdmin) && s.MaxBytes > 0 {
+		// read outside any lock, as room's: writes at once may pass it together
 		_, used, err := s.Store.SourceUsage(ctx, x.t.ID, x.src)
 		if err != nil {
 			return EntryMetaView{}, err
 		}
-		if used-cur.IconBytes+int64(len(data)) > s.MaxBytes {
+		if growth := int64(len(data)) - cur.IconBytes; growth > 0 && used+growth > s.MaxBytes {
 			return EntryMetaView{}, fmt.Errorf("%w (catalogue.max_bytes): the source's builds placed nowhere and its entries' icons "+
 				"hold as many bytes as it may", store.ErrCatalogueFull)
 		}
@@ -307,39 +352,66 @@ func (s *Service) SetEntryMeta(ctx context.Context, a authz.Actor, tenant, packa
 		}
 		if err != nil {
 			_ = s.Blob.ReleaseIcon(context.WithoutCancel(ctx), x.t.StorageDomain, sha, claim)
+			err = &UploadedError{Err: err}
 		}
 		return v, err
 	}
 }
 
-// commitMeta writes the row (step 4 of an icon's write when sha is a new icon's).
+// UploadedError is a metadata write that failed after its icon was uploaded (the object is left
+// for the collector): the API records it.
+type UploadedError struct{ Err error }
+
+func (e *UploadedError) Error() string { return e.Err.Error() }
+func (e *UploadedError) Unwrap() error { return e.Err }
+
+// commitMeta writes the row (step 4 of an icon's write when sha is a new icon's), under the
+// tenant's auth lock, checking again what the write was checked against before.
 func (s *Service) commitMeta(ctx context.Context, a authz.Actor, x metaTarget, w MetaWrite, summary, keep, sha, claim string,
 	info icon.Info, size int64) (EntryMetaView, error) {
+	if s.beforeMetaCommit != nil {
+		s.beforeMetaCommit()
+	}
 	locks := []string{store.PublisherAuthLock(x.t.ID)}
 	if sha != "" {
 		locks = append(locks, store.IconLock(x.t.StorageDomain, sha))
 	}
 	var out EntryMetaView
 	err := s.Store.InTenantTx(ctx, x.t.ID, locks, func(tx *store.Tx) error {
-		if a.Kind == authz.ActorPublisher {
+		if !serverActor(a) {
+			if active, err := tx.TenantActive(ctx, x.t.ID); err != nil {
+				return err
+			} else if !active {
+				return authz.ErrDenied // suspended meanwhile
+			}
+		}
+		switch a.Kind {
+		case authz.ActorPublisher:
 			if err := tx.PublicationLive(ctx, x.src, w.KeyID); err != nil {
 				return err // the publisher or its key removed meanwhile: nothing is written
+			}
+			if x.dt != "" {
+				if err := distributorMayNow(ctx, tx, x.t.ID, x.typ, x.name, x.dt); err != nil {
+					return err // the name reserved meanwhile for another holder
+				}
+			}
+		case authz.ActorPrincipal:
+			if dt, err := tx.SourceDistributor(ctx, x.t.ID, x.src); err != nil {
+				return err
+			} else if dt != "" {
+				return authz.ErrDenied // a tenant's administrators never write a distributor's entry
 			}
 		}
 		cur, had, err := tx.EntryMeta(ctx, x.t.ID, x.typ, x.src, x.name)
 		if err != nil {
 			return err
 		}
-		signedAt := w.SignedAt.UTC().Truncate(time.Microsecond)
-		if had && !w.SignedAt.IsZero() && (signedAt.Before(cur.SignedAt) || signedAt.Equal(cur.SignedAt) && w.BodySHA256 != cur.SignedBody) {
-			return ErrStale
+		if err := checkWrite(cur, had, w, keep); err != nil {
+			return err
 		}
 		next := store.EntryMeta{TenantID: x.t.ID, PackageType: x.typ, Source: x.src, Name: x.name, Summary: summary}
 		switch {
 		case keep != "":
-			if cur.IconSHA256 != keep {
-				return ErrIconChanged
-			}
 			next.IconSHA256, next.IconWidth, next.IconHeight, next.IconBytes = cur.IconSHA256, cur.IconWidth, cur.IconHeight, cur.IconBytes
 		case sha != "":
 			if err := tx.CommitIcon(ctx, x.t.StorageDomain, sha, claim); err != nil {
@@ -348,14 +420,24 @@ func (s *Service) commitMeta(ctx context.Context, a authz.Actor, x metaTarget, w
 			next.IconSHA256, next.IconWidth, next.IconHeight, next.IconBytes = sha, info.Width, info.Height, size
 		}
 		changed := next.Summary != cur.Summary || next.IconSHA256 != cur.IconSHA256
+		signed := !w.SignedAt.IsZero()
+		if !changed && !signed {
+			out = x.view(cur, had) // a token's no-op writes nothing, its mark included
+			return nil
+		}
 		next.SetBy, next.SetAt = cur.SetBy, cur.SetAt
 		if changed || !had {
-			next.SetBy, next.SetAt = a.String(), tx.Now()
+			next.SetBy, next.SetAt = a.String(), tx.Now().UTC().Truncate(time.Microsecond)
 		}
-		if w.SignedAt.IsZero() {
-			next.SignedAt = tx.Now() // a token's write: no signed request made before it undoes it
+		if signed {
+			next.SignedAt, next.SignedBody = w.SignedAt.UTC().Truncate(time.Microsecond), w.BodySHA256
 		} else {
-			next.SignedAt, next.SignedBody = signedAt, w.BodySHA256
+			// a token's write: no signed request made before it undoes it, and the mark never goes
+			// back (a signed write may have been dated ahead of the server's clock)
+			next.SignedAt = tx.Now().UTC().Truncate(time.Microsecond)
+			if cur.SignedAt.After(next.SignedAt) {
+				next.SignedAt = cur.SignedAt
+			}
 		}
 		if err := tx.PutEntryMeta(ctx, next); err != nil {
 			return err

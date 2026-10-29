@@ -112,7 +112,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"PlaceFollow":    {"source.set", "release.place", "shadow.add", "license.public_warning"},
 		"SetChannelHold": {"catalogue.hold"}, "ChannelHold": nil,
 		"Withdraw":     {"catalogue.withdrawn"},
-		"SetEntryMeta": {"catalogue.meta"}, "EntryMeta": nil, "EntryIcon": nil, // spec 0036
+		"SetEntryMeta": {"catalogue.meta"}, "EntryMeta": nil, "EntryIcon": nil, "MayWriteEntryMeta": nil, // spec 0036
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},

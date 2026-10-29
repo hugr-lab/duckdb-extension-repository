@@ -463,13 +463,26 @@ not publish answers `404`. A signed `GET` names an empty body, as `whoami` does.
   second with another body, is `409`, type `stale`: within the five minutes a signed request lives, a
   captured one never undoes a newer write, and the same request again changes nothing. Every
   accepted signed write moves `signed_at` to its `signed-at`; a token's write (an administrator's, a
-  distribution admin's) moves it to kista's clock. A client answered `stale` reads again, and waits
-  until its clock passes `signed_at` when that is ahead of it.
+  distribution admin's) that changes something moves it to the later of kista's clock and
+  `signed_at` (it never goes back), and a token's write that changes nothing writes nothing. A client
+  answered `stale` reads again, and waits until its clock passes `signed_at` when that is ahead of
+  it. A request signed ahead of kista's clock (within the five minutes) and never delivered can still
+  land within its window, over a token's write made before its `signed-at`.
+- **Checked first.** A write is checked against the entry (stale, a kept icon changed), the key, and
+  the byte cap before anything is uploaded; an icon the entry has already is not uploaded again. A
+  write that fails after its icon was uploaded leaves the object to the collector, and is recorded.
 - **The body** is at most 384 KiB (`413`, "the body is at most 384 KiB"); every other management
-  route keeps 64 KiB.
+  route keeps 64 KiB. The caller is authorized before the body is read.
+- **The rate**: a caller's metadata writes are limited to one a second, in bursts of ten (`429`,
+  type `rate-limited`, with `Retry-After`), beside the API's per-client rate.
 - **The byte cap**: the icon counts toward the source's `catalogue.max_bytes` with its builds placed
-  nowhere; a write beyond it is `429`, type `catalogue-full`, with no `Retry-After`.
+  nowhere; a write that grows it beyond the cap is `429`, type `catalogue-full`, with no
+  `Retry-After` (a smaller icon, or the same one kept, passes).
+- **Busy**: a write of an icon the collector is deleting waits up to ten seconds, then answers `503`
+  with `Retry-After`.
 - A key revoked, or a publisher removed, while the write is in flight writes nothing (`401`).
+- **Recorded**: a stale write, and one that failed after its icon was uploaded, are `catalogue.meta`
+  events with the outcome `refused` or `failed` and a `reason`.
 
 **The icon's rules** (`400`, type `invalid`, naming the rule):
 
@@ -492,7 +505,7 @@ with its own type and headers (`image/png`, `nosniff`, `Content-Security-Policy:
 sandbox`, `inline`, `same-origin`, `no-store`), after the caller is authorized and the entry found,
 checked against its hash.
 
-With the [CI script above](#publishing-from-ci):
+With the [CI script below](#publishing-from-ci):
 
 ```bash
 M="/api/v1/tenants/acme/catalogue/publisher:enterest-ci/extensions/geo_tools/meta"
@@ -658,9 +671,9 @@ A captured request can be replayed only within its five minutes, to the same pat
 body: a publication then answers the existing release (`200`) and changes nothing; a promotion
 promotes the same; an attachment is added again; an entry's metadata write older than the entry's
 last one, or of its second with another body, is refused (`409`, type `stale`: [An entry's icon
-and summary](#an-entrys-icon-and-summary)), and the same one again changes nothing. The statement and the signature a release keeps
-are shown to the extension's administrators only, so another publisher of the channel cannot
-replay them.
+and summary](#an-entrys-icon-and-summary)), and the same one again changes nothing. The statement
+and the signature a release keeps are shown to the extension's administrators only, so another
+publisher of the channel cannot replay them.
 
 ### Publishing from CI
 

@@ -22,8 +22,9 @@ type EntryMeta struct {
 	IconBytes             int64
 	SetBy                 string
 	SetAt                 time.Time
-	// SignedAt and SignedBody are the last accepted signed write's signed-at and body hash (zero and
-	// "" after a token's write, which sets SignedAt to the server's clock)
+	// SignedAt and SignedBody are the mark a signed write must not be older than: the last accepted
+	// signed write's signed-at and body hash, or after a token's write that changed something the
+	// later of the server's clock and the mark, with SignedBody "" (zero for a row never signed)
 	SignedAt   time.Time
 	SignedBody string
 }

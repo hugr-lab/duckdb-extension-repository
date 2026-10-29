@@ -258,10 +258,11 @@ export function EntryIcon({ path, icon, size }: { path: string; icon?: EntryIcon
   return <img src={url} alt="" width={size} height={size} className="shrink-0 rounded" style={box} />
 }
 
-/** An entry's summary: plain text, never markup or a link. */
+/** An entry's summary: plain text, never markup or a link, its direction isolated. */
 export function EntrySummary({ summary }: { summary?: string }) {
   if (!summary) return null
-  return <span className="text-[13px] text-ink-muted">{summary}</span>
+  // isolated: a right-to-left summary does not reorder the text around it
+  return <bdi className="text-[13px] text-ink-muted">{summary}</bdi>
 }
 
 /** Editing an entry's metadata (spec 0036): the summary, a PNG file for the icon, or clearing it.

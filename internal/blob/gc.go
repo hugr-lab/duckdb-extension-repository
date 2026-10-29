@@ -371,14 +371,14 @@ func (c *Collector) tombstones(ctx context.Context, d Domain, k kind, cutoff tim
 			return err
 		}
 		for _, t := range ts {
-			key := k.key(t.StreamHash)
+			key := k.key(t.Hash)
 			size := c.size(ctx, d, key)
 			if r.DryRun {
 				*k.deleted(r)++
 				r.Bytes += size
 				continue
 			}
-			stamp, err := objs.BeginDelete(ctx, d.Name, t.StreamHash, cutoff, stale)
+			stamp, err := objs.BeginDelete(ctx, d.Name, t.Hash, cutoff, stale)
 			if err != nil {
 				return err
 			}
@@ -390,7 +390,7 @@ func (c *Collector) tombstones(ctx context.Context, d Domain, k kind, cutoff tim
 			if err := c.renew(ctx, d.Name); err != nil {
 				return err
 			}
-			mine, err := objs.StillDeleting(ctx, d.Name, t.StreamHash, stamp)
+			mine, err := objs.StillDeleting(ctx, d.Name, t.Hash, stamp)
 			if err != nil {
 				return err
 			}
@@ -402,13 +402,13 @@ func (c *Collector) tombstones(ctx context.Context, d Domain, k kind, cutoff tim
 			cancel()
 			if err != nil {
 				if ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) {
-					if aerr := objs.AbortDelete(context.WithoutCancel(ctx), d.Name, t.StreamHash, stamp); aerr != nil {
+					if aerr := objs.AbortDelete(context.WithoutCancel(ctx), d.Name, t.Hash, stamp); aerr != nil {
 						err = errors.Join(err, aerr)
 					}
 				}
-				return fmt.Errorf("blob: domain %s: deleting %s %s: %w", d.Name, k.name, t.StreamHash, err)
+				return fmt.Errorf("blob: domain %s: deleting %s %s: %w", d.Name, k.name, t.Hash, err)
 			}
-			if err := objs.EndDelete(ctx, d.Name, t.StreamHash, stamp); err != nil {
+			if err := objs.EndDelete(ctx, d.Name, t.Hash, stamp); err != nil {
 				return err
 			}
 			*k.deleted(r)++
@@ -417,7 +417,7 @@ func (c *Collector) tombstones(ctx context.Context, d Domain, k kind, cutoff tim
 				r.Resolved++
 			}
 		}
-		after = ts[len(ts)-1].StreamHash
+		after = ts[len(ts)-1].Hash
 	}
 }
 

@@ -14,11 +14,12 @@ import (
 // their row after; the collector marks streams no row references and deletes them a grace later.
 // Every change to a stream's claims and tombstone holds the stream's lock.
 
-// ErrStreamBusy is a commit meeting a stream the collector is deleting: it waits and tries again.
+// ErrStreamBusy is a write meeting an object the collector is deleting, a stream or an icon (spec
+// 0036): it waits and tries again. (Named for streams, the first kind.)
 var ErrStreamBusy = errors.New("store: the stream is being deleted; try again")
 
-// ErrClaimLost is a commit whose claim expired or was removed before its row was written: it claims
-// and uploads again.
+// ErrClaimLost is a write whose claim expired or was removed before its row was written, a stream's
+// or an icon's: it claims and uploads again.
 var ErrClaimLost = errors.New("store: the stream's claim was lost")
 
 // ErrBuildGone is a release insert whose Build was collected meanwhile: the intake starts again
@@ -97,17 +98,6 @@ func (o Objects) ReleaseClaim(ctx context.Context, domain, hash, claimID string)
 	})
 }
 
-// ClaimStream claims a stream for a commit until its deadline (commit step 1): it removes the
-// stream's tombstone, or answers ErrStreamBusy while the collector is deleting it.
-func (s *Store) ClaimStream(ctx context.Context, domain, stream, claimID string, until time.Time) error {
-	return s.Streams().Claim(ctx, domain, stream, claimID, until)
-}
-
-// ReleaseClaim removes a commit's claim (a commit giving up), under the stream's lock.
-func (s *Store) ReleaseClaim(ctx context.Context, domain, stream, claimID string) error {
-	return s.Streams().ReleaseClaim(ctx, domain, stream, claimID)
-}
-
 // CommitIcon ends an icon's write (spec 0036, step 4) in the transaction that writes the row
 // referencing it, which holds the icon's lock: it checks the write's claim is still live
 // (ErrClaimLost otherwise), and removes the claim and any tombstone of the icon.
@@ -124,6 +114,8 @@ func (t *Tx) CommitIcon(ctx context.Context, domain, sha256, claimID string) err
 	if _, err := t.exec(ctx, "DELETE FROM "+k.claims+" WHERE domain = ? AND "+k.col+" = ? AND claim_id = ?", domain, sha256, claimID); err != nil {
 		return err
 	}
+	// defensive, as CommitBlob's: the claim removed the tombstone, and a live claim keeps the listing
+	// from marking it again, so none should be here
 	_, err := t.exec(ctx, "DELETE FROM "+k.tombstones+" WHERE domain = ? AND "+k.col+" = ?", domain, sha256)
 	return err
 }
@@ -230,12 +222,6 @@ func (o Objects) Mark(ctx context.Context, domain, hash string) (bool, error) {
 		return err
 	})
 	return marked, err
-}
-
-// MarkStream marks a stream found in a domain's listing (where unmarked, unreferenced, unclaimed).
-// It reports whether it marked it.
-func (s *Store) MarkStream(ctx context.Context, domain, stream string) (bool, error) {
-	return s.Streams().Mark(ctx, domain, stream)
 }
 
 // buildDead is the condition of a Build no release references and not used since the cutoff (?).
@@ -397,15 +383,9 @@ func (o Objects) Unreferenced(ctx context.Context, domain string, hashes []strin
 	return out, nil
 }
 
-// UnreferencedStreams returns the streams among hashes that no row of the domain references and no
-// tombstone names: what the listing marks (MarkStream skips the ones a live claim holds).
-func (s *Store) UnreferencedStreams(ctx context.Context, domain string, hashes []string) ([]string, error) {
-	return s.Streams().Unreferenced(ctx, domain, hashes)
-}
-
 // Tombstone is an object the collector marked.
 type Tombstone struct {
-	StreamHash string // the object's hash: a stream's, or an icon's (spec 0036)
+	Hash       string // the object's: a stream's hash, or an icon's (spec 0036)
 	Since      time.Time
 	State      string
 	DeletingAt time.Time
@@ -420,18 +400,13 @@ func (o Objects) DueTombstones(ctx context.Context, domain string, cutoff, stale
 	var out []Tombstone
 	err := o.s.eachRow(ctx, q, []any{domain, after, o.s.d.timeArg(cutoff), o.s.d.timeArg(stale)}, func(sc func(...any) error) error {
 		var t Tombstone
-		if err := sc(&t.StreamHash, scanTime{&t.Since}, &t.State, scanTime{&t.DeletingAt}); err != nil {
+		if err := sc(&t.Hash, scanTime{&t.Since}, &t.State, scanTime{&t.DeletingAt}); err != nil {
 			return err
 		}
 		out = append(out, t)
 		return nil
 	})
 	return out, err
-}
-
-// DueTombstones lists up to limit stream tombstones of a domain to act on (Objects.DueTombstones).
-func (s *Store) DueTombstones(ctx context.Context, domain string, cutoff, stale time.Time, after string, limit int) ([]Tombstone, error) {
-	return s.Streams().DueTombstones(ctx, domain, cutoff, stale, after, limit)
 }
 
 // BeginDelete moves a due tombstone to deleting (the checks repeated under the object's lock:
@@ -464,11 +439,6 @@ func (o Objects) BeginDelete(ctx context.Context, domain, hash string, cutoff, s
 	return stamp, err
 }
 
-// BeginDelete moves a due stream tombstone to deleting (Objects.BeginDelete).
-func (s *Store) BeginDelete(ctx context.Context, domain, stream string, cutoff, stale time.Time) (time.Time, error) {
-	return s.Streams().BeginDelete(ctx, domain, stream, cutoff, stale)
-}
-
 // StillDeleting reports whether a delete begun at stamp is still this collector's: no other
 // collector took the tombstone again since, nor finished it.
 func (o Objects) StillDeleting(ctx context.Context, domain, hash string, stamp time.Time) (bool, error) {
@@ -479,11 +449,6 @@ func (o Objects) StillDeleting(ctx context.Context, domain, hash string, stamp t
 	return n == 1, err
 }
 
-// StillDeleting reports whether a stream's delete begun at stamp is still this collector's.
-func (s *Store) StillDeleting(ctx context.Context, domain, stream string, stamp time.Time) (bool, error) {
-	return s.Streams().StillDeleting(ctx, domain, stream, stamp)
-}
-
 // EndDelete removes the tombstone of a delete begun at stamp once its object is deleted.
 func (o Objects) EndDelete(ctx context.Context, domain, hash string, stamp time.Time) error {
 	k := o.k
@@ -492,11 +457,6 @@ func (o Objects) EndDelete(ctx context.Context, domain, hash string, stamp time.
 			domain, hash, tx.s.d.timeArg(stamp))
 		return err
 	})
-}
-
-// EndDelete removes the tombstone of a stream's delete begun at stamp once it is deleted.
-func (s *Store) EndDelete(ctx context.Context, domain, stream string, stamp time.Time) error {
-	return s.Streams().EndDelete(ctx, domain, stream, stamp)
 }
 
 // AbortDelete returns the tombstone of a delete begun at stamp that the store refused to marked (its
@@ -510,11 +470,6 @@ func (o Objects) AbortDelete(ctx context.Context, domain, hash string, stamp tim
 	})
 }
 
-// AbortDelete returns a stream's tombstone of a delete begun at stamp to marked.
-func (s *Store) AbortDelete(ctx context.Context, domain, stream string, stamp time.Time) error {
-	return s.Streams().AbortDelete(ctx, domain, stream, stamp)
-}
-
 // RemoveExpiredClaims removes a domain's claims expired before now (a write that never finished).
 // It takes no object lock: an expired claim holds nothing already (every check of a claim is of a
 // live one), so removing it changes no decision.
@@ -526,9 +481,4 @@ func (o Objects) RemoveExpiredClaims(ctx context.Context, domain string) (int, e
 	}
 	n, err := res.RowsAffected()
 	return int(n), err
-}
-
-// RemoveExpiredClaims removes a domain's stream claims expired before now.
-func (s *Store) RemoveExpiredClaims(ctx context.Context, domain string) (int, error) {
-	return s.Streams().RemoveExpiredClaims(ctx, domain)
 }

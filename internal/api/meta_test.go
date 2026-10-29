@@ -36,6 +36,7 @@ func iconBody(summary string, data []byte) string {
 // and changed writes and a full catalogue each have their answer.
 func TestEntryMetaRoutes(t *testing.T) {
 	m := newMgmt(t)
+	m.apiH.SetMetaRate(1e6, 1e6) // the actor's rate is tested at the end
 	da, ta, sa := m.toks["server dist admin"], m.toks["tenant admin"], m.toks["server admin"]
 	const T = "/api/v1/tenants/acme"
 	call := func(want int, method, path, tok, body string) resp {
@@ -104,15 +105,20 @@ func TestEntryMetaRoutes(t *testing.T) {
 		t.Fatalf("a distribution admin's write: %v", r)
 	}
 	call(404, "PUT", own+"/meta", da, `{"summary":"x"}`)
-	// a token's write moved the mark to the server's clock: a request signed in that second is stale,
-	// one signed after it is not
-	if r := m.call(t, "PUT", geo+"/meta", key, `{"summary":"Geometry tools"}`); r.status != 409 && r.status != 200 {
-		t.Fatalf("a request signed in the token write's second: %d %s", r.status, r.body)
+	// a token's write moved the mark to the server's clock: a request signed before it is stale, one
+	// signed after it is not
+	m.signers[key].at = time.Now().Add(-time.Second)
+	if r := m.call(t, "PUT", geo+"/meta", key, `{"summary":"Geometry tools"}`); r.status != 409 || !strings.Contains(string(r.body), "problem:stale") {
+		t.Fatalf("a request signed before the token's write: %d %s", r.status, r.body)
 	}
 	m.signers[key].at = time.Now().Add(2 * time.Second)
 	call(200, "PUT", T+"/catalogue/publisher-id:"+dist+"/extensions/geo_tools/meta", key, `{"summary":"Geometry tools"}`)
 	call(404, "PUT", own+"/meta", key, `{"summary":"x"}`)
 	call(404, "PUT", geo+"/meta", ownKey, `{"summary":"x"}`)
+	// the signer's own entry named by another source's label: refused, even where that label's
+	// source has no entry of the name
+	call(404, "PUT", T+"/catalogue/publisher:own-ci/extensions/geo_tools/meta", key, `{"summary":"x"}`)
+	call(404, "PUT", T+"/catalogue/tenant/extensions/geo_tools/meta", key, `{"summary":"x"}`)
 	if r := call(200, "GET", geo+"/meta", key, "").json(t); r["summary"] != "Geometry tools" || r["icon"] != nil || r["set_by"] != nil {
 		t.Fatalf("a signed read, the icon cleared by the write that named none: %v", r)
 	}
@@ -167,7 +173,7 @@ func TestEntryMetaRoutes(t *testing.T) {
 	if r := m.call(t, "PUT", geo+"/meta", key, `{"summary":"older"}`); r.status != 409 || !strings.Contains(string(r.body), "problem:stale") {
 		t.Fatalf("a stale request: %d %s", r.status, r.body)
 	}
-	m.signers[key].at = time.Now().Add(3 * time.Second)
+	m.signers[key].at = time.Now().Add(10 * time.Second) // past every signed write above
 
 	// a full catalogue: the distributor's publisher and its distribution admin are bounded
 	m.apiRel.MaxBytes = 1
@@ -209,9 +215,20 @@ func TestEntryMetaRoutes(t *testing.T) {
 		t.Fatal("event-kinds without catalogue.meta")
 	}
 	evs := call(200, "GET", T+"/events?kind=catalogue.meta", ta, "")
-	if !strings.Contains(string(evs.body), `"key":"SHA256:`) || !strings.Contains(string(evs.body), "distribution-admin") {
+	if !strings.Contains(string(evs.body), `"key":"`+m.signers[key].fp+`"`) || !strings.Contains(string(evs.body), "distribution-admin") {
 		t.Fatalf("the events: %s", evs.body)
 	}
+
+	// the actor's rate: a burst of one, then 429 with Retry-After; a write refused before its body is
+	// read takes none
+	m.apiH.SetMetaRate(0.001, 1)
+	call(404, "PUT", geo+"/meta", ta, `{"summary":"x"}`)
+	call(200, "PUT", own+"/meta", ta, `{"summary":"Own"}`)
+	if r := m.call(t, "PUT", own+"/meta", ta, `{"summary":"Own"}`); r.status != 429 || r.header.Get("Retry-After") == "" ||
+		!strings.Contains(string(r.body), "problem:rate-limited") {
+		t.Fatalf("over the actor's rate: %d %s", r.status, r.body)
+	}
+	m.apiH.SetMetaRate(1e6, 1e6)
 
 	// a row whose object is missing: the icon is not found (and logged), never served
 	tn, err := m.st.GetTenant(ctx, "acme")
@@ -226,4 +243,11 @@ func TestEntryMetaRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	call(404, "GET", own+"/icon", ta, "")
+
+	// a stale request is a refused event (written by the asynchronous writer, flushed by its close)
+	m.events.Close(ctx)
+	if evs := call(200, "GET", T+"/events?kind=catalogue.meta&outcome=refused", ta, ""); !strings.Contains(string(evs.body), `"reason":"stale"`) ||
+		!strings.Contains(string(evs.body), `"key":"`+m.signers[key].fp+`"`) {
+		t.Fatalf("the stale write's event: %s", evs.body)
+	}
 }
