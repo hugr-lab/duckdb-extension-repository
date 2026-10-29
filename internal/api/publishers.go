@@ -26,6 +26,9 @@ type publisherKeyJSON struct {
 }
 
 type publisherJSON struct {
+	// ID is the publisher's id (spec 0037): opaque, it grants nothing; a distributor recognises its
+	// own publisher by it after a publisher of the same name was removed and created again
+	ID        string             `json:"id"`
 	Name      string             `json:"name"`
 	CreatedAt string             `json:"created_at"`
 	CreatedBy string             `json:"created_by"`
@@ -45,7 +48,7 @@ func publisherKeyOf(k store.PublisherKey, c caller) publisherKeyJSON {
 }
 
 func publisherOf(p store.Publisher, keys []store.PublisherKey, c caller) publisherJSON {
-	o := publisherJSON{Name: p.Name, CreatedAt: timeOf(p.CreatedAt), CreatedBy: createdBy(p.CreatedBy, c), Keys: []publisherKeyJSON{},
+	o := publisherJSON{ID: p.ID, Name: p.Name, CreatedAt: timeOf(p.CreatedAt), CreatedBy: createdBy(p.CreatedBy, c), Keys: []publisherKeyJSON{},
 		LicenseKeys: p.LicenseKeys, Hold: holdOf(p.Hold), Distributor: p.Distributor}
 	for _, k := range keys {
 		o.Keys = append(o.Keys, publisherKeyOf(k, c))
@@ -188,13 +191,17 @@ func (h *Handler) removePublisher(w http.ResponseWriter, r *http.Request, c call
 	noContent(w)
 }
 
-// publisherWhoami is what a publisher's credential is: its publishers, the matched credentials, and
-// their grants.
+// publisherWhoami is what a publisher's credential is: its publishers (each with its id and, for a
+// distributor's, its distributor: spec 0037), the matched credentials, and their grants.
 func publisherWhoami(c caller) map[string]any {
 	var pubs []map[string]string
 	ids := map[string]bool{}
 	for _, m := range c.pub.Publishers {
-		pubs = append(pubs, map[string]string{"publisher": m.Publisher.Name, "credential": m.Credential})
+		pub := map[string]string{"publisher": m.Publisher.Name, "id": m.Publisher.ID, "credential": m.Credential}
+		if m.Publisher.Distributor != "" {
+			pub["distributor"] = m.Publisher.Distributor
+		}
+		pubs = append(pubs, pub)
 		ids[m.Publisher.ID] = true
 	}
 	grants := []grantOut{}

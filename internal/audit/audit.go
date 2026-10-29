@@ -161,8 +161,8 @@ var catalogue = map[Kind][]string{
 	"extension_group.remove":  {"name", "description", "members"},
 	"extension_group.change":  {"description"},
 	"extension_group.members": {"added", "removed", "package_type"},
-	"publisher.add":           {"name", "distributor"},                           // spec 0033 phase B: a distributor's publisher made marked
-	"publisher.remove":        {"name", "purged", "kept"},                        // spec 0033 phase A2: the held entries purged (how many) and kept, revoked
+	"publisher.add":           {"name", "id", "distributor"},                     // spec 0033 phase B: a distributor's publisher made marked; spec 0037: its id
+	"publisher.remove":        {"name", "id", "purged", "kept"},                  // spec 0033 phase A2: the held entries purged (how many) and kept, revoked
 	"publisher.change":        {"name", "license_keys", "distributor", "before"}, // spec 0033 phase B: a distributor's mark
 	"publisher.key.add":       {"publisher", "key", "fingerprint", "type", "title", "expires_at"},
 	"publisher.key.remove":    {"publisher", "key", "fingerprint", "type", "title", "purge_held", "purged", "kept"},

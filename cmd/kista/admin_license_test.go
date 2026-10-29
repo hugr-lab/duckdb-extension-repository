@@ -80,7 +80,7 @@ func TestAdminLicense(t *testing.T) {
 	_ = os.WriteFile(lic, []byte(sign("pro")+"\n"), 0o600)
 	run(0, "", "publisher", "add", "acme", "ci")
 	run(0, "", "publisher", "license-keys", "acme", "ci", "on")
-	if got := run(0, "", "publisher", "list", "acme"); !strings.Contains(got, "LICENSE KEYS") || len(strings.Fields(strings.Split(got, "\n")[1])) < 2 || strings.Fields(strings.Split(got, "\n")[1])[1] != "yes" {
+	if got := run(0, "", "publisher", "list", "acme"); !strings.Contains(got, "LICENSE KEYS") || len(strings.Fields(strings.Split(got, "\n")[1])) < 3 || strings.Fields(strings.Split(got, "\n")[1])[2] != "yes" {
 		t.Fatalf("publisher list: %q", got)
 	}
 	run(2, "", "publisher", "license-keys", "acme", "ci", "maybe")

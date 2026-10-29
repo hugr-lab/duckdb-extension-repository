@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
@@ -73,6 +74,11 @@ type catalogueBuildJSON struct {
 	// Placed is where it is released; omitted for a distribution admin, who reads no channel (spec
 	// 0033 phase B)
 	Placed *[]store.Placed `json:"placed,omitempty"`
+	// PublisherID and Distributor name the publisher that published, in a catalogue-only
+	// publication's answer (spec 0037); Distributor is omitted for the tenant's own publisher, both
+	// for a tenant principal's publication
+	PublisherID string `json:"publisher_id,omitempty"`
+	Distributor string `json:"distributor,omitempty"`
 }
 
 func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -166,8 +172,12 @@ func (h *Handler) publishToCatalogue(w http.ResponseWriter, r *http.Request, c c
 		code = http.StatusOK
 	}
 	bj := catalogueBuildOf(b, nil, h.o.Store.Now())
-	if dist, err := h.o.Store.SourceDistributor(r.Context(), b.TenantID, b.Source); err != nil || dist != "" {
+	dist, err := h.o.Store.SourceDistributor(r.Context(), b.TenantID, b.Source)
+	if err != nil || dist != "" {
 		bj.Placed = nil // a distributor's publisher reaches no channel, and learns nothing of them (spec 0033 phase B)
+	}
+	if id, ok := strings.CutPrefix(b.Source, store.SourcePublisherPrefix); ok && err == nil {
+		bj.PublisherID, bj.Distributor = id, dist // spec 0037: the publisher that published
 	}
 	reply(w, r, code, bj, "", noStore)
 }

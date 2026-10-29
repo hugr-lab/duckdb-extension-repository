@@ -161,6 +161,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   grants; its keys, hold, purges and withdrawals are the
                                                   distributor's
   publisher list <tenant>
+  publisher show <tenant> <name>                a publisher, with its id (spec 0037)
   publisher license-keys <tenant> <name> on|off  mark it a source of licence keys (spec 0021): its publications
                    record the builds' keys; its credentials and grants are then a server administrator's
   publisher key add <tenant> <name> <file.pub|-> [-expires <365d|RFC 3339>]
@@ -1604,20 +1605,44 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
-		a.table("PUBLISHER\tLICENSE KEYS\tKEY\tFINGERPRINT\tTITLE\tHOLD\tDISTRIBUTOR", func(w io.Writer) {
+		a.table("PUBLISHER\tID\tLICENSE KEYS\tKEY\tFINGERPRINT\tTITLE\tHOLD\tDISTRIBUTOR", func(w io.Writer) {
 			for _, p := range ps {
 				mark := "-"
 				if p.LicenseKeys {
 					mark = "yes"
 				}
 				if len(keys[p.ID]) == 0 {
-					fmt.Fprintf(w, "%s\t%s\t-\t\t\t%s\t%s\n", p.Name, mark, holdText(p.Hold), dash(p.Distributor))
+					fmt.Fprintf(w, "%s\t%s\t%s\t-\t\t\t%s\t%s\n", p.Name, p.ID, mark, holdText(p.Hold), dash(p.Distributor))
 				}
 				for _, k := range keys[p.ID] {
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, mark, k.ID, k.Fingerprint, k.Title, holdText(p.Hold), dash(p.Distributor))
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.ID, mark, k.ID, k.Fingerprint, k.Title, holdText(p.Hold),
+						dash(p.Distributor))
 				}
 			}
 		})
+	case sub == "show" && len(pos) == 2: // spec 0037: with its id
+		ps, err := a.svc.Auth.ListPublishers(ctx, a.actor, pos[0])
+		if err != nil {
+			return err
+		}
+		i := slices.IndexFunc(ps, func(p store.Publisher) bool { return p.Name == pos[1] })
+		if i < 0 {
+			return fmt.Errorf("%w: publisher %s", store.ErrNotFound, pos[1])
+		}
+		p := ps[i]
+		keys, err := a.svc.Auth.ListPublisherKeys(ctx, a.actor, pos[0], p.Name)
+		if err != nil {
+			return err
+		}
+		line := func(k, v string) { fmt.Fprintf(a.out, "%-14s %s\n", k+":", v) }
+		line("name", p.Name)
+		line("id", p.ID)
+		line("created", ts(p.CreatedAt))
+		line("created by", p.CreatedBy)
+		line("license keys", map[bool]string{true: "yes", false: "-"}[p.LicenseKeys])
+		line("hold", holdText(p.Hold))
+		line("distributor", dash(p.Distributor))
+		line("keys", strconv.Itoa(len(keys)))
 	default:
 		return errUsage
 	}

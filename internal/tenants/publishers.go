@@ -25,7 +25,7 @@ func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, nam
 		if err := tx.InsertPublisher(ctx, &p); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name})
+		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name, "id": p.ID})
 	})
 	return p, err
 }
@@ -48,7 +48,7 @@ func (s *AuthAdmin) AddDistributorPublisher(ctx context.Context, a authz.Actor, 
 			return err
 		}
 		p.Distributor = dist
-		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name, "distributor": dist})
+		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name, "id": p.ID, "distributor": dist})
 	})
 	return p, err
 }
@@ -96,7 +96,7 @@ func (s *AuthAdmin) RemovePublisher(ctx context.Context, a authz.Actor, tenant, 
 		if err := tx.DeletePublisher(ctx, t.ID, name, a.String()); err != nil {
 			return err
 		}
-		return tx.Event(ctx, t.ID, a.String(), "publisher.remove", "publisher:"+name, hp.event(map[string]any{"name": name}))
+		return tx.Event(ctx, t.ID, a.String(), "publisher.remove", "publisher:"+name, hp.event(map[string]any{"name": name, "id": p.ID}))
 	})
 	return hp, err
 }
