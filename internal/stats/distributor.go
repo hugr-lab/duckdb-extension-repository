@@ -48,11 +48,12 @@ func LastCompleteWeek(now time.Time) time.Time {
 	return monday(now.UTC().AddDate(0, 0, -9))
 }
 
-// DistributorWeeks are the Mondays of the weeks from..to (days, "" for the defaults) asks: widened
-// to whole weeks, to clamped to the last complete week (the default), from by default the 12 weeks
-// up to to; at most 53 weeks. A refusal is a *WeeksError.
-func DistributorWeeks(now time.Time, from, to string) ([]string, error) {
-	last := LastCompleteWeek(now)
+// DistributorWeeks are the Mondays of the weeks from..to (days, "" for the defaults) asks, within
+// the weeks oldest..newest (Mondays) an answer may hold, the weeks computed: widened to whole weeks,
+// to clamped to newest (the default), from by default the 12 weeks up to to and clamped to oldest;
+// at most 53 weeks. A refusal is a *WeeksError.
+func DistributorWeeks(oldest, newest time.Time, from, to string) ([]string, error) {
+	last := newest
 	end := last
 	if to != "" {
 		t, err := time.Parse(time.DateOnly, to)
@@ -75,7 +76,12 @@ func DistributorWeeks(now time.Time, from, to string) ([]string, error) {
 		start = monday(f)
 	}
 	if start.After(end) {
-		return nil, &WeeksError{"the last complete week starts " + store.DayOf(last) + " (a week is answered two days after it ends)"}
+		return nil, &WeeksError{"the newest week computed starts " + store.DayOf(last) + " (a week is computed two days after it ends)"}
+	}
+	if start.Before(oldest) {
+		if start = oldest; start.After(end) {
+			return nil, &WeeksError{"the oldest week kept starts " + store.DayOf(oldest)}
+		}
 	}
 	n := int(end.Sub(start)/week) + 1
 	if n > MaxDistributorWeeks {
@@ -144,14 +150,27 @@ func Distributor(parts []store.DistributorPart, public map[string]bool, minTenan
 	return out
 }
 
-// distributorWeeks computes the snapshots of the complete weeks without one, oldest first: those
-// within KeepDistributorWeeks of the last complete week whose days are all within the statistics'
-// retention (on the first pass, every such week), each once; then deletes the snapshots older than
-// KeepDistributorWeeks. held says whether the pass still holds its lease.
+// distributorWeeks computes the snapshots of the complete weeks after the newest one stored, oldest
+// first, each once. With none stored (the first pass, a one-time backfill), it starts at the oldest
+// week within KeepDistributorWeeks of the last complete one whose days the statistics' retention
+// still holds whole; it never goes back to older weeks afterwards. Then it deletes the snapshots older
+// than KeepDistributorWeeks. held says whether the pass still holds its lease.
 func (d *Daily) distributorWeeks(ctx context.Context, now time.Time, held func() bool) error {
 	last := LastCompleteWeek(now)
 	first := last.AddDate(0, 0, -7*(KeepDistributorWeeks-1))
-	if d.Retention > 0 { // the first Monday on or after the retention's first day: its week is held whole
+	_, newest, stored, err := d.Store.DistributorWeeksSpan(ctx)
+	if err != nil {
+		return err
+	}
+	if stored {
+		n, err := time.Parse(time.DateOnly, newest)
+		if err != nil {
+			return err
+		}
+		if n = n.AddDate(0, 0, 7); n.After(first) {
+			first = n
+		}
+	} else if d.Retention > 0 { // the first Monday on or after the retention's first day: its week is held whole
 		c := now.UTC().Add(-d.Retention)
 		cday := time.Date(c.Year(), c.Month(), c.Day(), 0, 0, 0, 0, time.UTC)
 		m := monday(cday)
@@ -164,16 +183,11 @@ func (d *Daily) distributorWeeks(ctx context.Context, now time.Time, held func()
 	}
 	var dists []string
 	public := map[string]bool{}
+	read := false // the distributors and public tenants: once a pass, and only when a week is computed
 	for w := first; !w.After(last) && ctx.Err() == nil; w = w.AddDate(0, 0, 7) {
 		day := store.DayOf(w)
-		done, err := d.Store.DistributorWeekDone(ctx, day)
-		if err != nil || done {
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		if dists == nil { // read once a pass, and only when a week is to be computed
+		if !read {
+			read = true
 			if dists, err = d.Store.Distributors(ctx); err != nil {
 				return err
 			}

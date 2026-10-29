@@ -130,7 +130,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events,
 		MinSuspended: apiMinSuspended(cfg.Tenants.MinSuspended),
-		Console:      ConsoleInfo(cfg), DistributorMinTenants: ss.DistributorMinTenants})
+		Console:      ConsoleInfo(cfg)})
 	logPublicTenants(ctx, st, ss.PublicTenants, log)
 	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background
 	puller := &upstream.Puller{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log,

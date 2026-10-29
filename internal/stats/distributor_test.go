@@ -27,7 +27,9 @@ func TestDistributorWeeks(t *testing.T) {
 			t.Errorf("%v: %s, want %s", c.now, got, c.last)
 		}
 	}
-	now := time.Date(2027, 1, 14, 10, 0, 0, 0, time.UTC) // the last complete week: Monday 2027-01-04
+	// the weeks computed: 2025-01-06 to 2027-01-04 (the last complete week on 2027-01-14)
+	newest := stats.LastCompleteWeek(time.Date(2027, 1, 14, 10, 0, 0, 0, time.UTC))
+	oldest := time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC)
 	for name, c := range map[string]struct {
 		from, to    string
 		first, last string
@@ -41,7 +43,7 @@ func TestDistributorWeeks(t *testing.T) {
 		"53 weeks":            {"2026-01-05", "2027-01-04", "2026-01-05", "2027-01-04", 53},
 		"from a later Sunday": {"2026-01-11", "2027-01-10", "2026-01-05", "2027-01-04", 53},
 	} {
-		weeks, err := stats.DistributorWeeks(now, c.from, c.to)
+		weeks, err := stats.DistributorWeeks(oldest, newest, c.from, c.to)
 		if err != nil || len(weeks) != c.n || weeks[0] != c.first || weeks[len(weeks)-1] != c.last {
 			t.Errorf("%s: %v %v", name, weeks, err)
 			continue
@@ -61,9 +63,18 @@ func TestDistributorWeeks(t *testing.T) {
 		"to not a day":        {"", "tomorrow"},
 	} {
 		var we *stats.WeeksError
-		if _, err := stats.DistributorWeeks(now, c[0], c[1]); !errors.As(err, &we) || we.Reason == "" {
+		if _, err := stats.DistributorWeeks(oldest, newest, c[0], c[1]); !errors.As(err, &we) || we.Reason == "" {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+	// from clamped to the oldest week kept; a range wholly before it refused
+	kept := time.Date(2026, 12, 21, 0, 0, 0, 0, time.UTC)
+	if weeks, err := stats.DistributorWeeks(kept, newest, "", ""); err != nil || len(weeks) != 3 || weeks[0] != "2026-12-21" {
+		t.Errorf("from clamped: %v %v", weeks, err)
+	}
+	var we *stats.WeeksError
+	if _, err := stats.DistributorWeeks(kept, newest, "2026-11-01", "2026-12-01"); !errors.As(err, &we) {
+		t.Errorf("before the oldest week kept: %v", err)
 	}
 }
 

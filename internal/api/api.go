@@ -78,9 +78,6 @@ type Options struct {
 	// Console is the administration console's sign-in configuration (spec 0015); nil: its routes
 	// answer 404 (ui.enabled false).
 	Console *Console
-	// DistributorMinTenants is statistics.distributor_min_tenants (below 2: the default, 3), which a
-	// distributor's statistics answer as min_tenants (spec 0036 phase 2: the daily pass applies it).
-	DistributorMinTenants int
 }
 
 // Handler serves /api/v1.
@@ -130,9 +127,6 @@ func New(o Options) *Handler {
 	}
 	if o.MaxBody == 0 {
 		o.MaxBody = 1 << 30
-	}
-	if o.DistributorMinTenants < 2 { // fail closed: never fewer than 2
-		o.DistributorMinTenants = 3
 	}
 	return &Handler{o: o, limiter: newLimiter(o.Rate, o.Burst), metaLimiter: newLimiter(metaWritesPerActor, metaWritesBurst),
 		failures: &auth.FailureLog{Log: o.Log}, egress: map[string]bool{},

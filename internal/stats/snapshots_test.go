@@ -95,11 +95,19 @@ func TestDistributorSnapshots(t *testing.T) {
 	}
 	three := int64(3)
 	want := []store.DistributorWeek{
-		{Distributor: "enterest", PackageType: "duckdb_extension", Week: "2026-10-05", Extension: "geo", Downloads: 65, Public: 5, InstallerDays: &three},
-		{Distributor: "enterest", PackageType: "duckdb_extension", Week: "2026-10-12", Extension: "geo", Downloads: 4, Public: 4, Withheld: true},
+		{Distributor: "enterest", PackageType: "duckdb_extension", Week: "2026-10-05", Extension: "geo", Downloads: 65, Public: 5, InstallerDays: &three,
+			MinTenants: 3},
+		{Distributor: "enterest", PackageType: "duckdb_extension", Week: "2026-10-12", Extension: "geo", Downloads: 4, Public: 4, Withheld: true,
+			MinTenants: 3},
 	}
 	if got := read("enterest", "2026-09-28", "2026-10-12"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the snapshots:\n got %+v\nwant %+v", got, want)
+	}
+	// the backfill is once: a longer retention never reaches back to older weeks
+	(&stats.Daily{Store: st, Holder: "test", Retention: 365 * 24 * time.Hour, EventRetention: 30 * 24 * time.Hour,
+		Log: slog.New(slog.DiscardHandler), PublicTenants: []string{"free"}, MinTenants: 3}).Once(ctx)
+	if done, _ := st.DistributorWeekDone(ctx, "2026-09-21"); done {
+		t.Fatal("an older week computed after the backfill")
 	}
 
 	// a late flush, a re-mark, a tenant's deletion and another minimum: the answered weeks stay

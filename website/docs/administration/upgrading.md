@@ -209,7 +209,8 @@ so the operator declares it:
   pass computes the complete weeks the retention holds, at most 106). New settings:
   `statistics.distributor_min_tenants` (default 3, at least 2) and `statistics.public_tenants` (none
   by default), applied when a week is computed. A used distributor's publisher's distributor is no
-  longer renamed (`409`).
+  longer renamed (`409`). The route answers from the first computed week on (`400` before), and
+  the week of the upgrade holds only the downloads counted after it (those before have no source).
 - **Statistics' row limit.** Counts are now kept per source too, so a tenant's statistics query
   over a long range reaches the 100,000 stored rows it reads (`400`, narrow the range) sooner when a
   name has several sources.

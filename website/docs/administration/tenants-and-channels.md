@@ -111,7 +111,9 @@ the first step of deleting a tenant.
 ### Deleting a tenant
 
 Deleting a tenant removes its channels, keys, releases, grants, issuers, publishers, upstreams,
-documents, feeds and download statistics, and cannot be undone. It takes two steps:
+documents, feeds and download statistics, and cannot be undone. A distributor's weekly snapshots
+(spec 0036) are sums over tenants and are kept: the deleted tenant's share stays in the weeks
+already computed, for up to 106 weeks. It takes two steps:
 
 1. **Suspend** the tenant (above). This can be undone.
 2. **Delete** it, once it has been suspended for at least `tenants.min_suspended` (default `168h`,
