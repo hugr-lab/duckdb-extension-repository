@@ -331,8 +331,8 @@ active tenant a distribution admin may:
   grants a distribution admin made, of those kinds (never a grant of the tenant's own publisher's,
   spec 0037).
 - create a distributor's publisher, marked from its creation (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)),
-  and for a distributor's publisher only: rename its distributor, set and clear its licence-key
-  mark, manage its keys (with `purge_held`), set its hold, purge its builds placed nowhere,
+  and for a distributor's publisher only: rename its distributor (while unused, spec 0036), set
+  and clear its licence-key mark, manage its keys (with `purge_held`), set its hold, purge its builds placed nowhere,
   [withdraw](upstreams.md#withdrawals) its versions, read its entries in the catalogue (without
   channels), and write their [icon and summary](catalogue.md#give-an-entry-an-icon-and-a-summary)
   (spec 0036: the tenant's administrators read a distributor's entry's metadata, and never write
@@ -342,6 +342,12 @@ active tenant a distribution admin may:
   publisher with the licence-key mark alone, a server administrator's, spec 0021). Such a call
   answers the same `404` as a missing publisher;
 - never switch a name's source in a channel: that is the channel's administrators'.
+
+Across tenants, a distribution admin reads a distributor's download statistics (`GET
+/api/v1/distributor-stats/downloads`, spec 0036): per extension per complete week, summed over every
+tenant into a snapshot computed once, naming no tenant or channel, the non-public tenants' part
+answered only above a minimum ([A distributor's statistics](observability.md#a-distributors-statistics)).
+It never renames a used distributor's publisher's distributor (`409`).
 
 Nothing else: it reads no channel, key or release beyond what those calls answer, and cannot change
 a tenant, a channel or a key set; the rest answers `404`. Its acts are recorded as

@@ -134,7 +134,7 @@ are all the kinds in `internal/audit`:
 | | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `bundle` and `dry_run` (an import's), `error` (a class: `unauthorized`, `refused`, `unreachable`, `credential`, `token`, `keys`, `limits`, `failed`) |
 | Access | `auth.failure` | `route:<route>` | `reason`, `route`, `count` |
 | | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count`; for a tenant administrator's write on a distributor's licence entry (spec 0037), `name` (with `name_unverified` when read from an import's token before it was verified), `source` (the entry as named), `entry` (resolved, `upstream-id:<id>` or `publisher-id:<id>`) and `operation` (`import`, `remove`, `public`, `private`; refusals are coalesced per operation) |
-| | `install` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `duckdb_version`, `body_hash`, `user_agent` |
+| | `install` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `source` (the release's, as builds store it: `upstream:<id>`, `publisher:<id>`, `tenant`; spec 0036), `name`, `version`, `platform`, `duckdb_version`, `body_hash`, `user_agent` |
 | | `extension.use` | `channel:<channel>/ext:<name>` | `version`, `platform`, `duckdb_version`, `license`, `status`, `events` |
 | | `usage.forward` | `upstream:<name>` | `upstream`, `sent`, `skipped`, `failed` |
 | | `usage.receive` | `channel:<channel>` | `day`, `part`, `parts`, `sender`, `reports`, `dropped` |
@@ -302,10 +302,14 @@ kista counts downloads of extension binaries:
 - `HEAD`, `304` and a range not starting at byte 0 do not;
 - a download from a passthrough channel counts, anonymous, in that channel's tenant.
 
-Counts are kept per (channel, extension, version, platform, DuckDB version, day, authenticated) with
-no principal and no address, and written to the database every minute. Once a day has ended, an
-hourly pass counts its distinct **installers** from that day's `install` events, per release.
-Counts and installers are kept for `statistics.retention` (default 3 years; 30 days to 10 years).
+Counts are kept per (channel, source, extension, version, platform, DuckDB version, day,
+authenticated) with no principal and no address, and written to the database every minute. The
+**source** is whose entry was downloaded: the release's (an upstream, a publisher, or the tenant;
+a promotion keeps it), so a download is attributed to a distributor's entry exactly (spec 0036).
+Once a day has ended, an hourly pass counts its distinct **installers** from that day's `install`
+events, per release and its source (the event's `source`, else the release's; none when the release
+is gone). Counts and installers are kept for `statistics.retention` (default 3 years; 30 days to 10
+years).
 
 ```yaml title="kista.yaml"
 statistics:
@@ -316,7 +320,7 @@ Read them over the API:
 
 ```text
 GET /api/v1/tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=<d>[,<d>]
-    d: day | channel | extension | version | platform | duckdb_version
+    d: day | channel | source | extension | version | platform | duckdb_version
     → {from, to, group, rows: [{dimensions…, count, authenticated, installers}]}
 GET /api/v1/tenants/{t}/stats/releases?channel=&extension=
     → {releases: [{channel, extension, version, platform, last_7_days, last_30_days, last_download_day}]}
@@ -324,7 +328,9 @@ GET /api/v1/tenants/{t}/stats/releases?channel=&extension=
 
 - `from` and `to` are days (`YYYY-MM-DD`); the default is the 30 days up to today; at most 366 days.
 - `group` defaults to `day`; `version` brings `extension` with it. `installers` is absent when
-  grouping by `duckdb_version`.
+  grouping by `duckdb_version`. `source` is answered as a label (`upstream:<name>`,
+  `publisher:<name>`, `tenant`; `publisher:(removed)` for a removed one), `unknown` for what was
+  counted before kista recorded the source.
 - A query over more than 100,000 stored rows is refused (`400`): narrow it.
 - The statistics are of one [package type](concepts.md#packages-and-package-types), `?type=`
   (`duckdb_extension` by default): the rows of that type's channels; a `?channel=` of another type
@@ -335,6 +341,68 @@ GET /api/v1/tenants/{t}/stats/releases?channel=&extension=
 
 The console's **Statistics** section shows these. Counts are not evidence: anyone may download a
 public release.
+
+### A distributor's statistics
+
+A distributor (such as a storefront publishing developers' extensions into many tenants) reads its
+downloads per extension per week, summed over every tenant (spec 0036):
+
+```text
+GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
+    → {distributor, from, to,
+       rows: [{week, extension, downloads, public, installer_days, withheld, min_tenants}]}
+```
+
+- **Who**: distribution admins and server administrators, with a fresh token. The distributor is a
+  query parameter, as its publishers are marked (`publishers.distributor`). `?type=` is the package
+  type (the default when not named).
+- **Weekly snapshots.** The hourly daily pass computes each complete week once, two days after it
+  ends (the counts are flushed and the days' installers counted), and stores it: one row per
+  (distributor, package type, week, extension). It is never computed again, so an answered week
+  never changes, whatever happens later (a late count, a tenant deleted, the counts pruned by
+  `statistics.retention`, a setting changed). The route reads only these snapshots. On its first
+  pass after the upgrade it computes every complete week the retention still holds whole, at most
+  106 (once: later passes compute only the weeks after the newest one stored); snapshots older than
+  106 weeks are deleted. A tenant deleted later keeps its share in the weeks already computed (up to 106 weeks).
+- **What counts**: the downloads of the distributor's entries only, in every tenant: its publishers'
+  (live, and removed ones remembered), as marked when the week is computed. A tenant's own build of
+  the same name, or an upstream's, never counts. A suspended tenant counts; a tenant being deleted
+  does not. A used publisher's distributor is never renamed (`409`).
+- **Weeks** are complete ISO weeks in UTC, Monday to Sunday, named by their Monday. Only weeks
+  computed are answered. `from` and `to` are any days, widened to whole weeks; `to` is clamped to
+  the newest week computed, `from` to the oldest kept. The default is the 12 weeks up to the newest;
+  at most 53 weeks. The answer's `from`, `to` and each row's `week` are Mondays. Before the first
+  week is computed the route answers `400`.
+- **Grouping is fixed**: one row per (week, extension). No row names a tenant, a channel or a
+  per-tenant figure.
+- **`downloads`** counts as above; **`public`** is the part from public tenants; **`installer_days`**
+  is the daily distinct installers summed over the days and the tenants (a principal installing on
+  two days, or in two tenants, counts twice), omitted when left out; **`min_tenants`** is the
+  minimum the week was computed with.
+
+**Public tenants and the minimum.** Tenants listed by name in `statistics.public_tenants` (such as
+a tenant serving free extensions to anyone) always count, with a token or without, and are outside
+the minimum. Every other tenant's downloads count in a row only when at least
+`statistics.distributor_min_tenants` such tenants (default 3, at least 2) downloaded there. With
+fewer, that part is left out and the row is **`withheld`**: `downloads` equals `public`, and
+`installer_days` is omitted. Installer-days take the minimum separately, by the tenants with
+installers in the row: with fewer, `installer_days` is omitted even when the downloads are
+answered. It is never answered in part. Both settings are applied when a week is computed; an empty
+list exempts no one, and a name matching no tenant is logged at start.
+
+```yaml title="kista.yaml"
+statistics:
+  distributor_min_tenants: 3
+  public_tenants: [free]
+```
+
+**What the minimum protects, and what it does not.** It keeps a single customer's downloads from
+being disclosed by accident in a row of their own. It does not protect against the server's
+operator, who lists public tenants and reads the counts anyway, nor against a distributor that
+controls several tenants (its own, or one organisation's several tenants): such tenants can make up
+the minimum, so a row may reflect one organisation alone. And `withheld` itself says yes or no:
+between one tenant and the minimum downloaded the extension that week, not which or how many times.
+kista publishes no public statistics of its own.
 
 Usage reports from licensed extensions' SDKs are counted the same way, with a budget of their own,
 and read at `GET /api/v1/tenants/{t}/stats/usage`: see [Licensing](licensing.md#usage-reports).
@@ -439,6 +507,8 @@ load balancer that checks it must reach the pod port directly.
 | `events.sinks` | none | at most 16 |
 | `statistics.retention` | 26280h (3 years) | 30 days to 10 years |
 | `statistics.usage_accept` | `true` | `false` keeps no usage reports |
+| `statistics.distributor_min_tenants` | `3` | at least 2: the non-public tenants a row of a [distributor's statistics](#a-distributors-statistics) needs |
+| `statistics.public_tenants` | none | the tenants, by name, whose downloads always count in a distributor's statistics |
 | `telemetry.metrics.tenants` | none | tenant names or `*` |
 | `telemetry.metrics.labels` | none | `version`, `platform`, `duckdb_version` |
 | `telemetry.metrics.max_series` | 10,000 | 100 to 1,000,000 |

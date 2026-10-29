@@ -220,7 +220,20 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   keys, or change a tenant, a channel or a key set; it reads a tenant's state and expected holder,
   each read an event. A reservation's answer names the releases under the name in the tenant. A
   server has one distributor: a second one's publishers on the same server would be the first's
-  distribution admin's and licence manager's to reach.
+  distribution admin's and licence manager's to reach. It reads a distributor's download statistics
+  across tenants (spec 0036), for the distributor's entries only: every row is a sum per week and
+  extension, naming no tenant or channel, and a tenant's downloads (and, on their own, its
+  installer-days) appear only in a row with at least `statistics.distributor_min_tenants` such
+  tenants. Each week is a snapshot computed once when it is complete and never again, so asking
+  twice, before and after a publisher's re-mark, a tenant's deletion, a late count or a prune,
+  answers the same week the same: two answers cannot be subtracted to isolate a tenant. Only tenants
+  the operator lists in `statistics.public_tenants` are answered whatever their size; an empty list
+  exempts no one. The minimum guards against accidental disclosure, not against the server's
+  operator nor against a distributor controlling several tenants (or one organisation's several
+  tenants), which can make up the minimum alone; and a `withheld` row still tells that at least one
+  tenant, fewer than the minimum, downloaded the extension that week. A deleted tenant's share
+  stays in the weeks already computed, for up to 106 weeks (sums naming no one, but a row may be a
+  single public tenant's figure).
 - **Publishers** sign each request with their developer's SSH key (spec 0023). kista stores only
   public keys, so a copy of its database cannot publish. A signature binds the method, the path and
   query, the body's SHA-256 and a time within five minutes, so a captured request cannot be sent

@@ -1,6 +1,6 @@
 # Spec 0036: Entry icons and distributor statistics
 
-- **Status**: accepted (phase 1 implemented)
+- **Status**: implemented (phases 1 and 2)
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -305,8 +305,9 @@ icon_claims, icon_tombstones   as spec 0016's blob_claims and blob_tombstones, k
 
 ```text
 GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
-    → {"distributor", "from", "to", "min_tenants",
-       "rows": [{"week", "extension", "downloads", "public", "installer_days", "withheld"}]}
+    → {"distributor", "from", "to",
+       "rows": [{"week", "extension", "downloads", "public", "installer_days", "withheld",
+                 "min_tenants"}]}
 ```
 
 - **The distributor is a query parameter.** Its name may need escaping, and the API answers `404`
@@ -316,13 +317,38 @@ GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
   distributor per server (Enterest). The role stays server-wide, as spec 0037 keeps it.
 - **The distributor's sources** are every publisher of every tenant marked with that name
   (`publishers.distributor`), plus the removed ones remembered in `removed_distributor_publishers`
-  with that name. So a removed publisher's entries keep counting. The mark is read at query time.
+  with that name. So a removed publisher's entries keep counting. The mark is read when a week is
+  computed (below). A used publisher's distributor is never renamed (`409`, type `conflict`): used
+  as `PublisherUsed` says (builds, releases, slots, withdrawals, rules, follows, a hold), or with any
+  download count or installers.
 - **Grouping is fixed**: one row per (week, extension).
 - **Weeks** are complete ISO weeks in UTC, Monday to Sunday, named by their Monday (`2026-10-19`).
-  Only weeks that ended at least two days ago are answered, so the counts are flushed and the
-  daily installers pass is done. `from` and `to` are days, widened to whole weeks. A `to` beyond the
-  last complete week is clamped to it. The default is the 12 weeks up to it. At most 53 weeks.
+  Only weeks computed are answered (below): a week is computed two days after it ends, so the
+  counts are flushed and the daily installers pass is done. `from` and `to` are any days, widened to
+  whole weeks. `to` is clamped to the newest week computed (a week not computed yet is never
+  answered empty, which a reader would take as coverage), `from` to the oldest kept. The default is
+  the 12 weeks up to the newest. At most 53 weeks. The answer's `from`, `to` and `week` are Mondays.
+  Before any week is computed the route answers `400`.
+- **`min_tenants`**, on each row: the minimum the week was computed with.
 - **Rate**: the API's per-client rate applies, as for every route.
+
+#### Weekly snapshots
+
+The owner's decision after review: an answer reads stored snapshots only.
+
+- The daily installers pass, once its days are counted, computes each complete week without a
+  snapshot: for every distributor (the distinct names of marked publishers, live and removed) and
+  every package type, the week's rows per extension, with the public tenants and the minimum of
+  that moment. It stores them in `distributor_weeks`, and the week in `distributor_weeks_done`, in
+  one transaction under the week's lock.
+- A week is computed once and never again. A later re-mark, a tenant's deletion, a late flush, the
+  retention's prune or a changed setting leaves an answered week as it was.
+- The first pass, with no week stored, computes every complete week the statistics' retention still
+  holds whole, at most 106 weeks back (a one-time backfill). Later passes compute only the weeks
+  after the newest one stored, never older ones, even when the retention is made longer later.
+  Snapshots older than 106 weeks are deleted. A failed step is logged; the retention's prune of the
+  counts still runs.
+- A tenant deleted later keeps its share in the weeks already computed, for up to 106 weeks.
 
 #### The figures
 
@@ -332,8 +358,8 @@ GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
 - **`installer_days`**: daily distinct installers (spec 0010), summed over the days and the tenants.
   A principal installing on two days, or in two tenants, counts twice. Weekly distinct installers
   cannot be computed: install events may be kept for only two days (`events.retention`).
-- **`withheld`**: true when a non-public part, of the downloads or of the installer-days, was left
-  out (below).
+- **`withheld`**: true when the downloads' non-public part was left out (below): `downloads` then
+  equals `public`, and `installer_days` is omitted. This is how Enterest's spec 0010 reads it.
 
 No tenant is named, nor any channel, nor any per-tenant figure.
 
@@ -346,23 +372,26 @@ No tenant is named, nor any channel, nor any per-tenant figure.
 - **Downloads.** A row's non-public downloads count only when at least
   `statistics.distributor_min_tenants` distinct non-public tenants contributed downloads to it
   (default 3, at least 2). When at least one but fewer did, that part is left out: `downloads`
-  equals `public`, and the row is `withheld`.
+  equals `public`, `installer_days` is omitted, and the row is `withheld`.
 - **Installer-days** take the minimum separately: their non-public part counts only when at least
   the minimum of distinct non-public tenants have installers in the row. When at least one but fewer
-  do, that part is left out and the row is `withheld`.
-- **What a row answers.** Public tenants' figures are always answered. So `installer_days` holds the
-  public tenants' installer-days, plus the non-public part when it may be answered. It is omitted
-  only when nothing of it may be answered: no public part, and a non-public part left out.
-- **Fail closed.** An empty list exempts no one. Names are matched against tenants on each query,
-  so a public tenant created after the server started is exempt from then on. A listed name that
-  matches no tenant exempts nothing, and is logged at start. The minimum cannot be set below 2.
+  do, `installer_days` is omitted, even when the downloads are answered (the row is not `withheld`
+  then). It is never answered in part: when answered, it holds the public tenants' installer-days
+  and the non-public part.
+- **Fail closed.** An empty list exempts no one. Names are matched against tenants when a week is
+  computed, so a public tenant created after the server started is exempt from then on. A listed
+  name that matches no tenant exempts nothing, and is logged at start. The minimum cannot be set
+  below 2.
 - **Which tenants count.** A suspended tenant counts: its downloads happened, and it still exists.
   A tenant whose deletion has started does not (spec 0019: its statistics go with it).
 
 #### The query
 
-- First, the distributor's sources, from `publishers` and `removed_distributor_publishers`, chunked
-  by tenant (at most 500 sources a chunk, under SQL Server's parameter limit).
+- The daily pass runs it per week, distributor and package type.
+- First, the distributor's sources, from `publishers` and `removed_distributor_publishers`, sorted
+  and taken in chunks of at most 500 sources (a publisher's id is the server's, so a source is in
+  one tenant only). With a week's bound per week and three more, a query stays under SQL Server's
+  2,100 parameters.
 - Per chunk, one query over `download_counts` and one over `download_installers`:
   - filtered by `source IN (…)`, the day range, the type (`channel_id IN (SELECT id FROM channels
     WHERE package_type = ?)`), and tenants not being deleted;
@@ -384,7 +413,13 @@ download_counts       + source (varchar 64, NOT NULL, default ''), in the primar
                         duckdb_version, day, authenticated); index (source, day)
 download_installers   + source, in the primary key (tenant_id, channel_id, source, name,
                         package_version, platform, day); index (source, day)
+distributor_weeks     distributor, package_type, week (its Monday), name, downloads,
+                        public_downloads, installer_days (NULL: left out), withheld;
+                        pk (distributor, package_type, week, name)
+distributor_weeks_done   week (pk), min_tenants, done_at
 ```
+
+The two snapshot tables are the server's (`store.GlobalTables`): sums over tenants, naming none.
 
 - **PostgreSQL**: in place. `ADD COLUMN source … DEFAULT ''`, drop the primary key, add the new one,
   create the index.
@@ -441,14 +476,26 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
   - only the distributor's sources count: a tenant's own build of the same name, or an upstream's,
     never does;
   - no answer names a tenant or a channel, and every row is a sum;
-  - grouping is fixed, so no two answers can be subtracted to isolate a smaller group;
+  - grouping is fixed, and each week is a snapshot computed once: asking before and after a
+    publisher's re-mark, a tenant's deletion, a late flush, the retention's prune or a changed
+    setting answers the same week the same, so no two answers differ by one tenant's figures; and a
+    used publisher's distributor is never renamed;
   - a non-public tenant's downloads appear only in a row with at least the minimum of non-public
     tenants (default 3), and installer-days the same.
 
-  The residual risk: a public tenant's figures are answered whatever their size. That is the point
-  of listing it. Only the server's operator lists a tenant, by its configuration, and an empty list
-  exempts no one. A `withheld` row tells that between one tenant and the minimum downloaded the
-  extension, not which or how many times.
+  The residual risks:
+  - A public tenant's figures are answered whatever their size. That is the point of listing it.
+    Only the server's operator lists a tenant, by its configuration, and an empty list exempts no
+    one.
+  - The minimum protects against accidental disclosure, not against the server's operator (who
+    reads the counts anyway), nor against a distributor that controls tenants of its own, nor
+    against one organisation's several tenants: such tenants can make up the minimum, so a row may
+    reflect one organisation alone. Documented, not prevented.
+  - A `withheld` row is a yes/no signal: between one tenant and the minimum downloaded the
+    extension that week (where one organisation alone chose it, this tells so), not which or how
+    many times.
+  - A deleted tenant's share stays in the weeks already computed, for up to 106 weeks: sums naming
+    no one, but a row may be a single public tenant's figure.
 - **Retention.** Counts follow `statistics.retention` (spec 0010). Nothing new is kept about a
   principal.
 
@@ -469,7 +516,11 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
     distributor's, public tenants (with and without tokens) never withheld, the minimum on
     downloads and on installers separately, a deleting tenant left out and a suspended one counted,
     weeks across a year's end, the clamp to complete weeks, the type filter, chunking (a small
-    chunk size in the test).
+    chunk size in the test, a tenant holding two of the distributor's publishers);
+  - the snapshots: stored once with the week's mark, read back, pruned; computed once by the daily
+    pass (the first pass's backfill within the retention), a later re-mark, tenant deletion, late
+    flush, changed minimum or retention prune changing no answered week;
+  - a used publisher's distributor refused a rename.
 - **Icon checks** (fixtures): a valid PNG accepted, with and without each optional chunk
   (`sRGB`, `gAMA`, `cHRM`, `pHYs`, `bKGD`); an optional chunk of the wrong length, out of order or
   after `IDAT`; each refused chunk (`iCCP`, `tEXt`, `zTXt`, `iTXt`, `eXIf`, `acTL`, `fcTL`,
@@ -498,7 +549,7 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
   - the event and its registry, the distribution admin's label;
   - a revoked key's write refused;
   - the statistics route: who may call it, `?distributor=`, `?type=`, the figures, `withheld`, and
-    `installer_days` answered with its public part when the non-public part is left out;
+    `installer_days` omitted whenever its non-public part is left out;
   - the tenant route's `source` dimension.
 - **Serving**: a download records its release's source; a promoted release keeps the original.
   The daily pass attributes installers by the event's release.
@@ -510,10 +561,11 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
   administrator edits the tenant's own entry and gets no dialog for the distributor's.
 - **DuckDB e2e** (`e2e/distributors_test.go`): a distributor's publisher in four tenants publishes
   `kista_demo` and sets its metadata. One tenant is listed as public. DuckDB at the pin installs
-  from each, plus a tenant's own build of the same name. The test sets the store's clock
-  (`Store.Now`) past the week, flushes the counts and runs the daily pass. The route answers one
-  row without the tenant's own build. With the minimum raised to 4, the row is `withheld` and
-  `downloads` equals `public`. The icon route serves the bytes with the headers above.
+  from each with a token of the tenant's, plus a tenant's own build of the same name. The test sets
+  the store's clock past the week, flushes the counts and runs the daily pass. The route answers
+  one row without the tenant's own build, with exact installer-days. A pass with the minimum at 4
+  leaves the snapshot; computed again at 4, the row is `withheld` and `downloads` equals `public`.
+  The icon route serves the bytes with the headers above.
 
 ## Delivery
 
@@ -524,8 +576,9 @@ phase 2 (migration 0045, `min_reader 45`), then spec 0037 PR 2 (migration 0046).
   and their collection step, the store, the service's checks, the access rule, `body()`'s limit
   parameter, the routes, the CLI, the event, the console, the website. About 1,600 lines with tests.
 - **Phase 2: distributor statistics.** Migration 0045, the source in the download key and the
-  installers pass, the aggregate query, the route, the two configuration keys, the tenant route's
-  `source` dimension, the website. About 800 lines with tests.
+  installers pass, the aggregate query, the weekly snapshots, the route, the two configuration
+  keys, the rename refusal, the tenant route's `source` dimension, the website. About 800 lines
+  with tests.
 
 ### As built (phase 1)
 
@@ -613,6 +666,65 @@ fixes followed in the same branch.
 - **Not here.** `kista_publish.py --summary --icon` is in `hugr-lab/extension-ci-tools`
   (Follow-ups).
 
+### As built (phase 2)
+
+Delivered on the branch `0036-entry-meta-2`, on phase 1 (merged to main, #144), with migration
+0045. After review, the owner's decisions (weekly snapshots, no rename of a used publisher's
+distributor, the residual risks documented, `withheld` and `installer_days` as Enterest's spec
+0010 reads them, Mondays in the answer) are in the sections above.
+
+- **Migration 0045** (`0045_download_sources`) is as the spec says. PostgreSQL's and SQL Server's
+  new primary keys are named (`pk_download_counts`, `pk_download_installers`); SQLite's rebuild
+  makes the old `(tenant_id, day)` indexes again beside the new `(source, day)` ones. SQL Server's
+  key is 805 bytes, under the 900 a clustered key takes. The snapshot's column is `public_downloads`
+  (`PUBLIC` is reserved in SQL Server) and its extension column `name`, as every table's.
+- **The install event's `source`** is the source as builds store it (`upstream:<id>`,
+  `publisher:<id>`, `tenant`), not a label, so the daily pass attributes it exactly; the event
+  catalogue lists the field. The pass buffers the events without it by release id and looks their
+  releases up in chunks of 500 (`Store.ReleaseSources`). A promotion keeps the source: release's
+  `TestSources`.
+- **`ReleaseStats`** orders its rows by release in SQL: the grouping no longer came out in that
+  order once the primary key held the source (tested with rows of two sources).
+- **The store** answers each tenant's part per (week, extension) (`Store.DistributorParts`); the
+  minimum is applied in Go (`stats.Distributor`), the weeks computed there too
+  (`stats.DistributorWeeks`, `stats.LastCompleteWeek`; a refusal is a `stats.WeeksError`). The `CASE`
+  maps a day to the week's index by `day <= <Sunday>` branches in a derived table, so every dialect
+  groups by it. Public tenants are matched by name when a week is computed
+  (`Store.TenantIDsByName`), a tenant being deleted matching none. The chunk sizes are constants
+  (`DistributorChunk`, `ReleaseSourcesChunk`), tested to stay under 2,100 parameters.
+- **Snapshots.** `stats.Daily` computes them after counting the days and before pruning the
+  counts, re-taking its lease after each week; a week's rows and its mark are one transaction, and a
+  week marked already is left (`PutDistributorWeek`). The mark is per week, for every distributor
+  and type at once: a distributor marked after a week was computed has no rows for it, and could
+  have none (only fresh publishers are marked, and a used one is never renamed). The distributors
+  and public tenants are read once a pass, only when a week is computed.
+- **The upgrade's week** holds mixed figures: its downloads counted before migration 0045 have the
+  source `''` and count for no distributor, so its snapshot (and the backfilled weeks before it,
+  which are empty) shows only what was counted after the upgrade.
+- **The route.** `distributor` must be given once, at most 128 bytes. A `from` after `to`, or after
+  the newest week computed, is `400` (rather than an empty answer), as are a day that is not one,
+  a range wholly before the oldest week kept and more than 53 weeks. The answerable span is read in
+  one query (`Store.DistributorWeeksSpan`: the oldest and newest weeks marked done; weeks are
+  computed in order and pruned oldest first, so none between them is missing). `min_tenants` is
+  answered per row, joined from the week's mark; the top-level `min_tenants` of the first draft is
+  gone.
+- **The rename refusal** is `409` (`tenants.Refusal`), its reason without counts.
+- **The tenant route's `source`** names a removed distributor's publisher `publisher-id:<id>`, as
+  the catalogue does, and another removed publisher `publisher:(removed)`. Counts kept per source
+  reach the route's 100,000 stored rows sooner (the website's upgrading notes say so).
+- **Configuration.** `statistics.public_tenants` must hold tenant names (the configuration is
+  refused otherwise); `statistics.distributor_min_tenants` `0` means 3, 1 or less is refused. The
+  app binds the settings once (`newDaily`).
+- **Tests.** The minimum, public tenants and installer-days are tested on `stats.Distributor`
+  (pure) and through the API; the store suite covers the query (removed publishers, a tenant with
+  two of the distributor's publishers, a tenant's own build and another distributor's left out, a
+  deleting tenant left out and a suspended one counted, weeks across a year's end, the type filter,
+  chunks of 1 and 3), the snapshot tables and their span, and two passes storing one week at once
+  (one stores, the other leaves it); `stats` covers the snapshots' life (computed once, the
+  backfill once, re-mark, deletion, late flush, prune). The DuckDB e2e case calls the route over https
+  with a server issuer the harness takes (`startKistaOpts`), installs with tokens for exact
+  installer-days, and moves the store's clock through the harness's guarded `testClock`.
+
 ## Alternatives considered
 
 - **The icon in the publication's request**: it changes the body spec 0023 signs and the spool
@@ -641,6 +753,9 @@ fixes followed in the same branch.
   could isolate a small group. A fixed grouping cannot be subtracted.
 - **Attributing old counts by today's rules**: a rule switched or a release purged would attribute
   downloads wrongly. Recording the source at download is exact.
+- **Computing the figures at query time** (the first implementation): a re-mark, a tenant's
+  deletion, a late flush or the retention's prune between two answers would change a past week, so
+  two answers could differ by one tenant's figures. A snapshot computed once cannot.
 
 ## Changes to earlier specs
 
@@ -649,8 +764,9 @@ fixes followed in the same branch.
   spec 0016's protocol.
 - **0007**: new routes; the catalogue's reads gain `summary`, `icon` and `distributor`.
 - **0010**: the download and installer keys gain the source; install events carry `source`; the
-  tenant's statistics gain the `source` dimension; the distributor route,
-  `statistics.distributor_min_tenants` and `statistics.public_tenants`.
+  tenant's statistics gain the `source` dimension; the daily pass stores weekly distributor
+  snapshots, which the distributor route answers; `statistics.distributor_min_tenants` and
+  `statistics.public_tenants`.
 - **0015**: the catalogue and entry pages show icons and summaries, with an Edit dialog.
 - **0019**: the reaper deletes `entry_meta`.
 - **0023**: one more route open to publishers' signed requests (`PUT` and `GET
@@ -658,7 +774,7 @@ fixes followed in the same branch.
   gains: a signed metadata write older than the entry's last, or of the same second with another
   body, is refused `409 stale`; the same one again changes nothing.
 - **0030**: distribution admins write a distributor's entries' metadata and read distributor
-  statistics.
+  statistics; a used publisher's distributor is never renamed.
 - **0033**: an entry gains metadata, kept through withdrawal, purges and source removal; the
   catalogue answers `distributor`; event `catalogue.meta`; icons count toward `catalogue.max_bytes`
   through `icon_bytes`.

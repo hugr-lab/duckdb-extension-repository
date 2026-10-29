@@ -133,7 +133,7 @@ sdk-test:
 	ctest --test-dir $(SDK_BUILD) --output-on-failure
 
 e2e:
-	KISTA_E2E_DUCKDB=$(E2E_BUILD) go test -count=1 ./e2e/...
+	KISTA_E2E_DUCKDB=$(E2E_BUILD) go test -count=1 -timeout 25m ./e2e/...
 
 # The docs site (website/, Docusaurus): built as the docs-build workflow does; `cd website && npm start`
 # serves it with live reload. Needs Node 22.

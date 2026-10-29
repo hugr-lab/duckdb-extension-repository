@@ -15,8 +15,10 @@ import (
 // DownloadKey is what a download count counts by (spec 0010 phase 2a): no principal, no address.
 type DownloadKey struct {
 	TenantID, ChannelID, Name, PackageVersion, Platform, DuckDBVersion string
-	Day                                                                string // YYYY-MM-DD, UTC
-	Authenticated                                                      bool
+	// Source is whose entry was downloaded (spec 0036 phase 2): the release's source.
+	Source        string
+	Day           string // YYYY-MM-DD, UTC
+	Authenticated bool
 }
 
 // DayOf is a time's UTC day as statistics store it.
@@ -28,13 +30,13 @@ func DayOf(t time.Time) string { return t.UTC().Format(time.DateOnly) }
 // On an error, the counts of the transactions that committed are not returned: done holds them.
 func (s *Store) AddDownloadCounts(ctx context.Context, counts map[DownloadKey]int64) (done []DownloadKey, err error) {
 	return addCounts(ctx, s, "kista/download_counts", counts, func(a, b DownloadKey) int {
-		return cmp.Or(cmp.Compare(a.TenantID, b.TenantID), cmp.Compare(a.ChannelID, b.ChannelID), cmp.Compare(a.Name, b.Name),
-			cmp.Compare(a.PackageVersion, b.PackageVersion), cmp.Compare(a.Platform, b.Platform), cmp.Compare(a.DuckDBVersion, b.DuckDBVersion),
-			cmp.Compare(a.Day, b.Day), cmp.Compare(boolInt(a.Authenticated), boolInt(b.Authenticated)))
+		return cmp.Or(cmp.Compare(a.TenantID, b.TenantID), cmp.Compare(a.ChannelID, b.ChannelID), cmp.Compare(a.Source, b.Source),
+			cmp.Compare(a.Name, b.Name), cmp.Compare(a.PackageVersion, b.PackageVersion), cmp.Compare(a.Platform, b.Platform),
+			cmp.Compare(a.DuckDBVersion, b.DuckDBVersion), cmp.Compare(a.Day, b.Day), cmp.Compare(boolInt(a.Authenticated), boolInt(b.Authenticated)))
 	}, func(k DownloadKey) string { return k.TenantID }, func(tx *Tx, k DownloadKey, n int64) error {
 		return tx.upsertCount(ctx, "download_counts", "count",
-			[]string{"tenant_id", "channel_id", "name", "package_version", "platform", "duckdb_version", "day", "authenticated"},
-			[]any{k.TenantID, k.ChannelID, k.Name, k.PackageVersion, k.Platform, k.DuckDBVersion, k.Day, k.Authenticated}, n)
+			[]string{"tenant_id", "channel_id", "source", "name", "package_version", "platform", "duckdb_version", "day", "authenticated"},
+			[]any{k.TenantID, k.ChannelID, k.Source, k.Name, k.PackageVersion, k.Platform, k.DuckDBVersion, k.Day, k.Authenticated}, n)
 	})
 }
 
@@ -119,9 +121,44 @@ func boolInt(b bool) int {
 	return 0
 }
 
-// InstallerKey is what daily installers are counted by.
+// InstallerKey is what daily installers are counted by; Source is the installed release's (spec 0036
+// phase 2: "" when the release is gone).
 type InstallerKey struct {
-	TenantID, ChannelID, Name, PackageVersion, Platform, Day string
+	TenantID, ChannelID, Source, Name, PackageVersion, Platform, Day string
+}
+
+// ReleaseSourcesChunk is the most ids one ReleaseSources query names (with the tenant's id, under
+// SQL Server's 2,100 parameters); a test makes it small.
+const ReleaseSourcesChunk = 500
+
+var releaseSourcesChunk = ReleaseSourcesChunk
+
+// ReleaseSources are the sources of a tenant's releases by id (spec 0036 phase 2: an install
+// event written before events carried the source); a release gone is left out. One query reads at
+// most ReleaseSourcesChunk ids.
+func (s *Store) ReleaseSources(ctx context.Context, tenantID string, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
+	for len(ids) > 0 {
+		chunk := ids[:min(len(ids), releaseSourcesChunk)]
+		ids = ids[len(chunk):]
+		args := []any{tenantID}
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		if err := s.eachRow(ctx, "SELECT id, source FROM releases WHERE tenant_id = ? AND id IN ("+marks(len(chunk))+")", args,
+			func(sc func(...any) error) error {
+				var id, src string
+				if err := sc(&id, &src); err != nil {
+					return err
+				}
+				out[id] = src
+				return nil
+			}); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // StatisticsDayDone reports whether a day's installers are stored.
@@ -166,8 +203,8 @@ func (s *Store) PutDaily(ctx context.Context, day string, d Daily) error {
 			if closed[k.TenantID] {
 				continue
 			}
-			if _, err := tx.exec(ctx, "INSERT INTO download_installers (tenant_id, channel_id, name, package_version, platform, day, installers) "+
-				"VALUES (?, ?, ?, ?, ?, ?, ?)", k.TenantID, k.ChannelID, k.Name, k.PackageVersion, k.Platform, day, n); err != nil {
+			if _, err := tx.exec(ctx, "INSERT INTO download_installers (tenant_id, channel_id, source, name, package_version, platform, day, "+
+				"installers) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", k.TenantID, k.ChannelID, k.Source, k.Name, k.PackageVersion, k.Platform, day, n); err != nil {
 				return err
 			}
 		}
@@ -215,15 +252,15 @@ type StatsFilter struct {
 
 // StatsRow is a download count with its installers, at the dimensions a query keeps (the others
 // empty). Installers are summed over the kept rows (a principal installing on two days or two
-// platforms counts twice).
+// platforms counts twice). Source is the downloaded release's (spec 0036 phase 2; "" before it).
 type StatsRow struct {
-	ChannelID, Name, PackageVersion, Platform, DuckDBVersion, Day string
-	Count, Authenticated, Installers                              int64
+	ChannelID, Source, Name, PackageVersion, Platform, DuckDBVersion, Day string
+	Count, Authenticated, Installers                                      int64
 }
 
-// DownloadRows reads a tenant's counts and installers per (channel, name, version, platform,
-// DuckDB version, day) within a filter, keeping the rows keep takes (a caller's scope); more than
-// limit rows kept is ErrInvalid (the caller narrows the range).
+// DownloadRows reads a tenant's counts and installers per (channel, source, name, version, platform,
+// DuckDB version, day, authenticated) within a filter, keeping the rows keep takes (a caller's
+// scope); more than limit rows kept is ErrInvalid (the caller narrows the range).
 func (s *Store) DownloadRows(ctx context.Context, tenantID string, f StatsFilter, limit int, keep func(channelID, name string) bool) ([]StatsRow, error) {
 	where, args := statsWhere(tenantID, f.From, f.To, f)
 	var out []StatsRow
@@ -237,25 +274,25 @@ func (s *Store) DownloadRows(ctx context.Context, tenantID string, f StatsFilter
 		}
 		return nil
 	}
-	err := s.eachRow(ctx, "SELECT channel_id, name, package_version, platform, duckdb_version, day, authenticated, count FROM download_counts WHERE "+where,
-		args, func(sc func(...any) error) error {
-			var r StatsRow
-			var auth bool
-			if err := sc(&r.ChannelID, &r.Name, &r.PackageVersion, &r.Platform, &r.DuckDBVersion, &r.Day, &auth, &r.Count); err != nil {
-				return err
-			}
-			if auth {
-				r.Authenticated = r.Count
-			}
-			return add(r)
-		})
+	err := s.eachRow(ctx, "SELECT channel_id, source, name, package_version, platform, duckdb_version, day, authenticated, count "+
+		"FROM download_counts WHERE "+where, args, func(sc func(...any) error) error {
+		var r StatsRow
+		var auth bool
+		if err := sc(&r.ChannelID, &r.Source, &r.Name, &r.PackageVersion, &r.Platform, &r.DuckDBVersion, &r.Day, &auth, &r.Count); err != nil {
+			return err
+		}
+		if auth {
+			r.Authenticated = r.Count
+		}
+		return add(r)
+	})
 	if err != nil {
 		return nil, err
 	}
-	err = s.eachRow(ctx, "SELECT channel_id, name, package_version, platform, day, installers FROM download_installers WHERE "+where,
+	err = s.eachRow(ctx, "SELECT channel_id, source, name, package_version, platform, day, installers FROM download_installers WHERE "+where,
 		args, func(sc func(...any) error) error {
 			var r StatsRow
-			if err := sc(&r.ChannelID, &r.Name, &r.PackageVersion, &r.Platform, &r.Day, &r.Installers); err != nil {
+			if err := sc(&r.ChannelID, &r.Source, &r.Name, &r.PackageVersion, &r.Platform, &r.Day, &r.Installers); err != nil {
 				return err
 			}
 			return add(r)
@@ -319,17 +356,20 @@ func (s *Store) ReleaseStats(ctx context.Context, tenantID, today string, f Stat
 	where, args := statsWhere(tenantID, "0000-00-00", today, f)
 	by := map[[4]string]*ReleaseDownloads{}
 	var order [][4]string
+	// ordered by the release: the primary key holds the source since spec 0036, so a grouping no
+	// longer comes out in this order by itself
 	err = s.eachRow(ctx, "SELECT channel_id, name, package_version, platform, MAX(day) FROM download_counts WHERE "+where+
-		" GROUP BY channel_id, name, package_version, platform", args, func(sc func(...any) error) error {
-		var k [4]string
-		var last string
-		if err := sc(&k[0], &k[1], &k[2], &k[3], &last); err != nil {
-			return err
-		}
-		by[k] = &ReleaseDownloads{ChannelID: k[0], Name: k[1], PackageVersion: k[2], Platform: k[3], LastDay: last}
-		order = append(order, k)
-		return nil
-	})
+		" GROUP BY channel_id, name, package_version, platform ORDER BY channel_id, name, package_version, platform", args,
+		func(sc func(...any) error) error {
+			var k [4]string
+			var last string
+			if err := sc(&k[0], &k[1], &k[2], &k[3], &last); err != nil {
+				return err
+			}
+			by[k] = &ReleaseDownloads{ChannelID: k[0], Name: k[1], PackageVersion: k[2], Platform: k[3], LastDay: last}
+			order = append(order, k)
+			return nil
+		})
 	if err != nil {
 		return nil, err
 	}

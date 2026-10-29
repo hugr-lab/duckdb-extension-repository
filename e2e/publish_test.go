@@ -104,6 +104,12 @@ func (k *kista) publishTo(t *testing.T, route, name string, key ssh.Signer, extr
 // publishFile is publishTo with an extension file (withVersion's copy of a built one).
 func (k *kista) publishFile(t *testing.T, route, path string, key ssh.Signer, extra url.Values) int {
 	t.Helper()
+	return k.publishFileIn(t, "acme", route, path, key, extra)
+}
+
+// publishFileIn is publishFile into another tenant (route: the path after /api/v1/tenants/<tenant>/).
+func (k *kista) publishFileIn(t *testing.T, tenant, route, path string, key ssh.Signer, extra url.Values) int {
+	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +122,7 @@ func (k *kista) publishFile(t *testing.T, route, path string, key ssh.Signer, ex
 	for p, vs := range extra {
 		q[p] = vs
 	}
-	req, err := http.NewRequest("POST", "https://"+k.addr+"/api/v1/tenants/acme/"+route+"?"+q.Encode(), bytes.NewReader(data))
+	req, err := http.NewRequest("POST", "https://"+k.addr+"/api/v1/tenants/"+tenant+"/"+route+"?"+q.Encode(), bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}

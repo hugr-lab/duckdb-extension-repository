@@ -2,6 +2,7 @@
 
 - **Status**: implemented (parts 1, 2 and 3)
 - **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): distribution admins write a distributor's entries' icon and summary.
+- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 2): distribution admins read a distributor's download statistics across tenants (`GET /api/v1/distributor-stats/downloads`), and never rename a used publisher's distributor.
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 

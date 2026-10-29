@@ -97,7 +97,23 @@ type kista struct {
 	usage    *stats.Counts[store.UsageKey]
 	// puller takes the misses serving offers, once a test sets one (spec 0009 phase 2, 0032)
 	puller *latePuller
+	// clock is the store's clock: the wall clock until a test sets it
+	clock *testClock
 }
+
+// testClock is a clock a test sets while kista runs (no data race on the store's Now): the wall
+// clock until set.
+type testClock struct{ at atomic.Pointer[time.Time] }
+
+func (c *testClock) now() time.Time {
+	if t := c.at.Load(); t != nil {
+		return *t
+	}
+	return time.Now()
+}
+
+// set makes the clock answer t from now on.
+func (c *testClock) set(t time.Time) { c.at.Store(&t) }
 
 // latePuller is serving's puller, set after kista starts (a test makes the upstream service on the
 // started store); before that, misses offer nothing.
@@ -139,11 +155,29 @@ func startKistaWith(t *testing.T, b *build, verifier *auth.Verifier) *kista {
 // and usage routes; spec 0021: licences verify against the keys the builds declare).
 func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, licensed bool) *kista {
 	t.Helper()
+	return startKistaOpts(t, b, kistaOpts{verifier: verifier, licensed: licensed})
+}
+
+// kistaOpts are startKistaOpts' choices: a token verifier (nil: anonymous callers only), licensing,
+// and a change to the API's options (a server issuer, spec 0036).
+type kistaOpts struct {
+	verifier *auth.Verifier
+	licensed bool
+	api      func(*api.Options)
+}
+
+// startKistaOpts starts kista serve with opts. The store's clock is the test's (k.clock), set before
+// anything runs: a test moves it with k.clock.set, never by replacing the store's Now.
+func startKistaOpts(t *testing.T, b *build, opts kistaOpts) *kista {
+	t.Helper()
+	verifier, licensed := opts.verifier, opts.licensed
 	ctx := context.Background()
 	st, err := store.OpenSQLite(ctx, filepath.Join(t.TempDir(), "kista.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	clock := &testClock{}
+	st.Now = clock.now
 	t.Cleanup(func() { st.Close() })
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
@@ -182,7 +216,7 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 	must(err)
 	_, err = ten.SetChannelVersions(ctx, serveAdmin, "acme", "prod", []string{b.versionDir}, nil)
 	must(err)
-	k := &kista{t: t, st: st, keys: ks, keyDir: keyDir, b: b, blob: bs, puller: &latePuller{},
+	k := &kista{t: t, st: st, keys: ks, keyDir: keyDir, b: b, blob: bs, puller: &latePuller{}, clock: clock,
 		rel: &release.Service{Store: st, Blob: bs, Signers: ks, Authz: authz.ServerAdmin{}}}
 	k.addKey("a.pem", true)
 
@@ -207,10 +241,14 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 		served, usage = licenses.Served{Service: k.licenses}, k.usage
 		mlic = k.licenses.WithAuthz(grants)
 	}
-	apiH := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
+	apiOpts := api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
 		PublicURL: "https://" + k.addr, Log: slog.New(slog.DiscardHandler), KistaVersion: "e2e",
 		Authz: grants, Tenants: &mten, Auth: &tenants.AuthAdmin{Store: st, Authz: grants, PublicURL: "https://" + k.addr},
-		Keys: &mks, Releases: &release.Service{Store: st, Blob: bs, Signers: &mks, Authz: grants}, Licenses: mlic})
+		Keys: &mks, Releases: &release.Service{Store: st, Blob: bs, Signers: &mks, Authz: grants}, Licenses: mlic}
+	if opts.api != nil {
+		opts.api(&apiOpts)
+	}
+	apiH := api.New(apiOpts)
 	k.events = &writer.Writer{Store: st, Log: slog.New(slog.DiscardHandler)}
 	k.counts = stats.Downloads(st, slog.New(slog.DiscardHandler))
 	k.handler = serve.NewHandler(st, ks, bs, serve.Options{MaxDownloads: 16, MaxDownloadsPerClient: 16, MinRate: 1024,

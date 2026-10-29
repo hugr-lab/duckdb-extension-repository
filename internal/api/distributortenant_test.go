@@ -345,8 +345,9 @@ func TestDistributionAdminOwnPublishers(t *testing.T) {
 	call(201, "POST", T+"/publishers", da, `{"name":"enterest-ci","distributor":"enterest"}`)
 	call(200, "POST", T+"/publishers/enterest-ci/license-keys", da, "")
 	call(200, "DELETE", T+"/publishers/enterest-ci/license-keys", da, "")
-	call(200, "PUT", T+"/publishers/enterest-ci/hold", da, `{"hold":"1h"}`)
 	call(200, "PUT", T+"/publishers/enterest-ci/distributor", da, `{"distributor":"enterest-eu"}`)
+	call(200, "PUT", T+"/publishers/enterest-ci/hold", da, `{"hold":"1h"}`)
+	call(409, "PUT", T+"/publishers/enterest-ci/distributor", da, `{"distributor":"enterest"}`) // spec 0036: used, never renamed
 	m.addKey(t, da, "acme", "enterest-ci")
 	if r := call(200, "GET", T+"/publishers", da, ""); !strings.Contains(string(r.body), `"fingerprint"`) {
 		t.Fatalf("its distributor's publisher's keys: %s", r.body)

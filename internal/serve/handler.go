@@ -546,8 +546,8 @@ func (h *Handler) binary(w http.ResponseWriter, r *http.Request, rt route) {
 func (h *Handler) downloaded(r *http.Request, sc store.ServeChannel, rt route, c store.Candidate, authenticated bool, actor string) {
 	day := store.DayOf(h.st.Now())
 	if h.o.Downloads != nil {
-		h.o.Downloads.Add(store.DownloadKey{TenantID: sc.Tenant.ID, ChannelID: sc.Channel.ID, Name: c.Name, PackageVersion: c.PackageVersion,
-			Platform: c.Platform, DuckDBVersion: rt.duckdbVersion, Day: day, Authenticated: authenticated})
+		h.o.Downloads.Add(store.DownloadKey{TenantID: sc.Tenant.ID, ChannelID: sc.Channel.ID, Source: c.Source, Name: c.Name,
+			PackageVersion: c.PackageVersion, Platform: c.Platform, DuckDBVersion: rt.duckdbVersion, Day: day, Authenticated: authenticated})
 	}
 	if h.o.Metrics != nil {
 		h.o.Metrics.Downloaded(r.Context(), telemetry.Download{TenantID: sc.Tenant.ID, TenantName: sc.Tenant.Name, Channel: sc.Channel.Name,
@@ -566,7 +566,7 @@ func (h *Handler) downloaded(r *http.Request, sc store.ServeChannel, rt route, c
 	}
 	ua = strings.ToValidUTF8(ua, "")
 	h.o.Events.Event(r.Context(), sc.Tenant.ID, actor, "install", "channel:"+sc.Channel.Name+"/ext:"+c.Name+"/release:"+c.ID,
-		map[string]any{"release": c.ID, "name": c.Name, "version": c.PackageVersion, "platform": c.Platform,
+		map[string]any{"release": c.ID, "source": c.Source, "name": c.Name, "version": c.PackageVersion, "platform": c.Platform,
 			"duckdb_version": rt.duckdbVersion, "body_hash": c.BodyHash, "user_agent": ua})
 }
 
