@@ -261,3 +261,70 @@ func TestDistributorHoldRaiseRemoved(t *testing.T) {
 		}
 	}
 }
+
+// Spec 0037: in a suspended tenant a distribution admin still reads its distributors' catalogue
+// entries and withdraws a version, so a withdrawal never waits for the tenant's resumption; its other
+// calls there, a purge and the metadata's included, find nothing, and so does every call of the
+// tenant's administrators. Resumed, the withdrawn version stays withdrawn.
+func TestDistributionAdminSuspendedTenant(t *testing.T) {
+	m := newMgmt(t)
+	da, ta, sa := m.toks["server dist admin"], m.toks["tenant admin"], m.toks["server admin"]
+	const T = "/api/v1/tenants/acme"
+	call := func(want int, method, path, tok, body string) resp {
+		t.Helper()
+		r := m.call(t, method, path, tok, body)
+		if r.status != want {
+			t.Fatalf("%s %s: %d, want %d: %s", method, path, r.status, want, r.body)
+		}
+		return r
+	}
+	call(201, "POST", T+"/publishers", da, `{"name":"enterest-ci","distributor":"enterest"}`)
+	key := m.addKey(t, da, "acme", "enterest-ci")
+	q := "?platform=linux_amd64&version="
+	for _, v := range []string{"1.0", "1.1"} {
+		if r := m.upload(t, T+"/catalogue/extensions/geo_tools/builds"+q+v, key, built(t, v, "geo_tools_duckdb_cpp_init")); r.status != 201 {
+			t.Fatalf("geo_tools %s: %d %s", v, r.status, r.body)
+		}
+	}
+	const E = T + "/catalogue/publisher:enterest-ci/extensions/geo_tools"
+	build := call(200, "GET", E, da, "").json(t)["versions"].([]any)[0].(map[string]any)["builds"].([]any)[0].(map[string]any)["id"].(string)
+	if _, err := m.ten.SetTenantState(ctx, admin, "acme", store.TenantSuspended, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// reached: the catalogue, an entry (without its metadata) and a withdrawal
+	if r := call(200, "GET", T+"/catalogue?name=geo_tools", da, ""); !strings.Contains(string(r.body), `"publisher:enterest-ci"`) {
+		t.Fatalf("the catalogue: %s", r.body)
+	}
+	if r := call(200, "GET", E, da, "").json(t); r["summary"] != nil || len(r["versions"].([]any)) != 2 {
+		t.Fatalf("the entry: %v", r)
+	}
+	if r := call(200, "POST", E+"/versions/1.1/withdraw", da, `{"reason":"CVE-2026-0002"}`).json(t); r["already"] != false ||
+		len(r["withdrawn"].([]any)) != 1 {
+		t.Fatalf("the withdrawal: %v", r)
+	}
+	call(200, "POST", E+"/versions/1.1/withdraw", da, `{"reason":"again"}`)
+	// not reached: the distribution admin's other calls, and the tenant's administrators
+	call(404, "DELETE", T+"/catalogue/builds/"+build, da, "")
+	call(404, "GET", E+"/meta", da, "")
+	call(404, "PUT", E+"/meta", da, `{"summary":"Geometry tools"}`)
+	call(404, "GET", T+"/publishers/enterest-ci", da, "")
+	call(404, "GET", T+"/catalogue", ta, "")
+	call(404, "POST", E+"/versions/1.0/withdraw", ta, `{"reason":"x"}`)
+	// the service alone admits a suspended tenant for these two calls only
+	dist := authz.Actor{Kind: authz.ActorDistributionAdmin, ID: "dist"}
+	if _, err := m.apiRel.PurgeEntry(ctx, dist, "acme", build); !errors.Is(err, authz.ErrDenied) {
+		t.Fatalf("a purge in a suspended tenant: %v", err)
+	}
+
+	// resumed: withdrawn, once, and told
+	if _, err := m.ten.SetTenantState(ctx, admin, "acme", store.TenantActive, 0); err != nil {
+		t.Fatal(err)
+	}
+	if r := call(200, "POST", E+"/versions/1.1/withdraw", da, `{"reason":"again"}`).json(t); r["already"] != true {
+		t.Fatalf("withdrawn already: %v", r)
+	}
+	if r := call(200, "GET", T+"/events?kind=catalogue.withdrawn", sa, ""); strings.Count(string(r.body), `"kind":"catalogue.withdrawn"`) != 1 {
+		t.Fatalf("the withdrawal's event: %s", r.body)
+	}
+}

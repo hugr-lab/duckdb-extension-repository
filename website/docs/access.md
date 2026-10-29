@@ -331,7 +331,8 @@ active tenant a distribution admin may:
   its hold (which holds its entries only above the tenant's [minimum hold for distributors'
   publishers](#the-minimum-hold-for-distributors-publishers)), purge its builds placed nowhere,
   [withdraw](upstreams.md#withdrawals) its versions, read its entries in the catalogue (without
-  channels), and write their [icon and summary](catalogue.md#give-an-entry-an-icon-and-a-summary)
+  channels; reading them and withdrawing reach a suspended tenant too, so a withdrawal never waits
+  for the tenant's resumption: spec 0037), and write their [icon and summary](catalogue.md#give-an-entry-an-icon-and-a-summary)
   (spec 0036: the tenant's administrators read a distributor's entry's metadata, and never write
   it);
 - never act on the tenant's own publishers (spec 0037), with the licence-key mark or without: their
