@@ -115,12 +115,13 @@ test('a licence: imported from a file into an entry, its claims read, made publi
   await expect(page.getByRole('alert')).toContainText('kid_untrusted')
   await page.getByLabel('licence file').setInputFiles([])
 
-  // spec 0037: it is the distributor's licence copied: tom does not make it public
+  // vault-ci's entry is not a distributor's: tom makes its licence public (spec 0037: a copy of the
+  // distributor's licence there is covered by the terms and the warning, not prevented)
   await page.getByRole('button', { name: 'Make public' }).click()
   await confirm(page, 'Make public')
-  const view = page.locator('section', { has: page.getByRole('heading', { name: 'vault', exact: true }) })
-  await expect(view.getByRole('alert')).toContainText("a copy of a distributor's licence (publisher:vault-dist)")
-  await expect(row.getByText('private', { exact: true })).toBeVisible()
+  await expect(row.getByText('public', { exact: true })).toBeVisible()
+  await expect(page.getByText(/and can copy it/)).toBeVisible()
+  await expect(warnings).toContainText('publisher:vault-ci holds a licence for vault')
 
   await page.getByRole('button', { name: 'Remove…' }).click()
   await confirm(page, 'Remove')
