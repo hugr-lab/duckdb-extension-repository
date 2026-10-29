@@ -163,7 +163,7 @@ containers (`host.docker.internal:56432`; on Linux, start the containers with
 | Job | Runs |
 | --- | --- |
 | `lint` | `go vet`, `govulncheck`, `golangci-lint` |
-| `go-linux` (three jobs: `internal/api`, `internal/store` and `internal/release`, the rest) | `go test -race` with the store suite on SQLite, and Vault, OpenBao, SeaweedFS, Azurite, moto and fake-gcs-server, every `REQUIRE` switch on |
+| `go-linux` (four jobs: `internal/api`, `internal/store` and `internal/release`, `internal/upstream`, the rest) | `go test -race` with the store suite on SQLite, and Vault, OpenBao, SeaweedFS, Azurite, moto and fake-gcs-server, every `REQUIRE` switch on |
 | `go-postgres` | `go test -race` of the store suite's packages on PostgreSQL 17 |
 | `go-sqlserver` | `go test -race` of the store suite's packages on SQL Server 2022 |
 | `go-macos` | `go vet` and `go test -race ./...` (SQLite and the file system only) |

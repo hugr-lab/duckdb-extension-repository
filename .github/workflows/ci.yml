@@ -32,13 +32,13 @@ jobs:
     # Every package under -race with the store suite on SQLite; Vault, OpenBao, an S3-compatible
     # server, Azurite, moto and fake-gcs-server. PostgreSQL is here for the Vault database secrets
     # engine (spec 0027); the store suite's PostgreSQL and SQL Server runs are the jobs below. The
-    # packages are split in three, each on its own runner: the largest ones share no CPUs.
+    # packages are split in four, each on its own runner: the largest ones share no CPUs.
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        packages: [api, store-release, rest]
+        packages: [api, store-release, upstream, rest]
     env:
       GOWORK: off
     services:
@@ -91,7 +91,8 @@ jobs:
           case "$PACKAGES" in
             api) pkgs=./internal/api/ ;;
             store-release) pkgs="./internal/store/... ./internal/release/..." ;;
-            rest) pkgs=$(go list ./... | grep -v -e '/internal/api$' -e '/internal/store' -e '/internal/release') ;;
+            upstream) pkgs=./internal/upstream/... ;;
+            rest) pkgs=$(go list ./... | grep -v -e '/internal/api$' -e '/internal/store' -e '/internal/release' -e '/internal/upstream') ;;
           esac
           test -n "$pkgs"
           go test -race -timeout 25m $pkgs
