@@ -1,6 +1,6 @@
 # Spec 0037: The distributor in a tenant
 
-- **Status**: accepted
+- **Status**: accepted (PR 1 implemented)
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -611,6 +611,39 @@ Two pull requests, in this order with spec 0036. Each runs `make test` on the th
 **The developer kit.** `kista_publish.py` in extension-ci-tools retries every `429` up to its limit.
 It should stop on `catalogue-full`, both from a publication and from spec 0036's metadata `PUT`. It
 may keep retrying the other types.
+
+### As built (PR 1)
+
+Delivered on the branch `0037-distributor-in-tenant-1`, with no migration.
+
+- **Licences.** The distributor's-entry check (`distributorsEntry` in `internal/licenses`) runs
+  when the entry is resolved and again in the write's transaction; it admits a licence manager (its
+  entries are distributors' only) and a server administrator (`Allow(admin, server)`). On an import
+  it runs before the token is parsed, so the refusal's event names the licence read from the token
+  unverified (`""` when the token names none). The API maps `*DistributorsEntry` to the typed `404`
+  and records its `name`, `source` and `operation` on `authz.refused` through the status writer.
+  `older` is one service helper over `store.LaterLicenses`, called by the import, the relay and
+  bundles; it treats a stored licence as not counting with the relay's `deadKey`. Its refusal names
+  the entry holding the later licence.
+- **The narrowing.** `marked()`, `SetPublisherLicenseKeys` (both directions), `ListPublisherKeys`,
+  `TenantPublisherKeys` and `SetPublisherDistributor` refuse a distribution admin on a publisher
+  without `Distributor`. So a distribution admin no longer marks a fresh publisher it created; a
+  server administrator still does until PR 2 removes the path.
+- **Reserved names.** A distribution admin's answer leaves out `added_at` as well as `sources`
+  ("each name and its kind only").
+- **CLI.** There was no `publisher show`: it is added, printing the publisher with its `id`.
+- **Console.** The import dialog never preselects a distributor's entry for a caller who is not a
+  server administrator, and "never one among several" still counts every entry listed.
+- **429s.** The chunk route's new `ingest-busy` answer has its own detail ("every ingest slot is
+  taken: send it again"); the other details are unchanged.
+- **Tests.** The "old licence into another entry where the distributor's key is live" case uses a
+  tenant publisher's entry rather than an upstream's: the rule is tenant-wide, whatever the entry's
+  kind. `TestDistributionAdmin` and `TestDistributorRoutes` are adjusted to PR 1 (distributors'
+  publishers created marked); their rewrite as the role's full matrix is PR 2's. The e2e server
+  answers the licence routes when licensing is on. The console e2e fixture gains `plain-ci`, a
+  tenant publisher whose builds declare no licence key.
+- **Website.** The deploy variables' descriptions, `upgrading.md` and `upstreams.md` describe
+  tenant reservations and the minimum hold, and change with PR 2.
 
 ## Alternatives considered
 
