@@ -190,15 +190,14 @@ func (s *Store) UpstreamKindOf(ctx context.Context, source string) (string, erro
 	return kind, err
 }
 
-// NameReservedFor is how kista reserves a name of a type server-wide (core or community), for a
-// follow's limits and a distributor's publisher's names; "" when it does not (spec 0037: tenant
-// reservations are gone).
-func (s *Store) NameReservedFor(ctx context.Context, packageType, name string) (string, error) {
-	var out string
-	err := s.InTx(ctx, "", func(tx *Tx) error {
-		var err error
-		out, err = tx.ReservedKind(ctx, packageType, name)
-		return err
-	})
-	return out, err
+// ServerReservedKind reads how kista reserves a name of a type server-wide (core or community), for a
+// follow's limits and a distributor's publisher's names; "" when it does not. It reads the server's
+// list, not the process's view.
+func (s *Store) ServerReservedKind(ctx context.Context, packageType, name string) (string, error) {
+	var k string
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT kind FROM reserved_names WHERE package_type = ? AND name = ?"), packageType, name).Scan(&k)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return k, err
 }

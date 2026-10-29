@@ -130,7 +130,7 @@ func TestReservedNames(t *testing.T) {
 
 // TestReservedFor is the one lookup (spec 0030; spec 0037: tenant reservations are gone): DuckDB's
 // names, then the tenant's upstreams'; and the server-wide names among a list (ReservedAmong,
-// NameReservedFor).
+// ServerReservedKind).
 func TestReservedFor(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
@@ -156,10 +156,10 @@ func TestReservedFor(t *testing.T) {
 		if err != nil || len(got) != 1 || !got["kista_held"] {
 			t.Fatalf("among: %v %v", got, err)
 		}
-		if k, err := s.NameReservedFor(ctx, pkgtype.DuckDBExtension, "kista_held"); err != nil || k != store.ReservedCommunity {
+		if k, err := s.ServerReservedKind(ctx, pkgtype.DuckDBExtension, "kista_held"); err != nil || k != store.ReservedCommunity {
 			t.Fatalf("name reserved for: %q %v", k, err)
 		}
-		if k, err := s.NameReservedFor(ctx, pkgtype.DuckDBExtension, "vendor_ext"); err != nil || k != "" {
+		if k, err := s.ServerReservedKind(ctx, pkgtype.DuckDBExtension, "vendor_ext"); err != nil || k != "" {
 			t.Fatalf("an upstream's name is not reserved server-wide: %q %v", k, err)
 		}
 	})

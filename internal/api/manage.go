@@ -109,7 +109,8 @@ func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
 		problem(w, http.StatusConflict, typeConflict, publicRefusal(err))
 	case errors.Is(err, tenants.ErrGroupGranted):
 		problem(w, http.StatusConflict, typeConflict, "a grant names the extension group: revoke its grants first")
-	case errors.Is(err, tenants.ErrPublisherTaken): // spec 0037
+	case errors.Is(err, tenants.ErrPublisherTaken): // spec 0037: a refusal, so a probe of the tenant's names is audited
+		note(w, func(sw *statusWriter) { sw.refused, sw.refusal = true, map[string]any{"reason": "publisher-taken"} })
 		problem(w, http.StatusConflict, typePublisherTaken, "the name is taken by a publisher of the tenant's own")
 	case errors.Is(err, tenants.ErrLastAdmin):
 		problem(w, http.StatusConflict, typeConflict, "the tenant's last tenant-wide admin grant; a server administrator can remove it")

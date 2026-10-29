@@ -142,17 +142,19 @@ type followLook struct {
 	consent *authz.Actor // a followed publisher, whose grants a name must reach (spec 0033)
 	// distributor is a followed distributor's publisher's distributor (spec 0033 phase B): it has no
 	// grants, so a name it may publish into the catalogue (not reserved server-wide) is consented to
-	// instead
+	// instead, but for a name an upstream of the tenant lists, which a grant reaches only by naming
+	// it (spec 0037)
 	distributor string
 }
 
 // PlaceFollow takes, for a follow, every name of its source the channel has no rule for (spec 0033):
 // it writes the name's rule (mode follow) and places as an auto rule would; a rule an arrival wrote
 // for the same source becomes the follow's. It skips a name the tenant uses from another source, one
-// reserved server-wide (unless the source is DuckDB's own repository of that kind), one another follow of the
-// channel offers too, and, for a publisher, one it may not publish in the channel (a follow is consent
-// to a source, not to every grant anyone gives it; a distributor's publisher has no grants, and the
-// names it may publish into the catalogue are its consent, spec 0033 phase B). It returns how
+// reserved server-wide (unless the source is DuckDB's own repository of that kind), one another
+// follow of the channel offers too, and, for a publisher, one it may not publish in the channel (a
+// follow is consent to a source, not to every grant anyone gives it; a distributor's publisher has no
+// grants, and the names it may publish into the catalogue are its consent, spec 0033 phase B, but
+// for a name an upstream of the tenant lists, spec 0037). It returns how
 // many builds it placed, the names it skipped with the reason, and the first failure's text; a
 // failure on one name does not stop the others.
 func (s *Service) PlaceFollow(ctx context.Context, f store.DueFollow, renew func(context.Context) error) (int, map[string]string, string, error) {
@@ -305,12 +307,23 @@ func (s *Service) followLook(ctx context.Context, f store.DueFollow) (followLook
 
 // followLimit says why a follow does not take a name ("" when it does).
 func (s *Service) followLimit(ctx context.Context, lk followLook, f store.DueFollow, name string) (string, error) {
-	reserved, err := s.Store.NameReservedFor(ctx, lk.channel.PackageType, name)
+	reserved, err := s.Store.ServerReservedKind(ctx, lk.channel.PackageType, name)
 	if err != nil {
 		return "", err
 	}
 	if reserved == store.ReservedCore && lk.kind != store.UpstreamCore || reserved == store.ReservedCommunity && lk.kind != store.UpstreamCommunity {
 		return "a name DuckDB's " + reserved + " repository has: a rule naming it takes it", nil
+	}
+	if lk.distributor != "" {
+		// spec 0037: a name an upstream of the tenant lists is reached by a grant naming it only; a
+		// distributor's publisher holds none, so its follow leaves the name to a rule
+		listed, err := s.Store.UpstreamProvides(ctx, f.TenantID, lk.channel.PackageType, name)
+		if err != nil {
+			return "", err
+		}
+		if listed {
+			return "a name an upstream of the tenant lists: a rule naming it takes it", nil
+		}
 	}
 	for _, src := range lk.byName[name] {
 		if src != f.Source {
@@ -336,7 +349,8 @@ func (s *Service) followLimit(ctx context.Context, lk followLook, f store.DueFol
 
 // takeName writes a name's follow rule under the channel lock, checking again that the channel
 // still follows the source and the name is still free (no rule, or one an arrival wrote for the
-// same source, which becomes the follow's).
+// same source, which becomes the follow's) and, for a distributor's publisher, not listed by an
+// upstream of the tenant meanwhile (spec 0037).
 func (s *Service) takeName(ctx context.Context, lk followLook, f store.DueFollow, name string) (bool, error) {
 	wrote := false
 	err := s.Store.InTx(ctx, lockKey(f.ChannelID), func(tx *store.Tx) error {
@@ -346,6 +360,11 @@ func (s *Service) takeName(ctx context.Context, lk followLook, f store.DueFollow
 		cur, had, err := tx.ChannelSourceOf(ctx, f.ChannelID, name)
 		if err != nil || had && (cur.Source != f.Source || cur.Mode != store.RuleNone) {
 			return err
+		}
+		if lk.distributor != "" { // spec 0037: listed by an upstream of the tenant meanwhile
+			if listed, err := tx.UpstreamProvides(ctx, f.TenantID, lk.channel.PackageType, name); err != nil || listed {
+				return err
+			}
 		}
 		tx.SetWarningAct("source.set") // spec 0035 phase 2
 		if _, err := tx.SetChannelRule(ctx, f.ChannelID, name, f.Source, store.RuleFollow, placer.String()); err != nil {

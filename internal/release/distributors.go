@@ -38,7 +38,7 @@ func (s *Service) distributorMay(ctx context.Context, packageType, name string) 
 	if err := ValidName(name); err != nil {
 		return err
 	}
-	kind, err := s.Store.NameReservedFor(ctx, packageType, name)
+	kind, err := s.Store.ServerReservedKind(ctx, packageType, name)
 	if err != nil {
 		return err
 	}

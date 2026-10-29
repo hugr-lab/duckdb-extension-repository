@@ -26,26 +26,40 @@ type Publisher struct {
 	Distributor string
 }
 
-// MaxPublishers is the most publishers a tenant may hold.
-const MaxPublishers = 200
+// MaxPublishers is the most publishers of its own a tenant may hold; MaxDistributorPublishers, the
+// most distributors' publishers (spec 0037: counted apart, so a distribution admin never takes the
+// tenant's own room).
+const (
+	MaxPublishers            = 200
+	MaxDistributorPublishers = 10
+)
 
 var publisherName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 
-// InsertPublisher adds a publisher.
+// InsertPublisher adds a publisher: a distributor's, marked from its creation, when p.Distributor is
+// set (1 to 128 bytes of printable text). The tenant's own publishers and its distributors' are
+// counted apart (MaxPublishers, MaxDistributorPublishers).
 func (t *Tx) InsertPublisher(ctx context.Context, p *Publisher) error {
 	if !publisherName.MatchString(p.Name) {
 		return fmt.Errorf("%w: publisher name %q must match [a-z][a-z0-9-]{0,63}", ErrInvalid, p.Name)
 	}
+	kind, most, what := "distributor IS NULL", MaxPublishers, "publishers of its own"
+	if p.Distributor != "" {
+		if !validText(p.Distributor, MaxDistributor) {
+			return fmt.Errorf("%w: distributor: 1 to %d bytes of printable text", ErrInvalid, MaxDistributor)
+		}
+		kind, most, what = "distributor IS NOT NULL", MaxDistributorPublishers, "distributors' publishers"
+	}
 	var n int
-	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM publishers WHERE tenant_id = ?", p.TenantID).Scan(&n); err != nil {
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM publishers WHERE tenant_id = ? AND "+kind, p.TenantID).Scan(&n); err != nil {
 		return err
 	}
-	if n >= MaxPublishers {
-		return fmt.Errorf("%w: a tenant holds at most %d publishers", ErrInvalid, MaxPublishers)
+	if n >= most {
+		return fmt.Errorf("%w: a tenant holds at most %d %s", ErrInvalid, most, what)
 	}
 	p.ID, p.CreatedAt = NewID(), t.Now()
-	_, err := t.exec(ctx, "INSERT INTO publishers (id, tenant_id, name, created_at, created_by) VALUES (?, ?, ?, ?, ?)",
-		p.ID, p.TenantID, p.Name, t.s.d.timeArg(p.CreatedAt), p.CreatedBy)
+	_, err := t.exec(ctx, "INSERT INTO publishers (id, tenant_id, name, created_at, created_by, distributor) VALUES (?, ?, ?, ?, ?, ?)",
+		p.ID, p.TenantID, p.Name, t.s.d.timeArg(p.CreatedAt), p.CreatedBy, nullable(p.Distributor))
 	if err := t.s.mapErr(err, "publisher "+p.Name); err != nil {
 		return err
 	}

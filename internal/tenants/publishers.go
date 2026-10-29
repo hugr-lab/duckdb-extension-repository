@@ -44,7 +44,7 @@ func (s *AuthAdmin) AddDistributorPublisher(ctx context.Context, a authz.Actor, 
 	if err != nil {
 		return store.Publisher{}, err
 	}
-	p := store.Publisher{TenantID: t.ID, Name: name, CreatedBy: a.String()}
+	p := store.Publisher{TenantID: t.ID, Name: name, CreatedBy: a.String(), Distributor: dist}
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.PublisherAuthLock(t.ID)}, func(tx *store.Tx) error {
 		if distributor(a) { // under the tenant's auth lock, which every publisher's insert takes
 			cur, err := tx.GetPublisher(ctx, t.ID, name)
@@ -55,13 +55,9 @@ func (s *AuthAdmin) AddDistributorPublisher(ctx context.Context, a authz.Actor, 
 				return err
 			}
 		}
-		if err := tx.InsertPublisher(ctx, &p); err != nil {
+		if err := tx.InsertPublisher(ctx, &p); err != nil { // marked from its creation
 			return err
 		}
-		if _, err := tx.SetPublisherDistributor(ctx, t.ID, name, dist); err != nil {
-			return err
-		}
-		p.Distributor = dist
 		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name, "id": p.ID, "distributor": dist})
 	})
 	return p, err

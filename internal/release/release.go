@@ -422,7 +422,7 @@ type item struct {
 	// build mirrored from DuckDB's repositories). "": none.
 	reserveKind, reserveSource string
 	// anyKind is the upstream's kind when its "*" took the name: insert refuses the name under the
-	// locks if it is reserved since (as AnyTakes, and the tenant's names and upstreams). "": none.
+	// locks if it is reserved since (as AnyTakes, and the tenant's upstreams). "": none.
 	anyKind string
 	// publication is a publisher's publication on a channel's route, signed with keyID ("": none):
 	// insert checks under its locks that the publisher and the key still exist (spec 0033 phase A2:

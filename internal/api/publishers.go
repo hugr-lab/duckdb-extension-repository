@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"slices"
 	"time"
@@ -265,6 +266,11 @@ func (h *Handler) addPublisherKey(w http.ResponseWriter, r *http.Request, c call
 	}
 	a, _ := c.actor()
 	k, err := h.o.Auth.AddPublisherKey(r.Context(), a, p["t"], p["name"], in.PublicKey, exp)
+	if errors.Is(err, store.ErrExists) && c.distribution && !c.admin {
+		// spec 0037: a key is unique in the tenant, so the 409 tells a distribution admin that one of
+		// the tenant's publishers holds it: a refusal, audited, as a probe would be
+		note(w, func(sw *statusWriter) { sw.refused, sw.refusal = true, map[string]any{"reason": "key-taken"} })
+	}
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
