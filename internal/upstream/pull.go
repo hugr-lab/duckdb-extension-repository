@@ -431,7 +431,10 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	if ctx.Err() != nil {
 		return "", nil // stopping, or the lease was lost: nothing is recorded
 	}
-	if rec.Outcome == atLimit { // spec 0038: no room for a cell holding no body: not requested, not recorded
+	if rec.Outcome == atLimit { // spec 0038: no room for a cell holding no body: not requested
+		if lazy && prev.Outcome == "" { // a first request is answered 404 now, not 503 while nothing comes (spec 0032)
+			p.putFailed(ctx, u, m, room.noRoom().Error())
+		}
 		return store.CellFailed, room.noRoom()
 	}
 	if rec.Outcome == "" { // the identity provider refuses kista's own client: logged, nothing recorded

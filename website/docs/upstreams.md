@@ -230,8 +230,10 @@ A tenant's [bytes limit](administration/tenants-and-channels.md#limits) and its 
 reads the tenant's use and the catalogue once when it starts. Without room (the tenant uses its
 whole bytes limit or the catalogue is full at the start, or a cell was refused by either since):
 
-- **a cell that holds no body and keeps no ETag** (never fetched, `missing`, refused) is skipped
-  without a request, its record left as it is, and counted `skipped_at_limit`;
+- **a cell whose record holds no body** (never fetched, `missing`, or refused: a refusal took
+  none) is skipped without a request, its record left as it is, and counted `skipped_at_limit`; a
+  lazy mirror's cell never fetched is recorded `failed` instead, so its first request is answered
+  `404`, not `503` while nothing comes;
 - **a cell that holds a body** runs as ever: conditionally with its ETag (a `304` costs nothing),
   or unconditionally without one; a body the tenant has passes (a yank kept, a changed ETag), and a
   new body is refused after its download;

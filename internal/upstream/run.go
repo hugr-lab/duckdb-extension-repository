@@ -248,6 +248,13 @@ func (s *Service) newBodyRoom(ctx context.Context, u store.Upstream) (*bodyRoom,
 // is; a run counts it, never records it.
 const atLimit = "skipped_at_limit"
 
+// holds reports whether a cell's record holds a body (spec 0038): one it took (a conditional
+// outcome), or a failed record that kept the body it held (import.go's rule). A refusal's record
+// (rejected, blocked, shadowed, conflict) names a body it did not take.
+func holds(c store.UpstreamCell) bool {
+	return c.BodyHash != "" && (conditional[c.Outcome] || c.Outcome == store.CellFailed)
+}
+
 // isRoomRefusal reports a refusal for room (spec 0038): the tenant's limit, the source's full
 // catalogue. Neither is the file's fault, and neither clears within a run.
 func isRoomRefusal(err error) bool {
@@ -574,8 +581,12 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		rec.Outcome = outcome
 		if outcome == store.CellFailed {
 			// never the file's fault: the record keeps the body the cell holds (a landed build stays
-			// its cell's) and its ETag, as an import's does
-			rec.BodyHash, rec.ETag = prev.BodyHash, prev.ETag
+			// its cell's) and its ETag, as an import's does; it holds none after a refusal or a miss
+			if holds(prev) {
+				rec.BodyHash, rec.ETag = prev.BodyHash, prev.ETag
+			} else {
+				rec.BodyHash, rec.ETag = "", ""
+			}
 		}
 		if err != nil {
 			rec.Detail = err.Error()
@@ -602,9 +613,10 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 	if !dryRun && conditional[prev.Outcome] && sel.Source != "" {
 		etag = prev.ETag
 	}
-	// spec 0038: without room, a cell that holds no body and keeps no ETag (a dry run's too) is not
-	// requested and its record not touched; a cell that holds a body runs as ever, and room decides
-	if room.noRoom() != nil && prev.BodyHash == "" && prev.ETag == "" {
+	// spec 0038: without room, a cell whose record holds no body (a dry run's too; a refusal's names
+	// one it did not take) is not requested and its record not touched; a cell that holds a body runs
+	// as ever, and room decides
+	if room.noRoom() != nil && !holds(prev) {
 		return store.UpstreamCell{Outcome: atLimit}
 	}
 	// kista serve creates the directory at start; kista admin bundle export -sync runs here without it

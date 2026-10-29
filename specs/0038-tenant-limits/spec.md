@@ -181,10 +181,10 @@ in the build's insert and when a build is kept) to learn that its limit is unlim
     of a body the tenant has (which must pass) from new bytes. A full tenant costs one upload per
     refused publication, which the upload slots and the per-actor rate already bound.
   - **An upstream cell** (`cell` in a run, and the lazy puller's fetch): before the download, a
-    cell that holds no body and keeps no ETag is skipped when `used >= limit`, or when its source's
-    catalogue is full ([Upstream runs at a limit](#upstream-runs-at-a-limit)). A cell that has a
-    body already runs as ever (conditionally with its ETag): a `304` costs nothing. A `200` whose body is new to the tenant is refused after the spool by
-    `room`. A run reads `used` (and its source's catalogue) once when it starts, not per cell; it
+    cell whose record holds no body (a refusal's took none) is skipped when `used >= limit`, or
+    when its source's catalogue is full ([Upstream runs at a limit](#upstream-runs-at-a-limit)). A
+    cell that has a body already runs as ever (conditionally with its ETag): a `304` costs
+    nothing. A `200` whose body is new to the tenant is refused after the spool by `room`. A run reads `used` (and its source's catalogue) once when it starts, not per cell; it
     adds nothing for the bodies it admits, since it cannot tell a body new to the tenant from one
     another source holds, and a figure that overcounts would refuse what the transaction takes: the
     first refusal after a download (by `room` or the transaction) stops its new downloads instead.
@@ -236,8 +236,9 @@ A run reads the tenant's use and its source's catalogue once when it starts. It 
 when the tenant uses its whole bytes limit or the catalogue is full then, or once a cell was
 refused by either during the run. Without room:
 
-1. **a cell that holds no body and keeps no ETag** (never fetched, `missing`, refused; a dry run
-   decides by the same record) is skipped without a request: its record is left as it is (no
+1. **a cell whose record holds no body** (never fetched, `missing`, or refused: a refusal's
+   record names a body it did not take; a dry run decides by the same record) is skipped without
+   a request: its record is left as it is (no
    write, so an ask, a refusal's event and an export read it unchanged), and the run counts it
    `skipped_at_limit` in its summary and its `upstream.run` event;
 2. **a cell that holds a body** runs as a run would: conditionally with its ETag, or
@@ -247,8 +248,10 @@ refused by either during the run. Without room:
 3. **a refused cell** (`tenant-limit` or `catalogue-full`) is recorded `failed` (retried by the
    next run: never the file's fault, so no `upstream.rejected` event), with the detail naming the
    limit or the cap, among the run's problems. A `failed` record keeps the body hash and the ETag
-   the cell held (as an import's does), so a landed build stays its cell's and the collector
-   leaves it;
+   the cell held (as an import's does: a record of a body taken, or a failed one that kept it), so
+   a landed build stays its cell's and the collector leaves it; after a refusal or a miss it holds
+   none. A failed record confirms nothing: a bundle export takes a cell record's `fetched_at` and
+   ETag only from a record of a body taken;
 4. the run ends with a cause wrapped in `errFailed` **only when a cell was refused during it**: the
    request is recorded as failed and is not re-queued as interrupted (`internal/upstream/run.go`);
    the next run comes at its usual time. A run that only skipped cells did not fail.
@@ -271,7 +274,9 @@ its catalogue does not empty within a run either. A bundle import keeps its hand
 server administrator's, run once, and exempt from the tenant limit).
 
 **The lazy puller** (spec 0032) checks before the download as above: a cell holding no body is
-skipped, not requested and not recorded; a cell holding one runs, and one refused by
+skipped, not requested, its record left as it is (a lazy mirror's cell never fetched is recorded
+failed, so its first request is answered `404` now, not `503` while nothing comes); a cell holding
+one runs, and one refused by
 `tenant-limit` or `catalogue-full` is recorded as a failed fetch. Either answers the client as a
 failed fetch does today, but is remembered for `NegativeTTL` (an hour by default), not the minute
 of a network failure: asking again within the hour would be refused again, and a pull-through

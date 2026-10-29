@@ -50,13 +50,17 @@ func TestRunAtTenantLimit(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
 		en.repo.put("v2.0.0", "linux_amd64", "tresor", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "tresor_duckdb_cpp_init"))
 		en.repo.put("v2.0.0", "linux_amd64", "pg", signed(t, en.key, cpp("1.0", "v2.0.0"), 4, "pg_duckdb_cpp_init"))
+		en.repo.put("v2.0.0", "linux_amd64", "bad", signed(t, nil, cpp("1.0", "v2.0.0"), 6, "bad_duckdb_cpp_init")) // unsigned: rejected
 		u, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "tresor"}, store.UpstreamEntry{Name: "pg"},
-			store.UpstreamEntry{Name: "acl"}, store.UpstreamEntry{Name: "geo"}))
+			store.UpstreamEntry{Name: "acl"}, store.UpstreamEntry{Name: "geo"}, store.UpstreamEntry{Name: "bad"}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if r := en.sync(t, false); r.Counts[store.CellReleased] != 2 || r.Counts[store.CellMissing] != 2 {
+		if r := en.sync(t, false); r.Counts[store.CellReleased] != 2 || r.Counts[store.CellMissing] != 2 || r.Counts[store.CellRejected] != 1 {
 			t.Fatalf("the first run: %+v", r)
+		}
+		if c := en.cell(t, "bad"); c.ETag == "" {
+			t.Fatalf("a refusal's record keeps the ETag of a body it did not take: %+v", c)
 		}
 		used, err := en.st.TenantBytes(ctx, u.TenantID)
 		if err != nil || used == 0 {
@@ -70,28 +74,29 @@ func TestRunAtTenantLimit(t *testing.T) {
 		en.repo.touch("v2.0.0", "linux_amd64", "tresor") // a 200 with the body the tenant has
 		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("1.0", "v2.0.0"), 2, "acl_duckdb_cpp_init"))
 		en.repo.put("v2.0.0", "linux_amd64", "geo", signed(t, en.key, cpp("1.0", "v2.0.0"), 3, "geo_duckdb_cpp_init"))
-		before := map[string]int{"acl": en.gets("acl"), "geo": en.gets("geo")}
+		before := map[string]int{"acl": en.gets("acl"), "geo": en.gets("geo"), "bad": en.gets("bad")}
+		want := map[string]string{"acl": store.CellMissing, "geo": store.CellMissing, "bad": store.CellRejected}
 
-		if r := en.sync(t, true); r.Counts["skipped_at_limit"] != 2 || r.Counts["would_release"] != 0 || r.Error != "" {
+		if r := en.sync(t, true); r.Counts["skipped_at_limit"] != 3 || r.Counts["would_release"] != 0 || r.Error != "" {
 			t.Fatalf("a dry run at the limit: %+v", r)
 		}
 		r := en.sync(t, false)
-		if r.Counts["skipped_at_limit"] != 2 || r.Counts[store.CellYanked] != 1 || r.Counts[store.CellUnchanged] != 1 ||
+		if r.Counts["skipped_at_limit"] != 3 || r.Counts[store.CellYanked] != 1 || r.Counts[store.CellUnchanged] != 1 ||
 			r.Counts[store.CellFailed] != 0 || r.Error != "" {
 			t.Fatalf("the run at the limit: %+v", r)
 		}
-		for _, n := range []string{"acl", "geo"} {
+		for n, outcome := range want {
 			if g := en.gets(n); g != before[n] {
 				t.Fatalf("%s requested %d times", n, g-before[n])
 			}
-			if c := en.cell(t, n); c.Outcome != store.CellMissing {
+			if c := en.cell(t, n); c.Outcome != outcome {
 				t.Fatalf("%s's record touched: %+v", n, c)
 			}
 		}
 		if rs := en.releases(t, "tresor"); len(rs) != 1 || rs[0].State != store.ReleaseYanked {
 			t.Fatalf("the yank: %+v", rs)
 		}
-		if rejected, failed := en.runEvents(t, u.TenantID, "upstream.rejected", "failed"); rejected != 0 || failed != 0 {
+		if rejected, failed := en.runEvents(t, u.TenantID, "upstream.rejected", "failed"); rejected != 1 || failed != 0 { // the first run's
 			t.Fatalf("events: %d rejected, %d failed runs", rejected, failed)
 		}
 		en.setBytes(t, store.LimitUnlimited)
@@ -240,6 +245,47 @@ func TestRunAtFullCatalogue(t *testing.T) {
 		en.rel.MaxEntries = 0
 		if r := en.sync(t, false); r.Counts[store.CellLanded] != 1 || r.Error != "" {
 			t.Fatalf("with room: %+v", r)
+		}
+	})
+}
+
+// Spec 0038 with spec 0032: a lazy mirror's first request at the tenant's bytes limit is not
+// fetched, and its cell is recorded failed, so the request is answered 404 (not coming) rather than
+// 503 forever, past the ask's window too.
+func TestLazyAskAtTenantLimit(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		u := lazySetup(t, en)
+		en.setBytes(t, 0)
+		miss := release.Miss{TenantID: u.TenantID, UpstreamID: u.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "b",
+			Principal: "user:alice", Lazy: true}
+		p := en.puller()
+		if coming, err := p.Ask(ctx, true, miss); err != nil || !coming {
+			t.Fatalf("a first ask: %v %v", coming, err)
+		}
+		before := en.gets("b")
+		p.Offer(miss)
+		p.Drain(ctx)
+		if g := en.gets("b"); g != before {
+			t.Fatalf("fetched past the limit: %d", g-before)
+		}
+		must(t, func() error {
+			return store.ExecRaw(ctx, en.st, "UPDATE upstream_asks SET asked_at = ? WHERE upstream_id = ?", store.TimeArg(en.st, time.Now().Add(-time.Hour)), u.ID)
+		})
+		if coming, err := p.Ask(ctx, true, miss); err != nil || coming {
+			t.Fatalf("an ask past the window at the limit: %v %v", coming, err)
+		}
+		cs, err := en.up.Cells(ctx, admin, "acme", u.Name, "", [3]string{}, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorded := false
+		for _, c := range cs {
+			if c.Name == "b" && c.DuckDBVersion == "v2.0.0" {
+				recorded = c.Outcome == store.CellFailed && strings.Contains(c.Detail, "bytes limit")
+			}
+		}
+		if !recorded {
+			t.Fatalf("b's cell: %+v", cs)
 		}
 	})
 }
