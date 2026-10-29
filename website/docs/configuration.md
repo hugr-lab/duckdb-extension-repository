@@ -434,7 +434,7 @@ role. See [Access](access.md).
 | `auth.server_egress_allow` | list | none | Like `egress.allow` (`cidr`, `ports`), reached only by the server issuers' fetcher. |
 | `auth.server_admins` | list | none | Principals of server issuers who are server administrators. |
 | `auth.server_license_admins` | list | none | Principals of server issuers who are licence managers: they read every tenant's licences and write those of distributors' publishers' entries, and nothing else (specs 0029, 0035). |
-| `auth.server_distribution_admins` | list | none | Principals of server issuers who are distribution admins: on every tenant they reserve names, create and manage distributors' publishers (never the tenant's own: spec 0037), read the tenant's state and expected holder, and grant `publish`, `promote` and `admin` on extensions; nothing else (spec 0030). Not also a licence manager. |
+| `auth.server_distribution_admins` | list | none | Principals of server issuers who are distribution admins: on every tenant they create and manage distributors' publishers and their catalogue entries (never the tenant's own publishers, nor grants: spec 0037), and read the tenant's state and expected holder; nothing else (spec 0030). Not also a licence manager. |
 | `auth.admin_token_max_age` | duration | `1h` | How recently a management token must have been issued; `1m..24h`. |
 
 Each server issuer:

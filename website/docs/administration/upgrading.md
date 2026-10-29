@@ -100,6 +100,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0042_license_owners` | 42 | licences are per (name, source): an older replica would serve a licence through any source's build, and store and read licences by name |
 | `0043_license_entries` | 43 | licences are per catalogue entry and key owners go: an older replica reads and writes `license_key_owners` and relies on the relay's exceptions |
 | `0045_download_sources` | 45 | download counts and installers are kept per source: an older replica would add counts by the old key, which the new primary key no longer matches |
+| `0046_distributor_holds` | 46 | tenant reservations are dropped and distributors' publishers take the tenant's minimum hold: an older replica reads the dropped table on every channel snapshot, and would ignore the minimum |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -170,7 +171,28 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 45)
+## Upgrading to the next release (schema 46)
+
+### The distributor in a tenant (spec 0037)
+
+- **Migration `0046_distributor_holds`** drops `tenant_reserved_names` (spec 0030's names reserved
+  in a tenant: they are lost) and adds `tenants.distributor_hold_seconds`, `NOT NULL DEFAULT 86400`.
+  It raises `min_reader` to 46: stop every older replica first.
+- **Tenant reservations are removed.** `GET|PUT|DELETE /api/v1/tenants/{t}/reserved-names[/{name}]`,
+  `kista admin tenant-reserved`, the `reserved.tenant.add` and `reserved.tenant.remove` events and the
+  console's "Names reserved for a distributor" card go. A tenant's own grants reach every name kista
+  does not reserve server-wide and no upstream of the tenant lists; an upstream's `allow_reserved`
+  concerns DuckDB's names only.
+- **A narrower distribution admin.** It no longer creates ordinary publishers, writes or reads
+  grants, or reads the tenant's own publishers (`404`); a name one of them holds answers
+  `publisher-taken` (`409`). Grants and publishers a distribution admin made before stay, the
+  tenant administrators' to manage. An existing publisher is never marked a distributor's any more,
+  by anyone.
+- **The minimum hold for distributors' publishers** is one day in every tenant from the upgrade on:
+  a distributor's builds reach the tenant's channels a day after publication unless its
+  administrators lower it (`kista admin tenant distributor-hold <tenant> 0`,
+  [the minimum hold](../access.md#the-minimum-hold-for-distributors-publishers)). Entries held
+  already keep their hold; lowering the minimum releases none of them.
 
 ### A distributor's download statistics (spec 0036, phase 2)
 
@@ -431,7 +453,7 @@ A channel serves each extension name from one source, which its administrator se
   reserved`), seeded with the lists kista compiled in until now; a new DuckDB version is added with
   its core names (`version add -core-extensions`). It raises `min_reader` to 30.
 - **Migration `0031_tenant_reserved_names`** adds names reserved in a tenant and raises `min_reader`
-  to 31.
+  to 31 (migration `0046` drops them again, spec 0037).
 
 ### An expected holder per tenant (spec 0028)
 

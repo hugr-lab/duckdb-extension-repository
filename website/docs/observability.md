@@ -67,7 +67,6 @@ are all the kinds in `internal/audit`:
 | | `reserved.add` | `version:<name>` (a version's core extensions), `reserved:<name>` (an administrator's) or `sync:community` (the community sync) | `kind`, `names`, `source`; a version's: `version`; forced over tenants' releases: `forced`, `tenants` |
 | | `reserved.remove` | `reserved:<name>` | `name`, `sources` |
 | | `reserved.sync` | `sync:community` | `error` (a failed community sync pass: `fetch`, `too_many`, `error`) |
-| | `reserved.tenant.add`, `reserved.tenant.remove` | `reserved:<name>` (on the tenant's events) | `name`, `holder`; add: `previous` (the holder before, when another) |
 | | `server.start` | `server` | `version`, `schema`, `digests`, `changed` |
 | | `signer.source.weak` | `source:<name>` | `source`, `kind`, `protection` |
 | Channels and keys | `channel.create` | `channel:<channel>` | `name`, `kind` |
@@ -99,7 +98,7 @@ are all the kinds in `internal/audit`:
 | | `release.promote` | `channel:<channel>/ext:<name>` | `releases`, `name`, `from_channel`, `version`, `shadows`, `provenance` |
 | | `catalogue.arrival` | `ext:<name>` | `build`, `name`, `version`, `platform`, `slot`, `body_hash`, `source`, `visibility`, `available_at` (held until then), `provenance`: a build published into the catalogue only (spec 0033) |
 | | `catalogue.purge` | `ext:<name>` | `build`, `name`, `version`, `platform`, `slot`, `body_hash`, `reason` and `key` (a held entry purged with its key, `publisher.key.remove`, or its publisher, `publisher.remove`): an entry purged from the catalogue |
-| | `catalogue.hold` | `upstream:<name>`, `publisher:<name>` or `channel:<channel>` | `source` or `channel`, `hold`, `before`, `held` (the held entries a raise held longer): a hold set (spec 0033) |
+| | `catalogue.hold` | `upstream:<name>`, `publisher:<name>`, `channel:<channel>` or `tenant:<name>` | `source` or `channel`, `hold`, `before`, `held` (the held entries a raise held longer): a hold set (spec 0033); with `tenant:<name>` and `source` `distributors`, the tenant's minimum hold for distributors' publishers (spec 0037), `held` counting every distributor's publisher's entries a raise held longer. A distributor alerts on a publisher's hold a distribution admin set, and on `publisher.key.add` by one |
 | | `catalogue.withdrawn` | `ext:<name>` | `source`, `name`, `version`, `reason`, `builds`, `channels` (how many of the tenant's channels it bumped), `package_type`: a distributor's version withdrawn, served nowhere (spec 0033) |
 | | `catalogue.meta` | `ext:<name>` | `source`, `name`, `summary` (the new text, `""` when cleared), `icon` and `icon_before` (the icons' hashes, `""` for none), `key` (a signed write's key fingerprint), `package_type`: an entry's [icon and summary](catalogue.md#give-an-entry-an-icon-and-a-summary) written; the same metadata again writes none (spec 0036). A write refused as `stale`, or failed after its icon was uploaded, is the same kind with the outcome `refused` or `failed`, a `reason` and a `count` (the refusals coalesced). A distribution admin's write shows under the generic `distribution-admin` actor in sinks unless unmasked; alert on one by a distribution admin or a newly added key |
 | | `follow.set`, `follow.clear` | `channel:<channel>` | `source`: a channel follows a whole source, or no longer does (spec 0033) |
@@ -171,7 +170,7 @@ Notes on some kinds:
 - **`package_type`** (spec 0034): the events that name a package without a channel, and a channel's
   creation, carry the package type when it is not the default (`duckdb_extension`; for a grant
   without a name, `*`): `channel.create`, `grant.add`, `grant.remove`, `extension_group.members`,
-  `reserved.add`, `reserved.remove`, `reserved.tenant.add`, `reserved.tenant.remove`,
+  `reserved.add`, `reserved.remove`,
   `catalogue.arrival`, `catalogue.purge`, `license.import`, `license.change`, `license.remove` and
   `license.public_warning`.
   Subjects are unchanged. A group's removal lists its members in one `extension_group.members`

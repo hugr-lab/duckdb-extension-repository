@@ -95,12 +95,8 @@ Names DuckDB owns are **reserved**. The server keeps the list as data, and it on
 - the core and community names kista knew before the list was data (its seed).
 
 A name core in any version is core; a community name may become core, never the other way. Names
-an upstream of the tenant provides are reserved in that tenant too (see [Upstreams](upstreams.md)),
-and so are the names a server administrator or a distribution admin reserves in the tenant for a
-holder, a distributor such as Enterest (`kista admin tenant-reserved add <tenant> <name> -holder
-<text>`, [the API](api.md#names-reserved-in-a-tenant)). A tenant's administrators read those, and
-change none; they may still grant `publish` that names the extension, and manage its releases with
-`admin`. A tenant reservation sets no `shadows`.
+an upstream of the tenant provides are reserved in that tenant too (see [Upstreams](upstreams.md)).
+Names reserved in a tenant for a distributor (spec 0030) are no more: spec 0037 removed them.
 
 For `publish` and `promote`, a reserved name is reached only by a grant that **names the
 extension**. A tenant-wide or channel-wide grant, or a grant on an extension group, never reaches
@@ -380,17 +376,18 @@ kista admin -config /etc/kista/kista.yaml publisher add acme enterest-ci -distri
 ```
 
 or `POST /api/v1/tenants/{t}/publishers {"name": "enterest-ci", "distributor": "enterest"}` (the
-distributor's name, as a [tenant reservation](#reserved-names) names its holder; a tenant
-administrator passing `distributor` is refused, `404`). An existing publisher is marked (`PUT
-…/publishers/{name}/distributor {"distributor": "enterest"}`, `publisher distributor <tenant>
-<name> <distributor>`) by a server administrator only when a distribution admin created it and it is
-fresh: one a tenant administrator or an operator (a server token, the CLI) created is refused
-(`404`), and one that holds grants, keys (unless it carries the licence-key mark already), a hold,
-builds, releases or rules is refused (`400`). A distribution admin marks no existing publisher
-(spec 0037: an unmarked publisher is the tenant's own, and answers it `404`); it creates its
-distributor's publishers marked. Marking a distributor's publisher again changes the name (a
-distribution admin's or a server administrator's); the mark is never removed: the publisher is
-removed instead.
+distributor's name, 1 to 128 bytes of text; a tenant administrator passing `distributor` is
+refused, `404`). A distributor's publisher is only ever created marked: an existing publisher is
+never marked one (spec 0037), and `PUT …/publishers/{name}/distributor` on a publisher without the
+mark answers `404` to everyone. On a distributor's publisher it renames the distributor (`PUT
+…/publishers/{name}/distributor {"distributor": "enterest-eu"}`, `publisher distributor <tenant>
+<name> <distributor>`, a distribution admin's or a server administrator's), unless the publisher has
+been used (builds, releases, rules, a hold or downloads: `409`, spec 0036). The mark is never
+removed: the publisher is removed instead.
+
+A distribution admin creates only distributors' publishers: `POST …/publishers` without
+`distributor` answers it `404`. For a name a tenant's own publisher holds it answers `409` with the
+problem type `publisher-taken`: the name is taken, and nothing else is said about that publisher.
 
 Every publisher answer carries the publisher's `id` (spec 0037): a distributor recognises its own
 publisher by it after a publisher of the same name was removed and created again. The ids are
@@ -398,16 +395,28 @@ opaque and grant nothing.
 
 - **The catalogue only, without grants.** It publishes with `POST
   …/catalogue/extensions/{ext}/builds` (above) any name kista does not reserve server-wide (DuckDB's
-  core and community names) and the tenant does not reserve for another holder than its distributor
-  (`404` otherwise, as a missing grant), a name an upstream of the tenant lists included (each is its
+  core and community names; `404` otherwise, as a missing grant), a name an upstream of the tenant
+  lists included (each is its
   own source in the catalogue). The channel's publication route refuses it (`404`), and it holds no
   grant (`400` to a server administrator or a distribution admin, `404` to a tenant administrator, for
   whom its grants are not theirs): what it publishes reaches no channel by itself. Channels take its builds by their rules: an `auto` rule naming it, or
   a follow (`channel follow <tenant>/<channel> publisher:enterest-ci`), which takes its names the
-  tenant does not use from another source, a name reserved for its distributor included.
+  tenant does not use from another source, as any follow does.
+- **Held for the tenant's minimum** (spec 0037). What it publishes is held for the larger of its own
+  hold and the tenant's **minimum hold for distributors' publishers**: one day unless the tenant's
+  administrators change it (`GET|PUT /api/v1/tenants/{t}/distributor-hold {"hold": "24h"}`, `0` for
+  none; `kista admin tenant distributor-hold <tenant> [<duration>]`; the console's Publishers
+  screen). A distribution admin neither reads nor sets it (`404`), and cannot go below it: a stolen
+  distribution admin's token that adds its own key and publishes reaches no channel before the
+  minimum has passed, time enough to revoke the key with `purge_held`. Raising it holds the entries
+  held now of every distributor's publisher of the tenant, live or removed, longer; lowering it
+  applies to entries arriving from then on. A distributor's publisher's answer carries
+  `effective_hold`, the larger of the two. So a distributor's builds reach a tenant's channels a day
+  after publication by default.
 - **The distributor's, not the tenant's**: its keys (as a [marked publisher](#sources-of-licence-keys)'s),
   its [hold](#holds-and-early-placement) (`publisher hold`, a distribution admin's or a server
-  administrator's: `404` to a tenant administrator; a tenant that wants more sets a channel hold),
+  administrator's: `404` to a tenant administrator; a tenant that wants more raises its minimum
+  hold, above),
   revoking its key with `purge_held`, purging its builds placed nowhere (`DELETE
   …/catalogue/builds/{id}`), and [withdrawing](upstreams.md#withdrawals) a version. A tenant's
   administrators may still remove it, purge its builds placed nowhere, and choose what their

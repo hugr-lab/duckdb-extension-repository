@@ -145,6 +145,7 @@ Errors are `application/problem+json`:
 | `held` | `409`: a held entry placed or promoted without `early`, or a publisher with a hold on a channel's publication route ([holds](upstreams.md#holds)) |
 | `withdrawn` | `409`: a [withdrawn](upstreams.md#withdrawals) build placed, its release made active, current or public, its body published again, or the build purged |
 | `stale` | `409`: a signed metadata write older than the entry's last one, or of its second with another body ([spec 0036](publishing.md#an-entrys-icon-and-summary)); read the metadata again |
+| `publisher-taken` | `409`: a distribution admin's new [distributor's publisher](publishing.md#distributors-publishers) whose name a tenant's own publisher holds (spec 0037); it says nothing else about that publisher |
 | `precondition-failed` | `412` |
 | `precondition-required` | `428` |
 | `too-large` | `413`: a management body over 64 KiB (384 KiB for an entry's metadata), the detail saying which |
@@ -377,15 +378,15 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `POST …/extensions/{ext}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
 | `DELETE …/extensions/{ext}/releases/{id}` | extension admin: purge a yanked release |
 | `GET, POST tenants/{t}/blocks`; `GET, DELETE tenants/{t}/blocks/{hash}` | tenant admin |
-| `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin; a distribution admin all but `DELETE`; `POST {"name", "distributor"}` creates a [distributor's publisher](publishing.md#distributors-publishers): server, a distribution admin (`404` to a tenant admin). Every publisher answer carries its `id` (spec 0037) |
+| `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin; `POST {"name", "distributor"}` creates a [distributor's publisher](publishing.md#distributors-publishers): server, a distribution admin (`404` to a tenant admin). A distribution admin (spec 0037) lists and reads distributors' publishers only (a tenant's own one is left out of a list, and reading it is `404`), creates only with `distributor` (`404` without), and gets `409` `publisher-taken` for a name a tenant's own publisher holds; never `DELETE`. Every publisher answer carries its `id` (spec 0037) |
 | `GET, POST …/publishers/{name}/github`; `GET, DELETE …/github/{id}` | tenant admin |
 | `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a distributor's publisher only (spec 0037: the tenant's own publishers, marked or not, answer it the `404` of a missing publisher); `DELETE …?purge_held=true` purges the builds the key published that are still held, and answers what it purged and kept, revoked ([holds](publishing.md#holds-and-early-placement)) |
-| `PUT …/publishers/{name}/hold {"hold": "24h"}` | tenant admin: the publisher's [hold](publishing.md#holds-and-early-placement); a publisher answers `hold` (omitted for none); a distributor's publisher's: server, a distribution admin only |
-| `PUT …/publishers/{name}/distributor {"distributor": "enterest"}` | server, a distribution admin: rename a [distributor's publisher](publishing.md#distributors-publishers)'s distributor (`409` once it is used: builds, releases, rules, a hold or downloads, spec 0036); server: mark a fresh publisher a distribution admin created (`404` for a tenant administrator's or an operator's publisher, and to a distribution admin for any unmarked one, `400` for one that is not fresh); a publisher answers `distributor` (omitted for the tenant's own) |
+| `PUT …/publishers/{name}/hold {"hold": "24h"}` | tenant admin: the publisher's [hold](publishing.md#holds-and-early-placement); a publisher answers `hold` (omitted for none); a distributor's publisher's: server, a distribution admin only, and its answer carries `effective_hold`, the larger of its hold and the tenant's minimum (spec 0037; omitted for none) |
+| `GET, PUT tenants/{t}/distributor-hold` | tenant admin (`404` to a distribution admin): the tenant's [minimum hold for distributors' publishers](access.md#the-minimum-hold-for-distributors-publishers) (spec 0037), `{"hold": "24h0m0s"}`, one day by default; `PUT` takes `{"hold": "24h"}` (`0s` for none, at most 90 days). Raising it holds what distributors' publishers' entries are held now longer; each change is a `catalogue.hold` event (subject `tenant:<name>`) |
+| `PUT …/publishers/{name}/distributor {"distributor": "enterest"}` | server, a distribution admin: rename a [distributor's publisher](publishing.md#distributors-publishers)'s distributor (`409` once it is used: builds, releases, rules, a hold or downloads, spec 0036); an existing publisher is never marked one (spec 0037: a publisher without the mark answers `404` to everyone); a publisher answers `distributor` (omitted for the tenant's own) |
 | `POST, DELETE …/publishers/{name}/license-keys` | server; a distribution admin for a distributor's publisher only: mark a publisher a source of licence keys, or unmark it |
 
-A publisher answers with its `id`, its `keys` and `license_keys` (true when marked; to a
-distribution admin, the tenant's own publishers' `keys` are empty). While it is marked, adding or
+A publisher answers with its `id`, its `keys` and `license_keys` (true when marked). While it is marked, adding or
 removing its keys and grants is a server administrator's (`404` to a tenant administrator), and a
 distribution admin's for a distributor's publisher only: to a distribution admin, the tenant's own
 publishers, marked or not, answer `404` as missing ones (spec 0037). A distributor's publisher is
@@ -481,11 +482,9 @@ promotion and a source's switch to an administrator of the path; a relay run (th
 | --- | --- |
 | `GET, POST tenants/{t}/issuers`; `GET, DELETE …/issuers/{name}` | tenant admin |
 | `POST, DELETE …/issuers/{name}/console` | tenant admin: the console's client at that issuer |
-| `GET tenants/{t}/grants[?principal=&extension_group=&extension=]`, `POST tenants/{t}/grants` | tenant admin; a distribution admin (`POST`: `publish`, `promote`, `admin` on an extension) |
+| `GET tenants/{t}/grants[?principal=&extension_group=&extension=]`, `POST tenants/{t}/grants` | tenant admin (spec 0037: not a distribution admin) |
 | `GET tenants/{t}/grants/principals[?prefix=]` | tenant admin |
-| `GET, DELETE tenants/{t}/grants/{id}` | tenant admin; a distribution admin (`DELETE`: the grants it may add) |
-| `GET tenants/{t}/reserved-names`, `GET …/reserved-names/{name}` | tenant admin, a distribution admin: [names reserved in the tenant](#names-reserved-in-a-tenant) |
-| `PUT, DELETE tenants/{t}/reserved-names/{name}` | server, a distribution admin |
+| `GET, DELETE tenants/{t}/grants/{id}` | tenant admin |
 | `GET tenants/{t}/extension-groups` | principal (tenant admins see all; group administrators theirs) |
 | `POST tenants/{t}/extension-groups` | tenant admin |
 | `GET tenants/{t}/extension-groups/{g}`, `GET …/{g}/members` | tenant admin, the group's administrators |
@@ -493,22 +492,8 @@ promotion and a source's switch to an administrator of the path; a relay run (th
 
 See [Access](access.md).
 
-#### Names reserved in a tenant
-
-A server administrator or a distribution admin reserves a name in a tenant for a holder (spec 0030):
-in that tenant, `publish` and `promote` reach it only through grants naming the extension
-([Reserved names](publishing.md#reserved-names)).
-
-- `PUT tenants/{t}/reserved-names/{name}` with `{"holder": "…"}` (1 to 128 bytes of text) reserves it,
-  or changes its holder: `200` with `name`, `holder`, `added_at`, `added_by`, `changed`, and
-  `previous_holder` when another held it. `releases` lists the name's releases in the tenant that are
-  not yanked or purged (`channel`, `version`, `platform`, `state`, `origin`), so the holder knows who
-  was there before it; they stay as they are. An alias or an invalid name is `400`. A new name or
-  another holder is a `reserved.tenant.add` event; the same holder again changes nothing.
-- `DELETE tenants/{t}/reserved-names/{name}` releases it (`204`; `404` when not reserved); no release
-  changes. A `reserved.tenant.remove` event.
-- `GET tenants/{t}/reserved-names` lists them (`reserved_names`), `GET …/{name}` reads one: the
-  tenant's administrators read them too, and change none.
+Names reserved in a tenant for a holder (spec 0030's `tenants/{t}/reserved-names` routes) are gone
+(spec 0037): those routes answer `404` to everyone.
 
 ### Attachments and feeds
 

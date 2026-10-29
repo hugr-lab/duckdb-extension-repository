@@ -2,6 +2,7 @@
 
 - **Status**: implemented (part 1: the store, intake, serving, switching over the API and the CLI;
   part 2: the console's Sources tab and the DuckDB end to end)
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): tenant reservations are removed, so "a distributor's tenant reservations remain available" no longer holds; reserved names are the server's (and an upstream's in its tenant) only.
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 
@@ -116,8 +117,7 @@ channel_sources   channel_id fk, name, source, set_by, set_at;   pk (channel_id,
 - **Tenant shadows** (passthrough channels, spec 0009 phase 1b) are about autoloading DuckDB's core
   builds and stay as they are.
 - Reserved names (specs 0008, 0030) stay: they decide who may publish or promote a name; the source
-  decides which arrival a channel takes. A distributor's tenant reservations (0030) remain available
-  and are independent of sources.
+  decides which arrival a channel takes.
 
 ### Existing data
 

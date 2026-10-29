@@ -1,6 +1,7 @@
 # Spec 0019: Deleting a tenant
 
 - **Status**: implemented (accepted 2026-10-12). Spec [0023](../0023-publisher-keys/spec.md) replaces `api_keys` and `publisher_github` with `publisher_keys` in the rows reaped
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): the reaper no longer removes tenant reservations: `tenant_reserved_names` is dropped (migration 0046).
 - **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): the reaper deletes `entry_meta`; a deleted tenant's icons go with the collector's next pass.
 - **Date**: 2026-10-12
 - **Author**: vgsml, Claude

@@ -92,7 +92,7 @@ variable "server_license_admins" {
 variable "server_distribution_admins" {
   type        = string
   default     = "[]"
-  description = "auth.server_distribution_admins as YAML: the distribution admins' principals (spec 0030), who reserve names in tenants and manage their distributors' publishers (never a tenant's own); empty, none."
+  description = "auth.server_distribution_admins as YAML: the distribution admins' principals (spec 0030), who create and manage distributors' publishers in tenants (never a tenant's own publishers, nor grants: spec 0037); empty, none."
 }
 
 variable "replicas" {

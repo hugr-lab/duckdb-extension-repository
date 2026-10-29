@@ -197,9 +197,9 @@ Rules:
 - A publisher grant carries `publish` and `promote` only.
 - `audit` is granted on the tenant only, of every package type; `feed` on the tenant or a channel,
   never on an extension or issuer-wide.
-- For `publish` and `promote`, a **reserved name** (DuckDB's core and community names, names
-  reserved in the tenant for a distributor, and names an upstream of the tenant provides) is reached
-  only by a grant naming that extension, never by a tenant-, channel- or group-wide grant.
+- For `publish` and `promote`, a **reserved name** (DuckDB's core and community names, and names an
+  upstream of the tenant provides) is reached only by a grant naming that extension, never by a
+  tenant-, channel- or group-wide grant.
 - An identical grant is not added twice. A tenant holds at most 1,000 grants, both kinds counted.
 - A tenant administrator cannot remove the last tenant-wide `admin` grant (or an issuer record whose
   removal would remove it); a server administrator or the CLI can.
@@ -314,25 +314,20 @@ licence manager's.
 Enterest's: a principal of a server issuer listed in `auth.server_distribution_admins`. On every
 active tenant a distribution admin may:
 
-- reserve names in the tenant for a holder, and release them (`PUT|DELETE
-  /api/v1/tenants/{t}/reserved-names/{name}`, [Reserved names](publishing.md#reserved-names)); read
-  the server's reserved names (`GET /api/v1/reserved-names`: each name and its kind only, without
-  `sources`, which name other tenants' upstreams and administrators: spec 0037);
-- read the tenant's reserved names;
+- read the server's reserved names (`GET /api/v1/reserved-names`: each name and its kind only,
+  without `sources`, which name other tenants' upstreams and administrators: spec 0037), the names a
+  distributor's publisher may not publish;
 - read the tenant's name, state and expected holder (`GET /api/v1/tenants/{t}`, spec 0037), active
   or suspended, so a distributor checks that the tenant is its customer's before it writes there;
   each read is a `tenant.read` event in the tenant;
-- create publishers, and list and read the tenant's publishers;
-- list the tenant's grants, and add grants of `publish`, `promote` and `admin` on a
-  name reserved in the tenant (in a channel or every channel), never on the tenant, a channel or an
-  extension group, nor for a whole issuer (a distributor's own publisher's builds are its
-  [source](upstreams.md#a-names-source-in-a-channel); a group's publications, which promotions out
-  of a channel need, are the tenant's, and land only where the name has no other source); remove the
-  grants a distribution admin made, of those kinds (never a grant of the tenant's own publisher's,
-  spec 0037).
-- create a distributor's publisher, marked from its creation (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)),
-  and for a distributor's publisher only: rename its distributor (while unused, spec 0036), set
-  and clear its licence-key mark, manage its keys (with `purge_held`), set its hold, purge its builds placed nowhere,
+- create a distributor's publisher, marked from its creation (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)):
+  without `distributor` the creation answers `404`, and for a name a tenant's own publisher holds
+  `409` with the problem type `publisher-taken` (the name is taken, and nothing else is said);
+- list and read the distributors' publishers (a list leaves the tenant's own publishers out, and
+  reading one answers `404`), and for a distributor's publisher only: rename its distributor (while
+  unused, spec 0036), set and clear its licence-key mark, manage its keys (with `purge_held`), set
+  its hold (which holds its entries only above the tenant's [minimum hold for distributors'
+  publishers](#the-minimum-hold-for-distributors-publishers)), purge its builds placed nowhere,
   [withdraw](upstreams.md#withdrawals) its versions, read its entries in the catalogue (without
   channels), and write their [icon and summary](catalogue.md#give-an-entry-an-icon-and-a-summary)
   (spec 0036: the tenant's administrators read a distributor's entry's metadata, and never write
@@ -341,6 +336,9 @@ active tenant a distribution admin may:
   mark, hold, keys and grants are the tenant administrators' and the server administrators' (a
   publisher with the licence-key mark alone, a server administrator's, spec 0021). Such a call
   answers the same `404` as a missing publisher;
+- never create an ordinary publisher, read or write grants (`…/grants` answers it `404`), or set the
+  tenant's minimum hold for distributors' publishers (spec 0037). Grants and publishers a
+  distribution admin made before spec 0037 stay, the tenant administrators' to manage;
 - never switch a name's source in a channel: that is the channel's administrators'.
 
 Across tenants, a distribution admin reads a distributor's download statistics (`GET
@@ -387,6 +385,28 @@ token's identity is at `GET /api/v1/whoami`, with `administrator`, `license_mana
 within `auth.admin_token_max_age` (default 1h), and a write needs a `sub` or client claim to record
 as the actor. A node's long-lived install token is not enough; a token that may not use a route at all
 gets `404`. See [HTTP API](api.md).
+
+### The minimum hold for distributors' publishers
+
+A tenant's administrators and server administrators set the tenant's **minimum hold for
+distributors' publishers** (spec 0037): an entry a distributor's publisher publishes is held for the
+larger of the publisher's hold and this minimum, one day unless changed. A distribution admin sets
+its publisher's hold to anything, but cannot go below the minimum, nor read or set it (`404`): a
+stolen distribution admin's token that adds its own key to the distributor's publisher and publishes
+reaches no channel, even through the tenant's `auto` rule or follow, before the minimum has passed,
+time enough to revoke the key with `purge_held`. A channel administrator's `early` placement still
+skips it: that is the tenant's choice.
+
+```bash
+kista admin -config /etc/kista/kista.yaml tenant distributor-hold acme        # prints it
+kista admin -config /etc/kista/kista.yaml tenant distributor-hold acme 2d     # 0 for none
+```
+
+`GET|PUT /api/v1/tenants/{t}/distributor-hold {"hold": "24h"}`, or the console's Publishers screen.
+Raising it holds the entries held now of every distributor's publisher of the tenant, live or
+removed, longer; lowering it applies to entries arriving from then on. Each change is a
+`catalogue.hold` event with the subject `tenant:<name>` and `source` `distributors`. A
+distributor's publisher's answer carries `effective_hold`, the larger of the two.
 
 ## Who sees what
 

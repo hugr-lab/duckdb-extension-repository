@@ -2,6 +2,7 @@
 
 - **Status**: implemented (2026-10-25: A1 parts 1, 2, 3a, 4; A2; B; C; part 3b deferred to the
   follow-ups)
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): a distributor's publisher may publish any name kista does not reserve server-wide (tenant reservations are removed, so "nor for another holder" goes, here and in the landing transaction's check); a follow of it takes names as any follow does (no holder check); marking an existing publisher goes for every caller (a distributor's publisher is only created marked; `PUT …/distributor` renames, `404` on an unmarked publisher, and the freshness check goes); distributors' publishers' entries are held for at least the tenant's minimum hold for distributors' publishers (`tenants.distributor_hold_seconds`, a day by default, set by its administrators); the distribution admins' calls are spec 0037's list.
 - **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 1): a distributor's publisher reads its own catalogue entries with a signed request; a full catalogue's `429` is typed `catalogue-full`; a distribution admin marks no existing publisher (PR 1: a server administrator still marks a fresh one); publisher answers carry the publisher's id.
 - **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): an entry gains metadata (an icon and a summary), kept through withdrawal, purges and source removal; the catalogue answers `distributor`; the event `catalogue.meta`; icons count toward `catalogue.max_bytes` through `icon_bytes`.
 - **Date**: 2026-10-24
@@ -109,7 +110,8 @@ its releases) gaining its source, state and visibility.
   because someone is installing now). Raising a hold applies to entries already held; lowering it
   applies only to entries arriving from then on. A tenant's administrators set the holds of its
   sources; a distributor's publisher's hold is set by a distribution admin or a server
-  administrator only, and a tenant that wants more waits with a channel hold (below). Revoking a
+  administrator only, and a tenant that wants more waits with a channel hold (below; spec 0037 (PR 2):
+  or raises its minimum hold for distributors' publishers, which their entries always take). Revoking a
   publisher key (`DELETE …/keys/{k}?purge_held=true`, or removing the publisher) purges the entries
   it published that are still held, with an event: a hold is what lets a stolen key be revoked
   before its builds reach a channel. A routine rotation, without `purge_held`, keeps them.
@@ -117,7 +119,8 @@ its releases) gaining its source, state and visibility.
   `allow_reserved` and the alias rules unchanged). A publication needs `publish` on the name as
   today (specs 0008, 0017, 0030: a reserved name only by a grant naming it). A distributor's
   publisher needs no grant: it publishes into the catalogue only, any name kista does not reserve
-  server-wide and that is not reserved in the tenant for another holder (spec 0030); nothing it
+  server-wide and that is not reserved in the tenant for another holder (spec 0030; spec 0037 (PR 2):
+  tenant reservations are removed, any name kista does not reserve server-wide); nothing it
   publishes is served until the tenant's rules take it.
 - **Removing a source** keeps its entries and their releases (shown as a removed source's); rules
   naming it keep serving what is placed. Spec 0031's successor stays, narrowed: an upstream of the
@@ -206,7 +209,7 @@ its releases) gaining its source, state and visibility.
   - a name kista reserves server-wide, unless the followed source is DuckDB's own repository of
     that kind;
   - a name reserved in the tenant (spec 0030) for another holder than the followed publisher's
-    distributor;
+    distributor (removed by spec 0037 (PR 2), with tenant reservations);
   - a name another of the tenant's sources has entries of, or whose rule in any of the tenant's
     channels names another source;
   - a name two of the channel's follows both offer (`contested`: neither places).
@@ -314,7 +317,9 @@ and in each tenant the key's owner is the source there.
   <t>/<c> <name> -set <source> [-mode auto|manual]`, `kista admin channel follow <t>/<c> <source>`
   (as built: `channel unfollow` removes it), `kista admin channel hold <t>/<c> <duration>`.
 - **Distribution admins** (spec 0030) gain, for distributors' publishers: marking them, setting
-  their hold, withdrawing and purging their versions, reading their entries.
+  their hold, withdrawing and purging their versions, reading their entries (spec 0037 (PR 2): the
+  role's calls are that spec's list; an existing publisher is never marked, a distributor's is
+  created marked).
 - **Events**: `catalogue.arrival`, `catalogue.hold`, `catalogue.withdrawn`, `catalogue.purge`,
   `source.set` (with `mode`), `source.clear`, `follow.set`, `follow.clear`, `release.place` (with
   `early`), `license.key_conflict`, `license.key_owner` (both removed by spec 0035); a placement's

@@ -209,17 +209,20 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   again) but not a writer who may remove the newer licence first; short licence lifetimes remain the
   real control.
 - **Distribution admins** (`auth.server_distribution_admins`, from the configuration file only)
-  provision a distributor's part of every tenant. A leaked distribution admin's token can reserve
-  names in a tenant (narrowing its wide grants; a server administrator releases them), create
-  publishers and distributors' publishers, give a distributor's publisher keys, and grant
-  `publish`, `promote` and `admin` on the names reserved in the tenant: so it can publish under
-  those names there, as the distributor does. It reaches distributors' publishers only (spec 0037):
-  never the tenant's own publishers, with the licence-key mark or without, so not a tenant's CI
-  publisher that holds its grants (their keys, marks, holds and grants answer it `404`). It cannot
-  grant on a name the tenant does not reserve, remove a grant the tenant made, read channels or
-  keys, or change a tenant, a channel or a key set; it reads a tenant's state and expected holder,
-  each read an event. A reservation's answer names the releases under the name in the tenant. A
-  server has one distributor: a second one's publishers on the same server would be the first's
+  provision a distributor's part of every tenant. It reaches distributors' publishers only (spec
+  0037): never the tenant's own publishers, with the licence-key mark or without, so not a tenant's
+  CI publisher that holds its grants (they answer it `404`), and it writes no grants and creates no
+  ordinary publisher. A leaked distribution admin's token can create a distributor's publisher, add
+  its own key to one, and publish into the catalogue as the distributor does. Nothing it publishes
+  reaches a channel by itself, and a channel's `auto` rule or follow of that publisher, which the
+  tenant wrote, places it only once the tenant's [minimum hold for distributors'
+  publishers](access.md#the-minimum-hold-for-distributors-publishers) has passed (a day by default;
+  the role cannot lower it): time to revoke the key with `purge_held`, which purges what it
+  published. A distributor alerts on `publisher.key.add` and on a `catalogue.hold` by a distribution
+  admin. It can still withdraw a distributor's versions. It cannot read channels or keys, or change
+  a tenant, a channel or a key set; it reads a tenant's state and expected holder, each read an
+  event. Without tenant reservations (spec 0037), a tenant's own grants reach every name kista does
+  not reserve server-wide and no upstream of the tenant lists. A server has one distributor: a second one's publishers on the same server would be the first's
   distribution admin's and licence manager's to reach. It reads a distributor's download statistics
   across tenants (spec 0036), for the distributor's entries only: every row is a sum per week and
   extension, naming no tenant or channel, and a tenant's downloads (and, on their own, its

@@ -68,8 +68,8 @@ terraform output url
   manage every tenant's licences and nothing else. Empty (the default), there are none, and the
   configuration leaves the key out.
 - **`server_distribution_admins`** is `auth.server_distribution_admins`, as YAML in a string: the
-  [distribution admins](../access.md), principals of the server issuers who reserve names in tenants
-  and manage their distributors' publishers, never a tenant's own (spec 0037). Empty (the
+  [distribution admins](../access.md), principals of the server issuers who create and manage
+  distributors' publishers in tenants, never a tenant's own, nor grants (spec 0037). Empty (the
   default), there are none, and the configuration leaves the key out.
 
 ## The first administration
