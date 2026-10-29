@@ -16,8 +16,11 @@ limit; nothing that exists is removed when a limit is lowered.
 
 This is plan item P4 (needed before production). It is what a hosted service needs for
 self-service tenants: Enterest's organisation plans (its plan item E7) set these limits through its
-provisioning worker, which is a kista server administrator. The defaults keep today's behaviour,
-so a server that sets nothing sees no change.
+provisioning worker, which is a kista server administrator. The defaults are unlimited, so a
+server that sets nothing keeps today's bounds, with two visible changes: a tenant holds at most
+1,000 channels (a new ceiling), and the 101st upstream and the 201st publisher are refused with
+`429 tenant-limit`, where they used to get `400 invalid` (only the bootstrap and a bundle import
+still meet the `400`).
 
 ## Problem
 
@@ -86,9 +89,11 @@ A tenant's own bytes are the sum of:
   (spec 0016): a build that is landed, or withdrawn, or has a release. A build the collector will
   delete (no release, not landed, not withdrawn: a purged release's, or an intake's that never
   landed) is not counted; its room returns at once, and its blob goes at the next collection. A
-  build is the tenant's own unless its source is a distributor's publisher, live or removed: `NOT
-  EXISTS` against `publishers` (`distributor IS NOT NULL`) and against
-  `removed_distributor_publishers`, matched on the source's publisher id.
+  kept build is the tenant's own unless its source is a distributor's publisher, live or removed:
+  `NOT EXISTS` against `publishers` (`distributor IS NOT NULL`) and against
+  `removed_distributor_publishers`, matched on the source's publisher id. This differs from
+  `SourceUsage` (spec 0033) on purpose: the per-source cap bounds a source's backlog, the builds
+  placed nowhere, kept or not; the tenant limit bounds what the tenant holds, placed or not.
 - `icon_bytes` of each entry of the tenant's own sources (spec 0036), while the entry still has a
   build. On SQL Server the column is summed as `SUM(CAST(icon_bytes AS bigint))`: an `int` sum
   overflows at 2 GiB. The same latent overflow in `SourceUsage` (`internal/store/rules.go`) is
@@ -107,22 +112,42 @@ placed nowhere from the catalogue (spec 0033). Withdrawn builds, which are never
 distributors' sources only (spec 0033 phase B), so they never count here.
 
 **Reading it.** Migration 0047 stores `body_len` on `builds` (filled from `blobs` for existing rows;
-every insert sets it, a copy copies it), with an index on `(tenant_id, body_hash)` that carries
-`body_len` (`INCLUDE` on PostgreSQL and SQL Server, a third key column on SQLite). The figure is one
-`SUM` over the distinct bodies through that index, with the release, landed and distributor
-conditions, plus one `SUM` over `entry_meta`. When a tenant's `bytes` is unlimited nothing is read:
-neither the checks nor a run's read below.
+every insert sets it, a copy copies it). A new index on `builds (tenant_id, body_hash)` carries the
+columns the filters read: `body_len`, `source`, `landed`, `withdrawn_at` and `id` (`INCLUDE` on
+PostgreSQL and SQL Server; key columns on SQLite). The figure is one `SUM` over the distinct bodies,
+and its real cost is:
+
+- one pass over the tenant's entries in that index (no table reads);
+- for each build neither landed nor withdrawn, one probe of `ix_releases_build` for the `EXISTS`
+  on releases;
+- for each build of a publisher's source, two primary-key probes for the distributor `NOT EXISTS`
+  (`publishers`, `removed_distributor_publishers`);
+- one `SUM` over the tenant's `entry_meta` rows, with an `EXISTS` probe per entry into the new
+  index for "the entry still has a build".
+
+It is linear in the tenant's builds. When a tenant's `bytes` is unlimited nothing is read: neither
+the checks nor a run's read below.
 
 ### Where each limit is enforced
 
 - **`bytes`, exactly, in the transaction that inserts a build.** When the tenant's limit is not
   unlimited, the transaction that inserts a new build of an own source (a publication, an
   administrator's add, an upstream's ingest, a lazy fetch, a succession's copy) also holds the lock
-  `TenantBytesLock(tenant)` among its other lock keys. Under it, it reads the figure and refuses
-  when the new build's body is not counted yet and `used + body_len > limit`. A body the tenant
-  already counts adds nothing and always passes. Two intakes of one tenant never both take the last
-  room, on one replica or many: there is no overshoot. (An older replica still running during the
-  rollout of migration 0047 does not check; the rollout is the only window.)
+  `TenantBytesLock(tenant)` (`kista/tenant-bytes/<tenant id>`, the shape of the tenant's other
+  locks). Under it, it reads the tenant's limit through `lockedTenantQuery` (a shared lock on the
+  tenant's row) and the figure, and refuses when the new build's body is not counted yet and
+  `used + body_len > limit`. A body the tenant already counts adds nothing and always passes.
+  - **The lock is always the last of the transaction's lock keys.** Keys are taken in the order
+    given, and these transactions take different ones first (`TenantUpstreamLock` and the
+    channel's lock for a signed channel's release, the channel's lock alone for a passthrough
+    channel's, the publisher's auth lock or the build's lock for a landing, the channel's lock for
+    a succession). One key taken last by all of them adds no cycle; no transaction takes a key
+    after it.
+  - **Two intakes of one tenant never both take the last room**, on one replica or many, whatever
+    path each comes by: there is no overshoot. (An older replica still running during the rollout
+    of migration 0047 does not check; the rollout is the only window.)
+  - **A lowering `PUT` and an intake are ordered.** The `PUT` updates the tenant's row; the
+    intake's shared lock on that row waits for it, or the `PUT` waits for the intake to commit.
 - **Fast paths before the body moves.** They refuse early and cheaply; the transaction still
   decides.
   - `room` (spec 0033), after the spool, with the body's hash and size: refused when the body is new
@@ -146,11 +171,13 @@ neither the checks nor a run's read below.
   - upstreams: `TenantUpstreamLock`, held today;
   - publishers: the tenant's auth lock under `InTenantTxForUpdate`, which `AddPublisher` holds
     today (no new lock);
-  - channels: `CreateChannel` moves from `InTx` to `InTenantTx` (`internal/tenants/tenants.go`)
-    with a new `TenantLimitLock(tenant, "channels")`.
+  - channels: `CreateChannel` moves from `InTx` to `InTenantTxForUpdate`
+    (`internal/tenants/tenants.go`), as `AddPublisher` uses: its update lock on the tenant's row
+    orders the tenant's channel creates, with no new lock.
 
-  The limit is read from the tenant's row with a shared lock (`lockedTenantQuery`); a change of the
-  limits updates that row, so a change and an insert are ordered too.
+  The limit is read from the tenant's row in the same transaction (under the update lock, or the
+  upstream insert's shared lock through `lockedTenantQuery`); a change of the limits updates that
+  row, so a change and an insert are ordered too.
 - **Which comes first.** The limit is checked before the ceiling. Every checked actor meets the
   limit, so only the bootstrap and a bundle import meet a ceiling's `400`.
 
@@ -278,21 +305,29 @@ tenants.limit_bytes       bigint  NULL       -- NULL: the server's default; -1: 
 tenants.limit_channels    int     NULL       -- NULL: the default; -1: the ceiling; 0..ceiling
 tenants.limit_upstreams   int     NULL
 tenants.limit_publishers  int     NULL
-builds.body_len           bigint  NOT NULL   -- default 0; filled from blobs (0 where the blob is gone)
-ix_builds_tenant_body     ON builds (tenant_id, body_hash), carrying body_len
+builds.body_len           bigint  NULL       -- the body's length; NULL until filled
+ix_builds_tenant_body     ON builds (tenant_id, body_hash), carrying body_len, source, landed, withdrawn_at, id
 ```
 
 - Columns on `tenants`, not a table: they go with the tenant when it is deleted (spec 0019), and the
-  insert transactions already hold a shared lock on that row.
+  limit checks read that row.
+- `body_len` is filled from `blobs` by the migration for existing rows, and set by every insert
+  (a copy copies it). It is nullable, not `0` by default, so a row an older replica inserts is
+  recognisable: `FillBodyLen`, beside `FillUsedAt` (`internal/store/gc.go`) and run by the
+  collector the same way, sets the `NULL`s of a domain's builds from `blobs`. Until it runs, such
+  a row counts as `0`. A row whose blob is gone stays `NULL` and counts as `0`: it holds no bytes.
 - `min_reader` 47: an older binary would insert builds without `body_len` and would not check
   limits, so it does not start on the new schema. One still running during the rollout does both
-  until it is replaced; kista is not released, and the rollout is the only window.
+  until it is replaced; the collector's fill repairs the first, and the rollout is the only window
+  for the second.
 
 ### Bootstrap, the CLI and the console
 
 - **Bootstrap** (spec 0024): the tenant section takes `limits` (the configuration's syntax). The
   plan shows it as a change like the tenant's other fields; applying it writes `tenant.limits` as
-  the bootstrap actor. The bootstrap itself is exempt from the limits.
+  the bootstrap actor. As a partial `PUT`, it sets only the limits it names: a tenant section
+  without `limits`, or without one of them, leaves the stored values as they are. The bootstrap
+  itself is exempt from the limits.
 - **CLI:** `kista admin tenant limits <tenant>` prints the limits as the `GET`.
   `kista admin tenant limits <tenant> -bytes 50GiB -channels 20 -upstreams default -publishers
   unlimited` sets them as the `PUT`, through the store with the server administrator's audit actor,
@@ -345,9 +380,10 @@ ix_builds_tenant_body     ON builds (tenant_id, body_hash), carrying body_len
   - *Builds waiting for the collector:* not counted, but no longer served or placed, so they hold
     no bytes a tenant can use.
 - **Denial of service by the check itself.** Only a tenant with a `bytes` limit pays for it: one
-  index-only `SUM` per new build, under a lock that orders that tenant's new builds, so a tenant's
-  intakes wait on one another for that short read. A run reads the figure once. A tenant with a
-  very large catalogue pays the cost on its own intakes only.
+  `SUM` per new build, linear in its builds (one pass over the new index plus the probes listed in
+  "Reading it"), under a lock that orders that tenant's new builds, so a tenant's intakes wait on
+  one another for that read. A run reads the figure once. A tenant with a very large catalogue pays
+  the cost on its own intakes only.
 
 ## Testing
 
@@ -357,12 +393,15 @@ ix_builds_tenant_body     ON builds (tenant_id, body_hash), carrying body_len
     an icon of an entry with no build left, a distributor's source and its icons left out, a
     **removed** distributor's publisher's withdrawn build left out;
   - icons summed past 2 GiB on SQL Server (`SourceUsage` too);
-  - `body_len` filled by the migration and set by every insert and copy;
+  - `body_len` filled by the migration and set by every insert and copy; a `NULL` row filled by
+    `FillBodyLen`, counted as `0` before;
   - the limit columns' round trip (`NULL`, `-1`, `0`, a value);
   - two concurrent inserts of a channel and of a publisher at the last place, one refused; two
     concurrent intakes of new bodies at the last room, one refused;
-  - a lowering `PUT` racing an insert: never a count past the new limit once both commit, unless
-    the insert committed first.
+  - a lowering `PUT` racing an insert, for a count and for `bytes` (an intake of a new body): the
+    insert is refused by the new limit unless it committed before the `PUT`;
+  - two intakes by different paths at the last room (a publication and an upstream ingest; a
+    signed and a passthrough channel's), one refused, no deadlock.
 - **Release:**
   - a publication, a tenant administrator's add (refused by `bytes` while the per-source cap
     exempts it), a server administrator's add, an upstream ingest: all refused at `bytes`; a bundle
@@ -393,7 +432,8 @@ ix_builds_tenant_body     ON builds (tenant_id, body_hash), carrying body_len
 - **A counter kept per tenant.** No `SUM` per new build. But builds are added in several places and
   removed in several (the purge, the trim of landed builds, the collector, tenant deletion), icons
   change in others, and every one would have to keep the counter right forever. With `body_len` on
-  the build, the `SUM` reads one index, and only for tenants with a `bytes` limit.
+  the build, the `SUM` is one pass over one index plus probes, and only for tenants with a `bytes`
+  limit.
 - **A check outside any lock**, as the per-source cap's. A small free plan could then overshoot by
   many intakes times `blob.max_body` (gibibytes); the lock costs only tenants with a limit.
 - **Counting every build row.** Simpler, but a succession's copies and a re-publish into a second
@@ -423,6 +463,32 @@ ix_builds_tenant_body     ON builds (tenant_id, body_hash), carrying body_len
   cell `failed` (no longer `rejected` for `catalogue-full`) and ends failed; a lazy fetch is checked
   before its download, and a refused one is remembered for `NegativeTTL`.
 - 0024: the bootstrap's tenant takes `limits`.
+- 0003: a tenant holds at most 1,000 channels (a new ceiling), and its channels are counted
+  against its `channels` limit.
+- 0008 (publishers, as 0023 left them) and 0009 (upstreams): the 101st upstream and the 201st own
+  publisher are refused with `429 tenant-limit` (the limit, by default the ceiling), where they
+  used to get `400 invalid` (`internal/store/upstreams.go`, `internal/store/publishers.go`); only
+  the bootstrap and a bundle import still meet the `400`.
+
+## Delivery
+
+Two PRs on branches `0038-tenant-limits-1` and `0038-tenant-limits-2`. Each updates the website
+pages of the behaviour it changes, and each runs, before it opens, `make test` on the three engines,
+`make lint`, the console's tests, `make console-e2e` and `make e2e`.
+
+1. **The limits.** Migration 0047 (the tenant columns, `body_len`, the index, `min_reader` 47) and
+   `FillBodyLen`; the store's figure and the `SourceUsage` cast; the configuration; the `GET`, the
+   `PUT` and `POST /tenants`' `limits`; the bootstrap's `limits`; `kista admin tenant limits`; the
+   count checks (`CreateChannel` under `InTenantTxForUpdate`, the ceiling of channels) and the
+   bytes checks (`room`, the build's insert under `TenantBytesLock`, icons); `tenant-limit` and the
+   metric. Pages: `configuration.md`, `administration/tenants-and-channels.md`,
+   `administration/commands.md`, `api.md`, `catalogue.md`, `publishing.md`, `observability.md`,
+   `administration/upgrading.md`. Between the PRs, an upstream run that meets `tenant-limit` records
+   the cell as today's default does (`rejected`); the limit holds, only the run's handling waits.
+2. **Runs and the console.** The run at a limit (the cell `failed`, new downloads stopped, the
+   `errFailed` end; `catalogue-full` the same) and the check before a cell's download; the lazy
+   puller's check before the download and its `NegativeTTL`; the console's tenant overview and its
+   refusal display. Pages: `upstreams.md`, `console.md`.
 
 ## Website
 
