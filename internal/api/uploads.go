@@ -107,7 +107,7 @@ func (h *Handler) createUpload(w http.ResponseWriter, r *http.Request, c caller,
 		Feeds     []string `json:"feeds"`
 		AnyTenant bool     `json:"any_tenant"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()

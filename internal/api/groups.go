@@ -63,7 +63,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request, c caller, 
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -93,7 +93,7 @@ func (h *Handler) setGroupDescription(w http.ResponseWriter, r *http.Request, c 
 	var in struct {
 		Description string `json:"description"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -168,7 +168,7 @@ func (h *Handler) changeGroupMembers(w http.ResponseWriter, r *http.Request, c c
 		// PackageType is the type of the names (spec 0034: members are (type, name)); "": the default
 		PackageType string `json:"package_type"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()

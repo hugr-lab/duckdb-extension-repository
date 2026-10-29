@@ -23,7 +23,7 @@ func readHold(w http.ResponseWriter, r *http.Request) (time.Duration, bool) {
 	var in struct {
 		Hold *string `json:"hold"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return 0, false
 	}
 	if in.Hold == nil {

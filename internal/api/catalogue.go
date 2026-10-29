@@ -1,10 +1,12 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -30,6 +32,11 @@ type catalogueEntryJSON struct {
 	// and the publisher itself (spec 0033 phase B: a name two of them had is publisher-id:<id> as a
 	// source; spec 0037: its signed read); omitted otherwise
 	PublisherID string `json:"publisher_id,omitempty"`
+	// Distributor names a distributor's publisher's entry's distributor, as the publishers' answers
+	// do; Summary and Icon are the entry's metadata (spec 0036), omitted for none
+	Distributor string    `json:"distributor,omitempty"`
+	Summary     string    `json:"summary,omitempty"`
+	Icon        *iconJSON `json:"icon,omitempty"`
 }
 
 func (h *Handler) catalogue(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -43,7 +50,8 @@ func (h *Handler) catalogue(w http.ResponseWriter, r *http.Request, c caller, p 
 	out := []catalogueEntryJSON{}
 	for _, e := range es {
 		out = append(out, catalogueEntryJSON{PackageType: shownType(reqType(r)), Source: e.Source, Name: e.Name, Versions: e.Versions, Rules: e.Rules,
-			Held: e.Held, Revoked: e.Revoked, Withdrawn: e.Withdrawn, PublisherID: e.PublisherID})
+			Held: e.Held, Revoked: e.Revoked, Withdrawn: e.Withdrawn, PublisherID: e.PublisherID, Distributor: e.Distributor,
+			Summary: e.Meta.Summary, Icon: iconOf(e.Meta)})
 	}
 	reply(w, r, http.StatusOK, map[string]any{"entries": out}, "", noStore)
 }
@@ -109,6 +117,23 @@ func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c calle
 	if t := shownType(reqType(r)); t != "" {
 		ans["package_type"] = t
 	}
+	// spec 0036: the entry's metadata and distributor, when the caller reads its metadata (every
+	// catalogue reader does, but a distributor's publisher on a name reserved since for another holder)
+	switch m, err := h.o.Releases.EntryMeta(r.Context(), a, p["t"], reqType(r), p["source"], p["ext"]); {
+	case err == nil:
+		if m.Summary != "" {
+			ans["summary"] = m.Summary
+		}
+		if ic := iconOf(m.EntryMeta); ic != nil {
+			ans["icon"] = ic
+		}
+		if m.Distributor != "" {
+			ans["distributor"] = m.Distributor
+		}
+	case !errors.Is(err, authz.ErrDenied) && !errors.Is(err, store.ErrNotFound):
+		h.fail(w, err)
+		return
+	}
 	reply(w, r, http.StatusOK, ans, "", noStore)
 }
 
@@ -124,7 +149,7 @@ func (h *Handler) placeRelease(w http.ResponseWriter, r *http.Request, c caller,
 		// Early places a held entry (spec 0033 phase A2): a channel administrator's, audited
 		Early bool `json:"early"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	if in.PackageType != "" && !pkgtype.Known(in.PackageType) {
@@ -191,7 +216,7 @@ func (h *Handler) withdraw(w http.ResponseWriter, r *http.Request, c caller, p p
 	var in struct {
 		Reason string `json:"reason"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()

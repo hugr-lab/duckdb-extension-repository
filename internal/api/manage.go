@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -22,27 +23,29 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
 
-// maxBody is the largest management request body.
+// maxBody is the largest management request body; a route may take another (spec 0036: an entry's
+// metadata, its icon in base64, maxMetaBody).
 const maxBody = 64 << 10
 
 const noStore = "no-store"
 
 // body reads a JSON request body into v (after the decision): application/json exactly, at most
-// 64 KiB, within a read deadline, no unknown or duplicate keys, nothing after the object.
-func body(w http.ResponseWriter, r *http.Request, v any) bool {
+// limit bytes (maxBody for most routes), within a read deadline, no unknown or duplicate keys,
+// nothing after the object.
+func body(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
 	mt, ps, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mt != "application/json" || len(ps) > 1 || len(ps) == 1 && !strings.EqualFold(ps["charset"], "utf-8") {
 		problem(w, http.StatusUnsupportedMediaType, typeMediaType, "the body is application/json")
 		return false
 	}
 	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(10 * time.Second))
-	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.Is(err, errBodyNotSigned) {
 			problem(w, http.StatusBadRequest, typeInvalid, "the body is not the signed one: its SHA-256 is not the statement's")
 		} else if errors.As(err, &tooLarge) {
-			problem(w, http.StatusRequestEntityTooLarge, typeTooLarge, "the body is at most 64 KiB")
+			problem(w, http.StatusRequestEntityTooLarge, typeTooLarge, fmt.Sprintf("the body is at most %d KiB", limit>>10))
 		} else {
 			problem(w, http.StatusBadRequest, typeInvalid, "the body could not be read")
 		}
@@ -314,7 +317,7 @@ func (h *Handler) addDuckDBVersion(w http.ResponseWriter, r *http.Request, c cal
 		CoreCommit string   `json:"core_extensions_commit"`
 		Force      bool     `json:"force"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -337,7 +340,7 @@ func (h *Handler) addCoreExtensions(w http.ResponseWriter, r *http.Request, c ca
 		CoreCommit string   `json:"core_extensions_commit"`
 		Force      bool     `json:"force"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -356,7 +359,7 @@ func (h *Handler) addCAPI(w http.ResponseWriter, r *http.Request, c caller, p pa
 	var in struct {
 		CAPI string `json:"c_api"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -460,7 +463,7 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request, c caller,
 		StorageDomain string `json:"storage_domain"`
 		HolderID      string `json:"holder_id"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -580,7 +583,7 @@ func (h *Handler) setTenantHolder(w http.ResponseWriter, r *http.Request, c call
 	var in struct {
 		HolderID string `json:"holder_id"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	if in.HolderID == "" {
@@ -625,7 +628,7 @@ func (h *Handler) changeAudience(w http.ResponseWriter, r *http.Request, c calle
 	var in struct {
 		Audience string `json:"audience"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -721,7 +724,7 @@ func (h *Handler) listIssuers(w http.ResponseWriter, r *http.Request, c caller, 
 
 func (h *Handler) addIssuer(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in issuerJSON
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	if in.CreatedAt != "" || in.CreatedBy != "" || in.ETag != "" {
@@ -929,7 +932,7 @@ func (h *Handler) addGrant(w http.ResponseWriter, r *http.Request, c caller, p p
 		// default type; none: "*")
 		PackageType string `json:"package_type"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -1001,7 +1004,7 @@ func (h *Handler) addReserved(w http.ResponseWriter, r *http.Request, c caller, 
 		Kind  string   `json:"kind"`
 		Force bool     `json:"force"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -1080,7 +1083,7 @@ func (h *Handler) reserveInTenant(w http.ResponseWriter, r *http.Request, c call
 	var in struct {
 		Holder string `json:"holder"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()

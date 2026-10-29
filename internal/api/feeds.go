@@ -74,7 +74,7 @@ func (h *Handler) addAttestationKey(w http.ResponseWriter, r *http.Request, c ca
 		SignerRef string `json:"signer_ref"`
 		Active    bool   `json:"active"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -123,7 +123,7 @@ func (h *Handler) feed(w http.ResponseWriter, r *http.Request, c caller, p param
 	var in struct {
 		Bodies []attachment.FeedBody `json:"bodies"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -244,7 +244,7 @@ func (h *Handler) addFeed(w http.ResponseWriter, r *http.Request, c caller, p pa
 		Mode       string   `json:"mode"`
 		Export     bool     `json:"export"`
 	}
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
@@ -269,7 +269,7 @@ func (h *Handler) getFeed(w http.ResponseWriter, r *http.Request, c caller, p pa
 
 func (h *Handler) changeFeed(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in attachment.FeedChange
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	expected, ok := expectedVersion(w, r)

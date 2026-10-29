@@ -79,7 +79,7 @@ func (h *Handler) setConsoleClient(w http.ResponseWriter, r *http.Request, c cal
 		return
 	}
 	var in consoleClientJSON
-	if !body(w, r, &in) {
+	if !body(w, r, &in, maxBody) {
 		return
 	}
 	if len(in.Scopes) == 0 {
