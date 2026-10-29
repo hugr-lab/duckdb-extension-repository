@@ -25,6 +25,11 @@ type CatalogueEntry struct {
 	// PublisherID is a distributor's publisher's id, for a distribution admin (spec 0033 phase B: a
 	// name two of them had is publisher-id:<id> as a source)
 	PublisherID string
+	// Distributor is a distributor's publisher's entry's distributor (spec 0036); "" for the tenant's
+	// own sources
+	Distributor string
+	// Meta is the entry's metadata (spec 0036): its summary and icon; zero for none
+	Meta store.EntryMeta
 }
 
 // CatalogueBuild is a build of an entry: what it is, how it came, and where it is released.
@@ -117,6 +122,16 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 	if err != nil {
 		return nil, err
 	}
+	metas, err := s.Store.EntryMetas(ctx, t.ID, packageType) // spec 0036
+	if err != nil {
+		return nil, err
+	}
+	dists := only // the sources that are a distributor's publisher's
+	if dists == nil {
+		if dists, err = s.Store.DistributorSources(ctx, t.ID); err != nil {
+			return nil, err
+		}
+	}
 	newestFirst := func(x, y string) int { return CompareVersions(y, x) }
 	byKey := map[[2]string]*CatalogueEntry{}
 	var out []*CatalogueEntry
@@ -133,7 +148,7 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 			slices.SortFunc(l, newestFirst)
 		}
 		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, Revoked: rv, Withdrawn: wv,
-			PublisherID: ids[k[0]].PublisherID}
+			PublisherID: ids[k[0]].PublisherID, Distributor: dists[k[0]].Distributor, Meta: metas[k]}
 		byKey[k] = e
 		out = append(out, e)
 	}

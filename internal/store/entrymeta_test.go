@@ -43,7 +43,7 @@ func TestEntryMeta(t *testing.T) {
 		if _, ok, err := s.EntryMeta(ctx, tn.ID, typ, src, "geo"); err != nil || ok {
 			t.Fatalf("none yet: %v %v", ok, err)
 		}
-		m := store.EntryMeta{TenantID: tn.ID, PackageType: typ, Source: src, Name: "geo", Summary: "Geometry — für alle 🌍",
+		m := store.EntryMeta{TenantID: tn.ID, PackageType: typ, Source: src, Name: "geo", Summary: "Geometry \u2014 f\u00FCr alle \U0001F30D",
 			IconSHA256: strings.Repeat("a", 64), IconWidth: 128, IconHeight: 128, IconBytes: 4096, SetBy: "os:1:t", SetAt: now,
 			SignedAt: now.Add(-time.Minute), SignedBody: strings.Repeat("b", 64)}
 		inTx(t, s, func(tx *store.Tx) error { return tx.PutEntryMeta(ctx, m) })
@@ -52,7 +52,7 @@ func TestEntryMeta(t *testing.T) {
 			t.Fatalf("read back: %+v %v %v", got, ok, err)
 		}
 		// a summary of 160 code points beyond the Basic Multilingual Plane fits every dialect
-		m.Summary = strings.Repeat("🌍", 160)
+		m.Summary = strings.Repeat("\U0001F30D", 160)
 		inTx(t, s, func(tx *store.Tx) error { return tx.PutEntryMeta(ctx, m) })
 		if got, _, _ := s.EntryMeta(ctx, tn.ID, typ, src, "geo"); got.Summary != m.Summary {
 			t.Fatalf("160 astral characters: %d", len([]rune(got.Summary)))
