@@ -85,6 +85,9 @@ make test-db-down
 ```
 
 `KISTA_TEST_REQUIRE_DBS=1` turns a missing database into a failure instead of a skip; CI sets it.
+`KISTA_TEST_ENGINES`, a comma-separated subset of `sqlite,postgres,sqlserver`, narrows the store
+suite to those engines (all when unset); `make -s store-packages` lists the packages whose tests use
+it. CI runs each engine in its own job.
 The SQL Server image is `linux/amd64`, so on Apple silicon it runs under emulation.
 
 ### S3 and Azurite
@@ -159,7 +162,10 @@ containers (`host.docker.internal:56432`; on Linux, start the containers with
 
 | Job | Runs |
 | --- | --- |
-| `go-linux` | `go vet`, `govulncheck`, `golangci-lint`, and `go test -race ./...` with PostgreSQL, SQL Server, Vault, OpenBao, SeaweedFS, Azurite, moto and fake-gcs-server, every `REQUIRE` switch on |
+| `lint` | `go vet`, `govulncheck`, `golangci-lint` |
+| `go-linux` | `go test -race ./...` with the store suite on SQLite, and Vault, OpenBao, SeaweedFS, Azurite, moto and fake-gcs-server, every `REQUIRE` switch on |
+| `go-postgres` | `go test -race` of the store suite's packages on PostgreSQL 17 |
+| `go-sqlserver` | `go test -race` of the store suite's packages on SQL Server 2022 |
 | `go-macos` | `go vet` and `go test -race ./...` (SQLite and the file system only) |
 | `console` | type check, unit tests, licenses, `npm audit`, build |
 | `console-e2e` | `make console`, Playwright's Chromium, `make console-e2e` |

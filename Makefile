@@ -3,7 +3,7 @@ export GOWORK := off
 
 E2E_BUILD ?= $(CURDIR)/e2e/.build
 
-.PHONY: build image docs console console-test console-e2e reserved test test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down test-moto test-moto-down test-gcs test-gcs-down lint e2e-duckdb e2e-runner e2e-build e2e sdk-test
+.PHONY: build image docs console console-test console-e2e reserved test store-packages test-db test-db-down test-s3 test-s3-down test-azurite test-azurite-down test-moto test-moto-down test-gcs test-gcs-down lint e2e-duckdb e2e-runner e2e-build e2e sdk-test
 
 build:
 	go build -o bin/kista ./cmd/kista
@@ -29,6 +29,11 @@ console-e2e:
 
 test:
 	go test ./...
+
+# The packages whose tests use the store suite (internal/store/storetest); CI runs them once per
+# database engine with KISTA_TEST_ENGINES.
+store-packages:
+	@go list -f '{{.ImportPath}} {{join .TestImports " "}} {{join .XTestImports " "}}' ./... | awk '/storetest/ {print $$1}'
 
 # DuckDB's extension aliases and keys (spec 0009) from DuckDB at e2e/DUCKDB_PIN; CI checks the committed files are current.
 # The reserved names are the server's data since spec 0030 (kista duckdb core-extensions).

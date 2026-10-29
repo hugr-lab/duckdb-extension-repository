@@ -1,7 +1,8 @@
 // Package storetest opens test stores on every available engine: SQLite always, PostgreSQL and SQL
 // Server when KISTA_TEST_POSTGRES / KISTA_TEST_SQLSERVER name a server (a DSN without a password;
 // the password comes from KISTA_TEST_POSTGRES_PASSWORD / KISTA_TEST_SQLSERVER_PASSWORD). With
-// KISTA_TEST_REQUIRE_DBS=1 a missing server fails instead of skipping.
+// KISTA_TEST_REQUIRE_DBS=1 a missing server fails instead of skipping. KISTA_TEST_ENGINES, a
+// comma-separated subset of sqlite,postgres,sqlserver, narrows the engines (CI runs one per job).
 //
 // Each package run creates one database per server and drops it at exit (Cleanup); tests empty the
 // tables between them through Reset.
@@ -15,6 +16,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -113,7 +116,25 @@ func (s *server) newDB(kind string) (string, error) {
 	return withDB(kind, s.admin, name), nil
 }
 
+// selected reports whether KISTA_TEST_ENGINES (all when unset) names the engine.
+func selected(t testing.TB, kind string) bool {
+	v := os.Getenv("KISTA_TEST_ENGINES")
+	if v == "" {
+		return true
+	}
+	names := strings.Split(v, ",")
+	for _, n := range names {
+		if !slices.Contains([]string{"sqlite", "postgres", "sqlserver"}, n) {
+			t.Fatalf("KISTA_TEST_ENGINES: unknown engine %q", n)
+		}
+	}
+	return slices.Contains(names, kind)
+}
+
 func (s *server) engine(t testing.TB, kind, env string) (Engine, bool) {
+	if !selected(t, kind) {
+		return Engine{}, false
+	}
 	dsn := os.Getenv(env)
 	if dsn == "" {
 		if os.Getenv("KISTA_TEST_REQUIRE_DBS") == "1" {
@@ -170,7 +191,8 @@ func (s *server) engine(t testing.TB, kind, env string) (Engine, bool) {
 	return Engine{Name: kind, Open: open, Fresh: fresh}, true
 }
 
-// Engines returns every available engine. SQLite is always there.
+// Engines returns every available engine. SQLite is always there unless KISTA_TEST_ENGINES leaves
+// it out.
 func Engines(t testing.TB) []Engine {
 	t.Helper()
 	sqliteOpen := func(t testing.TB, path string) *store.Store {
@@ -182,29 +204,35 @@ func Engines(t testing.TB) []Engine {
 		t.Cleanup(func() { st.Close() })
 		return st
 	}
-	out := []Engine{{
-		Name: "sqlite",
-		Open: func(t testing.TB) *store.Store {
-			st := sqliteOpen(t, filepath.Join(t.TempDir(), "kista.db"))
-			if err := st.Migrate(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			return st
-		},
-		Fresh: func(t testing.TB, n int) []*store.Store {
-			path := filepath.Join(t.TempDir(), "kista.db")
-			var out []*store.Store
-			for i := 0; i < n; i++ {
-				out = append(out, sqliteOpen(t, path))
-			}
-			return out
-		},
-	}}
+	var out []Engine
+	if selected(t, "sqlite") {
+		out = append(out, Engine{
+			Name: "sqlite",
+			Open: func(t testing.TB) *store.Store {
+				st := sqliteOpen(t, filepath.Join(t.TempDir(), "kista.db"))
+				if err := st.Migrate(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				return st
+			},
+			Fresh: func(t testing.TB, n int) []*store.Store {
+				path := filepath.Join(t.TempDir(), "kista.db")
+				var out []*store.Store
+				for i := 0; i < n; i++ {
+					out = append(out, sqliteOpen(t, path))
+				}
+				return out
+			},
+		})
+	}
 	if e, ok := pg.engine(t, "postgres", "KISTA_TEST_POSTGRES"); ok {
 		out = append(out, e)
 	}
 	if e, ok := ms.engine(t, "sqlserver", "KISTA_TEST_SQLSERVER"); ok {
 		out = append(out, e)
+	}
+	if len(out) == 0 {
+		t.Skip("KISTA_TEST_ENGINES selects no available engine")
 	}
 	return out
 }
