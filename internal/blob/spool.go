@@ -224,7 +224,7 @@ func (sp *Spool) Commit(ctx context.Context) (store.Blob, error) {
 			return store.Blob{}, err
 		}
 		if err := sp.domain.Store.Put(ctx, StreamKey(rec.StreamHash), zf, pre.StreamLen); err != nil {
-			_ = s.st.ReleaseClaim(context.WithoutCancel(ctx), rec.Domain, rec.StreamHash, claim)
+			_ = s.st.Streams().ReleaseClaim(context.WithoutCancel(ctx), rec.Domain, rec.StreamHash, claim)
 			return store.Blob{}, err
 		}
 		// two first commits of one body (other compressors) race on the insert: the loser retries
@@ -238,7 +238,7 @@ func (sp *Spool) Commit(ctx context.Context) (store.Blob, error) {
 			continue // claim again, upload again
 		}
 		if err != nil {
-			_ = s.st.ReleaseClaim(context.WithoutCancel(ctx), rec.Domain, rec.StreamHash, claim)
+			_ = s.st.Streams().ReleaseClaim(context.WithoutCancel(ctx), rec.Domain, rec.StreamHash, claim)
 			return store.Blob{}, err
 		}
 		s.forget(r.Domain, r.BodyHash)

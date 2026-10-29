@@ -141,6 +141,9 @@ func TestIconObjects(t *testing.T) {
 		if un, _ := icons.Unreferenced(ctx, "other", []string{used}); len(un) != 1 {
 			t.Fatalf("another domain's tenants reference nothing here: %v", un)
 		}
+		if ok, err := icons.Mark(ctx, "other", used); err != nil || !ok {
+			t.Fatalf("an icon of the same hash in another domain is not marked: %v %v", ok, err)
+		}
 		if ok, err := icons.Mark(ctx, "default", used); err != nil || ok {
 			t.Fatalf("a referenced icon marked: %v %v", ok, err)
 		}
@@ -156,14 +159,14 @@ func TestIconObjects(t *testing.T) {
 			t.Fatalf("expired claims: %d %v", n, err)
 		}
 		// the streams' tables never see an icon
-		if ts, _ := s.DueTombstones(ctx, "default", now.Add(time.Hour), now, "", 10); len(ts) != 0 {
+		if ts, _ := s.Streams().DueTombstones(ctx, "default", now.Add(time.Hour), now, "", 10); len(ts) != 0 {
 			t.Fatalf("a stream tombstone: %+v", ts)
 		}
 		// a write waits while the collector deletes it
 		grace := now.Add(time.Hour)
 		now = now.Add(2 * time.Hour)
 		ts, err := icons.DueTombstones(ctx, "default", grace, now.Add(-30*time.Minute), "", 10)
-		if err != nil || len(ts) != 1 || ts[0].StreamHash != gone {
+		if err != nil || len(ts) != 1 || ts[0].Hash != gone {
 			t.Fatalf("due: %+v %v", ts, err)
 		}
 		stamp, err := icons.BeginDelete(ctx, "default", gone, grace, now.Add(-30*time.Minute))
@@ -195,7 +198,7 @@ func TestIconObjects(t *testing.T) {
 		now = now.Add(3 * time.Hour)
 		stamp3, _ := icons.BeginDelete(ctx, "default", gone, now.Add(-time.Hour), now.Add(-30*time.Minute))
 		noErr(t, icons.AbortDelete(ctx, "default", gone, stamp3))
-		if n, _ := store.CountRaw(ctx, s, "icon_tombstones", "state = 'marked'"); n != 1 {
+		if n, _ := store.CountRaw(ctx, s, "icon_tombstones", "domain = 'default' AND state = 'marked'"); n != 1 {
 			t.Fatalf("aborted: %d", n)
 		}
 	})
