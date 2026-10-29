@@ -44,6 +44,9 @@ func (s *AuthAdmin) AddDistributorPublisher(ctx context.Context, a authz.Actor, 
 	if err != nil {
 		return store.Publisher{}, err
 	}
+	if dist == "" { // the store checks the rest of the name; an empty one would make an ordinary publisher
+		return store.Publisher{}, fmt.Errorf("%w: distributor: 1 to %d bytes of printable text", store.ErrInvalid, store.MaxDistributor)
+	}
 	p := store.Publisher{TenantID: t.ID, Name: name, CreatedBy: a.String(), Distributor: dist}
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.PublisherAuthLock(t.ID)}, func(tx *store.Tx) error {
 		if distributor(a) { // under the tenant's auth lock, which every publisher's insert takes
