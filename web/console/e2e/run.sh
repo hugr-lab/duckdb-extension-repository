@@ -216,6 +216,9 @@ publish vault-dist "$cat_path/vault/builds?version=1.1&platform=linux_amd64" "$w
 # started again: the placement pass looks at every follow at its start (the skips), then every minute
 kill "$serve_pid"
 wait "$serve_pid" 2>/dev/null || true
+# spec 0037: the distributor's licence in vault-dist's entry, a server administrator's import (the
+# CLI): tom reads it, and writes it not
+k license import acme "$work/vault.kista-license" -source publisher:vault-dist
 serve
 
 python3 -m http.server --bind 127.0.0.1 --directory "$work/org" "$repo_port" >"$work/repo.log" 2>&1 &
