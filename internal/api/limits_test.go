@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -136,6 +137,13 @@ func TestTenantLimitsAPI(t *testing.T) {
 	call(400, "POST", "/api/v1/tenants", sa, `{"name":"gamma","limits":{"channels":"many"}}`)
 	if _, err := m.st.GetTenant(ctx, "gamma"); err == nil {
 		t.Fatal("a tenant created with invalid limits")
+	}
+	// the services refuse a name that is no limit's (never a panic)
+	if _, _, err := m.ten.SetTenantLimits(ctx, admin, "beta", map[string]int64{"egress": 1}, ""); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("an unknown limit: %v", err)
+	}
+	if _, err := m.ten.CreateTenantWithLimits(ctx, admin, "delta", "", "", "", map[string]int64{"egress": 1}); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("an unknown limit at creation: %v", err)
 	}
 }
 

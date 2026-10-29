@@ -439,6 +439,31 @@ type item struct {
 	auto, early bool
 }
 
+// recheckReserved runs an item's recheck under insert's locks: a name an upstream of the tenant
+// provides, or one the server reserved since the caller was authorized (spec 0030), takes a grant
+// that names it.
+func recheckReserved(ctx context.Context, tx *store.Tx, it item) error {
+	if it.recheck == nil {
+		return nil
+	}
+	b := it.b
+	provided, err := tx.UpstreamProvides(ctx, b.TenantID, b.PackageType, b.Name)
+	if err != nil {
+		return err
+	}
+	if !provided {
+		k, err := tx.ReservedKind(ctx, b.PackageType, b.Name)
+		if err != nil {
+			return err
+		}
+		provided = k != ""
+	}
+	if provided {
+		return it.recheck(ctx)
+	}
+	return nil
+}
+
 // reservedCheck is an item's recheck: the verb on the resource as a reserved name.
 func (s *Service) reservedCheck(a authz.Actor, verb authz.Verb, res authz.Resource) func(context.Context) error {
 	res.Reserved = true
@@ -637,13 +662,10 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 		if !passthrough {
 			locks = []string{store.TenantUpstreamLock(ch.TenantID), lockKey(channelID)}
 		}
-		// spec 0038: last, the tenant's bytes lock while it has a bytes limit (a release keeps its build)
-		bytesLocks, err := s.Store.BytesLocks(ctx, ch.TenantID)
-		if err != nil {
-			return nil, false, err
-		}
-		locks = append(locks, bytesLocks...)
-		err = s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
+		// spec 0038: the tenant's bytes lock is taken by the first release that keeps a build, after
+		// every item's recheck (which may take the tenant's auth lock on another connection: one held
+		// by an intake waiting for the bytes lock)
+		err := s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
 			out, made, existing, need = nil, nil, 0, nil
 			bump := false    // a cleared source set again by its release (spec 0031)
 			learned := false // a name reserved by this intake (spec 0030)
@@ -653,6 +675,12 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 			}
 			for _, it := range items { // spec 0034: a channel takes builds of its type only
 				if err := sameType(c, it.b); err != nil {
+					return err
+				}
+			}
+			// every item's recheck first, before any release takes the tenant's bytes lock (spec 0038)
+			for _, it := range items {
+				if err := recheckReserved(ctx, tx, it); err != nil {
 					return err
 				}
 			}
@@ -711,26 +739,6 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					}
 				}
 				upstream := it.origin == store.OriginUpstream
-				if it.recheck != nil {
-					// a name an upstream of the tenant provides, or one the server reserved since the
-					// caller was authorized (spec 0030), takes a grant that names it
-					provided, err := tx.UpstreamProvides(ctx, b.TenantID, b.PackageType, b.Name)
-					if err != nil {
-						return err
-					}
-					if !provided {
-						k, err := tx.ReservedKind(ctx, b.PackageType, b.Name)
-						if err != nil {
-							return err
-						}
-						provided = k != ""
-					}
-					if provided {
-						if err := it.recheck(ctx); err != nil {
-							return err
-						}
-					}
-				}
 				// spec 0033 phase A2: a publication's publisher and key, read with shared row locks a removal
 				// waits for; after the recheck, which may read the tenant's auth on another connection
 				// (GetTenantAuth's locked read), so no removal waits on a row this transaction holds then

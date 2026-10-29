@@ -78,11 +78,20 @@ func (l *Limits) field(name string) *int64 {
 	return nil
 }
 
-// Get is a limit's value by name.
-func (l Limits) Get(name string) int64 { return *l.field(name) }
+// Get is a limit's value by name; LimitDefault for a name that is no limit's.
+func (l Limits) Get(name string) int64 {
+	if f := l.field(name); f != nil {
+		return *f
+	}
+	return LimitDefault
+}
 
-// Set sets a limit's value by name.
-func (l *Limits) Set(name string, v int64) { *l.field(name) = v }
+// Set sets a limit's value by name; a name that is no limit's changes nothing.
+func (l *Limits) Set(name string, v int64) {
+	if f := l.field(name); f != nil {
+		*f = v
+	}
+}
 
 // ValidLimit checks a value a tenant may store for a limit: LimitDefault, LimitUnlimited, or 0 up to
 // the ceiling.
@@ -469,17 +478,18 @@ func (t *Tx) keepRoom(ctx context.Context, buildID string) error {
 	if own, err := ownSource(ctx, t.query, b.TenantID, b.Source); err != nil || !own {
 		return err
 	}
+	// the lock before anything kept is read, so a build or body kept, or no longer kept, meanwhile is
+	// seen as it is
+	if err := t.hold(ctx, TenantBytesLock(b.TenantID)); err != nil {
+		return err
+	}
 	keptOwn := t.s.keptOwn()
 	kept := func(where string, args ...any) (bool, error) {
 		n, err := count(ctx, t.query, "SELECT COUNT(*) FROM builds b WHERE "+where+" AND "+keptOwn, append(args, true)...)
 		return n > 0, err
 	}
 	if k, err := kept("b.id = ?", b.ID); err != nil || k {
-		return err // kept already (a placement, a promotion): no lock taken
-	}
-	// the lock before the rest is read, so a body kept meanwhile is seen counted
-	if err := t.hold(ctx, TenantBytesLock(b.TenantID)); err != nil {
-		return err
+		return err // kept already (a placement, a promotion)
 	}
 	var growth int64
 	if k, err := kept("b.tenant_id = ? AND b.body_hash = ?", b.TenantID, b.BodyHash); err != nil {

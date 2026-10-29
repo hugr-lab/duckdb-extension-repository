@@ -154,12 +154,16 @@ in the build's insert and when a build is kept) to learn that its limit is unlim
     between that read and the insert finds the transaction without the lock: the insert then takes
     it in the transaction, after the row locks it holds. A deadlock this may make is the engine's to
     detect, and the transaction is retried, as any other; it can happen only in that window.
-  - **The lock is always the last of the transaction's lock keys.** Keys are taken in the order
-    given, and these transactions take different ones first (`TenantUpstreamLock` and the
-    channel's lock for a signed channel's release, the channel's lock alone for a passthrough
-    channel's, the publisher's auth lock or the build's lock for a landing, the channel's lock for
-    a succession). One key taken last by all of them adds no cycle; no transaction takes a key
-    after it.
+  - **The lock is always the last lock a transaction takes.** Keys are taken in the order given,
+    and these transactions take different ones first (the publisher's auth lock for a build's
+    insert or a landing, the auth and icon locks for an icon's commit: these take the bytes lock as
+    their last key when they open). A release's transaction (`TenantUpstreamLock` and the
+    channel's lock for a signed channel, the channel's lock alone for a passthrough one, the
+    channel's lock for a placement or a promotion) takes it in the transaction, at the first
+    release that keeps a build, after every item's recheck: a recheck may read the tenant's auth
+    under the auth lock on another connection, which a landing holds while it waits for the bytes
+    lock, a cycle the database could not see. No transaction takes an advisory lock after the
+    bytes lock, so it adds no cycle.
   - **Two intakes of one tenant never both take the last room**, on one replica or many, whatever
     path each comes by: there is no overshoot. (An older replica still running during the rollout
     of migration 0047 does not check; the rollout is the only window.)
