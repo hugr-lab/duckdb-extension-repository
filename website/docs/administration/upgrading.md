@@ -177,13 +177,20 @@ so the operator declares it:
 - **Migration `0045_download_sources`** adds `source` to the keys of `download_counts` and
   `download_installers`, with an index `(source, day)`: in place on PostgreSQL and SQL Server, by
   rebuilding both tables on SQLite. Rows already there get the source `''`: they count for no
-  distributor, and the tenant's statistics answer them as `unknown`. It raises `min_reader` to 45:
-  stop every older replica first.
+  distributor, and the tenant's statistics answer them as `unknown`. It adds `distributor_weeks` and
+  `distributor_weeks_done`, the weekly snapshots. It raises `min_reader` to 45: stop every older
+  replica first.
 - **What changes.** A download counts under its release's source, and `install` events carry
   `source`; `GET …/stats/downloads` groups by `source`; `GET /api/v1/distributor-stats/downloads`
   answers a [distributor's statistics](../observability.md#a-distributors-statistics) to distribution
-  admins and server administrators. New settings: `statistics.distributor_min_tenants` (default 3,
-  at least 2) and `statistics.public_tenants` (none by default).
+  admins and server administrators, from the weekly snapshots the daily pass computes (its first
+  pass computes the complete weeks the retention holds, at most 106). New settings:
+  `statistics.distributor_min_tenants` (default 3, at least 2) and `statistics.public_tenants` (none
+  by default), applied when a week is computed. A used distributor's publisher's distributor is no
+  longer renamed (`409`).
+- **Statistics' row limit.** Counts are now kept per source too, so a tenant's statistics query
+  over a long range reaches the 100,000 stored rows it reads (`400`, narrow the range) sooner when a
+  name has several sources.
 
 ### An entry's icon and summary (spec 0036, phase 1)
 

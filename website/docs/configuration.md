@@ -541,8 +541,8 @@ Each sink:
 | --- | --- | --- | --- |
 | `statistics.retention` | duration | `26280h` (3 years) | How long download counts and installers, and usage counts, users and received aggregates, are kept; 30 days to 10 years. |
 | `statistics.usage_accept` | bool | `true` | `false` answers licensed extensions' usage reports and downstream kistas' daily usage, and keeps nothing ([Licensing](licensing.md#usage-reports)). |
-| `statistics.distributor_min_tenants` | integer | `3` | In a [distributor's statistics](observability.md#a-distributors-statistics), how many non-public tenants a row needs before their downloads (and, on their own, their installer-days) are answered; at least 2 (`0` means 3). |
-| `statistics.public_tenants` | list | none | Tenant names whose downloads always count in a distributor's statistics, outside the minimum (a tenant serving free extensions to anyone). Matched against tenants on each query; a name matching no tenant exempts nothing and is logged at start. |
+| `statistics.distributor_min_tenants` | integer | `3` | In a [distributor's statistics](observability.md#a-distributors-statistics), how many non-public tenants a row needs before their downloads (and, on their own, their installer-days) are answered; at least 2 (`0` means 3). Applied when a week's snapshot is computed: a change affects the weeks computed after it. |
+| `statistics.public_tenants` | list | none | Tenant names whose downloads always count in a distributor's statistics, outside the minimum (a tenant serving free extensions to anyone). Matched against tenants when a week's snapshot is computed; a name matching no tenant exempts nothing and is logged at start. |
 
 File-only. See [Observability](observability.md).
 

@@ -354,29 +354,38 @@ GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
 ```
 
 - **Who**: distribution admins and server administrators, with a fresh token. The distributor is a
-  query parameter, as its publishers are marked (`publishers.distributor`).
+  query parameter, as its publishers are marked (`publishers.distributor`). `?type=` is the package
+  type (the default when not named).
+- **Weekly snapshots.** The hourly daily pass computes each complete week once, two days after it
+  ends (the counts are flushed and the days' installers counted), and stores it: one row per
+  (distributor, package type, week, extension). It is never computed again, so an answered week
+  never changes, whatever happens later (a late count, a tenant deleted, the counts pruned by
+  `statistics.retention`, a setting changed). The route reads only these snapshots. On its first
+  pass after the upgrade it computes every complete week the retention still holds whole, at most
+  106; snapshots older than 106 weeks are deleted.
 - **What counts**: the downloads of the distributor's entries only, in every tenant: its publishers'
-  (live, and removed ones remembered), the mark read at query time. A tenant's own build of the same
-  name, or an upstream's, never counts. A suspended tenant counts; a tenant being deleted does not.
-- **Weeks** are complete ISO weeks in UTC, Monday to Sunday, named by their Monday. Only weeks that
-  ended at least two days ago are answered (the counts are flushed and the daily pass done). `from`
-  and `to` are days, widened to whole weeks; a `to` beyond the last complete week is clamped to it.
-  The default is the 12 weeks up to it; at most 53 weeks.
+  (live, and removed ones remembered), as marked when the week is computed. A tenant's own build of
+  the same name, or an upstream's, never counts. A suspended tenant counts; a tenant being deleted
+  does not. A used publisher's distributor is never renamed (`409`).
+- **Weeks** are complete ISO weeks in UTC, Monday to Sunday, named by their Monday. `from` and `to`
+  are days, widened to whole weeks; a `to` beyond the last complete week is clamped to it. The
+  default is the 12 weeks up to it; at most 53 weeks. The answer's `from` and `to` are the first and
+  the last week's Mondays.
 - **Grouping is fixed**: one row per (week, extension). No row names a tenant, a channel or a
   per-tenant figure.
 - **`downloads`** counts as above; **`public`** is the part from public tenants; **`installer_days`**
   is the daily distinct installers summed over the days and the tenants (a principal installing on
-  two days, or in two tenants, counts twice); **`withheld`** says a non-public part was left out.
+  two days, or in two tenants, counts twice), omitted when left out.
 
 **Public tenants and the minimum.** Tenants listed by name in `statistics.public_tenants` (such as
 a tenant serving free extensions to anyone) always count, with a token or without, and are outside
 the minimum. Every other tenant's downloads count in a row only when at least
-`statistics.distributor_min_tenants` such tenants (default 3, at least 2) downloaded there; with
-fewer, that part is left out (`downloads` equals `public`) and the row is `withheld`. Installer-days
-take the minimum separately, by the tenants with installers in the row; `installer_days` holds the
-public tenants' part, plus the rest when it may be answered, and is omitted only when it has no
-public part and the rest is left out. An empty list exempts no one; names are matched against
-tenants on each query, and a name matching no tenant is logged at start.
+`statistics.distributor_min_tenants` such tenants (default 3, at least 2) downloaded there. With
+fewer, that part is left out and the row is **`withheld`**: `downloads` equals `public`, and
+`installer_days` is omitted. Installer-days take the minimum separately, by the tenants with
+installers in the row: with fewer, `installer_days` is omitted even when the downloads are
+answered. It is never answered in part. Both settings are applied when a week is computed; an empty
+list exempts no one, and a name matching no tenant is logged at start.
 
 ```yaml title="kista.yaml"
 statistics:
@@ -384,8 +393,13 @@ statistics:
   public_tenants: [free]
 ```
 
-A `withheld` row tells that between one tenant and the minimum downloaded the extension, not which
-or how many times. kista publishes no public statistics of its own.
+**What the minimum protects, and what it does not.** It keeps a single customer's downloads from
+being disclosed by accident in a row of their own. It does not protect against the server's
+operator, who lists public tenants and reads the counts anyway, nor against a distributor that
+controls several tenants (its own, or one organisation's several tenants): such tenants can make up
+the minimum, so a row may reflect one organisation alone. And `withheld` itself says yes or no:
+between one tenant and the minimum downloaded the extension that week, not which or how many times.
+kista publishes no public statistics of its own.
 
 Usage reports from licensed extensions' SDKs are counted the same way, with a budget of their own,
 and read at `GET /api/v1/tenants/{t}/stats/usage`: see [Licensing](licensing.md#usage-reports).
