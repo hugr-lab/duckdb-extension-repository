@@ -350,10 +350,16 @@ func (s *Service) followLimit(ctx context.Context, lk followLook, f store.DueFol
 // takeName writes a name's follow rule under the channel lock, checking again that the channel
 // still follows the source and the name is still free (no rule, or one an arrival wrote for the
 // same source, which becomes the follow's) and, for a distributor's publisher, not listed by an
-// upstream of the tenant meanwhile (spec 0037).
+// upstream of the tenant meanwhile (spec 0037). For a distributor's publisher it first takes the
+// tenant's upstream lock, which every change to an upstream's entries takes (spec 0009's order:
+// upstream, then channel), so no entry is added between the check and the rule.
 func (s *Service) takeName(ctx context.Context, lk followLook, f store.DueFollow, name string) (bool, error) {
 	wrote := false
-	err := s.Store.InTx(ctx, lockKey(f.ChannelID), func(tx *store.Tx) error {
+	locks := []string{lockKey(f.ChannelID)}
+	if lk.distributor != "" {
+		locks = []string{store.TenantUpstreamLock(f.TenantID), lockKey(f.ChannelID)}
+	}
+	err := s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
 		if following, err := tx.FollowingTx(ctx, f.ChannelID, f.Source); err != nil || !following {
 			return err
 		}
@@ -361,7 +367,7 @@ func (s *Service) takeName(ctx context.Context, lk followLook, f store.DueFollow
 		if err != nil || had && (cur.Source != f.Source || cur.Mode != store.RuleNone) {
 			return err
 		}
-		if lk.distributor != "" { // spec 0037: listed by an upstream of the tenant meanwhile
+		if lk.distributor != "" { // spec 0037: listed by an upstream of the tenant meanwhile (under its lock)
 			if listed, err := tx.UpstreamProvides(ctx, f.TenantID, lk.channel.PackageType, name); err != nil || listed {
 				return err
 			}
