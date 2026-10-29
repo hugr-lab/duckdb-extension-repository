@@ -4,7 +4,10 @@ import { expect, test, type Page } from '@playwright/test'
 // block declaring the licence vectors' test-only key, as a marked publisher (spec 0021), and vault
 // 1.1 with the same key into the catalogue as a distributor's publisher, vault-dist (spec 0035: two
 // entries declaring it), signed a 20-day licence for vault (E2E_LICENSE), and serves another
-// repository's .well-known (E2E_REPO_URL, its key E2E_REPO_KEY).
+// repository's .well-known (E2E_REPO_URL, its key E2E_REPO_KEY). plain-ci is the tenant's own
+// publisher, its builds declaring no key. A distributor's publisher's entry (vault-dist,
+// enterest-ci) is its licence manager's and the server administrators' to write: tom reads it only
+// (spec 0037).
 
 const pw = (name: string) => process.env[`E2E_PW_${name.toUpperCase()}`] ?? ''
 
@@ -44,14 +47,22 @@ test('a licence: imported from a file into an entry, its claims read, made publi
   await expect(entries.getByText("enterest's publisher (a distributor)")).toBeVisible()
   await expect(entries.getByRole('radio', { name: 'publisher:vault-ci' })).not.toBeChecked()
   await expect(entries.getByRole('radio', { name: 'publisher:vault-dist' })).not.toBeChecked()
+  // spec 0037: the distributor's entry is listed, not tom's to choose
+  await expect(entries.getByRole('radio', { name: 'publisher:vault-dist' })).toBeDisabled()
+  await expect(entries.getByText("a distributor's: its licence manager writes it")).toBeVisible()
   await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeDisabled()
   // an entry whose builds do not declare the key: sent, and kista's refusal shown
   await entries.getByRole('radio', { name: 'another entry' }).check()
-  await entries.getByRole('textbox', { name: 'other entry' }).fill('publisher:enterest-ci')
-  const sent = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/licenses?source=publisher%3Aenterest-ci'))
+  await entries.getByRole('textbox', { name: 'other entry' }).fill('publisher:plain-ci')
+  const sent = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/licenses?source=publisher%3Aplain-ci'))
   await page.getByRole('button', { name: 'Import', exact: true }).click()
   await sent
   await expect(page.getByRole('alert')).toContainText('kid_untrusted')
+  await expect(page.getByText('No licences.')).toBeVisible()
+  // spec 0037: a distributor's entry named by hand: kista refuses tom, saying why
+  await entries.getByRole('textbox', { name: 'other entry' }).fill('publisher:enterest-ci')
+  await page.getByRole('button', { name: 'Import', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText("a distributor's entry: its licence manager or a server administrator writes it")
   await expect(page.getByText('No licences.')).toBeVisible()
 
   // into vault-ci's entry: ?source= sent
@@ -87,24 +98,6 @@ test('a licence: imported from a file into an entry, its claims read, made publi
   await confirm(page, 'Replace')
   await expect(page.getByLabel('licence file')).toHaveValue('')
   await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeDisabled()
-
-  // two entries of one name: the same licence into the distributor's entry too, a row each
-  await pickInto(page, 'publisher:vault-dist')
-  await expect(page.getByText(/It replaces the licence/)).toHaveCount(0)
-  await page.getByRole('button', { name: 'Import', exact: true }).click()
-  const dist = page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'publisher:vault-dist', exact: true }) })
-  await expect(dist.getByText('valid', { exact: true })).toBeVisible()
-  await expect(warnings).toHaveText('') // vault-dist's vault is in the catalogue only: no warning
-  await expect(page.getByRole('row', { name: /^vault pro/ })).toHaveCount(2)
-  // opened on import: removed again, vault-ci's staying
-  await expect(page.getByRole('heading', { name: 'vault' })).toBeVisible()
-  await page.getByRole('button', { name: 'Remove…' }).click()
-  await expect(page.getByRole('dialog')).toContainText('in publisher:vault-dist')
-  await confirm(page, 'Remove')
-  await expect(page.getByRole('row', { name: /^vault pro/ })).toHaveCount(1)
-  await expect(row.getByRole('cell', { name: 'publisher:vault-ci', exact: true })).toBeVisible()
-  await expect(page.getByRole('cell', { name: 'publisher:vault-dist', exact: true })).toHaveCount(0)
-  await row.getByRole('button', { name: 'vault' }).click()
 
   // no entry lists the key of a licence for tresor: named by hand, sent, and kista's refusal shown
   await page.getByLabel('licence file').setInputFiles(process.env.E2E_LICENSE_NOKEY ?? '')
