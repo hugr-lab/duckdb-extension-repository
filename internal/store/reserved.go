@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -75,15 +76,29 @@ func (s *Store) ReservedVersion(ctx context.Context) (int64, error) {
 	return v, err
 }
 
-// ReservedKind reads a name's kind for a type inside the transaction ("" for a name not reserved):
-// the check a release insert makes again under its locks (spec 0030).
-func (t *Tx) ReservedKind(ctx context.Context, packageType, name string) (string, error) {
+// reservedKindQuery reads a name's kind for a type; scanReservedKind answers "" for a name not
+// reserved.
+const reservedKindQuery = "SELECT kind FROM reserved_names WHERE package_type = ? AND name = ?"
+
+func scanReservedKind(r *sql.Row) (string, error) {
 	var k string
-	err := t.queryRow(ctx, "SELECT kind FROM reserved_names WHERE package_type = ? AND name = ?", packageType, name).Scan(&k)
-	if err == sql.ErrNoRows {
+	err := r.Scan(&k)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return k, err
+}
+
+// ReservedKind reads a name's kind for a type inside the transaction ("" for a name not reserved):
+// the check a release insert makes again under its locks (spec 0030).
+func (t *Tx) ReservedKind(ctx context.Context, packageType, name string) (string, error) {
+	return scanReservedKind(t.queryRow(ctx, reservedKindQuery, packageType, name))
+}
+
+// ServerReservedKind is ReservedKind outside a transaction, for a follow's limits and a distributor's
+// publisher's names: it reads the server's list, not the process's view.
+func (s *Store) ServerReservedKind(ctx context.Context, packageType, name string) (string, error) {
+	return scanReservedKind(s.db.QueryRowContext(ctx, s.d.rebind(reservedKindQuery), packageType, name))
 }
 
 // ReserveName reserves a name as kind with a source: inserted if absent (core always wins: a
