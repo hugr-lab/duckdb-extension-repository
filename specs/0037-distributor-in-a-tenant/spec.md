@@ -269,7 +269,10 @@ No migration is needed: the stored row already has `issuer`, `holder_id`, `key_f
   - Lists leave them out, and reading one answers `404`.
   - `POST …/publishers` for a name that a tenant's own publisher holds answers `409` with the
     problem type `publisher-taken`. This tells a distribution admin that the name is taken, and
-    nothing else. Enterest treats it as "foreign, the tenant's own".
+    nothing else. Enterest treats it as "foreign, the tenant's own". It is a refusal:
+    `authz.refused` records it with `reason` `publisher-taken`.
+  - Distributors' publishers are counted apart from the tenant's own: at most 10 per tenant, beside
+    the tenant's 200, so a distribution admin never takes the tenant's room.
 - **Ordinary publishers (PR 2).** `POST …/publishers` without `distributor` answers `404`.
 - **Grants (PR 2).** `GET|POST …/grants` and `GET|DELETE …/grants/{id}` go back to `pathAdmin`.
   `distributorGrant` and the checks on the grants' `created_by` go.
@@ -284,7 +287,8 @@ administrators' to manage.
   marks a fresh publisher that a distribution admin created, has nothing left to apply to.
 - `PUT …/distributor` on an unmarked publisher answers `404`. A distributor's publisher is created
   marked.
-- The freshness check (`PublisherUsed`) goes.
+- The freshness check goes. `PublisherUsed` stays for spec 0036 phase 2's refusal to rename a used
+  publisher's distributor.
 
 **The minimum hold for distributors' publishers (PR 2).** This answers the stolen-token problem.
 
@@ -298,7 +302,9 @@ administrators' to manage.
   commit, as it reads the publisher's row today. The `PUT` updates that row, so it and an arrival are
   ordered. If the arrival reads first, the raise waits for the arrival to commit, and its
   `RaiseHeld` then covers the new entry. If the raise commits first, the arrival reads the new
-  minimum. Either way, no arrival misses the raise.
+  minimum. Either way, no arrival misses the raise. A publication's build transaction and the `PUT`
+  also both take the tenant's auth lock (`PublisherAuthLock`), which orders them as well; the row
+  lock is what orders any other arrival.
 - **The publisher answer** gains `effective_hold`: the larger of the two. A distribution admin cannot
   read the minimum otherwise.
 - **Who sets it.** Tenant administrators and server administrators. A distribution admin is refused
@@ -464,6 +470,14 @@ The ids are opaque and grant nothing.
   - **What the token can still do.** It can add its own key to Enterest's publisher and publish.
     Nothing it publishes reaches a channel by itself. But a channel's `auto` rule or follow of that
     publisher, which the tenant wrote, places the build once the tenant's minimum hold has passed.
+    Through a follow, that is a new name too, not only a new version of a name the channel has.
+    A follow of a distributor's publisher skips a name an upstream of the tenant lists, as grants
+    reach such a name only by naming it.
+  - **Keys are unique in the tenant.** Adding a key that one of the tenant's publishers already
+    holds answers `409`. That tells a distribution admin that some publisher of the tenant holds
+    that public key, and a key a distributor registers first cannot then be registered on the
+    tenant's own publisher. The `409` is a refusal for a distribution admin (`authz.refused`,
+    `reason` `key-taken`). Public keys are not secrets, so kista does not hide it.
   - **The defences.**
     - The minimum hold (a day by default). The distribution admin cannot lower it.
     - Enterest's alerts on `publisher.key.add`, and on `catalogue.hold`, when the actor is a
@@ -486,7 +500,8 @@ The ids are opaque and grant nothing.
     exists. The role is already server-wide and acts in every active tenant.
   - No other field is answered, and each read is an event.
 - **`publisher-taken` (2).** It tells a distribution admin that a publisher name is taken in the
-  tenant, and nothing else about that publisher.
+  tenant, and nothing else about that publisher. Each one is an `authz.refused` event (`reason`
+  `publisher-taken`), so probing the tenant's names is audited.
 - **Ids (4).** They are opaque and grant nothing.
 - **Signed catalogue reads (5).**
   - The publisher reads its own source only. It learns nothing about channels.
@@ -711,7 +726,7 @@ Delivered on the branch `0037-distributor-in-tenant-2`, on spec 0036 phase 2, wi
 - **Tenant reservations removed.** The table, the routes, `kista admin tenant-reserved` (now an
   unknown command), the events, the console card and the store's and services' reservation calls
   are gone, as Design lists. `ReservedFor` answers core or community, then upstream.
-  `NameReservedFor` reads the server's list only (it no longer takes a tenant).
+  `NameReservedFor` became `Store.ServerReservedKind`, a plain read of the server's list.
   `Store.ReservedAgainst` (spec 0036's list of a distributor's publisher's names) became
   `Store.ReservedAmong`, the names reserved server-wide among a list. The statistics scope and the
   index's `reserved` read DuckDB's names and the upstreams' only. `allow_reserved` on an upstream
@@ -723,7 +738,16 @@ Delivered on the branch `0037-distributor-in-tenant-2`, on spec 0036 phase 2, wi
   - `AddDistributorPublisher` reads the name under the tenant's auth lock before its insert. For a
     distribution admin, a name a tenant's own publisher holds answers `409 publisher-taken`. A name a
     distributor's publisher holds answers the usual `409 conflict`, as it does to a server
-    administrator for any name.
+    administrator for any name. The read and the insert are under one lock, so no test hooks a
+    publisher in between.
+  - Refusals with a `reason`: the API records `publisher-taken` and, for a distribution admin, a
+    key's `409` (`key-taken`) as `authz.refused` events; the audit writer coalesces them per
+    `reason` as it does per `operation`.
+  - `InsertPublisher` inserts a distributor's publisher marked (`Publisher.Distributor`) and counts
+    the two kinds apart: `MaxPublishers` (200) for the tenant's own, `MaxDistributorPublishers` (10)
+    for distributors'.
+  - A follow of a distributor's publisher skips a name an upstream of the tenant lists, in
+    `followLimit` and again under the channel lock in `takeName`.
   - `ListPublishers` keeps distributors' publishers only for a distribution admin. The API's read of
     one publisher goes through that list, so the tenant's own answers `404`.
   - The grant routes are `pathAdmin` again; `distributorGrant` and the `created_by` checks went.
@@ -743,17 +767,34 @@ Delivered on the branch `0037-distributor-in-tenant-2`, on spec 0036 phase 2, wi
   - `effective_hold` is answered for distributors' publishers only, from the tenant as the request
     read it.
   - The console shows the field as a "Minimum hold for distributors' publishers" card on the
-    Publishers screen. A caller who may not read it sees no card. The list's Hold column shows a
-    distributor's publisher's effective hold.
+    Publishers screen, and reads the publishers again after a change. A caller who may not read it
+    sees no card. The list's Hold column shows a distributor's publisher's effective hold.
   - `kista admin tenant distributor-hold <tenant>` prints the hold; with a duration, it sets it.
-- **Tests.** `TestDistributionAdmin` is the role's matrix: what it keeps, what it loses, removed
-  routes for every caller, the minimum hold's access and event. `TestDistributorRoutes` loses the
-  freshness cases. It gains:
+    `tenant show` prints the minimum; `publisher list` has a `HELD FOR` column and `publisher show`
+    a `held for` line for a distributor's publisher.
+- **Tests.** `TestDistributionAdmin` is the role's matrix:
+  - what it keeps: publishers, keys, marks, holds, the rename, catalogue reads, purges, withdrawals
+    and metadata, a distributor's statistics;
+  - what it loses: the tenant's own publishers, ordinary publishers, publisher removal, grants and
+    `grants/principals`;
+  - the removed routes, for every caller;
+  - the minimum hold: refused to a distribution admin at the API and at the service, one event per
+    change, and no `effective_hold` on the tenant's own publishers;
+  - the `publisher-taken` and `key-taken` refusals, audited.
+
+  `TestDistributorRoutes` loses the freshness cases. It gains:
   - a distributor's build held for the minimum;
   - the minimum lowered (nothing released) and raised (held longer, `held: 1`).
 
-  The store suite covers migration 0046, the minimum at arrival and its race with a raise
-  (`TestDistributorHoldReadLocked`). Tests that place a distributor's build at once set the minimum
+  `TestDistributorHoldRaiseRemoved` raises the minimum over a removed distributor's publisher's held
+  entry; a removal through the API purges held entries, so the store removes the publisher there.
+  The store suite covers:
+  - migration 0046, a level-45 binary refused included (`Store.checkLevel`);
+  - the minimum at arrival;
+  - the distributors' cap;
+  - the race with a raise (`TestDistributorHoldReadLocked`). It reads the minimum alone and checks
+    that the raise waits for the arrival. With `SourceHold`'s row lock removed, it fails on
+    PostgreSQL and SQL Server. Tests that place a distributor's build at once set the minimum
   to 0: the release and upstream helpers, the e2e fixtures, the console e2e's `run.sh`. Tests that
   reserve a name server-wide remove it at cleanup, since the server's list outlives a test on a
   shared database. Server-wide names replace the reservations that some tests used:
