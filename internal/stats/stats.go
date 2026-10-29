@@ -311,9 +311,8 @@ func (d *Daily) Once(ctx context.Context) {
 	if ctx.Err() == nil {
 		if err := d.distributorWeeks(ctx, now, keep); errors.Is(err, errLeaseLost) {
 			return
-		} else if err != nil {
+		} else if err != nil { // logged; the retention's prune still runs
 			d.Log.Error("stats: computing distributors' weeks", "error", err)
-			return
 		}
 	}
 	if d.Retention > 0 && ctx.Err() == nil {

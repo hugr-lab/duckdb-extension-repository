@@ -159,12 +159,14 @@ func (s *Store) TenantIDsByName(ctx context.Context, names []string) (map[string
 
 // DistributorWeek is a distributor's snapshot of one complete week of one extension of a package
 // type: its downloads (Public: the public tenants' part) and installer-days (nil: left out), and
-// whether the downloads' non-public part was left out (Withheld).
+// whether the downloads' non-public part was left out (Withheld). MinTenants is the minimum the week
+// was computed with (read back only).
 type DistributorWeek struct {
 	Distributor, PackageType, Week, Extension string
 	Downloads, Public                         int64
 	InstallerDays                             *int64
 	Withheld                                  bool
+	MinTenants                                int
 }
 
 // DistributorWeekDone reports whether a week's snapshots are stored (the week by its Monday).
@@ -175,6 +177,17 @@ func (s *Store) DistributorWeekDone(ctx context.Context, week string) (bool, err
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// DistributorWeeksSpan is the oldest and the newest week (Mondays) whose snapshots are stored; ok is
+// false when none is. Weeks are computed in order and pruned oldest first, so every week between
+// them is stored.
+func (s *Store) DistributorWeeksSpan(ctx context.Context) (oldest, newest string, ok bool, err error) {
+	var lo, hi sql.NullString
+	if err := s.db.QueryRowContext(ctx, "SELECT MIN(week), MAX(week) FROM distributor_weeks_done").Scan(&lo, &hi); err != nil {
+		return "", "", false, err
+	}
+	return lo.String, hi.String, hi.Valid, nil
 }
 
 // PutDistributorWeek stores a week's snapshots, of every distributor and type, and marks the week
@@ -215,12 +228,13 @@ func (s *Store) PutDistributorWeek(ctx context.Context, week string, minTenants 
 // by week and extension.
 func (s *Store) DistributorWeeks(ctx context.Context, distributor, packageType, from, to string) ([]DistributorWeek, error) {
 	var out []DistributorWeek
-	err := s.eachRow(ctx, "SELECT week, name, downloads, public_downloads, installer_days, withheld FROM distributor_weeks "+
-		"WHERE distributor = ? AND package_type = ? AND week >= ? AND week <= ? ORDER BY week, name",
+	err := s.eachRow(ctx, "SELECT w.week, w.name, w.downloads, w.public_downloads, w.installer_days, w.withheld, d.min_tenants FROM distributor_weeks w "+
+		"JOIN distributor_weeks_done d ON d.week = w.week WHERE w.distributor = ? AND w.package_type = ? AND w.week >= ? AND w.week <= ? "+
+		"ORDER BY w.week, w.name",
 		[]any{distributor, packageType, from, to}, func(sc func(...any) error) error {
 			r := DistributorWeek{Distributor: distributor, PackageType: packageType}
 			var inst sql.NullInt64
-			if err := sc(&r.Week, &r.Extension, &r.Downloads, &r.Public, &inst, &r.Withheld); err != nil {
+			if err := sc(&r.Week, &r.Extension, &r.Downloads, &r.Public, &inst, &r.Withheld, &r.MinTenants); err != nil {
 				return err
 			}
 			if inst.Valid {

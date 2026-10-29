@@ -284,6 +284,7 @@ func TestDistributorStatistics(t *testing.T) {
 		Public        int64  `json:"public"`
 		InstallerDays *int64 `json:"installer_days"`
 		Withheld      bool   `json:"withheld"`
+		MinTenants    int    `json:"min_tenants"`
 	}
 	statistics := func() []row {
 		t.Helper()
@@ -299,7 +300,7 @@ func TestDistributorStatistics(t *testing.T) {
 		return out.Rows
 	}
 	four := int64(4)
-	want := []row{{Week: store.DayOf(monday), Extension: demo, Downloads: 4, Public: 1, InstallerDays: &four}}
+	want := []row{{Week: store.DayOf(monday), Extension: demo, Downloads: 4, Public: 1, InstallerDays: &four, MinTenants: 3}}
 	if rows := statistics(); !reflect.DeepEqual(rows, want) {
 		t.Fatalf("the minimum 3: %+v", rows)
 	}
@@ -313,7 +314,8 @@ func TestDistributorStatistics(t *testing.T) {
 		}
 	}
 	daily(4)
-	if rows := statistics(); !reflect.DeepEqual(rows, []row{{Week: store.DayOf(monday), Extension: demo, Downloads: 1, Public: 1, Withheld: true}}) {
+	if rows := statistics(); !reflect.DeepEqual(rows, []row{{Week: store.DayOf(monday), Extension: demo, Downloads: 1, Public: 1, Withheld: true,
+		MinTenants: 4}}) {
 		t.Fatalf("the minimum 4: %+v", rows)
 	}
 }

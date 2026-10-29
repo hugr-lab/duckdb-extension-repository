@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -172,6 +173,9 @@ func TestChunkParameters(t *testing.T) {
 func TestDistributorWeekSnapshots(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Open(t)
+		if _, _, ok, err := s.DistributorWeeksSpan(ctx); err != nil || ok {
+			t.Fatalf("no week stored: %v %v", ok, err)
+		}
 		five := int64(5)
 		rows := []store.DistributorWeek{
 			{Distributor: "enterest", PackageType: "duckdb_extension", Week: "2026-10-12", Extension: "geo", Downloads: 9, Public: 2, InstallerDays: &five},
@@ -190,8 +194,15 @@ func TestDistributorWeekSnapshots(t *testing.T) {
 		if done, err := s.DistributorWeekDone(ctx, "2026-10-12"); err != nil || !done {
 			t.Fatalf("done: %v %v", done, err)
 		}
+		if lo, hi, ok, err := s.DistributorWeeksSpan(ctx); err != nil || !ok || lo != "2026-10-12" || hi != "2026-10-12" {
+			t.Fatalf("the span: %s %s %v %v", lo, hi, ok, err)
+		}
+		want := slices.Clone(rows[:2])
+		for i := range want {
+			want[i].MinTenants = 3 // read back with the week's minimum
+		}
 		got, err := s.DistributorWeeks(ctx, "enterest", "duckdb_extension", "2026-10-05", "2026-10-12")
-		if err != nil || !reflect.DeepEqual(got, rows[:2]) {
+		if err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("read back: %+v %v", got, err)
 		}
 		if got, _ := s.DistributorWeeks(ctx, "enterest", testType, "2026-10-05", "2026-10-12"); len(got) != 0 {
@@ -239,6 +250,44 @@ func TestReleaseSources(t *testing.T) {
 		}
 		if got, err := s.ReleaseSources(ctx, "another", []string{"r0"}); err != nil || len(got) != 0 {
 			t.Fatalf("another tenant's: %v %v", got, err)
+		}
+	})
+}
+
+// Two passes storing one week at once (each believing it holds the daily lease): the week's lock
+// orders them, one stores its rows and the mark, the other leaves the week as it is.
+func TestDistributorWeekRace(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		for i := range 8 {
+			week := store.DayOf(time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC).AddDate(0, 0, 7*i))
+			var stored [2]bool
+			var errs [2]error
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for g := range 2 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					rows := []store.DistributorWeek{{Distributor: "enterest", PackageType: "duckdb_extension", Week: week, Extension: "geo",
+						Downloads: int64(g + 1), Public: int64(g + 1)}}
+					stored[g], errs[g] = s.PutDistributorWeek(ctx, week, 3, rows)
+				}()
+			}
+			close(start)
+			wg.Wait()
+			if errs[0] != nil || errs[1] != nil || stored[0] == stored[1] {
+				t.Fatalf("week %s: stored %v, errors %v", week, stored, errs)
+			}
+			got, err := s.DistributorWeeks(ctx, "enterest", "duckdb_extension", week, week)
+			winner := int64(1)
+			if stored[1] {
+				winner = 2
+			}
+			if err != nil || len(got) != 1 || got[0].Downloads != winner {
+				t.Fatalf("week %s: the winner's rows only: %+v %v", week, got, err)
+			}
 		}
 	})
 }

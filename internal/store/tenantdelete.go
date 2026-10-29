@@ -304,7 +304,9 @@ var GlobalTables = []string{"blobs", "blob_claims", "blob_tombstones", "icon_cla
 	"deployment", "leases", "event_sinks", "statistics_days", "schema_migrations",
 	"bootstrap",                                                   // spec 0020: the bootstrap names its tenant, and outlives it
 	"reserved_names", "reserved_name_sources", "reserved_version", // spec 0030
-	"distributor_weeks", "distributor_weeks_done"} // spec 0036: sums over tenants, naming none
+	// spec 0036: weekly sums over tenants, naming none; a row may be one public tenant's figure alone,
+	// and a deleted tenant's share stays in them up to 106 weeks
+	"distributor_weeks", "distributor_weeks_done"}
 
 // TenantRows counts a tenant's rows in every table the reaper deletes from (purged_slots by the
 // given channel ids).
