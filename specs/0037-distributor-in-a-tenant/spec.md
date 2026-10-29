@@ -6,387 +6,613 @@
 
 ## Summary
 
-Six changes to how a distributor (Enterest) acts in a customer's tenant. All are needed before
-production. They come from the owner's decisions of 2026-10-26 and from Enterest's reviews.
+Changes to how a distributor (Enterest) acts in a customer's tenant. All of them are needed before
+production. They come from the owner's decisions of 2026-10-26 and 2026-10-29 and from Enterest's
+reviews.
 
-1. **A distributor's licences are the distributor's.** In a distributor's publisher's entry, only
-   licence managers and server administrators write licences. Tenant administrators read them.
-   Separately, kista refuses a licence older (by `iat`) than the one stored in its entry from the
-   same issuer for the same holder, on every path and in every entry.
-2. **A narrower distribution admin.** The role acts on distributors' publishers and their catalogue
-   entries only. It no longer reserves names in tenants, creates ordinary publishers, writes grants,
-   or manages a tenant publisher that carries only the licence-key mark. Tenant reservations
-   (spec 0030) are removed.
-3. **A distribution admin reads a tenant's state and expected holder**, so Enterest can check that a
-   tenant is its customer's before it writes there.
-4. **Publisher ids in answers.** A distributor recognises its own publisher after it is removed and
-   created again.
-5. **A distributor's publisher reads its own catalogue entries** with a signed request.
-6. **Each kind of `429` has its own problem type**, so clients do not have to guess from `detail`.
+1. **A distributor's licences belong to the distributor.**
+   - Only licence managers and server administrators write licences in a distributor's
+     publisher's entry. Tenant administrators can only read them.
+   - Separately, kista refuses a licence older (by `iat`) than a licence it already holds for the
+     same name, issuer and holder in the tenant.
+2. **A narrower distribution admin.**
+   - The role reaches only distributors' publishers and their catalogue entries. It no longer
+     reserves names in tenants, creates ordinary publishers, writes grants, or touches the tenant's
+     own publishers.
+   - Tenant reservations (spec 0030) are removed.
+   - Tenant administrators set a minimum hold for distributors' publishers, which a distribution
+     admin cannot lower.
+3. **A distribution admin can read a tenant's state and expected holder.** Enterest can then check
+   that a tenant belongs to its customer before it writes there.
+4. **Answers carry the publisher's id**, so a distributor can recognise its own publisher after the
+   publisher is removed and created again.
+5. **A distributor's publisher can read its own catalogue entries** with a signed request.
+6. **Each kind of `429` has its own problem type.**
 
 ## Problem
 
 - **A tenant administrator can undo the distributor's licence.** Spec 0035 lets tenant
-  administrators write any entry, a distributor's publisher's included. They can:
+  administrators write any entry, including a distributor's publisher's entry. They can:
   - remove the licence the reconciler stored;
-  - replace it, with `If-Match`, by an older licence of the same distributor (a longer or wider plan
-    issued before a downgrade);
-  - make it public. Its token is then served without authentication to anyone served a public
+  - replace it, with `If-Match`, by an older licence from the same distributor (for example, a
+    longer or wider plan issued before a downgrade);
+  - make it public. Its token is then served, without a token, to anyone who is served a public
     release of the name.
 
-  The reconciler restores the licence every 15 minutes. Until it does, the tenant is served a
-  licence the distributor did not intend. Spec 0035 phase 2 only warns about public serving.
-- **Old licences come back.** Spec 0012's replacement rules accept a relayed licence that lasts
-  longer even when it was issued earlier. A remote restored from a backup, a bundle imported again,
-  or a stale token a reconciler sends can therefore replace a newer licence.
-- **The distribution admin is wider than Enterest needs.** Spec 0030 gave the role names reserved in
-  tenants, the creation of ordinary publishers, and `publish`, `promote` and `admin` grants on
-  reserved names. Enterest used these to publish into customers' channels. Since its decisions 26
-  and 34 and spec 0033 B, a distributor publishes into the catalogue only and holds no grants, so
-  none of these is used. One of them is a hole: `marked()` (`internal/tenants/publishers.go`) lets a
-  distribution admin manage the keys of **any** marked publisher. That includes a tenant's own CI
-  publisher that a server administrator marked for licence keys (spec 0021), which holds the
-  tenant's `publish` grants. A distribution admin can add its own SSH key to that publisher and
-  publish into the tenant's channels as the tenant's CI.
-- **Enterest cannot check a tenant before writing.** A distribution admin cannot read
-  `GET /api/v1/tenants/{t}`. Enterest therefore cannot confirm that the tenant is active and that
-  its expected holder (spec 0028) is the customer's organisation before it creates a publisher or
-  imports a licence there.
-- **A distributor cannot recognise its publisher.** Publisher answers carry no id. If a publisher
-  is removed and created again under the same name, it is a new entry with no licence (spec 0035).
-  Enterest sees the same name and does not notice.
-- **Enterest's publishing worker cannot read what it published.** The worker signs as the
-  distributor's publisher. The catalogue reads admit only a distribution admin, so the worker needs
-  a second credential to check its own versions, holds and withdrawals.
-- **Clients guess what a `429` means.** The rate limiter, the upload slots, a full ingest spool and
-  a full catalogue all answer `too-many-requests`. Some carry `detail`, some do not. A client that
-  retries on any `429` retries a full catalogue forever.
+  The reconciler puts the licence back every 15 minutes. Until then, the tenant is served a licence
+  the distributor did not intend. Spec 0035 phase 2 only warns about public serving.
+- **Old licences come back.**
+  - Spec 0012's relay rules let a licence that lasts longer replace the stored one, even when it was
+    issued earlier.
+  - So a remote restored from a backup, a bundle imported again, or a stale token can replace a
+    newer licence.
+  - An administrator can also import an old licence into another entry whose builds declare the
+    same key, then switch a channel's rule to that entry.
+- **The distribution admin has more power than Enterest needs, and has holes.** Spec 0030 gave it
+  names reserved in tenants, the creation of ordinary publishers, and grants on reserved names.
+  Enterest stopped using all of these as a distribution admin after its decisions 26 and 34. Since
+  spec 0033 B, a distributor publishes only into the catalogue and holds no grants. Today a
+  distribution admin can also act on the tenant's own publishers:
+  - **Keys.** `marked()` (`internal/tenants/publishers.go`) admits a distribution admin to the keys
+    of any publisher with the licence-key mark. That includes a tenant's CI publisher that a server
+    administrator marked (spec 0021), which holds the tenant's `publish` grants. A distribution admin
+    can add its own SSH key to it and publish into the tenant's channels as the tenant's CI.
+    `ListPublisherKeys` and `TenantPublisherKeys` show it those keys.
+  - **The mark.** `SetPublisherLicenseKeys` has no check for a distribution admin when it unmarks
+    (`on=false`). When it marks (`on=true`), it accepts any tenant publisher without grants or
+    keys. Once marked, that publisher's keys and grants are no longer the tenant administrators' to
+    change.
+  - **Grants.** Through `marked()`, `AddGrant` and `RemoveGrant` let a distribution admin add or
+    remove grants of a marked tenant publisher.
+- **A stolen distribution admin's token can publish at once.** With that token, someone can add
+  their own key to Enterest's publisher, set its hold to 0, and publish. A channel's `auto` rule or a
+  follow of that publisher, which the tenant wrote, then places the build immediately.
+- **Enterest cannot check a tenant before it writes.** A distribution admin cannot read
+  `GET /api/v1/tenants/{t}`. So Enterest cannot confirm that the tenant is active and that its
+  expected holder (spec 0028) is the customer's organisation.
+- **A distributor cannot recognise its own publisher.** Publisher answers carry no id. Enterest
+  compares `created_at` to notice when a publisher was removed and created again under the same
+  name. An id would say it directly.
+- **Enterest's publishing worker cannot read what it published.** The catalogue reads admit only a
+  distribution admin, so the worker needs a second credential to check its versions, holds and
+  withdrawals.
+- **Clients have to guess what a `429` means.**
+  - Six refusals answer `too-many-requests`. Some carry a `detail` and some do not. One of them, a
+    chunk refusal, is typed `unavailable`.
+  - A client that retries every `429` keeps retrying a full catalogue. The developer kit's
+    `kista_publish.py` does this, up to its retry limit.
 
 ## Design
 
 ### 1. A distributor's licences
 
-**Who writes.** A distributor's publisher's entry is one named by `DistributorSources`, whether its
-publisher is live or removed. The licence writes on such an entry are allowed as follows:
+**Who writes.** A distributor's publisher's entry is the entry of a publisher marked as a
+distributor's, whether that publisher is live or removed. Writes on such an entry are allowed as
+follows:
 
 | Caller | import, replace | `DELETE` | `…/private` | `…/public` | reads |
 | --- | --- | --- | --- | --- | --- |
 | server administrator (server token, CLI) | yes | yes | yes | yes | yes |
 | licence manager (spec 0029) | yes | yes | yes | no (spec 0029) | yes |
-| tenant administrator | `404` | `404` | `404` | `404` | yes |
+| tenant administrator | refused | refused | refused | refused | yes |
 
-Other entries do not change: tenant and server administrators write them, and a licence manager
-gets `404`.
+Other entries do not change. Tenant and server administrators write them. A licence manager is
+refused.
 
-- **Implementation.** In `licenses.entry()`, a principal actor naming a distributor's publisher's
-  entry, live or by the id form of a removed one, gets `authz.ErrDenied`. The API answers that as a
-  missing path and records `authz.refused`, as it does for a licence manager's other entries.
-  `recheck` repeats the test inside the transaction.
-- **Answers.** A licence's answer gains `distributor` when its entry is a distributor's publisher's.
-  The keys listing already names it.
+- **The refusal.**
+  - A tenant principal (a tenant administrator) gets `404` with the problem type
+    `distributors-entry` and the detail "a distributor's entry: its licence manager or a server
+    administrator writes it". This is the one `404` that carries a type of its own and a detail.
+  - It reveals nothing new: the caller can already read the licence and see that the entry is a
+    distributor's.
+  - The console and the CLI show it as the reason.
+  - The `authz.refused` event gains `name`, `source` and the operation (`import`, `remove`,
+    `public`, `private`).
+  - The check runs when the service resolves the entry, and again inside the write's transaction.
+- **Answers.** A licence's answer gains `distributor` when its entry is a distributor's
+  publisher's. The keys listing already includes it.
 - **Console.** For a caller who is not a server administrator, the Licences screen shows a
-  distributor's entry read-only:
+  distributor's entry as read-only:
   - its licence has no Remove, Make public or Make private actions;
-  - the import dialog lists the entry but does not let it be chosen, with the note "a distributor's:
-    its licence manager writes it".
+  - the import dialog lists the entry but does not let the caller choose it. It shows the note "a
+    distributor's: its licence manager writes it".
 
-  A server administrator's console is unchanged.
+  A server administrator's console does not change.
 - **CLI.** No change. `kista admin` acts as a server administrator.
 
-**Older licences are refused** (rule `older`). This applies to every entry.
+**Older licences are refused**, with the rule `older`. This applies to every entry.
 
-- **The rule.** kista refuses to store a licence when the entry already holds a licence for the
-  name, both have the same `iss` and the same holder id, and the incoming `iat` is earlier than the
-  stored one. An equal `iat` is not older. A licence from another issuer is not compared.
+- **The rule.**
+  - kista refuses to store a licence when the tenant holds another licence of the same package type
+    and name, with the same `iss` and the same holder id, and a later `iat`. The stored licence can
+    be in any entry of the tenant.
+  - An equal `iat` is accepted. The console relies on this when it replaces a licence with the same
+    file.
+  - Licences from other issuers are not compared.
+  - A stored licence does not count once its grace has ended, or while its key is dead (not live in
+    its entry, or refused by the server). These are the cases in which `replaces` already lets
+    anything replace it. So a licence signed with a key that was later compromised cannot block
+    newer licences with a high `iat`.
 - **Where it applies.**
-  - Import, including a replacement with `If-Match`. The answer is `400` `invalid`, "the licence is
-    refused (older): …", as for every other licence refusal.
-  - The relay. The licence is refused with rule `older` in the run's result, and the stored licence
-    stays. This check comes before `replaces`, whose rules are otherwise unchanged.
-  - Bundles. The licence is refused with rule `older`, counted per target.
-- **Where it is checked.** Each service checks first, so its refusal can name the rule. `PutLicense`
-  checks again on every path, as it does for spec 0028's holder, and returns a typed error.
-- **Going back on purpose.** Remove the stored licence, then import the older one. Both acts are
-  audited, and only the entry's writers may do them.
-- **Why every entry.** The rule belongs to licences: an issuer's later licence for a holder
-  supersedes its earlier ones, whoever writes. The paths it protects most have no removal power: an
-  upstream's relay and a bundle import. Those feed upstream entries, not distributors' entries.
-  Applying the rule to distributors' entries only would leave the paths that run without anyone
-  acting unprotected. The check costs one comparison against a row the write reads already.
-- **The gap.** Nothing remembers a licence after it is removed (expired past its grace, or removed
-  by a writer). After that, an older licence can be imported again if it is still in force. See
-  Alternatives.
+  - **Import**, including a replacement with `If-Match`. The answer is `400` `invalid`, "the
+    licence is refused (older): …", like every other licence refusal. It is checked after the key
+    and holder checks and before the stored licence is compared. So an older licence sent without
+    `If-Match` gets `older`, not `409` "a licence is stored".
+  - **The relay.** The licence is refused with the rule `older` in the run's result, and the stored
+    licence stays. The check comes after the "unchanged" test and before `replaces`.
+  - **Bundles.** The licence is refused with the rule `older`, per target. The check comes before
+    the bundle's "superseded" refusal of a licence over an import, so when both apply, the refusal
+    names `older`.
+- **Where it is checked.**
+  - One store helper reads the tenant's licences of the type and name. Go compares `iss` and the
+    holder byte for byte, because SQL Server compares strings ignoring trailing spaces.
+  - The service drops the stored licences that do not count, since only it knows the refused keys.
+  - All three paths call it inside the write's transaction, under the tenant's licence lock. Every
+    licence write takes that lock, so nothing can be stored between the check and the write.
+    `PutLicense` does not repeat the check, because it does not know the refused keys.
+- **Going back on purpose.** Remove the newer licence, then import the older one. Both acts are
+  audited.
+- **Why every entry, and the whole tenant.**
+  - The rule is about licences, not entries: an issuer's later licence for a holder supersedes its
+    earlier ones.
+  - Comparing within one entry only would leave a hole. A tenant administrator could import an old
+    licence into an empty upstream entry where the distributor's key is live, then switch the
+    channel's rule to that entry.
+  - The relay and bundle imports run without anyone removing anything, so they need the rule most.
+    They feed upstream entries.
+- **Compatibility.**
+  - Enterest issues `iat = max(now, LastIAT+1)` (`internal/licence/licence.go`). Its reconciler
+    therefore always issues above the `iat` kista holds.
+  - Third-party issuers must make `iat` increase for each holder. The website says so.
+- **What it protects, honestly.**
+  - It protects the state kista serves against accidents.
+  - It also protects against tenant administrators who are not server administrators, on a kista
+    that someone else hosts.
+  - A customer who is the server administrator can still roll back by removing the newer licence. So
+    can a licence file placed by hand on a client.
+  - The real control is short licence lifetimes that the reconciler renews. This matches
+    licensing.md: licensing "protects honest users from accidents, not against deliberate acts".
+- **Gaps.** kista forgets a licence's `iat` once nothing it serves holds it. That happens:
+  - after the licence expires;
+  - after a writer removes it;
+  - after the relay revokes its row (`license.remove`, reason `revoked`).
 
-No migration: the stored row already has `issuer`, `holder_id` and `issued_at`.
+  After that, an older licence that is still in force can be stored again. kista keeps no
+  tombstone; see Alternatives.
+
+No migration is needed: the stored row already has `issuer`, `holder_id` and `issued_at`.
 
 ### 2. A narrower distribution admin
 
+**The assumption: one distributor per server** (the owner's decision, 2026-10-29).
+
+- A kista server has one distributor, Enterest. Other vendors reach a kista through upstreams.
+- So distribution admins and licence managers are not bound to a distributor. They reach every
+  distributor's publisher on the server.
+- If a second distributor were added to one server, the first distributor's distribution admin
+  could change the second one's publishers' keys and holds, withdraw its versions and purge its
+  builds. The first distributor's licence manager could write the second one's licences.
+- Binding a role to one distributor is a follow-up.
+
 **What the role keeps**, on every active tenant:
 
-- **Publishers.**
-  - Create a distributor's publisher (`POST …/publishers` with `distributor`).
-  - List and read the distributors' publishers. The tenant's own publishers are not listed, and
-    reading one answers `404`.
-  - Rename a publisher's distributor (`PUT …/publishers/{p}/distributor`).
-  - Set and clear the licence-key mark (`…/license-keys`) and set the hold (`…/hold`).
-  - Manage keys: list, read, add, remove, with `purge_held`.
-
-  All of these apply to distributors' publishers only.
+- **Publishers** (distributors' publishers only):
+  - create a distributor's publisher (`POST …/publishers` with `distributor`);
+  - list and read distributors' publishers;
+  - rename a publisher's distributor (`PUT …/publishers/{p}/distributor`);
+  - set and clear the licence-key mark (`…/license-keys`);
+  - set the hold (`…/hold`), which takes effect only above the tenant's minimum (below);
+  - manage keys: list, read, add, and remove (with `purge_held`).
 - **Catalogue.** Read distributors' entries, purge their builds, and withdraw their versions. This
   is unchanged.
 - **The tenant's state** (item 3).
-- **The server's reserved names**, read only (`GET /api/v1/reserved-names`). These are DuckDB's
-  names, public anyway, and they are the names a distributor's publisher may not publish.
-- **Spec 0036's aggregated statistics** of distributors' entries, as defined there. 0036 is being
-  drafted on its own branch, and this spec does not define them.
+- **The server's reserved names**, read only. `GET /api/v1/reserved-names` answers a distribution
+  admin with each name and its kind only. It leaves out `sources`, which name other tenants'
+  upstreams and administrators. These are DuckDB's names, which a distributor's publisher may not
+  publish.
+- **Spec 0036's metadata writes and aggregated statistics** for distributors' entries. They are
+  defined in spec 0036, not here.
 
 **What the role loses:**
 
-- **Grants.** `GET|POST …/grants` and `GET|DELETE …/grants/{id}` go back to `pathAdmin`.
-  `distributorGrant` and the `created_by` tests go.
-- **Ordinary publishers.** `POST …/publishers` without `distributor` answers `404`.
-- **Licence-key-only publishers.** For a distribution admin, `marked()` (and `ListPublisherKeys`,
-  `TenantPublisherKeys`) admits only distributors' publishers (`p.Distributor != ""`). A publisher
-  with only the licence-key mark stays a server administrator's (spec 0021). The licence-key mark
-  route admits a distribution admin for distributors' publishers only.
-- **Tenant reservations**, removed below.
+- **The tenant's own publishers (PR 1).** A distribution admin may act on a publisher only if it is
+  a distributor's (`p.Distributor != ""`). On a tenant's own publisher, with or without the
+  licence-key mark, these calls answer the same `404` as a missing publisher:
+  - mark and unmark (both directions of `SetPublisherLicenseKeys`; the grants check for a
+    distribution admin goes);
+  - hold;
+  - `PUT …/distributor`;
+  - every key route (`ListPublisherKeys` and `TenantPublisherKeys` too);
+  - the grant paths that go through `marked()`.
 
-**Marking an existing publisher goes, for every caller.** A distribution admin can no longer create
-an unmarked publisher, so spec 0033 B's "fresh, created by a distribution admin" path has nothing
-left to apply to. `PUT …/distributor` on an unmarked publisher answers `404`, and a distributor's
-publisher is created marked. The freshness check (`PublisherUsed`) goes.
+  A publisher with only the licence-key mark goes back to being a server administrator's
+  (spec 0021).
+- **Reads of the tenant's own publishers (PR 2).**
+  - Lists leave them out, and reading one answers `404`.
+  - `POST …/publishers` for a name that a tenant's own publisher holds answers `409` with the
+    problem type `publisher-taken`. This tells a distribution admin that the name is taken, and
+    nothing else. Enterest treats it as "foreign, the tenant's own".
+- **Ordinary publishers (PR 2).** `POST …/publishers` without `distributor` answers `404`.
+- **Grants (PR 2).** `GET|POST …/grants` and `GET|DELETE …/grants/{id}` go back to `pathAdmin`.
+  `distributorGrant` and the checks on the grants' `created_by` go.
+- **Tenant reservations (PR 2)**, which are removed (below).
 
-**Tenant reservations are removed.**
+Grants and publishers that a distribution admin made before PR 2 stay. They become the tenant
+administrators' to manage.
 
-- **Why.** They let a distributor that published into a tenant's channels keep its names out of the
-  tenant's wide grants (spec 0030's problem). Since spec 0033 B, a distributor publishes into the
-  catalogue, reaches no channel by itself and holds no grant. Enterest no longer uses reservations.
-  Keeping them for server administrators only would leave a second, unrequested way to narrow wide
-  grants, which every name check would still carry. kista is unreleased, so there is no
-  compatibility path.
-- **What goes.**
-  - The table `tenant_reserved_names`.
-  - The routes `GET|PUT|DELETE /api/v1/tenants/{t}/reserved-names[/{name}]`.
-  - `kista admin tenant-reserved add|remove|list`.
-  - The events `reserved.tenant.add` and `reserved.tenant.remove`.
-  - The console's "Names reserved for a distributor" card.
-  - In code:
-    - the `tenant` step of `ReservedFor`, leaving core, community and upstream;
-    - `TenantReserved` on the channel snapshot, and its uses in the index's `reserved`, the
-      statistics scope and `"*"`;
-    - `TenantReserves`, `TenantReservedHolder` and `TenantReservedSet`;
-    - the re-check under the release insert's locks;
-    - `allow_reserved` for a tenant's names on upstream entries;
-    - the follows' holder check;
-    - the reaper's step.
-- **Distributors' publishers.** A distributor's publisher may publish into the catalogue any name
-  kista does not reserve server-wide. A follow of a distributor's publisher takes names as any
-  follow does.
-- **Migration** `00NN_drop_tenant_reserved`, in the three dialects. It drops the table. `NN` is the
-  next free number when this lands: 0044 unless spec 0036 takes it first. `min_reader` is `NN`,
-  because an older binary reads the table on every channel snapshot.
+**Marking an existing publisher goes, for every caller (PR 2).**
+
+- A distribution admin can no longer create an unmarked publisher. So spec 0033 B's path, which
+  marks a fresh publisher that a distribution admin created, has nothing left to apply to.
+- `PUT …/distributor` on an unmarked publisher answers `404`. A distributor's publisher is created
+  marked.
+- The freshness check (`PublisherUsed`) goes.
+
+**The minimum hold for distributors' publishers (PR 2).** This answers the stolen-token problem.
+
+- **Where it lives.** A new column, `tenants.distributor_hold_seconds`, `NOT NULL DEFAULT 86400`
+  (one day), in the three dialects.
+- **Its effect.** An entry that arrives from a distributor's publisher is held for the larger of the
+  publisher's hold and the tenant's minimum. A distribution admin may set its publisher's hold to
+  anything, but cannot go below the minimum.
+- **Who sets it.** Tenant administrators and server administrators. A distribution admin is refused
+  (`404`).
+- **API.** `GET|PUT /api/v1/tenants/{t}/distributor-hold {"hold": "24h"}`, read as other holds are
+  (spec 0033 A2, `0` for none).
+- **CLI.** `kista admin tenant distributor-hold <tenant> [<duration>]`.
+- **Console.** On the Publishers screen, a "Minimum hold for distributors' publishers" field for the
+  tenant's administrators.
+- **Changes.** Raising the minimum applies to entries held now, as raising a publisher's hold does.
+  Lowering it applies to arrivals from then on.
+- **Event.** `catalogue.hold` with `source: "distributors"`, `hold`, `before` and `held`.
+- **Why a source hold and not a channel hold.**
+  - A held entry is what revoking a key with `purge_held` purges (spec 0033 A2). A channel's hold
+    only delays placements in that channel.
+  - A channel administrator's `early` placement still skips the hold. That is the tenant's own
+    choice.
+
+**Tenant reservations are removed** (the owner's decision, 2026-10-29). kista is unreleased, so
+there is no compatibility path. What goes:
+
+- **Data.** The table `tenant_reserved_names`, and its entries in the tenant deletion's list
+  (`store/tenantdelete.go`) and the test harness's list (`storetest.go`).
+- **Routes and CLI.** `GET|PUT|DELETE /api/v1/tenants/{t}/reserved-names[/{name}]`, and
+  `kista admin tenant-reserved add|remove|list`.
+- **Events.** `reserved.tenant.add` and `reserved.tenant.remove`.
+- **Console.** The "Names reserved for a distributor" card.
+- **Store.**
+  - `ReservedTenant` and the `tenant` step of `ReservedFor`, leaving core, community and upstream;
+  - `TenantReserves`, `TenantReservedHolder`, `TenantReservedSet` and `BumpTenantChannels`;
+  - `NameReservedFor`'s tenant step.
+- **The channel snapshot.** `TenantReserved` goes, along with its uses in the index's `reserved`,
+  `"*"`, and the statistics scope (`api/stats.go`).
+- **Release.**
+  - the re-check under the release insert's locks;
+  - `anyTakesNow`'s tenant check;
+  - `distributorMay` and `distributorMayNow`, which become "not reserved server-wide";
+  - the follows' holder check.
+- **Elsewhere.**
+  - `allow_reserved` for a tenant's names on upstream entries (`upstream.go`);
+  - the attachment service's comment on `ReservedFor`;
+  - the services `ReserveInTenant`, `ReleaseInTenant` and `ListInTenant`.
+
+After this, a distributor's publisher may publish into the catalogue any name kista does not
+reserve server-wide. A follow of a distributor's publisher takes names the way any follow does.
+
+**Migration `0046_distributor_holds`**, in the three dialects:
+
+- It drops `tenant_reserved_names` and adds `tenants.distributor_hold_seconds`.
+- `min_reader` is 46. An older binary reads the table on every channel snapshot, and would ignore
+  the minimum hold.
+- The number follows the order in Delivery: spec 0036's two phases take 0044 and 0045.
 
 ### 3. A distribution admin reads a tenant
 
-- **Access.** `GET /api/v1/tenants/{t}` admits a distribution admin on an **active or suspended**
-  tenant. A deleting, deleted or unknown tenant answers `404`.
-  - In `decide`, the rule "a suspended tenant is 404 for everyone but server administrators" admits
-    a distribution admin on this one route.
-  - The tenants service reads the tenant itself. It does not go through `activeTenant`.
-- **Answer.** `{"name", "state", "holder_id"}`, with `holder_id` omitted when none is set. It has no
-  ETag, display name, dates or storage domain.
-- **Why suspended too.** Enterest needs to tell "suspended, wait" from "gone". The role is
-  server-wide already.
+- **Access.**
+  - The rule for `GET /api/v1/tenants/{t}` changes from `pathAdmin` (with `closed`) to admit
+    distribution admins too.
+  - `decide` answers a suspended tenant with `404` for everyone but server administrators. It gets
+    a deliberate exception for a distribution admin on this one route.
+  - A deleting, deleted or unknown tenant answers `404`.
+  - The tenants service reads the tenant itself. It does not use `activeTenant`.
+- **Answer.** `{"name", "state", "holder_id"}`, with `holder_id` left out when none is set. There is
+  no ETag, display name, dates or storage domain.
+  - Enterest treats a missing `holder_id` as "not ours".
+  - A token that is both a server administrator and a distribution admin gets the full answer.
+- **Audit.** A distribution admin's read writes `tenant.read` (`state`) to the tenant's events,
+  including for a suspended tenant. The service writes it directly, because the API's `record()`
+  only records refusals and failures, and skips tenants that are not active.
+- **Why suspended too.** Enterest needs to tell "suspended, wait" from "gone". The role is already
+  server-wide.
 
 ### 4. Publisher ids in answers
 
-- **Publisher answers.** Every publisher answer gains `id`: list, read, create, hold, distributor
-  mark and licence-key mark (`publisherJSON`).
-- **whoami.** A signed `whoami` names, for each entry of `publishers`, its `id` and its
-  `distributor` (omitted for the tenant's own).
+- **Publisher answers.** Every publisher answer (`publisherJSON`) gains `id`: list, read, create,
+  hold, distributor mark and licence-key mark.
+- **whoami.** For each entry of `publishers`, a signed `whoami` gives its `id` and its
+  `distributor`. `distributor` is left out for the tenant's own publishers.
 - **Catalogue-only publication.** The answer gains `publisher_id` and `distributor` for the
-  publishing publisher (`distributor` omitted for the tenant's own).
-- **Events.** `publisher.add` and `publisher.remove` gain `id`, so a tenant's auditors can see a
-  re-creation.
+  publisher that published.
+  - `distributor` is left out for the tenant's own publisher.
+  - Both are left out when a tenant principal publishes with a token, since no publisher is
+    involved.
+- **Events.** `publisher.add` and `publisher.remove` gain `id`, added to their fields in the audit
+  registry (`internal/audit/audit.go`).
 - **CLI.** `publisher list` gains an `ID` column, and `publisher show` prints `id:`.
-- **Console.** The Publishers detail shows the id.
+- **Console.** The publisher detail shows the id.
 
-The ids are opaque, grant nothing, and are already listed for removed distributors' publishers.
+The ids are opaque and grant nothing.
 
 ### 5. A distributor's publisher reads its catalogue entries
 
-- **Access.** `GET …/catalogue` and `GET …/catalogue/{source}/extensions/{ext}` admit a signed
-  request from a distributor's publisher. The route rules gain `publishers` and `distributors`, as
-  the catalogue-only publication's have.
-  - As with `whoami`, the statement names the empty body.
-  - A request signed by a tenant's own publisher stays `404`.
-- **Answer.** The publisher's own source only, in the distribution admin's view: no rules, no
-  `placed`, and `publisher_id` on each entry.
-  - On the list, `?source=` may be omitted, which means its own source. If given, it must name
-    that source (`publisher:<name>` or `publisher-id:<id>`). Any other value answers `404`.
-  - On the entry route, `{source}` must name its own source in the same way. Any other value
-    answers `404`.
-- **Removal.** A removed publisher's keys are gone, so it reads nothing.
+- **Access.**
+  - `GET …/catalogue` and `GET …/catalogue/{source}/extensions/{ext}` admit a signed request from a
+    distributor's publisher.
+  - Today `decide` reads the `distributors` flag only for `pathVerbs` routes, and these reads are
+    `distributionAdmin` routes. So `decide` gains a branch: on a route with `publishers` and
+    `distributors`, a signed caller whose publisher is a distributor's is admitted.
+  - A request signed by a tenant's own publisher still answers `404`.
+  - The statement names the empty body, as a signed `whoami` does.
+- **Service.** A publisher's view of the catalogue:
+  - It finds the caller's own source by its publisher **id**. The source's label may be
+    `publisher-id:<id>` when a removed publisher of the same name existed.
+  - It answers that source only, in the distribution admin's view: no rules, no `placed`, and
+    `publisher_id` on each entry. `?type=` is accepted.
+  - `?source=` (on the list) or `{source}` (on the entry) may be `publisher:<its name>` or
+    `publisher-id:<its id>`. Either always means the signer. On the list, it may also be omitted.
+    Any other source answers `404`, not an empty `200`.
+- **Removal.** A removed publisher's keys are gone, so it can read nothing.
+- **Reuse.** Spec 0036's signed metadata `PUT` reuses this `decide` branch.
 
 ### 6. Problem types for `429`
 
-| Cause | Type | `Retry-After` |
+| Cause (site) | Type | `Retry-After` |
 | --- | --- | --- |
-| the per-client rate limiter | `rate-limited` | the limiter's |
-| the upload slots per actor, tenant or server (`slot`) | `upload-slots` | `5` |
-| every ingest slot taken (`blob.ErrBusy`: a publication, a bundle chunk) | `ingest-busy` | `5`, or `1` for a chunk |
-| a source's catalogue full (`catalogue.max_entries`, `max_bytes`) | `catalogue-full` | none: waiting does not help |
-| an issuer being added to the tenant | `issuer-busy` | `5` |
+| the per-client rate limiter (`api.go`, `ServeHTTP`) | `rate-limited` | the limiter's |
+| upload slots per actor, tenant or server: publications and attachments (`publish.go`, `slot`) | `upload-slots` | `5` |
+| every ingest slot taken (`blob.ErrBusy`): a publication (`publish.go`, `publishErr`) or a bundle chunk (`uploads.go`) | `ingest-busy` | `5`; `1` for a chunk |
+| too many chunks of one bundle upload in flight (`upstream.ErrUploadBusy`, `maxParallelChunks`) | `chunks-busy` | `1` |
+| a source's catalogue full (`catalogue.max_entries`, `max_bytes`; `publish.go`) | `catalogue-full` | none |
+| an issuer being added to the tenant (`manage.go`) | `issuer-busy` | `5` |
 
 - `too-many-requests` leaves the set.
-- The bundle chunk's `429`, typed `unavailable` today, becomes `ingest-busy`.
-- The status stays `429`, and the `detail` texts stay as they are.
-- The console's upload retries keep treating `429` as transient. A publication from the console
+- `upstream.ErrUploadBusy` stands for two causes today. They are split, so the chunk route answers
+  either `chunks-busy` or `ingest-busy`.
+- The status stays `429`, and the existing `detail` texts stay.
+- `catalogue-full` has no `Retry-After` because kista does not know when space will free up. It
+  clears when the source's builds are placed, purged or trimmed. The wording says that.
+- The console's upload retries keep treating `429` as transient. The console never publishes, so it
   never meets `catalogue-full`.
 
 ## Security
 
 - **Licences (1).**
-  - **Closed.** A tenant administrator, or a stolen tenant administrator's token, can no longer
-    remove, replace or publish a distributor's licence. Making it public would serve the
+  - **What is closed.** A tenant administrator, or a stolen tenant administrator's token, can no
+    longer remove, replace or make public a distributor's licence. Making it public would serve the
     distributor's paid licence to anonymous clients.
   - **What tenant administrators lose.** They can no longer write those entries. This is intended:
     the licence is the distributor's contract with the organisation.
-  - **What they keep.** The tenant still decides what its channels serve, by a rule switch (spec
-    0035), and may still remove the distributor's publisher.
-  - **The `older` rule** stops replays where nobody can remove the stored licence: a relay from a
-    remote restored from a backup, a bundle imported again, a stale token imported by mistake. It
-    does not stop a writer who may remove. A stolen licence manager's token can remove and then
-    import, as before, and both acts are audited.
+  - **What they keep.** The tenant still decides what its channels serve, by switching a rule
+    (spec 0035). It can still remove the distributor's publisher.
+  - **The `older` rule.** It protects against accidents, replays (a relay from a remote restored
+    from a backup, a bundle imported again), and tenant administrators on a kista that someone else
+    hosts. It does not stop a writer who may remove the newer licence first:
+    - a server administrator;
+    - a stolen licence manager's token, as before; both acts are audited.
+
+    Short lifetimes, renewed by the reconciler, remain the real control.
 - **Distribution admins (2).**
-  - **The `marked()` hole is closed.** A distribution admin no longer reaches a tenant publisher
-    that holds the tenant's grants.
-  - **What a stolen distribution admin's token reaches.** Only distributors' publishers and their
-    catalogue entries. It cannot write grants or reservations. Nothing it publishes reaches a
-    channel without the tenant's own rule.
-  - **What it keeps.** Withdrawal, which is the distributor's right over its own versions.
-  - **Tenant administrators** gain nothing and lose nothing here. Reservations only narrowed their
-    wide grants. Without them, the tenant's own grants reach every name that kista does not
-    reserve server-wide and that no upstream of the tenant lists (spec 0009).
-- **Tenant read (3).** A distribution admin learns a tenant's state and expected holder, and that a
-  suspended tenant exists. The role is server-wide and acts in every active tenant already. No
-  other field is answered.
+  - **What is closed.** The `marked()` hole, the unchecked unmark, and the grant paths. A
+    distribution admin no longer reaches a publisher that holds the tenant's grants.
+  - **A stolen distribution admin's token** reaches distributors' publishers, their keys, holds and
+    catalogue entries. It cannot write grants or reservations.
+  - **What the token can still do.** It can add its own key to Enterest's publisher and publish.
+    Nothing it publishes reaches a channel by itself. But a channel's `auto` rule or follow of that
+    publisher, which the tenant wrote, places the build once the tenant's minimum hold has passed.
+  - **The defences.**
+    - The minimum hold (a day by default). The distribution admin cannot lower it.
+    - Enterest's alerts on `publisher.key.add`, and on `catalogue.hold`, when the actor is a
+      distribution admin (Enterest's P7). These replace the earlier alert on `publisher.add`,
+      grants and reservations.
+    - Revoking the key with `purge_held` within the hold, which purges what was published.
+  - **What the token keeps.** It can still withdraw versions. Withdrawal is the distributor's right
+    over its own versions.
+  - **One distributor per server** is assumed (item 2). A second distributor on the same server
+    would be reachable by the first one's distribution admin and licence manager.
+  - **Tenant administrators.** Without reservations, the tenant's own grants reach every name that
+    kista does not reserve server-wide and that no upstream of the tenant lists (spec 0009).
+    Reservations only narrowed the tenant's own grants.
+- **Tenant read (3).**
+  - A distribution admin learns a tenant's state and expected holder, and that a suspended tenant
+    exists. The role is already server-wide and acts in every active tenant.
+  - No other field is answered, and each read is an event.
+- **`publisher-taken` (2).** It tells a distribution admin that a publisher name is taken in the
+  tenant, and nothing else about that publisher.
 - **Ids (4).** They are opaque and grant nothing.
 - **Signed catalogue reads (5).**
-  - The publisher reads its own source only, and learns nothing about channels.
+  - The publisher reads its own source only. It learns nothing about channels.
   - Signed requests keep spec 0023's statement and clock checks.
   - A stolen key could already publish under this publisher. Reading its entries adds nothing.
-- **`429` types (6).** These give no new information. Each cause was already in `detail`, except the
-  rate limiter's, which a caller can infer. `catalogue-full` is answered only to a caller allowed to
-  publish there, as today.
+- **`429` types (6).** These add no information. Each cause was already in a `detail`, except the
+  rate limiter's, which a caller can infer anyway. `catalogue-full` is answered only to a caller
+  allowed to publish there, as today.
 
 ## Testing
 
 - **Store suite, three dialects.**
-  - `PutLicense` and the `older` rule:
-    - an older `iat` is refused;
-    - an equal `iat` is accepted;
-    - another issuer is accepted;
-    - an older licence imported after the stored one is removed is accepted.
-  - Migration `NN`:
+  - The `older` helper:
+    - a later `iat` in another entry of the tenant counts;
+    - an equal `iat` does not;
+    - another issuer does not;
+    - a holder that differs only by a trailing space does not count;
+    - a stored licence past its grace does not count.
+  - Migration 0046:
     - the table is gone;
-    - a level `NN-1` binary is refused;
-    - tenant deletion and the harness no longer list the table.
+    - the column's default is one day;
+    - a level-45 binary is refused.
+  - Tenant deletion and the test harness without the table.
+  - The minimum hold:
+    - an arrival from a distributor's publisher is held for the larger of the two holds;
+    - raising the minimum applies to entries held now; lowering it does not.
 - **Licence service.**
   - The `older` rule:
-    - import, and replacement with `If-Match`: `400 older`;
-    - the relay: refused `older`, the stored licence kept, ahead of `replaces`;
-    - bundles: refused `older` per target.
-  - The writers' matrix on a distributor's entry, live and removed (id form):
-    - a tenant administrator is refused (`404`, `authz.refused`) on import, `DELETE`, `…/public`
-      and `…/private`, and reads;
+    - import, and replacement with `If-Match`: `400 older`, before `409`;
+    - the same file again is accepted;
+    - an old licence into an empty upstream entry, with the distributor's key live, is refused;
+    - a stored licence whose key is refused does not block;
+    - the relay refuses with `older` and keeps the stored licence;
+    - bundles refuse with `older` per target, before the bundle's "superseded" refusal.
+  - The writers on a distributor's entry, live and removed (id form):
+    - a tenant administrator is refused with `404 distributors-entry` on import, `DELETE`,
+      `…/public` and `…/private`, and the refusal event names the operation;
+    - a tenant administrator's reads succeed;
     - a licence manager writes but cannot make the licence public;
     - a server administrator writes everything.
 - **Tenants.**
-  - `marked()` refuses a distribution admin on a licence-key-only publisher. This is a regression
-    test for the hole.
-  - Distribution admins:
-    - no grants;
-    - no ordinary publisher;
-    - reads list only distributors' publishers;
-    - `PUT …/distributor` on an unmarked publisher answers `404`.
+  - On a tenant's own publisher, with and without the licence-key mark, a distribution admin's
+    mark, unmark, hold, `PUT …/distributor`, key routes and grant paths all answer the same `404`
+    as a missing publisher. This is the regression test for the hole.
+  - After PR 2:
+    - no grants and no ordinary publishers;
+    - lists show only distributors' publishers;
+    - a taken name answers `409 publisher-taken`;
+    - `PUT …/distributor` on an unmarked publisher answers `404`;
+    - a distribution admin cannot set the minimum hold, and its publisher's hold of 0 still holds
+      builds for the minimum.
 - **API.**
-  - `TestDistributionAdmin` rewritten as the allowed and refused matrix of item 2.
-  - `GET tenants/{t}` for a distribution admin on an active tenant, a suspended tenant, and a
-    deleting tenant (`404`).
-  - `id` in publisher answers and in a signed `whoami`; `publisher_id` and `distributor` in the
-    catalogue-only answer.
+  - `GET tenants/{t}` for a distribution admin:
+    - the exact field set;
+    - `holder_id` left out when unset;
+    - no ETag;
+    - on active and suspended tenants; a deleting tenant answers `404`;
+    - the `tenant.read` event, a suspended tenant included;
+    - a tenant administrator's answer is unchanged;
+    - a token that is both admin and distribution admin gets the full answer.
+  - `GET /api/v1/reserved-names` for a distribution admin answers without `sources`.
+  - Ids:
+    - `id` in publisher answers and in a signed `whoami`;
+    - `publisher_id` and `distributor` in the catalogue-only answer, and both left out for a
+      tenant principal's publication.
   - Signed catalogue reads:
-    - its own source;
-    - another distributor's publisher's source: `404`;
-    - a tenant publisher: `404`;
-    - `?source=` checked.
-  - Each `429` site answers its type, with or without `Retry-After`.
-  - The removed routes answer `404`.
+    - its own source, with no rules and no `placed`;
+    - `?type=`;
+    - `publisher:<its name>` resolves to the signer even when a removed distributor's publisher had
+      the same name;
+    - another source answers `404`;
+    - a tenant publisher's signed request answers `404`.
+  - Each `429` site answers its type, with or without `Retry-After`. The chunk route answers both
+    of its types.
+  - The routes removed in PR 2 answer `404`. `TestDistributionAdmin`
+    (`api/distributors_test.go`) is rewritten as the matrix of what the role keeps and loses.
+- **Unit tests to rewrite or drop:**
+  - in `internal/api`: `distributors_test.go`, `manage_test.go`, `types_test.go`;
+  - in `internal/release`: `distributors_test.go`, `publish_test.go`, `withdraw_test.go`;
+  - in `internal/upstream`: `reserved_test.go`, `holds_test.go`;
+  - in `internal/store`: `reserved_test.go`, `packagetypes_test.go`, `tenantdelete_test.go`;
+  - in `internal/audit`: `coverage_test.go` and `sinks/sinks_test.go`;
+  - in `cmd/kista`: `admin_test.go`, `admin_types_test.go`.
 - **CLI.**
   - `tenant-reserved` is gone.
+  - `tenant distributor-hold` works.
   - `publisher list` and `show` print the id.
-  - `license import` prints the `older` refusal.
+  - `license import` prints the `older` and `distributors-entry` refusals.
 - **Console.**
   - Unit tests:
-    - Licences shows a distributor's entry read-only to a tenant administrator and writable to a
-      server administrator;
+    - the Licences screen: a distributor's entry is read-only to a tenant administrator and
+      writable by a server administrator;
     - the import dialog's disabled entry;
-    - Publishers without the reservations card, with the id.
+    - the Publishers screen: no reservations card, the id shown, the minimum hold field.
   - `make console-e2e`:
-    - `licenses.spec.ts`: the tenant administrator cannot write `vault-dist`'s entry;
+    - `licenses.spec.ts`: the case where `tom` writes `publisher:enterest-ci`'s entry now uses a
+      non-distributor entry, and a new case shows `tom` refused on it. The `vault-dist` block that
+      relies on a tenant administrator writing a distributor's entry goes.
     - `run.sh` and `access.spec.ts` lose `tenant-reserved`.
+    - The minimum hold is set to 0 where a test places a distributor's build at once.
 - **End to end at the pin** (`make e2e`).
   - `TestLicenseFromDistributor`:
     - the tenant administrator's import into the distributor's entry is refused;
     - the licence manager's import works;
-    - an older licence of the same issuer is refused `older`;
+    - an older licence from the same issuer is refused with `older`;
     - the distributor's publisher reads its entries with a signed request.
-  - `TestDistributorWithdrawal` works without grants or reservations.
   - `reserved_test.go` loses its tenant-reserved part.
+  - The e2e tenants set the minimum hold where they need placement at once.
 
 ## Delivery
 
-Two pull requests. Each runs `make test` on the three databases, `make lint`, `make console-test`,
-`make console-e2e` and `make e2e` before it opens.
+Two pull requests, in this order with spec 0036. Each runs `make test` on the three databases,
+`make lint`, `make console-test`, `make console-e2e` and `make e2e` before it opens.
 
-1. **`0037-distributor-in-tenant-1`: answers and licences**, items 1 and 3 to 6. It is mostly
-   additive and has no migration.
-2. **`0037-distributor-in-tenant-2`: the narrower role**, item 2. It removes tenant reservations and
-   adds the migration. It mostly removes code.
+1. **kista 0037 PR 1, `0037-distributor-in-tenant-1`: answers, licences and the hole.**
+   - It covers items 1, 3, 4, 5 and 6, the `marked()` narrowing, and the reserved-names read
+     without `sources`.
+   - It has no migration.
+2. **kista 0036 phase 1** (migration 0044).
+3. **kista 0036 phase 2** (migration 0045).
+4. **kista 0037 PR 2, `0037-distributor-in-tenant-2`: the narrower role.**
+   - It covers the read narrowing, `publisher-taken`, the removal of ordinary publishers and
+     grants, tenant reservations removed, and the minimum hold.
+   - Its migration is 0046 (`min_reader` 46). It mostly removes code.
 
-**Enterest.** Its kista client reads the `429` types and the ids once PR 1 is deployed. Until then
-it treats any `429` as it does today. Since its decisions 26 and 34 it uses neither tenant
-reservations nor grants. Before PR 2 is deployed, its client is checked for any call PR 2 removes.
-Its reconciler is a licence manager, so it is unaffected.
+**Enterest, audited against this spec.**
+
+- It no longer uses tenant reservations.
+- It writes grants only with a server administrator's token (`internal/worker/provision.go`),
+  never as a distribution admin.
+- Its reconciler is a licence manager, and is not affected by PR 1's licence rules.
+
+**Enterest's follow-ups after PR 1:**
+
+- read the ids from creation and from `whoami`, and identify its publisher by id;
+- read the tenant before writing, and stop when `holder_id` is missing or not the organisation's;
+- treat `429` by its type;
+- optionally, check with a signed catalogue read that the publisher sees its own versions.
+
+**Enterest's follow-ups after PR 2:**
+
+- map `409 publisher-taken` to "foreign, the tenant's own" in `look`. Today, `look` sees `404`,
+  then `409`, then `404` again;
+- update its security text and its alert: `publisher.key.add` and `catalogue.hold` by a
+  distribution admin.
+
+**The developer kit.** `kista_publish.py` in extension-ci-tools retries every `429` up to its limit.
+It should stop on `catalogue-full`, and may keep retrying the other types.
 
 ## Alternatives considered
 
-- **Keep tenant reservations for server administrators.** Nobody needs them, and every name check
-  would carry them.
-- **Let tenant administrators write distributors' entries, with a warning** (as spec 0035 phase 2
-  does for public serving). The reconciler would still be undone between its runs.
-- **The `older` rule for distributors' entries only.** The relay and bundle paths, which run
-  without anyone acting, would stay open.
-- **A high-water mark per (entry, issuer, holder)** that survives removal. It needs a new table to
-  close a narrow gap: after removal, only the entry's writers may import.
-- **`403` for a tenant administrator's write.** kista answers a refused caller as a missing path
-  (spec 0007), as spec 0035 does for licence managers.
-- **`409` for a full catalogue.** It is a quota, and `429` without `Retry-After` and with its own
-  type says so. Clients key on the type.
+- **Keep tenant reservations for server administrators.** The owner decided to remove them.
+- **Let tenant administrators write distributors' entries, with a warning**, as spec 0035 phase 2
+  does for public serving. The reconciler would still be undone between its runs.
+- **The `older` rule per entry, or for distributors' entries only.** A tenant administrator could
+  load an old licence into another entry and switch the rule to it. The relay and bundle paths would
+  stay open.
+- **A tombstone that remembers the newest `iat` per (type, name, issuer, holder) after removal.**
+  It needs a new table. Once nothing serves the newer licence, any writer of an entry can store an
+  older one that is still in force. That means tenant administrators for their own entries, and the
+  relay and bundles for upstream entries. Short lifetimes bound how long such a licence stays in
+  force, and that is the control we rely on.
+- **A constant-bytes `404` for a tenant administrator's write.** The console and CLI could not tell
+  the caller why. The caller can already read the licence, so a type and a detail reveal nothing.
+- **A channel hold instead of a minimum source hold.** A channel hold does not keep entries held,
+  so `purge_held` would not purge what a stolen key published.
+- **`409` for a full catalogue.** It is a quota. A `429` with its own type and without
+  `Retry-After` says so, and clients act on the type.
 - **Signed reads for every publisher** (the tenant's own CI). Nobody asked for them.
 
 ## Changes to earlier specs
 
-- **0007**: the problem types (item 6); `GET tenants/{t}` for a distribution admin; the removed
-  routes.
-- **0008**: the upload-slot and ingest refusals' types.
+- **0007**:
+  - the problem types (item 6), and `distributors-entry` as a `404` with a type and a detail;
+  - `GET tenants/{t}` for a distribution admin;
+  - the routes PR 2 removes.
+- **0008**: the types of the upload-slot and ingest refusals.
+- **0012**: the relay's replacement rules gain the `older` rule. A licence that lasts longer no
+  longer replaces one with a later `iat` from the same issuer for the same holder.
 - **0019**: the reaper no longer removes tenant reservations.
 - **0021, 0023**: a distribution admin manages keys and the licence-key mark of distributors'
   publishers only.
 - **0029**: licence managers and server administrators are the only writers of distributors'
-  entries; a licence manager still never makes a licence public.
-- **0030**: tenant reservations are removed, which affects:
+  entries. A licence manager still never makes a licence public.
+- **0030**: tenant reservations are removed. This affects these sections:
   - Summary;
   - Problem's third bullet;
   - "Names reserved in a tenant";
@@ -395,42 +621,92 @@ Its reconciler is a licence manager, so it is unaffected.
   - As built (part 2);
   - Security's tenant isolation.
 
-  The distribution admins' calls are this spec's list. The implementing PR adds a "superseded in
-  part by spec 0037" line at the head of those sections.
+  The distribution admins' calls become the list in this spec. The implementing PR adds a
+  "superseded in part by spec 0037" line at the head of those sections.
+- **0031**:
+  - line 119: "a distributor's tenant reservations (0030) remain available" goes;
+  - line 183: the alternative that reserves names up front stays, as history.
 - **0033**:
-  - B's distributor's names: "not reserved server-wide", without "for another holder";
-  - follows of a distributor's publisher: no holder check;
-  - "Distribution admins (spec 0030) gain …": the list here;
+  - B's rule for a distributor's names becomes "not reserved server-wide"; the "for another holder"
+    part goes;
+  - follows of a distributor's publisher lose the holder check;
+  - "Distribution admins (spec 0030) gain …" becomes the list here;
   - a distributor's publisher reads its own entries;
-  - the full catalogue's `429` type;
+  - distributors' publishers get the tenant's minimum hold;
+  - a full catalogue's `429` gets its own type;
   - marking an existing publisher goes.
-- **0035**: "Who writes which entry": tenant administrators write every entry except distributors'
-  publishers'; the `older` rule applies to import, relay and bundles.
+- **0034**: `tenant_reserved_names` per type (lines 204 and 284) and `tenant-reserved` among the
+  typed commands (line 341) stay, as history, with a note.
+- **0035**:
+  - "Who writes which entry": tenant administrators write every entry except distributors'
+    publishers';
+  - the `older` rule applies to import, relay and bundles.
+- **0036**:
+  - line 129, "not reserved in the tenant for another holder", goes;
+  - its metadata writes and statistics stay with the role; they are referenced here, not defined.
 
 ## Website
 
-- `access.md`: the distribution admins' list; who writes a distributor's entry.
-- `licensing.md`: a distributor's entry; the `older` rule (import, relay, bundles).
+- `access.md`: the distribution admins' list; who writes a distributor's entry; the minimum hold.
+- `licensing.md`:
+  - lines 52-57: marking a publisher is a distribution admin's act only for distributors'
+    publishers;
+  - lines 191-195: the relay's rules gain `older`;
+  - a distributor's entry;
+  - the `older` rule and its gaps;
+  - `iat` must increase per holder for third-party issuers.
 - `api.md`:
+  - line 36: signed routes include the catalogue reads;
   - the problem types table;
   - `GET tenants/{t}` for a distribution admin;
+  - `distributor-hold`;
   - publisher `id`, `whoami`, and the catalogue-only answer;
-  - signed catalogue reads;
-  - the reserved-names and grant routes for distribution admins.
-- `publishing.md`: a distributor's publisher reading its entries; the ids; the `429` types for CI
-  scripts.
-- `catalogue.md`: distributors' reads.
-- `configuration.md`: `auth.server_distribution_admins`.
-- `administration/commands.md`: `tenant-reserved` removed; the publisher id; `older`.
-- Pages that mention tenant reservations: `administration/tenants-and-channels.md`, `upstreams.md`
-  (`allow_reserved`), `getting-started.md`, `security.md`, and the role's line in
-  `deployment/aws.md`, `deployment/gcp.md` and `deployment/azure.md`.
-- `administration/upgrading.md`: the migration and its `min_reader`; reservations dropped.
-- `observability.md`: `reserved.tenant.*` removed; `id` on publisher events.
-- `console.md`: read-only distributor entries; the Publishers card removed.
+  - `GET /api/v1/reserved-names` without `sources` for a distribution admin;
+  - the reserved-names and grant routes.
+- `publishing.md`:
+  - lines 98-103: tenant reservations go;
+  - lines 370-388: creation only marked, no marking of existing publishers, names not reserved
+    server-wide;
+  - a distributor's publisher reading its entries;
+  - the ids;
+  - the `429` types for CI scripts.
+- `catalogue.md`: distributors' reads; the minimum hold.
+- `upstreams.md` (lines 64-67): `allow_reserved` no longer applies to a tenant's names.
+- `security.md` (lines 201-207): the distribution admin's reach, and the one-distributor
+  assumption.
+- `administration/index.md` (line 24): the role table.
+- `administration/commands.md`:
+  - `tenant-reserved` removed;
+  - `tenant distributor-hold`;
+  - the publisher id;
+  - `older`.
+- `administration/upgrading.md`: migration 0046 and its `min_reader`; reservations dropped; the
+  minimum hold's default.
+- `configuration.md` (line 437): `auth.server_distribution_admins`.
+- `observability.md`:
+  - `reserved.tenant.*` removed;
+  - `id` on publisher events;
+  - `tenant.read`;
+  - the fields of `authz.refused`.
+- `console.md`: read-only distributor entries; the Publishers card removed; the minimum hold field.
+- Deploy variable descriptions: `deploy/azure-container-apps/main.bicep`,
+  `deploy/gcp-gke/variables.tf`, `deploy/aws-ecs/variables.tf`, and `deployment/aws.md`,
+  `gcp.md` and `azure.md`.
+- Code comments and help text:
+  - the CLI help for `publisher distributor` (`cmd/kista/admin.go`);
+  - `config/auth.go`, `authz/authz.go` (`VerbDistribute`), `tenants/auth.go` (`distributor`),
+    `tenants/publishers.go` (`SetPublisherDistributor`).
+
+`getting-started.md`, `administration/tenants-and-channels.md` and `console.md` mention only
+server-wide reserved names. They change only as listed above.
 
 ## Follow-ups
 
-- A licence manager's read of a tenant's state and holder, if the reconciler needs it.
-- A distribution admin removing a distributor's publisher, if Enterest needs it. Today a tenant or
-  server administrator does it.
+- **Binding** distribution admins and licence managers to one distributor, if a server ever
+  serves more than one.
+- **A licence manager's read** of a tenant's state and holder, if the reconciler needs it.
+- **A distribution admin removing a distributor's publisher**, if Enterest needs it. Today a
+  tenant or server administrator does it.
+- **`early` placement** asking for recent authentication (Enterest's request), in another spec.
+- **Binding a signed request to its server's host**, as defence in depth. Enterest uses one key per
+  tenant, so a request replayed to another kista finds no key there today.
