@@ -94,7 +94,7 @@ export function Publishers() {
         />
       )}
       <Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />
-      <DistributorHold />
+      <DistributorHold onChanged={list.reload} />
     </>
   )
 }
@@ -102,8 +102,8 @@ export function Publishers() {
 /** The tenant's minimum hold for distributors' publishers (spec 0037): an entry one publishes is held
  * for the larger of its publisher's hold and this, so a stolen distributor's credential cannot reach
  * a channel at once. Its administrators set it (a day by default); a caller who may not read it sees
- * nothing. */
-export function DistributorHold() {
+ * nothing. onChanged runs after a change: the publishers' effective holds follow it. */
+export function DistributorHold({ onChanged }: { onChanged?: () => void }) {
   const { client, api } = useTenant()
   const path = `${api}/distributor-hold`
   const hold = useLoad(() => client.get<{ hold: string }>(path), [path])
@@ -120,6 +120,7 @@ export function DistributorHold() {
               if (ok) {
                 setValue('')
                 hold.reload()
+                onChanged?.()
               }
             })
           }}>

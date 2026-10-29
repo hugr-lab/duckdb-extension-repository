@@ -67,6 +67,9 @@ describe('Publishers', () => {
     fireEvent.click(screen.getByText('Set minimum'))
     await waitFor(() => expect(calls.some((c) => c.method === 'PUT')).toBe(true))
     expect(calls.find((c) => c.method === 'PUT')).toEqual({ method: 'PUT', path: '/api/v1/tenants/acme/distributor-hold', body: { hold: '0' } })
+    // the list read again, its effective holds following the minimum
+    const put = calls.findIndex((c) => c.method === 'PUT')
+    await waitFor(() => expect(calls.slice(put).some((c) => c.path.endsWith('/publishers'))).toBe(true))
     expect(calls.some((c) => c.path.includes('reserved-names'))).toBe(false)
   })
 

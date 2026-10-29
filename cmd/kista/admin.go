@@ -592,6 +592,7 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 		line("display name", t.DisplayName)
 		line("storage domain", t.StorageDomain)
 		line("holder id", t.HolderID)
+		line("distributor hold", holdText(t.DistributorHold)) // spec 0037: the minimum for distributors' publishers
 		line("created", ts(t.CreatedAt))
 		line("suspended", tsOpt(t.SuspendedAt))
 		line("deletable from", tsOpt(tenants.DeletableAt(t, a.cfg.Tenants.MinSuspended)))
@@ -796,6 +797,15 @@ func parseHold(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("%w: a hold is a duration such as 24h or 2d, 0 for none", errUsage)
 	}
 	return d, nil
+}
+
+// effectiveHold is how long a publisher's entries are held: a distributor's publisher's, the larger
+// of its hold and the tenant's minimum for distributors' publishers (spec 0037).
+func effectiveHold(p store.Publisher, t store.Tenant) time.Duration {
+	if p.Distributor == "" {
+		return p.Hold
+	}
+	return max(p.Hold, t.DistributorHold)
 }
 
 // holdText shows a hold in a table or a show: "-" for none.
@@ -1624,18 +1634,25 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
-		a.table("PUBLISHER\tID\tLICENSE KEYS\tKEY\tFINGERPRINT\tTITLE\tHOLD\tDISTRIBUTOR", func(w io.Writer) {
+		t, err := a.svc.Store.GetTenant(ctx, pos[0])
+		if err != nil {
+			return err
+		}
+		// HOLD is the publisher's own; a distributor's publisher's entries are held for the larger of
+		// it and the tenant's minimum (spec 0037: HELD FOR)
+		a.table("PUBLISHER\tID\tLICENSE KEYS\tKEY\tFINGERPRINT\tTITLE\tHOLD\tHELD FOR\tDISTRIBUTOR", func(w io.Writer) {
 			for _, p := range ps {
 				mark := "-"
 				if p.LicenseKeys {
 					mark = "yes"
 				}
+				held := holdText(effectiveHold(p, t))
 				if len(keys[p.ID]) == 0 {
-					fmt.Fprintf(w, "%s\t%s\t%s\t-\t\t\t%s\t%s\n", p.Name, p.ID, mark, holdText(p.Hold), dash(p.Distributor))
+					fmt.Fprintf(w, "%s\t%s\t%s\t-\t\t\t%s\t%s\t%s\n", p.Name, p.ID, mark, holdText(p.Hold), held, dash(p.Distributor))
 				}
 				for _, k := range keys[p.ID] {
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.ID, mark, k.ID, k.Fingerprint, k.Title, holdText(p.Hold),
-						dash(p.Distributor))
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.ID, mark, k.ID, k.Fingerprint, k.Title, holdText(p.Hold),
+						held, dash(p.Distributor))
 				}
 			}
 		})
@@ -1660,6 +1677,13 @@ func (a *adminCmd) publisher(ctx context.Context, sub string, args []string) err
 		line("created by", p.CreatedBy)
 		line("license keys", map[bool]string{true: "yes", false: "-"}[p.LicenseKeys])
 		line("hold", holdText(p.Hold))
+		if p.Distributor != "" { // spec 0037: its entries are held for the larger of its hold and the tenant's minimum
+			t, err := a.svc.Store.GetTenant(ctx, pos[0])
+			if err != nil {
+				return err
+			}
+			line("held for", holdText(effectiveHold(p, t)))
+		}
 		line("distributor", dash(p.Distributor))
 		line("keys", strconv.Itoa(len(keys)))
 	default:

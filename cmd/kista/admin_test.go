@@ -517,6 +517,18 @@ func TestAdminCLI(t *testing.T) {
 	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, "DISTRIBUTOR") || !strings.Contains(got, "enterest\n") {
 		t.Fatalf("publisher list with a distributor: %q", got)
 	}
+	// spec 0037: its entries held for the larger of its hold and the tenant's minimum
+	run(0, "tenant", "distributor-hold", "acme", "36h")
+	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, "HELD FOR") || !strings.Contains(got, "36h0m0s") {
+		t.Fatalf("publisher list with its effective hold: %q", got)
+	}
+	if got := run(0, "publisher", "show", "acme", "enterest-ci"); !strings.Contains(got, "held for:") || !strings.Contains(got, "36h0m0s") {
+		t.Fatalf("publisher show with its effective hold: %q", got)
+	}
+	if got := run(0, "tenant", "show", "acme"); !strings.Contains(got, "distributor hold: 36h0m0s") {
+		t.Fatalf("tenant show with the minimum: %q", got)
+	}
+	run(0, "tenant", "distributor-hold", "acme", "0")
 	run(1, "grant", "add", "acme", "-principal", "publisher:enterest-ci", "-verb", "publish", "-extension", "geo")
 	withdrawable(t, filepath.Join(dir, "k.db"), "acme", "enterest-ci", "geo", "1.0")
 	run(2, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0")                                   // no -reason
