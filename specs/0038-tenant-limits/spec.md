@@ -153,7 +153,9 @@ in the build's insert and when a build is kept) to learn that its limit is unlim
     bytes limit as it reads it (`store.BytesLocks`, read before the transaction). A limit set
     between that read and the insert finds the transaction without the lock: the insert then takes
     it in the transaction, after the row locks it holds. A deadlock this may make is the engine's to
-    detect, and the transaction is retried, as any other; it can happen only in that window.
+    detect, and the transaction is retried, as any other. A release's transaction always takes the
+    lock so (below), after row locks of its own (the tenant's row, a succession's copies): such a
+    cycle with a landing is detected and retried the same way.
   - **The lock is always the last lock a transaction takes.** Keys are taken in the order given,
     and these transactions take different ones first (the publisher's auth lock for a build's
     insert or a landing, the auth and icon locks for an icon's commit: these take the bytes lock as
@@ -163,7 +165,8 @@ in the build's insert and when a build is kept) to learn that its limit is unlim
     release that keeps a build, after every item's recheck: a recheck may read the tenant's auth
     under the auth lock on another connection, which a landing holds while it waits for the bytes
     lock, a cycle the database could not see. No transaction takes an advisory lock after the
-    bytes lock, so it adds no cycle.
+    bytes lock, so it adds no cycle among advisory locks; a cycle with row locks is the engine's to
+    detect, as above.
   - **Two intakes of one tenant never both take the last room**, on one replica or many, whatever
     path each comes by: there is no overshoot. (An older replica still running during the rollout
     of migration 0047 does not check; the rollout is the only window.)
@@ -507,7 +510,8 @@ pages of the behaviour it changes, and each runs, before it opens, `make test` o
    `FillBodyLen`; the store's figure and the `SourceUsage` cast; the configuration; the `GET`, the
    `PUT` and `POST /tenants`' `limits`; the bootstrap's `limits`; `kista admin tenant limits`; the
    count checks (`CreateChannel` under `InTenantTxForUpdate`, the ceiling of channels) and the
-   bytes checks (`room`, the build's insert under `TenantBytesLock`, icons); `tenant-limit` and the
+   bytes checks (`room`, the build's insert, and the deciding check where a build is kept,
+   `SetLanded` and `InsertRelease`, under `TenantBytesLock`; icons); `tenant-limit` and the
    metric. Pages: `configuration.md`, `administration/tenants-and-channels.md`,
    `administration/commands.md`, `api.md`, `catalogue.md`, `publishing.md`, `observability.md`,
    `administration/upgrading.md`. Between the PRs, an upstream run that meets `tenant-limit` records

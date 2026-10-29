@@ -180,7 +180,8 @@ so the operator declares it:
   `limit_upstreams` and `limit_publishers` (all `NULL`: the configuration's defaults), and
   `builds.body_len`, filled from `blobs`, with an index `ix_builds_tenant_body`. It raises
   `min_reader` to 47: stop every older replica first. A build an older replica still inserts during
-  the rollout keeps no length until the collector fills it (`gc`); it counts as `0` until then.
+  the rollout keeps no length until the collector (`gc`) or the next `kista serve` start fills it;
+  it counts as `0` until then.
 - **What changes.** A server that sets nothing keeps today's bounds, with two visible changes: a
   tenant holds at most 1,000 channels (a new ceiling), and the 101st upstream and the 201st publisher
   of a tenant are refused with `429 tenant-limit` where they got `400`. New: the configuration's
