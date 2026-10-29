@@ -143,7 +143,16 @@ type Statistics struct {
 	Retention time.Duration `yaml:"retention"` // default 3 years
 	// UsageAccept false answers usage reports and keeps nothing; default true.
 	UsageAccept *bool `yaml:"usage_accept"`
+	// DistributorMinTenants is how many non-public tenants a distributor's row needs before their
+	// part is answered (spec 0036 phase 2); default 3, at least 2.
+	DistributorMinTenants int `yaml:"distributor_min_tenants"`
+	// PublicTenants are the tenants, by name, whose downloads always count in distributor statistics
+	// (spec 0036 phase 2); none by default.
+	PublicTenants []string `yaml:"public_tenants"`
 }
+
+// DefaultDistributorMinTenants is statistics.distributor_min_tenants' default.
+const DefaultDistributorMinTenants = 3
 
 // UsageAccepted reports whether usage reports are kept (statistics.usage_accept, default true).
 func (s Statistics) UsageAccepted() bool { return s.UsageAccept == nil || *s.UsageAccept }
@@ -157,12 +166,23 @@ func (c Config) StatisticsSettings() Statistics {
 	if s.Retention == 0 {
 		s.Retention = DefaultStatisticsRetention
 	}
+	if s.DistributorMinTenants == 0 {
+		s.DistributorMinTenants = DefaultDistributorMinTenants
+	}
 	return s
 }
 
 func validateStatistics(bad func(string, ...any), c Config) {
 	if r := c.Statistics.Retention; r != 0 && (r < 30*24*time.Hour || r > 10*365*24*time.Hour) {
 		bad("statistics.retention must be within 30 days..10 years")
+	}
+	if n := c.Statistics.DistributorMinTenants; n != 0 && n < 2 {
+		bad("statistics.distributor_min_tenants must be at least 2 (0: the default, 3)")
+	}
+	for _, t := range c.Statistics.PublicTenants {
+		if !tenantName.MatchString(t) {
+			bad("statistics.public_tenants: %q is not a tenant name", t)
+		}
 	}
 }
 

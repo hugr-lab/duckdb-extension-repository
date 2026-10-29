@@ -78,6 +78,10 @@ type Options struct {
 	// Console is the administration console's sign-in configuration (spec 0015); nil: its routes
 	// answer 404 (ui.enabled false).
 	Console *Console
+	// DistributorMinTenants and PublicTenants are statistics.distributor_min_tenants (below 2: the
+	// default, 3) and statistics.public_tenants (spec 0036 phase 2: distributor statistics).
+	DistributorMinTenants int
+	PublicTenants         []string
 }
 
 // Handler serves /api/v1.
@@ -125,6 +129,9 @@ func New(o Options) *Handler {
 	}
 	if o.MaxBody == 0 {
 		o.MaxBody = 1 << 30
+	}
+	if o.DistributorMinTenants < 2 { // fail closed: never fewer than 2
+		o.DistributorMinTenants = 3
 	}
 	return &Handler{o: o, limiter: newLimiter(o.Rate, o.Burst), failures: &auth.FailureLog{Log: o.Log}, egress: map[string]bool{},
 		uploads: map[string]int{}}
@@ -776,6 +783,9 @@ func init() {
 		{"tenants/{t}/stats/downloads", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsDownloads)}},
 		{"tenants/{t}/stats/releases", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsReleases)}},
 		{"tenants/{t}/stats/usage", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsUsage)}},
+		// spec 0036 phase 2: a distributor's downloads summed over the tenants (distribution admins
+		// and server administrators)
+		{"distributor-stats/downloads", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).distributorStats)}},
 		{"events/{id}", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvent)}},
 		{"event-kinds", idx((*Handler).eventKinds)},
 		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listPublishers),
@@ -1269,7 +1279,7 @@ func takesType(pattern, method string) bool {
 		pattern == "reserved-names", pattern == "reserved-names/{name}", strings.HasPrefix(pattern, "tenants/{t}/reserved-names"),
 		strings.HasPrefix(pattern, "tenants/{t}/extensions/{ext}/attachments"), strings.HasPrefix(pattern, "tenants/{t}/catalogue"),
 		strings.HasPrefix(pattern, "tenants/{t}/stats/"), strings.HasPrefix(pattern, "tenants/{t}/licenses"),
-		strings.HasPrefix(pattern, "tenants/{t}/license-keys"):
+		strings.HasPrefix(pattern, "tenants/{t}/license-keys"), pattern == "distributor-stats/downloads":
 		return true
 	case pattern == "tenants/{t}/grants", pattern == "tenants/{t}/extension-groups":
 		return get

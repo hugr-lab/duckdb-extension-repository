@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,16 +42,25 @@ func TestEventsConfig(t *testing.T) {
 		"one day":          {base + "events: { retention: 24h }\n", "events.retention"},
 		"statistics short": {base + "statistics: { retention: 240h }\n", "statistics.retention"},
 		"statistics long":  {base + "statistics: { retention: 100000h }\n", "statistics.retention"},
-		"metric label":     {base + "telemetry: { metrics: { labels: [principal] } }\n", "telemetry.metrics.labels"},
-		"metric tenant":    {base + "telemetry: { metrics: { tenants: ['Acme!'] } }\n", "telemetry.metrics.tenants"},
-		"metric series":    {base + "telemetry: { metrics: { max_series: 5 } }\n", "telemetry.metrics.max_series"},
+		// spec 0036 phase 2: the minimum is never below 2, and public tenants are tenant names
+		"min tenants one":      {base + "statistics: { distributor_min_tenants: 1 }\n", "statistics.distributor_min_tenants"},
+		"min tenants negative": {base + "statistics: { distributor_min_tenants: -3 }\n", "statistics.distributor_min_tenants"},
+		"public tenant":        {base + "statistics: { public_tenants: ['Acme!'] }\n", "statistics.public_tenants"},
+		"metric label":         {base + "telemetry: { metrics: { labels: [principal] } }\n", "telemetry.metrics.labels"},
+		"metric tenant":        {base + "telemetry: { metrics: { tenants: ['Acme!'] } }\n", "telemetry.metrics.tenants"},
+		"metric series":        {base + "telemetry: { metrics: { max_series: 5 } }\n", "telemetry.metrics.max_series"},
 	} {
 		if _, err := Load(write(t, c.file), nil); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if s := cfg.StatisticsSettings(); s.Retention != DefaultStatisticsRetention || !s.UsageAccepted() {
-		t.Errorf("statistics default: %v %v", s.Retention, s.UsageAccepted())
+	if s := cfg.StatisticsSettings(); s.Retention != DefaultStatisticsRetention || !s.UsageAccepted() || s.DistributorMinTenants != 3 ||
+		len(s.PublicTenants) != 0 {
+		t.Errorf("statistics default: %+v", s)
+	}
+	if c, err := Load(write(t, base+"statistics: { distributor_min_tenants: 2, public_tenants: [free] }\n"), nil); err != nil ||
+		c.StatisticsSettings().DistributorMinTenants != 2 || !slices.Equal(c.StatisticsSettings().PublicTenants, []string{"free"}) {
+		t.Errorf("statistics: the minimum and public tenants: %v", err)
 	}
 	if c, err := Load(write(t, base+"statistics: { usage_accept: false }\n"), nil); err != nil || c.StatisticsSettings().UsageAccepted() {
 		t.Errorf("statistics.usage_accept false: %v", err)

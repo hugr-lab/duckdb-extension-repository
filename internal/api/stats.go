@@ -25,7 +25,7 @@ const (
 )
 
 var (
-	statsDims  = []string{"day", "channel", "extension", "version", "platform", "duckdb_version"}
+	statsDims  = []string{"day", "channel", "source", "extension", "version", "platform", "duckdb_version"}
 	statsVerbs = []string{store.VerbAdmin, store.VerbPublish, store.VerbPromote}
 )
 
@@ -256,11 +256,12 @@ func (sr statsRequest) keep(channelID, name string) bool {
 	return sr.scope.allow(sr.names[channelID], name)
 }
 
-type statsKey struct{ day, channel, extension, version, platform, duckdb string }
+type statsKey struct{ day, channel, source, extension, version, platform, duckdb string }
 
 type statsRowJSON struct {
 	Day           string `json:"day,omitempty"`
 	Channel       string `json:"channel,omitempty"`
+	Source        string `json:"source,omitempty"` // spec 0036 phase 2: a label, "unknown" for counts before it
 	Extension     string `json:"extension,omitempty"`
 	Version       string `json:"version,omitempty"`
 	Platform      string `json:"platform,omitempty"`
@@ -306,6 +307,19 @@ func (h *Handler) statsDownloads(w http.ResponseWriter, r *http.Request, c calle
 		}
 		return ""
 	}
+	var labels map[string]string // spec 0036 phase 2: a source as answers name it
+	if has("source") {
+		if labels, err = h.o.Store.SourceLabels(r.Context(), c.tenant.ID); err != nil {
+			h.fail(w, err)
+			return
+		}
+	}
+	label := func(src string) string {
+		if src == "" {
+			return "unknown" // counted before downloads recorded their source
+		}
+		return store.Label(labels, src)
+	}
 	out := map[statsKey]*statsRowJSON{}
 	for _, row := range rows {
 		if row.Installers > 0 && byDuckDB {
@@ -313,9 +327,12 @@ func (h *Handler) statsDownloads(w http.ResponseWriter, r *http.Request, c calle
 		}
 		k := statsKey{day: pick("day", row.Day), channel: pick("channel", sr.names[row.ChannelID]), extension: pick("extension", row.Name),
 			version: pick("version", row.PackageVersion), platform: pick("platform", row.Platform), duckdb: pick("duckdb_version", row.DuckDBVersion)}
+		if has("source") {
+			k.source = label(row.Source)
+		}
 		o := out[k]
 		if o == nil {
-			o = &statsRowJSON{Day: k.day, Channel: k.channel, Extension: k.extension, Version: k.version, Platform: k.platform,
+			o = &statsRowJSON{Day: k.day, Channel: k.channel, Source: k.source, Extension: k.extension, Version: k.version, Platform: k.platform,
 				DuckDBVersion: k.duckdb}
 			if !byDuckDB {
 				o.Installers = new(int64)
@@ -333,8 +350,9 @@ func (h *Handler) statsDownloads(w http.ResponseWriter, r *http.Request, c calle
 		list = append(list, *o)
 	}
 	slices.SortFunc(list, func(a, b statsRowJSON) int {
-		return cmp.Or(cmp.Compare(a.Day, b.Day), cmp.Compare(a.Channel, b.Channel), cmp.Compare(a.Extension, b.Extension),
-			cmp.Compare(a.Version, b.Version), cmp.Compare(a.Platform, b.Platform), cmp.Compare(a.DuckDBVersion, b.DuckDBVersion))
+		return cmp.Or(cmp.Compare(a.Day, b.Day), cmp.Compare(a.Channel, b.Channel), cmp.Compare(a.Source, b.Source),
+			cmp.Compare(a.Extension, b.Extension), cmp.Compare(a.Version, b.Version), cmp.Compare(a.Platform, b.Platform),
+			cmp.Compare(a.DuckDBVersion, b.DuckDBVersion))
 	})
 	reply(w, r, http.StatusOK, map[string]any{"from": sr.f.From, "to": sr.f.To, "group": group, "rows": list}, "", noStore)
 }

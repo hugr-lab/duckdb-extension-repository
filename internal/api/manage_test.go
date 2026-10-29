@@ -140,8 +140,8 @@ func (f *fakePuller) take() []release.Miss {
 
 // newMgmt builds the API with server identity and management: server issuer ops (role
 // kista.admin is a server administrator, role kista.licenses a licence manager), tenant acme
-// (issuer corp) and tenant other (issuer corp, at another IdP).
-func newMgmt(t *testing.T) *mgmt {
+// (issuer corp) and tenant other (issuer corp, at another IdP). opts change the API's options.
+func newMgmt(t *testing.T, opts ...func(*api.Options)) *mgmt {
 	t.Helper()
 	en := newEnv(t)
 	ks := idps{idpURL: en.idp.key, opsURL: mustKey(t), otherIdPURL: mustKey(t)}
@@ -180,11 +180,15 @@ func newMgmt(t *testing.T) *mgmt {
 		t.Fatal(err)
 	}
 	lic := &licenses.Service{Store: en.st, Authz: grants, Enabled: true, Fetch: eg, Credentials: creds, Log: slog.New(slog.DiscardHandler)}
-	apiH := api.New(api.Options{Licenses: lic, Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths, Events: events,
+	o := api.Options{Licenses: lic, Store: en.st, Snapshots: &release.Snapshots{Store: en.st}, Auths: auths, Events: events,
 		Verifier: &auth.Verifier{Fetch: ks}, PublicURL: publicURL, Rate: 1000, Burst: 1000, Log: slog.New(slog.DiscardHandler),
 		Server: server, Authz: grants, Tenants: ten, Auth: adm, Keys: &keySvc, Releases: &relSvc, Upstreams: ups,
 		Attachments: att, Feeds: feeds, MinSuspended: -1,
-		Console: &api.Console{Environment: "test", AdminTokenMaxAge: 3600, Audience: serverAud}})
+		Console: &api.Console{Environment: "test", AdminTokenMaxAge: 3600, Audience: serverAud}}
+	for _, f := range opts {
+		f(&o)
+	}
+	apiH := api.New(o)
 	pulls := &fakePuller{}
 	h := serve.NewHandler(en.st, en.keys, en.blob, serve.Options{Log: slog.New(slog.DiscardHandler), Verifier: &auth.Verifier{Fetch: ks},
 		Server: server, PublicURL: publicURL, Auths: auths, API: apiH, MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,

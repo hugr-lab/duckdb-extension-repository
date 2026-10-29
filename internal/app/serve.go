@@ -129,7 +129,9 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events,
 		MinSuspended: apiMinSuspended(cfg.Tenants.MinSuspended),
-		Console:      ConsoleInfo(cfg)})
+		Console:      ConsoleInfo(cfg), DistributorMinTenants: cfg.StatisticsSettings().DistributorMinTenants,
+		PublicTenants: cfg.StatisticsSettings().PublicTenants})
+	logPublicTenants(ctx, st, cfg.StatisticsSettings().PublicTenants, log)
 	// pull-through (spec 0009 phase 2): misses of callers holding install, fetched in the background
 	puller := &upstream.Puller{Service: svc.Upstreams, Holder: host + "/" + store.NewID(), Log: log,
 		NegativeTTL: cfg.UpstreamLimits().NegativeTTL}
@@ -455,6 +457,24 @@ func apiMinSuspended(d time.Duration) time.Duration {
 		return -1
 	}
 	return d
+}
+
+// logPublicTenants says at start which of statistics.public_tenants match no tenant (spec 0036
+// phase 2): such a name exempts nothing until a tenant of that name exists.
+func logPublicTenants(ctx context.Context, st *store.Store, names []string, log *slog.Logger) {
+	if len(names) == 0 {
+		return
+	}
+	ids, err := st.TenantIDsByName(ctx, names)
+	if err != nil {
+		log.Error("serve: reading statistics.public_tenants' tenants", "error", err)
+		return
+	}
+	for _, n := range names {
+		if ids[n] == "" {
+			log.Warn("serve: statistics.public_tenants names no tenant; it exempts nothing until a tenant of that name exists", "tenant", n)
+		}
+	}
 }
 
 // withStoreLogin adds the database login's metrics when it reads Vault (spec 0027).
