@@ -47,7 +47,7 @@ func (s *Service) promote(ctx context.Context, a authz.Actor, tenant, channel, n
 	if err != nil {
 		return nil, false, err
 	}
-	kind, err := s.Store.ReservedFor(ctx, tenant, typ, name) // spec 0030: DuckDB's, the tenant's, its upstreams'
+	kind, err := s.Store.ReservedFor(ctx, tenant, typ, name) // spec 0030: DuckDB's, its upstreams'
 	if err != nil {
 		return nil, false, err
 	}

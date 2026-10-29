@@ -16,6 +16,11 @@ func MigrateTo(ctx context.Context, s *Store, level int) error {
 	}
 }
 
+// CheckAs is Check for a binary at an older schema level; for migration tests (its min_reader).
+func CheckAs(ctx context.Context, s *Store, level int) error {
+	return s.checkLevel(ctx, level)
+}
+
 // QueryStrings reads one string column in a transaction; for migration tests.
 func QueryStrings(ctx context.Context, t *Tx, q string, args ...any) ([]string, error) {
 	return t.strings(ctx, q, args...)

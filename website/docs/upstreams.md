@@ -62,9 +62,8 @@ tenant, 1,000 entries an upstream, 100 versions an entry, 10 pinned keys.
 **Names.** An entry is a canonical name: an alias (`postgres`) is refused with its canonical name
 (`postgres_scanner`). A core name is accepted only from a `duckdb-core` upstream and a community name
 only from a `duckdb-community` upstream, unless the entry sets `allow_reserved` (a tenant that mirrors
-its own build of `httpfs` from another kista says so). A name reserved in the tenant for a holder
-([Reserved names](publishing.md#reserved-names)) takes `allow_reserved` too. An entry added before
-its name became reserved keeps mirroring it.
+its own build of `httpfs` from another kista says so). `allow_reserved` concerns DuckDB's names only.
+An entry added before its name became reserved keeps mirroring it.
 
 A build mirrored from a `duckdb-core` upstream reserves its name server-wide as core, and one from a
 `duckdb-community` upstream as community, with the source `upstream:<tenant>/<upstream>` (a bundle
@@ -373,12 +372,12 @@ an administrator gives it.
   admin channel follow <tenant>/<channel>`, `GET …/follows[/{source}]`), refreshed at each look (a
   new build of the source, or hourly): a name the tenant uses from another source (another source
   has builds of it, or a channel serves it from another source); a reserved one (DuckDB's names,
-  unless the source is DuckDB's own repository of that kind; a name reserved in the tenant, unless
-  for a followed [distributor's publisher](publishing.md#distributors-publishers)'s distributor); one
+  unless the source is DuckDB's own repository of that kind); one
   two of the channel's follows offer; and, for a publisher, a name it may not publish in the channel
   (a follow follows a source, not every grant anyone gives it; a distributor's publisher holds no
-  grants: the names it may publish into the catalogue are what a follow takes). A rule naming one
-  takes it. A name
+  grants: the names it may publish into the catalogue are what a follow takes, but for a name an
+  upstream of the tenant lists, which a grant reaches only by naming it, spec 0037). A rule naming
+  one takes it. A name
   whose rule is cleared is taken again at the follow's next look: a rule naming another source
   keeps it out. `channel unfollow` (`DELETE`) places nothing more; what it placed stays, its rules
   completing the versions they hold. Removing the source removes its follows.
@@ -559,8 +558,7 @@ kista offers the cell to an in-memory queue, after the answer is decided, when:
 
 The client's request still misses; a later `INSTALL` finds the release. `*` is allowed only on a
 pull-through upstream, without versions or `allow_reserved`, and not on `duckdb-core`. It never
-matches an alias, a core name, a name reserved in the tenant or a name another upstream of the
-channel lists, and it reserves no name in the tenant. On a `duckdb-community` upstream it matches community names (each fetch reserves
+matches an alias, a core name or a name another upstream of the channel lists, and it reserves no name in the tenant. On a `duckdb-community` upstream it matches community names (each fetch reserves
 its name as community, and the name keeps being pulled through); on any other kind it matches no
 reserved name. Limits per replica: 256 queued misses (32 per tenant), 4 fetches at once (and never
 all of `upstreams.concurrency`) and

@@ -190,7 +190,7 @@ func (s *Service) metaTarget(ctx context.Context, a authz.Actor, tenant, typ, la
 		return x, err
 	}
 	if a.Kind == authz.ActorPublisher && x.dt != "" {
-		if err := s.distributorMay(ctx, tenant, typ, name, x.dt); err != nil {
+		if err := s.distributorMay(ctx, typ, name); err != nil {
 			return x, err
 		}
 	}
@@ -418,8 +418,8 @@ func (s *Service) commitMeta(ctx context.Context, a authz.Actor, x metaTarget, w
 				return err // the publisher or its key removed meanwhile: nothing is written
 			}
 			if x.dt != "" {
-				if err := distributorMayNow(ctx, tx, x.t.ID, x.typ, x.name, x.dt); err != nil {
-					return err // the name reserved meanwhile for another holder
+				if err := distributorMayNow(ctx, tx, x.t.ID, x.typ, x.name); err != nil {
+					return err // the name reserved server-wide meanwhile
 				}
 			}
 		case authz.ActorPrincipal:

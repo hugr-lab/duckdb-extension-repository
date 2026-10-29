@@ -154,16 +154,16 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 	}
 	if a.Kind == authz.ActorPublisher {
 		// spec 0036: a distributor's publisher reads the metadata of a name it may publish only, as
-		// its entry's read answers it; the reservations read at once
+		// its entry's read answers it (spec 0037: a name kista does not reserve server-wide); the
+		// reservations read at once
 		var names []string
-		dist := ""
 		for _, e := range out {
 			if e.Meta.Name != "" {
-				names, dist = append(names, e.Name), e.Distributor
+				names = append(names, e.Name)
 			}
 		}
 		if len(names) > 0 {
-			blocked, err := s.Store.ReservedAgainst(ctx, t.ID, packageType, dist, names)
+			blocked, err := s.Store.ReservedAmong(ctx, packageType, names)
 			if err != nil {
 				return nil, err
 			}

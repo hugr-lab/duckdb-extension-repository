@@ -77,14 +77,14 @@ func TestLicenseSources(t *testing.T) {
 	// genuine product), released in other, and a tenant's copycat's, in the catalogue only
 	publisher := func(name, distributor string) store.Publisher {
 		t.Helper()
-		p := store.Publisher{TenantID: tid, Name: name, CreatedBy: "os:1:t"}
+		p := store.Publisher{TenantID: tid, Name: name, CreatedBy: "os:1:t", Distributor: distributor}
 		must(t, func() error {
 			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
 				if err := tx.InsertPublisher(ctx, &p); err != nil {
 					return err
 				}
 				if distributor != "" {
-					if _, err := tx.SetPublisherDistributor(ctx, tid, name, distributor); err != nil {
+					if _, err := tx.SetDistributorHold(ctx, tid, 0); err != nil { // spec 0037: its builds live at once
 						return err
 					}
 				}

@@ -233,7 +233,7 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		if err != nil {
 			return store.Release{}, false, err
 		}
-		kind, err := s.Store.ReservedFor(ctx, tenant, typ, o.Name) // spec 0030: DuckDB's, the tenant's, its upstreams'
+		kind, err := s.Store.ReservedFor(ctx, tenant, typ, o.Name) // spec 0030: DuckDB's, its upstreams'
 		if err != nil {
 			return store.Release{}, false, err
 		}
@@ -422,7 +422,7 @@ type item struct {
 	// build mirrored from DuckDB's repositories). "": none.
 	reserveKind, reserveSource string
 	// anyKind is the upstream's kind when its "*" took the name: insert refuses the name under the
-	// locks if it is reserved since (as AnyTakes, and the tenant's names and upstreams). "": none.
+	// locks if it is reserved since (as AnyTakes, and the tenant's upstreams). "": none.
 	anyKind string
 	// publication is a publisher's publication on a channel's route, signed with keyID ("": none):
 	// insert checks under its locks that the publisher and the key still exist (spec 0033 phase A2:
@@ -702,8 +702,8 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 				}
 				upstream := it.origin == store.OriginUpstream
 				if it.recheck != nil {
-					// a name an upstream of the tenant provides, or one the server or the tenant reserved
-					// since the caller was authorized (spec 0030), takes a grant that names it
+					// a name an upstream of the tenant provides, or one the server reserved since the
+					// caller was authorized (spec 0030), takes a grant that names it
 					provided, err := tx.UpstreamProvides(ctx, b.TenantID, b.PackageType, b.Name)
 					if err != nil {
 						return err
@@ -714,11 +714,6 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 							return err
 						}
 						provided = k != ""
-					}
-					if !provided {
-						if provided, err = tx.TenantReserves(ctx, b.TenantID, b.PackageType, b.Name); err != nil {
-							return err
-						}
 					}
 					if provided {
 						if err := it.recheck(ctx); err != nil {
@@ -1271,13 +1266,10 @@ func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, nam
 }
 
 // anyTakesNow is AnyTakes inside a release's transaction, under its locks: the server's list as it is
-// now, and no name the tenant reserves or an upstream of the tenant lists (spec 0030).
+// now, and no name an upstream of the tenant lists (spec 0030).
 func anyTakesNow(ctx context.Context, tx *store.Tx, tenantID, packageType, name, kind string) (bool, error) {
 	k, err := tx.ReservedKind(ctx, packageType, name)
 	if err != nil || k == store.ReservedCore || k == store.ReservedCommunity && kind != store.UpstreamCommunity {
-		return false, err
-	}
-	if held, err := tx.TenantReserves(ctx, tenantID, packageType, name); err != nil || held {
 		return false, err
 	}
 	listed, err := tx.UpstreamProvides(ctx, tenantID, packageType, name)

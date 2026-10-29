@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"time"
@@ -19,33 +20,47 @@ type Publisher struct {
 	// Hold is its hold (spec 0033): an entry it publishes is held until its arrival plus the hold,
 	// and it publishes into the catalogue only; 0 for none.
 	Hold time.Duration
-	// Distributor marks it a distributor's publisher (spec 0033 phase B): the distributor's name, as a
-	// tenant reservation names its holder ("": the tenant's own). It publishes into the catalogue only,
-	// without grants; its hold, keys and withdrawals are the distributor's (a distribution admin's or a
-	// server administrator's).
+	// Distributor marks it a distributor's publisher (spec 0033 phase B): the distributor's name ("":
+	// the tenant's own). It publishes into the catalogue only, without grants; its hold (above the
+	// tenant's minimum, spec 0037), keys and withdrawals are the distributor's (a distribution admin's
+	// or a server administrator's).
 	Distributor string
 }
 
-// MaxPublishers is the most publishers a tenant may hold.
-const MaxPublishers = 200
+// MaxPublishers is the most publishers of its own a tenant may hold; MaxDistributorPublishers, the
+// most distributors' publishers (spec 0037: counted apart, so a distribution admin never takes the
+// tenant's own room).
+const (
+	MaxPublishers            = 200
+	MaxDistributorPublishers = 10
+)
 
 var publisherName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 
-// InsertPublisher adds a publisher.
+// InsertPublisher adds a publisher: a distributor's, marked from its creation, when p.Distributor is
+// set (1 to 128 bytes of printable text). The tenant's own publishers and its distributors' are
+// counted apart (MaxPublishers, MaxDistributorPublishers).
 func (t *Tx) InsertPublisher(ctx context.Context, p *Publisher) error {
 	if !publisherName.MatchString(p.Name) {
 		return fmt.Errorf("%w: publisher name %q must match [a-z][a-z0-9-]{0,63}", ErrInvalid, p.Name)
 	}
+	kind, most, what := "distributor IS NULL", MaxPublishers, "publishers of its own"
+	if p.Distributor != "" {
+		if !validText(p.Distributor, MaxDistributor) {
+			return fmt.Errorf("%w: distributor: 1 to %d bytes of printable text", ErrInvalid, MaxDistributor)
+		}
+		kind, most, what = "distributor IS NOT NULL", MaxDistributorPublishers, "distributors' publishers"
+	}
 	var n int
-	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM publishers WHERE tenant_id = ?", p.TenantID).Scan(&n); err != nil {
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM publishers WHERE tenant_id = ? AND "+kind, p.TenantID).Scan(&n); err != nil {
 		return err
 	}
-	if n >= MaxPublishers {
-		return fmt.Errorf("%w: a tenant holds at most %d publishers", ErrInvalid, MaxPublishers)
+	if n >= most {
+		return fmt.Errorf("%w: a tenant holds at most %d %s", ErrInvalid, most, what)
 	}
 	p.ID, p.CreatedAt = NewID(), t.Now()
-	_, err := t.exec(ctx, "INSERT INTO publishers (id, tenant_id, name, created_at, created_by) VALUES (?, ?, ?, ?, ?)",
-		p.ID, p.TenantID, p.Name, t.s.d.timeArg(p.CreatedAt), p.CreatedBy)
+	_, err := t.exec(ctx, "INSERT INTO publishers (id, tenant_id, name, created_at, created_by, distributor) VALUES (?, ?, ?, ?, ?, ?)",
+		p.ID, p.TenantID, p.Name, t.s.d.timeArg(p.CreatedAt), p.CreatedBy, nullable(p.Distributor))
 	if err := t.s.mapErr(err, "publisher "+p.Name); err != nil {
 		return err
 	}
@@ -67,14 +82,6 @@ func (t *Tx) GetPublisher(ctx context.Context, tenantID, name string) (Publisher
 func (t *Tx) PublisherCredentials(ctx context.Context, publisherID string) (int, error) {
 	var n int
 	err := t.queryRow(ctx, "SELECT COUNT(*) FROM publisher_keys WHERE publisher_id = ?", publisherID).Scan(&n)
-	return n, err
-}
-
-// PublisherGrants counts a publisher's grants, those on extension groups included.
-func (t *Tx) PublisherGrants(ctx context.Context, publisherID string) (int, error) {
-	var n int
-	err := t.queryRow(ctx, `SELECT (SELECT COUNT(*) FROM grants WHERE publisher_id = ?) +
-(SELECT COUNT(*) FROM package_group_grants WHERE publisher_id = ?)`, publisherID, publisherID).Scan(&n)
 	return n, err
 }
 
@@ -204,6 +211,19 @@ func (t *Tx) InsertPublisherKey(ctx context.Context, k *PublisherKey) error {
 created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, k.ID, k.TenantID, k.PublisherID, k.Type, k.PublicKey, k.Fingerprint,
 		k.Title, exp, t.s.d.timeArg(k.CreatedAt), k.CreatedBy)
 	return t.s.mapErr(err, "key "+k.Fingerprint+" in this tenant")
+}
+
+// PublisherKeyHolder reads which of a tenant's publishers holds a key fingerprint (keys are unique
+// in the tenant): ok is false when none does; distributor is the holder's distributor ("": the
+// tenant's own publisher).
+func (t *Tx) PublisherKeyHolder(ctx context.Context, tenantID, fingerprint string) (distributor string, ok bool, err error) {
+	var d sql.NullString
+	err = t.queryRow(ctx, `SELECT p.distributor FROM publisher_keys k JOIN publishers p ON p.id = k.publisher_id
+WHERE k.tenant_id = ? AND k.fingerprint = ?`, tenantID, fingerprint).Scan(&d)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return d.String, err == nil, err
 }
 
 // DeletePublisherKey removes a publisher's key and returns it. Keys are looked up on every request,

@@ -10,12 +10,13 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// Spec 0033 phase B part 1: a distribution admin (or a server administrator) marks a distributor's
-// publisher, sets its hold, manages its keys, purges and withdraws its versions, and reads its
+// Spec 0033 phase B part 1: a distribution admin (or a server administrator) creates a distributor's
+// publisher marked, sets its hold, manages its keys, purges and withdraws its versions, and reads its
 // entries without channels; the publisher publishes into the catalogue only, without grants, any
-// name not reserved server-wide nor in the tenant for another holder; a tenant administrator does
-// none of the distributor's acts. A withdrawn version is served nowhere, shown withdrawn, never made
-// current or placed again, never purged, and its body never arrives again.
+// name not reserved server-wide (spec 0037: tenant reservations are gone), its entries held for the
+// tenant's minimum hold at least; a tenant administrator does none of the distributor's acts. A
+// withdrawn version is served nowhere, shown withdrawn, never made current or placed again, never
+// purged, and its body never arrives again.
 func TestDistributorRoutes(t *testing.T) {
 	t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
 	m := newMgmt(t)
@@ -30,63 +31,27 @@ func TestDistributorRoutes(t *testing.T) {
 		return r
 	}
 
-	// the mark of a fresh publisher a distribution admin created: a server administrator's, never a
-	// tenant administrator's, nor a distribution admin's (spec 0037: an unmarked publisher is the
-	// tenant's own, as a missing one to it)
-	call(201, "POST", T+"/publishers", da, `{"name":"enterest-ci"}`)
-	call(404, "PUT", T+"/publishers/enterest-ci/distributor", ta, `{"distributor":"enterest"}`)
-	call(404, "PUT", T+"/publishers/enterest-ci/distributor", da, `{"distributor":"enterest"}`)
-	call(400, "PUT", T+"/publishers/enterest-ci/distributor", sa, `{"distributor":""}`)
-	if r := call(200, "PUT", T+"/publishers/enterest-ci/distributor", sa, `{"distributor":"enterest"}`); r.json(t)["distributor"] != "enterest" {
-		t.Fatalf("marked: %s", r.body)
+	// spec 0037: an existing publisher is never marked a distributor's (as a missing one, to everyone);
+	// a distributor's publisher is created marked, by a server administrator or a distribution admin,
+	// never a tenant administrator, and takes no grant
+	call(201, "POST", T+"/publishers", ta, `{"name":"own-ci"}`)
+	for _, tok := range []string{ta, da, sa} {
+		call(404, "PUT", T+"/publishers/own-ci/distributor", tok, `{"distributor":"enterest"}`)
 	}
+	call(201, "POST", T+"/grants", ta, `{"principal":"publisher:own-ci","verbs":["publish"]}`)
+	call(404, "POST", T+"/publishers", ta, `{"name":"tenant-dist","distributor":"enterest"}`)
+	if r := call(201, "POST", T+"/publishers", da, `{"name":"enterest-ci","distributor":"enterest"}`); r.json(t)["distributor"] != "enterest" {
+		t.Fatalf("created marked: %s", r.body)
+	}
+	call(404, "PUT", T+"/publishers/enterest-ci/distributor", ta, `{"distributor":"enterest"}`)
+	call(400, "PUT", T+"/publishers/enterest-ci/distributor", sa, `{"distributor":""}`)
 	if r := call(200, "GET", T+"/publishers/enterest-ci", ta, ""); r.json(t)["distributor"] != "enterest" {
 		t.Fatalf("the tenant administrator reads the mark: %s", r.body)
 	}
-	// the tenant's own publisher is never taken over (404, nothing said), not even by a server
-	// administrator; a distribution admin's that is not fresh any more is refused (400, no counts); a
-	// distributor's publisher takes no grant
-	call(201, "POST", T+"/publishers", ta, `{"name":"own-ci"}`)
-	call(404, "PUT", T+"/publishers/own-ci/distributor", sa, `{"distributor":"enterest"}`)
-	call(404, "PUT", T+"/publishers/own-ci/distributor", da, `{"distributor":"enterest"}`)
-	call(201, "POST", T+"/grants", ta, `{"principal":"publisher:own-ci","verbs":["publish"]}`)
-	call(201, "POST", T+"/publishers", da, `{"name":"used-ci"}`)
-	if _, err := m.env.adm.SetPublisherHold(ctx, admin, "acme", "used-ci", time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	// not fresh: a hold, a grant, a key, a build
-	call(201, "POST", T+"/publishers", da, `{"name":"granted-ci"}`)
-	call(201, "POST", T+"/grants", ta, `{"principal":"publisher:granted-ci","verbs":["publish"]}`)
-	call(201, "POST", T+"/publishers", da, `{"name":"keyed-ci"}`)
-	m.addKey(t, ta, "acme", "keyed-ci")
-	call(201, "POST", T+"/publishers", da, `{"name":"built-ci"}`)
 	acme, err := m.st.GetTenant(ctx, "acme")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
-		p, err := tx.GetPublisher(ctx, acme.ID, "built-ci")
-		if err != nil {
-			return err
-		}
-		b := store.Build{TenantID: p.TenantID, Source: store.PublisherSource(p.ID), Name: "geo_tools", PackageVersion: "0.1", Platform: "linux_amd64",
-			ABI: store.ABICPP, DuckDBVersion: "v2.0.0", BodyHash: strings.Repeat("e", 64), Origin: store.OriginPublication, CreatedBy: "os:1:t"}
-		return tx.FindOrInsertBuild(ctx, &b)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"used-ci", "granted-ci", "keyed-ci", "built-ci"} {
-		call(404, "PUT", T+"/publishers/"+name+"/distributor", da, `{"distributor":"enterest"}`)
-		if r := call(400, "PUT", T+"/publishers/"+name+"/distributor", sa, `{"distributor":"enterest"}`); strings.ContainsAny(r.json(t)["detail"].(string), "0123456789") {
-			t.Fatalf("the refusal tells counts: %s", r.body)
-		}
-	}
-	// an operator's publisher is not taken over either: a server administrator creates a distributor's
-	// publisher marked (a distribution admin may too; a tenant administrator may not)
-	call(201, "POST", T+"/publishers", sa, `{"name":"ops-ci"}`)
-	call(404, "PUT", T+"/publishers/ops-ci/distributor", sa, `{"distributor":"enterest"}`)
-	call(404, "PUT", T+"/publishers/ops-ci/distributor", da, `{"distributor":"enterest"}`)
-	call(404, "POST", T+"/publishers", ta, `{"name":"tenant-dist","distributor":"enterest"}`)
 	if r := call(201, "POST", T+"/publishers", sa, `{"name":"server-dist","distributor":"enterest"}`); r.json(t)["distributor"] != "enterest" {
 		t.Fatalf("created marked: %s", r.body)
 	}
@@ -131,24 +96,53 @@ func TestDistributorRoutes(t *testing.T) {
 	}
 	call(200, "PUT", T+"/publishers/enterest-ci/hold", sa, `{"hold":"0s"}`)
 
-	// it publishes into the catalogue only: any name not reserved server-wide nor for another holder
+	// spec 0037: held for the tenant's minimum (a day by default) whatever its own hold; lowering the
+	// minimum releases nothing held, raising it holds what is held longer
 	q := "?version=1.0&platform=linux_amd64"
+	r := m.upload(t, T+"/catalogue/extensions/early_tools/builds?version=0.5&platform=linux_amd64", key, built(t, "0.5", "early_tools_duckdb_cpp_init"))
+	if r.status != 201 || r.json(t)["state"] != "held" {
+		t.Fatalf("held for the minimum: %d %s", r.status, r.body)
+	}
+	early := r.json(t)
+	call(200, "PUT", T+"/distributor-hold", ta, `{"hold":"0s"}`)
+	heldUntil := func() time.Time {
+		t.Helper()
+		b := call(200, "GET", T+"/catalogue/publisher:enterest-ci/extensions/early_tools", ta, "").json(t)["versions"].([]any)[0].(map[string]any)["builds"].([]any)[0].(map[string]any)
+		at, err := time.Parse(time.RFC3339, b["available_at"].(string))
+		if err != nil || b["state"] != "held" {
+			t.Fatalf("held: %v %v", b, err)
+		}
+		return at
+	}
+	createdAt, err := time.Parse(time.RFC3339, early["created_at"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if at := heldUntil(); !at.Equal(createdAt.Add(24 * time.Hour)) {
+		t.Fatalf("lowered: held until %s", at)
+	}
+	call(200, "PUT", T+"/distributor-hold", sa, `{"hold":"48h"}`)
+	if at := heldUntil(); !at.Equal(createdAt.Add(48 * time.Hour)) {
+		t.Fatalf("raised: held until %s", at)
+	}
+	if r := call(200, "GET", T+"/events?kind=catalogue.hold&subject=tenant:acme", ta, ""); !strings.Contains(string(r.body), `"held":1`) {
+		t.Fatalf("the raise's event: %s", r.body)
+	}
+	call(200, "PUT", T+"/distributor-hold", ta, `{"hold":"0s"}`)
+
+	// it publishes into the catalogue only: any name not reserved server-wide
 	geo := built(t, "1.0", "geo_tools_duckdb_cpp_init")
 	if r := m.upload(t, T+"/channels/prod/extensions/geo_tools/releases"+q, key, geo); r.status != 404 {
 		t.Fatalf("a distributor's publisher on a channel's route: %d %s", r.status, r.body)
 	}
-	r := m.upload(t, T+"/catalogue/extensions/geo_tools/builds"+q, key, geo)
+	r = m.upload(t, T+"/catalogue/extensions/geo_tools/builds"+q, key, geo)
 	if r.status != 201 || r.json(t)["state"] != "available" || strings.Contains(string(r.body), `"placed"`) {
 		t.Fatalf("into the catalogue: %d %s", r.status, r.body)
 	}
 	build := r.json(t)["id"].(string)
-	call(200, "PUT", T+"/reserved-names/acme_other", da, `{"holder":"someone-else"}`)
-	call(200, "PUT", T+"/reserved-names/acme_mine", da, `{"holder":"enterest"}`)
+	call(200, "POST", "/api/v1/reserved-names", sa, `{"names":["acme_other"],"kind":"community"}`)
 	if r := m.upload(t, T+"/catalogue/extensions/acme_other/builds"+q, key, built(t, "1.0", "acme_other_duckdb_cpp_init")); r.status != 404 {
-		t.Fatalf("a name reserved for another holder: %d %s", r.status, r.body)
-	}
-	if r := m.upload(t, T+"/catalogue/extensions/acme_mine/builds"+q, key, built(t, "1.0", "acme_mine_duckdb_cpp_init")); r.status != 201 {
-		t.Fatalf("a name reserved for its distributor: %d %s", r.status, r.body)
+		t.Fatalf("a name reserved server-wide: %d %s", r.status, r.body)
 	}
 	if r := m.upload(t, T+"/catalogue/extensions/json/builds"+q, key, built(t, "1.0", "json_duckdb_cpp_init")); r.status != 404 {
 		t.Fatalf("a core name: %d %s", r.status, r.body)

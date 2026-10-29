@@ -2,8 +2,8 @@ package tenants
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
@@ -14,9 +14,10 @@ import (
 
 // Publishers (spec 0008): identities that only publish and promote, authenticated by their keys (spec 0023).
 
-// AddPublisher adds a publisher to a tenant.
+// AddPublisher adds a publisher to a tenant: its administrators' (spec 0037: a distribution admin
+// creates distributors' publishers only, AddDistributorPublisher).
 func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, name string) (store.Publisher, error) {
-	t, err := s.tenantOrDistributor(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return store.Publisher{}, err
 	}
@@ -30,24 +31,41 @@ func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, nam
 	return p, err
 }
 
+// ErrKeyTaken refuses a distribution admin's key that one of the tenant's own publishers holds
+// (spec 0037): keys are unique in the tenant, so its 409 tells that the tenant holds the key, and the
+// API records it as a refusal. It is a store.ErrExists.
+var ErrKeyTaken = fmt.Errorf("%w: the key is held by a publisher of the tenant's own", store.ErrExists)
+
+// ErrPublisherTaken refuses a distribution admin's new publisher whose name a tenant's own publisher
+// holds (spec 0037): it says the name is taken, and nothing else about that publisher.
+var ErrPublisherTaken = errors.New("tenants: the name is taken by a publisher of the tenant's own")
+
 // AddDistributorPublisher adds a publisher to a tenant marked a distributor's from its creation (spec
-// 0033 phase B): a server administrator's or a distribution admin's. This is how a server
-// administrator makes a distributor's publisher: an existing one is marked only when a distribution
-// admin created it (SetPublisherDistributor).
+// 0033 phase B): a server administrator's or a distribution admin's. This is the only way a
+// distributor's publisher is made (spec 0037: an existing publisher is never marked one). A
+// distribution admin is told a name a tenant's own publisher holds only as taken (ErrPublisherTaken).
 func (s *AuthAdmin) AddDistributorPublisher(ctx context.Context, a authz.Actor, tenant, name, dist string) (store.Publisher, error) {
 	t, err := s.distributorAct(ctx, a, tenant)
 	if err != nil {
 		return store.Publisher{}, err
 	}
-	p := store.Publisher{TenantID: t.ID, Name: name, CreatedBy: a.String()}
+	if dist == "" { // the store checks the rest of the name; an empty one would make an ordinary publisher
+		return store.Publisher{}, fmt.Errorf("%w: distributor: 1 to %d bytes of printable text", store.ErrInvalid, store.MaxDistributor)
+	}
+	p := store.Publisher{TenantID: t.ID, Name: name, CreatedBy: a.String(), Distributor: dist}
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.PublisherAuthLock(t.ID)}, func(tx *store.Tx) error {
-		if err := tx.InsertPublisher(ctx, &p); err != nil {
+		if distributor(a) { // under the tenant's auth lock, which every publisher's insert takes
+			cur, err := tx.GetPublisher(ctx, t.ID, name)
+			if err == nil && cur.Distributor == "" {
+				return ErrPublisherTaken
+			}
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+		}
+		if err := tx.InsertPublisher(ctx, &p); err != nil { // marked from its creation
 			return err
 		}
-		if _, err := tx.SetPublisherDistributor(ctx, t.ID, name, dist); err != nil {
-			return err
-		}
-		p.Distributor = dist
 		return tx.Event(ctx, t.ID, a.String(), "publisher.add", "publisher:"+p.Name, map[string]any{"name": p.Name, "id": p.ID, "distributor": dist})
 	})
 	return p, err
@@ -66,14 +84,24 @@ func (s *AuthAdmin) distributorAct(ctx context.Context, a authz.Actor, tenant st
 	return s.Store.GetTenant(ctx, tenant)
 }
 
-// ListPublishers lists a tenant's publishers.
+// ListPublishers lists a tenant's publishers: to a distribution admin, the distributors' only (spec
+// 0037: the tenant's own are not its to read).
 func (s *AuthAdmin) ListPublishers(ctx context.Context, a authz.Actor, tenant string) ([]store.Publisher, error) {
 	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
 	ta, err := s.Store.GetTenantAuth(ctx, t.ID)
-	return ta.Publishers, err
+	if err != nil || !distributor(a) {
+		return ta.Publishers, err
+	}
+	var out []store.Publisher
+	for _, p := range ta.Publishers {
+		if p.Distributor != "" {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 // RemovePublisher removes a publisher, its keys and its grants, and purges the entries it published
@@ -165,7 +193,8 @@ func purgeHeld(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID string
 // it publishes is held until its arrival plus the hold, and it publishes into the catalogue only (the
 // channel route refuses it). Raising it applies to the entries held now; lowering it, to those
 // arriving from then on. A distributor's publisher's hold is a distribution admin's or a server
-// administrator's only (spec 0033 phase B): a tenant that wants more waits with a channel hold.
+// administrator's only (spec 0033 phase B); it holds its entries only above the tenant's minimum for
+// distributors' publishers, which the tenant's administrators set (spec 0037, SetDistributorHold).
 func (s *AuthAdmin) SetPublisherHold(ctx context.Context, a authz.Actor, tenant, name string, d time.Duration) (store.Publisher, error) {
 	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
@@ -196,6 +225,56 @@ func (s *AuthAdmin) SetPublisherHold(ctx context.Context, a authz.Actor, tenant,
 			map[string]any{"source": "publisher:" + p.Name, "hold": d.String(), "before": before.Hold.String(), "held": held})
 	})
 	return p, err
+}
+
+// DistributorHold reads a tenant's minimum hold for distributors' publishers (spec 0037): its
+// administrators' and server administrators' (a distribution admin reads its publishers'
+// effective_hold instead).
+func (s *AuthAdmin) DistributorHold(ctx context.Context, a authz.Actor, tenant string) (time.Duration, error) {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return 0, err
+	}
+	return t.DistributorHold, nil
+}
+
+// SetDistributorHold sets a tenant's minimum hold for distributors' publishers (spec 0037), its
+// administrators' or a server administrator's, never a distribution admin's: an entry from a
+// distributor's publisher is held for the larger of the publisher's hold and this, so a stolen
+// distribution admin's token cannot publish into a channel at once. Raising it applies to the entries
+// of every distributor's publisher of the tenant, live or removed, held now; lowering it, to those
+// arriving from then on. It returns the hold it had.
+func (s *AuthAdmin) SetDistributorHold(ctx context.Context, a authz.Actor, tenant string, d time.Duration) (time.Duration, error) {
+	t, err := s.tenant(ctx, a, tenant)
+	if err != nil {
+		return 0, err
+	}
+	var before time.Duration
+	// the tenant's row under an update lock (which an arrival's shared read waits for), and its auth
+	// lock, which a publication's build transaction takes
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.PublisherAuthLock(t.ID)}, func(tx *store.Tx) error {
+		var err error
+		if before, err = tx.SetDistributorHold(ctx, t.ID, d); err != nil || before == d {
+			return err
+		}
+		held := 0
+		if d > before {
+			srcs, err := tx.DistributorPublisherSources(ctx, t.ID)
+			if err != nil {
+				return err
+			}
+			for _, src := range srcs {
+				n, err := tx.RaiseHeld(ctx, t.ID, src, d)
+				if err != nil {
+					return err
+				}
+				held += n
+			}
+		}
+		return tx.Event(ctx, t.ID, a.String(), "catalogue.hold", "tenant:"+t.Name,
+			map[string]any{"source": "distributors", "hold": d.String(), "before": before.String(), "held": held})
+	})
+	return before, err
 }
 
 // SetPublisherLicenseKeys marks a publisher a trusted source of licence keys, or unmarks it (spec
@@ -242,18 +321,15 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 	return p, err
 }
 
-// SetPublisherDistributor marks an existing publisher a distributor's (spec 0033 phase B), a server
-// administrator's act (a distribution admin only renames a distributor's publisher's distributor:
-// spec 0037, the tenant's own publishers are not its): distributor is the distributor's name, as a
-// tenant reservation names its holder. A distributor's publisher publishes into the catalogue only,
-// without grants (any name kista does not reserve server-wide and the tenant does not reserve for
-// another holder), and reaches no channel by itself; its keys, its hold, its withdrawals and the
-// purges of its entries are the distributor's. Only a fresh publisher a distribution admin created is
-// marked so, by a server administrator: no grants, no keys unless it carries the licence-key mark, no hold, never a source of
-// anything (a publisher created otherwise, a tenant administrator's or an operator's, is refused as
-// not found; a server administrator creates a distributor's publisher marked, AddDistributorPublisher).
-// Marking a distributor's publisher again changes the distributor's name. A mark is never removed: the
-// publisher is removed instead (its record kept, so its versions can still be withdrawn).
+// SetPublisherDistributor renames a distributor's publisher's distributor (spec 0033 phase B): a
+// distribution admin's or a server administrator's act. An existing publisher is never marked a
+// distributor's (spec 0037): a publisher without the mark answers as a missing one, and a
+// distributor's publisher is created marked (AddDistributorPublisher). A distributor's publisher
+// publishes into the catalogue only, without grants (any name kista does not reserve server-wide),
+// and reaches no channel by itself; its keys, its hold, its withdrawals and the purges of its entries
+// are the distributor's. A used publisher's distributor is never renamed (spec 0036 phase 2: its
+// history would move to another). A mark is never removed: the publisher is removed instead (its
+// record kept, so its versions can still be withdrawn).
 func (s *AuthAdmin) SetPublisherDistributor(ctx context.Context, a authz.Actor, tenant, name, dist string) (store.Publisher, error) {
 	t, err := s.distributorAct(ctx, a, tenant)
 	if err != nil {
@@ -265,30 +341,13 @@ func (s *AuthAdmin) SetPublisherDistributor(ctx context.Context, a authz.Actor, 
 		if err != nil {
 			return err
 		}
-		if cur.Distributor == "" { // a fresh publisher only; marked already, it is renamed
+		if cur.Distributor == "" { // spec 0037: never marked; as a missing publisher
 			if distributor(a) {
-				return authz.ErrDenied // spec 0037: the tenant's own publisher, as a missing one
+				return authz.ErrDenied // the tenant's own publisher: a refusal, audited
 			}
-			if !strings.HasPrefix(cur.CreatedBy, string(authz.ActorDistributionAdmin)+":") {
-				return authz.ErrDenied // the tenant's own publisher, or an operator's, is never made the distributor's
-			}
-			grants, err := tx.PublisherGrants(ctx, cur.ID)
-			if err != nil {
-				return err
-			}
-			keys, err := tx.PublisherCredentials(ctx, cur.ID)
-			if err != nil {
-				return err
-			}
-			used, err := tx.PublisherUsed(ctx, cur)
-			if err != nil {
-				return err
-			}
-			if grants > 0 || keys > 0 && !cur.LicenseKeys || used {
-				return fmt.Errorf("%w: publisher %s is not fresh: a distributor's publisher is marked before it holds grants, keys "+
-					"(unless marked for licence keys), a hold, builds, releases or rules; add a new one", store.ErrInvalid, name)
-			}
-		} else if cur.Distributor != dist {
+			return fmt.Errorf("%w: publisher %s is not a distributor's", store.ErrNotFound, name)
+		}
+		if cur.Distributor != dist {
 			// spec 0036 phase 2: a used publisher's history (its entries, its downloads) is its
 			// distributor's; renaming would move it to another
 			used, err := tx.PublisherUsed(ctx, cur)
@@ -380,6 +439,15 @@ func (s *AuthAdmin) AddPublisherKey(ctx context.Context, a authz.Actor, tenant, 
 			return err
 		}
 		k.PublisherID = p.ID
+		if distributor(a) { // under the tenant's auth lock, which every key's insert takes
+			holder, held, err := tx.PublisherKeyHolder(ctx, t.ID, k.Fingerprint)
+			if err != nil {
+				return err
+			}
+			if held && holder == "" {
+				return ErrKeyTaken // the tenant's own publisher's: a probe, audited
+			}
+		}
 		if err := tx.InsertPublisherKey(ctx, &k); err != nil {
 			return err
 		}

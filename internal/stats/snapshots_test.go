@@ -38,11 +38,8 @@ func TestDistributorSnapshots(t *testing.T) {
 			if err := tx.CreateChannel(ctx, &ch); err != nil {
 				return err
 			}
-			p := store.Publisher{TenantID: tn.ID, Name: "ent-ci", CreatedBy: "os:1:t"}
+			p := store.Publisher{TenantID: tn.ID, Name: "ent-ci", CreatedBy: "os:1:t", Distributor: "enterest"}
 			if err := tx.InsertPublisher(ctx, &p); err != nil {
-				return err
-			}
-			if _, err := tx.SetPublisherDistributor(ctx, tn.ID, "ent-ci", "enterest"); err != nil {
 				return err
 			}
 			ts[name] = tenant{tn.ID, ch.ID, store.PublisherSource(p.ID)}

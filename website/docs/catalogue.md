@@ -69,8 +69,9 @@ its home channel only. An upstream without a home channel is a follow-up.
 ### Take a distributor's builds
 
 A distributor (such as Enterest) publishes into the catalogue only, through its publisher in the
-tenant, and reaches no channel by itself. A channel takes its builds by a rule per name, or by
-following it:
+tenant, and reaches no channel by itself. Its builds are held for at least the tenant's minimum hold
+for distributors' publishers, one day unless you change it (below). A channel takes its builds by a
+rule per name, or by following it:
 
 ```bash
 kista admin channel source acme/prod geo_tools -set publisher:enterest-ci -mode auto
@@ -79,9 +80,10 @@ kista admin channel follow acme/nightly          # the follows, and the names ea
 ```
 
 A follow does not take a name the tenant uses from another source (another source has builds of it,
-or a channel serves it from another source), a reserved name, or a name two of the channel's follows
-offer: each is listed as skipped, with the reason, after the placement pass's next look at the source
-(a new build of it, or hourly). A rule naming the source takes such a name.
+or a channel serves it from another source), a reserved name, a name two of the channel's follows
+offer, or, from a distributor's publisher, a name an upstream of the tenant lists (spec 0037): each is
+listed as skipped, with the reason, after the placement pass's next look at the source (a new build
+of it, or hourly). A rule naming the source takes such a name.
 
 What the distributor reads of the tenant's catalogue is its own: a distribution admin reads its
 distributors' publishers' entries, and the publisher itself reads its own entries with a signed
@@ -124,8 +126,11 @@ available version is placed by the next pass. The other source's releases stay s
 
 A source's hold (`kista admin publisher hold`, `kista admin upstream hold`) keeps its new versions
 out of every channel for a while: time to look at a build, or to revoke a stolen key before an
-automatic placement serves it. A distributor's publisher's hold is the distributor's; a tenant that
-wants longer holds its own channel:
+automatic placement serves it. A distributor's publisher's hold is the distributor's, but its
+builds are held at least for the tenant's [minimum hold for distributors'
+publishers](access.md#the-minimum-hold-for-distributors-publishers) (spec 0037), one day by default
+(`kista admin tenant distributor-hold acme 2h`; `0` for none). A tenant that wants longer for one
+channel holds that channel:
 
 ```bash
 kista admin channel hold acme/prod 2d

@@ -1,6 +1,7 @@
 # Spec 0034: Package types
 
 - **Status**: implemented (2026-10-24)
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): tenant reservations are removed (migration 0046 drops `tenant_reserved_names`, and `kista admin tenant-reserved` goes); this spec's `tenant_reserved_names` per type and `tenant-reserved` among the typed commands stay as history.
 - **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): an entry's metadata is per package type, like the entry.
 - **Date**: 2026-10-24
 - **Author**: vgsml, Claude

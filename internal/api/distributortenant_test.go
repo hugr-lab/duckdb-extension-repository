@@ -190,6 +190,7 @@ func TestSignedCatalogueReads(t *testing.T) {
 			t.Fatalf("%s %s: %d %s", name, version, r.status, r.body)
 		}
 	}
+	call(200, "PUT", T+"/distributor-hold", ta, `{"hold":"0s"}`) // spec 0037 PR 2: placed at once
 	old := call(201, "POST", T+"/publishers", da, `{"name":"enterest-ci","distributor":"enterest"}`).json(t)["id"].(string)
 	key := m.addKey(t, da, "acme", "enterest-ci")
 	publish(key, "geo_tools", "1.0")
@@ -289,7 +290,6 @@ func TestDistributionAdminOwnPublishers(t *testing.T) {
 		}
 		return r
 	}
-	call(200, "PUT", T+"/reserved-names/acme_tool", da, `{"holder":"enterest"}`)
 	call(201, "POST", T+"/publishers", sa, `{"name":"plain-ci"}`)
 	call(201, "POST", T+"/publishers", sa, `{"name":"marked-ci"}`)
 	call(200, "POST", T+"/publishers/marked-ci/license-keys", sa, "")

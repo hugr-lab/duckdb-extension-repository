@@ -77,8 +77,8 @@ az deployment group show -g kista -n main --query properties.outputs.address.val
   licences and nothing else. Empty (the default), there are none, and the configuration leaves the
   key out.
 - **`serverDistributionAdmins`** sets the [distribution admins](../access.md)
-  (`auth.server_distribution_admins`): principals of the server issuers who reserve names in tenants
-  and manage their distributors' publishers, never a tenant's own (spec 0037). Empty (the
+  (`auth.server_distribution_admins`): principals of the server issuers who create and manage
+  distributors' publishers in tenants, never a tenant's own, nor grants (spec 0037). Empty (the
   default), there are none. The Marketplace package does not ask for them: a distributor's server is
   set up from the template.
 - **Switching the store** (PostgreSQL to Azure SQL, or a new server) needs an empty container:

@@ -109,6 +109,9 @@ func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
 		problem(w, http.StatusConflict, typeConflict, publicRefusal(err))
 	case errors.Is(err, tenants.ErrGroupGranted):
 		problem(w, http.StatusConflict, typeConflict, "a grant names the extension group: revoke its grants first")
+	case errors.Is(err, tenants.ErrPublisherTaken): // spec 0037: a refusal, so a probe of the tenant's names is audited
+		note(w, func(sw *statusWriter) { sw.refused, sw.refusal = true, map[string]any{"reason": "publisher-taken"} })
+		problem(w, http.StatusConflict, typePublisherTaken, "the name is taken by a publisher of the tenant's own")
 	case errors.Is(err, tenants.ErrLastAdmin):
 		problem(w, http.StatusConflict, typeConflict, "the tenant's last tenant-wide admin grant; a server administrator can remove it")
 	case errors.As(err, new(*tenants.Refusal)):
@@ -856,7 +859,7 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 	}
 	isReserved, typ := false, reqType(r)
 	if ext != "" {
-		kind, err := h.o.Store.ReservedFor(r.Context(), c.tenant.Name, typ, ext) // spec 0030: DuckDB's, the tenant's, its upstreams'
+		kind, err := h.o.Store.ReservedFor(r.Context(), c.tenant.Name, typ, ext) // spec 0030: DuckDB's, its upstreams'
 		if err != nil {
 			h.fail(w, err)
 			return
@@ -1022,94 +1025,6 @@ func (h *Handler) addReserved(w http.ResponseWriter, r *http.Request, c caller, 
 func (h *Handler) removeReserved(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
 	if err := h.o.Tenants.Unreserve(r.Context(), a, reqType(r), p["name"]); err != nil {
-		h.serviceErr(w, err, false)
-		return
-	}
-	noContent(w)
-}
-
-// --- names reserved in a tenant (spec 0030) ---
-
-type tenantReservedOut struct {
-	PackageType string `json:"package_type,omitempty"` // spec 0034: omitted when it is the default
-	Name        string `json:"name"`
-	Holder      string `json:"holder"`
-	AddedAt     string `json:"added_at"`
-	AddedBy     string `json:"added_by"`
-}
-
-type liveReleaseOut struct {
-	Channel  string `json:"channel"`
-	Version  string `json:"version"`
-	Platform string `json:"platform"`
-	State    string `json:"state"`
-	Origin   string `json:"origin"`
-}
-
-func tenantReservedOf(r store.TenantReservedName, c caller) tenantReservedOut {
-	return tenantReservedOut{PackageType: shownType(r.PackageType), Name: r.Name, Holder: r.Holder, AddedAt: rfc3339(r.AddedAt),
-		AddedBy: createdBy(r.AddedBy, c)}
-}
-
-func (h *Handler) listTenantReserved(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	a, _ := c.actor()
-	rs, err := h.o.Tenants.ListInTenant(r.Context(), a, p["t"], reqType(r), "")
-	if err != nil {
-		h.serviceErr(w, err, false)
-		return
-	}
-	out := []tenantReservedOut{}
-	for _, x := range rs {
-		out = append(out, tenantReservedOf(x, c))
-	}
-	reply(w, r, http.StatusOK, map[string]any{"reserved_names": out}, "", noStore)
-}
-
-func (h *Handler) getTenantReserved(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	a, _ := c.actor()
-	rs, err := h.o.Tenants.ListInTenant(r.Context(), a, p["t"], reqType(r), p["name"])
-	if err != nil {
-		h.serviceErr(w, err, false)
-		return
-	}
-	if len(rs) == 0 {
-		notFound(w)
-		return
-	}
-	reply(w, r, http.StatusOK, tenantReservedOf(rs[0], c), "", noStore)
-}
-
-func (h *Handler) reserveInTenant(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	var in struct {
-		Holder string `json:"holder"`
-	}
-	if !body(w, r, &in, maxBody) {
-		return
-	}
-	a, _ := c.actor()
-	res, err := h.o.Tenants.ReserveInTenant(r.Context(), a, p["t"], reqType(r), p["name"], in.Holder)
-	if err != nil {
-		h.serviceErr(w, err, false)
-		return
-	}
-	rels := []liveReleaseOut{}
-	for _, x := range res.Releases {
-		rels = append(rels, liveReleaseOut(x))
-	}
-	out := map[string]any{"name": res.Name, "holder": res.Holder, "added_at": rfc3339(res.AddedAt), "added_by": createdBy(res.AddedBy, c),
-		"changed": res.Changed, "releases": rels}
-	if t := shownType(res.PackageType); t != "" {
-		out["package_type"] = t
-	}
-	if res.Previous != "" && res.Previous != res.Holder {
-		out["previous_holder"] = res.Previous
-	}
-	reply(w, r, http.StatusOK, out, "", noStore)
-}
-
-func (h *Handler) releaseInTenant(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	a, _ := c.actor()
-	if err := h.o.Tenants.ReleaseInTenant(r.Context(), a, p["t"], reqType(r), p["name"]); err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}

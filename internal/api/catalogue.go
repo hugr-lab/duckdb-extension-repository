@@ -118,7 +118,7 @@ func (h *Handler) catalogueEntry(w http.ResponseWriter, r *http.Request, c calle
 		ans["package_type"] = t
 	}
 	// spec 0036: the entry's metadata and distributor, when the caller reads its metadata (every
-	// catalogue reader does, but a distributor's publisher on a name reserved since for another holder)
+	// catalogue reader does, but a distributor's publisher on a name reserved server-wide since)
 	switch m, err := h.o.Releases.EntryMeta(r.Context(), a, p["t"], reqType(r), p["source"], p["ext"]); {
 	case err == nil:
 		if m.Summary != "" {

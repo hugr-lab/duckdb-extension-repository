@@ -345,9 +345,6 @@ func (s *Service) insert(ctx context.Context, tx *store.Tx, a authz.Actor, t sto
 	if err := s.collisions(ctx, tx, *u, names); err != nil {
 		return err
 	}
-	if err := tenantReserved(ctx, tx, t.ID, u.Entries); err != nil {
-		return err
-	}
 	if passthrough { // once per tenant: replacements made before 1b become shadows
 		first, err := tx.TakeShadowBackfill(ctx, t.ID)
 		if err != nil {
@@ -511,25 +508,6 @@ func (s *Service) SetHold(ctx context.Context, a authz.Actor, tenant, name strin
 		return store.Upstream{}, err
 	}
 	return s.Get(ctx, a, tenant, name)
-}
-
-// tenantReserved refuses an entry for a name reserved in the tenant (spec 0030) without
-// allow_reserved: the holder's builds are not to be replaced by a mirror unasked. It runs under the
-// tenant's upstream lock, which a reservation takes too.
-func tenantReserved(ctx context.Context, tx *store.Tx, tenantID string, entries []store.UpstreamEntry) error {
-	for _, e := range entries {
-		if e.Name == "*" || e.AllowReserved {
-			continue
-		}
-		held, err := tx.TenantReserves(ctx, tenantID, pkgtype.DuckDBExtension, e.Name) // an upstream's names are DuckDB's
-		if err != nil {
-			return err
-		}
-		if held {
-			return fmt.Errorf("%w: %q is reserved in the tenant; an upstream provides it only with allow_reserved", store.ErrInvalid, e.Name)
-		}
-	}
-	return nil
 }
 
 // collisions refuses names another upstream of the channel lists (under the tenant's upstream
@@ -746,9 +724,6 @@ func (s *Service) PutEntry(ctx context.Context, a authz.Actor, tenant, name stri
 	_, err := s.change(ctx, a, tenant, name, "extension.put", map[string]any{"value": e.Name, "versions": e.Versions,
 		"allow_reserved": e.AllowReserved, "eager": e.Eager}, func(tx *store.Tx, u *store.Upstream) error {
 		if err := upspec.Entry(u.Kind, u.Mode, &e); err != nil {
-			return err
-		}
-		if err := tenantReserved(ctx, tx, u.TenantID, []store.UpstreamEntry{e}); err != nil {
 			return err
 		}
 		created = !slices.ContainsFunc(u.Entries, func(x store.UpstreamEntry) bool { return x.Name == e.Name })

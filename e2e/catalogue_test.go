@@ -77,6 +77,9 @@ func TestCatalogueSources(t *testing.T) {
 	if _, err := adm.AddDistributorPublisher(ctx, serveAdmin, "acme", "enterest-ci", "enterest"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := adm.SetDistributorHold(ctx, serveAdmin, "acme", 0); err != nil { // spec 0037: its publisher's hold alone
+		t.Fatal(err)
+	}
 	key := publisherSigner(t)
 	if _, err := adm.AddPublisherKey(ctx, serveAdmin, "acme", "enterest-ci", authorizedKey(key), time.Now().Add(24*time.Hour)); err != nil {
 		t.Fatal(err)

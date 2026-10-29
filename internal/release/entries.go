@@ -89,7 +89,7 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		}
 	}
 	if dist != "" {
-		if err := s.distributorMay(ctx, tenant, typ, o.Name, dist); err != nil {
+		if err := s.distributorMay(ctx, typ, o.Name); err != nil {
 			return store.Build{}, false, err
 		}
 	} else if err := s.Authz.Allow(ctx, a, verb, res); err != nil {
@@ -190,9 +190,9 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 	created := false
 	if err := s.land(ctx, sp, &it, func(tx *store.Tx, bb store.Build, inserted bool) error {
 		// spec 0033 phase B: a distributor's name checked again in the landing transaction (reserved
-		// server-wide or for another holder, or the tenant suspended, during the upload)
+		// server-wide, or the tenant suspended, during the upload)
 		if dist != "" {
-			if err := distributorMayNow(ctx, tx, t.ID, typ, o.Name, dist); err != nil {
+			if err := distributorMayNow(ctx, tx, t.ID, typ, o.Name); err != nil {
 				return err
 			}
 		}

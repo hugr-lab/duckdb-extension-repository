@@ -14,6 +14,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -283,15 +284,10 @@ func TestEntryMetaAccess(t *testing.T) {
 		if es, err := rel.Catalogue(ctx, distPub, "acme", pkgtype.Default, "", ""); err != nil || len(es) != 1 || es[0].Meta.Summary != "x" {
 			t.Errorf("a distributor's publisher's list with its metadata: %+v %v", es, err)
 		}
-		// a name reserved in the tenant for another holder: the distributor's publisher no longer
-		// reaches it; the distribution admin still does
-		must(t, func() error {
-			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
-				_, _, err := tx.ReserveTenantName(ctx, &store.TenantReservedName{TenantID: dist.TenantID, Name: "geo", Holder: "someone else",
-					AddedBy: "os:1:t"})
-				return err
-			})
-		})
+		// a name reserved server-wide since: the distributor's publisher no longer reaches it; the
+		// distribution admin still does
+		t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
+		reserveServerWide(t, en.st, "geo")
 		refused("a distributor's publisher, a reserved name", write(distPub, "publisher:enterest-ci", "geo"))
 		refused("a distributor's publisher reads a reserved name", read(distPub, "publisher:enterest-ci", "geo"))
 		if es, err := rel.Catalogue(ctx, distPub, "acme", pkgtype.Default, "", ""); err != nil || len(es) != 1 || es[0].Meta.Summary != "" {

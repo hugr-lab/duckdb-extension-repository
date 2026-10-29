@@ -43,10 +43,10 @@ func (s *AuthAdmin) tenant(ctx context.Context, a authz.Actor, name string) (sto
 	return s.Store.GetTenant(ctx, name)
 }
 
-// distributor reports whether an actor is a distribution admin (spec 0030): on a tenant it may
-// create publishers, manage the distributors' publishers (spec 0037: their marks, holds and keys,
-// never the tenant's own publishers'), and grant publish, promote and admin on the names reserved in
-// the tenant; each of those calls narrows it, and nothing else admits it.
+// distributor reports whether an actor is a distribution admin (spec 0030): on a tenant it may create
+// distributors' publishers, read them and manage their licence-key marks, holds and keys (spec 0037:
+// never the tenant's own publishers, nor grants); each of those calls narrows it, and nothing else
+// admits it.
 func distributor(a authz.Actor) bool { return a.Kind == authz.ActorDistributionAdmin }
 
 // tenantOrDistributor is tenant for a call a distribution admin may make too.
@@ -58,21 +58,6 @@ func (s *AuthAdmin) tenantOrDistributor(ctx context.Context, a authz.Actor, name
 		return store.Tenant{}, err
 	}
 	return s.Store.GetTenant(ctx, name)
-}
-
-// distributorGrant is the grant a distribution admin may make or remove: publish, promote or admin
-// on an extension (in a channel or every channel), never on a tenant, a channel or a group, nor
-// for a whole issuer.
-func distributorGrant(kind, extension, group string, verbs []string) error {
-	if extension == "" || group != "" || kind == store.PrincipalIssuer {
-		return authz.ErrDenied
-	}
-	for _, v := range verbs {
-		if v != store.VerbPublish && v != store.VerbPromote && v != store.VerbAdmin {
-			return authz.ErrDenied
-		}
-	}
-	return nil
 }
 
 // keepAdmin runs inside a removal's transaction (under the tenant's auth lock): a tenant principal
@@ -249,18 +234,13 @@ type GrantOn struct{ Channel, Package, PackageGroup, PackageType string }
 // would hold it.
 func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, principal string, verbs []string, on GrantOn) (store.Grant, error) {
 	channel, extension := on.Channel, on.Package
-	t, err := s.tenantOrDistributor(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return store.Grant{}, err
 	}
 	kind, issuer, value, err := ParsePrincipal(principal)
 	if err != nil {
 		return store.Grant{}, err
-	}
-	if distributor(a) {
-		if err := distributorGrant(kind, extension, on.PackageGroup, verbs); err != nil {
-			return store.Grant{}, err
-		}
 	}
 	if kind == store.PrincipalIssuer && (slices.Contains(verbs, store.VerbAdmin) || slices.Contains(verbs, store.VerbPublish) ||
 		slices.Contains(verbs, store.VerbPromote) || slices.Contains(verbs, store.VerbAudit) || slices.Contains(verbs, store.VerbFeed)) {
@@ -286,17 +266,6 @@ func (s *AuthAdmin) AddGrant(ctx context.Context, a authz.Actor, tenant, princip
 	}
 	g.Verbs = dedupe(g.Verbs)
 	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
-		if distributor(a) {
-			// spec 0030: a distribution admin grants on the names reserved in the tenant only (of the
-			// grant's type, spec 0034)
-			held, err := tx.TenantReserves(ctx, t.ID, g.Type(), extension)
-			if err != nil {
-				return err
-			}
-			if !held {
-				return authz.ErrDenied
-			}
-		}
 		if kind == store.PrincipalPublisher {
 			p, err := tx.GetPublisher(ctx, t.ID, value)
 			if err != nil {
@@ -365,7 +334,7 @@ func dedupe(in []string) []string {
 
 // ListGrants lists a tenant's grants, those on extension groups included, by (created_at, id).
 func (s *AuthAdmin) ListGrants(ctx context.Context, a authz.Actor, tenant string) ([]store.Grant, error) {
-	t, err := s.tenantOrDistributor(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +356,7 @@ func allGrants(ta store.TenantAuth) []store.Grant {
 
 // RemoveGrant removes a grant.
 func (s *AuthAdmin) RemoveGrant(ctx context.Context, a authz.Actor, tenant, id string) error {
-	t, err := s.tenantOrDistributor(ctx, a, tenant)
+	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return err
 	}
@@ -395,25 +364,11 @@ func (s *AuthAdmin) RemoveGrant(ctx context.Context, a authz.Actor, tenant, id s
 	if err != nil {
 		return err
 	}
-	fields, publisher, found := map[string]any{}, "", false
+	fields, publisher := map[string]any{}, ""
 	for _, g := range allGrants(ta) {
 		if g.ID == id {
-			fields, publisher, found = grantFields(g), g.PublisherName, true
-			if distributor(a) {
-				if err := distributorGrant(g.Kind, g.Package, g.PackageGroupName, g.Verbs); err != nil {
-					return err
-				}
-				// a distribution admin's own grants (a publisher's only if it is a distributor's,
-				// checked below, spec 0037: which holds none): the tenant's other grants are its
-				// administrators'
-				if !strings.HasPrefix(g.CreatedBy, string(authz.ActorDistributionAdmin)+":") && g.PublisherName == "" {
-					return authz.ErrDenied
-				}
-			}
+			fields, publisher = grantFields(g), g.PublisherName
 		}
-	}
-	if distributor(a) && !found {
-		return fmt.Errorf("%w: grant %s", store.ErrNotFound, id)
 	}
 	return s.Store.InTenantTxForUpdate(ctx, t.ID, []string{"kista/tenant-auth/" + t.ID}, func(tx *store.Tx) error {
 		if publisher != "" {

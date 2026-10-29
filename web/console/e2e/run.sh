@@ -143,7 +143,6 @@ printf 'json\nparquet\n' >"$work/core.txt" # the version's core extensions (spec
 k version add v2.0.0 -kind release -c-api v1.5.6 -core-extensions "$work/core.txt"
 k tenant create acme -display-name Acme
 k channel create acme/prod -kind signed
-k tenant-reserved add acme acme_tool -holder enterest # spec 0030: shown to the tenant's administrators
 k channel versions acme/prod -add v2.0.0
 k key add acme/prod -signer file:a.pem -active
 k attestation-key add acme file:att.pem -active
@@ -175,6 +174,9 @@ k key add scratch/prod -signer file:s.pem -active
 k channel create acme/nightly -kind signed
 k channel versions acme/nightly -add v2.0.0
 k key add acme/nightly -signer file:n.pem -active
+# spec 0037: no minimum hold for distributors' publishers, so each one's own hold alone holds its
+# builds (enterest-ci's day; vault-dist's none: its vault 1.1 is live at once)
+k tenant distributor-hold acme 0
 k publisher add acme enterest-ci -distributor enterest
 ssh-keygen -q -t ed25519 -N '' -C enterest-ci -f "$work/enterest-ci"
 k publisher key add acme enterest-ci "$work/enterest-ci.pub" -expires 1d

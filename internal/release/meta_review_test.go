@@ -17,6 +17,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -160,7 +161,7 @@ func TestEntryMetaChecksBeforeUpload(t *testing.T) {
 }
 
 // Spec 0036 (review): the write's transaction checks again, under the tenant's auth lock, what
-// changed since its checks: a name reserved for another holder, a tenant suspended, a key revoked.
+// changed since its checks: a name reserved server-wide, a tenant suspended, a key revoked.
 // An icon uploaded for a write that fails is released to the collector. A claim lost is claimed and
 // uploaded again.
 func TestEntryMetaChecksAgain(t *testing.T) {
@@ -182,24 +183,18 @@ func TestEntryMetaChecksAgain(t *testing.T) {
 			}
 			return ok
 		}
-		// a name reserved for another holder meanwhile
-		release.SetBeforeMetaCommit(rel, func() {
-			must(t, func() error {
-				return en.st.InTx(ctx, "", func(tx *store.Tx) error {
-					_, _, err := tx.ReserveTenantName(ctx, &store.TenantReservedName{TenantID: tn.ID, Name: "geo", Holder: "someone else", AddedBy: "os:1:t"})
-					return err
-				})
-			})
-		})
-		reserved := signed()
-		_, err := rel.SetEntryMeta(ctx, distPub, "acme", "", "publisher:enterest-ci", "geo", reserved)
+		// a name reserved server-wide meanwhile
+		t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
+		release.SetBeforeMetaCommit(rel, func() { reserveServerWide(t, en.st, "geo") })
+		onReserved := signed()
+		_, err := rel.SetEntryMeta(ctx, distPub, "acme", "", "publisher:enterest-ci", "geo", onReserved)
 		var up *release.UploadedError
-		if !errors.Is(err, authz.ErrDenied) || !errors.As(err, &up) || c.puts.Load() != 1 || !released(reserved) {
+		if !errors.Is(err, authz.ErrDenied) || !errors.As(err, &up) || c.puts.Load() != 1 || !released(onReserved) {
 			t.Fatalf("a name reserved meanwhile: %v, %d puts", err, c.puts.Load())
 		}
 		must(t, func() error {
 			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
-				_, err := tx.ReleaseTenantName(ctx, tn.ID, "duckdb_extension", "geo")
+				_, err := tx.RemoveReservedName(ctx, "duckdb_extension", "geo")
 				return err
 			})
 		})

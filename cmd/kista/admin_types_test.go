@@ -40,19 +40,12 @@ func TestAdminPackageTypes(t *testing.T) {
 		strings.Count(got, "test_package") != 1 {
 		t.Fatalf("channel list: %q", got)
 	}
-	// the server's and the tenant's reservations per type
+	// the server's reservations per type
 	run(0, "reserved", "add", "httpfs", "-kind", "core", "-type", "test_package")
 	if got := run(0, "reserved", "list", "-type", "test_package"); !strings.Contains(got, "httpfs") || strings.Contains(got, "legacy_parser") {
 		t.Fatalf("the other type's reservations: %q", got)
 	}
 	run(1, "reserved", "list", "-type", "nope")
-	run(0, "tenant-reserved", "add", "acme", "snowflake", "-holder", "columnar", "-type", "test_package")
-	if got := run(0, "tenant-reserved", "list", "acme"); strings.Contains(got, "snowflake") {
-		t.Fatalf("the default type's tenant reservations: %q", got)
-	}
-	if got := run(0, "tenant-reserved", "list", "acme", "-type", "test_package"); !strings.Contains(got, "columnar") {
-		t.Fatalf("the other type's tenant reservations: %q", got)
-	}
 	// a group's members of each type
 	run(0, "extension-group", "add", "acme", "warehouse")
 	run(0, "extension-group", "members", "acme", "warehouse", "-add", "snowflake")

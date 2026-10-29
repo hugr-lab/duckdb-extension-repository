@@ -3,8 +3,9 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Pager, Table, when } from '../components/ui'
 import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
+import { useAction } from '../lib/action'
 import { GrantForm, GrantsList, useGrants } from './Access'
-import { holdWords } from './Sources'
+import { holdInput, holdWords } from './Sources'
 
 // Publishers (spec 0008, 0023; console phase 2a): identities that only publish and promote, from CI
 // of any forge, signing their requests with an SSH key registered here. They never sign in here.
@@ -32,6 +33,9 @@ interface Publisher {
   license_keys?: boolean
   /** its hold (spec 0033): what it publishes waits this long for any channel; omitted for none */
   hold?: string
+  /** a distributor's publisher's hold as its entries are held: the larger of its own and the tenant's
+   * minimum for distributors' publishers (spec 0037); omitted for none */
+  effective_hold?: string
   /** a distributor's publisher's distributor (spec 0033 phase B): marked by a server administrator */
   distributor?: string
 }
@@ -84,42 +88,53 @@ export function Publishers() {
               </span>
             )],
             ['Keys', (p) => (p.keys.length ? p.keys.map((k) => k.title || k.fingerprint).join(', ') : <span className="text-ink-muted">none</span>)],
-            ['Hold', (p) => holdWords(p.hold)],
+            ['Hold', (p) => holdWords(p.distributor ? p.effective_hold : p.hold)],
             ['Added', (p) => when(p.created_at)],
           ]}
         />
       )}
       <Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />
-      <ReservedNames />
+      <DistributorHold onChanged={list.reload} />
     </>
   )
 }
 
-interface TenantReserved {
-  name: string
-  holder: string
-  added_at: string
-  added_by: string
-}
-
-/** The names a distributor holds in the tenant (spec 0030): read here, changed by the server's
- * administrators and distribution admins only. */
-function ReservedNames() {
+/** The tenant's minimum hold for distributors' publishers (spec 0037): an entry one publishes is held
+ * for the larger of its publisher's hold and this, so a stolen distributor's credential cannot reach
+ * a channel at once. Its administrators set it (a day by default); a caller who may not read it sees
+ * nothing. onChanged runs after a change: the publishers' effective holds follow it. */
+export function DistributorHold({ onChanged }: { onChanged?: () => void }) {
   const { client, api } = useTenant()
-  const list = useLoad(() => client.get<{ reserved_names: TenantReserved[] }>(`${api}/reserved-names`), [api])
-  const rows = list.data?.data.reserved_names ?? []
-  // a caller who may not read them, or a replica that does not know them: nothing to show
-  if (list.error instanceof ApiError && list.error.status === 404) return null
-  if (list.error) return <ErrorBox error={list.error} />
-  if (rows.length === 0) return null
+  const path = `${api}/distributor-hold`
+  const hold = useLoad(() => client.get<{ hold: string }>(path), [path])
+  const [value, setValue] = useState('')
+  const { busy, failure, act } = useAction('The minimum hold', hold.reload)
+  if (hold.error instanceof ApiError && hold.error.status === 404) return null
   return (
-    <Card title="Names reserved for a distributor">
-      <Table rows={rows} rowKey={(r) => r.name} columns={[
-        ['Name', (r) => <Mono>{r.name}</Mono>],
-        ['Holder', (r) => r.holder],
-        ['Since', (r) => when(r.added_at)],
-      ]} />
-      <Note>Only a grant that names the extension publishes or promotes it here; a tenant- or channel-wide grant does not.</Note>
+    <Card title="Minimum hold for distributors' publishers">
+      <div className="flex flex-col gap-2">
+        <form role="group" aria-label="minimum hold for distributors' publishers" className="flex flex-wrap items-center gap-2 text-[13px]"
+          onSubmit={(e) => {
+            e.preventDefault()
+            act(() => client.put(path, { body: { hold: holdInput(value) } })).then((ok) => {
+              if (ok) {
+                setValue('')
+                hold.reload()
+                onChanged?.()
+              }
+            })
+          }}>
+          <span className="text-ink-muted">Minimum hold</span>
+          <b>{hold.data ? holdWords(hold.data.data.hold) : '…'}</b>
+          <input aria-label="new minimum hold" className="field w-32 py-1 font-mono text-[13px]" placeholder="24h, 2d, 0" required value={value}
+            onChange={(e) => setValue(e.target.value)} />
+          <Button type="submit" disabled={busy}>Set minimum</Button>
+        </form>
+        {(failure != null || hold.error != null) && <ErrorBox error={failure ?? hold.error} />}
+        <Note>What a distributor's publisher publishes is held at least this long, whatever hold its distributor sets: within it, removing
+          a stolen key with its held entries purged keeps them from every channel. Raising it holds what is held now longer; lowering it
+          applies to what arrives from then on.</Note>
+      </div>
     </Card>
   )
 }
@@ -166,7 +181,8 @@ function PublisherView({ name }: { name: string }) {
       {p.distributor && (
         <Note>A distributor's publisher, {p.distributor}'s: it publishes into the tenant's <Link to={`${base}/catalogue`}>catalogue</Link> only,
           without grants, and reaches no channel by itself: channels take its builds by their rules. Its keys and its hold
-          ({holdWords(p.hold)}) are the distributor's: a change a tenant administrator makes here is refused.</Note>
+          ({holdWords(p.hold)}) are the distributor's: a change a tenant administrator makes here is refused. Its builds are held
+          for {holdWords(p.effective_hold)}: its hold, or the tenant's minimum for distributors' publishers when that is longer.</Note>
       )}
       <Keys publisher={p} onChanged={pub.reload} />
       {!p.distributor && <PublisherGrants publisher={p.name} />}

@@ -68,13 +68,13 @@ func testLicensePublicWarning(t *testing.T, e storetest.Engine) {
 
 	// a distributor's publisher with tresor 1.0 in the catalogue, on two platforms, declaring the
 	// licence's key
-	dist := store.Publisher{TenantID: tid, Name: "enterest-ci", CreatedBy: "os:1:t"}
+	dist := store.Publisher{TenantID: tid, Name: "enterest-ci", CreatedBy: "os:1:t", Distributor: "enterest"}
 	must(t, func() error {
 		return en.st.InTx(ctx, "", func(tx *store.Tx) error {
 			if err := tx.InsertPublisher(ctx, &dist); err != nil {
 				return err
 			}
-			if _, err := tx.SetPublisherDistributor(ctx, tid, dist.Name, "enterest"); err != nil {
+			if _, err := tx.SetDistributorHold(ctx, tid, 0); err != nil { // spec 0037: its builds live at once
 				return err
 			}
 			_, err := tx.SetPublisherLicenseKeys(ctx, tid, dist.Name, true)

@@ -270,8 +270,8 @@ kista admin -config kista.yaml version add v2.0.0 -kind release -c-api v1.5.6 -c
 
 ## Reserved names
 
-The server's reserved extension names, and the names reserved in a tenant (spec 0030; [Reserved
-names](../publishing.md#reserved-names)). Server administrators only. Every command takes
+The server's reserved extension names (spec 0030; [Reserved names](../publishing.md#reserved-names)).
+Server administrators only. Every command takes
 `-type <package type>` (spec 0034): names are reserved per type, `duckdb_extension` by default.
 
 | Command | What it does |
@@ -279,9 +279,6 @@ names](../publishing.md#reserved-names)). Server administrators only. Every comm
 | `reserved add <name>... -kind core` or `-kind community` `[-force]` | reserves names, with the source `admin:<actor>`; a name that becomes reserved (or community that becomes core) with releases that are not yanked or purged in some tenant is refused, naming the tenants, unless `-force` (the releases stay, and only grants naming the extension reach the name from then on) |
 | `reserved list [-name <name>]` | `NAME`, `KIND`, `ADDED`, `SOURCES` |
 | `reserved remove <name>` | removes a name only administrators reserved; a name a version, an upstream or the seed brought stays |
-| `tenant-reserved add <tenant> <name> -holder <text>` | reserves a name in a tenant for a holder (or changes its holder); prints the name's live releases there |
-| `tenant-reserved remove <tenant> <name>` | releases it; no release changes |
-| `tenant-reserved list <tenant>` | `NAME`, `HOLDER`, `ADDED`, `BY` |
 
 ## Tenants
 
@@ -289,8 +286,9 @@ names](../publishing.md#reserved-names)). Server administrators only. Every comm
 | --- | --- | --- |
 | `tenant create <name> [-display-name <text>] [-domain <storage domain>] [-holder-id <id>]` | creates a tenant; without `-domain` it lives in `default`; the domain must be configured and never changes; a deleted tenant's name is refused; `-holder-id` sets the holder its licences must name | the tenant id |
 | `tenant list [-state <s>,…]` | the tenants in the given states (`active`, `suspended`, `deleting`, `deleted`); by default every state but `deleted` | `NAME`, `STATE`, `DOMAIN`, `DISPLAY NAME`, `CREATED` |
-| `tenant show <name>` | a tenant in any state: its record (with its expected holder, when set), and when a suspended one becomes deletable; for a deleting or deleted one, who started the deletion and when, its progress, the last error and the keys to retire | `name:`, `state:`, `holder id:`, `deletable from:`, `deletion by:`, … one per line |
+| `tenant show <name>` | a tenant in any state: its record (with its expected holder, when set), and when a suspended one becomes deletable; for a deleting or deleted one, who started the deletion and when, its progress, the last error and the keys to retire | `name:`, `state:`, `holder id:`, `distributor hold:` (spec 0037), `deletable from:`, `deletion by:`, … one per line |
 | `tenant holder <name> <id>`, `tenant holder <name> -clear` | sets or clears the holder the tenant's licences must name (their `sub`, 1 to 128 bytes; an empty id is refused, only `-clear` clears it; setting the holder it has, or clearing none, changes nothing); every path that stores a licence then refuses another holder's (`holder_mismatch`); setting it is refused while the tenant holds a licence of another holder, naming those licences ([An expected holder](../licensing.md#an-expected-holder)) | |
+| `tenant distributor-hold <name> [<duration>]` | the tenant's [minimum hold for distributors' publishers](../access.md#the-minimum-hold-for-distributors-publishers) (spec 0037): a distributor's publisher's builds are held at least this long, whatever its own hold (`24h`, `2d`; `0` for none; one day by default). Raising it holds the distributors' entries held now longer | without a duration, the hold (`24h0m0s`) |
 | `tenant suspend <name>`, `tenant resume <name>` | a suspended tenant is served nothing and its API answers `404` except to server administrators; both are refused once a deletion started | |
 | `tenant delete <name> -confirm <name>` | deletes a tenant suspended for at least `tenants.min_suspended`; the name is given twice; cannot be undone; warns when `gc.interval` is `0` | the keys to retire in their key sources (`KIND`, `ID`, `FINGERPRINT`, `SIGNER`) |
 | `tenant reap <name> [-force]` | removes a deleting tenant's rows in this process and writes its tombstone; refused before the settle period (2 hours after the delete) ends, saying how long remains; `-force` skips the wait, only when no `kista serve` and no other command runs | `tenant <name> deleted` |
@@ -414,10 +412,10 @@ A principal is `subject:<issuer>|<value>`, `role:<issuer>|<value>`, `group:<issu
 | --- | --- | --- |
 | `publisher add <tenant> <name>`, `publisher remove <tenant> <name>` | an identity that only publishes and promotes | |
 | `publisher add <tenant> <name> -distributor <distributor>` | a [distributor's publisher](../publishing.md#distributors-publishers), marked at its creation: it publishes into the catalogue only, without grants; its keys, hold, purges and withdrawals are the distributor's | |
-| `publisher list <tenant>` | `PUBLISHER`, `ID`, `LICENSE KEYS`, `KEY`, `FINGERPRINT`, `TITLE`, `HOLD`, `DISTRIBUTOR` | |
-| `publisher show <tenant> <name>` | a publisher: `name`, `id` (spec 0037: a distributor recognises its publisher by it), `created`, `created by`, `license keys`, `hold`, `distributor`, `keys` (how many) | |
-| `publisher hold <tenant> <name> <duration>` | its [hold](../publishing.md#holds-and-early-placement) (`24h`, `2d`; `0` for none): what it publishes is held, and it publishes into the catalogue only; a distributor's publisher's is the distributor's | |
-| `publisher distributor <tenant> <name> <distributor>` | renames a [distributor's publisher](../publishing.md#distributors-publishers)'s distributor, or marks a fresh publisher a distribution admin created (an operator's or a tenant administrator's is refused); marking a fresh one is, over the API, a server administrator's act only (spec 0037) | |
+| `publisher list <tenant>` | `PUBLISHER`, `ID`, `LICENSE KEYS`, `KEY`, `FINGERPRINT`, `TITLE`, `HOLD`, `HELD FOR` (how long its entries are held: a distributor's publisher's, the larger of its hold and the tenant's `distributor-hold`, spec 0037), `DISTRIBUTOR` | |
+| `publisher show <tenant> <name>` | a publisher: `name`, `id` (spec 0037: a distributor recognises its publisher by it), `created`, `created by`, `license keys`, `hold`, `held for` (a distributor's publisher's only), `distributor`, `keys` (how many) | |
+| `publisher hold <tenant> <name> <duration>` | its [hold](../publishing.md#holds-and-early-placement) (`24h`, `2d`; `0` for none): what it publishes is held, and it publishes into the catalogue only; a distributor's publisher's is the distributor's, and holds only above the tenant's `distributor-hold` | |
+| `publisher distributor <tenant> <name> <distributor>` | renames a [distributor's publisher](../publishing.md#distributors-publishers)'s distributor, an unused one's (spec 0036); an existing publisher is never marked a distributor's (spec 0037: one without the mark is refused) | |
 | `publisher license-keys <tenant> <name> on or off` | marks it a source of licence keys (spec 0021), or unmarks it: a server administrator's act | |
 | `publisher key add <tenant> <name> <file.pub or -> [-expires <days>d or <RFC 3339 time>]` | registers a public SSH key (`ssh-ed25519` or `ecdsa-sha2-nistp256`) the publisher signs its requests with (spec 0023); an expiry within a year, or none | the key id |
 | `publisher key list <tenant> <name>` | `ID`, `FINGERPRINT`, `TYPE`, `TITLE`, `EXPIRES`, `LAST USED`, `CREATED`, `BY` | |

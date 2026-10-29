@@ -126,12 +126,12 @@ func TestDistributorStatistics(t *testing.T) {
 	for q, want := range map[string]int{
 		"":                                    400, // no distributor
 		"?distributor=enterest&distributor=x": 400,
-		"?distributor=" + strings.Repeat("d", store.MaxHolder+1): 400,
-		"?distributor=enterest&type=nope":                        400,
-		"?distributor=enterest&from=2026-10-09&to=2026-10-01":    400,
-		"?distributor=enterest&from=2020-01-01":                  400, // beyond 53 weeks
-		"?distributor=enterest&from=2999-01-01":                  400, // after the last complete week
-		"?distributor=nobody":                                    200,
+		"?distributor=" + strings.Repeat("d", store.MaxDistributor+1): 400,
+		"?distributor=enterest&type=nope":                             400,
+		"?distributor=enterest&from=2026-10-09&to=2026-10-01":         400,
+		"?distributor=enterest&from=2020-01-01":                       400, // beyond 53 weeks
+		"?distributor=enterest&from=2999-01-01":                       400, // after the last complete week
+		"?distributor=nobody":                                         200,
 	} {
 		if s := m.call(t, "GET", D+q, m.toks["server dist admin"], ""); s.status != want {
 			t.Errorf("%q: %d, want %d: %s", q, s.status, want, s.body)

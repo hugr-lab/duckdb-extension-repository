@@ -1,12 +1,15 @@
 # Spec 0030: Reserved names as data, and a distributor's names in a tenant
 
 - **Status**: implemented (parts 1, 2 and 3)
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): tenant reservations (part 2) are removed: `tenant_reserved_names` is dropped (migration 0046), with its routes, `kista admin tenant-reserved`, the `reserved.tenant.*` events and the lookup's `tenant` step; the distribution admins' calls are spec 0037's list (distributors' publishers and their entries only, no reservations, ordinary publishers or grants). Part 1 (the server's names) and part 3 (the community sync) stand.
 - **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): distribution admins write a distributor's entries' icon and summary.
 - **Changed by** [0036](../0036-entry-meta/spec.md) (phase 2): distribution admins read a distributor's download statistics across tenants (`GET /api/v1/distributor-stats/downloads`), and never rename a used publisher's distributor.
 - **Date**: 2026-10-22
 - **Author**: vgsml, Claude
 
 ## Summary
+
+*Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): a tenant no longer holds names for a distributor, and the distribution admins manage only distributors' publishers.*
 
 The names DuckDB owns (core and community) become the server's data, not lists compiled into kista.
 A DuckDB version brings its core names when it is registered, an upstream brings the names it
@@ -17,6 +20,8 @@ reach the catalogue a distributor publishes into it. A narrow server role, the *
 admins**, manages those reservations and the distributor's marked publishers, and nothing else.
 
 ## Problem
+
+*Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): the third bullet (a distributor keeping its names in a tenant) is no longer addressed by reservations; a distributor's publisher publishes into the catalogue only, and the tenant's rules decide what its channels serve (spec 0031, 0033).*
 
 - **The core list follows kista's pin, not the DuckDB versions it serves.** Spec 0008 generates it
   from the DuckDB commit in `e2e/DUCKDB_PIN` and compiles it in. A DuckDB release with a new core
@@ -109,6 +114,8 @@ reserved_version        a single row: the list's version, a counter
 
 ### What a reservation changes, and what it does not
 
+*Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): the lookup's `tenant` step, the snapshot's tenant set and the re-check of a tenant's names under the release insert's locks are removed; the lookup answers core, community, then upstream.*
+
 - Every check that spec 0008 and spec 0009 make against the compiled lists reads the table instead,
   through one lookup, `reserved.Lookup(ctx, tenant, name)`, which answers core, community, tenant
   (below) or upstream (spec 0009's names an upstream of the tenant provides), in that precedence:
@@ -135,6 +142,8 @@ reserved_version        a single row: the list's version, a counter
 
 ### Names reserved in a tenant
 
+*Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): this section is removed: names are no longer reserved in a tenant.*
+
 ```text
 tenant_reserved_names   tenant_id fk, name, holder, added_at;   pk (tenant_id, name)
 ```
@@ -160,6 +169,8 @@ tenant_reserved_names   tenant_id fk, name, holder, added_at;   pk (tenant_id, n
 
 ### The distribution admins
 
+*Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): the role keeps distributors' publishers (created marked) with their keys, licence-key marks, holds and catalogue entries, and reads a tenant's state and the server's reserved names; it no longer reserves names, creates ordinary publishers or writes grants.*
+
 `auth.server_distribution_admins` (principals, as `auth.server_license_admins` of spec 0029) may,
 on every tenant, and nothing else:
 - reserve and release names in the tenant, and read the server's reserved names;
@@ -172,6 +183,8 @@ It is never a tenant administrator: it reads no channel, key or release beyond w
 answer, and cannot change a tenant, a channel or a key set.
 
 ### Data model
+
+*Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): `tenant_reserved_names` is dropped by migration 0046 (`min_reader 46`).*
 
 Migration 0030, in every dialect (PostgreSQL, SQL Server, SQLite):
 
@@ -197,16 +210,22 @@ suite checks the migration holds them.
   trusts what its URL serves (TLS, GitHub, DuckDB's review of what is merged into
   community-extensions). What it changes only narrows who may publish a name, and it leaves a name a
   tenant has releases under, or a jump of more than 100 names, to an administrator (as built, part 3).
-- **Tenant isolation.** A tenant's reserved names reach only that tenant. Only server and
+- **Tenant isolation.** *(Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): no names are reserved in a tenant
+  any more.)* A tenant's reserved names reach only that tenant. Only server and
   distribution admins reserve and release them: a tenant administrator cannot lift a distributor's
   reservation, nor make one that would block another tenant.
-- **The distribution admins** hold a fixed list of calls; a stolen principal of that role can reserve
+- **The distribution admins** *(Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md)
+  (PR 2): the role no longer reserves names, writes grants or creates ordinary publishers; a stolen
+  token's reach is spec 0037's Security, bounded by the tenant's minimum hold for distributors'
+  publishers.)* hold a fixed list of calls; a stolen principal of that role can reserve
   names (an annoyance, undone by a server administrator), manage the publishers a distributor
   marked, and grant `publish`, `promote` and `admin` on the names reserved in a tenant: it can
   publish under those names there, as the distributor does. It cannot take a tenant's publisher with
   grants, grant on other names, remove the tenant's grants, or change a tenant's keys; it reads a
   tenant's channels only as a reservation's answer names releases under the name (as built, part 2).
-- **Existence.** The server's reserved names are DuckDB's, public anyway; a tenant's are read only
+- **Existence.** *(Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md) (PR 2):
+  a tenant reserves no names; a distribution admin reads the server's names and kinds only, without
+  their sources.)* The server's reserved names are DuckDB's, public anyway; a tenant's are read only
   by its administrators and the admins above.
 
 ## Testing
@@ -285,6 +304,8 @@ Three parts, each a pull request:
   commit.
 
 ### As built (part 2)
+
+*Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): the table, its routes, its CLI, its events and the lookup's `tenant` step are removed; the distribution admins' calls are spec 0037's list.*
 
 - Migration 0031 creates `tenant_reserved_names` (with `added_by`) and sets `min_reader 31`.
 - **The lookup** is `store.ReservedFor(tenant, name)`: core or community from the synced view, then

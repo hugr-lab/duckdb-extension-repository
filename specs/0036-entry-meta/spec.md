@@ -1,6 +1,7 @@
 # Spec 0036: Entry icons and distributor statistics
 
 - **Status**: implemented (phases 1 and 2)
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): tenant reservations are removed: `distributorMay` (and `distributorMayNow`) is "not reserved server-wide" only, and a distributor's publisher's catalogue list reads the server-wide reservations of its names (`Store.ReservedAmong`, which replaces `Store.ReservedAgainst`); a distributor's publisher is only created marked, and its distributor still renamed only while unused.
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -202,7 +203,8 @@ The service runs one of three checks, chosen by the entry's source:
    - `publisher:<own name>` and `publisher-id:<own id>` both mean its own source, resolved by id.
      Any other source is `404`.
    - A distributor's publisher must also pass `distributorMay` for the name (not reserved
-     server-wide, nor in the tenant for another holder).
+     server-wide; spec 0037 PR 2 removed "nor in the tenant for another holder" with tenant
+     reservations).
    - A tenant's own publisher needs nothing more. Its entry exists only because it published the
      name.
 
@@ -628,7 +630,8 @@ fixes followed in the same branch.
     server administrator), a publisher and its key (`PublicationLive`), a distributor's publisher's
     name (`distributorMayNow`), a tenant administrator never on a distributor's entry; then stale
     and a kept icon changed. A distribution admin is not held to `distributorMayNow`: it writes the
-    metadata of a name reserved since for another holder, as it withdraws its versions. A tenant
+    metadata of a name reserved since for another holder (spec 0037 PR 2: reserved server-wide since),
+    as it withdraws its versions. A tenant
     administrator's grants and a distribution admin's `distribute` are not checked again in the
     transaction (a grant revoked meanwhile lets one write in flight through, as for every other
     write of theirs); the cap is not either, a race bounded by the writes in flight.
@@ -645,9 +648,11 @@ fixes followed in the same branch.
 - **Reads.** "Catalogue readers" are spec 0033's: the tenant-wide administrators, the distribution
   admins (a distributor's entries) and a distributor's publisher (its own, signed), so the reads
   take the same checks as the writes, a tenant's administrators also reading a distributor's
-  entries. A distributor's publisher reads no metadata of a name reserved since for another holder:
+  entries. A distributor's publisher reads no metadata of a name reserved since for another holder (spec
+  0037 PR 2: reserved server-wide since):
   neither the entry's read nor the catalogue's list answers it (the list reads the reservations of
-  its names in one query, `Store.ReservedAgainst`).
+  its names in one query, `Store.ReservedAgainst`; spec 0037 PR 2: a name reserved server-wide since,
+  `Store.ReservedAmong`).
 - **The answers** carry `source`, `name`, `distributor` and `package_type` beside the spec's fields;
   `set_by` is shown as other answers show an actor (a server's or a distribution admin's actor by
   its kind to a caller who is not a server administrator). `Allow` now lists `PUT`.

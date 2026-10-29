@@ -89,13 +89,12 @@ func TestDistributorsLicences(t *testing.T) {
 			t.Fatalf("not refused as older (from %s): %d %s", in, r.status, r.body)
 		}
 	}
-	if _, err := storetest.LicenseKey(ctx, m.st, tid, "tresor", store.KeySourcePublisher, "enterest-ci", &m.licKey.PublicKey); err != nil {
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error { // a distributor's publisher, marked at its creation
+		return tx.InsertPublisher(ctx, &store.Publisher{TenantID: tid, Name: "enterest-ci", CreatedBy: "os:1:t", Distributor: "enterest"})
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
-		_, err := tx.SetPublisherDistributor(ctx, tid, "enterest-ci", "enterest")
-		return err
-	}); err != nil {
+	if _, err := storetest.LicenseKey(ctx, m.st, tid, "tresor", store.KeySourcePublisher, "enterest-ci", &m.licKey.PublicKey); err != nil {
 		t.Fatal(err)
 	}
 	m.declare(t, "ci", "c", &m.licKey.PublicKey) // the tenant's own publisher, the same key live in its entry

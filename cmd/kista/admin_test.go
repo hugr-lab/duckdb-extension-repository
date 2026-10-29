@@ -125,14 +125,19 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "reserved", "remove", "kista_cli_a")
 	run(1, "reserved", "remove", "kista_test_core") // a version's name stays
 	run(2, "reserved", "remove")
-	// spec 0030 part 2: a name reserved in a tenant
-	run(0, "tenant-reserved", "add", "acme", "acme_tool", "-holder", "enterest")
-	run(1, "tenant-reserved", "add", "acme", "acme_tool") // a holder is required
-	if got := run(0, "tenant-reserved", "list", "acme"); !strings.Contains(got, "acme_tool") || !strings.Contains(got, "enterest") {
-		t.Fatalf("tenant-reserved list: %q", got)
+	// spec 0037: tenant reservations are gone; the tenant's minimum hold for distributors' publishers
+	run(2, "tenant-reserved", "list", "acme")
+	if got := run(0, "tenant", "distributor-hold", "acme"); got != "24h0m0s\n" {
+		t.Fatalf("the default minimum: %q", got)
 	}
-	run(0, "tenant-reserved", "remove", "acme", "acme_tool")
-	run(1, "tenant-reserved", "remove", "acme", "acme_tool")
+	run(0, "tenant", "distributor-hold", "acme", "2d")
+	if got := run(0, "tenant", "distributor-hold", "acme"); got != "48h0m0s\n" {
+		t.Fatalf("the minimum: %q", got)
+	}
+	run(2, "tenant", "distributor-hold", "acme", "forever")
+	run(1, "tenant", "distributor-hold", "acme", "100d") // past the longest hold
+	run(1, "tenant", "distributor-hold", "nope", "0")
+	run(0, "tenant", "distributor-hold", "acme", "0")
 	run(0, "version", "c-api", "v2.0.0", "-c-api", "v2.0.0")
 	run(1, "version", "c-api", "v2.0.0", "-c-api", "v2.1.0") // a major is never changed
 	if got := run(0, "version", "list"); !strings.Contains(got, "v1.5.6 v2.0.0") {
@@ -502,7 +507,7 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "publisher", "remove", "acme", "acl-ci")
 	// a distributor's publisher (spec 0033 phase B): marked, listed, holds no grant; a version withdrawn
 	run(0, "publisher", "add", "acme", "plain-ci")
-	run(1, "publisher", "distributor", "acme", "plain-ci", "enterest") // an operator's publisher is not taken over
+	run(1, "publisher", "distributor", "acme", "plain-ci", "enterest") // spec 0037: an existing publisher is never marked
 	run(2, "publisher", "list", "acme", "-distributor", "enterest")    // -distributor is add's
 	run(1, "publisher", "add", "acme", "enterest-ci", "-distributor", "line\nbreak")
 	run(0, "publisher", "add", "acme", "enterest-ci", "-distributor", "enterest-eu")
@@ -512,6 +517,36 @@ func TestAdminCLI(t *testing.T) {
 	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, "DISTRIBUTOR") || !strings.Contains(got, "enterest\n") {
 		t.Fatalf("publisher list with a distributor: %q", got)
 	}
+	// spec 0037: its entries held for the larger of its hold and the tenant's minimum
+	run(0, "tenant", "distributor-hold", "acme", "36h")
+	if got := run(0, "publisher", "list", "acme"); !strings.Contains(got, "HELD FOR") || !strings.Contains(got, "36h0m0s") {
+		t.Fatalf("publisher list with its effective hold: %q", got)
+	}
+	if got := run(0, "publisher", "show", "acme", "enterest-ci"); !strings.Contains(got, "held for:") || !strings.Contains(got, "36h0m0s") {
+		t.Fatalf("publisher show with its effective hold: %q", got)
+	}
+	// the tenant's own publisher's entries are held for its own hold, whatever the minimum
+	run(0, "publisher", "hold", "acme", "plain-ci", "2h")
+	seen := false
+	for _, l := range strings.Split(run(0, "publisher", "list", "acme"), "\n") {
+		if f := strings.Fields(l); len(f) > 0 && f[0] == "plain-ci" {
+			seen = true
+			if strings.Count(l, "2h0m0s") != 2 || strings.Contains(l, "36h") {
+				t.Fatalf("an own publisher's HELD FOR: %q", l)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("publisher list without plain-ci")
+	}
+	if got := run(0, "publisher", "show", "acme", "plain-ci"); strings.Contains(got, "held for:") || !strings.Contains(got, "2h0m0s") {
+		t.Fatalf("publisher show of an own publisher: %q", got)
+	}
+	run(0, "publisher", "hold", "acme", "plain-ci", "0")
+	if got := run(0, "tenant", "show", "acme"); !strings.Contains(got, "distributor hold: 36h0m0s") {
+		t.Fatalf("tenant show with the minimum: %q", got)
+	}
+	run(0, "tenant", "distributor-hold", "acme", "0")
 	run(1, "grant", "add", "acme", "-principal", "publisher:enterest-ci", "-verb", "publish", "-extension", "geo")
 	withdrawable(t, filepath.Join(dir, "k.db"), "acme", "enterest-ci", "geo", "1.0")
 	run(2, "catalogue", "withdraw", "acme", "publisher:enterest-ci", "geo", "1.0")                                   // no -reason

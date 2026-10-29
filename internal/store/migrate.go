@@ -277,6 +277,11 @@ func (s *Store) Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.checkLevel(ctx, len(ms))
+}
+
+// checkLevel is Check for a binary whose schema level is level (the migrations it knows).
+func (s *Store) checkLevel(ctx context.Context, level int) error {
 	current, minReader, err := s.schemaState(ctx, s.db)
 	if err != nil {
 		if missing, merr := s.migrationsTableMissing(ctx); merr == nil && missing {
@@ -284,10 +289,10 @@ func (s *Store) Check(ctx context.Context) error {
 		}
 		return fmt.Errorf("store: reading schema_migrations: %w", err)
 	}
-	if minReader > len(ms) {
+	if minReader > level {
 		return ErrSchemaTooNew
 	}
-	if current < len(ms) {
+	if current < level {
 		return ErrSchemaBehind
 	}
 	return nil

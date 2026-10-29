@@ -63,6 +63,11 @@ func TestLicenseManager(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if err := m.st.InTx(ctx, "", func(tx *store.Tx) error { // a distributor's publisher, marked at its creation
+			return tx.InsertPublisher(ctx, &store.Publisher{TenantID: tenant.ID, Name: "nobody", CreatedBy: "os:1:t", Distributor: "enterest"})
+		}); err != nil {
+			t.Fatal(err)
+		}
 		kid, err := storetest.LicenseKey(ctx, m.st, tenant.ID, "tresor", store.KeySourcePublisher, "nobody", &m.licKey.PublicKey)
 		if err != nil {
 			t.Fatal(err)
@@ -72,9 +77,6 @@ func TestLicenseManager(t *testing.T) {
 		// names the first's entries only; any other source, whatever it is, answers as a missing path
 		// does, before anything about it is told (404, audited); it reads every licence
 		if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
-			if _, err := tx.SetPublisherDistributor(ctx, tenant.ID, "nobody", "enterest"); err != nil {
-				return err
-			}
 			p := store.Publisher{TenantID: tenant.ID, Name: "plain", CreatedBy: "os:1:t"}
 			return tx.InsertPublisher(ctx, &p)
 		}); err != nil {
@@ -170,14 +172,11 @@ func TestLicenseManager(t *testing.T) {
 		// a removed distributor's publisher's licence: removed by its id form
 		var goneID string
 		if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
-			p := store.Publisher{TenantID: tenant.ID, Name: "gone-ci", CreatedBy: "os:1:t"}
+			p := store.Publisher{TenantID: tenant.ID, Name: "gone-ci", CreatedBy: "os:1:t", Distributor: "enterest"}
 			if err := tx.InsertPublisher(ctx, &p); err != nil {
 				return err
 			}
 			goneID = p.ID
-			if _, err := tx.SetPublisherDistributor(ctx, tenant.ID, "gone-ci", "enterest"); err != nil {
-				return err
-			}
 			l := store.License{TenantID: tenant.ID, Name: "tresor", Entry: store.PublisherSource(p.ID), LicenseID: "lic-gone", Issuer: "i",
 				HolderID: tn, Plan: "old", Token: "t", Key: kid, IssuedAt: 1, ExpiresAt: 2, GraceUntil: 4102444800, Source: store.LicenseImport,
 				Visibility: store.Private, Actor: "os:1:t"}

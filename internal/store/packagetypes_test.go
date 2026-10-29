@@ -110,9 +110,6 @@ func TestMigrationPackageTypes(t *testing.T) {
 			!slices.Equal(rs[0].Sources, []string{"admin:os:1:t"}) {
 			t.Fatalf("the reservation: %+v %v", rs, err)
 		}
-		if rs, err := s.ListTenantReservedNames(ctx, tid, pkgtype.DuckDBExtension, ""); err != nil || len(rs) != 1 || rs[0].Name != "held" {
-			t.Fatalf("the tenant's reservations: %+v %v", rs, err)
-		}
 		if l, err := nameLicense(ctx, s, tid, pkgtype.DuckDBExtension, "tresor"); err != nil || l.LicenseID != "l1" || l.PackageType != pkgtype.DuckDBExtension {
 			t.Fatalf("the licence: %+v %v", l, err)
 		}
@@ -144,7 +141,6 @@ func TestMigrationPackageTypes(t *testing.T) {
 				"'cpp', 'v2.0.0', 'v2.0.0', ?, 'publication', ?, 'os:1:t', ?)", id("d"), tid, hash("1"), now, true},
 			[]any{"INSERT INTO reserved_names (package_type, name, kind, added_at) VALUES ('other_type', 'kista_x', 'core', ?)", now},
 			[]any{"INSERT INTO reserved_name_sources (package_type, name, source, added_at) VALUES ('other_type', 'kista_x', 'admin:os:1:t', ?)", now},
-			[]any{"INSERT INTO tenant_reserved_names (tenant_id, package_type, name, holder, added_at, added_by) VALUES (?, 'other_type', 'held', 'x', ?, 'os:1:t')", tid, now},
 			[]any{"INSERT INTO licenses (tenant_id, package_type, name, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, " +
 				"expires_at, grace_until, source, visibility, actor, updated_at, version, entry_source) VALUES (?, 'other_type', 'tresor', 'l2', " +
 				"'https://issuer.example', 'acme', 'Acme', 'pro', 't.x', 'kid', 1, 4102444800, 4103049600, 'import', 'private', 'os:1:t', ?, 1, 'publisher:p')", tid, now},
@@ -276,26 +272,6 @@ func TestPackageTypes(t *testing.T) {
 			ns[pkgtype.Of("httpfs")] != store.ReservedCore {
 			t.Fatalf("the list: %v", err)
 		}
-		inTx(t, s, func(tx *store.Tx) error {
-			for _, typ := range []string{pkgtype.DuckDBExtension, testType} {
-				r := store.TenantReservedName{TenantID: tn.ID, PackageType: typ, Name: "snowflake", Holder: "h-" + typ, AddedBy: "os:1:t"}
-				if _, changed, err := tx.ReserveTenantName(ctx, &r); err != nil || !changed {
-					t.Errorf("%s: %v %v", typ, changed, err)
-				}
-			}
-			if _, err := tx.ReleaseTenantName(ctx, tn.ID, pkgtype.DuckDBExtension, "snowflake"); err != nil {
-				return err
-			}
-			held, err := tx.TenantReserves(ctx, tn.ID, testType, "snowflake")
-			if err != nil || !held {
-				t.Errorf("the other type's reservation: %v %v", held, err)
-			}
-			return nil
-		})
-		if set, err := s.TenantReservedSet(ctx, tn.ID, pkgtype.DuckDBExtension); err != nil || set["snowflake"] {
-			t.Fatalf("DuckDB's set: %v %v", set, err)
-		}
-
 		// the licences: one per (type, name)
 		for _, typ := range []string{pkgtype.DuckDBExtension, testType} {
 			l := testLicense(tn.ID, "snowflake", "acme")

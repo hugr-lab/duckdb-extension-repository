@@ -189,22 +189,3 @@ func (s *Store) UpstreamKindOf(ctx context.Context, source string) (string, erro
 	}
 	return kind, err
 }
-
-// NameReservedFor is how a name of a type is reserved, for a follow's limits: by the server (core
-// or community), or in the tenant ("tenant"); "" when it is not.
-func (s *Store) NameReservedFor(ctx context.Context, tenantID, packageType, name string) (string, error) {
-	var out string
-	err := s.InTx(ctx, "", func(tx *Tx) error {
-		k, err := tx.ReservedKind(ctx, packageType, name)
-		if err != nil || k != "" {
-			out = k
-			return err
-		}
-		held, err := tx.TenantReserves(ctx, tenantID, packageType, name)
-		if held {
-			out = "tenant"
-		}
-		return err
-	})
-	return out, err
-}

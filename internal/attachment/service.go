@@ -87,7 +87,7 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant string, pkg 
 		return store.Attachment{}, err
 	}
 	if !admin {
-		kind, err := s.Store.ReservedFor(ctx, tenant, pkg.Type, pkg.Name) // spec 0030: DuckDB's, the tenant's, its upstreams'
+		kind, err := s.Store.ReservedFor(ctx, tenant, pkg.Type, pkg.Name) // spec 0030: DuckDB's, its upstreams'
 		if err != nil {
 			return store.Attachment{}, err
 		}
