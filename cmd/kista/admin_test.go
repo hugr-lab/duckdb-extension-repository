@@ -525,6 +525,24 @@ func TestAdminCLI(t *testing.T) {
 	if got := run(0, "publisher", "show", "acme", "enterest-ci"); !strings.Contains(got, "held for:") || !strings.Contains(got, "36h0m0s") {
 		t.Fatalf("publisher show with its effective hold: %q", got)
 	}
+	// the tenant's own publisher's entries are held for its own hold, whatever the minimum
+	run(0, "publisher", "hold", "acme", "plain-ci", "2h")
+	seen := false
+	for _, l := range strings.Split(run(0, "publisher", "list", "acme"), "\n") {
+		if f := strings.Fields(l); len(f) > 0 && f[0] == "plain-ci" {
+			seen = true
+			if strings.Count(l, "2h0m0s") != 2 || strings.Contains(l, "36h") {
+				t.Fatalf("an own publisher's HELD FOR: %q", l)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("publisher list without plain-ci")
+	}
+	if got := run(0, "publisher", "show", "acme", "plain-ci"); strings.Contains(got, "held for:") || !strings.Contains(got, "2h0m0s") {
+		t.Fatalf("publisher show of an own publisher: %q", got)
+	}
+	run(0, "publisher", "hold", "acme", "plain-ci", "0")
 	if got := run(0, "tenant", "show", "acme"); !strings.Contains(got, "distributor hold: 36h0m0s") {
 		t.Fatalf("tenant show with the minimum: %q", got)
 	}
