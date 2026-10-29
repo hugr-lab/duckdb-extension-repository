@@ -74,17 +74,25 @@ tenant: `entry_meta` joins the reaper's tables (`store.ReapTables`, which
 #### The icon
 
 - **PNG only.** The checks, in order, all refusing with `400`:
-  1. The PNG signature, then the chunks. Allowed: `IHDR`, `PLTE`, `tRNS`, `IDAT`, `IEND`. Each at
-     most once, except `IDAT`. Any other chunk (`tEXt`, `iCCP`, `sRGB`, `pHYs`, `acTL` and so on) is
-     refused, not stripped. No bytes after `IEND`.
+  1. The PNG signature, then the chunks. Allowed:
+     - the image's own: `IHDR`, `PLTE`, `tRNS`, `IDAT`, `IEND`;
+     - the small fixed-size colour and physical chunks most exporters write, with their exact
+       lengths checked: `sRGB` (1 byte), `gAMA` (4), `cHRM` (32), `pHYs` (9), `bKGD` (1, 2 or 6,
+       as the colour type says).
+
+     Each at most once, except `IDAT`, in the order the PNG specification requires: `cHRM`, `gAMA`
+     and `sRGB` before `PLTE`, `bKGD` after it, all of them before the first `IDAT`. Refused, not
+     stripped: `iCCP`, every text chunk (`tEXt`, `zTXt`, `iTXt`), `eXIf`, animation (`acTL`,
+     `fcTL`, `fdAT`), `sPLT`, and any chunk not listed. No bytes after `IEND`.
   2. The header (`png.DecodeConfig`): square, 64 to 512 pixels a side. This happens before
      decoding, so a decompression bomb never allocates pixels.
   3. A full decode with Go's `image/png`, and `img.Bounds()` must equal the header's size.
      Decodes run under a semaphore (4 per replica). The worst case is a 16-bit 512x512 image, 2 MiB.
 - **Size**: at most 256 KiB. A 256x256 PNG fits.
 - The declared `content_type` must be `image/png`.
-- Publishers are told how to strip chunks (`oxipng --strip all`, `pngcrush -rem allb`). Most
-  exporters add `pHYs` or `sRGB`.
+- For a refused file, the website tells publishers how to strip chunks (`oxipng --strip all`,
+  `pngcrush -rem allb`). Enterest re-encodes icons with Go's encoder, which writes none of the
+  optional chunks.
 - **Bytes kept as sent**: the checks refuse rather than rewrite, so the stored bytes are exactly
   what passed. The same icon has one hash wherever it goes.
 
@@ -200,7 +208,8 @@ caps.
   not named keeps its value. Without flags it prints the metadata.
 - `catalogue show` prints `summary:` and `icon: <sha256> <w>x<h>`.
 - `kista_publish.py` in `hugr-lab/extension-ci-tools` gains `--summary` and `--icon` (Follow-ups).
-  It always sends both from its flags: a CI states its metadata whole. Given neither flag, it sends
+  Like the CLI, it reads the current metadata first (`GET …/meta`, signed) and sends the merged
+  result, so `--summary` alone keeps an icon set in the console. Given neither flag, it sends
   nothing.
 
 #### Events
@@ -400,7 +409,10 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
     downloads and on installers separately, a deleting tenant left out and a suspended one counted,
     weeks across a year's end, the clamp to complete weeks, the type filter, chunking (a small
     chunk size in the test).
-- **Icon checks** (fixtures): a valid PNG accepted; each disallowed chunk, a repeated chunk, bytes
+- **Icon checks** (fixtures): a valid PNG accepted, with and without each optional chunk
+  (`sRGB`, `gAMA`, `cHRM`, `pHYs`, `bKGD`); an optional chunk of the wrong length, out of order or
+  after `IDAT`; each refused chunk (`iCCP`, `tEXt`, `zTXt`, `iTXt`, `eXIf`, `acTL`, `fcTL`,
+  `fdAT`, `sPLT`, an unknown one), a repeated chunk, bytes
   after `IEND` (an HTML tail included), SVG, JPEG, GIF, WebP, a non-square image, under 64 and over
   512 pixels, over 256 KiB, a wrong `content_type`, truncated and corrupt files, a header claiming
   100000x100000 (refused before decoding), and an `IDAT` whose image does not match the header.
@@ -454,11 +466,12 @@ phase 2 (migration 0045, `min_reader 45`), then spec 0037 PR 2 (migration 0046).
   every tenant's icons and lets a shared row answer for another tenant's bytes. In the tenant's
   storage domain, icons count against its caps and stay with its data.
 - **WebP**: one more decoder and dependency, for files PNG already covers at these sizes.
-- **Stripping disallowed chunks**: it rewrites what the publisher sent, and the stored hash would
+- **Stripping refused chunks**: it rewrites what the publisher sent, and the stored hash would
   differ from the file's. Refusing is simpler and tells the publisher why.
 - **SVG with sanitising**: sanitisers have a long history of bypasses.
 - **A partial `PUT`** (a field left out keeps its value): replacing both leaves no doubt about
-  what a write meant.
+  what a write meant. Clients that change one field (the CLI, `kista_publish.py`) read first and
+  merge.
 - **A separate source-less route for publishers**: one route naming the source serves everyone, and
   the signed statement binds the source.
 - **Channel-scoped metadata and icon reads** now: no screen needs them before the console redesign.
