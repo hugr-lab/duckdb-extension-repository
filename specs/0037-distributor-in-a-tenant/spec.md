@@ -1,6 +1,6 @@
 # Spec 0037: The distributor in a tenant
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
