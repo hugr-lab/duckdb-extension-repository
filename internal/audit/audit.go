@@ -201,6 +201,8 @@ var catalogue = map[Kind][]string{
 	"license.change": {"name", "license", "visibility", "replaced", "upstream", "package_type", "source"},
 	"license.remove": {"name", "license", "reason", "package_type", "source"},
 	"license.sync":   {"upstream", "counts", "error", "refused"},
+	// spec 0037: an import refused by the rule older
+	"license.refused": {"name", "license", "issuer", "rule", "source", "count"},
 	// spec 0035 phase 2: an entry holding a licence served publicly in a channel, once per act (advisory)
 	"license.public_warning": {"name", "source", "package_type", "channel", "act"},
 	// bundles (spec 0014): targets last, since a truncated event keeps its first fields; a bundle's
@@ -223,7 +225,7 @@ var catalogue = map[Kind][]string{
 	"source.clear":     {"name", "before"},
 	"shadow.remove":    {"name"},
 	"auth.failure":     {"reason", "route", "count"},
-	"authz.refused":    {"route", "verb", "status", "count", "name", "source", "operation"}, // spec 0037: a licence write refused, what it was
+	"authz.refused":    {"route", "verb", "status", "count", "name", "source", "entry", "operation", "name_unverified", "copy_of"}, // spec 0037: a licence write refused, what it was
 	"install":          {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
 	"extension.use":    {"version", "platform", "duckdb_version", "license", "status", "events"},
 	"usage.forward":    {"upstream", "sent", "skipped", "failed"},

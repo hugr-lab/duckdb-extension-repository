@@ -344,7 +344,9 @@ Nothing else: it reads no channel, key or release beyond what those calls answer
 a tenant, a channel or a key set; the rest answers `404`. Its acts are recorded as
 `distribution-admin:<issuer>|<who>`, shown to a tenant's readers as `distribution-admin`. A
 principal is a licence manager or a distribution admin, not both: the configuration is refused, and
-so is a token whose principals hold both.
+so is a token whose principals hold both (`401`; were one accepted, it would act as a licence manager,
+and every distribution admin's route would answer it `404`). A server administrator's token acts as
+a server administrator, whatever other role its principals hold.
 
 A server has **one distributor** (spec 0037): distribution admins and licence managers are not bound
 to a distributor, and reach every distributor's publisher on the server. Other vendors reach a

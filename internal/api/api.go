@@ -434,7 +434,10 @@ func (c caller) actor() (authz.Actor, bool) {
 	case c.admin:
 		return authz.Actor{Kind: authz.ActorServer, ID: c.id.Issuer.Name + "|" + c.id.Who()}, true
 	case c.licenseManager:
-		// spec 0029: the services allow it license on a tenant, and nothing else
+		// spec 0029: the services allow it license on a tenant, and nothing else. A server token is
+		// never both a licence manager's and a distribution admin's (auth.Server.Verify refuses one
+		// whose principals hold both, 401); were it so, it would act as the licence manager, and the
+		// distribution admins' routes would answer it 404 (spec 0037)
 		return authz.Actor{Kind: authz.ActorLicenseManager, ID: c.id.Issuer.Name + "|" + c.id.Who()}, true
 	case c.distribution:
 		// spec 0030: the services allow it a distributor's calls, and nothing else

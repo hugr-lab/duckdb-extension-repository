@@ -49,10 +49,12 @@ func (m *mgmt) declare(t *testing.T, name, hash string, pub *rsa.PublicKey) stri
 
 // Spec 0037 PR 1: a distributor's publisher's licence entry, live or removed, is written by its
 // licence manager (never public) and by server administrators; a tenant administrator only reads it,
-// and is refused with a 404 of its own type that says why, recorded with what it was. A licence older
-// (by iat) than one the tenant holds from the same issuer for the same holder, in any entry, is
-// refused (rule older), before the stored one is compared; an equal iat is not older, and a stored
-// licence past its grace or whose key is dead does not count.
+// and is refused with a 404 of its own type that says why, recorded with what it was, and cannot make
+// public a copy of the distributor's licence in another entry. A licence older (by iat) than one the
+// tenant holds from the same issuer for the same holder, verified by the same key, in any entry, is
+// refused (rule older), before the stored one is compared, and recorded; an equal iat is not older; a
+// licence signed with another key never blocks; a stored licence past its grace does not count, but
+// one whose entry's source was removed still does.
 func TestDistributorsLicences(t *testing.T) {
 	m := newMgmt(t)
 	tom, lm, sa := m.toks["tenant admin"], m.toks["server licence mgr"], m.toks["server admin"]
@@ -73,11 +75,17 @@ func TestDistributorsLicences(t *testing.T) {
 		}
 		return r
 	}
-	distributorsEntry := func(r resp) {
+	const why = "a distributor's entry: its licence manager or a server administrator writes it"
+	refused := func(r resp, detail string) {
 		t.Helper()
-		if r.status != 404 || r.json(t)["type"] != "urn:kista:problem:distributors-entry" ||
-			r.json(t)["detail"] != "a distributor's entry: its licence manager or a server administrator writes it" {
+		if r.status != 404 || r.json(t)["type"] != "urn:kista:problem:distributors-entry" || !strings.Contains(fmt.Sprint(r.json(t)["detail"]), detail) {
 			t.Fatalf("not refused as a distributor's entry: %d %s", r.status, r.body)
+		}
+	}
+	older := func(r resp, in string) {
+		t.Helper()
+		if d := fmt.Sprint(r.json(t)["detail"]); r.status != 400 || !strings.Contains(d, "the licence is refused (older)") || !strings.Contains(d, in) {
+			t.Fatalf("not refused as older (from %s): %d %s", in, r.status, r.body)
 		}
 	}
 	if _, err := storetest.LicenseKey(ctx, m.st, tid, "tresor", store.KeySourcePublisher, "enterest-ci", &m.licKey.PublicKey); err != nil {
@@ -90,83 +98,82 @@ func TestDistributorsLicences(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.declare(t, "ci", "c", &m.licKey.PublicKey) // the tenant's own publisher, the same key live in its entry
+	other, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.declare(t, "twin", "d", &other.PublicKey) // the tenant's own, a key of the tenant administrator's
 	const E = T + "/licenses?source=publisher:enterest-ci"
+	const CI = T + "/licenses?source=publisher:ci"
 	const L = T + "/licenses/tresor"
 	const Q = "?source=publisher:enterest-ci"
+	etagOf := func(path, tok string) string { return call(200, "GET", path, tok, "").header.Get("ETag") }
 
 	// the writers of a distributor's entry: not a tenant administrator
-	distributorsEntry(m.call(t, "POST", E, tom, lic("pro", now-60)))
-	r := call(201, "POST", E, lm, lic("pro", now-60))
-	etag := r.header.Get("ETag")
+	refused(m.call(t, "POST", E, tom, lic("pro", now-60)), why)
+	etag := call(201, "POST", E, lm, lic("pro", now-60)).header.Get("ETag")
 	if r := call(200, "GET", L+Q, tom, ""); r.json(t)["distributor"] != "enterest" {
 		t.Fatalf("the tenant administrator's read: %s", r.body)
 	}
 	if r := call(200, "GET", T+"/licenses", tom, ""); !strings.Contains(string(r.body), `"distributor":"enterest"`) {
 		t.Fatalf("the list: %s", r.body)
 	}
-	distributorsEntry(m.call(t, "POST", E, tom, lic("pro", now-60), "If-Match", etag))
-	distributorsEntry(m.call(t, "DELETE", L+Q, tom, "", "If-Match", etag))
-	distributorsEntry(m.call(t, "POST", L+"/public"+Q, tom, "", "If-Match", etag))
-	distributorsEntry(m.call(t, "POST", L+"/private"+Q, tom, "", "If-Match", etag))
+	refused(m.call(t, "POST", E, tom, lic("pro", now-60), "If-Match", etag), why)
+	refused(m.call(t, "DELETE", L+Q, tom, "", "If-Match", etag), why)
+	refused(m.call(t, "POST", L+"/public"+Q, tom, "", "If-Match", etag), why)
+	refused(m.call(t, "POST", L+"/private"+Q, tom, "", "If-Match", etag), why)
 	// a licence manager writes it, never public; a server administrator writes everything
 	if r := call(404, "POST", L+"/public"+Q, lm, "", "If-Match", etag); r.json(t)["type"] != "urn:kista:problem:not-found" {
 		t.Fatalf("public by a licence manager: %s", r.body)
 	}
 	etag = call(200, "POST", L+"/public"+Q, sa, "", "If-Match", etag).header.Get("ETag")
 	etag = call(200, "POST", L+"/private"+Q, lm, "", "If-Match", etag).header.Get("ETag")
+	etag = call(200, "POST", E, sa, lic("pro", now-60), "If-Match", etag).header.Get("ETag") // the same file, a server administrator's import
 
 	// older: refused on an import and a replacement, before the stored licence is compared (no 409)
 	for _, hdr := range [][]string{nil, {"If-Match", etag}} {
-		if r := call(400, "POST", E, lm, lic("old", now-120), hdr...); !strings.Contains(r.json(t)["detail"].(string), "the licence is refused (older)") ||
-			!strings.Contains(r.json(t)["detail"].(string), "publisher:enterest-ci") {
-			t.Fatalf("an older licence: %s", r.body)
-		}
+		older(m.call(t, "POST", E, lm, lic("old", now-120), hdr...), "publisher:enterest-ci")
 	}
 	// the same file again: an equal iat is not older
 	etag = call(200, "POST", E, lm, lic("pro", now-60), "If-Match", etag).header.Get("ETag")
 	// in another entry where the key is live, the tenant's own: refused while the later one is stored
-	if r := call(400, "POST", T+"/licenses?source=publisher:ci", tom, lic("old", now-120)); !strings.Contains(string(r.body), "(older)") {
-		t.Fatalf("an older licence into another entry: %s", r.body)
-	}
-	call(201, "POST", T+"/licenses?source=publisher:ci", tom, lic("ci", now-60))
-	// a later licence whose key is live in its entry counts; once the server refuses its key, not
-	other, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	twin := m.declare(t, "twin", "d", &other.PublicKey)
-	later := store.License{TenantID: tid, PackageType: pkgtype.Default, Name: "tresor", Entry: store.PublisherSource(twin), LicenseID: "lic-later", Issuer: "https://issuer.example",
-		HolderID: "acme", Plan: "later", Token: sign(other, "later", now-30), Key: extfile.Fingerprint(&other.PublicKey), IssuedAt: now - 30,
-		ExpiresAt: now + 86400, GraceUntil: now + 2*86400, Source: store.LicenseImport, Visibility: store.Private, Actor: "os:1:t"}
-	put := func(l store.License) {
-		t.Helper()
-		if err := m.st.InTenantTx(ctx, tid, []string{store.LicenseLock(tid)}, func(tx *store.Tx) error { return tx.PutLicense(ctx, &l, 0) }); err != nil {
-			t.Fatal(err)
-		}
-	}
-	put(later)
-	if r := call(400, "POST", E, lm, lic("pro", now-60), "If-Match", etag); !strings.Contains(string(r.body), "(older)") ||
-		!strings.Contains(string(r.body), "publisher:twin") {
-		t.Fatalf("a later licence with a live key: %s", r.body)
-	}
-	m.lic.Refuse = map[string]bool{later.Key: true}
+	older(m.call(t, "POST", CI, tom, lic("old", now-120)), "publisher:enterest-ci")
+
+	// another key never blocks: the tenant administrator's licence with the issuer's and holder's
+	// claims, signed with a key of their own live in their entry, issued later
+	call(201, "POST", T+"/licenses?source=publisher:twin", tom, sign(other, "self", now-30))
 	etag = call(200, "POST", E, lm, lic("pro", now-60), "If-Match", etag).header.Get("ETag")
-	m.lic.Refuse = nil
-	// a later licence past its grace counts neither
+
+	// a copy of the distributor's licence (the same licence: its issuer and id) in another entry is
+	// not made public by a tenant administrator; a server administrator may
+	call(201, "POST", CI, tom, lic("pro", now-60))
+	refused(m.call(t, "POST", L+"/public?source=publisher:ci", tom, "", "If-Match", etagOf(L+"?source=publisher:ci", tom)),
+		"a copy of a distributor's licence (publisher:enterest-ci)")
+	call(200, "POST", L+"/public?source=publisher:ci", sa, "", "If-Match", etagOf(L+"?source=publisher:ci", tom))
+	// a later licence of the same key in the tenant's own entry blocks the distributor's older one
+	call(200, "POST", CI, tom, lic("later", now-30), "If-Match", etagOf(L+"?source=publisher:ci", tom))
+	older(m.call(t, "POST", E, lm, lic("pro", now-60), "If-Match", etag), "publisher:ci")
+	// once its grace has ended it counts no more
+	call(204, "DELETE", L+"?source=publisher:ci", tom, "", "If-Match", "*")
+	past := store.License{TenantID: tid, PackageType: pkgtype.Default, Name: "tresor", Entry: "", LicenseID: "lic-past", Issuer: "https://issuer.example",
+		HolderID: "acme", Plan: "past", Token: lic("past", now-30), Key: extfile.Fingerprint(&m.licKey.PublicKey), IssuedAt: now - 30,
+		ExpiresAt: now - 2, GraceUntil: now - 1, Source: store.LicenseImport, Visibility: store.Private, Actor: "os:1:t"}
 	if err := m.st.InTenantTx(ctx, tid, []string{store.LicenseLock(tid)}, func(tx *store.Tx) error {
-		l, err := tx.GetLicense(ctx, tid, later.PackageType, "tresor", later.Entry)
+		p, err := tx.GetPublisher(ctx, tid, "ci")
 		if err != nil {
 			return err
 		}
-		return tx.DeleteLicense(ctx, l, 0)
+		past.Entry = store.PublisherSource(p.ID)
+		return tx.PutLicense(ctx, &past, 0)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	later.GraceUntil, later.ExpiresAt = now-1, now-2
-	put(later)
-	call(200, "POST", E, lm, lic("pro", now-60), "If-Match", etag)
+	etag = call(200, "POST", E, lm, lic("pro", now-60), "If-Match", etag).header.Get("ETag")
+	call(204, "DELETE", L+"?source=publisher:ci", tom, "", "If-Match", "*")
 
-	// removed: its entry, named by its id, is still the distributor's
+	// removed: the distributor's licence still counts (a tenant administrator removing its publisher
+	// does not unblock an older one), and its entry, named by its id, is still the distributor's
+	call(200, "POST", E, lm, lic("newer", now-10), "If-Match", etag)
 	var id string
 	for _, p := range call(200, "GET", T+"/publishers", tom, "").json(t)["publishers"].([]any) {
 		if x := p.(map[string]any); x["name"] == "enterest-ci" {
@@ -174,19 +181,42 @@ func TestDistributorsLicences(t *testing.T) {
 		}
 	}
 	call(204, "DELETE", T+"/publishers/enterest-ci", tom, "")
-	distributorsEntry(m.call(t, "DELETE", L+"?source=publisher-id:"+id, tom, "", "If-Match", "*"))
+	older(m.call(t, "POST", CI, tom, lic("old", now-20)), "publisher-id:"+id)
+	refused(m.call(t, "DELETE", L+"?source=publisher-id:"+id, tom, "", "If-Match", "*"), why)
+	// a removed entry takes no import and no visibility change, from anyone (spec 0035)
+	for _, c := range []struct{ method, path, body string }{
+		{"POST", T + "/licenses?source=publisher-id:" + id, lic("newer", now-10)},
+		{"POST", L + "/public?source=publisher-id:" + id, ""}, {"POST", L + "/private?source=publisher-id:" + id, ""},
+	} {
+		for _, tok := range []string{tom, sa} {
+			if r := m.call(t, c.method, c.path, tok, c.body, "If-Match", "*"); r.status != 400 || !strings.Contains(string(r.body), "removed") {
+				t.Fatalf("%s %s into a removed entry: %d %s", c.method, c.path, r.status, r.body)
+			}
+		}
+	}
 	call(204, "DELETE", L+"?source=publisher-id:"+id, sa, "", "If-Match", "*")
 
-	// the refusals are recorded with what they refused
+	// the refusals are recorded with what they refused, each operation apart
 	m.events.Close(ctx)
 	evs, err := m.st.ListEvents(ctx, tid, store.EventFilter{Kind: "authz.refused", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.ContainsFunc(evs, func(e store.Event) bool {
-		return strings.Contains(e.Data, `"operation":"import"`) && strings.Contains(e.Data, `"name":"tresor"`) &&
-			strings.Contains(e.Data, `"source":"publisher:enterest-ci"`) && strings.Contains(e.Data, `"route":"POST tenants/{t}/licenses"`)
-	}) {
-		t.Fatalf("the refusal's event: %+v", evs)
+	for _, want := range [][]string{
+		{`"operation":"import"`, `"name":"tresor"`, `"name_unverified":true`, `"source":"publisher:enterest-ci"`, `"entry":"publisher-id:`},
+		{`"operation":"remove"`, `"source":"publisher:enterest-ci"`},
+		{`"operation":"public"`, `"source":"publisher:enterest-ci"`},
+		{`"operation":"private"`, `"source":"publisher:enterest-ci"`},
+		{`"operation":"public"`, `"copy_of":"publisher:enterest-ci"`, `"source":"publisher:ci"`},
+	} {
+		if !slices.ContainsFunc(evs, func(e store.Event) bool {
+			return !slices.ContainsFunc(want, func(s string) bool { return !strings.Contains(e.Data, s) })
+		}) {
+			t.Errorf("no refusal with %v: %+v", want, evs)
+		}
+	}
+	evs, err = m.st.ListEvents(ctx, tid, store.EventFilter{Kind: "license.refused", Limit: 100})
+	if err != nil || len(evs) == 0 || !strings.Contains(evs[0].Data, `"rule":"older"`) || !strings.Contains(evs[0].Data, `"issuer":"https://issuer.example"`) {
+		t.Fatalf("the older refusals' events: %+v %v", evs, err)
 	}
 }

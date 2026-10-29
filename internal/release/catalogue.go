@@ -65,7 +65,7 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 			return nil, err
 		}
 		if source != "" && !ownSource(d, source) {
-			return nil, fmt.Errorf("%w: no source %q of the publisher's", store.ErrNotFound, source)
+			return nil, authz.ErrDenied // another source: refused (the same 404), and audited
 		}
 		source, only = "", map[string]store.DistributorSource{d.Source: d}
 	} else {
@@ -169,12 +169,10 @@ func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, 
 		if t, d, err = s.publisherSource(ctx, a, tenant); err != nil {
 			return nil, err
 		}
-		resolve = func(context.Context, string, string) (string, error) {
-			if !ownSource(d, source) {
-				return "", store.ErrNoSource
-			}
-			return d.Source, nil
+		if !ownSource(d, source) {
+			return nil, authz.ErrDenied // another source: refused (the same 404), and audited
 		}
+		resolve = func(context.Context, string, string) (string, error) { return d.Source, nil }
 	} else if t, err = s.mayReadCatalogue(ctx, a, tenant); err != nil {
 		return nil, err
 	}

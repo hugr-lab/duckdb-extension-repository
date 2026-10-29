@@ -1,9 +1,11 @@
 package api_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
 
@@ -211,8 +213,23 @@ func TestSignedCatalogueReads(t *testing.T) {
 			t.Fatalf("%q: %s", query, r.body)
 		}
 	}
+	missing := call(404, "GET", T+"/catalogue/nope/extensions/x", da, "").body
 	for _, query := range []string{"?source=publisher:own-ci", "?source=tenant", "?source=publisher-id:" + old + "x"} {
-		call(404, "GET", T+"/catalogue"+query, key, "")
+		if r := call(404, "GET", T+"/catalogue"+query, key, ""); string(r.body) != string(missing) {
+			t.Fatalf("another source: %s", r.body)
+		}
+	}
+	// refused, so audited
+	m.events.Close(ctx)
+	acme, err := m.st.GetTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evs, err := m.st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "authz.refused", Limit: 100}); err != nil ||
+		!slices.ContainsFunc(evs, func(e store.Event) bool {
+			return strings.HasPrefix(e.Actor, "publisher:") && strings.Contains(e.Data, "GET tenants/{t}/catalogue")
+		}) {
+		t.Fatalf("another source's refusal: %+v %v", evs, err)
 	}
 	// an entry: without placements
 	for _, src := range []string{"publisher:enterest-ci", "publisher-id:" + old} {
