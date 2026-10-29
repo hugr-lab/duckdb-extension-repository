@@ -180,8 +180,9 @@ var catalogue = map[Kind][]string{
 	// channels it bumped)
 	"catalogue.withdrawn": {"source", "name", "version", "reason", "builds", "channels", "package_type"},
 	// spec 0036: an entry's metadata written (the new summary, "" cleared; the icons' hashes, "" for
-	// none; a signed write's key fingerprint)
-	"catalogue.meta":    {"source", "name", "summary", "icon", "icon_before", "key", "package_type"},
+	// none; a signed write's key fingerprint); refused as stale, or failed after its icon was
+	// uploaded, with the reason and how many such (the asynchronous writer's count)
+	"catalogue.meta":    {"source", "name", "summary", "icon", "icon_before", "key", "package_type", "reason", "count"},
 	"follow.set":        {"source"},
 	"follow.clear":      {"source"},
 	"release.yank":      {"release", "name", "version", "platform"},

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/icon"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -72,35 +74,95 @@ func (h *Handler) answerMeta(w http.ResponseWriter, r *http.Request, c caller, v
 	reply(w, r, http.StatusOK, out, "", noStore)
 }
 
-// metaErr answers a metadata route's error.
-func (h *Handler) metaErr(w http.ResponseWriter, err error) {
+// metaErr answers a metadata route's error. A write refused as stale, or failed after its icon was
+// uploaded, is a refused or failed catalogue.meta event in the tenant (a captured request replayed,
+// or storage spent for nothing); a conflict, an invalid write and a full catalogue are logged.
+func (h *Handler) metaErr(w http.ResponseWriter, r *http.Request, c caller, p params, err error) {
+	record := func(outcome, reason string) {
+		if h.o.Events == nil || c.tenant.ID == "" {
+			return
+		}
+		f := map[string]any{"source": p["source"], "name": p["ext"], "reason": reason}
+		if c.signed != nil {
+			f["key"] = c.signed.Fingerprint
+		}
+		if t := shownType(reqType(r)); t != "" {
+			f["package_type"] = t
+		}
+		h.o.Events.Refusal(r.Context(), c.tenant.ID, c.eventActor(), "catalogue.meta", outcome, "ext:"+p["ext"], f)
+	}
+	logged := func(status int) {
+		h.o.Log.Info("api: metadata write refused", "actor", c.logName(), "tenant", p["t"], "source", p["source"], "ext", p["ext"],
+			"status", status, "reason", publicRefusal(err))
+	}
+	var uploaded *release.UploadedError
+	if errors.As(err, &uploaded) {
+		record(audit.Failed, "uploaded, then "+uploadedReason(uploaded.Err))
+	}
 	switch {
 	case errors.Is(err, release.ErrStale):
+		record(audit.Refused, "stale")
 		problem(w, http.StatusConflict, typeStale, publicRefusal(err))
 	case errors.Is(err, release.ErrIconChanged):
+		logged(http.StatusConflict)
 		problem(w, http.StatusConflict, typeConflict, publicRefusal(err))
 	case errors.Is(err, store.ErrCatalogueFull):
+		logged(http.StatusTooManyRequests)
 		problem(w, http.StatusTooManyRequests, typeCatalogueFull, publicRefusal(err))
 	case errors.Is(err, store.ErrSourceGone):
 		// the publisher, or the key that signed the request, was removed while the write was in
 		// flight: it fails as a revoked key's request does (spec 0033 phase A2)
 		unauthorized(w)
+	case errors.Is(err, store.ErrInvalid):
+		logged(http.StatusBadRequest)
+		h.serviceErr(w, err, false)
 	default:
 		h.serviceErr(w, err, false)
 	}
+}
+
+// uploadedReason words why a write failed after its upload, without an internal error's text.
+func uploadedReason(err error) string {
+	switch {
+	case errors.Is(err, release.ErrStale):
+		return "stale"
+	case errors.Is(err, release.ErrIconChanged):
+		return "the icon changed"
+	case errors.Is(err, store.ErrSourceGone):
+		return "the key or the publisher removed"
+	case errors.Is(err, authz.ErrDenied):
+		return "refused"
+	}
+	return "failed"
 }
 
 func (h *Handler) entryMeta(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
 	v, err := h.o.Releases.EntryMeta(r.Context(), a, p["t"], reqType(r), p["source"], p["ext"])
 	if err != nil {
-		h.metaErr(w, err)
+		h.metaErr(w, r, c, p, err)
 		return
 	}
 	h.answerMeta(w, r, c, v)
 }
 
+// metaWritesPerActor is the rate of an actor's metadata writes (a write per second, bursts of 10):
+// each may upload an icon, which the per-client rate alone would let one caller repeat.
+const metaWritesPerActor, metaWritesBurst = 1, 10
+
 func (h *Handler) setEntryMeta(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	a, _ := c.actor()
+	// the caller is authorized before the body is read
+	if err := h.o.Releases.MayWriteEntryMeta(r.Context(), a, p["t"], reqType(r), p["source"], p["ext"]); err != nil {
+		h.metaErr(w, r, c, p, err)
+		return
+	}
+	if !h.metaLimiter.allow(a.String()) {
+		w.Header().Set("Retry-After", h.metaLimiter.retryAfter())
+		h.o.Log.Info("api: metadata writes over the actor's rate", "actor", c.logName(), "tenant", p["t"])
+		problem(w, http.StatusTooManyRequests, typeRateLimited, "too many metadata writes; try again")
+		return
+	}
 	var in struct {
 		Summary *string `json:"summary"`
 		Icon    *struct {
@@ -132,10 +194,9 @@ func (h *Handler) setEntryMeta(w http.ResponseWriter, r *http.Request, c caller,
 	if c.signed != nil {
 		mw.SignedAt, mw.BodySHA256, mw.KeyID, mw.KeyFingerprint = c.signed.Statement.SignedAt, c.signed.Statement.SHA256, keyID(c), c.signed.Fingerprint
 	}
-	a, _ := c.actor()
 	v, err := h.o.Releases.SetEntryMeta(r.Context(), a, p["t"], reqType(r), p["source"], p["ext"], mw)
 	if err != nil {
-		h.metaErr(w, err)
+		h.metaErr(w, r, c, p, err)
 		return
 	}
 	h.answerMeta(w, r, c, v)
@@ -153,7 +214,7 @@ func (h *Handler) entryIcon(w http.ResponseWriter, r *http.Request, c caller, p 
 		return
 	}
 	if err != nil {
-		h.metaErr(w, err)
+		h.metaErr(w, r, c, p, err)
 		return
 	}
 	hd := w.Header()

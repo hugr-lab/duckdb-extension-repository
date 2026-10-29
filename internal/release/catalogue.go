@@ -149,6 +149,15 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 		}
 		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, Revoked: rv, Withdrawn: wv,
 			PublisherID: ids[k[0]].PublisherID, Distributor: dists[k[0]].Distributor, Meta: metas[k]}
+		if a.Kind == authz.ActorPublisher && e.Meta.Name != "" {
+			// spec 0036: a distributor's publisher reads the metadata of a name it may publish only,
+			// as its entry's read answers it
+			if err := s.distributorMay(ctx, tenant, packageType, k[1], e.Distributor); errors.Is(err, authz.ErrDenied) {
+				e.Meta = store.EntryMeta{}
+			} else if err != nil {
+				return nil, err
+			}
+		}
 		byKey[k] = e
 		out = append(out, e)
 	}

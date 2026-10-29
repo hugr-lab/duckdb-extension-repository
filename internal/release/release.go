@@ -146,8 +146,9 @@ type Service struct {
 	// not declared done).
 	PurgeOff bool
 
-	afterBuild   func(store.Build)     // tests: between finding the Build and inserting the release
-	beforeResign func([]store.Release) // tests: between reading a re-sign batch and inserting it
+	afterBuild       func(store.Build)     // tests: between finding the Build and inserting the release
+	beforeResign     func([]store.Release) // tests: between reading a re-sign batch and inserting it
+	beforeMetaCommit func()                // tests: between a metadata write's checks (and upload) and its transaction
 }
 
 // CredentialOf is the private upstream credential a release came through (its provenance's
