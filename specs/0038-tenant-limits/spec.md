@@ -1,6 +1,6 @@
 # Spec 0038: Tenant limits
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -148,6 +148,12 @@ One new problem type among the `429`s (spec 0037: one type per cause):
   clear within a run, and going on would download every remaining body only to refuse it. The cells
   not reached keep their state. A lazy mirror's fetch (spec 0032) that is refused is recorded as a
   failed fetch and answers the client as a failed fetch does today.
+- **`catalogue-full` in an upstream run, changed the same way.** Today a run records a cell refused
+  by the per-source cap (spec 0033) as `rejected`: the file's fault, an `upstream.rejected` event,
+  and no ETag on the next run, so every run downloads the whole body again only to refuse it. The
+  source is the upstream, so its catalogue does not empty within a run either. It becomes what
+  `tenant-limit` is: the cell `failed` with the detail naming the cap, the run's problem, and the
+  run stopped. A bundle import keeps its handling (it is a server administrator's, run once).
 - **Events.** A refusal writes no event of its own: the refused request is not an action. Each
   change of limits writes one (below).
 
@@ -289,8 +295,9 @@ tenants.limit_publishers  int     NULL
   a server administrator only, the event, `default`/`unlimited`/`0`/sizes, `400`s; each count's
   refusal as `429 tenant-limit` with its `limit`; a publisher's refusal carries no figures; a
   suspended tenant's limits read and set.
-- **Upstream:** a run past `bytes` records `tenant-limit` per cell and goes on; a lazy fetch past
-  it answers as a failed fetch.
+- **Upstream:** a run past `bytes` records the cell `failed` with `tenant-limit`, no
+  `upstream.rejected` event, and stops (later cells untouched); the same for `catalogue-full`; a
+  lazy fetch past the limit answers as a failed fetch.
 - **Config:** defaults, ceilings, `0`, a count above its ceiling refused at start.
 - **CLI:** `kista tenant limits` read and set.
 - **Console:** the overview shows the limits (unit test and the console e2e's tenant page).
@@ -318,8 +325,8 @@ tenants.limit_publishers  int     NULL
 - 0033: the catalogue's admission (`room`) also checks the tenant's limit.
 - 0036: an icon write also checks the tenant's limit, for tenant administrators too.
 - 0037: `tenant-limit` joins the `429` types.
-- 0009, 0032: an upstream run stops at a `tenant-limit` refusal; a refused lazy fetch is a failed
-  fetch.
+- 0009, 0032: an upstream run stops at a `tenant-limit` or `catalogue-full` refusal, recording the
+  cell `failed` (no longer `rejected` for `catalogue-full`); a refused lazy fetch is a failed fetch.
 
 ## Website
 
@@ -340,17 +347,15 @@ tenants.limit_publishers  int     NULL
 - The developer kit's `kista_publish.py` (plan item K5) stops on `tenant-limit` as on
   `catalogue-full`.
 
-## Open questions
+## Decisions
 
-Decisions for the owner before the spec is accepted; the text above follows the recommendation.
+The owner's decisions of 2026-10-29, which the text above follows:
 
-1. **A distributor's builds and a customer's quota.** Recommended: never counted, never refused (a
-   customer at its quota still gets what it bought or chose). Alternatives: counted and shown but
-   never refused; counted and refused.
-2. **Which bytes count.** Recommended: every build of the tenant's own sources, mirrors included
-   (an upstream can bring any amount of data). Alternative: only what is uploaded (publications and
-   adds), mirrors free.
-3. **Who sets limits.** Recommended: server administrators only (Enterest's provisioning worker is
-   one). Alternative: distribution admins too.
-4. **The set of limits.** Recommended: bytes, channels, upstreams, publishers. Alternative: also
-   issuers, grants and groups per tenant now.
+1. **A distributor's builds and a customer's quota:** never counted, never refused. A customer at
+   its quota still gets what it bought or chose.
+2. **Which bytes count:** every build of the tenant's own sources, upstream mirrors included, and
+   their icons.
+3. **Who sets limits:** server administrators only (Enterest's provisioning worker is one).
+4. **The set of limits:** bytes, channels, upstreams, own publishers.
+5. **An upstream run at a limit** stops at its first `tenant-limit` refusal (and, below, at a
+   `catalogue-full` one).
