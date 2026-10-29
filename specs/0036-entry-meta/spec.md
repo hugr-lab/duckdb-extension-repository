@@ -1,6 +1,6 @@
 # Spec 0036: Entry icons and distributor statistics
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -345,8 +345,9 @@ No tenant is named, nor any channel, nor any per-tenant figure.
 - **What a row answers.** Public tenants' figures are always answered. So `installer_days` holds the
   public tenants' installer-days, plus the non-public part when it may be answered. It is omitted
   only when nothing of it may be answered: no public part, and a non-public part left out.
-- **Fail closed.** An empty list exempts no one. A listed name that matches no tenant exempts
-  nothing, and is logged at start. The minimum cannot be set below 2.
+- **Fail closed.** An empty list exempts no one. Names are matched against tenants on each query,
+  so a public tenant created after the server started is exempt from then on. A listed name that
+  matches no tenant exempts nothing, and is logged at start. The minimum cannot be set below 2.
 - **Which tenants count.** A suspended tenant counts: its downloads happened, and it still exists.
   A tenant whose deletion has started does not (spec 0019: its statistics go with it).
 
