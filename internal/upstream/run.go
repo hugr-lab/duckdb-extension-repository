@@ -197,7 +197,7 @@ var errFailed = errors.New("the run failed")
 
 // bodyRoom is a run's (or a lazy fetch's) room for new bodies (spec 0038). Without room (the
 // tenant uses its whole bytes limit or the upstream's catalogue is full when it starts, or a cell
-// was refused by either since), a cell that holds no body and keeps no ETag is skipped without a
+// was refused by either since), a cell whose record holds no body (see holds) is skipped without a
 // request; a cell that holds a body runs as ever, and room decides its body.
 type bodyRoom struct {
 	mu    sync.Mutex
@@ -252,7 +252,7 @@ const atLimit = "skipped_at_limit"
 // outcome), or a failed record that kept the body it held (import.go's rule). A refusal's record
 // (rejected, blocked, shadowed, conflict) names a body it did not take.
 func holds(c store.UpstreamCell) bool {
-	return c.BodyHash != "" && (conditional[c.Outcome] || c.Outcome == store.CellFailed)
+	return c.BodyHash != "" && c.Outcome != store.CellConflict && (conditional[c.Outcome] || c.Outcome == store.CellFailed)
 }
 
 // isRoomRefusal reports a refusal for room (spec 0038): the tenant's limit, the source's full

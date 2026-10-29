@@ -51,17 +51,27 @@ func TestRunAtTenantLimit(t *testing.T) {
 		en.repo.put("v2.0.0", "linux_amd64", "tresor", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "tresor_duckdb_cpp_init"))
 		en.repo.put("v2.0.0", "linux_amd64", "pg", signed(t, en.key, cpp("1.0", "v2.0.0"), 4, "pg_duckdb_cpp_init"))
 		en.repo.put("v2.0.0", "linux_amd64", "bad", signed(t, nil, cpp("1.0", "v2.0.0"), 6, "bad_duckdb_cpp_init")) // unsigned: rejected
+		en.repo.put("v2.0.0", "linux_amd64", "cf", signed(t, en.key, cpp("1.0", "v2.0.0"), 7, "cf_duckdb_cpp_init"))
 		u, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "tresor"}, store.UpstreamEntry{Name: "pg"},
-			store.UpstreamEntry{Name: "acl"}, store.UpstreamEntry{Name: "geo"}, store.UpstreamEntry{Name: "bad"}))
+			store.UpstreamEntry{Name: "acl"}, store.UpstreamEntry{Name: "geo"}, store.UpstreamEntry{Name: "bad"}, store.UpstreamEntry{Name: "cf"}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if r := en.sync(t, false); r.Counts[store.CellReleased] != 2 || r.Counts[store.CellMissing] != 2 || r.Counts[store.CellRejected] != 1 {
+		if r := en.sync(t, false); r.Counts[store.CellReleased] != 3 || r.Counts[store.CellMissing] != 2 || r.Counts[store.CellRejected] != 1 {
 			t.Fatalf("the first run: %+v", r)
 		}
 		if c := en.cell(t, "bad"); c.ETag == "" {
 			t.Fatalf("a refusal's record keeps the ETag of a body it did not take: %+v", c)
 		}
+		// another body for cf's version: a conflict, whose record names the body it did not take
+		en.repo.put("v2.0.0", "linux_amd64", "cf", signed(t, en.key, cpp("1.0", "v2.0.0"), 8, "cf_duckdb_cpp_init"))
+		if r := en.sync(t, false); r.Counts[store.CellConflict] != 1 {
+			t.Fatalf("the conflict: %+v", r)
+		}
+		if c := en.cell(t, "cf"); c.BodyHash == "" || c.ETag == "" {
+			t.Fatalf("a conflict's record: %+v", c)
+		}
+		en.repo.touch("v2.0.0", "linux_amd64", "cf") // its upstream's answer changes again
 		used, err := en.st.TenantBytes(ctx, u.TenantID)
 		if err != nil || used == 0 {
 			t.Fatalf("used: %d %v", used, err)
@@ -74,14 +84,14 @@ func TestRunAtTenantLimit(t *testing.T) {
 		en.repo.touch("v2.0.0", "linux_amd64", "tresor") // a 200 with the body the tenant has
 		en.repo.put("v2.0.0", "linux_amd64", "acl", signed(t, en.key, cpp("1.0", "v2.0.0"), 2, "acl_duckdb_cpp_init"))
 		en.repo.put("v2.0.0", "linux_amd64", "geo", signed(t, en.key, cpp("1.0", "v2.0.0"), 3, "geo_duckdb_cpp_init"))
-		before := map[string]int{"acl": en.gets("acl"), "geo": en.gets("geo"), "bad": en.gets("bad")}
-		want := map[string]string{"acl": store.CellMissing, "geo": store.CellMissing, "bad": store.CellRejected}
+		before := map[string]int{"acl": en.gets("acl"), "geo": en.gets("geo"), "bad": en.gets("bad"), "cf": en.gets("cf")}
+		want := map[string]string{"acl": store.CellMissing, "geo": store.CellMissing, "bad": store.CellRejected, "cf": store.CellConflict}
 
-		if r := en.sync(t, true); r.Counts["skipped_at_limit"] != 3 || r.Counts["would_release"] != 0 || r.Error != "" {
+		if r := en.sync(t, true); r.Counts["skipped_at_limit"] != 4 || r.Counts["would_release"] != 0 || r.Error != "" {
 			t.Fatalf("a dry run at the limit: %+v", r)
 		}
 		r := en.sync(t, false)
-		if r.Counts["skipped_at_limit"] != 3 || r.Counts[store.CellYanked] != 1 || r.Counts[store.CellUnchanged] != 1 ||
+		if r.Counts["skipped_at_limit"] != 4 || r.Counts[store.CellYanked] != 1 || r.Counts[store.CellUnchanged] != 1 ||
 			r.Counts[store.CellFailed] != 0 || r.Error != "" {
 			t.Fatalf("the run at the limit: %+v", r)
 		}
@@ -96,7 +106,7 @@ func TestRunAtTenantLimit(t *testing.T) {
 		if rs := en.releases(t, "tresor"); len(rs) != 1 || rs[0].State != store.ReleaseYanked {
 			t.Fatalf("the yank: %+v", rs)
 		}
-		if rejected, failed := en.runEvents(t, u.TenantID, "upstream.rejected", "failed"); rejected != 1 || failed != 0 { // the first run's
+		if rejected, failed := en.runEvents(t, u.TenantID, "upstream.rejected", "failed"); rejected != 2 || failed != 0 { // bad's and cf's, before the limit
 			t.Fatalf("events: %d rejected, %d failed runs", rejected, failed)
 		}
 		en.setBytes(t, store.LimitUnlimited)

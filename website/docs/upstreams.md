@@ -231,9 +231,8 @@ reads the tenant's use and the catalogue once when it starts. Without room (the 
 whole bytes limit or the catalogue is full at the start, or a cell was refused by either since):
 
 - **a cell whose record holds no body** (never fetched, `missing`, or refused: a refusal took
-  none) is skipped without a request, its record left as it is, and counted `skipped_at_limit`; a
-  lazy mirror's cell never fetched is recorded `failed` instead, so its first request is answered
-  `404`, not `503` while nothing comes;
+  none, nor did a conflict) is skipped without a request, its record left as it is, and counted
+  `skipped_at_limit`;
 - **a cell that holds a body** runs as ever: conditionally with its ETag (a `304` costs nothing),
   or unconditionally without one; a body the tenant has passes (a yank kept, a changed ETag), and a
   new body is refused after its download;
@@ -252,7 +251,9 @@ room:
 
 A pull-through fetch and a lazy mirror's first request check the same before the download; a cell
 skipped or refused so is answered as a failed fetch and not fetched again within
-`upstreams.negative_ttl` (a pull-through install keeps failing that long after room is made).
+`upstreams.negative_ttl` (a pull-through install keeps failing that long after room is made). A
+lazy mirror's cell never fetched, skipped so by a first request, is recorded `failed`, so the
+request is answered `404`, not `503` while nothing comes.
 
 ```yaml title="kista.yaml"
 upstreams:                   # file-only
