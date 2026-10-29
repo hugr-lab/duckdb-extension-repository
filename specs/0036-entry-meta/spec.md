@@ -1,6 +1,6 @@
 # Spec 0036: Entry icons and distributor statistics
 
-- **Status**: accepted (phase 1 implemented)
+- **Status**: accepted (phase 1 implemented; phase 2 implemented on its branch)
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -600,6 +600,41 @@ fixes followed in the same branch.
   service, where the order is decided).
 - **Not here.** `kista_publish.py --summary --icon` is in `hugr-lab/extension-ci-tools`
   (Follow-ups).
+
+### As built (phase 2)
+
+Delivered on the branch `0036-entry-meta-2`, on phase 1's branch (merged in with its review fixes),
+with migration 0045.
+
+- **Migration 0045** (`0045_download_sources`) is as the spec says. PostgreSQL's and SQL Server's
+  new primary keys are named (`pk_download_counts`, `pk_download_installers`); SQLite's rebuild
+  makes the old `(tenant_id, day)` indexes again beside the new `(source, day)` ones. SQL Server's
+  key is 805 bytes, under the 900 a clustered key takes.
+- **The install event's `source`** is the source as builds store it (`upstream:<id>`,
+  `publisher:<id>`, `tenant`), not a label, so the daily pass attributes it exactly; the event
+  catalogue lists the field. The pass looks up the releases of the events without it in one query
+  per 500 ids (`Store.ReleaseSources`).
+- **`ReleaseStats`** orders its rows by release: the grouping no longer came out in that order once
+  the primary key held the source.
+- **The store** answers each tenant's part per (week, extension) (`Store.DistributorParts`); the
+  minimum is applied in Go (`stats.Distributor`), the weeks computed there too
+  (`stats.DistributorWeeks`, `stats.LastCompleteWeek`). The `CASE` maps a day to the week's index by
+  `day <= <Sunday>` branches in a derived table, so every dialect groups by it. Public tenants are
+  matched by name on each query (`Store.TenantIDsByName`), a tenant being deleted matching none.
+- **The route.** `distributor` must be given once, at most 128 bytes. `from` and `to` in the answer
+  are the first week's Monday and the last week's Sunday. A `from` after `to`, or after the last
+  complete week, is `400` (rather than an empty answer), as are a day that is not one and more than
+  53 weeks. `installer_days`' "public part" is a public tenant's installers in the row: with none,
+  and the non-public part left out, it is omitted. Any `DistributorMinTenants` below 2 given to the
+  API is taken as 3.
+- **Configuration.** `statistics.public_tenants` must hold tenant names (the configuration is
+  refused otherwise); `statistics.distributor_min_tenants` `0` means 3, 1 or less is refused.
+- **Tests.** The minimum, public tenants and installer-days are tested on `stats.Distributor`
+  (pure) and through the API; the store suite covers the query (removed publishers, a tenant's own
+  build and another distributor's left out, a deleting tenant left out and a suspended one counted,
+  weeks across a year's end, the type filter, chunks of 1 and 3). The DuckDB e2e case calls the route
+  on an API handler made in the test with a server issuer (the harness's server takes no server
+  tokens), against the served kista's store.
 
 ## Alternatives considered
 
