@@ -31,6 +31,11 @@ func (s *AuthAdmin) AddPublisher(ctx context.Context, a authz.Actor, tenant, nam
 	return p, err
 }
 
+// ErrKeyTaken refuses a distribution admin's key that one of the tenant's own publishers holds
+// (spec 0037): keys are unique in the tenant, so its 409 tells that the tenant holds the key, and the
+// API records it as a refusal. It is a store.ErrExists.
+var ErrKeyTaken = fmt.Errorf("%w: the key is held by a publisher of the tenant's own", store.ErrExists)
+
 // ErrPublisherTaken refuses a distribution admin's new publisher whose name a tenant's own publisher
 // holds (spec 0037): it says the name is taken, and nothing else about that publisher.
 var ErrPublisherTaken = errors.New("tenants: the name is taken by a publisher of the tenant's own")
@@ -434,6 +439,15 @@ func (s *AuthAdmin) AddPublisherKey(ctx context.Context, a authz.Actor, tenant, 
 			return err
 		}
 		k.PublisherID = p.ID
+		if distributor(a) { // under the tenant's auth lock, which every key's insert takes
+			holder, held, err := tx.PublisherKeyHolder(ctx, t.ID, k.Fingerprint)
+			if err != nil {
+				return err
+			}
+			if held && holder == "" {
+				return ErrKeyTaken // the tenant's own publisher's: a probe, audited
+			}
+		}
 		if err := tx.InsertPublisherKey(ctx, &k); err != nil {
 			return err
 		}

@@ -108,6 +108,9 @@ func TestDistributionAdmin(t *testing.T) {
 	call(404, "DELETE", T+"/publishers/own-ci/keys/"+m.signers[ownKey].id, da, "")
 	// a key one of the tenant's publishers holds is unique in the tenant: the 409 is a refusal
 	call(409, "POST", T+"/publishers/enterest-ci/keys", da, `{"public_key":"`+m.signers[ownKey].authKey+`"}`)
+	// one a distributor's publisher holds already: a plain 409, no probe
+	again := m.addKey(t, da, "acme", "enterest-ci")
+	call(409, "POST", T+"/publishers/enterest-ci/keys", da, `{"public_key":"`+m.signers[again].authKey+`"}`)
 	call(404, "DELETE", T+"/publishers/enterest-ci", da, "") // a publisher's removal is the tenant's
 	ps := call(200, "GET", T+"/publishers", da, "").json(t)["publishers"].([]any)
 	if len(ps) != 1 || ps[0].(map[string]any)["name"] != "enterest-ci" {
@@ -187,6 +190,15 @@ func TestDistributionAdmin(t *testing.T) {
 		if !slices.ContainsFunc(evs, func(e store.Event) bool { return strings.Contains(e.Data, `"reason":"`+reason+`"`) }) {
 			t.Errorf("no refusal for %s: %+v", reason, evs)
 		}
+	}
+	keyTaken := 0
+	for _, e := range evs {
+		if strings.Contains(e.Data, `"reason":"key-taken"`) {
+			keyTaken++
+		}
+	}
+	if keyTaken != 1 {
+		t.Errorf("key-taken refusals: %d, want the own publisher's one only: %+v", keyTaken, evs)
 	}
 	// nothing else
 	call(404, "GET", T+"/channels/prod/keys", da, "")

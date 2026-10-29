@@ -9,6 +9,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
 )
 
 // Spec 0008: publishers and their credentials (tenant administrators).
@@ -266,9 +267,10 @@ func (h *Handler) addPublisherKey(w http.ResponseWriter, r *http.Request, c call
 	}
 	a, _ := c.actor()
 	k, err := h.o.Auth.AddPublisherKey(r.Context(), a, p["t"], p["name"], in.PublicKey, exp)
-	if errors.Is(err, store.ErrExists) && c.distribution && !c.admin {
+	if errors.Is(err, tenants.ErrKeyTaken) {
 		// spec 0037: a key is unique in the tenant, so the 409 tells a distribution admin that one of
-		// the tenant's publishers holds it: a refusal, audited, as a probe would be
+		// the tenant's own publishers holds it: a refusal, audited, as a probe would be (a key a
+		// distributor's publisher holds already is a plain 409)
 		note(w, func(sw *statusWriter) { sw.refused, sw.refusal = true, map[string]any{"reason": "key-taken"} })
 	}
 	if err != nil {

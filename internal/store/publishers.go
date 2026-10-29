@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"time"
@@ -210,6 +211,19 @@ func (t *Tx) InsertPublisherKey(ctx context.Context, k *PublisherKey) error {
 created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, k.ID, k.TenantID, k.PublisherID, k.Type, k.PublicKey, k.Fingerprint,
 		k.Title, exp, t.s.d.timeArg(k.CreatedAt), k.CreatedBy)
 	return t.s.mapErr(err, "key "+k.Fingerprint+" in this tenant")
+}
+
+// PublisherKeyHolder reads which of a tenant's publishers holds a key fingerprint (keys are unique
+// in the tenant): ok is false when none does; distributor is the holder's distributor ("": the
+// tenant's own publisher).
+func (t *Tx) PublisherKeyHolder(ctx context.Context, tenantID, fingerprint string) (distributor string, ok bool, err error) {
+	var d sql.NullString
+	err = t.queryRow(ctx, `SELECT p.distributor FROM publisher_keys k JOIN publishers p ON p.id = k.publisher_id
+WHERE k.tenant_id = ? AND k.fingerprint = ?`, tenantID, fingerprint).Scan(&d)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return d.String, err == nil, err
 }
 
 // DeletePublisherKey removes a publisher's key and returns it. Keys are looked up on every request,
