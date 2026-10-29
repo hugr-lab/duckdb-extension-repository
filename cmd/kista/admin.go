@@ -29,6 +29,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/icon"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -155,6 +156,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   withdraw a version of a distributor's publisher (spec 0033):
                                                   served nowhere in the tenant from then on, for good, and no
                                                   build of it arrives again from that source
+  catalogue meta <tenant> <source> <name> [-summary <text>] [-icon <file.png>] [-clear-summary] [-clear-icon] [-type t]
+                                                  an entry's icon and summary (spec 0036): without a flag, printed;
+                                                  a field not named keeps its value
   publisher add|remove <tenant> <name>          an identity that only publishes and promotes
   publisher add <tenant> <name> -distributor <distributor>   a distributor's publisher (spec 0033), marked at
                                                   its creation: it publishes into the catalogue only, without
@@ -2960,6 +2964,9 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 	private := fs.Bool("private", false, "")
 	ptype := fs.String("type", "", "")    // spec 0034: the catalogue's package type
 	reason := fs.String("reason", "", "") // spec 0033 phase B: a withdrawal's
+	// spec 0036: an entry's metadata
+	summary, iconFile := fs.String("summary", "", ""), fs.String("icon", "", "")
+	clearSummary, clearIcon := fs.Bool("clear-summary", false, ""), fs.Bool("clear-icon", false, "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
@@ -2968,10 +2975,17 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 	if err != nil {
 		return err
 	}
-	if *reason != "" && sub != "withdraw" || sub == "withdraw" && (*source != "" || *name != "" || *private) {
-		return errUsage // a flag another subcommand takes
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	metaFlags := set["summary"] || set["icon"] || *clearSummary || *clearIcon
+	if *reason != "" && sub != "withdraw" || sub == "withdraw" && (*source != "" || *name != "" || *private) ||
+		metaFlags && sub != "meta" || sub == "meta" && (*source != "" || *name != "" || *private || *reason != "") ||
+		set["summary"] && *clearSummary || set["icon"] && *clearIcon {
+		return errUsage // a flag another subcommand takes, or two that contradict
 	}
 	switch {
+	case sub == "meta" && len(pos) == 3:
+		return a.catalogueMeta(ctx, pos, typ, metaFlags, set["summary"], *summary, *iconFile, *clearSummary, *clearIcon)
 	case sub == "withdraw" && len(pos) == 4 && *reason != "":
 		w, err := a.svc.Releases.Withdraw(ctx, a.actor, pos[0], typ, pos[1], pos[2], pos[3], *reason)
 		if err != nil {
@@ -3035,6 +3049,10 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 		if err != nil {
 			return err
 		}
+		m, err := a.svc.Releases.EntryMeta(ctx, a.actor, pos[0], typ, pos[1], pos[2]) // spec 0036
+		if err != nil {
+			return err
+		}
 		now := a.svc.Store.Now()
 		// the build's id last: what catalogue purge takes
 		a.table("VERSION\tPLATFORM\tSLOT\tBODY\tVISIBILITY\tORIGIN\tCREATED\tRELEASED IN\tHELD UNTIL\tREVOKED\tWITHDRAWN\tID", func(w io.Writer) {
@@ -3059,10 +3077,76 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 				}
 			}
 		})
+		a.printMeta(m, false) // after the table, whose first line is its header
 	default:
 		return errUsage
 	}
 	return nil
+}
+
+// catalogueMeta prints an entry's metadata or, given a flag, writes it (spec 0036): it reads the
+// current metadata and writes both fields, a field not named keeping its value (the icon by its
+// hash).
+func (a *adminCmd) catalogueMeta(ctx context.Context, pos []string, typ string, write, setSummary bool, summary, iconFile string,
+	clearSummary, clearIcon bool) error {
+	cur, err := a.svc.Releases.EntryMeta(ctx, a.actor, pos[0], typ, pos[1], pos[2])
+	if err != nil {
+		return err
+	}
+	if !write {
+		a.printMeta(cur, true)
+		return nil
+	}
+	w := release.MetaWrite{}
+	switch {
+	case setSummary:
+		w.Summary = &summary
+	case clearSummary:
+	default:
+		w.Summary = &cur.Summary
+	}
+	switch {
+	case iconFile != "":
+		f, err := os.Open(iconFile)
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(io.LimitReader(f, icon.MaxBytes+1))
+		f.Close()
+		if err != nil {
+			return err
+		}
+		svc, err := app.BlobService(ctx, a.cfg, a.svc.Store, slog.New(slog.NewTextHandler(a.errw, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		if err != nil {
+			return err
+		}
+		defer func() { _ = svc.Close() }()
+		a.svc.WithBlob(svc)
+		w.Icon = &release.IconInput{ContentType: icon.ContentType, Data: data}
+	case clearIcon:
+	case cur.IconSHA256 != "":
+		w.Icon = &release.IconInput{Keep: cur.IconSHA256}
+	}
+	v, err := a.svc.Releases.SetEntryMeta(ctx, a.actor, pos[0], typ, pos[1], pos[2], w)
+	if err != nil {
+		return err
+	}
+	a.logf("catalogue meta %s %s %s", pos[0], pos[1], pos[2])
+	a.printMeta(v, true)
+	return nil
+}
+
+// printMeta prints an entry's metadata: its summary and icon, and with who, who wrote it last.
+func (a *adminCmd) printMeta(m release.EntryMetaView, who bool) {
+	fmt.Fprintf(a.out, "summary: %s\n", dash(m.Summary))
+	if m.IconSHA256 == "" {
+		fmt.Fprintln(a.out, "icon: -")
+	} else {
+		fmt.Fprintf(a.out, "icon: %s %dx%d\n", m.IconSHA256, m.IconWidth, m.IconHeight)
+	}
+	if who && m.SetBy != "" {
+		fmt.Fprintf(a.out, "set: %s by %s\n", ts(m.SetAt), m.SetBy)
+	}
 }
 
 // channelFollow lists a channel's follows, follows a source, or stops following it (spec 0033).

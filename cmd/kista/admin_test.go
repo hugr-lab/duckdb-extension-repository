@@ -5,10 +5,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"image"
+	"image/png"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -206,6 +210,42 @@ func TestAdminCLI(t *testing.T) {
 
 		t.Fatalf("catalogue show: %q", got)
 	}
+	// spec 0036: an entry's metadata, each flag keeping the field it does not name
+	if got := run(0, "catalogue", "meta", "acme", "tenant", "tresor"); !strings.Contains(got, "summary: -") || !strings.Contains(got, "icon: -") {
+		t.Fatalf("catalogue meta: %q", got)
+	}
+	iconFile := filepath.Join(t.TempDir(), "icon.png")
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(iconFile, pngBuf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(pngBuf.Bytes())
+	iconLine := "icon: " + hex.EncodeToString(sum[:]) + " 64x64"
+	if got := run(0, "catalogue", "meta", "acme", "tenant", "tresor", "-icon", iconFile); !strings.Contains(got, iconLine) {
+		t.Fatalf("catalogue meta -icon: %q", got)
+	}
+	if got := run(0, "catalogue", "meta", "acme", "tenant", "tresor", "-summary", "Secrets"); !strings.Contains(got, "summary: Secrets") ||
+		!strings.Contains(got, iconLine) {
+		t.Fatalf("catalogue meta -summary keeps the icon: %q", got)
+	}
+	if got := run(0, "catalogue", "meta", "acme", "tenant", "tresor", "-clear-icon"); !strings.Contains(got, "summary: Secrets") ||
+		!strings.Contains(got, "icon: -") {
+		t.Fatalf("catalogue meta -clear-icon keeps the summary: %q", got)
+	}
+	if got := run(0, "catalogue", "show", "acme", "tenant", "tresor"); !strings.Contains(got, "summary: Secrets") {
+		t.Fatalf("catalogue show with the summary: %q", got)
+	}
+	if got := run(0, "catalogue", "meta", "acme", "tenant", "tresor", "-clear-summary"); !strings.Contains(got, "summary: -") {
+		t.Fatalf("catalogue meta -clear-summary: %q", got)
+	}
+	run(2, "catalogue", "meta", "acme", "tenant", "tresor", "-summary", "x", "-clear-summary") // contradicting flags
+	run(2, "catalogue", "list", "acme", "-summary", "x")                                       // meta's flag
+	run(1, "catalogue", "meta", "acme", "tenant", "nothere")
+	run(1, "catalogue", "meta", "acme", "tenant", "tresor", "-summary", "two\nlines")
 	run(1, "release", "place", "acme/prod", "-name", "tresor", "-source", "tenant", "-version", "1.0") // added unchecked
 	run(1, "catalogue", "add", "acme", file, "-name", "tresor")                                        // not a binary: the checks refuse it
 	run(2, "catalogue", "add", "acme", file)                                                           // no -name
