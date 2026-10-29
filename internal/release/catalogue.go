@@ -164,8 +164,7 @@ func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, 
 	var t store.Tenant
 	var err error
 	resolve := s.Store.ResolveSource
-	switch {
-	case a.Kind == authz.ActorPublisher:
+	if a.Kind == authz.ActorPublisher {
 		var d store.DistributorSource
 		if t, d, err = s.publisherSource(ctx, a, tenant); err != nil {
 			return nil, err
@@ -176,10 +175,8 @@ func (s *Service) CatalogueVersions(ctx context.Context, a authz.Actor, tenant, 
 			}
 			return d.Source, nil
 		}
-	default:
-		if t, err = s.mayReadCatalogue(ctx, a, tenant); err != nil {
-			return nil, err
-		}
+	} else if t, err = s.mayReadCatalogue(ctx, a, tenant); err != nil {
+		return nil, err
 	}
 	switch {
 	case a.Kind == authz.ActorDistributionAdmin:

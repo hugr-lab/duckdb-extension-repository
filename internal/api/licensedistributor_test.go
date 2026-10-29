@@ -164,7 +164,7 @@ func TestDistributorsLicences(t *testing.T) {
 	}
 	later.GraceUntil, later.ExpiresAt = now-1, now-2
 	put(later)
-	etag = call(200, "POST", E, lm, lic("pro", now-60), "If-Match", etag).header.Get("ETag")
+	call(200, "POST", E, lm, lic("pro", now-60), "If-Match", etag)
 
 	// removed: its entry, named by its id, is still the distributor's
 	var id string

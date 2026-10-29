@@ -1005,7 +1005,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		}
 		// unknown and suspended tenants: 404 for everyone but server administrators (and, on a route
 		// that says so, a distribution admin for a suspended one: spec 0037)
-		if err != nil || t.State != store.TenantActive && !c.admin && !(ru.suspended && c.distribution) {
+		if err != nil || t.State != store.TenantActive && !c.admin && (!ru.suspended || !c.distribution) {
 			notFound(w)
 			return caller{}, false
 		}
