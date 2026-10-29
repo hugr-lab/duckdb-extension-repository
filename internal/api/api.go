@@ -569,8 +569,8 @@ type rule struct {
 	// its deletion and its events); to everyone else it is unknown
 	closed bool
 	// suspended: a distribution admin reaches a suspended tenant (spec 0037: its state, so a
-	// distributor tells "suspended, wait" from "gone"); to everyone else but server administrators it
-	// is unknown
+	// distributor tells "suspended, wait" from "gone"; its distributors' catalogue entries and their
+	// withdrawal); to everyone else but server administrators it is unknown
 	suspended bool
 	handle    handler
 }
@@ -715,7 +715,7 @@ func init() {
 		// (spec 0033 phase B: and distribution admins, their distributors' publishers' entries only)
 		// (spec 0037: and a distributor's publisher, signing the request, its own entries)
 		{"tenants/{t}/catalogue", map[string]rule{http.MethodGet: {access: distributionAdmin, manage: true, publishers: true, distributors: true,
-			handle: (*Handler).catalogue}}},
+			suspended: true, handle: (*Handler).catalogue}}},
 		// publishing into the catalogue only: publish on the name tenant-wide (a publisher's signed
 		// request), or a distributor's publisher without grants (spec 0033 phase B: its service checks
 		// the name); before the entry's route, which an extension named "extensions" would match
@@ -723,7 +723,7 @@ func init() {
 			http.MethodPost: {access: pathVerbs, verbs: []authz.Verb{authz.VerbPublish}, manage: true, raw: true, publishers: true,
 				distributors: true, handle: (*Handler).publishToCatalogue}}},
 		{"tenants/{t}/catalogue/{source}/extensions/{ext}", map[string]rule{http.MethodGet: {access: distributionAdmin, manage: true,
-			publishers: true, distributors: true, handle: (*Handler).catalogueEntry}}},
+			publishers: true, distributors: true, suspended: true, handle: (*Handler).catalogueEntry}}},
 		{"tenants/{t}/catalogue/builds/{id}", map[string]rule{http.MethodDelete: m(distributionAdmin, (*Handler).purgeEntry)}},
 		// spec 0036: an entry's metadata and its icon, an access rule of their own: any verified caller
 		// of the tenant, any of its publishers' signed requests included; the service decides by the
@@ -734,9 +734,11 @@ func init() {
 		{"tenants/{t}/catalogue/{source}/extensions/{ext}/icon", map[string]rule{
 			http.MethodGet: {access: tenantCaller, manage: true, publishers: true, handle: (*Handler).entryIcon}}},
 		// spec 0033 phase B: withdrawing a version of a distributor's publisher (distribution admins and
-		// server administrators; the service refuses a tenant's administrators)
+		// server administrators; the service refuses a tenant's administrators). Reading the catalogue
+		// and withdrawing reach a suspended tenant too (spec 0037), so a withdrawal never waits for
+		// its resumption.
 		{"tenants/{t}/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw", map[string]rule{
-			http.MethodPost: mb(distributionAdmin, (*Handler).withdraw)}},
+			http.MethodPost: {access: distributionAdmin, manage: true, body: true, suspended: true, handle: (*Handler).withdraw}}},
 		// spec 0031: a name's source in a channel ({name}, not {ext}: a channel's administrators)
 		{"tenants/{t}/channels/{c}/sources", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelSources)}},
 		// spec 0033: a channel following a whole source (its administrators')

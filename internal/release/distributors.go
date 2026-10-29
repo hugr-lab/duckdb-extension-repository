@@ -96,7 +96,11 @@ type Withdrawal struct {
 // The tenant's administrators are told (catalogue.withdrawn). Withdrawing a version withdrawn already
 // changes nothing.
 func (s *Service) Withdraw(ctx context.Context, a authz.Actor, tenant, packageType, source, name, version, reason string) (Withdrawal, error) {
-	t, err := s.mayDistribute(ctx, a, tenant)
+	mayIn := s.mayDistribute
+	if a.Kind == authz.ActorDistributionAdmin {
+		mayIn = s.distributorsTenant // a suspended tenant's too (spec 0037)
+	}
+	t, err := mayIn(ctx, a, tenant)
 	if err != nil {
 		return Withdrawal{}, err
 	}
@@ -186,13 +190,32 @@ func ownSource(d store.DistributorSource, label string) bool {
 }
 
 // mayReadCatalogue admits a tenant's administrators, and a distribution admin to its distributors'
-// entries only (spec 0033 phase B).
+// entries only (spec 0033 phase B), in an active or suspended tenant (spec 0037: a distributor
+// reads what it has to withdraw there).
 func (s *Service) mayReadCatalogue(ctx context.Context, a authz.Actor, tenant string) (store.Tenant, error) {
 	if a.Kind == authz.ActorDistributionAdmin {
-		if err := s.Authz.Allow(ctx, a, authz.VerbDistribute, authz.Resource{Tenant: tenant}); err != nil {
-			return store.Tenant{}, err
-		}
-		return s.Store.GetTenant(ctx, tenant)
+		return s.distributorsTenant(ctx, a, tenant)
 	}
 	return s.mayAdminTenant(ctx, a, tenant)
+}
+
+// distributorsTenant admits a distribution admin to an active or a suspended tenant (spec 0037), for
+// reading its distributors' entries and withdrawing a version: a withdrawal never waits for the
+// tenant's resumption, so a resumed tenant serves nothing withdrawn meanwhile. Its other calls are
+// an active tenant's only (authz's activeTenant). A tenant whose deletion started is nobody's.
+func (s *Service) distributorsTenant(ctx context.Context, a authz.Actor, tenant string) (store.Tenant, error) {
+	// distribute on the server, not on the tenant: the tenant's resource is an active tenant only
+	if err := s.Authz.Allow(ctx, a, authz.VerbDistribute, authz.Server); err != nil {
+		return store.Tenant{}, err
+	}
+	t, err := s.Store.GetTenant(ctx, tenant)
+	switch {
+	case errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleting) || errors.Is(err, store.ErrDeleted):
+		return store.Tenant{}, authz.ErrDenied
+	case err != nil:
+		return store.Tenant{}, err
+	case t.State != store.TenantActive && t.State != store.TenantSuspended:
+		return store.Tenant{}, authz.ErrDenied
+	}
+	return t, nil
 }

@@ -312,7 +312,7 @@ licence manager's.
 
 **Distribution admins** (spec 0030) are a server-wide role for a distributor's provisioning, such as
 Enterest's: a principal of a server issuer listed in `auth.server_distribution_admins`. On every
-active tenant a distribution admin may:
+active tenant (and, where said, a suspended one) a distribution admin may:
 
 - read the server's reserved names (`GET /api/v1/reserved-names`: each name and its kind only,
   without `sources`, which name other tenants' upstreams and administrators: spec 0037), the names a
@@ -331,7 +331,8 @@ active tenant a distribution admin may:
   its hold (which holds its entries only above the tenant's [minimum hold for distributors'
   publishers](#the-minimum-hold-for-distributors-publishers)), purge its builds placed nowhere,
   [withdraw](upstreams.md#withdrawals) its versions, read its entries in the catalogue (without
-  channels), and write their [icon and summary](catalogue.md#give-an-entry-an-icon-and-a-summary)
+  channels; reading them and withdrawing reach a suspended tenant too, so a withdrawal never waits
+  for the tenant's resumption: spec 0037), and write their [icon and summary](catalogue.md#give-an-entry-an-icon-and-a-summary)
   (spec 0036: the tenant's administrators read a distributor's entry's metadata, and never write
   it);
 - never act on the tenant's own publishers (spec 0037), with the licence-key mark or without: their

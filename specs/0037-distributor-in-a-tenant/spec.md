@@ -381,6 +381,22 @@ reserve server-wide. A follow of a distributor's publisher takes names the way a
   only records refusals and failures, and skips tenants that are not active.
 - **Why suspended too.** Enterest needs to tell "suspended, wait" from "gone". The role is already
   server-wide.
+- **Withdrawing in a suspended tenant** (added after PR 2, for Enterest's 3c-4). A distribution
+  admin also reads its distributors' catalogue entries (`GET …/catalogue` and
+  `GET …/catalogue/{source}/extensions/{ext}`) and withdraws a version
+  (`POST …/versions/{v}/withdraw`) in a suspended tenant. Otherwise a withdrawal waits for the
+  tenant's resumption, and a resumed tenant serves the withdrawn version until the distributor's
+  next pass.
+  - The three routes carry the `suspended` exception. The release service admits the distribution
+    admin by `distribute` on the server and reads the tenant itself: active or suspended, never one
+    whose deletion started.
+  - The catalogue's answers carry the entries' metadata there too (the metadata's read admits a
+    distribution admin in a suspended tenant, as the catalogue does). Its other calls stay an active
+    tenant's only: a purge, the metadata's own routes and its writes, its publishers. The tenant's
+    administrators and a distributor's publisher's signed reads find nothing in a suspended tenant,
+    as before.
+  - The withdrawal is the same transaction and the same `catalogue.withdrawn` event; a suspended
+    tenant's channels serve nothing anyway, and on resumption the release is served nowhere.
 
 ### 4. Publisher ids in answers
 
@@ -637,6 +653,11 @@ Two pull requests, in this order with spec 0036. Each runs `make test` on the th
    - It covers the read narrowing, `publisher-taken`, the removal of ordinary publishers and
      grants, tenant reservations removed, and the minimum hold.
    - Its migration is 0046 (`min_reader` 46). It mostly removes code.
+5. **Withdrawing in a suspended tenant** (`0037-suspended-withdraw`), for Enterest's 3c-4: item 3's
+   last point. No migration. `TestDistributionAdminSuspendedTenant` covers the three routes
+   reached (the metadata in their answers), the other calls not reached (the service's purge
+   included), the tenant's administrators and a distributor's publisher's signed reads, and a
+   placed release served nowhere on resumption.
 
 **Enterest, audited against this spec.**
 

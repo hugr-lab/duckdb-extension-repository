@@ -220,7 +220,11 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 // distributor's publisher's entry (spec 0033 phase B: removed or not). A withdrawn entry is never
 // purged.
 func (s *Service) PurgeEntry(ctx context.Context, a authz.Actor, tenant, id string) (store.Build, error) {
-	t, err := s.mayReadCatalogue(ctx, a, tenant)
+	mayIn := s.mayAdminTenant
+	if a.Kind == authz.ActorDistributionAdmin {
+		mayIn = s.mayDistribute // an active tenant only, unlike reading and withdrawing
+	}
+	t, err := mayIn(ctx, a, tenant)
 	if err != nil {
 		return store.Build{}, err
 	}
