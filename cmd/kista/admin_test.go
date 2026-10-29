@@ -232,6 +232,10 @@ func TestAdminCLI(t *testing.T) {
 		!strings.Contains(got, iconLine) {
 		t.Fatalf("catalogue meta -summary keeps the icon: %q", got)
 	}
+	if got := run(0, "catalogue", "show", "acme", "tenant", "tresor"); !strings.Contains(got, "summary: Secrets\n"+iconLine+"\n") {
+		t.Fatalf("catalogue show with the summary and the icon: %q", got)
+	}
+	run(2, "catalogue", "meta", "acme", "tenant", "tresor", "-icon", "") // an empty file name
 	if got := run(0, "catalogue", "meta", "acme", "tenant", "tresor", "-clear-icon"); !strings.Contains(got, "summary: Secrets") ||
 		!strings.Contains(got, "icon: -") {
 		t.Fatalf("catalogue meta -clear-icon keeps the summary: %q", got)
