@@ -35,7 +35,27 @@ var (
 	// ErrSources is a licence read without its entry where the name has licences in several
 	// entries (spec 0033 phase B; spec 0035).
 	ErrSources = errors.New("licenses: the extension has licences in several entries")
+	// ErrDistributorsEntry is a write on a distributor's publisher's entry by another writer than
+	// its licence manager or a server administrator (spec 0037); the error is a *DistributorsEntry.
+	ErrDistributorsEntry = errors.New("licenses: a distributor's entry: its licence manager or a server administrator writes it")
 )
+
+// DistributorsEntry is a write refused on a distributor's publisher's entry (spec 0037): what it
+// would have written, for the refusal's event.
+type DistributorsEntry struct {
+	Name   string // the licence's name ("" when the import's token names none)
+	Source string // the entry, as the caller named it
+	Op     string // import, remove, public or private
+}
+
+func (e *DistributorsEntry) Error() string { return ErrDistributorsEntry.Error() }
+
+// Is makes a DistributorsEntry an ErrDistributorsEntry.
+func (e *DistributorsEntry) Is(target error) bool { return target == ErrDistributorsEntry }
+
+// RuleOlder refuses a licence older (by iat) than one the tenant holds of the same package, from
+// the same issuer for the same holder (spec 0037).
+const RuleOlder = "older"
 
 // Create is Import's expected version for a licence that must not exist yet.
 const Create = -1
@@ -96,25 +116,43 @@ type View struct {
 	Upstream   string            `json:"upstream,omitempty"`
 	Visibility string            `json:"visibility"`
 	Status     license.Status    `json:"status"`
-	Version    int64             `json:"-"`
-	Claims     *license.Claims   `json:"-"`
-	Created    bool              `json:"-"` // an import stored it where none was
+	// Distributor is its entry's distributor when the entry is a distributor's publisher's (spec
+	// 0037: its licence manager or a server administrator writes it), omitted otherwise
+	Distributor string          `json:"distributor,omitempty"`
+	Version     int64           `json:"-"`
+	Claims      *license.Claims `json:"-"`
+	Created     bool            `json:"-"` // an import stored it where none was
 }
 
 func seconds(n int64) string { return time.Unix(n, 0).UTC().Format(time.RFC3339) }
 
 // labels names entries by their sources as the licence routes do (spec 0033 phase B; spec 0035): a
 // live upstream's or publisher's as spec 0031 does (upstream:<name>, publisher:<name>), a removed
-// one's by its id (upstream-id:<id>, publisher-id:<id>).
-type labels map[string]string
+// one's by its id (upstream-id:<id>, publisher-id:<id>); and knows the distributors' publishers'
+// entries, live or removed, with their distributors (spec 0037).
+type labels struct {
+	names map[string]string
+	dists map[string]string // source -> its distributor
+}
 
 func (s *Service) labels(ctx context.Context, tenantID string) (labels, error) {
 	m, err := s.Store.SourceLabels(ctx, tenantID)
-	return labels(m), err
+	if err != nil {
+		return labels{}, err
+	}
+	ds, err := s.Store.DistributorSources(ctx, tenantID)
+	if err != nil {
+		return labels{}, err
+	}
+	lb := labels{names: m, dists: map[string]string{}}
+	for src, d := range ds {
+		lb.dists[src] = d.Distributor
+	}
+	return lb, nil
 }
 
 func (lb labels) of(src string) string {
-	if l, ok := lb[src]; ok {
+	if l, ok := lb.names[src]; ok {
 		return l
 	}
 	return idLabel(src)
@@ -128,14 +166,14 @@ func idLabel(src string) string {
 	return src
 }
 
-// names reports whether a caller's name for a source (its label, or its id form) is src.
-func (lb labels) names(src, given string) bool { return given == lb.of(src) || given == idLabel(src) }
+// named reports whether a caller's name for a source (its label, or its id form) is src.
+func (lb labels) named(src, given string) bool { return given == lb.of(src) || given == idLabel(src) }
 
 // view reads a stored licence's claims back from its token (verified when it was stored).
 func (s *Service) view(ctx context.Context, lb labels, l store.License) View {
 	v := View{Name: l.Name, Entry: lb.of(l.Entry), ID: l.LicenseID, Issuer: l.Issuer, HolderID: l.HolderID, Holder: l.Holder, Plan: l.Plan,
 		IssuedAt: seconds(l.IssuedAt), ExpiresAt: seconds(l.ExpiresAt), GraceUntil: seconds(l.GraceUntil), Key: l.Key,
-		Source: l.Source, Visibility: l.Visibility, Version: l.Version}
+		Source: l.Source, Visibility: l.Visibility, Version: l.Version, Distributor: lb.dists[l.Entry]}
 	if l.PackageType != pkgtype.Default {
 		v.PackageType = l.PackageType
 	}
@@ -193,7 +231,7 @@ func (s *Service) List(ctx context.Context, a authz.Actor, tenant, packageType, 
 	}
 	out := make([]View, 0, len(ls))
 	for _, l := range ls {
-		if source == "" || lb.names(l.Entry, source) {
+		if source == "" || lb.named(l.Entry, source) {
 			out = append(out, s.view(ctx, lb, l))
 		}
 	}
@@ -205,7 +243,7 @@ func (s *Service) List(ctx context.Context, a authz.Actor, tenant, packageType, 
 func pick(ls []store.License, lb labels, name, source string) (store.License, error) {
 	var found []store.License
 	for _, l := range ls {
-		if source == "" || lb.names(l.Entry, source) {
+		if source == "" || lb.named(l.Entry, source) {
 			found = append(found, l)
 		}
 	}
@@ -459,6 +497,54 @@ func recheck(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID, entry, 
 	return nil
 }
 
+// distributorsEntry refuses a write on a distributor's publisher's entry, live or removed (spec
+// 0037), unless its licence manager or a server administrator makes it: the licence is the
+// distributor's contract with the holder, which a tenant administrator only reads. The refusal
+// names what the write was (name, the entry as the caller named it, op). It reads in tx when one is
+// given, outside a transaction otherwise.
+func (s *Service) distributorsEntry(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID, src, name, label, op string) error {
+	if a.Kind == authz.ActorLicenseManager {
+		return nil // its entries are the distributors' publishers' only (distributorEntry)
+	}
+	var d string
+	var err error
+	if tx != nil {
+		d, err = tx.SourceDistributor(ctx, tenantID, src)
+	} else {
+		d, err = s.Store.SourceDistributor(ctx, tenantID, src)
+	}
+	if err != nil || d == "" {
+		return err
+	}
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); !errors.Is(err, authz.ErrDenied) {
+		return err // nil: a server administrator
+	}
+	return &DistributorsEntry{Name: name, Source: label, Op: op}
+}
+
+// older refuses (rule older) a licence l when the tenant holds a later one, by iat, of the same
+// package from the same issuer for the same holder, in any entry, that still counts (spec 0037): its
+// grace not ended, and its key not dead (live in its entry, not refused by the server; a stored
+// licence whose key was compromised and refused blocks nothing). An equal iat is not older. The
+// caller holds the tenant's licence lock, which every licence write takes: nothing is stored between
+// this check and its write.
+func (s *Service) older(ctx context.Context, tx *store.Tx, lb labels, l store.License) error {
+	ls, err := tx.LaterLicenses(ctx, l.TenantID, l.PackageType, l.Name, l.Issuer, l.HolderID, l.IssuedAt)
+	if err != nil {
+		return err
+	}
+	now := s.Store.Now().Unix()
+	for _, o := range ls {
+		if o.GraceUntil <= now || s.deadKey(ctx, tx, o) {
+			continue
+		}
+		return fmt.Errorf("%w: %w", ErrRefused, &license.Error{Rule: RuleOlder, Msg: fmt.Sprintf(
+			"a later licence of %s from this issuer for this holder is stored in %s (issued %s, this one %s): to go back, remove it first",
+			l.Name, lb.of(o.Entry), seconds(o.IssuedAt), seconds(l.IssuedAt))})
+	}
+	return nil
+}
+
 // holderRefused turns the store's refusal of a licence of another holder than its tenant expects
 // (spec 0028) into a licence refusal by the rule holder_mismatch; any other error is unchanged.
 func holderRefused(err error) error {
@@ -496,6 +582,13 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 	if err != nil {
 		return View{}, err
 	}
+	name := "" // the refusal's, read from the token unverified
+	if p, err := license.Parse(token); err == nil {
+		name = p.Extension
+	}
+	if err := s.distributorsEntry(ctx, nil, a, t.ID, src, name, source, "import"); err != nil {
+		return View{}, err
+	}
 	tok, err := s.parse(token)
 	if err != nil {
 		return View{}, err
@@ -510,6 +603,9 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 		if err := recheck(ctx, tx, a, t.ID, src, source, true); err != nil {
 			return err
 		}
+		if err := s.distributorsEntry(ctx, tx, a, t.ID, src, l.Name, source, "import"); err != nil {
+			return err
+		}
 		// the entry's live keys: those its source recorded on its own live builds anywhere in the
 		// tenant, or on its newest available version in the catalogue
 		if err := s.verifyIn(ctx, tx, t.ID, l.PackageType, src, tok, lb.of(src)); err != nil {
@@ -520,6 +616,11 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 		// stored one is compared (409 without If-Match), so the refusal names the rule
 		if err := tx.CheckLicenseHolder(ctx, t.ID, l.HolderID); err != nil {
 			return holderRefused(err)
+		}
+		// spec 0037: never older than a licence the tenant holds, a replacement's too; before the
+		// stored one is compared, so the refusal names the rule (not 409 without If-Match)
+		if err := s.older(ctx, tx, lb, l); err != nil {
+			return err
 		}
 		old, err := tx.GetLicense(ctx, t.ID, l.PackageType, l.Name, src)
 		replaced := ""
@@ -577,12 +678,18 @@ func (s *Service) Remove(ctx context.Context, a authz.Actor, tenant, packageType
 	if err != nil {
 		return err
 	}
+	if err := s.distributorsEntry(ctx, nil, a, t.ID, src, name, source, "remove"); err != nil {
+		return err
+	}
 	lb, err := s.labels(ctx, t.ID)
 	if err != nil {
 		return err
 	}
 	return s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
 		if err := recheck(ctx, tx, a, t.ID, src, source, false); err != nil {
+			return err
+		}
+		if err := s.distributorsEntry(ctx, tx, a, t.ID, src, name, source, "remove"); err != nil {
 			return err
 		}
 		l, err := tx.GetLicense(ctx, t.ID, packageType, name, src)
@@ -620,6 +727,9 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, pack
 	if err != nil {
 		return View{}, err
 	}
+	if err := s.distributorsEntry(ctx, nil, a, t.ID, src, name, source, visibility); err != nil {
+		return View{}, err
+	}
 	lb, err := s.labels(ctx, t.ID)
 	if err != nil {
 		return View{}, err
@@ -627,6 +737,9 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, pack
 	var l store.License
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
 		if err := recheck(ctx, tx, a, t.ID, src, source, true); err != nil {
+			return err
+		}
+		if err := s.distributorsEntry(ctx, tx, a, t.ID, src, name, source, visibility); err != nil {
 			return err
 		}
 		if l, err = tx.GetLicense(ctx, t.ID, packageType, name, src); err != nil {

@@ -110,8 +110,9 @@ func TestLicenseWarningAnswers(t *testing.T) {
 	ci := m.addKey(t, tom, "acme", "edge-ci")
 	check("a publisher's signed promotion", m.call(t, "POST", T+"/channels/edge2/extensions/tresor/releases/promote", ci,
 		`{"from_channel":"staging","version":"1.0"}`), 201)
-	// an administrator makes the licence public: answered for every channel serving the entry
+	// a server administrator makes the licence public (spec 0037: a distributor's entry is not the
+	// tenant administrators' to write): answered for every channel serving the entry
 	g := m.call(t, "GET", T+"/licenses/tresor?source=publisher:nobody", tom, "")
-	check("an administrator makes it public", m.call(t, "POST", T+"/licenses/tresor/public?source=publisher:nobody", tom, "",
+	check("an administrator makes it public", m.call(t, "POST", T+"/licenses/tresor/public?source=publisher:nobody", m.toks["server admin"], "",
 		"If-Match", g.header.Get("ETag")), 200, "edge", "edge2", "prod", "staging")
 }

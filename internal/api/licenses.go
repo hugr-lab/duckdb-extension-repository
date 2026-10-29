@@ -50,6 +50,15 @@ func (h *Handler) licenseErr(w http.ResponseWriter, err error) {
 		problem(w, http.StatusConflict, typeConflict, "the upstream is paused: resume it to relay its licences")
 	case errors.Is(err, licenses.ErrSources):
 		problem(w, http.StatusConflict, typeConflict, strings.TrimPrefix(err.Error(), "licenses: ")+"; name one with ?source=")
+	case errors.Is(err, licenses.ErrDistributorsEntry):
+		// spec 0037: a refusal, recorded with what it refused; its 404 says why
+		var de *licenses.DistributorsEntry
+		f := map[string]any{}
+		if errors.As(err, &de) {
+			f = map[string]any{"name": de.Name, "source": de.Source, "operation": de.Op}
+		}
+		note(w, func(sw *statusWriter) { sw.refused, sw.refusal = true, f })
+		writeProblem(w, http.StatusNotFound, typeDistributorsEntry, "a distributor's entry: its licence manager or a server administrator writes it", true)
 	default:
 		h.serviceErr(w, err, false)
 	}

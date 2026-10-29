@@ -124,14 +124,19 @@ func TestLicenseManager(t *testing.T) {
 		if r.status != 200 || r.json(t)["plan"] != "max" {
 			t.Fatalf("%s: get: %d %s", tn, r.status, r.body)
 		}
-		// public is the tenant administrators' alone (its token is then served to anyone); a licence
+		// public is never a licence manager's (its token is then served to anyone); on a distributor's
+		// entry, a server administrator's alone (spec 0037: not the tenant administrators'); a licence
 		// manager restores private
 		if r := m.call(t, "POST", T+"/licenses/tresor/public?source=publisher:nobody", lm, "", "If-Match", r.header.Get("ETag")); r.status != 404 {
 			t.Fatalf("%s: public by a licence manager: %d %s", tn, r.status, r.body)
 		}
-		r = m.call(t, "POST", T+"/licenses/tresor/public?source=publisher:nobody", admins[tn], "", "If-Match", r.header.Get("ETag"))
-		if r.status != 200 || r.json(t)["visibility"] != "public" {
+		if r := m.call(t, "POST", T+"/licenses/tresor/public?source=publisher:nobody", admins[tn], "", "If-Match", r.header.Get("ETag")); r.status != 404 ||
+			r.json(t)["type"] != "urn:kista:problem:distributors-entry" {
 			t.Fatalf("%s: public by the tenant administrator: %d %s", tn, r.status, r.body)
+		}
+		r = m.call(t, "POST", T+"/licenses/tresor/public?source=publisher:nobody", m.toks["server admin"], "", "If-Match", r.header.Get("ETag"))
+		if r.status != 200 || r.json(t)["visibility"] != "public" {
+			t.Fatalf("%s: public by a server administrator: %d %s", tn, r.status, r.body)
 		}
 		r = m.call(t, "POST", T+"/licenses/tresor/private?source=publisher:nobody", lm, "", "If-Match", r.header.Get("ETag"))
 		if r.status != 200 || r.json(t)["visibility"] != "private" {

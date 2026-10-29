@@ -141,6 +141,14 @@ func TestAdminLicense(t *testing.T) {
 	run(1, "", "license", "import", "acme", "-", "-replace", "-source", "publisher:ci") // nothing on stdin
 	run(1, sign("max"), "license", "import", "acme", "-", "-source", "publisher:ci")    // a licence is stored: -replace replaces it
 	run(0, sign("max"), "license", "import", "acme", "-", "-replace", "-source", "publisher:ci")
+	// spec 0037: a licence older than the one stored, from its issuer for its holder, is refused by
+	// the rule older
+	older := vectors.Sign(k, vectors.Header(k), fmt.Sprintf(
+		`{"v":1,"iss":"https://issuer.example","jti":"lic-older","sub":"acme","ext":"tresor","plan":"older","iat":%d,"exp":%d}`, now-600, now+86400))
+	if got := stderrOf(1, older, "license", "import", "acme", "-", "-replace", "-source", "publisher:ci"); !strings.Contains(got, "the licence is refused (older)") ||
+		!strings.Contains(got, "a later licence of tresor") {
+		t.Fatalf("an older licence: %q", got)
+	}
 	if got := run(0, "", "license", "list", "acme"); !strings.Contains(got, "tresor") || !strings.Contains(got, "max") ||
 		!strings.Contains(got, "publisher:ci") || !strings.Contains(got, "ENTRY") {
 		t.Fatalf("list: %q", got)

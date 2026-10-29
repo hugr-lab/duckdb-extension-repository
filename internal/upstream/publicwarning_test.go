@@ -264,8 +264,9 @@ func testLicensePublicWarning(t *testing.T, e storetest.Engine) {
 	if rs := en.releases(t, "tresor"); len(rs) != 1 || rs[0].Visibility != store.Public {
 		t.Fatalf("the mirror's release: %+v", rs)
 	}
-	// its relay stores a licence there: a warning
-	en.answer(t, lic.sign("tresor", "pro", now-60, now+30*day))
+	// its relay stores a licence there: a warning (issued with the one the tenant holds: spec 0037, an
+	// older one would be refused)
+	en.answer(t, lic.sign("tresor", "pro", now, now+30*day))
 	act("the relay", "license.sync", "upstream:acme-repo", []string{"prod"}, func(c context.Context) error {
 		res, err := svc.RunUpstream(c, u.ID)
 		if err == nil && res.Counts["stored"] != 1 {

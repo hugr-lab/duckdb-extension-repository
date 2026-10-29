@@ -303,12 +303,24 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 			old, err := tx.GetLicense(ctx, t.ID, typ, name, src)
 			switch {
 			case errors.Is(err, store.ErrNotFound):
-				old.Version = 0
+				old = store.License{}
 			case err != nil:
 				return err
 			case old.Token == it.token:
 				counts["unchanged"]++
 				continue
+			}
+			// spec 0037: never older than a licence the tenant holds (a remote restored from a backup,
+			// a stale token): refused, the stored licence stays
+			if err := s.older(ctx, tx, lb, l); err != nil {
+				if r := refusal(err, it.tok); r != nil {
+					refused = append(refused, *r)
+					continue
+				}
+				return err
+			}
+			switch {
+			case old.Version == 0:
 			case replaces(old, l, s.Store.Now().Unix(), s.deadKey(ctx, tx, old)):
 				l.Visibility = old.Visibility
 			default:
@@ -381,7 +393,9 @@ func refusal(err error, tok *license.Token) *Refusal {
 // replaces reports whether a relayed licence l replaces the one stored in its entry (spec 0012's
 // rules, with spec 0021's condition): once the stored one's grace has ended or its key counts
 // nowhere (dead); otherwise when l is a later licence from the same upstream or lasts longer, and,
-// over an import, is signed with the same key.
+// over an import, is signed with the same key. The caller has refused l first when it is older than
+// a licence the tenant holds from its issuer for its holder (spec 0037: rule older), so a licence
+// that lasts longer no longer replaces a later one of the same issuer and holder.
 func replaces(old, l store.License, now int64, dead bool) bool {
 	if old.GraceUntil <= now || dead {
 		return true
