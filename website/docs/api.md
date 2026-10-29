@@ -33,7 +33,7 @@ tokens, so there is no CSRF surface.
 | --- | --- |
 | A **tenant token**: issued by one of the tenant's issuer records, for one of its audiences | that tenant's routes, `/api/v1/tenants/{t}/…` |
 | A **server token**: issued by a server issuer (`auth.server_issuers`), for a server audience | routes without a tenant; on tenant routes a server administrator acts with every right, a licence manager on the licence routes only, a distribution admin on a distributor's calls only ([Access](access.md)) |
-| A publisher's **signed request**: `Kista-Statement` and `Kista-Signature`, signed with one of its keys, no `Authorization` | its tenant's `whoami`, and the publication, promotion, release-read and attachment routes only |
+| A publisher's **signed request**: `Kista-Statement` and `Kista-Signature`, signed with one of its keys, no `Authorization` | its tenant's `whoami`, and the publication, promotion, release-read and attachment routes only; a distributor's publisher also its own catalogue entries (`GET …/catalogue`, `GET …/catalogue/{source}/extensions/{ext}`, spec 0037) |
 
 Server and tenant audiences are disjoint, so a token is one or the other. See [Access](access.md)
 for issuers, principals and grants, and [Publishing](publishing.md#signed-requests) for signed requests.
@@ -148,11 +148,19 @@ Errors are `application/problem+json`:
 | `precondition-required` | `428` |
 | `too-large` | `413` |
 | `unsupported-media-type` | `415` |
-| `too-many-requests` | `429`, with `Retry-After` |
+| `distributors-entry` | `404`: a tenant administrator's write on a distributor's publisher's licence entry ([who writes it](access.md#server-administrators-and-tenant-administrators), spec 0037), the one `404` with a type and a detail of its own |
+| `rate-limited` | `429`: the per-client [rate limit](#rate-limits); `Retry-After` the limiter's |
+| `upload-slots` | `429`: the upload slots per caller, tenant or server, for publications and attachments; `Retry-After: 5` |
+| `ingest-busy` | `429`: every ingest slot taken, for a publication (`Retry-After: 5`) or a bundle's chunk (`Retry-After: 1`) |
+| `chunks-busy` | `429`: too many chunks of one bundle upload in flight; `Retry-After: 1` |
+| `catalogue-full` | `429`: the source's catalogue holds as many entries or bytes as it may (`catalogue.max_entries`, `max_bytes`); no `Retry-After`: it clears when the source's builds are placed, purged or trimmed, so a client stops |
+| `issuer-busy` | `429`: an issuer is being added to the tenant; `Retry-After: 5` |
 | `unavailable` | `503`; with `Retry-After: 1` when the store or the storage collector is busy |
 
 `401` and `404` have constant bytes and no `detail`, except a publisher's signed request's `401`,
-which names the key's fingerprint kista found and kista's clock ([spec 0023](publishing.md#signed-requests)). Other answers to an allowed caller carry a
+which names the key's fingerprint kista found and kista's clock ([spec 0023](publishing.md#signed-requests)),
+and the `distributors-entry` `404`, which says why. Each `429` has its own type (spec 0037): a client
+acts on the type, retrying all but `catalogue-full`. Other answers to an allowed caller carry a
 `detail`: a fixed message, or for an invalid value the service's own wording of the value and the
 rule (at most 300 bytes). It is never an internal error.
 
@@ -173,10 +181,10 @@ expires. Some lists take a name `prefix` (`…/channels/{c}/extensions`, `…/ch
 
 A token bucket per client address (IPv6 by /64, after `serve.trusted_proxies`) is checked before
 anything else: `serve.api_rate` requests a second, burst `serve.api_burst` (default 20 and 40; set
-both or neither). Over the limit the answer is `429` with `Retry-After`. Adding an issuer (which
-fetches its discovery document) runs one at a time per tenant: a second one meanwhile answers `429`.
-Uploads (publications and attachments) take a slot per caller, per tenant and per server; without
-one the answer is `429`. See
+both or neither). Over the limit the answer is `429` (`rate-limited`) with `Retry-After`. Adding
+an issuer (which fetches its discovery document) runs one at a time per tenant: a second one
+meanwhile answers `429` (`issuer-busy`). Uploads (publications and attachments) take a slot per
+caller, per tenant and per server; without one the answer is `429` (`upload-slots`). See
 [Configuration](configuration.md).
 
 ### CORS
@@ -217,7 +225,7 @@ All paths are relative to `/api/v1`. `{t}` is a tenant, `{c}` a channel.
 | `GET reserved-names[?name=]` | server, a distribution admin: [reserved names](#duckdb-versions-and-reserved-names) |
 | `POST reserved-names`, `DELETE reserved-names/{name}` | server |
 | `GET tenants[?state=]`, `POST tenants`; `POST tenants/{t}/suspend`, `/resume` | server |
-| `GET tenants/{t}` | tenant admin; a deleting or deleted tenant: server |
+| `GET tenants/{t}` | tenant admin; a deleting or deleted tenant: server; a distribution admin: `{"name", "state", "holder_id"}` of an active or suspended tenant (spec 0037; `holder_id` left out when none is set; no ETag; a `tenant.read` event each time) |
 | `DELETE tenants/{t}` | server: [deleting a tenant](#deleting-a-tenant) |
 | `PUT tenants/{t}/holder {"holder_id"}`, `DELETE tenants/{t}/holder` (`If-Match`) | server: [the expected holder](#the-expected-holder) |
 | `GET tenants/{t}/audiences` | tenant admin |
@@ -303,7 +311,8 @@ names](publishing.md#reserved-names); `kista duckdb core-extensions <tag>` print
   `core_extensions_added`, `404` for an unknown version.
 - `GET reserved-names` lists `names`, each with `name`, `kind` (`core` or `community`), `added_at`
   and `sources` (`builtin`, `version:<v>@<commit>`, `upstream:<tenant>/<upstream>`, `bundle:<id>`,
-  `admin:<actor>`, `community-sync@<commit>`); `?name=` reads one. Names are reserved per package
+  `admin:<actor>`, `community-sync@<commit>`); `?name=` reads one. A distribution admin gets each
+  name and its kind only (spec 0037): `sources` names other tenants' upstreams and administrators. Names are reserved per package
   type: these routes take `?type=` (`duckdb_extension`, DuckDB's names, by default).
 - `POST reserved-names` with `names`, `kind` and `force` reserves names as an administrator's. A
   name that becomes reserved (or goes from community to core) with releases that are not yanked or
@@ -318,7 +327,7 @@ names](publishing.md#reserved-names); `kista duckdb core-extensions <tag>` print
 
 | Route | Who |
 | --- | --- |
-| `GET tenants/{t}/whoami` | public (a tenant token or a publisher credential) |
+| `GET tenants/{t}/whoami` | public (a tenant token or a publisher credential; a publisher's `publishers` give each one's `id`, and a distributor's publisher's `distributor`, spec 0037) |
 | `GET tenants/{t}/channels` | public |
 | `GET tenants/{t}/channels/{c}` | public: kind, DuckDB versions and C API maxima, signing keys |
 | `GET tenants/{t}/channels/{c}/extensions[?duckdb_version=&platform=&prefix=&cursor=&limit=]` | public, in the caller's view |
@@ -338,10 +347,10 @@ channel. See [Using kista from DuckDB](duckdb.md).
 | `GET, POST tenants/{t}/channels/{c}/duckdb-versions`; `DELETE …/duckdb-versions/{v}` | channel admin |
 | `GET tenants/{t}/channels/{c}/sources`; `GET, PUT, DELETE …/sources/{name}` | channel admin: [a name's source in the channel](upstreams.md#a-names-source-in-a-channel) and its [rule](upstreams.md#the-catalogue-and-a-channels-rules) (`PUT` takes `{"source": "tenant" \| "upstream:<name>" \| "publisher:<name>", "mode": "auto" \| "manual"}`, `mode` optional; a follow's rules have mode `follow`; each answer is `{"name", "source", "mode", "current", "newest" (the newest available in the catalogue: a version with a held, withdrawn or revoked build is not), "outcome", "outcome_at", "set_by", "set_at", "available": {"<source>": <releases>}}`, `source` `""` when none; a list is `{"sources": [...]}`). A release's management answer carries `source` and `selected` (whether it is the channel's source of the name: only those are served) |
 | `GET tenants/{t}/channels/{c}/follows`; `GET, PUT, DELETE …/follows/{source}` | channel admin: the channel's [follows](upstreams.md#the-catalogue-and-a-channels-rules) (`PUT` takes no body; each answer is `{"source", "set_by", "set_at", "skips": {"<name>": "<reason>"}}`; a list is `{"follows": [...]}`) |
-| `GET tenants/{t}/catalogue[?source=&name=]` | tenant admin: the tenant's [catalogue](upstreams.md#the-catalogue-and-a-channels-rules), `{"entries": [{"source", "name", "versions": [newest first], "rules": {"<channel>": "<mode>"}, "held": [the versions with a held build, omitted for none], "revoked": [...], "withdrawn": [...]}]}`; a distribution admin: its distributors' publishers' entries only (removed ones too), `rules` empty, each with its `publisher_id` (a name two of them had is `publisher-id:<id>` as a source) |
-| `GET tenants/{t}/catalogue/{source}/extensions/{ext}` | tenant admin: an entry's versions (newest first), each with its builds: `{"versions": [{"version", "builds": [{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility", "origin", "checked", "created_at", "state": "held" \| "available" \| "withdrawn", "available_at" (held), "revoked_at", "withdrawn_at", "withdrawn_reason", "placed": [{"channel", "state"}]}]}]}`; a distribution admin: a distributor's publisher's entry (`publisher:<name>` or `publisher-id:<id>`, removed or not), without `placed` |
+| `GET tenants/{t}/catalogue[?source=&name=]` | tenant admin: the tenant's [catalogue](upstreams.md#the-catalogue-and-a-channels-rules), `{"entries": [{"source", "name", "versions": [newest first], "rules": {"<channel>": "<mode>"}, "held": [the versions with a held build, omitted for none], "revoked": [...], "withdrawn": [...]}]}`; a distribution admin: its distributors' publishers' entries only (removed ones too), `rules` empty, each with its `publisher_id` (a name two of them had is `publisher-id:<id>` as a source); a distributor's publisher's signed request (spec 0037): its own entries so, `?source=` left out or `publisher:<its name>` or `publisher-id:<its id>` (any other `404`) |
+| `GET tenants/{t}/catalogue/{source}/extensions/{ext}` | tenant admin: an entry's versions (newest first), each with its builds: `{"versions": [{"version", "builds": [{"id", "platform", "slot", "abi", "duckdb_version", "c_api", "body_hash", "visibility", "origin", "checked", "created_at", "state": "held" \| "available" \| "withdrawn", "available_at" (held), "revoked_at", "withdrawn_at", "withdrawn_reason", "placed": [{"channel", "state"}]}]}]}`; a distribution admin: a distributor's publisher's entry (`publisher:<name>` or `publisher-id:<id>`, removed or not), without `placed`; a distributor's publisher's signed request: its own entry so (`publisher:<its name>` or `publisher-id:<its id>`, either meaning the signer; any other `404`) |
 | `GET, PUT tenants/{t}/channels/{c}/hold` | channel admin: the channel's [hold](upstreams.md#holds), `{"channel", "hold": "2h0m0s"}`; `PUT` takes `{"hold": "2h"}` (`0s` for none, at most 90 days) |
-| `POST tenants/{t}/catalogue/extensions/{ext}/builds?version=&platform=[&visibility=]` | `publish` on the extension tenant-wide, or a [distributor's publisher](publishing.md#distributors-publishers) without grants: [publishing into the catalogue](publishing.md#publishing-into-the-catalogue) only |
+| `POST tenants/{t}/catalogue/extensions/{ext}/builds?version=&platform=[&visibility=]` | `publish` on the extension tenant-wide, or a [distributor's publisher](publishing.md#distributors-publishers) without grants: [publishing into the catalogue](publishing.md#publishing-into-the-catalogue) only; the answer names the publisher that published (`publisher_id`, and `distributor` for a distributor's), neither for a tenant principal's publication |
 | `DELETE tenants/{t}/catalogue/builds/{id}` | tenant admin; a distribution admin for a distributor's publisher's build: purge a build no release holds (`409` when one does, or it was withdrawn) |
 | `POST tenants/{t}/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw {"reason": "…"}` | server, a distribution admin: [withdraw](upstreams.md#withdrawals) a version of a distributor's publisher (`publisher:<name>`, or `publisher-id:<id>` when the name is ambiguous, `409` otherwise; removed or not), whether it holds builds of it or not; answers `{"tenant", "source", "name", "version", "reason", "withdrawn": [{"build", "platform", "slot"}], "already"}`, never the channels |
 | `GET tenants/{t}/channels/{c}/keys` | channel admin: keys, serving and active key, re-sign progress; a server administrator also sees each key's `signer_ref` and `protection` tier |
@@ -364,18 +373,19 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `POST …/extensions/{ext}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
 | `DELETE …/extensions/{ext}/releases/{id}` | extension admin: purge a yanked release |
 | `GET, POST tenants/{t}/blocks`; `GET, DELETE tenants/{t}/blocks/{hash}` | tenant admin |
-| `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin; a distribution admin all but `DELETE`; `POST {"name", "distributor"}` creates a [distributor's publisher](publishing.md#distributors-publishers): server, a distribution admin (`404` to a tenant admin) |
+| `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin; a distribution admin all but `DELETE`; `POST {"name", "distributor"}` creates a [distributor's publisher](publishing.md#distributors-publishers): server, a distribution admin (`404` to a tenant admin). Every publisher answer carries its `id` (spec 0037) |
 | `GET, POST …/publishers/{name}/github`; `GET, DELETE …/github/{id}` | tenant admin |
-| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a marked publisher; `DELETE …?purge_held=true` (a tenant admin; a distribution admin for a distributor's publisher) purges the builds the key published that are still held, and answers what it purged and kept, revoked ([holds](publishing.md#holds-and-early-placement)) |
+| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a distributor's publisher only (spec 0037: the tenant's own publishers, marked or not, answer it the `404` of a missing publisher); `DELETE …?purge_held=true` purges the builds the key published that are still held, and answers what it purged and kept, revoked ([holds](publishing.md#holds-and-early-placement)) |
 | `PUT …/publishers/{name}/hold {"hold": "24h"}` | tenant admin: the publisher's [hold](publishing.md#holds-and-early-placement); a publisher answers `hold` (omitted for none); a distributor's publisher's: server, a distribution admin only |
-| `PUT …/publishers/{name}/distributor {"distributor": "enterest"}` | server, a distribution admin: rename a [distributor's publisher](publishing.md#distributors-publishers)'s distributor, or mark a fresh publisher a distribution admin created (`404` for a tenant administrator's or an operator's publisher, `400` for one that is not fresh); a publisher answers `distributor` (omitted for the tenant's own) |
-| `POST, DELETE …/publishers/{name}/license-keys` | server, a distribution admin: mark a publisher a source of licence keys, or unmark it |
+| `PUT …/publishers/{name}/distributor {"distributor": "enterest"}` | server, a distribution admin: rename a [distributor's publisher](publishing.md#distributors-publishers)'s distributor; server: mark a fresh publisher a distribution admin created (`404` for a tenant administrator's or an operator's publisher, and to a distribution admin for any unmarked one, `400` for one that is not fresh); a publisher answers `distributor` (omitted for the tenant's own) |
+| `POST, DELETE …/publishers/{name}/license-keys` | server; a distribution admin for a distributor's publisher only: mark a publisher a source of licence keys, or unmark it |
 
-A publisher answers with its `keys` and `license_keys` (true when marked; to a distribution admin,
-an unmarked publisher's `keys` are empty). While it is marked, adding or removing its keys and
-grants is a server administrator's or a distribution admin's (`404` to a tenant administrator). A
-distribution admin marks a publisher only before it holds keys or grants (`400`). A distributor's
-publisher is marked so too, and holds no grants (`400` to a server administrator or a distribution
+A publisher answers with its `id`, its `keys` and `license_keys` (true when marked; to a
+distribution admin, the tenant's own publishers' `keys` are empty). While it is marked, adding or
+removing its keys and grants is a server administrator's (`404` to a tenant administrator), and a
+distribution admin's for a distributor's publisher only: to a distribution admin, the tenant's own
+publishers, marked or not, answer `404` as missing ones (spec 0037). A distributor's publisher is
+marked so too, and holds no grants (`400` to a server administrator or a distribution
 admin, `404` to a tenant administrator). A marked publisher's publication of a body whose key block is malformed answers
 `400` (`license_keys`).
 
@@ -403,16 +413,17 @@ See [Upstreams](upstreams.md).
 | Route | Who |
 | --- | --- |
 | `GET tenants/{t}/licenses[?source=]`; `GET …/licenses/{name}[?source=]` | a tenant admin or a licence manager |
-| `POST tenants/{t}/licenses?source=` (the licence as the body; `If-Match` to replace one) | a tenant admin; a licence manager into a distributor's publisher's entry |
-| `DELETE …/licenses/{name}?source=`; `POST …/licenses/{name}/private?source=` (`If-Match`) | a tenant admin; a licence manager in a distributor's publisher's entry |
-| `POST …/licenses/{name}/public?source=` (`If-Match`) | tenant admin |
+| `POST tenants/{t}/licenses?source=` (the licence as the body; `If-Match` to replace one) | a tenant admin, except into a distributor's publisher's entry (spec 0037: `404 distributors-entry`); a licence manager into a distributor's publisher's entry only |
+| `DELETE …/licenses/{name}?source=`; `POST …/licenses/{name}/private?source=` (`If-Match`) | a tenant admin, except in a distributor's publisher's entry; a licence manager in a distributor's publisher's entry only |
+| `POST …/licenses/{name}/public?source=` (`If-Match`) | tenant admin, except in a distributor's publisher's entry (a server administrator's) |
 | `GET …/upstreams/{name}/licenses`; `POST …/upstreams/{name}/licenses/sync` | tenant admin |
 | `GET …/upstreams/{name}/usage`; `POST …/upstreams/{name}/usage {"usage": "forward"\|"off"}` (`If-Match`) | tenant admin: the usage switch and the last forwarding run |
 | `GET tenants/{t}/license-keys[?source=]`, `GET …/license-keys/{name}[?source=]` | a tenant admin or a licence manager: the tenant's live licence keys, each with the entries it is live for |
 
 A licence is answered as its claims and state (`name`, `entry`, `id`, `issuer`, `holder_id`,
 `holder`, `plan`, `versions`, `limits`, `issued_at`, `expires_at`, `grace_until`, `key`, `source`,
-`upstream`, `visibility`, `status`, `etag`), never with the token. A tenant holds a licence per
+`upstream`, `visibility`, `status`, `etag`, and `distributor` when its entry is a distributor's
+publisher's, spec 0037), never with the token. A tenant holds a licence per
 catalogue entry (spec 0035): `entry` is the licence's entry, by its source (`upstream:<name>`,
 `publisher:<name>`, or a removed one's `upstream-id:<id>` or `publisher-id:<id>`), and `source` how
 it arrived (`import` or `upstream`): the query's `?source=` names the entry, the answer's `source`
@@ -440,7 +451,12 @@ and a relayed licence against those of its upstream's own entry (spec 0021, 0035
 live builds declaring the key, or its newest available version in the catalogue); without one it is
 refused (`400`, `kid_untrusted`, naming the entry). In a tenant with
 an [expected holder](#the-expected-holder), an import of another holder's licence answers `400`
-with `holder_mismatch` in its detail, naming the expected and the given holder.
+with `holder_mismatch` in its detail, naming the expected and the given holder. A licence older (by
+`iat`) than one the tenant holds of the same name from the same issuer for the same holder, in any
+entry, is refused (`400`, "the licence is refused (older): …"), checked after the key and the
+holder and before the stored licence is compared, so not `409` (spec 0037,
+[Licensing](licensing.md#older-licences-are-refused)); the relay and bundles refuse it with the rule
+`older` in their results.
 `GET …/license-keys` answers `{"names": [{"name", "keys": [{"kid", "sources": [{"kind":
 "publisher"|"upstream", "name", "distributor", "builds": n}]}]}]}`: exactly what an import's key
 check would accept now, per entry (`sources`: the entries the key is live for, `distributor` for a

@@ -283,13 +283,32 @@ upstream's licence into another entry or pin an import into an upstream's entry:
   `POST …/licenses/{name}/private?source=`, for a distributor's publisher's entry;
 - `GET /api/v1/tenants/{t}/license-keys`, `GET …/license-keys/{name}`.
 
-Nothing else. It cannot make a licence public (`…/public`, the tenant administrators'), since a
-public licence is served to anyone served a public release. It cannot call the upstreams' licence
+Nothing else. It cannot make a licence public (`…/public`: a server administrator's on a
+distributor's entry, a tenant administrator's on the tenant's other entries), since a public
+licence is served to anyone served a public release. It cannot call the upstreams' licence
 relay (`…/upstreams/{u}/licenses[/sync]`, the tenant administrators'), any other tenant route or
 any server route. Those answer `404`, as to any caller who may not use them. A licence still has
 to verify against a key a live release declares. The role is configuration only: no API call
 grants it. Its acts are recorded as `license-manager:<issuer>|<who>`; a tenant's readers see
 `license-manager`, without the name. A principal in both lists is a server administrator.
+
+**Who writes a distributor's entry** (spec 0037). A distributor's publisher's licence entry, live
+or removed, is the distributor's contract with the tenant's holder:
+
+| Caller | import, replace | `DELETE` | `…/private` | `…/public` | reads |
+| --- | --- | --- | --- | --- | --- |
+| server administrator (server token, CLI) | yes | yes | yes | yes | yes |
+| licence manager | yes | yes | yes | no | yes |
+| tenant administrator | refused | refused | refused | refused | yes |
+
+A tenant administrator's write there answers `404` with the problem type `distributors-entry` and
+the detail "a distributor's entry: its licence manager or a server administrator writes it" (it
+reveals nothing: the caller reads the licence and sees whose entry it is), recorded as
+`authz.refused` with the licence's `name`, the entry (`source`) and the `operation` (`import`,
+`remove`, `public`, `private`). The tenant still decides what its channels serve, by a name's
+[source](upstreams.md#a-names-source-in-a-channel), and may remove the distributor's publisher. The
+tenant's other entries are its administrators' and the server administrators' to write, never a
+licence manager's.
 
 **Distribution admins** (spec 0030) are a server-wide role for a distributor's provisioning, such as
 Enterest's: a principal of a server issuer listed in `auth.server_distribution_admins`. On every
@@ -297,21 +316,28 @@ active tenant a distribution admin may:
 
 - reserve names in the tenant for a holder, and release them (`PUT|DELETE
   /api/v1/tenants/{t}/reserved-names/{name}`, [Reserved names](publishing.md#reserved-names)); read
-  the server's reserved names (`GET /api/v1/reserved-names`);
+  the server's reserved names (`GET /api/v1/reserved-names`: each name and its kind only, without
+  `sources`, which name other tenants' upstreams and administrators: spec 0037);
 - read the tenant's reserved names;
-- create publishers, mark one (before it holds keys or grants) a source of licence keys and unmark
-  it, and manage a marked publisher's keys and grants: the steps a server administrator alone takes
-  otherwise. The tenant's own publishers stay its administrators';
-- list the tenant's grants and publishers, and add grants of `publish`, `promote` and `admin` on a
+- read the tenant's name, state and expected holder (`GET /api/v1/tenants/{t}`, spec 0037), active
+  or suspended, so a distributor checks that the tenant is its customer's before it writes there;
+  each read is a `tenant.read` event in the tenant;
+- create publishers, and list and read the tenant's publishers;
+- list the tenant's grants, and add grants of `publish`, `promote` and `admin` on a
   name reserved in the tenant (in a channel or every channel), never on the tenant, a channel or an
   extension group, nor for a whole issuer (a distributor's own publisher's builds are its
   [source](upstreams.md#a-names-source-in-a-channel); a group's publications, which promotions out
   of a channel need, are the tenant's, and land only where the name has no other source); remove the
-  grants a distribution admin made, or a marked publisher's.
-- create a distributor's publisher, or mark a fresh one it created (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)),
-  and for a distributor's publisher: manage its keys (with `purge_held`), set its hold, purge its
-  builds placed nowhere, [withdraw](upstreams.md#withdrawals) its versions, and read its entries in
-  the catalogue (without channels);
+  grants a distribution admin made.
+- create a distributor's publisher, marked from its creation (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)),
+  and for a distributor's publisher only: rename its distributor, set and clear its licence-key
+  mark, manage its keys (with `purge_held`), set its hold, purge its builds placed nowhere,
+  [withdraw](upstreams.md#withdrawals) its versions, and read its entries in the catalogue (without
+  channels);
+- never act on the tenant's own publishers (spec 0037), with the licence-key mark or without: their
+  mark, hold, keys and grants are the tenant administrators' and the server administrators' (a
+  publisher with the licence-key mark alone, a server administrator's, spec 0021). Such a call
+  answers the same `404` as a missing publisher;
 - never switch a name's source in a channel: that is the channel's administrators'.
 
 Nothing else: it reads no channel, key or release beyond what those calls answer, and cannot change
@@ -319,6 +345,10 @@ a tenant, a channel or a key set; the rest answers `404`. Its acts are recorded 
 `distribution-admin:<issuer>|<who>`, shown to a tenant's readers as `distribution-admin`. A
 principal is a licence manager or a distribution admin, not both: the configuration is refused, and
 so is a token whose principals hold both.
+
+A server has **one distributor** (spec 0037): distribution admins and licence managers are not bound
+to a distributor, and reach every distributor's publisher on the server. Other vendors reach a
+kista through [upstreams](upstreams.md).
 
 ```yaml title="kista.yaml"
 auth:                                  # file-only; changes take effect at restart

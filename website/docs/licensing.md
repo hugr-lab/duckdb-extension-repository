@@ -50,12 +50,13 @@ principal, `release add`, and an upstream run that gets a `304` (it does not rea
 key whose source is gone counts for nothing.
 
 - **Marking a publisher** is a server administrator's act (or a distribution admin's, for a
-  publisher without keys or grants: [Access](access.md)): `kista admin publisher license-keys
+  distributor's publisher only: spec 0037, [Access](access.md)): `kista admin publisher license-keys
   <tenant> <name> on|off`, or `POST`/`DELETE /api/v1/tenants/{t}/publishers/{name}/license-keys`.
   A publisher is marked only while it holds no key; the server administrator registers its keys
   afterwards. While marked, its keys, grants and the members of extension groups its grants name
-  are changed by a server administrator (or a distribution admin) only; a tenant administrator can
-  still remove it. See [Publishing](publishing.md#sources-of-licence-keys).
+  are changed by a server administrator only (or a distribution admin, for a distributor's
+  publisher); a tenant administrator can still remove it. See
+  [Publishing](publishing.md#sources-of-licence-keys).
 - **A malformed key block** in a marked publisher's publication is refused (`400`, `license_keys`).
 - **Removing a source** (the publisher, or the upstream) drops the keys it brought. Unmarking a
   publisher keeps them.
@@ -113,8 +114,17 @@ key check passes; being in force, the holder and `If-Match` are checked separate
 
 The query's `?source=` names a licence's entry; the licence's own `source` field says how it
 arrived (`import` or `upstream`). A write checks, in order: the caller, licensing being on, the
-entry (`400` as above), then the licence (in force, its key live for the entry, the holder,
-`If-Match`).
+entry (`400` as above; a distributor's entry, below), then the licence (in force, its key live for
+the entry, the holder, the [`older` rule](#older-licences-are-refused), `If-Match`).
+
+**A distributor's entry** (spec 0037), a distributor's publisher's, live or removed, is the
+distributor's contract with the holder: its licence manager and the server administrators write it,
+and a tenant administrator only reads it. A tenant administrator's import, removal, `…/public` or
+`…/private` there answers `404` with the problem type `distributors-entry` and the detail "a
+distributor's entry: its licence manager or a server administrator writes it", recorded as
+`authz.refused` with what it was. A licence's answer carries `distributor` when its entry is a
+distributor's publisher's, as the keys listing does. See
+[who writes a distributor's entry](access.md#server-administrators-and-tenant-administrators).
 
 ## On and off
 
@@ -189,7 +199,9 @@ the upstream's **own entry** (`upstream:<name>`) when:
 - it names the tenant's [expected holder](#an-expected-holder), when one is set (`holder_mismatch`).
 
 It replaces the licence stored in the entry when it is newer from the same upstream, or lasts
-longer. An import in the entry is replaced only by a relayed licence signed with the same key that
+longer, and is not [older](#older-licences-are-refused) than a licence the tenant holds from its
+issuer for its holder (refused `older`, the stored licence staying: a licence that lasts longer no
+longer replaces a later one of the same issuer and holder). An import in the entry is replaced only by a relayed licence signed with the same key that
 lasts longer, or once the import's grace has ended or its key is no longer live (or the server
 refuses it); the row is then the relay's, and the relay governs it (a `license.change` event names
 the import it replaced and the upstream). A licence refused for its key or its holder stays stored
@@ -214,12 +226,45 @@ carries the licences it holds for the names whose files the bundle carries
 exporting tenant's mirror or the source its own channel serves the name from), and the import reads
 each licence once, even when several of the bundle's sources carry it. It goes into **each**
 bundle-mode upstream of a carrying source that supplies the name and whose live keys verify it,
-checked as a relayed licence is; it never replaces an administrator's import, and a bundle never
-revokes one. The import's counts (stored, replaced, unchanged, refused) are per target, and its
+checked as a relayed licence is (an [older](#older-licences-are-refused) one refused `older` per
+target, before the refusal over an import); it never replaces an administrator's import, and a
+bundle never revokes one. The import's counts (stored, replaced, unchanged, refused) are per target, and its
 result lists each target's own counts (`targets`, by upstream)
 ([Exporting a bundle](upstreams.md#exporting-a-bundle),
 [Importing a bundle](upstreams.md#importing-a-bundle),
 [Air-gapped sites](deployment/air-gapped.md#licences)).
+
+### Older licences are refused
+
+kista refuses to store a licence when the tenant holds another of the same package (type and name),
+from the same issuer (`iss`) for the same holder (its id), issued later (`iat`), in **any** entry
+(spec 0037): the rule `older`. An import, a replacement with `If-Match` included, answers `400`
+"the licence is refused (older): …", checked after the key and holder checks and before the stored
+licence is compared (so not `409`); the relay and a bundle refuse it with the rule `older` in their
+results, and the stored licence stays.
+
+- **An equal `iat` is not older**: the same file again is taken (the console replaces a licence with
+  the same file).
+- **Other issuers are not compared**, nor other holders.
+- **A stored licence that no longer counts blocks nothing**: once its grace has ended, or while its
+  key is dead (not live in its entry, or refused by the server: a licence signed with a key later
+  compromised and refused cannot block newer ones).
+- **Going back on purpose**: remove the newer licence, then import the older one; both acts are
+  audited.
+- **Issuers must make `iat` increase for each holder.** Enterest issues `iat = max(now, last + 1)`.
+  A third-party issuer that issued two licences in the wrong order sees the earlier-dated one refused.
+
+It protects what kista serves against accidents (a remote restored from a backup, a bundle imported
+again, a stale token) and against tenant administrators who are not server administrators on a
+kista someone else hosts. It does not stop a writer who may remove the newer licence first (a
+server administrator, a licence manager's token), and a licence file placed by hand on a client is
+outside it. Short licence lifetimes, renewed by the issuer, remain the real control.
+
+**Its gaps.** kista forgets a licence's `iat` once nothing it serves holds it: after the licence
+expires, after a writer removes it, after the relay revokes it. An older licence still in force can
+then be stored again: kista keeps no tombstone. The rule refuses new stores only: an older licence
+stored in another entry while it was the newest stays there after a newer one arrives elsewhere,
+and a channel whose rule is switched to that entry serves it. Short lifetimes bound both.
 
 `kista admin upstream licenses <tenant> <upstream> [-sync]` shows the last relay run (received,
 stored, replaced, unchanged, removed, refused with reasons) and with `-sync` asks for one now;
@@ -228,10 +273,12 @@ the API has `GET` and `POST …/upstreams/{name}/licenses[/sync]`.
 **In the console**, tenant administrators have **Licences**: the tenant's licences with plan,
 holder, how each arrived, visibility, expiry, status (one expiring within 30 days, or in its grace,
 is flagged) and its **Entry**; a licence's claims, limits and the fingerprint of the key that signed
-it; making one public or private, and removing one. **Import a licence** reads the file's extension
+it; making one public or private, and removing one (none of these on a distributor's licence for a
+caller who is not a server administrator: it is read-only to them, spec 0037). **Import a licence** reads the file's extension
 and key, and lists the entries whose live keys include it, each with its kind and, for a
-distributor's publisher, the distributor. It preselects an entry only when exactly one lists the
-key; with several, the administrator chooses; another entry may be named (kista's `400
+distributor's publisher, the distributor (listed but not chosen by a caller who is not a server
+administrator: "a distributor's: its licence manager writes it"). It preselects an entry only when
+exactly one lists the key; with several, the administrator chooses; another entry may be named (kista's `400
 kid_untrusted` is shown when its keys do not verify the licence). The import always names its entry,
 and the licence stored there is replaced after a confirmation. A licence is flagged when no live
 build of its entry declares its key: it is not served. The **licence keys** table shows each key's
