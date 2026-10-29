@@ -7,7 +7,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -24,6 +26,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license/vectors"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -36,8 +39,10 @@ import (
 // Spec 0033 phase B part 2, spec 0035: kista_demo from a distributor's publisher, marked for
 // licence keys, published into the catalogue only; its licence is imported into that entry
 // (?source=) before any placement and served once prod's auto rule places the build, and the
-// pinned DuckDB is licensed. The tenant's upstream (another kista) then brings kista_demo into
-// nightly with the same key: two entries, one licensed, so nightly serves no licence (missing) and
+// pinned DuckDB is licensed. Spec 0037: the entry is the licence manager's to write, not the tenant
+// administrator's; an older licence from the same issuer is refused; the distributor's publisher
+// reads its entry with a signed request. The tenant's upstream (another kista) then brings
+// kista_demo into nightly with the same key: two entries, one licensed, so nightly serves no licence (missing) and
 // prod keeps its own. Switching nightly's rule to the distributor's entry serves its licence there
 // (valid); switching back answers 404 again. Spec 0035 phase 2: prod's release made public answers
 // the warning and writes its event.
@@ -70,18 +75,57 @@ func TestLicenseFromDistributor(t *testing.T) {
 		t.Fatalf("into the catalogue: %d", st)
 	}
 	now := time.Now().Unix()
-	tok := vectors.Sign(signKey, vectors.Header(signKey), fmt.Sprintf(`{"v":1,"iss":"https://issuer.example","jti":"lic-dist",`+
-		`"sub":"acme","holder":"Acme Test","ext":"kista_demo","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}`,
-		now-60, now+30*86400))
-	v, err := k.licenses.Import(ctx, serveAdmin, "acme", "", "publisher:enterest-ci", tok, licenses.Create)
-	if err != nil || v.Entry != "publisher:enterest-ci" {
-		t.Fatalf("the licence, before any placement: %+v %v", v, err)
+	licence := func(jti string, iat int64) string {
+		return vectors.Sign(signKey, vectors.Header(signKey), fmt.Sprintf(`{"v":1,"iss":"https://issuer.example","jti":%q,`+
+			`"sub":"acme","holder":"Acme Test","ext":"kista_demo","plan":"pro","limits":{"max_attached_sources":5},"iat":%d,"exp":%d}`,
+			jti, iat, now+30*86400))
 	}
+	tok := licence("lic-dist", now-60)
 	token := idp.token(t, "alice", "api://kista-acme")
 	pool := x509.NewCertPool()
 	caPEM, _ := os.ReadFile(testCA(t).caFile)
 	pool.AppendCertsFromPEM(caPEM)
 	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	// spec 0037: a tenant administrator's import into the distributor's entry is refused, saying why
+	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|tom", []string{"admin"}, tenants.GrantOn{}); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("POST", "https://"+k.addr+"/api/v1/tenants/acme/licenses?source=publisher:enterest-ci", strings.NewReader(tok))
+	req.Header.Set("Authorization", "Bearer "+idp.token(t, "tom", "api://kista-acme"))
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusal, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(refusal), "urn:kista:problem:distributors-entry") {
+		t.Fatalf("the tenant administrator's import: %d %s", resp.StatusCode, refusal)
+	}
+	// the licence manager's import is stored
+	lm := k.licenses.WithAuthz(authz.Grants{Store: k.st, Auths: &auth.TenantAuths{Store: k.st}})
+	reconciler := authz.Actor{Kind: authz.ActorLicenseManager, ID: "ops|reconciler"}
+	v, err := lm.Import(ctx, reconciler, "acme", "", "publisher:enterest-ci", tok, licenses.Create)
+	if err != nil || v.Entry != "publisher:enterest-ci" || v.Distributor != "enterest" {
+		t.Fatalf("the licence, before any placement: %+v %v", v, err)
+	}
+	// an older licence from the same issuer for the same holder is refused (rule older)
+	var le *license.Error
+	if _, err := lm.Import(ctx, reconciler, "acme", "", "publisher:enterest-ci", licence("lic-older", now-120), 0); !errors.Is(err, licenses.ErrRefused) ||
+		!errors.As(err, &le) || le.Rule != licenses.RuleOlder {
+		t.Fatalf("an older licence: %v", err)
+	}
+	// the distributor's publisher reads its entry with a signed request
+	req, _ = http.NewRequest("GET", "https://"+k.addr+"/api/v1/tenants/acme/catalogue/publisher:enterest-ci/extensions/kista_demo", nil)
+	signRequest(t, req, key, nil)
+	resp, err = hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(entry), `"name":"kista_demo"`) || strings.Contains(string(entry), `"placed"`) {
+		t.Fatalf("the distributor's publisher reads its entry: %d %s", resp.StatusCode, entry)
+	}
 	licenseGet := func(channel string) int {
 		t.Helper()
 		req, _ := http.NewRequest("GET", "https://"+k.addr+"/acme/"+channel+"/-/licenses/kista_demo", nil)
@@ -235,17 +279,14 @@ func TestLicenseFromDistributor(t *testing.T) {
 	if evs := warnings(); len(evs) != 0 {
 		t.Fatalf("warned before anything was public: %+v", evs)
 	}
-	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|tom", []string{"admin"}, tenants.GrantOn{}); err != nil {
-		t.Fatal(err)
-	}
 	rs, err := k.rel.List(ctx, serveAdmin, "acme", "prod", "kista_demo")
 	if err != nil || len(rs) != 1 || rs[0].Visibility != store.Private {
 		t.Fatalf("prod's release: %+v %v", rs, err)
 	}
-	req, _ := http.NewRequest("POST", "https://"+k.addr+"/api/v1/tenants/acme/channels/prod/extensions/kista_demo/releases/"+rs[0].ID+"/public", nil)
+	req, _ = http.NewRequest("POST", "https://"+k.addr+"/api/v1/tenants/acme/channels/prod/extensions/kista_demo/releases/"+rs[0].ID+"/public", nil)
 	req.Header.Set("Authorization", "Bearer "+idp.token(t, "tom", "api://kista-acme"))
 	req.Header.Set("If-Match", fmt.Sprintf(`"v%d"`, rs[0].Version))
-	resp, err := hc.Do(req)
+	resp, err = hc.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

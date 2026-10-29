@@ -198,19 +198,21 @@ func startKistaLicensed(t *testing.T, b *build, verifier *auth.Verifier, license
 	k.ten = ten
 	mten := *ten
 	mten.Authz = grants
-	apiH := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
-		PublicURL: "https://" + k.addr, Log: slog.New(slog.DiscardHandler), KistaVersion: "e2e",
-		Authz: grants, Tenants: &mten, Auth: &tenants.AuthAdmin{Store: st, Authz: grants, PublicURL: "https://" + k.addr},
-		Keys: &mks, Releases: &release.Service{Store: st, Blob: bs, Signers: &mks, Authz: grants}})
-	k.events = &writer.Writer{Store: st, Log: slog.New(slog.DiscardHandler)}
-	k.counts = stats.Downloads(st, slog.New(slog.DiscardHandler))
 	var served serve.Licenses
 	var usage serve.UsageCounter
+	var mlic *licenses.Service // the licence routes (spec 0037: a tenant administrator's writes over the API)
 	if licensed {
 		k.licenses = &licenses.Service{Store: st, Authz: authz.ServerAdmin{}, Enabled: true, Log: slog.New(slog.DiscardHandler)}
 		k.usage = stats.Usage(st, slog.New(slog.DiscardHandler))
 		served, usage = licenses.Served{Service: k.licenses}, k.usage
+		mlic = k.licenses.WithAuthz(grants)
 	}
+	apiH := api.New(api.Options{Store: st, Snapshots: snaps, Auths: auths, Verifier: verifier,
+		PublicURL: "https://" + k.addr, Log: slog.New(slog.DiscardHandler), KistaVersion: "e2e",
+		Authz: grants, Tenants: &mten, Auth: &tenants.AuthAdmin{Store: st, Authz: grants, PublicURL: "https://" + k.addr},
+		Keys: &mks, Releases: &release.Service{Store: st, Blob: bs, Signers: &mks, Authz: grants}, Licenses: mlic})
+	k.events = &writer.Writer{Store: st, Log: slog.New(slog.DiscardHandler)}
+	k.counts = stats.Downloads(st, slog.New(slog.DiscardHandler))
 	k.handler = serve.NewHandler(st, ks, bs, serve.Options{MaxDownloads: 16, MaxDownloadsPerClient: 16, MinRate: 1024,
 		Events: k.events, Downloads: k.counts, Licenses: served, Usage: usage, Puller: k.puller,
 		WriteIdleTimeout: 30 * time.Second, Log: slog.New(slog.NewJSONHandler(&k.access, nil)), Verifier: verifier,
