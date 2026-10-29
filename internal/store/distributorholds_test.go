@@ -66,16 +66,11 @@ func TestDistributorHold(t *testing.T) {
 			t.Fatalf("a new tenant's minimum: %s", tn.DistributorHold)
 		}
 		own := store.Publisher{TenantID: tn.ID, Name: "ci"}
-		dist := store.Publisher{TenantID: tn.ID, Name: "enterest-ci"}
-		gone := store.Publisher{TenantID: tn.ID, Name: "enterest-old"}
+		dist := store.Publisher{TenantID: tn.ID, Name: "enterest-ci", Distributor: "enterest"}
+		gone := store.Publisher{TenantID: tn.ID, Name: "enterest-old", Distributor: "enterest"}
 		inTx(t, s, func(tx *store.Tx) error {
 			for _, p := range []*store.Publisher{&own, &dist, &gone} {
 				if err := tx.InsertPublisher(ctx, p); err != nil {
-					return err
-				}
-			}
-			for _, n := range []string{dist.Name, gone.Name} {
-				if _, err := tx.SetPublisherDistributor(ctx, tn.ID, n, "enterest"); err != nil {
 					return err
 				}
 			}
@@ -155,12 +150,9 @@ func TestDistributorHoldReadLocked(t *testing.T) {
 		clock := time.Now().UTC().Truncate(time.Second)
 		s.Now = func() time.Time { return clock }
 		tn, _ := fixture(t, s)
-		dist := store.Publisher{TenantID: tn.ID, Name: "enterest-ci"}
+		dist := store.Publisher{TenantID: tn.ID, Name: "enterest-ci", Distributor: "enterest"}
 		inTx(t, s, func(tx *store.Tx) error {
 			if err := tx.InsertPublisher(ctx, &dist); err != nil {
-				return err
-			}
-			if _, err := tx.SetPublisherDistributor(ctx, tn.ID, dist.Name, "enterest"); err != nil {
 				return err
 			}
 			_, err := tx.SetDistributorHold(ctx, tn.ID, time.Hour)

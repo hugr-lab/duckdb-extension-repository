@@ -12,7 +12,8 @@ import (
 
 // Migration 0041 (spec 0033 phase B part 1): on a populated database at level 40, every publisher is
 // the tenant's own and every build is not withdrawn, so every channel serves what it served; a
-// publisher marked a distributor's afterwards is remembered once removed.
+// publisher marked a distributor's afterwards (by the column: spec 0037 marks none) is remembered once
+// removed.
 func TestMigrationDistributors(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Fresh(t, 1)[0]
@@ -61,8 +62,18 @@ func TestMigrationDistributors(t *testing.T) {
 			if _, err := tx.SetPublisherDistributor(ctx, tid, "ci", "line\nbreak"); !errors.Is(err, store.ErrInvalid) {
 				t.Errorf("a distributor's name with a line break: %v", err)
 			}
+			// spec 0037: an existing publisher is never marked; the store renames a marked one only
+			if _, err := tx.SetPublisherDistributor(ctx, tid, "ci", "enterest"); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("an unmarked publisher marked: %v", err)
+			}
+			return nil
+		})
+		if err := store.ExecRaw(ctx, s, "UPDATE publishers SET distributor = 'enterest-old' WHERE id = ?", id("p")); err != nil {
+			t.Fatal(err)
+		}
+		inTx(t, s, func(tx *store.Tx) error {
 			before, err := tx.SetPublisherDistributor(ctx, tid, "ci", "enterest")
-			if err == nil && before.Distributor != "" {
+			if err == nil && before.Distributor != "enterest-old" {
 				t.Errorf("before: %+v", before)
 			}
 			return err
@@ -84,14 +95,8 @@ func TestMigrationDistributors(t *testing.T) {
 			t.Fatalf("an unknown one: %v", err)
 		}
 		// another distributor's publisher of the same name: the name is ambiguous, each is named by its id
-		again := store.Publisher{TenantID: tid, Name: "ci", CreatedBy: "os:1:t"}
-		inTx(t, s, func(tx *store.Tx) error {
-			if err := tx.InsertPublisher(ctx, &again); err != nil {
-				return err
-			}
-			_, err := tx.SetPublisherDistributor(ctx, tid, "ci", "enterest")
-			return err
-		})
+		again := store.Publisher{TenantID: tid, Name: "ci", CreatedBy: "os:1:t", Distributor: "enterest"}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &again) })
 		if _, err := s.ResolveDistributorSource(ctx, tid, "publisher:ci"); !errors.Is(err, store.ErrAmbiguousSource) {
 			t.Fatalf("an ambiguous name: %v", err)
 		}
@@ -123,12 +128,9 @@ func TestWithdraw(t *testing.T) {
 		tn, ch := fixture(t, s)
 		other := store.Channel{TenantID: tn.ID, Name: "dev", Kind: store.ChannelSigned}
 		inTx(t, s, func(tx *store.Tx) error { return tx.CreateChannel(ctx, &other) })
-		p := store.Publisher{TenantID: tn.ID, Name: "enterest-ci"}
+		p := store.Publisher{TenantID: tn.ID, Name: "enterest-ci", Distributor: "enterest"}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &p) })
 		inTx(t, s, func(tx *store.Tx) error {
-			if _, err := tx.SetPublisherDistributor(ctx, tn.ID, "enterest-ci", "enterest"); err != nil {
-				return err
-			}
 			_, err := tx.SetDistributorHold(ctx, tn.ID, 0) // spec 0037: its entries not held by the tenant's minimum
 			return err
 		})

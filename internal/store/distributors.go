@@ -29,15 +29,19 @@ func validText(s string, max int) bool {
 	return s != "" && len(s) <= max && utf8.ValidString(s) && strings.IndexFunc(s, func(c rune) bool { return !unicode.IsPrint(c) }) < 0
 }
 
-// SetPublisherDistributor marks a tenant's publisher a distributor's (spec 0033 phase B), or renames
-// its distributor: distributor is the distributor's name (1 to 128 bytes of printable text). It
-// returns the publisher as it was. A mark is never removed: a distributor's publisher is removed
-// instead.
+// SetPublisherDistributor renames a distributor's publisher's distributor (spec 0033 phase B):
+// distributor is the distributor's name (1 to 128 bytes of printable text). It returns the publisher
+// as it was. A publisher without the mark is not found (spec 0037: an existing publisher is never
+// marked; InsertPublisher marks one at its creation). A mark is never removed: a distributor's
+// publisher is removed instead.
 func (t *Tx) SetPublisherDistributor(ctx context.Context, tenantID, name, distributor string) (Publisher, error) {
 	if !validText(distributor, MaxDistributor) {
 		return Publisher{}, fmt.Errorf("%w: distributor: 1 to %d bytes of printable text", ErrInvalid, MaxDistributor)
 	}
 	p, err := t.GetPublisher(ctx, tenantID, name)
+	if err == nil && p.Distributor == "" {
+		err = fmt.Errorf("%w: publisher %s is not a distributor's", ErrNotFound, name)
+	}
 	if err != nil || p.Distributor == distributor {
 		return p, err
 	}

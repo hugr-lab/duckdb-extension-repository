@@ -25,13 +25,12 @@ func TestLicenseWarningAnswers(t *testing.T) {
 	}
 	// tresor's builds are a distributor's publisher's (nobody), checked, its key declared; prod has
 	// its public releases
-	if _, err := storetest.LicenseKey(ctx, m.st, tn.ID, "tresor", store.KeySourcePublisher, "nobody", &m.licKey.PublicKey); err != nil {
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error { // a distributor's publisher, marked at its creation
+		return tx.InsertPublisher(ctx, &store.Publisher{TenantID: tn.ID, Name: "nobody", CreatedBy: "os:1:t", Distributor: "enterest"})
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
-		_, err := tx.SetPublisherDistributor(ctx, tn.ID, "nobody", "enterest")
-		return err
-	}); err != nil {
+	if _, err := storetest.LicenseKey(ctx, m.st, tn.ID, "tresor", store.KeySourcePublisher, "nobody", &m.licKey.PublicKey); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ExecRaw(ctx, m.st, "UPDATE builds SET checked = ? WHERE name = ?", true, "tresor"); err != nil {

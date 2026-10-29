@@ -50,14 +50,9 @@ func TestDistributorParts(t *testing.T) {
 					name, distributor string
 					id                *string
 				}{{"enterest-ci", "enterest", &x.pub}, {"own", "", &x.own}} {
-					pp := store.Publisher{TenantID: tn.ID, Name: p.name, CreatedBy: "os:1:t"}
+					pp := store.Publisher{TenantID: tn.ID, Name: p.name, CreatedBy: "os:1:t", Distributor: p.distributor}
 					if err := tx.InsertPublisher(ctx, &pp); err != nil {
 						return err
-					}
-					if p.distributor != "" {
-						if _, err := tx.SetPublisherDistributor(ctx, tn.ID, p.name, p.distributor); err != nil {
-							return err
-						}
 					}
 					*p.id = store.PublisherSource(pp.ID)
 				}
@@ -65,20 +60,18 @@ func TestDistributorParts(t *testing.T) {
 			}
 			// t0 has a second publisher of the distributor's; t1's is removed (remembered), t2's own is
 			// another distributor's
-			two := store.Publisher{TenantID: ts[0].id, Name: "enterest-two", CreatedBy: "os:1:t"}
+			two := store.Publisher{TenantID: ts[0].id, Name: "enterest-two", CreatedBy: "os:1:t", Distributor: "enterest"}
 			if err := tx.InsertPublisher(ctx, &two); err != nil {
 				return err
 			}
-			if _, err := tx.SetPublisherDistributor(ctx, ts[0].id, two.Name, "enterest"); err != nil {
-				return err
-			}
 			second = store.PublisherSource(two.ID)
-			if err := tx.DeletePublisher(ctx, ts[1].id, "enterest-ci", "os:1:t"); err != nil {
-				return err
-			}
-			_, err := tx.SetPublisherDistributor(ctx, ts[2].id, "own", "other")
-			return err
+			return tx.DeletePublisher(ctx, ts[1].id, "enterest-ci", "os:1:t")
 		})
+		// t2's own becomes another distributor's (as an older binary could leave it: spec 0037 marks
+		// a publisher at its creation only)
+		if err := store.ExecRaw(ctx, s, "UPDATE publishers SET distributor = 'other' WHERE tenant_id = ? AND name = 'own'", ts[2].id); err != nil {
+			t.Fatal(err)
+		}
 		// t3 suspended, t4 being deleted
 		if err := store.ExecRaw(ctx, s, "UPDATE tenants SET state = 'suspended' WHERE id = ?", ts[3].id); err != nil {
 			t.Fatal(err)

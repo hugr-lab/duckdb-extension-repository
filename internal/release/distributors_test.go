@@ -23,15 +23,9 @@ func TestDistributorFollowAndWithdraw(t *testing.T) {
 		t.Cleanup(reserved.SetForTest(reserved.Seed(), 0))
 		en.rel.Authz = publishes{} // no publisher holds a grant
 		p := newPlacing(t, en)
-		dist := store.Publisher{TenantID: p.ci.TenantID, Name: "enterest-ci"}
+		dist := store.Publisher{TenantID: p.ci.TenantID, Name: "enterest-ci", Distributor: "enterest"}
 		must(t, func() error {
-			return p.st.InTx(ctx, "", func(tx *store.Tx) error {
-				if err := tx.InsertPublisher(ctx, &dist); err != nil {
-					return err
-				}
-				_, err := tx.SetPublisherDistributor(ctx, dist.TenantID, dist.Name, "enterest")
-				return err
-			})
+			return p.st.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &dist) })
 		})
 		reserveServerWide(t, p.st, "kista_theirs")
 		pub := authzOf(dist)

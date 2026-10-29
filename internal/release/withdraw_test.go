@@ -17,13 +17,10 @@ func distributorPlacing(t *testing.T, en *env) (placing, func(name, version, pla
 	t.Helper()
 	en.rel.Authz = publishes{}
 	p := newPlacing(t, en)
-	dist := store.Publisher{TenantID: p.ci.TenantID, Name: "enterest-ci", CreatedBy: "os:1:t"}
+	dist := store.Publisher{TenantID: p.ci.TenantID, Name: "enterest-ci", CreatedBy: "os:1:t", Distributor: "enterest"}
 	must(t, func() error {
 		return p.st.InTx(ctx, "", func(tx *store.Tx) error {
 			if err := tx.InsertPublisher(ctx, &dist); err != nil {
-				return err
-			}
-			if _, err := tx.SetPublisherDistributor(ctx, dist.TenantID, dist.Name, "enterest"); err != nil {
 				return err
 			}
 			_, err := tx.SetDistributorHold(ctx, dist.TenantID, 0)
