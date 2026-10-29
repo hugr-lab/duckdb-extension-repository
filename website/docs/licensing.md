@@ -237,19 +237,22 @@ result lists each target's own counts (`targets`, by upstream)
 ### Older licences are refused
 
 kista refuses to store a licence when the tenant holds another of the same package (type and name),
-from the same issuer (`iss`) for the same holder (its id), **verified by the same key**, issued later
-(`iat`), in **any** entry (spec 0037): the rule `older`. An import, a replacement with `If-Match`
+from the same issuer (`iss`) for the same holder (its id), issued later (`iat`), in **any** entry,
+and that licence is in a **distributor's entry** or was **verified by the same key** (spec 0037): the
+rule `older`. An import, a replacement with `If-Match`
 included, answers `400` "the licence is refused (older): …", naming the entry that holds the later
 licence, checked after the key and holder checks and before the stored licence is compared (so not
 `409`), and recorded as a `license.refused` event; the relay and a bundle refuse it with the rule
 `older` in their results, and the stored licence stays.
 
-- **The same key**: a stored licence's key is the fingerprint of the key material that verified it.
-  A licence signed with another key never blocks the issuer's, whatever its claims say: a tenant
-  administrator who signs a licence with a key of their own (declared by a build of an upstream of
-  theirs) and the issuer's `iss`, holder and a later `iat` cannot freeze the issuer's licences. So
-  after the issuer rotates its key, its older licences signed with the previous key are not compared
-  with the new key's.
+- **A distributor's entry counts whatever its key**: only its licence manager and server
+  administrators write it, so after the issuer rotates its key, its new licence there still
+  supersedes a stale licence of the previous key imported anywhere in the tenant.
+- **Elsewhere, the same key**: a stored licence's key is the fingerprint of the key material that
+  verified it. A licence in any other entry signed with another key never blocks the issuer's,
+  whatever its claims say: a tenant administrator who signs a licence with a key of their own
+  (declared by a build of an upstream of theirs) and the issuer's `iss`, holder and a later `iat`
+  cannot freeze the issuer's licences.
 - **An equal `iat` is not older**: the same file again is taken (the console replaces a licence with
   the same file).
 - **Other issuers are not compared**, nor other holders.
@@ -266,10 +269,10 @@ licence, checked after the key and holder checks and before the stored licence i
   renewing; a path that lags behind is refused `older` until it catches up, and its entry keeps the
   licence it holds.
 
-A copy of a distributor's licence (the same licence, its issuer and id, imported into another entry
-where its key is live) is not made public there but by a server administrator: `404`
-`distributors-entry`, "a copy of a distributor's licence (…): its licence manager or a server
-administrator makes it public".
+**A copy made public is not prevented.** A tenant administrator reads the distributor's licence,
+so they can import a copy of it into another entry where its key is live (an upstream's, their own
+publisher's) and make it public there. kista does not refuse that: the distributor's terms and the
+[warning](#public-serving-of-licensed-entries) of a licensed entry served publicly cover it.
 
 It protects what kista serves against accidents (a remote restored from a backup, a bundle imported
 again, a stale token) and against tenant administrators who are not server administrators on a

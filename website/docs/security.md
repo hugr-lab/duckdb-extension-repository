@@ -199,11 +199,13 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   public release), publish, block, or add upstreams or keys. A licence still has to verify against
   a key a live release declares. A distributor's entry is its licence manager's and the server
   administrators' to write (spec 0037): a tenant administrator, or a stolen tenant administrator's
-  token, can no longer remove, replace or make public a distributor's licence. A licence older (by
-  `iat`) than one the tenant holds from the same issuer for the same holder, verified by the same
-  key (so a licence a tenant administrator signs with a key of their own never blocks the issuer's),
-  is refused on every path, and a copy of a distributor's licence is not made public elsewhere by a
-  tenant administrator. The rule stops replays (a remote restored from a backup, a bundle imported
+  token, can no longer remove, replace or make public a distributor's licence in its entry. They can
+  still import a copy of it into another entry where its key is live and make that public: the
+  distributor's terms and the public-serving warning cover it, kista does not prevent it. A licence
+  older (by `iat`) than one the tenant holds from the same issuer for the same holder (in a
+  distributor's entry whatever its key, elsewhere verified by the same key, so a licence a tenant
+  administrator signs with a key of their own never blocks the issuer's) is refused on every path.
+  The rule stops replays (a remote restored from a backup, a bundle imported
   again) but not a writer who may remove the newer licence first; short licence lifetimes remain the
   real control.
 - **Distribution admins** (`auth.server_distribution_admins`, from the configuration file only)

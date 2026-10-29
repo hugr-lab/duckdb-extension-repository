@@ -132,7 +132,7 @@ are all the kinds in `internal/audit`:
 | | `feed.remove` | `feed:<name>` | `name`, `documents`, `export` |
 | | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `bundle` and `dry_run` (an import's), `error` (a class: `unauthorized`, `refused`, `unreachable`, `credential`, `token`, `keys`, `limits`, `failed`) |
 | Access | `auth.failure` | `route:<route>` | `reason`, `route`, `count` |
-| | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count`; for a tenant administrator's write on a distributor's licence entry (spec 0037), `name` (with `name_unverified` when read from an import's token before it was verified), `source` (the entry as named), `entry` (resolved, `upstream-id:<id>` or `publisher-id:<id>`) and `operation` (`import`, `remove`, `public`, `private`; refusals are coalesced per operation), and `copy_of` for a copy of a distributor's licence made public elsewhere |
+| | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count`; for a tenant administrator's write on a distributor's licence entry (spec 0037), `name` (with `name_unverified` when read from an import's token before it was verified), `source` (the entry as named), `entry` (resolved, `upstream-id:<id>` or `publisher-id:<id>`) and `operation` (`import`, `remove`, `public`, `private`; refusals are coalesced per operation) |
 | | `install` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `name`, `version`, `platform`, `duckdb_version`, `body_hash`, `user_agent` |
 | | `extension.use` | `channel:<channel>/ext:<name>` | `version`, `platform`, `duckdb_version`, `license`, `status`, `events` |
 | | `usage.forward` | `upstream:<name>` | `upstream`, `sent`, `skipped`, `failed` |
@@ -157,8 +157,9 @@ Notes on some kinds:
   `malformed`, `invalid`, `publisher_route`, `stale_token` or `unnamed_writer`, or for a publisher's
   signed request `signed_stale` (`signed-at` more than five minutes away), `signed_key` (not a key of
   the tenant, or expired) or `signed_signature`.
-  `authz.refused` is a known caller refused. These two and `request.failed` are rate-limited per
-  tenant, actor and kind to one a second, each carrying `count`, the requests it stands for.
+  `authz.refused` is a known caller refused. These two, `request.failed` and `license.refused`
+  are rate-limited per tenant, actor and kind to one a second (an `authz.refused` that names its
+  `operation`, spec 0037, per operation too), each carrying `count`, the requests it stands for.
 - `install` is an authenticated download by a principal holding `install` on it: the first per
   (principal, release, client network, day) on a replica, at most 1,000 a day per principal.
 - `extension.use` is a usage report by a principal holding `install` on the extension
