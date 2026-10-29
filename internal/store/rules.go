@@ -319,13 +319,19 @@ var ErrCatalogueFull = errors.New("store: the source's catalogue is full")
 // SourceUsage is how many builds a tenant's source holds placed nowhere (its catalogue's backlog:
 // released builds are the channels'), and their bodies' bytes. A withdrawn entry counts, released or
 // not (spec 0033 phase B: kept for good, its body with it): a source that publishes and withdraws
-// does not grow a tenant's storage without bound.
+// does not grow a tenant's storage without bound. The source's entries' icons count in bytes too
+// (spec 0036: icon_bytes), whether or not the entries still have builds.
 func (s *Store) SourceUsage(ctx context.Context, tenantID, source string) (entries int, bytes int64, err error) {
-	var n sql.NullInt64
+	var n, icons sql.NullInt64
 	err = s.db.QueryRowContext(ctx, s.d.rebind(`SELECT COUNT(*), SUM(bl.body_len) FROM builds b JOIN tenants t ON t.id = b.tenant_id
 LEFT JOIN blobs bl ON bl.domain = t.storage_domain AND bl.body_hash = b.body_hash WHERE b.tenant_id = ? AND b.source = ?
 AND (b.withdrawn_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id))`), tenantID, source).Scan(&entries, &n)
-	return entries, n.Int64, err
+	if err != nil {
+		return 0, 0, err
+	}
+	err = s.db.QueryRowContext(ctx, s.d.rebind(`SELECT SUM(icon_bytes) FROM entry_meta WHERE tenant_id = ? AND source = ?`), tenantID,
+		source).Scan(&icons)
+	return entries, n.Int64 + icons.Int64, err
 }
 
 // LandedBuild is a build landed in the catalogue without a release (TrimLanded's reads), with its

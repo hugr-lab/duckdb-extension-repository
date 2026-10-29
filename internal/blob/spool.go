@@ -220,7 +220,7 @@ func (sp *Spool) Commit(ctx context.Context) (store.Blob, error) {
 	}
 	for attempt := 0; ; attempt++ {
 		claim := store.NewID()
-		if err := s.claim(ctx, rec.Domain, rec.StreamHash, claim); err != nil {
+		if err := s.claim(ctx, s.st.Streams(), rec.Domain, rec.StreamHash, claim); err != nil {
 			return store.Blob{}, err
 		}
 		if err := sp.domain.Store.Put(ctx, StreamKey(rec.StreamHash), zf, pre.StreamLen); err != nil {
@@ -252,15 +252,15 @@ const IntakeDeadline = time.Hour
 // busyPoll is how often a commit waiting on a stream's delete tries again.
 var busyPoll = 2 * time.Second
 
-// claim claims a stream until the intake's deadline (its context's, at most IntakeDeadline), waiting
-// while the collector deletes it.
-func (s *Service) claim(ctx context.Context, domain, stream, id string) error {
+// claim claims an object (a stream, an icon) until the intake's deadline (its context's, at most
+// IntakeDeadline), waiting while the collector deletes it.
+func (s *Service) claim(ctx context.Context, objs store.Objects, domain, hash, id string) error {
 	until := s.st.Now().Add(IntakeDeadline)
 	if d, ok := ctx.Deadline(); ok && d.Before(until) {
 		until = d
 	}
 	for {
-		err := s.st.ClaimStream(ctx, domain, stream, id, until)
+		err := objs.Claim(ctx, domain, hash, id, until)
 		if !errors.Is(err, store.ErrStreamBusy) {
 			return err
 		}

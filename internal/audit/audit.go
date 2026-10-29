@@ -231,7 +231,7 @@ var catalogue = map[Kind][]string{
 	"usage.forward":    {"upstream", "sent", "skipped", "failed"},
 	"usage.receive":    {"day", "part", "parts", "sender", "reports", "dropped"},
 	"audit.dropped":    {"counts", "sink"},
-	"storage.gc":       {"domain", "builds", "bodies", "marked", "streams", "tmp", "attachments", "uploads", "chunks", "bytes", "claims", "resolved", "dry_run", "error"},
+	"storage.gc":       {"domain", "builds", "bodies", "marked", "streams", "icons", "tmp", "attachments", "uploads", "chunks", "bytes", "claims", "resolved", "dry_run", "error"},
 	"storage.verify": {"domain", "full", "mark", "unmark", "checked", "ok", "skipped", "marked_ok", "missing", "short", "long",
 		"corrupt", "record", "unreadable", "marked", "unmarked", "bytes", "error"},
 	"audit.sink":     {"sink", "state", "class", "status"},

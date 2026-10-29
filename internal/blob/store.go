@@ -22,7 +22,8 @@ type Store interface {
 	// Stat returns an object's size, or ErrNotFound.
 	Stat(ctx context.Context, key string) (int64, error)
 	Delete(ctx context.Context, key string) error
-	// List calls fn for every object under prefix ("streams/", "tmp/" or "attachments/").
+	// List calls fn for every object under prefix ("streams/", "tmp/", "attachments/", "uploads/" or
+	// "icons/").
 	List(ctx context.Context, prefix string, fn func(key string, size int64, modified time.Time) error) error
 	// Anonymous reports whether key can be read without credentials (a public store), when the
 	// backend can tell; ok is false when it cannot.
@@ -44,6 +45,7 @@ const MarkerKey = "kista-domain.json"
 
 var (
 	streamKey = regexp.MustCompile(`^streams/[0-9a-f]{64}$`)
+	iconKey   = regexp.MustCompile(`^icons/[0-9a-f]{64}$`) // spec 0036
 	tmpKey    = regexp.MustCompile(`^tmp/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	attachKey = regexp.MustCompile(`^attachments/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	uploadKey = regexp.MustCompile(`^uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -52,9 +54,10 @@ var (
 )
 
 // ValidKey checks a key against the grammar: streams/<64 hex>, tmp/<uuid>, attachments/<uuid> (spec
-// 0011), or the marker.
+// 0011), uploads/<uuid> (spec 0014), icons/<64 hex> (spec 0036), or the marker.
 func ValidKey(key string) error {
-	if key == MarkerKey || streamKey.MatchString(key) || tmpKey.MatchString(key) || attachKey.MatchString(key) || uploadKey.MatchString(key) {
+	if key == MarkerKey || streamKey.MatchString(key) || tmpKey.MatchString(key) || attachKey.MatchString(key) || uploadKey.MatchString(key) ||
+		iconKey.MatchString(key) {
 		return nil
 	}
 	return fmt.Errorf("%w: %q", ErrKey, key)
@@ -80,7 +83,7 @@ func ImportKey(name string) (string, error) {
 
 // ValidListPrefix checks a List prefix.
 func ValidListPrefix(p string) error {
-	if p == "streams/" || p == "tmp/" || p == "attachments/" || p == "uploads/" {
+	if p == "streams/" || p == "tmp/" || p == "attachments/" || p == "uploads/" || p == "icons/" {
 		return nil
 	}
 	return fmt.Errorf("%w: list prefix %q", ErrKey, p)

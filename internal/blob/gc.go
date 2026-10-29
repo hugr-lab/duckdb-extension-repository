@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
 // The garbage collector (spec 0016): per storage domain, on one replica at a time (a lease), it
@@ -36,7 +38,8 @@ type Result struct {
 	Builds, Bodies, Marked, Streams, Tmp, Uploads int
 	Attachments                                   int   // spec 0011: of bodies gone, superseded a year ago, and objects without a record
 	Chunks                                        int   // spec 0014: bundle uploads' chunks deleted
-	Bytes                                         int64 // of the objects deleted: streams, tmp, attachments, chunks
+	Icons                                         int   // spec 0036: entries' icons deleted (their marks count in Marked)
+	Bytes                                         int64 // of the objects deleted: streams, icons, tmp, attachments, chunks
 	Claims                                        int   // expired claims removed
 	Resolved                                      int   // deleting tombstones another collector left, finished
 	Skipped                                       bool  // another replica holds the domain's lease
@@ -121,7 +124,11 @@ func (c *Collector) Resolve(ctx context.Context, domain string) (Result, error) 
 	if err := c.ours(ctx, d); err != nil {
 		return r, err
 	}
-	err = c.tombstones(ctx, d, time.Time{}, &r)
+	for _, k := range []kind{streamsKind, iconsKind} {
+		if err = c.tombstones(ctx, d, k, time.Time{}, &r); err != nil {
+			break
+		}
+	}
 	if r.Resolved > 0 {
 		c.Log.Info("blob: resolved deletes of a storage domain", "domain", domain, "resolved", r.Resolved, "bytes", r.Bytes)
 	}
@@ -169,7 +176,8 @@ func (c *Collector) Pass(ctx context.Context, domain string, dryRun bool) (r Res
 			log = c.Log.Error
 		}
 		log("blob: collected a storage domain", "domain", domain, "dry_run", dryRun, "builds", r.Builds, "bodies", r.Bodies,
-			"marked", r.Marked, "streams", r.Streams, "tmp", r.Tmp, "attachments", r.Attachments, "uploads", r.Uploads, "chunks", r.Chunks, "bytes", r.Bytes, "claims", r.Claims,
+			"marked", r.Marked, "streams", r.Streams, "icons", r.Icons, "tmp", r.Tmp, "attachments", r.Attachments, "uploads", r.Uploads, "chunks", r.Chunks,
+			"bytes", r.Bytes, "claims", r.Claims,
 			"resolved", r.Resolved, "error", err)
 		if c.Event != nil {
 			c.Event(context.WithoutCancel(ctx), r)
@@ -183,8 +191,11 @@ func (c *Collector) Pass(ctx context.Context, domain string, dryRun bool) (r Res
 	steps := []func() error{
 		func() error { return c.builds(ctx, domain, cutoff, &r) },
 		func() error { return c.bodies(ctx, domain, cutoff, &r) },
-		func() error { return c.listing(ctx, d, &r) },
-		func() error { return c.tombstones(ctx, d, cutoff, &r) },
+		func() error { return c.listing(ctx, d, streamsKind, &r) },
+		func() error { return c.tombstones(ctx, d, streamsKind, cutoff, &r) },
+		// spec 0036: the icons no entry's metadata references
+		func() error { return c.listing(ctx, d, iconsKind, &r) },
+		func() error { return c.tombstones(ctx, d, iconsKind, cutoff, &r) },
 		func() error { return c.leftovers(ctx, d, cutoff, &r) },
 		func() error { return c.attachments(ctx, d, cutoff, &r) },
 		func() error { return c.bundleUploads(ctx, d, cutoff, &r) },
@@ -198,8 +209,12 @@ func (c *Collector) Pass(ctx context.Context, domain string, dryRun bool) (r Res
 		}
 	}
 	if !dryRun {
-		if r.Claims, err = st.RemoveExpiredClaims(ctx, domain); err != nil {
-			return r, err
+		for _, k := range []kind{streamsKind, iconsKind} {
+			n, err := k.objects(st).RemoveExpiredClaims(ctx, domain)
+			r.Claims += n
+			if err != nil {
+				return r, err
+			}
 		}
 	}
 	return r, nil
@@ -285,15 +300,30 @@ func (c *Collector) bodies(ctx context.Context, domain string, cutoff time.Time,
 	}
 }
 
-// listing marks the streams of the store that no row references, no tombstone names and no claim
-// holds.
-func (c *Collector) listing(ctx context.Context, d Domain, r *Result) error {
+// kind is a kind of object the collector marks and deletes by spec 0016's protocol: streams, and
+// icons (spec 0036).
+type kind struct {
+	name, prefix string // "stream", "streams/"
+	objects      func(*store.Store) store.Objects
+	key          func(hash string) string
+	deleted      func(*Result) *int // the pass's count of the kind's objects deleted
+}
+
+var (
+	streamsKind = kind{"stream", "streams/", (*store.Store).Streams, StreamKey, func(r *Result) *int { return &r.Streams }}
+	iconsKind   = kind{"icon", "icons/", (*store.Store).Icons, IconKey, func(r *Result) *int { return &r.Icons }}
+)
+
+// listing marks the objects of a kind in the store that no row references, no tombstone names and
+// no claim holds.
+func (c *Collector) listing(ctx context.Context, d Domain, k kind, r *Result) error {
+	objs := k.objects(c.Service.st)
 	var batch []string
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
 		}
-		un, err := c.Service.st.UnreferencedStreams(ctx, d.Name, batch)
+		un, err := objs.Unreferenced(ctx, d.Name, batch)
 		batch = batch[:0]
 		if err != nil {
 			return err
@@ -303,7 +333,7 @@ func (c *Collector) listing(ctx context.Context, d Domain, r *Result) error {
 				r.Marked++
 				continue
 			}
-			marked, err := c.Service.st.MarkStream(ctx, d.Name, h)
+			marked, err := objs.Mark(ctx, d.Name, h)
 			if err != nil {
 				return err
 			}
@@ -313,41 +343,42 @@ func (c *Collector) listing(ctx context.Context, d Domain, r *Result) error {
 		}
 		return c.renew(ctx, d.Name)
 	}
-	err := d.Store.List(ctx, "streams/", func(key string, size int64, modified time.Time) error {
-		batch = append(batch, strings.TrimPrefix(key, "streams/"))
+	err := d.Store.List(ctx, k.prefix, func(key string, size int64, modified time.Time) error {
+		batch = append(batch, strings.TrimPrefix(key, k.prefix))
 		if len(batch) >= 1000 {
 			return flush()
 		}
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("blob: domain %s: listing: %w", d.Name, err)
+		return fmt.Errorf("blob: domain %s: listing %s: %w", d.Name, k.prefix, err)
 	}
 	return flush()
 }
 
-// tombstones deletes the streams of marked tombstones older than the cutoff (a zero cutoff: none),
-// and finishes deleting ones another collector left. A delete the store refuses stops the pass: the
-// tombstone goes back to marked (commits of the stream go on) and a later pass tries again; one
-// whose outcome is unknown (a timeout) stays deleting, finished by a resolver once stale.
-func (c *Collector) tombstones(ctx context.Context, d Domain, cutoff time.Time, r *Result) error {
+// tombstones deletes the objects of a kind whose marked tombstones are older than the cutoff (a zero
+// cutoff: none), and finishes deleting ones another collector left. A delete the store refuses stops
+// the pass: the tombstone goes back to marked (writes of the object go on) and a later pass tries
+// again; one whose outcome is unknown (a timeout) stays deleting, finished by a resolver once stale.
+func (c *Collector) tombstones(ctx context.Context, d Domain, k kind, cutoff time.Time, r *Result) error {
 	st := c.Service.st
+	objs := k.objects(st)
 	after := ""
 	for {
 		stale := st.Now().Add(-deleteStale)
-		ts, err := st.DueTombstones(ctx, d.Name, cutoff, stale, after, gcBatch)
+		ts, err := objs.DueTombstones(ctx, d.Name, cutoff, stale, after, gcBatch)
 		if err != nil || len(ts) == 0 {
 			return err
 		}
 		for _, t := range ts {
-			key := StreamKey(t.StreamHash)
+			key := k.key(t.StreamHash)
 			size := c.size(ctx, d, key)
 			if r.DryRun {
-				r.Streams++
+				*k.deleted(r)++
 				r.Bytes += size
 				continue
 			}
-			stamp, err := st.BeginDelete(ctx, d.Name, t.StreamHash, cutoff, stale)
+			stamp, err := objs.BeginDelete(ctx, d.Name, t.StreamHash, cutoff, stale)
 			if err != nil {
 				return err
 			}
@@ -359,7 +390,7 @@ func (c *Collector) tombstones(ctx context.Context, d Domain, cutoff time.Time, 
 			if err := c.renew(ctx, d.Name); err != nil {
 				return err
 			}
-			mine, err := st.StillDeleting(ctx, d.Name, t.StreamHash, stamp)
+			mine, err := objs.StillDeleting(ctx, d.Name, t.StreamHash, stamp)
 			if err != nil {
 				return err
 			}
@@ -371,16 +402,16 @@ func (c *Collector) tombstones(ctx context.Context, d Domain, cutoff time.Time, 
 			cancel()
 			if err != nil {
 				if ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) {
-					if aerr := st.AbortDelete(context.WithoutCancel(ctx), d.Name, t.StreamHash, stamp); aerr != nil {
+					if aerr := objs.AbortDelete(context.WithoutCancel(ctx), d.Name, t.StreamHash, stamp); aerr != nil {
 						err = errors.Join(err, aerr)
 					}
 				}
-				return fmt.Errorf("blob: domain %s: deleting stream %s: %w", d.Name, t.StreamHash, err)
+				return fmt.Errorf("blob: domain %s: deleting %s %s: %w", d.Name, k.name, t.StreamHash, err)
 			}
-			if err := st.EndDelete(ctx, d.Name, t.StreamHash, stamp); err != nil {
+			if err := objs.EndDelete(ctx, d.Name, t.StreamHash, stamp); err != nil {
 				return err
 			}
-			r.Streams++
+			*k.deleted(r)++
 			r.Bytes += size
 			if t.State == "deleting" {
 				r.Resolved++

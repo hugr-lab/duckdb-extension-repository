@@ -2229,14 +2229,15 @@ func (a *adminCmd) blobGC(ctx context.Context, args []string) error {
 		domains = []string{*domain}
 	}
 	var failed []string
-	a.table("DOMAIN\tBUILDS\tBODIES\tMARKED\tSTREAMS\tTMP\tUPLOADS\tATTACHMENTS\tBYTES", func(w io.Writer) {
+	a.table("DOMAIN\tBUILDS\tBODIES\tMARKED\tSTREAMS\tICONS\tTMP\tUPLOADS\tATTACHMENTS\tBYTES", func(w io.Writer) {
 		for _, d := range domains {
 			r, err := c.Pass(ctx, d, !*apply)
 			switch {
 			case r.Skipped:
 				fmt.Fprintf(w, "%s\tskipped: another replica is collecting it\n", d)
 			default:
-				fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", d, r.Builds, r.Bodies, r.Marked, r.Streams, r.Tmp, r.Uploads, r.Attachments, r.Bytes)
+				fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", d, r.Builds, r.Bodies, r.Marked, r.Streams, r.Icons, r.Tmp, r.Uploads, r.Attachments,
+					r.Bytes)
 			}
 			if err != nil {
 				failed = append(failed, d)
