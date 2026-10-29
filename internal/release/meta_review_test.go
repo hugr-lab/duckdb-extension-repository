@@ -141,7 +141,9 @@ func TestEntryMetaChecksBeforeUpload(t *testing.T) {
 			t.Fatalf("a smaller icon over the cap: %v", err)
 		}
 		rel.MaxBytes = 0
-		// a refused reader reads nothing; an allowed one reads the object once
+		// a refused reader reads nothing; an allowed one reads the object once (the same-icon write above
+		// read it once, to check it is there)
+		c.gets.Store(0)
 		if _, err := rel.EntryIcon(ctx, tenantAdmin, "acme", "", "publisher:ci", "nope"); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("no entry: %v", err)
 		}

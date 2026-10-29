@@ -29,3 +29,11 @@ func SetImportPause(t interface{ Cleanup(func()) }, d time.Duration) {
 	importPause = d
 	t.Cleanup(func() { importPause = old })
 }
+
+// SetIconClaimWait sets how long an icon's write waits on the collector (spec 0036), until the test
+// ends.
+func SetIconClaimWait(t interface{ Cleanup(func()) }, d time.Duration) {
+	old := iconClaimWait
+	iconClaimWait = d
+	t.Cleanup(func() { iconClaimWait = old })
+}

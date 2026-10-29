@@ -280,6 +280,9 @@ func TestEntryMetaAccess(t *testing.T) {
 		}())
 		refused("no source", write(admin, "upstream:nope", "acl"))
 		refused("a licence manager", write(authz.Actor{Kind: authz.ActorLicenseManager, ID: "kc|lm"}, "tenant", "acl"))
+		if es, err := rel.Catalogue(ctx, distPub, "acme", pkgtype.Default, "", ""); err != nil || len(es) != 1 || es[0].Meta.Summary != "x" {
+			t.Errorf("a distributor's publisher's list with its metadata: %+v %v", es, err)
+		}
 		// a name reserved in the tenant for another holder: the distributor's publisher no longer
 		// reaches it; the distribution admin still does
 		must(t, func() error {
@@ -291,6 +294,12 @@ func TestEntryMetaAccess(t *testing.T) {
 		})
 		refused("a distributor's publisher, a reserved name", write(distPub, "publisher:enterest-ci", "geo"))
 		refused("a distributor's publisher reads a reserved name", read(distPub, "publisher:enterest-ci", "geo"))
+		if es, err := rel.Catalogue(ctx, distPub, "acme", pkgtype.Default, "", ""); err != nil || len(es) != 1 || es[0].Meta.Summary != "" {
+			t.Errorf("a distributor's publisher's list, a reserved name's metadata: %+v %v", es, err)
+		}
+		if es, _ := rel.Catalogue(ctx, admin, "acme", pkgtype.Default, "publisher:enterest-ci", "geo"); len(es) != 1 || es[0].Meta.Summary != "x" {
+			t.Errorf("a server administrator's list: %+v", es)
+		}
 		allowed("a distribution admin, a reserved name", write(distAdmin, "publisher:enterest-ci", "geo"))
 	})
 }

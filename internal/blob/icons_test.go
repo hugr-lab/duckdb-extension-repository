@@ -127,13 +127,12 @@ func TestIconWriteWaitsForADelete(t *testing.T) {
 		t.Fatalf("a delete of unknown outcome: %v", err)
 	}
 	done := make(chan error, 1)
-	// a write waits at most IconClaimWait, then answers busy
-	wait := blob.IconClaimWait
-	blob.IconClaimWait = 50 * time.Millisecond
+	// a write waits a while at most, then answers busy
+	blob.SetIconClaimWait(t, 50*time.Millisecond)
 	if _, _, err := e.svc.PutIcon(ctx, "default", data); !errors.Is(err, store.ErrStreamBusy) {
 		t.Fatalf("a bounded wait: %v", err)
 	}
-	blob.IconClaimWait = wait
+	blob.SetIconClaimWait(t, time.Minute) // the write below waits on the resolver
 	go func() { done <- writeIconErr(e, tn, data) }()
 	select {
 	case err := <-done:

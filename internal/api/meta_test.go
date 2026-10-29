@@ -228,6 +228,15 @@ func TestEntryMetaRoutes(t *testing.T) {
 		!strings.Contains(string(r.body), "problem:rate-limited") {
 		t.Fatalf("over the actor's rate: %d %s", r.status, r.body)
 	}
+	// a captured request replayed (stale) spends none of its publisher's rate
+	m.signers[key].at = time.Now().Add(-4 * time.Minute)
+	for range 3 {
+		call(409, "PUT", geo+"/meta", key, `{"summary":"replayed"}`)
+	}
+	m.signers[key].at = time.Now().Add(4 * time.Minute)
+	call(200, "PUT", geo+"/meta", key, `{"summary":"Geometry tools"}`)
+	m.signers[key].at = time.Now().Add(4*time.Minute + time.Second)
+	call(429, "PUT", geo+"/meta", key, `{"summary":"Geometry tools, again"}`)
 	m.apiH.SetMetaRate(1e6, 1e6)
 
 	// a row whose object is missing: the icon is not found (and logged), never served
