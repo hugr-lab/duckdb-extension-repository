@@ -732,7 +732,7 @@ func (h *Handler) addIssuer(w http.ResponseWriter, r *http.Request, c caller, p 
 	h.mu.Unlock()
 	if busy {
 		w.Header().Set("Retry-After", "5")
-		problem(w, http.StatusTooManyRequests, typeTooMany, "an issuer is being added to this tenant")
+		problem(w, http.StatusTooManyRequests, typeIssuerBusy, "an issuer is being added to this tenant")
 		return
 	}
 	defer func() {

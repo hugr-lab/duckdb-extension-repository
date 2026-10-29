@@ -161,8 +161,14 @@ const (
 	typeRequired     = "precondition-required"
 	typeTooLarge     = "too-large"
 	typeMediaType    = "unsupported-media-type"
-	typeTooMany      = "too-many-requests"
 	typeUnavailable  = "unavailable"
+	// the 429s (spec 0037: one type per cause, so a client acts on the type)
+	typeRateLimited   = "rate-limited"   // the per-client rate limiter
+	typeUploadSlots   = "upload-slots"   // the upload slots per actor, tenant or server
+	typeIngestBusy    = "ingest-busy"    // every ingest slot taken
+	typeChunksBusy    = "chunks-busy"    // too many chunks of one bundle upload in flight
+	typeCatalogueFull = "catalogue-full" // a source's catalogue full: no Retry-After, it clears as its builds go
+	typeIssuerBusy    = "issuer-busy"    // an issuer being added to the tenant
 	// typeSource: another source holds the name in the channel (spec 0031)
 	typeSource = "source"
 	// typeHeld: a held entry, or a publisher with a hold on a channel's route (spec 0033)
@@ -175,7 +181,8 @@ const (
 var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "Not Found", typeMethod: "Method Not Allowed",
 	typeInvalid: "Invalid", typeConflict: "Conflict", typePrecondition: "Precondition Failed",
 	typeRequired: "Precondition Required", typeTooLarge: "Content Too Large", typeMediaType: "Unsupported Media Type",
-	typeTooMany: "Too Many Requests", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
+	typeRateLimited: "Rate Limited", typeUploadSlots: "Upload Slots Taken", typeIngestBusy: "Ingest Busy", typeChunksBusy: "Chunks Busy",
+	typeCatalogueFull: "Catalogue Full", typeIssuerBusy: "Issuer Busy", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
 	typeHeld: "Held", typeWithdrawn: "Withdrawn"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
@@ -823,7 +830,7 @@ func (rt route) allowHeader() string {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.limiter.allow(client(r)) {
 		w.Header().Set("Retry-After", h.limiter.retryAfter())
-		problem(w, http.StatusTooManyRequests, typeTooMany, "")
+		problem(w, http.StatusTooManyRequests, typeRateLimited, "")
 		return
 	}
 	rest, ok := strings.CutPrefix(r.URL.EscapedPath(), "/api/v1/")

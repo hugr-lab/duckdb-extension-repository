@@ -693,7 +693,8 @@ func TestManagementDetails(t *testing.T) {
 		done <- m.call(t, "POST", T+"/issuers", ta, `{"name":"slow","url":"https://slow.example"}`).status
 	}()
 	<-s.in
-	if r := m.call(t, "POST", T+"/issuers", ta, `{"name":"slow2","url":"https://slow.example"}`); r.status != 429 {
+	if r := m.call(t, "POST", T+"/issuers", ta, `{"name":"slow2","url":"https://slow.example"}`); r.status != 429 ||
+		r.header.Get("Retry-After") != "5" || r.json(t)["type"] != "urn:kista:problem:issuer-busy" {
 		t.Errorf("a second issuer add while one runs: %d", r.status)
 	}
 	close(s.gate)

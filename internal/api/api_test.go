@@ -589,8 +589,8 @@ func TestRateLimit(t *testing.T) {
 	}
 	// the same /64 from another port and address is the same client; Retry-After is 1/rate
 	rec := call("[2001:db8::2]:2000", "")
-	if rec.Code != 429 || rec.Header().Get("Retry-After") != "4" {
-		t.Fatalf("same /64: %d %v", rec.Code, rec.Header())
+	if rec.Code != 429 || rec.Header().Get("Retry-After") != "4" || !strings.Contains(rec.Body.String(), `"urn:kista:problem:rate-limited"`) {
+		t.Fatalf("same /64: %d %v %s", rec.Code, rec.Header(), rec.Body)
 	}
 	if rec := call("[2001:db8:0:1::1]:1000", ""); rec.Code != 200 {
 		t.Fatalf("another /64: %d", rec.Code)

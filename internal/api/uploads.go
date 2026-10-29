@@ -60,12 +60,16 @@ func (h *Handler) uploadOf(r *http.Request, u store.BundleUpload, chunks []store
 
 func mustActor(c caller) authz.Actor { a, _ := c.actor(); return a }
 
-// uploadErr maps an upload's refusals: a state or a limit is 409, a busy replica 429.
+// uploadErr maps an upload's refusals: a state or a limit is 409, a busy replica 429 (spec 0037: its
+// own type for too many chunks of the upload, and for no ingest slot).
 func (h *Handler) uploadErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, upstream.ErrUploadBusy):
 		w.Header().Set("Retry-After", "1")
-		problem(w, http.StatusTooManyRequests, typeUnavailable, "too many chunks at once: send it again")
+		problem(w, http.StatusTooManyRequests, typeChunksBusy, "too many chunks at once: send it again")
+	case errors.Is(err, upstream.ErrIngestBusy):
+		w.Header().Set("Retry-After", "1")
+		problem(w, http.StatusTooManyRequests, typeIngestBusy, "every ingest slot is taken: send it again")
 	case errors.Is(err, upstream.ErrUploadChunk):
 		notFound(w)
 	case errors.Is(err, blob.ErrDigest):

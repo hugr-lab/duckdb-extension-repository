@@ -29,7 +29,7 @@ func (h *Handler) publishErr(w http.ResponseWriter, err error, bodyRef bool) {
 		problem(w, http.StatusBadRequest, typeInvalid, "the upload ended before its Content-Length")
 	case errors.Is(err, blob.ErrBusy):
 		w.Header().Set("Retry-After", "5")
-		problem(w, http.StatusTooManyRequests, typeTooMany, "every upload slot is taken; try again")
+		problem(w, http.StatusTooManyRequests, typeIngestBusy, "every upload slot is taken; try again")
 	case errors.Is(err, blob.ErrTooLarge), errors.Is(err, extfile.ErrTooLarge):
 		problem(w, http.StatusRequestEntityTooLarge, typeTooLarge, "the file is larger than this server accepts")
 	case errors.Is(err, extfile.ErrMalformed):
@@ -50,7 +50,8 @@ func (h *Handler) publishErr(w http.ResponseWriter, err error, bodyRef bool) {
 	case errors.Is(err, release.ErrBlocked):
 		problem(w, http.StatusConflict, typeConflict, "the body is blocked in this tenant")
 	case errors.Is(err, store.ErrCatalogueFull):
-		problem(w, http.StatusTooManyRequests, typeTooMany, publicRefusal(err))
+		// spec 0037: no Retry-After: it clears when the source's builds are placed, purged or trimmed
+		problem(w, http.StatusTooManyRequests, typeCatalogueFull, publicRefusal(err))
 	default:
 		h.channelErr(w, err, bodyRef)
 	}
@@ -64,7 +65,7 @@ func (h *Handler) slot(w http.ResponseWriter, actor, tenant string) (func(), boo
 	if h.uploads["a:"+actor] >= h.o.PublishPerActor || h.uploads["t:"+tenant] >= h.o.PublishPerTenant ||
 		h.uploads["all"] >= h.o.PublishMax {
 		w.Header().Set("Retry-After", "5")
-		problem(w, http.StatusTooManyRequests, typeTooMany, "too many uploads at once; try again")
+		problem(w, http.StatusTooManyRequests, typeUploadSlots, "too many uploads at once; try again")
 		return nil, false
 	}
 	h.uploads["a:"+actor]++
