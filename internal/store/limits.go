@@ -202,7 +202,9 @@ func LimitRefusals() map[string]int64 {
 }
 
 // TenantBytesLock orders a limited tenant's intakes of new bodies (spec 0038): a transaction that
-// inserts a build of one of its own sources holds it as its last lock key.
+// inserts or keeps a build of one of its own sources, or commits an icon, holds it; no advisory
+// lock is taken after it (a build's insert and an icon's commit take it as their last key, a
+// release's transaction where it first keeps a build).
 func TenantBytesLock(tenantID string) string { return "kista/tenant-bytes/" + tenantID }
 
 func limitArg(v int64) any {
@@ -449,8 +451,8 @@ func (s *Store) bytesRoom(ctx context.Context, t *Tx, tenantID, source, bodyHash
 
 // BytesRoom refuses a new body of size bytes (bodyHash; "" for an icon's growth) of a tenant's own
 // source when its bytes limit has no room for it (spec 0038), read outside any lock: an early,
-// cheap refusal before the body is stored; the transaction that adds it decides (Tx.BytesRoom, a
-// build's insert).
+// cheap refusal before the body is stored; the transaction that keeps it decides (keepRoom: a
+// landing, a build's first release).
 func (s *Store) BytesRoom(ctx context.Context, tenantID, source, bodyHash string, size int64) error {
 	return s.bytesRoom(ctx, nil, tenantID, source, bodyHash, size)
 }
@@ -520,13 +522,15 @@ func (t *Tx) keepRoom(ctx context.Context, buildID string) error {
 	return nil
 }
 
-// BytesRoom is Store.BytesRoom in a transaction, under the tenant's bytes lock: an icon's growth.
+// BytesRoom is Store.BytesRoom in a transaction, under the tenant's bytes lock: an icon's growth,
+// and a build's insert (no row past the limit is inserted).
 func (t *Tx) BytesRoom(ctx context.Context, tenantID, source, bodyHash string, growth int64) error {
 	return t.s.bytesRoom(ctx, t, tenantID, source, bodyHash, growth)
 }
 
-// hold takes a lock key the transaction did not take at its start (a limit set after the caller read
-// it): a deadlock this may make is the engine's to detect, and the transaction is retried.
+// hold takes a lock key the transaction did not take at its start (a release's transaction keeping
+// a build, or a limit set after the caller read it): a deadlock this may make is the engine's to
+// detect, and the transaction is retried.
 func (t *Tx) hold(ctx context.Context, key string) error {
 	if slices.Contains(t.keys, key) {
 		return nil
