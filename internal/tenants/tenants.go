@@ -87,6 +87,8 @@ func (s *Service) TenantState(ctx context.Context, a authz.Actor, name string) (
 	if a.Kind != authz.ActorDistributionAdmin {
 		return store.Tenant{}, authz.ErrDenied
 	}
+	// distribute on the server, not on the tenant: the tenant's resource is an active tenant only
+	// (authz's activeTenant), and a suspended one is read too
 	if err := s.Authz.Allow(ctx, a, authz.VerbDistribute, authz.Server); err != nil {
 		return store.Tenant{}, err
 	}

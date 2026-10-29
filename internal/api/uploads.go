@@ -69,7 +69,7 @@ func (h *Handler) uploadErr(w http.ResponseWriter, err error) {
 		problem(w, http.StatusTooManyRequests, typeChunksBusy, "too many chunks at once: send it again")
 	case errors.Is(err, upstream.ErrIngestBusy):
 		w.Header().Set("Retry-After", "1")
-		problem(w, http.StatusTooManyRequests, typeIngestBusy, "every ingest slot is taken: send it again")
+		problem(w, http.StatusTooManyRequests, typeIngestBusy, "every ingest slot is taken; send it again")
 	case errors.Is(err, upstream.ErrUploadChunk):
 		notFound(w)
 	case errors.Is(err, blob.ErrDigest):

@@ -29,7 +29,7 @@ func (h *Handler) publishErr(w http.ResponseWriter, err error, bodyRef bool) {
 		problem(w, http.StatusBadRequest, typeInvalid, "the upload ended before its Content-Length")
 	case errors.Is(err, blob.ErrBusy):
 		w.Header().Set("Retry-After", "5")
-		problem(w, http.StatusTooManyRequests, typeIngestBusy, "every upload slot is taken; try again")
+		problem(w, http.StatusTooManyRequests, typeIngestBusy, "every ingest slot is taken; try again")
 	case errors.Is(err, blob.ErrTooLarge), errors.Is(err, extfile.ErrTooLarge):
 		problem(w, http.StatusRequestEntityTooLarge, typeTooLarge, "the file is larger than this server accepts")
 	case errors.Is(err, extfile.ErrMalformed):

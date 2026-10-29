@@ -90,6 +90,7 @@ type mgmt struct {
 	toks   map[string]string // caller -> token
 	other  string            // a grant id in tenant other
 	keySvc *keys.Service     // the API's key service
+	apiRel *release.Service  // the API's release service
 	ups    *upstream.Service
 	pulls  *fakePuller
 	events *writer.Writer // refusals (spec 0010 phase 1b)
@@ -189,7 +190,7 @@ func newMgmt(t *testing.T) *mgmt {
 		Server: server, PublicURL: publicURL, Auths: auths, API: apiH, MaxDownloads: 8, MaxDownloadsPerClient: 8, MinRate: 1024,
 		WriteIdleTimeout: 10 * time.Second, Puller: pulls})
 	h.SetReady(true)
-	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}, keySvc: &keySvc, ups: ups, pulls: pulls, events: events,
+	m := &mgmt{env: en, keys: ks, h: h, ten: ten, adm: adm, toks: map[string]string{}, keySvc: &keySvc, apiRel: &relSvc, ups: ups, pulls: pulls, events: events,
 		att: att, lic: lic, licKey: licKey}
 
 	// the CLI sets up: tenant other, grants in acme

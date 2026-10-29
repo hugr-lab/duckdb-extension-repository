@@ -23,8 +23,9 @@ type Auth struct {
 	// (issuer: is refused) who manage every tenant's licences and nothing else
 	ServerLicenseAdmins []string `yaml:"server_license_admins"`
 	// ServerDistributionAdmins are the distribution admins (spec 0030): principals of the server
-	// issuers (issuer: is refused) who, on every tenant, reserve names, mark publishers and manage the
-	// marked ones, and grant publish, promote and admin on extensions; nothing else
+	// issuers (issuer: is refused) who, on every tenant, reserve names, create and manage
+	// distributors' publishers (never the tenant's own: spec 0037), read the tenant's state and
+	// expected holder, and grant publish, promote and admin on extensions; nothing else
 	ServerDistributionAdmins []string      `yaml:"server_distribution_admins"`
 	AdminTokenMaxAge         time.Duration `yaml:"admin_token_max_age"` // default 1h
 }

@@ -403,8 +403,9 @@ func (s *AuthAdmin) RemoveGrant(ctx context.Context, a authz.Actor, tenant, id s
 				if err := distributorGrant(g.Kind, g.Package, g.PackageGroupName, g.Verbs); err != nil {
 					return err
 				}
-				// a distribution admin's own grants, or a marked publisher's (checked below): the
-				// tenant's other grants are its administrators'
+				// a distribution admin's own grants (a publisher's only if it is a distributor's,
+				// checked below, spec 0037: which holds none): the tenant's other grants are its
+				// administrators'
 				if !strings.HasPrefix(g.CreatedBy, string(authz.ActorDistributionAdmin)+":") && g.PublisherName == "" {
 					return authz.ErrDenied
 				}

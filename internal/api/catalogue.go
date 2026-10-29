@@ -26,8 +26,9 @@ type catalogueEntryJSON struct {
 	// Withdrawn are the versions with a withdrawn build (spec 0033 phase B: served nowhere), newest
 	// first; omitted for none
 	Withdrawn []string `json:"withdrawn,omitempty"`
-	// PublisherID is a distributor's publisher's id, to a distribution admin (spec 0033 phase B: a
-	// name two of them had is publisher-id:<id> as a source); omitted otherwise
+	// PublisherID is a distributor's publisher's id, to a distribution admin, a server administrator
+	// and the publisher itself (spec 0033 phase B: a name two of them had is publisher-id:<id> as a
+	// source; spec 0037: its signed read); omitted otherwise
 	PublisherID string `json:"publisher_id,omitempty"`
 }
 

@@ -249,7 +249,7 @@ func (s *AuthAdmin) SetPublisherLicenseKeys(ctx context.Context, a authz.Actor, 
 // without grants (any name kista does not reserve server-wide and the tenant does not reserve for
 // another holder), and reaches no channel by itself; its keys, its hold, its withdrawals and the
 // purges of its entries are the distributor's. Only a fresh publisher a distribution admin created is
-// marked so: no grants, no keys unless it carries the licence-key mark, no hold, never a source of
+// marked so, by a server administrator: no grants, no keys unless it carries the licence-key mark, no hold, never a source of
 // anything (a publisher created otherwise, a tenant administrator's or an operator's, is refused as
 // not found; a server administrator creates a distributor's publisher marked, AddDistributorPublisher).
 // Marking a distributor's publisher again changes the distributor's name. A mark is never removed: the

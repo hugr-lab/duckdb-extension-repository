@@ -294,7 +294,7 @@ func TestDistributionAdminOwnPublishers(t *testing.T) {
 		for _, c := range []struct{ method, path, body string }{
 			{"POST", P + "/license-keys", ""},
 			{"DELETE", P + "/license-keys", ""},
-			{"PUT", P + "/hold", `{"hold":"0s"}`},
+			{"PUT", P + "/hold", `{"hold":"1h"}`},
 			{"PUT", P + "/distributor", `{"distributor":"enterest"}`},
 			{"GET", P + "/keys", ""},
 			{"GET", P + "/keys/" + kid, ""},
@@ -305,15 +305,27 @@ func TestDistributionAdminOwnPublishers(t *testing.T) {
 			{"DELETE", T + "/grants/" + grant, ""},
 		} {
 			if r := call(404, c.method, c.path, da, c.body); string(r.body) != string(missing) {
+				// every 404 has constant bytes (spec 0007): this guards against a refusal that says
+				// more (a typed or detailed one), not against the cases being told apart otherwise
 				t.Fatalf("%s %s %s: not a missing publisher's answer: %s", name, c.method, c.path, r.body)
 			}
 		}
-		// nothing changed: its key, its grant and its mark are where they were
-		if r := call(200, "GET", P+"/keys", sa, ""); !strings.Contains(string(r.body), kid) {
+		// nothing changed: its one key, its one grant, its mark and its hold (none) are as they were
+		if r := call(200, "GET", P+"/keys", sa, ""); len(r.json(t)["keys"].([]any)) != 1 || !strings.Contains(string(r.body), kid) {
 			t.Fatalf("%s's keys: %s", name, r.body)
 		}
 		call(200, "GET", T+"/grants/"+grant, sa, "")
-		if r := call(200, "GET", P, sa, ""); r.json(t)["license_keys"] != (name == "marked-ci") || r.json(t)["distributor"] != nil {
+		n := 0
+		for _, g := range call(200, "GET", T+"/grants", sa, "").json(t)["grants"].([]any) {
+			if g.(map[string]any)["principal"] == "publisher:"+name {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("%s's grants: %d", name, n)
+		}
+		if r := call(200, "GET", P, sa, ""); r.json(t)["license_keys"] != (name == "marked-ci") || r.json(t)["distributor"] != nil ||
+			r.json(t)["hold"] != nil {
 			t.Fatalf("%s: %s", name, r.body)
 		}
 	}

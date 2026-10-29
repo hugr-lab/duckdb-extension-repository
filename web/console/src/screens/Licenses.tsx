@@ -299,7 +299,7 @@ export function LicenseView({ l, server, onChanged, onRemoved }: { l: License; s
  * If-Match sent. bad says why a typed entry is not one ('' none). A distributor's publisher's entry
  * is listed but never chosen nor preselected for a caller who is not a server administrator (spec
  * 0037: server false). */
-export function importEntry(listed: KeySource[], choice: string, typed: string, server = true): { entry: string; bad: string } {
+export function importEntry(listed: KeySource[], choice: string, typed: string, server: boolean): { entry: string; bad: string } {
   const names = listed.filter((s) => !readOnly(s, server)).map(entryOf)
   if (names.length > 0 && choice !== 'other') {
     const only = preselect(listed)
