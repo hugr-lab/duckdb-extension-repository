@@ -180,6 +180,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		},
 		UpstreamCells: st.CellOutcomes,
 		UpstreamAsks:  puller.Asks,
+		LimitRefusals: func(context.Context) (map[string]int64, error) { return store.LimitRefusals(), nil }, // spec 0038
 	}))
 	if err != nil {
 		return err

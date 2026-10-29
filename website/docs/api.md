@@ -158,12 +158,13 @@ Errors are `application/problem+json`:
 | `chunks-busy` | `429`: too many chunks of one bundle upload in flight; `Retry-After: 1` |
 | `catalogue-full` | `429`: the source's catalogue holds as many entries or bytes as it may (`catalogue.max_entries`, `max_bytes`; its entries' icons count in bytes, spec 0036); no `Retry-After`: it clears when the source's builds are placed, purged or trimmed, so a client stops |
 | `issuer-busy` | `429`: an issuer is being added to the tenant; `Retry-After: 5` |
+| `tenant-limit` | `429`: a [tenant limit](administration/tenants-and-channels.md#limits) reached (spec 0038), named by the problem's `limit` member (`bytes`, `channels`, `upstreams`, `publishers`), without figures; no `Retry-After`: it clears when the tenant frees room or a server administrator raises the limit, so a client stops |
 | `unavailable` | `503`; with `Retry-After: 1` when the store or the storage collector is busy |
 
 `401` and `404` have constant bytes and no `detail`, except a publisher's signed request's `401`,
 which names the key's fingerprint kista found and kista's clock ([spec 0023](publishing.md#signed-requests)),
 and the `distributors-entry` `404`, which says why. Each `429` has its own type (spec 0037): a client
-acts on the type, retrying all but `catalogue-full`. Other answers to an allowed caller carry a
+acts on the type, retrying all but `catalogue-full` and `tenant-limit`. Other answers to an allowed caller carry a
 `detail`: a fixed message, or for an invalid value the service's own wording of the value and the
 rule (at most 300 bytes). It is never an internal error.
 
@@ -233,6 +234,7 @@ All paths are relative to `/api/v1`. `{t}` is a tenant, `{c}` a channel.
 | `GET tenants/{t}` | tenant admin; a deleting or deleted tenant: server; a distribution admin: `{"name", "state", "holder_id"}` of an active or suspended tenant (spec 0037; `holder_id` left out when none is set; no ETag; a `tenant.read` event each time) |
 | `DELETE tenants/{t}` | server: [deleting a tenant](#deleting-a-tenant) |
 | `PUT tenants/{t}/holder {"holder_id"}`, `DELETE tenants/{t}/holder` (`If-Match`) | server: [the expected holder](#the-expected-holder) |
+| `GET tenants/{t}/limits`; `PUT tenants/{t}/limits` (`If-Match` optional) | tenant admin reads, server sets: [the tenant's limits](#the-tenants-limits) |
 | `GET tenants/{t}/audiences` | tenant admin |
 | `POST tenants/{t}/audiences`, `POST tenants/{t}/audiences/remove` | server |
 
@@ -257,7 +259,29 @@ All paths are relative to `/api/v1`. `{t}` is a tenant, `{c}` a channel.
   see it too).
 - `GET tenants?state=deleting,deleted` lists the tenants in those states (`400` for another value).
   Without `state`, every state but `deleted` is listed.
-- `POST tenants` takes `name`, and optionally `display_name`, `storage_domain` and `holder_id`.
+- `POST tenants` takes `name`, and optionally `display_name`, `storage_domain`, `holder_id` and
+  `limits` (the limits' `PUT` body: [the tenant's limits](#the-tenants-limits)), applied in the
+  creating transaction and recorded as `tenant.limits` beside `tenant.create`.
+
+#### The tenant's limits
+
+A server administrator limits what a tenant can make its catalogue grow by and how many channels,
+upstreams and publishers of its own it holds (spec 0038, [Limits](administration/tenants-and-channels.md#limits)).
+
+- `GET tenants/{t}/limits` (the tenant's administrators and server administrators, a suspended
+  tenant's too for the latter) answers `{"limits": {"bytes": {"set", "limit", "used"}, "channels": …,
+  "upstreams": …, "publishers": …}}`: `set` is the tenant's own value (a number, `"unlimited"`, or
+  `"default"` when the configuration's `limits:` applies), `limit` the value in force (a number, or
+  `null` for unlimited bytes; a count's unlimited is its ceiling), `used` what it counts. Its `ETag`
+  is over the stored values.
+- `PUT tenants/{t}/limits` (server administrators) takes the limits it names, e.g.
+  `{"bytes": "50GiB", "channels": 20, "upstreams": "default", "publishers": "unlimited"}`: a number
+  (for `bytes` also a size: `KiB`, `MiB`, `GiB`, `TiB`), `0` for none, `"unlimited"`, or
+  `"default"`. A limit left out is unchanged. A count above its ceiling, a negative number or an
+  unknown name is `400`. `If-Match`, when sent, must be the `GET`'s ETag (`412` otherwise). It
+  answers as the `GET`. A change writes `tenant.limits` with each changed limit's `old` and `new`
+  stored value and the `limit` in force; one that changes nothing writes nothing. The tenant's
+  version is not bumped.
 
 #### The expected holder
 

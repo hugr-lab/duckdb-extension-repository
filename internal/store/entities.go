@@ -51,6 +51,9 @@ type Tenant struct {
 	// DistributorHold is its minimum hold for distributors' publishers (spec 0037): an entry from one
 	// is held for the larger of the publisher's hold and this
 	DistributorHold time.Duration
+	// Limits are its own values of the limits (spec 0038): LimitDefault where the server's default
+	// applies
+	Limits Limits
 }
 
 // Phase is the tenant's state as the API shows it: active, suspended, deleting or deleted (spec
@@ -118,15 +121,18 @@ type KeyEvent struct {
 
 // --- reads (outside transactions) ---
 
-const tenantCols = "id, name, display_name, state, storage_domain, auth_version, created_at, version, suspended_at, deleting_at, deleted_at, holder_id, distributor_hold_seconds"
+const tenantCols = "id, name, display_name, state, storage_domain, auth_version, created_at, version, suspended_at, deleting_at, deleted_at, holder_id, distributor_hold_seconds, " +
+	"limit_bytes, limit_channels, limit_upstreams, limit_publishers"
 
 func scanTenant(r interface{ Scan(...any) error }) (Tenant, error) {
 	var t Tenant
 	var holder sql.NullString
 	var hold int64
+	var lb, lc, lu, lp sql.NullInt64
 	err := r.Scan(&t.ID, &t.Name, &t.DisplayName, &t.State, &t.StorageDomain, &t.AuthVersion, scanTime{&t.CreatedAt}, &t.Version,
-		scanTime{&t.SuspendedAt}, scanTime{&t.DeletingAt}, scanTime{&t.DeletedAt}, &holder, &hold)
+		scanTime{&t.SuspendedAt}, scanTime{&t.DeletingAt}, scanTime{&t.DeletedAt}, &holder, &hold, &lb, &lc, &lu, &lp)
 	t.HolderID, t.DistributorHold = holder.String, time.Duration(hold)*time.Second
+	t.Limits = Limits{scanLimit(lb), scanLimit(lc), scanLimit(lu), scanLimit(lp)}
 	return t, err
 }
 
@@ -398,6 +404,7 @@ func (t *Tx) CreateTenant(ctx context.Context, tn *Tenant) error {
 		}
 	}
 	tn.ID, tn.CreatedAt, tn.Version, tn.DistributorHold = NewID(), t.Now(), 1, DefaultDistributorHold // the column's default
+	tn.Limits = DefaultLimits()                                                                       // spec 0038: set apart (SetTenantLimits)
 	_, err := t.exec(ctx, "INSERT INTO tenants (id, name, display_name, state, storage_domain, created_at, version, holder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		tn.ID, tn.Name, tn.DisplayName, tn.State, tn.StorageDomain, t.s.d.timeArg(tn.CreatedAt), tn.Version, nullable(tn.HolderID))
 	return t.s.mapErr(err, "tenant "+tn.Name)
@@ -481,7 +488,8 @@ func (t *Tx) GetDuckDBVersion(ctx context.Context, name string) (DuckDBVersion, 
 	return v, notFound(err, "DuckDB version "+name)
 }
 
-// CreateChannel inserts a channel.
+// CreateChannel inserts a channel: within the tenant's channels limit (spec 0038; the caller holds
+// the tenant's row with an update lock, which orders its channel creates) and MaxChannels.
 func (t *Tx) CreateChannel(ctx context.Context, c *Channel) error {
 	if err := ValidName(c.Name); err != nil {
 		return err
@@ -494,6 +502,16 @@ func (t *Tx) CreateChannel(ctx context.Context, c *Channel) error {
 	}
 	if c.Kind == ChannelPassthrough && c.PackageType != pkgtype.DuckDBExtension {
 		return fmt.Errorf("%w: a passthrough channel serves DuckDB extensions only", ErrInvalid)
+	}
+	var n int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM channels WHERE tenant_id = ?", c.TenantID).Scan(&n); err != nil {
+		return err
+	}
+	if err := t.underLimit(ctx, c.TenantID, LimitChannels, n); err != nil {
+		return err
+	}
+	if n >= MaxChannels {
+		return fmt.Errorf("%w: a tenant holds at most %d channels", ErrInvalid, MaxChannels)
 	}
 	c.ID, c.CreatedAt, c.Version = NewID(), t.Now(), 1
 	_, err := t.exec(ctx, "INSERT INTO channels (id, tenant_id, name, kind, created_at, version, package_type) VALUES (?, ?, ?, ?, ?, ?, ?)",

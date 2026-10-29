@@ -138,6 +138,21 @@ func TestAdminCLI(t *testing.T) {
 	run(1, "tenant", "distributor-hold", "acme", "100d") // past the longest hold
 	run(1, "tenant", "distributor-hold", "nope", "0")
 	run(0, "tenant", "distributor-hold", "acme", "0")
+	// spec 0038: the tenant's limits, read and set; a flag left out unchanged, an empty one refused
+	if got := run(0, "tenant", "limits", "acme"); !strings.Contains(got, "bytes       default  unlimited") ||
+		!strings.Contains(got, "channels    default  1000") {
+		t.Fatalf("the limits: %q", got)
+	}
+	run(0, "tenant", "limits", "acme", "-bytes", "1GiB", "-channels", "20")
+	run(0, "tenant", "limits", "acme", "-channels", "unlimited")
+	if got := run(0, "tenant", "limits", "acme"); !strings.Contains(got, "bytes       1073741824  1073741824") ||
+		!strings.Contains(got, "channels    unlimited   1000") {
+		t.Fatalf("the limits set: %q", got)
+	}
+	run(2, "tenant", "limits", "acme", "-bytes", "")
+	run(1, "tenant", "limits", "acme", "-channels", "1001") // past the ceiling
+	run(1, "tenant", "limits", "acme", "-upstreams", "many")
+	run(0, "tenant", "limits", "acme", "-bytes", "default")
 	run(0, "version", "c-api", "v2.0.0", "-c-api", "v2.0.0")
 	run(1, "version", "c-api", "v2.0.0", "-c-api", "v2.1.0") // a major is never changed
 	if got := run(0, "version", "list"); !strings.Contains(got, "v1.5.6 v2.0.0") {

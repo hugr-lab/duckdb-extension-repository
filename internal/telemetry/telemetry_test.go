@@ -54,6 +54,8 @@ func TestMetrics(t *testing.T) {
 		StoreLogin:       "vault",
 		StoreLoginCounts: func() map[string]int64 { return map[string]int64{"vault": 2, "cached": 9} },
 		StoreLoginExpiry: func() int64 { return 42 },
+		// spec 0038: refusals by tenant limit
+		LimitRefusals: func(context.Context) (map[string]int64, error) { return map[string]int64{"bytes": 4}, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -123,6 +125,10 @@ func TestMetrics(t *testing.T) {
 	}
 	if lh := got["kista.store.login.duration"].Data.(metricdata.Histogram[float64]); len(lh.DataPoints) != 1 || lh.DataPoints[0].Count != 1 {
 		t.Fatalf("login durations: %+v", lh.DataPoints)
+	}
+	lr := got["kista.tenant.limit.refusals"].Data.(metricdata.Sum[int64])
+	if v, _ := lr.DataPoints[0].Attributes.Value("kista.limit"); v.AsString() != "bytes" || lr.DataPoints[0].Value != 4 || !lr.IsMonotonic {
+		t.Fatalf("limit refusals: %+v", lr)
 	}
 	if _, ok := got["kista.uploads.active"]; ok {
 		t.Fatal("an instrument without its source")

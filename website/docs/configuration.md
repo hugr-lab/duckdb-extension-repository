@@ -579,6 +579,41 @@ File-only. See [The catalogue](upstreams.md#the-catalogue-and-a-channels-rules).
 | `catalogue.max_entries` | integer | `20000` | Builds placed nowhere per source; `100..10000000`. A new build beyond it is refused (`429` `catalogue-full` for a publication, without `Retry-After`; a mirror's cell is `rejected`) until some are placed or purged; an administrator's add is not bounded. |
 | `catalogue.max_bytes` | size | `100GiB` | Their bodies per source; 1 GiB..1 PiB. |
 
+Beside this per-source cap, each tenant has [limits](administration/tenants-and-channels.md#limits)
+on its own bytes as a whole (spec 0038); a refusal names its own type (`tenant-limit`).
+
+## limits
+
+A tenant's default limits (spec 0038): what a tenant without values of its own may make its
+catalogue grow by, and how many channels, upstreams and publishers of its own it holds. File-only.
+A server administrator sets a tenant's own values over the API or the CLI (see
+[Limits](administration/tenants-and-channels.md#limits)); they replace these.
+
+```yaml
+limits:
+  bytes: unlimited     # its own catalogue bytes: a size (50GiB), 0 (none) or unlimited
+  channels: unlimited  # a number up to 1000, 0 (none) or unlimited (the ceiling)
+  upstreams: unlimited # up to 100
+  publishers: unlimited # its own publishers, up to 200
+```
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `limits.bytes` | size, `0` or `unlimited` | `unlimited` | The tenant's own catalogue bytes: each distinct body of its kept builds, and its entries' icons; distributors' sources are never counted. |
+| `limits.channels` | number, `0` or `unlimited` | `unlimited` (1000) | Its channels. |
+| `limits.upstreams` | number, `0` or `unlimited` | `unlimited` (100) | Its upstreams. |
+| `limits.publishers` | number, `0` or `unlimited` | `unlimited` (200) | Its own publishers; distributors' publishers are counted apart (at most 10). |
+
+:::warning `0` means none here
+Unlike kista's other settings, where `0` means "the default", a limit of `0` allows **no** growth
+of that kind at all. Leave a key out, or write `unlimited`, for no limit.
+:::
+
+- A count above its ceiling, or a value that is none of these, refuses to start.
+- **A backstop, not a plan.** A change here changes every tenant without values of its own, across
+  every replica as it restarts, and writes no event. A hosted service puts explicit values on each
+  tenant instead (`POST /api/v1/tenants` takes them).
+
 ## ui
 
 The administration console. File-only. See [Console](console.md).
@@ -703,6 +738,7 @@ bootstrap:
     display_name: Acme
     domain: default                      # a blob domain; default: default
     audiences: [api://kista-acme]        # as tenant audience add
+    limits: { bytes: 50GiB, channels: 20 }   # optional, its own limits (spec 0038); those named are set
   channels:
     - name: prod
       kind: signed                       # signed (needs key) or passthrough

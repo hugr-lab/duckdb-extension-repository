@@ -72,7 +72,8 @@ func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 // until it is listed.
 var writes = map[string]map[string][]audit.Kind{
 	"tenants.Service": {
-		"CreateTenant": {"tenant.create"}, "SetTenantState": {"tenant.suspend", "tenant.resume"}, "SetTenantHolder": {"tenant.holder"}, "Delete": {"tenant.delete"}, "Show": nil,
+		"CreateTenant": {"tenant.create"}, "CreateTenantWithLimits": {"tenant.create", "tenant.limits"},
+		"SetTenantLimits": {"tenant.limits"}, "TenantLimits": nil, "SetTenantState": {"tenant.suspend", "tenant.resume"}, "SetTenantHolder": {"tenant.holder"}, "Delete": {"tenant.delete"}, "Show": nil,
 		"AddVersion": {"version.add"}, "AddVersionCAPI": {"version.c_apis"}, "AddVersionCore": {"reserved.add"}, "CreateChannel": {"channel.create"},
 		"SetChannelVersions": {"channel.versions"}, "Reserve": {"reserved.add"}, "Unreserve": {"reserved.remove"}, "ListReserved": nil,
 		"ListTenants": nil, "GetTenant": nil, "ListVersions": nil, "ListChannels": nil, "ChannelVersions": nil, "TenantState": {"tenant.read"},
@@ -306,6 +307,11 @@ func TestCoverage(t *testing.T) {
 	do := func(f func() error) func() error { return f }
 
 	en.expect("tenants.Service.CreateTenant", do(func() error { _, err := en.ten.CreateTenant(rctx, admin, "acme", "Acme", "", ""); return err }), "tenant.create")
+	// spec 0038: a tenant created with its limits
+	en.expect("tenants.Service.CreateTenantWithLimits", do(func() error {
+		_, err := en.ten.CreateTenantWithLimits(rctx, admin, "limited", "", "", "", map[string]int64{store.LimitBytes: 1 << 30})
+		return err
+	}), "tenant.create", "tenant.limits")
 	en.expect("tenants.Service.AddVersion", do(func() error {
 		_, _, err := en.ten.AddVersion(rctx, admin, "v2.0.0", "release", []string{"v1.5.6"}, tenants.CoreExtensions{Names: []string{"json"}})
 		return err
@@ -343,6 +349,11 @@ func TestCoverage(t *testing.T) {
 		en.expect("tenants.Service.SetTenantHolder", do(func() error { _, err := en.ten.SetTenantHolder(rctx, admin, "acme", h, 0); return err }),
 			"tenant.holder")
 	}
+	// spec 0038: the tenant's limits changed
+	en.expect("tenants.Service.SetTenantLimits", do(func() error {
+		_, _, err := en.ten.SetTenantLimits(rctx, admin, "acme", map[string]int64{store.LimitChannels: 50}, "")
+		return err
+	}), "tenant.limits")
 	// spec 0037: a distribution admin's read of the tenant
 	dten := *en.ten
 	dten.Authz = authz.Grants{Store: en.st}
@@ -719,7 +730,7 @@ func TestCoverage(t *testing.T) {
 	}), "attachment.remove")
 	// spec 0019, the race: a deletion that starts after an operation's checks, before its first
 	// transaction; the operation is refused as a deleting tenant, or writes nothing
-	serverWide := map[string]bool{"tenants.Service.CreateTenant": true, "tenants.Service.AddVersion": true, "tenants.Service.AddVersionCAPI": true,
+	serverWide := map[string]bool{"tenants.Service.CreateTenant": true, "tenants.Service.CreateTenantWithLimits": true, "tenants.Service.AddVersion": true, "tenants.Service.AddVersionCAPI": true,
 		"tenants.Service.AddVersionCore": true, "tenants.Service.Reserve": true, "tenants.Service.Unreserve": true}
 	tid := en.tenantID()
 	chans, err := st.ListChannels(ctx, "acme")

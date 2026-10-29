@@ -146,6 +146,7 @@ type Gauges struct {
 	EventsPending   func(ctx context.Context) (map[string]int64, error) // per sink
 	UpstreamCells   func(ctx context.Context) (map[string]int64, error) // per outcome
 	UpstreamAsks    func(ctx context.Context) (map[string]int64, error) // lazy asks per outcome (spec 0032), cumulative
+	LimitRefusals   func(ctx context.Context) (map[string]int64, error) // refusals by tenant limit (spec 0038), cumulative
 	// StoreLogin is the database login's kind when it reads a secret service (spec 0027: vault),
 	// with its requests by outcome (cumulative) and the seconds its cached password has left.
 	StoreLogin       string
@@ -228,6 +229,8 @@ func New(mp metric.MeterProvider, tenants Tenants, labels Labels, g Gauges) (*Me
 		{"kista.upstream.cells", "{cell}", "Upstream cells by outcome", false, per("kista.outcome", g.UpstreamCells), g.UpstreamCells != nil},
 		{"kista.upstream.asks", "{ask}", "Lazy mirrors' first requests by outcome: asks recorded, requests answered 503, cells fetched, offers dropped", true,
 			per("kista.outcome", g.UpstreamAsks), g.UpstreamAsks != nil},
+		{"kista.tenant.limit.refusals", "{refusal}", "Growth refused by a tenant limit, by limit", true,
+			per("kista.limit", g.LimitRefusals), g.LimitRefusals != nil},
 		{"kista.store.login", "{request}", "The database login's password requests by outcome: vault, cached, error, rejected", true,
 			func(_ context.Context, o metric.Observer, i metric.Int64Observable) error {
 				for k, v := range g.StoreLoginCounts() {

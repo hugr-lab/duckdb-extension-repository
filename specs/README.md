@@ -44,4 +44,4 @@ and it is superseded by a new spec when a decision changes.
 | [0035](0035-licences-per-entry/spec.md) | Licences per catalogue entry: key owners removed, a warning for public licensed builds | implemented |
 | [0036](0036-entry-meta/spec.md) | Entry metadata (an icon and a summary per catalogue entry) and a distributor's aggregated download statistics | implemented |
 | [0037](0037-distributor-in-a-tenant/spec.md) | The distributor in a tenant: its licences and older ones refused, a narrower distribution admin (tenant reservations removed, a minimum hold), publisher ids, signed catalogue reads, `429` types | implemented |
-| [0038](0038-tenant-limits/spec.md) | Tenant limits: own catalogue bytes, channels, upstreams and publishers per tenant, set by server administrators; `catalogue-full` in an upstream run as a failed cell | accepted |
+| [0038](0038-tenant-limits/spec.md) | Tenant limits: own catalogue bytes, channels, upstreams and publishers per tenant, set by server administrators; `catalogue-full` in an upstream run as a failed cell | accepted; PR 1 implemented |

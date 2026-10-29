@@ -112,6 +112,10 @@ func OpenStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 		return nil, err
 	}
 	s.EventClients = cfg.EventSettings().ClientAddresses
+	if s.LimitDefaults, err = cfg.LimitSettings(); err != nil { // spec 0038 (validated at load)
+		s.Close()
+		return nil, err
+	}
 	// events written here carry the configured sinks' bits (spec 0010)
 	if len(cfg.Events.Sinks) > 0 {
 		// a sink without a free bit gets none until a serve replica frees a removed sink's

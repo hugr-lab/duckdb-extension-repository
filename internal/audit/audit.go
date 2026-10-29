@@ -112,8 +112,11 @@ const Version = 1
 // (Data refuses it), so secrets cannot by construction.
 var catalogue = map[Kind][]string{
 	// tenants and server
-	"tenant.create":  {"name", "display_name", "storage_domain", "holder_id"},
-	"tenant.holder":  {"old", "new"}, // the holder its licences must name (spec 0028)
+	"tenant.create": {"name", "display_name", "storage_domain", "holder_id"},
+	"tenant.holder": {"old", "new"}, // the holder its licences must name (spec 0028)
+	// a change of its limits (spec 0038): for each changed, its stored value before and after and the
+	// value in force after
+	"tenant.limits":  {"bytes", "channels", "upstreams", "publishers"},
 	"tenant.suspend": {},
 	"tenant.resume":  {},
 	"tenant.read":    {"state"}, // a distribution admin's read of the tenant (spec 0037)

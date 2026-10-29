@@ -52,6 +52,7 @@ func (h *Handler) publishErr(w http.ResponseWriter, err error, bodyRef bool) {
 	case errors.Is(err, store.ErrCatalogueFull):
 		// spec 0037: no Retry-After: it clears when the source's builds are placed, purged or trimmed
 		problem(w, http.StatusTooManyRequests, typeCatalogueFull, publicRefusal(err))
+	case limitProblem(w, err): // spec 0038
 	default:
 		h.channelErr(w, err, bodyRef)
 	}

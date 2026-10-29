@@ -83,6 +83,9 @@ type BootstrapTenant struct {
 	DisplayName string   `yaml:"display_name" json:"display_name,omitempty"`
 	Domain      string   `yaml:"domain" json:"domain,omitempty"`
 	Audiences   []string `yaml:"audiences" json:"audiences,omitempty"`
+	// Limits are the tenant's own limits (spec 0038): those named are set, the others left as they
+	// are; omitempty keeps the digest of a section without them as it was
+	Limits *Limits `yaml:"limits" json:"limits,omitempty"`
 }
 
 // BootstrapChannel is a channel (channel create), its DuckDB versions (added, never removed) and

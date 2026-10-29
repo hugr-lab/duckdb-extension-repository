@@ -368,6 +368,11 @@ func (s *Service) SetEntryMeta(ctx context.Context, a authz.Actor, tenant, packa
 				"hold as many bytes as it may", store.ErrCatalogueFull)
 		}
 	}
+	// spec 0038: the tenant's bytes limit, for every writer of its own source's entry (a
+	// distributor's is outside it), before anything is uploaded; checked again in the row's transaction
+	if err := s.Store.BytesRoom(ctx, x.t.ID, x.src, "", int64(len(data))-cur.IconBytes); err != nil {
+		return EntryMetaView{}, err
+	}
 	for attempt := 0; ; attempt++ {
 		sha, claim, err := s.Blob.PutIcon(ctx, x.t.StorageDomain, data)
 		if err != nil {
@@ -402,6 +407,11 @@ func (s *Service) commitMeta(ctx context.Context, a authz.Actor, x metaTarget, w
 	locks := []string{store.PublisherAuthLock(x.t.ID)}
 	if sha != "" {
 		locks = append(locks, store.IconLock(x.t.StorageDomain, sha))
+		bytes, err := s.Store.BytesLocks(ctx, x.t.ID) // spec 0038: last
+		if err != nil {
+			return EntryMetaView{}, err
+		}
+		locks = append(locks, bytes...)
 	}
 	var out EntryMetaView
 	err := s.Store.InTenantTx(ctx, x.t.ID, locks, func(tx *store.Tx) error {
@@ -441,6 +451,9 @@ func (s *Service) commitMeta(ctx context.Context, a authz.Actor, x metaTarget, w
 		case keep != "":
 			next.IconSHA256, next.IconWidth, next.IconHeight, next.IconBytes = cur.IconSHA256, cur.IconWidth, cur.IconHeight, cur.IconBytes
 		case sha != "":
+			if err := tx.BytesRoom(ctx, x.t.ID, x.src, "", size-cur.IconBytes); err != nil { // spec 0038
+				return err
+			}
 			if err := tx.CommitIcon(ctx, x.t.StorageDomain, sha, claim); err != nil {
 				return err
 			}
