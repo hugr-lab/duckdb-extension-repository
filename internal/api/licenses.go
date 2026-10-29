@@ -62,10 +62,6 @@ func (h *Handler) licenseErr(w http.ResponseWriter, err error) {
 			if de.NameUnverified {
 				f["name_unverified"] = true
 			}
-			if de.CopyOf != "" {
-				f["copy_of"] = de.CopyOf
-				detail = "a copy of a distributor's licence (" + de.CopyOf + "): its licence manager or a server administrator makes it public"
-			}
 		}
 		note(w, func(sw *statusWriter) { sw.refused, sw.refusal = true, f })
 		writeProblem(w, http.StatusNotFound, typeDistributorsEntry, detail, true)

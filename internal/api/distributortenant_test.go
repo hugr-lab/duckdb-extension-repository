@@ -219,17 +219,27 @@ func TestSignedCatalogueReads(t *testing.T) {
 			t.Fatalf("another source: %s", r.body)
 		}
 	}
-	// refused, so audited
+	for _, path := range []string{"publisher:own-ci/extensions/own_ext", "tenant/extensions/tresor"} {
+		if r := call(404, "GET", T+"/catalogue/"+path, key, ""); string(r.body) != string(missing) {
+			t.Fatalf("another source's entry: %s", r.body)
+		}
+	}
+	// refused, so audited, on both routes
 	m.events.Close(ctx)
 	acme, err := m.st.GetTenant(ctx, "acme")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if evs, err := m.st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "authz.refused", Limit: 100}); err != nil ||
-		!slices.ContainsFunc(evs, func(e store.Event) bool {
-			return strings.HasPrefix(e.Actor, "publisher:") && strings.Contains(e.Data, "GET tenants/{t}/catalogue")
+	evs, err := m.st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "authz.refused", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []string{`"route":"GET tenants/{t}/catalogue"`, `"route":"GET tenants/{t}/catalogue/{source}/extensions/{ext}"`} {
+		if !slices.ContainsFunc(evs, func(e store.Event) bool {
+			return strings.HasPrefix(e.Actor, "publisher:") && strings.Contains(e.Data, route)
 		}) {
-		t.Fatalf("another source's refusal: %+v %v", evs, err)
+			t.Fatalf("another source's refusal on %s: %+v", route, evs)
+		}
 	}
 	// an entry: without placements
 	for _, src := range []string{"publisher:enterest-ci", "publisher-id:" + old} {
@@ -238,8 +248,6 @@ func TestSignedCatalogueReads(t *testing.T) {
 			t.Fatalf("%s: %s", src, r.body)
 		}
 	}
-	call(404, "GET", T+"/catalogue/publisher:own-ci/extensions/own_ext", key, "")
-	call(404, "GET", T+"/catalogue/tenant/extensions/tresor", key, "")
 	// the tenant's own publisher reads nothing here
 	call(404, "GET", T+"/catalogue", own, "")
 	call(404, "GET", T+"/catalogue/publisher:own-ci/extensions/own_ext", own, "")

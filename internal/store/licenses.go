@@ -79,11 +79,10 @@ func (t *Tx) NameLicenses(ctx context.Context, tenantID, packageType, name strin
 }
 
 // LaterLicenses lists a tenant's licences of a package (type, name), in any entry, from issuer for
-// holderID, verified by the key key (the fingerprint of its key material), issued later than issuedAt
-// (spec 0037: what makes a licence older), by entry. It compares the issuer, the holder and the key
-// here, byte for byte: SQL Server's comparison ignores trailing spaces. Whether each still counts
-// (its grace, a refused key) is the caller's to decide.
-func (t *Tx) LaterLicenses(ctx context.Context, tenantID, packageType, name, issuer, holderID, key string, issuedAt int64) ([]License, error) {
+// holderID, issued later than issuedAt (spec 0037: what makes a licence older), by entry. It compares
+// the issuer and the holder here, byte for byte: SQL Server's comparison ignores trailing spaces.
+// Whether each still counts (its key, its entry, its grace) is the caller's to decide.
+func (t *Tx) LaterLicenses(ctx context.Context, tenantID, packageType, name, issuer, holderID string, issuedAt int64) ([]License, error) {
 	ls, err := t.licenses(ctx, "SELECT "+licenseCols+` FROM licenses WHERE tenant_id = ? AND package_type = ? AND name = ? AND issued_at > ?
 ORDER BY entry_source`, tenantID, packageType, name, issuedAt)
 	if err != nil {
@@ -91,7 +90,7 @@ ORDER BY entry_source`, tenantID, packageType, name, issuedAt)
 	}
 	out := ls[:0]
 	for _, l := range ls {
-		if l.Issuer == issuer && l.HolderID == holderID && l.Key == key {
+		if l.Issuer == issuer && l.HolderID == holderID {
 			out = append(out, l)
 		}
 	}

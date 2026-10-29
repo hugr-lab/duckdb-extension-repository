@@ -40,9 +40,8 @@ var (
 	ErrDistributorsEntry = errors.New("licenses: a distributor's entry: its licence manager or a server administrator writes it")
 )
 
-// DistributorsEntry is a write refused on a distributor's publisher's entry (spec 0037), or making
-// public a copy of a distributor's licence in another entry: what it would have written, for the
-// refusal's event.
+// DistributorsEntry is a write refused on a distributor's publisher's entry (spec 0037): what it
+// would have written, for the refusal's event.
 type DistributorsEntry struct {
 	Name string // the licence's name ("" when the import's token names none)
 	// NameUnverified: Name was read from an import's token before it was verified
@@ -50,10 +49,6 @@ type DistributorsEntry struct {
 	Source         string // the entry, as the caller named it
 	Entry          string // the entry, resolved: upstream-id:<id> or publisher-id:<id>
 	Op             string // import, remove, public or private
-	// CopyOf is the distributor's entry (as answers name it) holding the same licence (its issuer
-	// and id) as the one a caller would make public in another entry; "" for a write on the
-	// distributor's entry itself
-	CopyOf string
 }
 
 func (e *DistributorsEntry) Error() string { return ErrDistributorsEntry.Error() }
@@ -551,46 +546,21 @@ func (s *Service) serverAdmin(ctx context.Context, a authz.Actor) (bool, error) 
 	return err == nil, err
 }
 
-// refusePublicCopy refuses to make l public, unless a server administrator does, when a
-// distributor's publisher's entry holds the same licence (its issuer and id: spec 0037): a tenant
-// administrator who copied the distributor's licence into another entry where its key is live must
-// not serve it publicly from there.
-func (s *Service) refusePublicCopy(ctx context.Context, tx *store.Tx, a authz.Actor, lb labels, l store.License, w write) error {
-	if ok, err := s.serverAdmin(ctx, a); ok || err != nil {
-		return err
-	}
-	ls, err := tx.NameLicenses(ctx, l.TenantID, l.PackageType, l.Name)
-	if err != nil {
-		return err
-	}
-	for _, o := range ls {
-		if o.Entry == l.Entry || o.LicenseID != l.LicenseID || o.Issuer != l.Issuer {
-			continue
-		}
-		d, err := tx.SourceDistributor(ctx, l.TenantID, o.Entry)
-		if err != nil {
-			return err
-		}
-		if d != "" {
-			return &DistributorsEntry{Name: w.name, Source: w.label, Entry: idLabel(l.Entry), Op: w.op, CopyOf: lb.of(o.Entry)}
-		}
-	}
-	return nil
-}
-
 // older refuses (rule older) a licence l when the tenant holds a later one, by iat, of the same
-// package from the same issuer for the same holder, in any entry, verified by the same key, that
-// still counts (spec 0037). A stored licence's key is the fingerprint of the key material that
-// verified it (license.ParseKeys computes it), so a licence signed with another key, whatever its
-// claims say (a tenant administrator's own key on an upstream's build, a forged kid), never blocks
-// the issuer's. It counts until its grace ends, or while the server refuses its key
+// package from the same issuer for the same holder, in any entry, that still counts (spec 0037): in
+// a distributor's publisher's entry (live or removed) whatever its key, since only licence managers
+// and server administrators write there (so an issuer's rotated key still supersedes its older
+// licences); in any other entry only when verified by the same key. A stored licence's key is the
+// fingerprint of the key material that verified it (license.ParseKeys computes it), so a licence a
+// tenant administrator signs with another key, whatever its claims say (their own key on an
+// upstream's build, a forged kid), never blocks the issuer's. It counts until its grace ends, or while the server refuses its key
 // (licenses.refuse_keys: a licence signed with a key later compromised blocks nothing); a key no
 // longer live in its entry still counts, since a tenant administrator can make it so (removing the
 // distributor's publisher, blocking its bodies). An equal iat is not older. The caller holds the
 // tenant's licence lock, which every licence write takes: nothing is stored between this check and
 // its write.
 func (s *Service) older(ctx context.Context, tx *store.Tx, lb labels, l store.License) error {
-	ls, err := tx.LaterLicenses(ctx, l.TenantID, l.PackageType, l.Name, l.Issuer, l.HolderID, l.Key, l.IssuedAt)
+	ls, err := tx.LaterLicenses(ctx, l.TenantID, l.PackageType, l.Name, l.Issuer, l.HolderID, l.IssuedAt)
 	if err != nil {
 		return err
 	}
@@ -598,6 +568,15 @@ func (s *Service) older(ctx context.Context, tx *store.Tx, lb labels, l store.Li
 	for _, o := range ls {
 		if o.GraceUntil <= now || s.Refuse[o.Key] {
 			continue
+		}
+		if o.Key != l.Key {
+			d, err := tx.SourceDistributor(ctx, l.TenantID, o.Entry)
+			if err != nil {
+				return err
+			}
+			if d == "" {
+				continue // another key outside a distributor's entry: anyone's
+			}
 		}
 		return fmt.Errorf("%w: %w", ErrRefused, &license.Error{Rule: RuleOlder, Msg: fmt.Sprintf(
 			"a later licence of %s from this issuer for this holder is stored in %s (issued %s, this one %s): to go back, remove it first",
@@ -661,7 +640,8 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant, packageType
 	l := record(tok, t.ID, packageType, token, a.String())
 	l.Entry, l.Source = src, store.LicenseImport
 	err = s.Store.InTenantTx(ctx, t.ID, []string{store.LicenseLock(t.ID)}, func(tx *store.Tx) error {
-		if err := s.recheck(ctx, tx, a, t.ID, src, true, write{name: l.Name, label: source, op: "import"}); err != nil {
+		// the token's name, not verified yet (verifyIn comes next)
+		if err := s.recheck(ctx, tx, a, t.ID, src, true, write{name: l.Name, label: source, op: "import", unverified: true}); err != nil {
 			return err
 		}
 		// the entry's live keys: those its source recorded on its own live builds anywhere in the
@@ -798,11 +778,6 @@ func (s *Service) SetVisibility(ctx context.Context, a authz.Actor, tenant, pack
 		}
 		if l, err = tx.GetLicense(ctx, t.ID, packageType, name, src); err != nil {
 			return err
-		}
-		if visibility == store.Public {
-			if err := s.refusePublicCopy(ctx, tx, a, lb, l, w); err != nil {
-				return err
-			}
 		}
 		if expected == 0 {
 			expected = l.Version

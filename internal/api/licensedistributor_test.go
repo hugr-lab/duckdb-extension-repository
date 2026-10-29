@@ -49,12 +49,13 @@ func (m *mgmt) declare(t *testing.T, name, hash string, pub *rsa.PublicKey) stri
 
 // Spec 0037 PR 1: a distributor's publisher's licence entry, live or removed, is written by its
 // licence manager (never public) and by server administrators; a tenant administrator only reads it,
-// and is refused with a 404 of its own type that says why, recorded with what it was, and cannot make
-// public a copy of the distributor's licence in another entry. A licence older (by iat) than one the
-// tenant holds from the same issuer for the same holder, verified by the same key, in any entry, is
-// refused (rule older), before the stored one is compared, and recorded; an equal iat is not older; a
-// licence signed with another key never blocks; a stored licence past its grace does not count, but
-// one whose entry's source was removed still does.
+// and is refused with a 404 of its own type that says why, recorded with what it was (a copy of the
+// distributor's licence in another entry is theirs to make public: not prevented). A licence older
+// (by iat) than one the tenant holds from the same issuer for the same holder, in any entry, is
+// refused (rule older), before the stored one is compared, and recorded: a distributor's entry's
+// licence counts whatever its key (a rotated key supersedes), another entry's only when verified by
+// the same key (a licence signed with another key never blocks); an equal iat is not older; a stored
+// licence past its grace does not count, but one whose entry's source was removed still does.
 func TestDistributorsLicences(t *testing.T) {
 	m := newMgmt(t)
 	tom, lm, sa := m.toks["tenant admin"], m.toks["server licence mgr"], m.toks["server admin"]
@@ -144,12 +145,13 @@ func TestDistributorsLicences(t *testing.T) {
 	call(201, "POST", T+"/licenses?source=publisher:twin", tom, sign(other, "self", now-30))
 	etag = call(200, "POST", E, lm, lic("pro", now-60), "If-Match", etag).header.Get("ETag")
 
-	// a copy of the distributor's licence (the same licence: its issuer and id) in another entry is
-	// not made public by a tenant administrator; a server administrator may
+	// a copy of the distributor's licence (the same licence) in another entry where its key is live is
+	// the tenant administrator's to make public: covered by the terms and spec 0035 phase 2's warning,
+	// not prevented
 	call(201, "POST", CI, tom, lic("pro", now-60))
-	refused(m.call(t, "POST", L+"/public?source=publisher:ci", tom, "", "If-Match", etagOf(L+"?source=publisher:ci", tom)),
-		"a copy of a distributor's licence (publisher:enterest-ci)")
-	call(200, "POST", L+"/public?source=publisher:ci", sa, "", "If-Match", etagOf(L+"?source=publisher:ci", tom))
+	if r := call(200, "POST", L+"/public?source=publisher:ci", tom, "", "If-Match", etagOf(L+"?source=publisher:ci", tom)); r.json(t)["visibility"] != "public" {
+		t.Fatalf("a copy made public: %s", r.body)
+	}
 	// a later licence of the same key in the tenant's own entry blocks the distributor's older one
 	call(200, "POST", CI, tom, lic("later", now-30), "If-Match", etagOf(L+"?source=publisher:ci", tom))
 	older(m.call(t, "POST", E, lm, lic("pro", now-60), "If-Match", etag), "publisher:ci")
@@ -170,6 +172,18 @@ func TestDistributorsLicences(t *testing.T) {
 	}
 	etag = call(200, "POST", E, lm, lic("pro", now-60), "If-Match", etag).header.Get("ETag")
 	call(204, "DELETE", L+"?source=publisher:ci", tom, "", "If-Match", "*")
+
+	// the issuer rotates its key (K1 to K2): the distributor's entry's K2 licence counts against a
+	// stale K1 licence imported into the tenant's own entry, whatever their keys
+	k2, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.LicenseKey(ctx, m.st, tid, "tresor", store.KeySourcePublisher, "enterest-ci", &k2.PublicKey); err != nil {
+		t.Fatal(err)
+	}
+	etag = call(200, "POST", E, lm, sign(k2, "rotated", now-15), "If-Match", etag).header.Get("ETag")
+	older(m.call(t, "POST", CI, tom, lic("stale", now-20)), "publisher:enterest-ci")
 
 	// removed: the distributor's licence still counts (a tenant administrator removing its publisher
 	// does not unblock an older one), and its entry, named by its id, is still the distributor's
@@ -207,7 +221,6 @@ func TestDistributorsLicences(t *testing.T) {
 		{`"operation":"remove"`, `"source":"publisher:enterest-ci"`},
 		{`"operation":"public"`, `"source":"publisher:enterest-ci"`},
 		{`"operation":"private"`, `"source":"publisher:enterest-ci"`},
-		{`"operation":"public"`, `"copy_of":"publisher:enterest-ci"`, `"source":"publisher:ci"`},
 	} {
 		if !slices.ContainsFunc(evs, func(e store.Event) bool {
 			return !slices.ContainsFunc(want, func(s string) bool { return !strings.Contains(e.Data, s) })

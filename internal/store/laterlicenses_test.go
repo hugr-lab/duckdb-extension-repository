@@ -8,12 +8,12 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
 
-// Spec 0037: the licences that make a licence older. A later iat from the same issuer for the same
-// holder, verified by the same key, counts, in any entry of the tenant; an equal iat does not, nor
-// another issuer, another key, a holder that differs only by a trailing space (compared byte for
-// byte: SQL Server ignores trailing spaces), another package type, name or tenant. Whether a later
-// licence still counts (its grace, a refused key) is the service's: the licences' API test covers it
-// (TestDistributorsLicences).
+// Spec 0037: the licences that may make a licence older. A later iat from the same issuer for the
+// same holder, in any entry of the tenant, whatever its key; an equal iat does not, nor another
+// issuer, a holder that differs only by a trailing space (compared byte for byte: SQL Server ignores
+// trailing spaces), another package type, name or tenant. Whether a later licence counts (its key
+// outside a distributor's entry, its grace, a refused key) is the service's: the licences' API test
+// covers it (TestDistributorsLicences).
 func TestLaterLicenses(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		unregister := pkgtype.RegisterForTest(testType)
@@ -49,7 +49,7 @@ func TestLaterLicenses(t *testing.T) {
 			t.Helper()
 			var out []string
 			if err := s.InTx(ctx, "", func(tx *store.Tx) error {
-				ls, err := tx.LaterLicenses(ctx, acme.ID, pkgtype.Default, "tresor", iss, holder, key, iat)
+				ls, err := tx.LaterLicenses(ctx, acme.ID, pkgtype.Default, "tresor", iss, holder, iat)
 				for _, l := range ls {
 					out = append(out, l.LicenseID)
 				}
@@ -59,13 +59,13 @@ func TestLaterLicenses(t *testing.T) {
 			}
 			return out
 		}
-		if got := later(10); len(got) != 1 || got[0] != "enterest" {
+		if got := later(10); len(got) != 2 || got[0] != "enterest" || got[1] != "other-key" {
 			t.Fatalf("later than 10: %v", got)
 		}
-		if got := later(20); len(got) != 0 {
+		if got := later(45); len(got) != 0 {
 			t.Fatalf("an equal iat: %v", got)
 		}
-		if got := later(5); len(got) != 2 || got[0] != "ci" || got[1] != "enterest" {
+		if got := later(5); len(got) != 3 || got[0] != "ci" || got[1] != "enterest" || got[2] != "other-key" {
 			t.Fatalf("later than 5, by entry: %v", got)
 		}
 	})
