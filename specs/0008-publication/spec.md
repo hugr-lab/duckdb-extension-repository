@@ -1,6 +1,7 @@
 # Spec 0008: Publication and promotion
 
 - **Status**: implemented (phase 1a: publication, promotion, reserved names, blocks; 1b: publishers, trusted publishing; 2: API keys). Trusted publishing, API keys and the publisher's Bearer token are superseded by [0023](../0023-publisher-keys/spec.md): publishers sign their requests with keys
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 1): the upload slots' `429` is typed `upload-slots`, a publication without an ingest slot `ingest-busy`, and a full catalogue's `catalogue-full`, without `Retry-After`.
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 

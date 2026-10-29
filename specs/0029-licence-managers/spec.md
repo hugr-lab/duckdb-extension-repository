@@ -1,6 +1,7 @@
 # Spec 0029: Licence managers
 
 - **Status**: implemented (2026-10-21)
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 1): a distributor's publisher's entry is written by licence managers and server administrators only (a tenant administrator reads it); a licence manager still never makes a licence public.
 - **Date**: 2026-10-21
 - **Author**: vgsml, Claude
 

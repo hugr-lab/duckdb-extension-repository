@@ -107,8 +107,15 @@ refused.
     distributor's.
   - The console and the CLI show it as the reason.
   - The `authz.refused` event gains `name`, `source` and the operation (`import`, `remove`,
-    `public`, `private`).
+    `public`, `private`), the entry resolved (`entry`, its id form), and `name_unverified` when the
+    name was read from an import's token before it was verified. The audit writer coalesces these
+    refusals per operation, so each is told.
   - The check runs when the service resolves the entry, and again inside the write's transaction.
+- **A copy made public.** A tenant administrator could import the distributor's licence, which they
+  read, into another entry where its key is live, and make it public there. Making public a licence
+  whose issuer and id a distributor's publisher's entry also holds is refused to anyone but a server
+  administrator: `404` `distributors-entry`, "a copy of a distributor's licence (…): its licence
+  manager or a server administrator makes it public", recorded with `copy_of`.
 - **Answers.** A licence's answer gains `distributor` when its entry is a distributor's
   publisher's. The keys listing already includes it.
 - **Console.** For a caller who is not a server administrator, the Licences screen shows a
@@ -124,28 +131,37 @@ refused.
 
 - **The rule.**
   - kista refuses to store a licence when the tenant holds another licence of the same package type
-    and name, with the same `iss` and the same holder id, and a later `iat`. The stored licence can
-    be in any entry of the tenant.
+    and name, with the same `iss` and the same holder id, verified by the same key, and a later
+    `iat`. The stored licence can be in any entry of the tenant.
+  - The same key, because `iss` and the holder are the licence's own claims: a tenant administrator
+    could add an upstream whose build declares a key of their own, sign a licence with the issuer's
+    `iss` and holder and a later `iat`, and so freeze every write of the issuer's licences in the
+    tenant. A stored licence's key is the fingerprint of the key material that verified it (the key
+    set is built from the declared keys' material, never from a declared kid), so comparing keys
+    compares key material. After an issuer rotates its key, licences of the previous key are not
+    compared with the new key's.
   - An equal `iat` is accepted. The console relies on this when it replaces a licence with the same
     file.
   - Licences from other issuers are not compared.
-  - A stored licence does not count once its grace has ended, or while its key is dead (not live in
-    its entry, or refused by the server). These are the cases in which `replaces` already lets
-    anything replace it. So a licence signed with a key that was later compromised cannot block
-    newer licences with a high `iat`.
+  - A stored licence does not count once its grace has ended, or while the server refuses its key
+    (`licenses.refuse_keys`). So a licence signed with a key that was later compromised cannot block
+    newer licences with a high `iat`. A key no longer live in its entry still counts: a tenant
+    administrator can make it so (removing the distributor's publisher, blocking its bodies), then
+    import an older licence elsewhere.
 - **Where it applies.**
   - **Import**, including a replacement with `If-Match`. The answer is `400` `invalid`, "the
     licence is refused (older): …", like every other licence refusal. It is checked after the key
     and holder checks and before the stored licence is compared. So an older licence sent without
-    `If-Match` gets `older`, not `409` "a licence is stored".
+    `If-Match` gets `older`, not `409` "a licence is stored". The refusal is a `license.refused`
+    event.
   - **The relay.** The licence is refused with the rule `older` in the run's result, and the stored
     licence stays. The check comes after the "unchanged" test and before `replaces`.
   - **Bundles.** The licence is refused with the rule `older`, per target. As for the relay, the
     check comes after the "unchanged" test. It also comes before the bundle's "superseded" refusal
     of a licence over an import, so when both apply, the refusal names `older`.
 - **Where it is checked.**
-  - One store helper reads the tenant's licences of the type and name. Go compares `iss` and the
-    holder byte for byte, because SQL Server compares strings ignoring trailing spaces.
+  - One store helper reads the tenant's licences of the type and name. Go compares `iss`, the
+    holder and the key byte for byte, because SQL Server compares strings ignoring trailing spaces.
   - The service drops the stored licences that do not count, since only it knows the refused keys.
   - All three paths call it inside the write's transaction, under the tenant's licence lock. Every
     licence write takes that lock, so nothing can be stored between the check and the write.
@@ -616,15 +632,23 @@ may keep retrying the other types.
 
 Delivered on the branch `0037-distributor-in-tenant-1`, with no migration.
 
-- **Licences.** The distributor's-entry check (`distributorsEntry` in `internal/licenses`) runs
-  when the entry is resolved and again in the write's transaction; it admits a licence manager (its
-  entries are distributors' only) and a server administrator (`Allow(admin, server)`). On an import
-  it runs before the token is parsed, so the refusal's event names the licence read from the token
-  unverified (`""` when the token names none). The API maps `*DistributorsEntry` to the typed `404`
-  and records its `name`, `source` and `operation` on `authz.refused` through the status writer.
-  `older` is one service helper over `store.LaterLicenses`, called by the import, the relay and
-  bundles; it treats a stored licence as not counting with the relay's `deadKey`. Its refusal names
-  the entry holding the later licence.
+- **Licences.** The distributor's-entry check (`refuseDistributorsEntry` in `internal/licenses`)
+  runs when the entry is resolved and again in the write's transaction, as part of `recheck`; it
+  admits a licence manager (its entries are distributors' only) and a server administrator
+  (`Allow(admin, server)`). On an import it runs before the token is parsed, so the refusal's event
+  names the licence read from the token, marked `name_unverified` (`""` when the token names none).
+  The API maps `*DistributorsEntry` to the typed `404` and records its fields on `authz.refused`
+  through the status writer; the audit writer's coalescing key includes a refusal's `operation`.
+  `older` is one service helper over `store.LaterLicenses` (issuer, holder and key compared in Go),
+  called by the import, the relay and bundles; after review it compares the key (Design above) and
+  exempts a stored licence only for its grace or a refused key (the first cut also exempted a key not
+  live in its entry, the relay's `deadKey`). Its refusal names the entry holding the later licence;
+  the API writes `license.refused` for it. Making a copy public is refused by `refusePublicCopy`.
+- **Signed catalogue reads.** Another source than the signer's answers `authz.ErrDenied` (the same
+  `404` bytes), so it is audited as a refusal.
+- **Both roles.** A server token whose principals are a licence manager's and a distribution admin's
+  is refused (`401`, `auth.Server.Verify`, since spec 0030); the API would otherwise act as the licence
+  manager. The access page says so.
 - **The narrowing.** `marked()`, `SetPublisherLicenseKeys` (both directions), `ListPublisherKeys`,
   `TenantPublisherKeys` and `SetPublisherDistributor` refuse a distribution admin on a publisher
   without `Distributor`. So a distribution admin no longer marks a fresh publisher it created; a
@@ -634,16 +658,24 @@ Delivered on the branch `0037-distributor-in-tenant-1`, with no migration.
 - **CLI.** There was no `publisher show`: it is added, printing the publisher with its `id`.
 - **Console.** The import dialog never preselects a distributor's entry for a caller who is not a
   server administrator, and "never one among several" still counts every entry listed.
-- **429s.** The chunk route's new `ingest-busy` answer has its own detail ("every ingest slot is
-  taken: send it again"); the other details are unchanged.
+- **429s.** The `ingest-busy` details name the ingest slots ("every ingest slot is taken; try
+  again" for a publication, "…; send it again" for a chunk); the other details are unchanged. An
+  attachment takes the tenant's upload slots by its id, shared with publications (it used the
+  tenant's name before).
 - **Tests.** The "old licence into another entry where the distributor's key is live" case uses a
   tenant publisher's entry rather than an upstream's: the rule is tenant-wide, whatever the entry's
-  kind. `TestDistributionAdmin` and `TestDistributorRoutes` are adjusted to PR 1 (distributors'
+  kind. A refused key's exemption is not tested on its own: with the key compared, a stored licence
+  of a refused key could only block an incoming licence of the same key, which is refused first. A
+  removed entry's import, `…/public` and `…/private` answer `400` (removed) to every caller, as in
+  spec 0035; its `DELETE` is the one write refused as `distributors-entry`. `TestDistributionAdmin` and `TestDistributorRoutes` are adjusted to PR 1 (distributors'
   publishers created marked); their rewrite as the role's full matrix is PR 2's. The e2e server
   answers the licence routes when licensing is on. The console e2e fixture gains `plain-ci`, a
   tenant publisher whose builds declare no licence key.
-- **Website.** The deploy variables' descriptions, `upgrading.md` and `upstreams.md` describe
-  tenant reservations and the minimum hold, and change with PR 2.
+- **Earlier specs.** 0007, 0008, 0012, 0021, 0023, 0029, 0033 and 0035 carry a "Changed by 0037
+  (PR 1)" line; 0030, 0031, 0034 and the reservation parts of 0033 and 0036 change with PR 2.
+- **Website.** The deploy variables' descriptions say distributors' publishers now (their
+  reservations wording stays for PR 2); `upgrading.md` and `upstreams.md`'s `allow_reserved` change
+  with PR 2.
 
 ## Alternatives considered
 

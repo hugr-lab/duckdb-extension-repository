@@ -1,6 +1,7 @@
 # Spec 0023: Publisher keys: signed requests from any CI
 
 - **Status**: implemented (phase 1: kista; phase 2: the fork, tagged `sdk-v0.2.0`, and the template)
+- **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 1): a distribution admin manages a distributor's publisher's keys only; a distributor's publisher also signs its reads of its own catalogue entries.
 - **Date**: 2026-10-19
 - **Author**: vgsml, Claude
 
