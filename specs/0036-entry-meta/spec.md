@@ -50,10 +50,11 @@ type, source, name). The source is stored as builds store it (`upstream:<id>`, `
 `tenant`), so renames do not matter. It holds:
 
 - **summary**: plain text, at most 160 characters, or none.
-- **icon**: the SHA-256 of a PNG in the tenant's storage domain, with its width and height, or none.
+- **icon**: the SHA-256 of a PNG in the tenant's storage domain, with its width, height and size in
+  bytes, or none.
 - **set_by, set_at**: who wrote it last, and when.
-- **signed_at**: the `signed-at` of the last write made by a signed request (replay protection,
-  below).
+- **signed_at, signed_body**: the `signed-at` and the body's SHA-256 of the last accepted signed
+  write (replay protection, below).
 
 Metadata belongs to the entry, not to a version or a build. A publication never touches it, so a
 new version keeps the entry's icon. The row is kept when every build of the entry is purged or
@@ -83,7 +84,10 @@ tenant: `entry_meta` joins the reaper's tables (`store.ReapTables`, which
      Each at most once, except `IDAT`, in the order the PNG specification requires: `cHRM`, `gAMA`
      and `sRGB` before `PLTE`, `bKGD` after it, all of them before the first `IDAT`. Refused, not
      stripped: `iCCP`, every text chunk (`tEXt`, `zTXt`, `iTXt`), `eXIf`, animation (`acTL`,
-     `fcTL`, `fdAT`), `sPLT`, and any chunk not listed. No bytes after `IEND`.
+     `fcTL`, `fdAT`), `sPLT`, and any chunk not listed. No bytes after `IEND`. The `IDAT` chunks
+     must be consecutive, and their data, concatenated, must decompress with zlib reaching its end
+     exactly at the last `IDAT`'s last byte. Go's decoder ignores trailing `IDAT` data
+     (`image/png`, `reader.go`), so kista checks this itself.
   2. The header (`png.DecodeConfig`): square, 64 to 512 pixels a side. This happens before
      decoding, so a decompression bomb never allocates pixels.
   3. A full decode with Go's `image/png`, and `img.Bounds()` must equal the header's size.
@@ -100,22 +104,27 @@ tenant: `entry_meta` joins the reaper's tables (`store.ReapTables`, which
 
 - **The object** is `icons/<sha256>` in the tenant's storage domain (spec 0005), content-addressed.
   Tenants sharing a domain share the object.
-- **It counts toward the byte cap** of the entry's source (`catalogue.max_bytes`, spec 0033): each
-  entry's icon size counts once. A write beyond the cap is `429`, as an arrival.
-- **Write order: object first, row second.** A write:
+- **It counts toward the byte cap** of the entry's source (`catalogue.max_bytes`, spec 0033).
+  `entry_meta` keeps `icon_bytes`. A source's icons count as the sum of `icon_bytes` over its
+  `entry_meta` rows, added to `SourceUsage`'s bytes. They count whether or not the entry still has
+  builds, since metadata outlives purges. A write that would go beyond the cap is `429`, type
+  `catalogue-full` (added by spec 0037's first PR). As `room()` exempts an administrator's add,
+  tenant administrators and server administrators are not bounded. Publishers' signed writes and
+  distribution admins are.
+- **Writing and collecting reuse spec 0016's protocol for streams**, unchanged, in two tables of
+  their own shaped as spec 0016's: `icon_claims` and `icon_tombstones`. The lock is
+  `kista/blob/<domain>/icon/<sha256>`. A write:
   1. checks the image;
-  2. writes the object (always, even when it exists: this refreshes its modification time);
-  3. in one transaction holding the lock `kista/icon/<domain>/<sha256>`, checks that the object
-     exists, then upserts the row.
+  2. under the lock, claims the hash (waiting while a tombstone says `deleting`);
+  3. uploads the object, always, even when it exists;
+  4. under the lock, checks its claim, upserts the row, and removes its claim and any tombstone.
 
-  If the object is gone at step 3 (the collector won a race), the write puts it again under the
-  lock before committing. A row never points to a missing object.
-- **Collection** is a new step of spec 0016's collector, per domain, under the domain's lease:
-  - It lists `icons/` in the domain.
-  - It skips an object modified within `gc.grace`. That is an upload whose row may not be
-    committed yet.
-  - For an older object, it takes the same lock and checks that no `entry_meta` row of any tenant
-    in the domain references the hash. If none does, it deletes the object.
+  A row is never committed without its object in place.
+- **Collection** is a new step of spec 0016's collector, per domain, under the domain's lease. It
+  lists `icons/`, marks an object no `entry_meta` row of the domain's tenants references and no
+  live claim holds, and deletes marked objects older than `gc.grace`. Deleting follows spec 0016's
+  stamped `deleting` state: no network call under the lock, a delete of unknown outcome left
+  `deleting` and finished by the resolver after `deleteStale`. It reuses `blob/gc.go`'s code paths.
 - **Tenant deletion**: the reaper deletes the tenant's rows. Its icon objects then go with the
   collector's next pass, or with the domain when the domain was the tenant's alone.
 
@@ -124,8 +133,10 @@ tenant: `entry_meta` joins the reaper's tables (`store.ReapTables`, which
 ```text
 PUT /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/meta[?type=]
     {"summary": string | null,
-     "icon": {"content_type": "image/png", "data": "<standard base64>"} | null}
+     "icon": {"content_type": "image/png", "data": "<standard base64>"}
+           | {"sha256": "<the stored icon's hash>"} | null}
     → 200 {"summary": string | null, "icon": {"sha256", "width", "height"} | null, "set_at",
+           "signed_at",
            "set_by" (to tenant administrators, server administrators and distribution admins only)}
 GET /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/meta[?type=]
     → 200, the same answer
@@ -135,21 +146,31 @@ GET /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/icon[?type=]
 
 - **Replace semantics.** A `PUT` states the whole metadata: a field left out or `null` clears it.
   Writing the same metadata again changes nothing and makes no event.
+- **Keeping the icon.** `"icon": {"sha256": …}` naming the stored icon's hash keeps it. A hash that
+  no longer matches is `409`, type `conflict` ("the icon changed"): someone else wrote meanwhile,
+  and the client reads again. This is how a client changes the summary alone: the CLI,
+  `kista_publish.py` and the console's summary-only edit read the metadata and send the icon back
+  by its hash.
 - **Errors**:
   - `400`, type `invalid`, for every bound (summary, format, chunks, size, dimensions,
     `content_type`), naming the bound.
   - `413` above the body limit.
   - `404` for an entry that does not exist, a source the caller may not write, or a name the
     distributor's publisher may not publish (reserved). Always the same answer.
-  - `409`, type `stale`, when a signed request's `signed-at` is older than the entry's stored
-    `signed_at`. A captured older request cannot undo a newer one within spec 0023's five minutes.
-    Signed-at equal to the stored one is accepted (the same request again changes nothing).
+  - `409`, type `stale`, for a signed request whose `signed-at` is older than the entry's stored
+    `signed_at`, or equal to it with another body hash than `signed_body`. Every accepted signed
+    write advances both, no-ops included. A write by a token sets `signed_at` to the server's now
+    (and clears `signed_body`), so no signed request made before it can undo it. A captured request
+    therefore never undoes a newer write within spec 0023's five minutes, and the same request
+    again changes nothing. A client answered `stale` reads again; if the stored `signed_at` is ahead
+    of its clock, it waits until its clock passes it.
+  - `429`, type `catalogue-full`, beyond the source's byte cap (above).
 - **Body limit.** `body()` hard-codes 64 KiB and its 413 message (`internal/api/manage.go`). It
   gains a limit parameter. This route passes 384 KiB (a 256 KiB icon is about 342 KiB in base64),
   with its own message, "the body is at most 384 KiB".
 - **The catalogue's reads** (`GET …/catalogue`, `GET …/catalogue/{source}/extensions/{ext}`) gain
-  `summary`, `icon` (`{sha256, width, height}`) and `distributor: true` on a distributor's
-  publisher's entries.
+  `summary`, `icon` (`{sha256, width, height}`) and, on a distributor's publisher's entries,
+  `distributor` with the distributor's name, as the publishers' answers carry it.
 - **Signing.** The `PUT` is signed as spec 0023 says: the statement binds the method, the path with
   the source, and the SHA-256 of the JSON body, as for a promotion. The format does not change.
   The icon travels in this request, not in the publication: the publication's body stays the file
@@ -157,10 +178,12 @@ GET /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/icon[?type=]
 
 #### Who may write and read
 
-The route uses a new access rule: **any verified caller of the tenant** (a principal's token, a
-server token, a distribution admin, or a publisher's signed request). The service decides, and every
-refusal is `404`. The signed-publisher branch of `decide` is built by spec 0037's first PR, which
-lands before this spec.
+The three routes (`PUT …/meta`, `GET …/meta`, `GET …/icon`) use an access rule of their own: **any
+verified caller of the tenant**. That is a principal's token, a server token, a distribution admin,
+or a signed request from **any publisher of the tenant**, a tenant's own as well as a distributor's.
+A signed `GET` names the empty body, as `whoami` does. The service decides, and every refusal is
+`404`. Spec 0037's signed branch admits only distributors' publishers on its routes, so this rule is
+separate from it.
 
 The service runs one of three checks, chosen by the entry's source:
 
@@ -198,19 +221,21 @@ caps.
   - `Cross-Origin-Resource-Policy: same-origin`;
   - `Content-Disposition: inline; filename="icon.png"`;
   - `Cache-Control: private, no-store`.
-- An object missing at read time is `404`, and logged as an error.
+- The bytes read are hashed and must equal the row's `icon_sha256` (256 KiB at most, cheap). An
+  object missing or not matching is `404`, and logged as an error.
 
 #### CLI
 
 - `kista admin catalogue meta <t> <source> <name> [-summary <text>] [-icon <file.png>]
   [-clear-summary] [-clear-icon] [-type t]`, a server administrator's (the operator's CLI on the
   database, as `catalogue withdraw`). It reads the current metadata and writes both fields: a field
-  not named keeps its value. Without flags it prints the metadata.
+  not named keeps its value, the icon by its hash. Without flags it prints the metadata.
 - `catalogue show` prints `summary:` and `icon: <sha256> <w>x<h>`.
 - `kista_publish.py` in `hugr-lab/extension-ci-tools` gains `--summary` and `--icon` (Follow-ups).
   Like the CLI, it reads the current metadata first (`GET …/meta`, signed) and sends the merged
-  result, so `--summary` alone keeps an icon set in the console. Given neither flag, it sends
-  nothing.
+  result, the icon kept by `{"sha256"}`, so `--summary` alone keeps an icon set in the console. On
+  `409` it reads and merges again, once. On `catalogue-full` it stops with the error (a non-zero
+  exit). Given neither flag, it sends nothing.
 
 #### Events
 
@@ -219,7 +244,8 @@ caps.
 - `source` (its label), `name`, the package type when not the default;
 - `summary` (the new text, `""` when cleared), `icon` and `icon_before` (hashes, `""` for none);
 - the actor is the writer. A distribution admin shows under spec 0030's generic `distribution-admin`
-  label, unless unmasked.
+  label, unless unmasked;
+- for a signed write, `key`: the signing key's fingerprint, so a newly added key is visible.
 
 The icon's bytes are never in an event. `GET /api/v1/event-kinds` lists the kind.
 
@@ -230,16 +256,20 @@ Additive, in the three dialects, with no `min_reader` bump: an older replica ign
 ```text
 entry_meta   tenant_id (fk tenants), package_type, source, name,
              summary (160 characters, NULL; nvarchar on SQL Server), icon_sha256 (char 64, NULL),
-             icon_width, icon_height (int, NULL), set_by (varchar 400), set_at,
-             signed_at (NULL); pk (tenant_id, package_type, source, name); index (icon_sha256)
+             icon_width, icon_height, icon_bytes (int, NULL), set_by (varchar 400), set_at,
+             signed_at (NULL), signed_body (char 64, NULL);
+             pk (tenant_id, package_type, source, name); index (icon_sha256)
+icon_claims, icon_tombstones   as spec 0016's blob_claims and blob_tombstones, keyed by
+             (domain, sha256)
 ```
 
 #### The console
 
 - **Catalogue**: a 24-pixel icon before the name, and the summary under it in muted text.
 - **An entry's page**: a 64-pixel icon beside the title, the summary under it, and an **Edit…**
-  dialog (summary, icon file, clear). The dialog is hidden for entries the catalogue marks
-  `distributor: true`. The API decides anyway.
+  dialog (summary, icon file, clear). Changing only the summary sends the icon back by its hash.
+  The dialog is hidden for entries the catalogue answers with a `distributor`. The API decides
+  anyway.
 - **Loading an icon**: the console calls the API with a Bearer token, so `<img src>` cannot
   authenticate. It fetches the icon with its client, builds a `Blob` of type `image/png` (from a
   fixed allow-list, never from the response's header), and shows it from a `blob:` URL. Nothing
@@ -294,7 +324,8 @@ GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
 - **`installer_days`**: daily distinct installers (spec 0010), summed over the days and the tenants.
   A principal installing on two days, or in two tenants, counts twice. Weekly distinct installers
   cannot be computed: install events may be kept for only two days (`events.retention`).
-- **`withheld`**: true when the non-public part was left out (below).
+- **`withheld`**: true when a non-public part, of the downloads or of the installer-days, was left
+  out (below).
 
 No tenant is named, nor any channel, nor any per-tenant figure.
 
@@ -306,11 +337,14 @@ No tenant is named, nor any channel, nor any per-tenant figure.
 - **Every other tenant** is under the minimum, whether its downloads carry a token or not.
 - **Downloads.** A row's non-public downloads count only when at least
   `statistics.distributor_min_tenants` distinct non-public tenants contributed downloads to it
-  (default 3, at least 2). When at least one but fewer did, the row is `withheld`: `downloads`
-  equals `public`, and `installer_days` is left out.
-- **Installer-days** take the minimum separately: the non-public part counts only when at least the
-  minimum of distinct non-public tenants have installers in the row. Otherwise `installer_days` is
-  left out. A row with installers from public tenants only answers theirs.
+  (default 3, at least 2). When at least one but fewer did, that part is left out: `downloads`
+  equals `public`, and the row is `withheld`.
+- **Installer-days** take the minimum separately: their non-public part counts only when at least
+  the minimum of distinct non-public tenants have installers in the row. When at least one but fewer
+  do, that part is left out and the row is `withheld`.
+- **What a row answers.** Public tenants' figures are always answered. So `installer_days` holds the
+  public tenants' installer-days, plus the non-public part when it may be answered. It is omitted
+  only when nothing of it may be answered: no public part, and a non-public part left out.
 - **Fail closed.** An empty list exempts no one. A listed name that matches no tenant exempts
   nothing, and is logged at start. The minimum cannot be set below 2.
 - **Which tenants count.** A suspended tenant counts: its downloads happened, and it still exists.
@@ -369,13 +403,22 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
   administrators write only the tenant's own sources. A distributor's entries belong to its
   publisher, the distribution admins and the server administrators. A tenant cannot restyle a
   distributor's product, and a distributor cannot restyle a tenant's entries.
-- **Replay.** Within spec 0023's five minutes, a captured request can be sent again. Sending the
-  same request again changes nothing. An older request cannot overwrite a newer one (`409 stale`).
+- **Replay.** Within spec 0023's five minutes, a captured request can be sent again. The same
+  request again changes nothing. An older one, or another body with the same `signed-at`, is
+  `409 stale`, and a token's write moves the mark to the server's now.
+- **A stolen distribution admin's token**, or a publisher key it adds, can rewrite the icon and the
+  summary of every distributor's entry in every tenant at once. Metadata has no hold, so this
+  reaches every console immediately, and a summary can carry a phishing URL (as text, never a
+  link). The byte caps bound the icons, not the reach. What limits it: every write is a
+  `catalogue.meta` event in the tenant, naming the actor kind and the signing key; Enterest
+  alerts on `catalogue.meta` written by a distribution admin or by a newly added key; the console
+  never makes the summary a link.
 - **Revocation.** The write checks the publisher and its key under the lock their removal takes
   (`PublicationLive`).
 - **Existence.** Every refusal on the metadata and icon routes is `404`, the same as for an entry
   that does not exist. Install and anonymous callers learn nothing new: the DuckDB routes and the
   index do not change, and there is no public JSON.
+- **Integrity at read.** The icon route hashes the bytes it serves against the row.
 - **Tenant isolation.** Icons live in the tenant's own storage domain and count against its caps.
   Tenants sharing a domain share an object only when both were sent the same bytes. Every read goes
   through the reader's own row, so a hash proves nothing.
@@ -398,8 +441,12 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
 ## Testing
 
 - **Store suite, three dialects**:
-  - metadata write and replace, `""` and `null` clearing, the same write changing nothing,
-    `signed_at` and `stale`;
+  - metadata write and replace, `""` and `null` clearing, the same write changing nothing, the icon
+    kept by its hash and `409` when it changed;
+  - `stale`: an older `signed-at`, an equal one with another body, the same request again
+    accepted, a no-op advancing the mark, a token write moving it to now;
+  - `icon_bytes` in `SourceUsage`, `catalogue-full` for a publisher and a distribution admin, an
+    administrator not bounded;
   - the reaper (`ReapTables`), and a re-publication after a purge finding its metadata;
   - migration 0044 on a level-43 database; migration 0045 on a level-44 database: counts and
     installers kept with source `''`, and two sources of one (channel, name, version, platform)
@@ -415,25 +462,33 @@ New configuration: `statistics.distributor_min_tenants` (integer, default 3, at 
   `fdAT`, `sPLT`, an unknown one), a repeated chunk, bytes
   after `IEND` (an HTML tail included), SVG, JPEG, GIF, WebP, a non-square image, under 64 and over
   512 pixels, over 256 KiB, a wrong `content_type`, truncated and corrupt files, a header claiming
-  100000x100000 (refused before decoding), and an `IDAT` whose image does not match the header.
-- **Blob collection**: an unreferenced icon deleted after the grace; a fresh one kept; a write
-  racing the collector ending with its object present.
+  100000x100000 (refused before decoding), an `IDAT` whose image does not match the header,
+  `IDAT` chunks split by another chunk, and `IDAT(image) IDAT(<html>) IEND` (zlib data past the
+  stream's end) refused.
+- **Icon collection**: an unreferenced icon marked, then deleted after the grace; a claimed one
+  kept; a write waiting for a `deleting` tombstone; a delete of unknown outcome finished by the
+  resolver; a write racing the collector ending with its object present; a corrupted object refused
+  at read.
 - **API**:
   - each check of the three, and each refusal `404`; `publisher:<name>` and `publisher-id:<id>` for
-    a signed request; a tenant administrator refused a distributor's entry;
-  - replace semantics, the `400`s, the `413` with its message, `409 stale`;
+    a signed request; a tenant's own publisher and a distributor's both admitted by the route's
+    rule; a signed `GET` with the empty body; a tenant administrator refused a distributor's
+    entry;
+  - replace semantics, the icon kept by hash, the `400`s, the `413` with its message, `409 stale`
+    and `conflict`, `429 catalogue-full`, `signed_at` in the answer;
   - `set_by` shown only to administrators and distribution admins;
   - the icon route's headers, authorization before the blob read;
   - the catalogue reads with `summary`, `icon` and `distributor`;
   - the event and its registry, the distribution admin's label;
   - a revoked key's write refused;
-  - the statistics route: who may call it, `?distributor=`, `?type=`, the figures and `withheld`;
+  - the statistics route: who may call it, `?distributor=`, `?type=`, the figures, `withheld`, and
+    `installer_days` answered with its public part when the non-public part is left out;
   - the tenant route's `source` dimension.
 - **Serving**: a download records its release's source; a promoted release keeps the original.
   The daily pass attributes installers by the event's release.
 - **CLI**: `catalogue meta` with each flag, keeping the field not named; `catalogue show`.
-- **Console, unit**: the Edit dialog hidden for `distributor: true`, the Blob type fixed, the
-  summary rendered as text.
+- **Console, unit**: the Edit dialog hidden for an entry with a `distributor`, a summary-only edit
+  sending the icon's hash, the Blob type fixed, the summary rendered as text.
 - **Console, e2e** (`web/console/e2e/catalogue.spec.ts`): the fixture's distributor's publisher sets
   an icon and a summary by a signed request; the catalogue and the entry page show them; a tenant
   administrator edits the tenant's own entry and gets no dialog for the distributor's.
@@ -470,8 +525,8 @@ phase 2 (migration 0045, `min_reader 45`), then spec 0037 PR 2 (migration 0046).
   differ from the file's. Refusing is simpler and tells the publisher why.
 - **SVG with sanitising**: sanitisers have a long history of bypasses.
 - **A partial `PUT`** (a field left out keeps its value): replacing both leaves no doubt about
-  what a write meant. Clients that change one field (the CLI, `kista_publish.py`) read first and
-  merge.
+  what a write meant. A client that changes one field (the CLI, `kista_publish.py`, the console)
+  reads first and sends the other back, the icon by `{"sha256"}`, so it never re-uploads it.
 - **A separate source-less route for publishers**: one route naming the source serves everyone, and
   the signed statement binds the source.
 - **Channel-scoped metadata and icon reads** now: no screen needs them before the console redesign.
@@ -487,8 +542,9 @@ phase 2 (migration 0045, `min_reader 45`), then spec 0037 PR 2 (migration 0046).
 
 ## Changes to earlier specs
 
-- **0005, 0016**: a new object kind, `icons/<sha256>`, in a tenant's storage domain; the collector
-  gains a step that deletes unreferenced icons after the grace.
+- **0005, 0016**: a new object kind, `icons/<sha256>`, in a tenant's storage domain, with claims and
+  tombstones of its own; the collector gains a step that marks and deletes unreferenced icons by
+  spec 0016's protocol.
 - **0007**: new routes; the catalogue's reads gain `summary`, `icon` and `distributor`.
 - **0010**: the download and installer keys gain the source; install events carry `source`; the
   tenant's statistics gain the `source` dimension; the distributor route,
@@ -496,13 +552,18 @@ phase 2 (migration 0045, `min_reader 45`), then spec 0037 PR 2 (migration 0046).
 - **0015**: the catalogue and entry pages show icons and summaries, with an Edit dialog.
 - **0019**: the reaper deletes `entry_meta`.
 - **0023**: one more route open to publishers' signed requests (`PUT` and `GET
-  …/catalogue/{source}/extensions/{ext}/meta`, own source only). Its replay list gains: an older
-  signed metadata write is refused `409 stale`, and the same one again changes nothing.
+  …/catalogue/{source}/extensions/{ext}/meta` and `GET …/icon`, own source only). Its replay list
+  gains: a signed metadata write older than the entry's last, or of the same second with another
+  body, is refused `409 stale`; the same one again changes nothing.
 - **0030**: distribution admins write a distributor's entries' metadata and read distributor
   statistics.
 - **0033**: an entry gains metadata, kept through withdrawal, purges and source removal; the
-  catalogue answers `distributor`; event `catalogue.meta`; icons count toward `catalogue.max_bytes`.
+  catalogue answers `distributor`; event `catalogue.meta`; icons count toward `catalogue.max_bytes`
+  through `icon_bytes`.
 - **0034**: metadata is per package type, like the entry.
+- **0037**: this spec uses the `catalogue-full` problem type its first PR adds. Its metadata routes
+  have an access rule of their own, admitting any publisher of the tenant by a signed request,
+  beside 0037's signed branch, which admits only distributors' publishers.
 
 The website: `catalogue.md` (icon and summary, who sets them, the console), `publishing.md` (the
 signed `PUT` with `curl` and `ssh-keygen`, the PNG rules and how to strip chunks),
