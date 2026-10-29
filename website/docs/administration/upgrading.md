@@ -169,7 +169,20 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 43)
+## Upgrading to the next release (schema 44)
+
+### An entry's icon and summary (spec 0036, phase 1)
+
+- **Migration `0044_entry_meta`** adds `entry_meta` (an entry's summary and icon, who set them, and
+  the last signed write's mark) and `icon_claims` and `icon_tombstones`. It does not raise
+  `min_reader`: an older replica ignores the tables, and the metadata routes answer `404` there.
+- **What changes.** `PUT` and `GET …/catalogue/{source}/extensions/{ext}/meta` and `GET …/icon`
+  ([An entry's icon and summary](../publishing.md#an-entrys-icon-and-summary)); the catalogue's reads
+  answer `summary`, `icon` and `distributor`; the event `catalogue.meta`; the problem type `stale`;
+  `kista admin catalogue meta`. A storage domain holds `icons/<sha256>` objects, which the collector
+  marks and deletes as it does streams (`storage.gc` counts `icons`; `blob gc` prints `ICONS`). An
+  icon counts toward its source's `catalogue.max_bytes`. The console's content security policy takes
+  `blob:` images.
 
 ### Licences per catalogue entry (spec 0035, phase 1)
 

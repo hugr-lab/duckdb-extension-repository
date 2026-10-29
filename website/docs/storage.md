@@ -449,6 +449,18 @@ checked against the content hash in the record. The collector removes the attach
 the tenant no longer holds (and has not blocked), superseded versions older than a year, and
 objects without a record older than the grace. `blob verify` checks extension bodies only.
 
+## Entries' icons
+
+A catalogue entry's [icon](catalogue.md#give-an-entry-an-icon-and-a-summary) (spec 0036) is stored
+in the tenant's storage domain as `icons/<sha256>`, content-addressed: tenants sharing a domain
+share an object only when both were sent the same bytes, and every read goes through the reader's
+own entry and is checked against its hash. A write follows the streams' protocol in tables of its
+own (`icon_claims`, `icon_tombstones`): it claims the hash, uploads the object (always), and writes
+the entry's metadata with its claim checked. The collector lists `icons/`, marks an object no entry
+of the domain's tenants references and no live claim holds, and deletes it a grace later, as it
+does streams; its `storage.gc` event counts them as `icons`. A deleted tenant's icons go with the
+collector's next pass. An icon counts toward its source's `catalogue.max_bytes`.
+
 ## Bundle uploads
 
 An operator may upload a bundle for an air-gapped site into a domain's `imports/<name>` (inside its

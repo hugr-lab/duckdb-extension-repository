@@ -433,6 +433,80 @@ opaque and grant nothing.
   id>`, both of which always mean the signer, even where a removed publisher had its name; any
   other source answers `404`. A tenant's own publisher's signed read answers `404`.
 
+## An entry's icon and summary
+
+A publisher sets the icon and the summary of its own catalogue entries (spec 0036; what they are and
+who else sets them: [The catalogue](catalogue.md#give-an-entry-an-icon-and-a-summary)), with a signed
+request, any publisher of the tenant, a distributor's or the tenant's own:
+
+```text
+PUT /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/meta[?type=]
+    {"summary": "Geometry tools", "icon": {"content_type": "image/png", "data": "<standard base64>"}}
+GET /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/meta[?type=]
+GET /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/icon[?type=]
+```
+
+`{source}` is `publisher:<its name>` or `publisher-id:<its id>`; any other source, an entry that does
+not exist (no build of the name and type from the source), or a name a distributor's publisher may
+not publish answers `404`. A signed `GET` names an empty body, as `whoami` does.
+
+- **The whole metadata.** A `PUT` replaces both fields: a field left out or `null` clears it, and
+  `"summary": ""` clears the summary. The icon is new (`{"content_type": "image/png", "data": …}`),
+  the stored one kept by its hash (`{"sha256": "<the icon's sha256>"}`), or `null`. To change the
+  summary alone, read the metadata and send the icon back by its hash: a hash that is no longer the
+  stored one is `409`, type `conflict` (someone wrote meanwhile: read again). The same metadata again
+  changes nothing.
+- **The answer**: `{"source", "name", "summary": string | null, "icon": {"sha256", "width",
+  "height"} | null, "set_at", "signed_at", "distributor"}`; `set_by` too, to the tenant's
+  administrators, server administrators and distribution admins only.
+- **Replay.** A signed write whose `signed-at` is older than the entry's `signed_at`, or the same
+  second with another body, is `409`, type `stale`: within the five minutes a signed request lives, a
+  captured one never undoes a newer write, and the same request again changes nothing. Every
+  accepted signed write moves `signed_at` to its `signed-at`; a token's write (an administrator's, a
+  distribution admin's) moves it to kista's clock. A client answered `stale` reads again, and waits
+  until its clock passes `signed_at` when that is ahead of it.
+- **The body** is at most 384 KiB (`413`, "the body is at most 384 KiB"); every other management
+  route keeps 64 KiB.
+- **The byte cap**: the icon counts toward the source's `catalogue.max_bytes` with its builds placed
+  nowhere; a write beyond it is `429`, type `catalogue-full`, with no `Retry-After`.
+- A key revoked, or a publisher removed, while the write is in flight writes nothing (`401`).
+
+**The icon's rules** (`400`, type `invalid`, naming the rule):
+
+- `content_type` `image/png`, at most 256 KiB, square, 64 to 512 pixels a side;
+- PNG chunks: the image's own (`IHDR`, `PLTE`, `tRNS`, `IDAT`, `IEND`) and `sRGB`, `gAMA`, `cHRM`,
+  `pHYs`, `bKGD` with their exact sizes and in the PNG specification's order, each once but `IDAT`,
+  the `IDAT` chunks consecutive and their image data ending with the last of them, nothing after
+  `IEND`;
+- refused, never stripped: colour profiles (`iCCP`), text (`tEXt`, `zTXt`, `iTXt`), Exif (`eXIf`),
+  animation (`acTL`, `fcTL`, `fdAT`), `sPLT`, and any other chunk. Most exporters write some of
+  these; strip them first:
+
+```bash
+oxipng --strip all icon.png            # or
+pngcrush -rem allb icon.png icon-stripped.png
+```
+
+kista keeps the bytes as sent, so the same icon has one hash wherever it goes, and serves the icon
+with its own type and headers (`image/png`, `nosniff`, `Content-Security-Policy: default-src 'none';
+sandbox`, `inline`, `same-origin`, `no-store`), after the caller is authorized and the entry found,
+checked against its hash.
+
+With the [CI script above](#publishing-from-ci):
+
+```bash
+M="/api/v1/tenants/acme/catalogue/publisher:enterest-ci/extensions/geo_tools/meta"
+printf '{"summary":"Geometry tools","icon":{"content_type":"image/png","data":"%s"}}' \
+  "$(base64 < icon.png | tr -d '\r\n')" > meta.json
+{ read -r ST; read -r SIG; } < <(signed PUT "$M" meta.json)
+curl --fail-with-body -sS -X PUT "$KISTA$M" -H "Kista-Statement: $ST" -H "Kista-Signature: $SIG" \
+  -H "Content-Type: application/json" --data-binary @meta.json
+```
+
+The publication's body stays the file alone: the metadata travels in its own request, and a new
+version keeps the entry's metadata. `kista_publish.py` in the developer kit gains `--summary` and
+`--icon` in a later release of `hugr-lab/extension-ci-tools`.
+
 ## Changing a release
 
 An administrator of the extension (or of its channel or tenant) changes a release with
@@ -582,7 +656,9 @@ clock can be told apart; it does not say which check failed. A client sending `E
 
 A captured request can be replayed only within its five minutes, to the same path, with the same
 body: a publication then answers the existing release (`200`) and changes nothing; a promotion
-promotes the same; an attachment is added again. The statement and the signature a release keeps
+promotes the same; an attachment is added again; an entry's metadata write older than the entry's
+last one, or of its second with another body, is refused (`409`, type `stale`: [An entry's icon
+and summary](#an-entrys-icon-and-summary)), and the same one again changes nothing. The statement and the signature a release keeps
 are shown to the extension's administrators only, so another publisher of the channel cannot
 replay them.
 
