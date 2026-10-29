@@ -49,7 +49,7 @@ func TestDistributorFollowAndWithdraw(t *testing.T) {
 		must(t, func() error {
 			return p.st.InTx(ctx, "", func(tx *store.Tx) error { _, err := tx.SetDistributorHold(ctx, dist.TenantID, 0); return err })
 		})
-		for _, n := range []string{"geo", "mine", "kista_later"} {
+		for _, n := range []string{"geo", "mine", "kista_later", "kista_listed"} {
 			if err := land(n, "1.0"); err != nil {
 				t.Fatalf("%s: %v", n, err)
 			}
@@ -64,8 +64,20 @@ func TestDistributorFollowAndWithdraw(t *testing.T) {
 			publish("geo", "0.9", "linux_amd64")); !errors.Is(err, authz.ErrDenied) {
 			t.Fatalf("a distributor's publisher on a channel's route: %v", err)
 		}
-		// a name reserved server-wide before the follow looks
+		// a name reserved server-wide before the follow looks; one an upstream of the tenant lists
+		// (spec 0037: a grant reaches it only by naming it, and a distributor's publisher has none)
 		reserveServerWide(t, p.st, "kista_later")
+		prodCh, err := p.st.GetChannel(ctx, "acme", "prod")
+		if err != nil {
+			t.Fatal(err)
+		}
+		must(t, func() error {
+			return p.st.InTx(ctx, "", func(tx *store.Tx) error {
+				return tx.InsertUpstream(ctx, &store.Upstream{TenantID: dist.TenantID, Name: "vendor", Kind: store.UpstreamRepo,
+					ChannelID: prodCh.ID, Mode: store.ModeMirror, Visibility: store.Public, State: store.UpstreamActive,
+					Entries: []store.UpstreamEntry{{Name: "kista_listed"}}})
+			})
+		})
 		if _, err := p.rel.SetFollow(ctx, admin, "acme", "prod", "publisher:enterest-ci"); err != nil {
 			t.Fatal(err)
 		}
@@ -74,7 +86,8 @@ func TestDistributorFollowAndWithdraw(t *testing.T) {
 			t.Fatalf("the follow placed: %q", got)
 		}
 		v, err := p.rel.Follow(ctx, admin, "acme", "prod", "publisher:enterest-ci")
-		if err != nil || v.Skips["kista_later"] != "a name DuckDB's community repository has: a rule naming it takes it" {
+		if err != nil || v.Skips["kista_later"] != "a name DuckDB's community repository has: a rule naming it takes it" ||
+			v.Skips["kista_listed"] != "a name an upstream of the tenant lists: a rule naming it takes it" {
 			t.Fatalf("the follow's skips: %+v %v", v, err)
 		}
 		// withdrawn: a distribution admin's or a server administrator's only

@@ -3,6 +3,7 @@ package store_test
 import (
 	"errors"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 
 // Migration 0046 (spec 0037 PR 2) on a level-45 database: tenant reservations are gone, a tenant's
 // minimum hold for distributors' publishers is one day, and a level-45 binary no longer runs here
-// (min_reader 46: TestMigrate refuses a database whose min_reader is past the binary's level).
+// (min_reader 46).
 func TestMigrationDistributorHolds(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Fresh(t, 1)[0]
@@ -45,6 +46,9 @@ func TestMigrationDistributorHolds(t *testing.T) {
 		}
 		if n, err := store.CountRaw(ctx, s, "tenants", "distributor_hold_seconds = 86400"); err != nil || n != 1 {
 			t.Fatalf("the column's default: %d %v", n, err)
+		}
+		if err := store.CheckAs(ctx, s, 45); !errors.Is(err, store.ErrSchemaTooNew) {
+			t.Fatalf("a level-45 binary on a level-46 database: %v", err)
 		}
 	})
 }
@@ -142,7 +146,9 @@ func TestDistributorHold(t *testing.T) {
 
 // Spec 0037 PR 2: a build inserted from a distributor's publisher while the tenant's minimum is
 // being raised is held the raised time: the insert reads the tenant's row with a shared lock the
-// raise's update waits for, so the raise then finds the build.
+// raise waits for until the arrival commits (without it, on PostgreSQL and SQL Server, the raise would
+// finish meanwhile and miss the build), so the raise then finds the build. SQLite serialises
+// writers.
 func TestDistributorHoldReadLocked(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Open(t)
@@ -163,9 +169,13 @@ func TestDistributorHoldReadLocked(t *testing.T) {
 		b := cppBuild(tn, "geo", "1.0", "a")
 		b.Source = store.PublisherSource(dist.ID)
 		raised := make(chan error, 1)
+		var done error
+		finished := false
 		inTx(t, s, func(tx *store.Tx) error {
-			if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
-				return err
+			// the minimum read first, alone: its lock, not the build insert's own (WritableTenant),
+			// is what the raise must wait for
+			if d, err := tx.SourceHold(ctx, b.Source); err != nil || d != time.Hour {
+				t.Errorf("the minimum read: %s %v", d, err)
 			}
 			go func() {
 				raised <- s.InTenantTxForUpdate(ctx, tn.ID, nil, func(tx *store.Tx) error {
@@ -176,16 +186,67 @@ func TestDistributorHoldReadLocked(t *testing.T) {
 					return err
 				})
 			}()
-			time.Sleep(300 * time.Millisecond) // the raise reaches its update meanwhile
+			time.Sleep(300 * time.Millisecond) // the raise reaches the tenant's row meanwhile
+			select {
+			case done = <-raised:
+				finished = true
+				t.Errorf("the raise committed while an arrival had read the minimum: %v", done)
+			default: // it waits for this transaction
+			}
+			if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
+				return err
+			}
+			if !b.AvailableAt.Equal(b.CreatedAt.Add(time.Hour)) {
+				t.Errorf("held for the minimum read: %+v", b)
+			}
 			return nil
 		})
-		if err := <-raised; err != nil {
-			t.Fatal(err)
+		if !finished {
+			done = <-raised
+		}
+		if done != nil {
+			t.Fatal(done)
 		}
 		inTx(t, s, func(tx *store.Tx) error {
 			got, err := tx.GetBuild(ctx, b.ID)
 			if err == nil && !got.AvailableAt.Equal(b.CreatedAt.Add(3*time.Hour)) {
 				t.Errorf("a build inserted during the raise: %+v", got)
+			}
+			return err
+		})
+	})
+}
+
+// Spec 0037 PR 2: a tenant's distributors' publishers are counted apart from its own
+// (MaxDistributorPublishers), so they never take the tenant's own room; a distributor's publisher is
+// inserted marked.
+func TestDistributorPublisherCap(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		tn, _ := fixture(t, s)
+		insert := func(name, dist string) error {
+			return s.InTx(ctx, "", func(tx *store.Tx) error {
+				return tx.InsertPublisher(ctx, &store.Publisher{TenantID: tn.ID, Name: name, Distributor: dist})
+			})
+		}
+		for i := range store.MaxDistributorPublishers {
+			if err := insert("dist-"+strconv.Itoa(i), "enterest"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := insert("dist-more", "enterest"); !errors.Is(err, store.ErrInvalid) {
+			t.Fatalf("past the distributors' cap: %v", err)
+		}
+		if err := insert("own-ci", ""); err != nil {
+			t.Fatalf("the tenant's own, with the distributors' cap full: %v", err)
+		}
+		if err := insert("bad-dist", "line\nbreak"); !errors.Is(err, store.ErrInvalid) {
+			t.Fatalf("a distributor's name: %v", err)
+		}
+		inTx(t, s, func(tx *store.Tx) error {
+			p, err := tx.GetPublisher(ctx, tn.ID, "dist-0")
+			if err == nil && p.Distributor != "enterest" {
+				t.Errorf("inserted marked: %+v", p)
 			}
 			return err
 		})
