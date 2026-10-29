@@ -1,6 +1,6 @@
 # Spec 0037: The distributor in a tenant
 
-- **Status**: accepted (PR 1 implemented)
+- **Status**: accepted (PR 2 implemented on its branch)
 - **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): the metadata routes use the `catalogue-full` type PR 1 added, and an access rule of their own admitting any publisher of the tenant by a signed request, beside PR 1's signed branch, which admits only distributors' publishers.
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
@@ -702,6 +702,71 @@ Delivered on the branch `0037-distributor-in-tenant-1`, with no migration.
 - **Website.** The deploy variables' descriptions say distributors' publishers now (their
   reservations wording stays for PR 2); `upgrading.md` and `upstreams.md`'s `allow_reserved` change
   with PR 2.
+
+### As built (PR 2)
+
+Delivered on the branch `0037-distributor-in-tenant-2`, on spec 0036 phase 2, with migration
+`0046_distributor_holds` (`min_reader` 46).
+
+- **Tenant reservations removed.** The table, the routes, `kista admin tenant-reserved` (now an
+  unknown command), the events, the console card and the store's and services' reservation calls
+  are gone, as Design lists. `ReservedFor` answers core or community, then upstream.
+  `NameReservedFor` reads the server's list only (it no longer takes a tenant).
+  `Store.ReservedAgainst` (spec 0036's list of a distributor's publisher's names) became
+  `Store.ReservedAmong`, the names reserved server-wide among a list. The statistics scope and the
+  index's `reserved` read DuckDB's names and the upstreams' only. `allow_reserved` on an upstream
+  entry concerns DuckDB's names only. `store.MaxHolder` is `store.MaxDistributor` now, the bound of
+  a distributor's name.
+- **The narrower role.**
+  - `AddPublisher` admits tenant administrators and server administrators only, so a distribution
+    admin's `POST …/publishers` without `distributor` answers `404`.
+  - `AddDistributorPublisher` reads the name under the tenant's auth lock before its insert. For a
+    distribution admin, a name a tenant's own publisher holds answers `409 publisher-taken`. A name a
+    distributor's publisher holds answers the usual `409 conflict`, as it does to a server
+    administrator for any name.
+  - `ListPublishers` keeps distributors' publishers only for a distribution admin. The API's read of
+    one publisher goes through that list, so the tenant's own answers `404`.
+  - The grant routes are `pathAdmin` again; `distributorGrant` and the `created_by` checks went.
+- **Marking an existing publisher goes.** `PUT …/distributor` on a publisher without the mark
+  answers `404` to every caller: an audited refusal (`authz.ErrDenied`) for a distribution admin, not
+  found for anyone else. The call only renames a distributor's publisher's distributor.
+  `PublisherUsed` stays, for spec 0036 phase 2's `409` on renaming a used publisher's distributor:
+  only its use for the freshness check went. `Tx.PublisherGrants` went with that check.
+- **The minimum hold.**
+  - `tenants.distributor_hold_seconds` is read with the tenant (`Tenant.DistributorHold`).
+  - `Tx.SourceHold` reads the tenant's row, with a shared lock, only for a distributor's publisher.
+  - `Tx.SetDistributorHold` writes only a changed value. The service runs it in
+    `InTenantTxForUpdate` (an update lock on the tenant's row, which an arrival's shared read waits
+    for) with the tenant's auth lock, then calls `RaiseHeld` for every source of
+    `Tx.DistributorPublisherSources` (live and removed distributors' publishers).
+  - An unchanged value writes no event.
+  - `effective_hold` is answered for distributors' publishers only, from the tenant as the request
+    read it.
+  - The console shows the field as a "Minimum hold for distributors' publishers" card on the
+    Publishers screen. A caller who may not read it sees no card. The list's Hold column shows a
+    distributor's publisher's effective hold.
+  - `kista admin tenant distributor-hold <tenant>` prints the hold; with a duration, it sets it.
+- **Tests.** `TestDistributionAdmin` is the role's matrix: what it keeps, what it loses, removed
+  routes for every caller, the minimum hold's access and event. `TestDistributorRoutes` loses the
+  freshness cases. It gains:
+  - a distributor's build held for the minimum;
+  - the minimum lowered (nothing released) and raised (held longer, `held: 1`).
+
+  The store suite covers migration 0046, the minimum at arrival and its race with a raise
+  (`TestDistributorHoldReadLocked`). Tests that place a distributor's build at once set the minimum
+  to 0: the release and upstream helpers, the e2e fixtures, the console e2e's `run.sh`. Tests that
+  reserve a name server-wide remove it at cleanup, since the server's list outlives a test on a
+  shared database. Server-wide names replace the reservations that some tests used:
+  - "reserved meanwhile" (`TestDistributorMayNow` and spec 0036's metadata tests);
+  - a follow's skip;
+  - an eager mirror's `*` refused under the insert's locks.
+- **Earlier specs.** 0007, 0019, 0030, 0031, 0033, 0034 and 0036 carry a "Changed by 0037 (PR 2)"
+  line. 0030's listed sections open with a "superseded in part" note. 0031's sentence on a
+  distributor's tenant reservations goes. 0033 and 0036 carry inline notes where their rules
+  change. 0034 keeps its per-type reservation text as history.
+- **Website.** The pages Website lists, the three deploy variable descriptions and the deployment
+  pages follow PR 2. `upgrading.md` has a "schema 46" section: migration 0046, the reservations
+  dropped, the narrower role and the one-day default.
 
 ## Alternatives considered
 
