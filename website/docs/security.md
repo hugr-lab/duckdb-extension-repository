@@ -218,11 +218,20 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   tenant wrote, places it only once the tenant's [minimum hold for distributors'
   publishers](access.md#the-minimum-hold-for-distributors-publishers) has passed (a day by default;
   the role cannot lower it): time to revoke the key with `purge_held`, which purges what it
-  published. A distributor alerts on `publisher.key.add` and on a `catalogue.hold` by a distribution
-  admin. It can still withdraw a distributor's versions. It cannot read channels or keys, or change
+  published. Through a follow of that publisher, or an `auto` rule, the token brings new versions
+  and, through a follow, new names too: a follow takes every name of its source the channel has no
+  rule for (but for a reserved one and one an upstream of the tenant lists). A distributor alerts on
+  `publisher.key.add` and on a `catalogue.hold` by a distribution admin. Probes are refusals: a
+  name one of the tenant's own publishers holds answers `409 publisher-taken`, recorded as
+  `authz.refused`; a key is unique in the tenant, so adding to a distributor's publisher a public
+  key one of the tenant's publishers holds answers `409`, recorded as `authz.refused` (`reason`
+  `key-taken`). That `409` tells the distribution admin that the tenant holds that public key (a
+  public key, not a secret); and the other way round, a key a distributor's publisher registered
+  first cannot be registered on one of the tenant's own publishers. Distributors' publishers are
+  counted apart (at most 10 a tenant), so they never use up the tenant's own room. It can still withdraw a distributor's versions. It cannot read channels or keys, or change
   a tenant, a channel or a key set; it reads a tenant's state and expected holder, each read an
-  event. Without tenant reservations (spec 0037), a tenant's own grants reach every name kista does
-  not reserve server-wide and no upstream of the tenant lists. A server has one distributor: a second one's publishers on the same server would be the first's
+  event. A tenant's own grants reach every name kista does not reserve server-wide and no upstream
+  of the tenant lists. A server has one distributor: a second one's publishers on the same server would be the first's
   distribution admin's and licence manager's to reach. It reads a distributor's download statistics
   across tenants (spec 0036), for the distributor's entries only: every row is a sum per week and
   extension, naming no tenant or channel, and a tenant's downloads (and, on their own, its

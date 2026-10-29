@@ -62,7 +62,7 @@ optionally on the channel; a licence bound to the name, the source and the organ
 | **Catalogue entry** | A build of a source in the tenant: (source, name, version, platform, DuckDB version or C API major), verified at arrival against its source's signature, with its licence keys (spec 0021), its visibility, and its state: `held` (until a time), `available`, or `withdrawn`. Key: (tenant, source, name, body hash); a version is immutable within its source. The **catalogue** is a tenant's entries; it is not served to DuckDB. |
 | **Rule** | A channel's decision for a name: the source it serves it from (spec 0031's selection) and a mode, `auto` or `manual`. |
 | **Follow** | A channel taking a whole source automatically: every name of it the channel has no rule for, within limits (below). |
-| **Distributor's publisher** | A publisher a distribution admin or a server administrator marks as a distributor's (`distributor`: the distributor's name, as spec 0030's tenant reservations name their holder): it publishes into the catalogue only, its hold and withdrawals are the distributor's. Not the same mark as spec 0021's licence-key mark, which a distributor's publisher also carries. |
+| **Distributor's publisher** | A publisher a distribution admin or a server administrator marks as a distributor's (`distributor`: the distributor's name, as spec 0030's tenant reservations name their holder): it publishes into the catalogue only, its hold and withdrawals are the distributor's. Not the same mark as spec 0021's licence-key mark, which a distributor's publisher also carries. (Spec 0037 (PR 2): a distributor's publisher is only created marked; tenant reservations are removed.) |
 | **Release** | As today, a catalogue entry placed in a channel, signed with the channel's key (the original signature in a passthrough channel). Its slot is now per source: (channel, source, name, version, platform, DuckDB version or C API major). |
 
 A channel is still one DuckDB repository and still serves each name from one source (spec 0031).
@@ -445,7 +445,7 @@ see As built (C); the upgrade notes say so.)
 
 - The store suite on three dialects: entries per source (two sources, one name, one body, one
   version); slots per source; rules, modes, follows, their limits and skips (contested,
-  tenant-reserved for another holder); holds (raised, lowered, the channel's, a distributor's);
+  tenant-reserved for another holder, removed by spec 0037 (PR 2)); holds (raised, lowered, the channel's, a distributor's);
   withdrawal; licences per (name, source) (spec 0035: per entry; key owners removed); each
   migration's backfill from a spec 0031 database (home
   channels, `auto` and `manual`, pull-through follows, splits, duplicate and purged slots, `unknown`
@@ -618,7 +618,8 @@ channel, deferred.
 - **Limits**, each a skip listed with its reason: the channel's rule naming another source; a name
   another follow of the channel offers (`contested`); a core or community name unless the source is
   DuckDB's own repository of that kind; a name reserved in the tenant (any holder: a distributor's
-  exception comes with its publishers, B); another live source of the tenant with builds of the
+  exception comes with its publishers, B; spec 0037 (PR 2): removed with tenant reservations, and a
+  follow of a distributor's publisher skips a name an upstream of the tenant lists instead); another live source of the tenant with builds of the
   name, or a rule of any of its channels naming another source ("the tenant uses it from another
   source"); and, for a publisher, **a name it may not publish in the channel** (found in review: a
   follow is consent to a source, not to every grant anyone gives it anywhere in the tenant; a
@@ -831,11 +832,16 @@ channel, deferred.
   let it place); marking it again renames its distributor; the mark is never removed (the publisher
   is removed instead). It counts as spec 0021's mark for its keys and grants (a tenant
   administrator's change is `404`), so a distribution admin manages its keys, and may give it the
-  licence-key mark while it holds keys.
+  licence-key mark while it holds keys. *Superseded in part by spec 0037 (PR 2): an existing
+  publisher is never marked, by anyone (`PUT …/distributor` only renames a distributor's
+  publisher's distributor, `404` on an unmarked one), and the freshness check goes; a grant to a
+  distributor's publisher is `400` to a server administrator and `404` to a distribution admin,
+  whom the grant routes no longer admit.*
 - **The catalogue only.** The catalogue-only route admits a distributor's publisher's signed request
   without grants (a route flag, `distributors`); the service publishes any name kista does not
-  reserve server-wide and the tenant does not reserve for another holder than its distributor, and
-  refuses the rest as a missing grant does (`404`, nothing said). The name is checked again in the
+  reserve server-wide and the tenant does not reserve for another holder than its distributor (spec
+  0037 (PR 2): server-wide only, tenant reservations are removed), and refuses the rest as a missing
+  grant does (`404`, nothing said). The name is checked again in the
   build's landing transaction (`tx.ReservedKind`, `tx.TenantReservedHolder`), with the tenant still
   active (a suspension or a reservation during the upload refuses it); the reservation is read
   without a lock a reservation waits for, so one committed in between lands the build in the
@@ -922,7 +928,8 @@ channel, deferred.
   care); the record is what keeps the version from arriving again.
 - **Follows** (A1 part 4's seams): a follow of a distributor's publisher takes a name reserved in the
   tenant for its distributor (checked again under the channel lock when it writes the rule), and
-  skips one reserved for another holder; the "name it may not publish in the channel" limit uses the
+  skips one reserved for another holder (spec 0037 (PR 2): superseded: tenant reservations are
+  removed, and it skips a name an upstream of the tenant lists, checked again under the lock); the "name it may not publish in the channel" limit uses the
   distributor rules instead of grants (it has none): the names it may publish into the catalogue,
   which the server-wide and tenant-reservation limits already check.
 - **A distribution admin's reads**: `GET …/catalogue` and `…/catalogue/{source}/extensions/{ext}`
@@ -1270,7 +1277,8 @@ DuckDB's repositories it wants. Its spec 0003's decisions change accordingly.
 - **0023**: revoking a key may purge its held entries.
 - **0030**: distributors' publishers (a mark of their own) publish into the catalogue without grants;
   distribution admins mark them, set their holds, withdraw and purge their versions; a
-  distributor's tenant reservations are no longer needed (kept, unchanged; a follow honours them).
+  distributor's tenant reservations are no longer needed (kept, unchanged; a follow honours them;
+  spec 0037 (PR 2) removes them).
 - **0031**: selections gain a mode; follows; contests happen at placement; the same-body rule goes
   (slots are per source).
 - **0032**: asks come from channels whose rule or follow names the upstream; the fetch places into

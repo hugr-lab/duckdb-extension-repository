@@ -630,7 +630,8 @@ fixes followed in the same branch.
     server administrator), a publisher and its key (`PublicationLive`), a distributor's publisher's
     name (`distributorMayNow`), a tenant administrator never on a distributor's entry; then stale
     and a kept icon changed. A distribution admin is not held to `distributorMayNow`: it writes the
-    metadata of a name reserved since for another holder, as it withdraws its versions. A tenant
+    metadata of a name reserved since for another holder (spec 0037 PR 2: reserved server-wide since),
+    as it withdraws its versions. A tenant
     administrator's grants and a distribution admin's `distribute` are not checked again in the
     transaction (a grant revoked meanwhile lets one write in flight through, as for every other
     write of theirs); the cap is not either, a race bounded by the writes in flight.
@@ -647,7 +648,8 @@ fixes followed in the same branch.
 - **Reads.** "Catalogue readers" are spec 0033's: the tenant-wide administrators, the distribution
   admins (a distributor's entries) and a distributor's publisher (its own, signed), so the reads
   take the same checks as the writes, a tenant's administrators also reading a distributor's
-  entries. A distributor's publisher reads no metadata of a name reserved since for another holder:
+  entries. A distributor's publisher reads no metadata of a name reserved since for another holder (spec
+  0037 PR 2: reserved server-wide since):
   neither the entry's read nor the catalogue's list answers it (the list reads the reservations of
   its names in one query, `Store.ReservedAgainst`; spec 0037 PR 2: a name reserved server-wide since,
   `Store.ReservedAmong`).

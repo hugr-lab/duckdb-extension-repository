@@ -76,8 +76,8 @@ its writer (a `sub` or a client claim). Either failure answers `401`.
   rows are removed in the background.
 - **Package types** (spec 0034; see [Concepts](concepts.md#packages-and-package-types)): a body
   names one as `package_type` (a channel, a grant, a group's member change, a placement), and the
-  routes keyed or filtered by a name take `?type=`: the licences and licence keys, the server's and
-  a tenant's reserved names, attachments, the catalogue (and `catalogue?name=`),
+  routes keyed or filtered by a name take `?type=`: the licences and licence keys, the server's
+  reserved names, attachments, the catalogue (and `catalogue?name=`),
   `grants?extension=`, `extension-groups?extension=` and `stats/*?extension=`. Both default to
   `duckdb_extension`, the only type there is today, and answers leave `package_type` out when it is
   the default, so an existing client reads what it read. A type the server does not know is `400`
@@ -382,7 +382,7 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `GET, POST …/publishers/{name}/github`; `GET, DELETE …/github/{id}` | tenant admin |
 | `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a distributor's publisher only (spec 0037: the tenant's own publishers, marked or not, answer it the `404` of a missing publisher); `DELETE …?purge_held=true` purges the builds the key published that are still held, and answers what it purged and kept, revoked ([holds](publishing.md#holds-and-early-placement)) |
 | `PUT …/publishers/{name}/hold {"hold": "24h"}` | tenant admin: the publisher's [hold](publishing.md#holds-and-early-placement); a publisher answers `hold` (omitted for none); a distributor's publisher's: server, a distribution admin only, and its answer carries `effective_hold`, the larger of its hold and the tenant's minimum (spec 0037; omitted for none) |
-| `GET, PUT tenants/{t}/distributor-hold` | tenant admin (`404` to a distribution admin): the tenant's [minimum hold for distributors' publishers](access.md#the-minimum-hold-for-distributors-publishers) (spec 0037), `{"hold": "24h0m0s"}`, one day by default; `PUT` takes `{"hold": "24h"}` (`0s` for none, at most 90 days). Raising it holds what distributors' publishers' entries are held now longer; each change is a `catalogue.hold` event (subject `tenant:<name>`) |
+| `GET, PUT tenants/{t}/distributor-hold` | tenant admin: the tenant's [minimum hold for distributors' publishers](access.md#the-minimum-hold-for-distributors-publishers) (spec 0037), `{"hold": "24h0m0s"}`, one day by default; `PUT` takes `{"hold": "24h"}` (`0s` for none, at most 90 days). A distribution admin gets `404`: it reads the minimum only as its publishers' `effective_hold` |
 | `PUT …/publishers/{name}/distributor {"distributor": "enterest"}` | server, a distribution admin: rename a [distributor's publisher](publishing.md#distributors-publishers)'s distributor (`409` once it is used: builds, releases, rules, a hold or downloads, spec 0036); an existing publisher is never marked one (spec 0037: a publisher without the mark answers `404` to everyone); a publisher answers `distributor` (omitted for the tenant's own) |
 | `POST, DELETE …/publishers/{name}/license-keys` | server; a distribution admin for a distributor's publisher only: mark a publisher a source of licence keys, or unmark it |
 
@@ -390,8 +390,8 @@ A publisher answers with its `id`, its `keys` and `license_keys` (true when mark
 removing its keys and grants is a server administrator's (`404` to a tenant administrator), and a
 distribution admin's for a distributor's publisher only: to a distribution admin, the tenant's own
 publishers, marked or not, answer `404` as missing ones (spec 0037). A distributor's publisher is
-marked so too, and holds no grants (`400` to a server administrator or a distribution
-admin, `404` to a tenant administrator). A marked publisher's publication of a body whose key block is malformed answers
+marked so too, and holds no grants (`400` to a server administrator, `404` to a tenant
+administrator and to a distribution admin, whom the grant routes do not admit). A marked publisher's publication of a body whose key block is malformed answers
 `400` (`license_keys`).
 
 See [Publishing](publishing.md).
@@ -491,9 +491,6 @@ promotion and a source's switch to an administrator of the path; a relay run (th
 | `DELETE …/extension-groups/{g}`; `POST …/{g}/description`, `POST …/{g}/members` | tenant admin |
 
 See [Access](access.md).
-
-Names reserved in a tenant for a holder (spec 0030's `tenants/{t}/reserved-names` routes) are gone
-(spec 0037): those routes answer `404` to everyone.
 
 ### Attachments and feeds
 

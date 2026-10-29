@@ -96,7 +96,6 @@ Names DuckDB owns are **reserved**. The server keeps the list as data, and it on
 
 A name core in any version is core; a community name may become core, never the other way. Names
 an upstream of the tenant provides are reserved in that tenant too (see [Upstreams](upstreams.md)).
-Names reserved in a tenant for a distributor (spec 0030) are no more: spec 0037 removed them.
 
 For `publish` and `promote`, a reserved name is reached only by a grant that **names the
 extension**. A tenant-wide or channel-wide grant, or a grant on an extension group, never reaches
@@ -387,7 +386,10 @@ removed: the publisher is removed instead.
 
 A distribution admin creates only distributors' publishers: `POST …/publishers` without
 `distributor` answers it `404`. For a name a tenant's own publisher holds it answers `409` with the
-problem type `publisher-taken`: the name is taken, and nothing else is said about that publisher.
+problem type `publisher-taken`: the name is taken, and nothing else is said about that publisher
+(the refusal is recorded as `authz.refused`, `reason` `publisher-taken`). A tenant holds at most 10
+distributors' publishers, counted apart from its own publishers (at most 200): a distributor never
+uses up the tenant's room.
 
 Every publisher answer carries the publisher's `id` (spec 0037): a distributor recognises its own
 publisher by it after a publisher of the same name was removed and created again. The ids are
@@ -398,21 +400,18 @@ opaque and grant nothing.
   core and community names; `404` otherwise, as a missing grant), a name an upstream of the tenant
   lists included (each is its
   own source in the catalogue). The channel's publication route refuses it (`404`), and it holds no
-  grant (`400` to a server administrator or a distribution admin, `404` to a tenant administrator, for
+  grant (`400` to a server administrator; `404` to a distribution admin, whom the grant routes do not
+  admit, and to a tenant administrator, for
   whom its grants are not theirs): what it publishes reaches no channel by itself. Channels take its builds by their rules: an `auto` rule naming it, or
   a follow (`channel follow <tenant>/<channel> publisher:enterest-ci`), which takes its names the
-  tenant does not use from another source, as any follow does.
+  tenant does not use from another source, as any follow does, but for a name an upstream of the
+  tenant lists: a grant reaches such a name only by naming it, and a distributor's publisher holds
+  none, so a rule naming it takes it (spec 0037).
 - **Held for the tenant's minimum** (spec 0037). What it publishes is held for the larger of its own
-  hold and the tenant's **minimum hold for distributors' publishers**: one day unless the tenant's
-  administrators change it (`GET|PUT /api/v1/tenants/{t}/distributor-hold {"hold": "24h"}`, `0` for
-  none; `kista admin tenant distributor-hold <tenant> [<duration>]`; the console's Publishers
-  screen). A distribution admin neither reads nor sets it (`404`), and cannot go below it: a stolen
-  distribution admin's token that adds its own key and publishes reaches no channel before the
-  minimum has passed, time enough to revoke the key with `purge_held`. Raising it holds the entries
-  held now of every distributor's publisher of the tenant, live or removed, longer; lowering it
-  applies to entries arriving from then on. A distributor's publisher's answer carries
-  `effective_hold`, the larger of the two. So a distributor's builds reach a tenant's channels a day
-  after publication by default.
+  hold and the tenant's [minimum hold for distributors'
+  publishers](access.md#the-minimum-hold-for-distributors-publishers), one day unless the tenant's
+  administrators change it. A distribution admin reads the minimum only as its publishers'
+  `effective_hold`, and cannot lower it.
 - **The distributor's, not the tenant's**: its keys (as a [marked publisher](#sources-of-licence-keys)'s),
   its [hold](#holds-and-early-placement) (`publisher hold`, a distribution admin's or a server
   administrator's: `404` to a tenant administrator; a tenant that wants more raises its minimum
@@ -776,9 +775,9 @@ server administrators only (and distribution admins, for a distributor's publish
   say). The publisher must hold `publish` on the name itself.
 - **A malformed key block is refused**: `400`, with `license_keys` in the detail. `kista ext
   inspect <file>` shows what kista reads.
-- **Its keys and grants are the server administrator's** (a distribution admin's for a
-  distributor's publisher only, spec 0037: the tenant's own publishers, marked or not, answer it
-  `404`). A publisher holding a key is not marked
+- **Its keys and grants are the server administrator's.** A distribution admin changes a
+  distributor's publisher's keys and licence-key mark only, never its grants (it holds none) nor the
+  tenant's own publishers', marked or not, which answer it `404` (spec 0037). A publisher holding a key is not marked
   (`400`): keys a tenant administrator registered would outlive the mark. While it is marked,
   adding or removing its keys and grants, and changing the members of an extension group its grants
   name, is refused to a tenant administrator (`404`). A tenant administrator can still remove the

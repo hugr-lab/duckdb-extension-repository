@@ -323,7 +323,8 @@ As 0042 recorded it:
   catalogue only, without grants, and its keys and hold are the distributor's, no longer a tenant
   administrator's (`404`). A server administrator creates one marked (`POST …/publishers` with
   `distributor`, `publisher add … -distributor`); an existing publisher is marked only when a
-  distribution admin created it and it is fresh.
+  distribution admin created it and it is fresh (spec 0037: never; a distributor's publisher is
+  created marked only).
 - New routes: `PUT …/publishers/{name}/distributor` (and `distributor` in `POST …/publishers`), `POST …/catalogue/{source}/extensions/{ext}/versions/{v}/withdraw`
   ([withdrawals](../upstreams.md#withdrawals)); the publisher hold route, the catalogue's read
   routes and its purge admit distribution admins (for distributors' publishers). New in answers: a

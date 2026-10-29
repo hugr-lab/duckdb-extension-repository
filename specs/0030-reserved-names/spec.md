@@ -214,13 +214,18 @@ suite checks the migration holds them.
   any more.)* A tenant's reserved names reach only that tenant. Only server and
   distribution admins reserve and release them: a tenant administrator cannot lift a distributor's
   reservation, nor make one that would block another tenant.
-- **The distribution admins** hold a fixed list of calls; a stolen principal of that role can reserve
+- **The distribution admins** *(Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md)
+  (PR 2): the role no longer reserves names, writes grants or creates ordinary publishers; a stolen
+  token's reach is spec 0037's Security, bounded by the tenant's minimum hold for distributors'
+  publishers.)* hold a fixed list of calls; a stolen principal of that role can reserve
   names (an annoyance, undone by a server administrator), manage the publishers a distributor
   marked, and grant `publish`, `promote` and `admin` on the names reserved in a tenant: it can
   publish under those names there, as the distributor does. It cannot take a tenant's publisher with
   grants, grant on other names, remove the tenant's grants, or change a tenant's keys; it reads a
   tenant's channels only as a reservation's answer names releases under the name (as built, part 2).
-- **Existence.** The server's reserved names are DuckDB's, public anyway; a tenant's are read only
+- **Existence.** *(Superseded in part by [spec 0037](../0037-distributor-in-a-tenant/spec.md) (PR 2):
+  a tenant reserves no names; a distribution admin reads the server's names and kinds only, without
+  their sources.)* The server's reserved names are DuckDB's, public anyway; a tenant's are read only
   by its administrators and the admins above.
 
 ## Testing

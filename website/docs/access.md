@@ -322,7 +322,9 @@ active tenant a distribution admin may:
   each read is a `tenant.read` event in the tenant;
 - create a distributor's publisher, marked from its creation (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)):
   without `distributor` the creation answers `404`, and for a name a tenant's own publisher holds
-  `409` with the problem type `publisher-taken` (the name is taken, and nothing else is said);
+  `409` with the problem type `publisher-taken` (the name is taken, and nothing else is said; the
+  refusal is an `authz.refused` event). A tenant holds at most 10 distributors' publishers, counted
+  apart from its own (at most 200), so a distributor never takes the tenant's room;
 - list and read the distributors' publishers (a list leaves the tenant's own publishers out, and
   reading one answers `404`), and for a distributor's publisher only: rename its distributor (while
   unused, spec 0036), set and clear its licence-key mark, manage its keys (with `purge_held`), set
@@ -391,11 +393,12 @@ gets `404`. See [HTTP API](api.md).
 A tenant's administrators and server administrators set the tenant's **minimum hold for
 distributors' publishers** (spec 0037): an entry a distributor's publisher publishes is held for the
 larger of the publisher's hold and this minimum, one day unless changed. A distribution admin sets
-its publisher's hold to anything, but cannot go below the minimum, nor read or set it (`404`): a
-stolen distribution admin's token that adds its own key to the distributor's publisher and publishes
-reaches no channel, even through the tenant's `auto` rule or follow, before the minimum has passed,
-time enough to revoke the key with `purge_held`. A channel administrator's `early` placement still
-skips it: that is the tenant's choice.
+its publisher's hold to anything, but cannot go below the minimum, nor set it, and reads it only as
+its publishers' `effective_hold` (the route answers it `404`): a stolen distribution admin's token
+that adds its own key to the distributor's publisher and publishes reaches no channel, even through
+the tenant's `auto` rule or follow, before the minimum has passed, time enough to revoke the key with
+`purge_held`. A channel administrator's `early` placement still skips it: that is the tenant's
+choice. So, by default, a distributor's builds reach a tenant's channels a day after publication.
 
 ```bash
 kista admin -config /etc/kista/kista.yaml tenant distributor-hold acme        # prints it
@@ -405,8 +408,10 @@ kista admin -config /etc/kista/kista.yaml tenant distributor-hold acme 2d     # 
 `GET|PUT /api/v1/tenants/{t}/distributor-hold {"hold": "24h"}`, or the console's Publishers screen.
 Raising it holds the entries held now of every distributor's publisher of the tenant, live or
 removed, longer; lowering it applies to entries arriving from then on. Each change is a
-`catalogue.hold` event with the subject `tenant:<name>` and `source` `distributors`. A
-distributor's publisher's answer carries `effective_hold`, the larger of the two.
+`catalogue.hold` event with the subject `tenant:<name>` and `source` `distributors` (setting the same
+value again writes none). A distributor's publisher's answer carries `effective_hold`, the larger of
+the two; `kista admin publisher list` shows it as `HELD FOR`, `publisher show` as `held for`, and
+`tenant show` prints the minimum as `distributor hold`.
 
 ## Who sees what
 

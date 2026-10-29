@@ -54,8 +54,9 @@ key whose source is gone counts for nothing.
   <tenant> <name> on|off`, or `POST`/`DELETE /api/v1/tenants/{t}/publishers/{name}/license-keys`.
   A publisher is marked only while it holds no key; the server administrator registers its keys
   afterwards. While marked, its keys, grants and the members of extension groups its grants name
-  are changed by a server administrator only (or a distribution admin, for a distributor's
-  publisher); a tenant administrator can still remove it. See
+  are changed by a server administrator only; a distribution admin changes a distributor's
+  publisher's keys and mark only (it holds no grants), never the tenant's own publishers'. A tenant
+  administrator can still remove it. See
   [Publishing](publishing.md#sources-of-licence-keys).
 - **A malformed key block** in a marked publisher's publication is refused (`400`, `license_keys`).
 - **Removing a source** (the publisher, or the upstream) drops the keys it brought. Unmarking a
