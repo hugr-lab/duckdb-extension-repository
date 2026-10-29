@@ -24,10 +24,11 @@ const (
 	MinSide, MaxSide = 64, 512
 	// ContentType is the one type an icon is declared and served as.
 	ContentType = "image/png"
-	// maxRaw bounds the image data inflated by the end check: a 16-bit RGBA 512x512 image, its
-	// filter bytes and interlacing's included, is well under it.
+	// maxRaw bounds the image data inflated by the end check: a 16-bit RGBA 512x512 image's, its
+	// filter bytes and interlacing's included (about 2 MiB), is well under it.
 	maxRaw = 4 << 20
-	// decodesAtOnce bounds the full decodes running at once on a replica: 2 MiB each at most.
+	// decodesAtOnce bounds the full decodes running at once on a replica: a decode holds about 4 MiB
+	// at its peak (an interlaced 16-bit RGBA 512x512 image: its passes and the image).
 	decodesAtOnce = 4
 )
 
@@ -77,6 +78,7 @@ func Check(ctx context.Context, b []byte) (Info, error) {
 	if err != nil {
 		return Info{}, refuse("the PNG image could not be decoded")
 	}
+	// defence only: Go's decoder sizes the image by the header, which was checked above
 	if bd := img.Bounds(); bd.Min.X != 0 || bd.Min.Y != 0 || bd.Dx() != cfg.Width || bd.Dy() != cfg.Height {
 		return Info{}, refuse("the PNG image is not the size its header says")
 	}
@@ -106,7 +108,16 @@ func chunks(b []byte) ([]byte, error) {
 	seen := map[string]bool{}
 	var colourType byte
 	var idat []byte
-	inIDAT, afterIDAT, ended := false, false, false
+	ended := false
+	// before refuses a chunk of the image's header after the image data: every chunk allowed but IDAT
+	// and IEND comes before the first IDAT. So the IDAT chunks are consecutive too: whatever came
+	// between two of them is refused here, or is IEND, after which nothing may come.
+	before := func(what string) error {
+		if seen["IDAT"] {
+			return refuse("the chunk %s comes after the image data (IDAT); it must come before", what)
+		}
+		return nil
+	}
 	for pos := len(signature); pos < len(b); {
 		if ended {
 			return nil, refuse("the PNG has bytes after IEND")
@@ -130,15 +141,6 @@ func chunks(b []byte) ([]byte, error) {
 		}
 		if typ != "IDAT" && seen[typ] {
 			return nil, refuse("the PNG has the chunk %s more than once", typ)
-		}
-		if typ != "IDAT" && inIDAT {
-			inIDAT, afterIDAT = false, true
-		}
-		before := func(what string) error { // the chunk must come before the image data
-			if inIDAT || afterIDAT {
-				return refuse("the chunk %s comes after the image data (IDAT); it must come before", what)
-			}
-			return nil
 		}
 		switch typ {
 		case "IHDR":
@@ -178,10 +180,6 @@ func chunks(b []byte) ([]byte, error) {
 				return nil, refuse("the chunk %s comes after the palette (PLTE); it must come before it", typ)
 			}
 		case "IDAT":
-			if afterIDAT {
-				return nil, refuse("the PNG's image data (IDAT) is split by another chunk")
-			}
-			inIDAT = true
 			idat = append(idat, data...)
 		case "IEND":
 			if len(data) != 0 {
@@ -195,6 +193,8 @@ func chunks(b []byte) ([]byte, error) {
 			if what, ok := refused[typ]; ok {
 				return nil, refuse("the PNG carries %s, which an icon may not; strip it (oxipng --strip all, pngcrush -rem allb)", what)
 			}
+			// an unknown chunk is not named: its type is four bytes the sender chose, and a refusal is
+			// written into answers and logs
 			return nil, refuse("the PNG carries a chunk an icon may not; strip it (oxipng --strip all, pngcrush -rem allb)")
 		}
 		seen[typ] = true

@@ -2,6 +2,7 @@ package icon_test
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -108,6 +109,15 @@ func accepted(t *testing.T, name string, b []byte, side int) {
 	}
 }
 
+// refusedExactly checks a refusal's whole message.
+func refusedExactly(t *testing.T, name string, b []byte, want string) {
+	t.Helper()
+	_, err := icon.Check(ctx, b)
+	if !errors.Is(err, icon.ErrInvalid) || err.Error() != icon.ErrInvalid.Error()+": "+want {
+		t.Errorf("%s: %v, want the refusal %q", name, err, want)
+	}
+}
+
 func refused(t *testing.T, name string, b []byte, want string) {
 	t.Helper()
 	_, err := icon.Check(ctx, b)
@@ -211,11 +221,12 @@ func TestRefused(t *testing.T) {
 	// image data that is not the header's image: a 128x128 image's under a 64x64 header, and the
 	// reverse
 	small, large := parse(t, encode(t, 64, 64, false)), parse(t, encode(t, 128, 128, false))
-	refused(t, "image data too large", build([]chunk{small[0], large[1], small[2]}), "")
-	refused(t, "image data too small", build([]chunk{large[0], small[1], large[2]}), "")
+	refusedExactly(t, "image data too large", build([]chunk{small[0], large[1], small[2]}), "the PNG image could not be decoded")
+	refusedExactly(t, "image data too small", build([]chunk{large[0], small[1], large[2]}), "the PNG image could not be decoded")
 	// IDAT chunks split by another chunk
 	cs = parse(t, rgba)
-	refused(t, "IDAT split", build([]chunk{cs[0], {"IDAT", cs[1].data[:10]}, {"gAMA", make([]byte, 4)}, {"IDAT", cs[1].data[10:]}, cs[2]}), "image data")
+	refusedExactly(t, "IDAT split", build([]chunk{cs[0], {"IDAT", cs[1].data[:10]}, {"gAMA", make([]byte, 4)}, {"IDAT", cs[1].data[10:]}, cs[2]}),
+		"the chunk gAMA comes after the image data (IDAT); it must come before")
 	// IDAT(image) IDAT(<html>) IEND: data past the zlib stream's end, which Go's decoder ignores
 	tail := build([]chunk{cs[0], cs[1], {"IDAT", []byte("<html><script>alert(1)</script></html>")}, cs[2]})
 	if _, err := png.Decode(bytes.NewReader(tail)); err != nil {
@@ -224,4 +235,21 @@ func TestRefused(t *testing.T) {
 	refused(t, "data after the zlib stream", tail, "past its zlib stream")
 	refused(t, "an empty IEND with data", build([]chunk{cs[0], cs[1], {"IEND", []byte{0}}}), "not empty")
 	refused(t, "no IDAT", build([]chunk{cs[0], cs[2]}), "no image data")
+
+	// image data inflating past the bound, under a valid 64x64 header: refused without inflating it all
+	var z bytes.Buffer
+	zw := zlib.NewWriter(&z)
+	_, _ = zw.Write(make([]byte, 5<<20))
+	_ = zw.Close()
+	refusedExactly(t, "image data over the inflate bound", build([]chunk{cs[0], {"IDAT", z.Bytes()}, cs[2]}),
+		"the PNG's image data is larger than its size allows")
+	// a truecolour image's suggested palette after bKGD
+	refusedExactly(t, "bKGD before PLTE (truecolour)", insert(t, rgba, "IDAT", chunk{"bKGD", make([]byte, 6)}, chunk{"PLTE", make([]byte, 3)}),
+		"the palette (PLTE) comes after tRNS or bKGD; it must come before them")
+	// the size's boundary: 256 KiB is not refused for its size, a byte more is
+	at := append(append([]byte{}, rgba...), make([]byte, icon.MaxBytes-len(rgba))...)
+	if _, err := icon.Check(ctx, at); err == nil || strings.Contains(err.Error(), "256 KiB") {
+		t.Errorf("256 KiB exactly: %v", err)
+	}
+	refusedExactly(t, "256 KiB and a byte", append(at, 0), "the icon is at most 256 KiB")
 }
