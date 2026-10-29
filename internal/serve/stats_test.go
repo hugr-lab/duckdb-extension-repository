@@ -142,9 +142,18 @@ func TestDownloadsAndInstalls(t *testing.T) {
 		t.Fatalf("the failure's data: %v", d)
 	}
 	d := evs.data[1]
-	if d["release"] != priv.ID || d["version"] != "1.1" || d["duckdb_version"] != "v2.0.0" || d["user_agent"] == nil {
+	if d["release"] != priv.ID || d["version"] != "1.1" || d["duckdb_version"] != "v2.0.0" || d["user_agent"] == nil ||
+		d["source"] != priv.Source || priv.Source != store.SourceTenant {
 		t.Fatalf("the install's data: %v", d)
 	}
+	// spec 0036 phase 2: a download counts under its release's source
+	cnt.mu.Lock()
+	for k := range cnt.counts {
+		if k.Source != store.SourceTenant {
+			t.Errorf("a download's source: %+v", k)
+		}
+	}
+	cnt.mu.Unlock()
 	if _, err := audit.Data("install", d); err != nil {
 		t.Fatalf("the install's fields are the catalogue's: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,5 +181,74 @@ func TestCountsBudget(t *testing.T) {
 	}
 	if written["a"] != 2 || written["d"] != 1 || written["e"] != 0 || len(written) != 4 {
 		t.Fatalf("written: %v", written)
+	}
+}
+
+// Spec 0036 phase 2: the daily pass counts an install under its release's source: the event's, else
+// the release's by id (an event written before events carried it), "" for a release gone.
+func TestDailySources(t *testing.T) {
+	st, err := store.OpenSQLite(ctx, filepath.Join(t.TempDir(), "kista.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tn := store.Tenant{Name: "acme"}
+	ch := store.Channel{Name: "prod", Kind: store.ChannelSigned}
+	if err := st.InTx(ctx, "", func(tx *store.Tx) error {
+		if err := tx.CreateTenant(ctx, &tn); err != nil {
+			return err
+		}
+		ch.TenantID = tn.ID
+		return tx.CreateChannel(ctx, &ch)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	st.Now = func() time.Time { return now }
+	at := store.TimeArg(st, now)
+	for _, q := range [][]any{
+		{"INSERT INTO builds (id, tenant_id, source, name, package_version, platform, abi, duckdb_version, slot, body_hash, origin, " +
+			"created_at, created_by, checked) VALUES ('b2', ?, 'upstream:u', 'acl', '1.0', 'linux_amd64', 'cpp', 'v2.0.0', 'v2.0.0', ?, " +
+			"'upstream', ?, 'os:1:t', 1)", tn.ID, strings.Repeat("2", 64), at},
+		{"INSERT INTO releases (id, tenant_id, channel_id, build_id, name, package_version, platform, slot, state, visibility, seq, " +
+			"created_at, created_by, state_changed_at, state_changed_by, version, origin, source) VALUES ('r2', ?, ?, 'b2', 'acl', '1.0', " +
+			"'linux_amd64', 'v2.0.0', 'active', 'public', 1, ?, 'os:1:t', ?, 'os:1:t', 1, 'upstream', 'upstream:u')", tn.ID, ch.ID, at, at},
+	} {
+		if err := store.ExecRaw(ctx, st, q[0].(string), q[1:]...); err != nil {
+			t.Fatalf("%s: %v", q[0], err)
+		}
+	}
+	for _, ev := range []struct {
+		who  string
+		data map[string]any
+	}{
+		{"principal:acme/i|alice", map[string]any{"release": "r1", "source": "publisher:p", "name": "acl", "version": "1.0", "platform": "linux_amd64"}},
+		{"principal:acme/i|bob", map[string]any{"release": "r2", "name": "acl", "version": "1.0", "platform": "linux_amd64"}},
+		{"principal:acme/i|carol", map[string]any{"release": "r3", "name": "acl", "version": "1.0", "platform": "linux_amd64"}},
+		{"principal:acme/i|dave", map[string]any{"release": "r1", "source": "publisher:p", "name": "acl", "version": "1.0", "platform": "linux_amd64"}},
+	} {
+		e, err := st.NewEvent(ctx, tn.ID, ev.who, "install", audit.OK, "channel:prod/ext:acl/release:"+ev.data["release"].(string), ev.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.InsertEvents(ctx, []store.Event{e}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now = time.Date(2026, 10, 9, 1, 30, 0, 0, time.UTC)
+	(&stats.Daily{Store: st, Holder: "test", EventRetention: 30 * 24 * time.Hour, Log: slog.New(slog.DiscardHandler)}).Once(ctx)
+	rows, err := st.DownloadRows(ctx, tn.ID, store.StatsFilter{From: "2026-10-08", To: "2026-10-08"}, 100, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int64{}
+	for _, r := range rows {
+		got[r.Source] += r.Installers
+	}
+	if len(rows) != 3 || got["publisher:p"] != 2 || got["upstream:u"] != 1 || got[""] != 1 {
+		t.Fatalf("installers by source: %+v", rows)
 	}
 }

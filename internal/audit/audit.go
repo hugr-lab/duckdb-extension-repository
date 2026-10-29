@@ -229,7 +229,7 @@ var catalogue = map[Kind][]string{
 	"shadow.remove":    {"name"},
 	"auth.failure":     {"reason", "route", "count"},
 	"authz.refused":    {"route", "verb", "status", "count", "name", "source", "entry", "operation", "name_unverified"}, // spec 0037: a licence write refused, what it was
-	"install":          {"release", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
+	"install":          {"release", "source", "name", "version", "platform", "duckdb_version", "body_hash", "user_agent"},
 	"extension.use":    {"version", "platform", "duckdb_version", "license", "status", "events"},
 	"usage.forward":    {"upstream", "sent", "skipped", "failed"},
 	"usage.receive":    {"day", "part", "parts", "sender", "reports", "dropped"},

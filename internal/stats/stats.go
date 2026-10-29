@@ -323,12 +323,22 @@ func (d *Daily) count(ctx context.Context, day string) error {
 		for _, c := range store.KnownChannels(chans) { // spec 0034: a type this binary does not know counts nothing
 			ids[c.Name] = c.ID
 		}
+		// spec 0036 phase 2: an install counts under its release's source, the event's (from then
+		// on), else the release's by id; "" when the release is gone
+		type install struct {
+			k              store.InstallerKey
+			release, actor string
+		}
 		installers := map[store.InstallerKey]map[string]bool{}
+		var older []install  // events without a source
+		var unknown []string // their releases
 		err = d.Store.InstallEvents(ctx, t.ID, day, func(e store.Event) error {
 			var f struct {
-				Name     string `json:"name"`
-				Version  string `json:"version"`
-				Platform string `json:"platform"`
+				Release  string  `json:"release"`
+				Source   *string `json:"source"`
+				Name     string  `json:"name"`
+				Version  string  `json:"version"`
+				Platform string  `json:"platform"`
 			}
 			if json.Unmarshal([]byte(e.Data), &f) != nil {
 				return nil
@@ -339,11 +349,30 @@ func (d *Daily) count(ctx context.Context, day string) error {
 			if id == "" || f.Name == "" {
 				return nil
 			}
-			add(installers, store.InstallerKey{TenantID: t.ID, ChannelID: id, Name: f.Name, PackageVersion: f.Version, Platform: f.Platform, Day: day}, e.Actor)
+			k := store.InstallerKey{TenantID: t.ID, ChannelID: id, Name: f.Name, PackageVersion: f.Version, Platform: f.Platform, Day: day}
+			if f.Source != nil {
+				k.Source = *f.Source
+				add(installers, k, e.Actor)
+				return nil
+			}
+			older = append(older, install{k: k, release: f.Release, actor: e.Actor})
+			if f.Release != "" {
+				unknown = append(unknown, f.Release)
+			}
 			return nil
 		})
 		if err != nil {
 			return err
+		}
+		if len(older) > 0 {
+			srcs, err := d.Store.ReleaseSources(ctx, t.ID, unknown)
+			if err != nil {
+				return err
+			}
+			for _, in := range older {
+				in.k.Source = srcs[in.release]
+				add(installers, in.k, in.actor)
+			}
 		}
 		users := map[store.UsageUserKey]map[string]bool{}
 		err = d.Store.DayEvents(ctx, t.ID, "extension.use", day, func(e store.Event) error {
