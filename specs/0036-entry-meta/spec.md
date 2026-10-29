@@ -713,6 +713,9 @@ distributor, the residual risks documented, `withheld` and `installer_days` as E
   computed in order and pruned oldest first, so none between them is missing). `min_tenants` is
   answered per row, joined from the week's mark; the top-level `min_tenants` of the first draft is
   gone.
+- **`not-computed`.** Before any week is computed, and for `from` after the newest, the route's
+  `400` has the type `urn:kista:problem:not-computed` (`stats.WeeksError.NotComputed`), so a
+  client tells it from an `invalid` query without reading the detail.
 - **The rename refusal** is `409` (`tenants.Refusal`), its reason without counts.
 - **The tenant route's `source`** names a removed distributor's publisher `publisher-id:<id>`, as
   the catalogue does, and another removed publisher `publisher:(removed)`. Counts kept per source
