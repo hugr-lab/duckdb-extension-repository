@@ -352,7 +352,7 @@ func (s *Service) SetEntryMeta(ctx context.Context, a authz.Actor, tenant, packa
 		}
 		// the entry's icon changed meanwhile: the bytes the client sent are uploaded after all,
 		// rather than answering a conflict the client could not have caused
-		data, keep = w.Icon.Data, ""
+		data = w.Icon.Data
 		if cur, _, err = s.Store.EntryMeta(ctx, x.t.ID, x.typ, x.src, name); err != nil {
 			return EntryMetaView{}, err
 		}
