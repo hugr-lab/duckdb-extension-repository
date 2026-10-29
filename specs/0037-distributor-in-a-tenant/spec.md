@@ -140,9 +140,9 @@ refused.
     `If-Match` gets `older`, not `409` "a licence is stored".
   - **The relay.** The licence is refused with the rule `older` in the run's result, and the stored
     licence stays. The check comes after the "unchanged" test and before `replaces`.
-  - **Bundles.** The licence is refused with the rule `older`, per target. The check comes before
-    the bundle's "superseded" refusal of a licence over an import, so when both apply, the refusal
-    names `older`.
+  - **Bundles.** The licence is refused with the rule `older`, per target. As for the relay, the
+    check comes after the "unchanged" test. It also comes before the bundle's "superseded" refusal
+    of a licence over an import, so when both apply, the refusal names `older`.
 - **Where it is checked.**
   - One store helper reads the tenant's licences of the type and name. Go compares `iss` and the
     holder byte for byte, because SQL Server compares strings ignoring trailing spaces.
@@ -155,9 +155,10 @@ refused.
 - **Why every entry, and the whole tenant.**
   - The rule is about licences, not entries: an issuer's later licence for a holder supersedes its
     earlier ones.
-  - Comparing within one entry only would leave a hole. A tenant administrator could import an old
+  - Comparing within one entry only would be weaker. A tenant administrator could import an old
     licence into an empty upstream entry where the distributor's key is live, then switch the
-    channel's rule to that entry.
+    channel's rule to that entry. The tenant-wide comparison refuses that import while the newer
+    licence is stored. It does not undo a licence stored earlier (see Gaps).
   - The relay and bundle imports run without anyone removing anything, so they need the rule most.
     They feed upstream entries.
 - **Compatibility.**
@@ -179,6 +180,12 @@ refused.
 
   After that, an older licence that is still in force can be stored again. kista keeps no
   tombstone; see Alternatives.
+
+  **Pre-staging.** The rule only refuses new stores. It does not touch licences already stored. An
+  older licence stored in another entry while it was still the newest stays there after a newer one
+  arrives elsewhere. A channel serves it once its rule is switched to that entry. Likewise, when the
+  relay refuses a licence as `older`, it keeps its own stored licence, which may be older than
+  another entry's. kista adds no serving-time comparison for this. Short lifetimes bound it.
 
 No migration is needed: the stored row already has `issuer`, `holder_id` and `issued_at`.
 
@@ -255,6 +262,14 @@ administrators' to manage.
 - **Its effect.** An entry that arrives from a distributor's publisher is held for the larger of the
   publisher's hold and the tenant's minimum. A distribution admin may set its publisher's hold to
   anything, but cannot go below the minimum.
+- **Reading it at arrival.** For a distributor's publisher, `SourceHold` (`store/holds.go`) also
+  reads `tenants.distributor_hold_seconds`, with a shared lock on the tenant's row held until
+  commit, as it reads the publisher's row today. The `PUT` updates that row, so it and an arrival are
+  ordered. If the arrival reads first, the raise waits for the arrival to commit, and its
+  `RaiseHeld` then covers the new entry. If the raise commits first, the arrival reads the new
+  minimum. Either way, no arrival misses the raise.
+- **The publisher answer** gains `effective_hold`: the larger of the two. A distribution admin cannot
+  read the minimum otherwise.
 - **Who sets it.** Tenant administrators and server administrators. A distribution admin is refused
   (`404`).
 - **API.** `GET|PUT /api/v1/tenants/{t}/distributor-hold {"hold": "24h"}`, read as other holds are
@@ -262,9 +277,14 @@ administrators' to manage.
 - **CLI.** `kista admin tenant distributor-hold <tenant> [<duration>]`.
 - **Console.** On the Publishers screen, a "Minimum hold for distributors' publishers" field for the
   tenant's administrators.
-- **Changes.** Raising the minimum applies to entries held now, as raising a publisher's hold does.
-  Lowering it applies to arrivals from then on.
-- **Event.** `catalogue.hold` with `source: "distributors"`, `hold`, `before` and `held`.
+- **Changes.**
+  - Raising the minimum applies to entries held now, as raising a publisher's hold does. The `PUT`
+    calls `RaiseHeld` for the source of every distributor's publisher in the tenant, live or
+    removed, in its transaction.
+  - Lowering it applies to arrivals from then on.
+- **Event.** `catalogue.hold` with `source: "distributors"`, `hold`, `before` and `held` (the total
+  count raised). Its subject is `tenant:<name>`. The audit registry's subject list for
+  `catalogue.hold` (`internal/audit/audit.go`) gains `tenant:<name>`.
 - **Why a source hold and not a channel hold.**
   - A held entry is what revoking a key with `purge_held` purges (spec 0033 A2). A channel's hold
     only delays placements in that channel.
@@ -362,7 +382,8 @@ The ids are opaque and grant nothing.
     `publisher-id:<its id>`. Either always means the signer. On the list, it may also be omitted.
     Any other source answers `404`, not an empty `200`.
 - **Removal.** A removed publisher's keys are gone, so it can read nothing.
-- **Reuse.** Spec 0036's signed metadata `PUT` reuses this `decide` branch.
+- **Spec 0036.** Its signed metadata `PUT` has its own access rule (any publisher of the tenant,
+  for its own source). The two branches exist side by side.
 
 ### 6. Problem types for `429`
 
@@ -415,6 +436,10 @@ The ids are opaque and grant nothing.
       distribution admin (Enterest's P7). These replace the earlier alert on `publisher.add`,
       grants and reservations.
     - Revoking the key with `purge_held` within the hold, which purges what was published.
+  - **What no hold covers.** Spec 0036's metadata writes (`catalogue.meta`) take effect at once. A
+    stolen token can rewrite a distributor's entries' icons and summaries immediately, through a
+    distribution admin's call or a newly added key. Enterest also alerts on `catalogue.meta` written
+    by a distribution admin, or signed with a key added since its last look.
   - **What the token keeps.** It can still withdraw versions. Withdrawal is the distributor's right
     over its own versions.
   - **One distributor per server** is assumed (item 2). A second distributor on the same server
@@ -453,7 +478,9 @@ The ids are opaque and grant nothing.
   - Tenant deletion and the test harness without the table.
   - The minimum hold:
     - an arrival from a distributor's publisher is held for the larger of the two holds;
-    - raising the minimum applies to entries held now; lowering it does not.
+    - raising the minimum applies to entries held now, for every distributor's publisher of the
+      tenant, live or removed; lowering it does not;
+    - a raise that races an arrival is not missed (the shared lock on the tenant's row).
 - **Licence service.**
   - The `older` rule:
     - import, and replacement with `If-Match`: `400 older`, before `409`;
@@ -478,7 +505,9 @@ The ids are opaque and grant nothing.
     - a taken name answers `409 publisher-taken`;
     - `PUT …/distributor` on an unmarked publisher answers `404`;
     - a distribution admin cannot set the minimum hold, and its publisher's hold of 0 still holds
-      builds for the minimum.
+      builds for the minimum;
+    - the publisher answer's `effective_hold`;
+    - the `catalogue.hold` event with subject `tenant:<name>`.
 - **API.**
   - `GET tenants/{t}` for a distribution admin:
     - the exact field set;
@@ -527,7 +556,8 @@ The ids are opaque and grant nothing.
       non-distributor entry, and a new case shows `tom` refused on it. The `vault-dist` block that
       relies on a tenant administrator writing a distributor's entry goes.
     - `run.sh` and `access.spec.ts` lose `tenant-reserved`.
-    - The minimum hold is set to 0 where a test places a distributor's build at once.
+    - The minimum hold is set to 0 where a test places a distributor's build at once, including
+      the fixtures spec 0036 adds (`catalogue.spec.ts`).
 - **End to end at the pin** (`make e2e`).
   - `TestLicenseFromDistributor`:
     - the tenant administrator's import into the distributor's entry is refused;
@@ -535,7 +565,8 @@ The ids are opaque and grant nothing.
     - an older licence from the same issuer is refused with `older`;
     - the distributor's publisher reads its entries with a signed request.
   - `reserved_test.go` loses its tenant-reserved part.
-  - The e2e tenants set the minimum hold where they need placement at once.
+  - The e2e tenants set the minimum hold to 0 where they need placement at once, including the
+    fixtures spec 0036 adds (`e2e/distributors_test.go`).
 
 ## Delivery
 
@@ -571,11 +602,15 @@ Two pull requests, in this order with spec 0036. Each runs `make test` on the th
 
 - map `409 publisher-taken` to "foreign, the tenant's own" in `look`. Today, `look` sees `404`,
   then `409`, then `404` again;
-- update its security text and its alert: `publisher.key.add` and `catalogue.hold` by a
-  distribution admin.
+- update its security text and its alerts: `publisher.key.add`, `catalogue.hold` and
+  `catalogue.meta` by a distribution admin, and `catalogue.meta` signed with a newly added key;
+- account for the one-day default minimum hold. Its builds reach a tenant's channels a day after
+  publication unless the tenant lowers the minimum. That affects its storefront ("available in")
+  and how long provisioning takes to show a first version.
 
 **The developer kit.** `kista_publish.py` in extension-ci-tools retries every `429` up to its limit.
-It should stop on `catalogue-full`, and may keep retrying the other types.
+It should stop on `catalogue-full`, both from a publication and from spec 0036's metadata `PUT`. It
+may keep retrying the other types.
 
 ## Alternatives considered
 
@@ -642,7 +677,8 @@ It should stop on `catalogue-full`, and may keep retrying the other types.
     publishers';
   - the `older` rule applies to import, relay and bundles.
 - **0036**:
-  - line 129, "not reserved in the tenant for another holder", goes;
+  - "nor in the tenant for another holder", in its rule for a distributor's publisher's signed
+    metadata write (`distributorMay`), goes;
   - its metadata writes and statistics stay with the role; they are referenced here, not defined.
 
 ## Website
@@ -695,7 +731,8 @@ It should stop on `catalogue-full`, and may keep retrying the other types.
 - Code comments and help text:
   - the CLI help for `publisher distributor` (`cmd/kista/admin.go`);
   - `config/auth.go`, `authz/authz.go` (`VerbDistribute`), `tenants/auth.go` (`distributor`),
-    `tenants/publishers.go` (`SetPublisherDistributor`).
+    `tenants/publishers.go` (`SetPublisherDistributor`; and `SetPublisherHold`, whose "a tenant
+    that wants more waits with a channel hold" becomes the tenant's minimum hold).
 
 `getting-started.md`, `administration/tenants-and-channels.md` and `console.md` mention only
 server-wide reserved names. They change only as listed above.
