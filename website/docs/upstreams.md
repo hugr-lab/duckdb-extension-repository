@@ -222,6 +222,27 @@ change them per release (see [Publishing](publishing.md#changing-a-release)).
   request](#the-first-request)), so a kista mirroring it usually gets the build within its run. Runs,
   pull-through and bundle exports' syncs alike.
 
+### A run at a limit
+
+A tenant's [bytes limit](administration/tenants-and-channels.md#limits) and its source's
+[full catalogue](#the-catalogue-and-a-channels-rules) (`catalogue.max_entries`,
+`catalogue.max_bytes`) are not the file's fault, and neither clears within a run (spec 0038). A run
+reads the tenant's use when it starts; when the tenant uses its whole bytes limit, or the
+upstream's catalogue is full, or a cell is refused by either:
+
+- the refused cell is `failed` (not `rejected`, so no `upstream.rejected` event), its detail naming
+  the limit or the cap, and counted among the run's problems;
+- **new downloads stop**: a cell that would bring a new body (one with no ETag kept) is `failed` the
+  same way without a request. A cell with a body still fetches conditionally: a `304` costs
+  nothing, and a `200` with a body the tenant has (a yank kept, a changed ETag) passes, while a new
+  body is refused after its download;
+- the run ends with `error` "the run failed: …": it is not interrupted, so it is not retried after 5
+  minutes; the next run comes at its usual time, and the cells are fetched again once there is
+  room (a server administrator raises the limit, or the tenant's administrators purge builds).
+
+A pull-through fetch and a lazy mirror's first request check the same before the download; a cell
+refused so is answered as a failed fetch and not fetched again within `upstreams.negative_ttl`.
+
 ```yaml title="kista.yaml"
 upstreams:                   # file-only
   concurrency: 4             # runs, and cells fetched, at once per replica; 1..32
@@ -268,7 +289,7 @@ skipped).
 | `blocked` | the body is blocked in the tenant |
 | `shadowed` | a name `"*"` took is reserved since |
 | `other_source` | another source holds the name in the channel; decided before the download, asked again at each run |
-| `failed` | the fetch failed (network, size, rate, the upstream's `401`/`403`); retried by the next run |
+| `failed` | the fetch failed (network, size, rate, the upstream's `401`/`403`), the catalogue's use could not be read, or a [limit](#a-run-at-a-limit) refused it (the tenant's bytes, the source's full catalogue); retried by the next run |
 | `not_asked` | a lazy mirror's cell nobody asked for, of no eager entry, never fetched: listed only with `?outcome=not_asked`, never stored |
 
 Cells that leave the matrix are removed by the next run; removing an entry or a platform removes
@@ -636,8 +657,8 @@ The cell is then offered to the same worker pull-through uses, which fetches it 
 under the cell's lease. DuckDB 2.0 retries a `503` by itself after its `Retry-After` (eight times at
 most, each answer awaited 30 seconds), so the first `INSTALL` usually succeeds within about 40
 seconds ([Using kista from DuckDB](duckdb.md#install-and-load)). A failed fetch is tried again by
-the next run, or by an ask after a minute; a refused or missing one by an ask after
-`upstreams.negative_ttl`. A cell never fetched is answered `503` for two minutes after its ask; a
+the next run, or by an ask after a minute; a refused or missing one, or one a
+[limit](#a-run-at-a-limit) refused, by an ask after `upstreams.negative_ttl`. A cell never fetched is answered `503` for two minutes after its ask; a
 plain request after them opens them again and is offered again, so a dropped offer or a stopped
 replica costs a client its retries, never more. A fetch that cannot start (the repository's keys
 unreadable, kista's own client refused) records the cell `failed`. The versioned path records the ask but fetches nothing (a

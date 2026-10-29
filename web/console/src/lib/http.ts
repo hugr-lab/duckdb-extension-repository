@@ -7,9 +7,17 @@ export class ApiError extends Error {
     message: string,
     /** Retry-After's seconds, when the answer had one. */
     readonly retryAfter?: number,
+    /** The problem's type, its last segment ("tenant-limit"), when the answer had one. */
+    readonly problem?: string,
   ) {
     super(message)
   }
+}
+
+/** A refusal that waiting does not clear (spec 0038): a tenant limit, a source's full catalogue. Its
+ * 429 is never retried; it clears as room is made or the limit raised. */
+export function final(e: unknown): boolean {
+  return e instanceof ApiError && (e.problem === 'tenant-limit' || e.problem === 'catalogue-full')
 }
 
 /** A licence warning an act's answer carries (spec 0035 phase 2): an entry holding a licence served
@@ -138,9 +146,10 @@ export class Client {
       }
     }
     if (!res.ok) {
-      const detail = (data as { detail?: string; title?: string } | undefined) ?? {}
+      const detail = (data as { detail?: string; title?: string; type?: string } | undefined) ?? {}
       const after = Number(res.headers.get('Retry-After') ?? '')
-      throw new ApiError(res.status, detail.detail || detail.title || `${res.status}`, Number.isFinite(after) && after > 0 ? after : undefined)
+      const problem = typeof detail.type === 'string' ? detail.type.slice(detail.type.lastIndexOf(':') + 1) : undefined
+      throw new ApiError(res.status, detail.detail || detail.title || `${res.status}`, Number.isFinite(after) && after > 0 ? after : undefined, problem)
     }
     if (method !== 'GET') this.o.onWarnings?.(warningsOf(data))
     return { status: res.status, data: data as T, etag: res.headers.get('ETag') ?? '' }

@@ -299,7 +299,7 @@ func (p *Puller) work(ctx context.Context, m release.Miss) {
 		p.mu.Unlock()
 	}()
 	outcome, err := p.fetch(ctx, m)
-	if err != nil {
+	if err != nil && !isRoomRefusal(err) {
 		p.Log.Warn("upstream: a pull-through fetch failed", "upstream", m.UpstreamID, "name", m.Name, "error", err)
 	}
 	// a released cell is served from now on; any other outcome is not fetched again for a while (a
@@ -308,6 +308,11 @@ func (p *Puller) work(ctx context.Context, m release.Miss) {
 	case errors.Is(err, credential.ErrClient): // the operator's configuration: not asked again for a while
 		p.mu.Lock()
 		p.remember(k, time.Now().Add(failedTTL))
+		p.mu.Unlock()
+		return
+	case isRoomRefusal(err): // spec 0038: failed, but refused again until room is made
+		p.mu.Lock()
+		p.remember(k, time.Now().Add(p.NegativeTTL))
 		p.mu.Unlock()
 		return
 	}
@@ -415,7 +420,14 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	if lazy { // spec 0032: first requests have a gate of their own, one fetch a host and tenant, so a run does not hold them back
 		gate = s.gates().host("ask "+u.TenantID+" "+pu.Host, 1)
 	}
-	rec := s.cell(ctx, actor, sc, u, e, keys, base, gate, cell{m.DuckDBVersion, m.Platform, m.Name}, prev, false, triggerAsk)
+	room, err := s.newBodyRoom(ctx, u) // spec 0038: checked before the download
+	if err != nil {
+		if lazy { // a fetch that cannot start, as above
+			p.putFailed(ctx, u, m, "the catalogue's use could not be read")
+		}
+		return store.CellFailed, err
+	}
+	rec := s.cell(ctx, actor, sc, u, e, keys, base, gate, cell{m.DuckDBVersion, m.Platform, m.Name}, prev, false, triggerAsk, room)
 	if ctx.Err() != nil {
 		return "", nil // stopping, or the lease was lost: nothing is recorded
 	}
@@ -446,6 +458,9 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 		}); err != nil {
 			return rec.Outcome, err
 		}
+	}
+	if refused := room.refused(); refused != nil && rec.Outcome == store.CellFailed {
+		return rec.Outcome, refused // spec 0038: asking again within the hour would be refused again
 	}
 	return rec.Outcome, nil
 }

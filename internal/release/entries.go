@@ -47,23 +47,51 @@ func slotErr(origin string, err error) error {
 // stored, which the build's insert makes again under the tenant's bytes lock.
 func (s *Service) room(ctx context.Context, b store.Build, size int64, admin bool) error {
 	if err := s.Store.BytesRoom(ctx, b.TenantID, b.Source, b.BodyHash, size); err != nil {
-		return err
+		return usageErr(err)
 	}
 	if admin || s.MaxEntries <= 0 && s.MaxBytes <= 0 {
 		return nil
 	}
 	if _, ok, err := s.Store.BuildOf(ctx, b.TenantID, b.PackageType, b.Source, b.Name, b.BodyHash); err != nil || ok {
-		return err
+		return usageErr(err)
 	}
-	n, bytes, err := s.Store.SourceUsage(ctx, b.TenantID, b.Source)
+	return s.sourceRoom(ctx, b.TenantID, b.Source, size)
+}
+
+// sourceRoom refuses one more entry of size bytes in a source's catalogue backlog (spec 0033) past
+// catalogue.max_entries or catalogue.max_bytes.
+func (s *Service) sourceRoom(ctx context.Context, tenantID, source string, size int64) error {
+	n, bytes, err := s.Store.SourceUsage(ctx, tenantID, source)
 	if err != nil {
-		return err
+		return usageErr(err)
 	}
 	if s.MaxEntries > 0 && n+1 > s.MaxEntries || s.MaxBytes > 0 && bytes+size > s.MaxBytes {
 		return fmt.Errorf("%w (catalogue.max_entries, catalogue.max_bytes): the tenant's administrators place or purge its builds "+
 			"placed nowhere; its withdrawn builds count too and are never purged (a new publisher is the way out)", store.ErrCatalogueFull)
 	}
 	return nil
+}
+
+// usageErr is a room check's error: a refusal as it is, a use that could not be read as ErrUsage.
+func usageErr(err error) error {
+	if err == nil || errors.Is(err, store.ErrTenantLimit) || errors.Is(err, store.ErrCatalogueFull) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrUsage, err)
+}
+
+// NewBodyRoom refuses a new body for a source before its download (spec 0038: an upstream's cell),
+// when the tenant uses all of its bytes limit or the source's catalogue backlog is full (spec 0033).
+// It cannot tell a body the tenant has already, which room passes after the download: a caller
+// asks it only for a cell that would bring a new body.
+func (s *Service) NewBodyRoom(ctx context.Context, tenantID, source string) error {
+	if err := s.Store.BytesRoom(ctx, tenantID, source, "", 1); err != nil {
+		return usageErr(err)
+	}
+	if s.MaxEntries <= 0 && s.MaxBytes <= 0 {
+		return nil
+	}
+	return s.sourceRoom(ctx, tenantID, source, 1)
 }
 
 // AddToCatalogue puts a built extension into a tenant's catalogue only, placed in no channel (spec

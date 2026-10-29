@@ -9,6 +9,23 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
+// Spec 0038: a room check's failure to read the catalogue's use is ErrUsage (an upstream's cell
+// failed, never rejected); its refusals stay as they are.
+func TestUsageErr(t *testing.T) {
+	read := errors.New("connection reset")
+	if err := release.UsageErr(read); !errors.Is(err, release.ErrUsage) || !errors.Is(err, read) {
+		t.Fatalf("a read error: %v", err)
+	}
+	for _, refusal := range []error{store.LimitRefused(store.LimitBytes, 1), store.ErrCatalogueFull} {
+		if err := release.UsageErr(refusal); err != refusal {
+			t.Fatalf("a refusal: %v", err)
+		}
+	}
+	if release.UsageErr(nil) != nil {
+		t.Fatal("nil")
+	}
+}
+
 // Spec 0038: at a full tenant, a publication and an administrator's add (which the per-source cap
 // exempts) are refused by its bytes limit; the same body again, a bundle import (WithoutLimits) and,
 // once a release is purged (before the collector runs), a new body pass.

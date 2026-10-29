@@ -112,6 +112,15 @@ test('a body blocked and unblocked; a channel created with a DuckDB version', as
   await expect(page.getByRole('button', { name: 'stop serving v2.0.0' })).toBeVisible()
 })
 
+test("a tenant's limits, read only (spec 0038)", async ({ page }) => {
+  await signIn(page, '/ui/t/acme/', 'tom')
+  await nav(page, 'Limits').click()
+  for (const name of ['Bytes', 'Channels', 'Upstreams', 'Publishers']) await expect(page.getByRole('cell', { name, exact: true })).toBeVisible()
+  // the defaults: bytes unlimited, the counts at their ceilings
+  await expect(page.getByRole('row', { name: /Channels/ }).getByText('1000')).toBeVisible()
+  await expect(page.getByRole('row', { name: /Bytes/ }).getByText('unlimited')).toBeVisible()
+})
+
 test("a name's source in a channel: shown, cleared, switched back (specs 0031, 0033)", async ({ page }) => {
   await signIn(page, '/ui/t/acme/', 'tom')
   await nav(page, 'Channels').click()

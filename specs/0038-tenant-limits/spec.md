@@ -1,6 +1,6 @@
 # Spec 0038: Tenant limits
 
-- **Status**: accepted; PR 1 (the limits) implemented
+- **Status**: implemented (PR 1: the limits; PR 2: runs and the console)
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -184,8 +184,10 @@ in the build's insert and when a build is kept) to learn that its limit is unlim
     cell that would need a new body is refused when `used >= limit`, or when its source's
     catalogue is full. A cell that has a body already is still fetched conditionally (its ETag): a
     `304` costs nothing. A `200` whose body is new to the tenant is refused after the spool by
-    `room`. A run reads `used` once when it starts and adds each body it admits, so it does not
-    read the figure per cell.
+    `room`. A run reads `used` (and its source's catalogue) once when it starts, not per cell; it
+    adds nothing for the bodies it admits, since it cannot tell a body new to the tenant from one
+    another source holds, and a figure that overcounts would refuse what the transaction takes: the
+    first refusal after a download (by `room` or the transaction) stops its new downloads instead.
   - **An icon write** (spec 0036) checks its growth (the new icon's bytes less the stored icon's)
     before its upload, beside the per-source check, and again in its transaction. Unlike that
     per-source check, this one covers tenant administrators too.
@@ -235,10 +237,13 @@ A run that meets `tenant-limit` or `catalogue-full`:
 1. records the refusing cell as `failed` (retried by the next run: never the file's fault, so no
    `upstream.rejected` event), with the detail naming the limit or the cap, and adds it to the
    run's problems;
-2. **stops new downloads only.** From then on a cell that would need a new body is recorded
-   `failed` with the same detail without being downloaded (no request, or a `200`'s body not
-   read). Everything that brings no body goes on: conditional fetches answered `304`, yanks and
-   removals the upstream reports, signatures, metadata;
+2. **stops new downloads only.** From then on a cell that would need a new body (one without an
+   ETag kept) is recorded `failed` with the same detail without a request. A cell with a body still
+   fetches conditionally, as above: a `304` costs nothing, and `room` decides a `200`'s body (one
+   the tenant has passes: a yank kept, a changed ETag). Everything that brings no body goes on:
+   conditional fetches answered `304`, yanks and removals the upstream reports, signatures,
+   metadata. (As built: the earlier text also left a `200`'s body unread; reading it lets a body
+   the tenant has pass, and costs one download per conditional cell that changed.);
 3. ends with a cause wrapped in `errFailed`, so the request is recorded as failed and is not
    re-queued as interrupted (`internal/upstream/run.go`); the next run comes at its usual time.
 
@@ -363,10 +368,12 @@ ix_builds_tenant_body     ON builds (tenant_id, body_hash), carrying body_len, s
   unlimited` sets them as the `PUT`, through the store with the server administrator's audit actor,
   as `kista admin tenant holder` does. A flag left out changes nothing: the command tells an
   omitted flag from an empty one with `flag.Visit`, and an empty value is refused.
-- **Console:** the tenant overview shows each limit, what is set, what applies and what is used,
-  read only, for the tenant's administrators and server administrators. A server administrator's
-  editor belongs to plan item K4's server screens; until then the CLI and the API set limits. The
-  console shows a `tenant-limit` refusal with its limit and does not retry it.
+- **Console:** the tenant's **Limits** page (the console has no tenant overview; a section of its
+  own, beside Licences) shows each limit, what is set, what applies and what is used, read only,
+  for the tenant's administrators and server administrators. A server administrator's editor
+  belongs to plan item K4's server screens; until then the CLI and the API set limits. The console
+  shows a `tenant-limit` refusal with its detail, which names its limit, and never retries it (nor
+  `catalogue-full`): its API client keeps the problem's type.
 
 ### Interaction
 
@@ -451,11 +458,13 @@ ix_builds_tenant_body     ON builds (tenant_id, body_hash), carrying body_len, s
   `upstream.rejected` event, downloads nothing more, still applies a yank and a `304`, and ends
   failed without an interrupted retry; the same for `catalogue-full`; a lazy fetch past the limit
   is refused before the download and remembered for `NegativeTTL`; a usage-read error records
-  `failed`.
+  `failed` (as built: a room check's read error is `release.ErrUsage`, tested as a mapping; the
+  upstream's switch takes it as `failed`, since a store error cannot be made on demand).
 - **Config:** a key left out, `unlimited`, `0`, `50GiB`, a count above its ceiling refused at start.
 - **Bootstrap:** limits in the plan and applied, the event as the bootstrap actor.
 - **CLI:** `kista admin tenant limits` read and set; an omitted flag unchanged, an empty one refused.
-- **Console:** the overview shows the limits (unit test and the console e2e's tenant page).
+- **Console:** the Limits page shows the limits (unit test and the console e2e's tenant page); a
+  `tenant-limit` and a `catalogue-full` are final, never retried (unit test).
 
 ## Alternatives considered
 
@@ -518,8 +527,12 @@ pages of the behaviour it changes, and each runs, before it opens, `make test` o
    the cell as today's default does (`rejected`); the limit holds, only the run's handling waits.
 2. **Runs and the console.** The run at a limit (the cell `failed`, new downloads stopped, the
    `errFailed` end; `catalogue-full` the same) and the check before a cell's download; the lazy
-   puller's check before the download and its `NegativeTTL`; the console's tenant overview and its
-   refusal display. Pages: `upstreams.md`, `console.md`.
+   puller's check before the download and its `NegativeTTL`; a use that could not be read
+   (`release.ErrUsage`) a failed cell; the console's Limits page and its refusal display. Pages:
+   `upstreams.md`, `console.md`, `administration/tenants-and-channels.md` (links to both). As built:
+   `TestRunAtTenantLimit`, `TestRunMeetsTenantLimit`, `TestRunAtFullCatalogue`,
+   `TestPullAtTenantLimit`, `TestUsageErr`, the console's `limits.test.tsx` and its e2e's Limits
+   page.
 
 ## Website
 
@@ -531,7 +544,7 @@ pages of the behaviour it changes, and each runs, before it opens, `make test` o
 - `catalogue.md`: the tenant limit beside the per-source cap.
 - `publishing.md`: `tenant-limit` refusals, never retried.
 - `upstreams.md`: a run at a limit.
-- `console.md`: the limits on the tenant overview.
+- `console.md`: the tenant's Limits page, and a limit's refusal never retried.
 - `observability.md`: the refusals metric.
 - `administration/upgrading.md`: migration 0047, its `min_reader` and the `body_len` fill.
 
