@@ -250,13 +250,17 @@ func (s *Store) FillUsedAt(ctx context.Context, domain string) (int, error) {
 
 // FillBodyLen sets body_len of the domain's Builds that have none (inserted by a replica older than
 // migration 0047 that was still running) from their blobs (spec 0038: a tenant's bytes count such a
-// row as 0 until then); a row whose blob is gone keeps none.
+// row as 0 until then); a row whose blob is gone keeps none. Domain "" is every domain's (kista
+// serve's start, for a server whose collector does not run).
 func (s *Store) FillBodyLen(ctx context.Context, domain string) (int, error) {
 	n := 0
+	blob := "SELECT bl.body_len FROM blobs bl JOIN tenants t ON bl.domain = t.storage_domain WHERE t.id = builds.tenant_id AND bl.body_hash = builds.body_hash"
+	q, args := "UPDATE builds SET body_len = ("+blob+") WHERE body_len IS NULL AND EXISTS ("+blob+")", []any{}
+	if domain != "" {
+		q, args = q+" AND tenant_id IN (SELECT id FROM tenants WHERE storage_domain = ?)", []any{domain}
+	}
 	err := s.tx(ctx, nil, func(t *Tx) error {
-		res, err := t.exec(ctx, "UPDATE builds SET body_len = (SELECT bl.body_len FROM blobs bl WHERE bl.domain = ? AND bl.body_hash = builds.body_hash) "+
-			"WHERE body_len IS NULL AND tenant_id IN (SELECT id FROM tenants WHERE storage_domain = ?) "+
-			"AND EXISTS (SELECT 1 FROM blobs bl WHERE bl.domain = ? AND bl.body_hash = builds.body_hash)", domain, domain, domain)
+		res, err := t.exec(ctx, q, args...)
 		if err != nil {
 			return err
 		}

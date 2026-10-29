@@ -473,6 +473,9 @@ func (t *Tx) InsertRelease(ctx context.Context, r *Release, actor string) error 
 	if len(r.PublisherStatement) > 4096 || len(r.PublisherSignature) > 1400 {
 		return fmt.Errorf("%w: a signed request's statement or signature is too long", ErrInvalid)
 	}
+	if err := t.keepRoom(ctx, r.BuildID); err != nil { // spec 0038: kept within the tenant's bytes limit
+		return err
+	}
 	_, err := t.exec(ctx, `INSERT INTO releases (id, tenant_id, channel_id, build_id, name, package_version, platform, slot, state,
 visibility, seq, created_at, created_by, state_changed_at, state_changed_by, version, origin, provenance, origin_signature,
 publisher_statement, publisher_signature, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

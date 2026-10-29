@@ -426,3 +426,45 @@ func TestTenantLimitsConcurrent(t *testing.T) {
 		}
 	})
 }
+
+// Spec 0038: an entry's icon counts from its entry's first kept build, so keeping that build is
+// checked for the icon's bytes too.
+func TestTenantLimitsIconWithFirstBuild(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		tn, _ := fixture(t, s)
+		inTx(t, s, func(tx *store.Tx) error {
+			return tx.PutEntryMeta(ctx, store.EntryMeta{TenantID: tn.ID, PackageType: "duckdb_extension", Source: store.SourceTenant, Name: "geo",
+				IconSHA256: strings.Repeat("f", 64), IconWidth: 64, IconHeight: 64, IconBytes: 100, SetBy: "os:1:t", SetAt: time.Now()})
+		})
+		inTx(t, s, func(tx *store.Tx) error {
+			cur, err := tx.GetTenantForUpdate(ctx, "acme")
+			if err != nil {
+				return err
+			}
+			return tx.SetTenantLimits(ctx, &cur, map[string]int64{store.LimitBytes: 150})
+		})
+		b := cppBuild(tn, "geo", "1.0", "a")
+		b.BodyLen = 60 // within the limit alone, not with the icon
+		err := s.InTx(ctx, "", func(tx *store.Tx) error {
+			if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
+				return err
+			}
+			return tx.SetLanded(ctx, b.ID)
+		})
+		if !errors.Is(err, store.ErrTenantLimit) {
+			t.Fatalf("the entry's first build with its icon past the limit: %v", err)
+		}
+		b = cppBuild(tn, "geo", "1.0", "a")
+		b.BodyLen = 50
+		inTx(t, s, func(tx *store.Tx) error {
+			if err := tx.FindOrInsertBuild(ctx, &b); err != nil {
+				return err
+			}
+			return tx.SetLanded(ctx, b.ID)
+		})
+		if got, _ := s.TenantBytes(ctx, tn.ID); got != 150 {
+			t.Fatalf("the body and its icon: %d", got)
+		}
+	})
+}

@@ -117,7 +117,8 @@ Over the API, `GET /api/v1/tenants/{t}/limits` (the tenant's administrators and 
 administrators) answers each limit's `set` (a number, `"unlimited"` or `"default"`), `limit` (the
 value in force; `null` for unlimited bytes) and `used`; `PUT` (server administrators only) takes the
 limits it names, and `POST /api/v1/tenants` takes them as `limits` at creation. Each change is a
-`tenant.limits` event in the tenant's audit, with each limit's value before and after.
+`tenant.limits` event in the tenant's audit, with each limit's value before and after; the limits
+given at creation are one in the server's events, beside `tenant.create`.
 
 - **What bytes count.** Each distinct body of the tenant's builds that the collector keeps (placed in
   a channel, landed in the catalogue, or withdrawn) once, whatever source holds it, mirrors

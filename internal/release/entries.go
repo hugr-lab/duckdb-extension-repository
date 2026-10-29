@@ -176,6 +176,10 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		if err := s.room(ctx, it.b, f.BodySize, o.Publish == nil); err != nil {
 			return store.Build{}, false, err
 		}
+	} else if err := s.Store.BytesRoom(ctx, t.ID, it.source, b.BodyHash, f.BodySize); err != nil {
+		// spec 0038: a build the source has, that the tenant no longer counts (unlanded, waiting for
+		// the collector), is new bytes again; its landing decides
+		return store.Build{}, false, err
 	}
 	if dist == "" && o.Publish != nil { // a name reserved during the upload takes a grant naming it (spec 0030)
 		kind, err := s.Store.ReservedFor(ctx, tenant, typ, o.Name)

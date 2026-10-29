@@ -438,8 +438,8 @@ Export errors go to kista's log, at most once a minute.
 | `kista.usage.dropped` | counter, `{report}` | usage reports this replica did not count: over usage's budgets, or keys lost while the database failed |
 | `kista.events.pending` | gauge, `{event}` | `kista.sink`: events waiting per sink |
 | `kista.upstream.cells` | gauge, `{cell}` | `kista.outcome`: upstream cells per outcome |
-| `kista.tenant.limit.refusals` | counter, `{refusal}` | `kista.limit` (`bytes`, `channels`, `upstreams`, `publishers`): growth this replica refused by a [tenant limit](administration/tenants-and-channels.md#limits) (spec 0038); no tenant label: a tenant reads its own figures from its limits |
 | `kista.upstream.asks` | counter, `{ask}` | `kista.outcome`, lazy mirrors' first requests on this replica: `recorded` (asks inserted or renewed), `answered_503` (requests answered 503, DuckDB's retries included), `fetched` (cells released), `dropped` (offers a queue or a limit dropped; the next run fetches the cell) |
+| `kista.tenant.limit.refusals` | counter, `{refusal}` | `kista.limit` (`bytes`, `channels`, `upstreams`, `publishers`): growth this replica refused by a [tenant limit](administration/tenants-and-channels.md#limits) (spec 0038); no tenant label: a tenant reads its own figures from its limits |
 | `kista.store.login` | counter, `{request}` | with `store.login.kind: vault`: `kista.login.kind`, `kista.outcome` (`vault`: read from Vault, `cached` (or shared with a read in progress), `error`, `rejected`: the database refused the cached password); from the first read at start; an attempt its caller abandoned is not counted |
 | `kista.store.login.duration` | histogram, seconds | with `store.login.kind: vault`: the Vault reads, by `kista.login.kind` and `kista.outcome` |
 | `kista.store.login.expiry` | gauge, seconds | with `store.login.kind: vault`: how long the cached password may still be used; `0` when none is cached |

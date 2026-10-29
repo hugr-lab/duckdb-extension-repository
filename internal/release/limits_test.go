@@ -111,3 +111,67 @@ func TestTenantBytesLimitIcons(t *testing.T) {
 		}
 	})
 }
+
+// Spec 0038, regression: an intake's build is in flight between its insert and its release; a
+// second intake meanwhile does not take the room it needs. Exactly one of the two is kept, and the
+// tenant never holds more than its limit.
+func TestTenantBytesLimitInFlight(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		p := newPlacing(t, en)
+		p.publish(t, cpp("1.0"))
+		tn, _ := p.st.GetTenant(ctx, "acme")
+		used, _ := p.st.TenantBytes(ctx, tn.ID)
+		one := int64(len(built(t, cpp("1.1"), "tresor_duckdb_cpp_init")))
+		// room for one more body of about that size, not two
+		if _, _, err := p.ten.SetTenantLimits(ctx, admin, "acme", map[string]int64{store.LimitBytes: used + one + one/2}, ""); err != nil {
+			t.Fatal(err)
+		}
+		var second error
+		release.SetAfterBuild(p.pubs, func(store.Build) {
+			release.SetAfterBuild(p.pubs, nil)
+			_, _, second = p.pubs.Add(ctx, p.pub, "acme", "staging", bytes.NewReader(built(t, cpp("1.2"), "tresor_duckdb_cpp_init")),
+				publish("tresor", "1.2", "linux_amd64"))
+		})
+		_, _, first := p.pubs.Add(ctx, p.pub, "acme", "staging", bytes.NewReader(built(t, cpp("1.1"), "tresor_duckdb_cpp_init")),
+			publish("tresor", "1.1", "linux_amd64"))
+		if (first == nil) == (second == nil) {
+			t.Fatalf("both or neither kept: %v, %v", first, second)
+		}
+		for _, err := range []error{first, second} {
+			if err != nil && !errors.Is(err, store.ErrTenantLimit) {
+				t.Fatalf("refused otherwise: %v", err)
+			}
+		}
+		if now, _ := p.st.TenantBytes(ctx, tn.ID); now > used+one+one/2 {
+			t.Fatalf("past the limit: %d > %d", now, used+one+one/2)
+		}
+	})
+}
+
+// Spec 0038, regression: a build the tenant no longer counts (unlanded, waiting for the collector)
+// found again by an intake is checked as new bytes when it is kept again.
+func TestTenantBytesLimitFoundAgain(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		p := newPlacing(t, en)
+		b, _, err := p.catalogueOnly(t, cpp("1.0"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.st.Unland(ctx, []string{b.ID}); err != nil {
+			t.Fatal(err)
+		}
+		tn, _ := p.st.GetTenant(ctx, "acme")
+		if used, _ := p.st.TenantBytes(ctx, tn.ID); used != 0 {
+			t.Fatalf("an unlanded build counted: %d", used)
+		}
+		if _, _, err := p.ten.SetTenantLimits(ctx, admin, "acme", map[string]int64{store.LimitBytes: 0}, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := p.catalogueOnly(t, cpp("1.0")); !errors.Is(err, store.ErrTenantLimit) {
+			t.Fatalf("the same body landed again at a full tenant: %v", err)
+		}
+		if used, _ := p.st.TenantBytes(ctx, tn.ID); used != 0 {
+			t.Fatalf("past the limit: %d", used)
+		}
+	})
+}

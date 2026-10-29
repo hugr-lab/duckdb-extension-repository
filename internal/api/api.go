@@ -644,10 +644,10 @@ func init() {
 			handle: (*Handler).getTenant},
 			http.MethodDelete: {access: serverAdmin, manage: true, closed: true, handle: (*Handler).deleteTenant}}},
 		{"tenants/{t}/suspend", map[string]rule{http.MethodPost: m(serverAdmin, (*Handler).suspend)}},
-		// spec 0028: the holder the tenant's licences must name
 		// spec 0038: a tenant's limits, which a server administrator sets
 		{"tenants/{t}/limits", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).tenantLimits),
 			http.MethodPut: mb(serverAdmin, (*Handler).setTenantLimits)}},
+		// spec 0028: the holder the tenant's licences must name
 		{"tenants/{t}/holder", map[string]rule{http.MethodPut: mb(serverAdmin, (*Handler).setTenantHolder),
 			http.MethodDelete: m(serverAdmin, (*Handler).clearTenantHolder)}},
 		// bundles uploaded over the API (spec 0014 phase 2), and every import's record

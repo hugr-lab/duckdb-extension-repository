@@ -637,7 +637,13 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 		if !passthrough {
 			locks = []string{store.TenantUpstreamLock(ch.TenantID), lockKey(channelID)}
 		}
-		err := s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
+		// spec 0038: last, the tenant's bytes lock while it has a bytes limit (a release keeps its build)
+		bytesLocks, err := s.Store.BytesLocks(ctx, ch.TenantID)
+		if err != nil {
+			return nil, false, err
+		}
+		locks = append(locks, bytesLocks...)
+		err = s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
 			out, made, existing, need = nil, nil, 0, nil
 			bump := false    // a cleared source set again by its release (spec 0031)
 			learned := false // a name reserved by this intake (spec 0030)
@@ -1144,14 +1150,14 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 			return nil, false, err
 		}
 		// two intakes of one body race on the build's insert; the loser finds the winner's build
-		keys, err := s.buildLocks(ctx, it.b)
-		if err != nil {
-			return nil, false, err
-		}
 		for try := 0; ; try++ {
 			bb := it.b
 			bb.Visibility, bb.Provenance = it.visibility, it.provenance // spec 0033: as its arrival made its release
-			err := s.Store.InTxLocks(ctx, keys, func(tx *store.Tx) error {
+			keys, err := s.buildLocks(ctx, bb)
+			if err != nil {
+				return nil, false, err
+			}
+			err = s.Store.InTxLocks(ctx, keys, func(tx *store.Tx) error {
 				if err := tx.PublicationLive(ctx, bb.Source, bb.PublisherKeyID); err != nil {
 					return err
 				}
@@ -1200,14 +1206,14 @@ func (s *Service) land(ctx context.Context, sp *blob.Spool, it *item, event func
 	if _, err := sp.Commit(ctx); err != nil {
 		return err
 	}
-	keys, err := s.buildLocks(ctx, it.b)
-	if err != nil {
-		return err
-	}
 	for try := 0; ; try++ {
 		bb := it.b
 		bb.Visibility, bb.Provenance = it.visibility, it.provenance
-		err := s.Store.InTxLocks(ctx, keys, func(tx *store.Tx) error {
+		keys, err := s.buildLocks(ctx, bb)
+		if err != nil {
+			return err
+		}
+		err = s.Store.InTxLocks(ctx, keys, func(tx *store.Tx) error {
 			if err := tx.PublicationLive(ctx, bb.Source, bb.PublisherKeyID); err != nil {
 				return err
 			}

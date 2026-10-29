@@ -446,6 +446,70 @@ func (s *Store) BytesRoom(ctx context.Context, tenantID, source, bodyHash string
 	return s.bytesRoom(ctx, nil, tenantID, source, bodyHash, size)
 }
 
+// keepRoom refuses keeping a build of a tenant's own source (spec 0038: landing it, or releasing it
+// when it has no release yet) when its tenant's bytes limit has no room for it. Only kept builds
+// count, so this is the decisive check, under the tenant's bytes lock: a build is kept only here,
+// whatever transaction inserted it, so two intakes in flight at once never both take the last
+// room. A build kept already, or whose body the tenant counts, adds nothing; its entry's icon counts
+// with the entry's first kept build.
+func (t *Tx) keepRoom(ctx context.Context, buildID string) error {
+	if LimitsLifted(ctx) {
+		return nil
+	}
+	b, err := t.GetBuild(ctx, buildID)
+	if errors.Is(err, ErrNotFound) {
+		return nil // collected meanwhile: the write's own statement says so (ErrBuildGone)
+	} else if err != nil {
+		return err
+	}
+	lim, err := t.tenantLimit(ctx, b.TenantID, LimitBytes)
+	if err != nil || lim < 0 {
+		return err
+	}
+	if own, err := ownSource(ctx, t.query, b.TenantID, b.Source); err != nil || !own {
+		return err
+	}
+	keptOwn := t.s.keptOwn()
+	kept := func(where string, args ...any) (bool, error) {
+		n, err := count(ctx, t.query, "SELECT COUNT(*) FROM builds b WHERE "+where+" AND "+keptOwn, append(args, true)...)
+		return n > 0, err
+	}
+	if k, err := kept("b.id = ?", b.ID); err != nil || k {
+		return err // kept already (a placement, a promotion): no lock taken
+	}
+	// the lock before the rest is read, so a body kept meanwhile is seen counted
+	if err := t.hold(ctx, TenantBytesLock(b.TenantID)); err != nil {
+		return err
+	}
+	var growth int64
+	if k, err := kept("b.tenant_id = ? AND b.body_hash = ?", b.TenantID, b.BodyHash); err != nil {
+		return err
+	} else if !k {
+		growth += max(b.BodyLen, 1)
+	}
+	if k, err := kept("b.tenant_id = ? AND b.package_type = ? AND b.source = ? AND b.name = ?", b.TenantID, b.PackageType, b.Source, b.Name); err != nil {
+		return err
+	} else if !k {
+		icon, err := count(ctx, t.query, "SELECT COALESCE(MAX(icon_bytes), 0) FROM entry_meta WHERE tenant_id = ? AND package_type = ? AND source = ? AND name = ?",
+			b.TenantID, b.PackageType, b.Source, b.Name)
+		if err != nil {
+			return err
+		}
+		growth += icon
+	}
+	if growth == 0 {
+		return nil
+	}
+	used, err := t.s.tenantBytes(ctx, t.query, b.TenantID)
+	if err != nil {
+		return err
+	}
+	if used+growth > lim {
+		return LimitRefused(LimitBytes, lim)
+	}
+	return nil
+}
+
 // BytesRoom is Store.BytesRoom in a transaction, under the tenant's bytes lock: an icon's growth.
 func (t *Tx) BytesRoom(ctx context.Context, tenantID, source, bodyHash string, growth int64) error {
 	return t.s.bytesRoom(ctx, t, tenantID, source, bodyHash, growth)

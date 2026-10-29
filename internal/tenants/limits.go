@@ -49,12 +49,7 @@ func (s *Service) SetTenantLimits(ctx context.Context, a authz.Actor, name strin
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return store.Tenant{}, Limits{}, err
 	}
-	for n, v := range set {
-		if err := store.ValidLimit(n, v); err != nil {
-			return store.Tenant{}, Limits{}, err
-		}
-	}
-	t, err := s.Store.GetTenant(ctx, name)
+	t, err := s.Store.GetTenant(ctx, name) // the values are checked where they are stored
 	if err != nil {
 		return t, Limits{}, err
 	}

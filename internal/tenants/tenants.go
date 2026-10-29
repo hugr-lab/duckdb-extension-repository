@@ -37,11 +37,6 @@ func (s *Service) CreateTenantWithLimits(ctx context.Context, a authz.Actor, nam
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return store.Tenant{}, err
 	}
-	for n, v := range limits {
-		if err := store.ValidLimit(n, v); err != nil {
-			return store.Tenant{}, err
-		}
-	}
 	if domain == "" {
 		domain = store.DefaultDomain
 	}

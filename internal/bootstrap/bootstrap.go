@@ -353,6 +353,7 @@ func (d Deps) open(ctx context.Context, ref, purpose string) (string, error) {
 // Check compares every object the section names with what exists, writing nothing. Signers are
 // opened and probed, and a new issuer's discovery document and JWKS are fetched.
 func Check(ctx context.Context, d Deps, b config.Bootstrap, o Options) (Plan, error) {
+	ctx = store.WithoutLimits(ctx) // spec 0038: planned as applied, past the tenant's limits
 	var p Plan
 	item := func(kind, name string, a Action, detail string, args ...any) {
 		p.Items = append(p.Items, Item{Kind: kind, Name: name, Action: a, Detail: fmt.Sprintf(detail, args...)})
@@ -445,27 +446,18 @@ func Check(ctx context.Context, d Deps, b config.Bootstrap, o Options) (Plan, er
 	if p.TenantExists {
 		tenantID = t.ID
 	}
-	// spec 0038: the tenant's own limits, those named: set with the tenant, or changed
-	if tb.Limits != nil {
-		named, err := tb.Limits.Named()
-		switch {
-		case err != nil:
-			item("limits", tb.Name, Refused, "%s", strings.TrimPrefix(err.Error(), store.ErrInvalid.Error()+": "))
-		case !p.TenantExists:
-			item("limits", tb.Name, Create, "%s", limitsDetail(named))
-		default:
-			changed := map[string]int64{}
-			for n, v := range named {
-				if t.Limits.Get(n) != v {
-					changed[n] = v
-				}
-			}
-			if len(changed) == 0 {
-				item("limits", tb.Name, Same, "")
-			} else {
-				item("limits", tb.Name, Add, "%s", limitsDetail(changed))
-			}
+	// spec 0038: the tenant's own limits, those named (the configuration checked them): set with
+	// the tenant, or those that differ changed
+	if changed, err := limitsChanged(tb, t, p.TenantExists); err != nil {
+		return p, err
+	} else if len(changed) > 0 {
+		act := Add
+		if !p.TenantExists {
+			act = Create
 		}
+		item("limits", tb.Name, act, "%s", limitsDetail(changed))
+	} else if tb.Limits != nil {
+		item("limits", tb.Name, Same, "")
 	}
 	for _, aud := range tb.Audiences {
 		owner, err := d.Store.AudienceTenant(ctx, aud)
@@ -774,21 +766,34 @@ func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section stri
 			}
 		}
 	}
+	var limits map[string]int64
+	if p.action("limits", tb.Name) != Same && tb.Limits != nil {
+		if limits, err = tb.Limits.Named(); err != nil {
+			return res, err
+		}
+	}
 	if p.action("tenant", tb.Name) == Create {
-		if _, err := d.Tenants.CreateTenant(ctx, a, tb.Name, tb.DisplayName, tb.Domain, ""); err != nil {
+		// spec 0038: with its limits, in the creating transaction
+		if _, err := d.Tenants.CreateTenantWithLimits(ctx, a, tb.Name, tb.DisplayName, tb.Domain, "", limits); err != nil {
 			return res, err
 		}
 		made("tenant", tb.Name)
-	}
-	if act := p.action("limits", tb.Name); act == Create || act == Add {
-		named, err := tb.Limits.Named()
+		if len(limits) > 0 {
+			made("limits", tb.Name+" "+limitsDetail(limits))
+		}
+	} else if p.action("limits", tb.Name) == Add {
+		t, err := d.Store.GetTenant(ctx, tb.Name)
 		if err != nil {
 			return res, err
 		}
-		if _, _, err := d.Tenants.SetTenantLimits(ctx, a, tb.Name, named, ""); err != nil {
+		changed, err := limitsChanged(tb, t, true)
+		if err != nil {
 			return res, err
 		}
-		made("limits", tb.Name+" "+limitsDetail(named))
+		if _, _, err := d.Tenants.SetTenantLimits(ctx, a, tb.Name, changed, ""); err != nil {
+			return res, err
+		}
+		made("limits", tb.Name+" "+limitsDetail(changed))
 	}
 	for _, aud := range tb.Audiences {
 		if p.action("audience", aud) == Create {
@@ -1147,6 +1152,25 @@ func missingCore(names []string, kinds map[pkgtype.Key]string) []string {
 		}
 	}
 	return out
+}
+
+// limitsChanged are the section's tenant limits that differ from the tenant's (all of them for a
+// tenant not made yet).
+func limitsChanged(tb config.BootstrapTenant, t store.Tenant, exists bool) (map[string]int64, error) {
+	if tb.Limits == nil {
+		return nil, nil
+	}
+	named, err := tb.Limits.Named()
+	if err != nil || !exists {
+		return named, err
+	}
+	changed := map[string]int64{}
+	for n, v := range named {
+		if t.Limits.Get(n) != v {
+			changed[n] = v
+		}
+	}
+	return changed, nil
 }
 
 // limitsDetail names limits and their values, in the limits' order: "bytes 1073741824, channels unlimited".
