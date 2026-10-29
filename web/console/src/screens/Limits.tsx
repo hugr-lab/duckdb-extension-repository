@@ -1,6 +1,6 @@
 import { Empty, ErrorBox, Loading, Mono, Note, PageTitle, Table } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
-import { sizeText } from './BundleUploads'
+import { sizeText } from '../lib/size'
 
 // A tenant's limits (spec 0038), read only: for each, what is set, what applies and what is used. A
 // server administrator sets them with the CLI or the API; growth past one is refused (429
@@ -23,6 +23,11 @@ export function limitText(name: string, v: string | number | null): string {
   return name === 'bytes' ? sizeText(v) : String(v)
 }
 
+/** A byte figure exactly, for a title (a rounded size may read as the limit while short of it). */
+function exact(name: string, v: number | null): string | undefined {
+  return name === 'bytes' && v !== null ? `${v.toLocaleString('en')} bytes` : undefined
+}
+
 export function Limits() {
   const { client, api } = useTenant()
   const l = useLoad(() => client.get<{ limits: Record<string, Limit> }>(`${api}/limits`), [api])
@@ -36,9 +41,9 @@ export function Limits() {
         <>
           <Table rows={rows} rowKey={(r) => r.n} columns={[
             ['Limit', (r) => r.label],
-            ['Used', (r) => <Mono>{limitText(r.n, r.used)}</Mono>],
+            ['Used', (r) => <span title={exact(r.n, r.used)}><Mono>{limitText(r.n, r.used)}</Mono></span>],
             ['Applies', (r) => (
-              <span className={r.limit !== null && r.used >= r.limit ? 'font-semibold text-danger' : undefined}>
+              <span title={exact(r.n, r.limit)} className={r.limit !== null && r.used >= r.limit ? 'font-semibold text-danger' : undefined}>
                 <Mono>{limitText(r.n, r.limit)}</Mono>{r.limit !== null && r.used >= r.limit ? ' (reached)' : ''}
               </span>
             )],

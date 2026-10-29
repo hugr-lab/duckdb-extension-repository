@@ -5,6 +5,7 @@ import { Perms, TenantContext } from '../lib/context'
 import { ApiError, Client, final } from '../lib/http'
 import { transient } from '../lib/upload'
 import { Limits, limitText } from './Limits'
+import { tenantSections } from './TenantArea'
 
 // Spec 0038: the tenant's limits, read only (set, in force, used, a reached one marked); a
 // tenant-limit or catalogue-full refusal is final, never retried.
@@ -36,10 +37,38 @@ describe('Limits', () => {
       </MemoryRouter>)
     expect(await screen.findByText('Bytes')).toBeTruthy()
     expect(screen.getAllByText('1 GiB').length).toBe(3)
+    expect(screen.getAllByTitle('1,073,741,824 bytes').length).toBe(2) // used and applies, exactly
     expect(screen.getByText('(reached)', { exact: false })).toBeTruthy()
     expect(screen.getByText('1000')).toBeTruthy()
     expect(screen.getByText('unlimited')).toBeTruthy()
     expect(screen.getAllByText('default').length).toBe(2)
+  })
+
+  it('shows an error when the answer is refused', async () => {
+    for (const status of [403, 404]) {
+      vi.stubGlobal('fetch', vi.fn(async () => json({ detail: 'not yours' }, status)))
+      const client = new Client({ base: 'https://k.example/api/v1', prefix: '/tenants/', getToken: async () => 'tok' })
+      render(
+        <MemoryRouter>
+          <TenantContext.Provider value={{ client, tenant: 'acme', perms: new Perms(false), api: '/tenants/acme', base: '/t/acme' }}>
+            <Limits />
+          </TenantContext.Provider>
+        </MemoryRouter>)
+      expect(await screen.findByText('not yours', { exact: false })).toBeTruthy()
+      expect(screen.queryByText('Bytes')).toBeNull()
+      cleanup()
+    }
+  })
+
+  it('is a section for tenant administrators only', () => {
+    const shown = (p: Perms) => tenantSections(p, '/t/acme').some((t) => t.label === 'Limits')
+    const g = (verbs: string[], more: object = {}) => ({ principal: 'p', verbs, ...more })
+    expect(shown(new Perms(true))).toBe(true)
+    expect(shown(new Perms(false, [g(['admin'])]))).toBe(true)
+    expect(shown(new Perms(false, [g(['admin'], { channel: 'prod' })]))).toBe(false)
+    expect(shown(new Perms(false, [g(['admin'], { extension: 'acl' })]))).toBe(false)
+    expect(shown(new Perms(false, [], true))).toBe(false) // an auditor
+    expect(shown(new Perms(false, [g(['install'])]))).toBe(false)
   })
 
   it('reads values', () => {

@@ -4,6 +4,7 @@ import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
 import { entryNames } from '../lib/names'
+import { sizeText } from '../lib/size'
 import {
   type BundleImport, type BundleUpload, completedStates, finalStates, loadResume, normalSHA, type Resume, resumeKey, sameFile, saveResume, uploadBundle,
 } from '../lib/upload'
@@ -11,18 +12,6 @@ import {
 // Uploading a bundle (spec 0014 phase 2), on a tenant's Upstreams page in the server
 // administrator's scope: a file sent in chunks, the import a serving replica makes of it, and the
 // tenant's recent uploads.
-
-/** A size in words: 1.5 GiB, 16 MiB, 512 B. */
-export function sizeText(n: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let i = 0
-  let v = n
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  return i === 0 ? `${n} B` : `${v >= 10 ? Math.round(v) : Math.round(v * 10) / 10} ${units[i]}`
-}
 
 /** An upload's state in words, with why it failed. */
 export function uploadStatus(u: Pick<BundleUpload, 'state' | 'error' | 'attempts'>): string {

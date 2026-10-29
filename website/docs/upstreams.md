@@ -227,21 +227,30 @@ change them per release (see [Publishing](publishing.md#changing-a-release)).
 A tenant's [bytes limit](administration/tenants-and-channels.md#limits) and its source's
 [full catalogue](#the-catalogue-and-a-channels-rules) (`catalogue.max_entries`,
 `catalogue.max_bytes`) are not the file's fault, and neither clears within a run (spec 0038). A run
-reads the tenant's use when it starts; when the tenant uses its whole bytes limit, or the
-upstream's catalogue is full, or a cell is refused by either:
+reads the tenant's use and the catalogue once when it starts. Without room (the tenant uses its
+whole bytes limit or the catalogue is full at the start, or a cell was refused by either since):
 
-- the refused cell is `failed` (not `rejected`, so no `upstream.rejected` event), its detail naming
-  the limit or the cap, and counted among the run's problems;
-- **new downloads stop**: a cell that would bring a new body (one with no ETag kept) is `failed` the
-  same way without a request. A cell with a body still fetches conditionally: a `304` costs
-  nothing, and a `200` with a body the tenant has (a yank kept, a changed ETag) passes, while a new
-  body is refused after its download;
-- the run ends with `error` "the run failed: …": it is not interrupted, so it is not retried after 5
-  minutes; the next run comes at its usual time, and the cells are fetched again once there is
-  room (a server administrator raises the limit, or the tenant's administrators purge builds).
+- **a cell that holds no body and keeps no ETag** (never fetched, `missing`, refused) is skipped
+  without a request, its record left as it is, and counted `skipped_at_limit`;
+- **a cell that holds a body** runs as ever: conditionally with its ETag (a `304` costs nothing),
+  or unconditionally without one; a body the tenant has passes (a yank kept, a changed ETag), and a
+  new body is refused after its download;
+- **a refused cell** is `failed` (not `rejected`, so no `upstream.rejected` event), its detail naming
+  the limit or the cap, among the run's problems; a failed cell keeps the body and the ETag it held.
+
+A run in which a cell was refused ends with `error` "the run failed: …": failed, not interrupted,
+so it is not retried after 5 minutes, and its next run comes at its usual time. A run that only
+skipped cells did not fail. A dry run skips and decides the same way. The cells come once there is
+room:
+
+- **the tenant's bytes limit**: a server administrator raises it, or the tenant's administrators
+  purge builds placed nowhere (a purged release's build stops counting at once);
+- **a full catalogue**: the tenant's administrators place or purge the source's builds placed
+  nowhere, or the operator raises `catalogue.max_entries` or `catalogue.max_bytes`.
 
 A pull-through fetch and a lazy mirror's first request check the same before the download; a cell
-refused so is answered as a failed fetch and not fetched again within `upstreams.negative_ttl`.
+skipped or refused so is answered as a failed fetch and not fetched again within
+`upstreams.negative_ttl` (a pull-through install keeps failing that long after room is made).
 
 ```yaml title="kista.yaml"
 upstreams:                   # file-only
@@ -249,7 +258,7 @@ upstreams:                   # file-only
   fetch_timeout: 10m         # one file's download; 1m..2h
   min_rate: 64KiB            # a download's least rate after 30s; at least 1KiB
   interval: 6h               # between a mirror's scheduled runs; 15m..168h
-  negative_ttl: 1h           # pull-through and lazy asks: a refused or missing cell is not fetched again within it; 1m..24h
+  negative_ttl: 1h           # pull-through and lazy asks: a refused, missing or limited cell is not fetched again within it; 1m..24h
   credentials: []            # private upstreams, below
 ```
 
@@ -269,10 +278,10 @@ upstreams:                   # file-only
 }
 ```
 
-`error` is set when the run failed before its cells. `problems` holds the first 20 cells that were
+`error` is set when the run failed before its cells, or when a cell met a [limit](#a-run-at-a-limit). `problems` holds the first 20 cells that were
 neither released, unchanged nor landed. A lazy mirror's run also counts `not_asked` (cells of its matrix it
 did not fetch and never fetched, as the cells API lists them) and `busy` (cells another fetch held,
-skipped).
+skipped). A run without room counts `skipped_at_limit` ([A run at a limit](#a-run-at-a-limit)).
 
 **Cell outcomes** (`upstream cells`, `GET …/cells?outcome=`):
 
@@ -577,7 +586,9 @@ kista offers the cell to an in-memory queue, after the answer is decided, when:
 - the cell is in an upstream's matrix: the request's DuckDB version and platform, and an allowlisted
   name or `*`. The versioned path never triggers a fetch;
 - the cell is not in the replica's negative cache: every outcome but `released` keeps it from being
-  fetched again for `upstreams.negative_ttl` (default 1h), a failure for a minute.
+  fetched again for `upstreams.negative_ttl` (default 1h), a failure for a minute. A cell refused by
+  a tenant's [limit](#a-run-at-a-limit) or a full catalogue is remembered as a refusal: its installs
+  keep failing for up to `upstreams.negative_ttl` after room is made.
 
 The client's request still misses; a later `INSTALL` finds the release. `*` is allowed only on a
 pull-through upstream, without versions or `allow_reserved`, and not on `duckdb-core`. It never

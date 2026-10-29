@@ -431,6 +431,9 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	if ctx.Err() != nil {
 		return "", nil // stopping, or the lease was lost: nothing is recorded
 	}
+	if rec.Outcome == atLimit { // spec 0038: no room for a cell holding no body: not requested, not recorded
+		return store.CellFailed, room.noRoom()
+	}
 	if rec.Outcome == "" { // the identity provider refuses kista's own client: logged, nothing recorded
 		if lazy { // but a lazy mirror's cell is failed (spec 0032), as above
 			p.putFailed(ctx, u, m, "upstream.auth: kista's client is refused")
@@ -459,8 +462,10 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 			return rec.Outcome, err
 		}
 	}
-	if refused := room.refused(); refused != nil && rec.Outcome == store.CellFailed {
-		return rec.Outcome, refused // spec 0038: asking again within the hour would be refused again
+	// spec 0038: this cell refused by a limit (the room is the fetch's own): asked again within
+	// NegativeTTL it would be refused again; any other failure is retried sooner
+	if refused := room.refusal(); refused != nil && rec.Outcome == store.CellFailed {
+		return rec.Outcome, refused
 	}
 	return rec.Outcome, nil
 }
