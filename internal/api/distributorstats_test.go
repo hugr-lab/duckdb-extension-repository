@@ -96,7 +96,7 @@ func TestDistributorStatistics(t *testing.T) {
 	}
 	// before the daily pass, no week is computed: refused, never answered empty
 	if r := m.call(t, "GET", D+"?distributor=enterest", m.toks["server dist admin"], ""); r.status != 400 ||
-		!strings.Contains(string(r.body), "no week is computed yet") {
+		r.json(t)["type"] != "urn:kista:problem:not-computed" || !strings.Contains(string(r.body), "no week is computed yet") {
 		t.Fatalf("before the daily pass: %d %s", r.status, r.body)
 	}
 	(&stats.Daily{Store: m.st, Holder: "test", EventRetention: 30 * 24 * time.Hour, Log: slog.New(slog.DiscardHandler),
@@ -123,18 +123,20 @@ func TestDistributorStatistics(t *testing.T) {
 			t.Errorf("%s: %d, want %d", who, s, want)
 		}
 	}
-	for q, want := range map[string]int{
-		"":                                    400, // no distributor
-		"?distributor=enterest&distributor=x": 400,
-		"?distributor=" + strings.Repeat("d", store.MaxDistributor+1): 400,
-		"?distributor=enterest&type=nope":                             400,
-		"?distributor=enterest&from=2026-10-09&to=2026-10-01":         400,
-		"?distributor=enterest&from=2020-01-01":                       400, // beyond 53 weeks
-		"?distributor=enterest&from=2999-01-01":                       400, // after the last complete week
-		"?distributor=nobody":                                         200,
+	for q, want := range map[string]string{
+		"":                                    "invalid", // no distributor
+		"?distributor=enterest&distributor=x": "invalid",
+		"?distributor=" + strings.Repeat("d", store.MaxDistributor+1): "invalid",
+		"?distributor=enterest&type=nope":                             "invalid",
+		"?distributor=enterest&from=2026-10-09&to=2026-10-01":         "invalid",
+		"?distributor=enterest&from=2020-01-01":                       "invalid",      // beyond 53 weeks
+		"?distributor=enterest&from=2999-01-01":                       "not-computed", // after the newest week computed
+		"?distributor=nobody":                                         "",
 	} {
-		if s := m.call(t, "GET", D+q, m.toks["server dist admin"], ""); s.status != want {
-			t.Errorf("%q: %d, want %d: %s", q, s.status, want, s.body)
+		s := m.call(t, "GET", D+q, m.toks["server dist admin"], "")
+		if typ, _ := s.json(t)["type"].(string); want == "" && s.status != 200 ||
+			want != "" && (s.status != 400 || typ != "urn:kista:problem:"+want) {
+			t.Errorf("%q: %d %s, want %q", q, s.status, s.body, want)
 		}
 	}
 	// one week, by its days: the same rows, from and to its Monday

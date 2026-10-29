@@ -25,8 +25,8 @@ type distributorRowJSON struct {
 // for distribution admins and server administrators. It reads the weeks' snapshots, each computed
 // once by the daily pass when the week was complete (public tenants and the minimum applied then),
 // so an answered week never changes. It answers only weeks computed: to is clamped to the newest,
-// from to the oldest kept, and before any week is computed the answer is 400. No answer names a
-// tenant or a channel.
+// from to the oldest kept, and before any week is computed, or with from after the newest, the
+// answer is 400 not-computed. No answer names a tenant or a channel.
 func (h *Handler) distributorStats(w http.ResponseWriter, r *http.Request, c caller, _ params) {
 	q := r.URL.Query()
 	distributor := q.Get("distributor")
@@ -40,7 +40,7 @@ func (h *Handler) distributorStats(w http.ResponseWriter, r *http.Request, c cal
 		return
 	}
 	if !ok {
-		problem(w, http.StatusBadRequest, typeInvalid, "no week is computed yet (a week is computed two days after it ends)")
+		problem(w, http.StatusBadRequest, typeNotComputed, "no week is computed yet (a week is computed two days after it ends)")
 		return
 	}
 	lo, err1 := time.Parse(time.DateOnly, oldest)
@@ -55,7 +55,11 @@ func (h *Handler) distributorStats(w http.ResponseWriter, r *http.Request, c cal
 	weeks, err := stats.DistributorWeeks(lo, hi, q.Get("from"), q.Get("to"))
 	var we *stats.WeeksError
 	if errors.As(err, &we) {
-		problem(w, http.StatusBadRequest, typeInvalid, we.Reason)
+		typ := typeInvalid
+		if we.NotComputed {
+			typ = typeNotComputed
+		}
+		problem(w, http.StatusBadRequest, typ, we.Reason)
 		return
 	}
 	if err != nil {

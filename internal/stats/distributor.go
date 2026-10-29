@@ -30,8 +30,12 @@ const week = 7 * 24 * time.Hour
 // errLeaseLost ends a pass that no longer holds its lease.
 var errLeaseLost = errors.New("stats: the daily lease was lost")
 
-// WeeksError is a range of weeks refused; Reason says why.
-type WeeksError struct{ Reason string }
+// WeeksError is a range of weeks refused; Reason says why. NotComputed marks a range wholly after
+// the newest week computed: answerable once its weeks are.
+type WeeksError struct {
+	Reason      string
+	NotComputed bool
+}
 
 func (e *WeeksError) Error() string { return "stats: weeks: " + e.Reason }
 
@@ -58,7 +62,7 @@ func DistributorWeeks(oldest, newest time.Time, from, to string) ([]string, erro
 	if to != "" {
 		t, err := time.Parse(time.DateOnly, to)
 		if err != nil {
-			return nil, &WeeksError{"to is a day, YYYY-MM-DD"}
+			return nil, &WeeksError{Reason: "to is a day, YYYY-MM-DD"}
 		}
 		if end = monday(t); end.After(last) {
 			end = last
@@ -68,24 +72,24 @@ func DistributorWeeks(oldest, newest time.Time, from, to string) ([]string, erro
 	if from != "" {
 		f, err := time.Parse(time.DateOnly, from)
 		if err != nil {
-			return nil, &WeeksError{"from is a day, YYYY-MM-DD"}
+			return nil, &WeeksError{Reason: "from is a day, YYYY-MM-DD"}
 		}
 		if to != "" && from > to {
-			return nil, &WeeksError{"from is after to"}
+			return nil, &WeeksError{Reason: "from is after to"}
 		}
 		start = monday(f)
 	}
 	if start.After(end) {
-		return nil, &WeeksError{"the newest week computed starts " + store.DayOf(last) + " (a week is computed two days after it ends)"}
+		return nil, &WeeksError{Reason: "the newest week computed starts " + store.DayOf(last) + " (a week is computed two days after it ends)", NotComputed: true}
 	}
 	if start.Before(oldest) {
 		if start = oldest; start.After(end) {
-			return nil, &WeeksError{"the oldest week kept starts " + store.DayOf(oldest)}
+			return nil, &WeeksError{Reason: "the oldest week kept starts " + store.DayOf(oldest)}
 		}
 	}
 	n := int(end.Sub(start)/week) + 1
 	if n > MaxDistributorWeeks {
-		return nil, &WeeksError{"at most 53 weeks"}
+		return nil, &WeeksError{Reason: "at most 53 weeks"}
 	}
 	out := make([]string, n)
 	for i := range n {

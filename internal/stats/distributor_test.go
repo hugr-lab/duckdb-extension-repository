@@ -63,7 +63,8 @@ func TestDistributorWeeks(t *testing.T) {
 		"to not a day":        {"", "tomorrow"},
 	} {
 		var we *stats.WeeksError
-		if _, err := stats.DistributorWeeks(oldest, newest, c[0], c[1]); !errors.As(err, &we) || we.Reason == "" {
+		if _, err := stats.DistributorWeeks(oldest, newest, c[0], c[1]); !errors.As(err, &we) || we.Reason == "" ||
+			we.NotComputed != (name == "after the last week") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

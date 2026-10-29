@@ -372,7 +372,7 @@ GET /api/v1/distributor-stats/downloads?distributor=<name>&from=&to=[&type=]
   computed are answered. `from` and `to` are any days, widened to whole weeks; `to` is clamped to
   the newest week computed, `from` to the oldest kept. The default is the 12 weeks up to the newest;
   at most 53 weeks. The answer's `from`, `to` and each row's `week` are Mondays. Before the first
-  week is computed the route answers `400`.
+  week is computed, and for `from` after the newest, the route answers `400` `not-computed`.
 - **Grouping is fixed**: one row per (week, extension). No row names a tenant, a channel or a
   per-tenant figure.
 - **`downloads`** counts as above; **`public`** is the part from public tenants; **`installer_days`**
