@@ -1,7 +1,7 @@
 # Spec 0010: Audit events and download statistics
 
 - **Status**: implemented (phases 1a, 1b, 2a, 2b). The `publisher.github.*` events and the API key's prefix in `publisher.key.*` are replaced by spec [0023](../0023-publisher-keys/spec.md)'s key events
-- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 2): the download and installer keys hold the release's source (migration 0045, `min_reader` 45; rows before it `''`); `install` events carry `source`; the tenant's `stats/downloads` groups by `source` (a label, `unknown` for `''`); `GET /api/v1/distributor-stats/downloads` sums a distributor's downloads over the tenants, with `statistics.distributor_min_tenants` and `statistics.public_tenants`.
+- **Changed by** [0036](../0036-entry-meta/spec.md) (phase 2): the download and installer keys hold the release's source (migration 0045, `min_reader` 45; rows before it `''`); `install` events carry `source`; the tenant's `stats/downloads` groups by `source` (a label, `unknown` for `''`); the daily pass stores weekly snapshots of each distributor's downloads summed over the tenants (`distributor_weeks`, computed once when a week is complete, with `statistics.distributor_min_tenants` and `statistics.public_tenants` of that moment), which `GET /api/v1/distributor-stats/downloads` answers: weeks, `from` and `to` by their Mondays; `withheld` when the downloads' non-public part is left out (then `downloads` equals `public`, no `installer_days`); `installer_days` omitted whenever its non-public part is left out.
 - **Date**: 2026-10-09
 - **Author**: vgsml, Claude
 
