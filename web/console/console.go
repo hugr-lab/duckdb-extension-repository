@@ -184,7 +184,7 @@ func (h *Handler) policy(idp []string) string {
 		"default-src 'self'",
 		"script-src 'self'",
 		"style-src 'self'",
-		"img-src 'self' data:",
+		"img-src 'self' data: blob:", // spec 0036: an entry's icon, fetched with the token, shown from a blob: URL
 		"font-src 'self'",
 		join("connect-src 'self'", idp, h.o.ConnectSrc),
 		"object-src 'none'",

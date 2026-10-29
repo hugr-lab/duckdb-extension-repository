@@ -76,7 +76,7 @@ export function missing(chunks: number, received: number[] = []): number[] {
 export const chunkOf = (file: Blob, chunkSize: number, n: number) => file.slice(n * chunkSize, Math.min(file.size, (n + 1) * chunkSize))
 
 /** A blob's bytes (FileReader where Blob.arrayBuffer is missing: older engines, jsdom). */
-function bytesOf(b: Blob): Promise<ArrayBuffer> {
+export function bytesOf(b: Blob): Promise<ArrayBuffer> {
   if (typeof b.arrayBuffer === 'function') return b.arrayBuffer()
   return new Promise((resolve, reject) => {
     const r = new FileReader()
