@@ -89,10 +89,14 @@ test('a publisher with a key, and an issuer record, added and removed', async ({
   await page.getByRole('button', { name: 'Remove…' }).first().click()
   await page.getByRole('dialog').getByRole('button', { name: 'Remove' }).click()
   await expect(page.getByRole('heading', { name: 'Publishers' })).toBeVisible()
-  // spec 0030: a name a distributor holds in the tenant, read only
-  const held = page.locator('section', { has: page.getByRole('heading', { name: 'Names reserved for a distributor' }) })
-  await expect(held.getByRole('cell', { name: 'acme_tool' })).toBeVisible()
-  await expect(held.getByRole('cell', { name: 'enterest' })).toBeVisible()
+  // spec 0037: the tenant's minimum hold for distributors' publishers, its administrators' (run.sh set
+  // none; setting the same again changes nothing); tenant reservations are gone
+  await expect(page.getByRole('heading', { name: 'Names reserved for a distributor' })).toHaveCount(0)
+  const minimum = page.getByRole('group', { name: "minimum hold for distributors' publishers" })
+  await expect(minimum.getByText('none', { exact: true })).toBeVisible()
+  await minimum.getByLabel('new minimum hold').fill('0')
+  await minimum.getByRole('button', { name: 'Set minimum' }).click()
+  await expect(minimum.getByText('none', { exact: true })).toBeVisible()
 
   await nav(page, 'Identity').click()
   await page.getByRole('button', { name: 'Add an issuer' }).click()
