@@ -93,6 +93,9 @@ type MetaWrite struct {
 	// SignedAt, BodySHA256, KeyID and KeyFingerprint are a signed request's (zero for a token's)
 	SignedAt                          time.Time
 	BodySHA256, KeyID, KeyFingerprint string
+	// Admit, when set, is asked once the write's checks before any upload passed (the API spends the
+	// caller's rate there, so a refused or replayed write takes none); its error is the write's
+	Admit func() error
 }
 
 // EntryMetaView is an entry's metadata as answers show it: the row (its fields zero for an entry
@@ -270,10 +273,12 @@ func checkWrite(cur store.EntryMeta, had bool, w MetaWrite, keep string) error {
 // (internal/icon). Before anything is uploaded the write is checked against the entry's current
 // metadata (stale, a kept icon changed), a publisher and its key against the store, and a new icon
 // against the source's byte cap (catalogue.max_bytes, its growth only; a tenant's or a server
-// administrator's write is not bounded); an icon the entry has already is not uploaded again. A new
-// one is claimed (waiting at most IconClaimWait on the collector) and uploaded to the tenant's
-// storage domain, and committed with the row. The row's transaction takes the tenant's auth lock and
-// checks it all again. Writing the same metadata again changes nothing and makes no event; a signed
+// administrator's write is not bounded); an icon the entry has already is not uploaded again while
+// its object is there and matches (and is uploaded after all if the entry's icon changed
+// meanwhile). A new one is claimed (waiting at most the blob service's icon claim wait on the
+// collector) and uploaded to the tenant's storage domain, and committed with the row. The row's
+// transaction takes the tenant's auth lock and checks it all again. Writing the same metadata again
+// changes nothing and makes no event; a signed
 // write always advances the entry's mark, a token's that changes something moves it to the later of
 // the server's clock and the mark, and a token's no-op writes nothing.
 func (s *Service) SetEntryMeta(ctx context.Context, a authz.Actor, tenant, packageType, source, name string, w MetaWrite) (EntryMetaView, error) {
@@ -316,8 +321,16 @@ func (s *Service) SetEntryMeta(ctx context.Context, a authz.Actor, tenant, packa
 	if err != nil {
 		return EntryMetaView{}, err
 	}
+	derived := false // the client sent the bytes of the icon the entry has: kept by the server, not by the client
 	if data != nil && blob.ContentHash(data) == cur.IconSHA256 {
-		keep, data = cur.IconSHA256, nil // the icon the entry has: nothing to upload
+		// not uploaded again while its object is there and matches; a missing or changed one is
+		// uploaded again below (the write repairs it), so a row never stands without its object
+		switch _, err := s.Blob.ReadIcon(ctx, x.t.StorageDomain, cur.IconSHA256, cur.IconBytes); {
+		case err == nil:
+			keep, data, derived = cur.IconSHA256, nil, true
+		case !errors.Is(err, blob.ErrCorrupt):
+			return EntryMetaView{}, err
+		}
 	}
 	if err := checkWrite(cur, had, w, keep); err != nil {
 		return EntryMetaView{}, err
@@ -327,7 +340,24 @@ func (s *Service) SetEntryMeta(ctx context.Context, a authz.Actor, tenant, packa
 			return EntryMetaView{}, err
 		}
 	}
-	if data != nil && (a.Kind == authz.ActorPublisher || a.Kind == authz.ActorDistributionAdmin) && s.MaxBytes > 0 {
+	if w.Admit != nil {
+		if err := w.Admit(); err != nil {
+			return EntryMetaView{}, err
+		}
+	}
+	if data == nil {
+		v, err := s.commitMeta(ctx, a, x, w, summary, keep, "", "", info, 0)
+		if !derived || !errors.Is(err, ErrIconChanged) {
+			return v, err
+		}
+		// the entry's icon changed meanwhile: the bytes the client sent are uploaded after all,
+		// rather than answering a conflict the client could not have caused
+		data = w.Icon.Data
+		if cur, _, err = s.Store.EntryMeta(ctx, x.t.ID, x.typ, x.src, name); err != nil {
+			return EntryMetaView{}, err
+		}
+	}
+	if (a.Kind == authz.ActorPublisher || a.Kind == authz.ActorDistributionAdmin) && s.MaxBytes > 0 {
 		// read outside any lock, as room's: writes at once may pass it together
 		_, used, err := s.Store.SourceUsage(ctx, x.t.ID, x.src)
 		if err != nil {
@@ -337,9 +367,6 @@ func (s *Service) SetEntryMeta(ctx context.Context, a authz.Actor, tenant, packa
 			return EntryMetaView{}, fmt.Errorf("%w (catalogue.max_bytes): the source's builds placed nowhere and its entries' icons "+
 				"hold as many bytes as it may", store.ErrCatalogueFull)
 		}
-	}
-	if data == nil {
-		return s.commitMeta(ctx, a, x, w, summary, keep, "", "", info, 0)
 	}
 	for attempt := 0; ; attempt++ {
 		sha, claim, err := s.Blob.PutIcon(ctx, x.t.StorageDomain, data)

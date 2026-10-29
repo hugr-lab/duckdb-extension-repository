@@ -13,14 +13,14 @@ import (
 
 // Entries' icons (spec 0036): icons/<sha256> in the tenant's storage domain, content-addressed, so
 // tenants sharing a domain share an object sent to both. A write follows spec 0016's protocol for
-// streams in tables of its own: the caller checks the image, PutIcon claims the hash (waiting, for a
-// while, while the collector deletes it) and uploads the object, always, and the row's transaction commits the
-// claim (store.Tx.CommitIcon) under the icon's lock. The collector marks the icons no entry's
-// metadata of the domain's tenants references, and deletes them a grace later.
+// streams in tables of its own: the caller checks the image, PutIcon claims the hash (waiting a
+// while if the collector is deleting it) and uploads the object, always, and the row's transaction
+// commits the claim (store.Tx.CommitIcon) under the icon's lock. The collector marks the icons no
+// entry's metadata of the domain's tenants references, and deletes them a grace later.
 
-// IconClaimWait bounds how long an icon's write waits on the collector deleting the same icon: an
+// iconClaimWait bounds how long an icon's write waits on the collector deleting the same icon: an
 // API request, it answers busy (ErrStreamBusy) rather than hang.
-var IconClaimWait = 10 * time.Second
+var iconClaimWait = 10 * time.Second
 
 // IconKey is the key of an icon: its SHA-256.
 func IconKey(sha256 string) string { return "icons/" + sha256 }
@@ -33,7 +33,7 @@ func (s *Service) PutIcon(ctx context.Context, domain string, data []byte) (sha2
 		return "", "", err
 	}
 	sha256, claimID = ContentHash(data), store.NewID()
-	if err := s.claim(ctx, s.st.Icons(), domain, sha256, claimID, IconClaimWait); err != nil {
+	if err := s.claim(ctx, s.st.Icons(), domain, sha256, claimID, iconClaimWait); err != nil {
 		return "", "", err
 	}
 	if err := d.Store.Put(ctx, IconKey(sha256), bytes.NewReader(data), int64(len(data))); err != nil {

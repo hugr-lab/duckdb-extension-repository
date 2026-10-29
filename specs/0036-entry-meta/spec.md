@@ -214,8 +214,9 @@ the catalogue (held, available or withdrawn). The `GET`s take the same checks. C
 key, as `PublicationLive` does (`internal/store/holds.go`). A write in flight when the key is
 revoked writes nothing.
 
-**Rate.** One tenant's metadata writes are bounded by the API's per-client rate and by its byte
-caps.
+**Rate.** One tenant's metadata writes are bounded by the API's per-client rate, by a rate per
+caller and tenant on each replica (one a second, bursts of ten, spent once a write passed its
+checks), and by its byte caps.
 
 #### Serving the icon
 
@@ -553,21 +554,31 @@ fixes followed in the same branch.
   hash is `Tombstone.Hash`; `ErrStreamBusy` and `ErrClaimLost` keep their names for both kinds.
   `Tx.CommitIcon` checks and removes a write's claim in the row's transaction. The collector's
   `Marked` counts both kinds; `Result.Icons`, `storage.gc`'s `icons` and `blob gc`'s `ICONS` count
-  the icons deleted. An icon's write waits on the collector at most `IconClaimWait` (10 seconds),
-  then answers busy (`503`, `Retry-After`).
+  the icons deleted. An icon's write waits on the collector at most 10 seconds (`iconClaimWait`),
+  then answers busy (`503`, `Retry-After`); the wait is a package setting, changed in tests only.
 - **The write.**
   - The API authorizes the caller (the service's own checks, `MayWriteEntryMeta`) before it reads
-    the body, and rates an actor's metadata writes at one a second, in bursts of ten (`429`
-    `rate-limited`), beside the per-client rate.
+    the body. It rates a caller's metadata writes per tenant, on each replica, at one a second in
+    bursts of ten (`429` `rate-limited`), beside the per-client rate; a write spends it through
+    `MetaWrite.Admit`, once its body is the signed one and it passed its checks before any upload,
+    so a captured request replayed (`stale`) or a refused write spends none.
   - Before anything is uploaded the write is checked against the entry (stale, a kept icon
-    changed), a publisher's key against the store, and the byte cap; an icon the entry has already
-    is not uploaded again. The cap counts the growth only: a write whose icon grows the source's
+    changed), a publisher's key against the store, and the byte cap. An icon the entry has already,
+    sent as bytes, skips the cap and is not uploaded again while its object is there and matches;
+    a missing or changed object is uploaded again (the write repairs it, so a row never stands
+    without its object). Such a kept icon is the server's, not the client's: if the entry's icon
+    changed before the transaction, the write uploads the bytes it was sent rather than answering
+    `409 conflict`. The cap counts the growth only: a write whose icon grows the source's
     bytes past `catalogue.max_bytes` is refused, a smaller icon or the same one passes even over the
     cap. The cap is read outside any lock, as `room()`'s.
   - The row's transaction, under the tenant's auth lock, checks again: the tenant active (but for a
     server administrator), a publisher and its key (`PublicationLive`), a distributor's publisher's
     name (`distributorMayNow`), a tenant administrator never on a distributor's entry; then stale
-    and a kept icon changed.
+    and a kept icon changed. A distribution admin is not held to `distributorMayNow`: it writes the
+    metadata of a name reserved since for another holder, as it withdraws its versions. A tenant
+    administrator's grants and a distribution admin's `distribute` are not checked again in the
+    transaction (a grant revoked meanwhile lets one write in flight through, as for every other
+    write of theirs); the cap is not either, a race bounded by the writes in flight.
   - A token's write that changes something moves `signed_at` to the later of the server's clock and
     the stored mark, to the microsecond, and clears `signed_body`; a token's write that changes
     nothing writes nothing. A signed write always advances the mark, no-ops included. A request
@@ -576,13 +587,14 @@ fixes followed in the same branch.
     A key revoked or a publisher removed in flight is `401`, as a publication's.
   - A stale write, and one that fails after its icon was uploaded (the object left to the
     collector), are `catalogue.meta` events with the outcome `refused` or `failed` and a `reason`
-    (the asynchronous writer adds `count`); a conflict, an invalid write and a full catalogue are
-    logged.
+    (the asynchronous writer adds `count`); a write that is both is recorded once, as failed. A
+    conflict, an invalid write and a full catalogue are logged.
 - **Reads.** "Catalogue readers" are spec 0033's: the tenant-wide administrators, the distribution
   admins (a distributor's entries) and a distributor's publisher (its own, signed), so the reads
   take the same checks as the writes, a tenant's administrators also reading a distributor's
   entries. A distributor's publisher reads no metadata of a name reserved since for another holder:
-  neither the entry's read nor the catalogue's list answers it.
+  neither the entry's read nor the catalogue's list answers it (the list reads the reservations of
+  its names in one query, `Store.ReservedAgainst`).
 - **The answers** carry `source`, `name`, `distributor` and `package_type` beside the spec's fields;
   `set_by` is shown as other answers show an actor (a server's or a distribution admin's actor by
   its kind to a caller who is not a server administrator). `Allow` now lists `PUT`.

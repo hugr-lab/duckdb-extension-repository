@@ -469,12 +469,15 @@ not publish answers `404`. A signed `GET` names an empty body, as `whoami` does.
   it. A request signed ahead of kista's clock (within the five minutes) and never delivered can still
   land within its window, over a token's write made before its `signed-at`.
 - **Checked first.** A write is checked against the entry (stale, a kept icon changed), the key, and
-  the byte cap before anything is uploaded; an icon the entry has already is not uploaded again. A
+  the byte cap before anything is uploaded; an icon the entry has already is not uploaded again
+  while its object is there and matches (a missing one is uploaded again: the write repairs it). A
   write that fails after its icon was uploaded leaves the object to the collector, and is recorded.
 - **The body** is at most 384 KiB (`413`, "the body is at most 384 KiB"); every other management
   route keeps 64 KiB. The caller is authorized before the body is read.
-- **The rate**: a caller's metadata writes are limited to one a second, in bursts of ten (`429`,
-  type `rate-limited`, with `Retry-After`), beside the API's per-client rate.
+- **The rate**: a caller's metadata writes in a tenant are limited, on each replica, to one a
+  second in bursts of ten (`429`, type `rate-limited`, with `Retry-After`), beside the API's
+  per-client rate. A write spends it only once its body is the signed one and it passed its checks:
+  a captured request replayed (`stale`) spends none.
 - **The byte cap**: the icon counts toward the source's `catalogue.max_bytes` with its builds placed
   nowhere; a write that grows it beyond the cap is `429`, type `catalogue-full`, with no
   `Retry-After` (a smaller icon, or the same one kept, passes).

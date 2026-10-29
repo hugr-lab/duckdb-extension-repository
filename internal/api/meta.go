@@ -96,12 +96,19 @@ func (h *Handler) metaErr(w http.ResponseWriter, r *http.Request, c caller, p pa
 			"status", status, "reason", publicRefusal(err))
 	}
 	var uploaded *release.UploadedError
-	if errors.As(err, &uploaded) {
-		record(audit.Failed, "uploaded, then "+uploadedReason(uploaded.Err))
+	failed := errors.As(err, &uploaded)
+	if failed {
+		record(audit.Failed, "uploaded, then "+uploadedReason(uploaded.Err)) // the one event of this write
 	}
 	switch {
+	case errors.Is(err, errMetaRate):
+		w.Header().Set("Retry-After", h.metaLimiter.retryAfter())
+		h.o.Log.Info("api: metadata writes over the actor's rate", "actor", c.logName(), "tenant", p["t"])
+		problem(w, http.StatusTooManyRequests, typeRateLimited, "too many metadata writes; try again")
 	case errors.Is(err, release.ErrStale):
-		record(audit.Refused, "stale")
+		if !failed {
+			record(audit.Refused, "stale")
+		}
 		problem(w, http.StatusConflict, typeStale, publicRefusal(err))
 	case errors.Is(err, release.ErrIconChanged):
 		logged(http.StatusConflict)
@@ -146,21 +153,19 @@ func (h *Handler) entryMeta(w http.ResponseWriter, r *http.Request, c caller, p 
 	h.answerMeta(w, r, c, v)
 }
 
-// metaWritesPerActor is the rate of an actor's metadata writes (a write per second, bursts of 10):
-// each may upload an icon, which the per-client rate alone would let one caller repeat.
+// metaWritesPerActor is the rate of an actor's metadata writes in a tenant, per replica (a write
+// per second, bursts of 10): each may upload an icon, which the per-client rate alone would let one
+// caller repeat.
 const metaWritesPerActor, metaWritesBurst = 1, 10
+
+// errMetaRate is a metadata write over its caller's rate (429 rate-limited).
+var errMetaRate = errors.New("api: too many metadata writes")
 
 func (h *Handler) setEntryMeta(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
 	// the caller is authorized before the body is read
 	if err := h.o.Releases.MayWriteEntryMeta(r.Context(), a, p["t"], reqType(r), p["source"], p["ext"]); err != nil {
 		h.metaErr(w, r, c, p, err)
-		return
-	}
-	if !h.metaLimiter.allow(a.String()) {
-		w.Header().Set("Retry-After", h.metaLimiter.retryAfter())
-		h.o.Log.Info("api: metadata writes over the actor's rate", "actor", c.logName(), "tenant", p["t"])
-		problem(w, http.StatusTooManyRequests, typeRateLimited, "too many metadata writes; try again")
 		return
 	}
 	var in struct {
@@ -193,6 +198,15 @@ func (h *Handler) setEntryMeta(w http.ResponseWriter, r *http.Request, c caller,
 	}
 	if c.signed != nil {
 		mw.SignedAt, mw.BodySHA256, mw.KeyID, mw.KeyFingerprint = c.signed.Statement.SignedAt, c.signed.Statement.SHA256, keyID(c), c.signed.Fingerprint
+	}
+	// the caller's rate is spent once the body is the signed one (read above) and the write passed its
+	// checks (stale among them): a captured request replayed, or a refused write, takes none. A
+	// server-wide caller (a distribution admin, a server administrator) has a rate per tenant.
+	mw.Admit = func() error {
+		if !h.metaLimiter.allow(p["t"] + " " + a.String()) {
+			return errMetaRate
+		}
+		return nil
 	}
 	v, err := h.o.Releases.SetEntryMeta(r.Context(), a, p["t"], reqType(r), p["source"], p["ext"], mw)
 	if err != nil {

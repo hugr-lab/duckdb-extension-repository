@@ -149,17 +149,30 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 		}
 		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, Revoked: rv, Withdrawn: wv,
 			PublisherID: ids[k[0]].PublisherID, Distributor: dists[k[0]].Distributor, Meta: metas[k]}
-		if a.Kind == authz.ActorPublisher && e.Meta.Name != "" {
-			// spec 0036: a distributor's publisher reads the metadata of a name it may publish only,
-			// as its entry's read answers it
-			if err := s.distributorMay(ctx, tenant, packageType, k[1], e.Distributor); errors.Is(err, authz.ErrDenied) {
-				e.Meta = store.EntryMeta{}
-			} else if err != nil {
-				return nil, err
-			}
-		}
 		byKey[k] = e
 		out = append(out, e)
+	}
+	if a.Kind == authz.ActorPublisher {
+		// spec 0036: a distributor's publisher reads the metadata of a name it may publish only, as
+		// its entry's read answers it; the reservations read at once
+		var names []string
+		dist := ""
+		for _, e := range out {
+			if e.Meta.Name != "" {
+				names, dist = append(names, e.Name), e.Distributor
+			}
+		}
+		if len(names) > 0 {
+			blocked, err := s.Store.ReservedAgainst(ctx, t.ID, packageType, dist, names)
+			if err != nil {
+				return nil, err
+			}
+			for _, e := range out {
+				if blocked[e.Name] {
+					e.Meta = store.EntryMeta{}
+				}
+			}
+		}
 	}
 	for _, r := range rules {
 		if e := byKey[[2]string{r.Source, r.Name}]; e != nil {
