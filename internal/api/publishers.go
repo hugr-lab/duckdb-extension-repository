@@ -124,7 +124,7 @@ func (h *Handler) getPublisher(w http.ResponseWriter, r *http.Request, c caller,
 			a, _ := c.actor()
 			keys, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], x.Name)
 			if errors.Is(err, authz.ErrDenied) && c.distribution {
-				keys, err = nil, nil // an unmarked publisher's keys are not a distribution admin's to read
+				keys, err = nil, nil // the tenant's own publisher's keys are not a distribution admin's to read (spec 0037)
 			}
 			if err != nil {
 				h.serviceErr(w, err, false)
@@ -147,9 +147,6 @@ func publisherLicenseKeys(on bool) handler {
 			return
 		}
 		keys, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], pb.Name)
-		if errors.Is(err, authz.ErrDenied) && c.distribution {
-			keys, err = nil, nil // unmarked: its keys are the tenant administrators' to read
-		}
 		if err != nil {
 			h.serviceErr(w, err, false)
 			return

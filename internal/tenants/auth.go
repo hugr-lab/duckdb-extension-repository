@@ -44,9 +44,9 @@ func (s *AuthAdmin) tenant(ctx context.Context, a authz.Actor, name string) (sto
 }
 
 // distributor reports whether an actor is a distribution admin (spec 0030): on a tenant it may
-// create publishers, mark fresh ones and manage the marked ones' keys and grants, and grant publish,
-// promote and admin on the names reserved in the tenant; each of those calls narrows it, and nothing
-// else admits it.
+// create publishers, manage the distributors' publishers (spec 0037: their marks, holds and keys,
+// never the tenant's own publishers'), and grant publish, promote and admin on the names reserved in
+// the tenant; each of those calls narrows it, and nothing else admits it.
 func distributor(a authz.Actor) bool { return a.Kind == authz.ActorDistributionAdmin }
 
 // tenantOrDistributor is tenant for a call a distribution admin may make too.
