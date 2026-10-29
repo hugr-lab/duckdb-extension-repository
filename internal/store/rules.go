@@ -198,6 +198,9 @@ AND EXISTS (SELECT 1 FROM purged_slots p JOIN channels c ON c.id = p.channel_id 
 // SetLanded marks a build landed in the catalogue without a release (spec 0033), kept from the
 // collector until a release takes it; one with a release is left as it is.
 func (t *Tx) SetLanded(ctx context.Context, buildID string) error {
+	if err := t.keepRoom(ctx, buildID); err != nil { // spec 0038: kept within the tenant's bytes limit
+		return err
+	}
 	_, err := t.exec(ctx, "UPDATE builds SET landed = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = builds.id)", true, buildID)
 	return err
 }

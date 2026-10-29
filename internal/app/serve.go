@@ -47,6 +47,13 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	defer st.Close()
 	st.Log = log
+	// spec 0038: the lengths of builds an older replica inserted during the rollout of migration
+	// 0047, for a server whose collector does not run (the collector fills them too)
+	if n, err := st.FillBodyLen(ctx, ""); err != nil {
+		log.Warn("serve: filling builds' body lengths", "error", err)
+	} else if n > 0 {
+		log.Info("serve: builds' body lengths filled", "builds", n)
+	}
 	svc, err := NewServices(cfg, st, authz.ServerAdmin{})
 	if err != nil {
 		return err

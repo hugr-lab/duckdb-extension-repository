@@ -37,6 +37,9 @@ func TestTenantLimitsAPI(t *testing.T) {
 		t.Fatalf("channels: %v", c)
 	}
 	tag := r.header.Get("ETag")
+	if tag == "" || call(200, "GET", T+"/limits", ta, "", "If-None-Match", tag).status != 200 {
+		t.Fatal("the ETag, and never a 304: what is used changes without it")
+	}
 	call(200, "GET", T+"/limits", sa, "")
 	call(404, "GET", T+"/limits", da, "")
 	call(404, "GET", T+"/limits", m.toks["no grants"], "")
@@ -75,10 +78,24 @@ func TestTenantLimitsAPI(t *testing.T) {
 		t.Fatalf("the first change's event: %v", data)
 	}
 	for _, bad := range []string{`{"channels": 1001}`, `{"channels": -1}`, `{"egress": 1}`, `{"bytes": "lots"}`, `{"channels": "1GiB"}`,
-		`{"channels": 1.5}`, `{"channels": true}`} {
+		`{"channels": 1.5}`, `{"channels": true}`, `{"channels": null}`, `{"bytes": "1.5GiB"}`} {
 		call(400, "PUT", T+"/limits", sa, bad)
 	}
-	call(200, "PUT", T+"/limits", sa, `{"bytes": "default"}`)
+	// default again: set round-trips, and the event says so
+	if r := call(200, "PUT", T+"/limits", sa, `{"bytes": "default"}`); limit(r, "bytes")["set"] != "default" || limit(r, "bytes")["limit"] != nil {
+		t.Fatalf("bytes back to the default: %s", r.body)
+	}
+	evs = call(200, "GET", T+"/events?kind=tenant.limits", sa, "").json(t)["events"].([]any)
+	if len(evs) != 3 {
+		t.Fatalf("the events: %v", evs)
+	}
+	last := evs[0].(map[string]any)
+	if evs[len(evs)-1].(map[string]any)["at"].(string) > last["at"].(string) {
+		last = evs[len(evs)-1].(map[string]any)
+	}
+	if b := last["data"].(map[string]any)["bytes"].(map[string]any); b["old"] != 1073741824.0 || b["new"] != "default" || b["limit"] != nil {
+		t.Fatalf("back to the default's event: %v", last)
+	}
 
 	// growth past a count: 429 tenant-limit, its limit named, no figures
 	call(201, "POST", T+"/channels", ta, `{"name":"qa","kind":"signed"}`)
@@ -95,12 +112,17 @@ func TestTenantLimitsAPI(t *testing.T) {
 	if r := call(200, "GET", T+"/limits", ta, ""); limit(r, "publishers")["used"] != 0.0 {
 		t.Fatalf("a distributor's publisher counted: %s", r.body)
 	}
+	if r := call(429, "POST", T+"/upstreams", ta,
+		`{"name":"core","kind":"duckdb-core","channel":"staging","platforms":["linux_amd64"],"extensions":[{"name":"tresor"}]}`); r.json(t)["limit"] != "upstreams" {
+		t.Fatalf("an upstream past 0: %s", r.body)
+	}
 
 	// a suspended tenant's limits: a server administrator's
 	if r := m.call(t, "POST", T+"/suspend", sa, "", "If-Match", "*"); r.status >= 300 {
 		t.Fatalf("suspend: %d %s", r.status, r.body)
 	}
 	call(200, "GET", T+"/limits", sa, "")
+	call(404, "GET", T+"/limits", ta, "") // to its administrators a suspended tenant is unknown
 	call(200, "PUT", T+"/limits", sa, `{"publishers": 5}`)
 
 	// created with its limits, recorded beside its creation

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -32,7 +31,14 @@ func (h *Handler) tenantLimits(w http.ResponseWriter, r *http.Request, c caller,
 		h.serviceErr(w, err, false)
 		return
 	}
-	reply(w, r, http.StatusOK, limitsOut(l), tenants.LimitsTag(t.Limits), noStore)
+	limitsReply(w, r, t, l)
+}
+
+// limitsReply answers a tenant's limits with the ETag of its stored values, for a PUT's If-Match;
+// never 304 to If-None-Match, since what is used and in force change without them.
+func limitsReply(w http.ResponseWriter, r *http.Request, t store.Tenant, l tenants.Limits) {
+	w.Header().Set("ETag", tenants.LimitsTag(t.Limits))
+	reply(w, r, http.StatusOK, limitsOut(l), "-", noStore)
 }
 
 // setTenantLimits sets the limits the body names, the others unchanged; If-Match, when sent, is the
@@ -60,7 +66,7 @@ func (h *Handler) setTenantLimits(w http.ResponseWriter, r *http.Request, c call
 		h.serviceErr(w, err, false)
 		return
 	}
-	reply(w, r, http.StatusOK, limitsOut(l), tenants.LimitsTag(t.Limits), noStore)
+	limitsReply(w, r, t, l)
 }
 
 // parseLimits reads a limits object: each value a number, "unlimited", "default", or for bytes a
@@ -71,18 +77,11 @@ func parseLimits(in map[string]json.RawMessage) (map[string]int64, error) {
 		if !slices.Contains(store.LimitNames, n) {
 			return nil, fmt.Errorf("%w: unknown limit %q (%s)", store.ErrInvalid, n, strings.Join(store.LimitNames, ", "))
 		}
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			var num json.Number
-			d := json.NewDecoder(strings.NewReader(string(raw)))
-			d.UseNumber()
-			if err := d.Decode(&num); err != nil {
+		s := string(raw) // a number as written; null, true or a fraction is no limit's value
+		if len(raw) > 0 && raw[0] == '"' {
+			if err := json.Unmarshal(raw, &s); err != nil {
 				return nil, fmt.Errorf("%w: %s is a number or a string", store.ErrInvalid, n)
 			}
-			if _, err := strconv.ParseInt(num.String(), 10, 64); err != nil {
-				return nil, fmt.Errorf("%w: %s is a whole number", store.ErrInvalid, n)
-			}
-			s = num.String()
 		}
 		v, err := store.ParseLimit(n, s)
 		if err != nil {

@@ -3208,18 +3208,24 @@ func (a *adminCmd) tenantLimits(ctx context.Context, fs *flag.FlagSet, tenant st
 	if bad != nil {
 		return bad
 	}
-	var l tenants.Limits
-	var err error
-	if len(set) == 0 {
-		_, l, err = a.svc.Tenants.TenantLimits(ctx, a.actor, tenant)
-	} else {
-		_, l, err = a.svc.Tenants.SetTenantLimits(ctx, a.actor, tenant, set, "")
-	}
+	_, l, err := a.svc.Tenants.TenantLimits(ctx, a.actor, tenant)
 	if err != nil {
 		return err
 	}
 	if len(set) > 0 {
-		a.logf("tenant limits %s", tenant)
+		before := l.Set
+		if _, l, err = a.svc.Tenants.SetTenantLimits(ctx, a.actor, tenant, set, ""); err != nil {
+			return err
+		}
+		var changed []string // only what changed
+		for _, n := range store.LimitNames {
+			if v := l.Set.Get(n); v != before.Get(n) {
+				changed = append(changed, fmt.Sprintf("%s %v", n, tenants.LimitValue(v)))
+			}
+		}
+		if len(changed) > 0 {
+			a.logf("tenant limits %s %s", tenant, strings.Join(changed, ", "))
+		}
 	}
 	a.table("LIMIT\tSET\tIN FORCE\tUSED", func(w io.Writer) {
 		for _, n := range store.LimitNames {

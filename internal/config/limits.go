@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -54,11 +55,16 @@ const limitsRule = "each is unlimited, 0 (none), a number up to its ceiling (cha
 
 func validateLimits(bad func(string, ...any), c Config) {
 	if _, err := c.Limits.Named(); err != nil {
-		bad("limits: " + limitsRule)
+		bad("limits: %s (%s)", limitError(err), limitsRule)
 	}
 	if l := c.Bootstrap.Tenant.Limits; l != nil {
 		if _, err := l.Named(); err != nil {
-			bad("bootstrap.tenant.limits: " + limitsRule)
+			bad("bootstrap.tenant.limits: %s (%s)", limitError(err), limitsRule)
 		}
 	}
+}
+
+// limitError is a limit's refusal without the store's prefix: it names the limit, never the value.
+func limitError(err error) string {
+	return strings.TrimPrefix(err.Error(), store.ErrInvalid.Error()+": ")
 }
