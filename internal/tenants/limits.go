@@ -78,6 +78,9 @@ func (s *Service) setLimits(ctx context.Context, tx *store.Tx, a authz.Actor, t 
 	old := t.Limits
 	changed := map[string]int64{}
 	for n, v := range set {
+		if err := store.ValidLimit(n, v); err != nil {
+			return err
+		}
 		if old.Get(n) != v {
 			changed[n] = v
 		}
