@@ -200,9 +200,12 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   a key a live release declares. A distributor's entry is its licence manager's and the server
   administrators' to write (spec 0037): a tenant administrator, or a stolen tenant administrator's
   token, can no longer remove, replace or make public a distributor's licence. A licence older (by
-  `iat`) than one the tenant holds from the same issuer for the same holder is refused on every
-  path, which stops replays (a remote restored from a backup, a bundle imported again) but not a
-  writer who may remove the newer licence first; short licence lifetimes remain the real control.
+  `iat`) than one the tenant holds from the same issuer for the same holder, verified by the same
+  key (so a licence a tenant administrator signs with a key of their own never blocks the issuer's),
+  is refused on every path, and a copy of a distributor's licence is not made public elsewhere by a
+  tenant administrator. The rule stops replays (a remote restored from a backup, a bundle imported
+  again) but not a writer who may remove the newer licence first; short licence lifetimes remain the
+  real control.
 - **Distribution admins** (`auth.server_distribution_admins`, from the configuration file only)
   provision a distributor's part of every tenant. A leaked distribution admin's token can reserve
   names in a tenant (narrowing its wide grants; a server administrator releases them), create

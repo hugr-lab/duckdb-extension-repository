@@ -452,11 +452,13 @@ live builds declaring the key, or its newest available version in the catalogue)
 refused (`400`, `kid_untrusted`, naming the entry). In a tenant with
 an [expected holder](#the-expected-holder), an import of another holder's licence answers `400`
 with `holder_mismatch` in its detail, naming the expected and the given holder. A licence older (by
-`iat`) than one the tenant holds of the same name from the same issuer for the same holder, in any
-entry, is refused (`400`, "the licence is refused (older): …"), checked after the key and the
+`iat`) than one the tenant holds of the same name from the same issuer for the same holder, verified
+by the same key, in any entry, is refused (`400`, "the licence is refused (older): …"), checked after the key and the
 holder and before the stored licence is compared, so not `409` (spec 0037,
-[Licensing](licensing.md#older-licences-are-refused)); the relay and bundles refuse it with the rule
-`older` in their results.
+[Licensing](licensing.md#older-licences-are-refused)), recorded as a `license.refused` event; the
+relay and bundles refuse it with the rule `older` in their results. Making public a copy of a
+distributor's licence (its issuer and id) in another entry is refused but to a server administrator:
+`404` `distributors-entry`, "a copy of a distributor's licence (…)".
 `GET …/license-keys` answers `{"names": [{"name", "keys": [{"kid", "sources": [{"kind":
 "publisher"|"upstream", "name", "distributor", "builds": n}]}]}]}`: exactly what an import's key
 check would accept now, per entry (`sources`: the entries the key is live for, `distributor` for a

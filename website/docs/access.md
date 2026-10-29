@@ -328,7 +328,8 @@ active tenant a distribution admin may:
   extension group, nor for a whole issuer (a distributor's own publisher's builds are its
   [source](upstreams.md#a-names-source-in-a-channel); a group's publications, which promotions out
   of a channel need, are the tenant's, and land only where the name has no other source); remove the
-  grants a distribution admin made.
+  grants a distribution admin made, of those kinds (never a grant of the tenant's own publisher's,
+  spec 0037).
 - create a distributor's publisher, marked from its creation (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)),
   and for a distributor's publisher only: rename its distributor, set and clear its licence-key
   mark, manage its keys (with `purge_held`), set its hold, purge its builds placed nowhere,

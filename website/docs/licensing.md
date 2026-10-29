@@ -237,22 +237,39 @@ result lists each target's own counts (`targets`, by upstream)
 ### Older licences are refused
 
 kista refuses to store a licence when the tenant holds another of the same package (type and name),
-from the same issuer (`iss`) for the same holder (its id), issued later (`iat`), in **any** entry
-(spec 0037): the rule `older`. An import, a replacement with `If-Match` included, answers `400`
-"the licence is refused (older): …", checked after the key and holder checks and before the stored
-licence is compared (so not `409`); the relay and a bundle refuse it with the rule `older` in their
-results, and the stored licence stays.
+from the same issuer (`iss`) for the same holder (its id), **verified by the same key**, issued later
+(`iat`), in **any** entry (spec 0037): the rule `older`. An import, a replacement with `If-Match`
+included, answers `400` "the licence is refused (older): …", naming the entry that holds the later
+licence, checked after the key and holder checks and before the stored licence is compared (so not
+`409`), and recorded as a `license.refused` event; the relay and a bundle refuse it with the rule
+`older` in their results, and the stored licence stays.
 
+- **The same key**: a stored licence's key is the fingerprint of the key material that verified it.
+  A licence signed with another key never blocks the issuer's, whatever its claims say: a tenant
+  administrator who signs a licence with a key of their own (declared by a build of an upstream of
+  theirs) and the issuer's `iss`, holder and a later `iat` cannot freeze the issuer's licences. So
+  after the issuer rotates its key, its older licences signed with the previous key are not compared
+  with the new key's.
 - **An equal `iat` is not older**: the same file again is taken (the console replaces a licence with
   the same file).
 - **Other issuers are not compared**, nor other holders.
-- **A stored licence that no longer counts blocks nothing**: once its grace has ended, or while its
-  key is dead (not live in its entry, or refused by the server: a licence signed with a key later
-  compromised and refused cannot block newer ones).
+- **A stored licence stops counting** once its grace has ended, or while the server refuses its key
+  (`licenses.refuse_keys`: a licence signed with a key later compromised cannot block newer ones).
+  A key no longer live in its entry still counts: a tenant administrator could make it so (removing
+  the distributor's publisher, blocking its bodies) to import an older licence elsewhere.
 - **Going back on purpose**: remove the newer licence, then import the older one; both acts are
   audited.
 - **Issuers must make `iat` increase for each holder.** Enterest issues `iat = max(now, last + 1)`.
   A third-party issuer that issued two licences in the wrong order sees the earlier-dated one refused.
+- **Two delivery paths of one licence** (an issuer's licence for a holder reaching a tenant both by
+  an import and by a relay, or by two upstreams): only the path that brings the newest keeps
+  renewing; a path that lags behind is refused `older` until it catches up, and its entry keeps the
+  licence it holds.
+
+A copy of a distributor's licence (the same licence, its issuer and id, imported into another entry
+where its key is live) is not made public there but by a server administrator: `404`
+`distributors-entry`, "a copy of a distributor's licence (…): its licence manager or a server
+administrator makes it public".
 
 It protects what kista serves against accidents (a remote restored from a backup, a bundle imported
 again, a stale token) and against tenant administrators who are not server administrators on a
