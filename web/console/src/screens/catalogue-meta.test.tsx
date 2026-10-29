@@ -37,6 +37,7 @@ describe('entry metadata', () => {
     expect(container.querySelector('b')).toBeNull()
     expect(container.querySelector('a')).toBeNull()
     expect(container.textContent).toContain('<b>bold</b>')
+    expect(container.querySelector('bdi')).not.toBeNull() // its direction isolated
   })
   it('saves a changed summary with the icon kept by its hash, and a removed icon as none', async () => {
     const onSave = vi.fn()
