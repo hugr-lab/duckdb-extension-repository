@@ -27,6 +27,13 @@ type Service struct {
 // which must be configured and never changes, with the holder its licences must name (spec 0028;
 // empty: none).
 func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, displayName, domain, holderID string) (store.Tenant, error) {
+	return s.CreateTenantWithLimits(ctx, a, name, displayName, domain, holderID, nil)
+}
+
+// CreateTenantWithLimits is CreateTenant setting the tenant's own values of the limits named in
+// limits in the creating transaction (spec 0038: recorded as tenant.limits beside tenant.create).
+func (s *Service) CreateTenantWithLimits(ctx context.Context, a authz.Actor, name, displayName, domain, holderID string,
+	limits map[string]int64) (store.Tenant, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server); err != nil {
 		return store.Tenant{}, err
 	}
@@ -45,7 +52,10 @@ func (s *Service) CreateTenant(ctx context.Context, a authz.Actor, name, display
 		if t.HolderID != "" {
 			fields["holder_id"] = t.HolderID
 		}
-		return tx.Event(ctx, "", a.String(), "tenant.create", "tenant:"+t.Name, fields)
+		if err := tx.Event(ctx, "", a.String(), "tenant.create", "tenant:"+t.Name, fields); err != nil {
+			return err
+		}
+		return s.setLimits(ctx, tx, a, &t, limits, "") // beside tenant.create, in the server's events
 	})
 	if errors.Is(err, store.ErrExists) {
 		// spec 0019: a tombstone keeps its name for good
@@ -349,11 +359,13 @@ func (s *Service) CreateChannel(ctx context.Context, a authz.Actor, tenant, name
 		return store.Channel{}, fmt.Errorf("%w: %v", store.ErrInvalid, err)
 	}
 	c := store.Channel{Name: name, Kind: kind, PackageType: packageType}
-	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error {
-		t, err := tx.GetTenant(ctx, tenant)
-		if err != nil {
-			return err
-		}
+	t, err := s.Store.GetTenant(ctx, tenant)
+	if err != nil {
+		return c, err
+	}
+	// spec 0038: an update lock on the tenant's row orders its channel creates against its channels
+	// limit (and a change of its limits)
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, nil, func(tx *store.Tx) error {
 		c.TenantID = t.ID
 		if err := tx.CreateChannel(ctx, &c); err != nil {
 			return err

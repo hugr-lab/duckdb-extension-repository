@@ -55,6 +55,11 @@ func (t *Tx) InsertPublisher(ctx context.Context, p *Publisher) error {
 	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM publishers WHERE tenant_id = ? AND "+kind, p.TenantID).Scan(&n); err != nil {
 		return err
 	}
+	if p.Distributor == "" { // spec 0038: the tenant's own publishers' limit first; distributors' are outside it
+		if err := t.underLimit(ctx, p.TenantID, LimitPublishers, n); err != nil {
+			return err
+		}
+	}
 	if n >= most {
 		return fmt.Errorf("%w: a tenant holds at most %d %s", ErrInvalid, most, what)
 	}

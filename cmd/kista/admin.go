@@ -54,6 +54,10 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   tenant show <name>                              its record; a deleting one's progress and keys to retire
   tenant suspend|resume <name>
   tenant holder <name> <id>|-clear                set or clear the holder its licences must name (the licences' sub)
+  tenant limits <name> [-bytes …] [-channels …] [-upstreams …] [-publishers …]
+                                                  the tenant's limits (spec 0038): what is set, in force and used;
+                                                  each flag given sets one: a number (bytes: 50GiB), 0 (none),
+                                                  unlimited, or default (the configuration's limits:)
   tenant distributor-hold <name> [<duration>]     the minimum hold for distributors' publishers (spec 0037): their
                                                   entries are held at least this long (24h, 2d; 0 for none;
                                                   one day by default); without a duration, printed
@@ -488,6 +492,10 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 	states := fs.String("state", "", "")
 	holder := fs.String("holder-id", "", "")
 	clearHolder := fs.Bool("clear", false, "")
+	limits := map[string]*string{} // spec 0038
+	for _, n := range store.LimitNames {
+		limits[n] = fs.String(n, "", "")
+	}
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
@@ -517,6 +525,8 @@ func (a *adminCmd) tenant(ctx context.Context, sub string, args []string) error 
 		} else {
 			a.logf("tenant holder %s %q", t.Name, id)
 		}
+	case sub == "limits" && len(pos) == 1:
+		return a.tenantLimits(ctx, fs, pos[0], limits)
 	case sub == "distributor-hold" && (len(pos) == 1 || len(pos) == 2):
 		if len(pos) == 1 {
 			d, err := a.svc.Auth.DistributorHold(ctx, a.actor, pos[0])
@@ -3174,6 +3184,56 @@ func (a *adminCmd) channelFollow(ctx context.Context, sub string, pos []string) 
 			}
 			slices.Sort(skips)
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", v.Source, v.SetBy, ts(v.SetAt), dash(strings.Join(skips, "; ")))
+		}
+	})
+	return nil
+}
+
+// tenantLimits prints a tenant's limits, or sets those whose flags are given (spec 0038): a flag left
+// out changes nothing, an empty one is refused.
+func (a *adminCmd) tenantLimits(ctx context.Context, fs *flag.FlagSet, tenant string, values map[string]*string) error {
+	set := map[string]int64{}
+	var bad error
+	fs.Visit(func(f *flag.Flag) {
+		v, ok := values[f.Name]
+		if !ok || bad != nil {
+			return
+		}
+		if *v == "" {
+			bad = fmt.Errorf("%w: tenant limits: -%s is empty: give a number, unlimited or default", errUsage, f.Name)
+			return
+		}
+		set[f.Name], bad = store.ParseLimit(f.Name, *v)
+	})
+	if bad != nil {
+		return bad
+	}
+	_, l, err := a.svc.Tenants.TenantLimits(ctx, a.actor, tenant)
+	if err != nil {
+		return err
+	}
+	if len(set) > 0 {
+		before := l.Set
+		if _, l, err = a.svc.Tenants.SetTenantLimits(ctx, a.actor, tenant, set, ""); err != nil {
+			return err
+		}
+		var changed []string // only what changed
+		for _, n := range store.LimitNames {
+			if v := l.Set.Get(n); v != before.Get(n) {
+				changed = append(changed, fmt.Sprintf("%s %v", n, tenants.LimitValue(v)))
+			}
+		}
+		if len(changed) > 0 {
+			a.logf("tenant limits %s %s", tenant, strings.Join(changed, ", "))
+		}
+	}
+	a.table("LIMIT\tSET\tIN FORCE\tUSED", func(w io.Writer) {
+		for _, n := range store.LimitNames {
+			in := tenants.LimitInForce(l.Limit.Get(n))
+			if in == nil {
+				in = "unlimited"
+			}
+			fmt.Fprintf(w, "%s\t%v\t%v\t%d\n", n, tenants.LimitValue(l.Set.Get(n)), in, l.Used.Get(n))
 		}
 	})
 	return nil

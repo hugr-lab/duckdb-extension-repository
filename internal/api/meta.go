@@ -116,6 +116,9 @@ func (h *Handler) metaErr(w http.ResponseWriter, r *http.Request, c caller, p pa
 	case errors.Is(err, store.ErrCatalogueFull):
 		logged(http.StatusTooManyRequests)
 		problem(w, http.StatusTooManyRequests, typeCatalogueFull, publicRefusal(err))
+	case errors.Is(err, store.ErrTenantLimit): // spec 0038
+		logged(http.StatusTooManyRequests)
+		limitProblem(w, err)
 	case errors.Is(err, store.ErrSourceGone):
 		// the publisher, or the key that signed the request, was removed while the write was in
 		// flight: it fails as a revoked key's request does (spec 0033 phase A2)

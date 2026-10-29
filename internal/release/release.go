@@ -350,7 +350,11 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel string
 		// publication is always checked)
 		if it.b.Checked || len(it.keySources) > 0 {
 			bb := it.b
-			if err := s.Store.InTx(ctx, buildLock(bb), func(tx *store.Tx) error {
+			keys, err := s.buildLocks(ctx, bb)
+			if err != nil {
+				return store.Release{}, false, err
+			}
+			if err := s.Store.InTxLocks(ctx, keys, func(tx *store.Tx) error {
 				if it.publication {
 					if err := tx.PublicationLive(ctx, it.source, it.keyID); err != nil {
 						return err
@@ -433,6 +437,31 @@ type item struct {
 	// the channel's hold too. early places a held entry (a channel administrator's, audited); insert
 	// refuses a held entry under the channel lock otherwise.
 	auto, early bool
+}
+
+// recheckReserved runs an item's recheck under insert's locks: a name an upstream of the tenant
+// provides, or one the server reserved since the caller was authorized (spec 0030), takes a grant
+// that names it.
+func recheckReserved(ctx context.Context, tx *store.Tx, it item) error {
+	if it.recheck == nil {
+		return nil
+	}
+	b := it.b
+	provided, err := tx.UpstreamProvides(ctx, b.TenantID, b.PackageType, b.Name)
+	if err != nil {
+		return err
+	}
+	if !provided {
+		k, err := tx.ReservedKind(ctx, b.PackageType, b.Name)
+		if err != nil {
+			return err
+		}
+		provided = k != ""
+	}
+	if provided {
+		return it.recheck(ctx)
+	}
+	return nil
 }
 
 // reservedCheck is an item's recheck: the verb on the resource as a reserved name.
@@ -633,6 +662,9 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 		if !passthrough {
 			locks = []string{store.TenantUpstreamLock(ch.TenantID), lockKey(channelID)}
 		}
+		// spec 0038: the tenant's bytes lock is taken by the first release that keeps a build, after
+		// every item's recheck (which may take the tenant's auth lock on another connection: one held
+		// by an intake waiting for the bytes lock)
 		err := s.Store.InTxLocks(ctx, locks, func(tx *store.Tx) error {
 			out, made, existing, need = nil, nil, 0, nil
 			bump := false    // a cleared source set again by its release (spec 0031)
@@ -643,6 +675,12 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 			}
 			for _, it := range items { // spec 0034: a channel takes builds of its type only
 				if err := sameType(c, it.b); err != nil {
+					return err
+				}
+			}
+			// every item's recheck first, before any release takes the tenant's bytes lock (spec 0038)
+			for _, it := range items {
+				if err := recheckReserved(ctx, tx, it); err != nil {
 					return err
 				}
 			}
@@ -701,26 +739,6 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					}
 				}
 				upstream := it.origin == store.OriginUpstream
-				if it.recheck != nil {
-					// a name an upstream of the tenant provides, or one the server reserved since the
-					// caller was authorized (spec 0030), takes a grant that names it
-					provided, err := tx.UpstreamProvides(ctx, b.TenantID, b.PackageType, b.Name)
-					if err != nil {
-						return err
-					}
-					if !provided {
-						k, err := tx.ReservedKind(ctx, b.PackageType, b.Name)
-						if err != nil {
-							return err
-						}
-						provided = k != ""
-					}
-					if provided {
-						if err := it.recheck(ctx); err != nil {
-							return err
-						}
-					}
-				}
 				// spec 0033 phase A2: a publication's publisher and key, read with shared row locks a removal
 				// waits for; after the recheck, which may read the tenant's auth on another connection
 				// (GetTenantAuth's locked read), so no removal waits on a row this transaction holds then
@@ -1143,7 +1161,11 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 		for try := 0; ; try++ {
 			bb := it.b
 			bb.Visibility, bb.Provenance = it.visibility, it.provenance // spec 0033: as its arrival made its release
-			err := s.Store.InTx(ctx, buildLock(bb), func(tx *store.Tx) error {
+			keys, err := s.buildLocks(ctx, bb)
+			if err != nil {
+				return nil, false, err
+			}
+			err = s.Store.InTxLocks(ctx, keys, func(tx *store.Tx) error {
 				if err := tx.PublicationLive(ctx, bb.Source, bb.PublisherKeyID); err != nil {
 					return err
 				}
@@ -1168,15 +1190,18 @@ func (s *Service) commitAndRelease(ctx context.Context, sp *blob.Spool, it *item
 	}
 }
 
-// buildLock is the lock a build's transaction takes: a publisher's publication takes the tenant's
+// buildLocks are the locks a build's transaction takes: a publisher's publication takes the tenant's
 // auth lock, which removing its key or the publisher takes too, so an upload in flight when they are
 // removed is refused (store.PublicationLive) instead of landing after the removal's purge of held
-// entries (spec 0033 phase A2); other arrivals take none.
-func buildLock(b store.Build) string {
+// entries (spec 0033 phase A2); and last, while the tenant has a bytes limit, its bytes lock (spec
+// 0038), which orders its intakes of new bodies.
+func (s *Service) buildLocks(ctx context.Context, b store.Build) ([]string, error) {
+	var keys []string
 	if strings.HasPrefix(b.Source, store.SourcePublisherPrefix) {
-		return store.PublisherAuthLock(b.TenantID)
+		keys = append(keys, store.PublisherAuthLock(b.TenantID))
 	}
-	return ""
+	bytes, err := s.Store.BytesLocks(ctx, b.TenantID)
+	return append(keys, bytes...), err
 }
 
 // land commits a spooled body and finds or inserts its Build, with the keys a trusted intake
@@ -1192,7 +1217,11 @@ func (s *Service) land(ctx context.Context, sp *blob.Spool, it *item, event func
 	for try := 0; ; try++ {
 		bb := it.b
 		bb.Visibility, bb.Provenance = it.visibility, it.provenance
-		err := s.Store.InTx(ctx, buildLock(bb), func(tx *store.Tx) error {
+		keys, err := s.buildLocks(ctx, bb)
+		if err != nil {
+			return err
+		}
+		err = s.Store.InTxLocks(ctx, keys, func(tx *store.Tx) error {
 			if err := tx.PublicationLive(ctx, bb.Source, bb.PublisherKeyID); err != nil {
 				return err
 			}

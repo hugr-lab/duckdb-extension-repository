@@ -198,6 +198,9 @@ AND EXISTS (SELECT 1 FROM purged_slots p JOIN channels c ON c.id = p.channel_id 
 // SetLanded marks a build landed in the catalogue without a release (spec 0033), kept from the
 // collector until a release takes it; one with a release is left as it is.
 func (t *Tx) SetLanded(ctx context.Context, buildID string) error {
+	if err := t.keepRoom(ctx, buildID); err != nil { // spec 0038: kept within the tenant's bytes limit
+		return err
+	}
 	_, err := t.exec(ctx, "UPDATE builds SET landed = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = builds.id)", true, buildID)
 	return err
 }
@@ -329,7 +332,11 @@ AND (b.withdrawn_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM releases r WHERE r.
 	if err != nil {
 		return 0, 0, err
 	}
-	err = s.db.QueryRowContext(ctx, s.d.rebind(`SELECT SUM(icon_bytes) FROM entry_meta WHERE tenant_id = ? AND source = ?`), tenantID,
+	sum := "SUM(icon_bytes)"
+	if s.d.Name == "sqlserver" {
+		sum = "SUM(CAST(icon_bytes AS bigint))" // spec 0038: an int sum overflows at 2 GiB
+	}
+	err = s.db.QueryRowContext(ctx, s.d.rebind(`SELECT `+sum+` FROM entry_meta WHERE tenant_id = ? AND source = ?`), tenantID,
 		source).Scan(&icons)
 	return entries, n.Int64 + icons.Int64, err
 }

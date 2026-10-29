@@ -172,6 +172,7 @@ const (
 	typeChunksBusy    = "chunks-busy"    // too many chunks of one bundle upload in flight
 	typeCatalogueFull = "catalogue-full" // a source's catalogue full: no Retry-After, it clears as its builds go
 	typeIssuerBusy    = "issuer-busy"    // an issuer being added to the tenant
+	typeTenantLimit   = "tenant-limit"   // a tenant limit reached (spec 0038): no Retry-After, it clears as room is freed
 	// typeSource: another source holds the name in the channel (spec 0031)
 	typeSource = "source"
 	// typeHeld: a held entry, or a publisher with a hold on a channel's route (spec 0033)
@@ -200,7 +201,7 @@ var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "
 	typeRateLimited: "Rate Limited", typeUploadSlots: "Upload Slots Taken", typeIngestBusy: "Ingest Busy", typeChunksBusy: "Chunks Busy",
 	typeCatalogueFull: "Catalogue Full", typeIssuerBusy: "Issuer Busy", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
 	typeHeld: "Held", typeWithdrawn: "Withdrawn", typeDistributorsEntry: "A Distributor's Entry", typeStale: "Stale",
-	typePublisherTaken: "Publisher Name Taken", typeNotComputed: "Not Computed Yet"}
+	typePublisherTaken: "Publisher Name Taken", typeNotComputed: "Not Computed Yet", typeTenantLimit: "Tenant Limit Reached"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
 func problem(w http.ResponseWriter, status int, typ, detail string) {
@@ -210,7 +211,16 @@ func problem(w http.ResponseWriter, status int, typ, detail string) {
 // writeProblem writes a problem; its detail only when shown is set (a 401 and a 404 carry none,
 // except a signed request's 401, which names the key and the clock: spec 0023).
 func writeProblem(w http.ResponseWriter, status int, typ, detail string, shown bool) {
+	writeProblemWith(w, status, typ, detail, shown, nil)
+}
+
+// writeProblemWith is writeProblem with members of the problem's type (spec 0038: tenant-limit's
+// limit).
+func writeProblemWith(w http.ResponseWriter, status int, typ, detail string, shown bool, members map[string]any) {
 	body := map[string]any{"type": "urn:kista:problem:" + typ, "title": titles[typ], "status": status}
+	for k, v := range members {
+		body[k] = v
+	}
 	if detail != "" && shown {
 		body["detail"] = detail
 	}
@@ -634,6 +644,9 @@ func init() {
 			handle: (*Handler).getTenant},
 			http.MethodDelete: {access: serverAdmin, manage: true, closed: true, handle: (*Handler).deleteTenant}}},
 		{"tenants/{t}/suspend", map[string]rule{http.MethodPost: m(serverAdmin, (*Handler).suspend)}},
+		// spec 0038: a tenant's limits, which a server administrator sets
+		{"tenants/{t}/limits", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).tenantLimits),
+			http.MethodPut: mb(serverAdmin, (*Handler).setTenantLimits)}},
 		// spec 0028: the holder the tenant's licences must name
 		{"tenants/{t}/holder", map[string]rule{http.MethodPut: mb(serverAdmin, (*Handler).setTenantHolder),
 			http.MethodDelete: m(serverAdmin, (*Handler).clearTenantHolder)}},

@@ -406,10 +406,13 @@ type Store struct {
 	// Log takes what the store reports without failing a call (spec 0035 phase 2: a licence warning
 	// not written); nil: slog's default.
 	Log *slog.Logger
+	// LimitDefaults are the server's default limits of a tenant without its own values (spec 0038:
+	// the configuration's limits); never LimitDefault. Unlimited unless set.
+	LimitDefaults Limits
 }
 
 func newStore(db *sql.DB, d *Dialect) *Store {
-	return &Store{db: db, d: d, LockTimeout: 10 * time.Second,
+	return &Store{db: db, d: d, LockTimeout: 10 * time.Second, LimitDefaults: UnlimitedLimits(),
 		Now: func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }}
 }
 

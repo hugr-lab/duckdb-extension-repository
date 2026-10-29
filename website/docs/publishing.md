@@ -191,6 +191,11 @@ A client that sends `Expect: 100-continue` gets its `401` or `404` before sendin
 | `…/ingest-busy` | every ingest slot is taken | `5` | retries |
 | `…/rate-limited` | the per-client rate limit | the limiter's | retries |
 | `…/catalogue-full` | the source's catalogue holds as many entries or bytes as it may (`catalogue.max_entries`, `max_bytes`) | none | stops: it clears only when the source's builds are placed, purged or trimmed |
+| `…/tenant-limit` | the tenant's [limit](administration/tenants-and-channels.md#limits) on its own bytes is reached (spec 0038; the problem's `limit` names it, without figures) | none | stops: it clears only when the tenant frees room or a server administrator raises the limit |
+
+A publication's body is read before the tenant's bytes are checked (it carries no digest before
+its body), so a full tenant costs one upload per refused publication; the same body again is no
+growth and always passes. A distributor's publisher is outside the tenant's limits.
 
 **Limits.** The upload must arrive at no less than `serve.min_rate` (default 16 KiB/s) and within
 `Content-Length / min_rate` plus a minute. At most `publish.max_per_principal` uploads run at once
@@ -488,7 +493,9 @@ not publish answers `404`. A signed `GET` names an empty body, as `whoami` does.
   a captured request replayed (`stale`) spends none.
 - **The byte cap**: the icon counts toward the source's `catalogue.max_bytes` with its builds placed
   nowhere; a write that grows it beyond the cap is `429`, type `catalogue-full`, with no
-  `Retry-After` (a smaller icon, or the same one kept, passes).
+  `Retry-After` (a smaller icon, or the same one kept, passes). An icon of the tenant's own source
+  also counts toward the tenant's [bytes limit](administration/tenants-and-channels.md#limits)
+  (spec 0038), for every writer: beyond it, `429` typed `tenant-limit`.
 - **Busy**: a write of an icon the collector is deleting waits up to ten seconds, then answers `503`
   with `Retry-After`.
 - A key revoked, or a publisher removed, while the write is in flight writes nothing (`401`).
@@ -738,7 +745,7 @@ publish:
 publishes from GitHub Actions with the fork's `kista_publish.py`, which does the above for every
 build of a distribution: it reads each build's version and platform from its footer, skips wasm
 builds (refused, above), signs each request, and retries a `429`, a `408`, a `5xx` or a broken
-connection, signing again (it should stop on a `429` typed `catalogue-full`, [above](#publishing-over-the-api)). Its `--check` signs a `whoami` first. It needs only Python 3 and OpenSSH,
+connection, signing again (it should stop on a `429` typed `catalogue-full` or `tenant-limit`, [above](#publishing-over-the-api)). Its `--check` signs a `whoami` first. It needs only Python 3 and OpenSSH,
 so it also runs in another CI: see the fork's
 [KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md).
 

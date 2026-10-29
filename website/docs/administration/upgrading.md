@@ -101,6 +101,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0043_license_entries` | 43 | licences are per catalogue entry and key owners go: an older replica reads and writes `license_key_owners` and relies on the relay's exceptions |
 | `0045_download_sources` | 45 | download counts and installers are kept per source: an older replica would add counts by the old key, which the new primary key no longer matches |
 | `0046_distributor_holds` | 46 | tenant reservations are dropped and distributors' publishers take the tenant's minimum hold: an older replica reads the dropped table on every channel snapshot, and would ignore the minimum |
+| `0047_tenant_limits` | 47 | an older replica would insert builds without their body's length, and check no tenant limit |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -171,7 +172,23 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 46)
+## Upgrading to the next release (schema 47)
+
+### Tenant limits (spec 0038)
+
+- **Migration `0047_tenant_limits`** adds `tenants.limit_bytes`, `limit_channels`,
+  `limit_upstreams` and `limit_publishers` (all `NULL`: the configuration's defaults), and
+  `builds.body_len`, filled from `blobs`, with an index `ix_builds_tenant_body`. It raises
+  `min_reader` to 47: stop every older replica first. A build an older replica still inserts during
+  the rollout keeps no length until the collector (`gc`) or the next `kista serve` start fills it;
+  it counts as `0` until then.
+- **What changes.** A server that sets nothing keeps today's bounds, with two visible changes: a
+  tenant holds at most 1,000 channels (a new ceiling), and the 101st upstream and the 201st publisher
+  of a tenant are refused with `429 tenant-limit` where they got `400`. New: the configuration's
+  [`limits:`](../configuration.md#limits), `GET|PUT /api/v1/tenants/{t}/limits`, `limits` in
+  `POST /api/v1/tenants` and the bootstrap's tenant, `kista admin tenant limits`, the event
+  `tenant.limits`, the problem type `tenant-limit` and the metric `kista.tenant.limit.refusals`
+  ([Limits](tenants-and-channels.md#limits)). On SQL Server, a source's icons are summed as `bigint`.
 
 ### The distributor in a tenant (spec 0037)
 

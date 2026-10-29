@@ -33,6 +33,8 @@ type Tx struct {
 	s  *Store
 	tx *sql.Tx
 	w  txWarnings // spec 0035 phase 2: what the writes touched, for the licence warnings
+	// keys are the lock keys it holds (spec 0038: the tenant's bytes lock, taken late)
+	keys []string
 }
 
 func (t *Tx) exec(ctx context.Context, q string, args ...any) (sql.Result, error) {
@@ -126,7 +128,7 @@ func (s *Store) once(ctx context.Context, lockKeys []string, fn func(*Tx) error)
 			return err
 		}
 	}
-	tx := &Tx{s: s, tx: sqlTx}
+	tx := &Tx{s: s, tx: sqlTx, keys: lockKeys}
 	if err = fn(tx); err != nil {
 		return err
 	}

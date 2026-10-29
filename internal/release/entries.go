@@ -42,8 +42,13 @@ func slotErr(origin string, err error) error {
 // room refuses a new build of a source whose catalogue backlog (builds placed nowhere) holds as
 // many entries or bytes as it may (catalogue.max_entries, catalogue.max_bytes); a body the source
 // has already is no new entry, and an administrator's add is not bounded. The count is read outside
-// any lock: concurrent intakes may pass it together (bounded by the upload slots).
+// any lock: concurrent intakes may pass it together (bounded by the upload slots). The tenant's bytes
+// limit comes first, for an administrator's add too (spec 0038): an early refusal before the body is
+// stored, which the build's insert makes again under the tenant's bytes lock.
 func (s *Service) room(ctx context.Context, b store.Build, size int64, admin bool) error {
+	if err := s.Store.BytesRoom(ctx, b.TenantID, b.Source, b.BodyHash, size); err != nil {
+		return err
+	}
 	if admin || s.MaxEntries <= 0 && s.MaxBytes <= 0 {
 		return nil
 	}
@@ -171,6 +176,10 @@ func (s *Service) AddToCatalogue(ctx context.Context, a authz.Actor, tenant stri
 		if err := s.room(ctx, it.b, f.BodySize, o.Publish == nil); err != nil {
 			return store.Build{}, false, err
 		}
+	} else if err := s.Store.BytesRoom(ctx, t.ID, it.source, b.BodyHash, f.BodySize); err != nil {
+		// spec 0038: a build the source has, that the tenant no longer counts (unlanded, waiting for
+		// the collector), is new bytes again; its landing decides
+		return store.Build{}, false, err
 	}
 	if dist == "" && o.Publish != nil { // a name reserved during the upload takes a grant naming it (spec 0030)
 		kind, err := s.Store.ReservedFor(ctx, tenant, typ, o.Name)

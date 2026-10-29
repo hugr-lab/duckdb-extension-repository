@@ -717,7 +717,9 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 	}
 	in.ReserveKind = reserveKind(u.Kind) // spec 0030: a bundle's builds from DuckDB's repositories bring their names
 	in.ReserveSource = "bundle:" + tg.res.Bundle
-	got, err := s.Releases.Ingest(ctx, a, tg.sc, sp, in)
+	// spec 0038: a bundle import (a server administrator's, for an air-gapped site) is counted, but
+	// never refused by the tenant's limits
+	got, err := s.Releases.Ingest(store.WithoutLimits(ctx), a, tg.sc, sp, in)
 	rec := store.UpstreamCell{BodyHash: got.Hash}
 	switch {
 	case errors.Is(err, store.ErrDeleting):

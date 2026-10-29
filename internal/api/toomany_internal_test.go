@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
@@ -30,6 +31,13 @@ func TestTooManyTypes(t *testing.T) {
 		{"a full catalogue", "catalogue-full", "", func(w http.ResponseWriter) {
 			h.publishErr(w, fmt.Errorf("%w: 100 entries", store.ErrCatalogueFull), false)
 		}},
+		// spec 0038: a tenant limit, raisable or at its ceiling
+		{"a tenant's bytes limit", "tenant-limit", "", func(w http.ResponseWriter) {
+			h.publishErr(w, fmt.Errorf("x: %w", store.LimitRefused(store.LimitBytes, 1<<30)), false)
+		}},
+		{"a tenant at the channels' ceiling", "tenant-limit", "", func(w http.ResponseWriter) {
+			h.serviceErr(w, store.LimitRefused(store.LimitChannels, store.MaxChannels), false)
+		}},
 		{"too many chunks of an upload", "chunks-busy", "1", func(w http.ResponseWriter) { h.uploadErr(w, upstream.ErrUploadBusy) }},
 		{"a chunk without an ingest slot", "ingest-busy", "1", func(w http.ResponseWriter) { h.uploadErr(w, upstream.ErrIngestBusy) }},
 	} {
@@ -39,6 +47,27 @@ func TestTooManyTypes(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil || rec.Code != http.StatusTooManyRequests ||
 			p.Type != "urn:kista:problem:"+c.typ || p.Detail == "" || rec.Header().Get("Retry-After") != c.retry {
 			t.Errorf("%s: %d %v %s", c.name, rec.Code, rec.Header(), rec.Body)
+		}
+	}
+}
+
+// Spec 0038: tenant-limit names its limit, and says a server administrator can raise it unless it
+// is at its ceiling.
+func TestTenantLimitProblem(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{store.LimitRefused(store.LimitPublishers, 3), "a server administrator can raise it"},
+		{store.LimitRefused(store.LimitPublishers, store.MaxPublishers), "the most publishers kista allows"},
+	} {
+		rec := httptest.NewRecorder()
+		if !limitProblem(rec, c.err) {
+			t.Fatal("not a limit's refusal")
+		}
+		var p struct{ Type, Detail, Limit string }
+		if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil || p.Limit != "publishers" || !strings.Contains(p.Detail, c.want) {
+			t.Errorf("%v: %s", c.err, rec.Body)
 		}
 	}
 }

@@ -83,6 +83,9 @@ func jsonProblem(err error) string {
 // serviceErr answers a service error. bodyRef says a not-found refers to a name in the body (400),
 // not to the path (404).
 func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
+	if limitProblem(w, err) { // spec 0038
+		return
+	}
 	switch {
 	case errors.Is(err, authz.ErrDenied):
 		note(w, func(sw *statusWriter) { sw.refused = true })
@@ -465,12 +468,19 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request, c caller,
 		DisplayName   string `json:"display_name"`
 		StorageDomain string `json:"storage_domain"`
 		HolderID      string `json:"holder_id"`
+		// Limits are the tenant's own limits, as a PUT of its limits takes them (spec 0038)
+		Limits map[string]json.RawMessage `json:"limits"`
 	}
 	if !body(w, r, &in, maxBody) {
 		return
 	}
+	limits, err := parseLimits(in.Limits)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
 	a, _ := c.actor()
-	t, err := h.o.Tenants.CreateTenant(r.Context(), a, in.Name, in.DisplayName, in.StorageDomain, in.HolderID)
+	t, err := h.o.Tenants.CreateTenantWithLimits(r.Context(), a, in.Name, in.DisplayName, in.StorageDomain, in.HolderID, limits)
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return

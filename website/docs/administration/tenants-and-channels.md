@@ -95,6 +95,48 @@ Such a tenant is served nothing; it never falls back to another domain.
 
 Domain names follow `[a-z][a-z0-9-]{0,15}`. The domain is shown to server administrators only.
 
+### Limits
+
+A server administrator limits what a tenant's own administrators, publishers and upstreams can
+make it grow by (spec 0038): four limits, each a number, `0` (none at all) or `unlimited`.
+
+| Limit | Counts | Ceiling |
+| --- | --- | --- |
+| `bytes` | the tenant's own catalogue bytes (below) | none |
+| `channels` | its channels | 1000 |
+| `upstreams` | its upstreams | 100 |
+| `publishers` | its own publishers (not distributors') | 200 |
+
+```bash
+ka tenant limits acme                                   # what is set, in force and used
+ka tenant limits acme -bytes 50GiB -channels 20         # set those named; the others unchanged
+ka tenant limits acme -upstreams default                # the configuration's limits: again
+```
+
+Over the API, `GET /api/v1/tenants/{t}/limits` (the tenant's administrators and server
+administrators) answers each limit's `set` (a number, `"unlimited"` or `"default"`), `limit` (the
+value in force; `null` for unlimited bytes) and `used`; `PUT` (server administrators only) takes the
+limits it names, and `POST /api/v1/tenants` takes them as `limits` at creation. Each change is a
+`tenant.limits` event in the tenant's audit, with each limit's value before and after; the limits
+given at creation are one in the server's events, beside `tenant.create`.
+
+- **What bytes count.** Each distinct body of the tenant's builds that the collector keeps (placed in
+  a channel, landed in the catalogue, or withdrawn) once, whatever source holds it, mirrors
+  included; and the icons of its entries that still have such a build. Builds of distributors'
+  publishers, live or removed, are never counted nor refused: a customer at its limit still gets
+  what it bought. A purged release's build no longer counts at once, before the collector removes
+  it.
+- **Who is checked.** Everyone who makes the tenant grow: its administrators, its publishers, a
+  server administrator's call, its upstreams' runs and lazy fetches. Only a bundle import and the
+  bootstrap are counted but never refused. A server administrator who needs more raises the limit.
+- **A refusal** is `429` with the problem type `tenant-limit` and a `limit` member naming the limit,
+  without `Retry-After`: it clears as the tenant frees room or its limit is raised. kista's clients
+  never retry it.
+- **Lowering a limit removes nothing.** A tenant over a limit still reads, serves, promotes and
+  removes; only growth of that kind is refused until it is back under the limit.
+- **The configuration's [`limits:`](../configuration.md#limits)** are the default of a tenant
+  without values of its own: a backstop, not a plan. A hosted service sets every tenant's values.
+
 ### Suspending a tenant
 
 ```bash

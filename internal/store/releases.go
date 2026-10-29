@@ -69,10 +69,13 @@ type Build struct {
 	DuckDBVersion    string // cpp, c_struct_unstable
 	CAPI             *CAPI  // c_struct
 	BodyHash, Origin string
-	OriginSignature  []byte
-	Checked          bool // passed spec 0008's file checks; set once, never cleared
-	CreatedAt        time.Time
-	CreatedBy        string
+	// BodyLen is the body's length (spec 0038: a tenant's bytes); 0 for a row an older replica
+	// inserted, until the collector fills it
+	BodyLen         int64
+	OriginSignature []byte
+	Checked         bool // passed spec 0008's file checks; set once, never cleared
+	CreatedAt       time.Time
+	CreatedBy       string
 	// Visibility and Provenance are as its arrival made its release (spec 0033): the widest a
 	// placement serves it with, and the facts a placement's release carries (a credential).
 	Visibility, Provenance string
@@ -167,17 +170,19 @@ func (b Build) Slot() string {
 
 const buildCols = `id, tenant_id, source, name, package_version, platform, abi, duckdb_version, c_api_major, c_api_minor,
 c_api_patch, body_hash, origin, origin_signature, created_at, created_by, checked, visibility, provenance, package_type,
-available_at, publisher_key_id, landed, revoked_at, withdrawn_at, withdrawn_reason`
+available_at, publisher_key_id, landed, revoked_at, withdrawn_at, withdrawn_reason, body_len`
 
 func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 	var b Build
 	var dv sql.NullString
 	var ma, mi, pa sql.NullInt64
 	var prov, key, why sql.NullString
+	var n sql.NullInt64
 	err := r.Scan(&b.ID, &b.TenantID, &b.Source, &b.Name, &b.PackageVersion, &b.Platform, &b.ABI, &dv, &ma, &mi, &pa,
 		&b.BodyHash, &b.Origin, &b.OriginSignature, scanTime{&b.CreatedAt}, &b.CreatedBy, &b.Checked, &b.Visibility, &prov, &b.PackageType,
-		scanTime{&b.AvailableAt}, &key, &b.Landed, scanTime{&b.RevokedAt}, scanTime{&b.WithdrawnAt}, &why)
+		scanTime{&b.AvailableAt}, &key, &b.Landed, scanTime{&b.RevokedAt}, scanTime{&b.WithdrawnAt}, &why, &n)
 	b.DuckDBVersion, b.Provenance, b.PublisherKeyID, b.WithdrawnReason = dv.String, prov.String, key.String, why.String
+	b.BodyLen = n.Int64
 	if ma.Valid {
 		b.CAPI = &CAPI{int(ma.Int64), int(mi.Int64), int(pa.Int64)}
 	}
@@ -297,13 +302,21 @@ func (t *Tx) FindOrInsertBuild(ctx context.Context, b *Build) error {
 			b.AvailableAt = b.CreatedAt.Add(hold)
 		}
 	}
+	// spec 0038: a new body of the tenant's own source within its bytes limit
+	if err := t.BytesRoom(ctx, b.TenantID, b.Source, b.BodyHash, max(b.BodyLen, 1)); err != nil {
+		return err
+	}
 	b.Landed = false
 	b.WithdrawnAt, b.WithdrawnReason = time.Time{}, ""
-	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, legacy_duplicate, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	var bodyLen any // NULL when unknown: the collector fills it (FillBodyLen)
+	if b.BodyLen > 0 {
+		bodyLen = b.BodyLen
+	}
+	_, err = t.exec(ctx, "INSERT INTO builds ("+buildCols+", slot, legacy_duplicate, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		b.ID, b.TenantID, b.Source, b.Name, b.PackageVersion, b.Platform, b.ABI, nullable(b.DuckDBVersion), ma, mi, pa,
 		b.BodyHash, b.Origin, sig, t.s.d.timeArg(b.CreatedAt), b.CreatedBy, b.Checked, b.Visibility, nullable(b.Provenance),
 		b.PackageType, t.s.d.nullTimeArg(b.AvailableAt), nullable(b.PublisherKeyID), false, t.s.d.nullTimeArg(b.RevokedAt), t.s.d.nullTimeArg(time.Time{}),
-		nullable(""), b.Slot(), b.Legacy,
+		nullable(""), bodyLen, b.Slot(), b.Legacy,
 		t.s.d.timeArg(t.Now()))
 	b.Inserted = err == nil
 	return t.s.mapErr(err, "build "+b.Name)
@@ -459,6 +472,9 @@ func (t *Tx) InsertRelease(ctx context.Context, r *Release, actor string) error 
 	}
 	if len(r.PublisherStatement) > 4096 || len(r.PublisherSignature) > 1400 {
 		return fmt.Errorf("%w: a signed request's statement or signature is too long", ErrInvalid)
+	}
+	if err := t.keepRoom(ctx, r.BuildID); err != nil { // spec 0038: kept within the tenant's bytes limit
+		return err
 	}
 	_, err := t.exec(ctx, `INSERT INTO releases (id, tenant_id, channel_id, build_id, name, package_version, platform, slot, state,
 visibility, seq, created_at, created_by, state_changed_at, state_changed_by, version, origin, provenance, origin_signature,
