@@ -88,7 +88,7 @@ test('a publisher with a key, and an issuer record, added and removed', async ({
   await expect(keys.getByText('No key signs as ci-test.')).toBeVisible()
   await page.getByRole('button', { name: 'Remove…' }).first().click()
   await page.getByRole('dialog').getByRole('button', { name: 'Remove' }).click()
-  await expect(page.getByRole('heading', { name: 'Publishers' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Publishers', exact: true })).toBeVisible()
   // spec 0037: the tenant's minimum hold for distributors' publishers, its administrators' (run.sh set
   // none; setting the same again changes nothing); tenant reservations are gone
   await expect(page.getByRole('heading', { name: 'Names reserved for a distributor' })).toHaveCount(0)
