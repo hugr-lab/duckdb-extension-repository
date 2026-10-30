@@ -199,7 +199,9 @@ in the build's insert and when a build is kept) to learn that its limit is unlim
     today (no new lock);
   - channels: `CreateChannel` moves from `InTx` to `InTenantTxForUpdate`
     (`internal/tenants/tenants.go`), as `AddPublisher` uses: its update lock on the tenant's row
-    orders the tenant's channel creates, with no new lock.
+    orders the tenant's channel creates, with no new lock. A name the tenant holds already
+    answers `409` before any count (added after PR 2), so a distributor's provisioning that
+    makes a channel or finds it learns it is there at the limit too, rather than `429`.
 
   The limit is read from the tenant's row in the same transaction (under the update lock, or the
   upstream insert's shared lock through `lockedTenantQuery`); a change of the limits updates that

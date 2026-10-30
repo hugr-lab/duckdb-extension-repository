@@ -233,6 +233,10 @@ func TestTenantLimits(t *testing.T) {
 		if err := channel("qa", false); !errors.Is(err, store.ErrTenantLimit) {
 			t.Fatalf("a channel past 2: %v", err)
 		}
+		// a name held already is that at the limit too, not the limit
+		if err := channel("dev", false); !errors.Is(err, store.ErrExists) {
+			t.Fatalf("a channel held already, at the limit: %v", err)
+		}
 		if err := channel("qa", true); err != nil {
 			t.Fatalf("the bootstrap's channel: %v", err)
 		}
