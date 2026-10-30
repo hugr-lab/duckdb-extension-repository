@@ -1,6 +1,6 @@
 # Spec 0039: An own kista mirroring a channel, and revocations downstream
 
-- **Status**: draft
+- **Status**: accepted (the owner's decisions of 2026-10-30, below)
 - **Date**: 2026-10-30
 - **Author**: vgsml, Claude
 
@@ -13,7 +13,8 @@ extension chosen in Enterest reaches the own kista with no change there (plan it
 remote takes back reaches the downstream: a version **withdrawn** on the remote (spec 0033 phase B)
 is withdrawn in the downstream's mirror too, for good, and a release **yanked** there is yanked in
 the mirror's channel, by the mirror's runs online and by bundles for an air-gapped site (plan item
-K8).
+K8), on an upstream whose tenant administrators switched it on; switched off, the mirror shows the
+remote's revocations without applying them.
 
 ## Problem
 
@@ -76,7 +77,7 @@ repositories, a static repository) is not a kista: `*` is refused on it and noth
 - **A name leaving the remote** (no longer in a completed listing: the remote removed it, or the
   principal lost `install`) leaves the matrix: its cells are removed by the run, as for a removed
   entry, and its releases **stay**, the channel's, as spec 0009 keeps a removed entry's releases
-  (open question 1). A withdrawal or yank of its versions still reaches them (below), as long as the
+  (decision 1). A withdrawal or yank of its versions still reaches them (below), as long as the
   remote's index shows them to the principal.
 
 ### Revocations downstream (K8)
@@ -85,24 +86,46 @@ repositories, a static repository) is not a kista: `*` is refused on it and noth
 
 The index shows a release whose build was **withdrawn** as a row of its own, as it shows a yanked
 one, to every caller whose view includes the release: `state: "withdrawn"`, `withdrawn_reason` (the
-distributor's text, open question 4), served nowhere, `would_serve` listing the DuckDB versions it
+distributor's text, decision 4), served nowhere, `would_serve` listing the DuckDB versions it
 would serve. `…/versions/{v}` answers `status: "withdrawn"` where it answers `yanked` for a yanked
 one. The snapshot keeps withdrawn releases (`ChannelReleases` no longer leaves them out) with their
 `Withdrawn` mark, and the resolution functions skip them as they skip yanked ones, so serving does
 not change. A node agent learns a withdrawal the way it learns a yank.
 
+#### The switch
+
+A mirror applies the remote's revocations only when its tenant administrators switched it on
+(decision 2):
+
+- `revocations` (boolean, default `false`) on a `repository` upstream whose remote is a kista (on any
+  other upstream it is refused, `400`), and on a bundle-mode upstream (its bundles carry them).
+  Set when the upstream is added (`-revocations`, `"revocations": true`) or later
+  (`POST …/upstreams/{u}/revocations {"revocations": true|false}` with `If-Match`; `kista admin
+  upstream revocations <tenant> <name> on|off`; the console's upstream form). A change is an
+  `upstream.revocations` event (`upstream`, `revocations`) and makes the upstream due.
+- **Off**, the run still reads the remote's rows (the pass below) and **shows** them: each body the
+  mirror holds that the remote withdrew or yanked is a problem of the run (`withdrawn on the source:
+  <reason>`, `yanked on the source`) and is listed by `GET …/upstreams/{u}/revocations` (name,
+  version, platform, body hash, the remote's state and reason, first seen), so an administrator sees
+  it and acts (a yank, a block, or switching it on). Nothing is applied, and no
+  `upstream.revocation` event is written.
+- **Switched on**, the next run applies the remote's state as it is then, whatever arrived before:
+  there is no queue of past revocations, only the remote's current rows.
+- Bundles carry revocations whatever the switch (the export cannot know the site's); the importing
+  upstream's switch decides whether they apply, and off, they are shown as a run's are.
+
 #### A run applies them
 
-After its cells, a run of a mirror whose remote is a kista reads, for each name with a release from
+After its cells, a run of a mirror whose remote is a kista reads (switch on or off), for each name with a release from
 this upstream in its home channel, the remote's `GET …/extensions/{name}` (conditional, the ETag kept
 per name in `upstream_names`; a `304` costs nothing) and matches the remote's rows to its own builds
-**by body hash** (spec 0002's composite hash, the same on both sides):
+**by body hash** (spec 0002's composite hash, the same on both sides), and, switched on, does:
 
 | The remote's row for a body the mirror holds | The downstream does |
 | --- | --- |
 | `withdrawn` | withdraws the version from the upstream's source (`upstream:<name>`), as spec 0033 phase B does for a distributor's publisher: `withdrawn_versions` records it (none of it arrives again from this source), its builds are withdrawn, and every channel holding a release of them is bumped, so it is served nowhere in the tenant; the reason is `withdrawn on the source: <reason>`, cut to the 400 bytes a reason holds |
 | `yanked` | yanks the upstream's release of that body in the home channel (`state_changed_by` `upstream:<name>`), unless it is yanked already |
-| `active` or `deprecated`, a release this upstream's run had yanked | activates it again (only a yank whose `state_changed_by` is this upstream; an administrator's yank or a block stays) |
+| `active` or `deprecated`, a release this upstream's run had yanked | activates it again (only a yank whose `state_changed_by` is this upstream; an administrator's yank or a block stays: decision 3) |
 | absent (not in the view) | nothing |
 
 - Withdrawals are final on both sides: nothing activates a withdrawn build again, and a later
@@ -129,7 +152,8 @@ per name in `upstream_names`; a `304` costs nothing) and matches the remote's ro
   withdrawal on the exporting side like any other, so revocations travel through any number of
   kistas.
 - **Import.** A bundle-mode upstream applies a manifest's revocations as a run applies the remote's
-  rows, matched by body hash among its own builds, after the bundle's files. The manifest is signed
+  rows, matched by body hash among its own builds, after the bundle's files, when its switch is on;
+  off, it records them as a run shows them. The manifest is signed
   with the bundle key and checked as today (spec 0014), and a bundle older than the target's last
   import is `stale`, as today, so an old bundle cannot replay an `active` over a newer yank;
   withdrawals are final anyway.
@@ -138,7 +162,12 @@ per name in `upstream_names`; a `304` costs nothing) and matches the remote's ro
 
 ### Data model (migration 0048, three dialects)
 
-- `upstreams`: `remote_kista` (boolean, recorded at add and each run's start).
+- `upstreams`: `remote_kista` (boolean, recorded at add and each run's start), `revocations`
+  (boolean, default false).
+- `upstream_revocations` (`upstream_id`, `body_hash`, `name`, `package_version`, `platform`,
+  `state`, `reason`, `seen_at`, `applied_at`): what the remote revoked of what the mirror holds, as
+  last seen; a row leaves when the remote's state no longer revokes it or the mirror no longer holds
+  the body. It backs the listing and keeps a switched-off mirror's problems readable between runs.
 - `upstream_names` (`upstream_id`, `name`, `discovered_at`, `index_etag`): the discovered names, and
   the ETag of each held name's index rows (for explicit entries too).
 - No other change: releases' `state_changed_by`, builds' `withdrawn_at`/`withdrawn_reason` and
@@ -147,12 +176,15 @@ per name in `upstream_names`; a `304` costs nothing) and matches the remote's ro
 
 ### API, CLI, console, docs
 
+- `-revocations`, `POST …/upstreams/{u}/revocations`, `GET …/upstreams/{u}/revocations`, the CLI's
+  `upstream revocations`; the upstream's answer gains `revocations`.
 - `upstream add … -entry '*'` and `POST …/entries {"name": "*"}` on a kista remote; the upstream's
   answer gains `remote_kista` and, with `*`, `discovered` (the count) and
   `GET …/upstreams/{u}/names` (the discovered names, paged).
 - The index rows' `state` gains `withdrawn` and `withdrawn_reason`; the bundle manifest gains
   `revocations` (its format version moves; an older importer refuses a newer format, as today).
-- The console's upstream page shows discovered names and the revocations applied (from events).
+- The console's upstream page shows discovered names, the switch, and the remote's revocations
+  (applied, or waiting while the switch is off).
 - Docs: `upstreams.md` (a kista remote, `*`, revocations), `api.md` (index rows, names),
   `bundles.md` and the air-gapped page (revocations), `observability.md` (the event),
   `administration/upgrading.md` (schema 48).
@@ -161,7 +193,7 @@ per name in `upstream_names`; a `304` costs nothing) and matches the remote's ro
 
 - **What a remote can do.** It already decides what new versions a mirror gets; it can now also
   name the extensions (within the checks a pull-through `*` passes, the caps, and the tenant's
-  limits) and take back what came from it: yank or withdraw only builds whose source is this
+  limits) and, where the tenant administrators switched revocations on, take back what came from it: yank or withdraw only builds whose source is this
   upstream, matched by body hash. It never touches the tenant's own releases, another upstream's, a
   distributor's publisher's, or an administrator's yank or block (it activates only its own yanks).
   Every body still passes intake verification with the pinned keys; discovery adds no trust in a
@@ -187,6 +219,8 @@ per name in `upstream_names`; a `304` costs nothing) and matches the remote's ro
   - a lazy `*` mirror asking only for discovered names.
 - Revocations:
   - withdrawn rows in the index and `versions/{v}`;
+  - the switch: off shows (problems, the listing) and applies nothing; switching on applies the
+    remote's current state at the next run; its event; refused on a remote that is not a kista;
   - serving unchanged;
   - a run withdrawing (final; `withdrawn_versions` refusing the version again), yanking in the home
     channel, activating its own yank but not an administrator's or a block;
@@ -200,13 +234,25 @@ per name in `upstream_names`; a `304` costs nothing) and matches the remote's ro
 
 ## Delivery
 
-1. **PR 1, revocations (K8).** A kista remote, the index's withdrawn rows, the run's revocation pass,
-   bundles' revocations, the event, migration 0048 (`remote_kista`, `upstream_names` with the ETags).
+1. **PR 1, revocations (K8).** A kista remote, the index's withdrawn rows, the switch, the run's
+   revocation pass, bundles' revocations, the events, the revocations listing, migration 0048
+   (`remote_kista`, `revocations`, `upstream_names` with the ETags, `upstream_revocations`).
 2. **PR 2, `*` on a mirror (G5).** Discovery, names in the matrix, snapshot, placement, licences and
    reservations, the names route, the console, and the end-to-end case.
 
 Each PR runs `make test` on the three databases, `make lint`, `make console-test`,
 `make console-e2e` and `make e2e` before it opens.
+
+## Decisions
+
+The owner's decisions, 2026-10-30:
+
+1. An extension that leaves the source channel keeps its releases in the mirror (as a removed
+   entry's releases stay).
+2. Applying the source's withdrawals and yanks is opt-in per upstream, switched on by the tenant's
+   administrators (The switch); off, the mirror shows them without applying them.
+3. Yanks are mirrored too, and un-yanked only where this upstream made the yank.
+4. The index shows a withdrawal's reason to the callers who see the row.
 
 ## Alternatives considered
 
