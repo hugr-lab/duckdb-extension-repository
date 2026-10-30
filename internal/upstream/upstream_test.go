@@ -84,10 +84,13 @@ type fakeRepo struct {
 	// nil answers 404, as a static repository does
 	kista http.HandlerFunc
 	// names, when set, answers <prefix>/-/names[/<cursor>] (spec 0039 PR 2): its names, namesPage a
-	// page (cursor "n<i>"); namesStatus, when set, answers every names request
+	// page (cursor "n<i>"); namesStatus, when set, answers every names request; namesCut breaks the
+	// listing after its first page: "error" (a 502), "cursor" (a next that is no cursor), "empty" (an
+	// empty page that pages on)
 	names       []string
 	namesPage   int
 	namesStatus int
+	namesCut    string
 	namesReads  int
 }
 
@@ -141,6 +144,15 @@ func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 			ans := map[string]any{"api": 1, "names": append([]string{}, r.names[start:end]...)}
 			if end < len(r.names) {
 				ans["next"] = "n" + strconv.Itoa(end)
+			}
+			switch {
+			case start > 0 && r.namesCut == "error":
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			case start == 0 && r.namesCut == "cursor":
+				ans["next"] = "n.1"
+			case start > 0 && r.namesCut == "empty":
+				ans["names"], ans["next"] = []string{}, "n"+strconv.Itoa(end)
 			}
 			_ = json.NewEncoder(w).Encode(ans)
 			return

@@ -45,7 +45,11 @@ func (h *Handler) names(w http.ResponseWriter, r *http.Request, rt route) {
 	}
 	x := snap.NamesIndex()
 	sum := sha256.New()
-	sum.Write(x.Digest)
+	if actor == "" { // the public view: no other name moves its ETag
+		sum.Write(x.PublicDigest)
+	} else {
+		sum.Write(x.Digest)
+	}
 	sum.Write([]byte(rt.cursor + "\x00"))
 	view := func(n string) bool { return x.Public[n] }
 	if actor != "" {

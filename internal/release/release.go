@@ -762,6 +762,14 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					if k == store.ReservedCore || k == store.ReservedCommunity && it.discoveredKind != store.UpstreamCommunity {
 						return ErrShadowed
 					}
+					// nor a name a source of the tenant other than an upstream holds since: every signed
+					// channel's insert takes the tenant's upstream lock, so the two never race
+					if held, err := tx.OtherSourceHolds(ctx, b.TenantID, b.Name); err != nil || held {
+						if err == nil {
+							err = ErrShadowed
+						}
+						return err
+					}
 				}
 				upstream := it.origin == store.OriginUpstream
 				// spec 0033 phase A2: a publication's publisher and key, read with shared row locks a removal

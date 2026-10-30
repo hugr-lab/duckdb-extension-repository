@@ -70,7 +70,7 @@ func (s *Service) readRevocations(ctx context.Context, tenant string, u store.Up
 		}
 		var buf bytes.Buffer
 		var d egress.Download
-		d, tok, err = s.getPage(ctx, cred, tok, url, cond, &buf)
+		d, tok, err = s.getPage(ctx, cred, tok, url, cond, maxRevocationsPage, &buf)
 		switch {
 		case errors.Is(err, egress.ErrNotFound):
 			return out, errNotKista
@@ -117,14 +117,14 @@ func (s *Service) readRevocations(ctx context.Context, tenant string, u store.Up
 
 var cursorRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,512}$`)
 
-// getPage fetches one page into w: a 401 forgets the token once (as download does), a 429 or 503
+// getPage fetches one page of at most limit bytes into w: a 401 forgets the token once (as download does), a 429 or 503
 // with a short Retry-After is asked again.
-func (s *Service) getPage(ctx context.Context, cred *credential.Credential, tok, url, etag string, w *bytes.Buffer) (egress.Download, string, error) {
+func (s *Service) getPage(ctx context.Context, cred *credential.Credential, tok, url, etag string, limit int64, w *bytes.Buffer) (egress.Download, string, error) {
 	timeout := s.Config.FetchTimeout
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
-	o := egress.DownloadOptions{ETag: etag, MaxBytes: maxRevocationsPage, Timeout: timeout, MinRate: 1}
+	o := egress.DownloadOptions{ETag: etag, MaxBytes: limit, Timeout: timeout, MinRate: 1}
 	refreshed := false
 	for attempt := 0; ; attempt++ {
 		w.Reset()

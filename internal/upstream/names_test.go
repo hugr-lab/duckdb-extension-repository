@@ -81,6 +81,10 @@ func TestDiscovery(t *testing.T) {
 		if !en.provides(t, "geo") || en.provides(t, "zzz") {
 			t.Fatalf("provides: geo %v zzz %v", en.provides(t, "geo"), en.provides(t, "zzz"))
 		}
+		// the snapshot's set counts it alike: a pull-through "*" of the tenant takes no geo
+		if ps, err := en.st.ProvidedNames(ctx, en.tenantID(t), pkgtype.DuckDBExtension); err != nil || !ps["geo"] || ps["zzz"] {
+			t.Fatalf("provided names: %v %v", ps, err)
+		}
 		// the matrix's cells count the discovered names
 		var cells int
 		if err := en.st.InTx(ctx, "", func(tx *store.Tx) error {
@@ -126,7 +130,8 @@ func TestDiscovery(t *testing.T) {
 }
 
 // Spec 0039 PR 2: "*" keeps at most 1,000 names, counted after the checks: a reserved name past the
-// thousandth costs nothing, one more is a problem and the listing deletes nothing.
+// thousandth costs nothing. A complete listing over the cap keeps the names kept, removes those that
+// left and fills the room by name; a cut one adds within the room and removes nothing.
 func TestDiscoveryCap(t *testing.T) {
 	each(t, func(t *testing.T, en *env) {
 		en.kista()
@@ -145,17 +150,23 @@ func TestDiscoveryCap(t *testing.T) {
 		if r := en.sync(t, false); r.Counts["discovered"] != store.MaxDiscoveredNames || hasProblem(r, "names") {
 			t.Fatalf("1,000 after the checks: %+v", r)
 		}
-		// x0000 leaves, two new names come: 1,001 after the checks, one over the cap; a listing over
-		// the cap deletes nothing, so x0000 stays
+		// x0000 leaves, two new names come: x0000 goes, y0000 takes its room, y0001 is past the cap
 		en.repo.mu.Lock()
 		en.repo.names = append(slices.Clone(names[2:]), "y0000", "y0001")
 		en.repo.mu.Unlock()
 		r := en.sync(t, false)
-		if !hasProblem(r, "names") || r.Counts["discovered"] != store.MaxDiscoveredNames {
-			t.Fatalf("over the cap: %+v", r)
+		got := en.discovered(t)
+		if !hasProblem(r, "names") || len(got) != store.MaxDiscoveredNames || slices.Contains(got, "x0000") ||
+			!slices.Contains(got, "y0000") || slices.Contains(got, "y0001") {
+			t.Fatalf("over the cap: %+v, %d names", r, len(got))
 		}
-		if got := en.discovered(t); !slices.Contains(got, "x0000") {
-			t.Fatalf("x0000 deleted by a listing over the cap")
+		// a cut listing with more new names adds none past the cap
+		en.repo.mu.Lock()
+		en.repo.names, en.repo.namesPage, en.repo.namesCut = append([]string{"a0", "a1"}, en.repo.names...), 500, "error"
+		en.repo.mu.Unlock()
+		en.sync(t, false)
+		if got := en.discovered(t); len(got) != store.MaxDiscoveredNames || slices.Contains(got, "a0") {
+			t.Fatalf("a cut listing over the cap: %d names", len(got))
 		}
 	})
 }

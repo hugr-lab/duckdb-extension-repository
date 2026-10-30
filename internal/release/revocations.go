@@ -27,12 +27,14 @@ func (r RevokedRow) Key() [4]string { return [4]string{r.Name, r.Version, r.Plat
 // RevokedIndex is a snapshot's -/revocations rows, computed once and kept with the snapshot (so it
 // lives as long as the snapshot does): every row (the view of a caller holding install on its name)
 // and the public view's, both in key order. A view's rows are a function of the two and of the names
-// it holds install on, so its ETag is derived from Digest and those names.
+// it holds install on, so its ETag is derived from Digest and those names; an anonymous view's, from
+// PublicDigest alone (the public rows).
 type RevokedIndex struct {
-	All    []RevokedRow
-	Public map[[4]string]RevokedRow
-	Names  []string // the names of All's rows, once each, in order
-	Digest []byte
+	All          []RevokedRow
+	Public       map[[4]string]RevokedRow
+	Names        []string // the names of All's rows, once each, in order
+	Digest       []byte
+	PublicDigest []byte
 }
 
 // RevokedIndex answers the snapshot's index, computing it on first use.
@@ -48,12 +50,14 @@ func (s *Snapshot) RevokedIndex() *RevokedIndex {
 			sum.Write(b)
 		}
 		sum.Write([]byte{0})
+		pub := sha256.New()
 		for _, r := range s.RevokedRows(func(c *store.Candidate) bool { return c.Visibility == store.Public }) {
 			x.Public[r.Key()] = r
 			b, _ := json.Marshal(r)
 			sum.Write(b)
+			pub.Write(b)
 		}
-		x.Digest = sum.Sum(nil)
+		x.Digest, x.PublicDigest = sum.Sum(nil), pub.Sum(nil)
 		s.rev = x
 	})
 	return s.rev

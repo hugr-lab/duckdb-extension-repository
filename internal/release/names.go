@@ -10,11 +10,13 @@ import (
 // NamesIndex is a snapshot's -/names answer before a caller's view (spec 0039): the names the
 // channel serves (a release active or deprecated, its body not blocked), in order, and those it
 // serves publicly. A view is every name it holds install on and the public others, so its ETag is
-// derived from Digest and those names. Computed once and kept with the snapshot.
+// derived from Digest and those names; an anonymous view's, from PublicDigest alone (the public
+// names). Computed once and kept with the snapshot.
 type NamesIndex struct {
-	All    []string
-	Public map[string]bool
-	Digest []byte
+	All          []string
+	Public       map[string]bool
+	Digest       []byte
+	PublicDigest []byte
 }
 
 // NamesIndex answers the snapshot's names, computing them on first use.
@@ -36,14 +38,15 @@ func (s *Snapshot) NamesIndex() *NamesIndex {
 			}
 		}
 		slices.Sort(x.All)
-		sum := sha256.New()
+		sum, pub := sha256.New(), sha256.New()
 		for _, n := range x.All {
 			sum.Write([]byte(n + "\x00"))
 			if x.Public[n] {
 				sum.Write([]byte{1})
+				pub.Write([]byte(n + "\x00"))
 			}
 		}
-		x.Digest = sum.Sum(nil)
+		x.Digest, x.PublicDigest = sum.Sum(nil), pub.Sum(nil)
 		s.names = x
 	})
 	return s.names

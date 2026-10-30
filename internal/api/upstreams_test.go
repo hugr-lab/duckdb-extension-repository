@@ -297,7 +297,7 @@ func TestUpstreamNames(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, err = tx.SetUpstreamNames(ctx, cur, []string{"geo", "tresor"}, true)
+		_, _, err = tx.SetUpstreamNames(ctx, cur, []string{"geo", "tresor"}, true, store.MaxDiscoveredNames)
 		return err
 	}); err != nil {
 		t.Fatal(err)

@@ -314,19 +314,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	}); err != nil {
 		return err
 	}
-	names := u.Names()
-	if per := len(versions) * len(u.Platforms); u.AnyMirror() && per > 0 {
-		// discovered names past a cap are left out, by name; the explicit entries are what the caps
-		// checked when they were listed
-		fit := min(store.MaxUpstreamCells, store.MaxTenantCells-others) / per
-		if explicit := len(names) - len(u.Discovered); len(names) > fit && fit >= explicit {
-			if len(res.Problems) < maxProblems {
-				res.Problems = append(res.Problems, CellNote{Outcome: outcomeNames,
-					Detail: fmt.Sprintf("%d discovered names are past the matrix's caps and left out", len(names)-fit)})
-			}
-			names = names[:fit]
-		}
-	}
+	names := u.Names() // spec 0039: the discovered names discovery kept within the caps
 	if n := len(versions) * len(u.Platforms) * len(names); n > store.MaxUpstreamCells {
 		return fmt.Errorf("%w: the matrix is %d cells (at most %d)", errFailed, n, store.MaxUpstreamCells)
 	}

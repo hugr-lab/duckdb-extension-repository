@@ -50,7 +50,7 @@ func (s *Service) readNames(ctx context.Context, tenant string, u store.Upstream
 			url += "/" + cursor
 		}
 		var buf bytes.Buffer
-		_, tok, err = s.getPage(ctx, cred, tok, url, "", &buf)
+		_, tok, err = s.getPage(ctx, cred, tok, url, "", maxNamesPage, &buf)
 		switch {
 		case errors.Is(err, egress.ErrNotFound):
 			return out, errNotKista
@@ -105,7 +105,7 @@ func (s *Service) discover(ctx context.Context, sc store.ServeChannel, u store.U
 		}
 	}
 	var names []string
-	var over int
+	var over, room int
 	err := s.Store.InTenantTx(ctx, u.TenantID, []string{store.TenantUpstreamLock(u.TenantID)}, func(tx *store.Tx) error {
 		cur, err := tx.GetUpstreamByID(ctx, u.ID)
 		if err != nil {
@@ -134,15 +134,17 @@ func (s *Service) discover(ctx context.Context, sc store.ServeChannel, u store.U
 			names = append(names, n)
 		}
 		slices.Sort(names)
-		if len(names) > store.MaxDiscoveredNames {
-			over = len(names) - store.MaxDiscoveredNames
-			names = names[:store.MaxDiscoveredNames]
+		room, err = tx.DiscoveryRoom(ctx, cur)
+		if err != nil {
+			return err
 		}
 		if res.DryRun {
+			over = max(0, len(names)-room)
 			u = cur
 			return nil
 		}
-		changed, err := tx.SetUpstreamNames(ctx, cur, names, rerr == nil && got.complete && over == 0)
+		changed, n, err := tx.SetUpstreamNames(ctx, cur, names, rerr == nil && got.complete, room)
+		over = n
 		if err != nil || !changed {
 			u = cur
 			return err
@@ -157,8 +159,8 @@ func (s *Service) discover(ctx context.Context, sc store.ServeChannel, u store.U
 		return u, err
 	}
 	if over > 0 {
-		problem(fmt.Sprintf("the source lists %d names more than \"*\" keeps (%d)", over, store.MaxDiscoveredNames))
+		problem(fmt.Sprintf("%d names the source lists are past what \"*\" keeps (%d: at most %d, and the matrix's caps)", over, room, store.MaxDiscoveredNames))
 	}
-	res.Counts[countDiscovered] = len(names)
+	res.Counts[countDiscovered] = len(u.Discovered)
 	return u, nil
 }

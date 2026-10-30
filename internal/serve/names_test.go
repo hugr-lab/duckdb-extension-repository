@@ -44,6 +44,11 @@ func TestNamesRoute(t *testing.T) {
 	if a := en.do(t, "GET", path, map[string]string{"If-None-Match": etag}); a.status != 304 {
 		t.Fatalf("conditional: %d", a.status)
 	}
+	// a private name added moves no anonymous ETag: it hashes the public view only
+	en.add(t, ext(t, 2000, 4, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "hidden", Private: true})
+	if a := en.do(t, "GET", path, map[string]string{"If-None-Match": etag}); a.status != 304 {
+		t.Fatalf("a private name moved the anonymous ETag: %d", a.status)
+	}
 	if _, err := adm.AddGrant(ctx, admin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Package: "tresor"}); err != nil {
 		t.Fatal(err)
 	}

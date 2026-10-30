@@ -670,24 +670,26 @@ Enterest channel this way gets every extension its organisation chooses with no 
 **Discovery.** Each run, after the [revocation pass](#revocations-from-a-kista), reads `-/names`,
 every page, with the upstream's credential, and keeps a name when:
 
-- it is one a pull-through `*` would take: the name grammar, no alias, no name reserved server-wide
-  (a community name only on a `duckdb-community` upstream);
-- no upstream of the channel lists it, and no other upstream of the channel discovered it first;
+- it is one a pull-through `*` would take: the name grammar, no alias, no name reserved server-wide;
+- no upstream of the channel lists it, and it is not one of the upstream's own entries;
 - no source of the tenant other than an upstream (its own publications, a publisher's or a
   distributor's) holds a release of it in any channel.
 
-At most 1,000 names are kept, counted after these checks, by name; more is a `names` problem. Only a
-complete listing removes a name absent from it: a listing that failed or was cut keeps the names
-there are. A name that leaves the source keeps its releases, as a removed entry's do, and its cells
-go. `GET …/upstreams/{name}/names` and `kista admin upstream names <tenant> <name>` list them; the
+The names kept fit a room: at most 1,000, and no more than the [matrix limits](#what-is-fetched)
+hold beside the explicit entries and the tenant's other upstreams. The names already kept stay, new
+ones fill what is left by name, and the rest are a `names` problem. The room is decided when the
+names are read, and the run, the asks and the tenant's count of cells follow it. Only a complete
+listing removes a name absent from it: a listing that failed or was cut keeps the names there are.
+A name that leaves the source keeps its releases, as a removed entry's do, and its cells go. A
+discovered name listed explicitly becomes that entry's, counted once. `GET …/upstreams/{name}/names` and `kista admin upstream names <tenant> <name>` list them; the
 upstream's record shows their number (`discovered`), and its `last_run` counts them `discovered`.
 
-**A discovered name is a listed name**: its cells join the matrix (the [matrix limits](#what-is-fetched) count them;
-names past a cap are left out, by name, and counted as a problem), a lazy mirror takes asks for it,
+**A discovered name is a listed name**: its cells join the matrix, a lazy mirror takes asks for it,
 its builds are placed in the home channel by the channel's rules, and its licences are supplied as
 any upstream's are. One difference: the tenant's [reservation](#reservation-and-shadowing) of the name comes only
 once the upstream holds a release of it, so a source cannot reserve the tenant's names by listing
-them. A reservation made server-wide since the discovery is checked again when a release is made.
+them. A reservation made server-wide since the discovery, and a release of the name from another
+source of the tenant since, are checked again when a release is made.
 Removing `*` forgets the discovered names (their releases stay).
 
 ```bash

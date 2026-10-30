@@ -541,11 +541,12 @@ export function Discovered({ u, path }: { u: Upstream; path: string }) {
   const { client } = useTenant()
   const list = useLoad(() => client.get<{ names: string[] }>(`${path}/names`), [path, u.last_run_at])
   const names = list.data?.data.names ?? []
+  const problems = (u.last_run?.problems ?? []).filter((p) => p.outcome === 'names')
   return (
     <Card title="Discovered names">
       <div className="flex flex-col gap-3">
         <p className="m-0">The allowlist's <Mono>*</Mono> takes every name the source channel serves to this upstream, except names another upstream of the channel lists or took first, and names the tenant's own or a distributor's sources hold. A name the source stops listing leaves the list; its releases stay.</p>
-        {!u.remote_kista && <Note>The source has not answered as a kista: no names are read.</Note>}
+        {problems.map((p, i) => <Note key={i}>The last run's reading of the names: {p.detail}</Note>)}
         {list.loading && !list.data ? <Loading /> : list.error ? <ErrorBox error={list.error} /> : names.length === 0
           ? <span className="text-ink-muted">None yet: the next run reads them.</span>
           : <div className="flex flex-wrap gap-2">{names.map((n) => <Mono key={n}>{n}</Mono>)}</div>}

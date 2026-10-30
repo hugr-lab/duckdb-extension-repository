@@ -98,8 +98,8 @@ yanked row has it, as the management listing marks them (`internal/api/channels.
 remote and keeps it false). There is no separate probe (no kista version shown anonymously): a
 `repository` upstream's remote is
 **a kista** when `GET <prefix>/-/revocations`, read with the upstream's credential if it has one,
-answers kista's shape (`"api"` and `"rows"`). It is read when the upstream is added and by each run's
-pass (below).
+answers kista's shape (`"api"` and `"rows"`). It is read when the upstream is added, when `*` is put
+on a mirror that does not know its remote as a kista, and by each run's pass (below).
 
 - A `200` of that shape sets `remote_kista`.
 - A `404`, or a `200` of another shape, is **not a kista**: on an upstream with neither the switch
@@ -390,10 +390,18 @@ with its upstream.
      releases stay).
    - A release of a discovered name is checked again under the insert's locks for a reservation
      made server-wide since the discovery (as a pull-through `*`'s is, but without the tenant's
-     upstream reservations, which the upstream's own releases make): a run's intake and the
-     placement pass refuse it as `shadowed`.
-   - The matrix caps leave discovered names out at the run, by name, after the explicit entries; an
-     upstream's run counts the tenant's other upstreams' cells as `TenantCells` does.
+     upstream reservations, which the upstream's own releases make), and for a release of the name
+     from a source of the tenant other than an upstream (every signed channel's insert takes the
+     tenant's upstream lock, so the two do not race): a run's intake, a lazy ask and the placement
+     pass refuse it as `shadowed`.
+   - The discovery keeps the names that fit a room: at most 1,000, and what the matrix caps
+     (`MaxUpstreamCells`, `MaxTenantCells` less the tenant's other upstreams) hold beside the
+     explicit entries. Kept names stay first, new ones fill by name, the rest are a `names`
+     problem; a cut listing adds within the room and removes nothing. Only kept names are stored, so
+     the run, the asks and `TenantCells` follow the one decision.
+   - A discovered name put as an explicit entry becomes the entry's (its `upstream_names` row goes,
+     its cells stay).
+   - The anonymous ETags of `-/names` and `-/revocations` hash the public view only.
    - `GET …/upstreams/{name}/names` pages as the allowlist does (`prefix`, `limit`, `after`); the
      upstream's `discovered` is the number of names.
    - Adding `*` to an existing mirror reads `-/revocations` once when the upstream does not know its

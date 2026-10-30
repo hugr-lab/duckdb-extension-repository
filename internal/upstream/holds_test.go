@@ -278,7 +278,7 @@ func TestUpstreamHoldHomeChecks(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				_, err = tx.SetUpstreamNames(ctx, cur, []string{"acl"}, false)
+				_, _, err = tx.SetUpstreamNames(ctx, cur, []string{"acl"}, false, store.MaxDiscoveredNames)
 				return err
 			})
 		})

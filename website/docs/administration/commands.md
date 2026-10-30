@@ -430,7 +430,7 @@ See [Publishing](../publishing.md).
 | --- | --- |
 | `upstream add <tenant> <name> -kind <k> -channel <c> -platforms <p,...> [flags]` | adds an upstream; `-kind` is `duckdb-core`, `duckdb-community` or `repository`; `-revocations` switches on applying its source's revocations (a repository mirror of a kista, or a bundle-mode upstream; [Revocations from a kista](../upstreams.md#revocations-from-a-kista)) |
 | `upstream list <tenant>` | `NAME`, `KIND`, `MODE` (`mirror (lazy)` for a lazy mirror), `STATE`, `VISIBILITY`, `EXTENSIONS`, `LAST RUN` |
-| `upstream show <tenant> <name>` | its settings, entries, requested run, last run and, in bundle mode, the last bundle |
+| `upstream show <tenant> <name>` | its settings, entries, a `*` mirror's number of discovered names (`discovered:`), requested run, last run and, in bundle mode, the last bundle |
 | `upstream remove`, `pause`, `resume`, `public`, `private` `<tenant> <name>` | |
 | `upstream sync <tenant> <name> [-dry-run]` | requests a run; a running `kista serve` takes it (a lazy mirror's: its whole matrix; a dry run: what a scheduled run would fetch) |
 | `upstream fetch <tenant> <name> eager\|lazy` | a mirror's fetch mode ([Lazy mirrors](../upstreams.md#lazy-mirrors)) |

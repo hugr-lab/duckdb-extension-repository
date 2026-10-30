@@ -37,13 +37,17 @@ describe('Discovered', () => {
     show(upstream({}))
     expect(await screen.findByText('tresor')).toBeTruthy()
     expect(screen.getByText('geo')).toBeTruthy()
-    expect(screen.queryByText(/has not answered as a kista/)).toBeNull()
+    expect(screen.queryByText(/reading of the names/)).toBeNull()
   })
 
-  it('says when there are none yet, and when the source is no kista', async () => {
+  it('says when there are none yet, and what the last run met reading them', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ names: [] })))
-    show(upstream({ remote_kista: false, discovered: 0 }))
+    show(upstream({ discovered: 0, last_run_at: '2026-10-30T10:00:00Z', last_run: { started: '', ended: '', counts: {}, problems: [
+      { duckdb_version: '', platform: '', name: '', outcome: 'names', detail: 'the source lists over 10000 names: the rest is not read' },
+      { duckdb_version: 'v2.0.0', platform: 'linux_amd64', name: 'geo', outcome: 'missing' },
+    ] } }))
     expect(await screen.findByText(/the next run reads them/)).toBeTruthy()
-    expect(screen.getByText(/has not answered as a kista/)).toBeTruthy()
+    expect(screen.getByText(/the rest is not read/)).toBeTruthy()
+    expect(screen.queryByText(/geo/)).toBeNull()
   })
 })

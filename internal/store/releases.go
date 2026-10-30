@@ -1067,12 +1067,50 @@ func (s *Store) ProvidedNames(ctx context.Context, tenantID, packageType string)
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		names, err := tx.strings(ctx, `SELECT DISTINCT e.name FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
 JOIN channels c ON c.id = u.channel_id WHERE u.tenant_id = ? AND c.package_type = ?`, tenantID, packageType)
+		if err != nil {
+			return err
+		}
 		for _, n := range names {
 			if n != "*" { // "*" reserves no name
 				out[n] = true
 			}
 		}
-		return err
+		// spec 0039: a name a "*" mirror discovered, once that upstream holds a release of it (as
+		// UpstreamProvides counts it)
+		rows, err := tx.query(ctx, `SELECT d.upstream_id, d.name FROM upstream_names d JOIN upstreams u ON u.id = d.upstream_id
+JOIN channels c ON c.id = u.channel_id WHERE u.tenant_id = ? AND c.package_type = ?`, tenantID, packageType)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		found := map[[2]string]bool{}
+		for rows.Next() {
+			var id, n string
+			if err := rows.Scan(&id, &n); err != nil {
+				return err
+			}
+			found[[2]string{UpstreamSource(id), n}] = true
+		}
+		if err := rows.Err(); err != nil || len(found) == 0 {
+			return err
+		}
+		rows.Close()
+		held, err := tx.query(ctx, "SELECT DISTINCT source, name FROM releases WHERE tenant_id = ? AND source LIKE ?", tenantID,
+			SourceUpstreamPrefix+"%")
+		if err != nil {
+			return err
+		}
+		defer held.Close()
+		for held.Next() {
+			var src, n string
+			if err := held.Scan(&src, &n); err != nil {
+				return err
+			}
+			if found[[2]string{src, n}] {
+				out[n] = true
+			}
+		}
+		return held.Err()
 	})
 	return out, err
 }

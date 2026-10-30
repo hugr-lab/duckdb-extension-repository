@@ -126,7 +126,9 @@ func (u Upstream) Names() []UpstreamEntry {
 		out = append(out, e)
 	}
 	for _, n := range u.Discovered {
-		out = append(out, UpstreamEntry{Name: n, Eager: star.Eager})
+		if !slices.ContainsFunc(u.Entries, func(e UpstreamEntry) bool { return e.Name == n }) { // listed: its entry rules
+			out = append(out, UpstreamEntry{Name: n, Eager: star.Eager})
+		}
 	}
 	return out
 }
@@ -309,40 +311,82 @@ func (t *Tx) upstreamChildren(ctx context.Context, u *Upstream) error {
 	return err
 }
 
-// SetUpstreamNames records the names a "*" mirror discovered (spec 0039): each new one is added; with
-// complete (the remote's whole listing read), a name absent from names is removed with its cells and
-// asks (its releases stay). It reports whether anything changed.
-func (t *Tx) SetUpstreamNames(ctx context.Context, u Upstream, names []string, complete bool) (bool, error) {
-	have := map[string]bool{}
+// DiscoveryRoom is how many names a "*" mirror may keep (spec 0039): at most MaxDiscoveredNames, and
+// no more than its matrix and the tenant's room left by the other upstreams hold beside its explicit
+// entries. The one decision the run, the asks and TenantCells follow, as only kept names are stored.
+func (t *Tx) DiscoveryRoom(ctx context.Context, u Upstream) (int, error) {
+	var versions int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM channel_duckdb_versions WHERE channel_id = ?", u.ChannelID).Scan(&versions); err != nil {
+		return 0, err
+	}
+	per := versions * len(u.Platforms)
+	if per == 0 {
+		return MaxDiscoveredNames, nil
+	}
+	others, err := t.TenantCells(ctx, u.TenantID, u.ID)
+	if err != nil {
+		return 0, err
+	}
+	explicit := 0
+	for _, e := range u.Entries {
+		if e.Name != "*" {
+			explicit++
+		}
+	}
+	return max(0, min(MaxDiscoveredNames, min(MaxUpstreamCells, MaxTenantCells-others)/per-explicit)), nil
+}
+
+// SetUpstreamNames records the names a "*" mirror discovered (spec 0039) from the names its remote
+// lists that "*" takes, within room: the names it keeps stay first, then new ones by name; past room,
+// the rest are left out (over counts them). With complete (the remote's whole listing read), a kept
+// name absent from names is removed with its cells and asks (its releases stay); without, nothing is
+// removed. It reports whether anything changed.
+func (t *Tx) SetUpstreamNames(ctx context.Context, u Upstream, names []string, complete bool, room int) (changed bool, over int, err error) {
+	have, listed := map[string]bool{}, map[string]bool{}
 	for _, n := range u.Discovered {
 		have[n] = true
 	}
-	want := map[string]bool{}
-	changed := false
 	for _, n := range names {
-		want[n] = true
+		listed[n] = true
+	}
+	var keep []string // the stored names that stay, by name
+	for _, n := range u.Discovered {
+		if listed[n] || !complete {
+			keep = append(keep, n)
+		}
+	}
+	if len(keep) > room { // the room shrank (the channel's versions, say): the last names go
+		keep = keep[:room]
+	}
+	kept := map[string]bool{}
+	for _, n := range keep {
+		kept[n] = true
+	}
+	for _, n := range u.Discovered {
+		if !kept[n] {
+			if err := t.forgetName(ctx, u, n); err != nil {
+				return changed, over, err
+			}
+			changed = true
+		}
+	}
+	free := room - len(keep)
+	for _, n := range names {
 		if have[n] {
+			continue
+		}
+		if free == 0 {
+			over++
 			continue
 		}
 		if _, err := t.exec(ctx, "INSERT INTO upstream_names (upstream_id, name, discovered_at) VALUES (?, ?, ?)", u.ID, n,
 			t.s.d.timeArg(t.Now())); err != nil {
-			return changed, t.s.mapErr(err, "extension "+n)
+			return changed, over, t.s.mapErr(err, "extension "+n)
 		}
+		free--
 		changed = true
 	}
-	if !complete {
-		return changed, nil
-	}
-	for _, n := range u.Discovered {
-		if want[n] {
-			continue
-		}
-		if err := t.forgetName(ctx, u, n); err != nil {
-			return changed, err
-		}
-		changed = true
-	}
-	return changed, nil
+	return changed, over, nil
 }
 
 // ClearUpstreamNames forgets every name a mirror discovered (its "*" removed): their cells and asks
@@ -546,6 +590,10 @@ func (t *Tx) PutUpstreamEntry(ctx context.Context, upstreamID string, e Upstream
 	if _, err := t.exec(ctx, "DELETE FROM upstream_entries WHERE upstream_id = ? AND name = ?", upstreamID, e.Name); err != nil {
 		return err
 	}
+	// spec 0039: a name the upstream's "*" discovered is now its entry's, counted once; its cells stay
+	if _, err := t.exec(ctx, "DELETE FROM upstream_names WHERE upstream_id = ? AND name = ?", upstreamID, e.Name); err != nil {
+		return err
+	}
 	var n int
 	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM upstream_entries WHERE upstream_id = ?", upstreamID).Scan(&n); err != nil {
 		return err
@@ -675,6 +723,15 @@ func (t *Tx) TenantNamesOfOtherSources(ctx context.Context, tenantID string) (ma
 		out[n] = true
 	}
 	return out, err
+}
+
+// OtherSourceHolds reports whether a source of the tenant other than an upstream holds a release of
+// name (spec 0039: a discovered name's insert rechecks it).
+func (t *Tx) OtherSourceHolds(ctx context.Context, tenantID, name string) (bool, error) {
+	var n int
+	err := t.queryRow(ctx, "SELECT COUNT(*) FROM releases WHERE tenant_id = ? AND name = ? AND source NOT LIKE ?", tenantID, name,
+		SourceUpstreamPrefix+"%").Scan(&n)
+	return n > 0, err
 }
 
 // TenantCells counts the cells of the matrices of a tenant's upstreams other than one: entries ×

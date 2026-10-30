@@ -847,7 +847,8 @@ bootstrap:
     - name, kind, mode (mirror or pull-through), visibility, platforms, a prefix that is https on a
       port egress reaches, and pinned fingerprints;
     - the allowlist: at least one name for a mirror, canonical names, reserved names only from
-      their own repository unless `allow_reserved`, and `"*"` only on a pull-through upstream;
+      their own repository unless `allow_reserved`, and `"*"` only on a pull-through upstream or a
+      `repository` mirror whose source answers as a kista;
     - its channel is one of the section's. A passthrough channel takes `duckdb-core` mirrors only,
       with public releases, never lazy;
     - `fetch` is a mirror's, `eager` (the default) or `lazy`, and `eager` entries are a mirror's;

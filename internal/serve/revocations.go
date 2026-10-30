@@ -80,7 +80,11 @@ func (h *Handler) revocations(w http.ResponseWriter, r *http.Request, rt route) 
 	rows := snap.RevokedIndex()
 	v := revView{rows: rows, held: map[string]bool{}, suspended: suspended}
 	sum := sha256.New()
-	sum.Write(rows.Digest)
+	if actor == "" { // the public view: no other row moves its ETag
+		sum.Write(rows.PublicDigest)
+	} else {
+		sum.Write(rows.Digest)
+	}
 	sum.Write([]byte(strconv.FormatBool(suspended) + "\x00" + rt.cursor + "\x00"))
 	if actor != "" {
 		for _, n := range rows.Names {
