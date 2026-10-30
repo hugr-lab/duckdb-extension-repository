@@ -1,4 +1,4 @@
 # hugr-lab's extension-ci-tools commit (full hash) whose kista C++ SDK, kista/sdk/cpp, kista is tested
 # against (spec 0022): e2e builds kista_demo from it, and make sdk-test runs its tests.
 CI_TOOLS_REPO=https://github.com/hugr-lab/extension-ci-tools
-CI_TOOLS_COMMIT=a06cd0bc082c51dd44e12a612889f36486d01d20
+CI_TOOLS_COMMIT=c501c26be0c1fe484639138b449355ccc30b945a

@@ -241,9 +241,10 @@ checks), and by its byte caps.
   database, as `catalogue withdraw`). It reads the current metadata and writes both fields: a field
   not named keeps its value, the icon by its hash. Without flags it prints the metadata.
 - `catalogue show` prints `summary:` and `icon: <sha256> <w>x<h>`.
-- `kista_publish.py` in `hugr-lab/extension-ci-tools` gains `--summary` and `--icon` (Follow-ups).
-  Like the CLI, it reads the current metadata first (`GET …/meta`, signed) and sends the merged
-  result, the icon kept by `{"sha256"}`, so `--summary` alone keeps an icon set in the console. On
+- `kista_publish.py` in `hugr-lab/extension-ci-tools` gains `--entry-summary` (its `--summary` is
+  the job summary's file) and `--icon` (done in the fork's `sdk-v0.3.0`, Follow-ups). Like the CLI,
+  it reads the current metadata first (`GET …/meta`, signed) and sends the merged result, the icon
+  kept by `{"sha256"}`, so `--entry-summary` alone keeps an icon set in the console. On
   `409` it reads and merges again, once. On `catalogue-full` it stops with the error (a non-zero
   exit). Given neither flag, it sends nothing.
 
@@ -798,8 +799,9 @@ event), `api.md`, `console.md`, `configuration.md` (the two keys).
 
 ## Follow-ups
 
-- `kista_publish.py --summary --icon` in `hugr-lab/extension-ci-tools`, the template's workflow
-  passing them, and `e2e/CI_TOOLS_PIN` moved.
+- Done: `kista_publish.py --entry-summary --icon` (and `--catalogue`) in `hugr-lab/extension-ci-tools`
+  `sdk-v0.3.0`, `_kista_publish.yml`'s `entry_summary` and `icon` inputs, the template's pin, and
+  `e2e/CI_TOOLS_PIN` moved.
 - Several distributors on one server: re-marking a publisher under another distributor moves its
   whole history to the new name, since the mark is read at query time. Fix this when a second
   distributor comes, together with a per-distributor role.

@@ -535,8 +535,11 @@ curl --fail-with-body -sS -X PUT "$KISTA$M" -H "Kista-Statement: $ST" -H "Kista-
 ```
 
 The publication's body stays the file alone: the metadata travels in its own request, and a new
-version keeps the entry's metadata. `kista_publish.py` in the developer kit gains `--summary` and
-`--icon` in a later release of `hugr-lab/extension-ci-tools`.
+version keeps the entry's metadata. `kista_publish.py` in the [developer kit](#publishing-from-ci)
+sets them with `--entry-summary <text>` and `--icon <file.png>` after an extension's builds: it
+reads the metadata, merges what is given (the icon kept by its hash), and writes only a change; an
+empty value clears that field. `_kista_publish.yml` passes its `entry_summary` and `icon` inputs
+(an empty input leaves the field as it is).
 
 ## Changing a release
 
@@ -751,8 +754,12 @@ publish:
 publishes from GitHub Actions with the fork's `kista_publish.py`, which does the above for every
 build of a distribution: it reads each build's version and platform from its footer, skips wasm
 builds (refused, above), signs each request, and retries a `429`, a `408`, a `5xx` or a broken
-connection, signing again (it should stop on a `429` typed `catalogue-full` or `tenant-limit`, [above](#publishing-over-the-api)). Its `--check` signs a `whoami` first. It needs only Python 3 and OpenSSH,
-so it also runs in another CI: see the fork's
+connection, signing again; it stops on a `429` typed `catalogue-full` or `tenant-limit`
+([above](#publishing-over-the-api)), which clears only when room is made. Its `--check` signs a
+`whoami` first. With `--catalogue` instead of `--channel` it publishes [into the
+catalogue](#publishing-into-the-catalogue) (a publisher with a hold publishes so), and
+`--entry-summary` and `--icon` set the entry's [summary and icon](#an-entrys-icon-and-summary). It
+needs only Python 3 and OpenSSH, so it also runs in another CI: see the fork's
 [KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md).
 
 The release keeps the statement and the signature as they came (`publisher_statement`,
