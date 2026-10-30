@@ -386,10 +386,12 @@ Extension developers build and publish with hugr-lab's fork of DuckDB's extensio
 [KISTA.md](https://github.com/hugr-lab/extension-ci-tools/blob/main/KISTA.md)). It holds:
 
 - **the C++ SDK** (`kista/sdk/cpp`): licences and usage reports ([Licensing](licensing.md#the-c-sdk));
-- **`scripts/kista_publish.py`**: publishes a distribution build to a kista channel, each request
-  signed with the publisher's SSH key ([Signed requests](publishing.md#signed-requests)); it needs
-  only Python 3 and OpenSSH, so it runs in any CI. **`_kista_publish.yml`** runs it from GitHub
-  Actions, the key in the `KISTA_PUBLISHER_KEY` secret;
+- **`scripts/kista_publish.py`**: publishes a distribution build to a kista channel or, with
+  `--catalogue`, into the tenant's catalogue, and sets the entry's summary and icon
+  (`--entry-summary`, `--icon`); each request is signed with the publisher's SSH key
+  ([Signed requests](publishing.md#signed-requests)); it needs only Python 3 and OpenSSH, so it runs
+  in any CI. **`_kista_publish.yml`** runs it from GitHub Actions, the key in the
+  `KISTA_PUBLISHER_KEY` secret;
 - **`makefiles/kista.Makefile`**: the licence keys at build time.
 
 There are two kinds of extension:
