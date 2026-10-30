@@ -45,3 +45,4 @@ and it is superseded by a new spec when a decision changes.
 | [0036](0036-entry-meta/spec.md) | Entry metadata (an icon and a summary per catalogue entry) and a distributor's aggregated download statistics | implemented |
 | [0037](0037-distributor-in-a-tenant/spec.md) | The distributor in a tenant: its licences and older ones refused, a narrower distribution admin (tenant reservations removed, a minimum hold), publisher ids, signed catalogue reads, `429` types | implemented |
 | [0038](0038-tenant-limits/spec.md) | Tenant limits: own catalogue bytes, channels, upstreams and publishers per tenant, set by server administrators; `catalogue-full` in an upstream run as a failed cell | implemented |
+| [0039](0039-own-kista/spec.md) | An own kista mirroring a channel: `*` on a mirror of a kista (names from the remote's index), withdrawals and yanks downstream, online and in bundles | draft |
