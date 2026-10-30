@@ -555,7 +555,7 @@ func (s *Service) collisions(ctx context.Context, tx *store.Tx, u store.Upstream
 		}
 	}
 	if len(taken) > 0 {
-		return fmt.Errorf("%w: another upstream of the channel lists %s", ErrCollision, strings.Join(taken, ", "))
+		return fmt.Errorf("%w: another upstream of the channel lists or discovered %s", ErrCollision, strings.Join(taken, ", "))
 	}
 	return nil
 }

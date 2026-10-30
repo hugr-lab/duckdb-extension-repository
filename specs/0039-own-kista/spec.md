@@ -398,7 +398,13 @@ with its upstream.
      (`MaxUpstreamCells`, `MaxTenantCells` less the tenant's other upstreams) hold beside the
      explicit entries. Kept names stay first, new ones fill by name, the rest are a `names`
      problem; a cut listing adds within the room and removes nothing. Only kept names are stored, so
-     the run, the asks and `TenantCells` follow the one decision.
+     the run, the asks and `TenantCells` follow the one decision. Discovered names take room first
+     come and keep it: while they fill the caps, an explicit entry or a platform added to an upstream
+     of the tenant is refused, and another upstream of the channel listing a discovered name is a
+     collision ("lists or discovered"). When the room shrinks (more DuckDB versions in the channel),
+     the kept names last by name are forgotten, their cells and asks deleted.
+   - A discovered name's first release renews no other channel's snapshot: until one renews, a
+     pull-through `*` there may still fetch the name, a wasted fetch the insert's recheck refuses.
    - A discovered name put as an explicit entry becomes the entry's (its `upstream_names` row goes,
      its cells stay).
    - The anonymous ETags of `-/names` and `-/revocations` hash the public view only.

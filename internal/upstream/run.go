@@ -432,7 +432,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 					cancel(errStopped)
 					return
 				}
-				e, ok := entry(cur, c.name)
+				e, ok := cur.Entry(c.name)
 				if !ok || !slices.Contains(cur.Platforms, c.platform) {
 					continue
 				}
@@ -840,11 +840,6 @@ func freshness(st *store.Store, id string) func(context.Context) (store.Upstream
 		at = time.Now()
 		return u, nil
 	}
-}
-
-// entry is the upstream's entry of name: listed, or discovered by a mirror's "*" (spec 0039).
-func entry(u store.Upstream, name string) (store.UpstreamEntry, bool) {
-	return u.Entry(name)
 }
 
 // runClass is a stopped run's error class for its event (never the error's text).

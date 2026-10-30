@@ -714,10 +714,12 @@ WHERE u.channel_id = ? AND u.id <> ?`, channelID, exceptUpstreamID); err != nil 
 	return listed, discovered, nil
 }
 
-// TenantNamesOfOtherSources are the names a source of the tenant other than an upstream (its own,
-// a publisher's, a distributor's) holds a release of in a channel (spec 0039: "*" takes none).
-func (t *Tx) TenantNamesOfOtherSources(ctx context.Context, tenantID string) (map[string]bool, error) {
-	names, err := t.strings(ctx, "SELECT DISTINCT name FROM releases WHERE tenant_id = ? AND source NOT LIKE ?", tenantID, SourceUpstreamPrefix+"%")
+// TenantNamesOfOtherSources are the names of a package type a source of the tenant other than an
+// upstream (its own, a publisher's, a distributor's) holds a release of in a channel of that type
+// (spec 0039: "*" takes none).
+func (t *Tx) TenantNamesOfOtherSources(ctx context.Context, tenantID, packageType string) (map[string]bool, error) {
+	names, err := t.strings(ctx, `SELECT DISTINCT r.name FROM releases r JOIN channels c ON c.id = r.channel_id
+WHERE r.tenant_id = ? AND c.package_type = ? AND r.source NOT LIKE ?`, tenantID, packageType, SourceUpstreamPrefix+"%")
 	out := map[string]bool{}
 	for _, n := range names {
 		out[n] = true
@@ -726,10 +728,11 @@ func (t *Tx) TenantNamesOfOtherSources(ctx context.Context, tenantID string) (ma
 }
 
 // OtherSourceHolds reports whether a source of the tenant other than an upstream holds a release of
-// name (spec 0039: a discovered name's insert rechecks it).
-func (t *Tx) OtherSourceHolds(ctx context.Context, tenantID, name string) (bool, error) {
+// a package (type, name) (spec 0039: a discovered name's insert rechecks it).
+func (t *Tx) OtherSourceHolds(ctx context.Context, tenantID, packageType, name string) (bool, error) {
 	var n int
-	err := t.queryRow(ctx, "SELECT COUNT(*) FROM releases WHERE tenant_id = ? AND name = ? AND source NOT LIKE ?", tenantID, name,
+	err := t.queryRow(ctx, `SELECT COUNT(*) FROM releases r JOIN channels c ON c.id = r.channel_id
+WHERE r.tenant_id = ? AND c.package_type = ? AND r.name = ? AND r.source NOT LIKE ?`, tenantID, packageType, name,
 		SourceUpstreamPrefix+"%").Scan(&n)
 	return n > 0, err
 }

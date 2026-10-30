@@ -764,7 +764,7 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					}
 					// nor a name a source of the tenant other than an upstream holds since: every signed
 					// channel's insert takes the tenant's upstream lock, so the two never race
-					if held, err := tx.OtherSourceHolds(ctx, b.TenantID, b.Name); err != nil || held {
+					if held, err := tx.OtherSourceHolds(ctx, b.TenantID, b.PackageType, b.Name); err != nil || held {
 						if err == nil {
 							err = ErrShadowed
 						}

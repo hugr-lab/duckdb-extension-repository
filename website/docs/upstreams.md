@@ -678,7 +678,11 @@ every page, with the upstream's credential, and keeps a name when:
 The names kept fit a room: at most 1,000, and no more than the [matrix limits](#what-is-fetched)
 hold beside the explicit entries and the tenant's other upstreams. The names already kept stay, new
 ones fill what is left by name, and the rest are a `names` problem. The room is decided when the
-names are read, and the run, the asks and the tenant's count of cells follow it. Only a complete
+names are read, and the run, the asks and the tenant's count of cells follow it. Discovered names
+take room first come and keep it: while they fill the caps, an explicit entry or a platform added to
+an upstream of the tenant is refused for the room, and another upstream of the channel cannot list a
+discovered name (a collision, "lists or discovered"). When the room shrinks (the channel serves more
+DuckDB versions, say), the names last by name are forgotten, and their cells and asks deleted. Only a complete
 listing removes a name absent from it: a listing that failed or was cut keeps the names there are.
 A name that leaves the source keeps its releases, as a removed entry's do, and its cells go. A
 discovered name listed explicitly becomes that entry's, counted once. `GET …/upstreams/{name}/names` and `kista admin upstream names <tenant> <name>` list them; the

@@ -119,7 +119,7 @@ func (s *Service) discover(ctx context.Context, sc store.ServeChannel, u store.U
 		if err != nil {
 			return err
 		}
-		held, err := tx.TenantNamesOfOtherSources(ctx, cur.TenantID)
+		held, err := tx.TenantNamesOfOtherSources(ctx, cur.TenantID, pkgtype.DuckDBExtension)
 		if err != nil {
 			return err
 		}

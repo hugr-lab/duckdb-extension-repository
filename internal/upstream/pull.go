@@ -350,9 +350,9 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 		}
 		return "", err
 	}
-	e, ok := entry(u, m.Name)
+	e, ok := u.Entry(m.Name)
 	if !ok {
-		if _, any := entry(u, "*"); any && release.AnyTakes(pkgtype.DuckDBExtension, u.Kind, m.Name) { // an upstream's names are DuckDB's
+		if _, any := u.Entry("*"); any && release.AnyTakes(pkgtype.DuckDBExtension, u.Kind, m.Name) { // an upstream's names are DuckDB's
 			// "*" takes no name another upstream of the channel lists (it may have been added since
 			// the snapshot)
 			var owner string
@@ -447,7 +447,7 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 		return store.CellUnchanged, nil // a 304: the cell keeps its record
 	}
 	// a "*" upstream records released cells only: names probed by callers do not pile up
-	_, listed := entry(u, m.Name)
+	_, listed := u.Entry(m.Name)
 	if listed || rec.Outcome == store.CellReleased {
 		wctx := context.WithoutCancel(ctx)
 		if err := s.Store.InTenantTx(wctx, u.TenantID, nil, func(tx *store.Tx) error {
