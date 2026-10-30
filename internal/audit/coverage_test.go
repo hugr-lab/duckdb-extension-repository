@@ -108,7 +108,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
 		"Place":     {"release.place", "shadow.add", "source.set", "license.public_warning"},
 		"PlaceRule": {"release.place", "shadow.add", "license.public_warning"}, "Catalogue": nil,
-		"CatalogueVersions": nil, "AddToCatalogue": {"catalogue.arrival"}, "PurgeEntry": {"catalogue.purge"}, "TrimLanded": nil,
+		"CatalogueVersions": nil, "NewBodyRoom": nil, "AddToCatalogue": {"catalogue.arrival"}, "PurgeEntry": {"catalogue.purge"}, "TrimLanded": nil,
 		"SetFollow": {"follow.set"}, "RemoveFollow": {"follow.clear"}, "Follows": nil, "Follow": nil,
 		"PlaceFollow":    {"source.set", "release.place", "shadow.add", "license.public_warning"},
 		"SetChannelHold": {"catalogue.hold"}, "ChannelHold": nil,

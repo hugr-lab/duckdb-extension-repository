@@ -1,4 +1,4 @@
-import { ApiError, type Client, seg } from './http'
+import { ApiError, type Client, final, seg } from './http'
 
 // A bundle uploaded in chunks (spec 0014 phase 2): each chunk sent with its RFC 9530
 // Content-Digest, a few at once, sent again when the server is busy or the network fails; a broken
@@ -193,6 +193,7 @@ export function sleepFor(ms: number, signal: AbortSignal): Promise<void> {
 /** A failure worth sending a chunk again for: the server busy or failing, a chunk it could not
  * read whole (a slow link), the network gone, a chunk timed out. */
 export function transient(e: unknown) {
+  if (final(e)) return false // spec 0038: a limit or a full catalogue clears by no wait
   if (e instanceof ApiError) return e.status === 429 || e.status === 408 || e.status >= 500 || (e.status === 400 && /could not be read whole/.test(e.message))
   if (e instanceof DOMException) return e.name === 'TimeoutError'
   return e instanceof TypeError // fetch's network failure

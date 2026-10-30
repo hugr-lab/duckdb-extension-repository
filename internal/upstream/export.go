@@ -733,7 +733,9 @@ func (x *exporter) fromUpstream(ctx context.Context, src *xsource, xu *xupstream
 			rec, ok = other.cells[key]
 		}
 	}
-	if ok && rec.BodyHash == best.BodyHash && !rec.FetchedAt.IsZero() {
+	// a failed fetch keeps the body the cell held (spec 0038) but confirmed nothing: only a record of
+	// a body taken counts
+	if ok && conditional[rec.Outcome] && rec.BodyHash == best.BodyHash && !rec.FetchedAt.IsZero() {
 		c.FetchedAt, c.ETag = rec.FetchedAt, bundle.Text(rec.ETag, bundle.MaxETag)
 	} else if ft, err := time.Parse(time.RFC3339, prov.FetchedAt); err == nil {
 		c.FetchedAt = ft

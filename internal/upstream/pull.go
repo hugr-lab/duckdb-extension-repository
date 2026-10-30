@@ -299,7 +299,7 @@ func (p *Puller) work(ctx context.Context, m release.Miss) {
 		p.mu.Unlock()
 	}()
 	outcome, err := p.fetch(ctx, m)
-	if err != nil {
+	if err != nil && !isRoomRefusal(err) {
 		p.Log.Warn("upstream: a pull-through fetch failed", "upstream", m.UpstreamID, "name", m.Name, "error", err)
 	}
 	// a released cell is served from now on; any other outcome is not fetched again for a while (a
@@ -308,6 +308,11 @@ func (p *Puller) work(ctx context.Context, m release.Miss) {
 	case errors.Is(err, credential.ErrClient): // the operator's configuration: not asked again for a while
 		p.mu.Lock()
 		p.remember(k, time.Now().Add(failedTTL))
+		p.mu.Unlock()
+		return
+	case isRoomRefusal(err): // spec 0038: failed, but refused again until room is made
+		p.mu.Lock()
+		p.remember(k, time.Now().Add(p.NegativeTTL))
 		p.mu.Unlock()
 		return
 	}
@@ -415,9 +420,22 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	if lazy { // spec 0032: first requests have a gate of their own, one fetch a host and tenant, so a run does not hold them back
 		gate = s.gates().host("ask "+u.TenantID+" "+pu.Host, 1)
 	}
-	rec := s.cell(ctx, actor, sc, u, e, keys, base, gate, cell{m.DuckDBVersion, m.Platform, m.Name}, prev, false, triggerAsk)
+	room, err := s.newBodyRoom(ctx, u) // spec 0038: checked before the download
+	if err != nil {
+		if lazy { // a fetch that cannot start, as above
+			p.putFailed(ctx, u, m, "the catalogue's use could not be read")
+		}
+		return store.CellFailed, err
+	}
+	rec := s.cell(ctx, actor, sc, u, e, keys, base, gate, cell{m.DuckDBVersion, m.Platform, m.Name}, prev, false, triggerAsk, room)
 	if ctx.Err() != nil {
 		return "", nil // stopping, or the lease was lost: nothing is recorded
+	}
+	if rec.Outcome == atLimit { // spec 0038: no room for a cell holding no body: not requested
+		if lazy && prev.Outcome == "" { // a first request is answered 404 now, not 503 while nothing comes (spec 0032)
+			p.putFailed(ctx, u, m, room.noRoom().Error())
+		}
+		return store.CellFailed, room.noRoom()
 	}
 	if rec.Outcome == "" { // the identity provider refuses kista's own client: logged, nothing recorded
 		if lazy { // but a lazy mirror's cell is failed (spec 0032), as above
@@ -446,6 +464,11 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 		}); err != nil {
 			return rec.Outcome, err
 		}
+	}
+	// spec 0038: this cell refused by a limit (the room is the fetch's own): asked again within
+	// NegativeTTL it would be refused again; any other failure is retried sooner
+	if refused := room.refusal(); refused != nil && rec.Outcome == store.CellFailed {
+		return rec.Outcome, refused
 	}
 	return rec.Outcome, nil
 }

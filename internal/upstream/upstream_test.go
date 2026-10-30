@@ -77,6 +77,8 @@ type fakeRepo struct {
 	busy       map[string]int
 	retryAfter string
 	busyStatus int // 503 by default
+	// noETag serves a path without an ETag (spec 0038: a cell holding a body, fetched unconditionally)
+	noETag map[string]bool
 }
 
 // authorizations returns the Authorization headers of file requests so far.
@@ -90,7 +92,7 @@ func newRepo(t *testing.T) *fakeRepo { return newRepoTLS(t, false) }
 
 func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 	r := &fakeRepo{files: map[string][]byte{}, etags: map[string]string{}, gets: map[string]int{}, conds: map[string]int{},
-		gate: map[string]chan struct{}{}, hit: make(chan string, 16), busy: map[string]int{}, retryAfter: "0"}
+		gate: map[string]chan struct{}{}, hit: make(chan string, 16), busy: map[string]int{}, retryAfter: "0", noETag: map[string]bool{}}
 	h := http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
 		r.mu.Lock()
 		g := r.gate[q.URL.Path]
@@ -154,6 +156,10 @@ func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 			return
 		}
 		etag := r.etags[q.URL.Path]
+		if r.noETag[q.URL.Path] {
+			_, _ = w.Write(b)
+			return
+		}
 		if q.Header.Get("If-None-Match") == etag {
 			w.WriteHeader(http.StatusNotModified)
 			return

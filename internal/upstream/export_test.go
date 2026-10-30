@@ -240,6 +240,25 @@ func TestExport(t *testing.T) {
 					t.Errorf("%s: fetched_at %s etag %s, the record's %s %s", name, c.FetchedAt, c.ETag, rec.FetchedAt, rec.ETag)
 				}
 			}
+			// spec 0038: a failed fetch keeps the body the cell holds, but confirmed nothing: fetched_at
+			// is not the failure's, and no ETag goes with it
+			tresorPath := cellPath("v2.0.0", "linux_amd64", "tresor")
+			g.repo.mu.Lock()
+			g.repo.busy[tresorPath], g.repo.retryAfter = 1, ""
+			g.repo.mu.Unlock()
+			g.sync(t, false)
+			g.repo.mu.Lock()
+			g.repo.retryAfter = "0"
+			g.repo.mu.Unlock()
+			failed := g.cell(t, "tresor")
+			if failed.Outcome != store.CellFailed || failed.BodyHash != cells["tresor"].BodyHash {
+				t.Fatalf("the failed record: %+v", failed)
+			}
+			_, fdata := g.export(t, plan, upstream.ExportOptions{Private: []string{prefix}})
+			if _, fcells, _ := g.open(t, fdata); fcells["tresor"].FetchedAt.Equal(failed.FetchedAt) || fcells["tresor"].ETag != "" {
+				t.Fatalf("a failed fetch confirmed the body: %+v, the record %+v", fcells["tresor"], failed)
+			}
+
 			ir := g.importSite(t, data)
 			if tr := target(t, ir, "air"); tr.Result.Counts[store.CellReleased] != 2 || tr.Result.Counts[store.CellMissing] != 2 {
 				t.Fatalf("the import: %+v", tr)
@@ -299,7 +318,7 @@ func TestExport(t *testing.T) {
 			// the event, with no credential in it or the bundle
 			tn, _ := g.st.GetTenant(ctx, "acme")
 			evs, _ := g.st.ListEvents(ctx, tn.ID, store.EventFilter{Kind: "bundle.export", Limit: 100})
-			if len(evs) != 5 || !strings.Contains(evs[0].Data, `"manifest":"`+res.ID+`"`) || !strings.Contains(evs[0].Data, `"bundle_key":"`+g.fp+`"`) ||
+			if len(evs) != 6 || !strings.Contains(evs[0].Data, `"manifest":"`+res.ID+`"`) || !strings.Contains(evs[0].Data, `"bundle_key":"`+g.fp+`"`) ||
 				!strings.Contains(evs[0].Data, `"plan":"`+res.PlanSHA256+`"`) || !strings.Contains(evs[0].Data, `"counts":{`) ||
 				evs[0].Subject != "tenant:acme" {
 				t.Fatalf("events: %+v", evs)

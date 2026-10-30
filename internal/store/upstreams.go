@@ -642,8 +642,8 @@ func (t *Tx) DeleteAsk(ctx context.Context, upstreamID, duckdbVersion, platform,
 
 // AskFilled records an ask for each cell of an upstream that was fetched and found (spec 0032: an
 // upstream turning lazy keeps its releases current), with the cell's time: every recorded cell but
-// a missing one, since a failed fetch's record no longer names the body a release holds. An ask
-// recorded meanwhile is kept.
+// a missing one, a failed fetch's too, since a failed record keeps the body it held (spec 0038) and
+// a cell that failed is one to keep asking for. An ask recorded meanwhile is kept.
 func (t *Tx) AskFilled(ctx context.Context, upstreamID string) error {
 	const cells = `SELECT c.upstream_id, c.duckdb_version, c.platform, c.name, c.fetched_at FROM upstream_cells c
 WHERE c.upstream_id = ? AND c.outcome <> ?`

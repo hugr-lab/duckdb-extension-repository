@@ -195,6 +195,72 @@ var ErrNotDue = errors.New("upstream: not due")
 // errFailed wraps a run's own failure (keys, matrix): the run ended, it was not interrupted.
 var errFailed = errors.New("the run failed")
 
+// bodyRoom is a run's (or a lazy fetch's) room for new bodies (spec 0038). Without room (the
+// tenant uses its whole bytes limit or the upstream's catalogue is full when it starts, or a cell
+// was refused by either since), a cell whose record holds no body (see holds) is skipped without a
+// request; a cell that holds a body runs as ever, and room decides its body.
+type bodyRoom struct {
+	mu    sync.Mutex
+	short error // why there is no room: the start's check, or the first refusal since
+	met   error // the first refusal a cell met: the run ends failed
+}
+
+// noRoom is why there is no room for a new body, nil while there is.
+func (r *bodyRoom) noRoom() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.short
+}
+
+// refusal is the first refusal a cell met, nil when none did.
+func (r *bodyRoom) refusal() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.met
+}
+
+// refuse records a cell's refusal: no room from now on.
+func (r *bodyRoom) refuse(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.met == nil {
+		r.met = err
+	}
+	if r.short == nil {
+		r.short = err
+	}
+}
+
+// newBodyRoom is the room a run or a lazy fetch starts with: none when the tenant uses all of its
+// bytes limit or the upstream's catalogue is full.
+func (s *Service) newBodyRoom(ctx context.Context, u store.Upstream) (*bodyRoom, error) {
+	r := &bodyRoom{}
+	switch err := s.Releases.NewBodyRoom(ctx, u.TenantID, store.UpstreamSource(u.ID)); {
+	case isRoomRefusal(err):
+		r.short = err
+	case err != nil:
+		return nil, err
+	}
+	return r, nil
+}
+
+// atLimit marks a cell skipped for want of room (spec 0038): not requested, its record left as it
+// is; a run counts it, never records it.
+const atLimit = "skipped_at_limit"
+
+// holds reports whether a cell's record holds a body (spec 0038): one it took (a conditional
+// outcome), or a failed record that kept the body it held (import.go's rule). A refusal's record
+// (rejected, blocked, shadowed, conflict) names a body it did not take.
+func holds(c store.UpstreamCell) bool {
+	return c.BodyHash != "" && c.Outcome != store.CellConflict && (conditional[c.Outcome] || c.Outcome == store.CellFailed)
+}
+
+// isRoomRefusal reports a refusal for room (spec 0038): the tenant's limit, the source's full
+// catalogue. Neither is the file's fault, and neither clears within a run.
+func isRoomRefusal(err error) bool {
+	return errors.Is(err, store.ErrTenantLimit) || errors.Is(err, store.ErrCatalogueFull)
+}
+
 type cell struct{ version, platform, name string }
 
 func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew func(context.Context) error, full bool, only map[[3]string]bool,
@@ -297,6 +363,11 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	hostGate := g.host(pu.Host, perHost)
 	actor := authz.Actor{Kind: authz.ActorSystem, ID: "upstream:" + sc.Tenant.Name + "/" + u.Name}
 	res.actor = actor.String()
+	// spec 0038: the tenant's use is read once here; the first refusal in a cell stops new downloads
+	room, err := s.newBodyRoom(ctx, u)
+	if err != nil {
+		return err
+	}
 
 	var mu sync.Mutex
 	note := func(c cell, outcome, detail string) {
@@ -383,7 +454,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 						continue
 					}
 				}
-				outcome := s.cell(cctx, actor, sc, cur, e, ks, base, hostGate, c, prev, res.DryRun, trigger)
+				outcome := s.cell(cctx, actor, sc, cur, e, ks, base, hostGate, c, prev, res.DryRun, trigger, room)
 				lost := cctx.Err() != nil
 				done()
 				if outcome.Outcome == "" { // the identity provider refuses kista's own client: the run fails
@@ -392,6 +463,12 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 				}
 				if rctx.Err() != nil {
 					return // a stopped run records nothing more: another run takes the cell
+				}
+				if outcome.Outcome == atLimit { // spec 0038: counted, its record left as it is
+					mu.Lock()
+					res.Counts[atLimit]++
+					mu.Unlock()
+					continue
 				}
 				if lost { // the cell's lease was lost: another fetch takes the cell, and records it
 					mu.Lock()
@@ -443,7 +520,13 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 			return err
 		}
 	}
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := room.refusal(); err != nil { // spec 0038: a cell refused: failed, not interrupted; the next run comes at its time
+		return fmt.Errorf("%w: %w", errFailed, err)
+	}
+	return nil
 }
 
 // errStopped is a run stopped by a pause.
@@ -488,12 +571,23 @@ const (
 	maxRetryAfter = 30 * time.Second
 )
 
-// cell fetches and takes in one cell, and returns its record.
+// cell fetches and takes in one cell, and returns its record. room is the run's room for new bodies
+// (spec 0038): a cell meeting the tenant's limit or the source's full catalogue refuses it.
 func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel, u store.Upstream, e store.UpstreamEntry,
-	keys []*rsa.PublicKey, base string, hostGate chan struct{}, c cell, prev store.UpstreamCell, dryRun bool, trigger string) store.UpstreamCell {
+	keys []*rsa.PublicKey, base string, hostGate chan struct{}, c cell, prev store.UpstreamCell, dryRun bool, trigger string,
+	room *bodyRoom) store.UpstreamCell {
 	rec := store.UpstreamCell{UpstreamID: u.ID, DuckDBVersion: c.version, Platform: c.platform, Name: c.name, FetchedAt: time.Now().UTC()}
 	fail := func(outcome string, err error) store.UpstreamCell {
 		rec.Outcome = outcome
+		if outcome == store.CellFailed {
+			// never the file's fault: the record keeps the body the cell holds (a landed build stays
+			// its cell's) and its ETag, as an import's does; it holds none after a refusal or a miss
+			if holds(prev) {
+				rec.BodyHash, rec.ETag = prev.BodyHash, prev.ETag
+			} else {
+				rec.BodyHash, rec.ETag = "", ""
+			}
+		}
 		if err != nil {
 			rec.Detail = err.Error()
 			if outcome != store.CellMissing {
@@ -518,6 +612,12 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 	// a name without a source (cleared) fetches the body again, so the same body sets it
 	if !dryRun && conditional[prev.Outcome] && sel.Source != "" {
 		etag = prev.ETag
+	}
+	// spec 0038: without room, a cell whose record holds no body (a dry run's too; a refusal's names
+	// one it did not take) is not requested and its record not touched; a cell that holds a body runs
+	// as ever, and room decides
+	if room.noRoom() != nil && !holds(prev) {
+		return store.UpstreamCell{Outcome: atLimit}
 	}
 	// kista serve creates the directory at start; kista admin bundle export -sync runs here without it
 	if s.TempDir != "" {
@@ -652,7 +752,11 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		return fail(store.CellOtherSource, err)
 	case errors.Is(err, release.ErrConflict):
 		return fail(store.CellConflict, err)
+	case isRoomRefusal(err): // spec 0038: never the file's fault; new downloads stop
+		room.refuse(err)
+		return fail(store.CellFailed, err)
 	case errors.Is(err, store.ErrBusy), errors.Is(err, store.ErrBuildGone), errors.Is(err, store.ErrStreamBusy),
+		errors.Is(err, release.ErrUsage), // spec 0038: the catalogue's use could not be read
 		errors.Is(err, store.ErrClaimLost), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
 		errors.Is(err, store.ErrSourceGone),
 		errors.Is(err, store.ErrDeleting): // spec 0019: never the file's fault; recording the cell stops the run

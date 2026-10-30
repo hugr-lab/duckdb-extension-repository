@@ -43,6 +43,9 @@ var (
 	// reaches a channel once its hold has passed, or placed early by a channel administrator; and a
 	// publisher with a hold publishing on a channel's route, which publishes into the catalogue.
 	ErrHeld = errors.New("release: held")
+	// ErrUsage is a catalogue's use that could not be read for an intake's room (spec 0038): the
+	// intake is refused as an error, never as the file's fault (an upstream's cell is failed).
+	ErrUsage = errors.New("release: the catalogue's use could not be read")
 )
 
 // channelType is a channel's package type for the lookups that come before authorization (spec

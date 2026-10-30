@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { ApiError, type Client } from './http'
 import { type BundleUpload, checkUpload, contentDigest, loadResume, missing, normalSHA, resumeKey, sameFile, saveResume, sleepFor, transient, uploadBundle } from './upload'
-import { importLines, importProblem, sizeText, uploadStatus } from '../screens/BundleUploads'
+import { importLines, importProblem, uploadStatus } from '../screens/BundleUploads'
+import { sizeText } from './size'
 
 // Spec 0014 phase 2 in the console: a bundle's chunks, their digests, retries and resuming.
 

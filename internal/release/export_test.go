@@ -22,3 +22,6 @@ var DistributorMayNow = distributorMayNow
 // SetBeforeMetaCommit sets a hook run between a metadata write's checks (and its upload) and its
 // transaction (spec 0036).
 func SetBeforeMetaCommit(s *Service, f func()) { s.beforeMetaCommit = f }
+
+// UsageErr is a room check's error as an intake answers it (spec 0038).
+var UsageErr = usageErr

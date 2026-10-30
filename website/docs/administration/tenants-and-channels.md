@@ -131,7 +131,11 @@ given at creation are one in the server's events, beside `tenant.create`.
   bootstrap are counted but never refused. A server administrator who needs more raises the limit.
 - **A refusal** is `429` with the problem type `tenant-limit` and a `limit` member naming the limit,
   without `Retry-After`: it clears as the tenant frees room or its limit is raised. kista's clients
-  never retry it.
+  never retry it. An upstream run without room skips the cells that hold no body, and a run in which
+  a cell is refused ends failed, its next run at the usual time
+  ([A run at a limit](../upstreams.md#a-run-at-a-limit)).
+- **The console's Limits page** shows the tenant's administrators what is set, what applies and
+  what is used, read only.
 - **Lowering a limit removes nothing.** A tenant over a limit still reads, serves, promotes and
   removes; only growth of that kind is refused until it is back under the limit.
 - **The configuration's [`limits:`](../configuration.md#limits)** are the default of a tenant
