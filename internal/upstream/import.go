@@ -673,7 +673,7 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 		tg.stopped, tg.runErr = true, errStopped
 		return nil
 	}
-	e, ok := entry(cur, c.Name)
+	e, ok := cur.Entry(c.Name)
 	if !ok || !slices.Contains(cur.Platforms, c.Platform) {
 		return nil
 	}
@@ -844,7 +844,7 @@ func (s *Service) leftovers(ctx context.Context, t store.Tenant, targets []*targ
 				tg.stopped, tg.runErr = true, cmp.Or(err, errStopped)
 				break
 			}
-			if _, ok := entry(cur, c.Name); !ok || !slices.Contains(cur.Platforms, c.Platform) {
+			if _, ok := cur.Entry(c.Name); !ok || !slices.Contains(cur.Platforms, c.Platform) {
 				continue
 			}
 			prev := tg.last[k]

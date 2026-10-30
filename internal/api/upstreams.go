@@ -45,6 +45,9 @@ type upstreamJSON struct {
 	// spec 0039: the remote answers kista's revocations; the switch applying them
 	RemoteKista bool `json:"remote_kista"`
 	Revocations bool `json:"revocations"`
+	// Discovered is the number of names a mirror's "*" took from its kista remote (spec 0039 PR 2);
+	// absent without "*"
+	Discovered *int `json:"discovered,omitempty"`
 	// bundle mode (spec 0014): the last imported manifest
 	BundleID        string `json:"bundle_id,omitempty"`
 	BundleCreatedAt string `json:"bundle_created_at,omitempty"`
@@ -71,6 +74,10 @@ func (h *Handler) upstreamOf(u store.Upstream, channels map[string]string, c cal
 		RemoteKista: u.RemoteKista, Revocations: u.Revocations}
 	if u.Mode == store.ModeMirror {
 		o.Fetch = u.FetchMode
+	}
+	if u.AnyMirror() {
+		n := len(u.Discovered)
+		o.Discovered = &n
 	}
 	switch {
 	case !u.RequestedAt.IsZero() && u.RequestDryRun:
@@ -275,6 +282,31 @@ func (h *Handler) listEntries(w http.ResponseWriter, r *http.Request, c caller, 
 	es := slices.DeleteFunc(h.upstreamOf(u, chs, c).Extensions, func(e entryJSON) bool { return !strings.HasPrefix(e.Name, prefix) })
 	es, next := paged(es, func(e entryJSON) string { return e.Name }, limit, after)
 	reply(w, r, http.StatusOK, list("extensions", es, next), "", noStore)
+}
+
+// upstreamNames answers the names a mirror's "*" took from its kista remote (spec 0039 PR 2), paged
+// as the allowlist is, with a name prefix; an upstream without "*" has none.
+func (h *Handler) upstreamNames(w http.ResponseWriter, r *http.Request, c caller, p params) {
+	limit, after, ok := page(w, r)
+	if !ok {
+		return
+	}
+	if r.URL.Query().Get("limit") == "" {
+		limit = store.MaxDiscoveredNames
+	}
+	prefix, ok := namePrefix(w, r)
+	if !ok {
+		return
+	}
+	a, _ := c.actor()
+	u, err := h.o.Upstreams.Get(r.Context(), a, p["t"], p["name"])
+	if err != nil {
+		h.upstreamErr(w, err)
+		return
+	}
+	ns := slices.DeleteFunc(slices.Clone(u.Discovered), func(n string) bool { return !strings.HasPrefix(n, prefix) })
+	ns, next := paged(ns, func(n string) string { return n }, limit, after)
+	reply(w, r, http.StatusOK, list("names", nonNil(ns), next), "", noStore)
 }
 
 // putEntry adds an allowlist entry (201), or replaces an existing one's versions and allow_reserved

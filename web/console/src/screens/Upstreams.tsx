@@ -53,6 +53,8 @@ export interface Upstream {
   /** whether its source answered as a kista, and whether its revocations are applied (spec 0039) */
   remote_kista?: boolean
   revocations?: boolean
+  /** a mirror with "*": the number of names it took from its kista source (spec 0039) */
+  discovered?: number
   /** an eager mirror's hold (spec 0033): its new versions wait this long for any channel; omitted for none */
   hold?: string
   etag: string
@@ -265,7 +267,7 @@ function NewUpstream() {
           <span className="text-[13px] font-semibold text-ink">Platforms</span>
           <Checks label="platforms" options={platforms} value={plats} onChange={setPlats} />
         </div>
-        <Field label="Extensions" hint="names separated by commas or spaces; * (every name the source has) only in pull-through mode, never for DuckDB core. A reserved name is allowed from the upstream's page.">
+        <Field label="Extensions" hint="names separated by commas or spaces; * takes every name: in pull-through mode, or a repository mirror of a kista channel (the names it serves), never for DuckDB core. A reserved name is allowed from the upstream's page.">
           <input className="field font-mono" value={f.names} onChange={set('names')} />
         </Field>
         {takesRevocations(f) && (
@@ -361,6 +363,7 @@ function UpstreamView({ name }: { name: string }) {
       {u.kind === 'repository' && u.mode !== 'bundle' && <Usage u={u} path={path} etag={etag} onChanged={up.reload} />}
       {takesRevocations(u) && <Revocations u={u} path={path} etag={etag} onChanged={up.reload} />}
       <Allowlist path={path} mirror={u.mode === 'mirror'} lazy={lazy} onChanged={up.reload} />
+      {u.discovered !== undefined && <Discovered u={u} path={path} />}
       <Items key={u.etag} u={u} path={path} etag={etag} onChanged={up.reload} />
       <Cells key={String(lazy)} path={path} lazy={lazy} />
       <Confirm open={w !== null} title={w?.title ?? ''} confirm={w?.confirm ?? ''} danger={w?.danger} onConfirm={() => run(pending!)} onClose={() => setPending(null)}>
@@ -532,6 +535,26 @@ function Revocations({ u, path, etag, onChanged }: { u: Upstream; path: string; 
   )
 }
 
+/** The names a mirror's "*" took from its kista source (spec 0039): read again after each run, as a
+ * run changes them without moving the upstream's ETag. */
+export function Discovered({ u, path }: { u: Upstream; path: string }) {
+  const { client } = useTenant()
+  const list = useLoad(() => client.get<{ names: string[] }>(`${path}/names`), [path, u.last_run_at])
+  const names = list.data?.data.names ?? []
+  const problems = (u.last_run?.problems ?? []).filter((p) => p.outcome === 'names')
+  return (
+    <Card title="Discovered names">
+      <div className="flex flex-col gap-3">
+        <p className="m-0">The allowlist's <Mono>*</Mono> takes every name the source channel serves to this upstream, except names another upstream of the channel lists or took first, and names the tenant's own or a distributor's sources hold. A name the source stops listing leaves the list; its releases stay.</p>
+        {problems.map((p, i) => <Note key={i}>The last run's reading of the names: {p.detail}</Note>)}
+        {list.loading && !list.data ? <Loading /> : list.error ? <ErrorBox error={list.error} /> : names.length === 0
+          ? <span className="text-ink-muted">None yet: the next run reads them.</span>
+          : <div className="flex flex-wrap gap-2">{names.map((n) => <Mono key={n}>{n}</Mono>)}</div>}
+      </div>
+    </Card>
+  )
+}
+
 /** The allowlist, page by page with a prefix; entries added (or their versions replaced) and removed. */
 function Allowlist({ path, mirror, lazy, onChanged }: { path: string; mirror: boolean; lazy: boolean; onChanged: () => void }) {
   const { client } = useTenant()
@@ -572,7 +595,7 @@ function Allowlist({ path, mirror, lazy, onChanged }: { path: string; mirror: bo
         )}
         <Pager page={list.page} size={list.size} count={list.items.length} hasNext={list.hasNext} onPrev={list.prev} onNext={list.next} onSize={list.setSize} />
         <form className="flex flex-wrap items-end gap-3 border-t border-line pt-4" onSubmit={add}>
-          <Field label="Name" hint="* for every name: pull-through only, never for DuckDB core"><input className="field font-mono" required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+          <Field label="Name" hint="* for every name: pull-through, or a repository mirror of a kista channel; never for DuckDB core"><input className="field font-mono" required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
           <Field label="Versions" hint="empty: every version; an existing entry's versions, reserved-name and eager marks are replaced"><input className="field font-mono" value={f.versions} onChange={(e) => setF({ ...f, versions: e.target.value })} /></Field>
           <label className="flex items-center gap-2 pb-2 text-[13px]"><input type="checkbox" checked={f.allow_reserved} onChange={(e) => setF({ ...f, allow_reserved: e.target.checked })} /> allow a reserved name (core or community)</label>
           {mirror && <label className="flex items-center gap-2 pb-2 text-[13px]"><input type="checkbox" checked={f.eager} onChange={(e) => setF({ ...f, eager: e.target.checked })} /> eager (a lazy mirror fetches it before anyone asks)</label>}

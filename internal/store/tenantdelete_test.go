@@ -83,6 +83,8 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 			[]any{id("u"), hash, tid, now}},
 		{"INSERT INTO upstream_yanks (release_id, tenant_id, upstream_id, build_id, body_hash, prior_state, cause) VALUES (?, ?, ?, ?, ?, 'active', 'block')",
 			[]any{id("r"), tid, id("u"), id("b"), hash}},
+		// spec 0039 PR 2: a name a "*" mirror discovered
+		{"INSERT INTO upstream_names (upstream_id, name, discovered_at) VALUES (?, 'geo', ?)", []any{id("u"), now}},
 		{"INSERT INTO licenses (tenant_id, name, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, expires_at, " +
 			"grace_until, source, upstream_id, visibility, actor, updated_at, version, entry_source) VALUES (?, 'json', 'l1', 'https://i.example', 'acme', '', " +
 			"'pro', 't', ?, 1, 2, 3, 'upstream', ?, 'private', 'system:licenses', ?, 1, ?)", []any{tid, fp("l"), id("u"), now, "upstream:" + id("u")}},
@@ -151,7 +153,7 @@ func rowsOf(t *testing.T, s *store.Store, tenantID, channelID string) map[string
 			where = "feed_id IN (SELECT id FROM feeds WHERE tenant_id = ?)"
 		case "bundle_upload_chunks":
 			where = "upload_id IN (SELECT id FROM bundle_uploads WHERE tenant_id = ?)"
-		case "upstream_asks", "upstream_cells", "upstream_versions", "upstream_entries", "upstream_platforms", "upstream_keys":
+		case "upstream_names", "upstream_asks", "upstream_cells", "upstream_versions", "upstream_entries", "upstream_platforms", "upstream_keys":
 			where = "upstream_id IN (SELECT id FROM upstreams WHERE tenant_id = ?)"
 		case "issuer_console_clients":
 			where = "issuer_id IN (SELECT id FROM issuers WHERE tenant_id = ?)"

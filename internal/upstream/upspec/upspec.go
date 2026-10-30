@@ -72,9 +72,13 @@ func Entry(kind, mode string, e *store.UpstreamEntry) error {
 	if e.Eager && mode != store.ModeMirror { // spec 0032: fetched at every run unasked
 		return fmt.Errorf("%w: only a mirror's entry is eager", store.ErrInvalid)
 	}
-	if e.Name == "*" { // any name: pull-through only, never a reserved name, no versions
-		if mode != store.ModePullThrough || len(e.Versions) > 0 || e.AllowReserved {
-			return fmt.Errorf("%w: \"*\" is a pull-through upstream's entry, without versions or allow_reserved", store.ErrInvalid)
+	if e.Name == "*" { // any name: never a reserved name, no versions
+		// a pull-through upstream's, or a mirror's of a kista channel, which takes the names the
+		// remote lists (spec 0039: the caller checks the remote is a kista)
+		takes := mode == store.ModePullThrough || mode == store.ModeMirror && kind == store.UpstreamRepo
+		if !takes || len(e.Versions) > 0 || e.AllowReserved {
+			return fmt.Errorf("%w: \"*\" is a pull-through upstream's entry, or a repository mirror's of a kista channel, without versions or allow_reserved",
+				store.ErrInvalid)
 		}
 		if kind == store.UpstreamCore { // every core name is reserved: "*" would take none
 			return fmt.Errorf("%w: \"*\" takes no core name; list them", store.ErrInvalid)

@@ -430,7 +430,7 @@ See [Publishing](../publishing.md).
 | --- | --- |
 | `upstream add <tenant> <name> -kind <k> -channel <c> -platforms <p,...> [flags]` | adds an upstream; `-kind` is `duckdb-core`, `duckdb-community` or `repository`; `-revocations` switches on applying its source's revocations (a repository mirror of a kista, or a bundle-mode upstream; [Revocations from a kista](../upstreams.md#revocations-from-a-kista)) |
 | `upstream list <tenant>` | `NAME`, `KIND`, `MODE` (`mirror (lazy)` for a lazy mirror), `STATE`, `VISIBILITY`, `EXTENSIONS`, `LAST RUN` |
-| `upstream show <tenant> <name>` | its settings, entries, requested run, last run and, in bundle mode, the last bundle |
+| `upstream show <tenant> <name>` | its settings, entries, a `*` mirror's number of discovered names (`discovered:`), requested run, last run and, in bundle mode, the last bundle |
 | `upstream remove`, `pause`, `resume`, `public`, `private` `<tenant> <name>` | |
 | `upstream sync <tenant> <name> [-dry-run]` | requests a run; a running `kista serve` takes it (a lazy mirror's: its whole matrix; a dry run: what a scheduled run would fetch) |
 | `upstream fetch <tenant> <name> eager\|lazy` | a mirror's fetch mode ([Lazy mirrors](../upstreams.md#lazy-mirrors)) |
@@ -442,6 +442,7 @@ See [Publishing](../publishing.md).
 | `upstream usage <tenant> <name> [forward\|off]` | the upstream's usage switch and its last forwarding run; `forward` or `off` sets it ([Licensing](../licensing.md#forwarding-usage-upstream)) |
 | `upstream revocations <tenant> <name> [on\|off]` | whether the source is a kista, the revocations switch, and the stored revocations (`BUILD`, `NAME`, `VERSION`, `PLATFORM`, `STATE`, `APPLIED`, `LIFTED`, `REASON`); `on` or `off` sets it ([Revocations from a kista](../upstreams.md#revocations-from-a-kista)) |
 | `upstream revocation lift <tenant> <name> <build>` | lifts the upstream's revocation of a build and restores what it yanked |
+| `upstream names <tenant> <name>` | the names a mirror's `*` took from its kista remote, one a line ([`*` on a mirror of a kista](../upstreams.md#on-a-mirror-of-a-kista)) |
 | `upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved] [-eager]` | adds or replaces an allowlist entry; `-eager`: a lazy mirror fetches it unasked |
 | `upstream extension remove <tenant> <name> <extension>` | |
 | `upstream platform add` or `remove` `<tenant> <name> <platform>` | |

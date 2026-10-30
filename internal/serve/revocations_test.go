@@ -49,6 +49,14 @@ func TestRevocationsRoute(t *testing.T) {
 	if a := en.do(t, "GET", path, map[string]string{"If-None-Match": etag}); a.status != 304 {
 		t.Fatalf("conditional: %d", a.status)
 	}
+	// a private row added moves no anonymous ETag: it hashes the public view only
+	hidden := en.add(t, ext(t, 2000, 4, cpp("1.0")), release.AddOptions{Unchecked: true, Name: "hidden", Private: true})
+	if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "hidden", hidden.ID, release.Yank, 0); err != nil {
+		t.Fatal(err)
+	}
+	if a := en.do(t, "GET", path, map[string]string{"If-None-Match": etag}); a.status != 304 {
+		t.Fatalf("a private row moved the anonymous ETag: %d", a.status)
+	}
 	if a := en.do(t, "GET", path+"?cursor=x", nil); a.status != 404 {
 		t.Fatalf("a query string: %d", a.status)
 	}

@@ -431,6 +431,9 @@ type item struct {
 	// anyKind is the upstream's kind when its "*" took the name: insert refuses the name under the
 	// locks if it is reserved since (as AnyTakes, and the tenant's upstreams). "": none.
 	anyKind string
+	// discoveredKind is the upstream's kind when its mirror's "*" discovered the name (spec 0039):
+	// insert refuses the name under the locks if the server reserved it since. "": none.
+	discoveredKind string
 	// publication is a publisher's publication on a channel's route, signed with keyID ("": none):
 	// insert checks under its locks that the publisher and the key still exist (spec 0033 phase A2:
 	// a key revoked, or a publisher removed, while the request was in flight releases nothing).
@@ -749,6 +752,23 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					}
 					if !taken {
 						return ErrShadowed
+					}
+				}
+				if it.discoveredKind != "" {
+					k, err := tx.ReservedKind(ctx, b.PackageType, b.Name)
+					if err != nil {
+						return err
+					}
+					if k == store.ReservedCore || k == store.ReservedCommunity && it.discoveredKind != store.UpstreamCommunity {
+						return ErrShadowed
+					}
+					// nor a name a source of the tenant other than an upstream holds since: every signed
+					// channel's insert takes the tenant's upstream lock, so the two never race
+					if held, err := tx.OtherSourceHolds(ctx, b.TenantID, b.PackageType, b.Name); err != nil || held {
+						if err == nil {
+							err = ErrShadowed
+						}
+						return err
 					}
 				}
 				upstream := it.origin == store.OriginUpstream

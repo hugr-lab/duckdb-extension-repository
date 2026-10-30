@@ -39,6 +39,10 @@ type Ingest struct {
 	// AnyKind is the upstream's kind when "*" took the name (spec 0009 phase 2, spec 0030): the
 	// release insert checks again, under its locks, that no reservation came since. "": listed.
 	AnyKind string
+	// DiscoveredKind is the upstream's kind when its mirror's "*" discovered the name (spec 0039):
+	// the insert checks again, under its locks, that the server reserved it not since (the tenant's
+	// own names are the discovery's to skip). "": listed.
+	DiscoveredKind string
 }
 
 // Ingested is an intake's result: the release (new or the slot's), whether it existed, and the
@@ -103,7 +107,7 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		return res, err
 	}
 	it := item{b: b, visibility: in.Visibility, origin: store.OriginUpstream, originSignature: f.Signature, source: store.UpstreamSource(in.UpstreamID),
-		reserveKind: in.ReserveKind, reserveSource: in.ReserveSource, anyKind: in.AnyKind}
+		reserveKind: in.ReserveKind, reserveSource: in.ReserveSource, anyKind: in.AnyKind, discoveredKind: in.DiscoveredKind}
 	it.b.Source = it.source
 	if in.Provenance != nil {
 		it.provenance = in.Provenance(key)

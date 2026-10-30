@@ -26,7 +26,9 @@ type Snapshot struct {
 	// release_version on every signed channel of the tenant.
 	Blocked map[string]bool
 	// Provided holds the names the tenant's upstreams provide (spec 0009); allowlist changes bump
-	// release_version on every channel of the tenant.
+	// release_version on every channel of the tenant. A name a "*" mirror discovered counts once it
+	// has a release (spec 0039), which renews no other channel: until one renews, its pull-through
+	// "*" may still fetch the name, a wasted fetch the insert's recheck refuses.
 	Provided map[string]bool
 	// Shadowed holds, for a passthrough channel, the core names the tenant replaced (spec 0009): the
 	// channel does not serve them. Shadow changes bump the tenant's passthrough channels.
@@ -55,6 +57,8 @@ type Snapshot struct {
 	platforms map[string][]string          // by name, sorted
 	revOnce   sync.Once                    // the -/revocations rows, computed once (RevokedIndex)
 	rev       *RevokedIndex
+	namesOnce sync.Once // the -/names names, computed once (NamesIndex)
+	names     *NamesIndex
 }
 
 type group struct{ name, platform string }

@@ -1,6 +1,6 @@
 # Spec 0039: An own kista mirroring a channel, and revocations downstream
 
-- **Status**: accepted (the owner's decisions of 2026-10-30, below); PR 1 (revocations) implemented
+- **Status**: implemented (PR 1, revocations; PR 2, `*` on a mirror); the owner's decisions of 2026-10-30, below
 - **Date**: 2026-10-30
 - **Author**: vgsml, Claude
 
@@ -98,8 +98,8 @@ yanked row has it, as the management listing marks them (`internal/api/channels.
 remote and keeps it false). There is no separate probe (no kista version shown anonymously): a
 `repository` upstream's remote is
 **a kista** when `GET <prefix>/-/revocations`, read with the upstream's credential if it has one,
-answers kista's shape (`"api"` and `"rows"`). It is read when the upstream is added and by each run's
-pass (below).
+answers kista's shape (`"api"` and `"rows"`). It is read when the upstream is added, when `*` is put
+on a mirror that does not know its remote as a kista, and by each run's pass (below).
 
 - A `200` of that shape sets `remote_kista`.
 - A `404`, or a `200` of another shape, is **not a kista**: on an upstream with neither the switch
@@ -379,6 +379,39 @@ with its upstream.
 2. **PR 2, `*` on a mirror (G5).** `-/names`, discovery, names in the matrix, snapshot, placement,
    licences and reservations, the names route and CLI, the console's names, migration 0049 with
    `min_reader` 49, the PR 2 end to end case.
+
+   As built (PR 2):
+   - `-/names` answers `{"api": 1, "names": [...], "next"}`; a name is served while it has an active
+     or deprecated release of the channel's selected source whose body is not blocked, public in the
+     anonymous view when one of those is public. Its rows are computed once per snapshot, as
+     `-/revocations`' are.
+   - A discovered name takes the `*` entry's `eager`. The discovery also skips a name this upstream
+     lists explicitly. Removing `*` forgets the discovered names (their cells and asks go, their
+     releases stay).
+   - A release of a discovered name is checked again under the insert's locks for a reservation
+     made server-wide since the discovery (as a pull-through `*`'s is, but without the tenant's
+     upstream reservations, which the upstream's own releases make), and for a release of the name
+     from a source of the tenant other than an upstream (every signed channel's insert takes the
+     tenant's upstream lock, so the two do not race): a run's intake, a lazy ask and the placement
+     pass refuse it as `shadowed`.
+   - The discovery keeps the names that fit a room: at most 1,000, and what the matrix caps
+     (`MaxUpstreamCells`, `MaxTenantCells` less the tenant's other upstreams) hold beside the
+     explicit entries. Kept names stay first, new ones fill by name, the rest are a `names`
+     problem; a cut listing adds within the room and removes nothing. Only kept names are stored, so
+     the run, the asks and `TenantCells` follow the one decision. Discovered names take room first
+     come and keep it: while they fill the caps, an explicit entry or a platform added to an upstream
+     of the tenant is refused, and another upstream of the channel listing a discovered name is a
+     collision ("lists or discovered"). When the room shrinks (more DuckDB versions in the channel),
+     the kept names last by name are forgotten, their cells and asks deleted.
+   - A discovered name's first release renews no other channel's snapshot: until one renews, a
+     pull-through `*` there may still fetch the name, a wasted fetch the insert's recheck refuses.
+   - A discovered name put as an explicit entry becomes the entry's (its `upstream_names` row goes,
+     its cells stay).
+   - The anonymous ETags of `-/names` and `-/revocations` hash the public view only.
+   - `GET …/upstreams/{name}/names` pages as the allowlist does (`prefix`, `limit`, `after`); the
+     upstream's `discovered` is the number of names.
+   - Adding `*` to an existing mirror reads `-/revocations` once when the upstream does not know its
+     remote as a kista, and records it.
 
 Each PR runs `make test` on the three databases, `make lint`, `make console-test`,
 `make console-e2e` and `make e2e` before it opens.

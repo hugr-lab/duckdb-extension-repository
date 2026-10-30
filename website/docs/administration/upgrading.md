@@ -103,6 +103,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0046_distributor_holds` | 46 | tenant reservations are dropped and distributors' publishers take the tenant's minimum hold: an older replica reads the dropped table on every channel snapshot, and would ignore the minimum |
 | `0047_tenant_limits` | 47 | an older replica would insert builds without their body's length, and check no tenant limit |
 | `0048_upstream_revocations` | 48 | an older replica would take a body an upstream blocked from that upstream again, and run a switched-on mirror without its revocations |
+| `0049_upstream_names` | 49 | an older replica would run a `*` mirror of a kista with no names, and count none of them in a tenant's cells |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -173,7 +174,17 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 48)
+## Upgrading to the next release (schema 49)
+
+### `*` on a mirror of a kista (spec 0039, PR 2)
+
+- **Migration `0049_upstream_names`** adds the table `upstream_names`: the names a mirror's `*`
+  took from its kista remote. It raises `min_reader` to 49: stop every older replica first (one
+  would run a `*` mirror with no names).
+- **What changes.** Nothing until an upstream takes `*`. New: the route `<prefix>/-/names`, `*` on a
+  repository mirror whose remote is a kista (its runs read the remote's names after the revocation
+  pass; a `names` problem when that fails), the upstream's `discovered`, `…/upstreams/{name}/names`
+  and the CLI's `upstream names` ([`*` on a mirror of a kista](../upstreams.md#on-a-mirror-of-a-kista)).
 
 ### Revocations from a kista (spec 0039, PR 1)
 

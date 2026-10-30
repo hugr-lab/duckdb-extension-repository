@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -82,6 +83,15 @@ type fakeRepo struct {
 	// kista, when set, answers <prefix>/-/revocations[/<cursor>] (spec 0039): the remote is a kista;
 	// nil answers 404, as a static repository does
 	kista http.HandlerFunc
+	// names, when set, answers <prefix>/-/names[/<cursor>] (spec 0039 PR 2): its names, namesPage a
+	// page (cursor "n<i>"); namesStatus, when set, answers every names request; namesCut breaks the
+	// listing after its first page: "error" (a 502), "cursor" (a next that is no cursor), "empty" (an
+	// empty page that pages on)
+	names       []string
+	namesPage   int
+	namesStatus int
+	namesCut    string
+	namesReads  int
 }
 
 // authorizations returns the Authorization headers of file requests so far.
@@ -117,6 +127,34 @@ func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 		if q.URL.Path == "/.well-known/duckdb-extension-repo.json" {
 			r.wellAuth = append(r.wellAuth, q.Header.Get("Authorization"))
 			_ = json.NewEncoder(w).Encode(map[string]any{"signature_keys": r.keys})
+			return
+		}
+		if strings.HasPrefix(q.URL.Path, "/-/names") && (r.names != nil || r.namesStatus != 0) { // spec 0039 PR 2
+			r.namesReads++
+			if r.namesStatus != 0 {
+				w.WriteHeader(r.namesStatus)
+				return
+			}
+			start := 0
+			if c, ok := strings.CutPrefix(q.URL.Path, "/-/names/n"); ok {
+				start, _ = strconv.Atoi(c)
+			}
+			size := cmp.Or(r.namesPage, 500)
+			end := min(start+size, len(r.names))
+			ans := map[string]any{"api": 1, "names": append([]string{}, r.names[start:end]...)}
+			if end < len(r.names) {
+				ans["next"] = "n" + strconv.Itoa(end)
+			}
+			switch {
+			case start > 0 && r.namesCut == "error":
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			case start == 0 && r.namesCut == "cursor":
+				ans["next"] = "n.1"
+			case start > 0 && r.namesCut == "empty":
+				ans["names"], ans["next"] = []string{}, "n"+strconv.Itoa(end)
+			}
+			_ = json.NewEncoder(w).Encode(ans)
 			return
 		}
 		revocations := strings.HasPrefix(q.URL.Path, "/-/revocations")

@@ -296,23 +296,29 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	res.actor = actor.String()
 	// spec 0039: the revocation pass first, whatever follows (the tenant's room, the matrix's caps)
 	s.revocationPass(rctx, sc, u, actor, res)
+	if u.AnyMirror() { // spec 0039: "*" on a mirror takes the names its kista remote lists
+		if u, err = s.discover(rctx, sc, u, res); err != nil {
+			return err
+		}
+	}
 	versions, err := s.Store.ChannelVersions(ctx, u.ChannelID)
 	if err != nil {
 		return err
 	}
 	slices.SortFunc(versions, release.CompareVersions)
-	if n := len(versions) * len(u.Platforms) * len(u.Entries); n > store.MaxUpstreamCells {
-		return fmt.Errorf("%w: the matrix is %d cells (at most %d)", errFailed, n, store.MaxUpstreamCells)
-	}
-	var tenantCells int
+	var others int // the tenant's other upstreams' cells
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
-		tenantCells, err = tx.TenantCells(ctx, u.TenantID, "")
+		others, err = tx.TenantCells(ctx, u.TenantID, u.ID)
 		return err
 	}); err != nil {
 		return err
 	}
-	if tenantCells > store.MaxTenantCells {
+	names := u.Names() // spec 0039: the discovered names discovery kept within the caps
+	if n := len(versions) * len(u.Platforms) * len(names); n > store.MaxUpstreamCells {
+		return fmt.Errorf("%w: the matrix is %d cells (at most %d)", errFailed, n, store.MaxUpstreamCells)
+	}
+	if tenantCells := others + len(versions)*len(u.Platforms)*len(names); tenantCells > store.MaxTenantCells {
 		return fmt.Errorf("%w: the tenant's upstreams would fetch %d cells (at most %d)", errFailed, tenantCells, store.MaxTenantCells)
 	}
 	keys, err := s.keys(ctx, u)
@@ -340,7 +346,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	// run takes the cells asked for and its eager entries' (spec 0032)
 	var groups [][]cell
 	inMatrix := map[[3]string]bool{}
-	for _, e := range u.Entries {
+	for _, e := range names {
 		for _, p := range u.Platforms {
 			var g []cell
 			for _, v := range versions {
@@ -426,7 +432,7 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 					cancel(errStopped)
 					return
 				}
-				e, ok := entry(cur, c.name)
+				e, ok := cur.Entry(c.name)
 				if !ok || !slices.Contains(cur.Platforms, c.platform) {
 					continue
 				}
@@ -740,8 +746,11 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		in.KeySource = u.ID // spec 0021: a repository upstream is a trusted source of licence keys
 	}
 	in.ReserveKind = reserveKind(u.Kind) // spec 0030: DuckDB's repositories bring their names
-	if !slices.ContainsFunc(u.Entries, func(x store.UpstreamEntry) bool { return x.Name == c.name }) {
-		in.AnyKind = u.Kind // "*" took it: checked again under the insert's locks
+	switch _, listed := u.Entry(c.name); {
+	case !listed:
+		in.AnyKind = u.Kind // a pull-through "*" took it: checked again under the insert's locks
+	case u.Discovers(c.name):
+		in.DiscoveredKind = u.Kind // spec 0039: a reservation since is checked under the insert's locks
 	}
 	in.ReserveSource = "upstream:" + sc.Tenant.Name + "/" + u.Name
 	got, err := s.Releases.Ingest(ctx, a, sc, sp, in)
@@ -831,15 +840,6 @@ func freshness(st *store.Store, id string) func(context.Context) (store.Upstream
 		at = time.Now()
 		return u, nil
 	}
-}
-
-func entry(u store.Upstream, name string) (store.UpstreamEntry, bool) {
-	for _, e := range u.Entries {
-		if e.Name == name {
-			return e, true
-		}
-	}
-	return store.UpstreamEntry{}, false
 }
 
 // runClass is a stopped run's error class for its event (never the error's text).
