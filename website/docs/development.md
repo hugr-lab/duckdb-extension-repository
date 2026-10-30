@@ -13,8 +13,8 @@ follow the specs process described at the end.
 | --- | --- |
 | Go, the version in `go.mod` (1.27) | everything |
 | Docker | the PostgreSQL, SQL Server, S3, Azurite, moto and fake-gcs-server test suites, the console end-to-end run |
-| `golangci-lint` v2 (CI uses v2.14.0) | `make lint` |
-| Node 22 and npm | the console and this site |
+| nothing more: `make lint` runs golangci-lint v2.14.0, CI's version, with `go run` (`GOLANGCI_LINT` names another) | `make lint` |
+| Node and npm: 26 for the console (as CI and the image), 22 for this site | the console and this site |
 | CMake, Ninja, a C/C++ compiler, OpenSSL and libcurl headers; ccache recommended | `make e2e-build`, `make sdk-test` |
 
 Every make target runs with `GOWORK=off`, so a `go.work` in a parent directory cannot change what
@@ -46,7 +46,7 @@ make build
 | `build` | `go build -o bin/kista ./cmd/kista` |
 | `image` | Build the image for this machine's platform as `kista:dev` and run its smoke test (`deploy/docker/smoke.sh`) |
 | `test` | `go test ./...` |
-| `lint` | `go vet ./...` and `golangci-lint run ./...` |
+| `lint` | `go vet ./...` and golangci-lint v2.14.0 (`go run`) |
 | `test-db` / `test-db-down` | Start / stop PostgreSQL 17 and SQL Server 2022 in Docker Compose (`internal/store/testdb/compose.yaml`) |
 | `test-s3` / `test-s3-down` | Start / stop SeaweedFS (S3-compatible, pinned by digest) on `127.0.0.1:58333` |
 | `test-azurite` / `test-azurite-down` | Start / stop Azurite (the Azure Storage emulator) on `127.0.0.1:50000` |
@@ -335,7 +335,8 @@ the portal: try a changed `createUiDefinition.json` in its sandbox before a rele
 make lint
 ```
 
-It runs `go vet ./...` and `golangci-lint run ./...` with the repository's `.golangci.yml`.
+It runs `go vet ./...` and golangci-lint v2.14.0 (CI's version, built with the Go in `go.mod`;
+`GOLANGCI_LINT` names another binary) with the repository's `.golangci.yml`.
 
 ## DuckDB end to end
 

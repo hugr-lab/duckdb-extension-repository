@@ -115,9 +115,13 @@ test-gcs:
 test-gcs-down:
 	docker rm -f kista-test-gcs
 
+# golangci-lint at CI's version (ci.yml), built with the Go in go.mod: a linter built with an older Go
+# cannot load this module
+GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+
 lint:
 	go vet ./...
-	golangci-lint run ./...
+	$(GOLANGCI_LINT) run ./...
 
 # DuckDB at e2e/DUCKDB_PIN with the e2e extensions (30-45 min cold, minutes with ccache).
 e2e-duckdb:
