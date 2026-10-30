@@ -108,8 +108,11 @@ are all the kinds in `internal/audit`:
 | | `release.purge` | the release | `release`, `name`, `version`, `platform`, `slot`, `body_hash` |
 | | `block.add` | `block:<body hash>` | `body_hash`, `reason` |
 | | `block.remove` | `block:<body hash>` | `body_hash` |
-| Upstreams | `upstream.add` | `upstream:<name>` | `name`, `kind`, `prefix`, `channel`, `mode`, `fetch`, `visibility`, `keys`, `platforms`, `extensions`, `credential` |
+| Upstreams | `upstream.add` | `upstream:<name>` | `name`, `kind`, `prefix`, `channel`, `mode`, `fetch`, `visibility`, `keys`, `platforms`, `extensions`, `credential`, `revocations` |
 | | `upstream.remove` | `upstream:<name>` | `name` |
+| | `upstream.revocations` | `upstream:<name>` | `upstream`, `upstream_id`, `revocations` (the switch), `pending` (stored revocations waiting) |
+| | `upstream.revocation` | `upstream:<name>` | `upstream`, `upstream_id`, `name`, `version`, `platform`, `body_hash`, `action` (`blocked` or `yanked`), `state`, `reason` (the source's), `yanked` (releases yanked) |
+| | `upstream.revocation.lift` | `upstream:<name>` | `upstream`, `upstream_id`, `build`, `body_hash`, `state` (lifted), `restored` (releases restored) |
 | | `upstream.change` | `upstream:<name>` | `name`, `change`, `value`, `versions`, `allow_reserved`, `eager`, `visibility`, `state` |
 | | `upstream.release` | `channel:<channel>/ext:<name>/release:<id>` | `upstream`, `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `url`, `key`, `bundle` (an import's manifest), `trigger` (`run`; `sync`, a bundle export's `-sync` too; or `ask`: a caller's miss, pull-through or a lazy mirror's first request; none on a bundle import) |
 | | `upstream.rejected` | `upstream:<name>` | `upstream`, `duckdb_version`, `platform`, `name`, `outcome` |

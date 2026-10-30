@@ -214,12 +214,22 @@ func (s *Service) Block(ctx context.Context, a authz.Actor, tenant, hash, reason
 		if err := tx.InsertBlock(ctx, &b); err != nil {
 			return err
 		}
+		// spec 0039: the administrator's block takes over what upstreams yanked of the body, so no
+		// later lift of theirs restores it
+		if err := tx.DeleteUpstreamYanksWithBody(ctx, t.ID, hash); err != nil {
+			return err
+		}
 		return tx.Event(ctx, t.ID, a.String(), "block.add", "block:"+hash, map[string]any{"body_hash": hash, "reason": reason})
 	})
 	if errors.Is(err, store.ErrExists) {
 		existed = true
 		if b, err = s.GetBlock(ctx, a, tenant, hash); err != nil {
 			return store.Block{}, false, err
+		}
+		if err := s.Store.InTenantTx(ctx, t.ID, nil, func(tx *store.Tx) error {
+			return tx.DeleteUpstreamYanksWithBody(ctx, t.ID, hash)
+		}); err != nil {
+			return b, existed, err
 		}
 	} else if err != nil {
 		return store.Block{}, false, err

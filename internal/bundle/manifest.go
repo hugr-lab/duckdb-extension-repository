@@ -24,6 +24,11 @@ import (
 const (
 	PlanFormat     = "kista-bundle-plan/v1"
 	ManifestFormat = "kista-bundle/v1"
+	// ManifestFormatV2 is a manifest carrying revocations (spec 0039): written only then, and only
+	// for a plan that accepts them, so an older site imports every bundle it asked for as before.
+	ManifestFormatV2 = "kista-bundle/v2"
+	// MaxRevocations bounds the revocations a source carries (spec 0039).
+	MaxRevocations = 10000
 
 	MaxManifest  = 64 << 20 // bytes, also a plan's
 	MaxCells     = 100000
@@ -67,6 +72,9 @@ type Plan struct {
 	// only when it is set: a licence's sub.
 	Licenses      bool   `json:"licenses,omitempty"`
 	LicenseHolder string `json:"license_holder,omitempty"`
+	// AcceptsRevocations says the site takes a source's revocations (spec 0039): a site at this
+	// version writes it, and only then may a bundle carry them.
+	AcceptsRevocations bool `json:"accepts_revocations,omitempty"`
 }
 
 // PlanSource is one source: a kind, and for a repository its normalised prefix and pinned keys.
@@ -130,7 +138,23 @@ type Source struct {
 	// Licenses are the exporting tenant's licences of names whose files the source carries, by
 	// name (spec 0021): a repository source's, when the plan asks.
 	Licenses []License `json:"licenses,omitempty"`
+	// Revocations are the exporting channel's revoked rows of the source's names (spec 0039), as
+	// its -/revocations route shows them, by (name, version, platform, body hash): only for a plan
+	// that accepts them, in a v2 manifest.
+	Revocations []Revocation `json:"revocations,omitempty"`
 }
+
+// Revocation is a revoked release a bundle carries (spec 0039): no source label of the exporter's.
+type Revocation struct {
+	Name     string `json:"name"`
+	Version  string `json:"version"`
+	Platform string `json:"platform"`
+	BodyHash string `json:"body_hash"`
+	State    string `json:"state"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+func (r Revocation) key() [4]string { return [4]string{r.Name, r.Version, r.Platform, r.BodyHash} }
 
 // License is a licence a bundle carries: the token as the exporting kista stored it.
 type License struct {
@@ -398,7 +422,7 @@ func (p *Plan) Validate() error {
 // Validate checks a manifest before anything else (spec 0014, The bundle). now is the importing
 // host's clock, for the future-skew rule; zero skips it (the export, inspect without a clock).
 func (m *Manifest) Validate(now time.Time) error {
-	if m.Format != ManifestFormat {
+	if m.Format != ManifestFormat && m.Format != ManifestFormatV2 {
 		return fmt.Errorf("%w: manifest format %q", ErrInvalid, m.Format)
 	}
 	if !uuid7RE.MatchString(m.ID) {
@@ -487,11 +511,58 @@ func (m *Manifest) Validate(now time.Time) error {
 		if err := s.validateLicenses(m.Plan.Licenses); err != nil {
 			return err
 		}
+		if err := s.validateRevocations(m.Format, cellSeen); err != nil {
+			return err
+		}
 	}
 	if len(files) > MaxFiles {
 		return fmt.Errorf("%w: over %d files", ErrInvalid, MaxFiles)
 	}
 	return validateFeeds(m.Feeds)
+}
+
+// validateRevocations checks a source's revocations (spec 0039): only in a v2 manifest, at most
+// MaxRevocations, in canonical order, each of a name the source's cells name, a version, platform,
+// body hash and state of their grammars; a reason of at most MaxDetail bytes, which the import
+// cleans rather than refuses.
+func (s Source) validateRevocations(format string, cells map[[3]string]bool) error {
+	if len(s.Revocations) == 0 {
+		return nil
+	}
+	if format != ManifestFormatV2 {
+		return fmt.Errorf("%w: a %s manifest carries no revocations", ErrInvalid, format)
+	}
+	if len(s.Revocations) > MaxRevocations {
+		return fmt.Errorf("%w: source %s carries over %d revocations", ErrInvalid, s.Prefix, MaxRevocations)
+	}
+	names := map[string]bool{}
+	for k := range cells {
+		names[k[2]] = true
+	}
+	for i, r := range s.Revocations {
+		switch {
+		case !names[r.Name]:
+			return fmt.Errorf("%w: revocation of %s: no cell of the source names it", ErrInvalid, r.Name)
+		case release.ValidExtVersion(r.Version) != nil, release.ValidPlatform(r.Platform) != nil, !hexRE.MatchString(r.BodyHash):
+			return fmt.Errorf("%w: revocation of %s: version, platform or body_hash", ErrInvalid, r.Name)
+		case store.RevocationRank(r.State) == 0:
+			return fmt.Errorf("%w: revocation of %s: state %q (withdrawn, blocked or yanked)", ErrInvalid, r.Name, r.State)
+		case len(r.Reason) > MaxDetail:
+			return fmt.Errorf("%w: revocation of %s: a reason over %d bytes", ErrInvalid, r.Name, MaxDetail)
+		case i > 0 && !keyLess(s.Revocations[i-1].key(), r.key()):
+			return fmt.Errorf("%w: revocations out of canonical order", ErrInvalid)
+		}
+	}
+	return nil
+}
+
+func keyLess(a, b [4]string) bool {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return false
 }
 
 // checkHolder checks a plan's licence request: a holder only with licences, as a licence's sub.
@@ -645,6 +716,15 @@ func Canonical(sources []Source) {
 				return c
 			}
 			return release.CompareVersions(a.DuckDBVersion, b.DuckDBVersion)
+		})
+		slices.SortFunc(s.Revocations, func(a, b Revocation) int {
+			switch ka, kb := a.key(), b.key(); {
+			case keyLess(ka, kb):
+				return -1
+			case keyLess(kb, ka):
+				return 1
+			}
+			return 0
 		})
 	}
 }

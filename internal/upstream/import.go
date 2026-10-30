@@ -281,6 +281,13 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 	}
 	if streamErr == nil { // after the files, whose keys they need; a bundle read whole only
 		out.Licenses = s.importLicenses(ictx, a, t, m, targets, o.DryRun)
+		if !o.DryRun { // spec 0039: after the files, matched among each target's own builds
+			for _, tg := range targets {
+				if tg.active() {
+					s.importRevocations(ictx, t, tg)
+				}
+			}
+		}
 	}
 	// a feed's cursors move only after a whole read; a stopped import moves none
 	s.finishFeeds(ctx, a, b, fts, streamErr != nil)

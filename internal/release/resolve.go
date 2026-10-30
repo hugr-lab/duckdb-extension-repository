@@ -42,9 +42,19 @@ type Snapshot struct {
 	// Selected is the channel's source of each name (spec 0031); Releases holds the selected
 	// sources' releases only. A selection's change bumps release_version.
 	Selected map[string]string
+	// Revoked are the channel's revoked releases of every source (spec 0039: of a withdrawn build, or
+	// yanked), and Withdrawn the selected sources' releases of withdrawn builds: lists of their own,
+	// which only the routes showing them read (-/revocations, the index's withdrawn rows), so nothing
+	// serving or counting reads a withdrawn release. UpstreamBlocks are the upstreams' blocks of the
+	// bodies of the channel's releases, read when there is anything revoked.
+	Revoked        []store.Candidate
+	Withdrawn      []store.Candidate
+	UpstreamBlocks map[[2]string]store.UpstreamBlock
 
 	groups    map[group][]*store.Candidate // by (name, platform), in Releases order
 	platforms map[string][]string          // by name, sorted
+	revOnce   sync.Once                    // the -/revocations rows, computed once (RevokedIndex)
+	rev       *RevokedIndex
 }
 
 type group struct{ name, platform string }
@@ -325,6 +335,21 @@ func (s *Snapshots) build(ctx context.Context, c store.Channel) (*Snapshot, erro
 	snap.Selected = selected
 	if snap.Blocked, err = s.Store.BlockedHashes(ctx, c.TenantID); err != nil {
 		return nil, err
+	}
+	if snap.Revoked, err = s.Store.RevokedReleases(ctx, c.ID); err != nil {
+		return nil, err
+	}
+	var withdrawn []store.Candidate
+	for _, r := range snap.Revoked {
+		if r.Withdrawn {
+			withdrawn = append(withdrawn, r)
+		}
+	}
+	snap.Withdrawn = SelectedOnly(withdrawn, selected)
+	if len(snap.Revoked) > 0 {
+		if snap.UpstreamBlocks, err = s.Store.ChannelUpstreamBlocks(ctx, c.TenantID, c.ID); err != nil {
+			return nil, err
+		}
 	}
 	// spec 0034: the names of the channel's type, so that one type's reservations never reserve or
 	// block a name of another

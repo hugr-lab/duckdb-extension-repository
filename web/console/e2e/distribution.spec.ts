@@ -89,6 +89,31 @@ test('a lazy mirror (spec 0032): an eager entry, the cells not asked for, made e
   await expect(page.getByRole('heading', { name: 'Upstreams' })).toBeVisible()
 })
 
+test('revocations (spec 0039): switched on at creation, shown, switched off', async ({ page }) => {
+  await signIn(page, '/ui/t/acme/', 'tom')
+  await nav(page, 'Upstreams').click()
+  await page.getByRole('button', { name: 'New upstream' }).click()
+  await page.getByLabel('Name', { exact: true }).fill('air')
+  await page.getByLabel('Into channel').selectOption('prod')
+  await page.getByLabel('Mode').selectOption('bundle')
+  await page.getByLabel('Extensions').fill('json')
+  await page.getByLabel(/apply the source's revocations/).check()
+  await page.getByRole('button', { name: 'Add', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'air' })).toBeVisible()
+
+  const card = page.locator('section', { has: page.getByRole('heading', { name: 'Revocations' }) })
+  await expect(card.locator('.chip', { hasText: 'on' })).toBeVisible()
+  await expect(card.getByText('None stored.')).toBeVisible()
+  await card.getByRole('button', { name: 'Stop applying…' }).click()
+  await confirm(page, 'Stop')
+  await expect(card.locator('.chip', { hasText: 'off' })).toBeVisible()
+  await expect(card.getByRole('button', { name: 'Apply…' })).toBeVisible()
+
+  await page.getByRole('group', { name: 'upstream actions' }).getByRole('button', { name: 'Remove…' }).click()
+  await confirm(page, 'Remove')
+  await expect(page.getByRole('heading', { name: 'Upstreams' })).toBeVisible()
+})
+
 test('a body blocked and unblocked; a channel created with a DuckDB version', async ({ page }) => {
   await signIn(page, '/ui/t/acme/', 'tom')
   await nav(page, 'Blocks').click()

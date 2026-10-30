@@ -79,6 +79,9 @@ type fakeRepo struct {
 	busyStatus int // 503 by default
 	// noETag serves a path without an ETag (spec 0038: a cell holding a body, fetched unconditionally)
 	noETag map[string]bool
+	// kista, when set, answers <prefix>/-/revocations[/<cursor>] (spec 0039): the remote is a kista;
+	// nil answers 404, as a static repository does
+	kista http.HandlerFunc
 }
 
 // authorizations returns the Authorization headers of file requests so far.
@@ -116,7 +119,10 @@ func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 			_ = json.NewEncoder(w).Encode(map[string]any{"signature_keys": r.keys})
 			return
 		}
-		r.auths = append(r.auths, q.Header.Get("Authorization"))
+		revocations := strings.HasPrefix(q.URL.Path, "/-/revocations")
+		if !revocations { // a pass's read (spec 0039) is no file request
+			r.auths = append(r.auths, q.Header.Get("Authorization"))
+		}
 		if to, ok := r.redirects[q.URL.Path]; ok {
 			http.Redirect(w, q, to, http.StatusFound)
 			return
@@ -140,6 +146,10 @@ func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 			b, _ := io.ReadAll(q.Body)
 			r.posts = append(r.posts, b)
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if revocations && r.kista != nil { // spec 0039: a kista's revoked rows, a page at a time
+			r.kista(w, q)
 			return
 		}
 		if r.busy[q.URL.Path] > 0 {

@@ -725,6 +725,16 @@ func (s *Service) insert(ctx context.Context, a authz.Actor, channelID string, i
 					}
 					return err
 				}
+				// spec 0039: nor a body its upstream blocked, from that upstream (a placement or a
+				// promotion of its build too: the block serves it nowhere)
+				if id, ok := strings.CutPrefix(it.source, store.SourceUpstreamPrefix); ok {
+					if blocked, err := tx.UpstreamBlocked(ctx, id, b.BodyHash); err != nil || blocked {
+						if err == nil {
+							err = fmt.Errorf("%w: the upstream revoked it", ErrBlocked)
+						}
+						return err
+					}
+				}
 				if it.reserveKind != "" {
 					changed, err := tx.ReserveName(ctx, b.PackageType, b.Name, it.reserveKind, it.reserveSource)
 					if err != nil {

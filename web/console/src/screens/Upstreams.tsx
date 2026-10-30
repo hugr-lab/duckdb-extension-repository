@@ -50,6 +50,9 @@ export interface Upstream {
   usage: 'forward' | 'off'
   bundle_id?: string
   bundle_created_at?: string
+  /** whether its source answered as a kista, and whether its revocations are applied (spec 0039) */
+  remote_kista?: boolean
+  revocations?: boolean
   /** an eager mirror's hold (spec 0033): its new versions wait this long for any channel; omitted for none */
   hold?: string
   etag: string
@@ -110,14 +113,23 @@ export interface UpstreamForm {
   keys: string
   names: string
   credential: string
+  revocations: boolean
+}
+
+/** Whether an upstream applies its source's revocations when switched on (spec 0039): a repository
+ * mirror (of a kista), or a bundle-mode upstream (from a kista's bundles). */
+export function takesRevocations(u: Pick<Upstream, 'kind' | 'mode'>) {
+  return u.mode === 'bundle' || (u.kind === 'repository' && u.mode === 'mirror')
 }
 
 /** The body of POST …/upstreams: a repository's prefix, pinned keys and credential only; a mirror's
- * fetch mode (eager in a passthrough channel, which takes no lazy mirror). */
+ * fetch mode (eager in a passthrough channel, which takes no lazy mirror); the revocations switch
+ * where it applies. */
 export function upstreamBody(f: UpstreamForm, plats: string[], passthrough = false) {
   const body: Record<string, unknown> = { name: f.name, kind: f.kind, channel: f.channel, mode: f.mode, visibility: f.visibility, platforms: plats,
     extensions: entryNames(f.names).map((name) => ({ name })) }
   if (f.mode === 'mirror') body.fetch = passthrough ? 'eager' : f.fetch
+  if (f.revocations && takesRevocations(f)) body.revocations = true
   if (f.kind === 'repository') {
     body.prefix = f.prefix
     body.keys = entryNames(f.keys)
@@ -209,7 +221,7 @@ function NewUpstream() {
   const { client, api, base } = useTenant()
   const nav = useNavigate()
   const channels = useLoad(() => client.get<{ channels: { name: string; kind: string }[] }>(`${api}/channels`), [api])
-  const [f, setF] = useState<UpstreamForm>({ name: '', kind: 'duckdb-core', channel: '', mode: 'mirror', fetch: 'eager', visibility: 'private', prefix: '', keys: '', names: '', credential: '' })
+  const [f, setF] = useState<UpstreamForm>({ name: '', kind: 'duckdb-core', channel: '', mode: 'mirror', fetch: 'eager', visibility: 'private', prefix: '', keys: '', names: '', credential: '', revocations: false })
   const [plats, setPlats] = useState<string[]>(['linux_amd64', 'linux_arm64', 'osx_arm64'])
   const { busy, failure, act } = useAction()
   const set = (k: keyof UpstreamForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value })
@@ -256,6 +268,12 @@ function NewUpstream() {
         <Field label="Extensions" hint="names separated by commas or spaces; * (every name the source has) only in pull-through mode, never for DuckDB core. A reserved name is allowed from the upstream's page.">
           <input className="field font-mono" value={f.names} onChange={set('names')} />
         </Field>
+        {takesRevocations(f) && (
+          <label className="flex items-center gap-2 text-[13px]">
+            <input type="checkbox" checked={f.revocations} onChange={(e) => setF({ ...f, revocations: e.target.checked })} />
+            apply the source's revocations (a kista's withdrawals, blocks and yanks of what it sent; each lifted from the upstream's page)
+          </label>
+        )}
         {failure != null && <ErrorBox error={failure} />}
         <div><Button type="submit" tone="brand" disabled={busy || plats.length === 0}>Add</Button></div>
       </form>
@@ -341,6 +359,7 @@ function UpstreamView({ name }: { name: string }) {
       </Card>
       <LastRun u={u} onRefresh={up.reload} />
       {u.kind === 'repository' && u.mode !== 'bundle' && <Usage u={u} path={path} etag={etag} onChanged={up.reload} />}
+      {takesRevocations(u) && <Revocations u={u} path={path} etag={etag} onChanged={up.reload} />}
       <Allowlist path={path} mirror={u.mode === 'mirror'} lazy={lazy} onChanged={up.reload} />
       <Items key={u.etag} u={u} path={path} etag={etag} onChanged={up.reload} />
       <Cells key={String(lazy)} path={path} lazy={lazy} />
@@ -425,6 +444,89 @@ function Usage({ u, path, etag, onChanged }: { u: Upstream; path: string; etag: 
         <p>{next === 'off'
           ? 'The upstream gets no more usage from this tenant; what it received stays there.'
           : 'From the next daily run the upstream gets the last three finished days, and every day after.'}</p>
+      </Confirm>
+    </Card>
+  )
+}
+
+export interface Revocation {
+  build: string
+  name: string
+  version: string
+  platform: string
+  body_hash: string
+  state: string // the source's: withdrawn, blocked or yanked
+  reason: string
+  seen_at: string
+  applied_state?: string
+  applied_at?: string
+  lifted_state?: string
+  lifted_at?: string
+  unlisted_at?: string
+  status: 'waiting' | 'applied' | 'lifted' // applied: something applied is left to lift
+}
+
+/** A stored revocation's status in words: what was applied or lifted of it, and what waits. */
+export function revocationWords(r: Pick<Revocation, 'status' | 'state' | 'applied_state' | 'lifted_state' | 'unlisted_at'>) {
+  const rank = (s?: string) => ['yanked', 'blocked', 'withdrawn'].indexOf(s ?? '') + 1
+  // a stronger state the source shows now waits for the next run (or the switch); an unlisted row is
+  // kept for what was applied or lifted, and applies nothing more
+  const more = !r.unlisted_at && rank(r.state) > Math.max(rank(r.applied_state), rank(r.lifted_state)) ? `; ${r.state} waits` : ''
+  const gone = r.unlisted_at ? '; no longer listed by the source' : ''
+  switch (r.status) {
+    case 'applied':
+      return `applied as ${r.applied_state === 'yanked' ? 'a yank' : 'a block'}${more}${gone}`
+    case 'lifted':
+      return `${r.lifted_state} lifted${more}${gone}`
+    default:
+      return 'waits: nothing applied'
+  }
+}
+
+/** Whether the upstream applies its source's revocations, and those stored, each lifted by a tenant
+ * administrator (spec 0039). */
+function Revocations({ u, path, etag, onChanged }: { u: Upstream; path: string; etag: string; onChanged: () => void }) {
+  const { client } = useTenant()
+  // read again after each run too: a run stores, applies and forgets rows without moving the upstream's ETag
+  const list = useLoad(() => client.get<{ stored: Revocation[] }>(`${path}/revocations`), [path, etag, u.last_run_at])
+  const [switching, setSwitching] = useState(false)
+  const [lifting, setLifting] = useState<Revocation | null>(null)
+  const { busy, failure, act } = useAction('The upstream', onChanged)
+  const change = async () => {
+    setSwitching(false)
+    if (await act(() => client.post(`${path}/revocations`, { ifMatch: etag, body: { revocations: !u.revocations } }))) onChanged()
+  }
+  const lift = async (r: Revocation) => {
+    setLifting(null)
+    if (await act(() => client.del(`${path}/revocations/${seg(r.build)}`, { ifMatch: etag }))) onChanged()
+  }
+  const stored = list.data?.data.stored ?? []
+  return (
+    <Card title="Revocations" actions={<Button tone="outline" disabled={busy} onClick={() => setSwitching(true)}>{u.revocations ? 'Stop applying…' : 'Apply…'}</Button>}>
+      <div className="flex flex-col gap-3">
+        <p className="m-0">{u.revocations ? <Badge>on</Badge> : <Badge>off</Badge>} The source's withdrawals, blocks and yanks of the builds it sent {u.revocations ? 'are' : 'are shown, not'} applied: a withdrawal or block refuses the body from this upstream and yanks its releases in every channel, a yank yanks it in the home channel. Nothing else is touched.</p>
+        {u.mode === 'mirror' && !u.remote_kista && <Note>The source has not answered as a kista: it has no revocations to read.</Note>}
+        {list.loading && !list.data ? <Loading /> : list.error ? <ErrorBox error={list.error} /> : stored.length === 0 ? <span className="text-ink-muted">None stored.</span> : (
+          <Table rows={stored} rowKey={(r) => r.build} columns={[
+            ['Extension', (r) => <Mono>{r.name} {r.version}</Mono>],
+            ['Platform', (r) => <Mono>{r.platform}</Mono>],
+            ['Source', (r) => <Badge>{r.state}</Badge>],
+            ['Why', (r) => <span className="text-[13px]">{r.reason}</span>],
+            ['Here', (r) => <span className="text-[13px]">{revocationWords(r)}</span>],
+            ['', (r) => r.status === 'applied' && <Button tone="outline" disabled={busy} onClick={() => setLifting(r)}>Lift…</Button>],
+          ]} />
+        )}
+        {failure != null && <ErrorBox error={failure} />}
+      </div>
+      <Confirm open={switching} title={u.revocations ? `Stop applying ${u.name}'s revocations?` : `Apply ${u.name}'s revocations?`} confirm={u.revocations ? 'Stop' : 'Apply'}
+        danger={!u.revocations} onConfirm={change} onClose={() => setSwitching(false)}>
+        <p>{u.revocations
+          ? 'They are still read and shown; none is applied. What was applied stays until lifted.'
+          : 'The stored ones are applied at the next run, and every run after applies what the source revokes.'}</p>
+      </Confirm>
+      <Confirm open={lifting !== null} title={`Lift the revocation of ${lifting?.name} ${lifting?.version}?`} confirm="Lift" danger
+        onConfirm={() => lift(lifting!)} onClose={() => setLifting(null)}>
+        <p>The body is taken from this upstream again and the releases the revocation yanked are restored, but not one an administrator yanked or blocked since, nor a withdrawn build. It is not applied again unless the source revokes it more strongly.</p>
       </Confirm>
     </Card>
   )

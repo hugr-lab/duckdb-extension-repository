@@ -205,6 +205,15 @@ func TestDistributorRoutes(t *testing.T) {
 	if rel["withdrawn"] != true {
 		t.Fatalf("the release shows it: %v", rel)
 	}
+	// the index too (spec 0039): a withdrawn row with its reason, the path withdrawn
+	if r := call(200, "GET", T+"/channels/prod/extensions/geo_tools", ta, ""); !strings.Contains(string(r.body), `"withdrawn":true`) ||
+		!strings.Contains(string(r.body), `"withdrawn_reason":"CVE-2026-0001"`) {
+		t.Fatalf("the index's row: %s", r.body)
+	}
+	if r := call(200, "GET", T+"/channels/prod/extensions/geo_tools/versions/1.0?duckdb_version=v2.0.0&platform=linux_amd64", ta, ""); r.json(t)["status"] != "withdrawn" ||
+		len(r.json(t)["withdrawn"].([]any)) != 1 {
+		t.Fatalf("the index's item: %s", r.body)
+	}
 	if r := m.call(t, "POST", T+"/channels/prod/extensions/geo_tools/releases/"+rel["id"].(string)+"/current", ta, "", "If-Match", "*"); r.status != 409 ||
 		r.json(t)["type"] != "urn:kista:problem:withdrawn" {
 		t.Fatalf("made current: %d %s", r.status, r.body)

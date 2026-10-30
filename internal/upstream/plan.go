@@ -151,7 +151,7 @@ func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, sel Pl
 		}
 	}
 	plan := bundle.Plan{Format: bundle.PlanFormat, CreatedAt: s.Store.Now().UTC(), Tenant: t.Name, BundleKeys: bundleKeys,
-		Licenses: sel.Licenses, LicenseHolder: sel.LicenseHolder}
+		Licenses: sel.Licenses, LicenseHolder: sel.LicenseHolder, AcceptsRevocations: true} // spec 0039
 	for _, src := range sources {
 		ps := bundle.PlanSource{Kind: src.kind, Prefix: src.prefix, Keys: src.keys, Cells: []bundle.PlanCell{}}
 		slices.Sort(ps.Keys)

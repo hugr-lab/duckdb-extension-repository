@@ -364,8 +364,10 @@ func (s *Service) CreateChannel(ctx context.Context, a authz.Actor, tenant, name
 		return c, err
 	}
 	// spec 0038: an update lock on the tenant's row orders its channel creates against its channels
-	// limit (and a change of its limits)
-	err = s.Store.InTenantTxForUpdate(ctx, t.ID, nil, func(tx *store.Tx) error {
+	// limit (and a change of its limits); spec 0039: the tenant's upstream lock orders it against an
+	// upstream block's sweep and a lift, which lock every channel of the tenant (on SQL Server the
+	// row's update lock does not wait for their shared one)
+	err = s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
 		c.TenantID = t.ID
 		if err := tx.CreateChannel(ctx, &c); err != nil {
 			return err

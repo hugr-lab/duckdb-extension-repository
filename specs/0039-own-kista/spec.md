@@ -1,6 +1,6 @@
 # Spec 0039: An own kista mirroring a channel, and revocations downstream
 
-- **Status**: accepted (the owner's decisions of 2026-10-30, below)
+- **Status**: accepted (the owner's decisions of 2026-10-30, below); PR 1 (revocations) implemented
 - **Date**: 2026-10-30
 - **Author**: vgsml, Claude
 
@@ -59,19 +59,29 @@ path: the cursor is a path segment (an opaque base64url token of the last row's 
   rows), whose state is, strongest first:
   - `withdrawn`: its build was withdrawn (spec 0033 phase B), `reason` the distributor's text
     (decision 4);
-  - `blocked`: its body is blocked by an administrator (spec 0008);
-  - `yanked`: the release is yanked;
-  - and for a release this kista yanked by **applying an upstream's revocation** (below), that
-    revocation's state and reason, so a chain carries the strongest state on.
+  - `blocked`: its body is blocked by an administrator (spec 0008), `reason` empty (an
+    administrator's reason stays in the tenant);
+  - `yanked`: the release is yanked, `reason` empty;
+  - and for a release of an upstream's build whose body **that upstream blocked** applying its
+    remote's withdrawal or block (below), that block's state and reason, whatever yanked the release
+    first (the upstream's yank, then the block, or an administrator's yank: looked up by the
+    release's source and body), so a chain carries the strongest state on. A snapshot reads only the
+    upstream blocks of the bodies its channel holds, and keeps its rows with it (computed once). A release an
+    upstream only yanked shows `yanked`, `reason` empty.
 
   The rows come from a list of their own (`snap.Revoked`); `ChannelReleases` and every consumer of it
   (`Flat`, `Versioned`, `Live`, `LiveKey`, the extensions listing, export's servable lookup,
-  `PullThroughFor`) are unchanged. The ETag is over the channel's `release_version`, the tenant's
-  blocks and revocations, and the **caller's view** (all, public, or the set of names it holds
-  `install` on), so a grant change is never answered `304` with stale rows.
+  `PullThroughFor`) are unchanged. The rows of a snapshot are computed once (every row, and the
+  public view's); a caller's rows are those of the names it holds `install` on and the public rows of
+  the others, so the ETag is a digest of the snapshot's rows, the tenant's state, the cursor and the
+  **names the caller holds** `install` on: a grant change is never answered `304` with stale rows, and
+  a page is found by binary search. An upstream block made, changed or removed bumps every channel
+  holding a release of the body from that upstream, so the snapshot moves with it.
 
-  A **suspended** tenant answers this route (only this one, only to tokens holding `install`): it
-  takes things away, and Enterest withdraws in suspended tenants (spec 0037). A deleting or deleted
+  Served by **signed** channels only: a passthrough channel answers as a missing path (`404`). A
+  **suspended** tenant answers this route (only this one) to tokens holding `install` on a name the
+  channel has a release of, with those names' rows: it takes things away, and Enterest withdraws in
+  suspended tenants (spec 0037); anonymous callers and other tokens get `404`. A deleting or deleted
   tenant, and a missing channel, answer as a missing path (`404`).
 - `GET <prefix>/-/names` and `…/-/names/<cursor>` (PR 2): the channel's extension names in the
   caller's view, 500 a page, the same answer shape and rules (not in a suspended tenant).
@@ -84,7 +94,9 @@ yanked row has it, as the management listing marks them (`internal/api/channels.
 
 ### A kista remote
 
-There is no separate probe (no kista version shown anonymously): a `repository` upstream's remote is
+`remote_kista` is a property of a `repository` mirror only (a bundle-mode upstream never reads a
+remote and keeps it false). There is no separate probe (no kista version shown anonymously): a
+`repository` upstream's remote is
 **a kista** when `GET <prefix>/-/revocations`, read with the upstream's credential if it has one,
 answers kista's shape (`"api"` and `"rows"`). It is read when the upstream is added and by each run's
 pass (below).
@@ -94,7 +106,11 @@ pass (below).
   nor `*` it clears `remote_kista`; on one with either, it is a run problem ("the source answers no
   revocations: not a kista, suspended or gone") and the stored state stays (a suspended Enterest
   tenant answers a credential without `install` as a missing path).
+- A `401` or `403` to an upstream switched off whose remote is not known as a kista is **not a
+  kista** too, silently (a static repository behind a credential); otherwise it is a problem.
 - A failure (network, `5xx`, `429` after pacing) is a problem and changes nothing.
+- A read is bounded: at most 11 pages (10,000 rows at 1,000 a page, and one more), no page on from
+  an empty page, no cursor twice; each is a problem, and a cut read forgets nothing.
 
 `*` and the switch are refused (`400`) on an upstream whose remote is not a kista; DuckDB's
 repositories and static repositories stay as they are.
@@ -107,14 +123,15 @@ repositories and static repositories stay as they are.
 bundle-mode upstream (decision 2). Set at add (`-revocations`, `"revocations": true`) or later
 (`POST …/upstreams/{u}/revocations {"revocations": true|false}` with `If-Match`;
 `kista admin upstream revocations <tenant> <name> on|off`; the console's upstream form). A change is
-an `upstream.revocations` event (`upstream`, `revocations`, `pending`: the stored revocations not
+an `upstream.revocations` event (`upstream`, `upstream_id`, `revocations`, `pending`: the stored revocations not
 applied yet) and makes the upstream due. Switching on applies the **stored** state at the next run
 (below), whatever the remote's ETag says.
 
 #### The pass
 
-Each run of a mirror whose remote is a kista, eager or lazy, switch on or off, starts with the
-**revocation pass**, before its cells and independent of them: it runs whatever happens next (the
+Each run of a `repository` mirror, eager or lazy, switch on or off, starts with the
+**revocation pass** (a remote not known as a kista is read too, so one that becomes a kista is
+noticed; its `404` only keeps `remote_kista` clear), before its cells and independent of them: it runs whatever happens next (the
 tenant's bytes room, spec 0038; a matrix over its cap; a failed listing of names), and its own
 failure records a problem and lets the run go on.
 
@@ -126,8 +143,11 @@ failure records a problem and lets the run go on.
    (`upstream:<id>`, any channel of the tenant) and its name, extension version, platform and body
    hash are the row's. A row matching nothing is ignored: nothing is revoked ahead of time.
 3. **Store** each match in `upstream_revocations`: the remote's state and reason as last seen. A
-   stored row the remote no longer lists, or whose build is gone, is deleted (what it applied stays
-   applied). The reason is cleaned (printable, cut at a UTF-8 boundary, at most 400 bytes) rather than
+   stored row the remote no longer lists (after a complete read), or whose build is gone, is deleted
+   only when nothing was applied or lifted of it; otherwise it is kept and marked **unlisted**
+   (`unlisted_at`): what it applied stays applied and can still be lifted, it is no longer applied,
+   and a remote dropping it for a run and listing it again undoes no lift (listed again, it is as it
+   was). The reason is cleaned (printable, cut at a UTF-8 boundary, at most 400 bytes) rather than
    refused, and kept as the remote gave it: a chain nests no prefixes.
 4. **Apply**, when the switch is on, each stored row whose state is **stronger** than what was applied
    for it (precedence `withdrawn` > `blocked` > `yanked` > nothing), unless an administrator lifted it
@@ -140,11 +160,16 @@ failure records a problem and lets the run go on.
 
    So a yank followed by the remote's withdrawal is applied again, as a block. A weaker later state
    changes nothing applied (decision B: nothing is re-activated by a mirror). Each application is an
-   `upstream.revocation` event (`upstream`, `name`, `version`, `platform`, `body_hash`, `action`:
-   `blocked` | `yanked`, the remote's state and reason). Switched off, nothing is applied; each stored
-   row is a problem of the run (`withdrawn on the source: <reason>`, `yanked on the source`) and is
-   listed by `GET …/upstreams/{u}/revocations` (with what was applied and lifted), so an administrator
-   sees it and acts.
+   `upstream.revocation` event (`upstream`, `upstream_id`, `name`, `version`, `platform`,
+   `body_hash`, `action`: `blocked` | `yanked`, the remote's state and reason, `yanked`). Each is
+   applied in one transaction under the tenant's upstream lock (and, for a block, every channel's
+   lock: the block, its sweep, the mark and the event; a run's due withdrawals and blocks go up to
+   100 to a transaction), the row read again there and applied only
+   while still due, so an apply and a lift never interleave. Switched off, nothing is applied; the
+   stored rows due are counted (`revoked_on_source`) and summed up in **one** problem of the run, so
+   the cells' problems keep their room, and listed by `GET …/upstreams/{u}/revocations` (with what
+   was applied and lifted), so an administrator sees them and acts. The pass runs under the run's
+   lease renewal and pause check.
 
 **Actor**: every act of the pass is `system:upstream:<tenant>/<upstream>`; the upstream's `id` is in
 each record and event, so a renamed upstream's acts stay attributed.
@@ -163,9 +188,13 @@ spec 0008's `blocks` (whose rows, routes and sweep stay as they are), in `upstre
   channel lock with the release insert, as spec 0009 checks `blocks`). The same bytes from any other
   source (the tenant's own publishers, DuckDB's mirrors, another upstream, a passthrough channel)
   stay as they are.
-- **Sweep.** Under each channel's lock, every live release of a build of **this upstream** with that
-  body is yanked: in the home channel and its copies elsewhere (a promotion or placement releases the
-  same build), so it is served nowhere in the tenant. Nothing else is touched.
+- **Sweep.** In the block's transaction, under every channel's lock of the tenant (a promotion or
+  placement into any channel is ordered against it, as spec 0008's sweep orders them; creating a
+  channel takes the tenant's upstream lock, so none appears meanwhile, and channels that keep
+  changing make it `ErrBusy` after three attempts), with one query across the tenant, every live
+  release of a build of **this upstream** with that body is yanked: in the home channel and its
+  copies elsewhere (a promotion or placement releases the same build), so it is served nowhere in the
+  tenant. Nothing else is touched.
 
 #### What an upstream yanked is recorded (decision C)
 
@@ -182,12 +211,17 @@ A tenant administrator lifts an upstream's revocation of a build:
 
 - The upstream block of that body, if any, is removed, and the releases recorded for it are
   **restored**: under each channel's lock, each recorded release that is **still yanked**, whose build
-  is **not withdrawn** (spec 0033), whose body is **not blocked** by an administrator, and that no
-  other upstream block still covers, goes back to its recorded state; the channel is bumped. Its
-  records are deleted either way.
-- The stored row gets `lifted_at` and the state lifted; the pass does not apply it again unless the
-  remote's state becomes **stronger** than the state lifted (a yank lifted, then withdrawn).
-- An `upstream.revocation.lift` event (`upstream`, `build`, `body_hash`, `restored`).
+  is **not withdrawn** (spec 0033), and whose body is **not blocked** by an administrator, goes back
+  to its recorded state; the channel is bumped. Its records are deleted either way.
+- Only a row something applied is left to lift: one never applied (the switch off) or lifted
+  already is refused (`409`), with no change and no event.
+- The stored row gets `lifted_at` and the state lifted, the stronger of its stored and applied
+  states; the pass does not apply it again unless the remote's state becomes **stronger** than the
+  state lifted (a yank lifted, then withdrawn).
+- An `upstream.revocation.lift` event (`upstream`, `upstream_id`, `build`, `body_hash`, `state`,
+  `restored`).
+- The mark, the restore, the upstream's version and the event are one transaction, under the
+  tenant's upstream lock and every channel's lock.
 
 **An administrator's block takes over**: an administrator blocking a body (spec 0008) deletes, in the
 same transaction, the `upstream_yanks` records of releases with that body, so no later lift restores
@@ -204,9 +238,12 @@ separately.
   public rows, private ones only where `-private` covers the source), whatever the cells' current
   bodies. Each row is (name, version, platform, body hash, state, reason): no internal source labels.
   The manifest's format moves only when `revocations` is not empty, so an older site, whose plan does
-  not declare it, imports as before.
+  not declare it, imports as before. At most 10,000 rows a source; rows over it are counted
+  (`revocations_left_out`) and are a problem of the export, never left out silently.
 - **Import.** A bundle-mode upstream stores a manifest's revocations as the pass stores rows (matched
-  by build among its own builds, after the bundle's files) and applies them when its switch is on. It
+  by build among its own builds, after the bundle's files), and at every import, with or without
+  revocations in the bundle, applies the stored ones due when its switch is on (a switch turned on
+  since the last bundle applies what is stored). It
   refuses a manifest whose revocations are over 10,000 rows, carry a malformed body hash, or name a
   name outside the plan; reasons are cleaned as above.
 - **Absence is no signal** in a bundle: a bundle never removes a stored revocation, so a lift is final
@@ -252,9 +289,9 @@ upstream blocked from that upstream again, and run a switched-on mirror without 
 - `upstreams`: `remote_kista`, `revocations` (booleans, default false), `revocations_etag`.
 - `upstream_revocations` (pk `upstream_id, build_id`): `body_hash`, `name`, `package_version`,
   `platform`, `state`, `reason`, `seen_at`, `applied_state`, `applied_at`, `lifted_state`,
-  `lifted_at`.
+  `lifted_at`, `unlisted_at`.
 - `upstream_blocks` (pk `upstream_id, body_hash`): `tenant_id`, `state` (`withdrawn` | `blocked`),
-  `reason`, `created_at`.
+  `reason`, `created_at`; an index on `tenant_id` (a snapshot reads the tenant's).
 - `upstream_yanks` (pk `release_id`): `tenant_id`, `upstream_id`, `build_id`, `body_hash`,
   `prior_state`, `cause`.
 - Deletion: all three join tenant deletion's list (`internal/store/tenantdelete.go`).

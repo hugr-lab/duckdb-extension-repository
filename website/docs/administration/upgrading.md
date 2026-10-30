@@ -102,6 +102,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0045_download_sources` | 45 | download counts and installers are kept per source: an older replica would add counts by the old key, which the new primary key no longer matches |
 | `0046_distributor_holds` | 46 | tenant reservations are dropped and distributors' publishers take the tenant's minimum hold: an older replica reads the dropped table on every channel snapshot, and would ignore the minimum |
 | `0047_tenant_limits` | 47 | an older replica would insert builds without their body's length, and check no tenant limit |
+| `0048_upstream_revocations` | 48 | an older replica would take a body an upstream blocked from that upstream again, and run a switched-on mirror without its revocations |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -172,7 +173,26 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 47)
+## Upgrading to the next release (schema 48)
+
+### Revocations from a kista (spec 0039, PR 1)
+
+- **Migration `0048_upstream_revocations`** adds `upstreams.remote_kista`, `revocations` (both
+  false) and `revocations_etag`, and the tables `upstream_revocations` (a remote's revocations
+  matched to an upstream's builds, `unlisted_at` once the remote stops listing one something was
+  applied of), `upstream_blocks` (an upstream's blocks of bodies, indexed by tenant) and
+  `upstream_yanks` (what an upstream yanked, with each release's prior state). It raises
+  `min_reader` to 48: stop every older replica first.
+- **What changes.** Nothing is applied until a tenant administrator switches an upstream on. New:
+  the route `<prefix>/-/revocations`, every repository mirror's runs reading it first (a
+  `revocations` problem when it fails; an older remote is simply not a kista), the upstream's
+  `remote_kista` and `revocations`, `…/upstreams/{name}/revocations` and the CLI's
+  `upstream revocations` and `upstream revocation lift`, the events `upstream.revocations`,
+  `upstream.revocation` and `upstream.revocation.lift`, and the index's `withdrawn` rows. A plan
+  accepts revocations (`accepts_revocations`), and a bundle carrying them is `kista-bundle/v2`; a
+  plan written by an older site gets a `v1` bundle without them, so the gateway and the site upgrade
+  in either order
+  ([Revocations from a kista](../upstreams.md#revocations-from-a-kista)).
 
 ### Tenant limits (spec 0038)
 

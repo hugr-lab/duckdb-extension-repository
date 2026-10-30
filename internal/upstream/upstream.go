@@ -50,6 +50,9 @@ var (
 	ErrBundle = errors.New("upstream: a bundle-mode upstream is filled by bundle imports, not runs")
 	// ErrPaused is a run asked of a paused upstream (409).
 	ErrPaused = errors.New("upstream: the upstream is paused; resume it first")
+	// ErrNotLiftable is a lift of a revocation nothing applied of is left to lift: never applied
+	// (the switch off), or lifted already (409, spec 0039).
+	ErrNotLiftable = errors.New("upstream: nothing applied of the revocation is left to lift")
 )
 
 // Fetcher is egress as upstreams use it.
@@ -116,8 +119,11 @@ type Spec struct {
 	Name, Kind, Prefix, Channel, Mode, Visibility string
 	Credential                                    string // a configured credential's name (phase 3)
 	FetchMode                                     string // a mirror's: eager (the default) or lazy (spec 0032)
-	Keys, Platforms                               []string
-	Entries                                       []store.UpstreamEntry
+	// Revocations applies the remote's revocations (spec 0039): a repository mirror of a kista, or a
+	// bundle-mode upstream.
+	Revocations     bool
+	Keys, Platforms []string
+	Entries         []store.UpstreamEntry
 }
 
 func (s *Service) tenant(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
@@ -234,6 +240,21 @@ func (s *Service) CheckSource(ctx context.Context, tenant string, sp Spec, chann
 			}
 			return u, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 		}
+	}
+	// spec 0039: a repository mirror's remote is a kista when its -/revocations answers kista's shape;
+	// read once now (each run's pass reads it again), and needed for the switch
+	if u.Kind == store.UpstreamRepo && u.Mode == store.ModeMirror {
+		kista, err := s.probeKista(ctx, tenant, u)
+		if err != nil && sp.Revocations {
+			return u, err
+		}
+		u.RemoteKista = kista
+	}
+	if sp.Revocations {
+		if err := revocationsAllowed(u, u.RemoteKista); err != nil {
+			return u, err
+		}
+		u.Revocations = true
 	}
 	return u, nil
 }
@@ -377,6 +398,9 @@ func (s *Service) insert(ctx context.Context, tx *store.Tx, a authz.Actor, t sto
 		"keys": u.Keys, "platforms": u.Platforms, "extensions": names, "credential": u.Credential}
 	if u.Mode == store.ModeMirror {
 		f["fetch"] = u.FetchMode
+	}
+	if u.Revocations {
+		f["revocations"] = true // spec 0039
 	}
 	if err := tx.Event(ctx, t.ID, a.String(), "upstream.add", "upstream:"+u.Name, f); err != nil {
 		return err

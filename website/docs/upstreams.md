@@ -133,6 +133,7 @@ kista admin -config /etc/kista/kista.yaml upstream add acme hugr \
 | `-mode` | `mode` | `mirror` (default), `pull-through` or `bundle` (fixed) |
 | `-fetch` | `fetch` | a mirror's: `eager` (default) or `lazy` ([Lazy mirrors](#lazy-mirrors)); changed later with `upstream fetch` |
 | `-credential` | `credential` | `repository` only: a configured credential's name (see [Private upstreams](#private-upstreams)) |
+| `-revocations` | `revocations` | apply the source's revocations: a `repository` mirror of a kista, or a `bundle` upstream ([Revocations from a kista](#revocations-from-a-kista)); default off |
 
 Over the API, the same record is `POST /api/v1/tenants/{t}/upstreams` with a JSON body:
 
@@ -181,6 +182,8 @@ wanted later are added here, as above: the bootstrap is not a reconciler.
 | `POST /{name}/credential {"credential": name or ""}` (`If-Match`) | `upstream credential <tenant> <name> <credential>\|-` |
 | `POST /{name}/fetch {"fetch": "eager" or "lazy"}` (`If-Match`) | `upstream fetch <tenant> <name> eager\|lazy` ([Lazy mirrors](#lazy-mirrors)) |
 | `POST /{name}/usage {"usage": "forward" or "off"}` (`If-Match`); `GET /{name}/usage` | `upstream usage <tenant> <name> [forward\|off]` ([forwarding usage](licensing.md#forwarding-usage-upstream)) |
+| `POST /{name}/revocations {"revocations": true or false}` (`If-Match`); `GET /{name}/revocations` | `upstream revocations <tenant> <name> [on\|off]` ([Revocations from a kista](#revocations-from-a-kista)) |
+| `DELETE /{name}/revocations/{build}` (`If-Match`) | `upstream revocation lift <tenant> <name> <build>` |
 
 `POST /{name}/extensions` on an existing name replaces its `versions`, `allow_reserved` and `eager` (`200`).
 The upstream's `ETag` moves with every change to it or its lists; a sync does not move it.
@@ -507,7 +510,10 @@ POST /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/versions/{v}/withdr
   problem type `…/withdrawn`), and its builds are never purged nor collected.
 - **Immediate.** In one transaction every build of the version becomes `withdrawn`, and every
   channel of the tenant holding a release of one gets its release version bumped: the next request
-  serves it nowhere (DuckDB's `INSTALL` of it fails), and the index, bundles and feeds leave it out.
+  serves it nowhere (DuckDB's `INSTALL` of it fails); bundles and feeds leave its body out, and the
+  index lists its releases as `"withdrawn": true` rows with the `withdrawn_reason` (spec 0039). A
+  kista mirroring the channel reads the withdrawal from its `-/revocations` route
+  ([Revocations from a kista](#revocations-from-a-kista)).
   A placement racing the withdrawal reads the build under a lock the withdrawal waits for: it either
   sees it withdrawn, or commits its release before the withdrawal bumps its channel.
 - **Final.** A withdrawn build is never placed again (no rule, follow, promotion, nor by hand, even
@@ -536,6 +542,76 @@ POST /api/v1/tenants/{t}/catalogue/{source}/extensions/{ext}/versions/{v}/withdr
   build, released or not, counts in its source's `catalogue.max_entries` and `catalogue.max_bytes`:
   its body is kept with it, and it is never purged, so a source full of withdrawn builds stays full
   (`429`, which says so); the distributor publishes through a new publisher then.
+
+## Revocations from a kista
+
+A kista answers, under each signed channel's prefix, `GET <prefix>/-/revocations`: the channel's
+revoked releases of every source, one row per (name, version, platform, body hash) at its strongest
+state, `withdrawn` (with the distributor's reason), then `blocked`, then `yanked`
+([DuckDB's routes](duckdb.md#url-layout)). A `repository` mirror whose source answers it is a
+**kista remote**: the upstream's record shows `remote_kista` (checked when the upstream is added, and
+at every run).
+
+**The pass.** Every run of a repository mirror starts with it, before the cells (a dry run only
+reads):
+
+1. It reads the route, every page, with the upstream's credential, conditional on the last ETag
+   (a `304` reads nothing more); at most 10,000 rows, more is a problem and the rest is not read.
+2. It keeps only the rows that match one of **this upstream's own builds**, by name, version,
+   platform and body hash: nothing is revoked ahead of time, and another version, platform or
+   source is never touched.
+3. It stores them with the remote's state and reason (cleaned: printable, at most 400 bytes). A
+   stored row the remote no longer lists (after a complete read) or whose build is gone is deleted
+   when nothing was applied or lifted of it; otherwise it is kept, `unlisted`: what it applied stays
+   and can still be lifted, and it applies nothing more.
+4. With the **switch on**, it applies each stored revocation stronger than what was applied or
+   lifted of it (`revoked` in the run's counts). With the switch off it applies nothing: they are
+   counted `revoked_on_source`, summed up in one problem of the run, and listed on the upstream's
+   page.
+
+A read is bounded (at most 11 pages, no page on from an empty one, no cursor twice; each is a
+problem), and runs under the run's lease and pause check.
+
+A remote that answers no revocations (an older kista, another server, a suspended or deleted
+tenant; a `401` or `403` to an upstream switched off that knows no kista there) is not a kista: the switch cannot be turned on (`400`), and for an upstream switched on
+already it is a problem of every run, kept until it answers again.
+
+**Applying** (an `upstream.revocation` event each):
+
+- a **withdrawal or block** becomes the **upstream's block** of the body: the body is refused from
+  this upstream only (intake answers `blocked`; the tenant's own build of the same bytes, or another
+  upstream's, is still taken), and every live release of this upstream's builds with that body is
+  yanked, in every channel, promoted copies included;
+- a **yank** yanks that build's releases in the upstream's home channel.
+
+What the upstream yanked is recorded with each release's prior state. It never undoes an
+administrator's block or yank, and nothing is re-activated by a run: kista mirrors revocations only.
+
+**Lifting.** A tenant administrator lifts a revocation from the upstream's page, or with
+`upstream revocation lift <tenant> <name> <build>` (`DELETE …/upstreams/{name}/revocations/{build}`,
+`If-Match`; an `upstream.revocation.lift` event): the upstream's block of the body goes, and each
+release it yanked and still holds yanked returns to its prior state, but not a withdrawn build's,
+nor one whose body an administrator blocks (an administrator's block of the body
+takes over the upstream's records: what the upstream yanked stays yanked). A lifted revocation is
+not applied again unless the remote revokes the build more strongly (a yank lifted, then a
+withdrawal). Only something applied is lifted: a revocation never applied (the switch off) or lifted
+already is refused (`409`). The lift is one transaction with its event, and never interleaves with a
+run applying the same revocation.
+
+**The switch** is per upstream, off by default: `-revocations` at `upstream add`, or
+`upstream revocations <tenant> <name> on|off`
+(`POST …/upstreams/{name}/revocations {"revocations": true}`, `If-Match`; an
+`upstream.revocations` event with how many stored revocations wait). Switching on makes a mirror due: its next run applies what is stored.
+`GET …/upstreams/{name}/revocations` (`upstream revocations <tenant> <name>`) lists the stored
+revocations: each one's build, the remote's state and reason, and whether it is `applied`, `lifted`
+or `waiting`.
+
+**Chains and bundles.** A kista that applied a revocation shows it on its own route at the
+remote's state and reason (a withdrawal applied as a block is still `withdrawn` downstream), so
+A → B → C carries it on. A bundle carries each source's revoked rows when the plan accepts them
+(a plan from this release on); a bundle-mode upstream stores them at import, never forgetting one
+(a bundle may be partial), and applies them when its switch is on
+([Importing a bundle](#importing-a-bundle)).
 
 ## Passthrough channels
 
@@ -769,6 +845,14 @@ the versions); a failure is `rejected`. Nothing is re-signed. A cell carries `fe
 source last confirmed that body (the cell record's, kept fresh by unchanged runs; an own channel's
 release time), its ETag, and `authenticated` when its release came through a credential or is
 private on the gateway, so a release `-private` let out stays private at the site.
+
+**Revocations** (spec 0039). When the plan accepts them (`accepts_revocations`, written by plans
+from this release on), each source carries the revoked rows of the channel it is exported from (or
+of the matching upstreams' home channels), as that channel's `-/revocations` route would answer them
+in the export's view (private rows only with `-private`), at most 10,000, and the bundle is
+`kista-bundle/v2`; a bundle without any stays `v1`. The import checks them (the source's names,
+their grammar, the order) and stores and applies them as
+[a pass does](#revocations-from-a-kista), never forgetting one.
 
 `-private <prefix>` (repeatable) names a repository source of the plan whose private releases may
 leave: a credentialed or private mirror's, or an own channel's. DuckDB's kinds take no `-private`:

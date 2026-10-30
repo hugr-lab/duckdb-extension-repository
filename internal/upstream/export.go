@@ -139,6 +139,47 @@ func (src *xsource) entries(name string) []string {
 	return out
 }
 
+// revocations are the source's exporting channel's revoked rows of the plan's names (spec 0039), as
+// its -/revocations route shows them, in the export's view (private rows only where -private covers
+// the source), at most bundle.MaxRevocations (and how many rows were left out over it): its own
+// channel's, or its upstreams' home channels'.
+func (src *xsource) revocations() ([]bundle.Revocation, int) {
+	names := map[string]bool{}
+	for _, pc := range src.plan.Cells {
+		names[pc.Name] = true
+	}
+	vis := func(c *store.Candidate) bool { return names[c.Name] && (src.private || c.Visibility == store.Public) }
+	var snaps []*release.Snapshot
+	if src.ch != nil {
+		snaps = append(snaps, src.ch.snap)
+	}
+	for _, xu := range src.ups {
+		snaps = append(snaps, xu.snap)
+	}
+	seen := map[[4]string]int{}
+	left := map[[4]string]bool{}
+	var out []bundle.Revocation
+	for _, snap := range snaps {
+		for _, r := range snap.RevokedRows(vis) {
+			x := bundle.Revocation{Name: r.Name, Version: r.Version, Platform: r.Platform, BodyHash: r.BodyHash, State: r.State,
+				Reason: bundle.Text(r.Reason, bundle.MaxDetail)}
+			if i, ok := seen[r.Key()]; ok {
+				if store.RevocationRank(x.State) > store.RevocationRank(out[i].State) {
+					out[i] = x
+				}
+				continue
+			}
+			if len(out) >= bundle.MaxRevocations {
+				left[r.Key()] = true
+				continue
+			}
+			seen[r.Key()] = len(out)
+			out = append(out, x)
+		}
+	}
+	return out, len(left)
+}
+
 type xupstream struct {
 	u     store.Upstream
 	snap  *release.Snapshot
@@ -289,6 +330,19 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 		if held != nil && bs.Kind == store.UpstreamRepo {
 			bs.Licenses, src.out.Licenses, src.out.LicensesLeftOut = carry(bs.Cells, held, src.entries)
 			carried += len(bs.Licenses)
+		}
+		if plan.AcceptsRevocations { // spec 0039
+			var left int
+			bs.Revocations, left = src.revocations()
+			if len(bs.Revocations) > 0 {
+				m.Format = bundle.ManifestFormatV2
+				src.out.Counts["revocations"] = len(bs.Revocations)
+			}
+			if left > 0 { // said whatever the cells' problems took: the site misses these
+				src.out.Counts["revocations_left_out"] = left
+				src.out.Problems = append(src.out.Problems, CellNote{Outcome: "revocations",
+					Detail: fmt.Sprintf("%d revoked rows over the %d a bundle carries were left out", left, bundle.MaxRevocations)})
+			}
 		}
 		m.Sources = append(m.Sources, bs)
 	}

@@ -82,6 +82,11 @@ type Upstream struct {
 	// Hold is an eager mirror's hold (spec 0033): an entry its runs bring is held until its arrival
 	// plus the hold; 0 for none. A lazy or pull-through upstream has none.
 	Hold time.Duration
+	// RemoteKista says a repository upstream's remote answered kista's revocations route (spec
+	// 0039); Revocations applies what the remote revoked (switched on by the tenant's
+	// administrators); RevocationsETag is the route's first page's ETag at the last pass.
+	RemoteKista, Revocations bool
+	RevocationsETag          string
 
 	// bundle mode's freshness mark (spec 0014): the last imported manifest
 	BundleID, BundleManifestSHA256 string
@@ -113,16 +118,17 @@ func TenantUpstreamLock(tenantID string) string { return "kista/tenant-upstreams
 
 const upstreamCols = `id, tenant_id, name, kind, prefix, channel_id, mode, visibility, state, version, requested_at,
 request_dry_run, next_run_at, last_run_at, last_run, created_at, created_by, credential, bundle_id, bundle_created_at,
-bundle_manifest_sha256, usage, fetch_mode, hold_seconds`
+bundle_manifest_sha256, usage, fetch_mode, hold_seconds, remote_kista, revocations, revocations_etag`
 
 func scanUpstream(r interface{ Scan(...any) error }) (Upstream, error) {
 	var u Upstream
-	var prefix, lastRun, cred, bundleID, bundleSHA sql.NullString
+	var prefix, lastRun, cred, bundleID, bundleSHA, revETag sql.NullString
 	var hold int64
 	err := r.Scan(&u.ID, &u.TenantID, &u.Name, &u.Kind, &prefix, &u.ChannelID, &u.Mode, &u.Visibility, &u.State, &u.Version,
 		scanTime{&u.RequestedAt}, &u.RequestDryRun, scanTime{&u.NextRunAt}, scanTime{&u.LastRunAt}, &lastRun,
-		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred, &bundleID, scanTime{&u.BundleCreatedAt}, &bundleSHA, &u.Usage, &u.FetchMode, &hold)
-	u.Hold = time.Duration(hold) * time.Second
+		scanTime{&u.CreatedAt}, &u.CreatedBy, &cred, &bundleID, scanTime{&u.BundleCreatedAt}, &bundleSHA, &u.Usage, &u.FetchMode, &hold,
+		&u.RemoteKista, &u.Revocations, &revETag)
+	u.Hold, u.RevocationsETag = time.Duration(hold)*time.Second, revETag.String
 	u.Prefix, u.LastRun, u.Credential = prefix.String, lastRun.String, cred.String
 	u.BundleID, u.BundleManifestSHA256 = bundleID.String, bundleSHA.String
 	return u, err
@@ -158,10 +164,11 @@ func (t *Tx) InsertUpstream(ctx context.Context, u *Upstream) error {
 	if u.FetchMode == "" {
 		u.FetchMode = FetchEager
 	}
-	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := t.exec(ctx, "INSERT INTO upstreams ("+upstreamCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		u.ID, u.TenantID, u.Name, u.Kind, nullable(u.Prefix), u.ChannelID, u.Mode, u.Visibility, u.State, u.Version,
 		t.s.d.nullTimeArg(u.RequestedAt), u.RequestDryRun, t.s.d.nullTimeArg(u.NextRunAt), nil, nil,
-		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential), nil, nil, nil, u.Usage, u.FetchMode, int64(u.Hold/time.Second))
+		t.s.d.timeArg(u.CreatedAt), u.CreatedBy, nullable(u.Credential), nil, nil, nil, u.Usage, u.FetchMode, int64(u.Hold/time.Second),
+		u.RemoteKista, u.Revocations, nullable(u.RevocationsETag))
 	if err := t.s.mapErr(err, "upstream "+u.Name); err != nil {
 		return err
 	}
@@ -300,7 +307,15 @@ func (t *Tx) DeleteUpstream(ctx context.Context, u Upstream, expected int64) err
 	if err := t.DeleteLicenseKeysOf(ctx, KeySourceUpstream, u.ID); err != nil {
 		return err // spec 0021: the keys it brought go with it
 	}
-	for _, c := range []string{"upstream_asks", "upstream_cells", "upstream_versions", "upstream_entries", "upstream_platforms", "upstream_keys"} {
+	// spec 0039: its revocations, blocks and yank records go with it (its yanked releases stay
+	// yanked); the channels showing its blocks show them no more
+	if _, err := t.exec(ctx, "UPDATE channels SET release_version = release_version + 1 WHERE id IN "+
+		"(SELECT r.channel_id FROM releases r JOIN builds b ON b.id = r.build_id JOIN upstream_blocks ub ON ub.body_hash = b.body_hash "+
+		"WHERE ub.upstream_id = ? AND b.source = ?)", u.ID, UpstreamSource(u.ID)); err != nil {
+		return err
+	}
+	for _, c := range []string{"upstream_revocations", "upstream_blocks", "upstream_yanks", "upstream_asks", "upstream_cells", "upstream_versions",
+		"upstream_entries", "upstream_platforms", "upstream_keys"} {
 		if _, err := t.exec(ctx, "DELETE FROM "+c+" WHERE upstream_id = ?", u.ID); err != nil {
 			return err
 		}

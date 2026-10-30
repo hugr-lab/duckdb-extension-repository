@@ -361,7 +361,7 @@ names](publishing.md#reserved-names); `kista duckdb core-extensions <tag>` print
 | `GET tenants/{t}/channels/{c}` | public: kind, DuckDB versions and C API maxima, signing keys |
 | `GET tenants/{t}/channels/{c}/extensions[?duckdb_version=&platform=&prefix=&cursor=&limit=]` | public, in the caller's view |
 | `GET tenants/{t}/channels/{c}/extensions/{name}[?duckdb_version=&platform=]` | public, in the caller's view |
-| `GET tenants/{t}/channels/{c}/extensions/{name}/versions/{v}?duckdb_version=&platform=` | public: `available`, `deprecated`, `yanked` or `missing` |
+| `GET tenants/{t}/channels/{c}/extensions/{name}/versions/{v}?duckdb_version=&platform=` | public: `available`, `deprecated`, `yanked`, `withdrawn` (only a [withdrawn](upstreams.md#withdrawals) release would serve it: a `withdrawn` list of its rows) or `missing`. An index row of a withdrawn build carries `"withdrawn": true` and `withdrawn_reason`, its DuckDB versions in `would_serve` (spec 0039) |
 | `GET tenants/{t}/channels/{c}/extensions/{name}/attachments[/{id}]` | public, in the caller's view |
 | `GET tenants/{t}/attestation-keys` | public |
 
@@ -448,6 +448,8 @@ See [Upstreams](upstreams.md).
 | `POST …/licenses/{name}/public?source=` (`If-Match`) | tenant admin, except in a distributor's publisher's entry (a server administrator's) |
 | `GET …/upstreams/{name}/licenses`; `POST …/upstreams/{name}/licenses/sync` | tenant admin |
 | `GET …/upstreams/{name}/usage`; `POST …/upstreams/{name}/usage {"usage": "forward"\|"off"}` (`If-Match`) | tenant admin: the usage switch and the last forwarding run |
+| `GET …/upstreams/{name}/revocations`; `POST …/upstreams/{name}/revocations {"revocations": true\|false}` (`If-Match`) | tenant admin: [revocations from a kista](upstreams.md#revocations-from-a-kista), `{"remote_kista", "revocations", "stored": [{"build", "name", "version", "platform", "body_hash", "state", "reason", "seen_at", "applied_state", "applied_at", "lifted_state", "lifted_at", "unlisted_at" (the source no longer lists it: kept for what was applied or lifted), "status": "applied" (something applied is left to lift) \| "lifted" \| "waiting" (nothing applied)}]}`, its `ETag` the answer's content (a run moves it); the switch answers the upstream (`400` on one that is neither a repository mirror of a kista nor in bundle mode) |
+| `DELETE …/upstreams/{name}/revocations/{build}` (`If-Match`) | tenant admin: lift the upstream's revocation of a build; answers `{"build", "restored"}`; `409` when nothing applied is left to lift (never applied, or lifted already) |
 | `GET tenants/{t}/license-keys[?source=]`, `GET …/license-keys/{name}[?source=]` | a tenant admin or a licence manager: the tenant's live licence keys, each with the entries it is live for |
 
 A licence is answered as its claims and state (`name`, `entry`, `id`, `issuer`, `holder_id`,

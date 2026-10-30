@@ -186,7 +186,11 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   unused one's; an existing publisher is never marked one)
   upstream add <tenant> <name> -kind duckdb-core|duckdb-community|repository -channel <channel>
                -platforms <p,...> [-extensions <name,...|*>] [-prefix <https://...> -keys <sha256:...,...>] [-public]
-               [-mode mirror|pull-through|bundle] [-fetch eager|lazy] [-credential <name>]
+               [-mode mirror|pull-through|bundle] [-fetch eager|lazy] [-credential <name>] [-revocations]
+  upstream revocations <tenant> <name> [on|off]   the source's revocations the upstream stored, and the switch
+                                                  applying them (spec 0039: a mirror of a kista, or bundle mode)
+  upstream revocation lift <tenant> <name> <build>   lift the upstream's revocation of a build: what it yanked
+                                                  is restored, and it is not applied again unless stronger
   upstream fetch <tenant> <name> eager|lazy       a mirror's fetch mode (spec 0032): lazy fetches the cells asked for
                                                   and its eager entries; sync fetches the whole matrix
   upstream hold <tenant> <name> <duration>        an eager mirror's hold (spec 0033): its entries are held this long
@@ -1815,6 +1819,7 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 	cred := fs.String("credential", "", "")
 	fetch := fs.String("fetch", "", "")
 	sync := fs.Bool("sync", false, "")
+	revocations := fs.Bool("revocations", false, "")
 	pos, err := flags(fs, args)
 	if err != nil {
 		return err
@@ -1834,6 +1839,9 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 		if u.Credential != "" {
 			fmt.Fprintf(a.out, "credential: %s\n", u.Credential)
 		}
+		if u.RemoteKista || u.Revocations { // spec 0039
+			fmt.Fprintf(a.out, "remote kista: %v\nrevocations: %s\n", u.RemoteKista, map[bool]string{true: "on", false: "off"}[u.Revocations])
+		}
 		if u.BundleID != "" {
 			fmt.Fprintf(a.out, "last bundle: %s (made %s)\n", u.BundleID, ts(u.BundleCreatedAt))
 		}
@@ -1851,7 +1859,8 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 	switch {
 	case sub == "add" && len(pos) == 2:
 		sp := upstream.Spec{Name: pos[1], Kind: *kind, Channel: *channel, Prefix: *prefix, Keys: commaList(*keys),
-			Platforms: commaList(*platforms), Visibility: store.Private, Mode: *mode, Credential: *cred, FetchMode: *fetch}
+			Platforms: commaList(*platforms), Visibility: store.Private, Mode: *mode, Credential: *cred, FetchMode: *fetch,
+			Revocations: *revocations}
 		if *public {
 			sp.Visibility = store.Public
 		}
@@ -1913,6 +1922,37 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 			return err
 		}
 		a.logf("upstream fetch %s %s %s", pos[0], pos[1], pos[2])
+	case sub == "revocations" && (len(pos) == 2 || len(pos) == 3): // spec 0039
+		if len(pos) == 3 {
+			if pos[2] != "on" && pos[2] != "off" {
+				return errUsage
+			}
+			if _, err := a.svc.Upstreams.SetRevocations(ctx, a.actor, pos[0], pos[1], pos[2] == "on", 0); err != nil {
+				return err
+			}
+			a.logf("upstream revocations %s %s %s", pos[0], pos[1], pos[2])
+		}
+		u, err := a.svc.Upstreams.Get(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		rs, err := a.svc.Upstreams.RevocationsOf(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "remote kista: %v\nrevocations: %s\n", u.RemoteKista, map[bool]string{true: "on", false: "off"}[u.Revocations])
+		a.table("BUILD\tNAME\tVERSION\tPLATFORM\tSTATE\tAPPLIED\tLIFTED\tREASON", func(w io.Writer) {
+			for _, r := range rs {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.BuildID, r.Name, r.PackageVersion, r.Platform, r.State,
+					dash(r.AppliedState), dash(r.LiftedState), r.Reason)
+			}
+		})
+	case sub == "revocation" && len(pos) == 4 && pos[0] == "lift": // spec 0039
+		n, err := a.svc.Upstreams.LiftRevocation(ctx, a.actor, pos[1], pos[2], pos[3], 0)
+		if err != nil {
+			return err
+		}
+		a.logf("upstream revocation lift %s %s %s: %d releases restored", pos[1], pos[2], pos[3], n)
 	case sub == "hold" && len(pos) == 3:
 		d, err := parseHold(pos[2])
 		if err != nil {
