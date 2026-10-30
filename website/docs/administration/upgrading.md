@@ -173,7 +173,19 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 48)
+## Upgrading to the next release (schema 49)
+
+### `*` on a mirror of a kista (spec 0039, PR 2)
+
+- **Migration `0049_upstream_names`** adds the table `upstream_names`: the names a mirror's `*`
+  took from its kista remote. It raises `min_reader` to 49: stop every older replica first (one
+  would run a `*` mirror with no names).
+- **What changes.** Nothing until an upstream takes `*`. New: the route `<prefix>/-/names`, `*` on a
+  repository mirror whose remote is a kista (its runs read the remote's names after the revocation
+  pass; a `names` problem when that fails), the upstream's `discovered`, `…/upstreams/{name}/names`
+  and the CLI's `upstream names` ([`*` on a mirror of a kista](../upstreams.md#on-a-mirror-of-a-kista)).
+
+## Upgrading to schema 48
 
 ### Revocations from a kista (spec 0039, PR 1)
 

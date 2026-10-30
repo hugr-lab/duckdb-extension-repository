@@ -265,6 +265,54 @@ func TestUpstreamRevocations(t *testing.T) {
 	}
 }
 
+// Spec 0039 PR 2: a mirror with "*" answers the number of names it discovered, and GET …/names lists
+// them (tenant administrators, a name prefix); an upstream without "*" answers neither; "*" on a
+// mirror of DuckDB's repositories is refused.
+func TestUpstreamNames(t *testing.T) {
+	m := newMgmt(t)
+	ta := m.toks["tenant admin"]
+	const U = "/api/v1/tenants/acme/upstreams"
+	if r := m.call(t, "POST", U, ta, `{"name":"core","kind":"duckdb-core","channel":"staging","platforms":["linux_amd64"],"extensions":[{"name":"json"}]}`); r.status != 201 {
+		t.Fatalf("core: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", U+"/core", ta, ""); r.status != 200 || r.json(t)["discovered"] != nil {
+		t.Fatalf("no *: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", U+"/core/names", ta, ""); r.status != 200 || len(r.json(t)["names"].([]any)) != 0 {
+		t.Fatalf("no * names: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", U+"/core/extensions", ta, `{"name":"*"}`); r.status != 400 {
+		t.Errorf("* on a mirror of DuckDB: %d %s", r.status, r.body)
+	}
+	// as a run records them: "*" and the names it discovered
+	u, err := m.ups.Get(ctx, admin, "acme", "core")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+		if err := tx.PutUpstreamEntry(ctx, u.ID, store.UpstreamEntry{Name: "*"}); err != nil {
+			return err
+		}
+		cur, err := tx.GetUpstreamByID(ctx, u.ID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.SetUpstreamNames(ctx, cur, []string{"geo", "tresor"}, true)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r := m.call(t, "GET", U+"/core", ta, ""); r.json(t)["discovered"] != float64(2) {
+		t.Fatalf("discovered: %s", r.body)
+	}
+	if r := m.call(t, "GET", U+"/core/names?prefix=t", ta, ""); r.status != 200 || !strings.Contains(string(r.body), `"names":["tresor"]`) {
+		t.Fatalf("names: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", U+"/core/names", m.toks["channel adm"], ""); r.status != 404 {
+		t.Errorf("a channel administrator reads them: %d", r.status)
+	}
+}
+
 // Spec 0009 phase 2: a miss on a DuckDB route offers the cell to a pull-through upstream only for a
 // caller holding install, on the flat path; the answer is the same.
 func TestPullThroughOffers(t *testing.T) {

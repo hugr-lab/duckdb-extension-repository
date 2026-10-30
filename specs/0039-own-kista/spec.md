@@ -1,6 +1,6 @@
 # Spec 0039: An own kista mirroring a channel, and revocations downstream
 
-- **Status**: accepted (the owner's decisions of 2026-10-30, below); PR 1 (revocations) implemented
+- **Status**: implemented (PR 1, revocations; PR 2, `*` on a mirror); the owner's decisions of 2026-10-30, below
 - **Date**: 2026-10-30
 - **Author**: vgsml, Claude
 
@@ -379,6 +379,25 @@ with its upstream.
 2. **PR 2, `*` on a mirror (G5).** `-/names`, discovery, names in the matrix, snapshot, placement,
    licences and reservations, the names route and CLI, the console's names, migration 0049 with
    `min_reader` 49, the PR 2 end to end case.
+
+   As built (PR 2):
+   - `-/names` answers `{"api": 1, "names": [...], "next"}`; a name is served while it has an active
+     or deprecated release of the channel's selected source whose body is not blocked, public in the
+     anonymous view when one of those is public. Its rows are computed once per snapshot, as
+     `-/revocations`' are.
+   - A discovered name takes the `*` entry's `eager`. The discovery also skips a name this upstream
+     lists explicitly. Removing `*` forgets the discovered names (their cells and asks go, their
+     releases stay).
+   - A release of a discovered name is checked again under the insert's locks for a reservation
+     made server-wide since the discovery (as a pull-through `*`'s is, but without the tenant's
+     upstream reservations, which the upstream's own releases make): a run's intake and the
+     placement pass refuse it as `shadowed`.
+   - The matrix caps leave discovered names out at the run, by name, after the explicit entries; an
+     upstream's run counts the tenant's other upstreams' cells as `TenantCells` does.
+   - `GET …/upstreams/{name}/names` pages as the allowlist does (`prefix`, `limit`, `after`); the
+     upstream's `discovered` is the number of names.
+   - Adding `*` to an existing mirror reads `-/revocations` once when the upstream does not know its
+     remote as a kista, and records it.
 
 Each PR runs `make test` on the three databases, `make lint`, `make console-test`,
 `make console-e2e` and `make e2e` before it opens.

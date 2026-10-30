@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -95,6 +96,54 @@ type Upstream struct {
 	Keys      []string // fingerprints
 	Platforms []string
 	Entries   []UpstreamEntry
+	// Discovered are the names a mirror's "*" took from its kista remote (spec 0039), by name.
+	Discovered []string
+}
+
+// MaxDiscoveredNames is the most names a mirror's "*" keeps (spec 0039).
+const MaxDiscoveredNames = 1000
+
+// AnyMirror reports whether u is a mirror whose allowlist holds "*": its names are discovered from
+// its kista remote (spec 0039), not taken at a miss as a pull-through "*" takes them.
+func (u Upstream) AnyMirror() bool {
+	return u.Mode != ModePullThrough && slices.ContainsFunc(u.Entries, func(e UpstreamEntry) bool { return e.Name == "*" })
+}
+
+// Names are the entries a mirror's runs fetch: its explicit entries and, with "*", the names it
+// discovered, each as a listed name (eager as the "*" entry is). A pull-through upstream's are its
+// entries, "*" included.
+func (u Upstream) Names() []UpstreamEntry {
+	if !u.AnyMirror() {
+		return u.Entries
+	}
+	var star UpstreamEntry
+	out := make([]UpstreamEntry, 0, len(u.Entries)+len(u.Discovered))
+	for _, e := range u.Entries {
+		if e.Name == "*" {
+			star = e
+			continue
+		}
+		out = append(out, e)
+	}
+	for _, n := range u.Discovered {
+		out = append(out, UpstreamEntry{Name: n, Eager: star.Eager})
+	}
+	return out
+}
+
+// Discovers reports whether name is one the mirror's "*" discovered, not one it lists (spec 0039).
+func (u Upstream) Discovers(name string) bool {
+	return u.AnyMirror() && slices.Contains(u.Discovered, name) && !slices.ContainsFunc(u.Entries, func(e UpstreamEntry) bool { return e.Name == name })
+}
+
+// Entry is the entry a run or an ask of name takes (one of Names), if any.
+func (u Upstream) Entry(name string) (UpstreamEntry, bool) {
+	for _, e := range u.Names() {
+		if e.Name == name {
+			return e, true
+		}
+	}
+	return UpstreamEntry{}, false
 }
 
 // UpstreamEntry is an allowlist entry: a name and the extension versions accepted (none: any).
@@ -251,7 +300,75 @@ func (t *Tx) upstreamChildren(ctx context.Context, u *Upstream) error {
 			u.Entries[i].Versions = append(u.Entries[i].Versions, v)
 		}
 	}
-	return vrows.Err()
+	if err := vrows.Err(); err != nil {
+		return err
+	}
+	vrows.Close()
+	// spec 0039: the names a "*" mirror discovered
+	u.Discovered, err = t.strings(ctx, "SELECT name FROM upstream_names WHERE upstream_id = ? ORDER BY name", u.ID)
+	return err
+}
+
+// SetUpstreamNames records the names a "*" mirror discovered (spec 0039): each new one is added; with
+// complete (the remote's whole listing read), a name absent from names is removed with its cells and
+// asks (its releases stay). It reports whether anything changed.
+func (t *Tx) SetUpstreamNames(ctx context.Context, u Upstream, names []string, complete bool) (bool, error) {
+	have := map[string]bool{}
+	for _, n := range u.Discovered {
+		have[n] = true
+	}
+	want := map[string]bool{}
+	changed := false
+	for _, n := range names {
+		want[n] = true
+		if have[n] {
+			continue
+		}
+		if _, err := t.exec(ctx, "INSERT INTO upstream_names (upstream_id, name, discovered_at) VALUES (?, ?, ?)", u.ID, n,
+			t.s.d.timeArg(t.Now())); err != nil {
+			return changed, t.s.mapErr(err, "extension "+n)
+		}
+		changed = true
+	}
+	if !complete {
+		return changed, nil
+	}
+	for _, n := range u.Discovered {
+		if want[n] {
+			continue
+		}
+		if err := t.forgetName(ctx, u, n); err != nil {
+			return changed, err
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
+// ClearUpstreamNames forgets every name a mirror discovered (its "*" removed): their cells and asks
+// go, their releases stay. A name it also lists explicitly keeps its cells.
+func (t *Tx) ClearUpstreamNames(ctx context.Context, u Upstream) error {
+	for _, n := range u.Discovered {
+		if err := t.forgetName(ctx, u, n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// forgetName removes a discovered name of u, and its cells and asks unless u lists it explicitly.
+func (t *Tx) forgetName(ctx context.Context, u Upstream, name string) error {
+	if _, err := t.exec(ctx, "DELETE FROM upstream_names WHERE upstream_id = ? AND name = ?", u.ID, name); err != nil {
+		return err
+	}
+	if slices.ContainsFunc(u.Entries, func(e UpstreamEntry) bool { return e.Name == name }) {
+		return nil
+	}
+	if _, err := t.exec(ctx, "DELETE FROM upstream_asks WHERE upstream_id = ? AND name = ?", u.ID, name); err != nil {
+		return err
+	}
+	_, err := t.exec(ctx, "DELETE FROM upstream_cells WHERE upstream_id = ? AND name = ?", u.ID, name)
+	return err
 }
 
 func (t *Tx) strings(ctx context.Context, q string, args ...any) ([]string, error) {
@@ -314,7 +431,7 @@ func (t *Tx) DeleteUpstream(ctx context.Context, u Upstream, expected int64) err
 		"WHERE ub.upstream_id = ? AND b.source = ?)", u.ID, UpstreamSource(u.ID)); err != nil {
 		return err
 	}
-	for _, c := range []string{"upstream_revocations", "upstream_blocks", "upstream_yanks", "upstream_asks", "upstream_cells", "upstream_versions",
+	for _, c := range []string{"upstream_revocations", "upstream_blocks", "upstream_yanks", "upstream_names", "upstream_asks", "upstream_cells", "upstream_versions",
 		"upstream_entries", "upstream_platforms", "upstream_keys"} {
 		if _, err := t.exec(ctx, "DELETE FROM "+c+" WHERE upstream_id = ?", u.ID); err != nil {
 			return err
@@ -477,12 +594,27 @@ func (t *Tx) deleteOne(ctx context.Context, q, what string, args ...any) error {
 
 // UpstreamProvides reports whether an upstream of the tenant lists a package (type, name) (spec
 // 0009: the name is reserved for the tenant; spec 0034: an upstream's names are of its home
-// channel's type).
+// channel's type). A name a "*" mirror discovered counts only once that upstream holds a release of
+// it (spec 0039: a remote reserves no name by listing it).
 func (t *Tx) UpstreamProvides(ctx context.Context, tenantID, packageType, name string) (bool, error) {
 	var n int
 	err := t.queryRow(ctx, `SELECT COUNT(*) FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
 JOIN channels c ON c.id = u.channel_id WHERE u.tenant_id = ? AND c.package_type = ? AND e.name = ?`, tenantID, packageType, name).Scan(&n)
-	return n > 0, err
+	if err != nil || n > 0 {
+		return n > 0, err
+	}
+	ids, err := t.strings(ctx, `SELECT d.upstream_id FROM upstream_names d JOIN upstreams u ON u.id = d.upstream_id
+JOIN channels c ON c.id = u.channel_id WHERE u.tenant_id = ? AND c.package_type = ? AND d.name = ?`, tenantID, packageType, name)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if err := t.queryRow(ctx, "SELECT COUNT(*) FROM releases WHERE tenant_id = ? AND source = ? AND name = ?", tenantID,
+			UpstreamSource(id), name).Scan(&n); err != nil || n > 0 {
+			return n > 0, err
+		}
+	}
+	return false, nil
 }
 
 // UpstreamProvides is Tx.UpstreamProvides outside a transaction.
@@ -496,19 +628,61 @@ func (s *Store) UpstreamProvides(ctx context.Context, tenantID, packageType, nam
 	return ok, err
 }
 
-// ChannelEntryOwner returns the name of another upstream of the channel that lists name, or "".
+// ChannelEntryOwner returns the name of another upstream of the channel that lists name, or one that
+// discovered it (spec 0039), or "".
 func (t *Tx) ChannelEntryOwner(ctx context.Context, channelID, name, exceptUpstreamID string) (string, error) {
 	var owner sql.NullString
 	err := t.queryRow(ctx, `SELECT MIN(u.name) FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
 WHERE u.channel_id = ? AND e.name = ? AND u.id <> ?`, channelID, name, exceptUpstreamID).Scan(&owner)
+	if err != nil || owner.String != "" {
+		return owner.String, err
+	}
+	err = t.queryRow(ctx, `SELECT MIN(u.name) FROM upstream_names d JOIN upstreams u ON u.id = d.upstream_id
+WHERE u.channel_id = ? AND d.name = ? AND u.id <> ?`, channelID, name, exceptUpstreamID).Scan(&owner)
 	return owner.String, err
 }
 
+// ChannelNames are the names the channel's upstreams other than exceptUpstreamID list explicitly
+// ("*" not one), and those they discovered (spec 0039).
+func (t *Tx) ChannelNames(ctx context.Context, channelID, exceptUpstreamID string) (listed, discovered map[string]bool, err error) {
+	listed, discovered = map[string]bool{}, map[string]bool{}
+	names, err := t.strings(ctx, `SELECT DISTINCT e.name FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
+WHERE u.channel_id = ? AND u.id <> ?`, channelID, exceptUpstreamID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, n := range names {
+		if n != "*" {
+			listed[n] = true
+		}
+	}
+	if names, err = t.strings(ctx, `SELECT DISTINCT d.name FROM upstream_names d JOIN upstreams u ON u.id = d.upstream_id
+WHERE u.channel_id = ? AND u.id <> ?`, channelID, exceptUpstreamID); err != nil {
+		return nil, nil, err
+	}
+	for _, n := range names {
+		discovered[n] = true
+	}
+	return listed, discovered, nil
+}
+
+// TenantNamesOfOtherSources are the names a source of the tenant other than an upstream (its own,
+// a publisher's, a distributor's) holds a release of in a channel (spec 0039: "*" takes none).
+func (t *Tx) TenantNamesOfOtherSources(ctx context.Context, tenantID string) (map[string]bool, error) {
+	names, err := t.strings(ctx, "SELECT DISTINCT name FROM releases WHERE tenant_id = ? AND source NOT LIKE ?", tenantID, SourceUpstreamPrefix+"%")
+	out := map[string]bool{}
+	for _, n := range names {
+		out[n] = true
+	}
+	return out, err
+}
+
 // TenantCells counts the cells of the matrices of a tenant's upstreams other than one: entries ×
-// platforms × the channel's DuckDB versions.
+// platforms × the channel's DuckDB versions; a mirror's "*" is the names it discovered (spec 0039).
 func (t *Tx) TenantCells(ctx context.Context, tenantID, exceptUpstreamID string) (int, error) {
 	rows, err := t.query(ctx, `SELECT
- (SELECT COUNT(*) FROM upstream_entries e WHERE e.upstream_id = u.id) *
+ ((SELECT COUNT(*) FROM upstream_entries e WHERE e.upstream_id = u.id AND NOT (e.name = '*' AND u.mode <> 'pull-through')) +
+  (SELECT COUNT(*) FROM upstream_names d WHERE d.upstream_id = u.id)) *
  (SELECT COUNT(*) FROM upstream_platforms p WHERE p.upstream_id = u.id) *
  (SELECT COUNT(*) FROM channel_duckdb_versions v WHERE v.channel_id = u.channel_id)
 FROM upstreams u WHERE u.tenant_id = ? AND u.id <> ?`, tenantID, exceptUpstreamID)
@@ -937,8 +1111,8 @@ func (s *Store) ChannelPullThrough(ctx context.Context, channelID string) ([]Pul
 	listed := map[string]bool{}
 	err := s.InTx(ctx, "", func(tx *Tx) error {
 		out, listed = nil, map[string]bool{}
-		names, err := tx.strings(ctx, `SELECT DISTINCT e.name FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id
-WHERE u.channel_id = ?`, channelID)
+		names, err := tx.strings(ctx, `SELECT e.name FROM upstream_entries e JOIN upstreams u ON u.id = e.upstream_id WHERE u.channel_id = ?
+UNION SELECT d.name FROM upstream_names d JOIN upstreams u ON u.id = d.upstream_id WHERE u.channel_id = ?`, channelID, channelID)
 		if err != nil {
 			return err
 		}
@@ -978,7 +1152,8 @@ WHERE u.channel_id = ?`, channelID)
 			for _, x := range us[i].Platforms {
 				p.Platforms[x] = true
 			}
-			for _, e := range us[i].Entries {
+			// a lazy mirror's "*" is the names it discovered (spec 0039); a pull-through's, any name
+			for _, e := range us[i].Names() {
 				if e.Name == "*" {
 					p.Any = true
 				} else {

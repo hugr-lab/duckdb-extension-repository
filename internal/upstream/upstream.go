@@ -249,6 +249,12 @@ func (s *Service) CheckSource(ctx context.Context, tenant string, sp Spec, chann
 			return u, err
 		}
 		u.RemoteKista = kista
+		if err != nil && u.AnyMirror() {
+			return u, err
+		}
+	}
+	if err := anyAllowed(u, u.RemoteKista); err != nil {
+		return u, err
 	}
 	if sp.Revocations {
 		if err := revocationsAllowed(u, u.RemoteKista); err != nil {
@@ -739,16 +745,40 @@ func (s *Service) Set(ctx context.Context, a authz.Actor, tenant, name, visibili
 }
 
 // PutEntry adds an allowlist entry, or replaces an existing one's versions, allow_reserved and
-// eager; it reports whether the entry is new.
+// eager; it reports whether the entry is new. "*" on a mirror takes a kista remote (spec 0039), read
+// now when the upstream does not know it as one.
 func (s *Service) PutEntry(ctx context.Context, a authz.Actor, tenant, name string, e store.UpstreamEntry) (bool, error) {
 	if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030
 		return false, err
+	}
+	kista := false
+	if e.Name == "*" {
+		u, err := s.Get(ctx, a, tenant, name)
+		if err != nil {
+			return false, err
+		}
+		if kista = u.RemoteKista; !kista && u.Kind == store.UpstreamRepo && u.Mode == store.ModeMirror {
+			if kista, err = s.probeKista(ctx, tenant, u); err != nil {
+				return false, err
+			}
+		}
 	}
 	created := false
 	_, err := s.change(ctx, a, tenant, name, "extension.put", map[string]any{"value": e.Name, "versions": e.Versions,
 		"allow_reserved": e.AllowReserved, "eager": e.Eager}, func(tx *store.Tx, u *store.Upstream) error {
 		if err := upspec.Entry(u.Kind, u.Mode, &e); err != nil {
 			return err
+		}
+		if e.Name == "*" && u.Mode == store.ModeMirror {
+			if err := anyAllowed(store.Upstream{Mode: u.Mode, Entries: []store.UpstreamEntry{e}}, kista); err != nil {
+				return err
+			}
+			if kista && !u.RemoteKista {
+				if err := tx.SetUpstreamRemote(ctx, u.ID, true, u.RevocationsETag); err != nil {
+					return err
+				}
+				u.RemoteKista = true
+			}
 		}
 		created = !slices.ContainsFunc(u.Entries, func(x store.UpstreamEntry) bool { return x.Name == e.Name })
 		if created {
@@ -770,9 +800,24 @@ func (s *Service) PutEntry(ctx context.Context, a authz.Actor, tenant, name stri
 // RemoveEntry removes an allowlist entry; its cells go with the next run.
 func (s *Service) RemoveEntry(ctx context.Context, a authz.Actor, tenant, name, ext string) error {
 	_, err := s.change(ctx, a, tenant, name, "extension.remove", map[string]any{"value": ext}, func(tx *store.Tx, u *store.Upstream) error {
-		return tx.RemoveUpstreamEntry(ctx, u.ID, ext)
+		if err := tx.RemoveUpstreamEntry(ctx, u.ID, ext); err != nil {
+			return err
+		}
+		if ext == "*" && u.AnyMirror() { // spec 0039: its discovered names go, their releases stay
+			return tx.ClearUpstreamNames(ctx, *u)
+		}
+		return nil
 	})
 	return err
+}
+
+// anyAllowed checks "*" on a mirror (spec 0039): its remote must be a kista, whose -/names lists the
+// names.
+func anyAllowed(u store.Upstream, kista bool) error {
+	if u.AnyMirror() && !kista {
+		return fmt.Errorf("%w: \"*\" on a mirror takes a kista channel (its -/names lists the names); the source is not a kista", store.ErrInvalid)
+	}
+	return nil
 }
 
 // AddPlatform adds a platform to an upstream.
@@ -899,7 +944,7 @@ func (s *Service) notAsked(ctx context.Context, tx *store.Tx, u store.Upstream, 
 		return nil, err
 	}
 	var keys [][3]string
-	for _, e := range u.Entries {
+	for _, e := range u.Names() { // the discovered names too (spec 0039)
 		if e.Eager {
 			continue
 		}

@@ -191,6 +191,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   applying them (spec 0039: a mirror of a kista, or bundle mode)
   upstream revocation lift <tenant> <name> <build>   lift the upstream's revocation of a build: what it yanked
                                                   is restored, and it is not applied again unless stronger
+  upstream names <tenant> <name>                  the names a mirror's "*" took from its kista remote (spec 0039)
   upstream fetch <tenant> <name> eager|lazy       a mirror's fetch mode (spec 0032): lazy fetches the cells asked for
                                                   and its eager entries; sync fetches the whole matrix
   upstream hold <tenant> <name> <duration>        an eager mirror's hold (spec 0033): its entries are held this long
@@ -1849,6 +1850,9 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 			fmt.Fprintf(a.out, "extension: %s %s%s%s\n", e.Name, strings.Join(e.Versions, ","), map[bool]string{true: " (allow reserved)"}[e.AllowReserved],
 				map[bool]string{true: " (eager)"}[e.Eager])
 		}
+		if u.AnyMirror() { // spec 0039: the names its "*" took
+			fmt.Fprintf(a.out, "discovered: %d names (upstream names)\n", len(u.Discovered))
+		}
 		if !u.RequestedAt.IsZero() {
 			fmt.Fprintf(a.out, "run: requested %s\n", ts(u.RequestedAt))
 		}
@@ -1947,6 +1951,14 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 					dash(r.AppliedState), dash(r.LiftedState), r.Reason)
 			}
 		})
+	case sub == "names" && len(pos) == 2: // spec 0039 PR 2
+		u, err := a.svc.Upstreams.Get(ctx, a.actor, pos[0], pos[1])
+		if err != nil {
+			return err
+		}
+		for _, n := range u.Discovered {
+			fmt.Fprintln(a.out, n)
+		}
 	case sub == "revocation" && len(pos) == 4 && pos[0] == "lift": // spec 0039
 		n, err := a.svc.Upstreams.LiftRevocation(ctx, a.actor, pos[1], pos[2], pos[3], 0)
 		if err != nil {

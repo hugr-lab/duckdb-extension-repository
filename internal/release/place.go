@@ -350,13 +350,14 @@ func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(con
 
 // homeCheck is what a mirror's run checks of a build it releases into its home channel, made again
 // by the placement pass for the builds the run left to it (spec 0033 phase A2): the upstream active
-// and the channel still its home, the name in its allowlist (explicitly, or by "*": anyKind, checked
-// again under the insert's locks), the build's platform and version too; and the name reserved as
-// the run reserves it (spec 0030: DuckDB's repositories bring their names).
+// and the channel still its home, the name in its allowlist (listed, or discovered by its "*": spec
+// 0039: discoveredKind, a reservation since checked again under the insert's locks), the build's
+// platform and version too; and the name reserved as the run reserves it (spec 0030: DuckDB's
+// repositories bring their names).
 type homeCheck struct {
 	entry                      store.UpstreamEntry
 	platforms                  []string
-	anyKind                    string
+	discoveredKind             string
 	reserveKind, reserveSource string
 }
 
@@ -383,18 +384,14 @@ func (s *Service) homeOf(ctx context.Context, r store.DueRule, tenant string) (h
 		return homeCheck{}, false, err
 	}
 	h := homeCheck{platforms: u.Platforms, reserveSource: "upstream:" + tenant + "/" + u.Name}
-	found := false
-	for _, e := range u.Entries {
-		if e.Name == r.Name {
-			h.entry, found = e, true
-			break
-		}
-	}
+	// listed, or discovered by the mirror's "*" (spec 0039: as a listed name)
+	e, found := u.Entry(r.Name)
 	if !found {
-		if !slices.ContainsFunc(u.Entries, func(e store.UpstreamEntry) bool { return e.Name == "*" }) {
-			return homeCheck{}, false, nil
-		}
-		h.anyKind = u.Kind // "*" took it: checked again under the insert's locks, as the run's
+		return homeCheck{}, false, nil
+	}
+	h.entry = e
+	if u.Discovers(r.Name) {
+		h.discoveredKind = u.Kind
 	}
 	switch u.Kind {
 	case store.UpstreamCore:
@@ -501,7 +498,7 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 		}
 		if sv.held[b.PackageVersion] {
 			it := s.placement(tn.Name, b, r.Source, placer, how, false)
-			it.auto, it.reserveKind, it.reserveSource, it.anyKind = true, hc.reserveKind, hc.reserveSource, hc.anyKind
+			it.auto, it.reserveKind, it.reserveSource, it.discoveredKind = true, hc.reserveKind, hc.reserveSource, hc.discoveredKind
 			sv.complete(&it)
 			items = append(items, it)
 			continue
@@ -527,7 +524,7 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 		}
 		if !shadowed {
 			it := s.placement(tn.Name, b, r.Source, placer, how, false)
-			it.auto, it.reserveKind, it.reserveSource, it.anyKind = true, hc.reserveKind, hc.reserveSource, hc.anyKind
+			it.auto, it.reserveKind, it.reserveSource, it.discoveredKind = true, hc.reserveKind, hc.reserveSource, hc.discoveredKind
 			items = append(items, it)
 		}
 	}

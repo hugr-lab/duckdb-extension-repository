@@ -55,6 +55,8 @@ type Snapshot struct {
 	platforms map[string][]string          // by name, sorted
 	revOnce   sync.Once                    // the -/revocations rows, computed once (RevokedIndex)
 	rev       *RevokedIndex
+	namesOnce sync.Once // the -/names names, computed once (NamesIndex)
+	names     *NamesIndex
 }
 
 type group struct{ name, platform string }

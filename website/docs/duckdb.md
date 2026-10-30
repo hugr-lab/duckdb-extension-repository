@@ -37,10 +37,12 @@ Every channel answers these paths under its prefix:
 | `/<tenant>/<channel>/-/usage/<name>` | `POST`: a licensed extension's usage report; signed channels only ([Licensing](licensing.md#usage-reports)) |
 | `/<tenant>/<channel>/-/usage` | `POST`: a downstream kista's daily usage; signed channels only ([Licensing](licensing.md#forwarding-usage-upstream)) |
 | `/<tenant>/<channel>/-/revocations[/<cursor>]` | the channel's revoked releases in the caller's view, for a downstream kista: `{"api":1,"rows":[{name, version, platform, body_hash, state, reason}],"next"}`, 1,000 rows a page, the next page by path; signed channels only ([Revocations from a kista](upstreams.md#revocations-from-a-kista)) |
+| `/<tenant>/<channel>/-/names[/<cursor>]` | the extension names the channel serves in the caller's view, for a downstream kista's `*`: `{"api":1,"names":[...],"next"}`, 500 a page, the next page by path; signed channels only ([`*` on a mirror of a kista](upstreams.md#on-a-mirror-of-a-kista)) |
 
-The `-` routes are kista's own, for the SDK and downstream kistas. `-/revocations` answers in the
-caller's view (anonymous: public releases; a token: what it may install too) with an `ETag` bound to
-that view; a suspended tenant answers it to its install holders only.
+The `-` routes are kista's own, for the SDK and downstream kistas. `-/revocations` and `-/names`
+answer in the caller's view (anonymous: public releases; a token: what it may install too) with an
+`ETag` bound to that view; a suspended tenant answers `-/revocations` to its install holders only,
+and `-/names` to nobody.
 
 - `<duckdb_version>` is DuckDB's release tag (`v2.0.0`) or, on a development build, its source id
   (`eb0d9df48e`). `<platform>` is what `PRAGMA platform` returns (`linux_amd64`, `osx_arm64`, ...).

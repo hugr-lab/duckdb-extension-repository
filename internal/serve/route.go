@@ -26,12 +26,13 @@ const (
 	routeDaily    // <prefix>/-/usage (spec 0012 phase 1c)
 	// <prefix>/-/revocations[/<cursor>] (spec 0039): paged by path, as no route takes a query
 	routeRevocations
+	routeNames // <prefix>/-/names[/<cursor>] (spec 0039 PR 2)
 )
 
 // String is a route kind's name for metrics.
 func (k routeKind) String() string {
 	return [...]string{"none", "healthz", "readyz", "well-known", "extension", "extension-versioned", "license", "licenses", "usage", "usage-daily",
-		"revocations"}[k]
+		"revocations", "names"}[k]
 }
 
 // route is a parsed request path.
@@ -92,6 +93,12 @@ func parseRoute(r *http.Request) route {
 			return rt
 		case len(segs) == 5 && segs[3] == "revocations" && cursorRe.MatchString(segs[4]):
 			rt.kind, rt.cursor = routeRevocations, segs[4]
+			return rt
+		case len(segs) == 4 && segs[3] == "names":
+			rt.kind = routeNames
+			return rt
+		case len(segs) == 5 && segs[3] == "names" && cursorRe.MatchString(segs[4]):
+			rt.kind, rt.cursor = routeNames, segs[4]
 			return rt
 		case len(segs) == 5 && segs[3] == "licenses" && release.ValidName(segs[4]) == nil:
 			rt.kind, rt.name = routeLicense, segs[4]

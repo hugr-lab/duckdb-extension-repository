@@ -126,7 +126,7 @@ kista admin -config /etc/kista/kista.yaml upstream add acme hugr \
 | `-kind` | `kind` | `duckdb-core`, `duckdb-community` or `repository` (fixed at creation) |
 | `-channel` | `channel` | the channel it feeds (fixed) |
 | `-platforms` | `platforms` | at least one, in DuckDB's platform grammar |
-| `-extensions` | `extensions` | the allowlist; `*` for any name (pull-through only) |
+| `-extensions` | `extensions` | the allowlist; `*` for any name (pull-through), or every name a kista channel serves (a repository mirror of a kista: [`*` on a mirror of a kista](#on-a-mirror-of-a-kista)) |
 | `-prefix` | `prefix` | `repository` only: an `https://` URL with an optional port and path (fixed) |
 | `-keys` | `keys` | `repository` only, at least one: `sha256:<64 lowercase hex>` |
 | `-public` | `visibility` | releases it makes from now on are public; default `private` |
@@ -654,6 +654,49 @@ kista admin -config /etc/kista/kista.yaml shadow remove acme httpfs
 
 API: `GET /api/v1/tenants/{t}/shadows`, `DELETE …/shadows/{name}`.
 
+## `*` on a mirror of a kista {#on-a-mirror-of-a-kista}
+
+A kista answers, under each signed channel's prefix, `GET <prefix>/-/names`: the extension names the
+channel serves (a release active or deprecated, its body not blocked) in the caller's view,
+anonymous callers the names with a public release, a token those it may install too
+([DuckDB's routes](duckdb.md#url-layout)); a suspended tenant answers nobody.
+
+A `repository` mirror whose source is a [kista remote](#revocations-from-a-kista), eager or lazy,
+takes the entry `*` (without versions or `allow_reserved`), alone or beside explicit entries: it
+mirrors **everything the source channel serves to it**. A customer's own kista mirroring its
+Enterest channel this way gets every extension its organisation chooses with no change of its own.
+`*` on a mirror of anything else is refused (`400`, naming why).
+
+**Discovery.** Each run, after the [revocation pass](#revocations-from-a-kista), reads `-/names`,
+every page, with the upstream's credential, and keeps a name when:
+
+- it is one a pull-through `*` would take: the name grammar, no alias, no name reserved server-wide
+  (a community name only on a `duckdb-community` upstream);
+- no upstream of the channel lists it, and no other upstream of the channel discovered it first;
+- no source of the tenant other than an upstream (its own publications, a publisher's or a
+  distributor's) holds a release of it in any channel.
+
+At most 1,000 names are kept, counted after these checks, by name; more is a `names` problem. Only a
+complete listing removes a name absent from it: a listing that failed or was cut keeps the names
+there are. A name that leaves the source keeps its releases, as a removed entry's do, and its cells
+go. `GET …/upstreams/{name}/names` and `kista admin upstream names <tenant> <name>` list them; the
+upstream's record shows their number (`discovered`), and its `last_run` counts them `discovered`.
+
+**A discovered name is a listed name**: its cells join the matrix (the [matrix limits](#what-is-fetched) count them;
+names past a cap are left out, by name, and counted as a problem), a lazy mirror takes asks for it,
+its builds are placed in the home channel by the channel's rules, and its licences are supplied as
+any upstream's are. One difference: the tenant's [reservation](#reservation-and-shadowing) of the name comes only
+once the upstream holds a release of it, so a source cannot reserve the tenant's names by listing
+them. A reservation made server-wide since the discovery is checked again when a release is made.
+Removing `*` forgets the discovered names (their releases stay).
+
+```bash
+kista admin -config /etc/kista/kista.yaml upstream add acme enterest \
+  -kind repository -prefix https://kista.example.com/acme-corp/prod -keys sha256:... \
+  -channel prod -platforms linux_amd64,osx_arm64 -extensions '*' -credential enterest
+kista admin -config /etc/kista/kista.yaml upstream names acme enterest
+```
+
 ## Pull-through
 
 A `pull-through` upstream is not run. When a request on a DuckDB route of a signed channel misses,
@@ -669,8 +712,8 @@ kista offers the cell to an in-memory queue, after the answer is decided, when:
   a tenant's [limit](#a-run-at-a-limit) or a full catalogue is remembered as a refusal: its installs
   keep failing for up to `upstreams.negative_ttl` after room is made.
 
-The client's request still misses; a later `INSTALL` finds the release. `*` is allowed only on a
-pull-through upstream, without versions or `allow_reserved`, and not on `duckdb-core`. It never
+The client's request still misses; a later `INSTALL` finds the release. `*` on a pull-through upstream (a mirror's is [another](#on-a-mirror-of-a-kista)) is allowed
+without versions or `allow_reserved`, and not on `duckdb-core`. It never
 matches an alias, a core name or a name another upstream of the channel lists, and it reserves no name in the tenant. On a `duckdb-community` upstream it matches community names (each fetch reserves
 its name as community, and the name keeps being pulled through); on any other kind it matches no
 reserved name. Limits per replica: 256 queued misses (32 per tenant), 4 fetches at once (and never
@@ -720,7 +763,7 @@ kista admin -config /etc/kista/kista.yaml upstream extension add acme core httpf
 - A channel with a [hold](#holds) asks nothing of its lazy mirrors: what they fetch would wait.
   A lazy mirror takes no hold, and a mirror with one is not made lazy.
 - Only a mirror takes a fetch mode, and a passthrough channel takes no lazy mirror (its requests
-  carry no token, so no one could ask); a lazy mirror lists its names (no `*`, as any mirror). The
+  carry no token, so no one could ask); a lazy mirror lists its names, or takes those its kista remote serves (`*`, as any mirror of a kista). The
   matrix limits count the whole matrix, lazy or not. Everything else is a mirror's: intake, licence
   keys, the name's source in the channel, reservations, visibility, credentials, usage and events.
 

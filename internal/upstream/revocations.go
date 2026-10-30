@@ -174,10 +174,12 @@ func (s *Service) revocationPass(ctx context.Context, sc store.ServeChannel, u s
 	case errors.Is(err, credential.ErrClient):
 		problem("", "", "the identity provider refuses kista's own client")
 		return
-	case errors.As(err, &ae) && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden) && !u.Revocations && !u.RemoteKista:
+	case errors.As(err, &ae) && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden) && !u.Revocations && !u.RemoteKista &&
+		!u.AnyMirror():
 		return // a remote that refuses the route is no kista known to this upstream: nothing to say every run
 	case errors.Is(err, errNotKista):
-		if u.Revocations { // kept: a suspended or unreachable kista is still the one switched on
+		// kept: a suspended or unreachable kista is still the one switched on, or whose names "*" takes
+		if u.Revocations || u.AnyMirror() {
 			problem("", "", err.Error())
 		} else if u.RemoteKista && !res.DryRun {
 			if err := s.Store.InTenantTx(ctx, u.TenantID, nil, func(tx *store.Tx) error { return tx.SetUpstreamRemote(ctx, u.ID, false, "") }); err != nil {

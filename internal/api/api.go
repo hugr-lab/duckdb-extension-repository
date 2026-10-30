@@ -849,6 +849,8 @@ func init() {
 		{"tenants/{t}/upstreams/{name}/revocations", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).upstreamRevocations),
 			http.MethodPost: mb(pathAdmin, (*Handler).setRevocations)}},
 		{"tenants/{t}/upstreams/{name}/revocations/{build}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).liftRevocation)}},
+		// spec 0039 PR 2: the names a mirror's "*" took from its kista remote
+		{"tenants/{t}/upstreams/{name}/names", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).upstreamNames)}},
 		{"credentials", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).listCredentials)}},
 		// spec 0012: licences (tenant administrators and, spec 0029, licence managers, who never make one
 		// public), their relay per upstream (tenant administrators only); spec 0021: the keys

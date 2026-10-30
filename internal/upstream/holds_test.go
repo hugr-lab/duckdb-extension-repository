@@ -260,8 +260,8 @@ func TestUpstreamHoldHomeChecks(t *testing.T) {
 		if got := versions(); got != "2.0 1.0" {
 			t.Fatalf("placed a version out of the allowlist: %q", got)
 		}
-		// the name taken by "*" (as a pull-through's or lazy mirror's), then reserved server-wide: the
-		// pass makes the run's check under the insert's locks, and refuses it
+		// the name discovered by the mirror's "*" (spec 0039), then reserved server-wide: the pass
+		// makes the run's check under the insert's locks, and refuses it
 		if _, err := en.up.PutEntry(ctx, admin, "acme", "acme-repo", store.UpstreamEntry{Name: "acl"}); err != nil {
 			t.Fatal(err)
 		}
@@ -271,7 +271,15 @@ func TestUpstreamHoldHomeChecks(t *testing.T) {
 				if err := tx.PutUpstreamEntry(ctx, u.ID, store.UpstreamEntry{Name: "*"}); err != nil {
 					return err
 				}
-				return tx.RemoveUpstreamEntry(ctx, u.ID, "acl")
+				if err := tx.RemoveUpstreamEntry(ctx, u.ID, "acl"); err != nil {
+					return err
+				}
+				cur, err := tx.GetUpstreamByID(ctx, u.ID)
+				if err != nil {
+					return err
+				}
+				_, err = tx.SetUpstreamNames(ctx, cur, []string{"acl"}, false)
+				return err
 			})
 		})
 		if _, err := en.ten.Reserve(ctx, admin, "", []string{"acl"}, store.ReservedCommunity, true); err != nil {

@@ -742,8 +742,9 @@ func (x *exporter) fromUpstreams(ctx context.Context, src *xsource, pc bundle.Pl
 func (x *exporter) fromUpstream(ctx context.Context, src *xsource, xu *xupstream, pc bundle.PlanCell) (bundle.Cell, *xfile, error) {
 	u := xu.u
 	_, served := xu.snap.CAPIs[pc.DuckDBVersion]
-	if !served || !slices.Contains(u.Platforms, pc.Platform) || !slices.ContainsFunc(u.Entries, func(e store.UpstreamEntry) bool {
-		return e.Name == pc.Name || e.Name == "*" && u.Mode == store.ModePullThrough
+	_, listed := u.Entry(pc.Name) // listed, or discovered by a mirror's "*" (spec 0039)
+	if !served || !slices.Contains(u.Platforms, pc.Platform) || !listed && !slices.ContainsFunc(u.Entries, func(e store.UpstreamEntry) bool {
+		return e.Name == "*" && u.Mode == store.ModePullThrough
 	}) {
 		return missing(whyMatrix), nil, nil
 	}
