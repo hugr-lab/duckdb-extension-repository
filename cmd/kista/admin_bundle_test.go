@@ -75,7 +75,19 @@ func TestAdminBundleImport(t *testing.T) {
 	admin(0, nil, "channel", "versions", "acme/prod", "-add", "v2.0.0")
 	admin(0, nil, "key", "add", "acme/prod", "-signer", "file:a.pem", "-active")
 	admin(0, nil, "upstream", "add", "acme", "air", "-kind", "repository", "-mode", "bundle", "-channel", "prod",
-		"-platforms", "linux_amd64", "-extensions", "x", "-prefix", p.Sources[0].Prefix, "-keys", p.Sources[0].Keys[0])
+		"-platforms", "linux_amd64", "-extensions", "x", "-prefix", p.Sources[0].Prefix, "-keys", p.Sources[0].Keys[0], "-revocations")
+	// spec 0039: the switch, set at add, read, turned off; a bad argument is a usage error; a lift of
+	// a build nothing is stored of is refused
+	if got := admin(0, nil, "upstream", "revocations", "acme", "air"); !strings.Contains(got, "revocations: on") || !strings.Contains(got, "BUILD") {
+		t.Fatalf("revocations: %s", got)
+	}
+	if got := admin(0, nil, "upstream", "revocations", "acme", "air", "off"); !strings.Contains(got, "revocations: off") {
+		t.Fatalf("revocations off: %s", got)
+	}
+	admin(2, nil, "upstream", "revocations", "acme", "air", "maybe")
+	admin(1, nil, "upstream", "revocation", "lift", "acme", "air", "0192f0c4-0000-7000-8000-000000000000")
+	admin(2, nil, "upstream", "revocation", "lift", "acme", "air")
+	admin(0, nil, "upstream", "revocations", "acme", "air", "on")
 
 	got := admin(0, nil, "bundle", "import", "acme", signed, "-dry-run")
 	if !strings.Contains(got, "(dry run)") || !strings.Contains(got, "would_release 1") {

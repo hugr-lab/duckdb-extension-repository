@@ -6,8 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -24,11 +27,78 @@ type RevocationsAnswer struct {
 	Next string               `json:"next,omitempty"`
 }
 
+// revokedRows are a snapshot's -/revocations rows, computed once per snapshot: every row (the view
+// of a caller holding install on its name) and the public view's, both in key order. A view's rows
+// are a function of the two and of the names it holds install on, so its ETag is derived from the
+// digest of both and those names, without rebuilding the rows.
+type revokedRows struct {
+	snap   *release.Snapshot
+	all    []release.RevokedRow
+	public map[[4]string]release.RevokedRow
+	names  []string // the names of all's rows, once each
+	digest []byte
+}
+
+// revocationsCache keeps each channel's rows of its current snapshot.
+type revocationsCache struct {
+	mu sync.Mutex
+	by map[string]*revokedRows
+}
+
+func (c *revocationsCache) get(channelID string, snap *release.Snapshot) *revokedRows {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if r := c.by[channelID]; r != nil && r.snap == snap {
+		return r
+	}
+	r := &revokedRows{snap: snap, all: snap.RevokedRows(release.Everything), public: map[[4]string]release.RevokedRow{}}
+	sum := sha256.New()
+	for _, x := range r.all {
+		if len(r.names) == 0 || r.names[len(r.names)-1] != x.Name {
+			r.names = append(r.names, x.Name)
+		}
+		b, _ := json.Marshal(x)
+		sum.Write(b)
+	}
+	sum.Write([]byte{0})
+	for _, x := range snap.RevokedRows(func(c *store.Candidate) bool { return c.Visibility == store.Public }) {
+		r.public[x.Key()] = x
+		b, _ := json.Marshal(x)
+		sum.Write(b)
+	}
+	r.digest = sum.Sum(nil)
+	if c.by == nil {
+		c.by = map[string]*revokedRows{}
+	}
+	c.by[channelID] = r
+	return r
+}
+
+// revView is the rows a caller sees: of the names it holds install on, every row; of the others, the
+// public view's row (none in a suspended tenant).
+type revView struct {
+	rows      *revokedRows
+	held      map[string]bool
+	suspended bool
+}
+
+func (v revView) row(i int) (release.RevokedRow, bool) {
+	x := v.rows.all[i]
+	if v.held[x.Name] {
+		return x, true
+	}
+	if v.suspended {
+		return release.RevokedRow{}, false
+	}
+	p, ok := v.rows.public[x.Key()]
+	return p, ok
+}
+
 // revocations answers GET <prefix>/-/revocations[/<cursor>] (spec 0039): the channel's revoked rows
 // in the caller's view (anonymous: public releases; a token: also those of the names it holds
-// install on), 1,000 a page. A suspended tenant answers tokens holding install only, with the names
-// they hold it on (Enterest withdraws in suspended tenants); a deleting tenant, a missing or a
-// passthrough channel answer as a missing path.
+// install on), 1,000 a page. A suspended tenant answers tokens holding install on a name of the
+// channel only, with the names they hold it on (Enterest withdraws in suspended tenants); a deleting
+// tenant, a missing or a passthrough channel answer as a missing path.
 func (h *Handler) revocations(w http.ResponseWriter, r *http.Request, rt route) {
 	ctx := r.Context()
 	sc, err := h.st.GetServeChannel(ctx, rt.tenant, rt.channel)
@@ -55,19 +125,19 @@ func (h *Handler) revocations(w http.ResponseWriter, r *http.Request, rt route) 
 		notFound(w)
 		return
 	}
-	vis := func(c *store.Candidate) bool {
-		return installs(c.Name) || !suspended && c.Visibility == store.Public
-	}
-	rows := snap.RevokedRows(vis)
-	// the ETag is over every row of the caller's view, so a change on any page, or of the view (a
-	// grant), is never answered 304
+	rows := h.revs.get(sc.Channel.ID, snap)
+	v := revView{rows: rows, held: map[string]bool{}, suspended: suspended}
 	sum := sha256.New()
-	for _, x := range rows {
-		b, _ := json.Marshal(x)
-		sum.Write(b)
-		sum.Write([]byte{'\n'})
+	sum.Write(rows.digest)
+	sum.Write([]byte(strconv.FormatBool(suspended) + "\x00" + rt.cursor + "\x00"))
+	if actor != "" {
+		for _, n := range rows.names {
+			if installs(n) {
+				v.held[n] = true
+				sum.Write([]byte(n + "\x00"))
+			}
+		}
 	}
-	sum.Write([]byte(rt.cursor))
 	etag := `"` + hex.EncodeToString(sum.Sum(nil)[:16]) + `"`
 	start := 0
 	if rt.cursor != "" {
@@ -76,17 +146,19 @@ func (h *Handler) revocations(w http.ResponseWriter, r *http.Request, rt route) 
 			notFound(w)
 			return
 		}
-		for start < len(rows) && !keyAfter(rows[start].Key(), after) {
-			start++
+		start = sort.Search(len(rows.all), func(i int) bool { return keyAfter(rows.all[i].Key(), after) })
+	}
+	out := RevocationsAnswer{API: 1, Rows: []release.RevokedRow{}}
+	for i := start; i < len(rows.all); i++ {
+		x, ok := v.row(i)
+		if !ok {
+			continue
 		}
-	}
-	end := min(start+RevocationsPage, len(rows))
-	out := RevocationsAnswer{API: 1, Rows: rows[start:end]}
-	if out.Rows == nil {
-		out.Rows = []release.RevokedRow{}
-	}
-	if end < len(rows) {
-		out.Next = encodeCursor(rows[end-1].Key())
+		if len(out.Rows) == RevocationsPage {
+			out.Next = encodeCursor(out.Rows[len(out.Rows)-1].Key())
+			break
+		}
+		out.Rows = append(out.Rows, x)
 	}
 	hd := w.Header()
 	hd.Set("X-Content-Type-Options", "nosniff")
@@ -109,10 +181,8 @@ func (h *Handler) revocations(w http.ResponseWriter, r *http.Request, rt route) 
 // holdsAny reports whether installs holds a name the channel has a release of, live or revoked.
 func holdsAny(snap *release.Snapshot, installs func(string) bool) bool {
 	for _, list := range [][]store.Candidate{snap.Releases, snap.Revoked} {
-		for i := range list {
-			if installs(list[i].Name) {
-				return true
-			}
+		if slices.ContainsFunc(list, func(c store.Candidate) bool { return installs(c.Name) }) {
+			return true
 		}
 	}
 	return false

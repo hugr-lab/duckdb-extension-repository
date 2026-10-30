@@ -64,23 +64,32 @@ type UpstreamRevocation struct {
 	SeenAt                         time.Time
 	AppliedState, LiftedState      string // "": nothing applied, nothing lifted
 	AppliedAt, LiftedAt            time.Time
+	// UnlistedAt is when the remote stopped listing it, or its build went: a row something was
+	// applied or lifted of is kept (so it is lifted, and a lift is not undone by a remote dropping
+	// it for a run), and is no longer due
+	UnlistedAt time.Time
 }
 
-// Due reports whether a stored revocation is to be applied: its state is stronger than what was
-// applied of it, and than what an administrator lifted of it.
+// Due reports whether a stored revocation is to be applied: still listed, and its state stronger
+// than what was applied of it, and than what an administrator lifted of it.
 func (r UpstreamRevocation) Due() bool {
 	rank := RevocationRank(r.State)
-	return rank > RevocationRank(r.AppliedState) && rank > RevocationRank(r.LiftedState)
+	return r.UnlistedAt.IsZero() && rank > RevocationRank(r.AppliedState) && rank > RevocationRank(r.LiftedState)
+}
+
+// Liftable reports whether an administrator may lift it: something was applied that is not lifted.
+func (r UpstreamRevocation) Liftable() bool {
+	return r.AppliedState != "" && RevocationRank(r.AppliedState) > RevocationRank(r.LiftedState)
 }
 
 const revocationCols = `upstream_id, build_id, tenant_id, body_hash, name, package_version, platform, state, reason, seen_at,
-applied_state, applied_at, lifted_state, lifted_at`
+applied_state, applied_at, lifted_state, lifted_at, unlisted_at`
 
 func scanRevocation(r interface{ Scan(...any) error }) (UpstreamRevocation, error) {
 	var x UpstreamRevocation
 	var applied, lifted sql.NullString
 	err := r.Scan(&x.UpstreamID, &x.BuildID, &x.TenantID, &x.BodyHash, &x.Name, &x.PackageVersion, &x.Platform, &x.State, &x.Reason,
-		scanTime{&x.SeenAt}, &applied, scanTime{&x.AppliedAt}, &lifted, scanTime{&x.LiftedAt})
+		scanTime{&x.SeenAt}, &applied, scanTime{&x.AppliedAt}, &lifted, scanTime{&x.LiftedAt}, scanTime{&x.UnlistedAt})
 	x.AppliedState, x.LiftedState = applied.String, lifted.String
 	return x, err
 }
@@ -158,10 +167,10 @@ func (t *Tx) GetUpstreamRevocation(ctx context.Context, upstreamID, buildID stri
 }
 
 // PutUpstreamRevocation stores the remote's state and reason of a build as last seen: a new row, or
-// the stored one's state, reason and seen_at (what was applied and lifted stay).
+// the stored one's state, reason and seen_at, listed again (what was applied and lifted stay).
 func (t *Tx) PutUpstreamRevocation(ctx context.Context, r UpstreamRevocation) error {
 	now := t.s.d.timeArg(t.Now())
-	res, err := t.exec(ctx, "UPDATE upstream_revocations SET state = ?, reason = ?, seen_at = ? WHERE upstream_id = ? AND build_id = ?",
+	res, err := t.exec(ctx, "UPDATE upstream_revocations SET state = ?, reason = ?, seen_at = ?, unlisted_at = NULL WHERE upstream_id = ? AND build_id = ?",
 		r.State, r.Reason, now, r.UpstreamID, r.BuildID)
 	if err != nil {
 		return err
@@ -169,15 +178,21 @@ func (t *Tx) PutUpstreamRevocation(ctx context.Context, r UpstreamRevocation) er
 	if n, _ := res.RowsAffected(); n > 0 {
 		return nil
 	}
-	_, err = t.exec(ctx, "INSERT INTO upstream_revocations ("+revocationCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)",
+	_, err = t.exec(ctx, "INSERT INTO upstream_revocations ("+revocationCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)",
 		r.UpstreamID, r.BuildID, r.TenantID, r.BodyHash, r.Name, r.PackageVersion, r.Platform, r.State, r.Reason, now)
 	return t.s.mapErr(err, "revocation")
 }
 
-// DeleteUpstreamRevocation forgets a stored revocation (the remote no longer lists it, or its build
-// is gone); what it applied stays applied.
-func (t *Tx) DeleteUpstreamRevocation(ctx context.Context, upstreamID, buildID string) error {
-	_, err := t.exec(ctx, "DELETE FROM upstream_revocations WHERE upstream_id = ? AND build_id = ?", upstreamID, buildID)
+// ForgetUpstreamRevocation is a stored revocation the remote no longer lists, or whose build is
+// gone: deleted when nothing was applied or lifted of it, otherwise kept and marked unlisted (so it
+// is still lifted, and no longer due).
+func (t *Tx) ForgetUpstreamRevocation(ctx context.Context, r UpstreamRevocation) error {
+	if r.AppliedState == "" && r.LiftedState == "" {
+		_, err := t.exec(ctx, "DELETE FROM upstream_revocations WHERE upstream_id = ? AND build_id = ?", r.UpstreamID, r.BuildID)
+		return err
+	}
+	_, err := t.exec(ctx, "UPDATE upstream_revocations SET unlisted_at = ? WHERE upstream_id = ? AND build_id = ? AND unlisted_at IS NULL",
+		t.s.d.timeArg(t.Now()), r.UpstreamID, r.BuildID)
 	return err
 }
 
@@ -202,25 +217,36 @@ type UpstreamBlock struct {
 	CreatedAt                                     time.Time
 }
 
-// PutUpstreamBlock records an upstream's block of a body, or strengthens the stored one's state and
-// reason.
-func (t *Tx) PutUpstreamBlock(ctx context.Context, b UpstreamBlock) error {
-	var cur string
-	err := t.queryRow(ctx, "SELECT state FROM upstream_blocks WHERE upstream_id = ? AND body_hash = ?", b.UpstreamID, b.BodyHash).Scan(&cur)
+// PutUpstreamBlock records an upstream's block of a body, strengthens the stored one's state and
+// reason, or changes its reason at the same state; it reports whether anything changed (what the
+// -/revocations route shows of the body).
+func (t *Tx) PutUpstreamBlock(ctx context.Context, b UpstreamBlock) (bool, error) {
+	var cur, reason string
+	err := t.queryRow(ctx, "SELECT state, reason FROM upstream_blocks WHERE upstream_id = ? AND body_hash = ?", b.UpstreamID, b.BodyHash).
+		Scan(&cur, &reason)
 	switch {
 	case err == nil:
-		if RevocationRank(b.State) <= RevocationRank(cur) {
-			return nil
+		if r, c := RevocationRank(b.State), RevocationRank(cur); r < c || r == c && b.Reason == reason {
+			return false, nil
 		}
 		_, err = t.exec(ctx, "UPDATE upstream_blocks SET state = ?, reason = ? WHERE upstream_id = ? AND body_hash = ?",
 			b.State, b.Reason, b.UpstreamID, b.BodyHash)
-		return err
+		return err == nil, err
 	case err != sql.ErrNoRows:
-		return err
+		return false, err
 	}
 	_, err = t.exec(ctx, "INSERT INTO upstream_blocks (upstream_id, body_hash, tenant_id, state, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
 		b.UpstreamID, b.BodyHash, b.TenantID, b.State, b.Reason, t.s.d.timeArg(t.Now()))
-	return t.s.mapErr(err, "upstream block")
+	return err == nil, t.s.mapErr(err, "upstream block")
+}
+
+// BumpUpstreamBodyChannels moves the release version of every channel holding a release, in any
+// state, of an upstream's builds with a body: what their -/revocations route shows of it changed.
+func (t *Tx) BumpUpstreamBodyChannels(ctx context.Context, upstreamID, hash string) error {
+	_, err := t.exec(ctx, "UPDATE channels SET release_version = release_version + 1 WHERE id IN "+
+		"(SELECT r.channel_id FROM releases r JOIN builds b ON b.id = r.build_id WHERE b.source = ? AND b.body_hash = ?)",
+		UpstreamSource(upstreamID), hash)
+	return err
 }
 
 // DeleteUpstreamBlock lifts an upstream's block of a body; it reports whether there was one.
@@ -288,11 +314,20 @@ func (t *Tx) RecordUpstreamYank(ctx context.Context, y UpstreamYank) error {
 	return t.s.mapErr(err, "upstream yank")
 }
 
+const upstreamYanksQuery = `SELECT y.release_id, y.tenant_id, y.upstream_id, y.build_id, y.body_hash, y.prior_state, y.cause,
+r.channel_id FROM upstream_yanks y LEFT JOIN releases r ON r.id = y.release_id WHERE y.upstream_id = ? AND y.build_id = ? ORDER BY y.release_id`
+
 // UpstreamYanksOf lists the releases an upstream yanked of a build, with their channels.
 func (s *Store) UpstreamYanksOf(ctx context.Context, upstreamID, buildID string) ([]UpstreamYank, error) {
-	rows, err := s.db.QueryContext(ctx, s.d.rebind(`SELECT y.release_id, y.tenant_id, y.upstream_id, y.build_id, y.body_hash, y.prior_state, y.cause,
-r.channel_id FROM upstream_yanks y LEFT JOIN releases r ON r.id = y.release_id WHERE y.upstream_id = ? AND y.build_id = ? ORDER BY y.release_id`),
-		upstreamID, buildID)
+	return upstreamYanks(s.db.QueryContext(ctx, s.d.rebind(upstreamYanksQuery), upstreamID, buildID))
+}
+
+// UpstreamYanksOf is the transactional form: a lift reads them under its locks.
+func (t *Tx) UpstreamYanksOf(ctx context.Context, upstreamID, buildID string) ([]UpstreamYank, error) {
+	return upstreamYanks(t.query(ctx, upstreamYanksQuery, upstreamID, buildID))
+}
+
+func upstreamYanks(rows *sql.Rows, err error) ([]UpstreamYank, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -343,36 +378,24 @@ func (s *Store) UpstreamYankStates(ctx context.Context, tenantID string) (map[st
 	return out, rows.Err()
 }
 
-// RevocationChannels lists the channels holding a live release of an upstream's builds with a body:
-// where an upstream block's sweep goes.
-func (s *Store) RevocationChannels(ctx context.Context, tenantID, upstreamID, hash string) ([]Channel, error) {
-	rows, err := s.db.QueryContext(ctx, s.d.rebind(`SELECT DISTINCT r.channel_id FROM releases r JOIN builds b ON b.id = r.build_id
-WHERE b.tenant_id = ? AND b.source = ? AND b.body_hash = ? AND r.state <> 'yanked'`), tenantID, UpstreamSource(upstreamID), hash)
+// TenantChannelIDs lists a tenant's channels by id, outside a transaction: an upstream block's
+// sweep and a lift lock them all (a promotion into any of them is ordered against the block, as an
+// administrator's block's sweep orders it), and read them again under the locks.
+func (s *Store) TenantChannelIDs(ctx context.Context, tenantID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, s.d.rebind("SELECT id FROM channels WHERE tenant_id = ? ORDER BY id"), tenantID)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
 			return nil, err
 		}
 		ids = append(ids, id)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	var out []Channel
-	for _, id := range ids {
-		sc, err := s.ServeChannelByID(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, sc.Channel)
-	}
-	return out, nil
+	return ids, rows.Err()
 }
 
 // LiveUpstreamReleases lists a channel's live releases of an upstream's builds with a body, or

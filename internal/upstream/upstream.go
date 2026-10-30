@@ -50,6 +50,9 @@ var (
 	ErrBundle = errors.New("upstream: a bundle-mode upstream is filled by bundle imports, not runs")
 	// ErrPaused is a run asked of a paused upstream (409).
 	ErrPaused = errors.New("upstream: the upstream is paused; resume it first")
+	// ErrNotLiftable is a lift of a revocation nothing applied of is left to lift: never applied
+	// (the switch off), or lifted already (409, spec 0039).
+	ErrNotLiftable = errors.New("upstream: nothing applied of the revocation is left to lift")
 )
 
 // Fetcher is egress as upstreams use it.

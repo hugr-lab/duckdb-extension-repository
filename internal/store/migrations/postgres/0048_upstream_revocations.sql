@@ -28,6 +28,7 @@ CREATE TABLE upstream_revocations (
 	applied_at      timestamptz NULL,
 	lifted_state    varchar(16) NULL,
 	lifted_at       timestamptz NULL,
+	unlisted_at     timestamptz NULL,
 	PRIMARY KEY (upstream_id, build_id)
 )
 -- +statement
@@ -54,3 +55,5 @@ CREATE TABLE upstream_yanks (
 CREATE INDEX ix_upstream_yanks_build ON upstream_yanks (upstream_id, build_id)
 -- +statement
 CREATE INDEX ix_upstream_yanks_body ON upstream_yanks (tenant_id, body_hash)
+-- +statement
+CREATE INDEX ix_upstream_blocks_tenant ON upstream_blocks (tenant_id)

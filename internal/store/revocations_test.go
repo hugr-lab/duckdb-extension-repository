@@ -81,9 +81,30 @@ func TestRevocationRows(t *testing.T) {
 		if r := stored(); !r.Due() || r.Reason != "CVE" || r.AppliedState != store.RevokeYanked {
 			t.Fatalf("stronger, kept what was applied: %+v", r)
 		}
+		if r := stored(); !r.Liftable() {
+			t.Fatalf("a yank applied is liftable: %+v", r)
+		}
 		inTx(t, s, func(tx *store.Tx) error { return tx.MarkRevocationLifted(ctx, upID, id("c"), store.RevokeWithdrawn) })
-		if r := stored(); r.Due() || r.LiftedState != store.RevokeWithdrawn {
+		if r := stored(); r.Due() || r.LiftedState != store.RevokeWithdrawn || r.Liftable() {
 			t.Fatalf("lifted: %+v", r)
+		}
+		// unlisted, a row something was lifted of is kept, not due; listed again, it is as it was
+		lifted := stored()
+		inTx(t, s, func(tx *store.Tx) error { return tx.ForgetUpstreamRevocation(ctx, lifted) })
+		if r := stored(); r.UnlistedAt.IsZero() || r.LiftedState != store.RevokeWithdrawn {
+			t.Fatalf("unlisted: %+v", r)
+		}
+		inTx(t, s, func(tx *store.Tx) error { return tx.PutUpstreamRevocation(ctx, rev) })
+		if r := stored(); !r.UnlistedAt.IsZero() || r.LiftedState != store.RevokeWithdrawn || r.Due() {
+			t.Fatalf("listed again: %+v", r)
+		}
+		// a row nothing was applied or lifted of goes
+		other := rev
+		other.BuildID = id("o")
+		inTx(t, s, func(tx *store.Tx) error { return tx.PutUpstreamRevocation(ctx, other) })
+		inTx(t, s, func(tx *store.Tx) error { return tx.ForgetUpstreamRevocation(ctx, other) })
+		if n, err := store.CountRaw(ctx, s, "upstream_revocations", "build_id = ?", id("o")); err != nil || n != 0 {
+			t.Fatalf("a row nothing was applied of, forgotten: %d %v", n, err)
 		}
 
 		// an upstream's block strengthens only
@@ -95,9 +116,19 @@ func TestRevocationRows(t *testing.T) {
 			}
 			return ok
 		}
-		for _, st := range []string{store.RevokeWithdrawn, store.RevokeBlocked} {
+		// and reports a change: new, stronger, or another reason at the same state
+		for _, tc := range []struct {
+			state, reason string
+			changed       bool
+		}{{store.RevokeBlocked, "b", true}, {store.RevokeWithdrawn, "w", true}, {store.RevokeBlocked, "b", false},
+			{store.RevokeWithdrawn, "w", false}, {store.RevokeWithdrawn, "w2", true}, {store.RevokeWithdrawn, store.RevokeWithdrawn, true}} {
 			inTx(t, s, func(tx *store.Tx) error {
-				return tx.PutUpstreamBlock(ctx, store.UpstreamBlock{UpstreamID: upID, BodyHash: hash, TenantID: tn.ID, State: st, Reason: st})
+				changed, err := tx.PutUpstreamBlock(ctx, store.UpstreamBlock{UpstreamID: upID, BodyHash: hash, TenantID: tn.ID, State: tc.state,
+					Reason: tc.reason})
+				if err == nil && changed != tc.changed {
+					t.Errorf("%+v: changed %v", tc, changed)
+				}
+				return err
 			})
 		}
 		if bs, err := s.UpstreamBlocks(ctx, tn.ID); err != nil || bs[[2]string{upID, hash}].State != store.RevokeWithdrawn || !blocked() {

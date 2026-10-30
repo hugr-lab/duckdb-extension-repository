@@ -179,7 +179,8 @@ so the operator declares it:
 
 - **Migration `0048_upstream_revocations`** adds `upstreams.remote_kista`, `revocations` (both
   false) and `revocations_etag`, and the tables `upstream_revocations` (a remote's revocations
-  matched to an upstream's builds), `upstream_blocks` (an upstream's blocks of bodies) and
+  matched to an upstream's builds, `unlisted_at` once the remote stops listing one something was
+  applied of), `upstream_blocks` (an upstream's blocks of bodies, indexed by tenant) and
   `upstream_yanks` (what an upstream yanked, with each release's prior state). It raises
   `min_reader` to 48: stop every older replica first.
 - **What changes.** Nothing is applied until a tenant administrator switches an upstream on. New:

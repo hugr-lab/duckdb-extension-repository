@@ -199,4 +199,17 @@ func TestUpstreamRevocations(t *testing.T) {
 	mustServe(bk, "nightly", true)
 	run(bUp)
 	mustServe(bk, "prod", true)
+
+	// C runs after B's lift: B no longer lists the revocation, yet C keeps what it applied (its row
+	// kept, unlisted, for C's own administrator to lift)
+	run(cUp)
+	inC := stored(cUp)
+	if len(inC) != 1 || inC[0].AppliedState != store.RevokeWithdrawn || inC[0].UnlistedAt.IsZero() {
+		t.Fatalf("C after B's lift: %+v", inC)
+	}
+	mustServe(ck, "prod", false)
+	if n, err := cUp.LiftRevocation(ctx, serveAdmin, "acme", "src", inC[0].BuildID, 0); err != nil || n != 1 {
+		t.Fatalf("C lifts: %d %v", n, err)
+	}
+	mustServe(ck, "prod", true)
 }

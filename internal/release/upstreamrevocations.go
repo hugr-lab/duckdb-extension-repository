@@ -4,154 +4,195 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// UpstreamBlock applies an upstream's withdrawal or block of a body (spec 0039, decisions A and D):
-// the block is recorded first (from then on the body is refused from that upstream under every
-// channel's lock, as blocks are), then each channel holding a live release of the upstream's builds
-// with that body is swept under its lock: those releases (the home channel's and their copies
-// promoted or placed elsewhere) are yanked and recorded, so a lift restores them. The same bytes
-// from any other source stay. It answers how many releases it yanked; applying it again sweeps
-// again (a sweep that failed half-way is finished).
-func (s *Service) UpstreamBlock(ctx context.Context, a authz.Actor, tenantID, upstreamID, hash, state, reason string) (int, error) {
-	if state != store.RevokeWithdrawn && state != store.RevokeBlocked {
-		return 0, fmt.Errorf("%w: an upstream blocks for a withdrawal or a block, not %q", store.ErrInvalid, state)
-	}
-	if err := s.Store.InTenantTx(ctx, tenantID, nil, func(tx *store.Tx) error {
-		return tx.PutUpstreamBlock(ctx, store.UpstreamBlock{UpstreamID: upstreamID, BodyHash: hash, TenantID: tenantID, State: state,
-			Reason: reason})
-	}); err != nil {
-		return 0, err
-	}
-	chs, err := s.Store.RevocationChannels(ctx, tenantID, upstreamID, hash)
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, ch := range chs {
-		yanked, err := s.upstreamYank(ctx, a, ch.ID, tenantID, upstreamID, hash, "", store.YankCauseBlock)
+// RevocationHooks are an upstream's own steps in the transaction applying or lifting one of its
+// revocations (spec 0039), under the tenant's upstream lock: Check runs first (false: nothing is
+// done), Done last, with how many releases were yanked or restored. Applying and lifting a
+// revocation are serialised so, and each is whole or nothing.
+type RevocationHooks struct {
+	Check func(tx *store.Tx) (bool, error)
+	Done  func(tx *store.Tx, n int) error
+}
+
+// errChannelsMoved is a channel created between listing the tenant's channels and locking them:
+// the transaction is begun again with it.
+var errChannelsMoved = errors.New("the tenant's channels changed")
+
+// allChannels runs fn under the tenant's upstream lock and every channel's lock of the tenant (a
+// promotion or placement into any of them is ordered against what fn does), in one transaction.
+func (s *Service) allChannels(ctx context.Context, tenantID string, fn func(tx *store.Tx, channels []string) error) error {
+	for {
+		ids, err := s.Store.TenantChannelIDs(ctx, tenantID)
 		if err != nil {
-			return n, err
+			return err
 		}
-		n += yanked
+		locks := []string{store.TenantUpstreamLock(tenantID)}
+		for _, id := range ids {
+			locks = append(locks, lockKey(id))
+		}
+		err = s.Store.InTenantTx(ctx, tenantID, locks, func(tx *store.Tx) error {
+			now, err := tx.TenantChannelIDs(ctx, tenantID)
+			if err != nil {
+				return err
+			}
+			if !slices.Equal(now, ids) {
+				return errChannelsMoved
+			}
+			return fn(tx, ids)
+		})
+		if !errors.Is(err, errChannelsMoved) {
+			return err
+		}
 	}
-	return n, nil
+}
+
+// UpstreamBlock applies an upstream's withdrawal or block of a body (spec 0039, decisions A and D),
+// in one transaction under every channel's lock: the block is recorded (from then on the body is
+// refused from that upstream, under each channel's lock, as blocks are), each live release of the
+// upstream's builds with that body (in its home channel, and the copies promoted or placed
+// elsewhere) is yanked and recorded so a lift restores it, and every channel showing a release of
+// the body is bumped when the block is new or changed (its -/revocations rows changed). The same
+// bytes from any other source stay. It answers how many releases it yanked, and whether Check let
+// it apply.
+func (s *Service) UpstreamBlock(ctx context.Context, a authz.Actor, tenantID, upstreamID, hash, state, reason string, h RevocationHooks) (int, bool, error) {
+	if state != store.RevokeWithdrawn && state != store.RevokeBlocked {
+		return 0, false, fmt.Errorf("%w: an upstream blocks for a withdrawal or a block, not %q", store.ErrInvalid, state)
+	}
+	n, done := 0, false
+	err := s.allChannels(ctx, tenantID, func(tx *store.Tx, channels []string) error {
+		n, done = 0, false
+		if ok, err := h.Check(tx); err != nil || !ok {
+			return err
+		}
+		changed, err := tx.PutUpstreamBlock(ctx, store.UpstreamBlock{UpstreamID: upstreamID, BodyHash: hash, TenantID: tenantID, State: state,
+			Reason: reason})
+		if err != nil {
+			return err
+		}
+		for _, ch := range channels {
+			yanked, err := upstreamYank(ctx, tx, a, ch, tenantID, upstreamID, hash, "", store.YankCauseBlock)
+			if err != nil {
+				return err
+			}
+			n += yanked
+		}
+		if changed {
+			if err := tx.BumpUpstreamBodyChannels(ctx, upstreamID, hash); err != nil {
+				return err
+			}
+		}
+		done = true
+		return h.Done(tx, n)
+	})
+	return n, done, err
 }
 
 // UpstreamYank applies an upstream's yank of a build (spec 0039, decision C): its releases in the
 // upstream's home channel are yanked and recorded (a copy promoted or placed elsewhere is that
-// channel's own choice). It answers how many releases it yanked.
-func (s *Service) UpstreamYank(ctx context.Context, a authz.Actor, tenantID, upstreamID, channelID, buildID, hash string) (int, error) {
-	return s.upstreamYank(ctx, a, channelID, tenantID, upstreamID, hash, buildID, store.YankCauseYank)
-}
-
-// upstreamYank yanks and records, under a channel's lock, its live releases of the upstream's builds
-// with a body (of one build when buildID is set).
-func (s *Service) upstreamYank(ctx context.Context, a authz.Actor, channelID, tenantID, upstreamID, hash, buildID, cause string) (int, error) {
-	n := 0
-	err := s.Store.InTenantTx(ctx, tenantID, []string{lockKey(channelID)}, func(tx *store.Tx) error {
-		n = 0
-		rels, err := tx.LiveUpstreamReleases(ctx, channelID, upstreamID, hash, buildID)
-		if err != nil {
+// channel's own choice), in one transaction under the tenant's upstream lock and the channel's.
+func (s *Service) UpstreamYank(ctx context.Context, a authz.Actor, tenantID, upstreamID, channelID, buildID, hash string, h RevocationHooks) (int, bool, error) {
+	n, done := 0, false
+	err := s.Store.InTenantTx(ctx, tenantID, []string{store.TenantUpstreamLock(tenantID), lockKey(channelID)}, func(tx *store.Tx) error {
+		n, done = 0, false
+		if ok, err := h.Check(tx); err != nil || !ok {
 			return err
 		}
-		for i := range rels {
-			prior := rels[i].State
-			if err := tx.SetReleaseState(ctx, &rels[i], store.ReleaseYanked, a.String()); err != nil {
-				return err
-			}
-			if err := tx.RecordUpstreamYank(ctx, store.UpstreamYank{ReleaseID: rels[i].ID, TenantID: tenantID, UpstreamID: upstreamID,
-				BuildID: rels[i].BuildID, BodyHash: hash, PriorState: prior, Cause: cause}); err != nil {
-				return err
-			}
-			n++
+		var err error
+		if n, err = upstreamYank(ctx, tx, a, channelID, tenantID, upstreamID, hash, buildID, store.YankCauseYank); err != nil {
+			return err
 		}
-		if n == 0 {
-			return nil
-		}
-		return tx.BumpReleaseVersion(ctx, channelID)
+		done = true
+		return h.Done(tx, n)
 	})
-	return n, err
+	return n, done, err
 }
 
-// LiftUpstream lifts an upstream's revocation of a build (spec 0039, decisions A and C): its block of
-// the build's body, if any, is removed, and the releases recorded for the build are restored under
-// each channel's lock to their state before, each only while it is still yanked, its build not
-// withdrawn (spec 0033), its body blocked neither by an administrator nor by the upstream; the
-// records go either way. It answers how many releases it restored.
-func (s *Service) LiftUpstream(ctx context.Context, a authz.Actor, tenantID, upstreamID, buildID, hash string) (int, error) {
-	if err := s.Store.InTenantTx(ctx, tenantID, nil, func(tx *store.Tx) error {
-		_, err := tx.DeleteUpstreamBlock(ctx, upstreamID, hash)
-		return err
-	}); err != nil {
+// upstreamYank yanks and records, under the caller's lock of a channel, its live releases of the
+// upstream's builds with a body (of one build when buildID is set).
+func upstreamYank(ctx context.Context, tx *store.Tx, a authz.Actor, channelID, tenantID, upstreamID, hash, buildID, cause string) (int, error) {
+	rels, err := tx.LiveUpstreamReleases(ctx, channelID, upstreamID, hash, buildID)
+	if err != nil || len(rels) == 0 {
 		return 0, err
 	}
-	recs, err := s.Store.UpstreamYanksOf(ctx, upstreamID, buildID)
-	if err != nil {
-		return 0, err
-	}
-	byChannel := map[string][]store.UpstreamYank{}
-	var gone []store.UpstreamYank
-	for _, y := range recs {
-		if y.ChannelID == "" {
-			gone = append(gone, y)
-			continue
+	for i := range rels {
+		prior := rels[i].State
+		if err := tx.SetReleaseState(ctx, &rels[i], store.ReleaseYanked, a.String()); err != nil {
+			return 0, err
 		}
-		byChannel[y.ChannelID] = append(byChannel[y.ChannelID], y)
-	}
-	if len(gone) > 0 {
-		if err := s.Store.InTenantTx(ctx, tenantID, nil, func(tx *store.Tx) error {
-			for _, y := range gone {
-				if err := tx.DeleteUpstreamYank(ctx, y.ReleaseID); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
+		if err := tx.RecordUpstreamYank(ctx, store.UpstreamYank{ReleaseID: rels[i].ID, TenantID: tenantID, UpstreamID: upstreamID,
+			BuildID: rels[i].BuildID, BodyHash: hash, PriorState: prior, Cause: cause}); err != nil {
 			return 0, err
 		}
 	}
-	n := 0
-	for channelID, ys := range byChannel {
-		restored := 0
-		err := s.Store.InTenantTx(ctx, tenantID, []string{lockKey(channelID)}, func(tx *store.Tx) error {
-			restored = 0
-			for _, y := range ys {
+	return len(rels), tx.BumpReleaseVersion(ctx, channelID)
+}
+
+// LiftUpstream lifts an upstream's stored revocation of a build (spec 0039, decisions A and C), in
+// one transaction under every channel's lock: its block of the build's body, if any, is removed (the
+// channels showing the body bumped), and the releases recorded for the build are restored to their
+// state before, each only while it is still yanked, its build not withdrawn (spec 0033), and its body
+// not blocked by an administrator; the records go either way. It answers how many releases it
+// restored, and whether Check let it lift.
+func (s *Service) LiftUpstream(ctx context.Context, a authz.Actor, tenantID, upstreamID, buildID string, h RevocationHooks) (int, bool, error) {
+	n, done := 0, false
+	err := s.allChannels(ctx, tenantID, func(tx *store.Tx, _ []string) error {
+		n, done = 0, false
+		if ok, err := h.Check(tx); err != nil || !ok {
+			return err
+		}
+		rev, err := tx.GetUpstreamRevocation(ctx, upstreamID, buildID)
+		if err != nil {
+			return err
+		}
+		hash := rev.BodyHash
+		removed, err := tx.DeleteUpstreamBlock(ctx, upstreamID, hash)
+		if err != nil {
+			return err
+		}
+		if removed {
+			if err := tx.BumpUpstreamBodyChannels(ctx, upstreamID, hash); err != nil {
+				return err
+			}
+		}
+		recs, err := tx.UpstreamYanksOf(ctx, upstreamID, buildID)
+		if err != nil {
+			return err
+		}
+		bumped := map[string]bool{}
+		for _, y := range recs {
+			if y.ChannelID != "" {
 				rel, err := tx.ReleaseByID(ctx, y.ReleaseID)
-				if err == nil && rel.State == store.ReleaseYanked && !rel.Withdrawn {
-					blocked, err := tx.Blocked(ctx, tenantID, y.BodyHash)
-					if err != nil {
+				if err != nil {
+					return err
+				}
+				blocked, err := tx.Blocked(ctx, tenantID, y.BodyHash)
+				if err != nil {
+					return err
+				}
+				if rel.State == store.ReleaseYanked && !rel.Withdrawn && !blocked {
+					if err := tx.SetReleaseState(ctx, &rel.Release, y.PriorState, a.String()); err != nil {
 						return err
 					}
-					still, err := tx.UpstreamBlocked(ctx, upstreamID, y.BodyHash)
-					if err != nil {
-						return err
-					}
-					if !blocked && !still {
-						if err := tx.SetReleaseState(ctx, &rel.Release, y.PriorState, a.String()); err != nil {
+					n++
+					if !bumped[y.ChannelID] {
+						bumped[y.ChannelID] = true
+						if err := tx.BumpReleaseVersion(ctx, y.ChannelID); err != nil {
 							return err
 						}
-						restored++
 					}
-				} else if err != nil && !errors.Is(err, store.ErrNotFound) {
-					return err
-				}
-				if err := tx.DeleteUpstreamYank(ctx, y.ReleaseID); err != nil {
-					return err
 				}
 			}
-			if restored == 0 {
-				return nil
+			if err := tx.DeleteUpstreamYank(ctx, y.ReleaseID); err != nil {
+				return err
 			}
-			return tx.BumpReleaseVersion(ctx, channelID)
-		})
-		if err != nil {
-			return n, err
 		}
-		n += restored
-	}
-	return n, nil
+		done = true
+		return h.Done(tx, n)
+	})
+	return n, done, err
 }

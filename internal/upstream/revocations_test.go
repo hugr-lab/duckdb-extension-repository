@@ -1,6 +1,7 @@
 package upstream_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -28,6 +29,10 @@ type fakeKista struct {
 	busy  int
 	reads int // 200 answers
 	conds int // 304 answers
+	// status, when set, answers every request; bad answers a misbehaving remote: "loop" pages back
+	// to its first cursor, "empty" pages on from an empty page
+	status int
+	bad    string
 }
 
 func (k *fakeKista) set(rows ...release.RevokedRow) {
@@ -43,6 +48,18 @@ func (k *fakeKista) serve(w http.ResponseWriter, q *http.Request) {
 		k.busy--
 		w.Header().Set("Retry-After", "0")
 		w.WriteHeader(http.StatusTooManyRequests)
+		return
+	}
+	if k.status != 0 {
+		w.WriteHeader(k.status)
+		return
+	}
+	switch k.bad {
+	case "loop":
+		_ = json.NewEncoder(w).Encode(map[string]any{"api": 1, "rows": k.rows[:1], "next": "p1"})
+		return
+	case "empty":
+		_ = json.NewEncoder(w).Encode(map[string]any{"api": 1, "rows": []release.RevokedRow{}, "next": "p1"})
 		return
 	}
 	b, _ := json.Marshal(k.rows)
@@ -144,7 +161,7 @@ func TestRevocationPass(t *testing.T) {
 		ahead.Version = "9.9"
 		k.set(row(v10, store.RevokeWithdrawn, "CVE\x01-2026"), ahead)
 		r := en.sync(t, false)
-		if r.Counts["revoked_on_source"] != 1 || r.Counts["revoked"] != 0 || !strings.Contains(fmt.Sprint(r.Problems), "withdrawn on the source: CVE -2026") {
+		if r.Counts["revoked_on_source"] != 1 || r.Counts["revoked"] != 0 || !strings.Contains(fmt.Sprint(r.Problems), "1 of the source's revocations") {
 			t.Fatalf("switched off: %+v", r)
 		}
 		if s := en.stored(t); len(s) != 1 || s["1.0"].State != store.RevokeWithdrawn || s["1.0"].Reason != "CVE -2026" || s["1.0"].AppliedState != "" {
@@ -239,11 +256,27 @@ func TestRevocationPass(t *testing.T) {
 		if st := states(t, en, "prod", "tresor"); st["1.1"] != store.ReleaseYanked {
 			t.Fatalf("an administrator's block lifted: %+v", st)
 		}
-		// a stored row whose remote row goes away is forgotten; what it applied stays
+		// a stored row something was applied of, whose remote row goes away, is kept unlisted: what
+		// it applied stays, it is not due, and it is still lifted
 		k.set(row(v11, store.RevokeWithdrawn, "CVE-2027"))
 		en.sync(t, false)
-		if s := en.stored(t); len(s) != 1 || states(t, en, "prod", "tresor")["1.0"] != store.ReleaseYanked {
+		if s := en.stored(t); len(s) != 2 || s["1.0"].UnlistedAt.IsZero() || s["1.0"].Due() || states(t, en, "prod", "tresor")["1.0"] != store.ReleaseYanked {
 			t.Fatalf("a row gone: %+v", s)
+		}
+		if n, err := en.up.LiftRevocation(ctx, admin, "acme", "acme-repo", v10.BuildID, 0); err != nil || n != 2 {
+			t.Fatalf("an unlisted row lifted: %d %v", n, err)
+		}
+		// a lift is final at its state: lifting again is refused, and the remote dropping the row for a
+		// run and listing it again undoes nothing
+		if _, err := en.up.LiftRevocation(ctx, admin, "acme", "acme-repo", v10.BuildID, 0); !errors.Is(err, upstream.ErrNotLiftable) {
+			t.Fatalf("lifted again: %v", err)
+		}
+		k.set(row(v10, store.RevokeWithdrawn, "CVE-2026"), row(v11, store.RevokeWithdrawn, "CVE-2027"))
+		if r := en.sync(t, false); r.Counts["revoked"] != 0 || states(t, en, "prod", "tresor")["1.0"] != store.ReleaseActive {
+			t.Fatalf("a lift undone by a row listed again: %+v", r)
+		}
+		if evs := en.events(t, "upstream.revocation.lift"); len(evs) != 3 || !strings.Contains(evs[2].Data, `"upstream_id"`) {
+			t.Fatalf("the lifts' events: %+v", evs)
 		}
 	})
 }
@@ -297,6 +330,114 @@ func TestRevocationRemote(t *testing.T) {
 		}
 		if u, _ := en.up.Get(ctx, admin, "acme", "acme-repo"); !u.RemoteKista || !u.Revocations {
 			t.Fatalf("its state: %+v", u)
+		}
+	})
+}
+
+// Spec 0039 (review): an upstream's block is narrow: the tenant's own build of the same bytes stays
+// served and the body is still taken from another source. A yank applied first, then a withdrawal of
+// the same build: the release is yanked already, yet the channel's -/revocations shows the
+// withdrawal (a chain carries it on), its snapshot moved by the block; lifted, it shows nothing.
+func TestRevocationNarrowAndChain(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		k := en.kista()
+		file := signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "tresor_duckdb_cpp_init")
+		en.repo.put("v2.0.0", "linux_amd64", "tresor", file)
+		u := en.spec(store.UpstreamEntry{Name: "tresor"})
+		u.Revocations = true
+		if _, err := en.up.Add(ctx, admin, "acme", u); err != nil {
+			t.Fatal(err)
+		}
+		en.sync(t, false)
+		c := en.releases(t, "tresor")[0]
+		snaps := &release.Snapshots{Store: en.st}
+		shown := func() []release.RevokedRow { // as serving reads it: the channel's record, then its snapshot
+			t.Helper()
+			prod, err := en.st.GetChannel(ctx, "acme", "prod")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := snaps.Get(ctx, prod)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return s.RevokedRows(release.Everything)
+		}
+		k.set(row(c, store.RevokeYanked, ""))
+		if r := en.sync(t, false); r.Counts["revoked"] != 1 {
+			t.Fatalf("the yank: %+v", r)
+		}
+		if rows := shown(); len(rows) != 1 || rows[0].State != store.RevokeYanked {
+			t.Fatalf("shown after the yank: %+v", rows)
+		}
+		k.set(row(c, store.RevokeWithdrawn, "CVE"))
+		if r := en.sync(t, false); r.Counts["revoked"] != 1 {
+			t.Fatalf("the withdrawal: %+v", r)
+		}
+		if rows := shown(); len(rows) != 1 || rows[0].State != store.RevokeWithdrawn || rows[0].Reason != "CVE" {
+			t.Fatalf("shown after the withdrawal: %+v", rows)
+		}
+		// the same bytes from the tenant's own source: taken and served
+		if _, _, err := en.rel.Add(ctx, admin, "acme", "other", bytes.NewReader(file), release.AddOptions{Name: "tresor", Unchecked: true}); err != nil {
+			t.Fatalf("the tenant's own build of the bytes: %v", err)
+		}
+		if st := states(t, en, "other", "tresor"); st["1.0"] != store.ReleaseActive {
+			t.Fatalf("the tenant's own release: %+v", st)
+		}
+		if n, err := en.up.LiftRevocation(ctx, admin, "acme", "acme-repo", c.BuildID, 0); err != nil || n != 1 {
+			t.Fatalf("lift: %d %v", n, err)
+		}
+		if rows := shown(); len(rows) != 0 {
+			t.Fatalf("shown after the lift: %+v", rows)
+		}
+	})
+}
+
+// Spec 0039 (review): a read is bounded: at most 11 pages, no page on from an empty one, no cursor
+// twice; each is the run's problem, and a cut read forgets nothing. A remote refusing the route (401,
+// 403) to an upstream that knows no kista there and is switched off says nothing; switched on, it is
+// a problem.
+func TestRevocationReadBounds(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		en.repo.put("v2.0.0", "linux_amd64", "tresor", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "tresor_duckdb_cpp_init"))
+		if _, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "tresor"})); err != nil {
+			t.Fatal(err)
+		}
+		k := en.kista()
+		k.status = http.StatusUnauthorized
+		if r := en.sync(t, false); strings.Contains(fmt.Sprint(r.Problems), "revocations") {
+			t.Fatalf("a 401 to an upstream that knows no kista: %+v", r.Problems)
+		}
+		k.status = 0
+		c := en.releases(t, "tresor")[0]
+		k.set(row(c, store.RevokeYanked, ""))
+		en.sync(t, false) // stored: a kista
+		if s := en.stored(t); len(s) != 1 {
+			t.Fatalf("stored: %+v", s)
+		}
+		var rows []release.RevokedRow
+		for i := range 12 {
+			x := row(c, store.RevokeYanked, "")
+			x.Name = fmt.Sprintf("n%02d", i)
+			rows = append(rows, x)
+		}
+		for bad, want := range map[string]string{"": "over 11 pages", "loop": "a cursor that is not one", "empty": "from an empty page"} {
+			k.set(rows...)
+			k.page, k.bad = 1, bad
+			if r := en.sync(t, false); !strings.Contains(fmt.Sprint(r.Problems), want) {
+				t.Fatalf("%q: %+v", bad, r.Problems)
+			}
+			if s := en.stored(t); len(s) != 1 {
+				t.Fatalf("%q: a cut read forgot: %+v", bad, s)
+			}
+		}
+		k.page, k.bad = 0, ""
+		if _, err := en.up.SetRevocations(ctx, admin, "acme", "acme-repo", true, 0); err != nil {
+			t.Fatal(err)
+		}
+		k.status = http.StatusForbidden
+		if r := en.sync(t, false); !strings.Contains(fmt.Sprint(r.Problems), "revocations") {
+			t.Fatalf("a 403 switched on: %+v", r.Problems)
 		}
 	})
 }
@@ -383,7 +524,8 @@ func TestRevocationsImported(t *testing.T) {
 		if _, err := en.up.SetRevocations(ctx, admin, "acme", "air", true, 0); err != nil {
 			t.Fatal(err)
 		}
-		data, _ = bu.make([]bcell{{v: "v2.0.0", name: "x", outcome: bundle.Unchanged, bodyHash: rs[0].BodyHash}}, rev)
+		// switched on, the next import applies what is stored, though its bundle carries none
+		data, _ = bu.make([]bcell{{v: "v2.0.0", name: "x", outcome: bundle.Unchanged, bodyHash: rs[0].BodyHash}}, nil)
 		res = en.importB(t, bu, data, upstream.ImportOptions{})
 		if tr := target(t, res, "air"); tr.Result.Counts["revoked"] != 1 || en.releases(t, "x")[0].State != store.ReleaseYanked {
 			t.Fatalf("switched on: %+v", tr)
@@ -394,6 +536,24 @@ func TestRevocationsImported(t *testing.T) {
 		stored, err := en.up.RevocationsOf(ctx, admin, "acme", "air")
 		if err != nil || len(stored) != 1 {
 			t.Fatalf("a bundle without the row: %+v %v", stored, err)
+		}
+		// lifted, it stays lifted over later bundles of the same state, and over a replay of an older
+		// bundle after a reset
+		if n, err := en.up.LiftRevocation(ctx, admin, "acme", "air", stored[0].BuildID, 0); err != nil || n != 1 {
+			t.Fatalf("lift: %d %v", n, err)
+		}
+		old, _ := bu.make([]bcell{{v: "v2.0.0", name: "x", outcome: bundle.Unchanged, bodyHash: rs[0].BodyHash}}, rev)
+		data, _ = bu.make([]bcell{{v: "v2.0.0", name: "x", outcome: bundle.Unchanged, bodyHash: rs[0].BodyHash}}, rev)
+		res = en.importB(t, bu, data, upstream.ImportOptions{})
+		if tr := target(t, res, "air"); tr.Result.Counts["revoked"] != 0 || en.releases(t, "x")[0].State != store.ReleaseActive {
+			t.Fatalf("a later bundle undid the lift: %+v", tr)
+		}
+		if _, err := en.up.ResetBundle(ctx, admin, "acme", "air"); err != nil {
+			t.Fatal(err)
+		}
+		res = en.importB(t, bu, old, upstream.ImportOptions{})
+		if tr := target(t, res, "air"); tr.Result.Counts["revoked"] != 0 || en.releases(t, "x")[0].State != store.ReleaseActive {
+			t.Fatalf("a replay after a reset undid the lift: %+v", tr)
 		}
 	})
 }

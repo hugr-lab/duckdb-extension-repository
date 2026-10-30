@@ -307,7 +307,13 @@ func (t *Tx) DeleteUpstream(ctx context.Context, u Upstream, expected int64) err
 	if err := t.DeleteLicenseKeysOf(ctx, KeySourceUpstream, u.ID); err != nil {
 		return err // spec 0021: the keys it brought go with it
 	}
-	// spec 0039: its revocations, blocks and yank records go with it (its yanked releases stay yanked)
+	// spec 0039: its revocations, blocks and yank records go with it (its yanked releases stay
+	// yanked); the channels showing its blocks show them no more
+	if _, err := t.exec(ctx, "UPDATE channels SET release_version = release_version + 1 WHERE id IN "+
+		"(SELECT r.channel_id FROM releases r JOIN builds b ON b.id = r.build_id JOIN upstream_blocks ub ON ub.body_hash = b.body_hash "+
+		"WHERE ub.upstream_id = ? AND b.source = ?)", u.ID, UpstreamSource(u.ID)); err != nil {
+		return err
+	}
 	for _, c := range []string{"upstream_revocations", "upstream_blocks", "upstream_yanks", "upstream_asks", "upstream_cells", "upstream_versions",
 		"upstream_entries", "upstream_platforms", "upstream_keys"} {
 		if _, err := t.exec(ctx, "DELETE FROM "+c+" WHERE upstream_id = ?", u.ID); err != nil {

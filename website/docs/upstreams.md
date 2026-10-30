@@ -560,14 +560,20 @@ reads):
 2. It keeps only the rows that match one of **this upstream's own builds**, by name, version,
    platform and body hash: nothing is revoked ahead of time, and another version, platform or
    source is never touched.
-3. It stores them with the remote's state and reason (cleaned: printable, at most 400 bytes), and
-   forgets a stored row the remote no longer lists (after a complete read) or whose build is gone.
+3. It stores them with the remote's state and reason (cleaned: printable, at most 400 bytes). A
+   stored row the remote no longer lists (after a complete read) or whose build is gone is deleted
+   when nothing was applied or lifted of it; otherwise it is kept, `unlisted`: what it applied stays
+   and can still be lifted, and it applies nothing more.
 4. With the **switch on**, it applies each stored revocation stronger than what was applied or
-   lifted of it (`revoked` in the run's counts). With the switch off it applies nothing: each is
-   counted `revoked_on_source` and shown among the run's problems, and the upstream's page lists it.
+   lifted of it (`revoked` in the run's counts). With the switch off it applies nothing: they are
+   counted `revoked_on_source`, summed up in one problem of the run, and listed on the upstream's
+   page.
+
+A read is bounded (at most 11 pages, no page on from an empty one, no cursor twice; each is a
+problem), and runs under the run's lease and pause check.
 
 A remote that answers no revocations (an older kista, another server, a suspended or deleted
-tenant) is not a kista: the switch cannot be turned on (`400`), and for an upstream switched on
+tenant; a `401` or `403` to an upstream switched off that knows no kista there) is not a kista: the switch cannot be turned on (`400`), and for an upstream switched on
 already it is a problem of every run, kept until it answers again.
 
 **Applying** (an `upstream.revocation` event each):
@@ -586,8 +592,11 @@ administrator's block or yank, and nothing is re-activated by a run: kista mirro
 `If-Match`; an `upstream.revocation.lift` event): the upstream's block of the body goes, and each
 release it yanked and still holds yanked returns to its prior state, but not a withdrawn build's,
 nor one whose body an administrator blocks (an administrator's block of the body
-takes over the upstream's records: what the upstream yanked stays yanked). A lifted revocation is not applied again unless the remote revokes the
-build more strongly (a yank lifted, then a withdrawal).
+takes over the upstream's records: what the upstream yanked stays yanked). A lifted revocation is
+not applied again unless the remote revokes the build more strongly (a yank lifted, then a
+withdrawal). Only something applied is lifted: a revocation never applied (the switch off) or lifted
+already is refused (`409`). The lift is one transaction with its event, and never interleaves with a
+run applying the same revocation.
 
 **The switch** is per upstream, off by default: `-revocations` at `upstream add`, or
 `upstream revocations <tenant> <name> on|off`

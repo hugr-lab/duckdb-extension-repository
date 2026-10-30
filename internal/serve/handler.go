@@ -132,6 +132,7 @@ type Handler struct {
 	keys  *keys.Service
 	blob  *blob.Service
 	rv    *resolver
+	revs  revocationsCache // spec 0039: -/revocations rows per channel's snapshot
 	o     Options
 	log   *slog.Logger
 	slots chan struct{}

@@ -1,6 +1,9 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -21,21 +24,23 @@ type revocationJSON struct {
 	AppliedAt    string `json:"applied_at,omitempty"`
 	LiftedState  string `json:"lifted_state,omitempty"`
 	LiftedAt     string `json:"lifted_at,omitempty"`
-	// Status is applied, lifted, or waiting: stored and not applied (the switch off, or due at the
-	// next run)
+	// UnlistedAt: the remote no longer lists it (or its build went); kept for what was applied or
+	// lifted of it, and no longer applied
+	UnlistedAt string `json:"unlisted_at,omitempty"`
+	// Status is applied (something applied is left to lift), lifted, or waiting: stored and nothing
+	// applied (the switch off, or due at the next run)
 	Status string `json:"status"`
 }
 
 func revocationOf(x store.UpstreamRevocation) revocationJSON {
 	o := revocationJSON{Build: x.BuildID, Name: x.Name, Version: x.PackageVersion, Platform: x.Platform, BodyHash: x.BodyHash, State: x.State,
 		Reason: x.Reason, SeenAt: timeOf(x.SeenAt), AppliedState: x.AppliedState, AppliedAt: timeOf(x.AppliedAt), LiftedState: x.LiftedState,
-		LiftedAt: timeOf(x.LiftedAt), Status: "waiting"}
+		LiftedAt: timeOf(x.LiftedAt), UnlistedAt: timeOf(x.UnlistedAt), Status: "waiting"}
 	switch {
-	case x.Due():
+	case x.Liftable():
+		o.Status = "applied"
 	case x.LiftedState != "":
 		o.Status = "lifted"
-	default:
-		o.Status = "applied"
 	}
 	return o
 }
@@ -58,8 +63,13 @@ func (h *Handler) upstreamRevocations(w http.ResponseWriter, r *http.Request, c 
 	for _, x := range rs {
 		out = append(out, revocationOf(x))
 	}
-	reply(w, r, http.StatusOK, map[string]any{"remote_kista": u.RemoteKista, "revocations": u.Revocations, "stored": out},
-		versionTag(u.Version), noStore)
+	// the ETag is the answer's content: a run storing, applying or forgetting a row moves it, though
+	// the upstream's version stays (If-Match on the switch and a lift takes the upstream's, from its
+	// record)
+	body := map[string]any{"remote_kista": u.RemoteKista, "revocations": u.Revocations, "stored": out}
+	b, _ := json.Marshal(body)
+	sum := sha256.Sum256(b)
+	reply(w, r, http.StatusOK, body, `"`+hex.EncodeToString(sum[:16])+`"`, noStore)
 }
 
 // setRevocations switches applying the remote's revocations: POST …/upstreams/{name}/revocations

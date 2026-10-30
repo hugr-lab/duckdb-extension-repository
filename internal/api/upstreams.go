@@ -105,7 +105,7 @@ func (h *Handler) channelNames(w http.ResponseWriter, r *http.Request, tenant st
 func (h *Handler) upstreamErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, upstream.ErrCollision), errors.Is(err, upstream.ErrPaused), errors.Is(err, upstream.ErrPullThrough),
-		errors.Is(err, upstream.ErrBundle):
+		errors.Is(err, upstream.ErrBundle), errors.Is(err, upstream.ErrNotLiftable):
 		problem(w, http.StatusConflict, typeConflict, publicRefusal(err))
 	case errors.Is(err, upstream.ErrNoKeys):
 		problem(w, http.StatusBadRequest, typeInvalid, publicRefusal(err))

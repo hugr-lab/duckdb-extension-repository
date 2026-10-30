@@ -203,9 +203,9 @@ var catalogue = map[Kind][]string{
 	// spec 0039: the switch applying a remote's revocations (and how many stored revocations were not
 	// applied yet); a revocation applied (blocked or yanked, with the remote's state and reason);
 	// an administrator's lift (how many releases it restored)
-	"upstream.revocations":     {"upstream", "revocations", "pending"},
-	"upstream.revocation":      {"upstream", "name", "version", "platform", "body_hash", "action", "state", "reason", "yanked"},
-	"upstream.revocation.lift": {"upstream", "build", "body_hash", "state", "restored"},
+	"upstream.revocations":     {"upstream", "upstream_id", "revocations", "pending"},
+	"upstream.revocation":      {"upstream", "upstream_id", "name", "version", "platform", "body_hash", "action", "state", "reason", "yanked"},
+	"upstream.revocation.lift": {"upstream", "upstream_id", "build", "body_hash", "state", "restored"},
 	// licences (spec 0012): refused last, since a truncated event keeps its first fields
 	"license.import": {"name", "license", "issuer", "holder", "plan", "expires_at", "replaced", "package_type", "source"},
 	"license.change": {"name", "license", "visibility", "replaced", "upstream", "package_type", "source"},

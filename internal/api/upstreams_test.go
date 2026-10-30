@@ -186,7 +186,7 @@ func TestUpstreamRevocations(t *testing.T) {
 	}
 	r := m.call(t, "GET", U+"/air/revocations", ta, "")
 	if g := r.json(t); r.status != 200 || g["remote_kista"] != false || g["revocations"] != false || len(g["stored"].([]any)) != 0 ||
-		r.header.Get("ETag") != `"v1"` {
+		r.header.Get("ETag") == "" {
 		t.Fatalf("read: %d %s", r.status, r.body)
 	}
 	if r := m.call(t, "GET", U+"/air/revocations", m.toks["channel adm"], ""); r.status != 404 {
@@ -225,6 +225,43 @@ func TestUpstreamRevocations(t *testing.T) {
 	}
 	if r := m.call(t, "DELETE", U+"/air/revocations/b1", ta, "", "If-Match", "*"); r.status != 404 {
 		t.Errorf("a lift of nothing stored: %d %s", r.status, r.body)
+	}
+
+	// stored and applied (as a bundle's import stores and applies one): listed, lifted once (200),
+	// then nothing is left to lift (409); one never applied is not lifted either
+	air, err := m.ups.Get(ctx, admin, "acme", "air")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []string{"b1", "b2"} {
+		if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
+			if err := tx.PutUpstreamRevocation(ctx, store.UpstreamRevocation{UpstreamID: air.ID, BuildID: b, TenantID: air.TenantID,
+				BodyHash: strings.Repeat("c", 64), Name: "x", PackageVersion: "1.0", Platform: "linux_amd64", State: store.RevokeYanked}); err != nil {
+				return err
+			}
+			if b == "b2" {
+				return nil
+			}
+			return tx.MarkRevocationApplied(ctx, air.ID, b, store.RevokeYanked)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r = m.call(t, "GET", U+"/air/revocations", ta, "")
+	if body := string(r.body); !strings.Contains(body, `"status":"applied"`) || !strings.Contains(body, `"status":"waiting"`) {
+		t.Fatalf("stored: %s", body)
+	}
+	listed := r.header.Get("ETag")
+	if r := m.call(t, "DELETE", U+"/air/revocations/b1", ta, "", "If-Match", "*"); r.status != 200 || r.json(t)["restored"] != float64(0) {
+		t.Fatalf("a lift: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", U+"/air/revocations", ta, ""); !strings.Contains(string(r.body), `"status":"lifted"`) || r.header.Get("ETag") == listed {
+		t.Fatalf("lifted: %s %v", r.body, r.header)
+	}
+	for _, b := range []string{"b1", "b2"} {
+		if r := m.call(t, "DELETE", U+"/air/revocations/"+b, ta, "", "If-Match", "*"); r.status != 409 {
+			t.Errorf("%s: nothing to lift: %d %s", b, r.status, r.body)
+		}
 	}
 }
 

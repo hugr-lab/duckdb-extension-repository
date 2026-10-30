@@ -269,10 +269,33 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	if err != nil {
 		return err
 	}
+	// the lease is renewed, and a pause noticed, from the revocation pass on and while cells download
+	// (one may take fetch_timeout)
+	rctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-rctx.Done():
+				return
+			case <-t.C:
+			}
+			if err := renew(rctx); err != nil {
+				cancel(err)
+				return
+			}
+			if paused, err := s.paused(rctx, u.ID); err == nil && paused {
+				cancel(errStopped)
+				return
+			}
+		}
+	}()
 	actor := authz.Actor{Kind: authz.ActorSystem, ID: "upstream:" + sc.Tenant.Name + "/" + u.Name}
 	res.actor = actor.String()
 	// spec 0039: the revocation pass first, whatever follows (the tenant's room, the matrix's caps)
-	s.revocationPass(ctx, sc, u, actor, res)
+	s.revocationPass(rctx, sc, u, actor, res)
 	versions, err := s.Store.ChannelVersions(ctx, u.ChannelID)
 	if err != nil {
 		return err
@@ -383,28 +406,6 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	}
 	fresh := freshness(s.Store, u.ID)
 	holder := "run:" + store.NewID() // a lazy upstream's cell leases (spec 0032)
-	// the lease is renewed, and a pause noticed, while cells download (one may take fetch_timeout)
-	rctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	go func() {
-		t := time.NewTicker(30 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-rctx.Done():
-				return
-			case <-t.C:
-			}
-			if err := renew(rctx); err != nil {
-				cancel(err)
-				return
-			}
-			if paused, err := s.paused(rctx, u.ID); err == nil && paused {
-				cancel(errStopped)
-				return
-			}
-		}
-	}()
 	var wg sync.WaitGroup
 	for _, grp := range groups {
 		if acquire(rctx, g.all) != nil {

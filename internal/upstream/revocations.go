@@ -22,6 +22,9 @@ const (
 	// maxRevocationRows is the most rows a pass reads (and a bundle carries): more is a problem, and
 	// the rest is not read.
 	maxRevocationRows = 10000
+	// maxRevocationPages is the most pages a read asks for: maxRevocationRows at kista's 1,000 a page,
+	// and one more to learn there are more.
+	maxRevocationPages = maxRevocationRows/1000 + 1
 	// maxRevocationsPage bounds one page's answer (1,000 rows of short fields).
 	maxRevocationsPage = 4 << 20
 	// a run's counts of the pass
@@ -51,8 +54,11 @@ func (s *Service) readRevocations(ctx context.Context, tenant string, u store.Up
 		return out, err
 	}
 	base := s.prefix(u) + "/-/revocations"
-	cursor := ""
+	cursor, seen := "", map[string]bool{"": true}
 	for page := 0; ; page++ {
+		if page == maxRevocationPages {
+			return out, fmt.Errorf("the source's revocations run over %d pages: the rest is not read", maxRevocationPages)
+		}
 		url := base
 		if cursor != "" {
 			url += "/" + cursor
@@ -96,9 +102,14 @@ func (s *Service) readRevocations(ctx context.Context, tenant string, u store.Up
 			out.complete = true
 			return out, nil
 		}
-		if ans.Next == cursor || !cursorRe.MatchString(ans.Next) {
+		if len(*ans.Rows) == 0 {
+			return out, errors.New("the source's revocations page on from an empty page")
+		}
+		// each page moves on: a cursor seen in this read already is a loop
+		if seen[ans.Next] || !cursorRe.MatchString(ans.Next) {
 			return out, errors.New("the source's revocations page to a cursor that is not one")
 		}
+		seen[ans.Next] = true
 		cursor = ans.Next
 	}
 }
@@ -143,8 +154,9 @@ func (s *Service) getPage(ctx context.Context, cred *credential.Credential, tok,
 
 // revocationPass is a mirror's revocation pass (spec 0039), first in each run whatever follows: it
 // reads the remote's revocations, matches them by build to this upstream's builds and stores them,
-// then applies those due when the switch is on (shown as problems when it is off). Its failures are
-// the run's problems; the run goes on. A dry run reads and counts, and stores or applies nothing.
+// then applies those due when the switch is on (counted and summed up in one problem when it is
+// off). Its failures are the run's problems; the run goes on. A dry run only reads: it stores,
+// applies and counts nothing.
 func (s *Service) revocationPass(ctx context.Context, sc store.ServeChannel, u store.Upstream, a authz.Actor, res *Result) {
 	if u.Kind != store.UpstreamRepo || u.Mode != store.ModeMirror {
 		return
@@ -156,10 +168,13 @@ func (s *Service) revocationPass(ctx context.Context, sc store.ServeChannel, u s
 	}
 	etag := u.RevocationsETag
 	got, err := s.readRevocations(ctx, sc.Tenant.Name, u, etag)
+	var ae *egress.AuthError
 	switch {
 	case errors.Is(err, credential.ErrClient):
 		problem("", "", "the identity provider refuses kista's own client")
 		return
+	case errors.As(err, &ae) && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden) && !u.Revocations && !u.RemoteKista:
+		return // a remote that refuses the route is no kista known to this upstream: nothing to say every run
 	case errors.Is(err, errNotKista):
 		if u.Revocations { // kept: a suspended or unreachable kista is still the one switched on
 			problem("", "", err.Error())
@@ -172,7 +187,7 @@ func (s *Service) revocationPass(ctx context.Context, sc store.ServeChannel, u s
 	case err != nil && !got.kista:
 		problem("", "", "reading the source's revocations: "+err.Error())
 		return
-	case err != nil: // cut over the cap: what was read is stored, nothing absent is deleted
+	case err != nil: // cut over a cap: what was read is stored, nothing unlisted is forgotten
 		problem("", "", err.Error())
 	}
 	if res.DryRun {
@@ -197,8 +212,10 @@ func (s *Service) revocationPass(ctx context.Context, sc store.ServeChannel, u s
 	s.applyRevocations(ctx, u, a, res, problem)
 }
 
-// storeRevocations stores the rows matching this upstream's builds (state and reason as last seen),
-// and forgets stored rows the remote no longer lists (after a complete read) or whose build is gone.
+// storeRevocations stores the rows matching this upstream's builds (state and reason as last seen).
+// A stored row the remote no longer lists (after a complete read) or whose build is gone is
+// forgotten: deleted when nothing was applied or lifted of it, otherwise kept, unlisted, so it is
+// still lifted and a remote dropping it for a run undoes no lift.
 func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds map[[4]string]string, got remoteRevocations) error {
 	stored, err := s.Store.UpstreamRevocations(ctx, u.ID)
 	if err != nil {
@@ -227,7 +244,7 @@ func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds
 		}
 		for _, r := range stored {
 			if !ids[r.BuildID] || got.complete && !listed[r.BuildID] {
-				if err := tx.DeleteUpstreamRevocation(ctx, u.ID, r.BuildID); err != nil {
+				if err := tx.ForgetUpstreamRevocation(ctx, r); err != nil {
 					return err
 				}
 			}
@@ -246,86 +263,102 @@ func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds
 var bodyHashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // applyRevocations applies an upstream's stored revocations that are due (spec 0039), or, the switch
-// off, shows them as the run's problems.
+// off, counts them and says so in one problem (the cells' problems keep their room).
 func (s *Service) applyRevocations(ctx context.Context, u store.Upstream, a authz.Actor, res *Result, problem func(name, platform, detail string)) {
 	stored, err := s.Store.UpstreamRevocations(ctx, u.ID)
 	if err != nil {
 		problem("", "", err.Error())
 		return
 	}
+	off := 0
 	for _, r := range stored {
 		if !r.Due() {
 			continue
 		}
 		if !u.Revocations {
-			res.Counts[countRevokedOnSource]++
-			detail := r.State + " on the source"
-			if r.Reason != "" {
-				detail += ": " + r.Reason
-			}
-			problem(r.Name, r.Platform, detail)
+			off++
 			continue
 		}
-		if err := s.applyRevocation(ctx, u, a, r); err != nil {
+		applied, err := s.applyRevocation(ctx, u, a, r)
+		if err != nil {
 			problem(r.Name, r.Platform, "applying the source's revocation: "+err.Error())
 			continue
 		}
-		res.Counts[countRevoked]++
+		if applied {
+			res.Counts[countRevoked]++
+		}
+	}
+	if off > 0 {
+		res.Counts[countRevokedOnSource] += off
+		problem("", "", fmt.Sprintf("%d of the source's revocations of this upstream's builds are not applied: its revocations are switched off", off))
 	}
 }
 
 // applyRevocation applies one stored revocation: a withdrawal or block as the upstream's block of the
-// body, a yank as a yank of the build's releases in the home channel; then marks it applied, with its
-// event.
-func (s *Service) applyRevocation(ctx context.Context, u store.Upstream, a authz.Actor, r store.UpstreamRevocation) error {
-	var n int
-	var err error
+// body, a yank as a yank of the build's releases in the home channel. In the same transaction, under
+// the tenant's upstream lock (so a lift and an apply never interleave), the row is read again and
+// applied only while still due, then marked applied, with its event.
+func (s *Service) applyRevocation(ctx context.Context, u store.Upstream, a authz.Actor, r store.UpstreamRevocation) (bool, error) {
 	action := "blocked"
 	if r.State == store.RevokeYanked {
 		action = "yanked"
-		n, err = s.Releases.UpstreamYank(ctx, a, u.TenantID, u.ID, u.ChannelID, r.BuildID, r.BodyHash)
+	}
+	h := release.RevocationHooks{
+		Check: func(tx *store.Tx) (bool, error) {
+			cur, err := tx.GetUpstreamRevocation(ctx, u.ID, r.BuildID)
+			if errors.Is(err, store.ErrNotFound) {
+				return false, nil
+			}
+			if err != nil || !cur.Due() || cur.State != r.State {
+				return false, err // changed meanwhile: the next run applies what it is now
+			}
+			return true, nil
+		},
+		Done: func(tx *store.Tx, n int) error {
+			if err := tx.MarkRevocationApplied(ctx, u.ID, r.BuildID, r.State); err != nil {
+				return err
+			}
+			return tx.Event(ctx, u.TenantID, a.String(), "upstream.revocation", "upstream:"+u.Name, map[string]any{"upstream": u.Name,
+				"upstream_id": u.ID, "name": r.Name, "version": r.PackageVersion, "platform": r.Platform, "body_hash": r.BodyHash,
+				"action": action, "state": r.State, "reason": r.Reason, "yanked": n})
+		},
+	}
+	var done bool
+	var err error
+	if r.State == store.RevokeYanked {
+		_, done, err = s.Releases.UpstreamYank(ctx, a, u.TenantID, u.ID, u.ChannelID, r.BuildID, r.BodyHash, h)
 	} else {
-		n, err = s.Releases.UpstreamBlock(ctx, a, u.TenantID, u.ID, r.BodyHash, r.State, r.Reason)
+		_, done, err = s.Releases.UpstreamBlock(ctx, a, u.TenantID, u.ID, r.BodyHash, r.State, r.Reason, h)
 	}
-	if err != nil {
-		return err
-	}
-	return s.Store.InTenantTx(ctx, u.TenantID, nil, func(tx *store.Tx) error {
-		if err := tx.MarkRevocationApplied(ctx, u.ID, r.BuildID, r.State); err != nil {
-			return err
-		}
-		return tx.Event(ctx, u.TenantID, a.String(), "upstream.revocation", "upstream:"+u.Name, map[string]any{"upstream": u.Name,
-			"name": r.Name, "version": r.PackageVersion, "platform": r.Platform, "body_hash": r.BodyHash, "action": action,
-			"state": r.State, "reason": r.Reason, "yanked": n})
-	})
+	return done, err
 }
 
 // importRevocations takes a bundle source's revocations into a bundle-mode upstream (spec 0039):
-// matched by build among its own builds and stored as a pass stores rows, never deleting one (absence
-// is no signal in a bundle), then applied when its switch is on.
+// matched by build among its own builds and stored as a pass stores rows, never forgetting one
+// (absence is no signal in a bundle), then, at every import, the stored ones due are applied when its
+// switch is on (a switch turned on since the last bundle applies what is stored).
 func (s *Service) importRevocations(ctx context.Context, t store.Tenant, tg *target) {
-	if len(tg.src.Revocations) == 0 {
-		return
-	}
 	res := &tg.res
 	problem := func(name, platform, detail string) {
 		if len(res.Problems) < maxProblems {
 			res.Problems = append(res.Problems, CellNote{Platform: platform, Name: name, Outcome: outcomeRevocations, Detail: detail})
 		}
 	}
-	builds, err := s.Store.UpstreamBuilds(ctx, tg.u.TenantID, tg.u.ID)
-	if err != nil {
-		problem("", "", err.Error())
-		return
-	}
-	got := remoteRevocations{kista: true}
-	for _, r := range tg.src.Revocations {
-		got.rows = append(got.rows, release.RevokedRow{Name: r.Name, Version: r.Version, Platform: r.Platform, BodyHash: r.BodyHash,
-			State: r.State, Reason: r.Reason})
-	}
-	if err := s.storeRevocations(ctx, tg.u, builds, got); err != nil {
-		problem("", "", "storing the bundle's revocations: "+err.Error())
-		return
+	if len(tg.src.Revocations) > 0 {
+		builds, err := s.Store.UpstreamBuilds(ctx, tg.u.TenantID, tg.u.ID)
+		if err != nil {
+			problem("", "", err.Error())
+			return
+		}
+		got := remoteRevocations{kista: true}
+		for _, r := range tg.src.Revocations {
+			got.rows = append(got.rows, release.RevokedRow{Name: r.Name, Version: r.Version, Platform: r.Platform, BodyHash: r.BodyHash,
+				State: r.State, Reason: r.Reason})
+		}
+		if err := s.storeRevocations(ctx, tg.u, builds, got); err != nil {
+			problem("", "", "storing the bundle's revocations: "+err.Error())
+			return
+		}
 	}
 	a := authz.Actor{Kind: authz.ActorSystem, ID: "upstream:" + t.Name + "/" + tg.u.Name}
 	s.applyRevocations(ctx, tg.u, a, res, problem)
@@ -389,7 +422,7 @@ func (s *Service) SetRevocations(ctx context.Context, a authz.Actor, tenant, nam
 			}
 		}
 		return tx.Event(ctx, t.ID, a.String(), "upstream.revocations", "upstream:"+u.Name,
-			map[string]any{"upstream": u.Name, "revocations": on, "pending": pending})
+			map[string]any{"upstream": u.Name, "upstream_id": u.ID, "revocations": on, "pending": pending})
 	})
 	if err != nil {
 		return store.Upstream{}, err
@@ -437,48 +470,51 @@ func (s *Service) RevocationsOf(ctx context.Context, a authz.Actor, tenant, name
 }
 
 // LiftRevocation lifts an upstream's revocation of a build (spec 0039; expected: the upstream's
-// version, 0 for any): its block of the body, if any, is removed and what it yanked is restored; the
-// stored row is marked lifted at its applied state (its state when nothing was applied), so the pass
-// applies it again only when the remote's state becomes stronger. A tenant administrator's.
+// version, 0 for any): its block of the body, if any, is removed and what it yanked is restored. The
+// stored row is marked lifted at the stronger of its stored and applied states, so the pass applies
+// it again only when the remote's state becomes stronger still. A row nothing applied of is left to
+// lift (never applied, or lifted already) is ErrNotLiftable. The mark, the restore, the upstream's
+// version and the event are one transaction, under the tenant's upstream lock (a run's apply waits).
+// A tenant administrator's.
 func (s *Service) LiftRevocation(ctx context.Context, a authz.Actor, tenant, name, buildID string, expected int64) (int, error) {
 	t, err := s.tenant(ctx, a, tenant)
 	if err != nil {
 		return 0, err
 	}
-	var u store.Upstream
-	var r store.UpstreamRevocation
-	if err := s.Store.InTenantTxForUpdate(ctx, t.ID, []string{store.TenantUpstreamLock(t.ID)}, func(tx *store.Tx) error {
-		if u, err = tx.GetUpstream(ctx, t.ID, name); err != nil {
-			return err
-		}
-		if expected != 0 && expected != u.Version {
-			return store.ErrConflict
-		}
-		if r, err = tx.GetUpstreamRevocation(ctx, u.ID, buildID); err != nil {
-			return err
-		}
-		state := r.AppliedState
-		if state == "" {
-			state = r.State
-		}
-		if err := tx.MarkRevocationLifted(ctx, u.ID, buildID, state); err != nil {
-			return err
-		}
-		return tx.BumpUpstream(ctx, &u)
-	}); err != nil {
+	u, err := s.Get(ctx, a, tenant, name)
+	if err != nil {
 		return 0, err
 	}
-	n, err := s.Releases.LiftUpstream(ctx, a, t.ID, u.ID, buildID, r.BodyHash)
-	if err != nil {
-		return n, err
-	}
-	state := r.AppliedState
-	if state == "" {
-		state = r.State
-	}
-	err = s.Store.InTenantTx(ctx, t.ID, nil, func(tx *store.Tx) error {
-		return tx.Event(ctx, t.ID, a.String(), "upstream.revocation.lift", "upstream:"+u.Name,
-			map[string]any{"upstream": u.Name, "build": buildID, "body_hash": r.BodyHash, "state": state, "restored": n})
+	var r store.UpstreamRevocation
+	var state string
+	n, _, err := s.Releases.LiftUpstream(ctx, a, t.ID, u.ID, buildID, release.RevocationHooks{
+		Check: func(tx *store.Tx) (bool, error) {
+			var err error
+			if u, err = tx.GetUpstream(ctx, t.ID, name); err != nil {
+				return false, err
+			}
+			if expected != 0 && expected != u.Version {
+				return false, store.ErrConflict
+			}
+			if r, err = tx.GetUpstreamRevocation(ctx, u.ID, buildID); err != nil {
+				return false, err
+			}
+			if !r.Liftable() {
+				return false, ErrNotLiftable
+			}
+			state = r.AppliedState
+			if store.RevocationRank(r.State) > store.RevocationRank(state) {
+				state = r.State
+			}
+			if err := tx.MarkRevocationLifted(ctx, u.ID, buildID, state); err != nil {
+				return false, err
+			}
+			return true, tx.BumpUpstream(ctx, &u)
+		},
+		Done: func(tx *store.Tx, n int) error {
+			return tx.Event(ctx, t.ID, a.String(), "upstream.revocation.lift", "upstream:"+u.Name, map[string]any{"upstream": u.Name,
+				"upstream_id": u.ID, "build": buildID, "body_hash": r.BodyHash, "state": state, "restored": n})
+		},
 	})
 	return n, err
 }

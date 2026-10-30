@@ -428,7 +428,7 @@ See [Publishing](../publishing.md).
 
 | Command | What it does |
 | --- | --- |
-| `upstream add <tenant> <name> -kind <k> -channel <c> -platforms <p,...> [flags]` | adds an upstream; `-kind` is `duckdb-core`, `duckdb-community` or `repository` |
+| `upstream add <tenant> <name> -kind <k> -channel <c> -platforms <p,...> [flags]` | adds an upstream; `-kind` is `duckdb-core`, `duckdb-community` or `repository`; `-revocations` switches on applying its source's revocations (a repository mirror of a kista, or a bundle-mode upstream; [Revocations from a kista](../upstreams.md#revocations-from-a-kista)) |
 | `upstream list <tenant>` | `NAME`, `KIND`, `MODE` (`mirror (lazy)` for a lazy mirror), `STATE`, `VISIBILITY`, `EXTENSIONS`, `LAST RUN` |
 | `upstream show <tenant> <name>` | its settings, entries, requested run, last run and, in bundle mode, the last bundle |
 | `upstream remove`, `pause`, `resume`, `public`, `private` `<tenant> <name>` | |

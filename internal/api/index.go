@@ -535,55 +535,48 @@ func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, p param
 			}
 		}
 	}
-	ptrs := make([]*releaseOut, 0, len(yanked)+1)
+	// spec 0039: the withdrawn releases that would have served the path, beside what does
+	var withdrawn []releaseOut
+	for _, rel := range rs.withdrawnOf(name, platform) {
+		if rel.PackageVersion == extVersion {
+			if o := rs.withdrawnRow(rel); o.reaches(version) {
+				withdrawn = append(withdrawn, o)
+			}
+		}
+	}
+	ptrs := make([]*releaseOut, 0, len(yanked)+len(withdrawn)+1)
 	for i := range yanked {
 		ptrs = append(ptrs, &yanked[i])
 	}
-	switch best := rs.versionedOf(version, platform, name, extVersion, false); {
+	for i := range withdrawn {
+		ptrs = append(ptrs, &withdrawn[i])
+	}
+	best := rs.versionedOf(version, platform, name, extVersion, false)
+	var row releaseOut
+	if best != nil {
+		row = rs.row(best)
+		ptrs = append(ptrs, &row)
+	}
+	if len(ptrs) == 0 {
+		out["status"] = "missing"
+		answer(w, r, out, c.anonymous())
+		return
+	}
+	if err := h.withAttachments(r, c, snap.Channel.PackageType, name, ptrs...); err != nil {
+		h.fail(w, err)
+		return
+	}
+	out["yanked"], out["withdrawn"], out["current"] = nonNil(yanked), nonNil(withdrawn), false
+	switch {
 	case best != nil:
 		out["status"] = map[string]string{store.ReleaseActive: "available", store.ReleaseDeprecated: "deprecated"}[best.State]
 		cur := rs.flatOf(version, platform, name)
 		out["current"] = cur != nil && cur.ID == best.ID
-		row := rs.row(best)
-		if err := h.withAttachments(r, c, snap.Channel.PackageType, name, append(ptrs, &row)...); err != nil {
-			h.fail(w, err)
-			return
-		}
 		out["release"] = row
-		out["yanked"] = nonNil(yanked)
 	case len(yanked) > 0:
-		if err := h.withAttachments(r, c, snap.Channel.PackageType, name, ptrs...); err != nil {
-			h.fail(w, err)
-			return
-		}
 		out["status"] = "yanked"
-		out["current"] = false
-		out["yanked"] = yanked
-	default:
-		// spec 0039: only a withdrawn release would have served the path
-		var withdrawn []releaseOut
-		for _, rel := range rs.withdrawnOf(name, platform) {
-			if rel.PackageVersion == extVersion {
-				if o := rs.withdrawnRow(rel); o.reaches(version) {
-					withdrawn = append(withdrawn, o)
-				}
-			}
-		}
-		if len(withdrawn) == 0 {
-			out["status"] = "missing"
-			break
-		}
-		wptrs := make([]*releaseOut, len(withdrawn))
-		for i := range withdrawn {
-			wptrs[i] = &withdrawn[i]
-		}
-		if err := h.withAttachments(r, c, snap.Channel.PackageType, name, wptrs...); err != nil {
-			h.fail(w, err)
-			return
-		}
+	default: // only a withdrawn release would have served the path
 		out["status"] = "withdrawn"
-		out["current"] = false
-		out["withdrawn"] = withdrawn
 	}
 	answer(w, r, out, c.anonymous())
 }

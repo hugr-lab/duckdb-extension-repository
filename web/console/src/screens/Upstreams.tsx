@@ -462,18 +462,24 @@ export interface Revocation {
   applied_at?: string
   lifted_state?: string
   lifted_at?: string
-  status: 'waiting' | 'applied' | 'lifted'
+  unlisted_at?: string
+  status: 'waiting' | 'applied' | 'lifted' // applied: something applied is left to lift
 }
 
 /** A stored revocation's status in words: what was applied or lifted of it, and what waits. */
-export function revocationWords(r: Pick<Revocation, 'status' | 'state' | 'applied_state' | 'lifted_state'>) {
+export function revocationWords(r: Pick<Revocation, 'status' | 'state' | 'applied_state' | 'lifted_state' | 'unlisted_at'>) {
+  const rank = (s?: string) => ['yanked', 'blocked', 'withdrawn'].indexOf(s ?? '') + 1
+  // a stronger state the source shows now waits for the next run (or the switch); an unlisted row is
+  // kept for what was applied or lifted, and applies nothing more
+  const more = !r.unlisted_at && rank(r.state) > Math.max(rank(r.applied_state), rank(r.lifted_state)) ? `; ${r.state} waits` : ''
+  const gone = r.unlisted_at ? '; no longer listed by the source' : ''
   switch (r.status) {
     case 'applied':
-      return `applied as ${r.applied_state === 'yanked' ? 'a yank' : 'a block'}`
+      return `applied as ${r.applied_state === 'yanked' ? 'a yank' : 'a block'}${more}${gone}`
     case 'lifted':
-      return `${r.lifted_state} lifted`
+      return `${r.lifted_state} lifted${more}${gone}`
     default:
-      return r.applied_state ? `${r.state} waits (${r.applied_state} applied)` : 'waits'
+      return 'waits: nothing applied'
   }
 }
 
@@ -481,7 +487,8 @@ export function revocationWords(r: Pick<Revocation, 'status' | 'state' | 'applie
  * administrator (spec 0039). */
 function Revocations({ u, path, etag, onChanged }: { u: Upstream; path: string; etag: string; onChanged: () => void }) {
   const { client } = useTenant()
-  const list = useLoad(() => client.get<{ stored: Revocation[] }>(`${path}/revocations`), [path, etag])
+  // read again after each run too: a run stores, applies and forgets rows without moving the upstream's ETag
+  const list = useLoad(() => client.get<{ stored: Revocation[] }>(`${path}/revocations`), [path, etag, u.last_run_at])
   const [switching, setSwitching] = useState(false)
   const [lifting, setLifting] = useState<Revocation | null>(null)
   const { busy, failure, act } = useAction('The upstream', onChanged)
@@ -506,7 +513,7 @@ function Revocations({ u, path, etag, onChanged }: { u: Upstream; path: string; 
             ['Source', (r) => <Badge>{r.state}</Badge>],
             ['Why', (r) => <span className="text-[13px]">{r.reason}</span>],
             ['Here', (r) => <span className="text-[13px]">{revocationWords(r)}</span>],
-            ['', (r) => r.status !== 'lifted' && <Button tone="outline" disabled={busy} onClick={() => setLifting(r)}>Lift…</Button>],
+            ['', (r) => r.status === 'applied' && <Button tone="outline" disabled={busy} onClick={() => setLifting(r)}>Lift…</Button>],
           ]} />
         )}
         {failure != null && <ErrorBox error={failure} />}

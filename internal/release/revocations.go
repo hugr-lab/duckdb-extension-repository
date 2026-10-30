@@ -47,8 +47,10 @@ func (s *Snapshot) RevokedRows(vis Visible) []RevokedRow {
 		if s.Blocked[c.BodyHash] {
 			take(store.RevokeBlocked, "")
 		}
+		// whatever made the record (a yank first, then the block: the block's sweep finds the
+		// release yanked already), the upstream's block of the body is its strongest state
 		if y, ok := s.UpstreamYanks[c.ID]; ok {
-			if b, ok := s.UpstreamBlocks[[2]string{y.UpstreamID, y.BodyHash}]; ok && y.Cause == store.YankCauseBlock {
+			if b, ok := s.UpstreamBlocks[[2]string{y.UpstreamID, y.BodyHash}]; ok {
 				take(b.State, b.Reason)
 			}
 		}
