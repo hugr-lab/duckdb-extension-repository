@@ -503,6 +503,15 @@ func (t *Tx) CreateChannel(ctx context.Context, c *Channel) error {
 	if c.Kind == ChannelPassthrough && c.PackageType != pkgtype.DuckDBExtension {
 		return fmt.Errorf("%w: a passthrough channel serves DuckDB extensions only", ErrInvalid)
 	}
+	// a name the tenant holds already is that, whatever its room (spec 0038): a caller that makes a
+	// channel or finds it (a distributor's provisioning) learns it is there, at the limit too
+	var held int
+	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM channels WHERE tenant_id = ? AND name = ?", c.TenantID, c.Name).Scan(&held); err != nil {
+		return err
+	}
+	if held > 0 {
+		return fmt.Errorf("%w: channel %s", ErrExists, c.Name)
+	}
 	var n int
 	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM channels WHERE tenant_id = ?", c.TenantID).Scan(&n); err != nil {
 		return err
