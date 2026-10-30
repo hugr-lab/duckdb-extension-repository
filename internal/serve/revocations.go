@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -27,70 +26,23 @@ type RevocationsAnswer struct {
 	Next string               `json:"next,omitempty"`
 }
 
-// revokedRows are a snapshot's -/revocations rows, computed once per snapshot: every row (the view
-// of a caller holding install on its name) and the public view's, both in key order. A view's rows
-// are a function of the two and of the names it holds install on, so its ETag is derived from the
-// digest of both and those names, without rebuilding the rows.
-type revokedRows struct {
-	snap   *release.Snapshot
-	all    []release.RevokedRow
-	public map[[4]string]release.RevokedRow
-	names  []string // the names of all's rows, once each
-	digest []byte
-}
-
-// revocationsCache keeps each channel's rows of its current snapshot.
-type revocationsCache struct {
-	mu sync.Mutex
-	by map[string]*revokedRows
-}
-
-func (c *revocationsCache) get(channelID string, snap *release.Snapshot) *revokedRows {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if r := c.by[channelID]; r != nil && r.snap == snap {
-		return r
-	}
-	r := &revokedRows{snap: snap, all: snap.RevokedRows(release.Everything), public: map[[4]string]release.RevokedRow{}}
-	sum := sha256.New()
-	for _, x := range r.all {
-		if len(r.names) == 0 || r.names[len(r.names)-1] != x.Name {
-			r.names = append(r.names, x.Name)
-		}
-		b, _ := json.Marshal(x)
-		sum.Write(b)
-	}
-	sum.Write([]byte{0})
-	for _, x := range snap.RevokedRows(func(c *store.Candidate) bool { return c.Visibility == store.Public }) {
-		r.public[x.Key()] = x
-		b, _ := json.Marshal(x)
-		sum.Write(b)
-	}
-	r.digest = sum.Sum(nil)
-	if c.by == nil {
-		c.by = map[string]*revokedRows{}
-	}
-	c.by[channelID] = r
-	return r
-}
-
 // revView is the rows a caller sees: of the names it holds install on, every row; of the others, the
 // public view's row (none in a suspended tenant).
 type revView struct {
-	rows      *revokedRows
+	rows      *release.RevokedIndex
 	held      map[string]bool
 	suspended bool
 }
 
 func (v revView) row(i int) (release.RevokedRow, bool) {
-	x := v.rows.all[i]
+	x := v.rows.All[i]
 	if v.held[x.Name] {
 		return x, true
 	}
 	if v.suspended {
 		return release.RevokedRow{}, false
 	}
-	p, ok := v.rows.public[x.Key()]
+	p, ok := v.rows.Public[x.Key()]
 	return p, ok
 }
 
@@ -125,13 +77,13 @@ func (h *Handler) revocations(w http.ResponseWriter, r *http.Request, rt route) 
 		notFound(w)
 		return
 	}
-	rows := h.revs.get(sc.Channel.ID, snap)
+	rows := snap.RevokedIndex()
 	v := revView{rows: rows, held: map[string]bool{}, suspended: suspended}
 	sum := sha256.New()
-	sum.Write(rows.digest)
+	sum.Write(rows.Digest)
 	sum.Write([]byte(strconv.FormatBool(suspended) + "\x00" + rt.cursor + "\x00"))
 	if actor != "" {
-		for _, n := range rows.names {
+		for _, n := range rows.Names {
 			if installs(n) {
 				v.held[n] = true
 				sum.Write([]byte(n + "\x00"))
@@ -146,10 +98,10 @@ func (h *Handler) revocations(w http.ResponseWriter, r *http.Request, rt route) 
 			notFound(w)
 			return
 		}
-		start = sort.Search(len(rows.all), func(i int) bool { return keyAfter(rows.all[i].Key(), after) })
+		start = sort.Search(len(rows.All), func(i int) bool { return keyAfter(rows.All[i].Key(), after) })
 	}
 	out := RevocationsAnswer{API: 1, Rows: []release.RevokedRow{}}
-	for i := start; i < len(rows.all); i++ {
+	for i := start; i < len(rows.All); i++ {
 		x, ok := v.row(i)
 		if !ok {
 			continue

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -262,8 +263,14 @@ func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds
 
 var bodyHashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// blockBatch is how many due withdrawals and blocks one transaction applies (each transaction locks
+// every channel of the tenant).
+const blockBatch = 100
+
 // applyRevocations applies an upstream's stored revocations that are due (spec 0039), or, the switch
-// off, counts them and says so in one problem (the cells' problems keep their room).
+// off, counts them and says so in one problem (the cells' problems keep their room). Yanks are
+// applied one by one (the home channel's lock); withdrawals and blocks in batches, each one
+// transaction under every channel's lock.
 func (s *Service) applyRevocations(ctx context.Context, u store.Upstream, a authz.Actor, res *Result, problem func(name, platform, detail string)) {
 	stored, err := s.Store.UpstreamRevocations(ctx, u.ID)
 	if err != nil {
@@ -271,21 +278,37 @@ func (s *Service) applyRevocations(ctx context.Context, u store.Upstream, a auth
 		return
 	}
 	off := 0
+	var blocks []store.UpstreamRevocation
 	for _, r := range stored {
-		if !r.Due() {
-			continue
-		}
-		if !u.Revocations {
+		switch {
+		case !r.Due():
+		case !u.Revocations:
 			off++
-			continue
+		case r.State != store.RevokeYanked:
+			blocks = append(blocks, r)
+		default:
+			_, done, err := s.Releases.UpstreamYank(ctx, a, u.TenantID, u.ID, u.ChannelID, r.BuildID, r.BodyHash, revocationHooks(ctx, u, a, r))
+			if err != nil {
+				problem(r.Name, r.Platform, "applying the source's revocation: "+err.Error())
+			} else if done {
+				res.Counts[countRevoked]++
+			}
 		}
-		applied, err := s.applyRevocation(ctx, u, a, r)
+	}
+	for chunk := range slices.Chunk(blocks, blockBatch) {
+		items := make([]release.UpstreamBlockItem, len(chunk))
+		for i, r := range chunk {
+			items[i] = release.UpstreamBlockItem{Hash: r.BodyHash, State: r.State, Reason: r.Reason, RevocationHooks: revocationHooks(ctx, u, a, r)}
+		}
+		done, err := s.Releases.UpstreamBlocks(ctx, a, u.TenantID, u.ID, items)
 		if err != nil {
-			problem(r.Name, r.Platform, "applying the source's revocation: "+err.Error())
+			problem("", "", fmt.Sprintf("applying %d of the source's withdrawals and blocks: %v", len(chunk), err))
 			continue
 		}
-		if applied {
-			res.Counts[countRevoked]++
+		for _, d := range done {
+			if d {
+				res.Counts[countRevoked]++
+			}
 		}
 	}
 	if off > 0 {
@@ -294,16 +317,15 @@ func (s *Service) applyRevocations(ctx context.Context, u store.Upstream, a auth
 	}
 }
 
-// applyRevocation applies one stored revocation: a withdrawal or block as the upstream's block of the
-// body, a yank as a yank of the build's releases in the home channel. In the same transaction, under
-// the tenant's upstream lock (so a lift and an apply never interleave), the row is read again and
-// applied only while still due, then marked applied, with its event.
-func (s *Service) applyRevocation(ctx context.Context, u store.Upstream, a authz.Actor, r store.UpstreamRevocation) (bool, error) {
+// revocationHooks are one stored revocation's steps in the transaction applying it: under the
+// tenant's upstream lock (so a lift and an apply never interleave) the row is read again and applied
+// only while still due, then marked applied, with its event.
+func revocationHooks(ctx context.Context, u store.Upstream, a authz.Actor, r store.UpstreamRevocation) release.RevocationHooks {
 	action := "blocked"
 	if r.State == store.RevokeYanked {
 		action = "yanked"
 	}
-	h := release.RevocationHooks{
+	return release.RevocationHooks{
 		Check: func(tx *store.Tx) (bool, error) {
 			cur, err := tx.GetUpstreamRevocation(ctx, u.ID, r.BuildID)
 			if errors.Is(err, store.ErrNotFound) {
@@ -323,14 +345,6 @@ func (s *Service) applyRevocation(ctx context.Context, u store.Upstream, a authz
 				"action": action, "state": r.State, "reason": r.Reason, "yanked": n})
 		},
 	}
-	var done bool
-	var err error
-	if r.State == store.RevokeYanked {
-		_, done, err = s.Releases.UpstreamYank(ctx, a, u.TenantID, u.ID, u.ChannelID, r.BuildID, r.BodyHash, h)
-	} else {
-		_, done, err = s.Releases.UpstreamBlock(ctx, a, u.TenantID, u.ID, r.BodyHash, r.State, r.Reason, h)
-	}
-	return done, err
 }
 
 // importRevocations takes a bundle source's revocations into a bundle-mode upstream (spec 0039):

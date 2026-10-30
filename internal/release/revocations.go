@@ -2,7 +2,10 @@ package release
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/json"
 	"slices"
+	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -20,6 +23,41 @@ type RevokedRow struct {
 
 // Key orders and pages the rows.
 func (r RevokedRow) Key() [4]string { return [4]string{r.Name, r.Version, r.Platform, r.BodyHash} }
+
+// RevokedIndex is a snapshot's -/revocations rows, computed once and kept with the snapshot (so it
+// lives as long as the snapshot does): every row (the view of a caller holding install on its name)
+// and the public view's, both in key order. A view's rows are a function of the two and of the names
+// it holds install on, so its ETag is derived from Digest and those names.
+type RevokedIndex struct {
+	All    []RevokedRow
+	Public map[[4]string]RevokedRow
+	Names  []string // the names of All's rows, once each, in order
+	Digest []byte
+}
+
+// RevokedIndex answers the snapshot's index, computing it on first use.
+func (s *Snapshot) RevokedIndex() *RevokedIndex {
+	s.revOnce.Do(func() {
+		x := &RevokedIndex{All: s.RevokedRows(Everything), Public: map[[4]string]RevokedRow{}}
+		sum := sha256.New()
+		for _, r := range x.All {
+			if len(x.Names) == 0 || x.Names[len(x.Names)-1] != r.Name {
+				x.Names = append(x.Names, r.Name)
+			}
+			b, _ := json.Marshal(r)
+			sum.Write(b)
+		}
+		sum.Write([]byte{0})
+		for _, r := range s.RevokedRows(func(c *store.Candidate) bool { return c.Visibility == store.Public }) {
+			x.Public[r.Key()] = r
+			b, _ := json.Marshal(r)
+			sum.Write(b)
+		}
+		x.Digest = sum.Sum(nil)
+		s.rev = x
+	})
+	return s.rev
+}
 
 // RevokedRows lists the channel's revoked rows a view sees, ordered by (name, version, platform, body
 // hash), one row each, at its strongest state:
@@ -47,10 +85,11 @@ func (s *Snapshot) RevokedRows(vis Visible) []RevokedRow {
 		if s.Blocked[c.BodyHash] {
 			take(store.RevokeBlocked, "")
 		}
-		// whatever made the record (a yank first, then the block: the block's sweep finds the
-		// release yanked already), the upstream's block of the body is its strongest state
-		if y, ok := s.UpstreamYanks[c.ID]; ok {
-			if b, ok := s.UpstreamBlocks[[2]string{y.UpstreamID, y.BodyHash}]; ok {
+		// a release of an upstream's build whose body that upstream blocked shows the block, whatever
+		// yanked it (the upstream's yank first, or an administrator's: the block's sweep finds it
+		// yanked already)
+		if id, ok := strings.CutPrefix(c.Source, store.SourceUpstreamPrefix); ok {
+			if b, ok := s.UpstreamBlocks[[2]string{id, c.BodyHash}]; ok {
 				take(b.State, b.Reason)
 			}
 		}

@@ -393,6 +393,52 @@ func TestRevocationNarrowAndChain(t *testing.T) {
 	})
 }
 
+// Spec 0039 (post-PR review): two withdrawals due in one run are applied in one batch; a release an
+// administrator yanked before the upstream's block shows the block's state on -/revocations (looked
+// up by the release's source, not by what yanked it).
+func TestRevocationBatchAndAdminYank(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		k := en.kista()
+		for i, v := range []string{"1.0", "1.1"} {
+			en.repo.put("v2.0.0", "linux_amd64", "tresor", signed(t, en.key, cpp(v, "v2.0.0"), i+1, "tresor_duckdb_cpp_init"))
+			if i == 0 {
+				u := en.spec(store.UpstreamEntry{Name: "tresor"})
+				u.Revocations = true
+				if _, err := en.up.Add(ctx, admin, "acme", u); err != nil {
+					t.Fatal(err)
+				}
+			}
+			en.sync(t, false)
+		}
+		rels := map[string]store.Candidate{}
+		for _, r := range en.releases(t, "tresor") {
+			rels[r.PackageVersion] = r
+		}
+		if _, err := en.rel.Apply(ctx, admin, "acme", "prod", "tresor", rels["1.0"].ID, release.Yank, 0); err != nil {
+			t.Fatal(err)
+		}
+		k.set(row(rels["1.0"], store.RevokeWithdrawn, "CVE-1"), row(rels["1.1"], store.RevokeWithdrawn, "CVE-2"))
+		if r := en.sync(t, false); r.Counts["revoked"] != 2 {
+			t.Fatalf("one batch: %+v", r)
+		}
+		if st := states(t, en, "prod", "tresor"); st["1.0"] != store.ReleaseYanked || st["1.1"] != store.ReleaseYanked {
+			t.Fatalf("after the batch: %+v", st)
+		}
+		prod, err := en.st.GetChannel(ctx, "acme", "prod")
+		if err != nil {
+			t.Fatal(err)
+		}
+		snap, err := (&release.Snapshots{Store: en.st}).Get(ctx, prod)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows := snap.RevokedIndex().All
+		if len(rows) != 2 || rows[0].State != store.RevokeWithdrawn || rows[0].Reason != "CVE-1" || rows[1].State != store.RevokeWithdrawn {
+			t.Fatalf("shown: %+v", rows)
+		}
+	})
+}
+
 // Spec 0039 (review): a read is bounded: at most 11 pages, no page on from an empty one, no cursor
 // twice; each is the run's problem, and a cut read forgets nothing. A remote refusing the route (401,
 // 403) to an upstream that knows no kista there and is switched off says nothing; switched on, it is

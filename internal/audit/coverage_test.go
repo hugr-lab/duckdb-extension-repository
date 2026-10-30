@@ -115,7 +115,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"Withdraw":     {"catalogue.withdrawn"},
 		"SetEntryMeta": {"catalogue.meta"}, "EntryMeta": nil, "EntryIcon": nil, "MayWriteEntryMeta": nil, // spec 0036
 		// spec 0039: an upstream's block, yank and lift write their events in the upstream service's act
-		"UpstreamBlock": nil, "UpstreamYank": nil, "LiftUpstream": nil,
+		"UpstreamBlocks": nil, "UpstreamYank": nil, "LiftUpstream": nil,
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},

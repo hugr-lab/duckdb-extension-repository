@@ -64,7 +64,9 @@ path: the cursor is a path segment (an opaque base64url token of the last row's 
   - `yanked`: the release is yanked, `reason` empty;
   - and for a release of an upstream's build whose body **that upstream blocked** applying its
     remote's withdrawal or block (below), that block's state and reason, whatever yanked the release
-    first (a yank applied, then the block), so a chain carries the strongest state on. A release an
+    first (the upstream's yank, then the block, or an administrator's yank: looked up by the
+    release's source and body), so a chain carries the strongest state on. A snapshot reads only the
+    upstream blocks of the bodies its channel holds, and keeps its rows with it (computed once). A release an
     upstream only yanked shows `yanked`, `reason` empty.
 
   The rows come from a list of their own (`snap.Revoked`); `ChannelReleases` and every consumer of it
@@ -161,7 +163,8 @@ failure records a problem and lets the run go on.
    `upstream.revocation` event (`upstream`, `upstream_id`, `name`, `version`, `platform`,
    `body_hash`, `action`: `blocked` | `yanked`, the remote's state and reason, `yanked`). Each is
    applied in one transaction under the tenant's upstream lock (and, for a block, every channel's
-   lock: the block, its sweep, the mark and the event), the row read again there and applied only
+   lock: the block, its sweep, the mark and the event; a run's due withdrawals and blocks go up to
+   100 to a transaction), the row read again there and applied only
    while still due, so an apply and a lift never interleave. Switched off, nothing is applied; the
    stored rows due are counted (`revoked_on_source`) and summed up in **one** problem of the run, so
    the cells' problems keep their room, and listed by `GET …/upstreams/{u}/revocations` (with what
@@ -186,7 +189,9 @@ spec 0008's `blocks` (whose rows, routes and sweep stay as they are), in `upstre
   source (the tenant's own publishers, DuckDB's mirrors, another upstream, a passthrough channel)
   stay as they are.
 - **Sweep.** In the block's transaction, under every channel's lock of the tenant (a promotion or
-  placement into any channel is ordered against it, as spec 0008's sweep orders them), every live
+  placement into any channel is ordered against it, as spec 0008's sweep orders them; creating a
+  channel takes the tenant's upstream lock, so none appears meanwhile, and channels that keep
+  changing make it `ErrBusy` after three attempts), with one query across the tenant, every live
   release of a build of **this upstream** with that body is yanked: in the home channel and its
   copies elsewhere (a promotion or placement releases the same build), so it is served nowhere in the
   tenant. Nothing else is touched.
@@ -233,7 +238,8 @@ separately.
   public rows, private ones only where `-private` covers the source), whatever the cells' current
   bodies. Each row is (name, version, platform, body hash, state, reason): no internal source labels.
   The manifest's format moves only when `revocations` is not empty, so an older site, whose plan does
-  not declare it, imports as before.
+  not declare it, imports as before. At most 10,000 rows a source; rows over it are counted
+  (`revocations_left_out`) and are a problem of the export, never left out silently.
 - **Import.** A bundle-mode upstream stores a manifest's revocations as the pass stores rows (matched
   by build among its own builds, after the bundle's files), and at every import, with or without
   revocations in the bundle, applies the stored ones due when its switch is on (a switch turned on

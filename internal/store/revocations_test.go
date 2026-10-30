@@ -131,8 +131,12 @@ func TestRevocationRows(t *testing.T) {
 				return err
 			})
 		}
-		if bs, err := s.UpstreamBlocks(ctx, tn.ID); err != nil || bs[[2]string{upID, hash}].State != store.RevokeWithdrawn || !blocked() {
+		if bs, err := s.ChannelUpstreamBlocks(ctx, tn.ID, ch.ID); err != nil || bs[[2]string{upID, hash}].State != store.RevokeWithdrawn || !blocked() {
 			t.Fatalf("the block: %+v %v", bs, err)
+		}
+		// a channel reads only the blocks of the bodies it holds a release of
+		if bs, err := s.ChannelUpstreamBlocks(ctx, tn.ID, "a0000000-0000-0000-0000-0000000000ff"); err != nil || len(bs) != 0 {
+			t.Fatalf("another channel's blocks: %+v %v", bs, err)
 		}
 
 		// a yank record keeps its first prior state, and reads its channel

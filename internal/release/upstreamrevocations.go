@@ -20,13 +20,17 @@ type RevocationHooks struct {
 }
 
 // errChannelsMoved is a channel created between listing the tenant's channels and locking them:
-// the transaction is begun again with it.
+// the transaction is begun again with it, a few times.
 var errChannelsMoved = errors.New("the tenant's channels changed")
 
+// maxChannelAttempts bounds allChannels' attempts: channels created during each is ErrBusy.
+const maxChannelAttempts = 3
+
 // allChannels runs fn under the tenant's upstream lock and every channel's lock of the tenant (a
-// promotion or placement into any of them is ordered against what fn does), in one transaction.
-func (s *Service) allChannels(ctx context.Context, tenantID string, fn func(tx *store.Tx, channels []string) error) error {
-	for {
+// promotion or placement into any of them is ordered against what fn does; a channel's creation
+// takes the upstream lock too), in one transaction.
+func (s *Service) allChannels(ctx context.Context, tenantID string, fn func(tx *store.Tx) error) error {
+	for range maxChannelAttempts {
 		ids, err := s.Store.TenantChannelIDs(ctx, tenantID)
 		if err != nil {
 			return err
@@ -43,53 +47,70 @@ func (s *Service) allChannels(ctx context.Context, tenantID string, fn func(tx *
 			if !slices.Equal(now, ids) {
 				return errChannelsMoved
 			}
-			return fn(tx, ids)
+			return fn(tx)
 		})
 		if !errors.Is(err, errChannelsMoved) {
 			return err
 		}
 	}
+	return fmt.Errorf("%w: the tenant's channels kept changing", store.ErrBusy)
 }
 
-// UpstreamBlock applies an upstream's withdrawal or block of a body (spec 0039, decisions A and D),
-// in one transaction under every channel's lock: the block is recorded (from then on the body is
-// refused from that upstream, under each channel's lock, as blocks are), each live release of the
-// upstream's builds with that body (in its home channel, and the copies promoted or placed
-// elsewhere) is yanked and recorded so a lift restores it, and every channel showing a release of
-// the body is bumped when the block is new or changed (its -/revocations rows changed). The same
-// bytes from any other source stay. It answers how many releases it yanked, and whether Check let
-// it apply.
-func (s *Service) UpstreamBlock(ctx context.Context, a authz.Actor, tenantID, upstreamID, hash, state, reason string, h RevocationHooks) (int, bool, error) {
-	if state != store.RevokeWithdrawn && state != store.RevokeBlocked {
-		return 0, false, fmt.Errorf("%w: an upstream blocks for a withdrawal or a block, not %q", store.ErrInvalid, state)
+// UpstreamBlockItem is one of an upstream's withdrawals or blocks of a body to apply, with its hooks.
+type UpstreamBlockItem struct {
+	Hash, State, Reason string
+	RevocationHooks
+}
+
+// UpstreamBlocks applies an upstream's withdrawals and blocks of bodies (spec 0039, decisions A and
+// D), all in one transaction under every channel's lock: for each item Check lets apply, the block
+// is recorded (from then on the body is refused from that upstream, under each channel's lock, as
+// blocks are), each live release of the upstream's builds with that body (in its home channel, and
+// the copies promoted or placed elsewhere; one query across the tenant) is yanked and recorded so a
+// lift restores it, and every channel showing a release of the body is bumped when the block is new
+// or changed (its -/revocations rows changed). The same bytes from any other source stay. It answers
+// which items were applied; one failing fails them all.
+func (s *Service) UpstreamBlocks(ctx context.Context, a authz.Actor, tenantID, upstreamID string, items []UpstreamBlockItem) ([]bool, error) {
+	for _, it := range items {
+		if it.State != store.RevokeWithdrawn && it.State != store.RevokeBlocked {
+			return nil, fmt.Errorf("%w: an upstream blocks for a withdrawal or a block, not %q", store.ErrInvalid, it.State)
+		}
 	}
-	n, done := 0, false
-	err := s.allChannels(ctx, tenantID, func(tx *store.Tx, channels []string) error {
-		n, done = 0, false
-		if ok, err := h.Check(tx); err != nil || !ok {
-			return err
-		}
-		changed, err := tx.PutUpstreamBlock(ctx, store.UpstreamBlock{UpstreamID: upstreamID, BodyHash: hash, TenantID: tenantID, State: state,
-			Reason: reason})
-		if err != nil {
-			return err
-		}
-		for _, ch := range channels {
-			yanked, err := upstreamYank(ctx, tx, a, ch, tenantID, upstreamID, hash, "", store.YankCauseBlock)
+	done := make([]bool, len(items))
+	err := s.allChannels(ctx, tenantID, func(tx *store.Tx) error {
+		clear(done)
+		bumped := map[string]bool{}
+		for i, it := range items {
+			if ok, err := it.Check(tx); err != nil {
+				return err
+			} else if !ok {
+				continue
+			}
+			changed, err := tx.PutUpstreamBlock(ctx, store.UpstreamBlock{UpstreamID: upstreamID, BodyHash: it.Hash, TenantID: tenantID,
+				State: it.State, Reason: it.Reason})
 			if err != nil {
 				return err
 			}
-			n += yanked
-		}
-		if changed {
-			if err := tx.BumpUpstreamBodyChannels(ctx, upstreamID, hash); err != nil {
+			n, err := upstreamYank(ctx, tx, a, "", tenantID, upstreamID, it.Hash, "", store.YankCauseBlock, bumped)
+			if err != nil {
 				return err
 			}
+			if changed {
+				if err := tx.BumpUpstreamBodyChannels(ctx, upstreamID, it.Hash); err != nil {
+					return err
+				}
+			}
+			if err := it.Done(tx, n); err != nil {
+				return err
+			}
+			done[i] = true
 		}
-		done = true
-		return h.Done(tx, n)
+		return nil
 	})
-	return n, done, err
+	if err != nil {
+		return make([]bool, len(items)), err
+	}
+	return done, nil
 }
 
 // UpstreamYank applies an upstream's yank of a build (spec 0039, decision C): its releases in the
@@ -103,7 +124,7 @@ func (s *Service) UpstreamYank(ctx context.Context, a authz.Actor, tenantID, ups
 			return err
 		}
 		var err error
-		if n, err = upstreamYank(ctx, tx, a, channelID, tenantID, upstreamID, hash, buildID, store.YankCauseYank); err != nil {
+		if n, err = upstreamYank(ctx, tx, a, channelID, tenantID, upstreamID, hash, buildID, store.YankCauseYank, map[string]bool{}); err != nil {
 			return err
 		}
 		done = true
@@ -112,11 +133,14 @@ func (s *Service) UpstreamYank(ctx context.Context, a authz.Actor, tenantID, ups
 	return n, done, err
 }
 
-// upstreamYank yanks and records, under the caller's lock of a channel, its live releases of the
-// upstream's builds with a body (of one build when buildID is set).
-func upstreamYank(ctx context.Context, tx *store.Tx, a authz.Actor, channelID, tenantID, upstreamID, hash, buildID, cause string) (int, error) {
+// upstreamYank yanks and records, under the caller's lock of the channels it reaches, the live
+// releases of the upstream's builds with a body: in one channel, or every channel ("": one query
+// across the tenant), of one build when buildID is set. Each channel it yanked in is bumped once a
+// transaction (bumped holds those bumped already).
+func upstreamYank(ctx context.Context, tx *store.Tx, a authz.Actor, channelID, tenantID, upstreamID, hash, buildID, cause string,
+	bumped map[string]bool) (int, error) {
 	rels, err := tx.LiveUpstreamReleases(ctx, channelID, upstreamID, hash, buildID)
-	if err != nil || len(rels) == 0 {
+	if err != nil {
 		return 0, err
 	}
 	for i := range rels {
@@ -128,8 +152,14 @@ func upstreamYank(ctx context.Context, tx *store.Tx, a authz.Actor, channelID, t
 			BuildID: rels[i].BuildID, BodyHash: hash, PriorState: prior, Cause: cause}); err != nil {
 			return 0, err
 		}
+		if ch := rels[i].ChannelID; !bumped[ch] {
+			bumped[ch] = true
+			if err := tx.BumpReleaseVersion(ctx, ch); err != nil {
+				return 0, err
+			}
+		}
 	}
-	return len(rels), tx.BumpReleaseVersion(ctx, channelID)
+	return len(rels), nil
 }
 
 // LiftUpstream lifts an upstream's stored revocation of a build (spec 0039, decisions A and C), in
@@ -140,7 +170,7 @@ func upstreamYank(ctx context.Context, tx *store.Tx, a authz.Actor, channelID, t
 // restored, and whether Check let it lift.
 func (s *Service) LiftUpstream(ctx context.Context, a authz.Actor, tenantID, upstreamID, buildID string, h RevocationHooks) (int, bool, error) {
 	n, done := 0, false
-	err := s.allChannels(ctx, tenantID, func(tx *store.Tx, _ []string) error {
+	err := s.allChannels(ctx, tenantID, func(tx *store.Tx) error {
 		n, done = 0, false
 		if ok, err := h.Check(tx); err != nil || !ok {
 			return err

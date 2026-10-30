@@ -275,10 +275,13 @@ func (s *Store) UpstreamBlocked(ctx context.Context, upstreamID, hash string) (b
 	return n > 0, err
 }
 
-// UpstreamBlocks lists a tenant's upstream blocks: their state and reason by (upstream, body hash).
-func (s *Store) UpstreamBlocks(ctx context.Context, tenantID string) (map[[2]string]UpstreamBlock, error) {
-	rows, err := s.db.QueryContext(ctx, s.d.rebind("SELECT upstream_id, body_hash, tenant_id, state, reason, created_at FROM upstream_blocks WHERE tenant_id = ?"),
-		tenantID)
+// ChannelUpstreamBlocks lists the upstream blocks of the bodies a channel holds a release of: their
+// state and reason by (upstream, body hash), what the channel's -/revocations route shows (a
+// snapshot reads them; not the whole tenant's).
+func (s *Store) ChannelUpstreamBlocks(ctx context.Context, tenantID, channelID string) (map[[2]string]UpstreamBlock, error) {
+	rows, err := s.db.QueryContext(ctx, s.d.rebind(`SELECT upstream_id, body_hash, tenant_id, state, reason, created_at FROM upstream_blocks
+WHERE tenant_id = ? AND body_hash IN (SELECT b.body_hash FROM releases r JOIN builds b ON b.id = r.build_id WHERE r.channel_id = ?)`),
+		tenantID, channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -358,26 +361,6 @@ func (t *Tx) DeleteUpstreamYanksWithBody(ctx context.Context, tenantID, hash str
 	return err
 }
 
-// UpstreamYankStates maps a tenant's upstream-yanked releases to their record (the -/revocations
-// route shows the revocation's state for them).
-func (s *Store) UpstreamYankStates(ctx context.Context, tenantID string) (map[string]UpstreamYank, error) {
-	rows, err := s.db.QueryContext(ctx, s.d.rebind("SELECT release_id, tenant_id, upstream_id, build_id, body_hash, prior_state, cause FROM upstream_yanks WHERE tenant_id = ?"),
-		tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]UpstreamYank{}
-	for rows.Next() {
-		var y UpstreamYank
-		if err := rows.Scan(&y.ReleaseID, &y.TenantID, &y.UpstreamID, &y.BuildID, &y.BodyHash, &y.PriorState, &y.Cause); err != nil {
-			return nil, err
-		}
-		out[y.ReleaseID] = y
-	}
-	return out, rows.Err()
-}
-
 // TenantChannelIDs lists a tenant's channels by id, outside a transaction: an upstream block's
 // sweep and a lift lock them all (a promotion into any of them is ordered against the block, as an
 // administrator's block's sweep orders it), and read them again under the locks.
@@ -402,8 +385,12 @@ func (s *Store) TenantChannelIDs(ctx context.Context, tenantID string) ([]string
 // (buildID set) of that build: what a sweep or a yank yanks, under the channel's lock.
 func (t *Tx) LiveUpstreamReleases(ctx context.Context, channelID, upstreamID, hash, buildID string) ([]Release, error) {
 	q := "SELECT " + releaseCols + " FROM releases r JOIN builds b ON b.id = r.build_id" +
-		" WHERE r.channel_id = ? AND b.source = ? AND b.body_hash = ? AND r.state <> 'yanked'"
-	args := []any{channelID, UpstreamSource(upstreamID), hash}
+		" WHERE b.source = ? AND b.body_hash = ? AND r.state <> 'yanked'"
+	args := []any{UpstreamSource(upstreamID), hash}
+	if channelID != "" { // "": every channel's (a block's sweep, under every channel's lock)
+		q += " AND r.channel_id = ?"
+		args = append(args, channelID)
+	}
 	if buildID != "" {
 		q += " AND b.id = ?"
 		args = append(args, buildID)
