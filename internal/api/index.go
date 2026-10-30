@@ -300,10 +300,14 @@ type releaseOut struct {
 	CurrentFor     []string    `json:"current_for"`
 	WouldServe     []string    `json:"would_serve,omitempty"` // yanked rows: the DuckDB versions it would serve
 	Origin         string      `json:"origin"`
-	Upstream       string      `json:"upstream,omitempty"`   // an upstream release's upstream (spec 0009)
-	Shadows        string      `json:"shadows,omitempty"`    // a reserved name's owner (spec 0008)
-	Blocked        bool        `json:"blocked,omitempty"`    // a yanked row whose body is blocked
-	Provenance     any         `json:"provenance,omitempty"` // for the extension's administrators and publishers
+	Upstream       string      `json:"upstream,omitempty"` // an upstream release's upstream (spec 0009)
+	Shadows        string      `json:"shadows,omitempty"`  // a reserved name's owner (spec 0008)
+	Blocked        bool        `json:"blocked,omitempty"`  // a yanked row whose body is blocked
+	// spec 0039: a release of a withdrawn build (spec 0033 phase B), served nowhere, with the
+	// distributor's reason; its state kept, would_serve as a yanked row has it
+	Withdrawn       bool   `json:"withdrawn,omitempty"`
+	WithdrawnReason string `json:"withdrawn_reason,omitempty"`
+	Provenance      any    `json:"provenance,omitempty"` // for the extension's administrators and publishers
 	// spec 0011: per kind, the readers-visible documents of the body: their count and latest summary
 	Attachments map[string]*kindSummary `json:"attachments,omitempty"`
 	latestAt    map[string]time.Time
@@ -417,6 +421,31 @@ func (rs *resolver) row(rel *store.Candidate) releaseOut {
 	return o
 }
 
+// withdrawnRow describes a release of a withdrawn build (spec 0039): served nowhere, the DuckDB
+// versions it would serve listed as a yanked row's are.
+func (rs *resolver) withdrawnRow(rel *store.Candidate) releaseOut {
+	o := rs.row(rel) // not in the snapshot's releases: it serves and is current nowhere
+	o.Withdrawn, o.WithdrawnReason, o.WouldServe = true, rel.WithdrawnReason, nil
+	for _, v := range rs.versions {
+		if release.Serves(rel, v, rs.snap.CAPIs) {
+			o.WouldServe = append(o.WouldServe, v)
+		}
+	}
+	return o
+}
+
+// withdrawnOf lists the withdrawn releases of a name the view sees (optionally of one platform).
+func (rs *resolver) withdrawnOf(name, platform string) []*store.Candidate {
+	var out []*store.Candidate
+	for i := range rs.snap.Withdrawn {
+		rel := &rs.snap.Withdrawn[i]
+		if rel.Name == name && (platform == "" || rel.Platform == platform) && rs.vis(rel) {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
 // reaches reports whether a row is reached on a DuckDB version: served there, or yanked from there.
 func (o releaseOut) reaches(v string) bool {
 	return slices.ContainsFunc(o.Serves, func(s servesOut) bool { return s.DuckDBVersion == v }) || slices.Contains(o.WouldServe, v)
@@ -435,6 +464,9 @@ func (rs *resolver) rowsOf(name, platform string) []releaseOut {
 				out = append(out, rs.row(rel))
 			}
 		}
+	}
+	for _, rel := range rs.withdrawnOf(name, platform) {
+		out = append(out, rs.withdrawnRow(rel))
 	}
 	slices.SortStableFunc(out, func(a, b releaseOut) int {
 		if c := b.created.Compare(a.created); c != 0 {
@@ -528,7 +560,30 @@ func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, p param
 		out["current"] = false
 		out["yanked"] = yanked
 	default:
-		out["status"] = "missing"
+		// spec 0039: only a withdrawn release would have served the path
+		var withdrawn []releaseOut
+		for _, rel := range rs.withdrawnOf(name, platform) {
+			if rel.PackageVersion == extVersion {
+				if o := rs.withdrawnRow(rel); o.reaches(version) {
+					withdrawn = append(withdrawn, o)
+				}
+			}
+		}
+		if len(withdrawn) == 0 {
+			out["status"] = "missing"
+			break
+		}
+		wptrs := make([]*releaseOut, len(withdrawn))
+		for i := range withdrawn {
+			wptrs[i] = &withdrawn[i]
+		}
+		if err := h.withAttachments(r, c, snap.Channel.PackageType, name, wptrs...); err != nil {
+			h.fail(w, err)
+			return
+		}
+		out["status"] = "withdrawn"
+		out["current"] = false
+		out["withdrawn"] = withdrawn
 	}
 	answer(w, r, out, c.anonymous())
 }

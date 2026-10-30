@@ -76,6 +76,13 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 			[]any{id("u"), now}},
 		{"INSERT INTO upstream_asks (upstream_id, duckdb_version, platform, name, asked_at) VALUES (?, 'v2.0.0', 'linux_amd64', 'json', ?)",
 			[]any{id("u"), now}},
+		// spec 0039: a revocation stored, an upstream's block and what it yanked
+		{"INSERT INTO upstream_revocations (upstream_id, build_id, tenant_id, body_hash, name, package_version, platform, state, reason, seen_at) " +
+			"VALUES (?, ?, ?, ?, 'acl', '1.0', 'linux_amd64', 'withdrawn', 'CVE', ?)", []any{id("u"), id("b"), tid, hash, now}},
+		{"INSERT INTO upstream_blocks (upstream_id, body_hash, tenant_id, state, reason, created_at) VALUES (?, ?, ?, 'withdrawn', 'CVE', ?)",
+			[]any{id("u"), hash, tid, now}},
+		{"INSERT INTO upstream_yanks (release_id, tenant_id, upstream_id, build_id, body_hash, prior_state, cause) VALUES (?, ?, ?, ?, ?, 'active', 'block')",
+			[]any{id("r"), tid, id("u"), id("b"), hash}},
 		{"INSERT INTO licenses (tenant_id, name, license_id, issuer, holder_id, holder, plan_name, token, key_fp, issued_at, expires_at, " +
 			"grace_until, source, upstream_id, visibility, actor, updated_at, version, entry_source) VALUES (?, 'json', 'l1', 'https://i.example', 'acme', '', " +
 			"'pro', 't', ?, 1, 2, 3, 'upstream', ?, 'private', 'system:licenses', ?, 1, ?)", []any{tid, fp("l"), id("u"), now, "upstream:" + id("u")}},

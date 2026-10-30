@@ -581,6 +581,12 @@ tenant does not hold may be blocked ahead of time. A tenant holds at most 10,000
 shows `blocked: true` on a yanked row whose body is blocked. A block stops one artifact; to stop a
 publisher, remove its grants or the publisher.
 
+An **upstream's block** (spec 0039) is narrower and kept apart: a mirror of a kista, switched on to
+apply its source's revocations, blocks a body the source withdrew or blocked for that upstream only,
+yanking only the releases of that upstream's builds. It is listed and lifted on the upstream
+([Revocations from a kista](upstreams.md#revocations-from-a-kista)), not here; an administrator's
+block of the same body takes over (what the upstream yanked stays yanked).
+
 ## Publishers
 
 A **publisher** is a named identity in a tenant that may only publish and promote. Grants name it

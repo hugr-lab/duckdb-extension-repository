@@ -342,6 +342,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.wellKnown(lw, r, rt)
 	case routeLicense, routeLicenses:
 		h.licenses(lw, r, rt)
+	case routeRevocations:
+		h.revocations(lw, r, rt)
 	default:
 		h.binary(lw, r, rt)
 	}

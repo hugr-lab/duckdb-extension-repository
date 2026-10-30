@@ -42,6 +42,9 @@ type upstreamJSON struct {
 	CreatedBy  string          `json:"created_by"`
 	Credential string          `json:"credential,omitempty"` // a configured credential's name (spec 0009 phase 3)
 	Usage      string          `json:"usage"`                // forward | off (spec 0012 phase 1c)
+	// spec 0039: the remote answers kista's revocations; the switch applying them
+	RemoteKista bool `json:"remote_kista"`
+	Revocations bool `json:"revocations"`
 	// bundle mode (spec 0014): the last imported manifest
 	BundleID        string `json:"bundle_id,omitempty"`
 	BundleCreatedAt string `json:"bundle_created_at,omitempty"`
@@ -64,7 +67,8 @@ func (h *Handler) upstreamOf(u store.Upstream, channels map[string]string, c cal
 		Visibility: u.Visibility, State: u.State, Run: "idle", Keys: nonNil(u.Keys), Platforms: nonNil(u.Platforms),
 		Extensions: []entryJSON{}, LastRunAt: timeOf(u.LastRunAt), CreatedAt: timeOf(u.CreatedAt),
 		CreatedBy: createdBy(u.CreatedBy, c), Credential: u.Credential, Usage: u.Usage, BundleID: u.BundleID,
-		BundleCreatedAt: timeOf(u.BundleCreatedAt), BundleManifest: u.BundleManifestSHA256, ETag: versionTag(u.Version), Hold: holdOf(u.Hold)}
+		BundleCreatedAt: timeOf(u.BundleCreatedAt), BundleManifest: u.BundleManifestSHA256, ETag: versionTag(u.Version), Hold: holdOf(u.Hold),
+		RemoteKista: u.RemoteKista, Revocations: u.Revocations}
 	if u.Mode == store.ModeMirror {
 		o.Fetch = u.FetchMode
 	}
@@ -161,23 +165,25 @@ func (h *Handler) listUpstreams(w http.ResponseWriter, r *http.Request, c caller
 
 func (h *Handler) addUpstream(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
-		Name       string      `json:"name"`
-		Kind       string      `json:"kind"`
-		Prefix     string      `json:"prefix"`
-		Channel    string      `json:"channel"`
-		Mode       string      `json:"mode"`
-		Fetch      string      `json:"fetch"`
-		Visibility string      `json:"visibility"`
-		Keys       []string    `json:"keys"`
-		Platforms  []string    `json:"platforms"`
-		Extensions []entryJSON `json:"extensions"`
-		Credential string      `json:"credential"`
+		Name        string      `json:"name"`
+		Kind        string      `json:"kind"`
+		Prefix      string      `json:"prefix"`
+		Channel     string      `json:"channel"`
+		Mode        string      `json:"mode"`
+		Fetch       string      `json:"fetch"`
+		Visibility  string      `json:"visibility"`
+		Keys        []string    `json:"keys"`
+		Platforms   []string    `json:"platforms"`
+		Extensions  []entryJSON `json:"extensions"`
+		Credential  string      `json:"credential"`
+		Revocations bool        `json:"revocations"` // spec 0039
 	}
 	if !body(w, r, &in, maxBody) {
 		return
 	}
 	sp := upstream.Spec{Name: in.Name, Kind: in.Kind, Prefix: in.Prefix, Channel: in.Channel, Mode: in.Mode,
-		Visibility: in.Visibility, Keys: in.Keys, Platforms: in.Platforms, Credential: in.Credential, FetchMode: in.Fetch}
+		Visibility: in.Visibility, Keys: in.Keys, Platforms: in.Platforms, Credential: in.Credential, FetchMode: in.Fetch,
+		Revocations: in.Revocations}
 	for _, e := range in.Extensions {
 		sp.Entries = append(sp.Entries, store.UpstreamEntry{Name: e.Name, Versions: e.Versions, AllowReserved: e.AllowReserved, Eager: e.Eager})
 	}

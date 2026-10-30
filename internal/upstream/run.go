@@ -269,6 +269,10 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	if err != nil {
 		return err
 	}
+	actor := authz.Actor{Kind: authz.ActorSystem, ID: "upstream:" + sc.Tenant.Name + "/" + u.Name}
+	res.actor = actor.String()
+	// spec 0039: the revocation pass first, whatever follows (the tenant's room, the matrix's caps)
+	s.revocationPass(ctx, sc, u, actor, res)
 	versions, err := s.Store.ChannelVersions(ctx, u.ChannelID)
 	if err != nil {
 		return err
@@ -361,8 +365,6 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 		perHost = 2
 	}
 	hostGate := g.host(pu.Host, perHost)
-	actor := authz.Actor{Kind: authz.ActorSystem, ID: "upstream:" + sc.Tenant.Name + "/" + u.Name}
-	res.actor = actor.String()
 	// spec 0038: the tenant's use is read once here; the first refusal in a cell stops new downloads
 	room, err := s.newBodyRoom(ctx, u)
 	if err != nil {

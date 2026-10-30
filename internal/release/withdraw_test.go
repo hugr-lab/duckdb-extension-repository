@@ -74,6 +74,14 @@ func TestWithdrawnVersionFinal(t *testing.T) {
 				t.Fatalf("a withdrawn version served again: %+v", r)
 			}
 		}
+		// spec 0039: kept apart, for the routes that show it, and served or live nowhere
+		if len(snap.Withdrawn) != 1 || snap.Withdrawn[0].WithdrawnReason != "CVE" || snap.Flat("v2.0.0", "linux_amd64", "geo", release.Everything) != nil ||
+			snap.Versioned("v2.0.0", "linux_amd64", "geo", "1.0", release.Everything) != nil || snap.Live("geo", release.Everything) {
+			t.Fatalf("the withdrawn release in the snapshot: %+v", snap.Withdrawn)
+		}
+		if rows := snap.RevokedRows(release.Everything); len(rows) != 1 || rows[0].State != store.RevokeWithdrawn || rows[0].Reason != "CVE" {
+			t.Fatalf("the revoked rows: %+v", rows)
+		}
 		if w, err := p.rel.Withdraw(ctx, admin, "acme", "", "publisher:enterest-ci", "geo", "1.0", "CVE"); err != nil || !w.Already {
 			t.Fatalf("withdrawn again: %+v %v", w, err)
 		}

@@ -194,12 +194,18 @@ var catalogue = map[Kind][]string{
 	"release.purge":     {"release", "name", "version", "platform", "slot", "body_hash"},
 	"block.add":         {"body_hash", "reason"},
 	"block.remove":      {"body_hash"},
-	"upstream.add":      {"name", "kind", "prefix", "channel", "mode", "fetch", "visibility", "keys", "platforms", "extensions", "credential"},
+	"upstream.add":      {"name", "kind", "prefix", "channel", "mode", "fetch", "visibility", "keys", "platforms", "extensions", "credential", "revocations"},
 	"upstream.remove":   {"name"},
 	"upstream.change":   {"name", "change", "value", "versions", "allow_reserved", "eager", "visibility", "state"},
 	"upstream.release":  {"upstream", "release", "name", "version", "platform", "slot", "body_hash", "url", "key", "bundle", "trigger"},
 	"upstream.rejected": {"upstream", "duckdb_version", "platform", "name", "outcome"},
 	"upstream.run":      {"upstream", "dry_run", "counts", "error", "bundle"},
+	// spec 0039: the switch applying a remote's revocations (and how many stored revocations were not
+	// applied yet); a revocation applied (blocked or yanked, with the remote's state and reason);
+	// an administrator's lift (how many releases it restored)
+	"upstream.revocations":     {"upstream", "revocations", "pending"},
+	"upstream.revocation":      {"upstream", "name", "version", "platform", "body_hash", "action", "state", "reason", "yanked"},
+	"upstream.revocation.lift": {"upstream", "build", "body_hash", "state", "restored"},
 	// licences (spec 0012): refused last, since a truncated event keeps its first fields
 	"license.import": {"name", "license", "issuer", "holder", "plan", "expires_at", "replaced", "package_type", "source"},
 	"license.change": {"name", "license", "visibility", "replaced", "upstream", "package_type", "source"},

@@ -385,6 +385,9 @@ func (t *Tx) PurgeRelease(ctx context.Context, c Candidate) error {
 		t.s.d.timeArg(t.Now())); err != nil {
 		return t.s.mapErr(err, "purged slot")
 	}
+	if err := t.DeleteUpstreamYank(ctx, c.ID); err != nil { // spec 0039: nothing left to restore
+		return err
+	}
 	res, err := t.exec(ctx, "DELETE FROM releases WHERE id = ? AND version = ?", c.ID, c.Version)
 	if err != nil {
 		return err
@@ -693,19 +696,21 @@ type Candidate struct {
 	CAPI                         *CAPI
 	BuildOrigin                  string // the Build's origin (spec 0009: a mirrored build promoted is no replacement)
 	// Withdrawn says its build was withdrawn (spec 0033 phase B): the release is served nowhere, and
-	// shown as withdrawn.
-	Withdrawn bool
+	// shown as withdrawn, with the distributor's reason.
+	Withdrawn       bool
+	WithdrawnReason string
 }
 
-const candidateCols = releaseCols + ", b.abi, b.duckdb_version, b.c_api_major, b.c_api_minor, b.c_api_patch, b.body_hash, b.origin, b.withdrawn_at"
+const candidateCols = releaseCols + ", b.abi, b.duckdb_version, b.c_api_major, b.c_api_minor, b.c_api_patch, b.body_hash, b.origin, b.withdrawn_at, b.withdrawn_reason"
 
 func scanCandidate(r interface{ Scan(...any) error }) (Candidate, error) {
 	var c Candidate
 	var dv sql.NullString
 	var ma, mi, pa sql.NullInt64
 	var withdrawn time.Time
-	rel, err := scanRelease(r, &c.ABI, &dv, &ma, &mi, &pa, &c.BodyHash, &c.BuildOrigin, scanTime{&withdrawn})
-	c.Release, c.DuckDBVersion, c.Withdrawn = rel, dv.String, !withdrawn.IsZero()
+	var reason sql.NullString
+	rel, err := scanRelease(r, &c.ABI, &dv, &ma, &mi, &pa, &c.BodyHash, &c.BuildOrigin, scanTime{&withdrawn}, &reason)
+	c.Release, c.DuckDBVersion, c.Withdrawn, c.WithdrawnReason = rel, dv.String, !withdrawn.IsZero(), reason.String
 	if ma.Valid {
 		c.CAPI = &CAPI{int(ma.Int64), int(mi.Int64), int(pa.Int64)}
 	}
@@ -735,6 +740,14 @@ func (s *Store) candidates(ctx context.Context, q string, args ...any) ([]Candid
 func (s *Store) ChannelReleases(ctx context.Context, channelID string) ([]Candidate, error) {
 	return s.candidates(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id"+
 		" WHERE r.channel_id = ? AND b.withdrawn_at IS NULL ORDER BY r.created_at, r.id", channelID)
+}
+
+// RevokedReleases lists a channel's releases of every source that are revoked (spec 0039): of a
+// withdrawn build, or yanked. A snapshot keeps them apart from ChannelReleases, for the routes that
+// show them (-/revocations, the index's withdrawn rows); nothing serves from them.
+func (s *Store) RevokedReleases(ctx context.Context, channelID string) ([]Candidate, error) {
+	return s.candidates(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id"+
+		" WHERE r.channel_id = ? AND (b.withdrawn_at IS NOT NULL OR r.state = 'yanked') ORDER BY r.created_at, r.id", channelID)
 }
 
 // ListReleases lists a channel's releases (optionally of one name), newest first.

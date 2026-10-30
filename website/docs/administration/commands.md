@@ -440,6 +440,8 @@ See [Publishing](../publishing.md).
 | `upstream credentials` | the credentials in the configuration: `NAME`, `KIND`, `TENANTS`, `PREFIXES`, `PUBLIC`, `FORWARDS USAGE` |
 | `upstream licenses <tenant> <name> [-sync]` | the upstream's last licence relay; `-sync` requests one, which a running `kista serve` takes ([Licensing](../licensing.md)) |
 | `upstream usage <tenant> <name> [forward\|off]` | the upstream's usage switch and its last forwarding run; `forward` or `off` sets it ([Licensing](../licensing.md#forwarding-usage-upstream)) |
+| `upstream revocations <tenant> <name> [on\|off]` | whether the source is a kista, the revocations switch, and the stored revocations (`BUILD`, `NAME`, `VERSION`, `PLATFORM`, `STATE`, `APPLIED`, `LIFTED`, `REASON`); `on` or `off` sets it ([Revocations from a kista](../upstreams.md#revocations-from-a-kista)) |
+| `upstream revocation lift <tenant> <name> <build>` | lifts the upstream's revocation of a build and restores what it yanked |
 | `upstream extension add <tenant> <name> <extension> [-versions <v,...>] [-allow-reserved] [-eager]` | adds or replaces an allowlist entry; `-eager`: a lazy mirror fetches it unasked |
 | `upstream extension remove <tenant> <name> <extension>` | |
 | `upstream platform add` or `remove` `<tenant> <name> <platform>` | |

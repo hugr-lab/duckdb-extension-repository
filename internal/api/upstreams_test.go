@@ -170,6 +170,64 @@ func TestUpstreams(t *testing.T) {
 	}
 }
 
+// Spec 0039: an upstream's revocations switch and stored revocations, tenant administrators only;
+// the switch needs If-Match, is refused on a mirror of no kista, and an unchanged switch is no
+// change; a lift of a build the upstream stores no revocation of is a missing path.
+func TestUpstreamRevocations(t *testing.T) {
+	m := newMgmt(t)
+	ta := m.toks["tenant admin"]
+	const U = "/api/v1/tenants/acme/upstreams"
+	if _, err := m.ups.Add(ctx, admin, "acme", upstream.Spec{Name: "air", Kind: store.UpstreamCommunity, Channel: "prod",
+		Mode: store.ModeBundle, Platforms: []string{"linux_amd64"}, Entries: []store.UpstreamEntry{{Name: "x"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if r := m.call(t, "POST", U, ta, `{"name":"core","kind":"duckdb-core","channel":"staging","platforms":["linux_amd64"],"extensions":[{"name":"json"}]}`); r.status != 201 {
+		t.Fatalf("core: %d %s", r.status, r.body)
+	}
+	r := m.call(t, "GET", U+"/air/revocations", ta, "")
+	if g := r.json(t); r.status != 200 || g["remote_kista"] != false || g["revocations"] != false || len(g["stored"].([]any)) != 0 ||
+		r.header.Get("ETag") != `"v1"` {
+		t.Fatalf("read: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "GET", U+"/air/revocations", m.toks["channel adm"], ""); r.status != 404 {
+		t.Errorf("a channel administrator reads them: %d", r.status)
+	}
+	for name, tc := range map[string]struct {
+		path, body, match string
+		want              int
+	}{
+		"no If-Match":        {"/air/revocations", `{"revocations":true}`, "", 428},
+		"stale":              {"/air/revocations", `{"revocations":true}`, `"v9"`, 412},
+		"no value":           {"/air/revocations", `{}`, "*", 400},
+		"a mirror of DuckDB": {"/core/revocations", `{"revocations":true}`, "*", 400},
+		"a missing one":      {"/nope/revocations", `{"revocations":true}`, "*", 404},
+	} {
+		hdr := []string{}
+		if tc.match != "" {
+			hdr = []string{"If-Match", tc.match}
+		}
+		if r := m.call(t, "POST", U+tc.path, ta, tc.body, hdr...); r.status != tc.want {
+			t.Errorf("%s: %d %s", name, r.status, r.body)
+		}
+	}
+	if r := m.call(t, "POST", U+"/air/revocations", ta, `{"revocations":true}`, "If-Match", `"v1"`); r.status != 200 ||
+		r.json(t)["revocations"] != true || r.header.Get("ETag") != `"v2"` {
+		t.Fatalf("on: %d %s %v", r.status, r.body, r.header)
+	}
+	if r := m.call(t, "POST", U+"/air/revocations", ta, `{"revocations":true}`, "If-Match", "*"); r.header.Get("ETag") != `"v2"` {
+		t.Errorf("on again moved the version: %v", r.header)
+	}
+	if r := m.call(t, "GET", "/api/v1/tenants/acme/events?kind=upstream.revocations", ta, ""); !strings.Contains(string(r.body), `"pending":0`) {
+		t.Errorf("the event: %s", r.body)
+	}
+	if r := m.call(t, "DELETE", U+"/air/revocations/b1", ta, ""); r.status != 428 {
+		t.Errorf("a lift without If-Match: %d", r.status)
+	}
+	if r := m.call(t, "DELETE", U+"/air/revocations/b1", ta, "", "If-Match", "*"); r.status != 404 {
+		t.Errorf("a lift of nothing stored: %d %s", r.status, r.body)
+	}
+}
+
 // Spec 0009 phase 2: a miss on a DuckDB route offers the cell to a pull-through upstream only for a
 // caller holding install, on the flat path; the answer is the same.
 func TestPullThroughOffers(t *testing.T) {

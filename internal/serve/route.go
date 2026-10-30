@@ -4,6 +4,7 @@ package serve
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -23,11 +24,14 @@ const (
 	routeLicenses // <prefix>/-/licenses
 	routeUsage    // <prefix>/-/usage/<name> (spec 0012 phase 1b)
 	routeDaily    // <prefix>/-/usage (spec 0012 phase 1c)
+	// <prefix>/-/revocations[/<cursor>] (spec 0039): paged by path, as no route takes a query
+	routeRevocations
 )
 
 // String is a route kind's name for metrics.
 func (k routeKind) String() string {
-	return [...]string{"none", "healthz", "readyz", "well-known", "extension", "extension-versioned", "license", "licenses", "usage", "usage-daily"}[k]
+	return [...]string{"none", "healthz", "readyz", "well-known", "extension", "extension-versioned", "license", "licenses", "usage", "usage-daily",
+		"revocations"}[k]
 }
 
 // route is a parsed request path.
@@ -36,7 +40,11 @@ type route struct {
 	tenant, channel                           string
 	name, extVersion, duckdbVersion, platform string
 	gz                                        bool
+	cursor                                    string // a paged route's cursor ("" for its first page)
 }
+
+// cursorRe is a page cursor: base64url without padding.
+var cursorRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,512}$`)
 
 const (
 	extSuffix   = ".duckdb_extension"
@@ -78,6 +86,12 @@ func parseRoute(r *http.Request) route {
 			return rt
 		case len(segs) == 4 && segs[3] == "usage":
 			rt.kind = routeDaily
+			return rt
+		case len(segs) == 4 && segs[3] == "revocations":
+			rt.kind = routeRevocations
+			return rt
+		case len(segs) == 5 && segs[3] == "revocations" && cursorRe.MatchString(segs[4]):
+			rt.kind, rt.cursor = routeRevocations, segs[4]
 			return rt
 		case len(segs) == 5 && segs[3] == "licenses" && release.ValidName(segs[4]) == nil:
 			rt.kind, rt.name = routeLicense, segs[4]

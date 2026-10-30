@@ -1,6 +1,6 @@
 # Spec 0039: An own kista mirroring a channel, and revocations downstream
 
-- **Status**: accepted (the owner's decisions of 2026-10-30, below)
+- **Status**: accepted (the owner's decisions of 2026-10-30, below); PR 1 (revocations) implemented
 - **Date**: 2026-10-30
 - **Author**: vgsml, Claude
 
@@ -113,8 +113,9 @@ applied yet) and makes the upstream due. Switching on applies the **stored** sta
 
 #### The pass
 
-Each run of a mirror whose remote is a kista, eager or lazy, switch on or off, starts with the
-**revocation pass**, before its cells and independent of them: it runs whatever happens next (the
+Each run of a `repository` mirror, eager or lazy, switch on or off, starts with the
+**revocation pass** (a remote not known as a kista is read too, so one that becomes a kista is
+noticed; its `404` only keeps `remote_kista` clear), before its cells and independent of them: it runs whatever happens next (the
 tenant's bytes room, spec 0038; a matrix over its cap; a failed listing of names), and its own
 failure records a problem and lets the run go on.
 

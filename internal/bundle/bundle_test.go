@@ -205,7 +205,7 @@ func TestManifestValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, change := range map[string]func(m *bundle.Manifest){
-		"a format":                 func(m *bundle.Manifest) { m.Format = "kista-bundle/v2" },
+		"a format":                 func(m *bundle.Manifest) { m.Format = "kista-bundle/v3" },
 		"a UUIDv4":                 func(m *bundle.Manifest) { m.ID = "0192f0c4-1b2a-4c3d-8e4f-0123456789ab" },
 		"in the future":            func(m *bundle.Manifest) { m.CreatedAt = t0.Add(11 * time.Minute) },
 		"a control character":      func(m *bundle.Manifest) { m.Exporter.Version = "kista\x1b[2J" },

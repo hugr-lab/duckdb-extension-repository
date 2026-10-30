@@ -114,6 +114,8 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetChannelHold": {"catalogue.hold"}, "ChannelHold": nil,
 		"Withdraw":     {"catalogue.withdrawn"},
 		"SetEntryMeta": {"catalogue.meta"}, "EntryMeta": nil, "EntryIcon": nil, "MayWriteEntryMeta": nil, // spec 0036
+		// spec 0039: an upstream's block, yank and lift write their events in the upstream service's act
+		"UpstreamBlock": nil, "UpstreamYank": nil, "LiftUpstream": nil,
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
@@ -123,9 +125,12 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetUsage":      {"upstream.change"},
 		"SetFetchMode":  {"upstream.change"},
 		"SetHold":       {"catalogue.hold"},
-		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected", "license.public_warning"},
-		"Import":        {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected", "feed.run", "license.public_warning"},
-		"ResetBundle":   {"bundle.reset"}, "ResetFeedBundle": {"bundle.reset"}, "Imports": nil,
+		"RunUpstream":   {"upstream.run", "upstream.release", "upstream.rejected", "license.public_warning", "upstream.revocation"},
+		"Import": {"bundle.import", "upstream.run", "upstream.release", "upstream.rejected", "feed.run", "license.public_warning",
+			"upstream.revocation"},
+		// spec 0039: the switch, the stored revocations, a lift
+		"SetRevocations": {"upstream.revocations"}, "RevocationsOf": nil, "LiftRevocation": {"upstream.revocation.lift"},
+		"ResetBundle": {"bundle.reset"}, "ResetFeedBundle": {"bundle.reset"}, "Imports": nil,
 		"CreateUpload": {"bundle.upload"}, "CompleteUpload": {"bundle.upload_complete"}, "AbortUpload": {"bundle.upload_abort"},
 		"PutUploadChunk": nil, "GetUpload": nil, "ListUploads": nil, "UploadExpiresAt": nil, "WakeUploads": nil, "GetImport": nil, "Export": {"bundle.export"},
 		"Sync": nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil, "Plan": nil,
@@ -814,7 +819,9 @@ func TestCoverage(t *testing.T) {
 		"upstream.Service.Import": true, "upstream.Service.Export": true, "upstream.Service.ResetFeedBundle": true,
 		"upstream.Service.CreateUpload": true, "upstream.Service.CompleteUpload": true, "upstream.Service.AbortUpload": true,
 		// the relay and the expiry pass: in internal/upstream's licence tests
-		"licenses.Service.RunUpstream": true, "licenses.Service.ExpireOnce": true}
+		"licenses.Service.RunUpstream": true, "licenses.Service.ExpireOnce": true,
+		// spec 0039: the switch and a lift need a kista remote: in internal/upstream's revocation tests
+		"upstream.Service.SetRevocations": true, "upstream.Service.LiftRevocation": true}
 	for svc, ms := range writes {
 		for m, kinds := range ms {
 			if kinds != nil && !en.hit[svc+"."+m] && !elsewhere[svc+"."+m] {

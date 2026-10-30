@@ -95,6 +95,13 @@ func (s *Service) Ingest(ctx context.Context, a authz.Actor, sc store.ServeChann
 		}
 		return res, err
 	}
+	// spec 0039: a body this upstream blocked is never taken from it again (checked again under the lock)
+	if blocked, err := s.Store.UpstreamBlocked(ctx, in.UpstreamID, b.BodyHash); err != nil || blocked {
+		if err == nil {
+			err = fmt.Errorf("%w: the upstream revoked it", ErrBlocked)
+		}
+		return res, err
+	}
 	it := item{b: b, visibility: in.Visibility, origin: store.OriginUpstream, originSignature: f.Signature, source: store.UpstreamSource(in.UpstreamID),
 		reserveKind: in.ReserveKind, reserveSource: in.ReserveSource, anyKind: in.AnyKind}
 	it.b.Source = it.source
