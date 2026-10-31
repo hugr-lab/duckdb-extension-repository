@@ -627,11 +627,23 @@ What a tenant already holds stays; the stored value is kept and counts again if 
 | `MaxDiscoveredNames` (spec 0039) | product | `discovered_names` | 1000 |
 | `MaxHold` | product | `max_hold` | 2160h (90 days) |
 | `tenants.MaxKeyLifetime` | product | `publisher_key_lifetime` | 8784h (366 days) |
+| the issuer's `max_token_lifetime` cap (7 days) | product | `issuer_token_lifetime` | 168h |
+
+A ceiling is never 0 (a count at least 1, a duration at least 1s, `issuer_token_lifetime` at least
+1m): leave a key out for its default; a limit's `0` (none) is a different thing. The ceilings are the
+process's (`store.SetCeilings` writes package values once as the store opens): every replica and every
+`kista admin` run against one store must share `limits.ceilings`.
 
 What stays in code, and why (bounds on one request, one document or one remote answer, which protect
 the server and are part of a format, not a tenant's room):
 
 - `MaxSinks` (16): a bit each in `events.pending`, a column's width.
+- `events.retention`'s 90-day cap with sinks: the range of the operator's own setting (spec 0010), not
+  a tenant's room.
+- The bundle format: `bundle.MaxFeeds` (50 feed URLs a plan), `MaxPlanFeedKeys` (500), `MaxCells`,
+  `MaxFiles`, `MaxLicenses` (1000) and `MaxRevocations` (10000) are the same at every site, so any
+  site reads any bundle. A site whose `feeds` or `feed_keys` ceiling is above them names the feeds for
+  each plan; the plan refuses past them with a clear error.
 - Sizes and counts of one request or answer: request bodies, `MaxStatement`, `MaxData`, usage
   reports, feed and stats pages, `maxRevocationsPage`/`maxNamesPage` and their row bounds, the bundle
   manifest's bounds (`MaxCells`, `MaxFiles`, `MaxRevocations`, …), `MaxMemberChange` per request.

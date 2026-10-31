@@ -233,6 +233,12 @@ func (s *Service) planFeeds(ctx context.Context, t store.Tenant, names []string,
 	for _, f := range feeds {
 		pf := byURL[f.URL]
 		if pf == nil {
+			// the bundle format's bound, whatever this site's ceilings (limits.ceilings.feeds may be
+			// higher): a clear refusal here, not the plan's validation
+			if len(byURL) == bundle.MaxFeeds {
+				return nil, fmt.Errorf("%w: a plan carries at most %d feed URLs (the bundle format's bound); name the feeds for this plan",
+					store.ErrInvalid, bundle.MaxFeeds)
+			}
 			pf = &bundle.PlanFeed{URL: f.URL}
 			byURL[f.URL], cursors[f.URL] = pf, map[string]int64{}
 		}
@@ -266,6 +272,13 @@ func (s *Service) planFeeds(ctx context.Context, t store.Tenant, names []string,
 				seq = cur[b]
 			}
 			cursors[f.URL][b] = min(seq, cur[b])
+		}
+	}
+	// and the keys of one URL's feeds merged (limits.ceilings.feed_keys may be higher)
+	for u, pf := range byURL {
+		if len(pf.Keys) > bundle.MaxPlanFeedKeys {
+			return nil, fmt.Errorf("%w: the feeds of %s pin %d keys, over the bundle format's %d", store.ErrInvalid, u, len(pf.Keys),
+				bundle.MaxPlanFeedKeys)
 		}
 	}
 	var out []bundle.PlanFeed

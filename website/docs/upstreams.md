@@ -55,7 +55,7 @@ Each element is a **cell**. The path serves the upstream's current build, so a v
 the upstream's current one cannot be mirrored. An allowlist entry's `versions` filters what is
 accepted: empty means any extension version, otherwise only the exact versions listed.
 
-Limits: 20,000 cells an upstream and 100,000 a tenant (adding an entry or a platform that would
+Limits, by default ([`limits.ceilings`](configuration.md#limitsceilings)): 20,000 cells an upstream and 100,000 a tenant (adding an entry or a platform that would
 exceed them is `400`; a run whose matrix grew past them fails without fetching), 100 upstreams a
 tenant, 1,000 entries an upstream, 100 versions an entry, 10 pinned keys.
 
@@ -675,7 +675,7 @@ every page, with the upstream's credential, and keeps a name when:
 - no source of the tenant other than an upstream (its own publications, a publisher's or a
   distributor's) holds a release of it in any channel.
 
-The names kept fit a room: at most 1,000, and no more than the [matrix limits](#what-is-fetched)
+The names kept fit a room: at most 1,000 by default (`limits.ceilings.discovered_names`), and no more than the [matrix limits](#what-is-fetched)
 hold beside the explicit entries and the tenant's other upstreams. The names already kept stay, new
 ones fill what is left by name, and the rest are a `names` problem. The room is decided when the
 names are read, and the run, the asks and the tenant's count of cells follow it. Discovered names

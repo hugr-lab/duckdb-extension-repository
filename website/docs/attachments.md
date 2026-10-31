@@ -211,7 +211,7 @@ rows. One key never serves both roles.
 ### Lifecycle
 
 The lifecycle is a channel key's: `trusted`, `active`, `retired`, one active key per tenant, at most
-16 keys that are not retired.
+16 keys that are not retired by default (`limits.ceilings.signing_keys`).
 
 1. A server administrator registers a key by its signer reference. kista opens it, checks it and
    signs a probe. It is added as `trusted`, or `active` (`-active`) only for a tenant that never
@@ -507,7 +507,7 @@ source go when no feed of its URL has `export` left. A run that the change overt
 writes nothing (`overtaken`). The collector deletes a body's refusals and kept statements with its
 cursors.
 
-**A cap of its own.** A tenant's export feeds keep at most 100,000 refusals and statements together,
+**A cap of its own.** A tenant's export feeds keep at most 100,000 refusals and statements together by default (`limits.ceilings.feed_kept`),
 apart from the quota of feed documents, so a source never costs another source a document. Past the
 cap, a statement an export feed cannot keep holds its body's cursor (`held` in the run), the other
 bodies go on, and the run ends `failing` (`limits`): nothing is passed over unseen. Room comes back

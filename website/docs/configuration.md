@@ -648,11 +648,17 @@ limits:
     discovered_names: 1000     # a mirror's "*"
     max_hold: 2160h            # the longest hold (90 days)
     publisher_key_lifetime: 8784h # the furthest a publisher key's expiry (366 days)
+    issuer_token_lifetime: 168h   # the most an issuer's max_token_lifetime (7 days)
 ```
 
-A count is at least 1, a duration at least `1s`. Bounds on one request, one document or one remote
+A count is at least 1, a duration at least `1s` (`issuer_token_lifetime` at least `1m`); a ceiling
+is never `0`, unlike a limit: leave a key out for its default. The ceilings are the process's: every
+replica and every `kista admin` run against one store must share `limits.ceilings`, or a replica
+checks against other ceilings. Bounds on one request, one document or one remote
 answer (page and body sizes, a summary's 160 characters, an icon's size, the 16 event sinks) stay in
-code: they are part of a format, not a tenant's room. A ceiling lowered below a tenant's stored
+code: they are part of a format, not a tenant's room. A bundle carries at most 50 feed URLs and 500 keys
+a feed (the format's, the same at every site): a site whose `feeds` ceiling is above that names the
+feeds for each plan. A ceiling lowered below a tenant's stored
 limit caps it: growth past the ceiling is refused `429 tenant-limit`.
 
 ## ui

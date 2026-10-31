@@ -232,7 +232,8 @@ function Keys({ publisher, onChanged }: { publisher: Publisher; onChanged: () =>
             <Field label="Public key" hint="ssh-ed25519 AAAA… comment, or ecdsa-sha2-nistp256">
               <textarea className="field font-mono" required rows={2} value={line} onChange={(e) => setLine(e.target.value)} />
             </Field>
-            <label className="flex items-center gap-2 text-[13px] text-ink-muted">expires
+            <label className="flex items-center gap-2 text-[13px] text-ink-muted"
+              title="Within the server's limit on a key's lifetime (limits.ceilings.publisher_key_lifetime, a year by default)">expires
               <select className="field py-1 text-[13px]" value={days} onChange={(e) => setDays(Number(e.target.value))}>
                 {[90, 180, 365].map((d) => <option key={d} value={d}>in {d} days</option>)}
                 <option value={0}>never</option>

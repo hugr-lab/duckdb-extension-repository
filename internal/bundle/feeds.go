@@ -9,27 +9,23 @@ import (
 	"strconv"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
-	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
 // Statements in a bundle (spec 0014 phase 1b): a plan's feeds, a manifest's feeds and their entries.
 
-// Limits on feeds in a plan and a bundle.
+// Limits on feeds in a plan and a bundle: the format's bounds, the same at every site whatever its
+// ceilings (a site whose limits.ceilings.feeds is above MaxFeeds names its feeds in each plan, below
+// these; spec 0038's amendment).
 const (
+	MaxFeeds       = 50
 	MaxFeedBodies  = 100000 // across a plan's feeds
 	MaxFeedEntries = 100000 // batches, and documents, per feed
 	MaxKeysFile    = 64 << 10
 	MaxBatch       = 1 << 20
 	MaxDocument    = attachment.MaxConfigurableSize
+	// MaxPlanFeedKeys caps a plan feed's keys: the feeds of one URL merged
+	MaxPlanFeedKeys = 500
 )
-
-// maxFeeds is the most feeds a plan or a bundle carries: a tenant's feeds ceiling
-// (limits.ceilings.feeds), since a site's plan lists its own tenant's feeds.
-func maxFeeds() int { return store.MaxFeeds }
-
-// maxPlanFeedKeys caps a plan feed's keys: the feeds of one URL merged, each pinning up to the
-// feed_keys ceiling.
-func maxPlanFeedKeys() int { return store.MaxFeeds * store.MaxFeedKeys }
 
 // PlanFeed is one of a site's bundle-mode feeds (merged by URL): what it pins and accepts, the bodies
 // it offers with the last seq received, and the plan's sources whose new bodies it may be offered.
@@ -101,8 +97,8 @@ func validFeedKinds(kinds []string) error {
 
 // validatePlanFeeds checks a plan's feeds against its n sources.
 func validatePlanFeeds(feeds []PlanFeed, sources int) error {
-	if len(feeds) > maxFeeds() {
-		return fmt.Errorf("%w: over %d feeds", ErrInvalid, maxFeeds())
+	if len(feeds) > MaxFeeds {
+		return fmt.Errorf("%w: over %d feeds", ErrInvalid, MaxFeeds)
 	}
 	bodies := 0
 	for i, f := range feeds {
@@ -112,8 +108,8 @@ func validatePlanFeeds(feeds []PlanFeed, sources int) error {
 		if i > 0 && feeds[i-1].URL >= f.URL {
 			return fmt.Errorf("%w: feeds out of canonical order, or a URL twice", ErrInvalid)
 		}
-		if len(f.Keys) == 0 || len(f.Keys) > maxPlanFeedKeys() {
-			return fmt.Errorf("%w: feed %s pins 1 to %d keys", ErrInvalid, f.URL, maxPlanFeedKeys())
+		if len(f.Keys) == 0 || len(f.Keys) > MaxPlanFeedKeys {
+			return fmt.Errorf("%w: feed %s pins 1 to %d keys", ErrInvalid, f.URL, MaxPlanFeedKeys)
 		}
 		for j, k := range f.Keys {
 			if !fpRE.MatchString(k) || j > 0 && f.Keys[j-1] >= k {
@@ -167,8 +163,8 @@ func ParseFeedEntry(name string) (FeedEntry, bool) {
 // (the keys file first, batches numbered from 1, a document after a batch, by its content hash,
 // once), the sizes within their limits, and its bodies' ranges.
 func validateFeeds(feeds []Feed) error {
-	if len(feeds) > maxFeeds() {
-		return fmt.Errorf("%w: over %d feeds", ErrInvalid, maxFeeds())
+	if len(feeds) > MaxFeeds {
+		return fmt.Errorf("%w: over %d feeds", ErrInvalid, MaxFeeds)
 	}
 	for i, f := range feeds {
 		n := i + 1
