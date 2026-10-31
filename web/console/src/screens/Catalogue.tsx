@@ -5,6 +5,7 @@ import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { ApiError, seg, sourceSeg } from '../lib/http'
 import { bytesOf } from '../lib/upload'
+import { AddBuildButton } from './AddBuild'
 
 // The catalogue (spec 0033): every build that arrives in a tenant, mirrored or published, lands
 // there as a build of its source (an upstream, a publisher, the tenant), names side by side; a
@@ -335,6 +336,7 @@ export function Catalogue() {
     <>
       <PageTitle title="Catalogue">
         <span className="pb-1 text-ink-muted">Every build that arrived in the tenant, by its source. Channels take from it by their rules.</span>
+        <span className="ml-auto pb-1"><AddBuildButton onAdded={list.reload} /></span>
       </PageTitle>
       <div role="search" className="flex flex-wrap items-center gap-2">
         <SearchBox label="Find an extension in the catalogue" value={prefix} onChange={setPrefix} />
