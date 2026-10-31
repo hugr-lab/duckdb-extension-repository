@@ -149,7 +149,7 @@ func (h *Handler) listUpstreams(w http.ResponseWriter, r *http.Request, c caller
 		return
 	}
 	a, _ := c.actor()
-	us, err := h.o.Upstreams.List(r.Context(), a, p["t"])
+	us, err := h.o.Upstreams.ReadAll(r.Context(), a, p["t"])
 	if err != nil {
 		h.upstreamErr(w, err)
 		return
@@ -209,7 +209,7 @@ func (h *Handler) addUpstream(w http.ResponseWriter, r *http.Request, c caller, 
 
 func (h *Handler) getUpstream(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	u, err := h.o.Upstreams.Get(r.Context(), a, p["t"], p["name"])
+	u, err := h.o.Upstreams.Read(r.Context(), a, p["t"], p["name"])
 	if err != nil {
 		h.upstreamErr(w, err)
 		return

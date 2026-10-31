@@ -13,8 +13,9 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
 
-// Spec 0040: an upstream's reads take audit on the tenant (a tenant-wide admin implies it), never a
-// distribution admin's distribute; its writes keep admin.
+// Spec 0040: Read and ReadAll take audit on the tenant (a tenant-wide admin implies it), never a
+// distribution admin's distribute; Get and List, which the closed routes (an upstream's sub-routes)
+// and the writes use, and the writes keep admin.
 func TestUpstreamReaders(t *testing.T) {
 	osAdmin := authz.Actor{Kind: authz.ActorOS, ID: "1:t"}
 	for _, e := range storetest.Engines(t) {
@@ -58,16 +59,32 @@ func TestUpstreamReaders(t *testing.T) {
 				"nobody":             {principal("nobody"), authz.ErrDenied},
 				"distribution admin": {dist, authz.ErrDenied},
 			} {
-				if _, err := svc.List(ctx, c.a, "acme"); !errors.Is(err, c.want) {
+				if _, err := svc.ReadAll(ctx, c.a, "acme"); !errors.Is(err, c.want) {
 					t.Errorf("%s lists: %v", who, err)
 				}
 				want := c.want
 				if want == nil {
 					want = store.ErrNotFound // allowed: the upstream is missing
 				}
-				if _, err := svc.Get(ctx, c.a, "acme", "core"); !errors.Is(err, want) {
+				if _, err := svc.Read(ctx, c.a, "acme", "core"); !errors.Is(err, want) {
 					t.Errorf("%s reads one: %v", who, err)
 				}
+			}
+			// the administrators' paths refuse an auditor: List, Get (an upstream's sub-routes: its
+			// entries, platforms, keys, names, usage), its revocations, its cells
+			aud := principal("aud")
+			closed := map[string]error{}
+			_, closed["list"] = svc.List(ctx, aud, "acme")
+			_, closed["get"] = svc.Get(ctx, aud, "acme", "core")
+			_, closed["revocations"] = svc.RevocationsOf(ctx, aud, "acme", "core")
+			_, closed["cells"] = svc.Cells(ctx, aud, "acme", "core", "", [3]string{}, 10)
+			for what, err := range closed {
+				if !errors.Is(err, authz.ErrDenied) {
+					t.Errorf("an auditor's %s: %v", what, err)
+				}
+			}
+			if _, err := svc.Get(ctx, principal("tom"), "acme", "core"); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("an administrator's get: %v", err)
 			}
 			// an auditor writes nothing
 			if err := svc.Remove(ctx, principal("aud"), "acme", "core", 0); !errors.Is(err, authz.ErrDenied) {
@@ -75,6 +92,10 @@ func TestUpstreamReaders(t *testing.T) {
 			}
 			if _, err := svc.Add(ctx, principal("aud"), "acme", upstream.Spec{Name: "core", Kind: "duckdb-core", Channel: "prod"}); !errors.Is(err, authz.ErrDenied) {
 				t.Errorf("an auditor adds an upstream: %v", err)
+			}
+			// PutEntry checks admin before it reads the upstream or asks its remote anything
+			if _, err := svc.PutEntry(ctx, principal("aud"), "acme", "core", store.UpstreamEntry{Name: "*"}); !errors.Is(err, authz.ErrDenied) {
+				t.Errorf("an auditor puts an entry: %v", err)
 			}
 		})
 	}

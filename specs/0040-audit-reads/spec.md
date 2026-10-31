@@ -85,15 +85,22 @@ The issuer answer gains two fields, for administrators and auditors alike:
   admits one), used by those four routes only.
 - **Services, two checks** (defence in depth: the API rule and the service both decide):
   - `readTenant`: `audit` on the tenant (`Authz.Allow(…, VerbAudit, Resource{Tenant})`), never a
-    distribution admin. `ListIssuers`, `ListAudiences`, `ListGrants`, `GetPackageGroup`,
-    `PackageGroupMembers` (beside the group administrator's path), `upstream.Service.List` and
-    `Get` call it, and so does `IssuerConsoleClients`, the issuers' console clients for their
-    answers. `ListPackageGroups`' full view (today `tenantAdmin`: every group with its grants,
-    `?extension=`) becomes `admin` or `audit`; anyone else keeps today's view.
-  - `readPublishers`: `readTenant`, or `tenantOrDistributor` as today. `ListPublishers`,
-    `TenantPublisherKeys` and `ListPublisherKeys` call it; the narrowing to distributors' publishers
-    stays on `distributor(a)`. `ListPublisherKeys` reads its publisher after `readPublishers`
-    (`publisherOf`); the `publisher` lookup it used had no other caller, and is gone.
+    distribution admin. It is called only by **read variants** the opened routes use:
+    `ReadIssuers`, `ReadAudiences`, `ReadGrants`, `IssuerConsoleClients` (the issuers' console
+    clients for their answers), `upstream.Service.ReadAll` and `Read`. The existing
+    `ListIssuers`, `ListAudiences`, `ListGrants`, `upstream.Service.List` and `Get` keep `admin`:
+    the closed routes (`grants/principals`; an upstream's entries, platforms, keys, names, usage
+    and revocations) and the writes rely on them. `upstream.Service.PutEntry` checks `admin` first,
+    before it reads the upstream or asks a remote kista anything.
+  - The extension groups' reads (`GetPackageGroup`, `PackageGroupMembers`, `ListPackageGroups`)
+    have no closed route and only the opened ones call them: their full view (today
+    `tenantAdmin`: every group with its grants, `?extension=`) becomes `admin` or `audit`, beside
+    the group administrator's path; anyone else keeps today's view.
+  - `readPublishers`: `readTenant`, or `tenantOrDistributor` as today, called by `ReadPublishers`,
+    `ReadTenantPublisherKeys` and `ReadPublisherKeys`; `ListPublishers`, `TenantPublisherKeys`
+    and `ListPublisherKeys` keep `tenantOrDistributor` (the writes' answers use them). The
+    narrowing to distributors' publishers stays on `distributor(a)`. The keys' reads look their
+    publisher up after the check (`publisherOf`).
   - Every write keeps its check (`admin`; a distribution admin on a distributor's publisher).
 - **No audit event** is written for these reads, as for the events' reads.
 

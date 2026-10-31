@@ -53,16 +53,19 @@ func TestStructureReaders(t *testing.T) {
 			if _, err := adm.CreatePackageGroup(ctx, osAdmin, "acme", "platform", ""); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := adm.AddPublisher(ctx, osAdmin, "acme", "own-ci"); err != nil {
+				t.Fatal(err)
+			}
 			server := authz.Actor{Kind: authz.ActorServer, ID: "ops|root"}
 			dist := authz.Actor{Kind: authz.ActorDistributionAdmin, ID: "ops|distributor"}
 			reads := map[string]func(a authz.Actor) error{
-				"issuers": func(a authz.Actor) error { _, err := adm.ListIssuers(ctx, a, "acme"); return err },
+				"issuers": func(a authz.Actor) error { _, err := adm.ReadIssuers(ctx, a, "acme"); return err },
 				"console": func(a authz.Actor) error { _, err := adm.IssuerConsoleClients(ctx, a, "acme"); return err },
 				"audiences": func(a authz.Actor) error {
-					_, err := adm.ListAudiences(ctx, a, "acme")
+					_, err := adm.ReadAudiences(ctx, a, "acme")
 					return err
 				},
-				"grants": func(a authz.Actor) error { _, err := adm.ListGrants(ctx, a, "acme"); return err },
+				"grants": func(a authz.Actor) error { _, err := adm.ReadGrants(ctx, a, "acme"); return err },
 				"group":  func(a authz.Actor) error { _, _, err := adm.GetPackageGroup(ctx, a, "acme", "platform"); return err },
 				"members": func(a authz.Actor) error {
 					_, err := adm.PackageGroupMembers(ctx, a, "acme", "platform")
@@ -75,9 +78,13 @@ func TestStructureReaders(t *testing.T) {
 					}
 					return err
 				},
-				"publishers": func(a authz.Actor) error { _, err := adm.ListPublishers(ctx, a, "acme"); return err },
+				"publishers": func(a authz.Actor) error { _, err := adm.ReadPublishers(ctx, a, "acme"); return err },
 				"keys": func(a authz.Actor) error {
-					_, err := adm.TenantPublisherKeys(ctx, a, "acme")
+					_, err := adm.ReadTenantPublisherKeys(ctx, a, "acme")
+					return err
+				},
+				"publisher keys": func(a authz.Actor) error {
+					_, err := adm.ReadPublisherKeys(ctx, a, "acme", "own-ci")
 					return err
 				},
 			}
@@ -90,7 +97,7 @@ func TestStructureReaders(t *testing.T) {
 			}
 			for who, a := range map[string]authz.Actor{"installer": principal("ivan"), "nobody": principal("nobody"), "distribution admin": dist} {
 				for what, read := range reads {
-					if what == "publishers" || what == "keys" {
+					if who == "distribution admin" && (what == "publishers" || what == "keys") {
 						continue
 					}
 					if err := read(a); !errors.Is(err, authz.ErrDenied) {
@@ -98,15 +105,36 @@ func TestStructureReaders(t *testing.T) {
 					}
 				}
 			}
+			// the administrators' reads, which the closed routes (the grants' principals) and the
+			// writes' answers use, refuse an auditor
+			aud := principal("aud")
+			closed := map[string]error{}
+			_, closed["issuers"] = adm.ListIssuers(ctx, aud, "acme")
+			_, closed["audiences"] = adm.ListAudiences(ctx, aud, "acme")
+			_, closed["grants"] = adm.ListGrants(ctx, aud, "acme")
+			_, closed["publishers"] = adm.ListPublishers(ctx, aud, "acme")
+			_, closed["keys"] = adm.TenantPublisherKeys(ctx, aud, "acme")
+			_, closed["publisher keys"] = adm.ListPublisherKeys(ctx, aud, "acme", "own-ci")
+			for what, err := range closed {
+				if !errors.Is(err, authz.ErrDenied) {
+					t.Errorf("an auditor's %s through the administrators' read: %v", what, err)
+				}
+			}
+			if _, err := adm.ListPublisherKeys(ctx, principal("tom"), "acme", "own-ci"); err != nil {
+				t.Errorf("an administrator's publisher keys: %v", err)
+			}
+			// a distribution admin: the tenant's own publisher's keys are not its to read
+			if _, err := adm.ReadPublisherKeys(ctx, dist, "acme", "own-ci"); !errors.Is(err, authz.ErrDenied) {
+				t.Errorf("a distribution admin reads the tenant's own publisher's keys: %v", err)
+			}
 			// the publishers' reads: a distribution admin's, narrowed to the distributors' (none here)
-			if ps, err := adm.ListPublishers(ctx, dist, "acme"); err != nil || len(ps) != 0 {
+			if ps, err := adm.ReadPublishers(ctx, dist, "acme"); err != nil || len(ps) != 0 {
 				t.Errorf("a distribution admin's publishers: %v %v", ps, err)
 			}
-			if _, err := adm.ListPublishers(ctx, principal("ivan"), "acme"); !errors.Is(err, authz.ErrDenied) {
+			if _, err := adm.ReadPublishers(ctx, principal("ivan"), "acme"); !errors.Is(err, authz.ErrDenied) {
 				t.Errorf("an installer's publishers: %v", err)
 			}
 			// an auditor writes nothing
-			aud := principal("aud")
 			writes := map[string]error{}
 			_, writes["grant"] = adm.AddGrant(ctx, aud, "acme", "subject:corp|zed", []string{"install"}, tenants.GrantOn{})
 			_, writes["group"] = adm.CreatePackageGroup(ctx, aud, "acme", "other", "")

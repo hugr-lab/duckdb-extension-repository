@@ -87,7 +87,16 @@ func (s *AuthAdmin) distributorAct(ctx context.Context, a authz.Actor, tenant st
 // ListPublishers lists a tenant's publishers: to a distribution admin, the distributors' only (spec
 // 0037: the tenant's own are not its to read).
 func (s *AuthAdmin) ListPublishers(ctx context.Context, a authz.Actor, tenant string) ([]store.Publisher, error) {
-	t, err := s.readPublishers(ctx, a, tenant)
+	return s.publishers(ctx, s.tenantOrDistributor, a, tenant)
+}
+
+// ReadPublishers is ListPublishers for the tenant's readers too (spec 0040).
+func (s *AuthAdmin) ReadPublishers(ctx context.Context, a authz.Actor, tenant string) ([]store.Publisher, error) {
+	return s.publishers(ctx, s.readPublishers, a, tenant)
+}
+
+func (s *AuthAdmin) publishers(ctx context.Context, check tenantCheck, a authz.Actor, tenant string) ([]store.Publisher, error) {
+	t, err := check(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -462,7 +471,16 @@ func (s *AuthAdmin) AddPublisherKey(ctx context.Context, a authz.Actor, tenant, 
 
 // ListPublisherKeys lists a publisher's keys.
 func (s *AuthAdmin) ListPublisherKeys(ctx context.Context, a authz.Actor, tenant, publisher string) ([]store.PublisherKey, error) {
-	t, err := s.readPublishers(ctx, a, tenant)
+	return s.publisherKeys(ctx, s.tenantOrDistributor, a, tenant, publisher)
+}
+
+// ReadPublisherKeys is ListPublisherKeys for the tenant's readers too (spec 0040).
+func (s *AuthAdmin) ReadPublisherKeys(ctx context.Context, a authz.Actor, tenant, publisher string) ([]store.PublisherKey, error) {
+	return s.publisherKeys(ctx, s.readPublishers, a, tenant, publisher)
+}
+
+func (s *AuthAdmin) publisherKeys(ctx context.Context, check tenantCheck, a authz.Actor, tenant, publisher string) ([]store.PublisherKey, error) {
+	t, err := check(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -478,7 +496,16 @@ func (s *AuthAdmin) ListPublisherKeys(ctx context.Context, a authz.Actor, tenant
 
 // TenantPublisherKeys lists every key of a tenant's publishers, by publisher id.
 func (s *AuthAdmin) TenantPublisherKeys(ctx context.Context, a authz.Actor, tenant string) (map[string][]store.PublisherKey, error) {
-	t, err := s.readPublishers(ctx, a, tenant)
+	return s.tenantPublisherKeys(ctx, s.tenantOrDistributor, a, tenant)
+}
+
+// ReadTenantPublisherKeys is TenantPublisherKeys for the tenant's readers too (spec 0040).
+func (s *AuthAdmin) ReadTenantPublisherKeys(ctx context.Context, a authz.Actor, tenant string) (map[string][]store.PublisherKey, error) {
+	return s.tenantPublisherKeys(ctx, s.readPublishers, a, tenant)
+}
+
+func (s *AuthAdmin) tenantPublisherKeys(ctx context.Context, check tenantCheck, a authz.Actor, tenant string) (map[string][]store.PublisherKey, error) {
+	t, err := check(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}

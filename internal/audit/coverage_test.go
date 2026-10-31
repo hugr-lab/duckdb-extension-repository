@@ -86,6 +86,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetPublisherHold": {"catalogue.hold"}, "SetPublisherDistributor": {"publisher.change"}, "AddDistributorPublisher": {"publisher.add"},
 		"SetDistributorHold": {"catalogue.hold"}, "DistributorHold": nil,
 		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil, "IssuerConsoleClients": nil,
+		"ReadIssuers": nil, "ReadAudiences": nil, "ReadGrants": nil, "ReadPublishers": nil, "ReadPublisherKeys": nil, "ReadTenantPublisherKeys": nil,
 		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListPublisherKeys": nil, "TenantPublisherKeys": nil,
 		"CreatePackageGroup": {"extension_group.add"}, "SetPackageGroupDescription": {"extension_group.change"},
 		"ChangePackageGroupMembers": {"extension_group.members"},
@@ -133,7 +134,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"ResetBundle": {"bundle.reset"}, "ResetFeedBundle": {"bundle.reset"}, "Imports": nil,
 		"CreateUpload": {"bundle.upload"}, "CompleteUpload": {"bundle.upload_complete"}, "AbortUpload": {"bundle.upload_abort"},
 		"PutUploadChunk": nil, "GetUpload": nil, "ListUploads": nil, "UploadExpiresAt": nil, "WakeUploads": nil, "GetImport": nil, "Export": {"bundle.export"},
-		"Sync": nil, "List": nil, "Get": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil, "Plan": nil,
+		"Sync": nil, "List": nil, "Get": nil, "ReadAll": nil, "Read": nil, "Cells": nil, "WithAuthz": nil, "Shadows": nil, "Plan": nil,
 		"CheckAddAll": nil, "CheckSource": nil, // read only (spec 0024): the bootstrap's check
 	},
 	"attachment.Service": {

@@ -629,7 +629,7 @@ func (h *Handler) tenantHolder(w http.ResponseWriter, r *http.Request, c caller,
 
 func (h *Handler) listAudiences(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	auds, err := h.o.Auth.ListAudiences(r.Context(), a, p["t"])
+	auds, err := h.o.Auth.ReadAudiences(r.Context(), a, p["t"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -728,7 +728,7 @@ func issuerOf(is store.Issuer, cc *store.ConsoleClient, c caller) issuerJSON {
 // tenantIssuers reads a tenant's issuer records and their console clients, by issuer id.
 func (h *Handler) tenantIssuers(w http.ResponseWriter, r *http.Request, c caller, p params) ([]store.Issuer, map[string]store.ConsoleClient, bool) {
 	a, _ := c.actor()
-	iss, err := h.o.Auth.ListIssuers(r.Context(), a, p["t"])
+	iss, err := h.o.Auth.ReadIssuers(r.Context(), a, p["t"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return nil, nil, false
@@ -872,9 +872,15 @@ func grantKey(g store.Grant) string {
 	return g.CreatedAt.UTC().Format("20060102T150405.000000000") + "|" + g.ID
 }
 
-func (h *Handler) tenantGrants(w http.ResponseWriter, r *http.Request, c caller, p params) ([]store.Grant, bool) {
+// tenantGrants reads a tenant's grants: read, for its readers (spec 0040: the grants' routes),
+// otherwise for its administrators (the principals' picker).
+func (h *Handler) tenantGrants(w http.ResponseWriter, r *http.Request, c caller, p params, read bool) ([]store.Grant, bool) {
 	a, _ := c.actor()
-	gs, err := h.o.Auth.ListGrants(r.Context(), a, p["t"])
+	list := h.o.Auth.ListGrants
+	if read {
+		list = h.o.Auth.ReadGrants
+	}
+	gs, err := list(r.Context(), a, p["t"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return nil, false
@@ -888,7 +894,7 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 	if !ok {
 		return
 	}
-	gs, ok := h.tenantGrants(w, r, c, p)
+	gs, ok := h.tenantGrants(w, r, c, p, true)
 	if !ok {
 		return
 	}
@@ -943,7 +949,7 @@ func (h *Handler) grantPrincipals(w http.ResponseWriter, r *http.Request, c call
 		problem(w, http.StatusBadRequest, typeInvalid, "prefix is at most 300 bytes")
 		return
 	}
-	gs, ok := h.tenantGrants(w, r, c, p)
+	gs, ok := h.tenantGrants(w, r, c, p, false)
 	if !ok {
 		return
 	}
@@ -990,7 +996,7 @@ func (h *Handler) addGrant(w http.ResponseWriter, r *http.Request, c caller, p p
 }
 
 func (h *Handler) getGrant(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	gs, ok := h.tenantGrants(w, r, c, p)
+	gs, ok := h.tenantGrants(w, r, c, p, true)
 	if !ok {
 		return
 	}
