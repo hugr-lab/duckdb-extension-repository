@@ -5,6 +5,7 @@ import { useLoad, usePaged, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
 import { WhoMayUse } from './Access'
 import { Keys } from './Keys'
+import { PromoteButton } from './Promote'
 import { Reports } from './Reports'
 import { Sources } from './Sources'
 import type { Release } from './types'
@@ -233,7 +234,9 @@ export function Extension() {
   return (
     <>
       <PageTitle eyebrow={<><Link to={`${base}/channels`} className="no-underline">Channels</Link> / <Link to={`${base}/channels/${seg(c)}`} className="no-underline">{c}</Link></>}
-        title={<span className="font-mono">{ext}</span>} />
+        title={<span className="font-mono">{ext}</span>}>
+        <span className="pb-1"><PromoteButton key={`${c}/${ext}`} channel={c} ext={ext} /></span>
+      </PageTitle>
       <ReleaseList channel={c} ext={ext} />
       <Reports key={ext} ext={ext} />
       {perms.tenantAdmin && <WhoMayUse key={`${c}/${ext}`} channel={c} ext={ext} />}

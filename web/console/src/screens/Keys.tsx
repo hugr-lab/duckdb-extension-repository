@@ -22,6 +22,7 @@ export function Keys({ channel }: { channel: string }) {
   const [pending, setPending] = useState<{ key: Key; change: 'activate' | 'retire' } | null>(null)
   const [force, setForce] = useState(false)
   const [signer, setSigner] = useState('')
+  const [first, setFirst] = useState(true) // a channel's first key active at once (a later one never is)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<unknown>(null)
   const { data, error, loading, reload } = useLoad(() => client.get<KeyView>(`${api}/channels/${seg(channel)}/keys`), [api, channel])
@@ -83,8 +84,15 @@ export function Keys({ channel }: { channel: string }) {
       />
       {failure != null && <div className="mt-3"><ErrorBox error={failure} /></div>}
       {perms.server && (
-        <form className="mt-4 flex items-end gap-2 border-t border-line pt-4" onSubmit={(e) => { e.preventDefault(); act(() => client.post(`${api}/channels/${seg(channel)}/keys`, { body: { signer_ref: signer, active: false } }).then(() => setSigner(''))) }}>
-          <Field label="Add a key" hint="a signer reference (vault:…, kms:…, file:…); it starts trusted, activated later"><input className="field w-[28rem] font-mono" required value={signer} onChange={(e) => setSigner(e.target.value)} /></Field>
+        <form className="mt-4 flex flex-wrap items-end gap-2 border-t border-line pt-4" onSubmit={(e) => { e.preventDefault(); act(() => client.post(`${api}/channels/${seg(channel)}/keys`, { body: { signer_ref: signer, active: firstActive(v.keys.length, first) } }).then(() => setSigner(''))) }}>
+          <Field label={v.keys.length === 0 ? "Add the channel's first key" : 'Add a key'}
+            hint={v.keys.length === 0 && first ? 'a signer reference (vault:…, kms:…, file:…); the first key is active at once: it signs from now on'
+              : 'a signer reference (vault:…, kms:…, file:…); it starts trusted, activated later'}>
+            <input className="field w-[28rem] font-mono" required value={signer} onChange={(e) => setSigner(e.target.value)} />
+          </Field>
+          {v.keys.length === 0 && (
+            <label className="flex items-center gap-2 pb-2 text-[13px]"><input type="checkbox" checked={first} onChange={(e) => setFirst(e.target.checked)} /> active at once</label>
+          )}
           <Button type="submit" disabled={busy}>Add key</Button>
         </form>
       )}
@@ -116,4 +124,10 @@ export function Keys({ channel }: { channel: string }) {
     </Card>
     </div>
   )
+}
+
+/** Whether a key to add is made active at once: only a channel's first key may be (kista refuses
+ * active for a channel that ever had one), and only when asked. */
+export function firstActive(keys: number, asked: boolean) {
+  return keys === 0 && asked
 }

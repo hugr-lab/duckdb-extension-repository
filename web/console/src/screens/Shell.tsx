@@ -1,13 +1,13 @@
 // The console's frame, tresor-server's (spec 0015 phase 1b): standalone, a navy sidebar with the
 // sections and a top bar with the environment, the theme and the user; embedded in a host's shell,
 // only the sections, as tabs above the content.
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
-import { ChevronDown, LogOut, Moon, Sun } from 'lucide-react'
+import { ArrowLeftRight, ChevronDown, LogOut, Moon, Sun } from 'lucide-react'
 import iconOnDark from '../assets/hugr-icon-on-dark.svg'
 import logo from '../assets/hugr-logo.svg'
 import logoOnDark from '../assets/hugr-logo-on-dark.svg'
-import { useFrame } from '../lib/frame'
+import { sectionRuns, useFrame } from '../lib/frame'
 
 const themeKey = 'kista.theme'
 
@@ -65,6 +65,7 @@ export function Shell(props: ShellProps) {
 
 function Sidebar({ scope, service }: { scope?: ReactNode; service?: { host: string; version: string } }) {
   const { groups } = useFrame()
+  const ids = useId()
   const link = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-2.5 rounded-full px-3 py-2 no-underline ${isActive ? 'bg-[#1E4A60] font-semibold text-white' : 'text-[#C9DCE0] hover:text-white'}`
   return (
@@ -76,16 +77,34 @@ function Sidebar({ scope, service }: { scope?: ReactNode; service?: { host: stri
           <span className="text-[12px] text-[#9CB1BA]">extensions for DuckDB</span>
         </span>
       </a>
-      {scope && <div className="mx-3 mb-1.5 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#9CB1BA]">{scope}</div>}
+      {scope && (
+        <div className="mx-3 mb-1.5 flex items-center justify-between gap-2">
+          <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#9CB1BA]">{scope}</span>
+          {/* the landing chooses a tenant or the server's administration: each scope signs in on its own */}
+          <a href="/ui/" className="inline-flex items-center gap-1 text-[12px] text-[#C9DCE0] no-underline hover:text-white" title="Server or another tenant">
+            <ArrowLeftRight size={14} aria-hidden /> Switch
+          </a>
+        </div>
+      )}
       {groups.map((g, i) => (
         <div key={i} className="flex flex-col gap-1">
           {g.label && <div className="mx-3 mb-1.5 mt-[18px] text-[12px] font-semibold uppercase tracking-[0.08em] text-[#9CB1BA]">{g.label}</div>}
-          {g.items.map((it) => (
-            <NavLink key={it.to} to={it.to} end={it.end} className={link}>
-              <it.icon size={18} aria-hidden />
-              {it.label}
-            </NavLink>
-          ))}
+          {sectionRuns(g.items).map((run, k) => {
+            const items = run.items.map((it) => (
+              <NavLink key={it.to} to={it.to} end={it.end} className={link}>
+                <it.icon size={18} aria-hidden />
+                {it.label}
+              </NavLink>
+            ))
+            if (!run.section) return <div key={k} className="contents">{items}</div>
+            const id = `${ids}-${i}-${k}`
+            return (
+              <div key={k} role="group" aria-labelledby={id} className="flex flex-col gap-1">
+                <div id={id} className="mx-3 mb-1 mt-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#9CB1BA]">{run.section}</div>
+                {items}
+              </div>
+            )
+          })}
         </div>
       ))}
       {service && (
@@ -164,6 +183,7 @@ function UserMenu({ user, role, onSignOut }: { user: string; role?: string; onSi
 
 function EmbeddedFrame({ children }: { children: ReactNode }) {
   const { groups } = useFrame()
+  const ids = useId()
   const tab = ({ isActive }: { isActive: boolean }) =>
     `rounded-full px-4 py-1.5 no-underline ${isActive ? 'bg-brand-strong font-semibold text-brand-on' : 'border border-line text-ink'}`
   return (
@@ -171,11 +191,21 @@ function EmbeddedFrame({ children }: { children: ReactNode }) {
       {groups.map((g, i) => (
         <nav key={i} aria-label={typeof g.label === 'string' ? g.label : 'kista'} className="flex flex-wrap items-center gap-1.5">
           {g.label && <span className="eyebrow mr-2">{g.label}</span>}
-          {g.items.map((it) => (
-            <NavLink key={it.to} to={it.to} end={it.end} className={tab}>
-              {it.label}
-            </NavLink>
-          ))}
+          {sectionRuns(g.items).map((run, k) => {
+            const items = run.items.map((it) => (
+              <NavLink key={it.to} to={it.to} end={it.end} className={tab}>
+                {it.label}
+              </NavLink>
+            ))
+            if (!run.section) return <span key={k} className="contents">{items}</span>
+            const id = `${ids}-${i}-${k}`
+            return (
+              <span key={k} role="group" aria-labelledby={id} className="flex flex-wrap items-center gap-1.5">
+                <span id={id} className="eyebrow ml-3 mr-1">{run.section}</span>
+                {items}
+              </span>
+            )
+          })}
         </nav>
       ))}
       {children}

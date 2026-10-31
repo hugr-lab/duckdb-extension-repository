@@ -9,6 +9,21 @@ export interface NavItem {
   icon: LucideIcon
   /** Active on this path only, not below it. */
   end?: boolean
+  /** The section the item is in, within its group ("Organisation", "Audit"): a heading above each
+   * run of items in the same section. */
+  section?: string
+}
+
+/** A group's items in runs: each run of one section, with its heading; items without a section run
+ * without one. The frame renders a run with a heading as a group the heading names. */
+export function sectionRuns(items: NavItem[]) {
+  const runs: { section?: string; items: NavItem[] }[] = []
+  items.forEach((it, i) => {
+    const last = runs[runs.length - 1]
+    if (i > 0 && last.section === it.section) last.items.push(it)
+    else runs.push({ section: it.section, items: [it] })
+  })
+  return runs
 }
 
 export interface NavGroup {

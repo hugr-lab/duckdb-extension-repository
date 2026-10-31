@@ -199,7 +199,9 @@ test('a server administrator: a tenant created, suspended and resumed; a version
   await page.getByRole('link', { name: 'acme', exact: true }).click()
   await page.getByRole('link', { name: 'beta', exact: true }).click()
   await page.getByRole('button', { name: 'Keys' }).click()
-  await page.getByLabel('Add a key').fill('file:b.pem')
+  // a channel's first key may be active at once (K4); here it starts trusted, to be activated
+  await page.getByLabel("Add the channel's first key").fill('file:b.pem')
+  await page.getByLabel('active at once').uncheck()
   await page.getByRole('button', { name: 'Add key' }).click()
   await expect(page.getByText('trusted', { exact: true })).toBeVisible()
   // a key trusted for less than a week is refused, as the API words it; a server administrator forces
@@ -210,4 +212,15 @@ test('a server administrator: a tenant created, suspended and resumed; a version
   await page.getByRole('dialog').getByLabel(/force/).check()
   await confirm(page, 'Activate')
   await expect(page.getByRole('cell', { name: 'active', exact: true })).toBeVisible()
+
+  // K4: vault 1.0 (vault-ci's, checked) promoted from prod to beta, which now signs and serves v2.0.0
+  await page.getByRole('link', { name: 'Channels' }).first().click()
+  await page.getByRole('link', { name: 'prod', exact: true }).click()
+  await page.getByRole('link', { name: 'vault', exact: true }).click()
+  await page.getByRole('button', { name: 'Promote…' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('To channel').selectOption('beta')
+  await expect(dialog.getByLabel('Version', { exact: true })).toHaveValue('1.0')
+  await confirm(page, 'Promote')
+  await expect(page.getByRole('status').getByText('1.0 promoted to beta')).toBeVisible()
 })

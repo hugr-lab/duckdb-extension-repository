@@ -78,6 +78,10 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/a.
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/b.pem" 2>/dev/null  # added from the console (2b)
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/att.pem" 2>/dev/null  # the feed's (spec 0011)
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/s.pem" 2>/dev/null  # tenant scratch's (spec 0019)
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/k.pem" 2>/dev/null  # K4: a new channel's first key, active at once
+# K4: an upstream credential the server's Credentials page lists (its token never shown)
+printf 'e2e-only' >"$work/upstream.token"
+chmod 600 "$work/upstream.token"
 # spec 0021: vault's build declares the licence vectors' test-only key; a licence for vault, 20 days
 # long, to import
 openssl pkey -in "$root/internal/license/testdata/test-only-2048.pem" -pubout -out "$work/lic.pub.pem" 2>/dev/null
@@ -94,6 +98,8 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/n.
 "$work/fixture" "$work/hello2.duckdb_extension" 2.0 f hello_acme
 "$work/fixture" "$work/maps10.duckdb_extension" 1.0 g maps
 "$work/fixture" "$work/maps11.duckdb_extension" 1.1 h maps
+# K4: a build a server administrator adds to the catalogue from the console, its footer read there
+"$work/fixture" "$work/k4_tool.duckdb_extension" 0.4 j k4_tool
 # spec 0036: geo_tools' icon (its distributor's publisher's), and one tom gives maps in the console
 "$work/fixture" -icon "$work/geo.png" 64
 "$work/fixture" -icon "$work/maps.png" 96
@@ -130,6 +136,9 @@ auth:
 gc: { interval: 24h }  # every replica runs this version: purging is on (spec 0016)
 tenants: { min_suspended: 0s }  # spec 0019: deleted at once in the suite
 bundles: { chunk_size: 1MiB }  # spec 0014: an upload of a few MiB in several chunks
+upstreams:
+  credentials:
+    - { name: k4-cred, tenants: ["*"], prefixes: ["https://ext.example/acme/"], kind: token_file, token_file: $work/upstream.token }
 ui:
   environment: e2e
   allowed_origins: [ $host ]
@@ -245,4 +254,4 @@ for i in $(seq 1 30); do curl -sf "$host/" >/dev/null && break; sleep 1; done
 curl -sf "$host/" >/dev/null || { cat "$work/host.log"; exit 1; }
 
 echo "e2e: Playwright"
-E2E_ICON="$work/maps.png" E2E_LICENSE="$work/vault.kista-license" E2E_LICENSE_NOKEY="$work/tresor.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }
+E2E_EXT="$work/k4_tool.duckdb_extension" E2E_ICON="$work/maps.png" E2E_LICENSE="$work/vault.kista-license" E2E_LICENSE_NOKEY="$work/tresor.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }

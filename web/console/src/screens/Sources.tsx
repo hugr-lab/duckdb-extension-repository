@@ -4,6 +4,7 @@ import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { seg, sourceSeg } from '../lib/http'
 import { PlaceDialog, compareVersions, modeWords, placeBody, removedSource } from './Catalogue'
+import { HoldForm } from './Holds'
 
 // A channel's rules (specs 0031, 0033): the channel serves each extension name from one source (an
 // upstream, a publisher, the tenant), and takes that source's versions from the tenant's catalogue
@@ -203,27 +204,11 @@ function ChannelHold({ channel }: { channel: string }) {
   const { client, api } = useTenant()
   const path = `${api}/channels/${seg(channel)}/hold`
   const hold = useLoad(() => client.get<{ hold: string }>(path), [path])
-  const [value, setValue] = useState('')
-  const { busy, failure, act } = useAction('The hold', hold.reload)
   return (
     <div className="flex flex-col gap-2">
-      <form role="group" aria-label="channel hold" className="flex flex-wrap items-center gap-2 text-[13px]"
-        onSubmit={(e) => {
-          e.preventDefault()
-          act(() => client.put(path, { body: { hold: holdInput(value) } })).then((ok) => {
-            if (ok) {
-              setValue('')
-              hold.reload()
-            }
-          })
-        }}>
-        <span className="text-ink-muted">Channel hold</span>
-        <b>{hold.data ? holdWords(hold.data.data.hold) : '…'}</b>
-        <span className="text-ink-muted">(automatic placements wait this long after a build arrives, besides its source's hold)</span>
-        <input aria-label="new hold" className="field w-32 py-1 font-mono text-[13px]" placeholder="24h, 2d, 0" required value={value} onChange={(e) => setValue(e.target.value)} />
-        <Button type="submit" disabled={busy}>Set hold</Button>
-      </form>
-      {(failure != null || hold.error != null) && <ErrorBox error={failure ?? hold.error} />}
+      <HoldForm path={path} label="channel hold" caption="Channel hold" current={hold.data ? hold.data.data.hold : null} onChanged={hold.reload}
+        inline="(automatic placements wait this long after a build arrives, besides its source's hold)" />
+      {hold.error != null && <ErrorBox error={hold.error} />}
     </div>
   )
 }
