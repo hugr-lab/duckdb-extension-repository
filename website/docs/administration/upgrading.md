@@ -166,10 +166,10 @@ so the operator declares it:
   [Storage](../storage.md).
 - **Deleting a tenant** (migration 0019) needs no setting. Only a binary with migration 0019
   records when a tenant was suspended, and the migration gives tenants that are already suspended
-  the migration time. So no tenant can be deleted until `tenants.min_suspended` (at least 24 hours
-  outside `profile: dev`) has passed since the upgrade. An older replica that is still running
-  sees a deleting tenant as suspended and does not serve it; one still running a day after the
-  migration is outside what kista supports. A tenant suspended by an older binary while the
+  the migration time. So no tenant can be deleted until `tenants.min_suspended` (at least
+  `tenants.min_suspended_floor`, 24 hours by default, outside `profile: dev`) has passed since the
+  upgrade. An older replica that is still running sees a deleting tenant as suspended and does
+  not serve it; one still running a day after the migration is outside what kista supports. A tenant suspended by an older binary while the
   rollout ran has no suspension time: resume it and suspend it again before deleting it. The
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
@@ -182,6 +182,11 @@ so the operator declares it:
   grants, groups, feeds, blocks, attachments, an upstream's matrix, the longest hold, a publisher
   key's lifetime) are [`limits.ceilings`](../configuration.md#limitsceilings). A server that sets
   none keeps today's values. A ceiling lowered below a tenant's stored limit caps it. No migration.
+- The cap on `events.retention` once a sink is configured is
+  [`limits.ceilings.events_retention`](../configuration.md#limitsceilings) (90 days by default), and
+  the floor under `tenants.min_suspended` outside `profile: dev` is
+  [`tenants.min_suspended_floor`](../configuration.md#tenants) (24 hours by default). Leaving both
+  out keeps today's behaviour.
 
 ### `*` on a mirror of a kista (spec 0039, PR 2)
 

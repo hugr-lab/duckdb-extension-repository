@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -18,6 +19,17 @@ func TestEventsConfig(t *testing.T) {
 	// events.settle has no ceiling: a deployment chooses its window
 	if c, err := Load(write(t, base+"events: { settle: 48h }\n"), nil); err != nil || c.EventSettings().Settle != 48*time.Hour {
 		t.Fatalf("a long settle: %v", err)
+	}
+	// spec 0038 amended: the cap with sinks is limits.ceilings.events_retention (90 days by default)
+	sink := "events: { retention: %s, sinks: [{ name: a, kind: jsonl, path: '-' }] }\n"
+	if _, err := Load(write(t, base+fmt.Sprintf(sink, "2160h")), nil); err != nil {
+		t.Fatalf("90 days with a sink under the default ceiling: %v", err)
+	}
+	if _, err := Load(write(t, base+fmt.Sprintf(sink, "4320h")+"limits: { ceilings: { events_retention: 4320h } }\n"), nil); err != nil {
+		t.Fatalf("180 days with a sink under a raised ceiling: %v", err)
+	}
+	if _, err := Load(write(t, base+"events: { retention: 4320h }\nlimits: { ceilings: { events_retention: 168h } }\n"), nil); err != nil {
+		t.Fatalf("without sinks the ceiling does not apply: %v", err)
 	}
 	for name, c := range map[string]struct{ file, want string }{
 		"retention":    {base + "events: { retention: 1h }\n", "events.retention"},
@@ -38,7 +50,14 @@ func TestEventsConfig(t *testing.T) {
 		"port 0": {base + "events: { sinks: [{ name: a, kind: otlp, url: 'https://c/v1/logs', allow: [{ cidr: 10.0.0.0/8, ports: [0] }] }] }\n",
 			"0 is not a port"},
 		"same file":      {base + "events: { sinks: [{ name: a, kind: jsonl, path: /e }, { name: b, kind: jsonl, path: /e }] }\n", "another sink's file"},
-		"long retention": {base + "events: { retention: 2400h, sinks: [{ name: a, kind: jsonl, path: '-' }] }\n", "at most 90 days"},
+		"long retention": {base + "events: { retention: 2400h, sinks: [{ name: a, kind: jsonl, path: '-' }] }\n", "limits.ceilings.events_retention"},
+		// a lowered ceiling refuses a retention above it, the 30-day default included
+		"over a lowered ceiling": {base + "events: { retention: 240h, sinks: [{ name: a, kind: jsonl, path: '-' }] }\nlimits: { ceilings: { events_retention: 168h } }\n",
+			"events.retention is at most limits.ceilings.events_retention"},
+		"default over a lowered ceiling": {base + "events: { sinks: [{ name: a, kind: jsonl, path: '-' }] }\nlimits: { ceilings: { events_retention: 168h } }\n",
+			"limits.ceilings.events_retention"},
+		"ceiling 0":        {base + "limits: { ceilings: { events_retention: 0s } }\n", "limits.ceilings.events_retention is at least 1s"},
+		"ceiling negative": {base + "limits: { ceilings: { events_retention: -1h } }\n", "limits.ceilings.events_retention is at least 1s"},
 	} {
 		if _, err := Load(write(t, c.file), nil); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)

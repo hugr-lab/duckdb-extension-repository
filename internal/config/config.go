@@ -85,10 +85,22 @@ type Config struct {
 type Tenants struct {
 	// MinSuspended is how long a tenant stays suspended before it may be deleted (spec 0019).
 	MinSuspended time.Duration `yaml:"min_suspended"`
+	// MinSuspendedFloor is the least MinSuspended may be outside the dev profile; left out, the
+	// default (spec 0019, amended 2026-10-31: the floor is the server's setting, not a constant).
+	// Never 0: a floor of none would let a mistyped minimum delete a tenant at once.
+	MinSuspendedFloor *time.Duration `yaml:"min_suspended_floor" json:",omitempty"`
 }
 
-// MinSuspendedFloor is the least tenants.min_suspended may be outside the dev profile.
-const MinSuspendedFloor = 24 * time.Hour
+// DefaultMinSuspendedFloor is tenants.min_suspended_floor when it is left out.
+const DefaultMinSuspendedFloor = 24 * time.Hour
+
+// Floor is tenants.min_suspended_floor in force: as set, else its default.
+func (t Tenants) Floor() time.Duration {
+	if t.MinSuspendedFloor != nil {
+		return *t.MinSuspendedFloor
+	}
+	return DefaultMinSuspendedFloor
+}
 
 // Store selects and configures the metadata database.
 type Store struct {
@@ -598,8 +610,11 @@ func (c Config) Validate() error {
 	if c.Rotation.MinTrusted < 0 || c.Rotation.MinDemoted < 0 {
 		bad("rotation minimums cannot be negative")
 	}
-	if c.Tenants.MinSuspended < 0 || !dev && c.Tenants.MinSuspended < MinSuspendedFloor {
-		bad("tenants.min_suspended cannot be negative, nor below %s outside profile dev", MinSuspendedFloor)
+	if f := c.Tenants.MinSuspendedFloor; f != nil && *f < time.Second {
+		bad("tenants.min_suspended_floor is at least 1s (leave it out for its default, %s)", DefaultMinSuspendedFloor)
+	}
+	if c.Tenants.MinSuspended < 0 || !dev && c.Tenants.MinSuspended < c.Tenants.Floor() {
+		bad("tenants.min_suspended cannot be negative, nor below tenants.min_suspended_floor (%s) outside profile dev", c.Tenants.Floor())
 	}
 	if c.Signers.FileDir != "" && !strings.HasPrefix(c.Signers.FileDir, "/") {
 		bad("signers.file_dir must be an absolute path")

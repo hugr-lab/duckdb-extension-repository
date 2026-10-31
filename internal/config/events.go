@@ -76,8 +76,9 @@ func (c Config) EventSettings() Events {
 
 func validateEvents(bad func(string, ...any), c Config) {
 	e := c.Events
-	// up to 90 days with sinks (spec 0010); without any, the buffer is the only record
-	// two days at least: the installers of a day are counted from its events after it ends
+	// up to limits.ceilings.events_retention with sinks (spec 0010, 0038 amended); without any, the
+	// buffer is the only record. Two days at least: the installers of a day are counted from its
+	// events after it ends
 	if e.Retention != 0 && (e.Retention < 48*time.Hour || e.Retention > 365*24*time.Hour) {
 		bad("events.retention must be within 2..365 days")
 	}
@@ -85,8 +86,11 @@ func validateEvents(bad func(string, ...any), c Config) {
 	if e.Settle != 0 && e.Settle < time.Second {
 		bad("events.settle must be at least 1s")
 	}
-	if len(e.Sinks) > 0 && e.Retention > 90*24*time.Hour {
-		bad("events.retention is at most 90 days when sinks are configured")
+	// the retention in force, the default included: a lowered ceiling refuses the 30-day default too
+	// (a ceiling below 1s is refused as the ceilings are checked, not here again)
+	ceil := c.Limits.Ceilings.Settings().EventsRetention
+	if len(e.Sinks) > 0 && ceil >= time.Second && c.EventSettings().Retention > ceil {
+		bad("events.retention is at most limits.ceilings.events_retention (%s) when sinks are configured", ceil)
 	}
 	if len(e.Sinks) > 16 {
 		bad("events.sinks holds at most 16 sinks")

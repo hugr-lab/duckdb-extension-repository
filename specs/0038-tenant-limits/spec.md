@@ -632,6 +632,14 @@ when a token is verified; the configuration checks its issuers against its own c
 | `MaxHold` | product | `max_hold` | 2160h (90 days) |
 | `tenants.MaxKeyLifetime` | product | `publisher_key_lifetime` | 8784h (366 days) |
 | the issuer's `max_token_lifetime` cap (7 days) | product | `issuer_token_lifetime` | 168h |
+| `events.retention`'s cap once a sink is configured (spec 0010) | operator | `events_retention` | 2160h (90 days) |
+
+`events_retention` (added the same day, after the first list) bounds the operator's own
+`events.retention` while `events.sinks` is not empty: the retention in force, so a ceiling lowered
+below the 30-day default refuses the default too, naming `limits.ceilings.events_retention`. It
+does not lift `events.retention`'s own range (2 to 365 days), which is the buffer's (spec 0010).
+The floor under `tenants.min_suspended` is a setting too, but a minimum, not a ceiling: it is
+`tenants.min_suspended_floor` (spec 0019's amendment).
 
 A ceiling is never 0 (a count at least 1, a duration at least 1s, `issuer_token_lifetime` at least
 1m): leave a key out for its default; a limit's `0` (none) is a different thing. The ceilings are the
@@ -642,8 +650,6 @@ What stays in code, and why (bounds on one request, one document or one remote a
 the server and are part of a format, not a tenant's room):
 
 - `MaxSinks` (16): a bit each in `events.pending`, a column's width.
-- `events.retention`'s 90-day cap with sinks: the range of the operator's own setting (spec 0010), not
-  a tenant's room.
 - The bundle format: `bundle.MaxFeeds` (50 feed URLs a plan), `MaxPlanFeedKeys` (500), `MaxCells`,
   `MaxFiles`, `MaxLicenses` (1000) and `MaxRevocations` (10000) are the same at every site, so any
   site reads any bundle. A site whose `feeds` or `feed_keys` ceiling is above them names the feeds for

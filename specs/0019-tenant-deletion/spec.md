@@ -3,6 +3,7 @@
 - **Status**: implemented (accepted 2026-10-12). Spec [0023](../0023-publisher-keys/spec.md) replaces `api_keys` and `publisher_github` with `publisher_keys` in the rows reaped
 - **Changed by** [0037](../0037-distributor-in-a-tenant/spec.md) (PR 2): the reaper no longer removes tenant reservations: `tenant_reserved_names` is dropped (migration 0046).
 - **Changed by** [0036](../0036-entry-meta/spec.md) (phase 1): the reaper deletes `entry_meta`; a deleted tenant's icons go with the collector's next pass.
+- **Amended** 2026-10-31: the `24h` floor under `tenants.min_suspended` outside `profile: dev` is the setting `tenants.min_suspended_floor` (see "Amendment: a configured floor").
 - **Date**: 2026-10-12
 - **Author**: vgsml, Claude
 
@@ -236,7 +237,8 @@ Migration 0019 is `-- +min_reader 19`. That stops an older binary from starting 
 ran. It does not stop one that is already running, so the design does not lean on it:
 - `suspended_at` is set only by this version. The migration fills it with the migration time for
   tenants that are already suspended. So no tenant can be deleted until `tenants.min_suspended` has
-  passed since the upgrade: at least 24 hours outside `profile: dev`.
+  passed since the upgrade: at least `tenants.min_suspended_floor` (24 hours by default) outside
+  `profile: dev`.
 - An older replica sees a deleting tenant as `suspended`, and does not serve it.
 - An older replica still running a day after the migration is outside what kista supports, as in
   spec 0016. The upgrade notes say so.
@@ -291,8 +293,9 @@ to download, and `blob verify` (spec 0018) reports them. After a restore, the op
     the last error and the keys.
 - **Configuration**
   - `tenants.min_suspended` is a duration, file-only. Its default, `168h`, is set in
-    `config.Default()` as the rotation minimums are. Outside `profile: dev` it is at least `24h`;
-    in dev it may be `0`. A negative value is refused.
+    `config.Default()` as the rotation minimums are. Outside `profile: dev` it is at least
+    `tenants.min_suspended_floor` (`24h` by default, see the amendment); in dev it may be `0`. A
+    negative value is refused.
   - The process that takes the delete applies its own value, so `kista admin` and `kista serve`
     should share the configuration. `server.start` digests the `tenants` section with the other
     security-relevant ones (spec 0010): lowering the minimum shows.
@@ -351,6 +354,23 @@ tombstone. Spec 0010's catalogue and the coverage test gain:
 - **Docs.** `administration/tenants-and-channels.md` (it says there is no deletion yet),
   `commands.md`, `configuration.md`, `api.md`, `console.md`, `observability.md`,
   `backup-restore.md`, `upgrading.md`.
+
+### Amendment: a configured floor (2026-10-31)
+
+The owner: no limit is fixed in code (spec 0038's amendment of the same day). The floor that
+`tenants.min_suspended` may not go below outside `profile: dev` was the constant `24h`; it is now
+`tenants.min_suspended_floor`, a duration, file-only like the rest of `tenants`:
+
+- Left out, it is `24h`, today's value. Set, it is at least `1s`: a floor of `0` would let a
+  mistyped minimum delete a tenant at once, so it is refused, as is a negative one. A test or
+  staging server outside dev lowers it on purpose (`min_suspended_floor: 1s`, `min_suspended: 1s`).
+- `tenants.min_suspended` below the floor in force is refused outside dev, with the floor's key
+  in the message. In dev the floor is not applied (`min_suspended` may be `0`), but its own shape
+  is still checked.
+- The floor is checked only as the configuration loads. The delete and `deletable_at` follow
+  `tenants.min_suspended` as before; the floor bounds that value, nothing else.
+- `server.start` digests the `tenants` section, the floor with it: lowering it shows. Left out, the
+  section's digest is the same as before.
 
 ## Security
 

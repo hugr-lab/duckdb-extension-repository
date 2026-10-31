@@ -172,7 +172,8 @@ crash; changes' events never are.
 ### The buffer
 
 Events stay in the database for `events.retention` (default **30 days**, at least 2 days (phase 2a counts a day's installers from its events after it ends); at most 365
-days, and at most 90 once a sink is configured, for sites without a pipeline). A pass every hour
+days, and once a sink is configured at most `limits.ceilings.events_retention`, 90 days by default
+(spec 0038 as amended: the cap was a constant), for sites without a pipeline). A pass every hour
 (lease `kista/events/retention`) deletes older events in batches (`DELETE TOP (n)` on SQL Server;
 `WHERE id IN (SELECT … LIMIT n)` on PostgreSQL and SQLite). An event not yet delivered to every sink
 that takes it is kept past the retention for at most 7 more days, then deleted. A tenant's events

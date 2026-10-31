@@ -119,7 +119,7 @@ kista serve -config /etc/kista/kista.yaml
 | --- | --- | --- |
 | Store | any reachable PostgreSQL or SQL Server, or SQLite | SQLite, or PostgreSQL / SQL Server on loopback hosts only (every host of a multi-host DSN and the failover partner count) |
 | Rotation minimums | at least `24h` each | any value, `0` included |
-| `tenants.min_suspended` | at least `24h` | any value, `0` included |
+| `tenants.min_suspended` | at least `tenants.min_suspended_floor` (`24h` by default) | any value, `0` included |
 | File signers (`file:` references) | need `signers.allow_file: true` and `signers.file_dir` | need `signers.file_dir` only |
 | Vault / OpenBao | `https` address; `software_keys: true` required | `http` on loopback allowed; `software_keys` not required |
 | Azure Key Vault | `require_hsm` stays on | `require_hsm: false` allowed |
@@ -512,7 +512,7 @@ The event buffer and its sinks. The whole block is file-only. See
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `events.retention` | duration | `720h` (30 days) | `48h..8760h`; at most `2160h` (90 days) when sinks are configured. |
+| `events.retention` | duration | `720h` (30 days) | `48h..8760h`; when sinks are configured, at most [`limits.ceilings.events_retention`](#limitsceilings) (`2160h`, 90 days, by default). |
 | `events.client_addresses` | `full`, `truncated`, `none` | `truncated` | How client addresses are kept in events. |
 | `events.max_rows_per_tenant` | integer | `1000000` | `1..100000000`. |
 | `events.settle` | duration | `30s` | At least `1s`. Where an `order=asc` events read stops, behind now, and so where each `kista admin events list -follow` poll reads up to: the writer commits events in batches, so one can commit after a later one is readable ([Following the events](observability.md#following-the-events)). |
@@ -617,9 +617,10 @@ of that kind at all. Leave a key out, or write `unlimited`, for no limit.
 
 ### limits.ceilings
 
-The server's ceilings: the most any tenant may hold of each kind, whatever its limits. No limit is
-fixed in code; each key left out (or `0`) keeps its default. A tenant's limits and the defaults
-above stay at or below these; the bootstrap tenant's `limits` take no `ceilings`. File-only.
+The server's ceilings: the most any tenant may hold of each kind, whatever its limits, and the
+longest event retention with sinks. No limit is fixed in code; each key left out keeps its default.
+A tenant's limits and the defaults above stay at or below these; the bootstrap tenant's `limits`
+take no `ceilings`. File-only.
 
 ```yaml
 limits:
@@ -650,6 +651,7 @@ limits:
     max_hold: 2160h            # the longest hold (90 days)
     publisher_key_lifetime: 8784h # the furthest a publisher key's expiry (366 days)
     issuer_token_lifetime: 168h   # the most an issuer's max_token_lifetime (7 days)
+    events_retention: 2160h       # the longest events.retention once a sink is configured (90 days)
 ```
 
 A count is at least 1, a duration at least `1s` (`issuer_token_lifetime` at least `1m`); a ceiling
@@ -662,7 +664,9 @@ a feed (the format's, the same at every site): a site whose `feeds` ceiling is a
 feeds for each plan. A ceiling lowered below a tenant's stored
 limit caps it: growth past the ceiling is refused `429 tenant-limit`, and sending the stored value again
 unchanged is not refused. An issuer record's `max_token_lifetime` above a lowered
-`issuer_token_lifetime` is capped the same way when tokens are verified.
+`issuer_token_lifetime` is capped the same way when tokens are verified. `events_retention` bounds
+`events.retention` while `events.sinks` is not empty, the 30-day default included: a lower ceiling
+needs a retention at or below it. It does not widen `events.retention`'s own `48h..8760h`.
 
 ## ui
 
@@ -732,8 +736,12 @@ The tenant lifecycle. File-only. See
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `tenants.min_suspended` | duration | `168h` | How long a tenant stays suspended before it may be deleted. |
+| `tenants.min_suspended_floor` | duration | `24h` | The least `tenants.min_suspended` may be outside `profile: dev`. At least `1s`; never `0`. |
 
-Outside `profile: dev` it may not be below `24h`; in dev it may be `0`. It may not be negative. The
+Outside `profile: dev`, `min_suspended` may not be below `min_suspended_floor`; in dev it may be `0`
+(the floor is not applied there, but `0` or a negative floor is still refused). It may not be
+negative. Lower the floor only on purpose, for a test or staging server that deletes tenants within
+seconds (`min_suspended_floor: 1s`, `min_suspended: 1s`); `deletable_at` follows `min_suspended`. The
 process that takes the delete applies its own value (`kista admin tenant delete`, or the replica
 that answers `DELETE /api/v1/tenants/{t}`), so `kista admin` and `kista serve` should share the
 configuration.
@@ -948,7 +956,8 @@ rotation:
   min_demoted: 168h
 
 tenants:
-  min_suspended: 168h              # before a suspended tenant may be deleted; at least 24h outside dev
+  min_suspended: 168h              # before a suspended tenant may be deleted; at least the floor outside dev
+  min_suspended_floor: 24h         # the least min_suspended may be outside dev
 
 signers:
   allow_file: false

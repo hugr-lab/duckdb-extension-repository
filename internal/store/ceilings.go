@@ -37,6 +37,7 @@ type Ceilings struct {
 	MaxHold               time.Duration
 	PublisherKeyLifetime  time.Duration
 	IssuerTokenLifetime   time.Duration // the most an issuer's max_token_lifetime may be
+	EventsRetention       time.Duration // the longest events.retention once a sink is configured (spec 0010)
 }
 
 // DefaultCeilings are the ceilings a configuration that sets none has.
@@ -48,6 +49,7 @@ func DefaultCeilings() Ceilings {
 		Attachments: 100000, AttachmentHeads: 20, UpstreamEntries: 1000, EntryVersions: 100,
 		UpstreamKeys: 10, UpstreamCells: 20000, TenantCells: 100000, DiscoveredNames: 1000,
 		MaxHold: 90 * 24 * time.Hour, PublisherKeyLifetime: 366 * 24 * time.Hour, IssuerTokenLifetime: 7 * 24 * time.Hour,
+		EventsRetention: 90 * 24 * time.Hour,
 	}
 }
 
@@ -60,6 +62,10 @@ var MaxKeyLifetime = 366 * 24 * time.Hour
 // MaxIssuerTokenLifetime is the most an issuer's max_token_lifetime may be.
 var MaxIssuerTokenLifetime = 7 * 24 * time.Hour
 
+// MaxEventsRetention is the longest events.retention once a sink is configured: the configuration
+// checks it as it loads; nothing in the store reads it.
+var MaxEventsRetention = 90 * 24 * time.Hour
+
 // Check refuses a ceiling below 1 (a duration: below a second).
 func (c Ceilings) Check() error {
 	for _, f := range c.counts() {
@@ -67,8 +73,8 @@ func (c Ceilings) Check() error {
 			return fmt.Errorf("%w: limits.ceilings.%s must be at least 1", ErrInvalid, f.name)
 		}
 	}
-	if c.MaxHold < time.Second || c.PublisherKeyLifetime < time.Second || c.IssuerTokenLifetime < time.Minute {
-		return fmt.Errorf("%w: limits.ceilings: max_hold and publisher_key_lifetime are at least 1s, issuer_token_lifetime at least 1m", ErrInvalid)
+	if c.MaxHold < time.Second || c.PublisherKeyLifetime < time.Second || c.EventsRetention < time.Second || c.IssuerTokenLifetime < time.Minute {
+		return fmt.Errorf("%w: limits.ceilings: max_hold, publisher_key_lifetime and events_retention are at least 1s, issuer_token_lifetime at least 1m", ErrInvalid)
 	}
 	return nil
 }
@@ -110,6 +116,7 @@ func SetCeilings(c Ceilings) {
 	MaxUpstreamEntries, MaxEntryVersions, MaxUpstreamKeys = c.UpstreamEntries, c.EntryVersions, c.UpstreamKeys
 	MaxUpstreamCells, MaxTenantCells, MaxDiscoveredNames = c.UpstreamCells, c.TenantCells, c.DiscoveredNames
 	MaxHold, MaxKeyLifetime, MaxIssuerTokenLifetime = c.MaxHold, c.PublisherKeyLifetime, c.IssuerTokenLifetime
+	MaxEventsRetention = c.EventsRetention
 }
 
 // CurrentCeilings are the ceilings in force.
@@ -124,5 +131,6 @@ func CurrentCeilings() Ceilings {
 		EntryVersions: MaxEntryVersions, UpstreamKeys: MaxUpstreamKeys, UpstreamCells: MaxUpstreamCells,
 		TenantCells: MaxTenantCells, DiscoveredNames: MaxDiscoveredNames, MaxHold: MaxHold,
 		PublisherKeyLifetime: MaxKeyLifetime, IssuerTokenLifetime: MaxIssuerTokenLifetime,
+		EventsRetention: MaxEventsRetention,
 	}
 }

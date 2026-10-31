@@ -263,7 +263,8 @@ token; `429` (`rate-limited`) past the API's rate (`serve.api_rate`, per client 
 
 Events stay in the database for `events.retention`:
 
-- default 30 days, at least 2 days, at most 365 days (90 when a sink is configured);
+- default 30 days, at least 2 days, at most 365 days; when a sink is configured, at most
+  [`limits.ceilings.events_retention`](configuration.md#limitsceilings) (90 days by default);
 - an event not yet delivered to every sink that takes it is kept up to 7 more days;
 - a tenant holds at most `events.max_rows_per_tenant` events (default 1,000,000); older ones go
   first.

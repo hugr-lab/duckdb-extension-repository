@@ -42,6 +42,22 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// Spec 0019, amended 2026-10-31: the floor under tenants.min_suspended is the server's setting
+// (24h by default), so a prod test server may take a one-second minimum by lowering it.
+func TestMinSuspendedFloor(t *testing.T) {
+	cfg, err := Load(write(t, base), nil)
+	if err != nil || cfg.Tenants.Floor() != 24*time.Hour || cfg.Tenants.MinSuspended != 7*24*time.Hour {
+		t.Fatalf("defaults: %+v %v", cfg.Tenants, err)
+	}
+	cfg, err = Load(write(t, base+"tenants: { min_suspended_floor: 1s, min_suspended: 1s }\n"), nil)
+	if err != nil || cfg.Tenants.Floor() != time.Second || cfg.Tenants.MinSuspended != time.Second {
+		t.Fatalf("a lowered floor: %+v %v", cfg.Tenants, err)
+	}
+	if _, err := Load(write(t, base+"tenants: { min_suspended_floor: 1s, min_suspended: 0s }\n"), nil); err == nil || !strings.Contains(err.Error(), "tenants.min_suspended") {
+		t.Fatalf("0 under a lowered floor, outside dev: %v", err)
+	}
+}
+
 func TestRefused(t *testing.T) {
 	cases := []struct {
 		name, file string
@@ -63,6 +79,10 @@ func TestRefused(t *testing.T) {
 		{"relative key dir", base + "signers: { file_dir: keys }\n", nil, "absolute"},
 		{"min_demoted floor", base + "rotation: { min_demoted: 23h59m }\n", nil, "cannot be below"},
 		{"min_suspended floor", base + "tenants: { min_suspended: 1h }\n", nil, "tenants.min_suspended"},
+		{"min_suspended_floor 0", base + "tenants: { min_suspended_floor: 0s, min_suspended: 1h }\n", nil, "tenants.min_suspended_floor is at least 1s"},
+		{"min_suspended_floor negative", base + "tenants: { min_suspended_floor: -1s }\n", nil, "tenants.min_suspended_floor is at least 1s"},
+		{"min_suspended_floor 0 in dev", "profile: dev\nstore: { kind: sqlite, sqlite: { path: /tmp/k.db } }\ntenants: { min_suspended_floor: 0s, min_suspended: 0s }\n", nil, "tenants.min_suspended_floor is at least 1s"},
+		{"min_suspended under a raised floor", base + "tenants: { min_suspended_floor: 240h }\n", nil, "below tenants.min_suspended_floor"},
 		{"a refused key that is not a key id", base + "licenses: { refuse_keys: [ 'sha256:AB' ] }\n", nil, "licenses.refuse_keys: entry 1"},
 		{"licensing off from env", base, []string{"KISTA_LICENSES__ENABLED=false"}, "can only be set in the config file"},
 		{"min_suspended from env", base, []string{"KISTA_TENANTS__MIN_SUSPENDED=48h"}, "can only be set in the config file"},

@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/reserved"
@@ -735,5 +736,52 @@ func TestAdminTenantDelete(t *testing.T) {
 	}
 	if got := run(1, "tenant", "create", "gone"); !strings.Contains(got, "never reused") {
 		t.Errorf("the name again: %q", got)
+	}
+}
+
+// Spec 0019, amended 2026-10-31: outside profile dev a lowered tenants.min_suspended_floor admits a
+// minimum of a few seconds; "deletable from" follows it, and the delete is refused until then and
+// taken from then.
+func TestAdminTenantDeleteShortMinimum(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "kista.yaml")
+	os.WriteFile(cfg, []byte("profile: prod\nstore: { kind: sqlite, sqlite: { path: "+filepath.Join(dir, "k.db")+" } }\n"+
+		"tenants: { min_suspended_floor: 1s, min_suspended: 3s }\n"), 0o600)
+	run := func(want int, args ...string) string {
+		t.Helper()
+		var out, errw bytes.Buffer
+		if code := admin(append([]string{"-config", cfg}, args...), nil, &out, &errw); code != want {
+			t.Fatalf("%v: exit %d, want %d\n%s%s", args, code, want, out.String(), errw.String())
+		}
+		return out.String() + errw.String()
+	}
+	run(0, "migrate")
+	run(0, "tenant", "create", "brief")
+	run(0, "tenant", "suspend", "brief")
+	field := func(out, name string) time.Time {
+		t.Helper()
+		for _, l := range strings.Split(out, "\n") {
+			if v, ok := strings.CutPrefix(l, name+":"); ok {
+				at, err := time.Parse(time.RFC3339, strings.TrimSpace(v))
+				if err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				return at
+			}
+		}
+		t.Fatalf("no %s in %q", name, out)
+		return time.Time{}
+	}
+	show := run(0, "tenant", "show", "brief")
+	suspended, deletable := field(show, "suspended"), field(show, "deletable from")
+	if deletable.Sub(suspended) != 3*time.Second {
+		t.Fatalf("deletable from %s, suspended %s: want 3s apart", deletable, suspended)
+	}
+	if got := run(1, "tenant", "delete", "brief", "-confirm", "brief"); !strings.Contains(got, "may be deleted from") {
+		t.Fatalf("a delete before the minimum: %q", got)
+	}
+	time.Sleep(time.Until(deletable.Add(time.Second)))
+	if got := run(0, "tenant", "delete", "brief", "-confirm", "brief"); !strings.Contains(got, "being deleted") {
+		t.Errorf("a delete after the minimum: %q", got)
 	}
 }
