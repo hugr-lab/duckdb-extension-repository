@@ -43,15 +43,27 @@ func eventOf(e store.Event, c caller) eventJSON {
 	return o
 }
 
-// eventFilter reads the listing's query: since, until (RFC 3339), kind, actor, subject (a prefix),
-// outcome, order (desc, asc), cursor, limit.
+// eventFilter reads the listing's query: since, until (RFC 3339), kind (spec 0040: a list), actor,
+// subject (a prefix), outcome, order (desc, asc), cursor, limit.
 func eventFilter(w http.ResponseWriter, r *http.Request) (store.EventFilter, bool) {
 	limit, after, ok := page(w, r)
 	if !ok {
 		return store.EventFilter{}, false
 	}
 	q := r.URL.Query()
-	f := store.EventFilter{Kind: q.Get("kind"), Actor: q.Get("actor"), Subject: q.Get("subject"), Outcome: q.Get("outcome"), Limit: limit}
+	f := store.EventFilter{Actor: q.Get("actor"), Subject: q.Get("subject"), Outcome: q.Get("outcome"), Limit: limit}
+	if len(q["kind"]) > 1 {
+		problem(w, http.StatusBadRequest, typeInvalid, "kind is one parameter, a comma-separated list")
+		return f, false
+	}
+	if v := q.Get("kind"); v != "" {
+		kinds, not, msg := kindList(v)
+		if msg != "" {
+			problem(w, http.StatusBadRequest, typeInvalid, msg)
+			return f, false
+		}
+		f.Kinds, f.NotKinds = kinds, not
+	}
 	for _, t := range []struct {
 		name string
 		dst  *time.Time
@@ -85,10 +97,66 @@ func eventFilter(w http.ResponseWriter, r *http.Request) (store.EventFilter, boo
 	return f, true
 }
 
+// kindList reads kind (spec 0040): comma-separated kinds of the catalogue or families of them
+// (grant.*), none twice, or each after a ! the kinds left out (!install,!usage.*). It answers the
+// catalogue's kinds they name (a family's, expanded: an exact match never depends on the
+// database's collation), or why the list is refused.
+func kindList(v string) (kinds []string, not bool, msg string) {
+	entries, seen, named := strings.Split(v, ","), map[string]bool{}, map[string]bool{}
+	not = strings.HasPrefix(entries[0], "!")
+	for _, e := range entries {
+		e, left := strings.CutPrefix(e, "!")
+		switch {
+		case left != not:
+			return nil, false, "kind is a list of kinds, or a list of kinds left out, each after a !, not both"
+		case seen[e]:
+			return nil, false, "kind names " + e + " twice"
+		}
+		seen[e] = true
+		if family, ok := strings.CutSuffix(e, "*"); ok && strings.HasSuffix(family, ".") {
+			found := false
+			for _, k := range audit.Kinds() {
+				if k := string(k.Kind); strings.HasPrefix(k, family) {
+					if found = true; !named[k] {
+						named[k], kinds = true, append(kinds, k)
+					}
+				}
+			}
+			if !found {
+				return nil, false, "kind: no event kind is of the family " + e + " (see /api/v1/event-kinds)"
+			}
+			continue
+		}
+		if !audit.Known(audit.Kind(e)) {
+			return nil, false, "kind: " + e + " is not an event kind (see /api/v1/event-kinds)"
+		}
+		if !named[e] {
+			named[e], kinds = true, append(kinds, e)
+		}
+	}
+	return kinds, not, ""
+}
+
+// eventCursor is the opaque cursor of a listing: the last event's (at, id), or a time covered with
+// no id (spec 0040: the next read starts at it).
+func eventCursor(at time.Time, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(at.UTC().Format(time.RFC3339Nano) + "|" + id))
+}
+
 func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller, tenantID string) {
 	f, ok := eventFilter(w, r)
 	if !ok {
 		return
+	}
+	// spec 0040: an ascending read stops events.settle behind now (an event can commit after a later
+	// one is readable), and covers the time up to there
+	var covered time.Time
+	if f.Ascending {
+		covered = h.o.Now().Add(-h.o.EventSettle)
+		if !f.Until.IsZero() && f.Until.Before(covered) {
+			covered = f.Until
+		}
+		f.Until = covered
 	}
 	limit := f.Limit
 	f.Limit = limit + 1
@@ -97,17 +165,36 @@ func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller,
 		h.fail(w, err)
 		return
 	}
-	next := ""
-	if len(evs) > limit {
+	// with order=asc, covered_at is the time next stands for (spec 0040), which a reader compares
+	// with pruned_through without reading the cursor
+	next, coveredAt := "", time.Time{}
+	switch {
+	case len(evs) > limit: // a full page
 		evs = evs[:limit]
 		l := evs[len(evs)-1]
-		next = base64.RawURLEncoding.EncodeToString([]byte(l.At.UTC().Format(time.RFC3339Nano) + "|" + l.ID))
+		next, coveredAt = eventCursor(l.At, l.ID), l.At
+	case f.Ascending && f.AfterAt.After(covered): // a cursor past the covered time keeps its place
+		next, coveredAt = eventCursor(f.AfterAt, f.AfterID), f.AfterAt
+	case f.Ascending: // the tail: whatever the filter matched, the time covered
+		next, coveredAt = eventCursor(covered, ""), covered
+	}
+	pruned, held, err := h.o.Store.PrunedThrough(r.Context(), tenantID)
+	if err != nil {
+		h.fail(w, err)
+		return
 	}
 	out := []eventJSON{}
 	for _, e := range evs {
 		out = append(out, eventOf(e, c))
 	}
-	reply(w, r, http.StatusOK, list("events", out, next), "", noStore)
+	ans := list("events", out, next)
+	if f.Ascending {
+		ans["covered_at"] = coveredAt.UTC().Format(time.RFC3339Nano)
+	}
+	if held { // spec 0040: events at or before it are gone; a reader covered only to before it missed some
+		ans["pruned_through"] = pruned.UTC().Format(time.RFC3339Nano)
+	}
+	reply(w, r, http.StatusOK, ans, "", noStore)
 }
 
 func (h *Handler) getEventOf(w http.ResponseWriter, r *http.Request, c caller, tenantID, id string) {

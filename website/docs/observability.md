@@ -28,7 +28,7 @@ Each event has these fields:
 | `at` | when it happened (UTC) |
 | `kind`, `v` | the kind from the catalogue below, and the catalogue's version (1) |
 | `outcome` | `ok`, `refused` (a `401`, or a `404` that stands for forbidden) or `failed` (a `5xx`, a storage pass that failed or found damage, a failing sink) |
-| `actor` | who: `principal:<tenant>/<issuer id>\|sub:<sub>`, `server:<issuer>\|sub:…`, `license-manager:<issuer>\|sub:…` (a licence manager), `distribution-admin:<issuer>\|sub:…` (a distribution admin), `os:<uid>:<user>` (the CLI), `publisher:<tenant>/<names>`, `system:<what>`, `anonymous` |
+| `actor` | who: `principal:<tenant>/<issuer id>\|<sub>`, `server:<issuer>\|<sub>`, `license-manager:<issuer>\|<sub>` (a licence manager), `distribution-admin:<issuer>\|<sub>` (a distribution admin), `os:<uid>:<user>` (the CLI), `publisher:<tenant>/<names>`, `system:<what>`, `anonymous`. `<sub>` is the token's bare `sub`; `client:<id>` for a token without one, and `sub:<sub>` only when the `sub` itself begins with `client:` or `sub:` |
 | `actor_name` | a token's `name`, `preferred_username` or `email` claim, for display |
 | `subject` | the resource as a path, such as `channel:prod/ext:acl/release:<id>` |
 | `data` | the kind's fields only, at most 16 KiB (a larger one is cut and marked `"truncated": true`) |
@@ -209,7 +209,7 @@ kista admin -config kista.yaml events list -server
 | `-kind`, `-subject`, `-actor` | filters: `-kind` and `-actor` match exactly, `-subject` matches a prefix |
 | `-since` | RFC 3339 |
 | `-limit` | how many (default 100) |
-| `-follow` | print new events as they arrive, oldest first |
+| `-follow` | print new events as they settle, oldest first: each poll reads up to now minus `events.settle`, as an `order=asc` read does |
 | `-format` | `table` (default) or `jsonl` |
 
 Over the API:
@@ -223,6 +223,41 @@ GET /api/v1/events[…], GET /api/v1/events/{id}     the server's events (server
 A tenant's events are read with the `audit` verb on the tenant (`admin` on the tenant implies it), or
 by a server administrator. Events are newest first by default. See [Access](access.md) for granting
 `audit`, and the console's **Events** section in [Console](console.md).
+
+### Following the events
+
+A reader that follows a tenant's events (spec 0040), such as a watcher holding `audit`:
+
+- **`kind` takes a list**, comma-separated: kinds of the catalogue (`GET /api/v1/event-kinds`) and
+  families of them, `grant.*`, none twice. A list whose every entry starts with `!` leaves those out
+  instead, so a kind added later is not missed:
+  `kind=!install,!tenant.read,!authz.refused,!auth.failure,!usage.*`. An unknown kind or family, an
+  entry twice, a list mixing `!` and plain entries, or `kind` given twice is `400`.
+- **The tail settles.** The writer commits each replica's events in batches, so an event can commit
+  after a later one is already readable. With `order=asc`, a read answers only events older than
+  now minus `events.settle` (default 30s), and covers the time up to there.
+- **`next` is always there with `order=asc`.** A full page's `next` is its last event; a shorter
+  page is the tail, and its `next` is the time the read covered (now minus `events.settle`, or
+  `until` when sooner), whatever `kind` matched, so a filtered reader moves on too. Keep it, and ask
+  again later with it as `cursor`. Without a cursor a read starts at the oldest retained event (at
+  `since` with `since`). The cursor is opaque. An event that commits later than `events.settle`
+  (the writer stalled longer) is missed by a reader at the tail: raise the window if that happens.
+  `covered_at`, beside `next`, is the time `next` stands for (its event's, or the covered time); a
+  cursor past the covered time (another replica's clock ahead) comes back unchanged, so `next` never
+  moves back. `order=desc` gives `next` on a full page only, and no `covered_at`.
+- **`pruned_through`** in the answer is the newest event time retention (`events.retention` or
+  `events.max_rows_per_tenant`) has removed of the tenant's events, left out until it removed one. A
+  reader whose `covered_at` is before it has missed events, and reads the tenant's structure afresh
+  ([Access](access.md#who-sees-what)); a quiet or young tenant shows no false gap.
+  `audit.dropped` counts the events the writer dropped.
+- `request` ties the events one request wrote, such as a key's removal with `purge_held` and the
+  `catalogue.purge` it causes.
+
+What a reader gets: `200`; `404` without a right on the tenant, for a suspended, deleting or
+unknown tenant and for a missing object; `401` for a token not of the tenant's issuers, one whose
+issuer was removed, or one older than
+`auth.admin_token_max_age` (default 1h: these are management routes), after which it gets a fresh
+token; `429` (`rate-limited`) past the API's rate (`serve.api_rate`, per client address).
 
 ### The buffer
 
@@ -507,6 +542,7 @@ load balancer that checks it must reach the pod port directly.
 | --- | --- | --- |
 | `events.retention` | 720h (30 days) | 2 to 365 days; at most 90 with sinks |
 | `events.max_rows_per_tenant` | 1,000,000 | 1 to 100,000,000 |
+| `events.settle` | 30s | at least 1s: where an `order=asc` read [following the events](#following-the-events) stops, behind now |
 | `events.client_addresses` | `truncated` | `full`, `truncated`, `none` |
 | `events.resource` | none | attributes for OTLP exports |
 | `events.sinks` | none | at most 16 |

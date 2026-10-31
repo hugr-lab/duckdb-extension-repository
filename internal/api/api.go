@@ -65,6 +65,9 @@ type Options struct {
 	Licenses         *licenses.Service   // spec 0012; nil: no licence routes
 	Events           Recorder            // spec 0010: refusals and failures; nil: none recorded
 	AdminTokenMaxAge time.Duration       // default 1h
+	// EventSettle is how far behind now an ascending events read stops (spec 0040: events.settle);
+	// default 30s.
+	EventSettle time.Duration
 	// MinSuspended is how long a tenant stays suspended before it may be deleted (spec 0019): 0 is
 	// the default, 7 days; a negative value is none (tenants.min_suspended: 0 in the dev profile).
 	MinSuspended time.Duration
@@ -103,6 +106,9 @@ func New(o Options) *Handler {
 	}
 	if o.AdminTokenMaxAge == 0 {
 		o.AdminTokenMaxAge = time.Hour
+	}
+	if o.EventSettle == 0 {
+		o.EventSettle = 30 * time.Second
 	}
 	switch {
 	case o.MinSuspended == 0:
@@ -551,6 +557,9 @@ const (
 	// signed request from any of its publishers included on a route that admits publishers; its
 	// service decides, every refusal the same 404
 	tenantCaller
+	// auditOrDistributor: pathVerbs, or a distribution admin as distributionAdmin admits one (spec
+	// 0040: the publishers' reads, its service narrowing it to the distributors' publishers)
+	auditOrDistributor
 )
 
 type handler func(h *Handler, w http.ResponseWriter, r *http.Request, c caller, p params)
@@ -615,12 +624,22 @@ var (
 	attachmentWriters = []authz.Verb{authz.VerbAdmin, authz.VerbPublish}
 )
 
-// auditors read a tenant's events (spec 0010): audit, which admin on the tenant implies.
+// auditors read a tenant's events (spec 0010) and its structure (spec 0040): audit, which admin on
+// the tenant implies.
 var auditors = []authz.Verb{authz.VerbAudit}
+
+// groupReaders read an extension group (spec 0017: its administrators; spec 0040: the tenant's
+// auditors).
+var groupReaders = []authz.Verb{authz.VerbAdmin, authz.VerbAudit}
 
 func init() {
 	idx := func(f handler) map[string]rule { return map[string]rule{http.MethodGet: {access: public, handle: f}} }
 	m := func(a access, f handler) rule { return rule{access: a, manage: true, handle: f} }
+	// spec 0040: a structure read by the tenant's auditors (a publishers' read, by a distribution admin too)
+	audited := func(f handler) rule { return rule{access: pathVerbs, verbs: auditors, manage: true, handle: f} }
+	auditedPub := func(f handler) rule {
+		return rule{access: auditOrDistributor, verbs: auditors, manage: true, handle: f}
+	}
 	mb := func(a access, f handler) rule { return rule{access: a, manage: true, body: true, handle: f} }
 	routes = []route{
 		{"info", idx((*Handler).info)},
@@ -696,27 +715,28 @@ func init() {
 		{"tenants/{t}/feeds/{name}", map[string]rule{http.MethodGet: m(pathAdmin, feedRoute((*Handler).getFeed)),
 			http.MethodPost: mb(pathAdmin, feedRoute((*Handler).changeFeed)), http.MethodDelete: m(pathAdmin, feedRoute((*Handler).removeFeed))}},
 		{"tenants/{t}/feeds/{name}/sync", map[string]rule{http.MethodPost: m(pathAdmin, feedRoute((*Handler).syncFeed))}},
-		{"tenants/{t}/audiences", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listAudiences),
+		{"tenants/{t}/audiences", map[string]rule{http.MethodGet: audited((*Handler).listAudiences),
 			http.MethodPost: mb(serverAdmin, (*Handler).addAudience)}},
 		{"tenants/{t}/audiences/remove", map[string]rule{http.MethodPost: mb(serverAdmin, (*Handler).removeAudience)}},
-		{"tenants/{t}/issuers", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listIssuers),
+		{"tenants/{t}/issuers", map[string]rule{http.MethodGet: audited((*Handler).listIssuers),
 			http.MethodPost: mb(pathAdmin, (*Handler).addIssuer)}},
-		{"tenants/{t}/issuers/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getIssuer),
+		{"tenants/{t}/issuers/{name}", map[string]rule{http.MethodGet: audited((*Handler).getIssuer),
 			http.MethodDelete: m(pathAdmin, (*Handler).removeIssuer)}},
 		{"tenants/{t}/issuers/{name}/console", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).setConsoleClient),
 			http.MethodDelete: m(pathAdmin, (*Handler).removeConsoleClient)}},
-		{"tenants/{t}/grants", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listGrants),
+		{"tenants/{t}/grants", map[string]rule{http.MethodGet: audited((*Handler).listGrants),
 			http.MethodPost: mb(pathAdmin, (*Handler).addGrant)}},
 		{"tenants/{t}/grants/principals", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).grantPrincipals)}}, // before grants/{id}
-		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGrant),
+		{"tenants/{t}/grants/{id}", map[string]rule{http.MethodGet: audited((*Handler).getGrant),
 			http.MethodDelete: m(pathAdmin, (*Handler).removeGrant)}},
 		// spec 0017: extension groups; the services decide who besides a tenant administrator reads
 		{"tenants/{t}/extension-groups", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).listGroups),
 			http.MethodPost: mb(pathAdmin, (*Handler).createGroup)}},
-		{"tenants/{t}/extension-groups/{g}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getGroup),
+		{"tenants/{t}/extension-groups/{g}", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: groupReaders, manage: true, handle: (*Handler).getGroup},
 			http.MethodDelete: m(pathAdmin, (*Handler).removeGroup)}},
 		{"tenants/{t}/extension-groups/{g}/description", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).setGroupDescription)}},
-		{"tenants/{t}/extension-groups/{g}/members", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).groupMembers),
+		{"tenants/{t}/extension-groups/{g}/members", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: groupReaders, manage: true,
+			handle: (*Handler).groupMembers},
 			http.MethodPost: mb(pathAdmin, (*Handler).changeGroupMembers)}},
 		// phase 3: channels
 		{"tenants/{t}/channels", map[string]rule{http.MethodGet: {access: public, handle: (*Handler).channels},
@@ -800,9 +820,9 @@ func init() {
 		{"distributor-stats/downloads", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).distributorStats)}},
 		{"events/{id}", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvent)}},
 		{"event-kinds", idx((*Handler).eventKinds)},
-		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listPublishers),
+		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: auditedPub((*Handler).listPublishers),
 			http.MethodPost: mb(distributionAdmin, (*Handler).addPublisher)}},
-		{"tenants/{t}/publishers/{name}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).getPublisher),
+		{"tenants/{t}/publishers/{name}", map[string]rule{http.MethodGet: auditedPub((*Handler).getPublisher),
 			http.MethodDelete: m(pathAdmin, (*Handler).removePublisher)}},
 		// spec 0021: marking a publisher a source of licence keys (server administrators; spec 0030:
 		// distribution admins, spec 0037: a distributor's publisher's only)
@@ -818,9 +838,9 @@ func init() {
 		// server administrators; spec 0037: an existing publisher is never marked one)
 		{"tenants/{t}/publishers/{name}/distributor", map[string]rule{http.MethodPut: mb(distributionAdmin, (*Handler).setPublisherDistributor)}},
 		// spec 0023: a publisher's public SSH keys
-		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).listPublisherKeys),
+		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: auditedPub((*Handler).listPublisherKeys),
 			http.MethodPost: mb(distributionAdmin, (*Handler).addPublisherKey)}},
-		{"tenants/{t}/publishers/{name}/keys/{id}", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).getPublisherKey),
+		{"tenants/{t}/publishers/{name}/keys/{id}", map[string]rule{http.MethodGet: auditedPub((*Handler).getPublisherKey),
 			http.MethodDelete: m(distributionAdmin, (*Handler).removePublisherKey)}},
 		{"tenants/{t}/blocks", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listBlocks),
 			http.MethodPost: mb(pathAdmin, (*Handler).addBlock)}},
@@ -830,9 +850,9 @@ func init() {
 			http.MethodPost: m(pathAdmin, (*Handler).changeRelease)}},
 		// spec 0009: upstreams (tenant administrators; {entry}, never {ext}: an extension's
 		// administrators do not manage upstreams)
-		{"tenants/{t}/upstreams", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listUpstreams),
+		{"tenants/{t}/upstreams", map[string]rule{http.MethodGet: audited((*Handler).listUpstreams),
 			http.MethodPost: mb(pathAdmin, (*Handler).addUpstream)}},
-		{"tenants/{t}/upstreams/{name}", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).getUpstream),
+		{"tenants/{t}/upstreams/{name}", map[string]rule{http.MethodGet: audited((*Handler).getUpstream),
 			http.MethodDelete: m(pathAdmin, (*Handler).removeUpstream)}},
 		{"tenants/{t}/upstreams/{name}/public", map[string]rule{http.MethodPost: m(pathAdmin, upstreamAction(store.Public, ""))}},
 		{"tenants/{t}/upstreams/{name}/private", map[string]rule{http.MethodPost: m(pathAdmin, upstreamAction(store.Private, ""))}},
@@ -1188,6 +1208,11 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		if !c.verified {
 			return refuse()
 		}
+	case auditOrDistributor:
+		if c.distribution && !c.admin {
+			break // as distributionAdmin: the services allow it distribute on the tenant, and narrow each call
+		}
+		fallthrough
 	case pathVerbs:
 		a, ok := c.actor()
 		if !ok || h.o.Authz == nil {
@@ -1196,6 +1221,9 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		res := authz.Resource{Tenant: name, Channel: p["c"], Package: p["ext"]}
 		if p["c"] == "" {
 			res.PackageType = typ // spec 0034: a channel's is the channel's (the authorizer reads it)
+		}
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			res.PackageGroup = p["g"] // a group's administrators read it (spec 0017)
 		}
 		if p["ext"] != "" && h.o.Store != nil {
 			ptype := typ // a channel's name is of the channel's type

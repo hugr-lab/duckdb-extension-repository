@@ -148,7 +148,7 @@ per claim. An Entra groups overage is not resolved.
 | `admin` | management of its resource: the tenant, a channel, an extension or an extension group | - |
 | `publish` | upload a build into a channel ([Publishing](publishing.md)) | **no** |
 | `promote` | release in a channel a build from another channel of the tenant | **no** |
-| `audit` | read the tenant's events and statistics; tenant-wide grants of every package type only | yes, on a tenant-wide grant of every type |
+| `audit` | read the tenant's events and statistics, and its structure read-only ([below](#who-sees-what)); tenant-wide grants of every package type only; `whoami` answers it as `holds_audit` | yes, on a tenant-wide grant of every type |
 | `feed` | take the tenant's feed of signed statements ([Attachments](attachments.md)); on the tenant or a channel | yes, on a tenant-wide grant of every type only; on a channel, or on a grant of one type, it is granted explicitly |
 
 `publish` and `promote` are never implied by `admin`, so an administrator's install token cannot
@@ -422,6 +422,21 @@ the two; `kista admin publisher list` shows it as `HELD FOR`, `publisher show` a
   made (`license-manager` for a licence manager's acts, `distribution-admin` for a distribution
   admin's), and no infrastructure details (signer
   references, storage domains).
+- A holder of `audit` on the tenant (an auditor; a tenant-wide `admin` of every type implies it)
+  reads, read-only and with the administrators' answers, the tenant's structure: `GET` on
+  `issuers`, `issuers/{name}`, `audiences`, `grants`, `grants/{id}`, `extension-groups` (every
+  group with its grants, `?extension=` too), `extension-groups/{g}` and its `members`, `publishers`,
+  `publishers/{name}`, their `keys` and `keys/{id}`, `upstreams` and `upstreams/{name}`. It writes
+  nothing, and reads neither `grants/principals` nor an upstream's sub-routes. An administrator of
+  one package type, a channel, an extension or a group holds no tenant-wide `audit` (a group's
+  administrator still reads its own group); a distribution admin still reads only distributors'
+  publishers and their keys. These reads write no event.
+- `created_by`, and an event's `actor`, take these forms for a tenant's readers:
+  `principal:<tenant>/<issuer id>|<sub>` (the token's bare `sub`; `client:<id>` for a token without
+  a `sub`; `sub:<sub>` only when the `sub` itself begins with `client:` or `sub:`; the issuer
+  record's `id` is in its answer), `publisher:<tenant>/<names>`, `system:<what>`, `anonymous` (an
+  event of an unauthenticated request), and, masked, `server`, `license-manager` and
+  `distribution-admin`. Only a server administrator sees who those were.
 - The index lists, to a caller with `install`, the private extensions it may install; to anyone else,
   public ones only.
 

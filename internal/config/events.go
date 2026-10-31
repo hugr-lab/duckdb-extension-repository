@@ -20,6 +20,10 @@ type Events struct {
 	Retention        time.Duration `yaml:"retention"`           // default 30 days
 	ClientAddresses  string        `yaml:"client_addresses"`    // full, truncated (default) or none
 	MaxRowsPerTenant int           `yaml:"max_rows_per_tenant"` // default 1,000,000
+	// Settle is how far behind now a reader following the events stops (spec 0040: the writer
+	// commits each replica's events in batches, so an event can commit after a later one is
+	// readable); default 30s.
+	Settle time.Duration `yaml:"settle"`
 	// Resource are attributes every OTLP export carries (deployment.environment.name, …).
 	Resource map[string]string `yaml:"resource"`
 	Sinks    []Sink            `yaml:"sinks"`
@@ -49,6 +53,7 @@ type Sink struct {
 const (
 	DefaultEventRetention     = 30 * 24 * time.Hour
 	DefaultEventRowsPerTenant = 1000000
+	DefaultEventSettle        = 30 * time.Second
 )
 
 // EventSettings returns events: with its defaults.
@@ -63,6 +68,9 @@ func (c Config) EventSettings() Events {
 	if e.MaxRowsPerTenant == 0 {
 		e.MaxRowsPerTenant = DefaultEventRowsPerTenant
 	}
+	if e.Settle == 0 {
+		e.Settle = DefaultEventSettle
+	}
 	return e
 }
 
@@ -72,6 +80,10 @@ func validateEvents(bad func(string, ...any), c Config) {
 	// two days at least: the installers of a day are counted from its events after it ends
 	if e.Retention != 0 && (e.Retention < 48*time.Hour || e.Retention > 365*24*time.Hour) {
 		bad("events.retention must be within 2..365 days")
+	}
+	// a second at least: the writer's batches
+	if e.Settle != 0 && e.Settle < time.Second {
+		bad("events.settle must be at least 1s")
 	}
 	if len(e.Sinks) > 0 && e.Retention > 90*24*time.Hour {
 		bad("events.retention is at most 90 days when sinks are configured")

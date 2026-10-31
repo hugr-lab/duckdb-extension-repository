@@ -346,6 +346,7 @@ ka grant list acme
 | `admin` on the tenant | issuers, grants, channels, and everything inside the tenant |
 | `admin` with `-channel prod` | that channel's DuckDB versions, keys (activate, retire) and releases |
 | `admin` with `-extension x` (optionally `-channel`) | that extension's releases |
+| `audit` on the tenant | nothing: it reads the tenant's events and statistics, and its issuers, audiences, grants, extension groups, publishers with their keys, and upstreams, with the administrators' answers (spec 0040) |
 
 Rules:
 

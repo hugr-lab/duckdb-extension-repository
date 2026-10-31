@@ -2200,46 +2200,49 @@ func (a *adminCmd) events(ctx context.Context, sub string, args []string) error 
 		print(evs)
 		return nil
 	}
-	// -follow: oldest first, polling the store; each poll looks back a window, so an event that
-	// commits after a later one was printed is still printed (once: its id is remembered)
-	const window = 30 * time.Second
-	f.Ascending, f.Limit = true, 1000
-	from := f.Since
-	if from.IsZero() {
-		from = time.Now().Add(-time.Minute)
+	// -follow: oldest first, as the API's order=asc reads (spec 0040)
+	f.Limit = 1000
+	if f.Since.IsZero() {
+		f.Since = time.Now().Add(-time.Minute)
 	}
-	seen := map[string]time.Time{}
-	for {
-		f.Since = from
-		evs, err := a.svc.Store.ListEvents(ctx, tenantID, f)
-		if err != nil {
-			return err
-		}
-		var fresh []store.Event
-		for _, e := range evs {
-			if _, ok := seen[e.ID]; !ok {
-				seen[e.ID] = e.At
-				fresh = append(fresh, e)
-			}
-		}
-		print(fresh)
-		if len(evs) > 0 {
-			if last := evs[len(evs)-1].At.Add(-window); last.After(from) {
-				from = last
-			}
-		}
-		for id, at := range seen {
-			if at.Before(from) {
-				delete(seen, id)
-			}
-		}
-		if len(evs) == f.Limit && len(fresh) > 0 {
-			continue // more waiting: no pause
-		}
+	pause := func(ctx context.Context) bool {
 		select {
 		case <-ctx.Done():
-			return nil
+			return false
 		case <-time.After(2 * time.Second):
+			return true
+		}
+	}
+	return followEvents(ctx, a.svc.Store, tenantID, f, a.cfg.EventSettings().Settle, time.Now, pause, print)
+}
+
+// followEvents prints a tenant's events as they settle (spec 0040, as the API's order=asc reads do):
+// each read stops settle behind now, since the writer commits events in batches; a full page goes on
+// from its last event at once, a short one pauses and goes on from the time it covered. It returns
+// when pause says to stop.
+func followEvents(ctx context.Context, st *store.Store, tenantID string, f store.EventFilter, settle time.Duration,
+	now func() time.Time, pause func(context.Context) bool, print func([]store.Event)) error {
+	f.Ascending = true
+	for {
+		f.Until = now().Add(-settle)
+		var evs []store.Event
+		if !f.AfterAt.After(f.Until) { // a cursor past the covered time (the clock moved back) waits
+			var err error
+			if evs, err = st.ListEvents(ctx, tenantID, f); err != nil {
+				return err
+			}
+			print(evs)
+		}
+		if len(evs) == f.Limit {
+			l := evs[len(evs)-1]
+			f.AfterAt, f.AfterID = l.At, l.ID
+			continue
+		}
+		if f.Until.After(f.AfterAt) {
+			f.AfterAt, f.AfterID = f.Until, ""
+		}
+		if !pause(ctx) {
+			return nil
 		}
 	}
 }

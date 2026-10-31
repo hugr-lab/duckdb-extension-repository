@@ -66,7 +66,7 @@ func publisherOf(p store.Publisher, keys []store.PublisherKey, c caller) publish
 
 func (h *Handler) tenantPublishers(w http.ResponseWriter, r *http.Request, c caller, p params) ([]store.Publisher, bool) {
 	a, _ := c.actor()
-	ps, err := h.o.Auth.ListPublishers(r.Context(), a, p["t"])
+	ps, err := h.o.Auth.ReadPublishers(r.Context(), a, p["t"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return nil, false
@@ -85,7 +85,7 @@ func (h *Handler) listPublishers(w http.ResponseWriter, r *http.Request, c calle
 	}
 	ps, next := paged(ps, func(x store.Publisher) string { return x.Name }, limit, after)
 	a, _ := c.actor()
-	keys, err := h.o.Auth.TenantPublisherKeys(r.Context(), a, p["t"])
+	keys, err := h.o.Auth.ReadTenantPublisherKeys(r.Context(), a, p["t"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -130,7 +130,7 @@ func (h *Handler) getPublisher(w http.ResponseWriter, r *http.Request, c caller,
 	for _, x := range ps {
 		if x.Name == p["name"] {
 			a, _ := c.actor()
-			keys, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], x.Name)
+			keys, err := h.o.Auth.ReadPublisherKeys(r.Context(), a, p["t"], x.Name)
 			if err != nil {
 				h.serviceErr(w, err, false)
 				return
@@ -219,7 +219,7 @@ func publisherWhoami(c caller) map[string]any {
 // listPublisherKeys lists a publisher's keys.
 func (h *Handler) listPublisherKeys(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	ks, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], p["name"])
+	ks, err := h.o.Auth.ReadPublisherKeys(r.Context(), a, p["t"], p["name"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -234,7 +234,7 @@ func (h *Handler) listPublisherKeys(w http.ResponseWriter, r *http.Request, c ca
 // getPublisherKey reads one of a publisher's keys.
 func (h *Handler) getPublisherKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	ks, err := h.o.Auth.ListPublisherKeys(r.Context(), a, p["t"], p["name"])
+	ks, err := h.o.Auth.ReadPublisherKeys(r.Context(), a, p["t"], p["name"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return

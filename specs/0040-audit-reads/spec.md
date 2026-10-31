@@ -1,6 +1,6 @@
 # Spec 0040: An auditor reads a tenant's structure and follows its events
 
-- **Status**: accepted
+- **Status**: implemented
 - **Date**: 2026-10-31
 - **Author**: vgsml, Claude
 
@@ -85,14 +85,22 @@ The issuer answer gains two fields, for administrators and auditors alike:
   admits one), used by those four routes only.
 - **Services, two checks** (defence in depth: the API rule and the service both decide):
   - `readTenant`: `audit` on the tenant (`Authz.Allow(…, VerbAudit, Resource{Tenant})`), never a
-    distribution admin. `ListIssuers`, `ListAudiences`, `ListGrants`, `GetPackageGroup`,
-    `PackageGroupMembers` (beside the group administrator's path), `upstream.Service.List` and
-    `Get` call it. `ListPackageGroups`' full view (today `tenantAdmin`: every group with its grants,
-    `?extension=`) becomes `admin` or `audit`; anyone else keeps today's view.
-  - `readPublishers`: `readTenant`, or `tenantOrDistributor` as today. `ListPublishers`,
-    `TenantPublisherKeys` and `ListPublisherKeys` call it; the narrowing to distributors' publishers
-    stays on `distributor(a)`. `ListPublisherKeys` gets a read lookup of its publisher; the shared
-    `publisher` lookup stays the writes'.
+    distribution admin. It is called only by **read variants** the opened routes use:
+    `ReadIssuers`, `ReadAudiences`, `ReadGrants`, `IssuerConsoleClients` (the issuers' console
+    clients for their answers), `upstream.Service.ReadAll` and `Read`. The existing
+    `ListIssuers`, `ListAudiences`, `ListGrants`, `upstream.Service.List` and `Get` keep `admin`:
+    the closed routes (`grants/principals`; an upstream's entries, platforms, keys, names, usage
+    and revocations) and the writes rely on them. `upstream.Service.PutEntry` checks `admin` first,
+    before it reads the upstream or asks a remote kista anything.
+  - The extension groups' reads (`GetPackageGroup`, `PackageGroupMembers`, `ListPackageGroups`)
+    have no closed route and only the opened ones call them: their full view (today
+    `tenantAdmin`: every group with its grants, `?extension=`) becomes `admin` or `audit`, beside
+    the group administrator's path; anyone else keeps today's view.
+  - `readPublishers`: `readTenant`, or `tenantOrDistributor` as today, called by `ReadPublishers`,
+    `ReadTenantPublisherKeys` and `ReadPublisherKeys`; `ListPublishers`, `TenantPublisherKeys`
+    and `ListPublisherKeys` keep `tenantOrDistributor` (the writes' answers use them). The
+    narrowing to distributors' publishers stays on `distributor(a)`. The keys' reads look their
+    publisher up after the check (`publisherOf`).
   - Every write keeps its check (`admin`; a distribution admin on a distributor's publisher).
 - **No audit event** is written for these reads, as for the events' reads.
 
@@ -104,35 +112,56 @@ causes). It gains, for any caller that reads it:
 
 - **`kind` takes a list**, comma-separated: each entry a kind from the event catalogue
   (`GET /api/v1/event-kinds`) or a family prefix ending in `.*` (`grant.*`) of one that exists, no
-  entry twice; that bounds the list, with no fixed cap. A list starting with `!` excludes instead
-  (`kind=!install,tenant.read,authz.refused,auth.failure`), so a reader does not miss kinds added
-  later; the two forms do not mix. A prefix is a range on `ix_events_tenant_kind`
-  (`kind >= 'grant.' AND kind < 'grant/'`), never a `LIKE`.
+  entry twice; that bounds the list, with no fixed cap. A list whose every entry starts with `!`
+  excludes instead (`kind=!install,!tenant.read,!authz.refused,!auth.failure,!usage.*`), so a
+  reader does not miss kinds added later; a list mixing `!` and plain entries is refused, and so is
+  `kind` given twice. A family is expanded to the catalogue's kinds in it, and the list read as exact
+  matches (`kind IN (…)`, `kind NOT IN (…)`), never a `LIKE`: one kind through
+  `ix_events_tenant_kind`, several kinds and an exclusion through `ix_events_tenant_at` with a
+  filter. (Not a range `kind >= 'grant.' AND kind < 'grant/'`: on PostgreSQL the column takes the
+  database's collation, often a linguistic one such as `en_US.utf8`, where `.` and `/` are ignored at
+  the first level and `'grant.add' < 'grant/'` is false.)
 - **The tail settles.** The writer commits each replica's events in batches about every second,
   so an event can commit after a later one is already readable. With `order=asc`, a read answers
-  only events older than now minus a settle window (`events.settle`, default 30s, the window
-  `kista events -follow` already uses), and covers the time up to that point.
+  only events older than now minus a settle window (`events.settle`, default 30s, at least 1s, no
+  ceiling; the window `kista admin events list -follow` used, which now follows as these reads do),
+  and covers the time up to that point.
 - **Paging with `order=asc`** (documented in `api.md`): `next` is always present. A full page's
   `next` is its last event's cursor; a shorter page is the tail, and its `next` is the time the read
   covered (now minus `events.settle`, or `until` when sooner), whatever the `kind` filter matched,
-  so a filtered reader advances too and `oldest_at` never shows it a false gap. With no cursor the
+  so a filtered reader advances too and `pruned_through` never shows it a false gap. With no cursor the
   read starts at the oldest retained event, with `since` at `since`; with `until` it covers up to
-  `until`. A reader keeps `next` and asks again later. The cursor stays opaque (never built by hand).
+  `until`. A reader keeps `next` and asks again later. The cursor stays opaque (never built by hand);
+  beside it, `covered_at` is the time `next` stands for (its event's, or the covered time), which a
+  reader compares with `pruned_through`. A cursor past the covered time (another replica's clock ahead)
+  comes back unchanged, so `next` never moves back. A cursor bounds the read by its time before the
+  keyset's `OR` (`at >= ?`; `at <= ?` descending), so a generic plan starts there.
   An event that commits later than the settle window is missed by a tail reader (the writer stalled
   longer than `events.settle`); an operator raises the window if that happens. `order=desc` is
   unchanged (`next` on a full page only).
-- **What retention removed**: the answer gains `oldest_at`, the time of the tenant's oldest retained
-  event (omitted when it holds none). A reader whose cursor is older than `oldest_at` has missed
-  events and reads the structure afresh. Events the writer or retention dropped are still counted by
-  `audit.dropped` (spec 0010).
+- **What retention removed**: the answer gains `pruned_through`, the newest event time retention
+  (the age limit or a tenant's row limit) has removed of the tenant's events (omitted until it
+  removed one). A reader whose `covered_at` is before it has missed events, and reads the structure
+  afresh; one at or after it has missed none. The oldest retained event's time would not do: a
+  tenant quiet for longer than retention, or a young one, holds no event before a reader's cursor
+  and would look like a loss. The pruner records it per tenant (`event_pruned`, migration 0050, in
+  the same transaction as each deletion; it never moves back). Events the writer dropped are still
+  counted by `audit.dropped` (spec 0010).
 
 ### For consumers
 
 What a reader gets: `200` with the answers above; `404` with no right on the tenant, for a
-suspended, deleting or unknown tenant, and for a missing object; `401` for a token that is stale
-(its tenant's auth changed since), whose issuer was removed (spec 0007), or older than
+suspended, deleting or unknown tenant, and for a missing object; `401` for a token not of the
+tenant's issuers, one whose issuer was removed (spec 0007), or one that is stale: older than
 `auth.admin_token_max_age` (default 1h; these are manage routes), after which it gets a fresh
 token; `429` (`rate-limited`) past the API rate.
+
+An upstream's entries are its answer's `extensions` field (the `…/extensions` sub-route stays
+closed). A grant's scope is its `channel`, `extension`, `extension_group` and `package_type`
+(omitted when the default for its shape). An events read with `order=asc` answers `next` and
+`covered_at`, and `pruned_through` once retention has removed one of the tenant's events: a reader
+whose `covered_at` is before `pruned_through` missed events. An issuer's read is never a `304`: its
+ETag is the record's id (what `If-Match` takes), which a console client's change keeps.
 
 `created_by` and an event's `actor` take these forms for a tenant's readers:
 `principal:<tenant>/<issuer id>|<sub>` (the token's bare `sub`; `client:<id>` for a token with no
@@ -153,7 +182,7 @@ with no code.
 `access.md` (what `audit` reads; `holds_audit` in the verbs table; the `created_by` forms),
 `api.md` (the rows above, the events parameters; remove the stale `…/publishers/{name}/github` rows),
 `observability.md` (the actor forms corrected to the bare `sub`; the events parameters, `request`,
-`next` and `oldest_at`), `console.md` (the issuer answer's `console`), `publishing.md` and `tenants-and-channels.md` (who reads).
+`next`, `covered_at` and `pruned_through`), `console.md` (the issuer answer's `console`), `publishing.md` and `tenants-and-channels.md` (who reads).
 
 ## Security
 
@@ -175,7 +204,7 @@ with no code.
 - **No existence leak**: without a right the answer is the same `404` as for an unknown tenant.
 - **Writes** keep their check in the API rule and in the service.
 - **The events' `kind` list** is bounded by the catalogue: each entry a known kind or family, none
-  twice, read as an exact match or an index range.
+  twice, read as exact matches.
 
 ## Testing
 
@@ -186,21 +215,26 @@ with no code.
   upstream sub-route named above; `?type=` narrows as for an administrator. Refused (`404`): an administrator
   of one package type; an extension group's administrator (except its own group; the group list
   keeps its narrow view for anyone but an administrator or auditor); an auditor of
-  tenant B on tenant A; a server token with no role; an install holder; a licence manager. A stale
-  token, and one older than `admin_token_max_age`, get `401`. A distribution admin still reads only distributors' publishers and keys, `404` on
+  tenant B on tenant A (with an A token, no grant there: `404`; its B token is not one of A's:
+  `401`); a server token with no role; an install holder; a licence manager. A stale
+  token, one older than `admin_token_max_age`, gets `401`. A distribution admin still reads only distributors' publishers and keys, `404` on
   the rest, and `404` on publisher reads in a suspended tenant.
 - `internal/tenants` and `internal/upstream`: `readTenant` admits `audit`, a tenant-wide `admin` and a
   server administrator; `ListIssuers`, `ListAudiences`, `ListGrants`, the group reads and the upstream
   reads refuse an `ActorDistributionAdmin`; the writes refuse an auditor.
-- Events: a `kind` list with an exact kind and a prefix (answered through the kind index range);
+- Events: a `kind` list with an exact kind and a prefix (the store's `IN` and `NOT IN` on every
+  engine);
   an exclusion list; an unknown kind, a duplicate or a mixed list refused (`400`). With `order=asc`:
   a full page's `next` is its last event; a short page's `next` is the covered time (now minus
   `events.settle`), with and without a `kind` filter; an event stored late (committed with an `at`
   10s in the past, after a read at the tail) is answered by the next read with that read's `next`,
   never skipped; events newer than the window are not answered yet; `until` bounds the covered time; with no
-  cursor the read starts at the oldest retained event. `oldest_at` follows retention.
+  cursor the read starts at the oldest retained event. `pruned_through` is absent until retention
+  removes an event, then the newest time it removed (by age or by a tenant's row limit), never
+  moving back.
 - The issuer answer carries `id`, equal to the id in a principal's `created_by`, and `console` once a
-  console client is set (absent before, and after its removal).
+  console client is set (absent before, and after its removal), also to a reader revalidating with
+  `If-None-Match`.
 
 ## Alternatives considered
 
@@ -218,9 +252,10 @@ with no code.
 
 One PR, `0040-audit-reads`: the API rules and access kind, `readTenant` / `readPublishers` and their
 callers, the group list's full view, the issuer's `id` and `console`, the events' `kind` list and
-exclusions, the settled tail and `next`, `oldest_at`, the `events.settle` setting
+exclusions, the settled tail and `next`, `pruned_through`, the `events.settle` setting
 (`configuration.md`), the tests and the docs.
-No migration.
+One migration, 0050 (`event_pruned`, `min_reader` 50: an older replica's pruner would delete without
+recording it).
 
 ## Follow-ups
 

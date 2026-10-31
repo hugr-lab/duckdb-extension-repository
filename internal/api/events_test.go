@@ -5,7 +5,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -13,7 +15,7 @@ import (
 
 // Spec 0010 phase 1a: events, read with audit on the tenant or by server administrators.
 func TestEvents(t *testing.T) {
-	m := newMgmt(t)
+	m := newMgmt(t, func(o *api.Options) { o.EventSettle = time.Nanosecond }) // the tail at once (spec 0040)
 	ta := m.toks["tenant admin"]
 	const T = "/api/v1/tenants/acme"
 	// a change through the API writes its event with the request's facts

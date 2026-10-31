@@ -133,6 +133,16 @@ func (s *Service) tenant(ctx context.Context, a authz.Actor, name string) (store
 	return s.Store.GetTenant(ctx, name)
 }
 
+// readTenant is tenant for the reads spec 0040 opens to the tenant's auditors (Read and ReadAll,
+// which only those routes call; every other path keeps tenant): audit on the tenant, which a
+// tenant-wide admin implies.
+func (s *Service) readTenant(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAudit, authz.Resource{Tenant: name}); err != nil {
+		return store.Tenant{}, err
+	}
+	return s.Store.GetTenant(ctx, name)
+}
+
 // Add creates an upstream (spec 0009). A repository's .well-known file must list a pinned key; a
 // name with a live replacement in the channel, or on another upstream of the channel, is refused.
 func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec) (store.Upstream, error) {
@@ -595,7 +605,17 @@ func bumpTenant(ctx context.Context, tx *store.Tx, tenantID string) error {
 
 // List lists a tenant's upstreams.
 func (s *Service) List(ctx context.Context, a authz.Actor, tenant string) ([]store.Upstream, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	return s.list(ctx, s.tenant, a, tenant)
+}
+
+// ReadAll is List for the tenant's readers (spec 0040).
+func (s *Service) ReadAll(ctx context.Context, a authz.Actor, tenant string) ([]store.Upstream, error) {
+	return s.list(ctx, s.readTenant, a, tenant)
+}
+
+func (s *Service) list(ctx context.Context, check func(context.Context, authz.Actor, string) (store.Tenant, error), a authz.Actor,
+	tenant string) ([]store.Upstream, error) {
+	t, err := check(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -609,7 +629,17 @@ func (s *Service) List(ctx context.Context, a authz.Actor, tenant string) ([]sto
 
 // Get reads an upstream.
 func (s *Service) Get(ctx context.Context, a authz.Actor, tenant, name string) (store.Upstream, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	return s.get(ctx, s.tenant, a, tenant, name)
+}
+
+// Read is Get for the tenant's readers (spec 0040).
+func (s *Service) Read(ctx context.Context, a authz.Actor, tenant, name string) (store.Upstream, error) {
+	return s.get(ctx, s.readTenant, a, tenant, name)
+}
+
+func (s *Service) get(ctx context.Context, check func(context.Context, authz.Actor, string) (store.Tenant, error), a authz.Actor,
+	tenant, name string) (store.Upstream, error) {
+	t, err := check(ctx, a, tenant)
 	if err != nil {
 		return store.Upstream{}, err
 	}
@@ -748,6 +778,9 @@ func (s *Service) Set(ctx context.Context, a authz.Actor, tenant, name, visibili
 // eager; it reports whether the entry is new. "*" on a mirror takes a kista remote (spec 0039), read
 // now when the upstream does not know it as one.
 func (s *Service) PutEntry(ctx context.Context, a authz.Actor, tenant, name string, e store.UpstreamEntry) (bool, error) {
+	if _, err := s.tenant(ctx, a, tenant); err != nil { // before anything is read or fetched (probeKista's request)
+		return false, err
+	}
 	if err := reserved.Sync(ctx, s.Store); err != nil { // spec 0030
 		return false, err
 	}

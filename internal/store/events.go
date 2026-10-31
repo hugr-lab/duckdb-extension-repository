@@ -104,11 +104,17 @@ func scanEvent(r interface{ Scan(...any) error }) (Event, error) {
 type EventFilter struct {
 	Since, Until         time.Time // zero: open
 	Kind, Actor, Outcome string
-	Subject              string // a prefix
-	AfterAt              time.Time
-	AfterID              string // the cursor: the last (at, id) returned
-	Ascending            bool
-	Limit                int
+	// Kinds are exact kinds too (spec 0040: the API's list, its families expanded from the
+	// catalogue), or with NotKinds those left out
+	Kinds    []string
+	NotKinds bool
+	Subject  string // a prefix
+	// the cursor: the last (at, id) returned; a time with no id is a time covered (spec 0040), the
+	// next read starting at it
+	AfterAt   time.Time
+	AfterID   string
+	Ascending bool
+	Limit     int
 }
 
 // ListEvents lists a tenant's events (audit.ServerTenant: the server's), newest first unless
@@ -127,6 +133,16 @@ func (s *Store) ListEvents(ctx context.Context, tenantID string, f EventFilter) 
 			q, args = q+" AND "+col+" = ?", append(args, v)
 		}
 	}
+	if len(f.Kinds) > 0 { // exact matches: one kind on ix_events_tenant_kind, more a filter on ix_events_tenant_at
+		not := ""
+		if f.NotKinds {
+			not = "NOT "
+		}
+		q = q + " AND kind " + not + "IN (" + marks(len(f.Kinds)) + ")"
+		for _, k := range f.Kinds {
+			args = append(args, k)
+		}
+	}
 	if f.Subject != "" {
 		if s.d.Name == "sqlite" { // SQLite's LIKE ignores case: compare the prefix's characters
 			q, args = q+" AND substr(subject, 1, ?) = ?", append(args, len([]rune(f.Subject)), f.Subject)
@@ -139,9 +155,11 @@ func (s *Store) ListEvents(ctx context.Context, tenantID string, f EventFilter) 
 	if f.Ascending {
 		cmp, order = ">", "ASC"
 	}
-	if f.AfterID != "" {
+	if !f.AfterAt.IsZero() {
+		// the bound before the keyset's OR: a generic plan (PostgreSQL's) reads the index from it,
+		// not from the tenant's oldest event
 		at := s.d.timeArg(f.AfterAt)
-		q, args = q+" AND (at "+cmp+" ? OR at = ? AND id "+cmp+" ?)", append(args, at, at, f.AfterID)
+		q, args = q+" AND at "+cmp+"= ? AND (at "+cmp+" ? OR at = ? AND id "+cmp+" ?)", append(args, at, at, at, f.AfterID)
 	}
 	limit := f.Limit
 	if limit <= 0 {
@@ -180,10 +198,10 @@ func (s *Store) GetEvent(ctx context.Context, tenantID, id string) (Event, error
 // buffer), and up to batch undelivered ones written before overdue; it returns how many of each it
 // deleted.
 func (s *Store) PruneEvents(ctx context.Context, cutoff, overdue time.Time, batch int) (delivered, undelivered int, err error) {
-	if delivered, err = s.deleteEvents(ctx, "pending = 0 AND at < ?", batch, s.d.timeArg(cutoff)); err != nil {
+	if delivered, err = s.pruneEvents(ctx, "pending = 0 AND at < ?", batch, s.d.timeArg(cutoff)); err != nil {
 		return delivered, 0, err
 	}
-	undelivered, err = s.deleteEvents(ctx, "pending <> 0 AND at < ?", batch, s.d.timeArg(overdue))
+	undelivered, err = s.pruneEvents(ctx, "pending <> 0 AND at < ?", batch, s.d.timeArg(overdue))
 	return delivered, undelivered, err
 }
 
@@ -229,39 +247,85 @@ func (s *Store) PruneTenantOverflow(ctx context.Context, max, batch int) (delete
 	return deleted, undelivered, nil
 }
 
-// deleteEvents deletes at most n events matching where (the oldest first).
-func (s *Store) deleteEvents(ctx context.Context, where string, n int, args ...any) (int, error) {
-	var q string
-	if s.d.Name == "sqlserver" {
-		q = fmt.Sprintf("DELETE FROM events WHERE id IN (SELECT TOP (%d) id FROM events WHERE %s ORDER BY at, id)", n, where)
-	} else {
-		q = fmt.Sprintf("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE %s ORDER BY at, id LIMIT %d)", where, n)
-	}
-	res, err := s.db.ExecContext(ctx, s.d.rebind(q), args...)
-	if err != nil {
-		return 0, err
-	}
-	m, err := res.RowsAffected()
-	return int(m), err
-}
-
 func (s *Store) deleteOldestOf(ctx context.Context, tenantID string, delivered bool, n int) (int, error) {
 	cond := "pending <> 0"
 	if delivered {
 		cond = "pending = 0"
 	}
-	var q string
+	return s.pruneEvents(ctx, "tenant_id = ? AND "+cond, n, tenantID)
+}
+
+// pruneEvents deletes at most n events matching where, the oldest first, and records each tenant's
+// newest event time it removed (spec 0040: pruned_through), in one transaction.
+func (s *Store) pruneEvents(ctx context.Context, where string, n int, args ...any) (int, error) {
+	var sel string
 	if s.d.Name == "sqlserver" {
-		q = fmt.Sprintf("DELETE FROM events WHERE id IN (SELECT TOP (%d) id FROM events WHERE tenant_id = ? AND %s ORDER BY at, id)", n, cond)
+		sel = fmt.Sprintf("SELECT TOP (%d) id FROM events WHERE %s ORDER BY at, id", n, where)
 	} else {
-		q = fmt.Sprintf("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE tenant_id = ? AND %s ORDER BY at, id LIMIT %d)", cond, n)
+		sel = fmt.Sprintf("SELECT id FROM events WHERE %s ORDER BY at, id LIMIT %d", where, n)
 	}
-	res, err := s.db.ExecContext(ctx, s.d.rebind(q), tenantID)
-	if err != nil {
-		return 0, err
+	deleted := 0
+	err := s.InTx(ctx, "", func(tx *Tx) error {
+		rows, err := tx.query(ctx, "SELECT tenant_id, MAX(at) FROM events WHERE id IN ("+sel+") GROUP BY tenant_id", args...)
+		if err != nil {
+			return err
+		}
+		through := map[string]time.Time{}
+		for rows.Next() {
+			var t string
+			var at time.Time
+			if err := rows.Scan(&t, scanTime{&at}); err != nil {
+				rows.Close()
+				return err
+			}
+			through[t] = at
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		res, err := tx.exec(ctx, "DELETE FROM events WHERE id IN ("+sel+")", args...)
+		if err != nil {
+			return err
+		}
+		m, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		deleted = int(m)
+		for t, at := range through {
+			if err := tx.notePruned(ctx, t, at); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return deleted, err
+}
+
+// notePruned moves a tenant's pruned_through to at, never back.
+func (t *Tx) notePruned(ctx context.Context, tenantID string, at time.Time) error {
+	a := t.s.d.timeArg(at)
+	if t.s.d.Name == "sqlserver" {
+		_, err := t.exec(ctx, `MERGE event_pruned WITH (HOLDLOCK) AS p USING (SELECT ? AS tenant_id, ? AS pruned_through) AS n
+ON p.tenant_id = n.tenant_id
+WHEN MATCHED AND p.pruned_through < n.pruned_through THEN UPDATE SET pruned_through = n.pruned_through
+WHEN NOT MATCHED THEN INSERT (tenant_id, pruned_through) VALUES (n.tenant_id, n.pruned_through);`, tenantID, a)
+		return err
 	}
-	m, err := res.RowsAffected()
-	return int(m), err
+	_, err := t.exec(ctx, `INSERT INTO event_pruned (tenant_id, pruned_through) VALUES (?, ?)
+ON CONFLICT (tenant_id) DO UPDATE SET pruned_through = excluded.pruned_through WHERE event_pruned.pruned_through < excluded.pruned_through`,
+		tenantID, a)
+	return err
+}
+
+// PrunedThrough is the newest event time retention has removed of a tenant's (ok false: none yet).
+func (s *Store) PrunedThrough(ctx context.Context, tenantID string) (at time.Time, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx, s.d.rebind("SELECT pruned_through FROM event_pruned WHERE tenant_id = ?"), tenantID).Scan(scanTime{&at})
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	return at, err == nil, err
 }
 
 // PendingEvents reads up to limit events still to deliver to a sink (mask: 1 << its bit), in (at,

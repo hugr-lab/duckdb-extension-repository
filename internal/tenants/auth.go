@@ -60,6 +60,29 @@ func (s *AuthAdmin) tenantOrDistributor(ctx context.Context, a authz.Actor, name
 	return s.Store.GetTenant(ctx, name)
 }
 
+// tenantCheck authorizes a call on a tenant and reads it: tenant, or readTenant.
+type tenantCheck func(ctx context.Context, a authz.Actor, name string) (store.Tenant, error)
+
+// readTenant is tenant for the reads spec 0040 opens to the tenant's auditors (the Read… variants,
+// which only those routes call; every other path, a closed route's included, keeps tenant): audit
+// on the tenant, which a tenant-wide admin implies, or a server administrator; never a distribution
+// admin.
+func (s *AuthAdmin) readTenant(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAudit, authz.Resource{Tenant: name}); err != nil {
+		return store.Tenant{}, err
+	}
+	return s.Store.GetTenant(ctx, name)
+}
+
+// readPublishers is readTenant for the publishers' reads, which a distribution admin makes too (its
+// callers narrow it to the distributors' publishers, spec 0037).
+func (s *AuthAdmin) readPublishers(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
+	if distributor(a) {
+		return s.tenantOrDistributor(ctx, a, name)
+	}
+	return s.readTenant(ctx, a, name)
+}
+
 // keepAdmin runs inside a removal's transaction (under the tenant's auth lock): a tenant principal
 // may not remove the last tenant-wide admin grant. It counts grants, not people.
 func keepAdmin(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID string, before int) error {
@@ -114,7 +137,16 @@ func (s *AuthAdmin) AddIssuer(ctx context.Context, a authz.Actor, tenant string,
 
 // ListIssuers lists a tenant's issuer records.
 func (s *AuthAdmin) ListIssuers(ctx context.Context, a authz.Actor, tenant string) ([]store.Issuer, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	return s.issuers(ctx, s.tenant, a, tenant)
+}
+
+// ReadIssuers is ListIssuers for the tenant's readers (spec 0040).
+func (s *AuthAdmin) ReadIssuers(ctx context.Context, a authz.Actor, tenant string) ([]store.Issuer, error) {
+	return s.issuers(ctx, s.readTenant, a, tenant)
+}
+
+func (s *AuthAdmin) issuers(ctx context.Context, check tenantCheck, a authz.Actor, tenant string) ([]store.Issuer, error) {
+	t, err := check(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +238,16 @@ func (s *AuthAdmin) RemoveAudience(ctx context.Context, a authz.Actor, tenant, a
 
 // ListAudiences lists a tenant's audiences: the canonical one first, then the assigned ones.
 func (s *AuthAdmin) ListAudiences(ctx context.Context, a authz.Actor, tenant string) ([]string, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	return s.audiences(ctx, s.tenant, a, tenant)
+}
+
+// ReadAudiences is ListAudiences for the tenant's readers (spec 0040).
+func (s *AuthAdmin) ReadAudiences(ctx context.Context, a authz.Actor, tenant string) ([]string, error) {
+	return s.audiences(ctx, s.readTenant, a, tenant)
+}
+
+func (s *AuthAdmin) audiences(ctx context.Context, check tenantCheck, a authz.Actor, tenant string) ([]string, error) {
+	t, err := check(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +375,16 @@ func dedupe(in []string) []string {
 
 // ListGrants lists a tenant's grants, those on extension groups included, by (created_at, id).
 func (s *AuthAdmin) ListGrants(ctx context.Context, a authz.Actor, tenant string) ([]store.Grant, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	return s.grants(ctx, s.tenant, a, tenant)
+}
+
+// ReadGrants is ListGrants for the tenant's readers (spec 0040).
+func (s *AuthAdmin) ReadGrants(ctx context.Context, a authz.Actor, tenant string) ([]store.Grant, error) {
+	return s.grants(ctx, s.readTenant, a, tenant)
+}
+
+func (s *AuthAdmin) grants(ctx context.Context, check tenantCheck, a authz.Actor, tenant string) ([]store.Grant, error) {
+	t, err := check(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}

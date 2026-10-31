@@ -515,6 +515,7 @@ The event buffer and its sinks. The whole block is file-only. See
 | `events.retention` | duration | `720h` (30 days) | `48h..8760h`; at most `2160h` (90 days) when sinks are configured. |
 | `events.client_addresses` | `full`, `truncated`, `none` | `truncated` | How client addresses are kept in events. |
 | `events.max_rows_per_tenant` | integer | `1000000` | `1..100000000`. |
+| `events.settle` | duration | `30s` | At least `1s`. Where an `order=asc` events read stops, behind now, and so where each `kista admin events list -follow` poll reads up to: the writer commits events in batches, so one can commit after a later one is readable ([Following the events](observability.md#following-the-events)). |
 | `events.resource` | map | none | Attributes every OTLP export carries (`deployment.environment.name`, ...). |
 | `events.sinks` | list | none | At most 16. |
 

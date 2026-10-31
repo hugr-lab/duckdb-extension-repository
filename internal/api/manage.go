@@ -629,7 +629,7 @@ func (h *Handler) tenantHolder(w http.ResponseWriter, r *http.Request, c caller,
 
 func (h *Handler) listAudiences(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	auds, err := h.o.Auth.ListAudiences(r.Context(), a, p["t"])
+	auds, err := h.o.Auth.ReadAudiences(r.Context(), a, p["t"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -669,6 +669,7 @@ func (h *Handler) removeAudience(w http.ResponseWriter, r *http.Request, c calle
 // --- issuers ---
 
 type issuerJSON struct {
+	ID               string            `json:"id,omitempty"` // spec 0040: the id a principal's created_by names
 	Name             string            `json:"name"`
 	URL              string            `json:"url"`
 	JWKSURI          string            `json:"jwks_uri,omitempty"`
@@ -681,6 +682,15 @@ type issuerJSON struct {
 	CreatedAt        string            `json:"created_at,omitempty"`
 	CreatedBy        string            `json:"created_by,omitempty"`
 	ETag             string            `json:"etag,omitempty"`
+	// Console is its console client (spec 0015), when set (spec 0040)
+	Console *issuerConsoleJSON `json:"console,omitempty"`
+}
+
+// issuerConsoleJSON is an issuer record's console client in its answer.
+type issuerConsoleJSON struct {
+	consoleClientJSON
+	CreatedAt string `json:"created_at"`
+	CreatedBy string `json:"created_by"`
 }
 
 func issuerTag(is store.Issuer) string { return `"` + is.ID + `"` }
@@ -701,21 +711,42 @@ func createdBy(by string, c caller) string {
 	return by
 }
 
-func issuerOf(is store.Issuer, c caller) issuerJSON {
-	return issuerJSON{Name: is.Name, URL: is.URL, JWKSURI: is.JWKSURI, Algorithms: is.Algorithms, RequiredClaims: is.RequiredClaims,
+// issuerOf is an issuer record's answer; cc is its console client, if it has one.
+func issuerOf(is store.Issuer, cc *store.ConsoleClient, c caller) issuerJSON {
+	o := issuerJSON{ID: is.ID, Name: is.Name, URL: is.URL, JWKSURI: is.JWKSURI, Algorithms: is.Algorithms, RequiredClaims: is.RequiredClaims,
 		RolesClaim: is.RolesClaim, GroupsClaim: is.GroupsClaim, ClientClaim: is.ClientClaim,
 		MaxTokenLifetime: duration(is.MaxTokenLifetime), CreatedAt: is.CreatedAt.UTC().Format(time.RFC3339),
 		CreatedBy: createdBy(is.CreatedBy, c), ETag: issuerTag(is)}
+	if cc != nil {
+		o.Console = &issuerConsoleJSON{consoleClientJSON: consoleClientJSON{ClientID: cc.ClientID, Scopes: cc.Scopes,
+			AudienceParameter: cc.AudienceParameter, Audience: cc.Audience}, CreatedAt: cc.CreatedAt.UTC().Format(time.RFC3339),
+			CreatedBy: createdBy(cc.CreatedBy, c)}
+	}
+	return o
 }
 
-func (h *Handler) tenantIssuers(w http.ResponseWriter, r *http.Request, c caller, p params) ([]store.Issuer, bool) {
+// tenantIssuers reads a tenant's issuer records and their console clients, by issuer id.
+func (h *Handler) tenantIssuers(w http.ResponseWriter, r *http.Request, c caller, p params) ([]store.Issuer, map[string]store.ConsoleClient, bool) {
 	a, _ := c.actor()
-	iss, err := h.o.Auth.ListIssuers(r.Context(), a, p["t"])
+	iss, err := h.o.Auth.ReadIssuers(r.Context(), a, p["t"])
 	if err != nil {
 		h.serviceErr(w, err, false)
-		return nil, false
+		return nil, nil, false
 	}
-	return iss, true
+	ccs, err := h.o.Auth.IssuerConsoleClients(r.Context(), a, p["t"])
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return nil, nil, false
+	}
+	return iss, ccs, true
+}
+
+// consoleOf is an issuer record's console client from tenantIssuers' map (nil: none).
+func consoleOf(ccs map[string]store.ConsoleClient, is store.Issuer) *store.ConsoleClient {
+	if cc, ok := ccs[is.ID]; ok {
+		return &cc
+	}
+	return nil
 }
 
 func (h *Handler) listIssuers(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -723,14 +754,14 @@ func (h *Handler) listIssuers(w http.ResponseWriter, r *http.Request, c caller, 
 	if !ok {
 		return
 	}
-	iss, ok := h.tenantIssuers(w, r, c, p)
+	iss, ccs, ok := h.tenantIssuers(w, r, c, p)
 	if !ok {
 		return
 	}
 	iss, next := paged(iss, func(is store.Issuer) string { return is.Name }, limit, after)
 	out := []issuerJSON{}
 	for _, is := range iss {
-		out = append(out, issuerOf(is, c))
+		out = append(out, issuerOf(is, consoleOf(ccs, is), c))
 	}
 	reply(w, r, http.StatusOK, list("issuers", out, next), "", noStore)
 }
@@ -740,8 +771,8 @@ func (h *Handler) addIssuer(w http.ResponseWriter, r *http.Request, c caller, p 
 	if !body(w, r, &in, maxBody) {
 		return
 	}
-	if in.CreatedAt != "" || in.CreatedBy != "" || in.ETag != "" {
-		problem(w, http.StatusBadRequest, typeInvalid, "created_at, created_by and etag are not set by the caller")
+	if in.ID != "" || in.CreatedAt != "" || in.CreatedBy != "" || in.ETag != "" || in.Console != nil {
+		problem(w, http.StatusBadRequest, typeInvalid, "id, created_at, created_by, etag and console are not set by the caller")
 		return
 	}
 	is := store.Issuer{Name: in.Name, URL: in.URL, JWKSURI: in.JWKSURI, Algorithms: in.Algorithms, RequiredClaims: in.RequiredClaims,
@@ -777,17 +808,20 @@ func (h *Handler) addIssuer(w http.ResponseWriter, r *http.Request, c caller, p 
 		h.serviceErr(w, err, false)
 		return
 	}
-	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/issuers/"+esc(out.Name), issuerOf(out, c), issuerTag(out))
+	created(w, r, "/api/v1/tenants/"+esc(p["t"])+"/issuers/"+esc(out.Name), issuerOf(out, nil, c), issuerTag(out))
 }
 
 func (h *Handler) getIssuer(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	iss, ok := h.tenantIssuers(w, r, c, p)
+	iss, ccs, ok := h.tenantIssuers(w, r, c, p)
 	if !ok {
 		return
 	}
+	// the ETag is the record's id, which If-Match takes; a console client's change keeps it, so the
+	// answer (spec 0040: with its console) is never a 304
+	r.Header.Del("If-None-Match")
 	for _, is := range iss {
 		if is.Name == p["name"] {
-			reply(w, r, http.StatusOK, issuerOf(is, c), issuerTag(is), noStore)
+			reply(w, r, http.StatusOK, issuerOf(is, consoleOf(ccs, is), c), issuerTag(is), noStore)
 			return
 		}
 	}
@@ -841,9 +875,15 @@ func grantKey(g store.Grant) string {
 	return g.CreatedAt.UTC().Format("20060102T150405.000000000") + "|" + g.ID
 }
 
-func (h *Handler) tenantGrants(w http.ResponseWriter, r *http.Request, c caller, p params) ([]store.Grant, bool) {
+// tenantGrants reads a tenant's grants: read, for its readers (spec 0040: the grants' routes),
+// otherwise for its administrators (the principals' picker).
+func (h *Handler) tenantGrants(w http.ResponseWriter, r *http.Request, c caller, p params, read bool) ([]store.Grant, bool) {
 	a, _ := c.actor()
-	gs, err := h.o.Auth.ListGrants(r.Context(), a, p["t"])
+	list := h.o.Auth.ListGrants
+	if read {
+		list = h.o.Auth.ReadGrants
+	}
+	gs, err := list(r.Context(), a, p["t"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return nil, false
@@ -857,7 +897,7 @@ func (h *Handler) listGrants(w http.ResponseWriter, r *http.Request, c caller, p
 	if !ok {
 		return
 	}
-	gs, ok := h.tenantGrants(w, r, c, p)
+	gs, ok := h.tenantGrants(w, r, c, p, true)
 	if !ok {
 		return
 	}
@@ -912,7 +952,7 @@ func (h *Handler) grantPrincipals(w http.ResponseWriter, r *http.Request, c call
 		problem(w, http.StatusBadRequest, typeInvalid, "prefix is at most 300 bytes")
 		return
 	}
-	gs, ok := h.tenantGrants(w, r, c, p)
+	gs, ok := h.tenantGrants(w, r, c, p, false)
 	if !ok {
 		return
 	}
@@ -959,7 +999,7 @@ func (h *Handler) addGrant(w http.ResponseWriter, r *http.Request, c caller, p p
 }
 
 func (h *Handler) getGrant(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	gs, ok := h.tenantGrants(w, r, c, p)
+	gs, ok := h.tenantGrants(w, r, c, p, true)
 	if !ok {
 		return
 	}
