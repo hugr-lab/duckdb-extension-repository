@@ -361,7 +361,7 @@ function UpstreamView({ name }: { name: string }) {
         </dl>
       </Card>
       <LastRun u={u} onRefresh={up.reload} />
-      {u.mode === 'mirror' && (
+      {u.mode === 'mirror' && !lazy && ( // a hold is an eager mirror's: a lazy one takes none
         <HoldForm path={`${path}/hold`} label="upstream hold" current={u.hold} onChanged={up.reload}
           note={<>New versions it brings wait this long in the <Link to={`${base}/catalogue`}>catalogue</Link> before a channel's automatic
             placement takes them, so a bad upstream release can be blocked first; a channel administrator may place one earlier by hand.
