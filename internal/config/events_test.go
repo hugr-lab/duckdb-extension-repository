@@ -12,15 +12,17 @@ func TestEventsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e := cfg.EventSettings(); e.Retention != 30*24*time.Hour || e.ClientAddresses != "truncated" || e.MaxRowsPerTenant != 1000000 {
+	if e := cfg.EventSettings(); e.Retention != 30*24*time.Hour || e.ClientAddresses != "truncated" || e.MaxRowsPerTenant != 1000000 || e.Settle != 30*time.Second {
 		t.Fatalf("defaults: %+v", e)
 	}
 	for name, c := range map[string]struct{ file, want string }{
-		"retention": {base + "events: { retention: 1h }\n", "events.retention"},
-		"clients":   {base + "events: { client_addresses: some }\n", "events.client_addresses"},
-		"rows":      {base + "events: { max_rows_per_tenant: -1 }\n", "events.max_rows_per_tenant"},
-		"sink kind": {base + "events: { sinks: [{ name: a, kind: kafka }] }\n", "events.sinks[0].kind"},
-		"sink name": {base + "events: { sinks: [{ name: A, kind: jsonl, path: '-' }] }\n", "events.sinks[0].name"},
+		"retention":    {base + "events: { retention: 1h }\n", "events.retention"},
+		"settle short": {base + "events: { settle: 500ms }\n", "events.settle"},
+		"settle long":  {base + "events: { settle: 2h }\n", "events.settle"},
+		"clients":      {base + "events: { client_addresses: some }\n", "events.client_addresses"},
+		"rows":         {base + "events: { max_rows_per_tenant: -1 }\n", "events.max_rows_per_tenant"},
+		"sink kind":    {base + "events: { sinks: [{ name: a, kind: kafka }] }\n", "events.sinks[0].kind"},
+		"sink name":    {base + "events: { sinks: [{ name: A, kind: jsonl, path: '-' }] }\n", "events.sinks[0].name"},
 		"sink twice": {base + "events: { sinks: [{ name: a, kind: jsonl, path: '-' }, { name: a, kind: jsonl, path: '-' }] }\n",
 			"events.sinks[1].name"},
 		"relative path": {base + "events: { sinks: [{ name: a, kind: jsonl, path: e.jsonl }] }\n", "events.sinks[0].path"},
