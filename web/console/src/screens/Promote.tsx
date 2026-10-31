@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { Button, Confirm, ErrorBox, Field, Mono, Note } from '../components/ui'
-import { useLoad, useTenant } from '../lib/context'
+import { type Perms, useLoad, useTenant } from '../lib/context'
 import { useAction } from '../lib/action'
-import { seg } from '../lib/http'
+import { type Client, seg } from '../lib/http'
+import type { Release } from './types'
 
 // Promotion (spec 0008): releasing, in another signed channel, a version that is already in this
 // one, signed with that channel's key: promote on the name in the target, publish in the source.
@@ -36,25 +37,64 @@ export function promoteTargets(channels: ChannelRow[], from: string, packageType
   return channels.filter((c) => c.name !== from && c.kind === 'signed' && (c.package_type ?? '') === (packageType ?? '') && may(c.name)).map((c) => c.name)
 }
 
-/** A "Promote…" button and its dialog, on an extension's page in a channel. */
-export function PromoteButton({ channel, ext, versions }: { channel: string; ext: string; versions: string[] }) {
+/** The distinct versions of releases, newest first (the API answers oldest first). */
+export function activeVersions(rs: Pick<Release, 'version'>[]) {
+  const out: string[] = []
+  for (const r of [...rs].reverse()) if (!out.includes(r.version)) out.push(r.version)
+  return out
+}
+
+/** Every active release of ext in channel: the API's pages followed to the end. */
+export async function allActive(client: Client, api: string, channel: string, ext: string) {
+  const out: Release[] = []
+  let cursor = ''
+  for (;;) {
+    const q = new URLSearchParams({ state: 'active', limit: '500' })
+    if (cursor) q.set('cursor', cursor)
+    const r = await client.get<{ releases: Release[]; next?: string }>(`${api}/channels/${seg(channel)}/extensions/${seg(ext)}/releases?${q}`)
+    out.push(...r.data.releases)
+    if (!r.data.next || r.data.next === cursor) return out
+    cursor = r.data.next
+  }
+}
+
+/** Whether a promotion of ext from channel can be offered: publish on the name here (the API answers
+ * 404 without it) and promote somewhere. */
+export function mayPromoteFrom(perms: Perms, channel: string, ext: string) {
+  return perms.mayPromoteAny && perms.mayPublish(channel, ext)
+}
+
+/** A "Promote…" button and its dialog, on an extension's page in a channel. Nothing is read unless
+ * the caller may promote from here. */
+export function PromoteButton({ channel, ext }: { channel: string; ext: string }) {
+  const { perms } = useTenant()
+  if (!mayPromoteFrom(perms, channel, ext)) return null
+  return <Promote channel={channel} ext={ext} />
+}
+
+function Promote({ channel, ext }: { channel: string; ext: string }) {
   const { client, api, perms } = useTenant()
   const chans = useLoad(() => client.get<{ channels: ChannelRow[] }>(`${api}/channels`), [api])
+  const active = useLoad(() => allActive(client, api, channel, ext), [api, channel, ext])
   const all = chans.data?.data.channels ?? []
   const here = all.find((c) => c.name === channel)
   const targets = promoteTargets(all, channel, here?.package_type, (c) => perms.mayPromote(c, ext))
+  const versions = activeVersions(active.data ?? [])
   const [open, setOpen] = useState(false)
   const [p, setP] = useState<Promoting>({ target: '', version: '', narrow: false, notCurrent: false })
   const [done, setDone] = useState('')
   const { busy, failure, act } = useAction('The promotion')
-  if (here?.kind !== 'signed' || targets.length === 0) return chans.error ? <ErrorBox error={chans.error} /> : null
+  if (chans.error || active.error) return <ErrorBox error={chans.error ?? active.error} />
+  if (here?.kind !== 'signed' || targets.length === 0 || versions.length === 0) return null
   const ready = p.target !== '' && p.version.trim() !== ''
   const submit = () => {
     if (!ready) return
     const q = { ...p, version: p.version.trim() }
     setOpen(false)
-    act(() => client.post(`${api}/channels/${seg(q.target)}/extensions/${seg(ext)}/releases/promote`, { body: promoteBody(channel, q) }))
-      .then((ok) => ok && setDone(`${q.version} promoted to ${q.target}`))
+    let status = 0
+    act(async () => {
+      status = (await client.post(`${api}/channels/${seg(q.target)}/extensions/${seg(ext)}/releases/promote`, { body: promoteBody(channel, q) })).status
+    }).then((ok) => ok && setDone(status === 200 ? `${q.version} is in ${q.target} already` : `${q.version} promoted to ${q.target}`))
   }
   return (
     <>
@@ -62,7 +102,7 @@ export function PromoteButton({ channel, ext, versions }: { channel: string; ext
         {done && <span className="text-[13px] text-ink-muted" role="status">{done}</span>}
         <Button disabled={busy} onClick={() => {
           setDone('')
-          setP({ target: targets[0], version: versions[0] ?? '', narrow: false, notCurrent: false })
+          setP({ target: targets[0], version: versions[0], narrow: false, notCurrent: false })
           setOpen(true)
         }}>Promote…</Button>
       </span>
@@ -89,7 +129,7 @@ export function PromoteButton({ channel, ext, versions }: { channel: string; ext
           current version as it is
         </label>
         <Note>The visibility stays the source's unless private is asked: promotion never makes a private build public. The target must serve
-          each build's DuckDB version, and you need publish on the name in this channel.</Note>
+          each build's DuckDB version.</Note>
       </Confirm>
     </>
   )

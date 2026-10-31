@@ -51,6 +51,16 @@ export class Perms {
   mayPromote(c: string, ext: string) {
     return this.server || this.grants.some((g) => g.verbs.includes('promote') && (!g.channel || g.channel === c) && (!g.extension || g.extension === ext))
   }
+  /** Whether the caller may publish an extension in a channel (spec 0008): a promotion takes it in
+   * the source channel (release.Promote answers 404 without it). A group grant may cover it too: the
+   * API decides. */
+  mayPublish(c: string, ext: string) {
+    return this.server || this.grants.some((g) => g.verbs.includes('publish') && (!g.channel || g.channel === c) && (!g.extension || g.extension === ext))
+  }
+  /** Whether the caller may promote anything anywhere: a server administrator, or a grant with promote. */
+  get mayPromoteAny() {
+    return this.server || this.grants.some((g) => g.verbs.includes('promote'))
+  }
   /** Whether the caller may publish into the catalogue (spec 0033): publish tenant-wide, that is a
    * grant without a channel (on the name, a group, or every name); the API decides which names. */
   get mayPublishCatalogue() {

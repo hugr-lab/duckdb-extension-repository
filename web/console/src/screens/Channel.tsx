@@ -230,26 +230,16 @@ function Releases({ channel }: { channel: string }) {
  * cursor survives new releases). */
 export function Extension() {
   const { c = '', ext = '' } = useParams()
-  const { client, api, base, perms } = useTenant()
-  // the active versions here, newest first, for the promotion's choice (the API lists oldest first)
-  const active = useLoad(() => client.get<{ releases: Release[] }>(`${api}/channels/${seg(c)}/extensions/${seg(ext)}/releases?state=active&limit=100`), [api, c, ext])
-  const versions = activeVersions(active.data?.data.releases ?? [])
+  const { base, perms } = useTenant()
   return (
     <>
       <PageTitle eyebrow={<><Link to={`${base}/channels`} className="no-underline">Channels</Link> / <Link to={`${base}/channels/${seg(c)}`} className="no-underline">{c}</Link></>}
         title={<span className="font-mono">{ext}</span>}>
-        <span className="pb-1"><PromoteButton channel={c} ext={ext} versions={versions} /></span>
+        <span className="pb-1"><PromoteButton key={`${c}/${ext}`} channel={c} ext={ext} /></span>
       </PageTitle>
       <ReleaseList channel={c} ext={ext} />
       <Reports key={ext} ext={ext} />
       {perms.tenantAdmin && <WhoMayUse key={`${c}/${ext}`} channel={c} ext={ext} />}
     </>
   )
-}
-
-/** The distinct versions of releases, newest first (the API answers oldest first). */
-export function activeVersions(rs: Pick<Release, 'version'>[]) {
-  const out: string[] = []
-  for (const r of [...rs].reverse()) if (!out.includes(r.version)) out.push(r.version)
-  return out
 }
