@@ -51,8 +51,8 @@ func TestEventsFollow(t *testing.T) {
 		t.Helper()
 		next, _ := ans["next"].(string)
 		b, _ := base64.RawURLEncoding.DecodeString(next)
-		if string(b) != at.UTC().Format(time.RFC3339Nano)+"|" {
-			t.Errorf("next is the covered time %v: %q", at, b)
+		if string(b) != at.UTC().Format(time.RFC3339Nano)+"|" || ans["covered_at"] != at.UTC().Format(time.RFC3339Nano) {
+			t.Errorf("next and covered_at are the covered time %v: %q %v", at, b, ans["covered_at"])
 		}
 	}
 	e1 := stored("grant.add", base.Add(10*time.Second))
@@ -62,17 +62,18 @@ func TestEventsFollow(t *testing.T) {
 
 	// the kind list: kinds and families, or the kinds left out; refused: unknown, twice, mixed
 	for q, want := range map[string][]string{
-		"kind=grant.*,install":      {e1.ID, e2.ID},
-		"kind=grant.add":            {e1.ID},
-		"kind=!install":             {e1.ID},
-		"kind=!grant.*,tenant.read": {e2.ID},
+		"kind=grant.*,install":       {e1.ID, e2.ID},
+		"kind=grant.add":             {e1.ID},
+		"kind=!install":              {e1.ID},
+		"kind=!grant.*,!tenant.read": {e2.ID},
+		"kind=!install,!grant.add":   {},
 	} {
 		if got := ids(read(q + "&" + since)); !slices.Equal(got, want) {
 			t.Errorf("%s: %v, want %v", q, got, want)
 		}
 	}
-	for _, q := range []string{"kind=nope", "kind=nope.*", "kind=grant.add,grant.add", "kind=grant.add,!install", "kind=!install,!grant.add",
-		"kind=!", "kind=grant.add,", "kind=*"} {
+	for _, q := range []string{"kind=nope", "kind=nope.*", "kind=grant.add,grant.add", "kind=grant.add,!install", "kind=!grant.*,tenant.read",
+		"kind=!install,!install", "kind=!", "kind=grant.add,", "kind=*", "kind=grant.add&kind=install"} {
 		if r := m.call(t, "GET", T+"/events?"+q, ta, ""); r.status != 400 {
 			t.Errorf("%s: %d %s", q, r.status, r.body)
 		}
@@ -80,7 +81,7 @@ func TestEventsFollow(t *testing.T) {
 
 	// a full page's next is its last event; a short page's the covered time, with or without a kind
 	first := read(since + "&limit=1")
-	if got := ids(first); !slices.Equal(got, []string{e1.ID}) || first["next"] == nil {
+	if got := ids(first); !slices.Equal(got, []string{e1.ID}) || first["next"] == nil || first["covered_at"] != e1.At.UTC().Format(time.RFC3339Nano) {
 		t.Fatalf("a first page: %v", first)
 	}
 	tail := read(since + "&limit=5&cursor=" + url.QueryEscape(first["next"].(string)))
@@ -94,9 +95,17 @@ func TestEventsFollow(t *testing.T) {
 	}
 	covers(filtered, now.Add(-30*time.Second))
 	covers(read(since+"&until="+url.QueryEscape(base.Add(50*time.Second).Format(time.RFC3339))), base.Add(50*time.Second))
-	if d := read("order=desc&limit=500"); d["next"] != nil {
-		t.Errorf("order=desc on a short page: %v", d["next"])
+	if d := read("order=desc&limit=500"); d["next"] != nil || d["covered_at"] != nil {
+		t.Errorf("order=desc on a short page: %v %v", d["next"], d["covered_at"])
 	}
+	// a cursor past now - settle (another replica's clock ahead, or a smaller window) comes back
+	// unchanged: next never moves back
+	now = now.Add(-10 * time.Second)
+	if back := read(since + "&cursor=" + url.QueryEscape(tail["next"].(string))); back["next"] != tail["next"] ||
+		back["covered_at"] != tail["covered_at"] || len(ids(back)) != 0 {
+		t.Errorf("a cursor past the covered time: %v, want %v", back, tail["next"])
+	}
+	now = now.Add(10 * time.Second)
 
 	// an event stored late (its at 10s before now, after a read at the tail) is answered by the next
 	// read from that read's next, once it settles

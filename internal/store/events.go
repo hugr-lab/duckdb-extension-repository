@@ -133,7 +133,7 @@ func (s *Store) ListEvents(ctx context.Context, tenantID string, f EventFilter) 
 			q, args = q+" AND "+col+" = ?", append(args, v)
 		}
 	}
-	if len(f.Kinds) > 0 { // exact matches on ix_events_tenant_kind
+	if len(f.Kinds) > 0 { // exact matches: one kind on ix_events_tenant_kind, more a filter on ix_events_tenant_at
 		not := ""
 		if f.NotKinds {
 			not = "NOT "
@@ -156,8 +156,10 @@ func (s *Store) ListEvents(ctx context.Context, tenantID string, f EventFilter) 
 		cmp, order = ">", "ASC"
 	}
 	if !f.AfterAt.IsZero() {
+		// the bound before the keyset's OR: a generic plan (PostgreSQL's) reads the index from it,
+		// not from the tenant's oldest event
 		at := s.d.timeArg(f.AfterAt)
-		q, args = q+" AND (at "+cmp+" ? OR at = ? AND id "+cmp+" ?)", append(args, at, at, f.AfterID)
+		q, args = q+" AND at "+cmp+"= ? AND (at "+cmp+" ? OR at = ? AND id "+cmp+" ?)", append(args, at, at, at, f.AfterID)
 	}
 	limit := f.Limit
 	if limit <= 0 {

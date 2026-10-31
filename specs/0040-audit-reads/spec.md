@@ -112,24 +112,30 @@ causes). It gains, for any caller that reads it:
 
 - **`kind` takes a list**, comma-separated: each entry a kind from the event catalogue
   (`GET /api/v1/event-kinds`) or a family prefix ending in `.*` (`grant.*`) of one that exists, no
-  entry twice; that bounds the list, with no fixed cap. A list starting with `!` excludes instead
-  (`kind=!install,tenant.read,authz.refused,auth.failure`), so a reader does not miss kinds added
-  later; the two forms do not mix. A family is expanded to the catalogue's kinds in it, and the list
-  read as exact matches on `ix_events_tenant_kind` (`kind IN (…)`, `kind NOT IN (…)`), never a
-  `LIKE`. (Not a range `kind >= 'grant.' AND kind < 'grant/'`: on PostgreSQL the column takes the
+  entry twice; that bounds the list, with no fixed cap. A list whose every entry starts with `!`
+  excludes instead (`kind=!install,!tenant.read,!authz.refused,!auth.failure,!usage.*`), so a
+  reader does not miss kinds added later; a list mixing `!` and plain entries is refused, and so is
+  `kind` given twice. A family is expanded to the catalogue's kinds in it, and the list read as exact
+  matches (`kind IN (…)`, `kind NOT IN (…)`), never a `LIKE`: one kind through
+  `ix_events_tenant_kind`, several kinds and an exclusion through `ix_events_tenant_at` with a
+  filter. (Not a range `kind >= 'grant.' AND kind < 'grant/'`: on PostgreSQL the column takes the
   database's collation, often a linguistic one such as `en_US.utf8`, where `.` and `/` are ignored at
   the first level and `'grant.add' < 'grant/'` is false.)
 - **The tail settles.** The writer commits each replica's events in batches about every second,
   so an event can commit after a later one is already readable. With `order=asc`, a read answers
-  only events older than now minus a settle window (`events.settle`, default 30s, within 1s..1h; the
-  window `kista admin events list -follow` used, which now reads the setting too), and covers the
-  time up to that point.
+  only events older than now minus a settle window (`events.settle`, default 30s, at least 1s, no
+  ceiling; the window `kista admin events list -follow` used, which now follows as these reads do),
+  and covers the time up to that point.
 - **Paging with `order=asc`** (documented in `api.md`): `next` is always present. A full page's
   `next` is its last event's cursor; a shorter page is the tail, and its `next` is the time the read
   covered (now minus `events.settle`, or `until` when sooner), whatever the `kind` filter matched,
   so a filtered reader advances too and `oldest_at` never shows it a false gap. With no cursor the
   read starts at the oldest retained event, with `since` at `since`; with `until` it covers up to
-  `until`. A reader keeps `next` and asks again later. The cursor stays opaque (never built by hand).
+  `until`. A reader keeps `next` and asks again later. The cursor stays opaque (never built by hand);
+  beside it, `covered_at` is the time `next` stands for (its event's, or the covered time), which a
+  reader compares with `oldest_at`. A cursor past the covered time (another replica's clock ahead)
+  comes back unchanged, so `next` never moves back. A cursor bounds the read by its time before the
+  keyset's `OR` (`at >= ?`; `at <= ?` descending), so a generic plan starts there.
   An event that commits later than the settle window is missed by a tail reader (the writer stalled
   longer than `events.settle`); an operator raises the window if that happens. `order=desc` is
   unchanged (`next` on a full page only).
@@ -141,9 +147,15 @@ causes). It gains, for any caller that reads it:
 ### For consumers
 
 What a reader gets: `200` with the answers above; `404` with no right on the tenant, for a
-suspended, deleting or unknown tenant, and for a missing object; `401` for a token whose issuer was
-removed (spec 0007), or that is stale: older than `auth.admin_token_max_age` (default 1h; these are
-manage routes), after which it gets a fresh token; `429` (`rate-limited`) past the API rate.
+suspended, deleting or unknown tenant, and for a missing object; `401` for a token not of the
+tenant's issuers, one whose issuer was removed (spec 0007), or one that is stale: older than
+`auth.admin_token_max_age` (default 1h; these are manage routes), after which it gets a fresh
+token; `429` (`rate-limited`) past the API rate.
+
+An upstream's entries are its answer's `extensions` field (the `…/extensions` sub-route stays
+closed). A grant's scope is its `channel`, `extension`, `extension_group` and `package_type`
+(omitted when the default for its shape). An events read with `order=asc` answers `next` and
+`covered_at`, and `oldest_at` when the tenant holds events.
 
 `created_by` and an event's `actor` take these forms for a tenant's readers:
 `principal:<tenant>/<issuer id>|<sub>` (the token's bare `sub`; `client:<id>` for a token with no

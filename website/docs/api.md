@@ -179,7 +179,7 @@ Lists that can be long are paged with an opaque cursor:
 The events with `order=asc` page differently (spec 0040), for a reader following them: `next` is
 always there. A full page's `next` is its last event; a shorter page is the tail, and its `next` is
 the time the read covered (now minus `events.settle`, or `until` when sooner), whatever `kind`
-matched. A reader keeps it and asks again later; see [Following the events](observability.md#following-the-events).
+matched; `covered_at` beside it is the time it stands for. A reader keeps it and asks again later; see [Following the events](observability.md#following-the-events).
 
 The index's `extensions` list is ordered by name and its cursor is the last name, so it never
 expires. Some lists take a name `prefix` (`…/channels/{c}/extensions`, `…/channels/{c}/releases`,
@@ -558,7 +558,7 @@ last, `404`; a chunk without `Content-Length`, `411`; too many chunks at once, `
 | Route | Who |
 | --- | --- |
 | `GET event-kinds` | public: the event catalogue |
-| `GET tenants/{t}/events[?since=&until=&kind=&actor=&subject=&outcome=&order=&cursor=&limit=]`, `GET …/events/{id}` | auditor; a deleting or deleted tenant: server. `kind` is a comma-separated list of kinds and families (`grant.*`), or after `!` the kinds left out; the answer carries `oldest_at` ([Following the events](observability.md#following-the-events), spec 0040) |
+| `GET tenants/{t}/events[?since=&until=&kind=&actor=&subject=&outcome=&order=&cursor=&limit=]`, `GET …/events/{id}` | auditor; a deleting or deleted tenant: server. `kind` is a comma-separated list of kinds and families (`grant.*`), or of the kinds left out, each after a `!` (`!install,!usage.*`); the answer carries `oldest_at`, and `covered_at` with `order=asc` ([Following the events](observability.md#following-the-events), spec 0040) |
 | `GET events[...]`, `GET events/{id}` | server: the server's own events |
 | `GET tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=` | principal: everything with `audit`, otherwise what its `admin`, `publish` or `promote` grants cover; `group` takes `source` too, a label (`unknown` for counts before spec 0036) |
 | `GET tenants/{t}/stats/releases?channel=&extension=` | the same |

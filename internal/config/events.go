@@ -81,9 +81,9 @@ func validateEvents(bad func(string, ...any), c Config) {
 	if e.Retention != 0 && (e.Retention < 48*time.Hour || e.Retention > 365*24*time.Hour) {
 		bad("events.retention must be within 2..365 days")
 	}
-	// a second at least: the writer's batches; an hour at most: a reader's tail stays recent
-	if e.Settle != 0 && (e.Settle < time.Second || e.Settle > time.Hour) {
-		bad("events.settle must be within 1s..1h")
+	// a second at least: the writer's batches
+	if e.Settle != 0 && e.Settle < time.Second {
+		bad("events.settle must be at least 1s")
 	}
 	if len(e.Sinks) > 0 && e.Retention > 90*24*time.Hour {
 		bad("events.retention is at most 90 days when sinks are configured")

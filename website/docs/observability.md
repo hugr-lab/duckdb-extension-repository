@@ -209,7 +209,7 @@ kista admin -config kista.yaml events list -server
 | `-kind`, `-subject`, `-actor` | filters: `-kind` and `-actor` match exactly, `-subject` matches a prefix |
 | `-since` | RFC 3339 |
 | `-limit` | how many (default 100) |
-| `-follow` | print new events as they arrive, oldest first (each poll looks back `events.settle`) |
+| `-follow` | print new events as they settle, oldest first: each poll reads up to now minus `events.settle`, as an `order=asc` read does |
 | `-format` | `table` (default) or `jsonl` |
 
 Over the API:
@@ -229,9 +229,10 @@ by a server administrator. Events are newest first by default. See [Access](acce
 A reader that follows a tenant's events (spec 0040), such as a watcher holding `audit`:
 
 - **`kind` takes a list**, comma-separated: kinds of the catalogue (`GET /api/v1/event-kinds`) and
-  families of them, `grant.*`, none twice. A list starting with `!` leaves those out instead, so a
-  kind added later is not missed: `kind=!install,tenant.read,authz.refused,auth.failure`. The two
-  forms do not mix; an unknown kind or family, an entry twice or a mixed list is `400`.
+  families of them, `grant.*`, none twice. A list whose every entry starts with `!` leaves those out
+  instead, so a kind added later is not missed:
+  `kind=!install,!tenant.read,!authz.refused,!auth.failure,!usage.*`. An unknown kind or family, an
+  entry twice, a list mixing `!` and plain entries, or `kind` given twice is `400`.
 - **The tail settles.** The writer commits each replica's events in batches, so an event can commit
   after a later one is already readable. With `order=asc`, a read answers only events older than
   now minus `events.settle` (default 30s), and covers the time up to there.
@@ -241,16 +242,19 @@ A reader that follows a tenant's events (spec 0040), such as a watcher holding `
   again later with it as `cursor`. Without a cursor a read starts at the oldest retained event (at
   `since` with `since`). The cursor is opaque. An event that commits later than `events.settle`
   (the writer stalled longer) is missed by a reader at the tail: raise the window if that happens.
-  `order=desc` gives `next` on a full page only.
+  `covered_at`, beside `next`, is the time `next` stands for (its event's, or the covered time); a
+  cursor past the covered time (another replica's clock ahead) comes back unchanged, so `next` never
+  moves back. `order=desc` gives `next` on a full page only, and no `covered_at`.
 - **`oldest_at`** in the answer is the time of the tenant's oldest retained event (left out when it
-  holds none). A reader whose cursor is older has missed events, and reads the tenant's structure
+  holds none). A reader whose `covered_at` is older has missed events, and reads the tenant's structure
   afresh ([Access](access.md#who-sees-what)). `audit.dropped` counts the events the writer or
   retention dropped undelivered.
 - `request` ties the events one request wrote, such as a key's removal with `purge_held` and the
   `catalogue.purge` it causes.
 
 What a reader gets: `200`; `404` without a right on the tenant, for a suspended, deleting or
-unknown tenant and for a missing object; `401` for a token whose issuer was removed or older than
+unknown tenant and for a missing object; `401` for a token not of the tenant's issuers, one whose
+issuer was removed, or one older than
 `auth.admin_token_max_age` (default 1h: these are management routes), after which it gets a fresh
 token; `429` (`rate-limited`) past the API's rate (`serve.api_rate`, per client address).
 
@@ -537,7 +541,7 @@ load balancer that checks it must reach the pod port directly.
 | --- | --- | --- |
 | `events.retention` | 720h (30 days) | 2 to 365 days; at most 90 with sinks |
 | `events.max_rows_per_tenant` | 1,000,000 | 1 to 100,000,000 |
-| `events.settle` | 30s | 1s to 1h: how far behind now a reader [following the events](#following-the-events) stops |
+| `events.settle` | 30s | at least 1s: where an `order=asc` read [following the events](#following-the-events) stops, behind now |
 | `events.client_addresses` | `truncated` | `full`, `truncated`, `none` |
 | `events.resource` | none | attributes for OTLP exports |
 | `events.sinks` | none | at most 16 |

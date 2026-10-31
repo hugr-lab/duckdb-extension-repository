@@ -52,6 +52,10 @@ func eventFilter(w http.ResponseWriter, r *http.Request) (store.EventFilter, boo
 	}
 	q := r.URL.Query()
 	f := store.EventFilter{Actor: q.Get("actor"), Subject: q.Get("subject"), Outcome: q.Get("outcome"), Limit: limit}
+	if len(q["kind"]) > 1 {
+		problem(w, http.StatusBadRequest, typeInvalid, "kind is one parameter, a comma-separated list")
+		return f, false
+	}
 	if v := q.Get("kind"); v != "" {
 		kinds, not, msg := kindList(v)
 		if msg != "" {
@@ -94,16 +98,17 @@ func eventFilter(w http.ResponseWriter, r *http.Request) (store.EventFilter, boo
 }
 
 // kindList reads kind (spec 0040): comma-separated kinds of the catalogue or families of them
-// (grant.*), none twice, or after a leading ! those left out. It answers the catalogue's kinds they
-// name (a family's, expanded: an exact match never depends on the database's collation), or why
-// the list is refused.
+// (grant.*), none twice, or each after a ! the kinds left out (!install,!usage.*). It answers the
+// catalogue's kinds they name (a family's, expanded: an exact match never depends on the
+// database's collation), or why the list is refused.
 func kindList(v string) (kinds []string, not bool, msg string) {
-	v, not = strings.CutPrefix(v, "!")
 	entries, seen, named := strings.Split(v, ","), map[string]bool{}, map[string]bool{}
+	not = strings.HasPrefix(entries[0], "!")
 	for _, e := range entries {
+		e, left := strings.CutPrefix(e, "!")
 		switch {
-		case strings.HasPrefix(e, "!"):
-			return nil, false, "kind is a list of kinds, or a list after ! of kinds left out, not both"
+		case left != not:
+			return nil, false, "kind is a list of kinds, or a list of kinds left out, each after a !, not both"
 		case seen[e]:
 			return nil, false, "kind names " + e + " twice"
 		}
@@ -160,16 +165,18 @@ func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller,
 		h.fail(w, err)
 		return
 	}
-	next := ""
+	// with order=asc, covered_at is the time next stands for (spec 0040), which a reader compares
+	// with oldest_at without reading the cursor
+	next, coveredAt := "", time.Time{}
 	switch {
 	case len(evs) > limit: // a full page
 		evs = evs[:limit]
 		l := evs[len(evs)-1]
-		next = eventCursor(l.At, l.ID)
+		next, coveredAt = eventCursor(l.At, l.ID), l.At
 	case f.Ascending && f.AfterAt.After(covered): // a cursor past the covered time keeps its place
-		next = eventCursor(f.AfterAt, f.AfterID)
+		next, coveredAt = eventCursor(f.AfterAt, f.AfterID), f.AfterAt
 	case f.Ascending: // the tail: whatever the filter matched, the time covered
-		next = eventCursor(covered, "")
+		next, coveredAt = eventCursor(covered, ""), covered
 	}
 	oldest, held, err := h.o.Store.OldestEvent(r.Context(), tenantID)
 	if err != nil {
@@ -181,6 +188,9 @@ func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller,
 		out = append(out, eventOf(e, c))
 	}
 	ans := list("events", out, next)
+	if f.Ascending {
+		ans["covered_at"] = coveredAt.UTC().Format(time.RFC3339Nano)
+	}
 	if held {
 		ans["oldest_at"] = oldest.UTC().Format(time.RFC3339Nano)
 	}
