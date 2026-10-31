@@ -1,6 +1,6 @@
 # Spec 0040: An auditor reads a tenant's structure and follows its events
 
-- **Status**: accepted
+- **Status**: implemented
 - **Date**: 2026-10-31
 - **Author**: vgsml, Claude
 
@@ -87,12 +87,13 @@ The issuer answer gains two fields, for administrators and auditors alike:
   - `readTenant`: `audit` on the tenant (`Authz.Allow(…, VerbAudit, Resource{Tenant})`), never a
     distribution admin. `ListIssuers`, `ListAudiences`, `ListGrants`, `GetPackageGroup`,
     `PackageGroupMembers` (beside the group administrator's path), `upstream.Service.List` and
-    `Get` call it. `ListPackageGroups`' full view (today `tenantAdmin`: every group with its grants,
+    `Get` call it, and so does `IssuerConsoleClients`, the issuers' console clients for their
+    answers. `ListPackageGroups`' full view (today `tenantAdmin`: every group with its grants,
     `?extension=`) becomes `admin` or `audit`; anyone else keeps today's view.
   - `readPublishers`: `readTenant`, or `tenantOrDistributor` as today. `ListPublishers`,
     `TenantPublisherKeys` and `ListPublisherKeys` call it; the narrowing to distributors' publishers
-    stays on `distributor(a)`. `ListPublisherKeys` gets a read lookup of its publisher; the shared
-    `publisher` lookup stays the writes'.
+    stays on `distributor(a)`. `ListPublisherKeys` reads its publisher after `readPublishers`
+    (`publisherOf`); the `publisher` lookup it used had no other caller, and is gone.
   - Every write keeps its check (`admin`; a distribution admin on a distributor's publisher).
 - **No audit event** is written for these reads, as for the events' reads.
 
@@ -106,12 +107,16 @@ causes). It gains, for any caller that reads it:
   (`GET /api/v1/event-kinds`) or a family prefix ending in `.*` (`grant.*`) of one that exists, no
   entry twice; that bounds the list, with no fixed cap. A list starting with `!` excludes instead
   (`kind=!install,tenant.read,authz.refused,auth.failure`), so a reader does not miss kinds added
-  later; the two forms do not mix. A prefix is a range on `ix_events_tenant_kind`
-  (`kind >= 'grant.' AND kind < 'grant/'`), never a `LIKE`.
+  later; the two forms do not mix. A family is expanded to the catalogue's kinds in it, and the list
+  read as exact matches on `ix_events_tenant_kind` (`kind IN (…)`, `kind NOT IN (…)`), never a
+  `LIKE`. (Not a range `kind >= 'grant.' AND kind < 'grant/'`: on PostgreSQL the column takes the
+  database's collation, often a linguistic one such as `en_US.utf8`, where `.` and `/` are ignored at
+  the first level and `'grant.add' < 'grant/'` is false.)
 - **The tail settles.** The writer commits each replica's events in batches about every second,
   so an event can commit after a later one is already readable. With `order=asc`, a read answers
-  only events older than now minus a settle window (`events.settle`, default 30s, the window
-  `kista events -follow` already uses), and covers the time up to that point.
+  only events older than now minus a settle window (`events.settle`, default 30s, within 1s..1h; the
+  window `kista admin events list -follow` used, which now reads the setting too), and covers the
+  time up to that point.
 - **Paging with `order=asc`** (documented in `api.md`): `next` is always present. A full page's
   `next` is its last event's cursor; a shorter page is the tail, and its `next` is the time the read
   covered (now minus `events.settle`, or `until` when sooner), whatever the `kind` filter matched,
@@ -175,7 +180,7 @@ with no code.
 - **No existence leak**: without a right the answer is the same `404` as for an unknown tenant.
 - **Writes** keep their check in the API rule and in the service.
 - **The events' `kind` list** is bounded by the catalogue: each entry a known kind or family, none
-  twice, read as an exact match or an index range.
+  twice, read as exact matches.
 
 ## Testing
 
@@ -186,13 +191,15 @@ with no code.
   upstream sub-route named above; `?type=` narrows as for an administrator. Refused (`404`): an administrator
   of one package type; an extension group's administrator (except its own group; the group list
   keeps its narrow view for anyone but an administrator or auditor); an auditor of
-  tenant B on tenant A; a server token with no role; an install holder; a licence manager. A stale
+  tenant B on tenant A (with an A token, no grant there: `404`; its B token is not one of A's:
+  `401`); a server token with no role; an install holder; a licence manager. A stale
   token, and one older than `admin_token_max_age`, get `401`. A distribution admin still reads only distributors' publishers and keys, `404` on
   the rest, and `404` on publisher reads in a suspended tenant.
 - `internal/tenants` and `internal/upstream`: `readTenant` admits `audit`, a tenant-wide `admin` and a
   server administrator; `ListIssuers`, `ListAudiences`, `ListGrants`, the group reads and the upstream
   reads refuse an `ActorDistributionAdmin`; the writes refuse an auditor.
-- Events: a `kind` list with an exact kind and a prefix (answered through the kind index range);
+- Events: a `kind` list with an exact kind and a prefix (the store's `IN` and `NOT IN` on every
+  engine);
   an exclusion list; an unknown kind, a duplicate or a mixed list refused (`400`). With `order=asc`:
   a full page's `next` is its last event; a short page's `next` is the covered time (now minus
   `events.settle`), with and without a `kind` filter; an event stored late (committed with an `at`

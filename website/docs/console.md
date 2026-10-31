@@ -114,7 +114,8 @@ sign-in once it has a **console client**:
 
    Over the API: `POST /api/v1/tenants/{t}/issuers/{name}/console` with
    `{client_id, scopes, audience_parameter, audience}` and `If-Match: "<issuer id>"`; `DELETE` removes
-   it.
+   it. The issuer's answer (`GET …/issuers/{name}`, to its administrators and auditors) carries it
+   as `console`, with `created_at` and `created_by` (spec 0040), and its `id`.
 3. Open `/ui/`, type the tenant's name, and pick the issuer.
 
 `audience`, when set, must be one of the tenant's audiences; otherwise tokens are requested for the

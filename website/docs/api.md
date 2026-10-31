@@ -176,6 +176,11 @@ Lists that can be long are paged with an opaque cursor:
 - the answer carries `next` when there is more; pass it back as `cursor`;
 - a cursor is only valid for the list that returned it (`400` otherwise).
 
+The events with `order=asc` page differently (spec 0040), for a reader following them: `next` is
+always there. A full page's `next` is its last event; a shorter page is the tail, and its `next` is
+the time the read covered (now minus `events.settle`, or `until` when sooner), whatever `kind`
+matched. A reader keeps it and asks again later; see [Following the events](observability.md#following-the-events).
+
 The index's `extensions` list is ordered by name and its cursor is the last name, so it never
 expires. Some lists take a name `prefix` (`…/channels/{c}/extensions`, `…/channels/{c}/releases`,
 `…/grants/principals`, `…/extension-groups`, `…/extension-groups/{g}/members`,
@@ -235,7 +240,7 @@ All paths are relative to `/api/v1`. `{t}` is a tenant, `{c}` a channel.
 | `DELETE tenants/{t}` | server: [deleting a tenant](#deleting-a-tenant) |
 | `PUT tenants/{t}/holder {"holder_id"}`, `DELETE tenants/{t}/holder` (`If-Match`) | server: [the expected holder](#the-expected-holder) |
 | `GET tenants/{t}/limits`; `PUT tenants/{t}/limits` (`If-Match` optional) | tenant admin reads, server sets: [the tenant's limits](#the-tenants-limits) |
-| `GET tenants/{t}/audiences` | tenant admin |
+| `GET tenants/{t}/audiences` | tenant admin, an auditor (spec 0040) |
 | `POST tenants/{t}/audiences`, `POST tenants/{t}/audiences/remove` | server |
 
 #### The tenant record
@@ -403,9 +408,8 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 | `POST …/extensions/{ext}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
 | `DELETE …/extensions/{ext}/releases/{id}` | extension admin: purge a yanked release |
 | `GET, POST tenants/{t}/blocks`; `GET, DELETE tenants/{t}/blocks/{hash}` | tenant admin |
-| `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin; `POST {"name", "distributor"}` creates a [distributor's publisher](publishing.md#distributors-publishers): server, a distribution admin (`404` to a tenant admin). A distribution admin (spec 0037) lists and reads distributors' publishers only (a tenant's own one is left out of a list, and reading it is `404`), creates only with `distributor` (`404` without), and gets `409` `publisher-taken` for a name a tenant's own publisher holds; never `DELETE`. A tenant holds at most 200 publishers of its own and, counted apart, 10 distributors' publishers by default (`limits.ceilings`). Every publisher answer carries its `id` (spec 0037) |
-| `GET, POST …/publishers/{name}/github`; `GET, DELETE …/github/{id}` | tenant admin |
-| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin; a distribution admin for a distributor's publisher only (spec 0037: the tenant's own publishers, marked or not, answer it the `404` of a missing publisher); a key is unique in the tenant: one another publisher holds is `409`, recorded for a distribution admin as an `authz.refused` (`reason` `key-taken`) when a tenant's own publisher holds it; `DELETE …?purge_held=true` purges the builds the key published that are still held, and answers what it purged and kept, revoked ([holds](publishing.md#holds-and-early-placement)) |
+| `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin, an auditor (`GET`, spec 0040: every publisher); `POST {"name", "distributor"}` creates a [distributor's publisher](publishing.md#distributors-publishers): server, a distribution admin (`404` to a tenant admin). A distribution admin (spec 0037) lists and reads distributors' publishers only (a tenant's own one is left out of a list, and reading it is `404`), creates only with `distributor` (`404` without), and gets `409` `publisher-taken` for a name a tenant's own publisher holds; never `DELETE`. A tenant holds at most 200 publishers of its own and, counted apart, 10 distributors' publishers by default (`limits.ceilings`). Every publisher answer carries its `id` (spec 0037) |
+| `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin, an auditor (`GET`); a distribution admin for a distributor's publisher only (spec 0037: the tenant's own publishers, marked or not, answer it the `404` of a missing publisher); a key is unique in the tenant: one another publisher holds is `409`, recorded for a distribution admin as an `authz.refused` (`reason` `key-taken`) when a tenant's own publisher holds it; `DELETE …?purge_held=true` purges the builds the key published that are still held, and answers what it purged and kept, revoked ([holds](publishing.md#holds-and-early-placement)) |
 | `PUT …/publishers/{name}/hold {"hold": "24h"}` | tenant admin: the publisher's [hold](publishing.md#holds-and-early-placement); a publisher answers `hold` (omitted for none); a distributor's publisher's: server, a distribution admin only, and its answer carries `effective_hold`, the larger of its hold and the tenant's minimum (spec 0037; omitted for none) |
 | `GET, PUT tenants/{t}/distributor-hold` | tenant admin: the tenant's [minimum hold for distributors' publishers](access.md#the-minimum-hold-for-distributors-publishers) (spec 0037), `{"hold": "24h0m0s"}`, one day by default; `PUT` takes `{"hold": "24h"}` (`0s` for none, at most `limits.ceilings.max_hold`, 90 days by default). A distribution admin gets `404`: it reads the minimum only as its publishers' `effective_hold` |
 | `PUT …/publishers/{name}/distributor {"distributor": "enterest"}` | server, a distribution admin: rename a [distributor's publisher](publishing.md#distributors-publishers)'s distributor (`409` once it is used: builds, releases, rules, a hold or downloads, spec 0036); an existing publisher is never marked one (spec 0037: a publisher without the mark answers `404` to everyone); a publisher answers `distributor` (omitted for the tenant's own) |
@@ -425,7 +429,7 @@ See [Publishing](publishing.md).
 
 | Route | Who |
 | --- | --- |
-| `GET, POST tenants/{t}/upstreams`; `GET, DELETE …/upstreams/{name}` | tenant admin |
+| `GET, POST tenants/{t}/upstreams`; `GET, DELETE …/upstreams/{name}` | tenant admin, an auditor (`GET`, spec 0040; not the sub-routes below) |
 | `POST …/upstreams/{name}/public`, `/private`, `/pause`, `/resume`, `/sync`, `/credential` | tenant admin |
 | `POST …/upstreams/{name}/fetch {"fetch": "eager"\|"lazy"}` (`If-Match`) | tenant admin: a mirror's fetch mode ([Lazy mirrors](upstreams.md#lazy-mirrors)); an upstream answers `fetch`, an entry `eager` |
 | `PUT …/upstreams/{name}/hold {"hold": "24h"}` (`If-Match` optional) | tenant admin: an eager mirror's [hold](upstreams.md#holds); an upstream answers `hold` (omitted for none) |
@@ -508,14 +512,14 @@ promotion and a source's switch to an administrator of the path; a relay run (th
 
 | Route | Who |
 | --- | --- |
-| `GET, POST tenants/{t}/issuers`; `GET, DELETE …/issuers/{name}` | tenant admin |
+| `GET, POST tenants/{t}/issuers`; `GET, DELETE …/issuers/{name}` | tenant admin, an auditor (`GET`, spec 0040). An issuer answers its `id` (the one a principal's `created_by` names) and, once set, its console client as `console` (`client_id`, `scopes`, `audience_parameter`, `audience`, `created_at`, `created_by`) |
 | `POST, DELETE …/issuers/{name}/console` | tenant admin: the console's client at that issuer |
-| `GET tenants/{t}/grants[?principal=&extension_group=&extension=]`, `POST tenants/{t}/grants` | tenant admin (spec 0037: not a distribution admin) |
+| `GET tenants/{t}/grants[?principal=&extension_group=&extension=]`, `POST tenants/{t}/grants` | tenant admin, an auditor (`GET`, spec 0040) (spec 0037: not a distribution admin) |
 | `GET tenants/{t}/grants/principals[?prefix=]` | tenant admin |
-| `GET, DELETE tenants/{t}/grants/{id}` | tenant admin |
-| `GET tenants/{t}/extension-groups` | principal (tenant admins see all; group administrators theirs) |
+| `GET, DELETE tenants/{t}/grants/{id}` | tenant admin, an auditor (`GET`) |
+| `GET tenants/{t}/extension-groups` | principal (tenant admins and auditors see all, with their grants, and may ask `?extension=`; group administrators theirs) |
 | `POST tenants/{t}/extension-groups` | tenant admin |
-| `GET tenants/{t}/extension-groups/{g}`, `GET …/{g}/members` | tenant admin, the group's administrators |
+| `GET tenants/{t}/extension-groups/{g}`, `GET …/{g}/members` | tenant admin, an auditor, the group's administrators |
 | `DELETE …/extension-groups/{g}`; `POST …/{g}/description`, `POST …/{g}/members` | tenant admin |
 
 See [Access](access.md).
@@ -554,7 +558,7 @@ last, `404`; a chunk without `Content-Length`, `411`; too many chunks at once, `
 | Route | Who |
 | --- | --- |
 | `GET event-kinds` | public: the event catalogue |
-| `GET tenants/{t}/events[?since=&until=&kind=&actor=&subject=&outcome=&order=&cursor=&limit=]`, `GET …/events/{id}` | auditor; a deleting or deleted tenant: server |
+| `GET tenants/{t}/events[?since=&until=&kind=&actor=&subject=&outcome=&order=&cursor=&limit=]`, `GET …/events/{id}` | auditor; a deleting or deleted tenant: server. `kind` is a comma-separated list of kinds and families (`grant.*`), or after `!` the kinds left out; the answer carries `oldest_at` ([Following the events](observability.md#following-the-events), spec 0040) |
 | `GET events[...]`, `GET events/{id}` | server: the server's own events |
 | `GET tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=` | principal: everything with `audit`, otherwise what its `admin`, `publish` or `promote` grants cover; `group` takes `source` too, a label (`unknown` for counts before spec 0036) |
 | `GET tenants/{t}/stats/releases?channel=&extension=` | the same |

@@ -631,6 +631,10 @@ Over the API (tenant administrators):
 
 Removing a publisher removes its keys and grants; caches drop it at the next request.
 
+The tenant's auditors (`audit` on the tenant) read every publisher and its keys through the `GET`
+routes, with the administrators' answers, and change nothing (spec 0040); a distribution admin reads
+its distributors' publishers only.
+
 ### Keys
 
 - **Types**: `ssh-ed25519` (recommended) and `ecdsa-sha2-nistp256`, for a key held in a KMS. RSA,
