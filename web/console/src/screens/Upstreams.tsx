@@ -8,6 +8,7 @@ import { entryNames } from '../lib/names'
 import { platforms } from './Channel'
 import { BundleUploads } from './BundleUploads'
 import { Feeds } from './Feeds'
+import { HoldForm } from './Holds'
 import { holdWords } from './Sources'
 
 // Upstreams (spec 0009; console phase 2b): where a channel's mirrored extensions come from, what is
@@ -331,7 +332,7 @@ function UpstreamView({ name }: { name: string }) {
     ['Source', source(u)],
     ['Home channel', <><Link to={`${base}/channels/${seg(u.channel)}`} className="font-mono">{u.channel}</Link> · {modeWords(u)}</>],
     ['New releases are', u.visibility],
-    ...(u.mode === 'mirror' ? [['Hold', `${holdWords(u.hold)} (set with the CLI or the API)`] as [string, React.ReactNode]] : []),
+    ...(u.mode === 'mirror' ? [['Hold', holdWords(u.hold)] as [string, React.ReactNode]] : []),
     ['Signature keys', u.kind === 'repository' ? `${u.keys.length} pinned (below)` : `DuckDB ${u.kind === 'duckdb-core' ? 'core' : 'community'}'s own, from the pin`],
     ['Allowlist', `${u.extensions.length} ${u.extensions.length === 1 ? 'entry' : 'entries'} × ${u.platforms.length} platforms, for each DuckDB version the channel serves`],
     ...(u.mode === 'bundle' ? [['Last bundle', u.bundle_id ? <><Mono>{u.bundle_id}</Mono>, made {when(u.bundle_created_at!)}</> : 'none imported yet'] as [string, React.ReactNode]] : []),
@@ -360,6 +361,12 @@ function UpstreamView({ name }: { name: string }) {
         </dl>
       </Card>
       <LastRun u={u} onRefresh={up.reload} />
+      {u.mode === 'mirror' && (
+        <HoldForm path={`${path}/hold`} label="upstream hold" current={u.hold} onChanged={up.reload}
+          note={<>New versions it brings wait this long in the <Link to={`${base}/catalogue`}>catalogue</Link> before a channel's automatic
+            placement takes them, so a bad upstream release can be blocked first; a channel administrator may place one earlier by hand.
+            0 clears it.</>} />
+      )}
       {u.kind === 'repository' && u.mode !== 'bundle' && <Usage u={u} path={path} etag={etag} onChanged={up.reload} />}
       {takesRevocations(u) && <Revocations u={u} path={path} etag={etag} onChanged={up.reload} />}
       <Allowlist path={path} mirror={u.mode === 'mirror'} lazy={lazy} onChanged={up.reload} />

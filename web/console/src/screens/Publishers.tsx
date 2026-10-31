@@ -5,6 +5,7 @@ import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
 import { useAction } from '../lib/action'
 import { GrantForm, GrantsList, useGrants } from './Access'
+import { HoldForm } from './Holds'
 import { holdInput, holdWords } from './Sources'
 
 // Publishers (spec 0008, 0023; console phase 2a): identities that only publish and promote, from CI
@@ -147,7 +148,7 @@ export function PublisherPage() {
 
 /** One publisher: its keys and grants. */
 function PublisherView({ name }: { name: string }) {
-  const { client, api, base } = useTenant()
+  const { client, api, base, perms } = useTenant()
   const nav = useNavigate()
   const path = `${api}/publishers/${seg(name)}`
   const pub = useLoad(() => client.get<Publisher>(path), [path])
@@ -185,6 +186,12 @@ function PublisherView({ name }: { name: string }) {
           for {holdWords(p.effective_hold)}: its hold, or the tenant's minimum for distributors' publishers when that is longer.</Note>
       )}
       <Keys publisher={p} onChanged={pub.reload} />
+      {(!p.distributor || perms.server) && (
+        <HoldForm path={`${path}/hold`} label="publisher hold" current={p.hold} onChanged={pub.reload}
+          note={<>What it publishes waits this long in the <Link to={`${base}/catalogue`}>catalogue</Link> before a channel's automatic
+            placement takes it; a channel administrator may place it earlier by hand. Within it, removing a stolen key with its held
+            entries purged keeps them from every channel. 0 clears it.</>} />
+      )}
       {!p.distributor && <PublisherGrants publisher={p.name} />}
       <Confirm open={removing} title={`Remove the publisher ${p.name}?`} confirm="Remove" danger onConfirm={remove} onClose={() => setRemoving(false)}>
         <p>Its keys and grants go with it: CI signing with them can no longer publish.</p>
