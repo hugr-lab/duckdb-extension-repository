@@ -78,6 +78,10 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/a.
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/b.pem" 2>/dev/null  # added from the console (2b)
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/att.pem" 2>/dev/null  # the feed's (spec 0011)
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/s.pem" 2>/dev/null  # tenant scratch's (spec 0019)
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/k.pem" 2>/dev/null  # K4: a new channel's first key, active at once
+# K4: an upstream credential the server's Credentials page lists (its token never shown)
+printf 'e2e-only' >"$work/upstream.token"
+chmod 600 "$work/upstream.token"
 # spec 0021: vault's build declares the licence vectors' test-only key; a licence for vault, 20 days
 # long, to import
 openssl pkey -in "$root/internal/license/testdata/test-only-2048.pem" -pubout -out "$work/lic.pub.pem" 2>/dev/null
@@ -132,6 +136,9 @@ auth:
 gc: { interval: 24h }  # every replica runs this version: purging is on (spec 0016)
 tenants: { min_suspended: 0s }  # spec 0019: deleted at once in the suite
 bundles: { chunk_size: 1MiB }  # spec 0014: an upload of a few MiB in several chunks
+upstreams:
+  credentials:
+    - { name: k4-cred, tenants: ["*"], prefixes: ["https://ext.example/acme/"], kind: token_file, token_file: $work/upstream.token }
 ui:
   environment: e2e
   allowed_origins: [ $host ]
