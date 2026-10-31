@@ -28,6 +28,23 @@ export function splitNames(s: string) {
   return [...new Set(s.split(/[\s,]+/).map((x) => x.trim()).filter((x) => x !== ''))]
 }
 
+/** POST reserved-names' answer: the names newly reserved, and by name the tenants that keep
+ * releases of it. */
+export interface Reserved {
+  added: string[]
+  tenants?: Record<string, string[]>
+}
+
+/** The tenants keeping releases, by name, in words ("geo: acme, beta"). */
+export function keptWords(t?: Record<string, string[]>) {
+  return Object.keys(t ?? {}).sort().map((n) => `${n}: ${t![n].join(', ')}`).join('; ')
+}
+
+/** The reserve request: force only while it is offered (after a 409), so it is never sent stale. */
+export function reserveBody(names: string, kind: 'core' | 'community', force: boolean, offered: boolean) {
+  return { names: splitNames(names), kind, force: offered && force }
+}
+
 export function ReservedNames({ client }: { client: Client }) {
   const list = useLoad(() => client.get<{ names: ReservedName[] }>('/reserved-names'), [])
   const [prefix, setPrefix] = useState('')
@@ -35,9 +52,11 @@ export function ReservedNames({ client }: { client: Client }) {
   const [kind, setKind] = useState<'core' | 'community'>('community')
   const [force, setForce] = useState(false)
   const [removing, setRemoving] = useState('')
-  const [added, setAdded] = useState<{ added: string[]; tenants?: string[] } | null>(null)
-  const { busy, failure, act, setFailure } = useAction('The reserved names', list.reload)
-  const conflict = failure instanceof ApiError && failure.status === 409
+  const [added, setAdded] = useState<Reserved | null>(null)
+  const reserve = useAction('The reserved names', list.reload)
+  const remove = useAction('The reserved name', list.reload)
+  const busy = reserve.busy || remove.busy
+  const conflict = reserve.failure instanceof ApiError && reserve.failure.status === 409
   const rows = (list.data?.data.names ?? []).filter((n) => n.name.startsWith(prefix))
   return (
     <>
@@ -47,15 +66,15 @@ export function ReservedNames({ client }: { client: Client }) {
       <Card title="Reserve names">
         <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => {
           e.preventDefault()
-          const body = { names: splitNames(names), kind, force }
+          const body = reserveBody(names, kind, force, conflict)
           setAdded(null)
-          act(async () => {
-            const r = await client.post<{ added: string[]; tenants?: string[] }>('/reserved-names', { body })
+          setForce(false) // offered again only by the next 409
+          reserve.act(async () => {
+            const r = await client.post<Reserved>('/reserved-names', { body })
             setAdded(r.data)
           }).then((ok) => {
             if (ok) {
               setNames('')
-              setForce(false)
               list.reload()
             }
           })
@@ -75,11 +94,11 @@ export function ReservedNames({ client }: { client: Client }) {
             them (the releases stay; only grants naming the extension reach them from then on)
           </label>
         )}
-        {failure != null && <div className="mt-3"><ErrorBox error={failure} /></div>}
+        {reserve.failure != null && <div className="mt-3"><ErrorBox error={reserve.failure} /></div>}
         {added && (
           <p className="m-0 mt-3 text-[13px] text-ink-muted" role="status">
             Reserved: {added.added.length === 0 ? 'nothing new' : added.added.join(', ')}
-            {(added.tenants ?? []).length > 0 && <> · tenants keeping releases: {added.tenants!.join(', ')}</>}
+            {keptWords(added.tenants) && <> · tenants keeping releases: {keptWords(added.tenants)}</>}
           </p>
         )}
       </Card>
@@ -87,6 +106,7 @@ export function ReservedNames({ client }: { client: Client }) {
         <SearchBox label="Find a reserved name" value={prefix} onChange={setPrefix} />
         <span className="ml-auto"><Button onClick={list.reload}>Refresh</Button></span>
       </div>
+      {remove.failure != null && <ErrorBox error={remove.failure} />}
       {list.error ? <ErrorBox error={list.error} /> : !list.data ? <Loading /> : rows.length === 0 ? <Empty>{prefix ? 'Nothing matches.' : 'No reserved names.'}</Empty> : (
         <Table
           rows={rows}
@@ -96,7 +116,7 @@ export function ReservedNames({ client }: { client: Client }) {
             ['Kind', (n) => <Badge>{n.kind}</Badge>],
             ['Sources', (n) => <span className="flex flex-wrap gap-1">{(n.sources ?? []).map((s) => <span key={s} className="chip border border-line text-ink"><Mono>{s}</Mono></span>)}</span>],
             ['Added', (n) => <span className="text-[13px] text-ink-muted">{when(n.added_at)}</span>],
-            ['', (n) => (removable(n) ? <Button tone="danger-outline" disabled={busy} onClick={() => { setFailure(null); setRemoving(n.name) }}>Remove…</Button> : '')],
+            ['', (n) => (removable(n) ? <Button tone="danger-outline" disabled={busy} onClick={() => { remove.setFailure(null); setRemoving(n.name) }}>Remove…</Button> : '')],
           ]}
         />
       )}
@@ -104,7 +124,7 @@ export function ReservedNames({ client }: { client: Client }) {
         onConfirm={() => {
           const n = removing
           setRemoving('')
-          act(() => client.del(`/reserved-names/${seg(n)}`)).then((ok) => ok && list.reload())
+          remove.act(() => client.del(`/reserved-names/${seg(n)}`)).then((ok) => ok && list.reload())
         }}>
         <p>The name is no longer reserved: tenants' grants on every extension reach it again. Only a name administrators reserved can be
           removed.</p>
