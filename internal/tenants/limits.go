@@ -3,6 +3,7 @@ package tenants
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -78,12 +79,16 @@ func (s *Service) setLimits(ctx context.Context, tx *store.Tx, a authz.Actor, t 
 	old := t.Limits
 	changed := map[string]int64{}
 	for n, v := range set {
+		if !slices.Contains(store.LimitNames, n) {
+			return fmt.Errorf("%w: unknown limit %q", store.ErrInvalid, n)
+		}
+		if old.Get(n) == v {
+			continue // a value stored as it is (perhaps above a ceiling lowered since: it is capped) is left
+		}
 		if err := store.ValidLimit(n, v); err != nil {
 			return err
 		}
-		if old.Get(n) != v {
-			changed[n] = v
-		}
+		changed[n] = v
 	}
 	if len(changed) == 0 {
 		return nil

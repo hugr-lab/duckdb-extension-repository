@@ -181,11 +181,14 @@ func (v *Verifier) VerifyIdentity(ctx context.Context, ta store.TenantAuth, cano
 	return id, nil
 }
 
+// lifetime is the longest a token of rec may live: its record's, capped by the ceiling in force (a
+// record stored before the configuration lowered it), as Effective caps a stored limit.
 func lifetime(rec store.Issuer) time.Duration {
-	if rec.MaxTokenLifetime <= 0 {
-		return 24 * time.Hour
+	d := rec.MaxTokenLifetime
+	if d <= 0 {
+		d = 24 * time.Hour
 	}
-	return rec.MaxTokenLifetime
+	return min(d, store.MaxIssuerTokenLifetime)
 }
 
 func numericDate(v any) (time.Time, bool) {

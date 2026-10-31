@@ -51,14 +51,14 @@ LOAD tresor;
 - A token issued by tresor (or any issuer of the tenant) must carry the tenant's audience (below).
 - A server administrator's token is no token on the DuckDB routes, and so is a `kista_…` Bearer (a
   publisher's API key before spec 0023), so a stale configuration still installs public releases.
-- An issuer record's `max_token_lifetime` (default 24h, at most 7 days) bounds how long a token in a
+- An issuer record's `max_token_lifetime` (default 24h, at most 7 days by default: `limits.ceilings.issuer_token_lifetime`) bounds how long a token in a
   persistent DuckDB secret can live.
 
 See [Using kista from DuckDB](duckdb.md) for repositories, keys and secrets in full.
 
 ## Token issuers per tenant
 
-An **issuer record** names an OIDC/JWT issuer a tenant trusts. A tenant holds at most 16.
+An **issuer record** names an OIDC/JWT issuer a tenant trusts. A tenant holds at most 16 by default (`limits.ceilings.issuers`).
 
 ```bash
 # Keycloak: roles from realm_access.roles
@@ -200,7 +200,7 @@ Rules:
 - For `publish` and `promote`, a **reserved name** (DuckDB's core and community names, and names an
   upstream of the tenant provides) is reached only by a grant naming that extension, never by a
   tenant-, channel- or group-wide grant.
-- An identical grant is not added twice. A tenant holds at most 1,000 grants, both kinds counted.
+- An identical grant is not added twice. A tenant holds at most 1,000 grants by default (`limits.ceilings.grants`), both kinds counted.
 - A tenant administrator cannot remove the last tenant-wide `admin` grant (or an issuer record whose
   removal would remove it); a server administrator or the CLI can.
 - Grants, issuers, audiences and groups are cached per tenant behind a version: a change applies at
@@ -242,7 +242,7 @@ kista admin -config /etc/kista/kista.yaml grant add acme \
 
 - A name is `[a-z0-9][a-z0-9-]{0,62}`, unique in the tenant and immutable. A member may be added
   before anything is released under it, and may be in several groups.
-- Limits: 100 groups a tenant, 1,000 members a group, 10,000 members a tenant.
+- Limits, by default (`limits.ceilings.package_groups`, `group_members`, `tenant_group_members`): 100 groups a tenant, 1,000 members a group, 10,000 members a tenant.
 - Only a tenant administrator changes members; every change is an event. `admin` on a group lets its
   holders read the group and administer its members' releases, never change its members.
 - A group's grants never reach a reserved name for `publish` or `promote`, and cannot carry `audit`
@@ -323,8 +323,8 @@ active tenant (and, where said, a suspended one) a distribution admin may:
 - create a distributor's publisher, marked from its creation (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)):
   without `distributor` the creation answers `404`, and for a name a tenant's own publisher holds
   `409` with the problem type `publisher-taken` (the name is taken, and nothing else is said; the
-  refusal is an `authz.refused` event). A tenant holds at most 10 distributors' publishers, counted
-  apart from its own (at most 200), so a distributor never takes the tenant's room;
+  refusal is an `authz.refused` event). A tenant holds at most 10 distributors' publishers by default (`limits.ceilings`), counted
+  apart from its own (at most 200 by default), so a distributor never takes the tenant's room;
 - list and read the distributors' publishers (a list leaves the tenant's own publishers out, and
   reading one answers `404`), and for a distributor's publisher only: rename its distributor (while
   unused, spec 0036), set and clear its licence-key mark, manage its keys (with `purge_held`), set

@@ -13,7 +13,9 @@ import (
 
 // Statements in a bundle (spec 0014 phase 1b): a plan's feeds, a manifest's feeds and their entries.
 
-// Limits on feeds in a plan and a bundle.
+// Limits on feeds in a plan and a bundle: the format's bounds, the same at every site whatever its
+// ceilings (a site whose limits.ceilings.feeds is above MaxFeeds names its feeds in each plan, below
+// these; spec 0038's amendment).
 const (
 	MaxFeeds       = 50
 	MaxFeedBodies  = 100000 // across a plan's feeds
@@ -21,8 +23,8 @@ const (
 	MaxKeysFile    = 64 << 10
 	MaxBatch       = 1 << 20
 	MaxDocument    = attachment.MaxConfigurableSize
-	// MaxPlanFeedKeys caps a plan feed's keys: the feeds of one URL merged, each pinning up to 10
-	MaxPlanFeedKeys = MaxFeeds * 10
+	// MaxPlanFeedKeys caps a plan feed's keys: the feeds of one URL merged
+	MaxPlanFeedKeys = 500
 )
 
 // PlanFeed is one of a site's bundle-mode feeds (merged by URL): what it pins and accepts, the bodies

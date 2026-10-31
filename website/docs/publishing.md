@@ -392,8 +392,8 @@ removed: the publisher is removed instead.
 A distribution admin creates only distributors' publishers: `POST …/publishers` without
 `distributor` answers it `404`. For a name a tenant's own publisher holds it answers `409` with the
 problem type `publisher-taken`: the name is taken, and nothing else is said about that publisher
-(the refusal is recorded as `authz.refused`, `reason` `publisher-taken`). A tenant holds at most 10
-distributors' publishers, counted apart from its own publishers (at most 200): a distributor never
+(the refusal is recorded as `authz.refused`, `reason` `publisher-taken`). A tenant holds at most 10 (by default, `limits.ceilings.distributor_publishers`)
+distributors' publishers, counted apart from its own publishers (at most 200 by default, `limits.ceilings`): a distributor never
 uses up the tenant's room.
 
 Every publisher answer carries the publisher's `id` (spec 0037): a distributor recognises its own
@@ -580,7 +580,7 @@ curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application
 | `DELETE /blocks/{hash}` | `204`; the body may be released again, yanked releases stay yanked |
 
 CLI: `kista admin block add <tenant> <hash> -reason …`, `block list`, `block remove`. A hash the
-tenant does not hold may be blocked ahead of time. A tenant holds at most 10,000 blocks. The index
+tenant does not hold may be blocked ahead of time. A tenant holds at most 10,000 blocks by default (`limits.ceilings.blocks`). The index
 shows `blocked: true` on a yanked row whose body is blocked. A block stops one artifact; to stop a
 publisher, remove its grants or the publisher.
 
@@ -640,9 +640,9 @@ Removing a publisher removes its keys and grants; caches drop it at the next req
 - **A key is known by its fingerprint**, `SHA256:…`, as `ssh-keygen -lf publisher_key.pub` prints
   it. A fingerprint is unique in a tenant (`409`); the same key may serve publishers of other
   tenants.
-- **Expiry** is optional: `-expires` takes `<days>d` or an RFC 3339 time, within a year; over the
+- **Expiry** is optional: `-expires` takes `<days>d` or an RFC 3339 time, within the server's limit (`limits.ceilings.publisher_key_lifetime`, a year by default); over the
   API, `expires_at` in RFC 3339. A year is recommended. An expired key verifies nothing.
-- **A publisher holds at most 10 keys**, expired ones included.
+- **A publisher holds at most 10 keys** by default (`limits.ceilings.publisher_keys`), expired ones included.
 - **Removing a key** stops it at once: keys are looked up on every request, never cached.
 
 **Rotation**: register the new key, replace the CI secret, watch the old key's `last_used_at` stop

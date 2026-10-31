@@ -768,7 +768,7 @@ func apply(ctx context.Context, d Deps, b config.Bootstrap, digest, section stri
 	}
 	var limits map[string]int64
 	if p.action("limits", tb.Name) != Same && tb.Limits != nil {
-		if limits, err = tb.Limits.Named(); err != nil {
+		if limits, err = tb.Limits.Named(store.CurrentCeilings()); err != nil {
 			return res, err
 		}
 	}
@@ -1160,7 +1160,7 @@ func limitsChanged(tb config.BootstrapTenant, t store.Tenant, exists bool) (map[
 	if tb.Limits == nil {
 		return nil, nil
 	}
-	named, err := tb.Limits.Named()
+	named, err := tb.Limits.Named(store.CurrentCeilings())
 	if err != nil || !exists {
 		return named, err
 	}

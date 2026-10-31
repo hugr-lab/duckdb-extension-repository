@@ -92,8 +92,8 @@ func (s *Service) AddAttestation(ctx context.Context, a authz.Actor, tenant, ref
 				live++
 			}
 		}
-		if live > MaxKeys {
-			return fmt.Errorf("%w: a tenant holds at most %d non-retired attestation keys", ErrState, MaxKeys)
+		if live > store.MaxSigningKeys {
+			return fmt.Errorf("%w: a tenant holds at most %d non-retired attestation keys", ErrState, store.MaxSigningKeys)
 		}
 		if err := tx.InsertAttestationKey(ctx, &k, a.String()); err != nil {
 			return err

@@ -1247,6 +1247,43 @@ func TestPlanFeeds(t *testing.T) {
 	})
 }
 
+// Spec 0038's amendment: a feeds ceiling above the bundle format's MaxFeeds lets a tenant subscribe
+// to more, but a plan carries at most MaxFeeds feed URLs: past them it is refused with a clear
+// error, and naming the feeds plans them. Not parallel: the ceilings are the process's.
+func TestPlanFeedsFormatBound(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		c := store.CurrentCeilings()
+		t.Cleanup(func() { store.SetCeilings(c) })
+		raised := c
+		raised.Feeds = bundle.MaxFeeds + 10
+		store.SetCeilings(raised)
+		tn, _ := en.st.GetTenant(ctx, "acme")
+		var names []string
+		must(t, func() error {
+			return en.st.InTx(ctx, "", func(tx *store.Tx) error {
+				for i := range bundle.MaxFeeds + 1 {
+					f := store.Feed{TenantID: tn.ID, Name: fmt.Sprintf("f%02d", i), URL: fmt.Sprintf("https://src%02d.example.org/api/v1/tenants/r", i),
+						Keys: []string{"sha256:" + strings.Repeat("1", 64)}, Mode: store.FeedBundle, Offer: store.OfferUpstreams, CreatedBy: "os:1:t"}
+					if err := tx.InsertFeed(ctx, &f); err != nil {
+						return err
+					}
+					names = append(names, f.Name)
+				}
+				return nil
+			})
+		})
+		fp := []string{"sha256:" + strings.Repeat("9", 64)}
+		if _, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{}, fp); !errors.Is(err, store.ErrInvalid) ||
+			!strings.Contains(err.Error(), "name the feeds") {
+			t.Fatalf("past the format's feeds: %v", err)
+		}
+		p, err := en.up.Plan(ctx, admin, "acme", upstream.PlanTargets{Feeds: names[:bundle.MaxFeeds]}, fp)
+		if err != nil || len(p.Feeds) != bundle.MaxFeeds {
+			t.Fatalf("the feeds named: %v", err)
+		}
+	})
+}
+
 // Spec 0024: CheckAddAll makes Add's checks for several upstreams, each as if those before it were
 // added, and writes nothing; it names the first one refused. Add refuses what it refuses.
 func TestCheckAddAll(t *testing.T) {

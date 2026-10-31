@@ -321,7 +321,7 @@ export function WhoMayUse({ channel, ext }: { channel: string; ext: string }) {
   const list = useLoad(async () => {
     const rows: GrantRow[] = []
     let cursor = ''
-    // every grant reaching one name: a tenant holds at most 1000, so two pages at most
+    // every grant reaching one name, page by page (a tenant's grants are bounded by limits.ceilings)
     for (;;) {
       const q = new URLSearchParams({ extension: ext, limit: '500' })
       if (cursor) q.set('cursor', cursor)

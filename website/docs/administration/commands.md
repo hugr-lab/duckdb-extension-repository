@@ -418,7 +418,7 @@ A principal is `subject:<issuer>|<value>`, `role:<issuer>|<value>`, `group:<issu
 | `publisher hold <tenant> <name> <duration>` | its [hold](../publishing.md#holds-and-early-placement) (`24h`, `2d`; `0` for none): what it publishes is held, and it publishes into the catalogue only; a distributor's publisher's is the distributor's, and holds only above the tenant's `distributor-hold` | |
 | `publisher distributor <tenant> <name> <distributor>` | renames a [distributor's publisher](../publishing.md#distributors-publishers)'s distributor, an unused one's (spec 0036); an existing publisher is never marked a distributor's (spec 0037: one without the mark is refused) | |
 | `publisher license-keys <tenant> <name> on or off` | marks it a source of licence keys (spec 0021), or unmarks it: a server administrator's act | |
-| `publisher key add <tenant> <name> <file.pub or -> [-expires <days>d or <RFC 3339 time>]` | registers a public SSH key (`ssh-ed25519` or `ecdsa-sha2-nistp256`) the publisher signs its requests with (spec 0023); an expiry within a year, or none | the key id |
+| `publisher key add <tenant> <name> <file.pub or -> [-expires <days>d or <RFC 3339 time>]` | registers a public SSH key (`ssh-ed25519` or `ecdsa-sha2-nistp256`) the publisher signs its requests with (spec 0023); an expiry within `limits.ceilings.publisher_key_lifetime` (a year by default), or none | the key id |
 | `publisher key list <tenant> <name>` | `ID`, `FINGERPRINT`, `TYPE`, `TITLE`, `EXPIRES`, `LAST USED`, `CREATED`, `BY` | |
 | `publisher key remove <tenant> <name> <key id> [-purge-held]` | removes it: it stops at once; `-purge-held` purges the builds it published that are still held, and prints how many and those it kept, revoked (placed early) | |
 

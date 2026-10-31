@@ -228,7 +228,7 @@ user) with mode `0400` or `0600`, or owned by root with kista's group and mode `
   `key-taken`; one a distributor's publisher holds already is a plain `409`). That `409` tells the
   distribution admin that the tenant holds that public key (a public key, not a secret); and the
   other way round, a key a distributor's publisher registered first cannot be registered on one of
-  the tenant's own publishers. Distributors' publishers are counted apart (at most 10 a tenant), so
+  the tenant's own publishers. Distributors' publishers are counted apart (at most 10 a tenant by default, `limits.ceilings.distributor_publishers`), so
   they never use up the tenant's own room. It can still withdraw a distributor's versions. It cannot
   read channels or keys, or change a tenant, a channel or a key set; it reads a tenant's state and
   expected holder, each read an event. A tenant's own grants reach every name kista does not

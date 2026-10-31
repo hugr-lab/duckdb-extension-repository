@@ -33,18 +33,21 @@ const (
 	LimitUnlimited int64 = -1
 )
 
-// MaxChannels is the most channels a tenant holds (spec 0038: a ceiling, not policy).
-const MaxChannels = 1000
+// MaxChannels is the most channels a tenant holds (spec 0038: a ceiling the configuration sets).
+var MaxChannels = 1000
 
-// LimitCeiling is a limit's ceiling: a count's most, LimitUnlimited for bytes.
-func LimitCeiling(name string) int64 {
+// LimitCeiling is a limit's ceiling in force: a count's most, LimitUnlimited for bytes.
+func LimitCeiling(name string) int64 { return CurrentCeilings().Of(name) }
+
+// Of is a limit's ceiling in c: a count's most, LimitUnlimited for bytes.
+func (c Ceilings) Of(name string) int64 {
 	switch name {
 	case LimitChannels:
-		return MaxChannels
+		return int64(c.Channels)
 	case LimitUpstreams:
-		return MaxUpstreams
+		return int64(c.Upstreams)
 	case LimitPublishers:
-		return MaxPublishers
+		return int64(c.Publishers)
 	}
 	return LimitUnlimited
 }
@@ -95,14 +98,16 @@ func (l *Limits) Set(name string, v int64) {
 
 // ValidLimit checks a value a tenant may store for a limit: LimitDefault, LimitUnlimited, or 0 up to
 // the ceiling.
-func ValidLimit(name string, v int64) error {
+func ValidLimit(name string, v int64) error { return validLimit(name, v, CurrentCeilings()) }
+
+func validLimit(name string, v int64, ceil Ceilings) error {
 	if !slices.Contains(LimitNames, name) {
 		return fmt.Errorf("%w: unknown limit %q", ErrInvalid, name)
 	}
 	if v == LimitDefault || v == LimitUnlimited {
 		return nil
 	}
-	if c := LimitCeiling(name); v < 0 || c >= 0 && v > c {
+	if c := ceil.Of(name); v < 0 || c >= 0 && v > c {
 		return fmt.Errorf("%w: %s must be from 0 to %d, unlimited or default", ErrInvalid, name, c)
 	}
 	return nil
@@ -110,8 +115,26 @@ func ValidLimit(name string, v int64) error {
 
 // ParseLimit reads a limit's value as the API, the configuration and the CLI write it: "unlimited",
 // "default", a number, or for bytes also a size (50GiB: KiB, MiB, GiB or TiB). 0 means none. It
-// checks the value against the limit (ValidLimit).
+// checks the shape only: the ceiling is the setter's check (a value sent again unchanged stays,
+// even above a lowered ceiling; spec 0038's amendment).
 func ParseLimit(name, s string) (int64, error) {
+	if !slices.Contains(LimitNames, name) {
+		return 0, fmt.Errorf("%w: unknown limit %q", ErrInvalid, name)
+	}
+	return parseLimit(name, s)
+}
+
+// ParseLimitUnder is ParseLimit with the value checked under ceil's ceilings (the configuration's
+// own, as it is validated).
+func ParseLimitUnder(name, s string, ceil Ceilings) (int64, error) {
+	v, err := ParseLimit(name, s)
+	if err != nil {
+		return 0, err
+	}
+	return v, validLimit(name, v, ceil)
+}
+
+func parseLimit(name, s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	var v int64
 	switch s {
@@ -142,11 +165,13 @@ func ParseLimit(name, s string) (int64, error) {
 		}
 		v = n * mult
 	}
-	return v, ValidLimit(name, v)
+	return v, nil
 }
 
 // Effective is the value in force of each limit: a tenant's own value, else the server's default
-// (LimitDefaults); an unlimited count is its ceiling, unlimited bytes stay LimitUnlimited.
+// (LimitDefaults); an unlimited count is its ceiling, unlimited bytes stay LimitUnlimited. A count
+// above its ceiling (stored before the configuration lowered it) is capped at the ceiling, so growth
+// past it is refused as the tenant limit at its ceiling.
 func (s *Store) Effective(stored Limits) Limits {
 	out := stored
 	for _, n := range LimitNames {
@@ -154,8 +179,9 @@ func (s *Store) Effective(stored Limits) Limits {
 		if v == LimitDefault {
 			v = s.LimitDefaults.Get(n)
 		}
-		if v == LimitDefault || v == LimitUnlimited {
-			v = LimitCeiling(n)
+		c := LimitCeiling(n)
+		if v == LimitDefault || v == LimitUnlimited || c >= 0 && v > c {
+			v = c
 		}
 		out.Set(n, v)
 	}

@@ -238,7 +238,7 @@ function NewIssuer({ onDone }: { onDone: () => void }) {
           <Field label="Roles claim" hint="keys joined by dots (realm_access.roles), or a JSON array of keys"><input className="field font-mono" value={f.roles} onChange={set('roles')} /></Field>
           <Field label="Groups claim"><input className="field font-mono" value={f.groups} onChange={set('groups')} /></Field>
           <Field label="Client claim" hint="azp, appid or client_id"><input className="field font-mono" value={f.client} onChange={set('client')} /></Field>
-          <Field label="Longest token lifetime" hint="at most 168h"><input className="field font-mono" value={f.lifetime} onChange={set('lifetime')} /></Field>
+          <Field label="Longest token lifetime" hint="within the server's limit (168h by default)"><input className="field font-mono" value={f.lifetime} onChange={set('lifetime')} /></Field>
         </div>
         {failure != null && <ErrorBox error={failure} />}
         <div><Button type="submit" tone="brand" disabled={busy}>{busy ? 'Checking the issuer…' : 'Add'}</Button></div>

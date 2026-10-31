@@ -22,13 +22,8 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// Limits.
-const (
-	// MaxKeys is the most non-retired keys a channel may hold.
-	MaxKeys = 16
-	// MaxWellKnown is DuckDB's limit on a .well-known document.
-	MaxWellKnown = 64 << 10
-)
+// MaxWellKnown is DuckDB's limit on a .well-known document.
+const MaxWellKnown = 64 << 10
 
 // Errors.
 var (
@@ -119,8 +114,8 @@ func (s *Service) Add(ctx context.Context, a authz.Actor, tenant, channel, ref s
 				live = append(live, e)
 			}
 		}
-		if len(live) > MaxKeys {
-			return fmt.Errorf("%w: a channel holds at most %d non-retired keys", ErrState, MaxKeys)
+		if len(live) > store.MaxSigningKeys {
+			return fmt.Errorf("%w: a channel holds at most %d non-retired keys", ErrState, store.MaxSigningKeys)
 		}
 		if _, err := wellKnown(live); err != nil {
 			return err

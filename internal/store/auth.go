@@ -38,10 +38,10 @@ const (
 var Verbs = []string{VerbInstall, VerbAdmin, VerbPublish, VerbPromote, VerbAudit, VerbFeed}
 
 // MaxGrants is the most grants a tenant may hold: every request's authorization is linear in them.
-const MaxGrants = 1000
+var MaxGrants = 1000
 
 // MaxIssuers is the most issuer records a tenant may hold.
-const MaxIssuers = 16
+var MaxIssuers = 16
 
 // Issuer is a tenant's issuer record.
 type Issuer struct {

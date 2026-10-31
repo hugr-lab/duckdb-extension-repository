@@ -36,7 +36,7 @@ func TestTooManyTypes(t *testing.T) {
 			h.publishErr(w, fmt.Errorf("x: %w", store.LimitRefused(store.LimitBytes, 1<<30)), false)
 		}},
 		{"a tenant at the channels' ceiling", "tenant-limit", "", func(w http.ResponseWriter) {
-			h.serviceErr(w, store.LimitRefused(store.LimitChannels, store.MaxChannels), false)
+			h.serviceErr(w, store.LimitRefused(store.LimitChannels, int64(store.MaxChannels)), false)
 		}},
 		{"too many chunks of an upload", "chunks-busy", "1", func(w http.ResponseWriter) { h.uploadErr(w, upstream.ErrUploadBusy) }},
 		{"a chunk without an ingest slot", "ingest-busy", "1", func(w http.ResponseWriter) { h.uploadErr(w, upstream.ErrIngestBusy) }},
@@ -59,7 +59,7 @@ func TestTenantLimitProblem(t *testing.T) {
 		want string
 	}{
 		{store.LimitRefused(store.LimitPublishers, 3), "a server administrator can raise it"},
-		{store.LimitRefused(store.LimitPublishers, store.MaxPublishers), "the most publishers kista allows"},
+		{store.LimitRefused(store.LimitPublishers, int64(store.MaxPublishers)), "the most publishers kista allows"},
 	} {
 		rec := httptest.NewRecorder()
 		if !limitProblem(rec, c.err) {

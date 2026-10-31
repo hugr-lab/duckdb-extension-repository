@@ -298,7 +298,7 @@ ka wellknown acme/prod
 - `-active` works only for a channel that has **never** had a key: no client trusts the channel yet.
   Every later key starts `trusted` and is activated through rotation (see
   [Key rotation](key-rotation.md)).
-- A channel holds at most 16 keys that are not retired, and its `.well-known` must fit in 64 KiB.
+- A channel holds at most 16 keys that are not retired by default (`limits.ceilings.signing_keys`), and its `.well-known` must fit in 64 KiB.
 - A passthrough channel takes no keys.
 
 Only a server administrator registers a key, through the CLI, `POST …/channels/{c}/keys` or the
@@ -318,7 +318,7 @@ ka issuer list acme
 
 - At `issuer add` kista fetches discovery and the JWKS through its egress rules; the command fails
   if they cannot be fetched.
-- A tenant holds at most 16 issuer records. A record's name and URL never change; a new URL is a new
+- A tenant holds at most 16 issuer records by default (`limits.ceilings.issuers`). A record's name and URL never change; a new URL is a new
   record.
 - Removing a record removes its grants.
 - A token must carry the tenant's audience: the canonical `<public_url>/<tenant>`, or an audience a

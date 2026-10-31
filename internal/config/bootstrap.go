@@ -346,7 +346,7 @@ func validateBootstrap(bad func(string, ...any), c Config) {
 		}
 		if rec, err := is.IssuerRecord(); err != nil {
 			bad("bootstrap.issuer: %v", err)
-		} else if err := auth.CheckIssuer(&rec, c.Egress.AllowLoopbackHTTP); err != nil {
+		} else if err := auth.CheckIssuerUnder(&rec, c.Egress.AllowLoopbackHTTP, c.Limits.Ceilings.Settings().IssuerTokenLifetime); err != nil {
 			bad("bootstrap.issuer: %v", err)
 		}
 		if is.MaxLifetime < 0 {
@@ -424,13 +424,13 @@ func issuerNameOr(is *BootstrapIssuer) string {
 // validateBootstrapUpstreams checks the section's upstreams with upstream add's own field checks
 // (spec 0024); what depends on what exists (collisions, a source's keys) is the bootstrap's check.
 func validateBootstrapUpstreams(bad func(string, ...any), c Config, once func(what, v string)) {
-	b := c.Bootstrap
+	b, ceil := c.Bootstrap, c.Limits.Ceilings.Settings()
 	kinds, versions := map[string]string{}, map[string]int{}
 	for _, ch := range b.Channels {
 		kinds[ch.Name], versions[ch.Name] = ch.Kind, len(ch.Versions)
 	}
-	if len(b.Upstreams) > store.MaxUpstreams {
-		bad("bootstrap.upstreams: at most %d", store.MaxUpstreams)
+	if len(b.Upstreams) > ceil.Upstreams {
+		bad("bootstrap.upstreams: at most %d", ceil.Upstreams)
 	}
 	portAllowed := func(p uint16) bool {
 		if p == 443 || c.loopbackHTTP() {
@@ -493,8 +493,8 @@ func validateBootstrapUpstreams(bad func(string, ...any), c Config, once func(wh
 		default:
 			bad("%s.kind must be %s, %s or %s", where, store.UpstreamCore, store.UpstreamCommunity, store.UpstreamRepo)
 		}
-		if len(u.Keys) > store.MaxUpstreamKeys {
-			bad("%s.keys: at most %d", where, store.MaxUpstreamKeys)
+		if len(u.Keys) > ceil.UpstreamKeys {
+			bad("%s.keys: at most %d", where, ceil.UpstreamKeys)
 		}
 		for _, k := range u.Keys {
 			if err := upspec.Fingerprint(k); err != nil {
@@ -512,16 +512,16 @@ func validateBootstrapUpstreams(bad func(string, ...any), c Config, once func(wh
 		if u.Mode == store.ModeMirror && len(u.Extensions) == 0 {
 			bad("%s.extensions: a mirror names at least one", where)
 		}
-		if len(u.Extensions) > store.MaxUpstreamEntries {
-			bad("%s.extensions: at most %d", where, store.MaxUpstreamEntries)
+		if len(u.Extensions) > ceil.UpstreamEntries {
+			bad("%s.extensions: at most %d", where, ceil.UpstreamEntries)
 		}
 		names := map[string]bool{}
 		for j, e := range u.StoreEntries() {
 			if err := upspec.Entry(u.Kind, u.Mode, &e); err != nil {
 				bad("%s.extensions[%d]: %v", where, j, err)
 			}
-			if len(e.Versions) > store.MaxEntryVersions {
-				bad("%s.extensions[%d].versions: at most %d", where, j, store.MaxEntryVersions)
+			if len(e.Versions) > ceil.EntryVersions {
+				bad("%s.extensions[%d].versions: at most %d", where, j, ceil.EntryVersions)
 			}
 			if names[e.Name] {
 				bad("%s.extensions: %q is listed twice", where, e.Name)
@@ -557,13 +557,13 @@ func validateBootstrapUpstreams(bad func(string, ...any), c Config, once func(wh
 		}
 		// the matrix: the channel's DuckDB versions × platforms × entries, as the store counts them
 		cells := versions[u.Channel] * len(u.Platforms) * len(names)
-		if cells > store.MaxUpstreamCells {
-			bad("%s: its matrix would be %d cells (at most %d)", where, cells, store.MaxUpstreamCells)
+		if cells > ceil.UpstreamCells {
+			bad("%s: its matrix would be %d cells (at most %d)", where, cells, ceil.UpstreamCells)
 		}
 		tenantCells += cells
 	}
-	if tenantCells > store.MaxTenantCells {
-		bad("bootstrap.upstreams: the tenant's upstreams would fetch %d cells (at most %d)", tenantCells, store.MaxTenantCells)
+	if tenantCells > ceil.TenantCells {
+		bad("bootstrap.upstreams: the tenant's upstreams would fetch %d cells (at most %d)", tenantCells, ceil.TenantCells)
 	}
 }
 

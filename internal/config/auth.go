@@ -47,7 +47,7 @@ type ServerIssuer struct {
 // DefaultAdminTokenMaxAge is how recently a management token must have been issued.
 const DefaultAdminTokenMaxAge = time.Hour
 
-func (s ServerIssuer) issuer(allowHTTP bool) (store.Issuer, error) {
+func (s ServerIssuer) issuer(allowHTTP bool, maxLifetime time.Duration) (store.Issuer, error) {
 	is := store.Issuer{ID: auth.ServerIssuerID(s.Name), Name: s.Name, URL: s.URL, JWKSURI: s.JWKSURI,
 		Algorithms: s.Algorithms, RequiredClaims: s.RequiredClaims, MaxTokenLifetime: s.MaxTokenLifetime}
 	var err error
@@ -59,7 +59,7 @@ func (s ServerIssuer) issuer(allowHTTP bool) (store.Issuer, error) {
 			return is, err
 		}
 	}
-	if err := auth.CheckIssuer(&is, allowHTTP); err != nil {
+	if err := auth.CheckIssuerUnder(&is, allowHTTP, maxLifetime); err != nil {
 		return is, err
 	}
 	if len(is.RequiredClaims) == 0 {
@@ -72,7 +72,7 @@ func (s ServerIssuer) issuer(allowHTTP bool) (store.Issuer, error) {
 func (c Config) ServerIssuers() []store.Issuer {
 	var out []store.Issuer
 	for _, s := range c.Auth.ServerIssuers {
-		if is, err := s.issuer(c.loopbackHTTP()); err == nil {
+		if is, err := s.issuer(c.loopbackHTTP(), c.Limits.Ceilings.Settings().IssuerTokenLifetime); err == nil {
 			out = append(out, is)
 		}
 	}
@@ -132,7 +132,7 @@ func validateAuth(bad func(string, ...any), c Config) {
 			bad("auth.server_issuers[%d]: the URL %s is used twice", i, s.URL)
 		}
 		urls[s.URL] = true
-		if _, err := s.issuer(c.loopbackHTTP()); err != nil {
+		if _, err := s.issuer(c.loopbackHTTP(), c.Limits.Ceilings.Settings().IssuerTokenLifetime); err != nil {
 			bad("auth.server_issuers[%d]: %s", i, strings.TrimPrefix(err.Error(), store.ErrInvalid.Error()+": "))
 		}
 		if names[s.Name] {

@@ -176,6 +176,13 @@ so the operator declares it:
 
 ## Upgrading to the next release (schema 49)
 
+### Configured ceilings (spec 0038, amended)
+
+- No tenant ceiling is fixed in code any more (the bounds of one request or document still are): the ceilings (channels, upstreams, publishers, keys, issuers,
+  grants, groups, feeds, blocks, attachments, an upstream's matrix, the longest hold, a publisher
+  key's lifetime) are [`limits.ceilings`](../configuration.md#limitsceilings). A server that sets
+  none keeps today's values. A ceiling lowered below a tenant's stored limit caps it. No migration.
+
 ### `*` on a mirror of a kista (spec 0039, PR 2)
 
 - **Migration `0049_upstream_names`** adds the table `upstream_names`: the names a mirror's `*`

@@ -56,8 +56,8 @@ const (
 	CellFailed = "failed" // the fetch failed (network, size, rate): retried by the next run
 )
 
-// Limits (spec 0009).
-const (
+// Limits (spec 0009): ceilings the configuration sets (limits.ceilings, SetCeilings).
+var (
 	MaxUpstreams       = 100
 	MaxUpstreamEntries = 1000
 	MaxEntryVersions   = 100
@@ -100,8 +100,8 @@ type Upstream struct {
 	Discovered []string
 }
 
-// MaxDiscoveredNames is the most names a mirror's "*" keeps (spec 0039).
-const MaxDiscoveredNames = 1000
+// MaxDiscoveredNames is the most names a mirror's "*" keeps (spec 0039; a ceiling).
+var MaxDiscoveredNames = 1000
 
 // AnyMirror reports whether u is a mirror whose allowlist holds "*": its names are discovered from
 // its kista remote (spec 0039), not taken at a miss as a pull-through "*" takes them.

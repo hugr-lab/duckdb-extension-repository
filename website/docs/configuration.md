@@ -447,7 +447,7 @@ Each server issuer:
 | `algorithms` | list | all supported | Of `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `EdDSA`. |
 | `required_claims` | map | required | Claims every token must carry, at most 16. Mandatory for a server issuer. |
 | `roles_claim`, `groups_claim`, `client_claim` | claim path | none | Keys joined by dots (`realm_access.roles`), or a JSON array of keys when a key has dots. |
-| `max_token_lifetime` | duration | `24h` | `1m..168h`. |
+| `max_token_lifetime` | duration | `24h` | From `1m` up to [`limits.ceilings.issuer_token_lifetime`](#limitsceilings) (`168h` by default). |
 
 A server administrator is written `kind:issuer|value`, where `kind` is `subject`, `role`, `group`
 or `client`, and `issuer` is a server issuer's name: `role:ops|kista-admin`. `issuer:<name>` is
@@ -592,17 +592,17 @@ A server administrator sets a tenant's own values over the API or the CLI (see
 ```yaml
 limits:
   bytes: unlimited     # its own catalogue bytes: a size (50GiB), 0 (none) or unlimited
-  channels: unlimited  # a number up to 1000, 0 (none) or unlimited (the ceiling)
-  upstreams: unlimited # up to 100
-  publishers: unlimited # its own publishers, up to 200
+  channels: unlimited  # a number up to its ceiling (1000 by default), 0 (none) or unlimited (the ceiling)
+  upstreams: unlimited # up to its ceiling (100)
+  publishers: unlimited # its own publishers, up to its ceiling (200)
 ```
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `limits.bytes` | size, `0` or `unlimited` | `unlimited` | The tenant's own catalogue bytes: each distinct body of its kept builds, and its entries' icons; distributors' sources are never counted. |
-| `limits.channels` | number, `0` or `unlimited` | `unlimited` (1000) | Its channels. |
-| `limits.upstreams` | number, `0` or `unlimited` | `unlimited` (100) | Its upstreams. |
-| `limits.publishers` | number, `0` or `unlimited` | `unlimited` (200) | Its own publishers; distributors' publishers are counted apart (at most 10). |
+| `limits.channels` | number, `0` or `unlimited` | `unlimited` (the ceiling) | Its channels. |
+| `limits.upstreams` | number, `0` or `unlimited` | `unlimited` (the ceiling) | Its upstreams. |
+| `limits.publishers` | number, `0` or `unlimited` | `unlimited` (the ceiling) | Its own publishers; distributors' publishers are counted apart (`limits.ceilings.distributor_publishers`). |
 
 :::warning `0` means none here
 Unlike kista's other settings, where `0` means "the default", a limit of `0` allows **no** growth
@@ -613,6 +613,55 @@ of that kind at all. Leave a key out, or write `unlimited`, for no limit.
 - **A backstop, not a plan.** A change here changes every tenant without values of its own, across
   every replica as it restarts, and writes no event. A hosted service puts explicit values on each
   tenant instead (`POST /api/v1/tenants` takes them).
+
+### limits.ceilings
+
+The server's ceilings: the most any tenant may hold of each kind, whatever its limits. No limit is
+fixed in code; each key left out (or `0`) keeps its default. A tenant's limits and the defaults
+above stay at or below these; the bootstrap tenant's `limits` take no `ceilings`. File-only.
+
+```yaml
+limits:
+  ceilings:
+    channels: 1000             # per tenant
+    upstreams: 100
+    publishers: 200            # its own
+    distributor_publishers: 10 # distributors' publishers, counted apart
+    publisher_keys: 10         # per publisher, expired ones included
+    signing_keys: 16           # non-retired keys per channel; attestation keys per tenant
+    issuers: 16
+    grants: 1000
+    package_groups: 100
+    group_members: 1000        # per group
+    tenant_group_members: 10000
+    feeds: 50
+    feed_keys: 10              # per feed
+    feed_kept: 100000          # refusals and statements a tenant's export feeds keep
+    blocks: 10000
+    attachments: 100000
+    attachment_heads: 20       # per body, kind and origin
+    upstream_entries: 1000     # per upstream
+    entry_versions: 100        # per entry
+    upstream_keys: 10          # per upstream
+    upstream_cells: 20000      # one upstream's matrix
+    tenant_cells: 100000       # every upstream of a tenant
+    discovered_names: 1000     # a mirror's "*"
+    max_hold: 2160h            # the longest hold (90 days)
+    publisher_key_lifetime: 8784h # the furthest a publisher key's expiry (366 days)
+    issuer_token_lifetime: 168h   # the most an issuer's max_token_lifetime (7 days)
+```
+
+A count is at least 1, a duration at least `1s` (`issuer_token_lifetime` at least `1m`); a ceiling
+is never `0`, unlike a limit: leave a key out for its default. The ceilings are the process's: every
+replica and every `kista admin` run against one store must share `limits.ceilings`, or a replica
+checks against other ceilings. Bounds on one request, one document or one remote
+answer (page and body sizes, a summary's 160 characters, an icon's size, the 16 event sinks) stay in
+code: they are part of a format, not a tenant's room. A bundle carries at most 50 feed URLs and 500 keys
+a feed (the format's, the same at every site): a site whose `feeds` ceiling is above that names the
+feeds for each plan. A ceiling lowered below a tenant's stored
+limit caps it: growth past the ceiling is refused `429 tenant-limit`, and sending the stored value again
+unchanged is not refused. An issuer record's `max_token_lifetime` above a lowered
+`issuer_token_lifetime` is capped the same way when tokens are verified.
 
 ## ui
 
@@ -854,8 +903,9 @@ bootstrap:
     - `fetch` is a mirror's, `eager` (the default) or `lazy`, and `eager` entries are a mirror's;
     - a credential names one of `upstreams.credentials` that is for this tenant, covers the prefix,
       and allows public releases when the upstream makes them;
-    - the limits: 100 upstreams, 1,000 names, 100 versions per name, 10 keys, and 20,000 cells per
-      upstream (and 100,000 per tenant) counted from the section's channels;
+    - the ceilings (`limits.ceilings`): by default 100 upstreams, 1,000 names, 100 versions per
+      name, 10 keys, and 20,000 cells per upstream (and 100,000 per tenant) counted from the
+      section's channels;
   - a console client at a server issuer's URL is refused, since a tenant's console does not sign in
     there (spec 0015). Such a tenant has no console client: its administrators use the API, or a
     server administrator uses the console.

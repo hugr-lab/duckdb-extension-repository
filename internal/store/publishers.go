@@ -30,7 +30,7 @@ type Publisher struct {
 // MaxPublishers is the most publishers of its own a tenant may hold; MaxDistributorPublishers, the
 // most distributors' publishers (spec 0037: counted apart, so a distribution admin never takes the
 // tenant's own room).
-const (
+var (
 	MaxPublishers            = 200
 	MaxDistributorPublishers = 10
 )
@@ -190,7 +190,7 @@ type PublisherKey struct {
 }
 
 // MaxPublisherKeys is the most keys one publisher may hold, expired ones included.
-const MaxPublisherKeys = 10
+var MaxPublisherKeys = 10
 
 var fingerprint = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
 
