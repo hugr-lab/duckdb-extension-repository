@@ -9,6 +9,15 @@ export interface NavItem {
   icon: LucideIcon
   /** Active on this path only, not below it. */
   end?: boolean
+  /** A heading the item starts, within its group ("Organisation", "Audit"): shown above the first
+   * item of each run of the same section. */
+  section?: string
+}
+
+/** Where a group's items start a section: the item's section when it differs from the item before. */
+export function sectionStart(items: NavItem[], i: number) {
+  const s = items[i].section
+  return s && (i === 0 || items[i - 1].section !== s) ? s : undefined
 }
 
 export interface NavGroup {

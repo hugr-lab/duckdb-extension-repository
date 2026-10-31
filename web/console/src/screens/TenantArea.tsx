@@ -62,16 +62,19 @@ export function tenantSections(perms: Perms, base: string): NavItem[] {
     tabs.push({ to: `${base}/catalogue`, label: 'Catalogue', icon: Library }) // spec 0033: the tenant's administrators read it
     tabs.push({ to: `${base}/upstreams`, label: 'Upstreams', icon: CloudDownload })
   }
-  if (perms.tenantAdmin || perms.groups.length > 0) tabs.push({ to: `${base}/groups`, label: 'Groups', icon: Boxes })
+  // the organisation: who may do what, and what the tenant holds besides its channels
+  const org = 'Organisation'
+  if (perms.tenantAdmin || perms.groups.length > 0) tabs.push({ to: `${base}/groups`, label: 'Groups', icon: Boxes, section: org })
   if (perms.tenantAdmin) {
-    tabs.push({ to: `${base}/access`, label: 'Access', icon: ShieldCheck })
-    tabs.push({ to: `${base}/identity`, label: 'Identity', icon: Fingerprint })
-    tabs.push({ to: `${base}/publishers`, label: 'Publishers', icon: Send })
-    tabs.push({ to: `${base}/blocks`, label: 'Blocks', icon: Ban })
-    tabs.push({ to: `${base}/licenses`, label: 'Licences', icon: KeyRound })
-    tabs.push({ to: `${base}/limits`, label: 'Limits', icon: Gauge }) // spec 0038: read only
+    tabs.push({ to: `${base}/access`, label: 'Access', icon: ShieldCheck, section: org })
+    tabs.push({ to: `${base}/identity`, label: 'Identity', icon: Fingerprint, section: org })
+    tabs.push({ to: `${base}/publishers`, label: 'Publishers', icon: Send, section: org })
+    tabs.push({ to: `${base}/blocks`, label: 'Blocks', icon: Ban, section: org })
+    tabs.push({ to: `${base}/licenses`, label: 'Licences', icon: KeyRound, section: org })
+    tabs.push({ to: `${base}/limits`, label: 'Limits', icon: Gauge, section: org }) // spec 0038: read only
   }
-  if (perms.canAudit) tabs.push({ to: `${base}/events`, label: 'Events', icon: List })
-  if (admin || perms.canAudit) tabs.push({ to: `${base}/stats`, label: 'Statistics', icon: BarChart3 }) // the API scopes them to the caller's grants
+  // the record: the tenant's events and its statistics
+  if (perms.canAudit) tabs.push({ to: `${base}/events`, label: 'Events', icon: List, section: 'Audit' })
+  if (admin || perms.canAudit) tabs.push({ to: `${base}/stats`, label: 'Statistics', icon: BarChart3, section: 'Audit' }) // the API scopes them to the caller's grants
   return tabs
 }

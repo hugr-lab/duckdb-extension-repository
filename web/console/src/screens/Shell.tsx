@@ -3,11 +3,11 @@
 // only the sections, as tabs above the content.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
-import { ChevronDown, LogOut, Moon, Sun } from 'lucide-react'
+import { ArrowLeftRight, ChevronDown, LogOut, Moon, Sun } from 'lucide-react'
 import iconOnDark from '../assets/hugr-icon-on-dark.svg'
 import logo from '../assets/hugr-logo.svg'
 import logoOnDark from '../assets/hugr-logo-on-dark.svg'
-import { useFrame } from '../lib/frame'
+import { sectionStart, useFrame } from '../lib/frame'
 
 const themeKey = 'kista.theme'
 
@@ -76,16 +76,30 @@ function Sidebar({ scope, service }: { scope?: ReactNode; service?: { host: stri
           <span className="text-[12px] text-[#9CB1BA]">extensions for DuckDB</span>
         </span>
       </a>
-      {scope && <div className="mx-3 mb-1.5 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#9CB1BA]">{scope}</div>}
+      {scope && (
+        <div className="mx-3 mb-1.5 flex items-center justify-between gap-2">
+          <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#9CB1BA]">{scope}</span>
+          {/* the landing chooses a tenant or the server's administration: each scope signs in on its own */}
+          <a href="/ui/" className="inline-flex items-center gap-1 text-[12px] text-[#C9DCE0] no-underline hover:text-white" title="Server or another tenant">
+            <ArrowLeftRight size={14} aria-hidden /> Switch
+          </a>
+        </div>
+      )}
       {groups.map((g, i) => (
         <div key={i} className="flex flex-col gap-1">
           {g.label && <div className="mx-3 mb-1.5 mt-[18px] text-[12px] font-semibold uppercase tracking-[0.08em] text-[#9CB1BA]">{g.label}</div>}
-          {g.items.map((it) => (
-            <NavLink key={it.to} to={it.to} end={it.end} className={link}>
-              <it.icon size={18} aria-hidden />
-              {it.label}
-            </NavLink>
-          ))}
+          {g.items.map((it, j) => {
+            const section = sectionStart(g.items, j)
+            return (
+              <div key={it.to} className="contents">
+                {section && <div className="mx-3 mb-1 mt-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#9CB1BA]">{section}</div>}
+                <NavLink to={it.to} end={it.end} className={link}>
+                  <it.icon size={18} aria-hidden />
+                  {it.label}
+                </NavLink>
+              </div>
+            )
+          })}
         </div>
       ))}
       {service && (
@@ -171,11 +185,17 @@ function EmbeddedFrame({ children }: { children: ReactNode }) {
       {groups.map((g, i) => (
         <nav key={i} aria-label={typeof g.label === 'string' ? g.label : 'kista'} className="flex flex-wrap items-center gap-1.5">
           {g.label && <span className="eyebrow mr-2">{g.label}</span>}
-          {g.items.map((it) => (
-            <NavLink key={it.to} to={it.to} end={it.end} className={tab}>
-              {it.label}
-            </NavLink>
-          ))}
+          {g.items.map((it, j) => {
+            const section = sectionStart(g.items, j)
+            return (
+              <span key={it.to} className="contents">
+                {section && <span className="eyebrow ml-3 mr-1">{section}</span>}
+                <NavLink to={it.to} end={it.end} className={tab}>
+                  {it.label}
+                </NavLink>
+              </span>
+            )
+          })}
         </nav>
       ))}
       {children}
