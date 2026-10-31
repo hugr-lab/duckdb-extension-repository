@@ -61,7 +61,7 @@ are all the kinds in `internal/audit`:
 | | `tenant.limits` | `tenant:<name>` | for each limit changed (`bytes`, `channels`, `upstreams`, `publishers`): `old` and `new` (the stored value: a number, `unlimited` or `default`) and `limit` (the value in force; `null` for unlimited bytes); a tenant created with limits has it in the server's events, beside `tenant.create` (spec 0038) |
 | | `tenant.suspend`, `tenant.resume` | `tenant:<name>` | none |
 | | `tenant.read` | `tenant:<name>` | `state`: a distribution admin read the tenant's state and expected holder (spec 0037), written for a suspended tenant too |
-| | `tenant.delete` | `tenant:<name>` | `channels` (a count), `suspended_at`, `keys` (the fingerprints), `min_suspended` (the minimum applied) |
+| | `tenant.delete` | `tenant:<name>` | `channels` (a count), `suspended_at`, `keys` (the fingerprints), `min_suspended` (the minimum applied, as the configuration writes it: `168h`) |
 | | `tenant.purge` | `tenant:<name>` | `rows`, `passes`, `late`, `error` |
 | | `version.add` | `version:<name>` | `version`, `kind`, `c_apis` |
 | | `version.c_apis` | `version:<name>` | `version`, `c_api` |

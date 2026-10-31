@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -220,6 +221,11 @@ func (c Ceilings) check() error {
 				store.ErrInvalid, f.name, durationText(f.least), f.setting)
 		}
 	}
+	// auth.admin_token_max_age is at least a minute and below this, so a minute would admit none
+	if l := c.IssuerTokenLifetime; l != nil && *l <= MinAdminTokenMaxAge {
+		return fmt.Errorf("%w: limits.ceilings.issuer_token_lifetime is above %s: auth.admin_token_max_age, at least %s, "+
+			"stays below it (leave it out for its default)", store.ErrInvalid, durationText(MinAdminTokenMaxAge), durationText(MinAdminTokenMaxAge))
+	}
 	for _, f := range counts {
 		if f.v != nil && *f.v < 1 {
 			return fmt.Errorf("%w: limits.ceilings.%s is at least 1 (leave it out for its default)", store.ErrInvalid, f.name)
@@ -286,16 +292,7 @@ func validateLimits(bad func(string, ...any), c Config) {
 }
 
 // durationText is d as the docs write it: 8760h, 30m, 1m30s (never 8760h0m0s).
-func durationText(d time.Duration) string {
-	s := d.String()
-	if strings.HasSuffix(s, "m0s") {
-		s = strings.TrimSuffix(s, "0s")
-	}
-	if strings.HasSuffix(s, "h0m") {
-		s = strings.TrimSuffix(s, "0m")
-	}
-	return s
-}
+func durationText(d time.Duration) string { return audit.Duration(d) }
 
 // limitError is a limit's refusal without the store's prefix: it names the limit, never the value.
 func limitError(err error) string {

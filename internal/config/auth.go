@@ -218,7 +218,7 @@ func validateAuth(bad func(string, ...any), c Config) {
 	}
 	// below the longest token any issuer may mint: else a token as old as a token can be still
 	// manages, and the stale-token gate (spec 0007) never refuses one (spec 0038 amended, security)
-	if m, life := c.AdminTokenMaxAge(), c.Limits.Ceilings.Settings().IssuerTokenLifetime; m >= life {
+	if m, life := c.AdminTokenMaxAge(), c.Limits.Ceilings.Settings().IssuerTokenLifetime; life > MinAdminTokenMaxAge && m >= life {
 		bad("auth.admin_token_max_age must be below limits.ceilings.issuer_token_lifetime (%s): "+
 			"a management token must be fresher than the longest token", durationText(life))
 	}

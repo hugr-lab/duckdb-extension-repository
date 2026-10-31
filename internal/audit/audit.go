@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
@@ -25,6 +26,18 @@ const (
 	Refused = "refused"
 	Failed  = "failed"
 )
+
+// Duration is d as the docs and the configuration write it: 8760h, 30m, 1m30s (never 8760h0m0s).
+func Duration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
 
 // MaxData is the most bytes an event's data takes; a larger one keeps its first fields.
 const MaxData = 16 << 10

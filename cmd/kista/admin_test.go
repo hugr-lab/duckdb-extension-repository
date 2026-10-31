@@ -731,7 +731,8 @@ func TestAdminTenantDelete(t *testing.T) {
 	if got := run(0, "tenant", "list", "-state", "deleted"); !strings.Contains(got, "gone") {
 		t.Errorf("list -state deleted: %q", got)
 	}
-	if got := run(0, "events", "list", "gone"); !strings.Contains(got, "tenant.purge") || !strings.Contains(got, "tenant.delete") {
+	if got := run(0, "events", "list", "gone"); !strings.Contains(got, "tenant.purge") || !strings.Contains(got, "tenant.delete") ||
+		!strings.Contains(got, `"min_suspended":"0s"`) {
 		t.Errorf("a tombstone's events: %q", got)
 	}
 	if got := run(1, "tenant", "create", "gone"); !strings.Contains(got, "never reused") {

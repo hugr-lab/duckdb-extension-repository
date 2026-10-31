@@ -100,6 +100,9 @@ auth:
 			"auth.admin_token_max_age is at most limits.ceilings.admin_token_max_age"},
 		"max age ceiling 0":        {base + "limits: { ceilings: { admin_token_max_age: 0s } }\n", nil, "limits.ceilings.admin_token_max_age is at least 1m, the least auth.admin_token_max_age may be"},
 		"max age ceiling negative": {base + "limits: { ceilings: { admin_token_max_age: -1h } }\n", nil, "limits.ceilings.admin_token_max_age is at least 1m"},
+		// a 1m lifetime would admit no max age: at least 1m, and below the lifetime
+		"lifetime 1m": {base + "auth: { admin_token_max_age: 1m }\nlimits: { ceilings: { issuer_token_lifetime: 1m } }\n", nil,
+			"limits.ceilings.issuer_token_lifetime is above 1m"},
 		"max age over a lowered ceiling": {base + "auth: { admin_token_max_age: 45m }\nlimits: { ceilings: { admin_token_max_age: 30m } }\n", nil,
 			"limits.ceilings.admin_token_max_age (30m)"},
 		// the stale-token gate stays meaningful: a management token is fresher than the longest token
@@ -121,6 +124,14 @@ auth:
 	}
 	if c, err := Load(write(t, base+"auth: { admin_token_max_age: 15m }\nlimits: { ceilings: { admin_token_max_age: 30m } }\n"), nil); err != nil || c.AdminTokenMaxAge() != 15*time.Minute {
 		t.Errorf("a 15m max age under a lowered ceiling: %v", err)
+	}
+	// an invalid lifetime is refused once, for itself: no max-age refusal beside it
+	if _, err := Load(write(t, base+"limits: { ceilings: { issuer_token_lifetime: 30s } }\n"), nil); err == nil ||
+		!strings.Contains(err.Error(), "issuer_token_lifetime") || strings.Contains(err.Error(), "admin_token_max_age must be below") {
+		t.Errorf("a 30s lifetime: %v", err)
+	}
+	if c, err := Load(write(t, base+"auth: { admin_token_max_age: 1m }\nlimits: { ceilings: { issuer_token_lifetime: 2m } }\n"), nil); err != nil || c.AdminTokenMaxAge() != time.Minute {
+		t.Errorf("a 1m max age under a 2m lifetime: %v", err)
 	}
 	// the public URL itself may be a server audience
 	if _, err := Load(write(t, base+"serve: { public_url: https://k.example }\n"+iss+"server_audiences: [ 'https://k.example' ] }\n"), nil); err != nil {

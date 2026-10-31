@@ -662,7 +662,7 @@ limits:
     events_rows_per_tenant: 100000000 # the most events.max_rows_per_tenant
 ```
 
-A count is at least 1, a duration at least `1s` (`issuer_token_lifetime` at least `1m`); a ceiling
+A count is at least 1, a duration at least `1s` (`issuer_token_lifetime` above `1m`, since `auth.admin_token_max_age` is at least `1m` and below it); a ceiling
 is never `0`, unlike a limit: leave a key out for its default. The ceilings are the process's: every
 replica and every `kista admin` run against one store must share `limits.ceilings`, or a replica
 checks against other ceilings. Bounds on one request, one document or one remote

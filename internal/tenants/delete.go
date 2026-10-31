@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -68,7 +69,7 @@ func (s *Service) Delete(ctx context.Context, a authz.Actor, name string, expect
 		}
 		return tx.Event(ctx, t.ID, a.String(), "tenant.delete", "tenant:"+t.Name,
 			map[string]any{"channels": len(d.ChannelIDs), "suspended_at": t.SuspendedAt.UTC().Format(time.RFC3339), "keys": fps,
-				"min_suspended": minSuspended.String()}) // the minimum this process applied
+				"min_suspended": audit.Duration(minSuspended)}) // the minimum this process applied
 	})
 	return t, d, err
 }

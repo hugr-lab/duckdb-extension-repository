@@ -657,14 +657,15 @@ needs to work stays in code beside it, with the reason in the refusal: `events.r
 least 30 days (the API answers the last 30 days' downloads), `admin_token_max_age` at least 1m (the
 console renews before `iat` plus the age, and clocks drift). A setting's ceiling is at least that
 minimum too (`events_retention` and `events_retention_with_sinks` 48h, `statistics_retention`
-720h, `admin_token_max_age` 1m), as `issuer_token_lifetime` is at least 1m: a lower one would
-admit no value. `auth.admin_token_max_age` is also below `issuer_token_lifetime` (see Security).
+720h, `admin_token_max_age` 1m): a lower one would admit no value. `auth.admin_token_max_age` is
+also below `issuer_token_lifetime` (see Security), so `issuer_token_lifetime` is above 1m: at 1m
+no max age would be both at least 1m and below it.
 
 The floors outside `profile: dev` are settings too, but minimums, not ceilings, so they sit beside
 what they bound: `tenants.min_suspended_floor` (spec 0019's amendment) and `rotation.min_floor`
 (spec 0003's), `24h` each by default, never `0`.
 
-A ceiling is never 0 (a count at least 1, a duration at least 1s, `issuer_token_lifetime` at least
+A ceiling is never 0 (a count at least 1, a duration at least 1s, `issuer_token_lifetime` above
 1m): leave a key out for its default; a limit's `0` (none) is a different thing. The ceilings are the
 process's (`store.SetCeilings` writes package values once as the store opens): every replica and every
 `kista admin` run against one store must share `limits.ceilings`.
