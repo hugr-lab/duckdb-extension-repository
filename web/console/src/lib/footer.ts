@@ -36,6 +36,14 @@ export function nameFromFile(file: string) {
   return m ? m[1] : null
 }
 
+/** Whether a file starts with gzip's magic (1f 8b): a compressed download (.duckdb_extension.gz),
+ * whose footer is not at its end. */
+export async function gzipped(f: Blob) {
+  if (f.size < 2) return false
+  const b = new Uint8Array(await f.slice(0, 2).arrayBuffer())
+  return b[0] === 0x1f && b[1] === 0x8b
+}
+
 /** A file's footer: its last 512 bytes, parsed. */
 export async function readFooter(f: Blob): Promise<Footer | null> {
   if (f.size < footerSize) return null
