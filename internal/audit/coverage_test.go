@@ -85,7 +85,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddPublisherKey": {"publisher.key.add"}, "RemovePublisherKey": {"publisher.key.remove", "catalogue.purge"},
 		"SetPublisherHold": {"catalogue.hold"}, "SetPublisherDistributor": {"publisher.change"}, "AddDistributorPublisher": {"publisher.add"},
 		"SetDistributorHold": {"catalogue.hold"}, "DistributorHold": nil,
-		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil,
+		"SetConsoleClient": {"issuer.console.set"}, "RemoveConsoleClient": {"issuer.console.remove"}, "ConsoleIssuers": nil, "IssuerConsoleClients": nil,
 		"ListIssuers": nil, "ListAudiences": nil, "ListGrants": nil, "ListPublishers": nil, "ListPublisherKeys": nil, "TenantPublisherKeys": nil,
 		"CreatePackageGroup": {"extension_group.add"}, "SetPackageGroupDescription": {"extension_group.change"},
 		"ChangePackageGroupMembers": {"extension_group.members"},

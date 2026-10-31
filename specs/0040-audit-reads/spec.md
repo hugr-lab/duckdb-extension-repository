@@ -134,10 +134,9 @@ causes). It gains, for any caller that reads it:
 ### For consumers
 
 What a reader gets: `200` with the answers above; `404` with no right on the tenant, for a
-suspended, deleting or unknown tenant, and for a missing object; `401` for a token that is stale
-(its tenant's auth changed since), whose issuer was removed (spec 0007), or older than
-`auth.admin_token_max_age` (default 1h; these are manage routes), after which it gets a fresh
-token; `429` (`rate-limited`) past the API rate.
+suspended, deleting or unknown tenant, and for a missing object; `401` for a token whose issuer was
+removed (spec 0007), or that is stale: older than `auth.admin_token_max_age` (default 1h; these are
+manage routes), after which it gets a fresh token; `429` (`rate-limited`) past the API rate.
 
 `created_by` and an event's `actor` take these forms for a tenant's readers:
 `principal:<tenant>/<issuer id>|<sub>` (the token's bare `sub`; `client:<id>` for a token with no
@@ -193,7 +192,7 @@ with no code.
   keeps its narrow view for anyone but an administrator or auditor); an auditor of
   tenant B on tenant A (with an A token, no grant there: `404`; its B token is not one of A's:
   `401`); a server token with no role; an install holder; a licence manager. A stale
-  token, and one older than `admin_token_max_age`, get `401`. A distribution admin still reads only distributors' publishers and keys, `404` on
+  token, one older than `admin_token_max_age`, gets `401`. A distribution admin still reads only distributors' publishers and keys, `404` on
   the rest, and `404` on publisher reads in a suspended tenant.
 - `internal/tenants` and `internal/upstream`: `readTenant` admits `audit`, a tenant-wide `admin` and a
   server administrator; `ListIssuers`, `ListAudiences`, `ListGrants`, the group reads and the upstream
