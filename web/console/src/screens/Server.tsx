@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
-import { Building2, Cpu, List } from 'lucide-react'
+import { Building2, Cpu, KeySquare, List, Lock } from 'lucide-react'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Pager, Table, when } from '../components/ui'
 import { Perms, TenantContext, useLoad, usePaged } from '../lib/context'
 import { useSections } from '../lib/frame'
 import { ApiError, type Client, seg } from '../lib/http'
 import { useAction } from '../lib/action'
 import { Events } from './Events'
+import { Credentials, ReservedNames } from './ServerLists'
 import { TenantArea } from './TenantArea'
 
 export interface DeletionKey {
@@ -55,6 +56,8 @@ export function Server({ client, root }: { client: Client; root: string }) {
     items: [
       { to: `${root}/tenants`, label: 'Tenants', icon: Building2 },
       { to: `${root}/versions`, label: 'DuckDB versions', icon: Cpu },
+      { to: `${root}/reserved`, label: 'Reserved names', icon: Lock },
+      { to: `${root}/credentials`, label: 'Credentials', icon: KeySquare },
       { to: `${root}/events`, label: 'Server events', icon: List, end: true },
     ],
   } : null, `${root}|${ok}`)
@@ -67,6 +70,8 @@ export function Server({ client, root }: { client: Client; root: string }) {
       <Route index element={<Navigate to={`${root}/tenants`} replace />} />
       <Route path="tenants" element={<Tenants client={client} root={root} />} />
       <Route path="versions" element={<Versions client={client} />} />
+      <Route path="reserved" element={<ReservedNames client={client} />} />
+      <Route path="credentials" element={<Credentials client={client} />} />
       <Route path="events" element={<Events key="server" client={client} path="/events" title="Server events" />} />
       <Route path="tenants/:t/*" element={<ServerTenant client={client} root={root} />} />
     </Routes>
