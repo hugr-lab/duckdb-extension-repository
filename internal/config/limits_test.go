@@ -57,7 +57,7 @@ func TestCeilings(t *testing.T) {
 	if l, err := cfg.LimitSettings(); err != nil || l.Channels != 1500 {
 		t.Fatalf("a default under a raised ceiling: %+v %v", l, err)
 	}
-	for _, bad := range []string{"limits: { ceilings: { grants: -1 } }\n", "limits: { ceilings: { max_hold: -1h } }\n",
+	for _, bad := range []string{"limits: { ceilings: { grants: -1 } }\n", "limits: { ceilings: { max_hold: -1h } }\n", "limits: { ceilings: { feeds: 0 } }\n",
 		"limits: { channels: 30, ceilings: { channels: 20 } }\n",
 		"bootstrap: { tenant: { name: acme, limits: { ceilings: { channels: 5 } } } }\n"} {
 		if _, err := Load(write(t, base+bad), nil); err == nil || !strings.Contains(err.Error(), "limits") {

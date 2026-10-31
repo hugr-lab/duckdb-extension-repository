@@ -610,6 +610,9 @@ of that kind at all. Leave a key out, or write `unlimited`, for no limit.
 :::
 
 - A count above its ceiling, or a value that is none of these, refuses to start.
+- **A backstop, not a plan.** A change here changes every tenant without values of its own, across
+  every replica as it restarts, and writes no event. A hosted service puts explicit values on each
+  tenant instead (`POST /api/v1/tenants` takes them).
 
 ### limits.ceilings
 
@@ -649,10 +652,8 @@ limits:
 
 A count is at least 1, a duration at least `1s`. Bounds on one request, one document or one remote
 answer (page and body sizes, a summary's 160 characters, an icon's size, the 16 event sinks) stay in
-code: they are part of a format, not a tenant's room.
-- **A backstop, not a plan.** A change here changes every tenant without values of its own, across
-  every replica as it restarts, and writes no event. A hosted service puts explicit values on each
-  tenant instead (`POST /api/v1/tenants` takes them).
+code: they are part of a format, not a tenant's room. A ceiling lowered below a tenant's stored
+limit caps it: growth past the ceiling is refused `429 tenant-limit`.
 
 ## ui
 

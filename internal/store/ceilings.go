@@ -36,6 +36,7 @@ type Ceilings struct {
 	DiscoveredNames       int // a mirror's "*" (spec 0039)
 	MaxHold               time.Duration
 	PublisherKeyLifetime  time.Duration
+	IssuerTokenLifetime   time.Duration // the most an issuer's max_token_lifetime may be
 }
 
 // DefaultCeilings are the ceilings a configuration that sets none has.
@@ -46,7 +47,7 @@ func DefaultCeilings() Ceilings {
 		TenantGroupMembers: 10000, Feeds: 50, FeedKeys: 10, FeedKept: 100000, Blocks: 10000,
 		Attachments: 100000, AttachmentHeads: 20, UpstreamEntries: 1000, EntryVersions: 100,
 		UpstreamKeys: 10, UpstreamCells: 20000, TenantCells: 100000, DiscoveredNames: 1000,
-		MaxHold: 90 * 24 * time.Hour, PublisherKeyLifetime: 366 * 24 * time.Hour,
+		MaxHold: 90 * 24 * time.Hour, PublisherKeyLifetime: 366 * 24 * time.Hour, IssuerTokenLifetime: 7 * 24 * time.Hour,
 	}
 }
 
@@ -56,6 +57,9 @@ var MaxSigningKeys = 16
 // MaxKeyLifetime is the furthest a publisher key's expiry may be.
 var MaxKeyLifetime = 366 * 24 * time.Hour
 
+// MaxIssuerTokenLifetime is the most an issuer's max_token_lifetime may be.
+var MaxIssuerTokenLifetime = 7 * 24 * time.Hour
+
 // Check refuses a ceiling below 1 (a duration: below a second).
 func (c Ceilings) Check() error {
 	for _, f := range c.counts() {
@@ -63,8 +67,8 @@ func (c Ceilings) Check() error {
 			return fmt.Errorf("%w: limits.ceilings.%s must be at least 1", ErrInvalid, f.name)
 		}
 	}
-	if c.MaxHold < time.Second || c.PublisherKeyLifetime < time.Second {
-		return fmt.Errorf("%w: limits.ceilings.max_hold and publisher_key_lifetime must be at least 1s", ErrInvalid)
+	if c.MaxHold < time.Second || c.PublisherKeyLifetime < time.Second || c.IssuerTokenLifetime < time.Minute {
+		return fmt.Errorf("%w: limits.ceilings: max_hold and publisher_key_lifetime are at least 1s, issuer_token_lifetime at least 1m", ErrInvalid)
 	}
 	return nil
 }
@@ -91,8 +95,13 @@ func (c *Ceilings) counts() []struct {
 }
 
 // SetCeilings puts c in force for this process: the server's configuration, set once as the store
-// opens (tests set and restore it). It is not synchronised: never call it while requests run.
+// opens (tests set and restore it). It is not synchronised: never call it with different ceilings
+// while requests run. Ceilings already in force are not written again, so opening several stores
+// with one configuration (tests, replicas of a process) only reads them.
 func SetCeilings(c Ceilings) {
+	if c == CurrentCeilings() {
+		return
+	}
 	MaxChannels, MaxUpstreams, MaxPublishers, MaxDistributorPublishers = c.Channels, c.Upstreams, c.Publishers, c.DistributorPublishers
 	MaxPublisherKeys, MaxSigningKeys, MaxIssuers, MaxGrants = c.PublisherKeys, c.SigningKeys, c.Issuers, c.Grants
 	MaxPackageGroups, MaxGroupMembers, MaxTenantMembers = c.PackageGroups, c.GroupMembers, c.TenantGroupMembers
@@ -100,7 +109,7 @@ func SetCeilings(c Ceilings) {
 	MaxTenantAttachments, MaxAttachmentHeads = c.Attachments, c.AttachmentHeads
 	MaxUpstreamEntries, MaxEntryVersions, MaxUpstreamKeys = c.UpstreamEntries, c.EntryVersions, c.UpstreamKeys
 	MaxUpstreamCells, MaxTenantCells, MaxDiscoveredNames = c.UpstreamCells, c.TenantCells, c.DiscoveredNames
-	MaxHold, MaxKeyLifetime = c.MaxHold, c.PublisherKeyLifetime
+	MaxHold, MaxKeyLifetime, MaxIssuerTokenLifetime = c.MaxHold, c.PublisherKeyLifetime, c.IssuerTokenLifetime
 }
 
 // CurrentCeilings are the ceilings in force.
@@ -114,6 +123,6 @@ func CurrentCeilings() Ceilings {
 		AttachmentHeads: MaxAttachmentHeads, UpstreamEntries: MaxUpstreamEntries,
 		EntryVersions: MaxEntryVersions, UpstreamKeys: MaxUpstreamKeys, UpstreamCells: MaxUpstreamCells,
 		TenantCells: MaxTenantCells, DiscoveredNames: MaxDiscoveredNames, MaxHold: MaxHold,
-		PublisherKeyLifetime: MaxKeyLifetime,
+		PublisherKeyLifetime: MaxKeyLifetime, IssuerTokenLifetime: MaxIssuerTokenLifetime,
 	}
 }

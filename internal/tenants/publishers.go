@@ -412,7 +412,7 @@ func (s *AuthAdmin) marked(ctx context.Context, a authz.Actor, p store.Publisher
 }
 
 // AddPublisherKey registers a public SSH key on a publisher (spec 0023): an OpenSSH line, Ed25519
-// or ECDSA P-256, unique in the tenant; expires is optional (zero: none), within a year.
+// or ECDSA P-256, unique in the tenant; expires is optional (zero: none), within store.MaxKeyLifetime.
 func (s *AuthAdmin) AddPublisherKey(ctx context.Context, a authz.Actor, tenant, publisher, line string, expires time.Time) (store.PublisherKey, error) {
 	t, err := s.tenantOrDistributor(ctx, a, tenant)
 	if err != nil {
@@ -423,7 +423,7 @@ func (s *AuthAdmin) AddPublisherKey(ctx context.Context, a authz.Actor, tenant, 
 		return store.PublisherKey{}, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 	}
 	if now := s.Store.Now(); !expires.IsZero() && (!expires.After(now) || expires.Sub(now) > store.MaxKeyLifetime) {
-		return store.PublisherKey{}, fmt.Errorf("%w: a key expires within a year, or never", store.ErrInvalid)
+		return store.PublisherKey{}, fmt.Errorf("%w: a key expires within %s (limits.ceilings.publisher_key_lifetime), or never", store.ErrInvalid, store.MaxKeyLifetime)
 	}
 	k := store.PublisherKey{TenantID: t.ID, Type: pk.Type, PublicKey: auth.AuthorizedKey(pk.Wire), Fingerprint: pk.Fingerprint,
 		Title: pk.Title, ExpiresAt: expires, CreatedBy: a.String()}

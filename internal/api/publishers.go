@@ -252,7 +252,7 @@ func (h *Handler) getPublisherKey(w http.ResponseWriter, r *http.Request, c call
 func (h *Handler) addPublisherKey(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
 		PublicKey string `json:"public_key"` // an OpenSSH line
-		ExpiresAt string `json:"expires_at"` // RFC 3339, within a year; "": never
+		ExpiresAt string `json:"expires_at"` // RFC 3339, within the publisher_key_lifetime ceiling; "": never
 	}
 	if !body(w, r, &in, maxBody) {
 		return
@@ -261,7 +261,7 @@ func (h *Handler) addPublisherKey(w http.ResponseWriter, r *http.Request, c call
 	if in.ExpiresAt != "" {
 		var err error
 		if exp, err = time.Parse(time.RFC3339, in.ExpiresAt); err != nil {
-			problem(w, http.StatusBadRequest, typeInvalid, "expires_at is an RFC 3339 time within a year, or absent")
+			problem(w, http.StatusBadRequest, typeInvalid, "expires_at is an RFC 3339 time (within limits.ceilings.publisher_key_lifetime), or absent")
 			return
 		}
 	}

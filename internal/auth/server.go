@@ -204,8 +204,9 @@ func CheckIssuer(is *store.Issuer, allowHTTP bool) error {
 	if is.MaxTokenLifetime == 0 {
 		is.MaxTokenLifetime = 24 * time.Hour
 	}
-	if is.MaxTokenLifetime < time.Minute || is.MaxTokenLifetime > 7*24*time.Hour {
-		return fmt.Errorf("%w: max token lifetime must be within 1m..7d", store.ErrInvalid)
+	if is.MaxTokenLifetime < time.Minute || is.MaxTokenLifetime > store.MaxIssuerTokenLifetime {
+		return fmt.Errorf("%w: max token lifetime must be within 1m..%s (limits.ceilings.issuer_token_lifetime)", store.ErrInvalid,
+			store.MaxIssuerTokenLifetime)
 	}
 	if len(is.RequiredClaims) > 16 {
 		return fmt.Errorf("%w: at most 16 required claims", store.ErrInvalid)

@@ -17,10 +17,19 @@ func TestConfiguredCeilings(t *testing.T) {
 	each(t, func(t *testing.T, e storetest.Engine) {
 		s := e.Open(t)
 		tn, _ := fixture(t, s) // one channel: prod
+		// a value stored under the old ceiling: capped by the lowered one
+		inTx(t, s, func(tx *store.Tx) error {
+			cur, err := tx.GetTenantForUpdate(ctx, "acme")
+			if err != nil {
+				return err
+			}
+			return tx.SetTenantLimits(ctx, &cur, map[string]int64{store.LimitChannels: 500})
+		})
 		c := store.DefaultCeilings()
 		c.Channels, c.MaxHold = 2, time.Hour
+		prev := store.CurrentCeilings()
+		t.Cleanup(func() { store.SetCeilings(prev) })
 		store.SetCeilings(c)
-		t.Cleanup(func() { store.SetCeilings(store.DefaultCeilings()) })
 		if store.CurrentCeilings() != c {
 			t.Fatalf("in force: %+v", store.CurrentCeilings())
 		}
@@ -33,7 +42,14 @@ func TestConfiguredCeilings(t *testing.T) {
 		}
 		var le *store.LimitError
 		if err := channel("qa"); !errors.As(err, &le) || le.Limit != store.LimitChannels || !le.AtCeiling {
-			t.Fatalf("a channel past the configured ceiling: %v", err)
+			t.Fatalf("a channel past the configured ceiling, the stored 500 capped: %v", err)
+		}
+		got, err := s.GetTenant(ctx, "acme")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if in := s.Effective(got.Limits); in.Channels != 2 {
+			t.Fatalf("a stored value above the ceiling is capped: %+v", in)
 		}
 		if err := store.ValidLimit(store.LimitChannels, 3); !errors.Is(err, store.ErrInvalid) {
 			t.Fatalf("a limit above the ceiling: %v", err)

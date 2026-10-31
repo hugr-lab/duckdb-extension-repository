@@ -154,7 +154,9 @@ func ParseLimitUnder(name, s string, ceil Ceilings) (int64, error) {
 }
 
 // Effective is the value in force of each limit: a tenant's own value, else the server's default
-// (LimitDefaults); an unlimited count is its ceiling, unlimited bytes stay LimitUnlimited.
+// (LimitDefaults); an unlimited count is its ceiling, unlimited bytes stay LimitUnlimited. A count
+// above its ceiling (stored before the configuration lowered it) is capped at the ceiling, so growth
+// past it is refused as the tenant limit at its ceiling.
 func (s *Store) Effective(stored Limits) Limits {
 	out := stored
 	for _, n := range LimitNames {
@@ -162,8 +164,9 @@ func (s *Store) Effective(stored Limits) Limits {
 		if v == LimitDefault {
 			v = s.LimitDefaults.Get(n)
 		}
-		if v == LimitDefault || v == LimitUnlimited {
-			v = LimitCeiling(n)
+		c := LimitCeiling(n)
+		if v == LimitDefault || v == LimitUnlimited || c >= 0 && v > c {
+			v = c
 		}
 		out.Set(n, v)
 	}

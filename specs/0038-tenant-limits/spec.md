@@ -55,17 +55,20 @@ So:
 
 Four limits, each on one tenant:
 
-| Limit | Counts | Ceiling (code) |
+| Limit | Counts | Ceiling (`limits.ceilings`, the amendment below) |
 | --- | --- | --- |
 | `bytes` | the tenant's **own** catalogue bytes (below) | none |
-| `channels` | the tenant's channels | 1,000 (new `store.MaxChannels`) |
-| `upstreams` | the tenant's upstreams | 100 (`store.MaxUpstreams`, unchanged) |
-| `publishers` | the tenant's own publishers (not distributors') | 200 (`store.MaxPublishers`, unchanged) |
+| `channels` | the tenant's channels | `channels`, 1,000 by default |
+| `upstreams` | the tenant's upstreams | `upstreams`, 100 by default |
+| `publishers` | the tenant's own publishers (not distributors') | `publishers`, 200 by default |
 
-- The ceilings stay constants in the code. They bound queries and caches; they are not policy. A
-  limit's value is at most its ceiling, and "unlimited" for a count means the ceiling.
-- The other fixed bounds in the Problem's table stay as they are. They are small and cheap, and a
-  plan has no reason to differ in them. A later limit is added by the same pattern.
+- The ceilings are the server's configuration, not constants (amended 2026-10-31, below). As first
+  written they were constants that "bound queries and caches". That reason holds for the bounds of
+  one request or one answer, which stay in code; a tenant's counts only make queries and caches grow
+  linearly, and the operator who raises a ceiling accepts that cost. A limit's value is at most its
+  ceiling, and "unlimited" for a count means the ceiling.
+- The other bounds in the Problem's table are configured ceilings too (the amendment), not tenant
+  limits: a plan has no reason to differ in them. A later limit is added by the same pattern.
 - **Distributors are outside the limits.** The builds and icons of distributors' publishers'
   sources, live or removed, are never counted and never refused by a tenant limit. Distributors'
   publishers are counted apart, under their own cap of 10 (spec 0037). A customer's full quota must
@@ -600,6 +603,10 @@ are the server's, never a tenant's: a tenant's own limits (above) and the config
 stay at or below them, and the bootstrap tenant's `limits` refuse a `ceilings` key. `store.SetCeilings`
 puts them in force as the store opens (`kista serve` and `kista admin` alike); the checks, refusals
 and their types are unchanged.
+
+A ceiling lowered below what a tenant stored caps that value: the value in force is the smaller of
+the two, so growth past the ceiling is refused as `429 tenant-limit` at its ceiling, never `400`.
+What a tenant already holds stays; the stored value is kept and counts again if the ceiling is raised.
 
 | Was | Kind | `limits.ceilings.` key | Default |
 | --- | --- | --- | --- |
