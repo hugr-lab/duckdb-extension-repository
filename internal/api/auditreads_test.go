@@ -42,7 +42,7 @@ func TestAuditReads(t *testing.T) {
 	call(201, "POST", T+"/publishers", ta, `{"name":"own-ci"}`)
 	kid := call(201, "POST", T+"/publishers/own-ci/keys", ta, `{"public_key":"`+newSigner(t).authKey+`"}`).json(t)["id"].(string)
 	call(201, "POST", T+"/publishers", da, `{"name":"enterest-ci","distributor":"enterest"}`)
-	call(201, "POST", T+"/publishers/enterest-ci/keys", da, `{"public_key":"`+newSigner(t).authKey+`"}`)
+	dkid := call(201, "POST", T+"/publishers/enterest-ci/keys", da, `{"public_key":"`+newSigner(t).authKey+`"}`).json(t)["id"].(string)
 	call(201, "POST", T+"/upstreams", ta, `{"name":"core","kind":"duckdb-core","channel":"staging","platforms":["linux_amd64"],"extensions":[{"name":"tresor"}]}`)
 
 	// the issuer's id is the one a principal's created_by names; its console client, once set
@@ -101,6 +101,9 @@ func TestAuditReads(t *testing.T) {
 		{"POST", T + "/publishers/own-ci/keys", `{"public_key":"` + newSigner(t).authKey + `"}`},
 		{"DELETE", T + "/publishers/own-ci/keys/" + kid, ""},
 		{"PUT", T + "/publishers/own-ci/hold", `{"hold":"1h"}`},
+		{"PUT", T + "/publishers/enterest-ci/distributor", `{"distributor":"enterest-eu"}`},
+		{"POST", T + "/upstreams/core/fetch", `{"fetch":"lazy"}`},
+		{"PUT", T + "/upstreams/core/hold", `{"hold":"1h"}`},
 		{"POST", T + "/upstreams", `{"name":"x","kind":"duckdb-core","channel":"prod","platforms":["linux_amd64"]}`},
 		{"DELETE", T + "/upstreams/core", ""},
 		{"POST", T + "/upstreams/core/pause", ""},
@@ -168,6 +171,9 @@ func TestAuditReads(t *testing.T) {
 	}
 	call(200, "GET", T+"/publishers/enterest-ci", da, "")
 	call(200, "GET", T+"/publishers/enterest-ci/keys", da, "")
+	if k := call(200, "GET", T+"/publishers/enterest-ci/keys/"+dkid, da, "").json(t); k["id"] != dkid {
+		t.Errorf("a distributor's key: %v", k)
+	}
 	for _, p := range reads {
 		if !strings.Contains(p, "/publishers") || strings.Contains(p, "own-ci") {
 			call(404, "GET", p, da, "")
