@@ -46,7 +46,8 @@ release with it.
 | A key must be trusted this long before it is activated, counted from when it was added (a demotion does not reset it) | `rotation.min_trusted` | `168h` (7 days) |
 | A key must have left the active state this long before it is retired; a key that was never active counts from when it was added | `rotation.min_demoted` | `168h` (7 days) |
 
-Both cannot be set below 24h unless `profile: dev`. They can be set from the environment
+Both cannot be set below `rotation.min_floor` (`24h` by default; file-only) unless `profile: dev`.
+They can be set from the environment
 (`KISTA_ROTATION__MIN_TRUSTED`, `KISTA_ROTATION__MIN_DEMOTED`). See
 [Configuration](../configuration.md).
 

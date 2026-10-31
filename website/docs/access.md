@@ -377,7 +377,7 @@ auth:                                  # file-only; changes take effect at resta
   server_distribution_admins:          # distribution admins: a distributor's calls on every tenant
     - client:ops|enterest              # checked as server_admins
   server_egress_allow: []              # CIDRs reached only by the server issuers' fetcher
-  admin_token_max_age: 1h              # management needs a token issued this recently; 1m..24h
+  admin_token_max_age: 1h              # management needs a token issued this recently; at least 1m, at most limits.ceilings.admin_token_max_age (24h)
 ```
 
 A server issuer's principals never match a tenant's, whatever a tenant names its records. A server

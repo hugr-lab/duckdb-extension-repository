@@ -207,7 +207,19 @@ func validateAuth(bad func(string, ...any), c Config) {
 			}
 		}
 	}
-	if a.AdminTokenMaxAge != 0 && (a.AdminTokenMaxAge < time.Minute || a.AdminTokenMaxAge > 24*time.Hour) {
-		bad("auth.admin_token_max_age must be within 1m..24h")
+	// a minute at least, in code: the console renews a management token before iat plus the max age
+	// (spec 0015), and clocks drift; the most is the server's (limits.ceilings.admin_token_max_age,
+	// 24h by default; spec 0038 amended)
+	if a.AdminTokenMaxAge != 0 && a.AdminTokenMaxAge < MinAdminTokenMaxAge {
+		bad("auth.admin_token_max_age must be at least 1m")
+	}
+	if m, ceil := c.AdminTokenMaxAge(), c.Limits.Ceilings.Setting().AdminTokenMaxAge; ceil >= MinAdminTokenMaxAge && m > ceil {
+		bad("auth.admin_token_max_age is at most limits.ceilings.admin_token_max_age (%s)", durationText(ceil))
+	}
+	// below the longest token any issuer may mint: else a token as old as a token can be still
+	// manages, and the stale-token gate (spec 0007) never refuses one (spec 0038 amended, security)
+	if m, life := c.AdminTokenMaxAge(), c.Limits.Ceilings.Settings().IssuerTokenLifetime; life > MinAdminTokenMaxAge && m >= life {
+		bad("auth.admin_token_max_age must be below limits.ceilings.issuer_token_lifetime (%s): "+
+			"a management token must be fresher than the longest token", durationText(life))
 	}
 }

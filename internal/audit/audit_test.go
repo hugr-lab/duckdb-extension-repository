@@ -3,6 +3,7 @@ package audit
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReduceClient(t *testing.T) {
@@ -38,6 +39,15 @@ func TestData(t *testing.T) {
 	for _, k := range Kinds() {
 		if k.Subject == "" {
 			t.Errorf("%s has no subject form", k.Kind)
+		}
+	}
+}
+
+func TestDuration(t *testing.T) {
+	for d, want := range map[time.Duration]string{0: "0s", time.Second: "1s", time.Minute: "1m", 90 * time.Second: "1m30s",
+		24 * time.Hour: "24h", 168 * time.Hour: "168h", 90 * time.Minute: "1h30m", 8760 * time.Hour: "8760h"} {
+		if got := Duration(d); got != want {
+			t.Errorf("%v: %q, want %q", d, got, want)
 		}
 	}
 }

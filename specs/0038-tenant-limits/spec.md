@@ -1,6 +1,7 @@
 # Spec 0038: Tenant limits
 
 - **Status**: implemented (PR 1: the limits; PR 2: runs and the console)
+- **Amended** 2026-10-31: the ceilings, and the upper bounds of the server's own retention and token-age settings, are configuration (`limits.ceilings`, see "Amendment: configured ceilings").
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -447,6 +448,15 @@ ix_builds_tenant_body     ON builds (tenant_id, body_hash), carrying body_len, s
   - *Removing and adding back:* removals free room, which is the intent.
   - *Builds waiting for the collector:* not counted, but no longer served or placed, so they hold
     no bytes a tenant can use.
+- **Configured ceilings and floors (amended 2026-10-31).** Whoever edits the configuration can
+  loosen a guard: a floor of 1s under `tenants.min_suspended` or the rotation minimums, a longer
+  `auth.admin_token_max_age`. That is the operator's call, so it is allowed, but never silent:
+  `server.start` digests `tenants`, `rotation` and `limits`, both commands warn at every start while
+  a floor is below `24h` or the max age above `24h`, and `tenant.delete` records the minimum
+  applied. The trade-off kept: `auth.admin_token_max_age` must be below
+  `limits.ceilings.issuer_token_lifetime`, else a management token could be as old as any token
+  and the stale-token gate (spec 0007) would never refuse one; raising the age is bounded by how
+  long a token may live at all.
 - **Denial of service by the check itself.** Only a tenant with a `bytes` limit pays for it: one
   `SUM` per new build, linear in its builds (one pass over the new index plus the probes listed in
   "Reading it"), under a lock that orders that tenant's new builds, so a tenant's intakes wait on
@@ -632,8 +642,30 @@ when a token is verified; the configuration checks its issuers against its own c
 | `MaxHold` | product | `max_hold` | 2160h (90 days) |
 | `tenants.MaxKeyLifetime` | product | `publisher_key_lifetime` | 8784h (366 days) |
 | the issuer's `max_token_lifetime` cap (7 days) | product | `issuer_token_lifetime` | 168h |
+| `events.retention`'s most, 365 days (spec 0010) | setting | `events_retention` | 8760h |
+| `events.retention`'s most once a sink is configured, 90 days (spec 0010) | setting | `events_retention_with_sinks` | 2160h |
+| `statistics.retention`'s most, 10 years (spec 0010) | setting | `statistics_retention` | 87600h |
+| `auth.admin_token_max_age`'s most (spec 0007) | setting | `admin_token_max_age` | 24h |
+| `events.max_rows_per_tenant`'s most (spec 0010) | setting | `events_rows_per_tenant` | 100000000 |
 
-A ceiling is never 0 (a count at least 1, a duration at least 1s, `issuer_token_lifetime` at least
+The five "setting" ceilings (added the same day, after the first list) bound the server's own
+settings, not a tenant's room: `config.SettingCeilings`, checked as the configuration loads and
+never put in force in the store. Each bounds the setting in force, its default included, so a
+ceiling lowered below a default refuses the default too, naming the ceiling's key. What a setting
+needs to work stays in code beside it, with the reason in the refusal: `events.retention` at least
+2 days (a day's installers are counted from its events after it ends), `statistics.retention` at
+least 30 days (the API answers the last 30 days' downloads), `admin_token_max_age` at least 1m (the
+console renews before `iat` plus the age, and clocks drift). A setting's ceiling is at least that
+minimum too (`events_retention` and `events_retention_with_sinks` 48h, `statistics_retention`
+720h, `admin_token_max_age` 1m): a lower one would admit no value. `auth.admin_token_max_age` is
+also below `issuer_token_lifetime` (see Security), so `issuer_token_lifetime` is above 1m: at 1m
+no max age would be both at least 1m and below it.
+
+The floors outside `profile: dev` are settings too, but minimums, not ceilings, so they sit beside
+what they bound: `tenants.min_suspended_floor` (spec 0019's amendment) and `rotation.min_floor`
+(spec 0003's), `24h` each by default, never `0`.
+
+A ceiling is never 0 (a count at least 1, a duration at least 1s, `issuer_token_lifetime` above
 1m): leave a key out for its default; a limit's `0` (none) is a different thing. The ceilings are the
 process's (`store.SetCeilings` writes package values once as the store opens): every replica and every
 `kista admin` run against one store must share `limits.ceilings`.
@@ -642,8 +674,6 @@ What stays in code, and why (bounds on one request, one document or one remote a
 the server and are part of a format, not a tenant's room):
 
 - `MaxSinks` (16): a bit each in `events.pending`, a column's width.
-- `events.retention`'s 90-day cap with sinks: the range of the operator's own setting (spec 0010), not
-  a tenant's room.
 - The bundle format: `bundle.MaxFeeds` (50 feed URLs a plan), `MaxPlanFeedKeys` (500), `MaxCells`,
   `MaxFiles`, `MaxLicenses` (1000) and `MaxRevocations` (10000) are the same at every site, so any
   site reads any bundle. A site whose `feeds` or `feed_keys` ceiling is above them names the feeds for
@@ -652,7 +682,15 @@ the server and are part of a format, not a tenant's room):
   reports, feed and stats pages, `maxRevocationsPage`/`maxNamesPage` and their row bounds, the bundle
   manifest's bounds (`MaxCells`, `MaxFiles`, `MaxRevocations`, …), `MaxMemberChange` per request.
 - Content rules of a format: `MaxSummary` (160), the icon's size and sides, reasons' and
-  descriptions' lengths, licence and token sizes, DuckDB's 64 KiB `.well-known`.
+  descriptions' lengths, licence and token sizes, DuckDB's 64 KiB `.well-known`. A licence's
+  `grace` (0 to 90 days, spec 0012) is one: the extension SDK and every site parse the same claim
+  table, so a site's own bound would make a licence valid at one and invalid in the extension.
+
+Also in code: the sanity ranges of an operator's own knobs (`upstreams.negative_ttl` and
+`interval`, `gc.grace`, `licenses.refresh`, `bundles.upload_ttl` and `upload_max_age`, timeouts,
+concurrency, sizes of the bundle, catalogue and attachment settings). They bound a value the
+operator already chooses, against a typo, and limit no tenant or user; the 16-sink bitmask and
+`gc.grace`'s 4h (four intake deadlines) are format bounds.
 
 ## Decisions
 

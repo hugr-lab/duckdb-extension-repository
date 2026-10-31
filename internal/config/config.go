@@ -85,10 +85,22 @@ type Config struct {
 type Tenants struct {
 	// MinSuspended is how long a tenant stays suspended before it may be deleted (spec 0019).
 	MinSuspended time.Duration `yaml:"min_suspended"`
+	// MinSuspendedFloor is the least MinSuspended may be outside the dev profile; left out, the
+	// default (spec 0019, amended 2026-10-31: the floor is the server's setting, not a constant).
+	// Never 0: a floor of none would let a mistyped minimum delete a tenant at once.
+	MinSuspendedFloor *time.Duration `yaml:"min_suspended_floor" json:",omitempty"`
 }
 
-// MinSuspendedFloor is the least tenants.min_suspended may be outside the dev profile.
-const MinSuspendedFloor = 24 * time.Hour
+// DefaultMinSuspendedFloor is tenants.min_suspended_floor when it is left out.
+const DefaultMinSuspendedFloor = 24 * time.Hour
+
+// Floor is tenants.min_suspended_floor in force: as set, else its default.
+func (t Tenants) Floor() time.Duration {
+	if t.MinSuspendedFloor != nil {
+		return *t.MinSuspendedFloor
+	}
+	return DefaultMinSuspendedFloor
+}
 
 // Store selects and configures the metadata database.
 type Store struct {
@@ -211,6 +223,18 @@ type AWSKMSSource struct {
 type Rotation struct {
 	MinTrusted time.Duration `yaml:"min_trusted"`
 	MinDemoted time.Duration `yaml:"min_demoted"`
+	// MinFloor is the least either minimum may be outside the dev profile; left out, the default
+	// (spec 0003, amended 2026-10-31: the floor is the server's setting, not a constant). File-only
+	// and never 0, as tenants.min_suspended_floor.
+	MinFloor *time.Duration `yaml:"min_floor" json:",omitempty" kista:"fileonly"`
+}
+
+// Floor is rotation.min_floor in force: as set, else its default.
+func (r Rotation) Floor() time.Duration {
+	if r.MinFloor != nil {
+		return *r.MinFloor
+	}
+	return DefaultRotationFloor
 }
 
 // Signers configures where signing keys may come from (specs 0003, 0004). The whole block is
@@ -283,8 +307,8 @@ var (
 	vaultNamespace = regexp.MustCompile(`^[A-Za-z0-9_/-]*$`)
 )
 
-// RotationFloor is the least either rotation minimum may be outside the dev profile.
-const RotationFloor = 24 * time.Hour
+// DefaultRotationFloor is rotation.min_floor when it is left out.
+const DefaultRotationFloor = 24 * time.Hour
 
 // Default returns the defaults.
 func Default() Config {
@@ -590,16 +614,22 @@ func (c Config) Validate() error {
 	default:
 		bad("azure.identity.kind must be managed, workload or default")
 	}
+	if f := c.Rotation.MinFloor; f != nil && *f < time.Second {
+		bad("rotation.min_floor is at least 1s (leave it out for its default, %s)", durationText(DefaultRotationFloor))
+	}
 	if !dev {
-		if c.Rotation.MinTrusted < RotationFloor || c.Rotation.MinDemoted < RotationFloor {
-			bad("rotation minimums cannot be below %s outside profile dev", RotationFloor)
+		if c.Rotation.MinTrusted < c.Rotation.Floor() || c.Rotation.MinDemoted < c.Rotation.Floor() {
+			bad("rotation minimums cannot be below rotation.min_floor (%s) outside profile dev", durationText(c.Rotation.Floor()))
 		}
 	}
 	if c.Rotation.MinTrusted < 0 || c.Rotation.MinDemoted < 0 {
 		bad("rotation minimums cannot be negative")
 	}
-	if c.Tenants.MinSuspended < 0 || !dev && c.Tenants.MinSuspended < MinSuspendedFloor {
-		bad("tenants.min_suspended cannot be negative, nor below %s outside profile dev", MinSuspendedFloor)
+	if f := c.Tenants.MinSuspendedFloor; f != nil && *f < time.Second {
+		bad("tenants.min_suspended_floor is at least 1s (leave it out for its default, %s)", durationText(DefaultMinSuspendedFloor))
+	}
+	if c.Tenants.MinSuspended < 0 || !dev && c.Tenants.MinSuspended < c.Tenants.Floor() {
+		bad("tenants.min_suspended cannot be negative, nor below tenants.min_suspended_floor (%s) outside profile dev", durationText(c.Tenants.Floor()))
 	}
 	if c.Signers.FileDir != "" && !strings.HasPrefix(c.Signers.FileDir, "/") {
 		bad("signers.file_dir must be an absolute path")

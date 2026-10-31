@@ -441,7 +441,8 @@ send events to a store the database administrators do not control. See
 
 - Run with `profile: prod` (the default). It refuses development shortcuts: file keys without
   `allow_file`, plain `http` to vaults and stores, Azure `default` credentials, Google
-  `service_account` key files, `require_hsm: false`, rotation minimums below 24 hours.
+  `service_account` key files, `require_hsm: false`, rotation minimums below `rotation.min_floor`
+  (24 hours by default).
 - Keep channel keys in a vault or KMS; give kista read and sign on its keys only, and alert on key
   changes in the backend's audit log.
 - Block public access on buckets and containers.

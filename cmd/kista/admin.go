@@ -280,6 +280,9 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "kista admin:", err)
 		return 1
 	}
+	for _, w := range cfg.Warnings() {
+		fmt.Fprintln(stderr, "kista admin: WARNING:", w)
+	}
 	if cfg.Profile == config.ProfileDev {
 		fmt.Fprintln(stderr, "kista admin: WARNING: profile dev")
 	}

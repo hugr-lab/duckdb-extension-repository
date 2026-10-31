@@ -1,6 +1,7 @@
 # Spec 0003: Store, tenants, channels, signing keys and rotation
 
 - **Status**: implemented
+- **Amended** 2026-10-31: the `24h` floor under the rotation minimums outside `profile: dev` is the setting `rotation.min_floor` (see "Amendment: a configured rotation floor").
 - **Date**: 2026-10-07
 - **Author**: vgsml, Claude
 
@@ -254,8 +255,19 @@ Every transition takes `Lock("kista/channel/<id>")` first, writes a `key_events`
   the channel's serving key and its active key whatever activation runs concurrently.
 
 `rotation.min_trusted` (default 7 days) and `rotation.min_demoted` (default 7 days) cannot be set
-below 24 h outside `profile: dev`. The trusted period only counts once spec 0006 serves
-`.well-known`. Keys added before that have not really been seen by clients.
+below `rotation.min_floor` (24 h by default, see the amendment) outside `profile: dev`. The trusted
+period only counts once spec 0006 serves `.well-known`. Keys added before that have not really been
+seen by clients.
+
+#### Amendment: a configured rotation floor (2026-10-31)
+
+The owner: no limit is fixed in code (spec 0038's amendment). The floor under both minimums was the
+constant `RotationFloor` (24h); it is `rotation.min_floor`, a duration. Left out, it is `24h`. Set,
+it is at least `1s`, never `0` or negative: a floor of none would let a mistyped minimum activate or
+retire a key at once. It is file-only, though the minimums themselves may come from the environment:
+lowering the guard takes an edit of the file. In dev it is not applied (the minimums may be `0`), but
+its shape is checked. `server.start` digests `rotation` (spec 0010), so lowering the floor shows as
+a change, and `kista serve` and `kista admin` warn at every start while it is below `24h`.
 
 ### Signer references
 
@@ -384,7 +396,7 @@ cmd/kista           + admin subcommands
   - The active key cannot be retired.
   - A key is demoted for a minimum time before retirement.
   - Releases are checked from spec 0006 on.
-  - The minimums have a 24 h floor outside dev.
+  - The minimums have the `rotation.min_floor` floor (24 h by default) outside dev.
   - Every forced step is recorded.
 - **Guards cannot be switched off from the environment**: `profile` and the signer settings are
   file-only, and dev refuses non-local databases.
@@ -424,7 +436,7 @@ cmd/kista           + admin subcommands
 - **Lifecycle cases:**
   - every transition and its event row;
   - `min_trusted` from `trusted_since` across a demotion;
-  - `min_demoted`, `--force`, and the 24 h floor outside dev;
+  - `min_demoted`, `--force`, and the `rotation.min_floor` floor (24 h by default) outside dev;
   - first-key `--active` only on a channel that never had a key;
   - passthrough refuses keys;
   - the 16-key cap;

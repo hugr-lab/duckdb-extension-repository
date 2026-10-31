@@ -163,8 +163,9 @@ already computed, for up to 106 weeks. It takes two steps:
 
 1. **Suspend** the tenant (above). This can be undone.
 2. **Delete** it, once it has been suspended for at least `tenants.min_suspended` (default `168h`,
-   at least `24h` outside `profile: dev`; see [Configuration](../configuration.md#tenants)). The
-   minimum suspension is the window for changing one's mind.
+   at least `tenants.min_suspended_floor`, `24h` by default, outside `profile: dev`; see
+   [Configuration](../configuration.md#tenants)). The minimum suspension is the window for
+   changing one's mind.
 
 ```bash
 ka tenant suspend acme

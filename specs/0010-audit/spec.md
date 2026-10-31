@@ -2,6 +2,7 @@
 
 - **Status**: implemented (phases 1a, 1b, 2a, 2b). The `publisher.github.*` events and the API key's prefix in `publisher.key.*` are replaced by spec [0023](../0023-publisher-keys/spec.md)'s key events
 - **Changed by** [0036](../0036-entry-meta/spec.md) (phase 2): the download and installer keys hold the release's source (migration 0045, `min_reader` 45; rows before it `''`); `install` events carry `source`; the tenant's `stats/downloads` groups by `source` (a label, `unknown` for `''`); the daily pass stores weekly snapshots of each distributor's downloads summed over the tenants (`distributor_weeks`, computed once when a week is complete, with `statistics.distributor_min_tenants` and `statistics.public_tenants` of that moment), which `GET /api/v1/distributor-stats/downloads` answers: weeks, `from` and `to` by their Mondays; `withheld` when the downloads' non-public part is left out (then `downloads` equals `public`, no `installer_days`); `installer_days` omitted whenever its non-public part is left out.
+- **Amended** 2026-10-31: the upper bounds of `events.retention` (365 days; 90 with sinks), `events.max_rows_per_tenant` (100,000,000) and `statistics.retention` (10 years) are `limits.ceilings` settings; `server.start` digests `rotation` and `limits`; `tenant.delete` records `min_suspended`; the minimums stay in code (spec [0038](../0038-tenant-limits/spec.md)'s amendment "configured ceilings").
 - **Date**: 2026-10-09
 - **Author**: vgsml, Claude
 
@@ -90,10 +91,11 @@ kind's subject form and fields; `v` 1):
   `version.c_apis`, `server.start` (kista's version, the schema level, a digest (64 bits of SHA-256 of
   the section's JSON) of each security-relevant configuration section: `profile`, `signers`, `blob`,
   `serve`, `egress`, `auth`, `publish`, `upstreams`, `events`, `statistics`, `telemetry`, `tenants`
-  (spec 0019), and the names of those changed since the previous start (a section the previous start did not digest is not one), which every replica
+  (spec 0019), `rotation` and `limits` (the defaults, and the ceilings set by key; spec 0038 amended),
+  and the names of those changed since the previous start (a section the previous start did not digest is not one), which every replica
   records); spec 0019's `tenant.delete` (the tenant's event, actor the administrator, subject
   `tenant:<name>`; `channels` a count, `suspended_at`, `keys` the fingerprints, never signer
-  references) and `tenant.purge` (actor `system:tenant-delete`, subject `tenant:<name>`; `rows`,
+  references, `min_suspended` the minimum the process applied) and `tenant.purge` (actor `system:tenant-delete`, subject `tenant:<name>`; `rows`,
   `passes`, `late`, and `error`, a class (`lease`, `interrupted`, `error`), when the outcome is
   `failed`: written on the first failure and when the class changes);
 - channels and keys: `channel.create`, `channel.versions` (versions added and removed), `key.add`,
@@ -171,8 +173,10 @@ crash; changes' events never are.
 
 ### The buffer
 
-Events stay in the database for `events.retention` (default **30 days**, at least 2 days (phase 2a counts a day's installers from its events after it ends); at most 365
-days, and at most 90 once a sink is configured, for sites without a pipeline). A pass every hour
+Events stay in the database for `events.retention` (default **30 days**, at least 2 days (phase 2a counts a day's installers from its events after it ends); at most
+`limits.ceilings.events_retention`, 365 days by default, and once a sink is configured at most
+`limits.ceilings.events_retention_with_sinks`, 90 days by default, for sites without a pipeline;
+spec 0038 as amended: both were constants; the 2 days stay in code). A pass every hour
 (lease `kista/events/retention`) deletes older events in batches (`DELETE TOP (n)` on SQL Server;
 `WHERE id IN (SELECT … LIMIT n)` on PostgreSQL and SQLite). An event not yet delivered to every sink
 that takes it is kept past the retention for at most 7 more days, then deleted. A tenant's events
@@ -315,7 +319,9 @@ GET /api/v1/event-kinds                                          the catalogue (
   `download_installers(tenant_id, channel_id, name, ext_version, platform, day, installers)` with the
   day's mark, in one transaction. A day missed (kista down for longer) has no installers. No
   principal is kept.
-- Counts and installers are kept for `statistics.retention` (default 3 years; 30 days to 10 years),
+- Counts and installers are kept for `statistics.retention` (default 3 years; at least 30 days,
+  in code, because the API answers each name's downloads in the last 30 days and a 30-day range by
+  default; at most `limits.ceilings.statistics_retention`, 10 years by default, spec 0038 amended),
   deleted by the same pass.
 - **Statistics API**:
 

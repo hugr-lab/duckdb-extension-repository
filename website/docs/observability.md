@@ -61,7 +61,7 @@ are all the kinds in `internal/audit`:
 | | `tenant.limits` | `tenant:<name>` | for each limit changed (`bytes`, `channels`, `upstreams`, `publishers`): `old` and `new` (the stored value: a number, `unlimited` or `default`) and `limit` (the value in force; `null` for unlimited bytes); a tenant created with limits has it in the server's events, beside `tenant.create` (spec 0038) |
 | | `tenant.suspend`, `tenant.resume` | `tenant:<name>` | none |
 | | `tenant.read` | `tenant:<name>` | `state`: a distribution admin read the tenant's state and expected holder (spec 0037), written for a suspended tenant too |
-| | `tenant.delete` | `tenant:<name>` | `channels` (a count), `suspended_at`, `keys` (the fingerprints) |
+| | `tenant.delete` | `tenant:<name>` | `channels` (a count), `suspended_at`, `keys` (the fingerprints), `min_suspended` (the minimum applied, as the configuration writes it: `168h`) |
 | | `tenant.purge` | `tenant:<name>` | `rows`, `passes`, `late`, `error` |
 | | `version.add` | `version:<name>` | `version`, `kind`, `c_apis` |
 | | `version.c_apis` | `version:<name>` | `version`, `c_api` |
@@ -151,7 +151,8 @@ Notes on some kinds:
 
 - `server.start` is recorded by every replica at start: kista's version, the schema level, a digest
   of each security-relevant configuration section (`profile`, `signers`, `blob`, `serve`, `egress`,
-  `auth`, `publish`, `upstreams`, `events`, `statistics`, `telemetry`, `tenants`), and the sections changed
+  `auth`, `publish`, `upstreams`, `events`, `statistics`, `telemetry`, `tenants`, `rotation`,
+  `limits`), and the sections changed
   since the previous start.
 - `signer.source.weak` is recorded with every `server.start`, once per `kubesecret` key source: a
   source whose keys are only as safe as the cluster's Secrets
@@ -263,7 +264,10 @@ token; `429` (`rate-limited`) past the API's rate (`serve.api_rate`, per client 
 
 Events stay in the database for `events.retention`:
 
-- default 30 days, at least 2 days, at most 365 days (90 when a sink is configured);
+- default 30 days, at least 2 days; at most
+  [`limits.ceilings.events_retention`](configuration.md#limitsceilings) (365 days by default), and
+  when a sink is configured at most `limits.ceilings.events_retention_with_sinks` (90 days by
+  default);
 - an event not yet delivered to every sink that takes it is kept up to 7 more days;
 - a tenant holds at most `events.max_rows_per_tenant` events (default 1,000,000); older ones go
   first.
@@ -347,8 +351,9 @@ authenticated) with no principal and no address, and written to the database eve
 a promotion keeps it), so a download is attributed to a distributor's entry exactly (spec 0036).
 Once a day has ended, an hourly pass counts its distinct **installers** from that day's `install`
 events, per release and its source (the event's `source`, else the release's; none when the release
-is gone). Counts and installers are kept for `statistics.retention` (default 3 years; 30 days to 10
-years).
+is gone). Counts and installers are kept for `statistics.retention` (default 3 years; at least 30
+days; at most [`limits.ceilings.statistics_retention`](configuration.md#limitsceilings), 10 years by
+default).
 
 ```yaml title="kista.yaml"
 statistics:
@@ -540,13 +545,13 @@ load balancer that checks it must reach the pod port directly.
 
 | Setting | Default | Range |
 | --- | --- | --- |
-| `events.retention` | 720h (30 days) | 2 to 365 days; at most 90 with sinks |
-| `events.max_rows_per_tenant` | 1,000,000 | 1 to 100,000,000 |
+| `events.retention` | 720h (30 days) | at least 2 days; at most `limits.ceilings.events_retention` (365 days), with sinks `events_retention_with_sinks` (90 days) |
+| `events.max_rows_per_tenant` | 1,000,000 | at least 1; at most `limits.ceilings.events_rows_per_tenant` (100,000,000) |
 | `events.settle` | 30s | at least 1s: where an `order=asc` read [following the events](#following-the-events) stops, behind now |
 | `events.client_addresses` | `truncated` | `full`, `truncated`, `none` |
 | `events.resource` | none | attributes for OTLP exports |
 | `events.sinks` | none | at most 16 |
-| `statistics.retention` | 26280h (3 years) | 30 days to 10 years |
+| `statistics.retention` | 26280h (3 years) | at least 30 days; at most `limits.ceilings.statistics_retention` (10 years) |
 | `statistics.usage_accept` | `true` | `false` keeps no usage reports |
 | `statistics.distributor_min_tenants` | `3` | at least 2: the non-public tenants a row of a [distributor's statistics](#a-distributors-statistics) needs |
 | `statistics.public_tenants` | none | the tenants, by name, whose downloads always count in a distributor's statistics |

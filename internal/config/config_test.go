@@ -42,6 +42,74 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// Spec 0019, amended 2026-10-31: the floor under tenants.min_suspended is the server's setting
+// (24h by default), so a prod test server may take a one-second minimum by lowering it.
+func TestMinSuspendedFloor(t *testing.T) {
+	cfg, err := Load(write(t, base), nil)
+	if err != nil || cfg.Tenants.Floor() != 24*time.Hour || cfg.Tenants.MinSuspended != 7*24*time.Hour {
+		t.Fatalf("defaults: %+v %v", cfg.Tenants, err)
+	}
+	cfg, err = Load(write(t, base+"tenants: { min_suspended_floor: 1s, min_suspended: 1s }\n"), nil)
+	if err != nil || cfg.Tenants.Floor() != time.Second || cfg.Tenants.MinSuspended != time.Second {
+		t.Fatalf("a lowered floor: %+v %v", cfg.Tenants, err)
+	}
+	if w := cfg.Warnings(); len(w) != 1 || !strings.Contains(w[0], "tenants.min_suspended_floor is 1s, below its default 24h") {
+		t.Fatalf("a lowered floor warns: %q", w)
+	}
+	if _, err := Load(write(t, base+"tenants: { min_suspended_floor: 1s, min_suspended: 0s }\n"), nil); err == nil || !strings.Contains(err.Error(), "tenants.min_suspended") {
+		t.Fatalf("0 under a lowered floor, outside dev: %v", err)
+	}
+	cfg, err = Load(write(t, base+"tenants: { min_suspended_floor: 240h, min_suspended: 240h }\n"), nil)
+	if err != nil || cfg.Tenants.Floor() != 240*time.Hour || len(cfg.Warnings()) != 0 {
+		t.Fatalf("a raised floor, the minimum at it: %+v %v", cfg.Tenants, err)
+	}
+	if _, err := Load(write(t, base+"tenants: { min_suspended_floor: 240h }\n"), nil); err == nil ||
+		!strings.Contains(err.Error(), "below tenants.min_suspended_floor (240h) outside") {
+		t.Fatalf("the 168h default under a raised floor: %v", err)
+	}
+}
+
+// Spec 0003, amended 2026-10-31: the floor under the rotation minimums is rotation.min_floor (24h by
+// default), file-only.
+func TestRotationFloor(t *testing.T) {
+	cfg, err := Load(write(t, base), nil)
+	if err != nil || cfg.Rotation.Floor() != 24*time.Hour {
+		t.Fatalf("defaults: %+v %v", cfg.Rotation, err)
+	}
+	cfg, err = Load(write(t, base+"rotation: { min_floor: 1s, min_trusted: 1s, min_demoted: 1m }\n"), nil)
+	if err != nil || cfg.Rotation.Floor() != time.Second || cfg.Rotation.MinTrusted != time.Second {
+		t.Fatalf("a lowered floor: %+v %v", cfg.Rotation, err)
+	}
+	if w := cfg.Warnings(); len(w) != 1 || !strings.Contains(w[0], "rotation.min_floor is 1s, below its default 24h") {
+		t.Fatalf("a lowered floor warns: %q", w)
+	}
+	cfg, err = Load(write(t, base+"rotation: { min_floor: 240h, min_trusted: 240h, min_demoted: 300h }\n"), nil)
+	if err != nil || cfg.Rotation.Floor() != 240*time.Hour || len(cfg.Warnings()) != 0 {
+		t.Fatalf("a raised floor, minimums at and above it: %+v %v", cfg.Rotation, err)
+	}
+	for name, c := range map[string]struct {
+		file string
+		env  []string
+		want string
+	}{
+		"floor 0":                 {base + "rotation: { min_floor: 0s }\n", nil, "rotation.min_floor is at least 1s"},
+		"floor negative":          {base + "rotation: { min_floor: -1h }\n", nil, "rotation.min_floor is at least 1s"},
+		"under a raised floor":    {base + "rotation: { min_floor: 240h }\n", nil, "cannot be below rotation.min_floor"},
+		"0 under a lowered floor": {base + "rotation: { min_floor: 1s, min_trusted: 0s }\n", nil, "cannot be below rotation.min_floor"},
+		"floor from env":          {base, []string{"KISTA_ROTATION__MIN_FLOOR=1s"}, "can only be set in the config file"},
+		"floor 0 in dev": {"profile: dev\nstore: { kind: sqlite, sqlite: { path: /tmp/k.db } }\nrotation: { min_floor: 0s, min_trusted: 0s, min_demoted: 0s }\n", nil,
+			"rotation.min_floor is at least 1s (leave it out for its default, 24h)"},
+		"the floor as the docs write it": {base + "rotation: { min_trusted: 1h }\n", nil, "below rotation.min_floor (24h) outside"},
+		"suspended floor from env":       {base, []string{"KISTA_TENANTS__MIN_SUSPENDED_FLOOR=1s"}, "can only be set in the config file"},
+		"a ceiling from env":             {base, []string{"KISTA_LIMITS__CEILINGS__EVENTS_RETENTION=8760h"}, "can only be set in the config file"},
+		"a count ceiling from env":       {base, []string{"KISTA_LIMITS__CEILINGS__CHANNELS=5"}, "can only be set in the config file"},
+	} {
+		if _, err := Load(write(t, c.file), c.env); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got %v, want %q", name, err, c.want)
+		}
+	}
+}
+
 func TestRefused(t *testing.T) {
 	cases := []struct {
 		name, file string
@@ -63,6 +131,10 @@ func TestRefused(t *testing.T) {
 		{"relative key dir", base + "signers: { file_dir: keys }\n", nil, "absolute"},
 		{"min_demoted floor", base + "rotation: { min_demoted: 23h59m }\n", nil, "cannot be below"},
 		{"min_suspended floor", base + "tenants: { min_suspended: 1h }\n", nil, "tenants.min_suspended"},
+		{"min_suspended_floor 0", base + "tenants: { min_suspended_floor: 0s, min_suspended: 1h }\n", nil, "tenants.min_suspended_floor is at least 1s"},
+		{"min_suspended_floor negative", base + "tenants: { min_suspended_floor: -1s }\n", nil, "tenants.min_suspended_floor is at least 1s"},
+		{"min_suspended_floor 0 in dev", "profile: dev\nstore: { kind: sqlite, sqlite: { path: /tmp/k.db } }\ntenants: { min_suspended_floor: 0s, min_suspended: 0s }\n", nil, "tenants.min_suspended_floor is at least 1s"},
+		{"min_suspended under a raised floor", base + "tenants: { min_suspended_floor: 240h }\n", nil, "below tenants.min_suspended_floor"},
 		{"a refused key that is not a key id", base + "licenses: { refuse_keys: [ 'sha256:AB' ] }\n", nil, "licenses.refuse_keys: entry 1"},
 		{"licensing off from env", base, []string{"KISTA_LICENSES__ENABLED=false"}, "can only be set in the config file"},
 		{"min_suspended from env", base, []string{"KISTA_TENANTS__MIN_SUSPENDED=48h"}, "can only be set in the config file"},

@@ -166,10 +166,10 @@ so the operator declares it:
   [Storage](../storage.md).
 - **Deleting a tenant** (migration 0019) needs no setting. Only a binary with migration 0019
   records when a tenant was suspended, and the migration gives tenants that are already suspended
-  the migration time. So no tenant can be deleted until `tenants.min_suspended` (at least 24 hours
-  outside `profile: dev`) has passed since the upgrade. An older replica that is still running
-  sees a deleting tenant as suspended and does not serve it; one still running a day after the
-  migration is outside what kista supports. A tenant suspended by an older binary while the
+  the migration time. So no tenant can be deleted until `tenants.min_suspended` (at least
+  `tenants.min_suspended_floor`, 24 hours by default, outside `profile: dev`) has passed since the
+  upgrade. An older replica that is still running sees a deleting tenant as suspended and does
+  not serve it; one still running a day after the migration is outside what kista supports. A tenant suspended by an older binary while the
   rollout ran has no suspension time: resume it and suspend it again before deleting it. The
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
@@ -182,6 +182,18 @@ so the operator declares it:
   grants, groups, feeds, blocks, attachments, an upstream's matrix, the longest hold, a publisher
   key's lifetime) are [`limits.ceilings`](../configuration.md#limitsceilings). A server that sets
   none keeps today's values. A ceiling lowered below a tenant's stored limit caps it. No migration.
+- The upper bounds of the server's own settings are
+  [`limits.ceilings`](../configuration.md#limitsceilings) too: `events_retention` (365 days),
+  `events_retention_with_sinks` (90 days), `statistics_retention` (10 years),
+  `admin_token_max_age` (24h) and `events_rows_per_tenant` (100,000,000). The floors outside
+  `profile: dev` are settings beside what they bound:
+  [`tenants.min_suspended_floor`](../configuration.md#tenants) and
+  [`rotation.min_floor`](../configuration.md#rotation) (24 hours each). Leaving them out keeps
+  today's behaviour.
+- `auth.admin_token_max_age` must now be below `limits.ceilings.issuer_token_lifetime` (168h by
+  default); the default 1h is. A floor below 24h or a max age above 24h logs a warning at every
+  start. `server.start` digests two more sections, `rotation` and `limits`; a section new to the
+  digests is not reported as changed.
 
 ### `*` on a mirror of a kista (spec 0039, PR 2)
 

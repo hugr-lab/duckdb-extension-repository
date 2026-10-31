@@ -76,17 +76,25 @@ func (c Config) EventSettings() Events {
 
 func validateEvents(bad func(string, ...any), c Config) {
 	e := c.Events
-	// up to 90 days with sinks (spec 0010); without any, the buffer is the only record
-	// two days at least: the installers of a day are counted from its events after it ends
-	if e.Retention != 0 && (e.Retention < 48*time.Hour || e.Retention > 365*24*time.Hour) {
-		bad("events.retention must be within 2..365 days")
+	// Two days at least, in code: the installers of a day are counted from its events after it
+	// ends (spec 0010 phase 2a), so a shorter buffer loses them. The most is the server's
+	// (limits.ceilings.events_retention, 365 days by default; spec 0038 amended), and less with
+	// sinks (events_retention_with_sinks, 90 days): without any, the buffer is the only record.
+	// A ceiling below the least is refused as the ceilings are checked, not here again.
+	ceil := c.Limits.Ceilings.Setting()
+	if e.Retention != 0 && e.Retention < MinEventRetention {
+		bad("events.retention must be at least 48h (a day's installers are counted from its events after it ends)")
+	}
+	if r := c.EventSettings().Retention; ceil.EventsRetention >= MinEventRetention && r > ceil.EventsRetention {
+		bad("events.retention is at most limits.ceilings.events_retention (%s)", durationText(ceil.EventsRetention))
 	}
 	// a second at least: the writer's batches
 	if e.Settle != 0 && e.Settle < time.Second {
 		bad("events.settle must be at least 1s")
 	}
-	if len(e.Sinks) > 0 && e.Retention > 90*24*time.Hour {
-		bad("events.retention is at most 90 days when sinks are configured")
+	// the retention in force, the default included: a lowered ceiling refuses the 30-day default too
+	if w := ceil.EventsRetentionWithSinks; len(e.Sinks) > 0 && w >= MinEventRetention && c.EventSettings().Retention > w {
+		bad("events.retention is at most limits.ceilings.events_retention_with_sinks (%s) when sinks are configured", durationText(w))
 	}
 	if len(e.Sinks) > 16 {
 		bad("events.sinks holds at most 16 sinks")
@@ -144,8 +152,12 @@ func validateEvents(bad func(string, ...any), c Config) {
 	default:
 		bad("events.client_addresses must be full, truncated or none")
 	}
-	if e.MaxRowsPerTenant < 0 || e.MaxRowsPerTenant > 100000000 {
-		bad("events.max_rows_per_tenant must be within 1..100000000 (0: the default)")
+	// the most is the server's (limits.ceilings.events_rows_per_tenant, 100,000,000 by default)
+	if e.MaxRowsPerTenant < 0 {
+		bad("events.max_rows_per_tenant must be at least 1 (0: the default)")
+	}
+	if n, most := c.EventSettings().MaxRowsPerTenant, c.Limits.Ceilings.Setting().EventsRowsPerTenant; most >= 1 && n > most {
+		bad("events.max_rows_per_tenant is at most limits.ceilings.events_rows_per_tenant (%d)", most)
 	}
 }
 
@@ -185,8 +197,14 @@ func (c Config) StatisticsSettings() Statistics {
 }
 
 func validateStatistics(bad func(string, ...any), c Config) {
-	if r := c.Statistics.Retention; r != 0 && (r < 30*24*time.Hour || r > 10*365*24*time.Hour) {
-		bad("statistics.retention must be within 30 days..10 years")
+	// 30 days at least, in code: the API answers every name's downloads in the last 30 days and a
+	// 30-day range by default from the statistics kept. The most is the server's
+	// (limits.ceilings.statistics_retention, 10 years by default; spec 0038 amended).
+	if r := c.Statistics.Retention; r != 0 && r < MinStatisticsRetention {
+		bad("statistics.retention must be at least 720h (30 days: the API answers the last 30 days' downloads)")
+	}
+	if r, ceil := c.StatisticsSettings().Retention, c.Limits.Ceilings.Setting().StatisticsRetention; ceil >= MinStatisticsRetention && r > ceil {
+		bad("statistics.retention is at most limits.ceilings.statistics_retention (%s)", durationText(ceil))
 	}
 	if n := c.Statistics.DistributorMinTenants; n != 0 && n < 2 {
 		bad("statistics.distributor_min_tenants must be at least 2 (0: the default, 3)")

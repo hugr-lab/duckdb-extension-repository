@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -234,18 +235,6 @@ func noContent(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", noStore)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// duration formats a duration compactly: 24h, 90m, 1h30m.
-func duration(d time.Duration) string {
-	s := d.String()
-	if strings.HasSuffix(s, "m0s") {
-		s = strings.TrimSuffix(s, "0s")
-	}
-	if strings.HasSuffix(s, "h0m") {
-		s = strings.TrimSuffix(s, "0m")
-	}
-	return s
 }
 
 func esc(s string) string { return url.PathEscape(s) }
@@ -715,7 +704,7 @@ func createdBy(by string, c caller) string {
 func issuerOf(is store.Issuer, cc *store.ConsoleClient, c caller) issuerJSON {
 	o := issuerJSON{ID: is.ID, Name: is.Name, URL: is.URL, JWKSURI: is.JWKSURI, Algorithms: is.Algorithms, RequiredClaims: is.RequiredClaims,
 		RolesClaim: is.RolesClaim, GroupsClaim: is.GroupsClaim, ClientClaim: is.ClientClaim,
-		MaxTokenLifetime: duration(is.MaxTokenLifetime), CreatedAt: is.CreatedAt.UTC().Format(time.RFC3339),
+		MaxTokenLifetime: audit.Duration(is.MaxTokenLifetime), CreatedAt: is.CreatedAt.UTC().Format(time.RFC3339),
 		CreatedBy: createdBy(is.CreatedBy, c), ETag: issuerTag(is)}
 	if cc != nil {
 		o.Console = &issuerConsoleJSON{consoleClientJSON: consoleClientJSON{ClientID: cc.ClientID, Scopes: cc.Scopes,
