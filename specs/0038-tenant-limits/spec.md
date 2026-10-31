@@ -632,14 +632,23 @@ when a token is verified; the configuration checks its issuers against its own c
 | `MaxHold` | product | `max_hold` | 2160h (90 days) |
 | `tenants.MaxKeyLifetime` | product | `publisher_key_lifetime` | 8784h (366 days) |
 | the issuer's `max_token_lifetime` cap (7 days) | product | `issuer_token_lifetime` | 168h |
-| `events.retention`'s cap once a sink is configured (spec 0010) | operator | `events_retention` | 2160h (90 days) |
+| `events.retention`'s most, 365 days (spec 0010) | setting | `events_retention` | 8760h |
+| `events.retention`'s most once a sink is configured, 90 days (spec 0010) | setting | `events_retention_with_sinks` | 2160h |
+| `statistics.retention`'s most, 10 years (spec 0010) | setting | `statistics_retention` | 87600h |
+| `auth.admin_token_max_age`'s most (spec 0007) | setting | `admin_token_max_age` | 24h |
 
-`events_retention` (added the same day, after the first list) bounds the operator's own
-`events.retention` while `events.sinks` is not empty: the retention in force, so a ceiling lowered
-below the 30-day default refuses the default too, naming `limits.ceilings.events_retention`. It
-does not lift `events.retention`'s own range (2 to 365 days), which is the buffer's (spec 0010).
-The floor under `tenants.min_suspended` is a setting too, but a minimum, not a ceiling: it is
-`tenants.min_suspended_floor` (spec 0019's amendment).
+The four "setting" ceilings (added the same day, after the first list) bound the server's own
+settings, not a tenant's room: `config.SettingCeilings`, checked as the configuration loads and
+never put in force in the store. Each bounds the setting in force, its default included, so a
+ceiling lowered below a default refuses the default too, naming the ceiling's key. What a setting
+needs to work stays in code beside it, with the reason in the refusal: `events.retention` at least
+2 days (a day's installers are counted from its events after it ends), `statistics.retention` at
+least 30 days (the API answers the last 30 days' downloads), `admin_token_max_age` at least 1m (the
+console renews before `iat` plus the age, and clocks drift).
+
+The floors outside `profile: dev` are settings too, but minimums, not ceilings, so they sit beside
+what they bound: `tenants.min_suspended_floor` (spec 0019's amendment) and `rotation.min_floor`
+(spec 0003's), `24h` each by default, never `0`.
 
 A ceiling is never 0 (a count at least 1, a duration at least 1s, `issuer_token_lifetime` at least
 1m): leave a key out for its default; a limit's `0` (none) is a different thing. The ceilings are the

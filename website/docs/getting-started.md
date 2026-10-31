@@ -75,8 +75,8 @@ serve:
 ```
 
 - `profile: dev` allows `file:` keys without further settings, an `http` public URL on loopback,
-  and rotation minimums below 24 hours. Outside `dev`, file keys need `signers.allow_file: true`
-  as well as `signers.file_dir`; production keys belong in a vault or HSM (see
+  and rotation minimums below `rotation.min_floor` (24 hours by default). Outside `dev`, file keys
+  need `signers.allow_file: true` as well as `signers.file_dir`; production keys belong in a vault or HSM (see
   [Signing keys](signing-keys.md)).
 - SQLite means one replica. PostgreSQL and SQL Server are the multi-replica stores (see
   [State](state.md)).

@@ -94,13 +94,20 @@ auth:
 		"licence managers by env":     {base, []string{"KISTA_AUTH__SERVER_LICENSE_ADMINS=role:ops|x"}, "can only be set in the config file"},
 		"under public_url":            {base + "serve: { public_url: https://k.example }\n" + iss + "server_audiences: [ 'https://k.example/acme' ] }\n", nil, "canonical"},
 		"bad egress cidr":             {base + "auth: { server_egress_allow: [ { cidr: host.example } ] }\n", nil, "not a CIDR"},
-		"short max age":               {base + "auth: { admin_token_max_age: 10s }\n", nil, "1m..24h"},
-		"bad claim path":              {base + "auth: { server_issuers: [ { name: ops, url: 'https://x.example', roles_claim: 'a..b', required_claims: { a: b } } ] }\n", nil, "claim path"},
+		"short max age":               {base + "auth: { admin_token_max_age: 10s }\n", nil, "auth.admin_token_max_age must be at least 1m"},
+		"long max age":                {base + "auth: { admin_token_max_age: 25h }\n", nil, "auth.admin_token_max_age is at most limits.ceilings.admin_token_max_age"},
+		"default over a lowered ceiling": {base + "limits: { ceilings: { admin_token_max_age: 30m } }\n", nil,
+			"auth.admin_token_max_age is at most limits.ceilings.admin_token_max_age"},
+		"max age ceiling 0": {base + "limits: { ceilings: { admin_token_max_age: 0s } }\n", nil, "limits.ceilings.admin_token_max_age is at least 1s"},
+		"bad claim path":    {base + "auth: { server_issuers: [ { name: ops, url: 'https://x.example', roles_claim: 'a..b', required_claims: { a: b } } ] }\n", nil, "claim path"},
 	} {
 		_, err := Load(write(t, c.file), c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v, want %q", name, err, c.want)
 		}
+	}
+	if c, err := Load(write(t, base+"auth: { admin_token_max_age: 48h }\nlimits: { ceilings: { admin_token_max_age: 48h } }\n"), nil); err != nil || c.AdminTokenMaxAge() != 48*time.Hour {
+		t.Errorf("a 48h max age under a raised ceiling: %v", err)
 	}
 	// the public URL itself may be a server audience
 	if _, err := Load(write(t, base+"serve: { public_url: https://k.example }\n"+iss+"server_audiences: [ 'https://k.example' ] }\n"), nil); err != nil {

@@ -58,6 +58,34 @@ func TestMinSuspendedFloor(t *testing.T) {
 	}
 }
 
+// Spec 0003, amended 2026-10-31: the floor under the rotation minimums is rotation.min_floor (24h by
+// default), file-only.
+func TestRotationFloor(t *testing.T) {
+	cfg, err := Load(write(t, base), nil)
+	if err != nil || cfg.Rotation.Floor() != 24*time.Hour {
+		t.Fatalf("defaults: %+v %v", cfg.Rotation, err)
+	}
+	cfg, err = Load(write(t, base+"rotation: { min_floor: 1s, min_trusted: 1s, min_demoted: 1m }\n"), nil)
+	if err != nil || cfg.Rotation.Floor() != time.Second || cfg.Rotation.MinTrusted != time.Second {
+		t.Fatalf("a lowered floor: %+v %v", cfg.Rotation, err)
+	}
+	for name, c := range map[string]struct {
+		file string
+		env  []string
+		want string
+	}{
+		"floor 0":                 {base + "rotation: { min_floor: 0s }\n", nil, "rotation.min_floor is at least 1s"},
+		"floor negative":          {base + "rotation: { min_floor: -1h }\n", nil, "rotation.min_floor is at least 1s"},
+		"under a raised floor":    {base + "rotation: { min_floor: 240h }\n", nil, "cannot be below rotation.min_floor"},
+		"0 under a lowered floor": {base + "rotation: { min_floor: 1s, min_trusted: 0s }\n", nil, "cannot be below rotation.min_floor"},
+		"floor from env":          {base, []string{"KISTA_ROTATION__MIN_FLOOR=1s"}, "can only be set in the config file"},
+	} {
+		if _, err := Load(write(t, c.file), c.env); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got %v, want %q", name, err, c.want)
+		}
+	}
+}
+
 func TestRefused(t *testing.T) {
 	cases := []struct {
 		name, file string

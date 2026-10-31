@@ -207,7 +207,13 @@ func validateAuth(bad func(string, ...any), c Config) {
 			}
 		}
 	}
-	if a.AdminTokenMaxAge != 0 && (a.AdminTokenMaxAge < time.Minute || a.AdminTokenMaxAge > 24*time.Hour) {
-		bad("auth.admin_token_max_age must be within 1m..24h")
+	// a minute at least, in code: the console renews a management token before iat plus the max age
+	// (spec 0015), and clocks drift; the most is the server's (limits.ceilings.admin_token_max_age,
+	// 24h by default; spec 0038 amended)
+	if a.AdminTokenMaxAge != 0 && a.AdminTokenMaxAge < time.Minute {
+		bad("auth.admin_token_max_age must be at least 1m")
+	}
+	if m, ceil := c.AdminTokenMaxAge(), c.Limits.Ceilings.Setting().AdminTokenMaxAge; ceil >= time.Second && m > ceil {
+		bad("auth.admin_token_max_age is at most limits.ceilings.admin_token_max_age (%s)", ceil)
 	}
 }

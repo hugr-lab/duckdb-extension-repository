@@ -53,7 +53,46 @@ type Ceilings struct {
 	MaxHold               *time.Duration `yaml:"max_hold"`
 	PublisherKeyLifetime  *time.Duration `yaml:"publisher_key_lifetime"`
 	IssuerTokenLifetime   *time.Duration `yaml:"issuer_token_lifetime"`
-	EventsRetention       *time.Duration `yaml:"events_retention"`
+	// The ceilings on the server's own settings (SettingCeilings).
+	EventsRetention          *time.Duration `yaml:"events_retention"`
+	EventsRetentionWithSinks *time.Duration `yaml:"events_retention_with_sinks"`
+	StatisticsRetention      *time.Duration `yaml:"statistics_retention"`
+	AdminTokenMaxAge         *time.Duration `yaml:"admin_token_max_age"`
+}
+
+// SettingCeilings are the ceilings on the server's own settings (spec 0038, amended 2026-10-31): not
+// a tenant's room, so never in force in the store; the configuration checks its settings against
+// them as it loads. What a setting needs to work (events.retention's 2 days, statistics.retention's
+// 30 days, admin_token_max_age's minute) stays in code beside the setting.
+type SettingCeilings struct {
+	EventsRetention          time.Duration // the longest events.retention
+	EventsRetentionWithSinks time.Duration // the longest events.retention once a sink is configured
+	StatisticsRetention      time.Duration // the longest statistics.retention
+	AdminTokenMaxAge         time.Duration // the longest auth.admin_token_max_age
+}
+
+// DefaultSettingCeilings are the setting ceilings a configuration that sets none has.
+func DefaultSettingCeilings() SettingCeilings {
+	return SettingCeilings{EventsRetention: 365 * 24 * time.Hour, EventsRetentionWithSinks: 90 * 24 * time.Hour,
+		StatisticsRetention: 10 * 365 * 24 * time.Hour, AdminTokenMaxAge: 24 * time.Hour}
+}
+
+func (c Ceilings) settingFields(out *SettingCeilings) []ceilingDuration {
+	return []ceilingDuration{{"events_retention", &out.EventsRetention, c.EventsRetention},
+		{"events_retention_with_sinks", &out.EventsRetentionWithSinks, c.EventsRetentionWithSinks},
+		{"statistics_retention", &out.StatisticsRetention, c.StatisticsRetention},
+		{"admin_token_max_age", &out.AdminTokenMaxAge, c.AdminTokenMaxAge}}
+}
+
+// Setting are the setting ceilings in force: each one set, else its default.
+func (c Ceilings) Setting() SettingCeilings {
+	out := DefaultSettingCeilings()
+	for _, f := range c.settingFields(&out) {
+		if f.v != nil {
+			*f.dst = *f.v
+		}
+	}
+	return out
 }
 
 type ceilingCount struct {
@@ -82,8 +121,7 @@ func (c Ceilings) fields(out *store.Ceilings) ([]ceilingCount, []ceilingDuration
 			{"tenant_cells", &out.TenantCells, c.TenantCells}, {"discovered_names", &out.DiscoveredNames, c.DiscoveredNames}},
 		[]ceilingDuration{{"max_hold", &out.MaxHold, c.MaxHold},
 			{"publisher_key_lifetime", &out.PublisherKeyLifetime, c.PublisherKeyLifetime},
-			{"issuer_token_lifetime", &out.IssuerTokenLifetime, c.IssuerTokenLifetime},
-			{"events_retention", &out.EventsRetention, c.EventsRetention}}
+			{"issuer_token_lifetime", &out.IssuerTokenLifetime, c.IssuerTokenLifetime}}
 }
 
 // Settings are the ceilings in force: each one set, else its default.
@@ -108,6 +146,7 @@ func (c Ceilings) Settings() store.Ceilings {
 func (c Ceilings) check() error {
 	var out store.Ceilings
 	counts, durations := c.fields(&out)
+	durations = append(durations, c.settingFields(&SettingCeilings{})...)
 	for _, f := range counts {
 		if f.v != nil && *f.v < 1 {
 			return fmt.Errorf("%w: limits.ceilings.%s is at least 1 (leave it out for its default)", store.ErrInvalid, f.name)

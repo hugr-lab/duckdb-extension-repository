@@ -223,6 +223,18 @@ type AWSKMSSource struct {
 type Rotation struct {
 	MinTrusted time.Duration `yaml:"min_trusted"`
 	MinDemoted time.Duration `yaml:"min_demoted"`
+	// MinFloor is the least either minimum may be outside the dev profile; left out, the default
+	// (spec 0003, amended 2026-10-31: the floor is the server's setting, not a constant). File-only
+	// and never 0, as tenants.min_suspended_floor.
+	MinFloor *time.Duration `yaml:"min_floor" json:",omitempty" kista:"fileonly"`
+}
+
+// Floor is rotation.min_floor in force: as set, else its default.
+func (r Rotation) Floor() time.Duration {
+	if r.MinFloor != nil {
+		return *r.MinFloor
+	}
+	return DefaultRotationFloor
 }
 
 // Signers configures where signing keys may come from (specs 0003, 0004). The whole block is
@@ -295,8 +307,8 @@ var (
 	vaultNamespace = regexp.MustCompile(`^[A-Za-z0-9_/-]*$`)
 )
 
-// RotationFloor is the least either rotation minimum may be outside the dev profile.
-const RotationFloor = 24 * time.Hour
+// DefaultRotationFloor is rotation.min_floor when it is left out.
+const DefaultRotationFloor = 24 * time.Hour
 
 // Default returns the defaults.
 func Default() Config {
@@ -602,9 +614,12 @@ func (c Config) Validate() error {
 	default:
 		bad("azure.identity.kind must be managed, workload or default")
 	}
+	if f := c.Rotation.MinFloor; f != nil && *f < time.Second {
+		bad("rotation.min_floor is at least 1s (leave it out for its default, %s)", DefaultRotationFloor)
+	}
 	if !dev {
-		if c.Rotation.MinTrusted < RotationFloor || c.Rotation.MinDemoted < RotationFloor {
-			bad("rotation minimums cannot be below %s outside profile dev", RotationFloor)
+		if c.Rotation.MinTrusted < c.Rotation.Floor() || c.Rotation.MinDemoted < c.Rotation.Floor() {
+			bad("rotation minimums cannot be below rotation.min_floor (%s) outside profile dev", c.Rotation.Floor())
 		}
 	}
 	if c.Rotation.MinTrusted < 0 || c.Rotation.MinDemoted < 0 {

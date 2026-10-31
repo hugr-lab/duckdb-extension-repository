@@ -263,8 +263,10 @@ token; `429` (`rate-limited`) past the API's rate (`serve.api_rate`, per client 
 
 Events stay in the database for `events.retention`:
 
-- default 30 days, at least 2 days, at most 365 days; when a sink is configured, at most
-  [`limits.ceilings.events_retention`](configuration.md#limitsceilings) (90 days by default);
+- default 30 days, at least 2 days; at most
+  [`limits.ceilings.events_retention`](configuration.md#limitsceilings) (365 days by default), and
+  when a sink is configured at most `limits.ceilings.events_retention_with_sinks` (90 days by
+  default);
 - an event not yet delivered to every sink that takes it is kept up to 7 more days;
 - a tenant holds at most `events.max_rows_per_tenant` events (default 1,000,000); older ones go
   first.
@@ -541,13 +543,13 @@ load balancer that checks it must reach the pod port directly.
 
 | Setting | Default | Range |
 | --- | --- | --- |
-| `events.retention` | 720h (30 days) | 2 to 365 days; at most 90 with sinks |
+| `events.retention` | 720h (30 days) | at least 2 days; at most `limits.ceilings.events_retention` (365 days), with sinks `events_retention_with_sinks` (90 days) |
 | `events.max_rows_per_tenant` | 1,000,000 | 1 to 100,000,000 |
 | `events.settle` | 30s | at least 1s: where an `order=asc` read [following the events](#following-the-events) stops, behind now |
 | `events.client_addresses` | `truncated` | `full`, `truncated`, `none` |
 | `events.resource` | none | attributes for OTLP exports |
 | `events.sinks` | none | at most 16 |
-| `statistics.retention` | 26280h (3 years) | 30 days to 10 years |
+| `statistics.retention` | 26280h (3 years) | at least 30 days; at most `limits.ceilings.statistics_retention` (10 years) |
 | `statistics.usage_accept` | `true` | `false` keeps no usage reports |
 | `statistics.distributor_min_tenants` | `3` | at least 2: the non-public tenants a row of a [distributor's statistics](#a-distributors-statistics) needs |
 | `statistics.public_tenants` | none | the tenants, by name, whose downloads always count in a distributor's statistics |
