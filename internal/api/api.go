@@ -635,8 +635,11 @@ var groupReaders = []authz.Verb{authz.VerbAdmin, authz.VerbAudit}
 func init() {
 	idx := func(f handler) map[string]rule { return map[string]rule{http.MethodGet: {access: public, handle: f}} }
 	m := func(a access, f handler) rule { return rule{access: a, manage: true, handle: f} }
-	// spec 0040: a structure read by the tenant's auditors
+	// spec 0040: a structure read by the tenant's auditors (a publishers' read, by a distribution admin too)
 	audited := func(f handler) rule { return rule{access: pathVerbs, verbs: auditors, manage: true, handle: f} }
+	auditedPub := func(f handler) rule {
+		return rule{access: auditOrDistributor, verbs: auditors, manage: true, handle: f}
+	}
 	mb := func(a access, f handler) rule { return rule{access: a, manage: true, body: true, handle: f} }
 	routes = []route{
 		{"info", idx((*Handler).info)},
@@ -817,9 +820,9 @@ func init() {
 		{"distributor-stats/downloads", map[string]rule{http.MethodGet: m(distributionAdmin, (*Handler).distributorStats)}},
 		{"events/{id}", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvent)}},
 		{"event-kinds", idx((*Handler).eventKinds)},
-		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: m(auditOrDistributor, (*Handler).listPublishers),
+		{"tenants/{t}/publishers", map[string]rule{http.MethodGet: auditedPub((*Handler).listPublishers),
 			http.MethodPost: mb(distributionAdmin, (*Handler).addPublisher)}},
-		{"tenants/{t}/publishers/{name}", map[string]rule{http.MethodGet: m(auditOrDistributor, (*Handler).getPublisher),
+		{"tenants/{t}/publishers/{name}", map[string]rule{http.MethodGet: auditedPub((*Handler).getPublisher),
 			http.MethodDelete: m(pathAdmin, (*Handler).removePublisher)}},
 		// spec 0021: marking a publisher a source of licence keys (server administrators; spec 0030:
 		// distribution admins, spec 0037: a distributor's publisher's only)
@@ -835,9 +838,9 @@ func init() {
 		// server administrators; spec 0037: an existing publisher is never marked one)
 		{"tenants/{t}/publishers/{name}/distributor", map[string]rule{http.MethodPut: mb(distributionAdmin, (*Handler).setPublisherDistributor)}},
 		// spec 0023: a publisher's public SSH keys
-		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: m(auditOrDistributor, (*Handler).listPublisherKeys),
+		{"tenants/{t}/publishers/{name}/keys", map[string]rule{http.MethodGet: auditedPub((*Handler).listPublisherKeys),
 			http.MethodPost: mb(distributionAdmin, (*Handler).addPublisherKey)}},
-		{"tenants/{t}/publishers/{name}/keys/{id}", map[string]rule{http.MethodGet: m(auditOrDistributor, (*Handler).getPublisherKey),
+		{"tenants/{t}/publishers/{name}/keys/{id}", map[string]rule{http.MethodGet: auditedPub((*Handler).getPublisherKey),
 			http.MethodDelete: m(distributionAdmin, (*Handler).removePublisherKey)}},
 		{"tenants/{t}/blocks", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).listBlocks),
 			http.MethodPost: mb(pathAdmin, (*Handler).addBlock)}},
@@ -1215,10 +1218,6 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		if !ok || h.o.Authz == nil {
 			return refuse()
 		}
-		verbs := ru.verbs
-		if ru.access == auditOrDistributor {
-			verbs = auditors
-		}
 		res := authz.Resource{Tenant: name, Channel: p["c"], Package: p["ext"]}
 		if p["c"] == "" {
 			res.PackageType = typ // spec 0034: a channel's is the channel's (the authorizer reads it)
@@ -1246,7 +1245,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 			res.Reserved = kind != ""
 		}
 		allowed := false
-		for _, v := range verbs {
+		for _, v := range ru.verbs {
 			err := h.o.Authz.Allow(ctx, a, v, res)
 			if err == nil {
 				allowed = true

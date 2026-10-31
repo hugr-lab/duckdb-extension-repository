@@ -669,20 +669,21 @@ func (h *Handler) removeAudience(w http.ResponseWriter, r *http.Request, c calle
 // --- issuers ---
 
 type issuerJSON struct {
-	ID               string             `json:"id,omitempty"` // spec 0040: the id a principal's created_by names
-	Name             string             `json:"name"`
-	URL              string             `json:"url"`
-	JWKSURI          string             `json:"jwks_uri,omitempty"`
-	Algorithms       []string           `json:"algorithms,omitempty"`
-	RequiredClaims   map[string]string  `json:"required_claims,omitempty"`
-	RolesClaim       []string           `json:"roles_claim,omitempty"`
-	GroupsClaim      []string           `json:"groups_claim,omitempty"`
-	ClientClaim      []string           `json:"client_claim,omitempty"`
-	MaxTokenLifetime string             `json:"max_token_lifetime,omitempty"` // a Go duration: 24h
-	CreatedAt        string             `json:"created_at,omitempty"`
-	CreatedBy        string             `json:"created_by,omitempty"`
-	ETag             string             `json:"etag,omitempty"`
-	Console          *issuerConsoleJSON `json:"console,omitempty"` // spec 0040: its console client (spec 0015), when set
+	ID               string            `json:"id,omitempty"` // spec 0040: the id a principal's created_by names
+	Name             string            `json:"name"`
+	URL              string            `json:"url"`
+	JWKSURI          string            `json:"jwks_uri,omitempty"`
+	Algorithms       []string          `json:"algorithms,omitempty"`
+	RequiredClaims   map[string]string `json:"required_claims,omitempty"`
+	RolesClaim       []string          `json:"roles_claim,omitempty"`
+	GroupsClaim      []string          `json:"groups_claim,omitempty"`
+	ClientClaim      []string          `json:"client_claim,omitempty"`
+	MaxTokenLifetime string            `json:"max_token_lifetime,omitempty"` // a Go duration: 24h
+	CreatedAt        string            `json:"created_at,omitempty"`
+	CreatedBy        string            `json:"created_by,omitempty"`
+	ETag             string            `json:"etag,omitempty"`
+	// Console is its console client (spec 0015), when set (spec 0040)
+	Console *issuerConsoleJSON `json:"console,omitempty"`
 }
 
 // issuerConsoleJSON is an issuer record's console client in its answer.
