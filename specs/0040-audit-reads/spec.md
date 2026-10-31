@@ -57,21 +57,24 @@ administrator sees it, below):
 | `GET tenants/{t}/issuers`, `…/issuers/{name}` | tenant admin | also `audit` |
 | `GET tenants/{t}/audiences` | tenant admin | also `audit` |
 | `GET tenants/{t}/grants[?…]`, `…/grants/{id}` | tenant admin | also `audit` |
-| `GET tenants/{t}/extension-groups/{g}`, `…/members` | tenant admin, the group's admin | also `audit` (the list already admits a tenant's principals; an auditor gets the administrators' view of it) |
+| `GET tenants/{t}/extension-groups[?extension=]`, `…/{g}`, `…/members` | the list: a tenant's principals, the groups they hold grants on (the full list with each group's grants, and `?extension=`, an administrator's only); a group: tenant admin, the group's admin | also `audit`: the administrators' full view (every group, with its grants; `?extension=` allowed) |
 | `GET tenants/{t}/publishers`, `…/publishers/{name}`, `…/keys`, `…/keys/{id}` | tenant admin; a distribution admin, its distributors' publishers | also `audit` (every publisher) |
 | `GET tenants/{t}/upstreams`, `…/upstreams/{name}` | tenant admin | also `audit` |
 
-Kept closed: `GET …/grants/principals` (the console's picker), an upstream's runs, cells and asks,
-every write (the console client's `POST`/`DELETE` included) and every server-wide route. `?type=` (spec 0034) narrows grants, groups and publishers for an auditor as for an
-administrator.
+Kept closed: `GET …/grants/principals` (the console's picker); an upstream's sub-routes
+(`…/upstreams/{name}/cells`, `/usage`, `/revocations`, `/names`, `/licenses`, `/extensions`,
+`/platforms`, `/keys`: an upstream's answer already carries its entries, platforms and keys); every
+write (the console client's `POST`/`DELETE` included) and every server-wide route. `?type=` (spec
+0034) narrows grants, groups and publishers for an auditor as for an administrator.
 
 The issuer answer gains two fields, for administrators and auditors alike:
 
 - `id`, its record id, as 0037 gave publishers theirs: a principal's `created_by` names the issuer
   by that id, so a reader can tell which issuer made something;
 - `console`, its console client when one is set (spec 0015): `client_id`, `scopes`,
-  `audience_parameter`, `audience`, `created_at`, `created_by`. A public PKCE client holds no
-  secret; today these settings are written but never read back over the API.
+  `audience_parameter`, `audience`, `created_at`, `created_by`. The first four are already public
+  (`GET tenants/{t}/console` answers them to anyone, for the console's sign-in); only `created_at`
+  and `created_by` are new. A public PKCE client holds no secret.
 
 ### How
 
@@ -84,7 +87,8 @@ The issuer answer gains two fields, for administrators and auditors alike:
   - `readTenant`: `audit` on the tenant (`Authz.Allow(…, VerbAudit, Resource{Tenant})`), never a
     distribution admin. `ListIssuers`, `ListAudiences`, `ListGrants`, `GetPackageGroup`,
     `PackageGroupMembers` (beside the group administrator's path), `upstream.Service.List` and
-    `Get` call it.
+    `Get` call it. `ListPackageGroups`' full view (today `tenantAdmin`: every group with its grants,
+    `?extension=`) becomes `admin` or `audit`; anyone else keeps today's view.
   - `readPublishers`: `readTenant`, or `tenantOrDistributor` as today. `ListPublishers`,
     `TenantPublisherKeys` and `ListPublisherKeys` call it; the narrowing to distributors' publishers
     stays on `distributor(a)`. `ListPublisherKeys` gets a read lookup of its publisher; the shared
@@ -98,12 +102,25 @@ The issuer answer gains two fields, for administrators and auditors alike:
 ties the events one request wrote (a key's removal with `purge_held` and the `catalogue.purge` it
 causes). It gains, for any caller that reads it:
 
-- **`kind` takes a list**: comma-separated, at most 20 entries, each an exact kind or a prefix
-  ending in `.*` (`grant.*`); events of any listed kind are answered. A reader lists what it wants
-  instead of reading `install` and the refusals.
-- **A resume cursor at the tail**: with `order=asc`, `next` is always present: the last answered
-  event's cursor, or the request's own cursor when no event is newer. A reader keeps it and asks
-  again later; the cursor stays opaque (documented as such, never built by hand).
+- **`kind` takes a list**, comma-separated: each entry a kind from the event catalogue
+  (`GET /api/v1/event-kinds`) or a family prefix ending in `.*` (`grant.*`) of one that exists, no
+  entry twice; that bounds the list, with no fixed cap. A list starting with `!` excludes instead
+  (`kind=!install,tenant.read,authz.refused,auth.failure`), so a reader does not miss kinds added
+  later; the two forms do not mix. A prefix is a range on `ix_events_tenant_kind`
+  (`kind >= 'grant.' AND kind < 'grant/'`), never a `LIKE`.
+- **The tail settles.** The writer commits each replica's events in batches about every second,
+  so an event can commit after a later one is already readable. With `order=asc`, a read answers
+  only events older than now minus a settle window (`events.settle`, default 30s, the window
+  `kista events -follow` already uses), and covers the time up to that point.
+- **Paging with `order=asc`** (documented in `api.md`): `next` is always present. A full page's
+  `next` is its last event's cursor; a shorter page is the tail, and its `next` is the time the read
+  covered (now minus `events.settle`, or `until` when sooner), whatever the `kind` filter matched,
+  so a filtered reader advances too and `oldest_at` never shows it a false gap. With no cursor the
+  read starts at the oldest retained event, with `since` at `since`; with `until` it covers up to
+  `until`. A reader keeps `next` and asks again later. The cursor stays opaque (never built by hand).
+  An event that commits later than the settle window is missed by a tail reader (the writer stalled
+  longer than `events.settle`); an operator raises the window if that happens. `order=desc` is
+  unchanged (`next` on a full page only).
 - **What retention removed**: the answer gains `oldest_at`, the time of the tenant's oldest retained
   event (omitted when it holds none). A reader whose cursor is older than `oldest_at` has missed
   events and reads the structure afresh. Events the writer or retention dropped are still counted by
@@ -113,14 +130,15 @@ causes). It gains, for any caller that reads it:
 
 What a reader gets: `200` with the answers above; `404` with no right on the tenant, for a
 suspended, deleting or unknown tenant, and for a missing object; `401` for a token that is stale
-(its tenant's auth changed since) or whose issuer was removed (spec 0007), after which it gets a
-fresh token; `429` (`rate-limited`) past the API rate.
+(its tenant's auth changed since), whose issuer was removed (spec 0007), or older than
+`auth.admin_token_max_age` (default 1h; these are manage routes), after which it gets a fresh
+token; `429` (`rate-limited`) past the API rate.
 
 `created_by` and an event's `actor` take these forms for a tenant's readers:
 `principal:<tenant>/<issuer id>|<sub>` (the token's bare `sub`; `client:<id>` for a token with no
 `sub`; `sub:<sub>` only when the sub itself begins `client:` or `sub:`), `publisher:<tenant>/<names>`,
-`system:<what>`, and, masked, `server`, `license-manager` and `distribution-admin`. Only a server
-administrator sees who those were.
+`system:<what>`, `anonymous` (an event of an unauthenticated request), and, masked, `server`,
+`license-manager` and `distribution-admin`. Only a server administrator sees who those were.
 
 ### Rate
 
@@ -143,7 +161,10 @@ with no code.
   `required_claims` with their values, the roles, groups and client claim paths, `max_token_lifetime`,
   `id`, the console client's id, scopes and audience settings), audiences, grants, extension groups and members, publishers with their keys (type,
   fingerprint, title, public key, expiry, `last_used_at`), upstreams (prefix, channel, mode, keys,
-  platforms, entries, the configured credential's name, the last run's summary). The events an
+  platforms, entries, the configured credential's name, the last run's summary, whose errors may
+  name the remote's answers). An upstream's prefix never carries userinfo or a query (refused when
+  set); an issuer's JWKS URI never carries userinfo (refused), and a query in it is the identity
+  provider's own public endpoint. No credential hides in either. The events an
   auditor already reads tell most of it one change at a time (`issuer.add` with its URL,
   `grant.add` with the principal and scope, `publisher.key.add` with the fingerprint, spec 0010);
   `last_used_at`, the issuer's claim settings and its console client are new to it. Nothing secret is there: no token,
@@ -153,24 +174,31 @@ with no code.
   services refuse it whatever the API rule says, and its publishers' narrowing is unchanged.
 - **No existence leak**: without a right the answer is the same `404` as for an unknown tenant.
 - **Writes** keep their check in the API rule and in the service.
-- **The events' `kind` list** is bounded (20 entries), each entry validated as a kind or a prefix.
+- **The events' `kind` list** is bounded by the catalogue: each entry a known kind or family, none
+  twice, read as an exact match or an index range.
 
 ## Testing
 
 - `internal/api`, for each structure route: a tenant-wide auditor gets `200` and the
   administrators' JSON (`created_by` masked alike; a distributor's publisher with its keys, its
-  `created_by` shown as `distribution-admin`); every write answers it `404`, and so does
-  `…/grants/principals`; `?type=` narrows as for an administrator. Refused (`404`): an administrator
-  of one package type; an extension group's administrator (except its own group); an auditor of
+  `created_by` shown as `distribution-admin`; the group list's full view with grants and
+  `?extension=`); every write answers it `404`, and so do `…/grants/principals` and each
+  upstream sub-route named above; `?type=` narrows as for an administrator. Refused (`404`): an administrator
+  of one package type; an extension group's administrator (except its own group; the group list
+  keeps its narrow view for anyone but an administrator or auditor); an auditor of
   tenant B on tenant A; a server token with no role; an install holder; a licence manager. A stale
-  token gets `401`. A distribution admin still reads only distributors' publishers and keys, `404` on
+  token, and one older than `admin_token_max_age`, get `401`. A distribution admin still reads only distributors' publishers and keys, `404` on
   the rest, and `404` on publisher reads in a suspended tenant.
 - `internal/tenants` and `internal/upstream`: `readTenant` admits `audit`, a tenant-wide `admin` and a
   server administrator; `ListIssuers`, `ListAudiences`, `ListGrants`, the group reads and the upstream
   reads refuse an `ActorDistributionAdmin`; the writes refuse an auditor.
-- Events: a `kind` list with an exact kind and a prefix; a 21-entry list refused (`400`); with
-  `order=asc` an empty page answers the request's cursor as `next`, and a later read with it gets
-  the newer events; `oldest_at` follows retention.
+- Events: a `kind` list with an exact kind and a prefix (answered through the kind index range);
+  an exclusion list; an unknown kind, a duplicate or a mixed list refused (`400`). With `order=asc`:
+  a full page's `next` is its last event; a short page's `next` is the covered time (now minus
+  `events.settle`), with and without a `kind` filter; an event stored late (committed with an `at`
+  10s in the past, after a read at the tail) is answered by the next read with that read's `next`,
+  never skipped; events newer than the window are not answered yet; `until` bounds the covered time; with no
+  cursor the read starts at the oldest retained event. `oldest_at` follows retention.
 - The issuer answer carries `id`, equal to the id in a principal's `created_by`, and `console` once a
   console client is set (absent before, and after its removal).
 
@@ -189,8 +217,9 @@ with no code.
 ## Delivery
 
 One PR, `0040-audit-reads`: the API rules and access kind, `readTenant` / `readPublishers` and their
-callers, the issuer's `id` and `console`, the events' `kind` list, `next` and `oldest_at`, the tests
-and the docs.
+callers, the group list's full view, the issuer's `id` and `console`, the events' `kind` list and
+exclusions, the settled tail and `next`, `oldest_at`, the `events.settle` setting
+(`configuration.md`), the tests and the docs.
 No migration.
 
 ## Follow-ups
