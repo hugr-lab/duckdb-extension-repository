@@ -87,7 +87,7 @@ func (s *AuthAdmin) distributorAct(ctx context.Context, a authz.Actor, tenant st
 // ListPublishers lists a tenant's publishers: to a distribution admin, the distributors' only (spec
 // 0037: the tenant's own are not its to read).
 func (s *AuthAdmin) ListPublishers(ctx context.Context, a authz.Actor, tenant string) ([]store.Publisher, error) {
-	t, err := s.tenantOrDistributor(ctx, a, tenant)
+	t, err := s.readPublishers(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -462,7 +462,11 @@ func (s *AuthAdmin) AddPublisherKey(ctx context.Context, a authz.Actor, tenant, 
 
 // ListPublisherKeys lists a publisher's keys.
 func (s *AuthAdmin) ListPublisherKeys(ctx context.Context, a authz.Actor, tenant, publisher string) ([]store.PublisherKey, error) {
-	p, err := s.publisher(ctx, a, tenant, publisher)
+	t, err := s.readPublishers(ctx, a, tenant)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.publisherOf(ctx, t, publisher)
 	if err != nil {
 		return nil, err
 	}
@@ -474,7 +478,7 @@ func (s *AuthAdmin) ListPublisherKeys(ctx context.Context, a authz.Actor, tenant
 
 // TenantPublisherKeys lists every key of a tenant's publishers, by publisher id.
 func (s *AuthAdmin) TenantPublisherKeys(ctx context.Context, a authz.Actor, tenant string) (map[string][]store.PublisherKey, error) {
-	t, err := s.tenantOrDistributor(ctx, a, tenant)
+	t, err := s.readPublishers(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -541,13 +545,10 @@ func (s *AuthAdmin) RemovePublisherKey(ctx context.Context, a authz.Actor, tenan
 	return hp, err
 }
 
-func (s *AuthAdmin) publisher(ctx context.Context, a authz.Actor, tenant, name string) (store.Publisher, error) {
-	t, err := s.tenantOrDistributor(ctx, a, tenant)
-	if err != nil {
-		return store.Publisher{}, err
-	}
+// publisherOf reads a publisher of a tenant its caller checked.
+func (s *AuthAdmin) publisherOf(ctx context.Context, t store.Tenant, name string) (store.Publisher, error) {
 	var p store.Publisher
-	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
 		p, err = tx.GetPublisher(ctx, t.ID, name)
 		return err

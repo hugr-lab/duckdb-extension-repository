@@ -60,6 +60,24 @@ func (s *AuthAdmin) tenantOrDistributor(ctx context.Context, a authz.Actor, name
 	return s.Store.GetTenant(ctx, name)
 }
 
+// readTenant is tenant for a read of the tenant's structure (spec 0040): audit on it, which a
+// tenant-wide admin implies, or a server administrator; never a distribution admin.
+func (s *AuthAdmin) readTenant(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAudit, authz.Resource{Tenant: name}); err != nil {
+		return store.Tenant{}, err
+	}
+	return s.Store.GetTenant(ctx, name)
+}
+
+// readPublishers is readTenant for the publishers' reads, which a distribution admin makes too (its
+// callers narrow it to the distributors' publishers, spec 0037).
+func (s *AuthAdmin) readPublishers(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
+	if distributor(a) {
+		return s.tenantOrDistributor(ctx, a, name)
+	}
+	return s.readTenant(ctx, a, name)
+}
+
 // keepAdmin runs inside a removal's transaction (under the tenant's auth lock): a tenant principal
 // may not remove the last tenant-wide admin grant. It counts grants, not people.
 func keepAdmin(ctx context.Context, tx *store.Tx, a authz.Actor, tenantID string, before int) error {
@@ -114,7 +132,7 @@ func (s *AuthAdmin) AddIssuer(ctx context.Context, a authz.Actor, tenant string,
 
 // ListIssuers lists a tenant's issuer records.
 func (s *AuthAdmin) ListIssuers(ctx context.Context, a authz.Actor, tenant string) ([]store.Issuer, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.readTenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +224,7 @@ func (s *AuthAdmin) RemoveAudience(ctx context.Context, a authz.Actor, tenant, a
 
 // ListAudiences lists a tenant's audiences: the canonical one first, then the assigned ones.
 func (s *AuthAdmin) ListAudiences(ctx context.Context, a authz.Actor, tenant string) ([]string, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.readTenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +352,7 @@ func dedupe(in []string) []string {
 
 // ListGrants lists a tenant's grants, those on extension groups included, by (created_at, id).
 func (s *AuthAdmin) ListGrants(ctx context.Context, a authz.Actor, tenant string) ([]store.Grant, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.readTenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}

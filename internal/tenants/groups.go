@@ -24,32 +24,34 @@ var ErrGroupGranted = errors.New("tenants: a grant names the extension group: re
 // MaxMemberChange is the most names one member change adds and removes.
 const MaxMemberChange = 100
 
-// allowed asks the authorizer: a refusal is false, any other error an error.
-func (s *AuthAdmin) allowed(ctx context.Context, a authz.Actor, r authz.Resource) (bool, error) {
-	err := s.Authz.Allow(ctx, a, authz.VerbAdmin, r)
+// tenantReader says whether the caller reads the tenant's structure (spec 0040: audit on it, which a
+// tenant-wide admin implies): a refusal is false, any other error an error.
+func (s *AuthAdmin) tenantReader(ctx context.Context, a authz.Actor, tenant string) (bool, error) {
+	err := s.Authz.Allow(ctx, a, authz.VerbAudit, authz.Resource{Tenant: tenant})
 	if errors.Is(err, authz.ErrDenied) {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-// readGroup authorizes reading a group: a tenant administrator, or admin on the group. It answers
-// whether the caller administers the tenant (who sees grant counts).
+// readGroup authorizes reading a group: the tenant's readers (its administrators and auditors, spec
+// 0040), or admin on the group. It answers whether the caller reads the tenant (who sees the group's
+// grants).
 func (s *AuthAdmin) readGroup(ctx context.Context, a authz.Actor, tenant, name string) (store.Tenant, bool, error) {
 	if err := store.ValidGroupName(name); err != nil {
 		return store.Tenant{}, false, fmt.Errorf("%w: extension group %s", store.ErrNotFound, name) // no group has it: missing
 	}
-	tenantAdmin, err := s.allowed(ctx, a, authz.Resource{Tenant: tenant})
+	full, err := s.tenantReader(ctx, a, tenant)
 	if err != nil {
 		return store.Tenant{}, false, err
 	}
-	if !tenantAdmin {
+	if !full {
 		if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, PackageGroup: name}); err != nil {
 			return store.Tenant{}, false, err
 		}
 	}
 	t, err := s.Store.GetTenant(ctx, tenant)
-	return t, tenantAdmin, err
+	return t, full, err
 }
 
 // holder gives what an actor holds in a tenant, read once (authz.Grants).
@@ -74,19 +76,19 @@ func (s *AuthAdmin) CreatePackageGroup(ctx context.Context, a authz.Actor, tenan
 	return g, err
 }
 
-// ListPackageGroups lists the groups the caller may read, by name: every group for a tenant
-// administrator, those it holds admin on otherwise. extension (a tenant administrator's) keeps the
-// groups holding that package, of packageType ("": the default). tenantAdmin says whether the
-// caller administers the tenant.
-func (s *AuthAdmin) ListPackageGroups(ctx context.Context, a authz.Actor, tenant, packageType, extension string) (gs []store.PackageGroup, tenantAdmin bool, err error) {
+// ListPackageGroups lists the groups the caller may read, by name: every group for the tenant's
+// readers (its administrators and auditors, spec 0040), those it holds admin on otherwise. extension
+// (a tenant reader's) keeps the groups holding that package, of packageType ("": the default). full
+// says whether the caller reads the tenant.
+func (s *AuthAdmin) ListPackageGroups(ctx context.Context, a authz.Actor, tenant, packageType, extension string) (gs []store.PackageGroup, full bool, err error) {
 	if packageType == "" {
 		packageType = pkgtype.Default
 	}
-	if tenantAdmin, err = s.allowed(ctx, a, authz.Resource{Tenant: tenant}); err != nil {
+	if full, err = s.tenantReader(ctx, a, tenant); err != nil {
 		return nil, false, err
 	}
 	if extension != "" {
-		if !tenantAdmin {
+		if !full {
 			return nil, false, authz.ErrDenied
 		}
 		if err := release.ValidName(extension); err != nil {
@@ -101,8 +103,8 @@ func (s *AuthAdmin) ListPackageGroups(ctx context.Context, a authz.Actor, tenant
 		return nil, false, err
 	}
 	all, err := s.Store.ListPackageGroups(ctx, t.ID, packageType, extension)
-	if err != nil || tenantAdmin {
-		return all, tenantAdmin, err
+	if err != nil || full {
+		return all, full, err
 	}
 	h, ok := s.Authz.(holder)
 	if !ok {
@@ -123,14 +125,14 @@ func (s *AuthAdmin) ListPackageGroups(ctx context.Context, a authz.Actor, tenant
 	return gs, false, nil
 }
 
-// GetPackageGroup reads a group (tenantAdmin as in ListPackageGroups).
-func (s *AuthAdmin) GetPackageGroup(ctx context.Context, a authz.Actor, tenant, name string) (g store.PackageGroup, tenantAdmin bool, err error) {
-	t, tenantAdmin, err := s.readGroup(ctx, a, tenant, name)
+// GetPackageGroup reads a group (full as in ListPackageGroups).
+func (s *AuthAdmin) GetPackageGroup(ctx context.Context, a authz.Actor, tenant, name string) (g store.PackageGroup, full bool, err error) {
+	t, full, err := s.readGroup(ctx, a, tenant, name)
 	if err != nil {
 		return g, false, err
 	}
 	g, err = s.Store.GetPackageGroup(ctx, t.ID, name)
-	return g, tenantAdmin, err
+	return g, full, err
 }
 
 // PackageGroupMembers lists a group's members by name.

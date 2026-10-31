@@ -2200,9 +2200,9 @@ func (a *adminCmd) events(ctx context.Context, sub string, args []string) error 
 		print(evs)
 		return nil
 	}
-	// -follow: oldest first, polling the store; each poll looks back a window, so an event that
-	// commits after a later one was printed is still printed (once: its id is remembered)
-	const window = 30 * time.Second
+	// -follow: oldest first, polling the store; each poll looks back a window (events.settle), so an
+	// event that commits after a later one was printed is still printed (once: its id is remembered)
+	window := a.cfg.EventSettings().Settle
 	f.Ascending, f.Limit = true, 1000
 	from := f.Since
 	if from.IsZero() {

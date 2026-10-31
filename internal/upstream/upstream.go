@@ -133,6 +133,14 @@ func (s *Service) tenant(ctx context.Context, a authz.Actor, name string) (store
 	return s.Store.GetTenant(ctx, name)
 }
 
+// readTenant is tenant for a read (spec 0040): audit on the tenant, which a tenant-wide admin implies.
+func (s *Service) readTenant(ctx context.Context, a authz.Actor, name string) (store.Tenant, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAudit, authz.Resource{Tenant: name}); err != nil {
+		return store.Tenant{}, err
+	}
+	return s.Store.GetTenant(ctx, name)
+}
+
 // Add creates an upstream (spec 0009). A repository's .well-known file must list a pinned key; a
 // name with a live replacement in the channel, or on another upstream of the channel, is refused.
 func (s *Service) Add(ctx context.Context, a authz.Actor, tenant string, sp Spec) (store.Upstream, error) {
@@ -595,7 +603,7 @@ func bumpTenant(ctx context.Context, tx *store.Tx, tenantID string) error {
 
 // List lists a tenant's upstreams.
 func (s *Service) List(ctx context.Context, a authz.Actor, tenant string) ([]store.Upstream, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.readTenant(ctx, a, tenant)
 	if err != nil {
 		return nil, err
 	}
@@ -609,7 +617,7 @@ func (s *Service) List(ctx context.Context, a authz.Actor, tenant string) ([]sto
 
 // Get reads an upstream.
 func (s *Service) Get(ctx context.Context, a authz.Actor, tenant, name string) (store.Upstream, error) {
-	t, err := s.tenant(ctx, a, tenant)
+	t, err := s.readTenant(ctx, a, tenant)
 	if err != nil {
 		return store.Upstream{}, err
 	}

@@ -136,6 +136,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		Releases: mgmt.Releases, Upstreams: mgmt.Upstreams, Attachments: mgmt.Attachments, Feeds: mgmt.Feeds, Licenses: mgmt.Licenses, MaxBody: maxBody,
 		MinRate: int64(lim.MinRate), PublishPerActor: perActor,
 		PublishPerTenant: perTenant, PublishMax: max(1, maxIngests-1), AdminTokenMaxAge: cfg.AdminTokenMaxAge(), Events: events,
+		EventSettle:  cfg.EventSettings().Settle,
 		MinSuspended: apiMinSuspended(cfg.Tenants.MinSuspended),
 		Console:      ConsoleInfo(cfg)})
 	logPublicTenants(ctx, st, ss.PublicTenants, log)

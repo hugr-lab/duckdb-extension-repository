@@ -104,11 +104,17 @@ func scanEvent(r interface{ Scan(...any) error }) (Event, error) {
 type EventFilter struct {
 	Since, Until         time.Time // zero: open
 	Kind, Actor, Outcome string
-	Subject              string // a prefix
-	AfterAt              time.Time
-	AfterID              string // the cursor: the last (at, id) returned
-	Ascending            bool
-	Limit                int
+	// Kinds are exact kinds too (spec 0040: the API's list, its families expanded from the
+	// catalogue), or with NotKinds those left out
+	Kinds    []string
+	NotKinds bool
+	Subject  string // a prefix
+	// the cursor: the last (at, id) returned; a time with no id is a time covered (spec 0040), the
+	// next read starting at it
+	AfterAt   time.Time
+	AfterID   string
+	Ascending bool
+	Limit     int
 }
 
 // ListEvents lists a tenant's events (audit.ServerTenant: the server's), newest first unless
@@ -127,6 +133,16 @@ func (s *Store) ListEvents(ctx context.Context, tenantID string, f EventFilter) 
 			q, args = q+" AND "+col+" = ?", append(args, v)
 		}
 	}
+	if len(f.Kinds) > 0 { // exact matches on ix_events_tenant_kind
+		not := ""
+		if f.NotKinds {
+			not = "NOT "
+		}
+		q = q + " AND kind " + not + "IN (" + marks(len(f.Kinds)) + ")"
+		for _, k := range f.Kinds {
+			args = append(args, k)
+		}
+	}
 	if f.Subject != "" {
 		if s.d.Name == "sqlite" { // SQLite's LIKE ignores case: compare the prefix's characters
 			q, args = q+" AND substr(subject, 1, ?) = ?", append(args, len([]rune(f.Subject)), f.Subject)
@@ -139,7 +155,7 @@ func (s *Store) ListEvents(ctx context.Context, tenantID string, f EventFilter) 
 	if f.Ascending {
 		cmp, order = ">", "ASC"
 	}
-	if f.AfterID != "" {
+	if !f.AfterAt.IsZero() {
 		at := s.d.timeArg(f.AfterAt)
 		q, args = q+" AND (at "+cmp+" ? OR at = ? AND id "+cmp+" ?)", append(args, at, at, f.AfterID)
 	}
@@ -168,6 +184,14 @@ func (s *Store) ListEvents(ctx context.Context, tenantID string, f EventFilter) 
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// OldestEvent is the time of a tenant's oldest retained event (ok false: it holds none).
+func (s *Store) OldestEvent(ctx context.Context, tenantID string) (at time.Time, ok bool, err error) {
+	if err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT MIN(at) FROM events WHERE tenant_id = ?"), tenantID).Scan(scanTime{&at}); err != nil {
+		return time.Time{}, false, err
+	}
+	return at, !at.IsZero(), nil
 }
 
 // GetEvent reads one event of a tenant (ErrNotFound for none).

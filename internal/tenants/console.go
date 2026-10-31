@@ -95,6 +95,21 @@ type ConsoleIssuer struct {
 	Audience          string   `json:"audience"`
 }
 
+// IssuerConsoleClients lists the console clients of a tenant's issuer records, by issuer id (spec
+// 0040: in the records' answers, read by the tenant's readers).
+func (s *AuthAdmin) IssuerConsoleClients(ctx context.Context, a authz.Actor, tenant string) (map[string]store.ConsoleClient, error) {
+	t, err := s.readTenant(ctx, a, tenant)
+	if err != nil {
+		return nil, err
+	}
+	_, ccs, err := s.Store.ConsoleClients(ctx, t.ID)
+	out := map[string]store.ConsoleClient{}
+	for _, c := range ccs {
+		out[c.IssuerID] = c
+	}
+	return out, err
+}
+
 // ConsoleIssuers lists the issuers a tenant's console signs in with: the records with a console
 // client, each with the audience its tokens carry. It authorizes nothing: the route is public, and
 // the caller answers 404 for an unknown or suspended tenant before calling it.

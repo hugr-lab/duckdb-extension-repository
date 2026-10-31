@@ -8,22 +8,23 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
-// Extension groups (spec 0017): a tenant administrator's; an administrator of a group reads it.
+// Extension groups (spec 0017): a tenant administrator's; an administrator of a group reads it, and
+// the tenant's auditors read them all (spec 0040).
 
 type groupJSON struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Members     int    `json:"members"`
-	Grants      *int   `json:"grants,omitempty"` // tenant administrators only
+	Grants      *int   `json:"grants,omitempty"` // the tenant's administrators and auditors only
 	CreatedAt   string `json:"created_at"`
 	CreatedBy   string `json:"created_by"`
 	ETag        string `json:"etag"`
 }
 
-func groupOf(g store.PackageGroup, tenantAdmin bool, c caller) groupJSON {
+func groupOf(g store.PackageGroup, full bool, c caller) groupJSON {
 	o := groupJSON{Name: g.Name, Description: g.Description, Members: g.Members, CreatedAt: g.CreatedAt.UTC().Format(time.RFC3339),
 		CreatedBy: createdBy(g.CreatedBy, c), ETag: versionTag(g.Version)}
-	if tenantAdmin {
+	if full {
 		o.Grants = &g.Grants
 	}
 	return o
@@ -39,7 +40,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request, c caller, p
 		return
 	}
 	a, _ := c.actor()
-	gs, tenantAdmin, err := h.o.Auth.ListPackageGroups(r.Context(), a, p["t"], reqType(r), r.URL.Query().Get("extension"))
+	gs, full, err := h.o.Auth.ListPackageGroups(r.Context(), a, p["t"], reqType(r), r.URL.Query().Get("extension"))
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
@@ -53,7 +54,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request, c caller, p
 	kept, next := paged(kept, func(g store.PackageGroup) string { return g.Name }, limit, after)
 	out := []groupJSON{}
 	for _, g := range kept {
-		out = append(out, groupOf(g, tenantAdmin, c))
+		out = append(out, groupOf(g, full, c))
 	}
 	reply(w, r, http.StatusOK, list("extension_groups", out, next), "", noStore)
 }
@@ -77,12 +78,12 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request, c caller, 
 
 func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	g, tenantAdmin, err := h.o.Auth.GetPackageGroup(r.Context(), a, p["t"], p["g"])
+	g, full, err := h.o.Auth.GetPackageGroup(r.Context(), a, p["t"], p["g"])
 	if err != nil {
 		h.serviceErr(w, err, false)
 		return
 	}
-	reply(w, r, http.StatusOK, groupOf(g, tenantAdmin, c), versionTag(g.Version), noStore)
+	reply(w, r, http.StatusOK, groupOf(g, full, c), versionTag(g.Version), noStore)
 }
 
 func (h *Handler) setGroupDescription(w http.ResponseWriter, r *http.Request, c caller, p params) {

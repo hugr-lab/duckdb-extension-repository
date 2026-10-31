@@ -56,6 +56,26 @@ func TestEvents(t *testing.T) {
 		if len(page) != 1 || len(next) != 2 || next[0].Kind != "grant.remove" {
 			t.Fatalf("paging: %+v %+v", page, next)
 		}
+		// spec 0040: several kinds, or those left out; a covered time with no id starts at that time
+		for name, c := range map[string]struct {
+			f    store.EventFilter
+			want int
+		}{
+			"kinds":         {store.EventFilter{Kinds: []string{"grant.add", "grant.remove"}}, 2},
+			"not kinds":     {store.EventFilter{Kinds: []string{"grant.add", "grant.remove"}, NotKinds: true}, 1},
+			"a time cursor": {store.EventFilter{Ascending: true, AfterAt: got[1].At}, 2},
+			"at the time":   {store.EventFilter{Ascending: true, AfterAt: got[1].At.Add(time.Microsecond)}, 1},
+		} {
+			if r, err := s.ListEvents(ctx, tn.ID, c.f); err != nil || len(r) != c.want {
+				t.Errorf("%s: %+v %v", name, r, err)
+			}
+		}
+		if at, ok, err := s.OldestEvent(ctx, tn.ID); err != nil || !ok || !at.Equal(got[2].At) {
+			t.Fatalf("the oldest event: %v %v %v", at, ok, err)
+		}
+		if _, ok, err := s.OldestEvent(ctx, "nobody"); err != nil || ok {
+			t.Fatalf("a tenant without events: %v %v", ok, err)
+		}
 		for name, f := range map[string]store.EventFilter{
 			"kind":    {Kind: "grant.remove"},
 			"subject": {Subject: "channel:prod_x%"},
