@@ -12,7 +12,7 @@ import (
 // Spec 0033 phase A2: holds on sources (a publisher, an eager mirror) and on channels.
 
 // MaxHold is the longest hold a source or a channel may have.
-const MaxHold = 90 * 24 * time.Hour
+var MaxHold = 90 * 24 * time.Hour
 
 // ValidHold says whether d is a hold: whole seconds, 0 (none) up to MaxHold.
 func ValidHold(d time.Duration) error {

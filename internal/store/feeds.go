@@ -209,13 +209,14 @@ const (
 	FeedFailing      = "failing"
 )
 
-// Limits on feeds.
-const (
+// Limits on feeds: ceilings the configuration sets (SetCeilings).
+var (
 	MaxFeeds    = 50
 	MaxFeedKeys = 10
-	// MaxFeedKeysFile caps the source's attestation keys file an export feed keeps (spec 0014).
-	MaxFeedKeysFile = 64 << 10
 )
+
+// MaxFeedKeysFile caps the source's attestation keys file an export feed keeps (spec 0014).
+const MaxFeedKeysFile = 64 << 10
 
 // Feed is a source a tenant subscribes to for documents about the bodies it holds.
 type Feed struct {

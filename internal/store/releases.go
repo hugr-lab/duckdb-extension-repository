@@ -983,7 +983,7 @@ func scanBlock(r interface{ Scan(...any) error }) (Block, error) {
 }
 
 // MaxBlocks is the most blocks a tenant may hold (every index snapshot carries them).
-const MaxBlocks = 10000
+var MaxBlocks = 10000
 
 // InsertBlock bans a body hash in a tenant (ErrExists if it is banned already).
 func (t *Tx) InsertBlock(ctx context.Context, b *Block) error {

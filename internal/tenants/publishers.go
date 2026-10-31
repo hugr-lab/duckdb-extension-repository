@@ -411,9 +411,6 @@ func (s *AuthAdmin) marked(ctx context.Context, a authz.Actor, p store.Publisher
 	return s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Server)
 }
 
-// MaxKeyLifetime is the furthest a key's expiry may be.
-const MaxKeyLifetime = 366 * 24 * time.Hour
-
 // AddPublisherKey registers a public SSH key on a publisher (spec 0023): an OpenSSH line, Ed25519
 // or ECDSA P-256, unique in the tenant; expires is optional (zero: none), within a year.
 func (s *AuthAdmin) AddPublisherKey(ctx context.Context, a authz.Actor, tenant, publisher, line string, expires time.Time) (store.PublisherKey, error) {
@@ -425,7 +422,7 @@ func (s *AuthAdmin) AddPublisherKey(ctx context.Context, a authz.Actor, tenant, 
 	if err != nil {
 		return store.PublisherKey{}, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 	}
-	if now := s.Store.Now(); !expires.IsZero() && (!expires.After(now) || expires.Sub(now) > MaxKeyLifetime) {
+	if now := s.Store.Now(); !expires.IsZero() && (!expires.After(now) || expires.Sub(now) > store.MaxKeyLifetime) {
 		return store.PublisherKey{}, fmt.Errorf("%w: a key expires within a year, or never", store.ErrInvalid)
 	}
 	k := store.PublisherKey{TenantID: t.ID, Type: pk.Type, PublicKey: auth.AuthorizedKey(pk.Wire), Fingerprint: pk.Fingerprint,

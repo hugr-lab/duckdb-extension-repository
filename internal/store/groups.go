@@ -17,13 +17,15 @@ import (
 // package names in a tenant that grants may name. Grants on them live apart from grants, so code that does not know groups never reads one
 // as a tenant- or channel-wide grant.
 
-// Limits on package groups.
-const (
-	MaxPackageGroups    = 100
-	MaxGroupMembers     = 1000  // per group
-	MaxTenantMembers    = 10000 // per tenant, every group
-	MaxGroupDescription = 256   // bytes
+// Limits on package groups: the counts are ceilings the configuration sets (SetCeilings).
+var (
+	MaxPackageGroups = 100
+	MaxGroupMembers  = 1000  // per group
+	MaxTenantMembers = 10000 // per tenant, every group
 )
+
+// MaxGroupDescription is a description's most bytes.
+const MaxGroupDescription = 256
 
 var groupName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 

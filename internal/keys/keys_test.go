@@ -251,8 +251,8 @@ func TestAddRules(t *testing.T) {
 		if _, err := en.svc.Activate(ctx, admin, "acme", "staging", a.ID, 0, true); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("key through another channel: %v", err)
 		}
-		// at most MaxKeys non-retired keys
-		for i := 2; i < keys.MaxKeys+1; i++ { // a.pem is one; b.pem failed
+		// at most store.MaxSigningKeys non-retired keys
+		for i := 2; i < store.MaxSigningKeys+1; i++ { // a.pem is one; b.pem failed
 			if _, err := en.svc.Add(ctx, admin, "acme", "prod", en.keyFile(t, "k"+strconv.Itoa(i)+".pem"), false); err != nil {
 				t.Fatalf("key %d: %v", i, err)
 			}
@@ -368,7 +368,7 @@ func TestRetiredKeysCount(t *testing.T) {
 			t.Fatalf("--active after a retired key: %v", err)
 		}
 		// retired keys do not count against the cap
-		for i := 0; i < keys.MaxKeys; i++ {
+		for i := 0; i < store.MaxSigningKeys; i++ {
 			if _, err := en.svc.Add(ctx, admin, "acme", "staging", en.keyFile(t, "c"+strconv.Itoa(i)+".pem"), false); err != nil {
 				t.Fatalf("key %d: %v", i, err)
 			}

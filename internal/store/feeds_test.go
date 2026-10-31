@@ -217,7 +217,7 @@ func TestFeedRecords(t *testing.T) {
 		// removing the feed's documents, the feed; the collector's cursors of bodies no longer held
 		inTx(t, s, func(tx *store.Tx) error {
 			n, err := tx.RemoveFeedDocuments(ctx, f)
-			if n != 2+store.MaxAttachmentHeads {
+			if n != 2+int64(store.MaxAttachmentHeads) {
 				t.Errorf("removed %d", n)
 			}
 			return err

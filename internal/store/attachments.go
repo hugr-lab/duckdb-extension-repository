@@ -29,8 +29,8 @@ const (
 	VisibleReaders        = "readers"
 )
 
-// Limits on attachments (spec 0011).
-const (
+// Limits on attachments (spec 0011): ceilings the configuration sets (SetCeilings).
+var (
 	MaxAttachmentHeads   = 20 // per (body, kind, origin): chain heads only
 	MaxTenantAttachments = 100000
 )

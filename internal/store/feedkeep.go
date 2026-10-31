@@ -13,7 +13,7 @@ import (
 
 // MaxFeedKept caps what a tenant's export feeds keep (refusals and statements together), apart from
 // the documents quota, so a source flooding it never costs another source a document (spec 0014).
-const MaxFeedKept = 100000
+var MaxFeedKept = 100000
 
 // ErrQuota is MaxFeedKept reached; it wraps into ErrInvalid.
 var ErrQuota = errors.New("store: what export feeds keep is at its cap")

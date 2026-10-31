@@ -112,6 +112,8 @@ func OpenStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 		return nil, err
 	}
 	s.EventClients = cfg.EventSettings().ClientAddresses
+	// the server's ceilings (spec 0038, amended: limits.ceilings), in force before any check reads them
+	store.SetCeilings(cfg.Limits.Ceilings.Settings())
 	if s.LimitDefaults, err = cfg.LimitSettings(); err != nil { // spec 0038 (validated at load)
 		s.Close()
 		return nil, err
