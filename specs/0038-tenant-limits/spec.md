@@ -607,6 +607,10 @@ and their types are unchanged.
 A ceiling lowered below what a tenant stored caps that value: the value in force is the smaller of
 the two, so growth past the ceiling is refused as `429 tenant-limit` at its ceiling, never `400`.
 What a tenant already holds stays; the stored value is kept and counts again if the ceiling is raised.
+The API and the CLI parse a value for its shape only; the ceiling is checked where a value changes,
+so a client that sends every limit again (Enterest) is not refused for one it did not change. An
+issuer record's `max_token_lifetime` above a lowered `issuer_token_lifetime` is capped the same way
+when a token is verified; the configuration checks its issuers against its own ceiling as it loads.
 
 | Was | Kind | `limits.ceilings.` key | Default |
 | --- | --- | --- | --- |

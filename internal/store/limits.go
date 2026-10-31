@@ -115,11 +115,26 @@ func validLimit(name string, v int64, ceil Ceilings) error {
 
 // ParseLimit reads a limit's value as the API, the configuration and the CLI write it: "unlimited",
 // "default", a number, or for bytes also a size (50GiB: KiB, MiB, GiB or TiB). 0 means none. It
-// checks the value against the limit (ValidLimit).
-func ParseLimit(name, s string) (int64, error) { return ParseLimitUnder(name, s, CurrentCeilings()) }
+// checks the shape only: the ceiling is the setter's check (a value sent again unchanged stays,
+// even above a lowered ceiling; spec 0038's amendment).
+func ParseLimit(name, s string) (int64, error) {
+	if !slices.Contains(LimitNames, name) {
+		return 0, fmt.Errorf("%w: unknown limit %q", ErrInvalid, name)
+	}
+	return parseLimit(name, s)
+}
 
-// ParseLimitUnder is ParseLimit under ceil's ceilings (the configuration's own, as it is validated).
+// ParseLimitUnder is ParseLimit with the value checked under ceil's ceilings (the configuration's
+// own, as it is validated).
 func ParseLimitUnder(name, s string, ceil Ceilings) (int64, error) {
+	v, err := ParseLimit(name, s)
+	if err != nil {
+		return 0, err
+	}
+	return v, validLimit(name, v, ceil)
+}
+
+func parseLimit(name, s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	var v int64
 	switch s {
@@ -150,7 +165,7 @@ func ParseLimitUnder(name, s string, ceil Ceilings) (int64, error) {
 		}
 		v = n * mult
 	}
-	return v, validLimit(name, v, ceil)
+	return v, nil
 }
 
 // Effective is the value in force of each limit: a tenant's own value, else the server's default

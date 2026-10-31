@@ -57,6 +57,19 @@ func TestCeilings(t *testing.T) {
 	if l, err := cfg.LimitSettings(); err != nil || l.Channels != 1500 {
 		t.Fatalf("a default under a raised ceiling: %+v %v", l, err)
 	}
+	// an issuer's max token lifetime is checked against the configuration's own ceiling as it loads,
+	// before it is in force
+	long := "serve: { public_url: https://kista.example }\nauth: { server_issuers: [ { name: ops, url: 'https://login.example', required_claims: { tid: t1 }, max_token_lifetime: 240h } ] }\n"
+	if _, err := Load(write(t, base+long), nil); err == nil || !strings.Contains(err.Error(), "issuer_token_lifetime") {
+		t.Errorf("a 10-day server issuer under the default ceiling: %v", err)
+	}
+	if _, err := Load(write(t, base+long+"limits: { ceilings: { issuer_token_lifetime: 360h } }\n"), nil); err != nil {
+		t.Errorf("a 10-day server issuer under a raised ceiling: %v", err)
+	}
+	if _, err := Load(write(t, base+"serve: { public_url: https://kista.example }\nauth: { server_issuers: [ { name: ops, url: 'https://login.example', required_claims: { tid: t1 } } ] }\n"+
+		"limits: { ceilings: { issuer_token_lifetime: 1h } }\n"), nil); err == nil || !strings.Contains(err.Error(), "issuer_token_lifetime") {
+		t.Errorf("the 24h default over a lowered ceiling: %v", err)
+	}
 	for _, bad := range []string{"limits: { ceilings: { grants: -1 } }\n", "limits: { ceilings: { max_hold: -1h } }\n", "limits: { ceilings: { feeds: 0 } }\n",
 		"limits: { channels: 30, ceilings: { channels: 20 } }\n",
 		"bootstrap: { tenant: { name: acme, limits: { ceilings: { channels: 5 } } } }\n"} {

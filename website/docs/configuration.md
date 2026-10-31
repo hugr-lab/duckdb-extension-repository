@@ -447,7 +447,7 @@ Each server issuer:
 | `algorithms` | list | all supported | Of `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `EdDSA`. |
 | `required_claims` | map | required | Claims every token must carry, at most 16. Mandatory for a server issuer. |
 | `roles_claim`, `groups_claim`, `client_claim` | claim path | none | Keys joined by dots (`realm_access.roles`), or a JSON array of keys when a key has dots. |
-| `max_token_lifetime` | duration | `24h` | `1m..168h`. |
+| `max_token_lifetime` | duration | `24h` | From `1m` up to [`limits.ceilings.issuer_token_lifetime`](#limitsceilings) (`168h` by default). |
 
 A server administrator is written `kind:issuer|value`, where `kind` is `subject`, `role`, `group`
 or `client`, and `issuer` is a server issuer's name: `role:ops|kista-admin`. `issuer:<name>` is
@@ -659,7 +659,9 @@ answer (page and body sizes, a summary's 160 characters, an icon's size, the 16 
 code: they are part of a format, not a tenant's room. A bundle carries at most 50 feed URLs and 500 keys
 a feed (the format's, the same at every site): a site whose `feeds` ceiling is above that names the
 feeds for each plan. A ceiling lowered below a tenant's stored
-limit caps it: growth past the ceiling is refused `429 tenant-limit`.
+limit caps it: growth past the ceiling is refused `429 tenant-limit`, and sending the stored value again
+unchanged is not refused. An issuer record's `max_token_lifetime` above a lowered
+`issuer_token_lifetime` is capped the same way when tokens are verified.
 
 ## ui
 

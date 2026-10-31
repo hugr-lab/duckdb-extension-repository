@@ -175,8 +175,15 @@ func CheckClaimPath(p []string) error {
 
 // CheckIssuer checks an issuer record's fields and fills the defaults (every algorithm, a 24h
 // maximum lifetime): https URLs (http on loopback when allowHTTP), known algorithms, a lifetime
-// within 1m..7d, required claims with names and values, claim paths.
+// within 1m..the ceiling in force (limits.ceilings.issuer_token_lifetime), required claims with names
+// and values, claim paths.
 func CheckIssuer(is *store.Issuer, allowHTTP bool) error {
+	return CheckIssuerUnder(is, allowHTTP, store.MaxIssuerTokenLifetime)
+}
+
+// CheckIssuerUnder is CheckIssuer with the longest max token lifetime given: the configuration's own
+// ceiling as it is loaded, before the store opens and puts it in force.
+func CheckIssuerUnder(is *store.Issuer, allowHTTP bool, maxLifetime time.Duration) error {
 	if err := store.ValidIssuerName(is.Name); err != nil {
 		return err
 	}
@@ -204,9 +211,9 @@ func CheckIssuer(is *store.Issuer, allowHTTP bool) error {
 	if is.MaxTokenLifetime == 0 {
 		is.MaxTokenLifetime = 24 * time.Hour
 	}
-	if is.MaxTokenLifetime < time.Minute || is.MaxTokenLifetime > store.MaxIssuerTokenLifetime {
+	if is.MaxTokenLifetime < time.Minute || is.MaxTokenLifetime > maxLifetime {
 		return fmt.Errorf("%w: max token lifetime must be within 1m..%s (limits.ceilings.issuer_token_lifetime)", store.ErrInvalid,
-			store.MaxIssuerTokenLifetime)
+			maxLifetime)
 	}
 	if len(is.RequiredClaims) > 16 {
 		return fmt.Errorf("%w: at most 16 required claims", store.ErrInvalid)

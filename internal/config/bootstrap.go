@@ -346,7 +346,7 @@ func validateBootstrap(bad func(string, ...any), c Config) {
 		}
 		if rec, err := is.IssuerRecord(); err != nil {
 			bad("bootstrap.issuer: %v", err)
-		} else if err := auth.CheckIssuer(&rec, c.Egress.AllowLoopbackHTTP); err != nil {
+		} else if err := auth.CheckIssuerUnder(&rec, c.Egress.AllowLoopbackHTTP, c.Limits.Ceilings.Settings().IssuerTokenLifetime); err != nil {
 			bad("bootstrap.issuer: %v", err)
 		}
 		if is.MaxLifetime < 0 {

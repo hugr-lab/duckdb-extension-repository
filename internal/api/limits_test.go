@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -144,6 +145,56 @@ func TestTenantLimitsAPI(t *testing.T) {
 	}
 	if _, err := m.ten.CreateTenantWithLimits(ctx, admin, "delta", "", "", "", map[string]int64{"egress": 1}); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("an unknown limit at creation: %v", err)
+	}
+}
+
+// Spec 0038's amendment: under a lowered ceiling, a tenant's stored value above it is sent again
+// unchanged (Enterest PUTs every limit) without a refusal and without an event; a new value above
+// it is refused 400, by the API and the service alike; an issuer's max token lifetime is checked
+// against the issuer_token_lifetime ceiling in force. Not parallel: the ceilings are the process's.
+func TestLoweredCeilings(t *testing.T) {
+	m := newMgmt(t)
+	sa := m.toks["server admin"]
+	const T = "/api/v1/tenants/acme"
+	if r := m.call(t, "PUT", T+"/limits", sa, `{"channels": 500, "publishers": 5}`); r.status != 200 {
+		t.Fatalf("set: %d %s", r.status, r.body)
+	}
+	prev := store.CurrentCeilings()
+	t.Cleanup(func() { store.SetCeilings(prev) })
+	c := prev
+	c.Channels, c.IssuerTokenLifetime = 10, 12*time.Hour
+	store.SetCeilings(c)
+	events := func() int {
+		r := m.call(t, "GET", T+"/events?kind=tenant.limits", sa, "")
+		return len(r.json(t)["events"].([]any))
+	}
+	before := events()
+	r := m.call(t, "PUT", T+"/limits", sa, `{"channels": 500, "publishers": 5}`)
+	if r.status != 200 {
+		t.Fatalf("an unchanged value above a lowered ceiling sent again: %d %s", r.status, r.body)
+	}
+	if ch := r.json(t)["limits"].(map[string]any)["channels"].(map[string]any); ch["set"] != 500.0 || ch["limit"] != 10.0 {
+		t.Fatalf("kept, and capped in force: %v", ch)
+	}
+	if events() != before {
+		t.Fatal("an unchanged value wrote an event")
+	}
+	if r := m.call(t, "PUT", T+"/limits", sa, `{"channels": 600}`); r.status != 400 {
+		t.Fatalf("a new value above the ceiling: %d %s", r.status, r.body)
+	}
+	if _, _, err := m.ten.SetTenantLimits(ctx, admin, "acme", map[string]int64{store.LimitChannels: 500}, ""); err != nil {
+		t.Fatalf("the service, an unchanged value: %v", err)
+	}
+	if _, _, err := m.ten.SetTenantLimits(ctx, admin, "acme", map[string]int64{store.LimitChannels: 11}, ""); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("the service, a new value above the ceiling: %v", err)
+	}
+	// the issuer token lifetime ceiling in force: 12h
+	if _, err := m.adm.AddIssuer(ctx, admin, "acme", store.Issuer{Name: "long", URL: "https://long.example", MaxTokenLifetime: 13 * time.Hour}); !errors.Is(err, store.ErrInvalid) ||
+		!strings.Contains(err.Error(), "issuer_token_lifetime") {
+		t.Fatalf("an issuer past the lowered ceiling: %v", err)
+	}
+	if _, err := m.adm.AddIssuer(ctx, admin, "acme", store.Issuer{Name: "short", URL: opsURL, RequiredClaims: map[string]string{"tid": "t1"}, MaxTokenLifetime: 12 * time.Hour}); err != nil {
+		t.Fatalf("an issuer at the ceiling: %v", err)
 	}
 }
 

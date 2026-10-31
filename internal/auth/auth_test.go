@@ -316,6 +316,37 @@ func (failing) Get(context.Context, string) ([]byte, http.Header, error) {
 
 // Even a record that (wrongly) lists HS256 never verifies an HMAC with an RSA key, and claim values
 // with control or format characters give no principal.
+// Spec 0038's amendment: an issuer record's max token lifetime stored above a ceiling lowered since
+// is capped by it, as a stored limit is; CheckIssuerUnder checks against the ceiling it is given
+// (the configuration's, before it is in force). Not parallel: the ceilings are the process's.
+func TestIssuerLifetimeCeiling(t *testing.T) {
+	p, v, ta, claims := setup(t)
+	ta.Issuers[0].MaxTokenLifetime = 48 * time.Hour
+	tok := p.sign(t, "RS256", "r1", nil, claims(map[string]any{"exp": v.Now().Add(3 * time.Hour).Unix()}))
+	if _, _, err := v.Verify(ctx, ta, canonical, tok); err != nil {
+		t.Fatalf("a 3h token under a 48h record: %v", err)
+	}
+	prev := store.CurrentCeilings()
+	t.Cleanup(func() { store.SetCeilings(prev) })
+	c := prev
+	c.IssuerTokenLifetime = time.Hour
+	store.SetCeilings(c)
+	var f *Failure
+	if _, _, err := v.Verify(ctx, ta, canonical, tok); !errors.As(err, &f) || f.Reason != ReasonTime {
+		t.Fatalf("a 3h token past a lowered 1h ceiling: %v", err)
+	}
+	is := store.Issuer{Name: "corp", URL: "https://login.example", MaxTokenLifetime: 10 * 24 * time.Hour}
+	if err := CheckIssuerUnder(&is, false, 7*24*time.Hour); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("10 days under 7: %v", err)
+	}
+	if err := CheckIssuerUnder(&is, false, 30*24*time.Hour); err != nil {
+		t.Fatalf("10 days under 30: %v", err)
+	}
+	if err := CheckIssuer(&is, false); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("10 days under the ceiling in force (1h): %v", err)
+	}
+}
+
 func TestRecordLimits(t *testing.T) {
 	p, v, ta, claims := setup(t)
 	ta.Issuers[0].Algorithms = []string{"HS256", "none", "RS256"}
