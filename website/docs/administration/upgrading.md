@@ -184,11 +184,16 @@ so the operator declares it:
   none keeps today's values. A ceiling lowered below a tenant's stored limit caps it. No migration.
 - The upper bounds of the server's own settings are
   [`limits.ceilings`](../configuration.md#limitsceilings) too: `events_retention` (365 days),
-  `events_retention_with_sinks` (90 days), `statistics_retention` (10 years) and
-  `admin_token_max_age` (24h). The floors outside `profile: dev` are settings beside what they
-  bound: [`tenants.min_suspended_floor`](../configuration.md#tenants) and
+  `events_retention_with_sinks` (90 days), `statistics_retention` (10 years),
+  `admin_token_max_age` (24h) and `events_rows_per_tenant` (100,000,000). The floors outside
+  `profile: dev` are settings beside what they bound:
+  [`tenants.min_suspended_floor`](../configuration.md#tenants) and
   [`rotation.min_floor`](../configuration.md#rotation) (24 hours each). Leaving them out keeps
   today's behaviour.
+- `auth.admin_token_max_age` must now be below `limits.ceilings.issuer_token_lifetime` (168h by
+  default); the default 1h is. A floor below 24h or a max age above 24h logs a warning at every
+  start. `server.start` digests two more sections, `rotation` and `limits`; a section new to the
+  digests is not reported as changed.
 
 ### `*` on a mirror of a kista (spec 0039, PR 2)
 

@@ -266,8 +266,8 @@ constant `RotationFloor` (24h); it is `rotation.min_floor`, a duration. Left out
 it is at least `1s`, never `0` or negative: a floor of none would let a mistyped minimum activate or
 retire a key at once. It is file-only, though the minimums themselves may come from the environment:
 lowering the guard takes an edit of the file. In dev it is not applied (the minimums may be `0`), but
-its shape is checked. `server.start` does not digest `rotation`; the floor changes nothing at run
-time, only what the configuration accepts.
+its shape is checked. `server.start` digests `rotation` (spec 0010), so lowering the floor shows as
+a change, and `kista serve` and `kista admin` warn at every start while it is below `24h`.
 
 ### Signer references
 
@@ -396,7 +396,7 @@ cmd/kista           + admin subcommands
   - The active key cannot be retired.
   - A key is demoted for a minimum time before retirement.
   - Releases are checked from spec 0006 on.
-  - The minimums have a 24 h floor outside dev.
+  - The minimums have the `rotation.min_floor` floor (24 h by default) outside dev.
   - Every forced step is recorded.
 - **Guards cannot be switched off from the environment**: `profile` and the signer settings are
   file-only, and dev refuses non-local databases.
@@ -436,7 +436,7 @@ cmd/kista           + admin subcommands
 - **Lifecycle cases:**
   - every transition and its event row;
   - `min_trusted` from `trusted_since` across a demotion;
-  - `min_demoted`, `--force`, and the 24 h floor outside dev;
+  - `min_demoted`, `--force`, and the `rotation.min_floor` floor (24 h by default) outside dev;
   - first-key `--active` only on a channel that never had a key;
   - passthrough refuses keys;
   - the 16-key cap;

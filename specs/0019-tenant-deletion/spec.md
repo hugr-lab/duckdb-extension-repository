@@ -370,7 +370,8 @@ The owner: no limit is fixed in code (spec 0038's amendment of the same day). Th
 - The floor is checked only as the configuration loads. The delete and `deletable_at` follow
   `tenants.min_suspended` as before; the floor bounds that value, nothing else.
 - `server.start` digests the `tenants` section, the floor with it: lowering it shows. Left out, the
-  section's digest is the same as before.
+  section's digest is the same as before. `kista serve` and `kista admin` warn at every start while
+  the floor is below `24h`, and `tenant.delete` records the `min_suspended` the process applied.
 
 ## Security
 

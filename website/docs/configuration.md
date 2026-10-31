@@ -80,7 +80,7 @@ Every setting that is not file-only can be overridden by a variable named after 
 | `rotation.min_demoted` | `KISTA_ROTATION__MIN_DEMOTED` |
 | `serve.public_url` | `KISTA_SERVE__PUBLIC_URL` |
 
-That is the complete list. Everything else is **file-only**: `profile`, `azure.identity.kind`, `store.ca_pem`, and
+That is the complete list. Everything else is **file-only**: `profile`, `azure.identity.kind`, `rotation.min_floor`, `store.ca_pem`, and
 the whole of `aws`, `gcp`, `signers`, `blob`, `egress`, `auth`, `publish`, `upstreams`, `events`, `statistics`,
 `telemetry`, `gc`, `ui`, `attachments`, `tenants`, and every `serve` setting but `public_url`. Each of these
 switches a guard on or off, or decides what kista may reach, so it cannot be changed by whoever
@@ -209,7 +209,8 @@ Key-lifecycle minimums. See [Key rotation](administration/key-rotation.md).
 | `rotation.min_floor` | duration | `24h` | File-only. The least either minimum may be outside `profile: dev`. At least `1s`; never `0`. |
 
 Outside `profile: dev`, neither may be below `rotation.min_floor`. Neither may be negative. Lower
-the floor only on purpose, for a test or staging server.
+the floor only on purpose, for a test or staging server: below `24h`, `kista serve` and
+`kista admin` warn at every start, and `server.start` records the changed `rotation` section.
 
 ## signers
 
@@ -437,7 +438,7 @@ role. See [Access](access.md).
 | `auth.server_admins` | list | none | Principals of server issuers who are server administrators. |
 | `auth.server_license_admins` | list | none | Principals of server issuers who are licence managers: they read every tenant's licences and write those of distributors' publishers' entries, and nothing else (specs 0029, 0035). |
 | `auth.server_distribution_admins` | list | none | Principals of server issuers who are distribution admins: on every tenant they create and manage distributors' publishers and their catalogue entries (never the tenant's own publishers, nor grants: spec 0037), and read the tenant's state and expected holder; nothing else (spec 0030). Not also a licence manager. |
-| `auth.admin_token_max_age` | duration | `1h` | How recently a management token must have been issued; at least `1m`, at most [`limits.ceilings.admin_token_max_age`](#limitsceilings) (`24h` by default). |
+| `auth.admin_token_max_age` | duration | `1h` | How recently a management token must have been issued; at least `1m`, at most [`limits.ceilings.admin_token_max_age`](#limitsceilings) (`24h` by default), and below `limits.ceilings.issuer_token_lifetime`. Above `24h`, every start warns. |
 
 Each server issuer:
 
@@ -516,7 +517,7 @@ The event buffer and its sinks. The whole block is file-only. See
 | --- | --- | --- | --- |
 | `events.retention` | duration | `720h` (30 days) | At least `48h` (a day's installers are counted from its events after it ends); at most [`limits.ceilings.events_retention`](#limitsceilings) (`8760h`, 365 days, by default), and when sinks are configured at most `limits.ceilings.events_retention_with_sinks` (`2160h`, 90 days, by default). |
 | `events.client_addresses` | `full`, `truncated`, `none` | `truncated` | How client addresses are kept in events. |
-| `events.max_rows_per_tenant` | integer | `1000000` | `1..100000000`. |
+| `events.max_rows_per_tenant` | integer | `1000000` | At least `1`, at most [`limits.ceilings.events_rows_per_tenant`](#limitsceilings) (`100000000` by default). |
 | `events.settle` | duration | `30s` | At least `1s`. Where an `order=asc` events read stops, behind now, and so where each `kista admin events list -follow` poll reads up to: the writer commits events in batches, so one can commit after a later one is readable ([Following the events](observability.md#following-the-events)). |
 | `events.resource` | map | none | Attributes every OTLP export carries (`deployment.environment.name`, ...). |
 | `events.sinks` | list | none | At most 16. |
@@ -658,6 +659,7 @@ limits:
     events_retention_with_sinks: 2160h # the longest events.retention once a sink is configured (90 days)
     statistics_retention: 87600h  # the longest statistics.retention (10 years)
     admin_token_max_age: 24h      # the longest auth.admin_token_max_age
+    events_rows_per_tenant: 100000000 # the most events.max_rows_per_tenant
 ```
 
 A count is at least 1, a duration at least `1s` (`issuer_token_lifetime` at least `1m`); a ceiling
@@ -670,13 +672,16 @@ a feed (the format's, the same at every site): a site whose `feeds` ceiling is a
 feeds for each plan. A ceiling lowered below a tenant's stored
 limit caps it: growth past the ceiling is refused `429 tenant-limit`, and sending the stored value again
 unchanged is not refused. An issuer record's `max_token_lifetime` above a lowered
-`issuer_token_lifetime` is capped the same way when tokens are verified. The last four bound the
+`issuer_token_lifetime` is capped the same way when tokens are verified. The last five bound the
 server's own settings, their defaults included: `events_retention` and `statistics_retention` bound
 `events.retention` and `statistics.retention`, `events_retention_with_sinks` bounds
-`events.retention` while `events.sinks` is not empty, and `admin_token_max_age` bounds
-`auth.admin_token_max_age`. A ceiling lowered below a default needs the setting at or below it.
-What a setting needs to work stays in code: `events.retention` at least `48h`,
-`statistics.retention` at least `720h`, `auth.admin_token_max_age` at least `1m`.
+`events.retention` while `events.sinks` is not empty, `admin_token_max_age` bounds
+`auth.admin_token_max_age`, and `events_rows_per_tenant` bounds `events.max_rows_per_tenant`. A
+ceiling lowered below a default needs the setting at or below it. What a setting needs to work stays
+in code, and its ceiling may not go below it: `events.retention` (and both its ceilings) at least
+`48h`, `statistics.retention` at least `720h`, `auth.admin_token_max_age` at least `1m`.
+`auth.admin_token_max_age` must also stay below `issuer_token_lifetime`, so a management token is
+always fresher than the longest token.
 
 ## ui
 
@@ -751,7 +756,8 @@ The tenant lifecycle. File-only. See
 Outside `profile: dev`, `min_suspended` may not be below `min_suspended_floor`; in dev it may be `0`
 (the floor is not applied there, but `0` or a negative floor is still refused). It may not be
 negative. Lower the floor only on purpose, for a test or staging server that deletes tenants within
-seconds (`min_suspended_floor: 1s`, `min_suspended: 1s`); `deletable_at` follows `min_suspended`. The
+seconds (`min_suspended_floor: 1s`, `min_suspended: 1s`); below `24h`, every start warns, and
+`tenant.delete` records the minimum applied. `deletable_at` follows `min_suspended`. The
 process that takes the delete applies its own value (`kista admin tenant delete`, or the replica
 that answers `DELETE /api/v1/tenants/{t}`), so `kista admin` and `kista serve` should share the
 configuration.
