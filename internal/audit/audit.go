@@ -120,7 +120,7 @@ var catalogue = map[Kind][]string{
 	"tenant.suspend": {},
 	"tenant.resume":  {},
 	"tenant.read":    {"state"}, // a distribution admin's read of the tenant (spec 0037)
-	"tenant.delete":  {"channels", "suspended_at", "keys"},
+	"tenant.delete":  {"channels", "suspended_at", "keys", "min_suspended"},
 	"tenant.purge":   {"rows", "passes", "late", "error"},
 	"version.add":    {"version", "kind", "c_apis"},
 	"version.c_apis": {"version", "c_api"},

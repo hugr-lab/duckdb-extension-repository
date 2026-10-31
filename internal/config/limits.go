@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,17 +57,29 @@ type Ceilings struct {
 	// The ceilings on the server's own settings (SettingCeilings).
 	EventsRetention          *time.Duration `yaml:"events_retention"`
 	EventsRetentionWithSinks *time.Duration `yaml:"events_retention_with_sinks"`
+	EventsRowsPerTenant      *int           `yaml:"events_rows_per_tenant"`
 	StatisticsRetention      *time.Duration `yaml:"statistics_retention"`
 	AdminTokenMaxAge         *time.Duration `yaml:"admin_token_max_age"`
 }
 
+// The least a setting may be: what it needs to work, so in code (spec 0038, amended 2026-10-31), and
+// the least its ceiling may be.
+const (
+	// MinEventRetention: a day's installers are counted from its events after it ends (spec 0010).
+	MinEventRetention = 48 * time.Hour
+	// MinStatisticsRetention: the API answers each name's downloads in the last 30 days.
+	MinStatisticsRetention = 30 * 24 * time.Hour
+	// MinAdminTokenMaxAge: the console renews a token before iat plus the age, and clocks drift.
+	MinAdminTokenMaxAge = time.Minute
+)
+
 // SettingCeilings are the ceilings on the server's own settings (spec 0038, amended 2026-10-31): not
 // a tenant's room, so never in force in the store; the configuration checks its settings against
-// them as it loads. What a setting needs to work (events.retention's 2 days, statistics.retention's
-// 30 days, admin_token_max_age's minute) stays in code beside the setting.
+// them as it loads. Each is at least its setting's least (MinEventRetention, …).
 type SettingCeilings struct {
 	EventsRetention          time.Duration // the longest events.retention
 	EventsRetentionWithSinks time.Duration // the longest events.retention once a sink is configured
+	EventsRowsPerTenant      int           // the most events.max_rows_per_tenant
 	StatisticsRetention      time.Duration // the longest statistics.retention
 	AdminTokenMaxAge         time.Duration // the longest auth.admin_token_max_age
 }
@@ -74,20 +87,35 @@ type SettingCeilings struct {
 // DefaultSettingCeilings are the setting ceilings a configuration that sets none has.
 func DefaultSettingCeilings() SettingCeilings {
 	return SettingCeilings{EventsRetention: 365 * 24 * time.Hour, EventsRetentionWithSinks: 90 * 24 * time.Hour,
-		StatisticsRetention: 10 * 365 * 24 * time.Hour, AdminTokenMaxAge: 24 * time.Hour}
+		EventsRowsPerTenant: 100000000, StatisticsRetention: 10 * 365 * 24 * time.Hour, AdminTokenMaxAge: 24 * time.Hour}
 }
 
-func (c Ceilings) settingFields(out *SettingCeilings) []ceilingDuration {
-	return []ceilingDuration{{"events_retention", &out.EventsRetention, c.EventsRetention},
-		{"events_retention_with_sinks", &out.EventsRetentionWithSinks, c.EventsRetentionWithSinks},
-		{"statistics_retention", &out.StatisticsRetention, c.StatisticsRetention},
-		{"admin_token_max_age", &out.AdminTokenMaxAge, c.AdminTokenMaxAge}}
+// settingDuration is a setting ceiling with the least it may be and the setting it bounds.
+type settingDuration struct {
+	ceilingDuration
+	least   time.Duration
+	setting string
+}
+
+func (c Ceilings) settingFields(out *SettingCeilings) ([]ceilingCount, []settingDuration) {
+	return []ceilingCount{{"events_rows_per_tenant", &out.EventsRowsPerTenant, c.EventsRowsPerTenant}},
+		[]settingDuration{
+			{ceilingDuration{"events_retention", &out.EventsRetention, c.EventsRetention}, MinEventRetention, "events.retention"},
+			{ceilingDuration{"events_retention_with_sinks", &out.EventsRetentionWithSinks, c.EventsRetentionWithSinks}, MinEventRetention, "events.retention"},
+			{ceilingDuration{"statistics_retention", &out.StatisticsRetention, c.StatisticsRetention}, MinStatisticsRetention, "statistics.retention"},
+			{ceilingDuration{"admin_token_max_age", &out.AdminTokenMaxAge, c.AdminTokenMaxAge}, MinAdminTokenMaxAge, "auth.admin_token_max_age"}}
 }
 
 // Setting are the setting ceilings in force: each one set, else its default.
 func (c Ceilings) Setting() SettingCeilings {
 	out := DefaultSettingCeilings()
-	for _, f := range c.settingFields(&out) {
+	counts, durations := c.settingFields(&out)
+	for _, f := range counts {
+		if f.v != nil {
+			*f.dst = *f.v
+		}
+	}
+	for _, f := range durations {
 		if f.v != nil {
 			*f.dst = *f.v
 		}
@@ -141,12 +169,57 @@ func (c Ceilings) Settings() store.Ceilings {
 	return out
 }
 
+// Set are the ceilings this configuration sets, by key, as the docs write them: what server.start
+// digests (a ceiling left out is not named, so a new one does not show as a change).
+func (c Ceilings) Set() map[string]string {
+	out := map[string]string{}
+	counts, durations := c.fields(&store.Ceilings{})
+	settingCounts, settingDurations := c.settingFields(&SettingCeilings{})
+	for _, f := range append(counts, settingCounts...) {
+		if f.v != nil {
+			out[f.name] = strconv.Itoa(*f.v)
+		}
+	}
+	for _, f := range settingDurations {
+		durations = append(durations, f.ceilingDuration)
+	}
+	for _, f := range durations {
+		if f.v != nil {
+			out[f.name] = durationText(*f.v)
+		}
+	}
+	return out
+}
+
+// Warnings are the settings that loosen a guard below its default: each is allowed, and each start
+// says so (spec 0038 amended, security).
+func (c Config) Warnings() []string {
+	var out []string
+	if f := c.Rotation.Floor(); f < DefaultRotationFloor {
+		out = append(out, fmt.Sprintf("rotation.min_floor is %s, below its default %s", durationText(f), durationText(DefaultRotationFloor)))
+	}
+	if f := c.Tenants.Floor(); f < DefaultMinSuspendedFloor {
+		out = append(out, fmt.Sprintf("tenants.min_suspended_floor is %s, below its default %s", durationText(f), durationText(DefaultMinSuspendedFloor)))
+	}
+	if m, def := c.AdminTokenMaxAge(), DefaultSettingCeilings().AdminTokenMaxAge; m > def {
+		out = append(out, fmt.Sprintf("auth.admin_token_max_age is %s, above %s", durationText(m), durationText(def)))
+	}
+	return out
+}
+
 // check refuses a ceiling of 0 or below (left out is its default): a count at least 1, a duration at
-// least a second.
+// least a second, a setting's ceiling at least what the setting needs.
 func (c Ceilings) check() error {
 	var out store.Ceilings
 	counts, durations := c.fields(&out)
-	durations = append(durations, c.settingFields(&SettingCeilings{})...)
+	settingCounts, settingDurations := c.settingFields(&SettingCeilings{})
+	counts = append(counts, settingCounts...)
+	for _, f := range settingDurations {
+		if f.v != nil && *f.v < f.least {
+			return fmt.Errorf("%w: limits.ceilings.%s is at least %s, the least %s may be (leave it out for its default)",
+				store.ErrInvalid, f.name, durationText(f.least), f.setting)
+		}
+	}
 	for _, f := range counts {
 		if f.v != nil && *f.v < 1 {
 			return fmt.Errorf("%w: limits.ceilings.%s is at least 1 (leave it out for its default)", store.ErrInvalid, f.name)
@@ -210,6 +283,18 @@ func validateLimits(bad func(string, ...any), c Config) {
 			bad("bootstrap.tenant.limits: %s (%s)", limitError(err), limitsRule)
 		}
 	}
+}
+
+// durationText is d as the docs write it: 8760h, 30m, 1m30s (never 8760h0m0s).
+func durationText(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }
 
 // limitError is a limit's refusal without the store's prefix: it names the limit, never the value.

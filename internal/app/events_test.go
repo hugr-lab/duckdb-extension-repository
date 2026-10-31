@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
@@ -45,7 +46,7 @@ func TestServerStart(t *testing.T) {
 	if err := ServerStart(ctx, cfg, st); err != nil {
 		t.Fatal(err)
 	}
-	if d := last(); d.Version != Version || d.Schema == 0 || len(d.Digests) != 12 || len(d.Changed) != 0 {
+	if d := last(); d.Version != Version || d.Schema == 0 || len(d.Digests) != 14 || len(d.Changed) != 0 {
 		t.Fatalf("the first start: %+v", d)
 	}
 	cfg.Egress.Allow = []config.EgressAllow{{CIDR: "10.0.0.0/8"}}
@@ -54,6 +55,16 @@ func TestServerStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if d := last(); !slices.Equal(d.Changed, []string{"egress", "serve"}) {
+		t.Fatalf("changed: %+v", d)
+	}
+	// spec 0038 amended: the rotation floor and the ceilings are digested; a ceiling left out is not
+	// named, so the defaults' digest does not move when a ceiling is added to the code
+	floor, channels := time.Hour, 20
+	cfg.Rotation.MinFloor, cfg.Limits.Ceilings.Channels = &floor, &channels
+	if err := ServerStart(ctx, cfg, st); err != nil {
+		t.Fatal(err)
+	}
+	if d := last(); !slices.Equal(d.Changed, []string{"limits", "rotation"}) {
 		t.Fatalf("changed: %+v", d)
 	}
 	if _, err := st.LastEvent(ctx, audit.ServerTenant, "signer.source.weak"); err == nil {

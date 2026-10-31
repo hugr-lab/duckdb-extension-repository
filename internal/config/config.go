@@ -615,21 +615,21 @@ func (c Config) Validate() error {
 		bad("azure.identity.kind must be managed, workload or default")
 	}
 	if f := c.Rotation.MinFloor; f != nil && *f < time.Second {
-		bad("rotation.min_floor is at least 1s (leave it out for its default, %s)", DefaultRotationFloor)
+		bad("rotation.min_floor is at least 1s (leave it out for its default, %s)", durationText(DefaultRotationFloor))
 	}
 	if !dev {
 		if c.Rotation.MinTrusted < c.Rotation.Floor() || c.Rotation.MinDemoted < c.Rotation.Floor() {
-			bad("rotation minimums cannot be below rotation.min_floor (%s) outside profile dev", c.Rotation.Floor())
+			bad("rotation minimums cannot be below rotation.min_floor (%s) outside profile dev", durationText(c.Rotation.Floor()))
 		}
 	}
 	if c.Rotation.MinTrusted < 0 || c.Rotation.MinDemoted < 0 {
 		bad("rotation minimums cannot be negative")
 	}
 	if f := c.Tenants.MinSuspendedFloor; f != nil && *f < time.Second {
-		bad("tenants.min_suspended_floor is at least 1s (leave it out for its default, %s)", DefaultMinSuspendedFloor)
+		bad("tenants.min_suspended_floor is at least 1s (leave it out for its default, %s)", durationText(DefaultMinSuspendedFloor))
 	}
 	if c.Tenants.MinSuspended < 0 || !dev && c.Tenants.MinSuspended < c.Tenants.Floor() {
-		bad("tenants.min_suspended cannot be negative, nor below tenants.min_suspended_floor (%s) outside profile dev", c.Tenants.Floor())
+		bad("tenants.min_suspended cannot be negative, nor below tenants.min_suspended_floor (%s) outside profile dev", durationText(c.Tenants.Floor()))
 	}
 	if c.Signers.FileDir != "" && !strings.HasPrefix(c.Signers.FileDir, "/") {
 		bad("signers.file_dir must be an absolute path")

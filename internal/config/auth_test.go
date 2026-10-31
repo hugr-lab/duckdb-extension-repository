@@ -98,8 +98,16 @@ auth:
 		"long max age":                {base + "auth: { admin_token_max_age: 25h }\n", nil, "auth.admin_token_max_age is at most limits.ceilings.admin_token_max_age"},
 		"default over a lowered ceiling": {base + "limits: { ceilings: { admin_token_max_age: 30m } }\n", nil,
 			"auth.admin_token_max_age is at most limits.ceilings.admin_token_max_age"},
-		"max age ceiling 0": {base + "limits: { ceilings: { admin_token_max_age: 0s } }\n", nil, "limits.ceilings.admin_token_max_age is at least 1s"},
-		"bad claim path":    {base + "auth: { server_issuers: [ { name: ops, url: 'https://x.example', roles_claim: 'a..b', required_claims: { a: b } } ] }\n", nil, "claim path"},
+		"max age ceiling 0":        {base + "limits: { ceilings: { admin_token_max_age: 0s } }\n", nil, "limits.ceilings.admin_token_max_age is at least 1m, the least auth.admin_token_max_age may be"},
+		"max age ceiling negative": {base + "limits: { ceilings: { admin_token_max_age: -1h } }\n", nil, "limits.ceilings.admin_token_max_age is at least 1m"},
+		"max age over a lowered ceiling": {base + "auth: { admin_token_max_age: 45m }\nlimits: { ceilings: { admin_token_max_age: 30m } }\n", nil,
+			"limits.ceilings.admin_token_max_age (30m)"},
+		// the stale-token gate stays meaningful: a management token is fresher than the longest token
+		"max age at the token lifetime": {base + "auth: { admin_token_max_age: 168h }\nlimits: { ceilings: { admin_token_max_age: 200h } }\n", nil,
+			"auth.admin_token_max_age must be below limits.ceilings.issuer_token_lifetime (168h)"},
+		"default max age over a lowered lifetime": {base + "limits: { ceilings: { issuer_token_lifetime: 1h } }\n", nil,
+			"auth.admin_token_max_age must be below limits.ceilings.issuer_token_lifetime (1h)"},
+		"bad claim path": {base + "auth: { server_issuers: [ { name: ops, url: 'https://x.example', roles_claim: 'a..b', required_claims: { a: b } } ] }\n", nil, "claim path"},
 	} {
 		_, err := Load(write(t, c.file), c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -108,6 +116,11 @@ auth:
 	}
 	if c, err := Load(write(t, base+"auth: { admin_token_max_age: 48h }\nlimits: { ceilings: { admin_token_max_age: 48h } }\n"), nil); err != nil || c.AdminTokenMaxAge() != 48*time.Hour {
 		t.Errorf("a 48h max age under a raised ceiling: %v", err)
+	} else if w := c.Warnings(); len(w) != 1 || !strings.Contains(w[0], "auth.admin_token_max_age is 48h, above 24h") {
+		t.Errorf("a long max age warns: %q", w)
+	}
+	if c, err := Load(write(t, base+"auth: { admin_token_max_age: 15m }\nlimits: { ceilings: { admin_token_max_age: 30m } }\n"), nil); err != nil || c.AdminTokenMaxAge() != 15*time.Minute {
+		t.Errorf("a 15m max age under a lowered ceiling: %v", err)
 	}
 	// the public URL itself may be a server audience
 	if _, err := Load(write(t, base+"serve: { public_url: https://k.example }\n"+iss+"server_audiences: [ 'https://k.example' ] }\n"), nil); err != nil {

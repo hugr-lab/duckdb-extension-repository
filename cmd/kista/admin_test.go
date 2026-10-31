@@ -740,24 +740,36 @@ func TestAdminTenantDelete(t *testing.T) {
 }
 
 // Spec 0019, amended 2026-10-31: outside profile dev a lowered tenants.min_suspended_floor admits a
-// minimum of a few seconds; "deletable from" follows it, and the delete is refused until then and
-// taken from then.
+// minimum of seconds. "deletable from" follows the minimum, and the delete is refused until then (a
+// 30s minimum: nothing a loaded runner reaches) and taken from then (a 1s minimum, polled, no fixed
+// sleep); the event records the minimum applied, and each run warns of the lowered floor.
 func TestAdminTenantDeleteShortMinimum(t *testing.T) {
 	dir := t.TempDir()
-	cfg := filepath.Join(dir, "kista.yaml")
-	os.WriteFile(cfg, []byte("profile: prod\nstore: { kind: sqlite, sqlite: { path: "+filepath.Join(dir, "k.db")+" } }\n"+
-		"tenants: { min_suspended_floor: 1s, min_suspended: 3s }\n"), 0o600)
-	run := func(want int, args ...string) string {
-		t.Helper()
-		var out, errw bytes.Buffer
-		if code := admin(append([]string{"-config", cfg}, args...), nil, &out, &errw); code != want {
-			t.Fatalf("%v: exit %d, want %d\n%s%s", args, code, want, out.String(), errw.String())
-		}
-		return out.String() + errw.String()
+	config := func(minimum string) string {
+		p := filepath.Join(dir, "kista-"+minimum+".yaml")
+		os.WriteFile(p, []byte("profile: prod\nstore: { kind: sqlite, sqlite: { path: "+filepath.Join(dir, "k.db")+" } }\n"+
+			"tenants: { min_suspended_floor: 1s, min_suspended: "+minimum+" }\n"), 0o600)
+		return p
 	}
-	run(0, "migrate")
-	run(0, "tenant", "create", "brief")
-	run(0, "tenant", "suspend", "brief")
+	long, short := config("30s"), config("1s")
+	exec := func(cfg string, args ...string) (int, string) {
+		var out, errw bytes.Buffer
+		code := admin(append([]string{"-config", cfg}, args...), nil, &out, &errw)
+		return code, out.String() + errw.String()
+	}
+	run := func(cfg string, want int, args ...string) string {
+		t.Helper()
+		code, got := exec(cfg, args...)
+		if code != want {
+			t.Fatalf("%v: exit %d, want %d\n%s", args, code, want, got)
+		}
+		return got
+	}
+	if got := run(long, 0, "migrate"); !strings.Contains(got, "WARNING: tenants.min_suspended_floor is 1s, below its default 24h") {
+		t.Errorf("no warning of the lowered floor: %q", got)
+	}
+	run(long, 0, "tenant", "create", "brief")
+	run(long, 0, "tenant", "suspend", "brief")
 	field := func(out, name string) time.Time {
 		t.Helper()
 		for _, l := range strings.Split(out, "\n") {
@@ -772,16 +784,26 @@ func TestAdminTenantDeleteShortMinimum(t *testing.T) {
 		t.Fatalf("no %s in %q", name, out)
 		return time.Time{}
 	}
-	show := run(0, "tenant", "show", "brief")
-	suspended, deletable := field(show, "suspended"), field(show, "deletable from")
-	if deletable.Sub(suspended) != 3*time.Second {
-		t.Fatalf("deletable from %s, suspended %s: want 3s apart", deletable, suspended)
+	show := run(long, 0, "tenant", "show", "brief")
+	if s, d := field(show, "suspended"), field(show, "deletable from"); d.Sub(s) != 30*time.Second {
+		t.Fatalf("deletable from %s, suspended %s: want 30s apart", d, s)
 	}
-	if got := run(1, "tenant", "delete", "brief", "-confirm", "brief"); !strings.Contains(got, "may be deleted from") {
+	if got := run(long, 1, "tenant", "delete", "brief", "-confirm", "brief"); !strings.Contains(got, "may be deleted from") {
 		t.Fatalf("a delete before the minimum: %q", got)
 	}
-	time.Sleep(time.Until(deletable.Add(time.Second)))
-	if got := run(0, "tenant", "delete", "brief", "-confirm", "brief"); !strings.Contains(got, "being deleted") {
-		t.Errorf("a delete after the minimum: %q", got)
+	// the 1s minimum: polled until the second has passed
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		code, got := exec(short, "tenant", "delete", "brief", "-confirm", "brief")
+		if code == 0 && strings.Contains(got, "being deleted") {
+			break
+		}
+		if !strings.Contains(got, "may be deleted from") || time.Now().After(deadline) {
+			t.Fatalf("a delete after a 1s minimum: exit %d %q", code, got)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got := run(short, 0, "events", "list", "brief"); !strings.Contains(got, "tenant.delete") || !strings.Contains(got, `"min_suspended":"1s"`) {
+		t.Errorf("tenant.delete records the minimum applied: %q", got)
 	}
 }

@@ -31,6 +31,9 @@ func TestEventsConfig(t *testing.T) {
 		"2 years without sinks, raised":          "events: { retention: 17520h }\nlimits: { ceilings: { events_retention: 17520h } }\n",
 		"without sinks, the sinks' ceiling idle": "events: { retention: 4320h }\nlimits: { ceilings: { events_retention_with_sinks: 168h } }\n",
 		"20 years of statistics, raised":         "statistics: { retention: 175200h }\nlimits: { ceilings: { statistics_retention: 175200h } }\n",
+		"the least ceilings":                     "events: { retention: 48h }\nstatistics: { retention: 720h }\nlimits: { ceilings: { events_retention: 48h, statistics_retention: 720h } }\n",
+		"rows under a raised ceiling":            "events: { max_rows_per_tenant: 200000000 }\nlimits: { ceilings: { events_rows_per_tenant: 200000000 } }\n",
+		"rows under a lowered ceiling":           "events: { max_rows_per_tenant: 1000 }\nlimits: { ceilings: { events_rows_per_tenant: 1000 } }\n",
 	} {
 		if _, err := Load(write(t, base+file), nil); err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -66,12 +69,20 @@ func TestEventsConfig(t *testing.T) {
 			"events.retention is at most limits.ceilings.events_retention ("},
 		"default over a lowered sinks ceiling": {base + "events: { sinks: [{ name: a, kind: jsonl, path: '-' }] }\nlimits: { ceilings: { events_retention_with_sinks: 168h } }\n",
 			"limits.ceilings.events_retention_with_sinks"},
-		"ceiling 0":            {base + "limits: { ceilings: { events_retention: 0s } }\n", "limits.ceilings.events_retention is at least 1s"},
-		"ceiling negative":     {base + "limits: { ceilings: { events_retention: -1h } }\n", "limits.ceilings.events_retention is at least 1s"},
-		"sinks ceiling 0":      {base + "limits: { ceilings: { events_retention_with_sinks: 0s } }\n", "limits.ceilings.events_retention_with_sinks is at least 1s"},
-		"statistics over":      {base + "statistics: { retention: 87601h }\n", "statistics.retention is at most limits.ceilings.statistics_retention"},
-		"statistics lowered":   {base + "limits: { ceilings: { statistics_retention: 8760h } }\n", "statistics.retention is at most limits.ceilings.statistics_retention"},
-		"statistics ceiling 0": {base + "limits: { ceilings: { statistics_retention: 0s } }\n", "limits.ceilings.statistics_retention is at least 1s"},
+		"ceiling 0":                           {base + "limits: { ceilings: { events_retention: 0s } }\n", "limits.ceilings.events_retention is at least 48h, the least events.retention may be"},
+		"ceiling negative":                    {base + "limits: { ceilings: { events_retention: -1h } }\n", "limits.ceilings.events_retention is at least 48h"},
+		"sinks ceiling 0":                     {base + "limits: { ceilings: { events_retention_with_sinks: 0s } }\n", "limits.ceilings.events_retention_with_sinks is at least 48h"},
+		"sinks ceiling negative":              {base + "limits: { ceilings: { events_retention_with_sinks: -1h } }\n", "limits.ceilings.events_retention_with_sinks is at least 48h"},
+		"ceiling under the least":             {base + "limits: { ceilings: { events_retention: 47h } }\n", "limits.ceilings.events_retention is at least 48h"},
+		"statistics ceiling negative":         {base + "limits: { ceilings: { statistics_retention: -1h } }\n", "limits.ceilings.statistics_retention is at least 720h"},
+		"statistics ceiling under":            {base + "limits: { ceilings: { statistics_retention: 719h } }\n", "limits.ceilings.statistics_retention is at least 720h"},
+		"ceiling as the docs write it":        {base + "events: { retention: 8761h }\n", "limits.ceilings.events_retention (8760h)"},
+		"rows over the ceiling":               {base + "events: { max_rows_per_tenant: 100000001 }\n", "events.max_rows_per_tenant is at most limits.ceilings.events_rows_per_tenant (100000000)"},
+		"default rows over a lowered ceiling": {base + "limits: { ceilings: { events_rows_per_tenant: 1000 } }\n", "limits.ceilings.events_rows_per_tenant (1000)"},
+		"rows ceiling 0":                      {base + "limits: { ceilings: { events_rows_per_tenant: 0 } }\n", "limits.ceilings.events_rows_per_tenant is at least 1"},
+		"statistics over":                     {base + "statistics: { retention: 87601h }\n", "statistics.retention is at most limits.ceilings.statistics_retention"},
+		"statistics lowered":                  {base + "limits: { ceilings: { statistics_retention: 8760h } }\n", "statistics.retention is at most limits.ceilings.statistics_retention"},
+		"statistics ceiling 0":                {base + "limits: { ceilings: { statistics_retention: 0s } }\n", "limits.ceilings.statistics_retention is at least 720h, the least statistics.retention may be"},
 	} {
 		if _, err := Load(write(t, c.file), nil); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)
