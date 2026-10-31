@@ -393,7 +393,7 @@ A distribution admin creates only distributors' publishers: `POST …/publishers
 `distributor` answers it `404`. For a name a tenant's own publisher holds it answers `409` with the
 problem type `publisher-taken`: the name is taken, and nothing else is said about that publisher
 (the refusal is recorded as `authz.refused`, `reason` `publisher-taken`). A tenant holds at most 10
-distributors' publishers, counted apart from its own publishers (at most 200): a distributor never
+distributors' publishers, counted apart from its own publishers (at most 200 by default, `limits.ceilings`): a distributor never
 uses up the tenant's room.
 
 Every publisher answer carries the publisher's `id` (spec 0037): a distributor recognises its own

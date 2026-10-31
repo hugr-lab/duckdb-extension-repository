@@ -350,6 +350,7 @@ limits:                # the defaults per tenant (spec 0038), a backstop; a tena
   differs from kista's other settings, where `0` means "the default", and the website warns about
   it.
 - A count above its ceiling refuses to start.
+- **The ceilings are configured too** (amended 2026-10-31, below): `limits.ceilings`.
 - **The defaults are a backstop, not a plan.** A change of the configuration changes every tenant
   without a value of its own, across the whole fleet as replicas restart, with no audit event. A
   hosted service puts explicit values on each tenant instead.
@@ -589,6 +590,46 @@ pages of the behaviour it changes, and each runs, before it opens, `make test` o
 - Download or egress limits per tenant: out of scope; serving is never refused by a limit.
 - The developer kit's `kista_publish.py` (plan item K5) stops on `tenant-limit` as on
   `catalogue-full`.
+
+## Amendment: configured ceilings (2026-10-31)
+
+The owner: "Я бы не хотел хардкодить ограничения, нужно управляемые лимиты" — no limit is fixed in
+code. Every ceiling below was a constant; each is now a server setting under `limits.ceilings`,
+today's value its default, checked only for shape (a count at least 1, a duration at least 1s). They
+are the server's, never a tenant's: a tenant's own limits (above) and the configuration's defaults
+stay at or below them, and the bootstrap tenant's `limits` refuse a `ceilings` key. `store.SetCeilings`
+puts them in force as the store opens (`kista serve` and `kista admin` alike); the checks, refusals
+and their types are unchanged.
+
+| Was | Kind | `limits.ceilings.` key | Default |
+| --- | --- | --- | --- |
+| `MaxChannels` | product | `channels` | 1000 |
+| `MaxUpstreams` | product | `upstreams` | 100 |
+| `MaxPublishers` | product | `publishers` | 200 |
+| `MaxDistributorPublishers` | product | `distributor_publishers` | 10 |
+| `MaxPublisherKeys` | product | `publisher_keys` | 10 |
+| `keys.MaxKeys` (channel and attestation keys) | product | `signing_keys` | 16 |
+| `MaxIssuers` | product | `issuers` | 16 |
+| `MaxGrants` | product | `grants` | 1000 |
+| `MaxPackageGroups`, `MaxGroupMembers`, `MaxTenantMembers` | product | `package_groups`, `group_members`, `tenant_group_members` | 100, 1000, 10000 |
+| `MaxFeeds`, `MaxFeedKeys`, `MaxFeedKept` | product | `feeds`, `feed_keys`, `feed_kept` | 50, 10, 100000 |
+| `MaxBlocks` | product | `blocks` | 10000 |
+| `MaxTenantAttachments`, `MaxAttachmentHeads` | product | `attachments`, `attachment_heads` | 100000, 20 |
+| `MaxUpstreamEntries`, `MaxEntryVersions`, `MaxUpstreamKeys` | product | `upstream_entries`, `entry_versions`, `upstream_keys` | 1000, 100, 10 |
+| `MaxUpstreamCells`, `MaxTenantCells` | product | `upstream_cells`, `tenant_cells` | 20000, 100000 |
+| `MaxDiscoveredNames` (spec 0039) | product | `discovered_names` | 1000 |
+| `MaxHold` | product | `max_hold` | 2160h (90 days) |
+| `tenants.MaxKeyLifetime` | product | `publisher_key_lifetime` | 8784h (366 days) |
+
+What stays in code, and why (bounds on one request, one document or one remote answer, which protect
+the server and are part of a format, not a tenant's room):
+
+- `MaxSinks` (16): a bit each in `events.pending`, a column's width.
+- Sizes and counts of one request or answer: request bodies, `MaxStatement`, `MaxData`, usage
+  reports, feed and stats pages, `maxRevocationsPage`/`maxNamesPage` and their row bounds, the bundle
+  manifest's bounds (`MaxCells`, `MaxFiles`, `MaxRevocations`, …), `MaxMemberChange` per request.
+- Content rules of a format: `MaxSummary` (160), the icon's size and sides, reasons' and
+  descriptions' lengths, licence and token sizes, DuckDB's 64 KiB `.well-known`.
 
 ## Decisions
 

@@ -323,7 +323,7 @@ active tenant (and, where said, a suspended one) a distribution admin may:
 - create a distributor's publisher, marked from its creation (spec 0033, [Distributors' publishers](publishing.md#distributors-publishers)):
   without `distributor` the creation answers `404`, and for a name a tenant's own publisher holds
   `409` with the problem type `publisher-taken` (the name is taken, and nothing else is said; the
-  refusal is an `authz.refused` event). A tenant holds at most 10 distributors' publishers, counted
+  refusal is an `authz.refused` event). A tenant holds at most 10 distributors' publishers by default (`limits.ceilings`), counted
   apart from its own (at most 200), so a distributor never takes the tenant's room;
 - list and read the distributors' publishers (a list leaves the tenant's own publishers out, and
   reading one answers `404`), and for a distributor's publisher only: rename its distributor (while

@@ -592,17 +592,17 @@ A server administrator sets a tenant's own values over the API or the CLI (see
 ```yaml
 limits:
   bytes: unlimited     # its own catalogue bytes: a size (50GiB), 0 (none) or unlimited
-  channels: unlimited  # a number up to 1000, 0 (none) or unlimited (the ceiling)
-  upstreams: unlimited # up to 100
-  publishers: unlimited # its own publishers, up to 200
+  channels: unlimited  # a number up to its ceiling (1000 by default), 0 (none) or unlimited (the ceiling)
+  upstreams: unlimited # up to its ceiling (100)
+  publishers: unlimited # its own publishers, up to its ceiling (200)
 ```
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `limits.bytes` | size, `0` or `unlimited` | `unlimited` | The tenant's own catalogue bytes: each distinct body of its kept builds, and its entries' icons; distributors' sources are never counted. |
-| `limits.channels` | number, `0` or `unlimited` | `unlimited` (1000) | Its channels. |
-| `limits.upstreams` | number, `0` or `unlimited` | `unlimited` (100) | Its upstreams. |
-| `limits.publishers` | number, `0` or `unlimited` | `unlimited` (200) | Its own publishers; distributors' publishers are counted apart (at most 10). |
+| `limits.channels` | number, `0` or `unlimited` | `unlimited` (the ceiling) | Its channels. |
+| `limits.upstreams` | number, `0` or `unlimited` | `unlimited` (the ceiling) | Its upstreams. |
+| `limits.publishers` | number, `0` or `unlimited` | `unlimited` (the ceiling) | Its own publishers; distributors' publishers are counted apart (`limits.ceilings.distributor_publishers`). |
 
 :::warning `0` means none here
 Unlike kista's other settings, where `0` means "the default", a limit of `0` allows **no** growth
@@ -610,6 +610,46 @@ of that kind at all. Leave a key out, or write `unlimited`, for no limit.
 :::
 
 - A count above its ceiling, or a value that is none of these, refuses to start.
+
+### limits.ceilings
+
+The server's ceilings: the most any tenant may hold of each kind, whatever its limits. No limit is
+fixed in code; each key left out (or `0`) keeps its default. A tenant's limits and the defaults
+above stay at or below these; the bootstrap tenant's `limits` take no `ceilings`. File-only.
+
+```yaml
+limits:
+  ceilings:
+    channels: 1000             # per tenant
+    upstreams: 100
+    publishers: 200            # its own
+    distributor_publishers: 10 # distributors' publishers, counted apart
+    publisher_keys: 10         # per publisher, expired ones included
+    signing_keys: 16           # non-retired keys per channel; attestation keys per tenant
+    issuers: 16
+    grants: 1000
+    package_groups: 100
+    group_members: 1000        # per group
+    tenant_group_members: 10000
+    feeds: 50
+    feed_keys: 10              # per feed
+    feed_kept: 100000          # refusals and statements a tenant's export feeds keep
+    blocks: 10000
+    attachments: 100000
+    attachment_heads: 20       # per body, kind and origin
+    upstream_entries: 1000     # per upstream
+    entry_versions: 100        # per entry
+    upstream_keys: 10          # per upstream
+    upstream_cells: 20000      # one upstream's matrix
+    tenant_cells: 100000       # every upstream of a tenant
+    discovered_names: 1000     # a mirror's "*"
+    max_hold: 2160h            # the longest hold (90 days)
+    publisher_key_lifetime: 8784h # the furthest a publisher key's expiry (366 days)
+```
+
+A count is at least 1, a duration at least `1s`. Bounds on one request, one document or one remote
+answer (page and body sizes, a summary's 160 characters, an icon's size, the 16 event sinks) stay in
+code: they are part of a format, not a tenant's room.
 - **A backstop, not a plan.** A change here changes every tenant without values of its own, across
   every replica as it restarts, and writes no event. A hosted service puts explicit values on each
   tenant instead (`POST /api/v1/tenants` takes them).
@@ -854,8 +894,9 @@ bootstrap:
     - `fetch` is a mirror's, `eager` (the default) or `lazy`, and `eager` entries are a mirror's;
     - a credential names one of `upstreams.credentials` that is for this tenant, covers the prefix,
       and allows public releases when the upstream makes them;
-    - the limits: 100 upstreams, 1,000 names, 100 versions per name, 10 keys, and 20,000 cells per
-      upstream (and 100,000 per tenant) counted from the section's channels;
+    - the ceilings (`limits.ceilings`): by default 100 upstreams, 1,000 names, 100 versions per
+      name, 10 keys, and 20,000 cells per upstream (and 100,000 per tenant) counted from the
+      section's channels;
   - a console client at a server issuer's URL is refused, since a tenant's console does not sign in
     there (spec 0015). Such a tenant has no console client: its administrators use the API, or a
     server administrator uses the console.
