@@ -94,6 +94,8 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/n.
 "$work/fixture" "$work/hello2.duckdb_extension" 2.0 f hello_acme
 "$work/fixture" "$work/maps10.duckdb_extension" 1.0 g maps
 "$work/fixture" "$work/maps11.duckdb_extension" 1.1 h maps
+# K4: a build a server administrator adds to the catalogue from the console, its footer read there
+"$work/fixture" "$work/k4_tool.duckdb_extension" 0.4 j k4_tool
 # spec 0036: geo_tools' icon (its distributor's publisher's), and one tom gives maps in the console
 "$work/fixture" -icon "$work/geo.png" 64
 "$work/fixture" -icon "$work/maps.png" 96
@@ -245,4 +247,4 @@ for i in $(seq 1 30); do curl -sf "$host/" >/dev/null && break; sleep 1; done
 curl -sf "$host/" >/dev/null || { cat "$work/host.log"; exit 1; }
 
 echo "e2e: Playwright"
-E2E_ICON="$work/maps.png" E2E_LICENSE="$work/vault.kista-license" E2E_LICENSE_NOKEY="$work/tresor.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }
+E2E_EXT="$work/k4_tool.duckdb_extension" E2E_ICON="$work/maps.png" E2E_LICENSE="$work/vault.kista-license" E2E_LICENSE_NOKEY="$work/tresor.kista-license" E2E_REPO_URL="http://127.0.0.1:$repo_port/acme" E2E_REPO_KEY="$repo_key" E2E_HOST_URL="$host" E2E_KISTA_URL="$kista" E2E_KC_URL="$kc" E2E_KC_HOST="127.0.0.1:$kc_port" npx playwright test "$@" || { tail -50 "$work/kista.log"; exit 1; }
